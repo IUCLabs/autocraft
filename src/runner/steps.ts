@@ -85,6 +85,12 @@ async function checkCommentApproved(db: DatabaseSync, p: Params): Promise<string
   return commentApprovalOf(db, String(p.repo)) ? null : `commenting in ${p.repo} is not approved`;
 }
 
+/** Pushing to contributors' branches is opt-in per repo. */
+async function checkPushApproved(db: DatabaseSync, p: Params): Promise<string | null> {
+  const { pushApprovalOf } = await import("../fixup/approval.ts");
+  return pushApprovalOf(db, String(p.repo)) ? null : `pushing fix-ups in ${p.repo} is not approved`;
+}
+
 export const STEPS: StepDef[] = [
   {
     name: "classify-new",
@@ -271,6 +277,27 @@ export const STEPS: StepDef[] = [
       if (refused) throw new Error(refused);
       const r = await runAct(ctx.db, { repo: String(ctx.params.repo), limit: Number(ctx.params.limit), dryRun: false, onHandled: ctx.handled }, ctx.log);
       return `${r.repo}: ${r.done.length} closed, ${r.skipped.length} skipped, ${r.failed.length} failed, ${r.asked.length} decisions asked`;
+    },
+  },
+  {
+    name: "fixup",
+    title: "Fix up take-fix pull requests",
+    description: "For take-fix pull requests we may push to, Sonnet turns the review's fix list into a diff that is checked and applied on top of the reviewed head, pushed to the contributor's branch and noted with one short comment. The new head is reviewed again.",
+    stage: 6,
+    requires: "operator",
+    group: "github-write",
+    models: ["sonnet"],
+    params: [
+      { name: "repo", label: "Repo", kind: "repo", required: true },
+      { name: "limit", label: "At most", kind: "int", min: 1, max: 50, default: 5, help: "pull requests to fix up in this job" },
+    ],
+    check: checkPushApproved,
+    run: async (ctx) => {
+      const { runFixup } = await import("../fixup/index.ts");
+      const refused = await checkPushApproved(ctx.db, ctx.params);
+      if (refused) throw new Error(refused);
+      const r = await runFixup(ctx.db, { repo: String(ctx.params.repo), limit: Number(ctx.params.limit), dryRun: false, onHandled: ctx.handled }, ctx.log);
+      return `${r.repo}: pushed ${r.pushed.length}, ${r.failed.length} failed or refused, ${r.held.length} held`;
     },
   },
 ];

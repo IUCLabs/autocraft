@@ -245,6 +245,8 @@ export function apiRoutes(opts: ApiOptions = {}): Route[] {
     post("/api/repos/merge-revoke", (db, req) => adm.mergeApproval(db, req, false)),
     post("/api/repos/comment-approve", (db, req) => adm.commentApproval(db, req, true)),
     post("/api/repos/comment-revoke", (db, req) => adm.commentApproval(db, req, false)),
+    post("/api/repos/push-approve", (db, req) => adm.pushApproval(db, req, true)),
+    post("/api/repos/push-revoke", (db, req) => adm.pushApproval(db, req, false)),
     get("/api/access", adm.accessOverview),
     post("/api/access/add", adm.accessAdd),
     post("/api/access/remove", adm.accessRemove),

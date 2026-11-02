@@ -320,7 +320,7 @@ CREATE TABLE IF NOT EXISTS stage_limits (
 );
 INSERT OR IGNORE INTO stage_limits (step, per_day) VALUES
   ('classify-new', 2000), ('embed', NULL), ('decide', 100), ('checks', NULL),
-  ('review-batch', 40), ('labels-apply', NULL), ('merge', 10), ('act', 20);
+  ('review-batch', 40), ('labels-apply', NULL), ('merge', 10), ('act', 20), ('fixup', 20);
 
 -- One row per `craft-auto sync` run, kept for two days, for the Pipeline page.
 CREATE TABLE IF NOT EXISTS sync_runs (
@@ -593,3 +593,18 @@ CREATE TABLE IF NOT EXISTS actions (
   UNIQUE (decision_id, repo, number, kind)
 );
 CREATE INDEX IF NOT EXISTS actions_item ON actions(repo, number);
+-- Fix-up tries by the Integrate stage on take-fix PRs, one row per try (or per
+-- head for cannot-push and too-large). state: pushed | failed | refused (the
+-- patch or a pre-push check said no) | cannot-push | too-large. Only the first
+-- three count against the two tries per PR.
+CREATE TABLE IF NOT EXISTS fixups (
+  repo TEXT NOT NULL, number INTEGER NOT NULL,
+  from_head TEXT NOT NULL,            -- the reviewed head commit the fix was made on
+  to_head TEXT,                       -- the pushed commit; NULL unless pushed
+  state TEXT NOT NULL,
+  reason TEXT,                        -- one line, public-safe
+  files TEXT,                         -- JSON [path] the fix names (pushed: the files changed)
+  attempt INTEGER NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS fixups_item ON fixups(repo, number, created_at);
