@@ -30,6 +30,8 @@ import type {
   PromptsReport,
   QueueFilter,
   QueueList,
+  WorkFilter,
+  WorkList,
   RepoName,
   Role,
   RulePreview,
@@ -100,6 +102,8 @@ export interface Api {
     approvePushing(name: RepoName, approved: boolean): Promise<TrackedRepo[]>;
     /** Lets the Act step comment on and close items here, or stops it. */
     approveCommenting(name: RepoName, approved: boolean): Promise<TrackedRepo[]>;
+    /** Lets the Fix issues step push fixes, open pull requests and comment on issues here, or stops it. */
+    approveFixing(name: RepoName, approved: boolean): Promise<TrackedRepo[]>;
   };
   /** Operator only. */
   access: {
@@ -168,6 +172,8 @@ export interface Api {
   similar(repo: RepoName, number: number, limit?: number): Promise<SimilarHit[]>;
   /** Search by meaning: the query's embedding against every item's. */
   semanticSearch(q: string): Promise<SimilarHit[]>;
+  /** Open items in work-score order with the parts of each score and the next pipeline step. Read-only. */
+  work(filter: WorkFilter): Promise<WorkList>;
 }
 
 export const ApiContext = createContext<Api | null>(null);

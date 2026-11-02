@@ -695,8 +695,20 @@ CREATE TABLE IF NOT EXISTS fix_attempts (
   summary TEXT,                       -- why the last round failed (public-safe, one line)
   pr_url TEXT,
   reason TEXT,                        -- triage reason, or why it failed
+  -- size (S | M | L | XL) is added by migration: the triage's estimate of the fix
   created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
   PRIMARY KEY (repo, number)
 );
 CREATE INDEX IF NOT EXISTS fix_attempts_state ON fix_attempts(state);
 INSERT OR IGNORE INTO stage_limits (step, per_day) VALUES ('fixissue', 10);
+
+-- Work score of an open item (src/rank): priority, size, type and the security flag in one number, recomputed
+-- by the rank step from stored results, without a model. breakdown is JSON with the points of each part.
+CREATE TABLE IF NOT EXISTS item_rank (
+  repo TEXT NOT NULL, number INTEGER NOT NULL,
+  score INTEGER NOT NULL,
+  breakdown TEXT NOT NULL,
+  computed_at TEXT NOT NULL,
+  PRIMARY KEY (repo, number)
+);
+CREATE INDEX IF NOT EXISTS item_rank_score ON item_rank(score);

@@ -413,6 +413,22 @@ export const STEPS: StepDef[] = [
       return `${r.looked} pending: ${r.passed} passed, ${r.opened} PRs opened, ${r.failedRounds} failed rounds, ${r.failed} failed, ${r.retried} retried`;
     },
   },
+  {
+    name: "rank",
+    title: "Rank open items",
+    description: "Computes the work score of every open item from its priority, its size (changed lines of a PR, the Fix triage's estimate for an issue), its type label and the security flag. Review, Fix, Verify, Fix-up, Decide and the merge queue take their items in this order. Calls no model and writes nothing to GitHub.",
+    stage: 2,
+    requires: "operator",
+    group: "local",
+    models: [],
+    params: [],
+    run: async (ctx) => {
+      const { runRank } = await import("../rank/index.ts");
+      const r = runRank(ctx.db);
+      ctx.handled(r.items);
+      return `${r.items} open items ranked, ${r.changed} changed, ${r.removed} removed`;
+    },
+  },
 ];
 
 let loaded: Promise<Map<string, StepDef>> | null = null;

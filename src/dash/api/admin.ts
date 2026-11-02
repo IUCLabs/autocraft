@@ -10,7 +10,7 @@ import { AccessError, addLogin, isRole, listAccess, removeLogin, ROLES, setRole 
 import { approvalOf, setApproval } from "../../labels/approval.ts";
 import { commentApprovalOf, setCommentApproval } from "../../act/approval.ts";
 import { pushApprovalOf, setPushApproval } from "../../fixup/approval.ts";
-import { setFixIssueApproval } from "../../fixissue/approval.ts";
+import { fixIssueApprovalOf, setFixIssueApproval } from "../../fixissue/approval.ts";
 import { mergeApprovalOf, setMergeApproval } from "../../merge/approval.ts";
 import { countPlan, planLabels } from "../../labels/plan.ts";
 import { listAll, RepoError, trackRepo, untrackRepo } from "../../repos.ts";
@@ -233,6 +233,7 @@ export function allRepos(db: DatabaseSync, req: Req): TrackedRepo[] {
     merging: r.tracked ? mergeInfo(db, r.name) : null,
     pushing: r.tracked ? approvalInfo(pushApprovalOf(db, r.name)) : null,
     commenting: r.tracked ? approvalInfo(commentApprovalOf(db, r.name)) : null,
+    fixing: r.tracked ? approvalInfo(fixIssueApprovalOf(db, r.name)) : null,
   }));
 }
 

@@ -130,7 +130,9 @@ describe("ordering and API", () => {
     const db = connect(join(mkdtempSync(join(SCRATCH, "priority-order-")), "t.db"));
     const item = db.prepare(`INSERT INTO items (repo, number, kind, state, title, body, author, created_at, updated_at, head_oid, is_draft, additions, deletions, changed_files)
       VALUES ('photocraft', ?, 'pr', 'OPEN', 't', 'b', 'a', ?, ?, ?, 0, 5, 5, 1)`);
-    const score = db.prepare("INSERT INTO item_priority (repo, number, text_hash, impact, score, model, at) VALUES ('photocraft', ?, 'h', 'normal', ?, 'jev', 'x')");
+    const prio = db.prepare("INSERT INTO item_priority (repo, number, text_hash, impact, score, model, at) VALUES ('photocraft', ?, 'h', 'normal', ?, 'jev', 'x')");
+    const rank = db.prepare("INSERT INTO item_rank (repo, number, score, breakdown, computed_at) VALUES ('photocraft', ?, ?, '{}', 'x')");
+    const score = { run: (n: number, v: number) => { prio.run(n, v); rank.run(n, v); } };
     const cls = db.prepare(`INSERT INTO classifications (repo, number, classifier, run_id, at, type_label, flags, probs) VALUES ('photocraft', ?, 'jev', 'r1', '2026-10-01', 'bugfix', '["needs decision"]', '{"top":0.95,"needs_decision":0.9}')`);
     // number 1 is oldest and unscored; 2 scores 30, 3 scores 80.
     for (const n of [1, 2, 3]) {

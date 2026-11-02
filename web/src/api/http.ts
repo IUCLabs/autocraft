@@ -136,6 +136,7 @@ export function createHttpApi(): Api {
       approveMerging: (name, approved) => post(approved ? "/api/repos/merge-approve" : "/api/repos/merge-revoke", { name }),
       approvePushing: (name, approved) => post(approved ? "/api/repos/push-approve" : "/api/repos/push-revoke", { name }),
       approveCommenting: (name, approved) => post(approved ? "/api/repos/comment-approve" : "/api/repos/comment-revoke", { name }),
+      approveFixing: (name, approved) => post(approved ? "/api/repos/fixissue-approve" : "/api/repos/fixissue-revoke", { name }),
       approveLabels: (name, approved) => post(approved ? "/api/repos/labels-approve" : "/api/repos/labels-revoke", { name }),
     },
     access: {
@@ -195,5 +196,6 @@ export function createHttpApi(): Api {
     },
     similar: (repo, number, limit) => get(`/api/similar/${encodeURIComponent(repo)}/${encodeURIComponent(String(number))}${qs({ limit })}`),
     semanticSearch: (q) => get(`/api/search?${new URLSearchParams({ q, mode: "semantic" })}`),
+    work: (f) => get(`/api/work${qs(f)}`),
   };
 }

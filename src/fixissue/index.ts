@@ -114,7 +114,7 @@ export type AttemptRow = {
   repo: string; number: number; main_sha: string; text_hash: string; state: string; round: number;
   files: string | null; crate: string | null; crate_dir: string | null; patch: string | null; test_patch: string | null;
   head_task_id: number | null; base_task_id: number | null; retries: number; push_tries: number;
-  summary: string | null; pr_url: string | null; reason: string | null; created_at: string; updated_at: string;
+  summary: string | null; pr_url: string | null; reason: string | null; size: string | null; created_at: string; updated_at: string;
 };
 
 export const attemptOf = (db: DatabaseSync, repo: string, number: number): AttemptRow | null =>
@@ -203,8 +203,8 @@ async function startAttempt(x: Ctx, c: IssueCandidate): Promise<"started" | "ski
   }
   const at = iso(d);
   const row = (state: string, reason: string, extra: Partial<AttemptRow> = {}): AttemptRow => {
-    db.prepare(`INSERT OR REPLACE INTO fix_attempts (repo, number, main_sha, text_hash, state, round, files, crate, crate_dir, reason, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)`).run(c.repo, c.number, main, c.hash, state, extra.files ?? null, extra.crate ?? null, extra.crate_dir ?? null, reason, at, at);
+    db.prepare(`INSERT OR REPLACE INTO fix_attempts (repo, number, main_sha, text_hash, state, round, files, crate, crate_dir, reason, size, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?)`).run(c.repo, c.number, main, c.hash, state, extra.files ?? null, extra.crate ?? null, extra.crate_dir ?? null, reason, extra.size ?? null, at, at);
     return attemptOf(db, c.repo, c.number)!;
   };
   if (!parsed) { log(`  ${ref}: no answer from the triage`); return "none"; }
@@ -216,7 +216,7 @@ async function startAttempt(x: Ctx, c: IssueCandidate): Promise<"started" | "ski
     return "skipped";
   }
   const t = parsed.triage;
-  const r = row("retry", t.reason, { files: JSON.stringify(t.files), crate: t.crate.name, crate_dir: t.crate.dir });
+  const r = row("retry", t.reason, { files: JSON.stringify(t.files), crate: t.crate.name, crate_dir: t.crate.dir, size: t.size });
   await patchRound(x, r);
   return "started";
 }

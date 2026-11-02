@@ -107,11 +107,12 @@ function Approval({ r, write }: { r: TrackedRepo; write: Write }) {
   );
 }
 
-type Kind = { field: "merging" | "pushing" | "commenting"; badge: string; stop: string; go: string; run: (api: ReturnType<typeof useApi>, name: string, on: boolean) => Promise<unknown> };
+type Kind = { field: "merging" | "pushing" | "commenting" | "fixing"; badge: string; stop: string; go: string; run: (api: ReturnType<typeof useApi>, name: string, on: boolean) => Promise<unknown> };
 const KINDS: Record<Kind["field"], Kind> = {
   merging: { field: "merging", badge: "Merging approved", stop: "Stop merging here", go: "Approve: merges on GitHub", run: (a, n, on) => a.repoAdmin.approveMerging(n, on) },
   pushing: { field: "pushing", badge: "Push approved", stop: "Stop pushing here", go: "Approve: pushes to contributor branches", run: (a, n, on) => a.repoAdmin.approvePushing(n, on) },
   commenting: { field: "commenting", badge: "Comments approved", stop: "Stop commenting here", go: "Approve: comments and closes on GitHub", run: (a, n, on) => a.repoAdmin.approveCommenting(n, on) },
+  fixing: { field: "fixing", badge: "Issue fixes approved", stop: "Stop fixing issues here", go: "Approve: pushes to the pipeline fork, PRs and comments", run: (a, n, on) => a.repoAdmin.approveFixing(n, on) },
 };
 
 function WriteApproval({ r, write, kind }: { r: TrackedRepo; write: Write; kind: Kind["field"] }) {
@@ -162,6 +163,7 @@ function Table({ rows, write }: { rows: TrackedRepo[]; write: Write }) {
             <th className="w-[290px] px-3 text-right text-xs font-medium">Merge approval</th>
             <th className="w-[290px] px-3 text-right text-xs font-medium">Push fix-ups</th>
             <th className="w-[290px] px-3 text-right text-xs font-medium">Comment and close</th>
+            <th className="w-[290px] px-3 text-right text-xs font-medium">Fix issues</th>
             <th className="w-[190px]" aria-label="Change" />
           </tr>
         </thead>
@@ -188,6 +190,9 @@ function Table({ rows, write }: { rows: TrackedRepo[]; write: Write }) {
               </td>
               <td className="px-3">
                 <WriteApproval r={r} write={write} kind="commenting" />
+              </td>
+              <td className="px-3">
+                <WriteApproval r={r} write={write} kind="fixing" />
               </td>
               <td className="px-3 text-right">
                 <Toggle r={r} write={write} />
@@ -220,10 +225,10 @@ function Cards({ rows, write }: { rows: TrackedRepo[]; write: Write }) {
                 <Approval r={r} write={write} />
               </div>
             )}
-            {(["merging", "pushing", "commenting"] as const).map((f) =>
+            {(["merging", "pushing", "commenting", "fixing"] as const).map((f) =>
               r[f] ? (
                 <div key={f} className="mt-1 flex items-center gap-2">
-                  <span className="num w-28 shrink-0 text-xs text-ink/55">{{ merging: "Merging", pushing: "Push fix-ups", commenting: "Comment and close" }[f]}:</span>
+                  <span className="num w-28 shrink-0 text-xs text-ink/55">{{ merging: "Merging", pushing: "Push fix-ups", commenting: "Comment and close", fixing: "Fix issues" }[f]}:</span>
                   <WriteApproval r={r} write={write} kind={f} />
                 </div>
               ) : null,

@@ -1,9 +1,10 @@
 // Validation of what the models return for the Fix stage. Pure text checks.
 import { MAX_CHANGED_LINES, extractDiff, safePath, validatePatch } from "../fixup/patch.ts";
 import { patchFor, patchProblem } from "../verify/plan.ts";
+import { isSize, type Size } from "../rank/score.ts";
 import { MAX_FILES, TRIAGE_REASON_WORDS, type Crate } from "./types.ts";
 
-export type Triage = { fixable: false; reason: string } | { fixable: true; reason: string; crate: Crate; files: string[] };
+export type Triage = { fixable: false; reason: string } | { fixable: true; reason: string; crate: Crate; files: string[]; /** The triage's estimate of the fix; null when the reply gave none. */ size: Size | null };
 export type TriageParse = { ok: true; triage: Triage } | { ok: false; error: string };
 
 const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
@@ -35,9 +36,10 @@ export function parseTriage(text: string, ref: string, crates: Crate[], paths: s
   if (!crate || !/^[A-Za-z0-9_./-]+$/.test(crate.dir) || crate.dir.split("/").includes("..")) return { ok: false, error: "crate is not in the workspace" };
   const files = o.files;
   if (!Array.isArray(files) || files.length < 1 || files.length > MAX_FILES) return { ok: false, error: `files must list 1 to ${MAX_FILES} paths` };
+  if (o.size !== undefined && !isSize(o.size)) return { ok: false, error: "size must be S, M, L or XL" };
   const known = new Set(paths);
   if (files.some((f) => typeof f !== "string" || !editable(f) || !known.has(f))) return { ok: false, error: "a file is not an editable source path of the repository" };
-  return { ok: true, triage: { fixable: true, reason, crate, files: [...new Set(files as string[])] } };
+  return { ok: true, triage: { fixable: true, reason, crate, files: [...new Set(files as string[])], size: o.size ?? null } };
 }
 
 export type FixPatch = {

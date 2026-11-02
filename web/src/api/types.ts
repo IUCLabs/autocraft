@@ -528,6 +528,8 @@ export interface TrackedRepo {
   pushing: RepoApproval | null;
   /** Whether the Act step may comment on and close items here; null for repos that are not tracked */
   commenting: RepoApproval | null;
+  /** Fix issues: pushes to the pipeline's fork and opens PRs and comments for issue fixes. */
+  fixing: RepoApproval | null;
 }
 
 export interface AccessEntry {
@@ -905,6 +907,48 @@ export interface QueueList {
   total: number;
   /** Cursor for the next page (`after`), or null on the last one. */
   next: string | null;
+}
+
+/** One part of a work score: the value it came from and the points it adds. */
+export interface WorkPart {
+  value: string | number | boolean | null;
+  points: number;
+}
+
+export interface WorkBreakdown {
+  /** value is the item's priority score, null when it has none (the default band midpoint counts then). */
+  priority: WorkPart;
+  type: WorkPart;
+  /** source: lines (PR), triage (issue, from Fix triage) or default (not known yet). */
+  size: WorkPart & { source: "lines" | "triage" | "default" };
+  security: WorkPart;
+}
+
+export interface WorkRow {
+  repo: RepoName;
+  number: number;
+  kind: "pr" | "issue";
+  title: string;
+  score: number;
+  breakdown: WorkBreakdown;
+  label: TypeLabel | null;
+  /** The pipeline step the item waits for, in words. */
+  next: string;
+}
+
+export interface WorkFilter {
+  repo?: RepoName;
+  kind?: "pr" | "issue";
+  limit?: number;
+  offset?: number;
+}
+
+export interface WorkList {
+  rows: WorkRow[];
+  /** Open ranked items matching the filters, every page. */
+  total: number;
+  /** `offset` of the next page, or null on the last one. */
+  next: number | null;
 }
 
 /** A search hit ranked by embedding similarity (`/api/similar`, `/api/search?mode=semantic`). */

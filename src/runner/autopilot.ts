@@ -27,6 +27,8 @@ import { collectDue } from "../verify/results.ts";
 import { collectDue as fixCollectDue, fixDue } from "../fixissue/index.ts";
 import { audit } from "../dash/audit.ts";
 import { duePriorityCount } from "../priority/index.ts";
+import { rankDue } from "../rank/index.ts";
+import { selectIssues } from "../fixissue/candidates.ts";
 import { currentRun, dueItems, haikuDue } from "./classify.ts";
 import { enqueue, JobError, now, requestCancel, RUNNER_STOPPED } from "./jobs.ts";
 import { claudePauseReason } from "../agents/accounts.ts";
@@ -66,6 +68,8 @@ export type Lane = {
   /** Its jobs are per repo, so a cooldown after one repo's job does not close the lane. */
   perRepo?: boolean;
   detect: (db: DatabaseSync, ctx: PlanCtx) => Candidate[];
+  /** Work score of the lane's best item, null when it has none. Lanes that define it share capacity: see orderLanes(). */
+  topScore?: (db: DatabaseSync, ctx: PlanCtx) => number | null;
   /** Runs when the candidate was queued; may write. */
   chosen?: (db: DatabaseSync, c: Candidate) => void;
 };
@@ -106,6 +110,24 @@ export function refusedAsBefore(db: DatabaseSync, e: { repo: string; number: num
   return r.ci === null || r.mergeable === null || (r.ci === e.ci && r.mergeable === e.mergeable);
 }
 
+/** The highest of the scores, null when there is none. */
+export const bestScore = (scores: (number | null | undefined)[]): number | null => {
+  const some = scores.filter((s): s is number => typeof s === "number");
+  return some.length ? Math.max(...some) : null;
+};
+
+/**
+ * Lanes that have a topScore trade places by it: the lane whose best item has the higher work score comes
+ * first, so its job is queued first. A lane without work goes last; ties keep the pipeline order. Other
+ * lanes keep their places.
+ */
+export function orderLanes<T extends { name: string }>(lanes: T[], tops: Map<string, number | null>): T[] {
+  const shared = lanes.filter((l) => tops.has(l.name));
+  const sorted = [...shared].sort((a, b) => (tops.get(b.name) ?? -1) - (tops.get(a.name) ?? -1));
+  let k = 0;
+  return lanes.map((l) => (tops.has(l.name) ? sorted[k++]! : l));
+}
+
 export const LANES: Lane[] = [
   {
     name: "classify",
@@ -120,6 +142,12 @@ export const LANES: Lane[] = [
     name: "priority",
     steps: ["prioritize"],
     detect: (db) => (duePriorityCount(db) ? [{ step: "prioritize", params: {} }] : []),
+  },
+  {
+    // Work score from the stored priority, size, type and security flag; no model.
+    name: "rank",
+    steps: ["rank"],
+    detect: (db) => (rankDue(db) ? [{ step: "rank", params: {} }] : []),
   },
   {
     name: "embed",
@@ -155,6 +183,7 @@ export const LANES: Lane[] = [
       }
       return out;
     },
+    topScore: (db, { run, tracked }) => bestScore(tracked.map((repo) => reviewCandidates(db, repo, run)[0]?.score)),
     chosen: (db, c) => {
       if (c.step === "review-batch") setSetting(db, KEY_CURSOR, String(c.params.repo));
     },
@@ -229,6 +258,7 @@ export const LANES: Lane[] = [
     steps: ["fixissue"],
     perRepo: true,
     detect: (db, { tracked }) => tracked.filter((repo) => fixDue(db, repo)).sort().map((repo) => ({ step: "fixissue", params: { repo } })),
+    topScore: (db, { tracked }) => bestScore(tracked.map((repo) => selectIssues(db, repo)[0]?.score)),
   },
   {
     name: "fixissue-collect",
@@ -399,7 +429,12 @@ export async function detectAutopilot(db: DatabaseSync, opts: PlanOptions = {}):
   };
 
   let ctx: PlanCtx | undefined;
+  const tops = new Map<string, number | null>();
   for (const lane of lanes) {
+    if (!lane.topScore) continue;
+    try { tops.set(lane.name, lane.topScore(db, (ctx ??= planCtx(db)))); } catch (e) { log(`autopilot: ${lane.name}: ${(e as Error).message}`); }
+  }
+  for (const lane of orderLanes(lanes, tops)) {
     try {
       // A lane whose steps cannot start is not worth detecting.
       if (lane.steps && !lane.steps.some((s) => gate(s, {}, !lane.perRepo))) continue;

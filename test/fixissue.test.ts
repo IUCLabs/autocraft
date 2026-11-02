@@ -67,6 +67,7 @@ function issue(db: DatabaseSync, n: number, title: string, body: string, o: Opts
   db.prepare(`INSERT INTO classifications (repo, number, classifier, run_id, at, type_label, flags, probs) VALUES ('app', ?, 'jev', 'r1', ?, ?, ?, '{"top":0.97}')`)
     .run(n, T0, o.label ?? "bugfix", JSON.stringify(o.flags ?? []));
   if (o.score !== undefined) db.prepare("INSERT INTO item_priority (repo, number, text_hash, impact, score, model, at) VALUES ('app', ?, 'h', 'normal', ?, 'jev', ?)").run(n, o.score, T0);
+  if (o.score !== undefined) db.prepare("INSERT INTO item_rank (repo, number, score, breakdown, computed_at) VALUES ('app', ?, ?, '{}', ?)").run(n, o.score, T0);
 }
 
 describe("candidates", () => {

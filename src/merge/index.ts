@@ -169,7 +169,9 @@ export async function runMerge(db: DatabaseSync, params: MergeParams, log: (line
   const queue = buildQueue(db, { repo });
   const open = queue.filter((e) => e.state !== "merged");
   const states = countStates(queue);
-  let picks = open.filter(eligible).sort((a, b) => (a.path === b.path ? a.number - b.number : a.path === "rule" ? -1 : 1));
+  const scores = new Map((db.prepare("SELECT number, score FROM item_rank WHERE repo = ?").all(repo) as { number: number; score: number }[]).map((r) => [r.number, r.score]));
+  // Rule merges first; within a path the higher work score first, unranked last.
+  let picks = open.filter(eligible).sort((a, b) => (a.path === b.path ? (scores.get(b.number) ?? -1) - (scores.get(a.number) ?? -1) || a.number - b.number : a.path === "rule" ? -1 : 1));
   if (params.limit !== undefined) picks = picks.slice(0, params.limit);
   const ask1 = toAsk(open);
   const summary: MergeSummary = { runId, repo, dryRun, states, attempted: [], merged: [], refused: [], asked: [] };
