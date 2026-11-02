@@ -117,20 +117,20 @@ export interface Api {
     setEnabled(enabled: boolean): Promise<PipelineState>;
     setLimit(step: string, limit: { perDay: number | null }): Promise<StageLimit>;
   };
-  /** Every registered model prompt, with the server's commit. */
-  prompts(): Promise<PromptsReport>;
-  /** Claude accounts: everyone signed in reads (maintainers and viewers see enabled ones only); operators change them. */
+  /** Enabled accounts for everyone; operators also see disabled ones and edit label, enabled and max concurrent. Never an email or path. */
   accounts: {
     list(): Promise<ClaudeAccount[]>;
     update(id: string, input: AccountInput): Promise<ClaudeAccount>;
   };
-  /** Model calls made through the prompt registry. */
+  /** Agent runs (one model call each): keyset-paged, filtered on the server. */
   agents: {
     list(filter: AgentRunFilter): Promise<AgentRunPage>;
     get(id: number): Promise<AgentRunDetail>;
   };
-  /** Items moved per stage and account usage over 24 hours (by hour) or 7 days (by day). */
-  rates(window: Rates["window"]): Promise<Rates>;
+  /** Items moved per stage and account use over time. */
+  rates(window: "24h" | "7d"): Promise<Rates>;
+  /** Every registered model prompt, with the server's commit. */
+  prompts(): Promise<PromptsReport>;
   signOut(): Promise<void>;
   /** Called after any write so open views can refetch. Returns an unsubscribe function. */
   subscribe(fn: () => void): () => void;
