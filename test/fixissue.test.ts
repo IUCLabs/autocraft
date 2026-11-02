@@ -9,7 +9,7 @@ import { getTask } from "../src/build/tasks.ts";
 import { connect } from "../src/db.ts";
 import { exec, type Exec, type ExecResult } from "../src/fixup/git.ts";
 import { fixIssueApprovalOf, setFixIssueApproval } from "../src/fixissue/approval.ts";
-import { attemptOf, runFixIssue, runFixIssueCollect, selectIssues, type CollectDeps } from "../src/fixissue/index.ts";
+import { attemptOf, collectDue, fixDue, warmKeyOf, runFixIssue, runFixIssueCollect, selectIssues, type CollectDeps } from "../src/fixissue/index.ts";
 import { parseTriage, validateFixPatch } from "../src/fixissue/parse.ts";
 import { branchName, commentText, prBody, prTitle } from "../src/fixissue/template.ts";
 
@@ -51,7 +51,7 @@ index 0000000..e69de29
 const GOOD = FIX + NEWTEST;
 const TRIAGE_OK = (files = [LIB]) => JSON.stringify([{ ref: "app#5", fixable: true, reason: "panics on an empty slice", crate: "app", files }]);
 
-type Opts = { approved?: boolean; label?: string; flags?: string[]; score?: number };
+type Opts = { existingPr?: string; approved?: boolean; label?: string; flags?: string[]; score?: number };
 
 function fresh(o: Opts = {}): DatabaseSync {
   const db = connect(join(mkdtempSync(join(dir, "db-")), "t.db"));
@@ -227,6 +227,7 @@ function world(o: Opts & { triage?: string; patches?: (string | null)[]; title?:
       if (args[0] === "api" && args[1]!.startsWith(`repos/${LOGIN}/`)) return out("", forked ? 0 : 1);
       if (args[0] === "api" && args[1]!.includes("/forks")) return out(forked ? `${LOGIN}/app\n` : "");
       if (args[0] === "repo") { forked = true; return out(""); }
+      if (args[0] === "pr" && args[1] === "list") return out(o.existingPr ? `${o.existingPr}\n` : "");
       if (args[0] === "pr") { log.push(`pr ${args.join(" ")} :: ${opt.input}`); return out("https://github.com/storytold/app/pull/12\n"); }
       if (args[0] === "issue") { log.push(`comment ${opt.input}`); return out(""); }
       return out("", 1);
@@ -423,5 +424,86 @@ describe("fix step", () => {
     assert.equal(b.state, "testing");
     assert.notEqual(b.head_task_id, a.head_task_id);
     assert.equal(b.retries, 1);
+  });
+});
+
+describe("opening the PR is gated and repeatable", () => {
+  const passedWorld = async (o: Parameters<typeof world>[0] = {}) => {
+    const w = world(o);
+    await runFixIssue(w.db, { repo: "app", dryRun: false }, quiet, w.deps);
+    finishBoth(w.db, "pass", "fail-test");
+    return w;
+  };
+  const writes = (w: World) => w.log.length + w.calls.filter((c) => c === "gh repo").length;
+
+  test("revoked approval: a passed row waits, nothing is written, collectDue is false", async () => {
+    const w = await passedWorld();
+    setFixIssueApproval(w.db, "op", "app", false);
+    const c = await runFixIssueCollect(w.db, {}, quiet, w.deps);
+    assert.equal(c.opened, 0);
+    assert.equal(writes(w), 0);
+    assert.equal(w.calls.filter((c) => c.startsWith("gh pr") || c.startsWith("gh issue")).length, 0);
+    assert.equal(attemptOf(w.db, "app", 5)!.state, "passed");
+    assert.equal(collectDue(w.db), false);
+    setFixIssueApproval(w.db, "op", "app", true);
+    assert.equal(collectDue(w.db), true);
+    assert.equal((await runFixIssueCollect(w.db, {}, quiet, w.deps)).opened, 1);
+  });
+
+  test("the fixissue daily limit caps opened PRs", async () => {
+    const w = await passedWorld();
+    w.db.prepare("INSERT OR REPLACE INTO stage_limits (step, per_day, updated_by, updated_at) VALUES ('fixissue', 1, 'op', ?)").run(T0);
+    w.db.prepare("INSERT INTO audit (at, login, action, target) VALUES (?, 'fixissue', 'fixissue-pr', 'app#9')").run(new Date().toISOString());
+    assert.equal((await runFixIssueCollect(w.db, {}, quiet, w.deps)).opened, 0);
+    assert.equal(writes(w), 0);
+    assert.equal(attemptOf(w.db, "app", 5)!.state, "passed");
+    assert.equal(collectDue(w.db), false);
+  });
+
+  test("an existing PR from our branch is adopted: no push, no create, comment once", async () => {
+    const w = await passedWorld({ existingPr: "https://github.com/storytold/app/pull/7" });
+    assert.equal((await runFixIssueCollect(w.db, {}, quiet, w.deps)).opened, 1);
+    const a = attemptOf(w.db, "app", 5)!;
+    assert.deepEqual([a.state, a.pr_url], ["pr-opened", "https://github.com/storytold/app/pull/7"]);
+    assert.equal(w.log.filter((l) => l.startsWith("push") || l.startsWith("pr ")).length, 0);
+    assert.equal(w.log.filter((l) => l.startsWith("comment")).length, 1);
+  });
+
+  test("a comment already recorded is not posted again", async () => {
+    const w = await passedWorld({ existingPr: "https://github.com/storytold/app/pull/7" });
+    w.db.prepare("INSERT INTO audit (at, login, action, target) VALUES (?, 'fixissue', 'fixissue-comment', 'app#5')").run(T0);
+    await runFixIssueCollect(w.db, {}, quiet, w.deps);
+    assert.equal(w.log.filter((l) => l.startsWith("comment")).length, 0);
+  });
+
+  test("a closed issue or another open PR for it fails the row before any write", async () => {
+    const closed = await passedWorld();
+    closed.db.prepare("UPDATE items SET state = 'CLOSED' WHERE number = 5").run();
+    await runFixIssueCollect(closed.db, {}, quiet, closed.deps);
+    assert.equal(attemptOf(closed.db, "app", 5)!.state, "failed");
+    assert.equal(writes(closed), 0);
+
+    const other = await passedWorld();
+    other.db.prepare("INSERT INTO items (repo, number, kind, state, title, body, author, created_at, updated_at) VALUES ('app', 9, 'pr', 'OPEN', 'Fix', 'Fixes #5', 'someone', ?, ?)").run(T0, T0);
+    await runFixIssueCollect(other.db, {}, quiet, other.deps);
+    assert.equal(attemptOf(other.db, "app", 5)!.state, "failed");
+    assert.equal(writes(other), 0);
+  });
+});
+
+describe("lane helpers", () => {
+  test("fixDue ignores retry rows of a repo whose approval was revoked", () => {
+    const db = fresh();
+    db.prepare("INSERT INTO fix_attempts (repo, number, main_sha, text_hash, state, round, created_at, updated_at) VALUES ('app', 5, 'a', 'h', 'retry', 1, ?, ?)").run(T0, T0);
+    assert.equal(fixDue(db, "app"), true);
+    setFixIssueApproval(db, "op", "app", false);
+    assert.equal(fixDue(db, "app"), false);
+  });
+
+  test("warmKeyOf yields a key the task store accepts", () => {
+    const ok = /^[a-z0-9][a-z0-9-]{0,63}$/;
+    for (const n of ["App.Core", "_x", "Foo_Bar", "a".repeat(80), "-lead", "ok-name"]) assert.match(warmKeyOf(n), ok);
+    assert.equal(warmKeyOf("Foo_Bar.rs"), "foo-bar-rs");
+    assert.equal(warmKeyOf("a".repeat(80)).length, 64);
   });
 });

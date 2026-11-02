@@ -30,7 +30,7 @@ import { cloneTask, queueWarmBuild } from "../verify/tasks.ts";
 import { outcomeOf, summariseFailure } from "../verify/results.ts";
 import { regressionPath } from "../verify/plan.ts";
 import { fixIssueApprovalOf } from "./approval.ts";
-import { notRustKey, selectIssues, type IssueCandidate } from "./candidates.ts";
+import { hasOpenPr, notRustKey, selectIssues, type IssueCandidate } from "./candidates.ts";
 import { parseTriage, sourcePaths, validateFixPatch } from "./parse.ts";
 import { branchName, commentText, commitMessage, prBody, prTitle } from "./template.ts";
 import { COMMENTS_SHOWN, COMMENT_CHARS, FILE_CAP, ISSUE_BODY_LIMIT, MAX_PATHS, MAX_ROUNDS, TOTAL_CAP, type IssueText, type PatchInput, type TriageInput } from "./types.ts";
@@ -157,9 +157,12 @@ function issueText(db: DatabaseSync, c: { repo: string; number: number; title: s
 const regressionStep = (crate: string): TaskStep =>
   ({ name: "regression", cmd: ["cargo", "test", "--offline", "--locked", "-p", crate, "--test", "autocraft_regression"], network: "none", timeoutSec: 3600 });
 
+/** A warm-build key the task store accepts: ^[a-z0-9][a-z0-9-]{0,63}$. */
+export const warmKeyOf = (repo: string): string => repo.toLowerCase().replace(/[^a-z0-9-]/g, "-").replace(/^[^a-z0-9]+/, "").slice(0, 64);
+
 /** Head: main plus the full patch, the crate's tests and the regression test. Base: main plus the test file, expected to fail. */
 export function tasksFor(r: { repo: string; number: number; main_sha: string; crate: string }, patch: string, testPatch: string): NewTask[] {
-  const common = { step: "fixissue", repo: r.repo, number: r.number, headSha: r.main_sha, baseSha: r.main_sha, requires: { ...REQUIRES, toolchains: [...REQUIRES.toolchains] }, warm: { key: r.repo, role: "use" as const } };
+  const common = { step: "fixissue", repo: r.repo, number: r.number, headSha: r.main_sha, baseSha: r.main_sha, requires: { ...REQUIRES, toolchains: [...REQUIRES.toolchains] }, warm: { key: warmKeyOf(r.repo), role: "use" as const } };
   const steps = rustPlan({ cargoArgs: ["-p", r.crate] });
   const baseSteps = steps.map((s): TaskStep => (s.name === "test" ? { ...s, cmd: [...s.cmd, "--test", "autocraft_regression"] } : s));
   return [{ ...common, plan: [...steps, regressionStep(r.crate)], patch }, { ...common, plan: baseSteps, patch: testPatch }];
@@ -338,13 +341,25 @@ export function collectDefaults(): CollectDeps {
 /** Whether work is waiting for fixissue-collect: tasks finished or a passed fix to open. Read-only, for the autopilot. */
 export function collectDue(db: DatabaseSync): boolean {
   const terminal = TERMINAL.map((s) => `'${s}'`).join(", ");
-  return !!db.prepare(`SELECT 1 FROM fix_attempts a
+  if (db.prepare(`SELECT 1 FROM fix_attempts a
     LEFT JOIN build_tasks h ON h.id = a.head_task_id LEFT JOIN build_tasks b ON b.id = a.base_task_id
-    WHERE a.state = 'passed' OR (a.state = 'testing' AND h.state IN (${terminal}) AND (b.id IS NULL OR b.state IN (${terminal}))) LIMIT 1`).get();
+    WHERE a.state = 'testing' AND h.state IN (${terminal}) AND (b.id IS NULL OR b.state IN (${terminal})) LIMIT 1`).get()) return true;
+  const passed = db.prepare("SELECT DISTINCT repo FROM fix_attempts WHERE state = 'passed'").all() as { repo: string }[];
+  return passed.some((p) => !!fixIssueApprovalOf(db, p.repo)) && openedToday(db, new Date()) < perDay(db);
 }
+
+/** The daily limit of the fixissue stage (null: none). Opened PRs count against it. */
+function perDay(db: DatabaseSync): number {
+  const row = db.prepare("SELECT per_day FROM stage_limits WHERE step = 'fixissue'").get() as { per_day: number | null } | undefined;
+  return row?.per_day ?? Infinity;
+}
+
+const openedToday = (db: DatabaseSync, now: Date): number =>
+  (db.prepare("SELECT COUNT(*) AS n FROM audit WHERE action = 'fixissue-pr' AND at >= ?").get(`${now.toISOString().slice(0, 10)}T00:00:00.000Z`) as { n: number }).n;
 
 /** Whether a patch round is due or a candidate waits, for the autopilot's fixissue lane. */
 export function fixDue(db: DatabaseSync, repo: string): boolean {
+  if (!fixIssueApprovalOf(db, repo)) return false;
   return !!db.prepare("SELECT 1 FROM fix_attempts WHERE repo = ? AND state = 'retry' LIMIT 1").get(repo) || selectIssues(db, repo).length > 0;
 }
 
@@ -425,6 +440,19 @@ async function forkOf(run: Exec, login: string, repo: string): Promise<string> {
   return made;
 }
 
+const urlOk = (url: string, repo: string): boolean => new RegExp(`^https://github\\.com/${ORG}/${repo}/pull/\\d+$`).test(url);
+
+/** Comments on the issue at most once: the audit row is written before the post, so a crash or a failed post is not retried. */
+async function comment(x: Ctx, r: AttemptRow, url: string): Promise<void> {
+  const { db, d, log } = x;
+  const ref = refOf(r);
+  if (db.prepare("SELECT 1 FROM audit WHERE action = 'fixissue-comment' AND target = ?").get(ref)) return;
+  const text = commentText(url);
+  audit(db, ACTOR, "fixissue-comment", ref, { run: x.runId, text });
+  const cm = await d.exec("gh", ["issue", "comment", String(r.number), "--repo", `${ORG}/${r.repo}`, "--body-file", "-"], { input: text });
+  if (cm.code !== 0) log(`  ${ref}: comment failed: ${oneLine(cm.stderr)}`);
+}
+
 /** Commits the passed patch on main, pushes it to the fork, opens the PR and comments on the issue. */
 async function openPr(x: Ctx, r: AttemptRow): Promise<boolean> {
   const { db, d, git, log } = x;
@@ -435,11 +463,30 @@ async function openPr(x: Ctx, r: AttemptRow): Promise<boolean> {
     if (r.push_tries + 1 >= MAX_PUSH_TRIES) fail(db, d, r, "could not open the pull request");
     else update(db, d, r, { push_tries: r.push_tries + 1 });
   };
+  // Rechecked right before each GitHub write: the operator may revoke approval or the day's limit may be reached.
+  const permitted = (): boolean => {
+    if (!fixIssueApprovalOf(db, r.repo)) { log(`  ${ref}: waiting: fixing issues is not approved for ${r.repo}`); return false; }
+    if (openedToday(db, new Date()) >= perDay(db)) { log(`  ${ref}: waiting: the daily limit of opened PRs is reached`); return false; }
+    return true;
+  };
   try {
+    if (!permitted()) return false;
+    const issueNow = db.prepare("SELECT state, title FROM items WHERE repo = ? AND number = ?").get(r.repo, r.number) as { state: string; title: string | null } | undefined;
+    if (issueNow && issueNow.state !== "OPEN") { fail(db, d, r, "the issue is closed"); return false; }
     const who = await whoAmI(d.exec);
+    const branch = branchName(r.number, issueNow?.title ?? "", who.login);
+    const found = await d.exec("gh", ["pr", "list", "--repo", `${ORG}/${r.repo}`, "--state", "open", "--head", branch, "--json", "url,headRepositoryOwner", "--jq", `.[] | select(.headRepositoryOwner.login == "${who.login}") | .url`]);
+    const existing = found.code === 0 ? found.stdout.trim().split("\n")[0] ?? "" : "";
+    if (existing && urlOk(existing, r.repo)) {
+      update(db, d, r, { state: "pr-opened", pr_url: existing });
+      stage(db, d, r, "take", `fix PR opened: ${existing}`);
+      log(`  ${ref}: adopted ${existing}`);
+      await comment(x, r, existing);
+      return true;
+    }
+    if (hasOpenPr(db, r.repo, r.number)) { fail(db, d, r, "another pull request already covers the issue"); return false; }
     if (!(await git.fetchBranch(ORG, r.repo, branchOf(db, r.repo), r.main_sha))) { fail(db, d, r, "the base commit is no longer in the repository"); return false; }
-    const issue = db.prepare("SELECT title FROM items WHERE repo = ? AND number = ?").get(r.repo, r.number) as { title: string | null } | undefined;
-    const title = issue?.title ?? "";
+    const title = issueNow?.title ?? "";
     const scratch = mkdtempSync(join(d.root, ".index-"));
     let applied;
     try {
@@ -455,23 +502,20 @@ async function openPr(x: Ctx, r: AttemptRow): Promise<boolean> {
       fail(db, d, r, "the commit would change files or modes outside the validated diff");
       return false;
     }
+    if (!permitted()) return false;
     const fork = await forkOf(d.exec, who.login, r.repo);
-    const branch = branchName(r.number, title, who.login);
     const push = await git.pushNew(fork, branch, commit);
     if (push.code !== 0) { log(`  ${ref}: push failed: ${oneLine(push.stderr)}`); tried(); return false; }
     audit(db, ACTOR, "fixissue-push", ref, { run: x.runId, branch, commit, fork });
     const body = prBody(r.number, files, testPath);
     const pr = await d.exec("gh", ["pr", "create", "--repo", `${ORG}/${r.repo}`, "--base", branchOf(db, r.repo), "--head", `${fork.split("/")[0]}:${branch}`, "--title", prTitle(title), "--body-file", "-"], { input: body });
     const url = pr.stdout.trim().split("\n").pop() ?? "";
-    if (pr.code !== 0 || !new RegExp(`^https://github\\.com/${ORG}/${r.repo}/pull/\\d+$`).test(url)) { log(`  ${ref}: PR not opened: ${oneLine(pr.stderr || pr.stdout)}`); tried(); return false; }
+    if (pr.code !== 0 || !urlOk(url, r.repo)) { log(`  ${ref}: PR not opened: ${oneLine(pr.stderr || pr.stdout)}`); tried(); return false; }
     update(db, d, r, { state: "pr-opened", pr_url: url });
     audit(db, ACTOR, "fixissue-pr", ref, { run: x.runId, url, branch });
     stage(db, d, r, "take", `fix PR opened: ${url}`);
     log(`  ${ref}: opened ${url}`);
-    const text = commentText(url);
-    const cm = await d.exec("gh", ["issue", "comment", String(r.number), "--repo", `${ORG}/${r.repo}`, "--body-file", "-"], { input: text });
-    if (cm.code === 0) audit(db, ACTOR, "fixissue-comment", ref, { run: x.runId, text });
-    else log(`  ${ref}: comment failed: ${oneLine(cm.stderr)}`);
+    await comment(x, r, url);
     return true;
   } catch (e) {
     log(`  ${ref}: ${oneLine(String((e as Error).message ?? e))}`);

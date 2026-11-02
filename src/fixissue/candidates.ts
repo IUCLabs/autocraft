@@ -18,7 +18,7 @@ export const textHash = (title: string, body: string): string => createHash("sha
 type Row = { number: number; title: string | null; body: string | null; score: number | null };
 
 /** Whether an open PR in the repo closes issue `n` or mentions it by number. */
-function hasOpenPr(db: DatabaseSync, repo: string, n: number): boolean {
+export function hasOpenPr(db: DatabaseSync, repo: string, n: number): boolean {
   const prs = db.prepare("SELECT body, title, closing_issues FROM items WHERE repo = ? AND kind = 'pr' AND state = 'OPEN'").all(repo) as { body: string | null; title: string | null; closing_issues: string | null }[];
   const ref = new RegExp(`(^|[^\\w/])#${n}(?!\\d)`);
   for (const p of prs) {
