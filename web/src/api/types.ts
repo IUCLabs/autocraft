@@ -156,13 +156,20 @@ export interface Item extends ItemRef {
   authorClosedUnmerged: number;
   additions: number;
   deletions: number;
+  /** PRs: how many files the PR changes, from the mirror; null when unknown. */
+  changedFiles: number | null;
+  /** Per-file changes; empty when the mirror has none. */
   files: ChangedFile[];
+  /** "none" also when the mirror has no check data for the item. */
   ci: CiState;
   ciChecks: { name: string; state: CiState; minutes: number }[];
   mergeable: Mergeable;
   labels: string[];
   createdAt: string;
   updatedAt: string;
+  closedAt: string | null;
+  mergedAt: string | null;
+  mergedBy: string | null;
   related: RelatedItem[];
   classifications: Classification[];
   stages: StageEntry[];
