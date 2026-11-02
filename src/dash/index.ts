@@ -22,12 +22,21 @@ async function serve(): Promise<void> {
   process.once("SIGINT", stop);
 }
 
-// `dash <sub>`: further subcommands (export) join this table.
-export const dashCommands: Record<string, (args: string[]) => Promise<void> | void> = { serve };
+async function exportCmd(args: string[]): Promise<void> {
+  if (!args[0]) {
+    console.error("usage: craft-auto dash export <dir>");
+    process.exit(1);
+  }
+  const { exportSite } = await import("./pages/export.ts");
+  const { pages } = await exportSite(connect(), args[0]);
+  console.log(`wrote ${pages} pages to ${args[0]}`);
+}
+
+export const dashCommands: Record<string, (args: string[]) => Promise<void> | void> = { serve, export: exportCmd };
 
 export const commands = {
   dash: {
-    summary: "dashboard: serve",
+    summary: "dashboard: serve | export <dir>",
     run: async (args: string[]) => {
       const f = args[0] ? dashCommands[args[0]] : undefined;
       if (!f) {

@@ -168,3 +168,9 @@ CREATE TABLE IF NOT EXISTS audit (
 );
 CREATE INDEX IF NOT EXISTS audit_at ON audit(at);
 CREATE INDEX IF NOT EXISTS audit_target ON audit(target);
+
+-- Dashboard query indexes.
+CREATE INDEX IF NOT EXISTS items_closed ON items(closed_at, state);
+CREATE INDEX IF NOT EXISTS items_created ON items(created_at);
+CREATE INDEX IF NOT EXISTS items_pr_author ON items(kind, author, state, repo, merged_at);
+CREATE INDEX IF NOT EXISTS items_open ON items(state, repo, number);
