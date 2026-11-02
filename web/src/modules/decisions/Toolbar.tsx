@@ -1,0 +1,129 @@
+import { DropdownMenu } from "radix-ui";
+import { ChevronDownIcon } from "lucide-react";
+import { useQuery } from "../../api/client";
+import type { DecisionKind } from "../../api/types";
+import type { ViewProps } from "../../registry/types";
+import { cn } from "../../ui/cn";
+import { Count } from "../../ui/Heading";
+import { KIND_LABEL, KINDS, useDecisionFilter } from "./state";
+
+const AGES = [
+  { v: "", label: "Any age" },
+  { v: "1", label: "Older than 1 day" },
+  { v: "2", label: "Older than 2 days" },
+  { v: "3", label: "Older than 3 days" },
+];
+
+export function DecisionsToolbar(props: ViewProps & { phone?: boolean }) {
+  const { phone } = props;
+  const { filter, update } = useDecisionFilter();
+  const { data: open } = useQuery("count:open", (api) => api.decisions.list({ status: "open" }));
+  const { data: answered } = useQuery("count:answered", (api) => api.decisions.list({ status: "answered" }));
+  const { data: withOpinions } = useQuery("count:opinions", (api) => api.decisions.list({ status: "opinions" }));
+  const tabs = [
+    { t: "open" as const, label: "Waiting", n: open?.total },
+    { t: "opinions" as const, label: "With opinions", n: withOpinions?.total },
+    { t: "answered" as const, label: "Answered", n: answered?.total },
+  ];
+  const kinds = filter.kind ?? [];
+  const toggleKind = (k: DecisionKind) => {
+    const next = kinds.includes(k) ? kinds.filter((x) => x !== k) : [...kinds, k];
+    update({ kind: next.length ? next.join(",") : null });
+  };
+
+  return (
+    <div className={cn("flex items-center gap-x-4 gap-y-2", phone ? "flex-wrap" : "flex-nowrap")}>
+      <div role="tablist" aria-label="Status" className="flex shrink-0 items-center gap-1">
+        {tabs.map(({ t, label, n }) => (
+          <button
+            key={t}
+            role="tab"
+            aria-selected={filter.status === t}
+            onClick={() => update({ tab: t === "open" ? null : t })}
+            className={cn(
+              "flex h-7 items-center gap-1.5 rounded px-2.5 text-sm transition-colors duration-fast",
+              filter.status === t ? "bg-ink/[0.08] font-medium text-ink" : "text-ink/60 hover:bg-ink/[0.05] hover:text-ink",
+            )}
+          >
+            {label}
+            <Count n={n} />
+          </button>
+        ))}
+      </div>
+      <div className={cn("flex items-center gap-1", phone ? "flex-wrap" : "min-w-0 overflow-x-auto scrollbar-none")}>
+        {KINDS.map((k) => (
+          <button key={k} className="chip" data-active={kinds.includes(k)} aria-pressed={kinds.includes(k)} onClick={() => toggleKind(k)}>
+            {KIND_LABEL[k]}
+            {open?.byKind[k] ? <span className="num text-ink/45">{open.byKind[k]}</span> : null}
+          </button>
+        ))}
+      </div>
+      <div className={cn("flex items-center gap-2", !phone && "ml-auto")}>
+        <RepoPicker selected={filter.repo ?? []} onChange={(r) => update({ repo: r.length ? r.join(",") : null })} />
+        <Picker label={AGES.find((a) => a.v === String(filter.minAge ?? ""))?.label ?? "Any age"} items={AGES} onPick={(v) => update({ age: v || null })} />
+        <button className="chip" data-active={!!filter.mine} aria-pressed={!!filter.mine} onClick={() => update({ mine: filter.mine ? null : "1" })} title="Only repos where you have write access">
+          My repos
+        </button>
+      </div>
+    </div>
+  );
+}
+
+const menuCls = "z-50 max-h-[60vh] min-w-[200px] overflow-y-auto rounded-md border border-line-strong bg-raised p-1 shadow-[0_12px_32px_rgba(0,0,0,0.28)] animate-rise";
+const itemCls = "flex h-8 cursor-default items-center gap-2.5 rounded px-2 text-sm outline-none data-[highlighted]:bg-ink/[0.07]";
+
+function Picker({ label, items, onPick }: { label: string; items: { v: string; label: string }[]; onPick: (v: string) => void }) {
+  return (
+    <DropdownMenu.Root>
+      <DropdownMenu.Trigger className="chip">
+        {label} <ChevronDownIcon className="text-[10px]" />
+      </DropdownMenu.Trigger>
+      <DropdownMenu.Portal>
+        <DropdownMenu.Content align="end" sideOffset={4} className={menuCls}>
+          {items.map((i) => (
+            <DropdownMenu.Item key={i.v} onSelect={() => onPick(i.v)} className={itemCls}>
+              {i.label}
+            </DropdownMenu.Item>
+          ))}
+        </DropdownMenu.Content>
+      </DropdownMenu.Portal>
+    </DropdownMenu.Root>
+  );
+}
+
+function RepoPicker({ selected, onChange }: { selected: string[]; onChange: (r: string[]) => void }) {
+  const { data: repos } = useQuery("repos", (api) => api.repos());
+  const label = selected.length === 0 ? "All repos" : selected.length === 1 ? selected[0] : `${selected.length} repos`;
+  return (
+    <DropdownMenu.Root>
+      <DropdownMenu.Trigger className="chip" data-active={selected.length > 0}>
+        {label} <ChevronDownIcon className="text-[10px]" />
+      </DropdownMenu.Trigger>
+      <DropdownMenu.Portal>
+        <DropdownMenu.Content align="end" sideOffset={4} className={menuCls}>
+          {selected.length > 0 && (
+            <DropdownMenu.Item onSelect={() => onChange([])} className={cn(itemCls, "text-ink/60")}>
+              Clear
+            </DropdownMenu.Item>
+          )}
+          {repos?.map((r) => (
+            <DropdownMenu.CheckboxItem
+              key={r}
+              checked={selected.includes(r)}
+              onSelect={(e) => e.preventDefault()}
+              onCheckedChange={(c) => onChange(c ? [...selected, r] : selected.filter((x) => x !== r))}
+              className={cn(itemCls, "code")}
+            >
+              <span className="flex size-3.5 items-center justify-center rounded-sm border border-line-strong">
+                <DropdownMenu.ItemIndicator>
+                  <span className="block size-2 rounded-[1px] bg-accent" />
+                </DropdownMenu.ItemIndicator>
+              </span>
+              {r}
+            </DropdownMenu.CheckboxItem>
+          ))}
+        </DropdownMenu.Content>
+      </DropdownMenu.Portal>
+    </DropdownMenu.Root>
+  );
+}
