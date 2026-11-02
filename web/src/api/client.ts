@@ -61,6 +61,8 @@ export interface Api {
     list(): Promise<TrackedRepo[]>;
     track(name: RepoName): Promise<TrackedRepo[]>;
     untrack(name: RepoName): Promise<TrackedRepo[]>;
+    /** Lets the Label stage write labels to this repo on GitHub, or stops it. */
+    approveLabels(name: RepoName, approved: boolean): Promise<TrackedRepo[]>;
   };
   /** Operator only. */
   access: {

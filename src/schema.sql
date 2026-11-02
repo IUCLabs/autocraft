@@ -71,7 +71,7 @@ CREATE TABLE IF NOT EXISTS classifications (
 -- Where each item stands in the pipeline (latest row wins).
 CREATE TABLE IF NOT EXISTS stages (
   repo TEXT NOT NULL, number INTEGER NOT NULL,
-  stage TEXT NOT NULL,                -- classified | reviewed | take | hold | close | needs-decision | batched | merged | closed | fixed-by-us
+  stage TEXT NOT NULL,                -- classified | labeled | reviewed | take | hold | close | needs-decision | batched | merged | closed | fixed-by-us
   at TEXT NOT NULL,
   actor TEXT,                         -- session or agent name
   note TEXT,                          -- one line, public-safe
@@ -199,7 +199,7 @@ CREATE TABLE IF NOT EXISTS oauth_states (
 CREATE TABLE IF NOT EXISTS audit (
   at TEXT NOT NULL,
   login TEXT NOT NULL,
-  action TEXT NOT NULL,               -- answer | undo | adopt | opinion | opinion-retract | comment | override | rule | access-add | access-remove | access-role | session-revoke | sign-in | sign-in-refused | repo-track | repo-untrack
+  action TEXT NOT NULL,               -- answer | undo | adopt | opinion | opinion-retract | comment | override | rule | access-add | access-remove | access-role | session-revoke | sign-in | sign-in-refused | repo-track | repo-untrack | labels-approve | labels-revoke | labels-apply
   target TEXT,
   details TEXT                        -- JSON
 );

@@ -210,6 +210,8 @@ export function apiRoutes(opts: ApiOptions = {}): Route[] {
     get("/api/repos/all", adm.allRepos),
     post("/api/repos/track", (db, req) => adm.track(db, req, true)),
     post("/api/repos/untrack", (db, req) => adm.track(db, req, false)),
+    post("/api/repos/labels-approve", (db, req) => adm.labelsApproval(db, req, true)),
+    post("/api/repos/labels-revoke", (db, req) => adm.labelsApproval(db, req, false)),
     get("/api/access", adm.accessOverview),
     post("/api/access/add", adm.accessAdd),
     post("/api/access/remove", adm.accessRemove),

@@ -4,9 +4,11 @@
 // already checked the Origin, the CSRF header and the body size on POSTs.
 import type { DatabaseSync } from "node:sqlite";
 import type {
-  AccessOverview, AuditEntry, AuditPage, Contributor, ContributorList, ContributorSort, RulePreview, Tier, TrackedRepo, WhitelistRule,
+  AccessOverview, AuditEntry, AuditPage, Contributor, ContributorList, ContributorSort, RulePreview, RepoLabels, Tier, TrackedRepo, WhitelistRule,
 } from "../../../web/src/api/types.ts";
 import { AccessError, addLogin, isRole, listAccess, removeLogin, ROLES, setRole } from "../../access.ts";
+import { approvalOf, setApproval } from "../../labels/approval.ts";
+import { countPlan, planLabels } from "../../labels/plan.ts";
 import { listAll, RepoError, trackRepo, untrackRepo } from "../../repos.ts";
 import { contributors, getRule, setOverride, setRule, tierOf, type Contributor as Row, type Rule } from "../../whitelist.ts";
 import { audit } from "../audit.ts";
@@ -18,7 +20,7 @@ const ACCESS_NOTE_MAX = 500;
 const AUDIT_PAGE = 50;
 export const AUDIT_ACTIONS = [
   "answer", "undo", "adopt", "opinion", "opinion-retract", "comment", "override", "rule", "access-add", "access-remove", "access-role",
-  "session-revoke", "sign-in", "sign-in-refused", "repo-track", "repo-untrack",
+  "session-revoke", "sign-in", "sign-in-refused", "repo-track", "repo-untrack", "labels-approve", "labels-revoke", "labels-apply",
 ];
 
 const isOperator = (req: Req): boolean => req.user.role === "operator";
@@ -183,7 +185,29 @@ export function allRepos(db: DatabaseSync, req: Req): TrackedRepo[] {
   requireOperator(req, "manage tracked repos");
   return listAll(db).map((r) => ({
     name: r.name, tracked: !!r.tracked, openPrs: r.open_prs, openIssues: r.open_issues, mirrored: r.rows, syncedAt: r.synced_at,
+    labels: r.tracked ? labelsInfo(db, r.name) : null,
   }));
+}
+
+function labelsInfo(db: DatabaseSync, repo: string): RepoLabels {
+  const a = approvalOf(db, repo);
+  const c = countPlan(planLabels(db, repo));
+  return { approved: !!a, approvedBy: a?.by ?? null, approvedAt: a?.at ?? null, toAdd: c.toAdd, skipped: c.already + c.unsettled, conflicts: c.conflicts };
+}
+
+// Only an operator lets the Label stage write to a repo on GitHub.
+export function labelsApproval(db: DatabaseSync, req: Req, approved: boolean): TrackedRepo[] {
+  requireOperator(req, "approve labelling");
+  const name = required(body(req).name, "name");
+  const changed = refused(() => {
+    try {
+      return setApproval(db, req.user.login, name, approved);
+    } catch (e) {
+      throw new RepoError((e as Error).message);
+    }
+  });
+  if (!changed) throw new HttpError(409, `${name} is ${approved ? "already" : "not"} approved for labelling`);
+  return allRepos(db, req);
 }
 
 export function track(db: DatabaseSync, req: Req, on: boolean): TrackedRepo[] {
