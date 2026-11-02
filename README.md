@@ -5,6 +5,7 @@ Local mirror of every storytold issue and PR, the triage pipeline's state, and t
 - `craft-auto sync` fills a SQLite mirror (`~/.local/share/craft-automation/mirror.db`, or `$CRAFT_AUTO_DB`) from GitHub GraphQL. Agents and scripts query the mirror instead of calling `gh`.
 - `craft-auto whitelist` shows and edits which contributors' PRs may merge on green CI without a decision.
 - `craft-auto dash serve` serves the dashboard.
+- `craft-auto review --repo R [--limit N] [--dry-run]` runs the Review stage on one repo; `craft-auto checks --repo R` refreshes CI and merge state of its open PRs. See docs/pipeline.md, stage 5.
 
 Schema: `src/schema.sql`. Mirror tables are overwritten by sync; work tables (classifications, stages, whitelist overrides, token use) are ours.
 

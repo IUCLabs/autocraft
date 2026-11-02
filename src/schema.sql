@@ -253,3 +253,38 @@ SELECT column1, 'seed', strftime('%Y-%m-%dT%H:%M:%SZ', 'now') FROM (VALUES
 ) WHERE NOT EXISTS (SELECT 1 FROM settings WHERE key = 'tracked_seeded')
   AND NOT EXISTS (SELECT 1 FROM tracked_repos);
 INSERT OR IGNORE INTO settings VALUES ('tracked_seeded', '1');
+
+-- CI and merge state of open PRs at their head commit, for review candidates.
+-- Written by `craft-auto checks` and the Review stage; sync never touches it.
+CREATE TABLE IF NOT EXISTS pr_checks (
+  repo TEXT NOT NULL, number INTEGER NOT NULL,
+  head_oid TEXT NOT NULL,
+  state TEXT,                         -- OPEN | CLOSED | MERGED at fetch time
+  is_draft INTEGER,
+  overall TEXT NOT NULL,              -- success | failure | pending | none (no checks ran)
+  checks TEXT NOT NULL,               -- JSON [{name, state}]; state: success | failure | pending | skipped
+  mergeable TEXT,                     -- MERGEABLE | CONFLICTING | UNKNOWN
+  maintainer_can_modify INTEGER,
+  fetched_at TEXT NOT NULL,
+  PRIMARY KEY (repo, number)
+);
+
+-- One code review per PR head commit. A new push gets a new review; the
+-- latest row per item is its current verdict. Each review also writes a
+-- `reviewed` stages row and a take/hold/close stages row.
+CREATE TABLE IF NOT EXISTS reviews (
+  repo TEXT NOT NULL, number INTEGER NOT NULL,
+  head_oid TEXT NOT NULL,
+  run_id TEXT NOT NULL,
+  at TEXT NOT NULL,
+  model TEXT,                         -- NULL when no model was asked (too large)
+  size TEXT,                          -- S | M | L by lines changed
+  verdict TEXT NOT NULL,              -- take | take-fix | hold | close
+  reason TEXT NOT NULL,
+  fixes TEXT,                         -- JSON [{file, change}], take-fix only
+  duplicate_of TEXT,                  -- "repo#n" of the better PR
+  overlaps TEXT,                      -- JSON ["repo#n"]: open PRs changing the same code
+  risks TEXT,                         -- JSON [string]
+  PRIMARY KEY (repo, number, head_oid)
+);
+CREATE INDEX IF NOT EXISTS reviews_run ON reviews(run_id);

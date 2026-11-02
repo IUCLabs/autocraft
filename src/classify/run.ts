@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
-import { CLAUDE_PROMPTS, JEV_ARGS, JEV_PROMPTS, claudeArgs, renderClaude, renderJev, type ClaudePromptId, type JevPromptId } from "../prompts/index.ts";
+import { CLAUDE_PROMPTS, JEV_ARGS, JEV_PROMPTS, claudeArgs, renderClaude, renderJev, type ClaudeInput, type ClaudePromptId, type JevPromptId } from "../prompts/index.ts";
 import { flagsOf, jevVerdict, parseHaikuReply, parseRef, refOf, type Item, type JevAnswers, type Verdict } from "./parse.ts";
 
 export function loadRefs(file: string): { repo: string; number: number }[] {
@@ -82,13 +82,13 @@ export function setRunner(r: Runner): () => void {
 
 /**
  * Sends a registered prompt (src/prompts) to `claude -p`. Callers pass a prompt
- * id and the items, never prompt text: that keeps every prompt on the Prompts
- * page. A new stage registers its prompt there first.
+ * id and the prompt's input, never prompt text: that keeps every prompt on the
+ * Prompts page. A new stage registers its prompt there first.
  */
-export async function askClaude(id: ClaudePromptId, model: string, items: Item[]): Promise<{ text: string; usage: Usage } | null> {
+export async function askClaude<K extends ClaudePromptId>(id: K, model: string, input: ClaudeInput[K]): Promise<{ text: string; usage: Usage } | null> {
   const args = claudeArgs(id, model);
   const cwd = mkdtempSync(join(tmpdir(), "classify-"));
-  const r = await runner("claude", args, renderClaude(id, items), cwd, CLAUDE_PROMPTS[id].limits.timeoutSeconds * 1000);
+  const r = await runner("claude", args, renderClaude(id, input), cwd, CLAUDE_PROMPTS[id].limits.timeoutSeconds * 1000);
   try {
     // Some CLI versions print the event list, others only the final result object.
     const parsed = JSON.parse(r.stdout) as { type?: string }[] | { type?: string };
@@ -110,7 +110,7 @@ export function askJev(id: JevPromptId, item: Item): Promise<Proc> {
   return runner("jev", JEV_ARGS, renderJev(id, item), undefined, JEV_PROMPTS[id].limits.timeoutSeconds * 1000);
 }
 
-const add = (a: Usage, b: Usage): Usage => ({ input: a.input + b.input, output: a.output + b.output, cacheRead: a.cacheRead + b.cacheRead, cacheWrite: a.cacheWrite + b.cacheWrite, cost: a.cost === null && b.cost === null ? null : (a.cost ?? 0) + (b.cost ?? 0) });
+export const add = (a: Usage, b: Usage): Usage => ({ input: a.input + b.input, output: a.output + b.output, cacheRead: a.cacheRead + b.cacheRead, cacheWrite: a.cacheWrite + b.cacheWrite, cost: a.cost === null && b.cost === null ? null : (a.cost ?? 0) + (b.cost ?? 0) });
 
 const HAIKU = CLAUDE_PROMPTS["classify.haiku"];
 
