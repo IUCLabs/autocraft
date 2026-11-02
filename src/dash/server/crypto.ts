@@ -1,0 +1,39 @@
+import { createCipheriv, createDecipheriv, createHash, hkdfSync, randomBytes, timingSafeEqual } from "node:crypto";
+
+export const randomToken = (bytes = 32): string => randomBytes(bytes).toString("base64url");
+
+export const sha256hex = (s: string): string => createHash("sha256").update(s).digest("hex");
+
+export const pkceChallenge = (verifier: string): string => createHash("sha256").update(verifier).digest("base64url");
+
+export function safeEqual(a: string, b: string): boolean {
+  const x = Buffer.from(a), y = Buffer.from(b);
+  return x.length === y.length && timingSafeEqual(x, y);
+}
+
+// AES-256-GCM with a key derived from the session key. The AAD binds a
+// ciphertext to one session row, so a token can't be moved to another session.
+export class TokenBox {
+  #key: Buffer;
+  constructor(sessionKey: string) {
+    this.#key = Buffer.from(hkdfSync("sha256", sessionKey, "craft-automation", "github-token", 32));
+  }
+  seal(plain: string, aad: string): string {
+    const iv = randomBytes(12);
+    const c = createCipheriv("aes-256-gcm", this.#key, iv);
+    c.setAAD(Buffer.from(aad));
+    const body = Buffer.concat([c.update(plain, "utf8"), c.final()]);
+    return Buffer.concat([iv, c.getAuthTag(), body]).toString("base64url");
+  }
+  open(sealed: string, aad: string): string | null {
+    try {
+      const buf = Buffer.from(sealed, "base64url");
+      const d = createDecipheriv("aes-256-gcm", this.#key, buf.subarray(0, 12));
+      d.setAAD(Buffer.from(aad));
+      d.setAuthTag(buf.subarray(12, 28));
+      return Buffer.concat([d.update(buf.subarray(28)), d.final()]).toString("utf8");
+    } catch {
+      return null;
+    }
+  }
+}

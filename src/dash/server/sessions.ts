@@ -1,0 +1,152 @@
+import type { DatabaseSync } from "node:sqlite";
+import type { Role, User } from "../types.ts";
+import { randomToken, sha256hex, type TokenBox } from "./crypto.ts";
+import { REPO_NAME, WRITE_PERMISSIONS, type Provider, type Tokens } from "./provider.ts";
+
+const DAY = 86_400_000;
+export const SESSION_TTL = 14 * DAY;
+const TOUCH_EVERY = 60_000;
+export const PERM_READ_TTL = 10 * 60_000;
+export const PERM_WRITE_TTL = 60_000;
+
+export type Session = {
+  rowid: number;
+  idHash: string;
+  login: string;
+  role: Role;
+  csrf: string;
+  tokenEnc: string | null;
+};
+
+// sessions.token_enc holds the sealed JSON of the whole Tokens set, so the
+// refresh token and expiry times are encrypted the same way as the access token.
+export const sealTokens = (box: TokenBox, t: Tokens, idHash: string): string => box.seal(JSON.stringify(t), idHash);
+
+export function openTokens(box: TokenBox, sealed: string | null, idHash: string): Tokens | null {
+  const plain = sealed ? box.open(sealed, idHash) : null;
+  if (!plain) return null;
+  try {
+    return JSON.parse(plain) as Tokens;
+  } catch {
+    return null;
+  }
+}
+
+export function createSession(db: DatabaseSync, box: TokenBox, login: string, tokens: Tokens, userAgent: string | undefined): string {
+  const id = randomToken(32);
+  const idHash = sha256hex(id);
+  const now = new Date();
+  db.prepare(`INSERT INTO sessions (id_hash, login, csrf, token_enc, created_at, last_seen, expires_at, user_agent)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(idHash, login, randomToken(32), sealTokens(box, tokens, idHash), now.toISOString(), now.toISOString(),
+      new Date(now.getTime() + SESSION_TTL).toISOString(), (userAgent ?? "").slice(0, 300) || null);
+  return id;
+}
+
+// A session counts only while its login is still on the access list; the
+// role comes from the list, not the session, so it is always current.
+export function loadSession(db: DatabaseSync, id: string | undefined): Session | null {
+  if (!id || id.length > 100) return null;
+  const idHash = sha256hex(id);
+  const row = db.prepare(`SELECT s.rowid, s.login, s.csrf, s.token_enc, s.last_seen, a.role
+                          FROM sessions s JOIN access a ON a.login = s.login
+                          WHERE s.id_hash = ? AND s.expires_at > ?`)
+    .get(idHash, new Date().toISOString()) as
+    { rowid: number; login: string; csrf: string; token_enc: string | null; last_seen: string; role: Role } | undefined;
+  if (!row) return null;
+  const now = Date.now();
+  if (now - Date.parse(row.last_seen) > TOUCH_EVERY) {
+    db.prepare("UPDATE sessions SET last_seen = ?, expires_at = ? WHERE id_hash = ?")
+      .run(new Date(now).toISOString(), new Date(now + SESSION_TTL).toISOString(), idHash);
+  }
+  return { rowid: Number(row.rowid), idHash, login: row.login, role: row.role, csrf: row.csrf, tokenEnc: row.token_enc };
+}
+
+export function deleteSession(db: DatabaseSync, id: string): void {
+  db.prepare("DELETE FROM sessions WHERE id_hash = ?").run(sha256hex(id));
+}
+
+export function pruneExpired(db: DatabaseSync): void {
+  const now = new Date();
+  db.prepare("DELETE FROM sessions WHERE expires_at <= ?").run(now.toISOString());
+  db.prepare("DELETE FROM oauth_states WHERE created_at <= ?").run(new Date(now.getTime() - 600_000).toISOString());
+}
+
+// One refresh per session at a time: GitHub refresh tokens are single use, so
+// two concurrent refreshes would end the session.
+const refreshing = new Map<string, Promise<string | null | undefined>>();
+const EXPIRY_MARGIN = 60_000;
+
+// Returns a usable access token: null when the session can no longer get one
+// (and has been ended), undefined after a transient failure.
+async function accessToken(db: DatabaseSync, box: TokenBox, provider: Provider, idHash: string, rejected?: string): Promise<string | null | undefined> {
+  const row = db.prepare("SELECT token_enc FROM sessions WHERE id_hash = ?").get(idHash) as { token_enc: string | null } | undefined;
+  if (!row) return null;
+  const t = openTokens(box, row.token_enc, idHash);
+  if (!t) return null;
+  const fresh = t.access !== rejected && (t.expiresAt === null || t.expiresAt - EXPIRY_MARGIN > Date.now());
+  if (fresh) return t.access;
+  let p = refreshing.get(idHash);
+  if (!p) {
+    p = (async () => {
+      const end = () => {
+        db.prepare("DELETE FROM sessions WHERE id_hash = ?").run(idHash);
+        return null;
+      };
+      if (!t.refresh || (t.refreshExpiresAt !== null && t.refreshExpiresAt <= Date.now())) return end();
+      let next: Tokens | null;
+      try {
+        next = await provider.refresh(t.refresh);
+      } catch (e) {
+        console.error(`token refresh: ${(e as Error).message}`);
+        return undefined;
+      }
+      if (!next) return end();
+      db.prepare("UPDATE sessions SET token_enc = ? WHERE id_hash = ?").run(sealTokens(box, next, idHash), idHash);
+      return next.access;
+    })().finally(() => refreshing.delete(idHash));
+    refreshing.set(idHash, p);
+  }
+  return p;
+}
+
+// `forWrite` is true on POST requests: a handler that calls canWrite there is
+// about to write, so the cached permission must be at most a minute old.
+export function makeUser(db: DatabaseSync, box: TokenBox, provider: Provider, s: Session, forWrite: boolean): User {
+  const memo = new Map<string, Promise<boolean>>();
+  const check = async (repo: string): Promise<boolean> => {
+    if (!REPO_NAME.test(repo)) return false;
+    const maxAge = forWrite ? PERM_WRITE_TTL : PERM_READ_TTL;
+    const cached = db.prepare("SELECT permission, checked_at FROM repo_permissions WHERE login = ? AND repo = ?")
+      .get(s.login, repo) as { permission: string; checked_at: string } | undefined;
+    if (cached && Date.now() - Date.parse(cached.checked_at) < maxAge) return WRITE_PERMISSIONS.has(cached.permission);
+    let permission: string | undefined;
+    try {
+      let token = await accessToken(db, box, provider, s.idHash);
+      if (!token) return false;
+      permission = await provider.permission(token, repo);
+      if (permission === "unauthorized") {
+        token = await accessToken(db, box, provider, s.idHash, token);
+        if (!token) return false;
+        permission = await provider.permission(token, repo);
+        if (permission === "unauthorized") return false;
+      }
+    } catch (e) {
+      console.error(`permission check ${s.login} ${repo}: ${(e as Error).message}`);
+      return false;
+    }
+    db.prepare(`INSERT INTO repo_permissions (login, repo, permission, checked_at) VALUES (?, ?, ?, ?)
+                ON CONFLICT (login, repo) DO UPDATE SET permission = excluded.permission, checked_at = excluded.checked_at`)
+      .run(s.login, repo, permission, new Date().toISOString());
+    return WRITE_PERMISSIONS.has(permission);
+  };
+  return {
+    login: s.login,
+    role: s.role,
+    canWrite(repo: string): Promise<boolean> {
+      let p = memo.get(repo);
+      if (!p) memo.set(repo, (p = check(repo)));
+      return p;
+    },
+  };
+}
