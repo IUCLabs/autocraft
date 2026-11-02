@@ -119,7 +119,10 @@ export type Stage =
   | "batched"
   | "merged"
   | "closed"
-  | "fixed-by-us";
+  | "fixed-by-us"
+  | "verify-planned"
+  | "verify-ci-enough"
+  | "verify-error";
 
 export interface StageEntry {
   stage: Stage;

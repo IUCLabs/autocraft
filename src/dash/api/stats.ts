@@ -38,7 +38,7 @@ export function funnelByRepo(db: DatabaseSync, repo?: string): FunnelRow[] {
       SUM(st.status = 'settled') AS classified, SUM(st.status = 'waiting') AS second_opinion, SUM(st.status = 'disagree') AS disagreement,
       SUM(COALESCE(l.reviewed, 0)
        OR EXISTS (SELECT 1 FROM main.classifications c WHERE c.repo = i.repo AND c.number = i.number AND c.classifier = 'sonnet')) AS reviewed,
-      SUM(l.stage = 'take') AS take, SUM(l.stage = 'hold') AS hold, SUM(l.stage = 'close') AS close,
+      SUM(l.stage = 'take' OR l.stage LIKE 'verify-%') AS take, SUM(l.stage = 'hold') AS hold, SUM(l.stage = 'close') AS close,
       SUM(l.stage = 'needs-decision') AS needs_decision, SUM(l.stage = 'batched') AS batched
     FROM items i LEFT JOIN latest l ON l.repo = i.repo AND l.number = i.number
     LEFT JOIN temp.item_settled st ON st.repo = i.repo AND st.number = i.number

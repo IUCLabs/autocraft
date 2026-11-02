@@ -329,6 +329,9 @@ const STAGE: Record<Stage, [string, LucideIcon]> = {
   merged: ["Merged by the pipeline", GitMergeIcon],
   closed: ["Closed by the pipeline", CircleSlashIcon],
   "fixed-by-us": ["Fixed by us", CircleCheckIcon],
+  "verify-planned": ["Verification planned", SparklesIcon],
+  "verify-ci-enough": ["CI is enough", CircleCheckIcon],
+  "verify-error": ["Verification not planned", MinusIcon],
 };
 
 type Event = { label: string; Icon: LucideIcon; at: string; by: string; note: string | null };
