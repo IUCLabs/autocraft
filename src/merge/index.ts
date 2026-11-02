@@ -13,8 +13,9 @@ import { connect } from "../db.ts";
 import { actionable, ask, factsOf, getDecision } from "../decisions.ts";
 import { Client, type Querier } from "../mirror.ts";
 import { refreshChecks } from "../review/checks.ts";
+import { verificationOf } from "../verify/results.ts";
 import { TIER_LABEL } from "../whitelist.ts";
-import { buildQueue, countStates, eligible, HEAD_FACT, MERGE_OPTIONS, mergeDecisionId, QUEUE_STATES, type QueueEntry } from "./queue.ts";
+import { buildQueue, countStates, eligible, HEAD_FACT, MERGE_OPTIONS, mergeDecisionId, QUEUE_STATES, verifyOk, type QueueEntry } from "./queue.ts";
 
 export { buildQueue, countStates, QUEUE_STATES, type QueueEntry, type QueueState } from "./queue.ts";
 
@@ -135,9 +136,9 @@ export function mergeQuestion(e: QueueEntry): Record<string, unknown> & { id: st
     question: "Merge this PR?",
     context: `The review says take, but the merge-without-asking rule doesn't cover it: ${e.outsideRule.join(", ")}.`,
     facts: [
-      `size ${e.size}, label ${e.label ?? "not settled"}`,
-      `author: ${e.author ?? "unknown"}, ${TIER_LABEL[e.tier]}`,
+      `size ${e.size}, label ${e.label ?? "not settled"}; author: ${e.author ?? "unknown"}, ${TIER_LABEL[e.tier]}`,
       `CI ${e.ci}, mergeable ${e.mergeable.toLowerCase()}`,
+      `verify: ${e.verify ? `${e.verify.kind ?? "unknown"}, ${e.verify.state}${e.verify.note ? `: ${e.verify.note}` : ""}` : "none"}`,
       `review: ${e.verdict}: ${e.reason}${fixes}`,
       `${HEAD_FACT}${e.head}`,
     ],
@@ -219,6 +220,8 @@ export async function runMerge(db: DatabaseSync, params: MergeParams, log: (line
     if (!ch) { refuse(e, null, "GitHub returned no such PR"); continue; }
     if (ch.state !== "OPEN") { refuse(e, null, `no longer open on GitHub (${ch.state.toLowerCase()})`); continue; }
     if (ch.head_oid !== e.head) { refuse(e, null, `head moved from ${short(e.head)} to ${short(ch.head_oid)} since the review`); continue; }
+    const ver = verificationOf(db, repo, e.number, ch.head_oid);
+    if (!verifyOk(ver?.state)) { refuse(e, null, `verification at ${short(ch.head_oid)} is ${ver?.state ?? "missing"}, not passed`); continue; }
     if (e.path === "operator") {
       const still = actionable(db).some((a) => a.id === e.decisionId && a.answer === MERGE_OPTIONS.merge.key);
       if (!still) { refuse(e, null, "the operator's merge answer is gone"); continue; }
@@ -282,13 +285,13 @@ export const commands = {
     },
   },
   queue: {
-    summary: "queue [--repo R]: the merge queue with each PR's state",
+    summary: "queue [--repo R]: the merge queue with each PR's state and verification",
     run(args: string[]): void {
       const i = args.indexOf("--repo");
       const q = buildQueue(connect(), { repo: i >= 0 ? args[i + 1] : undefined });
       const c = countStates(q);
       console.log(QUEUE_STATES.map((s) => `${s}: ${c[s]}`).join(", "));
-      for (const e of q) console.log(`${refOf(e)}\t${e.state}\t${e.verdict}\t${e.size}\t${e.label ?? "-"}\t${e.ci}\t${e.mergeable}\t${e.refusedReason ?? e.outsideRule.join("; ")}`);
+      for (const e of q) console.log(`${refOf(e)}\t${e.state}\t${e.verdict}\t${e.size}\t${e.label ?? "-"}\t${e.ci}\t${e.mergeable}\t${e.verify?.state ?? "-"}\t${e.refusedReason ?? e.outsideRule.join("; ")}`);
     },
   },
 };

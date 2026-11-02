@@ -15,7 +15,7 @@ const dir = mkdtempSync(join(SCRATCH, "merge-test-"));
 const T0 = "2026-01-01T00:00:00Z";
 const T1 = "2026-01-02T00:00:00Z";
 
-type Pr = { n: number; verdict?: string; lines?: number; label?: string; author?: string; ci?: "SUCCESS" | "FAILURE" | "PENDING"; mergeable?: string; reviewHead?: string };
+type Pr = { n: number; verdict?: string; lines?: number; label?: string; author?: string; ci?: "SUCCESS" | "FAILURE" | "PENDING"; mergeable?: string; reviewHead?: string; verify?: string | null; verifyHead?: string };
 
 // #1 meets every part of the rule; each other PR breaks exactly one part.
 const PRS: Pr[] = [
@@ -30,6 +30,13 @@ const PRS: Pr[] = [
   { n: 9, verdict: "hold" },
   { n: 10, reviewHead: "old10" },
   { n: 11, label: "infra", lines: 120 },
+  { n: 12, verify: null },
+  { n: 13, verify: "running" },
+  { n: 14, verify: "failed" },
+  { n: 15, verify: "error" },
+  { n: 16, verify: "ci-enough" },
+  { n: 17, verifyHead: "old17" },
+  { n: 18, author: "stranger", verify: "planned" },
 ];
 
 function fresh(): DatabaseSync {
@@ -46,6 +53,10 @@ function fresh(): DatabaseSync {
     jev.run(p.n, p.label ?? "bugfix");
     const verdict = p.verdict ?? "take";
     review.run(p.n, p.reviewHead ?? `sha${p.n}`, lines <= 50 ? "S" : lines <= 300 ? "M" : "L", verdict, verdict === "take-fix" ? '[{"file":"a.rs","change":"x"}]' : null);
+    if (p.verify !== null) {
+      db.prepare(`INSERT INTO verifications (repo, number, head_sha, kind, reason, state, summary, note, created_at) VALUES ('app', ?, ?, 'tests', 'r', ?, ?, ?, '${T0}')`)
+        .run(p.n, p.verifyHead ?? `sha${p.n}`, p.verify ?? "passed", (p.verify ?? "passed") === "failed" ? "cargo test failed" : null, (p.verify ?? "passed") === "passed" ? "also passes on base" : null);
+    }
     checks.run(p.n, `sha${p.n}`, (p.ci ?? "SUCCESS").toLowerCase(), p.mergeable ?? "MERGEABLE");
   }
   db.prepare("INSERT INTO whitelist_overrides (login, status, by, at) VALUES ('regular', 'allow', 'op', ?)").run(T0);
@@ -108,8 +119,12 @@ describe("merge queue", () => {
     assert.deepEqual(states, {
       1: "ready", 2: "needs-fix-up", 3: "needs-decision", 4: "needs-decision", 5: "needs-decision",
       6: "ci-failed", 7: "waiting-ci", 8: "conflict", 11: "ready",
+      12: "waiting-verify", 13: "waiting-verify", 14: "verify-failed", 15: "verify-error", 16: "ready", 17: "waiting-verify", 18: "waiting-verify",
     });
-    assert.deepEqual(q.filter(eligible).map((e) => e.number), [1, 11]);
+    assert.deepEqual(q.filter(eligible).map((e) => e.number), [1, 11, 16]);
+    assert.deepEqual({ ...q.find((e) => e.number === 14)!.verify }, { state: "failed", kind: "tests", summary: "cargo test failed", note: null });
+    assert.equal(q.find((e) => e.number === 12)!.verify, null);
+    assert.equal(q.find((e) => e.number === 17)!.verify, null);
     assert.deepEqual(q.find((e) => e.number === 3)!.outsideRule, ["size L"]);
     assert.deepEqual(q.find((e) => e.number === 5)!.outsideRule, ["author not on the whitelist"]);
   });
@@ -121,7 +136,7 @@ describe("merge queue", () => {
     const deps = fakes(log);
     const s = await runMerge(db, { repo: "app" }, quiet, deps);
     assert.equal(s.dryRun, true);
-    assert.deepEqual(s.attempted, ["app#1", "app#11"]);
+    assert.deepEqual(s.attempted, ["app#1", "app#11", "app#16"]);
     assert.equal(s.asked.length, 3);
     assert.equal(deps.calls(), 0);
     assert.deepEqual(["stages", "decisions", "merges", "audit"].map((t) => count(db, t)), before);
@@ -131,8 +146,8 @@ describe("merge queue", () => {
     const db = fresh();
     const log: Log = [];
     const s = await runMerge(db, { repo: "app", dryRun: false }, quiet, fakes(log, { assignees: new Map([[11, ["someone"]]]) }));
-    assert.deepEqual(s.merged, ["app#1", "app#11"]);
-    assert.deepEqual(log, [
+    assert.deepEqual(s.merged, ["app#1", "app#11", "app#16"]);
+    assert.deepEqual(log.slice(0, 8), [
       "checks 1", "info 1", "viewer", "assign PR1", "safe-merge-test storytold/app 1 --squash",
       "checks 11", "info 11", "safe-merge-test storytold/app 11 --squash",
     ]);
@@ -140,10 +155,10 @@ describe("merge queue", () => {
     const facts = JSON.parse((db.prepare("SELECT facts FROM decisions WHERE id = ?").get(mergeDecisionId("app", 3, "sha3")) as { facts: string }).facts) as string[];
     assert.ok(facts.includes("head commit sha3"));
     assert.equal(stateOf(db, 1), "merged");
-    assert.equal(count(db, "merges"), 2);
-    assert.equal((db.prepare("SELECT COUNT(*) AS n FROM stages WHERE stage = 'merged'").get() as { n: number }).n, 2);
+    assert.equal(count(db, "merges"), 3);
+    assert.equal((db.prepare("SELECT COUNT(*) AS n FROM stages WHERE stage = 'merged'").get() as { n: number }).n, 3);
     assert.ok((db.prepare("SELECT COUNT(*) AS n FROM stages WHERE stage = 'batched'").get() as { n: number }).n >= 9);
-    assert.equal((db.prepare("SELECT COUNT(*) AS n FROM audit WHERE action = 'merge'").get() as { n: number }).n, 2);
+    assert.equal((db.prepare("SELECT COUNT(*) AS n FROM audit WHERE action = 'merge'").get() as { n: number }).n, 3);
 
     const again = await runMerge(db, { repo: "app", dryRun: false }, quiet, fakes([]));
     assert.deepEqual(again.asked, []);
@@ -162,7 +177,7 @@ describe("merge queue", () => {
     assert.equal(stateOf(db, 3), "declined");
     const log: Log = [];
     const s = await runMerge(db, { repo: "app", dryRun: false }, quiet, fakes(log));
-    assert.deepEqual(s.merged, ["app#1", "app#11", "app#5"]);
+    assert.deepEqual(s.merged, ["app#1", "app#11", "app#16", "app#5"]);
     assert.ok(!log.some((l) => / storytold\/app [34] /.test(l)));
     assert.ok((db.prepare("SELECT applied_at FROM decisions WHERE id = ?").get(mergeDecisionId("app", 5, "sha5")) as { applied_at: string | null }).applied_at);
   });
@@ -172,8 +187,8 @@ describe("merge queue", () => {
     await runMerge(db, { repo: "app", dryRun: false, limit: 0 }, quiet, fakes([]));
     answer(db, mergeDecisionId("app", 5, "sha5"), "op", "merge");
     const log: Log = [];
-    const s = await runMerge(db, { repo: "app", dryRun: false, limit: 3 }, quiet, fakes(log, { heads: new Map([[5, "sha5b"]]) }));
-    assert.deepEqual(s.merged, ["app#1", "app#11"]);
+    const s = await runMerge(db, { repo: "app", dryRun: false, limit: 4 }, quiet, fakes(log, { heads: new Map([[5, "sha5b"]]) }));
+    assert.deepEqual(s.merged, ["app#1", "app#11", "app#16"]);
     assert.match(s.refused.find((r) => r.ref === "app#5")!.reason, /head moved/);
     assert.ok(!log.some((l) => l.includes("storytold/app 5")));
   });
@@ -204,5 +219,46 @@ describe("merge queue", () => {
     deps.run = async () => { throw new Error("spawn safe-merge-test ENOENT"); };
     await assert.rejects(runMerge(db, { repo: "app", dryRun: false }, quiet, deps), /ENOENT/);
     assert.equal(count(db, "merges"), 0);
+  });
+
+  test("Merge? is asked only for PRs whose verification passed or said CI is enough", async () => {
+    const db = fresh();
+    const s = await runMerge(db, { repo: "app", dryRun: false, limit: 0 }, quiet, fakes([]));
+    assert.deepEqual(s.asked.sort(), [3, 4, 5].map((n) => mergeDecisionId("app", n, `sha${n}`)));
+    assert.equal(stateOf(db, 18), "waiting-verify");
+    const facts = JSON.parse((db.prepare("SELECT facts FROM decisions WHERE id = ?").get(mergeDecisionId("app", 5, "sha5")) as { facts: string }).facts) as string[];
+    assert.ok(facts.includes("verify: tests, passed: also passes on base"));
+    db.prepare("UPDATE verifications SET state = 'ci-enough' WHERE number = 18").run();
+    assert.equal(stateOf(db, 18), "needs-decision");
+    db.prepare("UPDATE verifications SET state = 'failed' WHERE number = 18").run();
+    assert.equal(stateOf(db, 18), "verify-failed");
+  });
+
+  test("an answered merge waits for the verification at the head", () => {
+    const db = fresh();
+    db.prepare("UPDATE verifications SET state = 'running' WHERE number = 5").run();
+    db.prepare(`INSERT INTO decisions (id, kind, repo, number, question, options, facts, asked_at, answer, answered_by, answered_at)
+      VALUES (?, 'merge', 'app', 5, 'Merge this PR?', '[]', '[]', ?, 'merge', 'op', ?)`).run(mergeDecisionId("app", 5, "sha5"), T0, T1);
+    assert.equal(stateOf(db, 5), "waiting-verify");
+    assert.ok(!buildQueue(db, { repo: "app" }).filter(eligible).some((e) => e.number === 5));
+    db.prepare("UPDATE verifications SET state = 'passed' WHERE number = 5").run();
+    assert.equal(stateOf(db, 5), "decision-answered-merge");
+  });
+
+  test("the pre-merge re-check refuses when the verification is no longer passed at the head", async () => {
+    const db = fresh();
+    const log: Log = [];
+    const deps = fakes(log);
+    const query = deps.querier.query.bind(deps.querier);
+    // The verification turns stale and a failing one lands for #11 while #1 is being merged.
+    deps.querier.query = async (q: string, v: object) => {
+      if ((v as { n?: number }).n === 1) db.prepare("UPDATE verifications SET state = 'stale' WHERE number = 11").run();
+      return query(q, v);
+    };
+    db.prepare("UPDATE verifications SET state = 'failed' WHERE number = 16").run();
+    const s = await runMerge(db, { repo: "app", dryRun: false }, quiet, deps);
+    assert.deepEqual(s.merged, ["app#1"]);
+    assert.match(s.refused.find((r) => r.ref === "app#11")!.reason, /verification at sha11 is stale/);
+    assert.ok(!log.some((l) => l.includes("storytold/app 11 ")));
   });
 });

@@ -631,3 +631,4 @@ CREATE TABLE IF NOT EXISTS verifications (
   PRIMARY KEY (repo, number, head_sha)
 );
 CREATE INDEX IF NOT EXISTS verifications_state ON verifications(state);
+CREATE INDEX IF NOT EXISTS verifications_finished ON verifications(finished_at);
