@@ -324,6 +324,19 @@ export interface OverrideInput {
   note?: string;
 }
 
+/** The Label stage for one repo: approval and what the plan holds. */
+export interface RepoLabels {
+  approved: boolean;
+  approvedBy: string | null;
+  approvedAt: string | null;
+  /** open items that would get labels */
+  toAdd: number;
+  /** open items with nothing to add: already labelled or not settled */
+  skipped: number;
+  /** open items with a different type label set by a person */
+  conflicts: number;
+}
+
 export interface TrackedRepo {
   name: RepoName;
   tracked: boolean;
@@ -332,6 +345,8 @@ export interface TrackedRepo {
   /** issue and PR rows in the mirror */
   mirrored: number;
   syncedAt: string | null;
+  /** null for repos that are not tracked */
+  labels: RepoLabels | null;
 }
 
 export interface AccessEntry {

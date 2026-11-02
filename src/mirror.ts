@@ -71,7 +71,7 @@ query($name: String!, $first: Int!, $after: String, $states: [${stateType}!]) {
 }`;
 }
 
-class Transient extends Error {}
+export class Transient extends Error {}
 
 export class Client {
   reserve: number;
@@ -127,10 +127,12 @@ export class Client {
       if (/502|503|504|timeout|eof|connection|unexpected end of json/.test(r.text)) throw new Transient(r.stderr.trim().slice(0, 200));
       throw new Error(`gh failed: ${r.stderr.trim().slice(0, 500)}`);
     }
-    const rl = r.data.rateLimit;
-    this.remaining = rl.remaining;
-    this.spent += rl.cost;
-    this.resetAt = new Date(rl.resetAt);
+    const rl = r.data.rateLimit; // absent in mutation responses
+    if (rl) {
+      this.remaining = rl.remaining;
+      this.spent += rl.cost;
+      this.resetAt = new Date(rl.resetAt);
+    }
     return r.data;
   }
 }

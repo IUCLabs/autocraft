@@ -3,7 +3,7 @@
 type Command = { summary: string; run: (args: string[]) => Promise<void> | void };
 type Module = { commands: Record<string, Command> };
 
-const MODULES = ["./mirror.ts", "./whitelist.ts", "./decisions.ts", "./access.ts", "./repos.ts", "./classify/index.ts", "./dash/index.ts"];
+const MODULES = ["./mirror.ts", "./whitelist.ts", "./decisions.ts", "./access.ts", "./repos.ts", "./classify/index.ts", "./labels/index.ts", "./dash/index.ts"];
 
 async function main(): Promise<void> {
   const commands: Record<string, Command> = {};
