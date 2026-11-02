@@ -52,7 +52,7 @@ before(async () => {
   ins.run("filmcraft", 3, "issue", "CLOSED", "DUPLICATE", "App crashes exporting layered TIFF files", "Crash on export of TIFF with layers <!-- template -->", "carol", now, now);
   ins.run("filmcraft", 4, "issue", "OPEN", null, "Timeline audio drifts after an hour", "Audio drift on long timelines", "dave", now, now);
   ins.run("untracked-repo", 5, "issue", "OPEN", null, "Crash when exporting a layered TIFF", "same words", "erin", now, now);
-  db.prepare("INSERT INTO classifications (repo, number, classifier, run_id, at, type_label) VALUES ('filmcraft', 3, 'jev', 'r1', ?, 'bugfix')").run(now);
+  db.prepare("INSERT INTO classifications (repo, number, classifier, run_id, at, type_label, probs) VALUES ('filmcraft', 3, 'jev', 'r1', ?, 'bugfix', ?)").run(now, JSON.stringify({ top: 0.95 }));
   db.prepare("INSERT INTO classifications (repo, number, classifier, run_id, at, type_label) VALUES ('filmcraft', 3, 'haiku', 'r1', ?, 'infra')").run(now);
   db.exec("DELETE FROM tracked_repos");
   db.exec("INSERT INTO tracked_repos (name) VALUES ('photocraft'), ('filmcraft')");

@@ -8,7 +8,7 @@ import { RefLink } from "../ui/RefLink";
 import { cn } from "../ui/cn";
 
 const SEMANTIC_KEY = "craft-triage:search-semantic";
-const isRef = (q: string) => /^([A-Za-z0-9._-]+)?#?\d+$/.test(q.trim());
+const isRefQuery = (q: string) => /^([A-Za-z0-9._-]+)?#?\d+$/.test(q.trim());
 
 /** Global search: `repo#123`, `#123`, a title fragment or an author login; or, with the meaning toggle (Alt+M), by embedding similarity. */
 export function SearchBox({ autoFocus, onPick, fullscreen }: { autoFocus?: boolean; onPick?: () => void; fullscreen?: boolean }) {
@@ -41,7 +41,7 @@ export function SearchBox({ autoFocus, onPick, fullscreen }: { autoFocus?: boole
       setHits([]);
       return;
     }
-    const bySense = semantic && !isRef(q);
+    const bySense = semantic && !isRefQuery(q);
     const t = setTimeout(
       () => (bySense ? api.semanticSearch(q) : api.search(q)).then((h) => live && (setHits(h), setSel(0)), () => live && setHits([])),
       bySense ? 250 : 90,

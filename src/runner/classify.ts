@@ -38,7 +38,7 @@ function openItems(db: DatabaseSync, run: string): Row[] {
   return db.prepare(`SELECT ${ITEM_COLUMNS}, i.updated_at, c.at AS c_at, c.input_hash AS c_hash
     FROM items i JOIN tracked_repos t ON t.name = i.repo
     LEFT JOIN classifications c ON c.repo = i.repo AND c.number = i.number AND c.classifier = 'jev' AND c.run_id = ?
-    WHERE i.state = 'OPEN' ORDER BY i.updated_at DESC, i.repo, i.number`).all(run) as Row[];
+    WHERE i.state = 'OPEN' ORDER BY i.updated_at DESC, i.repo, i.number`).all(run) as unknown as Row[];
 }
 
 const strip = (r: Row): Item => ({ repo: r.repo, number: r.number, kind: r.kind, title: r.title, body: r.body, lines_changed: r.lines_changed, files_changed: r.files_changed, author_association: r.author_association });
@@ -75,7 +75,7 @@ function haikuDue(db: DatabaseSync, run: string, limit: number): Item[] {
     LEFT JOIN classifications h ON h.repo = i.repo AND h.number = i.number AND h.classifier = 'haiku' AND h.run_id = :run
     WHERE i.state = 'OPEN' AND COALESCE(json_extract(CASE WHEN json_valid(j.probs) THEN j.probs END, '$.top'), 0) < :sure
       AND (h.at IS NULL OR h.at < j.at)
-    ORDER BY j.at DESC LIMIT :limit`).all({ run, sure: SURE, limit }) as Item[];
+    ORDER BY j.at DESC LIMIT :limit`).all({ run, sure: SURE, limit }) as unknown as Item[];
 }
 
 async function haikuPass(ctx: StepContext, run: string, todo: Item[]): Promise<number> {
