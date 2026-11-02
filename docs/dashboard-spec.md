@@ -145,6 +145,14 @@ An agent run is one model call: one `claude -p` call or one Jev batch request, m
 - **Running now**: every active run, refreshed every 5 s while the tab is visible. Each shows step and stage, model, account label (Jev has no account), the items it works on as `repo#n` links with "+N more", elapsed time and tokens so far.
 - **Recent runs**: newest first, filtered on the server by step, account, state and repo, and read by keyset cursor ("Load more"); the page never shows a total. A run opens a detail panel (a bottom sheet on phones) with the rendered prompt (collapsible; its registry id and version link to the Prompts page), the output, the error, token counts and a link to the job. Prompt and output are kept for 14 days; after that the panel says "Prompt text removed after 14 days".
 
+### Build environments (`/envs`, `/envs/<task>`)
+
+Operator navigation group; everyone signed in reads. Concept and trust rules: [pipeline.md](pipeline.md#build-environments-and-tasks).
+
+- **Environments**: one card per environment (everyone sees enabled ones; operators also see disabled ones): label, kind, Online / Offline / Disabled, a Paused badge with the worker's reason, slots in use of total, the machine (os, arch, cpus, memory, disk, display, GPU), toolchains, worker version and last seen. Operators add an environment (id, label, kind, slots), edit label, slots and enabled, and rotate the key. The key appears once in the response, with a Copy button, and is never listed again (`POST /api/envs`, `PUT /api/envs/:id`, `POST /api/envs/:id/rotate-key`; audited).
+- **Recent tasks**: newest first, filtered on the server by state, environment and repo, read by keyset cursor (`GET /api/tasks?state=&env=&repo=&cursor=`). Tasks of repos the viewer cannot see are left out. A task opens a detail panel (a bottom sheet on phones): steps with network mode, exit code and duration, summary, the log tail (plain text, labelled as output from the build environment) and artifacts with download links (PNG shown as a thumbnail). Operators cancel a queued or active task (`POST /api/tasks/:id/cancel`; audited).
+- **Flowchart**: the Verify stage panel shows queued and running tasks and free slots (`GET /api/build/summary`). The stage stays planned until a step queues tasks.
+
 ### Rates (`/rates`)
 
 Items moved per stage per hour (last 24 hours) or per day (last 7 days), with runs and failed runs, drawn as one small chart per stage; and each account's 5-hour and weekly use over time as lines on a 0 to 100 % scale with the 90 % pause threshold marked. A table view gives the stage totals as text. The charts redraw to the container width and stay readable at 390 px.

@@ -114,6 +114,44 @@ To run it as a systemd user service, fill in the placeholders of `deploy/craft-r
 
 From a shell: `craft-auto pipeline on|off|status` flips the switch and `pipeline limit <step> --per-day N|none` sets a stage's daily limit (both recorded as `cli`). `craft-auto runner steps` lists steps and their params, `runner enqueue <step> [--<param> <value> ...]` queues a job by hand for debugging (recorded as `cli`), `runner jobs [--state S]` lists jobs, `runner cancel <id>` cancels one.
 
+### Build environments and the worker API
+
+The runner also serves the worker API on its own listener, for workers that run untrusted code (concept and trust rules: [docs/pipeline.md](docs/pipeline.md#build-environments-and-tasks)). It is separate from the dashboard; expose it to remote workers only behind TLS (for example a tailnet-only proxy).
+
+| Variable | Meaning |
+|---|---|
+| `CRAFT_AUTO_WORKER_LISTEN` | `host:port` of the worker API. Default `127.0.0.1:8981`. If it cannot listen, the runner logs the error and carries on. |
+| `CRAFT_AUTO_ARTIFACT_DIR` | Where task artifacts are stored. Default `artifacts` beside the database. The runner and the dashboard must both see it. |
+
+Every call carries `Authorization: Bearer <worker key>`, which identifies the environment and refreshes its heartbeat. JSON bodies are sent as `application/json`.
+
+| Call | Body | Answer |
+|---|---|---|
+| `POST /worker/hello` | `{ version, capabilities, slots }` | `{ envId, label, slots }` (slots capped by the operator's setting) |
+| `POST /worker/claim` | `{ free, pausedReason }` | `{ tasks: [{ id, repo, headSha, baseSha, requires, plan, sourceUrl }], cancel: [ids] }` |
+| `POST /worker/tasks/:id/start` | none | `{ cancel }` |
+| `POST /worker/tasks/:id/log` | `{ step, chunk }`, chunk at most 64 KB | `{ truncated }` |
+| `PUT /worker/tasks/:id/artifacts/:name` | raw bytes, at most 50 MB; the name is 1 to 100 of letters, digits, `.`, `_`, `-` | `{ bytes, contentType }` |
+| `POST /worker/tasks/:id/finish` | `{ results: [{ step, exitCode, durationMs, timedOut }], summary }` | `{ state }`; retries return the same answer |
+| `POST /worker/tasks/:id/heartbeat` | none (every 15 s while running) | `{ cancel }` |
+
+`claim` with `free: 0` is allowed and refreshes the heartbeat and the paused reason. The task is `done` when every step exited 0 without a timeout, otherwise `failed` (empty results too). Errors are `{ "error": text }` with status 400 (bad body), 401 (key), 409 (the task is not running on this environment), 413 (size cap), 415 (artifact type), 429 (rate limit; `Retry-After`).
+
+Operators manage environments on the Build environments page (`/envs`) or from a shell (recorded as `cli`). A worker key is written to a file with mode 0600 and printed only with `--print`:
+
+```
+craft-auto envs list
+craft-auto envs add <id> --label TEXT --kind local-sandbox|remote --slots N (--out FILE | --print)
+craft-auto envs set <id> [--label TEXT] [--enabled yes|no] [--slots N]
+craft-auto envs rotate-key <id> (--out FILE | --print)
+craft-auto tasks list [--state S] [--env ID] [--repo NAME] [--limit N]
+craft-auto tasks show <id>
+craft-auto tasks cancel <id>
+craft-auto tasks enqueue-test --env-requires linux --repo NAME --sha SHA
+```
+
+`tasks enqueue-test` queues a harmless smoke test for a tracked public repo (`uname -a; nproc; free -g` with no network, then `cargo --version`).
+
 ### Claude accounts
 
 Claude calls run under accounts that an operator enabled. Which accounts exist on a machine comes from files outside the repository, named by environment variables that the runner, the dashboard and the CLI all read:

@@ -157,6 +157,28 @@ The step that acts on answers reads these keys:
 | `close` | Out of scope. Close with a short reason |
 | `need-info` | Ask how the reference app behaves, then decide again |
 
+## Build environments and tasks
+
+Untrusted code (a PR's build, tests and screenshots) never runs where the GitHub token or a Claude login is. It runs in a task on a build environment, a worker registered by an operator.
+
+- **Environment**: an id, a label, a kind (`local-sandbox` on this box as a separate OS user, or `remote`), an enabled switch, a slot count, and capabilities the worker reports (os, arch, cpus, memory, disk, display, gpu, toolchains). It has a worker key, shown once and stored as a SHA-256 hash. It is online while its last call is under 60 seconds old. The worker may report fewer slots than the operator allows, never more, and may report a pause reason (for example low disk), which the page shows.
+- **Task**: created by a pipeline step with `createTask` (`src/build/tasks.ts`). It names the source (repo, head sha, base sha), what it requires (os, arch, display, gpu, toolchains, minimum memory and disk), a priority and a plan of steps (argv, network `fetch` or `none`, timeout, artifact globs). Verify is the first step that will create tasks; none does yet. States: queued, claimed, running, done, failed, cancelled, lost.
+- **Scheduling is pull.** A worker calls `claim` with its free slots. In one write transaction the coordinator gives it the oldest queued tasks of the highest priority whose requirements its capabilities satisfy, up to the smaller of its free slots and its slots minus the tasks it runs. Several environments compete: whichever has a matching free slot claims first. A disabled, paused, never-reported or offline environment gets nothing.
+- **Lost workers.** A claimed or running task needs a heartbeat at least every 2 minutes. Without one it is requeued once; if the second worker is lost too, it fails. The runner checks every pass.
+- **Cancel.** Cancelling a queued task ends it at once. Cancelling an active task also ends it at once and lists its id in the worker's claim and heartbeat responses for 2 minutes; the worker kills the containers and sends no finish.
+- **Retention.** Tasks, logs and artifacts are deleted 30 days after the task ended.
+
+### Trust
+
+The worker holds no GitHub token, no Claude login and no database access. It fetches public source anonymously by sha. Everything it returns is untrusted data:
+
+- Logs are capped (64 KB a chunk, 20 MB a task, then truncated) and shown as plain text.
+- Artifacts are capped (50 MB each, 200 MB and 100 files a task), stored as files under `CRAFT_AUTO_ARTIFACT_DIR` with names that never reach the file system, and accepted only as PNG, JSON, JUnit XML or UTF-8 text. The type comes from sniffing the bytes, not from the worker's header. Downloads are `attachment` (PNG inline) with `nosniff` and `Content-Security-Policy: sandbox`.
+- Results and summaries are validated and stored as data. Nothing a worker sends is executed, rendered as HTML or put in a model prompt by the coordinator. A later step that lets a model read it must frame it as untrusted.
+- Worker calls come in on their own listener, authenticated by key, with body caps and a per-key rate limit. A wrong key counts against the caller's address.
+- Tasks of repos a viewer cannot see are hidden from that viewer, like every other list.
+- Only operators register or change an environment, rotate a key or cancel a task; each is audited (`env-create`, `env-change`, `env-rotate-key`, `task-cancel`).
+
 ## What needs a person
 
 - **Scope**: is this in scope, does it get us closer to the reference application, is it a plug-in rather than core?
