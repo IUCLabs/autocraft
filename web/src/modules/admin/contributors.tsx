@@ -148,18 +148,18 @@ function Table({ list, operator, filter, onSort }: { list: ContributorList; oper
   const sort = { k: filter.sort ?? "merged", desc: !!filter.desc };
   return (
     <div className="overflow-x-auto">
-      <table className="w-full min-w-[960px] border-collapse text-sm">
+      <table className="w-full min-w-[1040px] border-collapse text-sm">
         <thead className="bg-ink/[0.03] text-xs">
           <tr className="border-b border-line">
             <SortTh k="login" sort={sort} onSort={onSort}>Login</SortTh>
-            <SortTh k="tier" sort={sort} onSort={onSort} className="w-[260px]">Status</SortTh>
+            <SortTh k="tier" sort={sort} onSort={onSort} className="w-[220px]">Status</SortTh>
             <SortTh k="merged" sort={sort} onSort={onSort} right className="w-[80px]">Merged</SortTh>
             <SortTh k="closed" sort={sort} onSort={onSort} right className="w-[90px]">Closed unmerged</SortTh>
             <SortTh k="open" sort={sort} onSort={onSort} right className="w-[64px]">Open</SortTh>
             <SortTh k="rate" sort={sort} onSort={onSort} right className="w-[90px]">Merge rate</SortTh>
             <SortTh k="last" sort={sort} onSort={onSort} className="w-[100px]">Last merge</SortTh>
-            <SortTh k="repos" sort={sort} onSort={onSort} className="w-[200px]">Repos</SortTh>
-            {operator && <th className="w-[96px]" aria-label="Override" />}
+            <SortTh k="repos" sort={sort} onSort={onSort} className="w-[150px]">Repos</SortTh>
+            {operator && <th className="w-[110px]" aria-label="Override" />}
           </tr>
         </thead>
         <tbody>
@@ -171,15 +171,15 @@ function Table({ list, operator, filter, onSort }: { list: ContributorList; oper
                   <span className="truncate">{c.login}</span>
                 </a>
               </td>
-              <td className="max-w-[260px] px-3 py-1.5">
+              <td className="max-w-[220px] px-3 py-1.5">
                 <StatusCell c={c} operator={operator} />
               </td>
               <td className="num px-3 text-right">{num(c.merged)}</td>
               <td className="num px-3 text-right">{num(c.closedUnmerged)}</td>
               <td className="num px-3 text-right">{num(c.open)}</td>
               <td className={cn("num px-3 text-right", c.mergeRate !== null && c.mergeRate < list.rule.minRate && "text-ink/50")}>{rateText(c.mergeRate)}</td>
-              <td className="num px-3 text-ink/70">{c.lastMerge?.slice(0, 10) ?? "–"}</td>
-              <td className="max-w-[200px] truncate px-3 text-xs text-ink/60" title={c.repos.join(", ")}>
+              <td className="num whitespace-nowrap px-3 text-ink/70">{c.lastMerge?.slice(0, 10) ?? "–"}</td>
+              <td className="max-w-[150px] truncate px-3 text-xs text-ink/60" title={c.repos.join(", ")}>
                 {c.repos.join(", ") || "–"}
               </td>
               {operator && (

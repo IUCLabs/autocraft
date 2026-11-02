@@ -97,7 +97,7 @@ function AccessList({ entries, me }: { entries: AccessEntry[]; me: string }) {
               <tr className="border-b border-line">
                 <SortTh>Login</SortTh>
                 <SortTh className="w-[150px]">Role</SortTh>
-                <SortTh className="w-[190px]">Added</SortTh>
+                <SortTh className="w-[230px]">Added</SortTh>
                 <SortTh>Note</SortTh>
                 <SortTh right className="w-[80px]">Sessions</SortTh>
                 <th className="w-[170px]" aria-label="Remove" />
@@ -112,7 +112,7 @@ function AccessList({ entries, me }: { entries: AccessEntry[]; me: string }) {
                   <td className="px-3">
                     <RolePicker e={e} write={write} />
                   </td>
-                  <td className="num px-3 text-ink/65">
+                  <td className="num whitespace-nowrap px-3 text-ink/65">
                     {when(e.addedAt).slice(0, 10)} by {e.addedBy ?? "–"}
                   </td>
                   <td className="max-w-[320px] truncate px-3 text-ink/70" title={e.note ?? undefined}>
@@ -243,11 +243,11 @@ function Sessions({ sessions }: { sessions: SessionInfo[] }) {
                     <td className="px-3 text-ink/70" title={s.userAgent ?? undefined}>
                       {browser(s.userAgent)}
                     </td>
-                    <td className="num px-3 text-ink/65">{when(s.createdAt)}</td>
+                    <td className="num whitespace-nowrap px-3 text-ink/65">{when(s.createdAt)}</td>
                     <td className="px-3 text-ink/65" title={when(s.lastSeen)}>
                       {ago(s.lastSeen, false)}
                     </td>
-                    <td className="num px-3 text-ink/65">{when(s.expiresAt)}</td>
+                    <td className="num whitespace-nowrap px-3 text-ink/65">{when(s.expiresAt)}</td>
                     <td className="px-3 text-right">{revoke(s)}</td>
                   </tr>
                 ))}
@@ -330,7 +330,7 @@ function AuditLog() {
             <table className="w-full min-w-[820px] border-collapse text-sm">
               <thead className="bg-ink/[0.03] text-xs">
                 <tr className="border-b border-line">
-                  <SortTh className="w-[140px]">When</SortTh>
+                  <SortTh className="w-[150px]">When</SortTh>
                   <SortTh className="w-[150px]">By</SortTh>
                   <SortTh className="w-[140px]">Action</SortTh>
                   <SortTh className="w-[240px]">Target</SortTh>
@@ -340,7 +340,7 @@ function AuditLog() {
               <tbody>
                 {data.entries.map((e, i) => (
                   <tr key={i} className="h-8 border-b border-line last:border-0 hover:bg-ink/[0.03]">
-                    <td className="num px-3 text-ink/65">{when(e.at)}</td>
+                    <td className="num whitespace-nowrap px-3 text-ink/65">{when(e.at)}</td>
                     <td className="px-3">
                       <button className="hover:text-accent-ink hover:underline" onClick={() => update({ login: e.login, offset: null })}>
                         {e.login}

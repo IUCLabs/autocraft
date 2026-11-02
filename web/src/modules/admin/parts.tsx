@@ -109,7 +109,7 @@ export function SortTh<K extends string>({
 }) {
   const active = k !== undefined && sort?.k === k;
   return (
-    <th className={cn("h-8 px-3 font-medium", right ? "text-right" : "text-left", className)} aria-sort={active ? (sort!.desc ? "descending" : "ascending") : undefined}>
+    <th className={cn("h-8 whitespace-nowrap px-3 font-medium", right ? "text-right" : "text-left", className)} aria-sort={active ? (sort!.desc ? "descending" : "ascending") : undefined}>
       {k !== undefined && onSort ? (
         <button onClick={() => onSort(k)} className={cn("inline-flex items-center gap-1", active ? "text-ink" : "text-ink/55 hover:text-ink")}>
           {children}
