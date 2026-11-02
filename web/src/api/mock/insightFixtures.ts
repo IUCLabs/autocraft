@@ -122,5 +122,5 @@ export function costReport(run = ""): CostReport {
     tokens: Math.round((900_000 + r() * 6_000_000) * k),
     usd: Math.round((0.4 + r() * 4.5) * k * 100) / 100,
   }));
-  return { runs: [{ id: RUN, from: "2026-10-27T08:00:00Z", to: "2026-11-02T10:30:00Z" }, { id: "pilot-1029", from: "2026-10-29T14:00:00Z", to: "2026-10-29T15:10:00Z" }], run, total, stages, repos, series, bucketSize: "hour" };
+  return { runs: [{ id: RUN, from: "2026-10-27T08:00:00Z", to: "2026-11-02T10:30:00Z" }, { id: "pilot-1029", from: "2026-10-29T14:00:00Z", to: "2026-10-29T15:10:00Z" }], run, total, itemsClassified: Math.round(21000 * k), stages, repos, series, bucketSize: "hour" };
 }

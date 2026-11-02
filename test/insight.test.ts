@@ -65,6 +65,7 @@ describe("insight", () => {
   test("cost totals, wall time and series", () => {
     const c = cost(db, rq("run=r1"));
     assert.deepEqual(c.total, { calls: 2, items: 6, input: 150, output: 30, cacheRead: 10, cacheWrite: 0, usd: 0.25, wallSeconds: 180 });
+    assert.equal(c.itemsClassified, 6);
     assert.equal(c.stages.length, 1);
     assert.deepEqual(c.series, [{ bucket: "2026-11-01T10", tokens: 190, usd: 0.25 }]);
   });

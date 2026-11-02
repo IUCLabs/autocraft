@@ -60,8 +60,8 @@ function trackedOnly(db: DatabaseSync, repo: string): void {
 
 type ItemRow = {
   repo: string; number: number; kind: string; state: string; title: string | null; body: string | null; author: string | null;
-  created_at: string | null; updated_at: string | null; labels: string | null; additions: number | null; deletions: number | null;
-  mergeable: string | null; ci_state: string | null;
+  created_at: string | null; updated_at: string | null; labels: string | null; additions: number | null; deletions: number | null; changed_files: number | null;
+  mergeable: string | null; ci_state: string | null; closed_at: string | null; merged_at: string | null; merged_by: string | null;
 };
 
 function item(db: DatabaseSync, req: Req): Item {
@@ -89,10 +89,13 @@ function item(db: DatabaseSync, req: Req): Item {
     title: it.title ?? "", body: it.body ?? "", state: itemState(it.state), author: it.author ?? "",
     tier: TIER[c?.tier ?? "not"] ?? "not", authorMerged: c?.merged ?? 0, authorClosedUnmerged: c?.closed ?? 0,
     additions: it.additions ?? 0, deletions: it.deletions ?? 0,
+    changedFiles: it.kind === "pr" ? it.changed_files : null,
+    // The mirror stores only the rollup state and the counts, not per-file or per-check rows.
     files: [], ciChecks: [],
     ci: it.kind === "pr" ? (CI[it.ci_state ?? ""] ?? "none") : "none",
     mergeable: MERGEABLE[it.mergeable ?? ""] ?? "unknown",
     labels, createdAt: it.created_at ?? "", updatedAt: it.updated_at ?? "",
+    closedAt: it.closed_at, mergedAt: it.merged_at, mergedBy: it.merged_by,
     related: relatedOf(db, repo, n), classifications: classificationsOf(db, repo, n),
     stages: stages.map((s) => ({ ...s, by: s.by ?? "" })),
     comments: comments.map((x) => ({ ...x, author: x.author ?? "", body: x.body ?? "" })),

@@ -156,13 +156,20 @@ export interface Item extends ItemRef {
   authorClosedUnmerged: number;
   additions: number;
   deletions: number;
+  /** PRs: how many files the PR changes, from the mirror; null when unknown. */
+  changedFiles: number | null;
+  /** Per-file changes; empty when the mirror has none. */
   files: ChangedFile[];
+  /** "none" also when the mirror has no check data for the item. */
   ci: CiState;
   ciChecks: { name: string; state: CiState; minutes: number }[];
   mergeable: Mergeable;
   labels: string[];
   createdAt: string;
   updatedAt: string;
+  closedAt: string | null;
+  mergedAt: string | null;
+  mergedBy: string | null;
   related: RelatedItem[];
   classifications: Classification[];
   stages: StageEntry[];
@@ -497,6 +504,8 @@ export interface CostReport {
   /** A run id, or "" for all runs. */
   run: string;
   total: UsageTotals;
+  /** Distinct items with a classification in the run (or all runs); `total.items` counts an item once per model. */
+  itemsClassified: number;
   stages: ({ stage: string; model: string } & UsageTotals)[];
   repos: ({ repo: string } & UsageTotals)[];
   /** Spend per time bucket; `bucket` is an ISO hour or day. */

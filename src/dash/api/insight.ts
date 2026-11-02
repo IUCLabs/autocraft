@@ -148,6 +148,7 @@ export function cost(db: DatabaseSync, req: Req): CostReport {
     runs: db.prepare(`SELECT run_id AS id, MIN(started_at) AS "from", MAX(COALESCE(ended_at, started_at)) AS "to" FROM token_usage GROUP BY run_id ORDER BY MAX(COALESCE(ended_at, started_at)) DESC`).all() as CostReport["runs"],
     run,
     total: { ...(total as object) } as UsageTotals,
+    itemsClassified: (db.prepare(`SELECT COUNT(*) AS n FROM (SELECT DISTINCT repo, number FROM classifications WHERE ${flt})`).get(p) as { n: number }).n,
     stages: q<CostReport["stages"][number]>(`SELECT COALESCE(stage, '') AS stage, COALESCE(model, '') AS model, ${TOTALS} FROM token_usage WHERE ${flt} GROUP BY stage, model ORDER BY stage, model`),
     repos: q<CostReport["repos"][number]>(`SELECT repo, ${TOTALS} FROM token_usage WHERE ${flt} AND repo IS NOT NULL GROUP BY repo ORDER BY COALESCE(SUM(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0) + COALESCE(cache_read_tokens, 0) + COALESCE(cache_write_tokens, 0)), 0) DESC`),
     series: q<CostReport["series"][number]>(`SELECT substr(COALESCE(ended_at, started_at), 1, ${len}) AS bucket,
