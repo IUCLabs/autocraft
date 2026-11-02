@@ -25,6 +25,14 @@ import type {
   TrackedRepo,
   User,
   WhitelistRule,
+  Job,
+  JobDetail,
+  JobFilter,
+  JobList,
+  JobParams,
+  PipelineOverview,
+  Schedule,
+  ScheduleInput,
 } from "./types";
 
 /** The dashboard API as the frontend sees it. The mock and the HTTP client both implement it. */
@@ -77,6 +85,15 @@ export interface Api {
   };
   /** Token use and spend for one run, or all runs when `run` is empty. */
   cost(run?: string): Promise<CostReport>;
+  /** Steps, jobs and schedules: everyone reads; run, cancel and schedule are for operators. */
+  pipeline: {
+    overview(): Promise<PipelineOverview>;
+    jobs(filter: JobFilter): Promise<JobList>;
+    job(id: number): Promise<JobDetail>;
+    run(step: string, params: JobParams): Promise<Job>;
+    cancel(id: number): Promise<Job>;
+    schedule(step: string, input: ScheduleInput): Promise<Schedule>;
+  };
   signOut(): Promise<void>;
   /** Called after any write so open views can refetch. Returns an unsubscribe function. */
   subscribe(fn: () => void): () => void;

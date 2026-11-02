@@ -5,6 +5,7 @@ Local mirror of every storytold issue and PR, the triage pipeline's state, and t
 - `craft-auto sync` fills a SQLite mirror (`~/.local/share/craft-automation/mirror.db`, or `$CRAFT_AUTO_DB`) from GitHub GraphQL. Agents and scripts query the mirror instead of calling `gh`.
 - `craft-auto whitelist` shows and edits which contributors' PRs may merge on green CI without a decision.
 - `craft-auto dash serve` serves the dashboard.
+- `craft-auto runner serve` runs pipeline steps as jobs requested on the dashboard's Pipeline page or by schedules.
 
 Schema: `src/schema.sql`. Mirror tables are overwritten by sync; work tables (classifications, stages, whitelist overrides, token use) are ours.
 
@@ -53,6 +54,50 @@ The frontend in `web/` talks to `/api/`; the wire types are `web/src/api/types.t
 | `GET /api/contributors/rule-preview?minMerged=&minRate=`; `POST /api/contributors/rule` `{minMerged, minRate}`, `/api/contributors/<login>/override` `{status: "allow"\|"deny"\|null, note?}` | operator |
 | `GET /api/repos/all`; `POST /api/repos/track` `{name}`, `/api/repos/untrack` `{name}` | operator |
 | `GET /api/access`, `/api/audit?login=&action=&limit=&offset=`; `POST /api/access/add` `{login, role, note?}`, `/api/access/remove` `{login}`, `/api/access/role` `{login, role}`, `/api/access/sessions/revoke` `{id}` | operator; the last operator can't be removed or demoted |
+| `GET /api/pipeline` (stages, steps with their params schema, schedules and last job, runner heartbeat, recent syncs), `/api/pipeline/jobs?step=&state=&limit=&offset=`, `/api/pipeline/jobs/<id>` (with the scrubbed end of its log) | anyone signed in |
+| `POST /api/pipeline/jobs` `{step, params}`, `/api/pipeline/jobs/<id>/cancel`, `/api/pipeline/schedules/<step>` `{enabled, trigger: "interval"\|"after-sync", intervalMinutes, params}` | operator; audited |
 | `POST /api/signout` | anyone signed in |
 
 Opinions and comments are display-only. The pipeline reads answers with `craft-auto decisions list --actionable` (one JSON object per line: option keys of unapplied answers by a current operator), which never includes them.
+
+## Pipeline runner
+
+`craft-auto runner serve` is the only process that runs pipeline steps (how the parts fit together: [docs/pipeline.md](docs/pipeline.md#architecture)). It polls the `jobs` table every 2 seconds, runs each job in a child process (`craft-auto runner exec <id>`) with its output in a log file, stops jobs whose cancel was requested, and queues the jobs that schedules ask for. On start it marks jobs that an earlier runner left running as failed. A lock file keeps a second runner on the same database from starting.
+
+It reads the same variables as the CLI (`CRAFT_AUTO_DB` and the rest), plus:
+
+| Variable | Meaning |
+|---|---|
+| `CRAFT_AUTO_RUNNER_LOGS` | Directory of the per-job log files. Default `~/.cache/craft-automation-logs/jobs`. The dashboard reads each job's log from the path recorded in its row, so it must run as a user who can read this directory. |
+| `CRAFT_AUTO_RUNNER_JOBS` | Most jobs running at once. Default 2; jobs of one concurrency group always run one at a time. |
+| `CRAFT_AUTO_RUNNER_POLL_MS` | Poll interval. Default 2000. |
+| `CRAFT_AUTO_LOCK_DIR` | Directory of the lock file, shared with `sync`. Default `~/.cache/craft-automation-logs`. |
+| `CRAFT_AUTO_EXTRA_STEPS` | A module exporting `steps: StepDef[]` that is added to the step list, for tests and development (`test/runner-steps.ts` has fake steps). Set it for the dashboard and the runner alike, or not at all. |
+
+The classify steps call `jev` and `claude`, so the runner's `PATH` must reach them.
+
+To run it as a systemd user service, fill in the placeholders of `deploy/craft-runner.service`, copy it to `~/.config/systemd/user/`, and run `systemctl --user daemon-reload && systemctl --user enable --now craft-runner`. Stopping the service stops running jobs; they show as failed and can be started again.
+
+From a shell: `craft-auto runner steps` lists steps and their params, `runner enqueue <step> [--<param> <value> ...]` queues a job (recorded as `cli`), `runner jobs [--state S]` lists jobs, `runner cancel <id>` cancels one.
+
+### Adding a step
+
+A step is one entry in `STEPS` in `src/runner/steps.ts`:
+
+```ts
+{
+  name: "review-batch",
+  title: "Review PRs",
+  description: "Sonnet reviews the open PRs of one repo that are marked for review.",
+  stage: 5,                      // docs/pipeline.md stage
+  requires: "operator",
+  group: "models",               // one job of a group at a time
+  params: [
+    { name: "repo", label: "Repo", kind: "repo", required: true },
+    { name: "limit", label: "At most", kind: "int", min: 1, max: 50, default: 10 },
+  ],
+  run: async (ctx) => (await import("../review/step.ts")).reviewBatch(ctx),
+}
+```
+
+Param kinds are `enum`, `repo` (a tracked repo), `int` and `run-id`; there is no free-text kind, so nothing typed on the dashboard reaches a prompt. `run` gets the database, the validated params, `progress(text)`, `log(line)`, `usageRun(runId)` (token use recorded under that run from the job's start counts as the job's) and `cancelled()`, and returns a one-line summary; throwing fails the job with the error's message. `available()` and `check(db, params)` can refuse a step or a request with a reason. The Pipeline page, the API, schedules and the CLI pick the step up from the list.

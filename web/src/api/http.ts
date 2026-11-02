@@ -121,6 +121,14 @@ export function createHttpApi(): Api {
       disagreements: (f) => get(`/api/classifiers/disagreements${qs(f)}`),
     },
     cost: (run) => get(`/api/cost${qs({ run })}`),
+    pipeline: {
+      overview: () => get("/api/pipeline"),
+      jobs: (f) => get(`/api/pipeline/jobs${qs(f)}`),
+      job: (id) => get(`/api/pipeline/jobs/${id}`),
+      run: (step, params) => post("/api/pipeline/jobs", { step, params }),
+      cancel: (id) => post(`/api/pipeline/jobs/${id}/cancel`),
+      schedule: (step, input) => post(`/api/pipeline/schedules/${encodeURIComponent(step)}`, input),
+    },
     async signOut() {
       await call("POST", "/api/signout");
       location.assign("/auth/signed-out");

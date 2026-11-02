@@ -3,6 +3,7 @@ import type { Decision, DecisionComment, DecisionFilter, User } from "../types";
 import { decisionAccess } from "../../registry/permissions";
 import { setClock } from "../../lib/format";
 import { createAdminMock } from "./adminMock";
+import { createPipelineMock } from "./pipelineMock";
 import { classifierReport, costReport, disagreementList } from "./insightFixtures";
 import { DECISIONS, MOCK_USERS, NOW, REPOS, SEARCH_POOL, THREADS, itemFor, permFor, progress, type MockRole } from "./fixtures";
 
@@ -154,6 +155,7 @@ export function createMockApi(): Api {
       disagreements: (f) => wait(disagreementList(f), 60),
     },
     cost: (run) => wait(costReport(run), 80),
+    ...createPipelineMock(me, changed),
     signOut: () => wait(undefined),
     subscribe(fn) {
       listeners.add(fn);
