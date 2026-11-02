@@ -10,6 +10,7 @@ import { promptsReport } from "../../../../src/prompts/index.ts";
 import { semanticHits, similarFor } from "./similarFixtures";
 import { classifierReport, costReport, disagreementList } from "./insightFixtures";
 import { itemList, settledFor } from "./itemsFixtures";
+import { prWorkFor } from "./verifyFixtures";
 import { queueList } from "./queueFixtures";
 import { flowFixture } from "./flowFixtures";
 import { DECISIONS, MOCK_USERS, NOW, REPOS, SEARCH_POOL, THREADS, itemFor, permFor, progress, type MockRole } from "./fixtures";
@@ -145,7 +146,10 @@ export function createMockApi(): Api {
         return wait(c, 30);
       },
     },
-    item: (repo, number) => wait({ ...itemFor(repo, number), settled: settledFor(number) }),
+    item: (repo, number) => {
+      const it = itemFor(repo, number);
+      return wait({ ...it, settled: settledFor(number), ...prWorkFor(number, it.kind) });
+    },
     items: (f) => wait(itemList(f), 70),
     search(q) {
       const s = q.trim().toLowerCase();

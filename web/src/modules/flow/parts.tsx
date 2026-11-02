@@ -1,6 +1,6 @@
 // Shared pieces of the flowchart: links, tones, what a branch waits on, branch rows.
 import { Link } from "react-router-dom";
-import { BotIcon, CircleDashedIcon, CogIcon, UserIcon, type LucideIcon } from "lucide-react";
+import { BotIcon, BoxIcon, CircleDashedIcon, CogIcon, UserIcon, type LucideIcon } from "lucide-react";
 import type { AgentRun, Flow, FlowBranch, FlowLink, FlowNode, FlowWait } from "../../api/types";
 import { cn } from "../../ui/cn";
 import { num } from "../../lib/format";
@@ -34,6 +34,7 @@ export const WAIT: Record<Exclude<FlowWait, "nothing">, [LucideIcon, string]> = 
   model: [BotIcon, "a model step"],
   ci: [CircleDashedIcon, "CI"],
   runner: [CogIcon, "the runner"],
+  sandbox: [BoxIcon, "a build environment"],
 };
 
 export function WaitIcon({ w, className }: { w: FlowWait; className?: string }) {

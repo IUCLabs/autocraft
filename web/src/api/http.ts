@@ -134,6 +134,8 @@ export function createHttpApi(): Api {
       track: (name) => post("/api/repos/track", { name }),
       untrack: (name) => post("/api/repos/untrack", { name }),
       approveMerging: (name, approved) => post(approved ? "/api/repos/merge-approve" : "/api/repos/merge-revoke", { name }),
+      approvePushing: (name, approved) => post(approved ? "/api/repos/push-approve" : "/api/repos/push-revoke", { name }),
+      approveCommenting: (name, approved) => post(approved ? "/api/repos/comment-approve" : "/api/repos/comment-revoke", { name }),
       approveLabels: (name, approved) => post(approved ? "/api/repos/labels-approve" : "/api/repos/labels-revoke", { name }),
     },
     access: {

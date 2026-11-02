@@ -738,6 +738,9 @@ export function itemFor(repo: string, number: number): Item {
     decisionIds: seed ? [d.id] : [],
     // mockApi fills this in from itemsFixtures
     settled: { status: "unclassified", label: null, source: null, confidence: null, jevLabel: null, haikuLabel: null, flags: [] },
+    verification: null,
+    fixups: [],
+    actions: [],
   };
 }
 

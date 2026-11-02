@@ -122,7 +122,9 @@ export type Stage =
   | "fixed-by-us"
   | "verify-planned"
   | "verify-ci-enough"
-  | "verify-error";
+  | "verify-error"
+  | "verified"
+  | "verify-failed";
 
 export interface StageEntry {
   stage: Stage;
@@ -180,6 +182,52 @@ export interface Item extends ItemRef {
   decisionIds: string[];
   /** For the latest classification run. */
   settled: Settled;
+  /** PRs: the Verify stage's result for the newest head it looked at; null when none. */
+  verification: ItemVerification | null;
+  /** PRs: the Fix-up step's tries, oldest first. */
+  fixups: ItemFixup[];
+  /** The Act step's GitHub writes after an operator's answer, oldest first. */
+  actions: ItemAction[];
+}
+
+export type VerificationKind = "ci-enough" | "tests" | "regression" | "error";
+export type VerificationState = "planned" | "running" | "passed" | "failed" | "error" | "ci-enough" | "stale";
+export interface ItemVerification {
+  headSha: string;
+  baseSha: string | null;
+  /** False when the PR has a newer head than the one verified. */
+  current: boolean;
+  kind: VerificationKind;
+  reason: string;
+  /** Crates and test filters (kind tests), or the crate and size of the added regression test. */
+  plan: { crates: string[]; tests: string[]; testLines: number | null } | null;
+  state: VerificationState;
+  summary: string | null;
+  note: string | null;
+  createdAt: string;
+  finishedAt: string | null;
+  /** Head task first, then the base task of a regression. */
+  tasks: { id: number; role: "head" | "base"; state: TaskState; results: TaskResult[]; endedAt: string | null }[];
+}
+
+export type FixupState = "pushed" | "failed" | "refused" | "cannot-push" | "too-large";
+export interface ItemFixup {
+  fromHead: string;
+  toHead: string | null;
+  state: FixupState;
+  reason: string | null;
+  files: string[];
+  attempt: number;
+  createdAt: string;
+}
+
+export interface ItemAction {
+  decisionId: string;
+  kind: string;
+  state: "done" | "skipped" | "failed";
+  commentUrl: string | null;
+  reason: string | null;
+  createdAt: string;
 }
 
 /**
@@ -464,6 +512,10 @@ export interface TrackedRepo {
   labels: RepoLabels | null;
   /** Whether the pipeline may merge pull requests here; null for repos that are not tracked */
   merging: RepoApproval | null;
+  /** Whether the Fix-up step may push to contributor branches here; null for repos that are not tracked */
+  pushing: RepoApproval | null;
+  /** Whether the Act step may comment on and close items here; null for repos that are not tracked */
+  commenting: RepoApproval | null;
 }
 
 export interface AccessEntry {
@@ -853,8 +905,8 @@ export interface SimilarHit extends SearchHit {
 /** The nodes of the flowchart, in pipeline order (docs/pipeline.md). */
 export type FlowNodeId = "synced" | "classify" | "decide" | "labels" | "review" | "verify" | "merge";
 
-/** What items in a branch wait on: a model step, CI, a person, the runner (a step that needs no model), or nothing. */
-export type FlowWait = "model" | "ci" | "person" | "runner" | "nothing";
+/** What items in a branch wait on: a model step, CI, a person, the runner (a step that needs no model), a build environment (a build task), or nothing. */
+export type FlowWait = "model" | "ci" | "person" | "runner" | "sandbox" | "nothing";
 
 /**
  * Where a branch's link goes. `items` opens the Items browser with these params
@@ -1027,9 +1079,13 @@ export type BuildTask = {
   results: TaskResult[];
   artifacts: TaskArtifact[];
   summary: string | null;
+  /** Bytes of the unified diff applied to the checkout before the plan; null when the task has none. */
+  patchBytes: number | null;
+  /** Shared build cache: `build` fills it, `use` reads it. */
+  warm: { key: string; role: "use" | "build" } | null;
 };
 /** Worker-sent text: shown as plain text only, never as markup. */
-export type BuildTaskDetail = BuildTask & { logTail: string; logBytes: number; logTruncated: boolean };
+export type BuildTaskDetail = BuildTask & { logTail: string; logBytes: number; logTruncated: boolean; patch: string | null };
 export type TaskFilter = { state?: TaskState | "active"; env?: string; repo?: string; cursor?: string; limit?: number };
 export type TaskPage = { tasks: BuildTask[]; next: string | null };
 /** Queued and running tasks and the slots left over the online, enabled environments (the flowchart's Verify node). */

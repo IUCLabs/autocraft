@@ -412,6 +412,10 @@ function DetailBody({ id }: { id: number }) {
         <dd className="num">{ago(t.queuedAt, false)}</dd>
         <dt className="text-ink/55">Run time</dt>
         <dd className="num">{duration(t)}</dd>
+        <dt className="text-ink/55">Warm build</dt>
+        <dd>{t.warm ? <span>{t.warm.role === "build" ? "fills" : "uses"} cache <span className="code text-xs">{t.warm.key}</span></span> : "none"}</dd>
+        <dt className="text-ink/55">Patch</dt>
+        <dd className="num">{t.patchBytes ? `${num(t.patchBytes)} bytes applied before the steps` : "none"}</dd>
         {t.heartbeatAt && active && (
           <>
             <dt className="text-ink/55">Heartbeat</dt>
@@ -442,6 +446,13 @@ function DetailBody({ id }: { id: number }) {
           })}
         </ol>
       </section>
+
+      {t.patch && (
+        <details className="rounded border border-line">
+          <summary className="cursor-pointer px-3 py-2 text-xs font-semibold text-ink/65 max-md:min-h-11">View patch ({num(t.patchBytes ?? t.patch.length)} bytes)</summary>
+          <pre className="code max-h-[45vh] overflow-auto whitespace-pre border-t border-line bg-sunken p-3 text-xs leading-relaxed">{t.patch}</pre>
+        </details>
+      )}
 
       <section>
         <h3 className="mb-1 flex flex-wrap items-baseline gap-x-2 text-xs font-semibold text-ink/65">

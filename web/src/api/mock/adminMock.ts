@@ -99,9 +99,9 @@ function buildRepos(): TrackedRepo[] {
     const prs = Math.round(open * (0.3 + r() * 0.2));
     const toAdd = Math.round(prs * (0.4 + r() * 0.3));
     const labels = { approved: false, approvedBy: null, approvedAt: null, toAdd, skipped: Math.round(prs * 0.2), conflicts: r() < 0.3 ? Math.floor(r() * 4) : 0 };
-    return { name, tracked: true, openPrs: prs, openIssues: open - prs, mirrored: Math.round(open * (3.5 + r())), syncedAt: iso((2 + r() * 40) * 60_000), labels, merging: { approved: false, approvedBy: null, approvedAt: null } };
+    return { name, tracked: true, openPrs: prs, openIssues: open - prs, mirrored: Math.round(open * (3.5 + r())), syncedAt: iso((2 + r() * 40) * 60_000), labels, merging: { approved: false, approvedBy: null, approvedAt: null }, pushing: { approved: false, approvedBy: null, approvedAt: null }, commenting: { approved: false, approvedBy: null, approvedAt: null } };
   });
-  const rest = UNTRACKED.map((name) => ({ name, tracked: false, openPrs: Math.floor(r() * 30), openIssues: Math.floor(r() * 80), mirrored: name === "craft-docs-archive" ? 412 : 0, syncedAt: name === "craft-docs-archive" ? iso(12 * D) : null, labels: null, merging: null }));
+  const rest = UNTRACKED.map((name) => ({ name, tracked: false, openPrs: Math.floor(r() * 30), openIssues: Math.floor(r() * 80), mirrored: name === "craft-docs-archive" ? 412 : 0, syncedAt: name === "craft-docs-archive" ? iso(12 * D) : null, labels: null, merging: null, pushing: null, commenting: null }));
   return [...tracked, ...rest];
 }
 
@@ -176,6 +176,15 @@ export function createAdminMock(me: User, changed: () => void): AdminApi {
   };
   const log = (action: string, target: string | null, details: Record<string, unknown> | null = null) => {
     auditLog.unshift({ at: nowIso(), login: me.login, action, target, details });
+  };
+  const setKind = (field: "pushing" | "commenting", audit: string, name: string, approved: boolean) => {
+    requireOperator(`approve ${field}`);
+    const a = repos.find((x) => x.name === name)?.[field];
+    if (!a) throw new Error(`${name} is not tracked`);
+    if (a.approved === approved) throw new Error(`${name} is ${approved ? "already" : "not"} approved for ${field}`);
+    Object.assign(a, approved ? { approved, approvedBy: me.login, approvedAt: nowIso() } : { approved, approvedBy: null, approvedAt: null });
+    log(approved ? `${audit}-approve` : `${audit}-revoke`, name);
+    changed();
   };
   const write = <T>(v: T) => {
     changed();
@@ -259,10 +268,12 @@ export function createAdminMock(me: User, changed: () => void): AdminApi {
         if (!/^[A-Za-z0-9._-]{1,100}$/.test(name)) throw new Error("Not a repo name.");
         let r = repos.find((x) => x.name === name);
         if (r?.tracked) throw new Error(`${name} is already tracked`);
-        if (!r) repos.push((r = { name, tracked: true, openPrs: null, openIssues: null, mirrored: 0, syncedAt: null, labels: null, merging: null }));
+        if (!r) repos.push((r = { name, tracked: true, openPrs: null, openIssues: null, mirrored: 0, syncedAt: null, labels: null, merging: null, pushing: null, commenting: null }));
         r.tracked = true;
         r.labels ??= { approved: false, approvedBy: null, approvedAt: null, toAdd: 0, skipped: 0, conflicts: 0 };
         r.merging ??= { approved: false, approvedBy: null, approvedAt: null };
+        r.pushing ??= { approved: false, approvedBy: null, approvedAt: null };
+        r.commenting ??= { approved: false, approvedBy: null, approvedAt: null };
         log("repo-track", name);
         changed();
         return this.list();
@@ -274,6 +285,8 @@ export function createAdminMock(me: User, changed: () => void): AdminApi {
         r.tracked = false;
         r.labels = null;
         r.merging = null;
+        r.pushing = null;
+        r.commenting = null;
         log("repo-untrack", name);
         changed();
         return this.list();
@@ -286,6 +299,14 @@ export function createAdminMock(me: User, changed: () => void): AdminApi {
         Object.assign(r.merging, approved ? { approved, approvedBy: me.login, approvedAt: nowIso() } : { approved, approvedBy: null, approvedAt: null });
         log(approved ? "merge-approve" : "merge-revoke", name);
         changed();
+        return this.list();
+      },
+      async approvePushing(name, approved) {
+        setKind("pushing", "push", name, approved);
+        return this.list();
+      },
+      async approveCommenting(name, approved) {
+        setKind("commenting", "comment", name, approved);
         return this.list();
       },
       async approveLabels(name, approved) {
