@@ -49,6 +49,8 @@ export type StepDef = {
   /** At most one job of a group runs at a time. */
   group: "models" | "github-write" | "local" | (string & {});
   params: ParamDef[];
+  /** Models the step calls, known before any call is made: a list, or derived from the params. Empty or absent for steps that call none. */
+  models?: string[] | ((params: Params) => string[]);
   /** null when the step can run; otherwise why not, shown on the page. */
   available?: () => string | null;
   /** Checks a request beyond the schema (null = fine), at request time and again before the run. */
@@ -63,6 +65,14 @@ async function checkApproved(db: DatabaseSync, p: Params): Promise<string | null
   return approvalOf(db, String(p.repo)) ? null : `labelling ${p.repo} is not approved`;
 }
 
+export function modelsOf(step: StepDef | undefined, params: Params): string[] {
+  const m = step?.models;
+  return typeof m === "function" ? m(params) : (m ?? []);
+}
+
+/** Models served through a Claude account (everything but Jev, which has none). */
+export const usesClaude = (models: string[]): boolean => models.some((m) => m !== "jev");
+
 export const STEPS: StepDef[] = [
   {
     name: "classify-new",
@@ -71,6 +81,7 @@ export const STEPS: StepDef[] = [
     stage: 2,
     requires: "operator",
     group: "models",
+    models: ["jev", "haiku"],
     params: [{ name: "limit", label: "At most", kind: "int", min: 1, max: 5000, default: 500, help: "items per model in this job" }],
     run: async (ctx) => (await import("./classify.ts")).classifyNew(ctx),
   },
@@ -81,6 +92,7 @@ export const STEPS: StepDef[] = [
     stage: 2,
     requires: "operator",
     group: "models",
+    models: ["jev", "haiku"],
     params: [
       { name: "run", label: "Run id", kind: "run-id", required: true, help: "lowercase letters, digits and dashes" },
       { name: "limit", label: "At most", kind: "int", min: 1, max: 30000, default: 30000, help: "items per model in this job" },
@@ -154,6 +166,7 @@ export const STEPS: StepDef[] = [
     stage: 3,
     requires: "operator",
     group: "models",
+    models: (p) => [String(p.model ?? "sonnet")],
     params: [
       { name: "repo", label: "Repo", kind: "repo", help: "every tracked repo when empty" },
       { name: "limit", label: "At most", kind: "int", min: 1, max: 500, default: 50, help: "decisions to ask in this job" },
@@ -178,6 +191,7 @@ export const STEPS: StepDef[] = [
     stage: 5,
     requires: "operator",
     group: "models",
+    models: ["sonnet"],
     params: [
       { name: "repo", label: "Repo", kind: "repo", required: true },
       { name: "limit", label: "At most", kind: "int", min: 1, max: 50, default: 10, help: "PRs to review in this job" },
@@ -227,6 +241,10 @@ export const STEPS: StepDef[] = [
 ];
 
 let loaded: Promise<Map<string, StepDef>> | null = null;
+let loadedMap: Map<string, StepDef> | null = null;
+
+/** A step by name without waiting: the loaded list once `loadSteps` has finished, else the built-in steps. */
+export const knownStep = (name: string): StepDef | undefined => loadedMap?.get(name) ?? STEPS.find((s) => s.name === name);
 
 /**
  * Every step by name. CRAFT_AUTO_EXTRA_STEPS names a module exporting `steps:
@@ -239,6 +257,7 @@ export function loadSteps(): Promise<Map<string, StepDef>> {
     const map = new Map(STEPS.map((s) => [s.name, s]));
     const extra = process.env.CRAFT_AUTO_EXTRA_STEPS;
     if (extra) for (const s of ((await import(pathToFileURL(resolve(extra)).href)) as { steps: StepDef[] }).steps) map.set(s.name, s);
+    loadedMap = map;
     return map;
   })();
   return loaded;

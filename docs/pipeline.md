@@ -106,6 +106,30 @@ Classifiers and Cost show how often the models agree and what each stage costs.
 
 Every prompt sent to a model is defined in one registry (`src/prompts`), and the code can call a model only with a registered prompt. [Prompts](/prompts) shows each one exactly as sent, with its model, call settings and a rendered example.
 
+## Claude accounts and agent runs
+
+An **agent run** is one model call made through the prompt registry: one `claude -p` call, or one Jev request. Every run is recorded when it starts and again when it ends.
+
+### Accounts and allocation
+
+An operator enables Claude accounts on the Accounts page and gives each a label and a number of calls at once (default 2). Only the label is shown; the account's login and config directory never appear in the API, logs or UI. The accounts a machine has come from its box config (see the README); the page lists only those.
+
+Before each Claude call the runner side picks an account:
+
+1. It must be enabled and have a free slot (runs in state `running` fewer than its limit).
+2. It must have headroom by its latest usage reading: 5-hour use under 90 % and weekly use under 95 %. A reading older than 30 minutes counts as unknown and is allowed.
+3. Of those, the account with the lowest weekly use gets the call.
+
+The call runs with that account's `CLAUDE_CONFIG_DIR` for its own child process only. When no account qualifies, the call waits (polling every few seconds) and stops if the job is cancelled. If no account is enabled at all, the call fails with a message that says so. Jev calls use no account.
+
+Stages that call Claude (Classify, for its Haiku part, Decide and Review) show as paused, with the reason, and the autopilot queues no job for them while no enabled account has headroom ("paused: no Claude account is enabled", "paused: no Claude account has headroom (...)"). A job started by hand waits for an account instead.
+
+The runner records each account's usage reading whenever it changes (`account_usage_samples`, kept 30 days). If `CRAFT_AUTO_USAGE_REFRESH` is set, it also runs that command every 5 minutes to refresh the readings.
+
+### What a run records
+
+Each run has its job, step and stage, prompt id and version (a hash of the prompt text), provider, model, account, up to 50 item refs and the item count, state (`running`, `done`, `failed`), times, token counts, and a one-line summary (verdict counts or the error class). The rendered prompt and the raw output are kept in a separate table for 14 days; the rest of the run is kept for 90 days. The Agents page lists runs (newest first, or only the running ones, filtered by state, step, account or repo), and the Rates page shows items moved and runs per stage by hour (24 hours) or day (7 days) next to account usage. Each job on the Pipeline page lists the models its step uses and the accounts its runs used. Runs left `running` by a process that is gone are marked failed when the runner starts or the job ends, so they do not hold a slot.
+
 ## Scope decisions
 
 `craft-auto decide [--repo R ...] [--limit N] [--dry-run]` asks one scope decision per item. An item gets one when it is open, not a draft, in a tracked repo, and either
@@ -140,7 +164,7 @@ Everything else waits for a decision on this dashboard.
 - Only the operator's answers are acted on. The pipeline reads the chosen option, never free text.
 - Comments and picks by other people are shown to everyone here but never reach a model's prompt.
 - All GitHub text is treated as untrusted data: models judge it and never follow instructions in it.
-- Only operators can turn the pipeline on or off, change the daily limits, or cancel jobs. A maintainer or viewer account, even a compromised one, cannot trigger a merge, close, post, label, push or any pipeline step.
+- Only operators can turn the pipeline on or off, change the daily limits, enable or relabel Claude accounts, or cancel jobs. A maintainer or viewer account, even a compromised one, cannot trigger a merge, close, post, label, push or any pipeline step.
 
 ## Architecture
 

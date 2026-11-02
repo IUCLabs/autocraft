@@ -98,7 +98,7 @@ export async function runDecide(db: DatabaseSync, params: DecideParams = {}, log
     let usage = zero(), done = 0;
     let todo = items;
     for (let attempt = 0; attempt < PROMPT.limits.attempts && todo.length; attempt++) {
-      const reply = await askClaude("decide.summary", model, todo);
+      const reply = await askClaude("decide.summary", model, todo, db);
       if (!reply) continue;
       usage = add(usage, reply.usage);
       const { summaries, missing } = parseSummaryReply(reply.text, todo.map(refOf));

@@ -20,7 +20,8 @@ import { selectCandidates as reviewCandidates } from "../review/candidates.ts";
 import { audit } from "../dash/audit.ts";
 import { currentRun, dueItems, haikuDue } from "./classify.ts";
 import { enqueue, JobError, now } from "./jobs.ts";
-import { loadSteps, type Params } from "./steps.ts";
+import { claudePauseReason } from "../agents/accounts.ts";
+import { knownStep, loadSteps, modelsOf, usesClaude, type Params } from "./steps.ts";
 
 export const PLAN_EVERY_MS = 15 * 60_000;
 /** A stage that handled nothing waits this long before it is tried again. */
@@ -151,13 +152,15 @@ export function backoffUntil(db: DatabaseSync, step: string, ms: number = Date.n
   return until > ms ? until : null;
 }
 
-/** Why the stage cannot start jobs now, or null. The one place a stage's pause is decided. */
+/** Why the stage cannot start jobs now, or null. The one place a stage's pause is decided. A step's models are taken at their defaults. */
 export function pauseReason(db: DatabaseSync, step: string, ms: number = Date.now()): string | null {
   const l = limitRow(db, step), used = usageToday(db, step, ms);
   if (l.per_day === 0) return "paused: the daily limit is 0";
   if (l.per_day !== null && used >= l.per_day) return `daily limit of ${l.per_day} items reached`;
   const b = backoffUntil(db, step, ms);
   if (b !== null) return `last ${BACKOFF_AFTER} automatic jobs failed; waiting until ${new Date(b).toISOString().slice(11, 16)} UTC`;
+  // Steps that call Claude (decide, review-batch, the Haiku part of classify-new) wait for an account with headroom.
+  if (usesClaude(modelsOf(knownStep(step), {}))) return claudePauseReason(db, ms);
   return null;
 }
 

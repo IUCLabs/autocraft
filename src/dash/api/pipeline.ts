@@ -5,7 +5,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import type { Job, JobState, PipelineOverview, PipelineStage, PipelineStep, StepParam, SyncRun } from "../../../web/src/api/types.ts";
 import { trackedNames } from "../../repos.ts";
-import { enqueue, getJob, jobDetail, JobError, JOB_STATES, listJobs, requestCancel, toJob } from "../../runner/jobs.ts";
+import { enqueue, getJob, jobDetail, JobError, JOB_STATES, listJobs, requestCancel, toJob, toJobs } from "../../runner/jobs.ts";
 import { LimitError, pipelineState, setEnabled, setLimit } from "../../runner/autopilot.ts";
 import { HEARTBEAT_KEY } from "../../runner/runner.ts";
 import { loadSteps, type StepDef } from "../../runner/steps.ts";
@@ -54,7 +54,7 @@ function wireParams(s: StepDef, repos: string[]): StepParam[] {
 
 const lastJob = (db: DatabaseSync, step: string): Job | null => {
   const r = db.prepare("SELECT * FROM jobs WHERE step = ? ORDER BY id DESC LIMIT 1").get(step);
-  return r ? toJob(r as Parameters<typeof toJob>[0]) : null;
+  return r ? toJobs(db, [r as Parameters<typeof toJob>[0]])[0]! : null;
 };
 
 function stageState(db: DatabaseSync, steps: string[], syncFailed: boolean | null): PipelineStage["state"] {

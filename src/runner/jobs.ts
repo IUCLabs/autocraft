@@ -1,11 +1,11 @@
 // The jobs table: requests from the dashboard, the CLI and the autopilot,
 // state written by the runner. Shared by the API, the runner and the CLI.
 import { closeSync, fstatSync, openSync, readSync } from "node:fs";
-import { homedir } from "node:os";
 import type { DatabaseSync } from "node:sqlite";
 import type { Job, JobDetail, JobFilter, JobList, JobParams, JobState, JobUsage } from "../../web/src/api/types.ts";
 import { trackedNames } from "../repos.ts";
-import { loadSteps, ParamError, validateParams, type StepDef } from "./steps.ts";
+import { accountLabelsByJob } from "../agents/runs.ts";
+import { knownStep, loadSteps, modelsOf, ParamError, validateParams, type StepDef } from "./steps.ts";
 
 export const JOB_STATES: JobState[] = ["queued", "running", "done", "failed", "cancelled"];
 export const now = (): string => new Date().toISOString();
@@ -33,12 +33,21 @@ function parseJson<T>(s: string | null, fallback: T): T {
   }
 }
 
-export function toJob(r: JobRow): Job {
+/** `accounts`: labels of the accounts the job's agent runs used (see `toJobs` for a page of jobs). */
+export function toJob(r: JobRow, accounts: string[] = []): Job {
+  const params = parseJson<JobParams>(r.params, {});
   return {
-    id: r.id, step: r.step, params: parseJson<JobParams>(r.params, {}), requestedBy: r.requested_by, requestedAt: r.requested_at,
+    id: r.id, step: r.step, params, requestedBy: r.requested_by, requestedAt: r.requested_at,
     state: r.state, startedAt: r.started_at, endedAt: r.ended_at, progress: r.progress, summary: r.summary, error: r.error,
     cancelRequested: r.cancel_requested_at !== null, usage: parseJson<JobUsage | null>(r.usage, null),
+    models: modelsOf(knownStep(r.step), params), accounts,
   };
+}
+
+/** Jobs with their account labels, looked up in one query. */
+export function toJobs(db: DatabaseSync, rows: JobRow[]): Job[] {
+  const labels = accountLabelsByJob(db, rows.map((r) => r.id));
+  return rows.map((r) => toJob(r, labels.get(r.id)));
 }
 
 export function jobRow(db: DatabaseSync, id: number): JobRow | undefined {
@@ -48,7 +57,7 @@ export function jobRow(db: DatabaseSync, id: number): JobRow | undefined {
 export function getJob(db: DatabaseSync, id: number): Job {
   const r = jobRow(db, id);
   if (!r) throw new JobError(404, `no job ${id}`);
-  return toJob(r);
+  return toJobs(db, [r])[0]!;
 }
 
 export function listJobs(db: DatabaseSync, f: JobFilter = {}): JobList {
@@ -66,7 +75,7 @@ export function listJobs(db: DatabaseSync, f: JobFilter = {}): JobList {
   const total = (db.prepare(`SELECT COUNT(*) AS n FROM jobs ${w}`).get(...args) as { n: number }).n;
   const limit = Math.min(Math.max(f.limit ?? 50, 1), 200), offset = Math.max(f.offset ?? 0, 0);
   const rows = db.prepare(`SELECT * FROM jobs ${w} ORDER BY id DESC LIMIT ? OFFSET ?`).all(...args, limit, offset) as JobRow[];
-  return { jobs: rows.map(toJob), total };
+  return { jobs: toJobs(db, rows), total };
 }
 
 async function stepOf(name: unknown): Promise<StepDef> {
@@ -122,33 +131,8 @@ export function requestCancel(db: DatabaseSync, id: number, by: string): Job {
 
 // ---- logs ----------------------------------------------------------------------
 
-// Replaces anything that looks like a credential. Logs hold step output only,
-// but a tool's error message could still quote a header or an environment value.
-const SECRET_PATTERNS: RegExp[] = [
-  /\b(gh[pousr]_[A-Za-z0-9]{20,})/g,
-  /\bgithub_pat_[A-Za-z0-9_]{20,}/g,
-  /\bsk-[A-Za-z0-9_-]{16,}/g,
-  /\bxox[abprs]-[A-Za-z0-9-]{10,}/g,
-  /\bAKIA[0-9A-Z]{16}\b/g,
-  /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g,
-  /\b(Bearer|token|Basic)\s+[A-Za-z0-9._~+/=-]{16,}/gi,
-  /\b([A-Za-z_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|API_?KEY|SESSION_KEY|CLIENT_SECRET)[A-Za-z_]*)\s*[:=]\s*("[^"]*"|'[^']*'|\S+)/gi,
-  /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(-----END [A-Z ]*PRIVATE KEY-----|$)/g,
-];
-// Long mixed-case letter-and-digit runs (keys) that aren't hex digests or commit ids.
-const LONG_RANDOM = /\b[A-Za-z0-9_+/-]{40,}={0,2}/g;
-
-export function scrub(text: string): string {
-  // Paths under the home directory show as ~/...: the log is shown to everyone signed in.
-  let t = text.replaceAll(homedir(), "~");
-  for (const p of SECRET_PATTERNS) {
-    t = t.replace(p, (m, name?: string) => {
-      if (/^(Bearer|token|Basic)$/i.test(name ?? "")) return `${name} [hidden]`;
-      return typeof name === "string" && name !== m && /^[A-Za-z_]+$/.test(name) && /[=:]/.test(m) ? `${name}=[hidden]` : "[hidden]";
-    });
-  }
-  return t.replace(LONG_RANDOM, (m) => (/^[0-9a-f]+$/i.test(m) || !/[A-Z]/.test(m) || !/[a-z]/.test(m) || !/[0-9]/.test(m) ? m : "[hidden]"));
-}
+export { scrub } from "./scrub.ts";
+import { scrub } from "./scrub.ts";
 
 export const LOG_TAIL_BYTES = 48 * 1024;
 
@@ -176,5 +160,5 @@ export function logTail(path: string | null, bytes = LOG_TAIL_BYTES): { log: str
 export function jobDetail(db: DatabaseSync, id: number): JobDetail {
   const r = jobRow(db, id);
   if (!r) throw new JobError(404, `no job ${id}`);
-  return { ...toJob(r), ...logTail(r.log_path) };
+  return { ...toJobs(db, [r])[0]!, ...logTail(r.log_path) };
 }

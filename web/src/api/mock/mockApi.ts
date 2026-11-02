@@ -4,6 +4,12 @@ import { decisionAccess } from "../../registry/permissions";
 import { setClock } from "../../lib/format";
 import { createAdminMock } from "./adminMock";
 import { createPipelineMock } from "./pipelineMock";
+import type { ClaudeAccount } from "../types";
+
+const MOCK_ACCOUNT: ClaudeAccount = {
+  id: "b", label: "Account B", enabled: true, maxConcurrent: 2, running: 0, pausedReason: null,
+  usage: { fiveHourPct: 15, fiveHourResetsAt: null, weeklyPct: 4, weeklyResetsAt: null, readAt: null },
+};
 import { promptsReport } from "../../../../src/prompts/index.ts";
 import { semanticHits, similarFor } from "./similarFixtures";
 import { classifierReport, costReport, disagreementList } from "./insightFixtures";
@@ -162,6 +168,15 @@ export function createMockApi(): Api {
     cost: (run) => wait(costReport(run), 80),
     ...createPipelineMock(me, changed),
     prompts: () => wait(promptsReport(null), 60),
+    accounts: {
+      list: () => wait([MOCK_ACCOUNT]),
+      update: (_id, input) => wait({ ...MOCK_ACCOUNT, ...(input.label !== undefined && { label: input.label }), ...(input.enabled !== undefined && { enabled: input.enabled }), ...(input.maxConcurrent !== undefined && { maxConcurrent: input.maxConcurrent }) }),
+    },
+    agents: {
+      list: () => wait({ runs: [], nextCursor: null }),
+      get: () => Promise.reject(new Error("no such agent run")),
+    },
+    rates: (window) => wait({ window, bucket: window === "24h" ? "hour" : "day", stages: [], accounts: [] }),
     queue: (f) => wait(queueList(f), 60),
     signOut: () => wait(undefined),
     subscribe(fn) {

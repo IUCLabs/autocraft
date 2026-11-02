@@ -158,6 +158,15 @@ export function createHttpApi(): Api {
       setLimit: (step, limit) => put(`/api/pipeline/limits/${encodeURIComponent(step)}`, limit),
     },
     prompts: () => get("/api/prompts"),
+    accounts: {
+      list: () => get("/api/accounts"),
+      update: (id, input) => put(`/api/accounts/${encodeURIComponent(id)}`, input),
+    },
+    agents: {
+      list: (f) => get(`/api/agents${qs(f)}`),
+      get: (id) => get(`/api/agents/${id}`),
+    },
+    rates: (window) => get(`/api/rates?window=${window}`),
     queue: (f) => get(`/api/queue${qs(f)}`),
     async signOut() {
       await call("POST", "/api/signout");

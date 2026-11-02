@@ -26,7 +26,7 @@ export async function runReferee(db: DatabaseSync, runId: string, picked: Pair[]
     let usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: null as number | null };
     for (let attempt = 0; attempt < REFEREE.limits.attempts && got < refs.length; attempt++) {
       const todo = chunk.filter((i) => !db.prepare(`SELECT 1 FROM classifications WHERE repo = ? AND number = ? AND classifier = 'sonnet' AND run_id = ?`).get(i.repo, i.number, runId));
-      const reply = await askClaude("referee.sonnet", REFEREE.models[0]!, todo);
+      const reply = await askClaude("referee.sonnet", REFEREE.models[0]!, todo, db);
       if (!reply) continue;
       usage = { input: usage.input + reply.usage.input, output: usage.output + reply.usage.output, cacheRead: usage.cacheRead + reply.usage.cacheRead, cacheWrite: usage.cacheWrite + reply.usage.cacheWrite, cost: (usage.cost ?? 0) + (reply.usage.cost ?? 0) };
       for (const v of parseRefereeReply(reply.text, todo.map(ref))) {

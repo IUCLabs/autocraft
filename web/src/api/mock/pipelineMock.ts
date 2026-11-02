@@ -36,7 +36,8 @@ const STEPS: Omit<PipelineStep, "lastJob">[] = [
 const job = (id: number, step: string, state: Job["state"], startMin: number | null, minutes: number, extra: Partial<Job> = {}): Job => ({
   id, step, params: {}, requestedBy: "ochre-fox", requestedAt: iso((startMin ?? 0) + 1), state,
   startedAt: startMin === null ? null : iso(startMin), endedAt: state === "running" || state === "queued" ? null : iso((startMin ?? 0) - minutes),
-  progress: null, summary: null, error: null, cancelRequested: false, usage: null, ...extra,
+  progress: null, summary: null, error: null, cancelRequested: false, usage: null,
+  models: step.startsWith("classify") ? ["jev", "haiku"] : step === "review-batch" || step === "decide" ? ["sonnet"] : [], accounts: state === "queued" ? [] : step === "review-batch" || step === "decide" || step.startsWith("classify") ? ["Account B"] : [], ...extra,
 });
 
 function seed(): Job[] {

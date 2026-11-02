@@ -6,6 +6,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { describe, test } from "node:test";
+import { useTestAccount } from "./accounts-fixture.ts";
 import { setRunner, type Runner } from "../src/classify/run.ts";
 import { LABELS } from "../src/classify/rules.ts";
 import { connect } from "../src/db.ts";
@@ -40,6 +41,7 @@ const ASKED = ["photocraft#1", "photocraft#2", "filmcraft#10"];
 
 function fixture(): DatabaseSync {
   const db = connect(join(mkdtempSync(join(SCRATCH, "decide-test-")), "t.db"));
+  useTestAccount(db);
   const item = db.prepare(`INSERT INTO items (repo, number, kind, state, title, body, author, created_at, updated_at, is_draft, labels, additions, deletions, changed_files, comments_count)
     VALUES (?, ?, ?, ?, ?, ?, 'someone', ?, ?, ?, '["enhancement"]', 10, 2, 1, 2)`);
   const cls = db.prepare(`INSERT INTO classifications (repo, number, classifier, run_id, at, type_label, flags, probs) VALUES (?, ?, ?, 'r1', '2026-10-01T00:00:00Z', ?, ?, ?)`);

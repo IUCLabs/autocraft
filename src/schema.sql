@@ -397,3 +397,69 @@ CREATE TABLE IF NOT EXISTS item_embeddings (
   at TEXT NOT NULL,
   PRIMARY KEY (repo, number)
 );
+
+-- Claude accounts an operator may enable. A row exists for each account in the
+-- box config (CRAFT_AUTO_ACCOUNTS); the config directory is never stored here.
+CREATE TABLE IF NOT EXISTS claude_accounts (
+  id TEXT PRIMARY KEY,
+  label TEXT NOT NULL,                -- the only name shown to people
+  enabled INTEGER NOT NULL DEFAULT 0,
+  max_concurrent INTEGER NOT NULL DEFAULT 2,
+  updated_by TEXT,
+  updated_at TEXT
+);
+
+-- Usage readings, written by the runner when a reading changes; kept 30 days.
+-- t is the reading's own time (ISO), so a reading is recorded once.
+CREATE TABLE IF NOT EXISTS account_usage_samples (
+  account_id TEXT NOT NULL,
+  t TEXT NOT NULL,
+  five_hour_pct REAL,
+  weekly_pct REAL,
+  PRIMARY KEY (account_id, t)
+) WITHOUT ROWID;
+
+-- One row per model call made through the prompt registry. Ids grow with time,
+-- so newest-first paging is a keyset on id. Prompt and output text live in
+-- agent_run_texts, which is pruned after 14 days; runs are kept 90 days.
+CREATE TABLE IF NOT EXISTS agent_runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  job_id INTEGER,
+  step TEXT NOT NULL,
+  stage INTEGER NOT NULL,
+  prompt_id TEXT NOT NULL,
+  prompt_version TEXT NOT NULL,
+  provider TEXT NOT NULL,             -- claude | jev
+  model TEXT NOT NULL,
+  account_id TEXT,                    -- null for Jev
+  items TEXT NOT NULL DEFAULT '[]',   -- JSON [{repo, number}], at most 50
+  item_count INTEGER NOT NULL DEFAULT 0,
+  state TEXT NOT NULL,                -- running | done | failed
+  started_at TEXT NOT NULL,
+  ended_at TEXT,
+  input_tokens INTEGER, output_tokens INTEGER, cache_read_tokens INTEGER, cache_write_tokens INTEGER,
+  summary TEXT,
+  error TEXT
+);
+CREATE INDEX IF NOT EXISTS agent_runs_running ON agent_runs(account_id) WHERE state = 'running';
+CREATE INDEX IF NOT EXISTS agent_runs_state ON agent_runs(state, id);
+CREATE INDEX IF NOT EXISTS agent_runs_step ON agent_runs(step, id);
+CREATE INDEX IF NOT EXISTS agent_runs_account ON agent_runs(account_id, id);
+CREATE INDEX IF NOT EXISTS agent_runs_job ON agent_runs(job_id, id);
+CREATE INDEX IF NOT EXISTS agent_runs_started ON agent_runs(started_at);
+
+CREATE TABLE IF NOT EXISTS agent_run_items (
+  run_id INTEGER NOT NULL,
+  repo TEXT NOT NULL,
+  number INTEGER NOT NULL,
+  PRIMARY KEY (run_id, repo, number)
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS agent_run_items_repo ON agent_run_items(repo, run_id, number);
+
+CREATE TABLE IF NOT EXISTS agent_run_texts (
+  run_id INTEGER PRIMARY KEY,
+  prompt TEXT,
+  output TEXT
+);
+
+CREATE INDEX IF NOT EXISTS jobs_started ON jobs(started_at);

@@ -1,6 +1,12 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 import type {
   AccessOverview,
+  AccountInput,
+  AgentRunDetail,
+  AgentRunFilter,
+  AgentRunPage,
+  ClaudeAccount,
+  Rates,
   AnswerInput,
   AuditFilter,
   AuditPage,
@@ -111,6 +117,18 @@ export interface Api {
   };
   /** Every registered model prompt, with the server's commit. */
   prompts(): Promise<PromptsReport>;
+  /** Claude accounts: everyone signed in reads (maintainers and viewers see enabled ones only); operators change them. */
+  accounts: {
+    list(): Promise<ClaudeAccount[]>;
+    update(id: string, input: AccountInput): Promise<ClaudeAccount>;
+  };
+  /** Model calls made through the prompt registry. */
+  agents: {
+    list(filter: AgentRunFilter): Promise<AgentRunPage>;
+    get(id: number): Promise<AgentRunDetail>;
+  };
+  /** Items moved per stage and account usage over 24 hours (by hour) or 7 days (by day). */
+  rates(window: Rates["window"]): Promise<Rates>;
   signOut(): Promise<void>;
   /** Called after any write so open views can refetch. Returns an unsubscribe function. */
   subscribe(fn: () => void): () => void;

@@ -129,7 +129,7 @@ export async function runReview(db: DatabaseSync, params: ReviewParams, log: (li
     let todo = batch;
     for (let attempt = 0; attempt < PROMPT.limits.attempts && todo.length; attempt++) {
       const strip = todo.map(({ c: _c, area: _a, diffChars: _d, ...pr }) => pr);
-      const reply = await askClaude("review.sonnet", deps.model, strip);
+      const reply = await askClaude("review.sonnet", deps.model, strip, db);
       if (!reply) continue;
       usage = add(usage, reply.usage);
       const { reviews, missing } = parseReviewReply(reply.text, todo.map((p) => p.ref));
