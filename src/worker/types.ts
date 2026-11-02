@@ -1,4 +1,4 @@
-// Types of the worker API (docs/pipeline.md, "Build environments").
+// Types of the worker API (docs/pipeline.md, "Build environments and tasks").
 export type Capabilities = {
   os: "linux" | "macos" | "windows";
   arch: "x86_64" | "aarch64";

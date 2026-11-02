@@ -29,7 +29,7 @@ export type NodeCount = { counts: Counts; members: Map<string, Refs> };
 const DAY = 24 * 3600_000;
 const ref = (r: { repo: string; number: number }) => `${r.repo}#${r.number}`;
 
-/** Scope answers the step that applies them reads (docs/pipeline.md, Scope decisions). */
+/** Scope answers the step that applies them reads (docs/pipeline.md, Decide). */
 export const SCOPE_ANSWERS = ["take", "small-extra", "plugin", "close", "need-info"] as const;
 export const VERDICTS = ["take", "take-fix", "hold", "close"] as const;
 

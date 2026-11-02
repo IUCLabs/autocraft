@@ -1,4 +1,4 @@
-// craft-auto labels ensure|plan|apply: the pipeline's Label stage (docs/pipeline.md, stage 4).
+// craft-auto labels ensure|plan|apply: the pipeline's Label stage (docs/pipeline.md, Label).
 import { mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";

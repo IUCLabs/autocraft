@@ -4,12 +4,12 @@ Local mirror of every storytold issue and PR, the triage pipeline's state, and t
 
 - `craft-auto sync` fills a SQLite mirror (`~/.local/share/craft-automation/mirror.db`, or `$CRAFT_AUTO_DB`) from GitHub GraphQL. Agents and scripts query the mirror instead of calling `gh`.
 - `craft-auto whitelist` shows and edits which contributors' PRs may merge on green CI without a decision.
-- `craft-auto decide` turns items that need a maintainer's scope call into dashboard decisions, each with an AI summary (`docs/pipeline.md`, Scope decisions).
+- `craft-auto decide` turns items that need a maintainer's scope call into dashboard decisions, each with an AI summary (`docs/pipeline.md`, Decide).
 - `craft-auto labels ensure|plan|apply --repo R` is the pipeline's Label stage: puts each item's settled type label and flags on GitHub. `plan` and dry runs only read; `apply --apply` writes, and only for repos an operator approved on the dashboard Repos page. See docs/pipeline.md.
 - `craft-auto dash serve` serves the dashboard.
 - `craft-auto runner serve` runs the pipeline: while the pipeline is On (switch on the dashboard's Pipeline page, or `craft-auto pipeline on`), it queues and runs the steps that have work, within each stage's daily limit. Turning it Off cancels queued automatic jobs; running ones finish.
-- `craft-auto review --repo R [--limit N] [--dry-run]` runs the Review stage on one repo; `craft-auto checks --repo R` refreshes CI and merge state of its open PRs. See docs/pipeline.md, stage 5.
-- `craft-auto merge --repo R [--limit N] [--apply]` merges the repo's queued PRs that may merge, through `$CRAFT_AUTO_MERGE_CMD` (default `safe-merge`), and asks a Merge? decision for the other taken PRs; without `--apply` it is a dry run. `craft-auto queue [--repo R]` prints the merge queue. The runner's `merge` step and the autopilot merge only in repos an operator approved for merging on the Repos page. See docs/pipeline.md, stage 6.
+- `craft-auto review --repo R [--limit N] [--dry-run]` runs the Review stage on one repo; `craft-auto checks --repo R` refreshes CI and merge state of its open PRs. See docs/pipeline.md, Review.
+- `craft-auto merge --repo R [--limit N] [--apply]` merges the repo's queued PRs that may merge, through `$CRAFT_AUTO_MERGE_CMD` (default `safe-merge`), and asks a Merge? decision for the other taken PRs; without `--apply` it is a dry run. `craft-auto queue [--repo R]` prints the merge queue. The runner's `merge` step and the autopilot merge only in repos an operator approved for merging on the Repos page. See docs/pipeline.md, Merge queue.
 - Runner steps (`craft-auto runner steps`): `classify-new`, `classify-all`, `embed`, `labels-ensure`, `labels-apply`, `decide`, `review-batch`, `checks` and `merge` (operator only, group `github-write`, params `repo` and `limit`; it runs the merge command with `--apply`, so it merges for real).
 
 ### Sync
