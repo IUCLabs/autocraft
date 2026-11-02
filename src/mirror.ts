@@ -71,7 +71,7 @@ query($name: String!, $first: Int!, $after: String, $states: [${stateType}!]) {
 }`;
 }
 
-class Transient extends Error {}
+export class Transient extends Error {}
 
 export class Client {
   reserve: number;
@@ -127,10 +127,12 @@ export class Client {
       if (/502|503|504|timeout|eof|connection|unexpected end of json/.test(r.text)) throw new Transient(r.stderr.trim().slice(0, 200));
       throw new Error(`gh failed: ${r.stderr.trim().slice(0, 500)}`);
     }
-    const rl = r.data.rateLimit;
-    this.remaining = rl.remaining;
-    this.spent += rl.cost;
-    this.resetAt = new Date(rl.resetAt);
+    const rl = r.data.rateLimit; // absent in mutation responses
+    if (rl) {
+      this.remaining = rl.remaining;
+      this.spent += rl.cost;
+      this.resetAt = new Date(rl.resetAt);
+    }
     return r.data;
   }
 }
@@ -218,9 +220,13 @@ function commentRows(repo: string, kind: Kind, n: Node): SQLInputValue[][] {
 }
 
 function writePage(db: DatabaseSync, repo: string, kind: Kind, detail: Detail, nodes: Node[]): void {
-  const insert = db.prepare(`INSERT OR REPLACE INTO items (${COLUMNS.join(",")}) VALUES (${COLUMNS.map((c) => `:${c}`).join(",")})`);
+  // Upserts keep each row's rowid, which the full-text index (schema.sql) is keyed on.
+  const insert = db.prepare(`INSERT INTO items (${COLUMNS.join(",")}) VALUES (${COLUMNS.map((c) => `:${c}`).join(",")})
+    ON CONFLICT (repo, number) DO UPDATE SET ${COLUMNS.filter((c) => c !== "repo" && c !== "number").map((c) => `${c}=excluded.${c}`).join(",")}`);
   const del = db.prepare("DELETE FROM comments WHERE repo=? AND number=?");
-  const insComment = db.prepare("INSERT OR REPLACE INTO comments VALUES (?,?,?,?,?,?,?,?,?)");
+  const insComment = db.prepare(`INSERT INTO comments VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT (id) DO UPDATE SET
+    repo=excluded.repo, number=excluded.number, kind=excluded.kind, author=excluded.author, created_at=excluded.created_at,
+    body=excluded.body, review_state=excluded.review_state, commit_oid=excluded.commit_oid`);
   db.exec("BEGIN");
   try {
     for (const n of nodes) {

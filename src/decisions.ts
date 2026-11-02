@@ -46,9 +46,9 @@ export function validateAsk(q: Record<string, unknown>): Record<string, string |
   if (!KINDS.includes(q.kind as Kind)) throw err(`kind must be one of ${KINDS.join(", ")}`);
   if (typeof q.question !== "string" || !q.question.trim()) throw err("question is required");
   const options = q.options as Option[];
-  if (!Array.isArray(options) || options.length < 2 || options.length > 4 ||
+  if (!Array.isArray(options) || options.length < 2 || options.length > 5 ||
     !options.every((o) => typeof o?.key === "string" && typeof o?.label === "string" && (o.hint === undefined || typeof o.hint === "string")))
-    throw err("options must be 2–4 {key, label, hint?}");
+    throw err("options must be 2–5 {key, label, hint?}");
   if (new Set(options.map((o) => o.key)).size !== options.length) throw err("option keys must be unique");
   if (q.recommended != null && !options.some((o) => o.key === q.recommended)) throw err("recommended must be an option key");
   const facts = (q.facts ?? []) as unknown[];

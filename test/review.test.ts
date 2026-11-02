@@ -97,6 +97,14 @@ describe("review candidates", () => {
     // 2 plugin candidate, 3 draft, 4 closed, 5 needs decision, 8 Jev unsure and Haiku disagrees
     assert.deepEqual(got, [[1, "S"], [6, "S"], [7, "S"], [9, "L"]]);
   });
+
+  test("a scope answer of small-extra keeps a needs-decision PR; plugin does not", () => {
+    const db = fresh();
+    db.prepare("UPDATE decisions SET answer = 'small-extra' WHERE id = 'd1'").run();
+    assert.ok(selectCandidates(db, "app").some((c) => c.number === 6));
+    db.prepare("UPDATE decisions SET answer = 'plugin' WHERE id = 'd1'").run();
+    assert.ok(!selectCandidates(db, "app").some((c) => c.number === 6));
+  });
 });
 
 describe("runReview", () => {

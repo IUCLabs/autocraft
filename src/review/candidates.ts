@@ -1,5 +1,7 @@
 // Which open PRs the Review stage looks at, and at which head commit.
 import type { DatabaseSync } from "node:sqlite";
+import { settledOf } from "../classify/settled.ts";
+import { SCOPE_OPTIONS } from "../decide/decision.ts";
 
 /** Type labels whose PRs get a code review; plugin candidates do not. */
 export const REVIEW_LABELS = ["bugfix", "performance", "missing feature", "small extra", "infra"];
@@ -11,41 +13,8 @@ export function sizeOf(linesChanged: number): Size {
   return linesChanged <= 50 ? "S" : linesChanged <= 300 ? "M" : "L";
 }
 
-// --- Settled label: temporary -------------------------------------------------
-// TEMPORARY until the shared settled-classification function (src/classify/
-// settled.ts, branch dash-items) lands; then replace settledLabel with a call
-// to it. Same rule: Jev's label when its top probability is at least 0.9,
-// else the label when Haiku agrees with Jev, else unsettled. Flags: Jev's when
-// it is sure, otherwise every flag either classifier raised.
-export const SURE = 0.9;
-
-export type SettledLabel = { label: string | null; flags: string[] };
-
-const jsonArr = (s: string | null): string[] => {
-  try {
-    const v = JSON.parse(s ?? "[]") as unknown;
-    return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
-  } catch { return []; }
-};
-const topOf = (probs: string | null): number => {
-  try {
-    const t = (JSON.parse(probs ?? "null") as { top?: unknown } | null)?.top;
-    return typeof t === "number" ? t : 0;
-  } catch { return 0; }
-};
-
-export function settledLabel(db: DatabaseSync, repo: string, number: number): SettledLabel {
-  const run = (db.prepare("SELECT run_id FROM classifications WHERE classifier = 'jev' ORDER BY at DESC LIMIT 1").get() as { run_id: string } | undefined)?.run_id;
-  if (!run) return { label: null, flags: [] };
-  const q = db.prepare("SELECT type_label, flags, probs FROM classifications WHERE repo = ? AND number = ? AND classifier = ? AND run_id = ?");
-  const j = q.get(repo, number, "jev", run) as { type_label: string; flags: string | null; probs: string | null } | undefined;
-  if (!j) return { label: null, flags: [] };
-  if (topOf(j.probs) >= SURE) return { label: j.type_label, flags: jsonArr(j.flags) };
-  const h = q.get(repo, number, "haiku", run) as { type_label: string; flags: string | null } | undefined;
-  const flags = [...new Set([...jsonArr(j.flags), ...jsonArr(h?.flags ?? null)])];
-  return { label: h && h.type_label === j.type_label ? j.type_label : null, flags };
-}
-// -------------------------------------------------------------------------------
+/** Scope answers that keep a PR in core. */
+const KEEP_IN_CORE: string[] = [SCOPE_OPTIONS.take.key, SCOPE_OPTIONS["small-extra"].key];
 
 /**
  * The operator's answer to the latest scope decision on this PR, or null.
@@ -99,9 +68,8 @@ export function headOf(r: { head_oid: string | null; updated_at: string | null; 
 
 /**
  * Open, non-draft PRs of `repo` whose settled label is one we review, that
- * carry no `needs decision` flag unless a scope decision answered `take`, and
- * that have no review at their current head commit. A scope answer other than
- * `take` keeps a PR out.
+ * carry no `needs decision` flag unless a scope decision answered `take` or `small-extra`, and
+ * that have no review at their current head commit. Any other scope answer keeps a PR out.
  */
 export function selectCandidates(db: DatabaseSync, repo: string): Candidate[] {
   const rows = db.prepare(`SELECT i.repo, i.number, i.title, i.body, i.author, i.author_association, i.head_oid,
@@ -116,10 +84,10 @@ export function selectCandidates(db: DatabaseSync, repo: string): Candidate[] {
     if (fresh ? r.c_state !== "OPEN" || r.c_draft : r.is_draft) continue;
     const head = headOf(r);
     if (!head) continue;
-    const s = settledLabel(db, r.repo, r.number);
+    const s = settledOf(db, r.repo, r.number);
     if (!s.label || !REVIEW_LABELS.includes(s.label)) continue;
     const answer = scopeAnswer(db, r.repo, r.number);
-    if (answer !== null ? answer !== "take" : s.flags.includes("needs decision")) continue;
+    if (answer !== null ? !KEEP_IN_CORE.includes(answer) : s.flags.includes("needs decision")) continue;
     if (reviewed.get(r.repo, r.number, head)) continue;
     const lines = (r.additions ?? 0) + (r.deletions ?? 0);
     out.push({

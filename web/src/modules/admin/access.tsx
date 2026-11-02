@@ -260,11 +260,15 @@ function Sessions({ sessions }: { sessions: SessionInfo[] }) {
   );
 }
 
+// Rows written before the role was renamed say "admin" for operator.
+const ROLE_KEYS = new Set(["role", "from", "to"]);
+const detailValue = (k: string, v: unknown) => (ROLE_KEYS.has(k) && v === "admin" ? "operator" : typeof v === "object" ? JSON.stringify(v) : String(v));
+
 const detailText = (d: AuditEntry["details"]) =>
   d
     ? Object.entries(d)
         .filter(([, v]) => v !== null && v !== undefined)
-        .map(([k, v]) => `${k}: ${typeof v === "object" ? JSON.stringify(v) : String(v)}`)
+        .map(([k, v]) => `${k}: ${detailValue(k, v)}`)
         .join(" · ")
     : "";
 

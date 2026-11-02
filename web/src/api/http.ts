@@ -1,5 +1,5 @@
 import type { Api } from "./client";
-import type { DecisionFilter } from "./types";
+import type { DecisionFilter, ItemFilter } from "./types";
 
 /** Query string from the set fields; booleans as 1 / 0. */
 function qs(f: object): string {
@@ -57,7 +57,16 @@ export function createHttpApi(): Api {
     return (await r.json()) as T;
   }
 
-  const get = <T>(path: string) => call<T>("GET", path);
+  // Views that mount together often ask for the same thing; they share one request.
+  const inflight = new Map<string, Promise<unknown>>();
+  const get = <T>(path: string): Promise<T> => {
+    let p = inflight.get(path) as Promise<T> | undefined;
+    if (!p) {
+      p = call<T>("GET", path).finally(() => inflight.delete(path));
+      inflight.set(path, p);
+    }
+    return p;
+  };
   async function post<T>(path: string, body?: unknown): Promise<T> {
     const v = await call<T>("POST", path, body);
     changed();
@@ -74,6 +83,16 @@ export function createHttpApi(): Api {
     if (f.mine) q.set("mine", "1");
     if (f.limit !== undefined) q.set("limit", String(f.limit));
     if (f.offset !== undefined) q.set("offset", String(f.offset));
+    const s = q.toString();
+    return s ? `?${s}` : "";
+  }
+
+  function itemQuery(f: ItemFilter): string {
+    const q = new URLSearchParams();
+    for (const [k, v] of Object.entries(f)) {
+      if (v === undefined || v === "" || (Array.isArray(v) && !v.length)) continue;
+      q.set(k, Array.isArray(v) ? v.join(",") : typeof v === "boolean" ? (v ? "1" : "0") : String(v));
+    }
     const s = q.toString();
     return s ? `?${s}` : "";
   }
@@ -95,7 +114,8 @@ export function createHttpApi(): Api {
       comment: (id, body) => post(dec(id, "/comments"), { body }),
     },
     item: (repo, number) => get(`/api/items/${encodeURIComponent(repo)}/${encodeURIComponent(String(number))}`),
-    search: (q) => get(`/api/search?${new URLSearchParams({ q })}`),
+    search: (q) => (q.trim() ? get(`/api/search?${new URLSearchParams({ q })}`) : Promise.resolve([])),
+    items: (f) => get(`/api/items${itemQuery(f)}`),
     progress: () => get("/api/progress"),
     contributors: {
       list: (filter) => get(`/api/contributors${qs(filter)}`),
@@ -107,6 +127,7 @@ export function createHttpApi(): Api {
       list: () => get("/api/repos/all"),
       track: (name) => post("/api/repos/track", { name }),
       untrack: (name) => post("/api/repos/untrack", { name }),
+      approveLabels: (name, approved) => post(approved ? "/api/repos/labels-approve" : "/api/repos/labels-revoke", { name }),
     },
     access: {
       overview: () => get("/api/access"),

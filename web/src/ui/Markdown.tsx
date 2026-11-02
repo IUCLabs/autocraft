@@ -3,28 +3,9 @@ import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { ImageIcon, ExternalLinkIcon } from "lucide-react";
 import { cn } from "./cn";
+import { proxiedImage, remarkHtmlToMarkdown, safeUrl } from "./markdownHtml";
 
-// Images the server's proxy (GET /img, src/dash/server/images.ts) fetches:
-// the same hosts and path shapes. Anything else stays a link.
-const PROXIED: [string, RegExp][] = [
-  ["github.com", /^\/user-attachments\/assets\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i],
-  ["private-user-images.githubusercontent.com", /^\/./],
-  ["user-images.githubusercontent.com", /^\/./],
-  ["raw.githubusercontent.com", /^\/storytold\/./],
-  ["avatars.githubusercontent.com", /^\/./],
-];
-
-export function proxiedImage(src: string): string | null {
-  let u: URL;
-  try {
-    u = new URL(src);
-  } catch {
-    return null;
-  }
-  if (u.protocol !== "https:" || u.username || u.password || u.port) return null;
-  if (!PROXIED.some(([host, path]) => u.hostname === host && path.test(u.pathname))) return null;
-  return `/img?${new URLSearchParams({ u: u.href })}`;
-}
+export { proxiedImage };
 
 function ImageLink({ src, alt }: { src?: string; alt?: string }) {
   return (
@@ -50,7 +31,8 @@ function Image({ src, alt }: { src?: string; alt?: string }) {
 }
 
 // GitHub-flavoured Markdown from issue and PR bodies. Untrusted input:
-// raw HTML is dropped (skipHtml), links open in a new tab without referrer,
+// common HTML (images, links, breaks, block tags) becomes Markdown nodes and
+// all other raw HTML is dropped (markdownHtml.ts, skipHtml), links open in a new tab without referrer,
 // and only GitHub-hosted images load inline, through the same-origin proxy
 // (the CSP allows only same-origin images); others become a link the reader
 // can choose to open.
@@ -63,12 +45,10 @@ const components: Components = {
   img: ({ src, alt }) => <Image src={typeof src === "string" ? src : undefined} alt={alt} />,
 };
 
-const safeUrl = (url: string) => (/^(https?:|mailto:|#|\/)/i.test(url) ? url : "");
-
 export function Markdown({ source, className }: { source: string; className?: string }) {
   return (
     <div className={cn("md", className)}>
-      <ReactMarkdown remarkPlugins={[remarkGfm]} skipHtml components={components} urlTransform={safeUrl}>
+      <ReactMarkdown remarkPlugins={[remarkGfm, remarkHtmlToMarkdown]} skipHtml components={components} urlTransform={safeUrl}>
         {source}
       </ReactMarkdown>
     </div>

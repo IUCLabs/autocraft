@@ -39,7 +39,7 @@ Add a `decisions` table; the pipeline writes the questions, the dashboard and th
 | `repo`, `number` | the item; `number` null for a batch |
 | `items` | JSON array of `{repo, number}` for a batch |
 | `question` | one sentence |
-| `summary`, `summary_by`, `summary_at` | AI summary of the item (or batch): 3–6 sentences on what it does, why, what is risky or unclear, and how it relates to the reference app; which model wrote it and when |
+| `summary`, `summary_by`, `summary_at` | AI summary of the item (or batch): 2–6 sentences on what it does, why, what is risky or unclear, and how it relates to the reference app; which model wrote it and when |
 | `context` | at most three short sentences, in user terms |
 | `facts` | JSON array of up to five short facts ("+120 −8, 3 files", "author: 14 merged PRs", "reference app: Filter › Distort › Wave") |
 | `options` | JSON array of `{key, label}`; 2–4 options |
@@ -60,13 +60,16 @@ Stage vocabulary (`stages.stage`, latest row per item wins): `classified`, `revi
 | Funnel step | Rule |
 |---|---|
 | Open | open in the mirror |
-| Classified | has any `classifications` row |
+| Classified | has a settled type label in the latest classification run (below) |
+| Waiting for a second opinion / disagreement | Jev unsure and Haiku hasn't answered / Haiku gave another label |
 | Reviewed | has a `reviewed` stage or a `sonnet` classification |
 | Taken / held / to close / waiting for a decision | latest stage `take` / `hold` / `close` / `needs-decision` |
 | In a batch | latest stage `batched` |
-| Done | item closed or merged since the run started, split by: merged by the pipeline, closed by the pipeline, closed by others |
+| Done | item closed or merged since tracking began, split by: merged by the pipeline, closed by the pipeline, closed by others |
 
-The run start is `settings.run_started_at`.
+The settled type label (`src/classify/settled.ts`): Jev's label when its top probability is at least 0.9; otherwise Haiku's when Haiku agrees with Jev; otherwise the item is unsettled, waiting for Haiku or in disagreement. The latest run is the one with the newest Jev verdict.
+
+Done counts and trends start at `settings.tracking_started_at`, set when the database is first opened (the earliest repo sync, or that moment).
 
 ## Pages
 
@@ -80,14 +83,18 @@ The run start is `settings.run_started_at`.
 
 ### Progress
 
-- Org totals at the top: open now, done since run start (merged / closed), items per hour over the last 24 h, decisions open.
+- Org totals at the top: open now, done by the pipeline since tracking began (merged / closed), closed by others, items closed per hour over the last 24 h, decisions open. Steps the pipeline hasn't reached yet say "not started yet".
 - Funnel chart for the org, then a table with one row per repo (sortable by open count, done count, decisions open).
 - Breakdowns: type label, size bucket (S ≤ 50 changed lines, M ≤ 300, L ≤ 1,000, XL above), contributor tier.
-- Trend: open items per repo per day since run start (from `items` created/closed dates).
+- Trend: open items per repo per day since tracking began (from `items` created/closed dates).
 
 ### Repo (`/repo/<name>`)
 
 Same blocks as Progress, filtered to one repo, plus its decisions and its batches.
+
+### Items (`/items`)
+
+One table over every tracked repo: ref, title, kind, state, author, updated, settled label with Jev's confidence, flags, latest stage. Filters, all kept in the URL: full-text query over titles, bodies and comments (words, "phrases", prefix\*, -excluded, OR; the matching snippet is shown), repo (several), kind, state (default open), settled label, settled status, flags, author, updated since. Sort by relevance, updated, created or number; 50 rows a page; cards on phones. The top-bar search jumps to `repo#n` and links here for full results.
 
 ### Item (`/item/<repo>/<n>`)
 

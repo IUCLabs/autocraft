@@ -6,7 +6,7 @@
 //
 // No Node imports: the web mockup imports this file too.
 import type { PromptInfo, PromptsReport } from "../../web/src/api/types.ts";
-import { BODY_LIMIT, itemInput, type Item } from "../classify/parse.ts";
+import { BODY_LIMIT, COMMENT_LIMIT, COMMENTS_PER_ITEM, SUMMARY_MAX, SUMMARY_MIN, itemInput, summaryInput, type Item } from "../classify/parse.ts";
 import { LABELS, LABEL_MEANING, RULES, UNTRUSTED_NOTE } from "../classify/rules.ts";
 import { REVIEW_BODY_LIMIT, VERDICTS, type ReviewPr } from "../review/parse.ts";
 import { SAMPLE_ITEMS, SAMPLE_REVIEW_PRS } from "./samples.ts";
@@ -27,7 +27,9 @@ type Common = {
   limits: Limits;
 };
 
-export type ClaudePrompt = Common & { runner: "claude"; template: string };
+export type ClaudePrompt = Common & {
+  runner: "claude"; template: string;
+};
 export type JevPrompt = Common & { runner: "jev"; request: JevRequest };
 
 type JevQuestion = { type: "choice" | "noul"; instructions: string; criteria?: Record<string, string> };
@@ -154,20 +156,50 @@ Reply with ONLY a JSON array, one object per PR, in the same order:
   limits: { perCall: 15, parallel: 2, attempts: 2, timeoutSeconds: 900 },
 };
 
-export const CLAUDE_PROMPTS = { "classify.haiku": HAIKU, "referee.sonnet": REFEREE, "review.sonnet": REVIEW } as const;
+const SUMMARY: ClaudePrompt = {
+  id: "decide.summary",
+  stage: "Decide",
+  runner: "claude",
+  purpose: "A short plain summary for each item that becomes a scope decision, shown first on the decision card.",
+  models: ["sonnet", "haiku"],
+  placeholders: { items: `The items as a JSON array indented by one space, one object per item with ${ITEM_FIELDS}, labels (GitHub label names) and comments (the first ${COMMENTS_PER_ITEM} comments that are not by bots: author and the first ${COMMENT_LIMIT} characters of the body).` },
+  template: `You summarise GitHub issues and pull requests for a maintainer who must decide whether each one is in scope. The project re-creates a reference application: an item is in scope when it brings the project closer to the reference application, and small extras beyond it are sometimes welcome. Niche or large additions belong in plug-ins.
+
+${UNTRUSTED_NOTE}
+
+For each item write 2 to 4 short plain sentences, at most 90 words in all:
+1. What it asks for (issue) or changes (pull request), in user terms.
+2. How it relates to the reference application: something the reference application has, something beyond it, or a deliberate difference from it. If the text does not say, write that this is unclear; never guess what the reference application does.
+3. What is unclear or would need checking before deciding.
+When an item names a well-known commercial application as the model to follow, that application is the reference application: report what the item says about it as the author's claim. Never write the name of that application or its vendor; write "the reference application" instead.
+Write plain prose: no headings, lists, Markdown, praise or recommendation, and do not repeat the title word for word.
+
+Reply with ONLY a JSON array, one object per item, in the same order:
+{"ref": "<ref as given>", "summary": "<2 to 4 sentences>"}
+
+<items>
+{{items}}
+</items>`,
+  output: `A JSON array, one object per item: {"ref", "summary"}.`,
+  validation: `${CLAUDE_RESULT} The text from the first "[" to the last "]" is parsed as JSON. An object is kept only when its ref is one that was asked and not seen before and its summary, with whitespace runs collapsed, is ${SUMMARY_MIN} to ${SUMMARY_MAX} characters. Items without a kept summary are sent once more; items still missing get no decision in this run and are picked up by the next one.`,
+  limits: { perCall: 8, parallel: 3, attempts: 2, timeoutSeconds: 600 },
+};
+
+export const CLAUDE_PROMPTS = { "classify.haiku": HAIKU, "referee.sonnet": REFEREE, "review.sonnet": REVIEW, "decide.summary": SUMMARY } as const;
 export const JEV_PROMPTS = { "classify.jev": JEV } as const;
 export type ClaudePromptId = keyof typeof CLAUDE_PROMPTS;
 export type JevPromptId = keyof typeof JEV_PROMPTS;
-export const PROMPTS: (ClaudePrompt | JevPrompt)[] = [JEV, HAIKU, REFEREE, REVIEW];
+export const PROMPTS: (ClaudePrompt | JevPrompt)[] = [JEV, HAIKU, REFEREE, REVIEW, SUMMARY];
 
 /** What each Claude prompt is rendered from. */
-export type ClaudeInput = { "classify.haiku": Item[]; "referee.sonnet": Item[]; "review.sonnet": ReviewPr[] };
+export type ClaudeInput = { "classify.haiku": Item[]; "referee.sonnet": Item[]; "review.sonnet": ReviewPr[]; "decide.summary": Item[] };
 
 const itemValues = (items: Item[]) => ({ items: JSON.stringify(items.map(itemInput), null, 1) });
 const reviewInput = (p: ReviewPr): ReviewPr => ({ ...p, body: (p.body ?? "").slice(0, REVIEW_BODY_LIMIT) });
 const VALUES: { [K in ClaudePromptId]: (input: ClaudeInput[K]) => Record<string, string> } = {
   "classify.haiku": itemValues,
   "referee.sonnet": itemValues,
+  "decide.summary": (items) => ({ items: JSON.stringify(items.map(summaryInput), null, 1) }),
   "review.sonnet": (prs) => ({ prs: JSON.stringify(prs.map(reviewInput), null, 1) }),
 };
 
@@ -175,6 +207,7 @@ const VALUES: { [K in ClaudePromptId]: (input: ClaudeInput[K]) => Record<string,
 const EXAMPLES: { [K in ClaudePromptId]: { input: ClaudeInput[K]; refs: string[] } } = {
   "classify.haiku": { input: SAMPLE_ITEMS.slice(0, 2), refs: SAMPLE_ITEMS.slice(0, 2).map((i) => `${i.repo}#${i.number}`) },
   "referee.sonnet": { input: SAMPLE_ITEMS.slice(0, 2), refs: SAMPLE_ITEMS.slice(0, 2).map((i) => `${i.repo}#${i.number}`) },
+  "decide.summary": { input: SAMPLE_ITEMS.slice(0, 2), refs: SAMPLE_ITEMS.slice(0, 2).map((i) => `${i.repo}#${i.number}`) },
   "review.sonnet": { input: SAMPLE_REVIEW_PRS, refs: SAMPLE_REVIEW_PRS.map((p) => p.ref) },
 };
 
