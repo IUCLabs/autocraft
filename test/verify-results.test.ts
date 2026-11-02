@@ -10,7 +10,7 @@ import { connect } from "../src/db.ts";
 import { funnelByRepo } from "../src/dash/api/stats.ts";
 import { renderClaude } from "../src/prompts/index.ts";
 import { saveVerification } from "../src/verify/index.ts";
-import { collectDue, listVerifications, runCollect, verificationOf, NOT_FAILING_NOTE, type CollectDeps } from "../src/verify/results.ts";
+import { collectDue, listVerifications, runCollect, verificationOf, NOT_FAILING_REASON, type CollectDeps } from "../src/verify/results.ts";
 import { queueTasks, queueWarmBuild } from "../src/verify/tasks.ts";
 
 const SCRATCH = join(homedir(), ".cache/craft-automation-scratch");
@@ -148,17 +148,36 @@ describe("verify results", () => {
     } finally { c.restore(); }
   });
 
-  test("regression: the test passes on the base too: passed with a note", async () => {
+  test("regression: the test passes on the base too: failed and held, no model call", async () => {
     const c = setup();
     try {
       const { head, base } = plan(c, "regression");
       end(c, head, ALL_OK);
       end(c, base!, ALL_OK);
       await collect(c);
-      assert.deepEqual([state(c).state, state(c).note], ["passed", NOT_FAILING_NOTE]);
-      assert.match(stages(c).at(-1)!.note, /did not fail on the base/);
-      const view = verificationOf(c.db, "app", 1, HEAD)!;
-      assert.deepEqual([view.state, view.note, view.summary], ["passed", NOT_FAILING_NOTE, null]);
+      assert.deepEqual([state(c).state, state(c).summary], ["failed", NOT_FAILING_REASON]);
+      assert.equal(NOT_FAILING_REASON, "regression test passes on base");
+      assert.deepEqual(stages(c).map((r) => r.stage).slice(-2), ["verify-failed", "hold"]);
+      assert.equal(c.calls.length, 0);
+    } finally { c.restore(); }
+  });
+
+  test("a verification at the head the checks table reports is not stale before the next sync", async () => {
+    const NEW = "c".repeat(40);
+    const c = setup();
+    try {
+      plan(c, "tests"); // planned at HEAD, which items.head_oid still says
+      c.db.prepare("UPDATE items SET head_oid = ? WHERE number = 1").run(NEW);
+      c.db.prepare("INSERT INTO pr_checks (repo, number, head_oid, state, is_draft, overall, checks, fetched_at) VALUES ('app', 1, ?, 'OPEN', 0, 'success', '[]', '2026-01-02T00:00:00Z')").run(HEAD);
+      // checks fetched later than the mirror saw the PR change: HEAD is current although items says NEW
+      assert.equal(collectDue(c.db), false);
+      assert.equal((await collect(c)).stale, 0);
+      assert.equal(state(c).state, "planned");
+      // the checks row is older than the mirror's update: the mirror's head wins and HEAD is stale
+      c.db.prepare("UPDATE items SET updated_at = '2026-01-03T00:00:00Z' WHERE number = 1").run();
+      assert.equal(collectDue(c.db), true);
+      assert.equal((await collect(c)).stale, 1);
+      assert.equal(state(c).state, "stale");
     } finally { c.restore(); }
   });
 
@@ -228,7 +247,7 @@ describe("verify results", () => {
       end(c, head, ALL_OK);
       await collect(c);
       assert.equal(state(c).state, "running"); // the base is queued
-      end(c, base!, ALL_OK);
+      end(c, base!, [["fetch deps", 0], ["build", 0], ["test", 101]]);
       await collect(c);
       assert.equal(state(c).state, "passed");
     } finally { c.restore(); }

@@ -207,9 +207,10 @@ Builds and tests `take` PRs in the sandbox. Only Rust repos (a `Cargo.toml` at t
 
 - **Plan.** Sonnet, no tools, picks one kind: `ci-enough` (no task), `tests` (up to 5 crates, optional test filters) or `regression` (bugfixes only: a test that fails on the base commit and passes on the head). Our code validates the plan; anything invalid is an error.
 - **Result.** Pass or fail comes from exit codes only, never from a model.
+- **Regression.** The test must fail on the base commit and pass on the head. If it also passes on the base, the verification fails with "regression test passes on base" and the PR is held.
 - **Failure.** Haiku writes a summary of at most 60 words from the failing step's log (credentials scrubbed, quoted as untrusted). The PR is held.
 - **Errors.** An environment error is retried once per head.
-- **Stale.** A verification counts only at the head it was made for; a push or a close cancels its tasks.
+- **Stale.** A verification counts only at the head it was made for (the checks table's head when newer than the mirror's, as in Review); a push or a close cancels its tasks.
 
 Models: Sonnet (plan), Haiku (failure summary). Daily limit 30 PRs.
 

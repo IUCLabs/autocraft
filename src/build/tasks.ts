@@ -53,6 +53,11 @@ export type NewTask = {
 
 export type Warm = { key: string; role: "use" | "build" };
 export const MAX_PATCH_BYTES = 1024 * 1024;
+/** A warm-cache key for a repo name: lowercase, other characters become '-', trimmed, at most 64 characters; always valid. */
+export function warmKeyOf(name: string): string {
+  const k = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+/, "").slice(0, 64).replace(/-+$/, "");
+  return k || "repo";
+}
 const WARM_KEY_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
 
 export function parseWarm(v: unknown): Warm {
