@@ -5,14 +5,14 @@ import { isAbsolute, join } from "node:path";
 import type { Capabilities } from "./types.ts";
 
 /**
- * Default toolchain images. The tags move; pin each to a digest before
- * relying on it: `podman pull <ref>`, then
- * `podman image inspect --format '{{index .RepoDigests 0}}' <ref>` and put
- * the printed `name@sha256:...` into "images" of the config file.
+ * Default toolchain images, pinned by digest (the tag is kept for reading;
+ * the digest decides). To move a pin: `podman pull <name:tag>`, then
+ * `podman image inspect --format '{{index .RepoDigests 0}}' <name:tag>`.
+ * The config file's "images" overrides these per toolchain.
  */
 export const DEFAULT_IMAGES: Record<string, string> = {
-  "rust-stable": "docker.io/library/rust:1-bookworm",
-  "node-24": "docker.io/library/node:24-bookworm",
+  "rust-stable": "docker.io/library/rust:1-bookworm@sha256:0097cc72a939f26665ab11380e995aa9476735ec9516867e14ff5dfa8318b068",
+  "node-24": "docker.io/library/node:24-bookworm@sha256:8544b46b91d1a8c8bf8fc0d53ae9f276ed07d0ffa9098dc4a9c2f627363a13a0",
 };
 
 export type WorkerConfig = {
@@ -115,8 +115,9 @@ export function detectCapabilities(cfg: WorkerConfig): Capabilities {
   return {
     os,
     arch: arch() === "arm64" ? "aarch64" : "x86_64",
-    cpus: availableParallelism(),
-    memGb: Math.round(totalmem() / 1024 ** 3),
+    // What one task gets: each container runs under the configured limits.
+    cpus: Math.min(availableParallelism(), cfg.limits.cpus),
+    memGb: Math.min(Math.round(totalmem() / 1024 ** 3), cfg.limits.memoryGb),
     diskGb: Math.floor(freeDiskGb(cfg.workDir)),
     display: cfg.display,
     gpu: cfg.gpu,
