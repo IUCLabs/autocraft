@@ -211,6 +211,8 @@ CREATE INDEX IF NOT EXISTS items_closed ON items(closed_at, state);
 CREATE INDEX IF NOT EXISTS items_created ON items(created_at);
 CREATE INDEX IF NOT EXISTS items_pr_author ON items(kind, author, state, repo, merged_at);
 CREATE INDEX IF NOT EXISTS items_open ON items(state, repo, number);
+CREATE INDEX IF NOT EXISTS classifications_run ON classifications(run_id, classifier, repo, number);
+CREATE INDEX IF NOT EXISTS token_usage_run ON token_usage(run_id, stage, model);
 
 -- Repos the dashboard, pipeline and sync work on. `repos` keeps every org repo
 -- (metadata only for untracked ones); operators choose here.

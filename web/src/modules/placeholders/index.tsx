@@ -1,4 +1,4 @@
-import { BadgeCheckIcon, CoinsIcon, FolderGit2Icon, ScaleIcon, ShieldIcon, type LucideIcon } from "lucide-react";
+import { BadgeCheckIcon, FolderGit2Icon, ShieldIcon, type LucideIcon } from "lucide-react";
 import type { FeatureModule, NavEntry, Permission, ViewProps } from "../../registry/types";
 
 // Pages from docs/dashboard-spec.md that the app doesn't have yet. The server
@@ -29,8 +29,6 @@ function placeholder(id: string, label: string, icon: LucideIcon, group: NavEntr
 
 export const placeholderModules: FeatureModule[] = [
   placeholder("contributors", "Contributors", BadgeCheckIcon, "insight", 10, "viewer", "Whitelist tiers, merge rates and overrides per author."),
-  placeholder("classifiers", "Classifiers", ScaleIcon, "insight", 11, "viewer", "Agreement between classifiers per field, with the disagreeing items."),
-  placeholder("cost", "Run and cost", CoinsIcon, "insight", 12, "viewer", "Agent runs, tokens per stage and model, and items done per repo."),
   placeholder("repos", "Repos", FolderGit2Icon, "operator", 20, "operator", "Tracked repos: add, remove and sync."),
   placeholder("access", "Access", ShieldIcon, "operator", 21, "operator", "Access list, active sessions and the audit log."),
 ];

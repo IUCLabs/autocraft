@@ -118,6 +118,7 @@ describe("api", () => {
     const r = await c.req("GET", "/api/me");
     assert.equal(r.status, 401);
     assert.deepEqual(await r.json(), { error: "sign-in required" });
+    for (const path of ["/api/classifiers", "/api/classifiers/disagreements", "/api/cost"]) assert.equal((await c.req("GET", path)).status, 401, path);
     assert.equal((await c.req("POST", dpath(P1, "/opinion"), { body: { option: "small" }, csrf: "x" })).status, 401);
   });
 

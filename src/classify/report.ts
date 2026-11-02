@@ -59,6 +59,14 @@ export function pairUp(rows: Row[], reference: Map<string, string>): Pair[] {
   return out.sort((a, b) => ref(a.r).localeCompare(ref(b.r), "en", { numeric: true }));
 }
 
+/** Finer confidence bands of a top-label probability, highest first; `lo` is inclusive, `hi` exclusive. */
+export const BANDS = [
+  { band: "≥0.99", lo: 0.99, hi: Infinity }, { band: "0.95–0.99", lo: 0.95, hi: 0.99 }, { band: "0.90–0.95", lo: 0.9, hi: 0.95 },
+  { band: "0.80–0.90", lo: 0.8, hi: 0.9 }, { band: "0.70–0.80", lo: 0.7, hi: 0.8 }, { band: "0.50–0.70", lo: 0.5, hi: 0.7 },
+  { band: "<0.50", lo: -Infinity, hi: 0.5 },
+] as const;
+export const bandIndex = (p: number): number => BANDS.findIndex((b) => p >= b.lo && p < b.hi);
+
 export const band = (p: number | null) => (p === null ? "<0.7" : p >= 0.9 ? "≥0.9" : p >= 0.7 ? "0.7–0.9" : "<0.7");
 
 export function compareReport(pairs: Pair[]): string {

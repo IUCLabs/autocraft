@@ -5,9 +5,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import type { Req, Res, User } from "../types.ts";
-import { classifiers } from "./classifiers.ts";
 import { contributorsPage } from "./contributors.ts";
-import { cost } from "./cost.ts";
 import type { PageReq } from "./layout.ts";
 
 const viewer: User = { login: "viewer", role: "viewer", canWrite: async () => false };
@@ -27,8 +25,6 @@ export function stripControls(html: string): string {
 export async function exportSite(db: DatabaseSync, dir: string): Promise<{ pages: number }> {
   const pages: [string, (db: DatabaseSync, r: Req) => Res | Promise<Res>, PageReq][] = [
     ["contributors/index.html", contributorsPage, req("/contributors")],
-    ["classifiers/index.html", classifiers, req("/classifiers")],
-    ["cost/index.html", cost, req("/cost")],
   ];
   let n = 0;
   for (const [file, handler, r] of pages) {
