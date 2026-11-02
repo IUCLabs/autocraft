@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import { itemInput, jevRequest, jevVerdict, parseHaikuReply, parseRefereeReply, type Item } from "../src/classify/parse.ts";
+import { renderJev } from "../src/prompts/index.ts";
+import { itemInput, jevVerdict, parseHaikuReply, parseRefereeReply, type Item } from "../src/classify/parse.ts";
 
 const refs = ["a#1", "a#2", "a#3"];
 
@@ -41,7 +42,7 @@ describe("jev", () => {
   test("item text goes in the state as data, cut to 4000 characters", () => {
     const item: Item = { repo: "a", number: 1, kind: "pr", title: "t", body: "x".repeat(5000), lines_changed: 10, files_changed: 2, author_association: "NONE" };
     assert.equal((itemInput(item).body as string).length, 4000);
-    const req = jevRequest(item) as { state: string };
+    const req = JSON.parse(renderJev("classify.jev", item)) as { state: string };
     assert.equal(JSON.parse(req.state).files_changed, 2);
   });
 });

@@ -8,5 +8,6 @@ import { classifiersModule } from "../modules/classifiers";
 import { costModule } from "../modules/cost";
 import { accessModule, contributorsModule, reposModule } from "../modules/admin";
 import { aboutModule } from "../modules/about";
+import { promptsModule } from "../modules/prompts";
 
-export const modules: FeatureModule[] = [decisionsModule, itemModule, progressModule, contributorsModule, classifiersModule, costModule, reposModule, accessModule, aboutModule];
+export const modules: FeatureModule[] = [decisionsModule, itemModule, progressModule, contributorsModule, classifiersModule, costModule, reposModule, accessModule, aboutModule, promptsModule];

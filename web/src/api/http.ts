@@ -121,6 +121,7 @@ export function createHttpApi(): Api {
       disagreements: (f) => get(`/api/classifiers/disagreements${qs(f)}`),
     },
     cost: (run) => get(`/api/cost${qs({ run })}`),
+    prompts: () => get("/api/prompts"),
     async signOut() {
       await call("POST", "/api/signout");
       location.assign("/auth/signed-out");

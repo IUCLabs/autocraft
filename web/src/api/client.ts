@@ -18,6 +18,7 @@ import type {
   Item,
   OverrideInput,
   Progress,
+  PromptsReport,
   RepoName,
   Role,
   RulePreview,
@@ -77,6 +78,8 @@ export interface Api {
   };
   /** Token use and spend for one run, or all runs when `run` is empty. */
   cost(run?: string): Promise<CostReport>;
+  /** Every registered model prompt, with the server's commit. */
+  prompts(): Promise<PromptsReport>;
   signOut(): Promise<void>;
   /** Called after any write so open views can refetch. Returns an unsubscribe function. */
   subscribe(fn: () => void): () => void;

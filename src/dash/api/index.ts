@@ -14,6 +14,7 @@ import type { Req, Res, Route } from "../types.ts";
 import * as adm from "./admin.ts";
 import * as dec from "./decisions.ts";
 import * as insight from "./insight.ts";
+import { prompts } from "./prompts.ts";
 import { classificationsOf, itemState, relatedOf } from "./decisions.ts";
 
 export type ApiOptions = {
@@ -218,5 +219,6 @@ export function apiRoutes(opts: ApiOptions = {}): Route[] {
     get("/api/classifiers", insight.classifiersReport),
     get("/api/classifiers/disagreements", insight.disagreements),
     get("/api/cost", insight.cost),
+    get("/api/prompts", prompts),
   ];
 }

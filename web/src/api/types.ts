@@ -488,3 +488,34 @@ export interface CostReport {
   series: { bucket: string; tokens: number; usd: number | null }[];
   bucketSize: "hour" | "day";
 }
+
+// ---- prompts ----------------------------------------------------------------
+
+/** One registered model prompt (src/prompts), as the Prompts page shows it. */
+export interface PromptInfo {
+  id: string;
+  stage: string;
+  purpose: string;
+  /** The first is the default. */
+  models: string[];
+  runner: "claude" | "jev";
+  /** The command line, as a shell would show it; the prompt or request goes on stdin. */
+  command: string;
+  settings: { label: string; value: string }[];
+  /** Static text with `{{name}}` placeholders; for Jev, the request body. */
+  template: string;
+  placeholders: { name: string; meaning: string }[];
+  /** Jev only: every question with its type and criteria. */
+  questions: { id: string; type: string; instructions: string; criteria: Record<string, string> | null }[];
+  output: string;
+  validation: string;
+  /** Exactly what would be sent for `exampleItems` (made-up items). */
+  example: string;
+  exampleItems: string[];
+}
+
+export interface PromptsReport {
+  /** Git commit the server runs, or null when unknown. */
+  commit: string | null;
+  prompts: PromptInfo[];
+}

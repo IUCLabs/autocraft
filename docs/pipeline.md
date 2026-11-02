@@ -27,6 +27,8 @@ Stages 5–7 go one or a few repos at a time, in turn. Stages 1–4 cover the wh
 
 Classifiers and Cost show how often the models agree and what each stage costs.
 
+Every prompt sent to a model is defined in one registry (`src/prompts`), and the code can call a model only with a registered prompt. [Prompts](/prompts) shows each one exactly as sent, with its model, call settings and a rendered example.
+
 ## What needs a person
 
 - **Scope**: is this in scope, does it get us closer to the reference application, is it a plug-in rather than core?
