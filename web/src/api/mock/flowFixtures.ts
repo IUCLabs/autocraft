@@ -4,14 +4,20 @@ import { buildFlow } from "../../../../src/flow/shape.ts";
 import { NOW, REPOS } from "./fixtures";
 
 const ALL: Record<string, number> = {
-  "synced.issues": 12_577, "synced.prs": 8_745, "synced.total": 21_322, "synced.recent.new": 212, "synced.recent.closed": 95, "edge.synced.classify": 21_322,
+  "synced.issues": 12_577, "synced.prs": 8_745, "synced.total": 21_322, "synced.recent.new": 212, "synced.recent.closed": 95, 
   "classify.settled": 17_906, "classify.waiting": 25, "classify.disagree": 3_306, "classify.unclassified": 85, "classify.total": 21_322,
-  "classify.recent.classified": 164, "edge.classify.labels": 17_906,
+  "classify.recent.classified": 164, "edge.decide.labels": 17_906, "edge.classify.priority": 21_322,
+  "dupes.checking": 46, "dupes.waiting": 12, "dupes.held": 5, "dupes.closed": 83, "dupes.total": 21_322, "x.pairsUnchecked": 31, "edge.synced.dupes": 21_322, "edge.dupes.classify": 21_305,
+  "priority.scored": 20_870, "priority.unsure": 14, "priority.todo": 380, "priority.total": 21_264, "x.ranked": 21_322, "max.topRank": 94, "edge.priority.decide": 21_322,
   "decide.not-asked": 4_239, "decide.open": 38, "decide.take": 61, "decide.small-extra": 23, "decide.plugin": 31, "decide.close": 19, "decide.need-info": 9,
   "decide.total": 4_420, "decide.recent.asked": 50, "decide.recent.answered": 27, "x.openDecisions": 38, "edge.classify.decide": 4_420,
   "labels.labelled": 2_140, "labels.pending": 1_310, "labels.unapproved": 14_456, "labels.total": 17_906, "labels.recent.labelled": 400, "x.repos": REPOS.length, "x.approved": 3,
   "review.not-reviewed": 5_640, "review.take": 58, "review.take-fix": 31, "review.hold": 36, "review.close": 21, "review.total": 5_786, "review.recent.reviewed": 40,
-  "edge.classify.review": 5_702, "edge.decide.review": 84, "edge.review.verify": 89,
+  "edge.labels.review": 5_786, "edge.review.verify": 58, "edge.review.fixup": 31,
+  "fix.candidates": 64, "fix.retry": 3, "fix.testing": 2, "fix.passed": 1, "fix.pr-opened": 7, "fix.skipped": 41, "fix.failed": 5, "fix.unapproved": 410, "fix.total": 533,
+  "edge.labels.fix": 533, "edge.fix.review": 7,
+  "fixup.fix": 9, "fixup.pushed": 14, "fixup.hold": 6, "fixup.unapproved": 12, "fixup.total": 41, "fixup.recent.pushed": 4, "edge.fixup.review": 14,
+  "act.todo": 3, "act.failed": 1, "act.unapproved": 8, "act.done": 6, "act.total": 12, "edge.decide.act": 12,
   "verify.waiting": 21, "verify.planned": 6, "verify.running": 4, "verify.passed": 33, "verify.ci-enough": 18, "verify.failed": 5, "verify.error": 2,
   "verify.total": 89, "verify.recent.finished": 24, "edge.verify.merge": 51,
   "merge.waiting-verify": 27, "merge.verify-failed": 5, "merge.verify-error": 2,
@@ -21,13 +27,14 @@ const ALL: Record<string, number> = {
 
 export function flowFixture(repo?: string): Flow {
   const f = repo ? 0.04 + 0.1 * ((REPOS.indexOf(repo) + 1) % 5) : 1;
-  const counts = Object.fromEntries(Object.entries(ALL).map(([k, v]) => [k, k === "x.repos" ? (repo ? 1 : v) : k === "x.approved" ? (repo ? 1 : v) : Math.round(v * f)]));
+  const counts = Object.fromEntries(Object.entries(ALL).map(([k, v]) => [k, k === "x.repos" ? (repo ? 1 : v) : k === "x.approved" ? (repo ? 1 : v) : k.startsWith("max.") ? v : Math.round(v * f)]));
   const iso = (msAgo: number) => new Date(NOW - msAgo).toISOString();
   return buildFlow(counts, {
     repo: repo ?? null, now: iso(0), lastSync: iso(70_000), run: "org-1102", countedAt: iso(40_000), uncounted: 0,
     steps: [
-      { name: "embed", stage: 1 }, { name: "classify-new", stage: 2 }, { name: "classify-all", stage: 2 }, { name: "decide", stage: 3 },
-      { name: "labels-ensure", stage: 4 }, { name: "labels-apply", stage: 4 }, { name: "review-batch", stage: 5 }, { name: "checks", stage: 5 }, { name: "verify", stage: 6 }, { name: "verify-collect", stage: 6 }, { name: "merge", stage: 6 },
+      { name: "embed", stage: 1 }, { name: "dupes", stage: 3 }, { name: "classify-new", stage: 2 }, { name: "classify-all", stage: 2 }, { name: "prioritize", stage: 2 }, { name: "rank", stage: 8 }, { name: "decide", stage: 3 },
+      { name: "labels-ensure", stage: 4 }, { name: "labels-apply", stage: 4 }, { name: "review-batch", stage: 5 }, { name: "checks", stage: 5 }, { name: "fixissue", stage: 7 }, { name: "fixissue-collect", stage: 7 },
+      { name: "fixup", stage: 6 }, { name: "verify", stage: 6 }, { name: "verify-collect", stage: 6 }, { name: "merge", stage: 6 }, { name: "act", stage: 6 },
     ],
   });
 }

@@ -965,18 +965,18 @@ export interface SimilarHit extends SearchHit {
 // ---- flowchart (home page) ----------------------------------------------------
 
 /** The nodes of the flowchart, in pipeline order (docs/pipeline.md). */
-export type FlowNodeId = "synced" | "classify" | "decide" | "labels" | "review" | "verify" | "merge";
+export type FlowNodeId = "synced" | "dupes" | "classify" | "priority" | "decide" | "labels" | "review" | "fix" | "fixup" | "verify" | "merge" | "act";
 
 /** What items in a branch wait on: a model step, CI, a person, the runner (a step that needs no model), a build environment (a build task), or nothing. */
 export type FlowWait = "model" | "ci" | "person" | "runner" | "sandbox" | "nothing";
 
 /**
  * Where a branch's link goes. `items` opens the Items browser with these params
- * (`flow=<node>.<branch>` picks exactly the branch's items); `decisions` and
- * `queue` open those pages with these params.
+ * (`flow=<node>.<branch>` picks exactly the branch's items); `decisions`,
+ * `queue` and `work` open those pages with these params.
  */
 export interface FlowLink {
-  page: "items" | "decisions" | "queue";
+  page: "items" | "decisions" | "queue" | "work";
   params: Record<string, string>;
 }
 

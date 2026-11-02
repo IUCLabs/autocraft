@@ -38,6 +38,7 @@ const globalSig = (db: DatabaseSync): string => JSON.stringify(db.prepare(`SELEC
     (SELECT value FROM main.settings WHERE key = 'classify_run') AS run,
     (SELECT group_concat(key || '=' || value) FROM main.settings WHERE key LIKE 'labels_approved:%') AS approvals,
     (SELECT group_concat(key || '=' || value) FROM main.settings WHERE key LIKE 'merge_approved:%') AS mergeApprovals,
+    (SELECT group_concat(key || '=' || value) FROM main.settings WHERE key LIKE 'fixissue_approved:%' OR key LIKE 'push_approved:%' OR key LIKE 'comment_approved:%') AS writeApprovals,
     (SELECT group_concat(name) FROM (SELECT name FROM main.tracked_repos ORDER BY name)) AS tracked,
     (SELECT run_id FROM main.classifications WHERE classifier = 'jev' ORDER BY at DESC LIMIT 1) AS jev`).get());
 
@@ -132,7 +133,7 @@ export function readSummary(db: DatabaseSync, repo: string | null, budgetMs = 15
     const counts = row ? (JSON.parse(row.counts) as Counts) : countRepo(db, r);
     const at = row?.counted_at ?? new Date().toISOString();
     if (!oldest || at < oldest) oldest = at;
-    for (const [k, v] of Object.entries(counts)) sum[k] = (sum[k] ?? 0) + v;
+    for (const [k, v] of Object.entries(counts)) sum[k] = k.startsWith("max.") ? Math.max(sum[k] ?? 0, v) : (sum[k] ?? 0) + v;
   }
   return { counts: sum, countedAt: oldest, uncounted };
 }

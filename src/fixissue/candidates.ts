@@ -17,17 +17,17 @@ export const textHash = (title: string, body: string): string => createHash("sha
 
 type Row = { number: number; title: string | null; body: string | null; score: number | null };
 
-/** Whether an open PR in the repo closes issue `n` or mentions it by number. */
-function hasOpenPr(db: DatabaseSync, repo: string, n: number): boolean {
+/** Issue numbers an open PR in the repo closes or mentions by number. */
+function issuesWithOpenPr(db: DatabaseSync, repo: string): Set<number> {
   const prs = db.prepare("SELECT body, title, closing_issues FROM items WHERE repo = ? AND kind = 'pr' AND state = 'OPEN'").all(repo) as { body: string | null; title: string | null; closing_issues: string | null }[];
-  const ref = new RegExp(`(^|[^\\w/])#${n}(?!\\d)`);
+  const out = new Set<number>();
   for (const p of prs) {
     try {
-      if ((JSON.parse(p.closing_issues ?? "[]") as unknown[]).includes(n)) return true;
+      for (const n of JSON.parse(p.closing_issues ?? "[]") as unknown[]) if (typeof n === "number") out.add(n);
     } catch { /* fall through to the text */ }
-    if (ref.test(`${p.title ?? ""}\n${p.body ?? ""}`)) return true;
+    for (const m of `${p.title ?? ""}\n${p.body ?? ""}`.matchAll(/(?<![\w/])#(\d+)/g)) out.add(Number(m[1]));
   }
-  return false;
+  return out;
 }
 
 /**
@@ -36,7 +36,11 @@ function hasOpenPr(db: DatabaseSync, repo: string, n: number): boolean {
  * repo with fix-issue approval. Highest work score first.
  */
 export function selectIssues(db: DatabaseSync, repo: string, run: string | null = latestRun(db)): IssueCandidate[] {
-  if (!fixIssueApprovalOf(db, repo)) return [];
+  return fixIssueApprovalOf(db, repo) ? candidateIssues(db, repo, run) : [];
+}
+
+/** The issues selectIssues would return in a repo with fix approval: what the Fix stage could work on once approved. */
+export function candidateIssues(db: DatabaseSync, repo: string, run: string | null = latestRun(db)): IssueCandidate[] {
   if (!db.prepare("SELECT 1 FROM repos WHERE name = ? AND visibility = 'public'").get(repo)) return [];
   if (db.prepare("SELECT 1 FROM settings WHERE key = ?").get(notRustKey(repo))) return [];
   const rows = db.prepare(`SELECT i.number, i.title, i.body, p.score FROM items i LEFT JOIN item_rank p ON p.repo = i.repo AND p.number = i.number
@@ -45,6 +49,7 @@ export function selectIssues(db: DatabaseSync, repo: string, run: string | null 
   const attempt = db.prepare("SELECT state, text_hash FROM fix_attempts WHERE repo = ? AND number = ?");
   const scope = db.prepare(`SELECT answer, answered_by FROM decisions WHERE kind = 'scope' AND repo = ? AND number = ? ORDER BY asked_at DESC LIMIT 1`);
   const isOperator = db.prepare("SELECT 1 FROM access WHERE login = ? AND role = 'operator'");
+  const withPr = issuesWithOpenPr(db, repo);
   const out: IssueCandidate[] = [];
   for (const r of rows) {
     const s = settled(repo, r.number);
@@ -56,7 +61,7 @@ export function selectIssues(db: DatabaseSync, repo: string, run: string | null 
     const take = !!d && d.answer === "take" && !!d.answered_by && !!isOperator.get(d.answered_by);
     if (d && !take) continue;
     if (!d && s.flags.includes("needs decision")) continue;
-    if (hasOpenPr(db, repo, r.number)) continue;
+    if (withPr.has(r.number)) continue;
     out.push({ repo, number: r.number, title: r.title ?? "", body: r.body ?? "", hash, score: r.score });
   }
   return out;

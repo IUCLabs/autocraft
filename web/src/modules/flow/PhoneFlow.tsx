@@ -7,7 +7,7 @@ import { cn } from "../../ui/cn";
 import { num } from "../../lib/format";
 import { BranchRow, nodeOf, recentText, RunningMarker } from "./parts";
 
-const ORDER: FlowNode["id"][] = ["synced", "classify", "decide", "labels", "review", "verify", "merge"];
+const ORDER: FlowNode["id"][] = ["synced", "dupes", "classify", "priority", "decide", "labels", "review", "fix", "fixup", "verify", "merge", "act"];
 
 export function PhoneFlow({ flow, onSelect, runs }: { flow: Flow; onSelect: (id: string) => void; runs: AgentRun[] }) {
   const nodes = ORDER.map((id) => nodeOf(flow, id)).filter((n): n is FlowNode => !!n);

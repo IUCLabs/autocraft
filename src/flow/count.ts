@@ -10,11 +10,17 @@
 //   "<node>.recent.<label>"   movement in the last 24 hours
 //   "edge.<from>.<to>"        items on an edge
 //   "x.<name>"                other facts (open decisions, approved repos, ...)
+// Keys starting "max." are combined with max, not summed, when repos add up.
 // Item-backed branches also return their refs ("repo#n") for the Items
 // browser's flow filter.
 import type { DatabaseSync } from "node:sqlite";
 import { latestRun, settledTable } from "../classify/settled.ts";
 import { latestJevRun, selectCandidates as decideCandidates } from "../decide/select.ts";
+import { commentApprovalOf } from "../act/approval.ts";
+import { pending as actPending } from "../act/index.ts";
+import { fixIssueApprovalOf } from "../fixissue/approval.ts";
+import { candidateIssues } from "../fixissue/candidates.ts";
+import { classifyFixups } from "../fixup/candidates.ts";
 import { approvalOf } from "../labels/approval.ts";
 import { mergeApprovalOf } from "../merge/approval.ts";
 import { buildQueue, eligible, type QueueState } from "../merge/queue.ts";
@@ -60,6 +66,17 @@ export class Ctx {
   andRepo(col = "repo"): string {
     return this.repo ? `AND ${col} = :repo` : "";
   }
+  /** Restricts a query on `col` to the repo, or to the tracked repos. */
+  tracked(col = "repo"): string {
+    return this.repo ? `AND ${col} = :repo` : `AND ${col} IN (SELECT name FROM main.tracked_repos)`;
+  }
+  repos(): string[] {
+    return this.repo ? [this.repo] : trackedNames(this.db);
+  }
+  /** Rows of `repo, number` as refs. */
+  refs(sql: string, params: Record<string, string> = {}): Refs {
+    return new Set((this.db.prepare(sql).all({ ...this.rp, ...params }) as { repo: string; number: number }[]).map(ref));
+  }
   inRepo(k: string): boolean {
     return !this.repo || k.startsWith(`${this.repo}#`);
   }
@@ -99,7 +116,7 @@ function synced(c: Ctx): NodeCount {
     counts: {
       "synced.issues": open.length - prs, "synced.prs": prs, "synced.total": open.length,
       "synced.recent.new": c.recentItems("created_at"), "synced.recent.closed": c.recentItems("closed_at"),
-      "edge.synced.classify": open.length,
+      "edge.synced.dupes": open.length,
     },
     members: new Map(),
   };
@@ -114,7 +131,7 @@ function classify(c: Ctx): NodeCount {
   return {
     counts: {
       ...Object.fromEntries(Object.entries(by).map(([k, v]) => [`classify.${k}`, v])),
-      "classify.total": c.open().length, "classify.recent.classified": recent, "edge.classify.labels": by.settled!,
+      "classify.total": c.open().length, "classify.recent.classified": recent, "edge.decide.labels": by.settled!, "edge.classify.priority": c.open().length,
     },
     members: new Map(),
   };
@@ -148,7 +165,7 @@ function decide(c: Ctx): NodeCount {
     counts: {
       ...Object.fromEntries([...members].map(([k, v]) => [k, v.size])),
       "decide.total": total, "decide.recent.asked": asked, "decide.recent.answered": answered,
-      "x.openDecisions": openDecisions, "edge.classify.decide": total,
+      "x.openDecisions": openDecisions, "edge.classify.decide": total, "edge.priority.decide": c.open().length,
     },
     members,
   };
@@ -165,15 +182,13 @@ function review(c: Ctx): NodeCount {
   for (const r of last) if (!candidates.has(ref(r))) by.get(r.verdict)?.add(ref(r));
   const members = new Map<string, Refs>([["review.not-reviewed", candidates], ...[...by].map(([k, v]) => [`review.${k}`, v] as [string, Refs])]);
   const all = [...members.values()].flatMap((s) => [...s]);
-  const answers = c.scopeAnswers();
-  const viaDecide = all.filter((r) => answers.get(r) === "take" || answers.get(r) === "small-extra").length;
+  const takeFix = by.get("take-fix")!.size;
   return {
     counts: {
       ...Object.fromEntries([...members].map(([k, v]) => [k, v.size])),
       "review.total": all.length,
       "review.recent.reviewed": c.n(`SELECT COUNT(*) AS n FROM reviews WHERE at >= :since ${c.andRepo()}`, { since: c.since }),
-      "edge.classify.review": all.length - viaDecide, "edge.decide.review": viaDecide,
-      "edge.review.verify": by.get("take")!.size + by.get("take-fix")!.size,
+      "edge.labels.review": all.length, "edge.review.verify": by.get("take")!.size, "edge.review.fixup": takeFix,
     },
     members,
   };
@@ -253,7 +268,118 @@ function labels(c: Ctx): NodeCount {
   };
 }
 
-export const COUNTERS = { synced, classify, decide, labels, review, verify, merge } as const;
+const sizeOf = (m: Map<string, Refs>, key: string) => m.get(key)?.size ?? 0;
+
+/** Duplicate pairs and the decisions about them (src/dupes). Pairs count by their open items. */
+function dupes(c: Ctx): NodeCount {
+  const members = new Map<string, Refs>(["checking", "waiting", "held", "closed"].map((k) => [`dupes.${k}`, new Set()]));
+  // Unjudged pairs whose items still have the hashed text; duplicate_pairs_open reads only the rows without a verdict.
+  const pairs = c.db.prepare(`SELECT p.repo, p.a, p.b, ia.state AS sa, ib.state AS sb FROM main.duplicate_pairs p
+    JOIN main.items ia ON ia.repo = p.repo AND ia.number = p.a AND ia.embed_hash = p.a_hash
+    JOIN main.items ib ON ib.repo = p.repo AND ib.number = p.b AND ib.embed_hash = p.b_hash
+    WHERE p.verdict IS NULL AND (ia.state = 'OPEN' OR ib.state = 'OPEN') ${c.tracked("p.repo")}`).all(c.rp) as { repo: string; a: number; b: number; sa: string; sb: string }[];
+  for (const p of pairs) {
+    if (p.sa === "OPEN") members.get("dupes.checking")!.add(`${p.repo}#${p.a}`);
+    if (p.sb === "OPEN") members.get("dupes.checking")!.add(`${p.repo}#${p.b}`);
+  }
+  // Open decisions and answered close (the held-out items, see src/dupes/held.ts); decisions_open covers both.
+  const rows = c.db.prepare(`SELECT d.repo, d.number, d.answer, i.state FROM main.decisions d
+    JOIN main.items i ON i.repo = d.repo AND i.number = d.number
+    WHERE d.kind = 'duplicate' AND (d.answer IS NULL OR d.answer = 'close') ${c.tracked("d.repo")}`).all(c.rp) as { repo: string; number: number; answer: string | null; state: string }[];
+  for (const r of rows) members.get(r.answer === null ? (r.state === "OPEN" ? "dupes.waiting" : "") : r.state === "OPEN" ? "dupes.held" : "dupes.closed")?.add(ref(r));
+  const open = c.open().length;
+  return {
+    counts: {
+      ...Object.fromEntries([...members].map(([k, v]) => [k, v.size])),
+      "dupes.total": open, "x.pairsUnchecked": pairs.length,
+      "edge.dupes.classify": Math.max(0, open - sizeOf(members, "dupes.waiting") - sizeOf(members, "dupes.held")),
+    },
+    members,
+  };
+}
+
+/** Priority scores (src/priority) and the work rank (src/rank) of the open, embedded items. */
+function priority(c: Ctx): NodeCount {
+  const members = new Map<string, Refs>(["scored", "todo", "unsure"].map((k) => [`priority.${k}`, new Set()]));
+  const rows = c.db.prepare(`SELECT i.repo, i.number, CASE WHEN p.repo IS NULL OR p.text_hash <> i.embed_hash THEN 'todo' WHEN p.model = 'jev-unsure' THEN 'unsure' ELSE 'scored' END AS s
+    FROM main.items i LEFT JOIN main.item_priority p ON p.repo = i.repo AND p.number = i.number
+    WHERE i.state = 'OPEN' AND i.embed_hash IS NOT NULL ${c.tracked("i.repo")}`).all(c.rp) as { repo: string; number: number; s: string }[];
+  for (const r of rows) members.get(`priority.${r.s}`)!.add(ref(r));
+  const rank = c.db.prepare(`SELECT COUNT(*) AS n, COALESCE(MAX(score), 0) AS top FROM main.item_rank WHERE 1 ${c.tracked()}`).get(c.rp) as { n: number; top: number };
+  return {
+    counts: {
+      ...Object.fromEntries([...members].map(([k, v]) => [k, v.size])),
+      "priority.total": rows.length, "x.ranked": rank.n, "max.topRank": rank.top,
+    },
+    members,
+  };
+}
+
+const FIX_STATES = ["retry", "testing", "passed", "pr-opened", "skipped", "failed"] as const;
+
+/** The Fix stage: open issues by where their attempt stands (src/fixissue). */
+function fix(c: Ctx): NodeCount {
+  const members = new Map<string, Refs>(["candidates", "unapproved", ...FIX_STATES].map((k) => [`fix.${k}`, new Set()]));
+  for (const repo of c.repos()) {
+    const bucket = members.get(fixIssueApprovalOf(c.db, repo) ? "fix.candidates" : "fix.unapproved")!;
+    for (const x of candidateIssues(c.db, repo, c.run)) bucket.add(ref(x));
+  }
+  const rows = c.db.prepare(`SELECT a.repo, a.number, a.state FROM main.fix_attempts a
+    JOIN main.items i ON i.repo = a.repo AND i.number = a.number AND i.state = 'OPEN' WHERE 1 ${c.tracked("a.repo")}`).all(c.rp) as { repo: string; number: number; state: string }[];
+  for (const r of rows) members.get(`fix.${r.state}`)?.add(ref(r));
+  // A skipped issue whose text changed is a candidate again.
+  for (const r of members.get("fix.candidates")!) members.get("fix.skipped")!.delete(r);
+  const total = [...members.values()].reduce((a, s) => a + s.size, 0);
+  return {
+    counts: { ...Object.fromEntries([...members].map(([k, v]) => [k, v.size])), "fix.total": total, "edge.labels.fix": total, "edge.fix.review": sizeOf(members, "fix.pr-opened") },
+    members,
+  };
+}
+
+/** Fix-up: take-fix PRs by whether the step may push (src/fixup). */
+function fixup(c: Ctx): NodeCount {
+  const members = new Map<string, Refs>(["fix", "pushed", "hold", "unapproved"].map((k) => [`fixup.${k}`, new Set()]));
+  const hold = members.get("fixup.hold")!;
+  for (const repo of c.repos())
+    for (const x of classifyFixups(c.db, repo)) {
+      if (x.bucket === "fix" || x.bucket === "unapproved") members.get(`fixup.${x.bucket}`)!.add(ref(x.c));
+      else hold.add(ref(x.c));
+    }
+  const waiting = hold.size + sizeOf(members, "fixup.fix") + sizeOf(members, "fixup.unapproved");
+  const pushed = members.get("fixup.pushed")!;
+  for (const r of c.refs(`SELECT DISTINCT f.repo, f.number FROM main.fixups f JOIN main.items i ON i.repo = f.repo AND i.number = f.number AND i.state = 'OPEN'
+      WHERE f.state = 'pushed' ${c.tracked("f.repo")}`)) if (![...members.values()].some((s) => s !== pushed && s.has(r))) pushed.add(r);
+  return {
+    counts: {
+      ...Object.fromEntries([...members].map(([k, v]) => [k, v.size])),
+      "fixup.total": waiting + pushed.size, "edge.fixup.review": pushed.size,
+      "fixup.recent.pushed": c.n(`SELECT COUNT(*) AS n FROM main.fixups WHERE state = 'pushed' AND created_at >= :since ${c.tracked()}`, { since: c.since }),
+    },
+    members,
+  };
+}
+
+/** Act: comments and closes that follow an operator's answer (src/act). */
+function act(c: Ctx): NodeCount {
+  const members = new Map<string, Refs>(["todo", "failed", "unapproved", "done"].map((k) => [`act.${k}`, new Set()]));
+  for (const repo of c.repos()) {
+    const failed = new Set((c.db.prepare("SELECT decision_id, number FROM main.actions WHERE repo = ? AND state = 'failed'").all(repo) as { decision_id: string; number: number }[]).map((r) => `${r.decision_id}\0${r.number}`));
+    const approved = commentApprovalOf(c.db, repo) !== null;
+    for (const t of actPending(c.db, repo))
+      members.get(!approved ? "act.unapproved" : failed.has(`${t.decisionId}\0${t.number}`) ? "act.failed" : "act.todo")!.add(`${repo}#${t.number}`);
+  }
+  const done = c.n(`SELECT COUNT(*) AS n FROM main.actions WHERE state = 'done' AND created_at >= :since ${c.tracked()}`, { since: c.since });
+  const waiting = sizeOf(members, "act.todo") + sizeOf(members, "act.failed") + sizeOf(members, "act.unapproved");
+  return {
+    counts: {
+      ...Object.fromEntries([...members].map(([k, v]) => [k, v.size])),
+      "act.done": done, "act.total": waiting, "edge.decide.act": waiting,
+    },
+    members,
+  };
+}
+
+export const COUNTERS = { synced, dupes, classify, priority, decide, labels, review, fix, fixup, verify, merge, act } as const;
 export type CountedNode = keyof typeof COUNTERS;
 
 /** Every count for one repo, or for every tracked repo when `repo` is null. */

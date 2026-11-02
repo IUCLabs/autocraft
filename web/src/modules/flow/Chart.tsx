@@ -1,6 +1,7 @@
 // The desktop flowchart: nodes on a grid, the main line left to right along the
-// top row, Labels and the Decide gate below it, edges drawn over the grid from
-// the measured positions of the nodes and their branch rows.
+// top row (Synced to Merge queue), the side stages below it (Duplicates, Priority,
+// Act, Fix, Fix-up), edges drawn over the grid from the measured positions of the
+// nodes and their branch rows.
 import { useLayoutEffect, useRef, useState } from "react";
 import { ChevronRightIcon } from "lucide-react";
 import type { AgentRun, Flow, FlowEdge, FlowNode } from "../../api/types";
@@ -11,7 +12,8 @@ import { BranchRow, recentText, RunningMarker, WaitIcon } from "./parts";
 
 /** Grid cell of each node: [column, row, row span]. */
 const CELL: Record<FlowNode["id"], [number, number, number]> = {
-  synced: [1, 1, 1], classify: [2, 1, 1], labels: [2, 2, 1], review: [3, 1, 1], decide: [3, 2, 1], verify: [4, 1, 1], merge: [5, 1, 2],
+  synced: [1, 1, 1], dupes: [1, 2, 1], classify: [2, 1, 1], priority: [2, 2, 1], decide: [3, 1, 1], act: [3, 2, 1],
+  labels: [4, 1, 1], fix: [4, 2, 1], review: [5, 1, 1], fixup: [5, 2, 1], verify: [6, 1, 1], merge: [6, 2, 1],
 };
 
 export function NodeCard({ n, selected, onSelect, runs }: { n: FlowNode; selected: boolean; onSelect: () => void; runs: AgentRun[] }) {
@@ -84,8 +86,10 @@ function geometry(el: HTMLElement, edges: FlowEdge[]): Geo[] {
     } else {
       // above or below: from the facing edge's middle to the other's
       const down = t.t >= s.b;
-      const sx = (s.l + s.r) / 2, sy = down ? s.b : s.t;
-      const ex = (t.l + t.r) / 2, ey = down ? t.t : t.b;
+      // Two edges between the same pair (Review and Fix-up) run side by side.
+      const off = edges.some((o) => o.from === e.to && o.to === e.from) ? (e.from < e.to ? -32 : 32) : 0;
+      const sx = (s.l + s.r) / 2 + off, sy = down ? s.b : s.t;
+      const ex = (t.l + t.r) / 2 + off, ey = down ? t.t : t.b;
       const dy = (ey - sy) / 2;
       out.push({ e, d: `M${sx},${sy} C${sx},${sy + dy} ${ex},${ey - dy} ${ex},${ey + (down ? -1 : 1)}`, x: (sx + ex) / 2, y: (sy + ey) / 2 });
     }
@@ -111,8 +115,8 @@ export function Chart({ flow, selected, onSelect, runs }: { flow: Flow; selected
     <div className="overflow-x-auto pb-2">
       <div
         ref={ref}
-        className="relative grid min-w-[1150px] items-start gap-x-14 gap-y-16"
-        style={{ gridTemplateColumns: "minmax(150px,150fr) minmax(210px,210fr) minmax(215px,215fr) minmax(128px,128fr) minmax(245px,245fr)" }}
+        className="relative grid min-w-[1330px] items-start gap-x-10 gap-y-16"
+        style={{ gridTemplateColumns: "minmax(150px,150fr) minmax(190px,190fr) minmax(200px,200fr) minmax(185px,185fr) minmax(195px,195fr) minmax(215px,215fr)" }}
       >
         {flow.nodes.map((n) => {
           const [c, r, span] = CELL[n.id];

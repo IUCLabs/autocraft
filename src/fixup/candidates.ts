@@ -41,15 +41,24 @@ export function attemptsOf(db: DatabaseSync, repo: string, number: number): numb
     .get(repo, number, ...ATTEMPT_STATES) as { n: number }).n;
 }
 
-export function selectFixups(db: DatabaseSync, repo: string): FixSelection {
+export type FixupBucket = "fix" | "unapproved" | "cannot-push" | "hold";
+export type Classified = { c: FixCandidate; bucket: FixupBucket; done: boolean };
+
+/**
+ * Every take-fix PR at its current head with where it stands: `fix` (the step will push), `unapproved` (it could,
+ * but the repo has no push approval), `cannot-push` (maintainers may not modify the branch, or a recorded cannot-push
+ * or too-large at this head) and `hold` (two tries used up, or an earlier push left the head unchanged). `done` marks
+ * heads the step has recorded a final row for.
+ */
+export function classifyFixups(db: DatabaseSync, repo: string): Classified[] {
   const rows = db.prepare(`SELECT i.repo, i.number, i.head_oid, i.updated_at, i.is_draft,
       c.head_oid AS c_head, c.state AS c_state, c.is_draft AS c_draft, c.fetched_at AS c_at, c.mergeable, c.maintainer_can_modify AS can_modify
     FROM items i JOIN pr_checks c ON c.repo = i.repo AND c.number = i.number
     LEFT JOIN item_rank p ON p.repo = i.repo AND p.number = i.number
     WHERE i.repo = ? AND i.kind = 'pr' AND i.state = 'OPEN' AND ${notHeldSql("i")} ORDER BY p.score IS NULL, p.score DESC, i.number`).all(repo) as Row[];
-  const done = db.prepare("SELECT 1 FROM fixups WHERE repo = ? AND number = ? AND from_head = ? AND state IN ('pushed', 'cannot-push', 'too-large')");
+  const done = db.prepare("SELECT state FROM fixups WHERE repo = ? AND number = ? AND from_head = ? AND state IN ('pushed', 'cannot-push', 'too-large')");
   const approved = pushApprovalOf(db, repo) !== null;
-  const out: FixSelection = { fix: [], cannotPush: [] };
+  const out: Classified[] = [];
   for (const r of rows) {
     const fresh = r.c_at && (!r.updated_at || r.c_at > r.updated_at);
     if (fresh ? r.c_state !== "OPEN" || r.c_draft : r.is_draft) continue;
@@ -60,12 +69,24 @@ export function selectFixups(db: DatabaseSync, repo: string): FixSelection {
       { reason: string; fixes: string | null } | undefined;
     if (!review) continue;
     if (r.mergeable === "CONFLICTING") continue;
-    if (done.get(r.repo, r.number, head)) continue;
     const fixes = parseFixes(review.fixes);
     if (!fixes.length) continue;
     const c: FixCandidate = { repo: r.repo, number: r.number, head, reason: review.reason, fixes, attempt: attemptsOf(db, r.repo, r.number) + 1 };
-    if (!r.can_modify) out.cannotPush.push(c);
-    else if (approved && c.attempt <= MAX_ATTEMPTS) out.fix.push(c);
+    const row = done.get(r.repo, r.number, head) as { state: string } | undefined;
+    if (row) out.push({ c, done: true, bucket: row.state === "pushed" ? "hold" : "cannot-push" });
+    else if (!r.can_modify) out.push({ c, done: false, bucket: "cannot-push" });
+    else if (c.attempt > MAX_ATTEMPTS) out.push({ c, done: false, bucket: "hold" });
+    else out.push({ c, done: false, bucket: approved ? "fix" : "unapproved" });
+  }
+  return out;
+}
+
+export function selectFixups(db: DatabaseSync, repo: string): FixSelection {
+  const out: FixSelection = { fix: [], cannotPush: [] };
+  for (const x of classifyFixups(db, repo)) {
+    if (x.done) continue;
+    if (x.bucket === "cannot-push") out.cannotPush.push(x.c);
+    else if (x.bucket === "fix") out.fix.push(x.c);
   }
   return out;
 }

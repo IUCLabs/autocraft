@@ -93,6 +93,9 @@ function PromptRow({ id }: { id: string }) {
   );
 }
 
+/** Nodes whose GitHub writes need a per-repo approval, with the word the Repos page uses. */
+const APPROVES: Partial<Record<FlowNode["id"], string>> = { labels: "labelling", merge: "merging", fix: "fixing", fixup: "pushing", act: "commenting" };
+
 export function FlowPanel({ flow, node: n, onClose, onSelect }: { flow: Flow; node: FlowNode; onClose: () => void; onSelect: (id: string) => void }) {
   const user = useUser();
   const { data: overview } = useQuery("pipeline", (api) => api.pipeline.overview());
@@ -164,9 +167,9 @@ export function FlowPanel({ flow, node: n, onClose, onSelect }: { flow: Flow; no
               </div>
             ))}
           </dl>
-          {(n.id === "labels" || n.id === "merge") && user.role === "operator" && (
+          {n.id in APPROVES && user.role === "operator" && (
             <Link to="/repos" className="mt-2 inline-block text-sm text-accent-ink hover:underline">
-              Approve {n.id === "labels" ? "labelling" : "merging"} per repo on the Repos page
+              Approve {APPROVES[n.id]} per repo on the Repos page
             </Link>
           )}
         </Section>

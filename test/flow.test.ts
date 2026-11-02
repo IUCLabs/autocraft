@@ -85,9 +85,10 @@ test("flowchart counts every branch by the stages' own rules", async () => {
   assert.deepEqual(counts(node("labels")), { labelled: 1, pending: 7, unapproved: 0 });
   assert.deepEqual(node("decide").waitsOn.sort(), ["model", "person"]);
   const edge = (from: string, to: string) => flow.edges.find((e) => e.from === from && e.to === to)!.count;
-  assert.equal(edge("decide", "review"), 1);
-  assert.equal(edge("classify", "review"), 4);
-  assert.equal(edge("review", "verify"), 3);
+  assert.equal(edge("labels", "review"), 5);
+  assert.equal(edge("decide", "labels"), 8);
+  assert.equal(edge("review", "verify"), 2);
+  assert.equal(edge("review", "fixup"), 1);
   assert.equal(edge("verify", "merge"), 1);
   assert.deepEqual(node("review").recent, [{ label: "reviewed", count: 1 }]);
 
@@ -130,4 +131,70 @@ test("verify counts follow the verification at the PR's current head", () => {
   refreshSummary(db);
   const merge = flowOf(db, null).nodes.find((n) => n.id === "merge")!;
   assert.deepEqual([counts(merge)["waiting-verify"], counts(merge).eligible], [1, 0]);
+});
+
+test("the duplicate, priority, fix, fix-up and act nodes count one item in each state", async () => {
+  const db = build();
+  const item = db.prepare(`INSERT INTO main.items (repo, number, kind, state, title, author, head_oid, embed_hash, created_at, updated_at) VALUES ('${R}', ?, ?, ?, 't', 'regular', ?, ?, '${T0}', '${T0}')`);
+  const dec = db.prepare(`INSERT INTO main.decisions (id, kind, repo, number, question, options, asked_at, answer, answered_by, answered_at, applied_at) VALUES (?, ?, '${R}', ?, 'q', '[]', '${T0}', ?, ?, ?, ?)`);
+  const setting = (k: string) => db.prepare("INSERT OR REPLACE INTO main.settings (key, value) VALUES (?, '{\"by\":\"op\",\"at\":\"x\"}')").run(k);
+  // Counted afresh on every call: the stored summary would otherwise show the first count.
+  const node = (id: string) => { db.prepare("DELETE FROM main.flow_summary").run(); return flowOf(db, null).nodes.find((n) => n.id === id)!; };
+
+  // Duplicates: 20 and 21 sit in an unjudged pair, 22 has an open decision, 24 was answered close, 25 is closed after that.
+  for (const n of [20, 21, 22, 24]) item.run(n, "issue", "OPEN", null, `e${n}`);
+  item.run(25, "issue", "CLOSED", null, "e25");
+  db.prepare(`INSERT INTO main.duplicate_pairs (repo, a, b, a_hash, b_hash, similarity, created_at) VALUES ('${R}', 20, 21, 'e20', 'e21', 0.9, '${T0}')`).run();
+  dec.run(`${R}#22:duplicate@20`, "duplicate", 22, null, null, null, null);
+  dec.run(`${R}#24:duplicate@20`, "duplicate", 24, "close", "op", NOW, null);
+  dec.run(`${R}#25:duplicate@20`, "duplicate", 25, "close", "op", NOW, NOW);
+
+  // Priority: 20 scored, 21 waiting for a second opinion, 22 not scored. Rank gives the top work score.
+  const prio = db.prepare(`INSERT INTO main.item_priority (repo, number, text_hash, impact, score, model, at) VALUES ('${R}', ?, ?, 'high', 50, ?, '${T0}')`);
+  prio.run(20, "e20", "jev"); prio.run(21, "e21", "jev-unsure");
+  db.prepare(`INSERT INTO main.item_rank (repo, number, score, breakdown, computed_at) VALUES ('${R}', 20, 77, '{}', '${T0}')`).run();
+
+  // Fix: issue 1 is a candidate (settled bugfix, no attempt) once the repo is public; 31 to 34 have attempts.
+  db.prepare(`INSERT INTO main.repos (name, visibility) VALUES ('${R}', 'public')`).run();
+  const attempt = db.prepare(`INSERT INTO main.fix_attempts (repo, number, main_sha, text_hash, state, created_at, updated_at) VALUES ('${R}', ?, 'm', 'h', ?, '${T0}', '${T0}')`);
+  for (const [n, st] of [[31, "testing"], [32, "skipped"], [33, "pr-opened"], [34, "retry"]] as const) { item.run(n, "issue", "OPEN", null, null); attempt.run(n, st); }
+  assert.deepEqual(counts(node("fix")), { candidates: 0, retry: 1, testing: 1, passed: 0, "pr-opened": 1, skipped: 1, failed: 0, unapproved: 1 });
+  setting(`fixissue_approved:${R}`);
+  assert.deepEqual(counts(node("fix")), { candidates: 1, retry: 1, testing: 1, passed: 0, "pr-opened": 1, skipped: 1, failed: 0, unapproved: 0 });
+  assert.equal(node("fix").branches.find((b) => b.id === "testing")!.waitsOn, "sandbox");
+
+  // Fix-up: 13 can be pushed to, 40 cannot (closed to maintainers), 41 was pushed.
+  const checks = db.prepare(`INSERT INTO main.pr_checks (repo, number, head_oid, state, is_draft, overall, checks, mergeable, maintainer_can_modify, fetched_at)
+    VALUES ('${R}', ?, ?, 'OPEN', 0, 'success', '[]', 'MERGEABLE', ?, '2026-01-02T00:00:00Z')`);
+  const review = db.prepare(`INSERT INTO main.reviews (repo, number, head_oid, run_id, at, model, size, verdict, reason, fixes) VALUES ('${R}', ?, ?, 'rv', '${T0}', 'sonnet', 'S', ?, 'why', ?)`);
+  const fixes = '[{"file":"src/a.rs","change":"rename"}]';
+  db.prepare("UPDATE main.reviews SET fixes = ? WHERE number = 13").run(fixes);
+  checks.run(13, "h13", 1);
+  item.run(40, "pr", "OPEN", "h40", null); review.run(40, "h40", "take-fix", fixes); checks.run(40, "h40", 0);
+  item.run(41, "pr", "OPEN", "h41", null); review.run(41, "h41", "take", null); checks.run(41, "h41", 1);
+  db.prepare(`INSERT INTO main.fixups (repo, number, from_head, to_head, state, attempt, created_at) VALUES ('${R}', 41, 'g41', 'h41', 'pushed', 1, ?)`).run(NOW);
+  assert.deepEqual(counts(node("fixup")), { fix: 0, pushed: 1, hold: 1, unapproved: 1 });
+  setting(`push_approved:${R}`);
+  assert.deepEqual(counts(node("fixup")), { fix: 1, pushed: 1, hold: 1, unapproved: 0 });
+
+  // Act: scope decision 4 and the duplicate decision 24 are answered close by an operator.
+  dec.run(`${R}#4:scope`, "scope", 4, "close", "op", NOW, null);
+  db.prepare(`INSERT INTO main.actions (decision_id, repo, number, kind, state, created_at) VALUES ('${R}#25:duplicate@20', '${R}', 25, 'comment-close', 'done', ?)`).run(NOW);
+  assert.deepEqual(counts(node("act")), { todo: 0, failed: 0, unapproved: 2, done: 1 });
+  setting(`comment_approved:${R}`);
+  db.prepare(`INSERT INTO main.actions (decision_id, repo, number, kind, state, created_at) VALUES ('${R}#4:scope', '${R}', 4, 'comment-close', 'failed', ?)`).run(NOW);
+  assert.deepEqual(counts(node("act")), { todo: 1, failed: 1, unapproved: 0, done: 1 });
+
+  refreshSummary(db);
+  assert.deepEqual(counts(node("dupes")), { checking: 2, waiting: 1, held: 1, closed: 1 });
+  assert.deepEqual(counts(node("priority")), { scored: 1, unsure: 1, todo: 2 });
+  assert.deepEqual(node("priority").facts[0], { label: "Top work score", value: "77" });
+  assert.deepEqual(counts(node("fixup")), { fix: 1, pushed: 1, hold: 1, unapproved: 0 });
+
+  // The Items browser lists a branch's items.
+  const req = (qs: string) => ({ query: new URLSearchParams(qs), user: { login: "op", role: "operator" } }) as unknown as Req;
+  const numbers = async (flow: string) => (await listItems(db, req(`flow=${flow}`))).rows.map((r) => r.number).sort((a, b) => a - b);
+  assert.deepEqual(await numbers("dupes.checking"), [20, 21]);
+  assert.deepEqual(await numbers("fixup.hold"), [40]);
+  assert.deepEqual(await numbers("act.failed"), [4]);
 });
