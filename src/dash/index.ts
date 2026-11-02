@@ -24,27 +24,11 @@ async function serve(): Promise<void> {
   process.once("SIGINT", stop);
 }
 
-function scoped() {
-  const db = connect();
-  scopeToTracked(db);
-  return db;
-}
-
-async function exportCmd(args: string[]): Promise<void> {
-  if (!args[0]) {
-    console.error("usage: craft-auto dash export <dir>");
-    process.exit(1);
-  }
-  const { exportSite } = await import("./pages/export.ts");
-  const { pages } = await exportSite(scoped(), args[0]);
-  console.log(`wrote ${pages} pages to ${args[0]}`);
-}
-
-export const dashCommands: Record<string, (args: string[]) => Promise<void> | void> = { serve, export: exportCmd };
+export const dashCommands: Record<string, (args: string[]) => Promise<void> | void> = { serve };
 
 export const commands = {
   dash: {
-    summary: "dashboard: serve | export <dir>",
+    summary: "dashboard: serve",
     run: async (args: string[]) => {
       const f = args[0] ? dashCommands[args[0]] : undefined;
       if (!f) {

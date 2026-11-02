@@ -376,9 +376,115 @@ export interface AuditFilter {
   offset?: number;
 }
 
+// ---- classifiers ----------------------------------------------------------
+
+/** One run in which at least two classifiers judged the same items. */
+export interface ClassifierRun {
+  id: string;
+  at: string;
+  /** Pairs with items in both, `a` being the one with probabilities when only one has them. */
+  pairs: { a: string; b: string; items: number }[];
+}
+
+export interface Agreement {
+  n: number;
+  agree: number;
+}
+
+export interface ConfidenceBand {
+  /** Label such as "≥0.99" or "0.95–0.99". */
+  band: string;
+  n: number;
+  agree: number;
+  /** Items at or above this band's lower bound, and those that agree. */
+  cumN: number;
+  cumAgree: number;
+}
+
+export interface FlagAgreement {
+  flag: string;
+  n: number;
+  agree: number;
+  both: number;
+  onlyA: number;
+  onlyB: number;
+}
+
+export interface ClassifierReport {
+  runs: ClassifierRun[];
+  run: string;
+  a: string;
+  b: string;
+  labels: string[];
+  items: number;
+  overall: Agreement;
+  byKind: { pr: Agreement; issue: Agreement };
+  /** Grouped by classifier `a`'s label. */
+  byLabel: ({ label: string } & Agreement)[];
+  byRepo: ({ repo: string } & Agreement)[];
+  /** `confusion[i][j]`: `a` said labels[i], `b` said labels[j]. */
+  confusion: number[][];
+  /** Bands of classifier `a`'s top-label probability; empty when `a` recorded none. */
+  bands: ConfidenceBand[];
+  flags: FlagAgreement[];
+}
+
+export interface Disagreement {
+  repo: string;
+  number: number;
+  kind: "pr" | "issue";
+  title: string;
+  a: { label: string | null; prob: number | null };
+  b: { label: string | null; prob: number | null };
+}
+
+export interface DisagreementList {
+  total: number;
+  rows: Disagreement[];
+}
+
+export interface DisagreementFilter {
+  run: string;
+  a: string;
+  b: string;
+  /** Either classifier's label. */
+  label?: string;
+  /** A band label from `ClassifierReport.bands`. */
+  band?: string;
+  limit?: number;
+  offset?: number;
+}
+
 export interface AuditPage {
   entries: AuditEntry[];
   total: number;
   /** every action the log knows, for the filter */
   actions: string[];
+}
+
+// ---- run and cost ---------------------------------------------------------
+
+export interface UsageTotals {
+  calls: number;
+  items: number;
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+  /** Sum of the costs agents reported; null when none did. */
+  usd: number | null;
+  /** First start to last end, in seconds. */
+  wallSeconds: number;
+}
+
+export interface CostReport {
+  runs: { id: string; from: string; to: string }[];
+  /** A run id, or "" for all runs. */
+  run: string;
+  total: UsageTotals;
+  stages: ({ stage: string; model: string } & UsageTotals)[];
+  repos: ({ repo: string } & UsageTotals)[];
+  /** Spend per time bucket; `bucket` is an ISO hour or day. */
+  series: { bucket: string; tokens: number; usd: number | null }[];
+  bucketSize: "hour" | "day";
 }

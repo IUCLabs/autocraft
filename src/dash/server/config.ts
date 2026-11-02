@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomToken } from "./crypto.ts";
 import { dbPath } from "../../db.ts";
+import { defaultImageCacheDir } from "./images.ts";
 
 export type Secrets = { githubClientId: string; githubClientSecret: string; sessionKey: string };
 
@@ -17,6 +18,7 @@ export type Config = {
   devPermsFile: string | null;
   devTokenTtlMs: number | null;    // fake provider's access-token lifetime
   trustProxy: boolean;
+  imageCacheDir: string | null;    // the image proxy's disk cache; null: none
   secrets: Secrets;
 };
 
@@ -98,5 +100,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     devPermsFile: devAuth ? (env.CRAFT_AUTO_DEV_PERMS ?? null) : null,
     devTokenTtlMs: devAuth && env.CRAFT_AUTO_DEV_TOKEN_TTL ? Number(env.CRAFT_AUTO_DEV_TOKEN_TTL) * 1000 || null : null,
     trustProxy: env.CRAFT_AUTO_TRUST_PROXY === "1",
+    imageCacheDir: env.CRAFT_AUTO_IMG_CACHE === "" ? null : defaultImageCacheDir(env),
   };
 }

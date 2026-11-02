@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { after, describe, test } from "node:test";
 import { connect } from "../src/db.ts";
 import { apiRoutes } from "../src/dash/api/index.ts";
-import { funnelByRepo } from "../src/dash/pages/stats.ts";
+import { funnelByRepo } from "../src/dash/api/stats.ts";
 import type { Req } from "../src/dash/types.ts";
 import { selectSyncRepos } from "../src/mirror.ts";
 import { purgeRepo, RepoError, scopeToTracked, trackedNames, trackRepo, untrackRepo } from "../src/repos.ts";

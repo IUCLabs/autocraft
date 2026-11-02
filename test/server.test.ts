@@ -31,21 +31,21 @@ writeFileSync(join(dir, "web", "package.json"), JSON.stringify({ name: SECRET_MA
 writeFileSync(join(dir, "secret.txt"), SECRET_MARKER);
 
 let handlerRuns = 0;
-// Stand-ins for the pages' decision writes, which check permission the same way.
+// Stand-ins for the API's decision writes, which check permission the same way.
 const testRoutes: Route[] = [
-  { method: "GET", pattern: "/test/me", handler: (_db, req) => ({ json: { login: req.user.login, csrf: req.csrf } }) },
-  { method: "GET", pattern: "/test/can/:repo", handler: async (_db, req) => ({ json: { can: await req.user.canWrite(req.params.repo!) } }) },
+  { method: "GET", pattern: "/api/test/me", handler: (_db, req) => ({ json: { login: req.user.login, csrf: req.csrf } }) },
+  { method: "GET", pattern: "/api/test/can/:repo", handler: async (_db, req) => ({ json: { can: await req.user.canWrite(req.params.repo!) } }) },
   {
-    method: "POST", pattern: "/test/answer/:repo",
+    method: "POST", pattern: "/api/test/answer/:repo",
     handler: async (_db, req) => {
       handlerRuns++;
       return (await req.user.canWrite(req.params.repo!)) ? { json: { ok: true } } : { status: 403, json: { error: "no write" } };
     },
   },
   {
-    method: "POST", pattern: "/test/batch",
+    method: "POST", pattern: "/api/test/batch",
     handler: async (_db, req) => {
-      const repos = (req.form.get("repos") ?? "").split(",");
+      const repos = ((req.json as { repos?: string } | undefined)?.repos ?? "").split(",");
       const blocked = [];
       for (const r of repos) if (!(await req.user.canWrite(r))) blocked.push(r);
       return blocked.length ? { status: 403, json: { blocked } } : { json: { ok: true } };
@@ -81,16 +81,18 @@ after(async () => {
 
 class Client {
   jar = new Map<string, string>();
-  async req(method: string, path: string, opts: { form?: Record<string, string>; html?: boolean; headers?: Record<string, string> } = {}): Promise<Response> {
+  async req(method: string, path: string, opts: { json?: Record<string, string>; html?: boolean; headers?: Record<string, string> } = {}): Promise<Response> {
     const headers: Record<string, string> = {
       ...opts.headers,
       cookie: [...this.jar].map(([k, v]) => `${k}=${v}`).join("; "),
       accept: opts.html === false ? "application/json" : "text/html",
     };
     let body: string | undefined;
-    if (opts.form) {
-      headers["content-type"] = "application/x-www-form-urlencoded";
-      body = new URLSearchParams(opts.form).toString();
+    if (opts.json) {
+      const { csrf, ...rest } = opts.json;
+      headers["content-type"] = "application/json";
+      if (csrf !== undefined) headers["x-csrf-token"] = csrf;
+      body = JSON.stringify(rest);
     }
     const r = await fetch(new URL(path, base), { method, headers, body, redirect: "manual" });
     for (const c of r.headers.getSetCookie()) {
@@ -102,7 +104,7 @@ class Client {
     return r;
   }
   get = (path: string, html = true) => this.req("GET", path, { html });
-  post = (path: string, form: Record<string, string>) => this.req("POST", path, { form, html: false });
+  post = (path: string, form: Record<string, string>) => this.req("POST", path, { json: form, html: false });
   async signIn(login: string): Promise<Response> {
     const start = await this.get("/auth/signin?return_to=/");
     assert.equal(start.status, 303);
@@ -111,7 +113,7 @@ class Client {
     return this.get(auth.headers.get("location")!);
   }
   async csrf(): Promise<string> {
-    return ((await (await this.get("/test/me", false)).json()) as { csrf: string }).csrf;
+    return ((await (await this.get("/api/test/me", false)).json()) as { csrf: string }).csrf;
   }
 }
 
@@ -193,34 +195,34 @@ describe("permissions", () => {
       if (r.operator) assert.equal(status, 403, r.pattern);
       else assert.ok(status >= 400, `${r.pattern}: ${status}`);
     }
-    assert.equal((await c.post("/test/answer/photocraft", { csrf })).status, 403);
+    assert.equal((await c.post("/api/test/answer/photocraft", { csrf })).status, 403);
     assert.equal((db.prepare("SELECT COUNT(*) AS n FROM audit").get() as { n: number }).n, before);
   });
 
   test("a maintainer answers only in repos where they have write", async () => {
     const c = await signedIn("maint");
     const csrf = await c.csrf();
-    assert.equal((await c.post("/test/answer/photocraft", { csrf })).status, 200);
-    assert.equal((await c.post("/test/answer/filmcraft", { csrf })).status, 403);
+    assert.equal((await c.post("/api/test/answer/photocraft", { csrf })).status, 200);
+    assert.equal((await c.post("/api/test/answer/filmcraft", { csrf })).status, 403);
   });
 
   test("a batch spanning a repo without write is refused", async () => {
     const c = await signedIn("maint");
     const csrf = await c.csrf();
-    const r = await c.post("/test/batch", { csrf, repos: "photocraft,filmcraft" });
+    const r = await c.post("/api/test/batch", { csrf, repos: "photocraft,filmcraft" });
     assert.equal(r.status, 403);
     assert.deepEqual(await r.json(), { blocked: ["filmcraft"] });
-    assert.equal((await c.post("/test/batch", { csrf, repos: "photocraft" })).status, 200);
+    assert.equal((await c.post("/api/test/batch", { csrf, repos: "photocraft" })).status, 200);
   });
 
   test("reads use the 10-minute cache; writes re-check a value older than a minute", async () => {
     const c = await signedIn("maint");
     const csrf = await c.csrf();
-    assert.equal((await c.post("/test/answer/photocraft", { csrf })).status, 200);
+    assert.equal((await c.post("/api/test/answer/photocraft", { csrf })).status, 200);
     setPerms({ maint: {} });
     db.prepare("UPDATE repo_permissions SET checked_at = ? WHERE login = 'maint'").run(new Date(Date.now() - 120_000).toISOString());
-    assert.deepEqual(await (await c.get("/test/can/photocraft", false)).json(), { can: true });
-    assert.equal((await c.post("/test/answer/photocraft", { csrf })).status, 403);
+    assert.deepEqual(await (await c.get("/api/test/can/photocraft", false)).json(), { can: true });
+    assert.equal((await c.post("/api/test/answer/photocraft", { csrf })).status, 403);
     setPerms({ maint: { photocraft: "write" }, boss: {} });
     db.prepare("DELETE FROM repo_permissions").run();
   });
@@ -228,10 +230,10 @@ describe("permissions", () => {
   test("a POST without the right CSRF token is refused before the handler runs", async () => {
     const c = await signedIn("maint");
     const runs = handlerRuns;
-    assert.equal((await c.post("/test/answer/photocraft", {})).status, 403);
-    assert.equal((await c.post("/test/answer/photocraft", { csrf: "wrong" })).status, 403);
+    assert.equal((await c.post("/api/test/answer/photocraft", {})).status, 403);
+    assert.equal((await c.post("/api/test/answer/photocraft", { csrf: "wrong" })).status, 403);
     const other = await signedIn("viewer1");
-    assert.equal((await c.post("/test/answer/photocraft", { csrf: await other.csrf() })).status, 403);
+    assert.equal((await c.post("/api/test/answer/photocraft", { csrf: await other.csrf() })).status, 403);
     assert.equal(handlerRuns, runs);
   });
 });
@@ -325,7 +327,7 @@ describe("tokens", () => {
     await sleep(350);
     db.prepare("DELETE FROM repo_permissions").run();
     const refreshes = provider.refreshes;
-    assert.deepEqual(await (await c.get("/test/can/photocraft", false)).json(), { can: true });
+    assert.deepEqual(await (await c.get("/api/test/can/photocraft", false)).json(), { can: true });
     assert.equal(provider.refreshes, refreshes + 1);
   });
 
@@ -337,7 +339,7 @@ describe("tokens", () => {
     db.prepare("DELETE FROM repo_permissions").run();
     provider.rejectRefresh = true;
     try {
-      assert.deepEqual(await (await c.get("/test/can/photocraft", false)).json(), { can: false });
+      assert.deepEqual(await (await c.get("/api/test/can/photocraft", false)).json(), { can: false });
     } finally {
       provider.rejectRefresh = false;
     }

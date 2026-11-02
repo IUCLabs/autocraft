@@ -116,6 +116,11 @@ export function createHttpApi(): Api {
       revokeSession: (id) => post("/api/access/sessions/revoke", { id }),
       audit: (filter) => get(`/api/audit${qs(filter)}`),
     },
+    classifiers: {
+      report: (sel) => get(`/api/classifiers${qs(sel)}`),
+      disagreements: (f) => get(`/api/classifiers/disagreements${qs(f)}`),
+    },
+    cost: (run) => get(`/api/cost${qs({ run })}`),
     async signOut() {
       await call("POST", "/api/signout");
       location.assign("/auth/signed-out");

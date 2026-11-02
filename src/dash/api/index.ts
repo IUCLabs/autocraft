@@ -8,11 +8,12 @@ import type {
 } from "../../../web/src/api/types.ts";
 import { trackedNames } from "../../repos.ts";
 import { contributors } from "../../whitelist.ts";
-import { doneByRepo, funnelByRepo, runStart, trend, type DoneRow, type FunnelRow } from "../pages/stats.ts";
+import { doneByRepo, funnelByRepo, runStart, trend, type DoneRow, type FunnelRow } from "./stats.ts";
 import { HttpError, RateLimiter } from "../server/util.ts";
 import type { Req, Res, Route } from "../types.ts";
 import * as adm from "./admin.ts";
 import * as dec from "./decisions.ts";
+import * as insight from "./insight.ts";
 import { classificationsOf, itemState, relatedOf } from "./decisions.ts";
 
 export type ApiOptions = {
@@ -214,5 +215,8 @@ export function apiRoutes(opts: ApiOptions = {}): Route[] {
     post("/api/access/role", adm.accessRole),
     post("/api/access/sessions/revoke", adm.revokeSession),
     get("/api/audit", adm.auditLog),
+    get("/api/classifiers", insight.classifiersReport),
+    get("/api/classifiers/disagreements", insight.disagreements),
+    get("/api/cost", insight.cost),
   ];
 }

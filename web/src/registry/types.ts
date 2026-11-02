@@ -53,8 +53,6 @@ export interface NavEntry {
   order: number;
   /** Shown on the phone tab bar (at most four entries). */
   phoneTab?: boolean;
-  /** A server page outside the app: a plain link that loads the page. */
-  page?: boolean;
   /** Live count shown beside the entry. */
   useBadge?: () => number | undefined;
 }

@@ -7,10 +7,14 @@ import type {
   Contributor,
   ContributorFilter,
   ContributorList,
+  ClassifierReport,
+  CostReport,
   Decision,
   DecisionComment,
   DecisionFilter,
   DecisionList,
+  DisagreementFilter,
+  DisagreementList,
   Item,
   OverrideInput,
   Progress,
@@ -66,6 +70,13 @@ export interface Api {
     revokeSession(id: number): Promise<AccessOverview>;
     audit(filter: AuditFilter): Promise<AuditPage>;
   };
+  classifiers: {
+    /** `run`, `a` and `b` default to the latest run and its first pair. */
+    report(sel: { run?: string; a?: string; b?: string }): Promise<ClassifierReport>;
+    disagreements(filter: DisagreementFilter): Promise<DisagreementList>;
+  };
+  /** Token use and spend for one run, or all runs when `run` is empty. */
+  cost(run?: string): Promise<CostReport>;
   signOut(): Promise<void>;
   /** Called after any write so open views can refetch. Returns an unsubscribe function. */
   subscribe(fn: () => void): () => void;

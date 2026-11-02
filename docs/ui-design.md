@@ -82,7 +82,6 @@ interface FeatureModule {
 - **Slots** let a module add to another module's screen without editing it. The item page renders the `item.side` slot under its own side panel (for example, a future "audit entries" or "cost for this item" block).
 - **Data hooks**: `useQuery(key, api => …)` over the typed `Api` interface (`web/src/api/client.ts`). It refetches after any write. `createHttpApi()` (`web/src/api/http.ts`) implements it over the server's JSON API; `createMockApi()` implements it over deterministic fixtures for the mockup build (`VITE_MOCK=1`).
 - **Keyboard**: views register the keys they handle (`useShortcutHelp`), so the `?` sheet lists exactly what works on the current screen.
-- **Server pages**: Classifiers and Run and cost are modules whose nav entries link to the server-rendered pages with a full page load. In the mockup build they show a placeholder view instead.
 
 ## 6. Screens
 
@@ -102,7 +101,7 @@ Desktop, three panels: queue (28 %), decision (45 %), discussion (27 %, collapsi
 - **Discussion** panel: every comment (avatar, login, GitHub permission badge `write` / `no write`, the option it picks or "commented", note, age), with "Use this answer" for operators on comments that pick an option; then the comment thread. Both say they are never sent to the pipeline.
 - **Answering**: an operator's click or number key answers and moves to the next decision. The answered row stays at the top of the queue as a one-line confirmation with Undo; `u` undoes the last one until the pipeline applies it.
 
-Description rendering is for untrusted input: raw HTML is dropped, only `http(s)`, `mailto`, relative and anchor links survive, links open in a new tab with `rel="noopener noreferrer nofollow"`, and images never load inline (the CSP allows only same-origin images): each becomes a chip with its alt text that opens the image in a new tab on click.
+Description rendering is for untrusted input: raw HTML is dropped, only `http(s)`, `mailto`, relative and anchor links survive, links open in a new tab with `rel="noopener noreferrer nofollow"`, and only GitHub-hosted images load inline. The CSP allows only same-origin images, so the renderer sends images on the hosts the server's image proxy serves (`GET /img`, see the README) through it: lazy-loaded, at most the column's width and 480 px tall, and a click opens the original on GitHub in a new tab. Every other image, and one the proxy refuses, becomes a chip with its alt text that opens the image in a new tab on click.
 
 Phone: one decision per screen. A header strip with the count, summary and a Filter button (filters in a bottom sheet). The page scrolls through title, summary, description, facts, the question with full-width options, comments and the disclosures. A bottom bar holds previous / next, the position ("15 of 38"), the question in one line and a button that jumps to the options ("Answer", "Give opinion" or "Change").
 

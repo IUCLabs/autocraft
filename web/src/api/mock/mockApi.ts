@@ -3,6 +3,7 @@ import type { Decision, DecisionComment, DecisionFilter, User } from "../types";
 import { decisionAccess } from "../../registry/permissions";
 import { setClock } from "../../lib/format";
 import { createAdminMock } from "./adminMock";
+import { classifierReport, costReport, disagreementList } from "./insightFixtures";
 import { DECISIONS, MOCK_USERS, NOW, REPOS, SEARCH_POOL, THREADS, itemFor, permFor, progress, type MockRole } from "./fixtures";
 
 const wait = <T>(v: T, ms = 60) => new Promise<T>((r) => setTimeout(() => r(structuredClone(v)), ms));
@@ -148,6 +149,11 @@ export function createMockApi(): Api {
     },
     progress: () => wait(progress(decisions.filter((d) => !d.answer).length)),
     ...createAdminMock(me, changed),
+    classifiers: {
+      report: (sel) => wait(classifierReport(sel), 80),
+      disagreements: (f) => wait(disagreementList(f), 60),
+    },
+    cost: (run) => wait(costReport(run), 80),
     signOut: () => wait(undefined),
     subscribe(fn) {
       listeners.add(fn);

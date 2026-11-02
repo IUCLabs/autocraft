@@ -4,7 +4,8 @@ import type { FeatureModule } from "./types";
 import { decisionsModule } from "../modules/decisions";
 import { itemModule } from "../modules/item";
 import { progressModule } from "../modules/progress";
-import { placeholderModules } from "../modules/placeholders";
+import { classifiersModule } from "../modules/classifiers";
+import { costModule } from "../modules/cost";
 import { accessModule, contributorsModule, reposModule } from "../modules/admin";
 
-export const modules: FeatureModule[] = [decisionsModule, itemModule, progressModule, contributorsModule, reposModule, accessModule, ...placeholderModules];
+export const modules: FeatureModule[] = [decisionsModule, itemModule, progressModule, contributorsModule, classifiersModule, costModule, reposModule, accessModule];
