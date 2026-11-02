@@ -122,9 +122,44 @@ CREATE TABLE IF NOT EXISTS decisions (
   answer TEXT, answer_note TEXT,      -- answer_note is private
   exceptions TEXT,                    -- batch: JSON [{repo, number, answer}]
   answered_by TEXT, answered_at TEXT,
-  applied_at TEXT
+  applied_at TEXT,
+  summary TEXT, summary_by TEXT, summary_at TEXT,  -- AI summary of the item or batch, by which model, when
+  adopted_opinion TEXT                -- decision_opinions.id when the answer adopted an opinion
 );
 CREATE INDEX IF NOT EXISTS decisions_open ON decisions(answer, kind, repo);
+-- db.ts adds the summary and adopted_opinion columns to databases created before them.
+
+-- Opinions: non-binding picks by anyone signed in. Display-only: the pipeline
+-- and every CLI command agents run never read this table or decision_comments.
+CREATE TABLE IF NOT EXISTS decision_opinions (
+  id TEXT PRIMARY KEY,
+  decision_id TEXT NOT NULL,
+  login TEXT NOT NULL COLLATE NOCASE,
+  option TEXT,                        -- option key, or NULL for a note only
+  note TEXT,
+  at TEXT NOT NULL,
+  permission TEXT NOT NULL,           -- the login's GitHub permission on the repo when given: write | none
+  retracted_at TEXT                   -- set when changed or retracted; one live row per login and decision
+);
+CREATE UNIQUE INDEX IF NOT EXISTS decision_opinions_live ON decision_opinions(decision_id, login) WHERE retracted_at IS NULL;
+
+CREATE TABLE IF NOT EXISTS decision_comments (
+  id TEXT PRIMARY KEY,
+  decision_id TEXT NOT NULL,
+  login TEXT NOT NULL COLLATE NOCASE,
+  at TEXT NOT NULL,
+  body TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS decision_comments_decision ON decision_comments(decision_id, at);
+
+-- Who is looking at a decision; a claim lapses after 10 minutes without activity.
+CREATE TABLE IF NOT EXISTS decision_claims (
+  decision_id TEXT NOT NULL,
+  login TEXT NOT NULL COLLATE NOCASE,
+  since TEXT NOT NULL,                -- when this look started
+  at TEXT NOT NULL,                   -- last activity
+  PRIMARY KEY (decision_id, login)
+);
 
 -- Accounts. Only logins on the access list can sign in.
 CREATE TABLE IF NOT EXISTS access (
@@ -162,7 +197,7 @@ CREATE TABLE IF NOT EXISTS oauth_states (
 CREATE TABLE IF NOT EXISTS audit (
   at TEXT NOT NULL,
   login TEXT NOT NULL,
-  action TEXT NOT NULL,               -- answer | undo | override | rule | access-add | access-remove | access-role | session-revoke | sign-in | sign-in-refused | repo-track | repo-untrack
+  action TEXT NOT NULL,               -- answer | undo | adopt | opinion | opinion-retract | comment | override | rule | access-add | access-remove | access-role | session-revoke | sign-in | sign-in-refused | repo-track | repo-untrack
   target TEXT,
   details TEXT                        -- JSON
 );

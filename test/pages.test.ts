@@ -83,28 +83,30 @@ describe("pages", () => {
 
   const openSingle = (): DecisionRow => db.prepare("SELECT * FROM decisions WHERE answer IS NULL AND number IS NOT NULL LIMIT 1").get() as DecisionRow;
 
-  test("a viewer's and a no-write maintainer's answer gets 403; the card says why", async () => {
+  test("a non-operator's and a no-write operator's answer gets 403; the card says why", async () => {
     const d = openSingle();
-    const maint = user("maint", "viewer", (r) => r !== d.repo);
-    for (const u of [viewer, maint]) {
+    const maint = user("maint", "viewer", () => true);
+    const op = user("op", "admin", (r) => r !== d.repo);
+    for (const [u, why] of [[viewer, /Only the operator/], [maint, /Only the operator/], [op, new RegExp(`storytold/${d.repo}`)]] as const) {
       const res = await call("POST", "/decisions/answer", req(u, "POST", "/decisions/answer", {}, { id: d.id, answer: d.recommended! }));
       assert.equal(res.status, 403);
-      assert.match(res.html!, new RegExp(`storytold/${d.repo}`));
+      assert.match(res.html!, why);
+      const home = await call("GET", "/", req(u, "GET", "/", {}, {}, `repo=${d.repo}`));
+      assert.doesNotMatch(home.html!, /action="\/decisions\/answer"/);
     }
     assert.equal(getDecision(db, d.id)!.answer, null);
-    const home = await call("GET", "/", req(maint, "GET", "/", {}, {}, `repo=${d.repo}`));
-    assert.doesNotMatch(home.html!, /action="\/decisions\/answer"/);
+    const home = await call("GET", "/", req(op, "GET", "/", {}, {}, `repo=${d.repo}`));
     assert.match(home.html!, /You can&#39;t answer this/);
   });
 
   test("answer, undo, answer again", async () => {
     const d = openSingle();
-    const m = user("maint", "viewer", (r) => r === d.repo);
+    const m = user("op", "admin", (r) => r === d.repo);
     const r1 = await call("POST", "/decisions/answer", req(m, "POST", "/decisions/answer", {}, { id: d.id, answer: d.recommended!, note: `n ${MARKER}`, js: "1" }));
     assert.equal(r1.status ?? 200, 200);
     assert.match(r1.html!, /Answered/);
     assert.match(r1.html!, /decisions\/undo/);
-    assert.equal(getDecision(db, d.id)!.answered_by, "maint");
+    assert.equal(getDecision(db, d.id)!.answered_by, "op");
     const again = await call("POST", "/decisions/answer", req(m, "POST", "/decisions/answer", {}, { id: d.id, answer: d.recommended! }));
     assert.equal(again.status, 409);
     const r2 = await call("POST", "/decisions/undo", req(m, "POST", "/decisions/undo", {}, { id: d.id, back: "/" }));
@@ -127,11 +129,11 @@ describe("pages", () => {
     const b = db.prepare("SELECT * FROM decisions WHERE number IS NULL AND repo IS NULL AND answer IS NULL LIMIT 1").get() as DecisionRow;
     const refs = JSON.parse(b.items!) as { repo: string; number: number }[];
     const blockedRepo = refs[refs.length - 1].repo;
-    const partial = user("maint", "viewer", (r) => r !== blockedRepo);
+    const partial = user("op", "admin", (r) => r !== blockedRepo);
     const res = await call("POST", "/decisions/answer", req(partial, "POST", "/decisions/answer", {}, { id: b.id, answer: "close" }));
     assert.equal(res.status, 403);
     assert.match(res.html!, new RegExp(blockedRepo));
-    const full = user("maint", "viewer", () => true);
+    const full = user("op", "admin", () => true);
     const ex = `ex:${refs[0].repo}#${refs[0].number}`;
     const ok = await call("POST", "/decisions/answer", req(full, "POST", "/decisions/answer", {}, { id: b.id, answer: "close", [ex]: "keep" }));
     assert.ok(ok.redirect);

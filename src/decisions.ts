@@ -7,7 +7,7 @@ import { connect } from "./db.ts";
 export const KINDS = ["scope", "duplicate", "close", "merge", "split", "other"] as const;
 export type Kind = (typeof KINDS)[number];
 
-export type Option = { key: string; label: string };
+export type Option = { key: string; label: string; hint?: string };
 export type Ref = { repo: string; number: number };
 export type Exception = Ref & { answer: string };
 
@@ -17,6 +17,7 @@ export type DecisionRow = {
   recommended: string | null; public_text: string | null; asked_at: string; asked_by: string | null;
   docket: string | null; answer: string | null; answer_note: string | null; exceptions: string | null;
   answered_by: string | null; answered_at: string | null; applied_at: string | null;
+  summary: string | null; summary_by: string | null; summary_at: string | null; adopted_opinion: string | null;
 };
 
 const j = <T>(s: string | null, d: T): T => {
@@ -34,7 +35,9 @@ export function getDecision(db: DatabaseSync, id: string): DecisionRow | undefin
   return db.prepare("SELECT * FROM decisions WHERE id = ?").get(id) as DecisionRow | undefined;
 }
 
-const ASK_FIELDS = ["kind", "repo", "number", "items", "question", "context", "facts", "options", "recommended", "public_text", "asked_at", "asked_by", "docket"] as const;
+const ASK_FIELDS = ["kind", "repo", "number", "items", "question", "context", "facts", "options", "recommended", "public_text", "asked_at", "asked_by", "docket", "summary", "summary_by", "summary_at"] as const;
+
+const str = (v: unknown): string | null => (typeof v === "string" && v ? v : null);
 
 // Validates one question from the pipeline and returns the column values.
 export function validateAsk(q: Record<string, unknown>): Record<string, string | number | null> {
@@ -43,8 +46,9 @@ export function validateAsk(q: Record<string, unknown>): Record<string, string |
   if (!KINDS.includes(q.kind as Kind)) throw err(`kind must be one of ${KINDS.join(", ")}`);
   if (typeof q.question !== "string" || !q.question.trim()) throw err("question is required");
   const options = q.options as Option[];
-  if (!Array.isArray(options) || options.length < 2 || options.length > 4 || !options.every((o) => typeof o?.key === "string" && typeof o?.label === "string"))
-    throw err("options must be 2–4 {key, label}");
+  if (!Array.isArray(options) || options.length < 2 || options.length > 4 ||
+    !options.every((o) => typeof o?.key === "string" && typeof o?.label === "string" && (o.hint === undefined || typeof o.hint === "string")))
+    throw err("options must be 2–4 {key, label, hint?}");
   if (new Set(options.map((o) => o.key)).size !== options.length) throw err("option keys must be unique");
   if (q.recommended != null && !options.some((o) => o.key === q.recommended)) throw err("recommended must be an option key");
   const facts = (q.facts ?? []) as unknown[];
@@ -63,10 +67,11 @@ export function validateAsk(q: Record<string, unknown>): Record<string, string |
     id: q.id, kind: q.kind as string, repo, number: batch ? null : (q.number as number),
     items: items ? JSON.stringify(items.map((r) => ({ repo: r.repo, number: r.number }))) : null,
     question: q.question.trim(), context: typeof q.context === "string" ? q.context : null,
-    facts: JSON.stringify(facts), options: JSON.stringify(options.map((o) => ({ key: o.key, label: o.label }))),
+    facts: JSON.stringify(facts), options: JSON.stringify(options.map((o) => ({ key: o.key, label: o.label, ...(o.hint ? { hint: o.hint } : {}) }))),
     recommended: (q.recommended as string) ?? null, public_text: typeof q.public_text === "string" ? q.public_text : null,
     asked_at: typeof q.asked_at === "string" ? q.asked_at : new Date().toISOString(),
     asked_by: typeof q.asked_by === "string" ? q.asked_by : null, docket: typeof q.docket === "string" ? q.docket : null,
+    summary: str(q.summary), summary_by: str(q.summary_by), summary_at: str(q.summary_at),
   };
 }
 
@@ -92,7 +97,25 @@ export function ask(db: DatabaseSync, questions: Record<string, unknown>[]): { i
   return { inserted, updated };
 }
 
+// Answers the pipeline may act on: answered by someone who is an operator
+// (role admin) now, and not yet applied. Option keys only, never free text.
+// Opinions and comments are display-only and never read here.
+export type Actionable = { id: string; kind: Kind; repo: string | null; number: number | null; items: Ref[]; answer: string; exceptions: Exception[] };
+
+export function actionable(db: DatabaseSync): Actionable[] {
+  const rows = db.prepare(`SELECT * FROM decisions WHERE answer IS NOT NULL AND applied_at IS NULL
+    AND answered_by IN (SELECT login FROM access WHERE role = 'admin') ORDER BY answered_at`).all() as DecisionRow[];
+  return rows.map((d) => ({
+    id: d.id, kind: d.kind, repo: d.repo, number: d.number, items: itemsOf(d), answer: d.answer!,
+    exceptions: exceptionsOf(d).map((e) => ({ repo: e.repo, number: e.number, answer: e.answer })),
+  }));
+}
+
 function list(args: string[]): void {
+  if (args.includes("--actionable")) {
+    for (const a of actionable(connect())) console.log(JSON.stringify(a));
+    return;
+  }
   const which = args.includes("--all") ? "all" : args.includes("--answered") ? "answered" : "open";
   const ri = args.indexOf("--repo");
   const repo = ri >= 0 ? args[ri + 1] : undefined;
@@ -114,7 +137,9 @@ function show(args: string[]): void {
   const d = getDecision(connect(), id);
   if (!d) throw new Error(`no decision ${id}`);
   // answer_note is shown here: the CLI runs only on the host.
-  const out = { ...d, items: j(d.items, null), facts: factsOf(d), options: optionsOf(d), exceptions: j(d.exceptions, null) };
+  // adopted_opinion points at an opinion, which agents never see.
+  const { adopted_opinion: _adopted, ...rest } = d;
+  const out = { ...rest, items: j(d.items, null), facts: factsOf(d), options: optionsOf(d), exceptions: j(d.exceptions, null) };
   console.log(JSON.stringify(out, null, 2));
 }
 
@@ -124,7 +149,7 @@ function askCmd(args: string[]): void {
   const data = JSON.parse(readFileSync(file, "utf8")) as unknown;
   const qs = (Array.isArray(data) ? data : [data]) as Record<string, unknown>[];
   for (const q of qs) {
-    if (q && typeof q === "object" && ["answer", "answer_note", "answered_by", "answered_at", "exceptions", "applied_at"].some((k) => k in q))
+    if (q && typeof q === "object" && ["answer", "answer_note", "answered_by", "answered_at", "exceptions", "applied_at", "adopted_opinion"].some((k) => k in q))
       throw new Error(`decision ${String(q.id)}: the CLI cannot set answers`);
   }
   const r = ask(connect(), qs);
@@ -135,7 +160,7 @@ const SUB: Record<string, (args: string[]) => void> = { list, show, ask: askCmd 
 
 export const commands = {
   decisions: {
-    summary: "decisions for people: list [--open|--answered|--all] [--repo R] | show ID | ask FILE.json (answers come only from the dashboard)",
+    summary: "decisions for people: list [--open|--answered|--all|--actionable] [--repo R] | show ID | ask FILE.json (answers come only from the dashboard)",
     run(args: string[]): void {
       const [sub, ...rest] = args;
       const fn = sub ? SUB[sub] : undefined;

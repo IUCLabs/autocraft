@@ -10,8 +10,8 @@ import type { Req, Res, Route } from "../types.ts";
 import type { Config } from "./config.ts";
 import { pkceChallenge, randomToken, safeEqual, TokenBox } from "./crypto.ts";
 import { FakeProvider, providerFor, type Provider, type Tokens } from "./provider.ts";
-import { createSession, deleteSession, loadSession, makeUser, pruneExpired, SESSION_TTL } from "./sessions.ts";
-import { esc, parseCookies, plainPage, RateLimiter, safeReturnTo } from "./util.ts";
+import { createSession, deleteSession, loadSession, makeUser, pruneExpired, SESSION_TTL, type Session } from "./sessions.ts";
+import { esc, HttpError, parseCookies, plainPage, RateLimiter, safeReturnTo } from "./util.ts";
 
 export const SESSION_COOKIE = "__Host-craft_session";
 const STATE_COOKIE = "__Host-craft_oauth";
@@ -31,13 +31,6 @@ export type AppOptions = {
 
 type Compiled = Route & { parts: string[] };
 
-class HttpError extends Error {
-  status: number;
-  constructor(status: number, message: string) {
-    super(message);
-    this.status = status;
-  }
-}
 
 function placeholderRoutes(): Route[] {
   return [{
@@ -54,6 +47,7 @@ function placeholderRoutes(): Route[] {
 // home page when they are absent.
 export async function defaultRoutes(): Promise<Route[]> {
   const { accessRoutes } = await import("../access-page.ts");
+  const { apiRoutes } = await import("../api/index.ts");
   let pages: Route[];
   try {
     // A variable specifier, so the type check passes while the module is absent.
@@ -64,7 +58,7 @@ export async function defaultRoutes(): Promise<Route[]> {
     if (err.code !== "ERR_MODULE_NOT_FOUND" || !String(err.message).includes("pages/index.ts")) throw e;
     pages = placeholderRoutes();
   }
-  return [...accessRoutes, ...pages];
+  return [...accessRoutes, ...apiRoutes(), ...pages];
 }
 
 function compile(routes: Route[]): Compiled[] {
@@ -95,7 +89,7 @@ function match(routes: Compiled[], method: string, path: string): { route?: Comp
   return { other };
 }
 
-async function readBody(req: IncomingMessage): Promise<URLSearchParams> {
+async function readRaw(req: IncomingMessage): Promise<Buffer> {
   const declared = Number(req.headers["content-length"] ?? 0);
   if (declared > BODY_LIMIT) throw new HttpError(413, "Request too large");
   const chunks: Buffer[] = [];
@@ -105,11 +99,32 @@ async function readBody(req: IncomingMessage): Promise<URLSearchParams> {
     if (size > BODY_LIMIT) throw new HttpError(413, "Request too large");
     chunks.push(c);
   }
-  if (size === 0) return new URLSearchParams();
-  const type = (req.headers["content-type"] ?? "").split(";")[0]!.trim().toLowerCase();
-  if (type !== "application/x-www-form-urlencoded") throw new HttpError(415, "Forms must be sent as application/x-www-form-urlencoded");
-  return new URLSearchParams(Buffer.concat(chunks).toString("utf8"));
+  return Buffer.concat(chunks);
 }
+
+const contentType = (req: IncomingMessage): string => (req.headers["content-type"] ?? "").split(";")[0]!.trim().toLowerCase();
+
+async function readBody(req: IncomingMessage): Promise<URLSearchParams> {
+  const raw = await readRaw(req);
+  if (raw.length === 0) return new URLSearchParams();
+  if (contentType(req) !== "application/x-www-form-urlencoded") throw new HttpError(415, "Forms must be sent as application/x-www-form-urlencoded");
+  return new URLSearchParams(raw.toString("utf8"));
+}
+
+async function readJson(req: IncomingMessage): Promise<unknown> {
+  const raw = await readRaw(req);
+  if (raw.length === 0) return undefined;
+  if (contentType(req) !== "application/json") throw new HttpError(415, "Send the body as application/json");
+  try {
+    return JSON.parse(raw.toString("utf8"));
+  } catch {
+    throw new HttpError(400, "The body is not valid JSON");
+  }
+}
+
+// API clients send the session's CSRF token in this header; every /api/
+// response carries it, so the client reads it from GET /api/me.
+export const CSRF_HEADER = "x-csrf-token";
 
 function cookie(name: string, value: string, maxAgeSec: number): string {
   return `${name}=${value}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${maxAgeSec}`;
@@ -164,6 +179,50 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
 
   const errorPage = (nonce: string, status: number, title: string, text: string): Res =>
     ({ status, html: plainPage(nonce, title, `<p>${esc(text)}</p><p><a href="/">Dashboard</a></p>`) });
+  const apiError = (status: number, error: string): Res => ({ status, json: { error } });
+
+  // A browser sends Origin on every POST it makes with fetch, and
+  // Sec-Fetch-Site on current engines; either one from another site is refused.
+  // Clients that send neither still need the CSRF header.
+  function sameOrigin(req: IncomingMessage): boolean {
+    const site = req.headers["sec-fetch-site"];
+    if (site !== undefined && site !== "same-origin") return false;
+    const origin = req.headers.origin;
+    if (origin === undefined) return true;
+    const expected = config.baseUrl ?? `http://${req.headers.host ?? ""}`;
+    try {
+      return origin === new URL(expected).origin;
+    } catch {
+      return false;
+    }
+  }
+
+  async function handleApi(req: IncomingMessage, res: ServerResponse, url: URL, nonce: string, session: Session): Promise<void> {
+    const method = req.method;
+    const out = (r: Res, cookies?: string[]) =>
+      send(res, nonce, { ...r, headers: { ...r.headers, [CSRF_HEADER]: session.csrf } }, cookies);
+    if (method !== "GET" && method !== "POST") return out(apiError(405, "method not allowed"));
+    let json: unknown;
+    if (method === "POST") {
+      if (!sameOrigin(req)) return out(apiError(403, "cross-origin request refused"));
+      if (!writeLimitSession.allow(session.idHash) || !writeLimitIp.allow(clientIp(req))) return out(apiError(429, "too many requests; wait a minute"));
+      json = await readJson(req);
+      if (!safeEqual(String(req.headers[CSRF_HEADER] ?? ""), session.csrf)) return out(apiError(403, "missing or wrong CSRF token"));
+      if (url.pathname === "/api/signout") {
+        deleteSession(db, parseCookies(req.headers.cookie).get(SESSION_COOKIE)!);
+        return send(res, nonce, { status: 204 }, [cookie(SESSION_COOKIE, "", 0)]);
+      }
+    }
+    const { route, params, other } = match(routes, method, url.pathname);
+    if (!route) return out(other ? apiError(405, "method not allowed") : apiError(404, "not found"));
+    if (route.admin && session.role !== "admin") return out(apiError(403, "operators only"));
+    const r: Req = {
+      method, path: url.pathname, params: params!, query: url.searchParams, form: new URLSearchParams(), json,
+      user: makeUser(db, box, provider, session, method === "POST"),
+      csrf: session.csrf, nonce,
+    };
+    return out(await route.handler(db, r));
+  }
 
   async function auth(req: IncomingMessage, url: URL, nonce: string, cookies: Map<string, string>): Promise<{ r: Res; cookies?: string[] }> {
     const ip = clientIp(req);
@@ -271,6 +330,7 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
         if (wantsPage) return send(res, nonce, { redirect: `/auth/signin?${new URLSearchParams({ return_to: url.pathname + url.search })}` });
         return send(res, nonce, { status: 401, json: { error: "sign-in required" } });
       }
+      if (url.pathname.startsWith("/api/")) return await handleApi(req, res, url, nonce, session);
       if (method !== "GET" && method !== "POST") return send(res, nonce, { status: 405, json: { error: "method not allowed" } });
 
       if (method === "GET" && url.pathname.startsWith("/assets/")) return await sendAsset(res, nonce, url.pathname.slice(8));
@@ -299,9 +359,10 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
       };
       return send(res, nonce, await route.handler(db, r));
     } catch (e) {
-      if (e instanceof HttpError) return send(res, nonce, errorPage(nonce, e.status, "Request refused", e.message));
+      const api = (req.url ?? "").startsWith("/api/");
+      if (e instanceof HttpError) return send(res, nonce, api ? apiError(e.status, e.message) : errorPage(nonce, e.status, "Request refused", e.message));
       console.error(`${req.method} ${(req.url ?? "").split("?")[0]}: ${(e as Error).stack ?? e}`);
-      if (!res.headersSent) send(res, nonce, errorPage(nonce, 500, "Something went wrong", "The error is logged on the server."));
+      if (!res.headersSent) send(res, nonce, api ? apiError(500, "server error; it is logged") : errorPage(nonce, 500, "Something went wrong", "The error is logged on the server."));
       else res.destroy();
     }
   }

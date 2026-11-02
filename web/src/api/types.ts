@@ -134,6 +134,17 @@ export interface ChangedFile {
   deletions: number;
 }
 
+/** A GitHub comment or review on an item, from the mirror. Untrusted text: render as Markdown, never as HTML. */
+export interface ItemComment {
+  id: string;
+  author: string;
+  at: string;
+  body: string;
+  kind: "comment" | "review";
+  /** reviews: APPROVED | CHANGES_REQUESTED | COMMENTED */
+  reviewState: string | null;
+}
+
 export interface Item extends ItemRef {
   kind: "pr" | "issue";
   title: string;
@@ -155,6 +166,7 @@ export interface Item extends ItemRef {
   related: RelatedItem[];
   classifications: Classification[];
   stages: StageEntry[];
+  comments: ItemComment[];
   decisionIds: string[];
 }
 
@@ -222,6 +234,9 @@ export interface DecisionFilter {
   mine?: boolean;
   /** "opinions": open decisions that have at least one opinion */
   status?: "open" | "opinions" | "answered";
+  /** page size (server default 100, at most 500) and offset; `total` counts every match */
+  limit?: number;
+  offset?: number;
 }
 
 export interface DecisionList {
