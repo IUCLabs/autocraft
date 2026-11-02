@@ -49,7 +49,7 @@ export function useInboxKeys(list: Decision[]) {
 }
 
 export function InboxList({ user }: ViewProps) {
-  const { data, loading } = useDecisionList();
+  const { data, loading, hasMore, loadMore, loadingMore } = useDecisionList();
   const { id, go } = useSelection();
   const loc = useLocal();
   const list = ordered(data?.decisions ?? []);
@@ -96,6 +96,16 @@ export function InboxList({ user }: ViewProps) {
             </div>
           );
         })}
+        {hasMore && data && (
+          <div className="flex items-center justify-between gap-3 px-4 py-3 text-xs text-ink/55">
+            <span className="num">
+              {data.decisions.length} of {data.total}
+            </span>
+            <button className="chip" disabled={loadingMore} onClick={loadMore}>
+              {loadingMore ? "Loading…" : "Show more"}
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );

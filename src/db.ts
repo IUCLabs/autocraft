@@ -60,6 +60,26 @@ function buildSearchIndex(db: DatabaseSync): void {
   }
 }
 
+// Fills item_stage once, for a database that had stages before the table existed.
+function buildItemStage(db: DatabaseSync): void {
+  if (db.prepare("SELECT 1 FROM main.settings WHERE key = 'item_stage_built'").get()) return;
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    if (!db.prepare("SELECT 1 FROM main.settings WHERE key = 'item_stage_built'").get()) {
+      db.exec(`INSERT OR REPLACE INTO main.item_stage (repo, number, stage, at, reviewed)
+        SELECT repo, number, stage, at, reviewed FROM (
+          SELECT repo, number, stage, at, MAX(stage = 'reviewed') OVER (PARTITION BY repo, number) AS reviewed,
+            ROW_NUMBER() OVER (PARTITION BY repo, number ORDER BY at DESC, rowid DESC) AS rn FROM main.stages
+        ) WHERE rn = 1`);
+      db.exec("INSERT INTO main.settings (key, value) VALUES ('item_stage_built', '1')");
+    }
+    db.exec("COMMIT");
+  } catch (e) {
+    db.exec("ROLLBACK");
+    throw e;
+  }
+}
+
 export function connect(path: string = dbPath()): DatabaseSync {
   mkdirSync(dirname(path), { recursive: true });
   const db = new DatabaseSync(path, { timeout: 30_000 });
@@ -71,6 +91,7 @@ export function connect(path: string = dbPath()): DatabaseSync {
   addColumns(db);
   migrateValues(db);
   buildSearchIndex(db);
+  buildItemStage(db);
   // Progress counts from here: the first sync, or now for a new database.
   db.exec(`INSERT OR IGNORE INTO main.settings (key, value) SELECT 'tracking_started_at',
     COALESCE((SELECT MIN(synced_at) FROM main.repos), strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))`);
