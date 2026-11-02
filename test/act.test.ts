@@ -160,3 +160,11 @@ describe("act", () => {
     assert.equal(rows(db, "actions")[0]!.state, "done");
   });
 });
+
+describe("comment text from a model", () => {
+  test("cleanReason drops URLs, Markdown links and mentions", async () => {
+    const { cleanReason } = await import("../src/act/templates.ts");
+    assert.equal(cleanReason("See [the docs](https://x.example/a) or https://evil.example/p?q=1 and www.evil.example, thanks @bob"), "See the docs or and thanks bob.");
+    assert.equal(cleanReason("<https://evil.example> ![img](http://a.b/c.png)"), "img.");
+  });
+});

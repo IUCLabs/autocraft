@@ -11,7 +11,7 @@ import { DUP_FACT, DUP_OPTIONS } from "./held.ts";
 const ACTOR = "dupes";
 
 type Edge = { repo: string; a: number; b: number; similarity: number; jev_p: number | null; haiku: string | null };
-type Info = { number: number; kind: string; state: string; title: string | null; comments_count: number | null };
+export type Info = { number: number; kind: string; state: string; title: string | null; comments_count: number | null };
 
 /** Duplicate pairs whose items still have the checked text. */
 export function duplicateEdges(db: DatabaseSync, repo?: string): Edge[] {
@@ -51,11 +51,11 @@ const clip = (s: string | null, n = 110): string => (s ?? "").replace(/\s+/g, " 
 const kindWord = (i: Info) => (i.kind === "pr" ? "PR" : "issue");
 const stateWord = (i: Info) => i.state === "OPEN" ? "open" : i.state === "MERGED" ? "merged" : "closed";
 
-/** Asks the decisions for the groups of one repo (every repo when omitted). Returns the ids asked or refreshed. */
-export function askDuplicateDecisions(db: DatabaseSync, repo: string | undefined, at: string): string[] {
+/** Group members that still need a duplicate question: open, not answered, no other open question. Shared by the asker and the autopilot's work check. */
+export function duplicateAskTargets(db: DatabaseSync, repo?: string): { g: Group; x: number; id: string; xi: Info; y: Info }[] {
   const info = db.prepare("SELECT number, kind, state, title, comments_count FROM items WHERE repo = ? AND number = ?");
   const openElsewhere = db.prepare("SELECT 1 FROM decisions WHERE kind = 'duplicate' AND repo = ? AND number = ? AND answer IS NULL AND id <> ?");
-  const qs: Record<string, unknown>[] = [];
+  const out: { g: Group; x: number; id: string; xi: Info; y: Info }[] = [];
   for (const g of duplicateGroups(db, repo)) {
     const y = info.get(g.repo, g.canonical) as Info;
     for (const x of g.members) {
@@ -63,9 +63,18 @@ export function askDuplicateDecisions(db: DatabaseSync, repo: string | undefined
       const xi = info.get(g.repo, x) as Info;
       if (xi.state !== "OPEN") continue;
       const id = decisionId(g.repo, x, g.canonical);
-      const prev = getDecision(db, id);
-      if (prev?.answer) continue;
+      if (getDecision(db, id)?.answer) continue;
       if (openElsewhere.get(g.repo, x, id)) continue;
+      out.push({ g, x, id, xi, y });
+    }
+  }
+  return out;
+}
+
+/** Asks the decisions for the groups of one repo (every repo when omitted). Returns the ids asked or refreshed. */
+export function askDuplicateDecisions(db: DatabaseSync, repo: string | undefined, at: string): string[] {
+  const qs: Record<string, unknown>[] = [];
+  for (const { g, x, id, xi, y } of duplicateAskTargets(db, repo)) {
       // The pair's own check when there is one, else the member's strongest.
       const mine = g.edges.filter((e) => e.a === x || e.b === x);
       const e = mine.find((m) => m.a === g.canonical || m.b === g.canonical) ?? mine.sort((p, q) => q.similarity - p.similarity)[0]!;
@@ -84,7 +93,6 @@ export function askDuplicateDecisions(db: DatabaseSync, repo: string | undefined
         recommended: e.jev_p !== null && e.jev_p >= 0.9 ? "close" : null,
         asked_by: ACTOR, asked_at: at,
       });
-    }
   }
   if (qs.length) ask(db, qs);
   return qs.map((q) => q.id as string);
