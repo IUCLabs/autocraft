@@ -102,3 +102,69 @@ CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
 -- whitelist rule defaults; editable with `craft-auto whitelist rule`
 INSERT OR IGNORE INTO settings VALUES ('whitelist_min_merged', '5');
 INSERT OR IGNORE INTO settings VALUES ('whitelist_min_merge_rate', '0.6');
+
+-- Decisions for people. The pipeline asks; only a signed-in person on the
+-- dashboard answers (spec: docs/dashboard-spec.md).
+CREATE TABLE IF NOT EXISTS decisions (
+  id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL,                 -- scope | duplicate | close | merge | split | other
+  repo TEXT,                          -- null only for a batch spanning repos
+  number INTEGER,                     -- null for a batch
+  items TEXT,                         -- batch: JSON [{repo, number}]
+  question TEXT NOT NULL,
+  context TEXT,
+  facts TEXT,                         -- JSON array of short strings
+  options TEXT NOT NULL,              -- JSON [{key, label}]
+  recommended TEXT,
+  public_text TEXT,
+  asked_at TEXT NOT NULL, asked_by TEXT,
+  docket TEXT,
+  answer TEXT, answer_note TEXT,      -- answer_note is private
+  exceptions TEXT,                    -- batch: JSON [{repo, number, answer}]
+  answered_by TEXT, answered_at TEXT,
+  applied_at TEXT
+);
+CREATE INDEX IF NOT EXISTS decisions_open ON decisions(answer, kind, repo);
+
+-- Accounts. Only logins on the access list can sign in.
+CREATE TABLE IF NOT EXISTS access (
+  login TEXT PRIMARY KEY COLLATE NOCASE,
+  role TEXT NOT NULL,                 -- admin | viewer
+  added_by TEXT, added_at TEXT,
+  note TEXT                           -- private
+);
+
+CREATE TABLE IF NOT EXISTS sessions (
+  id_hash TEXT PRIMARY KEY,           -- sha256 of the cookie value
+  login TEXT NOT NULL COLLATE NOCASE,
+  csrf TEXT NOT NULL,
+  token_enc TEXT,                     -- user's GitHub token, encrypted with the session key
+  created_at TEXT NOT NULL, last_seen TEXT NOT NULL, expires_at TEXT NOT NULL,
+  user_agent TEXT
+);
+CREATE INDEX IF NOT EXISTS sessions_login ON sessions(login);
+
+CREATE TABLE IF NOT EXISTS repo_permissions (
+  login TEXT NOT NULL COLLATE NOCASE,
+  repo TEXT NOT NULL,
+  permission TEXT NOT NULL,           -- admin | maintain | write | triage | read | none
+  checked_at TEXT NOT NULL,
+  PRIMARY KEY (login, repo)
+);
+
+CREATE TABLE IF NOT EXISTS oauth_states (
+  state TEXT PRIMARY KEY,
+  verifier TEXT NOT NULL,             -- PKCE code verifier
+  return_to TEXT,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS audit (
+  at TEXT NOT NULL,
+  login TEXT NOT NULL,
+  action TEXT NOT NULL,               -- answer | undo | override | rule | access-add | access-remove | access-role | session-revoke | sign-in | sign-in-refused
+  target TEXT,
+  details TEXT                        -- JSON
+);
+CREATE INDEX IF NOT EXISTS audit_at ON audit(at);
+CREATE INDEX IF NOT EXISTS audit_target ON audit(target);
