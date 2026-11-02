@@ -10,8 +10,8 @@ import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { dbPath } from "../db.ts";
-import { autopilotTick } from "./autopilot.ts";
-import { jobRow, now } from "./jobs.ts";
+import { AUTOPILOT_USER, autopilotTick, isEnabled } from "./autopilot.ts";
+import { jobRow, now, RUNNER_STOPPED } from "./jobs.ts";
 import { loadSteps } from "./steps.ts";
 
 export const logsDir = (): string => process.env.CRAFT_AUTO_RUNNER_LOGS ?? join(homedir(), ".cache/craft-automation-logs/jobs");
@@ -79,7 +79,7 @@ export class Runner {
       if (r.pid && isJobProcess(r.pid, r.id)) killGroup(r.pid, "SIGKILL");
       const cancelled = r.cancel_requested_at !== null;
       this.db.prepare("UPDATE jobs SET state = ?, ended_at = ?, pid = NULL, error = COALESCE(error, ?) WHERE id = ? AND state = 'running'")
-        .run(cancelled ? "cancelled" : "failed", now(), cancelled ? null : "The runner stopped while this job ran; start it again if needed.", r.id);
+        .run(cancelled ? "cancelled" : "failed", now(), cancelled ? null : RUNNER_STOPPED, r.id);
       this.o.log(`job ${r.id}: left running by an earlier runner, marked ${cancelled ? "cancelled" : "failed"}`);
     }
     return rows.length;
@@ -120,8 +120,11 @@ export class Runner {
 
   private async startJobs(): Promise<void> {
     const steps = await loadSteps();
-    const queued = this.db.prepare("SELECT id, step FROM jobs WHERE state = 'queued' ORDER BY id").all() as { id: number; step: string }[];
+    const queued = this.db.prepare("SELECT id, step, requested_by FROM jobs WHERE state = 'queued' ORDER BY id").all() as { id: number; step: string; requested_by: string }[];
+    // Automatic jobs wait while the pipeline is off; they are cancelled when it is switched off.
+    const on = isEnabled(this.db);
     for (const q of queued) {
+      if (q.requested_by === AUTOPILOT_USER && !on) continue;
       if (this.running.size >= this.o.maxJobs) return;
       const step = steps.get(q.step);
       if (!step) {
@@ -171,7 +174,7 @@ export class Runner {
     else if (code === 0) state = "done";
     else {
       state = "failed";
-      if (this.stopping) error = "The runner stopped while this job ran; start it again if needed.";
+      if (this.stopping) error = RUNNER_STOPPED;
       error ??= spawnError ?? (signal ? `The job's process ended on ${signal}.` : `The job's process exited with code ${code}.`);
     }
     this.db.prepare("UPDATE jobs SET state = ?, ended_at = ?, pid = NULL, error = ?, progress = CASE WHEN ? = 'done' THEN NULL ELSE progress END WHERE id = ?")

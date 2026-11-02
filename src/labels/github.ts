@@ -59,7 +59,9 @@ export async function ensureLabels(client: Querier, repo: string, apply: boolean
 }
 
 export type ApplyResult = { planned: number; labeled: number; failed: number[]; batches: number; dryRun: boolean };
-export type ApplyOpts = { runId: string; limit?: number; apply: boolean; login?: string; wait?: Wait; log?: (s: string) => void };
+export type ApplyOpts = { runId: string; limit?: number; apply: boolean; login?: string; wait?: Wait; log?: (s: string) => void;
+  /** Called with the running count of items labelled, after each batch. */
+  onLabeled?: (labeled: number) => void };
 
 // Items a previous apply already labelled (resumability): the latest `labeled` stage row names every label we would add.
 function alreadyApplied(db: DatabaseSync, repo: string, r: PlanRow): boolean {
@@ -108,6 +110,7 @@ export async function applyLabels(db: DatabaseSync, client: Querier, repo: strin
       audit(db, o.login ?? "cli", "labels-apply", repo, { run: o.runId, items: ok.map((r) => r.number), labels: ok.reduce((n, r) => n + r.add.length, 0) });
       db.exec("COMMIT");
       res.labeled += ok.length;
+      o.onLabeled?.(res.labeled);
     }
     res.batches++;
     log(`${repo}: batch ${res.batches}: labelled ${ok.length} of ${chunk.length}`);

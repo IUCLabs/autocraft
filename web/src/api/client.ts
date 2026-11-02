@@ -79,6 +79,8 @@ export interface Api {
     untrack(name: RepoName): Promise<TrackedRepo[]>;
     /** Lets the Label stage write labels to this repo on GitHub, or stops it. */
     approveLabels(name: RepoName, approved: boolean): Promise<TrackedRepo[]>;
+    /** Lets the pipeline merge pull requests in this repo, or stops it. */
+    approveMerging(name: RepoName, approved: boolean): Promise<TrackedRepo[]>;
   };
   /** Operator only. */
   access: {
