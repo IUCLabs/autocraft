@@ -15,7 +15,7 @@ import { DECISIONS, MOCK_USERS, NOW, REPOS, SEARCH_POOL, THREADS, itemFor, permF
 
 const wait = <T>(v: T, ms = 60) => new Promise<T>((r) => setTimeout(() => r(structuredClone(v)), ms));
 const nowIso = () => new Date(NOW).toISOString();
-const ROLE_KEY = "craft-triage:mock-as";
+const ROLE_KEY = "autocraft:mock-as";
 
 /** Mock role: `?as=operator|maintainer|viewer`, else the last one picked, else operator. */
 export function mockRole(): MockRole {

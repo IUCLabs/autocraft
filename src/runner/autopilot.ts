@@ -50,12 +50,26 @@ const setSetting = (db: DatabaseSync, key: string, value: string): void => {
 /** One job the autopilot may queue; `params` leaves out `limit`, which the planner sets. */
 export type Candidate = { step: string; params: Params; /** Another job that must also be startable now, e.g. the review that follows a checks job. */ gate?: { step: string; params: Params } };
 /** A pipeline stage in order. `detect` lists the jobs that have work, best first. */
-export type Lane = { name: string; detect: (db: DatabaseSync) => Candidate[]; chosen?: (db: DatabaseSync, c: Candidate) => void };
+export type Lane = {
+  name: string;
+  /** Every step the lane may queue. When none of them can start (busy, paused, limit reached, cooling down), the lane is not detected at all. */
+  steps?: string[];
+  /** Its jobs are per repo, so a cooldown after one repo's job does not close the lane. */
+  perRepo?: boolean;
+  detect: (db: DatabaseSync, ctx: PlanCtx) => Candidate[];
+  /** Runs when the candidate was queued; may write. */
+  chosen?: (db: DatabaseSync, c: Candidate) => void;
+};
+
+/** What every lane's detect shares, resolved once per planner pass. */
+export type PlanCtx = { run: string | null; jevRun: string | null; tracked: string[] };
+
+export const planCtx = (db: DatabaseSync): PlanCtx => ({ run: currentRun(db), jevRun: latestJevRun(db), tracked: trackedNames(db) });
 
 const repoOf = (c: Candidate): string | null => (typeof c.params.repo === "string" ? c.params.repo : null);
 
 function lastJobEnd(db: DatabaseSync, step: string, repo: string | null, requestedBy?: string): { endedAt: string; state: string; items: number | null } | undefined {
-  return db.prepare(`SELECT ended_at AS endedAt, state, items FROM jobs WHERE step = ? AND (? IS NULL OR json_extract(params, '$.repo') = ?)
+  return db.prepare(`SELECT ended_at AS endedAt, state, items FROM jobs WHERE step = ? AND (? IS NULL OR repo = ?)
     AND ended_at IS NOT NULL AND (? IS NULL OR requested_by = ?) AND COALESCE(error, '') <> ? ORDER BY id DESC LIMIT 1`)
     .get(step, repo, repo, requestedBy ?? null, requestedBy ?? null, RUNNER_STOPPED) as { endedAt: string; state: string; items: number | null } | undefined;
 }
@@ -63,7 +77,7 @@ function lastJobEnd(db: DatabaseSync, step: string, repo: string | null, request
 /** True when the autopilot already queued `step` (for `repo`) since the planner last saw a new sync. */
 function queuedSinceSync(db: DatabaseSync, step: string, repo: string): boolean {
   const since = getSetting(db, KEY_SYNC_AT) ?? "";
-  return !!db.prepare("SELECT 1 FROM jobs WHERE step = ? AND requested_by = ? AND json_extract(params, '$.repo') = ? AND requested_at >= ?")
+  return !!db.prepare("SELECT 1 FROM jobs WHERE step = ? AND requested_by = ? AND repo = ? AND requested_at >= ?")
     .get(step, AUTOPILOT_USER, repo, since);
 }
 
@@ -86,30 +100,33 @@ export function refusedAsBefore(db: DatabaseSync, e: { repo: string; number: num
 export const LANES: Lane[] = [
   {
     name: "classify",
-    detect: (db) => {
-      const run = currentRun(db);
+    steps: ["classify-new"],
+    detect: (db, { run }) => {
       if (!run) return [];
       return dueItems(db, run, "new").due.length || haikuDue(db, run, 1).length ? [{ step: "classify-new", params: {} }] : [];
     },
   },
   {
     name: "embed",
+    steps: ["embed"],
     detect: (db) => (embedPending(db, embedderId(modelName())).length ? [{ step: "embed", params: {} }] : []),
   },
   {
     name: "decide",
-    detect: (db) => {
-      const run = latestJevRun(db);
+    steps: ["decide"],
+    detect: (db, { jevRun: run }) => {
       return run && decideCandidates(db, run).length ? [{ step: "decide", params: {} }] : [];
     },
   },
   {
     // One repo per job, round robin; the repo's checks come before its review.
     name: "review",
-    detect: (db) => {
+    steps: ["checks", "review-batch"],
+    perRepo: true,
+    detect: (db, { run, tracked }) => {
       const out: Candidate[] = [];
-      for (const repo of roundRobin(trackedNames(db), getSetting(db, KEY_CURSOR))) {
-        if (!reviewCandidates(db, repo).length) continue;
+      for (const repo of roundRobin(tracked, getSetting(db, KEY_CURSOR))) {
+        if (!reviewCandidates(db, repo, run).length) continue;
         const checks = lastJobEnd(db, "checks", repo);
         const fresh = checks?.state === "done" && Date.now() - Date.parse(checks.endedAt) < CHECKS_FRESH_MS;
         const review = { step: "review-batch", params: { repo } };
@@ -123,18 +140,21 @@ export const LANES: Lane[] = [
   },
   {
     name: "labels",
-    detect: (db) => {
-      const run = currentRun(db);
+    steps: ["labels-apply"],
+    perRepo: true,
+    detect: (db, { run, tracked }) => {
       if (!run) return [];
-      return trackedNames(db)
+      return tracked
         .filter((repo) => approvalOf(db, repo) && !queuedSinceSync(db, "labels-apply", repo) && countPlan(planLabels(db, repo, run)).toAdd > 0)
         .map((repo) => ({ step: "labels-apply", params: { repo } }));
     },
   },
   {
     name: "merge",
-    detect: (db) => {
-      const repos = [...new Set(buildQueue(db).filter((e) => eligible(e) && mergeApprovalOf(db, e.repo) && !refusedAsBefore(db, e)).map((e) => e.repo))].sort();
+    steps: ["merge"],
+    perRepo: true,
+    detect: (db, { run }) => {
+      const repos = [...new Set(buildQueue(db, { run }).filter((e) => eligible(e) && mergeApprovalOf(db, e.repo) && !refusedAsBefore(db, e)).map((e) => e.repo))].sort();
       return repos.map((repo) => ({ step: "merge", params: { repo } }));
     },
   },
@@ -241,23 +261,41 @@ export async function pipelineState(db: DatabaseSync): Promise<PipelineState> {
 
 export type PlanOptions = { lanes?: Lane[]; nowMs?: number; log?: (line: string) => void };
 
+/** A job the detection pass wants queued; `params` include the `limit` the gate set. */
+export type Proposal = { lane: string; step: string; params: Params; gate?: { step: string; params: Params } };
+export type Detected = { proposals: Proposal[]; logs: string[] };
+
+/** The most proposals one lane hands to apply, in case the first ones are refused at enqueue. */
+const PROPOSALS_PER_LANE = 3;
+
 const warned = new Set<string>();
 
 /**
- * Queues the jobs the autopilot wants now: per lane the first candidate whose step is idle, not cooling
- * down or backing off and has limit left. Returns the queued job ids.
+ * Detection: reads the database and returns, per lane, the candidates whose step is idle, not cooling
+ * down or backing off and has limit left. Writes nothing, so the runner can do it on another connection
+ * while it keeps polling; applyProposals() queues the result.
  */
-export async function planAutopilot(db: DatabaseSync, opts: PlanOptions = {}): Promise<number[]> {
-  const lanes = opts.lanes ?? LANES, ms = opts.nowMs ?? Date.now(), log = opts.log ?? (() => {});
+export async function detectAutopilot(db: DatabaseSync, opts: PlanOptions = {}): Promise<Detected> {
+  const lanes = opts.lanes ?? LANES, ms = opts.nowMs ?? Date.now();
+  const logs: string[] = [];
+  const log = (l: string) => { logs.push(l); opts.log?.(l); };
   const steps = await loadSteps();
-  const queued: number[] = [];
+  const proposals: Proposal[] = [];
+  // Pause, backoff and limit do not change during the pass: one answer per step.
+  const paused = new Map<string, string | null>();
+  const limitLeft = new Map<string, { limit?: number } | null>();
+
+  const pausedWhy = (stepName: string): string | null => {
+    if (!paused.has(stepName)) paused.set(stepName, pauseReason(db, stepName, ms));
+    return paused.get(stepName)!;
+  };
 
   /** The job's `limit` (undefined when the step has none), or why it cannot start now. */
-  const gate = (stepName: string, params: Params): { limit?: number } | null => {
+  const gate = (stepName: string, params: Params, cooldown = true): { limit?: number } | null => {
     const step = steps.get(stepName);
     if (!step) return null;
     if (db.prepare("SELECT 1 FROM jobs WHERE step = ? AND state IN ('queued', 'running')").get(stepName)) return null;
-    const reason = pauseReason(db, stepName, ms);
+    const reason = pausedWhy(stepName);
     if (reason) {
       const b = backoffUntil(db, stepName, ms);
       if (b !== null && !warned.has(`${stepName}:${b}`)) {
@@ -266,54 +304,95 @@ export async function planAutopilot(db: DatabaseSync, opts: PlanOptions = {}): P
       }
       return null;
     }
-    const last = lastJobEnd(db, stepName, typeof params.repo === "string" ? params.repo : null, AUTOPILOT_USER);
+    const last = cooldown ? lastJobEnd(db, stepName, typeof params.repo === "string" ? params.repo : null, AUTOPILOT_USER) : undefined;
     if (last && !last.items && ms - Date.parse(last.endedAt) < COOLDOWN_MS) return null;
-    const lp = step.params.find((p) => p.name === "limit" && p.kind === "int");
-    if (!lp || lp.kind !== "int") return {};
-    const perDay = limitRow(db, stepName).per_day;
-    const limit = Math.min(lp.default ?? lp.max, lp.max, perDay === null ? Infinity : perDay - usageToday(db, stepName, ms));
-    return limit < lp.min ? null : { limit };
+    if (!limitLeft.has(stepName)) {
+      const lp = step.params.find((p) => p.name === "limit" && p.kind === "int");
+      if (!lp || lp.kind !== "int") limitLeft.set(stepName, {});
+      else {
+        const perDay = limitRow(db, stepName).per_day;
+        const limit = Math.min(lp.default ?? lp.max, lp.max, perDay === null ? Infinity : perDay - usageToday(db, stepName, ms));
+        limitLeft.set(stepName, limit < lp.min ? null : { limit });
+      }
+    }
+    return limitLeft.get(stepName)!;
   };
 
+  let ctx: PlanCtx | undefined;
   for (const lane of lanes) {
     try {
-      for (const c of lane.detect(db)) {
+      // A lane whose steps cannot start is not worth detecting.
+      if (lane.steps && !lane.steps.some((s) => gate(s, {}, !lane.perRepo))) continue;
+      let taken = 0;
+      for (const c of lane.detect(db, (ctx ??= planCtx(db)))) {
         if (c.gate && !gate(c.gate.step, c.gate.params)) continue;
         const g = gate(c.step, c.params);
         if (!g) continue;
         const params: Params = { ...c.params, ...(g.limit === undefined ? {} : { limit: g.limit }) };
-        try {
-          const job = await enqueue(db, c.step, params, AUTOPILOT_USER);
-          queued.push(job.id);
-          lane.chosen?.(db, c);
-          log(`autopilot: job ${job.id}: ${c.step} ${JSON.stringify(job.params)}`);
-          break;
-        } catch (e) {
-          if (!(e instanceof JobError)) throw e;
-          log(`autopilot: ${c.step}: not queued: ${e.message}`);
-        }
+        proposals.push({ lane: lane.name, step: c.step, params, ...(c.gate ? { gate: c.gate } : {}) });
+        if (++taken >= PROPOSALS_PER_LANE) break;
       }
     } catch (e) {
       log(`autopilot: ${lane.name}: ${(e as Error).message}`);
     }
   }
+  return { proposals, logs };
+}
+
+/** Queues the proposals: per lane the first one that is accepted. Returns the queued job ids. */
+export async function applyProposals(db: DatabaseSync, proposals: Proposal[], opts: PlanOptions = {}): Promise<number[]> {
+  const lanes = opts.lanes ?? LANES, log = opts.log ?? (() => {});
+  const queued: number[] = [];
+  const done = new Set<string>();
+  for (const p of proposals) {
+    if (done.has(p.lane)) continue;
+    try {
+      // The detection ran a moment ago: a job of the same step may have been queued since.
+      if (db.prepare("SELECT 1 FROM jobs WHERE step = ? AND state IN ('queued', 'running')").get(p.step)) continue;
+      const job = await enqueue(db, p.step, p.params, AUTOPILOT_USER);
+      queued.push(job.id);
+      done.add(p.lane);
+      const c: Candidate = { step: p.step, params: Object.fromEntries(Object.entries(p.params).filter(([k]) => k !== "limit")) };
+      lanes.find((l) => l.name === p.lane)?.chosen?.(db, c);
+      log(`autopilot: job ${job.id}: ${p.step} ${JSON.stringify(job.params)}`);
+    } catch (e) {
+      if (!(e instanceof JobError)) {
+        log(`autopilot: ${p.lane}: ${(e as Error).message}`);
+        done.add(p.lane);
+      } else log(`autopilot: ${p.step}: not queued: ${e.message}`);
+    }
+  }
   return queued;
 }
 
-/** One runner tick: plans when enabled and a sync, a finished autopilot job or 15 minutes call for it. */
-export async function autopilotTick(db: DatabaseSync, opts: PlanOptions = {}): Promise<number[]> {
-  if (!isEnabled(db)) return [];
-  const t = opts.nowMs ?? Date.now();
+/** Detection and queueing in one go, on one connection. */
+export async function planAutopilot(db: DatabaseSync, opts: PlanOptions = {}): Promise<number[]> {
+  const { proposals } = await detectAutopilot(db, opts);
+  return applyProposals(db, proposals, opts);
+}
+
+/**
+ * Whether the planner is due now: a sync, a finished autopilot job or 15 minutes call for it. Moves the
+ * planner's marks when it is, so the caller must then plan.
+ */
+export function planDue(db: DatabaseSync, nowMs: number = Date.now()): boolean {
+  if (!isEnabled(db)) return false;
+  const t = nowMs;
   const sync = getSetting(db, "org_high_water");
   const syncChanged = (sync ?? "") !== (getSetting(db, KEY_SYNC_SEEN) ?? "");
   const plannedAt = getSetting(db, KEY_PLANNED_AT);
   const planned = plannedAt === null ? 0 : Date.parse(plannedAt);
   const finished = db.prepare("SELECT 1 FROM jobs WHERE requested_by = ? AND ended_at > ?").get(AUTOPILOT_USER, plannedAt ?? "");
-  if (!syncChanged && plannedAt !== null && t - planned < PLAN_EVERY_MS && !finished) return [];
+  if (!syncChanged && plannedAt !== null && t - planned < PLAN_EVERY_MS && !finished) return false;
   if (syncChanged) {
     setSetting(db, KEY_SYNC_SEEN, sync ?? "");
     setSetting(db, KEY_SYNC_AT, new Date(t).toISOString());
   }
   setSetting(db, KEY_PLANNED_AT, new Date(t).toISOString());
-  return planAutopilot(db, opts);
+  return true;
+}
+
+/** One planner pass on this connection when due (tests and the CLI; the runner detects on a worker thread). */
+export async function autopilotTick(db: DatabaseSync, opts: PlanOptions = {}): Promise<number[]> {
+  return planDue(db, opts.nowMs) ? planAutopilot(db, opts) : [];
 }

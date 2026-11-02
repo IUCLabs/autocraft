@@ -1,6 +1,6 @@
 // Which open PRs the Review stage looks at, and at which head commit.
 import type { DatabaseSync } from "node:sqlite";
-import { latestRun, settledOf, settledTable } from "../classify/settled.ts";
+import { latestRun, settledLookup, settledTable } from "../classify/settled.ts";
 import { SCOPE_OPTIONS } from "../decide/decision.ts";
 
 /** Type labels whose PRs get a code review; plugin candidates do not. */
@@ -22,9 +22,18 @@ const KEEP_IN_CORE: string[] = [SCOPE_OPTIONS.take.key, SCOPE_OPTIONS["small-ext
  * its exceptions.
  */
 export function scopeAnswer(db: DatabaseSync, repo: string, number: number): string | null {
-  const rows = db.prepare(`SELECT number, items, answer, exceptions FROM decisions
-    WHERE kind = 'scope' AND answer IS NOT NULL AND (repo = ? OR repo IS NULL) ORDER BY answered_at DESC`).all(repo) as
-    { number: number | null; items: string | null; answer: string; exceptions: string | null }[];
+  return scopeAnswerIn(scopeRows(db, repo), repo, number);
+}
+
+type ScopeRow = { number: number | null; items: string | null; answer: string; exceptions: string | null };
+
+/** The answered scope decisions that can apply to `repo`, newest first: read once per repo, then ask scopeAnswerIn() per PR. */
+function scopeRows(db: DatabaseSync, repo: string): ScopeRow[] {
+  return db.prepare(`SELECT number, items, answer, exceptions FROM decisions
+    WHERE kind = 'scope' AND answer IS NOT NULL AND (repo = ? OR repo IS NULL) ORDER BY answered_at DESC`).all(repo) as ScopeRow[];
+}
+
+function scopeAnswerIn(rows: ScopeRow[], repo: string, number: number): string | null {
   for (const r of rows) {
     if (r.number === number) return r.answer;
     if (r.number !== null) continue;
@@ -71,22 +80,24 @@ export function headOf(r: { head_oid: string | null; updated_at: string | null; 
  * carry no `needs decision` flag unless a scope decision answered `take` or `small-extra`, and
  * that have no review at their current head commit. Any other scope answer keeps a PR out.
  */
-export function selectCandidates(db: DatabaseSync, repo: string): Candidate[] {
+export function selectCandidates(db: DatabaseSync, repo: string, run: string | null = latestRun(db)): Candidate[] {
   const rows = db.prepare(`SELECT i.repo, i.number, i.title, i.body, i.author, i.author_association, i.head_oid,
       i.additions, i.deletions, i.changed_files, i.updated_at, i.is_draft,
       c.head_oid AS c_head, c.state AS c_state, c.is_draft AS c_draft, c.fetched_at AS c_at
     FROM items i LEFT JOIN pr_checks c ON c.repo = i.repo AND c.number = i.number
     WHERE i.repo = ? AND i.kind = 'pr' AND i.state = 'OPEN' ORDER BY i.number`).all(repo) as Row[];
   const reviewed = db.prepare("SELECT 1 FROM reviews WHERE repo = ? AND number = ? AND head_oid = ?");
+  const settled = settledLookup(db, run);
+  let scope: ScopeRow[] | undefined;
   const out: Candidate[] = [];
   for (const r of rows) {
     const fresh = r.c_at && (!r.updated_at || r.c_at > r.updated_at);
     if (fresh ? r.c_state !== "OPEN" || r.c_draft : r.is_draft) continue;
     const head = headOf(r);
     if (!head) continue;
-    const s = settledOf(db, r.repo, r.number);
+    const s = settled(r.repo, r.number);
     if (!s.label || !REVIEW_LABELS.includes(s.label)) continue;
-    const answer = scopeAnswer(db, r.repo, r.number);
+    const answer = scopeAnswerIn(scope ??= scopeRows(db, repo), r.repo, r.number);
     if (answer !== null ? !KEEP_IN_CORE.includes(answer) : s.flags.includes("needs decision")) continue;
     if (reviewed.get(r.repo, r.number, head)) continue;
     const lines = (r.additions ?? 0) + (r.deletions ?? 0);
@@ -128,8 +139,8 @@ export function scopeAnswers(db: DatabaseSync): Map<string, string> {
  * every repo, from one query over the settled table: for counting, where
  * selectCandidates() reads each PR on its own.
  */
-export function candidateRefs(db: DatabaseSync, repo?: string): Set<string> {
-  settledTable(db, latestRun(db));
+export function candidateRefs(db: DatabaseSync, repo?: string, run: string | null = latestRun(db)): Set<string> {
+  settledTable(db, run);
   const answers = scopeAnswers(db);
   const rows = db.prepare(`SELECT i.repo, i.number, i.head_oid, i.updated_at, i.is_draft,
       c.head_oid AS c_head, c.state AS c_state, c.is_draft AS c_draft, c.fetched_at AS c_at, s.label, s.flags

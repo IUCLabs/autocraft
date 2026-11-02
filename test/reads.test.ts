@@ -44,7 +44,7 @@ describe("item_stage", () => {
     stage(db, 1, "classified", "2026-01-01T00:00:00Z");
     stage(db, 1, "reviewed", "2026-01-02T00:00:00Z");
     stage(db, 1, "hold", "2026-01-01T12:00:00Z");
-    db.exec("DELETE FROM item_stage; DELETE FROM settings WHERE key = 'item_stage_built'");
+    db.exec("DELETE FROM item_stage; DELETE FROM settings WHERE key IN ('item_stage_built', 'schema_stamp')");
     db.close();
     assert.deepEqual({ ...latest(connect(path), 1) }, { stage: "reviewed", at: "2026-01-02T00:00:00Z", reviewed: 1 });
   });

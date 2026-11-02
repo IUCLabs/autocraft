@@ -298,10 +298,13 @@ CREATE TABLE IF NOT EXISTS jobs (
   pid INTEGER,                        -- the job's child process while running
   cancel_requested_at TEXT,
   cancel_requested_by TEXT,
+  repo TEXT,                          -- params.repo, for the autopilot's per-repo lookups
   items INTEGER                       -- items the job handled (classified, asked, reviewed, merged ...), for the daily limits
 );
 CREATE INDEX IF NOT EXISTS jobs_state ON jobs(state, id);
 CREATE INDEX IF NOT EXISTS jobs_step ON jobs(step, id);
+CREATE INDEX IF NOT EXISTS jobs_step_started ON jobs(step, started_at);
+CREATE INDEX IF NOT EXISTS jobs_user_ended ON jobs(requested_by, ended_at);
 
 -- Daily limits per autopilot stage (UTC day); NULL means no limit, 0 pauses the
 -- stage. The pipeline switch itself lives in settings (pipeline_enabled,

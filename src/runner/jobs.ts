@@ -1,6 +1,6 @@
 // The jobs table: requests from the dashboard, the CLI and the autopilot,
 // state written by the runner. Shared by the API, the runner and the CLI.
-import { closeSync, fstatSync, openSync, readSync } from "node:fs";
+import { closeSync, fstatSync, openSync, readSync, unlinkSync } from "node:fs";
 import type { DatabaseSync } from "node:sqlite";
 import type { Job, JobDetail, JobFilter, JobList, JobParams, JobState, JobUsage } from "../../web/src/api/types.ts";
 import { trackedNames } from "../repos.ts";
@@ -110,8 +110,9 @@ export async function enqueue(db: DatabaseSync, stepName: unknown, rawParams: un
   if (db.prepare("SELECT 1 FROM jobs WHERE step = ? AND params = ? AND state = 'queued'").get(step.name, json)) {
     throw new JobError(409, `${step.name} with these settings is already queued`);
   }
-  const id = Number(db.prepare("INSERT INTO jobs (step, params, requested_by, requested_at, state) VALUES (?, ?, ?, ?, 'queued')")
-    .run(step.name, json, by, now()).lastInsertRowid);
+  const repo = typeof params.repo === "string" ? params.repo : null;
+  const id = Number(db.prepare("INSERT INTO jobs (step, params, repo, requested_by, requested_at, state) VALUES (?, ?, ?, ?, ?, 'queued')")
+    .run(step.name, json, repo, by, now()).lastInsertRowid);
   return getJob(db, id);
 }
 
@@ -129,6 +130,32 @@ export function requestCancel(db: DatabaseSync, id: number, by: string): Job {
     .run(t, by, id).changes;
   if (!marked) throw new JobError(409, `job ${id} has already ended`);
   return getJob(db, id);
+}
+
+/** Finished jobs and their log files are kept this long; audit and token_usage are kept for good. */
+export const JOB_KEEP_MS = 90 * 24 * 3600_000;
+
+/** Deletes finished jobs that ended more than JOB_KEEP_MS ago, with their log files. Returns the number of jobs. */
+export function pruneJobs(db: DatabaseSync, nowMs: number = Date.now()): number {
+  const before = new Date(nowMs - JOB_KEEP_MS).toISOString();
+  const old = db.prepare("SELECT id, log_path FROM jobs WHERE ended_at IS NOT NULL AND ended_at < ? AND state IN ('done', 'failed', 'cancelled') ORDER BY ended_at LIMIT 1000");
+  const del = db.prepare("DELETE FROM jobs WHERE id = ?");
+  let n = 0;
+  for (;;) {
+    const rows = old.all(before) as { id: number; log_path: string | null }[];
+    if (!rows.length) return n;
+    for (const r of rows) {
+      if (r.log_path) {
+        try {
+          unlinkSync(r.log_path);
+        } catch {
+          // already gone
+        }
+      }
+      del.run(r.id);
+      n++;
+    }
+  }
 }
 
 // ---- logs ----------------------------------------------------------------------

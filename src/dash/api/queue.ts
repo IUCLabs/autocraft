@@ -1,6 +1,7 @@
 // The merge queue for the dashboard: read-only, anyone signed in.
 import type { DatabaseSync } from "node:sqlite";
 import type { Mergeable, QueueList, QueueRow, QueueState, Tier, TypeLabel } from "../../../web/src/api/types.ts";
+import { latestRun } from "../../classify/settled.ts";
 import { buildQueue, countMerged, countStates, QUEUE_STATES, type QueueEntry } from "../../merge/queue.ts";
 import { trackedNames } from "../../repos.ts";
 import { HttpError } from "../server/util.ts";
@@ -34,7 +35,7 @@ function parseCursor(s: string | null): { repo: string; number: number } | undef
 const OPEN_TTL = 20_000;
 const openCache = new WeakMap<DatabaseSync, { key: string; at: number; open: QueueEntry[]; merged: number }>();
 
-function openQueue(db: DatabaseSync, repo: string | undefined, tracked: Set<string>): { open: QueueEntry[]; merged: number } {
+function openQueue(db: DatabaseSync, repo: string | undefined, tracked: Set<string>, run: string | null): { open: QueueEntry[]; merged: number } {
   const sig = db.prepare(`SELECT (SELECT COUNT(*) || ':' || COALESCE(MAX(rowid), 0) FROM main.reviews) AS rv,
       (SELECT COUNT(*) || ':' || COALESCE(MAX(rowid), 0) FROM main.merges) AS mg,
       (SELECT COUNT(*) || ':' || COALESCE(MAX(answered_at), '') FROM main.decisions WHERE kind = 'merge') AS dc,
@@ -42,11 +43,11 @@ function openQueue(db: DatabaseSync, repo: string | undefined, tracked: Set<stri
       (SELECT MAX(rowid) FROM main.classifications) AS cl,
       (SELECT value FROM main.settings WHERE key = 'org_high_water') AS hw,
       (SELECT group_concat(name) FROM main.tracked_repos) AS tr`).get();
-  const key = JSON.stringify([sig, repo ?? null]);
+  const key = JSON.stringify([sig, repo ?? null, run]);
   const hit = openCache.get(db);
   const now = Date.now();
   if (hit && hit.key === key && now - hit.at < OPEN_TTL) return hit;
-  const open = buildQueue(db, { repo, merged: "exclude" }).filter((e) => tracked.has(e.repo));
+  const open = buildQueue(db, { repo, merged: "exclude", run }).filter((e) => tracked.has(e.repo));
   const built = { key, at: now, open, merged: countMerged(db, repo) };
   openCache.set(db, built);
   return built;
@@ -61,17 +62,18 @@ export function queue(db: DatabaseSync, req: Req): QueueList {
   const state = req.query.get("state") || undefined;
   const limit = Math.min(Math.max(Number(req.query.get("limit")) || 100, 1), 500);
   const after = parseCursor(req.query.get("after"));
+  const run = latestRun(db);
   const tracked = new Set(trackedNames(db));
   if (repo && !tracked.has(repo)) throw new HttpError(404, `${repo} is not a tracked repo`);
   if (state && !(QUEUE_STATES as readonly string[]).includes(state)) throw new HttpError(400, `state must be one of ${QUEUE_STATES.join(", ")}`);
-  const { open, merged } = openQueue(db, repo, tracked);
+  const { open, merged } = openQueue(db, repo, tracked, run);
   // An open PR that we merged and the mirror has not seen merged yet counts as merged.
   const counts = countStates(open);
   counts.merged += merged;
   let page: QueueEntry[];
   let more: boolean;
   if (state === "merged") {
-    page = buildQueue(db, { repo, merged: "only", after, limit: limit + 1 }).filter((e) => tracked.has(e.repo));
+    page = buildQueue(db, { repo, merged: "only", run, after, limit: limit + 1 }).filter((e) => tracked.has(e.repo));
     more = page.length > limit;
     page = page.slice(0, limit);
   } else {

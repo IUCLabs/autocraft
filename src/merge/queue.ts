@@ -1,7 +1,7 @@
 // The merge queue: every PR with a take or take-fix review at its current
 // head commit, and what it waits on. Reads only local tables; no GitHub calls.
 import type { DatabaseSync } from "node:sqlite";
-import { latestRun, settledOf } from "../classify/settled.ts";
+import { latestRun, settledLookup } from "../classify/settled.ts";
 import { actionable } from "../decisions.ts";
 import { headOf } from "../review/candidates.ts";
 import { getRule, STATS_SQL, tierOf, type Tier } from "../whitelist.ts";
@@ -78,6 +78,8 @@ export type QueueOptions = {
   /** Keyset page: entries after this PR in (repo, number) order, at most `limit` of them. */
   after?: { repo: string; number: number };
   limit?: number;
+  /** The classification run for labels, resolved once by the caller (default: latestRun). */
+  run?: string | null;
 };
 
 export function buildQueue(db: DatabaseSync, opts: QueueOptions = {}): QueueEntry[] {
@@ -106,7 +108,7 @@ export function buildQueue(db: DatabaseSync, opts: QueueOptions = {}): QueueEntr
   const decision = db.prepare("SELECT id, answer FROM decisions WHERE id = ?");
   const answers = new Map(actionable(db).filter((a) => a.kind === "merge").map((a) => [a.id, a.answer]));
   const tiers = tiersOf(db, [...new Set(rows.map((r) => r.author).filter((a): a is string => !!a))]);
-  const run = latestRun(db);
+  const settled = settledLookup(db, opts.run !== undefined ? opts.run : latestRun(db));
 
   const out: QueueEntry[] = [];
   for (const r of rows) {
@@ -119,7 +121,7 @@ export function buildQueue(db: DatabaseSync, opts: QueueOptions = {}): QueueEntr
     const ci = checksHere ? (r.overall ?? "none") : "unknown";
     const mergeable = (checksHere ? r.c_mergeable : r.i_mergeable) ?? "UNKNOWN";
     const tier = r.author ? tiers.get(r.author)! : "not";
-    const label = settledOf(db, r.repo, r.number, run).label;
+    const label = settled(r.repo, r.number).label;
     const size = r.size ?? "L";
     let fixes = 0;
     try { fixes = (JSON.parse(r.fixes ?? "[]") as unknown[]).length; } catch { /* none */ }
