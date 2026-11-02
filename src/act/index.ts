@@ -3,6 +3,9 @@
 //   - a scope decision answered `close` (Out of scope), on an issue or PR;
 //   - a "Close this PR?" decision, which this step asks for each PR whose
 //     latest review says close, once per head commit.
+//   - a duplicate decision answered `close` (Close as duplicate): "Duplicate of
+//     #y." (or "..., which is closed.") and a close. "Not a duplicate" and "Keep
+//     both" store the pair as distinct and write nothing (src/dupes/decide.ts).
 // Other scope answers need no write here (take and small-extra go on to
 // review, plugin is a label for the label stage, need-info is checked by
 // people). Only an operator's answer counts (actionable()), and only in repos
@@ -17,8 +20,9 @@ import { actionable, ask, factsOf, getDecision, type Actionable, type DecisionRo
 import { HEAD_FACT } from "../merge/queue.ts";
 import { Client, type Querier } from "../mirror.ts";
 import { headOf } from "../review/candidates.ts";
+import { applyDuplicateAnswers } from "../dupes/decide.ts";
 import { commentApprovalOf } from "./approval.ts";
-import { cleanReason, ORG, prCloseComment, scopeCloseComment } from "./templates.ts";
+import { cleanReason, duplicateComment, ORG, prCloseComment, scopeCloseComment } from "./templates.ts";
 
 const ACTOR = "act";
 const KIND = "comment-close";
@@ -106,12 +110,12 @@ export function askCloseDecisions(db: DatabaseSync, repo: string, at: string): s
 
 // ---- what to act on ------------------------------------------------------------
 
-type Target = { decisionId: string; kind: "scope" | "close"; repo: string; number: number };
+type Target = { decisionId: string; kind: "scope" | "close" | "duplicate"; repo: string; number: number };
 
 /** Items an operator's `close` answer applies to in this repo, minus those an exception changes. */
 function targetsOf(a: Actionable, repo: string): Target[] {
-  if (a.kind !== "scope" && a.kind !== "close") return [];
-  if (a.kind === "close" && a.number === null) return [];
+  if (a.kind !== "scope" && a.kind !== "close" && a.kind !== "duplicate") return [];
+  if (a.kind !== "scope" && a.number === null) return [];
   const out: Target[] = [];
   for (const it of a.items) {
     if (it.repo !== repo) continue;
@@ -181,6 +185,8 @@ export async function runAct(db: DatabaseSync, params: ActParams, log: (line: st
   if (params.limit !== undefined && !(Number.isInteger(params.limit) && params.limit >= 0)) throw new Error("limit must be a whole number ≥ 0");
   const at = () => (deps?.now() ?? new Date()).toISOString();
   const summary: ActSummary = { repo, dryRun, asked: [], done: [], skipped: [], failed: [], note: null };
+  // Answers that need no GitHub write are applied whether or not commenting is approved.
+  if (!dryRun) applyDuplicateAnswers(db, at());
   if (!commentApprovalOf(db, repo)) {
     summary.note = `commenting in ${repo} is not approved`;
     log(`act ${repo}: ${summary.note}; nothing done`);
@@ -236,7 +242,15 @@ export async function runAct(db: DatabaseSync, params: ActParams, log: (line: st
       }
       let url = prev?.comment_url ?? null;
       if (!url) {
-        const r = await d.querier.query(COMMENT, { id: live.id, body: commentFor(dec, t) }) as { addComment?: { commentEdge?: { node?: { url?: string } } } };
+        let body: string;
+        if (t.kind === "duplicate") {
+          const orig = /^([\w.-]+)#(\d+)$/.exec(factValue(dec, DUP_FACT) ?? "");
+          if (!orig || orig[1] !== t.repo || Number(orig[2]) === t.number) { skip(t, "the decision names no other item of this repo as the original"); continue; }
+          const o = await readLive(d.querier, t.repo, Number(orig[2]));
+          if (!o) { skip(t, "GitHub returned no such original"); continue; }
+          body = duplicateComment({ repo: t.repo, original: `${orig[1]}#${orig[2]}`, closed: o.state !== "OPEN" });
+        } else body = commentFor(dec, t);
+        const r = await d.querier.query(COMMENT, { id: live.id, body }) as { addComment?: { commentEdge?: { node?: { url?: string } } } };
         url = r.addComment?.commentEdge?.node?.url ?? "";
         // Saved before the close so a retry after a failed close does not comment twice.
         save(t, "failed", "comment posted; close not done yet", url);

@@ -93,7 +93,8 @@ From here the path depends on the item: pull requests go to Review, issues go to
 |---|---|---|---|---|
 | 1 | Mirror | Every issue, PR and comment of the tracked repos is copied into a local database. Later stages read the mirror, never GitHub directly. | `craft-auto sync`, every minute: one org-wide GitHub search for changes, in time slices of at most 1,000 results | Automatic |
 | 2 | Classify | Every open item gets one type label (bugfix, performance, missing feature, small extra, plugin candidate, infra) and two flags (security, needs decision). | Jev first. Where Jev is under 90 % sure, Haiku as well. Where they disagree, the item goes to a person or to Sonnet | Scripted, started by the operator (`craft-auto classify`) |
-| 2b | Priority | Every open item gets an impact class (critical, high, normal, low) and a 0 to 100 score. Decide, review, verify and fix-up take the highest score first. | Jev first. Where Jev is under 90 % sure, Haiku decides. The score adds reach from the mirror: no model | Automatic (`prioritize` step), daily limit 3000 |
+| 2b | Duplicates | Open issues and PRs that describe the same bug or request as another open item, or as one closed in the last year, in the same repo, become "Close as a duplicate?" decisions. Runs right after Embed and before Decide. | Jev first (accepted at 0.9 either way), Haiku for the rest; the operator answers | Built (`craft-auto dupes`, step `dupes`) |
+| 2c | Priority | Every open item gets an impact class (critical, high, normal, low) and a 0 to 100 score. Decide, review, verify and fix-up take the highest score first. | Jev first. Where Jev is under 90 % sure, Haiku decides. The score adds reach from the mirror: no model | Automatic (`prioritize` step), daily limit 3000 |
 | 3 | Decide | Items flagged "needs decision" (scope, wanted or not, reference-app behaviour), and items where Jev and Haiku disagree between scope labels, become decisions on this dashboard, each with an AI summary and the item's own text. | `craft-auto decide` asks them, with summaries by Sonnet. The operator answers; anyone signed in can comment and pick an option | Scripted, started by the operator |
 | 4 | Label | The type label and flags go onto the item on GitHub. | `craft-auto labels`, one repo at a time. No model calls. Only items whose type is settled (Jev at 90 % or more, or Haiku agreeing with Jev) are labelled. A label a person set is never changed: an item that already has a different type label is skipped and reported. Writes to GitHub need the operator's approval for that repo, given on the Repos page | Built. `ensure` and `plan` are read-only; `apply` is a dry run unless `--apply` and refuses unapproved repos |
 | 5 | Review | PRs we want get a code review: take, take with fixes, hold, or close (duplicate, already fixed, superseded). | Sonnet, one call per batch of related PRs. Tests are not reviewed, only code | Built, one repo at a time (`craft-auto review`) |
@@ -101,6 +102,24 @@ From here the path depends on the item: pull requests go to Review, issues go to
 | 7 | Fix issues | Issues with a clear bug and a clear fix get a PR from us. | Sonnet implementers | Planned |
 
 Stages 5–7 go one or a few repos at a time, in turn. Stages 1–4 cover the whole org.
+
+## Duplicates
+
+`craft-auto dupes [--limit N] [--dry-run]` (step `dupes`, group dupes, operator only, models Jev and Haiku) runs after Embed and before Decide. It reads the local database and the item vectors and calls models; it writes nothing to GitHub.
+
+**Candidates.** An open item is scanned when its text hash (`embed_hash`) has no row in `duplicate_scans`: new items and items whose text changed. Its nearest neighbours in the same repo come from the vector index. A neighbour becomes a pair when its similarity is at least 0.86 and it is open or was closed or merged within the last year. At most 3 neighbours are kept per scanned item. The threshold is the top quartile of nearest-neighbour similarity in the real data (bge-small, three repos with 2,155 open items: the best neighbour of half the items scores 0.85 or more, of a tenth 0.92 or more, of one in a hundred 0.96 or more; true duplicates sit above about 0.9, and below 0.8 the pairs are only related). The first scan of those 2,155 items gave 622 pairs, 186 of them at 0.9 or more and 34 at 0.95 or more. Both items are of the same kind (issue and issue, PR and PR). An item is never compared with itself, a PR is never compared with an issue it closes, and a pair an operator ruled on is not added again.
+
+**Pair check.** Prompt `dupes.jev` asks Jev "Do these two describe the same bug or request?". At 0.9 or more the pair is a duplicate, at 0.1 or less distinct. In between, prompt `dupes.haiku` (batches of 10) answers duplicate, distinct or unsure; a Haiku "duplicate" counts only when Jev's probability was at least 0.5, else the pair is stored as unsure. Sonnet is not used. The result is in `duplicate_pairs`: repo, a < b, similarity, `jev_p`, `haiku`, `verdict` (`duplicate`, `distinct`, `unsure`), `canonical`, `checked_at`. A pair is keyed by repo, both numbers and both text hashes, so it is checked once per pair of texts; edited text is checked again. Pairs that are not yet answered have no verdict and are tried in the next run.
+
+**Which one stays (canonical).** In order: an item that is closed or merged; an issue a merged PR fixes; the one with at least 5 more comments; the older one; the lower number. Items joined by duplicate pairs form a group with one canonical item, so a chain a~b~c never closes b as a duplicate of an item that is itself closing.
+
+**Decision.** Each open member of a group other than the canonical gets one decision `<repo>#<x>:duplicate@<y>`, "Close #x as a duplicate of #y?", with options Close as duplicate (`close`), Not a duplicate (`distinct`) and Keep both (`keep`). Facts: both titles with kind, state and comment count, the similarity and model verdicts, and `duplicate of <repo>#<y>`. An item has at most one open duplicate decision.
+
+**Answers.** Only an operator's answer counts. `close` is applied by the act step: it posts `Duplicate of #y.` (`..., which is closed.` when the original is no longer open on GitHub at that moment), then closes #x, under the same comment approval, daily limit and re-check before writing as the other closes. `distinct` and `keep` store the pair as distinct for good (`by_operator`), so it is never asked again, even after the text changes.
+
+**What it holds back.** While a duplicate decision for a PR or issue is open, or was answered `close`, the item is left out of the candidates of Decide, Review, Verify and Fix-ups. `distinct` and `keep` release it. Helpers: `duplicateHeld` and `notHeldSql` (src/dupes/held.ts), `duplicateCount` (open duplicates pointing at an item).
+
+**Limits.** The step's `limit` (default 2000, at most 5000) is the number of pairs sent to a model per job; the daily limit defaults to 2000 pairs until an operator sets another.
 
 ## Stage 5: Review
 
@@ -320,6 +339,7 @@ The step that acts on answers reads these keys:
 |---|---|
 | Scope decision answered `close` (Out of scope) by an operator | One comment, then close the issue or PR |
 | "Close this PR?" decision answered `close` by an operator | One comment, then close the PR |
+| "Close #x as a duplicate of #y?" decision answered `close` by an operator | `Duplicate of #y.` (or `Duplicate of #y, which is closed.`), then close the item |
 
 The other scope answers need no write here: `take` and `small-extra` go on to review, `plugin` is a label for the label stage, `need-info` is checked by people.
 
@@ -416,6 +436,7 @@ While it is On, the runner looks for work after each new sync and at least every
 |---|---|---|
 | Classify | `classify-new` | Open items without a verdict in the current run, or whose text changed since |
 | Embed | `embed` | New or changed items without a current embedding |
+| Duplicates | `dupes` | Open items without a scan at their current text, unchecked pairs, duplicate decisions to ask, answers to apply |
 | Decide | `decide` | Candidates left to ask, pull requests before issues |
 | Review | `checks`, then `review-batch` | Per repo, round robin across repos with review candidates, one repo per job; a repo's checks are refreshed (within the last 30 minutes) before its review, and only when that review could start (limit left, not paused, not busy) |
 | Label | `labels-apply` | Repos with operator approval and labels still to add, once per sync |
@@ -427,7 +448,7 @@ The full classification pass (`classify-all`) is never started automatically. A 
 
 ### Daily limits
 
-Each stage has a limit of items per day, counted from 00:00 UTC over the items its jobs handled. A job records its count as it works, so a failed or stopped job keeps it. Handled means units attempted: items sent to Jev or Haiku, items sent for a decision summary, PRs sent for review (or held as too large), items embedded, items labelled, PRs merged, PRs fixed up (or held). The job's `limit` is the smaller of the step's default and what remains of the day. An empty limit means no limit and 0 pauses the stage. Defaults: classify-new 2000, decide 100, review-batch 40, verify 30, prioritize 3000, merge 10, act 20, fixup 20; embed, checks and labels-apply have none (labelling, merging, commenting and pushing fix-ups are each gated by a per-repo approval). `embed` and `checks` jobs cannot be sized to what remains of the day, so `checks` accepts only no limit or 0; an `embed` limit stops new jobs once it is reached. Operators change limits on the Pipeline page or with `craft-auto pipeline limit <step> --per-day N|none`. A stage that cannot start jobs shows why on the page (limit reached, limit 0, waiting after failures).
+Each stage has a limit of items per day, counted from 00:00 UTC over the items its jobs handled. A job records its count as it works, so a failed or stopped job keeps it. Handled means units attempted: items sent to Jev or Haiku, items sent for a decision summary, PRs sent for review (or held as too large), pairs checked for duplicates, items embedded, items labelled, PRs merged, PRs fixed up (or held). The job's `limit` is the smaller of the step's default and what remains of the day. An empty limit means no limit and 0 pauses the stage. Defaults: classify-new 2000, prioritize 3000, dupes 2000, decide 100, review-batch 40, verify 30, merge 10, act 20, fixup 20; embed, checks and labels-apply have none (labelling, merging, commenting and pushing fix-ups are each gated by a per-repo approval). `embed` and `checks` jobs cannot be sized to what remains of the day, so `checks` accepts only no limit or 0; an `embed` limit stops new jobs once it is reached. Operators change limits on the Pipeline page or with `craft-auto pipeline limit <step> --per-day N|none`. A stage that cannot start jobs shows why on the page (limit reached, limit 0, waiting after failures).
 
 | Who | On the Pipeline page |
 |---|---|

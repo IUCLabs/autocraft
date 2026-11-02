@@ -117,6 +117,7 @@ describe("prioritize", () => {
 
   test("duplicate counts are read only when the table exists", () => {
     const db = fixture();
+    db.exec("DROP TABLE duplicate_pairs");
     assert.equal(duplicateCounts(db).size, 0);
     db.exec("CREATE TABLE duplicate_pairs (repo TEXT, number INTEGER, canonical INTEGER, verdict TEXT)");
     db.exec("INSERT INTO duplicate_pairs VALUES ('photocraft', 2, 1, 'duplicate'), ('photocraft', 3, 1, 'duplicate'), ('photocraft', 4, 1, 'distinct')");

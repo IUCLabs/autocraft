@@ -352,6 +352,22 @@ export const STEPS: StepDef[] = [
       return r.due ? `rated ${r.saved} of ${r.sent} items (${r.jev} by Jev, ${r.haiku} by Haiku), ${r.due - r.sent > 0 ? r.due - r.sent : 0} left; ${r.rescored} scores changed` : `nothing new to rate; ${r.rescored} scores changed`;
     },
   },
+  {
+    name: "dupes",
+    title: "Find duplicates",
+    description: "Looks up the nearest neighbours of new and changed open items in the same repo, among open items and items closed in the last year. Jev checks each pair; Haiku gives a second opinion where Jev is under 90 % sure either way. Each confirmed duplicate becomes a \"Close as a duplicate?\" decision; the act step closes only on an operator's answer. Writes nothing to GitHub.",
+    stage: 3,
+    requires: "operator",
+    group: "dupes",
+    models: ["jev", "haiku"],
+    params: [{ name: "limit", label: "At most", kind: "int", min: 1, max: 5000, default: 2000, help: "pairs to check in this job" }],
+    run: async (ctx) => {
+      const { runDupes } = await import("../dupes/index.ts");
+      const r = await runDupes(ctx.db, { limit: Number(ctx.params.limit), onHandled: ctx.handled }, ctx.log);
+      const v = Object.entries(r.verdicts).map(([k, n]) => `${n} ${k}`).join(", ");
+      return `scanned ${r.scanned} items, ${r.pairsAdded} new pairs; checked ${r.checked}${v ? ` (${v})` : ""}; ${r.asked.length} decisions asked, ${r.answersApplied} answers applied`;
+    },
+  },
 ];
 
 let loaded: Promise<Map<string, StepDef>> | null = null;
