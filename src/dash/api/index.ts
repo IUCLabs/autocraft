@@ -14,6 +14,7 @@ import type { Req, Res, Route } from "../types.ts";
 import * as adm from "./admin.ts";
 import * as dec from "./decisions.ts";
 import * as insight from "./insight.ts";
+import * as pipeline from "./pipeline.ts";
 import { classificationsOf, itemState, relatedOf } from "./decisions.ts";
 
 export type ApiOptions = {
@@ -218,5 +219,11 @@ export function apiRoutes(opts: ApiOptions = {}): Route[] {
     get("/api/classifiers", insight.classifiersReport),
     get("/api/classifiers/disagreements", insight.disagreements),
     get("/api/cost", insight.cost),
+    get("/api/pipeline", (db) => pipeline.overview(db)),
+    get("/api/pipeline/jobs", pipeline.jobs),
+    get("/api/pipeline/jobs/:id", pipeline.job),
+    { method: "POST", pattern: "/api/pipeline/jobs", operator: true, handler: ok(pipeline.request) },
+    { method: "POST", pattern: "/api/pipeline/jobs/:id/cancel", operator: true, handler: ok(pipeline.cancel) },
+    { method: "POST", pattern: "/api/pipeline/schedules/:step", operator: true, handler: ok(pipeline.schedule) },
   ];
 }

@@ -18,7 +18,7 @@ const ACCESS_NOTE_MAX = 500;
 const AUDIT_PAGE = 50;
 export const AUDIT_ACTIONS = [
   "answer", "undo", "adopt", "opinion", "opinion-retract", "comment", "override", "rule", "access-add", "access-remove", "access-role",
-  "session-revoke", "sign-in", "sign-in-refused", "repo-track", "repo-untrack",
+  "session-revoke", "sign-in", "sign-in-refused", "repo-track", "repo-untrack", "job-request", "job-cancel", "schedule-change",
 ];
 
 const isOperator = (req: Req): boolean => req.user.role === "operator";

@@ -199,7 +199,7 @@ CREATE TABLE IF NOT EXISTS oauth_states (
 CREATE TABLE IF NOT EXISTS audit (
   at TEXT NOT NULL,
   login TEXT NOT NULL,
-  action TEXT NOT NULL,               -- answer | undo | adopt | opinion | opinion-retract | comment | override | rule | access-add | access-remove | access-role | session-revoke | sign-in | sign-in-refused | repo-track | repo-untrack
+  action TEXT NOT NULL,               -- answer | undo | adopt | opinion | opinion-retract | comment | override | rule | access-add | access-remove | access-role | session-revoke | sign-in | sign-in-refused | repo-track | repo-untrack | job-request | job-cancel | schedule-change
   target TEXT,
   details TEXT                        -- JSON
 );
@@ -253,3 +253,51 @@ SELECT column1, 'seed', strftime('%Y-%m-%dT%H:%M:%SZ', 'now') FROM (VALUES
 ) WHERE NOT EXISTS (SELECT 1 FROM settings WHERE key = 'tracked_seeded')
   AND NOT EXISTS (SELECT 1 FROM tracked_repos);
 INSERT OR IGNORE INTO settings VALUES ('tracked_seeded', '1');
+
+-- Pipeline jobs: the only channel from the dashboard to the runner
+-- (`craft-auto runner serve`). The dashboard inserts requests and cancel
+-- marks; the runner claims, runs and finishes jobs. Steps are defined in code
+-- (src/runner/steps.ts); params are validated against the step's schema
+-- before a row is written.
+CREATE TABLE IF NOT EXISTS jobs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  step TEXT NOT NULL,
+  params TEXT NOT NULL,               -- JSON object, validated
+  requested_by TEXT NOT NULL,         -- login, 'schedule' or 'cli'
+  requested_at TEXT NOT NULL,
+  state TEXT NOT NULL,                -- queued | running | done | failed | cancelled
+  started_at TEXT, ended_at TEXT,
+  progress TEXT,                      -- one line, set while running
+  summary TEXT,                       -- one line when done
+  error TEXT,                         -- one line when failed
+  usage TEXT,                         -- JSON {calls, input, output, costUsd} of model calls made by the job
+  log_path TEXT,                      -- runner-side file; never sent to the browser
+  pid INTEGER,                        -- the job's child process while running
+  cancel_requested_at TEXT,
+  cancel_requested_by TEXT,
+  schedule TEXT                       -- the step whose schedule enqueued it
+);
+CREATE INDEX IF NOT EXISTS jobs_state ON jobs(state, id);
+CREATE INDEX IF NOT EXISTS jobs_step ON jobs(step, id);
+
+-- One schedule per step; a step without a row is not scheduled.
+CREATE TABLE IF NOT EXISTS job_schedules (
+  step TEXT PRIMARY KEY,
+  enabled INTEGER NOT NULL DEFAULT 0,
+  trigger TEXT NOT NULL,              -- 'interval' | 'after-sync'
+  interval_minutes INTEGER,
+  params TEXT NOT NULL DEFAULT '{}',  -- JSON, validated like a request
+  updated_by TEXT, updated_at TEXT,
+  last_enqueued_at TEXT,
+  last_sync_seen TEXT                 -- settings.org_high_water when it last enqueued
+);
+
+-- One row per `craft-auto sync` run, kept for two days, for the Pipeline page.
+CREATE TABLE IF NOT EXISTS sync_runs (
+  started_at TEXT NOT NULL,
+  ended_at TEXT,
+  mode TEXT,
+  items INTEGER,
+  error TEXT
+);
+CREATE INDEX IF NOT EXISTS sync_runs_started ON sync_runs(started_at);
