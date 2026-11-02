@@ -1,3 +1,13 @@
+// A refusal with a status code; the server renders it as a page, or as JSON
+// under /api/.
+export class HttpError extends Error {
+  status: number;
+  constructor(status: number, message: string) {
+    super(message);
+    this.status = status;
+  }
+}
+
 export function esc(s: unknown): string {
   return String(s ?? "").replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 }

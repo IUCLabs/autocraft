@@ -2,6 +2,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -12,7 +13,7 @@ import { ConfigError, loadConfig } from "../src/dash/server/config.ts";
 import { defaultRoutes, SESSION_COOKIE, startServer } from "../src/dash/server/index.ts";
 import { FakeProvider } from "../src/dash/server/provider.ts";
 
-const SCRATCH = "/home/user/.cache/craft-automation-scratch";
+const SCRATCH = join(homedir(), ".cache/craft-automation-scratch");
 mkdirSync(SCRATCH, { recursive: true });
 const dir = mkdtempSync(join(SCRATCH, "server-test-"));
 const permsFile = join(dir, "perms.json");

@@ -6,7 +6,7 @@ import type { Req, Res, Role, Route } from "./types.ts";
 import { esc } from "./server/util.ts";
 
 const PAGE = 50;
-const ACTIONS = ["answer", "undo", "override", "rule", "access-add", "access-remove", "access-role", "session-revoke", "sign-in", "sign-in-refused", "repo-track", "repo-untrack"];
+const ACTIONS = ["answer", "undo", "adopt", "opinion", "opinion-retract", "comment", "override", "rule", "access-add", "access-remove", "access-role", "session-revoke", "sign-in", "sign-in-refused", "repo-track", "repo-untrack"];
 
 function layout(req: Req, title: string, body: string): string {
   return `<!doctype html><html lang="en"><head><meta charset="utf-8">

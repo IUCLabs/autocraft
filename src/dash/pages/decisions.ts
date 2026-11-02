@@ -34,6 +34,11 @@ async function blockedRepos(req: Req, d: DecisionRow): Promise<string[]> {
   return repos.filter((_, i) => !ok[i]);
 }
 
+// Only an operator's answer is actionable (spec: Trust boundary); the
+// operator role is stored as "admin".
+const isOperator = (req: Req): boolean => req.user.role === "admin";
+const NOT_OPERATOR = "Only the operator answers decisions.";
+
 function whyNot(blocked: string[], batch: boolean): string {
   if (!batch) return `You can't answer this: you have no write access to storytold/${blocked[0]}.`;
   return `You can't answer this batch: no write access to ${blocked.map((r) => `storytold/${r}`).join(", ")}.`;
@@ -101,8 +106,9 @@ function batchList(db: DatabaseSync, req: Req, d: DecisionRow, withOverrides: bo
 async function card(db: DatabaseSync, req: Req, d: DecisionRow): Promise<string> {
   const batch = isBatch(d);
   const exp = exporting(req);
-  const blocked = exp ? [] : await blockedRepos(req, d);
-  const can = !exp && blocked.length === 0;
+  const operator = isOperator(req);
+  const blocked = exp || !operator ? [] : await blockedRepos(req, d);
+  const can = !exp && operator && blocked.length === 0;
   const opts = optionsOf(d);
   const facts = factsOf(d);
   const factList = facts.length ? `<ul class=facts>${facts.map((f) => `<li>${esc(f)}</li>`).join("")}</ul>` : "";
@@ -118,7 +124,7 @@ async function card(db: DatabaseSync, req: Req, d: DecisionRow): Promise<string>
   const count = batch ? `<p class=muted>${num(itemsOf(d).length)} items. First five:</p>` : "";
   if (!can) {
     const optsLine = `<p class=small>Options: ${opts.map((o) => esc(o.label) + (o.key === d.recommended ? " (recommended)" : "")).join(" · ")}</p>`;
-    const why = exp ? "" : `<p class=why>${esc(whyNot(blocked, batch))}</p>`;
+    const why = exp ? "" : `<p class=why>${esc(operator ? whyNot(blocked, batch) : NOT_OPERATOR)}</p>`;
     const items = batch ? batchList(db, req, d, false) : "";
     return `<article class=card data-card>${head}<p class=q>${esc(d.question)}</p>${count}${items}${factList}${optsLine}${why}` +
       (detail ? `<details><summary>More</summary>${detail}</details>` : "") + `</article>`;
@@ -249,8 +255,8 @@ export async function answeredTab(db: DatabaseSync, req: Req): Promise<Res> {
       section = sec;
       out += `<h2>${sec}</h2>`;
     }
-    const canUndo = !d.applied_at && !exp && (await blockedRepos(req, d)).length === 0;
-    const note = d.answer_note && !exp ? `<div class="small muted">Note: ${esc(d.answer_note)}</div>` : "";
+    const canUndo = !d.applied_at && !exp && isOperator(req) && (await blockedRepos(req, d)).length === 0;
+    const note = d.answer_note && !exp && isOperator(req) ? `<div class="small muted">Note: ${esc(d.answer_note)}</div>` : "";
     const ex = exceptionsOf(d).length;
     out += `<div class=card><div class=head>${target(d)}<span>· ${esc(d.kind)}</span><span>· ${esc(d.answered_by ?? "")}, ${esc(ago(d.answered_at))} ago</span></div>` +
       `<p class=q>${esc(d.question)}</p><p>Answer: <b>${esc(optionLabel(d, d.answer))}</b>${ex ? `, ${num(ex)} exceptions` : ""}${d.applied_at ? ` · applied ${esc(ago(d.applied_at))} ago` : ""}${canUndo ? ` ${undoForm(req, d)}` : ""}</p>${note}</div>`;
@@ -268,6 +274,7 @@ export async function answer(db: DatabaseSync, req: Req): Promise<Res> {
   const id = req.form.get("id") ?? "";
   const d = getDecision(db, id);
   if (!d) return badRequest(req, "That decision no longer exists.");
+  if (!isOperator(req)) return forbidden(req, NOT_OPERATOR);
   const blocked = await (async () => {
     // always the live check, never the page memo
     const repos = reposOf(d);
@@ -306,13 +313,14 @@ export async function undo(db: DatabaseSync, req: Req): Promise<Res> {
   const id = req.form.get("id") ?? "";
   const d = getDecision(db, id);
   if (!d) return badRequest(req, "That decision no longer exists.");
+  if (!isOperator(req)) return forbidden(req, NOT_OPERATOR);
   const repos = reposOf(d);
   const ok = await Promise.all(repos.map((r) => req.user.canWrite(r).catch(() => false)));
   const blocked = repos.filter((_, i) => !ok[i]);
   if (blocked.length) return forbidden(req, whyNot(blocked, isBatch(d)).replace("answer", "undo"));
   if (!d.answer) return badRequest(req, "That decision has no answer to undo.");
   if (d.applied_at) return { status: 409, html: `<div class="done err" data-card>The pipeline already acted on this answer; it can't be undone here.</div>` };
-  const r = db.prepare(`UPDATE main.decisions SET answer = NULL, answer_note = NULL, exceptions = NULL, answered_by = NULL, answered_at = NULL
+  const r = db.prepare(`UPDATE main.decisions SET answer = NULL, answer_note = NULL, exceptions = NULL, answered_by = NULL, answered_at = NULL, adopted_opinion = NULL
     WHERE id = ? AND answer IS NOT NULL AND applied_at IS NULL`).run(id);
   if (r.changes !== 1) return { status: 409, html: `<div class="done err" data-card>The pipeline acted on this a moment ago.</div>` };
   audit(db, req.user.login, "undo", id, { answer: d.answer });

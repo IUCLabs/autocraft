@@ -730,6 +730,7 @@ export function itemFor(repo: string, number: number): Item {
     related: s.related ?? [],
     classifications: d.classifications,
     stages: stagesFor(s, d),
+    comments: [],
     decisionIds: seed ? [d.id] : [],
   };
 }

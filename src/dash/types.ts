@@ -20,6 +20,7 @@ export type Req = {
   params: Record<string, string>;   // from the route pattern, e.g. /item/:repo/:n
   query: URLSearchParams;
   form: URLSearchParams;            // POST body (application/x-www-form-urlencoded)
+  json?: unknown;                   // POST body of an /api/ route (application/json)
   user: User;
   csrf: string;                     // put in every form as <input type=hidden name=csrf>
   nonce: string;                    // put on every <script> and <style> as nonce="..."
