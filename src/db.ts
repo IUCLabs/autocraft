@@ -15,5 +15,13 @@ export function connect(path: string = dbPath()): DatabaseSync {
   // WAL so the dashboard can read while a sync writes
   db.exec("PRAGMA journal_mode=WAL");
   db.exec(readFileSync(new URL("./schema.sql", import.meta.url), "utf8"));
+  addColumn(db, "classifications", "probs", "TEXT");
+  addColumn(db, "token_usage", "cost_usd", "REAL");
   return db;
+}
+
+// CREATE TABLE IF NOT EXISTS leaves older databases without columns added later.
+function addColumn(db: DatabaseSync, table: string, column: string, type: string): void {
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
+  if (!cols.some((c) => c.name === column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
 }

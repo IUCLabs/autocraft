@@ -64,6 +64,7 @@ CREATE TABLE IF NOT EXISTS classifications (
   dup_of INTEGER,
   area TEXT,
   reason TEXT,
+  probs TEXT,                         -- JSON, Jev: {type: {label: p}, top, security, needs_decision}
   PRIMARY KEY (repo, number, classifier, run_id)
 );
 
@@ -95,6 +96,7 @@ CREATE TABLE IF NOT EXISTS token_usage (
   input_tokens INTEGER, output_tokens INTEGER,
   cache_read_tokens INTEGER, cache_write_tokens INTEGER,
   started_at TEXT, ended_at TEXT,
+  cost_usd REAL,                      -- as reported by the CLI, when it reports one
   PRIMARY KEY (run_id, agent)
 );
 
