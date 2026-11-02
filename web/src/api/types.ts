@@ -251,3 +251,134 @@ export interface AnswerInput {
   note?: string;
   exceptions?: (ItemRef & { answer: string })[];
 }
+
+// ---- Contributors, Repos and Access (docs/dashboard-spec.md, Pages) ----
+
+export type OverrideStatus = "allow" | "deny";
+
+export interface WhitelistRule {
+  minMerged: number;
+  /** 0 to 1 */
+  minRate: number;
+}
+
+export interface Contributor {
+  login: string;
+  /** Effective status: an override wins over the automatic tier. */
+  tier: Tier;
+  /** From merge history under the current rule, ignoring any override. */
+  autoTier: "whitelisted" | "not";
+  override: OverrideStatus | null;
+  /** Operators only; absent for everyone else. */
+  overrideNote?: string | null;
+  overrideBy: string | null;
+  overrideAt: string | null;
+  merged: number;
+  closedUnmerged: number;
+  open: number;
+  /** merged / (merged + closed unmerged); null with no finished PRs */
+  mergeRate: number | null;
+  lastMerge: string | null;
+  repos: RepoName[];
+}
+
+export type ContributorSort = "login" | "tier" | "merged" | "closed" | "open" | "rate" | "last" | "repos";
+
+export interface ContributorFilter {
+  /** part of the login */
+  q?: string;
+  tier?: Tier;
+  repo?: RepoName;
+  sort?: ContributorSort;
+  desc?: boolean;
+  /** page size (server default 50, at most 500) and offset */
+  limit?: number;
+  offset?: number;
+}
+
+export interface ContributorList {
+  rule: WhitelistRule;
+  /** rows matching every filter */
+  total: number;
+  /** authors matching `q` and `repo`, per effective tier (before the tier filter) */
+  byTier: Record<Tier, number>;
+  contributors: Contributor[];
+}
+
+/** What a whitelist rule would do, before it is saved. Counts are of every author. */
+export interface RulePreview {
+  rule: WhitelistRule;
+  authors: number;
+  /** allowed under the current rule: whitelisted by the rule or by an allow override */
+  allowedNow: number;
+  allowedAfter: number;
+  /** status changes; overrides never change; at most 20 logins each, most merged first */
+  gained: { count: number; logins: string[] };
+  lost: { count: number; logins: string[] };
+}
+
+export interface OverrideInput {
+  /** null clears the override */
+  status: OverrideStatus | null;
+  /** private note, at most 300 characters */
+  note?: string;
+}
+
+export interface TrackedRepo {
+  name: RepoName;
+  tracked: boolean;
+  openPrs: number | null;
+  openIssues: number | null;
+  /** issue and PR rows in the mirror */
+  mirrored: number;
+  syncedAt: string | null;
+}
+
+export interface AccessEntry {
+  login: string;
+  role: Role;
+  addedBy: string | null;
+  addedAt: string | null;
+  note: string | null;
+  /** active sessions */
+  sessions: number;
+}
+
+export interface SessionInfo {
+  id: number;
+  login: string;
+  createdAt: string;
+  lastSeen: string;
+  expiresAt: string;
+  userAgent: string | null;
+  /** the session making this request */
+  current: boolean;
+}
+
+export interface AccessOverview {
+  entries: AccessEntry[];
+  sessions: SessionInfo[];
+}
+
+export interface AuditEntry {
+  at: string;
+  login: string;
+  action: string;
+  target: string | null;
+  details: Record<string, unknown> | null;
+}
+
+export interface AuditFilter {
+  /** the actor or the target */
+  login?: string;
+  action?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export interface AuditPage {
+  entries: AuditEntry[];
+  total: number;
+  /** every action the log knows, for the filter */
+  actions: string[];
+}

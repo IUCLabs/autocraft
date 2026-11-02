@@ -6,7 +6,6 @@ import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import type { Req, Res, User } from "../types.ts";
 import { classifiers } from "./classifiers.ts";
-import { contributorsPage } from "./contributors.ts";
 import { cost } from "./cost.ts";
 import type { PageReq } from "./layout.ts";
 
@@ -26,7 +25,6 @@ export function stripControls(html: string): string {
 
 export async function exportSite(db: DatabaseSync, dir: string): Promise<{ pages: number }> {
   const pages: [string, (db: DatabaseSync, r: Req) => Res | Promise<Res>, PageReq][] = [
-    ["contributors/index.html", contributorsPage, req("/contributors")],
     ["classifiers/index.html", classifiers, req("/classifiers")],
     ["cost/index.html", cost, req("/cost")],
   ];

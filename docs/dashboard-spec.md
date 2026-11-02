@@ -187,7 +187,7 @@ A fake OAuth provider for tests and local development, enabled only when `CRAFT_
 
 - Server: TypeScript on Node 24, run directly with type stripping (no build step); `node:http` and `node:sqlite`. It serves the JSON API under `/api/`, the sign-in routes under `/auth/`, and the frontend.
 - Frontend: a React app in `web/` (Vite, Tailwind, Radix primitives), described in `docs/ui-design.md`. `pnpm -C web build` writes it to `web/dist`, which the server serves behind sign-in: hashed files under `/assets/` with a year's cache, and `index.html`, uncached, for every other path, so the app routes on the client. It talks to the server only through the JSON API.
-- The pages the app doesn't have yet (Contributors, Classifiers, Run and cost, Repos, Access) are server-rendered HTML with a little plain JS, at their own paths; the app's sidebar links to them.
+- The pages the app doesn't have yet (Classifiers, Run and cost) are server-rendered HTML with a little plain JS, at their own paths; the app's sidebar links to them.
 - Content-Security-Policy: the app gets `script-src 'self'` and `style-src 'self'` plus the hash of the one fixed `<style>` the Radix dialog's scroll lock injects; server-rendered pages use a per-response nonce. No CDNs or external requests: all CSS, JS, fonts and charts are served by the app.
 - Light and dark themes via `prefers-color-scheme`; readable at 360 px wide without horizontal scrolling; touch targets at least 44 px.
 - Performance at the real size (about 100,000 mirror rows including closed history, 25,000 open): every page renders in under 300 ms. Add the indexes the queries need.

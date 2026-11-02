@@ -11,6 +11,7 @@ import { contributors } from "../../whitelist.ts";
 import { doneByRepo, funnelByRepo, runStart, trend, type DoneRow, type FunnelRow } from "../pages/stats.ts";
 import { HttpError, RateLimiter } from "../server/util.ts";
 import type { Req, Res, Route } from "../types.ts";
+import * as adm from "./admin.ts";
 import * as dec from "./decisions.ts";
 import { classificationsOf, itemState, relatedOf } from "./decisions.ts";
 
@@ -200,5 +201,18 @@ export function apiRoutes(opts: ApiOptions = {}): Route[] {
     get("/api/items/:repo/:n", item),
     get("/api/search", search),
     get("/api/progress", progress),
+    get("/api/contributors", adm.listContributors),
+    get("/api/contributors/rule-preview", adm.previewRule),
+    post("/api/contributors/rule", adm.saveRule),
+    post("/api/contributors/:login/override", adm.override),
+    get("/api/repos/all", adm.allRepos),
+    post("/api/repos/track", (db, req) => adm.track(db, req, true)),
+    post("/api/repos/untrack", (db, req) => adm.track(db, req, false)),
+    get("/api/access", adm.accessOverview),
+    post("/api/access/add", adm.accessAdd),
+    post("/api/access/remove", adm.accessRemove),
+    post("/api/access/role", adm.accessRole),
+    post("/api/access/sessions/revoke", adm.revokeSession),
+    get("/api/audit", adm.auditLog),
   ];
 }

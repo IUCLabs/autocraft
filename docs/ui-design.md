@@ -82,7 +82,7 @@ interface FeatureModule {
 - **Slots** let a module add to another module's screen without editing it. The item page renders the `item.side` slot under its own side panel (for example, a future "audit entries" or "cost for this item" block).
 - **Data hooks**: `useQuery(key, api => …)` over the typed `Api` interface (`web/src/api/client.ts`). It refetches after any write. `createHttpApi()` (`web/src/api/http.ts`) implements it over the server's JSON API; `createMockApi()` implements it over deterministic fixtures for the mockup build (`VITE_MOCK=1`).
 - **Keyboard**: views register the keys they handle (`useShortcutHelp`), so the `?` sheet lists exactly what works on the current screen.
-- **Server pages**: Contributors, Classifiers, Run and cost, Repos and Access are modules whose nav entries link to the server-rendered pages with a full page load. In the mockup build they show a placeholder view instead.
+- **Server pages**: Classifiers and Run and cost are modules whose nav entries link to the server-rendered pages with a full page load. In the mockup build they show a placeholder view instead.
 
 ## 6. Screens
 

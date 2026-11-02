@@ -1,4 +1,4 @@
-// The dashboard's access list. The Access page and the CLI both write through
+// The dashboard's access list. The Access API and the CLI both write through
 // these functions, so every change ends the login's sessions and is audited.
 import type { DatabaseSync } from "node:sqlite";
 import { connect } from "./db.ts";
@@ -50,25 +50,37 @@ export function addLogin(db: DatabaseSync, by: string, login: string, role: Role
   });
 }
 
-export function removeLogin(db: DatabaseSync, by: string, login: string): void {
+// Refuses a change that would leave the dashboard without an operator. The
+// dashboard applies it to every access write; the CLI doesn't, because only
+// someone with a shell on the host runs it.
+function keepAnOperator(db: DatabaseSync, row: AccessRow): void {
+  if (row.role === "operator" && operatorCount(db) <= 1) throw new AccessError("That would leave no operator. Add another operator first.");
+}
+
+export type AccessWriteOptions = { keepOperator?: boolean };
+
+export function removeLogin(db: DatabaseSync, by: string, login: string, opts: AccessWriteOptions = {}): void {
   tx(db, () => {
     const row = getAccess(db, login);
     if (!row) throw new AccessError(`${login} is not on the access list`);
+    if (opts.keepOperator) keepAnOperator(db, row);
     db.prepare("DELETE FROM access WHERE login = ?").run(login);
     const sessions = endSessions(db, login);
     audit(db, by, "access-remove", row.login, { role: row.role, sessions });
   });
 }
 
-export function setRole(db: DatabaseSync, by: string, login: string, role: Role): void {
+export function setRole(db: DatabaseSync, by: string, login: string, role: Role, opts: AccessWriteOptions = {}): boolean {
   if (!isRole(role)) throw new AccessError(`role must be ${ROLES.join(", ")}`);
-  tx(db, () => {
+  return tx(db, () => {
     const row = getAccess(db, login);
     if (!row) throw new AccessError(`${login} is not on the access list`);
-    if (row.role === role) return;
+    if (row.role === role) return false;
+    if (opts.keepOperator) keepAnOperator(db, row);
     db.prepare("UPDATE access SET role = ? WHERE login = ?").run(role, login);
     const sessions = endSessions(db, login);
     audit(db, by, "access-role", row.login, { from: row.role, to: role, sessions });
+    return true;
   });
 }
 

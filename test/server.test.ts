@@ -161,7 +161,7 @@ describe("sign-in", () => {
     assert.match(set, /Secure/);
     assert.match(set, /SameSite=Lax/);
     assert.match(set, /Path=\//);
-    const page = await c.get("/repos");
+    const page = await c.get("/api/access", false);
     assert.equal(page.status, 403);
     assert.match(page.headers.get("content-security-policy")!, /script-src 'self' 'nonce-[\w-]+'/);
     assert.equal(page.headers.get("x-frame-options"), "DENY");
@@ -185,7 +185,7 @@ describe("permissions", () => {
   test("a viewer can read, but every write returns 403", async () => {
     const c = await signedIn("viewer1");
     assert.equal((await c.get("/")).status, 200);
-    assert.equal((await c.get("/access")).status, 403);
+    assert.equal((await c.get("/api/access", false)).status, 403);
     const csrf = await c.csrf();
     const before = (db.prepare("SELECT COUNT(*) AS n FROM audit").get() as { n: number }).n;
     for (const r of allRoutes.filter((r) => r.method === "POST")) {
@@ -315,19 +315,6 @@ describe("frontend", () => {
       await s.close();
     }
   });
-
-  test("a v1 form POST from another site is refused", async () => {
-    const c = await signedIn("boss");
-    const csrf = await c.csrf();
-    const before = audits("repo-track").n;
-    for (const headers of [{ origin: "https://evil.example" }, { "sec-fetch-site": "cross-site" }, { origin: "null" }] as Record<string, string>[]) {
-      const r = await c.req("POST", "/repos/track", { form: { csrf, name: "from-elsewhere" }, html: false, headers });
-      assert.equal(r.status, 403, JSON.stringify(headers));
-    }
-    assert.equal(audits("repo-track").n, before);
-    const ok = await c.req("POST", "/repos/track", { form: { csrf, name: "from-here" }, html: false, headers: { origin: new URL(base).origin, "sec-fetch-site": "same-origin" } });
-    assert.equal(ok.status, 303);
-  });
 });
 
 describe("tokens", () => {
@@ -358,50 +345,13 @@ describe("tokens", () => {
   });
 });
 
-describe("repos page", () => {
-  test("is operator-only; a track POST without CSRF is refused and a valid one is audited", async () => {
-    const viewer = await signedIn("viewer1");
-    assert.equal((await viewer.get("/repos")).status, 403);
-    const boss = await signedIn("boss");
-    const page = await boss.get("/repos");
-    assert.equal(page.status, 200);
-    assert.match(await page.text(), /takes effect at the next sync/);
-    const before = audits("repo-track").n;
-    assert.equal((await boss.post("/repos/track", { name: "brand-new" })).status, 403);
-    assert.equal(audits("repo-track").n, before);
-    const r = await boss.post("/repos/track", { csrf: await boss.csrf(), name: "brand-new" });
-    assert.equal(r.status, 303);
-    assert.equal(audits("repo-track").n, before + 1);
-  });
-});
-
 describe("access changes", () => {
-  test("removing a login on the Access page ends its session", async () => {
-    addLogin(db, "cli", "leaver", "viewer", null);
-    const victim = await signedIn("leaver");
-    assert.equal((await victim.get("/")).status, 200);
-    const op = await signedIn("boss");
-    const page = await (await op.get("/access")).text();
-    const csrf = /name="csrf" value="([^"]+)"/.exec(page)![1]!;
-    assert.equal((await op.post("/access/remove", { csrf, login: "leaver" })).status, 303);
-    assert.equal((await victim.get("/")).status, 303);
-    assert.equal((await victim.get("/", false)).status, 401);
-    assert.equal(audits("access-remove").n, 1);
-  });
-
   test("changing a role ends the login's sessions", async () => {
     addLogin(db, "cli", "promoted", "viewer", null);
     const c = await signedIn("promoted");
     setRole(db, "cli", "promoted", "operator");
     assert.equal((await c.get("/")).status, 303);
     removeLogin(db, "cli", "promoted");
-  });
-
-  test("the last operator can't be removed from the page", async () => {
-    const op = await signedIn("boss");
-    const csrf = await op.csrf();
-    assert.equal((await op.post("/access/remove", { csrf, login: "boss" })).status, 400);
-    assert.equal((await op.get("/")).status, 200);
   });
 });
 

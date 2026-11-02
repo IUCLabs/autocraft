@@ -6,6 +6,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { after, before, describe, test } from "node:test";
 import { ask, getDecision } from "../src/decisions.ts";
 import { connect } from "../src/db.ts";
+import { apiRoutes } from "../src/dash/api/index.ts";
 import { exportSite } from "../src/dash/pages/export.ts";
 import { routes } from "../src/dash/pages/index.ts";
 import { doneByRepo, funnelByRepo } from "../src/dash/pages/stats.ts";
@@ -39,7 +40,7 @@ let pages: [string, string, Record<string, string>, string][];
 before(() => {
   db = buildFixture(join(dir, "fixture.db"));
   pages = [
-    ["/contributors", "/contributors", {}, ""], ["/classifiers", "/classifiers", {}, ""],
+    ["/classifiers", "/classifiers", {}, ""],
     ["/classifiers/items", "/classifiers/items", {}, "a=haiku&b=jev&field=type_label"], ["/cost", "/cost", {}, ""],
   ];
 });
@@ -74,18 +75,21 @@ describe("pages", () => {
     }
   });
 
-  test("the whitelist routes refuse non-operators", async () => {
-    const res = await call("POST", "/contributors/override", req(viewer, "POST", "/contributors/override", {}, { login: "user0001", status: "allow" }));
-    assert.equal(res.status, 403);
-    const ok = await call("POST", "/contributors/override", req(operator, "POST", "/contributors/override", {}, { login: "user0001", status: "allow", note: "hi" }));
-    assert.equal(ok.redirect, "/contributors");
-    assert.equal(isWhitelisted(db, "user0001").ok, true);
+  test("the contributors API answers in under 300 ms on the full-scale fixture", async () => {
+    const list = apiRoutes().find((r) => r.method === "GET" && r.pattern === "/api/contributors")!;
+    const rq = req(operator, "GET", "/api/contributors", {}, {}, "tier=not&sort=rate");
+    await list.handler(db, rq);
+    const t0 = performance.now();
+    const res = await list.handler(db, rq);
+    const ms = performance.now() - t0;
+    assert.equal(res.status ?? 200, 200);
+    assert.ok(ms < 300, `/api/contributors: ${ms.toFixed(0)} ms`);
   });
 
   test("the export has no write controls and no private field", async () => {
     const out = join(dir, "export");
     const r = await exportSite(db, out);
-    assert.equal(r.pages, 3);
+    assert.equal(r.pages, 2);
     const files: string[] = [];
     const walk = (d: string) => {
       for (const f of readdirSync(d)) {

@@ -42,17 +42,16 @@ export type AppOptions = {
   config: Config;
   db: DatabaseSync;
   provider?: Provider;
-  routes?: Route[];          // default: the pages plus the Access page
+  routes?: Route[];          // default: the JSON API plus the server-rendered pages
 };
 
 type Compiled = Route & { parts: string[] };
 
 
 export async function defaultRoutes(): Promise<Route[]> {
-  const { accessRoutes } = await import("../access-page.ts");
   const { apiRoutes } = await import("../api/index.ts");
   const { routes: pages } = await import("../pages/index.ts");
-  return [...accessRoutes, ...apiRoutes(), ...pages];
+  return [...apiRoutes(), ...pages];
 }
 
 function compile(routes: Route[]): Compiled[] {

@@ -1,15 +1,26 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 import type {
+  AccessOverview,
   AnswerInput,
+  AuditFilter,
+  AuditPage,
+  Contributor,
+  ContributorFilter,
+  ContributorList,
   Decision,
   DecisionComment,
   DecisionFilter,
   DecisionList,
   Item,
+  OverrideInput,
   Progress,
   RepoName,
+  Role,
+  RulePreview,
   SearchHit,
+  TrackedRepo,
   User,
+  WhitelistRule,
 } from "./types";
 
 /** The dashboard API as the frontend sees it. The mock and the HTTP client both implement it. */
@@ -33,6 +44,28 @@ export interface Api {
   item(repo: RepoName, number: number): Promise<Item>;
   search(q: string): Promise<SearchHit[]>;
   progress(): Promise<Progress>;
+  /** Anyone signed in reads; writes and the preview are for operators. Override notes come only to operators. */
+  contributors: {
+    list(filter: ContributorFilter): Promise<ContributorList>;
+    previewRule(rule: WhitelistRule): Promise<RulePreview>;
+    setRule(rule: WhitelistRule): Promise<WhitelistRule>;
+    override(login: string, input: OverrideInput): Promise<Contributor>;
+  };
+  /** Operator only: every org repo and whether it is tracked. */
+  repoAdmin: {
+    list(): Promise<TrackedRepo[]>;
+    track(name: RepoName): Promise<TrackedRepo[]>;
+    untrack(name: RepoName): Promise<TrackedRepo[]>;
+  };
+  /** Operator only. */
+  access: {
+    overview(): Promise<AccessOverview>;
+    add(input: { login: string; role: Role; note?: string }): Promise<AccessOverview>;
+    remove(login: string): Promise<AccessOverview>;
+    setRole(login: string, role: Role): Promise<AccessOverview>;
+    revokeSession(id: number): Promise<AccessOverview>;
+    audit(filter: AuditFilter): Promise<AuditPage>;
+  };
   signOut(): Promise<void>;
   /** Called after any write so open views can refetch. Returns an unsubscribe function. */
   subscribe(fn: () => void): () => void;
