@@ -1,15 +1,17 @@
 import { BadgeCheckIcon, CoinsIcon, FolderGit2Icon, ScaleIcon, ShieldIcon, type LucideIcon } from "lucide-react";
 import type { FeatureModule, NavEntry, Permission, ViewProps } from "../../registry/types";
-import { Hud } from "../../ui/Hud";
 
 // Pages from docs/dashboard-spec.md that this design phase leaves for later.
 // Each is a real module so the nav, permissions and routes already work.
 function placeholder(id: string, label: string, icon: LucideIcon, group: NavEntry["group"], order: number, permission: Permission, blurb: string): FeatureModule {
   function View(_: ViewProps) {
+    const Icon = icon;
     return (
-      <div className="bg-dots flex h-full flex-col items-center justify-center gap-3 p-8 text-center">
-        <Hud>{label}</Hud>
-        <p className="max-w-[44ch] text-sm leading-6 text-ink/60">{blurb}</p>
+      <div className="flex h-full flex-col items-center justify-center gap-1.5 p-8 text-center">
+        <Icon className="mb-1 text-[28px] text-ink/25" />
+        <p className="text-md font-semibold">{label}</p>
+        <p className="max-w-[44ch] text-sm text-ink/60">{blurb}</p>
+        <p className="text-xs text-ink/40">Designed in a later phase.</p>
       </div>
     );
   }

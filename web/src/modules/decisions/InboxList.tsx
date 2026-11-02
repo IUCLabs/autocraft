@@ -5,7 +5,8 @@ import type { Decision, DecisionList } from "../../api/types";
 import type { Command, ViewProps } from "../../registry/types";
 import { decisionAccess } from "../../registry/permissions";
 import { useHotkeys, useShortcutHelp } from "../../shell/keyboard";
-import { Hud } from "../../ui/Hud";
+import { Count } from "../../ui/Heading";
+import { Button } from "../../ui/Button";
 import { cn } from "../../ui/cn";
 import { ago, ageDays } from "../../lib/format";
 import { ClaimPill, KIND_ICON } from "./parts";
@@ -70,16 +71,15 @@ export function InboxList({ user }: ViewProps) {
     g ? g.items.push(d) : groups.push({ kind: d.kind, items: [d] });
   }
   const oldest = data?.oldestAskedAt;
+  // When the role itself is read-only, a lock on every row says nothing; the detail pane gives the reason.
+  const roleReadOnly = decisionAccess(user, []).mode === "read";
 
   return (
-    <div className="flex h-full min-h-0 flex-col bg-panel">
-      <div className="shrink-0 border-b border-line px-4 py-2.5">
-        <div className="flex items-baseline gap-2">
-          <span className="font-display text-lg leading-none">{data?.total ?? "–"}</span>
-          <span className="text-sm text-ink/70">{data?.total === 1 ? "decision" : "decisions"}</span>
-          {oldest && <span className="ml-auto font-mono text-2xs text-ink/45">oldest {ago(oldest)}</span>}
-        </div>
-        <div className="mt-1 truncate font-mono text-2xs text-ink/50">{summaryLine(data) || (loading ? "loading…" : "nothing matches")}</div>
+    <div className="flex h-full min-h-0 flex-col">
+      <div className="flex h-10 shrink-0 items-center gap-2 border-b border-line px-4 text-xs">
+        <span className="num shrink-0 whitespace-nowrap font-semibold text-ink">{data?.total ?? "–"} decisions</span>
+        <span className="truncate text-ink/50">{summaryLine(data) || (loading ? "loading…" : "nothing matches")}</span>
+        {oldest && <span className="ml-auto shrink-0 text-ink/50">oldest {ago(oldest)}</span>}
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto" role="listbox" aria-label="Decisions">
         {loc.justAnswered.slice(0, 3).map((a) => (
@@ -89,13 +89,13 @@ export function InboxList({ user }: ViewProps) {
           const Icon = KIND_ICON[g.kind];
           return (
             <div key={g.kind}>
-              <div className="sticky top-0 z-[1] flex h-7 items-center gap-1.5 border-b border-line bg-panel px-4">
-                <Icon className="text-[10px] text-ink/50" />
-                <Hud className="text-2xs">{KIND_LABEL[g.kind]}</Hud>
-                <span className="font-mono text-2xs text-ink/40">{g.items.length}</span>
+              <div className="sticky top-0 z-[1] flex h-8 items-center gap-1.5 border-b border-line bg-bg px-4 text-xs font-semibold text-ink/70">
+                <Icon className="text-[12px] text-ink/45" />
+                {KIND_LABEL[g.kind]}
+                <Count n={g.items.length} />
               </div>
               {g.items.map((d) => (
-                <Row key={d.id} d={d} active={d.id === id} checked={loc.checked.has(d.id)} canAnswer={decisionAccess(user, [d.repo]).mode !== "read"} onOpen={() => go(d.id)} activeRef={d.id === id ? activeRef : undefined} />
+                <Row key={d.id} d={d} active={d.id === id} checked={loc.checked.has(d.id)} canAnswer={roleReadOnly || decisionAccess(user, [d.repo]).mode !== "read"} onOpen={() => go(d.id)} activeRef={d.id === id ? activeRef : undefined} />
               ))}
             </div>
           );
@@ -107,38 +107,38 @@ export function InboxList({ user }: ViewProps) {
 
 function Row({ d, active, checked, canAnswer, onOpen, activeRef }: { d: Decision; active: boolean; checked: boolean; canAnswer: boolean; onOpen: () => void; activeRef?: React.Ref<HTMLButtonElement> }) {
   const rec = d.options.find((o) => o.key === d.recommended);
-  const age = ago(d.askedAt);
   const old = ageDays(d.askedAt) >= 2;
+  const proposals = d.proposals.filter((p) => p.status === "pending").length;
   return (
-    <div className={cn("group relative flex border-b border-line", active ? "bg-ink/[0.07]" : "hover:bg-ink/[0.035]")}>
-      {active && <span className="absolute inset-y-0 left-0 w-0.5 bg-ink" />}
-      <label className="flex w-9 shrink-0 cursor-pointer items-start justify-center pt-[11px]" title="Check for a batch answer (x)">
-        <input type="checkbox" checked={checked} onChange={() => localActions.toggle(d.id)} className="peer sr-only" aria-label={`Check ${d.title}`} />
-        <span className={cn("flex size-3.5 items-center justify-center border peer-focus-visible:outline peer-focus-visible:outline-2 peer-focus-visible:outline-accent-ink", checked ? "border-ink bg-ink text-inv" : "border-line-strong opacity-40 group-hover:opacity-100")}>
-          {checked && <CheckIcon className="text-[9px]" strokeWidth={3} />}
+    <div className={cn("group relative flex border-b border-line", active ? "bg-accent/[0.08]" : "hover:bg-ink/[0.03]")}>
+      {active && <span className="absolute inset-y-0 left-0 w-0.5 bg-accent" />}
+      <label className="flex w-9 shrink-0 cursor-pointer items-start justify-center pt-[11px]" title="Select for a batch answer (x)">
+        <input type="checkbox" checked={checked} onChange={() => localActions.toggle(d.id)} className="peer sr-only" aria-label={`Select ${d.title}`} />
+        <span className={cn("flex size-3.5 items-center justify-center rounded-sm border peer-focus-visible:outline peer-focus-visible:outline-2 peer-focus-visible:outline-accent-ink", checked ? "border-accent bg-accent text-white" : "border-line-strong opacity-50 group-hover:opacity-100")}>
+          {checked && <CheckIcon className="text-[10px]" strokeWidth={3} />}
         </span>
       </label>
       <button ref={activeRef} role="option" aria-selected={active} onClick={onOpen} className="min-w-0 flex-1 rounded-none py-2 pr-3 text-left">
-        <div className="flex items-center gap-2">
-          <span className="ref truncate text-ink/60">{d.number === null ? d.repo : `${d.repo}#${d.number}`}</span>
-          {d.number === null && <span className="shrink-0 border border-line px-1 font-mono text-[9px] uppercase leading-[13px] tracking-[0.1em] text-ink/70">batch ×{d.items.length}</span>}
-          {d.proposals.some((p) => p.status === "pending") && (
-            <span className="shrink-0 border border-accent-ink/50 bg-accent/10 px-1 font-mono text-[9px] uppercase leading-[13px] tracking-[0.1em] text-accent-ink">
-              proposal
-            </span>
-          )}
-          {!canAnswer && <LockIcon className="shrink-0 text-[10px] text-ink/40" aria-label="You can't answer this one" />}
-          <span className="ml-auto flex shrink-0 items-center gap-1.5">
-            <ClaimPill claim={d.claim} compact />
-            <span className={cn("font-mono text-2xs", old ? "text-warn" : "text-ink/40")}>{age}</span>
+        <div className="flex items-baseline gap-2">
+          <span className={cn("min-w-0 flex-1 truncate text-sm", active ? "font-medium text-ink" : "text-ink/90")}>{d.title}</span>
+          <span className={cn("num shrink-0 text-xs", old ? "text-warn" : "text-ink/45")} title={`asked ${ago(d.askedAt, false)}`}>
+            {ago(d.askedAt)}
           </span>
         </div>
-        <div className={cn("mt-0.5 truncate text-sm", active ? "text-ink" : "text-ink/85")}>{d.title}</div>
-        {rec && (
-          <div className="mt-0.5 truncate font-mono text-2xs text-ink/40">
-            <span className="text-ink/30">rec</span> {rec.label}
-          </div>
-        )}
+        <div className="mt-0.5 flex items-center gap-1.5 text-xs text-ink/50">
+          <span className="code shrink-0 text-[11.5px]">{d.number === null ? d.repo : `${d.repo}#${d.number}`}</span>
+          {d.number === null && <span className="shrink-0">· {d.items.length} items</span>}
+          {rec && <span className="truncate">· rec. {rec.label}</span>}
+          <span className="ml-auto flex shrink-0 items-center gap-1.5">
+            {proposals > 0 && (
+              <span className="rounded-full border border-accent/40 bg-accent/10 px-1.5 text-2xs font-medium leading-4 text-accent-ink">
+                {proposals === 1 ? "proposal" : `${proposals} proposals`}
+              </span>
+            )}
+            {!canAnswer && <LockIcon className="text-[11px] text-ink/40" aria-label="Read-only for you" />}
+            <ClaimPill claim={d.claim} compact />
+          </span>
+        </div>
       </button>
     </div>
   );
@@ -147,13 +147,13 @@ function Row({ d, active, checked, canAnswer, onOpen, activeRef }: { d: Decision
 function JustAnswered({ entry }: { entry: { id: string; label: string; ref: string } }) {
   const undo = useUndo();
   return (
-    <div className="flex h-9 items-center gap-2 border-b border-line bg-ok/[0.06] pl-4 pr-2 animate-fadeIn">
-      <CheckIcon className="shrink-0 text-xs text-ok" />
-      <span className="ref shrink-0 text-ink/70">{entry.ref}</span>
-      <span className="truncate text-xs text-ink/60">→ {entry.label}</span>
-      <button onClick={() => void undo(entry.id)} className="ml-auto flex h-7 shrink-0 items-center gap-1 px-2 font-mono text-2xs uppercase tracking-[0.1em] text-ink/60 hover:bg-ink/5 hover:text-ink">
-        <Undo2Icon className="text-[10px]" /> Undo
-      </button>
+    <div className="flex h-9 items-center gap-2 border-b border-line bg-ok/[0.06] pl-4 pr-2 text-xs animate-fadeIn">
+      <CheckIcon className="shrink-0 text-ok" />
+      <span className="code shrink-0 text-ink/70">{entry.ref}</span>
+      <span className="truncate text-ink/60">→ {entry.label}</span>
+      <Button size="sm" variant="ghost" icon={Undo2Icon} className="ml-auto" onClick={() => void undo(entry.id)}>
+        Undo
+      </Button>
     </div>
   );
 }

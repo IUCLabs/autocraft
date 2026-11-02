@@ -1,6 +1,5 @@
-@import "@fontsource-variable/archivo/wdth.css";
+@import "@fontsource-variable/inter/index.css";
 @import "@fontsource-variable/geist-mono/index.css";
-@import "@fontsource/instrument-serif/latin-400-italic.css";
 @import "./tokens.css";
 
 @tailwind base;
@@ -19,36 +18,23 @@
   }
   body {
     font-family: theme("fontFamily.sans");
-    font-size: 14px;
+    font-size: 13px;
     line-height: 20px;
+    font-feature-settings: "cv11", "ss01";
     color: rgb(var(--st-fg-rgb));
     background-color: var(--st-bg);
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
-    font-variant-numeric: tabular-nums;
     overflow: hidden;
   }
-  h1,
-  h2,
-  h3,
-  h4 {
-    font-family: theme("fontFamily.display");
-    letter-spacing: -0.03em;
-  }
-  h1,
-  h2 {
-    font-stretch: 118%;
-    font-weight: 620;
-  }
   ::selection {
-    background: #2d81ff;
-    color: #ffffff;
+    background: rgb(var(--st-accent-rgb) / 0.35);
   }
   :focus-visible {
     outline: 2px solid rgb(var(--st-accent-ink-rgb));
-    outline-offset: 2px;
+    outline-offset: 1px;
   }
-  /* ArtCraft: anything pressable gets a 3px corner; surfaces stay square. */
+  /* ArtCraft: pressable controls get a 3px corner. */
   button,
   select,
   textarea,
@@ -58,52 +44,28 @@
   }
   .lucide {
     display: inline-block;
-    width: 1.2em;
-    height: 1.2em;
+    width: 1.15em;
+    height: 1.15em;
     vertical-align: -0.2em;
     flex-shrink: 0;
   }
 }
 
 @layer components {
-  /* ArtCraft .hud-label: the mono micro-label used for every section title. */
-  .hud {
-    font-family: theme("fontFamily.mono");
-    font-size: 11px;
-    line-height: 14px;
-    font-weight: 500;
-    letter-spacing: 0.15em;
-    text-transform: uppercase;
-  }
-  .font-display {
-    font-stretch: 118%;
-    font-weight: 620;
-  }
-  .ref {
+  /* Code-ish values: refs, paths, diff stats, SHAs. */
+  .code {
     font-family: theme("fontFamily.mono");
     font-size: 12px;
-    letter-spacing: 0.02em;
+    font-variant-numeric: tabular-nums;
   }
-  /* ArtCraft .filter-tab, retargeted at the theme tokens so it works in light mode. */
-  .filter-tab {
-    @apply inline-flex h-7 items-center gap-1.5 whitespace-nowrap rounded border border-line bg-ink/5 px-2.5 font-mono text-xs font-semibold uppercase tracking-[0.12em] text-ink/70 transition-colors duration-fast hover:border-line-strong hover:bg-ink/[0.07] hover:text-ink;
+  .num {
+    font-variant-numeric: tabular-nums;
   }
-  .filter-tab[data-active="true"] {
-    @apply border-ink bg-ink text-inv hover:bg-ink hover:text-inv;
+  .chip {
+    @apply inline-flex h-7 items-center gap-1.5 whitespace-nowrap rounded border border-line bg-transparent px-2.5 text-[12px] font-medium text-ink/75 transition-colors duration-fast hover:border-line-strong hover:bg-ink/[0.04] hover:text-ink;
   }
-  .bg-dots {
-    background-image: radial-gradient(var(--st-dot) 1px, transparent 0);
-    background-size: 24px 24px;
-  }
-  /* ArtCraft .frame-corner-mark: fine registration crosses at panel corners. */
-  .reg {
-    position: absolute;
-    width: 11px;
-    height: 11px;
-    pointer-events: none;
-    background:
-      linear-gradient(rgb(var(--st-fg-rgb) / 0.45), rgb(var(--st-fg-rgb) / 0.45)) center / 1px 11px no-repeat,
-      linear-gradient(rgb(var(--st-fg-rgb) / 0.45), rgb(var(--st-fg-rgb) / 0.45)) center / 11px 1px no-repeat;
+  .chip[data-active="true"] {
+    @apply border-accent/50 bg-accent/10 text-accent-ink hover:bg-accent/15 hover:text-accent-ink;
   }
   .scrollbar-none {
     scrollbar-width: none;
@@ -113,7 +75,6 @@
   }
 }
 
-/* react-resizable-panels handle: a hairline that thickens on hover/drag. */
 [data-panel-resize-handle-id] {
   position: relative;
   flex: 0 0 1px;
@@ -127,5 +88,5 @@
 }
 [data-panel-resize-handle-id][data-resize-handle-state="hover"],
 [data-panel-resize-handle-id][data-resize-handle-state="drag"] {
-  background: rgb(var(--st-accent-ink-rgb));
+  background: rgb(var(--st-accent-rgb));
 }

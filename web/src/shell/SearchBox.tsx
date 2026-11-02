@@ -34,7 +34,7 @@ export function SearchBox({ autoFocus, onPick, fullscreen }: { autoFocus?: boole
 
   return (
     <div className={cn("relative", fullscreen && "flex-1")}>
-      <label className={cn("flex h-8 items-center gap-2 border border-line bg-sunken/60 px-2.5 focus-within:border-line-strong", fullscreen && "h-11")}>
+      <label className={cn("flex h-7 items-center gap-2 rounded border border-line bg-sunken px-2 focus-within:border-accent/60", fullscreen && "h-11")}>
         <SearchIcon className="text-xs text-ink/45" />
         <input
           id={fullscreen ? undefined : "global-search"}
@@ -59,17 +59,17 @@ export function SearchBox({ autoFocus, onPick, fullscreen }: { autoFocus?: boole
         {!fullscreen && !focus && <Kbd keys="/" />}
       </label>
       {open && (
-        <ul id="search-results" role="listbox" className={cn("z-50 border border-line bg-raised py-1 animate-fadeIn", fullscreen ? "mt-2" : "absolute inset-x-0 top-[calc(100%+4px)] shadow-[0_12px_40px_rgba(0,0,0,0.4)]")}>
+        <ul id="search-results" role="listbox" className={cn("z-50 rounded-md border border-line-strong bg-raised p-1 animate-fadeIn", fullscreen ? "mt-2" : "absolute inset-x-0 top-[calc(100%+4px)] shadow-[0_12px_32px_rgba(0,0,0,0.28)]")}>
           {hits.length === 0 && <li className="px-3 py-2 text-sm text-ink/50">No matches</li>}
           {hits.map((h, i) => (
             <li key={`${h.repo}#${h.number}`} role="option" aria-selected={i === sel}>
-              <button onMouseDown={() => pick(h)} onMouseEnter={() => setSel(i)} className={cn("flex w-full items-center gap-2.5 rounded-none px-3 text-left", fullscreen ? "h-12" : "h-9", i === sel && "bg-ink/[0.07]")}>
-                {h.kind === "pr" ? <GitPullRequestIcon className={cn("text-xs", h.state === "merged" ? "text-c4" : "text-ok")} /> : <CircleDotIcon className="text-xs text-ok" />}
-                <span className="ref shrink-0 text-ink/60">
+              <button onMouseDown={() => pick(h)} onMouseEnter={() => setSel(i)} className={cn("flex w-full items-center gap-2.5 rounded px-2 text-left", fullscreen ? "h-12" : "h-8", i === sel && "bg-ink/[0.07]")}>
+                {h.kind === "pr" ? <GitPullRequestIcon className={cn("text-xs", h.state === "merged" ? "text-merged" : "text-ok")} /> : <CircleDotIcon className="text-xs text-ok" />}
+                <span className="code shrink-0 text-ink/60">
                   {h.repo}#{h.number}
                 </span>
                 <span className="truncate text-sm">{h.title}</span>
-                <span className="ml-auto shrink-0 font-mono text-2xs text-ink/40">{h.author}</span>
+                <span className="ml-auto shrink-0 text-xs text-ink/45">{h.author}</span>
               </button>
             </li>
           ))}

@@ -1,12 +1,11 @@
 import { useEffect, useRef } from "react";
 import { Link } from "react-router-dom";
-import { ArrowUpRightIcon, ChevronLeftIcon, ChevronRightIcon, CheckIcon, Undo2Icon, MessageSquareIcon, XIcon } from "lucide-react";
+import { ChevronLeftIcon, ChevronRightIcon, CheckIcon, Undo2Icon, MessageSquareIcon, XIcon, InboxIcon } from "lucide-react";
 import { Avatar } from "../../ui/Avatar";
 import { useApi } from "../../api/client";
 import type { Decision, User } from "../../api/types";
 import type { ViewProps } from "../../registry/types";
 import { decisionAccess, type DecisionAccess } from "../../registry/permissions";
-import { Hud, RegMarks } from "../../ui/Hud";
 import { Kbd } from "../../ui/Kbd";
 import { Button, IconButton } from "../../ui/Button";
 import { cn } from "../../ui/cn";
@@ -33,11 +32,10 @@ export function DetailPanel({ user }: ViewProps) {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="flex h-10 shrink-0 items-center gap-2 border-b border-line px-4 pr-10">
-        <Hud>Decision</Hud>
+      <div className="flex h-10 shrink-0 items-center gap-2 border-b border-line px-4 pr-10 text-xs text-ink/55">
         {data && d && (
-          <span className="font-mono text-2xs text-ink/45">
-            {idx + 1} / {list.length}
+          <span className="num">
+            {idx + 1} of {list.length}
           </span>
         )}
         <div className="ml-auto flex items-center">
@@ -49,7 +47,7 @@ export function DetailPanel({ user }: ViewProps) {
         {just && !d ? (
           <AnsweredNotice entry={just} />
         ) : d ? (
-          <div className="mx-auto max-w-[760px] px-6 pb-10 pt-6">
+          <div className="mx-auto max-w-[720px] px-6 pb-10 pt-5">
             <DecisionBody key={d.id} d={d} user={user} onAnswered={() => go(list[idx + 1]?.id ?? list[idx - 1]?.id)} />
           </div>
         ) : (
@@ -62,19 +60,17 @@ export function DetailPanel({ user }: ViewProps) {
 
 function EmptyDetail({ count }: { count: number }) {
   return (
-    <div className="bg-dots flex h-full flex-col items-center justify-center gap-3 p-8 text-center">
+    <div className="flex h-full flex-col items-center justify-center gap-2 p-8 text-center">
+      <InboxIcon className="text-[28px] text-ink/25" />
       {count === 0 ? (
         <>
-          <p className="font-serif text-3xl italic text-ink/80">Nothing waiting.</p>
+          <p className="text-md font-semibold">Nothing waiting</p>
           <p className="text-sm text-ink/55">Every decision in this view has an answer.</p>
         </>
       ) : (
-        <>
-          <Hud>Pick a decision</Hud>
-          <p className="text-sm text-ink/55">
-            <Kbd keys="j" /> and <Kbd keys="k" /> move through the list.
-          </p>
-        </>
+        <p className="text-sm text-ink/55">
+          Select a decision. <Kbd keys="j" /> and <Kbd keys="k" /> move through the list.
+        </p>
       )}
     </div>
   );
@@ -84,9 +80,9 @@ function AnsweredNotice({ entry }: { entry: { id: string; label: string; ref: st
   const undo = useUndo();
   return (
     <div className="flex h-full items-center justify-center p-8">
-      <div className="flex items-center gap-3 border border-line px-4 py-3 text-sm">
+      <div className="flex items-center gap-3 rounded-md border border-line px-4 py-2.5 text-sm">
         <CheckIcon className="text-ok" />
-        <span className="ref">{entry.ref}</span>
+        <span className="code">{entry.ref}</span>
         <span className="text-ink/70">→ {entry.label}</span>
         <Button size="sm" variant="ghost" icon={Undo2Icon} onClick={() => undo(entry.id)}>
           Undo
@@ -105,9 +101,10 @@ export function DecisionBody({ d, user, onAnswered, phone }: { d: Decision; user
   const access = accessFor(user, [d]);
   const isBatch = d.number === null;
   const pendingProps = d.proposals.filter((p) => p.status === "pending");
-  const mine = pendingProps.find((p) => p.login === user.login);
+  const mine = access.mode === "propose" ? pendingProps.find((p) => p.login === user.login) : undefined;
   // Options are live for an operator, and for a maintainer who has no pending proposal here.
   const live = !d.answer && (access.mode === "answer" || (access.mode === "propose" && !mine));
+  const collapseOptions = phone && access.mode === "answer" && pendingProps.length > 0 && !d.answer;
 
   useEffect(() => {
     if (access.mode !== "read" && !d.answer) void api.decisions.claim(d.id);
@@ -142,70 +139,72 @@ export function DecisionBody({ d, user, onAnswered, phone }: { d: Decision; user
     return () => window.removeEventListener("keydown", on);
   });
 
+  const options = (
+    <>
+      <OptionButtons options={d.options} recommended={d.recommended} onPick={pick} readOnly={access.mode === "read" ? access.reason : null} verb={access.mode === "propose" ? "Propose" : undefined} phone={phone} />
+      {access.mode !== "read" && (
+        <label className="mt-2 flex h-8 items-center gap-2 rounded border border-line bg-sunken px-2.5 focus-within:border-accent/60">
+          <input
+            ref={noteRef}
+            value={loc.notes[d.id] ?? ""}
+            onChange={(e) => localActions.setNote(d.id, e.target.value)}
+            onKeyDown={(e) => e.key === "Escape" && e.currentTarget.blur()}
+            placeholder={access.mode === "propose" ? "Note for the operator (optional)" : "Note, kept with the answer (optional)"}
+            aria-label="Note"
+            className="min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-ink/40"
+          />
+          {!phone && <Kbd keys="n" />}
+        </label>
+      )}
+    </>
+  );
+
   return (
     <article className="animate-rise">
-      <div className="flex flex-wrap items-center gap-2">
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-ink/55">
         <KindTag kind={d.kind} batch={isBatch ? d.items.length : undefined} />
-        {isBatch ? (
-          <span className="ref text-ink/70">{d.repo}</span>
-        ) : (
-          <Link to={`/item/${d.repo}/${d.number}`} className="ref inline-flex items-center gap-0.5 text-accent-ink hover:underline">
-            {d.repo}#{d.number}
-            <ArrowUpRightIcon className="text-[10px]" />
-          </Link>
-        )}
-        <span className="font-mono text-2xs text-ink/45">asked {ago(d.askedAt)} ago</span>
+        <span>asked {ago(d.askedAt)} ago</span>
         <ClaimPill claim={d.claim} />
         {!phone && d.commentCount > 0 && (
-          <span className="inline-flex items-center gap-1 font-mono text-2xs text-ink/45">
-            <MessageSquareIcon className="text-[10px]" /> {d.commentCount}
+          <span className="inline-flex items-center gap-1">
+            <MessageSquareIcon className="text-[12px]" /> {d.commentCount}
           </span>
         )}
       </div>
-      <p className={cn("mt-3 text-ink/60", phone ? "line-clamp-2 text-sm" : "text-sm")}>{d.title}</p>
-      <h1 className={cn("mt-1.5 text-balance font-display text-ink", phone ? "text-[22px] leading-[26px]" : "text-xl")}>{d.question}</h1>
+      <h1 className={cn("mt-2.5 text-pretty font-semibold text-ink", phone ? "text-[17px] leading-6" : "text-lg")}>{d.question}</h1>
+      <p className="mt-1 flex min-w-0 items-baseline gap-1.5 text-sm text-ink/60">
+        {isBatch ? (
+          <span className="code shrink-0">{d.repo}</span>
+        ) : (
+          <Link to={`/item/${d.repo}/${d.number}`} className="code shrink-0 text-accent-ink hover:underline">
+            {d.repo}#{d.number}
+          </Link>
+        )}
+        <span className={cn(phone ? "truncate" : "")}>{d.title}</span>
+      </p>
 
-      <div className="relative mt-5">
-        {!phone && <RegMarks />}
-        <Facts facts={d.facts} compact={phone} />
+      <div className={cn("rounded-md border border-line bg-ink/[0.02] px-3 py-2.5", phone ? "mt-3" : "mt-4")}>
+        <Facts facts={d.facts} />
       </div>
 
       {!d.answer && pendingProps.length > 0 && <Proposals d={d} user={user} access={access} phone={phone} />}
 
       {d.answer ? (
         <AnsweredState d={d} canUndo={access.mode === "answer"} />
-      ) : mine ? null : phone && access.mode === "answer" && pendingProps.length > 0 ? (
-        <div className="mt-4">
+      ) : mine ? null : collapseOptions ? (
+        <div className="mt-3">
           <Disclosure title="Answer differently" count={d.options.length}>
-            <OptionButtons options={d.options} recommended={d.recommended} onPick={pick} phone />
+            {options}
           </Disclosure>
         </div>
       ) : (
-        <div className="mt-5">
-          {access.mode === "propose" && (
-            <p className="mb-2 flex items-center gap-2 font-mono text-2xs uppercase tracking-[0.1em] text-ink/55">
-              <span className="size-1.5 bg-accent-ink" /> Your pick goes to an operator as a proposal
-            </p>
-          )}
-          <OptionButtons options={d.options} recommended={d.recommended} onPick={pick} readOnly={access.mode === "read" ? access.reason : null} verb={access.mode === "propose" ? "Propose" : undefined} phone={phone} />
-          {access.mode !== "read" && (
-            <label className="mt-2 flex h-9 items-center gap-2 border border-line bg-sunken/40 px-2.5 focus-within:border-line-strong">
-              <Hud className="shrink-0 text-2xs">Note</Hud>
-              <input
-                ref={noteRef}
-                value={loc.notes[d.id] ?? ""}
-                onChange={(e) => localActions.setNote(d.id, e.target.value)}
-                onKeyDown={(e) => e.key === "Escape" && e.currentTarget.blur()}
-                placeholder={access.mode === "propose" ? "optional, for the operator" : "optional, kept with the answer"}
-                className="min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-ink/35"
-              />
-              {!phone && <Kbd keys="n" className="opacity-60" />}
-            </label>
-          )}
+        <div className="mt-4">
+          {access.mode === "propose" && <p className="mb-2 text-xs text-ink/60">Your answer goes to an operator as a proposal. Nothing happens until they approve it.</p>}
+          {options}
         </div>
       )}
 
-      <div className={!phone ? "mt-6" : phone && access.mode === "answer" && pendingProps.length > 0 && !d.answer ? "" : "mt-4"}>
+      <div className={collapseOptions ? "" : "mt-5"}>
         {isBatch && (
           <Disclosure title="Items" count={d.items.length} defaultOpen={!phone}>
             <BatchItems d={d} />
@@ -213,7 +212,7 @@ export function DecisionBody({ d, user, onAnswered, phone }: { d: Decision; user
         )}
         {d.context.length > 0 && (
           <Disclosure title="Context" defaultOpen={!phone}>
-            <div className="space-y-1.5 text-sm leading-6 text-ink/80">
+            <div className="space-y-1 text-sm leading-6 text-ink/80">
               {d.context.map((c, i) => (
                 <p key={i}>{c}</p>
               ))}
@@ -221,8 +220,8 @@ export function DecisionBody({ d, user, onAnswered, phone }: { d: Decision; user
           </Disclosure>
         )}
         {d.publicText && (
-          <Disclosure title="Posted publicly">
-            <blockquote className="border-l-2 border-line-strong pl-3 text-sm italic leading-6 text-ink/75">{d.publicText}</blockquote>
+          <Disclosure title="Comment posted on GitHub">
+            <blockquote className="border-l-2 border-line-strong pl-3 text-sm leading-6 text-ink/75">{d.publicText}</blockquote>
           </Disclosure>
         )}
         <Disclosure title="Classifiers" count={d.classifications.length}>
@@ -247,13 +246,13 @@ function AnsweredState({ d, canUndo }: { d: Decision; canUndo: boolean }) {
   const undo = useUndo();
   const label = d.options.find((o) => o.key === d.answer)?.label ?? d.answer;
   return (
-    <div className="mt-5 flex flex-wrap items-center gap-3 border border-ok/40 bg-ok/[0.06] px-4 py-3">
+    <div className="mt-4 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md border border-ok/35 bg-ok/[0.06] px-3 py-2.5">
       <CheckIcon className="text-ok" />
-      <span className="text-sm font-semibold">{label}</span>
-      <span className="font-mono text-2xs text-ink/55">
-        {d.proposedBy ? `proposed by ${d.proposedBy}, approved by ${d.answeredBy}` : d.answeredBy} · {ago(d.answeredAt!)} ago · {d.appliedAt ? "applied" : "not applied yet"}
+      <span className="text-sm font-medium">{label}</span>
+      <span className="text-xs text-ink/55">
+        {d.proposedBy ? `proposed by ${d.proposedBy}, approved by ${d.answeredBy}` : `by ${d.answeredBy}`} · {ago(d.answeredAt!)} ago · {d.appliedAt ? "applied" : "not applied yet"}
       </span>
-      {d.answerNote && <span className="w-full text-sm italic text-ink/70">“{d.answerNote}”</span>}
+      {d.answerNote && <span className="w-full text-sm text-ink/70">“{d.answerNote}”</span>}
       {!d.appliedAt && canUndo && (
         <Button size="sm" variant="ghost" icon={Undo2Icon} className="ml-auto" onClick={() => undo(d.id)}>
           Undo
@@ -267,22 +266,22 @@ function BatchItems({ d }: { d: Decision }) {
   const loc = useLocal();
   const ov = loc.overrides[d.id] ?? {};
   return (
-    <ul className="border border-line">
+    <ul className="overflow-hidden rounded-md border border-line">
       {d.items.map((it) => {
         const ref = `${it.repo}#${it.number}`;
         return (
-          <li key={ref} className="flex min-h-[36px] items-center gap-3 border-b border-line px-3 last:border-0">
-            <Link to={`/item/${it.repo}/${it.number}`} className="ref w-[118px] shrink-0 text-accent-ink hover:underline">
+          <li key={ref} className="flex min-h-[34px] items-center gap-3 border-b border-line px-3 last:border-0">
+            <Link to={`/item/${it.repo}/${it.number}`} className="code w-[112px] shrink-0 text-accent-ink hover:underline">
               {ref}
             </Link>
-            <span className="min-w-0 flex-1 truncate text-sm text-ink/80">{it.title}</span>
+            <span className="min-w-0 flex-1 truncate text-sm text-ink/85">{it.title}</span>
             <select
               aria-label={`Answer for ${ref}`}
               value={ov[ref] ?? ""}
               onChange={(e) => localActions.setOverride(d.id, ref, e.target.value || null)}
-              className={cn("h-7 shrink-0 border border-line bg-transparent px-1.5 font-mono text-2xs uppercase tracking-[0.08em]", ov[ref] ? "text-warn" : "text-ink/45")}
+              className={cn("h-7 shrink-0 rounded border border-line bg-sunken px-1.5 text-xs", ov[ref] ? "text-warn" : "text-ink/55")}
             >
-              <option value="">same as batch</option>
+              <option value="">Same as batch</option>
               {d.options.map((o) => (
                 <option key={o.key} value={o.key}>
                   {o.label}
@@ -299,38 +298,37 @@ function BatchItems({ d }: { d: Decision }) {
 /** Several checked rows of one kind: one answer for all of them. */
 function MultiAnswer({ ds, user }: { ds: Decision[]; user: User }) {
   const answer = useAnswer();
+  const api = useApi();
+  const access = accessFor(user, ds);
   const kinds = new Set(ds.map((d) => d.kind));
   const optionSig = new Set(ds.map((d) => d.options.map((o) => o.key).join()));
   const same = kinds.size === 1 && optionSig.size === 1;
-  const api = useApi();
-  const access = accessFor(user, ds);
   const recs = ds.map((d) => d.recommended);
   const rec = recs.every((r) => r === recs[0]) ? recs[0] : "";
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="flex h-10 shrink-0 items-center gap-2 border-b border-line px-4 pr-10">
-        <Hud>Answer together</Hud>
-        <span className="font-mono text-2xs text-ink/45">{ds.length} selected</span>
+      <div className="flex h-10 shrink-0 items-center gap-2 border-b border-line px-4 pr-10 text-xs text-ink/55">
+        <span>{ds.length} selected</span>
         <Button size="sm" variant="ghost" className="ml-auto" onClick={localActions.clearChecked}>
-          Clear <Kbd keys="esc" />
+          Clear selection <Kbd keys="Esc" />
         </Button>
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto">
-        <div className="mx-auto max-w-[760px] px-6 pb-10 pt-6">
-          <h1 className="font-display text-xl">{same ? ds[0].question.replace(/ for [a-z-]+\?$/, "?") : "These decisions ask different questions"}</h1>
-          <p className="mt-2 text-sm text-ink/60">{same ? `One answer for all ${ds.length}. Change single items afterwards from their own page.` : "Check decisions of one kind to answer them together."}</p>
-          <ul className="mt-5 border border-line">
+        <div className="mx-auto max-w-[720px] px-6 pb-10 pt-5">
+          <h1 className="text-lg font-semibold">{same ? `Answer ${ds.length} ${ds[0].kind} decisions together` : "These decisions ask different questions"}</h1>
+          <p className="mt-1 text-sm text-ink/60">{same ? "One answer for all of them. Change single items afterwards from their own page." : "Select decisions of one kind to answer them together."}</p>
+          <ul className="mt-4 overflow-hidden rounded-md border border-line">
             {ds.map((d) => (
               <li key={d.id} className="flex h-9 items-center gap-3 border-b border-line px-3 last:border-0">
-                <span className="ref w-[150px] shrink-0 truncate text-ink/70">{refOf(d)}</span>
+                <span className="code w-[150px] shrink-0 truncate text-ink/60">{refOf(d)}</span>
                 <span className="min-w-0 flex-1 truncate text-sm">{d.title}</span>
-                <span className="shrink-0 font-mono text-2xs text-ink/45">rec: {d.options.find((o) => o.key === d.recommended)?.label}</span>
+                <span className="shrink-0 text-xs text-ink/50">{d.options.find((o) => o.key === d.recommended)?.label}</span>
               </li>
             ))}
           </ul>
           {same && (
-            <div className="mt-5">
+            <div className="mt-4">
               <OptionButtons
                 options={ds[0].options}
                 recommended={rec}
@@ -368,39 +366,37 @@ function Proposals({ d, user, access, phone }: { d: Decision; user: User; access
   });
 
   return (
-    <div className="mt-5 border border-accent-ink/40 bg-accent/[0.06]">
-      <div className="flex h-8 items-center gap-2 border-b border-accent-ink/25 px-3">
-        <span className="size-1.5 bg-accent-ink" />
-        <Hud className="text-2xs text-accent-ink">{pending.length === 1 ? "Proposal" : `${pending.length} proposals`}</Hud>
-        <span className="ml-auto font-mono text-2xs text-ink/45">{operator ? "needs your approval" : "waiting for an operator"}</span>
+    <div className="mt-4 overflow-hidden rounded-md border border-accent/35">
+      <div className="flex h-8 items-center gap-2 border-b border-accent/25 bg-accent/[0.07] px-3 text-xs">
+        <span className="font-semibold text-accent-ink">{pending.length === 1 ? "Proposal" : `${pending.length} proposals`}</span>
+        <span className="ml-auto text-ink/55">{operator ? "Needs your approval" : "Waiting for an operator"}</span>
       </div>
       {pending.map((p, i) => {
         const own = p.login === user.login;
         return (
-          <div key={p.id} className={cn("flex gap-3 px-3 py-3", i > 0 && "border-t border-accent-ink/20", phone ? "flex-col" : "items-center")}>
+          <div key={p.id} className={cn("flex gap-3 px-3 py-2.5", i > 0 && "border-t border-line", phone ? "flex-col" : "items-center")}>
             <div className="flex min-w-0 flex-1 items-start gap-2.5">
-              <Avatar login={p.login} size={22} />
-              <div className="min-w-0">
-                <div className="text-sm">
-                  <span className="font-semibold">{own ? "You" : p.login}</span> <span className="text-ink/60">{own ? "propose" : "proposes"}</span>{" "}
-                  <span className="font-semibold">{label(p.option)}</span>
-                  {p.option === d.recommended && <span className="ml-1.5 border border-line px-1 align-[2px] font-mono text-[9px] uppercase tracking-[0.12em] text-ink/60">rec</span>}
+              <Avatar login={p.login} size={20} className="mt-0.5" />
+              <div className="min-w-0 text-sm">
+                <div>
+                  <span className="font-semibold">{own ? "You" : p.login}</span> <span className="text-ink/60">{own ? "propose" : "proposes"}</span> <span className="font-medium">{label(p.option)}</span>
+                  {p.option === d.recommended && <span className="ml-1 text-xs text-ink/50">(recommended)</span>}
+                  <span className="ml-1.5 text-xs text-ink/45">· {ago(p.at)} ago</span>
                 </div>
-                {p.note && <p className="mt-0.5 text-sm italic text-ink/65">“{p.note}”</p>}
-                <div className="mt-0.5 font-mono text-2xs text-ink/40">{ago(p.at)} ago</div>
+                {p.note && <p className="mt-0.5 text-ink/65">{p.note}</p>}
               </div>
             </div>
             {operator && (
               <div className={cn("flex shrink-0 gap-2", phone && "grid grid-cols-2")}>
-                <Button size={phone ? "lg" : "md"} variant="primary" icon={CheckIcon} onClick={() => void api.decisions.approve(d.id, p.id)}>
-                  Approve {!phone && i === 0 && <Kbd keys="a" className="ml-1 [&_kbd]:border-inv/30 [&_kbd]:bg-inv/10 [&_kbd]:text-inv" />}
+                <Button size={phone ? "lg" : "sm"} variant="primary" icon={CheckIcon} onClick={() => void api.decisions.approve(d.id, p.id)}>
+                  Approve {!phone && i === 0 && <kbd className="ml-0.5 rounded-sm border border-white/35 px-1 text-[11px] leading-4 text-white/80">a</kbd>}
                 </Button>
-                <Button size={phone ? "lg" : "md"} variant="secondary" icon={XIcon} onClick={() => void api.decisions.reject(d.id, p.id)}>
-                  Reject {!phone && i === 0 && <Kbd keys="r" className="ml-1" />}
+                <Button size={phone ? "lg" : "sm"} variant="secondary" icon={XIcon} onClick={() => void api.decisions.reject(d.id, p.id)}>
+                  Reject {!phone && i === 0 && <Kbd keys="r" className="ml-0.5" />}
                 </Button>
               </div>
             )}
-            {own && (
+            {own && access.mode === "propose" && (
               <Button size="sm" variant="ghost" onClick={() => void api.decisions.withdraw(d.id, p.id)}>
                 Withdraw
               </Button>

@@ -195,7 +195,7 @@ const SEEDS: Seed[] = [
     title: "Fix audio drift after 40 min of timeline playback",
     question: "This duplicates filmcraft#3302. Which one should stay open?",
     context: ["Both fix the same sample-rate rounding in the playback clock.", "#3381 adds a regression test; #3302 does not."],
-    facts: ["+88 −12 · 3 files", "author: 9 merged, whitelisted", "duplicate of #3302 (+61 −9, no test)", "CI passing · mergeable"],
+    facts: ["+88 −12 · 3 files", "author: 9 merged, whitelisted", "duplicate of: #3302, +61 −9, no test", "CI passing · mergeable"],
     options: [
       { key: "keep-this", label: "Keep this, close #3302", hint: "It has the regression test" },
       { key: "keep-other", label: "Keep #3302, close this" },
@@ -216,7 +216,7 @@ const SEEDS: Seed[] = [
     title: "12 PRs add keyboard shortcuts the reference app doesn't have",
     question: "Extra keyboard shortcuts: label all 12 as small extras?",
     context: ["Each PR adds one or two bindings with no conflicts with existing ones.", "None change default behaviour."],
-    facts: ["12 PRs · 9 authors", "+6 to +140 lines each", "all CI passing", "no binding conflicts found"],
+    facts: ["items: 12 PRs from 9 authors", "size: +6 to +140 lines each", "checks: all passing", "conflicts: none with existing bindings"],
     ...spread(scopeOpts("small-extra")),
     ageH: 49,
     items: [
@@ -283,7 +283,7 @@ const SEEDS: Seed[] = [
     title: "Sketch constraints, dimension tool and snapping overhaul",
     question: "Three topics in one PR. Ask the author to split it?",
     context: ["Constraints and the dimension tool are in scope; the snapping change alters default behaviour."],
-    facts: ["+3,340 −512 · 27 files", "author: 2 merged, not whitelisted", "3 topics", "CI pending"],
+    facts: ["+3,340 −512 · 27 files", "author: 2 merged, not whitelisted", "topics: 3", "CI pending"],
     options: [
       { key: "split", label: "Ask to split" },
       { key: "take", label: "Take as one PR" },
@@ -336,7 +336,7 @@ const SEEDS: Seed[] = [
     title: "Healing brush leaves visible seams on 16-bit images",
     question: "Close as a duplicate of photocraft#4098?",
     context: ["Same reproduction steps and screenshots as #4098, filed a week later."],
-    facts: ["issue · 2 comments", "author: 0 merged", "duplicate of #4098 (open, has PR #4102)"],
+    facts: ["issue · 2 comments", "author: 0 merged", "duplicate of: #4098, open, fix in PR #4102"],
     options: [
       { key: "close-dup", label: "Close as duplicate" },
       { key: "keep", label: "Not a duplicate" },
@@ -358,7 +358,7 @@ const SEEDS: Seed[] = [
     title: "9 PRs fix the same IME composition bug in text inputs",
     question: "Keep craft-libs#1188 and close the other 8 as duplicates?",
     context: ["All nine patch the same pre-edit handling in the shared text field.", "#1188 is the smallest and has a test."],
-    facts: ["9 PRs · 7 authors", "#1188: +46 −8, with test", "2 of 9 CI failing"],
+    facts: ["items: 9 PRs from 7 authors", "keep: #1188, +46 −8, with test", "checks: 2 of 9 failing"],
     options: [
       { key: "keep-1188", label: "Keep #1188, close the rest" },
       { key: "review-each", label: "Review each separately" },
@@ -414,7 +414,7 @@ const SEEDS: Seed[] = [
     title: "WIP: node graph experiments",
     question: "Close this draft? No activity for 94 days.",
     context: ["Draft PR; the author hasn't replied to two review requests."],
-    facts: ["draft · +4,018 −0 · 31 files", "last activity 94 days ago", "author: 0 merged"],
+    facts: ["draft · +4,018 −0 · 31 files", "last activity: 94 days ago", "author: 0 merged"],
     options: [
       { key: "close", label: "Close as stale" },
       { key: "ping", label: "Ping the author once more" },

@@ -25,9 +25,9 @@ function Legend({ items }: { items: { label: string; cls: string; value?: number
     <ul className="flex flex-wrap gap-x-4 gap-y-1.5">
       {items.map((i) => (
         <li key={i.label} className="flex items-center gap-1.5 text-xs text-ink/70">
-          <span className={cn("size-2", i.cls)} />
+          <span className={cn("size-2 rounded-sm", i.cls)} />
           {i.label}
-          {i.value !== undefined && <span className="font-mono text-ink">{num(i.value)}</span>}
+          {i.value !== undefined && <span className="num font-medium text-ink">{num(i.value)}</span>}
         </li>
       ))}
     </ul>
@@ -40,7 +40,7 @@ export function StackBar({ parts, height = 10, total }: { parts: { label: string
   const sum = total ?? parts.reduce((a, p) => a + p.value, 0);
   return (
     <div className="relative">
-      <div className="flex gap-[2px]" style={{ height }} onMouseLeave={() => setHover(null)}>
+      <div className="flex gap-[2px] overflow-hidden rounded-sm" style={{ height }} onMouseLeave={() => setHover(null)}>
         {parts.map((p, i) => (
           <div
             key={p.label}
@@ -53,7 +53,7 @@ export function StackBar({ parts, height = 10, total }: { parts: { label: string
         ))}
       </div>
       {hover !== null && (
-        <div className="pointer-events-none absolute -top-8 left-0 z-10 whitespace-nowrap border border-line bg-raised px-2 py-1 font-mono text-2xs">
+        <div className="pointer-events-none absolute -top-8 left-0 z-10 whitespace-nowrap rounded border border-line-strong bg-raised px-2 py-1 text-xs shadow-md">
           {parts[hover].label} · {num(parts[hover].value)} · {pct(parts[hover].value, sum)}
         </div>
       )}
@@ -66,9 +66,6 @@ export function DoneSplit({ done }: { done: Done }) {
   return (
     <div>
       <StackBar parts={parts} height={12} />
-      <div className="mt-3">
-        <Legend items={parts} />
-      </div>
     </div>
   );
 }
@@ -87,22 +84,22 @@ export function FunnelChart({ f }: { f: Funnel }) {
       <div className="space-y-2">
         {steps.map((s) => (
           <div key={s.label} className="grid grid-cols-[76px_1fr_64px] md:grid-cols-[96px_1fr_88px] items-center gap-3">
-            <span className="hud text-2xs text-ink/60">{s.label}</span>
-            <div className="h-7 bg-ink/[0.05]">
-              <div className="h-full bg-ink/80" style={{ width: `${(s.value / f.open) * 100}%` }} />
+            <span className="text-xs text-ink/60">{s.label}</span>
+            <div className="h-5 overflow-hidden rounded-sm bg-ink/[0.05]">
+              <div className="h-full rounded-sm bg-ink/55" style={{ width: `${(s.value / f.open) * 100}%` }} />
             </div>
-            <span className="text-right font-mono text-sm">
+            <span className="num text-right text-sm">
               {num(s.value)}
-              {s.note && <span className="ml-1.5 text-2xs text-ink/45">{s.note}</span>}
+              {s.note && <span className="ml-1.5 hidden text-xs text-ink/45 md:inline">{s.note}</span>}
             </span>
           </div>
         ))}
         <div className="grid grid-cols-[76px_1fr_64px] md:grid-cols-[96px_1fr_88px] items-center gap-3">
-          <span className="hud text-2xs text-ink/60">Routed</span>
-          <div className="h-7" style={{ width: `${Math.max((f.reviewed / f.open) * 100, 45)}%` }}>
-            <StackBar parts={outcome} height={28} total={Math.max(routed, f.reviewed)} />
+          <span className="text-xs text-ink/60">Routed</span>
+          <div className="h-5" style={{ width: `${Math.max((f.reviewed / f.open) * 100, 45)}%` }}>
+            <StackBar parts={outcome} height={20} total={Math.max(routed, f.reviewed)} />
           </div>
-          <span className="text-right font-mono text-sm">{num(routed)}</span>
+          <span className="num text-right text-sm">{num(routed)}</span>
         </div>
       </div>
       <div className="mt-4 md:pl-[108px]">
@@ -126,7 +123,7 @@ export function Throughput({ perHour, nowIso }: { perHour: number[]; nowIso: str
     return () => ro.disconnect();
   }, []);
   const Hh = 150;
-  const pad = { l: 28, r: 4, t: 8, b: 20 };
+  const pad = { l: 28, r: 48, t: 8, b: 20 };
   const max = Math.ceil(Math.max(...perHour) / 20) * 20;
   const avg = perHour.reduce((a, b) => a + b, 0) / perHour.length;
   const bw = (W - pad.l - pad.r) / perHour.length;
@@ -139,7 +136,7 @@ export function Throughput({ perHour, nowIso }: { perHour: number[]; nowIso: str
         {[0, max / 2, max].map((t) => (
           <g key={t}>
             <line x1={pad.l} x2={W - pad.r} y1={y(t)} y2={y(t)} stroke="var(--st-line)" strokeDasharray={t === 0 ? undefined : "2 3"} />
-            <text x={pad.l - 6} y={y(t) + 3} textAnchor="end" className="fill-current font-mono text-[10px] text-ink/45">
+            <text x={pad.l - 6} y={y(t) + 3} textAnchor="end" className="fill-current text-[11px] text-ink/45">
               {t}
             </text>
           </g>
@@ -149,9 +146,9 @@ export function Throughput({ perHour, nowIso }: { perHour: number[]; nowIso: str
           return (
             <g key={i} onMouseEnter={() => setHover(i)}>
               <rect x={x} y={pad.t} width={bw} height={Hh - pad.t - pad.b} fill="transparent" />
-              <rect x={x + bw * 0.18} y={y(v)} width={bw * 0.64} height={y(0) - y(v)} fill="var(--st-c1)" opacity={hover === null || hover === i ? 1 : 0.45} />
+              <rect x={x + bw * 0.18} y={y(v)} width={bw * 0.64} rx={2} height={y(0) - y(v)} fill="var(--st-c1)" opacity={hover === null || hover === i ? 1 : 0.45} />
               {i % (W < 500 ? 8 : 4) === 0 && (
-                <text x={x + bw / 2} y={Hh - 6} textAnchor="middle" className="fill-current font-mono text-[10px] text-ink/45">
+                <text x={x + bw / 2} y={Hh - 6} textAnchor="middle" className="fill-current text-[11px] text-ink/45">
                   {String(hourOf(i)).padStart(2, "0")}:00
                 </text>
               )}
@@ -159,12 +156,12 @@ export function Throughput({ perHour, nowIso }: { perHour: number[]; nowIso: str
           );
         })}
         <line x1={pad.l} x2={W - pad.r} y1={y(avg)} y2={y(avg)} stroke="rgb(var(--st-fg-rgb))" strokeOpacity={0.7} strokeDasharray="4 3" />
-        <text x={pad.l + 4} y={y(avg) - 4} textAnchor="start" className="fill-current font-mono text-[10px] text-ink/75">
+        <text x={W - pad.r + 6} y={y(avg) + 4} textAnchor="start" className="fill-current text-[11px] text-ink/75">
           avg {Math.round(avg)}
         </text>
       </svg>
       {hover !== null && (
-        <div className="pointer-events-none absolute top-0 border border-line bg-raised px-2 py-1 font-mono text-2xs" style={{ left: `calc(${((pad.l + hover * bw) / W) * 100}% - 20px)` }}>
+        <div className="pointer-events-none absolute top-0 whitespace-nowrap rounded border border-line-strong bg-raised px-2 py-1 text-xs shadow-md" style={{ left: `calc(${((pad.l + hover * bw) / W) * 100}% - 20px)` }}>
           {String(hourOf(hover)).padStart(2, "0")}:00 UTC · {perHour[hover]} done
         </div>
       )}

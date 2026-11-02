@@ -1,17 +1,7 @@
 import { useMemo, useState } from "react";
 import { NavLink, Route, Routes, useLocation, useNavigate, useParams, Navigate } from "react-router-dom";
 import { Dialog, DropdownMenu } from "radix-ui";
-import {
-  LogOutIcon,
-  MonitorIcon,
-  MoonIcon,
-  MoreHorizontalIcon,
-  PanelLeftIcon,
-  SearchIcon,
-  SunIcon,
-  KeyboardIcon,
-  XIcon,
-} from "lucide-react";
+import { LogOutIcon, MonitorIcon, MoonIcon, MoreHorizontalIcon, PanelLeftIcon, SearchIcon, SunIcon, KeyboardIcon, XIcon, CheckIcon } from "lucide-react";
 import { modules } from "../registry";
 import { can, roleLabel } from "../registry/permissions";
 import { mockRole, setMockRole } from "../api/mock/mockApi";
@@ -26,12 +16,14 @@ import { useHotkeys, useActiveShortcuts } from "./keyboard";
 import { SearchBox } from "./SearchBox";
 import { Avatar } from "../ui/Avatar";
 import { Kbd } from "../ui/Kbd";
-import { Hud } from "../ui/Hud";
+import { Logo } from "../ui/Logo";
+import { Badge, type Tone } from "../ui/Badge";
 import { cn } from "../ui/cn";
 import { useApi, useQuery } from "../api/client";
+import { num } from "../lib/format";
 
 const GROUPS: { id: NavEntry["group"]; label: string }[] = [
-  { id: "work", label: "Work" },
+  { id: "work", label: "" },
   { id: "insight", label: "Insight" },
   { id: "operator", label: "Operator" },
 ];
@@ -70,22 +62,22 @@ export function AppShell() {
 
   if (phone) {
     return (
-      <div className="flex h-full flex-col bg-bg">
-        <header className="flex h-12 shrink-0 items-center gap-2 border-b border-line bg-panel px-4">
+      <div className="flex h-full flex-col bg-panel">
+        <header className="flex h-12 shrink-0 items-center gap-1 border-b border-line bg-bg pl-4 pr-1.5">
           <Wordmark />
           <div className="flex-1" />
           <button aria-label="Search" onClick={() => setSearchOpen(true)} className="flex size-11 items-center justify-center text-ink/70">
-            <SearchIcon />
+            <SearchIcon className="text-[18px]" />
           </button>
-          <UserMenu theme={theme} setTheme={setTheme} />
+          <UserMenu theme={theme} setTheme={setTheme} onHelp={() => setHelp(true)} />
         </header>
         <main className="min-h-0 flex-1">{content}</main>
         <PhoneTabs nav={nav} />
         <Dialog.Root open={searchOpen} onOpenChange={setSearchOpen}>
           <Dialog.Portal>
-            <Dialog.Content className="fixed inset-0 z-50 flex flex-col bg-bg animate-fadeIn" aria-describedby={undefined}>
+            <Dialog.Content className="fixed inset-0 z-50 flex flex-col bg-panel animate-fadeIn" aria-describedby={undefined}>
               <Dialog.Title className="sr-only">Search</Dialog.Title>
-              <div className="flex items-center gap-2 border-b border-line px-3 py-2">
+              <div className="flex items-start gap-1 border-b border-line p-2">
                 <SearchBox autoFocus onPick={() => setSearchOpen(false)} fullscreen />
                 <Dialog.Close className="flex size-11 items-center justify-center text-ink/70" aria-label="Close search">
                   <XIcon />
@@ -100,17 +92,15 @@ export function AppShell() {
 
   return (
     <div className="flex h-full bg-bg">
-      <aside className={cn("flex shrink-0 flex-col border-r border-line bg-panel transition-[width] duration-base ease-out", railOpen ? "w-[212px]" : "w-[52px]")}>
-        <div className="flex h-12 shrink-0 items-center gap-2 border-b border-line px-3">
-          {railOpen ? <Wordmark /> : <Mark />}
-        </div>
-        <nav className="flex-1 overflow-y-auto py-3" aria-label="Main">
+      <aside className={cn("flex shrink-0 flex-col border-r border-line bg-bg transition-[width] duration-base ease-out", railOpen ? "w-[220px]" : "w-[52px]")}>
+        <div className={cn("flex h-11 shrink-0 items-center px-4", !railOpen && "justify-center px-0")}>{railOpen ? <Wordmark /> : <Logo size={20} />}</div>
+        <nav className="flex-1 overflow-y-auto px-2 pb-3 pt-1" aria-label="Main">
           {GROUPS.map((g) => {
             const entries = nav.filter((n) => n.group === g.id);
             if (!entries.length) return null;
             return (
-              <div key={g.id} className="mb-4">
-                {railOpen && <Hud className="block px-4 pb-1.5 text-2xs text-ink/40">{g.label}</Hud>}
+              <div key={g.id} className="mb-3">
+                {railOpen && g.label && <div className="px-2 pb-1 pt-2 text-2xs font-medium text-ink/45">{g.label}</div>}
                 {entries.map((n) => (
                   <RailLink key={n.to} entry={n} open={railOpen} />
                 ))}
@@ -119,30 +109,29 @@ export function AppShell() {
           })}
         </nav>
         <RunMeter open={railOpen} />
-        <div className="flex items-center border-t border-line p-1.5">
-          <button onClick={() => setRailOpen(!railOpen)} className="flex size-9 items-center justify-center text-ink/50 hover:bg-ink/5 hover:text-ink" aria-label={railOpen ? "Collapse navigation" : "Expand navigation"} title="Toggle navigation  [">
-            <PanelLeftIcon className="text-sm" />
+        <div className={cn("flex items-center border-t border-line p-2", !railOpen && "justify-center")}>
+          <button onClick={() => setRailOpen(!railOpen)} className="flex size-7 items-center justify-center text-ink/50 hover:bg-ink/[0.06] hover:text-ink" aria-label={railOpen ? "Collapse sidebar" : "Expand sidebar"} title="Toggle sidebar  [">
+            <PanelLeftIcon className="text-[15px]" />
           </button>
           {railOpen && (
-            <button onClick={() => setHelp(true)} className="ml-auto flex h-9 items-center gap-2 px-2 text-ink/50 hover:text-ink">
-              <span className="hud text-2xs">Shortcuts</span>
-              <Kbd keys="?" />
+            <button onClick={() => setHelp(true)} className="ml-auto flex h-7 items-center gap-2 px-2 text-xs text-ink/50 hover:bg-ink/[0.06] hover:text-ink">
+              Shortcuts <Kbd keys="?" />
             </button>
           )}
         </div>
       </aside>
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className="flex h-12 shrink-0 items-center gap-4 border-b border-line bg-panel pl-4 pr-2">
+        <header className="flex h-11 shrink-0 items-center gap-3 border-b border-line bg-bg pl-4 pr-2">
           <Breadcrumb routes={routes} />
-          <div className="mx-auto w-full max-w-[460px]">
+          <div className="mx-auto w-full max-w-[440px]">
             <SearchBox />
           </div>
-          <RoleChip />
           <LiveCounters />
+          <RoleChip />
           <ThemeSwitch theme={theme} setTheme={setTheme} />
           <UserMenu theme={theme} setTheme={setTheme} onHelp={() => setHelp(true)} />
         </header>
-        <main className="min-h-0 flex-1">{content}</main>
+        <main className="min-h-0 flex-1 bg-panel">{content}</main>
       </div>
       <ShortcutSheet open={help} onOpenChange={setHelp} />
     </div>
@@ -156,20 +145,11 @@ function RouteView({ route }: { route: RouteDef }) {
   return <Workspace view={route.view} props={{ params, user }} />;
 }
 
-function Mark() {
-  return (
-    <span aria-hidden className="relative flex size-6 items-center justify-center border border-ink/80">
-      <span className="size-1.5 bg-accent-ink" />
-    </span>
-  );
-}
-
 function Wordmark() {
   return (
     <NavLink to="/decisions" className="flex items-center gap-2" aria-label="Craft Triage home">
-      <Mark />
-      <span className="font-display text-md leading-none tracking-[-0.03em]">Craft</span>
-      <span className="hud text-2xs text-ink/50">Triage</span>
+      <Logo size={20} />
+      <span className="text-sm font-semibold">Craft Triage</span>
     </NavLink>
   );
 }
@@ -182,16 +162,16 @@ function RailLink({ entry, open }: { entry: NavEntry; open: boolean }) {
       title={open ? undefined : entry.label}
       className={({ isActive }) =>
         cn(
-          "relative mx-1.5 flex h-8 items-center gap-2.5 px-2.5 text-sm text-ink/65 transition-colors duration-fast hover:bg-ink/5 hover:text-ink",
-          isActive && "bg-ink/[0.07] text-ink before:absolute before:inset-y-1 before:-left-1.5 before:w-0.5 before:bg-ink",
+          "relative flex h-7 items-center gap-2 rounded px-2 text-sm text-ink/70 transition-colors duration-fast hover:bg-ink/[0.06] hover:text-ink",
+          isActive && "bg-ink/[0.08] font-medium text-ink",
           !open && "justify-center px-0",
         )
       }
     >
-      <entry.icon className="text-sm" />
+      <entry.icon className="text-[15px] opacity-80" />
       {open && <span className="flex-1 truncate">{entry.label}</span>}
-      {open && count !== undefined && count > 0 && <span className="font-mono text-2xs text-warn">{count}</span>}
-      {!open && count !== undefined && count > 0 && <span className="absolute right-1.5 top-1.5 size-1.5 bg-warn" />}
+      {open && count !== undefined && count > 0 && <span className="num text-xs text-ink/50">{count}</span>}
+      {!open && count !== undefined && count > 0 && <span className="absolute right-1 top-1 size-1.5 rounded-full bg-accent" />}
     </NavLink>
   );
 }
@@ -202,21 +182,21 @@ function PhoneTabs({ nav }: { nav: NavEntry[] }) {
   const loc = useLocation();
   const moreActive = rest.some((n) => loc.pathname.startsWith(n.to));
   return (
-    <nav aria-label="Main" style={{ gridTemplateColumns: `repeat(${tabs.length + 1}, 1fr)` }} className="grid shrink-0 border-t border-line bg-panel pb-[env(safe-area-inset-bottom)]">
+    <nav aria-label="Main" style={{ gridTemplateColumns: `repeat(${tabs.length + 1}, 1fr)` }} className="grid shrink-0 border-t border-line bg-bg pb-[env(safe-area-inset-bottom)]">
       {tabs.map((n) => (
         <PhoneTab key={n.to} entry={n} />
       ))}
       <DropdownMenu.Root>
-        <DropdownMenu.Trigger className={cn("flex h-14 flex-col items-center justify-center gap-1 rounded-none text-ink/55", moreActive && "text-ink")}>
-          <MoreHorizontalIcon className="text-md" />
-          <span className="hud text-2xs">More</span>
+        <DropdownMenu.Trigger className={cn("flex h-14 flex-col items-center justify-center gap-0.5 rounded-none text-2xs font-medium text-ink/55", moreActive && "text-accent-ink")}>
+          <MoreHorizontalIcon className="text-[20px]" />
+          More
         </DropdownMenu.Trigger>
         <DropdownMenu.Portal>
-          <DropdownMenu.Content side="top" align="end" sideOffset={4} className="z-50 min-w-[220px] border border-line bg-raised py-1 animate-rise">
+          <DropdownMenu.Content side="top" align="end" sideOffset={4} className={menuCls}>
             {rest.map((n) => (
               <DropdownMenu.Item key={n.to} asChild>
-                <NavLink to={n.to} className="flex h-11 items-center gap-3 px-4 text-sm outline-none data-[highlighted]:bg-ink/5">
-                  <n.icon className="text-ink/60" /> {n.label}
+                <NavLink to={n.to} className={cn(itemCls, "h-11")}>
+                  <n.icon className="text-ink/55" /> {n.label}
                 </NavLink>
               </DropdownMenu.Item>
             ))}
@@ -230,12 +210,12 @@ function PhoneTabs({ nav }: { nav: NavEntry[] }) {
 function PhoneTab({ entry }: { entry: NavEntry }) {
   const count = entry.useBadge?.();
   return (
-    <NavLink to={entry.to} className={({ isActive }) => cn("relative flex h-14 flex-col items-center justify-center gap-1 text-ink/55", isActive && "text-ink after:absolute after:inset-x-6 after:top-0 after:h-0.5 after:bg-ink")}>
+    <NavLink to={entry.to} className={({ isActive }) => cn("relative flex h-14 flex-col items-center justify-center gap-0.5 text-2xs font-medium text-ink/55", isActive && "text-accent-ink")}>
       <span className="relative">
-        <entry.icon className="text-md" />
-        {count !== undefined && count > 0 && <span className="absolute -right-3 -top-1.5 bg-warn px-1 font-mono text-[9px] font-bold leading-[13px] text-black">{count}</span>}
+        <entry.icon className="text-[20px]" />
+        {count !== undefined && count > 0 && <span className="num absolute -right-3.5 -top-1 rounded-full bg-accent px-1 text-[10px] font-semibold leading-[14px] text-white">{count}</span>}
       </span>
-      <span className="hud text-2xs">{entry.label}</span>
+      {entry.label}
     </NavLink>
   );
 }
@@ -246,28 +226,31 @@ function Breadcrumb({ routes }: { routes: RouteDef[] }) {
   const r = routes.find((x) => x.path.split("/")[0] === first);
   const rest = decodeURIComponent(loc.pathname.split("/").slice(2).join("/"));
   return (
-    <div className="flex w-[220px] shrink-0 items-center gap-2 truncate">
-      <Hud className="text-ink">{r?.view.title ?? ""}</Hud>
-      {rest && first === "item" && <span className="ref truncate text-ink/50">/ {rest.replace("/", "#")}</span>}
+    <div className="flex w-[200px] shrink-0 items-center gap-1.5 truncate text-sm">
+      <span className="font-medium">{r?.view.title ?? ""}</span>
+      {rest && first === "item" && (
+        <>
+          <span className="text-ink/35">/</span>
+          <span className="code truncate text-ink/60">{rest.replace("/", "#")}</span>
+        </>
+      )}
     </div>
   );
 }
 
 function LiveCounters() {
   const { data } = useQuery("progress", (api) => api.progress());
-  if (!data) return <div className="w-[190px]" />;
+  if (!data) return null;
   const lastHour = data.perHour[data.perHour.length - 1];
   return (
-    <div className="hidden shrink-0 items-center gap-4 xl:flex">
+    <div className="hidden shrink-0 items-center gap-3 whitespace-nowrap text-xs text-ink/60 xl:flex">
       <span className="flex items-center gap-1.5">
-        <span className="size-1.5 bg-warn" />
-        <span className="font-mono text-xs text-ink">{data.decisionsOpen}</span>
-        <span className="hud text-2xs">waiting</span>
+        <span className="size-1.5 rounded-full bg-warn" />
+        <span className="num font-medium text-ink">{data.decisionsOpen}</span> waiting
       </span>
       <span className="flex items-center gap-1.5">
-        <span className="size-1.5 animate-pulse bg-ok" />
-        <span className="font-mono text-xs text-ink">{lastHour}</span>
-        <span className="hud text-2xs">done / h</span>
+        <span className="size-1.5 rounded-full bg-ok" />
+        <span className="num font-medium text-ink">{lastHour}</span> done in the last hour
       </span>
     </div>
   );
@@ -280,24 +263,18 @@ const THEMES: { v: ThemePref; icon: typeof SunIcon; label: string }[] = [
 ];
 
 function ThemeSwitch({ theme, setTheme }: { theme: ThemePref; setTheme: (t: ThemePref) => void }) {
+  const cur = THEMES.find((t) => t.v === theme)!;
+  const next = THEMES[(THEMES.indexOf(cur) + 1) % THEMES.length];
   return (
-    <div role="radiogroup" aria-label="Theme" className="flex shrink-0 border border-line">
-      {THEMES.map((t) => (
-        <button
-          key={t.v}
-          role="radio"
-          aria-checked={theme === t.v}
-          aria-label={t.label}
-          title={t.label}
-          onClick={() => setTheme(t.v)}
-          className={cn("flex size-7 items-center justify-center rounded-none text-ink/45 hover:text-ink", theme === t.v && "bg-ink text-inv hover:text-inv")}
-        >
-          <t.icon className="text-xs" />
-        </button>
-      ))}
-    </div>
+    <button onClick={() => setTheme(next.v)} className="flex size-8 shrink-0 items-center justify-center text-ink/60 hover:bg-ink/[0.06] hover:text-ink" aria-label={`Theme: ${cur.label}. Switch to ${next.label}`} title={`Theme: ${cur.label}`}>
+      <cur.icon className="text-[15px]" />
+    </button>
   );
 }
+
+const menuCls = "z-50 min-w-[220px] rounded-md border border-line-strong bg-raised p-1 shadow-[0_12px_32px_rgba(0,0,0,0.28)] animate-rise";
+const itemCls = "flex h-8 cursor-default items-center gap-2.5 rounded px-2 text-sm outline-none data-[highlighted]:bg-ink/[0.07]";
+const labelCls = "px-2 pb-1 pt-2 text-2xs font-medium text-ink/45";
 
 function UserMenu({ theme, setTheme, onHelp }: { theme: ThemePref; setTheme: (t: ThemePref) => void; onHelp?: () => void }) {
   const user = useUser();
@@ -306,64 +283,64 @@ function UserMenu({ theme, setTheme, onHelp }: { theme: ThemePref; setTheme: (t:
   const adminLinks = modules.filter((m) => m.nav?.group === "operator" && can(user, m.permission));
   return (
     <DropdownMenu.Root>
-      <DropdownMenu.Trigger className="flex h-9 items-center gap-2 px-1.5 hover:bg-ink/5" aria-label={`Signed in as ${user.login}`}>
+      <DropdownMenu.Trigger className="flex size-9 items-center justify-center rounded-full hover:bg-ink/[0.06]" aria-label={`Signed in as ${user.login}`}>
         <Avatar login={user.login} size={24} />
       </DropdownMenu.Trigger>
       <DropdownMenu.Portal>
-        <DropdownMenu.Content align="end" sideOffset={6} className="z-50 w-[248px] border border-line bg-raised py-1 shadow-[0_12px_40px_rgba(0,0,0,0.4)] animate-rise">
-          <div className="flex items-center gap-2.5 border-b border-line px-3 pb-2.5 pt-2">
+        <DropdownMenu.Content align="end" sideOffset={6} className={cn(menuCls, "w-[248px]")}>
+          <div className="flex items-center gap-2.5 px-2 pb-2 pt-1.5">
             <Avatar login={user.login} size={32} />
             <div className="min-w-0">
               <div className="truncate text-sm font-semibold">{user.login}</div>
-              <Hud className="text-2xs">
-                {roleLabel(user)} · write on {user.writeRepos.length}
-              </Hud>
+              <div className="text-xs text-ink/55">
+                {roleLabel(user)} · write on {user.writeRepos.length} repos
+              </div>
             </div>
           </div>
-          <DropdownMenu.Label className="hud px-3 pb-1 pt-2.5 text-2xs text-ink/40">Theme</DropdownMenu.Label>
-          <DropdownMenu.RadioGroup value={theme} onValueChange={(v) => setTheme(v as ThemePref)} className="px-1">
+          <DropdownMenu.Separator className="-mx-1 my-1 h-px bg-line" />
+          <DropdownMenu.Label className={labelCls}>Theme</DropdownMenu.Label>
+          <DropdownMenu.RadioGroup value={theme} onValueChange={(v) => setTheme(v as ThemePref)}>
             {THEMES.map((t) => (
-              <DropdownMenu.RadioItem key={t.v} value={t.v} className="flex h-8 cursor-default items-center gap-2.5 px-2 text-sm outline-none data-[highlighted]:bg-ink/5">
+              <DropdownMenu.RadioItem key={t.v} value={t.v} className={itemCls}>
                 <t.icon className="text-ink/55" />
                 <span className="flex-1">{t.label}</span>
                 <DropdownMenu.ItemIndicator>
-                  <span className="block size-1.5 bg-ink" />
+                  <CheckIcon className="text-accent-ink" />
                 </DropdownMenu.ItemIndicator>
               </DropdownMenu.RadioItem>
             ))}
           </DropdownMenu.RadioGroup>
           {adminLinks.length > 0 && (
             <>
-              <DropdownMenu.Separator className="my-1 h-px bg-line" />
-              <DropdownMenu.Label className="hud px-3 pb-1 pt-1.5 text-2xs text-ink/40">Admin</DropdownMenu.Label>
+              <DropdownMenu.Separator className="-mx-1 my-1 h-px bg-line" />
               {adminLinks.map((m) => {
                 const Icon = m.nav!.icon;
                 return (
-                  <DropdownMenu.Item key={m.id} onSelect={() => navigate(m.nav!.to)} className="mx-1 flex h-8 cursor-default items-center gap-2.5 px-2 text-sm outline-none data-[highlighted]:bg-ink/5">
+                  <DropdownMenu.Item key={m.id} onSelect={() => navigate(m.nav!.to)} className={itemCls}>
                     <Icon className="text-ink/55" /> {m.nav!.label}
                   </DropdownMenu.Item>
                 );
               })}
             </>
           )}
-          <DropdownMenu.Separator className="my-1 h-px bg-line" />
-          <DropdownMenu.Label className="hud px-3 pb-1 pt-1.5 text-2xs text-warn/80">Mock · view as</DropdownMenu.Label>
-          <DropdownMenu.RadioGroup value={mockRole()} onValueChange={(v) => setMockRole(v as MockRole)} className="px-1">
+          <DropdownMenu.Separator className="-mx-1 my-1 h-px bg-line" />
+          <DropdownMenu.Label className={cn(labelCls, "text-warn")}>Mock data: view as</DropdownMenu.Label>
+          <DropdownMenu.RadioGroup value={mockRole()} onValueChange={(v) => setMockRole(v as MockRole)}>
             {MOCK_ROLES.map(([v, l]) => (
-              <DropdownMenu.RadioItem key={v} value={v} className="flex h-8 cursor-default items-center gap-2.5 px-2 text-sm outline-none data-[highlighted]:bg-ink/5">
+              <DropdownMenu.RadioItem key={v} value={v} className={itemCls}>
                 <span className="flex-1">{l}</span>
                 <DropdownMenu.ItemIndicator>
-                  <span className="block size-1.5 bg-ink" />
+                  <CheckIcon className="text-accent-ink" />
                 </DropdownMenu.ItemIndicator>
               </DropdownMenu.RadioItem>
             ))}
           </DropdownMenu.RadioGroup>
-          <DropdownMenu.Separator className="my-1 h-px bg-line" />
-          <DropdownMenu.Item onSelect={() => onHelp?.()} className="mx-1 flex h-8 cursor-default items-center gap-2.5 px-2 text-sm outline-none data-[highlighted]:bg-ink/5">
+          <DropdownMenu.Separator className="-mx-1 my-1 h-px bg-line" />
+          <DropdownMenu.Item onSelect={() => onHelp?.()} className={itemCls}>
             <KeyboardIcon className="text-ink/55" /> <span className="flex-1">Keyboard shortcuts</span> <Kbd keys="?" />
           </DropdownMenu.Item>
-          <DropdownMenu.Item onSelect={() => void api.signOut()} className="mx-1 flex h-8 cursor-default items-center gap-2.5 px-2 text-sm text-bad outline-none data-[highlighted]:bg-bad/10">
-            <LogOutIcon /> Sign out
+          <DropdownMenu.Item onSelect={() => void api.signOut()} className={itemCls}>
+            <LogOutIcon className="text-ink/55" /> Sign out
           </DropdownMenu.Item>
         </DropdownMenu.Content>
       </DropdownMenu.Portal>
@@ -376,8 +353,8 @@ function ShortcutSheet({ open, onOpenChange }: { open: boolean; onOpenChange: (o
   const global = modules.flatMap((m) => m.commands ?? []);
   const all = [
     { id: "search", keys: "/", label: "Search", group: "Anywhere" },
-    { id: "help", keys: "?", label: "This sheet", group: "Anywhere" },
-    { id: "rail", keys: "[", label: "Collapse or expand navigation", group: "Anywhere" },
+    { id: "help", keys: "?", label: "Keyboard shortcuts", group: "Anywhere" },
+    { id: "rail", keys: "[", label: "Toggle sidebar", group: "Anywhere" },
     ...global,
     ...local,
   ];
@@ -385,18 +362,18 @@ function ShortcutSheet({ open, onOpenChange }: { open: boolean; onOpenChange: (o
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
       <Dialog.Portal>
-        <Dialog.Overlay className="fixed inset-0 z-40 bg-black/50 animate-fadeIn" />
-        <Dialog.Content className="fixed left-1/2 top-[12vh] z-50 w-[560px] max-w-[calc(100vw-32px)] -translate-x-1/2 border border-line bg-panel animate-rise" aria-describedby={undefined}>
+        <Dialog.Overlay className="fixed inset-0 z-40 bg-black/40 animate-fadeIn" />
+        <Dialog.Content className="fixed left-1/2 top-[12vh] z-50 w-[560px] max-w-[calc(100vw-32px)] -translate-x-1/2 rounded-lg border border-line-strong bg-raised shadow-[0_24px_64px_rgba(0,0,0,0.35)] animate-rise" aria-describedby={undefined}>
           <div className="flex h-11 items-center justify-between border-b border-line px-4">
-            <Dialog.Title className="hud text-ink">Keyboard</Dialog.Title>
-            <Dialog.Close className="text-ink/50 hover:text-ink" aria-label="Close">
+            <Dialog.Title className="text-sm font-semibold">Keyboard shortcuts</Dialog.Title>
+            <Dialog.Close className="flex size-7 items-center justify-center text-ink/50 hover:text-ink" aria-label="Close">
               <XIcon />
             </Dialog.Close>
           </div>
-          <div className="grid grid-cols-2 gap-x-8 gap-y-5 p-5">
+          <div className="grid grid-cols-2 gap-x-8 gap-y-4 p-4">
             {groups.map((g) => (
               <div key={g}>
-                <Hud className="mb-2 block text-2xs">{g}</Hud>
+                <div className="mb-1 text-xs font-semibold text-ink/55">{g}</div>
                 {all
                   .filter((c) => c.group === g)
                   .map((c) => (
@@ -417,26 +394,24 @@ function ShortcutSheet({ open, onOpenChange }: { open: boolean; onOpenChange: (o
 function RunMeter({ open }: { open: boolean }) {
   const { data } = useQuery("progress", (api) => api.progress());
   if (!data || !open) return null;
-  const start = Date.parse(data.runStartedAt);
-  const now = Date.parse(data.now);
-  const days = (now - start) / 86400_000;
+  const days = (Date.parse(data.now) - Date.parse(data.runStartedAt)) / 86400_000;
   const done = data.done.mergedByPipeline + data.done.closedByPipeline + data.done.closedByOthers;
-  const pct = done / (done + data.funnel.open);
+  const all = done + data.funnel.open;
   return (
-    <div className="mx-3 mb-3 border border-line p-2.5">
-      <div className="flex items-baseline justify-between">
-        <Hud className="text-2xs">Run · day {Math.ceil(days)}</Hud>
-        <span className="font-mono text-2xs text-ink/60">{Math.round(pct * 100)}%</span>
+    <NavLink to="/progress" className="mx-2 mb-2 block rounded-md border border-line p-2.5 hover:border-line-strong">
+      <div className="flex items-baseline justify-between text-xs">
+        <span className="font-medium text-ink/80">Run · day {Math.ceil(days)}</span>
+        <span className="num text-ink/55">{Math.round((done / all) * 100)}%</span>
       </div>
-      <div className="mt-2 flex h-1 gap-px bg-ink/10">
-        <div className="bg-c1" style={{ width: `${(data.done.mergedByPipeline / (done + data.funnel.open)) * 100}%` }} />
-        <div className="bg-c2" style={{ width: `${(data.done.closedByPipeline / (done + data.funnel.open)) * 100}%` }} />
-        <div className="bg-ink/40" style={{ width: `${(data.done.closedByOthers / (done + data.funnel.open)) * 100}%` }} />
+      <div className="mt-2 flex h-1 gap-px overflow-hidden rounded-full bg-ink/10">
+        <div className="bg-c1" style={{ width: `${(data.done.mergedByPipeline / all) * 100}%` }} />
+        <div className="bg-c2" style={{ width: `${(data.done.closedByPipeline / all) * 100}%` }} />
+        <div className="bg-ink/40" style={{ width: `${(data.done.closedByOthers / all) * 100}%` }} />
       </div>
-      <div className="mt-1.5 font-mono text-2xs text-ink/50">
-        {done.toLocaleString("en")} done · {data.funnel.open.toLocaleString("en")} open
+      <div className="num mt-1.5 text-2xs text-ink/50">
+        {num(done)} done · {num(data.funnel.open)} open
       </div>
-    </div>
+    </NavLink>
   );
 }
 
@@ -447,13 +422,13 @@ const MOCK_ROLES: [MockRole, string][] = [
   ["viewer", "Viewer"],
 ];
 
-/** The reader's role and what it lets them do, always visible: it decides what every button means. */
+/** The reader's role decides what every button means, so it stays visible. */
 function RoleChip() {
   const user = useUser();
-  const tone = user.role === "operator" ? "border-ink text-ink" : user.role === "maintainer" && user.maintainerWrites ? "border-accent-ink/60 text-accent-ink" : "border-line text-ink/55";
+  const tone: Tone = user.role === "operator" ? "accent" : "neutral";
   return (
-    <span className={cn("hidden h-6 shrink-0 items-center border px-2 font-mono text-2xs uppercase tracking-[0.12em] lg:inline-flex", tone)} title="Your role on this dashboard">
-      {roleLabel(user)}
+    <span className="hidden lg:inline-flex" title="Your role on this dashboard">
+      <Badge tone={tone}>{roleLabel(user)}</Badge>
     </span>
   );
 }

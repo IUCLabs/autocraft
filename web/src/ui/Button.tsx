@@ -1,6 +1,5 @@
-// Adapted from ArtCraft libs/components/button/src/lib/button.tsx (MIT OR Apache-2.0).
-// Same variants and mono uppercase label; colours go through theme tokens so the
-// primary (ink-filled) button works in light mode too, and a size scale was added.
+// Variant set adapted from ArtCraft libs/components/button (MIT OR Apache-2.0),
+// restyled as developer-tool controls: sentence-case labels, 28/32 px heights.
 import { forwardRef, type ButtonHTMLAttributes } from "react";
 import type { LucideIcon } from "lucide-react";
 import { LoaderCircleIcon } from "lucide-react";
@@ -9,22 +8,21 @@ import { cn } from "./cn";
 export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   icon?: LucideIcon;
   iconAfter?: boolean;
-  variant?: "primary" | "secondary" | "ghost" | "destructive" | "accent";
+  variant?: "primary" | "secondary" | "ghost" | "destructive";
   size?: "sm" | "md" | "lg";
   loading?: boolean;
 }
 
 const variants = {
-  primary: "bg-ink text-inv border-ink hover:bg-ink/90 font-bold",
-  secondary: "bg-ink/5 text-ink border-line hover:bg-ink/[0.08] hover:border-line-strong",
-  ghost: "bg-transparent text-ink/70 border-transparent hover:text-ink hover:bg-ink/5",
-  destructive: "bg-bad text-white border-bad hover:bg-bad/90",
-  accent: "bg-accent text-white border-accent hover:bg-accent/90",
+  primary: "bg-accent text-white border-accent hover:bg-accent/90 shadow-[inset_0_1px_0_rgba(255,255,255,0.12)]",
+  secondary: "bg-raised text-ink border-line-strong hover:bg-ink/[0.06]",
+  ghost: "bg-transparent text-ink/70 border-transparent hover:text-ink hover:bg-ink/[0.06]",
+  destructive: "bg-transparent text-bad border-bad/40 hover:bg-bad/10",
 };
 const sizes = {
-  sm: "h-7 px-2.5 gap-1.5 text-2xs",
-  md: "h-9 px-3.5 gap-2 text-xs",
-  lg: "h-12 px-4 gap-2.5 text-xs",
+  sm: "h-7 px-2.5 gap-1.5 text-xs",
+  md: "h-8 px-3 gap-1.5 text-sm",
+  lg: "h-11 px-4 gap-2 text-base",
 };
 
 export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button(
@@ -37,7 +35,7 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
       ref={ref}
       disabled={disabled || loading}
       className={cn(
-        "inline-flex shrink-0 select-none items-center justify-center whitespace-nowrap rounded border font-mono font-semibold uppercase tracking-[0.12em] transition-colors duration-fast",
+        "inline-flex shrink-0 select-none items-center justify-center whitespace-nowrap rounded border font-medium transition-colors duration-fast",
         "disabled:pointer-events-none disabled:opacity-50",
         variants[variant],
         sizes[size],
@@ -56,6 +54,6 @@ export const IconButton = forwardRef<HTMLButtonElement, ButtonProps & { label: s
   { label, className, size = "md", ...rest },
   ref,
 ) {
-  const box = { sm: "size-7", md: "size-9", lg: "size-11" }[size];
+  const box = { sm: "size-7", md: "size-8", lg: "size-11" }[size];
   return <Button ref={ref} aria-label={label} title={label} variant="ghost" size={size} className={cn(box, "px-0", className)} {...rest} />;
 });

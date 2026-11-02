@@ -1,69 +1,64 @@
-/* Design tokens. Dark values are ArtCraft's default ("gray") brutalist theme
-   from apps/artcraft/app/src/styles/base.css; light values follow its
-   .theme-light block. Additions for this app are marked. */
+/* Design tokens. Surface and ink values come from ArtCraft (app base.css and
+   getartcraft.com): near-black #121316 / #101014 in dark, warm paper #f2f1ee in
+   light, ink #f2f1ee / #101014, brand blue #2d81ff. Lines are softer than
+   ArtCraft's 15 % hairlines so dense tables stay calm. */
 
 :root,
 .theme-dark {
-  --st-bg: #121316;
-  --st-panel: #101014;
-  --st-raised: #1e1f22; /* ArtCraft --st-controls, used as a raised surface */
-  --st-sunken: #060607;
-  --st-controls-rgb: 30 31 34;
+  --st-bg: #101014; /* chrome: rail, top bar */
+  --st-panel: #141518; /* content panels */
+  --st-raised: #1e1f22; /* menus, popovers, hover rows (ArtCraft controls) */
+  --st-sunken: #0b0b0d; /* inputs */
   --st-fg-rgb: 242 241 238;
-  --st-inv-rgb: 18 19 22; /* addition: text on an ink-filled (primary) control */
-  --st-line: rgba(255, 255, 255, 0.15);
-  --st-line-strong: rgba(255, 255, 255, 0.32);
-  --st-accent-rgb: 45 129 255; /* primary #2d81ff */
-  --st-accent-ink-rgb: 116 170 255; /* ui.accent-ink #74aaff */
-  --st-ok-rgb: 64 173 72; /* success #40ad48 */
-  --st-warn-rgb: 230 178 60; /* addition: amber for "waiting" states */
-  --st-bad-rgb: 224 86 98; /* red #D33242, lifted for contrast on near-black */
-  --st-dot: rgba(255, 255, 255, 0.09);
+  --st-inv-rgb: 255 255 255;
+  --st-line: rgba(255, 255, 255, 0.08);
+  --st-line-strong: rgba(255, 255, 255, 0.16);
+  --st-accent-rgb: 45 129 255; /* ArtCraft primary #2d81ff */
+  --st-accent-ink-rgb: 116 170 255; /* ArtCraft accent ink #74aaff: links, focus */
+  --st-ok-rgb: 76 185 84;
+  --st-warn-rgb: 230 178 60;
+  --st-bad-rgb: 236 98 108;
+  --st-merged-rgb: 163 113 247;
   --st-scroll-thumb: #2c2c2f;
-  --st-scroll-track: #0b0b0c;
-  /* Chart categorical slots: ArtCraft's timeline track hues (character,
-     camera, object, global_audio, keyframe), re-stepped to pass the
-     colour-vision checks on the dark panel surface. */
+  --st-scroll-track: transparent;
+  /* Chart slots: ArtCraft's timeline track hues, re-stepped to pass the
+     colour-vision checks on this surface. */
   --st-c1: #5b7bef;
   --st-c2: #1fa3ad;
   --st-c3: #d86e33;
   --st-c4: #cf5a9f;
   --st-c5: #a9871a;
-  --st-avatar-l: 64%;
+  --st-avatar-l: 66%;
   color-scheme: dark;
 
   --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
-  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
-  --ease-emphasis: cubic-bezier(0.32, 0.72, 0, 1);
-  --dur-fast: 140ms;
-  --dur-base: 220ms;
-  --dur-slow: 340ms;
+  --dur-fast: 120ms;
+  --dur-base: 180ms;
 }
 
 .theme-light {
-  --st-bg: #ffffff;
-  --st-panel: #f8f8f8;
-  --st-raised: #eeeeef;
-  --st-sunken: #ececef;
-  --st-controls-rgb: 238 238 239;
-  --st-fg-rgb: 17 24 39;
+  --st-bg: #f2f1ee;
+  --st-panel: #fbfaf8;
+  --st-raised: #ffffff;
+  --st-sunken: #ffffff;
+  --st-fg-rgb: 16 16 20;
   --st-inv-rgb: 255 255 255;
-  --st-line: rgba(17, 24, 39, 0.14);
-  --st-line-strong: rgba(17, 24, 39, 0.34);
+  --st-line: rgba(16, 16, 20, 0.1);
+  --st-line-strong: rgba(16, 16, 20, 0.2);
   --st-accent-rgb: 27 99 245;
-  --st-accent-ink-rgb: 20 78 225;
-  --st-ok-rgb: 40 125 46;
-  --st-warn-rgb: 140 94 0;
-  --st-bad-rgb: 190 40 54;
-  --st-dot: rgba(17, 24, 39, 0.1);
+  --st-accent-ink-rgb: 20 84 220;
+  --st-ok-rgb: 30 128 50;
+  --st-warn-rgb: 150 98 0;
+  --st-bad-rgb: 196 40 54;
+  --st-merged-rgb: 130 80 223;
   --st-scroll-thumb: #c4c4c8;
-  --st-scroll-track: #ececef;
+  --st-scroll-track: transparent;
   --st-c1: #4a6fe8;
   --st-c2: #0e949f;
   --st-c3: #d0652c;
   --st-c4: #c2468f;
   --st-c5: #a88412;
-  --st-avatar-l: 34%;
+  --st-avatar-l: 36%;
   color-scheme: light;
 }
 
@@ -71,6 +66,5 @@
   :root {
     --dur-fast: 1ms;
     --dur-base: 1ms;
-    --dur-slow: 1ms;
   }
 }

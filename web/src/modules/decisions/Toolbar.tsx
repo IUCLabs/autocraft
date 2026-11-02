@@ -4,6 +4,7 @@ import { useQuery } from "../../api/client";
 import type { DecisionKind } from "../../api/types";
 import type { ViewProps } from "../../registry/types";
 import { cn } from "../../ui/cn";
+import { Count } from "../../ui/Heading";
 import { KIND_LABEL, KINDS, useDecisionFilter } from "./state";
 
 const AGES = [
@@ -33,7 +34,7 @@ export function DecisionsToolbar(props: ViewProps & { phone?: boolean }) {
 
   return (
     <div className={cn("flex items-center gap-x-4 gap-y-2", phone ? "flex-wrap" : "flex-nowrap")}>
-      <div role="tablist" aria-label="Status" className="flex shrink-0 border border-line">
+      <div role="tablist" aria-label="Status" className="flex shrink-0 items-center gap-1">
         {tabs.map(({ t, label, n }) => (
           <button
             key={t}
@@ -41,27 +42,27 @@ export function DecisionsToolbar(props: ViewProps & { phone?: boolean }) {
             aria-selected={filter.status === t}
             onClick={() => update({ tab: t === "open" ? null : t })}
             className={cn(
-              "flex h-7 items-center gap-1.5 rounded-none px-3 font-mono text-xs font-semibold uppercase tracking-[0.12em]",
-              filter.status === t ? "bg-ink text-inv" : t === "proposals" && n ? "text-accent-ink hover:text-ink" : "text-ink/60 hover:text-ink",
+              "flex h-7 items-center gap-1.5 rounded px-2.5 text-sm transition-colors duration-fast",
+              filter.status === t ? "bg-ink/[0.08] font-medium text-ink" : "text-ink/60 hover:bg-ink/[0.05] hover:text-ink",
             )}
           >
             {label}
-            <span className="opacity-60">{n}</span>
+            <Count n={n} className={t === "proposals" && n ? "bg-accent/20 text-accent-ink" : ""} />
           </button>
         ))}
       </div>
       <div className={cn("flex items-center gap-1", phone ? "flex-wrap" : "min-w-0 overflow-x-auto scrollbar-none")}>
         {KINDS.map((k) => (
-          <button key={k} className="filter-tab" data-active={kinds.includes(k)} aria-pressed={kinds.includes(k)} onClick={() => toggleKind(k)}>
+          <button key={k} className="chip" data-active={kinds.includes(k)} aria-pressed={kinds.includes(k)} onClick={() => toggleKind(k)}>
             {KIND_LABEL[k]}
-            {open?.byKind[k] ? <span className="opacity-55">{open.byKind[k]}</span> : null}
+            {open?.byKind[k] ? <span className="num text-ink/45">{open.byKind[k]}</span> : null}
           </button>
         ))}
       </div>
       <div className={cn("flex items-center gap-2", !phone && "ml-auto")}>
         <RepoPicker selected={filter.repo ?? []} onChange={(r) => update({ repo: r.length ? r.join(",") : null })} />
         <Picker label={AGES.find((a) => a.v === String(filter.minAge ?? ""))?.label ?? "Any age"} items={AGES} onPick={(v) => update({ age: v || null })} />
-        <button className="filter-tab" data-active={!!filter.mine} aria-pressed={!!filter.mine} onClick={() => update({ mine: filter.mine ? null : "1" })} title="Only repos where you have write access">
+        <button className="chip" data-active={!!filter.mine} aria-pressed={!!filter.mine} onClick={() => update({ mine: filter.mine ? null : "1" })} title="Only repos where you have write access">
           My repos
         </button>
       </div>
@@ -69,13 +70,13 @@ export function DecisionsToolbar(props: ViewProps & { phone?: boolean }) {
   );
 }
 
-const menuCls = "z-50 max-h-[60vh] min-w-[200px] overflow-y-auto border border-line bg-raised py-1 shadow-[0_12px_40px_rgba(0,0,0,0.4)] animate-rise";
-const itemCls = "flex h-8 cursor-default items-center gap-2.5 px-3 text-sm outline-none data-[highlighted]:bg-ink/5";
+const menuCls = "z-50 max-h-[60vh] min-w-[200px] overflow-y-auto rounded-md border border-line-strong bg-raised p-1 shadow-[0_12px_32px_rgba(0,0,0,0.28)] animate-rise";
+const itemCls = "flex h-8 cursor-default items-center gap-2.5 rounded px-2 text-sm outline-none data-[highlighted]:bg-ink/[0.07]";
 
 function Picker({ label, items, onPick }: { label: string; items: { v: string; label: string }[]; onPick: (v: string) => void }) {
   return (
     <DropdownMenu.Root>
-      <DropdownMenu.Trigger className="filter-tab">
+      <DropdownMenu.Trigger className="chip">
         {label} <ChevronDownIcon className="text-[10px]" />
       </DropdownMenu.Trigger>
       <DropdownMenu.Portal>
@@ -96,7 +97,7 @@ function RepoPicker({ selected, onChange }: { selected: string[]; onChange: (r: 
   const label = selected.length === 0 ? "All repos" : selected.length === 1 ? selected[0] : `${selected.length} repos`;
   return (
     <DropdownMenu.Root>
-      <DropdownMenu.Trigger className="filter-tab" data-active={selected.length > 0}>
+      <DropdownMenu.Trigger className="chip" data-active={selected.length > 0}>
         {label} <ChevronDownIcon className="text-[10px]" />
       </DropdownMenu.Trigger>
       <DropdownMenu.Portal>
@@ -112,11 +113,11 @@ function RepoPicker({ selected, onChange }: { selected: string[]; onChange: (r: 
               checked={selected.includes(r)}
               onSelect={(e) => e.preventDefault()}
               onCheckedChange={(c) => onChange(c ? [...selected, r] : selected.filter((x) => x !== r))}
-              className={cn(itemCls, "font-mono text-xs")}
+              className={cn(itemCls, "code")}
             >
-              <span className="flex size-3 items-center justify-center border border-line-strong">
+              <span className="flex size-3.5 items-center justify-center rounded-sm border border-line-strong">
                 <DropdownMenu.ItemIndicator>
-                  <span className="block size-1.5 bg-ink" />
+                  <span className="block size-2 rounded-[1px] bg-accent" />
                 </DropdownMenu.ItemIndicator>
               </span>
               {r}

@@ -77,7 +77,7 @@ function PanelSlot({ def, index, last, props }: { def: PanelDef; index: number; 
             aria-label={`Show ${def.title}`}
           >
             <Icon className="rotate-180 text-sm" />
-            <span className="hud [writing-mode:vertical-rl]">{def.title}</span>
+            <span className="text-xs font-medium [writing-mode:vertical-rl]">{def.title}</span>
           </button>
         ) : (
           <div className={cn("flex h-full min-h-0 flex-col")}>

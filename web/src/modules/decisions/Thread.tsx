@@ -3,7 +3,7 @@ import { useApi, useQuery } from "../../api/client";
 import type { ViewProps } from "../../registry/types";
 import { Avatar } from "../../ui/Avatar";
 import { Button } from "../../ui/Button";
-import { Hud } from "../../ui/Hud";
+import { Count } from "../../ui/Heading";
 import { Kbd } from "../../ui/Kbd";
 import { ago } from "../../lib/format";
 import { useDecisionList, useSelection } from "./state";
@@ -18,8 +18,8 @@ export function ThreadPanel(_: ViewProps) {
   return (
     <div className="flex h-full min-h-0 flex-col bg-panel">
       <div className="flex h-10 shrink-0 items-center gap-2 border-b border-line px-4 pr-10">
-        <Hud>Discussion</Hud>
-        {d && <span className="font-mono text-2xs text-ink/45">{d.commentCount}</span>}
+        <span className="text-xs font-semibold text-ink/70">Discussion</span>
+        <Count n={d?.commentCount} />
       </div>
       {d ? <Thread decisionId={d.id} /> : <p className="p-4 text-sm text-ink/50">No decision selected.</p>}
     </div>
@@ -50,8 +50,8 @@ export function Thread({ decisionId, compact }: { decisionId: string; compact?: 
     <div className={compact ? "" : "flex min-h-0 flex-1 flex-col"}>
       <ol className={compact ? "space-y-4" : "min-h-0 flex-1 space-y-4 overflow-y-auto p-4"}>
         {activity.map((a, i) => (
-          <li key={`a${i}`} className="flex items-center gap-2 font-mono text-2xs text-ink/45">
-            <span className="size-1 bg-ink/40" />
+          <li key={`a${i}`} className="flex items-center gap-2 text-xs text-ink/50">
+            <span className="size-1.5 rounded-full bg-ink/30" />
             <span className="flex-1">{a.text}</span>
             <span>{ago(a.at)}</span>
           </li>
@@ -59,18 +59,18 @@ export function Thread({ decisionId, compact }: { decisionId: string; compact?: 
         {data?.map((c) => (
           <li key={c.id} className="animate-fadeIn">
             <div className="flex items-center gap-2">
-              <Avatar login={c.login} size={18} />
-              <span className="text-xs font-semibold">{c.login}</span>
-              <span className="ml-auto font-mono text-2xs text-ink/40">{ago(c.at)}</span>
+              <Avatar login={c.login} size={20} />
+              <span className="text-sm font-semibold">{c.login}</span>
+              <span className="ml-auto text-xs text-ink/45">{ago(c.at)}</span>
             </div>
-            <p className="mt-1.5 pl-[26px] text-sm leading-[21px] text-ink/80">{c.body}</p>
+            <p className="mt-1 pl-7 text-sm leading-5 text-ink/80">{c.body}</p>
           </li>
         ))}
         {data && data.length === 0 && <li className="text-sm text-ink/45">No comments yet.</li>}
       </ol>
       {d && !canComment(user, d.repo) ? (
         <p className={compact ? "mt-4 flex items-center gap-2 text-xs text-ink/50" : "flex items-center gap-2 border-t border-line p-3 text-xs text-ink/50"}>
-          <LockIcon className="shrink-0" /> Read-only for you. Operators and, when enabled, maintainers comment here.
+          <LockIcon className="shrink-0" /> You can read this discussion but not comment.
         </p>
       ) : (
       <div className={compact ? "mt-4" : "border-t border-line p-3"}>
@@ -82,14 +82,14 @@ export function Thread({ decisionId, compact }: { decisionId: string; compact?: 
             if (e.key === "Escape") e.currentTarget.blur();
           }}
           rows={compact ? 2 : 3}
-          placeholder="For people only: not posted on GitHub, never sent to the pipeline"
+          placeholder="Comment for maintainers (not posted on GitHub)"
           aria-label="Comment"
-          className="block w-full resize-none border border-line bg-sunken/40 px-2.5 py-2 text-sm outline-none placeholder:text-ink/35 focus:border-line-strong"
+          className="block w-full resize-none rounded border border-line bg-sunken px-2.5 py-2 text-sm outline-none placeholder:text-ink/40 focus:border-accent/60"
         />
         <div className="mt-2 flex items-center justify-between">
           {!compact && (
-            <span className="flex items-center gap-1 font-mono text-2xs text-ink/40">
-              <Kbd keys="ctrl ↵" /> to send
+            <span className="flex items-center gap-1 text-xs text-ink/45">
+              <Kbd keys="Ctrl ↵" /> to send
             </span>
           )}
           <Button size="sm" variant="secondary" className="ml-auto" onClick={() => void send()} disabled={!body.trim()}>
