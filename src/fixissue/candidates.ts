@@ -30,6 +30,9 @@ function issuesWithOpenPr(db: DatabaseSync, repo: string): Set<number> {
   return out;
 }
 
+/** Whether an open PR in the repo closes issue `n` or mentions it by number. */
+export const hasOpenPr = (db: DatabaseSync, repo: string, n: number): boolean => issuesWithOpenPr(db, repo).has(n);
+
 /**
  * Open issues with a settled bugfix label, no pending scope decision (or one answered `take` by an operator),
  * no open PR that mentions or closes them and no attempt (a skipped one returns when its text changed), in a
