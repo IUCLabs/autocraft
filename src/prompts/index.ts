@@ -448,20 +448,23 @@ export const PROMPTS: (ClaudePrompt | JevPrompt)[] = [JEV, HAIKU, REFEREE, REVIE
 /** What each Claude prompt is rendered from. */
 export type ClaudeInput = { "classify.haiku": Item[]; "referee.sonnet": Item[]; "review.sonnet": ReviewPr[]; "decide.summary": Item[]; "fixup.patch": FixupPr[]; "verify.plan": VerifyPlanInput[]; "verify.summary": VerifySummaryInput[]; "priority.haiku": Item[]; "dupes.haiku": DupePair[]; "fixissue.triage": TriageInput[]; "fixissue.patch": PatchInput[] };
 
-const itemValues = (items: Item[]) => ({ items: JSON.stringify(items.map(itemInput), null, 1) });
+/** Pretty JSON for text a stranger wrote, safe inside a tagged frame: JSON leaves "<" alone, so "</pr>" in a body would close the tag. */
+export const untrustedJson = (v: unknown): string => JSON.stringify(v, null, 1).replace(/</g, "\\u003c");
+
+const itemValues = (items: Item[]) => ({ items: untrustedJson(items.map(itemInput)) });
 const reviewInput = (p: ReviewPr): ReviewPr => ({ ...p, body: (p.body ?? "").slice(0, REVIEW_BODY_LIMIT) });
 const VALUES: { [K in ClaudePromptId]: (input: ClaudeInput[K]) => Record<string, string> } = {
   "classify.haiku": itemValues,
   "referee.sonnet": itemValues,
-  "decide.summary": (items) => ({ items: JSON.stringify(items.map(summaryInput), null, 1) }),
-  "review.sonnet": (prs) => ({ prs: JSON.stringify(prs.map(reviewInput), null, 1) }),
-  "fixup.patch": (prs) => ({ pr: JSON.stringify(prs[0], null, 1) }),
+  "decide.summary": (items) => ({ items: untrustedJson(items.map(summaryInput)) }),
+  "review.sonnet": (prs) => ({ prs: untrustedJson(prs.map(reviewInput)) }),
+  "fixup.patch": (prs) => ({ pr: untrustedJson(prs[0]) }),
   "priority.haiku": itemValues,
-  "verify.plan": ([pr]) => ({ pr: JSON.stringify({ ...pr!, body: (pr!.body ?? "").slice(0, PLAN_BODY_LIMIT) }, null, 1) }),
-  "verify.summary": ([f]) => ({ failure: JSON.stringify(f, null, 1) }),
-  "dupes.haiku": (pairs) => ({ pairs: JSON.stringify(pairs.map(pairView), null, 1) }),
-  "fixissue.triage": ([i]) => ({ issue: JSON.stringify(i, null, 1) }),
-  "fixissue.patch": ([i]) => ({ issue: JSON.stringify(i, null, 1) }),
+  "verify.plan": ([pr]) => ({ pr: untrustedJson({ ...pr!, body: (pr!.body ?? "").slice(0, PLAN_BODY_LIMIT) }) }),
+  "verify.summary": ([f]) => ({ failure: untrustedJson(f) }),
+  "dupes.haiku": (pairs) => ({ pairs: untrustedJson(pairs.map(pairView)) }),
+  "fixissue.triage": ([i]) => ({ issue: untrustedJson(i) }),
+  "fixissue.patch": ([i]) => ({ issue: untrustedJson(i) }),
 };
 
 /** Made-up input for each Claude prompt's example on the Prompts page. */

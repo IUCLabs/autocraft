@@ -7,6 +7,7 @@ import type {
   Claim, Classification, Decision, DecisionComment, DecisionKind, DecisionList, ItemState, Opinion, RelatedItem, Relation,
 } from "../../../web/src/api/types.ts";
 import { exceptionsOf, factsOf, getDecision, isBatch, itemsOf, KINDS, optionsOf, reposOf, type DecisionRow, type Exception } from "../../decisions.ts";
+import { commentPreview } from "../../act/index.ts";
 import { audit } from "../audit.ts";
 import { randomToken } from "../server/crypto.ts";
 import { HttpError, type RateLimiter } from "../server/util.ts";
@@ -156,7 +157,7 @@ export function toDecision(db: DatabaseSync, d: DecisionRow, viewer: Viewer): De
     facts: factsOf(d),
     options: optionsOf(d),
     recommended: d.recommended ?? "",
-    publicText: d.public_text,
+    publicText: commentPreview(d),
     askedAt: d.asked_at, askedBy: d.asked_by ?? "the pipeline",
     docket: d.docket,
     answer: d.answer,

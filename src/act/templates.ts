@@ -6,9 +6,13 @@ import type { CommentTemplate } from "../../web/src/api/types.ts";
 export const ORG = "storytold";
 export const REASON_MAX = 200;
 
-/** One plain line: no mentions, no markup that notifies or links, cut to REASON_MAX. */
+/** One plain line: no mentions, no URLs or Markdown links, cut to REASON_MAX. */
 export function cleanReason(s: string | null | undefined): string | null {
-  const t = (s ?? "").replace(/@/g, "").replace(/\s+/g, " ").trim();
+  const t = (s ?? "")
+    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/<?\b(?:[a-z][a-z0-9+.-]*:\/\/|www\.)[^\s<>]*>?/gi, "")
+    .replace(/@/g, "")
+    .replace(/\s+/g, " ").trim();
   if (!t) return null;
   const cut = t.length > REASON_MAX ? `${t.slice(0, REASON_MAX - 1).trimEnd()}…` : t;
   return /[.!?…]$/.test(cut) ? cut : `${cut}.`;

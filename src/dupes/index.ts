@@ -10,7 +10,7 @@ import { connect } from "../db.ts";
 import { embedderId, localEmbedder, modelName } from "../embed/model.ts";
 import { VectorIndex } from "../embed/vectors.ts";
 import { checkPairs, defaultCheckDeps, uncheckedPairs, type CheckDeps } from "./check.ts";
-import { applyDuplicateAnswers, askDuplicateDecisions, duplicateGroups } from "./decide.ts";
+import { applyDuplicateAnswers, askDuplicateDecisions, duplicateAskTargets } from "./decide.ts";
 import { scanItem, scanPending } from "./scan.ts";
 
 export { duplicateCount, duplicateHeld, notHeldSql } from "./held.ts";
@@ -41,8 +41,9 @@ export function dupesWork(db: DatabaseSync, modelId: string = embedderId(modelNa
   if (scanPending(db, modelId, 1).length || uncheckedPairs(db, 1).length) return true;
   const answered = db.prepare("SELECT 1 FROM decisions WHERE kind = 'duplicate' AND answer IS NOT NULL AND answer <> 'close' AND applied_at IS NULL LIMIT 1").get();
   if (answered) return true;
-  const open = new Set((db.prepare("SELECT id FROM decisions WHERE kind = 'duplicate'").all() as { id: string }[]).map((d) => d.id));
-  return duplicateGroups(db).some((g) => g.members.some((x) => x !== g.canonical && !open.has(`${g.repo}#${x}:duplicate@${g.canonical}`)));
+  // Asked-but-unanswered ones need no job: asking again only refreshes them.
+  const asked = db.prepare("SELECT 1 FROM decisions WHERE id = ?");
+  return duplicateAskTargets(db).some((t) => !asked.get(t.id));
 }
 
 export async function runDupes(db: DatabaseSync, params: DupesParams = {}, log: (line: string) => void = console.log, deps?: DupesDeps): Promise<DupesSummary> {

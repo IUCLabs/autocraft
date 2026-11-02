@@ -243,7 +243,7 @@ Makes the GitHub comments and closes that follow an operator's answer. No model.
 | Duplicate decision answered `close` | `Duplicate of #y.`, then close |
 
 - **Close this PR?** The step asks it for each PR whose latest review says close at the current head: options Close, Hold, Keep open. A new head asks again, and an answer given at an old head is skipped.
-- **Comment rules.** Comments are fixed templates in code (listed on [Prompts](/prompts)): one or two short factual lines, a fixed first sentence and at most `Reason: <text>`, cut to one line of 200 characters with `@` removed. Nothing a model wrote is posted.
+- **Comment rules.** Comments are fixed templates in code (listed on [Prompts](/prompts)): one or two short factual lines, a fixed first sentence and at most `Reason: <text>`, cut to one line of 200 characters with `@`, URLs and Markdown links removed. The reason text may come from a model; the decision page shows the exact comment, and the operator's answer approves that text.
 - **Before writing,** the step re-reads the item and skips it, without a comment, when it is already closed or merged, gone, or its head moved. A comment is never posted twice.
 
 ## Which model does what

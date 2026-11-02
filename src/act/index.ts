@@ -179,6 +179,16 @@ function commentFor(d: DecisionRow, t: Target): string {
   return prCloseComment({ repo: t.repo, reason: d.public_text ?? factValue(d, REASON_FACT), duplicateOf: factValue(d, DUP_FACT) });
 }
 
+/** The exact comment the act step posts for a decision, for the dashboard. Null when none is fixed in advance. */
+export function commentPreview(d: DecisionRow): string | null {
+  if (d.kind === "scope" || d.kind === "close") return commentFor(d, { decisionId: d.id, kind: d.kind, repo: d.repo ?? "", number: d.number ?? 0 });
+  if (d.kind === "duplicate") {
+    const orig = factValue(d, DUP_FACT);
+    return orig && d.repo ? duplicateComment({ repo: d.repo, original: orig, closed: false }) : null;
+  }
+  return null;
+}
+
 export async function runAct(db: DatabaseSync, params: ActParams, log: (line: string) => void = console.log, deps?: ActDeps): Promise<ActSummary> {
   const { repo } = params;
   const dryRun = params.dryRun ?? true;
@@ -241,7 +251,7 @@ export async function runAct(db: DatabaseSync, params: ActParams, log: (line: st
         if (live.type !== "PullRequest" || !h || live.head !== h) { skip(t, `head moved since the decision (${h ? short(h) : "no head recorded"} → ${live.head ? short(live.head) : "none"})`); continue; }
       }
       let url = prev?.comment_url ?? null;
-      if (!url) {
+      if (url === null) {
         let body: string;
         if (t.kind === "duplicate") {
           const orig = /^([\w.-]+)#(\d+)$/.exec(factValue(dec, DUP_FACT) ?? "");

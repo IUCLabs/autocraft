@@ -14,7 +14,7 @@ import { selectCandidates as decideCandidates } from "../src/decide/select.ts";
 import { checkPairs, type CheckDeps } from "../src/dupes/check.ts";
 import { applyDuplicateAnswers, askDuplicateDecisions } from "../src/dupes/decide.ts";
 import { duplicateCount, duplicateHeld } from "../src/dupes/held.ts";
-import { runDupes, type DupesDeps } from "../src/dupes/index.ts";
+import { dupesWork, runDupes, type DupesDeps } from "../src/dupes/index.ts";
 import { pickCanonical } from "../src/dupes/canonical.ts";
 import { settlePair } from "../src/dupes/pair.ts";
 import { MAX_NEIGHBOURS, neighbourPairs, scanPending, type ScanItem } from "../src/dupes/scan.ts";
@@ -289,5 +289,18 @@ describe("act on close as duplicate", () => {
     assert.deepEqual(log, []);
     assert.equal((db.prepare("SELECT verdict FROM duplicate_pairs WHERE a = 1 AND b = 2").get() as { verdict: string }).verdict, "distinct");
     assert.ok(!askDuplicateDecisions(db, undefined, T0).includes("app#2:duplicate@1"));
+  });
+});
+
+describe("dupesWork", () => {
+  test("is false when every member is closed or answered, true while an open member is unasked", () => {
+    const { db } = withDuplicates();
+    assert.equal(dupesWork(db, "no-embeddings"), true);
+    db.prepare("UPDATE items SET state = 'CLOSED' WHERE number IN (1, 2, 3, 4, 5)").run();
+    assert.equal(dupesWork(db, "no-embeddings"), false);
+    db.prepare("UPDATE items SET state = 'OPEN' WHERE number = 5").run();
+    assert.equal(dupesWork(db, "no-embeddings"), true);
+    askDuplicateDecisions(db, undefined, T0);
+    assert.equal(dupesWork(db, "no-embeddings"), false);
   });
 });
