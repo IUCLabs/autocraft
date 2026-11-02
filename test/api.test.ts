@@ -42,6 +42,7 @@ before(async () => {
   ins.run("photocraft", 4, "issue", "OPEN", "Crash on save", "d", "dave", now, now, null);
   ins.run("photocraft", 5, "issue", "OPEN", "Wave filter missing", "e", "erin", now, now, null);
   ins.run("untracked-repo", 6, "pr", "OPEN", "Add wave filter elsewhere", "f", "frank", now, now, null);
+  db.prepare("UPDATE items SET additions = 40, deletions = 3, changed_files = 7 WHERE repo = 'photocraft' AND number = 1").run();
   db.prepare("INSERT INTO comments (repo, number, id, kind, author, created_at, body) VALUES ('photocraft', 1, 'c1', 'comment', 'alice', ?, 'looks good')").run(now);
   db.prepare("INSERT INTO classifications (repo, number, classifier, run_id, at, type_label, want, reason) VALUES ('photocraft', 1, 'haiku', 'r1', ?, 'small extra', 'yes', 'adds a filter')").run(now);
   ask(db, [P1, P2, F3, P4].map((id) => {
@@ -118,7 +119,7 @@ describe("api", () => {
     const r = await c.req("GET", "/api/me");
     assert.equal(r.status, 401);
     assert.deepEqual(await r.json(), { error: "sign-in required" });
-    for (const path of ["/api/classifiers", "/api/classifiers/disagreements", "/api/cost"]) assert.equal((await c.req("GET", path)).status, 401, path);
+    for (const path of ["/api/classifiers", "/api/classifiers/disagreements", "/api/cost", "/api/items", "/api/items?q=wave"]) assert.equal((await c.req("GET", path)).status, 401, path);
     assert.equal((await c.req("POST", dpath(P1, "/opinion"), { body: { option: "small" }, csrf: "x" })).status, 401);
   });
 
@@ -130,6 +131,8 @@ describe("api", () => {
     assert.equal((await (await signedIn("maint")).get<User>("/api/me")).role, "viewer");
     const it = await boss.get<Item>("/api/items/photocraft/1");
     assert.equal(it.body, "<script>x</script> body");
+    assert.deepEqual([it.changedFiles, it.additions, it.deletions], [7, 40, 3]);
+    assert.equal((await boss.get<Item>("/api/items/photocraft/4")).changedFiles, null);
     assert.deepEqual(it.comments.map((c) => c.body), ["looks good"]);
     assert.deepEqual(it.decisionIds, [P1]);
     assert.deepEqual(it.related.map((r) => [r.number, r.relation]), [[5, "fixes"]]);

@@ -20,7 +20,7 @@ import type {
 } from "../types";
 
 export const NOW = Date.parse("2026-11-02T10:40:00Z");
-export const RUN_STARTED = "2026-10-27T08:00:00Z";
+export const TRACKING_SINCE = "2026-10-27T08:00:00Z";
 
 const iso = (msAgo: number) => new Date(NOW - msAgo).toISOString();
 const H = 3600_000;
@@ -720,6 +720,7 @@ export function itemFor(repo: string, number: number): Item {
     authorClosedUnmerged: closedUn,
     additions: s.size?.[0] ?? 0,
     deletions: s.size?.[1] ?? 0,
+    changedFiles: isIssue ? null : filesFor(s).length,
     files: filesFor(s),
     ci,
     ciChecks: checks,
@@ -727,11 +728,16 @@ export function itemFor(repo: string, number: number): Item {
     labels: isIssue ? ["bug"] : ["enhancement", ...(s.kind === "scope" ? ["needs-scope"] : [])],
     createdAt: iso(s.ageH * H + 26 * H),
     updatedAt: iso(s.ageH * H - 2 * H),
+    closedAt: null,
+    mergedAt: null,
+    mergedBy: null,
     related: s.related ?? [],
     classifications: d.classifications,
     stages: stagesFor(s, d),
     comments: [],
     decisionIds: seed ? [d.id] : [],
+    // mockApi fills this in from itemsFixtures
+    settled: { status: "unclassified", label: null, source: null, confidence: null, jevLabel: null, haikuLabel: null, flags: [] },
   };
 }
 
@@ -747,7 +753,7 @@ const TITLE_PARTS: Record<string, string[]> = {
 const TITLE_VERBS = ["fix crash when", "add support for", "improve performance of", "keep state after", "handle HiDPI in", "fix undo for", "add keyboard access to"];
 const TITLE_TAILS = ["large documents", "multiple selections", "copy and paste", "dark theme", "RTL text", "touch input", "autosave"];
 
-function titleFor(repo: string, n: number) {
+export function titleFor(repo: string, n: number) {
   const parts = TITLE_PARTS[repo] ?? TITLE_PARTS.default;
   return `${parts[n % parts.length]}: ${TITLE_VERBS[(n >> 2) % TITLE_VERBS.length]} ${TITLE_TAILS[(n >> 4) % TITLE_TAILS.length]}`;
 }
@@ -774,11 +780,13 @@ export const SEARCH_POOL: SearchHit[] = (() => {
 
 export function progress(decisionsOpen: number): Progress {
   const r = rng(7);
-  const days = Math.ceil((NOW - Date.parse(RUN_STARTED)) / D);
+  const days = Math.ceil((NOW - Date.parse(TRACKING_SINCE)) / D);
   const repos: RepoProgress[] = REPO_OPEN.map(([repo, open]) => {
     const cls = 0.62 + r() * 0.36;
     const rev = 0.18 + r() * 0.3;
     const classified = Math.round(open * cls);
+    const secondOpinion = Math.round((open - classified) * 0.7);
+    const disagreement = Math.round((open - classified) * 0.1);
     const reviewed = Math.round(classified * rev);
     const take = Math.round(reviewed * (0.25 + r() * 0.15));
     const hold = Math.round(reviewed * (0.1 + r() * 0.1));
@@ -794,7 +802,7 @@ export function progress(decisionsOpen: number): Progress {
     const startOpen = open + Math.round((done.mergedByPipeline + done.closedByPipeline + done.closedByOthers) * 0.82);
     const openTrend = Array.from({ length: days }, (_, i) => Math.round(startOpen - ((startOpen - open) * (i + 1)) / days + (r() - 0.5) * open * 0.01));
     openTrend[days - 1] = open;
-    return { repo, funnel: { open, classified, reviewed, take, hold, close, waiting, batched }, done, decisionsOpen: 0, openTrend };
+    return { repo, funnel: { open, classified, secondOpinion, disagreement, reviewed, take, hold, close, waiting, batched }, done, decisionsOpen: 0, openTrend };
   });
   for (const d of DECISIONS) if (!d.answer) {
     const rp = repos.find((x) => x.repo === d.repo);
@@ -808,11 +816,12 @@ export function progress(decisionsOpen: number): Progress {
     return Math.round(28 + 52 * day + r() * 14);
   });
   return {
-    runStartedAt: RUN_STARTED,
+    trackingSince: TRACKING_SINCE,
     now: new Date(NOW).toISOString(),
-    funnel: sum((x) => x.funnel, ["open", "classified", "reviewed", "take", "hold", "close", "waiting", "batched"]),
+    funnel: sum((x) => x.funnel, ["open", "classified", "secondOpinion", "disagreement", "reviewed", "take", "hold", "close", "waiting", "batched"]),
     done: sum((x) => x.done, ["mergedByPipeline", "closedByPipeline", "closedByOthers"]),
     perHour,
+    perHourPipeline: perHour.map((n) => Math.round(n * 0.55)),
     decisionsOpen,
     decisionsAnsweredToday: 64,
     repos,

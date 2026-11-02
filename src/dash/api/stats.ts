@@ -1,5 +1,6 @@
 // Shared queries for the Progress, Repo and Run and cost pages.
 import type { DatabaseSync } from "node:sqlite";
+import { latestRun, settledTable } from "../../classify/settled.ts";
 import { getRule, STATS_SQL, TIER_LABEL, TIER_SQL, type Tier } from "../../whitelist.ts";
 
 // Latest stage row per item (latest wins; rowid breaks ties at the same time).
@@ -13,36 +14,41 @@ export const latestCte = (repo?: string): string => LATEST_SQL.replace("%W", rep
 // One classification per item: the owner's, else Sonnet's, else Haiku's, else the newest other.
 export const PREF_ORDER = "CASE classifier WHEN 'owner' THEN 0 WHEN 'sonnet' THEN 1 WHEN 'haiku' THEN 2 ELSE 3 END, at DESC";
 
-export function runStart(db: DatabaseSync): string {
-  const r = db.prepare("SELECT value FROM settings WHERE key = 'run_started_at'").get() as { value: string } | undefined;
-  if (r?.value) return r.value;
-  const s = db.prepare("SELECT MIN(at) AS at FROM stages").get() as { at: string | null };
-  return s.at ?? new Date(Date.now() - 7 * 86400_000).toISOString();
+// When tracking began: set by connect() (src/db.ts) on first use.
+export function trackingStart(db: DatabaseSync): string {
+  const r = db.prepare("SELECT value FROM main.settings WHERE key = 'tracking_started_at'").get() as { value: string } | undefined;
+  return r?.value ?? new Date().toISOString();
 }
 
 const p = (repo?: string, extra: Record<string, string | number> = {}): Record<string, string | number> => (repo ? { repo, ...extra } : extra);
 
 export type FunnelRow = {
-  repo: string; open: number; classified: number; reviewed: number;
+  repo: string; open: number; classified: number; second_opinion: number; disagreement: number; reviewed: number;
   take: number; hold: number; close: number; needs_decision: number; batched: number;
 };
 
+// "classified" counts settled type labels (src/classify/settled.ts) in the latest run.
 export function funnelByRepo(db: DatabaseSync, repo?: string): FunnelRow[] {
+  settledTable(db, latestRun(db));
   return db.prepare(`WITH ${latestCte(repo)}
     SELECT i.repo, COUNT(*) AS open,
-      SUM(EXISTS (SELECT 1 FROM classifications c WHERE c.repo = i.repo AND c.number = i.number)) AS classified,
+      SUM(st.status = 'settled') AS classified, SUM(st.status = 'waiting') AS second_opinion, SUM(st.status = 'disagree') AS disagreement,
       SUM(EXISTS (SELECT 1 FROM stages s WHERE s.repo = i.repo AND s.number = i.number AND s.stage = 'reviewed')
        OR EXISTS (SELECT 1 FROM classifications c WHERE c.repo = i.repo AND c.number = i.number AND c.classifier = 'sonnet')) AS reviewed,
       SUM(l.stage = 'take') AS take, SUM(l.stage = 'hold') AS hold, SUM(l.stage = 'close') AS close,
       SUM(l.stage = 'needs-decision') AS needs_decision, SUM(l.stage = 'batched') AS batched
     FROM items i LEFT JOIN latest l ON l.repo = i.repo AND l.number = i.number
+    LEFT JOIN temp.item_settled st ON st.repo = i.repo AND st.number = i.number
     WHERE i.state = 'OPEN' ${repo ? "AND i.repo = :repo" : ""}
-    GROUP BY i.repo`).all(p(repo)).map((r) => ({ ...r, take: r.take ?? 0, hold: r.hold ?? 0, close: r.close ?? 0, needs_decision: r.needs_decision ?? 0, batched: r.batched ?? 0 })) as FunnelRow[];
+    GROUP BY i.repo`).all(p(repo)).map((r) => ({
+      ...r, classified: r.classified ?? 0, second_opinion: r.second_opinion ?? 0, disagreement: r.disagreement ?? 0,
+      take: r.take ?? 0, hold: r.hold ?? 0, close: r.close ?? 0, needs_decision: r.needs_decision ?? 0, batched: r.batched ?? 0,
+    })) as FunnelRow[];
 }
 
 export type DoneRow = { repo: string; merged_pipeline: number; closed_pipeline: number; closed_others: number; total: number };
 
-// Done since run start. Merged PRs carry closed_at too, so one range covers both.
+// Done since tracking began. Merged PRs carry closed_at too, so one range covers both.
 export function doneByRepo(db: DatabaseSync, start: string, repo?: string): DoneRow[] {
   return db.prepare(`WITH ${latestCte(repo)}, d AS (
       SELECT i.repo, i.state, l.stage FROM items i LEFT JOIN latest l ON l.repo = i.repo AND l.number = i.number
@@ -64,7 +70,7 @@ export const SIZE_SQL = `CASE WHEN kind = 'issue' THEN 'issue'
 
 export const SIZE_ORDER = ["S", "M", "L", "XL", "issue"];
 
-// Open items per repo per day since run start, rebuilt backwards from the
+// Open items per repo per day since tracking began, rebuilt backwards from the
 // current open count and the created/closed dates.
 export function trend(db: DatabaseSync, start: string, openNow: Map<string, number>, repo?: string): { days: string[]; series: Map<string, number[]> } {
   const today = new Date().toISOString().slice(0, 10);
@@ -86,6 +92,7 @@ export function trend(db: DatabaseSync, start: string, openNow: Map<string, numb
   for (const x of created) add(x.repo, x.d, x.n);
   for (const x of closed) add(x.repo, x.d, -x.n);
   const series = new Map<string, number[]>();
+  // every repo in openNow gets a series, a repo with nothing open one of zeros
   for (const name of new Set([...openNow.keys(), ...delta.keys()])) {
     const m = delta.get(name) ?? new Map<string, number>();
     // value at the end of each day; walk back from today's open count

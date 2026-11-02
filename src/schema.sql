@@ -71,7 +71,7 @@ CREATE TABLE IF NOT EXISTS classifications (
 -- Where each item stands in the pipeline (latest row wins).
 CREATE TABLE IF NOT EXISTS stages (
   repo TEXT NOT NULL, number INTEGER NOT NULL,
-  stage TEXT NOT NULL,                -- classified | reviewed | take | hold | close | needs-decision | batched | merged | closed | fixed-by-us
+  stage TEXT NOT NULL,                -- classified | labeled | reviewed | take | hold | close | needs-decision | batched | merged | closed | fixed-by-us
   at TEXT NOT NULL,
   actor TEXT,                         -- session or agent name
   note TEXT,                          -- one line, public-safe
@@ -199,7 +199,7 @@ CREATE TABLE IF NOT EXISTS oauth_states (
 CREATE TABLE IF NOT EXISTS audit (
   at TEXT NOT NULL,
   login TEXT NOT NULL,
-  action TEXT NOT NULL,               -- answer | undo | adopt | opinion | opinion-retract | comment | override | rule | access-add | access-remove | access-role | session-revoke | sign-in | sign-in-refused | repo-track | repo-untrack
+  action TEXT NOT NULL,               -- answer | undo | adopt | opinion | opinion-retract | comment | override | rule | access-add | access-remove | access-role | session-revoke | sign-in | sign-in-refused | repo-track | repo-untrack | labels-approve | labels-revoke | labels-apply
   target TEXT,
   details TEXT                        -- JSON
 );
@@ -253,3 +253,39 @@ SELECT column1, 'seed', strftime('%Y-%m-%dT%H:%M:%SZ', 'now') FROM (VALUES
 ) WHERE NOT EXISTS (SELECT 1 FROM settings WHERE key = 'tracked_seeded')
   AND NOT EXISTS (SELECT 1 FROM tracked_repos);
 INSERT OR IGNORE INTO settings VALUES ('tracked_seeded', '1');
+
+-- Full-text search over item titles and bodies and comment bodies. Both are
+-- external-content tables (the text stays in items and comments only), kept
+-- current by these triggers; db.ts builds them once for an existing database.
+-- The sync writes items with an upsert, which keeps their rowids, and connect()
+-- turns on recursive_triggers so an INSERT OR REPLACE also runs the delete triggers.
+CREATE VIRTUAL TABLE IF NOT EXISTS items_fts USING fts5(
+  title, body, content='items', content_rowid='rowid', tokenize='porter unicode61 remove_diacritics 2');
+CREATE VIRTUAL TABLE IF NOT EXISTS comments_fts USING fts5(
+  body, content='comments', content_rowid='rowid', tokenize='porter unicode61 remove_diacritics 2');
+
+CREATE TRIGGER IF NOT EXISTS items_fts_ai AFTER INSERT ON items BEGIN
+  INSERT INTO items_fts (rowid, title, body) VALUES (new.rowid, new.title, new.body);
+END;
+CREATE TRIGGER IF NOT EXISTS items_fts_ad AFTER DELETE ON items BEGIN
+  INSERT INTO items_fts (items_fts, rowid, title, body) VALUES ('delete', old.rowid, old.title, old.body);
+END;
+CREATE TRIGGER IF NOT EXISTS items_fts_au AFTER UPDATE OF title, body ON items
+WHEN old.title IS NOT new.title OR old.body IS NOT new.body OR old.rowid <> new.rowid BEGIN
+  INSERT INTO items_fts (items_fts, rowid, title, body) VALUES ('delete', old.rowid, old.title, old.body);
+  INSERT INTO items_fts (rowid, title, body) VALUES (new.rowid, new.title, new.body);
+END;
+CREATE TRIGGER IF NOT EXISTS comments_fts_ai AFTER INSERT ON comments BEGIN
+  INSERT INTO comments_fts (rowid, body) VALUES (new.rowid, new.body);
+END;
+CREATE TRIGGER IF NOT EXISTS comments_fts_ad AFTER DELETE ON comments BEGIN
+  INSERT INTO comments_fts (comments_fts, rowid, body) VALUES ('delete', old.rowid, old.body);
+END;
+CREATE TRIGGER IF NOT EXISTS comments_fts_au AFTER UPDATE OF body ON comments
+WHEN old.body IS NOT new.body OR old.rowid <> new.rowid BEGIN
+  INSERT INTO comments_fts (comments_fts, rowid, body) VALUES ('delete', old.rowid, old.body);
+  INSERT INTO comments_fts (rowid, body) VALUES (new.rowid, new.body);
+END;
+CREATE INDEX IF NOT EXISTS items_updated ON items(updated_at);
+CREATE INDEX IF NOT EXISTS items_state_updated ON items(state, updated_at);
+CREATE INDEX IF NOT EXISTS items_author_nocase ON items(author COLLATE NOCASE);

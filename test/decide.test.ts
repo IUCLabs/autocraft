@@ -11,7 +11,8 @@ import { LABELS } from "../src/classify/rules.ts";
 import { connect } from "../src/db.ts";
 import { buildDecision } from "../src/decide/decision.ts";
 import { loadSummaryItems, runDecide } from "../src/decide/index.ts";
-import { settle, type Candidate } from "../src/decide/select.ts";
+import { settle } from "../src/classify/settled.ts";
+import type { Candidate } from "../src/decide/select.ts";
 import { validateAsk, type DecisionRow } from "../src/decisions.ts";
 import { claudeArgs, renderClaude } from "../src/prompts/index.ts";
 

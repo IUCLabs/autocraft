@@ -9,32 +9,13 @@
 // decision on it (answered ones too), or a stage row past "classified".
 import type { DatabaseSync } from "node:sqlite";
 import { trackedNames } from "../repos.ts";
+import { settle, type Settled } from "../classify/settled.ts";
 
 export const SCOPE_LABELS = ["missing feature", "small extra", "plugin candidate"] as const;
 const isScope = (l: string | null): boolean => l !== null && (SCOPE_LABELS as readonly string[]).includes(l);
 
-// ---- Settled classification -------------------------------------------------
-// LOCAL COPY of the rule in src/classify/settled.ts (`settle`, from the
-// dash-items branch). Once that lands, delete this block and import `settle`,
-// `SURE` and `Settled` from "../classify/settled.ts": the signature and result
-// fields used here are the same.
-export const SURE = 0.9;
-type Verdict = { label: string; flags: string[] };
-export type Settled = {
-  status: "settled" | "waiting" | "disagree" | "unclassified";
-  label: string | null; source: "jev" | "haiku" | null; confidence: number | null;
-  jevLabel: string | null; haikuLabel: string | null; flags: string[];
-};
-export function settle(jev: (Verdict & { top: number | null }) | null, haiku: Verdict | null): Settled {
-  if (!jev) return { status: "unclassified", label: null, source: null, confidence: null, jevLabel: null, haikuLabel: haiku?.label ?? null, flags: [] };
-  const base = { confidence: jev.top, jevLabel: jev.label, haikuLabel: haiku?.label ?? null };
-  if ((jev.top ?? 0) >= SURE) return { ...base, status: "settled", label: jev.label, source: "jev", flags: [...jev.flags] };
-  const flags = [...new Set([...jev.flags, ...(haiku?.flags ?? [])])];
-  if (!haiku) return { ...base, status: "waiting", label: null, source: null, flags };
-  if (haiku.label === jev.label) return { ...base, status: "settled", label: jev.label, source: "haiku", flags };
-  return { ...base, status: "disagree", label: null, source: null, flags };
-}
-// ---- end of local copy -------------------------------------------------------
+/** Jev's needs_decision probability a bugfix needs before it becomes a decision. */
+export const BUGFIX_NEEDS_DECISION = 0.7;
 
 export type Reason = "needs-decision" | "scope-disagreement";
 
@@ -94,7 +75,12 @@ export function selectCandidates(db: DatabaseSync, run: string, repos?: string[]
       { label: r.jl, flags: json<string[]>(r.jf, []), top: typeof top === "number" ? top : null },
       r.hl === null ? null : { label: r.hl, flags: json<string[]>(r.hf, []) },
     );
-    const reason = reasonOf(s);
+    let reason = reasonOf(s);
+    // Jev raises needs_decision too freely on plain bugs: a bugfix needs a firm flag.
+    if (reason === "needs-decision" && s.label === "bugfix") {
+      const nd = json<{ needs_decision?: unknown } | null>(r.probs, null)?.needs_decision;
+      if (typeof nd !== "number" || nd < BUGFIX_NEEDS_DECISION) reason = null;
+    }
     if (reason) out.push({ repo: r.repo, number: r.number, reason, settled: s });
   }
   return out;

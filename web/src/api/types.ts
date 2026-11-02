@@ -156,18 +156,110 @@ export interface Item extends ItemRef {
   authorClosedUnmerged: number;
   additions: number;
   deletions: number;
+  /** PRs: how many files the PR changes, from the mirror; null when unknown. */
+  changedFiles: number | null;
+  /** Per-file changes; empty when the mirror has none. */
   files: ChangedFile[];
+  /** "none" also when the mirror has no check data for the item. */
   ci: CiState;
   ciChecks: { name: string; state: CiState; minutes: number }[];
   mergeable: Mergeable;
   labels: string[];
   createdAt: string;
   updatedAt: string;
+  closedAt: string | null;
+  mergedAt: string | null;
+  mergedBy: string | null;
   related: RelatedItem[];
   classifications: Classification[];
   stages: StageEntry[];
   comments: ItemComment[];
   decisionIds: string[];
+  /** For the latest classification run. */
+  settled: Settled;
+}
+
+/**
+ * Settled type label for one classification run: Jev's label when its top
+ * probability is at least 0.9, else Haiku's when Haiku agrees with Jev.
+ * `waiting`: Jev unsure, Haiku hasn't answered; `disagree`: Haiku gave another label.
+ */
+export type SettledStatus = "settled" | "waiting" | "disagree" | "unclassified";
+
+export interface Settled {
+  status: SettledStatus;
+  /** Set only when `status` is `settled`. */
+  label: TypeLabel | null;
+  source: "jev" | "haiku" | null;
+  /** Jev's top probability. */
+  confidence: number | null;
+  jevLabel: TypeLabel | null;
+  haikuLabel: TypeLabel | null;
+  /** Jev's flags when Jev is sure, otherwise every flag either classifier raised. */
+  flags: string[];
+}
+
+/** Where a text query matched. `text` marks each match with U+0002 before and U+0003 after it. */
+export interface Snippet {
+  field: "title" | "body" | "comment";
+  /** The comment's author. */
+  author: string | null;
+  text: string;
+}
+
+export type ItemSort = "relevance" | "updated" | "created" | "number";
+
+/** `status: "unsettled"` stands for waiting and disagree together. */
+export type StatusFilter = SettledStatus | "unsettled";
+
+export interface ItemFilter {
+  /** Full-text query: words (all must match), "quoted phrases", prefix*, -excluded, OR. */
+  q?: string;
+  /** Only `text`; other search modes may be added. */
+  mode?: "text";
+  repo?: RepoName[];
+  kind?: "pr" | "issue";
+  /** Default `open`. */
+  state?: ItemState | "all";
+  /** Settled label. */
+  label?: TypeLabel;
+  status?: StatusFilter[];
+  /** Every flag listed must be set. */
+  flag?: string[];
+  author?: string;
+  /** Updated on or after this date (YYYY-MM-DD). */
+  since?: string;
+  /** Default `relevance` with a query, else `updated`. */
+  sort?: ItemSort;
+  /** Default true. */
+  desc?: boolean;
+  limit?: number;
+  offset?: number;
+  /** Classification run; default the latest. */
+  run?: string;
+}
+
+export interface ItemListRow extends ItemRef {
+  kind: "pr" | "issue";
+  state: ItemState;
+  title: string;
+  author: string;
+  createdAt: string;
+  updatedAt: string;
+  comments: number;
+  settled: Settled;
+  /** Latest pipeline stage. */
+  stage: Stage | null;
+  /** With a text query only. */
+  snippet: Snippet | null;
+}
+
+export interface ItemList {
+  total: number;
+  rows: ItemListRow[];
+  /** Matches per settled status, under every filter except `status`. */
+  byStatus: Record<SettledStatus, number>;
+  run: string | null;
 }
 
 export interface SearchHit extends ItemRef {
@@ -185,7 +277,12 @@ export interface Done {
 
 export interface Funnel {
   open: number;
+  /** Settled type label (see `Settled`). */
   classified: number;
+  /** Jev unsure, Haiku hasn't answered yet. */
+  secondOpinion: number;
+  /** Jev unsure and Haiku gave another label. */
+  disagreement: number;
   reviewed: number;
   take: number;
   hold: number;
@@ -199,17 +296,20 @@ export interface RepoProgress {
   funnel: Funnel;
   done: Done;
   decisionsOpen: number;
-  /** open items at the end of each day since the run started */
+  /** open items at the end of each day since tracking began */
   openTrend: number[];
 }
 
 export interface Progress {
-  runStartedAt: string;
+  /** When tracking began; done counts and trends start here. */
+  trackingSince: string;
   now: string;
   funnel: Funnel;
   done: Done;
-  /** items done per hour, oldest first, last 24 h */
+  /** items closed or merged per hour by anyone, oldest first, last 24 h */
   perHour: number[];
+  /** the same, by the pipeline only */
+  perHourPipeline: number[];
   decisionsOpen: number;
   decisionsAnsweredToday: number;
   repos: RepoProgress[];
@@ -324,6 +424,19 @@ export interface OverrideInput {
   note?: string;
 }
 
+/** The Label stage for one repo: approval and what the plan holds. */
+export interface RepoLabels {
+  approved: boolean;
+  approvedBy: string | null;
+  approvedAt: string | null;
+  /** open items that would get labels */
+  toAdd: number;
+  /** open items with nothing to add: already labelled or not settled */
+  skipped: number;
+  /** open items with a different type label set by a person */
+  conflicts: number;
+}
+
 export interface TrackedRepo {
   name: RepoName;
   tracked: boolean;
@@ -332,6 +445,8 @@ export interface TrackedRepo {
   /** issue and PR rows in the mirror */
   mirrored: number;
   syncedAt: string | null;
+  /** null for repos that are not tracked */
+  labels: RepoLabels | null;
 }
 
 export interface AccessEntry {
@@ -482,6 +597,8 @@ export interface CostReport {
   /** A run id, or "" for all runs. */
   run: string;
   total: UsageTotals;
+  /** Distinct items with a classification in the run (or all runs); `total.items` counts an item once per model. */
+  itemsClassified: number;
   stages: ({ stage: string; model: string } & UsageTotals)[];
   repos: ({ repo: string } & UsageTotals)[];
   /** Spend per time bucket; `bucket` is an ISO hour or day. */

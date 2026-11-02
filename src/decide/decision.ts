@@ -37,7 +37,7 @@ export function shapeOf(c: Candidate): Shape {
     const pair = new Set([s.jevLabel, s.haikuLabel]);
     if (pair.has("small extra") && pair.has("plugin candidate"))
       // The classify rules say: unsure between the two, plugin candidate.
-      return { question: "Keep this in core as a small extra, or treat it as a plug-in?", options: ["small-extra", "plugin", "take", "close"], recommended: "plugin" };
+      return { question: "Keep this in core as a small extra, or treat it as a plug-in?", options: ["small-extra", "plugin", "take", "need-info", "close"], recommended: "plugin" };
     const other = OPTION_OF_LABEL[pair.has("small extra") ? "small extra" : "plugin candidate"]!;
     return { question: "Does the reference app have this, and do we want it in core?", options: ["take", other, "need-info", "close"], recommended: null };
   }
