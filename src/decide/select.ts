@@ -62,10 +62,11 @@ export function selectCandidates(db: DatabaseSync, run: string, repos?: string[]
   const rows = db.prepare(`SELECT j.repo, j.number, j.type_label AS jl, j.flags AS jf, j.probs, h.type_label AS hl, h.flags AS hf
     FROM classifications j
     JOIN items i ON i.repo = j.repo AND i.number = j.number
+    LEFT JOIN item_priority p ON p.repo = j.repo AND p.number = j.number
     LEFT JOIN classifications h ON h.repo = j.repo AND h.number = j.number AND h.classifier = 'haiku' AND h.run_id = j.run_id
     WHERE j.run_id = ? AND j.classifier = 'jev' AND i.state = 'OPEN' AND COALESCE(i.is_draft, 0) = 0
       AND j.repo IN (SELECT value FROM json_each(?))
-    ORDER BY i.kind = 'pr' DESC, i.created_at, j.repo, j.number`).all(run, JSON.stringify(want)) as Row[];
+    ORDER BY p.score IS NULL, p.score DESC, i.kind = 'pr' DESC, i.created_at, j.repo, j.number`).all(run, JSON.stringify(want)) as Row[];
   const out: Candidate[] = [];
   for (const r of rows) {
     if (skip.has(`${r.repo}#${r.number}`)) continue;

@@ -8,6 +8,7 @@ The craft apps have about 21,000 open issues and PRs. The pipeline sorts all of 
 |---|---|---|---|---|
 | 1 | Mirror | Every issue, PR and comment of the tracked repos is copied into a local database. Later stages read the mirror, never GitHub directly. | `craft-auto sync`, every minute: one org-wide GitHub search for changes, in time slices of at most 1,000 results | Automatic |
 | 2 | Classify | Every open item gets one type label (bugfix, performance, missing feature, small extra, plugin candidate, infra) and two flags (security, needs decision). | Jev first. Where Jev is under 90 % sure, Haiku as well. Where they disagree, the item goes to a person or to Sonnet | Scripted, started by the operator (`craft-auto classify`) |
+| 2b | Priority | Every open item gets an impact class (critical, high, normal, low) and a 0 to 100 score. Decide, review, verify and fix-up take the highest score first. | Jev first. Where Jev is under 90 % sure, Haiku decides. The score adds reach from the mirror: no model | Automatic (`prioritize` step), daily limit 3000 |
 | 3 | Decide | Items flagged "needs decision" (scope, wanted or not, reference-app behaviour), and items where Jev and Haiku disagree between scope labels, become decisions on this dashboard, each with an AI summary and the item's own text. | `craft-auto decide` asks them, with summaries by Sonnet. The operator answers; anyone signed in can comment and pick an option | Scripted, started by the operator |
 | 4 | Label | The type label and flags go onto the item on GitHub. | `craft-auto labels`, one repo at a time. No model calls. Only items whose type is settled (Jev at 90 % or more, or Haiku agreeing with Jev) are labelled. A label a person set is never changed: an item that already has a different type label is skipped and reported. Writes to GitHub need the operator's approval for that repo, given on the Repos page | Built. `ensure` and `plan` are read-only; `apply` is a dry run unless `--apply` and refuses unapproved repos |
 | 5 | Review | PRs we want get a code review: take, take with fixes, hold, or close (duplicate, already fixed, superseded). | Sonnet, one call per batch of related PRs. Tests are not reviewed, only code | Built, one repo at a time (`craft-auto review`) |
@@ -134,6 +135,31 @@ A take-fix review lists small mechanical fixes. The fix-up step applies them to 
 7. Posts one comment from a template in code (`src/fixup/template.ts`, shown on the Prompts page): "Pushed the small fixes from review: `<files>`."
 
 Each try adds a `fixups` row (repo, number, from_head, to_head, state, reason, files, attempt, created_at) and a stage row (`hold` for cannot-push and too-large, else `take` with a note), plus audit rows `assign`, `fixup-push` and `fixup-comment`. The pushed head has no review, so the Review stage selects the PR again once the mirror or the checks refresh show the new head; the merge queue then sees the new review.
+
+## Priority
+
+`craft-auto prioritize [--limit N]` rates open items; the pipeline's `prioritize` step (group `priority`, models Jev and Haiku) runs the same code as `runPrioritize(db, {limit})`.
+
+**Impact.** Jev (prompt `priority.jev`) picks one class per item:
+
+| Class | Meaning |
+|---|---|
+| critical | Crash, data loss, security hole, build or install broken, app unusable |
+| high | A core feature is broken, or a regression |
+| normal | Anything else |
+| low | Cosmetic, wording, documentation, nice-to-have |
+
+At 0.9 probability or more Jev's class stands. Below it Haiku (`priority.haiku`, batches of 25) decides. Both answers are stored in `item_priority` (`jev_impact`, `jev_p`, `haiku_impact`); `model` says which one counts (`jev`, `haiku`, or `jev-unsure` when Haiku gave no valid answer).
+
+**Score.** The class sets a band: critical 75 to 100, high 50 to 75, normal 25 to 50, low 0 to 25. Reach moves the score inside the band: `score = round(low + (high - low) * reach)`. Reach (0 to 1) is a weighted sum of distinct commenters (0.25, capped at 8), comment count (0.20, capped at 20), linked PRs or closing issues (0.15, capped at 3), confirmed duplicates pointing at the item (0.15, capped at 5), the security flag (0.15) and days open (0.10, capped at 365). The mirror holds no reactions. The formula is `scoreOf` in `src/priority/score.ts`.
+
+**When models run.** A row is stored with the item's `embed_hash` (a hash of title and body). The models run again only when that hash changes. Every pass recomputes all scores from the mirror, in a few queries and without a model call, so reach and age keep moving the score.
+
+**Autopilot.** The `priority` lane queues `prioritize` when open items have no row at their current hash. The daily limit counts items sent to Jev; the default is 3000. Jev calls average 0.33 s here, so a first pass over about 21,000 items takes about 29 minutes at the default Jev parallelism of 4 (about 15 minutes at 8), plus Haiku for the items Jev is unsure of. At 3000 a day it would take seven days, so an operator raises the limit for the first pass.
+
+**Ordering.** Decide, review, verify and fix-up candidates are ordered by score, highest first. Ties keep the earlier order (decide: pull requests first, oldest first; review: smallest first; verify and fix-up: by number). Items without a score come after all scored ones, so the first full pass matters.
+
+**Display.** The Item page and the decision card show the class and score.
 
 ## Which model does what
 
@@ -312,7 +338,7 @@ The full classification pass (`classify-all`) is never started automatically. A 
 
 ### Daily limits
 
-Each stage has a limit of items per day, counted from 00:00 UTC over the items its jobs handled. A job records its count as it works, so a failed or stopped job keeps it. Handled means units attempted: items sent to Jev or Haiku, items sent for a decision summary, PRs sent for review (or held as too large), items embedded, items labelled, PRs merged, PRs fixed up (or held). The job's `limit` is the smaller of the step's default and what remains of the day. An empty limit means no limit and 0 pauses the stage. Defaults: classify-new 2000, decide 100, review-batch 40, verify 30, merge 10, act 20, fixup 20; embed, checks and labels-apply have none (labelling, merging, commenting and pushing fix-ups are each gated by a per-repo approval). `embed` and `checks` jobs cannot be sized to what remains of the day, so `checks` accepts only no limit or 0; an `embed` limit stops new jobs once it is reached. Operators change limits on the Pipeline page or with `craft-auto pipeline limit <step> --per-day N|none`. A stage that cannot start jobs shows why on the page (limit reached, limit 0, waiting after failures).
+Each stage has a limit of items per day, counted from 00:00 UTC over the items its jobs handled. A job records its count as it works, so a failed or stopped job keeps it. Handled means units attempted: items sent to Jev or Haiku, items sent for a decision summary, PRs sent for review (or held as too large), items embedded, items labelled, PRs merged, PRs fixed up (or held). The job's `limit` is the smaller of the step's default and what remains of the day. An empty limit means no limit and 0 pauses the stage. Defaults: classify-new 2000, decide 100, review-batch 40, verify 30, prioritize 3000, merge 10, act 20, fixup 20; embed, checks and labels-apply have none (labelling, merging, commenting and pushing fix-ups are each gated by a per-repo approval). `embed` and `checks` jobs cannot be sized to what remains of the day, so `checks` accepts only no limit or 0; an `embed` limit stops new jobs once it is reached. Operators change limits on the Pipeline page or with `craft-auto pipeline limit <step> --per-day N|none`. A stage that cannot start jobs shows why on the page (limit reached, limit 0, waiting after failures).
 
 | Who | On the Pipeline page |
 |---|---|

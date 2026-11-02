@@ -337,6 +337,21 @@ export const STEPS: StepDef[] = [
       return `${r.looked} pending: ${r.passed} passed, ${r.failed} failed, ${r.errors} errors, ${r.retried} retried, ${r.stale} stale, ${r.running} running; ${r.warmCancelled} warm builds cancelled`;
     },
   },
+  {
+    name: "prioritize",
+    title: "Prioritize open items",
+    description: "Jev rates the impact of open items whose text has no priority yet (critical, high, normal or low); Haiku decides where Jev is under 90 % sure. Then every score is recomputed from comments, linked PRs, duplicates, age and the security flag.",
+    stage: 2,
+    requires: "operator",
+    group: "priority",
+    models: ["jev", "haiku"],
+    params: [{ name: "limit", label: "At most", kind: "int", min: 1, max: 30000, default: 1000, help: "items sent to Jev in this job" }],
+    run: async (ctx) => {
+      const { runPrioritize } = await import("../priority/index.ts");
+      const r = await runPrioritize(ctx.db, { limit: Number(ctx.params.limit), onSent: ctx.handled, cancelled: ctx.cancelled, log: ctx.log });
+      return r.due ? `rated ${r.saved} of ${r.sent} items (${r.jev} by Jev, ${r.haiku} by Haiku), ${r.due - r.sent > 0 ? r.due - r.sent : 0} left; ${r.rescored} scores changed` : `nothing new to rate; ${r.rescored} scores changed`;
+    },
+  },
 ];
 
 let loaded: Promise<Map<string, StepDef>> | null = null;
