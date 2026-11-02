@@ -14,6 +14,7 @@ import { embedderId, modelName } from "../embed/model.ts";
 import { pending as embedPending } from "../embed/store.ts";
 import { approvalOf } from "../labels/approval.ts";
 import { countPlan, planLabels } from "../labels/plan.ts";
+import { selectFixups } from "../fixup/candidates.ts";
 import { mergeApprovalOf } from "../merge/approval.ts";
 import { buildQueue, eligible } from "../merge/queue.ts";
 import { trackedNames } from "../repos.ts";
@@ -158,6 +159,18 @@ export const LANES: Lane[] = [
       return repos.map((repo) => ({ step: "merge", params: { repo } }));
     },
   },
+  {
+    name: "fixup",
+    steps: ["fixup"],
+    perRepo: true,
+    detect: (db, { tracked }) => {
+      const repos = tracked.filter((repo) => {
+        const s = selectFixups(db, repo);
+        return s.fix.length > 0 || s.cannotPush.length > 0;
+      });
+      return repos.sort().map((repo) => ({ step: "fixup", params: { repo } }));
+    },
+  },
 ];
 
 // ---- limits and usage ----------------------------------------------------------
@@ -217,7 +230,7 @@ export function setEnabled(db: DatabaseSync, enabled: boolean, by: string): void
 }
 
 /** Steps that have a row in stage_limits, in pipeline order. */
-export const LIMIT_STEPS = ["classify-new", "embed", "decide", "checks", "review-batch", "labels-apply", "merge"];
+export const LIMIT_STEPS = ["classify-new", "embed", "decide", "checks", "review-batch", "labels-apply", "merge", "fixup"];
 
 /** Steps whose jobs cannot be sized to what remains of the day: only no limit or a pause makes sense. */
 export const ZERO_ONLY = ["checks"];

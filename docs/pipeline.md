@@ -45,7 +45,7 @@ The weaker of two duplicates is held, never closed, until the better one has mer
 
 ## Stage 6: Integrate
 
-Built so far: the merge queue and the merge step. Fix-ups of take-fix PRs and integration branches come next.
+Built so far: the merge queue and the merge step. Integration branches come next.
 
 **Merge queue.** Every PR whose latest review is take or take-fix at its current head commit, plus the ones merged since. [Merge queue](/queue) shows it, read-only, with one state per PR:
 
@@ -94,6 +94,24 @@ A refusal by the command is recorded with its reason and the PR stays in the que
 Merge approval: tracked repos include ones we do not maintain, so merging is opt-in per repo. The Repos page has a Merge approval column with a confirm button, operators only, audited (`merge-approve`, `merge-revoke`); the `merge` step and the autopilot refuse repos without it.
 
 Approval: the Repos page has a Label approval column with a confirm button, operators only, audited (`labels-approve`, `labels-revoke`). The CLI reads the approval and cannot set it. The column also shows the plan counts: to add, skipped, conflicts.
+
+### Fix-ups
+
+A take-fix review lists small mechanical fixes. The fix-up step applies them to the contributor's branch, so the PR can merge without waiting for the contributor. `craft-auto fixup --repo R [--limit N] [--apply]` (dry run without `--apply`); the runner calls `runFixup(db, {repo, limit, dryRun}, log)` as step `fixup` (group `github-write`, Sonnet, autopilot lane `fixup`, daily limit 20 PRs).
+
+**Candidates.** An open, non-draft PR whose review at its current head commit is take-fix, that GitHub lets maintainers modify, that does not conflict with the base branch, in a repo where an operator approved pushing (setting `push_approved:<repo>`, audited as `push-approve` and `push-revoke`; `POST /api/repos/push-approve` and `/push-revoke`; `craft-auto push-approval [--repo R]` prints it), with fewer than 2 earlier tries (`fixups` rows in state pushed, failed or refused). A PR we can't push to gets a `hold` stage row "can't push to the contributor's branch" and a `cannot-push` fix-up row, once per head commit, and no GitHub write.
+
+**Per PR.**
+
+1. Reads the PR from GitHub; skips it when it is closed, a draft, conflicting, or its head moved since the review.
+2. Assigns it to the pipeline's GitHub account when nobody is assigned (audit `assign`), before any change.
+3. Fetches `refs/pull/<n>/head` into a bare cache repository (`$CRAFT_AUTO_FIXUP_DIR`, default `~/.cache/craft-automation/fixups/<repo>`) over HTTPS with the `gh` credential helper. The checkout is untrusted: there is no working tree, so no hook, filter, textconv driver or submodule runs, and git runs with `core.hooksPath=/dev/null`, `protocol.file.allow=never` and `GIT_LFS_SKIP_SMUDGE=1`. Files are read with `git cat-file`.
+4. Asks Sonnet (prompt `fixup.patch`, no tools) for a unified diff. It sees the review's fix list, the full current content of each file the list names and the PR diff, all quoted as untrusted. A file over 40,000 characters, more than 120,000 in all or a diff over 60,000 holds the PR as `too-large` without a model call.
+5. Validates the diff: only files named in the fix list, at most 300 changed lines, no new, deleted, renamed, mode-changed, symlink or binary file, and `git apply --check` accepts it against the reviewed head. It applies the diff to a private index (no working tree), commits on top of the reviewed head as the pipeline's account (login and GitHub noreply address from `gh api user`) with the message "Apply review fixes" and one line per file, and checks the commit changes exactly the validated files without a mode change.
+6. Pushes to the contributor's branch with `--force-with-lease=refs/heads/<branch>:<reviewed head>`, never a plain force, so a branch that moved since the review is left alone (recorded as refused).
+7. Posts one comment from a template in code (`src/fixup/template.ts`, shown on the Prompts page): "Pushed the small fixes from review: `<files>`."
+
+Each try adds a `fixups` row (repo, number, from_head, to_head, state, reason, files, attempt, created_at) and a stage row (`hold` for cannot-push and too-large, else `take` with a note), plus audit rows `assign`, `fixup-push` and `fixup-comment`. The pushed head has no review, so the Review stage selects the PR again once the mirror or the checks refresh show the new head; the merge queue then sees the new review.
 
 ## Which model does what
 
@@ -229,7 +247,7 @@ The full classification pass (`classify-all`) is never started automatically. A 
 
 ### Daily limits
 
-Each stage has a limit of items per day, counted from 00:00 UTC over the items its jobs handled. A job records its count as it works, so a failed or stopped job keeps it. Handled means units attempted: items sent to Jev or Haiku, items sent for a decision summary, PRs sent for review (or held as too large), items embedded, items labelled, PRs merged. The job's `limit` is the smaller of the step's default and what remains of the day. An empty limit means no limit and 0 pauses the stage. Defaults: classify-new 2000, decide 100, review-batch 40, merge 10; embed, checks and labels-apply have none (labelling and merging are each gated by a per-repo approval). `embed` and `checks` jobs cannot be sized to what remains of the day, so `checks` accepts only no limit or 0; an `embed` limit stops new jobs once it is reached. Operators change limits on the Pipeline page or with `craft-auto pipeline limit <step> --per-day N|none`. A stage that cannot start jobs shows why on the page (limit reached, limit 0, waiting after failures).
+Each stage has a limit of items per day, counted from 00:00 UTC over the items its jobs handled. A job records its count as it works, so a failed or stopped job keeps it. Handled means units attempted: items sent to Jev or Haiku, items sent for a decision summary, PRs sent for review (or held as too large), items embedded, items labelled, PRs merged, PRs fixed up (or held). The job's `limit` is the smaller of the step's default and what remains of the day. An empty limit means no limit and 0 pauses the stage. Defaults: classify-new 2000, decide 100, review-batch 40, merge 10, fixup 20; embed, checks and labels-apply have none (labelling and merging are each gated by a per-repo approval). `embed` and `checks` jobs cannot be sized to what remains of the day, so `checks` accepts only no limit or 0; an `embed` limit stops new jobs once it is reached. Operators change limits on the Pipeline page or with `craft-auto pipeline limit <step> --per-day N|none`. A stage that cannot start jobs shows why on the page (limit reached, limit 0, waiting after failures).
 
 | Who | On the Pipeline page |
 |---|---|
