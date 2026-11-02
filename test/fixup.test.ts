@@ -10,7 +10,7 @@ import type { Querier } from "../src/mirror.ts";
 import { pushApprovalOf, setPushApproval } from "../src/fixup/approval.ts";
 import { selectFixups } from "../src/fixup/candidates.ts";
 import { exec, type Exec, type ExecResult } from "../src/fixup/git.ts";
-import { runFixup, type FixupDeps } from "../src/fixup/index.ts";
+import { runFixup, scrubReason, type FixupDeps } from "../src/fixup/index.ts";
 import { validatePatch } from "../src/fixup/patch.ts";
 import { COMMENT_TEMPLATE, commentText } from "../src/fixup/template.ts";
 import { selectCandidates } from "../src/review/candidates.ts";
@@ -206,7 +206,7 @@ describe("fixup step", () => {
     assert.equal(git(w.fork, "log", "-1", "--format=%an <%ae>%n%B", pushed).split("\n")[0], "pipeline-bot <42+pipeline-bot@users.noreply.github.com>");
     assert.match(git(w.fork, "log", "-1", "--format=%B", pushed), /^Apply review fixes\n\n- src\/lib\.rs/);
     assert.deepEqual(w.log.filter((l) => !l.startsWith("pr-info")), [
-      "assign", "model", `push --force-with-lease=refs/heads/fix:${w.head} ${pushed}:refs/heads/fix`, `comment: ${commentText(["src/lib.rs"])}`,
+      "model", "assign", `push --force-with-lease=refs/heads/fix:${w.head} ${pushed}:refs/heads/fix`, `comment: ${commentText(["src/lib.rs"])}`,
     ]);
     assert.equal(commentText(["src/lib.rs"]), "Pushed the small fixes from review: `src/lib.rs`.");
     assert.ok(COMMENT_TEMPLATE.includes("{{files}}"));
@@ -264,6 +264,33 @@ describe("fixup step", () => {
     assert.deepEqual(w.log, []);
     assert.deepEqual(rows(db, "SELECT stage, note FROM stages WHERE stage = 'hold'"), [{ stage: "hold", note: "can't push to the contributor's branch" }]);
     assert.deepEqual(rows(db, "SELECT state FROM fixups"), [{ state: "cannot-push" }]);
+  });
+
+  test("a fix list naming a workflow or manifest is held before any call", async () => {
+    const w = world();
+    const db = fresh(w.head);
+    db.prepare("UPDATE reviews SET fixes = ?").run(JSON.stringify([{ file: ".github/workflows/ci.yml", change: "x" }, { file: "Cargo.toml", change: "y" }]));
+    await runFixup(db, { repo: "app", dryRun: false }, () => {}, w.deps);
+    assert.deepEqual(w.log.filter((l) => !l.startsWith("pr-info")), []);
+    assert.equal(rows(db, "SELECT state FROM fixups")[0]!.state, "too-large");
+  });
+
+  test("a patch touching an uneditable path is refused even when the fixes name it", () => {
+    const patch = "diff --git a/build.rs b/build.rs\n--- a/build.rs\n+++ b/build.rs\n@@ -1 +1 @@\n-a\n+b\n";
+    assert.equal(validatePatch(patch, ["build.rs"]).ok, false);
+    assert.equal(validatePatch(patch.replaceAll("build.rs", "src/lib.rs"), ["src/lib.rs"]).ok, true);
+  });
+
+  test("a PR whose patch is refused is not assigned", async () => {
+    const w = world({ reply: "not a diff" });
+    await runFixup(fresh(w.head), { repo: "app", dryRun: false }, () => {}, w.deps);
+    assert.ok(!w.log.includes("assign"));
+  });
+
+  test("stored reasons carry no absolute path", () => {
+    const r = scrubReason("fatal: bad object /home/someone/.cache/x/repo.git/objects/ab\nmore", "/srv/fixups");
+    assert.ok(!r.includes("/home") && !r.includes("\n"));
+    assert.equal(scrubReason("cannot open /srv/fixups/app.git: no", "/srv/fixups"), "cannot open <dir>/app.git: no");
   });
 
   test("a dry run reads the tables only", async () => {

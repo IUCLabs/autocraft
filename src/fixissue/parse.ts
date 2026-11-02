@@ -1,5 +1,7 @@
 // Validation of what the models return for the Fix stage. Pure text checks.
-import { MAX_CHANGED_LINES, extractDiff, safePath, validatePatch } from "../fixup/patch.ts";
+import { MAX_CHANGED_LINES, editable, extractDiff, safePath, validatePatch } from "../fixup/patch.ts";
+
+export { editable };
 import { patchFor, patchProblem } from "../verify/plan.ts";
 import { isSize, type Size } from "../rank/score.ts";
 import { MAX_FILES, TRIAGE_REASON_WORDS, type Crate } from "./types.ts";
@@ -9,11 +11,6 @@ export type TriageParse = { ok: true; triage: Triage } | { ok: false; error: str
 
 const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
 const clip = (s: string): string => s.trim().split(/\s+/).slice(0, TRIAGE_REASON_WORDS).join(" ");
-
-/** Source files a fix may edit: Rust files other than build scripts. */
-export function editable(path: string): boolean {
-  return safePath(path) && path.endsWith(".rs") && !path.endsWith("/build.rs") && path !== "build.rs" && !path.split("/").some((s) => s === ".cargo" || s === ".github");
-}
 
 /** Rust source paths for the triage prompt, capped. */
 export function sourcePaths(all: string[], cap: number): string[] {
