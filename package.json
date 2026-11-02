@@ -1,0 +1,21 @@
+{
+  "name": "craft-automation",
+  "version": "0.1.0",
+  "description": "Backlog mirror, triage pipeline state and dashboard for the storytold craft apps",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "bin": {
+    "craft-auto": "src/cli.ts"
+  },
+  "scripts": {
+    "check": "tsc --noEmit",
+    "test": "node --test"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "typescript": "^7.0.2"
+  }
+}
