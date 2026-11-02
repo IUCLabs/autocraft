@@ -156,7 +156,7 @@ function RepoTable({ p }: { p: Progress }) {
             <Th k="decisions" right className="w-[90px]">
               Waiting
             </Th>
-            <Th className="w-[110px]">Open, 7 days</Th>
+            <Th className="w-[110px]">Open, by day</Th>
           </tr>
         </thead>
         <tbody>

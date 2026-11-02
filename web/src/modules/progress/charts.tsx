@@ -195,6 +195,8 @@ export function Throughput({ perHour, nowIso }: { perHour: number[]; nowIso: str
 export function Sparkline({ values, className }: { values: number[]; className?: string }) {
   const W = 72;
   const H = 18;
+  // one day of tracking has no trend yet
+  if (values.length < 2) return <span className={cn("text-2xs text-ink/35", className)}>from today</span>;
   const min = Math.min(...values);
   const max = Math.max(...values);
   const pts = values.map((v, i) => `${(i / (values.length - 1)) * W},${H - 2 - ((v - min) / (max - min || 1)) * (H - 4)}`).join(" ");
