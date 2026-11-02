@@ -67,12 +67,10 @@ export const TIER_SQL = `CASE
   WHEN merged >= :min_merged AND merged + closed > 0 AND CAST(merged AS REAL) / (merged + closed) >= :min_rate THEN 'whitelisted'
   ELSE 'not' END`;
 
-export function contributors(db: DatabaseSync, opts: { repo?: string; login?: string; hidden?: string[] } = {}): Contributor[] {
+export function contributors(db: DatabaseSync, opts: { repo?: string; login?: string } = {}): Contributor[] {
   const rule = getRule(db);
+  const where = [opts.repo ? "AND repo = :repo" : "", opts.login ? "AND author = :login" : ""].join(" ");
   const params: Record<string, string | number> = { min_merged: rule.minMerged, min_rate: rule.minRate };
-  // Hidden repos are left out of the repo list; the merged/closed counts that decide a tier still cover every repo.
-  const hide = (opts.hidden ?? []).map((h, k) => ((params[`hid${k}`] = h), `:hid${k}`));
-  const where = [opts.repo ? "AND repo = :repo" : "", opts.login ? "AND author = :login" : "", hide.length ? `AND repo NOT IN (${hide.join(",")})` : ""].join(" ");
   if (opts.repo) params.repo = opts.repo;
   if (opts.login) params.login = opts.login;
   // Stats always come from every repo; the repo filter only picks who is listed.

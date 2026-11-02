@@ -14,6 +14,7 @@ import { scopeToTracked } from "../src/repos.ts";
 import { apiRoutes } from "../src/dash/api/index.ts";
 import { loadConfig } from "../src/dash/server/config.ts";
 import { startServer } from "../src/dash/server/index.ts";
+import { ImageProxy } from "../src/dash/server/images.ts";
 import { FakeProvider } from "../src/dash/server/provider.ts";
 
 const SCRATCH = join(homedir(), ".cache/craft-automation-scratch");
@@ -27,6 +28,14 @@ writeFileSync(permsFile, JSON.stringify({ reader: { vault: "read" } }));
 const db = connect(dbFile);
 let base = "";
 let close: () => Promise<void>;
+const PNG = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(32)]);
+const VAULT_IMG = "https://github.com/user-attachments/assets/f3f8be53-b594-419f-b49d-a7dfec20b476";
+const BOTH_IMG = "https://github.com/user-attachments/assets/aaaaaaaa-b594-419f-b49d-a7dfec20b476";
+const fetched: string[] = [];
+const fakeFetch = (async (input: string | URL | Request) => {
+  fetched.push(String(input));
+  return new Response(new Uint8Array(PNG), { status: 200, headers: { "content-type": "image/png" } });
+}) as typeof fetch;
 const OPTS = [{ key: "a", label: "A" }, { key: "b", label: "B" }];
 
 before(async () => {
@@ -39,6 +48,8 @@ before(async () => {
     item.run(repo, 1, "pr", "OPEN", `Wave filter in ${repo}`, "body", `h-${repo}`, "alice", now, now);
     review.run(repo, 1, `h-${repo}`, now);
   }
+  db.prepare("UPDATE items SET body = ? WHERE repo = 'vault'").run(`![a](${VAULT_IMG}) ![b](${BOTH_IMG})`);
+  db.prepare("UPDATE items SET body = ? WHERE repo = 'open-app'").run(`![b](${BOTH_IMG})`);
   ask(db, ["open-app", "vault"].map((repo) => ({
     id: `${repo}#1:scope`, kind: "scope", repo, number: 1, question: "A or B?", options: OPTS, recommended: "a", summary: "s",
   })));
@@ -52,7 +63,7 @@ before(async () => {
   addLogin(db, "cli", "outsider", "viewer", null);
   scopeToTracked(db);
   const config = loadConfig({ CRAFT_AUTO_DEV_AUTH: "1", CRAFT_AUTO_LISTEN: "127.0.0.1:0", CRAFT_AUTO_DB: dbFile, CRAFT_AUTO_DEV_PERMS: permsFile });
-  const s = await startServer({ config, db, provider: new FakeProvider(permsFile), routes: apiRoutes() });
+  const s = await startServer({ config, db, provider: new FakeProvider(permsFile), routes: apiRoutes(), images: new ImageProxy({ fetch: fakeFetch, token: async () => null, cacheDir: null, repos: () => ["any"] }) });
   base = s.url;
   close = s.close;
 });
@@ -128,6 +139,16 @@ describe("repo visibility", () => {
       assert.equal(await c.status("/api/flow?repo=vault"), 200, login);
       assert.equal((await c.get<Flow>("/api/flow")).repo, null, login);
     }
+  });
+
+  test("an image is served when any repo it occurs in is visible", async () => {
+    const img = (u: string) => `/img?${new URLSearchParams({ u })}`;
+    const outsider = await signedIn("outsider");
+    assert.equal(await outsider.status(img(VAULT_IMG)), 404);
+    assert.deepEqual(fetched, []);
+    assert.equal(await outsider.status(img(BOTH_IMG)), 200);
+    assert.equal(await (await signedIn("reader")).status(img(VAULT_IMG)), 200);
+    assert.equal(await (await signedIn("boss")).status(img(VAULT_IMG)), 200);
   });
 
   test("agent texts go to operators only", async () => {

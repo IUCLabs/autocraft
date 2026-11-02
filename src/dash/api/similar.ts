@@ -7,6 +7,7 @@ import type { SimilarHit } from "../../../web/src/api/types.ts";
 import type { Embedder } from "../../embed/model.ts";
 import { itemText } from "../../embed/text.ts";
 import { VectorIndex, type Hit } from "../../embed/vectors.ts";
+import { Semaphore } from "../server/limits.ts";
 import { HttpError } from "../server/util.ts";
 import { latestRun, settledOf } from "../../classify/settled.ts";
 import type { Req } from "../types.ts";
@@ -46,12 +47,26 @@ function describe(db: DatabaseSync, hits: Hit[]): SimilarHit[] {
   return out;
 }
 
-async function embedOne(index: VectorIndex, text: string, role: "item" | "query"): Promise<Float32Array> {
+// At most two embeddings run at once per index; a request waits a few seconds
+// for a turn, then gets 429.
+export const EMBED_CONCURRENCY = 2;
+const gates = new WeakMap<VectorIndex, Semaphore>();
+const gateOf = (index: VectorIndex) => {
+  let g = gates.get(index);
+  if (!g) gates.set(index, (g = new Semaphore(EMBED_CONCURRENCY, 3000)));
+  return g;
+};
+
+async function embedOne(index: VectorIndex, text: string, role: "item" | "query", gate = gateOf(index)): Promise<Float32Array> {
+  const release = await gate.acquire();
+  if (!release) throw new HttpError(429, "Too many searches are running; try again in a moment.");
   try {
     return (await index.embedder.embed([text], role))[0]!;
   } catch (e) {
     console.error(`embedding model unavailable: ${(e as Error).message}`);
     throw new HttpError(503, "The embedding model is not available on the server.");
+  } finally {
+    release();
   }
 }
 
@@ -60,7 +75,7 @@ async function needVectors(db: DatabaseSync, index: VectorIndex): Promise<void> 
   if (!index.size) throw new HttpError(503, "No item embeddings yet: run craft-auto embed.");
 }
 
-export async function similar(db: DatabaseSync, req: Req, index: VectorIndex): Promise<SimilarHit[]> {
+export async function similar(db: DatabaseSync, req: Req, index: VectorIndex, gate?: Semaphore): Promise<SimilarHit[]> {
   const repo = req.params.repo!;
   const n = Number(req.params.n);
   if (!Number.isInteger(n)) throw new HttpError(400, "not an item number");
@@ -68,13 +83,13 @@ export async function similar(db: DatabaseSync, req: Req, index: VectorIndex): P
   const it = db.prepare("SELECT title, body FROM items WHERE repo = ? AND number = ?").get(repo, n) as { title: string | null; body: string | null } | undefined;
   if (!it) throw new HttpError(404, `no item ${repo}#${n} in the mirror`);
   await needVectors(db, index);
-  const q = index.vectorOf(db, repo, n) ?? await embedOne(index, itemText(it.title, it.body), "item");
+  const q = index.vectorOf(db, repo, n) ?? await embedOne(index, itemText(it.title, it.body), "item", gate);
   return describe(db, await visibleHits(db, req, index, q, limitOf(req, 10), `${repo}#${n}`));
 }
 
-export async function semanticSearch(db: DatabaseSync, req: Req, index: VectorIndex): Promise<SimilarHit[]> {
+export async function semanticSearch(db: DatabaseSync, req: Req, index: VectorIndex, gate?: Semaphore): Promise<SimilarHit[]> {
   const q = (req.query.get("q") ?? "").trim().slice(0, 500);
   if (!q) return [];
   await needVectors(db, index);
-  return describe(db, await visibleHits(db, req, index, await embedOne(index, q, "query"), limitOf(req, 20)));
+  return describe(db, await visibleHits(db, req, index, await embedOne(index, q, "query", gate), limitOf(req, 20)));
 }

@@ -1,13 +1,14 @@
 // The image proxy (GET /img), with a fake upstream in place of fetch.
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { after, before, beforeEach, describe, test } from "node:test";
 import { addLogin } from "../src/access.ts";
 import { connect } from "../src/db.ts";
 import { loadConfig } from "../src/dash/server/config.ts";
-import { ImageProxy, MAX_IMAGE_BYTES } from "../src/dash/server/images.ts";
+import { ImageIndex } from "../src/dash/server/image-index.ts";
+import { ImageProxy, MAX_IMAGE_BYTES, imageRepo, imageTokenSource, registerImageRepos } from "../src/dash/server/images.ts";
 import { SESSION_COOKIE, startServer } from "../src/dash/server/index.ts";
 import { FakeProvider } from "../src/dash/server/provider.ts";
 
@@ -35,6 +36,10 @@ const fakeFetch = (async (input: string | URL | Request, init?: RequestInit) => 
   return new Response(new Uint8Array(typeof r.body === "string" ? Buffer.from(r.body) : (r.body ?? PNG)), { status: r.status ?? 200, headers: { "content-type": "image/png", ...r.headers } });
 }) as typeof fetch;
 
+// The hrefs the proxy treats as present in the mirror; null: every URL is.
+let inMirror: Set<string> | null = null;
+const repos = (href: string) => (!inMirror || inMirror.has(href) ? ["photocraft"] : []);
+
 const db = connect(join(dir, "dash.db"));
 let base = "";
 let close: () => Promise<void>;
@@ -46,7 +51,7 @@ before(async () => {
     CRAFT_AUTO_DEV_AUTH: "1", CRAFT_AUTO_LISTEN: "127.0.0.1:0", CRAFT_AUTO_DB: join(dir, "dash.db"), CRAFT_AUTO_DEV_PERMS: permsFile,
     CRAFT_AUTO_IMG_CACHE: "",
   });
-  const images = new ImageProxy({ fetch: fakeFetch, token: async () => TOKEN, cacheDir: join(dir, "img") });
+  const images = new ImageProxy({ fetch: fakeFetch, token: async () => TOKEN, cacheDir: join(dir, "img"), repos });
   const s = await startServer({ config, db, provider: new FakeProvider(permsFile), routes: [], images });
   base = s.url;
   close = s.close;
@@ -73,6 +78,7 @@ after(async () => {
   rmSync(dir, { recursive: true, force: true });
 });
 beforeEach(() => {
+  inMirror = null;
   upstream.clear();
   calls.length = 0;
 });
@@ -161,10 +167,143 @@ test("the rate limit applies to upstream fetches only", async () => {
   calls.length = 0;
   const u = "https://avatars.githubusercontent.com/u/2";
   upstream.set(u, {});
-  const proxy = new ImageProxy({ fetch: fakeFetch, token: async () => TOKEN, cacheDir: join(dir, "img-limit") });
+  const proxy = new ImageProxy({ fetch: fakeFetch, token: async () => TOKEN, cacheDir: join(dir, "img-limit"), repos });
   assert.equal((await proxy.get(u, () => false)).status, 429);
   assert.equal(calls.length, 0);
   assert.equal((await proxy.get(u)).status, 200);
   assert.equal((await proxy.get(u, () => false)).status, 200);
   assert.equal(calls.length, 1);
+});
+
+describe("which URLs are proxied", () => {
+  test("a URL that is not in the mirror is 404 without an upstream fetch", async () => {
+    inMirror = new Set();
+    upstream.set(ASSET, {});
+    assert.equal((await img(ASSET)).status, 404);
+    assert.equal(calls.length, 0);
+  });
+
+  test("a cached image is not served once its URL is no longer in the mirror", async () => {
+    const u = "https://user-images.githubusercontent.com/cached-then-gone.png";
+    inMirror = new Set([u]);
+    upstream.set(u, {});
+    assert.equal((await img(u)).status, 200);
+    assert.equal((await img(u)).status, 200);
+    assert.equal(calls.length, 1);
+    inMirror = new Set();
+    assert.equal((await img(u)).status, 404);
+    assert.equal(calls.length, 1);
+  });
+
+  test("the index lists images of bodies and comments of tracked repos only", () => {
+    const mdb = connect(join(dir, "index.db"));
+    const other = "https://github.com/user-attachments/assets/00000000-0000-4000-8000-000000000001";
+    const inComment = "https://user-images.githubusercontent.com/9/c.png";
+    const untracked = "https://user-images.githubusercontent.com/9/untracked.png";
+    const ins = mdb.prepare("INSERT INTO items (repo, number, kind, state, body) VALUES (?, ?, 'issue', 'OPEN', ?)");
+    ins.run("photocraft", 1, `text ![a](${ASSET}) and <img src="${other}&amp;x=1"> https://example.com/x.png`);
+    ins.run("not-tracked-repo", 1, `![a](${untracked})`);
+    mdb.prepare("INSERT INTO comments (repo, number, id, body) VALUES ('photocraft', 1, 'c1', ?)").run(`see ${inComment}.`);
+    const index = new ImageIndex(mdb, { minIntervalMs: 0 });
+    assert.deepEqual(index.reposOf(ASSET), ["photocraft"]);
+    assert.deepEqual(index.reposOf(inComment), ["photocraft"]);
+    assert.deepEqual(index.reposOf(untracked), []);
+    assert.deepEqual(index.reposOf("https://example.com/x.png"), []);
+
+    registerImageRepos((h) => index.reposOf(h));
+    assert.equal(imageRepo(ASSET), "photocraft");
+    assert.equal(imageRepo(untracked), null);
+    assert.equal(imageRepo("https://example.com/x.png"), null);
+    registerImageRepos(null);
+
+    // An edit that removes the URL drops it at the next build.
+    mdb.prepare("UPDATE items SET body = 'none', updated_at = 'x' WHERE repo = 'photocraft'").run();
+    mdb.prepare("DELETE FROM comments").run();
+    assert.deepEqual(index.reposOf(ASSET), []);
+    mdb.close();
+  });
+});
+
+describe("upstream limits", () => {
+  const png = (n: number) => `https://user-images.githubusercontent.com/limits/${n}.png`;
+  const proxyWith = (f: typeof fetch, extra: ConstructorParameters<typeof ImageProxy>[0] = {}) =>
+    new ImageProxy({ fetch: f, cacheDir: null, repos, ...extra });
+
+  test("the size cap aborts a stream that has no content-length", async () => {
+    let pulled = 0;
+    let cancelled = false;
+    const body = new ReadableStream<Uint8Array>({
+      pull(c) {
+        pulled++;
+        c.enqueue(pulled === 1 ? PNG : new Uint8Array(1024 * 1024));
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const f = (async () => new Response(body, { headers: { "content-type": "image/png" } })) as typeof fetch;
+    const r = await proxyWith(f).get(png(1));
+    assert.equal(r.status, 413);
+    assert.ok(cancelled);
+    assert.ok(pulled <= MAX_IMAGE_BYTES / (1024 * 1024) + 3, `pulled ${pulled} chunks`);
+  });
+
+  test("at most the configured number of upstream fetches run at once; the rest wait", async () => {
+    let running = 0, peak = 0;
+    const f = (async () => {
+      peak = Math.max(peak, ++running);
+      await new Promise((r) => setTimeout(r, 20));
+      running--;
+      return new Response(new Uint8Array(PNG), { headers: { "content-type": "image/png" } });
+    }) as typeof fetch;
+    const proxy = proxyWith(f, { maxConcurrent: 4 });
+    const rs = await Promise.all([1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((n) => proxy.get(png(n))));
+    assert.ok(rs.every((r) => r.status === 200));
+    assert.equal(peak, 4);
+  });
+
+  test("a fetch that waits too long for a slot gets 429", async () => {
+    const f = (async () => {
+      await new Promise((r) => setTimeout(r, 100));
+      return new Response(new Uint8Array(PNG), { headers: { "content-type": "image/png" } });
+    }) as typeof fetch;
+    const proxy = proxyWith(f, { maxConcurrent: 1, queueWaitMs: 10 });
+    const [a, b] = await Promise.all([proxy.get(png(1)), proxy.get(png(2))]);
+    assert.deepEqual([a.status, b.status], [200, 429]);
+  });
+
+  test("a redirect to a loopback or private address is refused and not followed", async () => {
+    for (const target of ["https://127.0.0.1/x.png", "https://10.0.0.5/x.png", "https://[::1]/x.png", "https://localhost/x.png", "http://169.254.169.254/latest"]) {
+      const seen: string[] = [];
+      const f = (async (input: string | URL | Request) => {
+        seen.push(String(input));
+        return new Response("", { status: 302, headers: { location: target } });
+      }) as typeof fetch;
+      const r = await proxyWith(f).get(png(2));
+      assert.equal(r.status, 502, target);
+      assert.deepEqual(seen, [png(2)]);
+    }
+  });
+});
+
+describe("the token source", () => {
+  test("a token file is read at start and again when it changes; the log never has the value", async () => {
+    const file = join(dir, "token");
+    writeFileSync(file, "ghp_first\n");
+    const lines: string[] = [];
+    const src = imageTokenSource({ CRAFT_AUTO_IMAGE_TOKEN_FILE: file }, (l) => lines.push(l));
+    assert.equal(await src(), "ghp_first");
+    writeFileSync(file, "ghp_second\n");
+    utimesSync(file, new Date(Date.now() + 5000), new Date(Date.now() + 5000));
+    assert.equal(await src(), "ghp_second");
+    assert.equal(lines.length, 1);
+    assert.ok(!lines[0]!.includes("ghp_"));
+    assert.equal(await imageTokenSource({ CRAFT_AUTO_IMAGE_TOKEN_FILE: join(dir, "missing") }, () => {})(), null);
+  });
+
+  test("without the variable it says it uses gh", () => {
+    const lines: string[] = [];
+    imageTokenSource({}, (l) => lines.push(l));
+    assert.match(lines[0]!, /gh auth token/);
+  });
 });

@@ -45,6 +45,7 @@ before(async () => {
   db.prepare("UPDATE items SET additions = 40, deletions = 3, changed_files = 7 WHERE repo = 'photocraft' AND number = 1").run();
   db.prepare("INSERT INTO comments (repo, number, id, kind, author, created_at, body) VALUES ('photocraft', 1, 'c1', 'comment', 'alice', ?, 'looks good')").run(now);
   db.prepare("INSERT INTO classifications (repo, number, classifier, run_id, at, type_label, want, reason) VALUES ('photocraft', 1, 'haiku', 'r1', ?, 'small extra', 'yes', 'adds a filter')").run(now);
+  db.exec("INSERT OR REPLACE INTO repos (name, visibility) VALUES ('photocraft', 'public'), ('filmcraft', 'public')");
   ask(db, [P1, P2, F3, P4].map((id) => {
     const [repo, rest] = id.split("#");
     return { id, kind: id.endsWith("close") ? "close" : "scope", repo, number: Number(rest!.split(":")[0]), question: "Small extra or plugin?", options: OPTS, recommended: "small", summary: "Adds a filter." };

@@ -6,16 +6,17 @@
 import type { DatabaseSync, SQLInputValue } from "node:sqlite";
 import { trackedNames } from "../../repos.ts";
 import { HttpError } from "../server/util.ts";
-import type { Req } from "../types.ts";
+import type { Req, User } from "../types.ts";
 
 const memo = new WeakMap<Req, Promise<string[]>>();
 
-async function compute(db: DatabaseSync, req: Req): Promise<string[]> {
+/** The tracked repos `user` may see; also used by the server for image requests. */
+export async function visibleTo(db: DatabaseSync, user: Pick<User, "role" | "canRead">): Promise<string[]> {
   const tracked = trackedNames(db);
-  if (req.user.role === "operator") return tracked;
+  if (user.role === "operator") return tracked;
   const pub = new Set((db.prepare("SELECT name FROM main.repos WHERE lower(visibility) = 'public'").all() as { name: string }[]).map((r) => r.name));
   const rest = tracked.filter((r) => !pub.has(r));
-  const ok = await Promise.all(rest.map((r) => req.user.canRead(r).catch(() => false)));
+  const ok = await Promise.all(rest.map((r) => user.canRead(r).catch(() => false)));
   const allowed = new Set(rest.filter((_, i) => ok[i]));
   return tracked.filter((r) => pub.has(r) || allowed.has(r));
 }
@@ -23,7 +24,7 @@ async function compute(db: DatabaseSync, req: Req): Promise<string[]> {
 /** Tracked repos the requester may see, sorted by name. */
 export function visibleRepos(db: DatabaseSync, req: Req): Promise<string[]> {
   let p = memo.get(req);
-  if (!p) memo.set(req, (p = compute(db, req)));
+  if (!p) memo.set(req, (p = visibleTo(db, req.user)));
   return p;
 }
 

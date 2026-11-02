@@ -160,9 +160,10 @@ The whole dashboard sits behind GitHub sign-in: every page, asset and endpoint e
 
 ### Who can sign in
 
-- Only GitHub logins on the **access list** (`access` table: `login`, `role` = `operator` | `maintainer` | `viewer`, `added_by`, `added_at`, `note`). A login not on the list sees a plain "not authorised" page after GitHub's redirect, and no session is created.
+- Only GitHub logins on the **access list** (`access` table: `login`, `role` = `operator` | `maintainer` | `viewer`, `added_by`, `added_at`, `note`, `github_id`). A login not on the list sees a plain "not authorised" page after GitHub's redirect, and no session is created.
 - Operators add and remove logins on the Access page or with `craft-auto access add <login> [--operator|--maintainer] [--note]` / `access remove <login>`. The first operator is added with the CLI.
 - Removing a login or changing its role ends its sessions at once.
+- Access is bound to the numeric GitHub user id, not only the login. The id from `GET /user` is stored in `github_id` at the login's first sign-in, and every later sign-in must present the same id. A different id (a renamed or released login taken by someone else) is refused like an unlisted login and audited. Removing and re-adding a login clears the binding.
 
 ### Trust boundary
 
@@ -174,6 +175,8 @@ The pipeline runs Claude agents under the operator's own Claude account on the o
 - **Writes by non-operators are rate-limited and audited**: opinions and comments per session and per login (proposed: 60 an hour), each with an audit row.
 - **`settings.maintainer_writes` is reserved** for a later deployment, on accounts and a machine meant for shared use, where an answer by a maintainer with write permission on the repo becomes actionable directly. It is off and has no effect in this deployment.
 - **What a compromised account can do**: add opinions and comments, which people can see and nothing acts on. A maintainer or viewer account cannot trigger a merge, close, post, label, push or any pipeline step, change the whitelist, settings or access list, or see private fields. An operator account can also turn the pipeline on and off, change its daily limits and cancel jobs; the steps run with the fixed settings their definitions allow, and every such request is audited.
+- **Repo visibility**: a tracked repo whose `repos.visibility` is not `public` (private, internal, or unknown) is visible only to operators and to users whose own GitHub permission on it (the cached `repo_permissions` value, read with the user's token) is not `none`. For everyone else it does not exist: items, search (text and semantic), similar items, decisions and batches that touch it, the merge queue, flow counts and the repo list, progress, contributor repo lists, classifier reports, cost per repo, rates, pipeline parameter choices, agent runs, jobs and images that occur only in its text are all left out, and a direct request for one of them answers 404. Per-repo counts add up visible repos only. Contributor tiers still count merged and closed pull requests in every tracked repo, because the tier is a pipeline policy.
+- **Agent texts**: the prompt and output of an agent run hold item and comment text verbatim, so only operators receive them (others get `null`). They are passed through the credential scrubber when stored. Job logs of jobs that ran across all repos are withheld from non-operators while any tracked repo is hidden from them.
 - **What viewers can see**: public GitHub data and the pipeline's public-safe outputs. Private fields (override notes, answer notes, anything naming why a contributor gets extra scrutiny) are operator-only and never in the export.
 - **Pipeline hygiene**: agents treat all GitHub content and all dashboard text as untrusted data. Briefs quote it as data and never as instructions.
 
@@ -200,15 +203,16 @@ GitHub permissions: after sign-in, read the user's permission on each repo with 
 
 ### Sessions and request safety
 
-- Session id: 32 random bytes; cookie `HttpOnly`, `Secure`, `SameSite=Lax`, path `/`; stored in SQLite as a hash with login, created, last seen, expiry (14 days, sliding), user agent.
+- Session id: 32 random bytes; cookie `HttpOnly`, `Secure`, `SameSite=Lax`, path `/`; stored in SQLite as a hash with login, created, last seen, expiry (14 days, sliding, and at most 30 days after sign-in, 7 days for operators), user agent.
 - Sign-out ends the session. Operators can see and revoke sessions on the Access page.
 - Every POST carries a CSRF token tied to the session; reject a missing or wrong token.
 - Rate-limit sign-in attempts and writes per session and per IP.
+- `return_to` is resolved against the dashboard's own origin; a value that leaves it, holds a control character, a backslash or an encoded one, or resolves to a protocol-relative path becomes `/`. Only path, query and fragment are used.
 - Security headers: a strict Content-Security-Policy (self only, no inline script without a nonce), `X-Frame-Options: DENY`, `Referrer-Policy: same-origin`.
 
 ### Audit log
 
-`audit` table: `at`, `login`, `action` (`answer`, `undo`, `adopt`, `opinion`, `opinion-retract`, `comment`, `override`, `rule`, `access-add`, `access-remove`, `session-revoke`, `sign-in`, `sign-in-refused`, `job-request`, `job-cancel`, `pipeline-switch`, `stage-limit`), `target`, `details` (JSON). Shown on the item page (that item's entries) and on the Access page (everything, filterable).
+`audit` table: `at`, `login`, `action` (`answer`, `undo`, `adopt`, `opinion`, `opinion-retract`, `comment`, `override`, `rule`, `access-add`, `access-remove`, `session-revoke`, `sign-in`, `sign-in-refused` (anyone with a GitHub account can cause one, so there is at most one row per login per hour and `details.refused` counts the rest), `job-request`, `job-cancel`, `pipeline-switch`, `stage-limit`), `target`, `details` (JSON). Shown on the item page (that item's entries) and on the Access page (everything, filterable).
 
 ### Secrets and configuration
 
@@ -221,13 +225,13 @@ The server listens on 127.0.0.1 only; a private network proxy in front of it pro
 
 ### Testing without GitHub
 
-A fake OAuth provider for tests and local development, enabled only when `CRAFT_AUTO_DEV_AUTH=1` **and** the server listens on a loopback address; it signs in as a login given in the test and serves configurable repo permissions. The server refuses to start with dev auth on any other address.
+A fake OAuth provider for tests and local development, enabled only when `CRAFT_AUTO_DEV_AUTH=1` **and** the server listens on a loopback address; it signs in as a login given in the test and serves configurable repo permissions. The server refuses to start with dev auth on any other address, or with `CRAFT_AUTO_BASE_URL` set to anything but an `http://localhost` or `http://127.0.0.1` URL. In dev mode it also answers 403 to any request that carries `X-Forwarded-For` or a `Host` that is not a loopback name, and its default port (8994) differs from the real dashboard's (8993).
 
 ## Technology
 
 - Server: TypeScript on Node 24, run directly with type stripping (no build step); `node:http` and `node:sqlite`. It serves the JSON API under `/api/`, the sign-in routes under `/auth/`, and the frontend.
 - Frontend: a React app in `web/` (Vite, Tailwind, Radix primitives), described in `docs/ui-design.md`. `pnpm -C web build` writes it to `web/dist`, which the server serves behind sign-in: hashed files under `/assets/` with a year's cache, and `index.html`, uncached, for every other path, so the app routes on the client. It talks to the server only through the JSON API.
-- Content-Security-Policy: the app gets `script-src 'self'` and `style-src 'self'` plus the hash of the one fixed `<style>` the Radix dialog's scroll lock injects; the sign-in and error pages use a per-response nonce. `img-src` is `'self' data:`. No CDNs or external requests from the browser: all CSS, JS, fonts and charts are served by the app, and GitHub-hosted images in bodies and comments come through the server's image proxy, `GET /img?u=<url>`. The proxy needs a session, fetches only an allow-list of GitHub image hosts and path shapes (redirects re-checked against it), sends the bot's token only to `github.com`, serves only raster image types (no SVG) under a size cap, timeout and per-session rate limit, with `default-src 'none'` and `nosniff`; the README lists its rules.
+- Content-Security-Policy: the app gets `script-src 'self'` and `style-src 'self'` plus the hash of the one fixed `<style>` the Radix dialog's scroll lock injects; the sign-in and error pages use a per-response nonce. `img-src` is `'self' data:`. No CDNs or external requests from the browser: all CSS, JS, fonts and charts are served by the app, and GitHub-hosted images in bodies and comments come through the server's image proxy, `GET /img?u=<url>`. The proxy needs a session and fetches only an allow-list of GitHub image hosts and path shapes (redirects re-checked, IP addresses never fetched), and only URLs that occur in a mirrored body or comment of a tracked repo (a cached image is served only while its URL still does). It sends the token only to `github.com` attachment URLs, serves only raster image types (no SVG) up to 5 MB, within a timeout, with at most 4 upstream fetches at once and per-session and per-address rate limits, under `default-src 'none'` and `nosniff`. Expensive GETs (queue, contributors, semantic search) share a per-session token bucket (429 with `Retry-After`), embeddings run two at a time, and the contributors aggregate is cached for a minute; the README lists the rules and the token source setting (`CRAFT_AUTO_IMAGE_TOKEN_FILE`).
 - Light and dark themes via `prefers-color-scheme`; readable at 360 px wide without horizontal scrolling; touch targets at least 44 px.
 - Performance at the real size (about 100,000 mirror rows including closed history, 25,000 open): every page renders in under 300 ms. Add the indexes the queries need.
 - Nothing in the repo names a person other than as a GitHub login from the data, a machine, a hostname or a home directory: the repo may become public.
