@@ -96,6 +96,26 @@ function int(v: string | null, def: number, min: number, max: number, what: stri
   return n;
 }
 
+// The whole-mirror aggregate is reused for at least a minute, and after that
+// until the next sync moves the high water. An override or rule change drops it.
+const CONTRIBUTORS_TTL = 60_000;
+const contributorCache = new WeakMap<DatabaseSync, Map<string, { at: number; hw: string | null; rows: Row[] }>>();
+export function clearContributorCache(db: DatabaseSync): void {
+  contributorCache.delete(db);
+}
+function cachedContributors(db: DatabaseSync, repo: string | undefined): Row[] {
+  const hw = (db.prepare("SELECT value FROM main.settings WHERE key = 'org_high_water'").get() as { value: string } | undefined)?.value ?? null;
+  const byRepo = contributorCache.get(db) ?? new Map<string, { at: number; hw: string | null; rows: Row[] }>();
+  contributorCache.set(db, byRepo);
+  const key = repo ?? "";
+  const hit = byRepo.get(key);
+  const now = Date.now();
+  if (hit && (now - hit.at < CONTRIBUTORS_TTL || hit.hw === hw)) return hit.rows.map((r) => ({ ...r }));
+  const rows = contributors(db, { repo });
+  byRepo.set(key, { at: now, hw, rows });
+  return rows.map((r) => ({ ...r }));
+}
+
 export function listContributors(db: DatabaseSync, req: Req): ContributorList {
   const q = req.query;
   const repo = q.get("repo") || undefined;
@@ -110,7 +130,7 @@ export function listContributors(db: DatabaseSync, req: Req): ContributorList {
   const needle = (q.get("q") ?? "").trim().toLowerCase().slice(0, 100);
 
   const rule = getRule(db);
-  let rows = contributors(db, { repo });
+  let rows = cachedContributors(db, repo);
   if (needle) rows = rows.filter((c) => c.login.toLowerCase().includes(needle));
   const byTier = Object.fromEntries(TIERS.map((t) => [t, 0])) as Record<Tier, number>;
   for (const c of rows) byTier[TIER[c.tier]]++;
@@ -156,6 +176,7 @@ export function saveRule(db: DatabaseSync, req: Req): WhitelistRule {
   requireOperator(req, "change the whitelist rule");
   const r = ruleOf(body(req));
   setRule(db, r, req.user.login);
+  clearContributorCache(db);
   return getRule(db);
 }
 
@@ -170,6 +191,7 @@ export function override(db: DatabaseSync, req: Req): Contributor {
   const note = status === null ? null : b.note === undefined ? kept() : text(b.note, NOTE_MAX, "note");
   try {
     setOverride(db, login, status, note, req.user.login);
+    clearContributorCache(db);
   } catch (e) {
     throw new HttpError(400, (e as Error).message);
   }
@@ -238,6 +260,7 @@ export function track(db: DatabaseSync, req: Req, on: boolean): TrackedRepo[] {
   const name = required(body(req).name, "name");
   const changed = refused(() => (on ? trackRepo : untrackRepo)(db, req.user.login, name));
   if (!changed) throw new HttpError(409, `${name} is ${on ? "already" : "not"} tracked`);
+  clearContributorCache(db);
   return allRepos(db, req);
 }
 

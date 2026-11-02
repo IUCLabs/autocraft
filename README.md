@@ -46,7 +46,19 @@ The GitHub OAuth App needs no scopes, and expiring user tokens are supported: th
 
 ### Images
 
-`GET /img?u=<url>` (signed in only) fetches GitHub-hosted images from issue and PR bodies so the app can show them inline under its CSP. It serves only `https` URLs on `github.com/user-attachments/assets/<uuid>`, `private-user-images.githubusercontent.com`, `user-images.githubusercontent.com`, `raw.githubusercontent.com/storytold/` and `avatars.githubusercontent.com`; everything else is a 404. It follows at most three redirects, each to one of those hosts or GitHub's attachment bucket (`github-production-user-asset-6210df.s3.amazonaws.com`). Requests to `github.com` carry the bot's token from `gh auth token`, run in the repo's directory and kept in memory for an hour; no other host gets it. It serves PNG, JPEG, GIF, WebP and AVIF, checked by their magic bytes, up to 15 MB, within 15 seconds; never SVG. Responses are `private, max-age=86400` with `default-src 'none'` and `nosniff`; images are cached on disk for 7 days (at most 512 MB), and each session may make 120 upstream fetches a minute.
+`GET /img?u=<url>` (signed in only) fetches GitHub-hosted images from issue and PR bodies and comments so the app can show them inline under its CSP. It serves only `https` URLs on `github.com/user-attachments/assets/<uuid>`, `private-user-images.githubusercontent.com`, `user-images.githubusercontent.com`, `raw.githubusercontent.com/storytold/` and `avatars.githubusercontent.com`, and only when the exact URL occurs in a mirrored body or comment of a tracked repo; everything else is a 404 with no upstream request. The set of such URLs is rebuilt from the mirror when it has changed (at most every 30 seconds), and a cached image is served only while its URL is still in it. `imageRepo(url)` in `src/dash/server/images.ts` returns the repo an allowed URL belongs to.
+
+The proxy follows at most three redirects, each to one of those hosts or GitHub's attachment bucket (`github-production-user-asset-6210df.s3.amazonaws.com`); IP addresses and `localhost` are never fetched. It serves PNG, JPEG, GIF, WebP and AVIF, checked by their magic bytes, up to 5 MB (the stream is aborted past that), within 15 seconds; never SVG. At most 4 upstream fetches run at once; further ones wait up to 5 seconds, then get 429. Each session may make 120 upstream fetches a minute and each client address 240. Responses are `private, max-age=86400` with `default-src 'none'` and `nosniff`; images are cached on disk for 7 days (at most 512 MB).
+
+Requests to `github.com` attachment URLs carry a GitHub token; no other host gets it. The token comes from `CRAFT_AUTO_IMAGE_TOKEN_FILE` when it is set: a file holding a token that can read the tracked repos and nothing more (a fine-grained read-only token). The file is read at start and again when it changes. When the variable is unset, the server runs `gh auth token` in the repo's directory instead. The server logs which source it uses at start, never the value.
+
+| Variable | Meaning |
+|---|---|
+| `CRAFT_AUTO_IMAGE_TOKEN_FILE` | File with the image proxy's token. Default: unset, use `gh auth token`. |
+
+### Request limits
+
+The GET endpoints that do real work (`/api/queue`, `/api/contributors`, `/api/search?mode=semantic`) share a per-session token bucket of 20 requests refilling at one every two seconds; beyond it the answer is 429 with `Retry-After`. At most two embeddings run at once; others wait up to 3 seconds, then get 429. The contributors table is computed at most once a minute, and after that until the next sync moves the high-water mark.
 
 ### Development sign-in
 

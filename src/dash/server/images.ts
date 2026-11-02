@@ -1,18 +1,24 @@
 // GET /img?u=<url>: a proxy for the GitHub-hosted images in issue and PR
 // bodies, so the app can show them inline under `img-src 'self'`. Only the
-// hosts and path shapes in `allowedImage` are fetched; redirects are followed
-// by hand and re-checked; the bot's token goes only to github.com.
+// hosts and path shapes in `allowedImage` are fetched, and only URLs that occur
+// in mirrored text of tracked repos (the `repos` lookup, see image-index.ts);
+// redirects are followed by hand and re-checked; the bot's token goes only to
+// github.com. Upstream fetches are limited to a few at a time, 5 MB each.
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdir, readdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
+import { isIP } from "node:net";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { Semaphore } from "./limits.ts";
 
-export const MAX_IMAGE_BYTES = 15 * 1024 * 1024;
+export const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+export const MAX_UPSTREAM_FETCHES = 4;
+const FETCH_QUEUE_WAIT_MS = 5_000;
 const MAX_REDIRECTS = 3;
 const TIMEOUT_MS = 15_000;
-const TOKEN_TTL_MS = 3_600_000;
+const TOKEN_TTL_MS = 60_000;
 const CACHE_TTL_MS = 7 * 86_400_000;
 const CACHE_MAX_BYTES = 512 * 1024 * 1024;
 const REPO_DIR = fileURLToPath(new URL("../../..", import.meta.url));
@@ -39,6 +45,8 @@ function check(raw: string, list: { host: string; path: RegExp }[]): URL | null 
     return null;
   }
   if (u.protocol !== "https:" || u.username || u.password || u.port) return null;
+  // Never an address, so a redirect cannot reach loopback or the private network by IP.
+  if (u.hostname === "localhost" || isIP(u.hostname.replace(/^\[|\]$/g, ""))) return null;
   const rule = list.find((s) => s.host === u.hostname);
   if (!rule || !rule.path.test(u.pathname) || /%2f|%5c|\/\.\.?(\/|$)/i.test(u.pathname)) return null;
   u.hash = "";
@@ -68,9 +76,49 @@ export type ImageResult = { status: number; type?: string; data?: Buffer; error?
 
 export type ImageProxyOptions = {
   fetch?: typeof fetch;
-  token?: () => Promise<string | null>;   // the bot's GitHub token
+  token?: () => Promise<string | null>;   // the token for attachment URLs
   cacheDir?: string | null;               // null: no disk cache
+  repos?: (href: string) => string[];     // tracked repos whose text contains the URL; default: none
+  maxConcurrent?: number;                 // upstream fetches at once
+  queueWaitMs?: number;                   // how long a fetch waits for a free slot
 };
+
+let currentIndex: ((href: string) => string[]) | null = null;
+/** Sets the lookup that `imageRepo` answers from (the server registers its image index). */
+export function registerImageRepos(fn: ((href: string) => string[]) | null): void {
+  currentIndex = fn;
+}
+/** The repo an allowed image URL belongs to (the first, when it occurs in several), else null. */
+export function imageRepo(raw: string): string | null {
+  const u = allowedImage(raw);
+  return (u && currentIndex?.(u.href)[0]) || null;
+}
+
+/**
+ * Where the image token comes from: the file named by CRAFT_AUTO_IMAGE_TOKEN_FILE
+ * (re-read when its mtime changes), else `gh auth token`. Logs which one, never the value.
+ */
+export function imageTokenSource(env: NodeJS.ProcessEnv = process.env, log: (line: string) => void = console.log): () => Promise<string | null> {
+  const file = env.CRAFT_AUTO_IMAGE_TOKEN_FILE;
+  if (!file) {
+    log("image proxy token: from `gh auth token` (CRAFT_AUTO_IMAGE_TOKEN_FILE is not set)");
+    return ghToken;
+  }
+  log("image proxy token: from the file named by CRAFT_AUTO_IMAGE_TOKEN_FILE");
+  let seen: { mtime: number; value: string | null } | null = null;
+  return async () => {
+    try {
+      const mtime = (await stat(file)).mtimeMs;
+      if (!seen || seen.mtime !== mtime) {
+        const t = (await readFile(file, "utf8")).trim();
+        seen = { mtime, value: /^[\w-]+$/.test(t) ? t : null };
+      }
+      return seen.value;
+    } catch {
+      return null;
+    }
+  };
+}
 
 /** Runs `gh auth token` in the repo's directory (the gh wrapper picks the account by directory). */
 export function ghToken(): Promise<string | null> {
@@ -94,11 +142,15 @@ export class ImageProxy {
   #cacheDir: string | null;
   #inflight = new Map<string, Promise<ImageResult>>();
   #writes = 0;
+  #repos: (href: string) => string[];
+  #slots: Semaphore;
 
   constructor(opts: ImageProxyOptions = {}) {
     this.#fetch = opts.fetch ?? fetch;
     this.#tokenSource = opts.token ?? ghToken;
     this.#cacheDir = opts.cacheDir === undefined ? defaultImageCacheDir() : opts.cacheDir;
+    this.#repos = opts.repos ?? (() => []);
+    this.#slots = new Semaphore(opts.maxConcurrent ?? MAX_UPSTREAM_FETCHES, opts.queueWaitMs ?? FETCH_QUEUE_WAIT_MS);
   }
 
   async #getToken(): Promise<string | null> {
@@ -113,6 +165,8 @@ export class ImageProxy {
     const url = allowedImage(raw);
     if (!url) return Promise.resolve({ status: 404, error: "not an allowed image" });
     const key = url.href;
+    // Checked before the cache and the fetch: a cached image is served only while its URL is still in the mirror.
+    if (!this.#repos(key).length) return Promise.resolve({ status: 404, error: "not an image of a tracked repo" });
     const running = this.#inflight.get(key);
     if (running) return running;
     const p = this.#load(url, allow).finally(() => this.#inflight.delete(key));
@@ -127,7 +181,14 @@ export class ImageProxy {
       if (hit) return hit;
     }
     if (!allow()) return { status: 429, error: "too many image requests; wait a minute" };
-    const r = await this.#fetchImage(url);
+    const release = await this.#slots.acquire();
+    if (!release) return { status: 429, error: "image proxy is busy; try again shortly" };
+    let r: ImageResult;
+    try {
+      r = await this.#fetchImage(url);
+    } finally {
+      release();
+    }
     if (file && r.status === 200) await this.#writeCache(file, r.data!).catch(() => {});
     return r;
   }

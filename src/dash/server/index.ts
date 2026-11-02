@@ -10,7 +10,9 @@ import { audit } from "../audit.ts";
 import type { Req, Res, Route } from "../types.ts";
 import type { Config } from "./config.ts";
 import { pkceChallenge, randomToken, safeEqual, TokenBox } from "./crypto.ts";
-import { ImageProxy } from "./images.ts";
+import { ImageIndex } from "./image-index.ts";
+import { ImageProxy, imageTokenSource, registerImageRepos } from "./images.ts";
+import { TokenBucket } from "./limits.ts";
 import { FakeProvider, providerFor, type Provider, type Tokens } from "./provider.ts";
 import { createSession, deleteSession, loadSession, makeUser, pruneExpired, SESSION_TTL, type Session } from "./sessions.ts";
 import { esc, HttpError, parseCookies, plainPage, RateLimiter, safeReturnTo } from "./util.ts";
@@ -132,8 +134,18 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
   const signinLimit = new RateLimiter(60, 10 * 60_000);
   const writeLimitSession = new RateLimiter(60, 60_000);
   const writeLimitIp = new RateLimiter(300, 60_000);
-  const images = opts.images ?? new ImageProxy({ cacheDir: config.imageCacheDir });
+  const imageIndex = new ImageIndex(db);
+  registerImageRepos((href) => imageIndex.reposOf(href));
+  const images = opts.images ?? new ImageProxy({
+    cacheDir: config.imageCacheDir, repos: (href) => imageIndex.reposOf(href),
+    token: imageTokenSource(process.env),
+  });
   const imageLimit = new RateLimiter(120, 60_000);    // upstream fetches per session; cache hits are free
+  const imageLimitIp = new RateLimiter(240, 60_000);  // and per client address
+  // GET endpoints that aggregate the mirror or run the embedder: a burst, then 30 a minute, per session.
+  const expensiveGets = new TokenBucket(20, 0.5);
+  const isExpensive = (path: string, q: URLSearchParams) =>
+    path === "/api/queue" || path.startsWith("/api/contributors") || (path === "/api/search" && q.get("mode") === "semantic");
   const callbackUrl = `${config.baseUrl ?? ""}/auth/callback`;
   let lastPrune = 0;
 
@@ -214,6 +226,10 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
         deleteSession(db, parseCookies(req.headers.cookie).get(SESSION_COOKIE)!);
         return send(res, nonce, { status: 204 }, [cookie(SESSION_COOKIE, "", 0)]);
       }
+    }
+    if (!writes && isExpensive(url.pathname, url.searchParams)) {
+      const wait = expensiveGets.take(session.idHash);
+      if (wait) return out({ status: 429, json: { error: "too many requests; wait a moment" }, headers: { "retry-after": String(wait) } });
     }
     const { route, params, other } = match(routes, method, url.pathname);
     if (!route) return out(other ? apiError(405, "method not allowed") : apiError(404, "not found"));
@@ -352,9 +368,11 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
       res.writeHead(405, secure({ "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" }, "default-src 'none'"));
       return void res.end("method not allowed");
     }
-    const r = await images.get(url.searchParams.get("u") ?? "", () => imageLimit.allow(session.idHash));
+    const ip = clientIp(req);
+    const r = await images.get(url.searchParams.get("u") ?? "", () => imageLimit.allow(session.idHash) && imageLimitIp.allow(ip));
     if (r.status !== 200) {
-      res.writeHead(r.status, secure({ "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" }, "default-src 'none'"));
+      const retry: Record<string, string> = r.status === 429 ? { "retry-after": "10" } : {};
+      res.writeHead(r.status, secure({ "content-type": "text/plain; charset=utf-8", "cache-control": "no-store", ...retry }, "default-src 'none'"));
       return void res.end(r.error ?? "");
     }
     return sendFile(res, r.type!, "private, max-age=86400", "default-src 'none'", r.data!);
