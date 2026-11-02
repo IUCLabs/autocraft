@@ -489,6 +489,8 @@ export interface CostReport {
   /** A run id, or "" for all runs. */
   run: string;
   total: UsageTotals;
+  /** Distinct items with a classification in the run (or all runs); `total.items` counts an item once per model. */
+  itemsClassified: number;
   stages: ({ stage: string; model: string } & UsageTotals)[];
   repos: ({ repo: string } & UsageTotals)[];
   /** Spend per time bucket; `bucket` is an ISO hour or day. */
