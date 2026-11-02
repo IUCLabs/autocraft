@@ -1,4 +1,5 @@
 // Which open PRs the Review stage looks at, and at which head commit.
+import { notHeldSql } from "../dupes/held.ts";
 import type { DatabaseSync } from "node:sqlite";
 import { latestRun, settledLookup, settledTable } from "../classify/settled.ts";
 import { SCOPE_OPTIONS } from "../decide/decision.ts";
@@ -85,7 +86,7 @@ export function selectCandidates(db: DatabaseSync, repo: string, run: string | n
       i.additions, i.deletions, i.changed_files, i.updated_at, i.is_draft,
       c.head_oid AS c_head, c.state AS c_state, c.is_draft AS c_draft, c.fetched_at AS c_at
     FROM items i LEFT JOIN pr_checks c ON c.repo = i.repo AND c.number = i.number
-    WHERE i.repo = ? AND i.kind = 'pr' AND i.state = 'OPEN' ORDER BY i.number`).all(repo) as Row[];
+    WHERE i.repo = ? AND i.kind = 'pr' AND i.state = 'OPEN' AND ${notHeldSql("i")} ORDER BY i.number`).all(repo) as Row[];
   const reviewed = db.prepare("SELECT 1 FROM reviews WHERE repo = ? AND number = ? AND head_oid = ?");
   const settled = settledLookup(db, run);
   let scope: ScopeRow[] | undefined;
@@ -146,7 +147,7 @@ export function candidateRefs(db: DatabaseSync, repo?: string, run: string | nul
       c.head_oid AS c_head, c.state AS c_state, c.is_draft AS c_draft, c.fetched_at AS c_at, s.label, s.flags
     FROM items i LEFT JOIN pr_checks c ON c.repo = i.repo AND c.number = i.number
     LEFT JOIN temp.item_settled s ON s.repo = i.repo AND s.number = i.number
-    WHERE i.kind = 'pr' AND i.state = 'OPEN' ${repo ? "AND i.repo = :repo" : ""}`).all(repo ? { repo } : {}) as
+    WHERE i.kind = 'pr' AND i.state = 'OPEN' AND ${notHeldSql("i")} ${repo ? "AND i.repo = :repo" : ""}`).all(repo ? { repo } : {}) as
     (Pick<Row, "repo" | "number" | "head_oid" | "updated_at" | "is_draft" | "c_head" | "c_state" | "c_draft" | "c_at"> & { label: string | null; flags: string | null })[];
   const reviewed = new Set((db.prepare(`SELECT repo, number, head_oid FROM reviews ${repo ? "WHERE repo = ?" : ""}`).all(...(repo ? [repo] : [])) as
     { repo: string; number: number; head_oid: string }[]).map((r) => `${r.repo}#${r.number}@${r.head_oid}`));

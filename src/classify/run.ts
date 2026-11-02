@@ -11,6 +11,7 @@ import { claudeRoom, startClaudeRun, startJevRun } from "../agents/call.ts";
 import { finishRun } from "../agents/runs.ts";
 import { scrubError } from "../agents/text.ts";
 import { CLAUDE_PROMPTS, JEV_ARGS, JEV_PROMPTS, claudeArgs, claudePromptOf, jevPromptOf, renderClaude, renderJev, type ClaudeInput, type ClaudePromptId, type JevPromptId } from "../prompts/index.ts";
+import type { DupePair } from "../dupes/pair.ts";
 import { flagsOf, jevVerdict, parseHaikuReply, parseRef, refOf, type Item, type JevAnswers, type Verdict } from "./parse.ts";
 
 export function loadRefs(file: string): { repo: string; number: number }[] {
@@ -131,8 +132,10 @@ function promptVersion(id: ClaudePromptId | JevPromptId): string {
 /** Item refs of a prompt's input: items carry repo and number, review PRs a `repo#number` ref. */
 function refsOf(input: readonly unknown[]): ItemRef[] {
   const out: ItemRef[] = [];
-  for (const x of input as { repo?: string; number?: number; ref?: string }[]) {
+  for (const x of input as { repo?: string; number?: number; ref?: string; a?: { number: number }; b?: { number: number } }[]) {
     if (typeof x.repo === "string" && typeof x.number === "number") out.push({ repo: x.repo, number: x.number });
+    // A duplicate pair: both items.
+    else if (typeof x.repo === "string" && x.a && x.b) out.push({ repo: x.repo, number: x.a.number }, { repo: x.repo, number: x.b.number });
     else if (typeof x.ref === "string") {
       const r = parseRef(x.ref);
       if (r) out.push(r);
@@ -206,7 +209,7 @@ export async function askClaude<K extends ClaudePromptId>(id: K, model: string, 
 }
 
 /** Sends a registered Jev request (src/prompts) for one item to `jev ask`; the same rule as `askClaude`. Recorded as an agent run without an account. */
-export async function askJev(id: JevPromptId, item: Item, db: DatabaseSync): Promise<Proc> {
+export async function askJev(id: JevPromptId, item: Item | DupePair, db: DatabaseSync): Promise<Proc> {
   const body = renderJev(id, item);
   const runId = startJevRun(db, { promptId: id, promptVersion: promptVersion(id), provider: "jev", model: "jev", items: refsOf([item]), prompt: body });
   try {

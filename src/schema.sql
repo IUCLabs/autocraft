@@ -630,3 +630,30 @@ CREATE TABLE IF NOT EXISTS verifications (
   PRIMARY KEY (repo, number, head_sha)
 );
 CREATE INDEX IF NOT EXISTS verifications_state ON verifications(state);
+
+-- Duplicate candidates (Duplicates stage). a < b. A pair is checked once per pair of text hashes
+-- (embed_hash of each item); verdict is NULL until a model has answered. jev_p is Jev's yes-probability,
+-- haiku the second opinion (duplicate | distinct | unsure) when Jev was not sure either way.
+-- canonical is the one to keep. by_operator marks a pair an operator answered "not a duplicate" or "keep both" for.
+CREATE TABLE IF NOT EXISTS duplicate_pairs (
+  repo TEXT NOT NULL,
+  a INTEGER NOT NULL, b INTEGER NOT NULL,
+  a_hash TEXT NOT NULL, b_hash TEXT NOT NULL,
+  similarity REAL NOT NULL,
+  jev_p REAL,
+  haiku TEXT,
+  verdict TEXT,                       -- duplicate | distinct | unsure
+  canonical INTEGER,
+  by_operator INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  checked_at TEXT,
+  PRIMARY KEY (repo, a, b, a_hash, b_hash)
+);
+CREATE INDEX IF NOT EXISTS duplicate_pairs_open ON duplicate_pairs(verdict, similarity);
+-- The text hash each open item had when its neighbours were last looked up.
+CREATE TABLE IF NOT EXISTS duplicate_scans (
+  repo TEXT NOT NULL, number INTEGER NOT NULL,
+  hash TEXT NOT NULL,
+  at TEXT NOT NULL,
+  PRIMARY KEY (repo, number)
+);

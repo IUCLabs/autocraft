@@ -33,6 +33,11 @@ export function prCloseComment(o: { repo: string; reason: string | null; duplica
   return `Closing this pull request.${r ? `\nReason: ${r}` : ""}`;
 }
 
+/** `original` is the canonical item's reference (`repo#n`); `closed` when it is no longer open. */
+export function duplicateComment(o: { repo: string; original: string; closed: boolean }): string {
+  return `Duplicate of ${refText(o.repo, o.original)}${o.closed ? ", which is closed" : ""}.`;
+}
+
 export const COMMENT_TEMPLATES: CommentTemplate[] = [
   {
     id: "act.scope-close", stage: "Act",
@@ -50,5 +55,15 @@ export const COMMENT_TEMPLATES: CommentTemplate[] = [
       { name: "duplicate", meaning: "When the review names a duplicate, the comment is \"Closing this pull request. Duplicate of #N.\" instead" },
     ],
     example: prCloseComment({ repo: "app", reason: null, duplicateOf: "app#12" }),
+  },
+  {
+    id: "act.duplicate", stage: "Act",
+    purpose: "Posted when an operator answers a \"Close as a duplicate?\" decision with Close as duplicate, just before the item is closed.",
+    text: duplicateComment({ repo: "app", original: "app#{{original}}", closed: false }),
+    placeholders: [
+      { name: "original", meaning: "The number of the item that stays, in the same repo; another repo's item is written as org/repo#N" },
+      { name: "closed", meaning: "When the original is no longer open on GitHub at the time of the comment, \", which is closed\" follows the number" },
+    ],
+    example: duplicateComment({ repo: "app", original: "app#12", closed: true }),
   },
 ];

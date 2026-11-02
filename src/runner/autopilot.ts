@@ -16,6 +16,7 @@ import { approvalOf } from "../labels/approval.ts";
 import { countPlan, planLabels } from "../labels/plan.ts";
 import { commentApprovalOf } from "../act/approval.ts";
 import { closeCandidates, pending as actPending } from "../act/index.ts";
+import { dupesWork } from "../dupes/index.ts";
 import { selectFixups } from "../fixup/candidates.ts";
 import { mergeApprovalOf } from "../merge/approval.ts";
 import { buildQueue, eligible } from "../merge/queue.ts";
@@ -117,6 +118,12 @@ export const LANES: Lane[] = [
     detect: (db) => (embedPending(db, embedderId(modelName())).length ? [{ step: "embed", params: {} }] : []),
   },
   {
+    // Before Decide: items held as duplicates wait out the later stages.
+    name: "dupes",
+    steps: ["dupes"],
+    detect: (db) => (dupesWork(db) ? [{ step: "dupes", params: {} }] : []),
+  },
+  {
     name: "decide",
     steps: ["decide"],
     detect: (db, { jevRun: run }) => {
@@ -211,8 +218,11 @@ export const dayStart = (ms: number = Date.now()): string => `${new Date(ms).toI
 
 type LimitRow = { step: string; per_day: number | null; updated_by: string | null; updated_at: string | null };
 
+/** Daily limits that apply until an operator sets one. */
+const DEFAULT_PER_DAY: Record<string, number> = { dupes: 2000 };
+
 export const limitRow = (db: DatabaseSync, step: string): LimitRow =>
-  (db.prepare("SELECT * FROM stage_limits WHERE step = ?").get(step) as LimitRow | undefined) ?? { step, per_day: null, updated_by: null, updated_at: null };
+  (db.prepare("SELECT * FROM stage_limits WHERE step = ?").get(step) as LimitRow | undefined) ?? { step, per_day: DEFAULT_PER_DAY[step] ?? null, updated_by: null, updated_at: null };
 
 /** Items handled by the step's jobs that started today (UTC). */
 export function usageToday(db: DatabaseSync, step: string, ms: number = Date.now()): number {
@@ -262,7 +272,7 @@ export function setEnabled(db: DatabaseSync, enabled: boolean, by: string): void
 }
 
 /** Steps that have a row in stage_limits, in pipeline order. */
-export const LIMIT_STEPS = ["classify-new", "embed", "decide", "checks", "review-batch", "labels-apply", "merge", "act", "fixup", "verify"];
+export const LIMIT_STEPS = ["classify-new", "embed", "dupes", "decide", "checks", "review-batch", "labels-apply", "merge", "act", "fixup", "verify"];
 
 /** Steps whose jobs cannot be sized to what remains of the day: only no limit or a pause makes sense. */
 export const ZERO_ONLY = ["checks"];

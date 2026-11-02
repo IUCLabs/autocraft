@@ -1,4 +1,5 @@
 // Which take-fix PRs the fix-up step works on, from the local tables only.
+import { notHeldSql } from "../dupes/held.ts";
 import type { DatabaseSync } from "node:sqlite";
 import { headOf } from "../review/candidates.ts";
 import { pushApprovalOf } from "./approval.ts";
@@ -44,7 +45,7 @@ export function selectFixups(db: DatabaseSync, repo: string): FixSelection {
   const rows = db.prepare(`SELECT i.repo, i.number, i.head_oid, i.updated_at, i.is_draft,
       c.head_oid AS c_head, c.state AS c_state, c.is_draft AS c_draft, c.fetched_at AS c_at, c.mergeable, c.maintainer_can_modify AS can_modify
     FROM items i JOIN pr_checks c ON c.repo = i.repo AND c.number = i.number
-    WHERE i.repo = ? AND i.kind = 'pr' AND i.state = 'OPEN' ORDER BY i.number`).all(repo) as Row[];
+    WHERE i.repo = ? AND i.kind = 'pr' AND i.state = 'OPEN' AND ${notHeldSql("i")} ORDER BY i.number`).all(repo) as Row[];
   const done = db.prepare("SELECT 1 FROM fixups WHERE repo = ? AND number = ? AND from_head = ? AND state IN ('pushed', 'cannot-push', 'too-large')");
   const approved = pushApprovalOf(db, repo) !== null;
   const out: FixSelection = { fix: [], cannotPush: [] };

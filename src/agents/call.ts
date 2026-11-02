@@ -15,6 +15,7 @@ export const callContext = (): CallContext | null => context;
 const PROMPT_STEP: Record<string, { step: string; stage: number }> = {
   "classify.haiku": { step: "classify-new", stage: 2 }, "classify.jev": { step: "classify-new", stage: 2 }, "referee.sonnet": { step: "classify-all", stage: 2 },
   "decide.summary": { step: "decide", stage: 3 }, "review.sonnet": { step: "review-batch", stage: 5 }, "fixup.patch": { step: "fixup", stage: 6 }, "verify.plan": { step: "verify", stage: 6 },
+  "dupes.jev": { step: "dupes", stage: 3 }, "dupes.haiku": { step: "dupes", stage: 3 },
 };
 
 export function stepOf(promptId: string): { jobId: number | null; step: string; stage: number } {

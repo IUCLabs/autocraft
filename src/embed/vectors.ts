@@ -148,8 +148,8 @@ export class VectorIndex {
     return out;
   }
 
-  // The `limit` items closest to `q`, best first, leaving out `skip` ("repo#n").
-  nearest(db: DatabaseSync, q: Float32Array, limit: number, skip?: string): Hit[] {
+  // The `limit` items closest to `q`, best first, leaving out `skip` ("repo#n"); with `repo`, only items of that repo.
+  nearest(db: DatabaseSync, q: Float32Array, limit: number, skip?: string, repo?: string): Hit[] {
     this.refresh(db);
     const s = this.store;
     if (!s) return [];
@@ -162,7 +162,7 @@ export class VectorIndex {
     const topS: number[] = [];
     let floor = -Infinity;
     for (let i = 0, off = 0; i < n; i++, off += dim) {
-      if (i === skipAt) continue;
+      if (i === skipAt || (repo !== undefined && s.keys[i]!.repo !== repo)) continue;
       let dot = 0;
       for (let d = 0; d < dim; d++) dot += v[off + d]! * q[d]!;
       const sc = dot * s.scale[i]!;
