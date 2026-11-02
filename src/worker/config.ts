@@ -1,0 +1,125 @@
+// Worker configuration: one JSON file (`--config` or CRAFT_AUTO_WORKER_CONFIG).
+import { existsSync, readFileSync, statfsSync } from "node:fs";
+import { arch, availableParallelism, homedir, platform, totalmem } from "node:os";
+import { isAbsolute, join } from "node:path";
+import type { Capabilities } from "./types.ts";
+
+/**
+ * Default toolchain images. The tags move; pin each to a digest before
+ * relying on it: `podman pull <ref>`, then
+ * `podman image inspect --format '{{index .RepoDigests 0}}' <ref>` and put
+ * the printed `name@sha256:...` into "images" of the config file.
+ */
+export const DEFAULT_IMAGES: Record<string, string> = {
+  "rust-stable": "docker.io/library/rust:1-bookworm",
+  "node-24": "docker.io/library/node:24-bookworm",
+};
+
+export type WorkerConfig = {
+  coordinatorUrl: string;
+  keyFile: string;
+  workDir: string;
+  slots: number;
+  images: Record<string, string>;
+  runtime: string;
+  limits: { cpus: number; memoryGb: number; pids: number; minFreeDiskGb: number };
+  fetchNetwork: string;
+  display: boolean;
+  gpu: boolean;
+  userns: string;
+  maxSourceMb: number;
+  maxStepSec: number;
+};
+
+const SAFE_PATH = /^[^,:\s\0]+$/;
+const IMAGE_REF = /^[a-z0-9][A-Za-z0-9._\-/:@]*$/;
+
+function expand(p: string): string {
+  return p === "~" ? homedir() : p.startsWith("~/") ? join(homedir(), p.slice(2)) : p;
+}
+
+function num(v: unknown, name: string, def: number, min: number, max: number): number {
+  if (v === undefined) return def;
+  if (typeof v !== "number" || !Number.isFinite(v) || v < min || v > max) throw new Error(`config: ${name} must be a number from ${min} to ${max}`);
+  return v;
+}
+
+function str(o: Record<string, unknown>, name: string, def?: string): string {
+  const v = o[name] ?? def;
+  if (typeof v !== "string" || !v) throw new Error(`config: ${name} is required`);
+  return v;
+}
+
+export function parseWorkerConfig(raw: unknown): WorkerConfig {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) throw new Error("config: expected a JSON object");
+  const o = raw as Record<string, unknown>;
+  const coordinatorUrl = str(o, "coordinatorUrl").replace(/\/+$/, "");
+  if (!/^https?:\/\/[^\s]+$/.test(coordinatorUrl)) throw new Error("config: coordinatorUrl must be an http(s) URL");
+  const keyFile = expand(str(o, "keyFile"));
+  const workDir = expand(str(o, "workDir"));
+  for (const [n, p] of [["keyFile", keyFile], ["workDir", workDir]] as const) {
+    if (!isAbsolute(p)) throw new Error(`config: ${n} must be an absolute path`);
+  }
+  // Paths go into --mount specs, where commas and colons would split fields.
+  if (!SAFE_PATH.test(workDir)) throw new Error("config: workDir must not contain commas, colons or whitespace");
+  const images = { ...DEFAULT_IMAGES, ...((o.images as Record<string, string> | undefined) ?? {}) };
+  for (const [k, v] of Object.entries(images)) {
+    if (typeof v !== "string" || !IMAGE_REF.test(v)) throw new Error(`config: image for ${k} is not a valid reference`);
+  }
+  const l = (o.limits ?? {}) as Record<string, unknown>;
+  const runtime = str(o, "runtime", "podman");
+  const fetchNetwork = str(o, "fetchNetwork", "pasta");
+  const userns = str(o, "userns", "keep-id");
+  for (const v of [fetchNetwork, userns, runtime]) if (v.startsWith("-") || /\s/.test(v)) throw new Error("config: runtime, fetchNetwork and userns must not start with '-' or contain spaces");
+  return {
+    coordinatorUrl,
+    keyFile,
+    workDir,
+    slots: num(o.slots, "slots", 1, 1, 64),
+    images,
+    runtime,
+    limits: {
+      cpus: num(l.cpus, "limits.cpus", 4, 0.5, 256),
+      memoryGb: num(l.memoryGb, "limits.memoryGb", 8, 0.25, 1024),
+      pids: num(l.pids, "limits.pids", 1024, 16, 1_000_000),
+      minFreeDiskGb: num(l.minFreeDiskGb, "limits.minFreeDiskGb", 20, 0, 100_000),
+    },
+    fetchNetwork,
+    display: o.display === true,
+    gpu: o.gpu === true,
+    userns,
+    maxSourceMb: num(o.maxSourceMb, "maxSourceMb", 300, 1, 5000),
+    maxStepSec: num(o.maxStepSec, "maxStepSec", 4 * 3600, 10, 48 * 3600),
+  };
+}
+
+export function loadWorkerConfig(path: string): WorkerConfig {
+  if (!existsSync(path)) throw new Error(`config file not found: ${path}`);
+  return parseWorkerConfig(JSON.parse(readFileSync(path, "utf8")));
+}
+
+/** Reads the worker key. Never log the return value. */
+export function readKey(cfg: WorkerConfig): string {
+  const key = readFileSync(cfg.keyFile, "utf8").trim();
+  if (!key) throw new Error(`key file is empty: ${cfg.keyFile}`);
+  return key;
+}
+
+export function freeDiskGb(path: string): number {
+  const s = statfsSync(path);
+  return (s.bavail * s.bsize) / 1024 ** 3;
+}
+
+export function detectCapabilities(cfg: WorkerConfig): Capabilities {
+  const os = platform() === "darwin" ? "macos" : platform() === "win32" ? "windows" : "linux";
+  return {
+    os,
+    arch: arch() === "arm64" ? "aarch64" : "x86_64",
+    cpus: availableParallelism(),
+    memGb: Math.round(totalmem() / 1024 ** 3),
+    diskGb: Math.floor(freeDiskGb(cfg.workDir)),
+    display: cfg.display,
+    gpu: cfg.gpu,
+    toolchains: Object.keys(cfg.images).sort(),
+  };
+}

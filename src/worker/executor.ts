@@ -1,0 +1,163 @@
+// Runs one claimed task: fresh work dir, source tarball, one container per
+// plan step, artifact collection, cleanup.
+import { randomBytes } from "node:crypto";
+import { globSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { basename, join, relative, sep } from "node:path";
+import { promoteCargoHome, seedCargoHome } from "./cache.ts";
+import type { WorkerConfig } from "./config.ts";
+import { removeContainer, runContainer, type RunOutcome } from "./container.ts";
+import { downloadAndExtract } from "./tarball.ts";
+import { LIMITS, type ClaimedTask, type StepResult } from "./types.ts";
+
+export type TaskSink = {
+  log(step: string, chunk: string): Promise<void>;
+  artifact(name: string, body: Buffer, contentType: string): Promise<void>;
+};
+
+export type ExecResult = { results: StepResult[]; summary: string; cancelled: boolean };
+
+export function taskDir(cfg: WorkerConfig, id: number): string {
+  return join(cfg.workDir, `task-${id}`);
+}
+
+export function cacheDir(cfg: WorkerConfig): string {
+  return join(cfg.workDir, "crate-cache");
+}
+
+/** Removes work dirs of tasks that were running when a previous worker died. */
+export function removeStaleWorkDirs(cfg: WorkerConfig): number {
+  mkdirSync(cfg.workDir, { recursive: true });
+  let n = 0;
+  for (const e of readdirSync(cfg.workDir)) {
+    if (/^task-\d+$/.test(e)) {
+      rmSync(join(cfg.workDir, e), { recursive: true, force: true });
+      n++;
+    }
+  }
+  return n;
+}
+
+const CONTENT_TYPES: Record<string, string> = { ".png": "image/png", ".json": "application/json", ".xml": "application/xml", ".txt": "text/plain", ".log": "text/plain" };
+
+type Collected = { name: string; path: string; bytes: number };
+
+/** Files matching `globs` below `out`. Symlinks and anything resolving outside `out` are skipped. */
+export function collectArtifacts(out: string, globs: string[], taken: Set<string>, budget: { total: number; count: number }, note: (s: string) => void): Collected[] {
+  const root = realpathSync(out);
+  const found: Collected[] = [];
+  const seen = new Set<string>();
+  for (const g of globs) {
+    if (g.startsWith("/") || g.split("/").includes("..") || g.includes("\0")) {
+      note(`artifact pattern ignored: ${g}`);
+      continue;
+    }
+    for (const rel of globSync(g, { cwd: out })) {
+      let real: string;
+      try {
+        real = realpathSync(join(out, rel));
+      } catch {
+        continue;
+      }
+      if (real !== root && !real.startsWith(root + sep)) continue;
+      if (seen.has(real)) continue;
+      const st = lstatSync(real);
+      if (!st.isFile()) continue;
+      seen.add(real);
+      if (st.size > LIMITS.artifactBytes) {
+        note(`artifact skipped (over ${LIMITS.artifactBytes / 1024 / 1024} MB): ${rel}`);
+        continue;
+      }
+      if (budget.count >= LIMITS.artifactCount || budget.total + st.size > LIMITS.artifactsTotalBytes) {
+        note(`artifact skipped (task limit reached): ${rel}`);
+        continue;
+      }
+      let name = relative(root, real).split(sep).join("__").replace(/[^A-Za-z0-9._-]/g, "_").replace(/^\.+/, "_");
+      for (let i = 2; taken.has(name); i++) name = `${i}-${basename(name)}`;
+      taken.add(name);
+      budget.total += st.size;
+      budget.count++;
+      found.push({ name, path: real, bytes: st.size });
+    }
+  }
+  return found;
+}
+
+export async function executeTask(cfg: WorkerConfig, task: ClaimedTask, sink: TaskSink, signal: AbortSignal, o: { fetchImpl?: typeof fetch; note?: (s: string) => void } = {}): Promise<ExecResult> {
+  const note = o.note ?? (() => {});
+  const dir = taskDir(cfg, task.id);
+  const results: StepResult[] = [];
+  const names: string[] = [];
+  const emit = (step: string, s: string) => sink.log(step, s).catch(() => {});
+  try {
+    rmSync(dir, { recursive: true, force: true });
+    const paths = { src: join(dir, "src"), target: join(dir, "target"), cache: join(dir, "cache") };
+    for (const p of Object.values(paths)) mkdirSync(p, { recursive: true });
+    const wanted = task.requires.toolchains ?? [];
+    const toolchain = wanted.length ? wanted.find((t) => cfg.images[t]) : Object.keys(cfg.images)[0];
+    const image = toolchain ? cfg.images[toolchain] : undefined;
+    if (!image) return { results, summary: `no image for toolchains ${wanted.join(", ")}`, cancelled: false };
+
+    await emit("source", `fetching source for ${task.repo}@${task.headSha.slice(0, 12)}\n`);
+    try {
+      const files = await downloadAndExtract(task.sourceUrl, paths.src, cfg.maxSourceMb * 1024 * 1024, undefined, o.fetchImpl);
+      await emit("source", `unpacked ${files} files\n`);
+    } catch (e) {
+      await emit("source", `source failed: ${(e as Error).message}\n`);
+      return { results, summary: `source failed: ${(e as Error).message}`.slice(0, 300), cancelled: false };
+    }
+    seedCargoHome(cacheDir(cfg), join(paths.cache, "cargo"));
+
+    let failed: string | null = null;
+    let cancelled = false;
+    const taken = new Set<string>();
+    const budget = { total: 0, count: 0 };
+    for (const [i, step] of task.plan.entries()) {
+      if (signal.aborted) {
+        cancelled = true;
+        break;
+      }
+      const out = join(dir, "out", String(i));
+      mkdirSync(out, { recursive: true });
+      const name = `craft-${task.id}-${i}-${randomBytes(4).toString("hex")}`;
+      names.push(name);
+      const started = Date.now();
+      let outcome: RunOutcome;
+      try {
+        outcome = await runContainer(cfg, { name, image, network: step.network, mounts: { ...paths, out }, cmd: step.cmd }, {
+          timeoutMs: Math.min(step.timeoutSec, cfg.maxStepSec) * 1000,
+          signal,
+          onOutput: (b) => void sink.log(step.name, b.toString("utf8")).catch(() => {}),
+        });
+      } catch (e) {
+        await emit(step.name, `could not start container: ${(e as Error).message}\n`);
+        results.push({ step: step.name, exitCode: null, durationMs: Date.now() - started, timedOut: false });
+        failed = `${step.name}: container runtime failed`;
+        break;
+      }
+      if (outcome.cancelled) {
+        cancelled = true;
+        break;
+      }
+      results.push({ step: step.name, exitCode: outcome.exitCode, durationMs: Date.now() - started, timedOut: outcome.timedOut });
+      if (outcome.timedOut) await emit(step.name, `\nstep timed out after ${step.timeoutSec} s and was killed\n`);
+      const files = collectArtifacts(out, step.artifacts ?? [], taken, budget, (s) => void emit(step.name, `${s}\n`));
+      for (const f of files) {
+        await sink.artifact(f.name, readFileSync(f.path), CONTENT_TYPES[f.name.slice(f.name.lastIndexOf(".")).toLowerCase()] ?? "application/octet-stream");
+      }
+      if (outcome.timedOut || outcome.exitCode !== 0) {
+        failed = outcome.timedOut ? `${step.name} timed out` : `${step.name} failed (exit ${outcome.exitCode})`;
+        break;
+      }
+    }
+    try {
+      promoteCargoHome(join(paths.cache, "cargo"), cacheDir(cfg));
+    } catch (e) {
+      note(`crate cache promotion failed: ${(e as Error).message}`);
+    }
+    if (cancelled) return { results, summary: "cancelled", cancelled: true };
+    return { results, summary: failed ?? `${results.length} step${results.length === 1 ? "" : "s"} passed`, cancelled: false };
+  } finally {
+    for (const n of names) await removeContainer(cfg, n);
+    rmSync(dir, { recursive: true, force: true });
+  }
+}

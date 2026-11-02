@@ -152,6 +152,64 @@ A step lists the models it calls in `models` (a list, or a function of the param
 
 Param kinds are `enum`, `repo` (a tracked repo), `int` and `run-id`; there is no free-text kind, so nothing typed on the dashboard reaches a prompt. `run` gets the database, the validated params, `progress(text)`, `log(line)`, `handled(n)` (the running total of units the job has attempted, saved at once and counted against the stage's daily limit), `usageRun(runId)` (token use recorded under that run from the job's start counts as the job's) and `cancelled()`, and returns a one-line summary; throwing fails the job with the error's message. `available()` and `check(db, params)` can refuse a step or a request with a reason. The Pipeline page, the API, the autopilot and the CLI pick the step up from the list.
 
+## Running a worker
+
+A worker runs untrusted build tasks for the coordinator (the runner process). It holds no GitHub token, no Claude login and no database access: it downloads public source tarballs anonymously, runs each plan step in a fresh container, and sends logs, results and artifacts back, all of which the coordinator treats as untrusted data.
+
+```
+craft-auto worker serve [--config FILE]     # default: $CRAFT_AUTO_WORKER_CONFIG
+```
+
+### Local sandbox user
+
+Run the worker as a separate OS user without access to the operator's home, tokens or Claude login, with rootless Podman, from its own checkout of this repository. Create the environment on the Build environments page (or `POST /api/envs`); the key is shown once. Save it to a file readable only by the sandbox user, and write the config:
+
+```json
+{
+  "coordinatorUrl": "http://127.0.0.1:8981",
+  "keyFile": "/home/sandbox/.config/craft-worker/key",
+  "workDir": "/home/sandbox/work",
+  "slots": 2,
+  "images": { "rust-stable": "docker.io/library/rust@sha256:<digest>" },
+  "runtime": "podman",
+  "limits": { "cpus": 4, "memoryGb": 8, "pids": 1024, "minFreeDiskGb": 20 },
+  "fetchNetwork": "pasta",
+  "display": false,
+  "gpu": false
+}
+```
+
+Only `coordinatorUrl`, `keyFile` and `workDir` are required. `workDir` must not contain commas, colons or spaces. Other keys: `userns` (default `keep-id`), `maxSourceMb` (300), `maxStepSec` (14400).
+
+Then install `deploy/craft-worker.service` as a systemd user unit of the sandbox user (the file's header lists the steps).
+
+### Toolchain images
+
+`images` maps a toolchain name (what tasks `require`) to an image. The defaults are `rust-stable` = `docker.io/library/rust:1-bookworm` and `node-24` = `docker.io/library/node:24-bookworm`. Tags move, so pin each image to a digest:
+
+```
+podman pull docker.io/library/rust:1-bookworm
+podman image inspect --format '{{index .RepoDigests 0}}' docker.io/library/rust:1-bookworm
+```
+
+Put the printed `...@sha256:...` reference into `images`. The reported capabilities list the keys of `images`. A task that requires several toolchains runs in the first one that has an image.
+
+### What a step runs in
+
+Every step is `podman run --rm` with: `--network none` (the `fetchNetwork` for steps marked `fetch`), `--read-only` root with a 2 GB tmpfs on `/tmp`, `--cap-drop all`, `--security-opt no-new-privileges`, `--userns keep-id`, `--cpus`, `--memory` (swap equal), `--pids-limit`, and four bind mounts: `/src` (read-only source), `/target` (build output), `/cache` (CARGO_HOME) and `/out` (artifacts). No other mounts and no environment from the host. A step that exceeds its timeout is killed and recorded as timed out; a failing step ends the plan. The work dir and containers are removed after each task and at worker start.
+
+The disk check runs before every claim: below `minFreeDiskGb` (20) free on the work dir's file system, the worker claims nothing and reports `disk N GB free (needs 20)` as its paused reason.
+
+### Crate cache
+
+The shared crate cache (`<workDir>/crate-cache`) is never mounted into a container. Each task gets its own `CARGO_HOME`, seeded by copying `.crate` files from the shared cache and deleted with the task. After a task, only new regular `*.crate` files are copied back (no sources, index, config or binaries). Cargo checks every `.crate` against the checksum in the `Cargo.lock` of the task that uses it, so a planted file cannot reach another task's build. Build output (`/target`) is never shared between tasks.
+
+`rustPlan()` (`src/worker/rust.ts`) returns the Rust steps: `fetch deps` (`cargo fetch --locked`, network), then `build` and `test` with `--offline --locked`. The source is read-only, so `Cargo.lock` must be committed.
+
+### Remote hosts
+
+A remote worker is the same program with a config whose `coordinatorUrl` points to the coordinator's worker listener (`CRAFT_AUTO_WORKER_LISTEN`, exposed over the tailnet behind TLS) and its own key. Register it as another environment; the coordinator hands tasks to whichever environment has a free slot that satisfies the task's requirements.
+
 ## Similar items and semantic search
 
 `craft-auto embed [--all] [--threads N] [--batch N]` embeds every tracked item whose text changed since its last embedding (`--all`: every tracked item) into `item_embeddings`, and removes vectors of items that left the mirror or the tracked repos. Each batch commits on its own, so an interrupted run continues where it stopped. The dashboard reads the table for "Similar items" on the Item page and for the search box's meaning toggle; it embeds search queries, and items without a vector yet, itself.
