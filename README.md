@@ -202,7 +202,7 @@ The disk check runs before every claim: below `minFreeDiskGb` (20) free on the w
 
 ### Crate cache
 
-The shared crate cache (`<workDir>/crate-cache`) is never mounted into a container. Each task gets its own `CARGO_HOME`, seeded by copying `.crate` files from the shared cache and deleted with the task. After a task, only new regular `*.crate` files are copied back (no sources, index, config or binaries). Cargo checks every `.crate` against the checksum in the `Cargo.lock` of the task that uses it, so a planted file cannot reach another task's build. Build output (`/target`) is never shared between tasks.
+The shared crate cache (`<workDir>/crate-cache`) is never mounted into a container. Each task gets its own `CARGO_HOME`, seeded by copying `.crate` files from the shared cache and deleted with the task. Cargo does not re-verify files already in its cache, so nothing a task wrote is trusted. Right after each `fetch` step, before any build script or test has run, the worker process on the host admits a file to the shared cache only if it is a regular `.crate` in the official crates.io registry directory (`index.crates.io-*`) and its sha256 equals the checksum in the crates.io sparse index (fetched over HTTPS, looked up once per crate name). Other registries, git sources, anything written by offline steps and anything the index lookup cannot confirm are never admitted. Build output (`/target`) is never shared between tasks.
 
 `rustPlan()` (`src/worker/rust.ts`) returns the Rust steps: `fetch deps` (`cargo fetch --locked`, network), then `build` and `test` with `--offline --locked`. The source is read-only, so `Cargo.lock` must be committed.
 

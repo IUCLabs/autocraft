@@ -3,7 +3,7 @@
 import { randomBytes } from "node:crypto";
 import { globSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { basename, join, relative, sep } from "node:path";
-import { promoteCargoHome, seedCargoHome } from "./cache.ts";
+import { admitCrates, CrateVerifier, seedCargoHome } from "./cache.ts";
 import type { WorkerConfig } from "./config.ts";
 import { removeContainer, runContainer, type RunOutcome } from "./container.ts";
 import { downloadAndExtract } from "./tarball.ts";
@@ -15,6 +15,8 @@ export type TaskSink = {
 };
 
 export type ExecResult = { results: StepResult[]; summary: string; cancelled: boolean };
+
+let defaultVerifier: CrateVerifier | undefined;
 
 export function taskDir(cfg: WorkerConfig, id: number): string {
   return join(cfg.workDir, `task-${id}`);
@@ -82,8 +84,9 @@ export function collectArtifacts(out: string, globs: string[], taken: Set<string
   return found;
 }
 
-export async function executeTask(cfg: WorkerConfig, task: ClaimedTask, sink: TaskSink, signal: AbortSignal, o: { fetchImpl?: typeof fetch; note?: (s: string) => void } = {}): Promise<ExecResult> {
+export async function executeTask(cfg: WorkerConfig, task: ClaimedTask, sink: TaskSink, signal: AbortSignal, o: { fetchImpl?: typeof fetch; note?: (s: string) => void; crates?: CrateVerifier } = {}): Promise<ExecResult> {
   const note = o.note ?? (() => {});
+  const crates = o.crates ?? (defaultVerifier ??= new CrateVerifier());
   const dir = taskDir(cfg, task.id);
   const results: StepResult[] = [];
   const names: string[] = [];
@@ -144,15 +147,18 @@ export async function executeTask(cfg: WorkerConfig, task: ClaimedTask, sink: Ta
       for (const f of files) {
         await sink.artifact(f.name, readFileSync(f.path), CONTENT_TYPES[f.name.slice(f.name.lastIndexOf(".")).toLowerCase()] ?? "application/octet-stream");
       }
+      if (step.network === "fetch") {
+        // Before any offline step (build scripts, tests) can touch the cache.
+        try {
+          await admitCrates(join(paths.cache, "cargo"), cacheDir(cfg), crates, (s) => void emit(step.name, `${s}\n`));
+        } catch (e) {
+          note(`crate cache admission failed: ${(e as Error).message}`);
+        }
+      }
       if (outcome.timedOut || outcome.exitCode !== 0) {
         failed = outcome.timedOut ? `${step.name} timed out` : `${step.name} failed (exit ${outcome.exitCode})`;
         break;
       }
-    }
-    try {
-      promoteCargoHome(join(paths.cache, "cargo"), cacheDir(cfg));
-    } catch (e) {
-      note(`crate cache promotion failed: ${(e as Error).message}`);
     }
     if (cancelled) return { results, summary: "cancelled", cancelled: true };
     return { results, summary: failed ?? `${results.length} step${results.length === 1 ? "" : "s"} passed`, cancelled: false };

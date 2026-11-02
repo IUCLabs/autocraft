@@ -23,12 +23,16 @@ if (cmd === "ps") {
   const mounts = argv.flatMap((a, i) => (argv[i - 1] === "--mount" ? [a] : []));
   const outMount = mounts.find((m) => m.includes("target=/out"));
   const out = outMount.match(/source=([^,]+)/)[1];
+  const cache = mounts.find((m) => m.includes("target=/cache")).match(/source=([^,]+)/)[1];
   let code = 0;
   for (const op of ops.slice(ops[0] === "do" ? 1 : 0)) {
     const [k, a, ...rest] = op.split(":");
     const b = rest.join(":");
     if (k === "echo") console.log([a, b].filter(Boolean).join(":"));
-    else if (k === "exit") code = Number(a);
+    else if (k === "cache") {
+      mkdirSync(dirname(join(cache, a)), { recursive: true });
+      writeFileSync(join(cache, a), b);
+    } else if (k === "exit") code = Number(a);
     else if (k === "write") {
       mkdirSync(dirname(join(out, a)), { recursive: true });
       writeFileSync(join(out, a), b);

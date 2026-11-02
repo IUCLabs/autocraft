@@ -5,7 +5,9 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { after, before, describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { promoteCargoHome, seedCargoHome } from "../src/worker/cache.ts";
+import { createHash } from "node:crypto";
+import { createServer } from "node:http";
+import { CrateVerifier, admitCrates, indexPath, seedCargoHome } from "../src/worker/cache.ts";
 import { parseWorkerConfig, type WorkerConfig } from "../src/worker/config.ts";
 import { runArgs } from "../src/worker/container.ts";
 import { executeTask, removeStaleWorkDirs, type TaskSink } from "../src/worker/executor.ts";
@@ -239,29 +241,78 @@ describe("executor", () => {
 });
 
 describe("crate cache", () => {
-  const crate = (home: string, file: string, data = "c") => {
-    const d = join(home, "registry/cache/index.crates.io-abc");
-    mkdirSync(d, { recursive: true });
-    writeFileSync(join(d, file), data);
+  const sha = (s: string) => createHash("sha256").update(s).digest("hex");
+  const IDX = "registry/cache/index.crates.io-abc123";
+  let indexUrl = "";
+  let server: ReturnType<typeof createServer>;
+  const index = new Map<string, string>(); // path -> body
+  before(async () => {
+    server = createServer((req, res) => {
+      const b = index.get((req.url ?? "").slice(1));
+      res.writeHead(b === undefined ? 404 : 200).end(b);
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    indexUrl = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+    const line = (name: string, vers: string, data: string) => JSON.stringify({ name, vers, cksum: sha(data) }) + "\n";
+    index.set(indexPath("good"), line("good", "1.0.0", "GOOD"));
+    index.set(indexPath("late"), line("late", "1.0.0", "LATE"));
+    index.set(indexPath("bad"), line("bad", "1.0.0", "REAL"));
+    index.set(indexPath("other"), line("other", "1.0.0", "OTHER"));
+    index.set(indexPath("my-crate"), line("my-crate", "2.1.0-rc.1", "MC"));
+  });
+  after(() => void server.close());
+  const put = (home: string, rel: string, data: string) => {
+    mkdirSync(dirname(join(home, rel)), { recursive: true });
+    writeFileSync(join(home, rel), data);
   };
+  const shared = (cfg: WorkerConfig) => join(cfg.workDir, "crate-cache");
 
-  test("only .crate files go back to the shared cache; seeding copies, never links", () => {
-    const shared = join(root, "shared");
-    const task = join(root, "taskhome");
-    crate(task, "serde-1.0.0.crate");
-    crate(task, "evil.sh");
-    mkdirSync(join(task, "registry/src/x"), { recursive: true });
-    writeFileSync(join(task, "registry/src/x/lib.rs"), "planted");
-    mkdirSync(join(task, "bin"), { recursive: true });
-    writeFileSync(join(task, "bin/tool"), "planted");
-    assert.equal(promoteCargoHome(task, shared), 1);
-    assert.deepEqual(readdirSync(shared), ["registry"]);
-    assert.deepEqual(readdirSync(join(shared, "registry/cache/index.crates.io-abc")), ["serde-1.0.0.crate"]);
-    const next = join(root, "taskhome2");
-    seedCargoHome(shared, next);
-    assert.deepEqual(readdirSync(join(next, "registry")), ["cache"]);
-    writeFileSync(join(next, "registry/cache/index.crates.io-abc/serde-1.0.0.crate"), "tampered");
-    assert.equal(readFileSync(join(shared, "registry/cache/index.crates.io-abc/serde-1.0.0.crate"), "utf8"), "c");
+  test("indexPath follows the sparse index layout", () => {
+    assert.deepEqual(["a", "ab", "abc", "serde"].map(indexPath), ["1/a", "2/ab", "3/a/abc", "se/rd/serde"]);
+  });
+
+  test("only crates.io files with a matching checksum are admitted; seeding copies", async () => {
+    const sh = join(root, `sh-${++n}`);
+    const home = join(root, `home-${n}`);
+    put(home, `${IDX}/good-1.0.0.crate`, "GOOD");
+    put(home, `${IDX}/my-crate-2.1.0-rc.1.crate`, "MC");
+    put(home, `${IDX}/bad-1.0.0.crate`, "FAKE");
+    put(home, `${IDX}/unknown-1.0.0.crate`, "X");
+    put(home, "registry/cache/my-registry-ff00/other-1.0.0.crate", "OTHER");
+    put(home, "registry/cache/index.crates.io.evil-ff/other-1.0.0.crate", "OTHER");
+    put(home, "registry/src/x/lib.rs", "planted");
+    put(home, "git/db/x", "planted");
+    const notes: string[] = [];
+    const v = new CrateVerifier(indexUrl);
+    assert.equal(await admitCrates(home, sh, v, (s) => notes.push(s)), 2);
+    assert.deepEqual(readdirSync(join(sh, IDX)).sort(), ["good-1.0.0.crate", "my-crate-2.1.0-rc.1.crate"]);
+    assert.deepEqual(readdirSync(join(sh, "registry/cache")), ["index.crates.io-abc123"]);
+    assert.ok(notes.some((x) => x.includes("bad-1.0.0.crate") && x.includes("checksum")));
+    assert.ok(notes.some((x) => x.includes("unknown-1.0.0.crate")));
+    const next = join(root, `home-${++n}`);
+    seedCargoHome(sh, next);
+    writeFileSync(join(next, IDX, "good-1.0.0.crate"), "tampered");
+    assert.equal(readFileSync(join(sh, IDX, "good-1.0.0.crate"), "utf8"), "GOOD");
+  });
+
+  test("an unreachable index admits nothing", async () => {
+    const sh = join(root, `sh-${++n}`);
+    const home = join(root, `home-${n}`);
+    put(home, `${IDX}/good-1.0.0.crate`, "GOOD");
+    assert.equal(await admitCrates(home, sh, new CrateVerifier("http://127.0.0.1:1"), () => {}), 0);
+    assert.ok(!existsSync(sh));
+  });
+
+  test("a crate written by an offline step is never admitted; the fetch step's is", async () => {
+    const cfg = mkCfg();
+    const plan: TaskStep[] = [
+      step("fetch deps", [`cache:cargo/${IDX}/good-1.0.0.crate:GOOD`, `cache:cargo/${IDX}/bad-1.0.0.crate:FAKE`], { network: "fetch" }),
+      // correct content for the index, but written where untrusted code runs
+      step("build", [`cache:cargo/${IDX}/late-1.0.0.crate:LATE`]),
+    ];
+    const r = await executeTask(cfg, mkTask(30, plan), sink().s, live(), { crates: new CrateVerifier(indexUrl) });
+    assert.equal(r.summary, "2 steps passed");
+    assert.deepEqual(readdirSync(join(shared(cfg), IDX)), ["good-1.0.0.crate"]);
   });
 });
 
