@@ -27,20 +27,23 @@ flowchart TD
   queue{"Merge queue<br/>bugfix or infra, size S/M,<br/>whitelisted author, green CI,<br/>mergeable?"}
   mergeq{{"Merge?<br/>decision"}}
   merge["Merge<br/>safe-merge<br/>per-repo merge approval"]
-  fixiss["Fix issues (planned)<br/>clear bugs without a PR<br/>our patch + regression test<br/>sandbox build and test<br/>PR from our fork"]
+  kind{"Pull request<br/>or issue?"}
+  fixiss["Fix<br/>clear bugs without a PR<br/>Sonnet patch + regression test<br/>tested in the sandbox<br/>PR from our fork<br/>per-repo fix approval"]
 
   sync --> embed --> dups --> classify --> priority
   dups -- "duplicate pair" --> dupdec
   dupdec -- "duplicate: close" --> act
   dupdec -. "open or closed:<br/>item held" .-> dupheld
   dupheld -. "not a duplicate:<br/>released" .-> classify
-  dupheld -. "held out of Decide, Review,<br/>Verify, Fix-up, Fix issues" .- decide
+  dupheld -. "held out of Decide, Review,<br/>Verify, Fix-up, Fix" .- decide
   dups -. "duplicate count raises<br/>the original's priority" .-> priority
   classify -- "needs decision,<br/>disagreement" --> decide
   priority --> decide
   decide -- "type settled" --> label
   decide -- "out of scope" --> act
-  label --> review
+  label --> kind
+  kind -- "pull request" --> review
+  kind -- "issue" --> fixiss
   review -- "take-fix" --> fixup
   fixup -- "new head" --> review
   fixup -- "cannot push" --> hold
@@ -53,31 +56,36 @@ flowchart TD
   queue -- "rule met" --> merge
   queue -- "otherwise" --> mergeq
   mergeq -- "merge" --> merge
-  fixiss -. "opens a PR" .-> review
+  fixiss -- "our PR" --> review
+  fixiss -- "not a clear fix" --> hold
 
   class decide,closeq,mergeq,dupdec person
   class embed,classify,priority,dups,review,verify,vfail model
   class fixup,label,act,merge write
   class fixiss sandbox
+  class kind route
   classDef person fill:#fff1c7,stroke:#a87a00,color:#1c1c1c
   classDef model fill:#dbe8ff,stroke:#2f62c9,color:#1c1c1c
   classDef sandbox fill:#d9f2dc,stroke:#2a7d3a,color:#1c1c1c
   classDef write fill:#fddede,stroke:#b8323f,color:#1c1c1c
+  classDef route fill:#ffffff,stroke:#6b6b6b,color:#1c1c1c
 ```
 
 1. **Sync.** Every issue, PR and comment is mirrored into the local database each minute. Later stages read the mirror. See [Stages](#stages).
-2. **Embed.** Each item gets an embedding vector, so similar items can be found. See [Duplicates](#duplicates).
-3. **Duplicates.** Embedding neighbours are paired up and Jev or Haiku checks each pair. A confirmed pair becomes a duplicate decision for the operator. The newer, non-canonical item is held out of Decide, Review, Verify, Fix-up and Fix issues while that decision is open or answered close; "not a duplicate" releases it. An answer of close goes on to Act. The number of duplicates raises the original's priority. See [Duplicates](#duplicates).
-4. **Classify.** Jev gives each open item a type label and two flags; Haiku gives a second opinion where Jev is unsure. See [Stages](#stages).
-5. **Priority.** Jev scores each item's impact and reach. The score orders all later work, so the most useful items go first. See [Priority](#priority).
-6. **Decide.** Items that need a decision, and items where the classifiers disagree, get a Sonnet summary. The operator answers on the dashboard. Out-of-scope answers go on to Act. See [Scope decisions](#scope-decisions).
-7. **Label.** Settled type labels are written to GitHub, one repo at a time, once the operator has approved labels for that repo. See [Label stage commands](#label-stage-commands).
-8. **Review.** Sonnet reviews the PRs we want and answers take, take-fix, hold or close. See [Stage 5: Review](#stage-5-review).
-9. **Fix-up.** For take-fix, Sonnet writes a patch for the contributor's branch and we push it where the repo's push approval and the branch allow. If we cannot push, the PR is held. The PR is then reviewed again at its new head. See [Fix-ups](#fix-ups).
-10. **Close.** For close, the operator answers a "Close this PR?" decision. A yes goes to Act, which posts a short comment and closes the PR once the repo's comment approval is given. See [Act: comments and closes](#act-comments-and-closes).
-11. **Verify.** For take, Sonnet plans the checks: green CI is enough, targeted tests, or a regression test. Build tasks run in the sandbox build environment, and exit codes decide pass or fail. A failure gets a Haiku summary and the PR is held. See [Stage: Verify](#stage-verify).
-12. **Merge queue and Merge.** A verified PR that is a bugfix or infra change, size S or M, by a whitelisted author, with green CI and no conflicts, goes straight to the merge step. Any other PR becomes a "Merge?" decision. The merge runs through `safe-merge` once the repo's merge approval is given. See [Stage 6: Integrate](#stage-6-integrate).
-13. **Fix issues (planned).** For a clear bug without a PR, we write a patch and a regression test, build and test it in the sandbox, and open a PR from our fork. That PR enters Review like any other.
+2. **Duplicates.** Each item gets an embedding vector; its nearest neighbours are paired up and Jev or Haiku checks each pair. A confirmed pair becomes a duplicate decision for the operator. The newer, non-canonical item is held out of Decide, Review, Verify, Fix-up and Fix issues while that decision is open or answered close; "not a duplicate" releases it. An answer of close goes on to Act. The number of duplicates raises the original's priority. See [Duplicates](#duplicates).
+3. **Classify.** Jev gives each open item a type label and two flags; Haiku gives a second opinion where Jev is unsure. See [Stages](#stages).
+4. **Priority.** Jev scores each item's impact and reach. The score orders all later work, so the most useful items go first. See [Priority](#priority).
+5. **Decide.** Where the classification is settled (Jev at 90 % or more, or Haiku agreeing), the pipeline goes on by itself. Items that need a decision, and items where the classifiers disagree, get a Sonnet summary. The operator answers on the dashboard. Out-of-scope answers go on to Act. See [Scope decisions](#scope-decisions).
+6. **Label.** Settled type labels are written to GitHub, one repo at a time, once the operator has approved labels for that repo. See [Label stage commands](#label-stage-commands).
+
+From here the path depends on the item: pull requests go to Review, issues go to Fix, and both end in Verify and the merge queue.
+
+7. **Review** (pull requests). Sonnet reviews the PRs we want and answers take, take-fix, hold or close. See [Stage 5: Review](#stage-5-review).
+   - **Fix-up.** For take-fix, Sonnet writes a patch for the contributor's branch and we push it where the repo's push approval and the branch allow. If we cannot push, the PR is held. The PR is then reviewed again at its new head. See [Fix-ups](#fix-ups).
+   - **Close.** For close, the operator answers a "Close this PR?" decision. A yes goes to Act, which posts a short comment and closes the PR once the repo's comment approval is given. See [Act: comments and closes](#act-comments-and-closes).
+8. **Fix** (issues). For a clear bug without a PR, Sonnet writes a patch and a regression test, the sandbox builds and tests them, and we open a PR from our fork, once the repo's fix approval is given. That PR goes to Review like any other. See [Stage 7: Fix issues](#stage-7-fix-issues).
+9. **Verify.** For take, Sonnet plans the checks: green CI is enough, targeted tests, or a regression test. Build tasks run in the sandbox build environment, and exit codes decide pass or fail. A failure gets a Haiku summary and the PR is held. See [Stage: Verify](#stage-verify).
+10. **Merge queue and Merge.** A verified PR that is a bugfix or infra change, size S or M, by a whitelisted author, with green CI and no conflicts, goes straight to the merge step. Any other PR becomes a "Merge?" decision. The merge runs through `safe-merge` once the repo's merge approval is given. See [Stage 6: Integrate](#stage-6-integrate).
 
 ## Stages
 
