@@ -2,7 +2,10 @@
 import { spawnSync } from "node:child_process";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { DatabaseSync, SQLInputValue } from "node:sqlite";
-import { connect } from "./db.ts";
+import { closeSync, mkdirSync, openSync, readFileSync, statSync, unlinkSync, writeSync } from "node:fs";
+import { homedir } from "node:os";
+import { basename, dirname, join } from "node:path";
+import { connect, dbPath } from "./db.ts";
 import { trackedNames } from "./repos.ts";
 
 const ORG = "storytold";
@@ -116,7 +119,7 @@ export class Client {
       await this.sleepUntilReset("rate limit exhausted");
       throw new Transient("rate limited");
     }
-    if (r.errors.length && !r.data?.repository && !r.data?.organization) {
+    if (r.errors.length && !r.data?.repository && !r.data?.organization && !r.data?.search) {
       if (/node_limit|resource_limits|timeout|something went wrong/.test(r.text)) throw new Transient("query too heavy");
       throw new Error(`graphql error: ${JSON.stringify(r.errors).slice(0, 500)}`);
     }
@@ -133,7 +136,7 @@ export class Client {
 }
 
 // Newest first, lazily: stopping early saves requests. Halves the page size on transient errors.
-async function* fetchPages(client: Client, kind: Kind, detail: Detail, name: string, states: string[]): AsyncGenerator<Node[]> {
+async function* fetchPages(client: Querier, kind: Kind, detail: Detail, name: string, states: string[]): AsyncGenerator<Node[]> {
   const query = itemsQuery(kind, detail);
   let size = detail === "full" ? FULL_PAGE : LIGHT_PAGE;
   let cursor: string | null = null;
@@ -234,7 +237,7 @@ function writePage(db: DatabaseSync, repo: string, kind: Kind, detail: Detail, n
   }
 }
 
-async function listRepos(client: Client): Promise<Node[]> {
+async function listRepos(client: Querier): Promise<Node[]> {
   const repos: Node[] = [];
   let after: string | null = null;
   for (;;) {
@@ -248,7 +251,7 @@ async function listRepos(client: Client): Promise<Node[]> {
 const iso = (d: Date): string => d.toISOString().replace(/\.\d+Z$/, "Z");
 
 // high_water is written only when the whole repo finished, so a crash leaves the repo incomplete.
-async function syncRepo(db: DatabaseSync, client: Client, name: string, full: boolean): Promise<number> {
+async function syncRepo(db: DatabaseSync, client: Querier, name: string, full: boolean): Promise<number> {
   const row = db.prepare("SELECT high_water FROM repos WHERE name=?").get(name) as { high_water: string | null } | undefined;
   const high = row?.high_water ?? null;
   const cutoff = high && !full ? iso(new Date(new Date(high).getTime() - OVERLAP_MS)) : null;
@@ -279,20 +282,136 @@ export function selectSyncRepos(listed: string[], tracked: string[], opts: { onl
   return opts.all ? listed : listed.filter((n) => tracked.includes(n));
 }
 
-async function sync(args: string[]): Promise<void> {
-  const only: string[] = [];
-  let full = false;
-  let all = false;
-  let reserve = 1000;
-  for (let i = 0; i < args.length; i++) {
-    if (args[i] === "--repo") only.push(args[++i]);
-    else if (args[i] === "--full") full = true;
-    else if (args[i] === "--all") all = true;
-    else if (args[i] === "--reserve") reserve = Number(args[++i]);
-    else throw new Error(`unknown argument ${args[i]}\nusage: sync [--repo NAME ...] [--all] [--full] [--reserve N]`);
+const SEARCH_OVERLAP_MS = 2 * 60 * 1000;
+const SEARCH_PAGE = 20;
+const SEARCH_CAP = 1000;
+const META_REFRESH_MS = 15 * 60 * 1000;
+const LOCK_STALE_MS = 6 * 3600 * 1000;
+
+const SEARCH_QUERY = `
+query($q: String!, $first: Int!, $after: String) {
+  rateLimit { cost remaining resetAt }
+  search(type: ISSUE, query: $q, first: $first, after: $after) {
+    issueCount
+    pageInfo { hasNextPage endCursor }
+    nodes {
+      __typename
+      ... on Issue { repository { name } ${COMMON} stateReason ${COMMENTS} }
+      ... on PullRequest { repository { name } ${COMMON} ${PR_EXTRA} ${COMMENTS} ${PR_FULL} }
+    }
   }
-  const db = connect();
-  const client = new Client(reserve);
+}`;
+
+// GitHub's search index lags a little, so each query starts before the stored high water.
+export function searchSince(orgHighWater: string): string {
+  return iso(new Date(new Date(orgHighWater).getTime() - SEARCH_OVERLAP_MS));
+}
+
+export type Querier = { query(query: string, variables: object): Promise<Node>; spent: number; remaining: number | null };
+
+const getSetting = (db: DatabaseSync, key: string): string | null =>
+  ((db.prepare("SELECT value FROM settings WHERE key=?").get(key) as { value: string } | undefined)?.value) ?? null;
+const setSetting = (db: DatabaseSync, key: string, value: string): void => {
+  db.prepare("INSERT INTO settings (key, value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(key, value);
+};
+
+// One org-wide search for everything updated since `since`. Returns the number of items
+// written, or null when the search would hit its 1,000-result cap (nothing is written then).
+export async function syncBySearch(db: DatabaseSync, client: Querier, tracked: string[], since: string): Promise<number | null> {
+  const q = `org:${ORG} updated:>=${since}`;
+  const trackedSet = new Set(tracked);
+  let cursor: string | null = null;
+  let size = SEARCH_PAGE;
+  let count = 0;
+  let first = true;
+  let failures = 0;
+  const newest = new Map<string, string>();
+  for (;;) {
+    let conn: Node;
+    try {
+      conn = (await client.query(SEARCH_QUERY, { q, first: size, after: cursor })).search;
+    } catch (e) {
+      if (!(e instanceof Transient)) throw e;
+      if (size > MIN_PAGE) size = Math.max(MIN_PAGE, size >> 1);
+      else if (++failures > 6) throw e;
+      else await sleep(Math.min(30_000 * failures, 300_000));
+      continue;
+    }
+    if (first && conn.issueCount > SEARCH_CAP) return null;
+    first = false;
+    const groups = new Map<string, Node[]>();
+    for (const n of conn.nodes) {
+      if (!n?.repository || !trackedSet.has(n.repository.name)) continue;
+      const kind: Kind = n.__typename === "PullRequest" ? "pr" : "issue";
+      const detail: Detail = n.state === "OPEN" ? "full" : "light";
+      const key = `${n.repository.name}\t${kind}\t${detail}`;
+      groups.set(key, [...(groups.get(key) ?? []), n]);
+      if (n.updatedAt > (newest.get(n.repository.name) ?? "")) newest.set(n.repository.name, n.updatedAt);
+    }
+    for (const [key, nodes] of groups) {
+      const [repo, kind, detail] = key.split("\t");
+      writePage(db, repo, kind as Kind, detail as Detail, nodes);
+      count += nodes.length;
+    }
+    if (!conn.pageInfo.hasNextPage) break;
+    cursor = conn.pageInfo.endCursor;
+  }
+  const bump = db.prepare("UPDATE repos SET high_water=? WHERE name=? AND (high_water IS NULL OR high_water < ?)");
+  for (const [repo, t] of newest) bump.run(t, repo, t);
+  return count;
+}
+
+// A lock file with the owner's pid. Returns a release function, or null when another live run holds it.
+export function acquireLock(path: string): (() => void) | null {
+  mkdirSync(dirname(path), { recursive: true });
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const fd = openSync(path, "wx");
+      writeSync(fd, String(process.pid));
+      closeSync(fd);
+      return () => {
+        try {
+          unlinkSync(path);
+        } catch {
+          // already gone
+        }
+      };
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+    }
+    let live = false;
+    try {
+      const pid = Number(readFileSync(path, "utf8"));
+      const fresh = Date.now() - statSync(path).mtimeMs < LOCK_STALE_MS;
+      if (pid > 0 && fresh) {
+        try {
+          process.kill(pid, 0);
+          live = true;
+        } catch (err) {
+          live = (err as NodeJS.ErrnoException).code === "EPERM";
+        }
+      }
+    } catch {
+      // vanished or unreadable: treat as stale
+    }
+    if (live) return null;
+    try {
+      unlinkSync(path);
+    } catch {
+      // another run removed it first
+    }
+  }
+  return null;
+}
+
+export function lockPath(): string {
+  const dir = process.env.CRAFT_AUTO_LOCK_DIR ?? join(homedir(), ".cache/craft-automation-logs");
+  return join(dir, `sync-${basename(dbPath())}.lock`);
+}
+
+type SyncOpts = { only: string[]; all: boolean; full: boolean; perRepo: boolean };
+
+async function refreshRepoList(db: DatabaseSync, client: Querier): Promise<string[]> {
   const repos = await listRepos(client);
   const upsert = db.prepare(`INSERT INTO repos (name, visibility, default_branch, open_prs, open_issues) VALUES (?,?,?,?,?)
     ON CONFLICT(name) DO UPDATE SET visibility=excluded.visibility, default_branch=excluded.default_branch,
@@ -300,15 +419,69 @@ async function sync(args: string[]): Promise<void> {
   for (const r of repos) {
     upsert.run(r.name, r.visibility.toLowerCase(), r.defaultBranchRef?.name ?? null, r.pullRequests.totalCount, r.issues.totalCount);
   }
+  setSetting(db, "repos_refreshed_at", iso(new Date()));
+  return repos.map((r: Node) => r.name as string);
+}
+
+async function syncPerRepo(db: DatabaseSync, client: Querier, opts: SyncOpts): Promise<number> {
+  const listed = await refreshRepoList(db, client);
   const tracked = trackedNames(db);
-  const listed = repos.map((r: Node) => r.name as string);
-  const names = selectSyncRepos(listed, tracked, { only, all });
-  const gone = only.length || all ? [] : tracked.filter((n) => !listed.includes(n));
+  const names = selectSyncRepos(listed, tracked, opts);
+  const gone = opts.only.length || opts.all ? [] : tracked.filter((n) => !listed.includes(n));
   if (gone.length) console.log(`tracked but not in the org (archived or renamed): ${gone.join(", ")}`);
+  let total = 0;
   for (const name of names) {
     const before = client.spent;
-    const count = await syncRepo(db, client, name, full);
+    const count = await syncRepo(db, client, name, opts.full);
+    total += count;
     console.log(`${name}: ${count} items, ${client.spent - before} points used, ${client.remaining} left`);
+  }
+  return total;
+}
+
+// Runs one sync. `org_high_water` moves only after everything finished, and not for --repo runs.
+export async function runSync(db: DatabaseSync, client: Querier, opts: SyncOpts, now: Date = new Date()): Promise<{ mode: string; items: number }> {
+  const started = iso(now);
+  const orgHigh = getSetting(db, "org_high_water");
+  const tracked = trackedNames(db);
+  const synced = new Set((db.prepare("SELECT name FROM repos WHERE high_water IS NOT NULL").all() as { name: string }[]).map((r) => r.name));
+  const wantsSearch = !opts.only.length && !opts.all && !opts.full && !opts.perRepo && orgHigh !== null
+    && tracked.every((n) => synced.has(n));
+  let mode = "per-repo";
+  let items: number | null = null;
+  if (wantsSearch) {
+    items = await syncBySearch(db, client, tracked, searchSince(orgHigh as string));
+    if (items !== null) {
+      mode = "search";
+      const at = getSetting(db, "repos_refreshed_at");
+      if (!at || now.getTime() - new Date(at).getTime() >= META_REFRESH_MS) await refreshRepoList(db, client);
+    }
+  }
+  if (items === null) items = await syncPerRepo(db, client, opts);
+  if (!opts.only.length) setSetting(db, "org_high_water", started);
+  return { mode, items };
+}
+
+async function sync(args: string[]): Promise<void> {
+  const opts: SyncOpts = { only: [], all: false, full: false, perRepo: false };
+  let reserve = 1000;
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === "--repo") opts.only.push(args[++i]);
+    else if (args[i] === "--full") opts.full = true;
+    else if (args[i] === "--all") opts.all = true;
+    else if (args[i] === "--per-repo") opts.perRepo = true;
+    else if (args[i] === "--reserve") reserve = Number(args[++i]);
+    else throw new Error(`unknown argument ${args[i]}\nusage: sync [--repo NAME ...] [--all] [--full] [--per-repo] [--reserve N]`);
+  }
+  const release = acquireLock(lockPath());
+  if (!release) return;
+  try {
+    const db = connect();
+    const client = new Client(reserve);
+    const { mode, items } = await runSync(db, client, opts);
+    console.log(`sync: mode=${mode} items=${items} points=${client.spent} left=${client.remaining}`);
+  } finally {
+    release();
   }
 }
 
@@ -325,6 +498,6 @@ function syncStatus(): void {
 }
 
 export const commands = {
-  sync: { summary: "mirror issues and PRs of the storytold org: [--repo NAME ...] [--all] [--full] [--reserve N]", run: sync },
+  sync: { summary: "mirror issues and PRs of the storytold org: [--repo NAME ...] [--all] [--full] [--per-repo] [--reserve N] (default: one org-wide search for changes)", run: sync },
   "sync-status": { summary: "per repo: open PRs, open issues, mirrored rows, synced_at", run: syncStatus },
 };
