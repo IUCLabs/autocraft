@@ -10,6 +10,7 @@ import { HttpError } from "../server/util.ts";
 import type { Req } from "../types.ts";
 import { itemState } from "./decisions.ts";
 import { flowMembers } from "./flow.ts";
+import { excludeHidden, hiddenRepos } from "./visible.ts";
 
 const HAS_WORD = /[\p{L}\p{N}]/u;
 const quote = (s: string) => `"${s.replace(/"/g, "")}"`;
@@ -82,7 +83,7 @@ const list = (req: Req, key: string): string[] =>
 
 type Built = { where: string[]; statusWhere: string | null; statuses: SettledStatus[]; params: Record<string, SQLInputValue>; text: boolean };
 
-function build(db: DatabaseSync, req: Req): Built & { sort: ItemSort; desc: boolean; run: string | null } {
+function build(db: DatabaseSync, req: Req, hidden: string[]): Built & { sort: ItemSort; desc: boolean; run: string | null } {
   const q = req.query;
   const mode = q.get("mode") ?? "text";
   if (mode !== "text") throw new HttpError(400, "mode must be text");
@@ -92,6 +93,8 @@ function build(db: DatabaseSync, req: Req): Built & { sort: ItemSort; desc: bool
   const where: string[] = [];
   const fts = ftsQuery(q.get("q") ?? "");
   if (fts) params.q = fts;
+  const hide = excludeHidden("i.repo", hidden, params);
+  if (hide) where.push(hide);
   const repos = list(req, "repo");
   if (repos.length) {
     where.push(`i.repo IN (${repos.map((_, k) => `:repo${k}`).join(",")})`);
@@ -223,8 +226,8 @@ function statusCounts(db: DatabaseSync, b: Built & { run: string | null }, sql: 
   return { ...byStatus };
 }
 
-export function listItems(db: DatabaseSync, req: Req): ItemList {
-  const b = build(db, req);
+export async function listItems(db: DatabaseSync, req: Req): Promise<ItemList> {
+  const b = build(db, req, await hiddenRepos(db, req));
   const limit = Math.min(100, Math.max(1, Number(req.query.get("limit")) || 50));
   const offset = Math.max(0, Number(req.query.get("offset")) || 0);
   const from = (scored: boolean) => (b.text
@@ -285,14 +288,18 @@ const likeEscape = (s: string): string => s.replace(/[\\%_]/g, (c) => `\\${c}`);
 type Hit = { repo: string; number: number; kind: string; title: string | null; author: string | null; state: string };
 const hitOf = (r: Hit): SearchHit => ({ repo: r.repo, number: r.number, kind: r.kind === "pr" ? "pr" : "issue", title: r.title ?? "", author: r.author ?? "", state: itemState(r.state) });
 
-export function quickSearch(db: DatabaseSync, req: Req): SearchHit[] {
+export async function quickSearch(db: DatabaseSync, req: Req): Promise<SearchHit[]> {
   const q = (req.query.get("q") ?? "").trim().slice(0, 200);
   if (!q) return [];
   const ref = /^([A-Za-z0-9._-]+)?#(\d{1,9})$/.exec(q) ?? /^()(\d{1,9})$/.exec(q);
+  const hidden = await hiddenRepos(db, req);
+  const hp: Record<string, SQLInputValue> = {};
+  const hide = excludeHidden("repo", hidden, hp);
   let rows: Hit[];
   if (ref) {
     const where = ["CAST(number AS TEXT) LIKE :num"];
-    const params: Record<string, string> = { num: `${ref[2]}%` };
+    const params: Record<string, SQLInputValue> = { num: `${ref[2]}%`, ...hp };
+    if (hide) where.push(hide);
     if (ref[1]) {
       where.push("repo LIKE :repo ESCAPE '\\'");
       params.repo = `${likeEscape(ref[1])}%`;
@@ -305,7 +312,8 @@ export function quickSearch(db: DatabaseSync, req: Req): SearchHit[] {
     if (/^[A-Za-z0-9-]{2,39}$/.test(q)) {
       // main.items with the index named: through the scoping view the planner picks the repo index.
       rows = db.prepare(`SELECT repo, number, kind, title, author, state FROM main.items INDEXED BY items_author_nocase
-        WHERE author LIKE :p AND repo IN (SELECT name FROM main.tracked_repos) ORDER BY state <> 'OPEN', updated_at DESC LIMIT 5`).all({ p: `${q}%` }) as Hit[];
+        WHERE author LIKE :p AND repo IN (SELECT name FROM main.tracked_repos)${hide ? ` AND ${hide}` : ""}
+        ORDER BY state <> 'OPEN', updated_at DESC LIMIT 5`).all({ p: `${q}%`, ...hp }) as Hit[];
     }
     const fts = ftsQuery(q, true);
     if (!fts) return rows.map(hitOf);
@@ -314,11 +322,12 @@ export function quickSearch(db: DatabaseSync, req: Req): SearchHit[] {
     // Ordered by rowid, which FTS5 stops early on; ranking every match is too slow for common words.
     const look = db.prepare(`WITH hits AS (SELECT rowid AS rid FROM items_fts WHERE items_fts MATCH :q ORDER BY rowid DESC LIMIT 100)
       SELECT i.repo, i.number, i.kind, i.title, i.author, i.state
-      FROM hits h JOIN items i ON i.rowid = h.rid ORDER BY i.state <> 'OPEN', i.updated_at DESC LIMIT 20`);
-    let text = look.all({ q: `title : ${fts}` }) as Hit[];
+      FROM hits h JOIN items i ON i.rowid = h.rid${hide ? ` WHERE ${hide.replace("repo", "i.repo")}` : ""}
+      ORDER BY i.state <> 'OPEN', i.updated_at DESC LIMIT 20`);
+    let text = look.all({ q: `title : ${fts}`, ...hp }) as Hit[];
     if (text.length < 20) {
       const seenT = new Set(text.map((r) => `${r.repo}#${r.number}`));
-      text = [...text, ...(look.all({ q: fts }) as Hit[]).filter((r) => !seenT.has(`${r.repo}#${r.number}`))];
+      text = [...text, ...(look.all({ q: fts, ...hp }) as Hit[]).filter((r) => !seenT.has(`${r.repo}#${r.number}`))];
     }
     rows = [...rows, ...text.filter((r) => !have.has(`${r.repo}#${r.number}`))].slice(0, 20);
   }

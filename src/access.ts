@@ -18,6 +18,20 @@ export function listAccess(db: DatabaseSync): AccessRow[] {
   return db.prepare("SELECT login, role, added_by, added_at, note FROM access ORDER BY role, login COLLATE NOCASE").all() as AccessRow[];
 }
 
+// The access entry's GitHub id is stored at the first sign-in. Later sign-ins
+// must present the same id: a login that was renamed or released and taken by
+// someone else is not the person who was added.
+export function checkGithubId(db: DatabaseSync, login: string, id: number): "ok" | "bound" | "mismatch" {
+  const row = db.prepare("SELECT github_id FROM access WHERE login = ?").get(login) as { github_id: number | null } | undefined;
+  if (!row) return "mismatch";
+  if (row.github_id === null) {
+    const r = db.prepare("UPDATE access SET github_id = ? WHERE login = ? AND github_id IS NULL").run(id, login);
+    if (r.changes) return "bound";
+    return checkGithubId(db, login, id);
+  }
+  return Number(row.github_id) === id ? "ok" : "mismatch";
+}
+
 export function getAccess(db: DatabaseSync, login: string): AccessRow | undefined {
   return db.prepare("SELECT login, role, added_by, added_at, note FROM access WHERE login = ?").get(login) as AccessRow | undefined;
 }

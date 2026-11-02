@@ -14,6 +14,7 @@ export function dbPath(): string {
 // Columns added to existing tables after their first release. CREATE TABLE IF
 // NOT EXISTS leaves an older table as it was, so these are added here.
 const ADDED_COLUMNS: [table: string, column: string, type: string][] = [
+  ["access", "github_id", "INTEGER"],
   ["decisions", "summary", "TEXT"],
   ["decisions", "summary_by", "TEXT"],
   ["decisions", "summary_at", "TEXT"],

@@ -191,7 +191,8 @@ CREATE TABLE IF NOT EXISTS access (
   login TEXT PRIMARY KEY COLLATE NOCASE,
   role TEXT NOT NULL,                 -- operator | maintainer | viewer
   added_by TEXT, added_at TEXT,
-  note TEXT                           -- private
+  note TEXT,                          -- private
+  github_id INTEGER                   -- numeric GitHub user id, bound at the first sign-in; later sign-ins must match
 );
 
 CREATE TABLE IF NOT EXISTS sessions (
@@ -222,7 +223,7 @@ CREATE TABLE IF NOT EXISTS oauth_states (
 CREATE TABLE IF NOT EXISTS audit (
   at TEXT NOT NULL,
   login TEXT NOT NULL,
-  action TEXT NOT NULL,               -- answer | undo | adopt | opinion | opinion-retract | comment | override | rule | access-add | access-remove | access-role | session-revoke | sign-in | sign-in-refused | repo-track | repo-untrack | labels-approve | labels-revoke | merge-approve | merge-revoke | labels-apply | assign | merge | merge-refused | job-request | job-cancel | pipeline-switch | stage-limit
+  action TEXT NOT NULL,               -- answer | undo | adopt | opinion | opinion-retract | comment | override | rule | access-add | access-remove | access-role | session-revoke | sign-in | sign-in-refused (at most one row per login per hour; details.refused counts them) | repo-track | repo-untrack | labels-approve | labels-revoke | merge-approve | merge-revoke | labels-apply | assign | merge | merge-refused | job-request | job-cancel | pipeline-switch | stage-limit
   target TEXT,
   details TEXT                        -- JSON
 );

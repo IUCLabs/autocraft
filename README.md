@@ -35,7 +35,7 @@ The frontend is the React app in `web/`. Build it before serving: `pnpm -C web i
 | Variable | Meaning |
 |---|---|
 | `CRAFT_AUTO_BASE_URL` | Public origin of the dashboard, such as `https://dashboard.example.org` (no path). The OAuth App's callback URL must be exactly `<CRAFT_AUTO_BASE_URL>/auth/callback`. Required unless dev auth is on. |
-| `CRAFT_AUTO_LISTEN` | `host:port` to listen on. Default `127.0.0.1:8993`. |
+| `CRAFT_AUTO_LISTEN` | `host:port` to listen on. Default `127.0.0.1:8993`; with dev auth, `127.0.0.1:8994`. |
 | `CRAFT_AUTO_DB` | SQLite database path (the mirror database). |
 | `CRAFT_AUTO_WEB_DIST` | Directory of the built frontend. Default `web/dist` in the repo. |
 | `CRAFT_AUTO_SECRETS_FILE` | JSON file with `github_client_id`, `github_client_secret` and `session_key` (at least 32 characters, random). Must be mode 0600; the server refuses to start if it is missing, incomplete, or readable by group or others. |
@@ -50,7 +50,7 @@ The GitHub OAuth App needs no scopes, and expiring user tokens are supported: th
 
 ### Development sign-in
 
-With `CRAFT_AUTO_DEV_AUTH=1` the server uses a fake GitHub: `/auth/signin` shows a form that signs in as any login typed into it (the login must still be on the access list). It needs no secrets file and starts only on a loopback listen address. Repo permissions come from the JSON file named by `CRAFT_AUTO_DEV_PERMS`, read on every check: `{"<login>": {"<repo>": "write"}}` (values `admin`, `maintain`, `write`, `triage`, `read`). `CRAFT_AUTO_DEV_TOKEN_TTL` sets the fake access tokens' lifetime in seconds (default 8 hours). Open the dashboard as `http://localhost:<port>` so the browser accepts its `Secure` cookies.
+With `CRAFT_AUTO_DEV_AUTH=1` the server uses a fake GitHub: `/auth/signin` shows a form that signs in as any login typed into it (the login must still be on the access list). It needs no secrets file and starts only on a loopback listen address (default port 8994). If `CRAFT_AUTO_BASE_URL` is set it must be an `http://localhost` or `http://127.0.0.1` URL. The server answers 403 to any request that carries `X-Forwarded-For` or a `Host` that is not a loopback name. Repo permissions come from the JSON file named by `CRAFT_AUTO_DEV_PERMS`, read on every check: `{"<login>": {"<repo>": "write"}}` (values `admin`, `maintain`, `write`, `triage`, `read`). `CRAFT_AUTO_DEV_TOKEN_TTL` sets the fake access tokens' lifetime in seconds (default 8 hours). Open the dashboard as `http://localhost:<port>` so the browser accepts its `Secure` cookies.
 
 ### JSON API
 

@@ -5,13 +5,13 @@ import { isAbsolute, relative, resolve, sep } from "node:path";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import type { DatabaseSync } from "node:sqlite";
-import { LOGIN, getAccess } from "../../access.ts";
-import { audit } from "../audit.ts";
+import { LOGIN, checkGithubId, getAccess } from "../../access.ts";
+import { audit, auditRefusedSignIn } from "../audit.ts";
 import type { Req, Res, Route } from "../types.ts";
-import type { Config } from "./config.ts";
+import { isLoopbackHost, type Config } from "./config.ts";
 import { pkceChallenge, randomToken, safeEqual, TokenBox } from "./crypto.ts";
 import { ImageProxy } from "./images.ts";
-import { FakeProvider, providerFor, type Provider, type Tokens } from "./provider.ts";
+import { FakeProvider, providerFor, type GithubUser, type Provider, type Tokens } from "./provider.ts";
 import { createSession, deleteSession, loadSession, makeUser, pruneExpired, SESSION_TTL, type Session } from "./sessions.ts";
 import { esc, HttpError, parseCookies, plainPage, RateLimiter, safeReturnTo } from "./util.ts";
 
@@ -255,21 +255,26 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
       if (!row || !code || !safeEqual(cookieState, state) || Date.now() - Date.parse(row.created_at) > 600_000) {
         return { r: errorPage(nonce, 400, "Sign-in expired", "Start again from the sign-in link."), cookies: clear };
       }
-      let tokens: Tokens | null, login: string | null;
+      let tokens: Tokens | null, who: GithubUser | null;
       try {
         tokens = await provider.exchange(code, row.verifier, callbackUrl);
-        login = tokens ? await provider.login(tokens.access) : null;
+        who = tokens ? await provider.identity(tokens.access) : null;
       } catch (e) {
         console.error(`sign-in: ${(e as Error).message}`);
         return { r: errorPage(nonce, 502, "Sign-in failed", "GitHub did not answer. Try again in a minute."), cookies: clear };
       }
-      if (!tokens || !login) {
+      if (!tokens || !who) {
         return { r: errorPage(nonce, 400, "Sign-in failed", "GitHub did not accept the sign-in. Start again."), cookies: clear };
       }
+      const login = who.login;
       const access = getAccess(db, login);
       if (!access) {
-        audit(db, login, "sign-in-refused", login, { ip });
+        auditRefusedSignIn(db, login, { ip });
         return { r: errorPage(nonce, 403, "Not authorised", `The GitHub account ${login} is not on this dashboard's access list.`), cookies: clear };
+      }
+      if (checkGithubId(db, access.login, who.id) === "mismatch") {
+        auditRefusedSignIn(db, login, { ip, reason: "github-id-mismatch" });
+        return { r: errorPage(nonce, 403, "Not authorised", `The GitHub account ${login} is not the account that was added to this dashboard's access list.`), cookies: clear };
       }
       const id = createSession(db, box, access.login, tokens, req.headers["user-agent"]);
       audit(db, access.login, "sign-in", access.login, { ip });
@@ -319,6 +324,11 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
       if (Date.now() - lastPrune > 3_600_000) {
         lastPrune = Date.now();
         pruneExpired(db);
+      }
+      // Dev auth lets anyone who reaches the port sign in as any login, so
+      // a request that came through a proxy or under a public name is refused.
+      if (config.devAuth && (req.headers["x-forwarded-for"] !== undefined || !isLoopbackHost(req.headers.host))) {
+        return send(res, nonce, errorPage(nonce, 403, "Refused", "Development sign-in answers only on localhost."));
       }
       const url = new URL(req.url ?? "/", "http://dashboard.invalid");
       const cookies = parseCookies(req.headers.cookie);

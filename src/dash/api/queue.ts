@@ -3,9 +3,10 @@ import type { DatabaseSync } from "node:sqlite";
 import type { Mergeable, QueueList, QueueRow, QueueState, Tier, TypeLabel } from "../../../web/src/api/types.ts";
 import { latestRun } from "../../classify/settled.ts";
 import { buildQueue, countMerged, countStates, QUEUE_STATES, type QueueEntry } from "../../merge/queue.ts";
-import { trackedNames } from "../../repos.ts";
 import { HttpError } from "../server/util.ts";
+import { trackedNames } from "../../repos.ts";
 import type { Req } from "../types.ts";
+import { visibleRepos } from "./visible.ts";
 
 const TIER: Record<string, Tier> = { whitelisted: "whitelisted", not: "not", allow: "override-allow", deny: "override-deny" };
 const MERGEABLE: Record<string, Mergeable> = { MERGEABLE: "clean", CONFLICTING: "conflicts" };
@@ -35,7 +36,7 @@ function parseCursor(s: string | null): { repo: string; number: number } | undef
 const OPEN_TTL = 20_000;
 const openCache = new WeakMap<DatabaseSync, { key: string; at: number; open: QueueEntry[]; merged: number }>();
 
-function openQueue(db: DatabaseSync, repo: string | undefined, tracked: Set<string>, run: string | null): { open: QueueEntry[]; merged: number } {
+function openQueue(db: DatabaseSync, repo: string | undefined, hidden: string[], run: string | null): { open: QueueEntry[]; merged: number } {
   const sig = db.prepare(`SELECT (SELECT COUNT(*) || ':' || COALESCE(MAX(rowid), 0) FROM main.reviews) AS rv,
       (SELECT COUNT(*) || ':' || COALESCE(MAX(rowid), 0) FROM main.merges) AS mg,
       (SELECT COUNT(*) || ':' || COALESCE(MAX(answered_at), '') FROM main.decisions WHERE kind = 'merge') AS dc,
@@ -43,12 +44,12 @@ function openQueue(db: DatabaseSync, repo: string | undefined, tracked: Set<stri
       (SELECT MAX(rowid) FROM main.classifications) AS cl,
       (SELECT value FROM main.settings WHERE key = 'org_high_water') AS hw,
       (SELECT group_concat(name) FROM main.tracked_repos) AS tr`).get();
-  const key = JSON.stringify([sig, repo ?? null, run]);
+  const key = JSON.stringify([sig, repo ?? null, run, hidden]);
   const hit = openCache.get(db);
   const now = Date.now();
   if (hit && hit.key === key && now - hit.at < OPEN_TTL) return hit;
-  const open = buildQueue(db, { repo, merged: "exclude", run }).filter((e) => tracked.has(e.repo));
-  const built = { key, at: now, open, merged: countMerged(db, repo) };
+  const open = buildQueue(db, { repo, merged: "exclude", run, exclude: hidden });
+  const built = { key, at: now, open, merged: countMerged(db, repo, hidden) };
   openCache.set(db, built);
   return built;
 }
@@ -57,23 +58,24 @@ function openQueue(db: DatabaseSync, repo: string | undefined, tracked: Set<stri
 // records, so counts and the state filter need all of them) and cut into pages
 // by (repo, number). Merged PRs, the bulk of the table, are read a page at a time
 // and only when state=merged.
-export function queue(db: DatabaseSync, req: Req): QueueList {
+export async function queue(db: DatabaseSync, req: Req): Promise<QueueList> {
   const repo = req.query.get("repo") || undefined;
   const state = req.query.get("state") || undefined;
   const limit = Math.min(Math.max(Number(req.query.get("limit")) || 100, 1), 500);
   const after = parseCursor(req.query.get("after"));
   const run = latestRun(db);
-  const tracked = new Set(trackedNames(db));
-  if (repo && !tracked.has(repo)) throw new HttpError(404, `${repo} is not a tracked repo`);
+  const visible = new Set(await visibleRepos(db, req));
+  const hidden = trackedNames(db).filter((r) => !visible.has(r));
+  if (repo && !visible.has(repo)) throw new HttpError(404, `${repo} is not a tracked repo`);
   if (state && !(QUEUE_STATES as readonly string[]).includes(state)) throw new HttpError(400, `state must be one of ${QUEUE_STATES.join(", ")}`);
-  const { open, merged } = openQueue(db, repo, tracked, run);
+  const { open, merged } = openQueue(db, repo, hidden, run);
   // An open PR that we merged and the mirror has not seen merged yet counts as merged.
   const counts = countStates(open);
   counts.merged += merged;
   let page: QueueEntry[];
   let more: boolean;
   if (state === "merged") {
-    page = buildQueue(db, { repo, merged: "only", run, after, limit: limit + 1 }).filter((e) => tracked.has(e.repo));
+    page = buildQueue(db, { repo, merged: "only", run, after, limit: limit + 1, exclude: hidden });
     more = page.length > limit;
     page = page.slice(0, limit);
   } else {

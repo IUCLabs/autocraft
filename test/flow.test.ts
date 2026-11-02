@@ -61,7 +61,7 @@ const flowOf = (db: ReturnType<typeof build>, repo: string | null) =>
   buildFlow(readSummary(db, repo).counts, { repo, now: NOW, lastSync: null, run: null, countedAt: null, uncounted: 0, steps: [] });
 const counts = (n: FlowNode) => Object.fromEntries(n.branches.map((b) => [b.id, b.count]));
 
-test("a repo not approved for merging moves its ready PRs out of 'May merge now'", () => {
+test("a repo not approved for merging moves its ready PRs out of 'May merge now'", async () => {
   const db = build();
   db.prepare("DELETE FROM settings WHERE key LIKE 'merge_approved:%'").run();
   refreshSummary(db);
@@ -69,7 +69,7 @@ test("a repo not approved for merging moves its ready PRs out of 'May merge now'
   assert.deepEqual([counts(merge).eligible, counts(merge).unapproved], [0, 1]);
 });
 
-test("flowchart counts every branch by the stages' own rules", () => {
+test("flowchart counts every branch by the stages' own rules", async () => {
   const db = build();
   const flow = flowOf(db, null);
   const node = (id: string) => flow.nodes.find((n) => n.id === id)!;
@@ -95,10 +95,10 @@ test("flowchart counts every branch by the stages' own rules", () => {
   assert.ok(other.nodes.every((n) => n.branches.every((b) => !b.count)));
 
   // The Items browser's flow filter lists exactly a branch's items.
-  const req = (qs: string) => ({ query: new URLSearchParams(qs) }) as unknown as Req;
-  assert.deepEqual(listItems(db, req("flow=review.take")).rows.map((r) => r.number).sort((a, b) => a - b), [11, 14]);
-  assert.deepEqual(listItems(db, req("flow=decide.not-asked")).rows.map((r) => r.number), [3]);
-  assert.throws(() => listItems(db, req("flow=classify.nope")), /flow/);
+  const req = (qs: string) => ({ query: new URLSearchParams(qs), user: { login: "op", role: "operator" } }) as unknown as Req;
+  assert.deepEqual((await listItems(db, req("flow=review.take"))).rows.map((r) => r.number).sort((a, b) => a - b), [11, 14]);
+  assert.deepEqual((await listItems(db, req("flow=decide.not-asked"))).rows.map((r) => r.number), [3]);
+  await assert.rejects(async () => listItems(db, req("flow=classify.nope")), /flow/);
 
   // The summary row notices an answer and is counted again on the next refresh.
   refreshSummary(db);

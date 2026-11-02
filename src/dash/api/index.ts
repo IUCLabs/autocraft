@@ -2,11 +2,13 @@
 // server has already checked the session, and on POSTs the Origin, the CSRF
 // header and the per-session limits; these handlers check roles and GitHub
 // permissions themselves. Item and comment text is returned as data only.
-import type { DatabaseSync } from "node:sqlite";
+import type { DatabaseSync, SQLInputValue } from "node:sqlite";
 import type {
   CiState, Done, Funnel, Item, ItemComment, Mergeable, Progress, RepoProgress, Tier, User,
 } from "../../../web/src/api/types.ts";
 import { trackedNames } from "../../repos.ts";
+import { excludeHidden, hiddenRepos, needVisible, visibleRepos } from "./visible.ts";
+import { withoutHidden } from "./decisions.ts";
 import { contributors } from "../../whitelist.ts";
 import { CLOSED_ITEMS, TRACKED, doneByRepo, funnelByRepo, latestCte, trackingStart, trend, type DoneRow, type FunnelRow } from "./stats.ts";
 import { HttpError, RateLimiter } from "../server/util.ts";
@@ -44,7 +46,7 @@ const ok = (fn: (db: DatabaseSync, req: Req) => unknown) => async (db: DatabaseS
 };
 
 async function writeRepos(db: DatabaseSync, req: Req): Promise<string[]> {
-  const repos = trackedNames(db);
+  const repos = await visibleRepos(db, req);
   const ok = await Promise.all(repos.map((r) => req.user.canWrite(r).catch(() => false)));
   return repos.filter((_, i) => ok[i]);
 }
@@ -65,21 +67,17 @@ const CI: Record<string, CiState> = { SUCCESS: "passing", FAILURE: "failing", ER
 const MERGEABLE: Record<string, Mergeable> = { MERGEABLE: "clean", CONFLICTING: "conflicts" };
 const TIER: Record<string, Tier> = { whitelisted: "whitelisted", not: "not", allow: "override-allow", deny: "override-deny" };
 
-function trackedOnly(db: DatabaseSync, repo: string): void {
-  if (!trackedNames(db).includes(repo)) throw new HttpError(404, `${repo} is not a tracked repo`);
-}
-
 type ItemRow = {
   repo: string; number: number; kind: string; state: string; title: string | null; body: string | null; author: string | null;
   created_at: string | null; updated_at: string | null; labels: string | null; additions: number | null; deletions: number | null; changed_files: number | null;
   mergeable: string | null; ci_state: string | null; closed_at: string | null; merged_at: string | null; merged_by: string | null;
 };
 
-function item(db: DatabaseSync, req: Req): Item {
+async function item(db: DatabaseSync, req: Req): Promise<Item> {
   const repo = req.params.repo!;
   const n = Number(req.params.n);
   if (!Number.isInteger(n)) throw new HttpError(400, "not an item number");
-  trackedOnly(db, repo);
+  await needVisible(db, req, repo);
   const it = db.prepare("SELECT * FROM items WHERE repo = ? AND number = ?").get(repo, n) as ItemRow | undefined;
   if (!it) throw new HttpError(404, `no item ${repo}#${n} in the mirror`);
   const c = it.author ? contributors(db, { login: it.author }).find((x) => x.login === it.author) : undefined;
@@ -130,38 +128,44 @@ const sum = <T extends object>(xs: T[], zero: T): T => {
 };
 
 type Heavy = Omit<Progress, "decisionsOpen" | "decisionsAnsweredToday">;
-const progressCache = new WeakMap<DatabaseSync, { key: string; at: number; value: Heavy }>();
+// One entry per set of hidden repos (nearly always the operator's empty set and one other).
+const progressCache = new WeakMap<DatabaseSync, Map<string, { key: string; at: number; value: Heavy }>>();
 const PROGRESS_MAX_AGE = 60_000;
 
 // The item-based part of Progress: scans most of the mirror, so it is kept until
 // the mirror, the stages or the tracked repos change, or for a minute at most
 // (classifier verdicts and the hourly counts show within that minute).
-function progressItems(db: DatabaseSync): Heavy {
+function progressItems(db: DatabaseSync, hidden: string[]): Heavy {
   const sig = db.prepare(`SELECT (SELECT MAX(synced_at) FROM main.repos) AS synced,
       (SELECT value FROM main.settings WHERE key = 'org_high_water') AS hw,
       (SELECT COUNT(*) || ':' || COALESCE(MAX(rowid), 0) FROM main.stages) AS st,
       (SELECT group_concat(name) FROM main.tracked_repos) AS tr`).get() as Record<string, string | null>;
   const key = JSON.stringify(sig);
-  const hit = progressCache.get(db);
+  const cache = progressCache.get(db) ?? progressCache.set(db, new Map()).get(db)!;
+  const slot = JSON.stringify(hidden);
+  const hit = cache.get(slot);
   if (hit && hit.key === key && Date.now() - hit.at < PROGRESS_MAX_AGE) return hit.value;
+  const hide = new Set(hidden);
+  const hp: Record<string, SQLInputValue> = { since: "" };
+  const hideSql = excludeHidden("i.repo", hidden, hp);
 
   const start = trackingStart(db);
   const now = Date.now();
-  const funnels = new Map(funnelByRepo(db).map((r) => [r.repo, r]));
-  const done = new Map(doneByRepo(db, start).map((r) => [r.repo, r]));
+  const funnels = new Map(funnelByRepo(db).filter((r) => !hide.has(r.repo)).map((r) => [r.repo, r]));
+  const done = new Map(doneByRepo(db, start).filter((r) => !hide.has(r.repo)).map((r) => [r.repo, r]));
   const perHour = new Array<number>(24).fill(0);
   const perHourPipeline = new Array<number>(24).fill(0);
   const since = now - 24 * 3600_000;
   for (const r of db.prepare(`WITH ${latestCte()} SELECT i.closed_at, l.stage IN ('merged', 'closed', 'fixed-by-us') AS ours
       FROM ${CLOSED_ITEMS} LEFT JOIN latest l ON l.repo = i.repo AND l.number = i.number
-      WHERE i.closed_at >= ? AND i.state <> 'OPEN' AND i.${TRACKED}`).all(new Date(since).toISOString()) as { closed_at: string; ours: number | null }[]) {
+      WHERE i.closed_at >= :since AND i.state <> 'OPEN' AND i.${TRACKED}${hideSql ? ` AND ${hideSql}` : ""}`).all({ ...hp, since: new Date(since).toISOString() }) as { closed_at: string; ours: number | null }[]) {
     const h = Math.floor((Date.parse(r.closed_at) - since) / 3600_000);
     if (h >= 0 && h < 24) {
       perHour[h]!++;
       if (r.ours) perHourPipeline[h]!++;
     }
   }
-  const names = [...new Set([...trackedNames(db), ...funnels.keys(), ...done.keys()])].sort();
+  const names = [...new Set([...trackedNames(db), ...funnels.keys(), ...done.keys()])].filter((n) => !hide.has(n)).sort();
   const { series } = trend(db, start, new Map(names.map((n) => [n, funnels.get(n)?.open ?? 0])));
   const repos: RepoProgress[] = names.map((repo) => ({
     repo, funnel: toFunnel(funnels.get(repo)), done: toDone(done.get(repo)),
@@ -173,15 +177,18 @@ function progressItems(db: DatabaseSync): Heavy {
     done: sum(repos.map((r) => r.done), toDone(undefined)),
     perHour, perHourPipeline, repos,
   };
-  progressCache.set(db, { key, at: now, value });
+  cache.set(slot, { key, at: now, value });
+  if (cache.size > 8) cache.delete(cache.keys().next().value!);
   return value;
 }
 
-function progress(db: DatabaseSync): Progress {
-  const heavy = progressItems(db);
+function progress(db: DatabaseSync, hidden: string[]): Progress {
+  const heavy = progressItems(db, hidden);
+  const dp: Record<string, string> = {};
+  const hideDec = withoutHidden(hidden, dp);
   const openDec = new Map<string, number>();
   let decisionsOpen = 0;
-  for (const r of db.prepare("SELECT repo, number, items FROM decisions WHERE answer IS NULL").all() as { repo: string | null; number: number | null; items: string | null }[]) {
+  for (const r of db.prepare(`SELECT repo, number, items FROM decisions WHERE answer IS NULL${hideDec ? ` AND ${hideDec}` : ""}`).all(dp) as { repo: string | null; number: number | null; items: string | null }[]) {
     decisionsOpen++;
     let repos = r.number !== null && r.repo ? [r.repo] : [];
     if (r.number === null) {
@@ -192,7 +199,7 @@ function progress(db: DatabaseSync): Progress {
     for (const x of repos) openDec.set(x, (openDec.get(x) ?? 0) + 1);
   }
   const today = new Date().toISOString().slice(0, 10);
-  const answeredToday = (db.prepare("SELECT COUNT(*) AS n FROM decisions WHERE answered_at >= ?").get(`${today}T00:00:00`) as { n: number }).n;
+  const answeredToday = (db.prepare(`SELECT COUNT(*) AS n FROM decisions WHERE answered_at >= :t${hideDec ? ` AND ${hideDec}` : ""}`).get({ ...dp, t: `${today}T00:00:00` }) as { n: number }).n;
   return {
     ...heavy,
     repos: heavy.repos.map((r) => ({ ...r, decisionsOpen: openDec.get(r.repo) ?? 0 })),
@@ -209,7 +216,7 @@ export function apiRoutes(opts: ApiOptions = {}): Route[] {
   const post = (pattern: string, fn: (db: DatabaseSync, req: Req) => unknown): Route => ({ method: "POST", pattern, handler: ok(fn) });
   return [
     get("/api/me", me),
-    get("/api/repos", (db) => trackedNames(db)),
+    get("/api/repos", visibleRepos),
     get("/api/decisions", (db, req) => dec.listDecisions(db, req, () => writeRepos(db, req))),
     get("/api/decisions/:id", dec.getOne),
     get("/api/decisions/:id/thread", dec.thread),
@@ -223,7 +230,7 @@ export function apiRoutes(opts: ApiOptions = {}): Route[] {
     get("/api/items/:repo/:n", item),
     get("/api/items", items.listItems),
     get("/api/search", (db, req) => req.query.get("mode") === "semantic" ? sim.semanticSearch(db, req, vectors) : items.quickSearch(db, req)),
-    get("/api/progress", progress),
+    get("/api/progress", async (db, req) => progress(db, await hiddenRepos(db, req))),
     get("/api/contributors", adm.listContributors),
     get("/api/contributors/rule-preview", adm.previewRule),
     post("/api/contributors/rule", adm.saveRule),
@@ -244,7 +251,7 @@ export function apiRoutes(opts: ApiOptions = {}): Route[] {
     get("/api/classifiers", insight.classifiersReport),
     get("/api/classifiers/disagreements", insight.disagreements),
     get("/api/cost", insight.cost),
-    get("/api/pipeline", (db) => pipeline.overview(db)),
+    get("/api/pipeline", pipeline.overview),
     get("/api/pipeline/jobs", pipeline.jobs),
     get("/api/pipeline/jobs/:id", pipeline.job),
     { method: "POST", pattern: "/api/pipeline/jobs", operator: true, handler: ok(pipeline.request) },

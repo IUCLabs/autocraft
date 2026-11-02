@@ -12,7 +12,7 @@ const SCRATCH = join(homedir(), ".cache/craft-automation-scratch");
 mkdirSync(SCRATCH, { recursive: true });
 const dir = mkdtempSync(join(SCRATCH, "insight-test-"));
 const db = connect(join(dir, "t.db"));
-const rq = (q: string) => ({ query: new URLSearchParams(q) }) as unknown as Req;
+const rq = (q: string) => ({ query: new URLSearchParams(q), user: { login: "op", role: "operator" } }) as unknown as Req;
 
 before(() => {
   const item = db.prepare("INSERT INTO items (repo, number, kind, state, title) VALUES ('photocraft', ?, ?, 'OPEN', ?)");
@@ -38,8 +38,8 @@ before(() => {
 after(() => { db.close(); rmSync(dir, { recursive: true, force: true }); });
 
 describe("insight", () => {
-  test("agreement, confusion, confidence bands and flags", () => {
-    const r = classifiersReport(db, rq(""));
+  test("agreement, confusion, confidence bands and flags", async () => {
+    const r = (await classifiersReport(db, rq("")));
     assert.deepEqual([r.run, r.a, r.b], ["r1", "jev", "haiku"]);
     assert.deepEqual(r.overall, { n: 6, agree: 4 });
     assert.deepEqual(r.byKind, { pr: { n: 3, agree: 2 }, issue: { n: 3, agree: 2 } });
@@ -53,17 +53,17 @@ describe("insight", () => {
     assert.deepEqual(r.flags.find((f) => f.flag === "security"), { flag: "security", n: 6, agree: 5, both: 1, onlyA: 1, onlyB: 0 });
   });
 
-  test("disagreements filter by label and band", () => {
+  test("disagreements filter by label and band", async () => {
     const q = "run=r1&a=jev&b=haiku";
-    assert.deepEqual(disagreements(db, rq(q)).rows.map((x) => x.number), [3, 5]);
-    const hit = disagreements(db, rq(`${q}&band=${encodeURIComponent("0.90–0.95")}`));
+    assert.deepEqual((await disagreements(db, rq(q))).rows.map((x) => x.number), [3, 5]);
+    const hit = (await disagreements(db, rq(`${q}&band=${encodeURIComponent("0.90–0.95")}`)));
     assert.equal(hit.total, 1);
     assert.deepEqual(hit.rows[0], { repo: "photocraft", number: 3, kind: "pr", title: "item 3", a: { label: "bugfix", prob: 0.92 }, b: { label: "infra", prob: null } });
-    assert.equal(disagreements(db, rq(`${q}&label=small%20extra`)).total, 1);
+    assert.equal((await disagreements(db, rq(`${q}&label=small%20extra`))).total, 1);
   });
 
-  test("cost totals, wall time and series", () => {
-    const c = cost(db, rq("run=r1"));
+  test("cost totals, wall time and series", async () => {
+    const c = (await cost(db, rq("run=r1")));
     assert.deepEqual(c.total, { calls: 2, items: 6, input: 150, output: 30, cacheRead: 10, cacheWrite: 0, usd: 0.25, wallSeconds: 180 });
     assert.equal(c.itemsClassified, 6);
     assert.equal(c.stages.length, 1);

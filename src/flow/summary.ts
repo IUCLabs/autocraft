@@ -102,13 +102,13 @@ export function refreshSummary(db: DatabaseSync, budgetMs = 1500): string[] {
 }
 
 /**
- * The summed counts of every tracked repo, or of one. A repo without a row yet
+ * The summed counts of every tracked repo (or of `only`), or of one. A repo without a row yet
  * is counted here while `budgetMs` lasts; the rest are left to the runner and
  * listed in `uncounted`.
  */
-export function readSummary(db: DatabaseSync, repo: string | null, budgetMs = 150): { counts: Counts; countedAt: string | null; uncounted: string[] } {
+export function readSummary(db: DatabaseSync, repo: string | null, budgetMs = 150, only?: string[]): { counts: Counts; countedAt: string | null; uncounted: string[] } {
   const start = Date.now();
-  const want = repo ? [repo] : trackedNames(db);
+  const want = repo ? [repo] : (only ?? trackedNames(db));
   const rows = new Map((db.prepare("SELECT repo, counts, counted_at FROM main.flow_summary").all() as { repo: string; counts: string; counted_at: string }[]).map((r) => [r.repo, r]));
   const sum: Counts = {};
   const uncounted: string[] = [];

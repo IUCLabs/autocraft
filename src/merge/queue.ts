@@ -78,6 +78,8 @@ export type QueueOptions = {
   /** Keyset page: entries after this PR in (repo, number) order, at most `limit` of them. */
   after?: { repo: string; number: number };
   limit?: number;
+  /** Repos left out. */
+  exclude?: string[];
   /** The classification run for labels, resolved once by the caller (default: latestRun). */
   run?: string | null;
 };
@@ -87,6 +89,7 @@ export function buildQueue(db: DatabaseSync, opts: QueueOptions = {}): QueueEntr
   const params: Record<string, string | number> = {};
   const where: string[] = [];
   if (opts.repo) { where.push("i.repo = :repo"); params.repo = opts.repo; }
+  opts.exclude?.forEach((r, k) => { where.push(`i.repo <> :ex${k}`); params[`ex${k}`] = r; });
   if (opts.after) {
     where.push("(i.repo > :ar OR (i.repo = :ar AND i.number > :an))");
     params.ar = opts.after.repo;
@@ -170,10 +173,12 @@ export function countStates(entries: QueueEntry[]): Record<QueueState, number> {
 }
 
 /** How many merged PRs have a take or take-fix review as their latest. */
-export function countMerged(db: DatabaseSync, repo?: string): number {
+export function countMerged(db: DatabaseSync, repo?: string, exclude: string[] = []): number {
+  const params: Record<string, string> = repo ? { repo } : {};
+  exclude.forEach((r, k) => { params[`ex${k}`] = r; });
   return (db.prepare(`SELECT COUNT(*) AS n FROM items i
     JOIN reviews l ON l.repo = i.repo AND l.number = i.number AND l.rowid = (
       SELECT r.rowid FROM reviews r WHERE r.repo = i.repo AND r.number = i.number ORDER BY r.at DESC, r.rowid DESC LIMIT 1)
-    WHERE l.verdict IN ('take', 'take-fix') AND i.kind = 'pr' AND i.state = 'MERGED' ${repo ? "AND i.repo = :repo" : ""}`)
-    .get(repo ? { repo } : {}) as { n: number }).n;
+    WHERE l.verdict IN ('take', 'take-fix') AND i.kind = 'pr' AND i.state = 'MERGED' ${repo ? "AND i.repo = :repo" : ""}${exclude.map((_, k) => ` AND i.repo <> :ex${k}`).join("")}`)
+    .get(params) as { n: number }).n;
 }

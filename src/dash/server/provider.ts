@@ -19,13 +19,17 @@ export type Tokens = {
   refreshExpiresAt: number | null;
 };
 
+// The account behind a token. The numeric id never changes when a login is
+// renamed or released, so access is bound to it.
+export type GithubUser = { login: string; id: number };
+
 export interface Provider {
   authorizeUrl(state: string, challenge: string, redirectUri: string): string;
   // Each returns null when the provider rejects the code or refresh token, and
   // throws on a transport failure.
   exchange(code: string, verifier: string, redirectUri: string): Promise<Tokens | null>;
   refresh(refreshToken: string): Promise<Tokens | null>;
-  login(access: string): Promise<string | null>;
+  identity(access: string): Promise<GithubUser | null>;
   // "unauthorized": the access token is expired or revoked. Throws on a
   // transport failure, so a GitHub outage isn't cached as "none".
   permission(access: string, repo: string): Promise<Permission | "unauthorized">;
@@ -76,12 +80,12 @@ export class GitHubProvider implements Provider {
     // A rejected code or refresh token answers 200 with an `error` field.
     return tokensFrom((await r.json()) as Record<string, unknown>);
   }
-  async login(access: string): Promise<string | null> {
+  async identity(access: string): Promise<GithubUser | null> {
     const r = await this.#api(access, "/user");
     if (r.status === 401) return null;
     if (!r.ok) throw new Error(`GET /user: HTTP ${r.status}`);
-    const body = (await r.json()) as { login?: unknown };
-    return typeof body.login === "string" ? body.login : null;
+    const body = (await r.json()) as { login?: unknown; id?: unknown };
+    return typeof body.login === "string" && typeof body.id === "number" && Number.isSafeInteger(body.id) ? { login: body.login, id: body.id } : null;
   }
   async permission(access: string, repo: string): Promise<Permission | "unauthorized"> {
     const r = await this.#api(access, `/repos/${ORG}/${encodeURIComponent(repo)}`);
@@ -161,8 +165,18 @@ export class FakeProvider implements Provider {
     const t = this.#access.get(access);
     return t && t.expiresAt > Date.now() ? t.login : null;
   }
-  async login(access: string): Promise<string | null> {
-    return this.#valid(access);
+  // Ids are stable per lowercase login unless a test sets one in `ids`.
+  ids = new Map<string, number>();
+  async identity(access: string): Promise<GithubUser | null> {
+    const login = this.#valid(access);
+    if (!login) return null;
+    const key = login.toLowerCase();
+    let id = this.ids.get(key);
+    if (id === undefined) {
+      id = 1000 + [...key].reduce((h, c) => (h * 31 + c.charCodeAt(0)) % 1_000_003, 7);
+      this.ids.set(key, id);
+    }
+    return { login, id };
   }
   async permission(access: string, repo: string): Promise<Permission | "unauthorized"> {
     const login = this.#valid(access);

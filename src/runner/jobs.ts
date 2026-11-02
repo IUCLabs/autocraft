@@ -21,7 +21,7 @@ export class JobError extends Error {
 }
 
 type JobRow = {
-  id: number; step: string; params: string; requested_by: string; requested_at: string; state: JobState;
+  repo: string | null; id: number; step: string; params: string; requested_by: string; requested_at: string; state: JobState;
   started_at: string | null; ended_at: string | null; progress: string | null; summary: string | null; error: string | null;
   usage: string | null; log_path: string | null; pid: number | null; cancel_requested_at: string | null; cancel_requested_by: string | null;
   items: number | null;
@@ -62,7 +62,7 @@ export function getJob(db: DatabaseSync, id: number): Job {
   return toJobs(db, [r])[0]!;
 }
 
-export function listJobs(db: DatabaseSync, f: JobFilter = {}): JobList {
+export function listJobs(db: DatabaseSync, f: JobFilter = {}, hidden: string[] = []): JobList {
   const where: string[] = [];
   const args: (string | number)[] = [];
   if (f.step) {
@@ -72,6 +72,10 @@ export function listJobs(db: DatabaseSync, f: JobFilter = {}): JobList {
   if (f.state) {
     where.push("state = ?");
     args.push(f.state);
+  }
+  if (hidden.length) {
+    where.push(`(repo IS NULL OR repo NOT IN (${hidden.map(() => "?").join(",")}))`);
+    args.push(...hidden);
   }
   const w = where.length ? `WHERE ${where.join(" AND ")}` : "";
   const total = (db.prepare(`SELECT COUNT(*) AS n FROM jobs ${w}`).get(...args) as { n: number }).n;
@@ -186,8 +190,15 @@ export function logTail(path: string | null, bytes = LOG_TAIL_BYTES): { log: str
   }
 }
 
-export function jobDetail(db: DatabaseSync, id: number): JobDetail {
+/**
+ * `hidden`: the repos the viewer may not see. A job of such a repo is not found.
+ * `logs` false (non-operators) blanks the log of a job that ran across all repos
+ * while some repo is hidden, since its lines can name hidden items.
+ */
+export function jobDetail(db: DatabaseSync, id: number, view: { hidden?: string[]; logs?: boolean } = {}): JobDetail {
   const r = jobRow(db, id);
-  if (!r) throw new JobError(404, `no job ${id}`);
-  return { ...toJobs(db, [r])[0]!, ...logTail(r.log_path) };
+  const hidden = view.hidden ?? [];
+  if (!r || (r.repo && hidden.includes(r.repo))) throw new JobError(404, `no job ${id}`);
+  const blank = view.logs === false && hidden.length > 0 && !r.repo;
+  return { ...toJobs(db, [r])[0]!, ...(blank ? { log: "", logTruncated: false } : logTail(r.log_path)) };
 }

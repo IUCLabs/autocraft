@@ -7,15 +7,14 @@ import { latestRun } from "../../classify/settled.ts";
 import { branchMembers, type Refs } from "../../flow/count.ts";
 import { buildFlow } from "../../flow/shape.ts";
 import { readSummary } from "../../flow/summary.ts";
-import { trackedNames } from "../../repos.ts";
 import { loadSteps } from "../../runner/steps.ts";
-import { HttpError } from "../server/util.ts";
 import type { Req } from "../types.ts";
+import { needVisible, visibleRepos } from "./visible.ts";
 
 export async function flow(db: DatabaseSync, req: Req): Promise<Flow> {
   const repo = req.query.get("repo") || null;
-  if (repo && !trackedNames(db).includes(repo)) throw new HttpError(404, `${repo} is not a tracked repo`);
-  const { counts, countedAt, uncounted } = readSummary(db, repo);
+  if (repo) await needVisible(db, req, repo);
+  const { counts, countedAt, uncounted } = readSummary(db, repo, undefined, await visibleRepos(db, req));
   const lastSync = (db.prepare("SELECT MAX(ended_at) AS t FROM sync_runs WHERE error IS NULL").get() as { t: string | null }).t
     ?? (db.prepare("SELECT value AS t FROM settings WHERE key = 'org_high_water'").get() as { t: string } | undefined)?.t ?? null;
   const steps = [...(await loadSteps()).values()].map((s) => ({ name: s.name, stage: s.stage }));

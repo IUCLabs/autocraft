@@ -12,6 +12,8 @@ export type User = {
   // (cached; re-checked when older than a minute). Handlers call this
   // before every decision write.
   canWrite(repo: string): Promise<boolean>;
+  // Any permission but none on storytold/<repo>, from the same cached check.
+  canRead(repo: string): Promise<boolean>;
 };
 
 export type Req = {

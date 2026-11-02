@@ -7,6 +7,7 @@ import { AccountError, listAccounts, updateAccount } from "../../agents/accounts
 import { getRun, listRuns, rates as ratesOf, RunQueryError } from "../../agents/runs.ts";
 import { HttpError } from "../server/util.ts";
 import type { Req } from "../types.ts";
+import { hiddenRepos } from "./visible.ts";
 
 const wrap = async <T>(f: () => T | Promise<T>): Promise<T> => {
   try {
@@ -30,17 +31,18 @@ function intParam(req: Req, name: string): number | undefined {
   return Number(v);
 }
 
-export const list = (db: DatabaseSync, req: Req) => wrap(() => {
+export const list = (db: DatabaseSync, req: Req) => wrap(async () => {
   const q = (k: string) => req.query.get(k) || undefined;
   const f: AgentRunFilter = {
     state: q("state") as AgentRunState | "recent" | undefined, step: q("step"), account: q("account"), repo: q("repo"), cursor: q("cursor"), limit: intParam(req, "limit"),
   };
-  return listRuns(db, f);
+  return listRuns(db, f, await hiddenRepos(db, req));
 });
 
-export const detail = (db: DatabaseSync, req: Req) => wrap(() => {
+// The prompt and output texts hold item and comment text verbatim: operators only.
+export const detail = (db: DatabaseSync, req: Req) => wrap(async () => {
   if (!/^\d{1,15}$/.test(req.params.id ?? "")) throw new HttpError(400, "not a run id");
-  return getRun(db, Number(req.params.id));
+  return getRun(db, Number(req.params.id), { hidden: await hiddenRepos(db, req), texts: req.user.role === "operator" });
 });
 
-export const rates = (db: DatabaseSync, req: Req) => wrap(() => ratesOf(db, req.query.get("window") ?? "24h"));
+export const rates = (db: DatabaseSync, req: Req) => wrap(async () => ratesOf(db, req.query.get("window") ?? "24h", Date.now(), await hiddenRepos(db, req)));

@@ -26,6 +26,12 @@ export const DEFAULT_WEB_DIST = fileURLToPath(new URL("../../../web/dist", impor
 
 export class ConfigError extends Error {}
 
+// Dev auth signs in as any login typed on a form, so it is for this machine
+// only. Its default port differs from the real dashboard's, so a dev server
+// never answers on the port a reverse proxy forwards to.
+export const DEFAULT_LISTEN = "127.0.0.1:8993";
+export const DEV_LISTEN = "127.0.0.1:8994";
+
 export function parseListen(value: string): { host: string; port: number } {
   const m = /^(?:\[([0-9a-fA-F:.]+)\]|([^:\[\]]+)):(\d{1,5})$/.exec(value);
   if (!m) throw new ConfigError(`CRAFT_AUTO_LISTEN must be host:port, got ${JSON.stringify(value)}`);
@@ -39,6 +45,13 @@ export function isLoopback(host: string): boolean {
   if (isIP(host) === 4) return host.split(".")[0] === "127";
   if (isIP(host) === 6) return host === "::1" || /^::ffff:127\./i.test(host);
   return false;
+}
+
+/** True when a Host header names this machine (with or without a port). */
+export function isLoopbackHost(hostHeader: string | undefined): boolean {
+  if (!hostHeader) return false;
+  const m = /^(?:\[([0-9a-fA-F:.]+)\]|([^:\[\]]+))(?::\d{1,5})?$/.exec(hostHeader.trim());
+  return !!m && isLoopback(m[1] ?? m[2]!);
 }
 
 export function readSecrets(path: string | undefined): Secrets {
@@ -69,7 +82,7 @@ export function readSecrets(path: string | undefined): Secrets {
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
-  const { host, port } = parseListen(env.CRAFT_AUTO_LISTEN ?? "127.0.0.1:8993");
+  const { host, port } = parseListen(env.CRAFT_AUTO_LISTEN ?? (env.CRAFT_AUTO_DEV_AUTH === "1" ? DEV_LISTEN : DEFAULT_LISTEN));
   const devAuth = env.CRAFT_AUTO_DEV_AUTH === "1";
   let secrets: Secrets;
   let baseUrl: string | null = null;
@@ -88,6 +101,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       throw new ConfigError("CRAFT_AUTO_BASE_URL is not a URL");
     }
     if (u.protocol !== "https:" && u.protocol !== "http:") throw new ConfigError("CRAFT_AUTO_BASE_URL must be http(s)");
+    if (devAuth && (u.protocol !== "http:" || (u.hostname !== "localhost" && u.hostname !== "127.0.0.1"))) {
+      throw new ConfigError("CRAFT_AUTO_DEV_AUTH=1 allows CRAFT_AUTO_BASE_URL only as an http://localhost or http://127.0.0.1 URL");
+    }
     baseUrl = u.origin + u.pathname.replace(/\/+$/, "");
     if (baseUrl !== u.origin) throw new ConfigError("CRAFT_AUTO_BASE_URL must not have a path");
   } else if (!devAuth) {

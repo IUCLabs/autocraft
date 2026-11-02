@@ -21,6 +21,8 @@ export type RunEnd = {
   summary?: string | null; error?: string | null; output?: string | null;
 };
 
+import { scrub } from "../runner/scrub.ts";
+
 const now = (): string => new Date().toISOString();
 
 /** Inserts the running row, its item refs and its prompt text. Does not open a transaction. */
@@ -31,7 +33,7 @@ export function insertRun(db: DatabaseSync, s: RunStart): number {
     .run(s.jobId, s.step, s.stage, s.promptId, s.promptVersion, s.provider, s.model, s.accountId, JSON.stringify(refs), s.items.length, now()).lastInsertRowid);
   const ins = db.prepare("INSERT OR IGNORE INTO agent_run_items (run_id, repo, number) VALUES (?, ?, ?)");
   for (const r of refs) ins.run(id, r.repo, r.number);
-  db.prepare("INSERT INTO agent_run_texts (run_id, prompt) VALUES (?, ?)").run(id, s.prompt.slice(0, TEXT_MAX));
+  db.prepare("INSERT INTO agent_run_texts (run_id, prompt) VALUES (?, ?)").run(id, scrub(s.prompt.slice(0, TEXT_MAX)));
   return id;
 }
 
@@ -40,7 +42,7 @@ export function finishRun(db: DatabaseSync, id: number, e: RunEnd): void {
   db.prepare(`UPDATE agent_runs SET state = ?, ended_at = ?, input_tokens = ?, output_tokens = ?, cache_read_tokens = ?, cache_write_tokens = ?, summary = ?, error = ?
     WHERE id = ? AND state = 'running'`)
     .run(e.state, now(), t?.input ?? null, t?.output ?? null, t?.cacheRead ?? null, t?.cacheWrite ?? null, e.summary ?? null, e.error ? e.error.slice(0, ERROR_MAX) : null, id);
-  if (e.output) db.prepare("UPDATE agent_run_texts SET output = ? WHERE run_id = ?").run(e.output.slice(0, TEXT_MAX), id);
+  if (e.output) db.prepare("UPDATE agent_run_texts SET output = ? WHERE run_id = ?").run(scrub(e.output.slice(0, TEXT_MAX)), id);
 }
 
 /** Marks running rows as failed: all of them, or those of one job. Used when the process that made the calls is gone. */
@@ -94,7 +96,7 @@ const CURSOR_RE = /^[1-9][0-9]{0,15}$/;
 export const AGENT_PAGE_DEFAULT = 50, AGENT_PAGE_MAX = 200;
 
 /** Newest first, keyset on id: a page costs index reads proportional to its size, however many runs exist. */
-export function listRuns(db: DatabaseSync, f: AgentRunFilter): AgentRunPage {
+export function listRuns(db: DatabaseSync, f: AgentRunFilter, hidden: string[] = []): AgentRunPage {
   if (f.state !== undefined && !["running", "done", "failed", "recent"].includes(f.state)) throw new RunQueryError(400, "unknown state");
   if (f.step !== undefined && !STEP_RE.test(f.step)) throw new RunQueryError(400, "bad step");
   if (f.account !== undefined && !ACCOUNT_RE.test(f.account)) throw new RunQueryError(400, "bad account");
@@ -108,6 +110,7 @@ export function listRuns(db: DatabaseSync, f: AgentRunFilter): AgentRunPage {
   if (f.state && f.state !== "recent") where.push(`r.state = '${f.state}'`);   // validated above; a literal lets the planner use the state index
   if (f.step) { where.push("r.step = ?"); args.push(f.step); }
   if (f.account) { where.push("r.account_id = ?"); args.push(f.account); }
+  if (hidden.length) { where.push(touchesHidden(hidden)); args.push(...hidden); }
   let sql: string;
   if (f.repo) {
     // Driven by the (repo, run_id, number) index, newest run first, one row per run (the run's lowest number in the repo): no sort, stops at the limit.
@@ -123,10 +126,19 @@ export function listRuns(db: DatabaseSync, f: AgentRunFilter): AgentRunPage {
   return { runs: page.map(toRun), nextCursor: rows.length > limit ? String(page[page.length - 1]!.id) : null };
 }
 
-export function getRun(db: DatabaseSync, id: unknown): AgentRunDetail {
+/** SQL (with one `?` per name) true when a run has an item in a hidden repo. */
+const touchesHidden = (hidden: string[]): string =>
+  `NOT EXISTS (SELECT 1 FROM agent_run_items x WHERE x.run_id = r.id AND x.repo IN (${hidden.map(() => "?").join(",")}))`;
+
+/** A run that touches a hidden repo is not found; prompt and output text go only to `texts` viewers (operators). */
+export function getRun(db: DatabaseSync, id: unknown, view: { hidden?: string[]; texts?: boolean } = { texts: true }): AgentRunDetail {
   if (typeof id !== "number" || !Number.isInteger(id) || id < 1) throw new RunQueryError(400, "not a run id");
   const r = db.prepare(`${SELECT} WHERE r.id = ?`).get(id) as RunRow | undefined;
   if (!r) throw new RunQueryError(404, `no agent run ${id}`);
+  if (view.hidden?.length && !db.prepare(`SELECT 1 FROM agent_runs r WHERE r.id = ? AND ${touchesHidden(view.hidden)}`).get(id, ...view.hidden)) {
+    throw new RunQueryError(404, `no agent run ${id}`);
+  }
+  if (!view.texts) return { ...toRun(r), prompt: null, output: null, error: r.error };
   const t = db.prepare("SELECT prompt, output FROM agent_run_texts WHERE run_id = ?").get(id) as { prompt: string | null; output: string | null } | undefined;
   return { ...toRun(r), prompt: t?.prompt ?? null, output: t?.output ?? null, error: r.error };
 }
@@ -145,7 +157,7 @@ export function accountLabelsByJob(db: DatabaseSync, jobIds: number[]): Map<numb
 // ---- rates ---------------------------------------------------------------------
 
 /** Items moved per stage, and usage of the enabled accounts, in hourly (24h) or daily (7d) buckets ending now (UTC). */
-export async function rates(db: DatabaseSync, window: unknown, nowMs: number = Date.now()): Promise<Rates> {
+export async function rates(db: DatabaseSync, window: unknown, nowMs: number = Date.now(), hidden: string[] = []): Promise<Rates> {
   if (window !== "24h" && window !== "7d") throw new RunQueryError(400, "window must be 24h or 7d");
   const hourly = window === "24h", step = hourly ? 3600_000 : 86_400_000, n = hourly ? 24 : 7;
   const end = Math.floor(nowMs / step) * step + step;
@@ -159,12 +171,14 @@ export async function rates(db: DatabaseSync, window: unknown, nowMs: number = D
   const bucketsOf = (s: string) => byStep.get(s) ?? (byStep.set(s, empty()), byStep.get(s)!);
 
   for (const r of db.prepare(`SELECT step, strftime('${fmt}', started_at) AS t, COALESCE(SUM(items), 0) AS items FROM jobs
-    WHERE started_at >= ? AND started_at < ? GROUP BY step, t`).all(from, new Date(end).toISOString()) as { step: string; t: string; items: number }[]) {
+    WHERE started_at >= ? AND started_at < ?${hidden.length ? ` AND (repo IS NULL OR repo NOT IN (${hidden.map(() => "?").join(",")}))` : ""} GROUP BY step, t`)
+    .all(from, new Date(end).toISOString(), ...hidden) as { step: string; t: string; items: number }[]) {
     const b = bucketsOf(r.step).get(r.t);
     if (b) b.items = r.items;
   }
-  for (const r of db.prepare(`SELECT step, strftime('${fmt}', started_at) AS t, COUNT(*) AS runs, COALESCE(SUM(state = 'failed'), 0) AS failed FROM agent_runs
-    WHERE started_at >= ? AND started_at < ? GROUP BY step, t`).all(from, new Date(end).toISOString()) as { step: string; t: string; runs: number; failed: number }[]) {
+  for (const r of db.prepare(`SELECT step, strftime('${fmt}', started_at) AS t, COUNT(*) AS runs, COALESCE(SUM(state = 'failed'), 0) AS failed FROM agent_runs r
+    WHERE started_at >= ? AND started_at < ?${hidden.length ? ` AND ${touchesHidden(hidden)}` : ""} GROUP BY step, t`)
+    .all(from, new Date(end).toISOString(), ...hidden) as { step: string; t: string; runs: number; failed: number }[]) {
     const b = bucketsOf(r.step).get(r.t);
     if (b) { b.runs = r.runs; b.failed = r.failed; }
   }

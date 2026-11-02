@@ -53,7 +53,7 @@ describe("tracked repos", () => {
 
     const rq = (path: string, params: Record<string, string>): Req => ({
       method: "GET", path, params, query: new URLSearchParams(), form: new URLSearchParams(),
-      user: { login: "a", role: "operator", canWrite: async () => true }, csrf: "c", nonce: "n",
+      user: { login: "a", role: "operator", canWrite: async () => true, canRead: async () => true }, csrf: "c", nonce: "n",
     });
     const get = async (pattern: string, path: string, params: Record<string, string>) =>
       apiRoutes().find((r) => r.method === "GET" && r.pattern === pattern)!.handler(db, rq(path, params));

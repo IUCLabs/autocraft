@@ -68,7 +68,19 @@ export function parseCookies(header: string | undefined): Map<string, string> {
   return out;
 }
 
-// Same-site paths only: "/x", never "//host" or "/\host".
+// Same-site targets only. The value is resolved against a fixed origin and
+// refused when it lands elsewhere, holds a control character (a browser strips
+// tabs and newlines, which turns "/<tab>/host" into "//host") or a backslash,
+// or resolves to a protocol-relative path. Returns path, query and fragment.
+const RETURN_BASE = "http://dashboard.invalid";
 export function safeReturnTo(v: string | null | undefined): string {
-  return v && v.startsWith("/") && !v.startsWith("//") && !v.startsWith("/\\") && v.length < 2000 ? v : "/";
+  if (!v || v.length >= 2000 || /[\u0000-\u001f\u007f\\]/.test(v) || /%(?:[01][0-9a-f]|7f|5c)/i.test(v)) return "/";
+  try {
+    const u = new URL(v, RETURN_BASE);
+    if (u.origin !== RETURN_BASE) return "/";
+    const out = u.pathname + u.search + u.hash;
+    return out.startsWith("//") ? "/" : out;
+  } catch {
+    return "/";
+  }
 }

@@ -11,12 +11,22 @@ import { HttpError } from "../server/util.ts";
 import { latestRun, settledOf } from "../../classify/settled.ts";
 import type { Req } from "../types.ts";
 import { itemState } from "./decisions.ts";
+import { needVisible, visibleRepos } from "./visible.ts";
 
 const REASON: Record<string, SimilarHit["stateReason"]> = { COMPLETED: "completed", NOT_PLANNED: "not-planned", DUPLICATE: "duplicate" };
 
 function limitOf(req: Req, def: number): number {
   const l = Number(req.query.get("limit") ?? def);
   return Number.isInteger(l) && l > 0 ? Math.min(l, 50) : def;
+}
+
+// Neighbours are looked up among every embedded item, then cut to the repos the
+// requester may see; the lookup asks for extra so the cut rarely shortens the list.
+const OVERFETCH = 4;
+
+async function visibleHits(db: DatabaseSync, req: Req, index: VectorIndex, q: Float32Array, limit: number, skip?: string): Promise<Hit[]> {
+  const visible = new Set(await visibleRepos(db, req));
+  return index.nearest(db, q, Math.min(limit * OVERFETCH, 200), skip).filter((h) => visible.has(h.repo)).slice(0, limit);
 }
 
 function describe(db: DatabaseSync, hits: Hit[]): SimilarHit[] {
@@ -54,16 +64,17 @@ export async function similar(db: DatabaseSync, req: Req, index: VectorIndex): P
   const repo = req.params.repo!;
   const n = Number(req.params.n);
   if (!Number.isInteger(n)) throw new HttpError(400, "not an item number");
+  await needVisible(db, req, repo);
   const it = db.prepare("SELECT title, body FROM items WHERE repo = ? AND number = ?").get(repo, n) as { title: string | null; body: string | null } | undefined;
   if (!it) throw new HttpError(404, `no item ${repo}#${n} in the mirror`);
   await needVectors(db, index);
   const q = index.vectorOf(db, repo, n) ?? await embedOne(index, itemText(it.title, it.body), "item");
-  return describe(db, index.nearest(db, q, limitOf(req, 10), `${repo}#${n}`));
+  return describe(db, await visibleHits(db, req, index, q, limitOf(req, 10), `${repo}#${n}`));
 }
 
 export async function semanticSearch(db: DatabaseSync, req: Req, index: VectorIndex): Promise<SimilarHit[]> {
   const q = (req.query.get("q") ?? "").trim().slice(0, 500);
   if (!q) return [];
   await needVectors(db, index);
-  return describe(db, index.nearest(db, await embedOne(index, q, "query"), limitOf(req, 20)));
+  return describe(db, await visibleHits(db, req, index, await embedOne(index, q, "query"), limitOf(req, 20)));
 }

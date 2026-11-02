@@ -10,6 +10,7 @@ import { audit } from "../audit.ts";
 import { randomToken } from "../server/crypto.ts";
 import { HttpError, type RateLimiter } from "../server/util.ts";
 import type { Req } from "../types.ts";
+import { hiddenRepos, visibleRepos } from "./visible.ts";
 
 export const CLAIM_TTL = 10 * 60_000;
 const NOTE_MAX = 500;
@@ -29,9 +30,12 @@ const json = <T>(s: string | null | undefined, d: T): T => {
   }
 };
 
-function needDecision(db: DatabaseSync, id: string): DecisionRow {
+// A decision that covers a repo the requester may not see does not exist for them.
+async function needDecision(db: DatabaseSync, req: Req, id: string): Promise<DecisionRow> {
   const d = getDecision(db, id);
   if (!d) throw new HttpError(404, `no decision ${id}`);
+  const visible = new Set(await visibleRepos(db, req));
+  if (reposOf(d).some((r) => !visible.has(r))) throw new HttpError(404, `no decision ${id}`);
   return d;
 }
 
@@ -175,8 +179,13 @@ function inRepos(prefix: string, repos: string[], params: Record<string, string>
     params[`${prefix}${k}`] = r;
     return `:${prefix}${k}`;
   }).join(",") || "NULL";
-  return `(repo IN (${names}) OR EXISTS (SELECT 1 FROM json_each(CASE WHEN json_valid(items) THEN items ELSE '[]' END) j
+  return `(COALESCE(repo IN (${names}), 0) OR EXISTS (SELECT 1 FROM json_each(CASE WHEN json_valid(items) THEN items ELSE '[]' END) j
     WHERE json_extract(j.value, '$.repo') IN (${names})))`;
+}
+
+/** SQL that leaves out decisions touching a hidden repo (the decision's own, or an item of a batch); null when nothing is hidden. */
+export function withoutHidden(hidden: string[], params: Record<string, string>): string | null {
+  return hidden.length ? `NOT ${inRepos("hd", hidden, params)}` : null;
 }
 
 // Pages are cut by keyset: `after` is the `next` of the previous page, "<sort key>|<id>".
@@ -199,6 +208,8 @@ export async function listDecisions(db: DatabaseSync, req: Req, writeRepos: () =
     where.push("asked_at <= :before");
     params.before = new Date(Date.now() - minAge * 86400_000).toISOString();
   }
+  const hide = withoutHidden(await hiddenRepos(db, req), params);
+  if (hide) where.push(hide);
   const repos = [...new Set(list(req, "repo"))];
   if (repos.length) where.push(inRepos("rp", repos, params));
   if (q.get("mine") === "1" || q.get("mine") === "true") where.push(inRepos("mn", await writeRepos(), params));
@@ -240,12 +251,12 @@ export async function listDecisions(db: DatabaseSync, req: Req, writeRepos: () =
   };
 }
 
-export function getOne(db: DatabaseSync, req: Req): Decision {
-  return toDecision(db, needDecision(db, req.params.id!), viewerOf(req));
+export async function getOne(db: DatabaseSync, req: Req): Promise<Decision> {
+  return toDecision(db, await needDecision(db, req, req.params.id!), viewerOf(req));
 }
 
-export function thread(db: DatabaseSync, req: Req): DecisionComment[] {
-  needDecision(db, req.params.id!);
+export async function thread(db: DatabaseSync, req: Req): Promise<DecisionComment[]> {
+  await needDecision(db, req, req.params.id!);
   return db.prepare("SELECT id, login, at, body FROM decision_comments WHERE decision_id = ? ORDER BY at, rowid").all(req.params.id!) as unknown as DecisionComment[];
 }
 
@@ -257,7 +268,7 @@ function settled(db: DatabaseSync, req: Req, id: string): Decision {
 }
 
 export async function answer(db: DatabaseSync, req: Req): Promise<Decision> {
-  const d = needDecision(db, req.params.id!);
+  const d = await needDecision(db, req, req.params.id!);
   await requireOperator(req, d);
   if (d.answer) throw new HttpError(409, `already answered by ${d.answered_by}`);
   const b = body(req);
@@ -289,7 +300,7 @@ export async function answer(db: DatabaseSync, req: Req): Promise<Decision> {
 }
 
 export async function undo(db: DatabaseSync, req: Req): Promise<Decision> {
-  const d = needDecision(db, req.params.id!);
+  const d = await needDecision(db, req, req.params.id!);
   await requireOperator(req, d);
   if (!d.answer) throw new HttpError(409, "that decision has no answer to undo");
   if (d.applied_at) throw new HttpError(409, "the pipeline already acted on this answer");
@@ -301,7 +312,7 @@ export async function undo(db: DatabaseSync, req: Req): Promise<Decision> {
 }
 
 export async function adopt(db: DatabaseSync, req: Req): Promise<Decision> {
-  const d = needDecision(db, req.params.id!);
+  const d = await needDecision(db, req, req.params.id!);
   await requireOperator(req, d);
   if (d.answer) throw new HttpError(409, `already answered by ${d.answered_by}`);
   const oid = body(req).opinionId;
@@ -325,7 +336,7 @@ function limited(req: Req, limiter: RateLimiter): void {
 }
 
 export async function opine(db: DatabaseSync, req: Req, limiter: RateLimiter): Promise<Decision> {
-  const d = needDecision(db, req.params.id!);
+  const d = await needDecision(db, req, req.params.id!);
   limited(req, limiter);
   if (d.answer) throw new HttpError(409, "the decision is answered; opinions are closed");
   const b = body(req);
@@ -352,8 +363,8 @@ export async function opine(db: DatabaseSync, req: Req, limiter: RateLimiter): P
   return toDecision(db, getDecision(db, d.id)!, viewerOf(req));
 }
 
-export function retract(db: DatabaseSync, req: Req, limiter: RateLimiter): Decision {
-  const d = needDecision(db, req.params.id!);
+export async function retract(db: DatabaseSync, req: Req, limiter: RateLimiter): Promise<Decision> {
+  const d = await needDecision(db, req, req.params.id!);
   limited(req, limiter);
   if (d.answer) throw new HttpError(409, "the decision is answered; opinions are closed");
   const r = db.prepare("UPDATE decision_opinions SET retracted_at = ? WHERE decision_id = ? AND login = ? AND retracted_at IS NULL")
@@ -363,8 +374,8 @@ export function retract(db: DatabaseSync, req: Req, limiter: RateLimiter): Decis
   return toDecision(db, getDecision(db, d.id)!, viewerOf(req));
 }
 
-export function comment(db: DatabaseSync, req: Req, limiter: RateLimiter): DecisionComment {
-  const d = needDecision(db, req.params.id!);
+export async function comment(db: DatabaseSync, req: Req, limiter: RateLimiter): Promise<DecisionComment> {
+  const d = await needDecision(db, req, req.params.id!);
   limited(req, limiter);
   const text = optionalText(body(req).body, COMMENT_MAX, "body");
   if (!text) throw new HttpError(400, "body is required");
@@ -376,8 +387,8 @@ export function comment(db: DatabaseSync, req: Req, limiter: RateLimiter): Decis
 
 // Presence, not content: refreshed while someone has the decision open, so
 // it is neither audited nor counted against the hourly limit.
-export function claim(db: DatabaseSync, req: Req): void {
-  const d = needDecision(db, req.params.id!);
+export async function claim(db: DatabaseSync, req: Req): Promise<void> {
+  const d = await needDecision(db, req, req.params.id!);
   if (d.answer) return;
   const now = new Date().toISOString();
   const lapsed = new Date(Date.now() - CLAIM_TTL).toISOString();

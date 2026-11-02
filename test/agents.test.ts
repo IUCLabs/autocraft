@@ -211,7 +211,7 @@ describe("agent runs", () => {
 });
 
 describe("API", () => {
-  const user = (role: "operator" | "viewer") => ({ login: `${role}-1`, role, canWrite: async () => false });
+  const user = (role: "operator" | "viewer") => ({ login: `${role}-1`, role, canWrite: async () => false, canRead: async () => true });
   const req = (role: "operator" | "viewer", query = "", params: Record<string, string> = {}, json?: unknown): Req =>
     ({ method: "GET", path: "", params, query: new URLSearchParams(query), form: new URLSearchParams(), json, user: user(role), csrf: "", nonce: "" });
 

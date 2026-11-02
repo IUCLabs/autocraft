@@ -7,6 +7,7 @@ import { BANDS, bandIndex } from "../../classify/report.ts";
 import { LABELS } from "../../classify/rules.ts";
 import { HttpError } from "../server/util.ts";
 import type { Req } from "../types.ts";
+import { excludeHidden, hiddenRepos } from "./visible.ts";
 
 const FLAGS = ["security", "needs decision"];
 
@@ -44,7 +45,9 @@ function flagsOf(s: string | null): string[] {
   } catch { return []; }
 }
 
-export function classifiersReport(db: DatabaseSync, req: Req): ClassifierReport {
+export async function classifiersReport(db: DatabaseSync, req: Req): Promise<ClassifierReport> {
+  const hp: Record<string, string | number> = {};
+  const hide = excludeHidden("x.repo", await hiddenRepos(db, req), hp);
   const all = runs(db);
   const run = all.find((r) => r.id === req.query.get("run")) ?? all[0];
   if (!run) return { runs: [], run: "", a: "", b: "", labels: [...LABELS], items: 0, overall: agr(), byKind: { pr: agr(), issue: agr() }, byLabel: [], byRepo: [], confusion: [], bands: [], flags: [] };
@@ -53,7 +56,7 @@ export function classifiersReport(db: DatabaseSync, req: Req): ClassifierReport 
   const rows = db.prepare(`SELECT x.repo, i.kind, x.type_label AS ta, y.type_label AS tb, json_extract(x.probs, '$.top') AS pa, x.flags AS fa, y.flags AS fb
     FROM classifications x JOIN classifications y ON y.run_id = x.run_id AND y.repo = x.repo AND y.number = x.number AND y.classifier = :b
     LEFT JOIN items i ON i.repo = x.repo AND i.number = x.number
-    WHERE x.run_id = :run AND x.classifier = :a`).all({ run: run.id, a: pair.a, b: pair.b }) as PairRow[];
+    WHERE x.run_id = :run AND x.classifier = :a${hide ? ` AND ${hide}` : ""}`).all({ run: run.id, a: pair.a, b: pair.b, ...hp }) as PairRow[];
 
   const idx = new Map<string, number>(LABELS.map((l, i) => [l, i]));
   const overall = agr(), kind = { pr: agr(), issue: agr() };
@@ -97,10 +100,12 @@ export function classifiersReport(db: DatabaseSync, req: Req): ClassifierReport 
   };
 }
 
-export function disagreements(db: DatabaseSync, req: Req): DisagreementList {
+export async function disagreements(db: DatabaseSync, req: Req): Promise<DisagreementList> {
   const run = req.query.get("run") ?? "", a = req.query.get("a") ?? "", b = req.query.get("b") ?? "";
   const where = ["x.run_id = :run", "x.classifier = :a", "x.type_label IS NOT NULL", "y.type_label IS NOT NULL", "x.type_label <> y.type_label"];
   const p: Record<string, string | number> = { run, a, b };
+  const hide = excludeHidden("x.repo", await hiddenRepos(db, req), p);
+  if (hide) where.push(hide);
   const label = req.query.get("label");
   if (label) { where.push("(x.type_label = :label OR y.type_label = :label)"); p.label = label; }
   const bandName = req.query.get("band");
@@ -111,13 +116,13 @@ export function disagreements(db: DatabaseSync, req: Req): DisagreementList {
     p.lo = Number.isFinite(bd.lo) ? bd.lo : -1;
     p.hi = Number.isFinite(bd.hi) ? bd.hi : 2;
   }
-  const lim = Math.min(200, Math.max(1, Number(req.query.get("limit")) || 50));
-  const off = Math.max(0, Number(req.query.get("offset")) || 0);
+  const lim = Math.min(200, Math.max(1, Math.floor(Number(req.query.get("limit"))) || 50));
+  const off = Math.min(1_000_000, Math.max(0, Math.floor(Number(req.query.get("offset"))) || 0));
   const from = `FROM classifications x JOIN classifications y ON y.run_id = x.run_id AND y.repo = x.repo AND y.number = x.number AND y.classifier = :b
     LEFT JOIN items i ON i.repo = x.repo AND i.number = x.number WHERE ${where.join(" AND ")}`;
   const total = (db.prepare(`SELECT COUNT(*) AS n ${from}`).get(p) as { n: number }).n;
   const rows = db.prepare(`SELECT x.repo, x.number, i.kind, i.title, x.type_label AS la, y.type_label AS lb,
-      json_extract(x.probs, '$.top') AS pa, json_extract(y.probs, '$.top') AS pb ${from} ORDER BY x.repo, x.number LIMIT ${lim} OFFSET ${off}`).all(p) as
+      json_extract(x.probs, '$.top') AS pa, json_extract(y.probs, '$.top') AS pb ${from} ORDER BY x.repo, x.number LIMIT :lim OFFSET :off`).all({ ...p, lim, off }) as
     { repo: string; number: number; kind: string | null; title: string | null; la: string; lb: string; pa: number | null; pb: number | null }[];
   return {
     total,
@@ -134,9 +139,10 @@ const TOTALS = `COUNT(*) AS calls, COALESCE(SUM(items), 0) AS items, COALESCE(SU
   COALESCE(SUM(cache_read_tokens), 0) AS cacheRead, COALESCE(SUM(cache_write_tokens), 0) AS cacheWrite, SUM(cost_usd) AS usd,
   COALESCE(ROUND((julianday(MAX(ended_at)) - julianday(MIN(started_at))) * 86400), 0) AS wallSeconds`;
 
-export function cost(db: DatabaseSync, req: Req): CostReport {
+export async function cost(db: DatabaseSync, req: Req): Promise<CostReport> {
   const run = req.query.get("run") ?? "";
-  const p = { run };
+  const p: Record<string, string | number> = { run };
+  const hide = excludeHidden("repo", await hiddenRepos(db, req), p);
   const flt = "(:run = '' OR run_id = :run)";
   const q = <T>(sql: string) => (db.prepare(sql).all(p) as T[]).map((r) => ({ ...r }) as T);
   const total = (db.prepare(`SELECT ${TOTALS} FROM token_usage WHERE ${flt}`).get(p) as unknown as UsageTotals);
@@ -150,7 +156,7 @@ export function cost(db: DatabaseSync, req: Req): CostReport {
     total: { ...(total as object) } as UsageTotals,
     itemsClassified: (db.prepare(`SELECT COUNT(*) AS n FROM (SELECT DISTINCT repo, number FROM classifications WHERE ${flt})`).get(p) as { n: number }).n,
     stages: q<CostReport["stages"][number]>(`SELECT COALESCE(stage, '') AS stage, COALESCE(model, '') AS model, ${TOTALS} FROM token_usage WHERE ${flt} GROUP BY stage, model ORDER BY stage, model`),
-    repos: q<CostReport["repos"][number]>(`SELECT repo, ${TOTALS} FROM token_usage WHERE ${flt} AND repo IS NOT NULL GROUP BY repo ORDER BY COALESCE(SUM(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0) + COALESCE(cache_read_tokens, 0) + COALESCE(cache_write_tokens, 0)), 0) DESC`),
+    repos: q<CostReport["repos"][number]>(`SELECT repo, ${TOTALS} FROM token_usage WHERE ${flt} AND repo IS NOT NULL${hide ? ` AND ${hide}` : ""} GROUP BY repo ORDER BY COALESCE(SUM(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0) + COALESCE(cache_read_tokens, 0) + COALESCE(cache_write_tokens, 0)), 0) DESC`),
     series: q<CostReport["series"][number]>(`SELECT substr(COALESCE(ended_at, started_at), 1, ${len}) AS bucket,
         COALESCE(SUM(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0) + COALESCE(cache_read_tokens, 0) + COALESCE(cache_write_tokens, 0)), 0) AS tokens, SUM(cost_usd) AS usd
       FROM token_usage WHERE ${flt} AND COALESCE(ended_at, started_at) IS NOT NULL GROUP BY bucket ORDER BY bucket`),

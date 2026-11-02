@@ -4,7 +4,6 @@
 // dashboard never runs a step: it writes job rows that the runner picks up.
 import type { DatabaseSync } from "node:sqlite";
 import type { Job, JobState, PipelineOverview, PipelineStage, PipelineStep, StepParam, SyncRun } from "../../../web/src/api/types.ts";
-import { trackedNames } from "../../repos.ts";
 import { enqueue, getJob, jobDetail, JobError, JOB_STATES, listJobs, requestCancel, toJob, toJobs } from "../../runner/jobs.ts";
 import { LimitError, pipelineState, setEnabled, setLimit } from "../../runner/autopilot.ts";
 import { HEARTBEAT_KEY } from "../../runner/runner.ts";
@@ -12,6 +11,7 @@ import { loadSteps, type StepDef } from "../../runner/steps.ts";
 import { audit } from "../audit.ts";
 import { HttpError } from "../server/util.ts";
 import type { Req } from "../types.ts";
+import { hiddenRepos, visibleRepos } from "./visible.ts";
 
 // Stages of docs/pipeline.md. A stage with registered steps shows them; the
 // mirror also runs on its own timer.
@@ -70,9 +70,9 @@ function stageState(db: DatabaseSync, steps: string[], syncFailed: boolean | nul
   return last?.state === "done" ? "ok" : last?.state === "failed" ? "failed" : "idle";
 }
 
-export async function overview(db: DatabaseSync): Promise<PipelineOverview> {
+export async function overview(db: DatabaseSync, req: Req): Promise<PipelineOverview> {
   const all = [...(await loadSteps()).values()];
-  const repos = trackedNames(db);
+  const repos = await visibleRepos(db, req);
   const steps: PipelineStep[] = all.map((s) => ({
     name: s.name, title: s.title, description: s.description, stage: s.stage, requires: s.requires, group: s.group,
     params: wireParams(s, repos), unavailable: s.available?.() ?? null,
@@ -107,10 +107,10 @@ const intQuery = (req: Req, name: string): number | undefined => {
   return n;
 };
 
-export function jobs(db: DatabaseSync, req: Req) {
+export async function jobs(db: DatabaseSync, req: Req) {
   const state = req.query.get("state") || undefined;
   if (state && !JOB_STATES.includes(state as JobState)) throw new HttpError(400, "unknown state");
-  return listJobs(db, { step: req.query.get("step") || undefined, state: state as JobState | undefined, limit: intQuery(req, "limit"), offset: intQuery(req, "offset") });
+  return listJobs(db, { step: req.query.get("step") || undefined, state: state as JobState | undefined, limit: intQuery(req, "limit"), offset: intQuery(req, "offset") }, await hiddenRepos(db, req));
 }
 
 const jobId = (req: Req): number => {
@@ -119,7 +119,7 @@ const jobId = (req: Req): number => {
   return id;
 };
 
-export const job = (db: DatabaseSync, req: Req) => wrap(() => jobDetail(db, jobId(req)));
+export const job = (db: DatabaseSync, req: Req) => wrap(async () => jobDetail(db, jobId(req), { hidden: await hiddenRepos(db, req), logs: req.user.role === "operator" }));
 
 function body(req: Req): Record<string, unknown> {
   const b = req.json;

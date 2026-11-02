@@ -54,6 +54,7 @@ before(async () => {
   ins.run("untracked-repo", 5, "issue", "OPEN", null, "Crash when exporting a layered TIFF", "same words", "erin", now, now);
   db.prepare("INSERT INTO classifications (repo, number, classifier, run_id, at, type_label, probs) VALUES ('filmcraft', 3, 'jev', 'r1', ?, 'bugfix', ?)").run(now, JSON.stringify({ top: 0.95 }));
   db.prepare("INSERT INTO classifications (repo, number, classifier, run_id, at, type_label) VALUES ('filmcraft', 3, 'haiku', 'r1', ?, 'infra')").run(now);
+  db.exec("INSERT OR REPLACE INTO repos (name, visibility) VALUES ('photocraft', 'public'), ('filmcraft', 'public')");
   db.exec("DELETE FROM tracked_repos");
   db.exec("INSERT INTO tracked_repos (name) VALUES ('photocraft'), ('filmcraft')");
   addLogin(db, "cli", "viewer1", "viewer", null);

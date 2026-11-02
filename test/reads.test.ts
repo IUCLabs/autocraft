@@ -20,14 +20,14 @@ mkdirSync(SCRATCH, { recursive: true });
 const dir = mkdtempSync(join(SCRATCH, "reads-test-"));
 const fresh = (): DatabaseSync => connect(join(mkdtempSync(join(dir, "db-")), "t.db"));
 const req = (query: string): Req =>
-  ({ method: "GET", path: "/", params: {}, query: new URLSearchParams(query), form: new URLSearchParams(), user: { login: "op", role: "operator", canWrite: async () => true }, csrf: "", nonce: "" });
+  ({ method: "GET", path: "/", params: {}, query: new URLSearchParams(query), form: new URLSearchParams(), user: { login: "op", role: "operator", canWrite: async () => true, canRead: async () => true }, csrf: "", nonce: "" });
 
 describe("item_stage", () => {
   const stage = (db: DatabaseSync, n: number, s: string, at: string) =>
     db.prepare("INSERT INTO stages (repo, number, stage, at) VALUES ('app', ?, ?, ?)").run(n, s, at);
   const latest = (db: DatabaseSync, n: number) => db.prepare("SELECT stage, at, reviewed FROM item_stage WHERE repo = 'app' AND number = ?").get(n);
 
-  test("the trigger keeps the latest stage, also for out-of-order and same-time inserts", () => {
+  test("the trigger keeps the latest stage, also for out-of-order and same-time inserts", async () => {
     const db = fresh();
     stage(db, 1, "classified", "2026-01-01T00:00:00Z");
     stage(db, 1, "take", "2026-01-03T00:00:00Z");
@@ -38,7 +38,7 @@ describe("item_stage", () => {
     assert.deepEqual({ ...latest(db, 2) }, { stage: "merged", at: "2026-01-01T00:00:00Z", reviewed: 0 });
   });
 
-  test("the first connect fills it from existing stages", () => {
+  test("the first connect fills it from existing stages", async () => {
     const path = join(mkdtempSync(join(dir, "db-")), "old.db");
     const db = connect(path);
     stage(db, 1, "classified", "2026-01-01T00:00:00Z");
@@ -60,19 +60,19 @@ describe("keyset paging", () => {
     for (let n = 6; n <= 8; n++) { item.run(n, "MERGED", `PR ${n}`, `h${n}`); review.run(n, `h${n}`); }
     const get = (q: string) => queue(db, req(q));
     const seen: number[] = [];
-    let page: QueueList = get("limit=2");
+    let page: QueueList = await get("limit=2");
     assert.equal(page.total, 5);
     assert.equal(page.counts.merged, 3);
     for (;;) {
       seen.push(...page.rows.map((r) => r.number));
       if (!page.next) break;
-      page = get(`limit=2&after=${encodeURIComponent(page.next)}`);
+      page = await get(`limit=2&after=${encodeURIComponent(page.next)}`);
     }
     assert.deepEqual(seen, [1, 2, 3, 4, 5]);
-    const merged = get("state=merged&limit=2");
+    const merged = await get("state=merged&limit=2");
     assert.deepEqual(merged.rows.map((r) => r.number), [6, 7]);
-    assert.deepEqual(get(`state=merged&limit=2&after=${encodeURIComponent(merged.next!)}`).rows.map((r) => r.number), [8]);
-    assert.equal(get("state=merged&limit=2&after=app%238").next, null);
+    assert.deepEqual((await get(`state=merged&limit=2&after=${encodeURIComponent(merged.next!)}`)).rows.map((r) => r.number), [8]);
+    assert.equal((await get("state=merged&limit=2&after=app%238")).next, null);
   });
 
   test("decisions page in SQL by asked time, with filters and whole-list counts", async () => {

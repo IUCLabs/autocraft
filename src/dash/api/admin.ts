@@ -15,6 +15,7 @@ import { contributors, getRule, setOverride, setRule, tierOf, type Contributor a
 import { audit } from "../audit.ts";
 import { HttpError } from "../server/util.ts";
 import type { Req } from "../types.ts";
+import { hiddenRepos } from "./visible.ts";
 
 const NOTE_MAX = 300;
 const ACCESS_NOTE_MAX = 500;
@@ -96,7 +97,7 @@ function int(v: string | null, def: number, min: number, max: number, what: stri
   return n;
 }
 
-export function listContributors(db: DatabaseSync, req: Req): ContributorList {
+export async function listContributors(db: DatabaseSync, req: Req): Promise<ContributorList> {
   const q = req.query;
   const repo = q.get("repo") || undefined;
   const tier = q.get("tier") || undefined;
@@ -110,7 +111,7 @@ export function listContributors(db: DatabaseSync, req: Req): ContributorList {
   const needle = (q.get("q") ?? "").trim().toLowerCase().slice(0, 100);
 
   const rule = getRule(db);
-  let rows = contributors(db, { repo });
+  let rows = contributors(db, { repo, hidden: await hiddenRepos(db, req) });
   if (needle) rows = rows.filter((c) => c.login.toLowerCase().includes(needle));
   const byTier = Object.fromEntries(TIERS.map((t) => [t, 0])) as Record<Tier, number>;
   for (const c of rows) byTier[TIER[c.tier]]++;
