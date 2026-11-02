@@ -17,6 +17,7 @@ const PROMPT_STEP: Record<string, { step: string; stage: number }> = {
   "decide.summary": { step: "decide", stage: 3 }, "review.sonnet": { step: "review-batch", stage: 5 }, "fixup.patch": { step: "fixup", stage: 6 }, "verify.plan": { step: "verify", stage: 6 },
   "verify.summary": { step: "verify-collect", stage: 6 }, "priority.jev": { step: "prioritize", stage: 2 }, "priority.haiku": { step: "prioritize", stage: 2 },
   "dupes.jev": { step: "dupes", stage: 3 }, "dupes.haiku": { step: "dupes", stage: 3 },
+  "fixissue.triage": { step: "fixissue", stage: 7 }, "fixissue.patch": { step: "fixissue", stage: 7 },
 };
 
 export function stepOf(promptId: string): { jobId: number | null; step: string; stage: number } {

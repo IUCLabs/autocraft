@@ -676,3 +676,27 @@ CREATE TABLE IF NOT EXISTS duplicate_scans (
   at TEXT NOT NULL,
   PRIMARY KEY (repo, number)
 );
+-- One attempt to fix an issue (Fix stage), one row per issue. state: retry (a patch is due; round is the last
+-- one tried) | testing (head and base tasks queued) | passed (pushed and opened by the next collect) |
+-- pr-opened | skipped (triage: not a clear fix; retried only when the issue text changes) | failed.
+CREATE TABLE IF NOT EXISTS fix_attempts (
+  repo TEXT NOT NULL, number INTEGER NOT NULL,
+  main_sha TEXT NOT NULL,             -- default branch head the patch is made and tested on
+  text_hash TEXT NOT NULL,            -- of the issue title and body when triaged
+  state TEXT NOT NULL,
+  round INTEGER NOT NULL DEFAULT 0,
+  files TEXT,                         -- JSON [path] the patch may edit
+  crate TEXT, crate_dir TEXT,
+  patch TEXT,                         -- the latest validated patch (fix and test file)
+  test_patch TEXT,                    -- the test file alone
+  head_task_id INTEGER, base_task_id INTEGER,
+  retries INTEGER NOT NULL DEFAULT 0, -- tasks queued again after a build-environment error
+  push_tries INTEGER NOT NULL DEFAULT 0,
+  summary TEXT,                       -- why the last round failed (public-safe, one line)
+  pr_url TEXT,
+  reason TEXT,                        -- triage reason, or why it failed
+  created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+  PRIMARY KEY (repo, number)
+);
+CREATE INDEX IF NOT EXISTS fix_attempts_state ON fix_attempts(state);
+INSERT OR IGNORE INTO stage_limits (step, per_day) VALUES ('fixissue', 10);

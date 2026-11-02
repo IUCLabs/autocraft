@@ -74,6 +74,19 @@ export class Git {
     return (await this.must(["rev-parse", `refs/fixup/pr-${number}`])).trim();
   }
 
+  /** Fetches `branch` of `org/repo` and reports whether the commit `sha` is now available (it may be older than the branch head). */
+  async fetchBranch(org: string, repo: string, branch: string, sha: string): Promise<boolean> {
+    await this.init();
+    await this.must(["fetch", "--quiet", "--no-tags", "--no-recurse-submodules", "--no-write-fetch-head", `https://github.com/${org}/${repo}.git`, `+refs/heads/${branch}:refs/fixissue/main`]);
+    const have = (await this.git(["cat-file", "-e", `${sha}^{commit}`])).code === 0;
+    return have;
+  }
+
+  /** Pushes `sha` to a branch of the pipeline's own fork, replacing what an earlier try of the same fix left there. */
+  async pushNew(repoFullName: string, branch: string, sha: string): Promise<ExecResult> {
+    return this.git(["push", "--quiet", "--force", `https://github.com/${repoFullName}.git`, `${sha}:refs/heads/${branch}`]);
+  }
+
   /** The blob at `sha:path` as text with its mode, or why it can't be used. */
   async file(sha: string, path: string): Promise<{ ok: true; mode: string; content: string } | { ok: false; reason: string }> {
     const t = await this.git(["ls-tree", sha, "--", path]);
