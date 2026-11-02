@@ -39,8 +39,7 @@ let pages: [string, string, Record<string, string>, string][];
 before(() => {
   db = buildFixture(join(dir, "fixture.db"));
   pages = [
-    ["/contributors", "/contributors", {}, ""], ["/classifiers", "/classifiers", {}, ""],
-    ["/classifiers/items", "/classifiers/items", {}, "a=haiku&b=jev&field=type_label"], ["/cost", "/cost", {}, ""],
+    ["/contributors", "/contributors", {}, ""],
   ];
 });
 after(() => db?.close());
@@ -85,7 +84,7 @@ describe("pages", () => {
   test("the export has no write controls and no private field", async () => {
     const out = join(dir, "export");
     const r = await exportSite(db, out);
-    assert.equal(r.pages, 3);
+    assert.equal(r.pages, 1);
     const files: string[] = [];
     const walk = (d: string) => {
       for (const f of readdirSync(d)) {

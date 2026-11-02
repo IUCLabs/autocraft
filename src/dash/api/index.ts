@@ -12,6 +12,7 @@ import { doneByRepo, funnelByRepo, runStart, trend, type DoneRow, type FunnelRow
 import { HttpError, RateLimiter } from "../server/util.ts";
 import type { Req, Res, Route } from "../types.ts";
 import * as dec from "./decisions.ts";
+import * as insight from "./insight.ts";
 import { classificationsOf, itemState, relatedOf } from "./decisions.ts";
 
 export type ApiOptions = {
@@ -200,5 +201,8 @@ export function apiRoutes(opts: ApiOptions = {}): Route[] {
     get("/api/items/:repo/:n", item),
     get("/api/search", search),
     get("/api/progress", progress),
+    get("/api/classifiers", insight.classifiersReport),
+    get("/api/classifiers/disagreements", insight.disagreements),
+    get("/api/cost", insight.cost),
   ];
 }

@@ -67,6 +67,13 @@ export function createHttpApi(): Api {
     return s ? `?${s}` : "";
   }
 
+  const qs = (o: object) => {
+    const q = new URLSearchParams();
+    for (const [k, v] of Object.entries(o)) if (v !== undefined && v !== "") q.set(k, String(v));
+    const s = q.toString();
+    return s ? `?${s}` : "";
+  };
+
   return {
     me: () => get("/api/me"),
     repos: () => get("/api/repos"),
@@ -86,6 +93,11 @@ export function createHttpApi(): Api {
     item: (repo, number) => get(`/api/items/${encodeURIComponent(repo)}/${encodeURIComponent(String(number))}`),
     search: (q) => get(`/api/search?${new URLSearchParams({ q })}`),
     progress: () => get("/api/progress"),
+    classifiers: {
+      report: (sel) => get(`/api/classifiers${qs(sel)}`),
+      disagreements: (f) => get(`/api/classifiers/disagreements${qs(f)}`),
+    },
+    cost: (run) => get(`/api/cost${qs({ run })}`),
     async signOut() {
       await call("POST", "/api/signout");
       location.assign("/auth/signed-out");
