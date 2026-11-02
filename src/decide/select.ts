@@ -54,7 +54,7 @@ function covered(db: DatabaseSync): Set<string> {
 
 type Row = { repo: string; number: number; jl: string; jf: string | null; probs: string | null; hl: string | null; hf: string | null };
 
-/** Candidates in the given repos (default: every tracked repo), oldest first. */
+/** Candidates in the given repos (default: every tracked repo), pull requests before issues, oldest first. */
 export function selectCandidates(db: DatabaseSync, run: string, repos?: string[]): Candidate[] {
   const tracked = new Set(trackedNames(db));
   const want = (repos?.length ? repos : [...tracked]).filter((r) => tracked.has(r));
@@ -66,7 +66,7 @@ export function selectCandidates(db: DatabaseSync, run: string, repos?: string[]
     LEFT JOIN classifications h ON h.repo = j.repo AND h.number = j.number AND h.classifier = 'haiku' AND h.run_id = j.run_id
     WHERE j.run_id = ? AND j.classifier = 'jev' AND i.state = 'OPEN' AND COALESCE(i.is_draft, 0) = 0
       AND j.repo IN (SELECT value FROM json_each(?))
-    ORDER BY i.created_at, j.repo, j.number`).all(run, JSON.stringify(want)) as Row[];
+    ORDER BY i.kind = 'pr' DESC, i.created_at, j.repo, j.number`).all(run, JSON.stringify(want)) as Row[];
   const out: Candidate[] = [];
   for (const r of rows) {
     if (skip.has(`${r.repo}#${r.number}`)) continue;

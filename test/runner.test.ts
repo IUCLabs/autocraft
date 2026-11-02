@@ -1,6 +1,6 @@
 // The runner on fake steps: it runs queued jobs in child processes, records
 // success, failure and usage, honours cancels, recovers jobs an earlier runner
-// left running, enqueues scheduled jobs and runs one job per group at a time.
+// left running, runs one job per group at a time.
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
@@ -11,7 +11,7 @@ import { fileURLToPath } from "node:url";
 process.env.CRAFT_AUTO_EXTRA_STEPS = fileURLToPath(new URL("./runner-steps.ts", import.meta.url));
 
 const { connect } = await import("../src/db.ts");
-const { enqueue, getJob, jobDetail, requestCancel, saveSchedule } = await import("../src/runner/jobs.ts");
+const { enqueue, getJob, jobDetail, requestCancel } = await import("../src/runner/jobs.ts");
 const { Runner } = await import("../src/runner/runner.ts");
 const { FAKE_TOKEN } = await import("./runner-steps.ts");
 const { dueItems, inputHash } = await import("../src/runner/classify.ts");
@@ -87,29 +87,6 @@ describe("runner", () => {
     assert.deepEqual([state(a1.id), state(a2.id), state(b.id)], ["running", "queued", "running"]);
     await until(() => state(a2.id) === "done");
     assert.ok(getJob(db, a2.id).startedAt! >= getJob(db, a1.id).endedAt!, "the second job of group a started after the first ended");
-    await runner.idle();
-  });
-
-  test("schedules enqueue jobs: an interval when due, after-sync when the sync moves on", async () => {
-    await saveSchedule(db, "test-echo", { enabled: true, trigger: "interval", intervalMinutes: 60, params: { n: 3 } }, "boss");
-    db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('org_high_water', '2026-11-01T00:00:00Z')").run();
-    await saveSchedule(db, "test-other", { enabled: true, trigger: "after-sync", intervalMinutes: null, params: { ms: 1 } }, "boss");
-    const count = (step: string) => (db.prepare("SELECT COUNT(*) AS n FROM jobs WHERE step = ? AND requested_by = 'schedule'").get(step) as { n: number }).n;
-    await runner.tick();
-    assert.equal(count("test-echo"), 1);
-    assert.equal(count("test-other"), 0, "after-sync waits for the next sync");
-    await runner.idle();
-    await runner.tick();
-    await runner.idle();
-    assert.equal(count("test-echo"), 1, "not again within the interval");
-    db.prepare("UPDATE settings SET value = '2026-11-01T00:01:00Z' WHERE key = 'org_high_water'").run();
-    await runner.tick();
-    assert.equal(count("test-other"), 1);
-    await runner.idle();
-    await runner.tick();
-    assert.equal(count("test-other"), 1);
-    await saveSchedule(db, "test-echo", { enabled: false, trigger: "interval", intervalMinutes: 60, params: {} }, "boss");
-    await saveSchedule(db, "test-other", { enabled: false, trigger: "after-sync", intervalMinutes: null, params: {} }, "boss");
     await runner.idle();
   });
 

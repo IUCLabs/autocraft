@@ -1,8 +1,10 @@
-// craft-auto runner serve | exec | enqueue | jobs | cancel | steps
+// craft-auto runner serve | exec | enqueue | jobs | cancel | steps; craft-auto pipeline on | off | status | limit
 import { acquireLock } from "../mirror.ts";
 import { connect } from "../db.ts";
+import { audit } from "../dash/audit.ts";
 import { scopeToTracked } from "../repos.ts";
 import { execJob } from "./exec.ts";
+import { LimitError, pipelineState, setEnabled, setLimit } from "./autopilot.ts";
 import { enqueue, JobError, listJobs, requestCancel } from "./jobs.ts";
 import { Runner, runnerLockPath } from "./runner.ts";
 import { loadSteps } from "./steps.ts";
@@ -99,6 +101,7 @@ function cancel(args: string[]): void {
 const SUB: Record<string, (args: string[]) => Promise<void> | void> = { serve, exec, steps, enqueue: enqueueCmd, jobs, cancel };
 
 export const commands = {
+  pipeline: { summary: "pipeline switch and limits: on | off | status | limit <step> --per-day N", run: (args: string[]) => pipeline(args) },
   runner: {
     summary: "pipeline runner: serve | steps | enqueue | jobs | cancel",
     run: async (args: string[]) => {
@@ -108,3 +111,31 @@ export const commands = {
     },
   },
 };
+
+const PIPELINE_USAGE = `usage: craft-auto pipeline on | off | status
+       craft-auto pipeline limit <step> --per-day <N|none>`;
+
+// Recorded as `cli`: only someone with a shell on the host can run this.
+async function pipeline(args: string[]): Promise<void> {
+  const [sub, ...rest] = args;
+  const db = connect();
+  if (sub === "on" || sub === "off") {
+    setEnabled(db, sub === "on", "cli");
+    audit(db, "cli", "pipeline-switch", "pipeline", { enabled: sub === "on" });
+    console.log(`pipeline ${sub}`);
+  } else if (sub === "limit") {
+    const step = rest[0], n = rest[rest.indexOf("--per-day") + 1];
+    if (!step || rest.indexOf("--per-day") < 0 || n === undefined) die(PIPELINE_USAGE);
+    try {
+      setLimit(db, step, { perDay: n === "none" ? null : Number(n) }, "cli");
+    } catch (e) {
+      if (e instanceof LimitError) die(e.message);
+      throw e;
+    }
+  } else if (sub !== "status") die(PIPELINE_USAGE);
+  const s = await pipelineState(db);
+  console.log(`pipeline ${s.enabled ? "ON" : "OFF"}${s.changedAt ? ` (set by ${s.changedBy} at ${s.changedAt.slice(0, 16)})` : ""}`);
+  for (const l of s.limits) {
+    console.log(`${l.step.padEnd(14)} ${String(l.usedToday).padStart(5)} / ${l.perDay === null ? "no limit" : l.perDay}${l.pausedReason ? `  ${l.pausedReason}` : ""}`);
+  }
+}

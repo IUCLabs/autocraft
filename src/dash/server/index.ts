@@ -202,9 +202,10 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
     const method = req.method;
     const out = (r: Res, cookies?: string[]) =>
       send(res, nonce, { ...r, headers: { ...r.headers, [CSRF_HEADER]: session.csrf } }, cookies);
-    if (method !== "GET" && method !== "POST") return out(apiError(405, "method not allowed"));
+    if (method !== "GET" && method !== "POST" && method !== "PUT") return out(apiError(405, "method not allowed"));
+    const writes = method !== "GET";
     let json: unknown;
-    if (method === "POST") {
+    if (writes) {
       if (!sameOrigin(req)) return out(apiError(403, "cross-origin request refused"));
       if (!writeLimitSession.allow(session.idHash) || !writeLimitIp.allow(clientIp(req))) return out(apiError(429, "too many requests; wait a minute"));
       json = await readJson(req);
@@ -219,7 +220,7 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
     if (route.operator && session.role !== "operator") return out(apiError(403, "operators only"));
     const r: Req = {
       method, path: url.pathname, params: params!, query: url.searchParams, form: new URLSearchParams(), json,
-      user: makeUser(db, box, provider, session, method === "POST"),
+      user: makeUser(db, box, provider, session, writes),
       csrf: session.csrf, nonce,
     };
     return out(await route.handler(db, r));

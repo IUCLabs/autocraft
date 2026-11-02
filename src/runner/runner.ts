@@ -1,7 +1,8 @@
 // `craft-auto runner serve`: the only process that runs pipeline steps. It
 // polls the jobs table, runs each job in its own child process (`craft-auto
 // runner exec <id>`, its own process group, output to a per-job log file),
-// stops jobs whose cancel was requested, enqueues scheduled jobs and marks
+// stops jobs whose cancel was requested, runs the autopilot (queues jobs while the
+// pipeline switch is on) and marks
 // jobs left running by an earlier runner as failed.
 import { spawn, type ChildProcess } from "node:child_process";
 import { closeSync, mkdirSync, openSync, readFileSync, utimesSync } from "node:fs";
@@ -9,7 +10,8 @@ import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { dbPath } from "../db.ts";
-import { enqueue, JobError, jobRow, now, scheduleRows } from "./jobs.ts";
+import { autopilotTick } from "./autopilot.ts";
+import { jobRow, now } from "./jobs.ts";
 import { loadSteps } from "./steps.ts";
 
 export const logsDir = (): string => process.env.CRAFT_AUTO_RUNNER_LOGS ?? join(homedir(), ".cache/craft-automation-logs/jobs");
@@ -83,7 +85,7 @@ export class Runner {
     return rows.length;
   }
 
-  /** One pass: heartbeat, cancels, schedules, new jobs. */
+  /** One pass: heartbeat, cancels, autopilot, new jobs. */
   async tick(): Promise<void> {
     const t = now();
     this.db.prepare("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value").run(HEARTBEAT_KEY, t);
@@ -96,7 +98,7 @@ export class Runner {
     }
     this.cancels();
     if (this.stopping) return;
-    await this.schedules();
+    await autopilotTick(this.db, { log: this.o.log });
     await this.startJobs();
   }
 
@@ -112,31 +114,6 @@ export class Runner {
         this.o.log(`job ${id}: stopping (${this.stopping ? "runner stopping" : "cancel requested"})`);
       } else if (Date.now() - r.termAt >= this.o.killAfterMs) {
         killGroup(pid, "SIGKILL");
-      }
-    }
-  }
-
-  private busy(step: string): boolean {
-    return !!this.db.prepare("SELECT 1 FROM jobs WHERE step = ? AND state IN ('queued', 'running')").get(step);
-  }
-
-  private async schedules(): Promise<void> {
-    const steps = await loadSteps();
-    const sync = (this.db.prepare("SELECT value FROM settings WHERE key = 'org_high_water'").get() as { value: string } | undefined)?.value ?? null;
-    for (const s of scheduleRows(this.db)) {
-      if (!s.enabled || !steps.has(s.step) || this.busy(s.step)) continue;
-      const due = s.trigger === "after-sync"
-        ? sync !== null && sync !== s.last_sync_seen
-        : !s.last_enqueued_at || Date.now() - Date.parse(s.last_enqueued_at) >= (s.interval_minutes ?? 60) * 60_000;
-      if (!due) continue;
-      const t = now();
-      this.db.prepare("UPDATE job_schedules SET last_enqueued_at = ?, last_sync_seen = ? WHERE step = ?").run(t, sync, s.step);
-      try {
-        const job = await enqueue(this.db, s.step, JSON.parse(s.params), "schedule", s.step);
-        this.o.log(`job ${job.id}: ${s.step} queued by its schedule`);
-      } catch (e) {
-        if (!(e instanceof JobError)) throw e;
-        this.o.log(`schedule ${s.step}: not queued: ${e.message}`);
       }
     }
   }

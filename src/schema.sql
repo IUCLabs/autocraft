@@ -199,7 +199,7 @@ CREATE TABLE IF NOT EXISTS oauth_states (
 CREATE TABLE IF NOT EXISTS audit (
   at TEXT NOT NULL,
   login TEXT NOT NULL,
-  action TEXT NOT NULL,               -- answer | undo | adopt | opinion | opinion-retract | comment | override | rule | access-add | access-remove | access-role | session-revoke | sign-in | sign-in-refused | repo-track | repo-untrack | labels-approve | labels-revoke | labels-apply | assign | merge | merge-refused | job-request | job-cancel | schedule-change
+  action TEXT NOT NULL,               -- answer | undo | adopt | opinion | opinion-retract | comment | override | rule | access-add | access-remove | access-role | session-revoke | sign-in | sign-in-refused | repo-track | repo-untrack | labels-approve | labels-revoke | labels-apply | assign | merge | merge-refused | job-request | job-cancel | pipeline-switch | stage-limit
   target TEXT,
   details TEXT                        -- JSON
 );
@@ -263,7 +263,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   step TEXT NOT NULL,
   params TEXT NOT NULL,               -- JSON object, validated
-  requested_by TEXT NOT NULL,         -- login, 'schedule' or 'cli'
+  requested_by TEXT NOT NULL,         -- login, 'pipeline' (autopilot) or 'cli'
   requested_at TEXT NOT NULL,
   state TEXT NOT NULL,                -- queued | running | done | failed | cancelled
   started_at TEXT, ended_at TEXT,
@@ -275,22 +275,22 @@ CREATE TABLE IF NOT EXISTS jobs (
   pid INTEGER,                        -- the job's child process while running
   cancel_requested_at TEXT,
   cancel_requested_by TEXT,
-  schedule TEXT                       -- the step whose schedule enqueued it
+  items INTEGER                       -- items the job handled (classified, asked, reviewed, merged ...), for the daily limits
 );
 CREATE INDEX IF NOT EXISTS jobs_state ON jobs(state, id);
 CREATE INDEX IF NOT EXISTS jobs_step ON jobs(step, id);
 
--- One schedule per step; a step without a row is not scheduled.
-CREATE TABLE IF NOT EXISTS job_schedules (
+-- Daily limits per autopilot stage (UTC day); NULL means no limit, 0 pauses the
+-- stage. The pipeline switch itself lives in settings (pipeline_enabled,
+-- pipeline_changed_by, pipeline_changed_at).
+CREATE TABLE IF NOT EXISTS stage_limits (
   step TEXT PRIMARY KEY,
-  enabled INTEGER NOT NULL DEFAULT 0,
-  trigger TEXT NOT NULL,              -- 'interval' | 'after-sync'
-  interval_minutes INTEGER,
-  params TEXT NOT NULL DEFAULT '{}',  -- JSON, validated like a request
-  updated_by TEXT, updated_at TEXT,
-  last_enqueued_at TEXT,
-  last_sync_seen TEXT                 -- settings.org_high_water when it last enqueued
+  per_day INTEGER,                    -- items per day
+  updated_by TEXT, updated_at TEXT
 );
+INSERT OR IGNORE INTO stage_limits (step, per_day) VALUES
+  ('classify-new', 2000), ('embed', NULL), ('decide', 100), ('checks', NULL),
+  ('review-batch', 40), ('labels-apply', NULL), ('merge', 10);
 
 -- One row per `craft-auto sync` run, kept for two days, for the Pipeline page.
 CREATE TABLE IF NOT EXISTS sync_runs (

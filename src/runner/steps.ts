@@ -1,7 +1,7 @@
 // The pipeline steps the runner can run. Each step is a declaration: who may
 // request it, a params schema, a concurrency group and the function that runs
 // it. Adding a step means adding one entry to STEPS (and the module its `run`
-// imports); the dashboard, the API, schedules and the runner pick it up from here.
+// imports); the dashboard, the API, the autopilot and the runner pick it up from here.
 //
 // Params are only enums, tracked repo names, bounded integers and run ids:
 // nothing a person types can reach a model's prompt or a shell.
@@ -31,6 +31,8 @@ export type StepContext = {
   log(line: string): void;
   /** Model calls recorded in token_usage under this run id (from the job's start) count as the job's usage. */
   usageRun(runId: string): void;
+  /** Items this job handled, counted against the stage's daily limit. Call once with the total, before returning. */
+  handled(n: number): void;
   /** Set when a cancel was requested; long loops should stop between units of work. */
   cancelled(): boolean;
 };
@@ -42,7 +44,7 @@ export type StepDef = {
   description: string;
   /** Stage number in docs/pipeline.md. */
   stage: number;
-  /** Who may start, cancel or schedule it. Anything that writes to GitHub or spends model quota is operator-only. */
+  /** Who may start or cancel it. Anything that writes to GitHub or spends model quota is operator-only. */
   requires: "operator";
   /** At most one job of a group runs at a time. */
   group: "models" | "github-write" | "local" | (string & {});
@@ -141,6 +143,7 @@ export const STEPS: StepDef[] = [
       const { applyLabels } = await import("../labels/github.ts");
       const { Client } = await import("../mirror.ts");
       const r = await applyLabels(ctx.db, new Client(500), repo, { runId, apply: true, login: ctx.job.requestedBy, log: ctx.log });
+      ctx.handled(r.labeled);
       return `${repo}: labelled ${r.labeled} of ${r.planned} items in ${r.batches} batches, ${r.failed.length} failed`;
     },
   },
@@ -164,6 +167,7 @@ export const STEPS: StepDef[] = [
         model: String(ctx.params.model),
       }, ctx.log);
       if (r.usageRun) ctx.usageRun(r.usageRun);
+      ctx.handled(r.asked);
       return `asked ${r.asked} decisions; ${r.noSummary} items without a summary`;
     },
   },
@@ -182,6 +186,7 @@ export const STEPS: StepDef[] = [
       const { runReview } = await import("../review/index.ts");
       const r = await runReview(ctx.db, { repo: String(ctx.params.repo), limit: Number(ctx.params.limit) }, ctx.log);
       ctx.usageRun(r.runId);
+      ctx.handled(r.reviewed);
       const v = Object.entries(r.verdicts).map(([k, n]) => `${n} ${k}`).join(", ");
       return `${r.repo}: reviewed ${r.reviewed} of ${r.candidates} candidates${v ? ` (${v})` : ""}; ${r.skipped.length} skipped, ${r.missing.length} without an answer`;
     },
@@ -197,6 +202,7 @@ export const STEPS: StepDef[] = [
     run: async (ctx) => {
       const { runChecks } = await import("../review/index.ts");
       const r = await runChecks(ctx.db, { repo: String(ctx.params.repo) }, ctx.log);
+      ctx.handled(r.prs);
       return `${ctx.params.repo}: refreshed ${r.prs} open pull requests`;
     },
   },
@@ -214,6 +220,7 @@ export const STEPS: StepDef[] = [
     run: async (ctx) => {
       const { runMerge } = await import("../merge/index.ts");
       const r = await runMerge(ctx.db, { repo: String(ctx.params.repo), limit: Number(ctx.params.limit), dryRun: false }, ctx.log);
+      ctx.handled(r.merged.length);
       return `${r.repo}: merged ${r.merged.length} of ${r.attempted.length} tried, ${r.refused.length} refused, ${r.asked.length} decisions asked`;
     },
   },
