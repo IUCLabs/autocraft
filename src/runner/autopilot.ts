@@ -23,6 +23,7 @@ import { trackedNames } from "../repos.ts";
 import { selectCandidates as reviewCandidates } from "../review/candidates.ts";
 import { selectCandidates as verifyCandidates } from "../verify/candidates.ts";
 import { audit } from "../dash/audit.ts";
+import { duePriorityCount } from "../priority/index.ts";
 import { currentRun, dueItems, haikuDue } from "./classify.ts";
 import { enqueue, JobError, now, requestCancel, RUNNER_STOPPED } from "./jobs.ts";
 import { claudePauseReason } from "../agents/accounts.ts";
@@ -110,6 +111,12 @@ export const LANES: Lane[] = [
       if (!run) return [];
       return dueItems(db, run, "new").due.length || haikuDue(db, run, 1).length ? [{ step: "classify-new", params: {} }] : [];
     },
+  },
+  {
+    // Items without a priority at their current text hash; the scores of the others are refreshed by the same job.
+    name: "priority",
+    steps: ["prioritize"],
+    detect: (db) => (duePriorityCount(db) ? [{ step: "prioritize", params: {} }] : []),
   },
   {
     name: "embed",
@@ -262,7 +269,7 @@ export function setEnabled(db: DatabaseSync, enabled: boolean, by: string): void
 }
 
 /** Steps that have a row in stage_limits, in pipeline order. */
-export const LIMIT_STEPS = ["classify-new", "embed", "decide", "checks", "review-batch", "labels-apply", "merge", "act", "fixup", "verify"];
+export const LIMIT_STEPS = ["classify-new", "embed", "decide", "checks", "review-batch", "labels-apply", "merge", "act", "fixup", "verify", "prioritize"];
 
 /** Steps whose jobs cannot be sized to what remains of the day: only no limit or a pause makes sense. */
 export const ZERO_ONLY = ["checks"];

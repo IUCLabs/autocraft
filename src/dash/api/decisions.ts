@@ -1,6 +1,7 @@
 // Decisions over JSON: the queue, answers (operator only), opinions, claims
 // and comments. Opinions and comments are display-only: nothing the pipeline
 // reads (src/decisions.ts `actionable`) touches their tables.
+import { priorityOf } from "../../priority/read.ts";
 import type { DatabaseSync } from "node:sqlite";
 import type {
   Claim, Classification, Decision, DecisionComment, DecisionKind, DecisionList, ItemState, Opinion, RelatedItem, Relation,
@@ -168,6 +169,7 @@ export function toDecision(db: DatabaseSync, d: DecisionRow, viewer: Viewer): De
     commentCount,
     related: batch ? [] : relatedOf(db, d.repo!, d.number!),
     classifications: batch ? [] : classificationsOf(db, d.repo!, d.number!),
+    priority: batch ? null : priorityOf(db, d.repo!, d.number!),
   };
 }
 

@@ -2,6 +2,7 @@
 // server has already checked the session, and on POSTs the Origin, the CSRF
 // header and the per-session limits; these handlers check roles and GitHub
 // permissions themselves. Item and comment text is returned as data only.
+import { priorityOf } from "../../priority/read.ts";
 import type { DatabaseSync, SQLInputValue } from "node:sqlite";
 import type {
   CiState, Done, Funnel, Item, ItemComment, Mergeable, Progress, RepoProgress, Tier, User,
@@ -109,7 +110,7 @@ async function item(db: DatabaseSync, req: Req): Promise<Item> {
     related: relatedOf(db, repo, n), classifications: classificationsOf(db, repo, n),
     stages: stages.map((s) => ({ ...s, by: s.by ?? "" })),
     comments: comments.map((x) => ({ ...x, author: x.author ?? "", body: x.body ?? "" })),
-    decisionIds, settled: settledOf(db, repo, n) as Item["settled"],
+    decisionIds, settled: settledOf(db, repo, n) as Item["settled"], priority: priorityOf(db, repo, n),
   };
 }
 

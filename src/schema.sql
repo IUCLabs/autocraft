@@ -630,3 +630,20 @@ CREATE TABLE IF NOT EXISTS verifications (
   PRIMARY KEY (repo, number, head_sha)
 );
 CREATE INDEX IF NOT EXISTS verifications_state ON verifications(state);
+-- Priority of an open item (Prioritize step). text_hash is the item's embed_hash when the models ran;
+-- the models run again only when it changes, while score is recomputed from the mirror on each pass.
+-- impact: critical | high | normal | low. model: jev (sure) | haiku | jev-unsure (no Haiku answer).
+CREATE TABLE IF NOT EXISTS item_priority (
+  repo TEXT NOT NULL, number INTEGER NOT NULL,
+  text_hash TEXT NOT NULL,
+  impact TEXT NOT NULL,
+  jev_impact TEXT, jev_p REAL,
+  haiku_impact TEXT,
+  score INTEGER NOT NULL,
+  model TEXT NOT NULL,
+  reason TEXT,
+  at TEXT NOT NULL,
+  PRIMARY KEY (repo, number)
+);
+CREATE INDEX IF NOT EXISTS item_priority_score ON item_priority(score);
+INSERT OR IGNORE INTO stage_limits (step, per_day) VALUES ('prioritize', 3000);

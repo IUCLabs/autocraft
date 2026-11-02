@@ -81,7 +81,7 @@ export async function runReview(db: DatabaseSync, params: ReviewParams, log: (li
 
   // Fresh head commits and CI first: a PR pushed, closed or turned draft since the last sync drops out here.
   await withRetry(() => refreshChecks(db, deps.querier, repo, cands.map((c) => c.number), log));
-  cands = selectCandidates(db, repo).sort((a, b) => SIZE_ORDER[a.size] - SIZE_ORDER[b.size] || a.number - b.number);
+  cands = selectCandidates(db, repo).sort((a, b) => (b.score ?? -1) - (a.score ?? -1) || SIZE_ORDER[a.size] - SIZE_ORDER[b.size] || a.number - b.number);
   if (params.limit !== undefined) cands = cands.slice(0, params.limit);
   summary.candidates = cands.length;
   summary.bySize = count(cands);
