@@ -37,8 +37,8 @@ import type {
   JobList,
   JobParams,
   PipelineOverview,
-  Schedule,
-  ScheduleInput,
+  PipelineState,
+  StageLimit,
 } from "./types";
 
 /** The dashboard API as the frontend sees it. The mock and the HTTP client both implement it. */
@@ -98,14 +98,16 @@ export interface Api {
   cost(run?: string): Promise<CostReport>;
   /** The merge queue: every PR with a take or take-fix review at its head, and what it waits on. */
   queue(filter: QueueFilter): Promise<QueueList>;
-  /** Steps, jobs and schedules: everyone reads; run, cancel and schedule are for operators. */
+  /** Steps, jobs, the on/off switch and the stage limits: everyone reads; run, cancel, switch and limits are for operators. */
   pipeline: {
     overview(): Promise<PipelineOverview>;
     jobs(filter: JobFilter): Promise<JobList>;
     job(id: number): Promise<JobDetail>;
     run(step: string, params: JobParams): Promise<Job>;
     cancel(id: number): Promise<Job>;
-    schedule(step: string, input: ScheduleInput): Promise<Schedule>;
+    state(): Promise<PipelineState>;
+    setEnabled(enabled: boolean): Promise<PipelineState>;
+    setLimit(step: string, limit: { perDay: number | null }): Promise<StageLimit>;
   };
   /** Every registered model prompt, with the server's commit. */
   prompts(): Promise<PromptsReport>;

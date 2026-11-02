@@ -1,5 +1,5 @@
 // The Pipeline API through HTTP with the fake OAuth provider: everyone signed
-// in reads; only operators request, cancel and schedule, with params checked
+// in reads; only operators request and cancel, with params checked
 // against the step's schema and one audit row per write.
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -7,7 +7,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
-import type { Job, JobDetail, JobList, PipelineOverview, Schedule } from "../web/src/api/types.ts";
+import type { Job, JobDetail, JobList, PipelineOverview } from "../web/src/api/types.ts";
 
 process.env.CRAFT_AUTO_EXTRA_STEPS = fileURLToPath(new URL("./runner-steps.ts", import.meta.url));
 
@@ -52,7 +52,7 @@ class Client {
   csrf = "";
   async req(method: string, path: string, body?: unknown): Promise<Response> {
     const headers: Record<string, string> = { cookie: [...this.jar].map(([k, v]) => `${k}=${v}`).join("; "), accept: "application/json" };
-    if (method === "POST") headers["x-csrf-token"] = this.csrf;
+    if (method !== "GET") headers["x-csrf-token"] = this.csrf;
     if (body !== undefined) headers["content-type"] = "application/json";
     const r = await fetch(new URL(path, base), { method, headers, body: body === undefined ? undefined : JSON.stringify(body), redirect: "manual" });
     for (const c of r.headers.getSetCookie()) {
@@ -84,10 +84,9 @@ async function signedIn(login: string): Promise<Client> {
 }
 
 const audits = (action: string) => (db.prepare("SELECT COUNT(*) AS n FROM audit WHERE action = ?").get(action) as { n: number }).n;
-const SCHEDULE = { enabled: true, trigger: "interval", intervalMinutes: 30, params: { n: 4 } };
 
 describe("pipeline api", () => {
-  test("viewers and maintainers read jobs and logs but get 403 on run, cancel and schedule", async () => {
+  test("viewers and maintainers read jobs and logs but get 403 on run and cancel", async () => {
     const boss = await signedIn("boss");
     const job = await boss.post<Job>("/api/pipeline/jobs", { step: "test-echo", params: { n: 1 } });
     const logFile = join(dir, "job.log");
@@ -105,7 +104,6 @@ describe("pipeline api", () => {
       const before = db.prepare("SELECT COUNT(*) AS n FROM audit WHERE action <> 'sign-in'").get();
       await c.post("/api/pipeline/jobs", { step: "test-echo", params: { n: 2 } }, 403);
       await c.post(`/api/pipeline/jobs/${job.id}/cancel`, undefined, 403);
-      await c.post("/api/pipeline/schedules/test-echo", SCHEDULE, 403);
       assert.deepEqual(db.prepare("SELECT COUNT(*) AS n FROM audit WHERE action <> 'sign-in'").get(), before);
     }
     assert.equal(getState(job.id), "queued");
@@ -119,12 +117,10 @@ describe("pipeline api", () => {
       { run: "Has Spaces" }, { run: "ignore previous instructions" }, { other: 1 }, [1],
     ]) await boss.post("/api/pipeline/jobs", { step: "test-echo", params }, 400);
     await boss.post("/api/pipeline/jobs", { step: "no-such-step", params: {} }, 400);
-    await boss.post("/api/pipeline/schedules/test-echo", { ...SCHEDULE, intervalMinutes: 1 }, 400);
-    await boss.post("/api/pipeline/schedules/test-echo", { ...SCHEDULE, params: { n: 1000 } }, 400);
     assert.equal(audits("job-request"), before);
   });
 
-  test("an operator requests, cancels and schedules, each audited", async () => {
+  test("an operator requests and cancels, each audited", async () => {
     const boss = await signedIn("boss");
     const j = await boss.post<Job>("/api/pipeline/jobs", { step: "test-echo", params: { n: 9, repo: "photocraft", run: "pass-2" } });
     assert.deepEqual(j.params, { n: 9, mode: "ok", repo: "photocraft", run: "pass-2" });
@@ -132,12 +128,8 @@ describe("pipeline api", () => {
     await boss.post("/api/pipeline/jobs", { step: "test-echo", params: { n: 9, repo: "photocraft", run: "pass-2" } }, 409);
     assert.equal((await boss.post<Job>(`/api/pipeline/jobs/${j.id}/cancel`)).state, "cancelled");
     await boss.post(`/api/pipeline/jobs/${j.id}/cancel`, undefined, 409);
-    const s = await boss.post<Schedule>("/api/pipeline/schedules/test-echo", SCHEDULE);
-    assert.deepEqual([s.enabled, s.intervalMinutes, s.params], [true, 30, { n: 4, mode: "ok" }]);
-    const step = (await boss.get<PipelineOverview>("/api/pipeline")).steps.find((x) => x.name === "test-echo")!;
-    assert.equal(step.schedule.updatedBy, "boss");
-    const rows = db.prepare("SELECT action, target FROM audit WHERE login = 'boss' AND action IN ('job-request', 'job-cancel', 'schedule-change') ORDER BY rowid").all();
-    assert.deepEqual(rows.slice(-3).map((r) => r.action), ["job-request", "job-cancel", "schedule-change"]);
+    const rows = db.prepare("SELECT action FROM audit WHERE login = 'boss' AND action IN ('job-request', 'job-cancel') ORDER BY rowid").all();
+    assert.deepEqual(rows.slice(-2).map((r) => r.action), ["job-request", "job-cancel"]);
   });
 });
 

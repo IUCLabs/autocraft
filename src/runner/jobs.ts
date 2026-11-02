@@ -1,9 +1,9 @@
-// The jobs and job_schedules tables: requests from the dashboard and the CLI,
+// The jobs table: requests from the dashboard, the CLI and the autopilot,
 // state written by the runner. Shared by the API, the runner and the CLI.
 import { closeSync, fstatSync, openSync, readSync } from "node:fs";
 import { homedir } from "node:os";
 import type { DatabaseSync } from "node:sqlite";
-import type { Job, JobDetail, JobFilter, JobList, JobParams, JobState, JobUsage, Schedule, ScheduleInput } from "../../web/src/api/types.ts";
+import type { Job, JobDetail, JobFilter, JobList, JobParams, JobState, JobUsage } from "../../web/src/api/types.ts";
 import { trackedNames } from "../repos.ts";
 import { loadSteps, ParamError, validateParams, type StepDef } from "./steps.ts";
 
@@ -22,7 +22,7 @@ type JobRow = {
   id: number; step: string; params: string; requested_by: string; requested_at: string; state: JobState;
   started_at: string | null; ended_at: string | null; progress: string | null; summary: string | null; error: string | null;
   usage: string | null; log_path: string | null; pid: number | null; cancel_requested_at: string | null; cancel_requested_by: string | null;
-  schedule: string | null;
+  items: number | null;
 };
 
 function parseJson<T>(s: string | null, fallback: T): T {
@@ -93,14 +93,14 @@ export async function checkRequest(db: DatabaseSync, stepName: unknown, rawParam
 }
 
 /** Queues a job. The same step with the same params already waiting is refused. */
-export async function enqueue(db: DatabaseSync, stepName: unknown, rawParams: unknown, by: string, schedule: string | null = null): Promise<Job> {
+export async function enqueue(db: DatabaseSync, stepName: unknown, rawParams: unknown, by: string): Promise<Job> {
   const { step, params } = await checkRequest(db, stepName, rawParams);
   const json = JSON.stringify(params);
   if (db.prepare("SELECT 1 FROM jobs WHERE step = ? AND params = ? AND state = 'queued'").get(step.name, json)) {
     throw new JobError(409, `${step.name} with these settings is already queued`);
   }
-  const id = Number(db.prepare("INSERT INTO jobs (step, params, requested_by, requested_at, state, schedule) VALUES (?, ?, ?, ?, 'queued', ?)")
-    .run(step.name, json, by, now(), schedule).lastInsertRowid);
+  const id = Number(db.prepare("INSERT INTO jobs (step, params, requested_by, requested_at, state) VALUES (?, ?, ?, ?, 'queued')")
+    .run(step.name, json, by, now()).lastInsertRowid);
   return getJob(db, id);
 }
 
@@ -118,67 +118,6 @@ export function requestCancel(db: DatabaseSync, id: number, by: string): Job {
     .run(t, by, id).changes;
   if (!marked) throw new JobError(409, `job ${id} has already ended`);
   return getJob(db, id);
-}
-
-// ---- schedules ---------------------------------------------------------------
-
-type ScheduleRow = {
-  step: string; enabled: number; trigger: string; interval_minutes: number | null; params: string;
-  updated_by: string | null; updated_at: string | null; last_enqueued_at: string | null; last_sync_seen: string | null;
-};
-
-const OFF: Schedule = { enabled: false, trigger: "interval", intervalMinutes: 60, params: {}, updatedBy: null, updatedAt: null, lastEnqueuedAt: null };
-
-const toSchedule = (r: ScheduleRow | undefined): Schedule =>
-  r
-    ? {
-        enabled: r.enabled === 1, trigger: r.trigger === "after-sync" ? "after-sync" : "interval", intervalMinutes: r.interval_minutes,
-        params: parseJson<JobParams>(r.params, {}), updatedBy: r.updated_by, updatedAt: r.updated_at, lastEnqueuedAt: r.last_enqueued_at,
-      }
-    : { ...OFF };
-
-export function scheduleRows(db: DatabaseSync): ScheduleRow[] {
-  return db.prepare("SELECT * FROM job_schedules").all() as ScheduleRow[];
-}
-
-export function schedules(db: DatabaseSync): Map<string, Schedule> {
-  return new Map(scheduleRows(db).map((r) => [r.step, toSchedule(r)]));
-}
-
-export const scheduleOf = (db: DatabaseSync, step: string): Schedule =>
-  toSchedule(db.prepare("SELECT * FROM job_schedules WHERE step = ?").get(step) as ScheduleRow | undefined);
-
-export const MIN_INTERVAL = 5, MAX_INTERVAL = 7 * 24 * 60;
-
-export async function saveSchedule(db: DatabaseSync, stepName: string, input: unknown, by: string): Promise<Schedule> {
-  const step = await stepOf(stepName);
-  if (!input || typeof input !== "object" || Array.isArray(input)) throw new JobError(400, "the body must be a JSON object");
-  const b = input as Partial<ScheduleInput>;
-  if (typeof b.enabled !== "boolean") throw new JobError(400, "enabled must be true or false");
-  if (b.trigger !== "interval" && b.trigger !== "after-sync") throw new JobError(400, "trigger must be interval or after-sync");
-  let minutes: number | null = null;
-  if (b.trigger === "interval") {
-    minutes = b.intervalMinutes ?? null;
-    if (typeof minutes !== "number" || !Number.isInteger(minutes) || minutes < MIN_INTERVAL || minutes > MAX_INTERVAL) {
-      throw new JobError(400, `the interval must be a whole number of minutes from ${MIN_INTERVAL} to ${MAX_INTERVAL}`);
-    }
-  }
-  let params: JobParams;
-  try {
-    params = validateParams(step, b.params, trackedNames(db));
-  } catch (e) {
-    if (e instanceof ParamError) throw new JobError(400, e.message);
-    throw e;
-  }
-  if (b.enabled && step.available?.()) throw new JobError(409, step.available()!);
-  // An after-sync schedule waits for the next sync, not the one that already happened.
-  const sync = (db.prepare("SELECT value FROM settings WHERE key = 'org_high_water'").get() as { value: string } | undefined)?.value ?? null;
-  db.prepare(`INSERT INTO job_schedules (step, enabled, trigger, interval_minutes, params, updated_by, updated_at, last_sync_seen)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (step) DO UPDATE SET enabled = excluded.enabled, trigger = excluded.trigger,
-    interval_minutes = excluded.interval_minutes, params = excluded.params, updated_by = excluded.updated_by, updated_at = excluded.updated_at,
-    last_sync_seen = excluded.last_sync_seen`)
-    .run(step.name, b.enabled ? 1 : 0, b.trigger, minutes, JSON.stringify(params), by, now(), sync);
-  return scheduleOf(db, step.name);
 }
 
 // ---- logs ----------------------------------------------------------------------

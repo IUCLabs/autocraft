@@ -1,10 +1,12 @@
-// The Pipeline page over JSON. Everyone signed in reads steps, jobs, logs and
-// schedules; only operators request or cancel jobs and change schedules. The
+// The Pipeline page over JSON. Everyone signed in reads steps, jobs, logs, the
+// pipeline switch and the stage limits; only operators request or cancel jobs,
+// flip the switch and change limits. The
 // dashboard never runs a step: it writes job rows that the runner picks up.
 import type { DatabaseSync } from "node:sqlite";
 import type { Job, JobState, PipelineOverview, PipelineStage, PipelineStep, StepParam, SyncRun } from "../../../web/src/api/types.ts";
 import { trackedNames } from "../../repos.ts";
-import { enqueue, getJob, jobDetail, JobError, JOB_STATES, listJobs, requestCancel, saveSchedule, scheduleOf, schedules, toJob } from "../../runner/jobs.ts";
+import { enqueue, getJob, jobDetail, JobError, JOB_STATES, listJobs, requestCancel, toJob } from "../../runner/jobs.ts";
+import { LimitError, pipelineState, setEnabled, setLimit } from "../../runner/autopilot.ts";
 import { HEARTBEAT_KEY } from "../../runner/runner.ts";
 import { loadSteps, type StepDef } from "../../runner/steps.ts";
 import { audit } from "../audit.ts";
@@ -26,7 +28,7 @@ const STAGES: { n: number; name: string; automatic?: boolean }[] = [
 const RUNNER_ALIVE_MS = 30_000;
 
 function requireOperator(req: Req, step?: StepDef): void {
-  if (req.user.role !== "operator" || (step && step.requires !== "operator")) throw new HttpError(403, "only operators run, cancel or schedule pipeline steps");
+  if (req.user.role !== "operator" || (step && step.requires !== "operator")) throw new HttpError(403, "only operators run or cancel pipeline steps and change the pipeline switch and limits");
 }
 
 const wrap = async <T>(f: () => T | Promise<T>): Promise<T> => {
@@ -71,11 +73,10 @@ function stageState(db: DatabaseSync, steps: string[], syncFailed: boolean | nul
 export async function overview(db: DatabaseSync): Promise<PipelineOverview> {
   const all = [...(await loadSteps()).values()];
   const repos = trackedNames(db);
-  const sched = schedules(db);
   const steps: PipelineStep[] = all.map((s) => ({
     name: s.name, title: s.title, description: s.description, stage: s.stage, requires: s.requires, group: s.group,
     params: wireParams(s, repos), unavailable: s.available?.() ?? null,
-    schedule: sched.get(s.name) ?? scheduleOf(db, s.name), lastJob: lastJob(db, s.name),
+    lastJob: lastJob(db, s.name),
   }));
   const runs = db.prepare("SELECT started_at AS startedAt, ended_at AS endedAt, mode, items, error FROM sync_runs ORDER BY started_at DESC LIMIT 10").all() as unknown as SyncRun[];
   const lastSync = runs.find((r) => r.endedAt);
@@ -148,12 +149,25 @@ export async function cancel(db: DatabaseSync, req: Req): Promise<Job> {
   return j;
 }
 
-export async function schedule(db: DatabaseSync, req: Req) {
+export const state = (db: DatabaseSync) => pipelineState(db);
+
+export async function putState(db: DatabaseSync, req: Req) {
   requireOperator(req);
-  const step = (await loadSteps()).get(req.params.step ?? "");
-  if (!step) throw new HttpError(404, "no such step");
-  requireOperator(req, step);
-  const s = await wrap(() => saveSchedule(db, step.name, req.json, req.user.login));
-  audit(db, req.user.login, "schedule-change", `step:${step.name}`, { enabled: s.enabled, trigger: s.trigger, intervalMinutes: s.intervalMinutes, params: s.params });
-  return s;
+  const b = body(req);
+  if (typeof b.enabled !== "boolean") throw new HttpError(400, "enabled must be true or false");
+  const was = (await pipelineState(db)).enabled;
+  setEnabled(db, b.enabled, req.user.login);
+  audit(db, req.user.login, "pipeline-switch", "pipeline", { enabled: b.enabled, was });
+  return pipelineState(db);
+}
+
+export async function putLimit(db: DatabaseSync, req: Req) {
+  requireOperator(req);
+  try {
+    setLimit(db, req.params.step, req.json, req.user.login);
+  } catch (e) {
+    if (e instanceof LimitError) throw new HttpError(e.status, e.message);
+    throw e;
+  }
+  return (await pipelineState(db)).limits.find((l) => l.step === req.params.step)!;
 }

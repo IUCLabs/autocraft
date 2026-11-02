@@ -606,7 +606,7 @@ export interface CostReport {
   bucketSize: "hour" | "day";
 }
 
-// ---- pipeline (runner jobs, steps, schedules) ------------------------------
+// ---- pipeline (runner jobs, steps, the on/off switch and stage limits) ------------------------------
 
 export type JobState = "queued" | "running" | "done" | "failed" | "cancelled";
 
@@ -632,7 +632,7 @@ export interface Job {
   id: number;
   step: string;
   params: JobParams;
-  /** A login, `schedule` or `cli`. */
+  /** A login, `pipeline` (the autopilot) or `cli`. */
   requestedBy: string;
   requestedAt: string;
   state: JobState;
@@ -663,19 +663,8 @@ export interface JobFilter {
   offset?: number;
 }
 
-export type ScheduleTrigger = "interval" | "after-sync";
-
-export interface Schedule {
-  enabled: boolean;
-  trigger: ScheduleTrigger;
-  intervalMinutes: number | null;
-  params: JobParams;
-  updatedBy: string | null;
-  updatedAt: string | null;
-  lastEnqueuedAt: string | null;
-}
-
-export type ScheduleInput = Pick<Schedule, "enabled" | "trigger" | "intervalMinutes" | "params">;
+export type StageLimit = { step: string; title: string; perDay: number | null; usedToday: number; pausedReason: string | null };
+export type PipelineState = { enabled: boolean; changedBy: string | null; changedAt: string | null; heartbeat: string | null; limits: StageLimit[] };
 
 export interface PipelineStep {
   name: string;
@@ -687,7 +676,6 @@ export interface PipelineStep {
   params: StepParam[];
   /** null when the step can run; otherwise why not. */
   unavailable: string | null;
-  schedule: Schedule;
   lastJob: Job | null;
 }
 

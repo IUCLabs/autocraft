@@ -21,7 +21,7 @@ const AUDIT_PAGE = 50;
 export const AUDIT_ACTIONS = [
   "answer", "undo", "adopt", "opinion", "opinion-retract", "comment", "override", "rule", "access-add", "access-remove", "access-role",
   "session-revoke", "sign-in", "sign-in-refused", "repo-track", "repo-untrack", "labels-approve", "labels-revoke", "labels-apply",
-  "job-request", "job-cancel", "schedule-change",
+  "job-request", "job-cancel", "pipeline-switch", "stage-limit",
 ];
 
 const isOperator = (req: Req): boolean => req.user.role === "operator";

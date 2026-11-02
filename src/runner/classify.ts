@@ -69,7 +69,7 @@ async function jevPass(ctx: StepContext, run: string, todo: Item[], hashes: Map<
 }
 
 /** Items Jev is unsure of in `run` without a Haiku verdict as new as Jev's. */
-function haikuDue(db: DatabaseSync, run: string, limit: number): Item[] {
+export function haikuDue(db: DatabaseSync, run: string, limit: number): Item[] {
   return db.prepare(`SELECT ${ITEM_COLUMNS} FROM items i JOIN tracked_repos t ON t.name = i.repo
     JOIN classifications j ON j.repo = i.repo AND j.number = i.number AND j.classifier = 'jev' AND j.run_id = :run
     LEFT JOIN classifications h ON h.repo = i.repo AND h.number = i.number AND h.classifier = 'haiku' AND h.run_id = :run
@@ -125,6 +125,7 @@ export async function classifyNew(ctx: StepContext): Promise<string> {
   const run = currentRun(ctx.db);
   if (!run) throw new Error("There is no classification run yet; start a classification pass first.");
   const r = await pass(ctx, run, "new");
+  ctx.handled(r.jev);
   if (!r.due && !r.haikuDue) return `Nothing to classify in run ${run}.`;
   return `Run ${run}: Jev classified ${r.jev} of ${r.due} new or changed items${r.left ? ` (${r.left} left)` : ""}; Haiku gave a second opinion on ${r.haiku} of ${r.haikuDue}.`;
 }
@@ -132,6 +133,7 @@ export async function classifyNew(ctx: StepContext): Promise<string> {
 export async function classifyAll(ctx: StepContext): Promise<string> {
   const run = String(ctx.params.run);
   const r = await pass(ctx, run, "all");
+  ctx.handled(r.jev);
   const complete = r.left === 0 && !ctx.cancelled();
   if (complete) ctx.db.prepare("INSERT INTO settings (key, value) VALUES ('classify_run', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value").run(run);
   return `Run ${run}: Jev classified ${r.jev} of ${r.due} items without a verdict${r.left ? ` (${r.left} left; start it again to continue)` : ""}; Haiku gave a second opinion on ${r.haiku} of ${r.haikuDue}.${complete ? " The run is now the current one." : ""}`;

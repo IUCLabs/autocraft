@@ -25,9 +25,9 @@ export function createHttpApi(): Api {
   const listeners = new Set<() => void>();
   const changed = () => listeners.forEach((fn) => fn());
 
-  async function call<T>(method: "GET" | "POST", path: string, body?: unknown): Promise<T> {
+  async function call<T>(method: "GET" | "POST" | "PUT", path: string, body?: unknown): Promise<T> {
     const headers: Record<string, string> = { accept: "application/json" };
-    if (method === "POST") {
+    if (method !== "GET") {
       // Every /api/ response carries the session's token; a POST before any GET fetches it first.
       if (!csrf) await call("GET", "/api/me");
       headers[CSRF_HEADER] = csrf ?? "";
@@ -69,6 +69,11 @@ export function createHttpApi(): Api {
   };
   async function post<T>(path: string, body?: unknown): Promise<T> {
     const v = await call<T>("POST", path, body);
+    changed();
+    return v;
+  }
+  async function put<T>(path: string, body?: unknown): Promise<T> {
+    const v = await call<T>("PUT", path, body);
     changed();
     return v;
   }
@@ -148,7 +153,9 @@ export function createHttpApi(): Api {
       job: (id) => get(`/api/pipeline/jobs/${id}`),
       run: (step, params) => post("/api/pipeline/jobs", { step, params }),
       cancel: (id) => post(`/api/pipeline/jobs/${id}/cancel`),
-      schedule: (step, input) => post(`/api/pipeline/schedules/${encodeURIComponent(step)}`, input),
+      state: () => get("/api/pipeline/state"),
+      setEnabled: (enabled) => put("/api/pipeline/state", { enabled }),
+      setLimit: (step, limit) => put(`/api/pipeline/limits/${encodeURIComponent(step)}`, limit),
     },
     prompts: () => get("/api/prompts"),
     queue: (f) => get(`/api/queue${qs(f)}`),
