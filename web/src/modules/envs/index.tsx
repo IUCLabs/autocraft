@@ -354,7 +354,7 @@ function Tasks({ selected }: { selected?: number }) {
                 </td>
                 <td className="whitespace-nowrap px-3">
                   {r.number ? <RefLink repo={r.repo} number={r.number} kind="pr" stop className="text-xs" /> : <span className="code text-xs">{r.repo}</span>}
-                  <span className="ml-2 text-xs text-ink/50">{r.step}</span>
+                  <span className="ml-2 text-xs text-ink/50 max-md:hidden">{r.step}</span>
                 </td>
                 <td className="code px-3 text-xs max-md:hidden">{sha(r)}</td>
                 <td className="whitespace-nowrap px-3 text-ink/70 max-md:hidden">{r.envLabel ?? "–"}</td>
