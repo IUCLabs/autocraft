@@ -33,6 +33,9 @@ CREATE TABLE IF NOT EXISTS items (
   ci_state TEXT,                      -- statusCheckRollup state of the head commit
   closing_issues TEXT,                -- JSON array of issue numbers
   detail_level TEXT,                  -- 'full' (open: comments, reviews) | 'light' (closed)
+  embed_hash TEXT,                    -- hash of the embedded text, set at sync (src/itemhash.ts)
+  class_hash TEXT,                    -- the classifier's input hash under class_scheme
+  class_scheme TEXT,
   PRIMARY KEY (repo, number)
 );
 CREATE INDEX IF NOT EXISTS items_state ON items(repo, kind, state);

@@ -6,19 +6,18 @@
 // it (title, body, size). A new scheme or an edited title or body makes the item
 // due again; a new comment or label does not. Verdicts from before input_hash
 // existed count as changed when the item was updated after the verdict.
-import { createHash } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
-import { itemInput, refOf, type Item } from "../classify/parse.ts";
-import { LABELS, RULES } from "../classify/rules.ts";
+import { refOf, type Item } from "../classify/parse.ts";
 import { runHaiku, runJev } from "../classify/run.ts";
+import { fillClassHashes, SCHEME_ID } from "../itemhash.ts";
 import type { StepContext } from "./steps.ts";
+
+export { inputHash } from "../itemhash.ts";
 
 // Jev's top probability from which its label stands without a second opinion.
 export const SURE = 0.9;
 const JEV_CHUNK = 40, HAIKU_CHUNK = 100;
 
-const SCHEME = createHash("sha256").update(JSON.stringify(LABELS)).update(RULES).digest("hex");
-export const inputHash = (i: Item): string => createHash("sha256").update(SCHEME).update(JSON.stringify(itemInput(i))).digest("hex").slice(0, 32);
 
 /** The run new verdicts go into: the last completed pass, else the run with the newest Jev verdict. */
 export function currentRun(db: DatabaseSync): string | null {
@@ -32,14 +31,6 @@ type Row = Item & { updated_at: string | null; c_at: string | null; c_hash: stri
 
 const ITEM_COLUMNS = `i.repo, i.number, i.kind, COALESCE(i.title, '') AS title, COALESCE(i.body, '') AS body,
   i.additions + i.deletions AS lines_changed, i.changed_files AS files_changed, i.author_association`;
-
-/** Open items of tracked repos with their Jev verdict in `run`, if any. */
-function openItems(db: DatabaseSync, run: string): Row[] {
-  return db.prepare(`SELECT ${ITEM_COLUMNS}, i.updated_at, c.at AS c_at, c.input_hash AS c_hash
-    FROM items i JOIN tracked_repos t ON t.name = i.repo
-    LEFT JOIN classifications c ON c.repo = i.repo AND c.number = i.number AND c.classifier = 'jev' AND c.run_id = ?
-    WHERE i.state = 'OPEN' ORDER BY i.updated_at DESC, i.repo, i.number`).all(run) as unknown as Row[];
-}
 
 const strip = (r: Row): Item => ({ repo: r.repo, number: r.number, kind: r.kind, title: r.title, body: r.body, lines_changed: r.lines_changed, files_changed: r.files_changed, author_association: r.author_association });
 
@@ -99,20 +90,23 @@ async function haikuPass(ctx: StepContext, run: string, todo: Item[], sent: (n: 
   return (count.get(run, t0) as { n: number }).n;
 }
 
-/** Open items that need a Jev verdict in `run`, with each item's input hash. "all" takes only items without a verdict. */
+/**
+ * Open items that need a Jev verdict in `run`, with each due item's input hash. "all" takes only items without a verdict.
+ * The hashes are stored on the item row (src/itemhash.ts), so no body is read for items that are up to date.
+ */
 export function dueItems(db: DatabaseSync, run: string, mode: "new" | "all"): { open: number; due: Row[]; hashes: Map<string, string> } {
-  const rows = openItems(db, run);
-  const hashes = new Map<string, string>();
-  const due: Row[] = [];
-  for (const r of rows) {
-    const h = inputHash(strip(r));
-    hashes.set(refOf(r), h);
-    const stale = !r.c_at || (mode === "new" && (r.c_hash ? r.c_hash !== h : (r.updated_at ?? "") > r.c_at));
-    if (stale) due.push(r);
-  }
+  fillClassHashes(db);
+  const open = (db.prepare("SELECT COUNT(*) AS n FROM items i JOIN tracked_repos t ON t.name = i.repo WHERE i.state = 'OPEN'").get() as { n: number }).n;
   // Items without a verdict first, then changed ones; newest first within each.
-  due.sort((a, b) => Number(!!a.c_at) - Number(!!b.c_at));
-  return { open: rows.length, due, hashes };
+  const due = db.prepare(`SELECT ${ITEM_COLUMNS}, i.updated_at, c.at AS c_at, c.input_hash AS c_hash, i.class_hash AS h
+    FROM items i JOIN tracked_repos t ON t.name = i.repo
+    LEFT JOIN classifications c ON c.repo = i.repo AND c.number = i.number AND c.classifier = 'jev' AND c.run_id = :run
+    WHERE i.state = 'OPEN' AND i.class_scheme = :scheme
+      AND (c.at IS NULL OR (:new AND CASE WHEN c.input_hash IS NOT NULL THEN c.input_hash != i.class_hash ELSE COALESCE(i.updated_at, '') > c.at END))
+    ORDER BY c.at IS NOT NULL, i.updated_at DESC, i.repo, i.number`).all({ run, scheme: SCHEME_ID, new: mode === "new" ? 1 : 0 }) as unknown as (Row & { h: string })[];
+  const hashes = new Map<string, string>();
+  for (const r of due) hashes.set(refOf(r), r.h);
+  return { open, due, hashes };
 }
 
 async function pass(ctx: StepContext, run: string, mode: "new" | "all"): Promise<{ jev: number; due: number; haiku: number; haikuDue: number; left: number }> {

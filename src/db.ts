@@ -2,6 +2,7 @@ import { mkdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { fillClassHashes, fillEmbedHashes } from "./itemhash.ts";
 
 export const DEFAULT_DB = join(homedir(), ".local/share/craft-automation/mirror.db");
 
@@ -22,6 +23,9 @@ const ADDED_COLUMNS: [table: string, column: string, type: string][] = [
   ["jobs", "items", "INTEGER"],
   ["merges", "ci", "TEXT"],
   ["merges", "mergeable", "TEXT"],
+  ["items", "embed_hash", "TEXT"],
+  ["items", "class_hash", "TEXT"],
+  ["items", "class_scheme", "TEXT"],
 ];
 
 function addColumns(db: DatabaseSync): void {
@@ -60,6 +64,30 @@ function buildSearchIndex(db: DatabaseSync): void {
   }
 }
 
+// Indexes on columns added above, so they cannot live in schema.sql (it runs before addColumns).
+// Covering indexes: the planner compares stored hashes without reading item rows.
+function hashIndexes(db: DatabaseSync): void {
+  db.exec(`CREATE INDEX IF NOT EXISTS main.items_class ON items(state, repo, number, class_scheme, class_hash);
+    CREATE INDEX IF NOT EXISTS main.items_embed ON items(repo, number, embed_hash);
+    CREATE INDEX IF NOT EXISTS main.items_embed_missing ON items(repo, number) WHERE embed_hash IS NULL;
+    -- An edit of the hashed fields that does not bring its own hashes (sync does) clears them; the readers refill them.
+    CREATE TRIGGER IF NOT EXISTS main.items_hash_stale AFTER UPDATE OF title, body, additions, deletions, changed_files, author_association, kind ON items
+    WHEN new.embed_hash IS old.embed_hash AND new.class_hash IS old.class_hash AND new.class_scheme IS old.class_scheme
+      AND (old.title IS NOT new.title OR old.body IS NOT new.body OR old.additions IS NOT new.additions OR old.deletions IS NOT new.deletions
+        OR old.changed_files IS NOT new.changed_files OR old.author_association IS NOT new.author_association OR old.kind IS NOT new.kind)
+    BEGIN
+      UPDATE items SET embed_hash = NULL, class_hash = NULL, class_scheme = NULL WHERE rowid = new.rowid;
+    END`);
+}
+
+// Fills the stored hashes once, for a database whose items were written before they existed.
+function buildHashes(db: DatabaseSync): void {
+  if (db.prepare("SELECT 1 FROM main.settings WHERE key = 'hashes_built'").get()) return;
+  fillEmbedHashes(db);
+  fillClassHashes(db);
+  db.exec("INSERT OR IGNORE INTO main.settings (key, value) VALUES ('hashes_built', '1')");
+}
+
 export function connect(path: string = dbPath()): DatabaseSync {
   mkdirSync(dirname(path), { recursive: true });
   const db = new DatabaseSync(path, { timeout: 30_000 });
@@ -71,6 +99,8 @@ export function connect(path: string = dbPath()): DatabaseSync {
   addColumns(db);
   migrateValues(db);
   buildSearchIndex(db);
+  hashIndexes(db);
+  buildHashes(db);
   // Progress counts from here: the first sync, or now for a new database.
   db.exec(`INSERT OR IGNORE INTO main.settings (key, value) SELECT 'tracking_started_at',
     COALESCE((SELECT MIN(synced_at) FROM main.repos), strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))`);

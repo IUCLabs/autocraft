@@ -3,7 +3,8 @@
 // up where it stopped.
 import type { DatabaseSync } from "node:sqlite";
 import type { Embedder } from "./model.ts";
-import { itemText, textHash } from "./text.ts";
+import { fillEmbedHashes } from "../itemhash.ts";
+import { itemText } from "./text.ts";
 
 export type Todo = { repo: string; number: number; text: string; hash: string };
 
@@ -14,17 +15,18 @@ export const fromBlob = (b: Uint8Array): Float32Array =>
 // Tracked items whose text or model differs from the stored vector (every
 // tracked item with `all`), shortest text first so batches pad little.
 export function pending(db: DatabaseSync, modelId: string, all = false): Todo[] {
-  const rows = db.prepare(`SELECT i.repo, i.number, i.title, i.body, e.hash, e.model FROM main.items i
+  fillEmbedHashes(db);
+  // The first query runs on covering indexes; only the rows that differ are read in full.
+  const diff = db.prepare(`SELECT i.repo, i.number, i.embed_hash AS hash FROM main.items i
     LEFT JOIN main.item_embeddings e ON e.repo = i.repo AND e.number = i.number
-    WHERE i.repo IN (SELECT name FROM main.tracked_repos)`).iterate() as Iterable<
-    { repo: string; number: number; title: string | null; body: string | null; hash: string | null; model: string | null }>;
-  const out: Todo[] = [];
-  for (const r of rows) {
-    const text = itemText(r.title, r.body);
-    const hash = textHash(text);
-    if (all || r.model !== modelId || r.hash !== hash) out.push({ repo: r.repo, number: r.number, text, hash });
-  }
-  return out.sort((a, b) => a.text.length - b.text.length);
+    WHERE i.repo IN (SELECT name FROM main.tracked_repos)
+      AND (:all OR e.model IS NOT :model OR e.hash IS NOT i.embed_hash)`).all({ all: all ? 1 : 0, model: modelId }) as unknown as
+    { repo: string; number: number; hash: string }[];
+  const get = db.prepare("SELECT title, body FROM main.items WHERE repo = ? AND number = ?");
+  return diff.map((r) => {
+    const t = get.get(r.repo, r.number) as { title: string | null; body: string | null };
+    return { repo: r.repo, number: r.number, text: itemText(t.title, t.body), hash: r.hash };
+  }).sort((a, b) => a.text.length - b.text.length);
 }
 
 // Vectors of items that left the mirror or the tracked repos.

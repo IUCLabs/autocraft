@@ -7,6 +7,7 @@ import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { connect, dbPath } from "./db.ts";
 import { trackedNames } from "./repos.ts";
+import { hashColumns } from "./itemhash.ts";
 
 const ORG = "storytold";
 const OVERLAP_MS = 10 * 60 * 1000;
@@ -19,7 +20,7 @@ const COLUMNS = [
   "created_at", "updated_at", "closed_at", "merged_at", "merged_by", "state_reason", "is_draft",
   "labels", "assignees", "comments_count", "additions", "deletions", "changed_files",
   "head_ref", "head_oid", "head_repo", "base_ref", "maintainer_can_modify", "mergeable",
-  "review_decision", "ci_state", "closing_issues", "detail_level",
+  "review_decision", "ci_state", "closing_issues", "detail_level", "embed_hash", "class_hash", "class_scheme",
 ];
 
 type Kind = "issue" | "pr";
@@ -83,7 +84,7 @@ export class Client {
     this.reserve = reserve;
   }
 
-  private async sleepUntilReset(why: string): Promise<void> {
+  async sleepUntilReset(why: string): Promise<void> {
     const ms = this.resetAt ? Math.max(5_000, this.resetAt.getTime() - Date.now() + 5_000) : 60_000;
     console.log(`  ${why}: sleeping ${Math.round(ms / 1000)}s until rate limit reset`);
     await sleep(ms);
@@ -179,6 +180,11 @@ export async function* untilCutoff(pages: AsyncIterable<Node[]>, cutoff: string 
 const login = (n: Node): string | null => n?.login ?? null;
 
 function toRow(repo: string, kind: Kind, n: Node, detail: Detail): Record<string, SQLInputValue> {
+  const r = baseRow(repo, kind, n, detail);
+  return Object.assign(r, hashColumns(r as Parameters<typeof hashColumns>[0]));
+}
+
+function baseRow(repo: string, kind: Kind, n: Node, detail: Detail): Record<string, SQLInputValue> {
   const r: Record<string, SQLInputValue> = Object.fromEntries(COLUMNS.map((c) => [c, null]));
   Object.assign(r, {
     repo, number: n.number, kind, state: n.state, title: n.title, body: n.body, url: n.url,
@@ -273,7 +279,9 @@ async function syncRepo(db: DatabaseSync, client: Querier, name: string, full: b
       }
     }
   }
-  db.prepare("UPDATE repos SET synced_at=?, high_water=? WHERE name=?").run(iso(new Date()), newest || null, name);
+  // max(): an incremental sync may have moved the high water further while a full pass ran.
+  db.prepare(`UPDATE repos SET synced_at=:at, high_water=CASE WHEN :hw IS NOT NULL AND (high_water IS NULL OR high_water < :hw) THEN :hw ELSE high_water END
+    WHERE name=:name`).run({ at: iso(new Date()), hw: newest || null, name });
   return count;
 }
 
@@ -288,9 +296,11 @@ export function selectSyncRepos(listed: string[], tracked: string[], opts: { onl
   return opts.all ? listed : listed.filter((n) => tracked.includes(n));
 }
 
-const SEARCH_OVERLAP_MS = 2 * 60 * 1000;
+const SEARCH_OVERLAP_MS = 60 * 1000;
 const SEARCH_PAGE = 20;
 const SEARCH_CAP = 1000;
+// Rate-limit points a full re-sync leaves for the minute sync.
+const FULL_KEEP = 2500;
 const META_REFRESH_MS = 15 * 60 * 1000;
 const LOCK_STALE_MS = 6 * 3600 * 1000;
 
@@ -308,7 +318,7 @@ query($q: String!, $first: Int!, $after: String) {
   }
 }`;
 
-// GitHub's search index lags a little, so each query starts before the stored high water.
+// GitHub's search index lags a little, so each query starts before the newest updatedAt stored.
 export function searchSince(orgHighWater: string): string {
   return iso(new Date(new Date(orgHighWater).getTime() - SEARCH_OVERLAP_MS));
 }
@@ -321,32 +331,39 @@ const setSetting = (db: DatabaseSync, key: string, value: string): void => {
   db.prepare("INSERT INTO settings (key, value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(key, value);
 };
 
-// One org-wide search for everything updated since `since`. Returns the number of items
-// written, or null when the search would hit its 1,000-result cap (nothing is written then).
-export async function syncBySearch(db: DatabaseSync, client: Querier, tracked: string[], since: string): Promise<number | null> {
-  const q = `org:${ORG} updated:>=${since}`;
+// Search returns at most SEARCH_CAP results per query. A window with more matches is cut in half
+// (`updated:A..B` is inclusive, in whole seconds) until every slice fits. A one-second slice with
+// more matches than the cap is read as far as the search goes.
+export type SearchResult = { count: number; newest: string | null; slices: number };
+
+// Everything updated from `since` to `until`, oldest slice first. `newest` is the largest updatedAt
+// returned (tracked repos or not), the next sync's starting point; null when nothing matched.
+export async function syncBySearch(db: DatabaseSync, client: Querier, tracked: string[], since: string, until: string): Promise<SearchResult> {
   const trackedSet = new Set(tracked);
-  let cursor: string | null = null;
+  const bump = db.prepare("UPDATE repos SET high_water=? WHERE name=? AND (high_water IS NULL OR high_water < ?)");
   let size = SEARCH_PAGE;
-  let count = 0;
-  let first = true;
   let failures = 0;
-  const newest = new Map<string, string>();
-  for (;;) {
-    let conn: Node;
-    try {
-      conn = (await client.query(SEARCH_QUERY, { q, first: size, after: cursor })).search;
-    } catch (e) {
-      if (!(e instanceof Transient)) throw e;
-      if (size > MIN_PAGE) size = Math.max(MIN_PAGE, size >> 1);
-      else if (++failures > 6) throw e;
-      else await sleep(Math.min(30_000 * failures, 300_000));
-      continue;
+  const out: SearchResult = { count: 0, newest: null, slices: 0 };
+
+  async function page(q: string, cursor: string | null): Promise<Node> {
+    for (;;) {
+      try {
+        return (await client.query(SEARCH_QUERY, { q, first: size, after: cursor })).search;
+      } catch (e) {
+        if (!(e instanceof Transient)) throw e;
+        if (size > MIN_PAGE) size = Math.max(MIN_PAGE, size >> 1);
+        else if (++failures > 6) throw e;
+        else await sleep(Math.min(30_000 * failures, 300_000));
+      }
     }
-    if (first && conn.issueCount > SEARCH_CAP) return null;
-    first = false;
+  }
+
+  function write(nodes: Node[]): void {
     const groups = new Map<string, Node[]>();
-    for (const n of conn.nodes) {
+    const newest = new Map<string, string>();
+    for (const n of nodes) {
+      if (n?.updatedAt && n.updatedAt > (out.newest ?? "")) out.newest = n.updatedAt;
+      // Untracked repos are dropped here, before anything else is done with the node.
       if (!n?.repository || !trackedSet.has(n.repository.name)) continue;
       const kind: Kind = n.__typename === "PullRequest" ? "pr" : "issue";
       const detail: Detail = n.state === "OPEN" ? "full" : "light";
@@ -354,17 +371,53 @@ export async function syncBySearch(db: DatabaseSync, client: Querier, tracked: s
       groups.set(key, [...(groups.get(key) ?? []), n]);
       if (n.updatedAt > (newest.get(n.repository.name) ?? "")) newest.set(n.repository.name, n.updatedAt);
     }
-    for (const [key, nodes] of groups) {
+    for (const [key, group] of groups) {
       const [repo, kind, detail] = key.split("\t");
-      writePage(db, repo, kind as Kind, detail as Detail, nodes);
-      count += nodes.length;
+      writePage(db, repo, kind as Kind, detail as Detail, group);
+      out.count += group.length;
     }
-    if (!conn.pageInfo.hasNextPage) break;
-    cursor = conn.pageInfo.endCursor;
+    for (const [repo, t] of newest) bump.run(t, repo, t);
   }
-  const bump = db.prepare("UPDATE repos SET high_water=? WHERE name=? AND (high_water IS NULL OR high_water < ?)");
-  for (const [repo, t] of newest) bump.run(t, repo, t);
-  return count;
+
+  async function window(from: Date, to: Date): Promise<void> {
+    const q = `org:${ORG} updated:${iso(from)}..${iso(to)}`;
+    let conn = await page(q, null);
+    const seconds = Math.floor((to.getTime() - from.getTime()) / 1000);
+    if (conn.issueCount > SEARCH_CAP && seconds >= 1) {
+      const mid = new Date(from.getTime() + Math.floor(seconds / 2) * 1000);
+      await window(from, mid);
+      await window(new Date(mid.getTime() + 1000), to);
+      return;
+    }
+    if (conn.issueCount > SEARCH_CAP) console.log(`  ${conn.issueCount} items updated in ${iso(from)}: reading the first ${SEARCH_CAP}`);
+    out.slices++;
+    for (;;) {
+      write(conn.nodes);
+      if (!conn.pageInfo.hasNextPage) return;
+      conn = await page(q, conn.pageInfo.endCursor);
+    }
+  }
+
+  const from = new Date(since);
+  await window(from, new Date(Math.max(from.getTime(), new Date(until).getTime())));
+  return out;
+}
+
+// True when the lock file names a live process and is not stale.
+export function lockHeld(path: string): boolean {
+  try {
+    const pid = Number(readFileSync(path, "utf8"));
+    const fresh = Date.now() - statSync(path).mtimeMs < LOCK_STALE_MS;
+    if (!(pid > 0 && fresh)) return false;
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch (err) {
+      return (err as NodeJS.ErrnoException).code === "EPERM";
+    }
+  } catch {
+    return false; // vanished or unreadable: treat as stale
+  }
 }
 
 // A lock file with the owner's pid. Returns a release function, or null when another live run holds it.
@@ -385,22 +438,7 @@ export function acquireLock(path: string): (() => void) | null {
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
     }
-    let live = false;
-    try {
-      const pid = Number(readFileSync(path, "utf8"));
-      const fresh = Date.now() - statSync(path).mtimeMs < LOCK_STALE_MS;
-      if (pid > 0 && fresh) {
-        try {
-          process.kill(pid, 0);
-          live = true;
-        } catch (err) {
-          live = (err as NodeJS.ErrnoException).code === "EPERM";
-        }
-      }
-    } catch {
-      // vanished or unreadable: treat as stale
-    }
-    if (live) return null;
+    if (lockHeld(path)) return null;
     try {
       unlinkSync(path);
     } catch {
@@ -410,9 +448,41 @@ export function acquireLock(path: string): (() => void) | null {
   return null;
 }
 
+function lockDir(): string {
+  return process.env.CRAFT_AUTO_LOCK_DIR ?? join(homedir(), ".cache/craft-automation-logs");
+}
+
+// The incremental sync's lock.
 export function lockPath(): string {
-  const dir = process.env.CRAFT_AUTO_LOCK_DIR ?? join(homedir(), ".cache/craft-automation-logs");
-  return join(dir, `sync-${basename(dbPath())}.lock`);
+  return join(lockDir(), `sync-${basename(dbPath())}.lock`);
+}
+
+// A full re-sync has its own lock, so it never blocks the incremental sync.
+export function fullLockPath(): string {
+  return join(lockDir(), `sync-full-${basename(dbPath())}.lock`);
+}
+
+// Wraps a client for a full re-sync, which runs beside the incremental sync and gives way to it:
+// before each request it waits while `busy()` (an incremental sync is running) and, when fewer than
+// `minRemaining` rate-limit points are left, sleeps until the limit resets so the incremental
+// sync keeps a budget.
+export type LowPriorityOpts = {
+  busy: () => boolean; minRemaining: number; pollMs?: number;
+  wait?: (ms: number) => Promise<void>; pause?: () => Promise<void>;
+};
+export function lowPriority(inner: Client, o: LowPriorityOpts): Querier {
+  const wait = o.wait ?? ((ms: number) => sleep(ms));
+  return {
+    get spent() { return inner.spent; },
+    get remaining() { return inner.remaining; },
+    async query(query: string, variables: object): Promise<Node> {
+      while (o.busy()) await wait(o.pollMs ?? 2000);
+      if (inner.remaining !== null && inner.remaining < o.minRemaining) {
+        await (o.pause ?? (() => inner.sleepUntilReset(`${inner.remaining} points left, full re-sync keeps ${o.minRemaining} for the minute sync`)))();
+      }
+      return inner.query(query, variables);
+    },
+  };
 }
 
 type SyncOpts = { only: string[]; all: boolean; full: boolean; perRepo: boolean };
@@ -435,17 +505,28 @@ async function syncPerRepo(db: DatabaseSync, client: Querier, opts: SyncOpts): P
   const names = selectSyncRepos(listed, tracked, opts);
   const gone = opts.only.length || opts.all ? [] : tracked.filter((n) => !listed.includes(n));
   if (gone.length) console.log(`tracked but not in the org (archived or renamed): ${gone.join(", ")}`);
+  // A full re-sync goes through the repos in name order and records the last one finished,
+  // so a stopped run continues after it. The cursor belongs to one scope (tracked repos or all).
+  const resumable = opts.full && !opts.only.length;
+  const scope = opts.all ? "all" : "tracked";
+  const saved = resumable ? getSetting(db, "full_sync_cursor") : null;
+  const after = saved?.startsWith(`${scope}|`) ? saved.slice(scope.length + 1) : null;
+  const todo = after === null ? names : names.filter((n) => n > after);
+  if (after !== null) console.log(`resuming the full re-sync after ${after}: ${todo.length} of ${names.length} repos left`);
   let total = 0;
-  for (const name of names) {
+  for (const name of todo) {
     const before = client.spent;
     const count = await syncRepo(db, client, name, opts.full);
     total += count;
+    if (resumable) setSetting(db, "full_sync_cursor", `${scope}|${name}`);
     console.log(`${name}: ${count} items, ${client.spent - before} points used, ${client.remaining} left`);
   }
+  if (resumable) db.prepare("DELETE FROM settings WHERE key='full_sync_cursor'").run();
   return total;
 }
 
-// Runs one sync. `org_high_water` moves only after everything finished, and not for --repo runs.
+// Runs one sync. `org_high_water` is the newest updatedAt stored, so the next search starts a
+// minute before it; it does not move for --repo runs, and a full re-sync leaves an existing one alone.
 export async function runSync(db: DatabaseSync, client: Querier, opts: SyncOpts, now: Date = new Date()): Promise<{ mode: string; items: number }> {
   const started = iso(now);
   const orgHigh = getSetting(db, "org_high_water");
@@ -453,42 +534,58 @@ export async function runSync(db: DatabaseSync, client: Querier, opts: SyncOpts,
   const synced = new Set((db.prepare("SELECT name FROM repos WHERE synced_at IS NOT NULL").all() as { name: string }[]).map((r) => r.name));
   const wantsSearch = !opts.only.length && !opts.all && !opts.full && !opts.perRepo && orgHigh !== null
     && tracked.every((n) => synced.has(n));
+  const spent0 = client.spent;
   let mode = "per-repo";
-  let items: number | null = null;
-  if (wantsSearch) {
-    items = await syncBySearch(db, client, tracked, searchSince(orgHigh as string));
-    if (items !== null) {
+  let items: number;
+  try {
+    if (wantsSearch) {
+      const r = await syncBySearch(db, client, tracked, searchSince(orgHigh as string), started);
       mode = "search";
+      items = r.count;
+      if (r.newest && r.newest > (orgHigh as string)) setSetting(db, "org_high_water", r.newest);
+      console.log(`search: ${r.slices} slice${r.slices === 1 ? "" : "s"}`);
       const at = getSetting(db, "repos_refreshed_at");
       if (!at || now.getTime() - new Date(at).getTime() >= META_REFRESH_MS) await refreshRepoList(db, client);
+    } else {
+      items = await syncPerRepo(db, client, opts);
+      if (!opts.only.length && (orgHigh === null || !opts.full)) setSetting(db, "org_high_water", started);
     }
+  } finally {
+    // The dashboard can show the rate budget from these.
+    const prefix = opts.full ? "sync_full" : "sync";
+    setSetting(db, `${prefix}_points_last_run`, String(client.spent - spent0));
+    if (client.remaining !== null) setSetting(db, "sync_rate_remaining", String(client.remaining));
   }
-  if (items === null) items = await syncPerRepo(db, client, opts);
-  if (!opts.only.length) setSetting(db, "org_high_water", started);
   return { mode, items };
 }
 
 async function sync(args: string[]): Promise<void> {
   const opts: SyncOpts = { only: [], all: false, full: false, perRepo: false };
   let reserve = 1000;
+  let keep = FULL_KEEP;
+  let restart = false;
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--repo") opts.only.push(args[++i]);
     else if (args[i] === "--full") opts.full = true;
     else if (args[i] === "--all") opts.all = true;
     else if (args[i] === "--per-repo") opts.perRepo = true;
     else if (args[i] === "--reserve") reserve = Number(args[++i]);
-    else throw new Error(`unknown argument ${args[i]}\nusage: sync [--repo NAME ...] [--all] [--full] [--per-repo] [--reserve N]`);
+    else if (args[i] === "--restart") restart = true;
+    else if (args[i] === "--keep") keep = Number(args[++i]);
+    else throw new Error(`unknown argument ${args[i]}\nusage: sync [--repo NAME ...] [--all] [--full] [--per-repo] [--reserve N] [--keep N] [--restart]`);
   }
-  const release = acquireLock(lockPath());
+  const release = acquireLock(opts.full ? fullLockPath() : lockPath());
   if (!release) return;
   try {
     const db = connect();
     const client = new Client(reserve);
+    if (restart) db.prepare("DELETE FROM settings WHERE key='full_sync_cursor'").run();
+    const querier = opts.full ? lowPriority(client, { busy: () => lockHeld(lockPath()), minRemaining: keep }) : client;
     // Each run leaves a row for the Pipeline page; rows older than two days go.
     const row = db.prepare("INSERT INTO sync_runs (started_at) VALUES (?)").run(iso(new Date())).lastInsertRowid;
     db.prepare("DELETE FROM sync_runs WHERE started_at < ?").run(iso(new Date(Date.now() - 2 * 86400_000)));
     try {
-      const { mode, items } = await runSync(db, client, opts);
+      const { mode, items } = await runSync(db, querier, opts);
       db.prepare("UPDATE sync_runs SET ended_at = ?, mode = ?, items = ? WHERE rowid = ?").run(iso(new Date()), mode, items, row);
       console.log(`sync: mode=${mode} items=${items} points=${client.spent} left=${client.remaining}`);
     } catch (e) {
@@ -513,6 +610,6 @@ function syncStatus(): void {
 }
 
 export const commands = {
-  sync: { summary: "mirror issues and PRs of the storytold org: [--repo NAME ...] [--all] [--full] [--per-repo] [--reserve N] (default: one org-wide search for changes)", run: sync },
+  sync: { summary: "mirror issues and PRs of the storytold org: [--repo NAME ...] [--all] [--full] [--per-repo] [--reserve N] [--keep N] [--restart] (default: org-wide search for changes; --full runs beside it and resumes after the last finished repo)", run: sync },
   "sync-status": { summary: "per repo: open PRs, open issues, mirrored rows, synced_at", run: syncStatus },
 };
