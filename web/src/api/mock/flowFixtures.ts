@@ -12,6 +12,9 @@ const ALL: Record<string, number> = {
   "labels.labelled": 2_140, "labels.pending": 1_310, "labels.unapproved": 14_456, "labels.total": 17_906, "labels.recent.labelled": 400, "x.repos": REPOS.length, "x.approved": 3,
   "review.not-reviewed": 5_640, "review.take": 58, "review.take-fix": 31, "review.hold": 36, "review.close": 21, "review.total": 5_786, "review.recent.reviewed": 40,
   "edge.classify.review": 5_702, "edge.decide.review": 84, "edge.review.verify": 89,
+  "verify.waiting": 21, "verify.planned": 6, "verify.running": 4, "verify.passed": 33, "verify.ci-enough": 18, "verify.failed": 5, "verify.error": 2,
+  "verify.total": 89, "verify.recent.finished": 24, "edge.verify.merge": 51,
+  "merge.waiting-verify": 27, "merge.verify-failed": 5, "merge.verify-error": 2,
   "merge.eligible": 12, "merge.needs-decision": 14, "merge.waiting-ci": 19, "merge.ci-failed": 9, "merge.conflict": 4, "merge.needs-fix-up": 31, "merge.declined": 3,
   "merge.merged": 7, "merge.total": 92, "merge.recent.merged": 7, "merge.recent.tries": 9, "x.mergedAll": 41,
 };
@@ -24,7 +27,7 @@ export function flowFixture(repo?: string): Flow {
     repo: repo ?? null, now: iso(0), lastSync: iso(70_000), run: "org-1102", countedAt: iso(40_000), uncounted: 0,
     steps: [
       { name: "embed", stage: 1 }, { name: "classify-new", stage: 2 }, { name: "classify-all", stage: 2 }, { name: "decide", stage: 3 },
-      { name: "labels-ensure", stage: 4 }, { name: "labels-apply", stage: 4 }, { name: "review-batch", stage: 5 }, { name: "checks", stage: 5 }, { name: "merge", stage: 6 },
+      { name: "labels-ensure", stage: 4 }, { name: "labels-apply", stage: 4 }, { name: "review-batch", stage: 5 }, { name: "checks", stage: 5 }, { name: "verify", stage: 6 }, { name: "verify-collect", stage: 6 }, { name: "merge", stage: 6 },
     ],
   });
 }

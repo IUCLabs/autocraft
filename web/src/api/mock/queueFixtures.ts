@@ -2,7 +2,7 @@
 import type { QueueFilter, QueueList, QueueRow, QueueState, TypeLabel } from "../types";
 import { AUTHORS, DECISIONS, NOW, REPOS, rng, titleFor } from "./fixtures";
 
-const STATES: QueueState[] = ["ready", "decision-answered-merge", "refused", "waiting-ci", "ci-failed", "conflict", "needs-fix-up", "needs-decision", "declined", "merged"];
+const STATES: QueueState[] = ["ready", "decision-answered-merge", "refused", "waiting-ci", "ci-failed", "conflict", "needs-fix-up", "waiting-verify", "verify-failed", "verify-error", "needs-decision", "declined", "merged"];
 const REASONS = [
   "Fixes the off-by-one in the page range and adds a test.",
   "Small, correct guard against an empty selection.",
@@ -12,13 +12,24 @@ const REASONS = [
 ];
 const LABELS: TypeLabel[] = ["bugfix", "infra", "missing feature", "performance"];
 
+function verifyFor(state: QueueState, i: number): QueueRow["verify"] {
+  switch (state) {
+    case "ready": case "decision-answered-merge": case "refused": case "needs-decision":
+      return i % 2 ? { state: "ci-enough", kind: "ci-enough", summary: "Docs and comments only; CI covers the checks.", note: null } : { state: "passed", kind: i % 3 ? "tests" : "regression", summary: null, note: i === 2 ? "regression test did not fail on the base commit" : null };
+    case "waiting-verify": return i % 2 ? { state: "running", kind: "tests", summary: null, note: null } : { state: "planned", kind: "regression", summary: null, note: null };
+    case "verify-failed": return { state: "failed", kind: "regression", summary: "The regression test panics at png.rs:91: the decoded stride is 4096 where 8192 is expected.", note: null };
+    case "verify-error": return { state: "error", kind: "tests", summary: "fetch deps failed (exit 101)", note: null };
+    default: return null;
+  }
+}
+
 const ROWS: QueueRow[] = (() => {
   const r = rng(606);
   const mergeDecision = DECISIONS.find((d) => d.kind === "merge")?.id ?? null;
   const out: QueueRow[] = [];
   let k = 0;
   for (const state of STATES) {
-    const n = state === "ready" || state === "needs-decision" || state === "waiting-ci" ? 4 : 2;
+    const n = state === "ready" || state === "waiting-verify" || state === "needs-decision" || state === "waiting-ci" ? 4 : 2;
     for (let i = 0; i < n; i++, k++) {
       const repo = REPOS[k % 6]!;
       const number = 200 + Math.floor(r() * 3000);
@@ -44,6 +55,7 @@ const ROWS: QueueRow[] = (() => {
         answer: state === "decision-answered-merge" ? "merge" : state === "declined" ? (i ? "close" : "hold") : null,
         refusedReason: state === "refused" ? "safe-merge: required check 'build (linux)' has not finished" : null,
         reviewedAt: new Date(NOW - (k + 1) * 3_600_000 * 5).toISOString(),
+        verify: verifyFor(state, i),
       });
     }
   }

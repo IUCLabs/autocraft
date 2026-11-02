@@ -8,8 +8,8 @@ import type {
 } from "../../../web/src/api/types.ts";
 import { AccessError, addLogin, isRole, listAccess, removeLogin, ROLES, setRole } from "../../access.ts";
 import { approvalOf, setApproval } from "../../labels/approval.ts";
-import { setCommentApproval } from "../../act/approval.ts";
-import { setPushApproval } from "../../fixup/approval.ts";
+import { commentApprovalOf, setCommentApproval } from "../../act/approval.ts";
+import { pushApprovalOf, setPushApproval } from "../../fixup/approval.ts";
 import { setFixIssueApproval } from "../../fixissue/approval.ts";
 import { mergeApprovalOf, setMergeApproval } from "../../merge/approval.ts";
 import { countPlan, planLabels } from "../../labels/plan.ts";
@@ -231,7 +231,13 @@ export function allRepos(db: DatabaseSync, req: Req): TrackedRepo[] {
     name: r.name, tracked: !!r.tracked, openPrs: r.open_prs, openIssues: r.open_issues, mirrored: r.rows, syncedAt: r.synced_at,
     labels: r.tracked ? labelsInfo(db, r.name) : null,
     merging: r.tracked ? mergeInfo(db, r.name) : null,
+    pushing: r.tracked ? approvalInfo(pushApprovalOf(db, r.name)) : null,
+    commenting: r.tracked ? approvalInfo(commentApprovalOf(db, r.name)) : null,
   }));
+}
+
+function approvalInfo(a: { by: string; at: string } | null): RepoApproval {
+  return { approved: !!a, approvedBy: a?.by ?? null, approvedAt: a?.at ?? null };
 }
 
 function mergeInfo(db: DatabaseSync, repo: string): RepoApproval {

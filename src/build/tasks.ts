@@ -327,6 +327,8 @@ function toTask(r: TaskRow, artifacts: TaskArtifact[]): BuildTask {
     state: r.state, envId: r.env_id, envLabel: r.env_label ?? null, cancelRequested: r.cancel_requested_at !== null,
     queuedAt: r.queued_at, claimedAt: r.claimed_at, startedAt: r.started_at, endedAt: r.ended_at, heartbeatAt: r.heartbeat_at,
     results: json<TaskResult[]>(r.results, []), artifacts, summary: r.summary,
+    patchBytes: r.patch ? Buffer.byteLength(r.patch) : null,
+    warm: r.warm_key && (r.warm_role === "use" || r.warm_role === "build") ? { key: r.warm_key, role: r.warm_role } : null,
   };
 }
 
@@ -354,7 +356,8 @@ export function getTaskDetail(db: DatabaseSync, id: number): BuildTaskDetail | n
   const t = getTask(db, id);
   if (!t) return null;
   const l = logTail(db, id);
-  return { ...t, logTail: l.text, logBytes: l.bytes, logTruncated: l.truncated };
+  const p = db.prepare("SELECT patch FROM build_tasks WHERE id = ?").get(id) as { patch: string | null } | undefined;
+  return { ...t, logTail: l.text, logBytes: l.bytes, logTruncated: l.truncated, patch: p?.patch ?? null };
 }
 
 const CURSOR_RE = /^[1-9][0-9]{0,15}$/;

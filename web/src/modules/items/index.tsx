@@ -30,6 +30,7 @@ const STAGE: Record<Stage, string> = {
   classified: "Classified", reviewed: "Reviewed", take: "Taken", hold: "Held", close: "To close", "needs-decision": "Waiting for a decision",
   batched: "In a batch", merged: "Merged by the pipeline", closed: "Closed by the pipeline", "fixed-by-us": "Fixed by us",
   "verify-planned": "Being verified", "verify-ci-enough": "CI is enough", "verify-error": "Verification not planned",
+  verified: "Verified", "verify-failed": "Verification failed",
 };
 
 /** "review.take-fix" as "Review › take fix". */

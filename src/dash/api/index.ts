@@ -5,7 +5,7 @@
 import { priorityOf } from "../../priority/read.ts";
 import type { DatabaseSync, SQLInputValue } from "node:sqlite";
 import type {
-  CiState, Done, Funnel, Item, ItemComment, Mergeable, Progress, RepoProgress, Tier, User,
+  CiState, Done, Funnel, Item, ItemAction, ItemComment, ItemFixup, ItemVerification, Mergeable, Progress, RepoProgress, Tier, User,
 } from "../../../web/src/api/types.ts";
 import { trackedNames } from "../../repos.ts";
 import { excludeHidden, hiddenRepos, needVisible, visibleRepos } from "./visible.ts";
@@ -24,6 +24,7 @@ import { prompts } from "./prompts.ts";
 import { queue } from "./queue.ts";
 import { flow } from "./flow.ts";
 import * as items from "./items.ts";
+import { verificationOf } from "../../verify/results.ts";
 import { settledOf } from "../../classify/settled.ts";
 import { classificationsOf, itemState, relatedOf } from "./decisions.ts";
 import * as sim from "./similar.ts";
@@ -111,7 +112,39 @@ async function item(db: DatabaseSync, req: Req): Promise<Item> {
     stages: stages.map((s) => ({ ...s, by: s.by ?? "" })),
     comments: comments.map((x) => ({ ...x, author: x.author ?? "", body: x.body ?? "" })),
     decisionIds, settled: settledOf(db, repo, n) as Item["settled"], priority: priorityOf(db, repo, n),
+    ...(it.kind === "pr" ? prWork(db, repo, n) : { verification: null, fixups: [] }),
+    actions: actionsOf(db, repo, n),
   };
+}
+
+function prWork(db: DatabaseSync, repo: string, n: number): Pick<Item, "verification" | "fixups"> {
+  const head = (db.prepare("SELECT head_oid FROM items WHERE repo = ? AND number = ?").get(repo, n) as { head_oid: string | null } | undefined)?.head_oid ?? null;
+  const latest = db.prepare("SELECT head_sha FROM verifications WHERE repo = ? AND number = ? ORDER BY (head_sha = ?) DESC, created_at DESC LIMIT 1").get(repo, n, head) as { head_sha: string } | undefined;
+  const v = latest ? verificationOf(db, repo, n, latest.head_sha) : null;
+  const plan = (v?.plan ?? null) as Record<string, unknown> | null;
+  const strings = (x: unknown): string[] => (Array.isArray(x) ? x.filter((s): s is string => typeof s === "string") : []);
+  const fixups = (db.prepare("SELECT from_head, to_head, state, reason, files, attempt, created_at FROM fixups WHERE repo = ? AND number = ? ORDER BY created_at, rowid").all(repo, n) as
+    { from_head: string; to_head: string | null; state: string; reason: string | null; files: string | null; attempt: number; created_at: string }[])
+    .map((f): ItemFixup => {
+      let files: string[] = [];
+      try { files = strings(JSON.parse(f.files ?? "[]")); } catch { /* malformed: none */ }
+      return { fromHead: f.from_head, toHead: f.to_head, state: f.state as ItemFixup["state"], reason: f.reason, files, attempt: f.attempt, createdAt: f.created_at };
+    });
+  return {
+    fixups,
+    verification: !v ? null : {
+      headSha: v.headSha, baseSha: v.baseSha, current: v.headSha === head, kind: v.kind as ItemVerification["kind"], reason: v.reason,
+      plan: !plan ? null : { crates: plan.crate ? [String(plan.crate)] : strings(plan.crates), tests: strings(plan.tests), testLines: typeof plan.test_lines === "number" ? plan.test_lines : null },
+      state: v.state, summary: v.summary, note: v.note, createdAt: v.createdAt, finishedAt: v.finishedAt,
+      tasks: v.tasks.map((t) => ({ id: t.id, role: t.role, state: t.state, results: t.results, endedAt: t.endedAt })),
+    },
+  };
+}
+
+function actionsOf(db: DatabaseSync, repo: string, n: number): ItemAction[] {
+  return (db.prepare("SELECT decision_id, kind, state, comment_url, reason, created_at FROM actions WHERE repo = ? AND number = ? ORDER BY created_at, id").all(repo, n) as
+    { decision_id: string; kind: string; state: string; comment_url: string | null; reason: string | null; created_at: string }[])
+    .map((a): ItemAction => ({ decisionId: a.decision_id, kind: a.kind, state: a.state as ItemAction["state"], commentUrl: a.comment_url, reason: a.reason, createdAt: a.created_at }));
 }
 
 // ---- progress ----------------------------------------------------------------

@@ -49,6 +49,21 @@ running 412 tests
 test result: ok. 412 passed; 0 failed; 0 ignored; finished in 18.40s
 `;
 
+const PATCH = `diff --git a/crates/codecs/tests/autocraft_regression.rs b/crates/codecs/tests/autocraft_regression.rs
+new file mode 100644
+--- /dev/null
++++ b/crates/codecs/tests/autocraft_regression.rs
+@@ -0,0 +1,12 @@
++use codecs::png::decode;
++
++#[test]
++fn decodes_16bit_rgba() {
++    let data = include_bytes!("data/rgba16.png");
++    let img = decode(data).unwrap();
++    assert_eq!(img.stride(), 8192);
++}
+`;
+
 const N = [2214, 2230, 1187, 640, 3302, 905, 2511, 77];
 let id = 900;
 function make(state: TaskState, agoMin: number, over: Partial<BuildTask> = {}): BuildTask {
@@ -67,16 +82,17 @@ function make(state: TaskState, agoMin: number, over: Partial<BuildTask> = {}): 
     endedAt: active || state === "queued" ? null : iso((agoMin - 6) * MIN), heartbeatAt: active ? iso(8_000) : null,
     results, artifacts: state === "done" ? [{ name: "junit.xml", bytes: 18_400, contentType: "application/xml" }, { name: "shot-main.png", bytes: 212_000, contentType: "image/png" }] : [],
     summary: state === "done" ? "build and 412 tests passed" : state === "failed" ? "test failed: 3 of 412" : state === "cancelled" ? "Cancelled before it started." : null,
+    patchBytes: null, warm: id % 2 === 0 ? { key: "main-3f9a2c1", role: "use" } : null,
     ...over,
   };
 }
 
 const TASKS: BuildTask[] = [
-  make("queued", 2, { requires: { display: true, minMemGb: 64 } }), make("queued", 3), make("queued", 7, { requires: { os: "macos" } }),
+  make("queued", 2, { warm: { key: "main-3f9a2c1", role: "build" }, requires: { display: true, minMemGb: 64 } }), make("queued", 3, { patchBytes: PATCH.length }), make("queued", 7, { requires: { os: "macos" } }),
   make("running", 9, { envId: "build-a", envLabel: "Build server A", results: [{ step: "fetch deps", exitCode: 0, durationMs: 6_000, timedOut: false }] }),
   make("running", 14, { envId: "sandbox", envLabel: "Local sandbox", results: [] }),
   make("claimed", 1, { envId: "sandbox", envLabel: "Local sandbox" }),
-  ...[25, 40, 64, 90, 130, 190, 260, 400, 520, 700, 900, 1300, 1700, 2200, 3000].map((m, i) => make(i % 5 === 3 ? "failed" : i === 6 ? "cancelled" : "done", m)),
+  ...[25, 40, 64, 90, 130, 190, 260, 400, 520, 700, 900, 1300, 1700, 2200, 3000].map((m, i) => make(i % 5 === 3 ? "failed" : i === 6 ? "cancelled" : "done", m, i === 0 ? { patchBytes: PATCH.length } : {})),
 ];
 TASKS.sort((a, b) => b.id - a.id);
 const used = (e: string) => TASKS.filter((t) => t.envId === e && (t.state === "running" || t.state === "claimed")).length;
@@ -128,7 +144,7 @@ export function createBuildMock(me: User, changed: () => void): Pick<Api, "envs"
         const t = TASKS.find((x) => x.id === taskId && visible(x));
         if (!t) throw new Error("no such task");
         const logged = t.state !== "queued";
-        const d: BuildTaskDetail = { ...t, logTail: logged ? LOG(t) : "", logBytes: logged ? LOG(t).length : 0, logTruncated: false };
+        const d: BuildTaskDetail = { ...t, logTail: logged ? LOG(t) : "", logBytes: logged ? LOG(t).length : 0, logTruncated: false, patch: t.patchBytes ? PATCH : null };
         return wait(d);
       },
       async cancel(taskId) {

@@ -32,6 +32,7 @@ import { KindTag, tallyOf } from "../decisions/parts";
 import { Markdown, Collapsible } from "../../ui/Markdown";
 import { useIsPhone } from "../../shell/useMedia";
 import { SettledBadge } from "../items";
+import { PrWork } from "./PrWork";
 
 function useItem(params: ViewProps["params"]) {
   const repo = params.repo!;
@@ -88,6 +89,7 @@ function ItemMain({ params }: ViewProps) {
         <Section title="Classifier verdicts" aside={agreement(it.classifications)}>
           <Verdicts cls={it.classifications} />
         </Section>
+        <PrWork it={it} />
         <Section title="Timeline">
           <Timeline it={it} />
         </Section>
@@ -334,6 +336,8 @@ const STAGE: Record<Stage, [string, LucideIcon]> = {
   "verify-planned": ["Verification planned", SparklesIcon],
   "verify-ci-enough": ["CI is enough", CircleCheckIcon],
   "verify-error": ["Verification not planned", MinusIcon],
+  verified: ["Verified", CircleCheckIcon],
+  "verify-failed": ["Verification failed", XIcon],
 };
 
 type Event = { label: string; Icon: LucideIcon; at: string; by: string; note: string | null };
