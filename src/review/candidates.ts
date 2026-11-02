@@ -57,13 +57,15 @@ export type Candidate = {
   author: string | null; author_association: string | null;
   head_oid: string; lines_changed: number; files_changed: number;
   size: Size; label: string;
+  /** Priority score (src/priority), null before the item was rated. */
+  score?: number | null;
 };
 
 type Row = {
   repo: string; number: number; title: string | null; body: string | null; author: string | null;
   author_association: string | null; head_oid: string | null; additions: number | null; deletions: number | null;
   changed_files: number | null; updated_at: string | null; is_draft: number | null;
-  c_head: string | null; c_state: string | null; c_draft: number | null; c_at: string | null;
+  c_head: string | null; c_state: string | null; c_draft: number | null; c_at: string | null; score: number | null;
 };
 
 /**
@@ -83,9 +85,10 @@ export function headOf(r: { head_oid: string | null; updated_at: string | null; 
 export function selectCandidates(db: DatabaseSync, repo: string, run: string | null = latestRun(db)): Candidate[] {
   const rows = db.prepare(`SELECT i.repo, i.number, i.title, i.body, i.author, i.author_association, i.head_oid,
       i.additions, i.deletions, i.changed_files, i.updated_at, i.is_draft,
-      c.head_oid AS c_head, c.state AS c_state, c.is_draft AS c_draft, c.fetched_at AS c_at
+      c.head_oid AS c_head, c.state AS c_state, c.is_draft AS c_draft, c.fetched_at AS c_at, p.score AS score
     FROM items i LEFT JOIN pr_checks c ON c.repo = i.repo AND c.number = i.number
-    WHERE i.repo = ? AND i.kind = 'pr' AND i.state = 'OPEN' ORDER BY i.number`).all(repo) as Row[];
+    LEFT JOIN item_priority p ON p.repo = i.repo AND p.number = i.number
+    WHERE i.repo = ? AND i.kind = 'pr' AND i.state = 'OPEN' ORDER BY p.score IS NULL, p.score DESC, i.number`).all(repo) as Row[];
   const reviewed = db.prepare("SELECT 1 FROM reviews WHERE repo = ? AND number = ? AND head_oid = ?");
   const settled = settledLookup(db, run);
   let scope: ScopeRow[] | undefined;
@@ -104,7 +107,7 @@ export function selectCandidates(db: DatabaseSync, repo: string, run: string | n
     out.push({
       repo: r.repo, number: r.number, title: r.title ?? "", body: r.body ?? "", author: r.author,
       author_association: r.author_association, head_oid: head, lines_changed: lines,
-      files_changed: r.changed_files ?? 0, size: sizeOf(lines), label: s.label,
+      files_changed: r.changed_files ?? 0, size: sizeOf(lines), label: s.label, score: r.score,
     });
   }
   return out;

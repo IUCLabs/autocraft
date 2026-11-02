@@ -24,6 +24,7 @@ import { Slot } from "../../registry/Slot";
 import { Avatar } from "../../ui/Avatar";
 import { RefLink } from "../../ui/RefLink";
 import { Badge, type Tone } from "../../ui/Badge";
+import { PriorityBadge } from "../../ui/PriorityBadge";
 import { Count } from "../../ui/Heading";
 import { cn } from "../../ui/cn";
 import { ago, num } from "../../lib/format";
@@ -167,6 +168,7 @@ function Properties({ it }: { it: Item }) {
       </Prop>
       <Prop label="Type">
         <SettledBadge s={it.settled} detail />
+        <PriorityBadge p={it.priority} />
         {it.settled.flags.map((f) => (
           <Badge key={f} tone={f === "security" ? "bad" : "warn"}>
             {f}

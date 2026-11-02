@@ -48,6 +48,7 @@ function build() {
   item.run(14, "pr", "OPEN", "take, CI fails", "h14"); sure(14, "bugfix"); review.run(14, "h14", T0, "take"); checks.run(14, "h14", "failure");
   item.run(15, "pr", "MERGED", "merged by us", "h15"); sure(15, "bugfix"); review.run(15, "h15", T0, "take");
   db.prepare(`INSERT INTO merges (repo, number, head_oid, run_id, at, path, method, outcome) VALUES ('${R}', 15, 'h15', 'm1', ?, 'rule', 'squash', 'merged')`).run(NOW);
+  db.prepare(`INSERT INTO verifications (repo, number, head_sha, kind, reason, state, created_at, finished_at) VALUES ('${R}', 11, 'h11', 'tests', 'r', 'passed', '${T0}', ?)`).run(NOW);
   db.prepare(`INSERT INTO stages (repo, number, stage, at) VALUES ('${R}', 1, 'labeled', ?)`).run(NOW);
   db.prepare(`INSERT INTO settings (key, value) VALUES ('labels_approved:${R}', '{"by":"op","at":"${T0}"}')`).run();
   db.prepare(`INSERT INTO settings (key, value) VALUES ('merge_approved:${R}', '{"by":"op","at":"${T0}"}')`).run();
@@ -77,14 +78,17 @@ test("flowchart counts every branch by the stages' own rules", async () => {
   assert.deepEqual(counts(node("classify")), { settled: 8, waiting: 1, disagree: 1, unclassified: 1 });
   assert.deepEqual(counts(node("decide")), { "not-asked": 1, open: 1, take: 1, "small-extra": 0, plugin: 1, close: 0, "need-info": 0 });
   assert.deepEqual(counts(node("review")), { "not-reviewed": 1, take: 2, "take-fix": 1, hold: 1, close: 0 });
-  assert.deepEqual(counts(node("merge")), { eligible: 1, unapproved: 0, "needs-decision": 0, "waiting-ci": 0, "ci-failed": 1, conflict: 0, "needs-fix-up": 1, declined: 0, merged: 1 });
+  assert.deepEqual(counts(node("merge")), { eligible: 1, unapproved: 0, "needs-decision": 0, "waiting-ci": 0, "ci-failed": 1, conflict: 0, "waiting-verify": 0, "verify-failed": 0, "verify-error": 0, "needs-fix-up": 1, declined: 0, merged: 1 });
+  assert.deepEqual(counts(node("verify")), { waiting: 0, planned: 0, running: 0, passed: 1, "ci-enough": 0, failed: 0, error: 0 });
+  assert.equal(node("verify").total, 1);
+  assert.deepEqual(node("verify").recent, [{ label: "finished", count: 1 }]);
   assert.deepEqual(counts(node("labels")), { labelled: 1, pending: 7, unapproved: 0 });
-  assert.deepEqual(node("verify").branches.map((b) => b.count), [null, null]);
   assert.deepEqual(node("decide").waitsOn.sort(), ["model", "person"]);
   const edge = (from: string, to: string) => flow.edges.find((e) => e.from === from && e.to === to)!.count;
   assert.equal(edge("decide", "review"), 1);
   assert.equal(edge("classify", "review"), 4);
   assert.equal(edge("review", "verify"), 3);
+  assert.equal(edge("verify", "merge"), 1);
   assert.deepEqual(node("review").recent, [{ label: "reviewed", count: 1 }]);
 
   // The batched candidate rule matches the Review stage's own.
@@ -107,4 +111,23 @@ test("flowchart counts every branch by the stages' own rules", async () => {
   assert.deepEqual(refreshSummary(db), [R]);
   assert.deepEqual([counts(flowOf(db, R).nodes.find((n) => n.id === "decide")!).open, counts(flowOf(db, R).nodes.find((n) => n.id === "decide")!).close], [0, 1]);
   assert.deepEqual(refreshSummary(db), []);
+});
+
+test("verify counts follow the verification at the PR's current head", () => {
+  const db = build();
+  const ins = db.prepare(`INSERT OR REPLACE INTO verifications (repo, number, head_sha, kind, reason, state, created_at, finished_at) VALUES ('${R}', ?, ?, 'tests', 'r', ?, '${T0}', ?)`);
+  ins.run(14, "h14", "failed", NOW);
+  ins.run(12, "h12", "running", null);
+  ins.run(10, "old10", "error", NOW); // an older head does not count
+  ins.run(13, "h13", "stale", NOW);
+  refreshSummary(db);
+  const flow = flowOf(db, null);
+  const node = (id: string) => flow.nodes.find((n) => n.id === id)!;
+  assert.deepEqual(counts(node("verify")), { waiting: 0, planned: 0, running: 1, passed: 1, "ci-enough": 0, failed: 1, error: 0 });
+  assert.equal(node("verify").total, 3);
+  assert.equal(counts(node("merge"))["verify-failed"], 0); // #14 is blocked by CI first
+  db.prepare("UPDATE verifications SET state = 'planned' WHERE number = 11").run();
+  refreshSummary(db);
+  const merge = flowOf(db, null).nodes.find((n) => n.id === "merge")!;
+  assert.deepEqual([counts(merge)["waiting-verify"], counts(merge).eligible], [1, 0]);
 });

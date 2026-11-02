@@ -1,3 +1,4 @@
+import { PriorityBadge } from "../../ui/PriorityBadge";
 import { useEffect, useRef, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { RefLink } from "../../ui/RefLink";
@@ -212,6 +213,7 @@ export function DecisionBody({
         ) : (
           <RefLink repo={d.repo} number={d.number!} />
         )}
+        <PriorityBadge p={d.priority} />
         <span>asked {ago(d.askedAt)} ago</span>
         <ClaimPill claim={d.claim} />
         {!phone && d.commentCount > 0 && (

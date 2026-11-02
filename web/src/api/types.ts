@@ -96,6 +96,8 @@ export interface Decision {
   commentCount: number;
   related: RelatedItem[];
   classifications: Classification[];
+  /** null or absent for a batch and before the item was rated. */
+  priority?: PriorityInfo | null;
 }
 
 export interface DecisionComment {
@@ -150,6 +152,14 @@ export interface ItemComment {
   reviewState: string | null;
 }
 
+/** Impact class and 0-100 priority score of an item (src/priority). `model`: jev, haiku or jev-unsure. */
+export interface PriorityInfo {
+  impact: "critical" | "high" | "normal" | "low";
+  score: number;
+  model: string;
+  reason: string | null;
+}
+
 export interface Item extends ItemRef {
   kind: "pr" | "issue";
   title: string;
@@ -188,6 +198,8 @@ export interface Item extends ItemRef {
   fixups: ItemFixup[];
   /** The Act step's GitHub writes after an operator's answer, oldest first. */
   actions: ItemAction[];
+  /** null or absent before the item was rated. */
+  priority?: PriorityInfo | null;
 }
 
 export type VerificationKind = "ci-enough" | "tests" | "regression" | "error";

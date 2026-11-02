@@ -20,6 +20,7 @@ import { mergeApprovalOf } from "../merge/approval.ts";
 import { buildQueue, eligible, type QueueState } from "../merge/queue.ts";
 import { trackedNames } from "../repos.ts";
 import { candidateRefs, scopeAnswers } from "../review/candidates.ts";
+import { selectCandidates as verifyCandidates } from "../verify/candidates.ts";
 
 export type Counts = Record<string, number>;
 export type Refs = Set<string>;
@@ -178,6 +179,35 @@ function review(c: Ctx): NodeCount {
   };
 }
 
+/** Verification states shown as branches of the Verify node; `stale` ones are not counted. */
+export const VERIFY_BRANCHES = ["planned", "running", "passed", "ci-enough", "failed", "error"] as const;
+
+function verify(c: Ctx): NodeCount {
+  const by = new Map<string, Refs>([["verify.waiting", new Set()], ...VERIFY_BRANCHES.map((s) => [`verify.${s}`, new Set()] as [string, Refs])]);
+  for (const repo of c.repo ? [c.repo] : trackedNames(c.db))
+    for (const cand of verifyCandidates(c.db, repo, c.run)) by.get("verify.waiting")!.add(ref(cand));
+  // Verifications at the open PR's current head (same head rule as the queue); primary-key joins, no scan of closed PRs' rows.
+  const rows = c.db.prepare(`SELECT v.repo, v.number, v.state FROM main.verifications v
+    JOIN main.items i ON i.repo = v.repo AND i.number = v.number AND i.state = 'OPEN'
+    LEFT JOIN main.pr_checks c ON c.repo = v.repo AND c.number = v.number
+    WHERE v.state <> 'stale' AND v.repo IN (SELECT name FROM main.tracked_repos) ${c.andRepo("v.repo")}
+      AND v.head_sha = COALESCE(CASE WHEN c.fetched_at IS NOT NULL AND (i.updated_at IS NULL OR c.fetched_at > i.updated_at) THEN c.head_oid END, i.head_oid, c.head_oid)`)
+    .all(c.rp) as { repo: string; number: number; state: string }[];
+  for (const r of rows) by.get(`verify.${r.state}`)?.add(ref(r));
+  const total = [...by.values()].reduce((a, s) => a + s.size, 0);
+  const passing = by.get("verify.passed")!.size + by.get("verify.ci-enough")!.size;
+  return {
+    counts: {
+      ...Object.fromEntries([...by].map(([k, v]) => [k, v.size])),
+      "verify.total": total,
+      "verify.recent.finished": c.n(`SELECT COUNT(*) AS n FROM main.verifications INDEXED BY verifications_finished WHERE finished_at >= :since
+        AND state IN ('passed', 'ci-enough', 'failed', 'error') AND repo IN (SELECT name FROM main.tracked_repos) ${c.andRepo()}`, { since: c.since }),
+      "edge.verify.merge": passing,
+    },
+    members: by,
+  };
+}
+
 function merge(c: Ctx): NodeCount {
   const tracked = new Set(trackedNames(c.db));
   const queue = buildQueue(c.db, { ...(c.repo ? { repo: c.repo } : {}), run: c.run }).filter((e) => tracked.has(e.repo));
@@ -189,7 +219,7 @@ function merge(c: Ctx): NodeCount {
     counts: {
       "merge.eligible": ready.filter((e) => approvedRepos.has(e.repo)).length,
       "merge.unapproved": ready.filter((e) => !approvedRepos.has(e.repo)).length,
-      ...Object.fromEntries((["needs-decision", "waiting-ci", "ci-failed", "conflict", "needs-fix-up", "declined"] as const).map((s) => [`merge.${s}`, st(s)])),
+      ...Object.fromEntries((["needs-decision", "waiting-ci", "ci-failed", "conflict", "needs-fix-up", "waiting-verify", "verify-failed", "verify-error", "declined"] as const).map((s) => [`merge.${s}`, st(s)])),
       "merge.merged": c.n(`SELECT COUNT(DISTINCT repo || '#' || number) AS n FROM merges WHERE outcome = 'merged' AND at >= :since ${c.andRepo()}`, since),
       "merge.total": queue.length - st("merged"),
       "merge.recent.merged": c.n(`SELECT COUNT(DISTINCT repo || '#' || number) AS n FROM merges WHERE outcome = 'merged' AND at >= :since ${c.andRepo()}`, since),
@@ -223,7 +253,7 @@ function labels(c: Ctx): NodeCount {
   };
 }
 
-export const COUNTERS = { synced, classify, decide, labels, review, merge } as const;
+export const COUNTERS = { synced, classify, decide, labels, review, verify, merge } as const;
 export type CountedNode = keyof typeof COUNTERS;
 
 /** Every count for one repo, or for every tracked repo when `repo` is null. */

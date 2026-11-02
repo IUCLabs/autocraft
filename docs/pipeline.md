@@ -2,12 +2,98 @@
 
 The craft apps have about 21,000 open issues and PRs. The pipeline sorts all of them, reviews and merges the PRs we want, and fixes clear bugs. People make the calls that need judgement: they answer decisions on this dashboard. Models do the reading, sorting and reviewing.
 
+## The flow
+
+Items move from the top to the bottom. Each box is a stage; the arrows show where its result goes. Yellow boxes are decisions a person answers on the dashboard, blue boxes are model calls, green boxes run in the sandbox build environment, and red boxes write to GitHub. Every red box waits for the operator's approval for that repo, given on the Repos page, and for its daily limit.
+
+```mermaid
+flowchart TD
+  sync["Sync<br/>mirror every minute"]
+  embed["Embed<br/>vector for each item"]
+  classify["Classify<br/>Jev, Haiku second opinion<br/>type label + flags"]
+  priority["Priority<br/>Jev impact + reach score<br/>orders all later work"]
+  dups["Duplicates<br/>embedding neighbours<br/>Jev/Haiku pair check"]
+  dupdec{{"Duplicate decision<br/>operator answers"}}
+  dupheld(["Held out<br/>non-canonical item"])
+  decide{{"Decide<br/>needs-decision items and<br/>disagreements, Sonnet summary<br/>operator answers"}}
+  label["Label<br/>settled type labels to GitHub<br/>per-repo label approval"]
+  review["Review<br/>PRs we want, Sonnet<br/>take / take-fix / hold / close"]
+  fixup["Fix-up<br/>Sonnet patch on contributor branch<br/>per-repo push approval"]
+  closeq{{"Close this PR?<br/>decision"}}
+  act["Act<br/>comment + close<br/>per-repo comment approval"]
+  verify["Verify<br/>Sonnet plans: CI enough,<br/>targeted tests or regression test<br/>build tasks in the sandbox"]
+  vfail["Haiku failure summary"]
+  hold(["Hold<br/>waits for a person"])
+  queue{"Merge queue<br/>bugfix or infra, size S/M,<br/>whitelisted author, green CI,<br/>mergeable?"}
+  mergeq{{"Merge?<br/>decision"}}
+  merge["Merge<br/>safe-merge<br/>per-repo merge approval"]
+  kind{"Pull request<br/>or issue?"}
+  fixiss["Fix<br/>clear bugs without a PR<br/>Sonnet patch + regression test<br/>tested in the sandbox<br/>PR from our fork<br/>per-repo fix approval"]
+
+  sync --> embed --> dups --> classify --> priority
+  dups -- "duplicate pair" --> dupdec
+  dupdec -- "duplicate: close" --> act
+  dupdec -. "open or closed:<br/>item held" .-> dupheld
+  dupheld -. "not a duplicate:<br/>released" .-> classify
+  dupheld -. "held out of Decide, Review,<br/>Verify, Fix-up, Fix" .- decide
+  dups -. "duplicate count raises<br/>the original's priority" .-> priority
+  classify -- "needs decision,<br/>disagreement" --> decide
+  priority --> decide
+  decide -- "type settled" --> label
+  decide -- "out of scope" --> act
+  label --> kind
+  kind -- "pull request" --> review
+  kind -- "issue" --> fixiss
+  review -- "take-fix" --> fixup
+  fixup -- "new head" --> review
+  fixup -- "cannot push" --> hold
+  review -- "hold" --> hold
+  review -- "close" --> closeq
+  closeq -- "yes" --> act
+  review -- "take" --> verify
+  verify -- "passed" --> queue
+  verify -- "failed" --> vfail --> hold
+  queue -- "rule met" --> merge
+  queue -- "otherwise" --> mergeq
+  mergeq -- "merge" --> merge
+  fixiss -- "our PR" --> review
+  fixiss -- "not a clear fix" --> hold
+
+  class decide,closeq,mergeq,dupdec person
+  class embed,classify,priority,dups,review,verify,vfail model
+  class fixup,label,act,merge write
+  class fixiss sandbox
+  class kind route
+  classDef person fill:#fff1c7,stroke:#a87a00,color:#1c1c1c
+  classDef model fill:#dbe8ff,stroke:#2f62c9,color:#1c1c1c
+  classDef sandbox fill:#d9f2dc,stroke:#2a7d3a,color:#1c1c1c
+  classDef write fill:#fddede,stroke:#b8323f,color:#1c1c1c
+  classDef route fill:#ffffff,stroke:#6b6b6b,color:#1c1c1c
+```
+
+1. **Sync.** Every issue, PR and comment is mirrored into the local database each minute. Later stages read the mirror. See [Stages](#stages).
+2. **Duplicates.** Each item gets an embedding vector; its nearest neighbours are paired up and Jev or Haiku checks each pair. A confirmed pair becomes a duplicate decision for the operator. The newer, non-canonical item is held out of Decide, Review, Verify, Fix-up and Fix issues while that decision is open or answered close; "not a duplicate" releases it. An answer of close goes on to Act. The number of duplicates raises the original's priority. See [Duplicates](#duplicates).
+3. **Classify.** Jev gives each open item a type label and two flags; Haiku gives a second opinion where Jev is unsure. See [Stages](#stages).
+4. **Priority.** Jev scores each item's impact and reach. The score orders all later work, so the most useful items go first. See [Priority](#priority).
+5. **Decide.** Where the classification is settled (Jev at 90 % or more, or Haiku agreeing), the pipeline goes on by itself. Items that need a decision, and items where the classifiers disagree, get a Sonnet summary. The operator answers on the dashboard. Out-of-scope answers go on to Act. See [Scope decisions](#scope-decisions).
+6. **Label.** Settled type labels are written to GitHub, one repo at a time, once the operator has approved labels for that repo. See [Label stage commands](#label-stage-commands).
+
+From here the path depends on the item: pull requests go to Review, issues go to Fix, and both end in Verify and the merge queue.
+
+7. **Review** (pull requests). Sonnet reviews the PRs we want and answers take, take-fix, hold or close. See [Stage 5: Review](#stage-5-review).
+   - **Fix-up.** For take-fix, Sonnet writes a patch for the contributor's branch and we push it where the repo's push approval and the branch allow. If we cannot push, the PR is held. The PR is then reviewed again at its new head. See [Fix-ups](#fix-ups).
+   - **Close.** For close, the operator answers a "Close this PR?" decision. A yes goes to Act, which posts a short comment and closes the PR once the repo's comment approval is given. See [Act: comments and closes](#act-comments-and-closes).
+8. **Fix** (issues). For a clear bug without a PR, Sonnet writes a patch and a regression test, the sandbox builds and tests them, and we open a PR from our fork, once the repo's fix approval is given. That PR goes to Review like any other. See [Stage 7: Fix issues](#stage-7-fix-issues).
+9. **Verify.** For take, Sonnet plans the checks: green CI is enough, targeted tests, or a regression test. Build tasks run in the sandbox build environment, and exit codes decide pass or fail. A failure gets a Haiku summary and the PR is held. See [Stage: Verify](#stage-verify).
+10. **Merge queue and Merge.** A verified PR that is a bugfix or infra change, size S or M, by a whitelisted author, with green CI and no conflicts, goes straight to the merge step. Any other PR becomes a "Merge?" decision. The merge runs through `safe-merge` once the repo's merge approval is given. See [Stage 6: Integrate](#stage-6-integrate).
+
 ## Stages
 
 | # | Stage | What happens | Who or what does it | Status |
 |---|---|---|---|---|
 | 1 | Mirror | Every issue, PR and comment of the tracked repos is copied into a local database. Later stages read the mirror, never GitHub directly. | `craft-auto sync`, every minute: one org-wide GitHub search for changes, in time slices of at most 1,000 results | Automatic |
 | 2 | Classify | Every open item gets one type label (bugfix, performance, missing feature, small extra, plugin candidate, infra) and two flags (security, needs decision). | Jev first. Where Jev is under 90 % sure, Haiku as well. Where they disagree, the item goes to a person or to Sonnet | Scripted, started by the operator (`craft-auto classify`) |
+| 2b | Priority | Every open item gets an impact class (critical, high, normal, low) and a 0 to 100 score. Decide, review, verify and fix-up take the highest score first. | Jev first. Where Jev is under 90 % sure, Haiku decides. The score adds reach from the mirror: no model | Automatic (`prioritize` step), daily limit 3000 |
 | 3 | Decide | Items flagged "needs decision" (scope, wanted or not, reference-app behaviour), and items where Jev and Haiku disagree between scope labels, become decisions on this dashboard, each with an AI summary and the item's own text. | `craft-auto decide` asks them, with summaries by Sonnet. The operator answers; anyone signed in can comment and pick an option | Scripted, started by the operator |
 | 4 | Label | The type label and flags go onto the item on GitHub. | `craft-auto labels`, one repo at a time. No model calls. Only items whose type is settled (Jev at 90 % or more, or Haiku agreeing with Jev) are labelled. A label a person set is never changed: an item that already has a different type label is skipped and reported. Writes to GitHub need the operator's approval for that repo, given on the Repos page | Built. `ensure` and `plan` are read-only; `apply` is a dry run unless `--apply` and refuses unapproved repos |
 | 5 | Review | PRs we want get a code review: take, take with fixes, hold, or close (duplicate, already fixed, superseded). | Sonnet, one call per batch of related PRs. Tests are not reviewed, only code | Built, one repo at a time (`craft-auto review`) |
@@ -73,18 +159,21 @@ Built so far: the merge queue and the merge step. Integration branches come next
 
 | State | Meaning |
 |---|---|
-| ready | The merge rule covers it, CI is green and it is mergeable: the next run merges it |
+| ready | The merge rule covers it, CI is green, Verify passed (or said CI is enough) at this head commit and it is mergeable: the next run merges it |
 | decision-answered-merge | Outside the rule, but the operator answered the Merge? decision `merge` at this head commit |
 | refused | The merge command or a pre-merge check said no; the reason is shown, and the next run tries again |
 | waiting-ci | CI is pending or has not run at this head, or GitHub has not worked out mergeability yet |
 | ci-failed | CI fails at this head |
 | conflict | Conflicts with the base branch |
 | needs-fix-up | The review is take-fix: it waits for the fix-up step |
-| needs-decision | Outside the rule: it waits for the operator's answer to a Merge? decision (asked on the next run when not asked yet) |
+| waiting-verify | No verification at this head commit yet, or it is planned or running (CI states are checked first) |
+| verify-failed | The verification at this head commit failed; the summary is shown |
+| verify-error | The verification at this head commit errored (invalid plan or task error after the retry) |
+| needs-decision | Outside the rule, Verify passed or said CI is enough: it waits for the operator's answer to a Merge? decision (asked on the next run when not asked yet) |
 | declined | The operator answered the Merge? decision `hold` or `close` |
 | merged | Merged |
 
-`craft-auto queue [--repo R]` prints the same list.
+`craft-auto queue [--repo R]` prints the same list, with the verification state of each PR. A verification counts only at the head commit it was made for; one made at an older head is ignored.
 
 **Merge without asking.** A PR merges without a decision only when all of these hold:
 
@@ -93,15 +182,16 @@ Built so far: the merge queue and the merge step. Integration branches come next
 - its settled type label is bugfix or infra (infra covers tests, CI, docs and build);
 - its author is on the whitelist (tier whitelisted, or an operator's allow override; see Contributors);
 - CI is `success` overall at that head commit;
+- Verify passed at that head commit, or planned "CI is enough";
 - GitHub reports it mergeable.
 
-**Merge? decisions.** A take PR that fails any of the first four gets a decision instead: "Merge this PR?" with options `merge`, `hold` and `close`, and facts for size and label, author and tier, CI and mergeability, the review's verdict, reason and fixes, and the head commit. There is one decision per PR head commit, so a push brings a new one. It is asked only while CI is not failing and the PR has no conflict. Only an operator's answer counts, read as an option key (`craft-auto decisions list --actionable`). An answer of `merge` makes the PR eligible at that head: CI must still be green and the PR mergeable, and the step refuses when the head commit moved since the question was asked.
+**Merge? decisions.** A take PR that fails any of the first four gets a decision instead, once its verification has passed or said CI is enough: "Merge this PR?" with options `merge`, `hold` and `close`, and facts for size and label, author and tier, CI and mergeability, the verification (kind, state, note), the review's verdict, reason and fixes, and the head commit. There is one decision per PR head commit, so a push brings a new one. It is asked only while CI is not failing, the PR has no conflict and the operator can see the verification result. Only an operator's answer counts, read as an option key (`craft-auto decisions list --actionable`). An answer of `merge` makes the PR eligible at that head: CI must still be green, Verify passed (or CI is enough) and the PR mergeable, and the step refuses when the head commit moved since the question was asked.
 
 **Merge step.** `craft-auto merge --repo R [--limit N] [--apply]`; the runner calls `runMerge(db, {repo, limit, dryRun}, log)`. Without `--apply` (or with `dryRun` unset) it is a dry run: it prints what it would merge and ask, from the local tables, and calls and writes nothing. With `--apply` it:
 
 1. writes a `batched` stage row for each queued PR, once per head commit, and asks the missing Merge? decisions;
 2. takes the eligible PRs one at a time, rule PRs first, up to `--limit` merges;
-3. refreshes that PR's checks and head commit, and refuses when it is no longer open, its head moved, the operator's answer is gone, or CI or mergeability changed;
+3. refreshes that PR's checks and head commit, and refuses when it is no longer open, its head moved, the operator's answer is gone, or the verification at the refreshed head is not passed or ci-enough, or CI or mergeability changed;
 4. assigns the PR to the pipeline's GitHub account (the signed-in `gh` account, read once per run) when nobody is assigned;
 5. runs the merge command (`$CRAFT_AUTO_MERGE_CMD`, default `safe-merge`) as `<cmd> storytold/<repo> <n> --squash`, or `--merge` when the commits have more than one author. It never calls `gh pr merge` itself and never passes `--allow-pending`.
 
@@ -134,6 +224,31 @@ A take-fix review lists small mechanical fixes. The fix-up step applies them to 
 7. Posts one comment from a template in code (`src/fixup/template.ts`, shown on the Prompts page): "Pushed the small fixes from review: `<files>`."
 
 Each try adds a `fixups` row (repo, number, from_head, to_head, state, reason, files, attempt, created_at) and a stage row (`hold` for cannot-push and too-large, else `take` with a note), plus audit rows `assign`, `fixup-push` and `fixup-comment`. The pushed head has no review, so the Review stage selects the PR again once the mirror or the checks refresh show the new head; the merge queue then sees the new review.
+
+## Priority
+
+`craft-auto prioritize [--limit N]` rates open items; the pipeline's `prioritize` step (group `priority`, models Jev and Haiku) runs the same code as `runPrioritize(db, {limit})`.
+
+**Impact.** Jev (prompt `priority.jev`) picks one class per item:
+
+| Class | Meaning |
+|---|---|
+| critical | Crash, data loss, security hole, build or install broken, app unusable |
+| high | A core feature is broken, or a regression |
+| normal | Anything else |
+| low | Cosmetic, wording, documentation, nice-to-have |
+
+At 0.9 probability or more Jev's class stands. Below it Haiku (`priority.haiku`, batches of 25) decides. Both answers are stored in `item_priority` (`jev_impact`, `jev_p`, `haiku_impact`); `model` says which one counts (`jev`, `haiku`, or `jev-unsure` when Haiku gave no valid answer).
+
+**Score.** The class sets a band: critical 75 to 100, high 50 to 75, normal 25 to 50, low 0 to 25. Reach moves the score inside the band: `score = round(low + (high - low) * reach)`. Reach (0 to 1) is a weighted sum of distinct commenters (0.25, capped at 8), comment count (0.20, capped at 20), linked PRs or closing issues (0.15, capped at 3), confirmed duplicates pointing at the item (0.15, capped at 5), the security flag (0.15) and days open (0.10, capped at 365). The mirror holds no reactions. The formula is `scoreOf` in `src/priority/score.ts`.
+
+**When models run.** A row is stored with the item's `embed_hash` (a hash of title and body). The models run again only when that hash changes. Every pass recomputes all scores from the mirror, in a few queries and without a model call, so reach and age keep moving the score.
+
+**Autopilot.** The `priority` lane queues `prioritize` when open items have no row at their current hash. The daily limit counts items sent to Jev; the default is 3000. Jev calls average 0.33 s here, so a first pass over about 21,000 items takes about 29 minutes at the default Jev parallelism of 4 (about 15 minutes at 8), plus Haiku for the items Jev is unsure of. At 3000 a day it would take seven days, so an operator raises the limit for the first pass.
+
+**Ordering.** Decide, review, verify and fix-up candidates are ordered by score, highest first. Ties keep the earlier order (decide: pull requests first, oldest first; review: smallest first; verify and fix-up: by number). Items without a score come after all scored ones, so the first full pass matters.
+
+**Display.** The Item page and the decision card show the class and score.
 
 ## Which model does what
 
@@ -312,7 +427,7 @@ The full classification pass (`classify-all`) is never started automatically. A 
 
 ### Daily limits
 
-Each stage has a limit of items per day, counted from 00:00 UTC over the items its jobs handled. A job records its count as it works, so a failed or stopped job keeps it. Handled means units attempted: items sent to Jev or Haiku, items sent for a decision summary, PRs sent for review (or held as too large), items embedded, items labelled, PRs merged, PRs fixed up (or held). The job's `limit` is the smaller of the step's default and what remains of the day. An empty limit means no limit and 0 pauses the stage. Defaults: classify-new 2000, decide 100, review-batch 40, verify 30, merge 10, act 20, fixup 20; embed, checks and labels-apply have none (labelling, merging, commenting and pushing fix-ups are each gated by a per-repo approval). `embed` and `checks` jobs cannot be sized to what remains of the day, so `checks` accepts only no limit or 0; an `embed` limit stops new jobs once it is reached. Operators change limits on the Pipeline page or with `craft-auto pipeline limit <step> --per-day N|none`. A stage that cannot start jobs shows why on the page (limit reached, limit 0, waiting after failures).
+Each stage has a limit of items per day, counted from 00:00 UTC over the items its jobs handled. A job records its count as it works, so a failed or stopped job keeps it. Handled means units attempted: items sent to Jev or Haiku, items sent for a decision summary, PRs sent for review (or held as too large), items embedded, items labelled, PRs merged, PRs fixed up (or held). The job's `limit` is the smaller of the step's default and what remains of the day. An empty limit means no limit and 0 pauses the stage. Defaults: classify-new 2000, decide 100, review-batch 40, verify 30, prioritize 3000, merge 10, act 20, fixup 20; embed, checks and labels-apply have none (labelling, merging, commenting and pushing fix-ups are each gated by a per-repo approval). `embed` and `checks` jobs cannot be sized to what remains of the day, so `checks` accepts only no limit or 0; an `embed` limit stops new jobs once it is reached. Operators change limits on the Pipeline page or with `craft-auto pipeline limit <step> --per-day N|none`. A stage that cannot start jobs shows why on the page (limit reached, limit 0, waiting after failures).
 
 | Who | On the Pipeline page |
 |---|---|

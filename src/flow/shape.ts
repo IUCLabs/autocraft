@@ -77,17 +77,25 @@ export function buildFlow(c: Record<string, number>, meta: FlowMeta): Flow {
       { id: "hold", label: "Hold", waitsOn: "person", tone: "warn", hint: "Needs a person: reference behaviour, scope, overlaps or too large" },
       { id: "close", label: "Close", waitsOn: "nothing", tone: "bad", hint: "Wrong, not wanted, already done or superseded" },
     ], { recent: ["reviewed"], promptStage: "Review" }),
-    node("verify", "Verify", 6, "planned", "Planned: tests, builds or screenshots, chosen per PR", [
-      { id: "pass", label: "Passes", waitsOn: "nothing", tone: "ok", link: null, planned: true },
-      { id: "fail", label: "Fails: back to fix-up", waitsOn: "nothing", tone: "bad", link: null, planned: true },
-    ]),
+    node("verify", "Verify", 6, "steps", `${fmt(v("verify.passed") + v("verify.ci-enough"))} verified · ${fmt(v("verify.waiting"))} to plan`, [
+      { id: "waiting", label: "Not planned yet", waitsOn: "model", tone: "neutral", hint: "Taken, CI not failing, no verification at the head commit" },
+      { id: "planned", label: "Planned", waitsOn: "runner", tone: "neutral", hint: "Tasks queued for a worker" },
+      { id: "running", label: "Running", waitsOn: "runner", tone: "neutral" },
+      { id: "passed", label: "Passed", waitsOn: "nothing", tone: "ok" },
+      { id: "ci-enough", label: "CI is enough", waitsOn: "nothing", tone: "ok", hint: "The planner found nothing more to run" },
+      { id: "failed", label: "Failed", waitsOn: "person", tone: "bad", hint: "Tests failed; the PR is on hold" },
+      { id: "error", label: "Error", waitsOn: "person", tone: "bad", hint: "The plan was invalid or a task errored; retried once" },
+    ], { recent: ["finished"], promptStage: "Verify" }),
     node("merge", "Merge queue", 6, "steps", `${fmt(v("merge.eligible"))} may merge now · ${fmt(v("merge.total"))} in the queue`, [
-      { id: "eligible", label: "May merge now", waitsOn: "runner", tone: "ok", hint: "Covered by the merge rule or answered merge; CI green and mergeable", link: queue() },
+      { id: "eligible", label: "May merge now", waitsOn: "runner", tone: "ok", hint: "Covered by the merge rule or answered merge; CI green, Verify passed and mergeable", link: queue() },
       { id: "unapproved", label: "Repo not approved for merging", waitsOn: "person", gate: true, tone: "warn", hint: "Ready to merge, but an operator has not approved merging in this repo; approve it on the Repos page", link: null },
       { id: "needs-decision", label: "Waiting for a Merge? answer", waitsOn: "person", gate: true, tone: "accent", hint: "Outside the merge rule", link: { page: "decisions", params: withRepo({ kind: "merge" }) } },
       { id: "waiting-ci", label: "Waiting for CI", waitsOn: "ci", tone: "neutral", link: queue("waiting-ci") },
       { id: "ci-failed", label: "Blocked: CI fails", waitsOn: "ci", tone: "bad", link: queue("ci-failed") },
       { id: "conflict", label: "Blocked: conflicts", waitsOn: "person", tone: "bad", link: queue("conflict") },
+      { id: "waiting-verify", label: "Waiting for Verify", waitsOn: "model", tone: "neutral", hint: "No passed verification at the head commit yet", link: queue("waiting-verify") },
+      { id: "verify-failed", label: "Blocked: Verify failed", waitsOn: "person", tone: "bad", link: queue("verify-failed") },
+      { id: "verify-error", label: "Blocked: Verify error", waitsOn: "person", tone: "bad", link: queue("verify-error") },
       { id: "needs-fix-up", label: "Needs fix-up", waitsOn: "model", tone: "warn", hint: "Take with fixes: waits for the fix-up step", link: queue("needs-fix-up") },
       { id: "declined", label: "Declined", waitsOn: "nothing", tone: "neutral", hint: "The operator answered hold or close", link: queue("declined") },
       { id: "merged", label: "Merged in the last 24 h", waitsOn: "nothing", tone: "merged", link: queue("merged") },
@@ -103,7 +111,7 @@ export function buildFlow(c: Record<string, number>, meta: FlowMeta): Flow {
     e("classify", "review", "settled", "PRs to review"),
     e("decide", "review", "take", "wanted PRs"),
     e("review", "verify", "take", "taken"),
-    e("verify", "merge", "pass", "passes straight through today", true),
+    e("verify", "merge", "pass", "verified"),
   ];
   return { repo: meta.repo, now: meta.now, lastSync: meta.lastSync, countedAt: meta.countedAt, uncounted: meta.uncounted, nodes, edges };
 }

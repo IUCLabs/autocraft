@@ -8,7 +8,7 @@ import { getRule, STATS_SQL, tierOf, type Tier } from "../whitelist.ts";
 
 export const QUEUE_STATES = [
   "ready", "decision-answered-merge", "refused", "waiting-ci", "ci-failed", "conflict",
-  "needs-fix-up", "needs-decision", "declined", "merged",
+  "needs-fix-up", "waiting-verify", "verify-failed", "verify-error", "needs-decision", "declined", "merged",
 ] as const;
 export type QueueState = (typeof QUEUE_STATES)[number];
 
@@ -30,6 +30,10 @@ export const MERGE_OPTIONS = {
 export const mergeDecisionId = (repo: string, number: number, head: string): string => `${repo}#${number}:merge@${head}`;
 export const HEAD_FACT = "head commit ";
 
+/** Verification states that let a PR merge. */
+export const VERIFY_OK = ["passed", "ci-enough"];
+export const verifyOk = (state: string | null | undefined): boolean => !!state && VERIFY_OK.includes(state);
+
 export type QueueEntry = {
   repo: string; number: number; title: string; author: string | null; tier: Tier;
   head: string; size: string; label: string | null; verdict: "take" | "take-fix";
@@ -44,11 +48,13 @@ export type QueueEntry = {
   answer: string | null;
   refusedReason: string | null;
   reviewedAt: string;
+  /** The verification of the PR's current head, or null when there is none. */
+  verify: { state: string; kind: string | null; summary: string | null; note: string | null } | null;
 };
 
 /** True when the PR may be merged now (ready, approved, or retried after a refusal). */
 export const eligible = (e: QueueEntry): boolean =>
-  e.path !== null && e.ci === "success" && e.mergeable === "MERGEABLE" && (e.state === "ready" || e.state === "decision-answered-merge" || e.state === "refused");
+  e.path !== null && verifyOk(e.verify?.state) && e.ci === "success" && e.mergeable === "MERGEABLE" && (e.state === "ready" || e.state === "decision-answered-merge" || e.state === "refused");
 
 type Row = {
   repo: string; number: number; title: string | null; author: string | null; state: string; head_oid: string | null; updated_at: string | null;
@@ -108,6 +114,7 @@ export function buildQueue(db: DatabaseSync, opts: QueueOptions = {}): QueueEntr
     ORDER BY i.repo, i.number ${opts.limit ? `LIMIT ${Math.floor(opts.limit)}` : ""}`).all(params) as Row[];
 
   const merges = db.prepare("SELECT outcome, reason FROM merges WHERE repo = ? AND number = ? AND head_oid = ? ORDER BY at DESC, rowid DESC LIMIT 1");
+  const verifs = db.prepare("SELECT state, kind, summary, note FROM verifications WHERE repo = ? AND number = ? AND head_sha = ?");
   const decision = db.prepare("SELECT id, answer FROM decisions WHERE id = ?");
   const answers = new Map(actionable(db).filter((a) => a.kind === "merge").map((a) => [a.id, a.answer]));
   const tiers = tiersOf(db, [...new Set(rows.map((r) => r.author).filter((a): a is string => !!a))]);
@@ -135,18 +142,26 @@ export function buildQueue(db: DatabaseSync, opts: QueueOptions = {}): QueueEntr
     if (!label || !RULE_LABELS.includes(label)) outsideRule.push(label ? `label ${label}` : "no settled label");
     if (!RULE_TIERS.includes(tier)) outsideRule.push(r.author ? "author not on the whitelist" : "author unknown");
 
+    const verify = (verifs.get(r.repo, r.number, r.r_head) as QueueEntry["verify"] | undefined) ?? null;
     const id = mergeDecisionId(r.repo, r.number, r.r_head);
     const asked = decision.get(id) as { id: string; answer: string | null } | undefined;
     const answer = answers.get(id) ?? null;
     const e: QueueEntry = {
       repo: r.repo, number: r.number, title: r.title ?? "", author: r.author, tier, head: r.r_head, size, label,
       verdict: r.verdict, reason: r.reason, fixes, ci, mergeable, state: "needs-decision", path: null, outsideRule,
-      decisionId: asked ? id : null, answer, refusedReason: null, reviewedAt: r.r_at,
+      decisionId: asked ? id : null, answer, refusedReason: null, reviewedAt: r.r_at, verify,
     };
     e.state = stateOf(e, r.state === "MERGED" || mergedByUs, last);
     out.push(e);
   }
   return out;
+}
+
+/** The queue state a PR is in until its verification passed (or said CI is enough); null once it did. */
+function verifyState(e: QueueEntry): QueueState | null {
+  const s = e.verify?.state;
+  if (verifyOk(s)) return null;
+  return s === "failed" ? "verify-failed" : s === "error" ? "verify-error" : "waiting-verify";
 }
 
 function stateOf(e: QueueEntry, merged: boolean, last: { outcome: string; reason: string | null } | undefined): QueueState {
@@ -157,8 +172,11 @@ function stateOf(e: QueueEntry, merged: boolean, last: { outcome: string; reason
   else if (e.answer) return "declined";
   if (e.mergeable === "CONFLICTING") return "conflict";
   if (e.ci === "failure") return "ci-failed";
-  if (!e.path) return "needs-decision";
+  // A Merge? question is asked only once the operator can see the verification result.
+  if (!e.path) return verifyState(e) ?? "needs-decision";
   if (e.ci !== "success" || e.mergeable !== "MERGEABLE") return "waiting-ci";
+  const v = verifyState(e);
+  if (v) return v;
   if (last?.outcome === "refused") {
     e.refusedReason = last.reason;
     return "refused";
