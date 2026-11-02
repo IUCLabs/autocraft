@@ -10,6 +10,7 @@
 // settle() is the rule; settledOf() applies it to one item and settledTable()
 // to a whole run for queries.
 import type { DatabaseSync } from "node:sqlite";
+import { audit } from "../dash/audit.ts";
 
 export const SURE = 0.9;
 
@@ -46,6 +47,17 @@ export function latestRun(db: DatabaseSync): string | null {
   return r?.run_id ?? null;
 }
 
+/** True when `run` has at least one Jev verdict. */
+export const runExists = (db: DatabaseSync, run: string): boolean =>
+  !!db.prepare("SELECT 1 FROM classifications WHERE run_id = ? AND classifier = 'jev' LIMIT 1").get(run);
+
+/** Makes `run` the current classification run (settings.classify_run), audited. */
+export function setCurrentRun(db: DatabaseSync, run: string, by: string): void {
+  const prev = (db.prepare("SELECT value FROM settings WHERE key = 'classify_run'").get() as { value: string } | undefined)?.value ?? null;
+  db.prepare("INSERT INTO settings (key, value) VALUES ('classify_run', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value").run(run);
+  audit(db, by, "classify-run", `run:${run}`, { previous: prev });
+}
+
 const parseFlags = (s: string | null): string[] => {
   try {
     const f = JSON.parse(s ?? "[]") as unknown;
@@ -53,15 +65,23 @@ const parseFlags = (s: string | null): string[] => {
   } catch { return []; }
 };
 
-export function settledOf(db: DatabaseSync, repo: string, number: number, run = latestRun(db)): Settled {
-  if (!run) return settle(null, null);
+/** settledOf() for one run, with the statement prepared once: for loops over many items. */
+export function settledLookup(db: DatabaseSync, run: string | null): (repo: string, number: number) => Settled {
+  if (!run) return () => settle(null, null);
   const q = db.prepare("SELECT type_label, flags, probs FROM classifications WHERE repo = ? AND number = ? AND classifier = ? AND run_id = ?");
-  const j = q.get(repo, number, "jev", run) as { type_label: string; flags: string | null; probs: string | null } | undefined;
-  const h = q.get(repo, number, "haiku", run) as { type_label: string; flags: string | null } | undefined;
-  return settle(
-    j ? { label: j.type_label, flags: parseFlags(j.flags), top: topOf(j.probs) } : null,
-    h ? { label: h.type_label, flags: parseFlags(h.flags) } : null,
-  );
+  return (repo, number) => {
+    const j = q.get(repo, number, "jev", run) as { type_label: string; flags: string | null; probs: string | null } | undefined;
+    const h = q.get(repo, number, "haiku", run) as { type_label: string; flags: string | null } | undefined;
+    return settle(
+      j ? { label: j.type_label, flags: parseFlags(j.flags), top: topOf(j.probs) } : null,
+      h ? { label: h.type_label, flags: parseFlags(h.flags) } : null,
+    );
+  };
+}
+
+/** Loops resolve `run` once (latestRun) and pass it, or use settledLookup(). */
+export function settledOf(db: DatabaseSync, repo: string, number: number, run = latestRun(db)): Settled {
+  return settledLookup(db, run)(repo, number);
 }
 
 function topOf(probs: string | null): number | null {

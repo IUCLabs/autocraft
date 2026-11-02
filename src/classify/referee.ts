@@ -1,5 +1,6 @@
 // Referee: Sonnet decides disagreements between Jev and Haiku under the written rules.
 import type { DatabaseSync } from "node:sqlite";
+import { claudeRoom } from "../agents/call.ts";
 import { CLAUDE_PROMPTS } from "../prompts/index.ts";
 import { parseRefereeReply, type Item } from "./parse.ts";
 import { type Pair, ref } from "./report.ts";
@@ -36,7 +37,7 @@ export async function runReferee(db: DatabaseSync, runId: string, picked: Pair[]
       }
     }
     saveUsage(db, runId, `sonnet-${n}`, "referee", REFEREE.models[0]!, got, usage, start, new Date().toISOString());
-  }), REFEREE.limits.parallel);
+  }), () => claudeRoom(db), { first: true });
 }
 
 /** Marks a varied subset (by kind and by whom Sonnet sided with) for the owner to check by hand. */

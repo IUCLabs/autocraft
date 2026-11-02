@@ -7,6 +7,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { connect } from "../db.ts";
 import { Client, type Querier } from "../mirror.ts";
 import { CLAUDE_PROMPTS } from "../prompts/index.ts";
+import { claudeRoom } from "../agents/call.ts";
 import { add, askClaude, pool, saveUsage, type Usage } from "../classify/run.ts";
 import { DEFAULT_CAPS, makeBatches, type Caps } from "./batch.ts";
 import { selectCandidates, type Candidate } from "./candidates.ts";
@@ -154,7 +155,7 @@ export async function runReview(db: DatabaseSync, params: ReviewParams, log: (li
       summary.missing.push(...todo.map((p) => p.ref));
     }
     saveUsage(db, runId, `review-${String(n).padStart(2, "0")}`, "review", deps.model, batch.length - todo.length, usage, start, now());
-  }), PROMPT.limits.parallel);
+  }), () => claudeRoom(db), { first: true });
   log(`review ${repo}: ${summary.reviewed} reviewed (${Object.entries(summary.verdicts).map(([v, k]) => `${k} ${v}`).join(", ")}); ${summary.skipped.length} skipped, ${summary.missing.length} without an answer`);
   return summary;
 }

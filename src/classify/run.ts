@@ -6,7 +6,8 @@ import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import type { ItemRef } from "../../web/src/api/types.ts";
 import { createHash } from "node:crypto";
-import { startClaudeRun, startJevRun } from "../agents/call.ts";
+import { jevParallel } from "../agents/accounts.ts";
+import { claudeRoom, startClaudeRun, startJevRun } from "../agents/call.ts";
 import { finishRun } from "../agents/runs.ts";
 import { scrubError } from "../agents/text.ts";
 import { CLAUDE_PROMPTS, JEV_ARGS, JEV_PROMPTS, claudeArgs, claudePromptOf, jevPromptOf, renderClaude, renderJev, type ClaudeInput, type ClaudePromptId, type JevPromptId } from "../prompts/index.ts";
@@ -50,15 +51,44 @@ export function exec(cmd: string, args: string[], input: string, cwd?: string, t
   });
 }
 
-export async function pool<T>(jobs: (() => Promise<T>)[], width: number): Promise<T[]> {
+export const POOL_POLL_MS = 500;
+
+export type PoolOptions = {
+  /** Run the first job alone and the rest after it returns, so the rest read the prompt cache the first one wrote. */
+  first?: boolean;
+  /** How long to wait before asking `room` again when nothing finished (default POOL_POLL_MS). */
+  pollMs?: number;
+};
+
+/**
+ * Runs the jobs with at most `width` at once. A function instead of a number
+ * is asked before each start how many more jobs may start now (for model
+ * calls: the free account slots); it is asked again whenever a job ends or
+ * after the poll time. When none of the pool's jobs is running, one starts
+ * regardless, so the call itself waits for a slot or reports that no account is enabled.
+ * The first failure is thrown once the running jobs have ended.
+ */
+export async function pool<T>(jobs: (() => Promise<T>)[], width: number | (() => number), opts: PoolOptions = {}): Promise<T[]> {
   const results: T[] = new Array(jobs.length);
-  let next = 0;
-  await Promise.all(Array.from({ length: Math.min(width, jobs.length) }, async () => {
-    while (next < jobs.length) {
-      const i = next++;
-      results[i] = await jobs[i]!();
+  const running = new Set<Promise<void>>();
+  let next = 0, failed: { e: unknown } | null = null;
+  const launch = (): Promise<void> => {
+    const i = next++;
+    const p: Promise<void> = jobs[i]!().then((r) => void (results[i] = r), (e) => void (failed ??= { e })).finally(() => running.delete(p));
+    running.add(p);
+    return p;
+  };
+  if (opts.first && jobs.length > 1) await launch();
+  while (next < jobs.length && !failed) {
+    const room = typeof width === "number" ? width - running.size : width();
+    if (room > 0 || !running.size) {
+      launch();
+      continue;
     }
-  }));
+    await Promise.race([...running, new Promise((r) => setTimeout(r, opts.pollMs ?? POOL_POLL_MS))]);
+  }
+  await Promise.all(running);
+  if (failed) throw (failed as { e: unknown }).e;
   return results;
 }
 
@@ -199,7 +229,7 @@ export const add = (a: Usage, b: Usage): Usage => ({ input: a.input + b.input, o
 
 const HAIKU = CLAUDE_PROMPTS["classify.haiku"];
 
-export async function runHaiku(db: DatabaseSync, runId: string, items: Item[], batchSize = HAIKU.limits.perCall, width = HAIKU.limits.parallel, model = HAIKU.models[0]!): Promise<void> {
+export async function runHaiku(db: DatabaseSync, runId: string, items: Item[], batchSize = HAIKU.limits.perCall, model = HAIKU.models[0]!, opts: { cold?: boolean } = {}): Promise<void> {
   const batches: Item[][] = [];
   for (let i = 0; i < items.length; i += batchSize) batches.push(items.slice(i, i + batchSize));
   await pool(batches.map((batch, n) => async () => {
@@ -216,12 +246,12 @@ export async function runHaiku(db: DatabaseSync, runId: string, items: Item[], b
     }
     if (todo.length) console.error(`haiku batch ${n}: no valid answer for ${todo.map(refOf).join(", ")}`);
     saveUsage(db, runId, `haiku-${String(n).padStart(2, "0")}`, "classify", model, batch.length - todo.length, usage, start, now());
-  }), width);
+  }), () => claudeRoom(db), { first: opts.cold });
 }
 
 const JEV = JEV_PROMPTS["classify.jev"];
 
-export async function runJev(db: DatabaseSync, runId: string, items: Item[], width = JEV.limits.parallel): Promise<void> {
+export async function runJev(db: DatabaseSync, runId: string, items: Item[], width = jevParallel(db)): Promise<void> {
   await pool(items.map((item) => async () => {
     const ref = refOf(item), start = now();
     let v: Verdict | null = null;

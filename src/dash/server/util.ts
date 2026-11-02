@@ -19,7 +19,7 @@ export function esc(s: unknown): string {
 export function plainPage(nonce: string, title: string, body: string): string {
   return `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1"><title>${esc(title)}</title>
-<script nonce="${nonce}">try{var t=localStorage.getItem("craft-triage:theme");if(t==="dark"||t==="light")document.documentElement.dataset.theme=t}catch(e){}</script>
+<script nonce="${nonce}">try{var t=localStorage.getItem("autocraft:theme");if(t==="dark"||t==="light")document.documentElement.dataset.theme=t}catch(e){}</script>
 <style nonce="${nonce}">
 :root{color-scheme:dark;--bg:#101014;--card:#141518;--fg:#f2f1ee;--muted:#9a9aa0;--line:rgba(255,255,255,.1);--link:#74aaff;--accent:#2d81ff}
 @media (prefers-color-scheme:light){:root:not([data-theme=dark]){color-scheme:light;--bg:#f2f1ee;--card:#fbfaf8;--fg:#101014;--muted:#5f5f66;--line:rgba(16,16,20,.12);--link:#1454dc;--accent:#1b63f5}}
@@ -32,7 +32,7 @@ p{margin:8px 0}a{color:var(--link)}p.muted{color:var(--muted)}code{font-size:13p
 input,button,a.button{font:inherit;min-height:40px;padding:0 14px;border-radius:6px;box-sizing:border-box}
 input{border:1px solid var(--line);background:var(--bg);color:var(--fg)}
 button,a.button{display:inline-flex;align-items:center;border:0;background:var(--accent);color:#fff;text-decoration:none;font-weight:500;cursor:pointer}
-</style></head><body><main><p class="brand">Craft Triage</p><h1>${esc(title)}</h1>${body}</main></body></html>`;
+</style></head><body><main><p class="brand">AutoCraft</p><h1>${esc(title)}</h1>${body}</main></body></html>`;
 }
 
 // Fixed-window counters, in memory: limits reset with the process, which is

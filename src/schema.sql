@@ -82,6 +82,24 @@ CREATE TABLE IF NOT EXISTS stages (
 );
 CREATE INDEX IF NOT EXISTS stages_item ON stages(repo, number, at);
 
+-- The latest stages row per item, kept by the trigger below so reads never scan
+-- `stages`. A later `at` wins; at the same `at` the newer insert wins. `reviewed`
+-- is 1 once the item has had a `reviewed` row. db.ts fills the table once for a
+-- database that had stages before it existed.
+CREATE TABLE IF NOT EXISTS item_stage (
+  repo TEXT NOT NULL, number INTEGER NOT NULL,
+  stage TEXT NOT NULL, at TEXT NOT NULL,
+  reviewed INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (repo, number)
+) WITHOUT ROWID;
+CREATE TRIGGER IF NOT EXISTS stages_latest AFTER INSERT ON stages BEGIN
+  INSERT INTO item_stage (repo, number, stage, at, reviewed) VALUES (NEW.repo, NEW.number, NEW.stage, NEW.at, NEW.stage = 'reviewed')
+  ON CONFLICT (repo, number) DO UPDATE SET
+    stage = CASE WHEN excluded.at >= item_stage.at THEN excluded.stage ELSE item_stage.stage END,
+    at = CASE WHEN excluded.at >= item_stage.at THEN excluded.at ELSE item_stage.at END,
+    reviewed = item_stage.reviewed OR excluded.reviewed;
+END;
+
 -- Contributor whitelist: the automatic tier comes from merge history;
 -- an override from the owner always wins.
 CREATE TABLE IF NOT EXISTS whitelist_overrides (
@@ -132,6 +150,8 @@ CREATE TABLE IF NOT EXISTS decisions (
   adopted_opinion TEXT                -- decision_opinions.id when the answer adopted an opinion
 );
 CREATE INDEX IF NOT EXISTS decisions_open ON decisions(answer, kind, repo);
+CREATE INDEX IF NOT EXISTS decisions_asked ON decisions(answer, asked_at);
+CREATE INDEX IF NOT EXISTS decisions_answered ON decisions(answered_at);
 -- db.ts adds the summary and adopted_opinion columns to databases created before them.
 
 -- Opinions: non-binding picks by anyone signed in. Display-only: the pipeline
@@ -217,6 +237,7 @@ CREATE INDEX IF NOT EXISTS items_open ON items(state, repo, number);
 CREATE INDEX IF NOT EXISTS classifications_run ON classifications(run_id, classifier, repo, number);
 -- The newest verdict of a classifier (latestRun, latestJevRun) without reading every row.
 CREATE INDEX IF NOT EXISTS classifications_latest ON classifications(classifier, at);
+CREATE INDEX IF NOT EXISTS classifications_dup ON classifications(repo, dup_of) WHERE dup_of IS NOT NULL;
 CREATE INDEX IF NOT EXISTS token_usage_run ON token_usage(run_id, stage, model);
 
 -- Repos the dashboard, pipeline and sync work on. `repos` keeps every org repo
@@ -280,10 +301,13 @@ CREATE TABLE IF NOT EXISTS jobs (
   pid INTEGER,                        -- the job's child process while running
   cancel_requested_at TEXT,
   cancel_requested_by TEXT,
+  repo TEXT,                          -- params.repo, for the autopilot's per-repo lookups
   items INTEGER                       -- items the job handled (classified, asked, reviewed, merged ...), for the daily limits
 );
 CREATE INDEX IF NOT EXISTS jobs_state ON jobs(state, id);
 CREATE INDEX IF NOT EXISTS jobs_step ON jobs(step, id);
+CREATE INDEX IF NOT EXISTS jobs_step_started ON jobs(step, started_at);
+CREATE INDEX IF NOT EXISTS jobs_user_ended ON jobs(requested_by, ended_at);
 
 -- Daily limits per autopilot stage (UTC day); NULL means no limit, 0 pauses the
 -- stage. The pipeline switch itself lives in settings (pipeline_enabled,

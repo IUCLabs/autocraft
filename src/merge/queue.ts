@@ -1,7 +1,7 @@
 // The merge queue: every PR with a take or take-fix review at its current
 // head commit, and what it waits on. Reads only local tables; no GitHub calls.
 import type { DatabaseSync } from "node:sqlite";
-import { latestRun, settledOf } from "../classify/settled.ts";
+import { latestRun, settledLookup } from "../classify/settled.ts";
 import { actionable } from "../decisions.ts";
 import { headOf } from "../review/candidates.ts";
 import { getRule, STATS_SQL, tierOf, type Tier } from "../whitelist.ts";
@@ -71,27 +71,44 @@ function tiersOf(db: DatabaseSync, logins: string[]): Map<string, Tier> {
   return out;
 }
 
-export type QueueOptions = { repo?: string };
+export type QueueOptions = {
+  repo?: string;
+  /** Which PRs by GitHub state: open ones only, merged ones only, or both (default). */
+  merged?: "exclude" | "only" | "all";
+  /** Keyset page: entries after this PR in (repo, number) order, at most `limit` of them. */
+  after?: { repo: string; number: number };
+  limit?: number;
+  /** The classification run for labels, resolved once by the caller (default: latestRun). */
+  run?: string | null;
+};
 
 export function buildQueue(db: DatabaseSync, opts: QueueOptions = {}): QueueEntry[] {
-  // Latest review per PR; only take and take-fix verdicts enter the queue.
+  const states = { exclude: "'OPEN'", only: "'MERGED'", all: "'OPEN', 'MERGED'" }[opts.merged ?? "all"];
+  const params: Record<string, string | number> = {};
+  const where: string[] = [];
+  if (opts.repo) { where.push("i.repo = :repo"); params.repo = opts.repo; }
+  if (opts.after) {
+    where.push("(i.repo > :ar OR (i.repo = :ar AND i.number > :an))");
+    params.ar = opts.after.repo;
+    params.an = opts.after.number;
+  }
+  // Latest review per PR (newest `at`, then rowid); only take and take-fix verdicts enter the queue.
   const rows = db.prepare(`
-    WITH last AS MATERIALIZED (
-      SELECT r.*, ROW_NUMBER() OVER (PARTITION BY r.repo, r.number ORDER BY r.at DESC, r.rowid DESC) AS k FROM reviews r
-      ${opts.repo ? "WHERE r.repo = :repo" : ""})
     SELECT i.repo, i.number, i.title, i.author, i.state, i.head_oid, i.updated_at, i.mergeable AS i_mergeable,
       c.head_oid AS c_head, c.fetched_at AS c_at, c.overall, c.mergeable AS c_mergeable,
       l.head_oid AS r_head, l.verdict, l.reason, l.fixes, l.size, l.at AS r_at
-    FROM last l CROSS JOIN items i ON i.repo = l.repo AND i.number = l.number
+    FROM items i
+    JOIN reviews l ON l.repo = i.repo AND l.number = i.number AND l.rowid = (
+      SELECT r.rowid FROM reviews r WHERE r.repo = i.repo AND r.number = i.number ORDER BY r.at DESC, r.rowid DESC LIMIT 1)
     LEFT JOIN pr_checks c ON c.repo = l.repo AND c.number = l.number
-    WHERE l.k = 1 AND l.verdict IN ('take', 'take-fix') AND i.kind = 'pr' AND i.state IN ('OPEN', 'MERGED')
-    ORDER BY i.repo, i.number`).all(opts.repo ? { repo: opts.repo } : {}) as Row[];
+    WHERE l.verdict IN ('take', 'take-fix') AND i.kind = 'pr' AND i.state IN (${states}) ${where.map((w) => `AND ${w}`).join(" ")}
+    ORDER BY i.repo, i.number ${opts.limit ? `LIMIT ${Math.floor(opts.limit)}` : ""}`).all(params) as Row[];
 
   const merges = db.prepare("SELECT outcome, reason FROM merges WHERE repo = ? AND number = ? AND head_oid = ? ORDER BY at DESC, rowid DESC LIMIT 1");
   const decision = db.prepare("SELECT id, answer FROM decisions WHERE id = ?");
   const answers = new Map(actionable(db).filter((a) => a.kind === "merge").map((a) => [a.id, a.answer]));
   const tiers = tiersOf(db, [...new Set(rows.map((r) => r.author).filter((a): a is string => !!a))]);
-  const run = latestRun(db);
+  const settled = settledLookup(db, opts.run !== undefined ? opts.run : latestRun(db));
 
   const out: QueueEntry[] = [];
   for (const r of rows) {
@@ -104,7 +121,7 @@ export function buildQueue(db: DatabaseSync, opts: QueueOptions = {}): QueueEntr
     const ci = checksHere ? (r.overall ?? "none") : "unknown";
     const mergeable = (checksHere ? r.c_mergeable : r.i_mergeable) ?? "UNKNOWN";
     const tier = r.author ? tiers.get(r.author)! : "not";
-    const label = settledOf(db, r.repo, r.number, run).label;
+    const label = settled(r.repo, r.number).label;
     const size = r.size ?? "L";
     let fixes = 0;
     try { fixes = (JSON.parse(r.fixes ?? "[]") as unknown[]).length; } catch { /* none */ }
@@ -150,4 +167,13 @@ export function countStates(entries: QueueEntry[]): Record<QueueState, number> {
   const c = Object.fromEntries(QUEUE_STATES.map((s) => [s, 0])) as Record<QueueState, number>;
   for (const e of entries) c[e.state]++;
   return c;
+}
+
+/** How many merged PRs have a take or take-fix review as their latest. */
+export function countMerged(db: DatabaseSync, repo?: string): number {
+  return (db.prepare(`SELECT COUNT(*) AS n FROM items i
+    JOIN reviews l ON l.repo = i.repo AND l.number = i.number AND l.rowid = (
+      SELECT r.rowid FROM reviews r WHERE r.repo = i.repo AND r.number = i.number ORDER BY r.at DESC, r.rowid DESC LIMIT 1)
+    WHERE l.verdict IN ('take', 'take-fix') AND i.kind = 'pr' AND i.state = 'MERGED' ${repo ? "AND i.repo = :repo" : ""}`)
+    .get(repo ? { repo } : {}) as { n: number }).n;
 }

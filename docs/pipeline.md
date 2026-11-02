@@ -114,7 +114,7 @@ An **agent run** is one model call made through the prompt registry: one `claude
 
 ### Accounts and allocation
 
-An operator enables Claude accounts on the Accounts page and gives each a label and a number of calls at once (default 2). Only the label is shown; the account's login and config directory never appear in the API, logs or UI. The accounts a machine has come from its box config (see the README); the page lists only those.
+An operator enables Claude accounts on the Accounts page and gives each a label and a number of calls at once (1 to 100, default 2). Only the label is shown; the account's login and config directory never appear in the API, logs or UI. The accounts a machine has come from its box config (see the README); the page lists only those.
 
 Before each Claude call the runner side picks an account:
 
@@ -123,6 +123,10 @@ Before each Claude call the runner side picks an account:
 3. Of those, the account with the lowest weekly use gets the call.
 
 The call runs with that account's `CLAUDE_CONFIG_DIR` for its own child process only. When no account qualifies, the call waits (polling every few seconds) and stops if the job is cancelled. If no account is enabled at all, the call fails with a message that says so. Jev calls use no account.
+
+The claim (choose the account, record the running agent run) is one `BEGIN IMMEDIATE` transaction, so job processes that choose at the same moment never take more than an account's slots.
+
+**Calls at once.** Nothing but the account slots limits Claude calls in flight. Inside a job, the calls of a batch run (Haiku batches, decide summaries, review batches, referee chunks) start as long as the enabled accounts with headroom have free slots, up to the number of batches left, and the job starts more as slots free up, whichever job or process frees them. The first call of a batch run goes out alone and the rest follow when it returns, so they read the prompt cache the first call wrote instead of each writing it. Haiku classification takes items in chunks of one batch per free slot (at least four). Jev has no accounts: its calls at once come from the setting `jev_parallel` (1 to 100, default 4), shown and changed with `craft-auto accounts jev [N]`.
 
 Stages that call Claude (Classify, for its Haiku part, Decide and Review) show as paused, with the reason, and the autopilot queues no job for them while no enabled account has headroom ("paused: no Claude account is enabled", "paused: no Claude account has headroom (...)"). A job started by hand waits for an account instead.
 
@@ -180,7 +184,7 @@ Three processes share one database. None of them needs anyone to keep a terminal
 
 The dashboard never runs a step and never calls a model. The runner queues and runs jobs; the dashboard only reads the **jobs** table and writes the pipeline switch, the daily limits and cancel marks. The runner runs each job in a separate process and writes back its progress, log, result, items handled and token use. A cancel is a mark on the job's row, which the runner acts on.
 
-Each step is defined in code with a fixed list of settings: choices from a list, a tracked repo, a number in a range, or a run id. Nothing typed on the dashboard can reach a model's prompt or a shell. Steps in the same group (for example, everything that writes to GitHub) run one at a time.
+Each step is defined in code with a fixed list of settings: choices from a list, a tracked repo, a number in a range, or a run id. Nothing typed on the dashboard can reach a model's prompt or a shell. Steps in the same concurrency group run one at a time; jobs of different groups run together, up to the runner's job limit (default 8). The groups are `classify` (classify-new, classify-all), `decide`, `review`, `github-write` (labels-ensure, labels-apply, merge), `github-read` (checks) and `local` (embed). A step has one group, so it never runs twice at once.
 
 ### On and Off
 
@@ -196,6 +200,8 @@ While it is On, the runner looks for work after each new sync and at least every
 | Review | `checks`, then `review-batch` | Per repo, round robin across repos with review candidates, one repo per job; a repo's checks are refreshed (within the last 30 minutes) before its review, and only when that review could start (limit left, not paused, not busy) |
 | Label | `labels-apply` | Repos with operator approval and labels still to add, once per sync |
 | Merge | `merge` | Repos with operator merge approval and queue entries the merge rule allows; a PR refused at its current head waits until its CI or mergeable state differs from what GitHub reported at the refusal |
+
+The runner polls every 2 seconds (heartbeat, cancels, starting jobs). The planner's detection pass reads a lot of data, so it runs on a worker thread with its own database connection, one pass at a time; the next poll queues what it found. Stages whose step cannot start (busy, paused, limit reached, cooling down, backing off) are not detected at all. The flowchart summary refresh runs on a worker thread too. Every pass resolves the classification run once and passes it to all stages. The current run is `settings.classify_run`, set when a `classify-all` pass completes or with `craft-auto classify current <run>` (`classify current` shows it; recorded as `cli`); without it, the run with the newest Jev verdict is used. Once an hour the runner deletes finished jobs and their log files older than 90 days; the audit log and token usage stay.
 
 The full classification pass (`classify-all`) is never started automatically. A failure in one stage does not stop the others. A stage whose last three automatic jobs failed, or finished without handling anything although there was work, waits an hour; jobs ended by a runner stop or restart do not count. A stage whose last automatic job handled nothing waits 15 minutes.
 

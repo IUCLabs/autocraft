@@ -169,6 +169,18 @@ export function toDecision(db: DatabaseSync, d: DecisionRow, viewer: Viewer): De
 
 const list = (req: Req, key: string): string[] => req.query.getAll(key).flatMap((v) => v.split(",")).map((s) => s.trim()).filter(Boolean);
 
+// Decisions touching any of the given repos: the decision's own repo, or an item of a batch.
+function inRepos(prefix: string, repos: string[], params: Record<string, string>): string {
+  const names = repos.map((r, k) => {
+    params[`${prefix}${k}`] = r;
+    return `:${prefix}${k}`;
+  }).join(",") || "NULL";
+  return `(repo IN (${names}) OR EXISTS (SELECT 1 FROM json_each(CASE WHEN json_valid(items) THEN items ELSE '[]' END) j
+    WHERE json_extract(j.value, '$.repo') IN (${names})))`;
+}
+
+// Pages are cut by keyset: `after` is the `next` of the previous page, "<sort key>|<id>".
+// Open decisions run oldest asked first, answered ones newest answer first.
 export async function listDecisions(db: DatabaseSync, req: Req, writeRepos: () => Promise<string[]>): Promise<DecisionList> {
   const q = req.query;
   const status = q.get("status") ?? "open";
@@ -187,21 +199,45 @@ export async function listDecisions(db: DatabaseSync, req: Req, writeRepos: () =
     where.push("asked_at <= :before");
     params.before = new Date(Date.now() - minAge * 86400_000).toISOString();
   }
-  const order = status === "answered" ? "answered_at DESC" : "asked_at";
-  let rows = db.prepare(`SELECT * FROM decisions WHERE ${where.join(" AND ")} ORDER BY ${order}`).all(params) as DecisionRow[];
-  const repos = new Set(list(req, "repo"));
-  if (repos.size) rows = rows.filter((d) => reposOf(d).some((r) => repos.has(r)));
-  if (q.get("mine") === "1" || q.get("mine") === "true") {
-    const mine = new Set(await writeRepos());
-    rows = rows.filter((d) => reposOf(d).some((r) => mine.has(r)));
-  }
+  const repos = [...new Set(list(req, "repo"))];
+  if (repos.length) where.push(inRepos("rp", repos, params));
+  if (q.get("mine") === "1" || q.get("mine") === "true") where.push(inRepos("mn", await writeRepos(), params));
+
+  // Counts and the oldest ask cover every match, not just the page.
+  const kindRows = db.prepare(`SELECT kind, COUNT(*) AS n, MIN(asked_at) AS oldest FROM decisions WHERE ${where.join(" AND ")} GROUP BY kind`).all(params) as
+    { kind: DecisionKind; n: number; oldest: string }[];
   const byKind: Partial<Record<DecisionKind, number>> = {};
-  for (const d of rows) byKind[d.kind as DecisionKind] = (byKind[d.kind as DecisionKind] ?? 0) + 1;
-  const oldestAskedAt = rows.reduce<string | null>((m, d) => (m === null || d.asked_at < m ? d.asked_at : m), null);
+  let total = 0;
+  let oldestAskedAt: string | null = null;
+  for (const r of kindRows) {
+    byKind[r.kind] = r.n;
+    total += r.n;
+    if (oldestAskedAt === null || r.oldest < oldestAskedAt) oldestAskedAt = r.oldest;
+  }
+
+  const answered = status === "answered";
+  const sortKey = answered ? "answered_at" : "asked_at";
+  const after = q.get("after");
+  const page = [...where];
+  if (after) {
+    const k = after.indexOf("|");
+    if (k < 0) throw new HttpError(400, "after must be a next cursor");
+    params.ck = after.slice(0, k);
+    params.cid = after.slice(k + 1);
+    page.push(`(${sortKey} ${answered ? "<" : ">"} :ck OR (${sortKey} = :ck AND id > :cid))`);
+  }
   const limit = Math.min(Math.max(Number(q.get("limit")) || 100, 1), 500);
-  const offset = Math.max(Number(q.get("offset")) || 0, 0);
+  const offset = after ? 0 : Math.max(Number(q.get("offset")) || 0, 0);
+  const rows = db.prepare(`SELECT * FROM decisions WHERE ${page.join(" AND ")} ORDER BY ${sortKey} ${answered ? "DESC" : "ASC"}, id LIMIT :limit OFFSET :offset`)
+    .all({ ...params, limit: limit + 1, offset }) as DecisionRow[];
+  const more = rows.length > limit;
+  const shown = rows.slice(0, limit);
+  const last = shown[shown.length - 1] as (DecisionRow & Record<string, string>) | undefined;
   const viewer = viewerOf(req);
-  return { decisions: rows.slice(offset, offset + limit).map((d) => toDecision(db, d, viewer)), total: rows.length, byKind, oldestAskedAt };
+  return {
+    decisions: shown.map((d) => toDecision(db, d, viewer)), total, byKind, oldestAskedAt,
+    next: more && last ? `${last[sortKey]}|${last.id}` : null,
+  };
 }
 
 export function getOne(db: DatabaseSync, req: Req): Decision {

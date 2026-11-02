@@ -11,8 +11,11 @@ import { LABELS, LABEL_MEANING, RULES, UNTRUSTED_NOTE } from "../classify/rules.
 import { REVIEW_BODY_LIMIT, VERDICTS, type ReviewPr } from "../review/parse.ts";
 import { SAMPLE_ITEMS, SAMPLE_REVIEW_PRS } from "./samples.ts";
 
-/** How a call is made: items per call, calls at once, attempts per item, and the time limit per call. */
-export type Limits = { perCall: number; parallel: number; attempts: number; timeoutSeconds: number };
+/** Jev calls at once unless the `jev_parallel` setting says otherwise (Jev has no accounts, so no slots limit it). */
+export const JEV_PARALLEL_DEFAULT = 4;
+
+/** How a call is made: items per call, attempts per item, and the time limit per call. */
+export type Limits = { perCall: number; attempts: number; timeoutSeconds: number };
 
 type Common = {
   id: string;
@@ -60,7 +63,7 @@ Below is a JSON array of items. Reply with ONLY a JSON array, one object per ite
 </items>`,
   output: `A JSON array, one object per item: {"ref", "type_label", "security", "needs_decision", "reason"}.`,
   validation: `${CLAUDE_RESULT} The text from the first "[" to the last "]" is parsed as JSON. An object is kept only when its ref is one that was asked and not seen before, type_label is one of the six labels, and security and needs_decision are booleans; reason is cut to 200 characters. Items without a kept object are sent again once, in a smaller batch; items still missing are logged and stay unclassified.`,
-  limits: { perCall: 25, parallel: 4, attempts: 2, timeoutSeconds: 600 },
+  limits: { perCall: 25, attempts: 2, timeoutSeconds: 600 },
 };
 
 const REFEREE: ClaudePrompt = {
@@ -84,7 +87,7 @@ For each item below, give the one label that is right under these rules. Reply w
 </items>`,
   output: `A JSON array, one object per item: {"ref", "type_label", "why"}.`,
   validation: `${CLAUDE_RESULT} The text from the first "[" to the last "]" is parsed as JSON. An object is kept only when its ref is one that was asked and not seen before and type_label is one of the six labels; why is cut to 300 characters. Items without a kept object are sent once more.`,
-  limits: { perCall: 10, parallel: 3, attempts: 2, timeoutSeconds: 600 },
+  limits: { perCall: 10, attempts: 2, timeoutSeconds: 600 },
 };
 
 const JEV: JevPrompt = {
@@ -109,7 +112,7 @@ const JEV: JevPrompt = {
   },
   output: `{"answers": {"type": {"choice", "confidence", "probabilities": {label: p}}, "security": {"noul": p}, "needs_decision": {"noul": p}}, "usage": {"input_tokens", "output_tokens"}}`,
   validation: "The answer is kept only when type.choice is one of the six labels and both noul answers are numbers. A noul of 0.5 or more counts as yes. The probabilities are stored with the verdict. A call without a valid answer is made once more; after that the item is logged and stays unclassified.",
-  limits: { perCall: 1, parallel: 8, attempts: 2, timeoutSeconds: 600 },
+  limits: { perCall: 1, attempts: 2, timeoutSeconds: 600 },
 };
 
 const PR_FIELDS = `ref, title, body (first ${REVIEW_BODY_LIMIT} characters), author_association, size (S, M or L), lines_changed, ci (success, failure, pending or none), mergeable, files (code files changed), tests_omitted and lockfiles_omitted (paths left out of the diff), same_files_as (other open PRs in the review that change one of the same files: ref and title) and diff (the unified diff of the code files)`;
@@ -153,7 +156,7 @@ Reply with ONLY a JSON array, one object per PR, in the same order:
 </prs>`,
   output: `A JSON array, one object per PR: {"ref", "verdict", "reason", "fixes", "duplicate_of", "overlaps", "risks"}.`,
   validation: `${CLAUDE_RESULT} The text from the first "[" to the last "]" is parsed as JSON. An object is kept only when its ref is one that was asked and not seen before, verdict is one of ${VERDICTS.join(", ")}, reason is text, and a take-fix has at least one fix with a file and a change. reason is cut to 25 words; refs in duplicate_of and overlaps must look like repo#number. A close whose duplicate_of has not merged is stored as a hold. PRs without a kept object are sent again once, in a smaller batch; PRs still missing are logged and stay unreviewed.`,
-  limits: { perCall: 15, parallel: 2, attempts: 2, timeoutSeconds: 900 },
+  limits: { perCall: 15, attempts: 2, timeoutSeconds: 900 },
 };
 
 const SUMMARY: ClaudePrompt = {
@@ -182,7 +185,7 @@ Reply with ONLY a JSON array, one object per item, in the same order:
 </items>`,
   output: `A JSON array, one object per item: {"ref", "summary"}.`,
   validation: `${CLAUDE_RESULT} The text from the first "[" to the last "]" is parsed as JSON. An object is kept only when its ref is one that was asked and not seen before and its summary, with whitespace runs collapsed, is ${SUMMARY_MIN} to ${SUMMARY_MAX} characters. Items without a kept summary are sent once more; items still missing get no decision in this run and are picked up by the next one.`,
-  limits: { perCall: 8, parallel: 3, attempts: 2, timeoutSeconds: 600 },
+  limits: { perCall: 8, attempts: 2, timeoutSeconds: 600 },
 };
 
 export const CLAUDE_PROMPTS = { "classify.haiku": HAIKU, "referee.sonnet": REFEREE, "review.sonnet": REVIEW, "decide.summary": SUMMARY } as const;
@@ -257,7 +260,7 @@ function settings(p: ClaudePrompt | JevPrompt): PromptInfo["settings"] {
   const l = p.limits;
   const s: PromptInfo["settings"] = [
     { label: "Items per call", value: String(l.perCall) },
-    { label: "Calls at once", value: String(l.parallel) },
+    { label: "Calls at once", value: p.runner === "claude" ? "As many as the enabled accounts have free slots for" : `The Jev setting (default ${JEV_PARALLEL_DEFAULT})` },
     { label: "Attempts", value: `${l.attempts} (a retry asks only for the items still missing)` },
     { label: "Time limit", value: `${l.timeoutSeconds} s per call` },
   ];

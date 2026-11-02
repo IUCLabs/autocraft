@@ -9,7 +9,6 @@ import { LABELS } from "../../classify/rules.ts";
 import { HttpError } from "../server/util.ts";
 import type { Req } from "../types.ts";
 import { itemState } from "./decisions.ts";
-import { latestCte } from "./stats.ts";
 import { flowMembers } from "./flow.ts";
 
 const HAS_WORD = /[\p{L}\p{N}]/u;
@@ -198,6 +197,32 @@ function snippets(db: DatabaseSync, fts: string, rows: Row[]): Map<number, Snipp
   return out;
 }
 
+// Status counts cost a scan of every matching item, so they are kept per filter
+// until a sync, a classification or a tracked-repo change, or for COUNTS_TTL at most.
+const COUNTS_TTL = 45_000;
+const COUNTS_MAX = 100;
+const countsCache = new WeakMap<DatabaseSync, { sig: string; at: number; byKey: Map<string, Record<SettledStatus, number>> }>();
+
+function statusCounts(db: DatabaseSync, b: Built & { run: string | null }, sql: string, flow: string | null): Record<SettledStatus, number> {
+  const sig = JSON.stringify(db.prepare(`SELECT (SELECT value FROM main.settings WHERE key = 'org_high_water') AS hw,
+      (SELECT MAX(rowid) FROM main.classifications) AS cl, (SELECT group_concat(name) FROM main.tracked_repos) AS tr`).get());
+  const now = Date.now();
+  let c = countsCache.get(db);
+  if (!c || c.sig !== sig || now - c.at >= COUNTS_TTL) {
+    c = { sig, at: now, byKey: new Map() };
+    countsCache.set(db, c);
+  }
+  const key = JSON.stringify([sql, b.params, b.run, flow]);
+  const hit = c.byKey.get(key);
+  if (hit) return { ...hit };
+  const counts = db.prepare(sql).all(b.params) as { status: string | null; n: number }[];
+  const byStatus = Object.fromEntries(STATUSES.map((s) => [s, 0])) as Record<SettledStatus, number>;
+  for (const r of counts) byStatus[(r.status ?? "unclassified") as SettledStatus] += r.n;
+  if (c.byKey.size >= COUNTS_MAX) c.byKey.clear();
+  c.byKey.set(key, byStatus);
+  return { ...byStatus };
+}
+
 export function listItems(db: DatabaseSync, req: Req): ItemList {
   const b = build(db, req);
   const limit = Math.min(100, Math.max(1, Number(req.query.get("limit")) || 50));
@@ -208,17 +233,21 @@ export function listItems(db: DatabaseSync, req: Req): ItemList {
   const whereSql = (w: string[]) => (w.length ? ` WHERE ${w.join(" AND ")}` : "");
 
   // Counts per status under every filter but the status one; the total follows from them.
-  const counts = db.prepare(from(false).replace("%COLS", "s.status, COUNT(*) AS n") + whereSql(b.where) + " GROUP BY 1")
-    .all(b.params) as { status: string | null; n: number }[];
-  const byStatus = Object.fromEntries(STATUSES.map((s) => [s, 0])) as Record<SettledStatus, number>;
-  for (const c of counts) byStatus[(c.status ?? "unclassified") as SettledStatus] += c.n;
+  const byStatus = statusCounts(db, b, from(false).replace("%COLS", "s.status, COUNT(*) AS n") + whereSql(b.where) + " GROUP BY 1", req.query.get("flow"));
   const total = (b.statuses.length ? b.statuses : STATUSES).reduce((a, s) => a + byStatus[s], 0);
 
   // The page as rowids first, so only its rows are read in full.
   const where = [...b.where, ...(b.statusWhere ? [b.statusWhere] : [])];
   // bm25 is lower for better matches, so "most relevant first" sorts it ascending.
   const order = b.sort === "relevance" ? `h.score ${b.desc ? "ASC" : "DESC"}` : `${ORDER[b.sort]} ${b.desc ? "DESC" : "ASC"}`;
-  const ids = (db.prepare(from(b.sort === "relevance").replace("%COLS", "i.rowid AS rid") + whereSql(where) +
+  // Newest first within a state: main.items with its index named, because through the
+  // scoping view the planner walks the repo index and sorts every open item.
+  const byUpdated = !b.text && b.sort === "updated" && b.params.state !== undefined;
+  const pageFrom = byUpdated
+    ? from(false).replace("FROM items i", "FROM main.items AS i INDEXED BY items_state_updated")
+    : from(b.sort === "relevance");
+  const pageWhere = byUpdated ? [...where, "i.repo IN (SELECT name FROM main.tracked_repos)"] : where;
+  const ids = (db.prepare(pageFrom.replace("%COLS", "i.rowid AS rid") + whereSql(pageWhere) +
     ` ORDER BY ${order}, i.repo, i.number DESC LIMIT :limit OFFSET :offset`).all({ ...b.params, limit, offset }) as { rid: number }[]).map((r) => r.rid);
   const byId = new Map((ids.length ? db.prepare(`SELECT i.rowid AS rid, i.repo, i.number, i.kind, i.state, i.title, i.author,
       i.created_at, i.updated_at, i.comments_count, s.status, s.label, s.source, s.top, s.jev_label, s.haiku_label, s.flags
@@ -244,7 +273,7 @@ function stagesOf(db: DatabaseSync, rows: { repo: string; number: number }[]): M
   const out = new Map<string, string>();
   if (!rows.length) return out;
   const pairs = rows.map(() => "(?, ?)").join(",");
-  const got = db.prepare(`WITH ${latestCte()} SELECT repo, number, stage FROM latest WHERE (repo, number) IN (VALUES ${pairs})`)
+  const got = db.prepare(`SELECT repo, number, stage FROM main.item_stage WHERE (repo, number) IN (VALUES ${pairs})`)
     .all(...rows.flatMap((r) => [r.repo, r.number])) as { repo: string; number: number; stage: string }[];
   for (const g of got) out.set(`${g.repo}#${g.number}`, g.stage);
   return out;

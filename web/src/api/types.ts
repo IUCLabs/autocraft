@@ -336,8 +336,10 @@ export interface DecisionFilter {
   mine?: boolean;
   /** "opinions": open decisions that have at least one opinion */
   status?: "open" | "opinions" | "answered";
-  /** page size (server default 100, at most 500) and offset; `total` counts every match */
+  /** page size (server default 100, at most 500); `total` counts every match */
   limit?: number;
+  /** the `next` of the previous page */
+  after?: string;
   offset?: number;
 }
 
@@ -346,6 +348,8 @@ export interface DecisionList {
   total: number;
   byKind: Partial<Record<DecisionKind, number>>;
   oldestAskedAt: string | null;
+  /** Cursor for the next page (`after`), or null on the last one. */
+  next: string | null;
 }
 
 export interface AnswerInput {
@@ -800,14 +804,21 @@ export interface QueueRow {
 
 export interface QueueFilter {
   repo?: RepoName;
+  /** "merged" lists merged PRs; without a state they are left out. */
   state?: QueueState;
+  /** page size (server default 100, at most 500) and the `next` cursor of the previous page */
+  limit?: number;
+  after?: string;
 }
 
 export interface QueueList {
   rows: QueueRow[];
   /** Per state, for the repo filter (ignores the state filter). */
   counts: Record<QueueState, number>;
+  /** Rows matching the filters, every page. */
   total: number;
+  /** Cursor for the next page (`after`), or null on the last one. */
+  next: string | null;
 }
 
 /** A search hit ranked by embedding similarity (`/api/similar`, `/api/search?mode=semantic`). */

@@ -3,11 +3,8 @@ import type { DatabaseSync } from "node:sqlite";
 import { latestRun, settledTable } from "../../classify/settled.ts";
 import { getRule, STATS_SQL, TIER_LABEL, TIER_SQL, type Tier } from "../../whitelist.ts";
 
-// Latest stage row per item (latest wins; rowid breaks ties at the same time).
-export const LATEST_SQL = `latest AS (
-  SELECT repo, number, stage FROM (
-    SELECT repo, number, stage, ROW_NUMBER() OVER (PARTITION BY repo, number ORDER BY at DESC, rowid DESC) AS rn FROM stages %W
-  ) WHERE rn = 1)`;
+// Latest stage per item, from the item_stage table the stages trigger maintains.
+export const LATEST_SQL = `latest AS (SELECT repo, number, stage, reviewed FROM main.item_stage %W)`;
 
 export const latestCte = (repo?: string): string => LATEST_SQL.replace("%W", repo ? "WHERE repo = :repo" : "");
 
@@ -19,6 +16,12 @@ export function trackingStart(db: DatabaseSync): string {
   const r = db.prepare("SELECT value FROM main.settings WHERE key = 'tracking_started_at'").get() as { value: string } | undefined;
   return r?.value ?? new Date().toISOString();
 }
+
+// Closed items by date: main.items with its index named, because through the
+// scoping view the planner walks the repo index instead of the closed_at range.
+export const CLOSED_ITEMS = "main.items AS i INDEXED BY items_closed";
+export const CREATED_ITEMS = "main.items AS i INDEXED BY items_created";
+export const TRACKED = "repo IN (SELECT name FROM main.tracked_repos)";
 
 const p = (repo?: string, extra: Record<string, string | number> = {}): Record<string, string | number> => (repo ? { repo, ...extra } : extra);
 
@@ -33,8 +36,8 @@ export function funnelByRepo(db: DatabaseSync, repo?: string): FunnelRow[] {
   return db.prepare(`WITH ${latestCte(repo)}
     SELECT i.repo, COUNT(*) AS open,
       SUM(st.status = 'settled') AS classified, SUM(st.status = 'waiting') AS second_opinion, SUM(st.status = 'disagree') AS disagreement,
-      SUM(EXISTS (SELECT 1 FROM stages s WHERE s.repo = i.repo AND s.number = i.number AND s.stage = 'reviewed')
-       OR EXISTS (SELECT 1 FROM classifications c WHERE c.repo = i.repo AND c.number = i.number AND c.classifier = 'sonnet')) AS reviewed,
+      SUM(COALESCE(l.reviewed, 0)
+       OR EXISTS (SELECT 1 FROM main.classifications c WHERE c.repo = i.repo AND c.number = i.number AND c.classifier = 'sonnet')) AS reviewed,
       SUM(l.stage = 'take') AS take, SUM(l.stage = 'hold') AS hold, SUM(l.stage = 'close') AS close,
       SUM(l.stage = 'needs-decision') AS needs_decision, SUM(l.stage = 'batched') AS batched
     FROM items i LEFT JOIN latest l ON l.repo = i.repo AND l.number = i.number
@@ -51,8 +54,8 @@ export type DoneRow = { repo: string; merged_pipeline: number; closed_pipeline: 
 // Done since tracking began. Merged PRs carry closed_at too, so one range covers both.
 export function doneByRepo(db: DatabaseSync, start: string, repo?: string): DoneRow[] {
   return db.prepare(`WITH ${latestCte(repo)}, d AS (
-      SELECT i.repo, i.state, l.stage FROM items i LEFT JOIN latest l ON l.repo = i.repo AND l.number = i.number
-      WHERE i.closed_at >= :start AND i.state <> 'OPEN' ${repo ? "AND i.repo = :repo" : ""})
+      SELECT i.repo, i.state, l.stage FROM ${CLOSED_ITEMS} LEFT JOIN latest l ON l.repo = i.repo AND l.number = i.number
+      WHERE i.closed_at >= :start AND i.state <> 'OPEN' AND i.${TRACKED} ${repo ? "AND i.repo = :repo" : ""})
     SELECT repo,
       SUM(state = 'MERGED' AND stage = 'merged') AS merged_pipeline,
       SUM(state = 'CLOSED' AND stage IN ('closed', 'fixed-by-us')) AS closed_pipeline,
@@ -81,8 +84,8 @@ export function trend(db: DatabaseSync, start: string, openNow: Map<string, numb
     if (d >= today || days.length > 365) break;
   }
   const r = repo ? "AND repo = :repo" : "";
-  const created = db.prepare(`SELECT repo, substr(created_at, 1, 10) AS d, COUNT(*) AS n FROM items WHERE created_at >= :start ${r} GROUP BY repo, d`).all(p(repo, { start })) as { repo: string; d: string; n: number }[];
-  const closed = db.prepare(`SELECT repo, substr(closed_at, 1, 10) AS d, COUNT(*) AS n FROM items WHERE closed_at >= :start AND state <> 'OPEN' ${r} GROUP BY repo, d`).all(p(repo, { start })) as { repo: string; d: string; n: number }[];
+  const created = db.prepare(`SELECT repo, substr(created_at, 1, 10) AS d, COUNT(*) AS n FROM ${CREATED_ITEMS} WHERE created_at >= :start AND ${TRACKED} ${r} GROUP BY repo, d`).all(p(repo, { start })) as { repo: string; d: string; n: number }[];
+  const closed = db.prepare(`SELECT repo, substr(closed_at, 1, 10) AS d, COUNT(*) AS n FROM ${CLOSED_ITEMS} WHERE closed_at >= :start AND state <> 'OPEN' AND ${TRACKED} ${r} GROUP BY repo, d`).all(p(repo, { start })) as { repo: string; d: string; n: number }[];
   const delta = new Map<string, Map<string, number>>();
   const add = (repo: string, d: string, n: number) => {
     if (!delta.has(repo)) delta.set(repo, new Map());

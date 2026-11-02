@@ -7,7 +7,7 @@ import { Kbd } from "../ui/Kbd";
 import { RefLink } from "../ui/RefLink";
 import { cn } from "../ui/cn";
 
-const SEMANTIC_KEY = "craft-triage:search-semantic";
+const SEMANTIC_KEY = "autocraft:search-semantic";
 const isRefQuery = (q: string) => /^([A-Za-z0-9._-]+)?#?\d+$/.test(q.trim());
 
 /** Global search: `repo#123`, `#123`, a title fragment or an author login; or, with the meaning toggle (Alt+M), by embedding similarity. */

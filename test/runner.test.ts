@@ -12,7 +12,8 @@ process.env.CRAFT_AUTO_EXTRA_STEPS = fileURLToPath(new URL("./runner-steps.ts", 
 
 const { connect } = await import("../src/db.ts");
 const { enqueue, getJob, jobDetail, requestCancel } = await import("../src/runner/jobs.ts");
-const { Runner } = await import("../src/runner/runner.ts");
+const { DEFAULT_MAX_JOBS, Runner } = await import("../src/runner/runner.ts");
+const { STEPS } = await import("../src/runner/steps.ts");
 const { FAKE_TOKEN } = await import("./runner-steps.ts");
 const { dueItems, inputHash } = await import("../src/runner/classify.ts");
 
@@ -88,6 +89,16 @@ describe("runner", () => {
     await until(() => state(a2.id) === "done");
     assert.ok(getJob(db, a2.id).startedAt! >= getJob(db, a1.id).endedAt!, "the second job of group a started after the first ended");
     await runner.idle();
+  });
+
+  test("each pipeline stage has its own group, so stages run together and a step never runs twice at once", () => {
+    const g = (n: string) => STEPS.find((s) => s.name === n)!.group;
+    const stages = ["classify-new", "decide", "review-batch", "labels-apply", "checks", "embed"].map(g);
+    assert.equal(new Set(stages).size, stages.length);
+    assert.equal(g("classify-new"), g("classify-all"));
+    assert.equal(g("labels-ensure"), g("labels-apply"));
+    assert.equal(g("labels-apply"), g("merge"));
+    assert.ok(DEFAULT_MAX_JOBS >= new Set(STEPS.map((s) => s.group)).size);
   });
 
   test("classify-new takes items without a verdict and items whose text changed; a pass takes only the first", () => {

@@ -1,7 +1,7 @@
 // Starting a model call: picks the account (Claude) and records the agent run,
 // in one transaction so two job processes cannot both take the last slot.
 import type { DatabaseSync } from "node:sqlite";
-import { chooseAccount } from "./accounts.ts";
+import { chooseAccount, freeSlots, type Choice } from "./accounts.ts";
 import { insertRun, type RunStart } from "./runs.ts";
 import { scrubError } from "./text.ts";
 
@@ -29,33 +29,60 @@ export class CancelledError extends Error {}
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
+/** Calls in this process that are waiting for a slot. */
+let waiting = 0;
+
+/** How many more Claude calls this process may start now: free slots on the enabled accounts, minus calls already waiting for one. */
+export function claudeRoom(db: DatabaseSync): number {
+  return Math.max(0, freeSlots(db) - waiting);
+}
+
 export type Started = { runId: number; configDir: string; accountId: string };
 
-/** Waits for an enabled account with a free slot and headroom, then records the running agent run on it. */
-export async function startClaudeRun(db: DatabaseSync, s: Omit<RunStart, "accountId" | "jobId" | "step" | "stage">, log: (line: string) => void = console.log): Promise<Started> {
-  let lastLog = 0;
-  for (;;) {
-    db.exec("BEGIN IMMEDIATE");
-    try {
-      const c = chooseAccount(db);
-      if ("account" in c) {
-        const runId = insertRun(db, { ...s, ...stepOf(s.promptId), accountId: c.account.id });
-        db.exec("COMMIT");
-        return { runId, configDir: c.account.configDir, accountId: c.account.id };
-      }
+type RunInput = Omit<RunStart, "accountId" | "jobId" | "step" | "stage">;
+
+/**
+ * One attempt to take a slot: picks the account and records the running agent run
+ * in a single BEGIN IMMEDIATE transaction, so job processes that choose at the
+ * same time cannot both take the last slot. Returns why it could not, if it could not.
+ */
+export function tryStartClaudeRun(db: DatabaseSync, s: RunInput): Started | Exclude<Choice, { account: unknown }> {
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const c = chooseAccount(db);
+    if (!("account" in c)) {
       db.exec("COMMIT");
+      return c;
+    }
+    const runId = insertRun(db, { ...s, ...stepOf(s.promptId), accountId: c.account.id });
+    db.exec("COMMIT");
+    return { runId, configDir: c.account.configDir, accountId: c.account.id };
+  } catch (e) {
+    try { db.exec("ROLLBACK"); } catch { /* already committed */ }
+    throw e;
+  }
+}
+
+/** Waits for an enabled account with a free slot and headroom, then records the running agent run on it. */
+export async function startClaudeRun(db: DatabaseSync, s: RunInput, log: (line: string) => void = console.log): Promise<Started> {
+  let lastLog = 0;
+  // Counted until the claim, and decremented in the same synchronous step as it, so claudeRoom() is exact right after a call starts.
+  waiting++;
+  try {
+    for (;;) {
+      const c = tryStartClaudeRun(db, s);
+      if ("runId" in c) return c;
       if ("none" in c) throw new NoAccountError("no Claude account is enabled; an operator enables one on the Accounts page or with `craft-auto accounts set <id> --enabled yes`");
       if (Date.now() - lastLog >= allocation.logEveryMs) {
         lastLog = Date.now();
         log(`waiting for a Claude account: ${scrubError(c.wait)}`);
       }
-    } catch (e) {
-      try { db.exec("ROLLBACK"); } catch { /* already committed */ }
-      throw e;
+      if (context?.cancelled()) throw new CancelledError("cancelled while waiting for a Claude account");
+      await sleep(allocation.pollMs);
+      if (context?.cancelled()) throw new CancelledError("cancelled while waiting for a Claude account");
     }
-    if (context?.cancelled()) throw new CancelledError("cancelled while waiting for a Claude account");
-    await sleep(allocation.pollMs);
-    if (context?.cancelled()) throw new CancelledError("cancelled while waiting for a Claude account");
+  } finally {
+    waiting--;
   }
 }
 

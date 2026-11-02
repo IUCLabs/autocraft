@@ -1,6 +1,7 @@
 // The per-repo flowchart summary (table flow_summary): refreshed by the runner
 // for repos whose data changed, read and added up by GET /api/flow.
 import type { DatabaseSync } from "node:sqlite";
+import { latestRun } from "../classify/settled.ts";
 import { trackedNames } from "../repos.ts";
 import { countAll, type Counts } from "./count.ts";
 
@@ -67,8 +68,8 @@ export function markChanged(db: DatabaseSync): number {
 }
 
 /** Counts one repo and stores its row. */
-export function countRepo(db: DatabaseSync, repo: string, now = Date.now()): Counts {
-  const counts = countAll(db, repo, now).counts;
+export function countRepo(db: DatabaseSync, repo: string, now = Date.now(), run: string | null = latestRun(db)): Counts {
+  const counts = countAll(db, repo, now, run).counts;
   db.prepare(`INSERT INTO main.flow_summary (repo, counts, counted_at, stale, decisions_sig) VALUES (?, ?, ?, 0, ?)
     ON CONFLICT (repo) DO UPDATE SET counts = excluded.counts, counted_at = excluded.counted_at, stale = 0, decisions_sig = excluded.decisions_sig`)
     .run(repo, JSON.stringify(counts), new Date(now).toISOString(), decisionSigs(db).get(repo) ?? null);
@@ -91,9 +92,10 @@ export function refreshSummary(db: DatabaseSync, budgetMs = 1500): string[] {
     .filter((x) => !x.row || x.row.stale || x.row.counted_at < old)
     .sort((a, b) => (a.row ? (a.row.stale ? 1 : 2) : 0) - (b.row ? (b.row.stale ? 1 : 2) : 0) || (a.row?.counted_at ?? "").localeCompare(b.row?.counted_at ?? ""));
   const done: string[] = [];
+  const run = latestRun(db);
   for (const { repo } of due) {
     if (done.length && Date.now() - start > budgetMs) break;
-    countRepo(db, repo);
+    countRepo(db, repo, Date.now(), run);
     done.push(repo);
   }
   return done;

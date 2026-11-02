@@ -14,7 +14,7 @@ Local mirror of every storytold issue and PR, the triage pipeline's state, and t
 
 ### Sync
 
-`craft-auto sync` (every minute) runs one org-wide GitHub search for items updated since the newest `updatedAt` stored (`org_high_water`) minus 60 seconds, up to the run's start. The search returns at most 1,000 results, so a window with more matches is cut into `updated:A..B` slices, halving until each fits; there is no per-repo fallback. `org_high_water` moves to the newest `updatedAt` seen, not to the start time. Items of untracked repos are dropped before anything else is done with them. Per-repo passes run only for the first sync and for `--per-repo`, `--all` and `--repo`.
+`craft-auto sync` (every minute) runs one org-wide GitHub search for items updated since the newest `updatedAt` stored (`org_high_water`) minus 120 seconds, up to the run's start. The search returns at most 1,000 results, so a window with more matches is cut into `updated:A..B` slices, halving until each fits; there is no per-repo fallback. GitHub's search index can lag several minutes, so once an hour (`search_catchup_at`) the same search also re-reads the 30 minutes before `org_high_water`, sliced the same way. `org_high_water` moves to the newest `updatedAt` seen, not to the start time. Items of untracked repos are dropped before anything else is done with them. Per-repo passes run only for the first sync and for `--per-repo`, `--all` and `--repo`.
 
 `craft-auto sync --full` re-reads every item of every tracked repo. It has its own lock (`sync-full-<db>.lock`), so the minute sync keeps running; before each request it waits while a minute sync runs, and it sleeps until the rate limit resets when fewer than 2,500 points are left (`--keep N`). It records the last finished repo (`full_sync_cursor` in `settings`) and a stopped run continues after it; `--restart` starts over.
 
@@ -91,7 +91,7 @@ It reads the same variables as the CLI (`CRAFT_AUTO_DB` and the rest), plus:
 | Variable | Meaning |
 |---|---|
 | `CRAFT_AUTO_RUNNER_LOGS` | Directory of the per-job log files. Default `~/.cache/craft-automation-logs/jobs`. The dashboard reads each job's log from the path recorded in its row, so it must run as a user who can read this directory. |
-| `CRAFT_AUTO_RUNNER_JOBS` | Most jobs running at once. Default 2; jobs of one concurrency group always run one at a time. |
+| `CRAFT_AUTO_RUNNER_JOBS` | Most jobs running at once. Default 8, enough for every concurrency group to have a job running; jobs of one group always run one at a time. |
 | `CRAFT_AUTO_RUNNER_POLL_MS` | Poll interval. Default 2000. |
 | `CRAFT_AUTO_LOCK_DIR` | Directory of the lock file, shared with `sync`. Default `~/.cache/craft-automation-logs`. |
 | `CRAFT_AUTO_EXTRA_STEPS` | A module exporting `steps: StepDef[]` that is added to the step list, for tests and development (`test/runner-steps.ts` has fake steps). Set it for the dashboard and the runner alike, or not at all. |
@@ -114,7 +114,7 @@ Claude calls run under accounts that an operator enabled. Which accounts exist o
 
 Example: `CRAFT_AUTO_ACCOUNTS=/path/to/accounts.json`, `CRAFT_AUTO_USAGE_DIR=/path/to/usage`, `CRAFT_AUTO_USAGE_REFRESH="/path/to/refresh-usage --all"`.
 
-Each account in the file gets a row (disabled, labelled with its id) the first time anything lists accounts. Operators set the label, the switch and the number of calls at once on the Accounts page or with `craft-auto accounts list` and `craft-auto accounts set <id> [--label X] [--enabled yes|no] [--max-concurrent N]` (recorded as `cli`). Allocation and pauses are described in [docs/pipeline.md](docs/pipeline.md#claude-accounts-and-agent-runs).
+Each account in the file gets a row (disabled, labelled with its id) the first time anything lists accounts. Operators set the label, the switch and the number of calls at once on the Accounts page or with `craft-auto accounts list` and `craft-auto accounts set <id> [--label X] [--enabled yes|no] [--max-concurrent N]` (1 to 100; recorded as `cli`). Jev has no accounts; its calls at once are the `jev_parallel` setting (default 4), changed with `craft-auto accounts jev [N]`. Claude calls in flight are limited only by the accounts' free slots. Allocation and pauses are described in [docs/pipeline.md](docs/pipeline.md#claude-accounts-and-agent-runs).
 
 ### Adding a step
 
@@ -127,7 +127,7 @@ A step is one entry in `STEPS` in `src/runner/steps.ts`:
   description: "Sonnet reviews the open PRs of one repo that are marked for review.",
   stage: 5,                      // docs/pipeline.md stage
   requires: "operator",
-  group: "models",               // one job of a group at a time
+  group: "review",               // one job of a group at a time; groups: classify, decide, review, github-write, github-read, local
   params: [
     { name: "repo", label: "Repo", kind: "repo", required: true },
     { name: "limit", label: "At most", kind: "int", min: 1, max: 50, default: 10 },

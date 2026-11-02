@@ -43,11 +43,18 @@ export class Ctx {
   private answers?: Map<string, string>;
   readonly db: DatabaseSync;
   readonly repo: string | null;
-  constructor(db: DatabaseSync, repo: string | null, now = Date.now()) {
+  /** The classification run every counter uses, resolved once. */
+  readonly run: string | null;
+  private jev?: string | null;
+  constructor(db: DatabaseSync, repo: string | null, now = Date.now(), run: string | null = latestRun(db)) {
+    this.run = run;
     this.db = db;
     this.repo = repo;
     this.since = new Date(now - DAY).toISOString();
     this.rp = repo ? { repo } : {};
+  }
+  jevRun(): string | null {
+    return this.jev !== undefined ? this.jev : (this.jev = latestJevRun(this.db));
   }
   andRepo(col = "repo"): string {
     return this.repo ? `AND ${col} = :repo` : "";
@@ -61,7 +68,7 @@ export class Ctx {
   /** Every open item with its settled status in the current run. */
   open(): OpenRow[] {
     if (!this.openRows) {
-      settledTable(this.db, latestRun(this.db));
+      settledTable(this.db, this.run);
       this.openRows = this.db.prepare(`SELECT i.repo, i.number, i.kind, s.status FROM items i
         LEFT JOIN temp.item_settled s ON s.repo = i.repo AND s.number = i.number
         WHERE i.state = 'OPEN' ${this.andRepo("i.repo")}`).all(this.rp) as OpenRow[];
@@ -100,7 +107,7 @@ function synced(c: Ctx): NodeCount {
 function classify(c: Ctx): NodeCount {
   const by: Counts = { settled: 0, waiting: 0, disagree: 0, unclassified: 0 };
   for (const r of c.open()) by[r.status ?? "unclassified"]!++;
-  const run = latestRun(c.db);
+  const run = c.run;
   const recent = run ? c.n(`SELECT COUNT(*) AS n FROM main.classifications INDEXED BY classifications_run WHERE run_id = :run AND classifier = 'jev' AND at >= :since
       AND repo IN (SELECT name FROM main.tracked_repos) ${c.andRepo()}`, { run, since: c.since }) : 0;
   return {
@@ -132,7 +139,7 @@ function decide(c: Ctx): NodeCount {
   }
   const byAnswer = new Map<string, Refs>(SCOPE_ANSWERS.map((a) => [a, new Set()]));
   for (const [r, a] of c.scopeAnswers()) if (openRefs.has(r) && !waiting.has(r) && c.inRepo(r)) byAnswer.get(a)?.add(r);
-  const jevRun = latestJevRun(c.db);
+  const jevRun = c.jevRun();
   const notAsked: Refs = new Set(jevRun ? decideCandidates(c.db, jevRun, c.repo ? [c.repo] : undefined).map(ref) : []);
   const members = new Map<string, Refs>([["decide.not-asked", notAsked], ["decide.open", waiting], ...[...byAnswer].map(([k, v]) => [`decide.${k}`, v] as [string, Refs])]);
   const total = [...members.values()].reduce((a, s) => a + s.size, 0);
@@ -147,7 +154,7 @@ function decide(c: Ctx): NodeCount {
 }
 
 function review(c: Ctx): NodeCount {
-  const candidates = candidateRefs(c.db, c.repo ?? undefined);
+  const candidates = candidateRefs(c.db, c.repo ?? undefined, c.run);
   const last = c.db.prepare(`WITH last AS (SELECT repo, number, verdict, ROW_NUMBER() OVER (PARTITION BY repo, number ORDER BY at DESC, rowid DESC) AS k
       FROM reviews WHERE 1 ${c.andRepo()})
     SELECT l.repo, l.number, l.verdict FROM last l JOIN items i ON i.repo = l.repo AND i.number = l.number
@@ -173,7 +180,7 @@ function review(c: Ctx): NodeCount {
 
 function merge(c: Ctx): NodeCount {
   const tracked = new Set(trackedNames(c.db));
-  const queue = buildQueue(c.db, c.repo ? { repo: c.repo } : {}).filter((e) => tracked.has(e.repo));
+  const queue = buildQueue(c.db, { ...(c.repo ? { repo: c.repo } : {}), run: c.run }).filter((e) => tracked.has(e.repo));
   const st = (s: QueueState) => queue.filter((e) => e.state === s).length;
   const approvedRepos = new Set([...new Set(queue.map((e) => e.repo))].filter((r) => mergeApprovalOf(c.db, r)));
   const ready = queue.filter(eligible);
@@ -220,8 +227,8 @@ export const COUNTERS = { synced, classify, decide, labels, review, merge } as c
 export type CountedNode = keyof typeof COUNTERS;
 
 /** Every count for one repo, or for every tracked repo when `repo` is null. */
-export function countAll(db: DatabaseSync, repo: string | null, now = Date.now()): NodeCount {
-  const c = new Ctx(db, repo, now);
+export function countAll(db: DatabaseSync, repo: string | null, now = Date.now(), run: string | null = latestRun(db)): NodeCount {
+  const c = new Ctx(db, repo, now, run);
   const out: NodeCount = { counts: {}, members: new Map() };
   for (const f of Object.values(COUNTERS)) {
     const r = f(c);

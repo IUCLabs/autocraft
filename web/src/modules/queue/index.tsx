@@ -1,9 +1,10 @@
 // Merge queue: every PR with a take or take-fix review at its current head, and
 // what it waits on. Read-only; merges are started from the Pipeline page.
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { GitMergeIcon } from "lucide-react";
-import { useQuery } from "../../api/client";
-import type { QueueFilter, QueueRow, QueueState, Tier } from "../../api/types";
+import { useApi, useQuery } from "../../api/client";
+import type { QueueFilter, QueueList, QueueRow, QueueState, Tier } from "../../api/types";
 import type { FeatureModule, ViewProps } from "../../registry/types";
 import { Badge, type Tone } from "../../ui/Badge";
 import { RefLink } from "../../ui/RefLink";
@@ -38,12 +39,41 @@ function useFilter() {
   return { filter, update };
 }
 
+// The first page for a filter, then more on request: pages append, a new filter starts over.
+function usePagedQueue(filter: QueueFilter) {
+  const api = useApi();
+  const key = JSON.stringify(filter);
+  const [data, setData] = useState<QueueList>();
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<Error>();
+  const seq = useRef(0);
+  const load = useCallback(
+    (after: string | undefined) => {
+      const mine = ++seq.current;
+      setLoading(true);
+      api.queue({ ...(JSON.parse(key) as QueueFilter), after }).then(
+        (p) => {
+          if (mine !== seq.current) return;
+          setData((d) => (after && d ? { ...p, rows: [...d.rows, ...p.rows] } : p));
+          setError(undefined);
+          setLoading(false);
+        },
+        (e: Error) => mine === seq.current && (setError(e), setLoading(false)),
+      );
+    },
+    [api, key],
+  );
+  useEffect(() => load(undefined), [load]);
+  return { data, error, loading, loadMore: () => data?.next && load(data.next) };
+}
+
 function QueueView(_: ViewProps) {
   const { filter, update } = useFilter();
-  const { data, error, loading } = useQuery(`queue:${JSON.stringify(filter)}`, (api) => api.queue(filter));
+  const { data, error, loading, loadMore } = usePagedQueue(filter);
   const { data: repos } = useQuery("repos", (api) => api.repos());
   const phone = useIsPhone();
-  const all = data ? Object.values(data.counts).reduce((a, b) => a + b, 0) : undefined;
+  // Merged PRs are listed only under their own state, so "any state" leaves them out.
+  const all = data ? Object.entries(data.counts).reduce((a, [k, n]) => a + (k === "merged" ? 0 : n), 0) : undefined;
   const mergeable = data ? data.counts.ready + data.counts["decision-answered-merge"] : undefined;
 
   return (
@@ -93,6 +123,16 @@ function QueueView(_: ViewProps) {
         <ErrorLine error={error?.message} className="p-4" />
         {data && data.rows.length === 0 && <p className="px-4 py-6 text-sm text-ink/50">No PR in the queue matches these filters.</p>}
         {data && data.rows.length > 0 && (phone ? <Cards rows={data.rows} /> : <Table rows={data.rows} />)}
+        {data?.next && (
+          <div className="flex items-center justify-between gap-3 border-t border-line px-4 py-2.5 text-xs text-ink/55">
+            <span className="num">
+              {num(data.rows.length)} of {num(data.total)}
+            </span>
+            <button className="chip max-md:h-11" disabled={loading} onClick={loadMore}>
+              {loading ? "Loading…" : "Show more"}
+            </button>
+          </div>
+        )}
       </Block>
     </Page>
   );

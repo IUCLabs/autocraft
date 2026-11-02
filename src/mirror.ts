@@ -296,7 +296,11 @@ export function selectSyncRepos(listed: string[], tracked: string[], opts: { onl
   return opts.all ? listed : listed.filter((n) => tracked.includes(n));
 }
 
-const SEARCH_OVERLAP_MS = 60 * 1000;
+const SEARCH_OVERLAP_MS = 2 * 60 * 1000;
+// GitHub's search index can lag several minutes, so once an hour the search also re-reads the
+// half hour before the high water.
+const CATCHUP_EVERY_MS = 60 * 60 * 1000;
+const CATCHUP_SPAN_MS = 30 * 60 * 1000;
 const SEARCH_PAGE = 20;
 const SEARCH_CAP = 1000;
 // Rate-limit points a full re-sync leaves for the minute sync.
@@ -542,7 +546,14 @@ export async function runSync(db: DatabaseSync, client: Querier, opts: SyncOpts,
       const r = await syncBySearch(db, client, tracked, searchSince(orgHigh as string), started);
       mode = "search";
       items = r.count;
-      if (r.newest && r.newest > (orgHigh as string)) setSetting(db, "org_high_water", r.newest);
+      const high = r.newest && r.newest > (orgHigh as string) ? r.newest : (orgHigh as string);
+      if (high !== orgHigh) setSetting(db, "org_high_water", high);
+      const last = getSetting(db, "search_catchup_at");
+      if (!last || now.getTime() - new Date(last).getTime() >= CATCHUP_EVERY_MS) {
+        const c = await syncBySearch(db, client, tracked, iso(new Date(new Date(high).getTime() - CATCHUP_SPAN_MS)), iso(new Date(high)));
+        items += c.count;
+        setSetting(db, "search_catchup_at", started);
+      }
       console.log(`search: ${r.slices} slice${r.slices === 1 ? "" : "s"}`);
       const at = getSetting(db, "repos_refreshed_at");
       if (!at || now.getTime() - new Date(at).getTime() >= META_REFRESH_MS) await refreshRepoList(db, client);
