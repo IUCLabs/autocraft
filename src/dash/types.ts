@@ -1,5 +1,5 @@
 // The contract between the server (auth, sessions, routing: src/dash/server/)
-// and the pages (src/dash/pages/). The server authenticates every request and
+// and the API handlers (src/dash/api/). The server authenticates every request and
 // checks CSRF on every POST before a handler runs.
 import type { DatabaseSync } from "node:sqlite";
 
@@ -22,7 +22,7 @@ export type Req = {
   form: URLSearchParams;            // POST body (application/x-www-form-urlencoded)
   json?: unknown;                   // POST body of an /api/ route (application/json)
   user: User;
-  csrf: string;                     // put in every form as <input type=hidden name=csrf>
+  csrf: string;                     // the session's CSRF token
   nonce: string;                    // put on every <script> and <style> as nonce="..."
 };
 
@@ -36,7 +36,7 @@ export type Res = {
 
 export type Route = {
   method: "GET" | "POST";
-  pattern: string;                  // "/", "/repo/:name", "/item/:repo/:n"
+  pattern: string;                  // "/api/items/:repo/:n"
   operator?: boolean;               // server returns 403 unless user.role is operator
   handler: (db: DatabaseSync, req: Req) => Res | Promise<Res>;
 };

@@ -171,12 +171,6 @@ function RailLink({ entry, open }: { entry: NavEntry; open: boolean }) {
       {!open && count !== undefined && count > 0 && <span className="absolute right-1 top-1 size-1.5 rounded-full bg-accent" />}
     </>
   );
-  if (entry.page)
-    return (
-      <a href={entry.to} title={open ? undefined : entry.label} className={cls(false)}>
-        {inner}
-      </a>
-    );
   return (
     <NavLink to={entry.to} title={open ? undefined : entry.label} className={({ isActive }) => cls(isActive)}>
       {inner}
@@ -203,15 +197,9 @@ function PhoneTabs({ nav }: { nav: NavEntry[] }) {
           <DropdownMenu.Content side="top" align="end" sideOffset={4} className={menuCls}>
             {rest.map((n) => (
               <DropdownMenu.Item key={n.to} asChild>
-                {n.page ? (
-                  <a href={n.to} className={cn(itemCls, "h-11")}>
-                    <n.icon className="text-ink/55" /> {n.label}
-                  </a>
-                ) : (
-                  <NavLink to={n.to} className={cn(itemCls, "h-11")}>
-                    <n.icon className="text-ink/55" /> {n.label}
-                  </NavLink>
-                )}
+                <NavLink to={n.to} className={cn(itemCls, "h-11")}>
+                  <n.icon className="text-ink/55" /> {n.label}
+                </NavLink>
               </DropdownMenu.Item>
             ))}
           </DropdownMenu.Content>
@@ -330,7 +318,7 @@ function UserMenu({ theme, setTheme, onHelp }: { theme: ThemePref; setTheme: (t:
               {adminLinks.map((m) => {
                 const Icon = m.nav!.icon;
                 return (
-                  <DropdownMenu.Item key={m.id} onSelect={() => (m.nav!.page ? location.assign(m.nav!.to) : navigate(m.nav!.to))} className={itemCls}>
+                  <DropdownMenu.Item key={m.id} onSelect={() => navigate(m.nav!.to)} className={itemCls}>
                     <Icon className="text-ink/55" /> {m.nav!.label}
                   </DropdownMenu.Item>
                 );

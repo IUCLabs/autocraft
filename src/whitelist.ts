@@ -25,6 +25,8 @@ export type Contributor = {
   repos: string;           // comma-separated
   override: "allow" | "deny" | null;
   note: string | null;     // private
+  override_by: string | null;
+  override_at: string | null;
   tier: Tier;
 };
 
@@ -77,10 +79,10 @@ export function contributors(db: DatabaseSync, opts: { repo?: string; login?: st
     r AS (SELECT author, GROUP_CONCAT(DISTINCT repo) AS repos FROM items WHERE kind = 'pr' AND author IS NOT NULL ${where} GROUP BY author),
     j AS (
       SELECT r.author AS login, COALESCE(s.merged,0) AS merged, COALESCE(s.closed,0) AS closed, COALESCE(s.open,0) AS open,
-             s.last_merge, r.repos, o.status AS override, o.note
+             s.last_merge, r.repos, o.status AS override, o.note, o.by AS override_by, o.at AS override_at
       FROM r LEFT JOIN s ON s.login = r.author LEFT JOIN whitelist_overrides o ON o.login = r.author
       UNION ALL
-      SELECT o.login, 0, 0, 0, NULL, '', o.status, o.note FROM whitelist_overrides o
+      SELECT o.login, 0, 0, 0, NULL, '', o.status, o.note, o.by, o.at FROM whitelist_overrides o
       WHERE NOT EXISTS (SELECT 1 FROM items i WHERE i.kind = 'pr' AND i.author = o.login) ${opts.repo ? "AND 0" : ""} ${opts.login ? "AND o.login = :login" : ""}
     )
     SELECT j.*, ${TIER_SQL} AS tier FROM j`).all(params) as Omit<Contributor, "rate">[];

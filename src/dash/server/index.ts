@@ -1,5 +1,5 @@
 // HTTP server: sign-in, sessions, CSRF, rate limits, security headers and
-// routing for the dashboard. Pages only ever see authenticated requests.
+// routing for the dashboard. Handlers only ever see authenticated requests.
 import { readFile } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
@@ -43,7 +43,7 @@ export type AppOptions = {
   config: Config;
   db: DatabaseSync;
   provider?: Provider;
-  routes?: Route[];          // default: the pages plus the Access page
+  routes?: Route[];          // default: the JSON API
   images?: ImageProxy;       // default: fetches with global fetch and the bot's gh token
 };
 
@@ -51,10 +51,8 @@ type Compiled = Route & { parts: string[] };
 
 
 export async function defaultRoutes(): Promise<Route[]> {
-  const { accessRoutes } = await import("../access-page.ts");
   const { apiRoutes } = await import("../api/index.ts");
-  const { routes: pages } = await import("../pages/index.ts");
-  return [...accessRoutes, ...apiRoutes(), ...pages];
+  return apiRoutes();
 }
 
 function compile(routes: Route[]): Compiled[] {
@@ -336,34 +334,9 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
       }
       if (url.pathname.startsWith("/api/")) return await handleApi(req, res, url, nonce, session);
       if (url.pathname === "/img") return await sendImage(req, res, url, session);
-      if (method !== "GET" && method !== "POST") return send(res, nonce, { status: 405, json: { error: "method not allowed" } });
-
-      const { route, params, other } = match(routes, method, url.pathname);
-      if (!route) {
-        // Every other page belongs to the React app, which routes on the client.
-        if (method === "GET" && !other) return await sendWeb(res, nonce, url.pathname);
-        return send(res, nonce, other ? errorPage(nonce, 405, "Not allowed", "This address does not accept that request.")
-          : errorPage(nonce, 404, "Not found", "No such page."));
-      }
-      let form = new URLSearchParams();
-      if (method === "POST") {
-        if (!sameOrigin(req)) return send(res, nonce, errorPage(nonce, 403, "Refused", "This form was sent from another site."));
-        const ip = clientIp(req);
-        if (!writeLimitSession.allow(session.idHash) || !writeLimitIp.allow(ip)) {
-          return send(res, nonce, errorPage(nonce, 429, "Too many requests", "Wait a minute and try again."));
-        }
-        form = await readBody(req);
-        if (!safeEqual(form.get("csrf") ?? "", session.csrf)) {
-          return send(res, nonce, errorPage(nonce, 403, "Refused", "The form expired. Reload the page and try again."));
-        }
-      }
-      if (route.operator && session.role !== "operator") return send(res, nonce, errorPage(nonce, 403, "Operators only", "This page is for the dashboard's operators."));
-      const r: Req = {
-        method, path: url.pathname, params: params!, query: url.searchParams, form,
-        user: makeUser(db, box, provider, session, method === "POST"),
-        csrf: session.csrf, nonce,
-      };
-      return send(res, nonce, await route.handler(db, r));
+      // Every other address belongs to the React app, which routes on the client.
+      if (method === "GET") return await sendWeb(res, nonce, url.pathname);
+      return send(res, nonce, errorPage(nonce, 405, "Not allowed", "This address does not accept that request."));
     } catch (e) {
       const api = (req.url ?? "").startsWith("/api/");
       if (e instanceof HttpError) return send(res, nonce, api ? apiError(e.status, e.message) : errorPage(nonce, e.status, "Request refused", e.message));

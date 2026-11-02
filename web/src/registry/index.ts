@@ -6,6 +6,6 @@ import { itemModule } from "../modules/item";
 import { progressModule } from "../modules/progress";
 import { classifiersModule } from "../modules/classifiers";
 import { costModule } from "../modules/cost";
-import { placeholderModules } from "../modules/placeholders";
+import { accessModule, contributorsModule, reposModule } from "../modules/admin";
 
-export const modules: FeatureModule[] = [decisionsModule, itemModule, progressModule, classifiersModule, costModule, ...placeholderModules];
+export const modules: FeatureModule[] = [decisionsModule, itemModule, progressModule, contributorsModule, classifiersModule, costModule, reposModule, accessModule];

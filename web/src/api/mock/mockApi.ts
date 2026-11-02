@@ -2,6 +2,7 @@ import type { Api } from "../client";
 import type { Decision, DecisionComment, DecisionFilter, User } from "../types";
 import { decisionAccess } from "../../registry/permissions";
 import { setClock } from "../../lib/format";
+import { createAdminMock } from "./adminMock";
 import { classifierReport, costReport, disagreementList } from "./insightFixtures";
 import { DECISIONS, MOCK_USERS, NOW, REPOS, SEARCH_POOL, THREADS, itemFor, permFor, progress, type MockRole } from "./fixtures";
 
@@ -147,6 +148,7 @@ export function createMockApi(): Api {
       return wait(hits.slice(0, 8), 40);
     },
     progress: () => wait(progress(decisions.filter((d) => !d.answer).length)),
+    ...createAdminMock(me, changed),
     classifiers: {
       report: (sel) => wait(classifierReport(sel), 80),
       disagreements: (f) => wait(disagreementList(f), 60),

@@ -86,7 +86,7 @@ export const MOCK_USERS: Record<"operator" | "maintainer" | "viewer", User> = {
 };
 export type MockRole = keyof typeof MOCK_USERS;
 
-const AUTHORS: [string, Tier, number, number][] = [
+export const AUTHORS: [string, Tier, number, number][] = [
   ["pixel-wrangler", "whitelisted", 14, 2],
   ["larkspur-dev", "whitelisted", 31, 4],
   ["kiln-and-reed", "not", 1, 3],

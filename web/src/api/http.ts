@@ -1,6 +1,17 @@
 import type { Api } from "./client";
 import type { DecisionFilter } from "./types";
 
+/** Query string from the set fields; booleans as 1 / 0. */
+function qs(f: object): string {
+  const q = new URLSearchParams();
+  for (const [k, v] of Object.entries(f)) {
+    if (v === undefined || v === null || v === "") continue;
+    q.set(k, typeof v === "boolean" ? (v ? "1" : "0") : String(v));
+  }
+  const s = q.toString();
+  return s ? `?${s}` : "";
+}
+
 const CSRF_HEADER = "X-CSRF-Token";
 
 function signIn(): never {
@@ -67,13 +78,6 @@ export function createHttpApi(): Api {
     return s ? `?${s}` : "";
   }
 
-  const qs = (o: object) => {
-    const q = new URLSearchParams();
-    for (const [k, v] of Object.entries(o)) if (v !== undefined && v !== "") q.set(k, String(v));
-    const s = q.toString();
-    return s ? `?${s}` : "";
-  };
-
   return {
     me: () => get("/api/me"),
     repos: () => get("/api/repos"),
@@ -93,6 +97,25 @@ export function createHttpApi(): Api {
     item: (repo, number) => get(`/api/items/${encodeURIComponent(repo)}/${encodeURIComponent(String(number))}`),
     search: (q) => get(`/api/search?${new URLSearchParams({ q })}`),
     progress: () => get("/api/progress"),
+    contributors: {
+      list: (filter) => get(`/api/contributors${qs(filter)}`),
+      previewRule: (rule) => get(`/api/contributors/rule-preview${qs(rule)}`),
+      setRule: (rule) => post("/api/contributors/rule", rule),
+      override: (login, input) => post(`/api/contributors/${encodeURIComponent(login)}/override`, input),
+    },
+    repoAdmin: {
+      list: () => get("/api/repos/all"),
+      track: (name) => post("/api/repos/track", { name }),
+      untrack: (name) => post("/api/repos/untrack", { name }),
+    },
+    access: {
+      overview: () => get("/api/access"),
+      add: (input) => post("/api/access/add", input),
+      remove: (login) => post("/api/access/remove", { login }),
+      setRole: (login, role) => post("/api/access/role", { login, role }),
+      revokeSession: (id) => post("/api/access/sessions/revoke", { id }),
+      audit: (filter) => get(`/api/audit${qs(filter)}`),
+    },
     classifiers: {
       report: (sel) => get(`/api/classifiers${qs(sel)}`),
       disagreements: (f) => get(`/api/classifiers/disagreements${qs(f)}`),
