@@ -163,6 +163,18 @@ export function createHttpApi(): Api {
       list: () => get("/api/accounts"),
       update: (id, input) => put(`/api/accounts/${encodeURIComponent(id)}`, input),
     },
+    envs: {
+      list: () => get("/api/envs"),
+      create: (input) => post("/api/envs", input),
+      update: (id, input) => put(`/api/envs/${encodeURIComponent(id)}`, input),
+      rotateKey: (id) => post(`/api/envs/${encodeURIComponent(id)}/rotate-key`),
+    },
+    tasks: {
+      list: (f) => get(`/api/tasks${qs(f)}`),
+      get: (id) => get(`/api/tasks/${id}`),
+      cancel: (id) => post(`/api/tasks/${id}/cancel`),
+      summary: () => get("/api/build/summary"),
+    },
     agents: {
       list: (f) => get(`/api/agents${qs(f)}`),
       get: (id) => get(`/api/agents/${id}`),

@@ -121,9 +121,9 @@ export function handler(o: WorkerServerOptions) {
       return reply(res, 200, hello(db, env.id, await readJson(req, 16 * 1024)));
     }
     if (method === "POST" && path === "/worker/claim") {
-      const b = (await readJson(req, 1024)) as { free?: unknown; paused?: unknown };
+      const b = (await readJson(req, 1024)) as { free?: unknown; pausedReason?: unknown };
       if (typeof b.free !== "number" || !Number.isInteger(b.free) || b.free < 0 || b.free > 1024) throw new Refusal(400, "free must be a whole number");
-      const paused = typeof b.paused === "string" ? b.paused.replace(/[\u0000-\u001f\u007f]+/g, " ").trim().slice(0, 200) || null : null;
+      const paused = typeof b.pausedReason === "string" ? b.pausedReason.replace(/[\u0000-\u001f\u007f]+/g, " ").trim().slice(0, 200) || null : null;
       touch(db, env.id, paused);
       return reply(res, 200, claim(db, env.id, b.free));
     }

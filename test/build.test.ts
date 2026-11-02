@@ -136,8 +136,12 @@ describe("lost workers and cancels", () => {
     assert.throws(() => cancelTask(db, q, "op"), /already cancelled/);
     const run = task();
     claim(db, e.id, 1);
-    assert.equal(cancelTask(db, run, "op").cancelRequested, true);
+    const c = cancelTask(db, run, "op");
+    assert.equal(c.state, "cancelled");
+    assert.equal(c.cancelRequested, true);
     assert.deepEqual(claim(db, e.id, 0).cancel, [run]);
+    assert.equal(listEnvs(db).find((x) => x.id === e.id)!.running, 0);
+    assert.equal(reapLost(db, Date.now() + 10 * LOST_AFTER_MS), 0);
     const w = await startWorkerServer({ db, listen: "127.0.0.1:0" });
     try {
       const hb = await fetch(`${w.url}/worker/tasks/${run}/heartbeat`, { method: "POST", headers: { authorization: `Bearer ${e.key}` } });
@@ -146,7 +150,7 @@ describe("lost workers and cancels", () => {
         method: "POST", headers: { authorization: `Bearer ${e.key}`, "content-type": "application/json" },
         body: JSON.stringify({ results: [{ step: "t", exitCode: 137, durationMs: 5, timedOut: false }], summary: "killed" }),
       });
-      assert.equal(((await fin.json()) as { state: string }).state, "cancelled");
+      assert.deepEqual(await fin.json(), { state: "cancelled" });   // a finish after a cancel changes nothing
     } finally {
       await w.close();
     }
@@ -175,7 +179,7 @@ describe("worker API", () => {
   const call = (key: string | null, path: string, body?: unknown, method = "POST", type = "application/json") =>
     fetch(`${url}${path}`, {
       method, headers: { ...(key ? { authorization: `Bearer ${key}` } : {}), ...(body !== undefined ? { "content-type": type } : {}) },
-      body: body === undefined ? undefined : typeof body === "string" || Buffer.isBuffer(body) ? body : JSON.stringify(body),
+      body: body === undefined ? undefined : Buffer.isBuffer(body) ? new Uint8Array(body) : typeof body === "string" ? body : JSON.stringify(body),
     });
 
   test("keys: missing, wrong, other environment's and rotated keys are refused", async () => {
@@ -200,6 +204,30 @@ describe("worker API", () => {
     assert.equal((await call(b.key, `/worker/tasks/${id}/heartbeat`)).status, 409);
     assert.equal((await call(b.key, `/worker/tasks/${id}/log`, { step: "t", chunk: "x" })).status, 409);
     assert.equal((await call(a.key, `/worker/tasks/${id}/start`)).status, 200);
+  });
+
+  test("finish is idempotent and a missing finish after failure shows as failed with empty results", async () => {
+    clear();
+    const e = env();
+    const id = task();
+    claim(db, e.id, 1);
+    const fin = () => call(e.key, `/worker/tasks/${id}/finish`, { results: [], summary: "source failed: 404" });
+    assert.deepEqual(await (await fin()).json(), { state: "failed" });
+    assert.deepEqual(await (await fin()).json(), { state: "failed" });
+    assert.equal(getTask(db, id)!.summary, "source failed: 404");
+  });
+
+  test("a paused reason sent with claim is stored and shown; no task is handed out", async () => {
+    clear();
+    const e = env();
+    task();
+    const r = await (await call(e.key, "/worker/claim", { free: 0, pausedReason: "disk 12 GB free (needs 20)" })).json();
+    assert.deepEqual(r, { tasks: [], cancel: [] });
+    assert.equal(listEnvs(db).find((x) => x.id === e.id)!.pausedReason, "disk 12 GB free (needs 20)");
+    const ok = (await (await call(e.key, "/worker/claim", { free: 1, pausedReason: null })).json()) as { tasks: { requires: unknown; sourceUrl: string }[] };
+    assert.equal(ok.tasks.length, 1);
+    assert.deepEqual(ok.tasks[0]!.requires, {});
+    assert.match(ok.tasks[0]!.sourceUrl, /^https:\/\/codeload\.github\.com\/storytold\/open-app\/tar\.gz\/a{40}$/);
   });
 
   test("hello stores capabilities; bad ones are refused", async () => {
@@ -354,7 +382,7 @@ describe("dashboard API", () => {
     claim(db, e.id, 1);
     const w = await startWorkerServer({ db, listen: "127.0.0.1:0" });
     try {
-      const put = (name: string, body: Buffer | string) => fetch(`${w.url}/worker/tasks/${id}/artifacts/${name}`, { method: "PUT", headers: { authorization: `Bearer ${e.key}` }, body });
+      const put = (name: string, body: Buffer | string) => fetch(`${w.url}/worker/tasks/${id}/artifacts/${name}`, { method: "PUT", headers: { authorization: `Bearer ${e.key}` }, body: typeof body === "string" ? body : new Uint8Array(body) });
       assert.equal((await put("page.html", "<script>alert(1)</script>")).status, 200);
       assert.equal((await put("shot.png", PNG)).status, 200);
     } finally {

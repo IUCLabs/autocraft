@@ -46,6 +46,14 @@ import type {
   PipelineOverview,
   PipelineState,
   StageLimit,
+  BuildEnv,
+  BuildSummary,
+  BuildTask,
+  BuildTaskDetail,
+  EnvCreate,
+  EnvInput,
+  TaskFilter,
+  TaskPage,
 } from "./types";
 
 /** The dashboard API as the frontend sees it. The mock and the HTTP client both implement it. */
@@ -130,6 +138,20 @@ export interface Api {
   agents: {
     list(filter: AgentRunFilter): Promise<AgentRunPage>;
     get(id: number): Promise<AgentRunDetail>;
+  };
+  /** Build environments (workers that run untrusted code) and their tasks. Everyone reads; operators write. A worker key is returned once. */
+  envs: {
+    list(): Promise<BuildEnv[]>;
+    create(input: EnvCreate): Promise<{ env: BuildEnv; key: string }>;
+    update(id: string, input: EnvInput): Promise<BuildEnv>;
+    rotateKey(id: string): Promise<{ key: string }>;
+  };
+  tasks: {
+    list(filter: TaskFilter): Promise<TaskPage>;
+    get(id: number): Promise<BuildTaskDetail>;
+    cancel(id: number): Promise<BuildTask>;
+    /** Queued and running tasks and free slots, for the flowchart's Verify node. */
+    summary(): Promise<BuildSummary>;
   };
   /** Items moved per stage and account use over time. */
   rates(window: "24h" | "7d"): Promise<Rates>;

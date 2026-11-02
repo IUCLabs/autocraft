@@ -1,0 +1,150 @@
+// Build environments and tasks on fake data: a local sandbox, two remote servers (one paused for disk, one offline), a disabled one,
+// and a few dozen tasks in every state.
+import type { Api } from "../client";
+import type { BuildEnv, BuildTask, BuildTaskDetail, TaskResult, TaskState, TaskStep, User } from "../types";
+import { NOW, REPOS } from "./fixtures";
+
+const wait = <T>(v: T, ms = 60) => new Promise<T>((r) => setTimeout(() => r(structuredClone(v)), ms));
+const iso = (msAgo: number) => new Date(NOW - msAgo).toISOString();
+const MIN = 60_000;
+const HOUR = 3_600_000;
+
+const envs: BuildEnv[] = [
+  {
+    id: "sandbox", label: "Local sandbox", kind: "local-sandbox", enabled: true, online: true, lastSeenAt: iso(4_000), slots: 2, running: 0, version: "0.4.1", pausedReason: null,
+    capabilities: { os: "linux", arch: "x86_64", cpus: 16, memGb: 48, diskGb: 210, display: false, gpu: false, toolchains: ["node-24", "rust-stable"] },
+  },
+  {
+    id: "build-a", label: "Build server A", kind: "remote", enabled: true, online: true, lastSeenAt: iso(9_000), slots: 4, running: 0, version: "0.4.1", pausedReason: null,
+    capabilities: { os: "linux", arch: "x86_64", cpus: 64, memGb: 256, diskGb: 1800, display: true, gpu: true, toolchains: ["java-21", "node-24", "rust-stable", "rust-nightly"] },
+  },
+  {
+    id: "build-b", label: "Build server B", kind: "remote", enabled: true, online: true, lastSeenAt: iso(12_000), slots: 4, running: 0, version: "0.4.0", pausedReason: "disk 12 GB free (needs 20)",
+    capabilities: { os: "linux", arch: "aarch64", cpus: 32, memGb: 128, diskGb: 900, display: false, gpu: false, toolchains: ["node-24", "rust-stable"] },
+  },
+  {
+    id: "mac-mini", label: "Mac mini", kind: "remote", enabled: true, online: false, lastSeenAt: iso(3 * HOUR), slots: 1, running: 0, version: "0.3.2", pausedReason: null,
+    capabilities: { os: "macos", arch: "aarch64", cpus: 10, memGb: 32, diskGb: 400, display: true, gpu: true, toolchains: ["rust-stable"] },
+  },
+  { id: "old-box", label: "Old build box", kind: "remote", enabled: false, online: false, lastSeenAt: iso(9 * 24 * HOUR), slots: 2, running: 0, version: null, pausedReason: null, capabilities: null },
+];
+
+const PLAN: TaskStep[] = [
+  { name: "fetch deps", cmd: ["cargo", "fetch", "--locked"], network: "fetch", timeoutSec: 600 },
+  { name: "build", cmd: ["cargo", "build", "--offline", "--locked"], network: "none", timeoutSec: 1800 },
+  { name: "test", cmd: ["cargo", "test", "--offline", "--lib"], network: "none", timeoutSec: 1800, artifacts: ["junit.xml"] },
+  { name: "screenshot", cmd: ["sh", "-c", "./scripts/shot.sh"], network: "none", timeoutSec: 300, artifacts: ["shot-*.png"] },
+];
+
+const LOG = (t: BuildTask) => `[fetch deps] cargo fetch --locked
+    Updating crates.io index
+  Downloaded 214 crates (31.2 MB) in 4.81s
+[build] cargo build --offline --locked
+   Compiling libc v0.2.159
+   Compiling serde v1.0.210
+   Compiling ${t.repo} v0.9.3 (/work/src)
+    Finished \`dev\` profile [unoptimized + debuginfo] target(s) in 3m 12s
+[test] cargo test --offline --lib
+running 412 tests
+test result: ok. 412 passed; 0 failed; 0 ignored; finished in 18.40s
+`;
+
+const N = [2214, 2230, 1187, 640, 3302, 905, 2511, 77];
+let id = 900;
+function make(state: TaskState, agoMin: number, over: Partial<BuildTask> = {}): BuildTask {
+  const repo = REPOS[id % REPOS.length]!;
+  const queuedAt = iso(agoMin * MIN);
+  const active = state === "claimed" || state === "running";
+  const envId = state === "queued" ? null : (over.envId ?? (id % 3 === 0 ? "build-a" : "sandbox"));
+  const steps = active || state === "queued" ? [] : PLAN.slice(0, state === "failed" ? 2 : 3);
+  const results: TaskResult[] = steps.map((s, i) => ({ step: s.name, exitCode: state === "failed" && i === steps.length - 1 ? 101 : 0, durationMs: 4_000 + i * 70_000, timedOut: false }));
+  const started = state === "queued" ? null : iso((agoMin - 1) * MIN);
+  return {
+    id: ++id, jobId: null, step: "verify", repo, number: N[id % N.length]!, headSha: (id * 7919).toString(16).padStart(8, "0").repeat(5), baseSha: null,
+    requires: id % 4 === 0 ? { display: true } : { os: "linux" }, priority: 0, plan: PLAN,
+    state, envId, envLabel: envs.find((e) => e.id === envId)?.label ?? null, cancelRequested: false,
+    queuedAt, claimedAt: started, startedAt: state === "claimed" ? null : started,
+    endedAt: active || state === "queued" ? null : iso((agoMin - 6) * MIN), heartbeatAt: active ? iso(8_000) : null,
+    results, artifacts: state === "done" ? [{ name: "junit.xml", bytes: 18_400, contentType: "application/xml" }, { name: "shot-main.png", bytes: 212_000, contentType: "image/png" }] : [],
+    summary: state === "done" ? "build and 412 tests passed" : state === "failed" ? "test failed: 3 of 412" : state === "cancelled" ? "Cancelled before it started." : null,
+    ...over,
+  };
+}
+
+const TASKS: BuildTask[] = [
+  make("queued", 2, { requires: { display: true, minMemGb: 64 } }), make("queued", 3), make("queued", 7, { requires: { os: "macos" } }),
+  make("running", 9, { envId: "build-a", envLabel: "Build server A", results: [{ step: "fetch deps", exitCode: 0, durationMs: 6_000, timedOut: false }] }),
+  make("running", 14, { envId: "sandbox", envLabel: "Local sandbox", results: [] }),
+  make("claimed", 1, { envId: "sandbox", envLabel: "Local sandbox" }),
+  ...[25, 40, 64, 90, 130, 190, 260, 400, 520, 700, 900, 1300, 1700, 2200, 3000].map((m, i) => make(i % 5 === 3 ? "failed" : i === 6 ? "cancelled" : "done", m)),
+];
+TASKS.sort((a, b) => b.id - a.id);
+const used = (e: string) => TASKS.filter((t) => t.envId === e && (t.state === "running" || t.state === "claimed")).length;
+for (const e of envs) e.running = used(e.id);
+
+export function createBuildMock(me: User, changed: () => void): Pick<Api, "envs" | "tasks"> {
+  const visible = (t: BuildTask) => me.role === "operator" || t.repo !== "vault";
+  const operator = () => {
+    if (me.role !== "operator") throw new Error("only operators change build environments");
+  };
+  return {
+    envs: {
+      list: () => wait(envs.filter((e) => e.enabled || me.role === "operator")),
+      async create(input) {
+        operator();
+        if (!/^[a-z][a-z0-9-]{1,30}[a-z0-9]$/.test(input.id)) throw new Error("id must be 3 to 32 lowercase letters, digits or hyphens, starting with a letter");
+        if (envs.some((e) => e.id === input.id)) throw new Error(`environment ${input.id} exists`);
+        const env: BuildEnv = { id: input.id, label: input.label, kind: input.kind, enabled: true, online: false, lastSeenAt: null, slots: input.slots, running: 0, capabilities: null, version: null, pausedReason: null };
+        envs.push(env);
+        changed();
+        return wait({ env, key: `cwk_${input.id}_Zr4mQ0vJp8XwL2nT7bKd1HsYcE9uAf3GiO5xVjR6MqN` }, 40);
+      },
+      async update(id, input) {
+        operator();
+        const e = envs.find((x) => x.id === id);
+        if (!e) throw new Error("no such environment");
+        if (input.label !== undefined) e.label = input.label.trim();
+        if (input.enabled !== undefined) e.enabled = input.enabled;
+        if (input.slots !== undefined) e.slots = input.slots;
+        changed();
+        return wait(e, 30);
+      },
+      async rotateKey(id) {
+        operator();
+        if (!envs.some((x) => x.id === id)) throw new Error("no such environment");
+        return wait({ key: `cwk_${id}_Hq8LwN2cT5vB0xYzR3mKd7JpEa9UsGf1iO6XtVjQ4Mn` }, 40);
+      },
+    },
+    tasks: {
+      list(f) {
+        const rows = TASKS.filter(
+          (t) => visible(t) && (!f.state || (f.state === "active" ? ["queued", "claimed", "running"].includes(t.state) : t.state === f.state)) && (!f.env || t.envId === f.env) && (!f.repo || t.repo === f.repo) && (!f.cursor || t.id < Number(f.cursor)),
+        );
+        const limit = f.limit ?? 50;
+        const tasks = rows.slice(0, limit);
+        return wait({ tasks, next: rows.length > limit ? String(tasks[tasks.length - 1]!.id) : null }, 80);
+      },
+      get(taskId) {
+        const t = TASKS.find((x) => x.id === taskId && visible(x));
+        if (!t) throw new Error("no such task");
+        const logged = t.state !== "queued";
+        const d: BuildTaskDetail = { ...t, logTail: logged ? LOG(t) : "", logBytes: logged ? LOG(t).length : 0, logTruncated: false };
+        return wait(d);
+      },
+      async cancel(taskId) {
+        operator();
+        const t = TASKS.find((x) => x.id === taskId);
+        if (!t) throw new Error("no such task");
+        if (t.state === "queued") Object.assign(t, { state: "cancelled", endedAt: new Date(NOW).toISOString(), summary: "Cancelled before it started." });
+        else t.cancelRequested = true;
+        changed();
+        return wait(t, 30);
+      },
+      summary() {
+        const online = envs.filter((e) => e.enabled && e.online);
+        const slots = online.reduce((s, e) => s + e.slots, 0);
+        return wait({ queued: TASKS.filter((t) => t.state === "queued").length, running: TASKS.filter((t) => t.state === "running" || t.state === "claimed").length, slots, free: slots - online.reduce((s, e) => s + e.running, 0), online: online.length });
+      },
+    },
+  };
+}

@@ -112,12 +112,17 @@ export function satisfies(caps: Capabilities, req: Requires): boolean {
   return true;
 }
 
-export type ClaimedTask = { id: number; repo: string; headSha: string; baseSha: string | null; plan: TaskStep[]; sourceUrl: string };
+export type ClaimedTask = { id: number; repo: string; headSha: string; baseSha: string | null; requires: Requires; plan: TaskStep[]; sourceUrl: string };
 export type ClaimResult = { tasks: ClaimedTask[]; cancel: number[] };
 
-/** Ids of this environment's active tasks that an operator asked to cancel. */
+/**
+ * Ids of this environment's tasks that an operator cancelled and whose containers the worker may still be running.
+ * A cancel ends the task at once; the worker kills its containers and does not report back, so the id is
+ * repeated for LOST_AFTER_MS after the cancel.
+ */
 export function cancelIds(db: DatabaseSync, envId: string): number[] {
-  return (db.prepare("SELECT id FROM build_tasks WHERE env_id = ? AND state IN ('claimed', 'running') AND cancel_requested_at IS NOT NULL ORDER BY id").all(envId) as { id: number }[]).map((r) => r.id);
+  const since = new Date(Date.now() - LOST_AFTER_MS).toISOString();
+  return (db.prepare("SELECT id FROM build_tasks WHERE env_id = ? AND cancel_requested_at > ? ORDER BY id").all(envId, since) as { id: number }[]).map((r) => r.id);
 }
 
 /**
@@ -145,7 +150,7 @@ export function claim(db: DatabaseSync, envId: string, free: number, nowMs: numb
           if (!satisfies(caps, json<Requires>(t.requires, {}))) continue;
           take.run(envId, at, at, t.id);
           out.push({
-            id: t.id, repo: t.repo, headSha: t.head_sha, baseSha: t.base_sha, plan: json<TaskStep[]>(t.plan, []),
+            id: t.id, repo: t.repo, headSha: t.head_sha, baseSha: t.base_sha, requires: json<Requires>(t.requires, {}), plan: json<TaskStep[]>(t.plan, []),
             sourceUrl: `https://codeload.github.com/${SOURCE_ORG}/${t.repo}/tar.gz/${t.head_sha}`,
           });
         }
@@ -199,6 +204,8 @@ export function startTask(db: DatabaseSync, envId: string, id: number): { cancel
 }
 
 export function heartbeat(db: DatabaseSync, envId: string, id: number): { cancel: number[] } {
+  const prior = db.prepare("SELECT state, env_id FROM build_tasks WHERE id = ?").get(id) as { state: TaskState; env_id: string | null } | undefined;
+  if (prior?.env_id === envId && prior.state === "cancelled") return { cancel: cancelIds(db, envId) };
   const t = mine(db, envId, id);
   db.prepare("UPDATE build_tasks SET heartbeat_at = ? WHERE id = ?").run(nowIso(), t.id);
   return { cancel: cancelIds(db, envId) };
@@ -244,6 +251,9 @@ export function parseResults(v: unknown): TaskResult[] {
 
 /** The worker's last word: done when every step exited 0, cancelled when an operator asked, else failed. */
 export function finishTask(db: DatabaseSync, envId: string, id: number, body: unknown): { state: TaskState } {
+  // A retried finish (the answer was lost) gets the state the first one set.
+  const prior = db.prepare("SELECT state, env_id FROM build_tasks WHERE id = ?").get(id) as { state: TaskState; env_id: string | null } | undefined;
+  if (prior && prior.env_id === envId && TERMINAL.includes(prior.state)) return { state: prior.state };
   const t = mine(db, envId, id);
   if (!body || typeof body !== "object" || Array.isArray(body)) throw new BuildError(400, "the body must be a JSON object");
   const o = body as Record<string, unknown>;
@@ -255,7 +265,7 @@ export function finishTask(db: DatabaseSync, envId: string, id: number, body: un
   return { state };
 }
 
-/** Cancels a queued task at once, or flags an active one for its worker to stop. */
+/** Cancels a task at once. An active one stays listed in its worker's claim and heartbeat responses for two minutes, so the worker kills it. */
 export function cancelTask(db: DatabaseSync, id: unknown, by: string): BuildTask {
   const n = typeof id === "number" ? id : Number(id);
   const t = Number.isInteger(n) ? (db.prepare("SELECT * FROM build_tasks WHERE id = ?").get(n) as TaskRow | undefined) : undefined;
@@ -263,7 +273,7 @@ export function cancelTask(db: DatabaseSync, id: unknown, by: string): BuildTask
   if (TERMINAL.includes(t.state)) throw new BuildError(409, `the task is already ${t.state}`);
   const at = nowIso();
   if (t.state === "queued") db.prepare("UPDATE build_tasks SET state = 'cancelled', ended_at = ?, cancel_requested_at = ?, summary = 'Cancelled before it started.' WHERE id = ? AND state = 'queued'").run(at, at, t.id);
-  else db.prepare("UPDATE build_tasks SET cancel_requested_at = COALESCE(cancel_requested_at, ?) WHERE id = ?").run(at, t.id);
+  else db.prepare("UPDATE build_tasks SET state = 'cancelled', ended_at = ?, cancel_requested_at = ?, summary = 'Cancelled by an operator.' WHERE id = ? AND state IN ('claimed', 'running')").run(at, at, t.id);
   audit(db, by, "task-cancel", `task:${t.id}`, { repo: t.repo, was: t.state });
   return getTask(db, t.id)!;
 }
