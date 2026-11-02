@@ -8,7 +8,7 @@ import { PhoneInbox } from "./PhoneInbox";
 import { DecisionsToolbar } from "./Toolbar";
 
 function useWaitingCount() {
-  return useQuery("count:open", (api) => api.decisions.list({ status: "open" })).data?.total;
+  return useQuery("count:open", (api) => api.decisions.list({ status: "open", limit: 1 })).data?.total;
 }
 
 export const decisionsModule: FeatureModule = {

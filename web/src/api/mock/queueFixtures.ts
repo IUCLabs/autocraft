@@ -53,6 +53,9 @@ const ROWS: QueueRow[] = (() => {
 export function queueList(f: QueueFilter): QueueList {
   const all = ROWS.filter((x) => !f.repo || x.repo === f.repo);
   const counts = Object.fromEntries(STATES.map((s) => [s, all.filter((x) => x.state === s).length])) as Record<QueueState, number>;
-  const rows = all.filter((x) => !f.state || x.state === f.state);
-  return { rows, counts, total: rows.length };
+  const match = all.filter((x) => (f.state ? x.state === f.state : x.state !== "merged"));
+  const from = f.after ? match.findIndex((x) => `${x.repo}#${x.number}` === f.after) + 1 : 0;
+  const rows = match.slice(from, from + (f.limit ?? 100));
+  const last = rows[rows.length - 1];
+  return { rows, counts, total: match.length, next: last && from + rows.length < match.length ? `${last.repo}#${last.number}` : null };
 }

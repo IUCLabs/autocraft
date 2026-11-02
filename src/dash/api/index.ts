@@ -8,7 +8,7 @@ import type {
 } from "../../../web/src/api/types.ts";
 import { trackedNames } from "../../repos.ts";
 import { contributors } from "../../whitelist.ts";
-import { doneByRepo, funnelByRepo, latestCte, trackingStart, trend, type DoneRow, type FunnelRow } from "./stats.ts";
+import { CLOSED_ITEMS, TRACKED, doneByRepo, funnelByRepo, latestCte, trackingStart, trend, type DoneRow, type FunnelRow } from "./stats.ts";
 import { HttpError, RateLimiter } from "../server/util.ts";
 import type { Req, Res, Route } from "../types.ts";
 import * as adm from "./admin.ts";
@@ -153,8 +153,8 @@ function progressItems(db: DatabaseSync): Heavy {
   const perHourPipeline = new Array<number>(24).fill(0);
   const since = now - 24 * 3600_000;
   for (const r of db.prepare(`WITH ${latestCte()} SELECT i.closed_at, l.stage IN ('merged', 'closed', 'fixed-by-us') AS ours
-      FROM items i LEFT JOIN latest l ON l.repo = i.repo AND l.number = i.number
-      WHERE i.closed_at >= ? AND i.state <> 'OPEN'`).all(new Date(since).toISOString()) as { closed_at: string; ours: number | null }[]) {
+      FROM ${CLOSED_ITEMS} LEFT JOIN latest l ON l.repo = i.repo AND l.number = i.number
+      WHERE i.closed_at >= ? AND i.state <> 'OPEN' AND i.${TRACKED}`).all(new Date(since).toISOString()) as { closed_at: string; ours: number | null }[]) {
     const h = Math.floor((Date.parse(r.closed_at) - since) / 3600_000);
     if (h >= 0 && h < 24) {
       perHour[h]!++;

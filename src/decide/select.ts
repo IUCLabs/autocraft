@@ -46,9 +46,8 @@ function covered(db: DatabaseSync): Set<string> {
     if (d.number !== null) out.add(`${d.repo}#${d.number}`);
     else for (const r of json<{ repo: string; number: number }[]>(d.items, [])) out.add(`${r.repo}#${r.number}`);
   }
-  const stages = db.prepare(`SELECT s.repo, s.number, s.stage FROM stages s
-    WHERE s.at = (SELECT MAX(t.at) FROM stages t WHERE t.repo = s.repo AND t.number = s.number)`).all() as { repo: string; number: number; stage: string }[];
-  for (const s of stages) if (s.stage !== "classified") out.add(`${s.repo}#${s.number}`);
+  const stages = db.prepare(`SELECT repo, number, stage FROM item_stage WHERE stage <> 'classified'`).all() as { repo: string; number: number; stage: string }[];
+  for (const s of stages) out.add(`${s.repo}#${s.number}`);
   return out;
 }
 
