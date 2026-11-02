@@ -162,7 +162,7 @@ CREATE TABLE IF NOT EXISTS oauth_states (
 CREATE TABLE IF NOT EXISTS audit (
   at TEXT NOT NULL,
   login TEXT NOT NULL,
-  action TEXT NOT NULL,               -- answer | undo | override | rule | access-add | access-remove | access-role | session-revoke | sign-in | sign-in-refused
+  action TEXT NOT NULL,               -- answer | undo | override | rule | access-add | access-remove | access-role | session-revoke | sign-in | sign-in-refused | repo-track | repo-untrack
   target TEXT,
   details TEXT                        -- JSON
 );
@@ -174,3 +174,43 @@ CREATE INDEX IF NOT EXISTS items_closed ON items(closed_at, state);
 CREATE INDEX IF NOT EXISTS items_created ON items(created_at);
 CREATE INDEX IF NOT EXISTS items_pr_author ON items(kind, author, state, repo, merged_at);
 CREATE INDEX IF NOT EXISTS items_open ON items(state, repo, number);
+
+-- Repos the dashboard, pipeline and sync work on. `repos` keeps every org repo
+-- (metadata only for untracked ones); admins choose here.
+CREATE TABLE IF NOT EXISTS tracked_repos (
+  name TEXT PRIMARY KEY,
+  added_by TEXT,
+  added_at TEXT
+);
+-- Seeded once; the flag keeps the seed from returning after an admin empties the list.
+INSERT INTO tracked_repos (name, added_by, added_at)
+SELECT column1, 'seed', strftime('%Y-%m-%dT%H:%M:%SZ', 'now') FROM (VALUES
+  ('photocraft'),
+  ('pdfcraft'),
+  ('wordcraft'),
+  ('filmcraft'),
+  ('gridcraft'),
+  ('lightcraft'),
+  ('cadcraft'),
+  ('vectorcraft'),
+  ('effectcraft'),
+  ('designcraft'),
+  ('deckcraft'),
+  ('artcraft'),
+  ('soundcraft'),
+  ('figcraft'),
+  ('texturecraft'),
+  ('materialcraft'),
+  ('stencilcraft'),
+  ('craft-libs'),
+  ('craft-launcher'),
+  ('craft-anything'),
+  ('craft-i18n'),
+  ('craft-fonts'),
+  ('font-preview-service'),
+  ('artcraft-services'),
+  ('egui'),
+  ('winit')
+) WHERE NOT EXISTS (SELECT 1 FROM settings WHERE key = 'tracked_seeded')
+  AND NOT EXISTS (SELECT 1 FROM tracked_repos);
+INSERT OR IGNORE INTO settings VALUES ('tracked_seeded', '1');

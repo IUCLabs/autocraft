@@ -45,7 +45,7 @@ export type DoneRow = { repo: string; merged_pipeline: number; closed_pipeline: 
 // Done since run start. Merged PRs carry closed_at too, so one range covers both.
 export function doneByRepo(db: DatabaseSync, start: string, repo?: string): DoneRow[] {
   return db.prepare(`WITH ${latestCte(repo)}, d AS (
-      SELECT i.repo, i.state, l.stage FROM items i INDEXED BY items_closed LEFT JOIN latest l ON l.repo = i.repo AND l.number = i.number
+      SELECT i.repo, i.state, l.stage FROM items i LEFT JOIN latest l ON l.repo = i.repo AND l.number = i.number
       WHERE i.closed_at >= :start AND i.state <> 'OPEN' ${repo ? "AND i.repo = :repo" : ""})
     SELECT repo,
       SUM(state = 'MERGED' AND stage = 'merged') AS merged_pipeline,

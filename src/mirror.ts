@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { DatabaseSync, SQLInputValue } from "node:sqlite";
 import { connect } from "./db.ts";
+import { trackedNames } from "./repos.ts";
 
 const ORG = "storytold";
 const OVERLAP_MS = 10 * 60 * 1000;
@@ -267,49 +268,63 @@ async function syncRepo(db: DatabaseSync, client: Client, name: string, full: bo
   return count;
 }
 
+// Which repos get their items synced: --repo names (any repo), else every repo
+// with --all, else the tracked ones. `listed` is every non-archived org repo.
+export function selectSyncRepos(listed: string[], tracked: string[], opts: { only: string[]; all: boolean }): string[] {
+  if (opts.only.length) {
+    const missing = opts.only.filter((n) => !listed.includes(n));
+    if (missing.length) throw new Error(`unknown or archived repos: ${missing.join(", ")}`);
+    return listed.filter((n) => opts.only.includes(n));
+  }
+  return opts.all ? listed : listed.filter((n) => tracked.includes(n));
+}
+
 async function sync(args: string[]): Promise<void> {
   const only: string[] = [];
   let full = false;
+  let all = false;
   let reserve = 1000;
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--repo") only.push(args[++i]);
     else if (args[i] === "--full") full = true;
+    else if (args[i] === "--all") all = true;
     else if (args[i] === "--reserve") reserve = Number(args[++i]);
-    else throw new Error(`unknown argument ${args[i]}\nusage: sync [--repo NAME ...] [--full] [--reserve N]`);
+    else throw new Error(`unknown argument ${args[i]}\nusage: sync [--repo NAME ...] [--all] [--full] [--reserve N]`);
   }
   const db = connect();
   const client = new Client(reserve);
-  let repos = await listRepos(client);
-  if (only.length) {
-    const missing = only.filter((n) => !repos.some((r) => r.name === n));
-    if (missing.length) throw new Error(`unknown or archived repos: ${missing.join(", ")}`);
-    repos = repos.filter((r) => only.includes(r.name));
-  }
+  const repos = await listRepos(client);
   const upsert = db.prepare(`INSERT INTO repos (name, visibility, default_branch, open_prs, open_issues) VALUES (?,?,?,?,?)
     ON CONFLICT(name) DO UPDATE SET visibility=excluded.visibility, default_branch=excluded.default_branch,
     open_prs=excluded.open_prs, open_issues=excluded.open_issues`);
   for (const r of repos) {
     upsert.run(r.name, r.visibility.toLowerCase(), r.defaultBranchRef?.name ?? null, r.pullRequests.totalCount, r.issues.totalCount);
   }
-  for (const r of repos) {
+  const tracked = trackedNames(db);
+  const listed = repos.map((r: Node) => r.name as string);
+  const names = selectSyncRepos(listed, tracked, { only, all });
+  const gone = only.length || all ? [] : tracked.filter((n) => !listed.includes(n));
+  if (gone.length) console.log(`tracked but not in the org (archived or renamed): ${gone.join(", ")}`);
+  for (const name of names) {
     const before = client.spent;
-    const count = await syncRepo(db, client, r.name, full);
-    console.log(`${r.name}: ${count} items, ${client.spent - before} points used, ${client.remaining} left`);
+    const count = await syncRepo(db, client, name, full);
+    console.log(`${name}: ${count} items, ${client.spent - before} points used, ${client.remaining} left`);
   }
 }
 
 function syncStatus(): void {
   const rows = connect().prepare(`
     SELECT r.name, r.open_prs, r.open_issues, r.synced_at,
+           EXISTS (SELECT 1 FROM tracked_repos t WHERE t.name = r.name) AS tracked,
            (SELECT COUNT(*) FROM items i WHERE i.repo = r.name) AS n
     FROM repos r ORDER BY r.name`).all() as Node[];
-  console.log(`${"repo".padEnd(28)} ${"open PRs".padStart(8)} ${"open iss".padStart(8)} ${"mirrored".padStart(8)}  synced_at`);
+  console.log(`${"repo".padEnd(28)} ${"tracked".padEnd(7)} ${"open PRs".padStart(8)} ${"open iss".padStart(8)} ${"mirrored".padStart(8)}  synced_at`);
   for (const r of rows) {
-    console.log(`${r.name.padEnd(28)} ${String(r.open_prs).padStart(8)} ${String(r.open_issues).padStart(8)} ${String(r.n).padStart(8)}  ${r.synced_at ?? "-"}`);
+    console.log(`${r.name.padEnd(28)} ${(r.tracked ? "yes" : "-").padEnd(7)} ${String(r.open_prs).padStart(8)} ${String(r.open_issues).padStart(8)} ${String(r.n).padStart(8)}  ${r.synced_at ?? "-"}`);
   }
 }
 
 export const commands = {
-  sync: { summary: "mirror issues and PRs of the storytold org: [--repo NAME ...] [--full] [--reserve N]", run: sync },
+  sync: { summary: "mirror issues and PRs of the storytold org: [--repo NAME ...] [--all] [--full] [--reserve N]", run: sync },
   "sync-status": { summary: "per repo: open PRs, open issues, mirrored rows, synced_at", run: syncStatus },
 };

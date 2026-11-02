@@ -250,6 +250,23 @@ describe("tokens", () => {
   });
 });
 
+describe("repos page", () => {
+  test("is admin-only; a track POST without CSRF is refused and a valid one is audited", async () => {
+    const viewer = await signedIn("viewer1");
+    assert.equal((await viewer.get("/repos")).status, 403);
+    const boss = await signedIn("boss");
+    const page = await boss.get("/repos");
+    assert.equal(page.status, 200);
+    assert.match(await page.text(), /takes effect at the next sync/);
+    const before = audits("repo-track").n;
+    assert.equal((await boss.post("/repos/track", { name: "brand-new" })).status, 403);
+    assert.equal(audits("repo-track").n, before);
+    const r = await boss.post("/repos/track", { csrf: await boss.csrf(), name: "brand-new" });
+    assert.equal(r.status, 303);
+    assert.equal(audits("repo-track").n, before + 1);
+  });
+});
+
 describe("access changes", () => {
   test("removing a login on the Access page ends its session", async () => {
     addLogin(db, "cli", "leaver", "viewer", null);

@@ -1,4 +1,5 @@
 // Every dashboard page except Access. Handlers are pure functions of (db, req).
+import { reposRoutes } from "../repos-page.ts";
 import type { Route } from "../types.ts";
 import { classifiers, disagreements } from "./classifiers.ts";
 import { contributorsPage, override, rule } from "./contributors.ts";
@@ -21,4 +22,5 @@ export const routes: Route[] = [
   { method: "GET", pattern: "/classifiers", handler: classifiers },
   { method: "GET", pattern: "/classifiers/items", handler: disagreements },
   { method: "GET", pattern: "/cost", handler: cost },
+  ...reposRoutes,
 ];

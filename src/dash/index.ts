@@ -1,4 +1,5 @@
 import { connect } from "../db.ts";
+import { scopeToTracked } from "../repos.ts";
 import { ConfigError, loadConfig } from "./server/config.ts";
 import { startServer } from "./server/index.ts";
 
@@ -12,6 +13,7 @@ async function serve(): Promise<void> {
     process.exit(2);
   }
   const db = connect(config.dbPath);
+  scopeToTracked(db);
   const { url, close } = await startServer({ config, db });
   console.log(`dashboard listening on ${url}${config.devAuth ? " (development sign-in)" : ""}`);
   const stop = () => void close().then(() => {
@@ -22,13 +24,19 @@ async function serve(): Promise<void> {
   process.once("SIGINT", stop);
 }
 
+function scoped() {
+  const db = connect();
+  scopeToTracked(db);
+  return db;
+}
+
 async function exportCmd(args: string[]): Promise<void> {
   if (!args[0]) {
     console.error("usage: craft-auto dash export <dir>");
     process.exit(1);
   }
   const { exportSite } = await import("./pages/export.ts");
-  const { pages } = await exportSite(connect(), args[0]);
+  const { pages } = await exportSite(scoped(), args[0]);
   console.log(`wrote ${pages} pages to ${args[0]}`);
 }
 

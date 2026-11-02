@@ -293,7 +293,7 @@ export async function answer(db: DatabaseSync, req: Req): Promise<Res> {
     }
   }
   const at = new Date().toISOString();
-  const r = db.prepare(`UPDATE decisions SET answer = ?, answer_note = ?, exceptions = ?, answered_by = ?, answered_at = ?
+  const r = db.prepare(`UPDATE main.decisions SET answer = ?, answer_note = ?, exceptions = ?, answered_by = ?, answered_at = ?
     WHERE id = ? AND answer IS NULL`).run(ans, note, exceptions ? JSON.stringify(exceptions) : null, req.user.login, at, id);
   if (r.changes !== 1) return { status: 409, html: `<div class="done err" data-card>Someone answered this a moment ago.</div>` };
   audit(db, req.user.login, "answer", id, { answer: ans, exceptions: exceptions ?? undefined, note: note ? true : undefined });
@@ -312,7 +312,7 @@ export async function undo(db: DatabaseSync, req: Req): Promise<Res> {
   if (blocked.length) return forbidden(req, whyNot(blocked, isBatch(d)).replace("answer", "undo"));
   if (!d.answer) return badRequest(req, "That decision has no answer to undo.");
   if (d.applied_at) return { status: 409, html: `<div class="done err" data-card>The pipeline already acted on this answer; it can't be undone here.</div>` };
-  const r = db.prepare(`UPDATE decisions SET answer = NULL, answer_note = NULL, exceptions = NULL, answered_by = NULL, answered_at = NULL
+  const r = db.prepare(`UPDATE main.decisions SET answer = NULL, answer_note = NULL, exceptions = NULL, answered_by = NULL, answered_at = NULL
     WHERE id = ? AND answer IS NOT NULL AND applied_at IS NULL`).run(id);
   if (r.changes !== 1) return { status: 409, html: `<div class="done err" data-card>The pipeline acted on this a moment ago.</div>` };
   audit(db, req.user.login, "undo", id, { answer: d.answer });

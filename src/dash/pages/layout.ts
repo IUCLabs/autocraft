@@ -203,10 +203,11 @@ export function layout(req: Req, title: string, body: string): string {
     return `<a href="${href}"${on ? ' aria-current="page"' : ""}>${label}</a>`;
   }).join("");
   const access = req.user.role === "admin" && !exp ? `<a href="/access"${req.path.startsWith("/access") ? ' aria-current="page"' : ""}>Access</a>` : "";
+  const repos = req.user.role === "admin" && !exp ? `<a href="/repos"${req.path.startsWith("/repos") ? ' aria-current="page"' : ""}>Repos</a>` : "";
   const me = exp ? "" : `<div class=me><span>${esc(req.user.login)}</span><form method=post action="/auth/signout" class=inline>${csrfField(req)}<button type=submit class=link>Sign out</button></form></div>`;
   return `<!doctype html><html lang=en><head><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">` +
     `<title>${esc(title)} · Triage</title><style nonce="${esc(req.nonce)}">${CSS}</style></head><body>` +
-    `<header><nav>${nav}${access}</nav>${me}</header><main>${body}</main>` +
+    `<header><nav>${nav}${repos}${access}</nav>${me}</header><main>${body}</main>` +
     (exp ? "" : `<script nonce="${esc(req.nonce)}">${JS}</script>`) + `</body></html>`;
 }
 
