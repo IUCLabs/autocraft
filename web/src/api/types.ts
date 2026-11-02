@@ -840,7 +840,8 @@ export interface CommentTemplate {
  * ready (may merge by the rule now), decision-answered-merge (the operator answered merge),
  * refused (the merge command or a pre-merge check said no; tried again next run),
  * waiting-ci (CI pending or none, or GitHub still computing mergeability), ci-failed, conflict,
- * needs-fix-up (take-fix), needs-decision (outside the rule; Merge? asked or about to be),
+ * needs-fix-up (take-fix), waiting-verify (no passed verification at the head yet), verify-failed, verify-error,
+ * needs-decision (outside the rule; Merge? asked or about to be),
  * declined (the operator answered hold or close), merged.
  */
 export type QueueState =
@@ -851,6 +852,9 @@ export type QueueState =
   | "ci-failed"
   | "conflict"
   | "needs-fix-up"
+  | "waiting-verify"
+  | "verify-failed"
+  | "verify-error"
   | "needs-decision"
   | "declined"
   | "merged";
@@ -880,6 +884,8 @@ export interface QueueRow {
   answer: string | null;
   refusedReason: string | null;
   reviewedAt: string;
+  /** The Verify stage's result at the reviewed head; null when none. `summary` is the failure or error text, or the plan's reason. */
+  verify: { state: string; kind: string | null; summary: string | null; note: string | null } | null;
 }
 
 export interface QueueFilter {

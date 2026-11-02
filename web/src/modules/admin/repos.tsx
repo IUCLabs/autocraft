@@ -213,16 +213,17 @@ function Cards({ rows, write }: { rows: TrackedRepo[]; write: Write }) {
             <div className="num mt-0.5 text-xs text-ink/55">
               {maybe(r.openPrs)} PRs · {maybe(r.openIssues)} issues · synced {synced(r)}
             </div>
+            {r.labels && <div className="num mt-0.5 text-xs text-ink/55">Labels plan: {planText(r)}</div>}
             {r.labels && (
               <div className="mt-1 flex items-center gap-2">
-                <span className="num text-xs text-ink/55">Labels: {planText(r)}</span>
+                <span className="num w-28 shrink-0 text-xs text-ink/55">Labels</span>
                 <Approval r={r} write={write} />
               </div>
             )}
             {(["merging", "pushing", "commenting"] as const).map((f) =>
               r[f] ? (
                 <div key={f} className="mt-1 flex items-center gap-2">
-                  <span className="num text-xs text-ink/55">{{ merging: "Merging", pushing: "Push fix-ups", commenting: "Comment and close" }[f]}:</span>
+                  <span className="num w-28 shrink-0 text-xs text-ink/55">{{ merging: "Merging", pushing: "Push fix-ups", commenting: "Comment and close" }[f]}:</span>
                   <WriteApproval r={r} write={write} kind={f} />
                 </div>
               ) : null,

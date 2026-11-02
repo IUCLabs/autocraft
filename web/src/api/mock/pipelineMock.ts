@@ -31,6 +31,26 @@ const STEPS: Omit<PipelineStep, "lastJob">[] = [
     description: "Puts the settled type label and flags onto the open items of one repo on GitHub. Refused unless the operator has approved labelling for that repo.",
     params: [{ name: "repo", label: "Repo", kind: "repo", options: REPOS, required: true }],
   },
+  {
+    name: "fixup", title: "Fix up take-fix pull requests", stage: 6, requires: "operator", group: "github-write", unavailable: null,
+    description: "For take-fix pull requests we may push to, Sonnet turns the review's fix list into a diff that is checked and applied on top of the reviewed head, pushed to the contributor's branch and noted with one short comment. The new head is reviewed again.",
+    params: [{ name: "repo", label: "Repo", kind: "repo", options: REPOS, required: true }, { name: "limit", label: "At most", kind: "int", min: 1, max: 50, default: 5, required: false, help: "pull requests to fix up in this job" }],
+  },
+  {
+    name: "verify", title: "Plan verification of taken pull requests", stage: 6, requires: "operator", group: "verify", unavailable: null,
+    description: "Sonnet decides per taken pull request of one repo whether CI is enough, or which crates and tests a build machine should run, or (bug fixes) a regression test that fails before the change. Queues the build tasks; reads GitHub, writes nothing to it.",
+    params: [{ name: "repo", label: "Repo", kind: "repo", options: REPOS, required: true }, { name: "limit", label: "At most", kind: "int", min: 1, max: 50, default: 10, required: false, help: "PRs to plan in this job" }],
+  },
+  {
+    name: "verify-collect", title: "Collect verification results", stage: 6, requires: "operator", group: "verify", unavailable: null,
+    description: "Reads the finished build tasks of each pending verification and sets passed, failed or error from their exit codes. For a failure, Haiku summarises the log; the failure becomes a hold.",
+    params: [],
+  },
+  {
+    name: "act", title: "Comment and close", stage: 6, requires: "operator", group: "github-write", unavailable: null,
+    description: "Posts one short comment and closes the items an operator answered Out of scope or Close. Skips an item that already closed or whose PR head moved. Calls no model.",
+    params: [{ name: "repo", label: "Repo", kind: "repo", options: REPOS, required: true }, { name: "limit", label: "At most", kind: "int", min: 1, max: 50, default: 20, required: false, help: "items to act on in this job" }],
+  },
 ];
 
 const job = (id: number, step: string, state: Job["state"], startMin: number | null, minutes: number, extra: Partial<Job> = {}): Job => ({
@@ -66,6 +86,7 @@ export function createPipelineMock(me: User, changed: () => void): Pick<Api, "pi
   const limits: StageLimit[] = [
     ["classify-new", "Classify new and changed items", 2000, 412], ["embed", "Embed items", null, 0], ["decide", "Ask decisions", 100, 100],
     ["checks", "Refresh CI and merge state", null, 38], ["review-batch", "Review pull requests", 40, 14], ["labels-apply", "Apply labels on GitHub", null, 0], ["merge", "Merge queued pull requests", 10, 2],
+    ["verify", "Plan verification of taken pull requests", 40, 12], ["fixup", "Fix up take-fix pull requests", 10, 3], ["act", "Comment and close", 20, 20],
   ].map(([step, title, perDay, usedToday]) => ({
     step: step as string, title: title as string, perDay: perDay as number | null, usedToday: usedToday as number,
     pausedReason: perDay !== null && (usedToday as number) >= (perDay as number) ? `daily limit of ${perDay} items reached` : null,

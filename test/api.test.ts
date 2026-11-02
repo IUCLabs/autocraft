@@ -134,6 +134,15 @@ describe("api", () => {
     assert.equal(it.body, "<script>x</script> body");
     assert.deepEqual([it.changedFiles, it.additions, it.deletions], [7, 40, 3]);
     assert.equal((await boss.get<Item>("/api/items/photocraft/4")).changedFiles, null);
+    assert.deepEqual([it.verification, it.fixups, it.actions], [null, [], []]);
+    db.prepare("UPDATE main.items SET head_oid = 'h1' WHERE repo = 'photocraft' AND number = 1").run();
+    db.prepare(`INSERT INTO verifications (repo, number, head_sha, kind, reason, plan, state, summary, created_at)
+      VALUES ('photocraft', 1, 'h1', 'tests', 'why', '{"kind":"tests","crates":["codecs"],"tests":["png::"]}', 'failed', 'test failed', '2026-01-01T00:00:00Z')`).run();
+    db.prepare("INSERT INTO fixups (repo, number, from_head, state, reason, files, attempt, created_at) VALUES ('photocraft', 1, 'h0', 'refused', 'no', '[\"a.rs\"]', 1, '2026-01-01T00:00:00Z')").run();
+    db.prepare("INSERT INTO actions (decision_id, repo, number, kind, state, comment_url, created_at) VALUES ('d1', 'photocraft', 1, 'comment-close', 'done', 'https://x/c', '2026-01-01T00:00:00Z')").run();
+    const worked = await boss.get<Item>("/api/items/photocraft/1");
+    assert.deepEqual([worked.verification?.state, worked.verification?.current, worked.verification?.plan], ["failed", true, { crates: ["codecs"], tests: ["png::"], testLines: null }]);
+    assert.deepEqual([worked.fixups[0]?.files, worked.fixups[0]?.state, worked.actions[0]?.commentUrl], [["a.rs"], "refused", "https://x/c"]);
     assert.deepEqual(it.comments.map((c) => c.body), ["looks good"]);
     assert.deepEqual(it.decisionIds, [P1]);
     assert.deepEqual(it.related.map((r) => [r.number, r.relation]), [[5, "fixes"]]);

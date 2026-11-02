@@ -18,7 +18,7 @@ const toRow = (e: QueueEntry): QueueRow => ({
   verdict: e.verdict, reason: e.reason, fixes: e.fixes,
   ci: (CI.includes(e.ci) ? e.ci : "unknown") as QueueRow["ci"], mergeable: MERGEABLE[e.mergeable] ?? "unknown",
   state: e.state as QueueState, path: e.path, outsideRule: e.outsideRule, decisionId: e.decisionId, answer: e.answer,
-  refusedReason: e.refusedReason, reviewedAt: e.reviewedAt,
+  refusedReason: e.refusedReason, reviewedAt: e.reviewedAt, verify: e.verify,
 });
 
 /** `repo#number` cursor of the last row of a page. */

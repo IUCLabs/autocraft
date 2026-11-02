@@ -21,6 +21,9 @@ export const STATE: Record<QueueState, [string, Tone, string]> = {
   "ci-failed": ["CI failed", "bad", "CI fails at this head"],
   conflict: ["Conflict", "bad", "Conflicts with the base branch"],
   "needs-fix-up": ["Needs fix-up", "warn", "The review lists small fixes; a later step makes them"],
+  "waiting-verify": ["Waiting for Verify", "neutral", "No passed verification at this head yet: the build tasks are planned or running"],
+  "verify-failed": ["Verify failed", "bad", "The build or tests failed at this head"],
+  "verify-error": ["Verify error", "warn", "Verification could not run; it is retried once, then held"],
   "needs-decision": ["Needs a decision", "warn", "Outside the merge rule: waits for the operator's Merge? answer"],
   declined: ["Declined", "neutral", "The operator answered hold or close"],
   merged: ["Merged", "merged", "Merged"],
@@ -165,6 +168,23 @@ function Why({ row }: { row: QueueRow }) {
   return null;
 }
 
+const V_TONE: Record<string, Tone> = { passed: "ok", "ci-enough": "ok", failed: "bad", error: "warn", running: "accent", planned: "neutral", stale: "neutral" };
+const V_LABEL: Record<string, string> = { passed: "Passed", "ci-enough": "CI is enough", failed: "Failed", error: "Error", running: "Running", planned: "Planned", stale: "Stale" };
+
+/** The Verify result at the reviewed head; the summary shows on hover and below the badge. */
+function VerifyCell({ row }: { row: QueueRow }) {
+  const v = row.verify;
+  if (!v) return <span className="text-ink/30">–</span>;
+  const text = [v.summary, v.note].filter(Boolean).join(" · ");
+  return (
+    <span className="block" title={text || undefined}>
+      <Badge tone={V_TONE[v.state] ?? "neutral"}>{V_LABEL[v.state] ?? v.state}</Badge>
+      {v.kind && <span className="ml-1.5 text-2xs text-ink/50">{v.kind}</span>}
+      {text && <span className="mt-0.5 line-clamp-2 block text-2xs text-ink/55">{text}</span>}
+    </span>
+  );
+}
+
 function Review({ row }: { row: QueueRow }) {
   return (
     <span className="block">
@@ -178,7 +198,7 @@ function Review({ row }: { row: QueueRow }) {
 function Table({ rows }: { rows: QueueRow[] }) {
   return (
     <div className="overflow-x-auto">
-      <table className="w-full min-w-[1080px] border-collapse text-sm">
+      <table className="w-full min-w-[1300px] border-collapse text-sm">
         <thead className="bg-ink/[0.03] text-xs text-ink/55">
           <tr className="border-b border-line text-left">
             <th className="h-8 px-3 font-medium">PR</th>
@@ -187,6 +207,7 @@ function Table({ rows }: { rows: QueueRow[] }) {
             <th className="w-[100px] px-3 font-medium">Label</th>
             <th className="w-[220px] px-3 font-medium">Review</th>
             <th className="w-[80px] px-3 font-medium">CI</th>
+            <th className="w-[200px] px-3 font-medium">Verify</th>
             <th className="w-[90px] px-3 font-medium">Mergeable</th>
             <th className="w-[130px] px-3 font-medium">State</th>
             <th className="w-[110px] px-3 font-medium">Decision</th>
@@ -215,6 +236,9 @@ function Table({ rows }: { rows: QueueRow[] }) {
               </td>
               <td className="px-3 py-2">
                 <Badge tone={CI_TONE[r.ci]}>{r.ci}</Badge>
+              </td>
+              <td className="px-3 py-2">
+                <VerifyCell row={r} />
               </td>
               <td className="px-3 py-2">
                 <Badge tone={MERGEABLE[r.mergeable][1]}>{MERGEABLE[r.mergeable][0]}</Badge>
@@ -261,6 +285,11 @@ function Cards({ rows }: { rows: QueueRow[] }) {
             <Badge tone={MERGEABLE[r.mergeable][1]}>{MERGEABLE[r.mergeable][0]}</Badge>
           </div>
           <p className="mt-1 text-xs text-ink/65">{r.reason}</p>
+          {r.verify && (
+            <div className="mt-1.5">
+              <VerifyCell row={r} />
+            </div>
+          )}
           <div className="mt-1 flex flex-wrap items-center justify-between gap-2">
             <Why row={r} />
             {r.decisionId && (
