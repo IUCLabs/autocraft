@@ -39,7 +39,7 @@ Add a `decisions` table; the pipeline writes the questions, the dashboard and th
 | `repo`, `number` | the item; `number` null for a batch |
 | `items` | JSON array of `{repo, number}` for a batch |
 | `question` | one sentence |
-| `summary`, `summary_by`, `summary_at` | AI summary of the item (or batch): 3–6 sentences on what it does, why, what is risky or unclear, and how it relates to the reference app; which model wrote it and when |
+| `summary`, `summary_by`, `summary_at` | AI summary of the item (or batch): 2–6 sentences on what it does, why, what is risky or unclear, and how it relates to the reference app; which model wrote it and when |
 | `context` | at most three short sentences, in user terms |
 | `facts` | JSON array of up to five short facts ("+120 −8, 3 files", "author: 14 merged PRs", "reference app: Filter › Distort › Wave") |
 | `options` | JSON array of `{key, label}`; 2–4 options |

@@ -8,7 +8,7 @@ The craft apps have about 21,000 open issues and PRs. The pipeline sorts all of 
 |---|---|---|---|---|
 | 1 | Mirror | Every issue, PR and comment of the tracked repos is copied into a local database. Later stages read the mirror, never GitHub directly. | `craft-auto sync`, every minute: one org-wide GitHub search for changes | Automatic |
 | 2 | Classify | Every open item gets one type label (bugfix, performance, missing feature, small extra, plugin candidate, infra) and two flags (security, needs decision). | Jev first. Where Jev is under 90 % sure, Haiku as well. Where they disagree, the item goes to a person or to Sonnet | Scripted, started by the operator (`craft-auto classify`) |
-| 3 | Decide | Items flagged "needs decision" (scope, wanted or not, reference-app behaviour) become decisions on this dashboard, each with an AI summary and the item's own text. | The operator answers; anyone signed in can comment and pick an option | Dashboard built; asking decisions from stage 2 is next |
+| 3 | Decide | Items flagged "needs decision" (scope, wanted or not, reference-app behaviour), and items where Jev and Haiku disagree between scope labels, become decisions on this dashboard, each with an AI summary and the item's own text. | `craft-auto decide` asks them, with summaries by Sonnet. The operator answers; anyone signed in can comment and pick an option | Scripted, started by the operator |
 | 4 | Label | The type label and flags go onto the item on GitHub. | Script, one repo at a time, after the operator agrees the timing for that repo | Planned |
 | 5 | Review | PRs we want get a code review: take, take with fixes, hold, or close (duplicate, already fixed, superseded). | Sonnet, one reviewer per batch of related PRs; one per feature for large PRs. Tests are not reviewed, only code | Planned here; earlier rounds ran by hand |
 | 6 | Integrate | Taken PRs are assigned to us, fixed up on the contributor's branch where possible, grouped into integration branches and merged when GitHub CI is green. | Sonnet implementers; merges only through a checked merge script | Planned here; earlier rounds ran by hand |
@@ -28,6 +28,27 @@ Stages 5–7 go one or a few repos at a time, in turn. Stages 1–4 cover the wh
 Classifiers and Cost show how often the models agree and what each stage costs.
 
 Every prompt sent to a model is defined in one registry (`src/prompts`), and the code can call a model only with a registered prompt. [Prompts](/prompts) shows each one exactly as sent, with its model, call settings and a rendered example.
+
+## Scope decisions
+
+`craft-auto decide [--repo R ...] [--limit N] [--dry-run]` asks one scope decision per item. An item gets one when it is open, not a draft, in a tracked repo, and either
+
+- its settled classification carries the "needs decision" flag (settled: Jev at least 90 % sure, or Haiku agreeing with Jev), or
+- Jev and Haiku chose different labels among missing feature, small extra and plugin candidate.
+
+Items that already have an open decision, a scope decision (answered ones too) or a later stage are skipped, so the command can run again at any time and asks only what is new. Items Haiku has not judged yet wait for it.
+
+Each decision has a one-line question chosen by the label, up to four options, a recommendation from the classifiers' labels (none when they disagree, except plugin candidate over small extra), up to five facts (size and age, author and whitelist tier, both classifiers' labels, GitHub labels, linked items) and a 2–4 sentence summary from the `decide.summary` prompt.
+
+The step that acts on answers reads these keys:
+
+| Key | Meaning |
+|---|---|
+| `take` | In scope for core. Keep open; PRs go to review |
+| `small-extra` | Keep in core as a small extra (label "small extra") |
+| `plugin` | Not for core. Keep open and label "plugin candidate" |
+| `close` | Out of scope. Close with a short reason |
+| `need-info` | Ask how the reference app behaves, then decide again |
 
 ## What needs a person
 

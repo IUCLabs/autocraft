@@ -69,7 +69,7 @@ export interface Decision {
   items: (ItemRef & { title: string })[];
   title: string;
   question: string;
-  /** AI summary of the item or batch, 3–6 sentences. */
+  /** AI summary of the item or batch, 2–6 sentences. */
   summary: string;
   summaryBy: string;
   summaryAt: string;
