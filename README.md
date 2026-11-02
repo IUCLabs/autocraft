@@ -24,8 +24,13 @@ The frontend is the React app in `web/`. Build it before serving: `pnpm -C web i
 | `CRAFT_AUTO_WEB_DIST` | Directory of the built frontend. Default `web/dist` in the repo. |
 | `CRAFT_AUTO_SECRETS_FILE` | JSON file with `github_client_id`, `github_client_secret` and `session_key` (at least 32 characters, random). Must be mode 0600; the server refuses to start if it is missing, incomplete, or readable by group or others. |
 | `CRAFT_AUTO_TRUST_PROXY` | `1` to take the client address for rate limits from the last `X-Forwarded-For` entry. Set it only behind a proxy that sets that header. |
+| `CRAFT_AUTO_IMG_CACHE` | Disk cache of the image proxy. Default `$XDG_CACHE_HOME/craft-automation/img` (`~/.cache/...`); empty for no disk cache. |
 
 The GitHub OAuth App needs no scopes, and expiring user tokens are supported: the server refreshes them as needed and ends the session when a refresh fails. Tokens are stored encrypted with a key derived from `session_key`; changing `session_key` ends every session.
+
+### Images
+
+`GET /img?u=<url>` (signed in only) fetches GitHub-hosted images from issue and PR bodies so the app can show them inline under its CSP. It serves only `https` URLs on `github.com/user-attachments/assets/<uuid>`, `private-user-images.githubusercontent.com`, `user-images.githubusercontent.com`, `raw.githubusercontent.com/storytold/` and `avatars.githubusercontent.com`; everything else is a 404. It follows at most three redirects, each to one of those hosts or GitHub's attachment bucket (`github-production-user-asset-6210df.s3.amazonaws.com`). Requests to `github.com` carry the bot's token from `gh auth token`, run in the repo's directory and kept in memory for an hour; no other host gets it. It serves PNG, JPEG, GIF, WebP and AVIF, checked by their magic bytes, up to 15 MB, within 15 seconds; never SVG. Responses are `private, max-age=86400` with `default-src 'none'` and `nosniff`; images are cached on disk for 7 days (at most 512 MB), and each session may make 120 upstream fetches a minute.
 
 ### Development sign-in
 

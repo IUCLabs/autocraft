@@ -203,6 +203,18 @@
   color: rgb(var(--st-fg-rgb) / 0.75);
   font-size: 12px;
 }
+.md .md-inline-image {
+  display: inline-block;
+  max-width: 100%;
+}
+.md .md-inline-image img {
+  display: block;
+  max-width: 100%;
+  max-height: 480px;
+  height: auto;
+  border: 1px solid var(--st-line);
+  border-radius: 4px;
+}
 .md .md-image:hover {
   text-decoration: none;
   border-color: rgb(var(--st-accent-ink-rgb) / 0.6);
