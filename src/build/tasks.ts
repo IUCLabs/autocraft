@@ -30,6 +30,7 @@ type TaskRow = {
   requires: string; priority: number; plan: string; state: TaskState; env_id: string | null; attempts: number;
   queued_at: string; claimed_at: string | null; started_at: string | null; ended_at: string | null; heartbeat_at: string | null;
   cancel_requested_at: string | null; results: string; summary: string | null; log_bytes: number; artifact_bytes: number;
+  patch?: string | null; warm_key?: string | null; warm_role?: string | null;
   env_label?: string | null;
 };
 
@@ -44,7 +45,30 @@ const json = <T>(s: string, fallback: T): T => {
 export type NewTask = {
   jobId?: number | null; step: string; repo: string; number?: number | null; headSha: string; baseSha?: string | null;
   requires?: Requires; priority?: number; plan: TaskStep[];
+  /** Unified git diff applied to the checkout before the plan runs. */
+  patch?: string;
+  /** Tasks of one repo share a build cache under `key`: `build` fills it, `use` reads it. */
+  warm?: Warm;
 };
+
+export type Warm = { key: string; role: "use" | "build" };
+export const MAX_PATCH_BYTES = 1024 * 1024;
+const WARM_KEY_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
+
+export function parseWarm(v: unknown): Warm {
+  const o = v as Record<string, unknown> | null;
+  if (!o || typeof o !== "object" || Array.isArray(o) || Object.keys(o).some((k) => k !== "key" && k !== "role")) throw new BuildError(400, "warm must be { key, role }");
+  if (typeof o.key !== "string" || !WARM_KEY_RE.test(o.key)) throw new BuildError(400, "warm.key is not valid");
+  if (o.role !== "use" && o.role !== "build") throw new BuildError(400, "warm.role must be use or build");
+  return { key: o.key, role: o.role };
+}
+
+export function parsePatch(v: unknown): string {
+  if (typeof v !== "string" || v.length === 0) throw new BuildError(400, "patch must be a non-empty string");
+  if (Buffer.byteLength(v) > MAX_PATCH_BYTES) throw new BuildError(400, "patch is larger than 1 MiB");
+  if (v.includes("\0")) throw new BuildError(400, "patch must be text");
+  return v;
+}
 
 export function parseRequires(v: unknown): Requires {
   if (v === undefined) return {};
@@ -92,11 +116,14 @@ export function createTask(db: DatabaseSync, t: NewTask): number {
   if (!Number.isInteger(priority) || priority < -100 || priority > 100) throw new BuildError(400, "priority must be -100 to 100");
   const requires = parseRequires(t.requires);
   const plan = parsePlan(t.plan);
+  const patch = t.patch === undefined ? null : parsePatch(t.patch);
+  const warm = t.warm === undefined ? null : parseWarm(t.warm);
   const queued = (db.prepare("SELECT COUNT(*) AS n FROM build_tasks WHERE state = 'queued'").get() as { n: number }).n;
   if (queued >= MAX_QUEUED) throw new BuildError(429, `${MAX_QUEUED} tasks are already queued`);
-  const r = db.prepare(`INSERT INTO build_tasks (job_id, step, repo, number, head_sha, base_sha, requires, priority, plan, state, queued_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?)`)
-    .run(t.jobId ?? null, t.step, t.repo, t.number ?? null, t.headSha, t.baseSha ?? null, JSON.stringify(requires), priority, JSON.stringify(plan), nowIso());
+  const r = db.prepare(`INSERT INTO build_tasks (job_id, step, repo, number, head_sha, base_sha, requires, priority, plan, state, queued_at, patch, warm_key, warm_role)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?)`)
+    .run(t.jobId ?? null, t.step, t.repo, t.number ?? null, t.headSha, t.baseSha ?? null, JSON.stringify(requires), priority, JSON.stringify(plan), nowIso(),
+      patch, warm?.key ?? null, warm?.role ?? null);
   return Number(r.lastInsertRowid);
 }
 
@@ -112,7 +139,7 @@ export function satisfies(caps: Capabilities, req: Requires): boolean {
   return true;
 }
 
-export type ClaimedTask = { id: number; repo: string; headSha: string; baseSha: string | null; requires: Requires; plan: TaskStep[]; sourceUrl: string };
+export type ClaimedTask = { id: number; repo: string; headSha: string; baseSha: string | null; requires: Requires; plan: TaskStep[]; sourceUrl: string; patch?: string; warm?: Warm };
 export type ClaimResult = { tasks: ClaimedTask[]; cancel: number[] };
 
 /**
@@ -152,6 +179,8 @@ export function claim(db: DatabaseSync, envId: string, free: number, nowMs: numb
           out.push({
             id: t.id, repo: t.repo, headSha: t.head_sha, baseSha: t.base_sha, requires: json<Requires>(t.requires, {}), plan: json<TaskStep[]>(t.plan, []),
             sourceUrl: `https://codeload.github.com/${SOURCE_ORG}/${t.repo}/tar.gz/${t.head_sha}`,
+            ...(t.patch ? { patch: t.patch } : {}),
+            ...(t.warm_key && (t.warm_role === "use" || t.warm_role === "build") ? { warm: { key: t.warm_key, role: t.warm_role } } : {}),
           });
         }
       }

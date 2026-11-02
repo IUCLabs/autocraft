@@ -18,6 +18,7 @@ import { mergeApprovalOf } from "../merge/approval.ts";
 import { buildQueue, eligible } from "../merge/queue.ts";
 import { trackedNames } from "../repos.ts";
 import { selectCandidates as reviewCandidates } from "../review/candidates.ts";
+import { selectCandidates as verifyCandidates } from "../verify/candidates.ts";
 import { audit } from "../dash/audit.ts";
 import { currentRun, dueItems, haikuDue } from "./classify.ts";
 import { enqueue, JobError, now, requestCancel, RUNNER_STOPPED } from "./jobs.ts";
@@ -38,6 +39,7 @@ export const KEY_ENABLED = "pipeline_enabled";
 const KEY_BY = "pipeline_changed_by", KEY_AT = "pipeline_changed_at";
 const KEY_SYNC_SEEN = "pipeline_sync_seen", KEY_SYNC_AT = "pipeline_sync_at", KEY_PLANNED_AT = "pipeline_planned_at";
 const KEY_CURSOR = "pipeline_review_cursor";
+const KEY_VERIFY_CURSOR = "pipeline_verify_cursor";
 
 const getSetting = (db: DatabaseSync, key: string): string | null =>
   (db.prepare("SELECT value FROM settings WHERE key = ?").get(key) as { value: string } | undefined)?.value ?? null;
@@ -158,6 +160,26 @@ export const LANES: Lane[] = [
       return repos.map((repo) => ({ step: "merge", params: { repo } }));
     },
   },
+  {
+    // One repo per job, round robin; the repo's checks come before its planning.
+    name: "verify",
+    steps: ["checks", "verify"],
+    perRepo: true,
+    detect: (db, { run, tracked }) => {
+      const out: Candidate[] = [];
+      for (const repo of roundRobin(tracked, getSetting(db, KEY_VERIFY_CURSOR))) {
+        if (!verifyCandidates(db, repo, run).length) continue;
+        const checks = lastJobEnd(db, "checks", repo);
+        const fresh = checks?.state === "done" && Date.now() - Date.parse(checks.endedAt) < CHECKS_FRESH_MS;
+        const verify = { step: "verify", params: { repo } };
+        out.push(fresh ? verify : { step: "checks", params: { repo }, gate: verify });
+      }
+      return out;
+    },
+    chosen: (db, c) => {
+      if (c.step === "verify") setSetting(db, KEY_VERIFY_CURSOR, String(c.params.repo));
+    },
+  },
 ];
 
 // ---- limits and usage ----------------------------------------------------------
@@ -217,7 +239,7 @@ export function setEnabled(db: DatabaseSync, enabled: boolean, by: string): void
 }
 
 /** Steps that have a row in stage_limits, in pipeline order. */
-export const LIMIT_STEPS = ["classify-new", "embed", "decide", "checks", "review-batch", "labels-apply", "merge"];
+export const LIMIT_STEPS = ["classify-new", "embed", "decide", "checks", "review-batch", "labels-apply", "merge", "verify"];
 
 /** Steps whose jobs cannot be sized to what remains of the day: only no limit or a pause makes sense. */
 export const ZERO_ONLY = ["checks"];

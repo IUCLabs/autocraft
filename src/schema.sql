@@ -320,7 +320,7 @@ CREATE TABLE IF NOT EXISTS stage_limits (
 );
 INSERT OR IGNORE INTO stage_limits (step, per_day) VALUES
   ('classify-new', 2000), ('embed', NULL), ('decide', 100), ('checks', NULL),
-  ('review-batch', 40), ('labels-apply', NULL), ('merge', 10);
+  ('review-batch', 40), ('labels-apply', NULL), ('merge', 10), ('verify', 30);
 
 -- One row per `craft-auto sync` run, kept for two days, for the Pipeline page.
 CREATE TABLE IF NOT EXISTS sync_runs (
@@ -549,7 +549,10 @@ CREATE TABLE IF NOT EXISTS build_tasks (
   results TEXT NOT NULL DEFAULT '[]', -- JSON, as reported by the worker
   summary TEXT,                       -- one line, as reported by the worker
   log_bytes INTEGER NOT NULL DEFAULT 0,
-  artifact_bytes INTEGER NOT NULL DEFAULT 0
+  artifact_bytes INTEGER NOT NULL DEFAULT 0,
+  patch TEXT,                         -- unified git diff the worker applies to the checkout (at most 1 MiB)
+  warm_key TEXT,                      -- build-cache key shared by tasks of one repo
+  warm_role TEXT                      -- use | build
 );
 CREATE INDEX IF NOT EXISTS build_tasks_queue ON build_tasks(priority DESC, id) WHERE state = 'queued';
 CREATE INDEX IF NOT EXISTS build_tasks_env ON build_tasks(env_id, state);
@@ -576,3 +579,23 @@ CREATE TABLE IF NOT EXISTS build_artifacts (
   file TEXT NOT NULL,                 -- path under the artifact directory
   PRIMARY KEY (task_id, name)
 ) WITHOUT ROWID;
+
+-- One verification per PR head commit (Verify stage). kind: ci-enough | tests | regression.
+-- state: planned (tasks queued) | running | passed | failed | error (the plan was invalid, no task) | ci-enough | stale (the PR moved on).
+CREATE TABLE IF NOT EXISTS verifications (
+  repo TEXT NOT NULL, number INTEGER NOT NULL,
+  head_sha TEXT NOT NULL,
+  base_sha TEXT,
+  kind TEXT NOT NULL,
+  reason TEXT NOT NULL,               -- at most 25 words
+  plan TEXT,                          -- JSON, the validated plan
+  model TEXT,
+  head_task_id INTEGER,
+  base_task_id INTEGER,
+  state TEXT NOT NULL,
+  summary TEXT,
+  created_at TEXT NOT NULL,
+  finished_at TEXT,
+  PRIMARY KEY (repo, number, head_sha)
+);
+CREATE INDEX IF NOT EXISTS verifications_state ON verifications(state);

@@ -247,6 +247,26 @@ export const STEPS: StepDef[] = [
       return `${r.repo}: merged ${r.merged.length} of ${r.attempted.length} tried, ${r.refused.length} refused, ${r.asked.length} decisions asked`;
     },
   },
+  {
+    name: "verify",
+    title: "Plan verification of taken pull requests",
+    description: "Sonnet decides per taken pull request of one repo whether CI is enough, or which crates and tests a build machine should run, or (bug fixes) a regression test that fails before the change. Queues the build tasks; reads GitHub, writes nothing to it.",
+    stage: 6,
+    requires: "operator",
+    group: "verify",
+    models: ["sonnet"],
+    params: [
+      { name: "repo", label: "Repo", kind: "repo", required: true },
+      { name: "limit", label: "At most", kind: "int", min: 1, max: 50, default: 10, help: "PRs to plan in this job" },
+    ],
+    run: async (ctx) => {
+      const { runVerify } = await import("../verify/index.ts");
+      const r = await runVerify(ctx.db, { repo: String(ctx.params.repo), limit: Number(ctx.params.limit), onHandled: ctx.handled }, ctx.log);
+      ctx.usageRun(r.runId);
+      const k = Object.entries(r.kinds).map(([x, n]) => `${n} ${x}`).join(", ");
+      return `${r.repo}: planned ${r.handled} of ${r.candidates} candidates${k ? ` (${k})` : ""}; ${r.errors} errors, ${r.tasks.length} tasks queued`;
+    },
+  },
 ];
 
 let loaded: Promise<Map<string, StepDef>> | null = null;

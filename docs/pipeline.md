@@ -43,6 +43,28 @@ The weaker of two duplicates is held, never closed, until the better one has mer
 
 **Storage.** One `reviews` row per PR and head commit: verdict, reason (25 words at most), fixes, duplicate_of, overlaps, risks, model, size, run. Each review also adds two `stages` rows: `reviewed` (verdict, short head commit and reason) and the verdict itself (`take` for take and take-fix, `hold`, `close`), which the Progress page counts. Token use goes to `token_usage` with stage `review`.
 
+## Stage: Verify
+
+Sits between Review (5) and Integrate (6). Its step is numbered 6 in the runner, like the flow chart's Verify node. Planning and task creation are built; result collection comes with part 2 (`src/verify/results.ts`).
+
+**Which PRs.** Open, non-draft PRs of public repos whose latest review at the current head commit is `take` (a take-fix PR gets a fix-up push first, which is reviewed again), whose CI does not fail at that head, and that have no verification at that head. Only Rust repos: the repo needs a `Cargo.toml` at its root at that head. `craft-auto verify --repo R [--limit N] [--dry-run]` runs the step; the autopilot queues it per repo after a fresh `checks` job.
+
+**Planner.** One Sonnet call per PR, no tools (prompt `verify.plan`). Inputs, all untrusted: title and body, the review's verdict, reason, risks and fixes, the code diff (same cache as Review), the settled type label, and the workspace's crate names with their directories (GitHub tree API at the head sha, cached by sha next to the diffs). The reply picks one kind:
+
+| Kind | Meaning |
+|---|---|
+| `ci-enough` | No task; the reason is recorded |
+| `tests` | Build plus tests of up to 5 named crates, optionally narrowed by test-name filters |
+| `regression` | Only for PRs whose settled label is bugfix: a test file the planner writes, which should fail on the base commit and pass on the head |
+
+Our code validates the reply and treats anything invalid as an error with no task: crates must be names from the listed workspace (at most 5, passed to cargo only as `-p <crate>`); a test filter matches `[A-Za-z0-9_:]{1,100}`; a regression test is at most 200 lines and is turned into a patch that adds exactly `<crate dir>/tests/autocraft_regression.rs`, which a parser of the diff checks again (one new file, additions only). Screenshots are not part of the plan yet. Pass or fail comes from exit codes, never from a model.
+
+**Tasks.** Built with `rustPlan` (`src/worker/rust.ts`). Each requires `{ os: linux, toolchains: [rust-stable] }`, has step `verify` and `warm { key: <repo>, role: use }`. `tests` and `regression` queue a head task (head sha = PR head, base sha = PR base). `regression` also queues a base task: the same patch at the base commit, where the test is expected to fail. A task's `patch` (unified diff, at most 1 MiB) is applied to the checkout by the worker before its plan runs.
+
+**Warm builds.** When a repo gets verification tasks and has no warm build for its default branch head, one task builds that head (all targets of the workspace, no tests) with `warm { key: <repo>, role: build }` at priority -10. At most one per repo per 24 hours.
+
+**Storage.** One `verifications` row per PR and head commit: kind, reason (25 words at most), plan, model, head and base task ids, state (`planned`, `running`, `passed`, `failed`, `error`, `ci-enough`, `stale`), summary, created and finished times. Planning writes a `stages` row per PR: `verify-planned`, `verify-ci-enough` or `verify-error`; the Progress page counts them as take. Token use goes to `token_usage` with stage `verify`. The stage has a daily limit of PRs planned (default 30).
+
 ## Stage 6: Integrate
 
 Built so far: the merge queue and the merge step. Fix-ups of take-fix PRs and integration branches come next.
@@ -162,7 +184,7 @@ The step that acts on answers reads these keys:
 Untrusted code (a PR's build, tests and screenshots) never runs where the GitHub token or a Claude login is. It runs in a task on a build environment, a worker registered by an operator.
 
 - **Environment**: an id, a label, a kind (`local-sandbox` on this box as a separate OS user, or `remote`), an enabled switch, a slot count, and capabilities the worker reports (os, arch, cpus, memory, disk, display, gpu, toolchains). It has a worker key, shown once and stored as a SHA-256 hash. It is online while its last call is under 60 seconds old. The worker may report fewer slots than the operator allows, never more, and may report a pause reason (for example low disk), which the page shows.
-- **Task**: created by a pipeline step with `createTask` (`src/build/tasks.ts`). It names the source (repo, head sha, base sha), what it requires (os, arch, display, gpu, toolchains, minimum memory and disk), a priority and a plan of steps (argv, network `fetch` or `none`, timeout, artifact globs). Verify is the first step that will create tasks; none does yet. States: queued, claimed, running, done, failed, cancelled, lost.
+- **Task**: created by a pipeline step with `createTask` (`src/build/tasks.ts`). It names the source (repo, head sha, base sha), what it requires (os, arch, display, gpu, toolchains, minimum memory and disk), a priority and a plan of steps (argv, network `fetch` or `none`, timeout, artifact globs). The Verify step creates tasks; a task may also carry a `patch` (unified diff the worker applies to the checkout) and `warm { key, role }` (`key` matches `^[a-z0-9][a-z0-9-]{0,63}$`; role `build` fills the build cache of that key, `use` reads it). States: queued, claimed, running, done, failed, cancelled, lost.
 - **Scheduling is pull.** A worker calls `claim` with its free slots. In one write transaction the coordinator gives it the oldest queued tasks of the highest priority whose requirements its capabilities satisfy, up to the smaller of its free slots and its slots minus the tasks it runs. Several environments compete: whichever has a matching free slot claims first. A disabled, paused, never-reported or offline environment gets nothing.
 - **Lost workers.** A claimed or running task needs a heartbeat at least every 2 minutes. Without one it is requeued once; if the second worker is lost too, it fails. The runner checks every pass.
 - **Cancel.** Cancelling a queued task ends it at once. Cancelling an active task also ends it at once and lists its id in the worker's claim and heartbeat responses for 2 minutes; the worker kills the containers and sends no finish.
@@ -229,7 +251,7 @@ The full classification pass (`classify-all`) is never started automatically. A 
 
 ### Daily limits
 
-Each stage has a limit of items per day, counted from 00:00 UTC over the items its jobs handled. A job records its count as it works, so a failed or stopped job keeps it. Handled means units attempted: items sent to Jev or Haiku, items sent for a decision summary, PRs sent for review (or held as too large), items embedded, items labelled, PRs merged. The job's `limit` is the smaller of the step's default and what remains of the day. An empty limit means no limit and 0 pauses the stage. Defaults: classify-new 2000, decide 100, review-batch 40, merge 10; embed, checks and labels-apply have none (labelling and merging are each gated by a per-repo approval). `embed` and `checks` jobs cannot be sized to what remains of the day, so `checks` accepts only no limit or 0; an `embed` limit stops new jobs once it is reached. Operators change limits on the Pipeline page or with `craft-auto pipeline limit <step> --per-day N|none`. A stage that cannot start jobs shows why on the page (limit reached, limit 0, waiting after failures).
+Each stage has a limit of items per day, counted from 00:00 UTC over the items its jobs handled. A job records its count as it works, so a failed or stopped job keeps it. Handled means units attempted: items sent to Jev or Haiku, items sent for a decision summary, PRs sent for review (or held as too large), items embedded, items labelled, PRs merged. The job's `limit` is the smaller of the step's default and what remains of the day. An empty limit means no limit and 0 pauses the stage. Defaults: classify-new 2000, decide 100, review-batch 40, verify 30, merge 10; embed, checks and labels-apply have none (labelling and merging are each gated by a per-repo approval). `embed` and `checks` jobs cannot be sized to what remains of the day, so `checks` accepts only no limit or 0; an `embed` limit stops new jobs once it is reached. Operators change limits on the Pipeline page or with `craft-auto pipeline limit <step> --per-day N|none`. A stage that cannot start jobs shows why on the page (limit reached, limit 0, waiting after failures).
 
 | Who | On the Pipeline page |
 |---|---|

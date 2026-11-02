@@ -29,6 +29,9 @@ const ADDED_COLUMNS: [table: string, column: string, type: string][] = [
   ["items", "class_hash", "TEXT"],
   ["items", "class_scheme", "TEXT"],
   ["jobs", "repo", "TEXT"],
+  ["build_tasks", "patch", "TEXT"],
+  ["build_tasks", "warm_key", "TEXT"],
+  ["build_tasks", "warm_role", "TEXT"],
 ];
 
 // Indexes on added columns: they can only be created once the column exists.
