@@ -389,13 +389,12 @@ function ShortcutSheet({ open, onOpenChange }: { open: boolean; onOpenChange: (o
 function RunMeter({ open }: { open: boolean }) {
   const { data } = useQuery("progress", (api) => api.progress());
   if (!data || !open) return null;
-  const days = (Date.parse(data.now) - Date.parse(data.runStartedAt)) / 86400_000;
   const done = data.done.mergedByPipeline + data.done.closedByPipeline + data.done.closedByOthers;
   const all = done + data.funnel.open;
   return (
     <NavLink to="/progress" className="mx-2 mb-2 block rounded-md border border-line p-2.5 hover:border-line-strong">
       <div className="flex items-baseline justify-between text-xs">
-        <span className="font-medium text-ink/80">Run · day {Math.ceil(days)}</span>
+        <span className="font-medium text-ink/80">Backlog</span>
         <span className="num text-ink/55">{Math.round((done / all) * 100)}%</span>
       </div>
       <div className="mt-2 flex h-1 gap-px overflow-hidden rounded-full bg-ink/10">

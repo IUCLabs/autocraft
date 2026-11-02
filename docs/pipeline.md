@@ -25,7 +25,7 @@ Stages 5–7 go one or a few repos at a time, in turn. Stages 1–4 cover the wh
 | Sonnet | Code review, fix-ups, implementation, settling disagreements | Good enough for review at a fraction of Opus's cost |
 | Opus | Planning and direction only | Expensive; used where judgement matters most |
 
-Classifiers and Run and cost show how often the models agree and what each stage costs.
+Classifiers and Cost show how often the models agree and what each stage costs.
 
 ## What needs a person
 

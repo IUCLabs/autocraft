@@ -105,7 +105,7 @@ Agreement between classifiers on the same items (for the Jev vs Haiku trial, lat
 
 Access list with add, remove and role change; active sessions with revoke; the audit log, filterable by login and action.
 
-### Run and cost
+### Cost
 
 Per stage and model: agent runs, items handled, tokens (input, output, cache), tokens per item. Per repo: items done and tokens spent. The experiment's headline numbers: issues and PRs closed, merged, fixed by us, by size; decisions asked and answered; items still needing a human.
 

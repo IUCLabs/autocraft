@@ -45,7 +45,7 @@ function Overview(_: ViewProps) {
     <div className="h-full overflow-y-auto">
       <div className="mx-auto max-w-[1180px] px-4 pb-12 pt-5 md:px-6">
         <div className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5">
-          <h1 className="text-xl font-semibold">Run progress</h1>
+          <h1 className="text-xl font-semibold">Progress</h1>
           <span className="text-sm text-ink/55">
             Started {p.runStartedAt.slice(0, 10)} · day {days} · {p.repos.length} repos
           </span>

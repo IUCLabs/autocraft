@@ -96,7 +96,7 @@ function Cost(_: ViewProps) {
     <div className="h-full overflow-y-auto">
       <div className="mx-auto max-w-[1180px] px-4 pb-12 pt-5 md:px-6">
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-          <h1 className="text-xl font-semibold">Run and cost</h1>
+          <h1 className="text-xl font-semibold">Cost</h1>
           <Select
             label="Run"
             value={r.run}
@@ -130,6 +130,6 @@ function Cost(_: ViewProps) {
 export const costModule: FeatureModule = {
   id: "cost",
   permission: "viewer",
-  nav: { label: "Run and cost", icon: CoinsIcon, to: "/cost", group: "insight", order: 12 },
-  routes: [{ path: "cost", view: { id: "cost", title: "Run and cost", panels: [{ id: "main", title: "Run and cost", component: Cost, defaultSize: 100 }] } }],
+  nav: { label: "Cost", icon: CoinsIcon, to: "/cost", group: "insight", order: 12 },
+  routes: [{ path: "cost", view: { id: "cost", title: "Cost", panels: [{ id: "main", title: "Cost", component: Cost, defaultSize: 100 }] } }],
 };
