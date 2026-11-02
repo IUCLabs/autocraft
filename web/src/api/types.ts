@@ -488,3 +488,14 @@ export interface CostReport {
   series: { bucket: string; tokens: number; usd: number | null }[];
   bucketSize: "hour" | "day";
 }
+
+/** A search hit ranked by embedding similarity (`/api/similar`, `/api/search?mode=semantic`). */
+export interface SimilarHit extends SearchHit {
+  /** Cosine similarity of the two embeddings; near-duplicates score about 0.9 and up. */
+  score: number;
+  /** How a closed issue was closed. */
+  stateReason: "completed" | "not-planned" | "duplicate" | null;
+  /** Type label from the most trusted classifier that judged the item (owner, then sonnet, jev, haiku). */
+  label: string | null;
+  labelBy: string | null;
+}

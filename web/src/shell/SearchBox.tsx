@@ -1,29 +1,52 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { GitPullRequestIcon, CircleDotIcon, SearchIcon } from "lucide-react";
+import { GitPullRequestIcon, CircleDotIcon, SearchIcon, SparklesIcon } from "lucide-react";
 import { useApi } from "../api/client";
-import type { SearchHit } from "../api/types";
+import type { SearchHit, SimilarHit } from "../api/types";
 import { Kbd } from "../ui/Kbd";
 import { RefLink } from "../ui/RefLink";
 import { cn } from "../ui/cn";
 
-/** Global search: `repo#123`, `#123`, a title fragment or an author login. */
+const SEMANTIC_KEY = "craft-triage:search-semantic";
+const isRef = (q: string) => /^([A-Za-z0-9._-]+)?#?\d+$/.test(q.trim());
+
+/** Global search: `repo#123`, `#123`, a title fragment or an author login; or, with the meaning toggle (Alt+M), by embedding similarity. */
 export function SearchBox({ autoFocus, onPick, fullscreen }: { autoFocus?: boolean; onPick?: () => void; fullscreen?: boolean }) {
   const api = useApi();
   const navigate = useNavigate();
   const [q, setQ] = useState("");
-  const [hits, setHits] = useState<SearchHit[]>([]);
+  const [hits, setHits] = useState<(SearchHit | SimilarHit)[]>([]);
+  const [semantic, setSemantic] = useState(() => {
+    try {
+      return localStorage.getItem(SEMANTIC_KEY) === "1";
+    } catch {
+      return false;
+    }
+  });
+  const toggleSemantic = () =>
+    setSemantic((v) => {
+      try {
+        localStorage.setItem(SEMANTIC_KEY, v ? "0" : "1");
+      } catch {
+        /* private mode: not remembered */
+      }
+      return !v;
+    });
   const [focus, setFocus] = useState(false);
   const [sel, setSel] = useState(0);
 
   useEffect(() => {
     let live = true;
-    const t = setTimeout(() => api.search(q).then((h) => live && (setHits(h), setSel(0))), 90);
+    const bySense = semantic && !isRef(q);
+    const t = setTimeout(
+      () => (bySense ? api.semanticSearch(q) : api.search(q)).then((h) => live && (setHits(h), setSel(0)), () => live && setHits([])),
+      bySense ? 250 : 90,
+    );
     return () => {
       live = false;
       clearTimeout(t);
     };
-  }, [q, api]);
+  }, [q, api, semantic]);
 
   const pick = (h: SearchHit) => {
     navigate(`/item/${h.repo}/${h.number}`);
@@ -49,14 +72,26 @@ export function SearchBox({ autoFocus, onPick, fullscreen }: { autoFocus?: boole
             if (e.key === "ArrowUp") (e.preventDefault(), setSel((s) => Math.max(s - 1, 0)));
             if (e.key === "Enter" && hits[sel]) pick(hits[sel]);
             if (e.key === "Escape") (e.target as HTMLInputElement).blur();
+            if (e.altKey && e.code === "KeyM") (e.preventDefault(), toggleSemantic());
           }}
-          placeholder="photocraft#4127, title or author"
+          placeholder={semantic ? "Describe the problem or feature" : "photocraft#4127, title or author"}
           aria-label="Search issues and PRs"
           className="min-w-0 flex-1 bg-transparent text-sm text-ink outline-none placeholder:text-ink/35"
           role="combobox"
           aria-expanded={open}
           aria-controls="search-results"
         />
+        <button
+          type="button"
+          tabIndex={-1}
+          aria-pressed={semantic}
+          title={semantic ? "Searching by meaning (Alt+M for titles)" : "Search by meaning (Alt+M)"}
+          onMouseDown={(e) => (e.preventDefault(), toggleSemantic())}
+          className={cn("flex h-5 items-center gap-1 rounded px-1 text-2xs", semantic ? "bg-accent/15 text-accent-ink" : "text-ink/40 hover:text-ink/70")}
+        >
+          <SparklesIcon className="text-xs" />
+          {(semantic || fullscreen) && <span>Meaning</span>}
+        </button>
         {!fullscreen && !focus && <Kbd keys="/" />}
       </label>
       {open && (
@@ -69,6 +104,7 @@ export function SearchBox({ autoFocus, onPick, fullscreen }: { autoFocus?: boole
                 <RefLink repo={h.repo} number={h.number} kind={h.kind} stop className="shrink-0 text-ink/60" />
                 <span className="truncate text-sm">{h.title}</span>
                 <span className="ml-auto shrink-0 text-xs text-ink/45">{h.author}</span>
+                {"score" in h && <span className="num w-8 shrink-0 text-right text-xs text-ink/45">{h.score.toFixed(2)}</span>}
               </div>
             </li>
           ))}

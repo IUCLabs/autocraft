@@ -253,3 +253,14 @@ SELECT column1, 'seed', strftime('%Y-%m-%dT%H:%M:%SZ', 'now') FROM (VALUES
 ) WHERE NOT EXISTS (SELECT 1 FROM settings WHERE key = 'tracked_seeded')
   AND NOT EXISTS (SELECT 1 FROM tracked_repos);
 INSERT OR IGNORE INTO settings VALUES ('tracked_seeded', '1');
+
+-- Sentence embeddings of tracked items, for similar items and semantic search.
+-- Written by `craft-auto embed` (src/embed/); the dashboard only reads them.
+CREATE TABLE IF NOT EXISTS item_embeddings (
+  repo TEXT NOT NULL, number INTEGER NOT NULL,
+  model TEXT NOT NULL,                -- embedder id: "<model>:<dtype>:<max tokens>"; another model's rows count as missing
+  hash TEXT NOT NULL,                 -- of the embedded text (src/embed/text.ts), so only changed items are embedded again
+  vec BLOB NOT NULL,                  -- float32, little-endian, unit length
+  at TEXT NOT NULL,
+  PRIMARY KEY (repo, number)
+);

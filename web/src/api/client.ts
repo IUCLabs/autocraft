@@ -22,6 +22,7 @@ import type {
   Role,
   RulePreview,
   SearchHit,
+  SimilarHit,
   TrackedRepo,
   User,
   WhitelistRule,
@@ -80,6 +81,10 @@ export interface Api {
   signOut(): Promise<void>;
   /** Called after any write so open views can refetch. Returns an unsubscribe function. */
   subscribe(fn: () => void): () => void;
+  /** Nearest items by embedding across the tracked repos, best first, leaving out the item itself. */
+  similar(repo: RepoName, number: number, limit?: number): Promise<SimilarHit[]>;
+  /** Search by meaning: the query's embedding against every item's. */
+  semanticSearch(q: string): Promise<SimilarHit[]>;
 }
 
 export const ApiContext = createContext<Api | null>(null);
