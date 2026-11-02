@@ -30,12 +30,15 @@ export const HEARTBEAT_KEY = "runner_heartbeat";
 export const FLOW_EVERY_MS = 20_000;
 const CLI = new URL("../cli.ts", import.meta.url).pathname;
 
+/** Enough for every concurrency group to have a job running. */
+export const DEFAULT_MAX_JOBS = 8;
+
 export type RunnerOptions = {
   db: DatabaseSync;
   /** Database file the children open; default CRAFT_AUTO_DB or the default path. */
   dbFile?: string;
   logs?: string;
-  /** Most jobs running at once (each group still runs one at a time). */
+  /** Most jobs running at once (each concurrency group still runs one at a time). */
   maxJobs?: number;
   /** Time a job gets to stop after SIGTERM before SIGKILL. */
   killAfterMs?: number;
@@ -83,7 +86,7 @@ export class Runner {
   constructor(opts: RunnerOptions) {
     this.db = opts.db;
     this.o = {
-      dbFile: opts.dbFile ?? dbPath(), logs: opts.logs ?? logsDir(), maxJobs: opts.maxJobs ?? 2, killAfterMs: opts.killAfterMs ?? 10_000,
+      dbFile: opts.dbFile ?? dbPath(), logs: opts.logs ?? logsDir(), maxJobs: opts.maxJobs ?? DEFAULT_MAX_JOBS, killAfterMs: opts.killAfterMs ?? 10_000,
       lockFile: opts.lockFile ?? null, log: opts.log ?? ((l) => console.log(l)),
     };
     mkdirSync(this.o.logs, { recursive: true });

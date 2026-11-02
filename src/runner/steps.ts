@@ -46,8 +46,8 @@ export type StepDef = {
   stage: number;
   /** Who may start or cancel it. Anything that writes to GitHub or spends model quota is operator-only. */
   requires: "operator";
-  /** At most one job of a group runs at a time. */
-  group: "models" | "github-write" | "local" | (string & {});
+  /** At most one job of a group runs at a time; jobs of different groups run together. */
+  group: "classify" | "decide" | "review" | "github-write" | "github-read" | "local" | (string & {});
   params: ParamDef[];
   /** Models the step calls, known before any call is made: a list, or derived from the params. Empty or absent for steps that call none. */
   models?: string[] | ((params: Params) => string[]);
@@ -86,7 +86,7 @@ export const STEPS: StepDef[] = [
     description: "Jev labels open items that have no verdict in the current classification run, or whose text changed since; Haiku gives a second opinion where Jev is under 90 % sure.",
     stage: 2,
     requires: "operator",
-    group: "models",
+    group: "classify",
     models: ["jev", "haiku"],
     params: [{ name: "limit", label: "At most", kind: "int", min: 1, max: 5000, default: 500, help: "items per model in this job" }],
     run: async (ctx) => (await import("./classify.ts")).classifyNew(ctx),
@@ -97,7 +97,7 @@ export const STEPS: StepDef[] = [
     description: "Jev labels every open item of the tracked repos into the given run, then Haiku the ones Jev is unsure of. A stopped pass continues where it left off when started again with the same run id; once complete, the run becomes the current one.",
     stage: 2,
     requires: "operator",
-    group: "models",
+    group: "classify",
     models: ["jev", "haiku"],
     params: [
       { name: "run", label: "Run id", kind: "run-id", required: true, help: "lowercase letters, digits and dashes" },
@@ -173,7 +173,7 @@ export const STEPS: StepDef[] = [
     description: "Turns items that need a decision, and items where Jev and Haiku disagree between scope labels, into decisions on the dashboard, each with a summary written by the chosen model.",
     stage: 3,
     requires: "operator",
-    group: "models",
+    group: "decide",
     models: (p) => [String(p.model ?? "sonnet")],
     params: [
       { name: "repo", label: "Repo", kind: "repo", help: "every tracked repo when empty" },
@@ -198,7 +198,7 @@ export const STEPS: StepDef[] = [
     description: "Sonnet reviews the pull requests we want from one repo in batches of related PRs: take, take with fixes, hold or close.",
     stage: 5,
     requires: "operator",
-    group: "models",
+    group: "review",
     models: ["sonnet"],
     params: [
       { name: "repo", label: "Repo", kind: "repo", required: true },

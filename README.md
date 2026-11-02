@@ -81,7 +81,7 @@ It reads the same variables as the CLI (`CRAFT_AUTO_DB` and the rest), plus:
 | Variable | Meaning |
 |---|---|
 | `CRAFT_AUTO_RUNNER_LOGS` | Directory of the per-job log files. Default `~/.cache/craft-automation-logs/jobs`. The dashboard reads each job's log from the path recorded in its row, so it must run as a user who can read this directory. |
-| `CRAFT_AUTO_RUNNER_JOBS` | Most jobs running at once. Default 2; jobs of one concurrency group always run one at a time. |
+| `CRAFT_AUTO_RUNNER_JOBS` | Most jobs running at once. Default 8, enough for every concurrency group to have a job running; jobs of one group always run one at a time. |
 | `CRAFT_AUTO_RUNNER_POLL_MS` | Poll interval. Default 2000. |
 | `CRAFT_AUTO_LOCK_DIR` | Directory of the lock file, shared with `sync`. Default `~/.cache/craft-automation-logs`. |
 | `CRAFT_AUTO_EXTRA_STEPS` | A module exporting `steps: StepDef[]` that is added to the step list, for tests and development (`test/runner-steps.ts` has fake steps). Set it for the dashboard and the runner alike, or not at all. |
@@ -104,7 +104,7 @@ Claude calls run under accounts that an operator enabled. Which accounts exist o
 
 Example: `CRAFT_AUTO_ACCOUNTS=/path/to/accounts.json`, `CRAFT_AUTO_USAGE_DIR=/path/to/usage`, `CRAFT_AUTO_USAGE_REFRESH="/path/to/refresh-usage --all"`.
 
-Each account in the file gets a row (disabled, labelled with its id) the first time anything lists accounts. Operators set the label, the switch and the number of calls at once on the Accounts page or with `craft-auto accounts list` and `craft-auto accounts set <id> [--label X] [--enabled yes|no] [--max-concurrent N]` (recorded as `cli`). Allocation and pauses are described in [docs/pipeline.md](docs/pipeline.md#claude-accounts-and-agent-runs).
+Each account in the file gets a row (disabled, labelled with its id) the first time anything lists accounts. Operators set the label, the switch and the number of calls at once on the Accounts page or with `craft-auto accounts list` and `craft-auto accounts set <id> [--label X] [--enabled yes|no] [--max-concurrent N]` (1 to 100; recorded as `cli`). Jev has no accounts; its calls at once are the `jev_parallel` setting (default 4), changed with `craft-auto accounts jev [N]`. Claude calls in flight are limited only by the accounts' free slots. Allocation and pauses are described in [docs/pipeline.md](docs/pipeline.md#claude-accounts-and-agent-runs).
 
 ### Adding a step
 
@@ -117,7 +117,7 @@ A step is one entry in `STEPS` in `src/runner/steps.ts`:
   description: "Sonnet reviews the open PRs of one repo that are marked for review.",
   stage: 5,                      // docs/pipeline.md stage
   requires: "operator",
-  group: "models",               // one job of a group at a time
+  group: "review",               // one job of a group at a time; groups: classify, decide, review, github-write, github-read, local
   params: [
     { name: "repo", label: "Repo", kind: "repo", required: true },
     { name: "limit", label: "At most", kind: "int", min: 1, max: 50, default: 10 },

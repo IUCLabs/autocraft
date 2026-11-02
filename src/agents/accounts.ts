@@ -6,6 +6,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import type { AccountInput, ClaudeAccount } from "../../web/src/api/types.ts";
 import { audit } from "../dash/audit.ts";
+import { JEV_PARALLEL_DEFAULT } from "../prompts/index.ts";
 import { boxAccounts, iso, readUsage, type BoxAccount, type Reading } from "./box.ts";
 
 export const FIVE_HOUR_LIMIT = 90;
@@ -14,7 +15,7 @@ export const WEEKLY_LIMIT = 95;
 export const STALE_MS = 30 * 60_000;
 /** A run still "running" after this long belongs to a process that is gone; it no longer takes a slot. */
 export const RUN_SLOT_MS = 60 * 60_000;
-export const MAX_CONCURRENT_LIMIT = 20;
+export const MAX_CONCURRENT_LIMIT = 100;
 export const LABEL_MAX = 40;
 
 export class AccountError extends Error {
@@ -139,6 +140,37 @@ export function chooseAccount(db: DatabaseSync, nowMs: number = Date.now()): Cho
   ok.sort((a, b) => a.weekly - b.weekly || a.running - b.running || a.r.id.localeCompare(b.r.id));
   const pick = ok[0]!.r;
   return { account: { id: pick.id, configDir: box.find((b) => b.id === pick.id)!.configDir } };
+}
+
+/** Calls the enabled accounts with headroom can take right now: the sum of their free slots. */
+export function freeSlots(db: DatabaseSync, nowMs: number = Date.now()): number {
+  const box = boxAccounts();
+  syncAccounts(db, box);
+  const counts = runningCounts(db, nowMs);
+  let free = 0;
+  for (const r of rows(db, box)) {
+    if (r.enabled !== 1 || headroomReason(readUsage(r.id), nowMs)) continue;
+    free += Math.max(0, r.max_concurrent - (counts.get(r.id) ?? 0));
+  }
+  return free;
+}
+
+export const JEV_PARALLEL_KEY = "jev_parallel";
+export { JEV_PARALLEL_DEFAULT };
+export const JEV_PARALLEL_MAX = 100;
+
+/** Jev calls at once (Jev has no accounts, so no slots limit it). */
+export function jevParallel(db: DatabaseSync): number {
+  const v = Number((db.prepare("SELECT value FROM settings WHERE key = ?").get(JEV_PARALLEL_KEY) as { value: string } | undefined)?.value);
+  return Number.isInteger(v) && v >= 1 && v <= JEV_PARALLEL_MAX ? v : JEV_PARALLEL_DEFAULT;
+}
+
+export function setJevParallel(db: DatabaseSync, n: unknown, by: string): number {
+  if (typeof n !== "number" || !Number.isInteger(n) || n < 1 || n > JEV_PARALLEL_MAX) throw new AccountError(400, `Jev calls at once must be a whole number from 1 to ${JEV_PARALLEL_MAX}`);
+  const was = jevParallel(db);
+  db.prepare("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value").run(JEV_PARALLEL_KEY, String(n));
+  if (n !== was) audit(db, by, "account-change", "jev", { jevParallel: n, was });
+  return n;
 }
 
 /**

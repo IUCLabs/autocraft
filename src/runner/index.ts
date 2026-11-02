@@ -6,7 +6,7 @@ import { scopeToTracked } from "../repos.ts";
 import { execJob } from "./exec.ts";
 import { LimitError, pipelineState, setEnabled, setLimit } from "./autopilot.ts";
 import { enqueue, JobError, listJobs, requestCancel } from "./jobs.ts";
-import { Runner, runnerLockPath } from "./runner.ts";
+import { DEFAULT_MAX_JOBS, Runner, runnerLockPath } from "./runner.ts";
 import { loadSteps } from "./steps.ts";
 
 const USAGE = `usage: craft-auto runner serve
@@ -26,7 +26,7 @@ async function serve(): Promise<void> {
   if (!release) die("another runner is running on this database");
   const db = connect();
   scopeToTracked(db);
-  const runner = new Runner({ db, lockFile: lock, maxJobs: Number(process.env.CRAFT_AUTO_RUNNER_JOBS) || 2 });
+  const runner = new Runner({ db, lockFile: lock, maxJobs: Number(process.env.CRAFT_AUTO_RUNNER_JOBS) || DEFAULT_MAX_JOBS });
   const ac = new AbortController();
   process.once("SIGTERM", () => ac.abort());
   process.once("SIGINT", () => ac.abort());

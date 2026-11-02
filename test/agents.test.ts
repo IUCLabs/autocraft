@@ -5,10 +5,10 @@ import { mkdtempSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { describe, test } from "node:test";
-import { chooseAccount, claudePauseReason, listAccounts, recordUsageSamples, updateAccount } from "../src/agents/accounts.ts";
-import { allocation, setCallContext, startClaudeRun } from "../src/agents/call.ts";
+import { chooseAccount, claudePauseReason, freeSlots, jevParallel, listAccounts, recordUsageSamples, setJevParallel, updateAccount } from "../src/agents/accounts.ts";
+import { allocation, claudeRoom, setCallContext, startClaudeRun } from "../src/agents/call.ts";
 import { getRun, listRuns, pruneRuns, rates } from "../src/agents/runs.ts";
-import { askClaude, askJev, setRunner, type Runner } from "../src/classify/run.ts";
+import { askClaude, askJev, pool, setRunner, type Runner } from "../src/classify/run.ts";
 import { connect } from "../src/db.ts";
 import * as api from "../src/dash/api/agents.ts";
 import { pauseReason } from "../src/runner/autopilot.ts";
@@ -84,6 +84,54 @@ describe("allocation", () => {
     } finally {
       setCallContext(null);
     }
+  });
+
+  test("free slots add up over enabled accounts with headroom; up to 100 slots per account", () => {
+    const { db, box } = fresh(["a", "b", "c"]);
+    for (const id of ["a", "b", "c"]) enable(db, id, 4);
+    updateAccount(db, "a", { maxConcurrent: 100 }, "op");
+    writeReading(box, "c", { five: 95 });
+    assert.equal(freeSlots(db), 104);
+    db.prepare("INSERT INTO agent_runs (step, stage, prompt_id, prompt_version, provider, model, account_id, state, started_at) VALUES ('decide', 3, 'p', 'v', 'claude', 'sonnet', 'b', 'running', ?)").run(new Date().toISOString());
+    assert.equal(freeSlots(db), 103);
+    assert.equal(jevParallel(db), 4);
+    setJevParallel(db, 12, "op");
+    assert.equal(jevParallel(db), 12);
+    assert.throws(() => setJevParallel(db, 0, "op"), /1 to 100/);
+  });
+
+  test("a pool of model calls follows the free slots, never exceeds them, and starts the first call alone", async () => {
+    const { db } = fresh(["a", "b"]);
+    enable(db, "a", 3);
+    enable(db, "b", 2);
+    const input: Parameters<typeof startClaudeRun>[1] = { promptId: "classify.haiku", promptVersion: "v", provider: "claude", model: "haiku", items: [], prompt: "p" };
+    let inFlight = 0, peak = 0, firstDone = false, startedBeforeFirst = 0;
+    const job = (n: number) => async () => {
+      if (!firstDone) startedBeforeFirst++;
+      const c = await startClaudeRun(db, input, () => {});
+      inFlight++;
+      peak = Math.max(peak, inFlight);
+      await new Promise((r) => setTimeout(r, 40));
+      db.prepare("UPDATE agent_runs SET state = 'done' WHERE id = ?").run(c.runId);
+      inFlight--;
+      if (n === 0) firstDone = true;
+      return n;
+    };
+    allocation.pollMs = 5;
+    const out = await pool(Array.from({ length: 12 }, (_, n) => job(n)), () => claudeRoom(db), { first: true, pollMs: 5 });
+    assert.deepEqual(out, Array.from({ length: 12 }, (_, n) => n));
+    assert.equal(peak, 5);
+    assert.equal(startedBeforeFirst, 1);
+    // fewer items than slots: only as many calls as items
+    peak = 0;
+    await pool([job(1), job(2)], () => claudeRoom(db), { pollMs: 5 });
+    assert.equal(peak, 2);
+  });
+
+  test("a pool with no enabled account still starts a call, which reports the missing account", async () => {
+    const { db } = fresh(["a"]);
+    const call = () => startClaudeRun(db, { promptId: "classify.haiku", promptVersion: "v", provider: "claude", model: "haiku", items: [], prompt: "p" }, () => {});
+    await assert.rejects(pool([call, call], () => claudeRoom(db), { pollMs: 5 }), /no Claude account is enabled/);
   });
 
   test("Claude steps pause when no account has headroom; Jev-only and local steps do not", () => {
@@ -176,7 +224,7 @@ describe("API", () => {
     assert.deepEqual(api.accounts(db, req("operator")).map((a) => a.id), ["a", "b"]);
     const a = db.prepare("SELECT login, action, target FROM audit").all() as object[];
     assert.deepEqual(a.map((x) => ({ ...x })), [{ login: "op", action: "account-change", target: "account:b" }]);
-    for (const bad of [{ label: "me@example.org" }, { label: "" }, { maxConcurrent: 0 }, { maxConcurrent: 99 }, { enabled: "yes" }, { configDir: "/x" }]) {
+    for (const bad of [{ label: "me@example.org" }, { label: "" }, { maxConcurrent: 0 }, { maxConcurrent: 101 }, { enabled: "yes" }, { configDir: "/x" }]) {
       assert.throws(() => updateAccount(db, "b", bad, "op"), /./, JSON.stringify(bad));
     }
     assert.throws(() => updateAccount(db, "zzz", {}, "op"), /no such account/);

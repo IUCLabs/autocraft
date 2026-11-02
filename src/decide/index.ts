@@ -6,6 +6,7 @@
 // skipped, so a re-run or an interrupted run asks only what is still missing.
 import type { DatabaseSync } from "node:sqlite";
 import { refOf, parseSummaryReply, type Item } from "../classify/parse.ts";
+import { claudeRoom } from "../agents/call.ts";
 import { askClaude, loadItems, pool, saveUsage, type Usage } from "../classify/run.ts";
 import { connect } from "../db.ts";
 import { ask } from "../decisions.ts";
@@ -121,7 +122,7 @@ export async function runDecide(db: DatabaseSync, params: DecideParams = {}, log
     n.noSummary += todo.length;
     if (todo.length) log(`decide: no valid summary for ${todo.map(refOf).join(", ")}; the next run retries them`);
     saveUsage(db, usageRun, `decide-${String(b).padStart(3, "0")}`, "decide", model, done, usage, start, now());
-  }), PROMPT.limits.parallel);
+  }), () => claudeRoom(db), { first: true });
   for (const n of Object.values(result.byRepo)) { result.asked += n.asked; result.noSummary += n.noSummary; }
   log(`decide: asked ${result.asked} decisions; ${result.noSummary} items without a summary`);
   return result;

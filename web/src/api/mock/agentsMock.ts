@@ -115,7 +115,7 @@ export function createAgentsMock(me: User, changed: () => void): Pick<Api, "acco
           a.label = input.label.trim();
         }
         if (input.maxConcurrent !== undefined) {
-          if (!Number.isInteger(input.maxConcurrent) || input.maxConcurrent < 1 || input.maxConcurrent > 20) throw new Error("max concurrent must be a whole number from 1 to 20");
+          if (!Number.isInteger(input.maxConcurrent) || input.maxConcurrent < 1 || input.maxConcurrent > 100) throw new Error("max concurrent must be a whole number from 1 to 100");
           a.maxConcurrent = input.maxConcurrent;
         }
         if (input.enabled !== undefined) {

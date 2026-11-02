@@ -10,12 +10,13 @@ import { createHash } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { itemInput, refOf, type Item } from "../classify/parse.ts";
 import { LABELS, RULES } from "../classify/rules.ts";
+import { freeSlots } from "../agents/accounts.ts";
 import { runHaiku, runJev } from "../classify/run.ts";
 import type { StepContext } from "./steps.ts";
 
 // Jev's top probability from which its label stands without a second opinion.
 export const SURE = 0.9;
-const JEV_CHUNK = 40, HAIKU_CHUNK = 100;
+const JEV_CHUNK = 40, HAIKU_PER_CALL = 25;
 
 const SCHEME = createHash("sha256").update(JSON.stringify(LABELS)).update(RULES).digest("hex");
 export const inputHash = (i: Item): string => createHash("sha256").update(SCHEME).update(JSON.stringify(itemInput(i))).digest("hex").slice(0, 32);
@@ -89,12 +90,15 @@ async function haikuPass(ctx: StepContext, run: string, todo: Item[], sent: (n: 
   const { db } = ctx;
   const count = db.prepare("SELECT COUNT(*) AS n FROM classifications WHERE classifier = 'haiku' AND run_id = ? AND at >= ?");
   const t0 = new Date().toISOString();
-  for (let i = 0; i < todo.length && !ctx.cancelled(); i += HAIKU_CHUNK) {
-    const chunk = todo.slice(i, i + HAIKU_CHUNK);
-    keepUsage(db, run, Array.from({ length: Math.ceil(chunk.length / 25) }, (_, n) => `haiku-${String(n).padStart(2, "0")}`));
+  // A chunk holds one batch for every call the accounts can take at once (at least 4), so the calls fill the free slots.
+  for (let i = 0, size = 0; i < todo.length && !ctx.cancelled(); i += size) {
+    size = HAIKU_PER_CALL * Math.max(4, freeSlots(db));
+    const chunk = todo.slice(i, i + size);
+    keepUsage(db, run, Array.from({ length: Math.ceil(chunk.length / HAIKU_PER_CALL) }, (_, n) => `haiku-${String(n).padStart(2, "0")}`));
     sent(chunk.length);
-    await runHaiku(db, run, chunk);
-    ctx.progress(`Haiku: ${Math.min(i + HAIKU_CHUNK, todo.length)} of ${todo.length} items`);
+    // The first call of the pass runs alone and writes the prompt cache; the rest read it.
+    await runHaiku(db, run, chunk, undefined, undefined, { cold: i === 0 });
+    ctx.progress(`Haiku: ${Math.min(i + size, todo.length)} of ${todo.length} items`);
   }
   return (count.get(run, t0) as { n: number }).n;
 }

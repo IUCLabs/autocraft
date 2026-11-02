@@ -1,9 +1,10 @@
 // craft-auto accounts list | set <id> [--label X] [--enabled yes|no] [--max-concurrent N]
 import { connect } from "../db.ts";
-import { AccountError, listAccounts, updateAccount } from "./accounts.ts";
+import { AccountError, jevParallel, listAccounts, setJevParallel, updateAccount } from "./accounts.ts";
 
 const USAGE = `usage: craft-auto accounts list
-       craft-auto accounts set <id> [--label <text>] [--enabled yes|no] [--max-concurrent <N>]`;
+       craft-auto accounts set <id> [--label <text>] [--enabled yes|no] [--max-concurrent <N>]   (N from 1 to 100)
+       craft-auto accounts jev [<N>]   Jev calls at once (shows the setting, or sets it; 1 to 100)`;
 
 function die(msg: string): never {
   console.error(msg);
@@ -44,12 +45,27 @@ function set(args: string[]): void {
   print();
 }
 
+function jev(args: string[]): void {
+  const db = connect();
+  if (args.length > 1) die(USAGE);
+  if (args[0] !== undefined) {
+    try {
+      setJevParallel(db, Number(args[0]), "cli");
+    } catch (e) {
+      if (e instanceof AccountError) die(e.message);
+      throw e;
+    }
+  }
+  console.log(`Jev calls at once: ${jevParallel(db)}`);
+}
+
 export const commands = {
   accounts: {
-    summary: "Claude accounts: list | set <id> [--label X] [--enabled yes|no] [--max-concurrent N]",
+    summary: "Claude accounts: list | set <id> [--label X] [--enabled yes|no] [--max-concurrent N] | jev [N]",
     run: (args: string[]) => {
       if (args[0] === "list") print();
       else if (args[0] === "set") set(args.slice(1));
+      else if (args[0] === "jev") jev(args.slice(1));
       else die(USAGE);
     },
   },

@@ -42,7 +42,7 @@ function EditForm({ a, onDone }: { a: ClaudeAccount; onDone: () => void }) {
     setEnabled(a.enabled);
     setMax(String(a.maxConcurrent));
   }, [a]);
-  const valid = label.trim() !== "" && /^\d{1,2}$/.test(max) && Number(max) >= 1;
+  const valid = label.trim() !== "" && /^\d{1,3}$/.test(max) && Number(max) >= 1 && Number(max) <= 100;
   return (
     <form
       className="mt-3 flex flex-wrap items-end gap-3 border-t border-line pt-3"
@@ -56,7 +56,7 @@ function EditForm({ a, onDone }: { a: ClaudeAccount; onDone: () => void }) {
         <TextInput value={label} maxLength={60} onChange={(e) => setLabel(e.target.value)} className="w-48 text-ink" />
       </label>
       <label className="flex flex-col gap-1 text-xs text-ink/60">
-        Max concurrent
+        Max concurrent (1 to 100)
         <TextInput inputMode="numeric" value={max} onChange={(e) => setMax(e.target.value)} className="w-24 text-ink" />
       </label>
       <label className="flex h-8 items-center gap-2 text-sm max-md:h-11">
