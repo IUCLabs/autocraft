@@ -10,11 +10,11 @@ import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { dbPath } from "../db.ts";
-import { AUTOPILOT_USER, autopilotTick, isEnabled } from "./autopilot.ts";
+import { applyProposals, AUTOPILOT_USER, isEnabled, planDue, type Detected } from "./autopilot.ts";
 import { recordUsageSamples } from "../agents/accounts.ts";
 import { failRunning, pruneRuns } from "../agents/runs.ts";
-import { refreshSummary } from "../flow/summary.ts";
-import { jobRow, now, RUNNER_STOPPED } from "./jobs.ts";
+import { jobRow, now, pruneJobs, RUNNER_STOPPED } from "./jobs.ts";
+import { OffThread } from "./offthread.ts";
 import { loadSteps } from "./steps.ts";
 
 export const logsDir = (): string => process.env.CRAFT_AUTO_RUNNER_LOGS ?? join(homedir(), ".cache/craft-automation-logs/jobs");
@@ -41,6 +41,10 @@ export type RunnerOptions = {
   killAfterMs?: number;
   lockFile?: string;
   log?: (line: string) => void;
+  /** The planner's detection pass (default: a worker thread on its own connection to `dbFile`). Tests pass a fake. */
+  detect?: (nowMs: number) => Promise<Detected>;
+  /** The flowchart summary refresh (default: a worker thread). */
+  refreshFlow?: () => Promise<unknown>;
 };
 
 type Running = { child: ChildProcess; group: string; termAt: number | null; exited: Promise<void> };
@@ -67,7 +71,14 @@ export class Runner {
   readonly running = new Map<number, Running>();
   private stopping = false;
   private flowAt = 0;
-  private readonly o: Required<Omit<RunnerOptions, "db" | "lockFile">> & { lockFile: string | null };
+  private planning: Promise<void> | null = null;
+  private detected: Detected | null = null;
+  private flowing: Promise<void> | null = null;
+  private readonly planThread: OffThread;
+  private readonly flowThread: OffThread;
+  private readonly o: Required<Omit<RunnerOptions, "db" | "lockFile" | "detect" | "refreshFlow">> & { lockFile: string | null };
+  private readonly detect: (nowMs: number) => Promise<Detected>;
+  private readonly refreshFlow: () => Promise<unknown>;
 
   constructor(opts: RunnerOptions) {
     this.db = opts.db;
@@ -76,6 +87,10 @@ export class Runner {
       lockFile: opts.lockFile ?? null, log: opts.log ?? ((l) => console.log(l)),
     };
     mkdirSync(this.o.logs, { recursive: true });
+    this.planThread = new OffThread(this.o.dbFile);
+    this.flowThread = new OffThread(this.o.dbFile);
+    this.detect = opts.detect ?? ((t) => this.planThread.plan(t));
+    this.refreshFlow = opts.refreshFlow ?? (() => this.flowThread.flow());
   }
 
   /** Jobs left `running` belong to a runner that is gone: stop what is left of them and mark them failed. */
@@ -109,16 +124,34 @@ export class Runner {
     this.cancels();
     if (this.stopping) return;
     this.usageTick();
-    await autopilotTick(this.db, { log: this.o.log });
+    await this.autopilot();
     await this.startJobs();
-    if (Date.now() - this.flowAt >= FLOW_EVERY_MS) {
+    if (!this.flowing && Date.now() - this.flowAt >= FLOW_EVERY_MS) {
       this.flowAt = Date.now();
+      this.flowing = this.refreshFlow().then(() => undefined, (e) => this.o.log(`flowchart summary: ${(e as Error).message}`)).finally(() => (this.flowing = null));
+    }
+  }
+
+  /**
+   * The planner. Detection reads a lot and runs off the loop, at most one pass at a time; the
+   * tick queues what it found, so a slow detection never delays the heartbeat or cancels.
+   */
+  private async autopilot(): Promise<void> {
+    const found = this.detected;
+    this.detected = null;
+    if (found) {
+      for (const l of found.logs) this.o.log(l);
       try {
-        refreshSummary(this.db);
+        // Detection read the database a moment ago; the switch may have been turned off since.
+        if (isEnabled(this.db)) await applyProposals(this.db, found.proposals, { log: this.o.log });
       } catch (e) {
-        this.o.log(`flowchart summary: ${(e as Error).message}`);
+        this.o.log(`autopilot: ${(e as Error).message}`);
       }
     }
+    if (this.planning || !planDue(this.db)) return;
+    this.planning = this.detect(Date.now())
+      .then((d) => { this.detected = d; }, (e) => this.o.log(`autopilot: detection failed: ${(e as Error).message}`))
+      .finally(() => (this.planning = null));
   }
 
   private usageAt = 0;
@@ -149,6 +182,11 @@ export class Runner {
     }
     if (t - this.pruneAt >= 3600_000) {
       this.pruneAt = t;
+      try {
+        pruneJobs(this.db, t);
+      } catch (e) {
+        this.o.log(`prune jobs: ${(e as Error).message}`);
+      }
       try {
         pruneRuns(this.db, t);
       } catch (e) {
@@ -250,6 +288,7 @@ export class Runner {
     this.cancels();
     await this.idle();
     clearInterval(timer);
+    await Promise.all([this.planThread.close(), this.flowThread.close()]);
   }
 
   /** Polls until `signal` aborts, then stops running jobs. */

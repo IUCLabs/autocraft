@@ -197,6 +197,8 @@ While it is On, the runner looks for work after each new sync and at least every
 | Label | `labels-apply` | Repos with operator approval and labels still to add, once per sync |
 | Merge | `merge` | Repos with operator merge approval and queue entries the merge rule allows; a PR refused at its current head waits until its CI or mergeable state differs from what GitHub reported at the refusal |
 
+The runner polls every 2 seconds (heartbeat, cancels, starting jobs). The planner's detection pass reads a lot of data, so it runs on a worker thread with its own database connection, one pass at a time; the next poll queues what it found. Stages whose step cannot start (busy, paused, limit reached, cooling down, backing off) are not detected at all. The flowchart summary refresh runs on a worker thread too. Every pass resolves the classification run once and passes it to all stages. The current run is `settings.classify_run`, set when a `classify-all` pass completes or with `craft-auto classify current <run>` (`classify current` shows it; recorded as `cli`); without it, the run with the newest Jev verdict is used. Once an hour the runner deletes finished jobs and their log files older than 90 days; the audit log and token usage stay.
+
 The full classification pass (`classify-all`) is never started automatically. A failure in one stage does not stop the others. A stage whose last three automatic jobs failed, or finished without handling anything although there was work, waits an hour; jobs ended by a runner stop or restart do not count. A stage whose last automatic job handled nothing waits 15 minutes.
 
 ### Daily limits

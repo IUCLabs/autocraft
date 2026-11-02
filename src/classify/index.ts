@@ -1,10 +1,11 @@
-// craft-auto classify | classify-sample | classify-referee | classify-compare
+// craft-auto classify | classify current | classify-sample | classify-referee | classify-compare
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { connect } from "../db.ts";
 import { band, compareReport, itemUrl, loadReference, loadRows, pairUp, ref, type Pair } from "./report.ts";
 import { markSpotCheck, pickDisagreements, runReferee } from "./referee.ts";
+import { latestRun, runExists, setCurrentRun } from "./settled.ts";
 import { loadItems, loadRefs, runHaiku, runJev } from "./run.ts";
 import { rng, shuffle } from "./sample.ts";
 
@@ -29,7 +30,29 @@ function need(f: Record<string, string>, name: string): string {
   return f[name]!;
 }
 
+// craft-auto classify current [<run>]: shows the current run, or makes <run> the current one.
+function current(args: string[]): void {
+  const db = connect();
+  const [run] = args;
+  if (args.length > 1) {
+    console.error("usage: classify current [<run>]");
+    process.exit(1);
+  }
+  if (run === undefined) {
+    const set = (db.prepare("SELECT value FROM settings WHERE key = 'classify_run'").get() as { value: string } | undefined)?.value;
+    console.log(set ? `current run: ${set}` : `no current run is set; the run with the newest Jev verdict is used: ${latestRun(db) ?? "none"}`);
+    return;
+  }
+  if (!runExists(db, run)) {
+    console.error(`run ${run} has no Jev verdicts`);
+    process.exit(1);
+  }
+  setCurrentRun(db, run, "cli");
+  console.log(`current run: ${run}`);
+}
+
 async function classify(args: string[]): Promise<void> {
+  if (args[0] === "current") return current(args.slice(1));
   const f = flags(args, ["classifier", "run-id", "items"]);
   const which = need(f, "classifier"), runId = need(f, "run-id");
   if (which !== "jev" && which !== "haiku") {
@@ -133,7 +156,7 @@ function compare(args: string[]): void {
 }
 
 export const commands = {
-  classify: { summary: "classify --classifier jev|haiku --run-id <id> --items <file>", run: classify },
+  classify: { summary: "classify --classifier jev|haiku --run-id <id> --items <file> | classify current [<run>]", run: classify },
   "classify-sample": { summary: "classify-sample --reference <csv> --pr-repo <r> --issue-repos a,b --out-dir <dir> [--seed --prs --issues-each]", run: sample },
   "classify-referee": { summary: "classify-referee --run-id <id> [--reference <csv> --count 30 --spot-check 10 --seed 1]", run: referee },
   "classify-compare": { summary: "classify-compare --run-id <id> [--reference <csv> --out <file>]", run: compare },
