@@ -19,7 +19,11 @@ const PROMPT = CLAUDE_PROMPTS["review.sonnet"];
 export const MAX_CODE_LINES = 1500;
 export const TOO_LARGE = "too large to review automatically";
 
-export type ReviewParams = { repo: string; limit?: number; dryRun?: boolean };
+export type ReviewParams = {
+  repo: string; limit?: number; dryRun?: boolean;
+  /** Called with the running count of PRs sent to the model or held without a call. */
+  onHandled?: (n: number) => void;
+};
 export type ReviewDeps = { querier: Querier; fetchDiff: DiffFetcher; caps: Caps; model: string };
 export type ReviewSummary = {
   runId: string; repo: string; candidates: number; bySize: Record<string, number>;
@@ -121,10 +125,14 @@ export async function runReview(db: DatabaseSync, params: ReviewParams, log: (li
     const [r, n] = ref.split("#");
     return (db.prepare("SELECT state FROM items WHERE repo = ? AND number = ?").get(r!, Number(n)) as { state: string } | undefined)?.state === "MERGED";
   };
+  let handled = summary.reviewed;
+  params.onHandled?.(handled);
   const batches = makeBatches(inputs, deps.caps);
   log(`review ${repo}: ${inputs.length} PRs to ask in ${batches.length} calls; ${summary.reviewed} held without a call; run ${runId}`);
   await pool(batches.map((batch, n) => async () => {
     const start = now();
+    handled += batch.length;
+    params.onHandled?.(handled);
     let usage: Usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: null };
     let todo = batch;
     for (let attempt = 0; attempt < PROMPT.limits.attempts && todo.length; attempt++) {

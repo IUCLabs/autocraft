@@ -8,6 +8,8 @@ import { accountLabelsByJob } from "../agents/runs.ts";
 import { knownStep, loadSteps, modelsOf, ParamError, validateParams, type StepDef } from "./steps.ts";
 
 export const JOB_STATES: JobState[] = ["queued", "running", "done", "failed", "cancelled"];
+/** Error text of jobs ended by a runner stop or restart; the autopilot does not count them as failures. */
+export const RUNNER_STOPPED = "The runner stopped while this job ran; start it again if needed.";
 export const now = (): string => new Date().toISOString();
 
 export class JobError extends Error {

@@ -425,6 +425,12 @@ export interface OverrideInput {
 }
 
 /** The Label stage for one repo: approval and what the plan holds. */
+export interface RepoApproval {
+  approved: boolean;
+  approvedBy: string | null;
+  approvedAt: string | null;
+}
+
 export interface RepoLabels {
   approved: boolean;
   approvedBy: string | null;
@@ -447,6 +453,8 @@ export interface TrackedRepo {
   syncedAt: string | null;
   /** null for repos that are not tracked */
   labels: RepoLabels | null;
+  /** Whether the pipeline may merge pull requests here; null for repos that are not tracked */
+  merging: RepoApproval | null;
 }
 
 export interface AccessEntry {

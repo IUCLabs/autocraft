@@ -19,6 +19,11 @@ function intArg(args: string[], flag: string, def: number): number {
 }
 
 async function embed(args: string[]): Promise<void> {
+  await embedCommand(args);
+}
+
+/** The embed command; `onEmbedded` gets the running count of items embedded. Returns the total. */
+export async function embedCommand(args: string[], onEmbedded?: (n: number) => void): Promise<number> {
   for (let i = 0; i < args.length; i++) {
     if (args[i] === "--threads" || args[i] === "--batch") i++;
     else if (args[i] !== "--all") {
@@ -36,6 +41,7 @@ async function embed(args: string[]): Promise<void> {
     all: args.includes("--all"),
     batch,
     onProgress: ({ done, total, ms }) => {
+      onEmbedded?.(done);
       if (done < total && ms - last < 10_000) return;
       last = ms;
       const rate = done / (ms / 1000);
@@ -45,6 +51,7 @@ async function embed(args: string[]): Promise<void> {
   });
   db.close();
   console.log(`embedded ${r.embedded} items, removed ${r.pruned} stale vectors, ${(r.ms / 1000).toFixed(1)} s`);
+  return r.embedded;
 }
 
 export const commands = {

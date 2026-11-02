@@ -28,6 +28,8 @@ export type DecideParams = {
   model?: string;
   /** Classification run; default the one with the newest Jev verdict. */
   run?: string;
+  /** Called with the running count of items sent to the model. */
+  onSent?: (n: number) => void;
 };
 
 export type RepoCount = { candidates: number; needsDecision: number; scopeDisagreement: number; asked: number; noSummary: number };
@@ -91,8 +93,11 @@ export async function runDecide(db: DatabaseSync, params: DecideParams = {}, log
   const usageRun = `decide-${now().replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z")}`;
   result.usageRun = usageRun;
   const stage = db.prepare("INSERT INTO stages (repo, number, stage, at, actor, note) VALUES (?, ?, 'needs-decision', ?, 'decide', ?)");
+  let sent = 0;
   await pool(batches.map((batch, b) => async () => {
     const repo = batch[0]!.repo, start = now();
+    sent += batch.length;
+    params.onSent?.(sent);
     const items = loadSummaryItems(db, batch);
     const cand = new Map(batch.map((c) => [refOf(c), c]));
     let usage = zero(), done = 0;

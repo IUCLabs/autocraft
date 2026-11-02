@@ -199,7 +199,7 @@ CREATE TABLE IF NOT EXISTS oauth_states (
 CREATE TABLE IF NOT EXISTS audit (
   at TEXT NOT NULL,
   login TEXT NOT NULL,
-  action TEXT NOT NULL,               -- answer | undo | adopt | opinion | opinion-retract | comment | override | rule | access-add | access-remove | access-role | session-revoke | sign-in | sign-in-refused | repo-track | repo-untrack | labels-approve | labels-revoke | labels-apply | assign | merge | merge-refused | job-request | job-cancel | pipeline-switch | stage-limit
+  action TEXT NOT NULL,               -- answer | undo | adopt | opinion | opinion-retract | comment | override | rule | access-add | access-remove | access-role | session-revoke | sign-in | sign-in-refused | repo-track | repo-untrack | labels-approve | labels-revoke | merge-approve | merge-revoke | labels-apply | assign | merge | merge-refused | job-request | job-cancel | pipeline-switch | stage-limit
   target TEXT,
   details TEXT                        -- JSON
 );
@@ -347,7 +347,8 @@ CREATE TABLE IF NOT EXISTS merges (
   path TEXT NOT NULL,                 -- rule (merge without asking) | operator (answered Merge? decision)
   method TEXT,                        -- squash | merge; null when refused before the command ran
   outcome TEXT NOT NULL,              -- merged | refused
-  reason TEXT                         -- one line, public-safe
+  reason TEXT,                        -- one line, public-safe
+  ci TEXT, mergeable TEXT             -- CI and mergeable state GitHub reported at the attempt
 );
 CREATE INDEX IF NOT EXISTS merges_item ON merges(repo, number, at);
 
