@@ -45,8 +45,8 @@ async function embedOne(index: VectorIndex, text: string, role: "item" | "query"
   }
 }
 
-function needVectors(db: DatabaseSync, index: VectorIndex): void {
-  index.refresh(db);
+async function needVectors(db: DatabaseSync, index: VectorIndex): Promise<void> {
+  await index.ready(db);
   if (!index.size) throw new HttpError(503, "No item embeddings yet: run craft-auto embed.");
 }
 
@@ -56,7 +56,7 @@ export async function similar(db: DatabaseSync, req: Req, index: VectorIndex): P
   if (!Number.isInteger(n)) throw new HttpError(400, "not an item number");
   const it = db.prepare("SELECT title, body FROM items WHERE repo = ? AND number = ?").get(repo, n) as { title: string | null; body: string | null } | undefined;
   if (!it) throw new HttpError(404, `no item ${repo}#${n} in the mirror`);
-  needVectors(db, index);
+  await needVectors(db, index);
   const q = index.vectorOf(db, repo, n) ?? await embedOne(index, itemText(it.title, it.body), "item");
   return describe(db, index.nearest(db, q, limitOf(req, 10), `${repo}#${n}`));
 }
@@ -64,6 +64,6 @@ export async function similar(db: DatabaseSync, req: Req, index: VectorIndex): P
 export async function semanticSearch(db: DatabaseSync, req: Req, index: VectorIndex): Promise<SimilarHit[]> {
   const q = (req.query.get("q") ?? "").trim().slice(0, 500);
   if (!q) return [];
-  needVectors(db, index);
+  await needVectors(db, index);
   return describe(db, index.nearest(db, await embedOne(index, q, "query"), limitOf(req, 20)));
 }
