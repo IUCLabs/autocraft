@@ -140,7 +140,7 @@ Everything else waits for a decision on this dashboard.
 - Only the operator's answers are acted on. The pipeline reads the chosen option, never free text.
 - Comments and picks by other people are shown to everyone here but never reach a model's prompt.
 - All GitHub text is treated as untrusted data: models judge it and never follow instructions in it.
-- Only operators can start, stop or schedule pipeline steps. A maintainer or viewer account, even a compromised one, cannot trigger a merge, close, post, label, push or any pipeline step.
+- Only operators can turn the pipeline on or off, change the daily limits, or cancel jobs. A maintainer or viewer account, even a compromised one, cannot trigger a merge, close, post, label, push or any pipeline step.
 
 ## Architecture
 
@@ -149,18 +149,37 @@ Three processes share one database. None of them needs anyone to keep a terminal
 | Process | What it does | Runs |
 |---|---|---|
 | Sync (`craft-auto sync`) | Copies changes from GitHub into the mirror | Every minute, on its own timer |
-| Dashboard (`craft-auto dash serve`) | Shows everything to people on the access list; records answers, opinions and job requests | Always |
+| Dashboard (`craft-auto dash serve`) | Shows everything to people on the access list; records answers, opinions, the pipeline switch and limits | Always |
 | Runner (`craft-auto runner serve`) | Runs pipeline steps: classifying, embedding, labelling, reviewing and merging | Always |
 
-The dashboard never runs a step and never calls a model. When an operator presses "Run now" on the Pipeline page, the dashboard writes a row to the **jobs** table. That table is the only way the dashboard reaches the runner. The runner picks up the row, runs the step in a separate process, and writes back its progress, log, result and token use. A cancel is a mark on the same row, which the runner acts on.
+The dashboard never runs a step and never calls a model. The runner queues and runs jobs; the dashboard only reads the **jobs** table and writes the pipeline switch, the daily limits and cancel marks. The runner runs each job in a separate process and writes back its progress, log, result, items handled and token use. A cancel is a mark on the job's row, which the runner acts on.
 
 Each step is defined in code with a fixed list of settings: choices from a list, a tracked repo, a number in a range, or a run id. Nothing typed on the dashboard can reach a model's prompt or a shell. Steps in the same group (for example, everything that writes to GitHub) run one at a time.
 
-Schedules start a step every so many minutes or after each sync. They are off until an operator turns them on, and a scheduled job is not queued while another job of that step is waiting or running.
+### On and Off
+
+The pipeline is either **On** (running and watching all issues and doing the automations) or **Off** (stopped). It starts Off. An operator switches it on the Pipeline page or with `craft-auto pipeline on|off`; the switch records who changed it and when. Turning it Off queues no new jobs; jobs already running finish, and operators can still cancel them.
+
+While it is On, the runner looks for work after each new sync and at least every 15 minutes, and again whenever one of its own jobs ends. It queues a job (requested by `pipeline`) for each stage that has work, has no job queued or running, and has limit left, in this order:
+
+| Stage | Step | Work it looks for (the stage's own candidate code) |
+|---|---|---|
+| Classify | `classify-new` | Open items without a verdict in the current run, or whose text changed since |
+| Embed | `embed` | New or changed items without a current embedding |
+| Decide | `decide` | Candidates left to ask, pull requests before issues |
+| Review | `checks`, then `review-batch` | Per repo, round robin across repos with review candidates, one repo per job; a repo's checks are refreshed (within the last 30 minutes) before its review |
+| Label | `labels-apply` | Repos with operator approval and labels still to add, once per sync |
+| Merge | `merge` | Repos with queue entries the merge rule allows |
+
+The full classification pass (`classify-all`) is never started automatically. A failure in one stage does not stop the others. A stage whose last three automatic jobs failed waits an hour, and a stage whose last automatic job handled nothing waits 15 minutes.
+
+### Daily limits
+
+Each stage has a limit of items per day, counted from 00:00 UTC over the items its jobs handled (classified, asked, reviewed, labelled, merged). The job's `limit` is the smaller of the step's default and what remains of the day. An empty limit means no limit and 0 pauses the stage. Defaults: classify-new 2000, decide 100, review-batch 40, merge 10; embed, checks and labels-apply have none (labelling is gated by the per-repo approval). Operators change limits on the Pipeline page or with `craft-auto pipeline limit <step> --per-day N|none`. A stage that cannot start jobs shows why on the page (limit reached, limit 0, waiting after failures).
 
 | Who | On the Pipeline page |
 |---|---|
-| Anyone signed in | Sees every stage and step, every job with its settings, progress, log, result and cost, the schedules and recent syncs |
-| Operator | Also starts and cancels jobs and edits schedules; each of these is in the audit log |
+| Anyone signed in | Sees the switch, the limits and their use today, every stage, every job with its settings, progress, log, result and cost, and recent syncs |
+| Operator | Also turns the pipeline on and off, changes limits and cancels jobs; each of these is in the audit log |
 
 Logs are written by the steps and hold no secrets; anything that looks like a token is hidden before a log is shown.

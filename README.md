@@ -7,7 +7,7 @@ Local mirror of every storytold issue and PR, the triage pipeline's state, and t
 - `craft-auto decide` turns items that need a maintainer's scope call into dashboard decisions, each with an AI summary (`docs/pipeline.md`, Scope decisions).
 - `craft-auto labels ensure|plan|apply --repo R` is the pipeline's Label stage: puts each item's settled type label and flags on GitHub. `plan` and dry runs only read; `apply --apply` writes, and only for repos an operator approved on the dashboard Repos page. See docs/pipeline.md.
 - `craft-auto dash serve` serves the dashboard.
-- `craft-auto runner serve` runs pipeline steps as jobs requested on the dashboard's Pipeline page or by schedules.
+- `craft-auto runner serve` runs the pipeline: while the pipeline is On (switch on the dashboard's Pipeline page, or `craft-auto pipeline on`), it queues and runs the steps that have work, within each stage's daily limit.
 - `craft-auto review --repo R [--limit N] [--dry-run]` runs the Review stage on one repo; `craft-auto checks --repo R` refreshes CI and merge state of its open PRs. See docs/pipeline.md, stage 5.
 - `craft-auto merge --repo R [--limit N] [--apply]` merges the repo's queued PRs that may merge, through `$CRAFT_AUTO_MERGE_CMD` (default `safe-merge`), and asks a Merge? decision for the other taken PRs; without `--apply` it is a dry run. `craft-auto queue [--repo R]` prints the merge queue. See docs/pipeline.md, stage 6.
 - Runner steps (`craft-auto runner steps`): `classify-new`, `classify-all`, `embed`, `labels-ensure`, `labels-apply`, `decide`, `review-batch`, `checks` and `merge` (operator only, group `github-write`, params `repo` and `limit`; it runs the merge command with `--apply`, so it merges for real).
@@ -62,8 +62,8 @@ The frontend in `web/` talks to `/api/`; the wire types are `web/src/api/types.t
 | `GET /api/contributors/rule-preview?minMerged=&minRate=`; `POST /api/contributors/rule` `{minMerged, minRate}`, `/api/contributors/<login>/override` `{status: "allow"\|"deny"\|null, note?}` | operator |
 | `GET /api/repos/all`; `POST /api/repos/track` `{name}`, `/api/repos/untrack` `{name}` | operator |
 | `GET /api/access`, `/api/audit?login=&action=&limit=&offset=`; `POST /api/access/add` `{login, role, note?}`, `/api/access/remove` `{login}`, `/api/access/role` `{login, role}`, `/api/access/sessions/revoke` `{id}` | operator; the last operator can't be removed or demoted |
-| `GET /api/pipeline` (stages, steps with their params schema, schedules and last job, runner heartbeat, recent syncs), `/api/pipeline/jobs?step=&state=&limit=&offset=`, `/api/pipeline/jobs/<id>` (with the scrubbed end of its log) | anyone signed in |
-| `POST /api/pipeline/jobs` `{step, params}`, `/api/pipeline/jobs/<id>/cancel`, `/api/pipeline/schedules/<step>` `{enabled, trigger: "interval"\|"after-sync", intervalMinutes, params}` | operator; audited |
+| `GET /api/pipeline` (stages, steps with their params schema and last job, runner heartbeat, recent syncs), `/api/pipeline/state` (switch, who and when, per-stage daily limits with use today), `/api/pipeline/jobs?step=&state=&limit=&offset=`, `/api/pipeline/jobs/<id>` (with the scrubbed end of its log) | anyone signed in |
+| `POST /api/pipeline/jobs` `{step, params}`, `/api/pipeline/jobs/<id>/cancel`, `PUT /api/pipeline/state` `{enabled}`, `/api/pipeline/limits/<step>` `{perDay: number\|null}` | operator; audited |
 | `POST /api/signout` | anyone signed in |
 | `GET /api/similar/<repo>/<n>?limit=` (nearest items across the tracked repos, with score; default 10, at most 50), `/api/search?q=&mode=semantic` (search by meaning, same hits plus a score) | anyone signed in; 503 until `craft-auto embed` has run |
 
@@ -71,7 +71,7 @@ Opinions and comments are display-only. The pipeline reads answers with `craft-a
 
 ## Pipeline runner
 
-`craft-auto runner serve` is the only process that runs pipeline steps (how the parts fit together: [docs/pipeline.md](docs/pipeline.md#architecture)). It polls the `jobs` table every 2 seconds, runs each job in a child process (`craft-auto runner exec <id>`) with its output in a log file, stops jobs whose cancel was requested, and queues the jobs that schedules ask for. On start it marks jobs that an earlier runner left running as failed. A lock file keeps a second runner on the same database from starting.
+`craft-auto runner serve` is the only process that runs pipeline steps (how the parts fit together: [docs/pipeline.md](docs/pipeline.md#architecture)). It polls the `jobs` table every 2 seconds, runs each job in a child process (`craft-auto runner exec <id>`) with its output in a log file, stops jobs whose cancel was requested, and, while the pipeline is On, queues the jobs the stages need (see [docs/pipeline.md](docs/pipeline.md#on-and-off)). On start it marks jobs that an earlier runner left running as failed. A lock file keeps a second runner on the same database from starting.
 
 It reads the same variables as the CLI (`CRAFT_AUTO_DB` and the rest), plus:
 
@@ -87,7 +87,7 @@ The classify steps call `jev` and `claude`, so the runner's `PATH` must reach th
 
 To run it as a systemd user service, fill in the placeholders of `deploy/craft-runner.service`, copy it to `~/.config/systemd/user/`, and run `systemctl --user daemon-reload && systemctl --user enable --now craft-runner`. Stopping the service stops running jobs; they show as failed and can be started again.
 
-From a shell: `craft-auto runner steps` lists steps and their params, `runner enqueue <step> [--<param> <value> ...]` queues a job (recorded as `cli`), `runner jobs [--state S]` lists jobs, `runner cancel <id>` cancels one.
+From a shell: `craft-auto pipeline on|off|status` flips the switch and `pipeline limit <step> --per-day N|none` sets a stage's daily limit (both recorded as `cli`). `craft-auto runner steps` lists steps and their params, `runner enqueue <step> [--<param> <value> ...]` queues a job by hand for debugging (recorded as `cli`), `runner jobs [--state S]` lists jobs, `runner cancel <id>` cancels one.
 
 ### Adding a step
 
@@ -109,7 +109,7 @@ A step is one entry in `STEPS` in `src/runner/steps.ts`:
 }
 ```
 
-Param kinds are `enum`, `repo` (a tracked repo), `int` and `run-id`; there is no free-text kind, so nothing typed on the dashboard reaches a prompt. `run` gets the database, the validated params, `progress(text)`, `log(line)`, `usageRun(runId)` (token use recorded under that run from the job's start counts as the job's) and `cancelled()`, and returns a one-line summary; throwing fails the job with the error's message. `available()` and `check(db, params)` can refuse a step or a request with a reason. The Pipeline page, the API, schedules and the CLI pick the step up from the list.
+Param kinds are `enum`, `repo` (a tracked repo), `int` and `run-id`; there is no free-text kind, so nothing typed on the dashboard reaches a prompt. `run` gets the database, the validated params, `progress(text)`, `log(line)`, `handled(n)` (items the job handled, counted against the stage's daily limit), `usageRun(runId)` (token use recorded under that run from the job's start counts as the job's) and `cancelled()`, and returns a one-line summary; throwing fails the job with the error's message. `available()` and `check(db, params)` can refuse a step or a request with a reason. The Pipeline page, the API, the autopilot and the CLI pick the step up from the list.
 
 ## Similar items and semantic search
 

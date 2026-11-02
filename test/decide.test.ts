@@ -99,7 +99,7 @@ describe("decide", () => {
       const r = await runDecide(db, {}, quiet);
       assert.equal(r.asked, 3);
       // One call per repo batch, each exactly what the registry renders.
-      const want = [["photocraft#1", "photocraft#2"], ["filmcraft#10"]].map((refs) => ({
+      const want = [["photocraft#2", "photocraft#1"], ["filmcraft#10"]] /* pull requests before issues */.map((refs) => ({
         cmd: "claude", args: claudeArgs("decide.summary", "sonnet"),
         input: renderClaude("decide.summary", loadSummaryItems(db, refs.map((x) => ({ repo: x.split("#")[0]!, number: Number(x.split("#")[1]) })))),
       }));

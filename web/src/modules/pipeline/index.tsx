@@ -1,18 +1,19 @@
-// The Pipeline page: what runs, when, what it did and what it cost. Everyone
-// signed in sees it; only operators start, cancel or schedule steps. The page
-// writes job requests; the runner process does the work.
-import { useEffect, useMemo, useRef, useState } from "react";
+// The Pipeline page: the On/Off switch, the daily limits, what ran and what it
+// cost. Everyone signed in sees it; only operators flip the switch, change
+// limits and cancel jobs. The runner process does the work.
+import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { ArrowLeftIcon, PlayIcon, WorkflowIcon } from "lucide-react";
+import { ArrowLeftIcon, WorkflowIcon } from "lucide-react";
 import { useApi, useQuery } from "../../api/client";
-import type { Job, JobParams, JobState, PipelineOverview, PipelineStage, PipelineStep, Schedule, ScheduleTrigger, StepParam, SyncRun } from "../../api/types";
+import type { Job, JobParams, JobState, PipelineOverview, PipelineStage, SyncRun } from "../../api/types";
 import type { FeatureModule, ViewProps } from "../../registry/types";
 import { can } from "../../registry/permissions";
 import { Badge, type Tone } from "../../ui/Badge";
 import { Button } from "../../ui/Button";
 import { cn } from "../../ui/cn";
 import { ago, num } from "../../lib/format";
-import { Block, ConfirmButton, ErrorLine, Page, selectCls, TextInput, useWrite, when } from "../admin/parts";
+import { Block, ConfirmButton, ErrorLine, Page, useWrite, when } from "../admin/parts";
+import { PipelineSwitch, StageLimits } from "./controls";
 
 // ---- helpers -------------------------------------------------------------------
 
@@ -53,190 +54,6 @@ const paramText = (p: JobParams) =>
   Object.entries(p)
     .map(([k, v]) => `${k} ${v}`)
     .join(", ");
-
-function scheduleText(s: Schedule): string {
-  if (!s.enabled) return "Not scheduled";
-  const base = s.trigger === "after-sync" ? "After each sync" : `Every ${s.intervalMinutes} min`;
-  const p = paramText(s.params);
-  return p ? `${base} (${p})` : base;
-}
-
-// ---- param fields ----------------------------------------------------------------
-
-type Values = Record<string, string>;
-
-const initial = (params: StepParam[], from?: JobParams): Values =>
-  Object.fromEntries(params.map((p) => [p.name, from?.[p.name] !== undefined ? String(from[p.name]) : "default" in p && p.default !== undefined ? String(p.default) : ""]));
-
-function toParams(params: StepParam[], v: Values): JobParams {
-  const out: JobParams = {};
-  for (const p of params) {
-    const s = (v[p.name] ?? "").trim();
-    if (!s) continue;
-    out[p.name] = p.kind === "int" ? Number(s) : s;
-  }
-  return out;
-}
-
-function ParamFields({ params, values, onChange, disabled, idPrefix }: { params: StepParam[]; values: Values; onChange: (v: Values) => void; disabled?: boolean; idPrefix: string }) {
-  return (
-    <>
-      {params.map((p) => {
-        const id = `${idPrefix}-${p.name}`;
-        const set = (x: string) => onChange({ ...values, [p.name]: x });
-        const v = values[p.name] ?? "";
-        return (
-          <label key={p.name} htmlFor={id} className="flex flex-col gap-1 text-xs text-ink/60">
-            <span>
-              {p.label}
-              {p.help && <span className="text-ink/40"> · {p.help}</span>}
-            </span>
-            {p.kind === "enum" || p.kind === "repo" ? (
-              <select id={id} value={v} disabled={disabled} onChange={(e) => set(e.target.value)} className={cn(selectCls, "min-w-36 text-ink")}>
-                {(p.kind === "repo" || !p.required) && <option value="">{p.kind === "repo" ? "Choose a repo" : "Default"}</option>}
-                {p.options.map((o) => (
-                  <option key={o} value={o}>
-                    {o}
-                  </option>
-                ))}
-              </select>
-            ) : p.kind === "int" ? (
-              <TextInput id={id} type="number" inputMode="numeric" min={p.min} max={p.max} step={1} value={v} disabled={disabled} onChange={(e) => set(e.target.value)} className="w-28 text-ink" />
-            ) : (
-              <TextInput id={id} value={v} disabled={disabled} pattern="[a-z0-9][a-z0-9\-]{0,47}" maxLength={48} placeholder="org-1102" onChange={(e) => set(e.target.value)} className="w-40 text-ink" />
-            )}
-          </label>
-        );
-      })}
-    </>
-  );
-}
-
-// ---- steps ---------------------------------------------------------------------
-
-function RunForm({ step }: { step: PipelineStep }) {
-  const api = useApi();
-  const navigate = useNavigate();
-  const [values, setValues] = useState(() => initial(step.params));
-  const write = useWrite();
-  const blocked = step.unavailable !== null;
-  return (
-    <form
-      className="mt-3 flex flex-wrap items-end gap-3"
-      onSubmit={(e) => {
-        e.preventDefault();
-        let id = 0;
-        void write
-          .run("run", async () => {
-            id = (await api.pipeline.run(step.name, toParams(step.params, values))).id;
-          })
-          .then((ok) => ok && navigate(`/pipeline/${id}`));
-      }}
-    >
-      <ParamFields params={step.params} values={values} onChange={setValues} disabled={blocked} idPrefix={`run-${step.name}`} />
-      <Button type="submit" variant="primary" icon={PlayIcon} disabled={blocked} loading={write.busy === "run"} className="max-md:h-11">
-        Run now
-      </Button>
-      <ErrorLine error={write.error} className="basis-full" />
-    </form>
-  );
-}
-
-function ScheduleEditor({ step, onDone }: { step: PipelineStep; onDone: () => void }) {
-  const api = useApi();
-  const s = step.schedule;
-  const [enabled, setEnabled] = useState(s.enabled);
-  const [trigger, setTrigger] = useState<ScheduleTrigger>(s.trigger);
-  const [minutes, setMinutes] = useState(String(s.intervalMinutes ?? 60));
-  const [values, setValues] = useState(() => initial(step.params, s.params));
-  const write = useWrite();
-  return (
-    <form
-      className="mt-3 rounded border border-line bg-ink/[0.02] p-3"
-      onSubmit={(e) => {
-        e.preventDefault();
-        void write
-          .run("schedule", () =>
-            api.pipeline.schedule(step.name, { enabled, trigger, intervalMinutes: trigger === "interval" ? Number(minutes) : null, params: toParams(step.params, values) }),
-          )
-          .then((ok) => ok && onDone());
-      }}
-    >
-      <div className="flex flex-wrap items-end gap-3">
-        <label className="flex h-8 items-center gap-2 text-sm max-md:h-11">
-          <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} className="size-4 accent-[rgb(var(--st-accent-rgb))]" />
-          On
-        </label>
-        <label className="flex flex-col gap-1 text-xs text-ink/60">
-          When
-          <select value={trigger} onChange={(e) => setTrigger(e.target.value as ScheduleTrigger)} className={cn(selectCls, "text-ink")}>
-            <option value="interval">Every few minutes</option>
-            <option value="after-sync">After each sync</option>
-          </select>
-        </label>
-        {trigger === "interval" && (
-          <label className="flex flex-col gap-1 text-xs text-ink/60">
-            Minutes
-            <TextInput type="number" min={5} max={10080} value={minutes} onChange={(e) => setMinutes(e.target.value)} className="w-24 text-ink" />
-          </label>
-        )}
-        <ParamFields params={step.params} values={values} onChange={setValues} idPrefix={`sched-${step.name}`} />
-        <div className="flex gap-2">
-          <Button type="submit" loading={write.busy === "schedule"} className="max-md:h-11">
-            Save
-          </Button>
-          <Button type="button" variant="ghost" onClick={onDone} className="max-md:h-11">
-            Close
-          </Button>
-        </div>
-      </div>
-      <p className="mt-2 text-xs text-ink/50">A scheduled job is not queued while another job of the same step is waiting or running.</p>
-      <ErrorLine error={write.error} className="mt-2" />
-    </form>
-  );
-}
-
-const GROUP_LABEL: Record<string, string> = { models: "Uses model quota", "github-write": "Writes to GitHub", local: "Runs locally" };
-
-function StepCard({ step, operator }: { step: PipelineStep; operator: boolean }) {
-  const [editing, setEditing] = useState(false);
-  const last = step.lastJob;
-  return (
-    <section className="min-w-0 rounded-md border border-line p-4">
-      <div className="flex flex-wrap items-center gap-2">
-        <h3 className="text-sm font-semibold">{step.title}</h3>
-        <span className="code text-xs text-ink/50">{step.name}</span>
-        <Badge tone={step.group === "github-write" ? "warn" : "neutral"}>{GROUP_LABEL[step.group] ?? step.group}</Badge>
-        {step.unavailable && <Badge tone="warn">Not available</Badge>}
-      </div>
-      <p className="mt-1.5 max-w-[80ch] text-sm text-ink/70">{step.description}</p>
-      {step.unavailable && <p className="mt-1 text-sm text-warn">{step.unavailable}</p>}
-      <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-ink/55">
-        <span>
-          Last run:{" "}
-          {last ? (
-            <Link to={`/pipeline/${last.id}`} className="text-ink/80 underline-offset-2 hover:underline">
-              #{last.id} {STATE_LABEL[last.state].toLowerCase()} {ago(last.endedAt ?? last.startedAt ?? last.requestedAt, false)}
-            </Link>
-          ) : (
-            "never"
-          )}
-        </span>
-        <span>
-          Schedule: <span className="text-ink/80">{scheduleText(step.schedule)}</span>
-          {step.schedule.enabled && step.schedule.lastEnqueuedAt && <> · last queued {ago(step.schedule.lastEnqueuedAt, false)}</>}
-        </span>
-        {operator && !editing && (
-          <button className="text-accent-ink underline-offset-2 hover:underline max-md:py-2" onClick={() => setEditing(true)}>
-            Edit schedule
-          </button>
-        )}
-      </div>
-      {operator && editing && <ScheduleEditor step={step} onDone={() => setEditing(false)} />}
-      {operator && <RunForm step={step} />}
-    </section>
-  );
-}
 
 // ---- stages, sync ----------------------------------------------------------------
 
@@ -401,22 +218,19 @@ function PipelineView({ user, params }: ViewProps) {
   usePoll(q.refetch, busy ? 4000 : 20000);
   const o = q.data;
   const selected = params.id ? Number(params.id) : undefined;
-  const byStage = useMemo(() => [...(o?.steps ?? [])].sort((a, b) => a.stage - b.stage), [o]);
   return (
     <Page title="Pipeline" sub={o && <RunnerLine o={o} />}>
       <p className="mt-2 max-w-[80ch] text-sm text-ink/65">
-        Every pipeline step runs here as a job, started from this page or by a schedule. {operator ? "As an operator you can start, stop and schedule steps; each request is in the audit log." : "Only operators start, stop or schedule steps; you can see what runs, what it did and what it cost."}
+        The pipeline is either On, watching all issues and running every automation within its daily limits, or Off. {operator ? "As an operator you can switch it, change limits and cancel jobs; each change is in the audit log." : "Only operators switch it or change limits; you can see what runs, what it did and what it cost."}
       </p>
       <ErrorLine error={q.error?.message} className="mt-3" />
+      <PipelineSwitch className="mt-4" />
+      <div className="mt-4">
+        <StageLimits />
+      </div>
       {o && <Stages o={o} />}
       <div className="mt-5">
         <Jobs selected={selected} />
-      </div>
-      <h2 className="mb-2 mt-6 text-sm font-semibold">Steps</h2>
-      <div className="flex flex-col gap-3">
-        {byStage.map((s) => (
-          <StepCard key={s.name} step={s} operator={operator} />
-        ))}
       </div>
       {o && (
         <div className="mt-6">
