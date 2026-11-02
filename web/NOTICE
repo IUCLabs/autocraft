@@ -1,0 +1,8 @@
+Parts of src/ui/ (Button, Badge, Kbd) and the global style rules in
+src/styles/ (.hud label, .filter-tab, registration marks, dot grid, control
+corners, lucide sizing, theme tokens) are adapted from ArtCraft
+(https://github.com/storytold/artcraft, frontend/), licensed under
+MIT OR Apache-2.0. Copyright the ArtCraft authors.
+
+Fonts: Archivo, Geist Mono and Instrument Serif via @fontsource, under the
+SIL Open Font License 1.1 (see each package's LICENSE).
