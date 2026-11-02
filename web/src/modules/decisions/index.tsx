@@ -27,7 +27,7 @@ export const decisionsModule: FeatureModule = {
         panels: [
           { id: "list", title: "Queue", component: InboxList, defaultSize: 28, minSize: 20, maxSize: 45 },
           { id: "detail", title: "Decision", component: DetailPanel, defaultSize: 45, minSize: 32 },
-          { id: "thread", title: "Opinions and discussion", component: ThreadPanel, defaultSize: 27, minSize: 18, maxSize: 40, collapsible: true, hideOnPhone: true },
+          { id: "thread", title: "Discussion", component: ThreadPanel, defaultSize: 27, minSize: 18, maxSize: 40, collapsible: true, hideOnPhone: true },
         ],
       },
     },

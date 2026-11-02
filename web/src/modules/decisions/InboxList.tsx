@@ -8,6 +8,7 @@ import { Count } from "../../ui/Heading";
 import { Button } from "../../ui/Button";
 import { cn } from "../../ui/cn";
 import { ago, ageDays } from "../../lib/format";
+import { RefLink } from "../../ui/RefLink";
 import { ClaimPill, KIND_ICON } from "./parts";
 import { KIND_LABEL, KINDS, localActions, ordered, useDecisionFilter, useDecisionList, useLocal, useSelection, useUndo } from "./state";
 
@@ -53,7 +54,7 @@ export function InboxList({ user }: ViewProps) {
   const loc = useLocal();
   const list = ordered(data?.decisions ?? []);
   useInboxKeys(list);
-  const activeRef = useRef<HTMLButtonElement>(null);
+  const activeRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     activeRef.current?.scrollIntoView({ block: "nearest" });
   }, [id]);
@@ -100,7 +101,7 @@ export function InboxList({ user }: ViewProps) {
   );
 }
 
-function Row({ d, active, checked, mine, onOpen, activeRef }: { d: Decision; active: boolean; checked: boolean; mine?: string; onOpen: () => void; activeRef?: React.Ref<HTMLButtonElement> }) {
+function Row({ d, active, checked, mine, onOpen, activeRef }: { d: Decision; active: boolean; checked: boolean; mine?: string; onOpen: () => void; activeRef?: React.Ref<HTMLDivElement> }) {
   const rec = d.options.find((o) => o.key === d.recommended);
   const old = ageDays(d.askedAt) >= 2;
   const opinions = d.opinions.length;
@@ -114,7 +115,7 @@ function Row({ d, active, checked, mine, onOpen, activeRef }: { d: Decision; act
           {checked && <CheckIcon className="text-[10px]" strokeWidth={3} />}
         </span>
       </label>
-      <button ref={activeRef} role="option" aria-selected={active} onClick={onOpen} className="min-w-0 flex-1 rounded-none py-2 pr-3 text-left">
+      <div ref={activeRef} role="option" tabIndex={0} aria-selected={active} onClick={onOpen} onKeyDown={(e) => { if (e.target === e.currentTarget && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); onOpen(); } }} className="min-w-0 flex-1 cursor-pointer rounded-none py-2 pr-3 text-left">
         <div className="flex items-baseline gap-2">
           <span className={cn("min-w-0 flex-1 truncate text-sm", active ? "font-medium text-ink" : "text-ink/90")}>{d.title}</span>
           <span className={cn("num shrink-0 text-xs", old ? "text-warn" : "text-ink/45")} title={`asked ${ago(d.askedAt, false)}`}>
@@ -125,12 +126,12 @@ function Row({ d, active, checked, mine, onOpen, activeRef }: { d: Decision; act
           {firstSentence}
         </div>
         <div className="mt-0.5 flex items-center gap-1.5 text-xs text-ink/50">
-          <span className="code shrink-0 text-[11.5px]">{d.number === null ? d.repo : `${d.repo}#${d.number}`}</span>
+          {d.number === null ? <span className="code shrink-0 text-[11.5px]">{d.repo}</span> : <RefLink repo={d.repo} number={d.number} stop className="shrink-0 text-[11.5px] text-ink/50" />}
           {d.number === null && <span className="shrink-0">· {d.items.length} items</span>}
           {rec && <span className="truncate">· rec. {rec.label}</span>}
           <span className="ml-auto flex shrink-0 items-center gap-1.5">
             {opinions > 0 && (
-              <span className={cn("inline-flex items-center gap-0.5", mine && "text-accent-ink")} title={`${opinions} ${opinions === 1 ? "opinion" : "opinions"}${mine ? ", including yours" : ""}`}>
+              <span className={cn("inline-flex items-center gap-0.5", mine && "text-accent-ink")} title={`picked by ${opinions}${mine ? ", including you" : ""}`}>
                 <UsersIcon className="text-[11px]" />
                 <span className="num">{opinions}</span>
               </span>
@@ -138,7 +139,7 @@ function Row({ d, active, checked, mine, onOpen, activeRef }: { d: Decision; act
             <ClaimPill claim={d.claim} compact />
           </span>
         </div>
-      </button>
+      </div>
     </div>
   );
 }

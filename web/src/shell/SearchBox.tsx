@@ -4,6 +4,7 @@ import { GitPullRequestIcon, CircleDotIcon, SearchIcon } from "lucide-react";
 import { useApi } from "../api/client";
 import type { SearchHit } from "../api/types";
 import { Kbd } from "../ui/Kbd";
+import { RefLink } from "../ui/RefLink";
 import { cn } from "../ui/cn";
 
 /** Global search: `repo#123`, `#123`, a title fragment or an author login. */
@@ -63,14 +64,12 @@ export function SearchBox({ autoFocus, onPick, fullscreen }: { autoFocus?: boole
           {hits.length === 0 && <li className="px-3 py-2 text-sm text-ink/50">No matches</li>}
           {hits.map((h, i) => (
             <li key={`${h.repo}#${h.number}`} role="option" aria-selected={i === sel}>
-              <button onMouseDown={() => pick(h)} onMouseEnter={() => setSel(i)} className={cn("flex w-full items-center gap-2.5 rounded px-2 text-left", fullscreen ? "h-12" : "h-8", i === sel && "bg-ink/[0.07]")}>
+              <div onMouseDown={() => pick(h)} onMouseEnter={() => setSel(i)} className={cn("flex w-full cursor-pointer items-center gap-2.5 rounded px-2 text-left", fullscreen ? "h-12" : "h-8", i === sel && "bg-ink/[0.07]")}>
                 {h.kind === "pr" ? <GitPullRequestIcon className={cn("text-xs", h.state === "merged" ? "text-merged" : "text-ok")} /> : <CircleDotIcon className="text-xs text-ok" />}
-                <span className="code shrink-0 text-ink/60">
-                  {h.repo}#{h.number}
-                </span>
+                <RefLink repo={h.repo} number={h.number} kind={h.kind} stop className="shrink-0 text-ink/60" />
                 <span className="truncate text-sm">{h.title}</span>
                 <span className="ml-auto shrink-0 text-xs text-ink/45">{h.author}</span>
-              </button>
+              </div>
             </li>
           ))}
         </ul>

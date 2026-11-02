@@ -8,7 +8,6 @@ import {
   XIcon,
   LoaderIcon,
   MinusIcon,
-  ExternalLinkIcon,
   TagIcon,
   SparklesIcon,
   FlagIcon,
@@ -21,6 +20,7 @@ import type { CiState, Classification, Item, Stage, Tier } from "../../api/types
 import type { FeatureModule, ViewProps } from "../../registry/types";
 import { Slot } from "../../registry/Slot";
 import { Avatar } from "../../ui/Avatar";
+import { RefLink } from "../../ui/RefLink";
 import { Badge, type Tone } from "../../ui/Badge";
 import { Count } from "../../ui/Heading";
 import { cn } from "../../ui/cn";
@@ -110,7 +110,10 @@ function Header({ it }: { it: Item }) {
   return (
     <div className="border-b border-line pb-4">
       <h1 className="text-xl font-semibold text-ink">
-        {it.title} <span className="font-normal text-ink/45">#{it.number}</span>
+        {it.title}{" "}
+        <RefLink repo={it.repo} number={it.number} kind={it.kind} className="font-normal">
+          {it.repo}#{it.number}
+        </RefLink>
       </h1>
       <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1.5 text-sm text-ink/60">
         <StatePill it={it} />
@@ -120,14 +123,6 @@ function Header({ it }: { it: Item }) {
             <span className="font-medium text-ink">{it.author}</span> opened {ago(it.createdAt)} ago in <span className="code text-ink/80">{it.repo}</span>
           </span>
         </span>
-        <a
-          href={`https://github.com/storytold/${it.repo}/${it.kind === "pr" ? "pull" : "issues"}/${it.number}`}
-          className="ml-auto inline-flex items-center gap-1 text-xs text-accent-ink hover:underline"
-          rel="noreferrer"
-          target="_blank"
-        >
-          Open on GitHub <ExternalLinkIcon className="text-[11px]" />
-        </a>
       </div>
     </div>
   );
@@ -373,7 +368,7 @@ function ItemSide(props: ViewProps) {
               )}
               {!d.answer && d.opinions.length > 0 && (
                 <div className="mt-0.5 text-xs text-ink/55">
-                  {d.opinions.length} {d.opinions.length === 1 ? "opinion" : "opinions"}:{" "}
+                  {d.opinions.length} {d.opinions.length === 1 ? "comment" : "comments"}:{" "}
                   {Object.entries(tallyOf(d))
                     .map(([k, n]) => `${d.options.find((o) => o.key === k)?.label} ${n}`)
                     .join(" · ")}
@@ -389,8 +384,10 @@ function ItemSide(props: ViewProps) {
           {it.related.map((r) => (
             <li key={`${r.repo}#${r.number}`} className="text-sm">
               <div className="text-xs text-ink/50">{r.relation.replace(/-/g, " ")}</div>
+              <RefLink repo={r.repo} number={r.number} className="mr-1.5">
+                #{r.number}
+              </RefLink>
               <Link to={`/item/${r.repo}/${r.number}`} className="hover:underline">
-                <span className="code mr-1.5 text-accent-ink">#{r.number}</span>
                 {r.title}
               </Link>
             </li>

@@ -10,14 +10,14 @@ export function can(user: User, p: Permission): boolean {
 /**
  * What a pick on a decision means for this user (docs/dashboard-spec.md, Trust
  * boundary): an operator with GitHub write on every repo involved answers;
- * everyone else gives an opinion, which nothing acts on.
+ * everyone else comments, which nothing acts on.
  */
 export type DecisionAccess = { mode: "answer" } | { mode: "opinion"; reason: string };
 
 export function decisionAccess(user: User, repos: string[]): DecisionAccess {
-  if (user.role !== "operator") return { mode: "opinion", reason: "Your pick is an opinion: maintainers see it, the operator decides." };
+  if (user.role !== "operator") return { mode: "opinion", reason: "Your pick is a comment: maintainers see it, the operator decides." };
   const missing = [...new Set(repos)].filter((r) => !user.writeRepos.includes(r));
-  if (missing.length) return { mode: "opinion", reason: `You don't have write access to ${missing.join(", ")}, so your pick is an opinion.` };
+  if (missing.length) return { mode: "opinion", reason: `You don't have write access to ${missing.join(", ")}, so your pick is a comment.` };
   return { mode: "answer" };
 }
 

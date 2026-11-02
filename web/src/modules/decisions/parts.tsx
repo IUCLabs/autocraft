@@ -1,5 +1,6 @@
 import { useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
+import { RefLink } from "../../ui/RefLink";
 import {
   ChevronRightIcon,
   CircleHelpIcon,
@@ -117,7 +118,7 @@ export function OptionButtons({
   layout?: "row" | "list";
 }) {
   return (
-    <div className={cn("grid gap-1.5", layout === "row" && options.length > 1 && "grid-cols-2")} role="group" aria-label={mode === "answer" ? "Answer" : "Your opinion"}>
+    <div className={cn("grid gap-1.5", layout === "row" && options.length > 1 && "grid-cols-2")} role="group" aria-label={mode === "answer" ? "Answer" : "Your pick"}>
       {options.map((o, i) => {
         const rec = o.key === recommended;
         const picked = mine === o.key;
@@ -146,7 +147,7 @@ export function OptionButtons({
                 <span className={cn("shrink-0 rounded-full px-1.5 text-2xs font-medium leading-[18px]", filled ? "bg-white/20" : "bg-accent/15 text-accent-ink")}>Recommended</span>
               ))}
             {n > 0 && (
-              <span className={cn("num shrink-0 text-xs", filled ? "text-white/80" : "text-ink/50")} title={`${n} ${n === 1 ? "opinion" : "opinions"}`}>
+              <span className={cn("num shrink-0 text-xs", filled ? "text-white/80" : "text-ink/50")} title={`picked by ${n}`}>
                 <UsersIcon className="mr-0.5 text-[11px]" />
                 {n}
               </span>
@@ -159,9 +160,9 @@ export function OptionButtons({
   );
 }
 
-/** Opinions from everyone, newest first, with GitHub permission badges. Operators can adopt one. */
+/** Comments from everyone, newest first, with GitHub permission badges. Operators can use a pick as the answer. */
 export function OpinionList({ d, onAdopt, me }: { d: Decision; onAdopt?: (opinionId: string) => void; me: string }) {
-  if (!d.opinions.length) return <p className="text-sm text-ink/50">No opinions yet.</p>;
+  if (!d.opinions.length) return <p className="text-sm text-ink/50">No comments yet.</p>;
   const label = (k: string) => d.options.find((o) => o.key === k)?.label ?? k;
   return (
     <ul className="divide-y divide-line overflow-hidden rounded-md border border-line">
@@ -188,12 +189,12 @@ export function OpinionList({ d, onAdopt, me }: { d: Decision; onAdopt?: (opinio
               <span className="text-xs text-ink/45">· {ago(o.at)} ago</span>
             </div>
             {o.note && <p className="mt-0.5 text-ink/70">{o.note}</p>}
+            {onAdopt && o.option && (
+              <button onClick={() => onAdopt(o.id)} className="mt-1.5 rounded border border-line-strong px-2 py-0.5 text-xs font-medium hover:border-accent/60 hover:text-accent-ink" title={`Answer "${label(o.option)}" using ${o.login}'s answer`}>
+                Use this answer
+              </button>
+            )}
           </div>
-          {onAdopt && o.option && (
-            <button onClick={() => onAdopt(o.id)} className="shrink-0 rounded border border-line-strong px-2 py-0.5 text-xs font-medium hover:border-accent/60 hover:text-accent-ink" title={`Answer "${label(o.option)}" and credit ${o.login}`}>
-              Adopt
-            </button>
-          )}
         </li>
       ))}
     </ul>
@@ -248,10 +249,10 @@ export function RelatedList({ d }: { d: Decision }) {
       {d.related.map((r) => (
         <li key={`${r.repo}#${r.number}`} className="flex items-baseline gap-2 text-sm">
           <span className="w-24 shrink-0 text-xs text-ink/50">{r.relation.replace(/-/g, " ")}</span>
-          <Link to={`/item/${r.repo}/${r.number}`} className="code shrink-0 text-accent-ink hover:underline">
-            {r.repo}#{r.number}
+          <RefLink repo={r.repo} number={r.number} className="shrink-0" />
+          <Link to={`/item/${r.repo}/${r.number}`} className="truncate text-ink/75 hover:underline">
+            {r.title}
           </Link>
-          <span className="truncate text-ink/75">{r.title}</span>
         </li>
       ))}
     </ul>

@@ -88,44 +88,44 @@ interface FeatureModule {
 
 ### Decisions inbox (home)
 
-Desktop, three panels: queue (28 %), decision (45 %), opinions and discussion (27 %, collapsible).
+Desktop, three panels: queue (28 %), decision (45 %), discussion (27 %, collapsible).
 
-- **Toolbar**: tabs Waiting / With opinions / Answered with count pills; kind chips with counts; repo picker (multi-select); age picker; "My repos". All filters live in the URL.
-- **Queue**: count and one-line summary first ("38 decisions · 20 scope · 8 duplicate … · oldest 3d"), then rows grouped by kind (sticky group headers), then repo, oldest first. A row has three lines: the item title and age (amber from 2 days); the first sentence of the AI summary; the ref, batch size, recommendation, opinion count (accent when one of them is yours) and the avatar of whoever is viewing it. Checkboxes select rows for a batch pick.
+- **Toolbar**: tabs Waiting / Commented / Answered with count pills; kind chips with counts; repo picker (multi-select); age picker; "My repos". All filters live in the URL.
+- **Queue**: count and one-line summary first ("38 decisions · 20 scope · 8 duplicate … · oldest 3d"), then rows grouped by kind (sticky group headers), then repo, oldest first. A row has three lines: the item title and age (amber from 2 days); the first sentence of the AI summary; the ref, batch size, recommendation, comment count (accent when one of them is yours) and the avatar of whoever is viewing it. Checkboxes select rows for a batch pick.
 - **Decision** leads with the item, not the question:
   1. kind pill, ref, age, "kiri-n is viewing · 3m", comment count; the item title (17 px semibold);
   2. **AI summary** (3–6 sentences: what it does, why, what is risky or unclear, how it relates to the reference app), with the model and age;
   3. **Description**: the issue or PR body as GitHub-flavoured Markdown, clamped to about 25 lines (15 on phones) with "Show all";
   4. **Key facts** as a key-value list;
   5. disclosures: Items (batch, with per-item overrides), Context, Comment posted on GitHub, Classifiers, Related.
-- **Decision bar**, pinned to the bottom of the decision panel: the question, one line saying what a pick means for this reader, the options in a 2 × 2 grid with the recommendation starred and the opinion tally on each, and a note field.
-- **Opinions and discussion** panel: every opinion (avatar, login, GitHub permission badge `write` / `no write`, the option picked or "commented", note, age), with Adopt for operators; then the comment thread. Both say they are never sent to the pipeline.
+- **Decision bar**, pinned to the bottom of the decision panel: the question, one line saying what a pick means for this reader, the options in a 2 × 2 grid with the recommendation starred and the number of people who picked it on each, and a note field.
+- **Discussion** panel: every comment (avatar, login, GitHub permission badge `write` / `no write`, the option it picks or "commented", note, age), with "Use this answer" for operators on comments that pick an option; then the comment thread. Both say they are never sent to the pipeline.
 - **Answering**: an operator's click or number key answers and moves to the next decision. The answered row stays at the top of the queue as a one-line confirmation with Undo; `u` undoes the last one until the pipeline applies it.
 
 Description rendering is for untrusted input: raw HTML is dropped, only `http(s)`, `mailto`, relative and anchor links survive, links open in a new tab with `rel="noopener noreferrer nofollow"`, and images never load inline (the CSP allows only same-origin images): each becomes a chip with its alt text that opens the image in a new tab on click.
 
-Phone: one decision per screen. A header strip with the count, summary and a Filter button (filters in a bottom sheet). The page scrolls through title, summary, description, facts, the question with full-width options, opinions and the disclosures. A bottom bar holds previous / next, the position ("15 of 38"), the question in one line and a button that jumps to the options ("Answer", "Give opinion" or "Change").
+Phone: one decision per screen. A header strip with the count, summary and a Filter button (filters in a bottom sheet). The page scrolls through title, summary, description, facts, the question with full-width options, comments and the disclosures. A bottom bar holds previous / next, the position ("15 of 38"), the question in one line and a button that jumps to the options ("Answer", "Give opinion" or "Change").
 
-### Answers and opinions (spec: Trust boundary)
+### Answers and comments (spec: Trust boundary)
 
 | Reader | A pick means | Also sees |
 |---|---|---|
-| Operator with GitHub write on the repo | the answer; it is actionable | Adopt on every opinion with an option: answers with that option and credits the person |
-| Anyone else signed in (maintainer, viewer, or operator without write on the repo) | an opinion: shown to everyone with their permission badge and counted in the tally, never acted on | their own opinion highlighted, "Retract mine", a note field that saves with Enter |
+| Operator with GitHub write on the repo | the answer; it is actionable | "Use this answer" on every comment that picks an option: answers with that option and credits the person |
+| Anyone else signed in (maintainer, viewer, or operator without write on the repo) | a comment that may pick an option: shown to everyone with their permission badge and counted in the tally, never acted on | their own pick highlighted, "Retract mine", a note field that saves with Enter |
 
-Nobody is read-only: everyone signed in can give an opinion and comment (rate-limited and audited on the server). The top bar shows the reader's role badge (Operator / Maintainer / Viewer), and the line above the options says in words what a pick does. Answered decisions say "by ochre-fox, adopting kiri-n's opinion" when an opinion was adopted. The mock API enforces the same rules the server will (`decisionAccess` in `web/src/registry/permissions.ts`); in the mock, the user menu has "Mock data: view as" and URLs accept `?as=operator|maintainer|viewer`.
+Nobody is read-only: everyone signed in can comment, with or without picking an option (rate-limited and audited on the server). The top bar shows the reader's role badge (Operator / Maintainer / Viewer), and the line above the options says in words what a pick does. Answered decisions say "by ochre-fox, using kiri-n's answer" when an operator used someone's pick. The mock API enforces the same rules the server will (`decisionAccess` in `web/src/registry/permissions.ts`); in the mock, the user menu has "Mock data: view as" and URLs accept `?as=operator|maintainer|viewer`.
 
 ### Item detail
 
 Two panels: the item (68 %) and a collapsible side panel (32 %).
 
-- Header as on GitHub: title with `#number`, a state pill (Open / Merged / Closed), author with avatar, age and repo, "Open on GitHub".
+- Header as on GitHub: title with `#number`, a state pill (Open / Merged / Closed), author with avatar, age and repo. The `repo#number` in the header links to the issue or PR on GitHub (new tab); everywhere else a `repo#number` reference (inbox rows, decision detail, item page, search results) does the same, and there is no separate "Open on GitHub" link.
 - Properties as a key-value list: author with whitelist tier badge and merged / closed-unmerged counts; size (+/−, file count, S/M/L/XL); checks; mergeable; labels; updated.
 - Classifier verdicts as a table, one column per classifier (type, want, reference, topics, reason). Values that disagree with the majority get an amber highlight; the heading says "2 of 3 agree on type". On phones, one block per classifier.
 - Timeline with an icon per stage in plain words ("Waiting for a decision", "Merged by the pipeline"), actor and age; the current stage is highlighted.
 - Files changed as a table with mono paths, +/− and a proportional bar.
 - The description below the properties, rendered like the decision's.
-- Side: decisions about the item (status, recommendation or answer, opinion tally), linked and duplicate items, CI checks, then the `item.side` slot.
+- Side: decisions about the item (status, recommendation or answer, pick tally), linked and duplicate items, CI checks, then the `item.side` slot.
 
 ### Progress
 
@@ -147,7 +147,7 @@ Charts are hand-written SVG and HTML (no chart library): every bar has a 2 px su
 | `[` | Collapse or expand the sidebar |
 | `g d`, `g p` | Go to decisions, progress |
 | `j` / `k` | Next / previous decision |
-| `1`–`4` | Answer (operator) or give an opinion (everyone else) with that option |
+| `1`–`4` | Answer (operator) or comment (everyone else) with that option |
 | `n` | Focus the note |
 | `x` | Check the row for a batch answer; `Esc` clears |
 | `u` | Undo the last answer |
@@ -162,7 +162,7 @@ Keys are ignored while typing, except `Esc` and `Ctrl Enter`.
 - Contrast: body text ≥ 4.5:1 on both themes; amber, red and green have separate light-theme steps for that reason. Chart marks ≥ 3:1 against the surface.
 - Focus: a 2 px accent-ink outline on every focusable element; all actions reachable by keyboard; Radix handles focus in menus and dialogs.
 - Semantics: the queue is a `listbox` with `aria-selected`; tabs, radio groups and toggles carry their ARIA roles and states; option buttons declare `aria-keyshortcuts`; each chart has an `aria-label` and its numbers appear as text beside it.
-- State is never colour alone: opinions carry a text permission badge and the reader's own pick has a check mark, disagreeing verdicts have a marker and amber text, chart series have legends.
+- State is never colour alone: comments carry a text permission badge and the reader's own pick has a check mark, disagreeing verdicts have a marker and amber text, chart series have legends.
 - Phones: targets ≥ 44 px (option buttons 52 px), no horizontal page scroll at 360–390 px.
 - `prefers-reduced-motion` collapses all durations.
 
@@ -170,5 +170,5 @@ Keys are ignored while typing, except `Esc` and `Ctrl Enter`.
 
 - Radix `Dialog` injects a small `<style>` for scroll locking, which `style-src 'self'` blocks (the dialogs still work). Options: allow a hashed style, or drop scroll locking.
 - Claim indicator: the mock records a claim when a decision opens; the server needs a short-lived claim table and a "being looked at" expiry (proposed: 10 minutes).
-- Opinions need the `decision_opinions` table and the summary columns now in `dashboard-spec.md`; the pipeline must write `summary` when it asks a decision.
+- Comments need the `decision_opinions` table (storing picks and notes) and the summary columns now in `dashboard-spec.md`; the pipeline must write `summary` when it asks a decision.
 - Layout persistence is localStorage only; a `PUT /api/me/layout/:key` endpoint would make layouts follow the user.

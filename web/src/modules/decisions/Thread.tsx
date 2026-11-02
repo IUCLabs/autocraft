@@ -10,7 +10,7 @@ import { localActions, refOf, useDecisionList, useSelection } from "./state";
 import { OpinionList } from "./parts";
 import { decisionAccess } from "../../registry/permissions";
 
-/** Desktop side panel: everyone's opinions (operators adopt from here), then the comment thread. */
+/** Desktop side panel: everyone's comments (operators can use a pick as the answer), then the comment thread. */
 export function ThreadPanel({ user }: ViewProps) {
   const api = useApi();
   const { id } = useSelection();
@@ -26,19 +26,19 @@ export function ThreadPanel({ user }: ViewProps) {
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex h-10 shrink-0 items-center gap-2 border-b border-line px-4 pr-10">
-        <span className="text-xs font-semibold text-ink/70">Opinions and discussion</span>
+        <span className="text-xs font-semibold text-ink/70">Discussion</span>
       </div>
       {d ? (
         <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
           <section className="border-b border-line p-3">
             <h2 className="mb-2 flex items-center gap-1.5 text-xs font-semibold text-ink/60">
-              Opinions <Count n={d.opinions.length} />
+              Comments <Count n={d.opinions.length} />
               {d.opinions.length > 0 && <span className="ml-auto font-normal text-ink/45">not sent to the pipeline</span>}
             </h2>
             <OpinionList d={d} me={user.login} onAdopt={operator && !d.answer ? (oid) => void adopt(oid) : undefined} />
           </section>
           <h2 className="flex items-center gap-1.5 px-4 pt-3 text-xs font-semibold text-ink/60">
-            Discussion <Count n={d.commentCount} />
+            Thread <Count n={d.commentCount} />
           </h2>
           <Thread decisionId={d.id} />
         </div>

@@ -1,5 +1,6 @@
 import { useEffect, useRef, type ReactNode } from "react";
 import { Link } from "react-router-dom";
+import { RefLink } from "../../ui/RefLink";
 import { ChevronLeftIcon, ChevronRightIcon, CheckIcon, Undo2Icon, MessageSquareIcon, InboxIcon, SparklesIcon, ArrowDownIcon } from "lucide-react";
 import { useApi } from "../../api/client";
 import type { Decision, User } from "../../api/types";
@@ -194,7 +195,7 @@ export function DecisionBody({
           const v = e.currentTarget.value.trim();
           if (e.key === "Enter" && !operator && v) void api.decisions.opine(d.id, { option: mine?.option ?? null, note: v }).then(() => localActions.setNote(d.id, ""));
         }}
-        placeholder={operator ? "Note, kept with the answer (optional)" : mine ? "Add a note to your opinion, Enter to save" : "Note with your opinion (optional)"}
+        placeholder={operator ? "Note, kept with the answer (optional)" : mine ? "Add a note to your comment, Enter to save" : "Note with your comment (optional)"}
         aria-label="Note"
         className="min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-ink/40"
       />
@@ -209,9 +210,7 @@ export function DecisionBody({
         {isBatch ? (
           <span className="code">{d.repo}</span>
         ) : (
-          <Link to={`/item/${d.repo}/${d.number}`} className="code text-accent-ink hover:underline">
-            {d.repo}#{d.number}
-          </Link>
+          <RefLink repo={d.repo} number={d.number!} />
         )}
         <span>asked {ago(d.askedAt)} ago</span>
         <ClaimPill claim={d.claim} />
@@ -242,9 +241,11 @@ export function DecisionBody({
     <Section
       title="Description"
       aside={
-        <a className="text-accent-ink hover:underline" href={`https://github.com/storytold/${d.repo}/issues/${d.number}`} target="_blank" rel="noopener noreferrer">
-          Open on GitHub
-        </a>
+        isBatch ? undefined : (
+          <Link to={`/item/${d.repo}/${d.number}`} className="text-accent-ink hover:underline">
+            Item page
+          </Link>
+        )
       }
     >
       <Collapsible lines={phone ? 15 : 25}>
@@ -265,7 +266,7 @@ export function DecisionBody({
     <Section
       title={
         <>
-          Opinions <Count n={d.opinions.length} />
+          Comments <Count n={d.opinions.length} />
         </>
       }
       aside="Shown to people only, never sent to the pipeline"
@@ -344,7 +345,7 @@ export function DecisionBody({
           </div>
           {!d.answer && (
             <Button size="md" variant="primary" icon={ArrowDownIcon} className="h-10 px-3" onClick={() => decideRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })}>
-              {operator ? "Answer" : mine ? "Change" : "Give opinion"}
+              {operator ? "Answer" : mine ? "Change" : "Comment"}
             </Button>
           )}
           <IconButton size="lg" icon={ChevronRightIcon} label="Next decision" disabled={!pager?.next} onClick={pager?.next} />
@@ -392,7 +393,7 @@ function AnsweredState({ d, canUndo }: { d: Decision; canUndo: boolean }) {
       <span className="text-sm font-medium">{label}</span>
       <span className="text-xs text-ink/55">
         by {d.answeredBy}
-        {d.adoptedOpinion ? `, adopting ${d.adoptedOpinion.login}'s opinion` : ""} · {ago(d.answeredAt!)} ago · {d.appliedAt ? "applied" : "not applied yet"}
+        {d.adoptedOpinion ? `, using ${d.adoptedOpinion.login}'s answer` : ""} · {ago(d.answeredAt!)} ago · {d.appliedAt ? "applied" : "not applied yet"}
       </span>
       {d.answerNote && <span className="w-full text-sm text-ink/70">“{d.answerNote}”</span>}
       {!d.appliedAt && canUndo && (
@@ -413,9 +414,7 @@ function BatchItems({ d }: { d: Decision }) {
         const ref = `${it.repo}#${it.number}`;
         return (
           <li key={ref} className="flex min-h-[34px] items-center gap-3 border-b border-line px-3 last:border-0">
-            <Link to={`/item/${it.repo}/${it.number}`} className="code w-[112px] shrink-0 text-accent-ink hover:underline">
-              {ref}
-            </Link>
+            <RefLink repo={it.repo} number={it.number} className="w-[112px] shrink-0" />
             <span className="min-w-0 flex-1 truncate text-sm text-ink/85">{it.title}</span>
             <select
               aria-label={`Answer for ${ref}`}
@@ -437,7 +436,7 @@ function BatchItems({ d }: { d: Decision }) {
   );
 }
 
-/** Several checked rows of one kind: one answer (or opinion) for all of them. */
+/** Several checked rows of one kind: one answer (or comment) for all of them. */
 function MultiAnswer({ ds, user }: { ds: Decision[]; user: User }) {
   const answer = useAnswer();
   const api = useApi();
@@ -458,7 +457,7 @@ function MultiAnswer({ ds, user }: { ds: Decision[]; user: User }) {
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto max-w-[720px] px-6 pb-10 pt-5">
-          <h1 className="text-lg font-semibold">{same ? `${access.mode === "answer" ? "Answer" : "Give an opinion on"} ${ds.length} ${ds[0].kind} decisions together` : "These decisions ask different questions"}</h1>
+          <h1 className="text-lg font-semibold">{same ? `${access.mode === "answer" ? "Answer" : "Comment on"} ${ds.length} ${ds[0].kind} decisions together` : "These decisions ask different questions"}</h1>
           <p className="mt-1 text-sm text-ink/60">{same ? "One pick for all of them. Change single items afterwards from their own page." : "Select decisions of one kind to answer them together."}</p>
           <ul className="mt-4 overflow-hidden rounded-md border border-line">
             {ds.map((d) => (
