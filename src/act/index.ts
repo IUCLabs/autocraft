@@ -1,0 +1,308 @@
+// Act stage: the GitHub writes that follow an operator's answer. Two kinds,
+// both a short comment and a close:
+//   - a scope decision answered `close` (Out of scope), on an issue or PR;
+//   - a "Close this PR?" decision, which this step asks for each PR whose
+//     latest review says close, once per head commit.
+// Other scope answers need no write here (take and small-extra go on to
+// review, plugin is a label for the label stage, need-info is checked by
+// people). Only an operator's answer counts (actionable()), and only in repos
+// an operator approved for comments. No model calls.
+//
+//   craft-auto act --repo R [--limit N] [--apply]
+//   craft-auto comment-approval [--repo R]
+import type { DatabaseSync } from "node:sqlite";
+import { audit } from "../dash/audit.ts";
+import { connect } from "../db.ts";
+import { actionable, ask, factsOf, getDecision, type Actionable, type DecisionRow } from "../decisions.ts";
+import { HEAD_FACT } from "../merge/queue.ts";
+import { Client, type Querier } from "../mirror.ts";
+import { headOf } from "../review/candidates.ts";
+import { commentApprovalOf } from "./approval.ts";
+import { cleanReason, ORG, prCloseComment, scopeCloseComment } from "./templates.ts";
+
+const ACTOR = "act";
+const KIND = "comment-close";
+const DUP_FACT = "duplicate of ";
+const REASON_FACT = "review reason: ";
+
+export type ActDeps = { querier: Querier; now: () => Date };
+export const defaultDeps = (): ActDeps => ({ querier: new Client(1000), now: () => new Date() });
+
+export type ActParams = {
+  repo: string;
+  /** Most items to attempt in this run. */
+  limit?: number;
+  /** Default true: only `dryRun: false` asks, comments or closes. */
+  dryRun?: boolean;
+  onHandled?: (n: number) => void;
+};
+
+export type ActSummary = {
+  repo: string; dryRun: boolean;
+  /** Close? decisions asked (or that would be). */
+  asked: string[];
+  done: string[]; skipped: { ref: string; reason: string }[]; failed: { ref: string; reason: string }[];
+  note: string | null;
+};
+
+/** Option keys of a "Close this PR?" decision. */
+export const CLOSE_OPTIONS = {
+  close: { key: "close", label: "Close", hint: "Post a short comment and close the PR." },
+  hold: { key: "hold", label: "Hold", hint: "Leave it open for now." },
+  keep: { key: "keep", label: "Keep open", hint: "The PR stays; do not ask again at this head commit." },
+} as const;
+
+/** One decision per PR head: a push gets a new one. */
+export const closeDecisionId = (repo: string, number: number, head: string): string => `${repo}#${number}:close@${head}`;
+
+const refOf = (e: { repo: string; number: number }) => `${e.repo}#${e.number}`;
+const short = (sha: string) => sha.slice(0, 7);
+
+// ---- Close this PR? ------------------------------------------------------------
+
+type ReviewRow = { repo: string; number: number; head_oid: string; reason: string; duplicate_of: string | null; size: string | null; title: string | null; author: string | null;
+  i_head: string | null; updated_at: string | null; c_head: string | null; c_at: string | null };
+
+/** Open PRs whose latest review says close at the PR's current head and that have no Close? decision at that head. */
+export function closeCandidates(db: DatabaseSync, repo: string): ReviewRow[] {
+  const rows = db.prepare(`
+    SELECT r.repo, r.number, r.head_oid, r.reason, r.duplicate_of, r.size, i.title, i.author,
+           i.head_oid AS i_head, i.updated_at, c.head_oid AS c_head, c.fetched_at AS c_at
+    FROM reviews r
+    JOIN items i ON i.repo = r.repo AND i.number = r.number AND i.kind = 'pr' AND i.state = 'OPEN'
+    LEFT JOIN pr_checks c ON c.repo = r.repo AND c.number = r.number
+    WHERE r.repo = ? AND r.verdict = 'close'
+      AND r.rowid = (SELECT r2.rowid FROM reviews r2 WHERE r2.repo = r.repo AND r2.number = r.number ORDER BY r2.at DESC, r2.rowid DESC LIMIT 1)
+    ORDER BY r.number`).all(repo) as ReviewRow[];
+  const has = db.prepare("SELECT 1 FROM decisions WHERE id = ?");
+  return rows.filter((r) => headOf({ head_oid: r.i_head, updated_at: r.updated_at, c_head: r.c_head, c_at: r.c_at }) === r.head_oid && !has.get(closeDecisionId(r.repo, r.number, r.head_oid)));
+}
+
+export function closeQuestion(r: ReviewRow): Record<string, unknown> & { id: string } {
+  const reason = cleanReason(r.reason);
+  return {
+    id: closeDecisionId(r.repo, r.number, r.head_oid), kind: "close", repo: r.repo, number: r.number,
+    question: "Close this PR?",
+    context: `The review says close${r.duplicate_of ? `: it duplicates ${r.duplicate_of}` : ""}.`,
+    facts: [
+      `${REASON_FACT}${r.reason.replace(/\s+/g, " ").trim().slice(0, 300)}`,
+      ...(r.duplicate_of ? [`${DUP_FACT}${r.duplicate_of}`] : []),
+      `author: ${r.author ?? "unknown"}${r.size ? `, size ${r.size}` : ""}`,
+      `${HEAD_FACT}${r.head_oid}`,
+    ],
+    options: Object.values(CLOSE_OPTIONS).map((o) => ({ ...o })),
+    recommended: "close",
+    // The reason the closing comment gives; the operator sees it in the facts.
+    public_text: reason,
+    asked_by: ACTOR,
+  };
+}
+
+export function askCloseDecisions(db: DatabaseSync, repo: string, at: string): string[] {
+  const qs = closeCandidates(db, repo).map(closeQuestion);
+  if (qs.length) ask(db, qs.map((q) => ({ ...q, asked_at: at })));
+  return qs.map((q) => q.id);
+}
+
+// ---- what to act on ------------------------------------------------------------
+
+type Target = { decisionId: string; kind: "scope" | "close"; repo: string; number: number };
+
+/** Items an operator's `close` answer applies to in this repo, minus those an exception changes. */
+function targetsOf(a: Actionable, repo: string): Target[] {
+  if (a.kind !== "scope" && a.kind !== "close") return [];
+  if (a.kind === "close" && a.number === null) return [];
+  const out: Target[] = [];
+  for (const it of a.items) {
+    if (it.repo !== repo) continue;
+    const ex = a.exceptions.find((e) => e.repo === it.repo && e.number === it.number);
+    if ((ex ? ex.answer : a.answer) === "close") out.push({ decisionId: a.id, kind: a.kind, repo, number: it.number });
+  }
+  return out;
+}
+
+type ActionRow = { id: number; decision_id: string; repo: string; number: number; kind: string; state: string; comment_url: string | null; reason: string | null; created_at: string };
+const rowOf = (db: DatabaseSync, t: Target): ActionRow | undefined =>
+  db.prepare("SELECT * FROM actions WHERE decision_id = ? AND repo = ? AND number = ? AND kind = ?").get(t.decisionId, t.repo, t.number, KIND) as ActionRow | undefined;
+
+/** Answered-close targets in the repo without a final (done or skipped) action row. */
+export function pending(db: DatabaseSync, repo: string): Target[] {
+  return actionable(db).flatMap((a) => targetsOf(a, repo)).filter((t) => {
+    const r = rowOf(db, t);
+    return !r || r.state === "failed";
+  });
+}
+
+// ---- GitHub ----------------------------------------------------------------------
+
+type Live = { id: string; type: "Issue" | "PullRequest"; state: string; head: string | null };
+
+const READ = `query($name: String!, $n: Int!) {
+  repository(owner: "${ORG}", name: $name) {
+    issueOrPullRequest(number: $n) {
+      __typename
+      ... on Issue { id state }
+      ... on PullRequest { id state headRefOid }
+    }
+  }
+}`;
+const COMMENT = `mutation($id: ID!, $body: String!) {
+  addComment(input: { subjectId: $id, body: $body }) { commentEdge { node { url } } }
+}`;
+const CLOSE_ISSUE = `mutation($id: ID!) { closeIssue(input: { issueId: $id }) { clientMutationId } }`;
+const CLOSE_PR = `mutation($id: ID!) { closePullRequest(input: { pullRequestId: $id }) { clientMutationId } }`;
+
+async function readLive(q: Querier, repo: string, n: number): Promise<Live | null> {
+  const d = await q.query(READ, { name: repo, n }) as { repository?: { issueOrPullRequest?: { __typename: string; id: string; state: string; headRefOid?: string } | null } };
+  const x = d.repository?.issueOrPullRequest;
+  if (!x) return null;
+  return { id: x.id, type: x.__typename === "PullRequest" ? "PullRequest" : "Issue", state: x.state, head: x.headRefOid ?? null };
+}
+
+// ---- the step ----------------------------------------------------------------
+
+function headFact(d: DecisionRow): string | null {
+  const f = factsOf(d).find((x) => x.startsWith(HEAD_FACT));
+  return f ? f.slice(HEAD_FACT.length).trim() : null;
+}
+const factValue = (d: DecisionRow, prefix: string): string | null => {
+  const f = factsOf(d).find((x) => x.startsWith(prefix));
+  return f ? f.slice(prefix.length).trim() : null;
+};
+
+function commentFor(d: DecisionRow, t: Target): string {
+  if (t.kind === "scope") return scopeCloseComment(d.public_text);
+  return prCloseComment({ repo: t.repo, reason: d.public_text ?? factValue(d, REASON_FACT), duplicateOf: factValue(d, DUP_FACT) });
+}
+
+export async function runAct(db: DatabaseSync, params: ActParams, log: (line: string) => void = console.log, deps?: ActDeps): Promise<ActSummary> {
+  const { repo } = params;
+  const dryRun = params.dryRun ?? true;
+  if (params.limit !== undefined && !(Number.isInteger(params.limit) && params.limit >= 0)) throw new Error("limit must be a whole number ≥ 0");
+  const at = () => (deps?.now() ?? new Date()).toISOString();
+  const summary: ActSummary = { repo, dryRun, asked: [], done: [], skipped: [], failed: [], note: null };
+  if (!commentApprovalOf(db, repo)) {
+    summary.note = `commenting in ${repo} is not approved`;
+    log(`act ${repo}: ${summary.note}; nothing done`);
+    return summary;
+  }
+  let todo = pending(db, repo);
+  if (params.limit !== undefined) todo = todo.slice(0, params.limit);
+  if (dryRun) {
+    summary.asked = closeCandidates(db, repo).map((r) => closeDecisionId(r.repo, r.number, r.head_oid));
+    for (const id of summary.asked) log(`  would ask Close? ${id}`);
+    for (const t of todo) log(`  would comment and close ${refOf(t)} (${t.decisionId})`);
+    log(`act ${repo}: dry run, nothing called or written`);
+    summary.done = todo.map(refOf);
+    return summary;
+  }
+  const d = deps ?? defaultDeps();
+  summary.asked = askCloseDecisions(db, repo, at());
+  if (summary.asked.length) log(`  asked ${summary.asked.length} Close? decision${summary.asked.length === 1 ? "" : "s"}`);
+  // Newly asked ones are unanswered, so the work list is the one taken above.
+
+  const save = (t: Target, state: "done" | "skipped" | "failed", reason: string | null, url: string | null) => {
+    const prev = rowOf(db, t);
+    if (prev) db.prepare("UPDATE actions SET state = ?, reason = ?, comment_url = COALESCE(?, comment_url), created_at = ? WHERE id = ?").run(state, reason, url, at(), prev.id);
+    else db.prepare("INSERT INTO actions (decision_id, repo, number, kind, state, comment_url, reason, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(t.decisionId, t.repo, t.number, KIND, state, url, reason, at());
+  };
+  // A decision is applied once none of its targets is left to do.
+  const settle = (t: Target) => {
+    const a = actionable(db).find((x) => x.id === t.decisionId);
+    if (a && !pending(db, repo).some((p) => p.decisionId === t.decisionId) && !targetsOfElsewhere(a, repo))
+      db.prepare("UPDATE decisions SET applied_at = ? WHERE id = ? AND applied_at IS NULL").run(at(), t.decisionId);
+  };
+  const skip = (t: Target, reason: string) => {
+    save(t, "skipped", reason, null);
+    audit(db, ACTOR, "act-skip", refOf(t), { decision: t.decisionId, reason });
+    summary.skipped.push({ ref: refOf(t), reason });
+    log(`  ${refOf(t)}: skipped: ${reason}`);
+    settle(t);
+  };
+
+  let handled = 0;
+  for (const t of todo) {
+    const dec = getDecision(db, t.decisionId)!;
+    handled++;
+    params.onHandled?.(handled);
+    const prev = rowOf(db, t);
+    try {
+      const live = await readLive(d.querier, t.repo, t.number);
+      if (!live) { skip(t, "GitHub returned no such item"); continue; }
+      if (live.state !== "OPEN") { skip(t, `already ${live.state.toLowerCase()} on GitHub`); continue; }
+      if (t.kind === "close") {
+        const h = headFact(dec);
+        if (live.type !== "PullRequest" || !h || live.head !== h) { skip(t, `head moved since the decision (${h ? short(h) : "no head recorded"} → ${live.head ? short(live.head) : "none"})`); continue; }
+      }
+      let url = prev?.comment_url ?? null;
+      if (!url) {
+        const r = await d.querier.query(COMMENT, { id: live.id, body: commentFor(dec, t) }) as { addComment?: { commentEdge?: { node?: { url?: string } } } };
+        url = r.addComment?.commentEdge?.node?.url ?? "";
+        // Saved before the close so a retry after a failed close does not comment twice.
+        save(t, "failed", "comment posted; close not done yet", url);
+        audit(db, ACTOR, "act-comment", refOf(t), { decision: t.decisionId, url });
+      }
+      await d.querier.query(live.type === "PullRequest" ? CLOSE_PR : CLOSE_ISSUE, { id: live.id });
+      save(t, "done", null, url);
+      audit(db, ACTOR, "act-close", refOf(t), { decision: t.decisionId, head: live.head });
+      db.prepare("INSERT INTO stages (repo, number, stage, at, actor, note) VALUES (?, ?, 'closed', ?, ?, ?)").run(t.repo, t.number, at(), ACTOR, `closed after ${t.kind} decision ${t.decisionId}`);
+      summary.done.push(refOf(t));
+      log(`  ${refOf(t)}: commented and closed`);
+      settle(t);
+    } catch (e) {
+      const why = (e as Error).message.replace(/\s+/g, " ").slice(0, 300);
+      const row = rowOf(db, t);
+      save(t, "failed", why, row?.comment_url ?? null);
+      summary.failed.push({ ref: refOf(t), reason: why });
+      log(`  ${refOf(t)}: failed: ${why}`);
+      break;
+    }
+  }
+  log(`act ${repo}: ${summary.done.length} closed, ${summary.skipped.length} skipped, ${summary.failed.length} failed, ${summary.asked.length} asked`);
+  return summary;
+}
+
+/** True when the decision has close targets in another repo (a batch across repos), which this run does not settle. */
+function targetsOfElsewhere(a: Actionable, repo: string): boolean {
+  return a.items.some((i) => i.repo !== repo);
+}
+
+// ---- CLI -----------------------------------------------------------------------
+
+function parseArgs(args: string[]): { repo: string; limit?: number; apply: boolean } {
+  let repo: string | undefined, limit: number | undefined, apply = false;
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === "--repo") repo = args[++i];
+    else if (a === "--limit") limit = Number(args[++i]);
+    else if (a === "--apply") apply = true;
+    else if (a === "--dry-run") apply = false;
+    else throw new Error(`unknown option ${a}; options: --repo R --limit N --apply --dry-run`);
+  }
+  if (!repo) throw new Error("missing --repo");
+  if (limit !== undefined && !(Number.isInteger(limit) && limit >= 0)) throw new Error("--limit is a whole number");
+  return { repo, limit, apply };
+}
+
+export const commands = {
+  act: {
+    summary: "act --repo R [--limit N] [--apply]: comment and close items an operator answered close, ask Close? for reviewed PRs (dry run unless --apply)",
+    async run(args: string[]): Promise<void> {
+      const f = parseArgs(args);
+      await runAct(connect(), { repo: f.repo, limit: f.limit, dryRun: !f.apply });
+    },
+  },
+  "comment-approval": {
+    summary: "comment-approval [--repo R]: which repos an operator approved for comments and closes",
+    run(args: string[]): void {
+      const i = args.indexOf("--repo");
+      const db = connect();
+      const repos = i >= 0 ? [args[i + 1]!] : (db.prepare("SELECT name FROM tracked_repos ORDER BY name").all() as { name: string }[]).map((r) => r.name);
+      for (const r of repos) {
+        const a = commentApprovalOf(db, r);
+        console.log(`${r}\t${a ? `approved by ${a.by} at ${a.at}` : "not approved"}`);
+      }
+    },
+  },
+};
+

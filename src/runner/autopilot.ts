@@ -14,6 +14,8 @@ import { embedderId, modelName } from "../embed/model.ts";
 import { pending as embedPending } from "../embed/store.ts";
 import { approvalOf } from "../labels/approval.ts";
 import { countPlan, planLabels } from "../labels/plan.ts";
+import { commentApprovalOf } from "../act/approval.ts";
+import { closeCandidates, pending as actPending } from "../act/index.ts";
 import { mergeApprovalOf } from "../merge/approval.ts";
 import { buildQueue, eligible } from "../merge/queue.ts";
 import { trackedNames } from "../repos.ts";
@@ -158,6 +160,14 @@ export const LANES: Lane[] = [
       return repos.map((repo) => ({ step: "merge", params: { repo } }));
     },
   },
+  {
+    // Comments and closes after operator answers, and Close? decisions for reviewed PRs.
+    name: "act",
+    steps: ["act"],
+    perRepo: true,
+    detect: (db, { tracked }) =>
+      tracked.filter((repo) => commentApprovalOf(db, repo) && (actPending(db, repo).length || closeCandidates(db, repo).length)).map((repo) => ({ step: "act", params: { repo } })),
+  },
 ];
 
 // ---- limits and usage ----------------------------------------------------------
@@ -217,7 +227,7 @@ export function setEnabled(db: DatabaseSync, enabled: boolean, by: string): void
 }
 
 /** Steps that have a row in stage_limits, in pipeline order. */
-export const LIMIT_STEPS = ["classify-new", "embed", "decide", "checks", "review-batch", "labels-apply", "merge"];
+export const LIMIT_STEPS = ["classify-new", "embed", "decide", "checks", "review-batch", "labels-apply", "merge", "act"];
 
 /** Steps whose jobs cannot be sized to what remains of the day: only no limit or a pause makes sense. */
 export const ZERO_ONLY = ["checks"];

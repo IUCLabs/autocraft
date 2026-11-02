@@ -157,6 +157,25 @@ The step that acts on answers reads these keys:
 | `close` | Out of scope. Close with a short reason |
 | `need-info` | Ask how the reference app behaves, then decide again |
 
+## Act: comments and closes
+
+`craft-auto act --repo R [--limit N] [--apply]` (step `act`, group github-write, operator only, no model) makes the GitHub writes that follow an operator's answer. Without `--apply` it is a dry run. It writes only in repos an operator approved for comments (setting `comment_approved:<repo>`, audited as `comment-approve` and `comment-revoke`; `craft-auto comment-approval` shows it; the dashboard endpoints are `POST /api/repos/comment-approve` and `/comment-revoke`). The autopilot queues it per repo when the repo is approved and has an answer to act on or a PR to ask about. Daily limit: 20 items.
+
+| Trigger | Action |
+|---|---|
+| Scope decision answered `close` (Out of scope) by an operator | One comment, then close the issue or PR |
+| "Close this PR?" decision answered `close` by an operator | One comment, then close the PR |
+
+The other scope answers need no write here: `take` and `small-extra` go on to review, `plugin` is a label for the label stage, `need-info` is checked by people.
+
+**Close this PR?** For each open PR whose latest review says close at the PR's current head commit, the step asks one decision per head (id `<repo>#<n>:close@<head>`) with the options close, hold and keep open. Facts: the review's reason, `duplicate of repo#n` when set, author and size, and the head commit. The review stage stores a close that names an unmerged duplicate as hold, so those never reach this decision. The decision goes stale when the head moves: a new head gets a new decision, and an answer given at an old head is skipped.
+
+**Before writing**, the step reads the item from GitHub. It skips the item, without a comment, when it is already closed or merged, when it no longer exists, or (Close? decisions) when its head is not the one the decision was asked at. A skipped item is recorded and its decision is marked applied.
+
+**Comments** are fixed templates in code (`src/act/templates.ts`, listed on the Prompts page). Each is one or two short factual lines: a fixed first sentence and, when there is one, `Reason: <text>`. The text is the decision's `public_text` (a Close? decision stores the review's reason there), cut to one line of at most 200 characters with `@` removed. A PR with a duplicate gets `Duplicate of #N.` (`storytold/<repo>#N` for another repo) instead of a reason.
+
+**`actions` table**: decision id, repo, number, kind (`comment-close`), state (`done`, `skipped`, `failed`), comment url, reason, created time; unique per decision and item. A finished decision is marked applied, and the audit log gets `act-comment`, `act-close` or `act-skip`. A rerun does nothing for `done` and `skipped` rows. A `failed` row is retried; when it already holds a comment url, only the close is retried, so a comment is never posted twice. A failure stops the run.
+
 ## Build environments and tasks
 
 Untrusted code (a PR's build, tests and screenshots) never runs where the GitHub token or a Claude login is. It runs in a task on a build environment, a worker registered by an operator.
@@ -231,7 +250,7 @@ The full classification pass (`classify-all`) is never started automatically. A 
 
 ### Daily limits
 
-Each stage has a limit of items per day, counted from 00:00 UTC over the items its jobs handled. A job records its count as it works, so a failed or stopped job keeps it. Handled means units attempted: items sent to Jev or Haiku, items sent for a decision summary, PRs sent for review (or held as too large), items embedded, items labelled, PRs merged. The job's `limit` is the smaller of the step's default and what remains of the day. An empty limit means no limit and 0 pauses the stage. Defaults: classify-new 2000, decide 100, review-batch 40, merge 10; embed, checks and labels-apply have none (labelling and merging are each gated by a per-repo approval). `embed` and `checks` jobs cannot be sized to what remains of the day, so `checks` accepts only no limit or 0; an `embed` limit stops new jobs once it is reached. Operators change limits on the Pipeline page or with `craft-auto pipeline limit <step> --per-day N|none`. A stage that cannot start jobs shows why on the page (limit reached, limit 0, waiting after failures).
+Each stage has a limit of items per day, counted from 00:00 UTC over the items its jobs handled. A job records its count as it works, so a failed or stopped job keeps it. Handled means units attempted: items sent to Jev or Haiku, items sent for a decision summary, PRs sent for review (or held as too large), items embedded, items labelled, PRs merged. The job's `limit` is the smaller of the step's default and what remains of the day. An empty limit means no limit and 0 pauses the stage. Defaults: classify-new 2000, decide 100, review-batch 40, merge 10, act 20; embed, checks and labels-apply have none (labelling, merging and commenting are each gated by a per-repo approval). `embed` and `checks` jobs cannot be sized to what remains of the day, so `checks` accepts only no limit or 0; an `embed` limit stops new jobs once it is reached. Operators change limits on the Pipeline page or with `craft-auto pipeline limit <step> --per-day N|none`. A stage that cannot start jobs shows why on the page (limit reached, limit 0, waiting after failures).
 
 | Who | On the Pipeline page |
 |---|---|

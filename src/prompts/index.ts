@@ -9,6 +9,7 @@ import type { PromptInfo, PromptsReport } from "../../web/src/api/types.ts";
 import { BODY_LIMIT, COMMENT_LIMIT, COMMENTS_PER_ITEM, SUMMARY_MAX, SUMMARY_MIN, itemInput, summaryInput, type Item } from "../classify/parse.ts";
 import { LABELS, LABEL_MEANING, RULES, UNTRUSTED_NOTE } from "../classify/rules.ts";
 import { REVIEW_BODY_LIMIT, VERDICTS, type ReviewPr } from "../review/parse.ts";
+import { COMMENT_TEMPLATES } from "../act/templates.ts";
 import { SAMPLE_ITEMS, SAMPLE_REVIEW_PRS } from "./samples.ts";
 
 /** Jev calls at once unless the `jev_parallel` setting says otherwise (Jev has no accounts, so no slots limit it). */
@@ -299,5 +300,5 @@ function info(p: ClaudePrompt | JevPrompt): PromptInfo {
 }
 
 export function promptsReport(commit: string | null): PromptsReport {
-  return { commit, prompts: PROMPTS.map(info) };
+  return { commit, prompts: PROMPTS.map(info), comments: COMMENT_TEMPLATES };
 }

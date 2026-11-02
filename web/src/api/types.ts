@@ -751,6 +751,19 @@ export interface PromptsReport {
   /** Git commit the server runs, or null when unknown. */
   commit: string | null;
   prompts: PromptInfo[];
+  /** Comments the pipeline posts on GitHub; fixed text, no model. */
+  comments: CommentTemplate[];
+}
+
+export interface CommentTemplate {
+  id: string;
+  stage: string;
+  purpose: string;
+  /** The text with `{{name}}` placeholders. */
+  text: string;
+  placeholders: { name: string; meaning: string }[];
+  /** The text for made-up values. */
+  example: string;
 }
 
 // ---- merge queue ------------------------------------------------------------
