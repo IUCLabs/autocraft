@@ -13,10 +13,11 @@ import {
   FlagIcon,
   CircleCheckIcon,
   CircleSlashIcon,
+  MessageSquareIcon,
   type LucideIcon,
 } from "lucide-react";
 import { useQuery } from "../../api/client";
-import type { CiState, Classification, Item, Stage, Tier } from "../../api/types";
+import type { CiState, Classification, Item, ItemComment, Stage, Tier } from "../../api/types";
 import type { FeatureModule, ViewProps } from "../../registry/types";
 import { Slot } from "../../registry/Slot";
 import { Avatar } from "../../ui/Avatar";
@@ -28,6 +29,7 @@ import { ago, num } from "../../lib/format";
 import { KindTag, tallyOf } from "../decisions/parts";
 import { Markdown, Collapsible } from "../../ui/Markdown";
 import { useIsPhone } from "../../shell/useMedia";
+import { SettledBadge } from "../items";
 
 function useItem(params: ViewProps["params"]) {
   const repo = params.repo!;
@@ -91,6 +93,11 @@ function ItemMain({ params }: ViewProps) {
             <Files it={it} />
           </Section>
         )}
+        {it.comments.length > 0 && (
+          <Section title="Discussion" aside={`${it.comments.length} ${it.comments.length === 1 ? "comment" : "comments"}`}>
+            <Discussion comments={it.comments} />
+          </Section>
+        )}
       </div>
     </div>
   );
@@ -142,6 +149,9 @@ function Properties({ it }: { it: Item }) {
   const total = it.additions + it.deletions;
   const passing = it.ciChecks.filter((c) => c.state === "passing").length;
   const [CiIcon, ciCls] = CI_ICON[it.ci];
+  // The mirror records checks and mergeability only for open PRs; without them the rows are left out.
+  const showCi = it.kind === "pr" && it.ci !== "none";
+  const showMergeable = it.kind === "pr" && it.state === "open" && it.mergeable !== "unknown";
   return (
     <dl className="mt-4 grid grid-cols-[96px_1fr] gap-x-4 text-sm md:grid-cols-[96px_1fr_96px_1fr]">
       <Prop label="Author">
@@ -151,34 +161,48 @@ function Properties({ it }: { it: Item }) {
           {it.authorMerged} merged · {it.authorClosedUnmerged} closed unmerged
         </span>
       </Prop>
+      <Prop label="Type">
+        <SettledBadge s={it.settled} detail />
+        {it.settled.flags.map((f) => (
+          <Badge key={f} tone={f === "security" ? "bad" : "warn"}>
+            {f}
+          </Badge>
+        ))}
+      </Prop>
       <Prop label="Size">
         {it.kind === "pr" ? (
           <>
             <span className="code">
               <span className="text-ok">+{num(it.additions)}</span> <span className="text-bad">−{num(it.deletions)}</span>
             </span>
-            <span className="text-ink/60">{it.files.length} files</span>
+            {it.changedFiles !== null && (
+              <span className="text-ink/60">
+                {num(it.changedFiles)} {it.changedFiles === 1 ? "file" : "files"}
+              </span>
+            )}
             <Badge>{sizeBucket(total)}</Badge>
           </>
         ) : (
           <span className="text-ink/60">Issue</span>
         )}
       </Prop>
-      <Prop label="Checks">
-        <span className={cn("inline-flex items-center gap-1 font-medium", ciCls)}>
-          <CiIcon /> {it.ci === "none" ? "No checks" : it.ci[0].toUpperCase() + it.ci.slice(1)}
-        </span>
-        {it.ciChecks.length > 0 && (
-          <span className="text-ink/55">
-            {passing} of {it.ciChecks.length} passed
+      {showCi && (
+        <Prop label="Checks">
+          <span className={cn("inline-flex items-center gap-1 font-medium", ciCls)}>
+            <CiIcon /> {it.ci[0]!.toUpperCase() + it.ci.slice(1)}
           </span>
-        )}
-      </Prop>
-      <Prop label="Mergeable">
-        <span className={cn("font-medium", it.mergeable === "clean" ? "text-ok" : it.mergeable === "conflicts" ? "text-bad" : "text-ink/55")}>
-          {it.mergeable === "clean" ? "No conflicts" : it.mergeable === "conflicts" ? "Has conflicts" : "Unknown"}
-        </span>
-      </Prop>
+          {it.ciChecks.length > 0 && (
+            <span className="text-ink/55">
+              {passing} of {it.ciChecks.length} passed
+            </span>
+          )}
+        </Prop>
+      )}
+      {showMergeable && (
+        <Prop label="Mergeable">
+          <span className={cn("font-medium", it.mergeable === "clean" ? "text-ok" : "text-bad")}>{it.mergeable === "clean" ? "No conflicts" : "Has conflicts"}</span>
+        </Prop>
+      )}
       <Prop label="Labels">
         {it.labels.map((l) => (
           <Badge key={l}>{l}</Badge>
@@ -203,6 +227,29 @@ function agreement(cls: Classification[]) {
   return n === cls.length ? "all agree on type" : `${n} of ${cls.length} agree on type`;
 }
 
+const likelihood = (p: number) => (p < 0.2 ? "unlikely" : p < 0.5 ? "possible" : p < 0.8 ? "likely" : "very likely");
+const percent = (p: number) => `${Math.round(p * 100)}%`;
+
+// Classifiers that score labels write "bugfix 0.84; security 0.03; needs decision 0.27":
+// the chosen label's probability, then flag probabilities. Other reasons are prose.
+function Reason({ reason }: { reason: string }) {
+  const parts = reason.split(";").map((x) => /^\s*([a-z][a-z -]*?)\s+(0(?:\.\d+)?|1(?:\.0+)?)\s*$/i.exec(x));
+  if (!parts.length || parts.some((m) => !m)) return <>{reason}</>;
+  const [label, ...flags] = parts.map((m) => ({ name: m![1]!, p: Number(m![2]) }));
+  return (
+    <>
+      <span>
+        {label!.name} ({percent(label!.p)})
+      </span>
+      {flags.length > 0 && (
+        <span className="block text-xs text-ink/55">
+          {flags.map((f) => `${f.name[0]!.toUpperCase()}${f.name.slice(1)}: ${likelihood(f.p)} (${percent(f.p)})`).join(" · ")}
+        </span>
+      )}
+    </>
+  );
+}
+
 const WANT: Record<string, string> = { yes: "text-ok", no: "text-bad", unclear: "text-warn" };
 
 function Verdicts({ cls }: { cls: Classification[] }) {
@@ -223,7 +270,9 @@ function Verdicts({ cls }: { cls: Classification[] }) {
               <span className="ml-auto text-xs text-ink/45">{ago(c.at)}</span>
             </div>
             {c.reference && <div className="mt-0.5 text-xs text-ink/55">Reference: {c.reference}</div>}
-            <p className="mt-1 text-sm text-ink/70">{c.reason}</p>
+            <div className="mt-1 text-sm text-ink/70">
+              <Reason reason={c.reason} />
+            </div>
           </li>
         ))}
       </ul>
@@ -232,8 +281,8 @@ function Verdicts({ cls }: { cls: Classification[] }) {
     { label: "Type", render: (c) => c.typeLabel, off: (c) => c.typeLabel !== typeMaj },
     { label: "Want", render: (c) => <span className={WANT[c.want]}>{c.want}</span>, off: (c) => c.want !== wantMaj },
     { label: "Reference", render: (c) => c.reference ?? <span className="text-ink/35">none</span> },
-    { label: "Topics", render: (c) => c.topics },
-    { label: "Reason", render: (c) => <span className="text-ink/70">{c.reason}</span> },
+    { label: "Topics", render: (c) => (c.topics === "many" ? "several topics" : "one topic") },
+    { label: "Reason", render: (c) => <span className="text-ink/70"><Reason reason={c.reason} /></span> },
   ];
   return (
     <div className="overflow-hidden rounded-md border border-line">
@@ -280,23 +329,79 @@ const STAGE: Record<Stage, [string, LucideIcon]> = {
   "fixed-by-us": ["Fixed by us", CircleCheckIcon],
 };
 
+type Event = { label: string; Icon: LucideIcon; at: string; by: string; note: string | null };
+
+// GitHub's own events from the mirror, merged with the pipeline's stages.
+// A pipeline merge or close already says who did it, so GitHub's copy is left out.
+function events(it: Item): Event[] {
+  const out: Event[] = [{ label: "Opened", Icon: it.kind === "pr" ? GitPullRequestIcon : CircleDotIcon, at: it.createdAt, by: it.author, note: null }];
+  for (const s of it.stages) {
+    const [label, Icon] = STAGE[s.stage];
+    out.push({ label, Icon, at: s.at, by: s.by, note: s.note });
+  }
+  const has = (st: Stage) => it.stages.some((s) => s.stage === st);
+  if (it.state === "merged" && it.mergedAt && !has("merged")) out.push({ label: "Merged", Icon: GitMergeIcon, at: it.mergedAt, by: it.mergedBy ?? "", note: null });
+  else if (it.state === "closed" && it.closedAt && !has("closed")) out.push({ label: "Closed", Icon: CircleSlashIcon, at: it.closedAt, by: "", note: null });
+  return out.filter((e) => e.at).sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
+}
+
 function Timeline({ it }: { it: Item }) {
+  const evs = events(it);
   return (
     <ol className="relative">
-      <span className="absolute bottom-3 left-[11px] top-3 w-px bg-line-strong" aria-hidden />
-      {it.stages.map((s, i) => {
-        const last = i === it.stages.length - 1;
-        const [label, Icon] = STAGE[s.stage];
+      {evs.length > 1 && <span className="absolute bottom-3 left-[11px] top-3 w-px bg-line-strong" aria-hidden />}
+      {evs.map((e, i) => {
+        const last = i === evs.length - 1 && evs.length > 1;
         return (
           <li key={i} className="relative flex items-center gap-3 py-1.5">
             <span className={cn("z-[1] flex size-6 shrink-0 items-center justify-center rounded-full border", last ? "border-warn/50 bg-warn/15 text-warn" : "border-line-strong bg-panel text-ink/55")}>
-              <Icon className="text-[12px]" />
+              <e.Icon className="text-[12px]" />
             </span>
             <span className="min-w-0 flex-1 text-sm">
-              <span className={cn(last ? "font-medium text-ink" : "text-ink/85")}>{label}</span> <span className="text-ink/55">by {s.by}</span>
-              {s.note && <span className="text-ink/45"> · {s.note}</span>}
+              <span className={cn(last ? "font-medium text-ink" : "text-ink/85")}>{e.label}</span>
+              {e.by && <span className="text-ink/55"> by {e.by}</span>}
+              {e.note && <span className="text-ink/45"> · {e.note}</span>}
             </span>
-            <span className="shrink-0 text-xs text-ink/45">{ago(s.at)} ago</span>
+            <span className="shrink-0 text-xs text-ink/45">{ago(e.at)} ago</span>
+          </li>
+        );
+      })}
+    </ol>
+  );
+}
+
+const REVIEW: Record<string, [string, Tone]> = {
+  APPROVED: ["approved", "ok"],
+  CHANGES_REQUESTED: ["requested changes", "bad"],
+  COMMENTED: ["reviewed", "neutral"],
+  DISMISSED: ["review dismissed", "neutral"],
+};
+
+// GitHub comments and reviews, oldest first. Bodies are untrusted: the same Markdown renderer as the description.
+function Discussion({ comments }: { comments: ItemComment[] }) {
+  return (
+    <ol className="space-y-3">
+      {comments.map((c) => {
+        const review = c.kind === "review" ? (REVIEW[c.reviewState ?? ""] ?? REVIEW.COMMENTED!) : null;
+        return (
+          <li key={c.id} className="overflow-hidden rounded-md border border-line">
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-line bg-ink/[0.03] px-3 py-1.5 text-sm">
+              {c.author ? <Avatar login={c.author} size={18} /> : <MessageSquareIcon className="text-ink/40" />}
+              <span className="font-medium">{c.author || "ghost"}</span>
+              {review && <Badge tone={review[1]}>{review[0]}</Badge>}
+              <span className="ml-auto text-xs text-ink/45" title={c.at}>
+                {c.at ? ago(c.at, false) : ""}
+              </span>
+            </div>
+            <div className="px-3 py-2">
+              {c.body.trim() ? (
+                <Collapsible lines={12}>
+                  <Markdown source={c.body} />
+                </Collapsible>
+              ) : (
+                <p className="text-sm text-ink/45">No text.</p>
+              )}
+            </div>
           </li>
         );
       })}

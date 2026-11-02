@@ -16,8 +16,11 @@ import type {
   DisagreementFilter,
   DisagreementList,
   Item,
+  ItemFilter,
+  ItemList,
   OverrideInput,
   Progress,
+  PromptsReport,
   RepoName,
   Role,
   RulePreview,
@@ -54,7 +57,10 @@ export interface Api {
     comment(id: string, body: string): Promise<DecisionComment>;
   };
   item(repo: RepoName, number: number): Promise<Item>;
+  /** Top bar: jumps by number, logins, words in titles and bodies. */
   search(q: string): Promise<SearchHit[]>;
+  /** The Items browser: every tracked repo, full-text search over titles, bodies and comments. */
+  items(filter: ItemFilter): Promise<ItemList>;
   progress(): Promise<Progress>;
   /** Anyone signed in reads; writes and the preview are for operators. Override notes come only to operators. */
   contributors: {
@@ -68,6 +74,8 @@ export interface Api {
     list(): Promise<TrackedRepo[]>;
     track(name: RepoName): Promise<TrackedRepo[]>;
     untrack(name: RepoName): Promise<TrackedRepo[]>;
+    /** Lets the Label stage write labels to this repo on GitHub, or stops it. */
+    approveLabels(name: RepoName, approved: boolean): Promise<TrackedRepo[]>;
   };
   /** Operator only. */
   access: {
@@ -94,6 +102,8 @@ export interface Api {
     cancel(id: number): Promise<Job>;
     schedule(step: string, input: ScheduleInput): Promise<Schedule>;
   };
+  /** Every registered model prompt, with the server's commit. */
+  prompts(): Promise<PromptsReport>;
   signOut(): Promise<void>;
   /** Called after any write so open views can refetch. Returns an unsubscribe function. */
   subscribe(fn: () => void): () => void;

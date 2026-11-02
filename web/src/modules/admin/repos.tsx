@@ -30,7 +30,7 @@ function ReposView(_: ViewProps) {
   return (
     <Page title="Repos" sub={data && `${tracked} of ${data.length} repos tracked`}>
       <p className="mt-2 max-w-[80ch] text-sm text-ink/65">
-        Sync, the pipeline and every page work on tracked repos only. Switching a repo on takes effect at the next sync. Rows of an untracked repo stay in the mirror but are hidden.
+        Sync, the pipeline and every page work on tracked repos only. Switching a repo on takes effect at the next sync. Rows of an untracked repo stay in the mirror but are hidden. The Label stage writes labels to GitHub only for repos approved here; the plan counts show what it would do.
       </p>
 
       <div className="mt-4 flex flex-wrap items-center gap-2">
@@ -84,13 +84,38 @@ function Toggle({ r, write }: { r: TrackedRepo; write: Write }) {
   return <ConfirmButton label="Untrack" confirmLabel="Untrack: hides its items" loading={write.busy === key} onConfirm={() => void write.run(key, () => api.repoAdmin.untrack(r.name))} />;
 }
 
+function Approval({ r, write }: { r: TrackedRepo; write: Write }) {
+  const api = useApi();
+  const l = r.labels;
+  if (!l) return <span className="text-ink/40">–</span>;
+  const key = `labels:${r.name}`;
+  return (
+    <div className="flex items-center justify-end gap-2">
+      {l.approved ? (
+        <span title={`Approved by ${l.approvedBy} ${l.approvedAt ?? ""}`}>
+          <Badge tone="ok">Approved</Badge>
+        </span>
+      ) : (
+        <Badge>Not approved</Badge>
+      )}
+      {l.approved ? (
+        <ConfirmButton label="Stop" confirmLabel="Stop labelling here" loading={write.busy === key} onConfirm={() => void write.run(key, () => api.repoAdmin.approveLabels(r.name, false))} />
+      ) : (
+        <ConfirmButton label="Approve" confirmLabel="Approve: writes to GitHub" loading={write.busy === key} onConfirm={() => void write.run(key, () => api.repoAdmin.approveLabels(r.name, true))} />
+      )}
+    </div>
+  );
+}
+
+const planText = (r: TrackedRepo) => (r.labels ? `${num(r.labels.toAdd)} to add · ${num(r.labels.skipped)} skipped · ${num(r.labels.conflicts)} conflicts` : "–");
+
 const synced = (r: TrackedRepo) => (r.syncedAt ? `${ago(r.syncedAt, false)}` : "never");
 const maybe = (n: number | null) => (n === null ? "–" : num(n));
 
 function Table({ rows, write }: { rows: TrackedRepo[]; write: Write }) {
   return (
     <div className="overflow-x-auto">
-      <table className="w-full min-w-[760px] border-collapse text-sm">
+      <table className="w-full min-w-[1200px] border-collapse text-sm">
         <thead className="bg-ink/[0.03] text-xs">
           <tr className="border-b border-line">
             <SortTh>Repo</SortTh>
@@ -99,6 +124,8 @@ function Table({ rows, write }: { rows: TrackedRepo[]; write: Write }) {
             <SortTh right className="w-[100px]">Open issues</SortTh>
             <SortTh right className="w-[120px]">Rows in mirror</SortTh>
             <SortTh className="w-[150px]">Last synced</SortTh>
+            <SortTh className="w-[270px]">Labels plan</SortTh>
+            <th className="w-[270px] px-3 text-right text-xs font-medium">Label approval</th>
             <th className="w-[190px]" aria-label="Change" />
           </tr>
         </thead>
@@ -112,6 +139,10 @@ function Table({ rows, write }: { rows: TrackedRepo[]; write: Write }) {
               <td className="num px-3 text-right">{num(r.mirrored)}</td>
               <td className="px-3 text-ink/60" title={r.syncedAt ?? undefined}>
                 {synced(r)}
+              </td>
+              <td className="num whitespace-nowrap px-3 text-ink/70">{planText(r)}</td>
+              <td className="px-3">
+                <Approval r={r} write={write} />
               </td>
               <td className="px-3 text-right">
                 <Toggle r={r} write={write} />
@@ -137,6 +168,12 @@ function Cards({ rows, write }: { rows: TrackedRepo[]; write: Write }) {
             <div className="num mt-0.5 text-xs text-ink/55">
               {maybe(r.openPrs)} PRs · {maybe(r.openIssues)} issues · synced {synced(r)}
             </div>
+            {r.labels && (
+              <div className="mt-1 flex items-center gap-2">
+                <span className="num text-xs text-ink/55">Labels: {planText(r)}</span>
+                <Approval r={r} write={write} />
+              </div>
+            )}
           </div>
           <Toggle r={r} write={write} />
         </li>

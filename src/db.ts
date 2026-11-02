@@ -38,13 +38,38 @@ function migrateValues(db: DatabaseSync): void {
   db.exec("UPDATE main.access SET role = 'operator' WHERE role = 'admin'");
 }
 
+// Fills the full-text tables once, for a database that had items before they existed.
+function buildSearchIndex(db: DatabaseSync): void {
+  if (db.prepare("SELECT 1 FROM main.settings WHERE key = 'fts_built'").get()) return;
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    if (!db.prepare("SELECT 1 FROM main.settings WHERE key = 'fts_built'").get()) {
+      db.exec("INSERT INTO main.items_fts (items_fts) VALUES ('rebuild')");
+      db.exec("INSERT INTO main.comments_fts (comments_fts) VALUES ('rebuild')");
+      // ORDER BY rank: a title match weighs ten times one in the body
+      db.exec("INSERT INTO main.items_fts (items_fts, rank) VALUES ('rank', 'bm25(10.0, 1.0)')");
+      db.exec("INSERT INTO main.settings (key, value) VALUES ('fts_built', '1')");
+    }
+    db.exec("COMMIT");
+  } catch (e) {
+    db.exec("ROLLBACK");
+    throw e;
+  }
+}
+
 export function connect(path: string = dbPath()): DatabaseSync {
   mkdirSync(dirname(path), { recursive: true });
   const db = new DatabaseSync(path, { timeout: 30_000 });
   // WAL so the dashboard can read while a sync writes
   db.exec("PRAGMA journal_mode=WAL");
+  // INSERT OR REPLACE then runs delete triggers, which keep the full-text index right
+  db.exec("PRAGMA recursive_triggers=ON");
   db.exec(readFileSync(new URL("./schema.sql", import.meta.url), "utf8"));
   addColumns(db);
   migrateValues(db);
+  buildSearchIndex(db);
+  // Progress counts from here: the first sync, or now for a new database.
+  db.exec(`INSERT OR IGNORE INTO main.settings (key, value) SELECT 'tracking_started_at',
+    COALESCE((SELECT MIN(synced_at) FROM main.repos), strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))`);
   return db;
 }

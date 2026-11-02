@@ -93,8 +93,8 @@ function Disagreements({ r, label, band, setFilter }: { r: ClassifierReport; lab
           <tr>
             <Th>Item</Th>
             <Th>Title</Th>
-            <Th>{r.a}</Th>
-            <Th>{r.b}</Th>
+            <Th className="hidden sm:table-cell">{r.a}</Th>
+            <Th className="hidden sm:table-cell">{r.b}</Th>
           </tr>
         </thead>
         <tbody>
@@ -103,11 +103,24 @@ function Disagreements({ r, label, band, setFilter }: { r: ClassifierReport; lab
               <td className="whitespace-nowrap px-3 py-1.5">
                 <RefLink repo={d.repo} number={d.number} kind={d.kind} />
               </td>
-              <td className="min-w-[16rem] px-3 py-1.5 text-ink/85">{d.title}</td>
-              <td className="whitespace-nowrap px-3 py-1.5">
+              <td className="px-3 py-1.5 text-ink/85 sm:min-w-[16rem]">
+                {d.title}
+                {/* Phones: the two answers under the title instead of in their own columns. */}
+                <dl className="mt-1 grid grid-cols-[auto_1fr] gap-x-2 text-xs sm:hidden">
+                  <dt className="text-ink/50">{r.a}</dt>
+                  <dd>
+                    {d.a.label} <span className="num text-ink/50">{prob(d.a.prob)}</span>
+                  </dd>
+                  <dt className="text-ink/50">{r.b}</dt>
+                  <dd>
+                    {d.b.label} <span className="num text-ink/50">{prob(d.b.prob)}</span>
+                  </dd>
+                </dl>
+              </td>
+              <td className="hidden whitespace-nowrap px-3 py-1.5 sm:table-cell">
                 {d.a.label} <span className="num text-xs text-ink/50">{prob(d.a.prob)}</span>
               </td>
-              <td className="whitespace-nowrap px-3 py-1.5">
+              <td className="hidden whitespace-nowrap px-3 py-1.5 sm:table-cell">
                 {d.b.label} <span className="num text-xs text-ink/50">{prob(d.b.prob)}</span>
               </td>
             </tr>
@@ -168,6 +181,11 @@ function Classifiers(_: ViewProps) {
             options={cur.pairs.map((p) => ({ value: `${p.a}|${p.b}`, label: `${p.a} vs ${p.b} (${num(p.items)})` }))}
           />
         </div>
+        {run && run !== r.run && (
+          <p role="status" className="mt-2 rounded-md border border-warn/40 bg-warn/10 px-3 py-2 text-sm">
+            There is no run <span className="code">{run}</span>. Showing the latest run, <span className="code">{r.run}</span>.
+          </p>
+        )}
         <p className="mt-1 text-sm text-ink/55">Agreement on the type label, per run. Rows are grouped by {r.a}&apos;s answer.</p>
 
         <div className="mt-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
@@ -181,8 +199,10 @@ function Classifiers(_: ViewProps) {
           <Block title={`By ${r.a}'s label`} aside="Click to filter disagreements" flush>
             <AgreementRows name="Label" rows={r.byLabel.map((x) => ({ key: x.label, n: x.n, agree: x.agree }))} picked={label} onPick={(k) => set({ label: label === k ? "" : k })} />
           </Block>
-          <Block title="By repo" flush>
-            <AgreementRows name="Repo" rows={r.byRepo.map((x) => ({ key: x.repo, n: x.n, agree: x.agree }))} />
+          <Block title="By repo" aside={`${num(r.byRepo.length)} repos with items judged by both`} flush>
+            <div className="max-h-[22rem] overflow-y-auto">
+              <AgreementRows name="Repo" rows={r.byRepo.map((x) => ({ key: x.repo, n: x.n, agree: x.agree }))} />
+            </div>
           </Block>
         </div>
 

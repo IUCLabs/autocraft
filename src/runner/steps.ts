@@ -9,6 +9,7 @@ import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { DatabaseSync } from "node:sqlite";
+import { DECIDE_MODELS } from "../decide/index.ts";
 
 type Base = { name: string; label: string; help?: string; required?: boolean };
 export type ParamDef =
@@ -63,11 +64,11 @@ async function optional<T>(rel: string): Promise<T> {
   return (await import(path)) as T;
 }
 
-// The labels step (`craft-auto labels`) is expected to export these.
-type LabelsModule = {
-  isApproved(db: DatabaseSync, repo: string): boolean;
-  applyRepo(db: DatabaseSync, repo: string, ctx: StepContext): Promise<string>;
-};
+/** Labelling writes to GitHub only for repos an operator approved on the Repos page. */
+async function checkApproved(db: DatabaseSync, p: Params): Promise<string | null> {
+  const { approvalOf } = await import("../labels/approval.ts");
+  return approvalOf(db, String(p.repo)) ? null : `labelling ${p.repo} is not approved`;
+}
 
 export const STEPS: StepDef[] = [
   {
@@ -109,20 +110,102 @@ export const STEPS: StepDef[] = [
     },
   },
   {
-    name: "labels-apply",
-    title: "Apply labels on GitHub",
-    description: "Puts the settled type label and flags onto the open items of one repo on GitHub. Refused unless the operator has approved labelling for that repo.",
+    name: "labels-ensure",
+    title: "Create the pipeline labels on GitHub",
+    description: "Creates the labels of the set that the repo is missing. Refused unless the operator has approved labelling for that repo.",
     stage: 4,
     requires: "operator",
     group: "github-write",
     params: [{ name: "repo", label: "Repo", kind: "repo", required: true }],
-    available: () => (moduleExists("../labels/index.ts") ? null : "Not available yet: the labels command is not in this build."),
-    check: async (db, p) => {
-      if (!moduleExists("../labels/index.ts")) return "the labels command is not in this build";
-      const m = await optional<LabelsModule>("../labels/index.ts");
-      return m.isApproved(db, String(p.repo)) ? null : `labelling ${p.repo} is not approved`;
+    check: checkApproved,
+    run: async (ctx) => {
+      const repo = String(ctx.params.repo);
+      const refused = await checkApproved(ctx.db, ctx.params);
+      if (refused) throw new Error(refused);
+      const { ensureLabels } = await import("../labels/github.ts");
+      const { Client } = await import("../mirror.ts");
+      const missing = await ensureLabels(new Client(500), repo, true);
+      for (const l of missing) ctx.log(`${repo}: created "${l.name}"`);
+      return missing.length ? `created ${missing.length} labels on ${repo}` : `${repo}: all labels exist`;
     },
-    run: async (ctx) => (await optional<LabelsModule>("../labels/index.ts")).applyRepo(ctx.db, String(ctx.params.repo), ctx),
+  },
+  {
+    name: "labels-apply",
+    title: "Apply labels on GitHub",
+    description: "Puts the settled type label and flags of the current classification run onto the open items of one repo on GitHub. Refused unless the operator has approved labelling for that repo.",
+    stage: 4,
+    requires: "operator",
+    group: "github-write",
+    params: [{ name: "repo", label: "Repo", kind: "repo", required: true }],
+    check: checkApproved,
+    run: async (ctx) => {
+      const repo = String(ctx.params.repo);
+      const refused = await checkApproved(ctx.db, ctx.params);
+      if (refused) throw new Error(refused);
+      const { currentRun } = await import("./classify.ts");
+      const runId = currentRun(ctx.db);
+      if (!runId) throw new Error("there is no classification run yet");
+      const { applyLabels } = await import("../labels/github.ts");
+      const { Client } = await import("../mirror.ts");
+      const r = await applyLabels(ctx.db, new Client(500), repo, { runId, apply: true, login: ctx.job.requestedBy, log: ctx.log });
+      return `${repo}: labelled ${r.labeled} of ${r.planned} items in ${r.batches} batches, ${r.failed.length} failed`;
+    },
+  },
+  {
+    name: "decide",
+    title: "Ask decisions",
+    description: "Turns items that need a decision, and items where Jev and Haiku disagree between scope labels, into decisions on the dashboard, each with a summary written by the chosen model.",
+    stage: 3,
+    requires: "operator",
+    group: "models",
+    params: [
+      { name: "repo", label: "Repo", kind: "repo", help: "every tracked repo when empty" },
+      { name: "limit", label: "At most", kind: "int", min: 1, max: 500, default: 50, help: "decisions to ask in this job" },
+      { name: "model", label: "Model", kind: "enum", options: [...DECIDE_MODELS], default: "sonnet" },
+    ],
+    run: async (ctx) => {
+      const { runDecide } = await import("../decide/index.ts");
+      const r = await runDecide(ctx.db, {
+        repos: ctx.params.repo ? [String(ctx.params.repo)] : undefined,
+        limit: Number(ctx.params.limit),
+        model: String(ctx.params.model),
+      }, ctx.log);
+      if (r.usageRun) ctx.usageRun(r.usageRun);
+      return `asked ${r.asked} decisions; ${r.noSummary} items without a summary`;
+    },
+  },
+  {
+    name: "review-batch",
+    title: "Review pull requests",
+    description: "Sonnet reviews the pull requests we want from one repo in batches of related PRs: take, take with fixes, hold or close.",
+    stage: 5,
+    requires: "operator",
+    group: "models",
+    params: [
+      { name: "repo", label: "Repo", kind: "repo", required: true },
+      { name: "limit", label: "At most", kind: "int", min: 1, max: 50, default: 10, help: "PRs to review in this job" },
+    ],
+    run: async (ctx) => {
+      const { runReview } = await import("../review/index.ts");
+      const r = await runReview(ctx.db, { repo: String(ctx.params.repo), limit: Number(ctx.params.limit) }, ctx.log);
+      ctx.usageRun(r.runId);
+      const v = Object.entries(r.verdicts).map(([k, n]) => `${n} ${k}`).join(", ");
+      return `${r.repo}: reviewed ${r.reviewed} of ${r.candidates} candidates${v ? ` (${v})` : ""}; ${r.skipped.length} skipped, ${r.missing.length} without an answer`;
+    },
+  },
+  {
+    name: "checks",
+    title: "Refresh CI and merge state",
+    description: "Reads the CI and merge state of every open pull request of one repo from GitHub. Writes nothing to GitHub.",
+    stage: 5,
+    requires: "operator",
+    group: "github-read",
+    params: [{ name: "repo", label: "Repo", kind: "repo", required: true }],
+    run: async (ctx) => {
+      const { runChecks } = await import("../review/index.ts");
+      const r = await runChecks(ctx.db, { repo: String(ctx.params.repo) }, ctx.log);
+      return `${ctx.params.repo}: refreshed ${r.prs} open pull requests`;
+    },
   },
 ];
 

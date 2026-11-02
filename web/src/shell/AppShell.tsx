@@ -1,5 +1,5 @@
 import { lazy, Suspense, useMemo, useState } from "react";
-import { NavLink, Route, Routes, useLocation, useNavigate, useParams, Navigate } from "react-router-dom";
+import { NavLink, Route, Routes, matchPath, useLocation, useNavigate, useParams, Navigate } from "react-router-dom";
 import { Dialog, DropdownMenu } from "radix-ui";
 import { LogOutIcon, MonitorIcon, MoonIcon, MoreHorizontalIcon, PanelLeftIcon, SearchIcon, SunIcon, KeyboardIcon, XIcon, CheckIcon } from "lucide-react";
 import { modules } from "../registry";
@@ -41,6 +41,7 @@ export function AppShell() {
   const visible = useMemo(() => modules.filter((m) => can(user, m.permission)), [user]);
   const nav = visible.flatMap((m) => (m.nav ? [m.nav] : [])).sort((a, b) => a.order - b.order);
   const routes = visible.flatMap((m) => m.routes);
+  const hiddenPaths = useMemo(() => modules.filter((m) => !can(user, m.permission)).flatMap((m) => m.routes.map((r) => r.path)), [user]);
 
   useHotkeys({
     "/": () => (phone ? setSearchOpen(true) : document.getElementById("global-search")?.focus()),
@@ -49,6 +50,7 @@ export function AppShell() {
     "[": () => setRailOpen(!railOpen),
     "g d": () => navigate("/decisions"),
     "g p": () => navigate("/progress"),
+    "g i": () => navigate("/items"),
   });
 
   const content = (
@@ -57,7 +59,7 @@ export function AppShell() {
       {routes.map((r) => (
         <Route key={r.path} path={r.path} element={<RouteView route={r} />} />
       ))}
-      <Route path="*" element={<div className="p-8 text-ink/60">Nothing here.</div>} />
+      <Route path="*" element={<NoRoute hidden={hiddenPaths} />} />
     </Routes>
   );
 
@@ -67,6 +69,7 @@ export function AppShell() {
         <header className="flex h-12 shrink-0 items-center gap-1 border-b border-line bg-bg pl-4 pr-1.5">
           <Wordmark />
           <div className="flex-1" />
+          <RoleChip />
           <button aria-label="Search" onClick={() => setSearchOpen(true)} className="flex size-11 items-center justify-center text-ink/70">
             <SearchIcon className="text-[18px]" />
           </button>
@@ -243,7 +246,7 @@ function Breadcrumb({ routes }: { routes: RouteDef[] }) {
 function LiveCounters() {
   const { data } = useQuery("progress", (api) => api.progress());
   if (!data) return null;
-  const lastHour = data.perHour[data.perHour.length - 1];
+  const lastHour = data.perHourPipeline[data.perHourPipeline.length - 1] ?? 0;
   return (
     <div className="hidden shrink-0 items-center gap-3 whitespace-nowrap text-xs text-ink/60 xl:flex">
       <span className="flex items-center gap-1.5">
@@ -252,7 +255,7 @@ function LiveCounters() {
       </span>
       <span className="flex items-center gap-1.5">
         <span className="size-1.5 rounded-full bg-ok" />
-        <span className="num font-medium text-ink">{lastHour}</span> done in the last hour
+        <span className="num font-medium text-ink">{lastHour}</span> done by the pipeline in the last hour
       </span>
     </div>
   );
@@ -389,24 +392,29 @@ function ShortcutSheet({ open, onOpenChange }: { open: boolean; onOpenChange: (o
 function RunMeter({ open }: { open: boolean }) {
   const { data } = useQuery("progress", (api) => api.progress());
   if (!data || !open) return null;
-  const done = data.done.mergedByPipeline + data.done.closedByPipeline + data.done.closedByOthers;
-  const all = done + data.funnel.open;
+  const ours = data.done.mergedByPipeline + data.done.closedByPipeline;
+  const f = data.funnel;
   return (
     <NavLink to="/progress" className="mx-2 mb-2 block rounded-md border border-line p-2.5 hover:border-line-strong">
       <div className="flex items-baseline justify-between text-xs">
-        <span className="font-medium text-ink/80">Backlog</span>
-        <span className="num text-ink/55">{Math.round((done / all) * 100)}%</span>
+        <span className="font-medium text-ink/80">Classified</span>
+        <span className="num text-ink/55">{f.open ? Math.round((f.classified / f.open) * 100) : 0}%</span>
       </div>
       <div className="mt-2 flex h-1 gap-px overflow-hidden rounded-full bg-ink/10">
-        <div className="bg-c1" style={{ width: `${(data.done.mergedByPipeline / all) * 100}%` }} />
-        <div className="bg-c2" style={{ width: `${(data.done.closedByPipeline / all) * 100}%` }} />
-        <div className="bg-ink/40" style={{ width: `${(data.done.closedByOthers / all) * 100}%` }} />
+        <div className="bg-c1" style={{ width: `${f.open ? (f.classified / f.open) * 100 : 0}%` }} />
       </div>
       <div className="num mt-1.5 text-2xs text-ink/50">
-        {num(done)} done · {num(data.funnel.open)} open
+        {num(f.open)} open · {ours ? `${num(ours)} done by the pipeline` : "pipeline not started yet"}
       </div>
     </NavLink>
   );
+}
+
+/** A page this reader's role doesn't open says so; anything else is unknown. */
+function NoRoute({ hidden }: { hidden: string[] }) {
+  const { pathname } = useLocation();
+  const restricted = hidden.some((p) => matchPath({ path: `/${p}`, end: false }, pathname));
+  return <div className="p-8 text-ink/60">{restricted ? "Operators only." : "Nothing here."}</div>;
 }
 
 /** The reader's role decides what every button means, so it stays visible. */
@@ -414,7 +422,7 @@ function RoleChip() {
   const user = useUser();
   const tone: Tone = user.role === "operator" ? "accent" : "neutral";
   return (
-    <span className="hidden lg:inline-flex" title="Your role on this dashboard">
+    <span className="inline-flex shrink-0" title="Your role on this dashboard">
       <Badge tone={tone}>{roleLabel(user)}</Badge>
     </span>
   );

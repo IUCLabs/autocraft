@@ -18,6 +18,10 @@ export function SearchBox({ autoFocus, onPick, fullscreen }: { autoFocus?: boole
 
   useEffect(() => {
     let live = true;
+    if (!q.trim()) {
+      setHits([]);
+      return;
+    }
     const t = setTimeout(() => api.search(q).then((h) => live && (setHits(h), setSel(0))), 90);
     return () => {
       live = false;
@@ -25,13 +29,16 @@ export function SearchBox({ autoFocus, onPick, fullscreen }: { autoFocus?: boole
     };
   }, [q, api]);
 
-  const pick = (h: SearchHit) => {
-    navigate(`/item/${h.repo}/${h.number}`);
+  const go = (to: string) => {
+    navigate(to);
     setQ("");
     onPick?.();
     (document.activeElement as HTMLElement | null)?.blur();
   };
-  const open = (focus || fullscreen) && q.length > 0;
+  const pick = (h: SearchHit) => go(`/item/${h.repo}/${h.number}`);
+  const isRef = /^([A-Za-z0-9._-]+)?#?\d+$/.test(q.trim());
+  const seeAll = () => go(`/items?${new URLSearchParams({ q: q.trim(), state: "all" })}`);
+  const open = (focus || fullscreen) && q.trim().length > 0;
 
   return (
     <div className={cn("relative", fullscreen && "flex-1")}>
@@ -47,10 +54,13 @@ export function SearchBox({ autoFocus, onPick, fullscreen }: { autoFocus?: boole
           onKeyDown={(e) => {
             if (e.key === "ArrowDown") (e.preventDefault(), setSel((s) => Math.min(s + 1, hits.length - 1)));
             if (e.key === "ArrowUp") (e.preventDefault(), setSel((s) => Math.max(s - 1, 0)));
-            if (e.key === "Enter" && hits[sel]) pick(hits[sel]);
+            if (e.key === "Enter") {
+              if (hits[sel]) pick(hits[sel]);
+              else if (!isRef) seeAll();
+            }
             if (e.key === "Escape") (e.target as HTMLInputElement).blur();
           }}
-          placeholder="photocraft#4127, title or author"
+          placeholder="photocraft#4127, words or a login"
           aria-label="Search issues and PRs"
           className="min-w-0 flex-1 bg-transparent text-sm text-ink outline-none placeholder:text-ink/35"
           role="combobox"
@@ -61,7 +71,7 @@ export function SearchBox({ autoFocus, onPick, fullscreen }: { autoFocus?: boole
       </label>
       {open && (
         <ul id="search-results" role="listbox" className={cn("z-50 rounded-md border border-line-strong bg-raised p-1 animate-fadeIn", fullscreen ? "mt-2" : "absolute inset-x-0 top-[calc(100%+4px)] shadow-[0_12px_32px_rgba(0,0,0,0.28)]")}>
-          {hits.length === 0 && <li className="px-3 py-2 text-sm text-ink/50">No matches</li>}
+          {hits.length === 0 && <li className="px-3 py-2 text-sm text-ink/50">No matches in titles, descriptions or logins</li>}
           {hits.map((h, i) => (
             <li key={`${h.repo}#${h.number}`} role="option" aria-selected={i === sel}>
               <div onMouseDown={() => pick(h)} onMouseEnter={() => setSel(i)} className={cn("flex w-full cursor-pointer items-center gap-2.5 rounded px-2 text-left", fullscreen ? "h-12" : "h-8", i === sel && "bg-ink/[0.07]")}>
@@ -72,6 +82,13 @@ export function SearchBox({ autoFocus, onPick, fullscreen }: { autoFocus?: boole
               </div>
             </li>
           ))}
+          {!isRef && (
+            <li role="option" aria-selected={false}>
+              <div onMouseDown={seeAll} className={cn("flex w-full cursor-pointer items-center gap-2 rounded border-t border-line px-2 text-sm text-accent-ink hover:bg-ink/[0.07]", fullscreen ? "h-12" : "h-8")}>
+                <SearchIcon className="text-xs" /> See all results, comments included
+              </div>
+            </li>
+          )}
         </ul>
       )}
     </div>

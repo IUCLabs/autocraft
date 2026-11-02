@@ -4,8 +4,8 @@ import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
-import { flagsOf, itemInput, jevRequest, jevVerdict, parseHaikuReply, parseRef, refOf, type Item, type JevAnswers, type Verdict } from "./parse.ts";
-import { LABELS, RULES, UNTRUSTED_NOTE } from "./rules.ts";
+import { CLAUDE_PROMPTS, JEV_ARGS, JEV_PROMPTS, claudeArgs, renderClaude, renderJev, type ClaudeInput, type ClaudePromptId, type JevPromptId } from "../prompts/index.ts";
+import { flagsOf, jevVerdict, parseHaikuReply, parseRef, refOf, type Item, type JevAnswers, type Verdict } from "./parse.ts";
 
 export function loadRefs(file: string): { repo: string; number: number }[] {
   const out: { repo: string; number: number }[] = [];
@@ -29,6 +29,7 @@ export function loadItems(db: DatabaseSync, refs: { repo: string; number: number
 }
 
 type Proc = { code: number | null; stdout: string; stderr: string };
+export type Runner = (cmd: string, args: string[], input: string, cwd?: string, timeoutMs?: number) => Promise<Proc>;
 
 export function exec(cmd: string, args: string[], input: string, cwd?: string, timeoutMs = 600_000): Promise<Proc> {
   return new Promise((resolve) => {
@@ -71,10 +72,23 @@ export function saveUsage(db: DatabaseSync, runId: string, agent: string, stage:
     .run(runId, agent, stage, model, items, u.input, u.output, u.cacheRead, u.cacheWrite, start, end, u.cost);
 }
 
-/** `claude -p` runs in an empty directory so no project instructions are loaded or paid for. */
-export async function askClaude(model: string, prompt: string): Promise<{ text: string; usage: Usage } | null> {
+let runner: Runner = exec;
+
+/** Tests swap the process runner for a fake; returns a function that restores the real one. */
+export function setRunner(r: Runner): () => void {
+  runner = r;
+  return () => { runner = exec; };
+}
+
+/**
+ * Sends a registered prompt (src/prompts) to `claude -p`. Callers pass a prompt
+ * id and the prompt's input, never prompt text: that keeps every prompt on the
+ * Prompts page. A new stage registers its prompt there first.
+ */
+export async function askClaude<K extends ClaudePromptId>(id: K, model: string, input: ClaudeInput[K]): Promise<{ text: string; usage: Usage } | null> {
+  const args = claudeArgs(id, model);
   const cwd = mkdtempSync(join(tmpdir(), "classify-"));
-  const r = await exec("claude", ["-p", "--model", model, "--output-format", "json", "--tools", "", "--strict-mcp-config", "--disable-slash-commands", "--no-session-persistence"], prompt, cwd);
+  const r = await runner("claude", args, renderClaude(id, input), cwd, CLAUDE_PROMPTS[id].limits.timeoutSeconds * 1000);
   try {
     // Some CLI versions print the event list, others only the final result object.
     const parsed = JSON.parse(r.stdout) as { type?: string }[] | { type?: string };
@@ -91,32 +105,24 @@ export async function askClaude(model: string, prompt: string): Promise<{ text: 
   }
 }
 
-export function haikuPrompt(items: Item[]): string {
-  return `You classify GitHub issues and pull requests.
-
-${RULES}
-
-${UNTRUSTED_NOTE}
-
-Below is a JSON array of items. Reply with ONLY a JSON array, one object per item, in the same order:
-{"ref": "<ref as given>", "type_label": one of ${JSON.stringify(LABELS)}, "security": true|false, "needs_decision": true|false, "reason": "<15 words or fewer>"}
-
-<items>
-${JSON.stringify(items.map(itemInput), null, 1)}
-</items>`;
+/** Sends a registered Jev request (src/prompts) for one item to `jev ask`; the same rule as `askClaude`. */
+export function askJev(id: JevPromptId, item: Item): Promise<Proc> {
+  return runner("jev", JEV_ARGS, renderJev(id, item), undefined, JEV_PROMPTS[id].limits.timeoutSeconds * 1000);
 }
 
-const add = (a: Usage, b: Usage): Usage => ({ input: a.input + b.input, output: a.output + b.output, cacheRead: a.cacheRead + b.cacheRead, cacheWrite: a.cacheWrite + b.cacheWrite, cost: a.cost === null && b.cost === null ? null : (a.cost ?? 0) + (b.cost ?? 0) });
+export const add = (a: Usage, b: Usage): Usage => ({ input: a.input + b.input, output: a.output + b.output, cacheRead: a.cacheRead + b.cacheRead, cacheWrite: a.cacheWrite + b.cacheWrite, cost: a.cost === null && b.cost === null ? null : (a.cost ?? 0) + (b.cost ?? 0) });
 
-export async function runHaiku(db: DatabaseSync, runId: string, items: Item[], batchSize = 25, width = 4, model = "haiku"): Promise<void> {
+const HAIKU = CLAUDE_PROMPTS["classify.haiku"];
+
+export async function runHaiku(db: DatabaseSync, runId: string, items: Item[], batchSize = HAIKU.limits.perCall, width = HAIKU.limits.parallel, model = HAIKU.models[0]!): Promise<void> {
   const batches: Item[][] = [];
   for (let i = 0; i < items.length; i += batchSize) batches.push(items.slice(i, i + batchSize));
   await pool(batches.map((batch, n) => async () => {
     const start = now();
     let usage: Usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: null };
     let todo = batch;
-    for (let attempt = 0; attempt < 2 && todo.length; attempt++) {
-      const reply = await askClaude(model, haikuPrompt(todo));
+    for (let attempt = 0; attempt < HAIKU.limits.attempts && todo.length; attempt++) {
+      const reply = await askClaude("classify.haiku", model, todo);
       if (!reply) continue;
       usage = add(usage, reply.usage);
       const { verdicts, missing } = parseHaikuReply(reply.text, todo.map(refOf));
@@ -128,13 +134,15 @@ export async function runHaiku(db: DatabaseSync, runId: string, items: Item[], b
   }), width);
 }
 
-export async function runJev(db: DatabaseSync, runId: string, items: Item[], width = 8): Promise<void> {
+const JEV = JEV_PROMPTS["classify.jev"];
+
+export async function runJev(db: DatabaseSync, runId: string, items: Item[], width = JEV.limits.parallel): Promise<void> {
   await pool(items.map((item) => async () => {
     const ref = refOf(item), start = now();
     let v: Verdict | null = null;
     let usage: Usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: null };
-    for (let attempt = 0; attempt < 2 && !v; attempt++) {
-      const r = await exec("jev", ["--compact", "ask"], JSON.stringify(jevRequest(item)));
+    for (let attempt = 0; attempt < JEV.limits.attempts && !v; attempt++) {
+      const r = await askJev("classify.jev", item);
       try {
         const j = JSON.parse(r.stdout) as { answers?: JevAnswers; usage?: { input_tokens?: number; output_tokens?: number } };
         usage = add(usage, { input: j.usage?.input_tokens ?? 0, output: j.usage?.output_tokens ?? 0, cacheRead: 0, cacheWrite: 0, cost: null });
@@ -143,6 +151,6 @@ export async function runJev(db: DatabaseSync, runId: string, items: Item[], wid
     }
     if (v) saveVerdict(db, "jev", runId, v);
     else console.error(`jev: no valid answer for ${ref}`);
-    saveUsage(db, runId, `jev-${ref}`, "classify", "jev-latest", v ? 1 : 0, usage, start, now());
+    saveUsage(db, runId, `jev-${ref}`, "classify", JEV.models[0]!, v ? 1 : 0, usage, start, now());
   }), width);
 }
