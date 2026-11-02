@@ -152,9 +152,9 @@ function RouteView({ route }: { route: RouteDef }) {
 
 function Wordmark() {
   return (
-    <NavLink to="/" className="flex items-center gap-2" aria-label="Craft Triage home">
+    <NavLink to="/" className="flex items-center gap-2" aria-label="AutoCraft home">
       <Logo size={20} />
-      <span className="text-sm font-semibold">Craft Triage</span>
+      <span className="text-sm font-semibold">AutoCraft</span>
     </NavLink>
   );
 }

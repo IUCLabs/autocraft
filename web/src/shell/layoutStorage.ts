@@ -4,7 +4,7 @@ import { useState } from "react";
 import type { PanelGroupStorage } from "react-resizable-panels";
 
 export function layoutStorage(login: string): PanelGroupStorage {
-  const k = (name: string) => `craft-triage:${login}:${name}`;
+  const k = (name: string) => `autocraft:${login}:${name}`;
   return {
     getItem(name) {
       try {
@@ -24,7 +24,7 @@ export function layoutStorage(login: string): PanelGroupStorage {
 }
 
 export function usePref<T>(login: string, name: string, initial: T): [T, (v: T) => void] {
-  const key = `craft-triage:${login}:${name}`;
+  const key = `autocraft:${login}:${name}`;
   let start = initial;
   try {
     const raw = localStorage.getItem(key);

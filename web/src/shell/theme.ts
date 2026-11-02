@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 
 export type ThemePref = "system" | "dark" | "light";
-const KEY = "craft-triage:theme";
+const KEY = "autocraft:theme";
 
 function read(): ThemePref {
   try {
