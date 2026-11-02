@@ -130,7 +130,8 @@ Review the code, not the tests: test files and lockfiles are left out of each di
 3. It cannot crash on input: no unwrap, expect, panic or unchecked indexing on data from files, users or the network in non-test code, and no new unsafe code.
 4. New dependencies in manifests count against it; several are a reason to hold.
 5. Missing translations never block anything: English fallback is fine. Note in risks a test that compares one language's translation with literal text.
-6. same_files_as lists other PRs in this review that change the same files. Put in overlaps those that change the same code or behaviour. When two are the same fix or feature, set duplicate_of on the weaker one to the better one (smaller, clearer, closer to the reference application); the weaker one gets hold, never close, because it is closed only after the better one merges.
+6. Merge conflicts, missing or failing CI and a first-time author are not reasons to hold on their own: integration rebases and reruns CI. Note them in risks; judge the change itself.
+7. same_files_as lists other PRs in this review that change the same files. Put in overlaps those that change the same code or behaviour. When two are the same fix or feature, set duplicate_of on the weaker one to the better one (smaller, clearer, closer to the reference application); the weaker one gets hold, never close, because it is closed only after the better one merges.
 
 Verdicts:
 - take: wanted, correct, nothing to change.
