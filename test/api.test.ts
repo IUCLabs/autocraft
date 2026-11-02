@@ -247,12 +247,15 @@ describe("api", () => {
       assert.equal(r.status, 0, r.stderr);
       return r.stdout;
     };
+    db.prepare("UPDATE main.decisions SET answer_note = 'operator-note-text' WHERE id = ?").run(P4);
     const actionable = cli("list", "--actionable").trim().split("\n").map((l) => JSON.parse(l) as { id: string; answer: string });
     assert.deepEqual(actionable.map((a) => [a.id, a.answer]), [[P4, "plugin"]]);
     for (const out of [cli("list", "--actionable"), cli("list", "--all"), cli("show", P4), cli("show", P1)]) {
       assert.doesNotMatch(out, new RegExp(MARKER));
       assert.doesNotMatch(out, /adopt/);
+      assert.doesNotMatch(out, /operator-note-text/);
     }
+    assert.equal((JSON.parse(cli("show", P4)) as { actionable: boolean }).actionable, true);
   });
 });
 

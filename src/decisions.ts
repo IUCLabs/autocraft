@@ -102,6 +102,10 @@ export function ask(db: DatabaseSync, questions: Record<string, unknown>[]): { i
 // Opinions and comments are display-only and never read here.
 export type Actionable = { id: string; kind: Kind; repo: string | null; number: number | null; items: Ref[]; answer: string; exceptions: Exception[] };
 
+function operators(db: DatabaseSync): Set<string> {
+  return new Set((db.prepare("SELECT login FROM access WHERE role = 'operator'").all() as { login: string }[]).map((r) => r.login));
+}
+
 export function actionable(db: DatabaseSync): Actionable[] {
   const rows = db.prepare(`SELECT * FROM decisions WHERE answer IS NOT NULL AND applied_at IS NULL
     AND answered_by IN (SELECT login FROM access WHERE role = 'operator') ORDER BY answered_at`).all() as DecisionRow[];
@@ -123,10 +127,13 @@ function list(args: string[]): void {
   if (repo) where.push("(repo = :repo OR items LIKE :like)");
   const params: Record<string, string> = {};
   if (repo) Object.assign(params, { repo, like: `%"repo":"${repo}"%` });
-  const rows = connect().prepare(`SELECT * FROM decisions WHERE ${where.join(" AND ")} ORDER BY asked_at`).all(params) as DecisionRow[];
+  const db = connect();
+  const ops = operators(db);
+  const rows = db.prepare(`SELECT * FROM decisions WHERE ${where.join(" AND ")} ORDER BY asked_at`).all(params) as DecisionRow[];
   for (const d of rows) {
     const target = isBatch(d) ? `batch of ${itemsOf(d).length}` : `${d.repo}#${d.number}`;
-    const state = d.answer ? `answered ${d.answer}${d.applied_at ? ", applied" : ""}` : "open";
+    const by = d.answered_by && ops.has(d.answered_by) ? "" : " (not actionable: not answered by an operator)";
+    const state = d.answer ? `answered ${d.answer}${d.applied_at ? ", applied" : ""}${by}` : "open";
     console.log(`${d.id}\t${d.kind}\t${target}\t${state}\t${d.question}`);
   }
 }
@@ -134,12 +141,14 @@ function list(args: string[]): void {
 function show(args: string[]): void {
   const id = args[0];
   if (!id) throw new Error("usage: decisions show <id>");
-  const d = getDecision(connect(), id);
+  const db = connect();
+  const d = getDecision(db, id);
   if (!d) throw new Error(`no decision ${id}`);
-  // answer_note is shown here: the CLI runs only on the host.
+  // Agents run this command: no free text from people (answer_note), and
   // adopted_opinion points at an opinion, which agents never see.
-  const { adopted_opinion: _adopted, ...rest } = d;
-  const out = { ...rest, items: j(d.items, null), facts: factsOf(d), options: optionsOf(d), exceptions: j(d.exceptions, null) };
+  const { adopted_opinion: _adopted, answer_note: _note, ...rest } = d;
+  const actionable = d.answer !== null && d.answered_by !== null && operators(db).has(d.answered_by);
+  const out = { ...rest, actionable, items: j(d.items, null), facts: factsOf(d), options: optionsOf(d), exceptions: j(d.exceptions, null) };
   console.log(JSON.stringify(out, null, 2));
 }
 

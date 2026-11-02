@@ -182,7 +182,7 @@ export async function listDecisions(db: DatabaseSync, req: Req, writeRepos: () =
   if (status === "opinions") where.push("EXISTS (SELECT 1 FROM decision_opinions o WHERE o.decision_id = decisions.id AND o.retracted_at IS NULL)");
   const kinds = list(req, "kind").filter((k) => (KINDS as readonly string[]).includes(k));
   if (kinds.length) where.push(`kind IN (${kinds.map((k) => `'${k}'`).join(",")})`);
-  const minAge = Number(q.get("minAge") ?? 0);
+  const minAge = Math.min(Number(q.get("minAge") ?? 0), 36500);
   if (minAge > 0) {
     where.push("asked_at <= :before");
     params.before = new Date(Date.now() - minAge * 86400_000).toISOString();
@@ -301,6 +301,9 @@ export async function opine(db: DatabaseSync, req: Req, limiter: RateLimiter): P
   const at = new Date().toISOString();
   db.exec("BEGIN IMMEDIATE");
   try {
+    // The permission check above can wait on GitHub; the operator may have answered meanwhile.
+    if ((db.prepare("SELECT answer FROM decisions WHERE id = ?").get(d.id) as { answer: string | null }).answer !== null)
+      throw new HttpError(409, "the decision is answered; opinions are closed");
     db.prepare("UPDATE decision_opinions SET retracted_at = ? WHERE decision_id = ? AND login = ? AND retracted_at IS NULL").run(at, d.id, req.user.login);
     db.prepare("INSERT INTO decision_opinions (id, decision_id, login, option, note, at, permission) VALUES (?, ?, ?, ?, ?, ?, ?)")
       .run(randomToken(12), d.id, req.user.login, option, note, at, permission);

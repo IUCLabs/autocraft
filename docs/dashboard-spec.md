@@ -112,7 +112,7 @@ Per stage and model: agent runs, items handled, tokens (input, output, cache), t
 ## Behaviour
 
 - Writes (answers, overrides, settings, access) go through POST endpoints that check the reader's permission, validate input and write one row plus one audit row; each records the signed-in reader's GitHub login.
-- **Decisions are answered only on the dashboard, by a signed-in person.** The CLI can ask decisions and read answers (`craft-auto decisions list|show`), but it cannot answer them: the pipeline's agents run that CLI, and an answer must always come from a person. The CLI may edit the whitelist and access list (`craft-auto whitelist ...`, `craft-auto access ...`), recorded as `cli`, because only someone with a shell on the host can run it.
+- **Decisions are answered only on the dashboard, by a signed-in person.** The CLI can ask decisions and read answers (`craft-auto decisions list --actionable`; `list` and `show` mark answers that aren't actionable and never print answer notes), but it cannot answer them: the pipeline's agents run that CLI, and an answer must always come from a person. The CLI may edit the whitelist and access list (`craft-auto whitelist ...`, `craft-auto access ...`), recorded as `cli`, because only someone with a shell on the host can run it.
 - `craft-auto dash export <dir>` writes a static, read-only copy for later public sharing. Nothing serves it; publishing it is a separate decision. It has no write controls, no private fields (override notes, `answer_note`, anything marked private in the schema), and no hostnames or paths.
 
 ## Accounts and access
