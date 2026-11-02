@@ -17,7 +17,10 @@ const ACTOR = "verify";
 const FETCH = "fetch deps";
 /** An automatic retry per head: the new tasks run once more, then an error stays. */
 export const MAX_RETRIES = 1;
-export const NOT_FAILING_NOTE = "regression test did not fail on the base commit";
+export const NOT_FAILING_REASON = "regression test passes on base";
+/** The PR's current head, as src/review/candidates.ts headOf picks it: the checks table's when fetched after the mirror last saw the PR change. */
+const CURRENT_HEAD_SQL = `CASE WHEN c.head_oid IS NOT NULL AND c.fetched_at IS NOT NULL AND (i.updated_at IS NULL OR c.fetched_at > i.updated_at)
+  THEN c.head_oid ELSE COALESCE(i.head_oid, c.head_oid) END`;
 const ERROR_LIMIT = 200;
 
 export const VERIFICATION_STATES = ["planned", "running", "passed", "failed", "error", "ci-enough", "stale"] as const;
@@ -86,10 +89,11 @@ const TERMINAL_SQL = TERMINAL.map((s) => `'${s}'`).join(", ");
 export function collectDue(db: DatabaseSync): boolean {
   return !!db.prepare(`SELECT 1 FROM verifications v
     LEFT JOIN items i ON i.repo = v.repo AND i.number = v.number
+    LEFT JOIN pr_checks c ON c.repo = v.repo AND c.number = v.number
     LEFT JOIN build_tasks h ON h.id = v.head_task_id
     LEFT JOIN build_tasks b ON b.id = v.base_task_id
     WHERE v.state IN ('planned', 'running') AND (
-      i.state IS NOT 'OPEN' OR i.head_oid IS NOT v.head_sha
+      i.state IS NOT 'OPEN' OR (${CURRENT_HEAD_SQL}) IS NOT v.head_sha
       OR (h.state IN (${TERMINAL_SQL}) AND (b.id IS NULL OR b.state IN (${TERMINAL_SQL})))
       OR (v.state = 'planned' AND (h.state IN ('claimed', 'running') OR b.state IN ('claimed', 'running'))))
     LIMIT 1`).get();
@@ -128,7 +132,7 @@ export function verdictOf(head: Outcome, base: Outcome | null): Verdict {
   if (head.kind === "error") return { state: "error", reason: head.reason };
   if (!base) return { state: "passed" };
   if (base.kind === "error") return { state: "error", reason: `base commit: ${base.reason}` };
-  if (base.kind === "pass") return { state: "passed", note: NOT_FAILING_NOTE };
+  if (base.kind === "pass") return { state: "failed", reason: NOT_FAILING_REASON };
   if (base.step === "test") return base.timedOut ? { state: "passed", note: "regression test timed out on the base commit" } : { state: "passed" };
   return { state: "passed", note: "base commit did not build with the regression test, so the test was not shown to fail there" };
 }
@@ -199,8 +203,9 @@ export async function runCollect(db: DatabaseSync, params: { dryRun?: boolean } 
   const d: CollectDeps = deps ?? { model: PROMPT.models[0]!, mainHead: (await import("./index.ts")).defaultDeps().mainHead };
   const runId = `verify-collect-${now().replace(/[-:]/g, "").slice(0, 15)}`;
   const s: CollectSummary = { runId, looked: 0, passed: 0, failed: 0, errors: 0, retried: 0, stale: 0, running: 0, warmCancelled: 0, changed: 0 };
-  const rows = db.prepare(`SELECT v.*, i.state AS item_state, i.head_oid AS item_head FROM verifications v
+  const rows = db.prepare(`SELECT v.*, i.state AS item_state, ${CURRENT_HEAD_SQL} AS item_head FROM verifications v
     LEFT JOIN items i ON i.repo = v.repo AND i.number = v.number
+    LEFT JOIN pr_checks c ON c.repo = v.repo AND c.number = v.number
     WHERE v.state IN ('planned', 'running') ORDER BY v.created_at, v.number`).all() as (Row & { item_state: string | null; item_head: string | null })[];
   s.looked = rows.length;
   if (params.dryRun) { log(`verify-collect: ${rows.length} pending; dry run`); return s; }
@@ -260,8 +265,7 @@ export async function runCollect(db: DatabaseSync, params: { dryRun?: boolean } 
       const why = oneLine(verdict.reason ?? "error");
       if (finish("error", why, null)) { s.errors++; s.changed++; stageRow(db, v, "verify-error", at, `${v.kind} at ${sha7}: ${why}`); }
     } else {
-      const f = verdict.failed!;
-      const summary = await summariseFailure(db, v, v.head_task_id!, f, d, runId);
+      const summary = verdict.failed ? await summariseFailure(db, v, v.head_task_id!, verdict.failed, d, runId) : oneLine(verdict.reason ?? "failed");
       if (finish("failed", summary, null)) {
         s.failed++; s.changed++;
         stageRow(db, v, "verify-failed", at, `${v.kind} at ${sha7}: ${summary}`);

@@ -30,7 +30,7 @@ export const cachedRust: RustCheck = (repo, sha) => cachedCratesOf(repo, sha)?.r
 /**
  * Open, non-draft PRs of a public repo whose review at the current head is `take` (take-fix gets a fix-up
  * push first, which is reviewed again), whose CI does not fail at that head, and that have no verification
- * at that head. A repo known to have no Cargo.toml at the root is left out.
+ * at that head (a `stale` one does not count). A repo known to have no Cargo.toml at the root is left out.
  */
 export function selectCandidates(db: DatabaseSync, repo: string, run: string | null = latestRun(db), rust: RustCheck = cachedRust): VerifyCandidate[] {
   const pub = db.prepare("SELECT 1 FROM repos WHERE name = ? AND visibility = 'public'").get(repo);
@@ -43,7 +43,7 @@ export function selectCandidates(db: DatabaseSync, repo: string, run: string | n
       CASE WHEN c.fetched_at IS NOT NULL AND (i.updated_at IS NULL OR c.fetched_at > i.updated_at) THEN c.head_oid END, i.head_oid, c.head_oid)
     LEFT JOIN item_rank p ON p.repo = i.repo AND p.number = i.number
     WHERE i.repo = ? AND i.kind = 'pr' AND i.state = 'OPEN' AND ${notHeldSql("i")} ORDER BY p.score IS NULL, p.score DESC, i.number`).all(repo) as Row[];
-  const done = db.prepare("SELECT 1 FROM verifications WHERE repo = ? AND number = ? AND head_sha = ?");
+  const done = db.prepare("SELECT 1 FROM verifications WHERE repo = ? AND number = ? AND head_sha = ? AND state != 'stale'");
   const settled = settledLookup(db, run);
   const out: VerifyCandidate[] = [];
   for (const r of rows) {

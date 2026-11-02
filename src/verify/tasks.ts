@@ -1,6 +1,6 @@
 // Build tasks for a validated plan, and the warm build of the default branch.
 import type { DatabaseSync } from "node:sqlite";
-import { createTask, type NewTask } from "../build/tasks.ts";
+import { createTask, warmKeyOf, type NewTask } from "../build/tasks.ts";
 import { rustPlan } from "../worker/rust.ts";
 import type { TaskStep } from "../worker/types.ts";
 import type { VerifyPlan } from "./plan.ts";
@@ -14,7 +14,7 @@ type Planned = Exclude<VerifyPlan, { kind: "ci-enough" }>;
 
 /** The tasks that run `plan` at `head` (and, for a regression, at `base`). Order: head first. */
 export function tasksFor(plan: Planned, c: { repo: string; number: number; head: string; base: string }): NewTask[] {
-  const common = { step: "verify", repo: c.repo, number: c.number, requires: { ...REQUIRES, toolchains: [...REQUIRES.toolchains] }, warm: { key: c.repo, role: "use" as const } };
+  const common = { step: "verify", repo: c.repo, number: c.number, requires: { ...REQUIRES, toolchains: [...REQUIRES.toolchains] }, warm: { key: warmKeyOf(c.repo), role: "use" as const } };
   if (plan.kind === "tests") {
     const steps = rustPlan({ cargoArgs: plan.crates.flatMap((n) => ["-p", n]) }).map((s): TaskStep =>
       s.name === "test" && plan.tests.length ? { ...s, cmd: [...s.cmd, "--", ...plan.tests] } : s);
@@ -44,7 +44,7 @@ export function queueWarmBuild(db: DatabaseSync, repo: string, mainSha: string, 
   if (db.prepare("SELECT 1 FROM build_tasks WHERE repo = ? AND warm_role = 'build' AND queued_at > ?").get(repo, since)) return null;
   return createTask(db, {
     step: "verify", repo, headSha: mainSha, requires: { ...REQUIRES, toolchains: [...REQUIRES.toolchains] }, priority: WARM_PRIORITY,
-    plan: rustPlan({ cargoArgs: ["--workspace"], test: false }), warm: { key: repo, role: "build" },
+    plan: rustPlan({ cargoArgs: ["--workspace"], test: false }), warm: { key: warmKeyOf(repo), role: "build" },
   });
 }
 
