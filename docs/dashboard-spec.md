@@ -10,9 +10,11 @@ The craft-app repos have about 25,000 open issues and PRs across about 20 active
 
 | Reader | Device | Wants |
 |---|---|---|
-| Owner | Phone first, sometimes desktop | Make decisions in bursts; see whether the run is on track; adjust the whitelist |
-| Maintainers | Desktop and phone | Decisions in their repos; what got merged or closed and why |
-| Public (later) | Any | Read-only progress; no decisions UI, no private notes |
+| Owner (admin) | Phone first, sometimes desktop | Make decisions in bursts; see whether the run is on track; adjust the whitelist; manage who has access |
+| Maintainers | Desktop and phone | Decisions in the repos they can write to; what got merged or closed and why |
+| Viewers | Any | Read-only: progress, decisions and their outcomes; no answering |
+
+Every reader signs in with GitHub. See [Accounts and access](#accounts-and-access).
 
 ## Principles
 
@@ -95,15 +97,74 @@ Table: login, tier (whitelisted / not / override allow / override deny), merged 
 
 Agreement between classifiers on the same items (for the Jev vs Haiku trial, later Sonnet as the reference): per field (`type_label`, `want`), an agreement rate and a confusion matrix, with a link to the disagreeing items.
 
+### Access (admins)
+
+Access list with add, remove and role change; active sessions with revoke; the audit log, filterable by login and action.
+
 ### Run and cost
 
 Per stage and model: agent runs, items handled, tokens (input, output, cache), tokens per item. Per repo: items done and tokens spent. The experiment's headline numbers: issues and PRs closed, merged, fixed by us, by size; decisions asked and answered; items still needing a human.
 
 ## Behaviour
 
-- Writes (answers, overrides, settings) go through POST endpoints that validate input and write one row; each records `answered_by` / `by` as the signed-in reader. Until there is sign-in, the dashboard listens on 127.0.0.1 only (the box's dev portal puts it on the private network) and records `owner`.
-- The same writes are available from the CLI (`craft-auto decide <id> <option> [--note]`, `craft-auto whitelist ...`), so sessions and scripts don't scrape HTML.
-- `craft-auto dash export <dir>` writes a static, read-only copy for public sharing: no write controls, no private fields (override notes, `answer_note`, anything marked private in the schema), no box paths or hostnames.
+- Writes (answers, overrides, settings, access) go through POST endpoints that check the reader's permission, validate input and write one row plus one audit row; each records the signed-in reader's GitHub login.
+- **Decisions are answered only on the dashboard, by a signed-in person.** The CLI can ask decisions and read answers (`craft-auto decisions list|show`), but it cannot answer them: the pipeline's agents run that CLI, and an answer must always come from a person. The CLI may edit the whitelist and access list (`craft-auto whitelist ...`, `craft-auto access ...`), recorded as `cli`, because only someone with a shell on the host can run it.
+- `craft-auto dash export <dir>` writes a static, read-only copy for later public sharing. Nothing serves it; publishing it is a separate decision. It has no write controls, no private fields (override notes, `answer_note`, anything marked private in the schema), and no hostnames or paths.
+
+## Accounts and access
+
+The whole dashboard sits behind GitHub sign-in: every page, asset and endpoint except the sign-in routes returns a redirect to sign-in (pages) or 401 (everything else) without a valid session. Nothing about the data, not even repo names or counts, is visible before sign-in.
+
+### Who can sign in
+
+- Only GitHub logins on the **access list** (`access` table: `login`, `role` = `admin` | `viewer`, `added_by`, `added_at`, `note`). A login not on the list sees a plain "not authorised" page after GitHub's redirect, and no session is created.
+- Admins add and remove logins on the Access page or with `craft-auto access add <login> [--admin] [--note]` / `access remove <login>`. The first admin is added with the CLI.
+- Removing a login or changing its role ends its sessions at once.
+
+### What each person can do
+
+| Action | Who |
+|---|---|
+| Read every page | anyone on the access list |
+| Answer or undo a decision about repo R | signed in **and** has write, maintain or admin permission on `storytold/R` on GitHub |
+| Answer a batch | has that permission on every repo in the batch; otherwise the batch card shows which repos block them |
+| Whitelist overrides, whitelist rule, settings | admin |
+| Access list, sessions, audit log | admin |
+
+The access-list role never grants decision rights by itself: an admin without write access to a repo can't answer its decisions.
+
+GitHub permissions: after sign-in, read the user's permission on each repo with the user's own token (`GET /repos/storytold/<repo>` returns `permissions` for the authenticated user), cache it per user and repo for 10 minutes, and re-check at the moment of any write if the cached value is older than one minute. A user without any write permission still signs in as a viewer. The card hides answer buttons when the reader can't answer, and says why in one line.
+
+### Sign-in flow
+
+- A GitHub OAuth App with the authorization-code flow, `state` and PKCE. Request no scopes beyond what reading public repo permissions needs; if a private repo's permission can't be read, treat it as no write access.
+- The OAuth callback URL, client id and public base URL are configuration, not code.
+- Store the user's GitHub token only server-side (encrypted at rest with the session key) for permission checks; never send it to the browser or log it.
+
+### Sessions and request safety
+
+- Session id: 32 random bytes; cookie `HttpOnly`, `Secure`, `SameSite=Lax`, path `/`; stored in SQLite as a hash with login, created, last seen, expiry (14 days, sliding), user agent.
+- Sign-out ends the session. Admins can see and revoke sessions on the Access page.
+- Every POST carries a CSRF token tied to the session; reject a missing or wrong token.
+- Rate-limit sign-in attempts and writes per session and per IP.
+- Security headers: a strict Content-Security-Policy (self only, no inline script without a nonce), `X-Frame-Options: DENY`, `Referrer-Policy: same-origin`.
+
+### Audit log
+
+`audit` table: `at`, `login`, `action` (`answer`, `undo`, `override`, `rule`, `access-add`, `access-remove`, `session-revoke`, `sign-in`, `sign-in-refused`), `target`, `details` (JSON). Shown on the item page (that item's entries) and on the Access page (everything, filterable).
+
+### Secrets and configuration
+
+- The OAuth client secret and the session key are never in the repo, in logs or in error pages. The server reads them from a file named by `CRAFT_AUTO_SECRETS_FILE` (mode 0600, JSON) and refuses to start if it's missing, readable by others, or incomplete.
+- Other configuration (base URL, listen address, port, database path) comes from environment variables, documented in the README with no values specific to one machine.
+
+### Hosting for now
+
+The server listens on 127.0.0.1 only; a private network proxy in front of it provides HTTPS. GitHub sign-in applies there too, so moving to a public host later changes only the configuration.
+
+### Testing without GitHub
+
+A fake OAuth provider for tests and local development, enabled only when `CRAFT_AUTO_DEV_AUTH=1` **and** the server listens on a loopback address; it signs in as a login given in the test and serves configurable repo permissions. The server refuses to start with dev auth on any other address.
 
 ## Technology
 
@@ -116,6 +177,7 @@ Per stage and model: agent runs, items handled, tokens (input, output, cache), t
 
 1. A fixture generator writes data at the real scale (25,000 open items over 20 repos, 75,000 closed, 500 decisions including batches, 2,000 stage rows, 40 overrides, token rows), and every page meets the 300 ms target on it.
 2. Screenshots of every page at 390 px and 1,280 px, light and dark, reviewed by eye for crowding and overflow.
-3. A decision answered on the page, undone, and answered again; the same through the CLI.
+3. A decision answered on the page, undone, and answered again.
 4. The export contains no write controls and none of the private fields (grep for a marker placed in each private field of the fixture).
-5. Tests for the funnel rules, whitelist tier precedence, and decision answer and undo.
+5. Access, with the fake provider: every route without a session redirects or returns 401; a login not on the access list gets no session; a viewer can read but every write returns 403; a maintainer can answer only decisions in repos where the fake provider grants write; a batch spanning a repo without write is refused; a POST without the CSRF token is refused; removing a login ends its session; the server refuses to start with dev auth on a non-loopback address or with a world-readable secrets file.
+6. Tests for the funnel rules, whitelist tier precedence, decision answer and undo, and the access checks in item 5.
