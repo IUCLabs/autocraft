@@ -1,0 +1,58 @@
+// Fake merge queue: a few PRs in every state, over the mock repos.
+import type { QueueFilter, QueueList, QueueRow, QueueState, TypeLabel } from "../types";
+import { AUTHORS, DECISIONS, NOW, REPOS, rng, titleFor } from "./fixtures";
+
+const STATES: QueueState[] = ["ready", "decision-answered-merge", "refused", "waiting-ci", "ci-failed", "conflict", "needs-fix-up", "needs-decision", "declined", "merged"];
+const REASONS = [
+  "Fixes the off-by-one in the page range and adds a test.",
+  "Small, correct guard against an empty selection.",
+  "Restores the reference app's default margin.",
+  "CI config change; runs the same jobs faster.",
+  "Correct, but the error message should name the file.",
+];
+const LABELS: TypeLabel[] = ["bugfix", "infra", "missing feature", "performance"];
+
+const ROWS: QueueRow[] = (() => {
+  const r = rng(606);
+  const mergeDecision = DECISIONS.find((d) => d.kind === "merge")?.id ?? null;
+  const out: QueueRow[] = [];
+  let k = 0;
+  for (const state of STATES) {
+    const n = state === "ready" || state === "needs-decision" || state === "waiting-ci" ? 4 : 2;
+    for (let i = 0; i < n; i++, k++) {
+      const repo = REPOS[k % 6]!;
+      const number = 200 + Math.floor(r() * 3000);
+      const [author, tier] = AUTHORS[k % AUTHORS.length]!;
+      const ruleTier = tier === "whitelisted" || tier === "override-allow";
+      const rulePath = state === "ready" || ((state === "waiting-ci" || state === "refused") && i % 2 === 0);
+      const label = rulePath ? (i % 2 ? "infra" : "bugfix") : LABELS[k % LABELS.length]!;
+      const size = rulePath ? (i % 2 ? "M" : "S") : (["S", "M", "L"] as const)[k % 3];
+      const outsideRule = rulePath ? [] : [
+        ...(state === "needs-fix-up" ? ["review asks for fixes"] : []),
+        ...(size === "L" ? ["size L"] : []),
+        ...(label !== "bugfix" && label !== "infra" ? [`label ${label}`] : []),
+        ...(ruleTier ? [] : ["author not on the whitelist"]),
+      ];
+      if (!rulePath && !outsideRule.length) outsideRule.push("author not on the whitelist");
+      const ci: QueueRow["ci"] = state === "ci-failed" ? "failure" : state === "waiting-ci" ? "pending" : state === "needs-decision" && i === 3 ? "pending" : "success";
+      out.push({
+        repo, number, title: titleFor(repo, number), author, tier: rulePath ? "whitelisted" : tier, head: `${(number * 2654435761 >>> 0).toString(16).padStart(8, "0")}c0ffee12345678900abcdef1234`,
+        size, label, verdict: state === "needs-fix-up" ? "take-fix" : "take", reason: REASONS[k % REASONS.length]!,
+        fixes: state === "needs-fix-up" ? 1 + (i % 3) : 0, ci, mergeable: state === "conflict" ? "conflicts" : "clean", state,
+        path: rulePath ? "rule" : state === "decision-answered-merge" || state === "refused" ? "operator" : null,
+        outsideRule, decisionId: state === "needs-decision" || state === "decision-answered-merge" || state === "declined" ? mergeDecision : null,
+        answer: state === "decision-answered-merge" ? "merge" : state === "declined" ? (i ? "close" : "hold") : null,
+        refusedReason: state === "refused" ? "safe-merge: required check 'build (linux)' has not finished" : null,
+        reviewedAt: new Date(NOW - (k + 1) * 3_600_000 * 5).toISOString(),
+      });
+    }
+  }
+  return out.sort((a, b) => a.repo.localeCompare(b.repo) || a.number - b.number);
+})();
+
+export function queueList(f: QueueFilter): QueueList {
+  const all = ROWS.filter((x) => !f.repo || x.repo === f.repo);
+  const counts = Object.fromEntries(STATES.map((s) => [s, all.filter((x) => x.state === s).length])) as Record<QueueState, number>;
+  const rows = all.filter((x) => !f.state || x.state === f.state);
+  return { rows, counts, total: rows.length };
+}

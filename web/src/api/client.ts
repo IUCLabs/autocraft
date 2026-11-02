@@ -21,6 +21,8 @@ import type {
   OverrideInput,
   Progress,
   PromptsReport,
+  QueueFilter,
+  QueueList,
   RepoName,
   Role,
   RulePreview,
@@ -85,6 +87,8 @@ export interface Api {
   };
   /** Token use and spend for one run, or all runs when `run` is empty. */
   cost(run?: string): Promise<CostReport>;
+  /** The merge queue: every PR with a take or take-fix review at its head, and what it waits on. */
+  queue(filter: QueueFilter): Promise<QueueList>;
   /** Every registered model prompt, with the server's commit. */
   prompts(): Promise<PromptsReport>;
   signOut(): Promise<void>;

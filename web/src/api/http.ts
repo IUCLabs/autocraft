@@ -143,6 +143,7 @@ export function createHttpApi(): Api {
     },
     cost: (run) => get(`/api/cost${qs({ run })}`),
     prompts: () => get("/api/prompts"),
+    queue: (f) => get(`/api/queue${qs(f)}`),
     async signOut() {
       await call("POST", "/api/signout");
       location.assign("/auth/signed-out");

@@ -51,6 +51,7 @@ export function AppShell() {
     "g d": () => navigate("/decisions"),
     "g p": () => navigate("/progress"),
     "g i": () => navigate("/items"),
+    "g q": () => navigate("/queue"),
   });
 
   const content = (

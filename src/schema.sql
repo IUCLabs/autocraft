@@ -199,7 +199,7 @@ CREATE TABLE IF NOT EXISTS oauth_states (
 CREATE TABLE IF NOT EXISTS audit (
   at TEXT NOT NULL,
   login TEXT NOT NULL,
-  action TEXT NOT NULL,               -- answer | undo | adopt | opinion | opinion-retract | comment | override | rule | access-add | access-remove | access-role | session-revoke | sign-in | sign-in-refused | repo-track | repo-untrack | labels-approve | labels-revoke | labels-apply
+  action TEXT NOT NULL,               -- answer | undo | adopt | opinion | opinion-retract | comment | override | rule | access-add | access-remove | access-role | session-revoke | sign-in | sign-in-refused | repo-track | repo-untrack | labels-approve | labels-revoke | labels-apply | assign | merge | merge-refused
   target TEXT,
   details TEXT                        -- JSON
 );
@@ -288,6 +288,20 @@ CREATE TABLE IF NOT EXISTS reviews (
   PRIMARY KEY (repo, number, head_oid)
 );
 CREATE INDEX IF NOT EXISTS reviews_run ON reviews(run_id);
+
+-- Merge attempts by the Integrate stage, one row per try at a PR head.
+-- outcome: merged | refused (the merge command or a pre-merge check said no, with why).
+CREATE TABLE IF NOT EXISTS merges (
+  repo TEXT NOT NULL, number INTEGER NOT NULL,
+  head_oid TEXT NOT NULL,
+  run_id TEXT NOT NULL,
+  at TEXT NOT NULL,
+  path TEXT NOT NULL,                 -- rule (merge without asking) | operator (answered Merge? decision)
+  method TEXT,                        -- squash | merge; null when refused before the command ran
+  outcome TEXT NOT NULL,              -- merged | refused
+  reason TEXT                         -- one line, public-safe
+);
+CREATE INDEX IF NOT EXISTS merges_item ON merges(repo, number, at);
 
 -- Full-text search over item titles and bodies and comment bodies. Both are
 -- external-content tables (the text stays in items and comments only), kept

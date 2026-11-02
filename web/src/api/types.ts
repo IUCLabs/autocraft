@@ -636,3 +636,64 @@ export interface PromptsReport {
   commit: string | null;
   prompts: PromptInfo[];
 }
+
+// ---- merge queue ------------------------------------------------------------
+
+/**
+ * Where a taken PR stands in the merge queue:
+ * ready (may merge by the rule now), decision-answered-merge (the operator answered merge),
+ * refused (the merge command or a pre-merge check said no; tried again next run),
+ * waiting-ci (CI pending or none, or GitHub still computing mergeability), ci-failed, conflict,
+ * needs-fix-up (take-fix), needs-decision (outside the rule; Merge? asked or about to be),
+ * declined (the operator answered hold or close), merged.
+ */
+export type QueueState =
+  | "ready"
+  | "decision-answered-merge"
+  | "refused"
+  | "waiting-ci"
+  | "ci-failed"
+  | "conflict"
+  | "needs-fix-up"
+  | "needs-decision"
+  | "declined"
+  | "merged";
+
+export interface QueueRow {
+  repo: RepoName;
+  number: number;
+  title: string;
+  author: string;
+  tier: Tier;
+  /** Head commit the review is for. */
+  head: string;
+  size: "S" | "M" | "L";
+  label: TypeLabel | null;
+  verdict: "take" | "take-fix";
+  reason: string;
+  fixes: number;
+  /** CI at the reviewed head: success | failure | pending | none, or unknown before checks were fetched for it. */
+  ci: "success" | "failure" | "pending" | "none" | "unknown";
+  mergeable: Mergeable;
+  state: QueueState;
+  /** How it may merge: by the rule, by the operator's answer, or not yet. */
+  path: "rule" | "operator" | null;
+  /** Why the merge-without-asking rule doesn't cover it. */
+  outsideRule: string[];
+  decisionId: string | null;
+  answer: string | null;
+  refusedReason: string | null;
+  reviewedAt: string;
+}
+
+export interface QueueFilter {
+  repo?: RepoName;
+  state?: QueueState;
+}
+
+export interface QueueList {
+  rows: QueueRow[];
+  /** Per state, for the repo filter (ignores the state filter). */
+  counts: Record<QueueState, number>;
+  total: number;
+}

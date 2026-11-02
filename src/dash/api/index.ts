@@ -15,6 +15,7 @@ import * as adm from "./admin.ts";
 import * as dec from "./decisions.ts";
 import * as insight from "./insight.ts";
 import { prompts } from "./prompts.ts";
+import { queue } from "./queue.ts";
 import * as items from "./items.ts";
 import { settledOf } from "../../classify/settled.ts";
 import { classificationsOf, itemState, relatedOf } from "./decisions.ts";
@@ -233,5 +234,6 @@ export function apiRoutes(opts: ApiOptions = {}): Route[] {
     get("/api/classifiers/disagreements", insight.disagreements),
     get("/api/cost", insight.cost),
     get("/api/prompts", prompts),
+    get("/api/queue", queue),
   ];
 }

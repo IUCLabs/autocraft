@@ -11,7 +11,7 @@ The craft apps have about 21,000 open issues and PRs. The pipeline sorts all of 
 | 3 | Decide | Items flagged "needs decision" (scope, wanted or not, reference-app behaviour), and items where Jev and Haiku disagree between scope labels, become decisions on this dashboard, each with an AI summary and the item's own text. | `craft-auto decide` asks them, with summaries by Sonnet. The operator answers; anyone signed in can comment and pick an option | Scripted, started by the operator |
 | 4 | Label | The type label and flags go onto the item on GitHub. | `craft-auto labels`, one repo at a time. No model calls. Only items whose type is settled (Jev at 90 % or more, or Haiku agreeing with Jev) are labelled. A label a person set is never changed: an item that already has a different type label is skipped and reported. Writes to GitHub need the operator's approval for that repo, given on the Repos page | Built. `ensure` and `plan` are read-only; `apply` is a dry run unless `--apply` and refuses unapproved repos |
 | 5 | Review | PRs we want get a code review: take, take with fixes, hold, or close (duplicate, already fixed, superseded). | Sonnet, one call per batch of related PRs. Tests are not reviewed, only code | Built, one repo at a time (`craft-auto review`) |
-| 6 | Integrate | Taken PRs are assigned to us, fixed up on the contributor's branch where possible, grouped into integration branches and merged when GitHub CI is green. | Sonnet implementers; merges only through a checked merge script | Planned here; earlier rounds ran by hand |
+| 6 | Integrate | Taken PRs are assigned to us, fixed up on the contributor's branch where possible, grouped into integration branches and merged when GitHub CI is green. | Sonnet implementers; merges only through a checked merge script | Merge queue and merge step built (`craft-auto merge`); fix-ups and integration branches next |
 | 7 | Fix issues | Issues with a clear bug and a clear fix get a PR from us. | Sonnet implementers | Planned |
 
 Stages 5–7 go one or a few repos at a time, in turn. Stages 1–4 cover the whole org.
@@ -42,6 +42,48 @@ Stages 5–7 go one or a few repos at a time, in turn. Stages 1–4 cover the wh
 The weaker of two duplicates is held, never closed, until the better one has merged; a close that names an unmerged duplicate is stored as a hold.
 
 **Storage.** One `reviews` row per PR and head commit: verdict, reason (25 words at most), fixes, duplicate_of, overlaps, risks, model, size, run. Each review also adds two `stages` rows: `reviewed` (verdict, short head commit and reason) and the verdict itself (`take` for take and take-fix, `hold`, `close`), which the Progress page counts. Token use goes to `token_usage` with stage `review`.
+
+## Stage 6: Integrate
+
+Built so far: the merge queue and the merge step. Fix-ups of take-fix PRs and integration branches come next.
+
+**Merge queue.** Every PR whose latest review is take or take-fix at its current head commit, plus the ones merged since. [Merge queue](/queue) shows it, read-only, with one state per PR:
+
+| State | Meaning |
+|---|---|
+| ready | The merge rule covers it, CI is green and it is mergeable: the next run merges it |
+| decision-answered-merge | Outside the rule, but the operator answered the Merge? decision `merge` at this head commit |
+| refused | The merge command or a pre-merge check said no; the reason is shown, and the next run tries again |
+| waiting-ci | CI is pending or has not run at this head, or GitHub has not worked out mergeability yet |
+| ci-failed | CI fails at this head |
+| conflict | Conflicts with the base branch |
+| needs-fix-up | The review is take-fix: it waits for the fix-up step |
+| needs-decision | Outside the rule: it waits for the operator's answer to a Merge? decision (asked on the next run when not asked yet) |
+| declined | The operator answered the Merge? decision `hold` or `close` |
+| merged | Merged |
+
+`craft-auto queue [--repo R]` prints the same list.
+
+**Merge without asking.** A PR merges without a decision only when all of these hold:
+
+- the review verdict is take (not take-fix) at the PR's current head commit;
+- its size is S or M (up to 300 changed lines);
+- its settled type label is bugfix or infra (infra covers tests, CI, docs and build);
+- its author is on the whitelist (tier whitelisted, or an operator's allow override; see Contributors);
+- CI is `success` overall at that head commit;
+- GitHub reports it mergeable.
+
+**Merge? decisions.** A take PR that fails any of the first four gets a decision instead: "Merge this PR?" with options `merge`, `hold` and `close`, and facts for size and label, author and tier, CI and mergeability, the review's verdict, reason and fixes, and the head commit. There is one decision per PR head commit, so a push brings a new one. It is asked only while CI is not failing and the PR has no conflict. Only an operator's answer counts, read as an option key (`craft-auto decisions list --actionable`). An answer of `merge` makes the PR eligible at that head: CI must still be green and the PR mergeable, and the step refuses when the head commit moved since the question was asked.
+
+**Merge step.** `craft-auto merge --repo R [--limit N] [--apply]`; the runner calls `runMerge(db, {repo, limit, dryRun}, log)`. Without `--apply` (or with `dryRun` unset) it is a dry run: it prints what it would merge and ask, from the local tables, and calls and writes nothing. With `--apply` it:
+
+1. writes a `batched` stage row for each queued PR, once per head commit, and asks the missing Merge? decisions;
+2. takes the eligible PRs one at a time, rule PRs first, up to `--limit` merges;
+3. refreshes that PR's checks and head commit, and refuses when it is no longer open, its head moved, the operator's answer is gone, or CI or mergeability changed;
+4. assigns the PR to the pipeline's GitHub account (the signed-in `gh` account, read once per run) when nobody is assigned;
+5. runs the merge command (`$CRAFT_AUTO_MERGE_CMD`, default `safe-merge`) as `<cmd> storytold/<repo> <n> --squash`, or `--merge` when the commits have more than one author. It never calls `gh pr merge` itself and never passes `--allow-pending`.
+
+A refusal by the command is recorded with its reason and the PR stays in the queue. Any other error stops the run. Each try adds a `merges` row (head commit, rule or operator, squash or merge, merged or refused, reason) and an audit row (`assign`, `merge`, `merge-refused`); a merge adds a `merged` stage row and marks the operator's decision applied. The step makes no model calls.
 
 ### Label stage commands
 
@@ -89,7 +131,7 @@ The step that acts on answers reads these keys:
 
 - **Scope**: is this in scope, does it get us closer to the reference application, is it a plug-in rather than core?
 - **Reference behaviour** that public sources don't settle.
-- **Merges outside the whitelist.** PRs merge without a decision only when all of these hold: a bug fix of small or medium size from a contributor on the whitelist, or tests and infrastructure, with green CI. Contributors shows who is on the whitelist and why.
+- **Merges outside the rule.** A PR merges without a decision only when its review is take at its current head, it is size S or M, its label is bugfix or infra (tests, CI, docs, build), its author is on the whitelist, CI is green and it is mergeable (stage 6). Contributors shows who is on the whitelist and why.
 
 Everything else waits for a decision on this dashboard.
 

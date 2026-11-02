@@ -6,6 +6,7 @@ import { createAdminMock } from "./adminMock";
 import { promptsReport } from "../../../../src/prompts/index.ts";
 import { classifierReport, costReport, disagreementList } from "./insightFixtures";
 import { itemList, settledFor } from "./itemsFixtures";
+import { queueList } from "./queueFixtures";
 import { DECISIONS, MOCK_USERS, NOW, REPOS, SEARCH_POOL, THREADS, itemFor, permFor, progress, type MockRole } from "./fixtures";
 
 const wait = <T>(v: T, ms = 60) => new Promise<T>((r) => setTimeout(() => r(structuredClone(v)), ms));
@@ -158,6 +159,7 @@ export function createMockApi(): Api {
     },
     cost: (run) => wait(costReport(run), 80),
     prompts: () => wait(promptsReport(null), 60),
+    queue: (f) => wait(queueList(f), 60),
     signOut: () => wait(undefined),
     subscribe(fn) {
       listeners.add(fn);
