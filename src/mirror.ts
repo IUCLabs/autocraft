@@ -218,9 +218,13 @@ function commentRows(repo: string, kind: Kind, n: Node): SQLInputValue[][] {
 }
 
 function writePage(db: DatabaseSync, repo: string, kind: Kind, detail: Detail, nodes: Node[]): void {
-  const insert = db.prepare(`INSERT OR REPLACE INTO items (${COLUMNS.join(",")}) VALUES (${COLUMNS.map((c) => `:${c}`).join(",")})`);
+  // Upserts keep each row's rowid, which the full-text index (schema.sql) is keyed on.
+  const insert = db.prepare(`INSERT INTO items (${COLUMNS.join(",")}) VALUES (${COLUMNS.map((c) => `:${c}`).join(",")})
+    ON CONFLICT (repo, number) DO UPDATE SET ${COLUMNS.filter((c) => c !== "repo" && c !== "number").map((c) => `${c}=excluded.${c}`).join(",")}`);
   const del = db.prepare("DELETE FROM comments WHERE repo=? AND number=?");
-  const insComment = db.prepare("INSERT OR REPLACE INTO comments VALUES (?,?,?,?,?,?,?,?,?)");
+  const insComment = db.prepare(`INSERT INTO comments VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT (id) DO UPDATE SET
+    repo=excluded.repo, number=excluded.number, kind=excluded.kind, author=excluded.author, created_at=excluded.created_at,
+    body=excluded.body, review_state=excluded.review_state, commit_oid=excluded.commit_oid`);
   db.exec("BEGIN");
   try {
     for (const n of nodes) {
