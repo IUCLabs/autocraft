@@ -33,13 +33,13 @@ function hasOpenPr(db: DatabaseSync, repo: string, n: number): boolean {
 /**
  * Open issues with a settled bugfix label, no pending scope decision (or one answered `take` by an operator),
  * no open PR that mentions or closes them and no attempt (a skipped one returns when its text changed), in a
- * repo with fix-issue approval. Highest priority first.
+ * repo with fix-issue approval. Highest work score first.
  */
 export function selectIssues(db: DatabaseSync, repo: string, run: string | null = latestRun(db)): IssueCandidate[] {
   if (!fixIssueApprovalOf(db, repo)) return [];
   if (!db.prepare("SELECT 1 FROM repos WHERE name = ? AND visibility = 'public'").get(repo)) return [];
   if (db.prepare("SELECT 1 FROM settings WHERE key = ?").get(notRustKey(repo))) return [];
-  const rows = db.prepare(`SELECT i.number, i.title, i.body, p.score FROM items i LEFT JOIN item_priority p ON p.repo = i.repo AND p.number = i.number
+  const rows = db.prepare(`SELECT i.number, i.title, i.body, p.score FROM items i LEFT JOIN item_rank p ON p.repo = i.repo AND p.number = i.number
     WHERE i.repo = ? AND i.kind = 'issue' AND i.state = 'OPEN' AND ${notHeldSql("i")} ORDER BY p.score IS NULL, p.score DESC, i.number`).all(repo) as Row[];
   const settled = settledLookup(db, run);
   const attempt = db.prepare("SELECT state, text_hash FROM fix_attempts WHERE repo = ? AND number = ?");

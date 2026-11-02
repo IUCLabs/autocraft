@@ -58,7 +58,7 @@ export type Candidate = {
   author: string | null; author_association: string | null;
   head_oid: string; lines_changed: number; files_changed: number;
   size: Size; label: string;
-  /** Priority score (src/priority), null before the item was rated. */
+  /** Work score (src/rank), null before the item was ranked. */
   score?: number | null;
 };
 
@@ -88,7 +88,7 @@ export function selectCandidates(db: DatabaseSync, repo: string, run: string | n
       i.additions, i.deletions, i.changed_files, i.updated_at, i.is_draft,
       c.head_oid AS c_head, c.state AS c_state, c.is_draft AS c_draft, c.fetched_at AS c_at, p.score AS score
     FROM items i LEFT JOIN pr_checks c ON c.repo = i.repo AND c.number = i.number
-    LEFT JOIN item_priority p ON p.repo = i.repo AND p.number = i.number
+    LEFT JOIN item_rank p ON p.repo = i.repo AND p.number = i.number
     WHERE i.repo = ? AND i.kind = 'pr' AND i.state = 'OPEN' AND ${notHeldSql("i")} ORDER BY p.score IS NULL, p.score DESC, i.number`).all(repo) as Row[];
   const reviewed = db.prepare("SELECT 1 FROM reviews WHERE repo = ? AND number = ? AND head_oid = ?");
   const settled = settledLookup(db, run);

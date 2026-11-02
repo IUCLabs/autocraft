@@ -45,7 +45,7 @@ export function selectFixups(db: DatabaseSync, repo: string): FixSelection {
   const rows = db.prepare(`SELECT i.repo, i.number, i.head_oid, i.updated_at, i.is_draft,
       c.head_oid AS c_head, c.state AS c_state, c.is_draft AS c_draft, c.fetched_at AS c_at, c.mergeable, c.maintainer_can_modify AS can_modify
     FROM items i JOIN pr_checks c ON c.repo = i.repo AND c.number = i.number
-    LEFT JOIN item_priority p ON p.repo = i.repo AND p.number = i.number
+    LEFT JOIN item_rank p ON p.repo = i.repo AND p.number = i.number
     WHERE i.repo = ? AND i.kind = 'pr' AND i.state = 'OPEN' AND ${notHeldSql("i")} ORDER BY p.score IS NULL, p.score DESC, i.number`).all(repo) as Row[];
   const done = db.prepare("SELECT 1 FROM fixups WHERE repo = ? AND number = ? AND from_head = ? AND state IN ('pushed', 'cannot-push', 'too-large')");
   const approved = pushApprovalOf(db, repo) !== null;

@@ -79,8 +79,8 @@ export function buildFlow(c: Record<string, number>, meta: FlowMeta): Flow {
     ], { recent: ["reviewed"], promptStage: "Review" }),
     node("verify", "Verify", 6, "steps", `${fmt(v("verify.passed") + v("verify.ci-enough"))} verified · ${fmt(v("verify.waiting"))} to plan`, [
       { id: "waiting", label: "Not planned yet", waitsOn: "model", tone: "neutral", hint: "Taken, CI not failing, no verification at the head commit" },
-      { id: "planned", label: "Planned", waitsOn: "runner", tone: "neutral", hint: "Tasks queued for a worker" },
-      { id: "running", label: "Running", waitsOn: "runner", tone: "neutral" },
+      { id: "planned", label: "Planned", waitsOn: "sandbox", tone: "neutral", hint: "Tasks queued for a worker" },
+      { id: "running", label: "Running", waitsOn: "sandbox", tone: "neutral" },
       { id: "passed", label: "Passed", waitsOn: "nothing", tone: "ok" },
       { id: "ci-enough", label: "CI is enough", waitsOn: "nothing", tone: "ok", hint: "The planner found nothing more to run" },
       { id: "failed", label: "Failed", waitsOn: "person", tone: "bad", hint: "Tests failed; the PR is on hold" },

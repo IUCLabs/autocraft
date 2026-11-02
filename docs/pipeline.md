@@ -117,7 +117,23 @@ Each open item gets an impact class and a 0 to 100 score.
 - Models run again only when the item's text changes; scores are recomputed from the mirror on every pass.
 - Items without a score come after all scored ones. Daily limit 3000 items sent to Jev; raise it for the first pass over a new org.
 
-<!-- work-rank section goes here -->
+## Work rank
+
+One score per open item decides what the pipeline works on next, for issues and PRs alike. No model; recomputed every 30 minutes from stored results.
+
+`score = priority + type + size + security` (never below 0)
+
+| Part | Points |
+|---|---|
+| Priority | The priority score, 0 to 100 (37 if none yet) |
+| Type | bugfix 20, performance 14, infra 10, missing feature 8, small extra 2, plugin candidate 0; 5 if not settled |
+| Size | S +12, M +6, L 0, XL −10 |
+| Security flag | +15 |
+
+- PR size comes from changed lines: up to 50 S, up to 300 M, up to 1,000 L, more XL. An issue counts as M until Fix triage estimates its size.
+- Decide, Review, Fix, Fix-up, Verify and the merge queue all take the highest-ranked item first.
+- When Review and Fix both have work, the one with the higher-ranked item starts first. Daily limits still cap both.
+- The Work queue page lists every open item in rank order, with its score parts and next step.
 
 ## Decide
 
@@ -167,7 +183,7 @@ Hand-off: take goes to Verify, take-fix to Fix-up, close to a "Close this PR?" d
 
 Opens a PR for open bugfix issues in public Rust repos where the fix is clear. Needs the repo's **fix approval**.
 
-- **Candidates.** No pending scope decision (needs-decision issues need a `take`), no open PR that mentions the issue, no earlier attempt, not held as a duplicate. Highest priority first.
+- **Candidates.** No pending scope decision (needs-decision issues need a `take`), no open PR that mentions the issue, no earlier attempt, not held as a duplicate. Highest work rank first.
 - **Triage.** Sonnet decides if the fix is clear. If not, the issue is held with the reason.
 - **Patch.** Sonnet writes a diff to the listed files plus one regression test. Our code validates it: only listed files, at most 300 changed lines, no binary, symlink or mode changes.
 - **Sandbox.** The patched head must build and pass; the test alone on the base commit must fail. Untrusted code runs only there.
@@ -323,6 +339,7 @@ Dry run is the default for every writing command; `--apply` writes (and still re
 | Command | Stage |
 |---|---|
 | `craft-auto sync`, `embed`, `dupes`, `classify`, `prioritize` | Sync to Priority |
+| `craft-auto rank`, `rank show <repo> <n>` | Work rank |
 | `craft-auto decide [--repo R]` | Decide |
 | `craft-auto labels ensure\|plan\|apply --repo R` | Label |
 | `craft-auto checks --repo R`, `review --repo R` | Review |

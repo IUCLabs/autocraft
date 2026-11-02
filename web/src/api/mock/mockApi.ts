@@ -12,6 +12,7 @@ import { classifierReport, costReport, disagreementList } from "./insightFixture
 import { itemList, settledFor } from "./itemsFixtures";
 import { prWorkFor } from "./verifyFixtures";
 import { queueList } from "./queueFixtures";
+import { workList } from "./workFixtures";
 import { flowFixture } from "./flowFixtures";
 import { DECISIONS, MOCK_USERS, NOW, REPOS, SEARCH_POOL, THREADS, itemFor, permFor, progress, type MockRole } from "./fixtures";
 
@@ -182,5 +183,6 @@ export function createMockApi(): Api {
     },
     similar: (repo, number, limit) => wait(similarFor(repo, number, limit), 120),
     semanticSearch: (q) => wait(semanticHits(q), 90),
+    work: (f) => wait(workList(f), 60),
   };
 }
