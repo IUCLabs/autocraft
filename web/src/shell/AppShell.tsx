@@ -1,5 +1,5 @@
 import { lazy, Suspense, useMemo, useState } from "react";
-import { NavLink, Route, Routes, useLocation, useNavigate, useParams, Navigate } from "react-router-dom";
+import { NavLink, Route, Routes, matchPath, useLocation, useNavigate, useParams, Navigate } from "react-router-dom";
 import { Dialog, DropdownMenu } from "radix-ui";
 import { LogOutIcon, MonitorIcon, MoonIcon, MoreHorizontalIcon, PanelLeftIcon, SearchIcon, SunIcon, KeyboardIcon, XIcon, CheckIcon } from "lucide-react";
 import { modules } from "../registry";
@@ -41,6 +41,7 @@ export function AppShell() {
   const visible = useMemo(() => modules.filter((m) => can(user, m.permission)), [user]);
   const nav = visible.flatMap((m) => (m.nav ? [m.nav] : [])).sort((a, b) => a.order - b.order);
   const routes = visible.flatMap((m) => m.routes);
+  const hiddenPaths = useMemo(() => modules.filter((m) => !can(user, m.permission)).flatMap((m) => m.routes.map((r) => r.path)), [user]);
 
   useHotkeys({
     "/": () => (phone ? setSearchOpen(true) : document.getElementById("global-search")?.focus()),
@@ -57,7 +58,7 @@ export function AppShell() {
       {routes.map((r) => (
         <Route key={r.path} path={r.path} element={<RouteView route={r} />} />
       ))}
-      <Route path="*" element={<div className="p-8 text-ink/60">Nothing here.</div>} />
+      <Route path="*" element={<NoRoute hidden={hiddenPaths} />} />
     </Routes>
   );
 
@@ -67,6 +68,7 @@ export function AppShell() {
         <header className="flex h-12 shrink-0 items-center gap-1 border-b border-line bg-bg pl-4 pr-1.5">
           <Wordmark />
           <div className="flex-1" />
+          <RoleChip />
           <button aria-label="Search" onClick={() => setSearchOpen(true)} className="flex size-11 items-center justify-center text-ink/70">
             <SearchIcon className="text-[18px]" />
           </button>
@@ -409,12 +411,19 @@ function RunMeter({ open }: { open: boolean }) {
   );
 }
 
+/** A page this reader's role doesn't open says so; anything else is unknown. */
+function NoRoute({ hidden }: { hidden: string[] }) {
+  const { pathname } = useLocation();
+  const restricted = hidden.some((p) => matchPath({ path: `/${p}`, end: false }, pathname));
+  return <div className="p-8 text-ink/60">{restricted ? "Operators only." : "Nothing here."}</div>;
+}
+
 /** The reader's role decides what every button means, so it stays visible. */
 function RoleChip() {
   const user = useUser();
   const tone: Tone = user.role === "operator" ? "accent" : "neutral";
   return (
-    <span className="hidden lg:inline-flex" title="Your role on this dashboard">
+    <span className="inline-flex shrink-0" title="Your role on this dashboard">
       <Badge tone={tone}>{roleLabel(user)}</Badge>
     </span>
   );
