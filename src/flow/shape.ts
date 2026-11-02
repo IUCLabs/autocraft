@@ -74,7 +74,7 @@ export function buildFlow(c: Record<string, number>, meta: FlowMeta): Flow {
       { id: "scored", label: "Scored", waitsOn: "nothing", tone: "ok", hint: "Impact and reach give the work score", link: { page: "work", params: withRepo({}) } },
       { id: "unsure", label: "Waiting for a second opinion", waitsOn: "model", tone: "warn", hint: "Jev is unsure; Haiku hasn't answered yet" },
       { id: "todo", label: "Not scored yet", waitsOn: "model", tone: "neutral", hint: "No score at the item's current text" },
-    ], { facts: [{ label: "Top work score", value: v("max.topRank") ? fmt(v("max.topRank")) : "none yet" }, { label: "Items ranked", value: fmt(v("x.ranked")) }], promptStage: "Priority" }),
+    ], { facts: [{ label: "Top level", value: v("max.topRank") ? `P${4 - Math.floor(v("max.topRank") / 10000)}` : "none yet" }, { label: "Items ranked", value: fmt(v("x.ranked")) }], promptStage: "Priority" }),
     node("decide", "Decide", 5, "gate", openDec ? `${plural(openDec, "decision")} waiting` : "Nothing waiting", [
       { id: "not-asked", label: "Not asked yet", waitsOn: "model", tone: "neutral", hint: "Needs a decision; the decide step writes the question and summary" },
       { id: "open", label: "Waiting for an answer", waitsOn: "person", gate: true, tone: "accent", hint: `${plural(openDec, "open scope decision")}`, link: { page: "decisions", params: withRepo({ kind: "scope" }) } },

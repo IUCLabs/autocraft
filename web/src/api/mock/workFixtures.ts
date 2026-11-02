@@ -1,13 +1,13 @@
-// Fake work queue: open items in score order. The points mirror the server's first-guess weights.
+// Fake work queue: open items in rank order (level, type, size, reach).
 import type { TypeLabel, WorkBreakdown, WorkFilter, WorkList, WorkRow } from "../types";
 import { REPOS, rng, titleFor } from "./fixtures";
 
-const TYPE_POINTS: Record<TypeLabel, number> = { bugfix: 20, performance: 14, infra: 10, "missing feature": 8, "small extra": 2, "plugin candidate": 0 };
-const SIZE_POINTS = { S: 12, M: 6, L: 0, XL: -10 } as const;
-const LABELS = Object.keys(TYPE_POINTS) as TypeLabel[];
+const LABELS: TypeLabel[] = ["bugfix", "performance", "infra", "missing feature", "small extra", "plugin candidate"];
 const SIZES = ["S", "M", "L", "XL"] as const;
 const NEXT_PR = ["Review", "Verify", "Verify: running", "Merge queue", "Fix-up", "Needs a person"];
 const NEXT_ISSUE = ["Fix", "Fix: in progress", "Fix: pull request opened", "Decide", "Needs a person", "Triage by a person"];
+
+const LEVELS = ["P0", "P1", "P2", "P3", "P4"] as const;
 
 const ROWS: WorkRow[] = (() => {
   const r = rng(808);
@@ -16,19 +16,19 @@ const ROWS: WorkRow[] = (() => {
     const kind = k % 3 === 0 ? "issue" : "pr";
     const label = LABELS[Math.floor(r() * LABELS.length)]!;
     const size = SIZES[Math.floor(r() * 4)]!;
-    const priority = k % 7 === 0 ? null : Math.round(r() * 100);
+    const rated = k % 7 === 0 ? null : LEVELS[Math.floor(r() * 5)]!;
     const security = k % 11 === 0;
+    const reach = Math.floor(r() * 100);
+    const base = LEVELS.indexOf(rated ?? "P2");
+    const level = LEVELS[security ? Math.max(0, base - 1) : base]!;
     const breakdown: WorkBreakdown = {
-      priority: { value: priority, points: priority ?? 37 },
-      type: { value: label, points: TYPE_POINTS[label] },
-      size: { value: size, points: SIZE_POINTS[size], source: kind === "issue" ? (k % 2 ? "triage" : "default") : "lines" },
-      security: { value: security, points: security ? 15 : 0 },
+      level, rated, security, type: label, size, sizeSource: kind === "issue" ? (k % 2 ? "triage" : "default") : "lines", reach,
     };
-    const score = Math.max(0, breakdown.priority.points + breakdown.type.points + breakdown.size.points + breakdown.security.points);
+    const score = (4 - base + (security && base > 0 ? 1 : 0)) * 10000 + (LABELS.length - LABELS.indexOf(label)) * 1000 + (3 - SIZES.indexOf(size)) * 100 + reach;
     const next = kind === "pr" ? NEXT_PR : NEXT_ISSUE;
     const repo = REPOS[k % REPOS.length]!;
     const number = 100 + Math.floor(r() * 3000);
-    out.push({ repo, number, kind, title: titleFor(repo, number), score, breakdown, label, next: next[k % next.length]! });
+    out.push({ repo, number, kind, title: titleFor(repo, number), score, level, size, breakdown, label, next: next[k % next.length]! });
   }
   return out.sort((a, b) => b.score - a.score);
 })();

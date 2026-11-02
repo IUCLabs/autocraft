@@ -8,7 +8,7 @@ const ALL: Record<string, number> = {
   "classify.settled": 17_906, "classify.waiting": 25, "classify.disagree": 3_306, "classify.unclassified": 85, "classify.total": 21_322,
   "classify.recent.classified": 164, "edge.decide.labels": 17_906, "edge.classify.priority": 21_322,
   "dupes.checking": 46, "dupes.waiting": 12, "dupes.held": 5, "dupes.closed": 83, "dupes.total": 21_322, "x.pairsUnchecked": 31, "edge.synced.dupes": 21_322, "edge.dupes.classify": 21_305,
-  "priority.scored": 20_870, "priority.unsure": 14, "priority.todo": 380, "priority.total": 21_264, "x.ranked": 21_322, "max.topRank": 94, "edge.priority.decide": 21_322,
+  "priority.scored": 20_870, "priority.unsure": 14, "priority.todo": 380, "priority.total": 21_264, "x.ranked": 21_322, "max.topRank": 46_288, "edge.priority.decide": 21_322,
   "decide.not-asked": 4_239, "decide.open": 38, "decide.take": 61, "decide.small-extra": 23, "decide.plugin": 31, "decide.close": 19, "decide.need-info": 9,
   "decide.total": 4_420, "decide.recent.asked": 50, "decide.recent.answered": 27, "x.openDecisions": 38, "edge.classify.decide": 4_420,
   "labels.labelled": 2_140, "labels.pending": 1_310, "labels.unapproved": 14_456, "labels.total": 17_906, "labels.recent.labelled": 400, "x.repos": REPOS.length, "x.approved": 3,

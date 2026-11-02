@@ -633,7 +633,7 @@ CREATE TABLE IF NOT EXISTS verifications (
 CREATE INDEX IF NOT EXISTS verifications_state ON verifications(state);
 -- Priority of an open item (Prioritize step). text_hash is the item's embed_hash when the models ran;
 -- the models run again only when it changes, while score is recomputed from the mirror on each pass.
--- impact: critical | high | normal | low. model: jev (sure) | haiku | jev-unsure (no Haiku answer).
+-- impact: the priority level, P0 (critical) to P4 (backlog). score: reach 0-99, the tie-breaker inside a level. model: jev (sure) | haiku | jev-unsure (no Haiku answer).
 CREATE TABLE IF NOT EXISTS item_priority (
   repo TEXT NOT NULL, number INTEGER NOT NULL,
   text_hash TEXT NOT NULL,
@@ -702,8 +702,8 @@ CREATE TABLE IF NOT EXISTS fix_attempts (
 CREATE INDEX IF NOT EXISTS fix_attempts_state ON fix_attempts(state);
 INSERT OR IGNORE INTO stage_limits (step, per_day) VALUES ('fixissue', 10);
 
--- Work score of an open item (src/rank): priority, size, type and the security flag in one number, recomputed
--- by the rank step from stored results, without a model. breakdown is JSON with the points of each part.
+-- Work rank of an open item (src/rank): level, type, size and reach in one sortable integer, recomputed
+-- by the rank step from stored results, without a model. breakdown is JSON with each part.
 CREATE TABLE IF NOT EXISTS item_rank (
   repo TEXT NOT NULL, number INTEGER NOT NULL,
   score INTEGER NOT NULL,

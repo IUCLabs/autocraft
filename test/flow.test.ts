@@ -152,7 +152,7 @@ test("the duplicate, priority, fix, fix-up and act nodes count one item in each 
   // Priority: 20 scored, 21 waiting for a second opinion, 22 not scored. Rank gives the top work score.
   const prio = db.prepare(`INSERT INTO main.item_priority (repo, number, text_hash, impact, score, model, at) VALUES ('${R}', ?, ?, 'high', 50, ?, '${T0}')`);
   prio.run(20, "e20", "jev"); prio.run(21, "e21", "jev-unsure");
-  db.prepare(`INSERT INTO main.item_rank (repo, number, score, breakdown, computed_at) VALUES ('${R}', 20, 77, '{}', '${T0}')`).run();
+  db.prepare(`INSERT INTO main.item_rank (repo, number, score, breakdown, computed_at) VALUES ('${R}', 20, 30277, '{}', '${T0}')`).run();
 
   // Fix: issue 1 is a candidate (settled bugfix, no attempt) once the repo is public; 31 to 34 have attempts.
   db.prepare(`INSERT INTO main.repos (name, visibility) VALUES ('${R}', 'public')`).run();
@@ -188,7 +188,7 @@ test("the duplicate, priority, fix, fix-up and act nodes count one item in each 
   refreshSummary(db);
   assert.deepEqual(counts(node("dupes")), { checking: 2, waiting: 1, held: 1, closed: 1 });
   assert.deepEqual(counts(node("priority")), { scored: 1, unsure: 1, todo: 2 });
-  assert.deepEqual(node("priority").facts[0], { label: "Top work score", value: "77" });
+  assert.deepEqual(node("priority").facts[0], { label: "Top level", value: "P1" });
   assert.deepEqual(counts(node("fixup")), { fix: 1, pushed: 1, hold: 1, unapproved: 0 });
 
   // The Items browser lists a branch's items.

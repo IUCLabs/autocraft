@@ -8,7 +8,7 @@ import { after, describe, test } from "node:test";
 import { connect } from "../src/db.ts";
 import { parseTriage } from "../src/fixissue/parse.ts";
 import { rankOfItem, runRank } from "../src/rank/index.ts";
-import { RANK_WEIGHTS, rankOf, sizeOfLines, type RankInput } from "../src/rank/score.ts";
+import { rankOf, sizeOfLines, type RankInput } from "../src/rank/score.ts";
 import { bestScore, orderLanes } from "../src/runner/autopilot.ts";
 
 const SCRATCH = join(homedir(), ".cache/craft-automation-scratch");
@@ -16,34 +16,43 @@ mkdirSync(SCRATCH, { recursive: true });
 const dir = mkdtempSync(join(SCRATCH, "rank-test-"));
 after(() => rmSync(dir, { recursive: true, force: true }));
 
-const input = (o: Partial<RankInput>): RankInput => ({ priority: 40, label: "bugfix", security: false, size: "M", sizeSource: "lines", ...o });
+const input = (o: Partial<RankInput>): RankInput => ({ level: "P2", reach: 40, label: "bugfix", security: false, size: "M", sizeSource: "lines", ...o });
+const key = (o: Partial<RankInput>) => rankOf(input(o)).score;
 
 describe("score", () => {
-  test("a small bugfix outranks a large feature at equal priority", () => {
-    const bug = rankOf(input({ label: "bugfix", size: "S" })).score;
-    const feature = rankOf(input({ label: "missing feature", size: "XL" })).score;
-    assert.ok(bug > feature);
-    assert.ok(rankOf(input({ size: "S" })).score > rankOf(input({ size: "L" })).score, "smaller ranks higher");
+  test("a higher level wins over type, size and reach", () => {
+    assert.ok(key({ level: "P1", label: "small extra", size: "XL", reach: 0 }) > key({ level: "P2", label: "bugfix", size: "S", reach: 99 }));
+    assert.ok(key({ level: "P0" }) > key({ level: "P1" }));
+    assert.ok(key({ level: "P3" }) > key({ level: "P4", label: "bugfix", size: "S", reach: 99 }));
   });
 
-  test("a clearly higher priority still wins over type and size", () => {
-    assert.ok(rankOf(input({ priority: 85, label: "small extra", size: "XL" })).score > rankOf(input({ priority: 30, label: "bugfix", size: "S" })).score);
+  test("at equal level a bugfix comes before a feature, then smaller before larger, then higher reach", () => {
+    assert.ok(key({ label: "bugfix", size: "XL", reach: 0 }) > key({ label: "missing feature", size: "S", reach: 99 }));
+    assert.ok(key({ label: "bugfix", size: "S", reach: 0 }) > key({ label: "bugfix", size: "M", reach: 99 }));
+    assert.ok(key({ size: "L", reach: 50 }) > key({ size: "L", reach: 10 }));
+    assert.ok(key({ label: "plugin candidate" }) > key({ label: null }), "an unsettled type comes last");
   });
 
-  test("the security flag adds its bonus and shows in the breakdown", () => {
-    const plain = rankOf(input({}));
-    const sec = rankOf(input({ security: true }));
-    assert.equal(sec.score - plain.score, RANK_WEIGHTS.security);
-    assert.equal(sec.breakdown.security.points, RANK_WEIGHTS.security);
+  test("the security flag raises the level by one, not above P0", () => {
+    const sec = rankOf(input({ level: "P2", security: true }));
+    assert.equal(sec.breakdown.level, "P1");
+    assert.equal(sec.breakdown.rated, "P2");
+    assert.equal(sec.score, key({ level: "P1" }));
+    assert.equal(rankOf(input({ level: "P0", security: true })).breakdown.level, "P0");
   });
 
-  test("missing priority, size and label use the defaults", () => {
-    const r = rankOf({ priority: null, label: null, security: false, size: null, sizeSource: "default" });
-    assert.equal(r.breakdown.priority.points, RANK_WEIGHTS.defaultPriority);
-    assert.equal(r.breakdown.size.value, RANK_WEIGHTS.defaultSize);
-    assert.equal(r.breakdown.size.source, "default");
-    assert.equal(r.breakdown.type.points, RANK_WEIGHTS.unlabelledType);
-    assert.equal(r.score, RANK_WEIGHTS.defaultPriority + RANK_WEIGHTS.unlabelledType + RANK_WEIGHTS.size[RANK_WEIGHTS.defaultSize]);
+  test("the key encodes level, type, size and reach as digits", () => {
+    assert.equal(key({ level: "P0", label: "bugfix", size: "S", reach: 7 }), 4 * 10000 + 6 * 1000 + 3 * 100 + 7);
+    assert.equal(key({ level: "P4", label: null, size: "XL", reach: 0 }), 0);
+  });
+
+  test("missing level, size, reach and label use the defaults", () => {
+    const r = rankOf({ level: null, reach: null, label: null, security: false, size: null, sizeSource: "default" });
+    assert.equal(r.breakdown.level, "P2");
+    assert.equal(r.breakdown.rated, null);
+    assert.equal(r.breakdown.size, "M");
+    assert.equal(r.breakdown.sizeSource, "default");
+    assert.equal(r.score, 2 * 10000 + 0 * 1000 + 2 * 100 + 0);
   });
 
   test("PR size bounds", () => {
@@ -68,20 +77,23 @@ describe("runRank", () => {
     cls.run(3, "bugfix", "[]");
     cls.run(4, "bugfix", "[]");
     db.exec("INSERT INTO settings (key, value) VALUES ('classify_run', 'r1')");
-    db.exec("INSERT INTO item_priority (repo, number, text_hash, impact, score, model, at) VALUES ('app', 1, 'h', 'normal', 40, 'jev', 'x')");
+    db.exec("INSERT INTO item_priority (repo, number, text_hash, impact, score, model, at) VALUES ('app', 1, 'h', 'P1', 40, 'jev', 'x')");
     db.exec("INSERT INTO fix_attempts (repo, number, main_sha, text_hash, state, size, created_at, updated_at) VALUES ('app', 3, 's', 'h', 'retry', 'S', 'x', 'x')");
 
     const r = runRank(db);
     assert.equal(r.items, 4);
     const one = rankOfItem(db, "app", 1)!;
-    assert.equal(one.breakdown.size.value, "S");
-    assert.equal(one.breakdown.size.source, "lines");
+    assert.equal(one.breakdown.size, "S");
+    assert.equal(one.breakdown.sizeSource, "lines");
+    assert.equal(one.breakdown.level, "P1");
+    assert.equal(one.breakdown.reach, 40);
     const big = rankOfItem(db, "app", 2)!;
-    assert.equal(big.breakdown.size.value, "XL");
-    assert.equal(big.breakdown.security.value, true);
-    assert.equal(big.breakdown.priority.value, null, "unrated: default priority");
-    assert.equal(rankOfItem(db, "app", 3)!.breakdown.size.source, "triage");
-    assert.equal(rankOfItem(db, "app", 4)!.breakdown.size.source, "default");
+    assert.equal(big.breakdown.size, "XL");
+    assert.equal(big.breakdown.security, true);
+    assert.equal(big.breakdown.rated, null);
+    assert.equal(big.breakdown.level, "P1", "unrated P2 raised by the security flag");
+    assert.equal(rankOfItem(db, "app", 3)!.breakdown.sizeSource, "triage");
+    assert.equal(rankOfItem(db, "app", 4)!.breakdown.sizeSource, "default");
     assert.ok(rankOfItem(db, "app", 3)!.score > rankOfItem(db, "app", 4)!.score, "a small estimated fix ranks above an unestimated one");
     assert.equal(rankOfItem(db, "app", 5), null, "merged items have no rank");
 

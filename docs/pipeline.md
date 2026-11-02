@@ -14,7 +14,7 @@ flowchart TD
   dupdec{{"Duplicate?<br/>operator answers"}}
   dupheld(["Held out"])
   classify["Classify<br/>Jev, Haiku backup"]
-  priority["Priority<br/>Jev impact + reach"]
+  priority["Priority<br/>Jev level P0 to P4"]
   decide{{"Decide<br/>operator answers"}}
   label["Label<br/>type labels to GitHub"]
   kind{"PR or issue?"}
@@ -70,7 +70,7 @@ flowchart TD
   classDef route fill:#ffffff,stroke:#6b6b6b,color:#1c1c1c
 ```
 
-Sync, Embed, Duplicates, Classify, Priority and Decide cover the whole org. Label, Review, Fix, Fix-up, Verify, Merge and Act go one or a few repos at a time. Priority scores order the candidates of Decide, Review, Verify and Fix-up, highest first.
+Sync, Embed, Duplicates, Classify, Priority and Decide cover the whole org. Label, Review, Fix, Fix-up, Verify, Merge and Act go one or a few repos at a time. The work rank orders the candidates of Decide, Review, Verify and Fix-up, highest first.
 
 ## Sync
 
@@ -103,37 +103,36 @@ Every open item gets one type label (bugfix, performance, missing feature, small
 
 ## Priority
 
-Each open item gets an impact class and a 0 to 100 score.
+Each open item gets a level from P0 to P4.
 
-| Class | Band | Meaning |
-|---|---|---|
-| critical | 75 to 100 | Crash, data loss, security hole, broken build or install |
-| high | 50 to 75 | A core feature is broken, or a regression |
-| normal | 25 to 50 | Anything else |
-| low | 0 to 25 | Cosmetic, wording, docs, nice-to-have |
+| Level | Meaning |
+|---|---|
+| P0 critical | Crash, data loss, security hole, broken build or install, unusable app |
+| P1 high | A core feature is broken, or a regression |
+| P2 normal | An ordinary bug, feature or change |
+| P3 low | Cosmetic, wording, docs, nice-to-have |
+| P4 backlog | Kept open but not worked on now: vague or wishlist requests, ideas without a clear ask, very large asks with little reach. Plugin candidates are P4. |
 
-- Jev picks the class; under 90 % sure, Haiku decides.
-- Reach moves the score inside the band: commenters, comments, linked PRs, confirmed duplicates, the security flag and age. No model.
-- Models run again only when the item's text changes; scores are recomputed from the mirror on every pass.
-- Items without a score come after all scored ones. Daily limit 3000 items sent to Jev; raise it for the first pass over a new org.
+- Jev picks the level; under 90 % sure, Haiku decides. The security flag raises the level by one, up to P0.
+- Reach (0 to 99) breaks ties inside a level: commenters, comments, linked PRs, confirmed duplicates, the security flag and age. No model. It is not shown.
+- Models run again only when the item's text changes; reach is recomputed from the mirror on every pass.
+- Unrated items count as P2. Daily limit 3000 items sent to Jev; raise it for the first pass over a new org.
+- Fix skips P4 issues: no code is written for the backlog. Everywhere else P4 items come last. Review still reviews P4 PRs.
 
 ## Work rank
 
-One score per open item decides what the pipeline works on next, for issues and PRs alike. No model; recomputed every 30 minutes from stored results.
+One key per open item decides what the pipeline works on next, for issues and PRs alike. No model; recomputed every 30 minutes from stored results. Items are ordered by, in turn:
 
-`score = priority + type + size + security` (never below 0)
+1. Level, P0 first.
+2. Type: bugfix, performance, infra, missing feature, small extra, plugin candidate; not settled last.
+3. Size, smaller first: S, M, L, XL.
+4. Reach, higher first.
 
-| Part | Points |
-|---|---|
-| Priority | The priority score, 0 to 100 (37 if none yet) |
-| Type | bugfix 20, performance 14, infra 10, missing feature 8, small extra 2, plugin candidate 0; 5 if not settled |
-| Size | S +12, M +6, L 0, XL −10 |
-| Security flag | +15 |
-
+- The key is one integer, `(4 - level) * 10000 + type * 1000 + size * 100 + reach`, so every candidate list sorts by it.
 - PR size comes from changed lines: up to 50 S, up to 300 M, up to 1,000 L, more XL. An issue counts as M until Fix triage estimates its size.
 - Decide, Review, Fix, Fix-up, Verify and the merge queue all take the highest-ranked item first.
 - When Review and Fix both have work, the one with the higher-ranked item starts first. Daily limits still cap both.
-- The Work queue page lists every open item in rank order, with its score parts and next step.
+- The Work queue page lists every open item in rank order with its level, type, size and next step.
 
 ## Decide
 
