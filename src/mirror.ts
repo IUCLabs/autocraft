@@ -444,7 +444,7 @@ export async function runSync(db: DatabaseSync, client: Querier, opts: SyncOpts,
   const started = iso(now);
   const orgHigh = getSetting(db, "org_high_water");
   const tracked = trackedNames(db);
-  const synced = new Set((db.prepare("SELECT name FROM repos WHERE high_water IS NOT NULL").all() as { name: string }[]).map((r) => r.name));
+  const synced = new Set((db.prepare("SELECT name FROM repos WHERE synced_at IS NOT NULL").all() as { name: string }[]).map((r) => r.name));
   const wantsSearch = !opts.only.length && !opts.all && !opts.full && !opts.perRepo && orgHigh !== null
     && tracked.every((n) => synced.has(n));
   let mode = "per-repo";

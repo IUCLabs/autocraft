@@ -59,7 +59,7 @@ function scratch() {
   const db = connect(join(dir, "m.db"));
   db.exec("DELETE FROM tracked_repos");
   db.exec("INSERT INTO tracked_repos VALUES ('a','t','x'),('b','t','x')");
-  db.exec("INSERT INTO repos (name, high_water) VALUES ('a','2026-11-02T09:00:00Z'),('b','2026-11-02T09:00:00Z')");
+  db.exec("INSERT INTO repos (name, synced_at, high_water) VALUES ('a','2026-11-02T09:00:00Z','2026-11-02T09:00:00Z'),('b','2026-11-02T09:00:00Z','2026-11-02T09:00:00Z')");
   db.exec("INSERT INTO settings VALUES ('org_high_water','2026-11-02T09:30:00Z'),('repos_refreshed_at','2999-01-01T00:00:00Z')");
   return { dir, db };
 }
@@ -104,15 +104,22 @@ test("more than 1,000 matches falls back to per-repo passes and writes nothing f
 
 test("an unset org high water or a never-synced tracked repo skips the search", async () => {
   const { db } = scratch();
-  db.exec("UPDATE repos SET high_water=NULL WHERE name='b'");
+  db.exec("UPDATE repos SET synced_at=NULL, high_water=NULL WHERE name='b'");
   const c = fakeClient([]);
   const empty = { ...c, async query(q: string, v: Record<string, unknown>) { c.calls.push({ query: q, variables: v }); throw new Error("stop"); } };
   await assert.rejects(runSync(db, empty, opts), /stop/);
   assert.ok(!c.calls[0].query.includes("search("));
-  db.exec("UPDATE repos SET high_water='x' WHERE name='b'; DELETE FROM settings WHERE key='org_high_water'");
+  db.exec("UPDATE repos SET synced_at='x' WHERE name='b'; DELETE FROM settings WHERE key='org_high_water'");
   c.calls.length = 0;
   await assert.rejects(runSync(db, empty, opts), /stop/);
   assert.ok(!c.calls[0].query.includes("search("));
+});
+
+test("a synced tracked repo with no items still allows the search", async () => {
+  const { db } = scratch();
+  db.exec("UPDATE repos SET high_water=NULL WHERE name='b'");
+  const r = await runSync(db, fakeClient([]), opts, new Date("2026-11-02T10:05:00Z"));
+  assert.equal(r.mode, "search");
 });
 
 test("a failed run leaves the high water unchanged", async () => {
