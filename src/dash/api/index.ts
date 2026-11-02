@@ -4,17 +4,19 @@
 // permissions themselves. Item and comment text is returned as data only.
 import type { DatabaseSync } from "node:sqlite";
 import type {
-  CiState, Done, Funnel, Item, ItemComment, Mergeable, Progress, RepoProgress, SearchHit, Tier, User,
+  CiState, Done, Funnel, Item, ItemComment, Mergeable, Progress, RepoProgress, Tier, User,
 } from "../../../web/src/api/types.ts";
 import { trackedNames } from "../../repos.ts";
 import { contributors } from "../../whitelist.ts";
-import { doneByRepo, funnelByRepo, runStart, trend, type DoneRow, type FunnelRow } from "./stats.ts";
+import { doneByRepo, funnelByRepo, latestCte, trackingStart, trend, type DoneRow, type FunnelRow } from "./stats.ts";
 import { HttpError, RateLimiter } from "../server/util.ts";
 import type { Req, Res, Route } from "../types.ts";
 import * as adm from "./admin.ts";
 import * as dec from "./decisions.ts";
 import * as insight from "./insight.ts";
 import { prompts } from "./prompts.ts";
+import * as items from "./items.ts";
+import { settledOf } from "../../classify/settled.ts";
 import { classificationsOf, itemState, relatedOf } from "./decisions.ts";
 
 export type ApiOptions = {
@@ -99,41 +101,14 @@ function item(db: DatabaseSync, req: Req): Item {
     related: relatedOf(db, repo, n), classifications: classificationsOf(db, repo, n),
     stages: stages.map((s) => ({ ...s, by: s.by ?? "" })),
     comments: comments.map((x) => ({ ...x, author: x.author ?? "", body: x.body ?? "" })),
-    decisionIds,
+    decisionIds, settled: settledOf(db, repo, n) as Item["settled"],
   };
-}
-
-const likeEscape = (s: string): string => s.replace(/[\\%_]/g, (c) => `\\${c}`);
-
-function search(db: DatabaseSync, req: Req): SearchHit[] {
-  const q = (req.query.get("q") ?? "").trim().slice(0, 200);
-  if (!q) return [];
-  const where: string[] = ["repo IN (SELECT name FROM main.tracked_repos)"];
-  const params: Record<string, string | number> = {};
-  const ref = /^([A-Za-z0-9._-]+)?#(\d{1,9})$/.exec(q) ?? /^()(\d{1,9})$/.exec(q);
-  if (ref) {
-    if (ref[1]) {
-      where.push("repo LIKE :repo ESCAPE '\\'");
-      params.repo = `${likeEscape(ref[1])}%`;
-    }
-    where.push("CAST(number AS TEXT) LIKE :num");
-    params.num = `${ref[2]}%`;
-  } else {
-    q.split(/\s+/).slice(0, 8).forEach((w, i) => {
-      where.push(`title LIKE :w${i} ESCAPE '\\'`);
-      params[`w${i}`] = `%${likeEscape(w)}%`;
-    });
-  }
-  const order = ref ? "length(CAST(number AS TEXT)), repo, number" : "state <> 'OPEN', updated_at DESC";
-  const rows = db.prepare(`SELECT repo, number, kind, title, author, state FROM items WHERE ${where.join(" AND ")} ORDER BY ${order} LIMIT 20`).all(params) as
-    { repo: string; number: number; kind: string; title: string | null; author: string | null; state: string }[];
-  return rows.map((r) => ({ repo: r.repo, number: r.number, kind: r.kind === "pr" ? "pr" : "issue", title: r.title ?? "", author: r.author ?? "", state: itemState(r.state) }));
 }
 
 // ---- progress ----------------------------------------------------------------
 
 const toFunnel = (r: FunnelRow | undefined): Funnel => ({
-  open: r?.open ?? 0, classified: r?.classified ?? 0, reviewed: r?.reviewed ?? 0, take: r?.take ?? 0,
+  open: r?.open ?? 0, classified: r?.classified ?? 0, secondOpinion: r?.second_opinion ?? 0, disagreement: r?.disagreement ?? 0, reviewed: r?.reviewed ?? 0, take: r?.take ?? 0,
   hold: r?.hold ?? 0, close: r?.close ?? 0, waiting: r?.needs_decision ?? 0, batched: r?.batched ?? 0,
 });
 const toDone = (r: DoneRow | undefined): Done => ({
@@ -145,11 +120,56 @@ const sum = <T extends object>(xs: T[], zero: T): T => {
   return out as T;
 };
 
-function progress(db: DatabaseSync): Progress {
-  const start = runStart(db);
+type Heavy = Omit<Progress, "decisionsOpen" | "decisionsAnsweredToday">;
+const progressCache = new WeakMap<DatabaseSync, { key: string; at: number; value: Heavy }>();
+const PROGRESS_MAX_AGE = 60_000;
+
+// The item-based part of Progress: scans most of the mirror, so it is kept until
+// the mirror, the stages or the tracked repos change, or for a minute at most
+// (classifier verdicts and the hourly counts show within that minute).
+function progressItems(db: DatabaseSync): Heavy {
+  const sig = db.prepare(`SELECT (SELECT MAX(synced_at) FROM main.repos) AS synced,
+      (SELECT value FROM main.settings WHERE key = 'org_high_water') AS hw,
+      (SELECT COUNT(*) || ':' || COALESCE(MAX(rowid), 0) FROM main.stages) AS st,
+      (SELECT group_concat(name) FROM main.tracked_repos) AS tr`).get() as Record<string, string | null>;
+  const key = JSON.stringify(sig);
+  const hit = progressCache.get(db);
+  if (hit && hit.key === key && Date.now() - hit.at < PROGRESS_MAX_AGE) return hit.value;
+
+  const start = trackingStart(db);
   const now = Date.now();
   const funnels = new Map(funnelByRepo(db).map((r) => [r.repo, r]));
   const done = new Map(doneByRepo(db, start).map((r) => [r.repo, r]));
+  const perHour = new Array<number>(24).fill(0);
+  const perHourPipeline = new Array<number>(24).fill(0);
+  const since = now - 24 * 3600_000;
+  for (const r of db.prepare(`WITH ${latestCte()} SELECT i.closed_at, l.stage IN ('merged', 'closed', 'fixed-by-us') AS ours
+      FROM items i LEFT JOIN latest l ON l.repo = i.repo AND l.number = i.number
+      WHERE i.closed_at >= ? AND i.state <> 'OPEN'`).all(new Date(since).toISOString()) as { closed_at: string; ours: number | null }[]) {
+    const h = Math.floor((Date.parse(r.closed_at) - since) / 3600_000);
+    if (h >= 0 && h < 24) {
+      perHour[h]!++;
+      if (r.ours) perHourPipeline[h]!++;
+    }
+  }
+  const names = [...new Set([...trackedNames(db), ...funnels.keys(), ...done.keys()])].sort();
+  const { series } = trend(db, start, new Map(names.map((n) => [n, funnels.get(n)?.open ?? 0])));
+  const repos: RepoProgress[] = names.map((repo) => ({
+    repo, funnel: toFunnel(funnels.get(repo)), done: toDone(done.get(repo)),
+    decisionsOpen: 0, openTrend: series.get(repo)!,
+  }));
+  const value: Heavy = {
+    trackingSince: start, now: new Date(now).toISOString(),
+    funnel: sum(repos.map((r) => r.funnel), toFunnel(undefined)),
+    done: sum(repos.map((r) => r.done), toDone(undefined)),
+    perHour, perHourPipeline, repos,
+  };
+  progressCache.set(db, { key, at: now, value });
+  return value;
+}
+
+function progress(db: DatabaseSync): Progress {
+  const heavy = progressItems(db);
   const openDec = new Map<string, number>();
   let decisionsOpen = 0;
   for (const r of db.prepare("SELECT repo, number, items FROM decisions WHERE answer IS NULL").all() as { repo: string | null; number: number | null; items: string | null }[]) {
@@ -162,25 +182,12 @@ function progress(db: DatabaseSync): Progress {
     }
     for (const x of repos) openDec.set(x, (openDec.get(x) ?? 0) + 1);
   }
-  const today = new Date(now).toISOString().slice(0, 10);
+  const today = new Date().toISOString().slice(0, 10);
   const answeredToday = (db.prepare("SELECT COUNT(*) AS n FROM decisions WHERE answered_at >= ?").get(`${today}T00:00:00`) as { n: number }).n;
-  const perHour = new Array<number>(24).fill(0);
-  const since = now - 24 * 3600_000;
-  for (const r of db.prepare("SELECT closed_at FROM items WHERE closed_at >= ? AND state <> 'OPEN'").all(new Date(since).toISOString()) as { closed_at: string }[]) {
-    const h = Math.floor((Date.parse(r.closed_at) - since) / 3600_000);
-    if (h >= 0 && h < 24) perHour[h]!++;
-  }
-  const { series } = trend(db, start, new Map([...funnels].map(([k, v]) => [k, v.open])));
-  const names = [...new Set([...trackedNames(db), ...funnels.keys(), ...done.keys()])].sort();
-  const repos: RepoProgress[] = names.map((repo) => ({
-    repo, funnel: toFunnel(funnels.get(repo)), done: toDone(done.get(repo)),
-    decisionsOpen: openDec.get(repo) ?? 0, openTrend: series.get(repo) ?? [],
-  }));
   return {
-    runStartedAt: start, now: new Date(now).toISOString(),
-    funnel: sum(repos.map((r) => r.funnel), toFunnel(undefined)),
-    done: sum(repos.map((r) => r.done), toDone(undefined)),
-    perHour, decisionsOpen, decisionsAnsweredToday: answeredToday, repos,
+    ...heavy,
+    repos: heavy.repos.map((r) => ({ ...r, decisionsOpen: openDec.get(r.repo) ?? 0 })),
+    decisionsOpen, decisionsAnsweredToday: answeredToday,
   };
 }
 
@@ -204,7 +211,8 @@ export function apiRoutes(opts: ApiOptions = {}): Route[] {
     post("/api/decisions/:id/comments", (db, req) => dec.comment(db, req, limiter)),
     post("/api/decisions/:id/claim", dec.claim),
     get("/api/items/:repo/:n", item),
-    get("/api/search", search),
+    get("/api/items", items.listItems),
+    get("/api/search", items.quickSearch),
     get("/api/progress", progress),
     get("/api/contributors", adm.listContributors),
     get("/api/contributors/rule-preview", adm.previewRule),

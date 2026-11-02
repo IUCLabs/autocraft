@@ -29,6 +29,7 @@ import { ago, num } from "../../lib/format";
 import { KindTag, tallyOf } from "../decisions/parts";
 import { Markdown, Collapsible } from "../../ui/Markdown";
 import { useIsPhone } from "../../shell/useMedia";
+import { SettledBadge } from "../items";
 
 function useItem(params: ViewProps["params"]) {
   const repo = params.repo!;
@@ -159,6 +160,14 @@ function Properties({ it }: { it: Item }) {
         <span className="text-xs text-ink/50">
           {it.authorMerged} merged · {it.authorClosedUnmerged} closed unmerged
         </span>
+      </Prop>
+      <Prop label="Type">
+        <SettledBadge s={it.settled} detail />
+        {it.settled.flags.map((f) => (
+          <Badge key={f} tone={f === "security" ? "bad" : "warn"}>
+            {f}
+          </Badge>
+        ))}
       </Prop>
       <Prop label="Size">
         {it.kind === "pr" ? (

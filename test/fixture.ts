@@ -41,7 +41,7 @@ export function buildFixture(path: string, scale: Scale = FULL): DatabaseSync {
   const author = () => `user${String(Math.floor(3000 * r() ** 3)).padStart(4, "0")}`;
 
   db.exec("BEGIN");
-  db.prepare("INSERT OR REPLACE INTO settings VALUES ('run_started_at', ?)").run(iso(start));
+  db.prepare("INSERT OR REPLACE INTO settings VALUES ('tracking_started_at', ?)").run(iso(start));
   const repoIns = db.prepare("INSERT INTO repos (name, visibility, default_branch, open_prs, open_issues, synced_at) VALUES (?, 'public', 'main', 0, 0, ?)");
   for (const name of REPOS) repoIns.run(name, iso(now));
 
