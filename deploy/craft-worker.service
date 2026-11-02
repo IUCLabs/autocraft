@@ -27,8 +27,10 @@ RestartSec=10
 KillMode=mixed
 TimeoutStopSec=60
 # The worker needs no extra privileges of its own.
-NoNewPrivileges=true
-PrivateTmp=true
+# No NoNewPrivileges= or PrivateTmp=: rootless Podman needs the setuid
+# newuidmap, and PrivateTmp= in a user service adds a user namespace that
+# maps only this uid, so Podman can't map its subuid range. Isolation comes
+# from the containers.
 
 [Install]
 WantedBy=default.target
