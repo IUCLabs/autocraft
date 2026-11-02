@@ -11,5 +11,6 @@ import { accessModule, contributorsModule, reposModule } from "../modules/admin"
 import { aboutModule } from "../modules/about";
 import { pipelineModule } from "../modules/pipeline";
 import { promptsModule } from "../modules/prompts";
+import { similarModule } from "../modules/similar";
 
-export const modules: FeatureModule[] = [decisionsModule, itemModule, progressModule, itemsModule, contributorsModule, classifiersModule, costModule, reposModule, accessModule, aboutModule, pipelineModule, promptsModule];
+export const modules: FeatureModule[] = [decisionsModule, itemModule, progressModule, itemsModule, contributorsModule, classifiersModule, costModule, reposModule, accessModule, aboutModule, pipelineModule, promptsModule, similarModule];

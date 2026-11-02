@@ -159,5 +159,7 @@ export function createHttpApi(): Api {
       listeners.add(fn);
       return () => void listeners.delete(fn);
     },
+    similar: (repo, number, limit) => get(`/api/similar/${encodeURIComponent(repo)}/${encodeURIComponent(String(number))}${qs({ limit })}`),
+    semanticSearch: (q) => get(`/api/search?${new URLSearchParams({ q, mode: "semantic" })}`),
   };
 }

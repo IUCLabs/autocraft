@@ -5,6 +5,7 @@ import { setClock } from "../../lib/format";
 import { createAdminMock } from "./adminMock";
 import { createPipelineMock } from "./pipelineMock";
 import { promptsReport } from "../../../../src/prompts/index.ts";
+import { semanticHits, similarFor } from "./similarFixtures";
 import { classifierReport, costReport, disagreementList } from "./insightFixtures";
 import { itemList, settledFor } from "./itemsFixtures";
 import { DECISIONS, MOCK_USERS, NOW, REPOS, SEARCH_POOL, THREADS, itemFor, permFor, progress, type MockRole } from "./fixtures";
@@ -165,5 +166,7 @@ export function createMockApi(): Api {
       listeners.add(fn);
       return () => void listeners.delete(fn);
     },
+    similar: (repo, number, limit) => wait(similarFor(repo, number, limit), 120),
+    semanticSearch: (q) => wait(semanticHits(q), 90),
   };
 }

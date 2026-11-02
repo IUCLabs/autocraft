@@ -5,7 +5,6 @@
 //
 // Params are only enums, tracked repo names, bounded integers and run ids:
 // nothing a person types can reach a model's prompt or a shell.
-import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { DatabaseSync } from "node:sqlite";
@@ -56,14 +55,6 @@ export type StepDef = {
   run: (ctx: StepContext) => Promise<string>;
 };
 
-const moduleExists = (rel: string): boolean => existsSync(new URL(rel, import.meta.url));
-
-// Modules from parallel tracks, imported by path so this file type-checks before they land.
-async function optional<T>(rel: string): Promise<T> {
-  const path: string = rel;
-  return (await import(path)) as T;
-}
-
 /** Labelling writes to GitHub only for repos an operator approved on the Repos page. */
 async function checkApproved(db: DatabaseSync, p: Params): Promise<string | null> {
   const { approvalOf } = await import("../labels/approval.ts");
@@ -101,12 +92,14 @@ export const STEPS: StepDef[] = [
     stage: 1,
     requires: "operator",
     group: "local",
-    params: [{ name: "scope", label: "Items", kind: "enum", options: ["changed", "all"], default: "changed" }],
-    available: () => (moduleExists("../embed/index.ts") ? null : "Not available yet: the embeddings command is not in this build."),
+    params: [
+      { name: "all", label: "Every item", kind: "enum", options: ["no", "yes"], default: "no", help: "yes embeds all items again, not only new and changed ones" },
+      { name: "threads", label: "Threads", kind: "int", min: 1, max: 8, default: 4 },
+    ],
     run: async (ctx) => {
-      const m = await optional<{ commands: { embed: { run(args: string[]): Promise<void> } } }>("../embed/index.ts");
-      await m.commands.embed.run(ctx.params.scope === "all" ? ["--all"] : []);
-      return ctx.params.scope === "all" ? "embedded every item" : "embedded new and changed items";
+      const { commands } = await import("../embed/index.ts");
+      await commands.embed.run([...(ctx.params.all === "yes" ? ["--all"] : []), "--threads", String(ctx.params.threads)]);
+      return ctx.params.all === "yes" ? "embedded every item" : "embedded new and changed items";
     },
   },
   {

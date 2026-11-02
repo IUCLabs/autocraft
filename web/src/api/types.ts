@@ -746,3 +746,14 @@ export interface PromptsReport {
   commit: string | null;
   prompts: PromptInfo[];
 }
+
+/** A search hit ranked by embedding similarity (`/api/similar`, `/api/search?mode=semantic`). */
+export interface SimilarHit extends SearchHit {
+  /** Cosine similarity of the two embeddings; near-duplicates score about 0.9 and up. */
+  score: number;
+  /** How a closed issue was closed. */
+  stateReason: "completed" | "not-planned" | "duplicate" | null;
+  /** The item's settled type label (see src/classify/settled.ts); null while unsettled. */
+  label: string | null;
+  labelBy: string | null;
+}

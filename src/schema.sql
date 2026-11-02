@@ -372,3 +372,14 @@ END;
 CREATE INDEX IF NOT EXISTS items_updated ON items(updated_at);
 CREATE INDEX IF NOT EXISTS items_state_updated ON items(state, updated_at);
 CREATE INDEX IF NOT EXISTS items_author_nocase ON items(author COLLATE NOCASE);
+
+-- Sentence embeddings of tracked items, for similar items and semantic search.
+-- Written by `craft-auto embed` (src/embed/); the dashboard only reads them.
+CREATE TABLE IF NOT EXISTS item_embeddings (
+  repo TEXT NOT NULL, number INTEGER NOT NULL,
+  model TEXT NOT NULL,                -- embedder id: "<model>:<dtype>:<max tokens>"; another model's rows count as missing
+  hash TEXT NOT NULL,                 -- of the embedded text (src/embed/text.ts), so only changed items are embedded again
+  vec BLOB NOT NULL,                  -- float32, little-endian, unit length
+  at TEXT NOT NULL,
+  PRIMARY KEY (repo, number)
+);
