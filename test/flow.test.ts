@@ -22,6 +22,8 @@ const NOW = new Date().toISOString();
 
 function build() {
   const db = connect(join(mkdtempSync(join(SCRATCH, "flow-test-")), "f.db"));
+  // Only the test repo: counting stops after a time budget, so the seeded list would leave it uncounted on a loaded machine.
+  db.prepare(`DELETE FROM tracked_repos WHERE name != '${R}'`).run();
   const item = db.prepare(`INSERT INTO items (repo, number, kind, state, title, author, additions, deletions, head_oid, created_at, updated_at)
     VALUES ('${R}', ?, ?, ?, ?, 'regular', 10, 0, ?, '${T0}', '${T0}')`);
   const jev = db.prepare(`INSERT INTO classifications (repo, number, classifier, run_id, at, type_label, flags, probs) VALUES ('${R}', ?, 'jev', 'r1', '${T0}', ?, ?, ?)`);
