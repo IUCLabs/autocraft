@@ -121,17 +121,28 @@ The whole dashboard sits behind GitHub sign-in: every page, asset and endpoint e
 - Admins add and remove logins on the Access page or with `craft-auto access add <login> [--admin] [--note]` / `access remove <login>`. The first admin is added with the CLI.
 - Removing a login or changing its role ends its sessions at once.
 
+### Trust boundary
+
+The pipeline runs Claude agents under the operator's own Claude account on the operator's machine, and the operator is responsible for what they do. So nothing a dashboard user enters may steer the pipeline unless the operator has approved it, and a compromised dashboard account must not be able to cause harm.
+
+- **Operator**: one or more logins with role `operator` (today only the owner). Only an operator's answer, or an answer an operator has approved, is **actionable**. The pipeline reads only actionable answers (`craft-auto decisions list --actionable`), and only their option keys: never free text.
+- **Maintainers' input is a proposal.** When maintainer writes are enabled, a maintainer's answer to a decision is stored as a proposal (who, which option, optional note) and shown to operators with one-tap approve or reject. Comments and notes are displayed to people only; they never enter an agent prompt, approved or not.
+- **Maintainer writes are off by default** (`settings.maintainer_writes = off`). While off, every non-operator is read-only, whatever their GitHub permissions. The operator turns it on per deployment, once the pipeline runs on accounts and a machine meant for shared use.
+- **What a compromised account can do**: a viewer reads; a maintainer (when enabled) adds proposals and comments that wait for an operator. Neither can trigger a merge, close, post, label, push or any pipeline action, change the whitelist, settings or access list, or see private fields.
+- **What viewers can see**: public GitHub data and the pipeline's public-safe outputs. Private fields (override notes, answer notes, anything naming why a contributor gets extra scrutiny) are operator-only and never in the export.
+- **Pipeline hygiene**: agents treat all GitHub content and all dashboard text as untrusted data. Briefs quote it as data and never as instructions.
+
 ### What each person can do
 
 | Action | Who |
 |---|---|
 | Read every page | anyone on the access list |
-| Answer or undo a decision about repo R | signed in **and** has write, maintain or admin permission on `storytold/R` on GitHub |
-| Answer a batch | has that permission on every repo in the batch; otherwise the batch card shows which repos block them |
-| Whitelist overrides, whitelist rule, settings | admin |
-| Access list, sessions, audit log | admin |
+| Answer, undo, approve or reject proposals | operator; for a repo decision the operator also needs write, maintain or admin permission on `storytold/R` on GitHub |
+| Propose an answer, comment on a decision | maintainer with write permission on the repo (on GitHub), only while `maintainer_writes` is on |
+| Whitelist overrides, whitelist rule, settings (including `maintainer_writes`) | operator |
+| Access list, sessions, audit log | operator |
 
-The access-list role never grants decision rights by itself: an admin without write access to a repo can't answer its decisions.
+Roles on the access list: `operator`, `maintainer`, `viewer`. The role sets the ceiling; GitHub write permission on the repo is still required for anything about that repo. (The current code calls the operator role `admin`; rename it when the new UI lands.)
 
 GitHub permissions: after sign-in, read the user's permission on each repo with the user's own token (`GET /repos/storytold/<repo>` returns `permissions` for the authenticated user), cache it per user and repo for 10 minutes, and re-check at the moment of any write if the cached value is older than one minute. A user without any write permission still signs in as a viewer. The card hides answer buttons when the reader can't answer, and says why in one line.
 
