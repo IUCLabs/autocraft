@@ -58,7 +58,7 @@ Not taken: Archivo display headings, uppercase letter-spaced mono labels, regist
 ## 4. Layout model
 
 - **Shell**: sidebar, 44 px top bar (breadcrumb, global search, live counters, role badge, theme toggle, user menu), workspace.
-- **Sidebar** (220 px, collapses to 52 px with `[`): ArtCraft logo, Decisions and Progress, then Insight (Contributors, Classifiers, Cost) and Operator (Repos, Access). A backlog meter at the bottom shows the percentage done and the done split.
+- **Sidebar** (220 px, collapses to 52 px with `[`): ArtCraft logo, Pipeline flow (the home page, see dashboard-spec.md), Decisions and Progress, then Insight (Contributors, Classifiers, Cost) and Operator (Repos, Access). A backlog meter at the bottom shows the percentage done and the done split.
 - **Workspace**: each view is a row of panels in a `PanelGroup`. Panels are resizable; panels marked `collapsible` fold to a narrow strip with a vertical label. Layouts are saved per user and view (`craft-triage:<login>:layout:<view>` in localStorage; the storage adapter is two calls the server can implement later).
 - **Phones** (< 768 px): one column. A view either supplies its own phone component (Decisions) or its panels stack top to bottom, skipping those marked `hideOnPhone`. The sidebar becomes a bottom tab bar (entries with `phoneTab`, plus More); search opens full screen.
 
@@ -85,7 +85,7 @@ interface FeatureModule {
 
 ## 6. Screens
 
-### Decisions inbox (home)
+### Decisions inbox
 
 Desktop, three panels: queue (28 %), decision (45 %), discussion (27 %, collapsible).
 

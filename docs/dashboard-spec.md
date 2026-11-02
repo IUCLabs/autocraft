@@ -18,7 +18,7 @@ Every reader signs in with GitHub. See [Accounts and access](#accounts-and-acces
 
 ## Principles
 
-1. **Decisions come first.** The home page is the decision queue. Everything else is one tap away.
+1. **Decisions come first.** The home page is the pipeline flowchart: it shows where every item stands and which gates wait for people, and each waiting count is one tap from its decision queue.
 2. **One decision fits on one phone screen**, collapsed: the question in one sentence, the options as buttons, the recommendation marked, and three to five facts. Everything else (classifier reasons, diff stats, related items, comments) sits behind an expander or on the item page.
 3. **Similar decisions are answered together.** Decisions of the same kind (for example "beyond the reference app: label small extra or plugin candidate?") group into a batch the reader can answer with one choice and a list of exceptions.
 4. **Counts before lists.** Every list page opens with a one-line summary ("38 decisions: 21 scope, 9 duplicates, 8 other; oldest 3 days").
@@ -73,7 +73,22 @@ Done counts and trends start at `settings.tracking_started_at`, set when the dat
 
 ## Pages
 
-### Decisions (home)
+### Pipeline flow (home, `/`)
+
+The pipeline as a flowchart, so maintainers see at a glance what moves, what is stuck and what waits for them.
+
+- **Nodes**, one per stage of docs/pipeline.md: Synced, Classify, Decide, Labels, Review, Verify (planned: tests, builds or screenshots, chosen per PR; no counts), Merge queue. Each node shows a one-line summary, its branches with counts, movement in the last 24 hours and icons for what it waits on (a model step, CI, a person, the runner).
+- **Branches**: Classify: settled, waiting for a second opinion, models disagree, not classified yet. Decide: not asked yet, waiting for an answer, and the answers take, small extra, plugin, close, need info. Labels: labelled, to label, repo not approved. Review: not reviewed yet (no review at the current head), take, take with fixes, hold, close. Merge queue: may merge now, waiting for a Merge? answer, waiting for CI, blocked by failing CI or conflicts, needs fix-up, declined, merged in the last 24 h. Every count links to its items: the Items browser (`flow=<node>.<branch>` lists exactly the counted items, or the matching kind or status filter), the Decisions page filtered to the gate's kind, or the Merge queue filtered to its state.
+- **Edges** carry counts: open items into Classify, settled items into Labels, items needing a decision into Decide, PRs to review from Classify and wanted PRs from Decide, taken PRs into Verify, and Verify into the Merge queue (planned).
+- **Gates** (Decide, the repo approval for labels and the Merge? answers) are drawn in the accent colour; a line above the chart lists every branch that waits for a person, with its count and link.
+- **Stage panel** (side panel on desktop, bottom sheet on phones): the branches with their meaning, the edges in and out, the last 24 hours and facts (last sync, run, approved repos), the stage's runner steps with their daily limit and last four jobs with spend, and the stage's prompts, each expandable to its full text as on the Prompts page. Other modules can add blocks through the `flow.panel` slot.
+- The page header has the pipeline On/Off switch and a searchable repo selector that filters every count. Stage and repo live in the URL (`/?node=review&repo=photocraft`).
+- Desktop: a left-to-right chart, the main line along the top and Labels and Decide below it. Below 700 px: the stages as a vertical list with their branches indented and the stages each one feeds.
+- The item page shows the item's own path: the stages it passed and the one it is in now.
+
+**Counts at scale.** The flowchart must stay under 300 ms at 300 repos and 300,000 items, where counting live takes seconds. Counts are kept per repo in `flow_summary` (src/flow/): the runner refreshes, every 20 seconds within a 1.5-second budget, the rows of repos whose items, verdicts, stage rows, reviews, checks, merges or decisions changed, and every row at least every ten minutes; a change of the classification run, label approvals or tracked repos refreshes all. `GET /api/flow` adds up the rows. A repo without a row is counted on request while 150 ms last; the rest are reported as not counted yet. The Items browser's `flow=` filter counts its one stage live.
+
+### Decisions
 
 - Summary line, then filter chips (repo, kind, age) and the cards, oldest first within each group, grouped by kind then repo.
 - Card: link label (`photocraft#1234`) and title, the AI summary, the issue or PR body (rendered, collapsed when long), the facts, then the question with option buttons (recommendation marked, opinion tally on each), an optional note field, everyone's opinions, and expanders with the context, latest classifications (one line per classifier) and related items (duplicates, linked issues, overlapping PRs). List rows show the item title and the summary's first sentence.

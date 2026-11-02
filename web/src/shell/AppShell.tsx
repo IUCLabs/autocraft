@@ -1,5 +1,5 @@
 import { lazy, Suspense, useMemo, useState } from "react";
-import { NavLink, Route, Routes, matchPath, useLocation, useNavigate, useParams, Navigate } from "react-router-dom";
+import { NavLink, Route, Routes, matchPath, useLocation, useNavigate, useParams } from "react-router-dom";
 import { Dialog, DropdownMenu } from "radix-ui";
 import { LogOutIcon, MonitorIcon, MoonIcon, MoreHorizontalIcon, PanelLeftIcon, SearchIcon, SunIcon, KeyboardIcon, XIcon, CheckIcon } from "lucide-react";
 import { modules } from "../registry";
@@ -48,6 +48,7 @@ export function AppShell() {
     "mod+k": () => (phone ? setSearchOpen(true) : document.getElementById("global-search")?.focus()),
     "?": () => setHelp(true),
     "[": () => setRailOpen(!railOpen),
+    "g h": () => navigate("/"),
     "g d": () => navigate("/decisions"),
     "g p": () => navigate("/progress"),
     "g i": () => navigate("/items"),
@@ -56,7 +57,6 @@ export function AppShell() {
 
   const content = (
     <Routes>
-      <Route path="/" element={<Navigate to="/decisions" replace />} />
       {routes.map((r) => (
         <Route key={r.path} path={r.path} element={<RouteView route={r} />} />
       ))}
@@ -152,7 +152,7 @@ function RouteView({ route }: { route: RouteDef }) {
 
 function Wordmark() {
   return (
-    <NavLink to="/decisions" className="flex items-center gap-2" aria-label="Craft Triage home">
+    <NavLink to="/" className="flex items-center gap-2" aria-label="Craft Triage home">
       <Logo size={20} />
       <span className="text-sm font-semibold">Craft Triage</span>
     </NavLink>
@@ -176,7 +176,7 @@ function RailLink({ entry, open }: { entry: NavEntry; open: boolean }) {
     </>
   );
   return (
-    <NavLink to={entry.to} title={open ? undefined : entry.label} className={({ isActive }) => cls(isActive)}>
+    <NavLink to={entry.to} end={entry.to === "/"} title={open ? undefined : entry.label} className={({ isActive }) => cls(isActive)}>
       {inner}
     </NavLink>
   );
@@ -186,7 +186,7 @@ function PhoneTabs({ nav }: { nav: NavEntry[] }) {
   const tabs = nav.filter((n) => n.phoneTab).slice(0, 3);
   const rest = nav.filter((n) => !n.phoneTab);
   const loc = useLocation();
-  const moreActive = rest.some((n) => loc.pathname.startsWith(n.to));
+  const moreActive = rest.some((n) => (n.to === "/" ? loc.pathname === "/" : loc.pathname.startsWith(n.to)));
   return (
     <nav aria-label="Main" style={{ gridTemplateColumns: `repeat(${tabs.length + 1}, 1fr)` }} className="grid shrink-0 border-t border-line bg-bg pb-[env(safe-area-inset-bottom)]">
       {tabs.map((n) => (
@@ -216,7 +216,7 @@ function PhoneTabs({ nav }: { nav: NavEntry[] }) {
 function PhoneTab({ entry }: { entry: NavEntry }) {
   const count = entry.useBadge?.();
   return (
-    <NavLink to={entry.to} className={({ isActive }) => cn("relative flex h-14 flex-col items-center justify-center gap-0.5 text-2xs font-medium text-ink/55", isActive && "text-accent-ink")}>
+    <NavLink to={entry.to} end={entry.to === "/"} className={({ isActive }) => cn("relative flex h-14 flex-col items-center justify-center gap-0.5 text-2xs font-medium text-ink/55", isActive && "text-accent-ink")}>
       <span className="relative">
         <entry.icon className="text-[20px]" />
         {count !== undefined && count > 0 && <span className="num absolute -right-3.5 -top-1 rounded-full bg-accent px-1 text-[10px] font-semibold leading-[14px] text-white">{count}</span>}

@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { Popover } from "radix-ui";
-import { ChevronDownIcon, CircleDotIcon, GitMergeIcon, GitPullRequestIcon, ListIcon, SearchIcon, CircleSlashIcon, ShieldAlertIcon, FlagIcon } from "lucide-react";
+import { ChevronDownIcon, CircleDotIcon, GitMergeIcon, GitPullRequestIcon, ListIcon, SearchIcon, CircleSlashIcon, ShieldAlertIcon, FlagIcon, XIcon } from "lucide-react";
 import { useQuery } from "../../api/client";
 import type { ItemFilter, ItemList, ItemListRow, ItemSort, Settled, SettledStatus, Snippet, Stage, StatusFilter, TypeLabel } from "../../api/types";
 import type { FeatureModule, ViewProps } from "../../registry/types";
@@ -31,6 +31,12 @@ const STAGE: Record<Stage, string> = {
   batched: "In a batch", merged: "Merged by the pipeline", closed: "Closed by the pipeline", "fixed-by-us": "Fixed by us",
 };
 
+/** "review.take-fix" as "Review › take fix". */
+const flowLabel = (k: string) => {
+  const [node, branch] = k.split(".");
+  return `${node![0]!.toUpperCase()}${node!.slice(1)} › ${branch!.replace(/-/g, " ")}`;
+};
+
 const csv = (v: string | undefined) => (v ? v.split(",").filter(Boolean) : []);
 
 function useFilter() {
@@ -47,6 +53,7 @@ function useFilter() {
     flag: csv(state.flag).filter((f) => FLAGS.some(([k]) => k === f)),
     author: state.author?.trim() || undefined,
     since: /^\d{4}-\d{2}-\d{2}$/.test(state.since ?? "") ? state.since : undefined,
+    flow: /^[a-z]+\.[a-z-]+$/.test(state.flow ?? "") ? state.flow : undefined,
     sort: sort === "relevance" && !q ? undefined : sort,
     desc: state.desc !== "0",
     limit: PAGE,
@@ -105,6 +112,14 @@ function ItemsView(_: ViewProps) {
         </button>
       </div>
 
+      {filter.flow && (
+        <div className="mt-2 flex flex-wrap items-center gap-1.5 text-sm">
+          <span className="text-ink/55">From the pipeline flow:</span>
+          <button data-active className="chip max-md:h-11" onClick={() => set({ flow: null })} aria-label="Clear the flowchart branch">
+            {flowLabel(filter.flow)} <XIcon className="opacity-60" />
+          </button>
+        </div>
+      )}
       <div className="mt-2 flex flex-wrap items-center gap-1.5">
         <div role="group" aria-label="Classification" className="flex flex-wrap items-center gap-1">
           <button aria-pressed={!filter.status?.length} data-active={!filter.status?.length} className="chip max-md:h-11" onClick={() => set({ status: null })}>

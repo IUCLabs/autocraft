@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 import { useQuery } from "../../api/client";
 import type { CiState, Classification, Item, ItemComment, Stage, Tier } from "../../api/types";
+import { ItemPath } from "../flow/ItemPath";
 import type { FeatureModule, ViewProps } from "../../registry/types";
 import { Slot } from "../../registry/Slot";
 import { Avatar } from "../../ui/Avatar";
@@ -72,6 +73,7 @@ function ItemMain({ params }: ViewProps) {
     <div className="h-full overflow-y-auto">
       <div className="mx-auto max-w-[920px] px-4 pb-12 pt-5 md:px-6">
         <Header it={it} />
+        <ItemPath it={it} />
         <Properties it={it} />
         {it.body && (
           <Section title="Description">

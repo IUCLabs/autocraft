@@ -61,7 +61,7 @@ function Field({ label, children }: { label: string; children: ReactNode }) {
   );
 }
 
-function PromptCard({ p }: { p: PromptInfo }) {
+export function PromptCard({ p }: { p: PromptInfo }) {
   const [example, setExample] = useState(false);
   return (
     <section id={p.id} className="min-w-0 scroll-mt-4 rounded-md border border-line px-4 pb-4 pt-3">
