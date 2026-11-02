@@ -142,6 +142,14 @@ export function createHttpApi(): Api {
       disagreements: (f) => get(`/api/classifiers/disagreements${qs(f)}`),
     },
     cost: (run) => get(`/api/cost${qs({ run })}`),
+    pipeline: {
+      overview: () => get("/api/pipeline"),
+      jobs: (f) => get(`/api/pipeline/jobs${qs(f)}`),
+      job: (id) => get(`/api/pipeline/jobs/${id}`),
+      run: (step, params) => post("/api/pipeline/jobs", { step, params }),
+      cancel: (id) => post(`/api/pipeline/jobs/${id}/cancel`),
+      schedule: (step, input) => post(`/api/pipeline/schedules/${encodeURIComponent(step)}`, input),
+    },
     prompts: () => get("/api/prompts"),
     queue: (f) => get(`/api/queue${qs(f)}`),
     async signOut() {
@@ -152,5 +160,7 @@ export function createHttpApi(): Api {
       listeners.add(fn);
       return () => void listeners.delete(fn);
     },
+    similar: (repo, number, limit) => get(`/api/similar/${encodeURIComponent(repo)}/${encodeURIComponent(String(number))}${qs({ limit })}`),
+    semanticSearch: (q) => get(`/api/search?${new URLSearchParams({ q, mode: "semantic" })}`),
   };
 }

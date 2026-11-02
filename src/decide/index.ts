@@ -31,7 +31,7 @@ export type DecideParams = {
 };
 
 export type RepoCount = { candidates: number; needsDecision: number; scopeDisagreement: number; asked: number; noSummary: number };
-export type DecideResult = { run: string | null; dryRun: boolean; byRepo: Record<string, RepoCount>; asked: number; noSummary: number };
+export type DecideResult = { run: string | null; dryRun: boolean; byRepo: Record<string, RepoCount>; asked: number; noSummary: number; usageRun: string | null };
 
 export type Log = (line: string) => void;
 
@@ -66,7 +66,7 @@ export async function runDecide(db: DatabaseSync, params: DecideParams = {}, log
   const untracked = (params.repos ?? []).filter((r) => !tracked.has(r));
   if (untracked.length) throw new Error(`not tracked: ${untracked.join(", ")}`);
   const run = params.run ?? latestJevRun(db);
-  const result: DecideResult = { run, dryRun: !!params.dryRun, byRepo: {}, asked: 0, noSummary: 0 };
+  const result: DecideResult = { run, dryRun: !!params.dryRun, byRepo: {}, asked: 0, noSummary: 0, usageRun: null };
   if (!run) {
     log("decide: no classification run with Jev verdicts");
     return result;
@@ -89,6 +89,7 @@ export async function runDecide(db: DatabaseSync, params: DecideParams = {}, log
   for (const cs of byRepo.values()) for (let i = 0; i < cs.length; i += PROMPT.limits.perCall) batches.push(cs.slice(i, i + PROMPT.limits.perCall));
 
   const usageRun = `decide-${now().replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z")}`;
+  result.usageRun = usageRun;
   const stage = db.prepare("INSERT INTO stages (repo, number, stage, at, actor, note) VALUES (?, ?, 'needs-decision', ?, 'decide', ?)");
   await pool(batches.map((batch, b) => async () => {
     const repo = batch[0]!.repo, start = now();

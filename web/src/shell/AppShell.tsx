@@ -84,7 +84,7 @@ export function AppShell() {
               <Dialog.Title className="sr-only">Search</Dialog.Title>
               <div className="flex items-start gap-1 border-b border-line p-2">
                 <SearchBox autoFocus onPick={() => setSearchOpen(false)} fullscreen />
-                <Dialog.Close className="flex size-11 items-center justify-center text-ink/70" aria-label="Close search">
+                <Dialog.Close className="flex size-11 shrink-0 items-center justify-center text-ink/70" aria-label="Close search">
                   <XIcon />
                 </Dialog.Close>
               </div>

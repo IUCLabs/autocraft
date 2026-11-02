@@ -606,6 +606,116 @@ export interface CostReport {
   bucketSize: "hour" | "day";
 }
 
+// ---- pipeline (runner jobs, steps, schedules) ------------------------------
+
+export type JobState = "queued" | "running" | "done" | "failed" | "cancelled";
+
+/** A step parameter. Only enums, tracked repos, bounded whole numbers and run ids: never free text. */
+export type StepParam =
+  | { name: string; label: string; help?: string; required: boolean; kind: "enum"; options: string[]; default?: string }
+  | { name: string; label: string; help?: string; required: boolean; kind: "repo"; options: string[] }
+  | { name: string; label: string; help?: string; required: boolean; kind: "int"; min: number; max: number; default?: number }
+  | { name: string; label: string; help?: string; required: boolean; kind: "run-id"; default?: string };
+
+export type JobParams = Record<string, string | number>;
+
+export interface JobUsage {
+  /** Model calls (token_usage rows) made by the job. */
+  calls: number;
+  input: number;
+  output: number;
+  /** Sum of reported costs; null when no call reported one. */
+  costUsd: number | null;
+}
+
+export interface Job {
+  id: number;
+  step: string;
+  params: JobParams;
+  /** A login, `schedule` or `cli`. */
+  requestedBy: string;
+  requestedAt: string;
+  state: JobState;
+  startedAt: string | null;
+  endedAt: string | null;
+  progress: string | null;
+  summary: string | null;
+  error: string | null;
+  cancelRequested: boolean;
+  usage: JobUsage | null;
+}
+
+export interface JobDetail extends Job {
+  /** The end of the job's log, with anything token-like replaced. */
+  log: string;
+  logTruncated: boolean;
+}
+
+export interface JobList {
+  jobs: Job[];
+  total: number;
+}
+
+export interface JobFilter {
+  step?: string;
+  state?: JobState;
+  limit?: number;
+  offset?: number;
+}
+
+export type ScheduleTrigger = "interval" | "after-sync";
+
+export interface Schedule {
+  enabled: boolean;
+  trigger: ScheduleTrigger;
+  intervalMinutes: number | null;
+  params: JobParams;
+  updatedBy: string | null;
+  updatedAt: string | null;
+  lastEnqueuedAt: string | null;
+}
+
+export type ScheduleInput = Pick<Schedule, "enabled" | "trigger" | "intervalMinutes" | "params">;
+
+export interface PipelineStep {
+  name: string;
+  title: string;
+  description: string;
+  stage: number;
+  requires: "operator";
+  group: string;
+  params: StepParam[];
+  /** null when the step can run; otherwise why not. */
+  unavailable: string | null;
+  schedule: Schedule;
+  lastJob: Job | null;
+}
+
+export interface PipelineStage {
+  n: number;
+  name: string;
+  /** How the stage runs today. */
+  mode: "automatic" | "steps" | "planned";
+  steps: string[];
+  state: "running" | "queued" | "ok" | "failed" | "idle" | "planned";
+}
+
+export interface SyncRun {
+  startedAt: string;
+  endedAt: string | null;
+  mode: string | null;
+  items: number | null;
+  error: string | null;
+}
+
+export interface PipelineOverview {
+  stages: PipelineStage[];
+  steps: PipelineStep[];
+  runner: { lastSeen: string | null; alive: boolean };
+  sync: { lastFinishedAt: string | null; runs: SyncRun[] };
+  counts: { queued: number; running: number };
+}
+
 // ---- prompts ----------------------------------------------------------------
 
 /** One registered model prompt (src/prompts), as the Prompts page shows it. */
@@ -696,4 +806,15 @@ export interface QueueList {
   /** Per state, for the repo filter (ignores the state filter). */
   counts: Record<QueueState, number>;
   total: number;
+}
+
+/** A search hit ranked by embedding similarity (`/api/similar`, `/api/search?mode=semantic`). */
+export interface SimilarHit extends SearchHit {
+  /** Cosine similarity of the two embeddings; near-duplicates score about 0.9 and up. */
+  score: number;
+  /** How a closed issue was closed. */
+  stateReason: "completed" | "not-planned" | "duplicate" | null;
+  /** The item's settled type label (see src/classify/settled.ts); null while unsettled. */
+  label: string | null;
+  labelBy: string | null;
 }

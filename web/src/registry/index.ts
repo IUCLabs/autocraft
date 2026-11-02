@@ -9,7 +9,9 @@ import { classifiersModule } from "../modules/classifiers";
 import { costModule } from "../modules/cost";
 import { accessModule, contributorsModule, reposModule } from "../modules/admin";
 import { aboutModule } from "../modules/about";
+import { pipelineModule } from "../modules/pipeline";
 import { promptsModule } from "../modules/prompts";
 import { queueModule } from "../modules/queue";
+import { similarModule } from "../modules/similar";
 
-export const modules: FeatureModule[] = [decisionsModule, queueModule, itemModule, progressModule, itemsModule, contributorsModule, classifiersModule, costModule, reposModule, accessModule, aboutModule, promptsModule];
+export const modules: FeatureModule[] = [decisionsModule, queueModule, itemModule, progressModule, itemsModule, contributorsModule, classifiersModule, costModule, reposModule, accessModule, aboutModule, pipelineModule, promptsModule, similarModule];

@@ -116,6 +116,10 @@ Access list with add, remove and role change; active sessions with revoke; the a
 
 Per stage and model: agent runs, items handled, tokens (input, output, cache), tokens per item. Per repo: items done and tokens spent. The experiment's headline numbers: issues and PRs closed, merged, fixed by us, by size; decisions asked and answered; items still needing a human.
 
+### Pipeline (`/pipeline`)
+
+The stages of the pipeline with each one's state; every step with its description, last job and schedule; the job list (live), each job's settings, progress, result, token use and the end of its log; recent sync runs. Everyone signed in sees it; operators also start and cancel jobs and edit schedules. Architecture: docs/pipeline.md.
+
 ## Behaviour
 
 - Writes (answers, overrides, settings, access) go through POST endpoints that check the reader's permission, validate input and write one row plus one audit row; each records the signed-in reader's GitHub login.
@@ -140,7 +144,7 @@ The pipeline runs Claude agents under the operator's own Claude account on the o
 - **Opinions and comments never reach the pipeline.** They are display-only: no agent prompt, brief or CLI output used by agents includes them, adopted or not.
 - **Writes by non-operators are rate-limited and audited**: opinions and comments per session and per login (proposed: 60 an hour), each with an audit row.
 - **`settings.maintainer_writes` is reserved** for a later deployment, on accounts and a machine meant for shared use, where an answer by a maintainer with write permission on the repo becomes actionable directly. It is off and has no effect in this deployment.
-- **What a compromised account can do**: add opinions and comments, which people can see and nothing acts on. It cannot trigger a merge, close, post, label, push or any pipeline action, change the whitelist, settings or access list, or see private fields.
+- **What a compromised account can do**: add opinions and comments, which people can see and nothing acts on. A maintainer or viewer account cannot trigger a merge, close, post, label, push or any pipeline step, change the whitelist, settings or access list, or see private fields. An operator account can also start, stop and schedule pipeline steps, each only with the fixed settings its definition allows, and every such request is audited.
 - **What viewers can see**: public GitHub data and the pipeline's public-safe outputs. Private fields (override notes, answer notes, anything naming why a contributor gets extra scrutiny) are operator-only and never in the export.
 - **Pipeline hygiene**: agents treat all GitHub content and all dashboard text as untrusted data. Briefs quote it as data and never as instructions.
 
@@ -153,6 +157,7 @@ The pipeline runs Claude agents under the operator's own Claude account on the o
 | Give, change or retract an opinion; comment on a decision | anyone signed in (rate-limited, audited); shown with their GitHub permission on the repo |
 | Whitelist overrides, whitelist rule, settings (including `maintainer_writes`) | operator |
 | Access list, sessions, audit log | operator |
+| Start, cancel or schedule pipeline steps | operator; everyone signed in sees the Pipeline page |
 
 Roles on the access list: `operator`, `maintainer`, `viewer`. Today `maintainer` and `viewer` differ only in the badge shown beside their opinions; `maintainer` gains direct answers once `maintainer_writes` is used. GitHub write permission on the repo is still required for an operator's answer about that repo.
 
@@ -174,7 +179,7 @@ GitHub permissions: after sign-in, read the user's permission on each repo with 
 
 ### Audit log
 
-`audit` table: `at`, `login`, `action` (`answer`, `undo`, `adopt`, `opinion`, `opinion-retract`, `comment`, `override`, `rule`, `access-add`, `access-remove`, `session-revoke`, `sign-in`, `sign-in-refused`), `target`, `details` (JSON). Shown on the item page (that item's entries) and on the Access page (everything, filterable).
+`audit` table: `at`, `login`, `action` (`answer`, `undo`, `adopt`, `opinion`, `opinion-retract`, `comment`, `override`, `rule`, `access-add`, `access-remove`, `session-revoke`, `sign-in`, `sign-in-refused`, `job-request`, `job-cancel`, `schedule-change`), `target`, `details` (JSON). Shown on the item page (that item's entries) and on the Access page (everything, filterable).
 
 ### Secrets and configuration
 

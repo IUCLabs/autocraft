@@ -14,15 +14,21 @@ import type { Req, Res, Route } from "../types.ts";
 import * as adm from "./admin.ts";
 import * as dec from "./decisions.ts";
 import * as insight from "./insight.ts";
+import * as pipeline from "./pipeline.ts";
 import { prompts } from "./prompts.ts";
 import { queue } from "./queue.ts";
 import * as items from "./items.ts";
 import { settledOf } from "../../classify/settled.ts";
 import { classificationsOf, itemState, relatedOf } from "./decisions.ts";
+import * as sim from "./similar.ts";
+import { localEmbedder, type Embedder } from "../../embed/model.ts";
+import { VectorIndex } from "../../embed/vectors.ts";
 
 export type ApiOptions = {
   // Opinions and comments by non-operators, per login per hour.
   writesPerHour?: number;
+  // Embeds search queries and items without a stored vector; default: the local model, loaded on first use.
+  embedder?: Embedder;
 };
 
 const ok = (fn: (db: DatabaseSync, req: Req) => unknown) => async (db: DatabaseSync, req: Req): Promise<Res> => {
@@ -196,6 +202,7 @@ function progress(db: DatabaseSync): Progress {
 
 export function apiRoutes(opts: ApiOptions = {}): Route[] {
   const limiter = new RateLimiter(opts.writesPerHour ?? 60, 3600_000);
+  const vectors = new VectorIndex(opts.embedder ?? localEmbedder({ threads: 2 }));
   const get = (pattern: string, fn: (db: DatabaseSync, req: Req) => unknown): Route => ({ method: "GET", pattern, handler: ok(fn) });
   const post = (pattern: string, fn: (db: DatabaseSync, req: Req) => unknown): Route => ({ method: "POST", pattern, handler: ok(fn) });
   return [
@@ -213,7 +220,7 @@ export function apiRoutes(opts: ApiOptions = {}): Route[] {
     post("/api/decisions/:id/claim", dec.claim),
     get("/api/items/:repo/:n", item),
     get("/api/items", items.listItems),
-    get("/api/search", items.quickSearch),
+    get("/api/search", (db, req) => req.query.get("mode") === "semantic" ? sim.semanticSearch(db, req, vectors) : items.quickSearch(db, req)),
     get("/api/progress", progress),
     get("/api/contributors", adm.listContributors),
     get("/api/contributors/rule-preview", adm.previewRule),
@@ -233,7 +240,14 @@ export function apiRoutes(opts: ApiOptions = {}): Route[] {
     get("/api/classifiers", insight.classifiersReport),
     get("/api/classifiers/disagreements", insight.disagreements),
     get("/api/cost", insight.cost),
+    get("/api/pipeline", (db) => pipeline.overview(db)),
+    get("/api/pipeline/jobs", pipeline.jobs),
+    get("/api/pipeline/jobs/:id", pipeline.job),
+    { method: "POST", pattern: "/api/pipeline/jobs", operator: true, handler: ok(pipeline.request) },
+    { method: "POST", pattern: "/api/pipeline/jobs/:id/cancel", operator: true, handler: ok(pipeline.cancel) },
+    { method: "POST", pattern: "/api/pipeline/schedules/:step", operator: true, handler: ok(pipeline.schedule) },
     get("/api/prompts", prompts),
     get("/api/queue", queue),
+    get("/api/similar/:repo/:n", (db, req) => sim.similar(db, req, vectors)),
   ];
 }

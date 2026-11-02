@@ -18,6 +18,7 @@ const ADDED_COLUMNS: [table: string, column: string, type: string][] = [
   ["decisions", "adopted_opinion", "TEXT"],
   ["classifications", "probs", "TEXT"],
   ["token_usage", "cost_usd", "REAL"],
+  ["classifications", "input_hash", "TEXT"],
 ];
 
 function addColumns(db: DatabaseSync): void {

@@ -484,8 +484,17 @@ async function sync(args: string[]): Promise<void> {
   try {
     const db = connect();
     const client = new Client(reserve);
-    const { mode, items } = await runSync(db, client, opts);
-    console.log(`sync: mode=${mode} items=${items} points=${client.spent} left=${client.remaining}`);
+    // Each run leaves a row for the Pipeline page; rows older than two days go.
+    const row = db.prepare("INSERT INTO sync_runs (started_at) VALUES (?)").run(iso(new Date())).lastInsertRowid;
+    db.prepare("DELETE FROM sync_runs WHERE started_at < ?").run(iso(new Date(Date.now() - 2 * 86400_000)));
+    try {
+      const { mode, items } = await runSync(db, client, opts);
+      db.prepare("UPDATE sync_runs SET ended_at = ?, mode = ?, items = ? WHERE rowid = ?").run(iso(new Date()), mode, items, row);
+      console.log(`sync: mode=${mode} items=${items} points=${client.spent} left=${client.remaining}`);
+    } catch (e) {
+      db.prepare("UPDATE sync_runs SET ended_at = ?, error = ? WHERE rowid = ?").run(iso(new Date()), String((e as Error)?.message ?? e).slice(0, 300), row);
+      throw e;
+    }
   } finally {
     release();
   }

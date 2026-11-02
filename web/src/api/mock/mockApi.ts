@@ -3,7 +3,9 @@ import type { Decision, DecisionComment, DecisionFilter, User } from "../types";
 import { decisionAccess } from "../../registry/permissions";
 import { setClock } from "../../lib/format";
 import { createAdminMock } from "./adminMock";
+import { createPipelineMock } from "./pipelineMock";
 import { promptsReport } from "../../../../src/prompts/index.ts";
+import { semanticHits, similarFor } from "./similarFixtures";
 import { classifierReport, costReport, disagreementList } from "./insightFixtures";
 import { itemList, settledFor } from "./itemsFixtures";
 import { queueList } from "./queueFixtures";
@@ -158,6 +160,7 @@ export function createMockApi(): Api {
       disagreements: (f) => wait(disagreementList(f), 60),
     },
     cost: (run) => wait(costReport(run), 80),
+    ...createPipelineMock(me, changed),
     prompts: () => wait(promptsReport(null), 60),
     queue: (f) => wait(queueList(f), 60),
     signOut: () => wait(undefined),
@@ -165,5 +168,7 @@ export function createMockApi(): Api {
       listeners.add(fn);
       return () => void listeners.delete(fn);
     },
+    similar: (repo, number, limit) => wait(similarFor(repo, number, limit), 120),
+    semanticSearch: (q) => wait(semanticHits(q), 90),
   };
 }

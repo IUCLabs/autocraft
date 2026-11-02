@@ -140,4 +140,27 @@ Everything else waits for a decision on this dashboard.
 - Only the operator's answers are acted on. The pipeline reads the chosen option, never free text.
 - Comments and picks by other people are shown to everyone here but never reach a model's prompt.
 - All GitHub text is treated as untrusted data: models judge it and never follow instructions in it.
-- A dashboard account, even a compromised one, cannot trigger a merge, close, post, label or push.
+- Only operators can start, stop or schedule pipeline steps. A maintainer or viewer account, even a compromised one, cannot trigger a merge, close, post, label, push or any pipeline step.
+
+## Architecture
+
+Three processes share one database. None of them needs anyone to keep a terminal or a Claude session open.
+
+| Process | What it does | Runs |
+|---|---|---|
+| Sync (`craft-auto sync`) | Copies changes from GitHub into the mirror | Every minute, on its own timer |
+| Dashboard (`craft-auto dash serve`) | Shows everything to people on the access list; records answers, opinions and job requests | Always |
+| Runner (`craft-auto runner serve`) | Runs pipeline steps: classifying, embedding, labelling, reviewing and merging | Always |
+
+The dashboard never runs a step and never calls a model. When an operator presses "Run now" on the Pipeline page, the dashboard writes a row to the **jobs** table. That table is the only way the dashboard reaches the runner. The runner picks up the row, runs the step in a separate process, and writes back its progress, log, result and token use. A cancel is a mark on the same row, which the runner acts on.
+
+Each step is defined in code with a fixed list of settings: choices from a list, a tracked repo, a number in a range, or a run id. Nothing typed on the dashboard can reach a model's prompt or a shell. Steps in the same group (for example, everything that writes to GitHub) run one at a time.
+
+Schedules start a step every so many minutes or after each sync. They are off until an operator turns them on, and a scheduled job is not queued while another job of that step is waiting or running.
+
+| Who | On the Pipeline page |
+|---|---|
+| Anyone signed in | Sees every stage and step, every job with its settings, progress, log, result and cost, the schedules and recent syncs |
+| Operator | Also starts and cancels jobs and edits schedules; each of these is in the audit log |
+
+Logs are written by the steps and hold no secrets; anything that looks like a token is hidden before a log is shown.

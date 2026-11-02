@@ -38,8 +38,10 @@ export function settle(jev: (Verdict & { top: number | null }) | null, haiku: Ve
   return { ...base, status: "disagree", label: null, source: null, flags };
 }
 
-// The run the dashboard shows: the one with the newest Jev verdict.
+// The run the dashboard shows: the current classification run (settings.classify_run), else the one with the newest Jev verdict.
 export function latestRun(db: DatabaseSync): string | null {
+  const set = db.prepare("SELECT value FROM settings WHERE key = 'classify_run'").get() as { value: string } | undefined;
+  if (set?.value) return set.value;
   const r = db.prepare("SELECT run_id FROM classifications WHERE classifier = 'jev' ORDER BY at DESC LIMIT 1").get() as { run_id: string } | undefined;
   return r?.run_id ?? null;
 }

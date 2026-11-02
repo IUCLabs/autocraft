@@ -27,9 +27,18 @@ import type {
   Role,
   RulePreview,
   SearchHit,
+  SimilarHit,
   TrackedRepo,
   User,
   WhitelistRule,
+  Job,
+  JobDetail,
+  JobFilter,
+  JobList,
+  JobParams,
+  PipelineOverview,
+  Schedule,
+  ScheduleInput,
 } from "./types";
 
 /** The dashboard API as the frontend sees it. The mock and the HTTP client both implement it. */
@@ -89,11 +98,24 @@ export interface Api {
   cost(run?: string): Promise<CostReport>;
   /** The merge queue: every PR with a take or take-fix review at its head, and what it waits on. */
   queue(filter: QueueFilter): Promise<QueueList>;
+  /** Steps, jobs and schedules: everyone reads; run, cancel and schedule are for operators. */
+  pipeline: {
+    overview(): Promise<PipelineOverview>;
+    jobs(filter: JobFilter): Promise<JobList>;
+    job(id: number): Promise<JobDetail>;
+    run(step: string, params: JobParams): Promise<Job>;
+    cancel(id: number): Promise<Job>;
+    schedule(step: string, input: ScheduleInput): Promise<Schedule>;
+  };
   /** Every registered model prompt, with the server's commit. */
   prompts(): Promise<PromptsReport>;
   signOut(): Promise<void>;
   /** Called after any write so open views can refetch. Returns an unsubscribe function. */
   subscribe(fn: () => void): () => void;
+  /** Nearest items by embedding across the tracked repos, best first, leaving out the item itself. */
+  similar(repo: RepoName, number: number, limit?: number): Promise<SimilarHit[]>;
+  /** Search by meaning: the query's embedding against every item's. */
+  semanticSearch(q: string): Promise<SimilarHit[]>;
 }
 
 export const ApiContext = createContext<Api | null>(null);
