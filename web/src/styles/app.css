@@ -219,3 +219,17 @@
   text-decoration: none;
   border-color: rgb(var(--st-accent-ink-rgb) / 0.6);
 }
+
+/* Mermaid diagrams: natural size, scrolling sideways on narrow screens. */
+.md-diagram {
+  overflow-x: auto;
+  padding: 12px;
+  border-radius: 6px;
+  background: var(--st-sunken);
+  border: 1px solid var(--st-line);
+}
+.md-diagram svg {
+  display: block;
+  max-width: none;
+  margin: 0 auto;
+}
