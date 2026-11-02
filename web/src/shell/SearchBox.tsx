@@ -57,7 +57,7 @@ export function SearchBox({ autoFocus, onPick, fullscreen }: { autoFocus?: boole
   const open = (focus || fullscreen) && q.length > 0;
 
   return (
-    <div className={cn("relative", fullscreen && "flex-1")}>
+    <div className={cn("relative", fullscreen && "min-w-0 flex-1")}>
       <label className={cn("flex h-7 items-center gap-2 rounded border border-line bg-sunken px-2 focus-within:border-accent/60", fullscreen && "h-11")}>
         <SearchIcon className="text-xs text-ink/45" />
         <input
@@ -95,7 +95,7 @@ export function SearchBox({ autoFocus, onPick, fullscreen }: { autoFocus?: boole
         {!fullscreen && !focus && <Kbd keys="/" />}
       </label>
       {open && (
-        <ul id="search-results" role="listbox" className={cn("z-50 rounded-md border border-line-strong bg-raised p-1 animate-fadeIn", fullscreen ? "mt-2" : "absolute inset-x-0 top-[calc(100%+4px)] shadow-[0_12px_32px_rgba(0,0,0,0.28)]")}>
+        <ul id="search-results" role="listbox" className={cn("z-50 rounded-md border border-line-strong bg-raised p-1 animate-fadeIn", fullscreen ? "mt-2 max-h-[calc(100dvh-5rem)] overflow-y-auto" : "absolute inset-x-0 top-[calc(100%+4px)] shadow-[0_12px_32px_rgba(0,0,0,0.28)]")}>
           {hits.length === 0 && <li className="px-3 py-2 text-sm text-ink/50">No matches</li>}
           {hits.map((h, i) => (
             <li key={`${h.repo}#${h.number}`} role="option" aria-selected={i === sel}>
