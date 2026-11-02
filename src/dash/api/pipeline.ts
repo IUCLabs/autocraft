@@ -79,17 +79,17 @@ export async function overview(db: DatabaseSync): Promise<PipelineOverview> {
   }));
   const runs = db.prepare("SELECT started_at AS startedAt, ended_at AS endedAt, mode, items, error FROM sync_runs ORDER BY started_at DESC LIMIT 10").all() as unknown as SyncRun[];
   const lastSync = runs.find((r) => r.endedAt);
+  const high = (db.prepare("SELECT value FROM settings WHERE key = 'org_high_water'").get() as { value: string } | undefined)?.value ?? null;
   const stages: PipelineStage[] = STAGES.map((st) => {
     const names = steps.filter((s) => s.stage === st.n).map((s) => s.name);
     const mode = st.automatic ? "automatic" : names.length ? "steps" : "planned";
     return {
       n: st.n, name: st.name, mode, steps: names,
-      state: mode === "planned" ? "planned" : stageState(db, names, st.automatic && lastSync ? lastSync.error !== null : null),
+      state: mode === "planned" ? "planned" : stageState(db, names, st.automatic ? (lastSync ? lastSync.error !== null : high ? false : null) : null),
     };
   });
   const beat = (db.prepare("SELECT value FROM settings WHERE key = ?").get(HEARTBEAT_KEY) as { value: string } | undefined)?.value ?? null;
   const count = (state: string) => (db.prepare("SELECT COUNT(*) AS n FROM jobs WHERE state = ?").get(state) as { n: number }).n;
-  const high = (db.prepare("SELECT value FROM settings WHERE key = 'org_high_water'").get() as { value: string } | undefined)?.value ?? null;
   return {
     stages, steps,
     runner: { lastSeen: beat, alive: beat !== null && Date.now() - Date.parse(beat) < RUNNER_ALIVE_MS },

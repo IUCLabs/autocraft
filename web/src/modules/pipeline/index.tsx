@@ -46,7 +46,7 @@ const usd = (v: number | null) => (v === null ? null : `$${v.toFixed(2)}`);
 function cost(j: Job): string {
   if (!j.usage || !j.usage.calls) return "–";
   const tokens = num(j.usage.input + j.usage.output);
-  return usd(j.usage.costUsd) ? `${usd(j.usage.costUsd)} · ${tokens} tok` : `${tokens} tok`;
+  return usd(j.usage.costUsd) ?? `${tokens} tok`;
 }
 
 const paramText = (p: JobParams) =>
@@ -243,7 +243,7 @@ function StepCard({ step, operator }: { step: PipelineStep; operator: boolean })
 function Stages({ o }: { o: PipelineOverview }) {
   const title = (s: PipelineStage) => (s.mode === "automatic" ? ["sync (timer)", ...s.steps] : s.steps).join(", ");
   return (
-    <ol className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-7">
+    <ol className="mt-4 grid grid-cols-[repeat(auto-fill,minmax(128px,1fr))] gap-2">
       {o.stages.map((s) => (
         <li key={s.n} className={cn("min-w-0 rounded-md border border-line px-3 py-2.5", s.mode === "planned" && "border-dashed text-ink/55")}>
           <div className="flex items-baseline gap-1.5">
@@ -359,7 +359,7 @@ function Jobs({ selected }: { selected?: number }) {
                   <td className="whitespace-nowrap px-3 text-ink/65" title={j.requestedAt}>
                     {j.requestedBy} · {ago(j.requestedAt)}
                   </td>
-                  <td className="num px-3 text-right">{took(j.startedAt, j.endedAt)}</td>
+                  <td className="num whitespace-nowrap px-3 text-right">{took(j.startedAt, j.endedAt)}</td>
                   <td className="max-w-[340px] truncate px-3 text-ink/70" title={j.error ?? j.summary ?? j.progress ?? ""}>
                     {j.state === "failed" ? <span className="text-bad">{j.error}</span> : (j.summary ?? j.progress ?? "")}
                   </td>
@@ -447,7 +447,7 @@ function JobDetailView({ id, operator, back }: { id: number; operator: boolean; 
   }, [j?.log]);
   return (
     <div className="flex h-full flex-col overflow-y-auto">
-      <div className="border-b border-line px-4 py-3">
+      <div className="border-b border-line py-3 pl-4 pr-12">
         {back && (
           <Link to="/pipeline" className="mb-2 inline-flex items-center gap-1 text-xs text-ink/60 max-md:py-2">
             <ArrowLeftIcon className="size-3.5" /> Pipeline
