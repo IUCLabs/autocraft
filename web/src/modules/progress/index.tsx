@@ -33,28 +33,36 @@ function Block({ title, aside, children, className, flush }: { title: string; as
   );
 }
 
+const NOT_STARTED = <span className="text-xs text-ink/45">not started yet</span>;
+
 function Overview(_: ViewProps) {
   const { data: p } = useQuery("progress", (api) => api.progress());
   const phone = useIsPhone();
   if (!p) return <div className="p-6 text-ink/50">Loading…</div>;
   const done = doneTotal(p.done);
-  const avg = Math.round(p.perHour.reduce((a, b) => a + b, 0) / p.perHour.length);
-  const startOpen = p.repos.reduce((a, r) => a + r.openTrend[0], 0);
-  const days = Math.ceil((Date.parse(p.now) - Date.parse(p.runStartedAt)) / 86400_000);
+  const ours = p.done.mergedByPipeline + p.done.closedByPipeline;
+  const lastDay = p.perHour.reduce((a, b) => a + b, 0);
+  const lastDayOurs = p.perHourPipeline.reduce((a, b) => a + b, 0);
+  const startOpen = p.repos.reduce((a, r) => a + (r.openTrend[0] ?? 0), 0);
+  const since = p.trackingSince.slice(0, 10);
   return (
     <div className="h-full overflow-y-auto">
       <div className="mx-auto max-w-[1180px] px-4 pb-12 pt-5 md:px-6">
         <div className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5">
-          <h1 className="text-xl font-semibold">Run progress</h1>
+          <h1 className="text-xl font-semibold">Progress</h1>
           <span className="text-sm text-ink/55">
-            Started {p.runStartedAt.slice(0, 10)} · day {days} · {p.repos.length} repos
+            Tracking since {since} · {p.repos.length} repos
           </span>
         </div>
 
         <div className="mt-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
-          <Stat label="Open now" value={num(p.funnel.open)} sub={<>from {num(startOpen)} at run start</>} />
-          <Stat label="Done since start" value={num(done)} sub={`${pct(p.done.mergedByPipeline + p.done.closedByPipeline, done)} by the pipeline`} />
-          <Stat label="Throughput" value={`${avg} / h`} sub={`${num(p.perHour.reduce((a, b) => a + b, 0))} in the last 24 h`} />
+          <Stat label="Open now" value={num(p.funnel.open)} sub={<>{num(startOpen)} when tracking began</>} />
+          <Stat
+            label="Done by the pipeline"
+            value={num(ours)}
+            sub={ours ? `${num(p.done.mergedByPipeline)} merged · ${num(p.done.closedByPipeline)} closed` : "not started yet"}
+          />
+          <Stat label="Closed by others" value={num(p.done.closedByOthers)} sub={`on GitHub since ${since}`} />
           <Stat
             label="Decisions waiting"
             value={String(p.decisionsOpen)}
@@ -68,11 +76,11 @@ function Overview(_: ViewProps) {
         </div>
 
         <div className="mt-4 grid gap-4 lg:grid-cols-[1.4fr_1fr]">
-          <Block title="Open items" aside={`${pct(p.funnel.reviewed, p.funnel.open)} reviewed`}>
+          <Block title="Open items" aside={p.funnel.reviewed ? `${pct(p.funnel.reviewed, p.funnel.open)} reviewed` : undefined}>
             <FunnelChart f={p.funnel} />
           </Block>
-          <Block title="Done since run start" aside={num(done)}>
-            <DoneSplit done={p.done} />
+          <Block title="Closed or merged since tracking began" aside={num(done)}>
+            {done ? <DoneSplit done={p.done} /> : <p className="text-sm text-ink/50">Nothing closed yet.</p>}
             <table className="mt-4 w-full text-sm">
               <tbody>
                 {DONE_PARTS.map((d) => (
@@ -82,7 +90,7 @@ function Overview(_: ViewProps) {
                         <span className={cn("size-2 rounded-sm", d.cls)} /> {d.label}
                       </span>
                     </td>
-                    <td className="num py-1.5 text-right font-medium">{num(p.done[d.key])}</td>
+                    <td className="num py-1.5 text-right font-medium">{d.key !== "closedByOthers" && !ours ? NOT_STARTED : num(p.done[d.key])}</td>
                     <td className="num w-14 py-1.5 text-right text-ink/50">{pct(p.done[d.key], done)}</td>
                   </tr>
                 ))}
@@ -91,7 +99,7 @@ function Overview(_: ViewProps) {
           </Block>
         </div>
 
-        <Block title="Items done per hour" aside="Last 24 h, UTC" className="mt-4">
+        <Block title="Items closed or merged per hour, by anyone" aside={`Last 24 h, UTC · ${num(lastDay)} in all, ${num(lastDayOurs)} by the pipeline`} className="mt-4">
           <Throughput perHour={p.perHour} nowIso={p.now} />
         </Block>
 
@@ -107,14 +115,16 @@ type SortKey = "repo" | "open" | "done" | "decisions" | "reviewed";
 
 function RepoTable({ p }: { p: Progress }) {
   const [sort, setSort] = useState<{ k: SortKey; desc: boolean }>({ k: "open", desc: true });
-  const val = (r: RepoProgress): number | string => ({ repo: r.repo, open: r.funnel.open, done: doneTotal(r.done), decisions: r.decisionsOpen, reviewed: r.funnel.reviewed / r.funnel.open })[sort.k];
+  const val = (r: RepoProgress): number | string => ({ repo: r.repo, open: r.funnel.open, done: doneTotal(r.done), decisions: r.decisionsOpen, reviewed: r.funnel.open ? r.funnel.reviewed / r.funnel.open : 0 })[sort.k];
   const rows = [...p.repos].sort((a, b) => {
     const x = val(a);
     const y = val(b);
     const c = typeof x === "string" ? x.localeCompare(y as string) : x - (y as number);
     return sort.desc ? -c : c;
   });
-  const maxDone = Math.max(...p.repos.map((r) => doneTotal(r.done)));
+  const maxDone = Math.max(1, ...p.repos.map((r) => doneTotal(r.done)));
+  const routedAny = OUTCOMES.some((o) => p.funnel[o.key] > 0);
+  const share = (n: number, d: number) => `${d ? (n / d) * 100 : 0}%`;
   const Th = ({ k, children, className, right }: { k?: SortKey; children: ReactNode; className?: string; right?: boolean }) => (
     <th className={cn("h-8 px-3 font-medium", right ? "text-right" : "text-left", className)} aria-sort={k && sort.k === k ? (sort.desc ? "descending" : "ascending") : undefined}>
       {k ? (
@@ -139,7 +149,7 @@ function RepoTable({ p }: { p: Progress }) {
             <Th k="reviewed" className="w-[200px]">
               Classified / reviewed
             </Th>
-            <Th className="w-[200px]">Routed</Th>
+            <Th className="w-[200px]">Routed{routedAny ? "" : " · not started yet"}</Th>
             <Th k="done" className="w-[220px]">
               Done
             </Th>
@@ -164,21 +174,19 @@ function RepoTable({ p }: { p: Progress }) {
                 <td className="px-3">
                   <div className="flex items-center gap-2">
                     <div className="relative h-1.5 flex-1 overflow-hidden rounded-full bg-ink/[0.07]">
-                      <div className="absolute inset-y-0 left-0 bg-ink/25" style={{ width: `${(f.classified / f.open) * 100}%` }} />
-                      <div className="absolute inset-y-0 left-0 bg-ink/70" style={{ width: `${(f.reviewed / f.open) * 100}%` }} />
+                      <div className="absolute inset-y-0 left-0 bg-ink/25" style={{ width: share(f.classified, f.open) }} />
+                      <div className="absolute inset-y-0 left-0 bg-ink/70" style={{ width: share(f.reviewed, f.open) }} />
                     </div>
                     <span className="num w-[72px] text-right text-xs text-ink/55">
                       {pct(f.classified, f.open)} / {pct(f.reviewed, f.open)}
                     </span>
                   </div>
                 </td>
-                <td className="px-3">
-                  <StackBar parts={OUTCOMES.map((o) => ({ ...o, value: f[o.key] }))} height={6} />
-                </td>
+                <td className="px-3">{routedAny ? <StackBar parts={OUTCOMES.map((o) => ({ ...o, value: f[o.key] }))} height={6} /> : <span className="text-ink/30">–</span>}</td>
                 <td className="px-3">
                   <div className="flex items-center gap-2">
                     <div className="flex-1">
-                      <div style={{ width: `${(d / maxDone) * 100}%` }}>
+                      <div style={{ width: share(d, maxDone) }}>
                         <StackBar parts={DONE_PARTS.map((x) => ({ ...x, value: r.done[x.key] }))} height={6} />
                       </div>
                     </div>
@@ -209,11 +217,15 @@ function RepoCards({ p }: { p: Progress }) {
             {r.decisionsOpen > 0 && <span className="text-xs text-warn">{r.decisionsOpen} waiting</span>}
             <span className="num ml-auto">{num(r.funnel.open)} open</span>
           </div>
-          <div className="mt-1.5">
-            <StackBar parts={OUTCOMES.map((o) => ({ ...o, value: r.funnel[o.key] }))} height={5} />
-          </div>
+          {OUTCOMES.some((o) => r.funnel[o.key] > 0) && (
+            <div className="mt-1.5">
+              <StackBar parts={OUTCOMES.map((o) => ({ ...o, value: r.funnel[o.key] }))} height={5} />
+            </div>
+          )}
           <div className="num mt-1 flex justify-between text-xs text-ink/50">
-            <span>{pct(r.funnel.reviewed, r.funnel.open)} reviewed</span>
+            <span>
+              {pct(r.funnel.classified, r.funnel.open)} classified{r.funnel.reviewed ? ` · ${pct(r.funnel.reviewed, r.funnel.open)} reviewed` : ""}
+            </span>
             <span>{num(doneTotal(r.done))} done</span>
           </div>
         </li>

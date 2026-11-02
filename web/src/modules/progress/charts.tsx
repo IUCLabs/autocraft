@@ -2,6 +2,7 @@
 // marks, mono labels. Colours come from the --st-c* slots (validated for
 // colour-vision separation on both theme surfaces).
 import { useLayoutEffect, useRef, useState } from "react";
+import { Link } from "react-router-dom";
 import type { Done, Funnel } from "../../api/types";
 import { cn } from "../../ui/cn";
 import { num, pct } from "../../lib/format";
@@ -45,7 +46,7 @@ export function StackBar({ parts, height = 10, total }: { parts: { label: string
           <div
             key={p.label}
             className={cn("h-full transition-opacity duration-fast", p.cls, hover !== null && hover !== i && "opacity-40")}
-            style={{ width: `${(p.value / sum) * 100}%` }}
+            style={{ width: `${sum ? (p.value / sum) * 100 : 0}%` }}
             onMouseEnter={() => setHover(i)}
             role="img"
             aria-label={`${p.label}: ${num(p.value)}`}
@@ -72,6 +73,7 @@ export function DoneSplit({ done }: { done: Done }) {
 
 /** Funnel for open items: the three filter steps as bars, then how the reviewed ones split. */
 export function FunnelChart({ f }: { f: Funnel }) {
+  const share = (n: number) => `${f.open ? (n / f.open) * 100 : 0}%`;
   const steps = [
     { label: "Open", value: f.open, note: "" },
     { label: "Classified", value: f.classified, note: pct(f.classified, f.open) },
@@ -79,32 +81,53 @@ export function FunnelChart({ f }: { f: Funnel }) {
   ];
   const outcome = OUTCOMES.map((o) => ({ ...o, value: f[o.key] }));
   const routed = outcome.reduce((a, o) => a + o.value, 0);
+  const row = "grid grid-cols-[76px_1fr_64px] md:grid-cols-[96px_1fr_88px] items-center gap-3";
+  const notStarted = <span className="text-xs text-ink/45">not started yet</span>;
   return (
     <div>
       <div className="space-y-2">
         {steps.map((s) => (
-          <div key={s.label} className="grid grid-cols-[76px_1fr_64px] md:grid-cols-[96px_1fr_88px] items-center gap-3">
+          <div key={s.label} className={row}>
             <span className="text-xs text-ink/60">{s.label}</span>
-            <div className="h-5 overflow-hidden rounded-sm bg-ink/[0.05]">
-              <div className="h-full rounded-sm bg-ink/55" style={{ width: `${(s.value / f.open) * 100}%` }} />
-            </div>
+            {s.value || s.label === "Open" ? (
+              <div className="h-5 overflow-hidden rounded-sm bg-ink/[0.05]">
+                <div className="h-full rounded-sm bg-ink/55" style={{ width: share(s.value) }} />
+              </div>
+            ) : (
+              notStarted
+            )}
             <span className="num text-right text-sm">
               {num(s.value)}
               {s.note && <span className="ml-1.5 hidden text-xs text-ink/45 md:inline">{s.note}</span>}
             </span>
           </div>
         ))}
-        <div className="grid grid-cols-[76px_1fr_64px] md:grid-cols-[96px_1fr_88px] items-center gap-3">
+        <div className={row}>
           <span className="text-xs text-ink/60">Routed</span>
-          <div className="h-5" style={{ width: `${Math.max((f.reviewed / f.open) * 100, 45)}%` }}>
-            <StackBar parts={outcome} height={20} total={Math.max(routed, f.reviewed)} />
-          </div>
+          {routed ? (
+            <div className="h-5" style={{ width: `${Math.max(f.open ? (f.reviewed / f.open) * 100 : 0, 45)}%` }}>
+              <StackBar parts={outcome} height={20} total={Math.max(routed, f.reviewed)} />
+            </div>
+          ) : (
+            notStarted
+          )}
           <span className="num text-right text-sm">{num(routed)}</span>
         </div>
       </div>
-      <div className="mt-4 md:pl-[108px]">
-        <Legend items={outcome} />
-      </div>
+      {(f.secondOpinion > 0 || f.disagreement > 0) && (
+        <p className="mt-3 text-xs text-ink/60">
+          Not yet classified: <span className="num font-medium text-ink">{num(f.secondOpinion)}</span> waiting for a second opinion,{" "}
+          <span className="num font-medium text-ink">{num(f.disagreement)}</span> where the two classifiers disagree.{" "}
+          <Link to="/items?status=unsettled" className="text-accent-ink hover:underline">
+            See them
+          </Link>
+        </p>
+      )}
+      {routed > 0 && (
+        <div className="mt-4 md:pl-[108px]">
+          <Legend items={outcome} />
+        </div>
+      )}
     </div>
   );
 }

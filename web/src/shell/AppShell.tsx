@@ -49,6 +49,7 @@ export function AppShell() {
     "[": () => setRailOpen(!railOpen),
     "g d": () => navigate("/decisions"),
     "g p": () => navigate("/progress"),
+    "g i": () => navigate("/items"),
   });
 
   const content = (
@@ -243,7 +244,7 @@ function Breadcrumb({ routes }: { routes: RouteDef[] }) {
 function LiveCounters() {
   const { data } = useQuery("progress", (api) => api.progress());
   if (!data) return null;
-  const lastHour = data.perHour[data.perHour.length - 1];
+  const lastHour = data.perHourPipeline[data.perHourPipeline.length - 1] ?? 0;
   return (
     <div className="hidden shrink-0 items-center gap-3 whitespace-nowrap text-xs text-ink/60 xl:flex">
       <span className="flex items-center gap-1.5">
@@ -252,7 +253,7 @@ function LiveCounters() {
       </span>
       <span className="flex items-center gap-1.5">
         <span className="size-1.5 rounded-full bg-ok" />
-        <span className="num font-medium text-ink">{lastHour}</span> done in the last hour
+        <span className="num font-medium text-ink">{lastHour}</span> done by the pipeline in the last hour
       </span>
     </div>
   );
@@ -389,22 +390,19 @@ function ShortcutSheet({ open, onOpenChange }: { open: boolean; onOpenChange: (o
 function RunMeter({ open }: { open: boolean }) {
   const { data } = useQuery("progress", (api) => api.progress());
   if (!data || !open) return null;
-  const days = (Date.parse(data.now) - Date.parse(data.runStartedAt)) / 86400_000;
-  const done = data.done.mergedByPipeline + data.done.closedByPipeline + data.done.closedByOthers;
-  const all = done + data.funnel.open;
+  const ours = data.done.mergedByPipeline + data.done.closedByPipeline;
+  const f = data.funnel;
   return (
     <NavLink to="/progress" className="mx-2 mb-2 block rounded-md border border-line p-2.5 hover:border-line-strong">
       <div className="flex items-baseline justify-between text-xs">
-        <span className="font-medium text-ink/80">Run · day {Math.ceil(days)}</span>
-        <span className="num text-ink/55">{Math.round((done / all) * 100)}%</span>
+        <span className="font-medium text-ink/80">Classified</span>
+        <span className="num text-ink/55">{f.open ? Math.round((f.classified / f.open) * 100) : 0}%</span>
       </div>
       <div className="mt-2 flex h-1 gap-px overflow-hidden rounded-full bg-ink/10">
-        <div className="bg-c1" style={{ width: `${(data.done.mergedByPipeline / all) * 100}%` }} />
-        <div className="bg-c2" style={{ width: `${(data.done.closedByPipeline / all) * 100}%` }} />
-        <div className="bg-ink/40" style={{ width: `${(data.done.closedByOthers / all) * 100}%` }} />
+        <div className="bg-c1" style={{ width: `${f.open ? (f.classified / f.open) * 100 : 0}%` }} />
       </div>
       <div className="num mt-1.5 text-2xs text-ink/50">
-        {num(done)} done · {num(data.funnel.open)} open
+        {num(f.open)} open · {ours ? `${num(ours)} done by the pipeline` : "pipeline not started yet"}
       </div>
     </NavLink>
   );

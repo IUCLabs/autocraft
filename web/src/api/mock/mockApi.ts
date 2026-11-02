@@ -4,6 +4,7 @@ import { decisionAccess } from "../../registry/permissions";
 import { setClock } from "../../lib/format";
 import { createAdminMock } from "./adminMock";
 import { classifierReport, costReport, disagreementList } from "./insightFixtures";
+import { itemList, settledFor } from "./itemsFixtures";
 import { DECISIONS, MOCK_USERS, NOW, REPOS, SEARCH_POOL, THREADS, itemFor, permFor, progress, type MockRole } from "./fixtures";
 
 const wait = <T>(v: T, ms = 60) => new Promise<T>((r) => setTimeout(() => r(structuredClone(v)), ms));
@@ -135,10 +136,11 @@ export function createMockApi(): Api {
         return wait(c, 30);
       },
     },
-    item: (repo, number) => wait(itemFor(repo, number)),
+    item: (repo, number) => wait({ ...itemFor(repo, number), settled: settledFor(number) }),
+    items: (f) => wait(itemList(f), 70),
     search(q) {
       const s = q.trim().toLowerCase();
-      if (!s) return wait([]);
+      if (!s) return Promise.resolve([]);
       const ref = s.match(/^([a-z-]+)?#(\d+)$/);
       const hits = SEARCH_POOL.filter((h) =>
         ref
