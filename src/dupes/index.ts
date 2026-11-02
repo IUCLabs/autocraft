@@ -41,7 +41,9 @@ export function dupesWork(db: DatabaseSync, modelId: string = embedderId(modelNa
   if (scanPending(db, modelId, 1).length || uncheckedPairs(db, 1).length) return true;
   const answered = db.prepare("SELECT 1 FROM decisions WHERE kind = 'duplicate' AND answer IS NOT NULL AND answer <> 'close' AND applied_at IS NULL LIMIT 1").get();
   if (answered) return true;
-  return duplicateAskTargets(db).length > 0;
+  // Asked-but-unanswered ones need no job: asking again only refreshes them.
+  const asked = db.prepare("SELECT 1 FROM decisions WHERE id = ?");
+  return duplicateAskTargets(db).some((t) => !asked.get(t.id));
 }
 
 export async function runDupes(db: DatabaseSync, params: DupesParams = {}, log: (line: string) => void = console.log, deps?: DupesDeps): Promise<DupesSummary> {
