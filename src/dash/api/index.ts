@@ -15,6 +15,7 @@ import { HttpError, RateLimiter } from "../server/util.ts";
 import type { Req, Res, Route } from "../types.ts";
 import * as adm from "./admin.ts";
 import * as agents from "./agents.ts";
+import * as build from "./build.ts";
 import * as dec from "./decisions.ts";
 import * as insight from "./insight.ts";
 import * as pipeline from "./pipeline.ts";
@@ -265,6 +266,15 @@ export function apiRoutes(opts: ApiOptions = {}): Route[] {
     get("/api/agents", agents.list),
     get("/api/agents/:id", agents.detail),
     get("/api/rates", agents.rates),
+    get("/api/envs", build.envs),
+    { method: "POST", pattern: "/api/envs", operator: true, handler: ok(build.postEnv) },
+    { method: "PUT", pattern: "/api/envs/:id", operator: true, handler: ok(build.putEnv) },
+    { method: "POST", pattern: "/api/envs/:id/rotate-key", operator: true, handler: ok(build.postRotate) },
+    get("/api/tasks", build.tasks),
+    get("/api/tasks/:id", build.task),
+    { method: "POST", pattern: "/api/tasks/:id/cancel", operator: true, handler: ok(build.cancel) },
+    { method: "GET", pattern: "/api/tasks/:id/artifacts/:name", handler: build.artifact },
+    get("/api/build/summary", build.buildSummary),
     get("/api/queue", queue),
     get("/api/flow", flow),
     get("/api/similar/:repo/:n", (db, req) => sim.similar(db, req, vectors)),

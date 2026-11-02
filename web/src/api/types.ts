@@ -963,3 +963,58 @@ export type Rates = {
   stages: { step: string; title: string; buckets: RateBucket[] }[];
   accounts: { id: string; label: string; samples: { t: string; fiveHourPct: number | null; weeklyPct: number | null }[] }[];
 };
+
+// ---- Build environments and tasks -----------------------------------------------------------------------
+
+export type Capabilities = {
+  os: "linux" | "macos" | "windows";
+  arch: "x86_64" | "aarch64";
+  cpus: number; memGb: number; diskGb: number;
+  display: boolean;          // can render UI (Xvfb or real) for screenshots
+  gpu: boolean;
+  toolchains: string[];      // e.g. ["rust-stable", "node-24"]
+};
+export type Requires = Partial<Pick<Capabilities, "os" | "arch" | "display" | "gpu">> & {
+  toolchains?: string[]; minMemGb?: number; minDiskGb?: number;
+};
+export type EnvKind = "local-sandbox" | "remote";
+export type BuildEnv = {
+  id: string; label: string; kind: EnvKind;
+  enabled: boolean; online: boolean; lastSeenAt: string | null;
+  slots: number; running: number;
+  capabilities: Capabilities | null;   // as last reported by the worker
+  version: string | null;              // worker software version
+  pausedReason: string | null;         // e.g. "disk 12 GB free (needs 20)"
+};
+export type EnvInput = { label?: string; enabled?: boolean; slots?: number };
+export type EnvCreate = { id: string; label: string; kind: EnvKind; slots: number };
+export type TaskStep = {
+  name: string;                         // "fetch deps", "build", "test", "screenshot"
+  cmd: string[];                        // argv, run inside the container
+  network: "fetch" | "none";            // "fetch": registry/GitHub egress allowed; "none": no network
+  timeoutSec: number;
+  artifacts?: string[];                 // globs under /out to return
+};
+export type TaskState = "queued" | "claimed" | "running" | "done" | "failed" | "cancelled" | "lost";
+export type TaskResult = { step: string; exitCode: number | null; durationMs: number; timedOut: boolean };
+export type TaskArtifact = { name: string; bytes: number; contentType: string };
+export type BuildTask = {
+  id: number; jobId: number | null; step: string;   // pipeline step that created it
+  repo: RepoName; number: number | null;            // PR
+  headSha: string; baseSha: string | null;
+  requires: Requires; priority: number;
+  plan: TaskStep[];
+  state: TaskState; envId: string | null; envLabel: string | null;
+  cancelRequested: boolean;
+  queuedAt: string; claimedAt: string | null; startedAt: string | null; endedAt: string | null;
+  heartbeatAt: string | null;
+  results: TaskResult[];
+  artifacts: TaskArtifact[];
+  summary: string | null;
+};
+/** Worker-sent text: shown as plain text only, never as markup. */
+export type BuildTaskDetail = BuildTask & { logTail: string; logBytes: number; logTruncated: boolean };
+export type TaskFilter = { state?: TaskState | "active"; env?: string; repo?: string; cursor?: string; limit?: number };
+export type TaskPage = { tasks: BuildTask[]; next: string | null };
+/** Queued and running tasks and the slots left over the online, enabled environments (the flowchart's Verify node). */
+export type BuildSummary = { queued: number; running: number; slots: number; free: number; online: number };

@@ -223,7 +223,7 @@ CREATE TABLE IF NOT EXISTS oauth_states (
 CREATE TABLE IF NOT EXISTS audit (
   at TEXT NOT NULL,
   login TEXT NOT NULL,
-  action TEXT NOT NULL,               -- answer | undo | adopt | opinion | opinion-retract | comment | override | rule | access-add | access-remove | access-role | session-revoke | sign-in | sign-in-refused (at most one row per login per hour; details.refused counts them) | repo-track | repo-untrack | labels-approve | labels-revoke | merge-approve | merge-revoke | labels-apply | assign | merge | merge-refused | job-request | job-cancel | pipeline-switch | stage-limit
+  action TEXT NOT NULL,               -- answer | undo | adopt | opinion | opinion-retract | comment | override | rule | access-add | access-remove | access-role | session-revoke | sign-in | sign-in-refused (at most one row per login per hour; details.refused counts them) | repo-track | repo-untrack | labels-approve | labels-revoke | merge-approve | merge-revoke | labels-apply | assign | merge | merge-refused | job-request | job-cancel | pipeline-switch | stage-limit | env-create | env-change | env-rotate-key | task-cancel
   target TEXT,
   details TEXT                        -- JSON
 );
@@ -507,3 +507,72 @@ CREATE TABLE IF NOT EXISTS agent_run_texts (
 );
 
 CREATE INDEX IF NOT EXISTS jobs_started ON jobs(started_at);
+
+-- Build environments: places that run untrusted code (workers), registered by an
+-- operator. The worker key is shown once and stored as a SHA-256 hash.
+CREATE TABLE IF NOT EXISTS build_envs (
+  id TEXT PRIMARY KEY,                -- lowercase letters, digits and hyphens
+  label TEXT NOT NULL,                -- the only name shown to people
+  kind TEXT NOT NULL,                 -- local-sandbox | remote
+  enabled INTEGER NOT NULL DEFAULT 1,
+  slots INTEGER NOT NULL,             -- the operator's cap; the worker may report fewer
+  key_hash TEXT NOT NULL,
+  capabilities TEXT,                  -- JSON Capabilities as last reported by the worker
+  reported_slots INTEGER,
+  version TEXT,
+  paused_reason TEXT,                 -- as last reported by the worker
+  last_seen_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_by TEXT,
+  updated_at TEXT
+);
+
+-- Tasks: one unit of untrusted execution created by a pipeline step.
+CREATE TABLE IF NOT EXISTS build_tasks (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  job_id INTEGER,
+  step TEXT NOT NULL,                 -- pipeline step that created it
+  repo TEXT NOT NULL,
+  number INTEGER,                     -- PR
+  head_sha TEXT NOT NULL,
+  base_sha TEXT,
+  requires TEXT NOT NULL,             -- JSON Requires
+  priority INTEGER NOT NULL DEFAULT 0,
+  plan TEXT NOT NULL,                 -- JSON TaskStep[]
+  state TEXT NOT NULL,                -- queued | claimed | running | done | failed | cancelled | lost
+  env_id TEXT,
+  attempts INTEGER NOT NULL DEFAULT 0,  -- claims so far; a lost task is requeued once
+  queued_at TEXT NOT NULL,
+  claimed_at TEXT, started_at TEXT, ended_at TEXT,
+  heartbeat_at TEXT,
+  cancel_requested_at TEXT,
+  results TEXT NOT NULL DEFAULT '[]', -- JSON, as reported by the worker
+  summary TEXT,                       -- one line, as reported by the worker
+  log_bytes INTEGER NOT NULL DEFAULT 0,
+  artifact_bytes INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS build_tasks_queue ON build_tasks(priority DESC, id) WHERE state = 'queued';
+CREATE INDEX IF NOT EXISTS build_tasks_env ON build_tasks(env_id, state);
+CREATE INDEX IF NOT EXISTS build_tasks_active ON build_tasks(heartbeat_at) WHERE state IN ('claimed', 'running');
+CREATE INDEX IF NOT EXISTS build_tasks_repo ON build_tasks(repo, id);
+CREATE INDEX IF NOT EXISTS build_tasks_state ON build_tasks(state, id);
+CREATE INDEX IF NOT EXISTS build_tasks_ended ON build_tasks(ended_at);
+
+-- Log chunks as the worker sent them (text, untrusted); capped per task.
+CREATE TABLE IF NOT EXISTS build_task_logs (
+  task_id INTEGER NOT NULL,
+  seq INTEGER NOT NULL,
+  step TEXT NOT NULL,
+  chunk TEXT NOT NULL,
+  PRIMARY KEY (task_id, seq)
+) WITHOUT ROWID;
+
+-- Artifact metadata; the bytes are files under the artifact directory.
+CREATE TABLE IF NOT EXISTS build_artifacts (
+  task_id INTEGER NOT NULL,
+  name TEXT NOT NULL,
+  bytes INTEGER NOT NULL,
+  content_type TEXT NOT NULL,         -- from sniffing the bytes, never from the worker's header
+  file TEXT NOT NULL,                 -- path under the artifact directory
+  PRIMARY KEY (task_id, name)
+) WITHOUT ROWID;

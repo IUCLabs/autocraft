@@ -1,4 +1,5 @@
 // craft-auto runner serve | exec | enqueue | jobs | cancel | steps; craft-auto pipeline on | off | status | limit
+import { startWorkerServer } from "../build/worker-api.ts";
 import { acquireLock } from "../mirror.ts";
 import { connect } from "../db.ts";
 import { audit } from "../dash/audit.ts";
@@ -31,9 +32,15 @@ async function serve(): Promise<void> {
   process.once("SIGTERM", () => ac.abort());
   process.once("SIGINT", () => ac.abort());
   console.log(`runner: started on ${(await loadSteps()).size} steps`);
+  // A failure to listen (port in use) must not stop the pipeline; workers just cannot connect.
+  const workers = await startWorkerServer({ db, log: (l) => console.log(l) }).then(
+    (w) => (console.log(`runner: worker API on ${w.url}`), w),
+    (e: Error) => (console.error(`runner: worker API not started: ${e.message}`), null),
+  );
   try {
     await runner.serve(ac.signal, Number(process.env.CRAFT_AUTO_RUNNER_POLL_MS) || 2000);
   } finally {
+    await workers?.close();
     release();
     db.close();
   }

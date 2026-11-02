@@ -33,6 +33,7 @@ export type Res = {
   html?: string;
   redirect?: string;                // 303 for POSTs
   json?: unknown;
+  body?: Buffer;                    // raw bytes (artifact downloads); set content-type in headers
   headers?: Record<string, string>;
 };
 

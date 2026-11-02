@@ -172,7 +172,10 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
     const status = r.status ?? (r.redirect ? 303 : 200);
     const headers: Record<string, string | string[]> = { ...r.headers };
     headers["cache-control"] ??= "no-store";
-    secure(headers, [
+    // A handler may set its own policy (artifact downloads use `sandbox`).
+    const csp = headers["content-security-policy"] as string | undefined;
+    delete headers["content-security-policy"];
+    secure(headers, csp ?? [
       "default-src 'none'", `script-src 'self' 'nonce-${nonce}'`, `style-src 'self' 'nonce-${nonce}'`,
       "img-src 'self' data:", "font-src 'self'", "connect-src 'self'", "form-action 'self'",
       "base-uri 'none'", "frame-ancestors 'none'",
@@ -183,6 +186,8 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
     if (r.html !== undefined) {
       headers["content-type"] ??= "text/html; charset=utf-8";
       body = r.html;
+    } else if (r.body !== undefined) {
+      body = r.body;
     } else if (r.json !== undefined) {
       headers["content-type"] ??= "application/json; charset=utf-8";
       body = JSON.stringify(r.json);

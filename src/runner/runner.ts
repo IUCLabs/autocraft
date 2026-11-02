@@ -13,6 +13,7 @@ import { dbPath } from "../db.ts";
 import { applyProposals, AUTOPILOT_USER, isEnabled, planDue, type Detected } from "./autopilot.ts";
 import { recordUsageSamples } from "../agents/accounts.ts";
 import { failRunning, pruneRuns } from "../agents/runs.ts";
+import { pruneTasks, reapLost } from "../build/tasks.ts";
 import { jobRow, now, pruneJobs, RUNNER_STOPPED } from "./jobs.ts";
 import { OffThread } from "./offthread.ts";
 import { loadSteps } from "./steps.ts";
@@ -126,6 +127,12 @@ export class Runner {
     }
     this.cancels();
     if (this.stopping) return;
+    try {
+      const lost = reapLost(this.db);
+      if (lost) this.o.log(`${lost} build tasks lost their worker`);
+    } catch (e) {
+      this.o.log(`build tasks: ${(e as Error).message}`);
+    }
     this.usageTick();
     await this.autopilot();
     await this.startJobs();
@@ -189,6 +196,11 @@ export class Runner {
         pruneJobs(this.db, t);
       } catch (e) {
         this.o.log(`prune jobs: ${(e as Error).message}`);
+      }
+      try {
+        pruneTasks(this.db, t);
+      } catch (e) {
+        this.o.log(`prune build tasks: ${(e as Error).message}`);
       }
       try {
         pruneRuns(this.db, t);
