@@ -3,6 +3,7 @@ import type { WorkerConfig } from "./config.ts";
 import { freeDiskGb } from "./config.ts";
 import type { WorkerApi } from "./client.ts";
 import { removeStaleContainers } from "./container.ts";
+import { cleanWarm } from "./warm.ts";
 import { executeTask, removeStaleWorkDirs } from "./executor.ts";
 import { LogSink } from "./logsink.ts";
 import type { Capabilities, ClaimedTask } from "./types.ts";
@@ -49,8 +50,9 @@ export async function serve(d: ServeDeps, signal: AbortSignal): Promise<void> {
   const { cfg, api, log } = d;
   const sleep = d.sleep ?? realSleep;
   const pollMs = d.pollMs ?? POLL_MS;
-  const disk = d.freeDiskGb ?? (() => freeDiskGb(cfg.workDir));
+  const disk = d.freeDiskGb ?? (() => Math.min(freeDiskGb(cfg.workDir), freeDiskGb(cfg.warmDir)));
   log(`removed ${removeStaleWorkDirs(cfg)} stale work dir(s)`);
+  cleanWarm(cfg);
   await removeStaleContainers(cfg);
 
   const running = new Map<number, AbortController>();

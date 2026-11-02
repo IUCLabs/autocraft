@@ -166,6 +166,8 @@ Untrusted code (a PR's build, tests and screenshots) never runs where the GitHub
 - **Scheduling is pull.** A worker calls `claim` with its free slots. In one write transaction the coordinator gives it the oldest queued tasks of the highest priority whose requirements its capabilities satisfy, up to the smaller of its free slots and its slots minus the tasks it runs. Several environments compete: whichever has a matching free slot claims first. A disabled, paused, never-reported or offline environment gets nothing.
 - **Lost workers.** A claimed or running task needs a heartbeat at least every 2 minutes. Without one it is requeued once; if the second worker is lost too, it fails. The runner checks every pass.
 - **Cancel.** Cancelling a queued task ends it at once. Cancelling an active task also ends it at once and lists its id in the worker's claim and heartbeat responses for 2 minutes; the worker kills the containers and sends no finish.
+- **Patch.** A task may carry `patch`, a git-format diff of at most 1 MiB. The worker applies it to the unpacked source on the host (`git apply --check`, then `git apply`) before the first step. Paths outside the tree, symlinks and binary content are refused; a patch that does not apply fails the task with no step run.
+- **Warm target dirs.** A task may carry `warm: { key, role }`. The worker keeps one cargo target dir per key. A `build` task (upstream main) stores its target dir when every step passes; a `use` task starts from a copy of it and discards its own, so a PR build never changes the stored one. Stored dirs are capped by `warmMaxGb`, least recently used removed first.
 - **Retention.** Tasks, logs and artifacts are deleted 30 days after the task ended.
 
 ### Trust

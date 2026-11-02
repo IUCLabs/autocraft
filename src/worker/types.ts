@@ -35,6 +35,10 @@ export type ClaimedTask = {
   requires: Requires;
   plan: TaskStep[];
   sourceUrl: string;
+  /** Unified diff (git format, at most 1 MiB) applied to the source before the first step. */
+  patch?: string;
+  /** Warm cargo target dir: "use" starts from a copy, "build" stores the target dir when all steps pass. */
+  warm?: { key: string; role: "use" | "build" };
 };
 
 export type ClaimResponse = { tasks: ClaimedTask[]; cancel?: number[] };

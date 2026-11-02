@@ -6,7 +6,9 @@ import { basename, join, relative, sep } from "node:path";
 import { admitCrates, CrateVerifier, seedCargoHome } from "./cache.ts";
 import type { WorkerConfig } from "./config.ts";
 import { removeContainer, runContainer, type RunOutcome } from "./container.ts";
+import { applyPatch } from "./patch.ts";
 import { downloadAndExtract } from "./tarball.ts";
+import { copyWarm, storeWarm, taskFieldProblem } from "./warm.ts";
 import { LIMITS, type ClaimedTask, type StepResult } from "./types.ts";
 
 export type TaskSink = {
@@ -92,6 +94,8 @@ export async function executeTask(cfg: WorkerConfig, task: ClaimedTask, sink: Ta
   const names: string[] = [];
   const emit = (step: string, s: string) => sink.log(step, s).catch(() => {});
   try {
+    const bad = taskFieldProblem(task);
+    if (bad) return { results, summary: `malformed task: ${bad}`, cancelled: false };
     rmSync(dir, { recursive: true, force: true });
     const paths = { src: join(dir, "src"), target: join(dir, "target"), cache: join(dir, "cache") };
     for (const p of Object.values(paths)) mkdirSync(p, { recursive: true });
@@ -107,6 +111,21 @@ export async function executeTask(cfg: WorkerConfig, task: ClaimedTask, sink: Ta
     } catch (e) {
       await emit("source", `source failed: ${(e as Error).message}\n`);
       return { results, summary: `source failed: ${(e as Error).message}`.slice(0, 300), cancelled: false };
+    }
+    if (task.patch !== undefined) {
+      const err = await applyPatch(task.patch, paths.src, dir);
+      await emit("source", `${err ?? "patch applied"}\n`);
+      if (err) return { results, summary: err, cancelled: false };
+    }
+    if (task.warm?.role === "use") {
+      try {
+        const hit = await copyWarm(cfg, task.warm.key, paths.target);
+        await emit("source", hit ? "warm target dir copied\n" : "no warm target dir, starting cold\n");
+      } catch (e) {
+        note(`warm copy failed: ${(e as Error).message}`);
+        rmSync(paths.target, { recursive: true, force: true });
+        mkdirSync(paths.target, { recursive: true });
+      }
     }
     seedCargoHome(cacheDir(cfg), join(paths.cache, "cargo"));
 
@@ -161,6 +180,14 @@ export async function executeTask(cfg: WorkerConfig, task: ClaimedTask, sink: Ta
       }
     }
     if (cancelled) return { results, summary: "cancelled", cancelled: true };
+    if (!failed && task.warm?.role === "build") {
+      try {
+        await storeWarm(cfg, task.warm.key, task.headSha, paths.target);
+        await emit("source", "warm target dir stored\n");
+      } catch (e) {
+        note(`warm store failed: ${(e as Error).message}`);
+      }
+    }
     return { results, summary: failed ?? `${results.length} step${results.length === 1 ? "" : "s"} passed`, cancelled: false };
   } finally {
     for (const n of names) await removeContainer(cfg, n);

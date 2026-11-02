@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Stands in for podman in worker tests. State directory: $FAKE_RT_DIR.
 // `run ... registry.test/<image> do <op>...` where each op is
+//   target:FILE:TEXT  targetcheck:FILE:TEXT (exit 1 unless equal)
 //   exit:N  echo:TEXT  write:REL:TEXT  big:REL:BYTES  link:REL:TARGET  sleep
 // `sleep` blocks until `kill <name>` is called (then exits 137).
 import { appendFileSync, existsSync, mkdirSync, readFileSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
@@ -23,6 +24,7 @@ if (cmd === "ps") {
   const mounts = argv.flatMap((a, i) => (argv[i - 1] === "--mount" ? [a] : []));
   const outMount = mounts.find((m) => m.includes("target=/out"));
   const out = outMount.match(/source=([^,]+)/)[1];
+  const target = mounts.find((m) => m.includes("target=/target")).match(/source=([^,]+)/)[1];
   const cache = mounts.find((m) => m.includes("target=/cache")).match(/source=([^,]+)/)[1];
   let code = 0;
   for (const op of ops.slice(ops[0] === "do" ? 1 : 0)) {
@@ -32,6 +34,14 @@ if (cmd === "ps") {
     else if (k === "cache") {
       mkdirSync(dirname(join(cache, a)), { recursive: true });
       writeFileSync(join(cache, a), b);
+    } else if (k === "target") {
+      writeFileSync(join(target, a), b);
+    } else if (k === "targetcheck") {
+      const have = existsSync(join(target, a)) ? readFileSync(join(target, a), "utf8") : "";
+      if (have !== b) {
+        console.log(`target ${a} is "${have}", wanted "${b}"`);
+        code = 1;
+      }
     } else if (k === "exit") code = Number(a);
     else if (k === "write") {
       mkdirSync(dirname(join(out, a)), { recursive: true });

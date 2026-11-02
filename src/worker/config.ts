@@ -1,7 +1,7 @@
 // Worker configuration: one JSON file (`--config` or CRAFT_AUTO_WORKER_CONFIG).
 import { existsSync, readFileSync, statfsSync } from "node:fs";
 import { arch, availableParallelism, homedir, platform, totalmem } from "node:os";
-import { isAbsolute, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import type { Capabilities } from "./types.ts";
 
 /**
@@ -19,6 +19,8 @@ export type WorkerConfig = {
   coordinatorUrl: string;
   keyFile: string;
   workDir: string;
+  warmDir: string;
+  warmMaxGb: number;
   slots: number;
   images: Record<string, string>;
   runtime: string;
@@ -57,11 +59,14 @@ export function parseWorkerConfig(raw: unknown): WorkerConfig {
   if (!/^https?:\/\/[^\s]+$/.test(coordinatorUrl)) throw new Error("config: coordinatorUrl must be an http(s) URL");
   const keyFile = expand(str(o, "keyFile"));
   const workDir = expand(str(o, "workDir"));
-  for (const [n, p] of [["keyFile", keyFile], ["workDir", workDir]] as const) {
+  const warmDir = expand(typeof o.warmDir === "string" && o.warmDir ? o.warmDir : join(dirname(workDir), "warm"));
+  for (const [n, p] of [["keyFile", keyFile], ["workDir", workDir], ["warmDir", warmDir]] as const) {
     if (!isAbsolute(p)) throw new Error(`config: ${n} must be an absolute path`);
   }
   // Paths go into --mount specs, where commas and colons would split fields.
   if (!SAFE_PATH.test(workDir)) throw new Error("config: workDir must not contain commas, colons or whitespace");
+  if (!SAFE_PATH.test(warmDir)) throw new Error("config: warmDir must not contain commas, colons or whitespace");
+  if (warmDir === workDir) throw new Error("config: warmDir must differ from workDir");
   const images = { ...DEFAULT_IMAGES, ...((o.images as Record<string, string> | undefined) ?? {}) };
   for (const [k, v] of Object.entries(images)) {
     if (typeof v !== "string" || !IMAGE_REF.test(v)) throw new Error(`config: image for ${k} is not a valid reference`);
@@ -75,6 +80,8 @@ export function parseWorkerConfig(raw: unknown): WorkerConfig {
     coordinatorUrl,
     keyFile,
     workDir,
+    warmDir,
+    warmMaxGb: num(o.warmMaxGb, "warmMaxGb", 60, 0, 100_000),
     slots: num(o.slots, "slots", 1, 1, 64),
     images,
     runtime,
