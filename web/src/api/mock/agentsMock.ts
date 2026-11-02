@@ -1,0 +1,149 @@
+// Agents, accounts and rates on fake data: three accounts (one disabled), twelve runs in flight and a few hundred finished ones.
+import type { Api } from "../client";
+import type { AgentRun, AgentRunDetail, ClaudeAccount, Rates, User } from "../types";
+import { NOW, REPOS } from "./fixtures";
+
+const wait = <T>(v: T, ms = 60) => new Promise<T>((r) => setTimeout(() => r(structuredClone(v)), ms));
+const iso = (msAgo: number) => new Date(NOW - msAgo).toISOString();
+const MIN = 60_000;
+const HOUR = 3_600_000;
+
+let seedN = 7;
+const rnd = () => ((seedN = (seedN * 48271) % 2147483647) / 2147483647);
+const pick = <T,>(a: T[]): T => a[Math.floor(rnd() * a.length)]!;
+
+const STEPS = [
+  { step: "decide", stage: 3, title: "Ask decisions", promptId: "decide.summary", provider: "claude" as const, model: "sonnet" },
+  { step: "review-batch", stage: 5, title: "Review pull requests", promptId: "review.sonnet", provider: "claude" as const, model: "sonnet" },
+  { step: "classify-new", stage: 2, title: "Classify new and changed items", promptId: "classify.haiku", provider: "claude" as const, model: "haiku" },
+  { step: "classify-new", stage: 2, title: "Classify new and changed items", promptId: "classify.jev", provider: "jev" as const, model: "jev" },
+];
+
+const accounts: ClaudeAccount[] = [
+  {
+    id: "b", label: "Team account B", enabled: true, maxConcurrent: 4, running: 0,
+    usage: { fiveHourPct: 62, fiveHourResetsAt: iso(-(2 * HOUR + 40 * MIN)), weeklyPct: 41, weeklyResetsAt: iso(-(3 * 24 * HOUR + 5 * HOUR)), readAt: iso(2 * MIN) },
+    pausedReason: null,
+  },
+  {
+    id: "c", label: "Team account C", enabled: true, maxConcurrent: 3, running: 0,
+    usage: { fiveHourPct: 93, fiveHourResetsAt: iso(-(55 * MIN)), weeklyPct: 78, weeklyResetsAt: iso(-(1 * 24 * HOUR + 2 * HOUR)), readAt: iso(1 * MIN) },
+    pausedReason: "5-hour use 93 % (pauses at 90 %)",
+  },
+  {
+    id: "d", label: "Spare account D", enabled: false, maxConcurrent: 2, running: 0,
+    usage: { fiveHourPct: 8, fiveHourResetsAt: iso(-(4 * HOUR)), weeklyPct: 12, weeklyResetsAt: iso(-(5 * 24 * HOUR)), readAt: iso(95 * MIN) },
+    pausedReason: "disabled by an operator",
+  },
+];
+
+const OUTPUT = `{"verdicts":[{"repo":"photocraft","number":2214,"verdict":"take","reason":"Small, tested fix."},{"repo":"photocraft","number":2230,"verdict":"hold","reason":"Needs a rebase; touches the export path."}]}`;
+const PROMPT = (r: AgentRun) =>
+  `You are reviewing ${r.itemCount} item${r.itemCount === 1 ? "" : "s"} for the ${r.step} step.\n\n${r.items.map((i) => `## ${i.repo}#${i.number}\nTitle: example title for ${i.repo}#${i.number}\nBody: (trimmed) ...`).join("\n\n")}\n\nAnswer with JSON only.`;
+
+function makeRun(id: number, startedMsAgo: number, running: boolean): AgentRun {
+  const s = pick(STEPS);
+  const acct = s.provider === "jev" ? null : running ? pick(accounts.filter((a) => a.enabled)) : pick(accounts);
+  const n = s.step === "classify-new" ? 1 + Math.floor(rnd() * 30) : s.step === "review-batch" ? 1 + Math.floor(rnd() * 4) : 1 + Math.floor(rnd() * 8);
+  const repo = pick(REPOS);
+  const items = Array.from({ length: Math.min(n, 50) }, (_, i) => ({ repo: i % 3 === 2 ? pick(REPOS) : repo, number: 1000 + Math.floor(rnd() * 1400) }));
+  const failed = !running && rnd() < 0.08;
+  const dur = (20 + rnd() * 240) * 1000;
+  const tokens = Math.round(n * (1500 + rnd() * 3000));
+  return {
+    id, jobId: 40 + Math.floor(id / 40) % 9, step: s.step, stage: s.stage, promptId: s.promptId, promptVersion: `v${1 + (id % 3)}-${(id * 2654435761 % 0xffffff).toString(16).padStart(6, "0")}`,
+    provider: s.provider, model: s.model, accountId: acct?.id ?? null, accountLabel: acct?.label ?? null,
+    items, itemCount: n, state: running ? "running" : failed ? "failed" : "done",
+    startedAt: iso(startedMsAgo), endedAt: running ? null : iso(startedMsAgo - dur),
+    inputTokens: tokens, outputTokens: running ? Math.round(tokens * 0.03) : Math.round(tokens * 0.08),
+    cacheReadTokens: s.provider === "jev" ? null : Math.round(tokens * 0.5), cacheWriteTokens: s.provider === "jev" ? null : Math.round(tokens * 0.1),
+    summary: running ? null : failed ? "timeout after 600 s" : s.step === "classify-new" ? `${n} classified` : `${Math.max(0, n - 1)} take, ${Math.min(1, n)} hold`,
+  };
+}
+
+const RUNNING: AgentRun[] = Array.from({ length: 12 }, (_, i) => makeRun(5000 + i, (1 + i * 1.7) * MIN + rnd() * 30_000, true));
+for (const r of RUNNING) if (r.accountId) accounts.find((a) => a.id === r.accountId)!.running++;
+RUNNING[0]!.itemCount = 64;
+RUNNING[0]!.items = Array.from({ length: 50 }, (_, i) => ({ repo: REPOS[i % REPOS.length]!, number: 1100 + i * 7 }));
+RUNNING[0]!.step = "classify-new";
+RUNNING[0]!.promptId = "classify.haiku";
+RUNNING[0]!.model = "haiku";
+const RECENT: AgentRun[] = Array.from({ length: 360 }, (_, i) => makeRun(4999 - i, 2 * MIN + i * 4.2 * MIN + rnd() * MIN, false));
+
+function rates(window: "24h" | "7d"): Rates {
+  const hourly = window === "24h";
+  const n = hourly ? 24 : 7;
+  const step = hourly ? HOUR : 24 * HOUR;
+  const t = (i: number) => iso((n - 1 - i) * step);
+  const stages = [
+    ["classify-new", "Classify new and changed items", 30], ["decide", "Ask decisions", 6], ["review-batch", "Review pull requests", 9], ["merge", "Merge queued pull requests", 1.5],
+  ].map(([s, title, base]) => ({
+    step: s as string, title: title as string,
+    buckets: Array.from({ length: n }, (_, i) => {
+      const night = hourly && (i < 6 || i > 21) ? 0.3 : 1;
+      const items = Math.round((base as number) * (hourly ? 1 : 22) * (0.4 + rnd()) * night);
+      const runs = Math.max(items ? 1 : 0, Math.round(items / 6));
+      return { t: t(i), items, runs, failed: rnd() < 0.15 ? 1 + Math.floor(rnd() * 2) : 0 };
+    }),
+  }));
+  const ns = hourly ? 24 : 28;
+  const sstep = hourly ? HOUR : 6 * HOUR;
+  const accts = accounts.slice(0, 3).map((a, k) => ({
+    id: a.id, label: a.label,
+    samples: Array.from({ length: ns }, (_, i) => {
+      const ago = (ns - 1 - i) * sstep;
+      const cycle = ((ago / HOUR + k * 1.3) % 5) / 5; // 5-hour window position
+      const five = a.enabled ? Math.min(100, Math.round(((a.usage.fiveHourPct ?? 0) * (1 - cycle) * 1.1) + 8 + rnd() * 6)) : 8;
+      const week = a.enabled ? Math.round((a.usage.weeklyPct ?? 0) * (1 - (ago / (7 * 24 * HOUR)) * 0.8)) : 12;
+      return { t: iso(ago), fiveHourPct: five, weeklyPct: week };
+    }),
+  }));
+  return { window, bucket: hourly ? "hour" : "day", stages, accounts: accts };
+}
+
+export function createAgentsMock(me: User, changed: () => void): Pick<Api, "accounts" | "agents" | "rates"> {
+  const visible = () => accounts.filter((a) => me.role === "operator" || a.enabled);
+  return {
+    accounts: {
+      list: () => wait(visible()),
+      async update(id, input) {
+        if (me.role !== "operator") throw new Error("only operators change accounts");
+        const a = accounts.find((x) => x.id === id);
+        if (!a) throw new Error("no such account");
+        if (input.label !== undefined) {
+          if (!input.label.trim() || input.label.length > 60 || input.label.includes("@")) throw new Error("label must be 1 to 60 characters and not an email address");
+          a.label = input.label.trim();
+        }
+        if (input.maxConcurrent !== undefined) {
+          if (!Number.isInteger(input.maxConcurrent) || input.maxConcurrent < 1 || input.maxConcurrent > 20) throw new Error("max concurrent must be a whole number from 1 to 20");
+          a.maxConcurrent = input.maxConcurrent;
+        }
+        if (input.enabled !== undefined) {
+          a.enabled = input.enabled;
+          a.pausedReason = input.enabled ? null : "disabled by an operator";
+        }
+        changed();
+        return wait(a, 30);
+      },
+    },
+    agents: {
+      list(f) {
+        if (f.state === "running") return wait({ runs: RUNNING.filter((r) => (!f.step || r.step === f.step) && (!f.account || r.accountId === f.account)), nextCursor: null });
+        const rows = RECENT.filter(
+          (r) => (!f.state || f.state === "recent" || r.state === f.state) && (!f.step || r.step === f.step) && (!f.account || r.accountId === f.account) && (!f.repo || r.items.some((i) => i.repo === f.repo)) && (!f.cursor || r.id < Number(f.cursor)),
+        );
+        const limit = f.limit ?? 50;
+        const runs = rows.slice(0, limit);
+        return wait({ runs, nextCursor: rows.length > limit ? String(runs[runs.length - 1]!.id) : null }, 80);
+      },
+      get(id) {
+        const r = [...RUNNING, ...RECENT].find((x) => x.id === id);
+        if (!r) throw new Error(`no agent run ${id}`);
+        const old = NOW - Date.parse(r.startedAt) > 14 * 24 * HOUR || id < 4850;
+        const d: AgentRunDetail = { ...r, prompt: old ? null : PROMPT(r), output: old || r.state === "running" ? null : OUTPUT, error: r.state === "failed" ? "claude -p exited after 600 s without output" : null };
+        return wait(d);
+      },
+    },
+    rates: (w) => wait(rates(w), 80),
+  };
+}

@@ -1,6 +1,12 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 import type {
   AccessOverview,
+  AccountInput,
+  AgentRunDetail,
+  AgentRunFilter,
+  AgentRunPage,
+  ClaudeAccount,
+  Rates,
   AnswerInput,
   AuditFilter,
   AuditPage,
@@ -109,6 +115,18 @@ export interface Api {
     setEnabled(enabled: boolean): Promise<PipelineState>;
     setLimit(step: string, limit: { perDay: number | null }): Promise<StageLimit>;
   };
+  /** Enabled accounts for everyone; operators also see disabled ones and edit label, enabled and max concurrent. Never an email or path. */
+  accounts: {
+    list(): Promise<ClaudeAccount[]>;
+    update(id: string, input: AccountInput): Promise<ClaudeAccount>;
+  };
+  /** Agent runs (one model call each): keyset-paged, filtered on the server. */
+  agents: {
+    list(filter: AgentRunFilter): Promise<AgentRunPage>;
+    get(id: number): Promise<AgentRunDetail>;
+  };
+  /** Items moved per stage and account use over time. */
+  rates(window: "24h" | "7d"): Promise<Rates>;
   /** Every registered model prompt, with the server's commit. */
   prompts(): Promise<PromptsReport>;
   signOut(): Promise<void>;

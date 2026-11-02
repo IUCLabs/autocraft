@@ -17,3 +17,15 @@ export const num = (n: number) => n.toLocaleString("en");
 export const pct = (a: number, b: number) => (b ? `${Math.round((a / b) * 100)}%` : "–");
 
 export const ageDays = (isoTime: string) => (now() - Date.parse(isoTime)) / 86400_000;
+
+/** The current time in ms on the app's clock (frozen in the mock). */
+export const nowMs = () => now();
+
+/** "2 h 40 m" / "35 m" / "3 d 4 h" for a span in ms. */
+export function span(ms: number): string {
+  const m = Math.max(0, Math.round(ms / 60000));
+  if (m < 1) return "<1 m";
+  if (m < 60) return `${m} m`;
+  if (m < 1440) return `${Math.floor(m / 60)} h ${m % 60} m`;
+  return `${Math.floor(m / 1440)} d ${Math.floor((m % 1440) / 60)} h`;
+}

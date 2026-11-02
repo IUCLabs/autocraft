@@ -13,6 +13,7 @@ import { Button } from "../../ui/Button";
 import { cn } from "../../ui/cn";
 import { ago, num } from "../../lib/format";
 import { Block, ConfirmButton, ErrorLine, Page, useWrite, when } from "../admin/parts";
+import { AccountsPanel } from "../agents/accounts";
 import { PipelineSwitch, StageLimits } from "./controls";
 
 // ---- helpers -------------------------------------------------------------------
@@ -227,6 +228,7 @@ function PipelineView({ user, params }: ViewProps) {
       <PipelineSwitch className="mt-4" />
       <div className="mt-4">
         <StageLimits />
+        <AccountsPanel />
       </div>
       {o && <Stages o={o} />}
       <div className="mt-5">
