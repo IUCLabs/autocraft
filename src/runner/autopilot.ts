@@ -17,6 +17,7 @@ import { countPlan, planLabels } from "../labels/plan.ts";
 import { commentApprovalOf } from "../act/approval.ts";
 import { closeCandidates, pending as actPending } from "../act/index.ts";
 import { dupesWork } from "../dupes/index.ts";
+import { pushApprovalOf } from "../fixup/approval.ts";
 import { selectFixups } from "../fixup/candidates.ts";
 import { mergeApprovalOf } from "../merge/approval.ts";
 import { buildQueue, eligible } from "../merge/queue.ts";
@@ -221,10 +222,7 @@ export const LANES: Lane[] = [
     steps: ["fixup"],
     perRepo: true,
     detect: (db, { tracked }) => {
-      const repos = tracked.filter((repo) => {
-        const s = selectFixups(db, repo);
-        return s.fix.length > 0 || s.cannotPush.length > 0;
-      });
+      const repos = tracked.filter((repo) => pushApprovalOf(db, repo) && selectFixups(db, repo).fix.length > 0);
       return repos.sort().map((repo) => ({ step: "fixup", params: { repo } }));
     },
   },

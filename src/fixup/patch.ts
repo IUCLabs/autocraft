@@ -11,6 +11,11 @@ export function safePath(p: string): boolean {
   return p.split("/").every((s) => s !== "" && s !== "." && s !== ".." && s.toLowerCase() !== ".git");
 }
 
+/** Source files an automated fix may edit: Rust files other than build scripts, nothing under .cargo or .github. */
+export function editable(path: string): boolean {
+  return safePath(path) && path.endsWith(".rs") && !path.endsWith("/build.rs") && path !== "build.rs" && !path.split("/").some((s) => s === ".cargo" || s === ".github");
+}
+
 /** The diff text without a surrounding Markdown fence or leading prose lines. */
 export function extractDiff(text: string): string {
   let t = text.replace(/\r\n/g, "\n").trim();
@@ -47,6 +52,7 @@ export function validatePatch(text: string, allowed: string[]): PatchCheck {
       if (!m || m[1] !== m[2]) return { ok: false, reason: `unsupported file header: ${l.slice(0, 100)}` };
       cur = m[1]!;
       if (!safePath(cur)) return { ok: false, reason: `unsafe path ${cur}` };
+      if (!editable(cur)) return { ok: false, reason: `${cur} is not a file a fix-up may edit` };
       if (!allowed.includes(cur)) return { ok: false, reason: `${cur} is not a file named in the review's fixes` };
       if (files.includes(cur)) return { ok: false, reason: `${cur} appears twice` };
       files.push(cur);

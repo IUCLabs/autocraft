@@ -9,6 +9,7 @@
 // Without --apply it is a dry run: local tables only, nothing called or written.
 // The checkout is untrusted data: nothing from it is ever run (see git.ts).
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { askClaude } from "../classify/run.ts";
@@ -20,7 +21,8 @@ import { cachedDiff, ghDiff, type DiffFetcher } from "../review/diff.ts";
 import { pushApprovalOf } from "./approval.ts";
 import { selectFixups, type FixCandidate } from "./candidates.ts";
 import { Git, exec, fixupDir, type Exec } from "./git.ts";
-import { validatePatch, type FixupPr } from "./patch.ts";
+import { scrubGitError } from "../worker/patch.ts";
+import { editable, validatePatch, type FixupPr } from "./patch.ts";
 import { HOLD_CANNOT_PUSH, commentText, commitMessage } from "./template.ts";
 
 export { selectFixups, MAX_ATTEMPTS, type FixCandidate, type FixSelection } from "./candidates.ts";
@@ -66,6 +68,10 @@ export type FixupSummary = {
 
 const refOf = (c: { repo: string; number: number }) => `${c.repo}#${c.number}`;
 const short = (sha: string) => sha.slice(0, 7);
+/** Reasons are shown on the dashboard: first line only, known directories and any absolute path removed. */
+export function scrubReason(text: string, root: string): string {
+  return scrubGitError(text, [root, homedir()]).replace(/(^|[\s"'(=:])\/[^\s"')]*/g, "$1<path>");
+}
 const oneLine = (s: string) => s.replace(/\s+/g, " ").trim().slice(0, 200);
 
 const PR_QUERY = `query($name: String!, $n: Int!) {
@@ -150,17 +156,21 @@ export async function runFixup(db: DatabaseSync, params: FixupParams, log: (line
   for (const c of picks) {
     const ref = refOf(c);
     const files = [...new Set(c.fixes.map((f) => f.file))];
-    const fail = (state: "failed" | "refused", reason: string) => {
+    const refusedPaths = files.filter((f) => !editable(f));
+    const fail = (state: "failed" | "refused", raw: string) => {
+      const reason = scrubReason(raw, d.root);
       rec.fixup(c, state, reason, files);
       summary.failed.push({ ref, reason });
       log(`  ${ref}: ${state}: ${reason}`);
     };
-    const hold = (state: "cannot-push" | "too-large", reason: string) => {
+    const hold = (state: "cannot-push" | "too-large", raw: string) => {
+      const reason = scrubReason(raw, d.root);
       rec.fixup(c, state, reason, files);
       summary.held.push({ ref, reason });
       log(`  ${ref}: held: ${reason}`);
     };
     try {
+      if (refusedPaths.length) { hold("too-large", "the fixes name files a fix-up may not edit"); continue; }
       const r = await d.querier.query(PR_QUERY, { name: repo, n: c.number }) as { repository?: { pullRequest?: PrNode | null } };
       const pr = r.repository?.pullRequest;
       if (!pr || pr.state !== "OPEN" || pr.isDraft) { log(`  ${ref}: skipped: no longer an open, non-draft PR`); continue; }
@@ -168,13 +178,6 @@ export async function runFixup(db: DatabaseSync, params: FixupParams, log: (line
       params.onHandled?.(++handled);
       if (!pr.maintainerCanModify || !pr.headRepository) { hold("cannot-push", HOLD_CANNOT_PUSH); continue; }
       if (pr.mergeable === "CONFLICTING") { log(`  ${ref}: skipped: conflicts with the base branch`); continue; }
-
-      // Claim before the first change.
-      if (!(pr.assignees?.nodes ?? []).length) {
-        await d.querier.query(ASSIGN, { id: pr.id, user: who.nodeId });
-        audit(db, ACTOR, "assign", ref, { run: runId, assignee: who.login });
-        log(`  ${ref}: assigned to ${who.login}`);
-      }
 
       const head = await git.fetchPr(ORG, repo, c.number);
       if (head !== c.head) { log(`  ${ref}: skipped: fetched head ${short(head)} is not the reviewed ${short(c.head)}`); continue; }
@@ -214,6 +217,13 @@ export async function runFixup(db: DatabaseSync, params: FixupParams, log: (line
       if (changes.some((x) => x[2] !== "M" || x[0] !== x[1] || (x[0] !== "100644" && x[0] !== "100755")) || touched !== [...v.files].sort().join("\n")) {
         fail("refused", "the commit would change files or modes outside the validated diff");
         continue;
+      }
+
+      // Claim after the patch is validated, just before the push.
+      if (!(pr.assignees?.nodes ?? []).length) {
+        await d.querier.query(ASSIGN, { id: pr.id, user: who.nodeId });
+        audit(db, ACTOR, "assign", ref, { run: runId, assignee: who.login });
+        log(`  ${ref}: assigned to ${who.login}`);
       }
 
       const push = await git.push(pr.headRepository.nameWithOwner, pr.headRefName, commit, head);
