@@ -8,6 +8,7 @@ import type {
 } from "../../../web/src/api/types.ts";
 import { AccessError, addLogin, isRole, listAccess, removeLogin, ROLES, setRole } from "../../access.ts";
 import { approvalOf, setApproval } from "../../labels/approval.ts";
+import { setCommentApproval } from "../../act/approval.ts";
 import { mergeApprovalOf, setMergeApproval } from "../../merge/approval.ts";
 import { countPlan, planLabels } from "../../labels/plan.ts";
 import { listAll, RepoError, trackRepo, untrackRepo } from "../../repos.ts";
@@ -22,7 +23,7 @@ const ACCESS_NOTE_MAX = 500;
 const AUDIT_PAGE = 50;
 export const AUDIT_ACTIONS = [
   "answer", "undo", "adopt", "opinion", "opinion-retract", "comment", "override", "rule", "access-add", "access-remove", "access-role",
-  "session-revoke", "sign-in", "sign-in-refused", "repo-track", "repo-untrack", "labels-approve", "labels-revoke", "labels-apply", "merge-approve", "merge-revoke",
+  "session-revoke", "sign-in", "sign-in-refused", "repo-track", "repo-untrack", "labels-approve", "labels-revoke", "labels-apply", "merge-approve", "merge-revoke", "comment-approve", "comment-revoke", "act-comment", "act-close", "act-skip",
   "job-request", "job-cancel", "pipeline-switch", "stage-limit",
 ];
 
@@ -269,6 +270,21 @@ export function mergeApproval(db: DatabaseSync, req: Req, approved: boolean): Tr
     }
   });
   if (!changed) throw new HttpError(409, `${name} is ${approved ? "already" : "not"} approved for merging`);
+  return allRepos(db, req);
+}
+
+// Only an operator lets the pipeline comment on and close items in a repo.
+export function commentApproval(db: DatabaseSync, req: Req, approved: boolean): TrackedRepo[] {
+  requireOperator(req, "approve commenting");
+  const name = required(body(req).name, "name");
+  const changed = refused(() => {
+    try {
+      return setCommentApproval(db, req.user.login, name, approved);
+    } catch (e) {
+      throw new RepoError((e as Error).message);
+    }
+  });
+  if (!changed) throw new HttpError(409, `${name} is ${approved ? "already" : "not"} approved for commenting`);
   return allRepos(db, req);
 }
 

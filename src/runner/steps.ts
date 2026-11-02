@@ -79,6 +79,12 @@ async function checkMergeApproved(db: DatabaseSync, p: Params): Promise<string |
   return mergeApprovalOf(db, String(p.repo)) ? null : `merging in ${p.repo} is not approved`;
 }
 
+/** Comments and closes are opt-in per repo: tracked repos include ones we do not maintain. */
+async function checkCommentApproved(db: DatabaseSync, p: Params): Promise<string | null> {
+  const { commentApprovalOf } = await import("../act/approval.ts");
+  return commentApprovalOf(db, String(p.repo)) ? null : `commenting in ${p.repo} is not approved`;
+}
+
 export const STEPS: StepDef[] = [
   {
     name: "classify-new",
@@ -245,6 +251,26 @@ export const STEPS: StepDef[] = [
       if (refused) throw new Error(refused);
       const r = await runMerge(ctx.db, { repo: String(ctx.params.repo), limit: Number(ctx.params.limit), dryRun: false, onMerged: ctx.handled }, ctx.log);
       return `${r.repo}: merged ${r.merged.length} of ${r.attempted.length} tried, ${r.refused.length} refused, ${r.asked.length} decisions asked`;
+    },
+  },
+  {
+    name: "act",
+    title: "Comment and close",
+    description: "Posts one short comment and closes the items an operator answered Out of scope or Close, and asks a \"Close this PR?\" decision for each PR whose review says close. Skips an item that already closed or whose PR head moved. Calls no model.",
+    stage: 6,
+    requires: "operator",
+    group: "github-write",
+    params: [
+      { name: "repo", label: "Repo", kind: "repo", required: true },
+      { name: "limit", label: "At most", kind: "int", min: 1, max: 50, default: 20, help: "items to act on in this job" },
+    ],
+    check: checkCommentApproved,
+    run: async (ctx) => {
+      const { runAct } = await import("../act/index.ts");
+      const refused = await checkCommentApproved(ctx.db, ctx.params);
+      if (refused) throw new Error(refused);
+      const r = await runAct(ctx.db, { repo: String(ctx.params.repo), limit: Number(ctx.params.limit), dryRun: false, onHandled: ctx.handled }, ctx.log);
+      return `${r.repo}: ${r.done.length} closed, ${r.skipped.length} skipped, ${r.failed.length} failed, ${r.asked.length} decisions asked`;
     },
   },
 ];

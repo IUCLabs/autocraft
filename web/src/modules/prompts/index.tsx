@@ -205,6 +205,33 @@ function Prompts(_: ViewProps) {
             </div>
           </div>
         ))}
+        {r.comments.length > 0 && (
+          <div className="mt-8">
+            <h2 className="mb-1 text-xs font-semibold text-ink/60">Comments posted on GitHub</h2>
+            <p className="mb-2 text-sm text-ink/70">Fixed texts, no model. Only an operator's answer triggers one, and only in repos an operator approved for comments.</p>
+            <div className="space-y-4">
+              {r.comments.map((c) => (
+                <section key={c.id} id={c.id} className="min-w-0 scroll-mt-4 rounded-md border border-line px-4 pb-4 pt-3">
+                  <h3 className="font-mono text-sm font-semibold">{c.id}</h3>
+                  <p className="mt-1 text-sm text-ink/75">{c.purpose}</p>
+                  <Field label="Template">
+                    <Code text={c.text} title="Text" marks />
+                    <ul className="mt-2 space-y-1 text-sm">
+                      {c.placeholders.map((ph) => (
+                        <li key={ph.name}>
+                          <code className="rounded-sm bg-accent/15 px-1 font-mono text-xs text-accent-ink">{`{{${ph.name}}}`}</code> {ph.meaning}
+                        </li>
+                      ))}
+                    </ul>
+                  </Field>
+                  <Field label="Example">
+                    <Code text={c.example} title="As posted, for made-up values" />
+                  </Field>
+                </section>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

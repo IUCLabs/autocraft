@@ -223,7 +223,7 @@ CREATE TABLE IF NOT EXISTS oauth_states (
 CREATE TABLE IF NOT EXISTS audit (
   at TEXT NOT NULL,
   login TEXT NOT NULL,
-  action TEXT NOT NULL,               -- answer | undo | adopt | opinion | opinion-retract | comment | override | rule | access-add | access-remove | access-role | session-revoke | sign-in | sign-in-refused (at most one row per login per hour; details.refused counts them) | repo-track | repo-untrack | labels-approve | labels-revoke | merge-approve | merge-revoke | labels-apply | assign | merge | merge-refused | job-request | job-cancel | pipeline-switch | stage-limit | env-create | env-change | env-rotate-key | task-cancel
+  action TEXT NOT NULL,               -- answer | undo | adopt | opinion | opinion-retract | comment | override | rule | access-add | access-remove | access-role | session-revoke | sign-in | sign-in-refused (at most one row per login per hour; details.refused counts them) | repo-track | repo-untrack | labels-approve | labels-revoke | merge-approve | merge-revoke | labels-apply | assign | merge | merge-refused | comment-approve | comment-revoke | act-comment | act-close | act-skip | job-request | job-cancel | pipeline-switch | stage-limit | env-create | env-change | env-rotate-key | task-cancel
   target TEXT,
   details TEXT                        -- JSON
 );
@@ -320,7 +320,7 @@ CREATE TABLE IF NOT EXISTS stage_limits (
 );
 INSERT OR IGNORE INTO stage_limits (step, per_day) VALUES
   ('classify-new', 2000), ('embed', NULL), ('decide', 100), ('checks', NULL),
-  ('review-batch', 40), ('labels-apply', NULL), ('merge', 10);
+  ('review-batch', 40), ('labels-apply', NULL), ('merge', 10), ('act', 20);
 
 -- One row per `craft-auto sync` run, kept for two days, for the Pipeline page.
 CREATE TABLE IF NOT EXISTS sync_runs (
@@ -576,3 +576,20 @@ CREATE TABLE IF NOT EXISTS build_artifacts (
   file TEXT NOT NULL,                 -- path under the artifact directory
   PRIMARY KEY (task_id, name)
 ) WITHOUT ROWID;
+
+-- GitHub writes made after an operator's answer (src/act): one row per decision
+-- and item. done: commented and closed; skipped: the item had already closed
+-- or its head moved, nothing written; failed: retried by the next run (a
+-- comment_url on a failed row means the comment is posted and only the close is left).
+CREATE TABLE IF NOT EXISTS actions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  decision_id TEXT NOT NULL,
+  repo TEXT NOT NULL, number INTEGER NOT NULL,
+  kind TEXT NOT NULL,                 -- comment-close
+  state TEXT NOT NULL,                -- done | skipped | failed
+  comment_url TEXT,
+  reason TEXT,
+  created_at TEXT NOT NULL,
+  UNIQUE (decision_id, repo, number, kind)
+);
+CREATE INDEX IF NOT EXISTS actions_item ON actions(repo, number);
