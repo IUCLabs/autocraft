@@ -1,6 +1,8 @@
 // Deterministic fixture data shaped like the real craft-app backlog.
 // Handles are invented GitHub-style logins; the reference apps are never named.
 
+import { BATCH_SUMMARY, TEXT, fillerText } from "./fixtureText";
+
 import type {
   Classification,
   Decision,
@@ -67,20 +69,14 @@ export const REPO_OPEN: [string, number][] = [
 export const REPOS = REPO_OPEN.map(([r]) => r);
 
 /** Signed-in user per mock role; pick one with `?as=` or the user menu. */
-export const MOCK_USERS: Record<"operator" | "maintainer" | "maintainer-off" | "viewer", User> = {
+export const MOCK_USERS: Record<"operator" | "maintainer" | "viewer", User> = {
   operator: {
     login: "ochre-fox",
     role: "operator",
     writeRepos: ["photocraft", "filmcraft", "designcraft", "pdfcraft", "wordcraft", "gridcraft", "vectorcraft", "deckcraft", "craft-libs", "effectcraft"],
-    maintainerWrites: true,
+    maintainerWrites: false,
   },
   maintainer: {
-    login: "kiri-n",
-    role: "maintainer",
-    writeRepos: ["photocraft", "designcraft", "vectorcraft", "deckcraft", "pdfcraft", "filmcraft"],
-    maintainerWrites: true,
-  },
-  "maintainer-off": {
     login: "kiri-n",
     role: "maintainer",
     writeRepos: ["photocraft", "designcraft", "vectorcraft", "deckcraft", "pdfcraft", "filmcraft"],
@@ -140,8 +136,8 @@ interface Seed {
   related?: RelatedItem[];
   cls?: [string, string, string][]; // classifier, typeLabel, want
   reference?: string;
-  answer?: [string, string, number, boolean, string?, string?]; // answer, by, hoursAgo, applied, note, proposedBy
-  proposals?: [string, string, string | null, number][]; // login, option, note, minutes ago
+  answer?: [string, string, number, boolean, string?, number?]; // answer, by, hoursAgo, applied, note, index of the adopted opinion
+  opinions?: [string, string | null, string | null, number][]; // login, option, note, minutes ago
   docket?: string;
 }
 
@@ -151,7 +147,12 @@ const SEEDS: Seed[] = [
     repo: "photocraft",
     number: 4127,
     title: "Add Wave distortion filter with live preview",
-    proposals: [["kiri-n", "take", "Matches the reference filter; preview checked against three images.", 55]],
+    opinions: [
+      ["kiri-n", "take", "Matches the reference filter; preview checked against three images.", 55],
+      ["mosswood", "take", null, 140],
+      ["saltmarsh-ink", "small-extra", "Would rather keep core lean until the layer model lands.", 300],
+      ["brushstroke42", "take", "Been waiting for this one.", 410],
+    ],
     question: "Is a Wave distortion filter in scope for photocraft?",
     context: [
       "The reference app ships Wave under Filter › Distort with the same five parameters.",
@@ -175,7 +176,15 @@ const SEEDS: Seed[] = [
     repo: "designcraft",
     number: 2210,
     title: "Export artboards as animated WebP",
-    proposals: [["mosswood", "plugin", "The encoder dependency is heavy for a feature the reference app lacks.", 130]],
+    opinions: [
+      ["mosswood", "plugin", "The encoder dependency is heavy for a feature the reference app lacks.", 130],
+      ["kiri-n", "plugin", "Agree: plugin API can already add export formats.", 95],
+      ["sable-ui", "small-extra", "Animated previews are the most requested export. A feature flag is enough.", 220],
+      ["quietgrid", "small-extra", null, 260],
+      ["okapi-codes", "take", "Please keep it in core, plugins are hard to install for designers.", 600],
+      ["glasswing", null, "Does this also cover GIF? Same encoder question would apply.", 700],
+      ["larkspur-dev", "plugin", null, 820],
+    ],
     question: "Animated WebP export goes beyond the reference app. Keep it or send it to a plugin?",
     context: ["The reference app exports static images only.", "The PR adds an encoder dependency (libwebp-sys, 1.4 MB)."],
     facts: ["+1,288 −40 · 19 files", "author: 3 merged, override allow", "new dependency: libwebp-sys", "CI passing · mergeable", "haiku: small extra · jev: plugin"],
@@ -260,7 +269,7 @@ const SEEDS: Seed[] = [
     repo: "gridcraft",
     number: 977,
     title: "Formula bar: support array formulas entered with Ctrl+Shift+Enter",
-    proposals: [["mosswood", "hold", "I want a second look at how ranges spill.", 32]],
+    opinions: [["mosswood", "hold", "I want a second look at how ranges spill.", 32]],
     question: "Reviewed and green, but it touches the evaluator core. Merge now?",
     context: ["Sonnet review found no issues; 140 new evaluator tests pass.", "It changes how ranges spill into neighbouring cells."],
     facts: ["+2,104 −310 · 14 files", "author: 22 merged, whitelisted", "review: no issues found", "CI passing · mergeable"],
@@ -383,7 +392,10 @@ const SEEDS: Seed[] = [
     repo: "effectcraft",
     number: 811,
     title: "Particle emitter: add turbulence field",
-    proposals: [["mosswood", "take", null, 300]],
+    opinions: [
+      ["mosswood", "take", null, 300],
+      ["sable-ui", "small-extra", null, 400],
+    ],
     question: "A turbulence field for particles: in scope or small extra?",
     context: ["The reference app has turbulence only through a third-party plugin."],
     facts: ["+930 −22 · 11 files", "author: 11 merged, whitelisted", "reference app: plugin only", "CI passing · mergeable"],
@@ -486,7 +498,8 @@ const SEEDS: Seed[] = [
     recommended: "merge",
     ageH: 22,
     author: "larkspur-dev",
-    answer: ["merge", "ochre-fox", 9, true, "Tested on the 2 h sample project.", "mosswood"],
+    answer: ["merge", "ochre-fox", 9, true, "Tested on the 2 h sample project.", 0],
+    opinions: [["mosswood", "merge", "Tested on the 2 h sample project.", 700]],
   },
 ];
 
@@ -566,8 +579,14 @@ function classification(c: [string, string, string], s: Seed, i: number): Classi
   };
 }
 
+/** GitHub permission of fixture logins: the two maintainers can write to most repos, contributors to none. */
+export const permFor = (login: string, repo: string): "write" | "none" =>
+  (login === "kiri-n" && MOCK_USERS.maintainer.writeRepos.includes(repo)) || (login === "mosswood" && repo !== "cadcraft") || login === "ochre-fox" ? "write" : "none";
+
 function toDecision(s: Seed): Decision {
   const id = s.number === null ? `batch-${s.repo}-${hash(s.title) & 0xffff}` : `${s.repo}#${s.number}:${s.kind}`;
+  const opinions = (s.opinions ?? []).map(([login, option, note, mins], i) => ({ id: `${id}/o${i}`, login, option, note, at: iso(mins * M), permission: permFor(login, s.repo) }));
+  const text = s.number === null ? { summary: BATCH_SUMMARY[s.repo] ?? s.question, body: null } : (TEXT[`${s.repo}#${s.number}`] ?? fillerText(s.title, s.repo));
   return {
     id,
     kind: s.kind,
@@ -576,6 +595,10 @@ function toDecision(s: Seed): Decision {
     items: s.items ?? [],
     title: s.title,
     question: s.question,
+    summary: text.summary,
+    summaryBy: "sonnet",
+    summaryAt: iso(s.ageH * H + 30 * M),
+    body: text.body,
     context: s.context,
     facts: s.facts.slice(0, 5),
     options: s.options,
@@ -589,17 +612,8 @@ function toDecision(s: Seed): Decision {
     answeredBy: s.answer?.[1] ?? null,
     answeredAt: s.answer ? iso(s.answer[2] * H) : null,
     appliedAt: s.answer?.[3] ? iso(s.answer[2] * H - 20 * M) : null,
-    proposedBy: s.answer?.[5] ?? null,
-    proposals: (s.proposals ?? []).map(([login, option, note, mins], i) => ({
-      id: `${id}/p${i}`,
-      login,
-      option,
-      note,
-      at: iso(mins * M),
-      status: "pending" as const,
-      decidedBy: null,
-      decidedAt: null,
-    })),
+    opinions,
+    adoptedOpinion: s.answer?.[5] !== undefined ? opinions[s.answer[5]] : null,
     exceptions: [],
     claim: s.claim ? { login: s.claim[0], since: iso(s.claim[1] * M) } : null,
     commentCount: s.comments?.length ?? 0,
@@ -698,6 +712,7 @@ export function itemFor(repo: string, number: number): Item {
     number,
     kind: isIssue ? "issue" : "pr",
     title: s.title,
+    body: d.body ?? "",
     state: d.answer === "merge" && d.appliedAt ? "merged" : "open",
     author,
     tier,

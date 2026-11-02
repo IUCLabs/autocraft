@@ -21,10 +21,11 @@ export interface Api {
     get(id: string): Promise<Decision>;
     answer(id: string, input: AnswerInput): Promise<Decision>;
     undo(id: string): Promise<Decision>;
-    propose(id: string, input: { answer: string; note?: string }): Promise<Decision>;
-    approve(id: string, proposalId: string): Promise<Decision>;
-    reject(id: string, proposalId: string): Promise<Decision>;
-    withdraw(id: string, proposalId: string): Promise<Decision>;
+    /** Give or change the signed-in user's opinion (anyone signed in). */
+    opine(id: string, input: { option: string | null; note?: string }): Promise<Decision>;
+    retract(id: string): Promise<Decision>;
+    /** Operator only: answer with the opinion's option. */
+    adopt(id: string, opinionId: string): Promise<Decision>;
     claim(id: string): Promise<void>;
     thread(id: string): Promise<DecisionComment[]>;
     comment(id: string, body: string): Promise<DecisionComment>;

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Dialog } from "radix-ui";
-import { ChevronLeftIcon, ChevronRightIcon, SlidersHorizontalIcon, XIcon } from "lucide-react";
+import { SlidersHorizontalIcon, XIcon } from "lucide-react";
 import type { ViewProps } from "../../registry/types";
 import { cn } from "../../ui/cn";
 import { DecisionBody } from "./DecisionDetail";
@@ -49,17 +49,8 @@ export function PhoneInbox(props: ViewProps) {
           </button>
         </div>
       )}
-      <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-6 pt-4">
-        {d ? <DecisionBody key={d.id} d={d} user={props.user} phone onAnswered={() => go(list[idx + 1]?.id ?? list[idx - 1]?.id)} /> : <p className="py-16 text-center text-sm text-ink/60">Nothing waiting.</p>}
-      </div>
-      <div className="grid h-12 shrink-0 grid-cols-[1fr_auto_1fr] items-center border-t border-line bg-bg">
-        <button disabled={idx <= 0} onClick={() => go(list[idx - 1]?.id)} className="flex h-12 items-center gap-1 rounded-none px-3 text-sm text-ink/70 disabled:opacity-30">
-          <ChevronLeftIcon /> Prev
-        </button>
-        <span className="num text-xs text-ink/55">{idx >= 0 ? `${idx + 1} of ${list.length}` : ""}</span>
-        <button disabled={idx < 0 || idx >= list.length - 1} onClick={() => go(list[idx + 1]?.id)} className="flex h-12 items-center justify-end gap-1 rounded-none px-3 text-sm font-medium text-ink disabled:opacity-30">
-          Next <ChevronRightIcon />
-        </button>
+      <div className="flex min-h-0 flex-1 flex-col">
+        {d ? <DecisionBody key={d.id} d={d} user={props.user} phone onAnswered={() => go(list[idx + 1]?.id ?? list[idx - 1]?.id)} pager={{ pos: `${idx + 1} of ${list.length}`, prev: idx > 0 ? () => go(list[idx - 1].id) : undefined, next: idx < list.length - 1 ? () => go(list[idx + 1].id) : undefined }} /> : <p className="py-16 text-center text-sm text-ink/60">Nothing waiting.</p>}
       </div>
       <Dialog.Root open={sheet} onOpenChange={setSheet}>
         <Dialog.Portal>

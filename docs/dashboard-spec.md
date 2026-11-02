@@ -39,6 +39,7 @@ Add a `decisions` table; the pipeline writes the questions, the dashboard and th
 | `repo`, `number` | the item; `number` null for a batch |
 | `items` | JSON array of `{repo, number}` for a batch |
 | `question` | one sentence |
+| `summary`, `summary_by`, `summary_at` | AI summary of the item (or batch): 3–6 sentences on what it does, why, what is risky or unclear, and how it relates to the reference app; which model wrote it and when |
 | `context` | at most three short sentences, in user terms |
 | `facts` | JSON array of up to five short facts ("+120 −8, 3 files", "author: 14 merged PRs", "reference app: Filter › Distort › Wave") |
 | `options` | JSON array of `{key, label}`; 2–4 options |
@@ -46,10 +47,13 @@ Add a `decisions` table; the pipeline writes the questions, the dashboard and th
 | `public_text` | the exact text that will be posted publicly if an option needs it, else null |
 | `asked_at`, `asked_by` | when and which session or agent |
 | `docket` | Docket issue key if also asked there, else null |
-| `answer`, `answer_note`, `answered_by`, `answered_at` | the reader's choice; null while open |
+| `answer`, `answer_note`, `answered_by`, `answered_at` | the operator's choice; null while open |
+| `adopted_opinion` | the opinion id when the answer adopted one, else null |
 | `applied_at` | when the pipeline acted on the answer |
 
 A batch answer records one `answer` for the batch plus an `exceptions` JSON array of `{repo, number, answer}`.
+
+A `decision_opinions` table holds opinions: `id`, `decision_id`, `login`, `option` (key, or null for a note only), `note`, `at`, `permission` (the login's GitHub permission on the repo when given: `write` or `none`), `retracted_at`. One live opinion per login and decision. Opinions are display-only and never read by the pipeline.
 
 Stage vocabulary (`stages.stage`, latest row per item wins): `classified`, `reviewed`, `take`, `hold`, `close`, `needs-decision`, `batched`, `merged`, `closed`, `fixed-by-us`. The funnel for open items, as displayed:
 
@@ -69,7 +73,7 @@ The run start is `settings.run_started_at`.
 ### Decisions (home)
 
 - Summary line, then filter chips (repo, kind, age) and the cards, oldest first within each group, grouped by kind then repo.
-- Card: link label (`photocraft#1234`), title, the question, the facts, option buttons with the recommendation marked, an optional note field, and an expander with the context, latest classifications (one line per classifier) and related items (duplicates, linked issues, overlapping PRs).
+- Card: link label (`photocraft#1234`) and title, the AI summary, the issue or PR body (rendered, collapsed when long), the facts, then the question with option buttons (recommendation marked, opinion tally on each), an optional note field, everyone's opinions, and expanders with the context, latest classifications (one line per classifier) and related items (duplicates, linked issues, overlapping PRs). List rows show the item title and the summary's first sentence.
 - Batch card: the shared question, the item count, the first five items with "show all", one set of option buttons, and a per-item override in the expanded list.
 - Answering a card replaces it with a one-line confirmation and an undo link (undo works until `applied_at` is set).
 - "Answered" tab: decisions answered but not yet applied, then applied ones (last 7 days).
@@ -121,19 +125,32 @@ The whole dashboard sits behind GitHub sign-in: every page, asset and endpoint e
 - Admins add and remove logins on the Access page or with `craft-auto access add <login> [--admin] [--note]` / `access remove <login>`. The first admin is added with the CLI.
 - Removing a login or changing its role ends its sessions at once.
 
+### Trust boundary
+
+The pipeline runs Claude agents under the operator's own Claude account on the operator's machine, and the operator is responsible for what they do. So nothing a dashboard user enters may steer the pipeline unless the operator has approved it, and a compromised dashboard account must not be able to cause harm.
+
+- **Operator**: one or more logins with role `operator` (today only the owner). Only an operator's answer is **actionable**, including an answer made by adopting someone's opinion. The pipeline reads only actionable answers (`craft-auto decisions list --actionable`), and only their option keys: never free text.
+- **Everyone else gives opinions.** Anyone signed in can pick an option on any decision (an **opinion**: who, which option, optional note) and comment, whatever their role or GitHub permission. Opinions are shown to everyone with the person's GitHub permission on that repo (`write` or `none`) and a tally per option. They are non-binding: the operator answers, or **adopts** an opinion with one tap, which records the operator's answer with that option and credits the opinion. A person can change or retract their opinion until the decision is answered.
+- **Opinions and comments never reach the pipeline.** They are display-only: no agent prompt, brief or CLI output used by agents includes them, adopted or not.
+- **Writes by non-operators are rate-limited and audited**: opinions and comments per session and per login (proposed: 60 an hour), each with an audit row.
+- **`settings.maintainer_writes` is reserved** for a later deployment, on accounts and a machine meant for shared use, where an answer by a maintainer with write permission on the repo becomes actionable directly. It is off and has no effect in this deployment.
+- **What a compromised account can do**: add opinions and comments, which people can see and nothing acts on. It cannot trigger a merge, close, post, label, push or any pipeline action, change the whitelist, settings or access list, or see private fields.
+- **What viewers can see**: public GitHub data and the pipeline's public-safe outputs. Private fields (override notes, answer notes, anything naming why a contributor gets extra scrutiny) are operator-only and never in the export.
+- **Pipeline hygiene**: agents treat all GitHub content and all dashboard text as untrusted data. Briefs quote it as data and never as instructions.
+
 ### What each person can do
 
 | Action | Who |
 |---|---|
 | Read every page | anyone on the access list |
-| Answer or undo a decision about repo R | signed in **and** has write, maintain or admin permission on `storytold/R` on GitHub |
-| Answer a batch | has that permission on every repo in the batch; otherwise the batch card shows which repos block them |
-| Whitelist overrides, whitelist rule, settings | admin |
-| Access list, sessions, audit log | admin |
+| Answer, undo, adopt an opinion | operator; for a repo decision the operator also needs write, maintain or admin permission on `storytold/R` on GitHub |
+| Give, change or retract an opinion; comment on a decision | anyone signed in (rate-limited, audited); shown with their GitHub permission on the repo |
+| Whitelist overrides, whitelist rule, settings (including `maintainer_writes`) | operator |
+| Access list, sessions, audit log | operator |
 
-The access-list role never grants decision rights by itself: an admin without write access to a repo can't answer its decisions.
+Roles on the access list: `operator`, `maintainer`, `viewer`. Today `maintainer` and `viewer` differ only in the badge shown beside their opinions; `maintainer` gains direct answers once `maintainer_writes` is used. GitHub write permission on the repo is still required for an operator's answer about that repo. (The current code calls the operator role `admin`; rename it when the new UI lands.)
 
-GitHub permissions: after sign-in, read the user's permission on each repo with the user's own token (`GET /repos/storytold/<repo>` returns `permissions` for the authenticated user), cache it per user and repo for 10 minutes, and re-check at the moment of any write if the cached value is older than one minute. A user without any write permission still signs in as a viewer. The card hides answer buttons when the reader can't answer, and says why in one line.
+GitHub permissions: after sign-in, read the user's permission on each repo with the user's own token (`GET /repos/storytold/<repo>` returns `permissions` for the authenticated user), cache it per user and repo for 10 minutes, and re-check at the moment of any write if the cached value is older than one minute. A user without any write permission still signs in and can give opinions. The card says in one line whether the reader's pick is an answer or an opinion.
 
 ### Sign-in flow
 
@@ -151,7 +168,7 @@ GitHub permissions: after sign-in, read the user's permission on each repo with 
 
 ### Audit log
 
-`audit` table: `at`, `login`, `action` (`answer`, `undo`, `override`, `rule`, `access-add`, `access-remove`, `session-revoke`, `sign-in`, `sign-in-refused`), `target`, `details` (JSON). Shown on the item page (that item's entries) and on the Access page (everything, filterable).
+`audit` table: `at`, `login`, `action` (`answer`, `undo`, `adopt`, `opinion`, `opinion-retract`, `comment`, `override`, `rule`, `access-add`, `access-remove`, `session-revoke`, `sign-in`, `sign-in-refused`), `target`, `details` (JSON). Shown on the item page (that item's entries) and on the Access page (everything, filterable).
 
 ### Secrets and configuration
 

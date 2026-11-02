@@ -25,9 +25,9 @@ export const decisionsModule: FeatureModule = {
         toolbar: DecisionsToolbar,
         phone: PhoneInbox,
         panels: [
-          { id: "list", title: "Queue", component: InboxList, defaultSize: 30, minSize: 22, maxSize: 45 },
-          { id: "detail", title: "Decision", component: DetailPanel, defaultSize: 48, minSize: 32 },
-          { id: "thread", title: "Discussion", component: ThreadPanel, defaultSize: 22, minSize: 16, maxSize: 34, collapsible: true, hideOnPhone: true },
+          { id: "list", title: "Queue", component: InboxList, defaultSize: 28, minSize: 20, maxSize: 45 },
+          { id: "detail", title: "Decision", component: DetailPanel, defaultSize: 45, minSize: 32 },
+          { id: "thread", title: "Opinions and discussion", component: ThreadPanel, defaultSize: 27, minSize: 18, maxSize: 40, collapsible: true, hideOnPhone: true },
         ],
       },
     },

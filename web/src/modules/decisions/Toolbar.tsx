@@ -19,11 +19,10 @@ export function DecisionsToolbar(props: ViewProps & { phone?: boolean }) {
   const { filter, update } = useDecisionFilter();
   const { data: open } = useQuery("count:open", (api) => api.decisions.list({ status: "open" }));
   const { data: answered } = useQuery("count:answered", (api) => api.decisions.list({ status: "answered" }));
-  const { data: proposals } = useQuery("count:proposals", (api) => api.decisions.list({ status: "proposals" }));
+  const { data: withOpinions } = useQuery("count:opinions", (api) => api.decisions.list({ status: "opinions" }));
   const tabs = [
     { t: "open" as const, label: "Waiting", n: open?.total },
-    // Operators approve proposals; everyone else sees them on the cards.
-    ...(props.user.role === "operator" ? [{ t: "proposals" as const, label: "Proposals", n: proposals?.total }] : []),
+    { t: "opinions" as const, label: "With opinions", n: withOpinions?.total },
     { t: "answered" as const, label: "Answered", n: answered?.total },
   ];
   const kinds = filter.kind ?? [];
@@ -47,7 +46,7 @@ export function DecisionsToolbar(props: ViewProps & { phone?: boolean }) {
             )}
           >
             {label}
-            <Count n={n} className={t === "proposals" && n ? "bg-accent/20 text-accent-ink" : ""} />
+            <Count n={n} />
           </button>
         ))}
       </div>

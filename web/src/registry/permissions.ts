@@ -8,25 +8,21 @@ export function can(user: User, p: Permission): boolean {
 }
 
 /**
- * What the user can do with a decision about these repos (docs/dashboard-spec.md,
- * Trust boundary): operators answer, maintainers propose while maintainer
- * writes are on, everyone else reads. GitHub write access is needed on every repo.
+ * What a pick on a decision means for this user (docs/dashboard-spec.md, Trust
+ * boundary): an operator with GitHub write on every repo involved answers;
+ * everyone else gives an opinion, which nothing acts on.
  */
-export type DecisionAccess = { mode: "answer" } | { mode: "propose" } | { mode: "read"; reason: string };
+export type DecisionAccess = { mode: "answer" } | { mode: "opinion"; reason: string };
 
 export function decisionAccess(user: User, repos: string[]): DecisionAccess {
-  if (user.role === "viewer") return { mode: "read", reason: "Viewers can read decisions but not answer them." };
-  if (user.role === "maintainer" && !user.maintainerWrites)
-    return { mode: "read", reason: "Maintainer proposals are off in this deployment; an operator decides." };
+  if (user.role !== "operator") return { mode: "opinion", reason: "Your pick is an opinion: maintainers see it, the operator decides." };
   const missing = [...new Set(repos)].filter((r) => !user.writeRepos.includes(r));
-  if (missing.length) return { mode: "read", reason: `You don't have write access to ${missing.join(", ")} on GitHub.` };
-  return user.role === "operator" ? { mode: "answer" } : { mode: "propose" };
+  if (missing.length) return { mode: "opinion", reason: `You don't have write access to ${missing.join(", ")}, so your pick is an opinion.` };
+  return { mode: "answer" };
 }
 
-export const canComment = (user: User, repo: string) => decisionAccess(user, [repo]).mode !== "read";
+export const repoPermission = (user: User, repo: string): "write" | "none" => (user.writeRepos.includes(repo) ? "write" : "none");
 
 export function roleLabel(user: User) {
-  if (user.role === "operator") return "Operator";
-  if (user.role === "viewer") return "Viewer";
-  return user.maintainerWrites ? "Maintainer · proposes" : "Maintainer · read-only";
+  return user.role === "operator" ? "Operator" : user.role === "maintainer" ? "Maintainer" : "Viewer";
 }

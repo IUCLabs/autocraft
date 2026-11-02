@@ -1,9 +1,8 @@
 import { useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
-import { CheckIcon, LockIcon, Undo2Icon } from "lucide-react";
+import { CheckIcon, Undo2Icon, UsersIcon } from "lucide-react";
 import type { Decision, DecisionList } from "../../api/types";
 import type { Command, ViewProps } from "../../registry/types";
-import { decisionAccess } from "../../registry/permissions";
 import { useHotkeys, useShortcutHelp } from "../../shell/keyboard";
 import { Count } from "../../ui/Heading";
 import { Button } from "../../ui/Button";
@@ -19,8 +18,6 @@ const SHORTCUTS: Command[] = [
   { id: "d-note", keys: "n", label: "Write a note", group: "Decisions" },
   { id: "d-check", keys: "x", label: "Check for a batch answer", group: "Decisions" },
   { id: "d-undo", keys: "u", label: "Undo last answer", group: "Decisions" },
-  { id: "d-approve", keys: "a", label: "Approve proposal (operators)", group: "Decisions" },
-  { id: "d-reject", keys: "r", label: "Reject proposal (operators)", group: "Decisions" },
   { id: "d-open", keys: "o", label: "Open the item page", group: "Decisions" },
   { id: "d-tab", keys: "g a", label: "Waiting / answered tab", group: "Decisions" },
 ];
@@ -71,8 +68,6 @@ export function InboxList({ user }: ViewProps) {
     g ? g.items.push(d) : groups.push({ kind: d.kind, items: [d] });
   }
   const oldest = data?.oldestAskedAt;
-  // When the role itself is read-only, a lock on every row says nothing; the detail pane gives the reason.
-  const roleReadOnly = decisionAccess(user, []).mode === "read";
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -95,7 +90,7 @@ export function InboxList({ user }: ViewProps) {
                 <Count n={g.items.length} />
               </div>
               {g.items.map((d) => (
-                <Row key={d.id} d={d} active={d.id === id} checked={loc.checked.has(d.id)} canAnswer={roleReadOnly || decisionAccess(user, [d.repo]).mode !== "read"} onOpen={() => go(d.id)} activeRef={d.id === id ? activeRef : undefined} />
+                <Row key={d.id} d={d} active={d.id === id} checked={loc.checked.has(d.id)} mine={d.opinions.find((o) => o.login === user.login)?.option ?? undefined} onOpen={() => go(d.id)} activeRef={d.id === id ? activeRef : undefined} />
               ))}
             </div>
           );
@@ -105,10 +100,11 @@ export function InboxList({ user }: ViewProps) {
   );
 }
 
-function Row({ d, active, checked, canAnswer, onOpen, activeRef }: { d: Decision; active: boolean; checked: boolean; canAnswer: boolean; onOpen: () => void; activeRef?: React.Ref<HTMLButtonElement> }) {
+function Row({ d, active, checked, mine, onOpen, activeRef }: { d: Decision; active: boolean; checked: boolean; mine?: string; onOpen: () => void; activeRef?: React.Ref<HTMLButtonElement> }) {
   const rec = d.options.find((o) => o.key === d.recommended);
   const old = ageDays(d.askedAt) >= 2;
-  const proposals = d.proposals.filter((p) => p.status === "pending").length;
+  const opinions = d.opinions.length;
+  const firstSentence = d.summary.split(/(?<=\.)\s/)[0];
   return (
     <div className={cn("group relative flex border-b border-line", active ? "bg-accent/[0.08]" : "hover:bg-ink/[0.03]")}>
       {active && <span className="absolute inset-y-0 left-0 w-0.5 bg-accent" />}
@@ -125,17 +121,20 @@ function Row({ d, active, checked, canAnswer, onOpen, activeRef }: { d: Decision
             {ago(d.askedAt)}
           </span>
         </div>
+        <div className="mt-0.5 truncate text-xs text-ink/60" title={d.summary}>
+          {firstSentence}
+        </div>
         <div className="mt-0.5 flex items-center gap-1.5 text-xs text-ink/50">
           <span className="code shrink-0 text-[11.5px]">{d.number === null ? d.repo : `${d.repo}#${d.number}`}</span>
           {d.number === null && <span className="shrink-0">· {d.items.length} items</span>}
           {rec && <span className="truncate">· rec. {rec.label}</span>}
           <span className="ml-auto flex shrink-0 items-center gap-1.5">
-            {proposals > 0 && (
-              <span className="rounded-full border border-accent/40 bg-accent/10 px-1.5 text-2xs font-medium leading-4 text-accent-ink">
-                {proposals === 1 ? "proposal" : `${proposals} proposals`}
+            {opinions > 0 && (
+              <span className={cn("inline-flex items-center gap-0.5", mine && "text-accent-ink")} title={`${opinions} ${opinions === 1 ? "opinion" : "opinions"}${mine ? ", including yours" : ""}`}>
+                <UsersIcon className="text-[11px]" />
+                <span className="num">{opinions}</span>
               </span>
             )}
-            {!canAnswer && <LockIcon className="text-[11px] text-ink/40" aria-label="Read-only for you" />}
             <ClaimPill claim={d.claim} compact />
           </span>
         </div>

@@ -46,16 +46,18 @@ export interface Claim {
   since: string;
 }
 
-/** A maintainer's answer. It does nothing until an operator approves it. */
-export interface Proposal {
+/**
+ * A non-binding pick by anyone signed in. Shown to people with the giver's GitHub
+ * permission on the repo; never read by the pipeline. The operator can adopt it.
+ */
+export interface Opinion {
   id: string;
   login: string;
-  option: string;
+  /** option key, or null for a note without a pick */
+  option: string | null;
   note: string | null;
   at: string;
-  status: "pending" | "approved" | "rejected" | "withdrawn";
-  decidedBy: string | null;
-  decidedAt: string | null;
+  permission: "write" | "none";
 }
 
 export interface Decision {
@@ -67,6 +69,12 @@ export interface Decision {
   items: (ItemRef & { title: string })[];
   title: string;
   question: string;
+  /** AI summary of the item or batch, 3–6 sentences. */
+  summary: string;
+  summaryBy: string;
+  summaryAt: string;
+  /** The issue or PR description (GitHub-flavoured Markdown); null for a batch. */
+  body: string | null;
   context: string[];
   facts: string[];
   options: DecisionOption[];
@@ -80,9 +88,9 @@ export interface Decision {
   answeredBy: string | null;
   answeredAt: string | null;
   appliedAt: string | null;
-  /** Set when the answer came from an approved proposal. */
-  proposedBy: string | null;
-  proposals: Proposal[];
+  /** The opinion the operator adopted as the answer, if any. */
+  adoptedOpinion: Opinion | null;
+  opinions: Opinion[];
   exceptions: (ItemRef & { answer: string })[];
   claim: Claim | null;
   commentCount: number;
@@ -129,6 +137,7 @@ export interface ChangedFile {
 export interface Item extends ItemRef {
   kind: "pr" | "issue";
   title: string;
+  body: string;
   state: ItemState;
   author: string;
   tier: Tier;
@@ -201,7 +210,7 @@ export interface User {
   role: Role;
   /** repos where GitHub grants write, maintain or admin */
   writeRepos: RepoName[];
-  /** Deployment setting `maintainer_writes`: when false every non-operator is read-only. */
+  /** Deployment setting `maintainer_writes`, reserved: off here, and it has no effect in the UI. */
   maintainerWrites: boolean;
 }
 
@@ -211,8 +220,8 @@ export interface DecisionFilter {
   /** minimum age in days */
   minAge?: number;
   mine?: boolean;
-  /** "proposals": open decisions with a pending proposal */
-  status?: "open" | "proposals" | "answered";
+  /** "opinions": open decisions that have at least one opinion */
+  status?: "open" | "opinions" | "answered";
 }
 
 export interface DecisionList {

@@ -417,9 +417,8 @@ function RunMeter({ open }: { open: boolean }) {
 
 const MOCK_ROLES: [MockRole, string][] = [
   ["operator", "Operator"],
-  ["maintainer", "Maintainer, proposals on"],
-  ["maintainer-off", "Maintainer, proposals off"],
-  ["viewer", "Viewer"],
+  ["maintainer", "Maintainer (write on 6 repos)"],
+  ["viewer", "Viewer (no write access)"],
 ];
 
 /** The reader's role decides what every button means, so it stays visible. */

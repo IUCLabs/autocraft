@@ -25,7 +25,8 @@ import { Badge, type Tone } from "../../ui/Badge";
 import { Count } from "../../ui/Heading";
 import { cn } from "../../ui/cn";
 import { ago, num } from "../../lib/format";
-import { KindTag } from "../decisions/parts";
+import { KindTag, tallyOf } from "../decisions/parts";
+import { Markdown, Collapsible } from "../../ui/Markdown";
 import { useIsPhone } from "../../shell/useMedia";
 
 function useItem(params: ViewProps["params"]) {
@@ -70,6 +71,15 @@ function ItemMain({ params }: ViewProps) {
       <div className="mx-auto max-w-[920px] px-4 pb-12 pt-5 md:px-6">
         <Header it={it} />
         <Properties it={it} />
+        {it.body && (
+          <Section title="Description">
+            <div className="rounded-md border border-line px-4 py-3">
+              <Collapsible lines={25}>
+                <Markdown source={it.body} />
+              </Collapsible>
+            </div>
+          </Section>
+        )}
         <Section title="Classifier verdicts" aside={agreement(it.classifications)}>
           <Verdicts cls={it.classifications} />
         </Section>
@@ -361,14 +371,14 @@ function ItemSide(props: ViewProps) {
               ) : (
                 <div className="mt-1 text-xs text-ink/55">Recommended: {d.options.find((o) => o.key === d.recommended)?.label}</div>
               )}
-              {!d.answer &&
-                d.proposals
-                  .filter((p) => p.status === "pending")
-                  .map((p) => (
-                    <div key={p.id} className="mt-0.5 text-xs text-accent-ink">
-                      {p.login} proposes {d.options.find((o) => o.key === p.option)?.label}
-                    </div>
-                  ))}
+              {!d.answer && d.opinions.length > 0 && (
+                <div className="mt-0.5 text-xs text-ink/55">
+                  {d.opinions.length} {d.opinions.length === 1 ? "opinion" : "opinions"}:{" "}
+                  {Object.entries(tallyOf(d))
+                    .map(([k, n]) => `${d.options.find((o) => o.key === k)?.label} ${n}`)
+                    .join(" · ")}
+                </div>
+              )}
             </Link>
           ))}
         </div>

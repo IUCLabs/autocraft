@@ -1,13 +1,13 @@
 import type { Api } from "../client";
 import type { Decision, DecisionComment, DecisionFilter, User } from "../types";
 import { decisionAccess } from "../../registry/permissions";
-import { DECISIONS, MOCK_USERS, NOW, REPOS, SEARCH_POOL, THREADS, itemFor, progress, type MockRole } from "./fixtures";
+import { DECISIONS, MOCK_USERS, NOW, REPOS, SEARCH_POOL, THREADS, itemFor, permFor, progress, type MockRole } from "./fixtures";
 
 const wait = <T>(v: T, ms = 60) => new Promise<T>((r) => setTimeout(() => r(structuredClone(v)), ms));
 const nowIso = () => new Date(NOW).toISOString();
 const ROLE_KEY = "craft-triage:mock-as";
 
-/** Mock role: `?as=operator|maintainer|maintainer-off|viewer`, else the last one picked, else operator. */
+/** Mock role: `?as=operator|maintainer|viewer`, else the last one picked, else operator. */
 export function mockRole(): MockRole {
   const q = new URLSearchParams(location.search).get("as");
   let v: string | null = q;
@@ -46,17 +46,16 @@ export function createMockApi(): Api {
   };
   const reposOf = (d: Decision) => (d.items.length ? d.items.map((i) => i.repo) : [d.repo]);
   // The server checks the same rules; the client only hides what would be refused.
-  const require = (d: Decision, mode: "answer" | "propose") => {
+  const requireOperator = (d: Decision) => {
     const a = decisionAccess(me, reposOf(d));
-    if (a.mode !== mode) throw new Error(a.mode === "read" ? a.reason : `${me.role} can't ${mode}`);
+    if (a.mode !== "answer") throw new Error(a.reason);
   };
-  const pending = (d: Decision) => d.proposals.some((p) => p.status === "pending");
 
   const matches = (d: Decision, f: DecisionFilter) => {
     const status = f.status ?? "open";
     if (status !== "answered" && d.answer) return false;
     if (status === "answered" && !d.answer) return false;
-    if (status === "proposals" && !pending(d)) return false;
+    if (status === "opinions" && !d.opinions.length) return false;
     if (f.repo?.length && !f.repo.includes(d.repo)) return false;
     if (f.kind?.length && !f.kind.includes(d.kind)) return false;
     if (f.minAge && NOW - Date.parse(d.askedAt) < f.minAge * 86400_000) return false;
@@ -64,8 +63,8 @@ export function createMockApi(): Api {
     return true;
   };
 
-  const settle = (d: Decision, answer: string, note: string | null, proposedBy: string | null, exceptions: Decision["exceptions"] = []) =>
-    Object.assign(d, { answer, answerNote: note, exceptions, answeredBy: me.login, answeredAt: nowIso(), proposedBy, claim: null });
+  const settle = (d: Decision, answer: string, note: string | null, adoptedOpinion: Decision["adoptedOpinion"], exceptions: Decision["exceptions"] = []) =>
+    Object.assign(d, { answer, answerNote: note, exceptions, answeredBy: me.login, answeredAt: nowIso(), adoptedOpinion, claim: null });
 
   return {
     me: () => wait(me, 10),
@@ -84,51 +83,39 @@ export function createMockApi(): Api {
       get: (id) => wait(find(id)),
       async answer(id, input) {
         const d = find(id);
-        require(d, "answer");
+        requireOperator(d);
         settle(d, input.answer, input.note ?? null, null, input.exceptions ?? []);
-        d.proposals.forEach((p) => p.status === "pending" && Object.assign(p, { status: "rejected", decidedBy: me.login, decidedAt: nowIso() }));
         changed();
         return wait(d, 30);
       },
       async undo(id) {
         const d = find(id);
-        require(d, "answer");
+        requireOperator(d);
         if (d.appliedAt) throw new Error("already applied");
-        Object.assign(d, { answer: null, answerNote: null, answeredBy: null, answeredAt: null, proposedBy: null, exceptions: [] });
-        d.proposals.forEach((p) => p.decidedAt === nowIso() && Object.assign(p, { status: "pending", decidedBy: null, decidedAt: null }));
+        Object.assign(d, { answer: null, answerNote: null, answeredBy: null, answeredAt: null, adoptedOpinion: null, exceptions: [] });
         changed();
         return wait(d, 30);
       },
-      async propose(id, input) {
+      async opine(id, input) {
         const d = find(id);
-        require(d, "propose");
-        d.proposals.forEach((p) => p.login === me.login && p.status === "pending" && (p.status = "withdrawn"));
-        d.proposals.push({ id: `${id}/p${d.proposals.length}`, login: me.login, option: input.answer, note: input.note ?? null, at: nowIso(), status: "pending", decidedBy: null, decidedAt: null });
+        if (d.answer) throw new Error("already answered");
+        d.opinions = d.opinions.filter((o) => o.login !== me.login);
+        d.opinions.unshift({ id: `${id}/o${Date.now()}`, login: me.login, option: input.option, note: input.note ?? null, at: nowIso(), permission: permFor(me.login, d.repo) });
         changed();
         return wait(d, 30);
       },
-      async approve(id, pid) {
+      async retract(id) {
         const d = find(id);
-        require(d, "answer");
-        const p = d.proposals.find((x) => x.id === pid);
-        if (!p) throw new Error("no such proposal");
-        Object.assign(p, { status: "approved", decidedBy: me.login, decidedAt: nowIso() });
-        settle(d, p.option, p.note, p.login);
+        d.opinions = d.opinions.filter((o) => o.login !== me.login);
         changed();
         return wait(d, 30);
       },
-      async reject(id, pid) {
+      async adopt(id, oid) {
         const d = find(id);
-        require(d, "answer");
-        Object.assign(d.proposals.find((x) => x.id === pid)!, { status: "rejected", decidedBy: me.login, decidedAt: nowIso() });
-        changed();
-        return wait(d, 30);
-      },
-      async withdraw(id, pid) {
-        const d = find(id);
-        const p = d.proposals.find((x) => x.id === pid && x.login === me.login);
-        if (!p) throw new Error("not your proposal");
-        p.status = "withdrawn";
+        requireOperator(d);
+        const o = d.opinions.find((x) => x.id === oid);
+        if (!o?.option) throw new Error("no option to adopt");
+        settle(d, o.option, null, o);
         changed();
         return wait(d, 30);
       },
@@ -136,7 +123,6 @@ export function createMockApi(): Api {
       thread: (id) => wait(threads[id] ?? []),
       async comment(id, body) {
         const d = find(id);
-        if (decisionAccess(me, reposOf(d)).mode === "read") throw new Error("read-only");
         const c = { id: `${id}/c${Date.now()}`, login: me.login, at: nowIso(), body };
         (threads[id] ??= []).push(c);
         d.commentCount++;

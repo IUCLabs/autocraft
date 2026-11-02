@@ -1,16 +1,17 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 import { Link } from "react-router-dom";
-import { ChevronLeftIcon, ChevronRightIcon, CheckIcon, Undo2Icon, MessageSquareIcon, XIcon, InboxIcon } from "lucide-react";
-import { Avatar } from "../../ui/Avatar";
+import { ChevronLeftIcon, ChevronRightIcon, CheckIcon, Undo2Icon, MessageSquareIcon, InboxIcon, SparklesIcon, ArrowDownIcon } from "lucide-react";
 import { useApi } from "../../api/client";
 import type { Decision, User } from "../../api/types";
 import type { ViewProps } from "../../registry/types";
 import { decisionAccess, type DecisionAccess } from "../../registry/permissions";
 import { Kbd } from "../../ui/Kbd";
 import { Button, IconButton } from "../../ui/Button";
+import { Count } from "../../ui/Heading";
+import { Markdown, Collapsible } from "../../ui/Markdown";
 import { cn } from "../../ui/cn";
 import { ago } from "../../lib/format";
-import { ClaimPill, ClassifierLines, Disclosure, Facts, KindTag, OptionButtons, RelatedList } from "./parts";
+import { ClaimPill, ClassifierLines, Disclosure, Facts, KindTag, OpinionList, OptionButtons, RelatedList, tallyOf } from "./parts";
 import { localActions, ordered, refOf, useAnswer, useDecisionList, useLocal, useSelection, useUndo } from "./state";
 import { Thread } from "./Thread";
 
@@ -43,17 +44,13 @@ export function DetailPanel({ user }: ViewProps) {
           <IconButton size="sm" icon={ChevronRightIcon} label="Next (j)" disabled={idx < 0 || idx >= list.length - 1} onClick={() => go(list[idx + 1]?.id)} />
         </div>
       </div>
-      <div className="min-h-0 flex-1 overflow-y-auto">
-        {just && !d ? (
-          <AnsweredNotice entry={just} />
-        ) : d ? (
-          <div className="mx-auto max-w-[720px] px-6 pb-10 pt-5">
-            <DecisionBody key={d.id} d={d} user={user} onAnswered={() => go(list[idx + 1]?.id ?? list[idx - 1]?.id)} />
-          </div>
-        ) : (
-          <EmptyDetail count={list.length} />
-        )}
-      </div>
+      {just && !d ? (
+        <AnsweredNotice entry={just} />
+      ) : d ? (
+        <DecisionBody key={d.id} d={d} user={user} onAnswered={() => go(list[idx + 1]?.id ?? list[idx - 1]?.id)} />
+      ) : (
+        <EmptyDetail count={list.length} />
+      )}
     </div>
   );
 }
@@ -92,41 +89,75 @@ function AnsweredNotice({ entry }: { entry: { id: string; label: string; ref: st
   );
 }
 
-/** The decision itself; shared by the desktop detail panel and the phone pager. */
-export function DecisionBody({ d, user, onAnswered, phone }: { d: Decision; user: User; onAnswered?: () => void; phone?: boolean }) {
+function Section({ title, aside, children }: { title: ReactNode; aside?: ReactNode; children: ReactNode }) {
+  return (
+    <section className="mt-5">
+      <h2 className="mb-2 flex items-center gap-1.5 text-xs font-semibold text-ink/60">
+        {title}
+        {aside && <span className="ml-auto font-normal text-ink/45">{aside}</span>}
+      </h2>
+      {children}
+    </section>
+  );
+}
+
+/**
+ * The decision: the item first (AI summary, then its description), then facts,
+ * opinions and the question. Shared by the desktop detail panel and the phone pager;
+ * it owns its scroll container so the decision bar can stay pinned.
+ */
+export function DecisionBody({
+  d,
+  user,
+  onAnswered,
+  phone,
+  pager,
+}: {
+  d: Decision;
+  user: User;
+  onAnswered?: () => void;
+  phone?: boolean;
+  /** Phone only: previous/next in the queue, shown in the bottom bar. */
+  pager?: { pos: string; prev?: () => void; next?: () => void };
+}) {
   const api = useApi();
   const answer = useAnswer();
   const loc = useLocal();
   const noteRef = useRef<HTMLInputElement>(null);
+  const decideRef = useRef<HTMLDivElement>(null);
   const access = accessFor(user, [d]);
   const isBatch = d.number === null;
-  const pendingProps = d.proposals.filter((p) => p.status === "pending");
-  const mine = access.mode === "propose" ? pendingProps.find((p) => p.login === user.login) : undefined;
-  // Options are live for an operator, and for a maintainer who has no pending proposal here.
-  const live = !d.answer && (access.mode === "answer" || (access.mode === "propose" && !mine));
-  const collapseOptions = phone && access.mode === "answer" && pendingProps.length > 0 && !d.answer;
+  const mine = d.opinions.find((o) => o.login === user.login);
+  const tally = tallyOf(d);
+  const operator = access.mode === "answer";
 
   useEffect(() => {
-    if (access.mode !== "read" && !d.answer) void api.decisions.claim(d.id);
-  }, [api, d.id, d.answer, access.mode]);
+    if (!d.answer) void api.decisions.claim(d.id);
+  }, [api, d.id, d.answer]);
 
   const pick = async (key: string) => {
-    if (access.mode === "propose") {
-      await api.decisions.propose(d.id, { answer: key, note: loc.notes[d.id] || undefined });
+    if (!operator) {
+      await api.decisions.opine(d.id, { option: key, note: loc.notes[d.id] || mine?.note || undefined });
       localActions.setNote(d.id, "");
       return;
     }
     await answer([d], key);
     onAnswered?.();
   };
+  const adopt = async (oid: string) => {
+    const o = d.opinions.find((x) => x.id === oid);
+    await api.decisions.adopt(d.id, oid);
+    localActions.answered([{ id: d.id, ref: refOf(d), label: d.options.find((x) => x.key === o?.option)?.label ?? "" }]);
+    onAnswered?.();
+  };
 
-  // Number keys answer; n focuses the note. Bound here so they always target the decision on screen.
+  // Number keys pick; n focuses the note. Bound here so they always target the decision on screen.
   useEffect(() => {
     const on = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement;
       if (["INPUT", "TEXTAREA"].includes(t.tagName) || e.metaKey || e.ctrlKey || e.altKey) return;
       const n = Number(e.key);
-      if (live && n >= 1 && n <= d.options.length) {
+      if (!d.answer && n >= 1 && n <= d.options.length) {
         e.preventDefault();
         void pick(d.options[n - 1].key);
       }
@@ -139,30 +170,49 @@ export function DecisionBody({ d, user, onAnswered, phone }: { d: Decision; user
     return () => window.removeEventListener("keydown", on);
   });
 
-  const options = (
+  const modeLine = operator ? (
+    <>Your pick answers it.</>
+  ) : (
     <>
-      <OptionButtons options={d.options} recommended={d.recommended} onPick={pick} readOnly={access.mode === "read" ? access.reason : null} verb={access.mode === "propose" ? "Propose" : undefined} phone={phone} />
-      {access.mode !== "read" && (
-        <label className="mt-2 flex h-8 items-center gap-2 rounded border border-line bg-sunken px-2.5 focus-within:border-accent/60">
-          <input
-            ref={noteRef}
-            value={loc.notes[d.id] ?? ""}
-            onChange={(e) => localActions.setNote(d.id, e.target.value)}
-            onKeyDown={(e) => e.key === "Escape" && e.currentTarget.blur()}
-            placeholder={access.mode === "propose" ? "Note for the operator (optional)" : "Note, kept with the answer (optional)"}
-            aria-label="Note"
-            className="min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-ink/40"
-          />
-          {!phone && <Kbd keys="n" />}
-        </label>
+      {access.reason}
+      {mine && (
+        <button onClick={() => void api.decisions.retract(d.id)} className="ml-1.5 text-accent-ink hover:underline">
+          Retract mine
+        </button>
       )}
     </>
   );
 
-  return (
-    <article className="animate-rise">
+  const note = (
+    <label className="flex h-8 min-w-0 flex-1 items-center gap-2 rounded border border-line bg-sunken px-2.5 focus-within:border-accent/60">
+      <input
+        ref={noteRef}
+        value={loc.notes[d.id] ?? ""}
+        onChange={(e) => localActions.setNote(d.id, e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Escape") e.currentTarget.blur();
+          const v = e.currentTarget.value.trim();
+          if (e.key === "Enter" && !operator && v) void api.decisions.opine(d.id, { option: mine?.option ?? null, note: v }).then(() => localActions.setNote(d.id, ""));
+        }}
+        placeholder={operator ? "Note, kept with the answer (optional)" : mine ? "Add a note to your opinion, Enter to save" : "Note with your opinion (optional)"}
+        aria-label="Note"
+        className="min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-ink/40"
+      />
+      {!phone && <Kbd keys="n" />}
+    </label>
+  );
+
+  const header = (
+    <>
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-ink/55">
         <KindTag kind={d.kind} batch={isBatch ? d.items.length : undefined} />
+        {isBatch ? (
+          <span className="code">{d.repo}</span>
+        ) : (
+          <Link to={`/item/${d.repo}/${d.number}`} className="code text-accent-ink hover:underline">
+            {d.repo}#{d.number}
+          </Link>
+        )}
         <span>asked {ago(d.askedAt)} ago</span>
         <ClaimPill claim={d.claim} />
         {!phone && d.commentCount > 0 && (
@@ -171,74 +221,165 @@ export function DecisionBody({ d, user, onAnswered, phone }: { d: Decision; user
           </span>
         )}
       </div>
-      <h1 className={cn("mt-2.5 text-pretty font-semibold text-ink", phone ? "text-[17px] leading-6" : "text-lg")}>{d.question}</h1>
-      <p className="mt-1 flex min-w-0 items-baseline gap-1.5 text-sm text-ink/60">
-        {isBatch ? (
-          <span className="code shrink-0">{d.repo}</span>
-        ) : (
-          <Link to={`/item/${d.repo}/${d.number}`} className="code shrink-0 text-accent-ink hover:underline">
-            {d.repo}#{d.number}
-          </Link>
-        )}
-        <span className={cn(phone ? "truncate" : "")}>{d.title}</span>
-      </p>
+      <h1 className={cn("mt-2 text-pretty font-semibold text-ink", phone ? "text-[17px] leading-6" : "text-lg")}>{d.title}</h1>
+    </>
+  );
 
-      <div className={cn("rounded-md border border-line bg-ink/[0.02] px-3 py-2.5", phone ? "mt-3" : "mt-4")}>
+  const summary = (
+    <section className="mt-3 rounded-md border border-line bg-ink/[0.025] px-3 py-2.5">
+      <div className="mb-1 flex items-center gap-1.5 text-xs text-ink/55">
+        <SparklesIcon className="text-[12px] text-accent-ink" />
+        <span className="font-semibold text-ink/75">AI summary</span>
+        <span>
+          · {d.summaryBy} · {ago(d.summaryAt)} ago
+        </span>
+      </div>
+      <p className="text-sm leading-[21px] text-ink/90">{d.summary}</p>
+    </section>
+  );
+
+  const description = d.body && (
+    <Section
+      title="Description"
+      aside={
+        <a className="text-accent-ink hover:underline" href={`https://github.com/storytold/${d.repo}/issues/${d.number}`} target="_blank" rel="noopener noreferrer">
+          Open on GitHub
+        </a>
+      }
+    >
+      <Collapsible lines={phone ? 15 : 25}>
+        <Markdown source={d.body} />
+      </Collapsible>
+    </Section>
+  );
+
+  const facts = (
+    <Section title="Key facts">
+      <div className="rounded-md border border-line px-3 py-2.5">
         <Facts facts={d.facts} />
       </div>
+    </Section>
+  );
 
-      {!d.answer && pendingProps.length > 0 && <Proposals d={d} user={user} access={access} phone={phone} />}
+  const opinions = (
+    <Section
+      title={
+        <>
+          Opinions <Count n={d.opinions.length} />
+        </>
+      }
+      aside="Shown to people only, never sent to the pipeline"
+    >
+      <OpinionList d={d} me={user.login} onAdopt={operator && !d.answer ? (oid) => void adopt(oid) : undefined} />
+    </Section>
+  );
 
-      {d.answer ? (
-        <AnsweredState d={d} canUndo={access.mode === "answer"} />
-      ) : mine ? null : collapseOptions ? (
-        <div className="mt-3">
-          <Disclosure title="Answer differently" count={d.options.length}>
-            {options}
-          </Disclosure>
-        </div>
-      ) : (
-        <div className="mt-4">
-          {access.mode === "propose" && <p className="mb-2 text-xs text-ink/60">Your answer goes to an operator as a proposal. Nothing happens until they approve it.</p>}
-          {options}
-        </div>
-      )}
-
-      <div className={collapseOptions ? "" : "mt-5"}>
-        {isBatch && (
-          <Disclosure title="Items" count={d.items.length} defaultOpen={!phone}>
-            <BatchItems d={d} />
-          </Disclosure>
-        )}
-        {d.context.length > 0 && (
-          <Disclosure title="Context" defaultOpen={!phone}>
-            <div className="space-y-1 text-sm leading-6 text-ink/80">
-              {d.context.map((c, i) => (
-                <p key={i}>{c}</p>
-              ))}
-            </div>
-          </Disclosure>
-        )}
-        {d.publicText && (
-          <Disclosure title="Comment posted on GitHub">
-            <blockquote className="border-l-2 border-line-strong pl-3 text-sm leading-6 text-ink/75">{d.publicText}</blockquote>
-          </Disclosure>
-        )}
-        <Disclosure title="Classifiers" count={d.classifications.length}>
-          <ClassifierLines d={d} />
+  const rest = (
+    <div className="mt-5">
+      {isBatch && (
+        <Disclosure title="Items" count={d.items.length} defaultOpen>
+          <BatchItems d={d} />
         </Disclosure>
-        {d.related.length > 0 && (
-          <Disclosure title="Related" count={d.related.length}>
-            <RelatedList d={d} />
-          </Disclosure>
-        )}
-        {phone && (
-          <Disclosure title="Discussion" count={d.commentCount}>
-            <Thread decisionId={d.id} compact />
-          </Disclosure>
-        )}
+      )}
+      {d.context.length > 0 && (
+        <Disclosure title="Context">
+          <div className="space-y-1 text-sm leading-6 text-ink/80">
+            {d.context.map((c, i) => (
+              <p key={i}>{c}</p>
+            ))}
+          </div>
+        </Disclosure>
+      )}
+      {d.publicText && (
+        <Disclosure title="Comment posted on GitHub">
+          <blockquote className="border-l-2 border-line-strong pl-3 text-sm leading-6 text-ink/75">{d.publicText}</blockquote>
+        </Disclosure>
+      )}
+      <Disclosure title="Classifiers" count={d.classifications.length}>
+        <ClassifierLines d={d} />
+      </Disclosure>
+      {d.related.length > 0 && (
+        <Disclosure title="Related" count={d.related.length}>
+          <RelatedList d={d} />
+        </Disclosure>
+      )}
+      {phone && (
+        <Disclosure title="Discussion" count={d.commentCount}>
+          <Thread decisionId={d.id} compact />
+        </Disclosure>
+      )}
+    </div>
+  );
+
+  if (phone)
+    return (
+      <div className="flex min-h-0 flex-1 flex-col">
+        <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-6 pt-3">
+          <article className="animate-rise">
+            {header}
+            {summary}
+            {description}
+            {facts}
+            <div ref={decideRef} className="mt-5 scroll-mt-3">
+              {d.answer ? (
+                <AnsweredState d={d} canUndo={operator} />
+              ) : (
+                <>
+                  <p className="text-sm font-semibold">{d.question}</p>
+                  <p className="mb-2 mt-0.5 text-xs text-ink/55">{modeLine}</p>
+                  <OptionButtons options={d.options} recommended={d.recommended} onPick={pick} mode={operator ? "answer" : "opinion"} mine={mine?.option} tally={tally} />
+                  <div className="mt-2 flex">{note}</div>
+                </>
+              )}
+            </div>
+            {opinions}
+            {rest}
+          </article>
+        </div>
+        <div className="flex shrink-0 items-center gap-1 border-t border-line bg-bg px-1 py-1.5">
+          <IconButton size="lg" icon={ChevronLeftIcon} label="Previous decision" disabled={!pager?.prev} onClick={pager?.prev} />
+          <div className="min-w-0 flex-1 px-1">
+            <p className="num text-2xs text-ink/50">{pager?.pos}</p>
+            <p className="truncate text-xs font-medium">{d.answer ? "Answered" : d.question}</p>
+          </div>
+          {!d.answer && (
+            <Button size="md" variant="primary" icon={ArrowDownIcon} className="h-10 px-3" onClick={() => decideRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })}>
+              {operator ? "Answer" : mine ? "Change" : "Give opinion"}
+            </Button>
+          )}
+          <IconButton size="lg" icon={ChevronRightIcon} label="Next decision" disabled={!pager?.next} onClick={pager?.next} />
+        </div>
       </div>
-    </article>
+    );
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        <article className="mx-auto max-w-[760px] px-6 pb-8 pt-5 animate-rise">
+          {header}
+          {summary}
+          {description}
+          {facts}
+          {rest}
+        </article>
+      </div>
+      <div className="shrink-0 border-t border-line bg-bg px-6 py-3">
+        <div className="mx-auto max-w-[760px]">
+          {d.answer ? (
+            <AnsweredState d={d} canUndo={operator} />
+          ) : (
+            <>
+              <p className="text-sm font-semibold">{d.question}</p>
+              <p className="mt-0.5 text-xs text-ink/55">{modeLine}</p>
+              <div className="mt-2">
+                <OptionButtons options={d.options} recommended={d.recommended} onPick={pick} mode={operator ? "answer" : "opinion"} mine={mine?.option} tally={tally} layout="row" />
+              </div>
+              <div className="mt-2 flex">{note}</div>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -246,11 +387,12 @@ function AnsweredState({ d, canUndo }: { d: Decision; canUndo: boolean }) {
   const undo = useUndo();
   const label = d.options.find((o) => o.key === d.answer)?.label ?? d.answer;
   return (
-    <div className="mt-4 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md border border-ok/35 bg-ok/[0.06] px-3 py-2.5">
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md border border-ok/35 bg-ok/[0.06] px-3 py-2.5">
       <CheckIcon className="text-ok" />
       <span className="text-sm font-medium">{label}</span>
       <span className="text-xs text-ink/55">
-        {d.proposedBy ? `proposed by ${d.proposedBy}, approved by ${d.answeredBy}` : `by ${d.answeredBy}`} · {ago(d.answeredAt!)} ago · {d.appliedAt ? "applied" : "not applied yet"}
+        by {d.answeredBy}
+        {d.adoptedOpinion ? `, adopting ${d.adoptedOpinion.login}'s opinion` : ""} · {ago(d.answeredAt!)} ago · {d.appliedAt ? "applied" : "not applied yet"}
       </span>
       {d.answerNote && <span className="w-full text-sm text-ink/70">“{d.answerNote}”</span>}
       {!d.appliedAt && canUndo && (
@@ -295,7 +437,7 @@ function BatchItems({ d }: { d: Decision }) {
   );
 }
 
-/** Several checked rows of one kind: one answer for all of them. */
+/** Several checked rows of one kind: one answer (or opinion) for all of them. */
 function MultiAnswer({ ds, user }: { ds: Decision[]; user: User }) {
   const answer = useAnswer();
   const api = useApi();
@@ -316,8 +458,8 @@ function MultiAnswer({ ds, user }: { ds: Decision[]; user: User }) {
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto max-w-[720px] px-6 pb-10 pt-5">
-          <h1 className="text-lg font-semibold">{same ? `Answer ${ds.length} ${ds[0].kind} decisions together` : "These decisions ask different questions"}</h1>
-          <p className="mt-1 text-sm text-ink/60">{same ? "One answer for all of them. Change single items afterwards from their own page." : "Select decisions of one kind to answer them together."}</p>
+          <h1 className="text-lg font-semibold">{same ? `${access.mode === "answer" ? "Answer" : "Give an opinion on"} ${ds.length} ${ds[0].kind} decisions together` : "These decisions ask different questions"}</h1>
+          <p className="mt-1 text-sm text-ink/60">{same ? "One pick for all of them. Change single items afterwards from their own page." : "Select decisions of one kind to answer them together."}</p>
           <ul className="mt-4 overflow-hidden rounded-md border border-line">
             {ds.map((d) => (
               <li key={d.id} className="flex h-9 items-center gap-3 border-b border-line px-3 last:border-0">
@@ -332,78 +474,13 @@ function MultiAnswer({ ds, user }: { ds: Decision[]; user: User }) {
               <OptionButtons
                 options={ds[0].options}
                 recommended={rec}
-                readOnly={access.mode === "read" ? access.reason : null}
-                verb={access.mode === "propose" ? "Propose" : undefined}
-                onPick={(k) =>
-                  void (access.mode === "propose" ? Promise.all(ds.map((d) => api.decisions.propose(d.id, { answer: k }))).then(localActions.clearChecked) : answer(ds, k))
-                }
+                mode={access.mode}
+                onPick={(k) => void (access.mode === "opinion" ? Promise.all(ds.map((d) => api.decisions.opine(d.id, { option: k }))).then(localActions.clearChecked) : answer(ds, k))}
               />
             </div>
           )}
         </div>
       </div>
-    </div>
-  );
-}
-
-/** Pending maintainer proposals. Operators approve or reject; the proposer can withdraw. */
-function Proposals({ d, user, access, phone }: { d: Decision; user: User; access: DecisionAccess; phone?: boolean }) {
-  const api = useApi();
-  const pending = d.proposals.filter((p) => p.status === "pending");
-  const label = (k: string) => d.options.find((o) => o.key === k)?.label ?? k;
-  const operator = access.mode === "answer";
-
-  useEffect(() => {
-    if (!operator) return;
-    const on = (e: KeyboardEvent) => {
-      const t = e.target as HTMLElement;
-      if (["INPUT", "TEXTAREA"].includes(t.tagName) || e.metaKey || e.ctrlKey || e.altKey) return;
-      if (e.key === "a") (e.preventDefault(), void api.decisions.approve(d.id, pending[0].id));
-      if (e.key === "r") (e.preventDefault(), void api.decisions.reject(d.id, pending[0].id));
-    };
-    window.addEventListener("keydown", on);
-    return () => window.removeEventListener("keydown", on);
-  });
-
-  return (
-    <div className="mt-4 overflow-hidden rounded-md border border-accent/35">
-      <div className="flex h-8 items-center gap-2 border-b border-accent/25 bg-accent/[0.07] px-3 text-xs">
-        <span className="font-semibold text-accent-ink">{pending.length === 1 ? "Proposal" : `${pending.length} proposals`}</span>
-        <span className="ml-auto text-ink/55">{operator ? "Needs your approval" : "Waiting for an operator"}</span>
-      </div>
-      {pending.map((p, i) => {
-        const own = p.login === user.login;
-        return (
-          <div key={p.id} className={cn("flex gap-3 px-3 py-2.5", i > 0 && "border-t border-line", phone ? "flex-col" : "items-center")}>
-            <div className="flex min-w-0 flex-1 items-start gap-2.5">
-              <Avatar login={p.login} size={20} className="mt-0.5" />
-              <div className="min-w-0 text-sm">
-                <div>
-                  <span className="font-semibold">{own ? "You" : p.login}</span> <span className="text-ink/60">{own ? "propose" : "proposes"}</span> <span className="font-medium">{label(p.option)}</span>
-                  {p.option === d.recommended && <span className="ml-1 text-xs text-ink/50">(recommended)</span>}
-                  <span className="ml-1.5 text-xs text-ink/45">· {ago(p.at)} ago</span>
-                </div>
-                {p.note && <p className="mt-0.5 text-ink/65">{p.note}</p>}
-              </div>
-            </div>
-            {operator && (
-              <div className={cn("flex shrink-0 gap-2", phone && "grid grid-cols-2")}>
-                <Button size={phone ? "lg" : "sm"} variant="primary" icon={CheckIcon} onClick={() => void api.decisions.approve(d.id, p.id)}>
-                  Approve {!phone && i === 0 && <kbd className="ml-0.5 rounded-sm border border-white/35 px-1 text-[11px] leading-4 text-white/80">a</kbd>}
-                </Button>
-                <Button size={phone ? "lg" : "sm"} variant="secondary" icon={XIcon} onClick={() => void api.decisions.reject(d.id, p.id)}>
-                  Reject {!phone && i === 0 && <Kbd keys="r" className="ml-0.5" />}
-                </Button>
-              </div>
-            )}
-            {own && access.mode === "propose" && (
-              <Button size="sm" variant="ghost" onClick={() => void api.decisions.withdraw(d.id, p.id)}>
-                Withdraw
-              </Button>
-            )}
-          </div>
-        );
-      })}
     </div>
   );
 }
