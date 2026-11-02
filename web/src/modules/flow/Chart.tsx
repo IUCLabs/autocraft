@@ -115,7 +115,7 @@ export function Chart({ flow, selected, onSelect, runs }: { flow: Flow; selected
     <div className="overflow-x-auto pb-2">
       <div
         ref={ref}
-        className="relative grid min-w-[1330px] items-start gap-x-10 gap-y-16"
+        className="relative grid min-w-[1440px] items-start gap-x-14 gap-y-16"
         style={{ gridTemplateColumns: "minmax(150px,150fr) minmax(190px,190fr) minmax(200px,200fr) minmax(185px,185fr) minmax(195px,195fr) minmax(215px,215fr)" }}
       >
         {flow.nodes.map((n) => {
