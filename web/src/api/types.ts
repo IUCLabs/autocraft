@@ -152,10 +152,12 @@ export interface ItemComment {
   reviewState: string | null;
 }
 
-/** Impact class and 0-100 priority score of an item (src/priority). `model`: jev, haiku or jev-unsure. */
+/** Priority level, P0 (critical) to P4 (backlog). */
+export type PriorityLevel = "P0" | "P1" | "P2" | "P3" | "P4";
+
+/** Priority level of an item (src/priority). `model`: jev, haiku or jev-unsure. */
 export interface PriorityInfo {
-  impact: "critical" | "high" | "normal" | "low";
-  score: number;
+  level: PriorityLevel;
   model: string;
   reason: string | null;
 }
@@ -909,19 +911,18 @@ export interface QueueList {
   next: string | null;
 }
 
-/** One part of a work score: the value it came from and the points it adds. */
-export interface WorkPart {
-  value: string | number | boolean | null;
-  points: number;
-}
-
 export interface WorkBreakdown {
-  /** value is the item's priority score, null when it has none (the default band midpoint counts then). */
-  priority: WorkPart;
-  type: WorkPart;
-  /** source: lines (PR), triage (issue, from Fix triage) or default (not known yet). */
-  size: WorkPart & { source: "lines" | "triage" | "default" };
-  security: WorkPart;
+  /** The level used for the order, after the security raise. */
+  level: PriorityLevel;
+  /** The stored level, null when the item has not been rated (P2 counts). */
+  rated: PriorityLevel | null;
+  security: boolean;
+  type: string | null;
+  size: "S" | "M" | "L" | "XL";
+  /** lines (PR), triage (issue, from Fix triage) or default (not known yet). */
+  sizeSource: "lines" | "triage" | "default";
+  /** 0 to 99, breaks ties inside a level. */
+  reach: number;
 }
 
 export interface WorkRow {
@@ -929,7 +930,10 @@ export interface WorkRow {
   number: number;
   kind: "pr" | "issue";
   title: string;
+  /** Sort key (see src/rank/score.ts); for a tooltip only. */
   score: number;
+  level: PriorityLevel;
+  size: "S" | "M" | "L" | "XL";
   breakdown: WorkBreakdown;
   label: TypeLabel | null;
   /** The pipeline step the item waits for, in words. */

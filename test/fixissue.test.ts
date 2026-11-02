@@ -51,7 +51,7 @@ index 0000000..e69de29
 const GOOD = FIX + NEWTEST;
 const TRIAGE_OK = (files = [LIB]) => JSON.stringify([{ ref: "app#5", fixable: true, reason: "panics on an empty slice", crate: "app", files }]);
 
-type Opts = { approved?: boolean; label?: string; flags?: string[]; score?: number };
+type Opts = { approved?: boolean; label?: string; flags?: string[]; score?: number; level?: string };
 
 function fresh(o: Opts = {}): DatabaseSync {
   const db = connect(join(mkdtempSync(join(dir, "db-")), "t.db"));
@@ -66,13 +66,19 @@ function issue(db: DatabaseSync, n: number, title: string, body: string, o: Opts
   db.prepare("INSERT INTO items (repo, number, kind, state, title, body, author, created_at, updated_at) VALUES ('app', ?, 'issue', 'OPEN', ?, ?, 'someone', ?, ?)").run(n, title, body, T0, T0);
   db.prepare(`INSERT INTO classifications (repo, number, classifier, run_id, at, type_label, flags, probs) VALUES ('app', ?, 'jev', 'r1', ?, ?, ?, '{"top":0.97}')`)
     .run(n, T0, o.label ?? "bugfix", JSON.stringify(o.flags ?? []));
-  if (o.score !== undefined) db.prepare("INSERT INTO item_priority (repo, number, text_hash, impact, score, model, at) VALUES ('app', ?, 'h', 'normal', ?, 'jev', ?)").run(n, o.score, T0);
+  if (o.level !== undefined) db.prepare("INSERT INTO item_priority (repo, number, text_hash, impact, score, model, at) VALUES ('app', ?, 'h', ?, 0, 'jev', ?)").run(n, o.level, T0);
   if (o.score !== undefined) db.prepare("INSERT INTO item_rank (repo, number, score, breakdown, computed_at) VALUES ('app', ?, ?, '{}', ?)").run(n, o.score, T0);
 }
 
 describe("candidates", () => {
   test("an approved repo's settled bugfix issue is a candidate", () => {
     assert.deepEqual(selectIssues(fresh(), "app").map((c) => c.number), [5]);
+  });
+
+  test("a P4 (backlog) issue is not a candidate; a security flag raises it to P3, which is", () => {
+    assert.equal(selectIssues(fresh({ level: "P4" }), "app").length, 0);
+    assert.deepEqual(selectIssues(fresh({ level: "P3" }), "app").map((c) => c.number), [5]);
+    assert.deepEqual(selectIssues(fresh({ level: "P4", flags: ["security"] }), "app").map((c) => c.number), [5]);
   });
 
   test("other labels, missing approval, a pending scope decision and Rust-less repos keep it out", () => {

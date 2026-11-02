@@ -346,7 +346,7 @@ export const STEPS: StepDef[] = [
   {
     name: "prioritize",
     title: "Prioritize open items",
-    description: "Jev rates the impact of open items whose text has no priority yet (critical, high, normal or low); Haiku decides where Jev is under 90 % sure. Then every score is recomputed from comments, linked PRs, duplicates, age and the security flag.",
+    description: "Jev rates the priority level (P0 to P4, P4 = backlog) of open items whose text has no priority yet; Haiku decides where Jev is under 90 % sure. Then every item's reach (the tie-breaker inside a level) is recomputed from comments, linked PRs, duplicates, age and the security flag.",
     stage: 2,
     requires: "operator",
     group: "priority",
@@ -355,7 +355,7 @@ export const STEPS: StepDef[] = [
     run: async (ctx) => {
       const { runPrioritize } = await import("../priority/index.ts");
       const r = await runPrioritize(ctx.db, { limit: Number(ctx.params.limit), onSent: ctx.handled, cancelled: ctx.cancelled, log: ctx.log });
-      return r.due ? `rated ${r.saved} of ${r.sent} items (${r.jev} by Jev, ${r.haiku} by Haiku), ${r.due - r.sent > 0 ? r.due - r.sent : 0} left; ${r.rescored} scores changed` : `nothing new to rate; ${r.rescored} scores changed`;
+      return r.due ? `rated ${r.saved} of ${r.sent} items (${r.jev} by Jev, ${r.haiku} by Haiku), ${r.due - r.sent > 0 ? r.due - r.sent : 0} left; ${r.rescored} reach values changed` : `nothing new to rate; ${r.rescored} reach values changed`;
     },
   },
   {
@@ -416,7 +416,7 @@ export const STEPS: StepDef[] = [
   {
     name: "rank",
     title: "Rank open items",
-    description: "Computes the work score of every open item from its priority, its size (changed lines of a PR, the Fix triage's estimate for an issue), its type label and the security flag. Review, Fix, Verify, Fix-up, Decide and the merge queue take their items in this order. Calls no model and writes nothing to GitHub.",
+    description: "Computes the work rank of every open item: priority level (raised by one for the security flag), type label, size (changed lines of a PR, the Fix triage's estimate for an issue), then reach. Review, Fix (which skips P4), Verify, Fix-up, Decide and the merge queue take their items in this order. Calls no model and writes nothing to GitHub.",
     stage: 2,
     requires: "operator",
     group: "local",

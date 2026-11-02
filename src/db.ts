@@ -76,8 +76,13 @@ function addColumns(db: DatabaseSync): void {
 // Values renamed after their first release, rewritten on every connect.
 function migrateValues(db: DatabaseSync): void {
   // Looked up first: an UPDATE that changes nothing still takes the write lock.
-  if (!db.prepare("SELECT 1 FROM main.access WHERE role = 'admin'").get()) return;
-  db.exec("UPDATE main.access SET role = 'operator' WHERE role = 'admin'");
+  if (db.prepare("SELECT 1 FROM main.access WHERE role = 'admin'").get()) db.exec("UPDATE main.access SET role = 'operator' WHERE role = 'admin'");
+  // Priority rows written with the impact names (critical, high, normal, low) become levels.
+  const OLD = "('critical', 'high', 'normal', 'low')";
+  if (db.prepare(`SELECT 1 FROM main.item_priority WHERE impact IN ${OLD} OR jev_impact IN ${OLD} OR haiku_impact IN ${OLD} LIMIT 1`).get()) {
+    const lv = (c: string) => `CASE ${c} WHEN 'critical' THEN 'P0' WHEN 'high' THEN 'P1' WHEN 'normal' THEN 'P2' WHEN 'low' THEN 'P3' ELSE ${c} END`;
+    db.exec(`UPDATE main.item_priority SET impact = ${lv("impact")}, jev_impact = ${lv("jev_impact")}, haiku_impact = ${lv("haiku_impact")}`);
+  }
 }
 
 // Fills the full-text tables once, for a database that had items before they existed.

@@ -1,7 +1,7 @@
-// craft-auto prioritize [--limit N]: impact class of open items and the 0-100 priority score (src/priority/score.ts).
+// craft-auto prioritize [--limit N]: priority level (P0-P4) of open items and their reach (src/priority/score.ts).
 //
 // Jev classifies the impact of each item whose text has no priority row at its
-// current hash; Haiku decides where Jev is under 90 % sure. The score is
+// current hash; Haiku decides where Jev is under 90 % sure. The reach is
 // recomputed from the mirror's reach signals on every pass, without a model.
 import type { DatabaseSync } from "node:sqlite";
 import { jevParallel } from "../agents/accounts.ts";
@@ -12,7 +12,7 @@ import { connect } from "../db.ts";
 import { fillEmbedHashes } from "../itemhash.ts";
 import { CLAUDE_PROMPTS, JEV_PROMPTS } from "../prompts/index.ts";
 import { reachOfOpenItems } from "./reach.ts";
-import { jevImpact, parseHaikuImpacts, scoreOf, settleImpact, SURE, type Impact, type JevImpactAnswers } from "./score.ts";
+import { jevImpact, parseHaikuImpacts, reachScore, settleImpact, SURE, type Impact, type JevImpactAnswers } from "./score.ts";
 
 const JEV = JEV_PROMPTS["priority.jev"], HAIKU = CLAUDE_PROMPTS["priority.haiku"];
 const JEV_CHUNK = 40;
@@ -57,18 +57,18 @@ function save(db: DatabaseSync, item: Due, v: Verdict): boolean {
   const reason = s.model === "haiku" ? v.haiku!.reason : v.jev ? `${v.jev.impact} ${v.jev.p.toFixed(2)}` : "";
   db.prepare(`INSERT OR REPLACE INTO item_priority (repo, number, text_hash, impact, jev_impact, jev_p, haiku_impact, score, model, reason, at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(item.repo, item.number, item.hash, s.impact, v.jev?.impact ?? null, v.jev?.p ?? null,
-    v.haiku?.impact ?? null, scoreOf(s.impact, { comments: 0, commenters: 0, linked: 0, duplicates: 0, security: false, ageDays: 0 }), s.model, reason, now());
+    v.haiku?.impact ?? null, 0, s.model, reason, now());
   return true;
 }
 
 /**
- * Recomputes the score of every open item with a priority row from the current reach.
- * Returns the number of rows whose score changed.
+ * Recomputes the reach of every open item with a priority row from the current reach signals.
+ * Returns the number of rows whose reach changed.
  */
 export function rescore(db: DatabaseSync, nowMs: number = Date.now()): number {
   const reach = reachOfOpenItems(db, nowMs);
-  const rows = db.prepare(`SELECT p.repo, p.number, p.impact, p.score FROM item_priority p JOIN items i ON i.repo = p.repo AND i.number = p.number WHERE i.state = 'OPEN'`)
-    .all() as { repo: string; number: number; impact: Impact; score: number }[];
+  const rows = db.prepare(`SELECT p.repo, p.number, p.score FROM item_priority p JOIN items i ON i.repo = p.repo AND i.number = p.number WHERE i.state = 'OPEN'`)
+    .all() as { repo: string; number: number; score: number }[];
   const upd = db.prepare("UPDATE item_priority SET score = ? WHERE repo = ? AND number = ?");
   let changed = 0;
   db.exec("BEGIN IMMEDIATE");
@@ -76,7 +76,7 @@ export function rescore(db: DatabaseSync, nowMs: number = Date.now()): number {
     for (const r of rows) {
       const rc = reach.get(`${r.repo}#${r.number}`);
       if (!rc) continue;
-      const score = scoreOf(r.impact, rc);
+      const score = reachScore(rc);
       if (score !== r.score) { upd.run(score, r.repo, r.number); changed++; }
     }
     db.exec("COMMIT");
@@ -131,13 +131,13 @@ export async function runPrioritize(db: DatabaseSync, opts: PrioritizeOptions): 
 
 export const commands = {
   prioritize: {
-    summary: "prioritize [--limit N]: Jev (Haiku where unsure) rates the impact of open items without a priority, then rescores all",
+    summary: "prioritize [--limit N]: Jev (Haiku where unsure) rates the level (P0-P4) of open items without a priority, then recomputes all reach",
     async run(args: string[]): Promise<void> {
       const i = args.indexOf("--limit");
       const limit = i >= 0 ? Number(args[i + 1]) : 500;
       if (!Number.isInteger(limit) || limit < 1) throw new Error("--limit is a whole number of at least 1");
       const r = await runPrioritize(connect(), { limit, log: console.log });
-      console.log(`${r.saved} of ${r.sent} rated (${r.jev} by Jev, ${r.haiku} by Haiku); ${r.rescored} scores changed`);
+      console.log(`${r.saved} of ${r.sent} rated (${r.jev} by Jev, ${r.haiku} by Haiku); ${r.rescored} reach values changed`);
     },
   },
 };

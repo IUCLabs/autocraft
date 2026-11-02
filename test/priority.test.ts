@@ -14,7 +14,7 @@ import { selectFixups } from "../src/fixup/candidates.ts";
 import { rescore, runPrioritize } from "../src/priority/index.ts";
 import { priorityOf } from "../src/priority/read.ts";
 import { duplicateCounts } from "../src/priority/reach.ts";
-import { BANDS, IMPACTS, parseHaikuImpacts, reachOf, scoreOf, settleImpact, type Reach } from "../src/priority/score.ts";
+import { LEVELS, levelWith, parseHaikuImpacts, reachOf, reachScore, settleImpact, type Reach } from "../src/priority/score.ts";
 import { selectCandidates as reviewCandidates } from "../src/review/candidates.ts";
 import { selectCandidates as verifyCandidates } from "../src/verify/candidates.ts";
 
@@ -25,27 +25,26 @@ const none: Reach = { comments: 0, commenters: 0, linked: 0, duplicates: 0, secu
 const all: Reach = { comments: 99, commenters: 99, linked: 9, duplicates: 9, security: true, ageDays: 999 };
 
 describe("score", () => {
-  test("impact sets the band and reach moves the score inside it", () => {
-    for (const i of IMPACTS) {
-      assert.equal(scoreOf(i, none), BANDS[i][0]);
-      assert.equal(scoreOf(i, all), BANDS[i][1]);
-    }
+  test("reach is a 0 to 99 tie-breaker and the security flag raises the level by one", () => {
+    assert.equal(reachScore(none), 0);
+    assert.equal(reachScore(all), 99);
     assert.equal(reachOf(all), 1);
-    assert.ok(scoreOf("normal", { ...none, comments: 10 }) > scoreOf("normal", none));
-    assert.ok(scoreOf("normal", { ...none, security: true }) > scoreOf("normal", { ...none, ageDays: 365 }));
-    assert.ok(scoreOf("normal", { ...none, duplicates: 2 }) > scoreOf("normal", none));
-    assert.ok(scoreOf("critical", none) >= scoreOf("high", all));
+    assert.ok(reachScore({ ...none, comments: 10 }) > reachScore(none));
+    assert.ok(reachScore({ ...none, security: true }) > reachScore({ ...none, ageDays: 365 }));
+    assert.ok(reachScore({ ...none, duplicates: 2 }) > reachScore(none));
+    assert.deepEqual(LEVELS.map((l) => levelWith(l, true)), ["P0", "P0", "P1", "P2", "P3"]);
+    assert.deepEqual(LEVELS.map((l) => levelWith(l, false)), [...LEVELS]);
   });
 
   test("Jev at 0.9 or more stands; below it Haiku decides", () => {
-    assert.deepEqual(settleImpact({ impact: "high", p: 0.9 }, "low"), { impact: "high", model: "jev" });
-    assert.deepEqual(settleImpact({ impact: "high", p: 0.89 }, "low"), { impact: "low", model: "haiku" });
-    assert.deepEqual(settleImpact({ impact: "high", p: 0.5 }, null), { impact: "high", model: "jev-unsure" });
+    assert.deepEqual(settleImpact({ impact: "P1", p: 0.9 }, "P3"), { impact: "P1", model: "jev" });
+    assert.deepEqual(settleImpact({ impact: "P1", p: 0.89 }, "P3"), { impact: "P3", model: "haiku" });
+    assert.deepEqual(settleImpact({ impact: "P1", p: 0.5 }, null), { impact: "P1", model: "jev-unsure" });
     assert.equal(settleImpact(null, null), null);
   });
 
   test("Haiku reply keeps asked refs with a known class", () => {
-    const r = parseHaikuImpacts(JSON.stringify([{ ref: "a#1", impact: "low", reason: "x" }, { ref: "a#2", impact: "huge" }, { ref: "z#9", impact: "low" }]), ["a#1", "a#2"]);
+    const r = parseHaikuImpacts(JSON.stringify([{ ref: "a#1", impact: "P3", reason: "x" }, { ref: "a#2", impact: "huge" }, { ref: "a#2", impact: "normal" }, { ref: "z#9", impact: "P3" }]), ["a#1", "a#2"]);
     assert.deepEqual(r.answers.map((a) => a.ref), ["a#1"]);
     assert.deepEqual(r.missing, ["a#2"]);
   });
@@ -58,11 +57,11 @@ function fake(calls: Call[], impacts: Record<string, string>, p: number): Runner
     calls.push({ cmd, input });
     if (cmd === "jev") {
       const ref = /"ref\\":\\"([^\\]+)\\"/.exec(input)![1]!;
-      const choice = impacts[ref] ?? "normal";
+      const choice = impacts[ref] ?? "P2";
       return { code: 0, stdout: JSON.stringify({ answers: { impact: { choice, confidence: p, probabilities: { [choice]: p } } }, usage: { input_tokens: 10, output_tokens: 2 } }), stderr: "" };
     }
     const refs = [...input.matchAll(/"ref": "([^"]+)"/g)].map((m) => m[1]!);
-    return { code: 0, stdout: JSON.stringify({ type: "result", result: JSON.stringify(refs.map((ref) => ({ ref, impact: "low", reason: "cosmetic" }))), usage: { input_tokens: 10, output_tokens: 2 } }), stderr: "" };
+    return { code: 0, stdout: JSON.stringify({ type: "result", result: JSON.stringify(refs.map((ref) => ({ ref, impact: "P3", reason: "cosmetic" }))), usage: { input_tokens: 10, output_tokens: 2 } }), stderr: "" };
   };
 }
 
@@ -84,14 +83,14 @@ describe("prioritize", () => {
     const restore = setRunner(async (cmd, args, input, ...rest) => {
       const ref = /photocraft#(\d)/.exec(input)?.[0];
       const p = ref === "photocraft#3" ? 0.6 : 0.95;
-      return fake(calls, { "photocraft#1": "critical", "photocraft#2": "low", "photocraft#3": "high" }, p)(cmd, args, input, ...rest);
+      return fake(calls, { "photocraft#1": "P0", "photocraft#2": "P3", "photocraft#3": "P1" }, p)(cmd, args, input, ...rest);
     });
     try {
       const r = await runPrioritize(db, { limit: 10 });
       assert.equal(r.saved, 3);
       const row = (n: number) => db.prepare("SELECT * FROM item_priority WHERE repo = 'photocraft' AND number = ?").get(n) as Record<string, unknown>;
-      assert.deepEqual([row(1).impact, row(1).model, row(1).haiku_impact], ["critical", "jev", null]);
-      assert.deepEqual([row(3).impact, row(3).model, row(3).jev_impact, row(3).haiku_impact], ["low", "haiku", "high", "low"]);
+      assert.deepEqual([row(1).impact, row(1).model, row(1).haiku_impact], ["P0", "jev", null]);
+      assert.deepEqual([row(3).impact, row(3).model, row(3).jev_impact, row(3).haiku_impact], ["P3", "haiku", "P1", "P3"]);
       assert.equal(calls.filter((c) => c.cmd === "claude").length, 1);
       const n = calls.length;
       const again = await runPrioritize(db, { limit: 10 });
@@ -103,16 +102,32 @@ describe("prioritize", () => {
     } finally { restore(); }
   });
 
-  test("rescoring follows reach without a model call", () => {
+  test("reach follows the signals without a model call", () => {
     const db = fixture();
-    db.prepare(`INSERT INTO item_priority (repo, number, text_hash, impact, score, model, at) VALUES ('photocraft', 1, 'h', 'normal', 25, 'jev', 'x')`).run();
+    db.prepare(`INSERT INTO item_priority (repo, number, text_hash, impact, score, model, at) VALUES ('photocraft', 1, 'h', 'P2', 0, 'jev', 'x')`).run();
     const com = db.prepare("INSERT INTO comments (repo, number, id, kind, author, created_at, body) VALUES ('photocraft', 1, ?, 'comment', ?, '2026-02-01', 'b')");
     com.run("c1", "u1");
     com.run("c2", "u2");
     assert.equal(rescore(db), 1);
-    const s = (priorityOf(db, "photocraft", 1))!.score;
-    assert.ok(s > 25 && s < 50);
+    const s = (db.prepare("SELECT score FROM item_priority WHERE number = 1").get() as { score: number }).score;
+    assert.ok(s > 0 && s < 99);
     assert.equal(rescore(db), 0);
+  });
+
+  test("rows written with the old impact names become levels, and a migrated database is left alone", () => {
+    const path = join(mkdtempSync(join(SCRATCH, "priority-migrate-")), "t.db");
+    const db = connect(path);
+    const ins = db.prepare("INSERT INTO item_priority (repo, number, text_hash, impact, jev_impact, haiku_impact, score, model, at) VALUES ('photocraft', ?, 'h', ?, ?, ?, 40, 'jev', 'x')");
+    ins.run(1, "critical", "critical", null);
+    ins.run(2, "high", "normal", "high");
+    ins.run(3, "normal", null, "low");
+    ins.run(4, "low", "low", null);
+    ins.run(5, "P4", "P4", null);
+    db.close();
+    const again = connect(path);
+    const rows = again.prepare("SELECT impact, jev_impact, haiku_impact FROM item_priority ORDER BY number").all() as Record<string, string | null>[];
+    assert.deepEqual(rows.map((r) => [r.impact, r.jev_impact, r.haiku_impact]), [["P0", "P0", null], ["P1", "P2", "P1"], ["P2", null, "P3"], ["P3", "P3", null], ["P4", "P4", null]]);
+    again.close();
   });
 
   test("duplicate counts are read only when the table exists", () => {
@@ -130,7 +145,7 @@ describe("ordering and API", () => {
     const db = connect(join(mkdtempSync(join(SCRATCH, "priority-order-")), "t.db"));
     const item = db.prepare(`INSERT INTO items (repo, number, kind, state, title, body, author, created_at, updated_at, head_oid, is_draft, additions, deletions, changed_files)
       VALUES ('photocraft', ?, 'pr', 'OPEN', 't', 'b', 'a', ?, ?, ?, 0, 5, 5, 1)`);
-    const prio = db.prepare("INSERT INTO item_priority (repo, number, text_hash, impact, score, model, at) VALUES ('photocraft', ?, 'h', 'normal', ?, 'jev', 'x')");
+    const prio = db.prepare("INSERT INTO item_priority (repo, number, text_hash, impact, score, model, at) VALUES ('photocraft', ?, 'h', 'P2', ?, 'jev', 'x')");
     const rank = db.prepare("INSERT INTO item_rank (repo, number, score, breakdown, computed_at) VALUES ('photocraft', ?, ?, '{}', 'x')");
     const score = { run: (n: number, v: number) => { prio.run(n, v); rank.run(n, v); } };
     const cls = db.prepare(`INSERT INTO classifications (repo, number, classifier, run_id, at, type_label, flags, probs) VALUES ('photocraft', ?, 'jev', 'r1', '2026-10-01', 'bugfix', '["needs decision"]', '{"top":0.95,"needs_decision":0.9}')`);
@@ -158,10 +173,10 @@ describe("ordering and API", () => {
   test("the item and decision responses carry the badge data", () => {
     const db = fixture();
     assert.equal(priorityOf(db, "photocraft", 1), null);
-    db.prepare(`INSERT INTO item_priority (repo, number, text_hash, impact, score, model, reason, at) VALUES ('photocraft', 1, 'h', 'critical', 82, 'jev', 'critical 0.95', 'x')`).run();
-    assert.deepEqual(priorityOf(db, "photocraft", 1), { impact: "critical", score: 82, model: "jev", reason: "critical 0.95" });
+    db.prepare(`INSERT INTO item_priority (repo, number, text_hash, impact, score, model, reason, at) VALUES ('photocraft', 1, 'h', 'P0', 82, 'jev', 'P0 0.95', 'x')`).run();
+    assert.deepEqual(priorityOf(db, "photocraft", 1), { level: "P0", model: "jev", reason: "P0 0.95" });
     db.prepare(`INSERT INTO decisions (id, kind, repo, number, question, options, asked_at) VALUES ('d1', 'scope', 'photocraft', 1, 'In scope?', '[]', '2026-10-01')`).run();
     const row = db.prepare("SELECT * FROM decisions WHERE id = 'd1'").get() as unknown as DecisionRow;
-    assert.equal(toDecision(db, row, { login: "x", operator: false }).priority?.score, 82);
+    assert.equal(toDecision(db, row, { login: "x", operator: false }).priority?.level, "P0");
   });
 });

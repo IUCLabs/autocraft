@@ -1,10 +1,11 @@
-// craft-auto rank [show <repo> <n>]: the work score of open items (src/rank/score.ts).
+// craft-auto rank [show <repo> <n>]: the work rank of open items (src/rank/score.ts).
 //
 // Reads the stored priority, the settled classification and the size; calls no model. The rank step
 // rewrites the item_rank row of every open item in a tracked repo and removes the rows of the others.
 import type { DatabaseSync } from "node:sqlite";
 import { latestRun, settledLookup } from "../classify/settled.ts";
 import { connect } from "../db.ts";
+import type { Level } from "../priority/score.ts";
 import { isSize, rankOf, sizeOfLines, type RankBreakdown, type RankInput, type Size } from "./score.ts";
 
 const now = () => new Date().toISOString();
@@ -21,7 +22,7 @@ export function rankDue(db: DatabaseSync, nowMs: number = Date.now()): boolean {
   return oldest !== null && nowMs - Date.parse(oldest) > RANK_STALE_MS;
 }
 
-type ItemRow = { repo: string; number: number; kind: string; lines: number | null; priority: number | null; fix_size: string | null };
+type ItemRow = { repo: string; number: number; kind: string; lines: number | null; level: Level | null; reach: number | null; fix_size: string | null };
 
 /** Size of an item: the fix triage's estimate for an issue, the changed lines for a PR. */
 export function sizeOfItem(kind: string, lines: number | null, fixSize: string | null): Pick<RankInput, "size" | "sizeSource"> {
@@ -34,7 +35,7 @@ export function runRank(db: DatabaseSync, nowMs: number = Date.now()): { items: 
   const settled = settledLookup(db, latestRun(db));
   const rows = db.prepare(`SELECT i.repo, i.number, i.kind,
       CASE WHEN i.kind = 'pr' AND (i.additions IS NOT NULL OR i.deletions IS NOT NULL) THEN COALESCE(i.additions, 0) + COALESCE(i.deletions, 0) END AS lines,
-      p.score AS priority, f.size AS fix_size
+      p.impact AS level, p.score AS reach, f.size AS fix_size
     FROM items i JOIN tracked_repos t ON t.name = i.repo
     LEFT JOIN item_priority p ON p.repo = i.repo AND p.number = i.number
     LEFT JOIN fix_attempts f ON f.repo = i.repo AND f.number = i.number
@@ -50,7 +51,7 @@ export function runRank(db: DatabaseSync, nowMs: number = Date.now()): { items: 
   try {
     for (const r of rows) {
       const s = settled(r.repo, r.number);
-      const { score, breakdown } = rankOf({ priority: r.priority, label: s.label, security: s.flags.includes("security"), ...sizeOfItem(r.kind, r.lines, r.fix_size) });
+      const { score, breakdown } = rankOf({ level: r.level, reach: r.reach, label: s.label, security: s.flags.includes("security"), ...sizeOfItem(r.kind, r.lines, r.fix_size) });
       const k = `${r.repo}#${r.number}`, json = JSON.stringify(breakdown);
       keep.add(k);
       const prev = old.get(k);
@@ -77,7 +78,7 @@ export function rankOfItem(db: DatabaseSync, repo: string, number: number): Rank
 
 export const commands = {
   rank: {
-    summary: "rank [show <repo> <n>]: recompute the work score of open items; show prints one item's score and its parts",
+    summary: "rank [show <repo> <n>]: recompute the work rank of open items; show prints one item's key and its parts",
     run(args: string[]): void {
       const db = connect();
       if (args[0] === "show") {
@@ -87,10 +88,10 @@ export const commands = {
         if (!r) { console.log(`${repo}#${n}: no rank (not open, or the rank step has not run)`); return; }
         console.log(`${repo}#${n}: ${r.score} (computed ${r.computedAt})`);
         const b = r.breakdown;
-        console.log(`  priority  ${String(b.priority.value ?? "none")} -> ${b.priority.points}`);
-        console.log(`  type      ${String(b.type.value ?? "none")} -> ${b.type.points}`);
-        console.log(`  size      ${String(b.size.value)} (${b.size.source}) -> ${b.size.points}`);
-        console.log(`  security  ${String(b.security.value)} -> ${b.security.points}`);
+        console.log(`  level     ${b.level}${b.security ? " (raised by the security flag)" : ""}${b.rated ? "" : " (not rated yet)"}`);
+        console.log(`  type      ${b.type ?? "not settled"}`);
+        console.log(`  size      ${b.size} (${b.sizeSource})`);
+        console.log(`  reach     ${b.reach}`);
         return;
       }
       if (args.length) throw new Error("usage: rank | rank show <repo> <n>");

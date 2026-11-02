@@ -1,4 +1,4 @@
-// Work queue: open issues and PRs in work-score order, with the parts of each score and the next pipeline
+// Work queue: open issues and PRs in rank order, with level, type and size and the next pipeline
 // step. Read-only.
 import { Link } from "react-router-dom";
 import { ListOrderedIcon } from "lucide-react";
@@ -6,6 +6,7 @@ import { useQuery } from "../../api/client";
 import type { WorkBreakdown, WorkFilter, WorkRow } from "../../api/types";
 import type { FeatureModule, ViewProps } from "../../registry/types";
 import { Badge } from "../../ui/Badge";
+import { LevelBadge } from "../../ui/PriorityBadge";
 import { RefLink } from "../../ui/RefLink";
 import { cn } from "../../ui/cn";
 import { num } from "../../lib/format";
@@ -14,21 +15,18 @@ import { Block, ErrorLine, Page, Pager, selectCls, useUrlState } from "../admin/
 
 const LIMIT = 100;
 
-const pts = (n: number): string => (n > 0 ? `+${n}` : String(n));
-
-/** The parts of a score in one line; the hover text names each part's source. */
+/** Size and reach in one line; the hover text names where each came from. */
 function Breakdown({ b }: { b: WorkBreakdown }) {
-  const parts: [string, string, string][] = [
-    ["priority", String(b.priority.points), b.priority.value === null ? "no priority yet: the middle of the normal band counts" : `priority score ${String(b.priority.value)}`],
-    ["type", pts(b.type.points), b.type.value === null ? "no settled type label" : String(b.type.value)],
-    ["size", pts(b.size.points), `${String(b.size.value)} (${{ lines: "from changed lines", triage: "Fix triage's estimate", default: "not known yet, medium counts" }[b.size.source]})`],
-    ...(b.security.points ? [["security", pts(b.security.points), "a classifier raised the security flag"] as [string, string, string]] : []),
+  const parts: [string, string][] = [
+    ["size", `${b.size} (${{ lines: "from changed lines", triage: "Fix triage's estimate", default: "not known yet, medium counts" }[b.sizeSource]})`],
+    ...(b.security ? [["security", "a classifier raised the security flag: one level higher"] as [string, string]] : []),
+    ...(b.rated === null ? [["unrated", "no priority yet: P2 counts"] as [string, string]] : []),
   ];
   return (
-    <span className="num flex flex-wrap gap-x-3 gap-y-0.5 text-2xs text-ink/60">
-      {parts.map(([name, value, hint]) => (
+    <span className="flex flex-wrap gap-x-3 gap-y-0.5 text-2xs text-ink/60">
+      {parts.map(([name, hint]) => (
         <span key={name} title={hint}>
-          {name} {value}
+          {name}
         </span>
       ))}
     </span>
@@ -55,7 +53,7 @@ function WorkView(_: ViewProps) {
   const { data: repos } = useQuery("repos", (api) => api.repos());
 
   return (
-    <Page title="Work queue" sub={data && <>{num(data.total)} open items, highest work score first. Review, Fix, Verify, Fix-up, Decide and the merge queue take their items in this order.</>}>
+    <Page title="Work queue" sub={data && <>{num(data.total)} open items, highest priority first (level, then type, then smaller size). Review, Fix, Verify, Fix-up, Decide and the merge queue take their items in this order.</>}>
       <div className="mt-4 flex flex-wrap items-center gap-1.5">
         <select aria-label="Repo" value={filter.repo ?? ""} onChange={(e) => update({ repo: e.target.value || null, offset: null })} className={cn(selectCls, filter.repo ? "text-accent-ink" : "text-ink/70")}>
           <option value="">Every repo</option>
@@ -91,9 +89,10 @@ function Table({ rows, offset }: { rows: WorkRow[]; offset: number }) {
           <tr className="border-b border-line text-left">
             <th className="h-8 w-[44px] px-3 font-medium">#</th>
             <th className="px-3 font-medium">Item</th>
-            <th className="w-[70px] px-3 font-medium">Score</th>
-            <th className="w-[280px] px-3 font-medium">Parts</th>
-            <th className="w-[110px] px-3 font-medium">Label</th>
+            <th className="w-[70px] px-3 font-medium">Level</th>
+            <th className="w-[110px] px-3 font-medium">Type</th>
+            <th className="w-[60px] px-3 font-medium">Size</th>
+            <th className="w-[160px] px-3 font-medium">Notes</th>
             <th className="w-[220px] px-3 font-medium">Next step</th>
           </tr>
         </thead>
@@ -104,11 +103,14 @@ function Table({ rows, offset }: { rows: WorkRow[]; offset: number }) {
               <td className="px-3 py-2">
                 <Title r={r} />
               </td>
-              <td className="num px-3 py-2 font-medium">{r.score}</td>
+              <td className="px-3 py-2" title={`Sort key ${r.score}, reach ${r.breakdown.reach}`}>
+                <LevelBadge level={r.level} />
+              </td>
+              <td className="px-3 py-2 text-xs text-ink/70">{r.label ?? <span className="text-ink/35">not settled</span>}</td>
+              <td className="num px-3 py-2 text-xs">{r.size}</td>
               <td className="px-3 py-2">
                 <Breakdown b={r.breakdown} />
               </td>
-              <td className="px-3 py-2 text-xs text-ink/70">{r.label ?? <span className="text-ink/35">not settled</span>}</td>
               <td className="px-3 py-2">
                 <Badge tone="neutral">{r.next}</Badge>
               </td>
@@ -128,7 +130,9 @@ function Cards({ rows, offset }: { rows: WorkRow[]; offset: number }) {
           <div className="flex items-center gap-2 text-xs text-ink/55">
             <span className="num">{offset + i + 1}.</span>
             <RefLink repo={r.repo} number={r.number} kind={r.kind} className="text-xs" />
-            <span className="num ml-auto shrink-0 text-sm font-medium text-ink">{r.score}</span>
+            <span className="ml-auto shrink-0" title={`Sort key ${r.score}, reach ${r.breakdown.reach}`}>
+              <LevelBadge level={r.level} />
+            </span>
           </div>
           <Link to={`/item/${r.repo}/${r.number}`} className="mt-1 block text-sm font-medium leading-5 active:text-accent-ink">
             {r.title}
@@ -136,6 +140,7 @@ function Cards({ rows, offset }: { rows: WorkRow[]; offset: number }) {
           <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-2xs text-ink/60">
             <Badge tone="neutral">{r.next}</Badge>
             <span>{r.label ?? "not settled"}</span>
+            <span className="num">{r.size}</span>
           </div>
           <div className="mt-1">
             <Breakdown b={r.breakdown} />

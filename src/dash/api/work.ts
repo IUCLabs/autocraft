@@ -28,10 +28,10 @@ export async function work(db: DatabaseSync, req: Req): Promise<WorkList> {
     WHERE ${where} ORDER BY r.score DESC, i.repo, i.number LIMIT ? OFFSET ?`).all(...args, limit, offset) as Row[];
   const settled = settledLookup(db, latestRun(db));
   const out: WorkRow[] = rows.map((r) => {
-    const s = settled(r.repo, r.number);
+    const s = settled(r.repo, r.number), bd = JSON.parse(r.breakdown) as RankBreakdown;
     return {
-      repo: r.repo, number: r.number, kind: r.kind === "pr" ? "pr" : "issue", title: r.title ?? "", score: r.score,
-      breakdown: JSON.parse(r.breakdown) as RankBreakdown, label: s.label as TypeLabel | null,
+      repo: r.repo, number: r.number, kind: r.kind === "pr" ? "pr" : "issue", title: r.title ?? "", score: r.score, level: bd.level, size: bd.size,
+      breakdown: bd, label: s.label as TypeLabel | null,
       next: nextStepOf(factsOf(db, r.repo, r.number, r.kind, r.head_oid, s.label, s.status === "settled", s.flags)),
     };
   });
