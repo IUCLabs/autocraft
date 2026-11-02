@@ -12,6 +12,7 @@ import { doneByRepo, funnelByRepo, latestCte, trackingStart, trend, type DoneRow
 import { HttpError, RateLimiter } from "../server/util.ts";
 import type { Req, Res, Route } from "../types.ts";
 import * as adm from "./admin.ts";
+import * as agents from "./agents.ts";
 import * as dec from "./decisions.ts";
 import * as insight from "./insight.ts";
 import * as pipeline from "./pipeline.ts";
@@ -232,6 +233,8 @@ export function apiRoutes(opts: ApiOptions = {}): Route[] {
     post("/api/repos/untrack", (db, req) => adm.track(db, req, false)),
     post("/api/repos/labels-approve", (db, req) => adm.labelsApproval(db, req, true)),
     post("/api/repos/labels-revoke", (db, req) => adm.labelsApproval(db, req, false)),
+    post("/api/repos/merge-approve", (db, req) => adm.mergeApproval(db, req, true)),
+    post("/api/repos/merge-revoke", (db, req) => adm.mergeApproval(db, req, false)),
     get("/api/access", adm.accessOverview),
     post("/api/access/add", adm.accessAdd),
     post("/api/access/remove", adm.accessRemove),
@@ -250,6 +253,11 @@ export function apiRoutes(opts: ApiOptions = {}): Route[] {
     { method: "PUT", pattern: "/api/pipeline/state", operator: true, handler: ok(pipeline.putState) },
     { method: "PUT", pattern: "/api/pipeline/limits/:step", operator: true, handler: ok(pipeline.putLimit) },
     get("/api/prompts", prompts),
+    get("/api/accounts", agents.accounts),
+    { method: "PUT", pattern: "/api/accounts/:id", operator: true, handler: ok(agents.putAccount) },
+    get("/api/agents", agents.list),
+    get("/api/agents/:id", agents.detail),
+    get("/api/rates", agents.rates),
     get("/api/queue", queue),
     get("/api/flow", flow),
     get("/api/similar/:repo/:n", (db, req) => sim.similar(db, req, vectors)),

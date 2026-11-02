@@ -1,15 +1,15 @@
 // The flowchart on a phone: the stages top to bottom, each with its branches
 // indented and the stages it feeds; a tap on a stage opens its panel.
 import { ArrowDownIcon, ChevronRightIcon } from "lucide-react";
-import type { Flow, FlowNode } from "../../api/types";
+import type { AgentRun, Flow, FlowNode } from "../../api/types";
 import { Badge } from "../../ui/Badge";
 import { cn } from "../../ui/cn";
 import { num } from "../../lib/format";
-import { BranchRow, nodeOf, recentText } from "./parts";
+import { BranchRow, nodeOf, recentText, RunningMarker } from "./parts";
 
 const ORDER: FlowNode["id"][] = ["synced", "classify", "decide", "labels", "review", "verify", "merge"];
 
-export function PhoneFlow({ flow, onSelect }: { flow: Flow; onSelect: (id: string) => void }) {
+export function PhoneFlow({ flow, onSelect, runs }: { flow: Flow; onSelect: (id: string) => void; runs: AgentRun[] }) {
   const nodes = ORDER.map((id) => nodeOf(flow, id)).filter((n): n is FlowNode => !!n);
   return (
     <ol className="space-y-0">
@@ -34,6 +34,7 @@ export function PhoneFlow({ flow, onSelect }: { flow: Flow; onSelect: (id: strin
                     <span className="text-md font-semibold">{n.title}</span>
                     {n.mode === "gate" && <Badge tone="accent">People decide</Badge>}
                     {n.mode === "planned" && <Badge>Planned</Badge>}
+                    <RunningMarker n={n} runs={runs} />
                   </span>
                   <span className={cn("mt-0.5 block text-xs", n.mode === "gate" && n.summary !== "Nothing waiting" ? "font-medium text-accent-ink" : "text-ink/60")}>{n.summary}</span>
                 </span>

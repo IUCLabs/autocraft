@@ -164,16 +164,16 @@ export function FlowPanel({ flow, node: n, onClose, onSelect }: { flow: Flow; no
               </div>
             ))}
           </dl>
-          {n.id === "labels" && user.role === "operator" && (
+          {(n.id === "labels" || n.id === "merge") && user.role === "operator" && (
             <Link to="/repos" className="mt-2 inline-block text-sm text-accent-ink hover:underline">
-              Approve labelling per repo on the Repos page
+              Approve {n.id === "labels" ? "labelling" : "merging"} per repo on the Repos page
             </Link>
           )}
         </Section>
       )}
 
       {/* Other modules add stage blocks here, such as the model calls running now. */}
-      <Slot name="flow.panel" params={{ node: n.id }} user={user} />
+      <Slot name="flow.panel" params={{ node: n.id, steps: n.steps.join(",") }} user={user} />
 
       {n.steps.length > 0 && (
         <Section title="Steps, limits and recent jobs" aside={<Link to="/pipeline" className="text-accent-ink hover:underline">Pipeline page</Link>}>

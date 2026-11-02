@@ -3,18 +3,18 @@
 // the measured positions of the nodes and their branch rows.
 import { useLayoutEffect, useRef, useState } from "react";
 import { ChevronRightIcon } from "lucide-react";
-import type { Flow, FlowEdge, FlowNode } from "../../api/types";
+import type { AgentRun, Flow, FlowEdge, FlowNode } from "../../api/types";
 import { Badge } from "../../ui/Badge";
 import { cn } from "../../ui/cn";
 import { num } from "../../lib/format";
-import { BranchRow, recentText, WaitIcon } from "./parts";
+import { BranchRow, recentText, RunningMarker, WaitIcon } from "./parts";
 
 /** Grid cell of each node: [column, row, row span]. */
 const CELL: Record<FlowNode["id"], [number, number, number]> = {
   synced: [1, 1, 1], classify: [2, 1, 1], labels: [2, 2, 1], review: [3, 1, 1], decide: [3, 2, 1], verify: [4, 1, 1], merge: [5, 1, 2],
 };
 
-export function NodeCard({ n, selected, onSelect }: { n: FlowNode; selected: boolean; onSelect: () => void }) {
+export function NodeCard({ n, selected, onSelect, runs }: { n: FlowNode; selected: boolean; onSelect: () => void; runs: AgentRun[] }) {
   const gate = n.mode === "gate";
   const planned = n.mode === "planned";
   const recent = recentText(n);
@@ -34,7 +34,8 @@ export function NodeCard({ n, selected, onSelect }: { n: FlowNode; selected: boo
           <span className="text-md font-semibold">{n.title}</span>
           {gate && <Badge tone="accent">People decide</Badge>}
           {planned && <Badge>Planned</Badge>}
-          <ChevronRightIcon className="ml-auto shrink-0 text-ink/40" />
+          <RunningMarker n={n} runs={runs} className="ml-auto" />
+          <ChevronRightIcon className={cn("shrink-0 text-ink/40", runs.length === 0 && "ml-auto")} />
         </span>
         <span className={cn("mt-0.5 block text-xs", gate && n.summary !== "Nothing waiting" ? "font-medium text-accent-ink" : "text-ink/60")}>{n.summary}</span>
       </button>
@@ -92,7 +93,7 @@ function geometry(el: HTMLElement, edges: FlowEdge[]): Geo[] {
   return out;
 }
 
-export function Chart({ flow, selected, onSelect }: { flow: Flow; selected: string | null; onSelect: (id: string) => void }) {
+export function Chart({ flow, selected, onSelect, runs }: { flow: Flow; selected: string | null; onSelect: (id: string) => void; runs: AgentRun[] }) {
   const ref = useRef<HTMLDivElement>(null);
   const [geo, setGeo] = useState<Geo[]>([]);
   useLayoutEffect(() => {
@@ -117,7 +118,7 @@ export function Chart({ flow, selected, onSelect }: { flow: Flow; selected: stri
           const [c, r, span] = CELL[n.id];
           return (
             <div key={n.id} style={{ gridColumn: c, gridRow: `${r} / span ${span}` }} className="relative z-[1]">
-              <NodeCard n={n} selected={selected === n.id} onSelect={() => onSelect(n.id)} />
+              <NodeCard n={n} selected={selected === n.id} onSelect={() => onSelect(n.id)} runs={runs} />
             </div>
           );
         })}

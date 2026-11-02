@@ -31,7 +31,7 @@ export type StepContext = {
   log(line: string): void;
   /** Model calls recorded in token_usage under this run id (from the job's start) count as the job's usage. */
   usageRun(runId: string): void;
-  /** Items this job handled, counted against the stage's daily limit. Call once with the total, before returning. */
+  /** Items this job has handled so far (units attempted, such as items sent to a model), counted against the stage's daily limit. Pass the running total as work goes: it is saved at once, so a failed or stopped job keeps its count. */
   handled(n: number): void;
   /** Set when a cancel was requested; long loops should stop between units of work. */
   cancelled(): boolean;
@@ -49,6 +49,8 @@ export type StepDef = {
   /** At most one job of a group runs at a time. */
   group: "models" | "github-write" | "local" | (string & {});
   params: ParamDef[];
+  /** Models the step calls, known before any call is made: a list, or derived from the params. Empty or absent for steps that call none. */
+  models?: string[] | ((params: Params) => string[]);
   /** null when the step can run; otherwise why not, shown on the page. */
   available?: () => string | null;
   /** Checks a request beyond the schema (null = fine), at request time and again before the run. */
@@ -63,6 +65,20 @@ async function checkApproved(db: DatabaseSync, p: Params): Promise<string | null
   return approvalOf(db, String(p.repo)) ? null : `labelling ${p.repo} is not approved`;
 }
 
+export function modelsOf(step: StepDef | undefined, params: Params): string[] {
+  const m = step?.models;
+  return typeof m === "function" ? m(params) : (m ?? []);
+}
+
+/** Models served through a Claude account (everything but Jev, which has none). */
+export const usesClaude = (models: string[]): boolean => models.some((m) => m !== "jev");
+
+/** Merging is opt-in per repo: tracked repos include ones we do not maintain. */
+async function checkMergeApproved(db: DatabaseSync, p: Params): Promise<string | null> {
+  const { mergeApprovalOf } = await import("../merge/approval.ts");
+  return mergeApprovalOf(db, String(p.repo)) ? null : `merging in ${p.repo} is not approved`;
+}
+
 export const STEPS: StepDef[] = [
   {
     name: "classify-new",
@@ -71,6 +87,7 @@ export const STEPS: StepDef[] = [
     stage: 2,
     requires: "operator",
     group: "models",
+    models: ["jev", "haiku"],
     params: [{ name: "limit", label: "At most", kind: "int", min: 1, max: 5000, default: 500, help: "items per model in this job" }],
     run: async (ctx) => (await import("./classify.ts")).classifyNew(ctx),
   },
@@ -81,6 +98,7 @@ export const STEPS: StepDef[] = [
     stage: 2,
     requires: "operator",
     group: "models",
+    models: ["jev", "haiku"],
     params: [
       { name: "run", label: "Run id", kind: "run-id", required: true, help: "lowercase letters, digits and dashes" },
       { name: "limit", label: "At most", kind: "int", min: 1, max: 30000, default: 30000, help: "items per model in this job" },
@@ -99,8 +117,8 @@ export const STEPS: StepDef[] = [
       { name: "threads", label: "Threads", kind: "int", min: 1, max: 8, default: 4 },
     ],
     run: async (ctx) => {
-      const { commands } = await import("../embed/index.ts");
-      await commands.embed.run([...(ctx.params.all === "yes" ? ["--all"] : []), "--threads", String(ctx.params.threads)]);
+      const { embedCommand } = await import("../embed/index.ts");
+      ctx.handled(await embedCommand([...(ctx.params.all === "yes" ? ["--all"] : []), "--threads", String(ctx.params.threads)], ctx.handled));
       return ctx.params.all === "yes" ? "embedded every item" : "embedded new and changed items";
     },
   },
@@ -131,7 +149,10 @@ export const STEPS: StepDef[] = [
     stage: 4,
     requires: "operator",
     group: "github-write",
-    params: [{ name: "repo", label: "Repo", kind: "repo", required: true }],
+    params: [
+      { name: "repo", label: "Repo", kind: "repo", required: true },
+      { name: "limit", label: "At most", kind: "int", min: 1, max: 5000, default: 500, help: "items to label in this job" },
+    ],
     check: checkApproved,
     run: async (ctx) => {
       const repo = String(ctx.params.repo);
@@ -142,8 +163,7 @@ export const STEPS: StepDef[] = [
       if (!runId) throw new Error("there is no classification run yet");
       const { applyLabels } = await import("../labels/github.ts");
       const { Client } = await import("../mirror.ts");
-      const r = await applyLabels(ctx.db, new Client(500), repo, { runId, apply: true, login: ctx.job.requestedBy, log: ctx.log });
-      ctx.handled(r.labeled);
+      const r = await applyLabels(ctx.db, new Client(500), repo, { runId, limit: Number(ctx.params.limit), apply: true, login: ctx.job.requestedBy, log: ctx.log, onLabeled: ctx.handled });
       return `${repo}: labelled ${r.labeled} of ${r.planned} items in ${r.batches} batches, ${r.failed.length} failed`;
     },
   },
@@ -154,6 +174,7 @@ export const STEPS: StepDef[] = [
     stage: 3,
     requires: "operator",
     group: "models",
+    models: (p) => [String(p.model ?? "sonnet")],
     params: [
       { name: "repo", label: "Repo", kind: "repo", help: "every tracked repo when empty" },
       { name: "limit", label: "At most", kind: "int", min: 1, max: 500, default: 50, help: "decisions to ask in this job" },
@@ -165,9 +186,9 @@ export const STEPS: StepDef[] = [
         repos: ctx.params.repo ? [String(ctx.params.repo)] : undefined,
         limit: Number(ctx.params.limit),
         model: String(ctx.params.model),
+        onSent: ctx.handled,
       }, ctx.log);
       if (r.usageRun) ctx.usageRun(r.usageRun);
-      ctx.handled(r.asked);
       return `asked ${r.asked} decisions; ${r.noSummary} items without a summary`;
     },
   },
@@ -178,15 +199,15 @@ export const STEPS: StepDef[] = [
     stage: 5,
     requires: "operator",
     group: "models",
+    models: ["sonnet"],
     params: [
       { name: "repo", label: "Repo", kind: "repo", required: true },
       { name: "limit", label: "At most", kind: "int", min: 1, max: 50, default: 10, help: "PRs to review in this job" },
     ],
     run: async (ctx) => {
       const { runReview } = await import("../review/index.ts");
-      const r = await runReview(ctx.db, { repo: String(ctx.params.repo), limit: Number(ctx.params.limit) }, ctx.log);
+      const r = await runReview(ctx.db, { repo: String(ctx.params.repo), limit: Number(ctx.params.limit), onHandled: ctx.handled }, ctx.log);
       ctx.usageRun(r.runId);
-      ctx.handled(r.reviewed);
       const v = Object.entries(r.verdicts).map(([k, n]) => `${n} ${k}`).join(", ");
       return `${r.repo}: reviewed ${r.reviewed} of ${r.candidates} candidates${v ? ` (${v})` : ""}; ${r.skipped.length} skipped, ${r.missing.length} without an answer`;
     },
@@ -217,16 +238,22 @@ export const STEPS: StepDef[] = [
       { name: "repo", label: "Repo", kind: "repo", required: true },
       { name: "limit", label: "At most", kind: "int", min: 1, max: 50, default: 5, help: "merges to attempt in this job" },
     ],
+    check: checkMergeApproved,
     run: async (ctx) => {
       const { runMerge } = await import("../merge/index.ts");
-      const r = await runMerge(ctx.db, { repo: String(ctx.params.repo), limit: Number(ctx.params.limit), dryRun: false }, ctx.log);
-      ctx.handled(r.merged.length);
+      const refused = await checkMergeApproved(ctx.db, ctx.params);
+      if (refused) throw new Error(refused);
+      const r = await runMerge(ctx.db, { repo: String(ctx.params.repo), limit: Number(ctx.params.limit), dryRun: false, onMerged: ctx.handled }, ctx.log);
       return `${r.repo}: merged ${r.merged.length} of ${r.attempted.length} tried, ${r.refused.length} refused, ${r.asked.length} decisions asked`;
     },
   },
 ];
 
 let loaded: Promise<Map<string, StepDef>> | null = null;
+let loadedMap: Map<string, StepDef> | null = null;
+
+/** A step by name without waiting: the loaded list once `loadSteps` has finished, else the built-in steps. */
+export const knownStep = (name: string): StepDef | undefined => loadedMap?.get(name) ?? STEPS.find((s) => s.name === name);
 
 /**
  * Every step by name. CRAFT_AUTO_EXTRA_STEPS names a module exporting `steps:
@@ -239,6 +266,7 @@ export function loadSteps(): Promise<Map<string, StepDef>> {
     const map = new Map(STEPS.map((s) => [s.name, s]));
     const extra = process.env.CRAFT_AUTO_EXTRA_STEPS;
     if (extra) for (const s of ((await import(pathToFileURL(resolve(extra)).href)) as { steps: StepDef[] }).steps) map.set(s.name, s);
+    loadedMap = map;
     return map;
   })();
   return loaded;

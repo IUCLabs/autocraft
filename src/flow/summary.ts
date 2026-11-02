@@ -28,6 +28,7 @@ function decisionSigs(db: DatabaseSync): Map<string, string> {
 const globalSig = (db: DatabaseSync): string => JSON.stringify(db.prepare(`SELECT
     (SELECT value FROM main.settings WHERE key = 'classify_run') AS run,
     (SELECT group_concat(key || '=' || value) FROM main.settings WHERE key LIKE 'labels_approved:%') AS approvals,
+    (SELECT group_concat(key || '=' || value) FROM main.settings WHERE key LIKE 'merge_approved:%') AS mergeApprovals,
     (SELECT group_concat(name) FROM (SELECT name FROM main.tracked_repos ORDER BY name)) AS tracked,
     (SELECT run_id FROM main.classifications WHERE classifier = 'jev' ORDER BY at DESC LIMIT 1) AS jev`).get());
 

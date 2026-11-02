@@ -3,6 +3,7 @@ import type { Decision, DecisionComment, DecisionFilter, User } from "../types";
 import { decisionAccess } from "../../registry/permissions";
 import { setClock } from "../../lib/format";
 import { createAdminMock } from "./adminMock";
+import { createAgentsMock } from "./agentsMock";
 import { createPipelineMock } from "./pipelineMock";
 import { promptsReport } from "../../../../src/prompts/index.ts";
 import { semanticHits, similarFor } from "./similarFixtures";
@@ -162,6 +163,7 @@ export function createMockApi(): Api {
     },
     cost: (run) => wait(costReport(run), 80),
     ...createPipelineMock(me, changed),
+    ...createAgentsMock(me, changed),
     prompts: () => wait(promptsReport(null), 60),
     queue: (f) => wait(queueList(f), 60),
     flow: (repo) => wait(flowFixture(repo), 60),

@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { describe, test } from "node:test";
+import { useTestAccount } from "./accounts-fixture.ts";
 import { setRunner, type Runner } from "../src/classify/run.ts";
 import { connect } from "../src/db.ts";
 import type { Querier } from "../src/mirror.ts";
@@ -23,6 +24,7 @@ const T0 = "2026-01-01T00:00:00Z";
 
 function fresh() {
   const db = connect(join(mkdtempSync(join(dir, "db-")), "t.db"));
+  useTestAccount(db);
   const pr = db.prepare(`INSERT INTO items (repo, number, kind, state, title, body, is_draft, additions, deletions, changed_files, head_oid, created_at, updated_at)
     VALUES ('app', ?, 'pr', ?, ?, 'body', ?, ?, 0, 1, ?, '${T0}', '${T0}')`);
   const jev = db.prepare(`INSERT INTO classifications (repo, number, classifier, run_id, at, type_label, flags, probs) VALUES ('app', ?, 'jev', 'r1', '${T0}', ?, ?, ?)`);

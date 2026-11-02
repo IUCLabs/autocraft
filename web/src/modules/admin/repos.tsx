@@ -107,6 +107,29 @@ function Approval({ r, write }: { r: TrackedRepo; write: Write }) {
   );
 }
 
+function MergeApproval({ r, write }: { r: TrackedRepo; write: Write }) {
+  const api = useApi();
+  const m = r.merging;
+  if (!m) return <span className="text-ink/40">–</span>;
+  const key = `merging:${r.name}`;
+  return (
+    <div className="flex items-center justify-end gap-2">
+      {m.approved ? (
+        <span title={`Approved by ${m.approvedBy} ${m.approvedAt ?? ""}`}>
+          <Badge tone="ok">Merging approved</Badge>
+        </span>
+      ) : (
+        <Badge>Not approved</Badge>
+      )}
+      {m.approved ? (
+        <ConfirmButton label="Stop" confirmLabel="Stop merging here" loading={write.busy === key} onConfirm={() => void write.run(key, () => api.repoAdmin.approveMerging(r.name, false))} />
+      ) : (
+        <ConfirmButton label="Approve" confirmLabel="Approve: merges on GitHub" loading={write.busy === key} onConfirm={() => void write.run(key, () => api.repoAdmin.approveMerging(r.name, true))} />
+      )}
+    </div>
+  );
+}
+
 const planText = (r: TrackedRepo) => (r.labels ? `${num(r.labels.toAdd)} to add · ${num(r.labels.skipped)} skipped · ${num(r.labels.conflicts)} conflicts` : "–");
 
 const synced = (r: TrackedRepo) => (r.syncedAt ? `${ago(r.syncedAt, false)}` : "never");
@@ -115,7 +138,7 @@ const maybe = (n: number | null) => (n === null ? "–" : num(n));
 function Table({ rows, write }: { rows: TrackedRepo[]; write: Write }) {
   return (
     <div className="overflow-x-auto">
-      <table className="w-full min-w-[1200px] border-collapse text-sm">
+      <table className="w-full min-w-[1500px] border-collapse text-sm">
         <thead className="bg-ink/[0.03] text-xs">
           <tr className="border-b border-line">
             <SortTh>Repo</SortTh>
@@ -126,6 +149,7 @@ function Table({ rows, write }: { rows: TrackedRepo[]; write: Write }) {
             <SortTh className="w-[150px]">Last synced</SortTh>
             <SortTh className="w-[270px]">Labels plan</SortTh>
             <th className="w-[270px] px-3 text-right text-xs font-medium">Label approval</th>
+            <th className="w-[290px] px-3 text-right text-xs font-medium">Merge approval</th>
             <th className="w-[190px]" aria-label="Change" />
           </tr>
         </thead>
@@ -143,6 +167,9 @@ function Table({ rows, write }: { rows: TrackedRepo[]; write: Write }) {
               <td className="num whitespace-nowrap px-3 text-ink/70">{planText(r)}</td>
               <td className="px-3">
                 <Approval r={r} write={write} />
+              </td>
+              <td className="px-3">
+                <MergeApproval r={r} write={write} />
               </td>
               <td className="px-3 text-right">
                 <Toggle r={r} write={write} />
@@ -172,6 +199,12 @@ function Cards({ rows, write }: { rows: TrackedRepo[]; write: Write }) {
               <div className="mt-1 flex items-center gap-2">
                 <span className="num text-xs text-ink/55">Labels: {planText(r)}</span>
                 <Approval r={r} write={write} />
+              </div>
+            )}
+            {r.merging && (
+              <div className="mt-1 flex items-center gap-2">
+                <span className="num text-xs text-ink/55">Merging:</span>
+                <MergeApproval r={r} write={write} />
               </div>
             )}
           </div>

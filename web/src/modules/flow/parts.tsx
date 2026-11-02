@@ -1,7 +1,7 @@
 // Shared pieces of the flowchart: links, tones, what a branch waits on, branch rows.
 import { Link } from "react-router-dom";
 import { BotIcon, CircleDashedIcon, CogIcon, UserIcon, type LucideIcon } from "lucide-react";
-import type { Flow, FlowBranch, FlowLink, FlowNode, FlowWait } from "../../api/types";
+import type { AgentRun, Flow, FlowBranch, FlowLink, FlowNode, FlowWait } from "../../api/types";
 import { cn } from "../../ui/cn";
 import { num } from "../../lib/format";
 
@@ -9,6 +9,20 @@ const PAGE: Record<FlowLink["page"], string> = { items: "/items", decisions: "/d
 export function hrefOf(l: FlowLink): string {
   const q = new URLSearchParams(l.params).toString();
   return q ? `${PAGE[l.page]}?${q}` : PAGE[l.page];
+}
+
+/** The number of running agent runs in the steps of a node. */
+export const runningIn = (n: FlowNode, runs: AgentRun[]): number => runs.filter((r) => n.steps.includes(r.step)).length;
+
+export function RunningMarker({ n, runs, className }: { n: FlowNode; runs: AgentRun[]; className?: string }) {
+  const k = runningIn(n, runs);
+  if (k === 0) return null;
+  return (
+    <span className={cn("inline-flex items-center gap-1 text-2xs font-medium text-accent-ink", className)} title="Model calls running now">
+      <span className="size-1.5 animate-pulse rounded-full bg-accent" aria-hidden />
+      {num(k)} running
+    </span>
+  );
 }
 
 export const DOT: Record<FlowBranch["tone"], string> = {

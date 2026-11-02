@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { describe, test } from "node:test";
 import { runReferee } from "../src/classify/referee.ts";
 import type { Pair, Row } from "../src/classify/report.ts";
+import { useTestAccount } from "./accounts-fixture.ts";
 import { runHaiku, runJev, setRunner, type Runner } from "../src/classify/run.ts";
 import { connect } from "../src/db.ts";
 import { JEV_ARGS, PROMPTS, claudeArgs, promptsReport, renderClaude, renderJev } from "../src/prompts/index.ts";
@@ -15,6 +16,7 @@ import { SAMPLE_ITEMS } from "../src/prompts/samples.ts";
 const SCRATCH = join(homedir(), ".cache/craft-automation-scratch");
 mkdirSync(SCRATCH, { recursive: true });
 const db = connect(join(mkdtempSync(join(SCRATCH, "prompts-test-")), "t.db"));
+useTestAccount(db);
 const ins = db.prepare(`INSERT INTO items (repo, number, kind, state, title, body, additions, deletions, changed_files, author_association, created_at, updated_at)
   VALUES (?, ?, ?, 'OPEN', ?, ?, ?, ?, ?, ?, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`);
 for (const i of SAMPLE_ITEMS)

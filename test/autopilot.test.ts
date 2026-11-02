@@ -11,7 +11,10 @@ import { fileURLToPath } from "node:url";
 process.env.CRAFT_AUTO_EXTRA_STEPS = fileURLToPath(new URL("./autopilot-steps.ts", import.meta.url));
 
 const { connect } = await import("../src/db.ts");
-const { autopilotTick, backoffUntil, LANES, planAutopilot, roundRobin, setEnabled, BACKOFF_MS, COOLDOWN_MS } = await import("../src/runner/autopilot.ts");
+const { autopilotTick, backoffUntil, LANES, planAutopilot, refusedAsBefore, roundRobin, setEnabled, BACKOFF_MS, COOLDOWN_MS } = await import("../src/runner/autopilot.ts");
+const { enqueue, JobError, RUNNER_STOPPED } = await import("../src/runner/jobs.ts");
+const { Runner } = await import("../src/runner/runner.ts");
+const { setMergeApproval } = await import("../src/merge/approval.ts");
 type Lane = import("../src/runner/autopilot.ts").Lane;
 
 const SCRATCH = join(homedir(), ".cache/craft-automation-scratch");
@@ -108,7 +111,7 @@ describe("autopilot", () => {
     assert.equal(jobs("test-plain").length, 1);
     assert.ok(logs.some((l) => /test-limited.*failed/.test(l)), logs.join("\n"));
     assert.equal(backoffUntil(db, "test-limited", Date.now() + BACKOFF_MS + 60 * 60_000), null, "an hour later it is free");
-    db.prepare("UPDATE jobs SET state = 'done' WHERE id = (SELECT MAX(id) FROM jobs WHERE step = 'test-limited')").run();
+    db.prepare("UPDATE jobs SET state = 'done', items = 3 WHERE id = (SELECT MAX(id) FROM jobs WHERE step = 'test-limited')").run();
     assert.equal(backoffUntil(db, "test-limited"), null, "a success in the last three ends it");
   });
 
@@ -116,5 +119,75 @@ describe("autopilot", () => {
     finish("test-limited", "done", 0);
     await planAutopilot(db, { lanes });
     assert.equal(jobs("test-limited").length, 1);
+  });
+
+  test("switching off cancels the queued automatic jobs (audited) and a queued one never starts while off", async () => {
+    setEnabled(db, true, "boss");
+    await planAutopilot(db, { lanes });
+    const manual = await enqueue(db, "test-limited", { limit: 3 }, "boss");
+    db.prepare("UPDATE jobs SET state = 'running' WHERE id = ?").run(manual.id);
+    const runner = new Runner({ db, dbFile: join(dir, "a.db"), logs: join(dir, "logs"), log: () => {} });
+    setEnabled(db, false, "boss");
+    db.prepare("INSERT INTO jobs (step, params, requested_by, requested_at, state) VALUES ('test-plain', '{}', 'pipeline', ?, 'queued')").run(new Date().toISOString());
+    await runner.tick();
+    assert.equal(db.prepare("SELECT state FROM jobs WHERE requested_by = 'pipeline' AND state = 'queued'").all().length, 1, "left queued, not started");
+    assert.equal(runner.running.size, 0);
+    db.prepare("DELETE FROM jobs WHERE requested_by = 'pipeline' AND state = 'queued'").run();
+    setEnabled(db, true, "boss");
+    await planAutopilot(db, { lanes });
+    setEnabled(db, false, "boss");
+    assert.equal((db.prepare("SELECT COUNT(*) AS n FROM jobs WHERE requested_by = 'pipeline' AND state = 'queued'").get() as { n: number }).n, 0);
+    assert.ok((db.prepare("SELECT COUNT(*) AS n FROM audit WHERE action = 'job-cancel' AND login = 'boss'").get() as { n: number }).n >= 1);
+    assert.equal(jobs("test-limited").find((j) => j.id === manual.id)!.state, "running", "running jobs are left alone");
+    await runner.stop();
+  });
+
+  test("a done job that handled nothing counts as a failure for backoff; one that handled something ends the streak", () => {
+    for (let i = 0; i < 3; i++) finish("test-limited", "done", 0, new Date(Date.now() - 20 * 60_000 - i * 60_000).toISOString());
+    assert.ok(backoffUntil(db, "test-limited") !== null);
+    db.prepare("UPDATE jobs SET items = 5 WHERE id = (SELECT MAX(id) FROM jobs WHERE step = 'test-limited')").run();
+    assert.equal(backoffUntil(db, "test-limited"), null);
+  });
+
+  test("jobs a runner stop ended do not count toward backoff", () => {
+    for (let i = 0; i < 3; i++) {
+      finish("test-limited", "failed", null, new Date(Date.now() - 20 * 60_000 - i * 60_000).toISOString());
+    }
+    db.prepare("UPDATE jobs SET error = ?").run(RUNNER_STOPPED);
+    assert.equal(backoffUntil(db, "test-limited"), null);
+  });
+
+  test("with no sync recorded, only the first plan and the 15-minute timer trigger", async () => {
+    setEnabled(db, true, "boss");
+    assert.equal((await autopilotTick(db, { lanes })).length, 2);
+    db.prepare("UPDATE jobs SET state = 'cancelled', ended_at = NULL").run();
+    assert.equal((await autopilotTick(db, { lanes })).length, 0, "a missing sync is not a new sync");
+  });
+
+  test("a PR refused at its head waits until its CI or mergeable state differs from the refusal", () => {
+    const entry = { repo: "photocraft", number: 7, head: "abc", state: "refused", ci: "success", mergeable: "MERGEABLE" };
+    db.prepare("INSERT INTO merges (repo, number, head_oid, run_id, at, path, outcome, reason, ci, mergeable) VALUES ('photocraft', 7, 'abc', 'r', '2026-11-01T00:00:00Z', 'rule', 'refused', 'x', 'success', 'MERGEABLE')").run();
+    assert.equal(refusedAsBefore(db, entry), true);
+    assert.equal(refusedAsBefore(db, { ...entry, ci: "pending" }), false);
+    assert.equal(refusedAsBefore(db, { ...entry, mergeable: "CONFLICTING" }), false);
+    assert.equal(refusedAsBefore(db, { ...entry, head: "def" }), false, "a new head is a new PR state");
+    assert.equal(refusedAsBefore(db, { ...entry, state: "ready" }), false);
+  });
+
+  test("the merge step refuses a repo an operator has not approved for merging", async () => {
+    await assert.rejects(enqueue(db, "merge", { repo: "photocraft" }, "pipeline"), (e: Error) => e instanceof JobError && /not approved/.test(e.message));
+    setMergeApproval(db, "boss", "photocraft", true);
+    const job = await enqueue(db, "merge", { repo: "photocraft" }, "pipeline");
+    assert.equal(job.state, "queued");
+    setMergeApproval(db, "boss", "photocraft", false);
+    db.prepare("DELETE FROM jobs").run();
+    await assert.rejects(enqueue(db, "merge", { repo: "photocraft" }, "boss"), JobError);
+  });
+
+  test("checks accept only no limit or 0 as a daily limit", async () => {
+    const { setLimit, LimitError } = await import("../src/runner/autopilot.ts");
+    assert.throws(() => setLimit(db, "checks", { perDay: 10 }, "boss"), LimitError);
+    setLimit(db, "checks", { perDay: 0 }, "boss");
+    setLimit(db, "checks", { perDay: null }, "boss");
   });
 });

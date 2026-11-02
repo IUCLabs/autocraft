@@ -4,7 +4,12 @@ import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
-import { CLAUDE_PROMPTS, JEV_ARGS, JEV_PROMPTS, claudeArgs, renderClaude, renderJev, type ClaudeInput, type ClaudePromptId, type JevPromptId } from "../prompts/index.ts";
+import type { ItemRef } from "../../web/src/api/types.ts";
+import { createHash } from "node:crypto";
+import { startClaudeRun, startJevRun } from "../agents/call.ts";
+import { finishRun } from "../agents/runs.ts";
+import { scrubError } from "../agents/text.ts";
+import { CLAUDE_PROMPTS, JEV_ARGS, JEV_PROMPTS, claudeArgs, claudePromptOf, jevPromptOf, renderClaude, renderJev, type ClaudeInput, type ClaudePromptId, type JevPromptId } from "../prompts/index.ts";
 import { flagsOf, jevVerdict, parseHaikuReply, parseRef, refOf, type Item, type JevAnswers, type Verdict } from "./parse.ts";
 
 export function loadRefs(file: string): { repo: string; number: number }[] {
@@ -29,11 +34,12 @@ export function loadItems(db: DatabaseSync, refs: { repo: string; number: number
 }
 
 type Proc = { code: number | null; stdout: string; stderr: string };
-export type Runner = (cmd: string, args: string[], input: string, cwd?: string, timeoutMs?: number) => Promise<Proc>;
+/** `env` is added to the process environment of the child. */
+export type Runner = (cmd: string, args: string[], input: string, cwd?: string, timeoutMs?: number, env?: Record<string, string>) => Promise<Proc>;
 
-export function exec(cmd: string, args: string[], input: string, cwd?: string, timeoutMs = 600_000): Promise<Proc> {
+export function exec(cmd: string, args: string[], input: string, cwd?: string, timeoutMs = 600_000, env?: Record<string, string>): Promise<Proc> {
   return new Promise((resolve) => {
-    const p = spawn(cmd, args, { cwd, stdio: ["pipe", "pipe", "pipe"], timeout: timeoutMs });
+    const p = spawn(cmd, args, { cwd, stdio: ["pipe", "pipe", "pipe"], timeout: timeoutMs, ...(env && { env: { ...process.env, ...env } }) });
     let stdout = "", stderr = "";
     p.stdout.on("data", (d) => (stdout += d));
     p.stderr.on("data", (d) => (stderr += d));
@@ -80,34 +86,113 @@ export function setRunner(r: Runner): () => void {
   return () => { runner = exec; };
 }
 
+const versions = new Map<string, string>();
+/** A short hash of the registered prompt text, so runs show which wording they used. */
+function promptVersion(id: ClaudePromptId | JevPromptId): string {
+  let v = versions.get(id);
+  if (!v) {
+    const p = id in CLAUDE_PROMPTS ? claudePromptOf(id as ClaudePromptId).template : JSON.stringify(jevPromptOf(id as JevPromptId).request);
+    v = createHash("sha256").update(p).digest("hex").slice(0, 10);
+    versions.set(id, v);
+  }
+  return v;
+}
+
+/** Item refs of a prompt's input: items carry repo and number, review PRs a `repo#number` ref. */
+function refsOf(input: readonly unknown[]): ItemRef[] {
+  const out: ItemRef[] = [];
+  for (const x of input as { repo?: string; number?: number; ref?: string }[]) {
+    if (typeof x.repo === "string" && typeof x.number === "number") out.push({ repo: x.repo, number: x.number });
+    else if (typeof x.ref === "string") {
+      const r = parseRef(x.ref);
+      if (r) out.push(r);
+    }
+  }
+  return out;
+}
+
+/** One line for the Agents page: how many answers came back and, where the answers carry one, their verdicts. */
+function replySummary(text: string, asked: number): string {
+  const a = text.indexOf("["), b = text.lastIndexOf("]");
+  try {
+    const arr = JSON.parse(text.slice(a, b + 1)) as { verdict?: string; type_label?: string }[];
+    const tally = new Map<string, number>();
+    for (const x of arr) {
+      const k = x.verdict ?? x.type_label;
+      if (typeof k === "string") tally.set(k, (tally.get(k) ?? 0) + 1);
+    }
+    const parts = [...tally].map(([k, n]) => `${n} ${k}`);
+    return `${arr.length} of ${asked} answered${parts.length ? `: ${parts.join(", ")}` : ""}`;
+  } catch {
+    return "answer is not a JSON list";
+  }
+}
+
+const exitClass = (code: number | null): string => (code === null ? "timed out or killed" : code === -1 ? "could not start" : `exit code ${code}`);
+
 /**
  * Sends a registered prompt (src/prompts) to `claude -p`. Callers pass a prompt
  * id and the prompt's input, never prompt text: that keeps every prompt on the
  * Prompts page. A new stage registers its prompt there first.
+ *
+ * Every call is an agent run: it waits for an enabled account with a free slot
+ * and headroom, runs with that account's CLAUDE_CONFIG_DIR, and is recorded from
+ * start to end (src/agents).
  */
-export async function askClaude<K extends ClaudePromptId>(id: K, model: string, input: ClaudeInput[K]): Promise<{ text: string; usage: Usage } | null> {
+export async function askClaude<K extends ClaudePromptId>(id: K, model: string, input: ClaudeInput[K], db: DatabaseSync): Promise<{ text: string; usage: Usage } | null> {
   const args = claudeArgs(id, model);
-  const cwd = mkdtempSync(join(tmpdir(), "classify-"));
-  const r = await runner("claude", args, renderClaude(id, input), cwd, CLAUDE_PROMPTS[id].limits.timeoutSeconds * 1000);
+  const prompt = renderClaude(id, input);
+  const items = refsOf(input);
+  const run = await startClaudeRun(db, { promptId: id, promptVersion: promptVersion(id), provider: "claude", model, items, prompt });
+  const end = (e: Parameters<typeof finishRun>[2]) => finishRun(db, run.runId, e);
   try {
-    // Some CLI versions print the event list, others only the final result object.
-    const parsed = JSON.parse(r.stdout) as { type?: string }[] | { type?: string };
-    const j = (Array.isArray(parsed) ? parsed.find((e) => e.type === "result") : parsed) as { result?: string; is_error?: boolean; total_cost_usd?: number; usage?: Record<string, number> } | undefined;
-    if (!j) return null;
-    if (j.is_error || typeof j.result !== "string") return null;
-    const u = j.usage ?? {};
-    return {
-      text: j.result,
-      usage: { input: u.input_tokens ?? 0, output: u.output_tokens ?? 0, cacheRead: u.cache_read_input_tokens ?? 0, cacheWrite: u.cache_creation_input_tokens ?? 0, cost: j.total_cost_usd ?? null },
-    };
-  } catch {
-    return null;
+    const cwd = mkdtempSync(join(tmpdir(), "classify-"));
+    const r = await runner("claude", args, prompt, cwd, CLAUDE_PROMPTS[id].limits.timeoutSeconds * 1000, { CLAUDE_CONFIG_DIR: run.configDir });
+    try {
+      // Some CLI versions print the event list, others only the final result object.
+      const parsed = JSON.parse(r.stdout) as { type?: string }[] | { type?: string };
+      const j = (Array.isArray(parsed) ? parsed.find((e) => e.type === "result") : parsed) as { result?: string; is_error?: boolean; total_cost_usd?: number; usage?: Record<string, number> } | undefined;
+      if (!j) {
+        end({ state: "failed", error: `no result (${exitClass(r.code)}) ${r.stderr}`.slice(0, 400), summary: "no result", output: r.stdout });
+        return null;
+      }
+      const u = j.usage ?? {};
+      const usage: Usage = { input: u.input_tokens ?? 0, output: u.output_tokens ?? 0, cacheRead: u.cache_read_input_tokens ?? 0, cacheWrite: u.cache_creation_input_tokens ?? 0, cost: j.total_cost_usd ?? null };
+      const tokens = { input: usage.input, output: usage.output, cacheRead: usage.cacheRead, cacheWrite: usage.cacheWrite };
+      if (j.is_error || typeof j.result !== "string") {
+        end({ state: "failed", tokens, error: scrubError(`model error ${typeof j.result === "string" ? j.result : ""}`), summary: "model error", output: r.stdout });
+        return null;
+      }
+      end({ state: "done", tokens, summary: replySummary(j.result, items.length), output: j.result });
+      return { text: j.result, usage };
+    } catch {
+      end({ state: "failed", error: scrubError(`unreadable output (${exitClass(r.code)}) ${r.stderr}`), summary: r.code === 0 ? "unreadable output" : exitClass(r.code), output: r.stdout });
+      return null;
+    }
+  } catch (e) {
+    end({ state: "failed", error: scrubError(String((e as Error).message ?? e)), summary: "failed before the call" });
+    throw e;
   }
 }
 
-/** Sends a registered Jev request (src/prompts) for one item to `jev ask`; the same rule as `askClaude`. */
-export function askJev(id: JevPromptId, item: Item): Promise<Proc> {
-  return runner("jev", JEV_ARGS, renderJev(id, item), undefined, JEV_PROMPTS[id].limits.timeoutSeconds * 1000);
+/** Sends a registered Jev request (src/prompts) for one item to `jev ask`; the same rule as `askClaude`. Recorded as an agent run without an account. */
+export async function askJev(id: JevPromptId, item: Item, db: DatabaseSync): Promise<Proc> {
+  const body = renderJev(id, item);
+  const runId = startJevRun(db, { promptId: id, promptVersion: promptVersion(id), provider: "jev", model: "jev", items: refsOf([item]), prompt: body });
+  try {
+    const r = await runner("jev", JEV_ARGS, body, undefined, JEV_PROMPTS[id].limits.timeoutSeconds * 1000);
+    let tokens: { input: number; output: number; cacheRead: number; cacheWrite: number } | undefined;
+    try {
+      const j = JSON.parse(r.stdout) as { usage?: { input_tokens?: number; output_tokens?: number } };
+      if (j.usage) tokens = { input: j.usage.input_tokens ?? 0, output: j.usage.output_tokens ?? 0, cacheRead: 0, cacheWrite: 0 };
+    } catch { /* the caller reports an unreadable answer */ }
+    if (r.code === 0 && tokens) finishRun(db, runId, { state: "done", tokens, summary: "answered", output: r.stdout });
+    else finishRun(db, runId, { state: "failed", error: scrubError(`${exitClass(r.code)} ${r.stderr}`), summary: r.code === 0 ? "unreadable answer" : exitClass(r.code), output: r.stdout });
+    return r;
+  } catch (e) {
+    finishRun(db, runId, { state: "failed", error: scrubError(String((e as Error).message ?? e)), summary: "failed before the call" });
+    throw e;
+  }
 }
 
 export const add = (a: Usage, b: Usage): Usage => ({ input: a.input + b.input, output: a.output + b.output, cacheRead: a.cacheRead + b.cacheRead, cacheWrite: a.cacheWrite + b.cacheWrite, cost: a.cost === null && b.cost === null ? null : (a.cost ?? 0) + (b.cost ?? 0) });
@@ -122,7 +207,7 @@ export async function runHaiku(db: DatabaseSync, runId: string, items: Item[], b
     let usage: Usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: null };
     let todo = batch;
     for (let attempt = 0; attempt < HAIKU.limits.attempts && todo.length; attempt++) {
-      const reply = await askClaude("classify.haiku", model, todo);
+      const reply = await askClaude("classify.haiku", model, todo, db);
       if (!reply) continue;
       usage = add(usage, reply.usage);
       const { verdicts, missing } = parseHaikuReply(reply.text, todo.map(refOf));
@@ -142,7 +227,7 @@ export async function runJev(db: DatabaseSync, runId: string, items: Item[], wid
     let v: Verdict | null = null;
     let usage: Usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: null };
     for (let attempt = 0; attempt < JEV.limits.attempts && !v; attempt++) {
-      const r = await askJev("classify.jev", item);
+      const r = await askJev("classify.jev", item, db);
       try {
         const j = JSON.parse(r.stdout) as { answers?: JevAnswers; usage?: { input_tokens?: number; output_tokens?: number } };
         usage = add(usage, { input: j.usage?.input_tokens ?? 0, output: j.usage?.output_tokens ?? 0, cacheRead: 0, cacheWrite: 0, cost: null });

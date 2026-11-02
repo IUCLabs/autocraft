@@ -16,6 +16,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { latestRun, settledTable } from "../classify/settled.ts";
 import { latestJevRun, selectCandidates as decideCandidates } from "../decide/select.ts";
 import { approvalOf } from "../labels/approval.ts";
+import { mergeApprovalOf } from "../merge/approval.ts";
 import { buildQueue, eligible, type QueueState } from "../merge/queue.ts";
 import { trackedNames } from "../repos.ts";
 import { candidateRefs, scopeAnswers } from "../review/candidates.ts";
@@ -174,10 +175,13 @@ function merge(c: Ctx): NodeCount {
   const tracked = new Set(trackedNames(c.db));
   const queue = buildQueue(c.db, c.repo ? { repo: c.repo } : {}).filter((e) => tracked.has(e.repo));
   const st = (s: QueueState) => queue.filter((e) => e.state === s).length;
+  const approvedRepos = new Set([...new Set(queue.map((e) => e.repo))].filter((r) => mergeApprovalOf(c.db, r)));
+  const ready = queue.filter(eligible);
   const since = { since: c.since };
   return {
     counts: {
-      "merge.eligible": queue.filter(eligible).length,
+      "merge.eligible": ready.filter((e) => approvedRepos.has(e.repo)).length,
+      "merge.unapproved": ready.filter((e) => !approvedRepos.has(e.repo)).length,
       ...Object.fromEntries((["needs-decision", "waiting-ci", "ci-failed", "conflict", "needs-fix-up", "declined"] as const).map((s) => [`merge.${s}`, st(s)])),
       "merge.merged": c.n(`SELECT COUNT(DISTINCT repo || '#' || number) AS n FROM merges WHERE outcome = 'merged' AND at >= :since ${c.andRepo()}`, since),
       "merge.total": queue.length - st("merged"),

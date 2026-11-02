@@ -38,6 +38,8 @@ export type MergeParams = {
   limit?: number;
   /** Default true: only `dryRun: false` merges, assigns or asks. */
   dryRun?: boolean;
+  /** Called with the running count of PRs merged, after each merge. */
+  onMerged?: (merged: number) => void;
 };
 
 export type MergeSummary = {
@@ -196,9 +198,11 @@ export async function runMerge(db: DatabaseSync, params: MergeParams, log: (line
     log(`  asked ${qs.length} Merge? decision${qs.length === 1 ? "" : "s"}`);
   }
 
+  // What GitHub reported for the PR being tried, once known; a refusal records it so the autopilot retries only when it changes.
+  let seen: { ci: string; mergeable: string } | null = null;
   const saveAttempt = (e: QueueEntry, method: string | null, outcome: "merged" | "refused", reason: string | null) =>
-    db.prepare("INSERT INTO merges (repo, number, head_oid, run_id, at, path, method, outcome, reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
-      .run(e.repo, e.number, e.head, runId, at(), e.path!, method, outcome, reason);
+    db.prepare("INSERT INTO merges (repo, number, head_oid, run_id, at, path, method, outcome, reason, ci, mergeable) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(e.repo, e.number, e.head, runId, at(), e.path!, method, outcome, reason, seen?.ci ?? e.ci, seen?.mergeable ?? e.mergeable);
   const refuse = (e: QueueEntry, method: string | null, reason: string) => {
     saveAttempt(e, method, "refused", reason);
     audit(db, ACTOR, "merge-refused", refOf(e), { run: runId, head: e.head, path: e.path, method, reason });
@@ -209,7 +213,9 @@ export async function runMerge(db: DatabaseSync, params: MergeParams, log: (line
   // One PR at a time; any error that isn't a refusal stops the run.
   for (const e of picks) {
     summary.attempted.push(refOf(e));
+    seen = null;
     const [ch] = await refreshChecks(db, d.querier, repo, [e.number]);
+    if (ch) seen = { ci: ch.overall ?? "none", mergeable: ch.mergeable ?? "UNKNOWN" };
     if (!ch) { refuse(e, null, "GitHub returned no such PR"); continue; }
     if (ch.state !== "OPEN") { refuse(e, null, `no longer open on GitHub (${ch.state.toLowerCase()})`); continue; }
     if (ch.head_oid !== e.head) { refuse(e, null, `head moved from ${short(e.head)} to ${short(ch.head_oid)} since the review`); continue; }
@@ -244,6 +250,7 @@ export async function runMerge(db: DatabaseSync, params: MergeParams, log: (line
     audit(db, ACTOR, "merge", refOf(e), { run: runId, head: e.head, path: e.path, method });
     if (e.path === "operator") db.prepare("UPDATE decisions SET applied_at = ? WHERE id = ? AND applied_at IS NULL").run(at(), e.decisionId);
     summary.merged.push(refOf(e));
+    params.onMerged?.(summary.merged.length);
     log(`  ${refOf(e)}: merged (${method})`);
   }
   log(`merge ${repo}: ${summary.merged.length} merged, ${summary.refused.length} refused, ${summary.asked.length} asked; run ${runId}`);

@@ -53,7 +53,13 @@ function keepUsage(db: DatabaseSync, run: string, agents: string[]): void {
   for (const a of agents) q.run(run, a);
 }
 
-async function jevPass(ctx: StepContext, run: string, todo: Item[], hashes: Map<string, string>): Promise<number> {
+/** Items sent to a model so far in this job, saved as the job's handled count. */
+const sentCounter = (ctx: StepContext) => {
+  let sent = 0;
+  return (n: number) => ctx.handled((sent += n));
+};
+
+async function jevPass(ctx: StepContext, run: string, todo: Item[], hashes: Map<string, string>, sent: (n: number) => void): Promise<number> {
   const { db } = ctx;
   const setHash = db.prepare("UPDATE classifications SET input_hash = ? WHERE repo = ? AND number = ? AND classifier = 'jev' AND run_id = ? AND at >= ?");
   let done = 0;
@@ -61,6 +67,7 @@ async function jevPass(ctx: StepContext, run: string, todo: Item[], hashes: Map<
     const chunk = todo.slice(i, i + JEV_CHUNK);
     keepUsage(db, run, chunk.map((x) => `jev-${refOf(x)}`));
     const t0 = new Date().toISOString();
+    sent(chunk.length);
     await runJev(db, run, chunk);
     for (const x of chunk) done += Number(setHash.run(hashes.get(refOf(x))!, x.repo, x.number, run, t0).changes);
     ctx.progress(`Jev: ${Math.min(i + JEV_CHUNK, todo.length)} of ${todo.length} items`);
@@ -78,13 +85,14 @@ export function haikuDue(db: DatabaseSync, run: string, limit: number): Item[] {
     ORDER BY j.at DESC LIMIT :limit`).all({ run, sure: SURE, limit }) as unknown as Item[];
 }
 
-async function haikuPass(ctx: StepContext, run: string, todo: Item[]): Promise<number> {
+async function haikuPass(ctx: StepContext, run: string, todo: Item[], sent: (n: number) => void): Promise<number> {
   const { db } = ctx;
   const count = db.prepare("SELECT COUNT(*) AS n FROM classifications WHERE classifier = 'haiku' AND run_id = ? AND at >= ?");
   const t0 = new Date().toISOString();
   for (let i = 0; i < todo.length && !ctx.cancelled(); i += HAIKU_CHUNK) {
     const chunk = todo.slice(i, i + HAIKU_CHUNK);
     keepUsage(db, run, Array.from({ length: Math.ceil(chunk.length / 25) }, (_, n) => `haiku-${String(n).padStart(2, "0")}`));
+    sent(chunk.length);
     await runHaiku(db, run, chunk);
     ctx.progress(`Haiku: ${Math.min(i + HAIKU_CHUNK, todo.length)} of ${todo.length} items`);
   }
@@ -114,10 +122,11 @@ async function pass(ctx: StepContext, run: string, mode: "new" | "all"): Promise
   const { open, due, hashes } = dueItems(ctx.db, run, mode);
   const todo = due.slice(0, limit).map(strip);
   ctx.log(`run ${run}: ${open} open items, ${due.length} due for Jev, taking ${todo.length}`);
-  const jev = await jevPass(ctx, run, todo, hashes);
+  const sent = sentCounter(ctx);
+  const jev = await jevPass(ctx, run, todo, hashes, sent);
   const unsure = ctx.cancelled() ? [] : haikuDue(ctx.db, run, limit);
   ctx.log(`Haiku: ${unsure.length} items where Jev is under ${SURE * 100} % sure`);
-  const haiku = await haikuPass(ctx, run, unsure);
+  const haiku = await haikuPass(ctx, run, unsure, sent);
   return { jev, due: due.length, haiku, haikuDue: unsure.length, left: due.length - jev };
 }
 
@@ -125,7 +134,6 @@ export async function classifyNew(ctx: StepContext): Promise<string> {
   const run = currentRun(ctx.db);
   if (!run) throw new Error("There is no classification run yet; start a classification pass first.");
   const r = await pass(ctx, run, "new");
-  ctx.handled(r.jev);
   if (!r.due && !r.haikuDue) return `Nothing to classify in run ${run}.`;
   return `Run ${run}: Jev classified ${r.jev} of ${r.due} new or changed items${r.left ? ` (${r.left} left)` : ""}; Haiku gave a second opinion on ${r.haiku} of ${r.haikuDue}.`;
 }
@@ -133,7 +141,6 @@ export async function classifyNew(ctx: StepContext): Promise<string> {
 export async function classifyAll(ctx: StepContext): Promise<string> {
   const run = String(ctx.params.run);
   const r = await pass(ctx, run, "all");
-  ctx.handled(r.jev);
   const complete = r.left === 0 && !ctx.cancelled();
   if (complete) ctx.db.prepare("INSERT INTO settings (key, value) VALUES ('classify_run', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value").run(run);
   return `Run ${run}: Jev classified ${r.jev} of ${r.due} items without a verdict${r.left ? ` (${r.left} left; start it again to continue)` : ""}; Haiku gave a second opinion on ${r.haiku} of ${r.haikuDue}.${complete ? " The run is now the current one." : ""}`;

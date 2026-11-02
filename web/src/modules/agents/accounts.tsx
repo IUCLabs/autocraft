@@ -1,0 +1,133 @@
+// Claude accounts: operator-set label, enabled state, 5-hour and weekly use, concurrency. Never an email or path.
+import { useEffect, useState } from "react";
+import { PencilIcon } from "lucide-react";
+import { useApi, useQuery } from "../../api/client";
+import type { ClaudeAccount } from "../../api/types";
+import { ago, nowMs, span } from "../../lib/format";
+import { useUser } from "../../shell/UserContext";
+import { Badge } from "../../ui/Badge";
+import { Button } from "../../ui/Button";
+import { cn } from "../../ui/cn";
+import { Block, ErrorLine, TextInput, useWrite } from "../admin/parts";
+
+export const useAccounts = () => useQuery<ClaudeAccount[]>("accounts", (a) => a.accounts.list());
+
+/** One usage bar: width is the share used; the colour warns from 75 % and goes critical from 90 % (the pause threshold). */
+export function UsageBar({ label, pct, resetsAt }: { label: string; pct: number | null; resetsAt: string | null }) {
+  const tone = pct === null ? "bg-ink/20" : pct >= 90 ? "bg-bad" : pct >= 75 ? "bg-warn" : "bg-c1";
+  const resets = resetsAt ? Date.parse(resetsAt) - nowMs() : null;
+  return (
+    <div>
+      <div className="flex flex-wrap items-baseline justify-between gap-x-2 text-xs">
+        <span className="whitespace-nowrap text-ink/60">
+          {label} <span className="num font-medium text-ink">{pct === null ? "no reading" : `${pct} %`}</span>
+        </span>
+        {resets !== null && <span className="num whitespace-nowrap text-ink/50">{resets > 0 ? `resets in ${span(resets)}` : "reset due"}</span>}
+      </div>
+      <div className="mt-1 h-2 overflow-hidden rounded-sm bg-ink/[0.07]" role="img" aria-label={`${label}: ${pct === null ? "no reading" : `${pct} percent used`}`}>
+        <div className={cn("h-full rounded-sm", tone)} style={{ width: `${pct ?? 0}%` }} />
+      </div>
+    </div>
+  );
+}
+
+function EditForm({ a, onDone }: { a: ClaudeAccount; onDone: () => void }) {
+  const api = useApi();
+  const write = useWrite();
+  const [label, setLabel] = useState(a.label);
+  const [enabled, setEnabled] = useState(a.enabled);
+  const [max, setMax] = useState(String(a.maxConcurrent));
+  useEffect(() => {
+    setLabel(a.label);
+    setEnabled(a.enabled);
+    setMax(String(a.maxConcurrent));
+  }, [a]);
+  const valid = label.trim() !== "" && /^\d{1,2}$/.test(max) && Number(max) >= 1;
+  return (
+    <form
+      className="mt-3 flex flex-wrap items-end gap-3 border-t border-line pt-3"
+      onSubmit={(e) => {
+        e.preventDefault();
+        void write.run("save", () => api.accounts.update(a.id, { label: label.trim(), enabled, maxConcurrent: Number(max) })).then((ok) => ok && onDone());
+      }}
+    >
+      <label className="flex flex-col gap-1 text-xs text-ink/60">
+        Label
+        <TextInput value={label} maxLength={60} onChange={(e) => setLabel(e.target.value)} className="w-48 text-ink" />
+      </label>
+      <label className="flex flex-col gap-1 text-xs text-ink/60">
+        Max concurrent
+        <TextInput inputMode="numeric" value={max} onChange={(e) => setMax(e.target.value)} className="w-24 text-ink" />
+      </label>
+      <label className="flex h-8 items-center gap-2 text-sm max-md:h-11">
+        <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} className="size-4" />
+        Enabled
+      </label>
+      <div className="flex gap-2">
+        <Button type="submit" variant="primary" size="sm" disabled={!valid} loading={write.busy === "save"} className="max-md:h-11">
+          Save
+        </Button>
+        <Button type="button" size="sm" variant="ghost" onClick={onDone} className="max-md:h-11">
+          Cancel
+        </Button>
+      </div>
+      <ErrorLine error={write.error} className="basis-full" />
+    </form>
+  );
+}
+
+function AccountCard({ a, operator }: { a: ClaudeAccount; operator: boolean }) {
+  const [editing, setEditing] = useState(false);
+  return (
+    <li className={cn("min-w-0 rounded-md border border-line p-4", !a.enabled && "bg-ink/[0.02]")}>
+      <div className="flex flex-wrap items-center gap-2">
+        <h3 className="text-sm font-semibold">{a.label}</h3>
+        <Badge tone={a.enabled ? "ok" : "neutral"}>{a.enabled ? "Enabled" : "Disabled"}</Badge>
+        {a.pausedReason && a.enabled && <Badge tone="warn">Paused</Badge>}
+        {operator && (
+          <button onClick={() => setEditing(!editing)} aria-label={`Edit ${a.label}`} className="ml-auto flex size-7 items-center justify-center text-ink/50 hover:bg-ink/[0.06] hover:text-ink max-md:size-11">
+            <PencilIcon className="text-[14px]" />
+          </button>
+        )}
+      </div>
+      <div className="mt-3 space-y-3">
+        <UsageBar label="5-hour use" pct={a.usage.fiveHourPct} resetsAt={a.usage.fiveHourResetsAt} />
+        <UsageBar label="Weekly use" pct={a.usage.weeklyPct} resetsAt={a.usage.weeklyResetsAt} />
+      </div>
+      <dl className="num mt-3 grid grid-cols-[auto_1fr] gap-x-4 gap-y-0.5 text-xs">
+        <dt className="text-ink/55">Running</dt>
+        <dd>
+          {a.running} of {a.maxConcurrent} at once
+        </dd>
+        <dt className="text-ink/55">Reading</dt>
+        <dd>{a.usage.readAt ? `${ago(a.usage.readAt, false)}` : "never"}</dd>
+        {a.pausedReason && (
+          <>
+            <dt className="text-ink/55">Paused</dt>
+            <dd className="text-warn">{a.pausedReason}</dd>
+          </>
+        )}
+      </dl>
+      {editing && <EditForm a={a} onDone={() => setEditing(false)} />}
+    </li>
+  );
+}
+
+/** Every account the signed-in user may see. Operators also edit. */
+export function AccountsPanel({ className }: { className?: string }) {
+  const q = useAccounts();
+  const operator = useUser().role === "operator";
+  return (
+    <Block title="Claude accounts" aside={operator ? "label, enabled and concurrency are yours to set" : "set by operators"} className={className}>
+      <ErrorLine error={q.error?.message} />
+      {q.data && q.data.length === 0 && <p className="text-sm text-ink/55">No account is enabled.</p>}
+      {q.data && (
+        <ul className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+          {q.data.map((a) => (
+            <AccountCard key={a.id} a={a} operator={operator} />
+          ))}
+        </ul>
+      )}
+    </Block>
+  );
+}

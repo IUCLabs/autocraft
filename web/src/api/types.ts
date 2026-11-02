@@ -427,6 +427,12 @@ export interface OverrideInput {
 }
 
 /** The Label stage for one repo: approval and what the plan holds. */
+export interface RepoApproval {
+  approved: boolean;
+  approvedBy: string | null;
+  approvedAt: string | null;
+}
+
 export interface RepoLabels {
   approved: boolean;
   approvedBy: string | null;
@@ -449,6 +455,8 @@ export interface TrackedRepo {
   syncedAt: string | null;
   /** null for repos that are not tracked */
   labels: RepoLabels | null;
+  /** Whether the pipeline may merge pull requests here; null for repos that are not tracked */
+  merging: RepoApproval | null;
 }
 
 export interface AccessEntry {
@@ -645,6 +653,10 @@ export interface Job {
   error: string | null;
   cancelRequested: boolean;
   usage: JobUsage | null;
+  /** Models the job's step uses, e.g. ["jev", "haiku"]; known before any call is made. */
+  models: string[];
+  /** Labels of the Claude accounts used by the job's agent runs, running or finished. */
+  accounts: string[];
 }
 
 export interface JobDetail extends Job {
@@ -886,3 +898,57 @@ export interface Flow {
   nodes: FlowNode[];
   edges: FlowEdge[];
 }
+
+// ---- Claude accounts, agent runs and rates -------------------------------------------------------------
+
+export type AccountUsage = {
+  fiveHourPct: number | null; fiveHourResetsAt: string | null;   // ISO
+  weeklyPct: number | null; weeklyResetsAt: string | null;
+  readAt: string | null;                                          // when the reading was taken
+};
+export type ClaudeAccount = {
+  id: string;            // short key from the box config, e.g. "b"; never an email or path
+  label: string;         // set by an operator; the only name the UI shows
+  enabled: boolean;
+  maxConcurrent: number; // agent runs at once on this account
+  running: number;       // agent runs active now
+  usage: AccountUsage;
+  pausedReason: string | null; // e.g. "5-hour use 92 % (pauses at 90 %)"
+};
+export type AccountInput = { label?: string; enabled?: boolean; maxConcurrent?: number };
+
+export type AgentRunState = "running" | "done" | "failed";
+export type AgentRun = {
+  id: number;
+  jobId: number | null;
+  step: string;              // runner step name
+  stage: number;             // stage number from docs/pipeline.md
+  promptId: string;          // prompt registry id
+  promptVersion: string;     // registry version or content hash
+  provider: "claude" | "jev";
+  model: string;             // e.g. "sonnet", "haiku", "jev"
+  accountId: string | null;  // null for Jev
+  accountLabel: string | null;
+  items: ItemRef[];          // at most 50
+  itemCount: number;         // all items in the call
+  state: AgentRunState;
+  startedAt: string;
+  endedAt: string | null;
+  inputTokens: number | null; outputTokens: number | null;
+  cacheReadTokens: number | null; cacheWriteTokens: number | null;
+  summary: string | null;    // one line: verdict counts, error class
+};
+export type AgentRunDetail = AgentRun & {
+  prompt: string | null;     // rendered prompt; null once past retention (14 days)
+  output: string | null;     // raw model output, same retention
+  error: string | null;
+};
+export type AgentRunPage = { runs: AgentRun[]; nextCursor: string | null };
+export type AgentRunFilter = { state?: AgentRunState | "recent"; step?: string; account?: string; repo?: string; cursor?: string; limit?: number };
+
+export type RateBucket = { t: string; items: number; runs: number; failed: number };
+export type Rates = {
+  window: "24h" | "7d"; bucket: "hour" | "day";
+  stages: { step: string; title: string; buckets: RateBucket[] }[];
+  accounts: { id: string; label: string; samples: { t: string; fiveHourPct: number | null; weeklyPct: number | null }[] }[];
+};

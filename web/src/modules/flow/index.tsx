@@ -5,6 +5,7 @@ import { Link } from "react-router-dom";
 import { Dialog } from "radix-ui";
 import { WaypointsIcon } from "lucide-react";
 import { useQuery } from "../../api/client";
+import { usePoll } from "../../lib/usePoll";
 import type { Flow } from "../../api/types";
 import type { FeatureModule, ViewProps } from "../../registry/types";
 import { useMedia } from "../../shell/useMedia";
@@ -68,6 +69,9 @@ function FlowView(_: ViewProps) {
   const { state, update } = useUrlState();
   const repo = state.repo || null;
   const { data: flow, error } = useQuery(`flow:${repo ?? ""}`, (api) => api.flow(repo ?? undefined));
+  const running = useQuery("flow-running", (api) => api.agents.list({ state: "running" }));
+  usePoll(running.refetch, 5000);
+  const runs = running.data?.runs ?? [];
   const phone = usePhoneFlow();
   const selected = flow && state.node ? nodeOf(flow, state.node) : undefined;
   const select = (id: string | null) => update({ node: id });
@@ -100,10 +104,10 @@ function FlowView(_: ViewProps) {
               <div className="mt-4">
                 <PeopleLine flow={flow} />
               </div>
-              <div className="mt-5">{phone ? <PhoneFlow flow={flow} onSelect={select} /> : <Chart flow={flow} selected={selected?.id ?? null} onSelect={(id) => select(selected?.id === id ? null : id)} />}</div>
+              <div className="mt-5">{phone ? <PhoneFlow flow={flow} onSelect={select} runs={runs} /> : <Chart flow={flow} selected={selected?.id ?? null} onSelect={(id) => select(selected?.id === id ? null : id)} runs={runs} />}</div>
               <Legend />
               <p className="mt-2 text-xs text-ink/50">
-                Full lists: <Link to="/pipeline" className="text-accent-ink hover:underline">Pipeline</Link> (steps, jobs, schedules) ·{" "}
+                Full lists: <Link to="/pipeline" className="text-accent-ink hover:underline">Pipeline</Link> (switch, limits, jobs) ·{" "}
                 <Link to="/prompts" className="text-accent-ink hover:underline">Prompts</Link> · <Link to="/queue" className="text-accent-ink hover:underline">Merge queue</Link>
               </p>
             </>

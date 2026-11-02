@@ -4,10 +4,11 @@
 // already checked the Origin, the CSRF header and the body size on POSTs.
 import type { DatabaseSync } from "node:sqlite";
 import type {
-  AccessOverview, AuditEntry, AuditPage, Contributor, ContributorList, ContributorSort, RulePreview, RepoLabels, Tier, TrackedRepo, WhitelistRule,
+  AccessOverview, AuditEntry, AuditPage, Contributor, ContributorList, ContributorSort, RulePreview, RepoApproval, RepoLabels, Tier, TrackedRepo, WhitelistRule,
 } from "../../../web/src/api/types.ts";
 import { AccessError, addLogin, isRole, listAccess, removeLogin, ROLES, setRole } from "../../access.ts";
 import { approvalOf, setApproval } from "../../labels/approval.ts";
+import { mergeApprovalOf, setMergeApproval } from "../../merge/approval.ts";
 import { countPlan, planLabels } from "../../labels/plan.ts";
 import { listAll, RepoError, trackRepo, untrackRepo } from "../../repos.ts";
 import { contributors, getRule, setOverride, setRule, tierOf, type Contributor as Row, type Rule } from "../../whitelist.ts";
@@ -20,7 +21,7 @@ const ACCESS_NOTE_MAX = 500;
 const AUDIT_PAGE = 50;
 export const AUDIT_ACTIONS = [
   "answer", "undo", "adopt", "opinion", "opinion-retract", "comment", "override", "rule", "access-add", "access-remove", "access-role",
-  "session-revoke", "sign-in", "sign-in-refused", "repo-track", "repo-untrack", "labels-approve", "labels-revoke", "labels-apply",
+  "session-revoke", "sign-in", "sign-in-refused", "repo-track", "repo-untrack", "labels-approve", "labels-revoke", "labels-apply", "merge-approve", "merge-revoke",
   "job-request", "job-cancel", "pipeline-switch", "stage-limit",
 ];
 
@@ -187,7 +188,13 @@ export function allRepos(db: DatabaseSync, req: Req): TrackedRepo[] {
   return listAll(db).map((r) => ({
     name: r.name, tracked: !!r.tracked, openPrs: r.open_prs, openIssues: r.open_issues, mirrored: r.rows, syncedAt: r.synced_at,
     labels: r.tracked ? labelsInfo(db, r.name) : null,
+    merging: r.tracked ? mergeInfo(db, r.name) : null,
   }));
+}
+
+function mergeInfo(db: DatabaseSync, repo: string): RepoApproval {
+  const a = mergeApprovalOf(db, repo);
+  return { approved: !!a, approvedBy: a?.by ?? null, approvedAt: a?.at ?? null };
 }
 
 function labelsInfo(db: DatabaseSync, repo: string): RepoLabels {
@@ -208,6 +215,21 @@ export function labelsApproval(db: DatabaseSync, req: Req, approved: boolean): T
     }
   });
   if (!changed) throw new HttpError(409, `${name} is ${approved ? "already" : "not"} approved for labelling`);
+  return allRepos(db, req);
+}
+
+// Only an operator lets the pipeline merge pull requests in a repo.
+export function mergeApproval(db: DatabaseSync, req: Req, approved: boolean): TrackedRepo[] {
+  requireOperator(req, "approve merging");
+  const name = required(body(req).name, "name");
+  const changed = refused(() => {
+    try {
+      return setMergeApproval(db, req.user.login, name, approved);
+    } catch (e) {
+      throw new RepoError((e as Error).message);
+    }
+  });
+  if (!changed) throw new HttpError(409, `${name} is ${approved ? "already" : "not"} approved for merging`);
   return allRepos(db, req);
 }
 

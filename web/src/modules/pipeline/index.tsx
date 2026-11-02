@@ -13,6 +13,7 @@ import { Button } from "../../ui/Button";
 import { cn } from "../../ui/cn";
 import { ago, num } from "../../lib/format";
 import { Block, ConfirmButton, ErrorLine, Page, useWrite, when } from "../admin/parts";
+import { AccountsPanel } from "../agents/accounts";
 import { PipelineSwitch, StageLimits } from "./controls";
 
 // ---- helpers -------------------------------------------------------------------
@@ -169,6 +170,12 @@ function Jobs({ selected }: { selected?: number }) {
                   <td className="px-3">
                     <span className="code">{j.step}</span>
                     {Object.keys(j.params).length > 0 && <span className="ml-1.5 text-xs text-ink/45">{paramText(j.params)}</span>}
+                    {(j.models.length > 0 || j.accounts.length > 0) && (
+                      <div className="text-xs text-ink/55">
+                        {j.models.join(", ")}
+                        {j.accounts.length > 0 && <span className="ml-1.5">on {j.accounts.join(", ")}</span>}
+                      </div>
+                    )}
                   </td>
                   <td className="px-3">
                     <JobBadge j={j} />
@@ -227,6 +234,7 @@ function PipelineView({ user, params }: ViewProps) {
       <PipelineSwitch className="mt-4" />
       <div className="mt-4">
         <StageLimits />
+        <AccountsPanel />
       </div>
       {o && <Stages o={o} />}
       <div className="mt-5">

@@ -4,15 +4,17 @@
 // stops jobs whose cancel was requested, runs the autopilot (queues jobs while the
 // pipeline switch is on) and marks
 // jobs left running by an earlier runner as failed.
-import { spawn, type ChildProcess } from "node:child_process";
+import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { closeSync, mkdirSync, openSync, readFileSync, utimesSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { dbPath } from "../db.ts";
-import { autopilotTick } from "./autopilot.ts";
+import { AUTOPILOT_USER, autopilotTick, isEnabled } from "./autopilot.ts";
+import { recordUsageSamples } from "../agents/accounts.ts";
+import { failRunning, pruneRuns } from "../agents/runs.ts";
 import { refreshSummary } from "../flow/summary.ts";
-import { jobRow, now } from "./jobs.ts";
+import { jobRow, now, RUNNER_STOPPED } from "./jobs.ts";
 import { loadSteps } from "./steps.ts";
 
 export const logsDir = (): string => process.env.CRAFT_AUTO_RUNNER_LOGS ?? join(homedir(), ".cache/craft-automation-logs/jobs");
@@ -22,6 +24,7 @@ export function runnerLockPath(): string {
   return join(dir, `runner-${basename(dbPath())}.lock`);
 }
 
+export const USAGE_REFRESH_MS = 5 * 60_000;
 export const HEARTBEAT_KEY = "runner_heartbeat";
 /** How often the runner brings the flowchart summary up to date (src/flow/summary.ts). */
 export const FLOW_EVERY_MS = 20_000;
@@ -77,13 +80,16 @@ export class Runner {
 
   /** Jobs left `running` belong to a runner that is gone: stop what is left of them and mark them failed. */
   recover(): number {
+    // Model calls of a runner that is gone no longer hold an account slot.
+    const orphans = failRunning(this.db, "The runner stopped during this call.");
+    if (orphans) this.o.log(`${orphans} agent runs left running by an earlier runner, marked failed`);
     const rows = this.db.prepare("SELECT id, pid, cancel_requested_at FROM jobs WHERE state = 'running'").all() as { id: number; pid: number | null; cancel_requested_at: string | null }[];
     for (const r of rows) {
       if (this.running.has(r.id)) continue;
       if (r.pid && isJobProcess(r.pid, r.id)) killGroup(r.pid, "SIGKILL");
       const cancelled = r.cancel_requested_at !== null;
       this.db.prepare("UPDATE jobs SET state = ?, ended_at = ?, pid = NULL, error = COALESCE(error, ?) WHERE id = ? AND state = 'running'")
-        .run(cancelled ? "cancelled" : "failed", now(), cancelled ? null : "The runner stopped while this job ran; start it again if needed.", r.id);
+        .run(cancelled ? "cancelled" : "failed", now(), cancelled ? null : RUNNER_STOPPED, r.id);
       this.o.log(`job ${r.id}: left running by an earlier runner, marked ${cancelled ? "cancelled" : "failed"}`);
     }
     return rows.length;
@@ -102,6 +108,7 @@ export class Runner {
     }
     this.cancels();
     if (this.stopping) return;
+    this.usageTick();
     await autopilotTick(this.db, { log: this.o.log });
     await this.startJobs();
     if (Date.now() - this.flowAt >= FLOW_EVERY_MS) {
@@ -110,6 +117,42 @@ export class Runner {
         refreshSummary(this.db);
       } catch (e) {
         this.o.log(`flowchart summary: ${(e as Error).message}`);
+      }
+    }
+  }
+
+  private usageAt = 0;
+  private refreshAt = 0;
+  private pruneAt = 0;
+  private refreshing = false;
+
+  /** Records usage readings that changed (at most every 15 s), refreshes them with CRAFT_AUTO_USAGE_REFRESH every 5 minutes, and prunes old agent data hourly. */
+  private usageTick(): void {
+    const t = Date.now();
+    if (t - this.usageAt >= 15_000) {
+      this.usageAt = t;
+      try {
+        recordUsageSamples(this.db, t);
+      } catch (e) {
+        this.o.log(`usage samples: ${(e as Error).message}`);
+      }
+    }
+    const cmd = process.env.CRAFT_AUTO_USAGE_REFRESH?.trim().split(/\s+/).filter(Boolean);
+    if (cmd?.length && !this.refreshing && t - this.refreshAt >= USAGE_REFRESH_MS) {
+      this.refreshAt = t;
+      this.refreshing = true;
+      // No shell: the command is split on spaces. Its output is not logged.
+      execFile(cmd[0]!, cmd.slice(1), { timeout: 60_000 }, (err) => {
+        this.refreshing = false;
+        if (err) this.o.log(`usage refresh failed: ${(err as Error & { code?: unknown }).code ?? "error"}`);
+      });
+    }
+    if (t - this.pruneAt >= 3600_000) {
+      this.pruneAt = t;
+      try {
+        pruneRuns(this.db, t);
+      } catch (e) {
+        this.o.log(`prune agent runs: ${(e as Error).message}`);
       }
     }
   }
@@ -132,8 +175,11 @@ export class Runner {
 
   private async startJobs(): Promise<void> {
     const steps = await loadSteps();
-    const queued = this.db.prepare("SELECT id, step FROM jobs WHERE state = 'queued' ORDER BY id").all() as { id: number; step: string }[];
+    const queued = this.db.prepare("SELECT id, step, requested_by FROM jobs WHERE state = 'queued' ORDER BY id").all() as { id: number; step: string; requested_by: string }[];
+    // Automatic jobs wait while the pipeline is off; they are cancelled when it is switched off.
+    const on = isEnabled(this.db);
     for (const q of queued) {
+      if (q.requested_by === AUTOPILOT_USER && !on) continue;
       if (this.running.size >= this.o.maxJobs) return;
       const step = steps.get(q.step);
       if (!step) {
@@ -183,9 +229,10 @@ export class Runner {
     else if (code === 0) state = "done";
     else {
       state = "failed";
-      if (this.stopping) error = "The runner stopped while this job ran; start it again if needed.";
+      if (this.stopping) error = RUNNER_STOPPED;
       error ??= spawnError ?? (signal ? `The job's process ended on ${signal}.` : `The job's process exited with code ${code}.`);
     }
+    failRunning(this.db, "The job ended during this call.", id);
     this.db.prepare("UPDATE jobs SET state = ?, ended_at = ?, pid = NULL, error = ?, progress = CASE WHEN ? = 'done' THEN NULL ELSE progress END WHERE id = ?")
       .run(state, now(), state === "failed" ? error : null, state, id);
     this.o.log(`job ${id}: ${state}${state === "failed" && error ? `: ${error}` : ""}`);
