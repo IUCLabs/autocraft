@@ -1,6 +1,6 @@
 // Which open PRs the Review stage looks at, and at which head commit.
 import type { DatabaseSync } from "node:sqlite";
-import { settledOf } from "../classify/settled.ts";
+import { latestRun, settledOf, settledTable } from "../classify/settled.ts";
 import { SCOPE_OPTIONS } from "../decide/decision.ts";
 
 /** Type labels whose PRs get a code review; plugin candidates do not. */
@@ -95,6 +95,62 @@ export function selectCandidates(db: DatabaseSync, repo: string): Candidate[] {
       author_association: r.author_association, head_oid: head, lines_changed: lines,
       files_changed: r.changed_files ?? 0, size: sizeOf(lines), label: s.label,
     });
+  }
+  return out;
+}
+
+/**
+ * The answer of the latest answered scope decision per item ("repo#n"), for
+ * every item at once: the same rule as scopeAnswer(), in one query.
+ */
+export function scopeAnswers(db: DatabaseSync): Map<string, string> {
+  const out = new Map<string, string>();
+  const rows = db.prepare(`SELECT repo, number, items, answer, exceptions FROM decisions
+    WHERE kind = 'scope' AND answer IS NOT NULL ORDER BY answered_at DESC`).all() as
+    { repo: string | null; number: number | null; items: string | null; answer: string; exceptions: string | null }[];
+  for (const r of rows) {
+    if (r.number !== null) {
+      const k = `${r.repo}#${r.number}`;
+      if (!out.has(k)) out.set(k, r.answer);
+      continue;
+    }
+    const ex = new Map(parseRefs(r.exceptions).map((e) => [`${e.repo}#${e.number}`, e.answer]));
+    for (const i of parseRefs(r.items)) {
+      const k = `${i.repo}#${i.number}`;
+      if (!out.has(k)) out.set(k, ex.get(k) ?? r.answer);
+    }
+  }
+  return out;
+}
+
+/**
+ * Refs ("repo#n") of the PRs selectCandidates() would return, for one repo or
+ * every repo, from one query over the settled table: for counting, where
+ * selectCandidates() reads each PR on its own.
+ */
+export function candidateRefs(db: DatabaseSync, repo?: string): Set<string> {
+  settledTable(db, latestRun(db));
+  const answers = scopeAnswers(db);
+  const rows = db.prepare(`SELECT i.repo, i.number, i.head_oid, i.updated_at, i.is_draft,
+      c.head_oid AS c_head, c.state AS c_state, c.is_draft AS c_draft, c.fetched_at AS c_at, s.label, s.flags
+    FROM items i LEFT JOIN pr_checks c ON c.repo = i.repo AND c.number = i.number
+    LEFT JOIN temp.item_settled s ON s.repo = i.repo AND s.number = i.number
+    WHERE i.kind = 'pr' AND i.state = 'OPEN' ${repo ? "AND i.repo = :repo" : ""}`).all(repo ? { repo } : {}) as
+    (Pick<Row, "repo" | "number" | "head_oid" | "updated_at" | "is_draft" | "c_head" | "c_state" | "c_draft" | "c_at"> & { label: string | null; flags: string | null })[];
+  const reviewed = new Set((db.prepare(`SELECT repo, number, head_oid FROM reviews ${repo ? "WHERE repo = ?" : ""}`).all(...(repo ? [repo] : [])) as
+    { repo: string; number: number; head_oid: string }[]).map((r) => `${r.repo}#${r.number}@${r.head_oid}`));
+  const out = new Set<string>();
+  for (const r of rows) {
+    const fresh = r.c_at && (!r.updated_at || r.c_at > r.updated_at);
+    if (fresh ? r.c_state !== "OPEN" || r.c_draft : r.is_draft) continue;
+    const head = headOf(r);
+    if (!head || !r.label || !REVIEW_LABELS.includes(r.label)) continue;
+    const ref = `${r.repo}#${r.number}`;
+    const answer = answers.get(ref) ?? null;
+    const flags = r.flags ? (JSON.parse(r.flags) as string[]) : [];
+    if (answer !== null ? !KEEP_IN_CORE.includes(answer) : flags.includes("needs decision")) continue;
+    if (reviewed.has(`${ref}@${head}`)) continue;
+    out.add(ref);
   }
   return out;
 }

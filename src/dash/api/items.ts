@@ -10,6 +10,7 @@ import { HttpError } from "../server/util.ts";
 import type { Req } from "../types.ts";
 import { itemState } from "./decisions.ts";
 import { latestCte } from "./stats.ts";
+import { flowMembers } from "./flow.ts";
 
 const HAS_WORD = /[\p{L}\p{N}]/u;
 const quote = (s: string) => `"${s.replace(/"/g, "")}"`;
@@ -129,6 +130,19 @@ function build(db: DatabaseSync, req: Req): Built & { sort: ItemSort; desc: bool
     if (!/^\d{4}-\d{2}-\d{2}$/.test(since)) throw new HttpError(400, "since must be YYYY-MM-DD");
     where.push("i.updated_at >= :since");
     params.since = since;
+  }
+  const flow = q.get("flow");
+  if (flow) {
+    const refs = flowMembers(db, flow);
+    if (!refs) throw new HttpError(400, "flow must name a flowchart branch with its own items");
+    db.exec("CREATE TEMP TABLE IF NOT EXISTS flow_pick (repo TEXT NOT NULL, number INTEGER NOT NULL, PRIMARY KEY (repo, number))");
+    db.exec("DELETE FROM temp.flow_pick");
+    const ins = db.prepare("INSERT OR IGNORE INTO temp.flow_pick VALUES (?, ?)");
+    for (const r of refs) {
+      const k = r.lastIndexOf("#");
+      ins.run(r.slice(0, k), Number(r.slice(k + 1)));
+    }
+    where.push("EXISTS (SELECT 1 FROM temp.flow_pick f WHERE f.repo = i.repo AND f.number = i.number)");
   }
   let statusWhere: string | null = null;
   const st = new Set(list(req, "status").flatMap((s) => (s === "unsettled" ? ["waiting", "disagree"] : [s])));

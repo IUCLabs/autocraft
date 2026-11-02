@@ -229,6 +229,8 @@ export interface ItemFilter {
   author?: string;
   /** Updated on or after this date (YYYY-MM-DD). */
   since?: string;
+  /** A flowchart branch, `<node>.<branch>` (FlowNode.id, FlowBranch.id): only the items it counts. */
+  flow?: string;
   /** Default `relevance` with a query, else `updated`. */
   sort?: ItemSort;
   /** Default true. */
@@ -817,4 +819,78 @@ export interface SimilarHit extends SearchHit {
   /** The item's settled type label (see src/classify/settled.ts); null while unsettled. */
   label: string | null;
   labelBy: string | null;
+}
+
+// ---- flowchart (home page) ----------------------------------------------------
+
+/** The nodes of the flowchart, in pipeline order (docs/pipeline.md). */
+export type FlowNodeId = "synced" | "classify" | "decide" | "labels" | "review" | "verify" | "merge";
+
+/** What items in a branch wait on: a model step, CI, a person, the runner (a step that needs no model), or nothing. */
+export type FlowWait = "model" | "ci" | "person" | "runner" | "nothing";
+
+/**
+ * Where a branch's link goes. `items` opens the Items browser with these params
+ * (`flow=<node>.<branch>` picks exactly the branch's items); `decisions` and
+ * `queue` open those pages with these params.
+ */
+export interface FlowLink {
+  page: "items" | "decisions" | "queue";
+  params: Record<string, string>;
+}
+
+export interface FlowBranch {
+  /** Unique within the node. */
+  id: string;
+  label: string;
+  /** null where nothing is counted yet (a planned stage). */
+  count: number | null;
+  waitsOn: FlowWait;
+  /** A person acts on the items here. */
+  gate: boolean;
+  tone: "ok" | "warn" | "bad" | "neutral" | "merged" | "accent";
+  link: FlowLink | null;
+  hint: string;
+}
+
+export interface FlowNode {
+  id: FlowNodeId;
+  title: string;
+  /** Stage number in docs/pipeline.md. */
+  stage: number;
+  /** auto: runs on its own; steps: runner steps; gate: a person decides; planned: not built yet. */
+  mode: "auto" | "steps" | "gate" | "planned";
+  /** One line under the title, e.g. "21,310 open". */
+  summary: string;
+  /** Items in the node, where that is one number. */
+  total: number | null;
+  branches: FlowBranch[];
+  /** Movement in the last 24 hours. */
+  recent: { label: string; count: number }[];
+  /** What the node waits on now: the waitsOn of its branches that hold items. */
+  waitsOn: FlowWait[];
+  /** Extra facts shown on the node, e.g. "Repos approved: 3 of 26". */
+  facts: { label: string; value: string }[];
+  /** Runner steps (src/runner/steps.ts) of the stage. */
+  steps: string[];
+  /** Prompt ids (src/prompts) the stage sends. */
+  prompts: string[];
+}
+
+export interface FlowEdge {
+  from: FlowNodeId;
+  to: FlowNodeId;
+  /** The branch of `from` the edge leaves from, if any. */
+  branch: string | null;
+  label: string;
+  /** null on planned edges. */
+  count: number | null;
+}
+
+export interface Flow {
+  repo: RepoName | null;
+  now: string;
+  lastSync: string | null;
+  nodes: FlowNode[];
+  edges: FlowEdge[];
 }

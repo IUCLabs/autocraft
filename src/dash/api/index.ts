@@ -17,6 +17,7 @@ import * as insight from "./insight.ts";
 import * as pipeline from "./pipeline.ts";
 import { prompts } from "./prompts.ts";
 import { queue } from "./queue.ts";
+import { flow } from "./flow.ts";
 import * as items from "./items.ts";
 import { settledOf } from "../../classify/settled.ts";
 import { classificationsOf, itemState, relatedOf } from "./decisions.ts";
@@ -248,6 +249,7 @@ export function apiRoutes(opts: ApiOptions = {}): Route[] {
     { method: "POST", pattern: "/api/pipeline/schedules/:step", operator: true, handler: ok(pipeline.schedule) },
     get("/api/prompts", prompts),
     get("/api/queue", queue),
+    get("/api/flow", flow),
     get("/api/similar/:repo/:n", (db, req) => sim.similar(db, req, vectors)),
   ];
 }
