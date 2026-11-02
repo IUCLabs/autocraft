@@ -320,6 +320,23 @@ export const STEPS: StepDef[] = [
       return `${r.repo}: planned ${r.handled} of ${r.candidates} candidates${k ? ` (${k})` : ""}; ${r.errors} errors, ${r.tasks.length} tasks queued`;
     },
   },
+  {
+    name: "verify-collect",
+    title: "Collect verification results",
+    description: "Reads the finished build tasks of each pending verification and sets passed, failed or error from their exit codes. For a failure, Haiku summarises the log; the failure becomes a hold. Cancels the tasks of a PR whose head moved on, and queued warm builds of a branch that moved on.",
+    stage: 6,
+    requires: "operator",
+    group: "verify",
+    models: ["haiku"],
+    params: [],
+    run: async (ctx) => {
+      const { runCollect } = await import("../verify/results.ts");
+      const r = await runCollect(ctx.db, {}, ctx.log);
+      ctx.usageRun(r.runId);
+      ctx.handled(r.changed);
+      return `${r.looked} pending: ${r.passed} passed, ${r.failed} failed, ${r.errors} errors, ${r.retried} retried, ${r.stale} stale, ${r.running} running; ${r.warmCancelled} warm builds cancelled`;
+    },
+  },
 ];
 
 let loaded: Promise<Map<string, StepDef>> | null = null;

@@ -45,7 +45,7 @@ The weaker of two duplicates is held, never closed, until the better one has mer
 
 ## Stage: Verify
 
-Sits between Review (5) and Integrate (6). Its step is numbered 6 in the runner, like the flow chart's Verify node. Planning and task creation are built; result collection comes with part 2 (`src/verify/results.ts`).
+Sits between Review (5) and Integrate (6). Its step is numbered 6 in the runner, like the flow chart's Verify node. Planning and task creation are in `src/verify/index.ts`; result collection is in `src/verify/results.ts`.
 
 **Which PRs.** Open, non-draft PRs of public repos whose latest review at the current head commit is `take` (a take-fix PR gets a fix-up push first, which is reviewed again), whose CI does not fail at that head, and that have no verification at that head. Only Rust repos: the repo needs a `Cargo.toml` at its root at that head. `craft-auto verify --repo R [--limit N] [--dry-run]` runs the step; the autopilot queues it per repo after a fresh `checks` job.
 
@@ -215,6 +215,28 @@ The other scope answers need no write here: `take` and `small-extra` go on to re
 **Comments** are fixed templates in code (`src/act/templates.ts`, listed on the Prompts page). Each is one or two short factual lines: a fixed first sentence and, when there is one, `Reason: <text>`. The text is the decision's `public_text` (a Close? decision stores the review's reason there), cut to one line of at most 200 characters with `@` removed. A PR with a duplicate gets `Duplicate of #N.` (`storytold/<repo>#N` for another repo) instead of a reason.
 
 **`actions` table**: decision id, repo, number, kind (`comment-close`), state (`done`, `skipped`, `failed`), comment url, reason, created time; unique per decision and item. A finished decision is marked applied, and the audit log gets `act-comment`, `act-close` or `act-skip`. A rerun does nothing for `done` and `skipped` rows. A `failed` row is retried; when it already holds a comment url, only the close is retried, so a comment is never posted twice. A failure stops the run.
+
+**Results.** The step `verify-collect` (`craft-auto verify-collect`, group `verify`, model Haiku, no daily limit, not counted toward the verify limit) reads the tasks of every verification in `planned` or `running`. The autopilot runs it when one has all its tasks finished, has a task that started while it is still `planned`, or is stale; the check is one query on the state index (`collectDue`). Pass or fail comes from exit codes only.
+
+| Tasks | Result |
+|---|---|
+| Head task done, every step exit 0 | `passed` |
+| `regression`: head passes, base builds and its test fails (non-zero, not timed out) | `passed` |
+| `regression`: head passes, the test also passes on the base | `passed`, with the note "regression test did not fail on the base commit" |
+| `regression`: head passes, but the base does not build with the test, or its test times out | `passed`, with a note saying so |
+| A build or test step fails or times out on the head | `failed` |
+| `fetch deps` fails or times out; a task is lost twice, cancelled, malformed or its patch does not apply (no step result); the environment could not start a step; the base task has such an error | `error` |
+| A task has started | `running` |
+
+An `error` is retried once per head: the verification's tasks are cloned (same plan, patch and warm role) and the row goes back to `planned`. A second error stays. The note is shown on the Item page.
+
+**Failure summary.** For `failed` only, one Haiku call (prompt `verify.summary`, `--tools ""`) gets the failing step's name, its command and the last 64 KiB of that step's log, scrubbed of credentials and quoted as untrusted output of untrusted code. It returns at most 60 words saying what failed, without speculation. The reply is whitespace-collapsed, cut to 60 words and scrubbed again, then stored in `verifications.summary`. Without an answer the summary names the step and its exit code. An error stores the short reason instead, with no model call.
+
+**Stages rows.** `passed` writes `verified`; `failed` writes `verify-failed` and a `hold` row with the reason "verify failed: <summary>", so the Progress page counts it as hold; `error` writes `verify-error`. The Progress page counts `verified` and the planning rows as take, but not `verify-failed`.
+
+**Stale.** A verification whose PR head moved, or whose PR closed or merged, becomes `stale`; its queued and running tasks are cancelled (the worker is told to stop running ones). Queued warm builds whose default branch has moved to another commit are cancelled in the same run.
+
+**Reading.** `verificationOf(db, repo, number, headSha)` and `listVerifications(db, { states, repo, limit })` (exported from `src/verify/index.ts`) return the plan, the tasks (id, role, state, per-step results), the summary and the note.
 
 ## Build environments and tasks
 

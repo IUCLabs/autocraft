@@ -624,7 +624,8 @@ CREATE TABLE IF NOT EXISTS verifications (
   head_task_id INTEGER,
   base_task_id INTEGER,
   state TEXT NOT NULL,
-  summary TEXT,
+  summary TEXT,                       -- why it failed or errored (failed: written by Haiku)
+  note TEXT,                          -- on a pass: what the result does not show
   created_at TEXT NOT NULL,
   finished_at TEXT,
   PRIMARY KEY (repo, number, head_sha)

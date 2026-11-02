@@ -22,6 +22,7 @@ import { buildQueue, eligible } from "../merge/queue.ts";
 import { trackedNames } from "../repos.ts";
 import { selectCandidates as reviewCandidates } from "../review/candidates.ts";
 import { selectCandidates as verifyCandidates } from "../verify/candidates.ts";
+import { collectDue } from "../verify/results.ts";
 import { audit } from "../dash/audit.ts";
 import { currentRun, dueItems, haikuDue } from "./classify.ts";
 import { enqueue, JobError, now, requestCancel, RUNNER_STOPPED } from "./jobs.ts";
@@ -202,6 +203,11 @@ export const LANES: Lane[] = [
     chosen: (db, c) => {
       if (c.step === "verify") setSetting(db, KEY_VERIFY_CURSOR, String(c.params.repo));
     },
+  },
+  {
+    name: "verify-collect",
+    steps: ["verify-collect"],
+    detect: (db) => (collectDue(db) ? [{ step: "verify-collect", params: {} }] : []),
   },
 ];
 

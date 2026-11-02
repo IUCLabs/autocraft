@@ -47,3 +47,15 @@ export function queueWarmBuild(db: DatabaseSync, repo: string, mainSha: string, 
     plan: rustPlan({ cargoArgs: ["--workspace"], test: false }), warm: { key: repo, role: "build" },
   });
 }
+
+type CloneRow = { step: string; repo: string; number: number | null; head_sha: string; base_sha: string | null; requires: string; priority: number; plan: string; patch: string | null; warm_key: string | null; warm_role: "use" | "build" | null };
+
+/** Queues a new task with the same step, commits, requirements, plan, patch and warm role as task `id`. */
+export function cloneTask(db: DatabaseSync, id: number): number {
+  const r = db.prepare("SELECT * FROM build_tasks WHERE id = ?").get(id) as CloneRow | undefined;
+  if (!r) throw new Error(`no task ${id}`);
+  return createTask(db, {
+    step: r.step, repo: r.repo, number: r.number, headSha: r.head_sha, baseSha: r.base_sha, requires: JSON.parse(r.requires), priority: r.priority,
+    plan: JSON.parse(r.plan), ...(r.patch === null ? {} : { patch: r.patch }), ...(r.warm_key && r.warm_role ? { warm: { key: r.warm_key, role: r.warm_role } } : {}),
+  });
+}

@@ -34,3 +34,15 @@ export const SAMPLE_VERIFY_PLAN: VerifyPlanInput[] = [{
   files: ["crates/codecs/src/png.rs"], tests_omitted: ["crates/codecs/tests/png16.rs"],
   diff: "diff --git a/crates/codecs/src/png.rs b/crates/codecs/src/png.rs\n--- a/crates/codecs/src/png.rs\n+++ b/crates/codecs/src/png.rs\n@@ -88,7 +88,8 @@ fn decode_rows(info: &Info, data: &[u8]) -> Result<Image, DecodeError> {\n-    let stride = info.width as usize * info.channels as usize;\n+    let bytes_per_sample = if info.bit_depth == 16 { 2 } else { 1 };\n+    let stride = info.width as usize * info.channels as usize * bytes_per_sample;\n",
 }];
+
+/** Words a failure summary may have, and the part of the failing step's log the summariser sees. */
+export const MAX_SUMMARY_WORDS = 60;
+export const SUMMARY_LOG_BYTES = 64 * 1024;
+
+/** What the failure-summary prompt is rendered from: one failed step. `log` is the end of its output. */
+export type VerifySummaryInput = { ref: string; step: string; command: string; log: string };
+
+export const SAMPLE_VERIFY_SUMMARY: VerifySummaryInput[] = [{
+  ref: "photocraft#1287", step: "test", command: "cargo test --offline --locked -p codecs",
+  log: "running 2 tests\ntest png::decode_16bit_rgba ... FAILED\ntest png::decode_8bit ... ok\n\nfailures:\n\n---- png::decode_16bit_rgba stdout ----\nthread 'png::decode_16bit_rgba' (16-bit PNG with an alpha channel) panicked at crates/codecs/src/png.rs:91:9:\nassertion `left == right` failed\n  left: 4096\n right: 8192\n\nerror: test failed, to rerun pass `-p codecs --lib`\n",
+}];

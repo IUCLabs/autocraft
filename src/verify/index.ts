@@ -19,6 +19,8 @@ import { parsePlanReply, type VerifyPlan } from "./plan.ts";
 import { queueTasks, queueWarmBuild } from "./tasks.ts";
 import type { Crate, VerifyPlanInput } from "./types.ts";
 
+export { collectDue, listVerifications, runCollect, verificationOf, type VerificationView } from "./results.ts";
+
 const PROMPT = CLAUDE_PROMPTS["verify.plan"];
 const ORG = "storytold";
 /** Characters of code diff the planner is shown; a larger change is not planned automatically. */
@@ -179,6 +181,14 @@ function parseArgs(args: string[]): Record<string, string | true> {
 }
 
 export const commands = {
+  "verify-collect": {
+    summary: "verify-collect [--dry-run]: set passed, failed or error on pending verifications from their finished tasks",
+    async run(args: string[]): Promise<void> {
+      if (args.some((a) => a !== "--dry-run")) throw new Error("options: --dry-run");
+      const { runCollect } = await import("./results.ts");
+      await runCollect(connect(), { dryRun: args.length > 0 });
+    },
+  },
   verify: {
     summary: "verify --repo R [--limit N] [--dry-run]: plan the verification of taken PRs and queue build tasks",
     async run(args: string[]): Promise<void> {
