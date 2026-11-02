@@ -7,7 +7,8 @@ import { join } from "node:path";
 import { test } from "node:test";
 import type { FlowNode } from "../web/src/api/types.ts";
 import { connect } from "../src/db.ts";
-import { flowModel } from "../src/dash/api/flow.ts";
+import { buildFlow } from "../src/flow/shape.ts";
+import { readSummary, refreshSummary } from "../src/flow/summary.ts";
 import { listItems } from "../src/dash/api/items.ts";
 import type { Req } from "../src/dash/types.ts";
 import { scopeToTracked } from "../src/repos.ts";
@@ -55,11 +56,13 @@ function build() {
   return db;
 }
 
+const flowOf = (db: ReturnType<typeof build>, repo: string | null) =>
+  buildFlow(readSummary(db, repo).counts, { repo, now: NOW, lastSync: null, run: null, countedAt: null, uncounted: 0, steps: [] });
 const counts = (n: FlowNode) => Object.fromEntries(n.branches.map((b) => [b.id, b.count]));
 
 test("flowchart counts every branch by the stages' own rules", () => {
   const db = build();
-  const { flow } = flowModel(db, null);
+  const flow = flowOf(db, null);
   const node = (id: string) => flow.nodes.find((n) => n.id === id)!;
   assert.deepEqual(counts(node("synced")), { issues: 6, prs: 5 });
   assert.deepEqual(counts(node("classify")), { settled: 8, waiting: 1, disagree: 1, unclassified: 1 });
@@ -79,7 +82,7 @@ test("flowchart counts every branch by the stages' own rules", () => {
   assert.deepEqual([...candidateRefs(db)], selectCandidates(db, R).map((c) => `${c.repo}#${c.number}`));
 
   // A repo filter that matches nothing empties every count.
-  const other = flowModel(db, "pdfcraft").flow;
+  const other = flowOf(db, "pdfcraft");
   assert.ok(other.nodes.every((n) => n.branches.every((b) => !b.count)));
 
   // The Items browser's flow filter lists exactly a branch's items.
@@ -87,4 +90,12 @@ test("flowchart counts every branch by the stages' own rules", () => {
   assert.deepEqual(listItems(db, req("flow=review.take")).rows.map((r) => r.number).sort((a, b) => a - b), [11, 14]);
   assert.deepEqual(listItems(db, req("flow=decide.not-asked")).rows.map((r) => r.number), [3]);
   assert.throws(() => listItems(db, req("flow=classify.nope")), /flow/);
+
+  // The summary row notices an answer and is counted again on the next refresh.
+  refreshSummary(db);
+  db.prepare("UPDATE main.decisions SET answer = 'close', answered_by = 'op', answered_at = ? WHERE id = ?").run(NOW, `${R}#5:scope`);
+  assert.equal(counts(flowOf(db, R).nodes.find((n) => n.id === "decide")!).open, 1);
+  assert.deepEqual(refreshSummary(db), [R]);
+  assert.deepEqual([counts(flowOf(db, R).nodes.find((n) => n.id === "decide")!).open, counts(flowOf(db, R).nodes.find((n) => n.id === "decide")!).close], [0, 1]);
+  assert.deepEqual(refreshSummary(db), []);
 });

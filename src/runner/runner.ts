@@ -11,6 +11,7 @@ import { basename, join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { dbPath } from "../db.ts";
 import { autopilotTick } from "./autopilot.ts";
+import { refreshSummary } from "../flow/summary.ts";
 import { jobRow, now } from "./jobs.ts";
 import { loadSteps } from "./steps.ts";
 
@@ -22,6 +23,8 @@ export function runnerLockPath(): string {
 }
 
 export const HEARTBEAT_KEY = "runner_heartbeat";
+/** How often the runner brings the flowchart summary up to date (src/flow/summary.ts). */
+export const FLOW_EVERY_MS = 20_000;
 const CLI = new URL("../cli.ts", import.meta.url).pathname;
 
 export type RunnerOptions = {
@@ -60,6 +63,7 @@ export class Runner {
   readonly db: DatabaseSync;
   readonly running = new Map<number, Running>();
   private stopping = false;
+  private flowAt = 0;
   private readonly o: Required<Omit<RunnerOptions, "db" | "lockFile">> & { lockFile: string | null };
 
   constructor(opts: RunnerOptions) {
@@ -100,6 +104,14 @@ export class Runner {
     if (this.stopping) return;
     await autopilotTick(this.db, { log: this.o.log });
     await this.startJobs();
+    if (Date.now() - this.flowAt >= FLOW_EVERY_MS) {
+      this.flowAt = Date.now();
+      try {
+        refreshSummary(this.db);
+      } catch (e) {
+        this.o.log(`flowchart summary: ${(e as Error).message}`);
+      }
+    }
   }
 
   private cancels(): void {

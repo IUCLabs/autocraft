@@ -212,6 +212,8 @@ CREATE INDEX IF NOT EXISTS items_created ON items(created_at);
 CREATE INDEX IF NOT EXISTS items_pr_author ON items(kind, author, state, repo, merged_at);
 CREATE INDEX IF NOT EXISTS items_open ON items(state, repo, number);
 CREATE INDEX IF NOT EXISTS classifications_run ON classifications(run_id, classifier, repo, number);
+-- The newest verdict of a classifier (latestRun, latestJevRun) without reading every row.
+CREATE INDEX IF NOT EXISTS classifications_latest ON classifications(classifier, at);
 CREATE INDEX IF NOT EXISTS token_usage_run ON token_usage(run_id, stage, model);
 
 -- Repos the dashboard, pipeline and sync work on. `repos` keeps every org repo
@@ -396,4 +398,17 @@ CREATE TABLE IF NOT EXISTS item_embeddings (
   vec BLOB NOT NULL,                  -- float32, little-endian, unit length
   at TEXT NOT NULL,
   PRIMARY KEY (repo, number)
+);
+
+-- Flowchart counts per repo (src/flow/), so the home page adds up a few hundred
+-- small rows instead of counting the mirror. The runner refreshes the rows of
+-- repos whose items, verdicts, decisions, reviews, checks or merges changed, and
+-- every row at least every ten minutes; the dashboard counts a repo itself only
+-- when it has no row yet.
+CREATE TABLE IF NOT EXISTS flow_summary (
+  repo TEXT PRIMARY KEY,
+  counts TEXT NOT NULL,               -- JSON {key: count}, keys as in src/flow/count.ts
+  counted_at TEXT NOT NULL,
+  stale INTEGER NOT NULL DEFAULT 0,   -- 1: changed since counted_at, waiting for the next refresh
+  decisions_sig TEXT                  -- the repo's decisions when counted, to notice answers and undos
 );

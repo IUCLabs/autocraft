@@ -10,6 +10,7 @@ import type {
   ClassifierReport,
   CostReport,
   Decision,
+  Flow,
   DecisionComment,
   DecisionFilter,
   DecisionList,
@@ -109,6 +110,8 @@ export interface Api {
     setEnabled(enabled: boolean): Promise<PipelineState>;
     setLimit(step: string, limit: { perDay: number | null }): Promise<StageLimit>;
   };
+  /** The pipeline as a flowchart: every stage with its branches and counts, for every tracked repo or one. */
+  flow(repo?: RepoName): Promise<Flow>;
   /** Every registered model prompt, with the server's commit. */
   prompts(): Promise<PromptsReport>;
   signOut(): Promise<void>;

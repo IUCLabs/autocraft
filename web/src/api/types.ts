@@ -879,6 +879,10 @@ export interface Flow {
   repo: RepoName | null;
   now: string;
   lastSync: string | null;
+  /** When the counts were taken: the oldest of the per-repo summaries they add up. */
+  countedAt: string | null;
+  /** Tracked repos left out because they have no counts yet; the runner adds them within minutes. */
+  uncounted: number;
   nodes: FlowNode[];
   edges: FlowEdge[];
 }
