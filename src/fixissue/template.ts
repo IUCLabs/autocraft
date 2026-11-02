@@ -1,0 +1,33 @@
+// Texts the Fix stage writes on GitHub. No Node imports: the prompt registry shows them on the Prompts page.
+
+export const COMMENT_TEMPLATE = "A PR for this is in progress: {{url}}.";
+export const PR_TITLE_TEMPLATE = "Fix {{title}}";
+export const PR_BODY_TEMPLATE = "Fixes #{{number}}.\n\n{{change}}\n\n{{test}}\n";
+
+export const commentText = (url: string): string => COMMENT_TEMPLATE.replace("{{url}}", url);
+
+/** The one-sentence line a model gives is not used: the text is built from facts our code knows. */
+export function prTitle(title: string): string {
+  const t = title.replace(/\s+/g, " ").trim().replace(/^fix(es|ed)?:?\s+/i, "").replace(/[.\s]+$/, "");
+  const cut = t.length > 70 ? `${t.slice(0, 70).replace(/\s+\S*$/, "")}` : t;
+  return PR_TITLE_TEMPLATE.replace("{{title}}", cut.charAt(0).toLowerCase() + cut.slice(1));
+}
+
+export function prBody(number: number, files: string[], testPath: string): string {
+  const change = `The change is in ${files.map((f) => `\`${f}\``).join(", ")}.`;
+  const test = `The regression test \`${testPath}\` fails without the change and passes with it.`;
+  return PR_BODY_TEMPLATE.replace("{{number}}", String(number)).replace("{{change}}", change).replace("{{test}}", test);
+}
+
+export function commitMessage(number: number, title: string, files: string[]): string {
+  return `${prTitle(title)}\n\nFixes #${number}.\n\n${files.map((f) => `- ${f}`).join("\n")}\n`;
+}
+
+/** `autocraft/fix-<number>-<slug>`: the slug comes from the issue title only. */
+export function branchName(number: number, title: string, login: string): string {
+  let slug = title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 30).replace(/-+$/, "");
+  if (login && slug.includes(login.toLowerCase())) slug = "";
+  return `autocraft/fix-${number}${slug ? `-${slug}` : ""}`;
+}
+
+export const HOLD_NOT_FIXABLE = "not a clear fix: ";

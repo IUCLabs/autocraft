@@ -23,6 +23,7 @@ import { trackedNames } from "../repos.ts";
 import { selectCandidates as reviewCandidates } from "../review/candidates.ts";
 import { selectCandidates as verifyCandidates } from "../verify/candidates.ts";
 import { collectDue } from "../verify/results.ts";
+import { collectDue as fixCollectDue, fixDue } from "../fixissue/index.ts";
 import { audit } from "../dash/audit.ts";
 import { duePriorityCount } from "../priority/index.ts";
 import { currentRun, dueItems, haikuDue } from "./classify.ts";
@@ -216,6 +217,17 @@ export const LANES: Lane[] = [
     steps: ["verify-collect"],
     detect: (db) => (collectDue(db) ? [{ step: "verify-collect", params: {} }] : []),
   },
+  {
+    name: "fixissue",
+    steps: ["fixissue"],
+    perRepo: true,
+    detect: (db, { tracked }) => tracked.filter((repo) => fixDue(db, repo)).sort().map((repo) => ({ step: "fixissue", params: { repo } })),
+  },
+  {
+    name: "fixissue-collect",
+    steps: ["fixissue-collect"],
+    detect: (db) => (fixCollectDue(db) ? [{ step: "fixissue-collect", params: {} }] : []),
+  },
 ];
 
 // ---- limits and usage ----------------------------------------------------------
@@ -275,7 +287,7 @@ export function setEnabled(db: DatabaseSync, enabled: boolean, by: string): void
 }
 
 /** Steps that have a row in stage_limits, in pipeline order. */
-export const LIMIT_STEPS = ["classify-new", "embed", "decide", "checks", "review-batch", "labels-apply", "merge", "act", "fixup", "verify", "prioritize"];
+export const LIMIT_STEPS = ["classify-new", "embed", "decide", "checks", "review-batch", "labels-apply", "merge", "act", "fixup", "verify", "prioritize", "fixissue"];
 
 /** Steps whose jobs cannot be sized to what remains of the day: only no limit or a pause makes sense. */
 export const ZERO_ONLY = ["checks"];

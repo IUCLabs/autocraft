@@ -170,7 +170,7 @@ const fallbackSummary = (f: NonNullable<Verdict["failed"]>): string =>
   `${f.step} ${f.timedOut ? "timed out" : `failed with exit code ${f.exitCode ?? "none"}`}`;
 
 /** Haiku's account of a failed step, or null. The log and the command are untrusted and scrubbed before they leave and before the reply is stored. */
-async function summariseFailure(db: DatabaseSync, v: Row, taskId: number, f: NonNullable<Verdict["failed"]>, deps: CollectDeps, runId: string): Promise<string> {
+export async function summariseFailure(db: DatabaseSync, v: { repo: string; number: number }, taskId: number, f: NonNullable<Verdict["failed"]>, deps: CollectDeps, runId: string): Promise<string> {
   const task = getTask(db, taskId);
   const step = task?.plan.find((s: TaskStep) => s.name === f.step);
   const input: VerifySummaryInput = {

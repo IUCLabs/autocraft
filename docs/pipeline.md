@@ -27,7 +27,7 @@ flowchart TD
   queue{"Merge queue<br/>bugfix or infra, size S/M,<br/>whitelisted author, green CI,<br/>mergeable?"}
   mergeq{{"Merge?<br/>decision"}}
   merge["Merge<br/>safe-merge<br/>per-repo merge approval"]
-  fixiss["Fix issues (planned)<br/>clear bugs without a PR<br/>our patch + regression test<br/>sandbox build and test<br/>PR from our fork"]
+  fixiss["Fix issues<br/>clear bugs without a PR<br/>Sonnet triage, patch + regression test<br/>sandbox build and test<br/>PR from our fork"]
 
   sync --> embed --> dups --> classify --> priority
   dups -- "duplicate pair" --> dupdec
@@ -40,7 +40,9 @@ flowchart TD
   priority --> decide
   decide -- "type settled" --> label
   decide -- "out of scope" --> act
-  label --> review
+  label -- "PRs" --> review
+  label -- "bugfix issues" --> fixiss
+  fixiss -- "not a clear fix,<br/>or 3 rounds failed" --> hold
   review -- "take-fix" --> fixup
   fixup -- "new head" --> review
   fixup -- "cannot push" --> hold
@@ -53,7 +55,7 @@ flowchart TD
   queue -- "rule met" --> merge
   queue -- "otherwise" --> mergeq
   mergeq -- "merge" --> merge
-  fixiss -. "opens a PR" .-> review
+  fixiss -- "opens a PR" --> review
 
   class decide,closeq,mergeq,dupdec person
   class embed,classify,priority,dups,review,verify,vfail model
@@ -77,7 +79,7 @@ flowchart TD
 10. **Close.** For close, the operator answers a "Close this PR?" decision. A yes goes to Act, which posts a short comment and closes the PR once the repo's comment approval is given. See [Act: comments and closes](#act-comments-and-closes).
 11. **Verify.** For take, Sonnet plans the checks: green CI is enough, targeted tests, or a regression test. Build tasks run in the sandbox build environment, and exit codes decide pass or fail. A failure gets a Haiku summary and the PR is held. See [Stage: Verify](#stage-verify).
 12. **Merge queue and Merge.** A verified PR that is a bugfix or infra change, size S or M, by a whitelisted author, with green CI and no conflicts, goes straight to the merge step. Any other PR becomes a "Merge?" decision. The merge runs through `safe-merge` once the repo's merge approval is given. See [Stage 6: Integrate](#stage-6-integrate).
-13. **Fix issues (planned).** For a clear bug without a PR, we write a patch and a regression test, build and test it in the sandbox, and open a PR from our fork. That PR enters Review like any other.
+13. **Fix issues.** The issue path of the flow: after Label, PRs go to Review and open bugfix issues go here. For a clear bug without a PR, Sonnet triages the issue, then writes a patch and a regression test; the sandbox builds and tests them, and a passing fix becomes a PR from our fork. That PR enters Review like any other. An issue that is not a clear fix is held for a person. See [Stage 7: Fix issues](#stage-7-fix-issues).
 
 ## Stages
 
@@ -90,7 +92,7 @@ flowchart TD
 | 4 | Label | The type label and flags go onto the item on GitHub. | `craft-auto labels`, one repo at a time. No model calls. Only items whose type is settled (Jev at 90 % or more, or Haiku agreeing with Jev) are labelled. A label a person set is never changed: an item that already has a different type label is skipped and reported. Writes to GitHub need the operator's approval for that repo, given on the Repos page | Built. `ensure` and `plan` are read-only; `apply` is a dry run unless `--apply` and refuses unapproved repos |
 | 5 | Review | PRs we want get a code review: take, take with fixes, hold, or close (duplicate, already fixed, superseded). | Sonnet, one call per batch of related PRs. Tests are not reviewed, only code | Built, one repo at a time (`craft-auto review`) |
 | 6 | Integrate | Taken PRs are assigned to us, fixed up on the contributor's branch where possible, grouped into integration branches and merged when GitHub CI is green. | Sonnet implementers; merges only through a checked merge script | Merge queue and merge step built (`craft-auto merge`); fix-ups and integration branches next |
-| 7 | Fix issues | Issues with a clear bug and a clear fix get a PR from us. | Sonnet implementers | Planned |
+| 7 | Fix issues | Issues with a clear bug and a clear fix get a PR from us: patch, regression test, sandbox build and test, PR from our fork. The PR then goes through Review, Verify and the merge queue. | Sonnet triage and patch, Haiku failure summaries; build tasks in the sandbox | Built (`craft-auto fixissue`), needs per-repo approval; daily limit 10 attempts |
 
 Stages 5–7 go one or a few repos at a time, in turn. Stages 1–4 cover the whole org.
 
@@ -212,6 +214,34 @@ A take-fix review lists small mechanical fixes. The fix-up step applies them to 
 7. Posts one comment from a template in code (`src/fixup/template.ts`, shown on the Prompts page): "Pushed the small fixes from review: `<files>`."
 
 Each try adds a `fixups` row (repo, number, from_head, to_head, state, reason, files, attempt, created_at) and a stage row (`hold` for cannot-push and too-large, else `take` with a note), plus audit rows `assign`, `fixup-push` and `fixup-comment`. The pushed head has no review, so the Review stage selects the PR again once the mirror or the checks refresh show the new head; the merge queue then sees the new review.
+
+## Stage 7: Fix issues
+
+The issue path of the flow. After Label, PRs go to Review and open bugfix issues go to Fix. `craft-auto fixissue --repo R [--limit N] [--apply]` starts and continues attempts (dry run without `--apply`); `craft-auto fixissue-collect [--apply]` reads the sandbox results and opens PRs; `craft-auto fixissue-approval [--repo R]` prints the approval. The runner calls `runFixIssue` as step `fixissue` (group `fixissue`, Sonnet and Haiku, autopilot lane `fixissue`, daily limit 10 attempts started) and `runFixIssueCollect` as step `fixissue-collect` (same group, Haiku, no limit, autopilot lane `fixissue-collect`).
+
+**Candidates.** An open issue in a public Rust repo (a Cargo.toml at the root) whose settled type label is bugfix, with no scope decision pending or answered other than `take` by an operator (an issue flagged "needs decision" needs a `take`), with no open PR that closes or mentions it, and with no attempt yet, in a repo where an operator approved fixing issues (setting `fixissue_approved:<repo>`, audited as `fixissue-approve` and `fixissue-revoke`; `POST /api/repos/fixissue-approve` and `/fixissue-revoke`). Highest priority score first. A skipped issue becomes a candidate again only when its title or body changes. The duplicates hold is checked at one marked place in `src/fixissue/candidates.ts`.
+
+**Attempt states** (table `fix_attempts`, one row per issue: repo, number, main_sha, state, round, files, crate, task ids, pr_url, reason, created_at, updated_at):
+
+| State | Meaning |
+|---|---|
+| `retry` | A patch round is due (the previous one failed, or triage just passed). |
+| `testing` | The head and base tasks are queued or running. |
+| `passed` | The fix passed; the PR is not open yet (a push or PR call failed and is tried again, three times at most). |
+| `pr-opened` | The PR is open and the issue has its comment. |
+| `skipped` | Triage found no clear fix. The issue gets a `hold` stage row "not a clear fix: <reason>". |
+| `failed` | Three rounds failed, or the attempt cannot go on (issue closed, base commit gone). A `hold` stage row names the reason. |
+
+**Per issue.**
+
+1. Triage. Sonnet (prompt `fixissue.triage`, no tools) sees the issue title, body and first comments, the workspace's crates and the repo's Rust source paths at the default branch head (GitHub tree API, cached by sha, build scripts and vendored code left out, at most 3,000 paths), all quoted as untrusted. It answers fixable yes or no, a reason of at most 25 words, the crate and up to 8 files to read. The crate must be in the workspace and each file a listed, editable path.
+2. Patch. Sonnet (prompt `fixissue.patch`, no tools) sees the issue and the content of the listed files at the default branch head (read with `git cat-file` from the bare cache, `$CRAFT_AUTO_FIXUP_DIR`, over HTTPS). On later rounds it also sees the previous diff and the failing step's Haiku summary. It answers one unified diff: edits to the listed files and one new file, `<crate dir>/tests/autocraft_regression.rs`.
+3. Validation. Only the listed files plus the test file; no other new, deleted, renamed, mode-changed, symlink or binary file; at most 300 changed lines in all and 200 lines of test; `git apply --check` accepts it on the base commit. The test file is rebuilt in a canonical form from its added lines.
+4. Sandbox. Two build tasks (step `fixissue`, warm cache of the repo) at the default branch head `main_sha`: the head task applies the full patch and runs build, the crate's tests and `cargo test -p <crate> --test autocraft_regression`; the base task applies only the test file and runs the regression test, which must fail. A queued warm build comes with them. Untrusted code runs only there, never on this user.
+5. Collect. A fix passes when the head task passes and the base task fails at its test step. A head failure gets a Haiku summary and starts the next round. A base task that passes means the test does not show the bug; one that fails to build means the test is not usable: both are failed rounds with that reason. A task lost to the build environment is queued once more. After three failed rounds the attempt is `failed`.
+6. Pull request. The patch is applied to a private index (no working tree) and committed on `main_sha` as the pipeline's account (identity from `gh api user`); the commit must change exactly the validated files. It is pushed over HTTPS to the account's fork of the repo (found, or created with `gh repo fork --clone=false`) as `autocraft/fix-<number>-<slug>`, where the slug comes from the issue title only. `gh pr create` opens the PR to `storytold/<repo>` titled `Fix <short issue title>` with the body "Fixes #N.", one sentence naming the changed files and one sentence on the regression test. The issue gets one comment, "A PR for this is in progress: <url>." (templates in `src/fixissue/template.ts`, shown on the Prompts page). The audit has `fixissue-push`, `fixissue-pr` and `fixissue-comment` rows.
+
+The PR then goes through Review, Verify and the merge queue like any other PR. Token use goes to `token_usage` with stage `fixissue`.
 
 ## Priority
 

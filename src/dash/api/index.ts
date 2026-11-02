@@ -248,6 +248,8 @@ export function apiRoutes(opts: ApiOptions = {}): Route[] {
     post("/api/repos/comment-revoke", (db, req) => adm.commentApproval(db, req, false)),
     post("/api/repos/push-approve", (db, req) => adm.pushApproval(db, req, true)),
     post("/api/repos/push-revoke", (db, req) => adm.pushApproval(db, req, false)),
+    post("/api/repos/fixissue-approve", (db, req) => adm.fixIssueApproval(db, req, true)),
+    post("/api/repos/fixissue-revoke", (db, req) => adm.fixIssueApproval(db, req, false)),
     get("/api/access", adm.accessOverview),
     post("/api/access/add", adm.accessAdd),
     post("/api/access/remove", adm.accessRemove),

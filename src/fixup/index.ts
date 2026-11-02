@@ -86,9 +86,9 @@ type PrNode = {
   headRepository: { nameWithOwner: string } | null; assignees?: { nodes?: { login: string }[] };
 };
 
-type Who = { login: string; nodeId: string; email: string };
+export type Who = { login: string; nodeId: string; email: string };
 
-async function whoAmI(run: Exec): Promise<Who> {
+export async function whoAmI(run: Exec): Promise<Who> {
   const r = await run("gh", ["api", "user"]);
   if (r.code !== 0) throw new Error("could not read the pipeline's GitHub account");
   const u = JSON.parse(r.stdout) as { login?: string; id?: number; node_id?: string };

@@ -10,6 +10,7 @@ import { AccessError, addLogin, isRole, listAccess, removeLogin, ROLES, setRole 
 import { approvalOf, setApproval } from "../../labels/approval.ts";
 import { setCommentApproval } from "../../act/approval.ts";
 import { setPushApproval } from "../../fixup/approval.ts";
+import { setFixIssueApproval } from "../../fixissue/approval.ts";
 import { mergeApprovalOf, setMergeApproval } from "../../merge/approval.ts";
 import { countPlan, planLabels } from "../../labels/plan.ts";
 import { listAll, RepoError, trackRepo, untrackRepo } from "../../repos.ts";
@@ -24,7 +25,7 @@ const ACCESS_NOTE_MAX = 500;
 const AUDIT_PAGE = 50;
 export const AUDIT_ACTIONS = [
   "answer", "undo", "adopt", "opinion", "opinion-retract", "comment", "override", "rule", "access-add", "access-remove", "access-role",
-  "session-revoke", "sign-in", "sign-in-refused", "repo-track", "repo-untrack", "labels-approve", "labels-revoke", "labels-apply", "merge-approve", "merge-revoke", "comment-approve", "comment-revoke", "act-comment", "act-close", "act-skip", "push-approve", "push-revoke", "fixup-push", "fixup-comment",
+  "session-revoke", "sign-in", "sign-in-refused", "repo-track", "repo-untrack", "labels-approve", "labels-revoke", "labels-apply", "merge-approve", "merge-revoke", "comment-approve", "comment-revoke", "act-comment", "act-close", "act-skip", "push-approve", "push-revoke", "fixup-push", "fixup-comment", "fixissue-approve", "fixissue-revoke", "fixissue-push", "fixissue-pr", "fixissue-comment",
   "job-request", "job-cancel", "pipeline-switch", "stage-limit",
 ];
 
@@ -301,6 +302,21 @@ export function pushApproval(db: DatabaseSync, req: Req, approved: boolean): Tra
     }
   });
   if (!changed) throw new HttpError(409, `${name} is ${approved ? "already" : "not"} approved for pushing`);
+  return allRepos(db, req);
+}
+
+// Only an operator lets the pipeline open fix PRs for issues in a repo.
+export function fixIssueApproval(db: DatabaseSync, req: Req, approved: boolean): TrackedRepo[] {
+  requireOperator(req, "approve fixing issues");
+  const name = required(body(req).name, "name");
+  const changed = refused(() => {
+    try {
+      return setFixIssueApproval(db, req.user.login, name, approved);
+    } catch (e) {
+      throw new RepoError((e as Error).message);
+    }
+  });
+  if (!changed) throw new HttpError(409, `${name} is ${approved ? "already" : "not"} approved for fixing issues`);
   return allRepos(db, req);
 }
 
