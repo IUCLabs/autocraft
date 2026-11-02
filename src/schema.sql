@@ -648,3 +648,4 @@ CREATE TABLE IF NOT EXISTS item_priority (
 );
 CREATE INDEX IF NOT EXISTS item_priority_score ON item_priority(score);
 INSERT OR IGNORE INTO stage_limits (step, per_day) VALUES ('prioritize', 3000);
+CREATE INDEX IF NOT EXISTS verifications_finished ON verifications(finished_at);

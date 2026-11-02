@@ -159,18 +159,21 @@ Built so far: the merge queue and the merge step. Integration branches come next
 
 | State | Meaning |
 |---|---|
-| ready | The merge rule covers it, CI is green and it is mergeable: the next run merges it |
+| ready | The merge rule covers it, CI is green, Verify passed (or said CI is enough) at this head commit and it is mergeable: the next run merges it |
 | decision-answered-merge | Outside the rule, but the operator answered the Merge? decision `merge` at this head commit |
 | refused | The merge command or a pre-merge check said no; the reason is shown, and the next run tries again |
 | waiting-ci | CI is pending or has not run at this head, or GitHub has not worked out mergeability yet |
 | ci-failed | CI fails at this head |
 | conflict | Conflicts with the base branch |
 | needs-fix-up | The review is take-fix: it waits for the fix-up step |
-| needs-decision | Outside the rule: it waits for the operator's answer to a Merge? decision (asked on the next run when not asked yet) |
+| waiting-verify | No verification at this head commit yet, or it is planned or running (CI states are checked first) |
+| verify-failed | The verification at this head commit failed; the summary is shown |
+| verify-error | The verification at this head commit errored (invalid plan or task error after the retry) |
+| needs-decision | Outside the rule, Verify passed or said CI is enough: it waits for the operator's answer to a Merge? decision (asked on the next run when not asked yet) |
 | declined | The operator answered the Merge? decision `hold` or `close` |
 | merged | Merged |
 
-`craft-auto queue [--repo R]` prints the same list.
+`craft-auto queue [--repo R]` prints the same list, with the verification state of each PR. A verification counts only at the head commit it was made for; one made at an older head is ignored.
 
 **Merge without asking.** A PR merges without a decision only when all of these hold:
 
@@ -179,15 +182,16 @@ Built so far: the merge queue and the merge step. Integration branches come next
 - its settled type label is bugfix or infra (infra covers tests, CI, docs and build);
 - its author is on the whitelist (tier whitelisted, or an operator's allow override; see Contributors);
 - CI is `success` overall at that head commit;
+- Verify passed at that head commit, or planned "CI is enough";
 - GitHub reports it mergeable.
 
-**Merge? decisions.** A take PR that fails any of the first four gets a decision instead: "Merge this PR?" with options `merge`, `hold` and `close`, and facts for size and label, author and tier, CI and mergeability, the review's verdict, reason and fixes, and the head commit. There is one decision per PR head commit, so a push brings a new one. It is asked only while CI is not failing and the PR has no conflict. Only an operator's answer counts, read as an option key (`craft-auto decisions list --actionable`). An answer of `merge` makes the PR eligible at that head: CI must still be green and the PR mergeable, and the step refuses when the head commit moved since the question was asked.
+**Merge? decisions.** A take PR that fails any of the first four gets a decision instead, once its verification has passed or said CI is enough: "Merge this PR?" with options `merge`, `hold` and `close`, and facts for size and label, author and tier, CI and mergeability, the verification (kind, state, note), the review's verdict, reason and fixes, and the head commit. There is one decision per PR head commit, so a push brings a new one. It is asked only while CI is not failing, the PR has no conflict and the operator can see the verification result. Only an operator's answer counts, read as an option key (`craft-auto decisions list --actionable`). An answer of `merge` makes the PR eligible at that head: CI must still be green, Verify passed (or CI is enough) and the PR mergeable, and the step refuses when the head commit moved since the question was asked.
 
 **Merge step.** `craft-auto merge --repo R [--limit N] [--apply]`; the runner calls `runMerge(db, {repo, limit, dryRun}, log)`. Without `--apply` (or with `dryRun` unset) it is a dry run: it prints what it would merge and ask, from the local tables, and calls and writes nothing. With `--apply` it:
 
 1. writes a `batched` stage row for each queued PR, once per head commit, and asks the missing Merge? decisions;
 2. takes the eligible PRs one at a time, rule PRs first, up to `--limit` merges;
-3. refreshes that PR's checks and head commit, and refuses when it is no longer open, its head moved, the operator's answer is gone, or CI or mergeability changed;
+3. refreshes that PR's checks and head commit, and refuses when it is no longer open, its head moved, the operator's answer is gone, or the verification at the refreshed head is not passed or ci-enough, or CI or mergeability changed;
 4. assigns the PR to the pipeline's GitHub account (the signed-in `gh` account, read once per run) when nobody is assigned;
 5. runs the merge command (`$CRAFT_AUTO_MERGE_CMD`, default `safe-merge`) as `<cmd> storytold/<repo> <n> --squash`, or `--merge` when the commits have more than one author. It never calls `gh pr merge` itself and never passes `--allow-pending`.
 

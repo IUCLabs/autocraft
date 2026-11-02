@@ -9,7 +9,7 @@ import { countAll, type Counts } from "./count.ts";
 export const MAX_AGE_MS = 10 * 60_000;
 const MARKS_KEY = "flow_summary_marks";
 
-type Marks = { items: string; cls: number; stages: number; reviews: number; merges: number; checks: string; global: string };
+type Marks = { items: string; cls: number; stages: number; reviews: number; merges: number; checks: string; global: string; vers?: Record<string, string> };
 
 const getMarks = (db: DatabaseSync): Marks | null => {
   const v = (db.prepare("SELECT value FROM main.settings WHERE key = ?").get(MARKS_KEY) as { value: string } | undefined)?.value;
@@ -23,6 +23,14 @@ function decisionSigs(db: DatabaseSync): Map<string, string> {
     FROM main.decisions d LEFT JOIN json_each(CASE WHEN d.repo IS NULL AND json_valid(d.items) THEN d.items ELSE '[]' END) j
     GROUP BY 1`).all() as { repo: string | null; sig: string }[];
   return new Map(rows.filter((r) => r.repo).map((r) => [r.repo!, r.sig]));
+}
+
+/** Per repo, a signature of its verifications (rows change state in place, so no row id marks a change). */
+function verificationSigs(db: DatabaseSync): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const r of db.prepare(`SELECT repo, state, COUNT(*) AS n, MAX(created_at) AS c, COALESCE(MAX(finished_at), '') AS f FROM main.verifications GROUP BY repo, state`).all() as
+    { repo: string; state: string; n: number; c: string; f: string }[]) out[r.repo] = `${out[r.repo] ?? ""}${r.state}:${r.n}:${r.c}:${r.f};`;
+  return out;
 }
 
 /** Settings that change every repo's counts: the classification run, label approvals and the tracked set. */
@@ -42,8 +50,9 @@ export function markChanged(db: DatabaseSync): number {
       COALESCE((SELECT MAX(rowid) FROM main.stages), 0) AS stages,
       COALESCE((SELECT MAX(rowid) FROM main.reviews), 0) AS reviews,
       COALESCE((SELECT MAX(rowid) FROM main.merges), 0) AS merges,
-      COALESCE((SELECT MAX(fetched_at) FROM main.pr_checks), '') AS checks`).get() as Marks;
+      COALESCE((SELECT MAX(fetched_at) FROM main.pr_checks), '') AS checks`).get() as unknown as Marks;
   cur.global = globalSig(db);
+  cur.vers = verificationSigs(db);
   const dirty = new Set<string>();
   let all = !prev || prev.global !== cur.global;
   if (!all && prev) {
@@ -56,6 +65,7 @@ export function markChanged(db: DatabaseSync): number {
     add("SELECT DISTINCT repo FROM main.reviews WHERE rowid > ?", prev.reviews);
     add("SELECT DISTINCT repo FROM main.merges WHERE rowid > ?", prev.merges);
     add("SELECT DISTINCT repo FROM main.pr_checks WHERE fetched_at > ?", prev.checks);
+    for (const r of new Set([...Object.keys(cur.vers), ...Object.keys(prev.vers ?? {})])) if (!prev.vers || prev.vers[r] !== cur.vers[r]) dirty.add(r);
     const sigs = decisionSigs(db);
     for (const r of db.prepare("SELECT repo, decisions_sig FROM main.flow_summary").all() as { repo: string; decisions_sig: string | null }[]) {
       if ((sigs.get(r.repo) ?? null) !== r.decisions_sig) dirty.add(r.repo);
