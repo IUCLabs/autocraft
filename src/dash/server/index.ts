@@ -10,6 +10,7 @@ import { audit } from "../audit.ts";
 import type { Req, Res, Route } from "../types.ts";
 import type { Config } from "./config.ts";
 import { pkceChallenge, randomToken, safeEqual, TokenBox } from "./crypto.ts";
+import { ImageProxy } from "./images.ts";
 import { FakeProvider, providerFor, type Provider, type Tokens } from "./provider.ts";
 import { createSession, deleteSession, loadSession, makeUser, pruneExpired, SESSION_TTL, type Session } from "./sessions.ts";
 import { esc, HttpError, parseCookies, plainPage, RateLimiter, safeReturnTo } from "./util.ts";
@@ -43,6 +44,7 @@ export type AppOptions = {
   db: DatabaseSync;
   provider?: Provider;
   routes?: Route[];          // default: the pages plus the Access page
+  images?: ImageProxy;       // default: fetches with global fetch and the bot's gh token
 };
 
 type Compiled = Route & { parts: string[] };
@@ -132,6 +134,8 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
   const signinLimit = new RateLimiter(60, 10 * 60_000);
   const writeLimitSession = new RateLimiter(60, 60_000);
   const writeLimitIp = new RateLimiter(300, 60_000);
+  const images = opts.images ?? new ImageProxy({ cacheDir: config.imageCacheDir });
+  const imageLimit = new RateLimiter(120, 60_000);    // upstream fetches per session; cache hits are free
   const callbackUrl = `${config.baseUrl ?? ""}/auth/callback`;
   let lastPrune = 0;
 
@@ -331,6 +335,7 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
         return send(res, nonce, { status: 401, json: { error: "sign-in required" } });
       }
       if (url.pathname.startsWith("/api/")) return await handleApi(req, res, url, nonce, session);
+      if (url.pathname === "/img") return await sendImage(req, res, url, session);
       if (method !== "GET" && method !== "POST") return send(res, nonce, { status: 405, json: { error: "method not allowed" } });
 
       const { route, params, other } = match(routes, method, url.pathname);
@@ -366,6 +371,19 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
       if (!res.headersSent) send(res, nonce, api ? apiError(500, "server error; it is logged") : errorPage(nonce, 500, "Something went wrong", "The error is logged on the server."));
       else res.destroy();
     }
+  }
+
+  async function sendImage(req: IncomingMessage, res: ServerResponse, url: URL, session: Session): Promise<void> {
+    if (req.method !== "GET") {
+      res.writeHead(405, secure({ "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" }, "default-src 'none'"));
+      return void res.end("method not allowed");
+    }
+    const r = await images.get(url.searchParams.get("u") ?? "", () => imageLimit.allow(session.idHash));
+    if (r.status !== 200) {
+      res.writeHead(r.status, secure({ "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" }, "default-src 'none'"));
+      return void res.end(r.error ?? "");
+    }
+    return sendFile(res, r.type!, "private, max-age=86400", "default-src 'none'", r.data!);
   }
 
   function sendFile(res: ServerResponse, type: string, cache: string, csp: string, data: Buffer): void {
