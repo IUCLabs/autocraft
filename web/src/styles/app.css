@@ -81,6 +81,12 @@
   background: var(--st-line);
   transition: background var(--dur-fast) var(--ease-out);
 }
+[data-panel-group-direction="horizontal"] > [data-panel-resize-handle-id] {
+  cursor: ew-resize;
+}
+[data-panel-group-direction="vertical"] > [data-panel-resize-handle-id] {
+  cursor: ns-resize;
+}
 [data-panel-resize-handle-id]::after {
   content: "";
   position: absolute;

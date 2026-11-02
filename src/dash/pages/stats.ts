@@ -57,37 +57,12 @@ export function doneByRepo(db: DatabaseSync, start: string, repo?: string): Done
     });
 }
 
-export function donePerHour(db: DatabaseSync, repo?: string): number {
-  const since = new Date(Date.now() - 86400_000).toISOString();
-  const r = db.prepare(`SELECT COUNT(*) AS n FROM items WHERE closed_at >= :since AND state <> 'OPEN' ${repo ? "AND repo = :repo" : ""}`).get(p(repo, { since })) as { n: number };
-  return r.n / 24;
-}
-
-export type Bucket = { key: string; n: number };
-
 export const SIZE_SQL = `CASE WHEN kind = 'issue' THEN 'issue'
   WHEN COALESCE(additions,0) + COALESCE(deletions,0) <= 50 THEN 'S'
   WHEN COALESCE(additions,0) + COALESCE(deletions,0) <= 300 THEN 'M'
   WHEN COALESCE(additions,0) + COALESCE(deletions,0) <= 1000 THEN 'L' ELSE 'XL' END`;
 
 export const SIZE_ORDER = ["S", "M", "L", "XL", "issue"];
-
-export function breakdowns(db: DatabaseSync, repo?: string): { type: Bucket[]; size: Bucket[]; tier: Bucket[] } {
-  const w = `i.state = 'OPEN' ${repo ? "AND i.repo = :repo" : ""}`;
-  const type = db.prepare(`SELECT COALESCE((SELECT type_label FROM classifications c WHERE c.repo = i.repo AND c.number = i.number
-      ORDER BY ${PREF_ORDER} LIMIT 1), 'not classified') AS key, COUNT(*) AS n
-    FROM items i WHERE ${w} GROUP BY key ORDER BY n DESC`).all(p(repo)) as Bucket[];
-  const size = (db.prepare(`SELECT ${SIZE_SQL} AS key, COUNT(*) AS n FROM items i WHERE ${w} GROUP BY key`).all(p(repo)) as Bucket[])
-    .sort((a, b) => SIZE_ORDER.indexOf(a.key) - SIZE_ORDER.indexOf(b.key));
-  const rule = getRule(db);
-  const tier = (db.prepare(`WITH s AS (${STATS_SQL} GROUP BY author),
-      a AS (SELECT i.author, COUNT(*) AS n FROM items i WHERE ${w} GROUP BY i.author),
-      j AS (SELECT a.n, COALESCE(s.merged, 0) AS merged, COALESCE(s.closed, 0) AS closed, o.status AS override
-            FROM a LEFT JOIN s ON s.login = a.author LEFT JOIN whitelist_overrides o ON o.login = a.author)
-    SELECT ${TIER_SQL} AS key, SUM(n) AS n FROM j GROUP BY key ORDER BY n DESC`).all(p(repo, { min_merged: rule.minMerged, min_rate: rule.minRate })) as Bucket[])
-    .map((b) => ({ key: TIER_LABEL[b.key as Tier] ?? b.key, n: b.n }));
-  return { type, size, tier };
-}
 
 // Open items per repo per day since run start, rebuilt backwards from the
 // current open count and the created/closed dates.
@@ -123,22 +98,4 @@ export function trend(db: DatabaseSync, start: string, openNow: Map<string, numb
     series.set(name, out);
   }
   return { days, series };
-}
-
-export type DecisionCount = { repo: string; n: number };
-
-// Open decisions per repo; a batch counts once for every repo it spans.
-export function openDecisionsByRepo(db: DatabaseSync): Map<string, number> {
-  const rows = db.prepare("SELECT repo, number, items FROM decisions WHERE answer IS NULL").all() as { repo: string | null; number: number | null; items: string | null }[];
-  const m = new Map<string, number>();
-  for (const r of rows) {
-    let repos: string[] = r.repo && r.number !== null ? [r.repo] : [];
-    if (r.number === null) {
-      try {
-        repos = [...new Set((JSON.parse(r.items ?? "[]") as { repo: string }[]).map((x) => x.repo))];
-      } catch { /* malformed batch: counted nowhere */ }
-    }
-    for (const x of repos) m.set(x, (m.get(x) ?? 0) + 1);
-  }
-  return m;
 }

@@ -1,11 +1,9 @@
-import { useMemo, useState } from "react";
+import { lazy, Suspense, useMemo, useState } from "react";
 import { NavLink, Route, Routes, useLocation, useNavigate, useParams, Navigate } from "react-router-dom";
 import { Dialog, DropdownMenu } from "radix-ui";
 import { LogOutIcon, MonitorIcon, MoonIcon, MoreHorizontalIcon, PanelLeftIcon, SearchIcon, SunIcon, KeyboardIcon, XIcon, CheckIcon } from "lucide-react";
 import { modules } from "../registry";
 import { can, roleLabel } from "../registry/permissions";
-import { mockRole, setMockRole } from "../api/mock/mockApi";
-import type { MockRole } from "../api/mock/fixtures";
 import type { NavEntry, RouteDef } from "../registry/types";
 import { useUser } from "./UserContext";
 import { Workspace } from "./Workspace";
@@ -21,6 +19,9 @@ import { Badge, type Tone } from "../ui/Badge";
 import { cn } from "../ui/cn";
 import { useApi, useQuery } from "../api/client";
 import { num } from "../lib/format";
+
+// Mockup builds only; a normal build drops this branch and the fixture data with it.
+const MockRoleMenu = import.meta.env.VITE_MOCK === "1" ? lazy(() => import("../api/mock/MockRoleMenu")) : null;
 
 const GROUPS: { id: NavEntry["group"]; label: string }[] = [
   { id: "work", label: "" },
@@ -156,22 +157,29 @@ function Wordmark() {
 
 function RailLink({ entry, open }: { entry: NavEntry; open: boolean }) {
   const count = entry.useBadge?.();
-  return (
-    <NavLink
-      to={entry.to}
-      title={open ? undefined : entry.label}
-      className={({ isActive }) =>
-        cn(
-          "relative flex h-7 items-center gap-2 rounded px-2 text-sm text-ink/70 transition-colors duration-fast hover:bg-ink/[0.06] hover:text-ink",
-          isActive && "bg-ink/[0.08] font-medium text-ink",
-          !open && "justify-center px-0",
-        )
-      }
-    >
+  const cls = (isActive: boolean) =>
+    cn(
+      "relative flex h-7 items-center gap-2 rounded px-2 text-sm text-ink/70 transition-colors duration-fast hover:bg-ink/[0.06] hover:text-ink",
+      isActive && "bg-ink/[0.08] font-medium text-ink",
+      !open && "justify-center px-0",
+    );
+  const inner = (
+    <>
       <entry.icon className="text-[15px] opacity-80" />
       {open && <span className="flex-1 truncate">{entry.label}</span>}
       {open && count !== undefined && count > 0 && <span className="num text-xs text-ink/50">{count}</span>}
       {!open && count !== undefined && count > 0 && <span className="absolute right-1 top-1 size-1.5 rounded-full bg-accent" />}
+    </>
+  );
+  if (entry.page)
+    return (
+      <a href={entry.to} title={open ? undefined : entry.label} className={cls(false)}>
+        {inner}
+      </a>
+    );
+  return (
+    <NavLink to={entry.to} title={open ? undefined : entry.label} className={({ isActive }) => cls(isActive)}>
+      {inner}
     </NavLink>
   );
 }
@@ -195,9 +203,15 @@ function PhoneTabs({ nav }: { nav: NavEntry[] }) {
           <DropdownMenu.Content side="top" align="end" sideOffset={4} className={menuCls}>
             {rest.map((n) => (
               <DropdownMenu.Item key={n.to} asChild>
-                <NavLink to={n.to} className={cn(itemCls, "h-11")}>
-                  <n.icon className="text-ink/55" /> {n.label}
-                </NavLink>
+                {n.page ? (
+                  <a href={n.to} className={cn(itemCls, "h-11")}>
+                    <n.icon className="text-ink/55" /> {n.label}
+                  </a>
+                ) : (
+                  <NavLink to={n.to} className={cn(itemCls, "h-11")}>
+                    <n.icon className="text-ink/55" /> {n.label}
+                  </NavLink>
+                )}
               </DropdownMenu.Item>
             ))}
           </DropdownMenu.Content>
@@ -316,25 +330,18 @@ function UserMenu({ theme, setTheme, onHelp }: { theme: ThemePref; setTheme: (t:
               {adminLinks.map((m) => {
                 const Icon = m.nav!.icon;
                 return (
-                  <DropdownMenu.Item key={m.id} onSelect={() => navigate(m.nav!.to)} className={itemCls}>
+                  <DropdownMenu.Item key={m.id} onSelect={() => (m.nav!.page ? location.assign(m.nav!.to) : navigate(m.nav!.to))} className={itemCls}>
                     <Icon className="text-ink/55" /> {m.nav!.label}
                   </DropdownMenu.Item>
                 );
               })}
             </>
           )}
-          <DropdownMenu.Separator className="-mx-1 my-1 h-px bg-line" />
-          <DropdownMenu.Label className={cn(labelCls, "text-warn")}>Mock data: view as</DropdownMenu.Label>
-          <DropdownMenu.RadioGroup value={mockRole()} onValueChange={(v) => setMockRole(v as MockRole)}>
-            {MOCK_ROLES.map(([v, l]) => (
-              <DropdownMenu.RadioItem key={v} value={v} className={itemCls}>
-                <span className="flex-1">{l}</span>
-                <DropdownMenu.ItemIndicator>
-                  <CheckIcon className="text-accent-ink" />
-                </DropdownMenu.ItemIndicator>
-              </DropdownMenu.RadioItem>
-            ))}
-          </DropdownMenu.RadioGroup>
+          {MockRoleMenu && (
+            <Suspense fallback={null}>
+              <MockRoleMenu itemCls={itemCls} labelCls={labelCls} />
+            </Suspense>
+          )}
           <DropdownMenu.Separator className="-mx-1 my-1 h-px bg-line" />
           <DropdownMenu.Item onSelect={() => onHelp?.()} className={itemCls}>
             <KeyboardIcon className="text-ink/55" /> <span className="flex-1">Keyboard shortcuts</span> <Kbd keys="?" />
@@ -414,12 +421,6 @@ function RunMeter({ open }: { open: boolean }) {
     </NavLink>
   );
 }
-
-const MOCK_ROLES: [MockRole, string][] = [
-  ["operator", "Operator"],
-  ["maintainer", "Maintainer (write on 6 repos)"],
-  ["viewer", "Viewer (no write access)"],
-];
 
 /** The reader's role decides what every button means, so it stays visible. */
 function RoleChip() {

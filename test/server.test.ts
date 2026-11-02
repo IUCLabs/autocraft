@@ -2,6 +2,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { request } from "node:http";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, test } from "node:test";
@@ -10,7 +11,7 @@ import { addLogin, removeLogin, setRole } from "../src/access.ts";
 import { connect } from "../src/db.ts";
 import type { Route } from "../src/dash/types.ts";
 import { ConfigError, loadConfig } from "../src/dash/server/config.ts";
-import { defaultRoutes, SESSION_COOKIE, startServer } from "../src/dash/server/index.ts";
+import { APP_CSP, defaultRoutes, SESSION_COOKIE, startServer } from "../src/dash/server/index.ts";
 import { FakeProvider } from "../src/dash/server/provider.ts";
 
 const SCRATCH = join(homedir(), ".cache/craft-automation-scratch");
@@ -18,6 +19,16 @@ mkdirSync(SCRATCH, { recursive: true });
 const dir = mkdtempSync(join(SCRATCH, "server-test-"));
 const permsFile = join(dir, "perms.json");
 const setPerms = (p: Record<string, Record<string, string>>) => writeFileSync(permsFile, JSON.stringify(p));
+
+// A stand-in for web/dist, with a file beside it that must never be served.
+const APP_MARKER = "<!-- test app shell -->";
+const SECRET_MARKER = "not-for-the-browser";
+const webDist = join(dir, "web", "dist");
+mkdirSync(join(webDist, "assets"), { recursive: true });
+writeFileSync(join(webDist, "index.html"), `<!doctype html>${APP_MARKER}<div id="root"></div><script type="module" src="/assets/index-abc123.js"></script>`);
+writeFileSync(join(webDist, "assets", "index-abc123.js"), "console.log('app')");
+writeFileSync(join(dir, "web", "package.json"), JSON.stringify({ name: SECRET_MARKER }));
+writeFileSync(join(dir, "secret.txt"), SECRET_MARKER);
 
 let handlerRuns = 0;
 // Stand-ins for the pages' decision writes, which check permission the same way.
@@ -50,11 +61,12 @@ let allRoutes: Route[];
 
 before(async () => {
   setPerms({ maint: { photocraft: "write" }, boss: {} });
-  addLogin(db, "cli", "boss", "admin", null);
+  addLogin(db, "cli", "boss", "operator", null);
   addLogin(db, "cli", "viewer1", "viewer", null);
   addLogin(db, "cli", "maint", "viewer", null);
   const config = loadConfig({
     CRAFT_AUTO_DEV_AUTH: "1", CRAFT_AUTO_LISTEN: "127.0.0.1:0", CRAFT_AUTO_DB: join(dir, "dash.db"), CRAFT_AUTO_DEV_PERMS: permsFile,
+    CRAFT_AUTO_WEB_DIST: webDist,
   });
   allRoutes = [...(await defaultRoutes()), ...testRoutes];
   const s = await startServer({ config, db, provider, routes: allRoutes });
@@ -69,8 +81,9 @@ after(async () => {
 
 class Client {
   jar = new Map<string, string>();
-  async req(method: string, path: string, opts: { form?: Record<string, string>; html?: boolean } = {}): Promise<Response> {
+  async req(method: string, path: string, opts: { form?: Record<string, string>; html?: boolean; headers?: Record<string, string> } = {}): Promise<Response> {
     const headers: Record<string, string> = {
+      ...opts.headers,
       cookie: [...this.jar].map(([k, v]) => `${k}=${v}`).join("; "),
       accept: opts.html === false ? "application/json" : "text/html",
     };
@@ -148,8 +161,8 @@ describe("sign-in", () => {
     assert.match(set, /Secure/);
     assert.match(set, /SameSite=Lax/);
     assert.match(set, /Path=\//);
-    const page = await c.get("/");
-    assert.equal(page.status, 200);
+    const page = await c.get("/repos");
+    assert.equal(page.status, 403);
     assert.match(page.headers.get("content-security-policy")!, /script-src 'self' 'nonce-[\w-]+'/);
     assert.equal(page.headers.get("x-frame-options"), "DENY");
     assert.equal(page.headers.get("referrer-policy"), "same-origin");
@@ -176,8 +189,8 @@ describe("permissions", () => {
     const csrf = await c.csrf();
     const before = (db.prepare("SELECT COUNT(*) AS n FROM audit").get() as { n: number }).n;
     for (const r of allRoutes.filter((r) => r.method === "POST")) {
-      const status = (await c.post(sample(r.pattern), { csrf, login: "viewer1", role: "admin", repos: "photocraft", id: "1" })).status;
-      if (r.admin) assert.equal(status, 403, r.pattern);
+      const status = (await c.post(sample(r.pattern), { csrf, login: "viewer1", role: "operator", repos: "photocraft", id: "1" })).status;
+      if (r.operator) assert.equal(status, 403, r.pattern);
       else assert.ok(status >= 400, `${r.pattern}: ${status}`);
     }
     assert.equal((await c.post("/test/answer/photocraft", { csrf })).status, 403);
@@ -223,6 +236,100 @@ describe("permissions", () => {
   });
 });
 
+// Sends the path exactly as written; fetch would resolve dot segments first.
+function rawGet(path: string, cookie: string): Promise<{ status: number; body: string }> {
+  const u = new URL(base);
+  return new Promise((resolve, reject) => {
+    const r = request({ host: u.hostname, port: u.port, path, headers: { cookie, accept: "text/html" } }, (res) => {
+      let body = "";
+      res.setEncoding("utf8");
+      res.on("data", (c: string) => (body += c));
+      res.on("end", () => resolve({ status: res.statusCode!, body }));
+    });
+    r.on("error", reject);
+    r.end();
+  });
+}
+
+describe("frontend", () => {
+  test("without a session GET / doesn't serve the app", async () => {
+    const c = new Client();
+    const page = await c.get("/");
+    assert.equal(page.status, 303);
+    assert.match(page.headers.get("location")!, /^\/auth\/signin\?/);
+    assert.doesNotMatch(await page.text(), /test app shell/);
+    const asset = await c.get("/assets/index-abc123.js", false);
+    assert.equal(asset.status, 401);
+  });
+
+  test("signed in, a client route gets index.html with the app's CSP; assets are cached", async () => {
+    const c = await signedIn("viewer1");
+    const page = await c.get("/item/x/1");
+    assert.equal(page.status, 200);
+    assert.ok((await page.text()).includes(APP_MARKER));
+    assert.equal(page.headers.get("cache-control"), "no-cache");
+    const csp = page.headers.get("content-security-policy")!;
+    assert.equal(csp, APP_CSP);
+    assert.match(csp, /default-src 'none'; script-src 'self'; style-src 'self' 'sha256-[\w+/=]+';/);
+    assert.doesNotMatch(csp, /unsafe/);
+    assert.equal(page.headers.get("x-frame-options"), "DENY");
+    const asset = await c.get("/assets/index-abc123.js");
+    assert.equal(asset.status, 200);
+    assert.match(asset.headers.get("content-type")!, /^text\/javascript/);
+    assert.match(asset.headers.get("cache-control")!, /immutable/);
+    assert.equal((await c.get("/assets/missing-000.js")).status, 404);
+  });
+
+  test("an asset path can't leave the dist directory", async () => {
+    const c = await signedIn("viewer1");
+    const cookie = [...c.jar].map(([k, v]) => `${k}=${v}`).join("; ");
+    for (const p of [
+      "/assets/../../package.json", "/assets/%2e%2e/%2e%2e/package.json", "/assets/..%2f..%2fpackage.json",
+      "/assets/%2e%2e%2f%2e%2e%2fpackage.json", "/assets/..%5c..%5cpackage.json", "/..%2fpackage.json",
+      "/%2e%2e/%2e%2e/secret.txt", "/assets/%252e%252e/%252e%252e/package.json", "/assets/..%00/package.json",
+    ]) {
+      const r = await rawGet(p, cookie);
+      assert.ok(!r.body.includes(SECRET_MARKER), `${p} served a file outside web/dist (${r.status})`);
+    }
+  });
+
+  test("a missing build gets a 503 page that says how to build it", async () => {
+    const config = loadConfig({
+      CRAFT_AUTO_DEV_AUTH: "1", CRAFT_AUTO_LISTEN: "127.0.0.1:0", CRAFT_AUTO_DB: join(dir, "dash.db"), CRAFT_AUTO_DEV_PERMS: permsFile,
+      CRAFT_AUTO_WEB_DIST: join(dir, "no-such-dist"),
+    });
+    const s = await startServer({ config, db, provider, routes: allRoutes });
+    try {
+      const c = new Client();
+      const saved = base;
+      base = s.url;
+      try {
+        await c.signIn("viewer1");
+        const r = await c.get("/");
+        assert.equal(r.status, 503);
+        assert.match(await r.text(), /pnpm -C web build/);
+      } finally {
+        base = saved;
+      }
+    } finally {
+      await s.close();
+    }
+  });
+
+  test("a v1 form POST from another site is refused", async () => {
+    const c = await signedIn("boss");
+    const csrf = await c.csrf();
+    const before = audits("repo-track").n;
+    for (const headers of [{ origin: "https://evil.example" }, { "sec-fetch-site": "cross-site" }, { origin: "null" }] as Record<string, string>[]) {
+      const r = await c.req("POST", "/repos/track", { form: { csrf, name: "from-elsewhere" }, html: false, headers });
+      assert.equal(r.status, 403, JSON.stringify(headers));
+    }
+    assert.equal(audits("repo-track").n, before);
+    const ok = await c.req("POST", "/repos/track", { form: { csrf, name: "from-here" }, html: false, headers: { origin: new URL(base).origin, "sec-fetch-site": "same-origin" } });
+    assert.equal(ok.status, 303);
+  });
+});
+
 describe("tokens", () => {
   test("a permission check after the access token expires refreshes it", async () => {
     provider.tokenTtlMs = 300;
@@ -252,7 +359,7 @@ describe("tokens", () => {
 });
 
 describe("repos page", () => {
-  test("is admin-only; a track POST without CSRF is refused and a valid one is audited", async () => {
+  test("is operator-only; a track POST without CSRF is refused and a valid one is audited", async () => {
     const viewer = await signedIn("viewer1");
     assert.equal((await viewer.get("/repos")).status, 403);
     const boss = await signedIn("boss");
@@ -273,10 +380,10 @@ describe("access changes", () => {
     addLogin(db, "cli", "leaver", "viewer", null);
     const victim = await signedIn("leaver");
     assert.equal((await victim.get("/")).status, 200);
-    const admin = await signedIn("boss");
-    const page = await (await admin.get("/access")).text();
+    const op = await signedIn("boss");
+    const page = await (await op.get("/access")).text();
     const csrf = /name="csrf" value="([^"]+)"/.exec(page)![1]!;
-    assert.equal((await admin.post("/access/remove", { csrf, login: "leaver" })).status, 303);
+    assert.equal((await op.post("/access/remove", { csrf, login: "leaver" })).status, 303);
     assert.equal((await victim.get("/")).status, 303);
     assert.equal((await victim.get("/", false)).status, 401);
     assert.equal(audits("access-remove").n, 1);
@@ -285,16 +392,33 @@ describe("access changes", () => {
   test("changing a role ends the login's sessions", async () => {
     addLogin(db, "cli", "promoted", "viewer", null);
     const c = await signedIn("promoted");
-    setRole(db, "cli", "promoted", "admin");
+    setRole(db, "cli", "promoted", "operator");
     assert.equal((await c.get("/")).status, 303);
     removeLogin(db, "cli", "promoted");
   });
 
-  test("the last admin can't be removed from the page", async () => {
-    const admin = await signedIn("boss");
-    const csrf = await admin.csrf();
-    assert.equal((await admin.post("/access/remove", { csrf, login: "boss" })).status, 400);
-    assert.equal((await admin.get("/")).status, 200);
+  test("the last operator can't be removed from the page", async () => {
+    const op = await signedIn("boss");
+    const csrf = await op.csrf();
+    assert.equal((await op.post("/access/remove", { csrf, login: "boss" })).status, 400);
+    assert.equal((await op.get("/")).status, 200);
+  });
+});
+
+describe("roles", () => {
+  test("an access row with the old role admin becomes operator on connect", () => {
+    const file = join(dir, "roles.db");
+    const old = connect(file);
+    old.prepare("INSERT INTO access (login, role, added_by, added_at) VALUES ('old-op', 'admin', 'cli', 'then'), ('old-viewer', 'viewer', 'cli', 'then')").run();
+    old.close();
+    const db2 = connect(file);
+    try {
+      assert.deepEqual(db2.prepare("SELECT login, role FROM access ORDER BY login").all().map((r) => ({ ...r })), [
+        { login: "old-op", role: "operator" }, { login: "old-viewer", role: "viewer" },
+      ]);
+    } finally {
+      db2.close();
+    }
   });
 });
 

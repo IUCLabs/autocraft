@@ -1,6 +1,7 @@
 // HTTP server: sign-in, sessions, CSRF, rate limits, security headers and
 // routing for the dashboard. Pages only ever see authenticated requests.
 import { readFile } from "node:fs/promises";
+import { isAbsolute, relative, resolve, sep } from "node:path";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import type { DatabaseSync } from "node:sqlite";
@@ -16,11 +17,26 @@ import { esc, HttpError, parseCookies, plainPage, RateLimiter, safeReturnTo } fr
 export const SESSION_COOKIE = "__Host-craft_session";
 const STATE_COOKIE = "__Host-craft_oauth";
 const BODY_LIMIT = 64 * 1024;
-const ASSETS = new URL("../assets/", import.meta.url);
-const ASSET_TYPES: Record<string, string> = {
+const FILE_TYPES: Record<string, string> = {
   css: "text/css; charset=utf-8", js: "text/javascript; charset=utf-8", svg: "image/svg+xml",
   png: "image/png", ico: "image/x-icon", woff2: "font/woff2", json: "application/json",
+  txt: "text/plain; charset=utf-8", webmanifest: "application/manifest+json",
 };
+
+// The one inline style the frontend needs: react-remove-scroll-bar (under
+// Radix Dialog and DropdownMenu) injects a <style> while a modal is open. Its
+// text depends only on the page scrollbar's width and the body's margins,
+// which the app's CSS fixes at 0 (body has no margin and overflow: hidden),
+// so the text is always the same. Recompute the hash if that package changes
+// the text; Chrome's console names the expected hash on a violation.
+const RADIX_SCROLL_LOCK_STYLE = "'sha256-nzTgYzXYDNe6BAHiiI7NNlfK8n/auuOAhh2t92YvuXo='";
+
+// The React app (web/): scripts and styles from this origin only, no nonce.
+export const APP_CSP = [
+  "default-src 'none'", "script-src 'self'", `style-src 'self' ${RADIX_SCROLL_LOCK_STYLE}`,
+  "img-src 'self' data:", "font-src 'self'", "connect-src 'self'", "form-action 'self'",
+  "base-uri 'none'", "frame-ancestors 'none'",
+].join("; ");
 
 export type AppOptions = {
   config: Config;
@@ -32,32 +48,10 @@ export type AppOptions = {
 type Compiled = Route & { parts: string[] };
 
 
-function placeholderRoutes(): Route[] {
-  return [{
-    method: "GET", pattern: "/",
-    handler: (_db, req) => ({
-      html: plainPage(req.nonce, "Dashboard", `<p>Signed in as ${esc(req.user.login)} (${esc(req.user.role)}).</p>
-<p>${req.user.role === "admin" ? `<a href="/access">Access</a>` : ""}</p>
-<form method="post" action="/auth/signout"><input type="hidden" name="csrf" value="${esc(req.csrf)}"><button>Sign out</button></form>`),
-    }),
-  }];
-}
-
-// The pages live on another branch until integration; run with a placeholder
-// home page when they are absent.
 export async function defaultRoutes(): Promise<Route[]> {
   const { accessRoutes } = await import("../access-page.ts");
   const { apiRoutes } = await import("../api/index.ts");
-  let pages: Route[];
-  try {
-    // A variable specifier, so the type check passes while the module is absent.
-    const pagesModule: string = "../pages/index.ts";
-    pages = ((await import(pagesModule)) as { routes: Route[] }).routes;
-  } catch (e) {
-    const err = e as NodeJS.ErrnoException;
-    if (err.code !== "ERR_MODULE_NOT_FOUND" || !String(err.message).includes("pages/index.ts")) throw e;
-    pages = placeholderRoutes();
-  }
+  const { routes: pages } = await import("../pages/index.ts");
   return [...accessRoutes, ...apiRoutes(), ...pages];
 }
 
@@ -149,20 +143,25 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
     return req.socket.remoteAddress ?? "?";
   }
 
-  function send(res: ServerResponse, nonce: string, r: Res, extraCookies: string[] = []): void {
-    const status = r.status ?? (r.redirect ? 303 : 200);
-    const headers: Record<string, string | string[]> = { ...r.headers };
-    headers["cache-control"] ??= "no-store";
-    headers["content-security-policy"] = [
-      "default-src 'none'", `script-src 'self' 'nonce-${nonce}'`, `style-src 'self' 'nonce-${nonce}'`,
-      "img-src 'self' data:", "font-src 'self'", "connect-src 'self'", "form-action 'self'",
-      "base-uri 'none'", "frame-ancestors 'none'",
-    ].join("; ");
+  function secure(headers: Record<string, string | string[]>, csp: string): Record<string, string | string[]> {
+    headers["content-security-policy"] = csp;
     headers["x-frame-options"] = "DENY";
     headers["referrer-policy"] = "same-origin";
     headers["x-content-type-options"] = "nosniff";
     headers["cross-origin-opener-policy"] = "same-origin";
     if (config.baseUrl?.startsWith("https:")) headers["strict-transport-security"] = "max-age=31536000";
+    return headers;
+  }
+
+  function send(res: ServerResponse, nonce: string, r: Res, extraCookies: string[] = []): void {
+    const status = r.status ?? (r.redirect ? 303 : 200);
+    const headers: Record<string, string | string[]> = { ...r.headers };
+    headers["cache-control"] ??= "no-store";
+    secure(headers, [
+      "default-src 'none'", `script-src 'self' 'nonce-${nonce}'`, `style-src 'self' 'nonce-${nonce}'`,
+      "img-src 'self' data:", "font-src 'self'", "connect-src 'self'", "form-action 'self'",
+      "base-uri 'none'", "frame-ancestors 'none'",
+    ].join("; "));
     if (extraCookies.length) headers["set-cookie"] = extraCookies;
     let body: string | Buffer = "";
     if (r.redirect) headers.location = r.redirect;
@@ -215,7 +214,7 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
     }
     const { route, params, other } = match(routes, method, url.pathname);
     if (!route) return out(other ? apiError(405, "method not allowed") : apiError(404, "not found"));
-    if (route.admin && session.role !== "admin") return out(apiError(403, "operators only"));
+    if (route.operator && session.role !== "operator") return out(apiError(403, "operators only"));
     const r: Req = {
       method, path: url.pathname, params: params!, query: url.searchParams, form: new URLSearchParams(), json,
       user: makeUser(db, box, provider, session, method === "POST"),
@@ -277,6 +276,7 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
       };
     }
     if (req.method === "POST" && path === "/auth/signout") {
+      if (!sameOrigin(req)) return { r: errorPage(nonce, 403, "Refused", "This form was sent from another site.") };
       const form = await readBody(req);
       const id = cookies.get(SESSION_COOKIE);
       const s = loadSession(db, id);
@@ -333,15 +333,16 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
       if (url.pathname.startsWith("/api/")) return await handleApi(req, res, url, nonce, session);
       if (method !== "GET" && method !== "POST") return send(res, nonce, { status: 405, json: { error: "method not allowed" } });
 
-      if (method === "GET" && url.pathname.startsWith("/assets/")) return await sendAsset(res, nonce, url.pathname.slice(8));
-
       const { route, params, other } = match(routes, method, url.pathname);
       if (!route) {
+        // Every other page belongs to the React app, which routes on the client.
+        if (method === "GET" && !other) return await sendWeb(res, nonce, url.pathname);
         return send(res, nonce, other ? errorPage(nonce, 405, "Not allowed", "This address does not accept that request.")
           : errorPage(nonce, 404, "Not found", "No such page."));
       }
       let form = new URLSearchParams();
       if (method === "POST") {
+        if (!sameOrigin(req)) return send(res, nonce, errorPage(nonce, 403, "Refused", "This form was sent from another site."));
         const ip = clientIp(req);
         if (!writeLimitSession.allow(session.idHash) || !writeLimitIp.allow(ip)) {
           return send(res, nonce, errorPage(nonce, 429, "Too many requests", "Wait a minute and try again."));
@@ -351,7 +352,7 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
           return send(res, nonce, errorPage(nonce, 403, "Refused", "The form expired. Reload the page and try again."));
         }
       }
-      if (route.admin && session.role !== "admin") return send(res, nonce, errorPage(nonce, 403, "Admins only", "This page is for dashboard admins."));
+      if (route.operator && session.role !== "operator") return send(res, nonce, errorPage(nonce, 403, "Operators only", "This page is for the dashboard's operators."));
       const r: Req = {
         method, path: url.pathname, params: params!, query: url.searchParams, form,
         user: makeUser(db, box, provider, session, method === "POST"),
@@ -367,21 +368,58 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
     }
   }
 
-  async function sendAsset(res: ServerResponse, nonce: string, name: string): Promise<void> {
-    const ext = /^[A-Za-z0-9_-][A-Za-z0-9._-]*\.([a-z0-9]+)$/.exec(name)?.[1];
-    const type = ext ? ASSET_TYPES[ext] : undefined;
-    if (!type || name.includes("..")) return send(res, nonce, errorPage(nonce, 404, "Not found", "No such file."));
-    let data: Buffer;
-    try {
-      data = await readFile(new URL(name, ASSETS));
-    } catch {
-      return send(res, nonce, errorPage(nonce, 404, "Not found", "No such file."));
-    }
-    res.writeHead(200, {
-      "content-type": type, "cache-control": "private, max-age=3600",
-      "x-content-type-options": "nosniff", "content-security-policy": "default-src 'none'",
-    });
+  function sendFile(res: ServerResponse, type: string, cache: string, csp: string, data: Buffer): void {
+    res.writeHead(200, secure({ "content-type": type, "cache-control": cache }, csp));
     res.end(data);
+  }
+
+  async function readDist(rel: string[]): Promise<Buffer | null> {
+    const full = resolve(config.webDist, ...rel);
+    const r = relative(config.webDist, full);
+    if (!r || r === ".." || r.startsWith(`..${sep}`) || isAbsolute(r)) return null;
+    try {
+      return await readFile(full);
+    } catch {
+      return null;    // missing, or a directory
+    }
+  }
+
+  // The frontend's build output: hashed files under /assets/ are cached for a
+  // year; any other path gets index.html, never cached, so a new build is
+  // picked up on the next load.
+  async function sendWeb(res: ServerResponse, nonce: string, pathname: string): Promise<void> {
+    const notFound = () => send(res, nonce, errorPage(nonce, 404, "Not found", "No such file."));
+    const rel: string[] = [];
+    for (const raw of pathname.split("/")) {
+      let seg: string;
+      try {
+        seg = decodeURIComponent(raw);
+      } catch {
+        return notFound();
+      }
+      if (seg === "") continue;
+      if (seg === "." || seg === ".." || /[\\/\0]/.test(seg)) return notFound();
+      rel.push(seg);
+    }
+    const ext = rel.length ? /\.([a-z0-9]+)$/.exec(rel[rel.length - 1]!)?.[1] : undefined;
+    if (rel[0] === "assets") {
+      const data = ext && FILE_TYPES[ext] ? await readDist(rel) : null;
+      if (!data) return notFound();
+      return sendFile(res, FILE_TYPES[ext!]!, "private, max-age=31536000, immutable", "default-src 'none'", data);
+    }
+    if (rel.length === 1 && ext && FILE_TYPES[ext]) {
+      const data = await readDist(rel);
+      if (data) return sendFile(res, FILE_TYPES[ext]!, "private, max-age=3600", "default-src 'none'", data);
+    }
+    const index = await readDist(["index.html"]);
+    if (!index) {
+      return send(res, nonce, {
+        status: 503,
+        html: plainPage(nonce, "Frontend not built", `<p>The dashboard's frontend is not built: there is no <code>index.html</code> in the directory <code>CRAFT_AUTO_WEB_DIST</code> names (default <code>web/dist</code> in the repo).</p>
+<p>Build it with <code>pnpm -C web install</code> and <code>pnpm -C web build</code>, then reload.</p>`),
+      });
+    }
+    return sendFile(res, "text/html; charset=utf-8", "no-cache", APP_CSP, index);
   }
 
   return { handle, routes: opts.routes, provider };

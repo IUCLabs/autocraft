@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { after, describe, test } from "node:test";
 import { connect } from "../src/db.ts";
-import { routes } from "../src/dash/pages/index.ts";
+import { apiRoutes } from "../src/dash/api/index.ts";
 import { funnelByRepo } from "../src/dash/pages/stats.ts";
 import type { Req } from "../src/dash/types.ts";
 import { selectSyncRepos } from "../src/mirror.ts";
@@ -53,13 +53,12 @@ describe("tracked repos", () => {
 
     const rq = (path: string, params: Record<string, string>): Req => ({
       method: "GET", path, params, query: new URLSearchParams(), form: new URLSearchParams(),
-      user: { login: "a", role: "admin", canWrite: async () => true }, csrf: "c", nonce: "n",
+      user: { login: "a", role: "operator", canWrite: async () => true }, csrf: "c", nonce: "n",
     });
     const get = async (pattern: string, path: string, params: Record<string, string>) =>
-      routes.find((r) => r.method === "GET" && r.pattern === pattern)!.handler(db, rq(path, params));
-    assert.equal(((await get("/item/:repo/:n", "/item/hidden-repo/1", { repo: "hidden-repo", n: "1" })) as { status: number }).status, 404);
-    assert.equal(((await get("/repo/:name", "/repo/hidden-repo", { name: "hidden-repo" })) as { status: number }).status, 404);
-    assert.equal(((await get("/item/:repo/:n", "/item/photocraft/1", { repo: "photocraft", n: "1" })) as { status?: number }).status ?? 200, 200);
+      apiRoutes().find((r) => r.method === "GET" && r.pattern === pattern)!.handler(db, rq(path, params));
+    assert.equal(((await get("/api/items/:repo/:n", "/api/items/hidden-repo/1", { repo: "hidden-repo", n: "1" })) as { status: number }).status, 404);
+    assert.equal(((await get("/api/items/:repo/:n", "/api/items/photocraft/1", { repo: "photocraft", n: "1" })) as { status?: number }).status ?? 200, 200);
 
     assert.throws(() => purgeRepo(db, "photocraft"), RepoError);
     assert.equal(untrackRepo(db, "t", "photocraft"), true);

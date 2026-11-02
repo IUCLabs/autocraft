@@ -15,12 +15,12 @@ const SORTS: Record<string, (a: Contributor, b: Contributor) => number> = {
   repos: (a, b) => b.repos.split(",").length - a.repos.split(",").length,
 };
 
-const isAdmin = (req: Req): boolean => req.user.role === "admin" && !exporting(req);
+const isOperator = (req: Req): boolean => req.user.role === "operator" && !exporting(req);
 
 function ruleBlock(db: DatabaseSync, req: Req): string {
   const r = getRule(db);
   const text = `Whitelisted: at least ${r.minMerged} merged PRs and a merge rate of at least ${Math.round(r.minRate * 100)}%. An override always wins.`;
-  if (!isAdmin(req)) return `<p class=summary>${esc(text)}</p>`;
+  if (!isOperator(req)) return `<p class=summary>${esc(text)}</p>`;
   return `<p class=summary>${esc(text)}</p><form method=post action="/contributors/rule" class=row>${csrfField(req)}
     <label>Min merged <input type=number name=min_merged min=0 step=1 value="${r.minMerged}" required></label>
     <label>Min merge rate (%) <input type=number name=min_rate min=0 max=100 step=1 value="${Math.round(r.minRate * 100)}" required></label>
@@ -46,7 +46,7 @@ export function contributorsPage(db: DatabaseSync, req: Req): Res {
   rows.sort((a, b) => sort(a, b) || a.login.localeCompare(b.login));
   const total = rows.length;
   const shown = rows.slice((pageNo(req) - 1) * PAGE_SIZE, pageNo(req) * PAGE_SIZE);
-  const admin = isAdmin(req);
+  const admin = isOperator(req);
   const summary = `${num([...counts.values()].reduce((s, n) => s + n, 0))} contributors: ${(Object.keys(TIER_LABEL) as Tier[]).map((t) => `${num(counts.get(t) ?? 0)} ${TIER_LABEL[t]}`).join(", ")}.`;
   const repos = (db.prepare("SELECT name FROM repos ORDER BY name").all() as { name: string }[]).map((r) => ({ value: r.name, label: r.name }));
   const table = `<div class=scroll><table><thead><tr>${sortHeader(req, "login", "Login", false)}${sortHeader(req, "tier", "Tier", false)}${sortHeader(req, "merged", "Merged")}${sortHeader(req, "closed", "Closed unmerged")}${sortHeader(req, "open", "Open")}${sortHeader(req, "rate", "Merge rate")}${sortHeader(req, "last", "Last merge")}${sortHeader(req, "repos", "Repos", false)}</tr></thead><tbody>` +
@@ -65,7 +65,7 @@ function back(req: Req): string {
 }
 
 export function override(db: DatabaseSync, req: Req): Res {
-  if (req.user.role !== "admin") return forbidden(req, "Only admins can change the whitelist.");
+  if (req.user.role !== "operator") return forbidden(req, "Only operators can change the whitelist.");
   const login = req.form.get("login") ?? "";
   const status = req.form.get("status");
   if (status !== "allow" && status !== "deny" && status !== "clear") return badRequest(req, "Choose allow, deny or clear.");
@@ -78,7 +78,7 @@ export function override(db: DatabaseSync, req: Req): Res {
 }
 
 export function rule(db: DatabaseSync, req: Req): Res {
-  if (req.user.role !== "admin") return forbidden(req, "Only admins can change the whitelist rule.");
+  if (req.user.role !== "operator") return forbidden(req, "Only operators can change the whitelist rule.");
   const minMerged = Number(req.form.get("min_merged"));
   const minRate = Number(req.form.get("min_rate")) / 100;
   try {

@@ -1,6 +1,7 @@
 import type { Api } from "../client";
 import type { Decision, DecisionComment, DecisionFilter, User } from "../types";
 import { decisionAccess } from "../../registry/permissions";
+import { setClock } from "../../lib/format";
 import { DECISIONS, MOCK_USERS, NOW, REPOS, SEARCH_POOL, THREADS, itemFor, permFor, progress, type MockRole } from "./fixtures";
 
 const wait = <T>(v: T, ms = 60) => new Promise<T>((r) => setTimeout(() => r(structuredClone(v)), ms));
@@ -34,6 +35,7 @@ export function setMockRole(r: MockRole) {
 
 /** In-memory API over the fixture. Writes change the in-memory copy until reload. */
 export function createMockApi(): Api {
+  setClock(() => NOW);
   const me: User = MOCK_USERS[mockRole()];
   const decisions = structuredClone(DECISIONS);
   const threads: Record<string, DecisionComment[]> = structuredClone(THREADS);

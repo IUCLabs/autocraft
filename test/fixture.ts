@@ -7,7 +7,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { connect } from "../src/db.ts";
 
 export const MARKER = "PRIVATE-MARKER-q7z";
-export const ADMIN = "admin-test";
+export const OPERATOR = "operator-test";
 export const REPOS = Array.from({ length: 20 }, (_, i) => `app-${String(i + 1).padStart(2, "0")}`);
 
 export type Scale = { open: number; closed: number; decisions: number; batches: number; stages: number; overrides: number };
@@ -119,7 +119,7 @@ export function buildFixture(path: string, scale: Scale = FULL): DatabaseSync {
       "Beyond the reference app: label small extra or plugin candidate?", "The PR adds a wave filter. The reference app has one too.",
       JSON.stringify(["+120 −8, 3 files", "author: 14 merged PRs", "reference app: Filter › Distort › Wave"]), opts, "small",
       i % 3 === 0 ? "Thanks! This fits better as a plugin." : null, iso(now - DAY * 10 * r()), "triage-agent",
-      a ? "small" : null, a ? `note ${MARKER}` : null, null, a ? ADMIN : null, a ? iso(now - DAY * r()) : null, a && i % 10 === 0 ? iso(now - DAY * r()) : null);
+      a ? "small" : null, a ? `note ${MARKER}` : null, null, a ? OPERATOR : null, a ? iso(now - DAY * r()) : null, a && i % 10 === 0 ? iso(now - DAY * r()) : null);
   }
   for (let b = 0; b < scale.batches; b++) {
     const n = 5 + (b % 25);
@@ -135,11 +135,11 @@ export function buildFixture(path: string, scale: Scale = FULL): DatabaseSync {
       "Close these stale PRs with a short thank-you?", null, JSON.stringify([`${n} PRs`, "no activity for 1 year"]),
       JSON.stringify([{ key: "close", label: "Close all" }, { key: "keep", label: "Keep open" }]), "close", "Closing as stale; thanks for the work.",
       iso(now - DAY * 5 * r()), "triage-agent", a ? "close" : null, a ? `batch note ${MARKER}` : null, a ? JSON.stringify([{ ...refs[0], answer: "keep" }]) : null,
-      a ? ADMIN : null, a ? iso(now - DAY * r()) : null, null);
+      a ? OPERATOR : null, a ? iso(now - DAY * r()) : null, null);
   }
 
   const ovIns = db.prepare("INSERT INTO whitelist_overrides (login, status, note, by, at) VALUES (?,?,?,?,?)");
-  for (let i = 0; i < scale.overrides; i++) ovIns.run(`user${String(i * 7).padStart(4, "0")}`, i % 3 ? "allow" : "deny", `override ${MARKER}`, ADMIN, iso(now - DAY * r() * 30));
+  for (let i = 0; i < scale.overrides; i++) ovIns.run(`user${String(i * 7).padStart(4, "0")}`, i % 3 ? "allow" : "deny", `override ${MARKER}`, OPERATOR, iso(now - DAY * r() * 30));
 
   const tokIns = db.prepare(`INSERT INTO token_usage (run_id, agent, stage, model, repo, items, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, started_at, ended_at)
     VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`);
@@ -151,8 +151,8 @@ export function buildFixture(path: string, scale: Scale = FULL): DatabaseSync {
   }
 
   const accIns = db.prepare("INSERT INTO access (login, role, added_by, added_at, note) VALUES (?,?,?,?,?)");
-  accIns.run(ADMIN, "admin", "cli", iso(now), `admin ${MARKER}`);
-  accIns.run("viewer-test", "viewer", ADMIN, iso(now), `viewer ${MARKER}`);
+  accIns.run(OPERATOR, "operator", "cli", iso(now), `operator ${MARKER}`);
+  accIns.run("viewer-test", "viewer", OPERATOR, iso(now), `viewer ${MARKER}`);
   db.exec("COMMIT");
   db.exec("ANALYZE");
   return db;

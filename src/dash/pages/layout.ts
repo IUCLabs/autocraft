@@ -33,7 +33,6 @@ export const day = (iso: string | null | undefined): string => (iso ? iso.slice(
 
 export const itemHref = (repo: string, n: number | string): string => `/item/${encodeURIComponent(repo)}/${encodeURIComponent(String(n))}`;
 export const itemLink = (repo: string, n: number | string): string => `<a href="${itemHref(repo, n)}">${esc(repo)}#${esc(n)}</a>`;
-export const repoLink = (repo: string): string => `<a href="/repo/${encodeURIComponent(repo)}">${esc(repo)}</a>`;
 
 // A link to the same path with some query parameters replaced; "" or null removes one.
 export function withQuery(req: Req, changes: Record<string, string | number | null>): string {
@@ -199,11 +198,11 @@ document.addEventListener("click", (e) => {
 export function layout(req: Req, title: string, body: string): string {
   const exp = exporting(req);
   const nav = NAV.map(([href, label]) => {
-    const on = href === "/" ? req.path === "/" || req.path === "/answered" : req.path.startsWith(href);
+    const on = href !== "/" && req.path.startsWith(href);
     return `<a href="${href}"${on ? ' aria-current="page"' : ""}>${label}</a>`;
   }).join("");
-  const access = req.user.role === "admin" && !exp ? `<a href="/access"${req.path.startsWith("/access") ? ' aria-current="page"' : ""}>Access</a>` : "";
-  const repos = req.user.role === "admin" && !exp ? `<a href="/repos"${req.path.startsWith("/repos") ? ' aria-current="page"' : ""}>Repos</a>` : "";
+  const access = req.user.role === "operator" && !exp ? `<a href="/access"${req.path.startsWith("/access") ? ' aria-current="page"' : ""}>Access</a>` : "";
+  const repos = req.user.role === "operator" && !exp ? `<a href="/repos"${req.path.startsWith("/repos") ? ' aria-current="page"' : ""}>Repos</a>` : "";
   const me = exp ? "" : `<div class=me><span>${esc(req.user.login)}</span><form method=post action="/auth/signout" class=inline>${csrfField(req)}<button type=submit class=link>Sign out</button></form></div>`;
   return `<!doctype html><html lang=en><head><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">` +
     `<title>${esc(title)} · Triage</title><style nonce="${esc(req.nonce)}">${CSS}</style></head><body>` +
@@ -213,7 +212,6 @@ export function layout(req: Req, title: string, body: string): string {
 
 export const page = (req: Req, title: string, body: string): Res => ({ html: layout(req, title, body) });
 
-export const notFound = (req: Req, what = "Not found"): Res => ({ status: 404, html: layout(req, "Not found", `<h1>${esc(what)}</h1>`) });
 
 export function forbidden(req: Req, reason: string): Res {
   const js = req.form.get("js") === "1";
@@ -226,12 +224,3 @@ export function badRequest(req: Req, reason: string): Res {
   const line = `<div class="done err" data-card>${esc(reason)}</div>`;
   return { status: 400, html: js ? line : layout(req, "Bad request", `<h1>Bad request</h1><p>${esc(reason)}</p>`) };
 }
-
-export const parseJson = <T>(s: string | null | undefined, fallback: T): T => {
-  if (!s) return fallback;
-  try {
-    return JSON.parse(s) as T;
-  } catch {
-    return fallback;
-  }
-};

@@ -10,7 +10,7 @@ The craft-app repos have about 25,000 open issues and PRs across about 20 active
 
 | Reader | Device | Wants |
 |---|---|---|
-| Owner (admin) | Phone first, sometimes desktop | Make decisions in bursts; see whether the run is on track; adjust the whitelist; manage who has access |
+| Owner (operator) | Phone first, sometimes desktop | Make decisions in bursts; see whether the run is on track; adjust the whitelist; manage who has access |
 | Maintainers | Desktop and phone | Decisions in the repos they can write to; what got merged or closed and why |
 | Viewers | Any | Read-only: progress, decisions and their outcomes; no answering |
 
@@ -101,7 +101,7 @@ Table: login, tier (whitelisted / not / override allow / override deny), merged 
 
 Agreement between classifiers on the same items (for the Jev vs Haiku trial, later Sonnet as the reference): per field (`type_label`, `want`), an agreement rate and a confusion matrix, with a link to the disagreeing items.
 
-### Access (admins)
+### Access (operators)
 
 Access list with add, remove and role change; active sessions with revoke; the audit log, filterable by login and action.
 
@@ -121,8 +121,8 @@ The whole dashboard sits behind GitHub sign-in: every page, asset and endpoint e
 
 ### Who can sign in
 
-- Only GitHub logins on the **access list** (`access` table: `login`, `role` = `admin` | `viewer`, `added_by`, `added_at`, `note`). A login not on the list sees a plain "not authorised" page after GitHub's redirect, and no session is created.
-- Admins add and remove logins on the Access page or with `craft-auto access add <login> [--admin] [--note]` / `access remove <login>`. The first admin is added with the CLI.
+- Only GitHub logins on the **access list** (`access` table: `login`, `role` = `operator` | `maintainer` | `viewer`, `added_by`, `added_at`, `note`). A login not on the list sees a plain "not authorised" page after GitHub's redirect, and no session is created.
+- Operators add and remove logins on the Access page or with `craft-auto access add <login> [--operator|--maintainer] [--note]` / `access remove <login>`. The first operator is added with the CLI.
 - Removing a login or changing its role ends its sessions at once.
 
 ### Trust boundary
@@ -148,7 +148,7 @@ The pipeline runs Claude agents under the operator's own Claude account on the o
 | Whitelist overrides, whitelist rule, settings (including `maintainer_writes`) | operator |
 | Access list, sessions, audit log | operator |
 
-Roles on the access list: `operator`, `maintainer`, `viewer`. Today `maintainer` and `viewer` differ only in the badge shown beside their opinions; `maintainer` gains direct answers once `maintainer_writes` is used. GitHub write permission on the repo is still required for an operator's answer about that repo. (The current code calls the operator role `admin`; rename it when the new UI lands.)
+Roles on the access list: `operator`, `maintainer`, `viewer`. Today `maintainer` and `viewer` differ only in the badge shown beside their opinions; `maintainer` gains direct answers once `maintainer_writes` is used. GitHub write permission on the repo is still required for an operator's answer about that repo.
 
 GitHub permissions: after sign-in, read the user's permission on each repo with the user's own token (`GET /repos/storytold/<repo>` returns `permissions` for the authenticated user), cache it per user and repo for 10 minutes, and re-check at the moment of any write if the cached value is older than one minute. A user without any write permission still signs in and can give opinions. The card says in one line whether the reader's pick is an answer or an opinion.
 
@@ -161,7 +161,7 @@ GitHub permissions: after sign-in, read the user's permission on each repo with 
 ### Sessions and request safety
 
 - Session id: 32 random bytes; cookie `HttpOnly`, `Secure`, `SameSite=Lax`, path `/`; stored in SQLite as a hash with login, created, last seen, expiry (14 days, sliding), user agent.
-- Sign-out ends the session. Admins can see and revoke sessions on the Access page.
+- Sign-out ends the session. Operators can see and revoke sessions on the Access page.
 - Every POST carries a CSRF token tied to the session; reject a missing or wrong token.
 - Rate-limit sign-in attempts and writes per session and per IP.
 - Security headers: a strict Content-Security-Policy (self only, no inline script without a nonce), `X-Frame-Options: DENY`, `Referrer-Policy: same-origin`.
@@ -185,7 +185,10 @@ A fake OAuth provider for tests and local development, enabled only when `CRAFT_
 
 ## Technology
 
-- TypeScript on Node 24, run directly with type stripping (no build step); `node:http` and `node:sqlite`. No frontend framework; server-rendered HTML with a small amount of plain JS for filters, expanders and answering in place. No CDNs or external requests; all CSS, JS and SVG charts inline or served by the app.
+- Server: TypeScript on Node 24, run directly with type stripping (no build step); `node:http` and `node:sqlite`. It serves the JSON API under `/api/`, the sign-in routes under `/auth/`, and the frontend.
+- Frontend: a React app in `web/` (Vite, Tailwind, Radix primitives), described in `docs/ui-design.md`. `pnpm -C web build` writes it to `web/dist`, which the server serves behind sign-in: hashed files under `/assets/` with a year's cache, and `index.html`, uncached, for every other path, so the app routes on the client. It talks to the server only through the JSON API.
+- The pages the app doesn't have yet (Contributors, Classifiers, Run and cost, Repos, Access) are server-rendered HTML with a little plain JS, at their own paths; the app's sidebar links to them.
+- Content-Security-Policy: the app gets `script-src 'self'` and `style-src 'self'` plus the hash of the one fixed `<style>` the Radix dialog's scroll lock injects; server-rendered pages use a per-response nonce. No CDNs or external requests: all CSS, JS, fonts and charts are served by the app.
 - Light and dark themes via `prefers-color-scheme`; readable at 360 px wide without horizontal scrolling; touch targets at least 44 px.
 - Performance at the real size (about 100,000 mirror rows including closed history, 25,000 open): every page renders in under 300 ms. Add the indexes the queries need.
 - Nothing in the repo names a person other than as a GitHub login from the data, a machine, a hostname or a home directory: the repo may become public.

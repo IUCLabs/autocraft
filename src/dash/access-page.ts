@@ -1,6 +1,6 @@
-// Access page (admins): the access list, active sessions and the audit log.
+// Access page (operators): the access list, active sessions and the audit log.
 import type { DatabaseSync } from "node:sqlite";
-import { AccessError, addLogin, adminCount, getAccess, listAccess, removeLogin, setRole } from "../access.ts";
+import { AccessError, addLogin, getAccess, isRole, listAccess, operatorCount, removeLogin, ROLES, setRole } from "../access.ts";
 import { audit } from "./audit.ts";
 import type { Req, Res, Role, Route } from "./types.ts";
 import { esc } from "./server/util.ts";
@@ -30,7 +30,7 @@ function accessPage(db: DatabaseSync, req: Req): Res {
   const rows = listAccess(db);
   const accessRows = rows.map((r) => `<tr><td>${esc(r.login)}</td><td>
 <form class="inline row" method="post" action="/access/role">${csrf(req)}<input type="hidden" name="login" value="${esc(r.login)}">
-<select name="role" aria-label="Role of ${esc(r.login)}">${(["viewer", "admin"] as Role[]).map((x) => `<option${x === r.role ? " selected" : ""}>${x}</option>`).join("")}</select>
+<select name="role" aria-label="Role of ${esc(r.login)}">${ROLES.map((x) => `<option${x === r.role ? " selected" : ""}>${x}</option>`).join("")}</select>
 <button>Change</button></form></td>
 <td>${when(r.added_at)} by ${esc(r.added_by ?? "-")}</td><td>${esc(r.note ?? "")}</td>
 <td><form class="inline" method="post" action="/access/remove">${csrf(req)}<input type="hidden" name="login" value="${esc(r.login)}"><button>Remove</button></form></td></tr>`).join("");
@@ -68,10 +68,10 @@ function accessPage(db: DatabaseSync, req: Req): Res {
   return {
     html: layout(req, "Access", `
 <h2>Access list</h2>
-<p>${rows.length} logins: ${rows.filter((r) => r.role === "admin").length} admins, ${rows.filter((r) => r.role === "viewer").length} viewers. Removing a login or changing its role ends its sessions.</p>
+<p>${rows.length} logins: ${ROLES.map((x) => `${rows.filter((r) => r.role === x).length} ${x}s`).join(", ")}. Removing a login or changing its role ends its sessions.</p>
 <form class="row" method="post" action="/access/add">${csrf(req)}
 <input name="login" placeholder="GitHub login" required aria-label="GitHub login">
-<select name="role" aria-label="Role"><option>viewer</option><option>admin</option></select>
+<select name="role" aria-label="Role"><option>viewer</option><option>maintainer</option><option>operator</option></select>
 <input name="note" placeholder="Note (private)" aria-label="Note">
 <button>Add</button></form>
 <div class="scroll"><table><thead><tr><th>Login</th><th>Role</th><th>Added</th><th>Note</th><th></th></tr></thead><tbody>${accessRows}</tbody></table></div>
@@ -95,8 +95,8 @@ function refuse(req: Req, message: string): Res {
   return { status: 400, html: layout(req, "Not changed", `<p class="warn">${esc(message)}</p><p><a href="/access">Back to Access</a></p>`) };
 }
 
-// Wraps a write: AccessError messages are for the admin; the page refuses any
-// change that would leave the dashboard without an admin.
+// Wraps a write: AccessError messages are for the operator; the page refuses
+// any change that would leave the dashboard without an operator.
 function write(f: (db: DatabaseSync, req: Req) => void) {
   return (db: DatabaseSync, req: Req): Res => {
     try {
@@ -109,43 +109,43 @@ function write(f: (db: DatabaseSync, req: Req) => void) {
   };
 }
 
-function guardLastAdmin(db: DatabaseSync, login: string): void {
-  if (getAccess(db, login)?.role === "admin" && adminCount(db) <= 1) {
-    throw new AccessError("That would leave no admin. Add another admin first.");
+function guardLastOperator(db: DatabaseSync, login: string): void {
+  if (getAccess(db, login)?.role === "operator" && operatorCount(db) <= 1) {
+    throw new AccessError("That would leave no operator. Add another operator first.");
   }
 }
 
 const role = (v: string | null): Role => {
-  if (v !== "admin" && v !== "viewer") throw new AccessError("Role must be admin or viewer.");
+  if (!isRole(v)) throw new AccessError(`Role must be ${ROLES.join(", ")}.`);
   return v;
 };
 
 export const accessRoutes: Route[] = [
-  { method: "GET", pattern: "/access", admin: true, handler: accessPage },
+  { method: "GET", pattern: "/access", operator: true, handler: accessPage },
   {
-    method: "POST", pattern: "/access/add", admin: true,
+    method: "POST", pattern: "/access/add", operator: true,
     handler: write((db, req) => addLogin(db, req.user.login, (req.form.get("login") ?? "").trim(), role(req.form.get("role")),
       (req.form.get("note") ?? "").trim().slice(0, 500) || null)),
   },
   {
-    method: "POST", pattern: "/access/remove", admin: true,
+    method: "POST", pattern: "/access/remove", operator: true,
     handler: write((db, req) => {
       const login = req.form.get("login") ?? "";
-      guardLastAdmin(db, login);
+      guardLastOperator(db, login);
       removeLogin(db, req.user.login, login);
     }),
   },
   {
-    method: "POST", pattern: "/access/role", admin: true,
+    method: "POST", pattern: "/access/role", operator: true,
     handler: write((db, req) => {
       const login = req.form.get("login") ?? "";
       const r = role(req.form.get("role"));
-      if (r === "viewer") guardLastAdmin(db, login);
+      if (r !== "operator") guardLastOperator(db, login);
       setRole(db, req.user.login, login, r);
     }),
   },
   {
-    method: "POST", pattern: "/access/revoke", admin: true,
+    method: "POST", pattern: "/access/revoke", operator: true,
     handler: write((db, req) => {
       const id = Number(req.form.get("id"));
       const s = Number.isInteger(id) ? db.prepare("DELETE FROM sessions WHERE rowid = ? RETURNING login, created_at").get(id) as

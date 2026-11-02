@@ -32,6 +32,11 @@ function addColumns(db: DatabaseSync): void {
   }
 }
 
+// Values renamed after their first release, rewritten on every connect.
+function migrateValues(db: DatabaseSync): void {
+  db.exec("UPDATE main.access SET role = 'operator' WHERE role = 'admin'");
+}
+
 export function connect(path: string = dbPath()): DatabaseSync {
   mkdirSync(dirname(path), { recursive: true });
   const db = new DatabaseSync(path, { timeout: 30_000 });
@@ -39,5 +44,6 @@ export function connect(path: string = dbPath()): DatabaseSync {
   db.exec("PRAGMA journal_mode=WAL");
   db.exec(readFileSync(new URL("./schema.sql", import.meta.url), "utf8"));
   addColumns(db);
+  migrateValues(db);
   return db;
 }

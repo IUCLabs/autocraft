@@ -15,8 +15,7 @@ export const CLAIM_TTL = 10 * 60_000;
 const NOTE_MAX = 500;
 const COMMENT_MAX = 4000;
 
-// The operator role is stored as "admin" in the access list.
-export const isOperator = (req: Req): boolean => req.user.role === "admin";
+export const isOperator = (req: Req): boolean => req.user.role === "operator";
 
 const STATE: Record<string, ItemState> = { OPEN: "open", MERGED: "merged", CLOSED: "closed" };
 export const itemState = (s: string | null | undefined): ItemState => STATE[s ?? ""] ?? "open";

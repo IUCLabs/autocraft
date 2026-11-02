@@ -98,13 +98,13 @@ export function ask(db: DatabaseSync, questions: Record<string, unknown>[]): { i
 }
 
 // Answers the pipeline may act on: answered by someone who is an operator
-// (role admin) now, and not yet applied. Option keys only, never free text.
+// (role operator) now, and not yet applied. Option keys only, never free text.
 // Opinions and comments are display-only and never read here.
 export type Actionable = { id: string; kind: Kind; repo: string | null; number: number | null; items: Ref[]; answer: string; exceptions: Exception[] };
 
 export function actionable(db: DatabaseSync): Actionable[] {
   const rows = db.prepare(`SELECT * FROM decisions WHERE answer IS NOT NULL AND applied_at IS NULL
-    AND answered_by IN (SELECT login FROM access WHERE role = 'admin') ORDER BY answered_at`).all() as DecisionRow[];
+    AND answered_by IN (SELECT login FROM access WHERE role = 'operator') ORDER BY answered_at`).all() as DecisionRow[];
   return rows.map((d) => ({
     id: d.id, kind: d.kind, repo: d.repo, number: d.number, items: itemsOf(d), answer: d.answer!,
     exceptions: exceptionsOf(d).map((e) => ({ repo: e.repo, number: e.number, answer: e.answer })),

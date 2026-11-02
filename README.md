@@ -12,13 +12,16 @@ TypeScript on Node 24, run directly (type stripping, no build step): `node src/c
 
 ## Dashboard server
 
-`craft-auto dash serve` serves the dashboard over plain HTTP; a proxy in front provides HTTPS. Every page needs GitHub sign-in, and only logins on the access list get a session. Add the first admin from a shell: `craft-auto access add <login> --admin`. Then manage the list on the Access page or with `craft-auto access list|add|remove|role`.
+`craft-auto dash serve` serves the dashboard over plain HTTP; a proxy in front provides HTTPS. Every page needs GitHub sign-in, and only logins on the access list get a session. Roles are `operator` (answers decisions, manages the whitelist, repos and access), `maintainer` and `viewer` (both read and give opinions). Add the first operator from a shell: `craft-auto access add <login> --operator`. Then manage the list on the Access page or with `craft-auto access list|add|remove|role`.
+
+The frontend is the React app in `web/`. Build it before serving: `pnpm -C web install && pnpm -C web build` (writes `web/dist`). Without a build the server answers app pages with a 503 that says so. `VITE_MOCK=1 pnpm -C web build` builds a mockup on fake data that runs without the server.
 
 | Variable | Meaning |
 |---|---|
 | `CRAFT_AUTO_BASE_URL` | Public origin of the dashboard, such as `https://dashboard.example.org` (no path). The OAuth App's callback URL must be exactly `<CRAFT_AUTO_BASE_URL>/auth/callback`. Required unless dev auth is on. |
 | `CRAFT_AUTO_LISTEN` | `host:port` to listen on. Default `127.0.0.1:8993`. |
 | `CRAFT_AUTO_DB` | SQLite database path (the mirror database). |
+| `CRAFT_AUTO_WEB_DIST` | Directory of the built frontend. Default `web/dist` in the repo. |
 | `CRAFT_AUTO_SECRETS_FILE` | JSON file with `github_client_id`, `github_client_secret` and `session_key` (at least 32 characters, random). Must be mode 0600; the server refuses to start if it is missing, incomplete, or readable by group or others. |
 | `CRAFT_AUTO_TRUST_PROXY` | `1` to take the client address for rate limits from the last `X-Forwarded-For` entry. Set it only behind a proxy that sets that header. |
 
@@ -36,7 +39,7 @@ The frontend in `web/` talks to `/api/`; the wire types are `web/src/api/types.t
 |---|---|
 | `GET /api/me`, `/api/repos`, `/api/progress`, `/api/search?q=`, `/api/items/<repo>/<n>` | anyone signed in |
 | `GET /api/decisions?status=open\|opinions\|answered&repo=&kind=&minAge=&mine=1&limit=&offset=`, `/api/decisions/<id>`, `/api/decisions/<id>/thread` | anyone signed in; answer notes only for operators |
-| `POST /api/decisions/<id>/answer` `{answer, note?, exceptions?}`, `/undo`, `/adopt` `{opinionId}` | operator (access role `admin`) with write, maintain or admin on every repo the decision covers |
+| `POST /api/decisions/<id>/answer` `{answer, note?, exceptions?}`, `/undo`, `/adopt` `{opinionId}` | operator with write, maintain or admin on every repo the decision covers |
 | `POST /api/decisions/<id>/opinion` `{option, note?}`, `/retract`, `/comments` `{body}` | anyone signed in; audited; non-operators get 60 an hour per login |
 | `POST /api/decisions/<id>/claim` | anyone signed in: marks the decision as being looked at for 10 minutes |
 | `POST /api/signout` | anyone signed in |

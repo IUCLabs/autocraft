@@ -1,8 +1,11 @@
 import { BadgeCheckIcon, CoinsIcon, FolderGit2Icon, ScaleIcon, ShieldIcon, type LucideIcon } from "lucide-react";
 import type { FeatureModule, NavEntry, Permission, ViewProps } from "../../registry/types";
 
-// Pages from docs/dashboard-spec.md that this design phase leaves for later.
-// Each is a real module so the nav, permissions and routes already work.
+// Pages from docs/dashboard-spec.md that the app doesn't have yet. The server
+// still renders them, so the nav links there with a full page load; the
+// mockup, which has no server, shows a placeholder instead.
+const MOCK = import.meta.env.VITE_MOCK === "1";
+
 function placeholder(id: string, label: string, icon: LucideIcon, group: NavEntry["group"], order: number, permission: Permission, blurb: string): FeatureModule {
   function View(_: ViewProps) {
     const Icon = icon;
@@ -15,6 +18,7 @@ function placeholder(id: string, label: string, icon: LucideIcon, group: NavEntr
       </div>
     );
   }
+  if (!MOCK) return { id, permission, nav: { label, icon, to: `/${id}`, group, order, page: true }, routes: [] };
   return {
     id,
     permission,

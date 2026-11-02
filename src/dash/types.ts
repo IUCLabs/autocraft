@@ -3,7 +3,7 @@
 // checks CSRF on every POST before a handler runs.
 import type { DatabaseSync } from "node:sqlite";
 
-export type Role = "admin" | "viewer";
+export type Role = "operator" | "maintainer" | "viewer";
 
 export type User = {
   login: string;
@@ -37,6 +37,6 @@ export type Res = {
 export type Route = {
   method: "GET" | "POST";
   pattern: string;                  // "/", "/repo/:name", "/item/:repo/:n"
-  admin?: boolean;                  // server returns 403 unless user.role is admin
+  operator?: boolean;               // server returns 403 unless user.role is operator
   handler: (db: DatabaseSync, req: Req) => Res | Promise<Res>;
 };

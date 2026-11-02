@@ -4,21 +4,21 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { after, before, describe, test } from "node:test";
-import { ask, getDecision, type DecisionRow } from "../src/decisions.ts";
+import { ask, getDecision } from "../src/decisions.ts";
 import { connect } from "../src/db.ts";
 import { exportSite } from "../src/dash/pages/export.ts";
 import { routes } from "../src/dash/pages/index.ts";
 import { doneByRepo, funnelByRepo } from "../src/dash/pages/stats.ts";
-import type { Req, Res, User } from "../src/dash/types.ts";
+import type { Req, Res, Role, User } from "../src/dash/types.ts";
 import { isWhitelisted, setOverride } from "../src/whitelist.ts";
-import { ADMIN, buildFixture, MARKER } from "./fixture.ts";
+import { buildFixture, MARKER, OPERATOR } from "./fixture.ts";
 
 const SCRATCH = join(homedir(), ".cache/craft-automation-scratch");
 mkdirSync(SCRATCH, { recursive: true });
 const dir = mkdtempSync(join(SCRATCH, "pages-test-"));
 
-const user = (login: string, role: "admin" | "viewer", writable: (repo: string) => boolean): User => ({ login, role, canWrite: async (r) => writable(r) });
-const admin = user(ADMIN, "admin", () => true);
+const user = (login: string, role: Role, writable: (repo: string) => boolean): User => ({ login, role, canWrite: async (r) => writable(r) });
+const operator = user(OPERATOR, "operator", () => true);
 const viewer = user("viewer-test", "viewer", () => false);
 
 function req(u: User, method: "GET" | "POST", path: string, params: Record<string, string> = {}, form: Record<string, string> = {}, query = ""): Req {
@@ -38,13 +38,9 @@ let pages: [string, string, Record<string, string>, string][];
 
 before(() => {
   db = buildFixture(join(dir, "fixture.db"));
-  const d = db.prepare("SELECT repo, number FROM decisions WHERE number IS NOT NULL LIMIT 1").get() as { repo: string; number: number };
   pages = [
-    ["/", "/", {}, ""], ["/answered", "/answered", {}, ""], ["/progress", "/progress", {}, ""],
-    ["/repo/:name", `/repo/${d.repo}`, { name: d.repo }, ""], ["/item/:repo/:n", `/item/${d.repo}/${d.number}`, { repo: d.repo, n: String(d.number) }, ""],
     ["/contributors", "/contributors", {}, ""], ["/classifiers", "/classifiers", {}, ""],
     ["/classifiers/items", "/classifiers/items", {}, "a=haiku&b=jev&field=type_label"], ["/cost", "/cost", {}, ""],
-    ["/", "/", {}, "kind=close&age=1&page=2"],
   ];
 });
 after(() => db?.close());
@@ -57,23 +53,19 @@ function checkHtml(html: string) {
 }
 
 describe("pages", () => {
-  test("every page renders for an admin and a viewer, escaped, with nonces and CSRF fields", async () => {
-    for (const u of [admin, viewer]) {
+  test("every page renders for an operator and a viewer, escaped, with nonces and CSRF fields", async () => {
+    for (const u of [operator, viewer]) {
       for (const [pattern, path, params, query] of pages) {
         const res = await call("GET", pattern, req(u, "GET", path, params, {}, query));
         assert.equal(res.status ?? 200, 200, `${u.login} ${path}`);
         checkHtml(res.html!);
       }
     }
-    // the fixture's hostile titles are shown escaped
-    const evil = db.prepare("SELECT repo, number FROM items WHERE title LIKE '<script>%' LIMIT 1").get() as { repo: string; number: number };
-    const res = await call("GET", "/item/:repo/:n", req(viewer, "GET", "/item", { repo: evil.repo, n: String(evil.number) }));
-    assert.match(res.html!, /&lt;script&gt;alert/);
   });
 
   test("each page renders in under 300 ms on the full-scale fixture", async () => {
     for (const [pattern, path, params, query] of pages) {
-      const rq = req(admin, "GET", path, params, {}, query);
+      const rq = req(operator, "GET", path, params, {}, query);
       await call("GET", pattern, rq);
       const t0 = performance.now();
       await call("GET", pattern, rq);
@@ -82,69 +74,10 @@ describe("pages", () => {
     }
   });
 
-  const openSingle = (): DecisionRow => db.prepare("SELECT * FROM decisions WHERE answer IS NULL AND number IS NOT NULL LIMIT 1").get() as DecisionRow;
-
-  test("a non-operator's and a no-write operator's answer gets 403; the card says why", async () => {
-    const d = openSingle();
-    const maint = user("maint", "viewer", () => true);
-    const op = user("op", "admin", (r) => r !== d.repo);
-    for (const [u, why] of [[viewer, /Only the operator/], [maint, /Only the operator/], [op, new RegExp(`storytold/${d.repo}`)]] as const) {
-      const res = await call("POST", "/decisions/answer", req(u, "POST", "/decisions/answer", {}, { id: d.id, answer: d.recommended! }));
-      assert.equal(res.status, 403);
-      assert.match(res.html!, why);
-      const home = await call("GET", "/", req(u, "GET", "/", {}, {}, `repo=${d.repo}`));
-      assert.doesNotMatch(home.html!, /action="\/decisions\/answer"/);
-    }
-    assert.equal(getDecision(db, d.id)!.answer, null);
-    const home = await call("GET", "/", req(op, "GET", "/", {}, {}, `repo=${d.repo}`));
-    assert.match(home.html!, /You can&#39;t answer this/);
-  });
-
-  test("answer, undo, answer again", async () => {
-    const d = openSingle();
-    const m = user("op", "admin", (r) => r === d.repo);
-    const r1 = await call("POST", "/decisions/answer", req(m, "POST", "/decisions/answer", {}, { id: d.id, answer: d.recommended!, note: `n ${MARKER}`, js: "1" }));
-    assert.equal(r1.status ?? 200, 200);
-    assert.match(r1.html!, /Answered/);
-    assert.match(r1.html!, /decisions\/undo/);
-    assert.equal(getDecision(db, d.id)!.answered_by, "op");
-    const again = await call("POST", "/decisions/answer", req(m, "POST", "/decisions/answer", {}, { id: d.id, answer: d.recommended! }));
-    assert.equal(again.status, 409);
-    const r2 = await call("POST", "/decisions/undo", req(m, "POST", "/decisions/undo", {}, { id: d.id, back: "/" }));
-    assert.equal(r2.redirect, "/");
-    assert.equal(getDecision(db, d.id)!.answer, null);
-    const other = JSON.parse(d.options).find((o: { key: string }) => o.key !== d.recommended).key;
-    const r3 = await call("POST", "/decisions/answer", req(m, "POST", "/decisions/answer", {}, { id: d.id, answer: other, back: "/" }));
-    assert.match(r3.redirect!, /^\/\?done=/);
-    assert.equal(getDecision(db, d.id)!.answer, other);
-    const acts = (db.prepare("SELECT action FROM audit WHERE target = ? ORDER BY rowid").all(d.id) as { action: string }[]).map((r) => r.action);
-    assert.deepEqual(acts, ["answer", "undo", "answer"]);
-    assert.ok(!(db.prepare("SELECT details FROM audit WHERE target = ?").all(d.id) as { details: string }[]).some((r) => r.details.includes(MARKER)), "audit has no note text");
-    // once applied, undo is refused
-    db.prepare("UPDATE decisions SET applied_at = ? WHERE id = ?").run(new Date().toISOString(), d.id);
-    const r4 = await call("POST", "/decisions/undo", req(m, "POST", "/decisions/undo", {}, { id: d.id }));
-    assert.equal(r4.status, 409);
-  });
-
-  test("a batch with one non-writable repo is refused; with all repos writable it records exceptions", async () => {
-    const b = db.prepare("SELECT * FROM decisions WHERE number IS NULL AND repo IS NULL AND answer IS NULL LIMIT 1").get() as DecisionRow;
-    const refs = JSON.parse(b.items!) as { repo: string; number: number }[];
-    const blockedRepo = refs[refs.length - 1].repo;
-    const partial = user("op", "admin", (r) => r !== blockedRepo);
-    const res = await call("POST", "/decisions/answer", req(partial, "POST", "/decisions/answer", {}, { id: b.id, answer: "close" }));
-    assert.equal(res.status, 403);
-    assert.match(res.html!, new RegExp(blockedRepo));
-    const full = user("op", "admin", () => true);
-    const ex = `ex:${refs[0].repo}#${refs[0].number}`;
-    const ok = await call("POST", "/decisions/answer", req(full, "POST", "/decisions/answer", {}, { id: b.id, answer: "close", [ex]: "keep" }));
-    assert.ok(ok.redirect);
-    assert.deepEqual(JSON.parse(getDecision(db, b.id)!.exceptions!), [{ ...refs[0], answer: "keep" }]);
-  });
-
-  test("the whitelist routes refuse non-admins", async () => {
+  test("the whitelist routes refuse non-operators", async () => {
     const res = await call("POST", "/contributors/override", req(viewer, "POST", "/contributors/override", {}, { login: "user0001", status: "allow" }));
     assert.equal(res.status, 403);
-    const ok = await call("POST", "/contributors/override", req(admin, "POST", "/contributors/override", {}, { login: "user0001", status: "allow", note: "hi" }));
+    const ok = await call("POST", "/contributors/override", req(operator, "POST", "/contributors/override", {}, { login: "user0001", status: "allow", note: "hi" }));
     assert.equal(ok.redirect, "/contributors");
     assert.equal(isWhitelisted(db, "user0001").ok, true);
   });
@@ -152,7 +85,7 @@ describe("pages", () => {
   test("the export has no write controls and no private field", async () => {
     const out = join(dir, "export");
     const r = await exportSite(db, out);
-    assert.ok(r.pages > 20);
+    assert.equal(r.pages, 3);
     const files: string[] = [];
     const walk = (d: string) => {
       for (const f of readdirSync(d)) {

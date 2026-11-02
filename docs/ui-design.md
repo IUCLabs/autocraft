@@ -80,9 +80,9 @@ interface FeatureModule {
 
 - **Panels** declare `defaultSize`, `minSize`, `maxSize`, `collapsible`, `startCollapsed`, `hideOnPhone`. Panels of one view share state through the URL (selection, filters) or a small view-local store.
 - **Slots** let a module add to another module's screen without editing it. The item page renders the `item.side` slot under its own side panel (for example, a future "audit entries" or "cost for this item" block).
-- **Data hooks**: `useQuery(key, api => …)` over the typed `Api` interface (`web/src/api/client.ts`). It refetches after any write. `createMockApi()` implements `Api` over deterministic fixtures; an HTTP client implementing the same interface replaces it when the server exposes JSON endpoints.
+- **Data hooks**: `useQuery(key, api => …)` over the typed `Api` interface (`web/src/api/client.ts`). It refetches after any write. `createHttpApi()` (`web/src/api/http.ts`) implements it over the server's JSON API; `createMockApi()` implements it over deterministic fixtures for the mockup build (`VITE_MOCK=1`).
 - **Keyboard**: views register the keys they handle (`useShortcutHelp`), so the `?` sheet lists exactly what works on the current screen.
-- **Placeholders**: Contributors, Classifiers, Run and cost, Repos and Access are real modules with a placeholder view, so nav and permissions are already in place.
+- **Server pages**: Contributors, Classifiers, Run and cost, Repos and Access are modules whose nav entries link to the server-rendered pages with a full page load. In the mockup build they show a placeholder view instead.
 
 ## 6. Screens
 
@@ -168,7 +168,6 @@ Keys are ignored while typing, except `Esc` and `Ctrl Enter`.
 
 ## 9. Open points
 
-- Radix `Dialog` injects a small `<style>` for scroll locking, which `style-src 'self'` blocks (the dialogs still work). Options: allow a hashed style, or drop scroll locking.
 - Claim indicator: the mock records a claim when a decision opens; the server needs a short-lived claim table and a "being looked at" expiry (proposed: 10 minutes).
 - Comments need the `decision_opinions` table (storing picks and notes) and the summary columns now in `dashboard-spec.md`; the pipeline must write `summary` when it asks a decision.
 - Layout persistence is localStorage only; a `PUT /api/me/layout/:key` endpoint would make layouts follow the user.

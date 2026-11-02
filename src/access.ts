@@ -9,6 +9,9 @@ export type AccessRow = { login: string; role: Role; added_by: string | null; ad
 
 export const LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}$/;
 
+export const ROLES: readonly Role[] = ["operator", "maintainer", "viewer"];
+export const isRole = (v: unknown): v is Role => (ROLES as readonly unknown[]).includes(v);
+
 export class AccessError extends Error {}
 
 export function listAccess(db: DatabaseSync): AccessRow[] {
@@ -38,7 +41,7 @@ function tx<T>(db: DatabaseSync, f: () => T): T {
 
 export function addLogin(db: DatabaseSync, by: string, login: string, role: Role, note: string | null): void {
   if (!LOGIN.test(login)) throw new AccessError(`not a GitHub login: ${JSON.stringify(login)}`);
-  if (role !== "admin" && role !== "viewer") throw new AccessError(`role must be admin or viewer`);
+  if (!isRole(role)) throw new AccessError(`role must be ${ROLES.join(", ")}`);
   tx(db, () => {
     if (getAccess(db, login)) throw new AccessError(`${login} is already on the access list`);
     db.prepare("INSERT INTO access (login, role, added_by, added_at, note) VALUES (?, ?, ?, ?, ?)")
@@ -58,7 +61,7 @@ export function removeLogin(db: DatabaseSync, by: string, login: string): void {
 }
 
 export function setRole(db: DatabaseSync, by: string, login: string, role: Role): void {
-  if (role !== "admin" && role !== "viewer") throw new AccessError(`role must be admin or viewer`);
+  if (!isRole(role)) throw new AccessError(`role must be ${ROLES.join(", ")}`);
   tx(db, () => {
     const row = getAccess(db, login);
     if (!row) throw new AccessError(`${login} is not on the access list`);
@@ -69,11 +72,11 @@ export function setRole(db: DatabaseSync, by: string, login: string, role: Role)
   });
 }
 
-export function adminCount(db: DatabaseSync): number {
-  return Number((db.prepare("SELECT COUNT(*) AS n FROM access WHERE role = 'admin'").get() as { n: number }).n);
+export function operatorCount(db: DatabaseSync): number {
+  return Number((db.prepare("SELECT COUNT(*) AS n FROM access WHERE role = 'operator'").get() as { n: number }).n);
 }
 
-const USAGE = "usage: craft-auto access list | add <login> [--admin] [--note TEXT] | remove <login> | role <login> admin|viewer";
+const USAGE = "usage: craft-auto access list | add <login> [--operator|--maintainer] [--note TEXT] | remove <login> | role <login> operator|maintainer|viewer";
 
 function run(args: string[]): void {
   const [sub, login, ...rest] = args;
@@ -84,7 +87,7 @@ function run(args: string[]): void {
         const rows = listAccess(db);
         if (!rows.length) console.log("access list is empty");
         for (const r of rows) {
-          console.log(`${r.login.padEnd(40)} ${r.role.padEnd(7)} added ${r.added_at?.slice(0, 10) ?? "-"} by ${r.added_by ?? "-"}${r.note ? `  ${r.note}` : ""}`);
+          console.log(`${r.login.padEnd(40)} ${r.role.padEnd(10)} added ${r.added_at?.slice(0, 10) ?? "-"} by ${r.added_by ?? "-"}${r.note ? `  ${r.note}` : ""}`);
         }
         return;
       }
@@ -93,7 +96,8 @@ function run(args: string[]): void {
         let role: Role = "viewer";
         let note: string | null = null;
         for (let i = 0; i < rest.length; i++) {
-          if (rest[i] === "--admin") role = "admin";
+          if (rest[i] === "--operator") role = "operator";
+          else if (rest[i] === "--maintainer") role = "maintainer";
           else if (rest[i] === "--note" && i + 1 < rest.length) note = rest[++i]!;
           else throw new AccessError(`unknown argument ${rest[i]}\n${USAGE}`);
         }
@@ -108,7 +112,7 @@ function run(args: string[]): void {
         return;
       case "role": {
         const role = rest[0];
-        if (!login || (role !== "admin" && role !== "viewer")) break;
+        if (!login || !isRole(role)) break;
         setRole(db, "cli", login, role);
         console.log(`${login} is ${role}; their sessions are ended`);
         return;
@@ -125,5 +129,5 @@ function run(args: string[]): void {
 }
 
 export const commands = {
-  access: { summary: "dashboard access list: list | add <login> [--admin] [--note] | remove <login> | role <login> admin|viewer", run },
+  access: { summary: "dashboard access list: list | add <login> [--operator|--maintainer] [--note] | remove <login> | role <login> operator|maintainer|viewer", run },
 };

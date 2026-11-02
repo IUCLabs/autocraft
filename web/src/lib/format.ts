@@ -1,7 +1,8 @@
-import { NOW } from "../api/mock/fixtures";
-
-// The fixture's clock is frozen so screenshots are stable; the real client uses Date.now().
-const now = () => NOW;
+let now = () => Date.now();
+/** The mock's fixtures are dated around a frozen moment, so screenshots stay stable; it sets the clock to match. */
+export function setClock(fn: () => number) {
+  now = fn;
+}
 
 export function ago(isoTime: string, short = true): string {
   const s = Math.max(0, (now() - Date.parse(isoTime)) / 1000);

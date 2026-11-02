@@ -1,4 +1,4 @@
-// Repos page (admins): choose which org repos are tracked. Reads use `main.`
+// Repos page (operators): choose which org repos are tracked. Reads use `main.`
 // names because the dashboard connection shows tracked repos only.
 import type { DatabaseSync } from "node:sqlite";
 import { listAll, RepoError, trackRepo, untrackRepo } from "../repos.ts";
@@ -29,7 +29,7 @@ const change = (f: (db: DatabaseSync, by: string, name: string) => unknown) => (
 };
 
 export const reposRoutes: Route[] = [
-  { method: "GET", pattern: "/repos", admin: true, handler: reposPage },
-  { method: "POST", pattern: "/repos/track", admin: true, handler: change(trackRepo) },
-  { method: "POST", pattern: "/repos/untrack", admin: true, handler: change(untrackRepo) },
+  { method: "GET", pattern: "/repos", operator: true, handler: reposPage },
+  { method: "POST", pattern: "/repos/track", operator: true, handler: change(trackRepo) },
+  { method: "POST", pattern: "/repos/untrack", operator: true, handler: change(untrackRepo) },
 ];

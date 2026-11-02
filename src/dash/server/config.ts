@@ -1,5 +1,7 @@
 import { readFileSync, statSync } from "node:fs";
 import { isIP } from "node:net";
+import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { randomToken } from "./crypto.ts";
 import { dbPath } from "../../db.ts";
 
@@ -10,12 +12,15 @@ export type Config = {
   port: number;
   baseUrl: string | null;          // null only with dev auth, where every URL the server builds is relative
   dbPath: string;
+  webDist: string;                 // the frontend's build output (web/dist)
   devAuth: boolean;
   devPermsFile: string | null;
   devTokenTtlMs: number | null;    // fake provider's access-token lifetime
   trustProxy: boolean;
   secrets: Secrets;
 };
+
+export const DEFAULT_WEB_DIST = fileURLToPath(new URL("../../../web/dist", import.meta.url));
 
 export class ConfigError extends Error {}
 
@@ -89,6 +94,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   return {
     host, port, baseUrl, devAuth, secrets,
     dbPath: env.CRAFT_AUTO_DB ?? dbPath(),
+    webDist: env.CRAFT_AUTO_WEB_DIST ? resolve(env.CRAFT_AUTO_WEB_DIST) : DEFAULT_WEB_DIST,
     devPermsFile: devAuth ? (env.CRAFT_AUTO_DEV_PERMS ?? null) : null,
     devTokenTtlMs: devAuth && env.CRAFT_AUTO_DEV_TOKEN_TTL ? Number(env.CRAFT_AUTO_DEV_TOKEN_TTL) * 1000 || null : null,
     trustProxy: env.CRAFT_AUTO_TRUST_PROXY === "1",

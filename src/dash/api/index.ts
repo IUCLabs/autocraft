@@ -39,7 +39,7 @@ async function me(db: DatabaseSync, req: Req): Promise<User> {
   const mw = db.prepare("SELECT value FROM settings WHERE key = 'maintainer_writes'").get() as { value: string } | undefined;
   return {
     login: req.user.login,
-    role: dec.isOperator(req) ? "operator" : "viewer",
+    role: req.user.role,
     writeRepos: await writeRepos(db, req),
     maintainerWrites: mw?.value === "1",
   };

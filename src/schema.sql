@@ -166,7 +166,7 @@ CREATE TABLE IF NOT EXISTS decision_claims (
 -- Accounts. Only logins on the access list can sign in.
 CREATE TABLE IF NOT EXISTS access (
   login TEXT PRIMARY KEY COLLATE NOCASE,
-  role TEXT NOT NULL,                 -- admin | viewer
+  role TEXT NOT NULL,                 -- operator | maintainer | viewer
   added_by TEXT, added_at TEXT,
   note TEXT                           -- private
 );
@@ -213,13 +213,13 @@ CREATE INDEX IF NOT EXISTS items_pr_author ON items(kind, author, state, repo, m
 CREATE INDEX IF NOT EXISTS items_open ON items(state, repo, number);
 
 -- Repos the dashboard, pipeline and sync work on. `repos` keeps every org repo
--- (metadata only for untracked ones); admins choose here.
+-- (metadata only for untracked ones); operators choose here.
 CREATE TABLE IF NOT EXISTS tracked_repos (
   name TEXT PRIMARY KEY,
   added_by TEXT,
   added_at TEXT
 );
--- Seeded once; the flag keeps the seed from returning after an admin empties the list.
+-- Seeded once; the flag keeps the seed from returning after an operator empties the list.
 INSERT INTO tracked_repos (name, added_by, added_at)
 SELECT column1, 'seed', strftime('%Y-%m-%dT%H:%M:%SZ', 'now') FROM (VALUES
   ('photocraft'),

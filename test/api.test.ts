@@ -48,7 +48,7 @@ before(async () => {
     const [repo, rest] = id.split("#");
     return { id, kind: id.endsWith("close") ? "close" : "scope", repo, number: Number(rest!.split(":")[0]), question: "Small extra or plugin?", options: OPTS, recommended: "small", summary: "Adds a filter." };
   }));
-  addLogin(db, "cli", "boss", "admin", null);
+  addLogin(db, "cli", "boss", "operator", null);
   addLogin(db, "cli", "viewer1", "viewer", null);
   addLogin(db, "cli", "maint", "viewer", null);
   addLogin(db, "cli", "chatty", "viewer", null);
