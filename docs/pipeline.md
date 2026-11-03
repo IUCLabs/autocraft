@@ -239,7 +239,13 @@ These calls run with tools: Read, Grep and Glob on a read-only checkout inside a
 
 An agent run is one model call: one `claude -p` call or one Jev request. Each is recorded when it starts and ends (prompt id and version, model, account, item refs, tokens, summary). Prompts and raw output are kept 14 days; the rest 90 days. The Agents page lists runs.
 
-Operators enable accounts on the Accounts page and set a label and calls at once (1 to 100, default 2). Logins and config directories never appear in the API, logs or UI.
+Operators manage accounts on the Accounts page (under Operations); viewers see the same page without controls. Labels, config directories and logins are the only account data kept here. Config directories, credentials, tokens and email addresses never appear in the API, logs or UI.
+
+- **Add.** An operator gives a label. The account gets an empty config directory, `<CRAFT_AUTO_ACCOUNTS_ROOT>/<id>` (mode 0700), and starts disabled. Accounts listed in the `CRAFT_AUTO_ACCOUNTS` file are added to the list on first start with their own directories.
+- **Sign in.** *Sign in* runs `claude auth login --claudeai` for that account's config directory, hidden in a pseudo-terminal, and shows the sign-in URL. The operator opens it, signs in, and pastes the code the page shows into the dialog. The code is checked against a strict pattern, sent to the command and never stored or logged. A sign-in ends when the code is accepted or refused, after 30 seconds without an answer to the code, after 10 minutes, or on Cancel.
+- **Status.** `claude auth status` gives signed in or out, the login method and the plan. The login's end date comes from the refresh-token expiry in the credentials file; only that number is read. Status is read every 15 minutes, after a sign-in or sign-out, and on *Refresh*.
+- **Sign out** runs `claude auth logout`. **Enable** and **Disable** set whether the runner may use the account.
+- **Usage.** For each enabled, signed-in account the runner runs `claude -p /usage --output-format json` every 5 minutes (and on *Refresh*). `/usage` is a local command: it makes no model call and spends no tokens. Its report gives the 5-hour (`session`) and weekly (`weekly_all`) use and reset times; a limit whose window has not started is left out. The reading is saved as `<id>.json` in `CRAFT_AUTO_USAGE_DIR` (default `<CRAFT_AUTO_ACCOUNTS_ROOT>/.usage`) in the format below, and a reading older than 30 minutes counts as unknown.
 
 Before each call, the runner picks an enabled account with a free slot and headroom (5-hour use under 90 %, weekly use under 95 %; a reading older than 30 minutes counts as unknown), preferring the lowest weekly use. When none qualifies, the call waits. Stages that call Claude show as paused, with the reason, while no account has headroom. Jev calls use no account; their parallelism is the `jev_parallel` setting (default 4).
 

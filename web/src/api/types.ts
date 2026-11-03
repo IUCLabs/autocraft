@@ -1156,7 +1156,13 @@ export type ClaudeAccount = {
   running: number;       // agent runs active now
   usage: AccountUsage;
   pausedReason: string | null; // e.g. "5-hour use 92 % (pauses at 90 %)"
+  auth: AccountAuth;
+  login: AccountLogin | null;  // operators only: the sign-in in progress, or the last one's outcome
 };
+/** From `claude auth status` and the credentials file's expiry date; no email. Null fields: not read yet. */
+export type AccountAuth = { loggedIn: boolean | null; method: string | null; plan: string | null; expiresAt: string | null; checkedAt: string | null };
+export type AccountLoginState = "starting" | "waiting" | "checking" | "done" | "failed" | "cancelled";
+export type AccountLogin = { state: AccountLoginState; url: string | null; message: string | null };
 export type AccountInput = { label?: string; enabled?: boolean; maxConcurrent?: number };
 
 export type AgentRunState = "running" | "done" | "failed";

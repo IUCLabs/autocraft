@@ -4,6 +4,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import type { AgentRunFilter, AgentRunState, ClaudeAccount } from "../../../web/src/api/types.ts";
 import { AccountError, listAccounts, updateAccount } from "../../agents/accounts.ts";
+import { addAccount, beginLogin, refreshNow, sendCode, signOut, stopLogin } from "../../agents/manage.ts";
 import { getRun, listRuns, rates as ratesOf, RunQueryError } from "../../agents/runs.ts";
 import { HttpError } from "../server/util.ts";
 import type { Req } from "../types.ts";
@@ -20,9 +21,19 @@ const wrap = async <T>(f: () => T | Promise<T>): Promise<T> => {
 
 /** Operators see every account; others only the enabled ones. */
 export const accounts = (db: DatabaseSync, req: Req): ClaudeAccount[] =>
-  listAccounts(db).filter((a) => a.enabled || req.user.role === "operator");
+  listAccounts(db)
+    .filter((a) => a.enabled || req.user.role === "operator")
+    // The sign-in URL belongs to the operator who started it.
+    .map((a) => (req.user.role === "operator" ? a : { ...a, login: null }));
 
 export const putAccount = (db: DatabaseSync, req: Req) => wrap(() => updateAccount(db, req.params.id, req.json, req.user.login));
+
+export const postAccount = (db: DatabaseSync, req: Req) => wrap(() => addAccount(db, req.json, req.user.login));
+export const loginStart = (db: DatabaseSync, req: Req) => wrap(() => beginLogin(db, req.params.id, req.user.login));
+export const loginCode = (db: DatabaseSync, req: Req) => wrap(() => sendCode(db, req.params.id, req.json, req.user.login));
+export const loginCancel = (db: DatabaseSync, req: Req) => wrap(() => stopLogin(db, req.params.id, req.user.login));
+export const accountSignOut = (db: DatabaseSync, req: Req) => wrap(() => signOut(db, req.params.id, req.user.login));
+export const accountRefresh = (db: DatabaseSync, req: Req) => wrap(() => refreshNow(db, req.params.id, req.user.login));
 
 function intParam(req: Req, name: string): number | undefined {
   const v = req.query.get(name);

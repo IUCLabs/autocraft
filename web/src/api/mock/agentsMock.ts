@@ -19,21 +19,22 @@ const STEPS = [
   { step: "classify-new", stage: 2, title: "Classify new and changed items", promptId: "classify.jev", provider: "jev" as const, model: "jev" },
 ];
 
+const AUTH = { loggedIn: true, method: "claude.ai", plan: "max", expiresAt: new Date(NOW + 40 * 24 * HOUR).toISOString(), checkedAt: new Date(NOW - 3 * MIN).toISOString() };
 const accounts: ClaudeAccount[] = [
   {
     id: "b", label: "Team account B", enabled: true, maxConcurrent: 4, running: 0,
     usage: { fiveHourPct: 62, fiveHourResetsAt: iso(-(2 * HOUR + 40 * MIN)), weeklyPct: 41, weeklyResetsAt: iso(-(3 * 24 * HOUR + 5 * HOUR)), readAt: iso(2 * MIN) },
-    pausedReason: null,
+    pausedReason: null, auth: AUTH, login: null,
   },
   {
     id: "c", label: "Team account C", enabled: true, maxConcurrent: 3, running: 0,
     usage: { fiveHourPct: 93, fiveHourResetsAt: iso(-(55 * MIN)), weeklyPct: 78, weeklyResetsAt: iso(-(1 * 24 * HOUR + 2 * HOUR)), readAt: iso(1 * MIN) },
-    pausedReason: "5-hour use 93 % (pauses at 90 %)",
+    pausedReason: "5-hour use 93 % (pauses at 90 %)", auth: { ...AUTH, expiresAt: new Date(NOW + 6 * 24 * HOUR).toISOString() }, login: null,
   },
   {
     id: "d", label: "Spare account D", enabled: false, maxConcurrent: 2, running: 0,
     usage: { fiveHourPct: 8, fiveHourResetsAt: iso(-(4 * HOUR)), weeklyPct: 12, weeklyResetsAt: iso(-(5 * 24 * HOUR)), readAt: iso(95 * MIN) },
-    pausedReason: "disabled by an operator",
+    pausedReason: "disabled by an operator", auth: { loggedIn: false, method: null, plan: null, expiresAt: null, checkedAt: iso(3 * MIN) }, login: null,
   },
 ];
 
@@ -102,6 +103,12 @@ function rates(window: "24h" | "7d"): Rates {
 }
 
 export function createAgentsMock(me: User, changed: () => void): Pick<Api, "accounts" | "agents" | "rates"> {
+  const find = (id: string) => {
+    if (me.role !== "operator") throw new Error("only operators change accounts");
+    const a = accounts.find((x) => x.id === id);
+    if (!a) throw new Error("no such account");
+    return a;
+  };
   const visible = () => accounts.filter((a) => me.role === "operator" || a.enabled);
   return {
     accounts: {
@@ -124,6 +131,50 @@ export function createAgentsMock(me: User, changed: () => void): Pick<Api, "acco
         }
         changed();
         return wait(a, 30);
+      },
+      async add(label) {
+        if (me.role !== "operator") throw new Error("only operators change accounts");
+        if (!label.trim() || label.length > 40 || /[@<>]/.test(label)) throw new Error("label must be 1 to 40 characters without @, < or > (never an email address)");
+        const a: ClaudeAccount = {
+          id: `a${accounts.length + 1}`, label: label.trim(), enabled: false, maxConcurrent: 2, running: 0,
+          usage: { fiveHourPct: null, fiveHourResetsAt: null, weeklyPct: null, weeklyResetsAt: null, readAt: null },
+          pausedReason: "disabled by an operator", auth: { loggedIn: null, method: null, plan: null, expiresAt: null, checkedAt: null }, login: null,
+        };
+        accounts.push(a);
+        changed();
+        return wait(a, 30);
+      },
+      async loginStart(id) {
+        const a = find(id);
+        a.login = { state: "waiting", url: "https://claude.example/oauth/authorize?state=demo", message: null };
+        changed();
+        return wait(a, 200);
+      },
+      async loginCode(id, code) {
+        const a = find(id);
+        if (!/^[A-Za-z0-9#_.~+/=-]{1,512}$/.test(code)) throw new Error("the code has letters, digits and # _ . ~ + / = - only");
+        a.login = { state: "done", url: null, message: "signed in" };
+        a.auth = { ...AUTH, checkedAt: iso(0) };
+        changed();
+        return wait(a, 300);
+      },
+      async loginCancel(id) {
+        const a = find(id);
+        a.login = { state: "cancelled", url: null, message: null };
+        changed();
+        return wait(a, 30);
+      },
+      async signOut(id) {
+        const a = find(id);
+        a.auth = { loggedIn: false, method: null, plan: null, expiresAt: null, checkedAt: iso(0) };
+        changed();
+        return wait(a, 100);
+      },
+      async refresh(id) {
+        const a = find(id);
+        a.usage.readAt = iso(0);
+        changed();
+        return wait(a, 200);
       },
     },
     agents: {

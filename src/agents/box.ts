@@ -2,17 +2,45 @@
 // that paths stay outside the repository and never reach the API, the logs or
 // the UI:
 //   CRAFT_AUTO_ACCOUNTS       JSON file: [{ "id": "b", "configDir": "/path" }]
-//   CRAFT_AUTO_USAGE_DIR      directory with one <id>.json usage reading per account
-//   CRAFT_AUTO_USAGE_REFRESH  command that refreshes the readings (run by the runner)
+//   CRAFT_AUTO_ACCOUNTS_ROOT  directory holding one config directory per account an operator added (<root>/<id>)
+//   CRAFT_AUTO_USAGE_DIR      directory with one <id>.json usage reading per account (default <root>/.usage)
+//   CRAFT_AUTO_CLAUDE_BIN     the claude command (default: claude on the PATH)
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import type { DatabaseSync } from "node:sqlite";
 
 export const ACCOUNT_ID = /^[a-z0-9][a-z0-9_-]{0,31}$/;
 
 export type BoxAccount = { id: string; configDir: string };
 
-/** Accounts of the box config, in file order. An unreadable or malformed file yields none. */
-export function boxAccounts(): BoxAccount[] {
+export const claudeBin = (): string => process.env.CRAFT_AUTO_CLAUDE_BIN || "claude";
+
+export const configRoot = (): string | null => process.env.CRAFT_AUTO_ACCOUNTS_ROOT || null;
+
+/** Where operator-added accounts keep their Claude config; null without a root. */
+export const managedDir = (id: string): string | null => (configRoot() && ACCOUNT_ID.test(id) ? join(configRoot()!, id) : null);
+
+export function usageDir(): string | null {
+  return process.env.CRAFT_AUTO_USAGE_DIR || (configRoot() ? join(configRoot()!, ".usage") : null);
+}
+
+/**
+ * Accounts of the box config file, in file order, then (with a config root and
+ * a db) the accounts operators added. An unreadable or malformed file yields none.
+ */
+export function boxAccounts(db?: DatabaseSync): BoxAccount[] {
+  const out = fileAccounts();
+  if (db && configRoot()) {
+    const seen = new Set(out.map((a) => a.id));
+    for (const r of db.prepare("SELECT id FROM claude_accounts ORDER BY rowid").all() as { id: string }[]) {
+      const dir = managedDir(r.id);
+      if (dir && !seen.has(r.id)) out.push({ id: r.id, configDir: dir });
+    }
+  }
+  return out;
+}
+
+function fileAccounts(): BoxAccount[] {
   const file = process.env.CRAFT_AUTO_ACCOUNTS;
   if (!file) return [];
   try {
@@ -47,7 +75,7 @@ function window(w: unknown): { pct: number; resetsAt: number | null } | null {
 
 /** The latest usage reading of one account: only `<id>.json` in the usage directory is read. */
 export function readUsage(id: string): Reading | null {
-  const dir = process.env.CRAFT_AUTO_USAGE_DIR;
+  const dir = usageDir();
   if (!dir || !ACCOUNT_ID.test(id)) return null;
   try {
     const j = JSON.parse(readFileSync(join(dir, `${id}.json`), "utf8")) as { written_at?: unknown; rate_limits?: { five_hour?: unknown; seven_day?: unknown } };

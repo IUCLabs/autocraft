@@ -169,6 +169,12 @@ export function createHttpApi(): Api {
     accounts: {
       list: () => get("/api/accounts"),
       update: (id, input) => put(`/api/accounts/${encodeURIComponent(id)}`, input),
+      add: (label) => post("/api/accounts", { label }),
+      loginStart: (id) => post(`/api/accounts/${encodeURIComponent(id)}/login`),
+      loginCode: (id, code) => post(`/api/accounts/${encodeURIComponent(id)}/login/code`, { code }),
+      loginCancel: (id) => post(`/api/accounts/${encodeURIComponent(id)}/login/cancel`),
+      signOut: (id) => post(`/api/accounts/${encodeURIComponent(id)}/sign-out`),
+      refresh: (id) => post(`/api/accounts/${encodeURIComponent(id)}/refresh`),
     },
     envs: {
       list: () => get("/api/envs"),

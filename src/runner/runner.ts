@@ -4,7 +4,7 @@
 // stops jobs whose cancel was requested, runs the autopilot (queues jobs while the
 // pipeline switch is on) and marks
 // jobs left running by an earlier runner as failed.
-import { execFile, spawn, type ChildProcess } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { closeSync, mkdirSync, openSync, readFileSync, utimesSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
@@ -12,6 +12,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { dbPath } from "../db.ts";
 import { applyProposals, AUTOPILOT_USER, isEnabled, planDue, type Detected } from "./autopilot.ts";
 import { recordUsageSamples } from "../agents/accounts.ts";
+import { AccountWatcher } from "../agents/manage.ts";
 import { failRunning, pruneRuns } from "../agents/runs.ts";
 import { pruneTasks, reapLost } from "../build/tasks.ts";
 import { jobRow, now, pruneJobs, RUNNER_STOPPED } from "./jobs.ts";
@@ -25,7 +26,6 @@ export function runnerLockPath(): string {
   return join(dir, `runner-${basename(dbPath())}.lock`);
 }
 
-export const USAGE_REFRESH_MS = 5 * 60_000;
 export const HEARTBEAT_KEY = "runner_heartbeat";
 /** How often the runner brings the flowchart summary up to date (src/flow/summary.ts). */
 export const FLOW_EVERY_MS = 20_000;
@@ -167,9 +167,9 @@ export class Runner {
   private usageAt = 0;
   private refreshAt = 0;
   private pruneAt = 0;
-  private refreshing = false;
+  private watcher: AccountWatcher | undefined;
 
-  /** Records usage readings that changed (at most every 15 s), refreshes them with CRAFT_AUTO_USAGE_REFRESH every 5 minutes, and prunes old agent data hourly. */
+  /** Records usage readings that changed (at most every 15 s), reads sign-in state (every 15 minutes) and plan usage (every 5) of accounts through the claude command, and prunes old agent data hourly. */
   private usageTick(): void {
     const t = Date.now();
     if (t - this.usageAt >= 15_000) {
@@ -180,15 +180,9 @@ export class Runner {
         this.o.log(`usage samples: ${(e as Error).message}`);
       }
     }
-    const cmd = process.env.CRAFT_AUTO_USAGE_REFRESH?.trim().split(/\s+/).filter(Boolean);
-    if (cmd?.length && !this.refreshing && t - this.refreshAt >= USAGE_REFRESH_MS) {
+    if (t - this.refreshAt >= 60_000) {
       this.refreshAt = t;
-      this.refreshing = true;
-      // No shell: the command is split on spaces. Its output is not logged.
-      execFile(cmd[0]!, cmd.slice(1), { timeout: 60_000 }, (err) => {
-        this.refreshing = false;
-        if (err) this.o.log(`usage refresh failed: ${(err as Error & { code?: unknown }).code ?? "error"}`);
-      });
+      void (this.watcher ??= new AccountWatcher(this.db, (m) => this.o.log(m))).tick(t);
     }
     if (t - this.pruneAt >= 3600_000) {
       this.pruneAt = t;

@@ -146,6 +146,16 @@ export interface Api {
   accounts: {
     list(): Promise<ClaudeAccount[]>;
     update(id: string, input: AccountInput): Promise<ClaudeAccount>;
+    /** Operators: a new, disabled, signed-out account with this label. */
+    add(label: string): Promise<ClaudeAccount>;
+    /** Starts a sign-in; the answer's `login.url` is the page to open. */
+    loginStart(id: string): Promise<ClaudeAccount>;
+    /** Sends the code the sign-in page showed. */
+    loginCode(id: string, code: string): Promise<ClaudeAccount>;
+    loginCancel(id: string): Promise<ClaudeAccount>;
+    signOut(id: string): Promise<ClaudeAccount>;
+    /** Reads sign-in state and plan usage now. */
+    refresh(id: string): Promise<ClaudeAccount>;
   };
   /** Agent runs (one model call each): keyset-paged, filtered on the server. */
   agents: {

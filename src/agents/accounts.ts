@@ -4,9 +4,10 @@
 // Only accounts present in the box config (box.ts) are listed. Their config
 // directories stay in this process: nothing here returns one.
 import type { DatabaseSync } from "node:sqlite";
-import type { AccountInput, ClaudeAccount } from "../../web/src/api/types.ts";
+import type { AccountAuth, AccountInput, ClaudeAccount } from "../../web/src/api/types.ts";
 import { audit } from "../dash/audit.ts";
 import { JEV_PARALLEL_DEFAULT } from "../prompts/index.ts";
+import { loginInfo } from "./login.ts";
 import { boxAccounts, iso, readUsage, type BoxAccount, type Reading } from "./box.ts";
 
 export const FIVE_HOUR_LIMIT = 90;
@@ -26,10 +27,17 @@ export class AccountError extends Error {
   }
 }
 
+export function validLabel(v: unknown): string {
+  if (typeof v !== "string") throw new AccountError(400, "label must be text");
+  const l = v.trim();
+  if (!l || l.length > LABEL_MAX || /[\u0000-\u001f<>@]/.test(l)) throw new AccountError(400, `label must be 1 to ${LABEL_MAX} characters without @, < or > (never an email address)`);
+  return l;
+}
+
 type Row = { id: string; label: string; enabled: number; max_concurrent: number };
 
 /** Adds a row (disabled, labelled with its id) for each account of the box config that has none. */
-export function syncAccounts(db: DatabaseSync, box: BoxAccount[] = boxAccounts()): void {
+export function syncAccounts(db: DatabaseSync, box: BoxAccount[] = boxAccounts(db)): void {
   const ins = db.prepare("INSERT OR IGNORE INTO claude_accounts (id, label) VALUES (?, ?)");
   for (const a of box) ins.run(a.id, a.id);
 }
@@ -59,8 +67,18 @@ function rows(db: DatabaseSync, box: BoxAccount[]): Row[] {
   return box.flatMap((b) => (byId.has(b.id) ? [byId.get(b.id)!] : []));
 }
 
-function toAccount(r: Row, running: number, reading: Reading | null, nowMs: number): ClaudeAccount {
+type StatusRow = { logged_in: number; method: string | null; plan: string | null; login_expires_at: string | null; checked_at: string };
+
+function authOf(db: DatabaseSync, id: string): AccountAuth {
+  const s = db.prepare("SELECT logged_in, method, plan, login_expires_at, checked_at FROM claude_account_status WHERE account_id = ?").get(id) as StatusRow | undefined;
+  return s
+    ? { loggedIn: s.logged_in === 1, method: s.method, plan: s.plan, expiresAt: s.login_expires_at, checkedAt: s.checked_at }
+    : { loggedIn: null, method: null, plan: null, expiresAt: null, checkedAt: null };
+}
+
+function toAccount(r: Row, running: number, reading: Reading | null, nowMs: number, auth: AccountAuth): ClaudeAccount {
   return {
+    auth, login: loginInfo(r.id),
     id: r.id, label: r.label, enabled: r.enabled === 1, maxConcurrent: r.max_concurrent, running,
     usage: {
       fiveHourPct: reading?.fiveHour?.pct ?? null,
@@ -75,24 +93,21 @@ function toAccount(r: Row, running: number, reading: Reading | null, nowMs: numb
 
 /** Every account of the box config, enabled or not, in config order. */
 export function listAccounts(db: DatabaseSync, nowMs: number = Date.now()): ClaudeAccount[] {
-  const box = boxAccounts();
+  const box = boxAccounts(db);
   syncAccounts(db, box);
   const counts = runningCounts(db, nowMs);
-  return rows(db, box).map((r) => toAccount(r, counts.get(r.id) ?? 0, readUsage(r.id), nowMs));
+  return rows(db, box).map((r) => toAccount(r, counts.get(r.id) ?? 0, readUsage(r.id), nowMs, authOf(db, r.id)));
 }
 
 export function updateAccount(db: DatabaseSync, id: unknown, input: unknown, by: string): ClaudeAccount {
-  const box = boxAccounts();
+  const box = boxAccounts(db);
   if (typeof id !== "string" || !box.some((b) => b.id === id)) throw new AccountError(404, "no such account");
   if (!input || typeof input !== "object" || Array.isArray(input)) throw new AccountError(400, "the body must be a JSON object");
   const o = input as Record<string, unknown>;
   const bad = Object.keys(o).find((k) => !["label", "enabled", "maxConcurrent"].includes(k));
   if (bad) throw new AccountError(400, `${bad} cannot be set`);
   if (o.label !== undefined) {
-    if (typeof o.label !== "string") throw new AccountError(400, "label must be text");
-    const l = o.label.trim();
-    if (!l || l.length > LABEL_MAX || /[\u0000-\u001f<>@]/.test(l)) throw new AccountError(400, `label must be 1 to ${LABEL_MAX} characters without @, < or > (never an email address)`);
-    o.label = l;
+    o.label = validLabel(o.label);
   }
   if (o.enabled !== undefined && typeof o.enabled !== "boolean") throw new AccountError(400, "enabled must be true or false");
   if (o.maxConcurrent !== undefined && (typeof o.maxConcurrent !== "number" || !Number.isInteger(o.maxConcurrent) || o.maxConcurrent < 1 || o.maxConcurrent > MAX_CONCURRENT_LIMIT)) {
@@ -122,7 +137,7 @@ export type Choice =
 
 /** The enabled account with a free slot and headroom that has the lowest weekly use. */
 export function chooseAccount(db: DatabaseSync, nowMs: number = Date.now()): Choice {
-  const box = boxAccounts();
+  const box = boxAccounts(db);
   syncAccounts(db, box);
   const enabled = rows(db, box).filter((r) => r.enabled === 1);
   if (!enabled.length) return { none: true };
@@ -144,7 +159,7 @@ export function chooseAccount(db: DatabaseSync, nowMs: number = Date.now()): Cho
 
 /** Calls the enabled accounts with headroom can take right now: the sum of their free slots. */
 export function freeSlots(db: DatabaseSync, nowMs: number = Date.now()): number {
-  const box = boxAccounts();
+  const box = boxAccounts(db);
   syncAccounts(db, box);
   const counts = runningCounts(db, nowMs);
   let free = 0;
@@ -178,7 +193,7 @@ export function setJevParallel(db: DatabaseSync, n: unknown, by: string): number
  * enabled account is out of headroom. A busy account is not a pause; calls wait for a slot.
  */
 export function claudePauseReason(db: DatabaseSync, nowMs: number = Date.now()): string | null {
-  const box = boxAccounts();
+  const box = boxAccounts(db);
   syncAccounts(db, box);
   const enabled = rows(db, box).filter((r) => r.enabled === 1);
   if (!enabled.length) return "paused: no Claude account is enabled";
@@ -199,7 +214,7 @@ export const SAMPLE_KEEP_MS = 30 * 86_400_000;
 export function recordUsageSamples(db: DatabaseSync, nowMs: number = Date.now()): number {
   const ins = db.prepare("INSERT OR IGNORE INTO account_usage_samples (account_id, t, five_hour_pct, weekly_pct) VALUES (?, ?, ?, ?)");
   let n = 0;
-  for (const a of boxAccounts()) {
+  for (const a of boxAccounts(db)) {
     const r = readUsage(a.id);
     if (!r) continue;
     n += Number(ins.run(a.id, iso(r.writtenAt), r.fiveHour?.pct ?? null, r.weekly?.pct ?? null).changes);

@@ -801,3 +801,14 @@ CREATE TABLE IF NOT EXISTS merge_batch_prs (
   PRIMARY KEY (batch_id, number)
 );
 CREATE INDEX IF NOT EXISTS merge_batch_prs_pr ON merge_batch_prs(number, head_oid);
+
+-- Last `claude auth status` of each account: sign-in state, method, plan and
+-- the login's end date. Nothing else of the status (no email) is kept.
+CREATE TABLE IF NOT EXISTS claude_account_status (
+  account_id TEXT PRIMARY KEY,
+  logged_in INTEGER NOT NULL,
+  method TEXT,
+  plan TEXT,
+  login_expires_at TEXT,
+  checked_at TEXT NOT NULL
+);

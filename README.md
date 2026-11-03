@@ -160,9 +160,10 @@ Claude calls run under accounts that an operator enabled. Which accounts exist o
 |---|---|
 | `CRAFT_AUTO_ACCOUNTS` | A JSON file `[{ "id": "b", "configDir": "/path/to/claude-config-b" }]`. `id` is a short key (lowercase letters, digits, `_`, `-`); `configDir` becomes `CLAUDE_CONFIG_DIR` of the `claude` child process of calls made on that account. Directories never appear in the API, the logs or the UI. |
 | `CRAFT_AUTO_USAGE_DIR` | A directory with one file per account id, `<id>.json`: `{ "written_at": <unix s>, "rate_limits": { "five_hour": { "used_percentage": n, "resets_at": <unix s> }, "seven_day": { ... } } }`. Only that file is read. |
-| `CRAFT_AUTO_USAGE_REFRESH` | Optional command (split on spaces, no shell) that the runner runs every 5 minutes to refresh the readings. |
+| `CRAFT_AUTO_ACCOUNTS_ROOT` | Directory for the config directories of accounts added on the Accounts page (`<root>/<id>`, mode 0700). Without it, accounts can only come from the file. |
+| `CRAFT_AUTO_CLAUDE_BIN` | The `claude` command used for sign-in, status and usage (default: `claude` on the PATH). |
 
-Example: `CRAFT_AUTO_ACCOUNTS=/path/to/accounts.json`, `CRAFT_AUTO_USAGE_DIR=/path/to/usage`, `CRAFT_AUTO_USAGE_REFRESH="/path/to/refresh-usage --all"`.
+Example: `CRAFT_AUTO_ACCOUNTS=/path/to/accounts.json`, `CRAFT_AUTO_USAGE_DIR=/path/to/usage`, `CRAFT_AUTO_ACCOUNTS_ROOT=/path/to/accounts`.
 
 Each account in the file gets a row (disabled, labelled with its id) the first time anything lists accounts. Operators set the label, the switch and the number of calls at once on the Accounts page or with `craft-auto accounts list` and `craft-auto accounts set <id> [--label X] [--enabled yes|no] [--max-concurrent N]` (1 to 100; recorded as `cli`). Jev has no accounts; its calls at once are the `jev_parallel` setting (default 4), changed with `craft-auto accounts jev [N]`. Claude calls in flight are limited only by the accounts' free slots. Allocation and pauses are described in [docs/pipeline.md](docs/pipeline.md#claude-accounts-and-agent-runs).
 
