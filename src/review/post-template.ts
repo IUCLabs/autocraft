@@ -23,6 +23,12 @@ const VERDICT_LINE: Record<string, string> = {
   close: "Significant problems found:",
 };
 
+/** The unsure note goes inside the line, so it can't read as the first of the needed changes. */
+function verdictLine(verdict: string, sure: boolean): string {
+  const line = VERDICT_LINE[verdict] ?? "Review:";
+  return sure ? line : `${line.slice(0, -1)} (not certain)${line.slice(-1)}`;
+}
+
 /** One line of plain text: no mentions (nobody gets pinged), no raw HTML tags, cut to `max` characters. */
 export function cleanLine(s: string | null | undefined, max = ITEM_MAX): string {
   const t = (s ?? "")
@@ -76,7 +82,7 @@ export type ReviewPostInput = {
 };
 
 export function reviewBody(r: ReviewPostInput): string {
-  const head = `_AI-generated review (${modelLabel(r.model)}). Not a maintainer decision._\n\n${VERDICT_LINE[r.verdict] ?? "Review:"}${r.sure ? "" : " The review was not certain."}`;
+  const head = `_AI-generated review (${modelLabel(r.model)}). Not a maintainer decision._\n\n${verdictLine(r.verdict, r.sure)}`;
   const foot = `Reviewed at ${/^[0-9a-f]+$/i.test(r.head) ? r.head.slice(0, 7) : r.head}.`;
   const summary = cleanLine(r.summary);
   const items: string[] = [];

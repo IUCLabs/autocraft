@@ -84,6 +84,7 @@ describe("review body", () => {
   test("verdict wording", () => {
     for (const [v, line] of [["take", "No blocking problems found."], ["hold", "Changes needed:"], ["close", "Significant problems found:"]] as const)
       assert.match(reviewBody({ ...base, verdict: v, points: [] }), new RegExp(`\\n\\n${line}\\n`));
+    assert.match(reviewBody({ ...base, verdict: "hold", sure: false }), /\n\nChanges needed \(not certain\):\n/);
   });
 
   test("mentions and HTML tags are removed, emails stay, and the body stays under the cap", () => {
