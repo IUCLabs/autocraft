@@ -1,4 +1,4 @@
-import { useEffect, useId, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 
 // Renders a Mermaid diagram. The mermaid package is a dynamic import, so it
 // loads only on pages that have a ```mermaid block. Security level "strict"
@@ -62,10 +62,47 @@ function themeFor() {
   };
 }
 
+// The dashboard CSP has no 'unsafe-inline' for styles, so the browser drops
+// <style> elements and style="" attributes in inserted markup. Both are routed
+// through CSSOM instead, which style-src does not restrict: <style> text goes
+// into a constructable stylesheet, style attributes become el.style.cssText.
+function parseSvg(markup: string): { svg: SVGSVGElement; css: string } | null {
+  // HTML parsing, because label HTML inside foreignObject is not well-formed XML.
+  const doc = new DOMParser().parseFromString(markup, "text/html");
+  const svg = doc.body.querySelector("svg");
+  if (!svg) return null;
+  let css = "";
+  svg.querySelectorAll("style").forEach((el) => {
+    css += (el.textContent ?? "") + "\n";
+    el.remove();
+  });
+  return { svg, css };
+}
+
+function mountSvg(host: HTMLElement, parsed: { svg: SVGSVGElement; css: string }): CSSStyleSheet | null {
+  const node = document.importNode(parsed.svg, true);
+  const styled: [Element, string][] = [];
+  node.querySelectorAll("[style]").forEach((el) => {
+    styled.push([el, el.getAttribute("style") ?? ""]);
+    el.removeAttribute("style");
+  });
+  if (node.hasAttribute("style")) {
+    styled.push([node, node.getAttribute("style") ?? ""]);
+    node.removeAttribute("style");
+  }
+  host.replaceChildren(node);
+  for (const [el, text] of styled) (el as SVGElement | HTMLElement).style.cssText = text;
+  const sheet = new CSSStyleSheet();
+  sheet.replaceSync(parsed.css);
+  document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
+  return sheet;
+}
+
 export function MermaidDiagram({ source }: { source: string }) {
   const base = "mmd" + useId().replace(/[^a-zA-Z0-9]/g, "");
   const [svg, setSvg] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const hostRef = useRef<HTMLDivElement>(null);
   const [themeTick, setThemeTick] = useState(0);
 
   useEffect(() => {
@@ -89,9 +126,23 @@ export function MermaidDiagram({ source }: { source: string }) {
           themeCSS: t.themeCSS,
           themeVariables: t.themeVariables,
           // Natural size: a wide diagram scrolls sideways instead of shrinking.
-          flowchart: { useMaxWidth: false, htmlLabels: true, curve: "basis", padding: 10 },
+          flowchart: { useMaxWidth: false, htmlLabels: false, curve: "basis", padding: 10 },
         });
-        const out = await mermaid.render(id, source.replace(/^\s*classDef .*$/gm, ""));
+        const src = source.replace(/^\s*classDef .*$/gm, "");
+        // Mermaid measures text in a scratch element whose <style> the CSP drops, so
+        // the first pass measures with the wrong font and clips labels. Its stylesheet
+        // is adopted up front for the second pass, which measures with the real one.
+        const first = await mermaid.render(id, src);
+        const probe = parseSvg(first.svg);
+        const warm = new CSSStyleSheet();
+        warm.replaceSync(probe?.css ?? "");
+        document.adoptedStyleSheets = [...document.adoptedStyleSheets, warm];
+        let out;
+        try {
+          out = await mermaid.render(id, src);
+        } finally {
+          document.adoptedStyleSheets = document.adoptedStyleSheets.filter((x) => x !== warm);
+        }
         if (!cancelled) {
           setSvg(out.svg);
           setError(null);
@@ -105,6 +156,20 @@ export function MermaidDiagram({ source }: { source: string }) {
     };
   }, [source, base, themeTick]);
 
+  useLayoutEffect(() => {
+    const host = hostRef.current;
+    if (!svg || !host) return;
+    const parsed = parseSvg(svg);
+    if (!parsed) {
+      setError("Invalid diagram SVG");
+      return;
+    }
+    const sheet = mountSvg(host, parsed);
+    return () => {
+      if (sheet) document.adoptedStyleSheets = document.adoptedStyleSheets.filter((x) => x !== sheet);
+    };
+  }, [svg]);
+
   if (error) {
     return (
       <pre>
@@ -114,7 +179,7 @@ export function MermaidDiagram({ source }: { source: string }) {
   }
   return (
     <div className="md-diagram" role="img" aria-label="Diagram">
-      {svg ? <div dangerouslySetInnerHTML={{ __html: svg }} /> : <span className="text-ink/45">Loading diagram…</span>}
+      {svg ? <div ref={hostRef} /> : <span className="text-ink/45">Loading diagram…</span>}
     </div>
   );
 }
