@@ -92,6 +92,7 @@ export function buildFlow(c: Record<string, number>, meta: FlowMeta): Flow {
     ], { recent: ["labelled"], facts: [{ label: "Repos approved", value: `${fmt(v("x.approved"))} of ${fmt(repos)}` }] }),
     node("review", "Review", 7, "steps", `${fmt(v("review.not-reviewed"))} to review · ${fmt(v("review.total") - v("review.not-reviewed"))} reviewed`, [
       { id: "not-reviewed", label: "Not reviewed yet", waitsOn: "model", tone: "neutral", hint: "No review at the PR's current head commit" },
+      { id: "waiting-opus", label: "Waiting for the Opus review", waitsOn: "model", tone: "neutral", hint: "Sonnet rated take or take with fixes; Opus has not reviewed this head" },
       { id: "take", label: "Take", waitsOn: "nothing", tone: "ok" },
       { id: "take-fix", label: "Take with fixes", waitsOn: "nothing", tone: "ok" },
       { id: "hold", label: "Hold", waitsOn: "person", tone: "warn", hint: "Needs a person: reference behaviour, scope, overlaps or too large" },

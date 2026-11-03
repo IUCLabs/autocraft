@@ -20,7 +20,7 @@ type ItemRow = { kind: string; state: string; labels: string | null };
 /** Marks the actionable answers the pipeline has used as applied; returns how many. */
 export function applyUsedAnswers(db: DatabaseSync, at: string = new Date().toISOString()): number {
   const item = db.prepare("SELECT kind, state, labels FROM items WHERE repo = ? AND number = ?");
-  const reviewed = db.prepare("SELECT 1 FROM reviews WHERE repo = ? AND number = ? AND at >= ?");
+  const reviewed = db.prepare("SELECT 1 FROM final_reviews WHERE repo = ? AND number = ? AND at >= ? AND final = 1");
   const attempted = db.prepare("SELECT 1 FROM fix_attempts WHERE repo = ? AND number = ?");
   let n = 0;
   for (const a of actionable(db)) {

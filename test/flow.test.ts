@@ -74,6 +74,14 @@ test("a repo not approved for merging moves its ready PRs out of 'May merge now'
   assert.deepEqual([counts(merge).eligible, counts(merge).unapproved], [0, 1]);
 });
 
+test("a take or take-fix without an Opus review counts as waiting for Opus, not under its verdict", async () => {
+  const db = build();
+  db.prepare("DELETE FROM opus_reviews WHERE number IN (13, 14)").run();
+  refreshSummary(db);
+  const review = flowOf(db, null).nodes.find((n) => n.id === "review")!;
+  assert.deepEqual(counts(review), { "not-reviewed": 1, "waiting-opus": 2, take: 1, "take-fix": 0, hold: 1, close: 0 });
+});
+
 test("flowchart counts every branch by the stages' own rules", async () => {
   const db = build();
   const flow = flowOf(db, null);
@@ -81,7 +89,7 @@ test("flowchart counts every branch by the stages' own rules", async () => {
   assert.deepEqual(counts(node("synced")), { issues: 6, prs: 5 });
   assert.deepEqual(counts(node("classify")), { settled: 8, waiting: 1, referee: 0, disagree: 1, unclassified: 1 });
   assert.deepEqual(counts(node("decide")), { "not-asked": 1, open: 1, take: 1, "small-extra": 0, plugin: 1, close: 0, "need-info": 0 });
-  assert.deepEqual(counts(node("review")), { "not-reviewed": 1, take: 2, "take-fix": 1, hold: 1, close: 0 });
+  assert.deepEqual(counts(node("review")), { "not-reviewed": 1, "waiting-opus": 0, take: 2, "take-fix": 1, hold: 1, close: 0 });
   assert.deepEqual(counts(node("merge")), { eligible: 1, unapproved: 0, "needs-decision": 0, "waiting-ci": 0, "ci-failed": 1, conflict: 0, "waiting-verify": 0, "verify-failed": 0, "verify-error": 0, "needs-fix-up": 1, declined: 0, merged: 1 });
   assert.deepEqual(counts(node("verify")), { waiting: 0, planned: 0, running: 0, passed: 1, "ci-enough": 0, failed: 0, error: 0 });
   assert.equal(node("verify").total, 1);

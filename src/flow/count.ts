@@ -177,14 +177,16 @@ function decide(c: Ctx): NodeCount {
 
 function review(c: Ctx): NodeCount {
   const candidates = candidateRefs(c.db, c.repo ?? undefined, c.run);
-  const last = c.db.prepare(`WITH last AS (SELECT repo, number, verdict, ROW_NUMBER() OVER (PARTITION BY repo, number ORDER BY at DESC, rowid DESC) AS k
-      FROM reviews WHERE 1 ${c.andRepo()})
-    SELECT l.repo, l.number, l.verdict FROM last l JOIN items i ON i.repo = l.repo AND i.number = l.number
-    WHERE l.k = 1 AND i.state = 'OPEN'`).all(c.rp) as { repo: string; number: number; verdict: string }[];
+  const last = c.db.prepare(`WITH last AS (SELECT repo, number, verdict, final, ROW_NUMBER() OVER (PARTITION BY repo, number ORDER BY at DESC, head_oid DESC) AS k
+      FROM final_reviews WHERE 1 ${c.andRepo()})
+    SELECT l.repo, l.number, l.verdict, l.final FROM last l JOIN items i ON i.repo = l.repo AND i.number = l.number
+    WHERE l.k = 1 AND i.state = 'OPEN'`).all(c.rp) as { repo: string; number: number; verdict: string; final: number }[];
   // A PR waiting for a review at its new head counts there, not under its old verdict.
   const by = new Map<string, Refs>(VERDICTS.map((v) => [v, new Set()]));
-  for (const r of last) if (!candidates.has(ref(r))) by.get(r.verdict)?.add(ref(r));
-  const members = new Map<string, Refs>([["review.not-reviewed", candidates], ...[...by].map(([k, v]) => [`review.${k}`, v] as [string, Refs])]);
+  // A take or take-fix from Sonnet that Opus has not reviewed yet is not a verdict later stages use.
+  const waitingOpus: Refs = new Set();
+  for (const r of last) if (!candidates.has(ref(r))) (r.final ? by.get(r.verdict) : waitingOpus)?.add(ref(r));
+  const members = new Map<string, Refs>([["review.not-reviewed", candidates], ["review.waiting-opus", waitingOpus], ...[...by].map(([k, v]) => [`review.${k}`, v] as [string, Refs])]);
   const all = [...members.values()].flatMap((s) => [...s]);
   const takeFix = by.get("take-fix")!.size;
   return {
