@@ -285,3 +285,7 @@ Layout: `<root>/{repo.git,releases,app,data,cache,config}` (`app` is a symlink t
 | `CRAFT_AUTO_MODEL_CACHE` | Where model files are kept. Default `$XDG_CACHE_HOME/craft-automation/models` (`~/.cache/...`). |
 | `CRAFT_AUTO_EMBED_MODEL` | `bge-small-en-v1.5` (default), `multilingual-e5-small` or `all-MiniLM-L6-v2`. Changing it makes the next `embed` run embed everything again. |
 | `CRAFT_AUTO_EMBED_THREADS` | CPU threads for `embed` (default and maximum 8). The server uses 2. |
+
+## License
+
+AutoCraft is dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at your option.
