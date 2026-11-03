@@ -259,7 +259,7 @@ function BatchFacts({ b }: { b: QueueBatch }) {
         {b.baseSha.slice(0, 7)}
       </a>
       <span className="num text-2xs text-ink/50" title={`created ${b.createdAt.slice(0, 16).replace("T", " ")}, updated ${b.updatedAt.slice(0, 16).replace("T", " ")}`}>
-        {ago(b.createdAt)} ago · upd {ago(b.updatedAt)}
+        {ago(b.updatedAt)} ago
       </span>
     </>
   );
@@ -456,7 +456,7 @@ function PrRows({ r }: { r: QueueRow }) {
           <StateChip row={r} />
         </td>
       </tr>
-      <tr className="border-b border-line/60 last:border-0">
+      <tr className="border-b border-line last:border-0">
         <td colSpan={9} className="px-3 pb-2 pt-0.5">
           <ReviewText r={r} />
         </td>
