@@ -137,7 +137,7 @@ async function nodeIds(client: Querier, repo: string, numbers: number[], wait: W
   for (let i = 0; i < numbers.length; i += NODE_LOOKUP) {
     const part = numbers.slice(i, i + NODE_LOOKUP);
     const q = `query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) {
-      ${part.map((n) => `n${n}: issueOrPullRequest(number: ${n}) { ... on Labelable { id } ... on Issue { state } ... on PullRequest { state } }`).join("\n")} } }`;
+      ${part.map((n) => `n${n}: issueOrPullRequest(number: ${n}) { ... on Issue { id state } ... on PullRequest { id state } }`).join("\n")} } }`;
     const d = await retrying(() => client.query(q, { owner: ORG, name: repo }), wait);
     for (const n of part) {
       const node = d.repository?.[`n${n}`];
