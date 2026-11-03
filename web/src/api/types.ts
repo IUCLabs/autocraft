@@ -84,6 +84,8 @@ export interface Decision {
   /** null for a batch */
   number: number | null;
   items: (ItemRef & ItemShown)[];
+  /** Kind, state and title of the item of a single decision; null for a batch. */
+  shown: ItemShown | null;
   title: string;
   question: string;
   /** AI summary of the item or batch, 2–6 sentences. */

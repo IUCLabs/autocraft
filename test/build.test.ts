@@ -60,7 +60,7 @@ describe("task source", () => {
     const warm = task({ warm: { key: "open-app", role: "build" } });
     const pr = task({ number: 12 });
     const one = getTask(db, t)!;
-    assert.deepEqual(one.batch, { id: 1, branch: "integration-open-app-20261102-1", fork: null, commitSha: tip, baseSha: SHA, prs: [7, 9] });
+    assert.deepEqual(one.batch, { id: 1, branch: "integration-open-app-20261102-1", fork: null, commitSha: tip, baseSha: SHA, prs: [7, 9], shown: [{ kind: null, state: null, title: null }, { kind: null, state: null, title: null }] });
     assert.equal(one.baseline, null);
     assert.deepEqual(getTask(db, warm)!.baseline, { branch: "main" });
     assert.equal(getTask(db, warm)!.batch, null);

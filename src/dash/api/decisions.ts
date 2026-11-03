@@ -142,8 +142,8 @@ const viewerWith = async (db: DatabaseSync, req: Req): Promise<Viewer> => ({ ...
 export function toDecision(db: DatabaseSync, d: DecisionRow, viewer: Viewer): Decision {
   const batch = isBatch(d);
   const refs = itemsOf(d);
-  const look = db.prepare("SELECT title, body FROM items WHERE repo = ? AND number = ?");
-  const item = batch ? undefined : (look.get(d.repo, d.number) as { title: string | null; body: string | null } | undefined);
+  const look = db.prepare("SELECT title, body, kind, state FROM items WHERE repo = ? AND number = ?");
+  const item = batch ? undefined : (look.get(d.repo, d.number) as { title: string | null; body: string | null; kind: string; state: string } | undefined);
   const opinions = (db.prepare(`SELECT id, login, option, note, at, permission FROM decision_opinions
     WHERE decision_id = ? AND retracted_at IS NULL ORDER BY at DESC`).all(d.id) as OpinionRow[]).map(toOpinion);
   const adopted = d.adopted_opinion
@@ -157,6 +157,7 @@ export function toDecision(db: DatabaseSync, d: DecisionRow, viewer: Viewer): De
     repo: d.repo ?? refs[0]?.repo ?? "",
     number: d.number,
     items: batch ? withShown(db, refs) : [],
+    shown: batch ? null : { kind: item ? (item.kind === "pr" ? "pr" : "issue") : null, state: item ? itemState(item.state) : null, title: item?.title ?? null },
     title: batch ? d.question : (item?.title ?? `${d.repo}#${d.number}`),
     question: d.question,
     summary: d.summary ?? "", summaryBy: d.summary_by ?? "", summaryAt: d.summary_at ?? d.asked_at,

@@ -120,7 +120,7 @@ function Row({ d, active, checked, mine, onOpen, activeRef }: { d: Decision; act
   useNow();
   const old = ageDays(d.askedAt) >= 2;
   const opinions = d.opinions.length;
-  const item = d.items[0];
+  const item = d.shown;
   return (
     <div className={cn("group relative flex border-b border-line", active ? "bg-accent/[0.08]" : "hover:bg-ink/[0.03]")}>
       {active && <span className="absolute inset-y-0 left-0 w-0.5 bg-accent" />}
@@ -146,7 +146,7 @@ function Row({ d, active, checked, mine, onOpen, activeRef }: { d: Decision; act
           ) : (
             // The row selects the decision; clicks on the item's links must not also select it.
             <span className="min-w-0 flex-1" onClick={(e) => e.stopPropagation()}>
-              <ItemRef repo={d.repo} number={d.number} kind={item?.kind} state={item?.state} title={item?.title} size="sm" />
+              <ItemRef repo={d.repo} number={d.number} kind={item?.kind} state={item?.state} title={null} size="sm" />
             </span>
           )}
           <span className="ml-auto flex shrink-0 items-center gap-1.5 pt-0.5">

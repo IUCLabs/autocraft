@@ -654,6 +654,7 @@ function toDecision(s: Seed): Decision {
     repo: s.repo,
     number: s.number,
     items: (s.items ?? []).map((i) => ({ ...i, kind: "pr" as const, state: "open" as const })),
+    shown: s.number === null ? null : { kind: s.number % 3 === 0 ? ("issue" as const) : ("pr" as const), state: "open" as const, title: s.title },
     title: s.title,
     question: s.question,
     summary: text.summary,

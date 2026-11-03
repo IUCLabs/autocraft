@@ -192,7 +192,7 @@ export function DecisionBody({
           </span>
         )}
       </div>
-      {!isBatch && <ItemRef repo={d.repo} number={d.number!} kind={d.items[0]?.kind} state={d.items[0]?.state} title={null} size="sm" className="mt-2 text-ink/55" />}
+      {!isBatch && <ItemRef repo={d.repo} number={d.number!} kind={d.shown?.kind} state={d.shown?.state} title={null} size="sm" className="mt-2 text-ink/55" />}
       <h1 className={cn("mt-2 text-pretty font-semibold text-ink", phone ? "text-[17px] leading-6" : "text-lg")}>{d.title}</h1>
     </>
   );
@@ -456,7 +456,7 @@ function MultiAnswer({ ds, user }: { ds: Decision[]; user: User }) {
                   {d.number === null ? (
                     <span className="code text-sm text-ink/60">{refOf(d)}</span>
                   ) : (
-                    <ItemRef repo={d.repo} number={d.number} kind={d.items[0]?.kind} state={d.items[0]?.state} title={d.items[0]?.title ?? null} />
+                    <ItemRef repo={d.repo} number={d.number} kind={d.shown?.kind} state={d.shown?.state} title={null} />
                   )}
                   <div className="text-sm text-ink/70">{d.title}</div>
                 </div>
