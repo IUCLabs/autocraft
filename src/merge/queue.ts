@@ -272,7 +272,9 @@ export function buildQueue(db: DatabaseSync, opts: QueueOptions = {}): QueueEntr
     if (ci === "none" && noCi(r.repo)) outsideRule.push("the repo has no CI checks");
     const id = mergeDecisionId(r.repo, r.number, r.r_head);
     const asked = decision.get(id) as { id: string; answer: string | null } | undefined;
-    const answer = unsure && !answeredAfter.get(id, r.r_at) ? null : (answers.get(id) ?? null);
+    // Only a merge answer is set aside at an unsure head; a hold or close still counts.
+    const given = (answers.get(id) as string | undefined) ?? null;
+    const answer = given === "merge" && unsure && !answeredAfter.get(id, r.r_at) ? null : given;
     const e: QueueEntry = {
       repo: r.repo, number: r.number, title: r.title ?? "", author: r.author, tier, head: r.r_head, size, label,
       verdict: r.verdict, reason: r.reason, fixes, ci, mergeable, state: "needs-decision", path: null, outsideRule, runsWaiting, runsBlocked,
