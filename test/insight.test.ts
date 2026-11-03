@@ -57,7 +57,7 @@ describe("insight", () => {
     assert.deepEqual((await disagreements(db, rq(q))).rows.map((x) => x.number), [3, 5]);
     const hit = (await disagreements(db, rq(`${q}&band=${encodeURIComponent("0.90–0.95")}`)));
     assert.equal(hit.total, 1);
-    assert.deepEqual(hit.rows[0], { repo: "photocraft", number: 3, kind: "pr", title: "item 3", a: { label: "bugfix", prob: 0.92 }, b: { label: "infra", prob: null } });
+    assert.deepEqual(hit.rows[0], { repo: "photocraft", number: 3, kind: "pr", state: "open", title: "item 3", a: { label: "bugfix", prob: 0.92 }, b: { label: "infra", prob: null } });
     assert.equal((await disagreements(db, rq(`${q}&label=small%20extra`))).total, 1);
   });
 
