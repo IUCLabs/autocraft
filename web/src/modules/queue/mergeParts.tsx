@@ -1,4 +1,5 @@
 // Parts of the Merge tab: PR rows with CI, Verify and batch columns, and the batch header facts.
+import { useIsLinked } from "./highlight";
 import { useLayoutEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { CaretRightIcon } from "@phosphor-icons/react";
@@ -185,9 +186,10 @@ export function useRowOpen(to: string) {
 export function PrRows({ r, inBatch }: { r: QueueMergeRow; inBatch?: boolean }) {
   const cell = "px-3 pt-2 align-top";
   const open = useRowOpen(rowTarget(r));
+  const linked = useIsLinked(r.repo, r.number);
   return (
     <>
-      <tr className="cursor-pointer" onClick={open}>
+      <tr data-item={`${r.repo}:${r.number}`} className={cn("cursor-pointer", linked && "bg-accent/10")} onClick={open}>
         <td className={cell}>
           <span className="flex items-center gap-1">
             <FastMark fast={r.fast} />
@@ -286,8 +288,9 @@ export function Table({ rows }: { rows: QueueMergeRow[] }) {
 
 export function PrCard({ r, inBatch }: { r: QueueMergeRow; inBatch?: boolean }) {
   const open = useRowOpen(rowTarget(r));
+  const linked = useIsLinked(r.repo, r.number);
   return (
-    <li className="cursor-pointer border-b border-line px-4 py-2.5 last:border-0" onClick={open}>
+    <li data-item={`${r.repo}:${r.number}`} className={cn("cursor-pointer border-b border-line px-4 py-2.5 last:border-0", linked && "bg-accent/10")} onClick={open}>
       <div className="flex items-center gap-2 text-xs text-ink/55">
         <FastMark fast={r.fast} />
         <RefLink repo={r.repo} number={r.number} kind="pr" className="text-xs" />

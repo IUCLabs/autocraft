@@ -5,12 +5,6 @@ import { cn } from "./cn";
 /** `/queue/<tab>?item=<repo>:<number>`: the stage's Queue tab with the item scrolled into view and highlighted. */
 export const queueItemPath = (slot: QueueSlot, repo: string, number: number): string => `/queue/${slot.tab}?item=${encodeURIComponent(`${repo}:${number}`)}`;
 
-/** Parses the `item` URL parameter of the Queue page. */
-export function parseQueueItem(v: string | undefined): { repo: string; number: number } | null {
-  const m = v ? /^(.+):(\d+)$/.exec(v) : null;
-  return m ? { repo: m[1]!, number: Number(m[2]) } : null;
-}
-
 /** "Review #3": the item's place in line for its next stage. A button, so it also works inside a row that is a link. */
 export function QueueBadge({ slot, repo, number, className }: { slot: QueueSlot | null | undefined; repo: string; number: number; className?: string }) {
   const navigate = useNavigate();

@@ -86,7 +86,7 @@ One key per open item decides what the pipeline works on next, for issues and PR
 - PR size comes from changed lines: up to 50 S, up to 300 M, up to 1,000 L, more XL. An issue counts as M until Fix triage estimates its size.
 - Decide, Review, Fix, Fix-up, Verify and the merge queue all take the highest-ranked item first.
 - When Review and Fix both have work, the one with the higher-ranked item starts first. Daily limits still cap both.
-- Queue position: an item whose next step is a queued stage (Review, Opus review, Fix, Fix-up, Verify, Merge) has a place among the items with the same next step, in work-rank order with fast-tracked items first. It shows as a badge such as "Review #3" on Items, Queue, Decisions and the item page, and links to that stage's Queue tab with the item highlighted (`/queue/review?item=<repo>:<number>`). Items waiting for a person, running, held or done have none.
+- Queue position: an item whose next step is a queued stage (Review, Opus review, Fix, Fix-up, Verify, Merge) has a place among the in-scope items (repo switch on or fast-tracked, the pilot, not our own integration PRs) with the same next step, in work-rank order with fast-tracked items first; Merge places follow the Merge tab's order. It shows as a badge such as "Review #3" on Items, Queue, Decisions and the item page, and links to that stage's Queue tab with the item highlighted (`/queue/review?item=<repo>:<number>`). Items waiting for a person, running, held or done have none.
 - The Work queue page lists every open item in rank order with its level, type, size and next step.
 
 ## Decide

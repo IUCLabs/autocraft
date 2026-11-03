@@ -7,10 +7,10 @@
  */
 export type Topic =
   | "repos" | "sync" | "items" | "ranks" | "stages" | "checks" | "classify" | "dupes" | "decisions" | "reviews" | "queue" | "jobs" | "usage" | "accounts" | "agents"
-  | "envs" | "tasks" | "actions" | "fixes" | "verify" | "access" | "settings" | "github" | "fasttrack" | "conversations";
+  | "envs" | "tasks" | "actions" | "fixes" | "verify" | "access" | "settings" | "github" | "fasttrack" | "conversations" | "steps";
 
 /** What moves an item's queue position (src/rank/position.ts), for every query that carries the badge. */
-const SLOT: Topic[] = ["items", "ranks", "classify", "decisions", "reviews", "verify", "fixes", "checks", "fasttrack", "queue", "repos", "settings"];
+const SLOT: Topic[] = ["steps", "repos"];
 const withSlot = (...topics: Topic[]): Topic[] => [...new Set([...topics, ...SLOT])];
 
 /** Everything an item page shows about a pull request. */

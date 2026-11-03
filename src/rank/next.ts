@@ -62,8 +62,15 @@ export function nextStepOf(f: NextFacts): string {
   }
 }
 
+/** Memoizes a per-repo predicate for one pass over many items. */
+export function memoNoCi(db: DatabaseSync): (repo: string) => boolean {
+  const m = new Map<string, boolean>();
+  return (repo) => m.get(repo) ?? (m.set(repo, repoHasNoCi(db, repo)), m.get(repo)!);
+}
+
 /** Facts of one item from the stored tables. */
-export function factsOf(db: DatabaseSync, repo: string, number: number, kind: string, head: string | null, s: Settled): NextFacts {
+/** `noCi` answers repoHasNoCi; callers that visit many items of a repo pass a memoized one. */
+export function factsOf(db: DatabaseSync, repo: string, number: number, kind: string, head: string | null, s: Settled, noCi: (repo: string) => boolean = (r) => repoHasNoCi(db, r)): NextFacts {
   const review = kind === "pr" ? (db.prepare("SELECT f.verdict, f.head_oid, f.final FROM final_reviews f WHERE f.repo = ? AND f.number = ? ORDER BY f.at DESC, f.head_oid DESC LIMIT 1").get(repo, number) as { verdict: string; head_oid: string; final: number } | undefined) : undefined;
   const verify = kind === "pr" && head ? (db.prepare("SELECT state FROM verifications WHERE repo = ? AND number = ? AND head_sha = ?").get(repo, number, head) as { state: string } | undefined) : undefined;
   const attempt = kind === "issue" ? (db.prepare("SELECT state FROM fix_attempts WHERE repo = ? AND number = ?").get(repo, number) as { state: string } | undefined) : undefined;
@@ -72,6 +79,6 @@ export function factsOf(db: DatabaseSync, repo: string, number: number, kind: st
   return {
     kind: kind === "pr" ? "pr" : "issue", label: s.label, settled: s.status === "settled", scopeOpen: !!scope && scope.answer === null, needsDecision: s.flags.includes("needs decision"),
     review: review && review.head_oid === head ? (review.final ? review.verdict : "awaiting-opus") : null, verify: verify?.state ?? null, attempt: attempt?.state ?? null,
-    held: duplicateHeld(db, repo, number), refereeDue: s.status === "disagree" && reasonOf(s) !== "scope-disagreement" && s.referee === null, disagree: s.status === "disagree" && reasonOf(s) !== "scope-disagreement" && s.referee !== null, ci: ci?.overall ?? null, noCi: repoHasNoCi(db, repo),
+    held: duplicateHeld(db, repo, number), refereeDue: s.status === "disagree" && reasonOf(s) !== "scope-disagreement" && s.referee === null, disagree: s.status === "disagree" && reasonOf(s) !== "scope-disagreement" && s.referee !== null, ci: ci?.overall ?? null, noCi: noCi(repo),
   };
 }

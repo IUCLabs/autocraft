@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import { test } from "node:test";
 import { connect } from "../src/db.ts";
-import { computeStages, queueSlots } from "../src/rank/position.ts";
+import { computeStages, queueSlots, slotsOf } from "../src/rank/position.ts";
 import { SCRATCH } from "./scratch.ts";
 
 test("places are numbered per stage by rank, fast track first, and only queued steps get one", () => {
@@ -26,8 +26,8 @@ test("places are numbered per stage by rank, fast track first, and only queued s
   db.prepare("INSERT INTO fast_track (repo, number, added_by, added_at) VALUES ('off', 2, 'op', 'x')").run();
   db.prepare("INSERT INTO merge_holds (repo, number, held_by, held_at) VALUES ('app', 7, 'op', 'x')").run();
 
-  const stages = computeStages(db, (_d, r) => next[`${r.repo}#${r.number}`]!);
-  const slots = queueSlots(db, ["app", "other", "off"], stages);
+  const stages = computeStages(db, { nextOf: (r) => next[`${r.repo}#${r.number}`]!, entries: [] });
+  const slots = slotsOf(stages, ["app", "other", "off"]);
   const at = (k: string) => slots.get(k);
   assert.deepEqual(at("off#2"), { stage: "Review", tab: "review", place: 1 });
   assert.equal(at("other#1")?.place, 2);
@@ -37,5 +37,20 @@ test("places are numbered per stage by rank, fast track first, and only queued s
   assert.deepEqual(at("app#4"), { stage: "Fix", tab: "fix", place: 1 });
   for (const k of ["app#5", "app#6", "app#7", "off#1"]) assert.equal(at(k), undefined, `${k} has no place`);
   // Places count only the repos the viewer may see.
-  assert.equal(queueSlots(db, ["app"], stages).get("app#2")?.place, 1);
+  assert.equal(slotsOf(stages, ["app"]).get("app#2")?.place, 1);
+});
+
+test("a PR with no review is in the Review queue when the next step is read from the stored rows", () => {
+  const db = connect(join(SCRATCH, "position-real.db"));
+  db.exec("INSERT INTO repos (name, visibility) VALUES ('app', 'public')");
+  db.exec("INSERT INTO tracked_repos (name, added_by, added_at, pipeline) VALUES ('app', 'op', 'x', 1)");
+  db.exec("INSERT INTO items (repo, number, kind, state, title) VALUES ('app', 1, 'pr', 'OPEN', 't'), ('app', 2, 'pr', 'OPEN', 't')");
+  db.exec("INSERT INTO item_rank (repo, number, score, breakdown, computed_at) VALUES ('app', 1, 5, '{}', 'x'), ('app', 2, 9, '{}', 'x')");
+  const cls = db.prepare("INSERT INTO classifications (repo, number, classifier, run_id, at, type_label, flags, probs) VALUES ('app', ?, 'jev', 'r1', '2026-10-01', 'bugfix', '[]', '{\"top\":0.97}')");
+  cls.run(1);
+  cls.run(2);
+  db.exec("INSERT INTO settings (key, value) VALUES ('classify_run', 'r1')");
+  const slots = queueSlots(db, ["app"]);
+  assert.deepEqual(slots.get("app#2"), { stage: "Review", tab: "review", place: 1 });
+  assert.deepEqual(slots.get("app#1"), { stage: "Review", tab: "review", place: 2 });
 });

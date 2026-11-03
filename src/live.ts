@@ -67,6 +67,18 @@ export const TOPIC_TABLES: Record<string, Source[]> = {
   // Sessions change on every request (last_seen); only sign-ins and revocations matter.
   access: [{ table: "access" }, { table: "sessions", ops: ["INSERT", "DELETE"] }, { table: "audit" }],
   settings: [{ table: "settings", when: `${shownSettings("new_key")}` }],
+  // What decides an item's next pipeline step and its place in line (src/rank/position.ts). Narrower than the page topics:
+  // no comment, claim or opinion writes, and only the item and decision columns that change a step.
+  steps: [
+    { table: "items", ops: ["INSERT", "DELETE"] },
+    { table: "items", ops: ["UPDATE"], when: "old.state IS NOT new.state OR old.head_oid IS NOT new.head_oid OR old.kind IS NOT new.kind" },
+    { table: "decisions", ops: ["INSERT", "DELETE"] },
+    { table: "decisions", ops: ["UPDATE"], when: "old.answer IS NOT new.answer OR old.kind IS NOT new.kind OR old.repo IS NOT new.repo OR old.number IS NOT new.number OR old.items IS NOT new.items" },
+    { table: "dupe_group_items" }, { table: "item_rank" }, { table: "classifications" }, { table: "reviews" }, { table: "opus_reviews" }, { table: "verifications" },
+    { table: "fix_attempts" }, { table: "pr_checks" }, { table: "fast_track" }, { table: "merge_holds" }, { table: "merges" }, { table: "merge_batches" },
+    { table: "merge_batch_prs" }, { table: "tracked_repos" },
+    { table: "settings", when: "new_key IN ('pilot_items', 'classify_run', 'pipeline_login')" },
+  ],
   // Rows of the audit table that record a write on GitHub.
   github: [{ table: "audit", ops: ["INSERT", "UPDATE"], when: `new.action IN (${Object.keys(GITHUB_ACTIONS).map((a) => `'${a}'`).join(", ")})` }],
 };
@@ -105,7 +117,8 @@ export function liveSql(db?: DatabaseSync): string {
   for (const [topic, sources] of Object.entries(TOPIC_TABLES)) {
     for (const { table, ops = ALL_OPS, when } of sources) {
       for (const op of ops) {
-        const name = `live_${table}_${op[0]!.toLowerCase()}`;
+        // `steps` reads tables other topics already watch; its triggers need names of their own.
+        const name = `live_${topic === "steps" ? "steps_" : ""}${table}_${op[0]!.toLowerCase()}`;
         const key = op === "DELETE" ? "old.key" : "new.key";
         let cond = when ? when.replaceAll("new_key", key) : "";
         if (op === "UPDATE" && !when) {

@@ -1430,6 +1430,8 @@ export type QueueRepos = "pipeline" | "all" | RepoName;
 export interface QueuePageFilter {
   tab?: QueueTab;
   repos?: QueueRepos;
+  /** `repo:number`: the first page is cut long enough to include this item. */
+  item?: string;
   limit?: number;
   offset?: number;
 }
