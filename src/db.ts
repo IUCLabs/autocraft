@@ -58,6 +58,8 @@ const ADDED_COLUMNS: [table: string, column: string, type: string][] = [
   ["conversation_turns", "seq", "INTEGER"],
   ["conversation_turns", "claim", "TEXT"],
   ["conversation_turns", "claimed_at", "TEXT"],
+  ["conversation_turns", "progress", "TEXT"],
+  ["agent_runs", "progress", "TEXT"],
 ];
 
 // Indexes on added columns: they can only be created once the column exists.

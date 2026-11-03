@@ -533,7 +533,8 @@ CREATE TABLE IF NOT EXISTS agent_runs (
   ended_at TEXT,
   input_tokens INTEGER, output_tokens INTEGER, cache_read_tokens INTEGER, cache_write_tokens INTEGER,
   summary TEXT,
-  error TEXT
+  error TEXT,
+  progress TEXT                       -- running: the latest line of what the call is doing
 );
 CREATE INDEX IF NOT EXISTS agent_runs_running ON agent_runs(account_id) WHERE state = 'running';
 CREATE INDEX IF NOT EXISTS agent_runs_state ON agent_runs(state, id);
@@ -964,7 +965,8 @@ CREATE TABLE IF NOT EXISTS conversation_turns (
   notes TEXT,                         -- opus turns: JSON array of notes about dropped cards
   seq INTEGER,                        -- position in the prompt; NULL while pending, answering or held
   claim TEXT,                         -- answering: token of the run that holds the message
-  claimed_at TEXT
+  claimed_at TEXT,
+  progress TEXT                       -- answering: JSON array of the last few progress lines, newest last
 );
 CREATE INDEX IF NOT EXISTS conversation_turns_item ON conversation_turns(repo, number, id);
 CREATE UNIQUE INDEX IF NOT EXISTS conversation_turns_waiting ON conversation_turns(repo, number) WHERE status IN ('pending', 'answering');

@@ -74,6 +74,7 @@ function RunningNow({ selected }: { selected?: number }) {
               <div className="mt-1">
                 <Items r={r} />
               </div>
+              {r.progress && <p className="mt-1 truncate text-xs text-ink/45">{r.progress}</p>}
             </button>
           </li>
         ))}

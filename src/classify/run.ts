@@ -8,7 +8,8 @@ import type { ItemRef } from "../../web/src/api/types.ts";
 import { createHash } from "node:crypto";
 import { jevParallel } from "../agents/accounts.ts";
 import { claudeRoom, startClaudeRun, startJevRun } from "../agents/call.ts";
-import { finishRun } from "../agents/runs.ts";
+import { finishRun, setRunProgress } from "../agents/runs.ts";
+import { coalesce, lineFeed } from "./progress.ts";
 import { scrubError } from "../agents/text.ts";
 import { scrub } from "../runner/scrub.ts";
 import { itemTools } from "../itemtools/index.ts";
@@ -42,14 +43,22 @@ export function loadItems(db: DatabaseSync, refs: { repo: string; number: number
 }
 
 type Proc = { code: number | null; stdout: string; stderr: string };
-/** `env` is added to the process environment of the child. */
-export type Runner = (cmd: string, args: string[], input: string, cwd?: string, timeoutMs?: number, env?: Record<string, string>) => Promise<Proc>;
+/** `env` is added to the process environment of the child. `onLine` gets each complete line of stdout as it arrives (the whole stdout is still returned). */
+export type Runner = (cmd: string, args: string[], input: string, cwd?: string, timeoutMs?: number, env?: Record<string, string>, onLine?: (line: string) => void) => Promise<Proc>;
 
-export function exec(cmd: string, args: string[], input: string, cwd?: string, timeoutMs = 600_000, env?: Record<string, string>): Promise<Proc> {
+export function exec(cmd: string, args: string[], input: string, cwd?: string, timeoutMs = 600_000, env?: Record<string, string>, onLine?: (line: string) => void): Promise<Proc> {
   return new Promise((resolve) => {
     const p = spawn(cmd, args, { cwd, stdio: ["pipe", "pipe", "pipe"], timeout: timeoutMs, ...(env && { env: { ...process.env, ...env } }) });
     let stdout = "", stderr = "";
-    p.stdout.on("data", (d) => (stdout += d));
+    let partial = "";
+    p.stdout.on("data", (d) => {
+      stdout += d;
+      if (!onLine) return;
+      partial += d;
+      const lines = partial.split("\n");
+      partial = lines.pop()!;
+      for (const l of lines) try { onLine(l); } catch { /* progress is best effort */ }
+    });
     p.stderr.on("data", (d) => (stderr += d));
     p.on("error", (e) => resolve({ code: -1, stdout, stderr: String(e) }));
     p.on("close", (code) => resolve({ code, stdout, stderr }));
@@ -207,6 +216,16 @@ function replySummary(text: string, asked: number): string {
 /** The result of a `--output-format json` run: with a subagent the event list holds several `result` events and the last one is final. */
 export const lastResult = <T extends { type?: string }>(parsed: T[] | T): T | undefined => (Array.isArray(parsed) ? parsed.findLast((e) => e.type === "result") : parsed);
 
+function parseOutput(stdout: string): { type?: string }[] | { type?: string } {
+  try {
+    return JSON.parse(stdout) as { type?: string }[] | { type?: string };
+  } catch {
+    const events = stdout.split("\n").filter((l) => l.startsWith("{")).flatMap((l) => { try { return [JSON.parse(l) as { type?: string }]; } catch { return []; } });
+    if (!events.length) throw new Error("no events");
+    return events;
+  }
+}
+
 const exitClass = (code: number | null): string => (code === null ? "timed out or killed" : code === -1 ? "could not start" : `exit code ${code}`);
 
 const madeDirs = new Set<string>();
@@ -225,11 +244,12 @@ export function claudeCwd(): string {
 }
 
 /**
+ * `onProgress`: called with a short plain line for each tool call of a sandboxed call, as it happens; the latest line is also kept on the agent run.
  * `checkout`: host directory of a read-only checkout; with it, a prompt that registers a sandbox runs with its tools inside bubblewrap (src/sandbox).
  * `shared`: for a prompt with the workspace, replaces the default workspace (every tracked repository's default branch, src/sandbox/workspace.ts).
  * `itemTools`: the item tools' read-only mounts and MCP servers (`mcpServers` as in an MCP config), for the call and its explorer; null means none, absent means `itemTools()` (src/itemtools).
  */
-export type AskOptions = { checkout?: string; shared?: { name: string; dir: string }[]; itemTools?: { mounts: { host: string; path: string }[]; mcpServers: Record<string, unknown> } | null };
+export type AskOptions = { onProgress?: (line: string) => void; checkout?: string; shared?: { name: string; dir: string }[]; itemTools?: { mounts: { host: string; path: string }[]; mcpServers: Record<string, unknown> } | null };
 
 type WorkspaceFn = (db: DatabaseSync) => Promise<{ name: string; dir: string }[]>;
 let workspaceOf: WorkspaceFn = defaultWorkspace;
@@ -254,6 +274,7 @@ export async function askClaude<K extends ClaudePromptId>(id: K, model: string, 
   const items = refsOf(input);
   const run = await startClaudeRun(db, { promptId: id, promptVersion: promptVersion(id), provider: "claude", model, items, prompt: joinParts(parts) });
   const end = (e: Parameters<typeof finishRun>[2]) => finishRun(db, run.runId, e);
+  const runProgress = coalesce((line: string) => setRunProgress(db, run.runId, line));
   try {
     // The sandbox never refreshes the token: with little lifetime left the call runs on the host without tools, where a refresh is safe.
     if (sandboxed && tokenNearExpiry(join(run.configDir, ".credentials.json"))) {
@@ -273,13 +294,15 @@ export async function askClaude<K extends ClaudePromptId>(id: K, model: string, 
       const claudeBin = resolveClaudeBin(), credentials = join(run.configDir, ".credentials.json");
       if (!claudeBin || !existsSync(credentials)) throw new Error("sandboxed call: claude binary or the account's credentials file not found");
       const c = sandboxCommand({ claudeBin, checkout: opts.checkout!, credentials, claudeArgs: args, shared, ...(workspace && { agentsFile: agentsFile(tools?.servers) }), extraMounts: tools ? [...tools.mounts, { host: tools.file, path: MCP_PATH }] : undefined });
-      r = await runner(c.cmd, c.args, parts.stdin, cwd, CLAUDE_PROMPTS[id].limits.timeoutSeconds * 1000);
+      const feed = lineFeed((line) => { opts.onProgress?.(line); runProgress.push(line); });
+      r = await runner(c.cmd, c.args, parts.stdin, cwd, CLAUDE_PROMPTS[id].limits.timeoutSeconds * 1000, undefined, feed);
+      runProgress.flush();
     } else r = await runner("claude", args, parts.stdin, cwd, CLAUDE_PROMPTS[id].limits.timeoutSeconds * 1000, { CLAUDE_CONFIG_DIR: run.configDir });
     // Stderr is scrubbed up front. For a sandboxed call the reply text is scrubbed after parsing, so a match cannot break the JSON.
     if (sandboxed) r = { ...r, stderr: scrub(r.stderr) };
     try {
-      // Some CLI versions print the event list, others only the final result object.
-      const parsed = JSON.parse(r.stdout) as { type?: string }[] | { type?: string };
+      // `--output-format json` prints the event list (older CLI versions only the final result object); stream-json prints one event per line.
+      const parsed = parseOutput(r.stdout);
       const j = lastResult(parsed) as { result?: string; is_error?: boolean; total_cost_usd?: number; num_turns?: number; usage?: Record<string, number>; modelUsage?: ModelUsage } | undefined;
       if (!j) {
         end({ state: "failed", error: `no result (${exitClass(r.code)}) ${r.stderr}`.slice(0, 400), summary: "no result", output: sandboxed ? scrub(r.stdout) : r.stdout });

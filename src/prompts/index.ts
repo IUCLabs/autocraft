@@ -975,7 +975,7 @@ export function claudeArgs(id: ClaudePromptId, model: string, sandboxed = false,
     const dirs = ws ? [REPO_PATH, REPOS_ROOT] : [REPO_PATH];
     const tools = [...p.sandbox.tools, ...(ws ? [AGENT_TOOL] : [])];
     const allowed = [...dirs.map((d) => `Read(/${d}/**)`), ...(ws ? [AGENT_TOOL] : []), ...(mcp ? mcpTools(mcp.servers) : [])];
-    return ["-p", "--model", model, "--effort", p.effort, "--output-format", "json", "--tools", tools.join(","), "--allowedTools", allowed.join(","),
+    return ["-p", "--model", model, "--effort", p.effort, "--output-format", "stream-json", "--verbose", "--tools", tools.join(","), "--allowedTools", allowed.join(","),
       "--permission-mode", "dontAsk", "--permission-prompts", "none", "--restricted", ...dirs.flatMap((d) => ["--add-dir", d]),
       ...(ws ? ["--agents", AGENTS_PATH] : []), ...(mcp ? ["--mcp-config", mcp.config] : []), "--strict-mcp-config", "--disable-slash-commands",
       "--no-session-persistence", "--max-turns", String(p.sandbox.maxTurns)];

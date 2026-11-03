@@ -39,10 +39,15 @@ export function insertRun(db: DatabaseSync, s: RunStart): number {
 
 export function finishRun(db: DatabaseSync, id: number, e: RunEnd): void {
   const t = e.tokens;
-  db.prepare(`UPDATE agent_runs SET state = ?, ended_at = ?, input_tokens = ?, output_tokens = ?, cache_read_tokens = ?, cache_write_tokens = ?, summary = ?, error = ?
+  db.prepare(`UPDATE agent_runs SET state = ?, ended_at = ?, input_tokens = ?, output_tokens = ?, cache_read_tokens = ?, cache_write_tokens = ?, summary = ?, error = ?, progress = NULL
     WHERE id = ? AND state = 'running'`)
     .run(e.state, now(), t?.input ?? null, t?.output ?? null, t?.cacheRead ?? null, t?.cacheWrite ?? null, e.summary ?? null, e.error ? e.error.slice(0, ERROR_MAX) : null, id);
   if (e.output) db.prepare("UPDATE agent_run_texts SET output = ? WHERE run_id = ?").run(scrub(e.output.slice(0, TEXT_MAX)), id);
+}
+
+/** The latest progress line of a running call (src/classify/progress.ts). */
+export function setRunProgress(db: DatabaseSync, id: number, line: string): void {
+  db.prepare("UPDATE agent_runs SET progress = ? WHERE id = ? AND state = 'running'").run(line, id);
 }
 
 /** Marks running rows as failed: all of them, or those of one job. Used when the process that made the calls is gone. */
@@ -58,7 +63,7 @@ export function failRunning(db: DatabaseSync, reason: string, jobId?: number): n
 type RunRow = {
   id: number; job_id: number | null; step: string; stage: number; prompt_id: string; prompt_version: string; provider: string; model: string;
   account_id: string | null; account_label: string | null; items: string; item_count: number; state: AgentRunState; started_at: string; ended_at: string | null;
-  input_tokens: number | null; output_tokens: number | null; cache_read_tokens: number | null; cache_write_tokens: number | null; summary: string | null; error: string | null;
+  input_tokens: number | null; output_tokens: number | null; cache_read_tokens: number | null; cache_write_tokens: number | null; summary: string | null; error: string | null; progress: string | null;
 };
 
 const SELECT = "SELECT r.*, a.label AS account_label FROM agent_runs r LEFT JOIN claude_accounts a ON a.id = r.account_id";
@@ -78,6 +83,7 @@ function toRun(r: RunRow): AgentRun {
     provider: r.provider === "jev" ? "jev" : "claude", model: r.model, accountId: r.account_id, accountLabel: r.account_id ? (r.account_label ?? r.account_id) : null,
     items: refs(r.items), itemCount: r.item_count, state: r.state, startedAt: r.started_at, endedAt: r.ended_at,
     inputTokens: r.input_tokens, outputTokens: r.output_tokens, cacheReadTokens: r.cache_read_tokens, cacheWriteTokens: r.cache_write_tokens, summary: r.summary,
+    ...(r.state === "running" && r.progress && { progress: r.progress }),
   };
 }
 

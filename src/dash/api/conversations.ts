@@ -53,7 +53,9 @@ export function conversationView(db: DatabaseSync, repo: string, n: number): Con
     ...(t.status && { status: t.status as ConversationTurn["status"] }),
     ...(t.error && { error: t.error }),
   }));
-  return { repo, number: n, exists: true, pending: !!pendingTurn(db, repo, n), startedBy: c.created_by, turns };
+  const wait = pendingTurn(db, repo, n);
+  const progress = wait?.status === "answering" && wait.progress ? (JSON.parse(wait.progress) as string[]) : [];
+  return { repo, number: n, exists: true, pending: !!wait, ...(progress.length > 0 && { progress }), startedBy: c.created_by, turns };
 }
 
 function itemOf(req: Req): { repo: string; n: number } {

@@ -21,7 +21,7 @@ export type StoreDeps = { diff?: DiffSource; now?: () => Date };
 const nowOf = (d?: StoreDeps) => (d?.now?.() ?? new Date()).toISOString();
 
 export type ConversationRow = { repo: string; number: number; item_block: string; item_sig: string; created_at: string; created_by: string };
-export type TurnRow = { id: number; repo: string; number: number; kind: TurnKind; login: string; at: string; body: string; block: string; status: string | null; error: string | null; notes: string | null; seq: number | null; claim: string | null; claimed_at: string | null };
+export type TurnRow = { id: number; repo: string; number: number; kind: TurnKind; login: string; at: string; body: string; block: string; status: string | null; error: string | null; notes: string | null; seq: number | null; claim: string | null; claimed_at: string | null; progress: string | null };
 
 export const conversationOf = (db: DatabaseSync, repo: string, n: number): ConversationRow | undefined =>
   db.prepare("SELECT * FROM conversations WHERE repo = ? AND number = ?").get(repo, n) as ConversationRow | undefined;
@@ -256,12 +256,17 @@ export function claimPending(db: DatabaseSync, repo: string, n: number, deps?: S
   const at = nowOf(deps);
   const stale = new Date(Date.parse(at) - STALE_CLAIM_MS).toISOString();
   return inTx(db, () => {
-    db.prepare("UPDATE conversation_turns SET status = 'pending', claim = NULL, claimed_at = NULL WHERE repo = ? AND number = ? AND kind = 'operator' AND status = 'answering' AND claimed_at < ?").run(repo, n, stale);
+    db.prepare("UPDATE conversation_turns SET status = 'pending', claim = NULL, claimed_at = NULL, progress = NULL WHERE repo = ? AND number = ? AND kind = 'operator' AND status = 'answering' AND claimed_at < ?").run(repo, n, stale);
     const claim = randomUUID();
     const r = db.prepare("UPDATE conversation_turns SET status = 'answering', claim = ?, claimed_at = ? WHERE repo = ? AND number = ? AND kind = 'operator' AND status = 'pending'").run(claim, at, repo, n);
     if (r.changes !== 1) return null;
     return { turn: db.prepare("SELECT * FROM conversation_turns WHERE claim = ?").get(claim) as unknown as TurnRow, claim };
   });
+}
+
+/** Stores what Opus is doing on the message the run holds (newest line last); the live topic pushes it. Cleared when the reply or the failure is stored. */
+export function setTurnProgress(db: DatabaseSync, repo: string, n: number, claim: string, lines: string[]): void {
+  db.prepare("UPDATE conversation_turns SET progress = ? WHERE repo = ? AND number = ? AND status = 'answering' AND claim = ?").run(JSON.stringify(lines), repo, n, claim);
 }
 
 /** The pieces of the next prompt: the stored item block and the turns in prompt order, the claimed message last. */
@@ -274,7 +279,7 @@ export function promptParts(db: DatabaseSync, repo: string, n: number, wait: Tur
 
 /** Gives the claimed message its place in the prompt order, then the turns held while it was answered, in the order they arrived. */
 function settleWait(db: DatabaseSync, repo: string, n: number, wait: TurnRow, status: string, error: string | null, between?: () => void): void {
-  db.prepare("UPDATE conversation_turns SET status = ?, error = ?, seq = ?, claim = NULL WHERE id = ?").run(status, error, nextSeq(db, repo, n), wait.id);
+  db.prepare("UPDATE conversation_turns SET status = ?, error = ?, seq = ?, claim = NULL, progress = NULL WHERE id = ?").run(status, error, nextSeq(db, repo, n), wait.id);
   between?.();
   const held = db.prepare("SELECT id FROM conversation_turns WHERE repo = ? AND number = ? AND status = 'held' ORDER BY id").all(repo, n) as { id: number }[];
   for (const h of held) db.prepare("UPDATE conversation_turns SET status = NULL, seq = ? WHERE id = ?").run(nextSeq(db, repo, n), h.id);

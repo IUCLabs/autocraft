@@ -1231,6 +1231,7 @@ export type AgentRun = {
   inputTokens: number | null; outputTokens: number | null;
   cacheReadTokens: number | null; cacheWriteTokens: number | null;
   summary: string | null;    // one line: verdict counts, error class
+  progress?: string;         // running calls with tools: the latest thing the model is doing
 };
 export type AgentRunDetail = AgentRun & {
   prompt: string | null;     // rendered prompt; null once past retention (14 days)
@@ -1480,6 +1481,8 @@ export interface Conversation {
   exists: boolean;
   /** An operator message waits for Opus's reply. */
   pending: boolean;
+  /** While a reply is being written: what Opus did last, up to five plain lines, newest last. */
+  progress?: string[];
   startedBy: string | null;
   turns: ConversationTurn[];
 }

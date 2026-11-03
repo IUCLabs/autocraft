@@ -3,10 +3,11 @@
 import type { DatabaseSync } from "node:sqlite";
 import { claudeRoom } from "../agents/call.ts";
 import { askClaude, pool, saveUsage, type Usage } from "../classify/run.ts";
+import { PROGRESS_KEEP, coalesce } from "../classify/progress.ts";
 import { CLAUDE_PROMPTS } from "../prompts/index.ts";
 import { parseReply } from "./cards.ts";
 import { sweepRunningCards } from "./act.ts";
-import { claimPending, failTurn, pendingConversations, promptParts, refreshItem, storeReply, type DiffSource } from "./store.ts";
+import { claimPending, failTurn, pendingConversations, promptParts, refreshItem, setTurnProgress, storeReply, type DiffSource } from "./store.ts";
 
 export const CONVERSATION_PROMPT = CLAUDE_PROMPTS["conversation.turn"];
 
@@ -50,8 +51,17 @@ export async function answerPending(db: DatabaseSync, p: ConversationParams): Pr
     const checkout = await checkouts.get(repo)!;
     let usage: Usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: null };
     let parsed: ReturnType<typeof parseReply> = null;
+    // The latest few lines go on the message's row, at most one write a second.
+    let recent: string[] = [];
+    const shown = coalesce((lines: string[]) => setTurnProgress(db, repo, n, claim, lines));
+    const onProgress = (line: string) => {
+      if (recent.at(-1) === line) return;
+      recent = [...recent, line].slice(-PROGRESS_KEEP);
+      shown.push(recent);
+    };
     for (let attempt = 0; attempt < CONVERSATION_PROMPT.limits.attempts && !parsed; attempt++) {
-      const reply = await askClaude("conversation.turn", model, [{ ref: `${repo}#${n}`, item: parts.item, turns: parts.turns }], db, { checkout: checkout ?? undefined });
+      const reply = await askClaude("conversation.turn", model, [{ ref: `${repo}#${n}`, item: parts.item, turns: parts.turns }], db, { checkout: checkout ?? undefined, onProgress });
+      shown.flush();
       if (!reply) continue;
       usage = sum(usage, reply.usage);
       parsed = parseReply(db, repo, n, reply.text);
