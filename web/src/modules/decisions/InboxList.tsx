@@ -117,10 +117,8 @@ export function InboxList({ user }: ViewProps) {
 
 function Row({ d, active, checked, mine, onOpen, activeRef }: { d: Decision; active: boolean; checked: boolean; mine?: string; onOpen: () => void; activeRef?: React.Ref<HTMLDivElement> }) {
   useNow();
-  const rec = d.options.find((o) => o.key === d.recommended);
   const old = ageDays(d.askedAt) >= 2;
   const opinions = d.opinions.length;
-  const firstSentence = d.summary.split(/(?<=\.)\s/)[0];
   return (
     <div className={cn("group relative flex border-b border-line", active ? "bg-accent/[0.08]" : "hover:bg-ink/[0.03]")}>
       {active && <span className="absolute inset-y-0 left-0 w-0.5 bg-accent" />}
@@ -132,18 +130,14 @@ function Row({ d, active, checked, mine, onOpen, activeRef }: { d: Decision; act
       </label>
       <div ref={activeRef} role="option" tabIndex={0} aria-selected={active} onClick={onOpen} onKeyDown={(e) => { if (e.target === e.currentTarget && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); onOpen(); } }} className="min-w-0 flex-1 cursor-pointer rounded-none py-2 pr-3 text-left">
         <div className="flex items-baseline gap-2">
-          <span className={cn("min-w-0 flex-1 truncate text-sm", active ? "font-medium text-ink" : "text-ink/90")}>{d.title}</span>
+          <span className={cn("min-w-0 flex-1 break-words text-sm", active ? "font-medium text-ink" : "text-ink/90")}>{d.title}</span>
           <span className={cn("num shrink-0 text-xs", old ? "text-warn" : "text-ink/45")} title={`asked ${ago(d.askedAt, false)}`}>
             {ago(d.askedAt)}
           </span>
         </div>
-        <div className="mt-0.5 truncate text-xs text-ink/60" title={d.summary}>
-          {firstSentence}
-        </div>
         <div className="mt-0.5 flex items-center gap-1.5 text-xs text-ink/50">
           {d.number === null ? <span className="code shrink-0 text-[11.5px]">{d.repo}</span> : <RefLink repo={d.repo} number={d.number} stop className="shrink-0 text-[11.5px] text-ink/50" />}
           {d.number === null && <span className="shrink-0">· {d.items.length} items</span>}
-          {rec && <span className="truncate">· rec. {rec.label}</span>}
           <span className="ml-auto flex shrink-0 items-center gap-1.5">
             {opinions > 0 && (
               <span className={cn("inline-flex items-center gap-0.5", mine && "text-accent-ink")} title={`picked by ${opinions}${mine ? ", including you" : ""}`}>
