@@ -100,7 +100,8 @@ export async function refreshUsage(id: string, configDir: string, nowMs: number 
   const dir = usageDir();
   if (!dir || !ACCOUNT_ID.test(id)) return false;
   mkdirSync(dir, { recursive: true, mode: 0o700 });
-  const out = await run(["-p", "/usage", "--output-format", "json", "--no-session-persistence", "--strict-mcp-config", "--settings", '{"disableAllHooks":true}'], configDir, USAGE_MS, dir);
+  // --verbose: the plain JSON result holds only a text summary; the message list carries usage_report.
+  const out = await run(["-p", "/usage", "--output-format", "json", "--verbose", "--no-session-persistence", "--strict-mcp-config", "--settings", '{"disableAllHooks":true}'], configDir, USAGE_MS, dir);
   const reading = parseUsage(out, Math.floor(nowMs / 1000));
   if (!reading) return false;
   const tmp = join(dir, `.${id}.tmp`);

@@ -86,16 +86,20 @@ export async function refreshNow(db: DatabaseSync, id: unknown, by: string): Pro
 export class AccountWatcher {
   private statusAt = new Map<string, number>();
   private usageAt = new Map<string, number>();
+  private usageFailed = new Set<string>();
   private busy = false;
   private db: DatabaseSync;
   private log: (m: string) => void;
   private statusMs: number;
   private usageMs: number;
-  constructor(db: DatabaseSync, log: (m: string) => void, statusMs = 15 * 60_000, usageMs = 5 * 60_000) {
+  private usageRetryMs: number;
+  /** Usage costs no tokens, so it is read every minute; after a failed reading the next try waits usageRetryMs. */
+  constructor(db: DatabaseSync, log: (m: string) => void, statusMs = 15 * 60_000, usageMs = 60_000, usageRetryMs = 5 * 60_000) {
     this.db = db;
     this.log = log;
     this.statusMs = statusMs;
     this.usageMs = usageMs;
+    this.usageRetryMs = usageRetryMs;
   }
 
   async tick(nowMs: number = Date.now()): Promise<void> {
@@ -111,9 +115,14 @@ export class AccountWatcher {
           this.statusAt.set(a.id, nowMs);
           loggedIn = (await refreshStatus(this.db, a.id, a.configDir))?.loggedIn ?? loggedIn;
         }
-        if (enabled.has(a.id) && loggedIn && nowMs - (this.usageAt.get(a.id) ?? 0) >= this.usageMs) {
+        const every = this.usageFailed.has(a.id) ? this.usageRetryMs : this.usageMs;
+        if (enabled.has(a.id) && loggedIn && nowMs - (this.usageAt.get(a.id) ?? 0) >= every) {
           this.usageAt.set(a.id, nowMs);
-          if (!(await refreshUsage(a.id, a.configDir, nowMs))) this.log(`usage refresh failed for account ${a.id}`);
+          if (await refreshUsage(a.id, a.configDir, nowMs)) this.usageFailed.delete(a.id);
+          else {
+            if (!this.usageFailed.has(a.id)) this.log(`usage refresh failed for account ${a.id}; retrying every ${this.usageRetryMs / 60_000} min`);
+            this.usageFailed.add(a.id);
+          }
         }
       }
     } catch (e) {

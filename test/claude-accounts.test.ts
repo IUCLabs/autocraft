@@ -29,7 +29,11 @@ case "$1 $2" in
     echo "Error: invalid code"; exit 1 ;;
   "auth logout") rm -f "$CLAUDE_CONFIG_DIR/in" ;;
   "-p /usage")
-    echo '[{"type":"system"},{"usage_report":{"rate_limits":{"limits":[{"kind":"session","percent":42,"resets_at":"2026-11-03T12:00:00.5+00:00"},{"kind":"weekly_all","percent":7,"resets_at":null}]}}}]' ;;
+    # Like the real CLI: without --verbose the JSON result holds only a text summary.
+    case " $* " in
+      *" --verbose "*) echo '[{"type":"system"},{"usage_report":{"rate_limits":{"limits":[{"kind":"session","percent":42,"resets_at":"2026-11-03T12:00:00.5+00:00"},{"kind":"weekly_all","percent":7,"resets_at":null}]}}}]' ;;
+      *) echo '{"type":"result","result":"Current session: 42% used"}' ;;
+    esac ;;
 esac
 `);
 chmodSync(FAKE, 0o755);
