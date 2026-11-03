@@ -21,10 +21,12 @@ import { actionable, ask, factsOf, getDecision } from "../decisions.ts";
 import { assignTo, mergeViaCommand, MERGE_RECORDED_ENV, type Writer } from "../github/write.ts";
 import { Client, markMerged, type Querier } from "../mirror.ts";
 import { refreshChecks } from "../review/checks.ts";
-import { discussionMovedChecked } from "../review/discussion.ts";
+import { readGate } from "./changes-requested.ts";
+import { liveGateChecked } from "../review/discussion.ts";
 import { fillReviewSummaries } from "../review/summary.ts";
 import { verificationOf } from "../verify/results.ts";
 import { TIER_LABEL } from "../whitelist.ts";
+import { withdrawBlockedQuestions } from "./withdraw.ts";
 import { buildQueue, ciAllows, toAsk, countStates, eligible, HEAD_FACT, MERGE_OPTIONS, mergeDecisionId, QUEUE_STATES, VERIFY_UNAVAILABLE, verifyAllows, type QueueEntry } from "./queue.ts";
 
 export { buildQueue, countStates, QUEUE_STATES, toAsk, type QueueEntry, type QueueState } from "./queue.ts";
@@ -186,6 +188,7 @@ export function askMergeDecisions(db: DatabaseSync, opts: { repos?: string[]; ru
   const queue = buildQueue(db, { merged: "exclude", ...(opts.run === undefined ? {} : { run: opts.run }) });
   const qs = toAsk(queue.filter((e) => !repos || repos.has(e.repo))).map(mergeQuestion);
   const at = opts.at ?? new Date().toISOString();
+  withdrawBlockedQuestions(db, queue.filter((e) => !repos || repos.has(e.repo)), at);
   if (qs.length) ask(db, qs.map((q) => ({ ...q, asked_at: at })));
   fillReviewSummaries(db, at);
   return qs.map((q) => q.id);
@@ -203,6 +206,11 @@ export async function runMerge(db: DatabaseSync, params: MergeParams, log: (line
   if (!scopeRepos(db).has(repo)) {
     log(`merge ${repo}: not in the pipeline scope; nothing done`);
     return { runId, repo, dryRun, states: {}, attempted: [], merged: [], refused: [], asked: [] };
+  }
+  const d = deps ?? defaultDeps();
+  // A PR in changes-requested is read live again each run: the mirror alone can block wrongly (the association is relative to the viewer) and a blocked PR never reaches the merge-time read.
+  if (!dryRun) {
+    for (const e of buildQueue(db, { repo, merged: "exclude" })) if (e.state === "changes-requested") await readGate(db, d.querier, ORG, repo, e.number, log);
   }
   const queue = buildQueue(db, { repo });
   const open = queue.filter((e) => e.state !== "merged");
@@ -226,7 +234,10 @@ export async function runMerge(db: DatabaseSync, params: MergeParams, log: (line
     log(`merge ${repo}: dry run, nothing called or written`);
     return summary;
   }
-  const d = deps ?? defaultDeps();
+
+  // A Merge? question open for a PR a maintainer has since blocked no longer applies.
+  const withdrawn = withdrawBlockedQuestions(db, open, at());
+  if (withdrawn) log(`  withdrew ${withdrawn} Merge? decision${withdrawn === 1 ? "" : "s"} of PRs with changes requested`);
 
   // Every taken PR in the queue gets one `batched` stage row per head.
   const batched = db.prepare("SELECT 1 FROM stages WHERE repo = ? AND number = ? AND stage = 'batched' AND note LIKE ?");
@@ -287,9 +298,11 @@ export async function runMerge(db: DatabaseSync, params: MergeParams, log: (line
     if (!info) { refuse(e, null, "GitHub returned no such PR"); continue; }
     if (info.head !== e.head) { refuse(e, null, `head moved from ${short(e.head)} to ${short(info.head)} since the review`); continue; }
     // Not a refusal: no merges row, so the queue keeps the PR and takes it up again once it is reviewed again.
-    const moved = await discussionMovedChecked(db, d.querier, repo, e.number, e.head, log);
-    if (moved === null) continue;
-    if (moved) {
+    // The same read checks for a maintainer's changes-requested review, whatever merge command runs next.
+    const gate = await liveGateChecked(db, d.querier, repo, e.number, e.head, log);
+    if (gate === null) continue;
+    if (gate.blocked) { log(`  ${refOf(e)}: ${gate.blocked}; not merged`); continue; }
+    if (gate.moved) {
       audit(db, ACTOR, "merge-held-for-discussion", refOf(e), { run: runId, head: e.head, path: e.path });
       log(`  ${refOf(e)}: new comments or reviews since the final review; not merged, it is reviewed again first`);
       continue;

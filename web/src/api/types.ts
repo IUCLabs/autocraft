@@ -945,7 +945,8 @@ export interface CommentTemplate {
  * declined (the operator answered hold or close), merged,
  * held-duplicate (an open Duplicate? decision keeps it out of every later stage), held-backlog (answered Backlog),
  * batch-checking (in an integration batch whose combined tree is being checked), in-batch (the batch PR is open),
- * batch-failed (failed alone in a batch: on hold until a new head).
+ * batch-failed (failed alone in a batch: on hold until a new head), changes-requested (a maintainer's
+ * changes-requested review stands).
  */
 export type QueueState =
   | "ready"
@@ -967,7 +968,8 @@ export type QueueState =
   | "batch-checking"
   | "in-batch"
   | "batch-failed"
-  | "ci-approval";
+  | "ci-approval"
+  | "changes-requested";
 
 /** An integration batch: PRs landed together through one integration branch and one PR. */
 export type BatchState = "checking" | "open" | "merged" | "failed" | "split" | "superseded";
@@ -1033,6 +1035,8 @@ export interface QueueRow {
   decisionId: string | null;
   answer: string | null;
   refusedReason: string | null;
+  /** Why a maintainer's review blocks the PR, or that its reviews cannot be read; null otherwise. */
+  note: string | null;
   reviewedAt: string;
   /** The Verify stage's result at the reviewed head; null when none. `summary` is the failure or error text, or the plan's reason. */
   verify: { state: string; kind: string | null; summary: string | null; note: string | null } | null;

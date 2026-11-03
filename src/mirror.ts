@@ -222,11 +222,11 @@ function commentRows(repo: string, kind: Kind, n: Node): SQLInputValue[][] {
   // `counted`: whether the entry counts as new discussion for the review stage (src/review/discussion.ts).
   const counted = (c: Node) => Number(isCounted({ author: login(c.author), association: c.authorAssociation, bot: c.author?.__typename === "Bot", prAuthor: login(n.author), state: c.state, body: c.body, inline: c.comments?.totalCount }));
   const rows = n.comments.nodes.map((c: Node) =>
-    [repo, n.number, c.id, "comment", login(c.author), c.createdAt, c.body, null, null, counted(c)]);
+    [repo, n.number, c.id, "comment", login(c.author), c.createdAt, c.body, null, null, counted(c), c.authorAssociation ?? null]);
   if (kind === "pr") {
     for (const c of n.reviews.nodes) {
       // A review without a body still counts: its inline threads are the discussion, and it makes earlier reviews stale.
-      rows.push([repo, n.number, c.id, "review", login(c.author), c.createdAt, c.body, c.state, c.commit?.oid ?? null, counted(c)]);
+      rows.push([repo, n.number, c.id, "review", login(c.author), c.createdAt, c.body, c.state, c.commit?.oid ?? null, counted(c), c.authorAssociation ?? null]);
     }
   }
   return rows;
@@ -238,9 +238,9 @@ function writePage(db: DatabaseSync, repo: string, kind: Kind, detail: Detail, n
     ON CONFLICT (repo, number) DO UPDATE SET ${COLUMNS.filter((c) => c !== "repo" && c !== "number").map((c) => `${c}=excluded.${c}`).join(",")}`);
   const stored = db.prepare(`SELECT ${COLUMNS.join(",")} FROM items WHERE repo=? AND number=?`);
   const del = db.prepare("DELETE FROM comments WHERE repo=? AND number=?");
-  const insComment = db.prepare(`INSERT INTO comments VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT (id) DO UPDATE SET
+  const insComment = db.prepare(`INSERT INTO comments (repo, number, id, kind, author, created_at, body, review_state, commit_oid, counted, author_association) VALUES (?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT (id) DO UPDATE SET
     repo=excluded.repo, number=excluded.number, kind=excluded.kind, author=excluded.author, created_at=excluded.created_at,
-    body=excluded.body, review_state=excluded.review_state, commit_oid=excluded.commit_oid, counted=excluded.counted`);
+    body=excluded.body, review_state=excluded.review_state, commit_oid=excluded.commit_oid, counted=excluded.counted, author_association=excluded.author_association`);
   db.exec("BEGIN IMMEDIATE");
   try {
     for (const n of nodes) {

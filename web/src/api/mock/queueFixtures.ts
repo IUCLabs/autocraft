@@ -2,7 +2,7 @@
 import type { BatchFilter, BatchList, QueueBatch, QueueFilter, QueueList, QueueRow, QueueState, TypeLabel } from "../types";
 import { AUTHORS, DECISIONS, NOW, REPOS, rng, titleFor } from "./fixtures";
 
-const STATES: QueueState[] = ["ready", "decision-answered-merge", "refused", "waiting-ci", "ci-failed", "conflict", "needs-fix-up", "waiting-opus", "waiting-verify", "verify-failed", "verify-error", "needs-decision", "declined", "merged", "held-duplicate", "held-backlog", "batch-checking", "in-batch", "batch-failed"];
+const STATES: QueueState[] = ["ready", "decision-answered-merge", "refused", "waiting-ci", "ci-failed", "conflict", "needs-fix-up", "waiting-opus", "waiting-verify", "verify-failed", "verify-error", "needs-decision", "declined", "merged", "held-duplicate", "held-backlog", "batch-checking", "in-batch", "batch-failed", "changes-requested"];
 const REASONS = [
   "Fixes the off-by-one in the page range and adds a test.",
   "Small, correct guard against an empty selection.",
@@ -54,6 +54,7 @@ const ROWS: QueueRow[] = (() => {
         outsideRule, decisionId: state === "needs-decision" || state === "decision-answered-merge" || state === "declined" ? mergeDecision : null,
         answer: state === "decision-answered-merge" ? "merge" : state === "declined" ? (i ? "close" : "hold") : null,
         refusedReason: state === "refused" ? "safe-merge: required check 'build (linux)' has not finished" : null,
+        note: state === "changes-requested" ? "changes requested by a maintainer (reviewer)" : null,
         reviewedAt: new Date(NOW - (k + 1) * 3_600_000 * 5).toISOString(),
         verify: verifyFor(state, i),
       });

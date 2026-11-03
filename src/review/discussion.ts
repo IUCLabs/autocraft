@@ -6,6 +6,7 @@ import { createHash } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { audit } from "../dash/audit.ts";
 import type { Querier } from "../mirror.ts";
+import { FORMAL_REVIEWS, recordGate, recordGateFailure, type ReviewFact } from "../merge/changes-requested.ts";
 import { ENTRY_LIMIT, TOTAL_LIMIT, type DiscussionEntry } from "./parse.ts";
 
 /** Setting that holds the pipeline account's login (also read by src/merge/queue.ts). */
@@ -93,9 +94,10 @@ function mirrorDiscussion(db: DatabaseSync, repo: string, number: number): { ent
 export const DISCUSSION_QUERY = `query($owner: String!, $name: String!, $number: Int!) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
-      author { login }
+      author { login } reviewDecision
       comments(last: 20) { nodes { id author { login __typename } authorAssociation createdAt body } }
       reviews(last: 10) { nodes { id author { login __typename } authorAssociation createdAt body state comments { totalCount } } }
+      formal: ${FORMAL_REVIEWS}
       reviewThreads(last: 50) { nodes { isResolved isOutdated path line originalLine
         head: comments(first: 1) { nodes { id author { login __typename } authorAssociation createdAt body } }
         tail: comments(last: 3) { nodes { id author { login } body } } } }
@@ -104,13 +106,13 @@ export const DISCUSSION_QUERY = `query($owner: String!, $name: String!, $number:
 }`;
 
 type Author = { login?: string; __typename?: string } | null;
-type Node = { id?: string; author?: Author; authorAssociation?: string; createdAt?: string; body?: string; state?: string; comments?: { totalCount?: number } };
+type Node = { id?: string; author?: Author; authorAssociation?: string; createdAt?: string; submittedAt?: string; body?: string; state?: string; comments?: { totalCount?: number } };
 type ThreadNode = {
   isResolved?: boolean; isOutdated?: boolean; path?: string; line?: number | null; originalLine?: number | null;
   head?: { nodes?: Node[] }; tail?: { nodes?: Node[] };
 };
 
-export type LiveDiscussion = { entries: DiscussionEntry[]; snap: Snapshot; newest: string | null };
+export type LiveDiscussion = { entries: DiscussionEntry[]; snap: Snapshot; newest: string | null; /** Latest formal review of each reviewer with write access, for the changes-requested rule. */ formal: ReviewFact[]; reviewDecision: string | null };
 
 /**
  * Everything others wrote on the PR, read from GitHub (a read, never a write) in one query: comments, review
@@ -152,7 +154,9 @@ export async function liveDiscussion(q: Querier, db: DatabaseSync, repo: string,
       .map((r) => ({ author: r.author?.login ?? null, body: clip(cleanBody(r.body), ENTRY_LIMIT / 2) })).filter((r) => r.body);
     entries.push({ kind: "thread", author: c.author?.login ?? null, at: c.createdAt ?? null, path: t.path, line: t.line ?? t.originalLine ?? null, ...(t.isOutdated ? { outdated: true } : {}), body: clip(body, ENTRY_LIMIT), ...(replies.length ? { replies } : {}) });
   }
-  return { entries, snap: { seen, hash: discussionHash(counted) }, newest };
+  const formal = ((pr.formal?.nodes ?? []) as Node[])
+    .map((n) => ({ id: n.id ?? null, author: n.author?.login ?? null, association: n.authorAssociation ?? null, state: n.state ?? null, at: n.submittedAt ?? n.createdAt ?? null }));
+  return { entries, snap: { seen, hash: discussionHash(counted) }, newest, formal, reviewDecision: pr.reviewDecision ?? null };
 }
 
 /** Retries a read a few times: a failed read must not silently drop what reviewers wrote. */
@@ -262,19 +266,20 @@ export async function ensurePipelineLogin(db: DatabaseSync, q: Querier): Promise
 }
 
 /**
- * Just before a merge: reads the PR's discussion live and says whether a counted entry newer than the final
- * review's snapshot (and different from what it read) exists. If so the PR's reviews are marked stale so the
- * pipeline reviews it again, and the caller must not merge.
+ * Just before a merge: reads the PR's discussion and reviews live in one query. `moved`: a counted entry newer than
+ * the final review's snapshot (and different from what it read) exists; the PR's reviews are then marked stale so the
+ * pipeline reviews it again. `blocked`: a maintainer's changes-requested review stands. Either way the caller must
+ * not merge. What the read saw of the formal reviews is stored in review_gates.
  */
-export async function discussionMovedSince(db: DatabaseSync, q: Querier, repo: string, number: number, head: string): Promise<boolean> {
+export async function liveGate(db: DatabaseSync, q: Querier, repo: string, number: number, head: string): Promise<{ moved: boolean; blocked: string | null }> {
+  const live = await liveDiscussion(q, db, repo, number);
+  const blocked = recordGate(db, repo, number, live.formal, live.reviewDecision);
   const snap = (db.prepare(`SELECT COALESCE(o.seen_at, o.at) AS seen, o.disc_hash AS hash FROM opus_reviews o JOIN reviews r ON r.repo = o.repo AND r.number = o.number AND r.head_oid = o.head_oid AND o.at >= r.at
       WHERE o.repo = ? AND o.number = ? AND o.head_oid = ? AND o.verdict IS NOT NULL`).get(repo, number, head)
     ?? db.prepare("SELECT COALESCE(seen_at, at) AS seen, disc_hash AS hash FROM reviews WHERE repo = ? AND number = ? AND head_oid = ?").get(repo, number, head)) as { seen: string; hash: string | null } | undefined;
-  if (!snap) return false;
-  const live = await liveDiscussion(q, db, repo, number);
-  if (!live.newest || !changedSince({ newest: live.newest, hash: live.snap.hash! }, snap.seen, snap.hash)) return false;
+  if (!snap || !live.newest || !changedSince({ newest: live.newest, hash: live.snap.hash! }, snap.seen, snap.hash)) return { moved: false, blocked };
   db.prepare("INSERT INTO main.settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value").run(staleKey(repo, number), new Date().toISOString());
-  return true;
+  return { moved: true, blocked };
 }
 
 /** Operator request: every review of the PR counts as older than now, so Sonnet and then Opus review it again. */
@@ -284,12 +289,18 @@ export function markReviewsStale(db: DatabaseSync, by: string, repo: string, num
   audit(db, by, "review-again", `${repo}#${number}`, { stale: true });
 }
 
-/** discussionMovedSince with retries; null when the read still fails, so the caller skips the PR this run instead of merging blind. */
-export async function discussionMovedChecked(db: DatabaseSync, q: Querier, repo: string, number: number, head: string, log: (line: string) => void): Promise<boolean | null> {
+/** Whether a counted entry newer than the final review's snapshot exists (see liveGate). */
+export async function discussionMovedSince(db: DatabaseSync, q: Querier, repo: string, number: number, head: string): Promise<boolean> {
+  return (await liveGate(db, q, repo, number, head)).moved;
+}
+
+/** liveGate with retries; null when the read still fails, so the caller skips the PR this run instead of merging blind. */
+export async function liveGateChecked(db: DatabaseSync, q: Querier, repo: string, number: number, head: string, log: (line: string) => void): Promise<{ moved: boolean; blocked: string | null } | null> {
   try {
-    return await withRetry(() => discussionMovedSince(db, q, repo, number, head));
+    return await withRetry(() => liveGate(db, q, repo, number, head));
   } catch (e) {
-    log(`  ${repo}#${number}: could not read its discussion (${String((e as Error).message ?? e).replace(/\s+/g, " ").slice(0, 200)}); skipped this run`);
+    recordGateFailure(db, repo, number);
+    log(`  ${repo}#${number}: could not read its discussion and reviews (${String((e as Error).message ?? e).replace(/\s+/g, " ").slice(0, 200)}); skipped this run`);
     return null;
   }
 }

@@ -64,6 +64,8 @@ const ADDED_COLUMNS: [table: string, column: string, type: string][] = [
   ["agent_runs", "progress", "TEXT"],
   // PRs in the first-pass call that produced the review; NULL for holds made without a call and for older rows.
   ["reviews", "call_size", "INTEGER"],
+  // The commenter's association with the repository (OWNER, MEMBER, ...); the merge queue reads it from reviews.
+  ["comments", "author_association", "TEXT"],
 ];
 
 // Indexes on added columns: they can only be created once the column exists.

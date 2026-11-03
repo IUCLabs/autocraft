@@ -8,6 +8,8 @@ export type BatchState = (typeof BATCH_STATES)[number];
 export const ACTIVE_BATCH: BatchState[] = ["checking", "open"];
 
 /** Summary of a batch whose PR a person closed: its PRs stay out of batches until they change. */
+/** Summary of a batch that failed because a maintainer requested changes on its PR: its members are held like those of a batch a person closed. */
+export const BLOCKED_BY_REVIEW = "a maintainer requested changes on the batch PR";
 export const CLOSED_BY_PERSON = "the batch PR was closed by a person";
 
 export const MAX_BATCH = 10;
@@ -92,7 +94,7 @@ export function batchStates(db: DatabaseSync, repo?: string): Map<string, "batch
     WHERE b.state IN ('checking', 'open', 'failed') ${repo ? "AND b.repo = ?" : ""} ORDER BY b.id`).all(...(repo ? [repo] : [])) as { repo: string; number: number; head_oid: string; state: string; summary: string | null; n: number }[];
   const out = new Map<string, "batch-checking" | "in-batch" | "batch-failed">();
   for (const r of rows) {
-    if (r.state === "failed" && r.n !== 1 && r.summary !== CLOSED_BY_PERSON) continue;
+    if (r.state === "failed" && r.n !== 1 && r.summary !== CLOSED_BY_PERSON && r.summary !== BLOCKED_BY_REVIEW) continue;
     out.set(`${r.repo}#${r.number}@${r.head_oid}`, r.state === "checking" ? "batch-checking" : r.state === "open" ? "in-batch" : "batch-failed");
   }
   return out;

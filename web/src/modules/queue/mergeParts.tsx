@@ -34,6 +34,7 @@ export const STATE: Record<QueueState, [string, Tone, string]> = {
   "held-duplicate": ["Held: Duplicate?", "warn", "An open Duplicate? decision keeps it out of every later stage; answer it in Decisions"],
   "held-backlog": ["Backlog", "neutral", "Answered Backlog; reopen the decision to take it up again"],
   "ci-approval": ["CI: waiting for run approval", "warn", "GitHub holds the workflow runs for a maintainer's approval; the pipeline approves them when the repo allows it"],
+  "changes-requested": ["Changes requested", "bad", "A maintainer's changes-requested review stands; it waits for that reviewer to approve or for a maintainer to dismiss it"],
 };
 export const TIER: Record<Tier, string> = { whitelisted: "whitelisted", not: "not whitelisted", "override-allow": "override allow", "override-deny": "override deny" };
 const CI_TONE: Record<QueueRow["ci"], Tone> = { success: "ok", failure: "bad", pending: "warn", none: "neutral", unknown: "neutral" };
@@ -107,6 +108,7 @@ function DecisionLink({ row }: { row: QueueRow }) {
 /** Why it waits, in one line: refusal reason, or what keeps it outside the rule. */
 function Why({ row }: { row: QueueRow }) {
   if (row.state === "refused" && row.refusedReason) return <span className="text-2xs text-bad">{row.refusedReason}</span>;
+  if (row.note) return <span className="text-2xs text-bad">{row.note}</span>;
   if (row.outsideRule.length) return <span className="text-2xs text-ink/50">outside the rule: {row.outsideRule.join(", ")}</span>;
   return null;
 }

@@ -1,13 +1,14 @@
 // Built-in guarded merge: merges one PR only when it is open, not a draft,
 // mergeable, every status check and Actions run for the head has finished
-// green (or skipped/neutral), and the merge is pinned to the head that was
-// checked.
+// green (or skipped/neutral), and no maintainer's "changes requested" review
+// stands; the merge is pinned to the head that was checked.
 //
 //   autocraft safe-merge OWNER/REPO PR --squash|--merge [--allow-pending NAME]...
 //
 // Exit 0 when merged, 1 on a refusal or gh failure (reason on stderr), 2 on usage.
 // The decisions are pure functions over the fetched JSON; `safeMerge` is the gh layer.
 import { spawn } from "node:child_process";
+import { FORMAL_REVIEWS, refuseLive, type ReviewFact } from "./changes-requested.ts";
 import { cliMergeRecorder, ghMergePr, MERGE_RECORDED_ENV } from "../github/write.ts";
 
 export type Method = "--squash" | "--merge";
@@ -62,6 +63,19 @@ export function refuseAuthors(c: Commits, method: Method): string | null {
   return others.length ? `commits by ${others.join(", ")}: use --merge so their commits and authorship stay` : null;
 }
 
+const REVIEWS_QUERY = `query($owner: String!, $name: String!, $number: Int!) { repository(owner: $owner, name: $name) { pullRequest(number: $number) { reviewDecision ${FORMAL_REVIEWS} } } }`;
+
+/** The reason a maintainer's formal "changes requested" review blocks the merge (see changes-requested.ts), or null. Decided on write access, read live. */
+export async function refuseChangesRequested(repo: string, pr: string, gh: Gh): Promise<string | null> {
+  const [owner, name] = repo.split("/");
+  const out = JSON.parse(await gh(["api", "graphql", "-f", `query=${REVIEWS_QUERY}`, "-f", `owner=${owner}`, "-f", `name=${name}`, "-F", `number=${pr}`])) as
+    { data?: { repository?: { pullRequest?: { reviewDecision?: string | null; latestOpinionatedReviews?: { nodes?: { id?: string; author?: { login?: string } | null; authorAssociation?: string; submittedAt?: string; createdAt?: string; state?: string }[] } } | null } } };
+  const p = out.data?.repository?.pullRequest;
+  if (!p) throw new Error(`reviews of ${repo}#${pr} not returned`);
+  const formal: ReviewFact[] = (p.latestOpinionatedReviews?.nodes ?? []).map((n) => ({ id: n.id, author: n.author?.login ?? null, association: n.authorAssociation ?? null, state: n.state ?? null, at: n.submittedAt ?? n.createdAt ?? null }));
+  return refuseLive(formal, p.reviewDecision);
+}
+
 export function ghExec(args: string[]): Promise<string> {
   return new Promise((resolve, reject) => {
     const p = spawn("gh", args, { stdio: ["ignore", "pipe", "pipe"] });
@@ -89,7 +103,7 @@ export async function safeMerge(
   const runs = JSON.parse(await gh(["api", `repos/${repo}/actions/runs?head_sha=${head}&per_page=100`])) as { workflow_runs?: Run[] };
   why = refuseRuns(runs.workflow_runs ?? [], allow);
   if (why) return refuse(why);
-  why = refuseAuthors(JSON.parse(await gh(["pr", "view", pr, "-R", repo, "--json", "author,commits"])) as Commits, method);
+  why = await refuseChangesRequested(repo, pr, gh) ?? refuseAuthors(JSON.parse(await gh(["pr", "view", pr, "-R", repo, "--json", "author,commits"])) as Commits, method);
   if (why) return refuse(why);
   await ghMergePr(gh, repo, pr, method, head, recordMerge && !process.env[MERGE_RECORDED_ENV] ? cliMergeRecorder(repo, pr, method, head) : undefined);
   await sleep(3000);

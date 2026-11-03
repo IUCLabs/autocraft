@@ -333,6 +333,16 @@ CREATE TABLE IF NOT EXISTS sync_runs (
 );
 CREATE INDEX IF NOT EXISTS sync_runs_started ON sync_runs(started_at);
 
+-- What the last live read of a PR's formal reviews found (changes-requested.ts); sync never touches it.
+CREATE TABLE IF NOT EXISTS review_gates (
+  repo TEXT NOT NULL, number INTEGER NOT NULL,
+  blocked INTEGER,                    -- 1 when a reviewer with write access has changes requested; NULL before any read
+  by_login TEXT,                      -- those reviewers, comma separated
+  read_at TEXT,                       -- ISO time of the last successful read
+  failures INTEGER NOT NULL DEFAULT 0, -- reads that failed since the last success
+  PRIMARY KEY (repo, number)
+);
+
 -- CI and merge state of open PRs at their head commit, for review candidates.
 -- Written by `autocraft checks` and the Review stage; sync never touches it.
 CREATE TABLE IF NOT EXISTS pr_checks (
