@@ -1,4 +1,4 @@
-import { Children, isValidElement, lazy, Suspense, useLayoutEffect, useRef, useState } from "react";
+import { Children, isValidElement, useLayoutEffect, useRef, useState } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { ImageIcon, ExternalLinkIcon } from "lucide-react";
@@ -37,19 +37,10 @@ function Image({ src, alt }: { src?: string; alt?: string }) {
 // and only GitHub-hosted images load inline, through the same-origin proxy
 // (the CSP allows only same-origin images); others become a link the reader
 // can choose to open.
-const MermaidDiagram = lazy(() => import("./MermaidDiagram").then((m) => ({ default: m.MermaidDiagram })));
-
 function fenceLang(children: React.ReactNode): string | null {
   const child = Children.toArray(children)[0];
   if (!isValidElement<{ className?: string }>(child)) return null;
   return /\blanguage-swimlane\b/.test(child.props.className ?? "") ? "swimlane" : null;
-}
-
-function mermaidSource(children: React.ReactNode): string | null {
-  const child = Children.toArray(children)[0];
-  if (!isValidElement<{ className?: string; children?: React.ReactNode }>(child)) return null;
-  if (!/\blanguage-mermaid\b/.test(child.props.className ?? "")) return null;
-  return String(child.props.children ?? "").replace(/\n$/, "");
 }
 
 const components: Components = {
@@ -60,13 +51,7 @@ const components: Components = {
   ),
   pre: ({ children }) => {
     if (fenceLang(children) === "swimlane") return <Swimlane />;
-    const src = mermaidSource(children);
-    if (src === null) return <pre>{children}</pre>;
-    return (
-      <Suspense fallback={<pre>{src}</pre>}>
-        <MermaidDiagram source={src} />
-      </Suspense>
-    );
+    return <pre>{children}</pre>;
   },
   img: ({ src, alt }) => <Image src={typeof src === "string" ? src : undefined} alt={alt} />,
 };

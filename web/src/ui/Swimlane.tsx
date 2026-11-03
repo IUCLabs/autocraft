@@ -8,9 +8,9 @@ import { EDGES, LANES, STEPS, type Edge, type Step } from "./swimlaneDef";
 const COL_W = 200;
 const CARD_W = 178;
 const CARD_H = 62;
-const ROW_PITCH = 120;
+const ROW_PITCH = 140;
 const PAD_X = 16;
-const HEAD_H = 52;
+const HEAD_H = 36;
 const TOP = HEAD_H + 22;
 
 type Pt = [number, number];
@@ -38,6 +38,14 @@ function spread(index: number, count: number, step: number): number {
   return (index - (count - 1) / 2) * step;
 }
 
+// An edge that stays in its column with no card between its ends is drawn as one straight line.
+function sameColumnStraight(r: Route): boolean {
+  if (colOf(r.from) !== colOf(r.to)) return false;
+  const lo = Math.min(r.from.row, r.to.row);
+  const hi = Math.max(r.from.row, r.to.row);
+  return !STEPS.some((s) => s !== r.from && s !== r.to && s.lane === r.from.lane && s.row > lo && s.row < hi);
+}
+
 function buildRoutes(): { route: Route; pts: Pt[] }[] {
   const routes: Route[] = EDGES.map((edge) => {
     const from = stepById.get(edge.from)!;
@@ -62,47 +70,97 @@ function buildRoutes(): { route: Route; pts: Pt[] }[] {
     add(r.from, r.down ? "bottom" : "top", r, "s", r.to);
     add(r.to, r.down ? "top" : "bottom", r, "t", r.from);
   }
-  const portX = new Map<string, number>();
-  for (const [k, list] of ports) {
-    const [first] = list;
-    const step = first.end === "s" ? first.r.from : first.r.to;
-    list.sort((a, b) => a.other - b.other);
-    list.forEach((p, i) => portX.set(`${p.r.edge.from}>${p.r.edge.to}${p.end}`, cx(step) + spread(i, list.length, 16)));
-    void k;
-  }
-
-  // Slots inside shared channels and gutters, so parallel lines do not overlap.
-  const channelUse = new Map<number, number>();
-  const gutterUse = new Map<number, number>();
   const take = (m: Map<number, number>, k: number) => {
     const n = m.get(k) ?? 0;
     m.set(k, n + 1);
     return n;
   };
-  const channelTotal = new Map<number, number>();
-  const gutterTotal = new Map<number, number>();
-  for (const r of routes) {
-    channelTotal.set(r.b1, (channelTotal.get(r.b1) ?? 0) + 1);
-    if (r.b2 !== r.b1) channelTotal.set(r.b2, (channelTotal.get(r.b2) ?? 0) + 1);
-    if (r.b1 !== r.b2) gutterTotal.set(r.gutter, (gutterTotal.get(r.gutter) ?? 0) + 1);
+  const portX = new Map<string, number>();
+  for (const list of ports.values()) {
+    const first = list[0];
+    const step = first.end === "s" ? first.r.from : first.r.to;
+    const c = cx(step);
+    const hasMain = list.some((p) => p.r.edge.main && sameColumnStraight(p.r));
+    list.sort((a, b) => a.other - b.other);
+    if (!hasMain) {
+      list.forEach((p, i) => portX.set(`${p.r.edge.from}>${p.r.edge.to}${p.end}`, c + spread(i, list.length, 16)));
+      continue;
+    }
+    // The straight main edge keeps the card's centre; the others sit to the side their other end is on.
+    const left = list.filter((p) => !(p.r.edge.main && sameColumnStraight(p.r)) && p.other < c);
+    const right = list.filter((p) => !(p.r.edge.main && sameColumnStraight(p.r)) && p.other >= c);
+    for (const p of list.filter((p) => p.r.edge.main && sameColumnStraight(p.r))) portX.set(`${p.r.edge.from}>${p.r.edge.to}${p.end}`, c);
+    left.reverse().forEach((p, i) => portX.set(`${p.r.edge.from}>${p.r.edge.to}${p.end}`, c - 16 * (i + 1)));
+    right.forEach((p, i) => portX.set(`${p.r.edge.from}>${p.r.edge.to}${p.end}`, c + 16 * (i + 1)));
   }
 
-  return routes.map((r) => {
+  // Gutter slots, so parallel vertical runs do not overlap.
+  const gutterUse = new Map<number, number>();
+  const gutterTotal = new Map<number, number>();
+  for (const r of routes) if (r.b1 !== r.b2 && !sameColumnStraight(r)) gutterTotal.set(r.gutter, (gutterTotal.get(r.gutter) ?? 0) + 1);
+
+  interface Run {
+    key: string;
+    b: number;
+    x0: number;
+    x1: number;
+    /** x positions where a vertical leaves the run upward or downward. */
+    up: number[];
+    down: number[];
+  }
+  const geo = new Map<string, { sx: number; tx: number; sy: number; ty: number; gx: number | null; r: Route }>();
+  const runs = new Map<number, Run[]>();
+  const addRun = (run: Run) => (runs.get(run.b) ?? runs.set(run.b, []).get(run.b)!).push(run);
+  for (const r of routes) {
+    if (sameColumnStraight(r)) continue;
     const key = `${r.edge.from}>${r.edge.to}`;
     const sx = portX.get(key + "s")!;
     const tx = portX.get(key + "t")!;
     const sy = r.down ? cardTop(r.from) + CARD_H : cardTop(r.from);
     const ty = r.down ? cardTop(r.to) : cardTop(r.to) + CARD_H;
-    const slot = (b: number) => spread(take(channelUse, b), channelTotal.get(b) ?? 1, 8);
-    const y1 = boundaryY(r.b1) + slot(r.b1);
-    const pts: Pt[] = [[sx, sy], [sx, y1]];
-    let y2 = y1;
-    if (r.b1 !== r.b2) {
-      const gx = gutterX(r.gutter) + spread(take(gutterUse, r.gutter), gutterTotal.get(r.gutter) ?? 1, 5);
-      y2 = boundaryY(r.b2) + slot(r.b2);
-      pts.push([gx, y1], [gx, y2]);
+    const gx = r.b1 !== r.b2 ? gutterX(r.gutter) + spread(take(gutterUse, r.gutter), gutterTotal.get(r.gutter) ?? 1, 5) : null;
+    geo.set(key, { sx, tx, sy, ty, gx, r });
+    // The source card is above its channel for a downward edge, below it for an upward one; the target the other way round.
+    const srcDir = r.down ? "up" : "down";
+    const dstDir = r.down ? "down" : "up";
+    const mk = (b: number, xa: number, da: string, xb: number, db: string): Run => {
+      const run: Run = { key, b, x0: Math.min(xa, xb), x1: Math.max(xa, xb), up: [], down: [] };
+      (da === "up" ? run.up : run.down).push(xa);
+      (db === "up" ? run.up : run.down).push(xb);
+      return run;
+    };
+    if (gx === null) addRun(mk(r.b1, sx, srcDir, tx, dstDir));
+    else {
+      addRun(mk(r.b1, sx, srcDir, gx, r.b2 > r.b1 ? "down" : "up"));
+      addRun(mk(r.b2, gx, r.b1 > r.b2 ? "down" : "up", tx, dstDir));
     }
-    pts.push([tx, y2], [tx, ty]);
+  }
+  // Order the runs of a channel top to bottom so that as few verticals as possible cross another run.
+  const within = (x: number, run: Run) => x > run.x0 + 0.5 && x < run.x1 - 0.5;
+  const crossings = (top: Run, low: Run) => low.up.filter((x) => within(x, top)).length + top.down.filter((x) => within(x, low)).length;
+  const slotY = new Map<string, number>();
+  for (const [b, list] of runs) {
+    for (let pass = 0; pass < list.length; pass++)
+      for (let i = 0; i + 1 < list.length; i++)
+        if (crossings(list[i + 1], list[i]) < crossings(list[i], list[i + 1])) [list[i], list[i + 1]] = [list[i + 1], list[i]];
+    list.forEach((run, i) => slotY.set(`${run.key}|${b}`, boundaryY(b) + spread(i, list.length, 9)));
+  }
+
+  return routes.map((r) => {
+    const key = `${r.edge.from}>${r.edge.to}`;
+    const g = geo.get(key);
+    if (!g) {
+      const x = portX.get(key + "s")!;
+      return { route: r, pts: [[x, cardTop(r.from) + (r.down ? CARD_H : 0)], [portX.get(key + "t")!, cardTop(r.to) + (r.down ? 0 : CARD_H)]] as Pt[] };
+    }
+    const y1 = slotY.get(`${key}|${r.b1}`)!;
+    const pts: Pt[] = [[g.sx, g.sy], [g.sx, y1]];
+    let y2 = y1;
+    if (g.gx !== null) {
+      y2 = slotY.get(`${key}|${r.b2}`)!;
+      pts.push([g.gx, y1], [g.gx, y2]);
+    }
+    pts.push([g.tx, y2], [g.tx, g.ty]);
     return { route: r, pts };
   });
 }
@@ -127,6 +185,13 @@ function placeLabels(): { key: string; x: number; y: number; w: number; text: st
     const text = route.edge.label;
     if (!text) continue;
     const w = text.length * 6.6 + 12;
+    if (pts.length === 2) {
+      const mid = (pts[0][1] + pts[1][1]) / 2;
+      const box = { x: pts[0][0] + 6, y: mid - 9, w, h: 18 };
+      placed.push(box);
+      out.push({ key: `${route.edge.from}>${route.edge.to}`, x: box.x + w / 2, y: mid, w, text });
+      continue;
+    }
     const runs: { x0: number; x1: number; y: number }[] = [];
     for (let i = 0; i + 1 < pts.length; i++) {
       if (pts[i][1] === pts[i + 1][1]) runs.push({ x0: Math.min(pts[i][0], pts[i + 1][0]), x1: Math.max(pts[i][0], pts[i + 1][0]), y: pts[i][1] });
@@ -171,9 +236,6 @@ function LaneHeads({ y }: { y: number }) {
           <text className="sw-head" x={PAD_X + i * COL_W + COL_W / 2} y={y + 20} textAnchor="middle">
             {l.title}
           </text>
-          <text className="sw-note" x={PAD_X + i * COL_W + COL_W / 2} y={y + 38} textAnchor="middle">
-            {l.note}
-          </text>
         </g>
       ))}
     </>
@@ -195,7 +257,7 @@ export function Swimlane() {
         <LaneHeads y={0} />
         <LaneHeads y={HEIGHT - HEAD_H} />
         {LAID_OUT.map(({ route, pts }) => (
-          <path key={`${route.edge.from}>${route.edge.to}`} className={`sw-edge${route.edge.dashed ? " dashed" : ""}`} d={pathD(pts)} markerEnd="url(#sw-arrow)" />
+          <path key={`${route.edge.from}>${route.edge.to}`} className={`sw-edge${route.edge.dashed ? " dashed" : ""}${route.edge.main ? " main" : ""}`} d={pathD(pts)} markerEnd="url(#sw-arrow)" />
         ))}
         {STEPS.map((s) => {
           const x = cx(s) - CARD_W / 2;
