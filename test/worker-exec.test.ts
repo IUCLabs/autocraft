@@ -124,15 +124,16 @@ describe("container argv", () => {
     assert.deepEqual(argv.slice(-3), ["registry.test/rust@sha256:aa", "cargo", "build"].slice(-3));
   });
 
-  test("only the four allowed mounts, source read-only, no host env or privileges", () => {
+  test("only the four allowed mounts, source as an overlay, no host env or privileges", () => {
     const m = argv.flatMap((a, i) => (argv[i - 1] === "--mount" ? [a] : []));
+    assert.deepEqual(argv.flatMap((a, i) => (argv[i - 1] === "--volume" ? [a] : [])), ["/w/src:/src:O"]);
+    assert.equal(argv.filter((a) => a === "--volume").length, 1);
     assert.deepEqual(m, [
-      "type=bind,source=/w/src,target=/src,readonly",
       "type=bind,source=/w/target,target=/target",
       "type=bind,source=/w/cache,target=/cache",
       "type=bind,source=/w/out,target=/out",
     ]);
-    for (const bad of ["-v", "--volume", "--privileged", "--env-host", "--device", "--network=host", "--userns=host"]) assert.ok(!argv.includes(bad), bad);
+    for (const bad of ["-v", "--privileged", "--env-host", "--device", "--network=host", "--userns=host"]) assert.ok(!argv.includes(bad), bad);
     const env = argv.flatMap((a, i) => (argv[i - 1] === "--env" ? [a] : []));
     assert.deepEqual(env, ["HOME=/tmp", "CARGO_HOME=/cache/cargo", "CARGO_TARGET_DIR=/target", "CI=1"]);
   });

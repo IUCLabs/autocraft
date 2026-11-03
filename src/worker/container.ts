@@ -6,7 +6,7 @@ import type { WorkerConfig } from "./config.ts";
 export const LABEL = "craft-worker";
 
 export type StepMounts = {
-  src: string; // read-only /src
+  src: string; // /src as an overlay: writable inside the step, the copy on the host never changes
   target: string; // writable /target, private to the task
   cache: string; // writable /cache (CARGO_HOME), private to the task
   out: string; // writable /out, artifacts of this step
@@ -20,7 +20,11 @@ export type RunSpec = {
   cmd: string[];
 };
 
-const bind = (source: string, target: string, ro: boolean) => `type=bind,source=${source},target=${target}${ro ? ",readonly" : ""}`;
+const overlay = (source: string, target: string) => {
+  if (/[:,]/.test(source)) throw new Error(`source path must not contain ':' or ',': ${source}`);
+  return `${source}:${target}:O`;
+};
+const bind = (source: string, target: string) => `type=bind,source=${source},target=${target}`;
 
 export function runArgs(cfg: WorkerConfig, s: RunSpec): string[] {
   const mem = `${Math.round(cfg.limits.memoryGb * 1024)}m`;
@@ -41,10 +45,11 @@ export function runArgs(cfg: WorkerConfig, s: RunSpec): string[] {
     "--memory-swap", mem,
     "--pids-limit", String(cfg.limits.pids),
     "--workdir", "/src",
-    "--mount", bind(s.mounts.src, "/src", true),
-    "--mount", bind(s.mounts.target, "/target", false),
-    "--mount", bind(s.mounts.cache, "/cache", false),
-    "--mount", bind(s.mounts.out, "/out", false),
+    // Tests may write next to their sources (CI checkouts are writable); the overlay drops those writes when the step ends.
+    "--volume", overlay(s.mounts.src, "/src"),
+    "--mount", bind(s.mounts.target, "/target"),
+    "--mount", bind(s.mounts.cache, "/cache"),
+    "--mount", bind(s.mounts.out, "/out"),
     "--env", "HOME=/tmp",
     "--env", "CARGO_HOME=/cache/cargo",
     "--env", "CARGO_TARGET_DIR=/target",
