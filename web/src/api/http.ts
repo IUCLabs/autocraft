@@ -217,5 +217,17 @@ export function createHttpApi(): Api {
     similar: (repo, number, limit) => get(`/api/similar/${encodeURIComponent(repo)}/${encodeURIComponent(String(number))}${qs({ limit })}`),
     semanticSearch: (q) => get(`/api/search?${new URLSearchParams({ q, mode: "semantic" })}`),
     work: (f) => get(`/api/work${qs(f)}`),
+    pipelineRepos: () => get("/api/repos/pipeline"),
+    fastTrack: () => get("/api/fast-track"),
+    heldMerges: () => get("/api/merge/held"),
+    queuePage: (f) => get(`/api/queue/page${qs(f)}`),
+    queueControl: {
+      fastTrackAdd: (item) => post("/api/fast-track", { item }),
+      fastTrackRemove: (item) => post("/api/fast-track/remove", { item }),
+      hold: async (item) => void (await post("/api/merge/hold", { item })),
+      release: async (item) => void (await post("/api/merge/release", { item })),
+      batchRemove: async (item) => void (await post("/api/merge/batch-remove", { item })),
+      stopBatch: async (id) => void (await post(`/api/queue/batches/${id}/stop`)),
+    },
   };
 }

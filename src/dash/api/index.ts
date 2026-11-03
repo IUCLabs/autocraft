@@ -35,7 +35,7 @@ import { classificationsOf, itemState, relatedOf } from "./decisions.ts";
 import * as sim from "./similar.ts";
 import { localEmbedder, type Embedder } from "../../embed/model.ts";
 import type { Exec } from "../../fixup/git.ts";
-import { batchRemovePr, batchStop, fastTrackAdd, fastTrackRefs, fastTrackRemove, mergeHoldPr, pipelineRepoNames, queuePage } from "./queue-page.ts";
+import { batchRemovePr, batchStop, fastTrackAdd, fastTrackRefs, fastTrackRemove, heldMergeRefs, mergeHoldPr, pipelineRepoNames, queuePage } from "./queue-page.ts";
 import { VectorIndex } from "../../embed/vectors.ts";
 
 export type ApiOptions = {
@@ -376,6 +376,7 @@ export function apiRoutes(opts: ApiOptions = {}): Route[] {
     get("/api/queue/page", queuePage),
     get("/api/repos/pipeline", pipelineRepoNames),
     get("/api/fast-track", fastTrackRefs),
+    get("/api/merge/held", heldMergeRefs),
     { method: "POST", pattern: "/api/fast-track", operator: true, handler: ok(fastTrackAdd) },
     { method: "POST", pattern: "/api/fast-track/remove", operator: true, handler: ok(fastTrackRemove) },
     { method: "POST", pattern: "/api/merge/hold", operator: true, handler: ok((db, req) => mergeHoldPr(db, req, true)) },

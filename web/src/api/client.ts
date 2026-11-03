@@ -38,6 +38,8 @@ import type {
   BatchFilter,
   BatchList,
   QueueFilter,
+  QueuePage,
+  QueuePageFilter,
   QueueList,
   WorkFilter,
   WorkList,
@@ -215,6 +217,23 @@ export interface Api {
   semanticSearch(q: string): Promise<SimilarHit[]>;
   /** Open items in work-score order with the parts of each score and the next pipeline step. Read-only. */
   work(filter: WorkFilter): Promise<WorkList>;
+  /** Repos whose pipeline stages are on. */
+  pipelineRepos(): Promise<RepoName[]>;
+  /** Fast-tracked items as `repo#number`, first to run first. */
+  fastTrack(): Promise<string[]>;
+  /** PRs whose merge an operator holds, as `repo#number`. */
+  heldMerges(): Promise<string[]>;
+  /** One tab of the Queue page over a repo filter. */
+  queuePage(filter: QueuePageFilter): Promise<QueuePage>;
+  /** Operator controls of the Queue page; items are `repo#number`. */
+  queueControl: {
+    fastTrackAdd(item: string): Promise<string[]>;
+    fastTrackRemove(item: string): Promise<string[]>;
+    hold(item: string): Promise<void>;
+    release(item: string): Promise<void>;
+    batchRemove(item: string): Promise<void>;
+    stopBatch(id: number): Promise<void>;
+  };
 }
 
 export const ApiContext = createContext<Api | null>(null);

@@ -3,6 +3,7 @@ import { useEffect, useRef, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { itemPath } from "../../lib/links";
 import { RefLink } from "../../ui/RefLink";
+import { FastMarkFor, FastToggle, HoldToggle } from "../queue/fastTrack";
 import { CaretLeftIcon, CaretRightIcon, CheckIcon, ArrowUUpLeftIcon, ChatCircleIcon, TrayIcon, SparkleIcon, ArrowDownIcon } from "@phosphor-icons/react";
 import { useApi } from "../../api/client";
 import type { Decision, User } from "../../api/types";
@@ -174,11 +175,20 @@ export function DecisionBody({
         {isBatch ? (
           <span className="code">{d.repo}</span>
         ) : (
-          <RefLink repo={d.repo} number={d.number!} />
+          <>
+            <FastMarkFor repo={d.repo} number={d.number!} />
+            <RefLink repo={d.repo} number={d.number!} />
+          </>
         )}
         <PriorityBadge p={d.priority} />
         <span>asked {ago(d.askedAt)} ago</span>
         <ClaimPill claim={d.claim} />
+        {!isBatch && (
+          <span className="ml-auto flex flex-wrap items-center gap-1.5">
+            <FastToggle repo={d.repo} number={d.number!} className="h-6 max-md:h-11" />
+            {(d.kind === "merge" || d.kind === "close") && <HoldToggle repo={d.repo} number={d.number!} className="h-6 max-md:h-11" />}
+          </span>
+        )}
         {!phone && d.commentCount > 0 && (
           <span className="inline-flex items-center gap-1">
             <ChatCircleIcon className="text-[12px]" /> {d.commentCount}

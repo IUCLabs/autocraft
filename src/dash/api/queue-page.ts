@@ -135,6 +135,13 @@ export async function fastTrackRefs(db: DatabaseSync, req: Req): Promise<string[
   return fastTrackList(db).filter((f) => visible.has(f.repo)).map((f) => `${f.repo}#${f.number}`);
 }
 
+/** PRs whose merge an operator holds, as `repo#number`, in visible repos. */
+export async function heldMergeRefs(db: DatabaseSync, req: Req): Promise<string[]> {
+  const visible = new Set(await visibleRepos(db, req));
+  const rows = db.prepare("SELECT repo, number FROM main.merge_holds ORDER BY repo, number").all() as { repo: string; number: number }[];
+  return rows.filter((r) => visible.has(r.repo)).map((r) => `${r.repo}#${r.number}`);
+}
+
 function item(req: Req): { repo: string; number: number } {
   const b = req.json;
   const text = b && typeof b === "object" && !Array.isArray(b) ? (b as { item?: unknown }).item : undefined;

@@ -13,6 +13,7 @@ import { pickDecision, shortRepo } from "../../lib/links";
 import { itemList, settledFor } from "./itemsFixtures";
 import { prWorkFor } from "./verifyFixtures";
 import { queueBatchList, queueList } from "./queueFixtures";
+import { createQueueMock } from "./queueMock";
 import { githubActivityPage } from "./githubFixtures";
 import { workList } from "./workFixtures";
 import { flowFixture } from "./flowFixtures";
@@ -185,6 +186,7 @@ export function createMockApi(): Api {
     ...createPipelineMock(me, changed),
     ...createAgentsMock(me, changed),
     ...createBuildMock(me, changed),
+    ...createQueueMock(me, changed),
     prompts: () => wait(promptsReport(null), 60),
     queue: (f) => wait(queueList(f), 60),
     queueBatches: (f) => wait(queueBatchList(f), 60),
