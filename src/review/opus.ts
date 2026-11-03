@@ -7,7 +7,8 @@ import { CLAUDE_PROMPTS } from "../prompts/index.ts";
 import { claudeRoom } from "../agents/call.ts";
 import { add, askClaude, pool, saveUsage, type Usage } from "../classify/run.ts";
 import { DEFAULT_CAPS } from "./batch.ts";
-import { checksOf } from "./checks.ts";
+import { Client, type Querier } from "../mirror.ts";
+import { checksOf, refreshChecks } from "./checks.ts";
 import { cachedDiff, codeDiff, ghDelta, ghDiff, type DeltaFetcher, type DiffFetcher } from "./diff.ts";
 import { selectOpusCandidates, type OpusCandidate } from "./opus-candidates.ts";
 import { parseOpusReply, type EarlierOpus, type OpusPr, type OpusReview } from "./opus-parse.ts";
@@ -23,12 +24,14 @@ export type OpusParams = {
   onHandled?: (n: number) => void;
 };
 export type OpusDeps = {
+  /** Reads the live head and state of the candidates just before the model calls; absent: the mirror's view stands. */
+  querier?: Querier;
   fetchDiff: DiffFetcher; fetchDelta: DeltaFetcher; model: string; maxChars: number;
   /** Host directory with a read-only checkout of the PR head for a sandboxed call, or null to ask without tools. Absent: no tools. */
   checkout?: (repo: string, number: number, head: string) => Promise<string | null>;
 };
 export type OpusSummary = {
-  runId: string; repo: string; candidates: number; reviewed: number; skipListed: number;
+  runId: string; repo: string; candidates: number; reviewed: number; skipListed: number; dropped: number;
   verdicts: Record<string, number>; missing: string[]; skipped: string[];
 };
 
@@ -36,7 +39,7 @@ const now = () => new Date().toISOString();
 const refOf = (c: { repo: string; number: number }) => `${c.repo}#${c.number}`;
 
 export function defaultOpusDeps(): OpusDeps {
-  return { fetchDiff: ghDiff, fetchDelta: ghDelta, model: PROMPT.models[0]!, maxChars: DEFAULT_CAPS.charsPerCall, checkout: (r, n, h) => checkoutForPr(r, n, h, console.log) };
+  return { querier: new Client(500), fetchDiff: ghDiff, fetchDelta: ghDelta, model: PROMPT.models[0]!, maxChars: DEFAULT_CAPS.charsPerCall, checkout: (r, n, h) => checkoutForPr(r, n, h, console.log) };
 }
 
 type Saved = { mode: "full" | "delta" | "skipped"; base: string | null; model: string | null; review: OpusReview | null; skip: string | null };
@@ -73,11 +76,31 @@ export async function runOpusReview(db: DatabaseSync, params: OpusParams, log: (
   const { repo } = params;
   const runId = `opus-review-${repo}-${now().replace(/[-:]/g, "").slice(0, 15)}`;
   let cands = selectOpusCandidates(db, repo);
-  const summary: OpusSummary = { runId, repo, candidates: cands.length, reviewed: 0, skipListed: 0, verdicts: {}, missing: [], skipped: [] };
+  const summary: OpusSummary = { runId, repo, candidates: cands.length, reviewed: 0, skipListed: 0, dropped: 0, verdicts: {}, missing: [], skipped: [] };
   if (params.limit !== undefined) cands = cands.slice(0, params.limit);
   if (params.dryRun || !cands.length) {
     log(`opus-review ${repo}: ${summary.candidates} candidates${params.dryRun ? "; dry run, nothing fetched or asked" : ""}`);
     return summary;
+  }
+  if (deps.querier) {
+    // The mirror can be minutes behind: a PR closed, turned draft or pushed since selection returns as a candidate at its new head on a later pass.
+    let live;
+    try {
+      live = await refreshChecks(db, deps.querier, repo, cands.map((c) => c.number), log);
+    } catch (e) {
+      log(`opus-review ${repo}: live state unavailable (${String((e as Error).message ?? e)}); nothing asked`);
+      return summary;
+    }
+    const asked = cands.length;
+    const byNumber = new Map(live.map((l) => [l.number, l]));
+    cands = cands.filter((c) => {
+      const l = byNumber.get(c.number);
+      const ok = !!l && l.state === "OPEN" && !l.is_draft && l.head_oid === c.head_oid;
+      if (!ok) log(`  ${refOf(c)}: dropped, ${l ? `now ${l.state}${l.is_draft ? " draft" : ""} at ${l.head_oid.slice(0, 7)}` : "not found on GitHub"}`);
+      return ok;
+    });
+    summary.dropped = asked - cands.length;
+    if (!cands.length) return summary;
   }
   let handled = 0;
   const tally = (r: OpusReview) => { summary.verdicts[r.verdict] = (summary.verdicts[r.verdict] ?? 0) + 1; summary.reviewed++; };

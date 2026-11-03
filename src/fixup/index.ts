@@ -264,9 +264,15 @@ export async function runFixup(db: DatabaseSync, params: FixupParams, log: (line
       audit(db, ACTOR, "fixup-check", ref, { run: runId, head, verdict: verdict.check.verdict, reasons: verdict.check.reasons });
       if (verdict.check.verdict === "reject") { fail("rejected", `Opus rejected the patch: ${checkLine(verdict.check)}`); continue; }
 
+      // The model calls took minutes: read the PR again before claiming and pushing.
+      const again = await d.querier.query(PR_QUERY, { name: repo, n: c.number }) as { repository?: { pullRequest?: PrNode | null } };
+      const now = again.repository?.pullRequest;
+      if (!now || now.state !== "OPEN" || now.isDraft) { log(`  ${ref}: skipped: no longer an open, non-draft PR after the model calls`); continue; }
+      if (now.headRefOid !== c.head) { log(`  ${ref}: skipped: head moved to ${short(now.headRefOid)} during the model calls`); continue; }
+
       // Claim after the patch is validated and approved, just before the push.
-      if (!(pr.assignees?.nodes ?? []).length) {
-        await d.querier.query(ASSIGN, { id: pr.id, user: who.nodeId });
+      if (!(now.assignees?.nodes ?? []).length) {
+        await d.querier.query(ASSIGN, { id: now.id, user: who.nodeId });
         audit(db, ACTOR, "assign", ref, { run: runId, assignee: who.login });
         log(`  ${ref}: assigned to ${who.login}`);
       }

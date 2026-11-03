@@ -476,11 +476,27 @@ export async function forkOf(run: Exec, login: string, repo: string): Promise<st
 
 const urlOk = (url: string, repo: string): boolean => new RegExp(`^https://github\\.com/${ORG}/${repo}/pull/\\d+$`).test(url);
 
+/** The issue's state on GitHub now; null when the read fails, in which case the mirror's state stands. */
+async function liveIssueState(d: FixIssueDeps, repo: string, number: number): Promise<string | null> {
+  const r = await d.exec("gh", ["api", `repos/${ORG}/${repo}/issues/${number}`, "--jq", ".state"]);
+  const v = r.code === 0 ? r.stdout.trim().toLowerCase() : "";
+  return v === "open" ? "OPEN" : v === "closed" ? "CLOSED" : null;
+}
+
+/** True when the issue is closed on GitHub; the mirror row is brought up to date. */
+async function closedLive(x: Ctx, r: AttemptRow): Promise<boolean> {
+  const live = await liveIssueState(x.d, r.repo, r.number);
+  if (live !== "CLOSED") return false;
+  x.db.prepare("UPDATE main.items SET state = 'CLOSED' WHERE repo = ? AND number = ? AND state = 'OPEN'").run(r.repo, r.number);
+  return true;
+}
+
 /** Comments on the issue at most once: the audit row is written before the post, so a crash or a failed post is not retried. */
 async function comment(x: Ctx, r: AttemptRow, url: string): Promise<void> {
   const { db, d, log } = x;
   const ref = refOf(r);
   if (db.prepare("SELECT 1 FROM audit WHERE action = 'fixissue-comment' AND target = ?").get(ref)) return;
+  if (await closedLive(x, r)) { log(`  ${ref}: not commenting, the issue is closed`); return; }
   const text = commentText(url);
   audit(db, ACTOR, "fixissue-comment", ref, { run: x.runId, text });
   const cm = await d.exec("gh", ["issue", "comment", String(r.number), "--repo", `${ORG}/${r.repo}`, "--body-file", "-"], { input: text });
@@ -488,7 +504,7 @@ async function comment(x: Ctx, r: AttemptRow, url: string): Promise<void> {
 }
 
 /** Commits the passed patch on main, pushes it to the fork, opens the PR and comments on the issue. */
-async function openPr(x: Ctx, r: AttemptRow): Promise<boolean> {
+export async function openPr(x: Ctx, r: AttemptRow): Promise<boolean> {
   const { db, d, git, log } = x;
   const ref = refOf(r);
   const files = (JSON.parse(r.files ?? "[]") as string[]);
@@ -507,6 +523,7 @@ async function openPr(x: Ctx, r: AttemptRow): Promise<boolean> {
     if (!permitted()) return false;
     const issueNow = db.prepare("SELECT state, title FROM items WHERE repo = ? AND number = ?").get(r.repo, r.number) as { state: string; title: string | null } | undefined;
     if (issueNow && issueNow.state !== "OPEN") { fail(db, d, r, "the issue is closed"); return false; }
+    if (await closedLive(x, r)) { fail(db, d, r, "the issue is closed"); return false; }
     const who = await whoAmI(d.exec);
     db.prepare("INSERT INTO main.settings (key, value) VALUES ('pipeline_login', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value").run(who.login);
     const branch = branchName(r.number, issueNow?.title ?? "", who.login);
@@ -542,6 +559,7 @@ async function openPr(x: Ctx, r: AttemptRow): Promise<boolean> {
     const push = await git.pushNew(fork, branch, commit);
     if (push.code !== 0) { log(`  ${ref}: push failed: ${oneLine(push.stderr)}`); tried(); return false; }
     audit(db, ACTOR, "fixissue-push", ref, { run: x.runId, branch, commit, fork });
+    if (await closedLive(x, r)) { fail(db, d, r, "the issue is closed"); return false; }
     const body = prBody(r.number, files, testPath);
     const pr = await d.exec("gh", ["pr", "create", "--repo", `${ORG}/${r.repo}`, "--base", branchOf(db, r.repo), "--head", `${fork.split("/")[0]}:${branch}`, "--title", prTitle(title), "--body-file", "-"], { input: body });
     const url = pr.stdout.trim().split("\n").pop() ?? "";

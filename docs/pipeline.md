@@ -14,7 +14,7 @@ Sync, Embed, Duplicates, Classify, Priority and Decide cover the whole org. Labe
 
 ## Sync
 
-Every issue, PR and comment of the tracked repos is mirrored into the local database every minute (one org-wide search for changes). Later stages read the mirror and never GitHub directly. Automatic; no model.
+Every issue, PR and comment of the tracked repos is mirrored into the local database every minute (one org-wide search for changes). Later stages plan from the mirror. The mirror can be minutes behind GitHub, so every stage that writes to GitHub or spends a model call first reads the item's live state (state, draft flag, head commit) in one batched query and skips what changed; the skipped items come back on a later pass. Automatic; no model.
 
 ## Embed
 
@@ -98,7 +98,7 @@ Writes each settled type label and flag to GitHub. No model.
 
 - Only settled types are labelled. A label a person set is never changed: items with a different type label are skipped and reported.
 - Needs the repo's **label approval**. Without it the stage only plans.
-- Writes in batches, at most 60 a minute. A re-run skips items already labelled.
+- Writes in batches, at most 60 a minute. A re-run skips items already labelled. Each batch first reads the live state of its items; an item that is no longer open is skipped, counted and its mirror row updated.
 - An operator's `plugin` scope answer sets the plugin candidate type, also where the classifiers disagreed; the label goes through the same approval.
 
 ## Review
@@ -122,7 +122,7 @@ The weaker of two duplicate PRs is held, never closed, until the better one merg
 
 ### Second pass: Opus
 
-Step `opus-review`, one PR per call, no tools, untrusted data quoted as in the first pass. Opus gets the full diff and Sonnet's verdict and fix list, and returns a verdict (take, take-fix, hold or close), a complete fix list for take-fix (it may keep, drop or add to Sonnet's), its reasons and `sure`. Highest work rank first; daily limit 40 PRs. Sonnet hold and close verdicts get no second pass.
+Step `opus-review`, one PR per call, no tools, untrusted data quoted as in the first pass. Opus gets the full diff and Sonnet's verdict and fix list, and returns a verdict (take, take-fix, hold or close), a complete fix list for take-fix (it may keep, drop or add to Sonnet's), its reasons and `sure`. Highest work rank first; daily limit 40 PRs. Sonnet hold and close verdicts get no second pass. Before the calls, the candidates' live state and heads are read in one query; a PR that is closed, a draft or at a different head than selected is dropped and returns as a candidate on the next pass.
 
 - **Final verdict.** Opus's for the head. Sonnet's when the skip list applies. While a Sonnet take or take-fix has neither, there is no final verdict yet and later stages wait (the queue shows `waiting-opus`).
 - **Disagreement.** When Opus's verdict differs from Sonnet's (take and take-fix count as the same) and Opus is not sure, the PR is held for a person; the hold reason shows both reviews. Otherwise Opus's verdict stands without a person.
@@ -139,6 +139,7 @@ Opens a PR for open bugfix issues in public Rust repos where the fix is clear. N
 
 - **Candidates.** No pending scope decision (needs-decision issues need a `take`), no open PR that mentions the issue, no earlier attempt, not held as a duplicate. Highest work rank first.
 - **Triage.** Sonnet decides if the fix is clear. If not, the issue is held with the reason.
+- **Live check.** Right before the PR is opened and right before the issue comment, the issue is read from GitHub. If it is closed, no PR or comment is made, the attempt is recorded as failed ("the issue is closed") and the mirror row is updated.
 - **Patch.** Sonnet writes a diff to the listed files plus one regression test. Our code validates it: only listed files, at most 300 changed lines, no binary, symlink or mode changes.
 - **Sandbox.** The patched head must build and pass; the test alone on the base commit must fail. Untrusted code runs only there.
 - **Opus check.** After the sandbox passes and before anything is pushed, Opus reads the issue, the triage reasoning and the full patch with its test. A reject counts as a failed round and its reasons go into the next round's prompt; the check is recorded with the patch hash.
@@ -155,6 +156,7 @@ For a take-fix review, Sonnet applies the listed small fixes to the contributor'
 - **Cannot push.** In a repo with **comment approval**, one comment lists the fixes (at most 6, cleaned of links and mentions), once per head, if the head is still the reviewed one. The PR shows as "asked the contributor"; a new head goes back to Review. Without the approval it stays held.
 - **Safety.** The checkout is untrusted: no working tree, hooks or filters run. The diff may touch only the files named in the review, at most 300 lines.
 - **Opus check.** Before the push, Opus reads the PR, the review's fix list and our patch. A reject pushes nothing, records the try as "rejected" with Opus's reason and counts as one of the 2 tries; the check is recorded with the patch hash.
+- **Live check.** The PR is read from GitHub before the model calls and again after the Opus check. If it is no longer open, is a draft or its head moved, nothing is assigned or pushed and the PR is tried again on a later run.
 - **Push.** One commit "Apply review fixes", pushed with a lease so a branch that moved is left alone, plus one comment from a fixed template.
 - **Hand-off.** The new head is reviewed again. At most 2 tries per PR. Daily limit 20 PRs, pushes and comments together.
 
@@ -191,7 +193,7 @@ A take PR that fails any of the first four, is not verified (Verify `unavailable
 
 A PR held by an open Duplicate? decision shows as `held-duplicate` and is not merged.
 
-**Merge step.** Needs the repo's **merge approval**. It lands the PRs that may merge in integration batches (below), assigns the batch PR to the pipeline's account and runs `safe-merge --merge`. `safe-merge` is built in (`craft-auto safe-merge OWNER/REPO PR --squash|--merge`); it refuses unless the PR is open, not a draft, mergeable and every check and Actions run for the head finished green, and it merges pinned to that head. `$CRAFT_AUTO_MERGE_CMD` can name another command instead. It never calls `gh pr merge` itself and never passes `--allow-pending`. A refusal is recorded with its reason and the batch stays open; any other error stops the run. A PR in a repo Verify cannot build (`unavailable`) is merged on its own through `safe-merge` (squash, or merge when the commits have more than one author). Haiku writes the failure summary of a held PR. Daily limit 10 PRs: a batch of 6 uses 6.
+**Merge step.** Needs the repo's **merge approval**. It lands the PRs that may merge in integration batches (below), assigns the batch PR to the pipeline's account (and each member PR nobody is assigned to, when its batch starts) and runs `safe-merge --merge`. `safe-merge` is built in (`craft-auto safe-merge OWNER/REPO PR --squash|--merge`); it refuses unless the PR is open, not a draft, mergeable and every check and Actions run for the head finished green, and it merges pinned to that head. `$CRAFT_AUTO_MERGE_CMD` can name another command instead. It never calls `gh pr merge` itself and never passes `--allow-pending`. A refusal is recorded with its reason and the batch stays open; any other error stops the run. A PR in a repo Verify cannot build (`unavailable`) is merged on its own through `safe-merge` (squash, or merge when the commits have more than one author). Haiku writes the failure summary of a held PR. Daily limit 10 PRs: a batch of 6 uses 6.
 
 **Integration batches.** A batch starts whenever a repo has PRs that may merge and no batch in flight there; nothing waits for more PRs. It takes PRs in work-rank order, up to the repo's batch size (1 to 10, starting at 10), at most about 2,000 changed lines in all; an L-size PR goes alone. A PR that conflicts with the batch so far waits for the next batch.
 
@@ -202,7 +204,9 @@ A PR held by an open Duplicate? decision shows as `held-duplicate` and is not me
 
 If the sandbox check or upstream CI fails, the batch is split in half and each half is retried, and the repo's batch size halves (minimum 1). A single PR that fails goes on hold (`batch-failed`) with Haiku's summary, until it has a new head. A person closing the batch PR holds its PRs the same way.
 
-Rebuilds. A PR in the batch that is no longer mergeable by the rule or the operator's answer, or that was closed, merged or pushed to on GitHub, leaves the batch: right before the merge command one query checks every member for state OPEN at the batched head, and the rest are rebuilt in a new batch (merge, not rebase). When the default branch moves, the batch is kept if its tip still merges cleanly with the new head (GitHub's mergeable flag and upstream CI on the batch PR cover the rest); a conflict, or GitHub reporting one, closes the batch PR and rebuilds. A batch PR merged by someone else is recorded as merged.
+Rebuilds. A PR in the batch that is no longer mergeable by the rule or the operator's answer, or that was closed, merged or pushed to on GitHub, leaves the batch: right before the batch branch is pushed and again right before the merge command one query checks every member for state OPEN at the batched head, and the rest are rebuilt in a new batch (merge, not rebase). When the default branch moves, the batch is kept if its tip still merges cleanly with the new head (GitHub's mergeable flag and upstream CI on the batch PR cover the rest); a conflict, or GitHub reporting one, closes the batch PR and rebuilds. A batch PR merged by someone else is recorded as merged.
+
+Assignment. When a batch is created, each member PR with no assignee is assigned to the pipeline account (audit action `assign`). When a member leaves the pipeline without merging (it failed alone and is held, was dropped from a rebuilt batch and is no longer eligible, or its batch PR was closed by a person), the assignment is removed (audit action `unassign`) only if the audit shows we made it and we are still the only assignee. A member that goes into a new batch keeps it. Single merges are assigned when they merge.
 
 Limits and exclusions. A PR whose own diff is binary or larger than the task limit is left out of batches and merged on its own, like PRs in repos with no CI (a batch PR would never turn green). A batch with more PRs than the daily limit has left waits, and rebuilds and splits take at most what is left. A build-environment error keeps the batch checking: the task is queued again at once, then after 5 minutes doubling up to 6 hours; the batch is never split or held for it. Merge jobs that only advance batches in flight do not count towards the stage's backoff. A crash after the batch PR was created is repaired by adopting the open PR of the branch. Fetches into the shared cache retry on ref-lock errors.
 
