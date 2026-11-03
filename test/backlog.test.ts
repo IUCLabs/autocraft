@@ -11,7 +11,7 @@ import { selectCandidates as decideCandidates } from "../src/decide/select.ts";
 import { answer, getOne, listDecisions, reopen, backlogBulk } from "../src/dash/api/decisions.ts";
 import type { Req } from "../src/dash/types.ts";
 import { connect } from "../src/db.ts";
-import { actionable, ask, backlogOpen, getDecision } from "../src/decisions.ts";
+import { actionable, ask, backlogOpen, getDecision, withdrawOpen } from "../src/decisions.ts";
 import { notHeldSql } from "../src/dupes/held.ts";
 import { textsHash } from "../src/dupes/texts.ts";
 import { buildQueue } from "../src/merge/queue.ts";
@@ -168,5 +168,23 @@ describe("Backlog", () => {
     // --repo moves every open decision of the repo.
     const repo = backlogOpen(db, { repo: "app" }, "cli", true);
     assert.deepEqual(repo.decisions.map((d) => d.id).sort(), ["a1", "a2"]);
+  });
+
+  test("withdraw outside the pilot deletes open scope decisions and their asked stage, leaving the item never asked", () => {
+    const db = fresh();
+    ask(db, [question("a1", "scope", "app", 1), question("o1", "scope", "other", 1), question("o2", "merge", "other", 2)]);
+    const stage = db.prepare("INSERT INTO stages (repo, number, stage, at, actor, note) VALUES (?, ?, ?, ?, ?, ?)");
+    stage.run("other", 1, "classified", T0, "classify", null);
+    stage.run("other", 1, "needs-decision", T1, "decide", "scope decision o1");
+    db.prepare("INSERT INTO decision_comments (id, decision_id, login, at, body) VALUES ('c1', 'o1', 'op', ?, 'x')").run(T1);
+    setPilot(db, "op", ["app"]);
+    assert.deepEqual(withdrawOpen(db, { outsidePilot: true }, "cli", false).decisions.map((d) => d.id), ["o1"], "scope only");
+    assert.ok(getDecision(db, "o1"), "dry run keeps it");
+    withdrawOpen(db, { outsidePilot: true }, "cli", true);
+    assert.equal(getDecision(db, "o1"), undefined);
+    assert.ok(getDecision(db, "o2") && getDecision(db, "a1"));
+    assert.equal((db.prepare("SELECT COUNT(*) AS n FROM decision_comments WHERE decision_id = 'o1'").get() as { n: number }).n, 0);
+    assert.deepEqual({ ...(db.prepare("SELECT stage FROM item_stage WHERE repo = 'other' AND number = 1").get() as object) }, { stage: "classified" });
+    assert.equal((db.prepare("SELECT COUNT(*) AS n FROM audit WHERE action = 'withdraw' AND target = 'o1'").get() as { n: number }).n, 1);
   });
 });

@@ -166,6 +166,53 @@ export function backlogOpen(db: DatabaseSync, scope: BacklogScope, by: string, a
   return { applied: true, decisions };
 }
 
+/**
+ * Withdraws open scope decisions in scope: deletes each with its opinions, comments, claims and the stages row Decide
+ * wrote when it asked, so the item counts as never asked and Decide asks it again later. Other kinds are left alone
+ * (their answers drive side tables). A dry run only lists them. Writes nothing to GitHub.
+ */
+export function withdrawOpen(db: DatabaseSync, scope: BacklogScope, by: string, apply: boolean): BacklogResult {
+  const rows = backlogCandidates(db, scope).filter((d) => d.kind === "scope" && !isBatch(d) && d.repo !== null && d.number !== null);
+  const decisions = rows.map((d) => ({ id: d.id, kind: d.kind, repo: d.repo, number: d.number }));
+  if (!apply) return { applied: false, decisions };
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const del = db.prepare("DELETE FROM decisions WHERE id = ? AND answer IS NULL");
+    const side = ["decision_opinions", "decision_comments", "decision_claims"].map((t) => db.prepare(`DELETE FROM ${t} WHERE decision_id = ?`));
+    const stage = db.prepare("DELETE FROM stages WHERE repo = ? AND number = ? AND stage = 'needs-decision' AND note = ?");
+    // item_stage is kept by an insert trigger only, so it is rebuilt from the remaining stages rows.
+    const latest = db.prepare("SELECT stage, at FROM stages WHERE repo = ? AND number = ? ORDER BY at DESC, rowid DESC LIMIT 1");
+    const reviewed = db.prepare("SELECT 1 FROM stages WHERE repo = ? AND number = ? AND stage = 'reviewed' LIMIT 1");
+    const put = db.prepare("UPDATE item_stage SET stage = ?, at = ?, reviewed = ? WHERE repo = ? AND number = ?");
+    const drop = db.prepare("DELETE FROM item_stage WHERE repo = ? AND number = ?");
+    for (const d of rows) {
+      if (del.run(d.id).changes !== 1) continue;
+      for (const s of side) s.run(d.id);
+      stage.run(d.repo, d.number, `scope decision ${d.id}`);
+      const l = latest.get(d.repo, d.number) as { stage: string; at: string } | undefined;
+      if (l) put.run(l.stage, l.at, reviewed.get(d.repo, d.number) ? 1 : 0, d.repo, d.number);
+      else drop.run(d.repo, d.number);
+      audit(db, by, "withdraw", d.id, { repo: d.repo, number: d.number, question: d.question });
+    }
+    db.exec("COMMIT");
+  } catch (e) {
+    db.exec("ROLLBACK");
+    throw e;
+  }
+  return { applied: true, decisions };
+}
+
+function withdrawCmd(args: string[]): void {
+  const ri = args.indexOf("--repo");
+  const scope: BacklogScope = { outsidePilot: args.includes("--outside-pilot"), repo: ri >= 0 ? args[ri + 1] : undefined };
+  if (ri >= 0 && !scope.repo) throw new Error("--repo needs a repo name");
+  if (!scope.outsidePilot && !scope.repo) throw new Error("usage: decisions withdraw (--outside-pilot | --repo R) [--apply]");
+  const apply = args.includes("--apply");
+  const res = withdrawOpen(connect(), scope, userInfo().username, apply);
+  for (const d of res.decisions) console.log(`${d.id}\t${d.repo}#${d.number}`);
+  console.log(`${res.decisions.length} open scope decision${res.decisions.length === 1 ? "" : "s"} ${apply ? "withdrawn" : "would be withdrawn (dry run; --apply writes)"}`);
+}
+
 function backlogCmd(args: string[]): void {
   const ri = args.indexOf("--repo");
   const scope: BacklogScope = { outsidePilot: args.includes("--outside-pilot"), repo: ri >= 0 ? args[ri + 1] : undefined };
@@ -227,16 +274,16 @@ function askCmd(args: string[]): void {
   console.log(`${r.inserted} asked, ${r.updated} updated`);
 }
 
-const SUB: Record<string, (args: string[]) => void> = { list, show, ask: askCmd, backlog: backlogCmd };
+const SUB: Record<string, (args: string[]) => void> = { list, show, ask: askCmd, backlog: backlogCmd, withdraw: withdrawCmd };
 
 export const commands = {
   decisions: {
-    summary: "decisions for people: list [--open|--answered|--all|--actionable] [--repo R] | show ID | ask FILE.json | backlog (--outside-pilot | --repo R) [--apply] (answers come from the dashboard; backlog is the operator bulk hold)",
+    summary: "decisions for people: list [--open|--answered|--all|--actionable] [--repo R] | show ID | ask FILE.json | backlog (--outside-pilot | --repo R) [--apply] | withdraw (--outside-pilot | --repo R) [--apply] (answers come from the dashboard; backlog is the operator bulk hold; withdraw deletes open scope decisions so Decide asks them again later)",
     run(args: string[]): void {
       const [sub, ...rest] = args;
       const fn = sub ? SUB[sub] : undefined;
       if (!fn) {
-        console.log("usage: craft-auto decisions list|show|ask|backlog ...");
+        console.log("usage: craft-auto decisions list|show|ask|backlog|withdraw ...");
         process.exit(sub ? 1 : 0);
       }
       fn(rest);

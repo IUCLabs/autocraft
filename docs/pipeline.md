@@ -112,6 +112,8 @@ Model: Sonnet (summaries). Daily limit 100.
 - The decision leaves the Waiting list. The Decisions page has a Backlog view that lists them. An operator can Reopen one there (two clicks, audited as `reopen`, nothing written to GitHub): the answer is cleared and the decision is open again. Other users see the view without controls.
 - An operator can move many open decisions at once: `craft-auto decisions backlog --outside-pilot` (open decisions none of whose items is in the pilot; with no pilot set, none) or `--repo R`. It lists what it would change and writes only with `--apply`; each answer is recorded for the CLI user and audited. The admin API offers the same as `POST /api/decisions/backlog` with `{outsidePilot, repo, apply}` (operators only; a dry run unless `apply` is true).
 
+**Withdraw.** `craft-auto decisions withdraw --outside-pilot` (or `--repo R`, dry run unless `--apply`) deletes open scope decisions with their opinions, comments and the stage row Decide wrote when asking, so the items count as never asked and Decide asks them again when they are in scope. Other kinds are not withdrawn. Each is audited as `withdraw`; nothing is written to GitHub.
+
 ## Label
 
 Writes each settled type label and flag to GitHub. No model.
