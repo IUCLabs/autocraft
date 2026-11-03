@@ -1,0 +1,22 @@
+// Kept apart from write.ts so src/live.ts can use it without loading the database module.
+/** Audit actions that are writes on GitHub, with the label the GitHub activity page shows. */
+export const GITHUB_ACTIONS: Record<string, string> = {
+  "labels-apply": "Labelled",
+  "label-create": "Created label",
+  "act-comment": "Commented",
+  "fixup-comment": "Commented",
+  "fixissue-comment": "Commented",
+  "act-close": "Closed",
+  "batch-pr-close": "Closed PR",
+  "merge": "Merged",
+  "assign": "Assigned",
+  "unassign": "Unassigned",
+  "review-post": "Posted review",
+  "review-edit": "Edited review",
+  "fixup-push": "Pushed",
+  "batch-push": "Pushed",
+  "fixissue-push": "Pushed",
+  "batch-pr": "Opened PR",
+  "fixissue-pr": "Opened PR",
+  "fork-create": "Forked",
+};

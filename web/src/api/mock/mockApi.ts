@@ -12,6 +12,7 @@ import { classifierReport, costReport, disagreementList } from "./insightFixture
 import { itemList, settledFor } from "./itemsFixtures";
 import { prWorkFor } from "./verifyFixtures";
 import { queueBatchList, queueList } from "./queueFixtures";
+import { githubActivityPage } from "./githubFixtures";
 import { workList } from "./workFixtures";
 import { flowFixture } from "./flowFixtures";
 import { DECISIONS, MOCK_USERS, NOW, REPOS, SEARCH_POOL, THREADS, itemFor, permFor, progress, type MockRole } from "./fixtures";
@@ -185,6 +186,7 @@ export function createMockApi(): Api {
     prompts: () => wait(promptsReport(null), 60),
     queue: (f) => wait(queueList(f), 60),
     queueBatches: (f) => wait(queueBatchList(f), 60),
+    githubActivity: (f) => wait(githubActivityPage(f), 60),
     flow: (repo) => wait(flowFixture(repo), 60),
     signOut: () => wait(undefined),
     subscribe(fn) {
