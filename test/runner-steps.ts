@@ -1,4 +1,4 @@
-// Fake pipeline steps for the runner and API tests (CRAFT_AUTO_EXTRA_STEPS).
+// Fake pipeline steps for the runner and API tests (AUTOCRAFT_EXTRA_STEPS).
 // They call no model and touch nothing outside the test database.
 import { setTimeout as sleep } from "node:timers/promises";
 import type { StepDef } from "../src/runner/steps.ts";

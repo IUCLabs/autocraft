@@ -5,7 +5,7 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-const BASE = join(homedir(), ".cache/craft-automation-scratch");
+const BASE = join(homedir(), ".cache/autocraft-scratch");
 mkdirSync(BASE, { recursive: true });
 export const SCRATCH = mkdtempSync(join(BASE, "test-"));
 process.on("exit", () => rmSync(SCRATCH, { recursive: true, force: true }));

@@ -2,6 +2,7 @@
 // built from the bare cached clone without a working tree. Only regular files
 // are written, one by one, under validated paths: no symlinks, submodules,
 // devices or `.git` entries exist in the copy, and nothing in it is executed.
+import { envVar } from "../env.ts";
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -12,7 +13,7 @@ export type CheckoutCaps = { maxFiles: number; maxBytes: number; maxFileBytes: n
 export const DEFAULT_CAPS: CheckoutCaps = { maxFiles: 20_000, maxBytes: 150 * 1024 * 1024, maxFileBytes: 2 * 1024 * 1024 };
 
 export function checkoutRoot(): string {
-  return process.env.CRAFT_AUTO_CHECKOUT_DIR ?? join(homedir(), ".cache/craft-automation/checkouts-v2");
+  return envVar("CHECKOUT_DIR") ?? join(homedir(), ".cache/autocraft/checkouts-v2");
 }
 
 type Out = { code: number; stdout: Buffer };

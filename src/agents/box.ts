@@ -1,10 +1,11 @@
 // What this machine offers, read from files named by environment variables so
 // that paths stay outside the repository and never reach the API, the logs or
 // the UI:
-//   CRAFT_AUTO_ACCOUNTS       JSON file: [{ "id": "b", "configDir": "/path" }]
-//   CRAFT_AUTO_ACCOUNTS_ROOT  directory holding one config directory per account an operator added (<root>/<id>)
-//   CRAFT_AUTO_USAGE_DIR      directory with one <id>.json usage reading per account (default <root>/.usage)
-//   CRAFT_AUTO_CLAUDE_BIN     the claude command (default: claude on the PATH)
+//   AUTOCRAFT_ACCOUNTS       JSON file: [{ "id": "b", "configDir": "/path" }]
+//   AUTOCRAFT_ACCOUNTS_ROOT  directory holding one config directory per account an operator added (<root>/<id>)
+//   AUTOCRAFT_USAGE_DIR      directory with one <id>.json usage reading per account (default <root>/.usage)
+//   AUTOCRAFT_CLAUDE_BIN     the claude command (default: claude on the PATH)
+import { envVar } from "../env.ts";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
@@ -13,15 +14,15 @@ export const ACCOUNT_ID = /^[a-z0-9][a-z0-9_-]{0,31}$/;
 
 export type BoxAccount = { id: string; configDir: string };
 
-export const claudeBin = (): string => process.env.CRAFT_AUTO_CLAUDE_BIN || "claude";
+export const claudeBin = (): string => envVar("CLAUDE_BIN") || "claude";
 
-export const configRoot = (): string | null => process.env.CRAFT_AUTO_ACCOUNTS_ROOT || null;
+export const configRoot = (): string | null => envVar("ACCOUNTS_ROOT") || null;
 
 /** Where operator-added accounts keep their Claude config; null without a root. */
 export const managedDir = (id: string): string | null => (configRoot() && ACCOUNT_ID.test(id) ? join(configRoot()!, id) : null);
 
 export function usageDir(): string | null {
-  return process.env.CRAFT_AUTO_USAGE_DIR || (configRoot() ? join(configRoot()!, ".usage") : null);
+  return envVar("USAGE_DIR") || (configRoot() ? join(configRoot()!, ".usage") : null);
 }
 
 /**
@@ -41,7 +42,7 @@ export function boxAccounts(db?: DatabaseSync): BoxAccount[] {
 }
 
 function fileAccounts(): BoxAccount[] {
-  const file = process.env.CRAFT_AUTO_ACCOUNTS;
+  const file = envVar("ACCOUNTS");
   if (!file) return [];
   try {
     const raw = JSON.parse(readFileSync(file, "utf8")) as unknown;

@@ -87,15 +87,15 @@ describe("item tool mounts", () => {
   test("only the diff directories of repositories in the snapshot are mounted", () => {
     const cache = join(dir, "diffs");
     for (const r of ["open", "hidden"]) mkdirSync(join(cache, r), { recursive: true });
-    const old = [process.env.CRAFT_AUTO_DIFF_CACHE, process.env.CRAFT_AUTO_SNAPSHOT_DIR];
-    process.env.CRAFT_AUTO_DIFF_CACHE = cache;
-    process.env.CRAFT_AUTO_SNAPSHOT_DIR = join(dir, "snap");
+    const old = [process.env.AUTOCRAFT_DIFF_CACHE, process.env.AUTOCRAFT_SNAPSHOT_DIR];
+    process.env.AUTOCRAFT_DIFF_CACHE = cache;
+    process.env.AUTOCRAFT_SNAPSHOT_DIR = join(dir, "snap");
     try {
       const t = itemTools()!;
       const diffs = t.mounts.filter((m) => m.path.startsWith("/data/diffs"));
       assert.deepEqual(diffs, [{ host: join(cache, "open"), path: "/data/diffs/open" }]);
     } finally {
-      for (const [k, v] of [["CRAFT_AUTO_DIFF_CACHE", old[0]], ["CRAFT_AUTO_SNAPSHOT_DIR", old[1]]] as const) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+      for (const [k, v] of [["AUTOCRAFT_DIFF_CACHE", old[0]], ["AUTOCRAFT_SNAPSHOT_DIR", old[1]]] as const) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
     }
   });
 });

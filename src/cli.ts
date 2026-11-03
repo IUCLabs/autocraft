@@ -17,7 +17,7 @@ async function main(): Promise<void> {
   const [name, ...args] = process.argv.slice(2);
   const cmd = name ? commands[name] : undefined;
   if (!cmd) {
-    console.log("usage: craft-auto <command> [args]\n");
+    console.log("usage: autocraft <command> [args]\n");
     for (const [n, c] of Object.entries(commands)) console.log(`  ${n.padEnd(14)} ${c.summary}`);
     process.exit(name ? 1 : 0);
   }

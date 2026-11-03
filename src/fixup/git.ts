@@ -2,6 +2,7 @@
 // checkout is untrusted: a bare repository only (no working tree, so no
 // filters, textconv drivers or hooks run), reached over HTTPS with the gh
 // credential helper, with every command given the same locked-down config.
+import { envVar } from "../env.ts";
 import { spawn } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
@@ -24,7 +25,7 @@ export const exec: Exec = (cmd, args, opts = {}) => new Promise((resolve, reject
 });
 
 export function fixupDir(): string {
-  return process.env.CRAFT_AUTO_FIXUP_DIR ?? join(homedir(), ".cache/craft-automation/fixups");
+  return envVar("FIXUP_DIR") ?? join(homedir(), ".cache/autocraft/fixups");
 }
 
 export const HARDENING = [

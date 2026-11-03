@@ -24,7 +24,7 @@ test("two processes claiming at once never exceed an account's slots", async () 
   writeReading(box, "a", {});
   writeReading(box, "b", {});
   const startAt = String(Date.now() + 1500);
-  const env = { ...process.env, CRAFT_AUTO_DB: file };
+  const env = { ...process.env, AUTOCRAFT_DB: file };
   const outs = await Promise.all([0, 1, 2].map(() => run(process.execPath, [WORKER, file, startAt, "20"], { env })));
   const got = outs.map((o) => Number(o.stdout.trim()));
   assert.equal(got.reduce((a, b) => a + b, 0), 12, `claims: ${got}`);

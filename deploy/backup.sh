@@ -3,11 +3,12 @@
 #   deploy/backup.sh [PREFIX [KEEP]]     defaults: daily 7
 # Writes $AUTOCRAFT_BACKUP_DIR/PREFIX-<UTC timestamp>.db.zst (gzip without zstd),
 # then deletes all but the newest KEEP files of that prefix. The database is
-# $CRAFT_AUTO_DB; backups default to <database dir>/backups.
+# $AUTOCRAFT_DB; backups default to <database dir>/backups.
 set -euo pipefail
 prefix="${1:-daily}"
 keep="${2:-7}"
-db="${CRAFT_AUTO_DB:?CRAFT_AUTO_DB is not set}"
+db="${AUTOCRAFT_DB:-${CRAFT_AUTO_DB:-}}"
+[ -n "$db" ] || { echo "AUTOCRAFT_DB is not set" >&2; exit 1; }
 dir="${AUTOCRAFT_BACKUP_DIR:-$(dirname "$db")/backups}"
 umask 077
 mkdir -p "$dir"

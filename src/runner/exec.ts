@@ -1,4 +1,4 @@
-// `craft-auto runner exec <id>`: runs one claimed job in the runner's child
+// `autocraft runner exec <id>`: runs one claimed job in the runner's child
 // process. Writes progress, the summary or the error, and the job's model
 // usage; the runner sets the final state from the exit code.
 import type { DatabaseSync } from "node:sqlite";

@@ -3,7 +3,7 @@
 // green (or skipped/neutral), and the merge is pinned to the head that was
 // checked.
 //
-//   craft-auto safe-merge OWNER/REPO PR --squash|--merge [--allow-pending NAME]...
+//   autocraft safe-merge OWNER/REPO PR --squash|--merge [--allow-pending NAME]...
 //
 // Exit 0 when merged, 1 on a refusal or gh failure (reason on stderr), 2 on usage.
 // The decisions are pure functions over the fetched JSON; `safeMerge` is the gh layer.
@@ -99,7 +99,7 @@ export async function safeMerge(
   return { merged: true, message: `${repo}#${pr} ${line} (head ${head.slice(0, 9)}, ${v.statusCheckRollup.length} checks green)` };
 }
 
-const USAGE = "usage: craft-auto safe-merge OWNER/REPO PR --squash|--merge [--allow-pending NAME]...";
+const USAGE = "usage: autocraft safe-merge OWNER/REPO PR --squash|--merge [--allow-pending NAME]...";
 
 export function parseSafeMergeArgs(args: string[]): { repo: string; pr: string; method: Method; allow: string[] } | null {
   if (args.length < 3) return null;

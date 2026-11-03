@@ -47,8 +47,8 @@ let cookie = "";
 before(async () => {
   addLogin(db, "cli", "viewer1", "viewer", null);
   const config = loadConfig({
-    CRAFT_AUTO_DEV_AUTH: "1", CRAFT_AUTO_LISTEN: "127.0.0.1:0", CRAFT_AUTO_DB: join(dir, "dash.db"), CRAFT_AUTO_DEV_PERMS: permsFile,
-    CRAFT_AUTO_IMG_CACHE: "",
+    AUTOCRAFT_DEV_AUTH: "1", AUTOCRAFT_LISTEN: "127.0.0.1:0", AUTOCRAFT_DB: join(dir, "dash.db"), AUTOCRAFT_DEV_PERMS: permsFile,
+    AUTOCRAFT_IMG_CACHE: "",
   });
   const images = new ImageProxy({ fetch: fakeFetch, token: async () => TOKEN, cacheDir: join(dir, "img"), repos });
   const s = await startServer({ config, db, provider: new FakeProvider(permsFile), routes: [], images });
@@ -290,14 +290,14 @@ describe("the token source", () => {
     const file = join(dir, "token");
     writeFileSync(file, "ghp_first\n");
     const lines: string[] = [];
-    const src = imageTokenSource({ CRAFT_AUTO_IMAGE_TOKEN_FILE: file }, (l) => lines.push(l));
+    const src = imageTokenSource({ AUTOCRAFT_IMAGE_TOKEN_FILE: file }, (l) => lines.push(l));
     assert.equal(await src(), "ghp_first");
     writeFileSync(file, "ghp_second\n");
     utimesSync(file, new Date(Date.now() + 5000), new Date(Date.now() + 5000));
     assert.equal(await src(), "ghp_second");
     assert.equal(lines.length, 1);
     assert.ok(!lines[0]!.includes("ghp_"));
-    assert.equal(await imageTokenSource({ CRAFT_AUTO_IMAGE_TOKEN_FILE: join(dir, "missing") }, () => {})(), null);
+    assert.equal(await imageTokenSource({ AUTOCRAFT_IMAGE_TOKEN_FILE: join(dir, "missing") }, () => {})(), null);
   });
 
   test("without the variable it says it uses gh", () => {

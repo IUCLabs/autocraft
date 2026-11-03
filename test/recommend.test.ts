@@ -129,7 +129,7 @@ describe("the workspace", () => {
     const box = useTestAccount(db);
     mkdirSync(box.configDir + "t", { recursive: true });
     writeFileSync(join(box.configDir + "t", ".credentials.json"), JSON.stringify({ claudeAiOauth: { expiresAt: Date.now() + 6 * 3600_000 } }));
-    process.env.CRAFT_AUTO_CLAUDE_BIN = "/usr/bin/true";
+    process.env.AUTOCRAFT_CLAUDE_BIN = "/usr/bin/true";
     const calls: { cmd: string; args: string[]; input: string }[] = [];
     const restore = setRunner(async (cmd, args, input) => {
       calls.push({ cmd, args, input });
@@ -148,7 +148,7 @@ describe("the workspace", () => {
     } finally {
       restoreWs();
       restore();
-      delete process.env.CRAFT_AUTO_CLAUDE_BIN;
+      delete process.env.AUTOCRAFT_CLAUDE_BIN;
     }
   });
 });

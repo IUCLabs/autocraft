@@ -18,7 +18,7 @@ import { validating } from "./gql.ts";
 
 mkdirSync(SCRATCH, { recursive: true });
 const dir = mkdtempSync(join(SCRATCH, "review-test-"));
-process.env.CRAFT_AUTO_DIFF_CACHE = join(dir, "diffs");
+process.env.AUTOCRAFT_DIFF_CACHE = join(dir, "diffs");
 
 const T0 = "2026-01-01T00:00:00Z";
 
@@ -157,7 +157,7 @@ describe("runReview", () => {
 
   test("a PR above the code-line cap is held without a model call; a bad reply is asked once more", async () => {
     const db = fresh();
-    process.env.CRAFT_AUTO_DIFF_CACHE = join(dir, "diffs-2");
+    process.env.AUTOCRAFT_DIFF_CACHE = join(dir, "diffs-2");
     db.prepare("DELETE FROM items WHERE number <> 1 AND number <> 7").run();
     const calls: Call[] = [];
     let n = 0;

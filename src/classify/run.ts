@@ -1,4 +1,5 @@
 // Runs the classifiers: Jev (one `jev ask` per item) and Haiku (batches through `claude -p`).
+import { envVar } from "../env.ts";
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -237,7 +238,7 @@ const madeDirs = new Set<string>();
  * directory per call would give each call its own prompt prefix and no call would read the prompt cache.
  */
 export function claudeCwd(): string {
-  const dir = process.env.CRAFT_AUTO_CLAUDE_CWD ?? join(homedir(), ".cache/craft-automation/claude-cwd");
+  const dir = envVar("CLAUDE_CWD") ?? join(homedir(), ".cache/autocraft/claude-cwd");
   if (!madeDirs.has(dir)) {
     mkdirSync(dir, { recursive: true });
     madeDirs.add(dir);

@@ -1,6 +1,7 @@
 // Sandboxed tool access for model calls: what a call needs to run claude with
 // read-only file tools on a checkout, and the default way to get a checkout of
 // a pull request's head commit from the cached bare clone.
+import { envVar } from "../env.ts";
 import { accessSync, constants, existsSync, readFileSync, realpathSync } from "node:fs";
 import { delimiter, join } from "node:path";
 import { exec, fixupDir, Git } from "../fixup/git.ts";
@@ -11,9 +12,9 @@ export { REPO_PATH, REPOS_ROOT, AGENTS_PATH, reposPath, sandboxCommand, type San
 export const ORG = "storytold";
 const MAX_AGE_MS = 24 * 3600_000;
 
-/** The claude binary behind the PATH entry, with symlinks resolved so one file can be bound. CRAFT_AUTO_CLAUDE_BIN overrides. */
+/** The claude binary behind the PATH entry, with symlinks resolved so one file can be bound. AUTOCRAFT_CLAUDE_BIN overrides. */
 export function resolveClaudeBin(): string | null {
-  const given = process.env.CRAFT_AUTO_CLAUDE_BIN;
+  const given = envVar("CLAUDE_BIN");
   const candidates = given ? [given] : (process.env.PATH ?? "").split(delimiter).filter(Boolean).map((d) => join(d, "claude"));
   for (const c of candidates) {
     try {
@@ -26,7 +27,7 @@ export function resolveClaudeBin(): string | null {
 
 /** Whether tool mode can run on this machine: bubblewrap and the claude binary are present. */
 export function sandboxAvailable(): boolean {
-  return process.env.CRAFT_AUTO_NO_SANDBOX !== "1" && existsSync("/usr/bin/bwrap") && resolveClaudeBin() !== null;
+  return envVar("NO_SANDBOX") !== "1" && existsSync("/usr/bin/bwrap") && resolveClaudeBin() !== null;
 }
 
 /** A sandboxed call needs at least this much token lifetime left, because the sandbox never refreshes. */

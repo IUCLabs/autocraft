@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import type { PipelineState, StageLimit } from "../web/src/api/types.ts";
 import { SCRATCH } from "./scratch.ts";
 
-process.env.CRAFT_AUTO_EXTRA_STEPS = fileURLToPath(new URL("./runner-steps.ts", import.meta.url));
+process.env.AUTOCRAFT_EXTRA_STEPS = fileURLToPath(new URL("./runner-steps.ts", import.meta.url));
 
 const { addLogin } = await import("../src/access.ts");
 const { connect } = await import("../src/db.ts");
@@ -33,7 +33,7 @@ before(async () => {
   addLogin(db, "cli", "viewer1", "viewer", null);
   addLogin(db, "cli", "maint", "maintainer", null);
   scopeToTracked(db);
-  const config = loadConfig({ CRAFT_AUTO_DEV_AUTH: "1", CRAFT_AUTO_LISTEN: "127.0.0.1:0", CRAFT_AUTO_DB: dbFile, CRAFT_AUTO_DEV_PERMS: permsFile });
+  const config = loadConfig({ AUTOCRAFT_DEV_AUTH: "1", AUTOCRAFT_LISTEN: "127.0.0.1:0", AUTOCRAFT_DB: dbFile, AUTOCRAFT_DEV_PERMS: permsFile });
   const s = await startServer({ config, db, provider: new FakeProvider(permsFile), routes: apiRoutes() });
   base = s.url;
   close = s.close;

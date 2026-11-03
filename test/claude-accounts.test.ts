@@ -36,10 +36,10 @@ case "$1 $2" in
 esac
 `);
 chmodSync(FAKE, 0o755);
-process.env.CRAFT_AUTO_CLAUDE_BIN = FAKE;
-process.env.CRAFT_AUTO_ACCOUNTS_ROOT = join(dir, "root");
-delete process.env.CRAFT_AUTO_ACCOUNTS;
-delete process.env.CRAFT_AUTO_USAGE_DIR;
+process.env.AUTOCRAFT_CLAUDE_BIN = FAKE;
+process.env.AUTOCRAFT_ACCOUNTS_ROOT = join(dir, "root");
+delete process.env.AUTOCRAFT_ACCOUNTS;
+delete process.env.AUTOCRAFT_USAGE_DIR;
 const db = connect(join(dir, "t.db"));
 
 describe("claude accounts", () => {
@@ -83,11 +83,11 @@ describe("claude accounts", () => {
   test("a login that prints no URL fails, and cancel ends a waiting login", async () => {
     const b = addAccount(db, { label: "Team B" }, "op");
     const was = timing.urlMs;
-    process.env.CRAFT_AUTO_CLAUDE_BIN = "/bin/true";
+    process.env.AUTOCRAFT_CLAUDE_BIN = "/bin/true";
     timing.urlMs = 600;
     assert.equal((await beginLogin(db, b.id, "op")).login?.state, "failed");
     timing.urlMs = was;
-    process.env.CRAFT_AUTO_CLAUDE_BIN = FAKE;
+    process.env.AUTOCRAFT_CLAUDE_BIN = FAKE;
     assert.equal((await beginLogin(db, b.id, "op")).login?.state, "waiting");
     assert.equal(stopLogin(db, b.id, "op").login?.state, "cancelled");
   });

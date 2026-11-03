@@ -101,7 +101,7 @@ export const commands = {
       const [sub, repo, num] = args;
       const by = args[args.indexOf("--by") + 1];
       if (sub !== "batch-again" || !repo || !/^\d+$/.test(num ?? "") || !args.includes("--by") || !by) {
-        console.error("usage: craft-auto item batch-again <repo> <number> --by <login>");
+        console.error("usage: autocraft item batch-again <repo> <number> --by <login>");
         process.exit(2);
       }
       try {

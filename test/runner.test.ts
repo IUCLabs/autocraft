@@ -8,7 +8,7 @@ import { after, describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { SCRATCH } from "./scratch.ts";
 
-process.env.CRAFT_AUTO_EXTRA_STEPS = fileURLToPath(new URL("./runner-steps.ts", import.meta.url));
+process.env.AUTOCRAFT_EXTRA_STEPS = fileURLToPath(new URL("./runner-steps.ts", import.meta.url));
 
 const { connect } = await import("../src/db.ts");
 const { enqueue, getJob, jobDetail, requestCancel } = await import("../src/runner/jobs.ts");

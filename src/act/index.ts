@@ -15,8 +15,8 @@
 // operator's answer counts (actionable()), and only in repos an operator
 // approved for comments. No model calls.
 //
-//   craft-auto act --repo R [--limit N] [--apply]
-//   craft-auto comment-approval [--repo R]
+//   autocraft act --repo R [--limit N] [--apply]
+//   autocraft comment-approval [--repo R]
 import type { DatabaseSync } from "node:sqlite";
 import { audit } from "../dash/audit.ts";
 import { closeItem, commentOn, type Writer } from "../github/write.ts";

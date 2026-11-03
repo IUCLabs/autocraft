@@ -18,7 +18,7 @@
 #   AUTOCRAFT_WORKER_SSH       user@host of the sandbox worker's admin SSH command; when set
 #                              and $AUTOCRAFT_ROOT/.ssh/id_craftsandbox exists, the worker code
 #                              is updated to this commit once the worker has no running tasks
-#   AUTOCRAFT_HEALTH_URL       URL polled after the restart (default: http://$CRAFT_AUTO_LISTEN/)
+#   AUTOCRAFT_HEALTH_URL       URL polled after the restart (default: http://$AUTOCRAFT_LISTEN/)
 #
 # Order: snapshot the database, stop the sync timer, build the new release beside
 # the running one, switch the `app` symlink, restart, start the timer. A failure
@@ -47,6 +47,8 @@ if [ -r "$ENV_FILE" ]; then
 	# shellcheck disable=SC1090
 	. "$ENV_FILE"
 	set +a
+	AUTOCRAFT_DB="${AUTOCRAFT_DB:-${CRAFT_AUTO_DB:-}}"
+	AUTOCRAFT_LISTEN="${AUTOCRAFT_LISTEN:-${CRAFT_AUTO_LISTEN:-}}"
 else
 	echo "!! $ENV_FILE is missing; create it first (README, Production install)" >&2
 	exit 1
@@ -74,7 +76,7 @@ REL="$ROOT/releases/$sha"
 echo "-- Deploying ${sha:0:12} to $REL --"
 
 # Snapshot first: nothing of the new code has touched the database yet.
-if [ -n "${CRAFT_AUTO_DB:-}" ] && [ -f "$CRAFT_AUTO_DB" ]; then
+if [ -n "${AUTOCRAFT_DB:-}" ] && [ -f "$AUTOCRAFT_DB" ]; then
 	echo "-> Snapshotting the database..."
 	bash "$ROOT/app/deploy/backup.sh" predeploy 3 2>/dev/null || {
 		# First deploy of this layout has no app/ yet: use the checkout about to be built.
@@ -137,15 +139,15 @@ ln -sfn "releases/$sha" "$ROOT/app.new"
 mv -T "$ROOT/app.new" "$ROOT/app"
 
 units="${AUTOCRAFT_UNITS-autocraft-dashboard autocraft-runner}"
-if [ -n "$units" ] && [ -n "${CRAFT_AUTO_DB:-}" ] && [ ! -f "$CRAFT_AUTO_DB" ]; then
-	echo "-> No database at $CRAFT_AUTO_DB yet; built, not restarting."
+if [ -n "$units" ] && [ -n "${AUTOCRAFT_DB:-}" ] && [ ! -f "$AUTOCRAFT_DB" ]; then
+	echo "-> No database at $AUTOCRAFT_DB yet; built, not restarting."
 	units=""
 fi
 if [ -n "$units" ]; then
 	echo "-> Restarting: $units"
 	# shellcheck disable=SC2086
 	for u in $units; do $SUDO systemctl restart "$u.service"; done
-	url="${AUTOCRAFT_HEALTH_URL:-http://${CRAFT_AUTO_LISTEN:-127.0.0.1:8993}/}"
+	url="${AUTOCRAFT_HEALTH_URL:-http://${AUTOCRAFT_LISTEN:-127.0.0.1:8993}/}"
 	up=0
 	for _ in $(seq 1 30); do
 		if curl -s -o /dev/null --max-time 2 "$url"; then up=1; break; fi

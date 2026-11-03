@@ -1,4 +1,5 @@
-// craft-auto runner serve | exec | enqueue | jobs | cancel | steps; craft-auto pipeline on | off | status | limit
+// autocraft runner serve | exec | enqueue | jobs | cancel | steps; autocraft pipeline on | off | status | limit
+import { envVar } from "../env.ts";
 import { startWorkerServer } from "../build/worker-api.ts";
 import { acquireLock } from "../mirror.ts";
 import { connect } from "../db.ts";
@@ -11,11 +12,11 @@ import { enqueue, JobError, listJobs, requestCancel } from "./jobs.ts";
 import { DEFAULT_MAX_JOBS, Runner, runnerLockPath } from "./runner.ts";
 import { loadSteps } from "./steps.ts";
 
-const USAGE = `usage: craft-auto runner serve
-       craft-auto runner steps
-       craft-auto runner enqueue <step> [--<param> <value> ...]
-       craft-auto runner jobs [--state queued|running|done|failed|cancelled] [--limit N]
-       craft-auto runner cancel <job id>`;
+const USAGE = `usage: autocraft runner serve
+       autocraft runner steps
+       autocraft runner enqueue <step> [--<param> <value> ...]
+       autocraft runner jobs [--state queued|running|done|failed|cancelled] [--limit N]
+       autocraft runner cancel <job id>`;
 
 function die(msg: string): never {
   console.error(msg);
@@ -28,7 +29,7 @@ async function serve(): Promise<void> {
   if (!release) die("another runner is running on this database");
   const db = connect();
   scopeToTracked(db);
-  const runner = new Runner({ db, lockFile: lock, maxJobs: Number(process.env.CRAFT_AUTO_RUNNER_JOBS) || DEFAULT_MAX_JOBS });
+  const runner = new Runner({ db, lockFile: lock, maxJobs: Number(envVar("RUNNER_JOBS")) || DEFAULT_MAX_JOBS });
   const ac = new AbortController();
   process.once("SIGTERM", () => ac.abort());
   process.once("SIGINT", () => ac.abort());
@@ -39,7 +40,7 @@ async function serve(): Promise<void> {
     (e: Error) => (console.error(`runner: worker API not started: ${e.message}`), null),
   );
   try {
-    await runner.serve(ac.signal, Number(process.env.CRAFT_AUTO_RUNNER_POLL_MS) || 2000);
+    await runner.serve(ac.signal, Number(envVar("RUNNER_POLL_MS")) || 2000);
   } finally {
     await workers?.close();
     release();
@@ -120,10 +121,10 @@ export const commands = {
   },
 };
 
-const PIPELINE_USAGE = `usage: craft-auto pipeline on | off | status
-       craft-auto pipeline limit <step> --per-day <N|none>
-       craft-auto pipeline limit reset <step>|--all
-       craft-auto pipeline pilot set <repo#number>... | show | clear`;
+const PIPELINE_USAGE = `usage: autocraft pipeline on | off | status
+       autocraft pipeline limit <step> --per-day <N|none>
+       autocraft pipeline limit reset <step>|--all
+       autocraft pipeline pilot set <repo#number>... | show | clear`;
 
 // Recorded as `cli`: only someone with a shell on the host can run this.
 async function pipeline(args: string[]): Promise<void> {

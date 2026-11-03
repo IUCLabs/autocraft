@@ -1,3 +1,4 @@
+import { envVar } from "../../env.ts";
 import { readFileSync, statSync } from "node:fs";
 import { isIP } from "node:net";
 import { resolve } from "node:path";
@@ -34,9 +35,9 @@ export const DEV_LISTEN = "127.0.0.1:8994";
 
 export function parseListen(value: string): { host: string; port: number } {
   const m = /^(?:\[([0-9a-fA-F:.]+)\]|([^:\[\]]+)):(\d{1,5})$/.exec(value);
-  if (!m) throw new ConfigError(`CRAFT_AUTO_LISTEN must be host:port, got ${JSON.stringify(value)}`);
+  if (!m) throw new ConfigError(`AUTOCRAFT_LISTEN must be host:port, got ${JSON.stringify(value)}`);
   const port = Number(m[3]);
-  if (port > 65535) throw new ConfigError("CRAFT_AUTO_LISTEN: port out of range");
+  if (port > 65535) throw new ConfigError("AUTOCRAFT_LISTEN: port out of range");
   return { host: m[1] ?? m[2]!, port };
 }
 
@@ -55,7 +56,7 @@ export function isLoopbackHost(hostHeader: string | undefined): boolean {
 }
 
 export function readSecrets(path: string | undefined): Secrets {
-  if (!path) throw new ConfigError("CRAFT_AUTO_SECRETS_FILE is not set");
+  if (!path) throw new ConfigError("AUTOCRAFT_SECRETS_FILE is not set");
   let mode: number;
   try {
     mode = statSync(path).mode;
@@ -82,40 +83,42 @@ export function readSecrets(path: string | undefined): Secrets {
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
-  const { host, port } = parseListen(env.CRAFT_AUTO_LISTEN ?? (env.CRAFT_AUTO_DEV_AUTH === "1" ? DEV_LISTEN : DEFAULT_LISTEN));
-  const devAuth = env.CRAFT_AUTO_DEV_AUTH === "1";
+  const { host, port } = parseListen(envVar("LISTEN", env) ?? (envVar("DEV_AUTH", env) === "1" ? DEV_LISTEN : DEFAULT_LISTEN));
+  const devAuth = envVar("DEV_AUTH", env) === "1";
   let secrets: Secrets;
   let baseUrl: string | null = null;
   if (devAuth) {
-    if (!isLoopback(host)) throw new ConfigError("CRAFT_AUTO_DEV_AUTH=1 is allowed only on a loopback listen address");
+    if (!isLoopback(host)) throw new ConfigError("AUTOCRAFT_DEV_AUTH=1 is allowed only on a loopback listen address");
     // Dev sessions don't survive a restart: the key lives only in this process.
     secrets = { githubClientId: "dev", githubClientSecret: "dev", sessionKey: randomToken() };
   } else {
-    secrets = readSecrets(env.CRAFT_AUTO_SECRETS_FILE);
+    secrets = readSecrets(envVar("SECRETS_FILE", env));
   }
-  if (env.CRAFT_AUTO_BASE_URL) {
+  const rawBaseUrl = envVar("BASE_URL", env);
+  if (rawBaseUrl) {
     let u: URL;
     try {
-      u = new URL(env.CRAFT_AUTO_BASE_URL);
+      u = new URL(rawBaseUrl);
     } catch {
-      throw new ConfigError("CRAFT_AUTO_BASE_URL is not a URL");
+      throw new ConfigError("AUTOCRAFT_BASE_URL is not a URL");
     }
-    if (u.protocol !== "https:" && u.protocol !== "http:") throw new ConfigError("CRAFT_AUTO_BASE_URL must be http(s)");
+    if (u.protocol !== "https:" && u.protocol !== "http:") throw new ConfigError("AUTOCRAFT_BASE_URL must be http(s)");
     if (devAuth && (u.protocol !== "http:" || (u.hostname !== "localhost" && u.hostname !== "127.0.0.1"))) {
-      throw new ConfigError("CRAFT_AUTO_DEV_AUTH=1 allows CRAFT_AUTO_BASE_URL only as an http://localhost or http://127.0.0.1 URL");
+      throw new ConfigError("AUTOCRAFT_DEV_AUTH=1 allows AUTOCRAFT_BASE_URL only as an http://localhost or http://127.0.0.1 URL");
     }
     baseUrl = u.origin + u.pathname.replace(/\/+$/, "");
-    if (baseUrl !== u.origin) throw new ConfigError("CRAFT_AUTO_BASE_URL must not have a path");
+    if (baseUrl !== u.origin) throw new ConfigError("AUTOCRAFT_BASE_URL must not have a path");
   } else if (!devAuth) {
-    throw new ConfigError("CRAFT_AUTO_BASE_URL is not set");
+    throw new ConfigError("AUTOCRAFT_BASE_URL is not set");
   }
+  const webDistEnv = envVar("WEB_DIST", env);
   return {
     host, port, baseUrl, devAuth, secrets,
-    dbPath: env.CRAFT_AUTO_DB ?? dbPath(),
-    webDist: env.CRAFT_AUTO_WEB_DIST ? resolve(env.CRAFT_AUTO_WEB_DIST) : DEFAULT_WEB_DIST,
-    devPermsFile: devAuth ? (env.CRAFT_AUTO_DEV_PERMS ?? null) : null,
-    devTokenTtlMs: devAuth && env.CRAFT_AUTO_DEV_TOKEN_TTL ? Number(env.CRAFT_AUTO_DEV_TOKEN_TTL) * 1000 || null : null,
-    trustProxy: env.CRAFT_AUTO_TRUST_PROXY === "1",
-    imageCacheDir: env.CRAFT_AUTO_IMG_CACHE === "" ? null : defaultImageCacheDir(env),
+    dbPath: envVar("DB", env) ?? dbPath(),
+    webDist: webDistEnv ? resolve(webDistEnv) : DEFAULT_WEB_DIST,
+    devPermsFile: devAuth ? (envVar("DEV_PERMS", env) ?? null) : null,
+    devTokenTtlMs: devAuth && envVar("DEV_TOKEN_TTL", env) ? Number(envVar("DEV_TOKEN_TTL", env)) * 1000 || null : null,
+    trustProxy: envVar("TRUST_PROXY", env) === "1",
+    imageCacheDir: envVar("IMG_CACHE", env) === "" ? null : defaultImageCacheDir(env),
   };
 }

@@ -34,7 +34,7 @@ export const commands = {
     run: async (args: string[]) => {
       const f = args[0] ? dashCommands[args[0]] : undefined;
       if (!f) {
-        console.error(`usage: craft-auto dash ${Object.keys(dashCommands).join("|")}`);
+        console.error(`usage: autocraft dash ${Object.keys(dashCommands).join("|")}`);
         process.exit(1);
       }
       await f(args.slice(1));

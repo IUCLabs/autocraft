@@ -1,13 +1,13 @@
-// craft-auto accounts list | set <id> [--label X] [--enabled yes|no] [--max-concurrent N] | jev [N | on | off] | pause [show | --five-hour N --weekly N]
+// autocraft accounts list | set <id> [--label X] [--enabled yes|no] [--max-concurrent N] | jev [N | on | off] | pause [show | --five-hour N --weekly N]
 import { connect } from "../db.ts";
 import { jevEnabled, jevOutage, setJevEnabled } from "./jev.ts";
 import { AccountError, jevParallel, listAccounts, setJevParallel, setUsagePause, updateAccount, usagePause } from "./accounts.ts";
 
-const USAGE = `usage: craft-auto accounts list
-       craft-auto accounts set <id> [--label <text>] [--enabled yes|no] [--max-concurrent <N>]   (N from 1 to 100)
-       craft-auto accounts jev [<N> | on | off]   Jev calls at once (1 to 100), or switch Jev on or off; shows the setting and whether Jev is in use
-       craft-auto accounts pause [show]   usage levels (%) at which an account stops taking calls
-       craft-auto accounts pause --five-hour <N> --weekly <N>   set them (each 1 to 100)`;
+const USAGE = `usage: autocraft accounts list
+       autocraft accounts set <id> [--label <text>] [--enabled yes|no] [--max-concurrent <N>]   (N from 1 to 100)
+       autocraft accounts jev [<N> | on | off]   Jev calls at once (1 to 100), or switch Jev on or off; shows the setting and whether Jev is in use
+       autocraft accounts pause [show]   usage levels (%) at which an account stops taking calls
+       autocraft accounts pause --five-hour <N> --weekly <N>   set them (each 1 to 100)`;
 
 function die(msg: string): never {
   console.error(msg);
@@ -18,7 +18,7 @@ const pct = (n: number | null) => (n === null ? "  - " : `${String(Math.round(n)
 
 function print(): void {
   const list = listAccounts(connect());
-  if (!list.length) console.log("no accounts in the box config (CRAFT_AUTO_ACCOUNTS)");
+  if (!list.length) console.log("no accounts in the box config (AUTOCRAFT_ACCOUNTS)");
   for (const a of list) {
     console.log(`${a.id.padEnd(10)} ${a.enabled ? "enabled " : "disabled"} ${a.label.padEnd(24)} ${a.running}/${a.maxConcurrent} running  5h ${pct(a.usage.fiveHourPct)}  week ${pct(a.usage.weeklyPct)}${a.pausedReason ? `  ${a.pausedReason}` : ""}`);
   }

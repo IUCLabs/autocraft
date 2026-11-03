@@ -1,7 +1,8 @@
-// The worker API: a listener of its own in the runner process (CRAFT_AUTO_WORKER_LISTEN,
+// The worker API: a listener of its own in the runner process (AUTOCRAFT_WORKER_LISTEN,
 // default 127.0.0.1:8981), separate from the dashboard. Workers authenticate with a bearer
 // key; every call refreshes the environment's heartbeat. Bodies are size-capped and
 // everything a worker sends is stored as data, never executed, rendered or put in a prompt.
+import { envVar } from "../env.ts";
 import { createWriteStream, unlinkSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -19,7 +20,7 @@ export const JSON_LIMIT = 4 * MAX_CHUNK_BYTES;
 
 export type WorkerServerOptions = {
   db: DatabaseSync;
-  /** host:port; default CRAFT_AUTO_WORKER_LISTEN or 127.0.0.1:8981 (port 0 picks a free one). */
+  /** host:port; default AUTOCRAFT_WORKER_LISTEN or 127.0.0.1:8981 (port 0 picks a free one). */
   listen?: string;
   log?: (line: string) => void;
   /** Calls a key may make: a burst and a refill per second. */
@@ -170,7 +171,7 @@ export function handler(o: WorkerServerOptions) {
 }
 
 export async function startWorkerServer(o: WorkerServerOptions): Promise<{ url: string; server: Server; close: () => Promise<void> }> {
-  const { host, port } = parseListen(o.listen ?? process.env.CRAFT_AUTO_WORKER_LISTEN ?? DEFAULT_WORKER_LISTEN);
+  const { host, port } = parseListen(o.listen ?? envVar("WORKER_LISTEN") ?? DEFAULT_WORKER_LISTEN);
   const server = createServer({ requestTimeout: 120_000, headersTimeout: 15_000, maxHeaderSize: 8 * 1024 }, (req, res) => void handler(o)(req, res));
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);

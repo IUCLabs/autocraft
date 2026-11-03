@@ -4,9 +4,9 @@
 // the pipeline account's identity, pushed to its fork and opened as a PR, which then goes through Review, Verify
 // and the merge queue like any other PR.
 //
-//   craft-auto fixissue --repo R [--limit N] [--apply]
-//   craft-auto fixissue-collect [--apply]
-//   craft-auto fixissue-approval [--repo R]
+//   autocraft fixissue --repo R [--limit N] [--apply]
+//   autocraft fixissue-collect [--apply]
+//   autocraft fixissue-approval [--repo R]
 //
 // Without --apply it is a dry run: local tables only. No model is a tool user: replies are text our code
 // validates, and nothing from an issue or a patch runs on this user (the build tasks run in the sandbox).

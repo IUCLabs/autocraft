@@ -1,4 +1,5 @@
 // Mirror of every issue and PR of the storytold org into SQLite, via `gh api graphql`.
+import { envVar } from "./env.ts";
 import { refreshSnapshot } from "./itemtools/snapshot.ts";
 import { isCounted } from "./review/discussion.ts";
 import { spawnSync } from "node:child_process";
@@ -486,7 +487,7 @@ export function acquireLock(path: string): (() => void) | null {
 }
 
 function lockDir(): string {
-  return process.env.CRAFT_AUTO_LOCK_DIR ?? join(homedir(), ".cache/craft-automation-logs");
+  return envVar("LOCK_DIR") ?? join(homedir(), ".cache/autocraft-logs");
 }
 
 // The incremental sync's lock.

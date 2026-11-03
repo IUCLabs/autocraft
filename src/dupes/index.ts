@@ -4,7 +4,7 @@
 // stages (src/dupes/held.ts). Reads the local database and calls models; writes
 // nothing to GitHub. The close itself is the act step.
 //
-//   craft-auto dupes [--limit N] [--dry-run]
+//   autocraft dupes [--limit N] [--dry-run]
 import type { DatabaseSync } from "node:sqlite";
 import { connect } from "../db.ts";
 import { embedderId, localEmbedder, modelName } from "../embed/model.ts";

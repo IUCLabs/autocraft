@@ -296,10 +296,10 @@ describe("merging a few ready PRs one at a time", () => {
     const file = (f: string) => `diff --git a/${f} b/${f}\n--- a/${f}\n+++ b/${f}\n@@ -1 +1 @@\n-a\n+b\n`;
     return { ok: true, text: file(`src/pr${n}.rs`) + (shared.includes(n) ? file("Cargo.lock") : "") };
   };
-  const saved = process.env.CRAFT_AUTO_DIFF_CACHE;
-  after(() => { if (saved === undefined) delete process.env.CRAFT_AUTO_DIFF_CACHE; else process.env.CRAFT_AUTO_DIFF_CACHE = saved; });
+  const saved = process.env.AUTOCRAFT_DIFF_CACHE;
+  after(() => { if (saved === undefined) delete process.env.AUTOCRAFT_DIFF_CACHE; else process.env.AUTOCRAFT_DIFF_CACHE = saved; });
   const attempt = async (db: DatabaseSync, fetchDiff: DiffFetcher, f: Fake = {}) => {
-    process.env.CRAFT_AUTO_DIFF_CACHE = mkdtempSync(join(dir, "diffs-"));
+    process.env.AUTOCRAFT_DIFF_CACHE = mkdtempSync(join(dir, "diffs-"));
     const log: Log = [];
     const r = await runSingles(db, { repo: "app" }, quiet, fakes(log, f), fetchDiff);
     return { r, log };

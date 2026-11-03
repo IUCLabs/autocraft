@@ -5,6 +5,7 @@
 // per repository); a checkout of a new head is built then, and a call waits
 // for it only briefly: it mounts the previous checkout when the new one is
 // not ready.
+import { envVar } from "../env.ts";
 import { existsSync, rmSync, statSync } from "node:fs";
 import type { DatabaseSync } from "node:sqlite";
 import { audit } from "../dash/audit.ts";
@@ -135,7 +136,7 @@ export async function workspaceCheckouts(db: DatabaseSync, log: (line: string) =
 
 /** The workspace for a call, or none when tool mode is unavailable. */
 export async function defaultWorkspace(db: DatabaseSync): Promise<{ name: string; dir: string }[]> {
-  if (!sandboxAvailable() || process.env.CRAFT_AUTO_WORKSPACE === "off") return [];
+  if (!sandboxAvailable() || envVar("WORKSPACE") === "off") return [];
   try { return await workspaceCheckouts(db); } catch { return []; }
 }
 

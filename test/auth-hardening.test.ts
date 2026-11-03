@@ -25,7 +25,7 @@ let close: () => Promise<void>;
 before(async () => {
   addLogin(db, "cli", "alice", "viewer", null);
   addLogin(db, "cli", "boss", "operator", null);
-  const config = loadConfig({ CRAFT_AUTO_DEV_AUTH: "1", CRAFT_AUTO_LISTEN: "127.0.0.1:0", CRAFT_AUTO_DB: join(dir, "dash.db") });
+  const config = loadConfig({ AUTOCRAFT_DEV_AUTH: "1", AUTOCRAFT_LISTEN: "127.0.0.1:0", AUTOCRAFT_DB: join(dir, "dash.db") });
   const s = await startServer({ config, db, provider, routes: [] });
   base = s.url;
   port = Number(new URL(s.url).port);
@@ -71,12 +71,12 @@ describe("return_to", () => {
 
 describe("dev auth guard", () => {
   test("a base URL other than localhost is refused, and dev mode listens on its own port", () => {
-    const dev = { CRAFT_AUTO_DEV_AUTH: "1" };
-    assert.throws(() => loadConfig({ ...dev, CRAFT_AUTO_BASE_URL: "https://dash.example.org" }), ConfigError);
-    assert.throws(() => loadConfig({ ...dev, CRAFT_AUTO_BASE_URL: "http://dash.example.org" }), ConfigError);
-    assert.throws(() => loadConfig({ ...dev, CRAFT_AUTO_BASE_URL: "http://localhost.evil.example" }), ConfigError);
-    assert.equal(loadConfig({ ...dev, CRAFT_AUTO_BASE_URL: "http://localhost:8994" }).baseUrl, "http://localhost:8994");
-    assert.equal(loadConfig({ ...dev, CRAFT_AUTO_BASE_URL: "http://127.0.0.1:8994" }).port, 8994);
+    const dev = { AUTOCRAFT_DEV_AUTH: "1" };
+    assert.throws(() => loadConfig({ ...dev, AUTOCRAFT_BASE_URL: "https://dash.example.org" }), ConfigError);
+    assert.throws(() => loadConfig({ ...dev, AUTOCRAFT_BASE_URL: "http://dash.example.org" }), ConfigError);
+    assert.throws(() => loadConfig({ ...dev, AUTOCRAFT_BASE_URL: "http://localhost.evil.example" }), ConfigError);
+    assert.equal(loadConfig({ ...dev, AUTOCRAFT_BASE_URL: "http://localhost:8994" }).baseUrl, "http://localhost:8994");
+    assert.equal(loadConfig({ ...dev, AUTOCRAFT_BASE_URL: "http://127.0.0.1:8994" }).port, 8994);
     assert.equal(loadConfig(dev).port, 8994);
   });
 

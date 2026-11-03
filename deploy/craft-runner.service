@@ -1,16 +1,16 @@
-# systemd user unit for the pipeline runner (`craft-auto runner serve`).
+# systemd user unit for the pipeline runner (`autocraft runner serve`).
 # Replace the @...@ placeholders, copy to ~/.config/systemd/user/, then:
 #   systemctl --user daemon-reload && systemctl --user enable --now craft-runner
 # Logs of the runner itself: journalctl --user -u craft-runner
 #
 # @REPO@      absolute path of this checkout
 # @NODE@      absolute path of Node 24 (`command -v node`)
-# @ENV_FILE@  file with the CRAFT_AUTO_* variables the CLI and the dashboard use
-#             (at least CRAFT_AUTO_DB if not the default); see README
+# @ENV_FILE@  file with the AUTOCRAFT_* variables the CLI and the dashboard use
+#             (at least AUTOCRAFT_DB if not the default); see README
 # @PATH@      a PATH that reaches `jev` and `claude`, which the classify steps call
 
 [Unit]
-Description=craft-automation pipeline runner
+Description=autocraft pipeline runner
 After=network-online.target
 
 [Service]

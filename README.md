@@ -51,8 +51,8 @@ See [Trust boundary](docs/pipeline.md#trust-boundary).
 | `gh`, logged in | Sync (`gh api graphql`) and every GitHub write |
 | `git` | Clones, diffs and pushes |
 | `claude` (Claude Code CLI) | All Claude calls |
-| `bwrap` (bubblewrap, `/usr/bin/bwrap`) | Sandbox for tool-using calls. Without it, those calls run without tools; `CRAFT_AUTO_NO_SANDBOX=1` forces that |
-| `jev` (optional) | CLI for TypeSafe's Jev model, used by the classify, priority and duplicate steps (`jev --compact ask`). Without it, switched off (`craft-auto accounts jev off`), or when its account is out of credit or its key is rejected, Haiku does Jev's work through the Claude accounts (more Claude usage) |
+| `bwrap` (bubblewrap, `/usr/bin/bwrap`) | Sandbox for tool-using calls. Without it, those calls run without tools; `AUTOCRAFT_NO_SANDBOX=1` forces that |
+| `jev` (optional) | CLI for TypeSafe's Jev model, used by the classify, priority and duplicate steps (`jev --compact ask`). Without it, switched off (`autocraft accounts jev off`), or when its account is out of credit or its key is rejected, Haiku does Jev's work through the Claude accounts (more Claude usage) |
 | Podman and a second OS user | Build environments for Verify and Fix (optional) |
 | `sqlite3`, `curl` | `deploy/backup.sh` and `deploy/hook.sh` |
 
@@ -66,7 +66,7 @@ pnpm -C web install && pnpm -C web build    # writes web/dist
 node src/cli.ts                             # lists every command
 ```
 
-`craft-auto` is the `bin` of `package.json`; `node src/cli.ts <command>` runs the same program. The database is `$CRAFT_AUTO_DB`, default `~/.local/share/craft-automation/mirror.db`.
+`autocraft` is the `bin` of `package.json`; `node src/cli.ts <command>` runs the same program. The database is `$AUTOCRAFT_DB`, default `~/.local/share/autocraft/mirror.db`.
 
 ### GitHub access
 
@@ -77,7 +77,7 @@ node src/cli.ts                             # lists every command
 Create an OAuth App on GitHub:
 
 - Homepage URL: your dashboard origin, for example `https://autocraft.example.com`.
-- Authorization callback URL: `https://autocraft.example.com/auth/callback`. It must equal `<CRAFT_AUTO_BASE_URL>/auth/callback` exactly.
+- Authorization callback URL: `https://autocraft.example.com/auth/callback`. It must equal `<AUTOCRAFT_BASE_URL>/auth/callback` exactly.
 - No scopes are requested. Expiring user tokens are supported.
 
 Write the client ID, client secret and a random session key (at least 32 characters) to a JSON file with mode 0600:
@@ -86,22 +86,22 @@ Write the client ID, client secret and a random session key (at least 32 charact
 { "github_client_id": "...", "github_client_secret": "...", "session_key": "..." }
 ```
 
-Point `CRAFT_AUTO_SECRETS_FILE` at it. The server refuses to start if the file is missing, incomplete, or readable by group or others.
+Point `AUTOCRAFT_SECRETS_FILE` at it. The server refuses to start if the file is missing, incomplete, or readable by group or others.
 
 | Variable | Meaning |
 |---|---|
-| `CRAFT_AUTO_BASE_URL` | Public origin of the dashboard, no path |
-| `CRAFT_AUTO_LISTEN` | `host:port`, default `127.0.0.1:8993` |
-| `CRAFT_AUTO_DB` | Database path |
-| `CRAFT_AUTO_SECRETS_FILE` | The secrets file above |
-| `CRAFT_AUTO_WEB_DIST` | Built frontend, default `web/dist` |
-| `CRAFT_AUTO_TRUST_PROXY` | `1` behind a proxy that sets `X-Forwarded-For` |
+| `AUTOCRAFT_BASE_URL` | Public origin of the dashboard, no path |
+| `AUTOCRAFT_LISTEN` | `host:port`, default `127.0.0.1:8993` |
+| `AUTOCRAFT_DB` | Database path |
+| `AUTOCRAFT_SECRETS_FILE` | The secrets file above |
+| `AUTOCRAFT_WEB_DIST` | Built frontend, default `web/dist` |
+| `AUTOCRAFT_TRUST_PROXY` | `1` behind a proxy that sets `X-Forwarded-For` |
 
 The server speaks plain HTTP; put a reverse proxy with HTTPS in front. More variables are in [docs/operations.md](docs/operations.md).
 
 ### Claude accounts
 
-Claude calls run under accounts that an operator enables. Each account is a Claude Code config directory that is logged in. Describe them in a JSON file and set `CRAFT_AUTO_ACCOUNTS` to its path:
+Claude calls run under accounts that an operator enables. Each account is a Claude Code config directory that is logged in. Describe them in a JSON file and set `AUTOCRAFT_ACCOUNTS` to its path:
 
 ```json
 [{ "id": "a", "configDir": "/srv/autocraft/config/claude/a" }]
@@ -111,17 +111,17 @@ Claude calls run under accounts that an operator enables. Each account is a Clau
 
 | Variable | Meaning |
 |---|---|
-| `CRAFT_AUTO_ACCOUNTS_ROOT` | Directory for accounts added on the dashboard's Accounts page, which runs `claude auth login` for you |
-| `CRAFT_AUTO_USAGE_DIR` | One `<id>.json` per account with its rate-limit readings |
-| `CRAFT_AUTO_CLAUDE_BIN` | The `claude` command, default from `PATH` |
+| `AUTOCRAFT_ACCOUNTS_ROOT` | Directory for accounts added on the dashboard's Accounts page, which runs `claude auth login` for you |
+| `AUTOCRAFT_USAGE_DIR` | One `<id>.json` per account with its rate-limit readings |
+| `AUTOCRAFT_CLAUDE_BIN` | The `claude` command, default from `PATH` |
 
 New accounts start disabled. Enable and size them:
 
 ```sh
-craft-auto accounts list
-craft-auto accounts set a --label main --enabled yes --max-concurrent 3
-craft-auto accounts jev 4        # parallel Jev calls
-craft-auto accounts jev off      # Haiku does Jev's work; `on` switches Jev back on
+autocraft accounts list
+autocraft accounts set a --label main --enabled yes --max-concurrent 3
+autocraft accounts jev 4        # parallel Jev calls
+autocraft accounts jev off      # Haiku does Jev's work; `on` switches Jev back on
 ```
 
 See [Claude accounts and agent runs](docs/pipeline.md#claude-accounts-and-agent-runs).
@@ -129,27 +129,27 @@ See [Claude accounts and agent runs](docs/pipeline.md#claude-accounts-and-agent-
 ### Track repos and sync
 
 ```sh
-craft-auto repos track <name>     # a repo of the organization, without the owner
-craft-auto repos list
-craft-auto sync                   # first sync of the tracked repos
+autocraft repos track <name>     # a repo of the organization, without the owner
+autocraft repos list
+autocraft sync                   # first sync of the tracked repos
 ```
 
-A newly tracked repo has its pipeline off: only Sync, Embed and Rank run for it. After the first sync, `craft-auto sync` runs every minute from a timer (`deploy/systemd/autocraft-sync.timer`). `craft-auto embed` fills the vectors; the first run downloads a 34 MB embedding model.
+A newly tracked repo has its pipeline off: only Sync, Embed and Rank run for it. After the first sync, `autocraft sync` runs every minute from a timer (`deploy/systemd/autocraft-sync.timer`). `autocraft embed` fills the vectors; the first run downloads a 34 MB embedding model.
 
 ### Start the dashboard and add the first operator
 
 ```sh
-craft-auto access add <github-login> --operator
-craft-auto dash serve
+autocraft access add <github-login> --operator
+autocraft dash serve
 ```
 
-Sign in at the base URL. Further users are added on the Access page or with `craft-auto access add <login> [--maintainer]`. Then, on the dashboard:
+Sign in at the base URL. Further users are added on the Access page or with `autocraft access add <login> [--maintainer]`. Then, on the dashboard:
 
 1. Repos page: approve each repo for the writes you want (labels, comments, fixing, pushing, merging) and switch its pipeline on.
-2. Run the runner: `craft-auto runner serve`. It is the only process that runs steps.
-3. Pipeline page: turn the pipeline on, or `craft-auto pipeline on`. Set daily limits with `craft-auto pipeline limit <step> --per-day N`.
+2. Run the runner: `autocraft runner serve`. It is the only process that runs steps.
+3. Pipeline page: turn the pipeline on, or `autocraft pipeline on`. Set daily limits with `autocraft pipeline limit <step> --per-day N`.
 
-`CRAFT_AUTO_DEV_AUTH=1 craft-auto dash serve` starts a local server with a fake GitHub sign-in on `127.0.0.1:8994`, with no secrets file.
+`AUTOCRAFT_DEV_AUTH=1 autocraft dash serve` starts a local server with a fake GitHub sign-in on `127.0.0.1:8994`, with no secrets file.
 
 ### Deployment
 

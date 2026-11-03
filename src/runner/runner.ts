@@ -1,9 +1,10 @@
-// `craft-auto runner serve`: the only process that runs pipeline steps. It
-// polls the jobs table, runs each job in its own child process (`craft-auto
+// `autocraft runner serve`: the only process that runs pipeline steps. It
+// polls the jobs table, runs each job in its own child process (`autocraft
 // runner exec <id>`, its own process group, output to a per-job log file),
 // stops jobs whose cancel was requested, runs the autopilot (queues jobs while the
 // pipeline switch is on) and marks
 // jobs left running by an earlier runner as failed.
+import { envVar } from "../env.ts";
 import { spawn, type ChildProcess } from "node:child_process";
 import { closeSync, mkdirSync, openSync, readFileSync, utimesSync } from "node:fs";
 import { homedir } from "node:os";
@@ -20,10 +21,10 @@ import { jobRow, now, pruneJobs, RUNNER_STOPPED } from "./jobs.ts";
 import { OffThread } from "./offthread.ts";
 import { loadSteps } from "./steps.ts";
 
-export const logsDir = (): string => process.env.CRAFT_AUTO_RUNNER_LOGS ?? join(homedir(), ".cache/craft-automation-logs/jobs");
+export const logsDir = (): string => envVar("RUNNER_LOGS") ?? join(homedir(), ".cache/autocraft-logs/jobs");
 
 export function runnerLockPath(): string {
-  const dir = process.env.CRAFT_AUTO_LOCK_DIR ?? join(homedir(), ".cache/craft-automation-logs");
+  const dir = envVar("LOCK_DIR") ?? join(homedir(), ".cache/autocraft-logs");
   return join(dir, `runner-${basename(dbPath())}.lock`);
 }
 
@@ -37,7 +38,7 @@ export const DEFAULT_MAX_JOBS = 12;
 
 export type RunnerOptions = {
   db: DatabaseSync;
-  /** Database file the children open; default CRAFT_AUTO_DB or the default path. */
+  /** Database file the children open; default AUTOCRAFT_DB or the default path. */
   dbFile?: string;
   logs?: string;
   /** Most jobs running at once (each concurrency group still runs one at a time). */
@@ -263,7 +264,7 @@ export class Runner {
       child = spawn(process.execPath, [CLI, "runner", "exec", String(id)], {
         detached: true,
         stdio: ["ignore", fd, fd],
-        env: { ...process.env, CRAFT_AUTO_DB: this.o.dbFile },
+        env: { ...process.env, AUTOCRAFT_DB: this.o.dbFile },
       });
     } finally {
       closeSync(fd);

@@ -15,7 +15,7 @@ import { SCRATCH } from "./scratch.ts";
 
 mkdirSync(SCRATCH, { recursive: true });
 const dir = mkdtempSync(join(SCRATCH, "verify-results-test-"));
-process.env.CRAFT_AUTO_ARTIFACT_DIR = join(dir, "artifacts");
+process.env.AUTOCRAFT_ARTIFACT_DIR = join(dir, "artifacts");
 
 const T0 = "2026-01-01T00:00:00Z";
 const HEAD = "a".repeat(40);

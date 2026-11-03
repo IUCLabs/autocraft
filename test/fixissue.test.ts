@@ -16,7 +16,7 @@ import { SCRATCH } from "./scratch.ts";
 
 mkdirSync(SCRATCH, { recursive: true });
 const dir = mkdtempSync(join(SCRATCH, "fixissue-test-"));
-process.env.CRAFT_AUTO_DIFF_CACHE = join(dir, "diffs");
+process.env.AUTOCRAFT_DIFF_CACHE = join(dir, "diffs");
 const T0 = "2026-01-01T00:00:00Z";
 const LOGIN = "pipeline-bot";
 const LIB = "crates/app/src/lib.rs";

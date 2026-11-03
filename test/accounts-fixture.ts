@@ -10,7 +10,7 @@ import { SCRATCH } from "./scratch.ts";
 
 export type TestBox = { dir: string; accountsFile: string; usageDir: string; configDir: string };
 
-/** Points CRAFT_AUTO_ACCOUNTS and CRAFT_AUTO_USAGE_DIR at fresh files holding `ids` (default one account, "t"). */
+/** Points AUTOCRAFT_ACCOUNTS and AUTOCRAFT_USAGE_DIR at fresh files holding `ids` (default one account, "t"). */
 export function setupBox(ids: string[] = ["t"]): TestBox {
   mkdirSync(SCRATCH, { recursive: true });
   const dir = mkdtempSync(join(SCRATCH, "box-"));
@@ -18,8 +18,8 @@ export function setupBox(ids: string[] = ["t"]): TestBox {
   mkdirSync(usageDir);
   const accountsFile = join(dir, "accounts.json");
   writeFileSync(accountsFile, JSON.stringify(ids.map((id) => ({ id, configDir: join(dir, `config-${id}`) }))));
-  process.env.CRAFT_AUTO_ACCOUNTS = accountsFile;
-  process.env.CRAFT_AUTO_USAGE_DIR = usageDir;
+  process.env.AUTOCRAFT_ACCOUNTS = accountsFile;
+  process.env.AUTOCRAFT_USAGE_DIR = usageDir;
   return { dir, accountsFile, usageDir, configDir: join(dir, "config-") };
 }
 

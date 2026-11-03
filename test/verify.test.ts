@@ -19,8 +19,8 @@ import { SCRATCH } from "./scratch.ts";
 
 mkdirSync(SCRATCH, { recursive: true });
 const dir = mkdtempSync(join(SCRATCH, "verify-test-"));
-process.env.CRAFT_AUTO_DIFF_CACHE = join(dir, "diffs");
-process.env.CRAFT_AUTO_ARTIFACT_DIR = join(dir, "artifacts");
+process.env.AUTOCRAFT_DIFF_CACHE = join(dir, "diffs");
+process.env.AUTOCRAFT_ARTIFACT_DIR = join(dir, "artifacts");
 
 const T0 = "2026-01-01T00:00:00Z";
 const sha = (n: number, tag = "a") => `${tag}${n}`.padStart(40, "0");
@@ -29,7 +29,7 @@ const MAIN = "d".repeat(40);
 const CRATES = [{ name: "core-lib", dir: "crates/core" }, { name: "app", dir: "." }];
 
 function fresh() {
-  process.env.CRAFT_AUTO_DIFF_CACHE = mkdtempSync(join(dir, "cache-"));
+  process.env.AUTOCRAFT_DIFF_CACHE = mkdtempSync(join(dir, "cache-"));
   const db = connect(join(mkdtempSync(join(dir, "db-")), "t.db"));
   db.exec("INSERT OR IGNORE INTO tracked_repos (name, pipeline) VALUES ('app', 1)");
   useTestAccount(db);

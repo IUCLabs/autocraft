@@ -1,4 +1,4 @@
-// Fake steps for the autopilot planner tests (CRAFT_AUTO_EXTRA_STEPS). Never run.
+// Fake steps for the autopilot planner tests (AUTOCRAFT_EXTRA_STEPS). Never run.
 import type { StepDef } from "../src/runner/steps.ts";
 
 const base = { description: "Test step.", stage: 2, requires: "operator" as const, group: "test-a", run: async () => "ok" };

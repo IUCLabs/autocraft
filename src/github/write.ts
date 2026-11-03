@@ -202,7 +202,7 @@ export function pushBranch(w: Writer, git: Pick<Git, "git">, action: string, o: 
 export type CommandResult = { code: number; stdout: string; stderr: string };
 
 /** Set on the child that `mergeViaCommand` starts, so the child does not record the same merge again. */
-export const MERGE_RECORDED_ENV = "CRAFT_AUTO_MERGE_RECORDED";
+export const MERGE_RECORDED_ENV = "AUTOCRAFT_MERGE_RECORDED";
 
 /** Runs the merge command (`args` = OWNER/REPO PR --squash|--merge ...) and records the merge or the refusal. */
 export async function mergeViaCommand(w: Writer, run: (cmd: string, args: string[]) => Promise<CommandResult>, cmd: string, args: string[], details: Details = {}, landed?: () => Promise<boolean>): Promise<CommandResult> {

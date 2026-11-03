@@ -1,8 +1,8 @@
 // Stage 5, Review: Sonnet reviews the PRs we want in one repo and records a
 // verdict per PR at its head commit. Reads GitHub (diffs, checks); never writes to it.
 //
-//   craft-auto review --repo R [--limit N] [--dry-run]
-//   craft-auto checks --repo R
+//   autocraft review --repo R [--limit N] [--dry-run]
+//   autocraft checks --repo R
 import type { DatabaseSync } from "node:sqlite";
 import { connect } from "../db.ts";
 import { Client, type Querier } from "../mirror.ts";
@@ -209,7 +209,7 @@ export const commands = {
       if (args[0] === "again") {
         const m = /^([\w.-]+)#(\d+)$/.exec(args[1] ?? "");
         const by = args[2] === "--by" && args[3] ? args[3] : "cli";
-        if (!m || args.length !== (args[2] ? 4 : 2)) throw new Error("usage: craft-auto review again <repo>#<number> [--by <login>]");
+        if (!m || args.length !== (args[2] ? 4 : 2)) throw new Error("usage: autocraft review again <repo>#<number> [--by <login>]");
         const db = connect();
         const open = db.prepare("SELECT 1 FROM items WHERE repo = ? AND number = ? AND kind = 'pr' AND state = 'OPEN'").get(m[1]!, Number(m[2]));
         if (!open) throw new Error(`${args[1]} is not an open pull request in the mirror`);

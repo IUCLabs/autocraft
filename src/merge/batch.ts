@@ -3,11 +3,12 @@
 // the batch lands), checked in the sandbox as one tree, pushed to the pipeline account's fork, opened as a PR
 // and merged through the merge command once upstream CI is green.
 //
-//   craft-auto merge-batches --repo R [--limit N]    (the runner's merge step calls runBatches)
+//   autocraft merge-batches --repo R [--limit N]    (the runner's merge step calls runBatches)
 //
 // One run advances every batch of the repo in flight, then starts the next batch when none is left. A failed
 // batch is split in half and each half retried; a single PR that fails goes on hold. When the default branch
 // moves, the batch is rebuilt on the new head. Every GitHub write goes through `exec` / `run`.
+import { envVar } from "../env.ts";
 import { baseScopeRepos, scopeRepos } from "../pilot.ts";
 import { isFastTracked, workScores } from "../fasttrack.ts";
 import { mergeHeld } from "./holds.ts";
@@ -40,7 +41,7 @@ export type BatchDeps = {
   /** Every git and gh command. */
   exec: Exec;
   querier: Querier;
-  /** Runs the merge command (`$CRAFT_AUTO_MERGE_CMD`, default safe-merge). */
+  /** Runs the merge command (`$AUTOCRAFT_MERGE_CMD`, default safe-merge). */
   run: (cmd: string, args: string[]) => Promise<CommandResult>;
   mergeCommand: string;
   /** The head commit of the repo's default branch, or null. */
@@ -80,7 +81,7 @@ export async function defaultBatchDeps(): Promise<BatchDeps> {
   const { CLAUDE_PROMPTS } = await import("../prompts/index.ts");
   const model = CLAUDE_PROMPTS["verify.summary"].models[0]!;
   return {
-    exec, querier: new Client(1000), run: mergeRun, mergeCommand: process.env.CRAFT_AUTO_MERGE_CMD || DEFAULT_MERGE_COMMAND,
+    exec, querier: new Client(1000), run: mergeRun, mergeCommand: envVar("MERGE_CMD") || DEFAULT_MERGE_COMMAND,
     mainHead: defaultDeps().mainHead, now: () => new Date(), root: fixupDir(),
     summarise: (db, v, taskId, f, runId) => summariseFailure(db, v, taskId, f, { model }, runId),
   };

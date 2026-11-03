@@ -61,7 +61,7 @@ before(async () => {
   addLogin(db, "cli", "reader", "viewer", null);
   addLogin(db, "cli", "outsider", "viewer", null);
   scopeToTracked(db);
-  const config = loadConfig({ CRAFT_AUTO_DEV_AUTH: "1", CRAFT_AUTO_LISTEN: "127.0.0.1:0", CRAFT_AUTO_DB: dbFile, CRAFT_AUTO_DEV_PERMS: permsFile });
+  const config = loadConfig({ AUTOCRAFT_DEV_AUTH: "1", AUTOCRAFT_LISTEN: "127.0.0.1:0", AUTOCRAFT_DB: dbFile, AUTOCRAFT_DEV_PERMS: permsFile });
   const s = await startServer({ config, db, provider: new FakeProvider(permsFile), routes: apiRoutes(), images: new ImageProxy({ fetch: fakeFetch, token: async () => null, cacheDir: null, repos: () => ["any"] }) });
   base = s.url;
   close = s.close;

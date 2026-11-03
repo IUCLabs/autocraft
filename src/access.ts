@@ -102,7 +102,7 @@ export function operatorCount(db: DatabaseSync): number {
   return Number((db.prepare("SELECT COUNT(*) AS n FROM access WHERE role = 'operator'").get() as { n: number }).n);
 }
 
-const USAGE = "usage: craft-auto access list | add <login> [--operator|--maintainer] [--note TEXT] | remove <login> | role <login> operator|maintainer|viewer";
+const USAGE = "usage: autocraft access list | add <login> [--operator|--maintainer] [--note TEXT] | remove <login> | role <login> operator|maintainer|viewer";
 
 function run(args: string[]): void {
   const [sub, login, ...rest] = args;

@@ -1,3 +1,4 @@
+import { envVar } from "./env.ts";
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -8,10 +9,10 @@ import { BOOKKEEPING_COLUMNS, liveSql } from "./live.ts";
 import { JEV_USD_PER_INPUT_TOKEN } from "./prompts/index.ts";
 import { JEV_NEEDS_DECISION_YES, JEV_SECURITY_YES } from "./classify/parse.ts";
 
-export const DEFAULT_DB = join(homedir(), ".local/share/craft-automation/mirror.db");
+export const DEFAULT_DB = join(homedir(), ".local/share/autocraft/mirror.db");
 
 export function dbPath(): string {
-  return process.env.CRAFT_AUTO_DB ?? DEFAULT_DB;
+  return envVar("DB") ?? DEFAULT_DB;
 }
 
 // Columns added to existing tables after their first release. CREATE TABLE IF

@@ -1,11 +1,12 @@
-// `craft-auto embed`: embed new and changed tracked items for similar items and
+// `autocraft embed`: embed new and changed tracked items for similar items and
 // semantic search.
+import { envVar } from "../env.ts";
 import { refreshSnapshot } from "../itemtools/snapshot.ts";
 import { connect } from "../db.ts";
 import { localEmbedder, modelCacheDir, modelName } from "./model.ts";
 import { embedItems } from "./store.ts";
 
-const USAGE = "usage: craft-auto embed [--all] [--threads N] [--batch N]";
+const USAGE = "usage: autocraft embed [--all] [--threads N] [--batch N]";
 const MAX_THREADS = 8;
 
 function intArg(args: string[], flag: string, def: number): number {
@@ -32,7 +33,7 @@ export async function embedCommand(args: string[], onEmbedded?: (n: number) => v
       process.exit(1);
     }
   }
-  const threads = Math.min(intArg(args, "--threads", Number(process.env.CRAFT_AUTO_EMBED_THREADS) || MAX_THREADS), MAX_THREADS);
+  const threads = Math.min(intArg(args, "--threads", Number(envVar("EMBED_THREADS")) || MAX_THREADS), MAX_THREADS);
   const batch = intArg(args, "--batch", 32);
   const db = connect();
   const embedder = localEmbedder({ name: modelName(), threads });

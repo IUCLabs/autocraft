@@ -4,7 +4,7 @@
 // pipeline switch, approvals, daily limits and merge gates apply as before. A row of an item that is closed or merged
 // stays in the table but is ignored: lists and positions count open items only.
 //
-//   craft-auto fasttrack add <url|repo#n> | remove <url|repo#n> | list
+//   autocraft fasttrack add <url|repo#n> | remove <url|repo#n> | list
 import type { DatabaseSync } from "node:sqlite";
 import { ORG } from "./act/templates.ts";
 import { audit } from "./dash/audit.ts";

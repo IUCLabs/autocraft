@@ -1,4 +1,4 @@
-// craft-auto envs list | add | set | rotate-key, craft-auto tasks list | show | cancel | enqueue-test
+// autocraft envs list | add | set | rotate-key, autocraft tasks list | show | cancel | enqueue-test
 // Recorded as `cli`: only someone with a shell on the host can run these. Worker keys go to a
 // file (mode 0600) and are printed only with --print. Text a worker sent is shown with control
 // characters removed, so it cannot drive the terminal.
@@ -10,14 +10,14 @@ import { trackedNames } from "../repos.ts";
 import { BuildError, createEnv, KINDS, listEnvs, rotateKey, updateEnv } from "./envs.ts";
 import { cancelTask, createTask, getTaskDetail, listTasks } from "./tasks.ts";
 
-const USAGE = `usage: craft-auto envs list
-       craft-auto envs add <id> --label TEXT --kind local-sandbox|remote --slots N (--out FILE | --print)
-       craft-auto envs set <id> [--label TEXT] [--enabled yes|no] [--slots N]
-       craft-auto envs rotate-key <id> (--out FILE | --print)
-       craft-auto tasks list [--state S] [--env ID] [--repo NAME] [--limit N]
-       craft-auto tasks show <id>
-       craft-auto tasks cancel <id>
-       craft-auto tasks enqueue-test --env-requires linux --repo NAME --sha SHA`;
+const USAGE = `usage: autocraft envs list
+       autocraft envs add <id> --label TEXT --kind local-sandbox|remote --slots N (--out FILE | --print)
+       autocraft envs set <id> [--label TEXT] [--enabled yes|no] [--slots N]
+       autocraft envs rotate-key <id> (--out FILE | --print)
+       autocraft tasks list [--state S] [--env ID] [--repo NAME] [--limit N]
+       autocraft tasks show <id>
+       autocraft tasks cancel <id>
+       autocraft tasks enqueue-test --env-requires linux --repo NAME --sha SHA`;
 
 function die(msg: string): never {
   console.error(msg);

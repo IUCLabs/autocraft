@@ -4,6 +4,7 @@
 // in mirrored text of tracked repos (the `repos` lookup, see image-index.ts);
 // redirects are followed by hand and re-checked; the bot's token goes only to
 // github.com. Upstream fetches are limited to a few at a time, 5 MB each.
+import { envVar } from "../../env.ts";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdir, readdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
@@ -95,16 +96,16 @@ export function imageRepo(raw: string): string | null {
 }
 
 /**
- * Where the image token comes from: the file named by CRAFT_AUTO_IMAGE_TOKEN_FILE
+ * Where the image token comes from: the file named by AUTOCRAFT_IMAGE_TOKEN_FILE
  * (re-read when its mtime changes), else `gh auth token`. Logs which one, never the value.
  */
 export function imageTokenSource(env: NodeJS.ProcessEnv = process.env, log: (line: string) => void = console.log): () => Promise<string | null> {
-  const file = env.CRAFT_AUTO_IMAGE_TOKEN_FILE;
+  const file = envVar("IMAGE_TOKEN_FILE", env);
   if (!file) {
-    log("image proxy token: from `gh auth token` (CRAFT_AUTO_IMAGE_TOKEN_FILE is not set)");
+    log("image proxy token: from `gh auth token` (AUTOCRAFT_IMAGE_TOKEN_FILE is not set)");
     return ghToken;
   }
-  log("image proxy token: from the file named by CRAFT_AUTO_IMAGE_TOKEN_FILE");
+  log("image proxy token: from the file named by AUTOCRAFT_IMAGE_TOKEN_FILE");
   let seen: { mtime: number; value: string | null } | null = null;
   return async () => {
     try {
@@ -131,8 +132,9 @@ export function ghToken(): Promise<string | null> {
 }
 
 export function defaultImageCacheDir(env: NodeJS.ProcessEnv = process.env): string {
-  if (env.CRAFT_AUTO_IMG_CACHE) return env.CRAFT_AUTO_IMG_CACHE;
-  return join(env.XDG_CACHE_HOME || join(homedir(), ".cache"), "craft-automation", "img");
+  const given = envVar("IMG_CACHE", env);
+  if (given) return given;
+  return join(env.XDG_CACHE_HOME || join(homedir(), ".cache"), "autocraft", "img");
 }
 
 export class ImageProxy {

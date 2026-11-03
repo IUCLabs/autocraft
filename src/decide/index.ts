@@ -1,7 +1,7 @@
 // Decide stage: open items that need a maintainer's scope call become
 // dashboard decisions, each with a short AI summary.
 //
-// runDecide() is the step the runner registers; `craft-auto decide` runs it
+// runDecide() is the step the runner registers; `autocraft decide` runs it
 // from a shell. Idempotent: items with a decision or a later stage are
 // skipped, so a re-run or an interrupted run asks only what is still missing.
 import type { DatabaseSync } from "node:sqlite";

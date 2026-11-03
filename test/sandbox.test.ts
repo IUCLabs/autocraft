@@ -283,7 +283,7 @@ describe("askClaude in tool mode", () => {
     const cfg = box.configDir + "t";
     mkdirSync(cfg, { recursive: true });
     writeFileSync(join(cfg, ".credentials.json"), fakeCreds(Date.now() + 6 * 3600_000));
-    process.env.CRAFT_AUTO_CLAUDE_BIN = "/usr/bin/true";
+    process.env.AUTOCRAFT_CLAUDE_BIN = "/usr/bin/true";
     const calls: { cmd: string; args: string[] }[] = [];
     const leak = "ghp_" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4";
     const fake: Runner = async (cmd, args) => {
@@ -306,13 +306,13 @@ describe("askClaude in tool mode", () => {
       assert.deepEqual(calls[1]!.args, claudeArgs("review.opus", "opus", false, undefined, claudeParts("review.opus", SAMPLE_OPUS_PRS, false).system));
     } finally {
       restore();
-      delete process.env.CRAFT_AUTO_CLAUDE_BIN;
+      delete process.env.AUTOCRAFT_CLAUDE_BIN;
     }
   });
 
   test("the reply is parsed before scrubbing, so token-like review text keeps the JSON valid", async () => {
     const cfg = box.configDir + "t";
-    process.env.CRAFT_AUTO_CLAUDE_BIN = "/usr/bin/true";
+    process.env.AUTOCRAFT_CLAUDE_BIN = "/usr/bin/true";
     const reply = '{"ref":"x","reason":"token: abc and password=x in the text"}';
     const restore = setRunner(async () => ({ code: 0, stdout: JSON.stringify({ type: "result", result: reply, num_turns: 2, usage: {} }), stderr: "password=hunter2" }));
     try {
@@ -322,14 +322,14 @@ describe("askClaude in tool mode", () => {
       assert.ok(cfg);
     } finally {
       restore();
-      delete process.env.CRAFT_AUTO_CLAUDE_BIN;
+      delete process.env.AUTOCRAFT_CLAUDE_BIN;
     }
   });
 
   test("a token near expiry runs the call without tools on the host, and the prompt drops the repository sentence", async () => {
     const cfg = box.configDir + "t";
     writeFileSync(join(cfg, ".credentials.json"), fakeCreds(Date.now() + 10 * 60_000));
-    process.env.CRAFT_AUTO_CLAUDE_BIN = "/usr/bin/true";
+    process.env.AUTOCRAFT_CLAUDE_BIN = "/usr/bin/true";
     const calls: { cmd: string; args: string[]; input: string }[] = [];
     const restore = setRunner(async (cmd, args, input) => {
       calls.push({ cmd, args, input });
@@ -344,7 +344,7 @@ describe("askClaude in tool mode", () => {
       console.log = log;
       restore();
       writeFileSync(join(cfg, ".credentials.json"), fakeCreds(Date.now() + 6 * 3600_000));
-      delete process.env.CRAFT_AUTO_CLAUDE_BIN;
+      delete process.env.AUTOCRAFT_CLAUDE_BIN;
     }
     assert.equal(calls[0]!.cmd, "claude");
     assert.ok(calls[0]!.args.includes("--system-prompt"));

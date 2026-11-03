@@ -23,7 +23,7 @@ const view = (db: DatabaseSync, id: string): ClaudeAccount => listAccounts(db).f
 export function addAccount(db: DatabaseSync, input: unknown, by: string): ClaudeAccount {
   if (!input || typeof input !== "object" || Array.isArray(input)) throw new AccountError(400, "the body must be a JSON object");
   const label = validLabel((input as { label?: unknown }).label);
-  if (!configRoot()) throw new AccountError(400, "no config root is set for new accounts (CRAFT_AUTO_ACCOUNTS_ROOT)");
+  if (!configRoot()) throw new AccountError(400, "no config root is set for new accounts (AUTOCRAFT_ACCOUNTS_ROOT)");
   const taken = new Set((db.prepare("SELECT id FROM claude_accounts").all() as { id: string }[]).map((r) => r.id));
   for (const a of boxAccounts(db)) taken.add(a.id);
   let n = 1;

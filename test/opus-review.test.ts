@@ -19,7 +19,7 @@ import { SCRATCH } from "./scratch.ts";
 
 mkdirSync(SCRATCH, { recursive: true });
 const dir = mkdtempSync(join(SCRATCH, "opus-review-test-"));
-process.env.CRAFT_AUTO_DIFF_CACHE = join(dir, "diffs");
+process.env.AUTOCRAFT_DIFF_CACHE = join(dir, "diffs");
 const T0 = "2026-01-01T00:00:00Z";
 const T1 = "2026-01-02T00:00:00Z";
 

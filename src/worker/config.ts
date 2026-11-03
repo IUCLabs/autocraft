@@ -1,4 +1,4 @@
-// Worker configuration: one JSON file (`--config` or CRAFT_AUTO_WORKER_CONFIG).
+// Worker configuration: one JSON file (`--config` or AUTOCRAFT_WORKER_CONFIG).
 import { existsSync, readFileSync, statfsSync } from "node:fs";
 import { arch, availableParallelism, homedir, platform, totalmem } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";

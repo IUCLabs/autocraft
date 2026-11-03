@@ -17,9 +17,9 @@ import { claudeArgs } from "../src/prompts/index.ts";
 
 mkdirSync(SCRATCH, { recursive: true });
 const dir = mkdtempSync(join(SCRATCH, "stream-"));
-process.env.CRAFT_AUTO_CLAUDE_BIN = "/bin/true";
-process.env.CRAFT_AUTO_CHECKOUT_DIR = join(dir, "checkouts");
-process.env.CRAFT_AUTO_CLAUDE_CWD = join(dir, "cwd");
+process.env.AUTOCRAFT_CLAUDE_BIN = "/bin/true";
+process.env.AUTOCRAFT_CHECKOUT_DIR = join(dir, "checkouts");
+process.env.AUTOCRAFT_CLAUDE_CWD = join(dir, "cwd");
 setWorkspace(async () => []);
 
 function fresh(): DatabaseSync {

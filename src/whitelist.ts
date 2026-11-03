@@ -181,7 +181,7 @@ export const commands = {
       const [sub, ...rest] = args;
       const fn = sub ? SUB[sub] : undefined;
       if (!fn) {
-        console.log(`usage: craft-auto whitelist ${Object.keys(SUB).join("|")} ...`);
+        console.log(`usage: autocraft whitelist ${Object.keys(SUB).join("|")} ...`);
         process.exit(sub ? 1 : 0);
       }
       fn(rest);

@@ -28,7 +28,7 @@ Every reader signs in with GitHub. See [Accounts and access](#accounts-and-acces
 
 ## Data
 
-Read from the SQLite mirror (`src/schema.sql`, opened with `src/db.ts`). Mirror tables (`repos`, `items`, `comments`) are filled by `craft-auto sync`; work tables are written by the pipeline and by the dashboard. Schema changes go in `src/schema.sql` as `CREATE ... IF NOT EXISTS` or additive `ALTER`s, and must keep existing rows.
+Read from the SQLite mirror (`src/schema.sql`, opened with `src/db.ts`). Mirror tables (`repos`, `items`, `comments`) are filled by `autocraft sync`; work tables are written by the pipeline and by the dashboard. Schema changes go in `src/schema.sql` as `CREATE ... IF NOT EXISTS` or additive `ALTER`s, and must keep existing rows.
 
 Add a `decisions` table; the pipeline writes the questions, the dashboard and the CLI record the answers:
 
@@ -160,7 +160,7 @@ Items moved per stage per hour (last 24 hours) or per day (last 7 days), with ru
 ## Behaviour
 
 - Writes (answers, overrides, settings, access) go through POST endpoints that check the reader's permission, validate input and write one row plus one audit row; each records the signed-in reader's GitHub login.
-- **Decisions are answered only on the dashboard, by a signed-in person.** The CLI can ask decisions and read answers (`craft-auto decisions list --actionable`; `list` and `show` mark answers that aren't actionable and never print answer notes), but it cannot answer them: the pipeline's agents run that CLI, and an answer must always come from a person. The CLI may edit the whitelist and access list (`craft-auto whitelist ...`, `craft-auto access ...`), recorded as `cli`, because only someone with a shell on the host can run it.
+- **Decisions are answered only on the dashboard, by a signed-in person.** The CLI can ask decisions and read answers (`autocraft decisions list --actionable`; `list` and `show` mark answers that aren't actionable and never print answer notes), but it cannot answer them: the pipeline's agents run that CLI, and an answer must always come from a person. The CLI may edit the whitelist and access list (`autocraft whitelist ...`, `autocraft access ...`), recorded as `cli`, because only someone with a shell on the host can run it.
 
 ## Accounts and access
 
@@ -169,7 +169,7 @@ The whole dashboard sits behind GitHub sign-in: every page, asset and endpoint e
 ### Who can sign in
 
 - Only GitHub logins on the **access list** (`access` table: `login`, `role` = `operator` | `maintainer` | `viewer`, `added_by`, `added_at`, `note`, `github_id`). A login not on the list sees a plain "not authorised" page after GitHub's redirect, and no session is created.
-- Operators add and remove logins on the Access page or with `craft-auto access add <login> [--operator|--maintainer] [--note]` / `access remove <login>`. The first operator is added with the CLI.
+- Operators add and remove logins on the Access page or with `autocraft access add <login> [--operator|--maintainer] [--note]` / `access remove <login>`. The first operator is added with the CLI.
 - Removing a login or changing its role ends its sessions at once.
 - Access is bound to the numeric GitHub user id, not only the login. The id from `GET /user` is stored in `github_id` at the login's first sign-in, and every later sign-in must present the same id. A different id (a renamed or released login taken by someone else) is refused like an unlisted login and audited. Removing and re-adding a login clears the binding.
 
@@ -177,7 +177,7 @@ The whole dashboard sits behind GitHub sign-in: every page, asset and endpoint e
 
 The pipeline runs Claude agents under the operator's own Claude account on the operator's machine, and the operator is responsible for what they do. So nothing a dashboard user enters may steer the pipeline unless the operator has approved it, and a compromised dashboard account must not be able to cause harm.
 
-- **Operator**: one or more logins with role `operator` (today only the owner). Only an operator's answer is **actionable**, including an answer made by adopting someone's opinion. The pipeline reads only actionable answers (`craft-auto decisions list --actionable`), and only their option keys: never free text.
+- **Operator**: one or more logins with role `operator` (today only the owner). Only an operator's answer is **actionable**, including an answer made by adopting someone's opinion. The pipeline reads only actionable answers (`autocraft decisions list --actionable`), and only their option keys: never free text.
 - **Everyone else gives opinions.** Anyone signed in can pick an option on any decision (an **opinion**: who, which option, optional note) and comment, whatever their role or GitHub permission. Opinions are shown to everyone with the person's GitHub permission on that repo (`write` or `none`) and a tally per option. They are non-binding: the operator answers, or **adopts** an opinion with one tap, which records the operator's answer with that option and credits the opinion. A person can change or retract their opinion until the decision is answered.
 - **Opinions and comments never reach the pipeline.** They are display-only: no agent prompt, brief or CLI output used by agents includes them, adopted or not.
 - **Writes by non-operators are rate-limited and audited**: opinions and comments per session and per login (proposed: 60 an hour), each with an audit row.
@@ -224,7 +224,7 @@ GitHub permissions: after sign-in, read the user's permission on each repo with 
 
 ### Secrets and configuration
 
-- The OAuth client secret and the session key are never in the repo, in logs or in error pages. The server reads them from a file named by `CRAFT_AUTO_SECRETS_FILE` (mode 0600, JSON) and refuses to start if it's missing, readable by others, or incomplete.
+- The OAuth client secret and the session key are never in the repo, in logs or in error pages. The server reads them from a file named by `AUTOCRAFT_SECRETS_FILE` (mode 0600, JSON) and refuses to start if it's missing, readable by others, or incomplete.
 - Other configuration (base URL, listen address, port, database path) comes from environment variables, documented in the README with no values specific to one machine.
 
 ### Hosting for now
@@ -233,13 +233,13 @@ The server listens on 127.0.0.1 only; a private network proxy in front of it pro
 
 ### Testing without GitHub
 
-A fake OAuth provider for tests and local development, enabled only when `CRAFT_AUTO_DEV_AUTH=1` **and** the server listens on a loopback address; it signs in as a login given in the test and serves configurable repo permissions. The server refuses to start with dev auth on any other address, or with `CRAFT_AUTO_BASE_URL` set to anything but an `http://localhost` or `http://127.0.0.1` URL. In dev mode it also answers 403 to any request that carries `X-Forwarded-For` or a `Host` that is not a loopback name, and its default port (8994) differs from the real dashboard's (8993).
+A fake OAuth provider for tests and local development, enabled only when `AUTOCRAFT_DEV_AUTH=1` **and** the server listens on a loopback address; it signs in as a login given in the test and serves configurable repo permissions. The server refuses to start with dev auth on any other address, or with `AUTOCRAFT_BASE_URL` set to anything but an `http://localhost` or `http://127.0.0.1` URL. In dev mode it also answers 403 to any request that carries `X-Forwarded-For` or a `Host` that is not a loopback name, and its default port (8994) differs from the real dashboard's (8993).
 
 ## Technology
 
 - Server: TypeScript on Node 24, run directly with type stripping (no build step); `node:http` and `node:sqlite`. It serves the JSON API under `/api/`, the sign-in routes under `/auth/`, and the frontend.
 - Frontend: a React app in `web/` (Vite, Tailwind, Radix primitives), described in `docs/ui-design.md`. `pnpm -C web build` writes it to `web/dist`, which the server serves behind sign-in: hashed files under `/assets/` with a year's cache, and `index.html`, uncached, for every other path, so the app routes on the client. It talks to the server only through the JSON API.
-- Content-Security-Policy: the app gets `script-src 'self'` and `style-src 'self'` plus the hash of the one fixed `<style>` the Radix dialog's scroll lock injects; the sign-in and error pages use a per-response nonce. `img-src` is `'self' data:`. No CDNs or external requests from the browser: all CSS, JS, fonts and charts are served by the app, and GitHub-hosted images in bodies and comments come through the server's image proxy, `GET /img?u=<url>`. The proxy needs a session and fetches only an allow-list of GitHub image hosts and path shapes (redirects re-checked, IP addresses never fetched), and only URLs that occur in a mirrored body or comment of a tracked repo (a cached image is served only while its URL still does). It sends the token only to `github.com` attachment URLs, serves only raster image types (no SVG) up to 5 MB, within a timeout, with at most 4 upstream fetches at once and per-session and per-address rate limits, under `default-src 'none'` and `nosniff`. Expensive GETs (queue, contributors, semantic search) share a per-session token bucket (429 with `Retry-After`), embeddings run two at a time, and the contributors aggregate is cached for a minute; the README lists the rules and the token source setting (`CRAFT_AUTO_IMAGE_TOKEN_FILE`).
+- Content-Security-Policy: the app gets `script-src 'self'` and `style-src 'self'` plus the hash of the one fixed `<style>` the Radix dialog's scroll lock injects; the sign-in and error pages use a per-response nonce. `img-src` is `'self' data:`. No CDNs or external requests from the browser: all CSS, JS, fonts and charts are served by the app, and GitHub-hosted images in bodies and comments come through the server's image proxy, `GET /img?u=<url>`. The proxy needs a session and fetches only an allow-list of GitHub image hosts and path shapes (redirects re-checked, IP addresses never fetched), and only URLs that occur in a mirrored body or comment of a tracked repo (a cached image is served only while its URL still does). It sends the token only to `github.com` attachment URLs, serves only raster image types (no SVG) up to 5 MB, within a timeout, with at most 4 upstream fetches at once and per-session and per-address rate limits, under `default-src 'none'` and `nosniff`. Expensive GETs (queue, contributors, semantic search) share a per-session token bucket (429 with `Retry-After`), embeddings run two at a time, and the contributors aggregate is cached for a minute; the README lists the rules and the token source setting (`AUTOCRAFT_IMAGE_TOKEN_FILE`).
 - Light and dark themes via `prefers-color-scheme`; readable at 360 px wide without horizontal scrolling; touch targets at least 44 px.
 - Performance at the real size (about 100,000 mirror rows including closed history, 25,000 open): every page renders in under 300 ms. Add the indexes the queries need.
 - Nothing in the repo names a person other than as a GitHub login from the data, a machine, a hostname or a home directory: the repo may become public.

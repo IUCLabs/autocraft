@@ -2,6 +2,7 @@
 // build_artifacts. The bytes are untrusted. Their type comes from sniffing
 // them, only a few kinds are accepted, and nothing here ever executes or
 // renders them.
+import { envVar } from "../env.ts";
 import { mkdirSync, readFileSync, renameSync, statSync, unlinkSync, rmSync } from "node:fs";
 import { dirname, join, resolve, sep } from "node:path";
 import { createHash } from "node:crypto";
@@ -13,9 +14,9 @@ export const MAX_TASK_ARTIFACT_BYTES = 200 * 1024 * 1024;
 export const MAX_ARTIFACTS_PER_TASK = 100;
 export const NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
 
-/** CRAFT_AUTO_ARTIFACT_DIR, else `artifacts` beside the database. */
+/** AUTOCRAFT_ARTIFACT_DIR, else `artifacts` beside the database. */
 export function artifactDir(): string {
-  return resolve(process.env.CRAFT_AUTO_ARTIFACT_DIR ?? join(dirname(dbPath()), "artifacts"));
+  return resolve(envVar("ARTIFACT_DIR") ?? join(dirname(dbPath()), "artifacts"));
 }
 
 const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);

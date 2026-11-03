@@ -473,7 +473,7 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
     if (!index) {
       return send(res, nonce, {
         status: 503,
-        html: plainPage(nonce, "Frontend not built", `<p>The dashboard's frontend is not built: there is no <code>index.html</code> in the directory <code>CRAFT_AUTO_WEB_DIST</code> names (default <code>web/dist</code> in the repo).</p>
+        html: plainPage(nonce, "Frontend not built", `<p>The dashboard's frontend is not built: there is no <code>index.html</code> in the directory <code>AUTOCRAFT_WEB_DIST</code> names (default <code>web/dist</code> in the repo).</p>
 <p>Build it with <code>pnpm -C web install</code> and <code>pnpm -C web build</code>, then reload.</p>`),
       });
     }

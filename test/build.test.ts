@@ -21,7 +21,7 @@ import { SCRATCH } from "./scratch.ts";
 
 mkdirSync(SCRATCH, { recursive: true });
 const dir = mkdtempSync(join(SCRATCH, "build-test-"));
-process.env.CRAFT_AUTO_ARTIFACT_DIR = join(dir, "artifacts");
+process.env.AUTOCRAFT_ARTIFACT_DIR = join(dir, "artifacts");
 const db = connect(join(dir, "build.db"));
 const SHA = "a".repeat(40);
 const PLAN = [{ name: "t", cmd: ["true"], network: "none" as const, timeoutSec: 10 }];
@@ -336,7 +336,7 @@ describe("dashboard API", () => {
     const perms = join(dir, "perms.json");
     writeFileSync(perms, "{}");
     const s = await startServer({
-      config: loadConfig({ CRAFT_AUTO_DEV_AUTH: "1", CRAFT_AUTO_LISTEN: "127.0.0.1:0", CRAFT_AUTO_DB: join(dir, "build.db"), CRAFT_AUTO_DEV_PERMS: perms }),
+      config: loadConfig({ AUTOCRAFT_DEV_AUTH: "1", AUTOCRAFT_LISTEN: "127.0.0.1:0", AUTOCRAFT_DB: join(dir, "build.db"), AUTOCRAFT_DEV_PERMS: perms }),
       db, provider: new FakeProvider(perms), routes: apiRoutes(),
     });
     base = s.url;

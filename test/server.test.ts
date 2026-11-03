@@ -64,8 +64,8 @@ before(async () => {
   addLogin(db, "cli", "viewer1", "viewer", null);
   addLogin(db, "cli", "maint", "viewer", null);
   const config = loadConfig({
-    CRAFT_AUTO_DEV_AUTH: "1", CRAFT_AUTO_LISTEN: "127.0.0.1:0", CRAFT_AUTO_DB: join(dir, "dash.db"), CRAFT_AUTO_DEV_PERMS: permsFile,
-    CRAFT_AUTO_WEB_DIST: webDist,
+    AUTOCRAFT_DEV_AUTH: "1", AUTOCRAFT_LISTEN: "127.0.0.1:0", AUTOCRAFT_DB: join(dir, "dash.db"), AUTOCRAFT_DEV_PERMS: permsFile,
+    AUTOCRAFT_WEB_DIST: webDist,
   });
   allRoutes = [...(await defaultRoutes()), ...testRoutes];
   const s = await startServer({ config, db, provider, routes: allRoutes });
@@ -296,8 +296,8 @@ describe("frontend", () => {
 
   test("a missing build gets a 503 page that says how to build it", async () => {
     const config = loadConfig({
-      CRAFT_AUTO_DEV_AUTH: "1", CRAFT_AUTO_LISTEN: "127.0.0.1:0", CRAFT_AUTO_DB: join(dir, "dash.db"), CRAFT_AUTO_DEV_PERMS: permsFile,
-      CRAFT_AUTO_WEB_DIST: join(dir, "no-such-dist"),
+      AUTOCRAFT_DEV_AUTH: "1", AUTOCRAFT_LISTEN: "127.0.0.1:0", AUTOCRAFT_DB: join(dir, "dash.db"), AUTOCRAFT_DEV_PERMS: permsFile,
+      AUTOCRAFT_WEB_DIST: join(dir, "no-such-dist"),
     });
     const s = await startServer({ config, db, provider, routes: allRoutes });
     try {
@@ -381,13 +381,13 @@ describe("startup refusals", () => {
     return p;
   };
   const full = { github_client_id: "id", github_client_secret: "secret", session_key: "k".repeat(43) };
-  const env = (file: string) => ({ CRAFT_AUTO_SECRETS_FILE: file, CRAFT_AUTO_BASE_URL: "https://dash.example" });
+  const env = (file: string) => ({ AUTOCRAFT_SECRETS_FILE: file, AUTOCRAFT_BASE_URL: "https://dash.example" });
 
   test("dev auth on a non-loopback address", () => {
-    assert.throws(() => loadConfig({ CRAFT_AUTO_DEV_AUTH: "1", CRAFT_AUTO_LISTEN: "0.0.0.0:8993" }), ConfigError);
+    assert.throws(() => loadConfig({ AUTOCRAFT_DEV_AUTH: "1", AUTOCRAFT_LISTEN: "0.0.0.0:8993" }), ConfigError);
     const r = spawnSync(process.execPath, ["src/cli.ts", "dash", "serve"], {
       cwd: new URL("..", import.meta.url), encoding: "utf8",
-      env: { PATH: process.env.PATH, CRAFT_AUTO_DEV_AUTH: "1", CRAFT_AUTO_LISTEN: "0.0.0.0:0", CRAFT_AUTO_DB: join(dir, "spawn.db") },
+      env: { PATH: process.env.PATH, AUTOCRAFT_DEV_AUTH: "1", AUTOCRAFT_LISTEN: "0.0.0.0:0", AUTOCRAFT_DB: join(dir, "spawn.db") },
     });
     assert.equal(r.status, 2);
     assert.match(r.stderr, /loopback/);
@@ -398,7 +398,7 @@ describe("startup refusals", () => {
     assert.throws(() => loadConfig(env(secrets(0o640, full))), /group or others/);
     assert.throws(() => loadConfig(env(join(dir, "missing.json"))), /not found/);
     assert.throws(() => loadConfig(env(secrets(0o600, { github_client_id: "id" }))), /missing/);
-    assert.throws(() => loadConfig({ CRAFT_AUTO_SECRETS_FILE: secrets(0o600, full) }), /BASE_URL/);
+    assert.throws(() => loadConfig({ AUTOCRAFT_SECRETS_FILE: secrets(0o600, full) }), /BASE_URL/);
     assert.equal(loadConfig(env(secrets(0o600, full))).baseUrl, "https://dash.example");
   });
 });

@@ -78,7 +78,7 @@ export async function startClaudeRun(db: DatabaseSync, s: RunInput, log: (line: 
     for (;;) {
       const c = tryStartClaudeRun(db, s);
       if ("runId" in c) return c;
-      if ("none" in c) throw new NoAccountError("no Claude account is enabled; an operator enables one on the Accounts page or with `craft-auto accounts set <id> --enabled yes`");
+      if ("none" in c) throw new NoAccountError("no Claude account is enabled; an operator enables one on the Accounts page or with `autocraft accounts set <id> --enabled yes`");
       if (Date.now() - lastLog >= allocation.logEveryMs) {
         lastLog = Date.now();
         log(`waiting for a Claude account: ${scrubError(c.wait)}`);

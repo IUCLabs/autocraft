@@ -36,7 +36,7 @@ export interface Provider {
   permission(access: string, repo: string): Promise<Permission | "unauthorized">;
 }
 
-const UA = "craft-automation-dashboard";
+const UA = "autocraft-dashboard";
 
 function tokensFrom(body: Record<string, unknown>, now = Date.now()): Tokens | null {
   if (typeof body.access_token !== "string") return null;
@@ -116,7 +116,7 @@ export class GitHubProvider implements Provider {
 }
 
 // Signs in as any login typed on /auth/dev/authorize (or given as ?login=),
-// and reads permissions from CRAFT_AUTO_DEV_PERMS on every check, so tests can
+// and reads permissions from AUTOCRAFT_DEV_PERMS on every check, so tests can
 // change them while the server runs. Tokens expire like GitHub's, after
 // `tokenTtlMs`, and refresh tokens are single use.
 export class FakeProvider implements Provider {

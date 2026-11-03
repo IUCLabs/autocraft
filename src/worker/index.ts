@@ -1,4 +1,5 @@
-// `craft-auto worker serve`: runs build tasks of the coordinator in containers.
+// `autocraft worker serve`: runs build tasks of the coordinator in containers.
+import { envVar } from "../env.ts";
 import { mkdirSync, readFileSync } from "node:fs";
 import { detectCapabilities, loadWorkerConfig, readKey } from "./config.ts";
 import { WorkerApi } from "./client.ts";
@@ -9,9 +10,9 @@ import { requestUpdate, statusLines } from "../build/worker-update.ts";
 export { rustPlan, hasCargoLock } from "./rust.ts";
 export type { Capabilities, TaskStep, ClaimedTask } from "./types.ts";
 
-const USAGE = `usage: craft-auto worker serve [--config FILE]   (default: $CRAFT_AUTO_WORKER_CONFIG)
-       craft-auto worker update-code --sha SHA --ssh USER@HOST --key FILE --git-dir BARE_REPO
-       craft-auto worker status`;
+const USAGE = `usage: autocraft worker serve [--config FILE]   (default: $AUTOCRAFT_WORKER_CONFIG)
+       autocraft worker update-code --sha SHA --ssh USER@HOST --key FILE --git-dir BARE_REPO
+       autocraft worker status`;
 
 /** Updates the sandbox worker now, or records the update when its tasks are still running. */
 async function updateCode(args: string[]): Promise<void> {
@@ -38,7 +39,7 @@ async function updateCode(args: string[]): Promise<void> {
 
 async function workerServe(args: string[]): Promise<void> {
   const i = args.indexOf("--config");
-  const path = (i >= 0 ? args[i + 1] : undefined) ?? process.env.CRAFT_AUTO_WORKER_CONFIG;
+  const path = (i >= 0 ? args[i + 1] : undefined) ?? envVar("WORKER_CONFIG");
   if (!path) {
     console.error(USAGE);
     process.exit(2);

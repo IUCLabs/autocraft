@@ -1,6 +1,7 @@
 // Sentence-embedding models run locally on the CPU through ONNX Runtime
 // (@huggingface/transformers). Model files are downloaded from Hugging Face
 // once into the model cache and read from there afterwards.
+import { envVar } from "../env.ts";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -42,12 +43,13 @@ export const DEFAULT_MODEL = "bge-small-en-v1.5";
 export const MAX_TOKENS = 256;
 
 export function modelCacheDir(env: NodeJS.ProcessEnv = process.env): string {
-  if (env.CRAFT_AUTO_MODEL_CACHE) return env.CRAFT_AUTO_MODEL_CACHE;
-  return join(env.XDG_CACHE_HOME || join(homedir(), ".cache"), "craft-automation/models");
+  const given = envVar("MODEL_CACHE", env);
+  if (given) return given;
+  return join(env.XDG_CACHE_HOME || join(homedir(), ".cache"), "autocraft/models");
 }
 
 export function modelName(env: NodeJS.ProcessEnv = process.env): string {
-  const name = env.CRAFT_AUTO_EMBED_MODEL || DEFAULT_MODEL;
+  const name = envVar("EMBED_MODEL", env) || DEFAULT_MODEL;
   if (!MODELS[name]) throw new Error(`unknown embedding model ${name}; one of ${Object.keys(MODELS).join(", ")}`);
   return name;
 }

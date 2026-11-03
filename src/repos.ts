@@ -99,7 +99,7 @@ function list(): void {
 
 function need(args: string[], usage: string): string {
   if (!args[0]) {
-    console.error(`usage: craft-auto repos ${usage}`);
+    console.error(`usage: autocraft repos ${usage}`);
     process.exit(1);
   }
   return args[0];
@@ -147,7 +147,7 @@ export const commands = {
     run: (args: string[]) => {
       const f = args[0] ? sub[args[0]] : undefined;
       if (!f) {
-        console.error(`usage: craft-auto repos ${Object.keys(sub).join("|")}`);
+        console.error(`usage: autocraft repos ${Object.keys(sub).join("|")}`);
         process.exit(1);
       }
       f(args.slice(1));

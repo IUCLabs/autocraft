@@ -29,7 +29,7 @@ let cookie = "";
 
 before(async () => {
   addLogin(db, "cli", "viewer1", "viewer", null);
-  const config = loadConfig({ CRAFT_AUTO_DEV_AUTH: "1", CRAFT_AUTO_LISTEN: "127.0.0.1:0", CRAFT_AUTO_DB: join(dir, "dash.db"), CRAFT_AUTO_DEV_PERMS: permsFile, CRAFT_AUTO_IMG_CACHE: "" });
+  const config = loadConfig({ AUTOCRAFT_DEV_AUTH: "1", AUTOCRAFT_LISTEN: "127.0.0.1:0", AUTOCRAFT_DB: join(dir, "dash.db"), AUTOCRAFT_DEV_PERMS: permsFile, AUTOCRAFT_IMG_CACHE: "" });
   const json = { status: 200, headers: {}, json: [] };
   const routes = (["/api/queue", "/api/contributors", "/api/search", "/api/progress"] as const).map((pattern) => ({ method: "GET" as const, pattern, handler: async () => json }));
   const s = await startServer({ config, db, provider: new FakeProvider(permsFile), routes });

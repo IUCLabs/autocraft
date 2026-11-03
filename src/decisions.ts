@@ -283,7 +283,7 @@ export const commands = {
       const [sub, ...rest] = args;
       const fn = sub ? SUB[sub] : undefined;
       if (!fn) {
-        console.log("usage: craft-auto decisions list|show|ask|backlog|withdraw ...");
+        console.log("usage: autocraft decisions list|show|ask|backlog|withdraw ...");
         process.exit(sub ? 1 : 0);
       }
       fn(rest);

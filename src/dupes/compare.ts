@@ -5,7 +5,7 @@
 // no valid answer the canonical rule decides (source "rule"). Reads GitHub (live
 // state, diffs); never writes to it.
 //
-//   craft-auto dupe-compare [--limit N] [--dry-run]
+//   autocraft dupe-compare [--limit N] [--dry-run]
 import type { DatabaseSync } from "node:sqlite";
 import { claudeRoom } from "../agents/call.ts";
 import { add, askClaude, pool, saveUsage, type Usage } from "../classify/run.ts";

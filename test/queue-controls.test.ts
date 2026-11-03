@@ -115,13 +115,13 @@ function req(query: string): Req {
 }
 
 describe("merge holds", () => {
-  const saved = process.env.CRAFT_AUTO_DIFF_CACHE;
-  after(() => { if (saved === undefined) delete process.env.CRAFT_AUTO_DIFF_CACHE; else process.env.CRAFT_AUTO_DIFF_CACHE = saved; });
+  const saved = process.env.AUTOCRAFT_DIFF_CACHE;
+  after(() => { if (saved === undefined) delete process.env.AUTOCRAFT_DIFF_CACHE; else process.env.AUTOCRAFT_DIFF_CACHE = saved; });
   const diffs: DiffFetcher = async (_repo, n) => ({ ok: true, text: `diff --git a/src/pr${n}.rs b/src/pr${n}.rs\n--- a/src/pr${n}.rs\n+++ b/src/pr${n}.rs\n@@ -1 +1 @@\n-a\n+b\n` });
 
   test("a held PR is skipped by the single and the batch merge and comes back on release; the queue still shows it, held", async () => {
     const db = fresh();
-    process.env.CRAFT_AUTO_DIFF_CACHE = mkdtempSync(join(dir, "diffs-"));
+    process.env.AUTOCRAFT_DIFF_CACHE = mkdtempSync(join(dir, "diffs-"));
     assert.deepEqual([...(await planSingles(db, "app", diffs))!].sort(), [1, 2, 3]);
     assert.ok(holdMerge(db, "op", "app", 2));
     assert.equal(holdMerge(db, "op", "app", 2), false);

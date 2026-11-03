@@ -5,6 +5,7 @@
 //
 // Params are only enums, tracked repo names, bounded integers and run ids:
 // nothing a person types can reach a model's prompt or a shell.
+import { envVar } from "../env.ts";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { DatabaseSync } from "node:sqlite";
@@ -573,7 +574,7 @@ let loadedMap: Map<string, StepDef> | null = null;
 export const knownStep = (name: string): StepDef | undefined => loadedMap?.get(name) ?? STEPS.find((s) => s.name === name);
 
 /**
- * Every step by name. CRAFT_AUTO_EXTRA_STEPS names a module exporting `steps:
+ * Every step by name. AUTOCRAFT_EXTRA_STEPS names a module exporting `steps:
  * StepDef[]` that is added too; tests and development smoke runs use it for
  * fake steps. The dashboard, the runner and each job's child read the same
  * variable, so they see the same list.
@@ -581,7 +582,7 @@ export const knownStep = (name: string): StepDef | undefined => loadedMap?.get(n
 export function loadSteps(): Promise<Map<string, StepDef>> {
   loaded ??= (async () => {
     const map = new Map(STEPS.map((s) => [s.name, s]));
-    const extra = process.env.CRAFT_AUTO_EXTRA_STEPS;
+    const extra = envVar("EXTRA_STEPS");
     if (extra) for (const s of ((await import(pathToFileURL(resolve(extra)).href)) as { steps: StepDef[] }).steps) map.set(s.name, s);
     loadedMap = map;
     return map;

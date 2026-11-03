@@ -2,10 +2,11 @@
 // at a time, through the configured merge command, and asks a "Merge this PR?"
 // decision for taken PRs the merge rule doesn't cover. No model calls.
 //
-//   craft-auto merge --repo R [--limit N] [--apply]
+//   autocraft merge --repo R [--limit N] [--apply]
 //
 // Without --apply it is a dry run: it reads the local tables only, calls
 // nothing and writes nothing.
+import { envVar } from "../env.ts";
 import { scopeRepos } from "../pilot.ts";
 import { FAST_FLOOR, workScores } from "../fasttrack.ts";
 import { mergeHeld } from "./holds.ts";
@@ -29,7 +30,7 @@ import { buildQueue, ciAllows, toAsk, countStates, eligible, HEAD_FACT, MERGE_OP
 export { buildQueue, countStates, QUEUE_STATES, toAsk, type QueueEntry, type QueueState } from "./queue.ts";
 
 export const ORG = "storytold";
-/** Name of the built-in guarded merge (`craft-auto safe-merge`); any other `$CRAFT_AUTO_MERGE_CMD` is run as an external command. */
+/** Name of the built-in guarded merge (`autocraft safe-merge`); any other `$AUTOCRAFT_MERGE_CMD` is run as an external command. */
 export const DEFAULT_MERGE_COMMAND = "safe-merge";
 const CLI = fileURLToPath(new URL("../cli.ts", import.meta.url));
 const ACTOR = "merge";
@@ -40,7 +41,7 @@ export type MergeDeps = {
   /** Runs the merge command; throws only when it can't be started. */
   run: (cmd: string, args: string[]) => Promise<CommandResult>;
   now: () => Date;
-  /** `$CRAFT_AUTO_MERGE_CMD`, default the built-in `safe-merge`. */
+  /** `$AUTOCRAFT_MERGE_CMD`, default the built-in `safe-merge`. */
   mergeCommand: string;
 };
 
@@ -78,13 +79,13 @@ export function spawnRun(cmd: string, args: string[], env?: Record<string, strin
   });
 }
 
-/** Runs the merge command; the built-in name runs `craft-auto safe-merge` from this checkout. */
+/** Runs the merge command; the built-in name runs `autocraft safe-merge` from this checkout. */
 export function mergeRun(cmd: string, args: string[]): Promise<CommandResult> {
   return cmd === DEFAULT_MERGE_COMMAND ? spawnRun(process.execPath, ["--no-warnings", CLI, "safe-merge", ...args], { [MERGE_RECORDED_ENV]: "1" }) : spawnRun(cmd, args);
 }
 
 export function defaultDeps(): MergeDeps {
-  return { querier: new Client(1000), run: mergeRun, now: () => new Date(), mergeCommand: process.env.CRAFT_AUTO_MERGE_CMD || DEFAULT_MERGE_COMMAND };
+  return { querier: new Client(1000), run: mergeRun, now: () => new Date(), mergeCommand: envVar("MERGE_CMD") || DEFAULT_MERGE_COMMAND };
 }
 
 const refOf = (e: { repo: string; number: number }) => `${e.repo}#${e.number}`;

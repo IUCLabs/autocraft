@@ -223,7 +223,7 @@ describe("opus review", () => {
   };
 
   test("a PR whose live head moved gets no model call; at the selected head it does", async () => {
-    process.env.CRAFT_AUTO_DIFF_CACHE = join(dir, "diffs");
+    process.env.AUTOCRAFT_DIFF_CACHE = join(dir, "diffs");
     const calls: string[] = [];
     const restore = setRunner(runner(calls));
     try {

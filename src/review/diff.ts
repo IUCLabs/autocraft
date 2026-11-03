@@ -1,5 +1,6 @@
 // PR diffs: fetched with `gh pr diff`, cached by head commit, and cut down to
 // the code a reviewer reads (tests and lockfiles are listed, not shown).
+import { envVar } from "../env.ts";
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -11,7 +12,7 @@ const ORG = "storytold";
 const REPO_DIR = fileURLToPath(new URL("../..", import.meta.url));
 
 export function diffCacheDir(): string {
-  return process.env.CRAFT_AUTO_DIFF_CACHE ?? join(homedir(), ".cache/craft-automation/diffs");
+  return envVar("DIFF_CACHE") ?? join(homedir(), ".cache/autocraft/diffs");
 }
 
 export type DiffResult = { ok: true; text: string } | { ok: false; tooLarge: boolean; error: string };

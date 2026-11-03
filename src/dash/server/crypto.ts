@@ -13,10 +13,17 @@ export function safeEqual(a: string, b: string): boolean {
 
 // AES-256-GCM with a key derived from the session key. The AAD binds a
 // ciphertext to one session row, so a token can't be moved to another session.
+// Values sealed under the earlier HKDF label stay readable through the legacy key.
+const LABEL = "autocraft";
+const LEGACY_LABEL = "craft-automation";
+const deriveKey = (sessionKey: string, label: string): Buffer => Buffer.from(hkdfSync("sha256", sessionKey, label, "github-token", 32));
+
 export class TokenBox {
   #key: Buffer;
+  #legacyKey: Buffer;
   constructor(sessionKey: string) {
-    this.#key = Buffer.from(hkdfSync("sha256", sessionKey, "craft-automation", "github-token", 32));
+    this.#key = deriveKey(sessionKey, LABEL);
+    this.#legacyKey = deriveKey(sessionKey, LEGACY_LABEL);
   }
   seal(plain: string, aad: string): string {
     const iv = randomBytes(12);
@@ -26,9 +33,12 @@ export class TokenBox {
     return Buffer.concat([iv, c.getAuthTag(), body]).toString("base64url");
   }
   open(sealed: string, aad: string): string | null {
+    return this.#openWith(this.#key, sealed, aad) ?? this.#openWith(this.#legacyKey, sealed, aad);
+  }
+  #openWith(key: Buffer, sealed: string, aad: string): string | null {
     try {
       const buf = Buffer.from(sealed, "base64url");
-      const d = createDecipheriv("aes-256-gcm", this.#key, buf.subarray(0, 12));
+      const d = createDecipheriv("aes-256-gcm", key, buf.subarray(0, 12));
       d.setAAD(Buffer.from(aad));
       d.setAuthTag(buf.subarray(12, 28));
       return Buffer.concat([d.update(buf.subarray(28)), d.final()]).toString("utf8");

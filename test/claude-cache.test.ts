@@ -13,7 +13,7 @@ import { SCRATCH } from "./scratch.ts";
 mkdirSync(SCRATCH, { recursive: true });
 const db = connect(join(mkdtempSync(join(SCRATCH, "claude-cache-")), "t.db"));
 useTestAccount(db);
-process.env.CRAFT_AUTO_CLAUDE_CWD = join(SCRATCH, "claude-cwd");
+process.env.AUTOCRAFT_CLAUDE_CWD = join(SCRATCH, "claude-cwd");
 
 type Call = { args: string[]; input: string; cwd?: string };
 const arg = (a: string[], flag: string) => a[a.indexOf(flag) + 1];

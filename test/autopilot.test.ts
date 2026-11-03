@@ -8,7 +8,7 @@ import { after, beforeEach, describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { SCRATCH } from "./scratch.ts";
 
-process.env.CRAFT_AUTO_EXTRA_STEPS = fileURLToPath(new URL("./autopilot-steps.ts", import.meta.url));
+process.env.AUTOCRAFT_EXTRA_STEPS = fileURLToPath(new URL("./autopilot-steps.ts", import.meta.url));
 
 const { connect } = await import("../src/db.ts");
 const { autopilotTick, backoffUntil, detectAutopilot, failureBackoff, failureDelayMs, LANES, planAutopilot, planDue, refusedAsBefore, roundRobin, setEnabled, FAIL_BACKOFF_MAX_MS, PLAN_EVERY_MS } = await import("../src/runner/autopilot.ts");
