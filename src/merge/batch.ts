@@ -21,7 +21,7 @@ import { refreshChecks } from "../review/checks.ts";
 import { type Verdict, outcomeOf, summariseFailure } from "../verify/results.ts";
 import { rustPlan } from "../worker/rust.ts";
 import { BatchGit } from "./batch-git.ts";
-import { ACTIVE_BATCH, CLOSED_BY_PERSON, activeBatches, admits, batchSizeOf, getBatch, growBatchSize, insertBatch, membersOf, nextBranch, shrinkBatchSize, updateBatch, type BatchMember, type BatchRow } from "./batch-store.ts";
+import { ACTIVE_BATCH, CLOSED_BY_PERSON, activeBatches, admits, batchSizeOf, getBatch, growBatchSize, insertBatch, membersOf, nextBranch, restartCheck, shrinkBatchSize, updateBatch, type BatchMember, type BatchRow } from "./batch-store.ts";
 import { mergeApprovalOf } from "./approval.ts";
 import { ASSIGN, ORG, prInfo, viewerOf, mergeRun, DEFAULT_MERGE_COMMAND, type CommandResult } from "./index.ts";
 import { PIPELINE_LOGIN_KEY, buildQueue, eligible, singleMergeOnly, type QueueEntry } from "./queue.ts";
@@ -350,7 +350,7 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
     }
     // A build-environment error says nothing about the PRs: keep checking with growing waits, never split or hold.
     if (d.now().getTime() - Date.parse(b.updated_at) < retryDelayMs(b.retries)) { s.waiting.push(b.branch); return; }
-    updateBatch(db, b.id, at(), { task_id: cloneTask(db, task.id), retries: b.retries + 1, summary: oneLine(`sandbox: ${out.reason}`, 400) });
+    restartCheck(db, b, at(), cloneTask(db, task.id));
     log(`  ${b.branch}: ${out.reason}; queued the sandbox task again (retry ${b.retries + 1})`);
     return;
   }
