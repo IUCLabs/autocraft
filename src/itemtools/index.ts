@@ -1,9 +1,12 @@
 // What a sandboxed model call needs to use the item tools: the read-only
 // mounts and the MCP server definition. Inside the sandbox:
 //   /app/item-tools      the server code (src/itemtools/server), run by /usr/bin/node
-//   /data/items.db       the item snapshot (src/itemtools/snapshot.ts)
+//   /data/snapshot       the directory of the item snapshot (src/itemtools/snapshot.ts), mounted as a
+//                        directory so a reader sees the journal of an interrupted refresh and fails
+//                        instead of reading a half-written page
 //   /data/diffs          the cache of PR diffs, when it exists
 import { existsSync } from "node:fs";
+import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { diffCacheDir } from "../review/diff.ts";
 import { snapshotFile, writeSnapshot } from "./snapshot.ts";
@@ -27,9 +30,9 @@ export function itemTools(): { mounts: Mount[]; mcpServers: Record<string, McpSe
   const diffs = diffCacheDir();
   const mounts: Mount[] = [
     { host: fileURLToPath(new URL("./server", import.meta.url)), path: APP_PATH },
-    { host: snapshot, path: `${DATA_PATH}/items.db` },
+    { host: dirname(snapshot), path: `${DATA_PATH}/snapshot` },
   ];
-  const env: Record<string, string> = { ITEM_TOOLS_DB: `${DATA_PATH}/items.db` };
+  const env: Record<string, string> = { ITEM_TOOLS_DB: `${DATA_PATH}/snapshot/items.db` };
   if (existsSync(diffs)) {
     mounts.push({ host: diffs, path: `${DATA_PATH}/diffs` });
     env.ITEM_TOOLS_DIFFS = `${DATA_PATH}/diffs`;
@@ -39,7 +42,7 @@ export function itemTools(): { mounts: Mount[]; mcpServers: Record<string, McpSe
 
 function snapshot(): void {
   const r = writeSnapshot();
-  console.log(`${snapshotFile()}: ${r.items} items, ${r.comments} comments, ${r.bytes} bytes`);
+  console.log(`${snapshotFile()}: ${r.items} items, ${r.comments} comments, ${r.bytes} bytes${r.rebuilt ? " (rebuilt)" : ""}, changed ${JSON.stringify(r.changed)}`);
 }
 
 function call(args: string[]): void {

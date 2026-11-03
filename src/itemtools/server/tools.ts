@@ -243,7 +243,7 @@ function prDiff(db: DatabaseSync, cfg: Config, a: Record<string, string | number
 }
 
 export function openDb(path: string): DatabaseSync {
-  return new DatabaseSync(path, { readOnly: true });
+  return new DatabaseSync(path, { readOnly: true, timeout: 10_000 });
 }
 
 /** Runs one tool. Bad arguments and missing items come back as an error result, never as a throw. */
