@@ -991,3 +991,23 @@ CREATE TABLE IF NOT EXISTS conversation_cards (
 );
 CREATE INDEX IF NOT EXISTS conversation_cards_turn ON conversation_cards(turn_id);
 CREATE INDEX IF NOT EXISTS conversation_cards_item ON conversation_cards(repo, number);
+
+-- Review quality cross-check (operator-run, never feeds the pipeline): for PRs whose final review
+-- at the head is a Sonnet hold from a batch call, the Opus verdict and, with --single, a
+-- Sonnet verdict for the PR alone in its call. Nothing else reads this table except the report.
+CREATE TABLE IF NOT EXISTS review_crosschecks (
+  run_id TEXT NOT NULL,
+  repo TEXT NOT NULL,
+  number INTEGER NOT NULL,
+  head_oid TEXT NOT NULL,
+  seed TEXT,                          -- the sample's seed, recorded so the pick can be repeated
+  batch_verdict TEXT NOT NULL,        -- the stored Sonnet verdict (hold)
+  batch_reason TEXT,
+  opus_verdict TEXT,
+  opus_sure INTEGER,
+  opus_reason TEXT,
+  single_verdict TEXT,
+  single_reason TEXT,
+  at TEXT NOT NULL,
+  PRIMARY KEY (run_id, repo, number)
+);

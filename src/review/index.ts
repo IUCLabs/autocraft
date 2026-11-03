@@ -10,6 +10,7 @@ import { CLAUDE_PROMPTS } from "../prompts/index.ts";
 import { claudeRoom } from "../agents/call.ts";
 import { add, askClaude, pool, saveUsage, type Usage } from "../classify/run.ts";
 import { DEFAULT_CAPS, makeBatches, type Caps } from "./batch.ts";
+import { reviewCaps } from "./batch-size.ts";
 import { selectCandidates, type Candidate } from "./candidates.ts";
 import { checksOf, refreshChecks } from "./checks.ts";
 import { MAX_RERUNS_PER_DAY, countRerun, discussionOf, ensurePipelineLogin, liveDiscussion, markReviewsStale, markedStaleSince, staleReviews, type Snapshot } from "./discussion.ts";
@@ -147,7 +148,7 @@ export async function runReview(db: DatabaseSync, params: ReviewParams, log: (li
   };
   let handled = summary.reviewed;
   params.onHandled?.(handled);
-  const batches = makeBatches(inputs, deps.caps);
+  const batches = makeBatches(inputs, reviewCaps(db, repo, deps.caps));
   log(`review ${repo}: ${inputs.length} PRs to ask in ${batches.length} calls; ${summary.reviewed} held without a call; run ${runId}`);
   await pool(batches.map((batch, n) => async () => {
     const start = now();
@@ -192,7 +193,7 @@ function parseArgs(args: string[], allowed: string[]): Record<string, string | t
   for (let i = 0; i < args.length; i++) {
     const n = args[i]!.replace(/^--/, "");
     if (!allowed.includes(n)) throw new Error(`unknown option ${args[i]}; options: ${allowed.map((a) => "--" + a).join(" ")}`);
-    if (n === "dry-run") out[n] = true;
+    if (n === "dry-run" || n === "single") out[n] = true;
     else {
       const v = args[++i];
       if (v === undefined) throw new Error(`--${n} needs a value`);
@@ -204,7 +205,7 @@ function parseArgs(args: string[], allowed: string[]): Record<string, string | t
 
 export const commands = {
   review: {
-    summary: "review --repo R [--limit N] [--dry-run]: Sonnet code review of wanted PRs, one verdict per head commit; review again REPO#N [--by LOGIN]: review a PR again",
+    summary: "review --repo R [--limit N] [--dry-run]: Sonnet code review of wanted PRs, one verdict per head commit; review again REPO#N [--by LOGIN]: review a PR again; review batch-size --repo R [--set N|default]: PRs per first-pass call; review crosscheck --repo R --sample N [--single] [--seed S] and review crosscheck-report [--run ID]: check Sonnet batch holds against Opus",
     async run(args: string[]): Promise<void> {
       if (args[0] === "again") {
         const m = /^([\w.-]+)#(\d+)$/.exec(args[1] ?? "");
@@ -215,6 +216,30 @@ export const commands = {
         if (!open) throw new Error(`${args[1]} is not an open pull request in the mirror`);
         markReviewsStale(db, by, m[1]!, Number(m[2]));
         console.log(`${args[1]}: its reviews are stale; Sonnet and then Opus review it again`);
+        return;
+      }
+      if (args[0] === "crosscheck") {
+        const f = parseArgs(args.slice(1), ["repo", "sample", "single", "seed"]);
+        const sample = Number(f.sample);
+        if (typeof f.repo !== "string" || !(Number.isInteger(sample) && sample > 0)) throw new Error("usage: autocraft review crosscheck --repo R --sample N [--single] [--seed S]");
+        const { runCrosscheck } = await import("./crosscheck.ts");
+        await runCrosscheck(connect(), { repo: f.repo, sample, single: f.single === true, seed: typeof f.seed === "string" ? f.seed : undefined });
+        return;
+      }
+      if (args[0] === "crosscheck-report") {
+        const f = parseArgs(args.slice(1), ["run"]);
+        const { crosscheckReport } = await import("./crosscheck.ts");
+        console.log(crosscheckReport(connect(), typeof f.run === "string" ? f.run : undefined));
+        return;
+      }
+      if (args[0] === "batch-size") {
+        const f = parseArgs(args.slice(1), ["repo", "set"]);
+        if (typeof f.repo !== "string") throw new Error("usage: autocraft review batch-size --repo R [--set N|default]");
+        const { batchSizeOf, setBatchSize } = await import("./batch-size.ts");
+        const db = connect();
+        if (typeof f.set === "string") setBatchSize(db, "cli", f.repo, f.set === "default" ? null : Number(f.set));
+        const n = batchSizeOf(db, f.repo);
+        console.log(`${f.repo}: first pass reviews ${n ?? `${DEFAULT_CAPS.perCall} (default)`} PRs per call`);
         return;
       }
       const f = parseArgs(args, ["repo", "limit", "dry-run"]);

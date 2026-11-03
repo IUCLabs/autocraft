@@ -565,6 +565,26 @@ export const STEPS: StepDef[] = [
       return `${r.answered} of ${r.waiting} messages answered`;
     },
   },
+  {
+    name: "review-crosscheck",
+    title: "Review cross-check",
+    description: "Checks Sonnet batch holds: Opus reviews a random sample of the held pull requests of one repo exactly as in the final review, and optionally Sonnet reviews each alone in its call. Results go to a report table only; no review, post, queue entry or merge changes.",
+    stage: 5,
+    requires: "operator",
+    group: "review-crosscheck",
+    models: (p) => (p.single === "yes" ? ["opus", "sonnet"] : ["opus"]),
+    params: [
+      { name: "repo", label: "Repo", kind: "repo", required: true },
+      { name: "sample", label: "Sample", kind: "int", min: 1, max: 50, default: 10, help: "held pull requests to check" },
+      { name: "single", label: "Single-PR Sonnet", kind: "enum", options: ["no", "yes"], default: "no", help: "also review each alone in a Sonnet call" },
+    ],
+    run: async (ctx) => {
+      const { runCrosscheck } = await import("../review/crosscheck.ts");
+      const r = await runCrosscheck(ctx.db, { repo: String(ctx.params.repo), sample: Number(ctx.params.sample), single: ctx.params.single === "yes", onHandled: ctx.handled }, ctx.log);
+      ctx.usageRun(r.runId);
+      return `${r.repo}: ${r.stored} of ${r.picked.length} sampled holds checked (${r.eligible} eligible), ${r.skipped.length} left out, ${r.missing.length} without an answer; report: autocraft review crosscheck-report --run ${r.runId}`;
+    },
+  },
 ];
 
 let loaded: Promise<Map<string, StepDef>> | null = null;

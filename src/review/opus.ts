@@ -76,6 +76,50 @@ function earlierOpus(db: DatabaseSync, c: OpusCandidate): EarlierOpus | null {
   return { head: o.head_oid, verdict: o.verdict, sure: o.sure === 1, reason: o.reason, fixes };
 }
 
+export type PreparedOpus =
+  | { kind: "no-diff"; error: string }
+  | { kind: "skip"; why: string }
+  | { kind: "large"; mode: "full" | "delta"; base: string | null }
+  | { kind: "no-threads"; error: string }
+  | { kind: "ready"; input: OpusPr; snap: Snapshot; mode: "full" | "delta"; base: string | null };
+
+/**
+ * Builds the Opus prompt input of a candidate: diff (full, or the delta since the last Opus review),
+ * skip list, size cap and discussion. Shared with the review cross-check so both ask the same question.
+ */
+export async function prepareOpusInput(db: DatabaseSync, repo: string, c: OpusCandidate, deps: OpusDeps, log: (line: string) => void): Promise<PreparedOpus> {
+  const d = await cachedDiff(repo, c.number, c.head_oid, deps.fetchDiff);
+  if (!d.ok) return { kind: "no-diff", error: d.error };
+  const ch = checksOf(db, repo, c.number);
+  const why = skipReason(d.text, ch?.head_oid === c.head_oid ? ch.overall : null);
+  if (why) return { kind: "skip", why };
+  let cd = codeDiff(d.text);
+  if (!cd.files.length && cd.testsOmitted.length) cd = codeDiff(d.text, true);
+  let mode: "full" | "delta" = "full", diff = cd.text, base: string | null = null;
+  const earlier = earlierOpus(db, c);
+  if (earlier) {
+    const delta = await deps.fetchDelta(repo, earlier.head, c.head_oid);
+    if (delta.ok) {
+      let dd = codeDiff(delta.text);
+      if (!dd.files.length && dd.testsOmitted.length) dd = codeDiff(delta.text, true);
+      mode = "delta"; diff = dd.text; base = earlier.head;
+    } else log(`  ${refOf(c)}: delta since ${earlier.head.slice(0, 7)} unavailable (${delta.error}); full diff`);
+  }
+  if (diff.length > deps.maxChars) return { kind: "large", mode, base };
+  let discussion: DiscussionEntry[], snap: Snapshot;
+  try {
+    ({ entries: discussion, snap } = discussionOf(db, repo, c.number, deps.querier ? await withRetry(() => liveDiscussion(deps.querier!, db, repo, c.number)) : undefined));
+  } catch (e) {
+    return { kind: "no-threads", error: String((e as Error).message ?? e) };
+  }
+  const input: OpusPr = {
+    ref: refOf(c), title: c.title, body: c.body, author_association: c.author_association, size: c.size, lines_changed: c.lines_changed,
+    ci: ch?.overall ?? "unknown", mergeable: ch?.mergeable ?? null, files: cd.files, tests_omitted: cd.testsOmitted, lockfiles_omitted: cd.lockfilesOmitted,
+    sonnet: c.sonnet, mode, earlier_opus: mode === "delta" ? earlier : null, diff, discussion,
+  };
+  return { kind: "ready", input, snap, mode, base };
+}
+
 export async function runOpusReview(db: DatabaseSync, params: OpusParams, log: (line: string) => void = console.log, deps: OpusDeps = defaultOpusDeps()): Promise<OpusSummary> {
   const { repo } = params;
   const runId = `opus-review-${repo}-${now().replace(/[-:]/g, "").slice(0, 15)}`;
@@ -111,52 +155,31 @@ export async function runOpusReview(db: DatabaseSync, params: OpusParams, log: (
   const tally = (r: OpusReview) => { summary.verdicts[r.verdict] = (summary.verdicts[r.verdict] ?? 0) + 1; summary.reviewed++; };
   await pool(cands.map((c) => async () => {
     const start = now();
-    const d = await cachedDiff(repo, c.number, c.head_oid, deps.fetchDiff);
-    if (!d.ok) {
-      log(`  ${refOf(c)}: no diff: ${d.error}`);
+    const p = await prepareOpusInput(db, repo, c, deps, log);
+    if (p.kind === "no-diff") {
+      log(`  ${refOf(c)}: no diff: ${p.error}`);
       summary.skipped.push(refOf(c));
       return;
     }
-    const ch = checksOf(db, repo, c.number);
-    const why = skipReason(d.text, ch?.head_oid === c.head_oid ? ch.overall : null);
-    if (why) {
-      saveOpus(db, runId, c, { mode: "skipped", base: null, model: null, review: null, skip: why });
+    if (p.kind === "skip") {
+      saveOpus(db, runId, c, { mode: "skipped", base: null, model: null, review: null, skip: p.why });
       summary.skipListed++;
       params.onHandled?.(++handled);
       return;
     }
-    let cd = codeDiff(d.text);
-    if (!cd.files.length && cd.testsOmitted.length) cd = codeDiff(d.text, true);
-    let mode: "full" | "delta" = "full", diff = cd.text, base: string | null = null;
-    const earlier = earlierOpus(db, c);
-    if (earlier) {
-      const delta = await deps.fetchDelta(repo, earlier.head, c.head_oid);
-      if (delta.ok) {
-        let dd = codeDiff(delta.text);
-        if (!dd.files.length && dd.testsOmitted.length) dd = codeDiff(delta.text, true);
-        mode = "delta"; diff = dd.text; base = earlier.head;
-      } else log(`  ${refOf(c)}: delta since ${earlier.head.slice(0, 7)} unavailable (${delta.error}); full diff`);
-    }
-    if (diff.length > deps.maxChars) {
+    if (p.kind === "large") {
       const r: OpusReview = { ref: refOf(c), verdict: "hold", sure: true, reason: "too large for the final review", fixes: [], risks: [], public: null };
-      saveOpus(db, runId, c, { mode, base, model: null, review: r, skip: null });
+      saveOpus(db, runId, c, { mode: p.mode, base: p.base, model: null, review: r, skip: null });
       tally(r);
       params.onHandled?.(++handled);
       return;
     }
-    let discussion: DiscussionEntry[], snap: Snapshot;
-    try {
-      ({ entries: discussion, snap } = discussionOf(db, repo, c.number, deps.querier ? await withRetry(() => liveDiscussion(deps.querier!, db, repo, c.number)) : undefined));
-    } catch (e) {
-      log(`  ${refOf(c)}: review threads unavailable (${String((e as Error).message ?? e)}); not reviewed this pass`);
+    if (p.kind === "no-threads") {
+      log(`  ${refOf(c)}: review threads unavailable (${p.error}); not reviewed this pass`);
       summary.skipped.push(refOf(c));
       return;
     }
-    const input: OpusPr = {
-      ref: refOf(c), title: c.title, body: c.body, author_association: c.author_association, size: c.size, lines_changed: c.lines_changed,
-      ci: ch?.overall ?? "unknown", mergeable: ch?.mergeable ?? null, files: cd.files, tests_omitted: cd.testsOmitted, lockfiles_omitted: cd.lockfilesOmitted,
-      sonnet: c.sonnet, mode, earlier_opus: mode === "delta" ? earlier : null, diff, discussion,
-    };
+    const { input, snap, mode, base } = p;
     const checkout = (await deps.checkout?.(repo, c.number, c.head_oid)) ?? undefined;
     if (checkout) input.repo_dir = REPO_PATH;
     let usage: Usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: null };

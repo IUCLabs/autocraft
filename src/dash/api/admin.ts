@@ -12,6 +12,7 @@ import { commentApprovalOf, setCommentApproval } from "../../act/approval.ts";
 import { pushApprovalOf, setPushApproval } from "../../fixup/approval.ts";
 import { fixIssueApprovalOf, setFixIssueApproval } from "../../fixissue/approval.ts";
 import { mergeApprovalOf, setMergeApproval } from "../../merge/approval.ts";
+import { batchSizeOf, setBatchSize } from "../../review/batch-size.ts";
 import { setWorkspaceExcluded, workspaceExcluded } from "../../sandbox/workspace.ts";
 import { setSingleMergeMax, singleMergeMax } from "../../merge/single.ts";
 import { setRepoPipeline } from "../../pilot.ts";
@@ -33,7 +34,7 @@ export const AUDIT_ACTIONS = [
   "session-revoke", "sign-in", "sign-in-refused", "repo-track", "repo-untrack", "labels-approve", "labels-revoke", "labels-apply", "merge-approve", "merge-revoke", "comment-approve", "comment-revoke", "act-comment", "act-close", "act-skip", "push-approve", "push-revoke", "fixup-push", "fixup-comment", "fixup-comment-edit", "fixissue-approve", "fixissue-revoke", "fixissue-push", "fixissue-pr", "fixissue-comment",
   "job-request", "job-cancel", "pipeline-switch", "stage-limit", "limit-reset", "pilot-set", "pilot-clear", "repo-pipeline", "review-post", "review-edit", "batch-again", "reopen", "backlog-bulk", "withdraw",
   "single-merge-max", "label-create", "batch-pr-close", "fork-create", "assign", "unassign", "merge", "batch-push", "batch-pr", "shared-repos",
-  "fasttrack-add", "fasttrack-remove", "merge-hold", "merge-release", "batch-remove", "batch-stop",
+  "fasttrack-add", "fasttrack-remove", "merge-hold", "merge-release", "batch-remove", "batch-stop", "review-batch-size",
 ];
 
 const isOperator = (req: Req): boolean => req.user.role === "operator";
@@ -288,6 +289,20 @@ export function mergeApproval(db: DatabaseSync, req: Req, approved: boolean): Tr
   });
   if (!changed) throw new HttpError(409, `${name} is ${approved ? "already" : "not"} approved for merging`);
   return allRepos(db, req);
+}
+
+// Only an operator changes how many PRs the Sonnet first pass reviews per call in a repo; size null restores the default.
+export function reviewBatchSize(db: DatabaseSync, req: Req): { repo: string; size: number | null } {
+  requireOperator(req, "change the review batch size");
+  const repo = required(body(req).name, "name");
+  const raw = body(req).size;
+  const size = raw === null || raw === undefined ? null : Number(raw);
+  try {
+    setBatchSize(db, req.user.login, repo, size);
+  } catch (e) {
+    throw new RepoError((e as Error).message);
+  }
+  return { repo, size: batchSizeOf(db, repo) };
 }
 
 export const workspaceInfo = (db: DatabaseSync): { excluded: string[] } => ({ excluded: workspaceExcluded(db) });
