@@ -14,7 +14,7 @@ import { HISTORY_COPY_SQL } from "../db.ts";
 import type { DiscussionEntry } from "./parse.ts";
 import { cachedDiff, codeDiff, ghDelta, ghDiff, type DeltaFetcher, type DiffFetcher } from "./diff.ts";
 import { selectOpusCandidates, type OpusCandidate } from "./opus-candidates.ts";
-import { carriedOutcome, lintOpusReply, parseOpusReply, publicTexts, type EarlierOpus, type OpusPr, type OpusReview, type UnappliedFix } from "./opus-parse.ts";
+import { carriedOutcome, lintOpusReply, parseOpusReply, publicTexts, rawReason, type EarlierOpus, type OpusPr, type OpusReview, type UnappliedFix } from "./opus-parse.ts";
 import { REPO_PATH } from "../sandbox/command.ts";
 import { checkoutForPr } from "../sandbox/index.ts";
 import { referenceDir } from "../reference.ts";
@@ -52,7 +52,7 @@ export function defaultOpusDeps(): OpusDeps {
   return { querier: new Client(500), fetchDiff: ghDiff, fetchDelta: ghDelta, model: PROMPT.models[0]!, maxChars: MAX_DIFF_CHARS, checkout: (r, n, h) => checkoutForPr(r, n, h, console.log) };
 }
 
-type Saved = { snap?: Snapshot; mode: "full" | "delta"; base: string | null; model: string | null; review: OpusReview; /** The fixes this review was given as unapplied; their outcome is stored with it. */ unapplied?: UnappliedFix[] };
+type Saved = { snap?: Snapshot; mode: "full" | "delta"; base: string | null; model: string | null; review: OpusReview; /** The fixes this review was given as unapplied, with what the reply did with each. */ unapplied?: (UnappliedFix & { outcome: string })[] };
 
 /**
  * Stores the Opus row of a head commit, then a `reviewed` stages row and a take/hold/close
@@ -80,7 +80,7 @@ export function saveOpus(db: DatabaseSync, runId: string | null, c: { repo: stri
   db.prepare("DELETE FROM opus_carried_fixes WHERE repo = ? AND number = ? AND head_oid = ?").run(c.repo, c.number, c.head_oid);
   for (const u of s.unapplied ?? []) {
     db.prepare("INSERT INTO opus_carried_fixes (repo, number, head_oid, from_head, file, change, outcome, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
-      .run(c.repo, c.number, c.head_oid, u.head, u.file, u.change, carriedOutcome(r, u), at);
+      .run(c.repo, c.number, c.head_oid, u.head, u.file, u.change, u.outcome, at);
   }
   const stage = db.prepare("INSERT INTO stages (repo, number, stage, at, actor, note) VALUES (?, ?, ?, ?, ?, ?)");
   stage.run(c.repo, c.number, "reviewed", at, "opus-review", `${r.verdict}${r.sure ? "" : " (unsure)"} at ${c.head_oid.slice(0, 7)}: ${r.reason}`);
@@ -88,9 +88,9 @@ export function saveOpus(db: DatabaseSync, runId: string | null, c: { repo: stri
 }
 
 /** The Opus review of the PR's latest earlier head that a model wrote (not a too-large hold), for the delta. */
-function earlierOpus(db: DatabaseSync, c: { repo: string; number: number; head_oid: string }): EarlierOpus | null {
+function earlierOpus(db: DatabaseSync, c: { repo: string; number: number; head_oid: string }, skip = 0): EarlierOpus | null {
   const o = db.prepare(`SELECT head_oid, verdict, sure, reason, fixes FROM opus_reviews
-    WHERE repo = ? AND number = ? AND head_oid <> ? AND verdict IS NOT NULL AND model IS NOT NULL ORDER BY at DESC, rowid DESC LIMIT 1`).get(c.repo, c.number, c.head_oid) as
+    WHERE repo = ? AND number = ? AND head_oid <> ? AND verdict IS NOT NULL AND model IS NOT NULL ORDER BY at DESC, rowid DESC LIMIT 1 OFFSET ?`).get(c.repo, c.number, c.head_oid, skip) as
     { head_oid: string; verdict: string; sure: number; reason: string; fixes: string | null } | undefined;
   if (!o) return null;
   let fixes: EarlierOpus["fixes"] = [];
@@ -103,10 +103,12 @@ function earlierOpus(db: DatabaseSync, c: { repo: string; number: number; head_o
  * and never posted as a comment (a conflict merge of ours or an author push made a new head first).
  */
 export function unappliedFixes(db: DatabaseSync, c: { repo: string; number: number; head_oid: string }): UnappliedFix[] {
-  const e = earlierOpus(db, c);
+  // A hold in between (an author push the reviewer could not judge) does not make the older take-fix's fixes moot.
+  let e = earlierOpus(db, c);
+  if (e?.verdict === "hold") e = earlierOpus(db, c, 1);
   if (!e || e.verdict !== "take-fix") return [];
   if (db.prepare("SELECT 1 FROM fixups WHERE repo = ? AND number = ? AND from_head = ? AND state IN ('pushed', 'asked')").get(c.repo, c.number, e.head)) return [];
-  return e.fixes.filter((f) => typeof f?.file === "string" && typeof f.change === "string").map((f) => ({ head: e.head, file: f.file, change: f.change }));
+  return e.fixes.filter((f) => typeof f?.file === "string" && !!f.file.trim() && typeof f.change === "string").map((f) => ({ head: e.head, file: f.file, change: f.change }));
 }
 
 export type PreparedOpus =
@@ -215,7 +217,7 @@ export async function runOpusReview(db: DatabaseSync, params: OpusParams, log: (
     const checkout = (await deps.checkout?.(repo, c.number, c.head_oid)) ?? undefined;
     if (checkout) input.repo_dir = REPO_PATH;
     let usage: Usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: null };
-    let got: OpusReview | null = null;
+    let got: OpusReview | null = null, gotText = "";
     const dir = referenceDir(repo);
     const semantic = dir ? deps.semantic ?? defaultSemanticDeps(db, input.ref) : undefined;
     // A reply that is not a valid review is lint-free here: it keeps the whole-call retry. Problems of a valid one go back to the model as one fix turn.
@@ -231,13 +233,17 @@ export async function runOpusReview(db: DatabaseSync, params: OpusParams, log: (
       else if (reply.problems?.length) log(`  ${refOf(c)}: reply lint: ${reply.problems.length} problems, no fix turn possible`);
       // Whatever the lint still found is left out (reference text) or cut to its first sentence (long summary or why); the call is never repeated for it.
       got = parseOpusReply(reply.text, input.ref, true, dropTexts(reply.problems));
-    }
-    // A take that neither made nor explained an earlier fix goes to a person before it can merge.
-    if (got?.verdict === "take" && input.unapplied_fixes?.some((u) => carriedOutcome(got!, u) === "unaddressed")) {
-      got = { ...got, sure: false, risks: [...got.risks, "an earlier fix was neither made nor explained"] };
+      gotText = reply.text;
     }
     if (got) {
-      saveOpus(db, runId, c, { mode, base, model: deps.model, review: got, snap, unapplied: input.unapplied_fixes });
+      // The outcome is read from the uncut reason, as the lint does.
+      const outcomes = (input.unapplied_fixes ?? []).map((u) => ({ ...u, outcome: carriedOutcome({ ...got!, reason: rawReason(gotText) ?? got!.reason }, u) }));
+      // A take that neither made nor explained an earlier fix goes to a person before it can merge.
+      if (got.verdict === "take") {
+        const risks = outcomes.filter((u) => u.outcome === "unaddressed").map((u) => `an earlier fix was neither made nor explained: ${u.file}: ${u.change.length > 100 ? `${u.change.slice(0, 100)}...` : u.change}`);
+        if (risks.length) got = { ...got, sure: false, risks: [...got.risks, ...risks] };
+      }
+      saveOpus(db, runId, c, { mode, base, model: deps.model, review: got, snap, unapplied: outcomes });
       tally(got);
     } else {
       log(`  ${refOf(c)}: no valid Opus review`);

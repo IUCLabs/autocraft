@@ -108,11 +108,19 @@ export function parseOpusReply(text: string, ref: string, last = true, drop: Rea
   return { ref, verdict: verdict as ReviewVerdict, sure: r.sure, reason: words(r.reason, OPUS_REASON_WORDS), fixes: verdict === "take-fix" ? fixes : [], risks, summary: summary.text, why: oneSentence(why.text), public: parsePublic(r.public, drop) };
 }
 
-/** How a review treats an earlier fix: kept in its fix list, explained in its reason (which names the file), or neither. */
+/** The reply's reason before the word cut that the stored review applies. */
+export function rawReason(text: string): string | null {
+  const o = replyObject(text) as { reason?: unknown } | null;
+  return typeof o?.reason === "string" ? o.reason : null;
+}
+
+/** How a review treats an earlier fix: kept in its fix list, explained in its reason (which names the file), or neither. Pass the uncut reason. */
 export function carriedOutcome(r: { verdict: string; reason: string; fixes: { file: string }[] }, fix: { file: string }): "kept" | "explained" | "unaddressed" {
+  if (!fix.file.trim()) return "unaddressed";
   if (r.verdict === "take-fix" && r.fixes.some((f) => f.file === fix.file)) return "kept";
-  const reason = r.reason.toLowerCase(), path = fix.file.toLowerCase();
-  return reason.includes(path) || reason.includes(path.slice(path.lastIndexOf("/") + 1)) ? "explained" : "unaddressed";
+  const reason = r.reason.toLowerCase(), path = fix.file.toLowerCase(), base = path.slice(path.lastIndexOf("/") + 1);
+  const word = base ? new RegExp(`(?<![\\w./-])${base.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\w-])`) : null;
+  return reason.includes(path) || (word?.test(reason) ?? false) ? "explained" : "unaddressed";
 }
 
 const squash = (s: string) => s.replace(/\s+/g, " ").trim();
@@ -129,7 +137,9 @@ export function lintOpusReply(text: string, ref: string, unapplied: readonly Una
   // A take-fix keeps the list the model chose; a hold or close makes the old fixes moot. Only a take that ignores them is a problem.
   if (parsed.verdict === "take" && !parsed.fixes.length) {
     unapplied.forEach((u, i) => {
-      if (carriedOutcome(parsed, u) === "unaddressed") out.push({ field: `unapplied_fixes[${i}]`, message: `(${u.file}) is neither in fixes nor explained in reason` });
+      if (carriedOutcome({ ...parsed, reason: String(r.reason) }, u) === "unaddressed") {
+        out.push({ field: `unapplied_fixes[${i}]`, message: `(${u.file}) is neither in fixes nor explained in reason; if the change is still needed, answer take-fix and list it; otherwise say in reason why it is no longer needed` });
+      }
     });
   }
   (Array.isArray(r.fixes) ? r.fixes : []).forEach((f: { file?: unknown; change?: unknown }, i) => {

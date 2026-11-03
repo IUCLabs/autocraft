@@ -107,7 +107,7 @@ function backfill(db: DatabaseSync): void {
   // Reviews made before snapshots existed count as having read everything up to now: no wave of re-reviews.
   const now = new Date().toISOString();
   db.prepare("UPDATE main.opus_reviews SET seen_at = ? WHERE seen_at IS NULL").run(now);
-  // Bot comments never count as new discussion; rows stored while they did are recomputed (a bot known only by its account type is fixed by the next sync).
+  // Bot comments never count as new discussion; rows stored while they did are recomputed (a bot whose login is on no list is fixed when its PR next changes, or by `sync --full`).
   const bots = (db.prepare("SELECT DISTINCT author FROM main.comments WHERE counted = 1 AND author IS NOT NULL").all() as { author: string }[]).map((r) => r.author).filter(isBotLogin);
   for (const a of bots) db.prepare("UPDATE main.comments SET counted = 0 WHERE counted = 1 AND author = ?").run(a);
   // The history starts with the stored rows, so an unsure review made before it existed is not lost by a re-review.

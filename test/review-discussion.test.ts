@@ -131,11 +131,14 @@ describe("PR discussion in reviews", () => {
     const path = join(mkdtempSync(join(dir, "db-")), "old.db");
     const db = connect(path);
     db.prepare("INSERT INTO comments (repo, number, id, kind, author, created_at, body, counted) VALUES ('app', 1, ?, 'comment', ?, ?, 'Major: x', 1)").run("b1", "coderabbitai", T2);
-    db.prepare("INSERT INTO comments (repo, number, id, kind, author, created_at, body, counted) VALUES ('app', 1, ?, 'comment', ?, ?, 'Major: x', 1)").run("b2", "renovate[bot]", T2);
+    db.prepare("INSERT INTO comments (repo, number, id, kind, author, created_at, body, counted) VALUES ('app', 1, ?, 'comment', ?, ?, 'Major: x', 1)").run("b2", "github-actions", T2);
     db.prepare("INSERT INTO comments (repo, number, id, kind, author, created_at, body, counted) VALUES ('app', 1, ?, 'comment', ?, ?, 'Major: x', 1)").run("h1", "dev", T2);
     db.exec("DELETE FROM main.settings WHERE key = 'schema_stamp'");
     db.close();
-    const again = connect(path);
+    // The mirror stores bot logins without the [bot] suffix, so a bot is known by the configured list.
+    process.env.AUTOCRAFT_REVIEW_BOTS = "coderabbitai,github-actions";
+    let again: DatabaseSync;
+    try { again = connect(path); } finally { delete process.env.AUTOCRAFT_REVIEW_BOTS; }
     assert.deepEqual(again.prepare("SELECT id, counted FROM comments ORDER BY id").all().map((r) => ({ ...r })), [{ id: "b1", counted: 0 }, { id: "b2", counted: 0 }, { id: "h1", counted: 1 }]);
   });
 

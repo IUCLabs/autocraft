@@ -39,6 +39,7 @@ The frontend is the React app in `web/`. Build it before serving: `pnpm -C web i
 | `AUTOCRAFT_BASE_URL` | Public origin of the dashboard, such as `https://dashboard.example.org` (no path). The OAuth App's callback URL must be exactly `<AUTOCRAFT_BASE_URL>/auth/callback`. Required unless dev auth is on. |
 | `AUTOCRAFT_LISTEN` | `host:port` to listen on. Default `127.0.0.1:8993`; with dev auth, `127.0.0.1:8994`. |
 | `AUTOCRAFT_DB` | SQLite database path (the mirror database). |
+| `AUTOCRAFT_REVIEW_BOTS` | Comma-separated logins of review bots whose comments never make a review stale, besides accounts of type Bot or ending in `[bot]`. Default `coderabbitai`. Read by `sync` (when it stores a comment), the database backfill and the runner, so set it for all three alike. |
 | `AUTOCRAFT_WEB_DIST` | Directory of the built frontend. Default `web/dist` in the repo. |
 | `AUTOCRAFT_SECRETS_FILE` | JSON file with `github_client_id`, `github_client_secret` and `session_key` (at least 32 characters, random). Must be mode 0600; the server refuses to start if it is missing, incomplete, or readable by group or others. |
 | `AUTOCRAFT_TRUST_PROXY` | `1` to take the client address for rate limits from the last `X-Forwarded-For` entry. Set it only behind a proxy that sets that header. |
@@ -108,7 +109,6 @@ It reads the same variables as the CLI (`AUTOCRAFT_DB` and the rest), plus:
 | `AUTOCRAFT_RUNNER_JOBS` | Most jobs running at once. Default 8, enough for every concurrency group to have a job running; jobs of one group always run one at a time. |
 | `AUTOCRAFT_RUNNER_POLL_MS` | Poll interval. Default 2000. |
 | `AUTOCRAFT_LOCK_DIR` | Directory of the lock file, shared with `sync`. Default `~/.cache/autocraft-logs`. |
-| `AUTOCRAFT_REVIEW_BOTS` | Comma-separated logins of review bots whose comments never make a review stale, besides accounts of type Bot or ending in `[bot]`. Default `coderabbitai`. |
 | `AUTOCRAFT_EXTRA_STEPS` | A module exporting `steps: StepDef[]` that is added to the step list, for tests and development (`test/runner-steps.ts` has fake steps). Set it for the dashboard and the runner alike, or not at all. |
 
 The classify steps call `jev` and `claude`, so the runner's `PATH` must reach them.

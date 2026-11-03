@@ -9,6 +9,7 @@ import { useTestAccount } from "./accounts-fixture.ts";
 import { SCRATCH } from "./scratch.ts";
 import { setRunner, setWorkspace, type Runner } from "../src/classify/run.ts";
 import { connect } from "../src/db.ts";
+import { buildQueue, UNSURE_REASON } from "../src/merge/queue.ts";
 import { setPushApproval } from "../src/fixup/approval.ts";
 import { selectFixups } from "../src/fixup/candidates.ts";
 import { runOpusReview, type OpusDeps } from "../src/review/opus.ts";
@@ -98,7 +99,7 @@ describe("unapplied fixes of an earlier take-fix", () => {
     const db = atMergedHead();
     const calls = await review(db, [reply({ reason: "Looks fine." }), reply({ verdict: "take-fix", reason: "Fix still needed.", fixes: [{ file: "src/lib.rs", change: "rename a to count, as asked before" }] })]);
     assert.equal(calls.length, 2);
-    assert.match(calls[1]!.input, /^Your reply has these problems:\n- unapplied_fixes\[0\]: \(src\/lib\.rs\) is neither in fixes nor explained in reason\n/);
+    assert.match(calls[1]!.input, /^Your reply has these problems:\n- unapplied_fixes\[0\]: \(src\/lib\.rs\) is neither in fixes nor explained in reason; if the change/);
     assert.deepEqual(carried(db), [{ from_head: "sha1", file: "src/lib.rs", outcome: "kept" }]);
     setPushApproval(db, "op", "app", true);
     const fix = selectFixups(db, "app").fix.find((c) => c.number === 1)!;
@@ -119,7 +120,46 @@ describe("unapplied fixes of an earlier take-fix", () => {
     assert.equal(calls.length, 2);
     const row = db.prepare("SELECT sure, risks FROM opus_reviews WHERE number = 1 AND head_oid = 'sha2'").get() as { sure: number; risks: string };
     assert.equal(row.sure, 0);
-    assert.deepEqual(JSON.parse(row.risks), ["an earlier fix was neither made nor explained"]);
+    assert.deepEqual(JSON.parse(row.risks), ["an earlier fix was neither made nor explained: src/lib.rs: rename a to count"]);
+    db.prepare(`INSERT INTO verifications (repo, number, head_sha, kind, reason, state, summary, note, created_at) VALUES ('app', 1, 'sha2', 'tests', 'r', 'passed', NULL, 'also passes on base', '${T2}')`).run();
+    const q = buildQueue(db, { repo: "app", merged: "exclude" }).find((e) => e.number === 1)!;
+    assert.equal(q.state, "needs-decision");
+    assert.ok(q.outsideRule.includes(UNSURE_REASON));
     assert.deepEqual(carried(db), [{ from_head: "sha1", file: "src/lib.rs", outcome: "unaddressed" }]);
+  });
+
+  test("the fix turn says what to do; naming the file as part of another name does not explain it", async () => {
+    const db = atMergedHead();
+    const calls = await review(db, [reply({ reason: "See mylib.rs.bak notes." }), reply({ reason: "lib.rs rename is moot: the merged code already uses count." })]);
+    assert.equal(calls.length, 2);
+    assert.match(calls[1]!.input, /if the change is still needed, answer take-fix and list it; otherwise say in reason why it is no longer needed/);
+    assert.deepEqual(carried(db), [{ from_head: "sha1", file: "src/lib.rs", outcome: "explained" }]);
+  });
+
+  test("the explanation is read from the whole reason, not the part kept after the word cut", async () => {
+    const db = atMergedHead();
+    const calls = await review(db, [reply({ reason: `${Array.from({ length: 70 }, (_, i) => `w${i}`).join(" ")} so the src/lib.rs rename is moot.` })]);
+    assert.equal(calls.length, 1);
+    assert.deepEqual(carried(db), [{ from_head: "sha1", file: "src/lib.rs", outcome: "explained" }]);
+  });
+
+  test("a hold in between does not hide the older take-fix's fixes", async () => {
+    const db = atMergedHead();
+    db.prepare(`INSERT INTO opus_reviews (repo, number, head_oid, run_id, at, model, mode, verdict, sure, reason) VALUES ('app', 1, 'shaH', 'rv', '2026-01-02T12:00:00Z', 'opus', 'full', 'hold', 1, 'unsure')`).run();
+    const calls = await review(db, [reply({ verdict: "take-fix", fixes: [FIX] })]);
+    assert.deepEqual(prOf(calls[0]!).unapplied_fixes, [{ head: "sha1", ...FIX }]);
+  });
+
+  test("after an author push the delta review gets the fixes too", async () => {
+    const db = atMergedHead();
+    db.exec("DELETE FROM conflict_merges");
+    const m = fakeModel([reply({ verdict: "take-fix", fixes: [FIX] })]);
+    try {
+      await runOpusReview(db, { repo: "app" }, () => {}, { ...deps, fetchDelta: async () => ({ ok: true, text: CODE }) });
+    } finally {
+      m.restore();
+    }
+    const input = prOf(m.calls[0]!);
+    assert.deepEqual([input.mode, input.earlier_opus?.head, input.unapplied_fixes], ["delta", "sha1", [{ head: "sha1", ...FIX }]]);
   });
 });
