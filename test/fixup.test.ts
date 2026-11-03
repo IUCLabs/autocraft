@@ -12,7 +12,7 @@ import { exec, type Exec, type ExecResult } from "../src/fixup/git.ts";
 import { runFixup, scrubReason, type FixupDeps } from "../src/fixup/index.ts";
 import { validatePatch } from "../src/fixup/patch.ts";
 import { setCommentApproval } from "../src/act/approval.ts";
-import { COMMENT_TEMPLATE, askText, commentText } from "../src/fixup/template.ts";
+import { ASK_ITEM_MAX, COMMENT_TEMPLATE, askText, commentText } from "../src/fixup/template.ts";
 import { checksOf } from "../src/patchcheck/index.ts";
 import { selectCandidates } from "../src/review/candidates.ts";
 import { finalizeReviews } from "./fixture.ts";
@@ -334,7 +334,7 @@ describe("fixup step", () => {
     assert.ok(!/@|https?:|\]\(/.test(body));
     const lines = body.split("\n");
     assert.equal(lines.length, 7);
-    assert.ok(lines.slice(1).every((l) => l.length <= 150));
+    assert.ok(lines.slice(1).every((l) => l.length <= ASK_ITEM_MAX));
     assert.ok(!w.log.includes("model") && !w.log.some((l) => l.startsWith("push")));
     assert.deepEqual(rows(db, "SELECT state FROM fixups"), [{ state: "asked" }]);
     assert.deepEqual(rows(db, "SELECT COUNT(*) AS n FROM audit WHERE action = 'fixup-comment'"), [{ n: 1 }]);
@@ -370,6 +370,11 @@ describe("fixup step", () => {
 
   test("the comment text caps items and drops empty ones", () => {
     assert.equal(askText([{ file: "a.rs", change: "https://x.example" }]), "Before this can be merged, it needs these changes:\n");
+  });
+
+  test("a fix of a few sentences is posted whole", () => {
+    const change = "Move the two doc lines and the `MAX_PREVIEW_PIXELS` constant, followed by a blank line, so they sit above the doc lines of `recent_preview`. ".repeat(3).trim();
+    assert.ok(askText([{ file: "a.rs", change }]).endsWith(change));
   });
 
   test("a fix list naming a workflow or manifest is held before any call", async () => {

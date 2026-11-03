@@ -19,12 +19,12 @@ export const HOLD_CANNOT_PUSH = "can't push to the contributor's branch";
 /** The one comment posted on a PR we can't push to; `{{fixes}}` is one "- file: change" line per fix. */
 export const ASK_TEMPLATE = "Before this can be merged, it needs these changes:\n{{fixes}}";
 export const ASK_MAX_ITEMS = 6;
-export const ASK_ITEM_MAX = 150;
+export const ASK_ITEM_MAX = 600;
 
 /** The review's fix list is model-written from untrusted text: no links or mentions, capped in count and length. */
 export function askText(fixes: { file: string; change: string }[]): string {
   const items = fixes.slice(0, ASK_MAX_ITEMS).flatMap((f) => {
-    const change = cleanReason(f.change);
+    const change = cleanReason(f.change, ASK_ITEM_MAX);
     if (!change) return [];
     const line = `\`${f.file.replace(/[`\s]/g, "")}\`: ${change}`;
     return [`- ${line.length > ASK_ITEM_MAX - 2 ? `${line.slice(0, ASK_ITEM_MAX - 3).trimEnd()}…` : line}`];
@@ -42,7 +42,7 @@ export function carryCommentText(sources: number[], files: string[]): string {
 export const CARRY_ASK_TEMPLATE = "Parts of the closed duplicates that fit here:\n{{points}}";
 export function carryAskText(sources: { number: number; points: string[] }[]): string {
   const lines = sources.flatMap((s) => s.points.flatMap((p) => {
-    const t = cleanReason(p);
+    const t = cleanReason(p, ASK_ITEM_MAX);
     if (!t) return [];
     const line = `#${s.number}: ${t}`;
     return [`- ${line.length > ASK_ITEM_MAX - 2 ? `${line.slice(0, ASK_ITEM_MAX - 3).trimEnd()}…` : line}`];

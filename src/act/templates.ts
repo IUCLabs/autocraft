@@ -7,8 +7,8 @@ import { recommendation, reviewBody } from "../review/post-template.ts";
 export const ORG = "storytold";
 export const REASON_MAX = 200;
 
-/** One plain line: no mentions, no URLs or Markdown links, cut to REASON_MAX. */
-export function cleanReason(s: string | null | undefined): string | null {
+/** One plain line: no mentions, no URLs or Markdown links, cut to `max` (REASON_MAX by default). */
+export function cleanReason(s: string | null | undefined, max = REASON_MAX): string | null {
   const t = (s ?? "")
     .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
     .replace(/<\/?[a-z!][^>]*>/gi, "")
@@ -18,7 +18,7 @@ export function cleanReason(s: string | null | undefined): string | null {
     .replace(/@/g, "")
     .replace(/\s+/g, " ").trim();
   if (!t) return null;
-  const cut = t.length > REASON_MAX ? `${t.slice(0, REASON_MAX - 1).trimEnd()}…` : t;
+  const cut = t.length > max ? `${t.slice(0, max - 1).trimEnd()}…` : t;
   return /[.!?…]$/.test(cut) ? cut : `${cut}.`;
 }
 
