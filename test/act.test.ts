@@ -5,7 +5,9 @@ import { join } from "node:path";
 import { describe, test } from "node:test";
 import type { DatabaseSync } from "node:sqlite";
 import { commentApprovalOf, setCommentApproval } from "../src/act/approval.ts";
-import { askCloseDecisions, closeDecisionId, runAct, type ActDeps } from "../src/act/index.ts";
+import { askCloseDecisions, closeDecisionId, commentPreview, runAct, writeEffect, type ActDeps } from "../src/act/index.ts";
+import { getDecision } from "../src/decisions.ts";
+import { MERGE_OPTIONS, HEAD_FACT } from "../src/merge/queue.ts";
 import { prCloseComment, scopeCloseComment } from "../src/act/templates.ts";
 import { ask } from "../src/decisions.ts";
 import { connect } from "../src/db.ts";
@@ -133,6 +135,24 @@ describe("act", () => {
     assert.deepEqual(s2.skipped.map((x) => x.ref), ["app#2"]);
     assert.deepEqual(s2.done, ["app#3"]);
     assert.equal(log2.filter((l) => l.startsWith("comment")).length, 1);
+  });
+
+  test("Merge? Close comments and closes like Close?, merge and hold write nothing here", async () => {
+    const db = fresh();
+    const id = "app#2:merge@sha2";
+    ask(db, [{ id, kind: "merge", repo: "app", number: 2, question: "Merge this PR?", facts: [`${HEAD_FACT}sha2`], options: Object.values(MERGE_OPTIONS).map((o) => ({ ...o })), recommended: "merge" }]);
+    assert.equal(commentPreview(getDecision(db, id)!), prCloseComment({ repo: "app", reason: null, duplicateOf: null }));
+    assert.deepEqual(Object.values(MERGE_OPTIONS).map((o) => writeEffect("merge", o.key)), ["merges on GitHub", null, "closes the PR on GitHub"]);
+    answer(db, id, "op", "merge");
+    const log: string[] = [];
+    await run(db, fakes(log));
+    assert.deepEqual(log, []);
+    db.prepare("UPDATE decisions SET answer = 'close' WHERE id = ?").run(id);
+    const log2: string[] = [];
+    const s = await run(db, fakes(log2));
+    assert.deepEqual(s.done, ["app#2"]);
+    assert.match(log2.join("\n"), /comment .*Closing this pull request\./);
+    assert.ok(log2.some((l) => l.startsWith("close")));
   });
 
   test("a duplicate gets the Duplicate of line", async () => {

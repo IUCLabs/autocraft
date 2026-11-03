@@ -14,7 +14,7 @@ import { Markdown, Collapsible } from "../../ui/Markdown";
 import { cn } from "../../ui/cn";
 import { ago } from "../../lib/format";
 import { ClaimPill, ClassifierLines, Disclosure, Facts, KindTag, OpinionList, OptionButtons, RelatedList, tallyOf } from "./parts";
-import { localActions, ordered, refOf, useAnswer, useDecisionList, useLocal, useSelection, useUndo } from "./state";
+import { localActions, ordered, refOf, useAnswer, useArmed, useDecisionList, useLocal, useSelection, useUndo, userSelection } from "./state";
 import { Thread } from "./Thread";
 
 export const accessFor = (user: User, ds: Decision[]): DecisionAccess =>
@@ -49,7 +49,7 @@ export function DetailPanel({ user }: ViewProps) {
       {just && !d ? (
         <AnsweredNotice entry={just} />
       ) : d ? (
-        <DecisionBody key={d.id} d={d} user={user} onAnswered={() => go(list[idx + 1]?.id ?? list[idx - 1]?.id)} />
+        <DecisionBody key={d.id} d={d} user={user} onAnswered={() => go(list[idx + 1]?.id ?? list[idx - 1]?.id, true)} />
       ) : (
         <EmptyDetail count={list.length} />
       )}
@@ -137,14 +137,28 @@ export function DecisionBody({
     if (!d.answer) void api.decisions.claim(d.id);
   }, [api, d.id, d.answer]);
 
+  const [armed, setArmed] = useArmed();
+  // The GitHub write a pick causes: the option's own, or that of a per-item exception in a batch.
+  const effectOf = (key: string): string | null =>
+    d.options.find((o) => o.key === key)?.writes ??
+    Object.values(loc.overrides[d.id] ?? {}).map((k) => d.options.find((o) => o.key === k)?.writes).find(Boolean) ??
+    null;
   const pick = async (key: string) => {
     if (!operator) {
       await api.decisions.opine(d.id, { option: key, note: loc.notes[d.id] || mine?.note || undefined });
       localActions.setNote(d.id, "");
       return;
     }
+    if (effectOf(key) && armed !== key) return setArmed(key);
+    setArmed(null);
     await answer([d], key);
     onAnswered?.();
+  };
+  const comment = async () => {
+    const v = (loc.notes[d.id] ?? "").trim();
+    if (!v) return;
+    await api.decisions.opine(d.id, { option: mine?.option ?? null, note: v });
+    localActions.setNote(d.id, "");
   };
   const adopt = async (oid: string) => {
     const o = d.opinions.find((x) => x.id === oid);
@@ -153,13 +167,19 @@ export function DecisionBody({
     onAnswered?.();
   };
 
-  // Number keys pick; n focuses the note. Bound here so they always target the decision on screen.
+  // Number keys pick, but only on a decision the user opened themselves; n focuses the note.
+  // Bound here so they always target the decision on screen.
   useEffect(() => {
     const on = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement;
-      if (["INPUT", "TEXTAREA"].includes(t.tagName) || e.metaKey || e.ctrlKey || e.altKey) return;
+      if (e.repeat || ["INPUT", "TEXTAREA", "SELECT", "BUTTON"].includes(t.tagName) || t.isContentEditable || e.metaKey || e.ctrlKey || e.altKey) return;
+      if (e.key === "Escape" && armed) return setArmed(null);
+      if (e.key === "Enter" && armed && !d.answer) {
+        e.preventDefault();
+        return void pick(armed);
+      }
       const n = Number(e.key);
-      if (!d.answer && n >= 1 && n <= d.options.length) {
+      if (!d.answer && userSelection.id === d.id && n >= 1 && n <= d.options.length) {
         e.preventDefault();
         void pick(d.options[n - 1].key);
       }
@@ -172,11 +192,9 @@ export function DecisionBody({
     return () => window.removeEventListener("keydown", on);
   });
 
-  const modeLine = operator ? (
-    <>Your pick answers it.</>
-  ) : (
+  const modeLine = operator ? null : (
     <>
-      {access.reason}
+      <span className={cn(user.role === "operator" && "font-medium text-warn")}>{access.reason}</span>
       {mine && (
         <button onClick={() => void api.decisions.retract(d.id)} className="ml-1.5 text-accent-ink hover:underline">
           Retract mine
@@ -184,6 +202,13 @@ export function DecisionBody({
       )}
     </>
   );
+  // An operator who can only comment here must not read the buttons as answers.
+  const banner =
+    !operator && user.role === "operator" ? (
+      <div role="note" className="mb-2 rounded-md border border-warn/50 bg-warn/[0.08] px-3 py-2 text-xs text-ink/85">
+        Comment mode: {access.mode === "opinion" ? access.reason : ""} Nothing you pick here is answered or acted on.
+      </div>
+    ) : null;
 
   const note = (
     <label className="flex h-8 min-w-0 flex-1 items-center gap-2 rounded border border-line bg-sunken px-2.5 focus-within:border-accent/60">
@@ -194,14 +219,22 @@ export function DecisionBody({
         onKeyDown={(e) => {
           if (e.key === "Escape") e.currentTarget.blur();
           const v = e.currentTarget.value.trim();
-          if (e.key === "Enter" && !operator && v) void api.decisions.opine(d.id, { option: mine?.option ?? null, note: v }).then(() => localActions.setNote(d.id, ""));
+          if (e.key === "Enter" && v) void comment();
         }}
-        placeholder={operator ? "Note, kept with the answer (optional)" : mine ? "Add a note to your comment, Enter to save" : "Note with your comment (optional)"}
+        placeholder={operator ? "Note with your answer, or a comment (Enter)" : mine ? "Add a note to your comment, Enter to save" : "Note with your comment (optional)"}
         aria-label="Note"
         className="min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-ink/40"
       />
       {!phone && <Kbd keys="n" />}
     </label>
+  );
+  const noteRow = (
+    <div className="mt-2 flex items-center gap-2">
+      {note}
+      <Button size="sm" variant="ghost" icon={MessageSquareIcon} className="shrink-0 max-md:h-11" disabled={!(loc.notes[d.id] ?? "").trim()} onClick={() => void comment()} title="Post the note as a comment. It does not answer the decision.">
+        Comment
+      </Button>
+    </div>
   );
 
   const header = (
@@ -294,7 +327,7 @@ export function DecisionBody({
         </Disclosure>
       )}
       {d.publicText && (
-        <Disclosure title="Comment posted on GitHub">
+        <Disclosure title={d.kind === "merge" ? "Comment posted on GitHub if closed" : "Comment posted on GitHub"}>
           <blockquote className="border-l-2 border-line-strong pl-3 text-sm leading-6 text-ink/75">{d.publicText}</blockquote>
         </Disclosure>
       )}
@@ -329,9 +362,10 @@ export function DecisionBody({
               ) : (
                 <>
                   <p className="text-sm font-semibold">{d.question}</p>
-                  <p className="mb-2 mt-0.5 text-xs text-ink/55">{modeLine}</p>
-                  <OptionButtons options={d.options} recommended={d.recommended} onPick={pick} mode={operator ? "answer" : "opinion"} mine={mine?.option} tally={tally} />
-                  <div className="mt-2 flex">{note}</div>
+                  {modeLine && <p className="mb-2 mt-0.5 text-xs text-ink/55">{modeLine}</p>}
+                  {banner && <div className="mt-2">{banner}</div>}
+                  <OptionButtons options={d.options} recommended={d.recommended} onPick={pick} mode={operator ? "answer" : "opinion"} mine={mine?.option} tally={tally} armed={armed} />
+                  {noteRow}
                 </>
               )}
             </div>
@@ -373,11 +407,12 @@ export function DecisionBody({
           ) : (
             <>
               <p className="text-sm font-semibold">{d.question}</p>
-              <p className="mt-0.5 text-xs text-ink/55">{modeLine}</p>
+              {modeLine && <p className="mt-0.5 text-xs text-ink/55">{modeLine}</p>}
+              {banner && <div className="mt-2">{banner}</div>}
               <div className="mt-2">
-                <OptionButtons options={d.options} recommended={d.recommended} onPick={pick} mode={operator ? "answer" : "opinion"} mine={mine?.option} tally={tally} layout="row" />
+                <OptionButtons options={d.options} recommended={d.recommended} onPick={pick} mode={operator ? "answer" : "opinion"} mine={mine?.option} tally={tally} layout="row" armed={armed} />
               </div>
-              <div className="mt-2 flex">{note}</div>
+              {noteRow}
             </>
           )}
         </div>
@@ -448,6 +483,13 @@ function MultiAnswer({ ds, user }: { ds: Decision[]; user: User }) {
   const same = kinds.size === 1 && optionSig.size === 1;
   const recs = ds.map((d) => d.recommended);
   const rec = recs.every((r) => r === recs[0]) ? recs[0] : "";
+  const [armed, setArmed] = useArmed();
+  const pickAll = (k: string) => {
+    if (access.mode === "opinion") return void Promise.all(ds.map((d) => api.decisions.opine(d.id, { option: k }))).then(localActions.clearChecked);
+    if (ds[0].options.find((o) => o.key === k)?.writes && armed !== k) return setArmed(k);
+    setArmed(null);
+    void answer(ds, k);
+  };
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -476,7 +518,9 @@ function MultiAnswer({ ds, user }: { ds: Decision[]; user: User }) {
                 options={ds[0].options}
                 recommended={rec}
                 mode={access.mode}
-                onPick={(k) => void (access.mode === "opinion" ? Promise.all(ds.map((d) => api.decisions.opine(d.id, { option: k }))).then(localActions.clearChecked) : answer(ds, k))}
+                onPick={pickAll}
+                armed={armed}
+                confirmSuffix={` for ${ds.length} decisions`}
               />
             </div>
           )}

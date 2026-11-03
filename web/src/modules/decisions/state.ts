@@ -65,12 +65,25 @@ export function ordered(ds: Decision[]): Decision[] {
   );
 }
 
+/**
+ * The decision the user opened themselves (a click, j/k, the pager). Automatic selection
+ * (the first one on arrival, the next one after an answer) does not count, so a digit key
+ * never answers a decision the user has not chosen.
+ */
+export const userSelection: { id: string | undefined } = { id: undefined };
+
 export function useSelection() {
   const params = useParams();
   const navigate = useNavigate();
   const { search } = useDecisionFilter();
   const id = params.id ? decodeURIComponent(params.id) : undefined;
-  const go = useCallback((next: string | undefined) => navigate(`/decisions${next ? `/${encodeURIComponent(next)}` : ""}${search ? `?${search}` : ""}`), [navigate, search]);
+  const go = useCallback(
+    (next: string | undefined, auto = false) => {
+      userSelection.id = auto ? undefined : next;
+      navigate(`/decisions${next ? `/${encodeURIComponent(next)}` : ""}${search ? `?${search}` : ""}`);
+    },
+    [navigate, search],
+  );
   return { id, go };
 }
 
@@ -152,4 +165,15 @@ export function useUndo() {
     },
     [api],
   );
+}
+
+/** The option key waiting for its confirming pick; it lapses after four seconds. */
+export function useArmed() {
+  const [armed, setArmed] = useState<string | null>(null);
+  useEffect(() => {
+    if (!armed) return;
+    const t = setTimeout(() => setArmed(null), 4000);
+    return () => clearTimeout(t);
+  }, [armed]);
+  return [armed, setArmed] as const;
 }

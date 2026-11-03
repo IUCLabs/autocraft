@@ -15,6 +15,8 @@ export interface DecisionOption {
   label: string;
   /** One short line shown under the label on wide layouts. */
   hint?: string;
+  /** What picking this option does on GitHub, e.g. "closes the PR on GitHub"; absent when it writes nothing. */
+  writes?: string;
 }
 
 export type Relation = "duplicate-of" | "duplicated-by" | "links" | "overlaps" | "fixes";
