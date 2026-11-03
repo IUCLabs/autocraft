@@ -1,6 +1,6 @@
 // The scope of the pipeline. A repo takes part only while its pipeline flag (tracked_repos.pipeline) is on; off means sync only.
 // The pilot is an operator setting that narrows the enabled repos further to a list of items ("repo#number").
-// Empty or absent means no pilot. A Fix PR the pipeline opened for a pilot issue counts as a pilot item.
+// Empty or absent means no pilot. A Fix PR the pipeline opened for a pilot issue, a follow-up issue it filed for a pilot PR, and a Fix PR it opened for such a follow-up issue count as pilot items.
 // A fast-tracked item (src/fasttrack.ts) is in scope whatever its repo's flag and the pilot say.
 // No Node imports besides the type, so candidate queries can use the SQL fragments.
 import type { DatabaseSync } from "node:sqlite";
@@ -87,14 +87,18 @@ export function setPilot(db: DatabaseSync, by: string, input: unknown): string[]
 
 const LIST = `(SELECT CASE WHEN json_valid(ps.value) THEN ps.value ELSE '[]' END FROM main.settings ps WHERE ps.key = '${PILOT_KEY}')`;
 
-/** SQL condition on an item given by its repo and number expressions: it is fast-tracked, or its repo's pipeline flag is on and, with a pilot set, it is a pilot item or the Fix PR of a pilot issue. */
+/** SQL condition on an item given by its repo and number expressions: it is fast-tracked, or its repo's pipeline flag is on and, with a pilot set, it is a pilot item, the Fix PR of a pilot issue, a follow-up issue of a pilot PR or the Fix PR of such an issue. */
 export const pilotSqlFor = (repo: string, number: string): string =>
   `(EXISTS (SELECT 1 FROM main.fast_track pft WHERE pft.repo = ${repo} AND pft.number = ${number})
     OR (EXISTS (SELECT 1 FROM main.tracked_repos pt WHERE pt.name = ${repo} AND pt.pipeline = 1)
     AND (COALESCE(json_array_length(${LIST}), 0) = 0
       OR EXISTS (SELECT 1 FROM json_each(${LIST}) pj WHERE pj.value = ${repo} || '#' || ${number})
       OR EXISTS (SELECT 1 FROM main.fix_attempts pf, json_each(${LIST}) pj WHERE pf.repo = ${repo} AND pf.pr_url LIKE '%/pull/' || ${number}
-        AND pj.value = pf.repo || '#' || pf.number)))
+        AND pj.value = pf.repo || '#' || pf.number)
+      OR EXISTS (SELECT 1 FROM main.fix_attempts pf2 JOIN main.postmerge_followups pm2 ON pm2.repo = pf2.repo AND pm2.issue_number = pf2.number, json_each(${LIST}) pj
+        WHERE pf2.repo = ${repo} AND pf2.pr_url LIKE '%/pull/' || ${number} AND pj.value = pm2.repo || '#' || pm2.number)
+      OR EXISTS (SELECT 1 FROM main.postmerge_followups pm, json_each(${LIST}) pj WHERE pm.repo = ${repo} AND pm.issue_number = ${number}
+        AND pj.value = pm.repo || '#' || pm.number)))
     OR EXISTS (SELECT 1 FROM main.fix_attempts pg JOIN main.fast_track pgt ON pgt.repo = pg.repo AND pgt.number = pg.number
       WHERE pg.repo = ${repo} AND pg.pr_url LIKE '%/pull/' || ${number}))`;
 

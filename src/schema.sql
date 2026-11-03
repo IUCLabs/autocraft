@@ -1053,3 +1053,40 @@ CREATE TABLE IF NOT EXISTS conflict_merges (
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS conflict_merges_item ON conflict_merges(repo, number, created_at);
+
+-- Post-merge review (src/postmerge): one Opus review of what a pipeline merge landed, latest per PR.
+-- findings: JSON array of the validated findings; error: why no review was stored (retry: ... is tried again after an hour).
+-- merge_sha: the commit the review read (the merge commit, else the PR's last head).
+CREATE TABLE IF NOT EXISTS postmerge_reviews (
+  repo TEXT NOT NULL, number INTEGER NOT NULL,
+  merge_sha TEXT NOT NULL,
+  at TEXT NOT NULL,
+  model TEXT,
+  run_id TEXT,
+  findings TEXT,
+  error TEXT,
+  tries INTEGER NOT NULL DEFAULT 0,   -- consecutive reviews that ended in a retry: error; the third becomes held
+  PRIMARY KEY (repo, number)
+);
+-- What the filing step did with each finding of a review (review_at identifies the review).
+-- state: filing (written before gh issue create runs; one left in this state has an unknown outcome and is never retried) | filed |
+-- failed (gh refused with no possible side effect; attempts counts the tries, retried after 1 h and then 6 h, three at most) |
+-- skipped-duplicate (duplicate_of: the PR or issue number that covers it) | skipped-limit | skipped-minor | skipped-stale (the cited file is gone).
+-- A skipped-limit row is replaced when the finding is filed later.
+CREATE TABLE IF NOT EXISTS postmerge_followups (
+  repo TEXT NOT NULL, number INTEGER NOT NULL,
+  review_at TEXT NOT NULL,
+  finding INTEGER NOT NULL,
+  title TEXT NOT NULL,
+  issue_number INTEGER,
+  url TEXT,
+  state TEXT NOT NULL,
+  at TEXT NOT NULL,
+  duplicate_of INTEGER,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  note TEXT,                          -- one line: why a failed attempt failed
+  PRIMARY KEY (repo, number, review_at, finding)
+);
+CREATE INDEX IF NOT EXISTS postmerge_followups_issue ON postmerge_followups(repo, issue_number);
+-- Only merges from this moment on are reviewed unless `postmerge backfill` moves it back.
+INSERT OR IGNORE INTO settings (key, value) VALUES ('postmerge_since', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));

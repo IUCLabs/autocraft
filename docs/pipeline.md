@@ -25,9 +25,10 @@ The stages, in order:
 10. Verify: Records upstream CI as the verification of taken PRs in repos that have it. A repo without CI, and a bugfix that changes a test file, get a model-planned build in a build environment; a model summarises failures.
 11. Merge queue: Merges PRs that pass the rules in integration batches (up to 50 PRs, checked by upstream CI on the batch PR) through safe-merge, and asks for a Merge? decision on PRs outside the rules. Approves held CI runs of outside contributors where the repo allows it.
 12. Act: Makes the comments and closes that follow an operator's answer, from fixed templates.
+13. Post-merge review: Opus reviews each PR the pipeline merged a second time, reading what landed with the pipeline's own commits and reviews of the PR, and lists defects and minor findings. Each defect that no open item covers becomes one follow-up issue in repos approved for commenting; minor findings are only shown.
 <!-- stages:end stage-list -->
 
-Sync, Embed, Duplicates, Classify, Priority and Decide cover the whole org. Label, Review, Fix, Fix-up, Verify, Merge and Act go one or a few repos at a time. The work rank orders the candidates of Decide, Review, Verify and Fix-up, highest first.
+Sync, Embed, Duplicates, Classify, Priority and Decide cover the whole org. Label, Review, Fix, Fix-up, Verify, Merge, Post-merge review and Act go one or a few repos at a time. The work rank orders the candidates of Decide, Review, Verify and Fix-up, highest first.
 
 ## Sync
 
@@ -329,6 +330,18 @@ Makes the GitHub comments and closes that follow an operator's answer. No model.
 - **Comment rules.** Comments are fixed templates in code (listed on [Prompts](/prompts)): one or two short factual lines, a fixed first sentence and at most `Reason: <text>`, cut to one line of 200 characters with `@`, URLs and Markdown links removed. The reason text may come from a model; the decision page shows the exact comment, and the operator's answer approves that text.
 - **Before writing,** the step re-reads the item and skips it, without a comment, when it is already closed or merged, gone, or its head moved. A comment is never posted twice.
 
+## Post-merge review
+
+A second Opus review of every PR the pipeline merged, to catch what the first review and the merge let through (for example a requested fix that a conflict merge dropped). Only merges recorded after the stage started, or since `autocraft postmerge backfill --since <date>`, are reviewed, and only for PRs in the pilot. Each merged PR is reviewed once, oldest merge first; there is no daily limit on the model step. A backfill more than 14 days back needs `--yes`.
+
+- **Input.** The PR's title, body and author; the merged diff (the merge commit against its first parent, kept to the files the PR changed, code files only, the same size cap as Review; for a PR merged through an integration batch, the PR's own diff at the merged head, which includes the pipeline's pushes to the PR branch; when the PR's own diff cannot be read there is no diff and the review is tried again later); the commits the pipeline added (conflict merges, fix-ups, parts carried over from duplicates); the PR's earlier Opus reviews; the open issues and PRs, and those closed in the last 30 days, that mention the PR number or one of its files, by number, state and title, to avoid duplicates; and the follow-up issues earlier reviews of the PR filed (`filed_before`), with their state. The call reads a checkout at the merge commit with the same read-only tools and reference mount as Review, and its reply goes through the same lint and fix turn.
+- **Findings.** Each finding is a `defect` (wrong behaviour, a crash, data loss, a correctness bug) or `minor` (style, wording, commit titles, stale comments, test-only gaps), with a title, a public body, file and line, the number of an open item that already covers it, and two internal notes: the stage that should have caught it and why it did not. An empty list is a valid review. A reply that is not valid is asked again once, then stored as an error and tried again after an hour, three times at most, after which the review is held; a diff over the size cap is held.
+- **Filing.** The `postmerge-file` step opens one GitHub issue for each defect that no open item covers, in repos approved for comments: the title is the finding's title, the body is `Follow-up to #<n>.` and the finding's text under the same AI-generated disclaimer line a review carries, then the `Location:` line when the finding names a file. Daily limit 20 issues; defects over the limit are filed by later runs, and every attempt counts against it. Public text outside code is cleaned: URLs go, Markdown links keep their text, issue references (`owner/repo#n`, `#n`, `GH-n`) read "issue n"; code spans and closed fenced blocks keep their URLs and references, and an unclosed fence is not code. Every `@` before a name is removed, code included. A title or body that names the product or the pipeline's GitHub account is stored and never filed.
+- **Safety.** Before the create call the step writes a follow-up row in state `filing`; after it, the row becomes `filed` with the issue number in a separate step. A row left in `filing` (crash, lost response, failed record) is never retried: the issue may exist, the item page says "Outcome unknown, check GitHub", and the run stops. A refusal from GitHub that cannot have created an issue (issues disabled, no permission) is stored as `failed` and tried again after 1 hour, then after 6 hours, three attempts at most. A defect whose cited file is no longer on the default branch is skipped as stale. Defects in the same file, within 20 lines and with a similar title are filed once: the first of a run, or one this stage filed in the last 30 days; the others are marked duplicates of it. A PR that already has a filed follow-up from an earlier review never files automatically again, and neither does a PR that itself fixes a follow-up issue: their findings are stored and shown as not filed.
+- **After filing.** The issue is mirrored, classified and fixed like any other issue. It counts as a pilot item when the PR it follows up is one, and so does the Fix PR opened for it.
+- **Item page.** A merged PR shows its findings with severity, text, file and line, and the issue filed for each defect, the duplicate it was marked as, why it was not filed, and the follow-ups of earlier reviews. Operators and maintainers also see which stage missed the finding and why.
+- **Commands.** `autocraft postmerge review <repo>#<n> [--again]` reviews one PR now (refused while the runner has a postmerge job running for the repo); `autocraft postmerge file <repo>#<n> <finding>` files one defect of the PR's latest review, counted from 0, whatever holds the PR's automatic filing back (the PR must still be in the pipeline's scope: repo flag and pilot); `autocraft postmerge backfill --since <ISO date> [--yes]` makes the step review the pipeline's merges since that date. All are logged in the audit log.
+
 ## Conversations
 
 Each item can have one conversation with Opus, shown beside its decision. Everyone with access to the repo reads it; only operators write, edit, run and dismiss. It belongs to the item, so it stays when a decision is asked again.
@@ -349,7 +362,7 @@ Each item can have one conversation with Opus, shown beside its decision. Everyo
 | Jev | Duplicates: judges each candidate pair first<br>Classify: classifies every item first<br>Priority: picks the level<br>Reports how sure it is; at 90 % or more it matched maintainers' labels 98 % of the time |
 | Haiku | Duplicates: settles pairs Jev is unsure of<br>Classify: second opinion where Jev is unsure<br>Priority: decides where Jev is unsure<br>Decide: summaries of duplicate decisions<br>Fix: failure summaries<br>Verify: failure summaries<br>Merge queue: short summaries in the merge run<br>Does every item while Jev is unavailable |
 | Sonnet | Duplicates: compares each group of issues<br>Classify: referee for label disagreements; area suggestions<br>Decide: writes decision summaries<br>Fix: triages the issue and writes the patch<br>Fix-up: writes the patch and resolves conflicts<br>Verify: plans a regression test (bugfixes that change a test file) or, in a repo without CI, the build and tests<br>The referee asks a person only when it is unsure |
-| Opus | Duplicates: compares each group of pull requests<br>Classify: proposes area lists<br>Decide: writes the scope recommendation and conversation replies<br>Review: reviews every wanted PR<br>Fix: checks the patch<br>Fix-up: checks the patch<br>The review gives a verdict, a complete fix list and how sure Opus is |
+| Opus | Duplicates: compares each group of pull requests<br>Classify: proposes area lists<br>Decide: writes the scope recommendation and conversation replies<br>Review: reviews every wanted PR<br>Fix: checks the patch<br>Fix-up: checks the patch<br>Post-merge review: reviews each merged PR<br>The review gives a verdict, a complete fix list and how sure Opus is<br>Reads the merge commit and lists findings; the reply is linted like the Review stage's |
 <!-- stages:end model-table -->
 
 These calls run with tools: Read, Grep and Glob on a read-only checkout inside a sandbox (see Trust boundary): the Opus review, the Fix-up patch and its Opus check, the Verify planner (checkouts of the PR head), Fix triage, patch and Opus check (checkouts of the base commit), the scope recommendation and conversation replies (the default branch). Every one of them also gets the workspace and, when a snapshot exists, the item tools (see Trust boundary). Every other call runs without tools. The Prompts page shows each prompt's tools, turn limit and sandbox mode.
@@ -461,15 +474,16 @@ Limits count items handled per stage per day (from 00:00 UTC), including by fail
 <!-- stages:begin limits-table (generated by npm run docs; do not edit) -->
 | Step | Default limit (new database) | Step | Default limit (new database) |
 |---|---|---|---|
-| Embed | none | Review (Opus) | 40 |
-| Duplicates | 2000 | Checks | none (0 pauses it) |
-| Compare duplicate groups | 200 | Post reviews | 40 |
-| Classify | 2000 | Fix | 10 |
-| Referee | 500 | Fix-up | 20 |
-| Priority | 3000 | Verify | 30 |
-| Decide | 100 | Merge | 10 |
-| Conversations | 30 | Approve CI runs | 30 |
-| Label | none | Act | 20 |
+| Embed | none | Checks | none (0 pauses it) |
+| Duplicates | 2000 | Post reviews | 40 |
+| Compare duplicate groups | 200 | Fix | 10 |
+| Classify | 2000 | Fix-up | 20 |
+| Referee | 500 | Verify | 30 |
+| Priority | 3000 | Merge | 10 |
+| Decide | 100 | Approve CI runs | 30 |
+| Conversations | 30 | Act | 20 |
+| Label | none | Post-merge review | none |
+| Review (Opus) | 40 | File follow-up issues | 20 |
 <!-- stages:end limits-table -->
 
 Steps not in the table have no limit setting.
@@ -494,6 +508,8 @@ Automated work waits only for the reasons below. A stage that is not running sho
 | Batch PR runs awaiting approval | The batch PR comes from the pipeline account's fork, so GitHub may hold its workflow runs (`action_required`) until a maintainer approves them; the ci-approve step approves them when the repo's CI approval is on and every member was reviewed at its batched head | Until the runs are approved and finish (read again with each checks job) | Batch note "batch PR runs wait for a maintainer's approval" |
 | Batch push retry | Pushing the batch branch or opening its PR failed | 1, 2, 4, 8 minutes (at most 30); the batch fails after 5 failures and its PRs return to the queue | Batch state `checking` with the error |
 | Changes requested | A reviewer with write access has a formal review that blocks the merge | Until that reviewer approves or a maintainer dismisses the review; no timer. Blocked PRs are read again every merge run | Queue state `changes-requested` with the reviewer in its note |
+| Failed post-merge review | The model gave no valid reply twice | 1 hour, three tries in all | Post-merge review on the item page: no review yet |
+| Failed post-merge filing | GitHub refused to create the issue | 1 hour, then 6 hours; stops after three attempts | Post-merge review on the item page: not filed, with the attempts |
 | Failed job | Retry a real failure without hammering | 1, 2, 4, 8, 16, then 30 minutes; ends on a release, and after a single failure also on a changed input | "failed N times in a row; retry at HH:MM UTC" |
 | Daily limit | Cost control | Until 00:00 UTC | "daily limit of N items reached; resumes at 00:00 UTC" |
 | Jev unavailable | Jev is switched off (`autocraft accounts jev off`), the `jev` command is missing, or its account fails: out of credit, or a missing or rejected key (status 401, 402, 403, or a message about credit, billing, quota or the key). Haiku does Jev's classify, priority and duplicate work through the Claude accounts. Off or not installed: no retry until it is switched on or the command exists (checked on each pass). Account failure: the first pass an hour after the last failure tries Jev again; no timer runs. Other Jev errors (timeouts, server errors, bad answers) are retried as before | 1 hour after an account failure | Accounts page and run logs |
@@ -529,5 +545,6 @@ Dry run is the default for every writing command; `--apply` writes (and still re
 | `autocraft queue`, `merge --repo R`, `merge-hold\|merge-release <repo#n>`, `batch-remove <repo#n>`, `batch-stop <id>` | Merge queue |
 | `autocraft fasttrack add\|remove <item>`, `fasttrack list` | Fast track |
 | `autocraft act --repo R` | Act |
+| `autocraft postmerge review <repo#n> [--again]`, `postmerge file <repo#n> <finding>`, `postmerge backfill --since <date> [--yes]` | Post-merge review |
 | `autocraft conversation show\|say\|do` | Conversations |
 | `autocraft pipeline on\|off\|limit`, `accounts list\|set\|jev` | Switch, limits, accounts |

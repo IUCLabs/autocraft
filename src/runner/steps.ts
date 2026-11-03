@@ -529,6 +529,46 @@ export const STEPS: StepDef[] = [
     },
   },
   {
+    name: "postmerge",
+    title: "Review merged pull requests",
+    description: "Opus reads, one pull request per call, what each pipeline merge landed in one repo, with our own commits and reviews of the PR, and lists defects and minor findings. Reads GitHub; writes only to the local database.",
+    stage: runStage("postmerge"),
+    requires: "operator",
+    group: "postmerge",
+    models: ["opus"],
+    params: [
+      { name: "repo", label: "Repo", kind: "repo", required: true },
+      { name: "limit", label: "At most", kind: "int", min: 1, max: 50, default: 10, help: "merged pull requests to review in this job" },
+    ],
+    run: async (ctx) => {
+      const { runPostmerge } = await import("../postmerge/review.ts");
+      const r = await runPostmerge(ctx.db, { repo: String(ctx.params.repo), limit: Number(ctx.params.limit), onHandled: ctx.handled }, ctx.log);
+      ctx.usageRun(r.runId);
+      return `${r.repo}: reviewed ${r.reviewed} of ${r.candidates} candidates; ${r.findings} findings (${r.defects} defects), ${r.failed.length} without an answer`;
+    },
+  },
+  {
+    name: "postmerge-file",
+    title: "File post-merge defects as issues",
+    description: "Opens one GitHub issue for each defect of a post-merge review that no open item covers yet, in a repo approved for comments. Minor findings are never filed. Refused unless the operator approved commenting for the repo. Calls no model.",
+    stage: runStage("postmerge-file"),
+    requires: "operator",
+    group: "github-write",
+    params: [
+      { name: "repo", label: "Repo", kind: "repo", required: true },
+      { name: "limit", label: "At most", kind: "int", min: 1, max: 50, default: 20, help: "issues to open in this job" },
+    ],
+    check: checkCommentApproved,
+    run: async (ctx) => {
+      const { runPostmergeFile } = await import("../postmerge/file.ts");
+      const refused = await checkCommentApproved(ctx.db, ctx.params);
+      if (refused) throw new Error(refused);
+      const r = await runPostmergeFile(ctx.db, { repo: String(ctx.params.repo), limit: Number(ctx.params.limit), onHandled: ctx.handled }, ctx.log);
+      ctx.acted(r.filed.length + r.failed.length + r.unknown.length);
+      return `${r.repo}: ${r.filed.length} issues filed, ${r.limited} over the limit, ${r.failed.length} failed${r.unknown.length ? `, ${r.unknown.length} with an unknown outcome (check GitHub)` : ""}`;
+    },
+  },
+  {
     name: "dupes-compare",
     title: "Compare duplicate groups",
     description: "Compares each group of duplicates in one pass: Opus, with read-only tools on the base checkout, for the pull requests of a group (diffs, titles, bodies and linked issues; CI and review state as background), Sonnet for its issues. It picks the best item to keep, lists what the others do better or add, and asks one decision per group. A closed or merged member wins without a call; a failed call falls back to the older-wins rule. A group is compared again only when a member's state, head or text changes. Writes nothing to GitHub.",
