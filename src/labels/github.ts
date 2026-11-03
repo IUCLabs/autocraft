@@ -30,10 +30,11 @@ async function retrying<T>(f: () => Promise<T>, wait: Wait): Promise<T> {
 
 type Repo = { id: string; labels: Map<string, string> }; // lower-case name -> label id
 
-export async function repoLabels(client: Querier, repo: string, wait: Wait = sleepMs as Wait): Promise<Repo> {
-  const q = `query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { id
+export const repoLabelsQuery = (): string => `query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { id
     ${ALL_LABELS.map((l, i) => `l${i}: label(name: ${JSON.stringify(l.name)}) { id name }`).join("\n")} } }`;
-  const d = await retrying(() => client.query(q, { owner: ORG, name: repo }), wait);
+
+export async function repoLabels(client: Querier, repo: string, wait: Wait = sleepMs as Wait): Promise<Repo> {
+  const d = await retrying(() => client.query(repoLabelsQuery(), { owner: ORG, name: repo }), wait);
   if (!d.repository) throw new LabelsError(`repo ${repo} not found`);
   const labels = new Map<string, string>();
   ALL_LABELS.forEach((l, i) => {
@@ -131,14 +132,15 @@ export async function applyLabels(db: DatabaseSync, client: Querier, repo: strin
 
 type Live = { id: string | null; state: string | null };
 
+export const nodeIdsQuery = (numbers: number[]): string => `query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) {
+      ${numbers.map((n) => `n${n}: issueOrPullRequest(number: ${n}) { ... on Issue { id state } ... on PullRequest { id state } }`).join("\n")} } }`;
+
 // One batched read per chunk: the node id to write to and the live state, which can be ahead of the mirror.
 async function nodeIds(client: Querier, repo: string, numbers: number[], wait: Wait): Promise<Map<number, Live>> {
   const out = new Map<number, Live>();
   for (let i = 0; i < numbers.length; i += NODE_LOOKUP) {
     const part = numbers.slice(i, i + NODE_LOOKUP);
-    const q = `query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) {
-      ${part.map((n) => `n${n}: issueOrPullRequest(number: ${n}) { ... on Issue { id state } ... on PullRequest { id state } }`).join("\n")} } }`;
-    const d = await retrying(() => client.query(q, { owner: ORG, name: repo }), wait);
+    const d = await retrying(() => client.query(nodeIdsQuery(part), { owner: ORG, name: repo }), wait);
     for (const n of part) {
       const node = d.repository?.[`n${n}`];
       out.set(n, { id: node?.id ?? null, state: node?.state ?? null });
@@ -147,18 +149,23 @@ async function nodeIds(client: Querier, repo: string, numbers: number[], wait: W
   return out;
 }
 
+/** One aliased `addLabelsToLabelable` per item, with variables `i<k>` (node id) and `l<k>` (label ids). */
+export function addLabelsMutation(count: number): string {
+  const ks = Array.from({ length: count }, (_, k) => k);
+  const decl = ks.flatMap((k) => [`$i${k}: ID!`, `$l${k}: [ID!]!`]);
+  const body = ks.map((k) => `m${k}: addLabelsToLabelable(input: {labelableId: $i${k}, labelIds: $l${k}}) { clientMutationId }`);
+  return `mutation(${decl.join(", ")}) { ${body.join("\n")} }`;
+}
+
 // Returns the numbers whose mutation succeeded. A failed batch is retried item by item.
 async function mutate(client: Querier, rows: PlanRow[], ids: Map<number, string | null>, have: Repo, wait: Wait): Promise<number[]> {
   const run = async (part: PlanRow[]): Promise<number[]> => {
     const vars: Record<string, unknown> = {};
-    const decl: string[] = [];
-    const body = part.map((r, k) => {
+    part.forEach((r, k) => {
       vars[`i${k}`] = ids.get(r.number);
       vars[`l${k}`] = r.add.map((a) => have.labels.get(a.toLowerCase()));
-      decl.push(`$i${k}: ID!`, `$l${k}: [ID!]!`);
-      return `m${k}: addLabelsToLabelable(input: {labelableId: $i${k}, labelIds: $l${k}}) { clientMutationId }`;
     });
-    const d = await retrying(() => client.query(`mutation(${decl.join(", ")}) { ${body.join("\n")} }`, vars), wait);
+    const d = await retrying(() => client.query(addLabelsMutation(part.length), vars), wait);
     return part.filter((_, k) => d && d[`m${k}`] !== null && d[`m${k}`] !== undefined).map((r) => r.number);
   };
   try {

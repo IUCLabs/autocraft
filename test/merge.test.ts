@@ -9,6 +9,7 @@ import { runMerge, type CommandResult, type MergeDeps } from "../src/merge/index
 import { buildQueue, eligible, mergeDecisionId } from "../src/merge/queue.ts";
 import { finalizeReviews } from "./fixture.ts";
 import { SCRATCH } from "./scratch.ts";
+import { validating } from "./gql.ts";
 
 mkdirSync(SCRATCH, { recursive: true });
 const dir = mkdtempSync(join(SCRATCH, "merge-test-"));
@@ -71,7 +72,7 @@ type Fake = { heads?: Map<number, string>; authors?: Map<number, string[]>; assi
 /** GitHub and merge-command stand-ins; every call goes into `log` in order. */
 function fakes(log: Log, f: Fake = {}): MergeDeps & { calls: () => number } {
   let n = 0;
-  const querier: Querier = {
+  const querier: Querier = validating({
     spent: 0, remaining: 5000,
     async query(query: string, vars: object) {
       n++;
@@ -94,7 +95,7 @@ function fakes(log: Log, f: Fake = {}): MergeDeps & { calls: () => number } {
         commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { nodes: [{ __typename: "CheckRun", name: "ci", status: "COMPLETED", conclusion: "SUCCESS" }] } } } }] },
       }])) };
     },
-  };
+  });
   return {
     querier, now: () => new Date(T1), mergeCommand: "safe-merge-test",
     async run(cmd, args) {

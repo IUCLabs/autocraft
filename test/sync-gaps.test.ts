@@ -6,6 +6,7 @@ import { connect } from "../src/db.ts";
 import { reconcileRepo, runSync } from "../src/mirror.ts";
 import { trackRepo, untrackRepo } from "../src/repos.ts";
 import { SCRATCH } from "./scratch.ts";
+import { validating } from "./gql.ts";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type N = any;
@@ -25,7 +26,7 @@ type Fake = {
 
 // Answers search windows, per-repo listings and single-item reads from `f`.
 function fake(f: Fake) {
-  const c = {
+  const c = validating({
     spent: 0, remaining: 4000 as number | null, kinds: [] as string[],
     async query(query: string, v: Record<string, unknown>): Promise<N> {
       if (query.includes("search(")) {
@@ -46,7 +47,7 @@ function fake(f: Fake) {
       const nodes = isIssue ? (f.listing ?? []).filter((n) => n.repository.name === v.name && states.includes(n.state)) : [];
       return { repository: { [isIssue ? "issues" : "pullRequests"]: { pageInfo: { hasNextPage: false, endCursor: null }, nodes } } };
     },
-  };
+  });
   return c;
 }
 

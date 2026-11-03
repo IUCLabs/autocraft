@@ -11,6 +11,7 @@ import { postCandidates, runReviewPost, type PostDeps } from "../src/review/post
 import { COMMENT_TEMPLATES } from "../src/act/templates.ts";
 import { pauseReason } from "../src/runner/autopilot.ts";
 import { SCRATCH } from "./scratch.ts";
+import { validating } from "./gql.ts";
 
 const dir = mkdtempSync(join(SCRATCH, "review-post-test-"));
 const T0 = "2026-01-01T00:00:00Z";
@@ -46,7 +47,7 @@ type Fake = PostDeps & { calls: { kind: string; vars: Record<string, unknown> }[
 function fake(live: Record<number, Live> = {}): Fake {
   const map = new Map(Object.entries(live).map(([k, v]) => [Number(k), v]));
   const calls: Fake["calls"] = [];
-  const querier: Querier = {
+  const querier: Querier = validating({
     spent: 0, remaining: null,
     async query(q: string, vars: Record<string, unknown>) {
       if (q.includes("addPullRequestReview")) { calls.push({ kind: "add", vars }); return { addPullRequestReview: { pullRequestReview: { id: `R_${vars.pr}` } } }; }
@@ -54,7 +55,7 @@ function fake(live: Record<number, Live> = {}): Fake {
       const l = map.get(vars.n as number);
       return { repository: { pullRequest: l ? { id: `PR_${vars.n}`, headRefOid: l.head, state: l.state, commits: { totalCount: 1, nodes: [] } } : null } };
     },
-  };
+  });
   return { querier, now: () => new Date("2026-02-01T00:00:00Z"), calls, live: map };
 }
 

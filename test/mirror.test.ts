@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { untilCutoff } from "../src/mirror.ts";
+import { validating } from "./gql.ts";
 
 const page = (...times: string[]) => times.map((updatedAt) => ({ updatedAt }));
 
@@ -45,14 +46,14 @@ const node = (repo: string, number: number, state = "OPEN", updatedAt = "2026-11
 });
 
 function fakeClient(nodes: unknown[], issueCount = nodes.length, failAfter = Infinity) {
-  const c = {
+  const c = validating({
     spent: 0, remaining: 4000 as number | null, calls: [] as { query: string; variables: Record<string, unknown> }[],
     async query(query: string, variables: Record<string, unknown>) {
       c.calls.push({ query, variables });
       if (c.calls.length > failAfter) throw new Error("boom");
       return { search: { issueCount, pageInfo: { hasNextPage: false, endCursor: null }, nodes } };
     },
-  };
+  });
   return c;
 }
 
@@ -88,7 +89,7 @@ test("search mode writes tracked results, ignores untracked, advances the high w
 
 // A fake search over `all`: honours `updated:A..B`, pages by cursor, and reports the true match count.
 function searchClient(all: ReturnType<typeof node>[]) {
-  const c = {
+  const c = validating({
     spent: 0, remaining: 4000 as number | null, queries: [] as string[], windows: [] as { from: string; to: string; matches: number }[],
     async query(query: string, v: Record<string, unknown>) {
       c.queries.push(query);
@@ -100,7 +101,7 @@ function searchClient(all: ReturnType<typeof node>[]) {
       const end = Math.min(start + size, 1000, hits.length);
       return { search: { issueCount: hits.length, pageInfo: { hasNextPage: end < Math.min(1000, hits.length), endCursor: String(end) }, nodes: hits.slice(start, end) } };
     },
-  };
+  });
   return c;
 }
 const at = (sec: number) => new Date(Date.UTC(2026, 10, 2, 10, 0, 0) + sec * 1000).toISOString().replace(".000Z", "Z");
@@ -178,7 +179,7 @@ test("a full re-sync resumes after the last finished repo and leaves the org hig
   const seen: string[] = [];
   let fail = true;
   const repo = (name: string) => ({ name, visibility: "PUBLIC", defaultBranchRef: null, pullRequests: { totalCount: 0 }, issues: { totalCount: 0 } });
-  const c = {
+  const c = validating({
     spent: 0, remaining: 4000 as number | null,
     async query(query: string, v: Record<string, unknown>) {
       if (query.includes("repositories(")) return { organization: { repositories: { pageInfo: { hasNextPage: false }, nodes: ["a", "b"].map(repo) } } };
@@ -186,7 +187,7 @@ test("a full re-sync resumes after the last finished repo and leaves the org hig
       if (v.name === "b" && fail) throw new Error("boom");
       return { repository: { issues: { pageInfo: { hasNextPage: false }, nodes: [] }, pullRequests: { pageInfo: { hasNextPage: false }, nodes: [] } } };
     },
-  };
+  });
   const full = { ...opts, full: true };
   await assert.rejects(runSync(db, c, full, new Date("2026-11-02T11:00:00Z")), /boom/);
   assert.equal(db.prepare("SELECT value FROM settings WHERE key='full_sync_cursor'").get()!.value, "tracked|a");

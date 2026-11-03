@@ -13,6 +13,7 @@ import { runSync } from "../src/mirror.ts";
 import { scopeToTracked } from "../src/repos.ts";
 import type { Req } from "../src/dash/types.ts";
 import { SCRATCH } from "./scratch.ts";
+import { validating } from "./gql.ts";
 
 mkdirSync(SCRATCH, { recursive: true });
 const freshPath = () => join(mkdtempSync(join(SCRATCH, "items-test-")), "m.db");
@@ -135,7 +136,7 @@ test("the index follows sync writes", async () => {
     labels: { nodes: [] }, assignees: { nodes: [] }, commentCount: { totalCount: 1 }, stateReason: null,
     comments: { nodes: [{ id: "c1", author: { login: "b" }, createdAt: updatedAt, body: comment }] },
   });
-  const client = (n: unknown) => ({
+  const client = (n: unknown) => validating({
     spent: 0, remaining: 4000,
     async query() { return { search: { issueCount: 1, pageInfo: { hasNextPage: false, endCursor: null }, nodes: [n] } }; },
   });
