@@ -236,6 +236,7 @@ export async function askClaude<K extends ClaudePromptId>(id: K, model: string, 
 export async function askJev(id: JevPromptId, item: Item | DupePair, db: DatabaseSync): Promise<Proc> {
   const body = renderJev(id, item);
   const runId = startJevRun(db, { promptId: id, promptVersion: promptVersion(id), provider: "jev", model: "jev", items: refsOf([item]), prompt: body });
+  const start = now();
   try {
     const r = await runner("jev", JEV_ARGS, body, undefined, JEV_PROMPTS[id].limits.timeoutSeconds * 1000);
     let tokens: { input: number; output: number; cacheRead: number; cacheWrite: number } | undefined;
@@ -243,6 +244,8 @@ export async function askJev(id: JevPromptId, item: Item | DupePair, db: Databas
       const j = JSON.parse(r.stdout) as { usage?: { input_tokens?: number; output_tokens?: number } };
       if (j.usage) tokens = { input: j.usage.input_tokens ?? 0, output: j.usage.output_tokens ?? 0, cacheRead: 0, cacheWrite: 0 };
     } catch { /* the caller reports an unreadable answer */ }
+    // classify.jev is saved per item by runJev, which sums its retries
+    if (tokens && id !== "classify.jev") saveUsage(db, String(runId), "jev", id.split(".")[0]!, JEV_PROMPTS[id].models[0]!, 1, { ...tokens, cost: tokens.input * JEV_USD_PER_INPUT_TOKEN }, start, now());
     if (r.code === 0 && tokens) finishRun(db, runId, { state: "done", tokens, summary: "answered", output: r.stdout });
     else finishRun(db, runId, { state: "failed", error: scrubError(`${exitClass(r.code)} ${r.stderr}`), summary: r.code === 0 ? "unreadable answer" : exitClass(r.code), output: r.stdout });
     return r;

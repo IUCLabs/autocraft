@@ -3,7 +3,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { runJev, saveUsage, setRunner } from "../src/classify/run.ts";
+import { askJev, runJev, saveUsage, setRunner } from "../src/classify/run.ts";
 import { connect } from "../src/db.ts";
 
 const answers = {
@@ -35,4 +35,17 @@ test("the migration prices unpriced Jev rows and leaves other models alone", () 
   const again = connect(path);
   assert.ok(Math.abs(cost(again, "jev-x")! - 0.084) < 1e-9);
   assert.equal(cost(again, "haiku-x"), null);
+});
+
+test("priority and dupes Jev calls are saved under their own stage", async () => {
+  const db = fresh();
+  const restore = setRunner(async () => ({ code: 0, stderr: "", stdout: JSON.stringify({ answers: {}, usage: { input_tokens: 500_000, output_tokens: 3 } }) }));
+  try {
+    const item = { repo: "a", number: 1, kind: "pr" as const, title: "t", body: "b", lines_changed: 1, files_changed: 1, author_association: null };
+    await askJev("priority.jev", item, db);
+  } finally { restore(); }
+  const row = db.prepare("SELECT stage, model, cost_usd AS c FROM token_usage").get() as { stage: string; model: string; c: number };
+  assert.equal(row.stage, "priority");
+  assert.equal(row.model, "jev-latest");
+  assert.ok(Math.abs(row.c - 0.021) < 1e-9);
 });
