@@ -750,7 +750,7 @@ export function itemFor(repo: string, number: number): Item {
     fixups: [],
     reviews: null,
     actions: [],
-    releases: { reviewAgain: false, verifyAgain: false, fixAgain: false },
+    releases: { reviewAgain: false, verifyAgain: false, fixAgain: false, batchAgain: false },
   };
 }
 

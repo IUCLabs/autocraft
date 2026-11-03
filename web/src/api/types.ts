@@ -262,7 +262,7 @@ export interface ItemReviews {
 
 export type FixupState = "pushed" | "failed" | "refused" | "cannot-push" | "too-large" | "asked" | "rejected";
 /** The operator releases of an item: the last path segment of POST /api/items/:repo/:n/<action>. */
-export type ReleaseAction = "review-again" | "verify-again" | "fix-again";
+export type ReleaseAction = "review-again" | "verify-again" | "fix-again" | "batch-again";
 
 /** Operator releases that apply to an item right now. */
 export interface ItemReleases {
@@ -272,6 +272,8 @@ export interface ItemReleases {
   verifyAgain: boolean;
   /** A skipped or failed fix attempt can be tried again. */
   fixAgain: boolean;
+  /** A PR held by a failed single-PR batch at its current head can go through a batch again. */
+  batchAgain: boolean;
 }
 
 export interface ItemPatchCheck {
