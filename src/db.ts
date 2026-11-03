@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { fillClassHashes, fillEmbedHashes } from "./itemhash.ts";
+import { JEV_USD_PER_INPUT_TOKEN } from "./prompts/index.ts";
 
 export const DEFAULT_DB = join(homedir(), ".local/share/craft-automation/mirror.db");
 
@@ -82,6 +83,11 @@ function migrateValues(db: DatabaseSync): void {
   if (db.prepare(`SELECT 1 FROM main.item_priority WHERE impact IN ${OLD} OR jev_impact IN ${OLD} OR haiku_impact IN ${OLD} LIMIT 1`).get()) {
     const lv = (c: string) => `CASE ${c} WHEN 'critical' THEN 'P0' WHEN 'high' THEN 'P1' WHEN 'normal' THEN 'P2' WHEN 'low' THEN 'P3' ELSE ${c} END`;
     db.exec(`UPDATE main.item_priority SET impact = ${lv("impact")}, jev_impact = ${lv("jev_impact")}, haiku_impact = ${lv("haiku_impact")}`);
+  }
+  // Jev usage saved without a cost is priced from its input tokens.
+  const JEV_UNPRICED = "model LIKE 'jev%' AND cost_usd IS NULL AND input_tokens IS NOT NULL";
+  if (db.prepare(`SELECT 1 FROM main.token_usage WHERE ${JEV_UNPRICED} LIMIT 1`).get()) {
+    db.prepare(`UPDATE main.token_usage SET cost_usd = input_tokens * ? WHERE ${JEV_UNPRICED}`).run(JEV_USD_PER_INPUT_TOKEN);
   }
 }
 

@@ -117,7 +117,7 @@ CREATE TABLE IF NOT EXISTS token_usage (
   input_tokens INTEGER, output_tokens INTEGER,
   cache_read_tokens INTEGER, cache_write_tokens INTEGER,
   started_at TEXT, ended_at TEXT,
-  cost_usd REAL,                      -- as reported by the CLI, when it reports one
+  cost_usd REAL,                      -- as reported by the CLI; Jev: input tokens at TypeSafe's price
   PRIMARY KEY (run_id, agent)
 );
 

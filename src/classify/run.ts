@@ -12,7 +12,7 @@ import { finishRun } from "../agents/runs.ts";
 import { scrubError } from "../agents/text.ts";
 import { scrub } from "../runner/scrub.ts";
 import { resolveClaudeBin, sandboxCommand, tokenNearExpiry } from "../sandbox/index.ts";
-import { CLAUDE_PROMPTS, JEV_ARGS, JEV_PROMPTS, claudeArgs, claudePromptOf, jevPromptOf, renderClaude, withoutRepoDir, renderJev, type ClaudeInput, type ClaudePromptId, type JevPromptId } from "../prompts/index.ts";
+import { CLAUDE_PROMPTS, JEV_ARGS, JEV_USD_PER_INPUT_TOKEN, JEV_PROMPTS, claudeArgs, claudePromptOf, jevPromptOf, renderClaude, withoutRepoDir, renderJev, type ClaudeInput, type ClaudePromptId, type JevPromptId } from "../prompts/index.ts";
 import type { DupePair } from "../dupes/pair.ts";
 import { flagsOf, jevVerdict, parseHaikuReply, parseRef, refOf, type Item, type JevAnswers, type Verdict } from "./parse.ts";
 
@@ -293,6 +293,6 @@ export async function runJev(db: DatabaseSync, runId: string, items: Item[], wid
     }
     if (v) saveVerdict(db, "jev", runId, v);
     else console.error(`jev: no valid answer for ${ref}`);
-    saveUsage(db, runId, `jev-${ref}`, "classify", JEV.models[0]!, v ? 1 : 0, usage, start, now());
+    saveUsage(db, runId, `jev-${ref}`, "classify", JEV.models[0]!, v ? 1 : 0, { ...usage, cost: usage.input * JEV_USD_PER_INPUT_TOKEN }, start, now());
   }), width);
 }

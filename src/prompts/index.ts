@@ -595,6 +595,9 @@ const DUPES_JEV: JevPrompt = {
 };
 
 export const CLAUDE_PROMPTS = { "classify.haiku": HAIKU, "referee.sonnet": REFEREE, "review.sonnet": REVIEW, "decide.summary": SUMMARY, "fixup.patch": FIXUP, "verify.plan": VERIFY_PLAN, "verify.summary": VERIFY_SUMMARY, "priority.haiku": PRIORITY_HAIKU, "dupes.haiku": DUPES_HAIKU, "fixissue.triage": FIXISSUE_TRIAGE, "fixissue.patch": FIXISSUE_PATCH, "fixup.check": FIXUP_CHECK, "fixissue.check": FIXISSUE_CHECK, "review.opus": OPUS_REVIEW } as const;
+/** TypeSafe's published price per input token for jev-1.13.0, jev-1.14.0 and jev-latest ($0.042 per million); output tokens are free. */
+export const JEV_USD_PER_INPUT_TOKEN = 0.042 / 1e6;
+
 export const JEV_PROMPTS = { "classify.jev": JEV, "priority.jev": PRIORITY_JEV, "dupes.jev": DUPES_JEV } as const;
 export type ClaudePromptId = keyof typeof CLAUDE_PROMPTS;
 export type JevPromptId = keyof typeof JEV_PROMPTS;
