@@ -33,6 +33,7 @@ export const STATE: Record<QueueState, [string, Tone, string]> = {
   "in-batch": ["In batch", "ok", "Part of an integration batch with an open PR; lands when upstream CI is green"],
   "batch-failed": ["Batch failed", "bad", "Failed alone in a batch: on hold until the PR has a new head"],
   "held-duplicate": ["Held: Duplicate?", "warn", "An open Duplicate? decision keeps it out of every later stage; answer it in Decisions"],
+  "held-backlog": ["Backlog", "neutral", "Answered Backlog; reopen the decision to take it up again"],
 };
 const STATES = Object.keys(STATE) as QueueState[];
 const TIER: Record<Tier, string> = { whitelisted: "whitelisted", not: "not whitelisted", "override-allow": "override allow", "override-deny": "override deny" };

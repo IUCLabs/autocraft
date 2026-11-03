@@ -50,6 +50,11 @@ export const notOwnIntegrationSql = (alias: string): string =>
 export const notHeldSql = (alias: string): string =>
   `${notOwnIntegrationSql(alias)} AND ${pilotSql(alias)} AND NOT EXISTS (SELECT 1 FROM decisions dh WHERE dh.kind = 'duplicate' AND dh.id NOT LIKE '%:dupegroup:%' AND dh.repo = ${alias}.repo AND dh.number = ${alias}.number AND (dh.answer IS NULL OR dh.answer = 'close')) AND NOT ${groupHeldSql(alias)} AND NOT ${backlogHeldSql(alias)}`;
 
+/** True when a Backlog answer holds the item. */
+export function backlogHeld(db: DatabaseSync, repo: string, number: number): boolean {
+  return !!db.prepare(`SELECT 1 FROM items i WHERE i.repo = ? AND i.number = ? AND ${backlogHeldSql("i")}`).get(repo, number);
+}
+
 export function duplicateHeld(db: DatabaseSync, repo: string, number: number): boolean {
   return !!db.prepare(`SELECT 1 FROM decisions WHERE kind = 'duplicate' AND id NOT LIKE '%:dupegroup:%' AND repo = ? AND number = ? AND (answer IS NULL OR answer = 'close')`).get(repo, number)
     || !!db.prepare(`SELECT 1 FROM items i WHERE i.repo = ? AND i.number = ? AND (${groupHeldSql("i")} OR ${backlogHeldSql("i")})`).get(repo, number);

@@ -4,7 +4,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import { latestRun, settledLookup } from "../classify/settled.ts";
 import { actionable } from "../decisions.ts";
-import { duplicateHeld, notOwnIntegrationSql } from "../dupes/held.ts";
+import { backlogHeld, duplicateHeld, notOwnIntegrationSql } from "../dupes/held.ts";
 import { headOf } from "../review/candidates.ts";
 import { batchStates } from "./batch-store.ts";
 import { getRule, STATS_SQL, tierOf, type Tier } from "../whitelist.ts";
@@ -12,7 +12,7 @@ import { pilotSql } from "../pilot.ts";
 
 export const QUEUE_STATES = [
   "ready", "decision-answered-merge", "refused", "waiting-ci", "ci-failed", "conflict",
-  "needs-fix-up", "waiting-opus", "waiting-verify", "verify-failed", "verify-error", "needs-decision", "declined", "merged", "held-duplicate",
+  "needs-fix-up", "waiting-opus", "waiting-verify", "verify-failed", "verify-error", "needs-decision", "declined", "merged", "held-duplicate", "held-backlog",
   "batch-checking", "in-batch", "batch-failed",
 ] as const;
 export type QueueState = (typeof QUEUE_STATES)[number];
@@ -205,7 +205,8 @@ export function buildQueue(db: DatabaseSync, opts: QueueOptions = {}): QueueEntr
       verdict: r.verdict, reason: r.reason, fixes, ci, mergeable, state: "needs-decision", path: null, outsideRule,
       decisionId: asked ? id : null, noCi: ci === "none" && noCi(r.repo), answer, refusedReason: null, reviewedAt: r.r_at, verify,
     };
-    e.state = stateOf(e, r.state === "MERGED" || mergedByUs, last, r.state === "OPEN" && !mergedByUs && duplicateHeld(db, r.repo, r.number), r.r_final === 1);
+    const open = r.state === "OPEN" && !mergedByUs;
+    e.state = stateOf(e, r.state === "MERGED" || mergedByUs, last, open && (backlogHeld(db, r.repo, r.number) ? "backlog" : duplicateHeld(db, r.repo, r.number) ? "duplicate" : null), r.r_final === 1);
     const batch = inBatch.get(`${r.repo}#${r.number}@${r.r_head}`);
     if (batch && BATCHABLE.includes(e.state)) e.state = batch;
     out.push(e);
@@ -220,9 +221,10 @@ function verifyState(e: QueueEntry): QueueState | null {
   return s === "failed" ? "verify-failed" : s === "error" ? "verify-error" : "waiting-verify";
 }
 
-function stateOf(e: QueueEntry, merged: boolean, last: { outcome: string; reason: string | null } | undefined, held = false, final = true): QueueState {
+function stateOf(e: QueueEntry, merged: boolean, last: { outcome: string; reason: string | null } | undefined, held: "backlog" | "duplicate" | null | false = null, final = true): QueueState {
   if (merged) return "merged";
-  // An open Duplicate? decision (or a duplicate close) keeps the item out of every later stage.
+  // A Backlog answer, an open Duplicate? decision or a duplicate close keeps the item out of every later stage.
+  if (held === "backlog") return "held-backlog";
   if (held) return "held-duplicate";
   // Sonnet's take or take-fix is not final until Opus has reviewed the head or the skip list exempted it.
   if (!final) return "waiting-opus";

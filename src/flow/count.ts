@@ -244,7 +244,7 @@ function merge(c: Ctx): NodeCount {
     ["merge.unapproved", new Set(ready.filter((e) => !approvedRepos.has(e.repo)).map(ref))],
     ["merge.in-batch", of("batch-checking", "in-batch")],
     ["merge.batch-failed", of("batch-failed")],
-    ["merge.needs-decision", of("needs-decision", "held-duplicate")],
+    ["merge.needs-decision", of("needs-decision", "held-duplicate", "held-backlog")],
     ...(["waiting-ci", "ci-failed", "conflict", "needs-fix-up", "waiting-verify", "verify-failed", "verify-error", "declined"] as const).map((s) => [`merge.${s}`, of(s)] as [string, Refs]),
     ["merge.merged", c.refs(`SELECT DISTINCT repo, number FROM merges WHERE outcome = 'merged' AND at >= :since ${c.andRepo()}`, since)],
   ]);

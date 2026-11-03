@@ -121,8 +121,8 @@ describe("Backlog", () => {
     // Issue 1 has an answered scope decision, issues 2 and 3 are backlogged: Decide asks about none of them.
     assert.deepEqual(decideCandidates(db, "r1", ["app"]).map((c) => c.number), []);
     const states = new Map(buildQueue(db, { repo: "app" }).map((e) => [e.number, e.state]));
-    assert.equal(states.get(7), "held-duplicate");
-    assert.notEqual(states.get(8), "held-duplicate");
+    assert.equal(states.get(7), "held-backlog");
+    assert.notEqual(states.get(8), "held-backlog");
     // Review takes up unreviewed PRs only: forget the reviews, then 4 (backlogged) and 5, 6 (group) and 7 (Merge?) stay out.
     db.exec("DELETE FROM reviews");
     assert.deepEqual(reviewCandidates(db, "app").map((c) => c.number), [8, 9]);

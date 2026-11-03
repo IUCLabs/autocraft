@@ -929,7 +929,7 @@ export interface CommentTemplate {
  * needs-fix-up (take-fix), waiting-opus (Sonnet's take or take-fix; Opus has not reviewed the head yet), waiting-verify (no passed verification at the head yet), verify-failed, verify-error,
  * needs-decision (outside the rule; Merge? asked or about to be),
  * declined (the operator answered hold or close), merged,
- * held-duplicate (an open Duplicate? decision keeps it out of every later stage),
+ * held-duplicate (an open Duplicate? decision keeps it out of every later stage), held-backlog (answered Backlog),
  * batch-checking (in an integration batch whose combined tree is being checked), in-batch (the batch PR is open),
  * batch-failed (failed alone in a batch: on hold until a new head).
  */
@@ -949,6 +949,7 @@ export type QueueState =
   | "declined"
   | "merged"
   | "held-duplicate"
+  | "held-backlog"
   | "batch-checking"
   | "in-batch"
   | "batch-failed";
