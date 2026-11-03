@@ -1,11 +1,11 @@
 // The All, Review, Fix and Verify tabs: open items in work-rank order with the next pipeline step.
-import { QueueBadge } from "../../ui/QueueBadge";
+import { QueueBadge } from "../../ui/molecules/QueueBadge";
 import { Link, useNavigate } from "react-router-dom";
 import type { QueueWorkRow, WorkBreakdown } from "../../api/types";
 import { itemPath } from "../../lib/links";
-import { Badge } from "../../ui/Badge";
+import { Badge } from "../../ui/atoms/Badge";
 import { cn } from "../../ui/cn";
-import { LevelBadge } from "../../ui/PriorityBadge";
+import { LevelBadge } from "../../ui/atoms/PriorityBadge";
 import { RefLink } from "../../ui/RefLink";
 import { FastMark } from "./fastTrack";
 import { RowMenu } from "./RowMenu";

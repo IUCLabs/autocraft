@@ -4,7 +4,7 @@ import { useLayoutEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { CaretRightIcon } from "@phosphor-icons/react";
 import type { BatchState, QueueBatch, QueueMergeRow, QueueRow, QueueState, Tier } from "../../api/types";
-import { Badge, type Tone } from "../../ui/Badge";
+import { Badge, type Tone } from "../../ui/atoms/Badge";
 import { RefLink } from "../../ui/RefLink";
 import { cn } from "../../ui/cn";
 import { ago } from "../../lib/format";

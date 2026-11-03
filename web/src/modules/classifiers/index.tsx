@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { ScalesIcon } from "@phosphor-icons/react";
 import { useQuery } from "../../api/client";
-import { Pending } from "../../ui/Pending";
+import { Pending } from "../../ui/atoms/Pending";
 import type { Agreement, ClassifierReport } from "../../api/types";
 import type { FeatureModule, ViewProps } from "../../registry/types";
 import { cn } from "../../ui/cn";

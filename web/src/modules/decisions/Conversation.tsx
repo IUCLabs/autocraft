@@ -2,9 +2,9 @@ import { useState } from "react";
 import { CheckIcon, PaperPlaneRightIcon, SpinnerIcon, WarningCircleIcon } from "@phosphor-icons/react";
 import { useApi, useQuery } from "../../api/client";
 import type { ConversationCard, ConversationTurn, RepoName } from "../../api/types";
-import { Avatar } from "../../ui/Avatar";
-import { Button } from "../../ui/Button";
-import { Markdown } from "../../ui/Markdown";
+import { Avatar } from "../../ui/atoms/Avatar";
+import { Button } from "../../ui/atoms/Button";
+import { Markdown } from "../../ui/molecules/Markdown";
 import { ago } from "../../lib/format";
 import { useNow } from "../../lib/useNow";
 

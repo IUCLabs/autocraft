@@ -1,6 +1,6 @@
 // Adapted from ArtCraft libs/components/badge (MIT OR Apache-2.0).
 import type { ReactNode } from "react";
-import { cn } from "./cn";
+import { cn } from "../cn";
 
 export type Tone = "neutral" | "ok" | "warn" | "bad" | "accent" | "merged";
 const tones: Record<Tone, string> = {

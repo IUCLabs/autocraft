@@ -1,6 +1,6 @@
 // Items: every issue and PR in the tracked repos, with full-text search and the
 // settled type label. Every filter lives in the URL.
-import { QueueBadge } from "../../ui/QueueBadge";
+import { QueueBadge } from "../../ui/molecules/QueueBadge";
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { Popover } from "radix-ui";
@@ -8,7 +8,7 @@ import { CaretDownIcon, RadioButtonIcon, GitMergeIcon, GitPullRequestIcon, ListI
 import { useQuery } from "../../api/client";
 import type { ItemFilter, ItemList, ItemListRow, ItemSort, Settled, SettledStatus, Snippet, Stage, StatusFilter, TypeLabel } from "../../api/types";
 import type { FeatureModule, ViewProps } from "../../registry/types";
-import { Badge, type Tone } from "../../ui/Badge";
+import { Badge, type Tone } from "../../ui/atoms/Badge";
 import { RefLink } from "../../ui/RefLink";
 import { cn } from "../../ui/cn";
 import { ago, num } from "../../lib/format";

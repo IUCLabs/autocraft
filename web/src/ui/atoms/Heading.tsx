@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { cn } from "./cn";
+import { cn } from "../cn";
 
 /** Small sentence-case section heading. */
 export function SectionTitle({ children, className, as: As = "h2" }: { children: ReactNode; className?: string; as?: "span" | "h2" | "h3" | "div" }) {

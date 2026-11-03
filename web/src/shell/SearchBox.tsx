@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { GitPullRequestIcon, RadioButtonIcon, MagnifyingGlassIcon, SparkleIcon } from "@phosphor-icons/react";
 import { useApi } from "../api/client";
 import type { SearchHit, SimilarHit } from "../api/types";
-import { Kbd } from "../ui/Kbd";
+import { Kbd } from "../ui/atoms/Kbd";
 import { RefLink } from "../ui/RefLink";
 import { cn } from "../ui/cn";
 import { itemPath } from "../lib/links";

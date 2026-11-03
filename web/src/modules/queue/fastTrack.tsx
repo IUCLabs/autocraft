@@ -4,7 +4,7 @@ import { FastForwardIcon, PauseIcon, PlayIcon } from "@phosphor-icons/react";
 import { useApi, useQuery } from "../../api/client";
 import type { FastPosition } from "../../api/types";
 import { useUser } from "../../shell/UserContext";
-import { Button } from "../../ui/Button";
+import { Button } from "../../ui/atoms/Button";
 import { ErrorLine, TextInput, useWrite } from "../admin/parts";
 
 export const refOf = (repo: string, number: number) => `${repo}#${number}`;

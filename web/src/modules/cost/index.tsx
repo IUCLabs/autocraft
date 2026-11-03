@@ -1,7 +1,7 @@
 import { useSearchParams } from "react-router-dom";
 import { CoinsIcon } from "@phosphor-icons/react";
 import { useQuery } from "../../api/client";
-import { Pending } from "../../ui/Pending";
+import { Pending } from "../../ui/atoms/Pending";
 import type { CostReport, UsageTotals } from "../../api/types";
 import type { FeatureModule, ViewProps } from "../../registry/types";
 import { num } from "../../lib/format";

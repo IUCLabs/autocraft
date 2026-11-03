@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 import type { Item, ItemAction, ItemFixup, ItemPatchCheck, ItemReviews, ItemVerification, ReleaseAction, ReviewSide, ReviewVerdictName, TaskResult } from "../../api/types";
 import { useApi } from "../../api/client";
-import { Badge, type Tone } from "../../ui/Badge";
+import { Badge, type Tone } from "../../ui/atoms/Badge";
 import { useUser } from "../../shell/UserContext";
 import { ConfirmButton, ErrorLine, useWrite } from "../admin/parts";
 import { decisionPath } from "../../lib/links";

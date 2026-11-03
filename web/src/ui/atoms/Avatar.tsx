@@ -1,4 +1,4 @@
-import { cn } from "./cn";
+import { cn } from "../cn";
 
 // Square initials tile; no remote avatars (strict CSP, no external requests).
 const HUES = [222, 186, 22, 322, 46, 262, 150];

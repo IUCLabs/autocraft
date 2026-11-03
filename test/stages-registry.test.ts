@@ -11,7 +11,7 @@ import { DEFAULT_PER_DAY, LANES, buildLanes, LIMIT_STEPS, ZERO_ONLY, limitRow } 
 import { STEPS } from "../src/runner/steps.ts";
 import { GLOBAL_WAITS, STAGES, defaultPerDay, lanesInOrder, limitSteps, stageById, stageOfStep, stagesInOrder, zeroOnlySteps } from "../src/stages/registry.ts";
 import { SCRATCH } from "./scratch.ts";
-import { EDGES, STEPS as CARDS } from "../web/src/ui/swimlaneDef.ts";
+import { EDGES, STEPS as CARDS } from "../web/src/ui/organisms/swimlaneDef.ts";
 
 const META = { repo: null, now: "", lastSync: null, run: null, countedAt: null, uncounted: 0 };
 const flow = buildFlow({}, META);

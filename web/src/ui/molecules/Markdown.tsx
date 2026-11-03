@@ -2,9 +2,9 @@ import { Children, isValidElement, useLayoutEffect, useRef, useState } from "rea
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { ImageIcon, ArrowSquareOutIcon } from "@phosphor-icons/react";
-import { cn } from "./cn";
-import { Swimlane } from "./Swimlane";
-import { proxiedImage, remarkHtmlToMarkdown, safeUrl } from "./markdownHtml";
+import { cn } from "../cn";
+import { Swimlane } from "../organisms/Swimlane";
+import { proxiedImage, remarkHtmlToMarkdown, safeUrl } from "../markdownHtml";
 
 export { proxiedImage };
 

@@ -4,7 +4,7 @@ import { useQuery } from "../../api/client";
 import type { DecisionKind } from "../../api/types";
 import type { ViewProps } from "../../registry/types";
 import { cn } from "../../ui/cn";
-import { Count } from "../../ui/Heading";
+import { Count } from "../../ui/atoms/Heading";
 import { KIND_LABEL, KINDS, useDecisionFilter } from "./state";
 
 const AGES = [

@@ -3,8 +3,8 @@ import { ScrollIcon } from "@phosphor-icons/react";
 import { useQuery } from "../../api/client";
 import type { AuditEntry } from "../../api/types";
 import type { FeatureModule } from "../../registry/types";
-import { Button } from "../../ui/Button";
-import { Count } from "../../ui/Heading";
+import { Button } from "../../ui/atoms/Button";
+import { Count } from "../../ui/atoms/Heading";
 import { useIsPhone } from "../../shell/useMedia";
 import { Block, ErrorLine, Page, Pager, selectCls, SortTh, TextInput, useUrlState, when } from "./parts";
 

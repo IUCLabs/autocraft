@@ -2,8 +2,8 @@
 import { useMemo, useState } from "react";
 import { Popover } from "radix-ui";
 import { CheckIcon, CaretDownIcon, MagnifyingGlassIcon } from "@phosphor-icons/react";
-import { useQuery } from "../api/client";
-import { cn } from "./cn";
+import { useQuery } from "../../api/client";
+import { cn } from "../cn";
 
 const SHOWN = 80;
 

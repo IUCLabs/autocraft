@@ -4,7 +4,7 @@ import { useApi } from "../../api/client";
 import type { MergeWait, NextMerge, QueueBatch, QueueMergeRow, QueuePage } from "../../api/types";
 import { itemPath } from "../../lib/links";
 import { useUser } from "../../shell/UserContext";
-import { Badge, type Tone } from "../../ui/Badge";
+import { Badge, type Tone } from "../../ui/atoms/Badge";
 import { RefLink } from "../../ui/RefLink";
 import { Block, ConfirmButton, ErrorLine, useWrite } from "../admin/parts";
 import { FastMark } from "./fastTrack";

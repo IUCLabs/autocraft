@@ -1,7 +1,7 @@
 import { useApi } from "../../api/client";
 import type { TrackedRepo } from "../../api/types";
-import { Badge } from "../../ui/Badge";
-import { Button } from "../../ui/Button";
+import { Badge } from "../../ui/atoms/Badge";
+import { Button } from "../../ui/atoms/Button";
 import { ago, num } from "../../lib/format";
 import { useUser } from "../../shell/UserContext";
 import { ConfirmButton, useWrite } from "./parts";

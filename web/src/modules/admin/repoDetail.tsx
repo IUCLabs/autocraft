@@ -2,7 +2,7 @@ import { Link } from "react-router-dom";
 import { useApi, useQuery } from "../../api/client";
 import type { TrackedRepo } from "../../api/types";
 import type { ViewProps } from "../../registry/types";
-import { Badge } from "../../ui/Badge";
+import { Badge } from "../../ui/atoms/Badge";
 import { num } from "../../lib/format";
 import { useUser } from "../../shell/UserContext";
 import { Block, ConfirmButton, ErrorLine, Page, useWrite } from "./parts";

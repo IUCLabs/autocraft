@@ -12,9 +12,9 @@ import {
   type Icon as PhosphorIcon,
 } from "@phosphor-icons/react";
 import type { Decision, DecisionKind } from "../../api/types";
-import { Avatar } from "../../ui/Avatar";
-import { Kbd } from "../../ui/Kbd";
-import { Count } from "../../ui/Heading";
+import { Avatar } from "../../ui/atoms/Avatar";
+import { Kbd } from "../../ui/atoms/Kbd";
+import { Count } from "../../ui/atoms/Heading";
 import { cn } from "../../ui/cn";
 import { ago } from "../../lib/format";
 import { Refs } from "./Refs";

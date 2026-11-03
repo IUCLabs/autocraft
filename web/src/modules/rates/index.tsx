@@ -6,7 +6,7 @@ import { useQuery } from "../../api/client";
 import type { RateBucket, Rates, UsagePause } from "../../api/types";
 import type { FeatureModule } from "../../registry/types";
 import { num } from "../../lib/format";
-import { Segmented } from "../../ui/Segmented";
+import { Segmented } from "../../ui/molecules/Segmented";
 import { cn } from "../../ui/cn";
 import { Block, ErrorLine, Page } from "../admin/parts";
 

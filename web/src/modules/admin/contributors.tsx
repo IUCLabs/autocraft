@@ -4,11 +4,11 @@ import { SealCheckIcon, PencilSimpleIcon, MagnifyingGlassIcon } from "@phosphor-
 import { useApi, useQuery } from "../../api/client";
 import type { Contributor, ContributorFilter, ContributorList, ContributorSort, RulePreview, Tier, WhitelistRule } from "../../api/types";
 import type { FeatureModule, ViewProps } from "../../registry/types";
-import { Avatar } from "../../ui/Avatar";
-import { Badge, type Tone } from "../../ui/Badge";
-import { Button } from "../../ui/Button";
+import { Avatar } from "../../ui/atoms/Avatar";
+import { Badge, type Tone } from "../../ui/atoms/Badge";
+import { Button } from "../../ui/atoms/Button";
 import { cn } from "../../ui/cn";
-import { Count } from "../../ui/Heading";
+import { Count } from "../../ui/atoms/Heading";
 import { num } from "../../lib/format";
 import { useIsPhone } from "../../shell/useMedia";
 import { Block, ErrorLine, Page, Pager, selectCls, SortTh, TextInput, useUrlState, useWrite, when } from "./parts";

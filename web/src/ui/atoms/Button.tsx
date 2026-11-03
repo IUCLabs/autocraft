@@ -3,7 +3,7 @@
 import { forwardRef, type ButtonHTMLAttributes } from "react";
 import type { Icon as PhosphorIcon } from "@phosphor-icons/react";
 import { CircleNotchIcon } from "@phosphor-icons/react";
-import { cn } from "./cn";
+import { cn } from "../cn";
 
 export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   icon?: PhosphorIcon;

@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { QueueBadge } from "../../ui/QueueBadge";
+import { QueueBadge } from "../../ui/molecules/QueueBadge";
 import { Link } from "react-router-dom";
 import {
   RadioButtonIcon,
@@ -18,21 +18,21 @@ import {
   type Icon as PhosphorIcon,
 } from "@phosphor-icons/react";
 import { useQuery } from "../../api/client";
-import { Pending } from "../../ui/Pending";
+import { Pending } from "../../ui/atoms/Pending";
 import type { CiState, Classification, Item, ItemComment, Stage, Tier } from "../../api/types";
 import { ItemPath } from "../flow/ItemPath";
 import type { FeatureModule, ViewProps } from "../../registry/types";
 import { Slot } from "../../registry/Slot";
-import { Avatar } from "../../ui/Avatar";
+import { Avatar } from "../../ui/atoms/Avatar";
 import { RefLink } from "../../ui/RefLink";
 import { FastMarkFor, FastToggle, HoldToggle } from "../queue/fastTrack";
-import { Badge, type Tone } from "../../ui/Badge";
-import { PriorityBadge } from "../../ui/PriorityBadge";
-import { Count } from "../../ui/Heading";
+import { Badge, type Tone } from "../../ui/atoms/Badge";
+import { PriorityBadge } from "../../ui/atoms/PriorityBadge";
+import { Count } from "../../ui/atoms/Heading";
 import { cn } from "../../ui/cn";
 import { ago, num } from "../../lib/format";
 import { KindTag, tallyOf } from "../decisions/parts";
-import { Markdown, Collapsible } from "../../ui/Markdown";
+import { Markdown, Collapsible } from "../../ui/molecules/Markdown";
 import { useIsPhone } from "../../shell/useMedia";
 import { SettledBadge } from "../items";
 import { PrWork } from "./PrWork";

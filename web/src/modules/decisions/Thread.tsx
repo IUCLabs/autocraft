@@ -2,16 +2,16 @@ import { useState } from "react";
 import { useApi, useQuery } from "../../api/client";
 import type { Decision } from "../../api/types";
 import type { ViewProps } from "../../registry/types";
-import { Avatar } from "../../ui/Avatar";
+import { Avatar } from "../../ui/atoms/Avatar";
 import { cn } from "../../ui/cn";
-import { Count } from "../../ui/Heading";
+import { Count } from "../../ui/atoms/Heading";
 import { ago } from "../../lib/format";
 import { localActions, useDecisionList, usePinned, useSelection } from "./state";
 import { scrollToWorkflow } from "./Workflow";
 import { canAct, canComment } from "../../registry/permissions";
 import { FeedbackBox } from "./FeedbackBox";
 import { Conversation } from "./Conversation";
-import { Segmented } from "../../ui/Segmented";
+import { Segmented } from "../../ui/molecules/Segmented";
 import { useNow } from "../../lib/useNow";
 
 /** Desktop side panel: the Opus conversation and the feedback on the decision. Operators select a pick in the Workflow box. */

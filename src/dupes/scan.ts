@@ -2,7 +2,7 @@
 // stored embed_hash differs from the one at its last scan), its nearest
 // neighbours in the same repo from the vector index.
 import type { DatabaseSync } from "node:sqlite";
-import { notOwnIntegrationSql } from "../dupes/held.ts";
+import { notOwnIntegrationSql } from "./held.ts";
 import type { VectorIndex } from "../embed/vectors.ts";
 import { pilotSql } from "../pilot.ts";
 
