@@ -12,9 +12,9 @@ import { cachedDiff } from "../review/diff.ts";
 import { checkLine, parseCheck, recordCheck } from "../patchcheck/index.ts";
 import { CHECK_DIFF_CAP, CHECK_PATCH_CAP } from "../patchcheck/types.ts";
 import { CLAUDE_PROMPTS } from "../prompts/index.ts";
-import { classifyConflicts, type ConflictCandidate } from "./conflict-state.ts";
+import { classifyConflicts, MAX_CONFLICT_TRIES, type ConflictCandidate } from "./conflict-state.ts";
 import type { Git } from "./git.ts";
-import type { FixupDeps, FixupSummary, Who } from "./index.ts";
+import type { FixupDeps, FixupSummary, PrNode, Who } from "./index.ts";
 import { hasMarkers, parseResolution, resolvablePath, type ConflictPr } from "./patch.ts";
 import { BASE_ORG, pushable } from "./pushable.ts";
 import { conflictAskText, conflictCommentText, mergeMessage } from "./template.ts";
@@ -24,13 +24,15 @@ const BASE_NAME = /^[A-Za-z0-9._/-]+$/;
 const FILE_CAP = 40_000;
 const TOTAL_CAP = 120_000;
 
-type PrNode = { id: string; state: string; isDraft: boolean; headRefOid: string; headRefName: string; maintainerCanModify: boolean; mergeable: string | null; headRepository: { nameWithOwner: string } | null };
 
 export type ConflictRun = {
   repo: string; runId: string; log: (line: string) => void; d: FixupDeps; gw: Writer; at: () => string; summary: FixupSummary;
   prQuery: string; scrub: (raw: string) => string; who: () => Promise<Who>; git: () => Git;
   /** Called once per PR handled. */
   onHandled?: (n: number) => void; handled: { n: number };
+  /** Assigns the PR to the pipeline's account when nobody is assigned; takes our assignment back when the stage gives up. */
+  claim: (c: ConflictCandidate, pr: PrNode) => Promise<void>;
+  release: (c: ConflictCandidate) => Promise<void>;
 };
 
 const refOf = (c: { repo: string; number: number }) => `${c.repo}#${c.number}`;
@@ -82,7 +84,9 @@ export async function mergeConflict(db: DatabaseSync, x: ConflictRun, c: Conflic
   const ref = refOf(c);
   let files: string[] = [];
   let baseSha: string | null = null;
+  let gaveUp = false;
   const fail = (state: "failed" | "refused" | "rejected", raw: string) => {
+    if (state === "rejected" || c.attempt >= MAX_CONFLICT_TRIES) gaveUp = true;
     const reason = x.scrub(raw);
     record(db, x.at(), c, state, reason, files, baseSha);
     x.summary.failed.push({ ref, reason });
@@ -95,6 +99,7 @@ export async function mergeConflict(db: DatabaseSync, x: ConflictRun, c: Conflic
     if (pr.mergeable !== "CONFLICTING") { x.log(`  ${ref}: skipped: GitHub no longer reports a conflict`); return; }
     if (!pr.headRepository || !pushable(pr.headRepository.nameWithOwner, x.repo, pr.maintainerCanModify)) { x.log(`  ${ref}: skipped: the branch is no longer pushable`); return; }
     x.onHandled?.(++x.handled.n);
+    await x.claim(c, pr);
     const git = x.git();
     const head = await git.fetchPr(BASE_ORG, x.repo, c.number);
     if (head !== c.head) { x.log(`  ${ref}: skipped: fetched head ${short(head)} is not the reviewed ${short(c.head)}`); return; }
@@ -168,5 +173,7 @@ export async function mergeConflict(db: DatabaseSync, x: ConflictRun, c: Conflic
     if (cm.code !== 0) x.log(`  ${ref}: comment failed: ${oneLine(cm.stderr)}`);
   } catch (e) {
     fail("failed", oneLine(String((e as Error).message ?? e)));
+  } finally {
+    if (gaveUp) await x.release(c);
   }
 }

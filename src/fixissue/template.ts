@@ -1,6 +1,9 @@
 // Texts the Fix stage writes on GitHub. No Node imports: the prompt registry shows them on the Prompts page.
 
 export const COMMENT_TEMPLATE = "A PR for this is in progress: {{url}}.";
+/** The comment posted once on an issue when the pipeline starts a fix for it. */
+export const CLAIM_COMMENT_TEMPLATE = "A PR for this is in progress.";
+export const claimCommentText = (): string => CLAIM_COMMENT_TEMPLATE;
 export const PR_TITLE_TEMPLATE = "Fix {{title}}";
 export const PR_BODY_TEMPLATE = "Fixes #{{number}}.\n\n{{change}}\n\n{{test}}\n";
 

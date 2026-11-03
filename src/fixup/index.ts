@@ -17,7 +17,8 @@ import { askClaude } from "../classify/run.ts";
 import { REPO_PATH } from "../sandbox/command.ts";
 import { checkoutForPr } from "../sandbox/index.ts";
 import { audit } from "../dash/audit.ts";
-import { assignTo, ghComment, ghEditComment, pushBranch, type Writer } from "../github/write.ts";
+import { ghComment, ghEditComment, pushBranch, type Writer } from "../github/write.ts";
+import { claimItem, releaseItem, type Assignable } from "../github/claim.ts";
 import { connect } from "../db.ts";
 import { Client, type Querier } from "../mirror.ts";
 import { CLAUDE_PROMPTS } from "../prompts/index.ts";
@@ -30,6 +31,7 @@ import { Git, exec, fixupDir, type Exec } from "./git.ts";
 import { scrubGitError } from "../worker/patch.ts";
 import { pushable, BASE_ORG } from "./pushable.ts";
 import { askConflict, mergeConflict, type ConflictRun } from "./conflict.ts";
+import type { ConflictCandidate } from "./conflict-state.ts";
 import { editable, validatePatch, type ConflictPr, type FixupPr } from "./patch.ts";
 import { HOLD_CANNOT_PUSH, askText, carryCommentText, commentText, commitMessage } from "./template.ts";
 import { commentApprovalOf } from "../act/approval.ts";
@@ -232,9 +234,24 @@ export async function runFixup(db: DatabaseSync, params: FixupParams, log: (line
   for (const c of asks) await askOne(c);
   const git = new Git(d.exec, d.root, repo);
   let whoP: Promise<Who> | undefined;
+  const me = async () => { const w = await (whoP ??= whoAmI(d.exec)); return { id: w.nodeId, login: w.login }; };
+  const infoOf = (pr: PrNode | null | undefined): Assignable | null => (pr ? { id: pr.id, state: pr.state, assignees: (pr.assignees?.nodes ?? []).map((a) => a.login) } : null);
+  /** Takes a PR the stage is about to work on when nobody is assigned. */
+  const claim = async (c: FixCandidate | ConflictCandidate, pr: PrNode): Promise<void> => {
+    try {
+      if (await claimItem(gw, d.querier, repo, c.number, infoOf(pr)!, await me(), { run: runId })) log(`  ${refOf(c)}: assigned to ${(await me()).login}`);
+    } catch (e) { log(`  ${refOf(c)}: could not assign: ${oneLine(String((e as Error).message ?? e))}`); }
+  };
+  /** Takes our assignment back when the stage gives the PR up. */
+  const release = async (c: FixCandidate | ConflictCandidate): Promise<void> => {
+    try {
+      const r = await d.querier.query(PR_QUERY, { name: repo, n: c.number }) as { repository?: { pullRequest?: PrNode | null } };
+      if (await releaseItem(gw, d.querier, repo, c.number, infoOf(r.repository?.pullRequest), await me(), { run: runId })) log(`  ${refOf(c)}: unassigned`);
+    } catch (e) { log(`  ${refOf(c)}: could not unassign: ${oneLine(String((e as Error).message ?? e))}`); }
+  };
   const conflictRun: ConflictRun = {
     repo, runId, log, d, gw, at, summary, prQuery: PR_QUERY, scrub: (raw) => scrubReason(raw, d.root), git: () => git,
-    who: () => (whoP ??= whoAmI(d.exec)), onHandled: params.onHandled, handled: { n: handled },
+    who: () => (whoP ??= whoAmI(d.exec)), onHandled: params.onHandled, handled: { n: handled }, claim, release,
   };
   for (const c of cAsks) await askConflict(db, conflictRun, c);
   if (!picks.length && !cMerges.length) return summary;
@@ -244,13 +261,16 @@ export async function runFixup(db: DatabaseSync, params: FixupParams, log: (line
   for (const c of picks) {
     const ref = refOf(c);
     let files = [...new Set(c.fixes.map((f) => f.file))];
+    let gaveUp = false;
     const fail = (state: "failed" | "refused" | "rejected", raw: string) => {
+      if (state === "rejected" || c.attempt >= MAX_ATTEMPTS) gaveUp = true;
       const reason = scrubReason(raw, d.root);
       rec.fixup(c, state, reason, files);
       summary.failed.push({ ref, reason });
       log(`  ${ref}: ${state}: ${reason}`);
     };
     const hold = (state: "cannot-push" | "too-large", raw: string) => {
+      gaveUp = true;
       const reason = scrubReason(raw, d.root);
       rec.fixup(c, state, reason, files);
       summary.held.push({ ref, reason });
@@ -279,6 +299,8 @@ export async function runFixup(db: DatabaseSync, params: FixupParams, log: (line
         files = [...new Set(c.fixes.map((f) => f.file))];
       }
       if (pr.mergeable === "CONFLICTING") { log(`  ${ref}: skipped: conflicts with the base branch; the conflict merge handles it`); continue; }
+      // Claimed as soon as the live check passes, before the model calls, so nobody else starts on it.
+      if (!c.carry) await claim(c, pr);
 
       const head = await git.fetchPr(ORG, repo, c.number);
       if (head !== c.head) { log(`  ${ref}: skipped: fetched head ${short(head)} is not the reviewed ${short(c.head)}`); continue; }
@@ -339,12 +361,6 @@ export async function runFixup(db: DatabaseSync, params: FixupParams, log: (line
       if (!now || now.state !== "OPEN" || now.isDraft) { log(`  ${ref}: skipped: no longer an open, non-draft PR after the model calls`); continue; }
       if (now.headRefOid !== c.head) { log(`  ${ref}: skipped: head moved to ${short(now.headRefOid)} during the model calls`); continue; }
 
-      // Claim after the patch is validated and approved, just before the push.
-      if (!c.carry && !(now.assignees?.nodes ?? []).length) {
-        await assignTo(gw, d.querier, { repo, number: c.number, id: now.id }, { id: who.nodeId, login: who.login }, { run: runId });
-        log(`  ${ref}: assigned to ${who.login}`);
-      }
-
       const push = await pushBranch(gw, git, "fixup-push", { repo, number: c.number, remote: pr.headRepository.nameWithOwner, branch: pr.headRefName, sha: commit, expected: head }, { run: runId, from: head, to: commit, files: v.files, changed: v.changed });
       if (push.code !== 0) {
         const err = oneLine(push.stderr);
@@ -362,6 +378,8 @@ export async function runFixup(db: DatabaseSync, params: FixupParams, log: (line
       if (cm.code !== 0) log(`  ${ref}: comment failed: ${oneLine(cm.stderr)}`);
     } catch (e) {
       fail("failed", oneLine(String((e as Error).message ?? e)));
+    } finally {
+      if (gaveUp && !c.carry) await release(c);
     }
   }
   conflictRun.handled.n = handled;

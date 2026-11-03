@@ -22,7 +22,7 @@ import { COMMENT_MAX, OPENING_MAX, SAMPLE_CONVERSATION, type ConversationInput }
 import { RECOMMEND_BODY_LIMIT, RECOMMEND_REASON_MAX, SAMPLE_RECOMMEND, type RecommendInput } from "../decide/recommend-types.ts";
 import { SAMPLE_COMPARE_ISSUES, SAMPLE_COMPARE_PRS, SAMPLE_CONFLICT_PRS, SAMPLE_DUPE_PAIRS, SAMPLE_FIXUP_PRS, SAMPLE_ITEMS, SAMPLE_OPUS_PRS, SAMPLE_REVIEW_PRS } from "./samples.ts";
 import { LEVELS, LEVEL_MEANING } from "../priority/score.ts";
-import { COMMENT_TEMPLATE as FIXISSUE_COMMENT, PR_BODY_TEMPLATE, PR_TITLE_TEMPLATE } from "../fixissue/template.ts";
+import { CLAIM_COMMENT_TEMPLATE as FIXISSUE_CLAIM, COMMENT_TEMPLATE as FIXISSUE_COMMENT, PR_BODY_TEMPLATE, PR_TITLE_TEMPLATE } from "../fixissue/template.ts";
 import { MAX_FILES, MAX_PATHS, MAX_ROUNDS, ISSUE_BODY_LIMIT, SAMPLE_PATCH, SAMPLE_TRIAGE, TRIAGE_REASON_WORDS, type PatchInput, type TriageInput } from "../fixissue/types.ts";
 import { MAX_CRATES, MAX_FILTERS, MAX_SUMMARY_WORDS, MAX_TEST_LINES, PLAN_BODY_LIMIT, REGRESSION_FILE, SAMPLE_VERIFY_PLAN, SAMPLE_VERIFY_SUMMARY, SUMMARY_LOG_BYTES, type VerifyPlanInput, type VerifySummaryInput } from "../verify/types.ts";
 
@@ -492,6 +492,7 @@ Reply with ONLY a unified diff in git format against the file contents shown: fo
   validation: `${CLAUDE_RESULT} The text is read as a diff, ignoring a surrounding Markdown fence. It is kept only when every edited file is one the triage named, it adds exactly the test file and no other new, deleted, renamed, mode-changed, symlink or binary file, it changes at most 300 lines in all, and \`git apply --check\` accepts it on the default branch head. A diff that fails is a failed round; at most ${MAX_ROUNDS} rounds are made.`,
   limits: { perCall: 1, attempts: 1, timeoutSeconds: 900 },
   extra: [
+    { label: "Comment on the issue when a fix is started", value: FIXISSUE_CLAIM },
     { label: "Comment on the issue after the PR is open", value: FIXISSUE_COMMENT },
     { label: "PR title", value: PR_TITLE_TEMPLATE },
     { label: "PR body", value: PR_BODY_TEMPLATE },

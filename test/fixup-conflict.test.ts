@@ -115,6 +115,7 @@ describe("conflict merge", () => {
     assert.equal(git(w.fork, "show", `${pushed}:g.txt`), "x\ny");
     assert.equal(git(w.fork, "show", `${pushed}:f.txt`), "a\nb\nc\nd");
     assert.equal(git(w.fork, "log", "-1", "--format=%s", pushed), "Merge main into feat");
+    assert.ok(w.log.indexOf("assign") >= 0 && w.log.indexOf("assign") < w.log.findIndex((l) => l.startsWith("push")), "assigned before the push");
     assert.deepEqual(w.log.filter((l) => l.startsWith("push") || l.startsWith("comment") || l === "check"), [`push --force-with-lease=refs/heads/feat:${w.head}`, `comment: ${conflictCommentText("main")}`]);
     assert.equal(conflictCommentText("main"), "Merged main into this branch to resolve the conflict.");
     assert.ok(CONFLICT_COMMENT_TEMPLATE.includes("{{base}}"));

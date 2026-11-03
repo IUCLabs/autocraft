@@ -138,7 +138,7 @@ describe("patch validation", () => {
 
 // ---- the whole step against real git, with the network replaced ------------
 
-type World = { fork: string; base: string; head: string; log: string[]; deps: FixupDeps; movedBeforePush?: boolean };
+type World = { assigned: string[]; fork: string; base: string; head: string; log: string[]; deps: FixupDeps; movedBeforePush?: boolean };
 
 /** A fork repository with branch `fix` at `head`, standing in for both the base repo's pull ref and the contributor's fork. */
 const APPROVE = JSON.stringify({ verdict: "approve", reasons: "matches the listed fix", problems: [] });
@@ -159,16 +159,21 @@ function world(opts: { check?: string | null; reply?: string | null; moveBranch?
   git(root, "clone", "-q", "--bare", work, fork);
   git(fork, "update-ref", "refs/pull/7/head", head);
   const log: string[] = [];
-  const w: World = { fork, base: root, head, log, deps: undefined as never };
+  const w: World = { assigned: [...(opts.assignees ?? [])], fork, base: root, head, log, deps: undefined as never };
   const good = "diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1,2 +1,2 @@\n-fn a() {}\n-fn main() { a(); }\n+fn b() {}\n+fn main() { b(); }\n";
   const querier: Querier = validating({
     spent: 0, remaining: 5000,
     async query(q: string) {
-      if (q.startsWith("mutation")) { log.push("assign"); return {}; }
+      if (q.startsWith("mutation")) {
+        const adding = q.includes("addAssignees");
+        log.push(adding ? "assign" : "unassign");
+        w.assigned = adding ? [...w.assigned, "pipeline-bot"] : w.assigned.filter((l) => l !== "pipeline-bot");
+        return {};
+      }
       log.push("pr-info");
       return { repository: { pullRequest: {
         id: "PR7", state: "OPEN", isDraft: false, headRefOid: head, headRefName: "fix", maintainerCanModify: opts.canModify !== false, mergeable: "MERGEABLE",
-        headRepository: { nameWithOwner: "contrib/app" }, assignees: { nodes: (opts.assignees ?? []).map((login) => ({ login })) },
+        headRepository: { nameWithOwner: "contrib/app" }, assignees: { nodes: w.assigned.map((login) => ({ login })) },
       } } };
     },
   });
@@ -214,7 +219,7 @@ describe("fixup step", () => {
     assert.equal(git(w.fork, "log", "-1", "--format=%an <%ae>%n%B", pushed).split("\n")[0], "pipeline-bot <42+pipeline-bot@users.noreply.github.com>");
     assert.match(git(w.fork, "log", "-1", "--format=%B", pushed), /^Apply review fixes\n\n- src\/lib\.rs/);
     assert.deepEqual(w.log.filter((l) => !l.startsWith("pr-info")), [
-      "model", "check", "assign", `push --force-with-lease=refs/heads/fix:${w.head} ${pushed}:refs/heads/fix`, `comment: ${commentText(["src/lib.rs"])}`,
+      "assign", "model", "check", `push --force-with-lease=refs/heads/fix:${w.head} ${pushed}:refs/heads/fix`, `comment: ${commentText(["src/lib.rs"])}`,
     ]);
     assert.equal(commentText(["src/lib.rs"]), "Pushed the small fixes from review: `src/lib.rs`.");
     assert.ok(COMMENT_TEMPLATE.includes("{{files}}"));
@@ -233,7 +238,7 @@ describe("fixup step", () => {
     assert.deepEqual(s.pushed, []);
     assert.equal(s.failed.length, 1);
     assert.equal(git(w.fork, "rev-parse", "refs/heads/fix"), before);
-    assert.deepEqual(w.log.filter((l) => !l.startsWith("pr-info")), ["model", "check"]);
+    assert.deepEqual(w.log.filter((l) => !l.startsWith("pr-info")), ["assign", "model", "check", "unassign"]);
     const f = rows(db, "SELECT state, reason, attempt FROM fixups");
     assert.equal(f.length, 1);
     assert.equal(f[0]!.state, "rejected");
@@ -392,10 +397,38 @@ describe("fixup step", () => {
     assert.equal(validatePatch(patch.replaceAll("build.rs", "src/lib.rs"), ["src/lib.rs"]).ok, true);
   });
 
-  test("a PR whose patch is refused is not assigned", async () => {
+  test("assigned when picked up, kept after a refused first try, released only when out of tries and we are the sole assignee", async () => {
     const w = world({ reply: "not a diff" });
-    await runFixup(fresh(w.head), { repo: "app", dryRun: false }, () => {}, w.deps);
-    assert.ok(!w.log.includes("assign"));
+    const db = fresh(w.head);
+    await runFixup(db, { repo: "app", dryRun: false }, () => {}, w.deps);
+    assert.deepEqual(w.log.filter((l) => l === "assign" || l === "unassign"), ["assign"]);
+    await runFixup(db, { repo: "app", dryRun: false }, () => {}, w.deps);
+    assert.deepEqual(w.log.filter((l) => l === "assign" || l === "unassign"), ["assign", "unassign"]);
+    assert.deepEqual(w.assigned, []);
+    assert.deepEqual(rows(db, "SELECT action FROM audit WHERE action IN ('assign', 'unassign') ORDER BY rowid").map((r) => r.action), ["assign", "unassign"]);
+  });
+
+  test("a PR someone else is assigned to is neither claimed nor released", async () => {
+    const w = world({ reply: "not a diff", assignees: ["someone"] });
+    const db = fresh(w.head);
+    for (let i = 0; i < 2; i++) await runFixup(db, { repo: "app", dryRun: false }, () => {}, w.deps);
+    assert.ok(!w.log.includes("assign") && !w.log.includes("unassign"));
+  });
+
+  test("no release when the audit does not show our assignment, even as the sole assignee", async () => {
+    const w = world({ reply: "not a diff", assignees: ["pipeline-bot"] });
+    const db = fresh(w.head);
+    for (let i = 0; i < 2; i++) await runFixup(db, { repo: "app", dryRun: false }, () => {}, w.deps);
+    assert.ok(!w.log.includes("unassign"));
+  });
+
+  test("an Opus reject releases our assignment at once; a push keeps it", async () => {
+    const r = world({ check: REJECT });
+    await runFixup(fresh(r.head), { repo: "app", dryRun: false }, () => {}, r.deps);
+    assert.deepEqual(r.log.filter((l) => l === "assign" || l === "unassign"), ["assign", "unassign"]);
+    const p = world();
+    await runFixup(fresh(p.head), { repo: "app", dryRun: false }, () => {}, p.deps);
+    assert.deepEqual(p.log.filter((l) => l === "assign" || l === "unassign"), ["assign"]);
   });
 
   test("stored reasons carry no absolute path", () => {
