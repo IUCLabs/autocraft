@@ -89,10 +89,12 @@ type ClassRow = {
 };
 
 export function classificationsOf(db: DatabaseSync, repo: string, n: number): Classification[] {
-  // latest verdict per classifier
-  const rows = db.prepare(`SELECT classifier, at, type_label, want, reference, reason, dup_of FROM classifications c
-    WHERE repo = ? AND number = ? AND at = (SELECT MAX(at) FROM classifications x WHERE x.repo = c.repo AND x.number = c.number AND x.classifier = c.classifier)
-    ORDER BY classifier`).all(repo, n) as ClassRow[];
+  // Latest verdict per classifier, picked here: a correlated MAX(at) subquery makes SQLite walk the (classifier, at) index.
+  const all = db.prepare(`SELECT classifier, at, type_label, want, reference, reason, dup_of FROM classifications
+    WHERE repo = ? AND number = ? ORDER BY classifier`).all(repo, n) as ClassRow[];
+  const latest = new Map<string, string>();
+  for (const r of all) if (!latest.has(r.classifier) || r.at > latest.get(r.classifier)!) latest.set(r.classifier, r.at);
+  const rows = all.filter((r) => r.at === latest.get(r.classifier));
   return rows.map((r) => ({
     classifier: r.classifier as Classification["classifier"], at: r.at,
     typeLabel: r.type_label as Classification["typeLabel"], want: (r.want ?? "unclear") as Classification["want"],
