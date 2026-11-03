@@ -5,6 +5,7 @@ export const GITHUB_ACTIONS: Record<string, string> = {
   "label-create": "Created label",
   "act-comment": "Commented",
   "fixup-comment": "Commented",
+  "fixup-comment-edit": "Edited comment",
   "fixissue-comment": "Commented",
   "act-close": "Closed",
   "batch-pr-close": "Closed PR",

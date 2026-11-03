@@ -161,6 +161,12 @@ export function ghComment(w: Writer, exec: Exec, action: string, o: { repo: stri
     [o.pr ? "pr" : "issue", "comment", String(o.number), "--repo", `${ORG}/${o.repo}`, "--body-file", "-"], body);
 }
 
+/** Replaces the body of a comment we posted (`commentId` is the number in its `#issuecomment-` URL). */
+export function ghEditComment(w: Writer, exec: Exec, action: string, o: { repo: string; number: number; commentId: string }, body: string, details: Details = {}): Promise<ExecResult> {
+  return viaGh(w, exec, action, refOf(o.repo, o.number), { ...details, text: body, comment: o.commentId },
+    ["api", "-X", "PATCH", `repos/${ORG}/${o.repo}/issues/comments/${o.commentId}`, "-F", "body=@-"], body);
+}
+
 export function ghOpenPr(w: Writer, exec: Exec, action: string, o: { repo: string; target: string; base: string; head: string; title: string; body: string }, details: Details = {}): Promise<ExecResult> {
   return viaGh(w, exec, action, o.target, details,
     ["pr", "create", "--repo", `${ORG}/${o.repo}`, "--base", o.base, "--head", o.head, "--title", o.title, "--body-file", "-"], o.body);

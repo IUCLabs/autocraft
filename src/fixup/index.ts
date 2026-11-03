@@ -4,6 +4,7 @@
 // contributor's branch. The new head gets reviewed again by the Review stage.
 //
 //   craft-auto fixup --repo R [--limit N] [--apply]
+//   craft-auto fixup repost R#N [--apply]
 //   craft-auto push-approval [--repo R]
 //
 // Without --apply it is a dry run: local tables only, nothing called or written.
@@ -16,7 +17,7 @@ import { askClaude } from "../classify/run.ts";
 import { REPO_PATH } from "../sandbox/command.ts";
 import { checkoutForPr } from "../sandbox/index.ts";
 import { audit } from "../dash/audit.ts";
-import { assignTo, ghComment, pushBranch, type Writer } from "../github/write.ts";
+import { assignTo, ghComment, ghEditComment, pushBranch, type Writer } from "../github/write.ts";
 import { connect } from "../db.ts";
 import { Client, type Querier } from "../mirror.ts";
 import { CLAUDE_PROMPTS } from "../prompts/index.ts";
@@ -24,7 +25,7 @@ import { cachedDiff, ghDiff, type DiffFetcher } from "../review/diff.ts";
 import { checkLine, parseCheck, recordCheck } from "../patchcheck/index.ts";
 import { CHECK_DIFF_CAP, CHECK_PATCH_CAP, type FixupCheckInput } from "../patchcheck/types.ts";
 import { pushApprovalOf } from "./approval.ts";
-import { MAX_ATTEMPTS, selectFixups, type FixCandidate } from "./candidates.ts";
+import { MAX_ATTEMPTS, parseFixes, selectFixups, type FixCandidate } from "./candidates.ts";
 import { Git, exec, fixupDir, type Exec } from "./git.ts";
 import { scrubGitError } from "../worker/patch.ts";
 import { editable, validatePatch, type FixupPr } from "./patch.ts";
@@ -358,6 +359,32 @@ function oneTitle(db: DatabaseSync, c: FixCandidate): string {
   return ((db.prepare("SELECT title FROM items WHERE repo = ? AND number = ?").get(c.repo, c.number) as { title: string | null } | undefined)?.title ?? "").slice(0, 300);
 }
 
+export type RepostResult = { status: "unchanged" | "dry-run" | "edited" | "failed"; old: string; text: string };
+
+/**
+ * Re-posts the ask comment of a PR we asked, by editing the comment we posted, from the fix list of the review at the
+ * head the ask was made on. Does nothing when the text equals the one last recorded for that comment.
+ */
+export async function repostAsk(db: DatabaseSync, repo: string, number: number, apply: boolean, run: Exec = exec): Promise<RepostResult> {
+  const state = db.prepare("SELECT state, from_head FROM fixups WHERE repo = ? AND number = ? ORDER BY created_at DESC, rowid DESC LIMIT 1").get(repo, number) as { state: string; from_head: string } | undefined;
+  if (state?.state !== "asked") throw new Error(`${repo}#${number} is not in the asked state`);
+  const rows = db.prepare("SELECT action, details FROM audit WHERE target = ? AND action IN ('fixup-comment', 'fixup-comment-edit') ORDER BY rowid DESC").all(`${repo}#${number}`) as { action: string; details: string }[];
+  const ds = rows.map((r) => ({ action: r.action, d: JSON.parse(r.details) as { state?: string; url?: string; text?: string; comment?: string } })).filter((r) => r.d.state === "done");
+  const last = ds[0];
+  const url = ds.find((r) => r.action === "fixup-comment" && r.d.url)?.d.url;
+  const id = /#issuecomment-(\d+)$/.exec(url ?? "")?.[1];
+  if (!last || !id) throw new Error(`no recorded ask comment for ${repo}#${number}`);
+  const review = db.prepare("SELECT fixes FROM final_reviews WHERE repo = ? AND number = ? AND head_oid = ? AND final = 1 AND verdict = 'take-fix'").get(repo, number, state.from_head) as { fixes: string | null } | undefined;
+  const fixes = parseFixes(review?.fixes ?? null);
+  if (!fixes.length) throw new Error(`no fix list for ${repo}#${number} at ${state.from_head.slice(0, 7)}`);
+  const old = last.d.text ?? "";
+  const text = askText(fixes);
+  if (text === old) return { status: "unchanged", old, text };
+  if (!apply) return { status: "dry-run", old, text };
+  const r = await ghEditComment({ db, login: ACTOR }, run, "fixup-comment-edit", { repo, number, commentId: id }, text, { head: state.from_head });
+  return { status: r.code === 0 ? "edited" : "failed", old, text };
+}
+
 function parseArgs(args: string[]): { repo: string; limit?: number; apply: boolean } {
   let repo: string | undefined, limit: number | undefined, apply = false;
   for (let i = 0; i < args.length; i++) {
@@ -374,8 +401,16 @@ function parseArgs(args: string[]): { repo: string; limit?: number; apply: boole
 
 export const commands = {
   fixup: {
-    summary: "fixup --repo R [--limit N] [--apply]: push the review's small fixes to take-fix PRs we may push to (dry run unless --apply)",
+    summary: "fixup --repo R [--limit N] [--apply] | fixup repost <repo>#<n> [--apply]: push the review's small fixes to take-fix PRs we may push to; repost edits our ask comment to the full fix list (dry run unless --apply)",
     async run(args: string[]): Promise<void> {
+      if (args[0] === "repost") {
+        const m = /^([^#\s]+)#(\d+)$/.exec(args[1] ?? "");
+        if (!m || args.slice(2).some((a) => a !== "--apply")) throw new Error("usage: craft-auto fixup repost <repo>#<n> [--apply]");
+        const r = await repostAsk(connect(), m[1]!, Number(m[2]), args.includes("--apply"));
+        console.log(`old:\n${r.old}\n\nnew:\n${r.text}\n\n${r.status}`);
+        if (r.status === "failed") process.exitCode = 1;
+        return;
+      }
       const f = parseArgs(args);
       await runFixup(connect(), { repo: f.repo, limit: f.limit, dryRun: !f.apply });
     },

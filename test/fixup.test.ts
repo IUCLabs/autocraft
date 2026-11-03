@@ -9,7 +9,7 @@ import type { Querier } from "../src/mirror.ts";
 import { pushApprovalOf, setPushApproval } from "../src/fixup/approval.ts";
 import { selectFixups } from "../src/fixup/candidates.ts";
 import { exec, type Exec, type ExecResult } from "../src/fixup/git.ts";
-import { runFixup, scrubReason, type FixupDeps } from "../src/fixup/index.ts";
+import { repostAsk, runFixup, scrubReason, type FixupDeps } from "../src/fixup/index.ts";
 import { validatePatch } from "../src/fixup/patch.ts";
 import { setCommentApproval } from "../src/act/approval.ts";
 import { ASK_ITEM_MAX, COMMENT_TEMPLATE, askText, commentText } from "../src/fixup/template.ts";
@@ -420,5 +420,44 @@ describe("review of a moved head", () => {
     assert.equal(selectCandidates(db, "app").length, 0);
     db.prepare("UPDATE items SET head_oid = 'h2', updated_at = '2026-01-03T00:00:00Z'").run();
     assert.deepEqual(selectCandidates(db, "app").map((c) => c.head_oid), ["h2"]);
+  });
+});
+
+describe("fixup repost", () => {
+  test("edits the recorded ask comment to the full text once, records it, and does nothing when the text matches", async () => {
+    const w = world();
+    const db = fresh(w.head, { canModify: false });
+    setCommentApproval(db, "op", "app", true);
+    const long = "y".repeat(400);
+    db.prepare("UPDATE reviews SET fixes = ?").run(JSON.stringify([{ file: "src/lib.rs", change: long }]));
+    const url = "https://github.com/storytold/app/pull/7#issuecomment-555";
+    const edits: string[][] = [];
+    const run: Exec = async (cmd, args, o) => {
+      if (cmd === "gh" && args[0] === "api" && args.includes("PATCH")) { edits.push([...args, String(o?.input)]); return { code: 0, stdout: "{}", stderr: "" }; }
+      if (cmd === "gh" && args[1] === "comment") return { code: 0, stdout: `${url}\n`, stderr: "" };
+      return w.deps.exec!(cmd, args, o);
+    };
+    await runFixup(db, { repo: "app", dryRun: false }, () => {}, { ...w.deps, exec: run });
+    // The comment as the older, shorter template posted it.
+    const old = "Before this can be merged, it needs these changes:\n- `src/lib.rs`: " + long.slice(0, 100);
+    db.prepare("UPDATE audit SET details = json_set(details, '$.text', ?) WHERE action = 'fixup-comment'").run(old);
+
+    assert.equal((await repostAsk(db, "app", 7, false, run)).status, "dry-run");
+    assert.equal(edits.length, 0);
+    assert.equal((await repostAsk(db, "app", 7, true, run)).status, "edited");
+    assert.equal(edits.length, 1);
+    assert.ok(edits[0]!.includes("repos/storytold/app/issues/comments/555"));
+    assert.equal(edits[0]!.at(-1), askText([{ file: "src/lib.rs", change: long }]));
+    assert.ok(edits[0]!.at(-1)!.includes(long));
+    const a = rows(db, "SELECT login, target, json_extract(details, '$.state') AS state FROM audit WHERE action = 'fixup-comment-edit'");
+    assert.deepEqual(a, [{ login: "fixup", target: "app#7", state: "done" }]);
+    assert.equal((await repostAsk(db, "app", 7, true, run)).status, "unchanged");
+    assert.equal(edits.length, 1);
+  });
+
+  test("refuses a PR that was not asked", async () => {
+    const w = world();
+    const db = fresh(w.head);
+    await assert.rejects(repostAsk(db, "app", 7, true, w.deps.exec), /not in the asked state/);
   });
 });
