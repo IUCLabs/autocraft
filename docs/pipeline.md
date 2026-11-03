@@ -22,8 +22,8 @@ The stages, in order:
 7. Review: Opus reviews every wanted PR at its current head, reading the repo, and gives a verdict with the complete fix list. It writes nothing to GitHub until the final review is posted.
 8. Fix: Writes a patch for a bugfix issue where the fix is clear, tests it in the sandbox and opens a PR.
 9. Fix-up: For a take-with-fixes review, applies the listed small fixes to the contributor's branch, or posts them as a comment when the branch cannot be pushed to.
-10. Verify: Builds and tests taken PRs in a build environment. A model plans what to run and summarises failures.
-11. Merge queue: Merges PRs that pass the rules in integration batches through safe-merge, and asks for a Merge? decision on PRs outside the rules. Approves held CI runs of outside contributors where the repo allows it.
+10. Verify: Records upstream CI as the verification of taken PRs in repos that have it. A repo without CI, and a bugfix that changes a test file, get a model-planned build in a build environment; a model summarises failures.
+11. Merge queue: Merges PRs that pass the rules in integration batches (up to 50 PRs, checked by upstream CI on the batch PR) through safe-merge, and asks for a Merge? decision on PRs outside the rules. Approves held CI runs of outside contributors where the repo allows it.
 12. Act: Makes the comments and closes that follow an operator's answer, from fixed templates.
 <!-- stages:end stage-list -->
 
@@ -230,16 +230,19 @@ Models: Sonnet (patch, conflict resolution), Opus (patch check).
 
 ## Verify
 
-Builds and tests `take` PRs in the sandbox. Only Rust repos (a `Cargo.toml` at the root), public PRs whose CI does not fail. For a private or non-Rust repo Verify records `unavailable` ("not verified") instead, and the PR goes on to the Merge? decision.
+Upstream CI is the verification for `take` PRs in a repo that has CI (the repos' CI runs the full format, lint and test gate). Verify records `ci-enough` for them without a model call or a sandbox task. The merge queue still waits for CI to be green at the head: a PR with `ci-enough` and CI pending is `waiting-ci`, and one with failing CI is `ci-failed`. Only public PRs whose CI does not fail are verified. A private repo is recorded `unavailable` ("not verified"), and the PR goes on to the Merge? decision.
 
-- **Plan.** Sonnet, no tools, picks one kind: `ci-enough` (no task), `tests` (up to 5 crates, optional test filters) or `regression` (bugfixes only: a test that fails on the base commit and passes on the head). Our code validates the plan; anything invalid is an error.
+A repo has no CI when none of its latest 20 PRs ever reported a check. In such a repo, and for the exception below, Verify builds and tests in the sandbox. This needs a Rust repo (a `Cargo.toml` at the root); for a non-Rust repo Verify records `unavailable`.
+
+- **Exception in repos with CI.** A bugfix PR whose diff adds or changes a test file gets a Sonnet plan limited to `regression` or `ci-enough`; `tests` is refused.
+- **Plan.** Sonnet, no tools, picks one kind: `ci-enough` (no task), `tests` (repos without CI only: up to 5 crates, optional test filters) or `regression` (bugfixes only: a test that fails on the base commit and passes on the head). Our code validates the plan; anything invalid is an error.
 - **Result.** Pass or fail comes from exit codes only, never from a model.
 - **Regression.** The test must fail on the base commit and pass on the head. If it also passes on the base, the verification fails with "regression test passes on base" and the PR is held.
 - **Failure.** Haiku writes a summary of at most 60 words from the failing step's log (credentials scrubbed, quoted as untrusted). The PR is held.
 - **Errors.** An environment error is retried once per head. An operator can plan a failed or errored verification again from the Item page ("Verify again").
 - **Stale.** A verification counts only at the head it was made for (the checks table's head when newer than the mirror's, as in Review); a push or a close cancels its tasks.
 
-Models: Sonnet (plan), Haiku (failure summary). Daily limit 30 PRs.
+Models: Sonnet (plan, only where the plan is needed), Haiku (failure summary). Daily limit 30 PRs.
 
 ## Merge queue
 
@@ -264,10 +267,10 @@ The queue lists every PR whose final review (Review) is take or take-fix at its 
 - type is bugfix or infra (tests, CI, docs, build)
 - author is on the whitelist (see Contributors)
 - CI is green
-- Verify passed, or planned "CI is enough"
+- Verify passed, or recorded "CI is enough" (CI must still be green at the head)
 - GitHub reports it mergeable
 
-A take PR that fails any of the first four, is not verified (Verify `unavailable`) or has no CI checks gets a "Merge this PR?" decision (Merge, Hold, Close) once Verify has an outcome, and its question says "not verified: <reason>" or "no CI". Such a PR is never merged by the rule. The `merge-ask` step asks these decisions for every tracked repo, whether or not merging is approved there; it writes only decisions. One decision per head, so a push asks again. An answer of merge needs a mergeable PR and the head must not have moved; it also needs green CI and a passed Verify, except for a PR whose question said "no CI" or "not verified".
+A take PR that fails any of the first four, is not verified (Verify `unavailable`) or has no CI checks gets a "Merge this PR?" decision (Merge, Hold, Close) once Verify has an outcome, and its question says "not verified: <reason>" or "no CI". Such a PR is never merged by the rule. The `merge-ask` step asks these decisions for every tracked repo, whether or not merging is approved there; it writes only decisions. One decision per head, so a push asks again. An answer of merge needs a mergeable PR and the head must not have moved; it also needs green CI and a passed Verify (or CI is enough), except for a PR whose question said "no CI" or "not verified".
 
 A conflicting PR also shows what Fix-up does about it next to its state: "conflict: merging <base>" while the merge is queued or active, "conflict: asked the contributor", or "conflict: held" after 2 tries (or when the branch can't be pushed and commenting is not approved).
 
@@ -279,20 +282,19 @@ A PR held by an open Duplicate? decision shows as `held-duplicate` and is not me
 
 The limit is set by an operator on the Repos page (a number field) or with `autocraft merge-single [N]` (0 to 100; without N it shows the value). A change is audited as `single-merge-max`.
 
-**Integration batches.** A batch starts whenever a repo has PRs that may merge and no batch in flight there; nothing waits for more PRs. It takes PRs in work-rank order, up to the repo's batch size (1 to 10, starting at 10), at most about 2,000 changed lines in all; an L-size PR goes alone. A PR that conflicts with the batch so far waits for the next batch.
+**Integration batches.** A batch starts whenever a repo has PRs that may merge and no batch in flight there; nothing waits for more PRs. It takes PRs in work-rank order, up to the repo's batch size (1 to 50, starting at 20), at most about 10,000 changed lines in all; an L-size PR goes alone. A PR that conflicts with the batch so far waits for the next batch.
 
 1. Build `integration-<repo>-<yyyymmdd>-<n>` from the current default branch by merging each PR head with a merge commit in the cached bare clone (`git merge-tree`, no working tree, no hooks or filters). Contributor commits stay, so GitHub marks each PR merged when the batch lands.
-2. Check the combined tree in the sandbox: a build task on the default branch head with the combined diff as its patch, running the same fetch, build and test steps Verify uses.
-3. Push the branch to the pipeline account's fork and open a PR to the storytold repo that lists the batch's PRs as links. Upstream CI runs on it.
-4. When upstream CI is green and the PR is mergeable, `safe-merge --merge` lands it. The repo's batch size grows by one.
+2. Push the branch to the pipeline account's fork and open a PR to the storytold repo that lists the batch's PRs as links. Upstream CI runs on it and is the only check of the combined tree. If the push or the PR fails, the next merge run tries again.
+3. When upstream CI is green and the PR is mergeable, `safe-merge --merge` lands it. The repo's batch size grows by one.
 
-If the sandbox check or upstream CI fails, the batch is split in half and each half is retried, and the repo's batch size halves (minimum 1). A single PR that fails goes on hold (`batch-failed`) with Haiku's summary, until it has a new head. A person closing the batch PR holds its PRs the same way.
+If upstream CI fails, the batch is split in half and each half is retried, and the repo's batch size halves (minimum 1). A single PR that fails goes on hold (`batch-failed`) with Haiku's summary, until it has a new head. A person closing the batch PR holds its PRs the same way.
 
 Rebuilds. A PR in the batch that is no longer mergeable by the rule or the operator's answer, or that was closed, merged or pushed to on GitHub, leaves the batch: right before the batch branch is pushed and again right before the merge command one query checks every member for state OPEN at the batched head, and the rest are rebuilt in a new batch (merge, not rebase). When the default branch moves, the batch is kept if its tip still merges cleanly with the new head (GitHub's mergeable flag and upstream CI on the batch PR cover the rest); a conflict, or GitHub reporting one, closes the batch PR and rebuilds. A batch PR merged by someone else is recorded as merged.
 
 Assignment. When a batch is created, each member PR with no assignee is assigned to the pipeline account (audit action `assign`). When a member leaves the pipeline without merging (it failed alone and is held, was dropped from a rebuilt batch and is no longer eligible, or its batch PR was closed by a person), the assignment is removed (audit action `unassign`) only if the audit shows we made it and we are still the only assignee. A member that goes into a new batch keeps it. Single merges are assigned when they merge.
 
-Limits and exclusions. A PR whose own diff is binary or larger than the task limit is left out of batches and merged on its own, like PRs in repos with no CI (a batch PR would never turn green). A batch with more PRs than the daily limit has left waits, and rebuilds and splits take at most what is left. A build-environment error keeps the batch checking: the task is queued again at once, then after 5 minutes doubling up to 30 minutes; the batch is never split or held for it. A merge job that started, opened, advanced, split or merged a batch counts as having made progress. A crash after the batch PR was created is repaired by adopting the open PR of the branch. Fetches into the shared cache retry on ref-lock errors.
+Limits and exclusions. PRs in repos with no CI, and PRs in a repo Verify cannot build, are merged on their own (a batch PR would never turn green). A batch with more PRs than the daily limit has left waits, and rebuilds and splits take at most what is left. A merge job that started, opened, advanced, split or merged a batch counts as having made progress. A crash after the batch PR was created is repaired by adopting the open PR of the branch. Fetches into the shared cache retry on ref-lock errors.
 
 The pipeline's own integration PRs (author the pipeline account, number in `merge_batches`) are left out of classify, labels, review, Opus review, duplicates, decide, act, fix-up, verify and the queue. There is no Opus review of the combined diff. The Merge queue page lists the batches with their PRs, state and batch PR.
 
@@ -302,7 +304,7 @@ Operators control what merges next from the Queue page, the CLI or the API. Ever
 
 - **Hold merge** (`autocraft merge-hold <repo#n>`, `merge-release`): reviews, fix-ups and Verify go on, but the PR does not merge alone or in a batch until Release. It differs from Backlog, which stops all work on the item. A hold on a PR already in a batch makes the next merge run rebuild the batch without that PR (the batch PR is closed and a new batch holds the others); Remove from batch does this at once. A hold set while a merge is in progress is checked again right before the merge command runs.
 - **Remove from batch** (`autocraft batch-remove <repo#n>`): holds the PR and ends its batch. The batch PR is closed through the GitHub write path (audited, on the GitHub activity page). The other PRs return to the queue and the next merge run builds a batch without the held PR. Neither control removes the pipeline account's assignment on the member PRs.
-- **Stop batch** (`autocraft batch-stop <id>`): closes the batch's integration PR (and cancels its sandbox task while it is still checking). Each member PR is held (audited per PR), so the next merge run does not rebuild the same batch; release them one by one with Release or `merge-release`.
+- **Stop batch** (`autocraft batch-stop <id>`): closes the batch's integration PR. Each member PR is held (audited per PR), so the next merge run does not rebuild the same batch; release them one by one with Release or `merge-release`.
 
 **Fast track** (`autocraft fasttrack add|remove|list`) marks PRs or issues, given as a GitHub URL, `repo#n` or `owner/repo#n`. Fast-tracked items go first in every stage that orders work by the work rank (Decide, Review, Opus review, Fix, Fix-up, Verify, merges and single merges), in the order they were added; new ones join the end. Removing the mark returns the item to normal ranking.
 
@@ -344,7 +346,7 @@ Each item can have one conversation with Opus, shown beside its decision. Everyo
 |---|---|
 | Jev | Duplicates: judges each candidate pair first<br>Classify: classifies every item first<br>Priority: picks the level<br>Reports how sure it is; at 90 % or more it matched maintainers' labels 98 % of the time |
 | Haiku | Duplicates: settles pairs Jev is unsure of<br>Classify: second opinion where Jev is unsure<br>Priority: decides where Jev is unsure<br>Decide: summaries of duplicate decisions<br>Fix: failure summaries<br>Verify: failure summaries<br>Merge queue: short summaries in the merge run<br>Does every item while Jev is unavailable |
-| Sonnet | Duplicates: compares each group of issues<br>Classify: referee for label disagreements; area suggestions<br>Decide: writes decision summaries<br>Fix: triages the issue and writes the patch<br>Fix-up: writes the patch and resolves conflicts<br>Verify: plans the build and tests<br>The referee asks a person only when it is unsure |
+| Sonnet | Duplicates: compares each group of issues<br>Classify: referee for label disagreements; area suggestions<br>Decide: writes decision summaries<br>Fix: triages the issue and writes the patch<br>Fix-up: writes the patch and resolves conflicts<br>Verify: plans a regression test (bugfixes that change a test file) or, in a repo without CI, the build and tests<br>The referee asks a person only when it is unsure |
 | Opus | Duplicates: compares each group of pull requests<br>Classify: proposes area lists<br>Decide: writes the scope recommendation and conversation replies<br>Review: reviews every wanted PR<br>Fix: checks the patch<br>Fix-up: checks the patch<br>The review gives a verdict, a complete fix list and how sure Opus is |
 <!-- stages:end model-table -->
 
@@ -481,7 +483,7 @@ Automated work waits only for the reasons below. A stage that is not running sho
 | Work rank recompute | Its input moves in bursts while a sync writes; nothing waits on it | at most once a minute | none |
 | Failed recommendation | A scope recommendation call that keeps failing must not re-run Decide | 1 hour between tries, at most 3; then the decision keeps no recommendation | none (the decision shows no recommendation) |
 | Checks before Review and Verify | CI data younger than 5 minutes is reused | 5 minutes | Job list |
-| Sandbox build | External | Until the task ends; build-environment errors queue it again after 0, 5, 10, 20, 30 minutes | Batch state `checking` |
+| Sandbox build | External | Until the task ends; a build-environment error queues it again once per head | Verification state `planned` or `running` |
 | Warm build of the default branch | Limits sandbox load; never blocks a PR | Once a day per repo | Sandbox tasks |
 | Upstream CI of PRs and open batch PRs | External | Read again every minute per repo while any waits | "waiting for CI on N PRs in repo" |
 | Runs waiting for approval | GitHub holds the runs of an outside contributor's PR until a maintainer approves them; the pipeline approves them once the head has a final take or take-fix review and the repo's CI approval is on | Until the step runs (read again with each checks job) | Queue state `ci-approval` |

@@ -1,5 +1,7 @@
-// Stage 6, Verify: for each taken PR, one Sonnet call (no tools) chooses what verification the change
-// needs beyond GitHub CI, and our code turns a valid choice into build tasks. Pass or fail comes from the
+// Stage 6, Verify: a PR in a repo with upstream CI is verified by that CI (the merge queue waits for it to be
+// green), so it is recorded `ci-enough` without a model call; only a bugfix whose diff touches a test file
+// gets a Sonnet plan (no tools), limited to a regression test. A repo without CI keeps the full planner, and
+// our code turns a valid choice into build tasks. Pass or fail comes from the
 // tasks' exit codes, never from a model. Reads GitHub; never writes to it.
 //
 //   autocraft verify --repo R [--limit N] [--dry-run]
@@ -18,6 +20,7 @@ import { cachedDiff, codeDiff, ghDiff, type DiffFetcher } from "../review/diff.t
 import { cachedCrates, ghApi, ghCrates, type CratesFetcher } from "./crates.ts";
 import { NOT_RUST_REASON, selectCandidates, unavailableCandidates, type VerifyCandidate } from "./candidates.ts";
 import { parsePlanReply, type VerifyPlan } from "./plan.ts";
+import { repoHasNoCi } from "../merge/no-ci.ts";
 import { queueTasks, queueWarmBuild } from "./tasks.ts";
 import type { Crate, VerifyPlanInput } from "./types.ts";
 
@@ -28,6 +31,7 @@ const ORG = "storytold";
 /** Characters of code diff the planner is shown; a larger change is not planned automatically. */
 export const MAX_DIFF_CHARS = 80_000;
 const SHA = /^[0-9a-f]{40}$/;
+const CI_REASON = "Upstream CI runs the full gate; the merge waits for it to be green.";
 
 export type VerifyDeps = {
   fetchDiff: DiffFetcher;
@@ -106,10 +110,22 @@ export async function runVerify(db: DatabaseSync, params: VerifyParams, log: (li
   }
   const branch = (db.prepare("SELECT default_branch FROM repos WHERE name = ?").get(repo) as { default_branch: string | null } | undefined)?.default_branch ?? "main";
   let queued = false;
+  const ci = !repoHasNoCi(db, repo);
 
   for (const c of cands) {
     const ref = refOf(c);
     const handle = (): void => { summary.handled++; params.onHandled?.(summary.handled); };
+    const byCi = (): void => {
+      saveVerification(db, c, { kind: "ci-enough", reason: CI_REASON, plan: null, model: null, headTask: null, baseTask: null, baseSha: null, state: "ci-enough", summary: CI_REASON });
+      summary.kinds["ci-enough"] = (summary.kinds["ci-enough"] ?? 0) + 1;
+      handle();
+    };
+    if (ci) {
+      // Only a bugfix that adds or changes a test file may get a regression test; everything else is covered by CI.
+      if (c.label !== "bugfix") { byCi(); continue; }
+      const pre = await cachedDiff(repo, c.number, c.head_oid, deps.fetchDiff);
+      if (pre.ok && !codeDiff(pre.text).testsOmitted.length) { byCi(); continue; }
+    }
     const cr = await cachedCrates(repo, c.head_oid, deps.fetchCrates);
     if (!cr.ok) { log(`  ${ref}: no crate list: ${cr.error}`); summary.skipped.push(ref); continue; }
     if (!cr.rust) {
@@ -130,7 +146,7 @@ export async function runVerify(db: DatabaseSync, params: VerifyParams, log: (li
     const base = await deps.baseOf(repo, c.number);
     if (!base) { log(`  ${ref}: no base commit`); summary.skipped.push(ref); continue; }
 
-    const input = planInput(c, cr.crates, cd);
+    const input = planInput(c, cr.crates, cd, ci);
     const checkout = (await deps.checkout?.(repo, c.number, c.head_oid)) ?? undefined;
     if (checkout) input.repo_dir = REPO_PATH;
     const start = now();
@@ -140,7 +156,7 @@ export async function runVerify(db: DatabaseSync, params: VerifyParams, log: (li
       const reply = await askClaude("verify.plan", deps.model, [input], db, { checkout });
       if (!reply) continue;
       usage = add(usage, reply.usage);
-      result = parsePlanReply(reply.text, ref, cr.crates, c.label);
+      result = parsePlanReply(reply.text, ref, cr.crates, c.label, ci);
     }
     saveUsage(db, runId, `verify-${c.number}`, "verify", deps.model, result ? 1 : 0, usage, start, now());
     if (!result) { log(`  ${ref}: no answer from the planner`); summary.skipped.push(ref); handle(); continue; }
@@ -179,9 +195,9 @@ export async function runVerify(db: DatabaseSync, params: VerifyParams, log: (li
   return summary;
 }
 
-function planInput(c: VerifyCandidate, crates: Crate[], cd: ReturnType<typeof codeDiff>): VerifyPlanInput {
+function planInput(c: VerifyCandidate, crates: Crate[], cd: ReturnType<typeof codeDiff>, ci: boolean): VerifyPlanInput {
   return {
-    ref: refOf(c), title: c.title, body: c.body, label: c.label, review: c.review, crates,
+    ref: refOf(c), title: c.title, body: c.body, label: c.label, ci, review: c.review, crates,
     files: cd.files, tests_omitted: cd.testsOmitted, diff: cd.text,
   };
 }

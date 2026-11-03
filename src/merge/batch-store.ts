@@ -12,9 +12,11 @@ export const ACTIVE_BATCH: BatchState[] = ["checking", "open"];
 export const BLOCKED_BY_REVIEW = "a maintainer requested changes on the batch PR";
 export const CLOSED_BY_PERSON = "the batch PR was closed by a person";
 
-export const MAX_BATCH = 10;
+export const MAX_BATCH = 50;
+/** A repo's batch size until its batches pass or fail. */
+export const START_BATCH = 20;
 /** Changed lines (additions plus deletions) a batch may carry, beyond its first PR. */
-export const MAX_BATCH_LINES = 2000;
+export const MAX_BATCH_LINES = 10_000;
 
 export type BatchRow = {
   id: number; repo: string; branch: string; state: BatchState; base_sha: string; commit_sha: string; parent_id: number | null;
@@ -30,7 +32,7 @@ const sizeKey = (repo: string) => `batch_size:${repo}`;
 export function batchSizeOf(db: DatabaseSync, repo: string): number {
   const v = (db.prepare("SELECT value FROM main.settings WHERE key = ?").get(sizeKey(repo)) as { value: string } | undefined)?.value;
   const n = Number(v);
-  return Number.isInteger(n) && n >= 1 && n <= MAX_BATCH ? n : MAX_BATCH;
+  return Number.isInteger(n) && n >= 1 && n <= MAX_BATCH ? n : START_BATCH;
 }
 export function setBatchSize(db: DatabaseSync, repo: string, n: number): number {
   const size = Math.max(1, Math.min(MAX_BATCH, n));
@@ -58,11 +60,6 @@ export function updateBatch(db: DatabaseSync, id: number, at: string, set: Parti
     .run(...(Object.values(set) as (string | number | null)[]), at, id);
 }
 
-/** Points a checking batch at a new sandbox task. The summary of the earlier task is dropped: the batch line shows the current task's state. */
-export function restartCheck(db: DatabaseSync, b: BatchRow, at: string, taskId: number): void {
-  updateBatch(db, b.id, at, { task_id: taskId, retries: b.retries + 1, summary: null });
-}
-
 /** `integration-<repo>-<yyyymmdd>-<n>`, n counting the repo's batches of that day. */
 export function nextBranch(db: DatabaseSync, repo: string, now: Date): string {
   const day = now.toISOString().slice(0, 10).replace(/-/g, "");
@@ -71,9 +68,9 @@ export function nextBranch(db: DatabaseSync, repo: string, now: Date): string {
   return `${prefix}${n + 1}`;
 }
 
-export function insertBatch(db: DatabaseSync, b: { repo: string; branch: string; baseSha: string; commitSha: string; parentId: number | null; taskId: number | null; members: BatchMember[]; at: string }): number {
+export function insertBatch(db: DatabaseSync, b: { repo: string; branch: string; baseSha: string; commitSha: string; parentId: number | null; taskId?: number | null; members: BatchMember[]; at: string }): number {
   const r = db.prepare("INSERT INTO main.merge_batches (repo, branch, state, base_sha, commit_sha, parent_id, task_id, created_at, updated_at) VALUES (?, ?, 'checking', ?, ?, ?, ?, ?, ?)")
-    .run(b.repo, b.branch, b.baseSha, b.commitSha, b.parentId, b.taskId, b.at, b.at);
+    .run(b.repo, b.branch, b.baseSha, b.commitSha, b.parentId, b.taskId ?? null, b.at, b.at);
   const id = Number(r.lastInsertRowid);
   const ins = db.prepare("INSERT INTO main.merge_batch_prs (batch_id, number, head_oid, position) VALUES (?, ?, ?, ?)");
   b.members.forEach((m, i) => ins.run(id, m.number, m.head_oid, i));

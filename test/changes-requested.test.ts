@@ -8,7 +8,7 @@ import { activeBatches, membersOf, setBatchSize } from "../src/merge/batch-store
 import { askMergeDecisions } from "../src/merge/index.ts";
 import { buildQueue, eligible, mergeDecisionId } from "../src/merge/queue.ts";
 import { safeMerge } from "../src/merge/safe-merge.ts";
-import { dir, fresh, world, deps, finishTask, T0 } from "./batch-fixture.ts";
+import { dir, fresh, world, deps, T0 } from "./batch-fixture.ts";
 
 const quiet = () => {};
 const states = (db: DatabaseSync) => Object.fromEntries(buildQueue(db, { repo: "app" }).map((e) => [e.number, e.state]));
@@ -187,7 +187,7 @@ describe("changes requested: batches", () => {
     await runBatches(db, { repo: "app" }, quiet, deps(world(), join(dir, "cr1")));
     const b = activeBatches(db, "app")[0]!;
     assert.deepEqual(membersOf(db, b.id).map((m) => m.number), [1, 3]);
-    assert.deepEqual(states(db), { 1: "batch-checking", 2: "changes-requested", 3: "batch-checking" });
+    assert.deepEqual(states(db), { 1: "in-batch", 2: "changes-requested", 3: "in-batch" });
   });
 
   test("a review on the batch PR itself fails the batch and holds its PRs", async () => {
@@ -203,8 +203,6 @@ describe("changes requested: batches", () => {
       }
       return query(q, v);
     };
-    await runBatches(db, { repo: "app" }, quiet, d);
-    finishTask(db, activeBatches(db, "app")[0]!.task_id!);
     await runBatches(db, { repo: "app" }, quiet, d);
     w.tip.set("tip", activeBatches(db, "app")[0]!.commit_sha);
     blocked = true;
@@ -230,9 +228,6 @@ describe("changes requested: batches", () => {
       }
       return query(q, v);
     };
-    await runBatches(db, { repo: "app" }, quiet, d);
-    const first = activeBatches(db, "app")[0]!;
-    finishTask(db, first.task_id!);
     await runBatches(db, { repo: "app" }, quiet, d);
     w.tip.set("tip", activeBatches(db, "app")[0]!.commit_sha);
     blocked = true;

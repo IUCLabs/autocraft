@@ -269,10 +269,50 @@ function deps(): VerifyDeps {
   };
 }
 const quiet = () => {};
+/** A repo whose PRs never report a check has no upstream CI, so Verify is the only check. */
+const withoutCi = (db: ReturnType<typeof fresh>) => {
+  db.prepare("UPDATE pr_checks SET overall = 'none'").run();
+  db.prepare("DELETE FROM items WHERE number = 5").run(); // its failing CI is what made it a non-candidate
+};
+const TEST_DIFF = `${DIFF}diff --git a/crates/core/tests/png.rs b/crates/core/tests/png.rs\n--- a/crates/core/tests/png.rs\n+++ b/crates/core/tests/png.rs\n@@ -1 +1 @@\n-old\n+new\n`;
 
 describe("runVerify", () => {
+  test("in a repo with CI, a PR other than a bugfix with a test change is ci-enough without a model call or a task", async () => {
+    const db = fresh();
+    const calls: Call[] = [];
+    const restore = setRunner(fakeClaude(calls, {}));
+    try {
+      const s = await runVerify(db, { repo: "app" }, quiet, deps());
+      assert.equal(calls.length, 0);
+      assert.deepEqual([s.handled, s.errors, s.tasks, s.kinds], [2, 0, [], { "ci-enough": 2 }]);
+      assert.deepEqual(db.prepare("SELECT number, state FROM verifications WHERE number IN (1, 8) ORDER BY number").all().map((r) => `${r.number}:${r.state}`), ["1:ci-enough", "8:ci-enough"]);
+      assert.equal((db.prepare("SELECT COUNT(*) AS n FROM build_tasks").get() as { n: number }).n, 0);
+    } finally {
+      restore();
+    }
+  });
+
+  test("in a repo with CI, a bugfix that changes a test file is planned, and tests is refused", async () => {
+    const db = fresh();
+    db.prepare("DELETE FROM items WHERE number = 8").run();
+    const calls: Call[] = [];
+    const restore = setRunner(fakeClaude(calls, { "app#1": { kind: "tests", reason: "r", crates: ["app"] } }));
+    try {
+      const d = deps();
+      d.fetchDiff = async () => ({ ok: true, text: TEST_DIFF });
+      const s = await runVerify(db, { repo: "app" }, quiet, d);
+      assert.equal(calls.length, 2);
+      assert.equal(s.errors, 1);
+      assert.match((db.prepare("SELECT summary FROM verifications WHERE number = 1").get() as { summary: string }).summary, /upstream CI/);
+      assert.equal((db.prepare("SELECT COUNT(*) AS n FROM build_tasks").get() as { n: number }).n, 0);
+    } finally {
+      restore();
+    }
+  });
+
   test("plans each candidate, queues the tasks, records the rows and queues one warm build", async () => {
     const db = fresh();
+    withoutCi(db);
     const calls: Call[] = [];
     const restore = setRunner(fakeClaude(calls, {
       "app#1": { kind: "regression", reason: "bug fix with a clear symptom", crate: "core-lib", test_file: TEST_FILE },
@@ -316,6 +356,7 @@ describe("runVerify", () => {
 
   test("an invalid plan is an error and creates no task; the model is asked twice", async () => {
     const db = fresh();
+    withoutCi(db);
     db.prepare("DELETE FROM items WHERE number = 8").run();
     const calls: Call[] = [];
     const restore = setRunner(fakeClaude(calls, { "app#1": { kind: "tests", reason: "r", crates: ["no-such-crate"] } }));
@@ -335,6 +376,7 @@ describe("runVerify", () => {
 
   test("a regression for a non-bugfix PR is an error", async () => {
     const db = fresh();
+    withoutCi(db);
     db.prepare("DELETE FROM items WHERE number = 1").run();
     const restore = setRunner(fakeClaude([], { "app#8": { kind: "regression", reason: "r", crate: "app", test_file: TEST_FILE } }));
     try {
@@ -348,6 +390,7 @@ describe("runVerify", () => {
 
   test("a repo without a root Cargo.toml is not planned, calls no model and is recorded as unavailable", async () => {
     const db = fresh();
+    withoutCi(db);
     const calls: Call[] = [];
     const restore = setRunner(fakeClaude(calls, {}));
     try {

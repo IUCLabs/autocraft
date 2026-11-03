@@ -31,10 +31,10 @@ export function fresh(prs: { n: number; author?: string }[]): DatabaseSync {
 
 export type World = { log: string[]; conflicts: Set<string>; mainHead: string; ci: "SUCCESS" | "FAILURE" | "PENDING"; mergeExit: number; tip: Map<string, string>;
   /** Head commits and states GitHub reports instead of the defaults (`sha<n>`, OPEN); 900 is the batch PR. */
-  heads: Map<number, string>; prState: Map<number, string>; binary: Set<string>; existingPr: string;
+  heads: Map<number, string>; prState: Map<number, string>; existingPr: string;
   /** Called whenever a single PR is read, with its number: lets a test change the database between a stage's calls. */
   onRead?: (n: number) => void };
-export const world = (): World => ({ log: [], conflicts: new Set(), mainHead: MAIN, ci: "SUCCESS", mergeExit: 0, tip: new Map(), heads: new Map(), prState: new Map(), binary: new Set(), existingPr: "" });
+export const world = (): World => ({ log: [], conflicts: new Set(), mainHead: MAIN, ci: "SUCCESS", mergeExit: 0, tip: new Map(), heads: new Map(), prState: new Map(), existingPr: "" });
 
 export function deps(w: World, root: string): BatchDeps {
   let commits = 0;
@@ -48,17 +48,18 @@ export function deps(w: World, root: string): BatchDeps {
       const head = (n: number) => w.heads.get(n) ?? (n === 900 ? w.tip.get("tip") ?? "none" : `sha${n}`);
       if (v.n !== undefined) { w.onRead?.(v.n); }
       if (v.n !== undefined) return { repository: { pullRequest: { id: `PR${v.n}`, headRefOid: head(v.n), state: w.prState.get(v.n) ?? "OPEN", assignees: { nodes: [] }, commits: { totalCount: 1, nodes: [] } } } };
+      // A failing CI is the batch PR's (#900); its members keep a green rollup.
+      const ciOf = (x: number) => (x !== 900 && w.ci === "FAILURE" ? "SUCCESS" : w.ci);
       const nums = [...query.matchAll(/pullRequest\(number: (\d+)\)/g)].map((m) => Number(m[1]));
       return { repository: Object.fromEntries(nums.map((x) => [`pr${x}`, {
         number: x, state: w.prState.get(x) ?? "OPEN", isDraft: false, headRefOid: head(x), mergeable: "MERGEABLE", maintainerCanModify: true,
-        commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { nodes: [{ __typename: "CheckRun", name: "ci", status: w.ci === "PENDING" ? "IN_PROGRESS" : "COMPLETED", conclusion: w.ci === "PENDING" ? null : w.ci }] } } } }] },
+        commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { nodes: [{ __typename: "CheckRun", name: "ci", status: ciOf(x) === "PENDING" ? "IN_PROGRESS" : "COMPLETED", conclusion: ciOf(x) === "PENDING" ? null : ciOf(x) }] } } } }] },
       }])) };
     },
   });
   return {
     querier, root, mergeCommand: "safe-merge-test", now: () => new Date(T1),
     mainHead: async () => w.mainHead,
-    summarise: async (_db, v) => `summary for ${v.number}`,
     async run(cmd, args) { w.log.push(`${cmd} ${args.join(" ")}`); return { code: w.mergeExit, stdout: "", stderr: w.mergeExit ? "not mergeable" : "" }; },
     async exec(cmd, args, opts) {
       const a = [...args];
@@ -74,7 +75,6 @@ export function deps(w: World, root: string): BatchDeps {
           return w.conflicts.has(b) ? { code: 1, stdout: "", stderr: "" } : ok(`tree-${a[a.length - 2]}-${b}\n`);
         }
         if (a[0] === "commit-tree") { const c = `commit${++commits}`; w.log.push(`commit-tree ${a.filter((x) => x.startsWith("sha") || x.startsWith("commit") || /^a+$/.test(x) || /^b+$/.test(x)).join(" ")}`); w.tip.set("tip", c); return ok(`${c}\n`); }
-        if (a[0] === "diff" && w.binary.has(a[a.length - 1]!.split("...")[1] ?? "")) return ok("diff --git a/x b/x\nBinary files a/x and b/x differ\n");
         if (a[0] === "diff") return ok("diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n");
         if (a[0] === "push") { w.log.push(`push ${a.slice(-2).join(" ")}`); return ok(); }
       }
@@ -89,11 +89,3 @@ export function deps(w: World, root: string): BatchDeps {
     },
   };
 }
-
-export const finishTask = (db: DatabaseSync, id: number, failAt?: string) => {
-  const t = db.prepare("SELECT plan FROM build_tasks WHERE id = ?").get(id) as { plan: string };
-  const plan = JSON.parse(t.plan) as { name: string }[];
-  const upto = failAt ? plan.findIndex((s) => s.name === failAt) + 1 : plan.length;
-  const results = plan.slice(0, upto).map((s) => ({ step: s.name, exitCode: s.name === failAt ? 1 : 0, timedOut: false, durationMs: 1 }));
-  db.prepare("UPDATE build_tasks SET state = ?, results = ? WHERE id = ?").run(failAt ? "failed" : "done", JSON.stringify(results), id);
-};

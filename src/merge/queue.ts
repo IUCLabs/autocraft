@@ -10,6 +10,7 @@ import { changedSince, discussionState, staleReviews } from "../review/discussio
 import { failureNote, GATE_FAILURES, gatesOf, reasonFor, refuseReviews, type ReviewFact } from "./changes-requested.ts";
 import { batchStates } from "./batch-store.ts";
 import { mergeHolds } from "./holds.ts";
+import { NO_CI_SAMPLE, repoHasNoCi } from "./no-ci.ts";
 import { ciApprovalOf, MAX_FAILURES } from "./ci-approval.ts";
 import { getRule, STATS_SQL, tierOf, type Tier } from "../whitelist.ts";
 import { pilotSql } from "../pilot.ts";
@@ -56,13 +57,7 @@ export const verifyAllows = (path: "rule" | "operator" | null, state: string | n
 export const ciAllows = (path: "rule" | "operator" | null, ci: string | null | undefined, noCi: boolean): boolean =>
   ci === "success" || (path === "operator" && ci === "none" && noCi);
 
-/** Checks of the repo's most recent PRs that were read; a repo has no CI when none of them ever reported a check. */
-export const NO_CI_SAMPLE = 20;
-/** True when the repo has checks fetched for some PRs and none of the latest NO_CI_SAMPLE reported any. */
-export function repoHasNoCi(db: DatabaseSync, repo: string): boolean {
-  const rows = db.prepare("SELECT overall FROM pr_checks WHERE repo = ? ORDER BY fetched_at DESC LIMIT ?").all(repo, NO_CI_SAMPLE) as { overall: string | null }[];
-  return rows.length > 0 && rows.every((r) => !r.overall || r.overall === "none");
-}
+export { NO_CI_SAMPLE, repoHasNoCi };
 
 export type QueueEntry = {
   repo: string; number: number; title: string; author: string | null; tier: Tier;

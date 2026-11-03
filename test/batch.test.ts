@@ -9,7 +9,7 @@ import { askMergeDecisions } from "../src/merge/index.ts";
 import { selectCandidates } from "../src/review/candidates.ts";
 import { Git } from "../src/fixup/git.ts";
 
-import { dir, T0, T1, MAIN, MAIN2, fresh, world, deps, finishTask, type World } from "./batch-fixture.ts";
+import { dir, T0, T1, MAIN2, fresh, world, deps, type World } from "./batch-fixture.ts";
 const states = (db: DatabaseSync) => Object.fromEntries(buildQueue(db, { repo: "app" }).map((e) => [e.number, e.state]));
 const quiet = () => {};
 
@@ -22,25 +22,16 @@ describe("integration batches", () => {
     const d = deps(w, join(dir, "r1"));
     const s = await runBatches(db, { repo: "app" }, quiet, d);
     assert.deepEqual(s.started, ["integration-app-20260102-1"]);
-    assert.deepEqual(states(db), { 1: "batch-checking", 2: "batch-checking", 3: "ready", 4: "batch-checking" });
+    // The batch goes straight to an open PR: no sandbox task, upstream CI is the check.
     const b = activeBatches(db, "app")[0]!;
+    assert.deepEqual(s.published, [b.branch]);
+    assert.deepEqual([b.state, b.task_id], ["open", null]);
+    assert.equal((db.prepare("SELECT COUNT(*) AS n FROM build_tasks").get() as { n: number }).n, 0);
     assert.deepEqual(membersOf(db, b.id).map((m) => m.number), [1, 2, 4]);
-    const task = db.prepare("SELECT head_sha, patch, step FROM build_tasks WHERE id = ?").get(b.task_id) as { head_sha: string; patch: string; step: string };
-    assert.equal(task.head_sha, MAIN);
-    assert.match(task.patch, /^diff --git/);
-
-    // The sandbox task is still running: nothing else starts.
-    const again = await runBatches(db, { repo: "app" }, quiet, d);
-    assert.deepEqual([again.started, again.waiting], [[], ["integration-app-20260102-1"]]);
-
-    finishTask(db, b.task_id!);
-    const pub = await runBatches(db, { repo: "app" }, quiet, d);
-    assert.deepEqual(pub.published, [b.branch]);
     assert.ok(w.log.some((l) => l.startsWith("push ") && l.endsWith(`:refs/heads/${b.branch}`)));
     assert.ok(w.log.some((l) => l.startsWith("pr create") && l.includes("[app#1](https://github.com/storytold/app/pull/1)") && l.includes("[app#4]")));
     assert.deepEqual(states(db), { 1: "in-batch", 2: "in-batch", 3: "ready", 4: "in-batch" });
 
-    w.tip.set("tip", activeBatches(db, "app")[0]!.commit_sha);
     const done = await runBatches(db, { repo: "app" }, quiet, d);
     assert.deepEqual(done.merged, [1, 2, 4]);
     assert.ok(w.log.includes("safe-merge-test storytold/app 900 --merge"));
@@ -49,36 +40,32 @@ describe("integration batches", () => {
     assert.equal(batchSizeOf(db, "app"), 6);
   });
 
-  test("a failed batch splits in half; a single failing PR is held with a summary and the size halves", async () => {
+  test("a batch whose PR fails CI splits in half; a single failing PR is held and the size halves", async () => {
     const db = fresh([{ n: 1 }, { n: 2 }, { n: 3 }]);
     const w = world();
     const d = deps(w, join(dir, "r2"));
     await runBatches(db, { repo: "app" }, quiet, d);
     const first = activeBatches(db, "app")[0]!;
     assert.equal(membersOf(db, first.id).length, 3);
-    finishTask(db, first.task_id!, "test");
+    w.ci = "FAILURE";
     const split = await runBatches(db, { repo: "app" }, quiet, d);
     assert.equal(split.split.length, 1);
-    assert.equal(batchSizeOf(db, "app"), 5);
+    assert.equal(batchSizeOf(db, "app"), 10);
     const kids = activeBatches(db, "app");
     assert.deepEqual(kids.map((k) => membersOf(db, k.id).map((m) => m.number)), [[1, 2], [3]]);
 
-    finishTask(db, kids[1]!.task_id!, "test");
-    finishTask(db, kids[0]!.task_id!);
     const next = await runBatches(db, { repo: "app" }, quiet, d);
     assert.deepEqual(next.failed, [3]);
     assert.equal(states(db)[3], "batch-failed");
-    assert.equal((db.prepare("SELECT summary FROM merge_batches WHERE id = ?").get(kids[1]!.id) as { summary: string }).summary, "summary for 3");
+    assert.equal((db.prepare("SELECT summary FROM merge_batches WHERE id = ?").get(kids[1]!.id) as { summary: string }).summary, "upstream CI failed on the batch PR");
     assert.equal(batchSizeOf(db, "app"), 2);
-    assert.deepEqual(next.published.length, 1);
+    assert.equal(next.split.length, 1);
   });
 
   test("a moved default branch rebuilds the batch and closes its PR; CI failure on the batch PR splits it", async () => {
     const db = fresh([{ n: 1 }, { n: 2 }]);
     const w = world();
     const d = deps(w, join(dir, "r3"));
-    await runBatches(db, { repo: "app" }, quiet, d);
-    finishTask(db, activeBatches(db, "app")[0]!.task_id!);
     await runBatches(db, { repo: "app" }, quiet, d);
     w.conflicts.add(activeBatches(db, "app")[0]!.commit_sha);
     w.mainHead = MAIN2;
@@ -88,10 +75,8 @@ describe("integration batches", () => {
     const rebuilt = activeBatches(db, "app");
     assert.equal(rebuilt.length, 1);
     assert.equal(rebuilt[0]!.base_sha, MAIN2);
-    assert.equal(rebuilt[0]!.state, "checking");
+    assert.equal(rebuilt[0]!.state, "open");
 
-    finishTask(db, rebuilt[0]!.task_id!);
-    await runBatches(db, { repo: "app" }, quiet, d);
     w.ci = "FAILURE";
     const failed = await runBatches(db, { repo: "app" }, quiet, d);
     assert.equal(failed.split.length, 1);
@@ -108,7 +93,8 @@ describe("integration batches", () => {
     const c = (size: string, lines: number) => ({ size, lines });
     assert.equal(admits([c("S", 10)], c("S", 10), 2), true);
     assert.equal(admits([c("S", 10), c("S", 10)], c("S", 10), 2), false);
-    assert.equal(admits([c("S", 1500)], c("M", 600), 10), false);
+    assert.equal(admits([c("S", 9500)], c("M", 600), 50), false);
+    assert.equal(admits([c("S", 1500)], c("M", 600), 50), true);
     assert.equal(admits([c("S", 10)], c("L", 5), 10), false);
     assert.equal(admits([c("L", 900)], c("S", 5), 10), false);
   });
@@ -121,14 +107,12 @@ describe("integration batches", () => {
     assert.deepEqual(states(db), { 1: "ready", 2: "needs-decision" });
   });
 
-  /** Builds a batch of PRs 1..n, finishes its sandbox task and publishes it; returns the open batch. */
-  async function open(n: number, w: World, root: string, limit?: number) {
+  /** Builds a batch of PRs 1..n, which is published at once; returns the open batch. */
+  async function open(n: number, w: World, root: string) {
     const db = fresh(Array.from({ length: n }, (_, k) => ({ n: k + 1, author: k === 1 ? "other" : "regular" })));
     db.prepare("INSERT INTO whitelist_overrides (login, status, by, at) VALUES ('other', 'allow', 'op', ?)").run(T0);
     const d = deps(w, join(dir, root));
     await runBatches(db, { repo: "app" }, quiet, d);
-    finishTask(db, activeBatches(db, "app")[0]!.task_id!);
-    await runBatches(db, { repo: "app", limit }, quiet, d);
     const b = activeBatches(db, "app")[0]!;
     assert.equal(b.state, "open");
     w.tip.set("tip", b.commit_sha);
@@ -160,15 +144,6 @@ describe("integration batches", () => {
     assert.deepEqual(activeBatches(db, "app").map((b) => membersOf(db, b.id).map((m) => m.number)), [[1]]);
   });
 
-  test("a PR with a binary diff is skipped for the single-merge path and does not block the others", async () => {
-    const db = fresh([{ n: 1 }, { n: 2 }, { n: 3 }]);
-    const w = world();
-    w.binary.add("sha3");
-    const s = await runBatches(db, { repo: "app" }, quiet, deps(w, join(dir, "f3")));
-    assert.deepEqual(s.skipped, [3]);
-    assert.deepEqual(membersOf(db, activeBatches(db, "app")[0]!.id).map((m) => m.number), [1, 2]);
-  });
-
   test("a batch larger than the daily limit left waits", async () => {
     const w = world();
     const { db, d } = await open(3, w, "f5");
@@ -187,21 +162,6 @@ describe("integration batches", () => {
     assert.ok(eligible(e!) && singleMergeOnly(e!));
     const s = await runBatches(db, { repo: "app" }, quiet, deps(world(), join(dir, "f6")));
     assert.deepEqual(s.started, []);
-  });
-
-  test("environment errors of the sandbox retry with a wait and never split or hold the batch", async () => {
-    const db = fresh([{ n: 1 }, { n: 2 }]);
-    const w = world();
-    const d = deps(w, join(dir, "f9"));
-    await runBatches(db, { repo: "app" }, quiet, d);
-    const lose = () => db.prepare("UPDATE build_tasks SET state = 'lost', results = '[]' WHERE id = ?").run(activeBatches(db, "app")[0]!.task_id!);
-    for (let k = 0; k < 3; k++) {
-      lose();
-      const s = await runBatches(db, { repo: "app" }, quiet, d);
-      assert.deepEqual([s.split, s.failed], [[], []]);
-    }
-    const [b] = activeBatches(db, "app");
-    assert.deepEqual([activeBatches(db, "app").length, b!.state, b!.retries], [1, "checking", 1]);
   });
 
   test("a batch PR merged outside the command is recorded as merged; one closed by a person holds its PRs", async () => {
@@ -234,8 +194,6 @@ describe("integration batches", () => {
     const w = world();
     w.existingPr = "https://github.com/storytold/app/pull/900\n";
     const d = deps(w, join(dir, "l3"));
-    await runBatches(db, { repo: "app" }, quiet, d);
-    finishTask(db, activeBatches(db, "app")[0]!.task_id!);
     await runBatches(db, { repo: "app" }, quiet, d);
     assert.equal(w.log.some((l) => l.startsWith("pr create")), false);
     assert.equal(activeBatches(db, "app")[0]!.pr_number, 900);

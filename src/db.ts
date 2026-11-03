@@ -8,6 +8,7 @@ import { BOOKKEEPING_COLUMNS, liveSql } from "./live.ts";
 import { JEV_USD_PER_INPUT_TOKEN } from "./prompts/index.ts";
 import { JEV_NEEDS_DECISION_YES, JEV_SECURITY_YES } from "./classify/parse.ts";
 import { envVar } from "./env.ts";
+import { repoHasNoCi } from "./merge/no-ci.ts";
 
 export const DEFAULT_DB = join(homedir(), ".local/share/autocraft/mirror.db");
 
@@ -86,7 +87,7 @@ const ADDED_INDEXES = [
 const DROPPED_COLUMNS: [table: string, column: string][] = [["classifications", "topics"], ["classifications", "area"]];
 
 // Bump when migrateValues() or backfill() change what they do.
-const MIGRATION_VERSION = 6;
+const MIGRATION_VERSION = 7;
 
 // Rows written before their column existed.
 function backfill(db: DatabaseSync): void {
@@ -161,10 +162,46 @@ function migrateValues(db: DatabaseSync): void {
   if (db.prepare("SELECT 1 FROM main.sqlite_master WHERE type = 'table' AND name = 'review_crosschecks'").get()) db.exec("DROP TABLE main.review_crosschecks");
   if (db.prepare("SELECT 1 FROM main.settings WHERE key LIKE 'review\\_batch\\_size:%' ESCAPE '\\' LIMIT 1").get()) db.exec("DELETE FROM main.settings WHERE key LIKE 'review\\_batch\\_size:%' ESCAPE '\\'");
   if (db.prepare("SELECT 1 FROM main.stage_limits WHERE step = 'review-batch'").get()) db.exec("DELETE FROM main.stage_limits WHERE step = 'review-batch'");
+  if (!db.prepare("SELECT 1 FROM main.settings WHERE key = 'ci_first_done'").get()) ciFirst(db);
   // Jev usage saved without a cost is priced from its input tokens.
   const JEV_UNPRICED = "model LIKE 'jev%' AND cost_usd IS NULL AND input_tokens IS NOT NULL";
   if (db.prepare(`SELECT 1 FROM main.token_usage WHERE ${JEV_UNPRICED} LIMIT 1`).get()) {
     db.prepare(`UPDATE main.token_usage SET cost_usd = input_tokens * ? WHERE ${JEV_UNPRICED}`).run(JEV_USD_PER_INPUT_TOKEN);
+  }
+}
+
+// Upstream CI is the check for PRs and batches in repos that have it: queued `tests` verifications are settled as
+// ci-enough (their sandbox tasks cancelled), batches still in the sandbox check go on without it, and stored batch
+// sizes below the starting size of 20 are raised to it. Runs once.
+function ciFirst(db: DatabaseSync): void {
+  const at = new Date().toISOString();
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    if (!db.prepare("SELECT 1 FROM main.settings WHERE key = 'ci_first_done'").get()) {
+      const cancel = db.prepare("UPDATE main.build_tasks SET state = 'cancelled', ended_at = ?, cancel_requested_at = ?, summary = 'Cancelled: upstream CI is the check.' WHERE id = ? AND state IN ('queued', 'claimed', 'running')");
+      const settle = db.prepare(`UPDATE main.verifications SET kind = 'ci-enough', state = 'ci-enough', plan = NULL, head_task_id = NULL, base_task_id = NULL,
+        reason = 'Upstream CI runs the full gate; the merge waits for it to be green.', summary = 'Upstream CI runs the full gate; the merge waits for it to be green.', finished_at = ?
+        WHERE repo = ? AND number = ? AND head_sha = ?`);
+      const stage = db.prepare("INSERT INTO main.stages (repo, number, stage, at, actor, note) VALUES (?, ?, 'verify-ci-enough', ?, 'verify', ?)");
+      for (const v of db.prepare("SELECT repo, number, head_sha, head_task_id, base_task_id FROM main.verifications WHERE kind = 'tests' AND state IN ('planned', 'running')").all() as
+        { repo: string; number: number; head_sha: string; head_task_id: number | null; base_task_id: number | null }[]) {
+        if (repoHasNoCi(db, v.repo)) continue;
+        for (const t of [v.head_task_id, v.base_task_id]) if (t !== null) cancel.run(at, at, t);
+        settle.run(at, v.repo, v.number, v.head_sha);
+        stage.run(v.repo, v.number, at, `ci-enough at ${v.head_sha.slice(0, 7)}: upstream CI is the check`);
+      }
+      // A batch that was checking in the sandbox has its PR opened by the next merge run.
+      for (const b of db.prepare("SELECT id, task_id FROM main.merge_batches WHERE state = 'checking' AND task_id IS NOT NULL").all() as { id: number; task_id: number }[]) {
+        cancel.run(at, at, b.task_id);
+        db.prepare("UPDATE main.merge_batches SET task_id = NULL, summary = NULL, updated_at = ? WHERE id = ?").run(at, b.id);
+      }
+      db.prepare("UPDATE main.settings SET value = '20' WHERE key LIKE 'batch\\_size:%' ESCAPE '\\' AND CAST(value AS INTEGER) < 20").run();
+      db.exec("INSERT INTO main.settings (key, value) VALUES ('ci_first_done', '1')");
+    }
+    db.exec("COMMIT");
+  } catch (e) {
+    db.exec("ROLLBACK");
+    throw e;
   }
 }
 

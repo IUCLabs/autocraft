@@ -48,7 +48,7 @@ const clip = (s: string): string => s.trim().split(/\s+/).slice(0, MAX_REASON_WO
 /**
  * Parses and validates the reply for the PR `ref`. `crates` is the workspace's list; `label` the settled type label.
  */
-export function parsePlanReply(text: string, ref: string, crates: Crate[], label: string | null): Parsed {
+export function parsePlanReply(text: string, ref: string, crates: Crate[], label: string | null, ci = false): Parsed {
   const a = text.indexOf("["), b = text.lastIndexOf("]");
   if (a < 0 || b < a) return fail("no JSON list in the reply");
   let arr: unknown;
@@ -63,6 +63,7 @@ export function parsePlanReply(text: string, ref: string, crates: Crate[], label
   if (kind === "ci-enough") return { ok: true, plan: { kind, reason } };
   const names = new Set(crates.map((c) => c.name));
   if (kind === "tests") {
+    if (ci) return fail("tests is not used in a repo with upstream CI");
     const cs = o.crates, ts = o.tests ?? [];
     if (!Array.isArray(cs) || cs.length < 1 || cs.length > MAX_CRATES) return fail(`crates must list 1 to ${MAX_CRATES} names`);
     if (cs.some((c) => typeof c !== "string" || !names.has(c))) return fail("crates names a crate that is not in the workspace");

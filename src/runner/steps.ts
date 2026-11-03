@@ -277,7 +277,7 @@ export const STEPS: StepDef[] = [
       ctx.usageRun(b.runId);
       let single = { merged: [] as string[], attempted: [] as string[], refused: [] as unknown[], asked: [] as string[] };
       if (limit > b.merged.length) {
-        single = await runMerge(ctx.db, { repo, limit: limit - b.merged.length, dryRun: false, only: (e) => singleMergeOnly(e) || b.skipped.includes(e.number), onMerged: (n) => ctx.handled(b.merged.length + n) }, ctx.log);
+        single = await runMerge(ctx.db, { repo, limit: limit - b.merged.length, dryRun: false, only: singleMergeOnly, onMerged: (n) => ctx.handled(b.merged.length + n) }, ctx.log);
       }
       ctx.acted(b.started.length + b.published.length + b.split.length + b.superseded.length + b.failed.length + single.merged.length + single.asked.length + b.merged.length);
       return `${repo}: ${b.merged.length} merged in batches (${b.started.length} started, ${b.published.length} opened, ${b.split.length} split), ${single.merged.length} merged singly, ${single.asked.length} decisions asked`;

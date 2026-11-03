@@ -22,8 +22,8 @@ Stages run in this order. Details, limits and rules for each are in [docs/pipeli
 | Review | Opus reviews every wanted PR at its current head, reading the repo, and gives a verdict with the complete fix list. It writes nothing to GitHub until the final review is posted. | Opus | yes: hold, close and merge-outside-rule verdicts |
 | Fix | Writes a patch for a bugfix issue where the fix is clear, tests it in the sandbox and opens a PR. | Sonnet, Opus, Haiku | yes: per-repo approval |
 | Fix-up | For a take-with-fixes review, applies the listed small fixes to the contributor's branch, or posts them as a comment when the branch cannot be pushed to. | Sonnet, Opus | yes: per-repo approval |
-| Verify | Builds and tests taken PRs in a build environment. A model plans what to run and summarises failures. | Sonnet, Haiku | yes: failures and errors |
-| Merge queue | Merges PRs that pass the rules in integration batches through safe-merge, and asks for a Merge? decision on PRs outside the rules. Approves held CI runs of outside contributors where the repo allows it. | Haiku | yes: merge? decision for PRs outside the rules |
+| Verify | Records upstream CI as the verification of taken PRs in repos that have it. A repo without CI, and a bugfix that changes a test file, get a model-planned build in a build environment; a model summarises failures. | Sonnet, Haiku | yes: failures and errors |
+| Merge queue | Merges PRs that pass the rules in integration batches (up to 50 PRs, checked by upstream CI on the batch PR) through safe-merge, and asks for a Merge? decision on PRs outside the rules. Approves held CI runs of outside contributors where the repo allows it. | Haiku | yes: merge? decision for PRs outside the rules |
 | Act | Makes the comments and closes that follow an operator's answer, from fixed templates. | none | yes: per-repo approval |
 <!-- stages:end stage-table -->
 

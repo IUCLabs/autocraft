@@ -38,10 +38,10 @@ function fresh(prs: { n: number; author?: string }[]): DatabaseSync {
 
 type World = { log: string[]; conflicts: Set<string>; mainHead: string; ci: "SUCCESS" | "FAILURE" | "PENDING"; mergeExit: number; tip: Map<string, string>;
   /** Head commits and states GitHub reports instead of the defaults (`sha<n>`, OPEN); 900 is the batch PR. */
-  heads: Map<number, string>; prState: Map<number, string>; binary: Set<string>; existingPr: string;
+  heads: Map<number, string>; prState: Map<number, string>; existingPr: string;
   /** Assignees GitHub reports per PR, and the assign / unassign writes made. */
   assignees: Map<number, string[]>; ops: string[] };
-const world = (): World => ({ log: [], conflicts: new Set(), mainHead: MAIN, ci: "SUCCESS", mergeExit: 0, tip: new Map(), heads: new Map(), prState: new Map(), binary: new Set(), existingPr: "", assignees: new Map(), ops: [] });
+const world = (): World => ({ log: [], conflicts: new Set(), mainHead: MAIN, ci: "SUCCESS", mergeExit: 0, tip: new Map(), heads: new Map(), prState: new Map(), existingPr: "", assignees: new Map(), ops: [] });
 
 function deps(w: World, root: string): BatchDeps {
   let commits = 0;
@@ -67,7 +67,6 @@ function deps(w: World, root: string): BatchDeps {
   return {
     querier, root, mergeCommand: "safe-merge-test", now: () => new Date(T1),
     mainHead: async () => w.mainHead,
-    summarise: async (_db, v) => `summary for ${v.number}`,
     async run(cmd, args) { w.log.push(`${cmd} ${args.join(" ")}`); return { code: w.mergeExit, stdout: "", stderr: w.mergeExit ? "not mergeable" : "" }; },
     async exec(cmd, args, opts) {
       const a = [...args];
@@ -83,7 +82,6 @@ function deps(w: World, root: string): BatchDeps {
           return w.conflicts.has(b) ? { code: 1, stdout: "", stderr: "" } : ok(`tree-${a[a.length - 2]}-${b}\n`);
         }
         if (a[0] === "commit-tree") { const c = `commit${++commits}`; w.log.push(`commit-tree ${a.filter((x) => x.startsWith("sha") || x.startsWith("commit") || /^a+$/.test(x) || /^b+$/.test(x)).join(" ")}`); w.tip.set("tip", c); return ok(`${c}\n`); }
-        if (a[0] === "diff" && w.binary.has(a[a.length - 1]!.split("...")[1] ?? "")) return ok("diff --git a/x b/x\nBinary files a/x and b/x differ\n");
         if (a[0] === "diff") return ok("diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n");
         if (a[0] === "push") { w.log.push(`push ${a.slice(-2).join(" ")}`); return ok(); }
       }
@@ -99,13 +97,6 @@ function deps(w: World, root: string): BatchDeps {
   };
 }
 
-const finishTask = (db: DatabaseSync, id: number, failAt?: string) => {
-  const t = db.prepare("SELECT plan FROM build_tasks WHERE id = ?").get(id) as { plan: string };
-  const plan = JSON.parse(t.plan) as { name: string }[];
-  const upto = failAt ? plan.findIndex((s) => s.name === failAt) + 1 : plan.length;
-  const results = plan.slice(0, upto).map((s) => ({ step: s.name, exitCode: s.name === failAt ? 1 : 0, timedOut: false, durationMs: 1 }));
-  db.prepare("UPDATE build_tasks SET state = ?, results = ? WHERE id = ?").run(failAt ? "failed" : "done", JSON.stringify(results), id);
-};
 const states = (db: DatabaseSync) => Object.fromEntries(buildQueue(db, { repo: "app" }).map((e) => [e.number, e.state]));
 const quiet = () => {};
 import { writeFileSync } from "node:fs";
@@ -319,7 +310,7 @@ describe("batch assignment", () => {
     const d = deps(w, join(dir, "a2"));
     await runBatches(db, { repo: "app" }, quiet, d);
     assert.deepEqual(w.ops, ["assign 1"]);
-    finishTask(db, activeBatches(db, "app")[0]!.task_id!, "test");
+    w.ci = "FAILURE";
     const s = await runBatches(db, { repo: "app" }, quiet, d);
     assert.deepEqual(s.failed, [1]);
     assert.deepEqual(w.ops, ["assign 1", "unassign 1"]);
@@ -331,7 +322,7 @@ describe("batch assignment", () => {
     const d2 = deps(w2, join(dir, "a3"));
     await runBatches(db2, { repo: "app" }, quiet, d2);
     w2.assignees.set(1, ["bot", "maintainer"]);
-    finishTask(db2, activeBatches(db2, "app")[0]!.task_id!, "test");
+    w2.ci = "FAILURE";
     await runBatches(db2, { repo: "app" }, quiet, d2);
     assert.deepEqual(w2.ops, ["assign 1"]);
   });

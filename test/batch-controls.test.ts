@@ -7,7 +7,7 @@ import { runBatches } from "../src/merge/batch.ts";
 import { activeBatches, updateBatch } from "../src/merge/batch-store.ts";
 import { holdMerge, stopBatch } from "../src/merge/controls.ts";
 import { addFastTrack, fastFirst, workScores } from "../src/fasttrack.ts";
-import { dir, deps, fresh, finishTask, T0, world, type World } from "./batch-fixture.ts";
+import { dir, deps, fresh, T0, world, type World } from "./batch-fixture.ts";
 
 const quiet = () => {};
 const merges = (w: World) => w.log.filter((l) => l.startsWith("safe-merge-test"));
@@ -17,8 +17,6 @@ const stateOf = (db: DatabaseSync, id: number) => (db.prepare("SELECT state FROM
 async function open(w: World, root: string) {
   const db = fresh([{ n: 1 }, { n: 2 }]);
   const d = deps(w, join(dir, root));
-  await runBatches(db, { repo: "app" }, quiet, d);
-  finishTask(db, activeBatches(db, "app")[0]!.task_id!);
   await runBatches(db, { repo: "app" }, quiet, d);
   const b = activeBatches(db, "app")[0]!;
   assert.equal(b.state, "open");
@@ -102,15 +100,6 @@ describe("controls against a running batch", () => {
     assert.equal(activeBatches(db, "app").length, 0);
   });
 
-  test("stopping a batch that is still checking cancels its sandbox task", async () => {
-    const w = world();
-    const db = fresh([{ n: 1 }]);
-    const d = deps(w, join(dir, "c6"));
-    await runBatches(db, { repo: "app" }, quiet, d);
-    const b = activeBatches(db, "app")[0]!;
-    await stopBatch(db, "op", b.id, async () => ({ code: 0, stdout: "", stderr: "" }));
-    assert.equal((db.prepare("SELECT state FROM build_tasks WHERE id = ?").get(b.task_id!) as { state: string }).state, "cancelled");
-  });
 });
 
 describe("fast track across repos and Fix PRs", () => {
