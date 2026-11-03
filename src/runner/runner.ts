@@ -32,7 +32,7 @@ export const FLOW_EVERY_MS = 20_000;
 const CLI = new URL("../cli.ts", import.meta.url).pathname;
 
 /** Enough for every concurrency group to have a job running. */
-export const DEFAULT_MAX_JOBS = 10;
+export const DEFAULT_MAX_JOBS = 11;
 
 export type RunnerOptions = {
   db: DatabaseSync;

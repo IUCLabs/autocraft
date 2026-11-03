@@ -22,7 +22,7 @@ type B = { id: string; label: string; waitsOn: FlowWait; tone: FlowBranch["tone"
 
 /** Runner steps (src/runner/steps.ts) each node shows. */
 const NODE_STEPS: Record<FlowNode["id"], string[]> = {
-  synced: ["embed"], dupes: ["dupes"], classify: ["classify-new", "classify-all"], priority: ["prioritize", "rank"], decide: ["decide"],
+  synced: ["embed"], dupes: ["dupes"], classify: ["classify-new", "classify-all", "referee"], priority: ["prioritize", "rank"], decide: ["decide"],
   labels: ["labels-ensure", "labels-apply"], review: ["review-batch", "checks"], fix: ["fixissue", "fixissue-collect"], fixup: ["fixup"],
   verify: ["verify", "verify-collect"], merge: ["merge"], act: ["act"],
 };
@@ -67,7 +67,8 @@ export function buildFlow(c: Record<string, number>, meta: FlowMeta): Flow {
     node("classify", "Classify", 3, "steps", `${fmt(v("classify.settled"))} settled of ${fmt(open)}`, [
       { id: "settled", label: "Settled", waitsOn: "nothing", tone: "ok", hint: "Jev at 90 % or more, or Haiku agreeing with Jev", link: { page: "items", params: withRepo({ status: "settled" }) } },
       { id: "waiting", label: "Waiting for a second opinion", waitsOn: "model", tone: "warn", hint: "Jev is unsure; Haiku hasn't answered yet", link: { page: "items", params: withRepo({ status: "waiting" }) } },
-      { id: "disagree", label: "Models disagree", waitsOn: "person", tone: "bad", hint: "Haiku chose another label; a referee or a person settles it", link: { page: "items", params: withRepo({ status: "disagree" }) } },
+      { id: "referee", label: "Waiting for the referee", waitsOn: "model", tone: "warn", hint: "Jev and Haiku chose different labels; Sonnet settles it unless it is a scope call", link: { page: "items", params: withRepo({ status: "disagree" }) } },
+      { id: "disagree", label: "Models disagree", waitsOn: "person", tone: "bad", hint: "Scope calls go to Decide; other disagreements are here when Sonnet was unsure", link: { page: "items", params: withRepo({ status: "disagree" }) } },
       { id: "unclassified", label: "Not classified yet", waitsOn: "model", tone: "neutral", hint: "No Jev verdict in the current run", link: { page: "items", params: withRepo({ status: "unclassified" }) } },
     ], { recent: ["classified"], facts: [{ label: "Run", value: meta.run ?? "none yet" }], promptStage: "Classify" }),
     node("priority", "Priority", 4, "steps", `${fmt(v("priority.scored") + v("priority.unsure"))} scored · ${fmt(v("priority.todo"))} not yet`, [

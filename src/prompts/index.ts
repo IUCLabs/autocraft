@@ -81,7 +81,7 @@ const REFEREE: ClaudePrompt = {
   id: "referee.sonnet",
   stage: "Classify (referee)",
   runner: "claude",
-  purpose: "Settles items where Jev and Haiku chose different type labels.",
+  purpose: "Settles items where Jev and Haiku chose different type labels (outside the scope labels) and says whether it is sure; an unsure answer goes to a person.",
   models: ["sonnet"],
   placeholders: { items: ITEMS_JSON },
   template: `You referee type labels for GitHub issues and pull requests.
@@ -90,14 +90,19 @@ ${RULES}
 
 ${UNTRUSTED_NOTE}
 
-For each item below, give the one label that is right under these rules. Reply with ONLY a JSON array, one object per item:
-{"ref": "<ref as given>", "type_label": one of ${JSON.stringify(LABELS)}, "why": "<one line>"}
+For each item below, give the one label that is right under these rules. If we don't have it, it's missing. If we have it but it doesn't match the reference app and it's not a specific change we want to make to reference app behavior, then it's a bugfix.
+
+Also say whether you are sure. sure is true when the text settles the label under the rules; it is false when the label depends on something the text does not say (whether we already have the feature, whether a difference from the reference application is wanted). A person looks at every item with sure false.
+Example: "Crash when opening a 16-bit PNG with an alpha channel" describes something broken: bugfix, sure true. "Support 16-bit PNG export" could be a feature we lack or one we have in part: sure false unless the text says which.
+
+Reply with ONLY a JSON array, one object per item:
+{"ref": "<ref as given>", "type_label": one of ${JSON.stringify(LABELS)}, "sure": true or false, "why": "<one line>"}
 
 <items>
 {{items}}
 </items>`,
-  output: `A JSON array, one object per item: {"ref", "type_label", "why"}.`,
-  validation: `${CLAUDE_RESULT} The text from the first "[" to the last "]" is parsed as JSON. An object is kept only when its ref is one that was asked and not seen before and type_label is one of the six labels; why is cut to 300 characters. Items without a kept object are sent once more.`,
+  output: `A JSON array, one object per item: {"ref", "type_label", "sure", "why"}.`,
+  validation: `${CLAUDE_RESULT} The text from the first "[" to the last "]" is parsed as JSON. An object is kept only when its ref is one that was asked and not seen before and type_label is one of the six labels; sure is kept when it is a boolean, else the item counts as not sure; why is cut to 300 characters. Items without a kept object are sent once more.`,
   limits: { perCall: 10, attempts: 2, timeoutSeconds: 600 },
 };
 

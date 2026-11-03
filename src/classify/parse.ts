@@ -126,7 +126,8 @@ export function flagsOf(v: { security: boolean; needs_decision: boolean }): stri
   return JSON.stringify(f);
 }
 
-export type Referee = { ref: string; type_label: Label; why: string };
+/** `sure` is null when the reply carried no sure field (evaluation runs ignore it). */
+export type Referee = { ref: string; type_label: Label; why: string; sure: boolean | null };
 
 export function parseRefereeReply(text: string, refs: string[]): Referee[] {
   const a = text.indexOf("["), b = text.lastIndexOf("]");
@@ -136,7 +137,7 @@ export function parseRefereeReply(text: string, refs: string[]): Referee[] {
   const out: Referee[] = [];
   for (const o of arr as Record<string, unknown>[]) {
     if (o && typeof o === "object" && refs.includes(String(o.ref)) && isLabel(o.type_label) && !out.some((x) => x.ref === o.ref))
-      out.push({ ref: String(o.ref), type_label: o.type_label, why: String(o.why ?? "").slice(0, 300) });
+      out.push({ ref: String(o.ref), type_label: o.type_label, why: String(o.why ?? "").slice(0, 300), sure: typeof o.sure === "boolean" ? o.sure : null });
   }
   return out;
 }

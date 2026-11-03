@@ -31,6 +31,7 @@ import { applyUsedAnswers } from "../decisions-used.ts";
 import { duePriorityCount } from "../priority/index.ts";
 import { rankDue } from "../rank/index.ts";
 import { selectIssues } from "../fixissue/candidates.ts";
+import { refereeCandidates } from "../classify/referee.ts";
 import { currentRun, dueItems, haikuDue } from "./classify.ts";
 import { enqueue, JobError, now, requestCancel, RUNNER_STOPPED } from "./jobs.ts";
 import { claudePauseReason } from "../agents/accounts.ts";
@@ -276,6 +277,12 @@ export const LANES: Lane[] = [
     steps: ["fixissue-collect"],
     detect: (db) => (fixCollectDue(db) ? [{ step: "fixissue-collect", params: {} }] : []),
   },
+  {
+    // Label disagreements outside the scope labels, after Jev and Haiku have both answered.
+    name: "referee",
+    steps: ["referee"],
+    detect: (db, { run }) => (run && refereeCandidates(db, run, 1).length ? [{ step: "referee", params: {} }] : []),
+  },
 ];
 
 // ---- limits and usage ----------------------------------------------------------
@@ -285,7 +292,7 @@ export const dayStart = (ms: number = Date.now()): string => `${new Date(ms).toI
 type LimitRow = { step: string; per_day: number | null; updated_by: string | null; updated_at: string | null };
 
 /** Daily limits that apply until an operator sets one. */
-const DEFAULT_PER_DAY: Record<string, number> = { dupes: 2000 };
+const DEFAULT_PER_DAY: Record<string, number> = { dupes: 2000, referee: 500 };
 
 export const limitRow = (db: DatabaseSync, step: string): LimitRow =>
   (db.prepare("SELECT * FROM stage_limits WHERE step = ?").get(step) as LimitRow | undefined) ?? { step, per_day: DEFAULT_PER_DAY[step] ?? null, updated_by: null, updated_at: null };
@@ -338,7 +345,7 @@ export function setEnabled(db: DatabaseSync, enabled: boolean, by: string): void
 }
 
 /** Steps that have a row in stage_limits, in pipeline order. */
-export const LIMIT_STEPS = ["classify-new", "embed", "dupes", "decide", "checks", "review-batch", "labels-apply", "merge", "act", "fixup", "verify", "prioritize", "fixissue"];
+export const LIMIT_STEPS = ["classify-new", "embed", "dupes", "decide", "checks", "review-batch", "labels-apply", "merge", "act", "fixup", "verify", "prioritize", "fixissue", "referee"];
 
 /** Steps whose jobs cannot be sized to what remains of the day: only no limit or a pause makes sense. */
 export const ZERO_ONLY = ["checks"];

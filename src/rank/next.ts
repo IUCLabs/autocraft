@@ -19,8 +19,10 @@ export type NextFacts = {
   attempt: string | null;
   /** An open Duplicate? decision (or a duplicate close) keeps the item out of the later stages. */
   held: boolean;
-  /** Jev and Haiku chose different labels and it is not a scope call: a person sets the label. */
+  /** Jev and Haiku chose different labels, it is not a scope call, and the referee was unsure or has not answered: a person sets the label. */
   disagree: boolean;
+  /** Not a scope call and the Sonnet referee has not answered yet. */
+  refereeDue: boolean;
   /** CI result at the PR's current head, if known. */
   ci: string | null;
   /** The repo has no CI at all. */
@@ -33,6 +35,7 @@ export const classifyListOf = (repo: string): string => `/items?status=disagree&
 export function nextStepOf(f: NextFacts): string {
   if (f.held) return "Held: waiting for a Duplicate? answer";
   if (f.disagree) return "Models disagree: needs a label";
+  if (f.refereeDue) return "Referee: waiting for Sonnet";
   if (!f.settled) return "Classify";
   if (f.scopeOpen) return "Decide: waiting for a scope answer";
   if (f.kind === "issue") {
@@ -68,6 +71,6 @@ export function factsOf(db: DatabaseSync, repo: string, number: number, kind: st
   return {
     kind: kind === "pr" ? "pr" : "issue", label: s.label, settled: s.status === "settled", scopeOpen: !!scope && scope.answer === null, needsDecision: s.flags.includes("needs decision"),
     review: review && review.head_oid === head ? review.verdict : null, verify: verify?.state ?? null, attempt: attempt?.state ?? null,
-    held: duplicateHeld(db, repo, number), disagree: s.status === "disagree" && reasonOf(s) !== "scope-disagreement", ci: ci?.overall ?? null, noCi: repoHasNoCi(db, repo),
+    held: duplicateHeld(db, repo, number), refereeDue: s.status === "disagree" && reasonOf(s) !== "scope-disagreement" && s.referee === null, disagree: s.status === "disagree" && reasonOf(s) !== "scope-disagreement" && s.referee !== null, ci: ci?.overall ?? null, noCi: repoHasNoCi(db, repo),
   };
 }

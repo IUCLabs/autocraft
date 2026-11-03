@@ -279,6 +279,7 @@ export function SettledBadge({ s, detail }: { s: Settled; detail?: boolean }) {
           Jev {s.jevLabel}
           {conf}
           {s.status === "disagree" ? ` · Haiku ${s.haikuLabel}` : ""}
+          {s.referee && s.status === "disagree" ? ` · Sonnet ${s.referee.label}, unsure: ${s.referee.reason}` : ""}
         </span>
       )}
       {detail && <span className="text-2xs text-ink/50">{text}</span>}
