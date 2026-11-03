@@ -172,19 +172,19 @@ export async function runFixup(db: DatabaseSync, params: FixupParams, log: (line
     log(`  ${refOf(c)}: held: ${HOLD_CANNOT_PUSH}`);
   }
   let handled = 0;
-  const askOne = async (c: FixCandidate) => {
+  const askOne = async (c: FixCandidate, count = true) => {
     const ref = refOf(c);
     try {
       const r = await d.querier.query(PR_QUERY, { name: repo, n: c.number }) as { repository?: { pullRequest?: PrNode | null } };
       const pr = r.repository?.pullRequest;
       if (!pr || pr.state !== "OPEN" || pr.isDraft) { log(`  ${ref}: skipped: no longer an open, non-draft PR`); return; }
       if (pr.headRefOid !== c.head) { log(`  ${ref}: skipped: head moved to ${short(pr.headRefOid)} since the review`); return; }
-      const body = c.carry ? carryAskText(c.carry.sources) : askText(c.fixes);
+      const body = c.carry ? (c.carry.suggestion ?? carryAskText(c.carry.sources)) : askText(c.fixes);
       const cm = await d.exec("gh", ["pr", "comment", String(c.number), "--repo", `${ORG}/${repo}`, "--body-file", "-"], { input: body });
       if (cm.code !== 0) { log(`  ${ref}: comment failed: ${oneLine(cm.stderr)}`); return; }
       rec.fixup(c, "asked", null, [...new Set(c.fixes.map((f) => f.file))]);
       audit(db, ACTOR, "fixup-comment", ref, { run: runId, head: c.head, text: body });
-      params.onHandled?.(++handled);
+      if (count) params.onHandled?.(++handled);
       summary.asked.push(ref);
       log(`  ${ref}: asked the contributor for changes at ${short(c.head)}`);
     } catch (e) {
@@ -221,7 +221,7 @@ export async function runFixup(db: DatabaseSync, params: FixupParams, log: (line
       params.onHandled?.(++handled);
       if (!pr.maintainerCanModify || !pr.headRepository) {
         // A carry-over we can't push is suggested on the PR instead, when the repo allows comments.
-        if (c.carry && commentApprovalOf(db, repo)) await askOne(c);
+        if (c.carry && commentApprovalOf(db, repo)) await askOne(c, false);
         else hold("cannot-push", HOLD_CANNOT_PUSH);
         continue;
       }
@@ -279,7 +279,7 @@ export async function runFixup(db: DatabaseSync, params: FixupParams, log: (line
 
       // Opus checks the validated patch; only an approve goes on to the push.
       if (v.patch.length > CHECK_PATCH_CAP) { fail("refused", `the patch is over the ${CHECK_PATCH_CAP} character limit for the check`); continue; }
-      const checkReply = await d.check(db, [{ ref, title: oneTitle(db, c), review_reason: c.reason, fixes: c.fixes, diff: diff.text.slice(0, CHECK_DIFF_CAP), patch: v.patch, ...repoDir }], checkout);
+      const checkReply = await d.check(db, [{ ref, title: oneTitle(db, c), review_reason: c.reason, fixes: c.fixes, diff: diff.text.slice(0, CHECK_DIFF_CAP), patch: v.patch, ...(carried ? { carried_from: carried.map((x) => ({ ...x, diff: x.diff.slice(0, Math.floor(CHECK_DIFF_CAP / carried.length)) })) } : {}), ...repoDir }], checkout);
       if (checkReply === null) { fail("failed", "the patch check gave no answer"); continue; }
       const verdict = parseCheck(checkReply);
       if (!verdict.ok) { fail("failed", `the patch check gave no valid answer: ${verdict.error}`); continue; }

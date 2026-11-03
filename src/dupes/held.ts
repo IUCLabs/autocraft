@@ -15,7 +15,7 @@ export const DUP_OPTIONS = {
 
 /** Option keys of a group decision: use the compared answer, keep another member instead (`keep:<number>`), or not duplicates. */
 export const GROUP_OPTIONS = {
-  accept: { key: "accept", label: "Use this answer", hint: "Keep the chosen item and close the others as duplicates of it." },
+  accept: { key: "accept", label: "Use this answer", hint: "Posts the comments shown under it and closes the others as duplicates." },
   distinct: { key: "distinct", label: "Not duplicates", hint: "They are different; do not ask about this group again." },
 } as const;
 export const keepKey = (n: number): string => `keep:${n}`;

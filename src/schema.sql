@@ -869,7 +869,7 @@ CREATE TABLE IF NOT EXISTS dupe_group_items (
   detail TEXT,
   base_role TEXT NOT NULL,            -- the roles as the comparison gave them; an answer's roles are rebuilt from these
   base_target INTEGER,
-  comment TEXT,                       -- the exact text the Act step posts: on a close member its closing comment, on the kept issue the details comment
+  head TEXT,                          -- a PR's head commit and an issue's text hash when the decision was asked; Act skips a member that differs
   PRIMARY KEY (decision_id, number)
 );
 CREATE INDEX IF NOT EXISTS dupe_group_items_item ON dupe_group_items(repo, number);
@@ -892,5 +892,21 @@ CREATE TABLE IF NOT EXISTS dupe_carries (
   outcome TEXT,                       -- pushed | asked | gone | too-large | failed, with reason
   to_head TEXT,
   updated_at TEXT NOT NULL,
+  PRIMARY KEY (decision_id, number)
+);
+-- The exact comments each answer of a group decision posts (src/dupes/texts.ts), written when the decision is asked. option: accept | keep:<n>.
+CREATE TABLE IF NOT EXISTS dupe_group_texts (
+  decision_id TEXT NOT NULL,
+  option TEXT NOT NULL,
+  number INTEGER NOT NULL,
+  step TEXT NOT NULL,                 -- close | details | suggestion
+  text TEXT NOT NULL,
+  PRIMARY KEY (decision_id, option, number, step)
+);
+-- Failed writes per member, so one permanent error does not block every later group.
+CREATE TABLE IF NOT EXISTS dupe_group_fails (
+  decision_id TEXT NOT NULL,
+  number INTEGER NOT NULL,
+  fails INTEGER NOT NULL,
   PRIMARY KEY (decision_id, number)
 );

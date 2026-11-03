@@ -11,7 +11,7 @@ import { actionable, ask, factsOf, getDecision } from "../decisions.ts";
 import { compareCanonical, canonInfo } from "./canonical.ts";
 import { DUP_FACT, GROUP_OPTIONS, groupId, keepKey, keptOf } from "./held.ts";
 import { duplicateGroups, kindSetsOf, currentComparison, type Group, type KindSet, type StoredComparison } from "./plan.ts";
-import { storeTexts } from "./texts.ts";
+import { storeOptionTexts } from "./texts.ts";
 import { inPilot, pilotSqlFor } from "../pilot.ts";
 
 export { duplicateEdges, duplicateGroups, type Group } from "./plan.ts";
@@ -87,6 +87,12 @@ export function groupPlans(db: DatabaseSync, repo?: string): GroupPlan[] {
   return out;
 }
 
+/** What Act compares before closing a member: a PR's head commit, an issue's text hash. */
+function headOf(db: DatabaseSync, repo: string, n: number, kind: string): string | null {
+  const r = db.prepare("SELECT head_oid, embed_hash FROM items WHERE repo = ? AND number = ?").get(repo, n) as { head_oid: string | null; embed_hash: string | null } | undefined;
+  return (kind === "pr" ? r?.head_oid : r?.embed_hash) ?? null;
+}
+
 function supersede(db: DatabaseSync, p: GroupPlan, id: string, at: string): void {
   const ph = p.group.members.map(() => "?").join(",");
   const rows = db.prepare(`SELECT id FROM decisions WHERE kind = 'duplicate' AND repo = ? AND answer IS NULL AND id <> ? AND number IN (${ph})`).all(p.repo, id, ...p.group.members) as { id: string }[];
@@ -159,13 +165,20 @@ export function askGroupDecisions(db: DatabaseSync, repo: string | undefined, at
         db.exec("COMMIT");
         continue;
       }
+      // An answer waiting for Act that already lists every member to close: no second decision.
+      const waiting = new Set((db.prepare(`SELECT gi.number FROM decisions d JOIN dupe_group_items gi ON gi.decision_id = d.id WHERE d.kind = 'duplicate' AND d.id LIKE '%:dupegroup:%' AND d.repo = ?
+        AND d.answer IS NOT NULL AND d.answer NOT IN ('superseded', 'distinct') AND d.applied_at IS NULL`).all(p.repo) as { number: number }[]).map((r) => r.number));
+      if (p.items.filter((i) => i.role === "close").every((i) => waiting.has(i.number))) {
+        db.exec("COMMIT");
+        continue;
+      }
       const id = idFor(db, p);
       const t = textOf(db, p);
       const primary = p.items.find((i) => i.number === p.number)!;
       const alts = canonInfo(db, p.repo, p.items.filter((i) => i.kind === primary.kind && i.number !== p.number && i.role !== "stay").map((i) => i.number)).sort(compareCanonical).slice(0, 3);
       ask(db, [{
         id, kind: "duplicate", repo: p.repo, number: p.number, question: t.question, context: t.context, facts: t.facts,
-        options: [GROUP_OPTIONS.accept, ...alts.map((a) => ({ key: keepKey(a.number), label: `Keep #${a.number} instead`, hint: `Close the others, and #${p.number}, as duplicates of #${a.number}.` })), GROUP_OPTIONS.distinct],
+        options: [GROUP_OPTIONS.accept, ...alts.map((a) => ({ key: keepKey(a.number), label: `Keep #${a.number} instead`, hint: `Posts the comments shown under it: keeps #${a.number}, closes the others, #${p.number} too.` })), GROUP_OPTIONS.distinct],
         recommended: p.source === "rule" ? null : "accept",
         asked_by: ACTOR, asked_at: at, summary: t.summary, summary_by: p.source === "rule" ? "rule" : p.model ?? "rule", summary_at: at,
       }], true);
@@ -173,9 +186,12 @@ export function askGroupDecisions(db: DatabaseSync, repo: string | undefined, at
       // A refresh restores the comparison's roles; an answer is applied to them again.
       db.prepare("INSERT INTO dupe_groups (decision_id, repo, source) VALUES (?, ?, ?) ON CONFLICT(decision_id) DO UPDATE SET source = excluded.source, applied_answer = NULL").run(id, p.repo, p.source);
       db.prepare("DELETE FROM dupe_group_items WHERE decision_id = ?").run(id);
-      const ins = db.prepare("INSERT INTO dupe_group_items (decision_id, repo, number, kind, role, target, detail, base_role, base_target) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
-      for (const i of p.items) ins.run(id, p.repo, i.number, i.kind, i.role, i.target, i.detail ? JSON.stringify(i.detail) : null, i.role, i.target);
-      storeTexts(db, id);
+      const ins = db.prepare("INSERT INTO dupe_group_items (decision_id, repo, number, kind, role, target, detail, base_role, base_target, head) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+      for (const i of p.items) ins.run(id, p.repo, i.number, i.kind, i.role, i.target, i.detail ? JSON.stringify(i.detail) : null, i.role, i.target, headOf(db, p.repo, i.number, i.kind));
+      storeOptionTexts(db, id, ["accept", ...alts.map((a) => keepKey(a.number))], (n) => {
+        const r = db.prepare("SELECT state FROM items WHERE repo = ? AND number = ?").get(p.repo, n) as { state: string } | undefined;
+        return r?.state === "OPEN" && inPilot(db, p.repo, n);
+      });
       db.exec("COMMIT");
       asked.push(id);
     } catch (e) {
@@ -224,7 +240,6 @@ function restoreRoles(db: DatabaseSync, id: string): void {
 export function resetGroupAnswer(db: DatabaseSync, id: string): void {
   if (!id.includes(":dupegroup:")) return;
   restoreRoles(db, id);
-  storeTexts(db, id);
   db.prepare("UPDATE dupe_groups SET applied_answer = NULL WHERE decision_id = ?").run(id);
 }
 
@@ -261,7 +276,6 @@ export function applyDuplicateAnswers(db: DatabaseSync, at: string): number {
         markDistinct(db, a.repo, members, at);
         db.prepare("UPDATE decisions SET applied_at = ? WHERE id = ? AND applied_at IS NULL").run(at, a.id);
       } else if (kept !== null) rekeep(db, a.id, kept, a.repo);
-      storeTexts(db, a.id);
       db.prepare("UPDATE dupe_groups SET applied_answer = ? WHERE decision_id = ?").run(a.answer, a.id);
       audit(db, ACTOR, "duplicate-answer", `${a.repo}#${a.number}`, { decision: a.id, answer: a.answer });
       n++;

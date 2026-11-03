@@ -9,6 +9,7 @@ import type {
 import { resetGroupAnswer } from "../../dupes/decide.ts";
 import { exceptionsOf, factsOf, getDecision, isBatch, itemsOf, KINDS, optionsOf, reposOf, type DecisionRow, type Exception } from "../../decisions.ts";
 import { commentPreview, writeEffect } from "../../act/index.ts";
+import { optionTextsOf, textsFor, textsHash } from "../../dupes/texts.ts";
 import { audit } from "../audit.ts";
 import { randomToken } from "../server/crypto.ts";
 import { HttpError, type RateLimiter } from "../server/util.ts";
@@ -158,7 +159,8 @@ export function toDecision(db: DatabaseSync, d: DecisionRow, viewer: Viewer): De
     facts: factsOf(d),
     options: optionsOf(d).map((o) => ({ ...o, writes: writeEffect(d.kind, o.key) ?? undefined })),
     recommended: d.recommended ?? "",
-    publicText: commentPreview(d, db),
+    publicText: commentPreview(d),
+    optionTexts: d.kind === "duplicate" && d.id.includes(":dupegroup:") ? optionTextsOf(db, d.id) : [],
     askedAt: d.asked_at, askedBy: d.asked_by ?? "the pipeline",
     docket: d.docket,
     answer: d.answer,
@@ -279,6 +281,9 @@ export async function answer(db: DatabaseSync, req: Req): Promise<Decision> {
   const keys = new Set(optionsOf(d).map((o) => o.key));
   if (typeof b.answer !== "string" || !keys.has(b.answer)) throw new HttpError(400, "answer must be one of the option keys");
   const ans = b.answer;
+  // A group answer approves the texts stored for its option; a page showing other texts is stale.
+  const stored = d.kind === "duplicate" && d.id.includes(":dupegroup:") ? textsFor(db, d.id, ans) : [];
+  if (stored.length && b.textsHash !== textsHash(stored)) throw new HttpError(409, "the comments for this answer changed; reload the decision");
   const note = optionalText(b.note, NOTE_MAX, "note");
   let exceptions: Exception[] | null = null;
   if (b.exceptions !== undefined && b.exceptions !== null) {
@@ -308,6 +313,7 @@ export async function undo(db: DatabaseSync, req: Req): Promise<Decision> {
   await requireOperator(req, d);
   if (!d.answer) throw new HttpError(409, "that decision has no answer to undo");
   if (d.applied_at) throw new HttpError(409, "the pipeline already acted on this answer");
+  if (db.prepare("SELECT 1 FROM dupe_group_posts WHERE decision_id = ? AND url IS NOT NULL LIMIT 1").get(d.id)) throw new HttpError(409, "the pipeline already wrote to GitHub for this answer");
   const r = db.prepare(`UPDATE main.decisions SET answer = NULL, answer_note = NULL, exceptions = NULL, answered_by = NULL, answered_at = NULL, adopted_opinion = NULL
     WHERE id = ? AND answer IS NOT NULL AND applied_at IS NULL`).run(d.id);
   if (r.changes !== 1) throw new HttpError(409, "the pipeline acted on this a moment ago");

@@ -248,8 +248,28 @@ export function DecisionBody({
         </Disclosure>
       )}
       {d.publicText && (
-        <Disclosure title={d.kind === "merge" ? "Comment posted on GitHub if closed" : d.id.includes(":dupegroup:") ? "Comments posted on GitHub" : "Comment posted on GitHub"}>
+        <Disclosure title={d.kind === "merge" ? "Comment posted on GitHub if closed" : "Comment posted on GitHub"}>
           <blockquote className="whitespace-pre-wrap border-l-2 border-line-strong pl-3 text-sm leading-6 text-ink/75">{d.publicText}</blockquote>
+        </Disclosure>
+      )}
+      {d.optionTexts?.length > 0 && (
+        <Disclosure title="Comments posted on GitHub" defaultOpen>
+          <div className="space-y-3">
+            {d.optionTexts.map((ot) => (
+              <div key={ot.option}>
+                <div className="text-xs font-medium text-ink/60">{d.options.find((o) => o.key === ot.option)?.label ?? ot.option}</div>
+                {ot.texts.length === 0 && <p className="text-sm text-ink/60">No comments.</p>}
+                {ot.texts.map((t) => (
+                  <div key={`${t.number}:${t.step}`} className="mt-1">
+                    <div className="text-xs text-ink/50">
+                      {t.step === "suggestion" ? "If the branch cannot be pushed to, on" : "On"} #{t.number}
+                    </div>
+                    <blockquote className="whitespace-pre-wrap border-l-2 border-line-strong pl-3 text-sm leading-6 text-ink/75">{t.text}</blockquote>
+                  </div>
+                ))}
+              </div>
+            ))}
+          </div>
         </Disclosure>
       )}
       <Disclosure title="Classifiers" count={d.classifications.length}>

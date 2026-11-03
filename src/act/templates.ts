@@ -11,7 +11,10 @@ export const REASON_MAX = 200;
 export function cleanReason(s: string | null | undefined): string | null {
   const t = (s ?? "")
     .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/<\/?[a-z!][^>]*>/gi, "")
     .replace(/<?\b(?:[a-z][a-z0-9+.-]*:\/\/|www\.)[^\s<>]*>?/gi, "")
+    .replace(/(^|\s)\/\/[^\s]*/g, "$1")
+    .replace(/\b[\w.-]+\/[\w.-]+#\d+/g, "")
     .replace(/@/g, "")
     .replace(/\s+/g, " ").trim();
   if (!t) return null;
@@ -47,7 +50,7 @@ export function duplicateComment(o: { repo: string; original: string; closed: bo
 /** The comment on a member closed in a duplicate group: the kept item, and for a PR the parts carried over. Carried points are model-written from untrusted text, so they are cleaned like a reason. */
 export function dupeGroupCloseComment(o: { kept: number; carry: string[] }): string {
   const c = cleanReason(o.carry.slice(0, 2).join("; "));
-  return `Closing as a duplicate of #${o.kept}.${c ? `\nCarried over to #${o.kept}: ${c}` : ""}`;
+  return `Closing as a duplicate of #${o.kept}.${c ? `\nParts to carry over to #${o.kept}: ${c}` : ""}`;
 }
 
 export const DETAILS_MAX_BULLETS = 6;
@@ -103,7 +106,7 @@ export const COMMENT_TEMPLATES: CommentTemplate[] = [
     text: dupeGroupCloseComment({ kept: 0, carry: ["{{carried}}"] }).replaceAll("#0", "#{{kept}}"),
     placeholders: [
       { name: "kept", meaning: "The number of the item that stays" },
-      { name: "carried", meaning: "For a pull request with parts carried over: the first two carry-over points of the comparison, cleaned to one line of at most 200 characters; the second line is left out when there are none" },
+      { name: "carried", meaning: "For a pull request with parts carried over: the first two carry-over points of the comparison, cleaned to one line of at most 200 characters; the second line, \"Parts to carry over to #{{kept}}: ...\", is left out when there are none" },
     ],
     example: dupeGroupCloseComment({ kept: 12, carry: ["master-page handling in src/pages.rs"] }),
   },

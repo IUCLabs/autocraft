@@ -51,7 +51,7 @@ function fresh(head: string, o: { canModify?: boolean; push?: boolean; comment?:
   return db;
 }
 
-type World = { head: string; fork: string; log: string[]; deps: FixupDeps; asked: any[] };
+type World = { head: string; fork: string; log: string[]; deps: FixupDeps; asked: any[]; checked: any[] };
 function world(o: { check?: string; canModify?: boolean } = {}): World {
   const root = mkdtempSync(join(dir, "w-"));
   const work = join(root, "work");
@@ -67,6 +67,7 @@ function world(o: { check?: string; canModify?: boolean } = {}): World {
   git(fork, "update-ref", "refs/pull/7/head", head);
   const log: string[] = [];
   const asked: any[] = [];
+  const checked: any[] = [];
   const good = "diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1,2 +1,2 @@\n-fn a() {}\n-fn main() { a(); }\n+fn b() {}\n+fn main() { b(); }\n";
   const querier: Querier = validating({
     spent: 0, remaining: 5000,
@@ -91,9 +92,9 @@ function world(o: { check?: string; canModify?: boolean } = {}): World {
     querier, exec: run, now: () => new Date(T1), root: join(root, "cache"),
     fetchDiff: async (_r, n) => ({ ok: true, text: `diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1 +1 @@\n-x\n+fn a() {} // ${n}\n` }),
     ask: async (_db, input) => { log.push("model"); asked.push(input[0]); return good; },
-    check: async () => { log.push("check"); return o.check ?? APPROVE; },
+    check: async (_db, input) => { log.push("check"); checked.push(input[0]); return o.check ?? APPROVE; },
   };
-  return { head, fork, log, deps, asked };
+  return { head, fork, log, deps, asked, checked };
 }
 const carry = (db: DatabaseSync) => db.prepare("SELECT state, attempts, outcome FROM dupe_carries").get() as { state: string; attempts: number; outcome: string };
 
@@ -115,6 +116,9 @@ describe("carry-over", () => {
     assert.match(w.asked[0].carried_from[0].diff, /^diff --git a\/src\/lib\.rs/);
     assert.deepEqual(w.log.filter((l) => l !== "assign" || true), ["model", "check", "push", `comment: ${carryCommentText([8], ["src/lib.rs"])}`]);
     assert.equal(db.prepare("SELECT COUNT(*) AS n FROM patch_checks WHERE kind = 'fixup' AND number = 7").get()!.n, 1);
+    // The patch check sees where the ported code comes from.
+    assert.equal(w.checked[0].carried_from[0].ref, "app#8");
+    assert.match(w.checked[0].carried_from[0].diff, /^diff --git/);
     assert.equal(carry(db).state, "done");
     // Take-fix bookkeeping is untouched.
     assert.equal(db.prepare("SELECT COUNT(*) AS n FROM fixups").get()!.n, 0);
@@ -148,5 +152,21 @@ describe("carry-over", () => {
     const db = fresh(w.head, { canModify: true, comment: true });
     await runFixup(db, { repo: "app", dryRun: false }, () => {}, w.deps);
     assert.deepEqual(w.log, [`comment: ${carryAskText([{ number: 8, points: [POINT] }])}`]);
+  });
+
+  test("the stored suggestion text is posted as it is", async () => {
+    const w = world({ canModify: false });
+    const db = fresh(w.head, { canModify: false, comment: true });
+    db.prepare("INSERT INTO dupe_groups (decision_id, repo, source, applied_answer) VALUES ('app:dupegroup:7', 'app', 'model', 'accept') ON CONFLICT DO NOTHING").run();
+    db.prepare("INSERT INTO dupe_group_texts (decision_id, option, number, step, text) VALUES ('app:dupegroup:7', 'accept', 7, 'suggestion', 'stored suggestion text')").run();
+    await runFixup(db, { repo: "app", dryRun: false }, () => {}, w.deps);
+    assert.deepEqual(w.log, ["comment: stored suggestion text"]);
+  });
+
+  test("a kept PR outside the pilot is not worked on", () => {
+    const db = fresh("h1");
+    db.prepare("INSERT INTO settings (key, value) VALUES ('pilot_items', ?)").run(JSON.stringify(["app#999"]));
+    const sel = selectFixups(db, "app");
+    assert.equal(sel.fix.length + sel.ask.length, 0);
   });
 });

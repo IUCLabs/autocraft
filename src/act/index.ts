@@ -29,7 +29,6 @@ import { notOwnIntegrationSql } from "../dupes/held.ts";
 import { applyDuplicateAnswers } from "../dupes/decide.ts";
 import { commentApprovalOf } from "./approval.ts";
 import { actOnGroups, type GroupIo } from "./dupe-groups.ts";
-import { previewOf } from "../dupes/texts.ts";
 import { cleanReason, duplicateComment, ORG, prCloseComment, scopeCloseComment } from "./templates.ts";
 import { inPilot, pilotSql } from "../pilot.ts";
 
@@ -207,8 +206,9 @@ function commentFor(d: DecisionRow, t: Target): string {
 }
 
 /** The exact comment the act step posts for a decision, for the dashboard. Null when none is fixed in advance. */
-export function commentPreview(d: DecisionRow, db?: DatabaseSync): string | null {
-  if (d.kind === "duplicate" && d.id.includes(":dupegroup:")) return db ? previewOf(db, d.id) : null;
+export function commentPreview(d: DecisionRow): string | null {
+  // A group decision shows the stored texts of each option instead (src/dupes/texts.ts).
+  if (d.kind === "duplicate" && d.id.includes(":dupegroup:")) return null;
   if (d.kind === "scope" || d.kind === "close" || d.kind === "merge") return commentFor(d, { decisionId: d.id, kind: d.kind, repo: d.repo ?? "", number: d.number ?? 0 });
   if (d.kind === "duplicate") {
     const orig = factValue(d, DUP_FACT);

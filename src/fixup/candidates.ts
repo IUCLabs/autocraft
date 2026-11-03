@@ -5,13 +5,14 @@ import { headOf } from "../review/candidates.ts";
 import { commentApprovalOf } from "../act/approval.ts";
 import { pushApprovalOf } from "./approval.ts";
 import { safePath } from "./patch.ts";
+import { pilotSql } from "../pilot.ts";
 
 /** Fix-up tries per PR (pushed, failed, refused or rejected) before the step leaves it to a person. */
 export const MAX_ATTEMPTS = 2;
 
 export type Fix = { file: string; change: string };
 /** Parts of PRs closed as duplicates that a duplicate group's kept PR should take over (src/act/dupe-groups.ts queues them). */
-export type Carry = { decisionId: string; sources: { number: number; head: string | null; points: string[] }[] };
+export type Carry = { decisionId: string; /** The suggestion comment stored with the answer, posted as it is when the branch can't be pushed to. */ suggestion: string | null; sources: { number: number; head: string | null; points: string[] }[] };
 /** `carry` set: the candidate is a carry-over job; its fixes are worked out from the source PRs' diffs when it runs. */
 export type FixCandidate = { repo: string; number: number; head: string; reason: string; fixes: Fix[]; attempt: number; carry?: Carry };
 export type FixSelection = {
@@ -101,7 +102,7 @@ export function carryCandidates(db: DatabaseSync, repo: string): { fix: FixCandi
   const out = { fix: [] as FixCandidate[], ask: [] as FixCandidate[] };
   const rows = db.prepare(`SELECT k.decision_id, k.attempts, i.number, i.head_oid, i.updated_at, i.is_draft,
       c.head_oid AS c_head, c.state AS c_state, c.is_draft AS c_draft, c.fetched_at AS c_at, c.maintainer_can_modify AS can_modify, c.mergeable
-    FROM dupe_carries k JOIN items i ON i.repo = k.repo AND i.number = k.number AND i.kind = 'pr' AND i.state = 'OPEN'
+    FROM dupe_carries k JOIN items i ON i.repo = k.repo AND i.number = k.number AND i.kind = 'pr' AND i.state = 'OPEN' AND ${pilotSql("i")}
     LEFT JOIN pr_checks c ON c.repo = i.repo AND c.number = i.number
     WHERE k.repo = ? AND k.state = 'queued' ORDER BY k.number`).all(repo) as (Row & { decision_id: string; attempts: number })[];
   const commenting = commentApprovalOf(db, repo) !== null;
@@ -119,7 +120,8 @@ export function carryCandidates(db: DatabaseSync, repo: string): { fix: FixCandi
         return { number: x.number, head: sh, points: Array.isArray(pts) ? pts.filter((p): p is string => typeof p === "string") : [] };
       }).filter((x) => x.points.length);
     if (!sources.length) continue;
-    const c: FixCandidate = { repo, number: r.number, head, reason: `Parts of ${sources.map((x) => `#${x.number}`).join(", ")}, closed as duplicates, to carry over.`, fixes: [], attempt: r.attempts + 1, carry: { decisionId: r.decision_id, sources } };
+    const suggestion = (db.prepare("SELECT t.text FROM dupe_group_texts t JOIN dupe_groups g ON g.decision_id = t.decision_id AND g.applied_answer = t.option WHERE t.decision_id = ? AND t.number = ? AND t.step = 'suggestion'").get(r.decision_id, r.number) as { text: string } | undefined)?.text ?? null;
+    const c: FixCandidate = { repo, number: r.number, head, reason: `Parts of ${sources.map((x) => `#${x.number}`).join(", ")}, closed as duplicates, to carry over.`, fixes: [], attempt: r.attempts + 1, carry: { decisionId: r.decision_id, suggestion, sources } };
     if (r.can_modify && approved && c.attempt <= MAX_ATTEMPTS) out.fix.push(c);
     else if (commenting) out.ask.push(c);
   }

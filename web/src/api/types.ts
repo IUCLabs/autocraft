@@ -10,6 +10,12 @@ export interface ItemRef {
 
 export type DecisionKind = "scope" | "duplicate" | "close" | "merge" | "split" | "other";
 
+export interface OptionTexts {
+  option: string;
+  hash: string;
+  texts: { number: number; step: "close" | "details" | "suggestion"; text: string }[];
+}
+
 export interface DecisionOption {
   key: string;
   label: string;
@@ -82,6 +88,8 @@ export interface Decision {
   options: DecisionOption[];
   recommended: string;
   publicText: string | null;
+  /** Group decisions: per answer, the exact comments it posts and a hash of them that the answer sends back. */
+  optionTexts: OptionTexts[];
   askedAt: string;
   askedBy: string;
   docket: string | null;
@@ -487,6 +495,8 @@ export interface AnswerInput {
   answer: string;
   note?: string;
   exceptions?: (ItemRef & { answer: string })[];
+  /** Group decisions: the hash of the shown comments for this answer. */
+  textsHash?: string;
 }
 
 // ---- Contributors, Repos and Access (docs/dashboard-spec.md, Pages) ----

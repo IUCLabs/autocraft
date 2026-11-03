@@ -6,12 +6,16 @@ import { join } from "node:path";
 import { describe, test } from "node:test";
 import type { DatabaseSync } from "node:sqlite";
 import { setCommentApproval } from "../src/act/approval.ts";
-import { commentPreview, runAct, writeEffect, type ActDeps } from "../src/act/index.ts";
+import { runAct, writeEffect, type ActDeps } from "../src/act/index.ts";
 import { connect } from "../src/db.ts";
 import { getDecision } from "../src/decisions.ts";
 import { kindSetsOf, duplicateGroups } from "../src/dupes/plan.ts";
+import { askGroupDecisions } from "../src/dupes/decide.ts";
+import { cleanReason } from "../src/act/templates.ts";
 import { runDupeCompare, type CompareDeps, type Reply } from "../src/dupes/compare.ts";
 import { applyDuplicateAnswers, resetGroupAnswer } from "../src/dupes/decide.ts";
+import { optionTextsOf, textsFor } from "../src/dupes/texts.ts";
+import { carryAskText } from "../src/fixup/template.ts";
 import { dupeGroupCloseComment, dupeGroupDetailsComment } from "../src/act/templates.ts";
 import type { Querier } from "../src/mirror.ts";
 import { validating } from "./gql.ts";
@@ -87,18 +91,24 @@ const CLOSE_12 = dupeGroupCloseComment({ kept: 11, carry: ["master-page handling
 const CLOSE_13 = dupeGroupCloseComment({ kept: 11, carry: [] });
 
 describe("group comments", () => {
-  test("the comparison stores the exact texts and the decision shows them", async () => {
+  test("the comparison stores the exact texts of every option and the decision shows them", async () => {
     const db = await world();
-    const rows = db.prepare("SELECT number, comment FROM dupe_group_items WHERE decision_id IN (?, ?) ORDER BY number").all(PR_GROUP, ISSUE_GROUP) as { number: number; comment: string | null }[];
-    const text = new Map(rows.map((r) => [r.number, r.comment]));
-    assert.equal(text.get(12), CLOSE_12);
-    assert.equal(text.get(13), CLOSE_13);
-    assert.equal(text.get(11), null);
-    assert.equal(text.get(2), "Closing as a duplicate of #1.");
-    assert.equal(text.get(1), dupeGroupDetailsComment([{ number: 2, points: ["Happens on macOS 14 only."] }, { number: 3, points: ["Started after version 2.3.", "Log: panic in layout"] }]));
-    assert.match(text.get(1)!, /^Details from the closed duplicates:\n- #2: Happens on macOS 14 only\.\n- #3: Started after version 2\.3\.\n- #3: Log: panic in layout\.$/);
-    const preview = commentPreview(state(db, PR_GROUP), db)!;
-    assert.ok(preview.includes(CLOSE_12) && preview.includes(CLOSE_13));
+    const text = (id: string, option: string, n: number, step: string) => textsFor(db, id, option).find((t) => t.number === n && t.step === step)?.text;
+    assert.equal(text(PR_GROUP, "accept", 12, "close"), CLOSE_12);
+    assert.match(CLOSE_12, /\nParts to carry over to #11: master-page handling in src\/a\.rs\.$/);
+    assert.equal(text(PR_GROUP, "accept", 13, "close"), CLOSE_13);
+    assert.equal(text(PR_GROUP, "accept", 11, "close"), undefined);
+    assert.equal(text(PR_GROUP, "accept", 11, "suggestion"), carryAskText([{ number: 12, points: ["master-page handling in src/a.rs"] }]));
+    // keep:12 has its own set, fixed now: #11 and #13 close onto #12.
+    assert.equal(text(PR_GROUP, "keep:12", 11, "close"), "Closing as a duplicate of #12.");
+    assert.equal(text(PR_GROUP, "keep:12", 13, "close"), "Closing as a duplicate of #12.");
+    assert.equal(text(ISSUE_GROUP, "accept", 2, "close"), "Closing as a duplicate of #1.");
+    const details = dupeGroupDetailsComment([{ number: 2, points: ["Happens on macOS 14 only."] }, { number: 3, points: ["Started after version 2.3.", "Log: panic in layout"] }]);
+    assert.equal(text(ISSUE_GROUP, "accept", 1, "details"), details);
+    assert.match(details!, /^Details from the closed duplicates:\n- #2: Happens on macOS 14 only\.\n- #3: Started after version 2\.3\.\n- #3: Log: panic in layout\.$/);
+    const shown = optionTextsOf(db, PR_GROUP);
+    assert.deepEqual(shown.map((o) => o.option).sort(), ["accept", "keep:12", "keep:13"]);
+    assert.notEqual(shown[0]!.hash, shown[1]!.hash);
     assert.equal(writeEffect("duplicate", "keep:12"), writeEffect("duplicate", "accept"));
   });
 
@@ -144,17 +154,14 @@ describe("act on group decisions", () => {
     assert.equal(state(db, PR_GROUP).applied_at, null);
   });
 
-  test("keep:N rebuilds the texts for the new roles and posts those", async () => {
+  test("keep:N posts the set stored for that option when the decision was asked", async () => {
     const db = await world();
+    const before = textsFor(db, PR_GROUP, "keep:12");
     answer(db, PR_GROUP, "keep:12");
-    const text = (n: number) => (db.prepare("SELECT comment FROM dupe_group_items WHERE decision_id = ? AND number = ?").get(PR_GROUP, n) as { comment: string | null }).comment;
-    assert.equal(text(11), "Closing as a duplicate of #12.");
-    assert.equal(text(13), "Closing as a duplicate of #12.");
-    assert.equal(text(12), null);
+    assert.deepEqual(textsFor(db, PR_GROUP, "keep:12"), before);
     const log: string[] = [];
     await run(db, fakes(log));
     assert.deepEqual(writes(log), ["comment P11: Closing as a duplicate of #12.", "close P11", "comment P13: Closing as a duplicate of #12.", "close P13"]);
-    // The issue group is untouched: its texts still name #1.
     assert.equal(state(db, ISSUE_GROUP).applied_at, null);
   });
 
@@ -176,21 +183,41 @@ describe("act on group decisions", () => {
     assert.equal(db.prepare("SELECT COUNT(*) AS n FROM audit WHERE action = 'act-comment' AND target = 'app#12'").get()!.n, 1);
   });
 
-  test("a member that closed is skipped for good; one whose head moved waits for a later run", async () => {
+  test("a member that closed or whose head moved is skipped and recorded; the rest is closed", async () => {
     const db = await world();
     answer(db, PR_GROUP, "accept");
     const log: string[] = [];
     const s = await run(db, fakes(log, { closed: new Set([13]), heads: new Map([[12, "newsha"]]) }));
     assert.deepEqual(writes(log), []);
     assert.deepEqual(s.skipped.map((x) => x.ref).sort(), ["app#12", "app#13"]);
-    assert.equal(state(db, PR_GROUP).applied_at, null);
-    // The mirror sees the new head: the stored comment still goes out.
-    db.prepare("UPDATE items SET head_oid = 'newsha' WHERE repo = 'app' AND number = 12").run();
-    const log2: string[] = [];
-    await run(db, fakes(log2, { closed: new Set([13]), heads: new Map([[12, "newsha"]]) }));
-    assert.deepEqual(writes(log2), [`comment P12: ${CLOSE_12}`, "close P12"]);
     assert.ok(state(db, PR_GROUP).applied_at);
-    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM dupe_carries").get()!.n, 1);
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM dupe_carries").get()!.n, 0);
+  });
+
+  test("a kept item that was closed stops the decision before any write", async () => {
+    const db = await world();
+    answer(db, PR_GROUP, "accept");
+    const log: string[] = [];
+    await run(db, fakes(log, { closed: new Set([11]) }));
+    assert.deepEqual(writes(log), []);
+    assert.equal(state(db, PR_GROUP).applied_at, null);
+  });
+
+  test("a member that keeps failing is skipped after three tries and later groups go on", async () => {
+    const db = await world();
+    answer(db, PR_GROUP, "accept");
+    answer(db, ISSUE_GROUP, "accept");
+    const bad = fakes([], {});
+    const real = bad.querier.query.bind(bad.querier);
+    bad.querier.query = async (q: string, v: object) => {
+      if (q.includes("addComment") && (v as { id: string }).id === "P12") throw new Error("locked");
+      return real(q, v);
+    };
+    for (let i = 0; i < 2; i++) assert.equal((await run(db, bad)).failed.length, 1);
+    const s = await run(db, bad);
+    assert.ok(s.skipped.some((x) => x.ref === "app#12"));
+    const s2 = await run(db, bad);
+    assert.ok(state(db, PR_GROUP).applied_at && state(db, ISSUE_GROUP).applied_at, JSON.stringify([s2, s]));
   });
 
   test("an undo while the run reads a member stops that decision before any write", async () => {
@@ -202,17 +229,18 @@ describe("act on group decisions", () => {
     assert.equal(state(db, PR_GROUP).applied_at, null);
   });
 
-  test("texts follow the roles after undo and a new answer", async () => {
+  test("undo and a new answer leave the stored texts of every option as they were shown", async () => {
     const db = await world();
+    const all = () => JSON.stringify(optionTextsOf(db, PR_GROUP));
+    const shown = all();
     answer(db, PR_GROUP, "keep:12");
     db.prepare("UPDATE decisions SET answer = NULL, answered_by = NULL, answered_at = NULL WHERE id = ?").run(PR_GROUP);
     resetGroupAnswer(db, PR_GROUP);
-    const text = (n: number) => (db.prepare("SELECT comment FROM dupe_group_items WHERE decision_id = ? AND number = ?").get(PR_GROUP, n) as { comment: string | null }).comment;
-    assert.equal(text(12), CLOSE_12);
-    assert.equal(text(11), null);
     answer(db, PR_GROUP, "keep:13");
-    assert.equal(text(12), dupeGroupCloseComment({ kept: 13, carry: ["master-page handling in src/a.rs"] }));
-    assert.equal(text(13), null);
+    assert.equal(all(), shown);
+    const log: string[] = [];
+    await run(db, fakes(log));
+    assert.deepEqual(writes(log).filter((l) => l.startsWith("comment")), [`comment P11: ${textsFor(db, PR_GROUP, "keep:13").find((t) => t.number === 11)!.text}`, `comment P12: ${textsFor(db, PR_GROUP, "keep:13").find((t) => t.number === 12)!.text}`]);
   });
 
   test("a PR our Act closed is no longer a member of its group's comparison sets", async () => {
@@ -222,5 +250,18 @@ describe("act on group decisions", () => {
     db.prepare("UPDATE items SET state = 'OPEN' WHERE repo = 'app' AND number IN (12, 13)").run();
     const g = duplicateGroups(db, "app").find((x) => x.members.includes(11))!;
     assert.deepEqual(kindSetsOf(db, g).flatMap((s) => s.members.map((m) => m.number)), [11]);
+  });
+
+  test("an answer waiting for Act is not met by a second decision for the same members", async () => {
+    const db = await world();
+    answer(db, PR_GROUP, "accept");
+    askGroupDecisions(db, "app", T1);
+    assert.deepEqual(db.prepare("SELECT id FROM decisions WHERE id LIKE 'app:dupegroup:11%'").all().map((r: any) => r.id), [PR_GROUP]);
+  });
+});
+
+describe("cleanReason", () => {
+  test("strips HTML tags, protocol-relative links and cross-repo references", () => {
+    assert.equal(cleanReason("see <b>this</b> //evil.example/x and other/repo#12 plus <img src=x onerror=y> @bob"), "see this and plus bob.");
   });
 });

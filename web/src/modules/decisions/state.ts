@@ -136,6 +136,7 @@ export function useAnswer() {
         const overrides = local.overrides[d.id] ?? {};
         await api.decisions.answer(d.id, {
           answer: key,
+          textsHash: d.optionTexts?.find((t) => t.option === key)?.hash,
           note: local.notes[d.id] || undefined,
           exceptions: Object.entries(overrides).map(([ref, answer]) => {
             const [repo, n] = ref.split("#");

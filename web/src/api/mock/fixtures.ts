@@ -612,6 +612,7 @@ function toDecision(s: Seed): Decision {
     options: s.options.map((o) => ({ ...o, ...(WRITES[s.kind]?.[o.key] ? { writes: WRITES[s.kind]![o.key] } : {}) })),
     recommended: s.recommended,
     publicText: s.publicText ?? null,
+    optionTexts: [],
     askedAt: iso(s.ageH * H),
     askedBy: s.kind === "merge" ? "pipeline:review" : "pipeline:classify",
     docket: s.docket ?? null,
