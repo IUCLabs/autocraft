@@ -106,6 +106,16 @@ describe("Merge? asked without a merge approval", () => {
     assert.ok(eligible(e!));
   });
 
+  test("a PR without checks in a repo that has CI keeps waiting for CI", () => {
+    const db = fresh();
+    add(db, { n: 1, verify: "passed", ci: "none" });
+    add(db, { n: 2, verify: "passed" }); // another PR of the repo reported checks
+    const e = buildQueue(db, { run: "r1" }).find((x) => x.number === 1)!;
+    assert.equal(e.noCi, false);
+    assert.equal(e.state, "waiting-ci");
+    assert.ok(!e.outsideRule.some((r) => r.includes("no CI")));
+  });
+
   test("a PR held by an open Duplicate? decision is held-duplicate and not eligible", () => {
     const db = fresh();
     add(db, { n: 1, verify: "passed" });
@@ -211,11 +221,12 @@ describe("what the Work queue says", () => {
     const db = fresh();
     add(db, { n: 1, verify: "passed" });
     add(db, { n: 2, verify: "unavailable" });
-    add(db, { n: 3, verify: "passed", ci: "none" });
     decision(db, "app#1:dup", "duplicate", 1);
     assert.match(nextStepOf(facts(db, 1)), /Duplicate\?/);
     assert.match(nextStepOf(facts(db, 2)), /not verified/);
-    assert.match(nextStepOf(facts(db, 3)), /no CI/);
+    const noCi = fresh();
+    add(noCi, { n: 3, verify: "passed", ci: "none" });
+    assert.match(nextStepOf(facts(noCi, 3)), /no CI/);
   });
 
   test("a label disagreement outside the scope labels names the problem and links the list", () => {

@@ -234,7 +234,8 @@ function merge(c: Ctx): NodeCount {
     counts: {
       "merge.eligible": ready.filter((e) => approvedRepos.has(e.repo)).length,
       "merge.unapproved": ready.filter((e) => !approvedRepos.has(e.repo)).length,
-      ...Object.fromEntries((["needs-decision", "waiting-ci", "ci-failed", "conflict", "needs-fix-up", "waiting-verify", "verify-failed", "verify-error", "declined"] as const).map((s) => [`merge.${s}`, st(s)])),
+      "merge.needs-decision": st("needs-decision") + st("held-duplicate"),
+      ...Object.fromEntries((["waiting-ci", "ci-failed", "conflict", "needs-fix-up", "waiting-verify", "verify-failed", "verify-error", "declined"] as const).map((s) => [`merge.${s}`, st(s)])),
       "merge.merged": c.n(`SELECT COUNT(DISTINCT repo || '#' || number) AS n FROM merges WHERE outcome = 'merged' AND at >= :since ${c.andRepo()}`, since),
       "merge.total": queue.length - st("merged"),
       "merge.recent.merged": c.n(`SELECT COUNT(DISTINCT repo || '#' || number) AS n FROM merges WHERE outcome = 'merged' AND at >= :since ${c.andRepo()}`, since),

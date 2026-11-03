@@ -3,6 +3,7 @@ import type { DatabaseSync } from "node:sqlite";
 import type { Settled } from "../classify/settled.ts";
 import { reasonOf } from "../decide/select.ts";
 import { duplicateHeld } from "../dupes/held.ts";
+import { repoHasNoCi } from "../merge/queue.ts";
 
 export type NextFacts = {
   kind: "pr" | "issue";
@@ -22,6 +23,8 @@ export type NextFacts = {
   disagree: boolean;
   /** CI result at the PR's current head, if known. */
   ci: string | null;
+  /** The repo has no CI at all. */
+  noCi: boolean;
 };
 
 /** The Items list of the repo's classifier disagreements, where a person settles the label. */
@@ -48,7 +51,7 @@ export function nextStepOf(f: NextFacts): string {
     case "close": return "Close";
     default:
       if (f.verify === "unavailable") return "Merge? decision: not verified (Verify cannot build this repo)";
-      if (f.ci === "none") return "Merge? decision: the repo has no CI";
+      if (f.ci === "none" && f.noCi) return "Merge? decision: the repo has no CI";
       if (f.verify === "passed" || f.verify === "ci-enough") return "Merge queue";
       if (f.verify === "failed" || f.verify === "error") return "Needs a person: verification failed";
       return f.verify ? "Verify: running" : "Verify";
@@ -65,6 +68,6 @@ export function factsOf(db: DatabaseSync, repo: string, number: number, kind: st
   return {
     kind: kind === "pr" ? "pr" : "issue", label: s.label, settled: s.status === "settled", scopeOpen: !!scope && scope.answer === null, needsDecision: s.flags.includes("needs decision"),
     review: review && review.head_oid === head ? review.verdict : null, verify: verify?.state ?? null, attempt: attempt?.state ?? null,
-    held: duplicateHeld(db, repo, number), disagree: s.status === "disagree" && reasonOf(s) !== "scope-disagreement", ci: ci?.overall ?? null,
+    held: duplicateHeld(db, repo, number), disagree: s.status === "disagree" && reasonOf(s) !== "scope-disagreement", ci: ci?.overall ?? null, noCi: repoHasNoCi(db, repo),
   };
 }

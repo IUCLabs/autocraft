@@ -137,7 +137,7 @@ export function mergeQuestion(e: QueueEntry): Record<string, unknown> & { id: st
     context: `The review says take, but the merge-without-asking rule doesn't cover it: ${e.outsideRule.join(", ")}.`,
     facts: [
       `size ${e.size}, label ${e.label ?? "not settled"}; author: ${e.author ?? "unknown"}, ${TIER_LABEL[e.tier]}`,
-      `CI ${e.ci === "none" ? "none: the repo has no CI checks" : e.ci}, mergeable ${e.mergeable.toLowerCase()}`,
+      `CI ${e.noCi ? "none: the repo has no CI checks" : e.ci}, mergeable ${e.mergeable.toLowerCase()}`,
       e.verify?.state === VERIFY_UNAVAILABLE
         ? `not verified: ${e.verify.summary ?? "Verify cannot build this repo"}`
         : `verify: ${e.verify ? `${e.verify.kind ?? "unknown"}, ${e.verify.state}${e.verify.note ? `: ${e.verify.note}` : ""}` : "none"}`,
@@ -242,7 +242,7 @@ export async function runMerge(db: DatabaseSync, params: MergeParams, log: (line
       const h = answeredHead(db, e.decisionId!);
       if (h !== ch.head_oid) { refuse(e, null, `head moved since the operator's answer (${h ? short(h) : "no head recorded"} → ${short(ch.head_oid)})`); continue; }
     }
-    if (!ciAllows(e.path, ch.overall) || ch.mergeable !== "MERGEABLE") {
+    if (!ciAllows(e.path, ch.overall, e.noCi) || ch.mergeable !== "MERGEABLE") {
       refuse(e, null, `not ready at merge time: CI ${ch.overall}, mergeable ${(ch.mergeable ?? "unknown").toLowerCase()}`);
       continue;
     }
