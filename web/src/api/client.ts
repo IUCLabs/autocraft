@@ -233,14 +233,15 @@ export function useQuery<T>(key: string, fn: (api: Api) => Promise<T>, opts: { p
   });
   const { refetch } = q;
   const again = useCallback(() => void refetch(), [refetch]);
-  return { data: q.data, error: q.error ?? undefined, loading: q.isFetching, refetch: again };
+  // A pushed refetch replaces the data in place; only a first load or a new key (data shown is the old key's) counts as loading.
+  return { data: q.data, error: q.error ?? undefined, loading: q.isPending || q.isPlaceholderData, refetch: again };
 }
 
 export interface PagedQuery<P> {
   /** Every loaded page, first to last; undefined until the first one arrives. */
   pages?: P[];
   error?: Error;
-  /** True while the first page loads or a refetch of the loaded pages runs. */
+  /** True while the first page loads, or while a new key's pages load over the old key's; pushed refetches don't count. */
   loading: boolean;
   hasMore: boolean;
   loadingMore: boolean;
@@ -266,7 +267,7 @@ export function usePagedQuery<P>(key: string, fn: (api: Api, cursor: string | un
   return {
     pages: q.data?.pages,
     error: q.error ?? undefined,
-    loading: q.isFetching && !q.isFetchingNextPage,
+    loading: q.isPending || q.isPlaceholderData,
     hasMore: !!q.hasNextPage,
     loadingMore: q.isFetchingNextPage,
     loadMore: useCallback(() => void fetchNextPage(), [fetchNextPage]),
