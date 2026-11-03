@@ -116,7 +116,7 @@ export async function applyLabels(db: DatabaseSync, client: Querier, repo: strin
     const ok = writable.filter((r) => done.includes(r.number));
     if (ok.length) {
       const at = new Date().toISOString();
-      db.exec("BEGIN");
+      db.exec("BEGIN IMMEDIATE");
       for (const r of ok) {
         db.prepare("INSERT INTO main.stages (repo, number, stage, at, actor, note) VALUES (?, ?, 'labeled', ?, 'labels', ?)")
           .run(repo, r.number, at, `added: ${r.add.join(", ")}`);

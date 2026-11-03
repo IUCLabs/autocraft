@@ -35,7 +35,7 @@ export function untrackRepo(db: DatabaseSync, by: string, name: string): boolean
 // Deletes the mirrored items and comments of one untracked repo.
 export function purgeRepo(db: DatabaseSync, name: string): { items: number; comments: number } {
   if (isTracked(db, name)) throw new RepoError(`${name} is tracked; untrack it first.`);
-  db.exec("BEGIN");
+  db.exec("BEGIN IMMEDIATE");
   try {
     const comments = Number(db.prepare("DELETE FROM main.comments WHERE repo = ?").run(name).changes);
     const items = Number(db.prepare("DELETE FROM main.items WHERE repo = ?").run(name).changes);

@@ -70,7 +70,7 @@ export function scanItem(db: DatabaseSync, index: VectorIndex, item: ScanItem, n
   const ruled = db.prepare("SELECT 1 FROM duplicate_pairs WHERE repo = ? AND a = ? AND b = ? AND by_operator = 1");
   const put = db.prepare(`INSERT OR IGNORE INTO duplicate_pairs (repo, a, b, a_hash, b_hash, similarity, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`);
   let added = 0;
-  db.exec("BEGIN");
+  db.exec("BEGIN IMMEDIATE");
   try {
     for (const p of pairs) {
       if (ruled.get(p.repo, p.a, p.b)) continue;

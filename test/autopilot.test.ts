@@ -145,16 +145,20 @@ describe("autopilot", () => {
     assert.equal(backoffUntil(db, "test-limited"), null, "a success resets the count");
   });
 
-  test("a changed input ends a failure backoff", async () => {
+  test("a changed input ends a backoff after one failure, not after two", async () => {
     setEnabled(db, true, "boss");
+    const fail = (id: number) => db.prepare("UPDATE jobs SET state = 'failed', ended_at = ?, error = 'x' WHERE id = ?").run(new Date().toISOString(), id);
     await planAutopilot(db, { lanes });
-    const j = jobs("test-limited")[0]!;
-    db.prepare("UPDATE jobs SET state = 'failed', ended_at = ?, error = 'x' WHERE id = ?").run(new Date().toISOString(), j.id);
+    fail(jobs("test-limited")[0]!.id);
     await planAutopilot(db, { lanes });
     assert.equal(jobs("test-limited").length, 1, "same input: backing off");
     touch();
     await planAutopilot(db, { lanes });
     assert.equal(jobs("test-limited").length, 2, "new input: tried at once");
+    fail(jobs("test-limited").at(-1)!.id);
+    touch();
+    await planAutopilot(db, { lanes });
+    assert.equal(jobs("test-limited").length, 2, "second failure: new input waits out the backoff");
   });
 
   test("a job that handled nothing is not queued again on the same input; a changed input queues it at once", async () => {

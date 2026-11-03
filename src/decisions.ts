@@ -86,7 +86,7 @@ export function ask(db: DatabaseSync, questions: Record<string, unknown>[], inTr
     ON CONFLICT(id) DO UPDATE SET ${ASK_FIELDS.map((c) => SUMMARY_FIELDS.includes(c) ? `${c} = COALESCE(excluded.${c}, ${c})` : `${c} = excluded.${c}`).join(", ")}`);
   const exists = db.prepare("SELECT 1 FROM decisions WHERE id = ?");
   let inserted = 0, updated = 0;
-  if (!inTransaction) db.exec("BEGIN");
+  if (!inTransaction) db.exec("BEGIN IMMEDIATE");
   try {
     for (const r of rows) {
       if (exists.get(r.id as string)) updated++; else inserted++;

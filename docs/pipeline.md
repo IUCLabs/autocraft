@@ -368,7 +368,7 @@ Automated work waits only for the reasons below. A stage that is not running sho
 
 | Wait | Why | How long | Shows as |
 |---|---|---|---|
-| Failed job | Retry a real failure without hammering | 1, 2, 4, 8, 16, then 30 minutes; ends on a changed input or a release | "failed N times in a row; retry at HH:MM UTC" |
+| Failed job | Retry a real failure without hammering | 1, 2, 4, 8, 16, then 30 minutes; ends on a release, and after a single failure also on a changed input | "failed N times in a row; retry at HH:MM UTC" |
 | Upstream CI of PRs and open batch PRs | External | Read again every minute per repo while any waits | "waiting for CI on N PRs in repo" |
 | Sandbox build | External | Until the task ends; build-environment errors queue it again after 0, 5, 10, 20, 30 minutes | Batch state `checking` |
 | Checks before Review and Verify | CI data younger than 5 minutes is reused | 5 minutes | Job list |

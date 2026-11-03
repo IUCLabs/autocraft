@@ -429,8 +429,9 @@ export const failureDelayMs = (failures: number): number => Math.min(FAIL_BACKOF
 
 /**
  * Failed autopilot jobs of the step (of the repo, when given) since its last success: when it may run again, else null.
- * An operator release since the last failure ends it, and so does a changed input when `fp` is given and differs from
- * the one the last failed job saw. Jobs a runner restart ended do not count.
+ * An operator release since the last failure ends it. After a single failure, so does a changed input (`fp` given and
+ * different from the one the failed job saw); later failures wait out the backoff, because inputs that change every
+ * minute would otherwise retry a failing step at once, every time. Jobs a runner restart ended do not count.
  */
 export function failureBackoff(db: DatabaseSync, step: string, ms: number = Date.now(), o: { repo?: string | null; fp?: string } = {}): { until: number; failures: number } | null {
   const rows = db.prepare(`SELECT id, state, ended_at FROM jobs WHERE step = ? AND (? IS NULL OR repo = ?) AND requested_by = ? AND state IN ('done', 'failed')
@@ -440,7 +441,7 @@ export function failureBackoff(db: DatabaseSync, step: string, ms: number = Date
   if (!failures || !rows[0]!.ended_at) return null;
   const released = releasedAt(db, step);
   if (released && released > rows[0]!.ended_at) return null;
-  if (o.fp !== undefined) {
+  if (o.fp !== undefined && failures === 1) {
     const rec = fpRecord(db, step, o.repo ?? null);
     if (rec && rec.job === rows[0]!.id && rec.fp !== o.fp) return null;
   }

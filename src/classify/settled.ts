@@ -163,7 +163,7 @@ export function settledTable(db: DatabaseSync, run: string | null): void {
     ins.run(r.repo, r.number, s.status, s.label, s.source, s.confidence, s.jevLabel, s.haikuLabel, JSON.stringify(s.flags),
       s.flags.includes("security") ? 1 : 0, s.flags.includes("needs decision") ? 1 : 0, s.referee?.label ?? null, s.referee ? Number(s.referee.sure) : null, s.referee?.reason ?? null);
   };
-  db.exec("BEGIN");
+  db.exec("BEGIN IMMEDIATE");
   try {
     const fresh = prev && prev.run === run
       ? (db.prepare("SELECT DISTINCT repo, number FROM main.classifications WHERE rowid > ? AND run_id = ?").all(prev.maxRowid, run) as { repo: string; number: number }[])

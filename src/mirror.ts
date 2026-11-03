@@ -235,7 +235,7 @@ function writePage(db: DatabaseSync, repo: string, kind: Kind, detail: Detail, n
   const insComment = db.prepare(`INSERT INTO comments VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT (id) DO UPDATE SET
     repo=excluded.repo, number=excluded.number, kind=excluded.kind, author=excluded.author, created_at=excluded.created_at,
     body=excluded.body, review_state=excluded.review_state, commit_oid=excluded.commit_oid`);
-  db.exec("BEGIN");
+  db.exec("BEGIN IMMEDIATE");
   try {
     for (const n of nodes) {
       const row = toRow(repo, kind, n, detail);

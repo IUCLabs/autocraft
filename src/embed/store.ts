@@ -49,7 +49,7 @@ export async function embedItems(db: DatabaseSync, embedder: Embedder,
     const batch = todo.slice(i, i + size);
     const vecs = await embedder.embed(batch.map((t) => t.text), "item");
     const at = new Date().toISOString();
-    db.exec("BEGIN");
+    db.exec("BEGIN IMMEDIATE");
     try {
       batch.forEach((t, k) => put.run(t.repo, t.number, embedder.id, t.hash, toBlob(vecs[k]!), at));
       db.exec("COMMIT");
