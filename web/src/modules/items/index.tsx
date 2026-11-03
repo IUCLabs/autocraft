@@ -282,7 +282,7 @@ export function SettledBadge({ s, detail }: { s: Settled; detail?: boolean }) {
           {s.referee && s.status === "disagree" ? ` · Sonnet ${s.referee.label}, unsure: ${s.referee.reason}` : ""}
         </span>
       )}
-      {detail && <span className="text-2xs text-ink/50">{text}</span>}
+      {detail && (s.status === "waiting" || s.status === "disagree") && <span className="text-2xs text-ink/50">{text}</span>}
     </span>
   );
 }

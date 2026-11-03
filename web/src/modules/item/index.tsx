@@ -17,6 +17,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { useQuery } from "../../api/client";
+import { Pending } from "../../ui/Pending";
 import type { CiState, Classification, Item, ItemComment, Stage, Tier } from "../../api/types";
 import { ItemPath } from "../flow/ItemPath";
 import type { FeatureModule, ViewProps } from "../../registry/types";
@@ -69,8 +70,8 @@ function Section({ title, aside, children }: { title: string; aside?: ReactNode;
 }
 
 function ItemMain({ params }: ViewProps) {
-  const { data: it } = useItem(params);
-  if (!it) return <div className="p-6 text-ink/50">Loading…</div>;
+  const { data: it, error } = useItem(params);
+  if (!it) return <Pending error={error} />;
   return (
     <div className="h-full overflow-y-auto">
       <div className="mx-auto max-w-[920px] px-4 pb-12 pt-5 md:px-6">

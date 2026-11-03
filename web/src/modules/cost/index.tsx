@@ -1,6 +1,7 @@
 import { useSearchParams } from "react-router-dom";
 import { CoinsIcon } from "lucide-react";
 import { useQuery } from "../../api/client";
+import { Pending } from "../../ui/Pending";
 import type { CostReport, UsageTotals } from "../../api/types";
 import type { FeatureModule, ViewProps } from "../../registry/types";
 import { num } from "../../lib/format";
@@ -120,8 +121,8 @@ function SpendSub({ models }: { models: ModelTotals[] }) {
 function Cost(_: ViewProps) {
   const [sp, setSp] = useSearchParams();
   const run = sp.get("run") ?? "";
-  const { data: r } = useQuery(`cost:${run}`, (api) => api.cost(run));
-  if (!r) return <div className="p-6 text-ink/50">Loading…</div>;
+  const { data: r, error } = useQuery(`cost:${run}`, (api) => api.cost(run));
+  if (!r) return <Pending error={error} />;
   const t = r.total;
   const models = byModel(r);
   // Each model's calls count the same item again, so the headline uses distinct classified items.

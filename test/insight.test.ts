@@ -69,4 +69,20 @@ describe("insight", () => {
     assert.equal(c.stages.length, 1);
     assert.deepEqual(c.series, [{ bucket: "2026-11-01T10", tokens: 190, usd: 0.25 }]);
   });
+
+  test("cost for a viewer leaves out hidden repos in every figure", async () => {
+    db.exec("DELETE FROM tracked_repos; DELETE FROM repos; INSERT INTO tracked_repos (name) VALUES ('photocraft'), ('vault'); INSERT INTO repos (name, visibility) VALUES ('photocraft', 'public'), ('vault', 'internal')");
+    db.prepare("INSERT INTO token_usage (run_id, agent, stage, model, repo, items, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, started_at, ended_at, cost_usd) VALUES ('r1','a3','review','opus','vault',1,1000,0,0,0,'2026-11-01T10:04:00Z','2026-11-01T10:05:00Z',9)").run();
+    try {
+      const viewer = { query: new URLSearchParams("run=r1"), user: { login: "v", role: "viewer", canRead: async () => false } } as unknown as Req;
+      const c = await cost(db, viewer);
+      assert.equal(c.total.input, 150);
+      assert.equal(c.total.usd, 0.25);
+      assert.deepEqual(c.repos.map((r) => r.repo), ["photocraft"]);
+      assert.equal(c.stages.every((x) => x.stage === "classify"), true);
+      assert.equal((await cost(db, rq("run=r1"))).total.input, 1150);
+    } finally {
+      db.exec("DELETE FROM tracked_repos; DELETE FROM repos; DELETE FROM token_usage WHERE agent = 'a3'");
+    }
+  });
 });

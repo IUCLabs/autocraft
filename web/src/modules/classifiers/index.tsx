@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { ScaleIcon } from "lucide-react";
 import { useQuery } from "../../api/client";
+import { Pending } from "../../ui/Pending";
 import type { Agreement, ClassifierReport } from "../../api/types";
 import type { FeatureModule, ViewProps } from "../../registry/types";
 import { cn } from "../../ui/cn";
@@ -155,14 +156,14 @@ function Classifiers(_: ViewProps) {
   const [sp, setSp] = useSearchParams();
   const run = sp.get("run") ?? "", a = sp.get("a") ?? "", b = sp.get("b") ?? "";
   const label = sp.get("label") ?? "", band = sp.get("band") ?? "";
-  const { data: r } = useQuery(`cls:${run}:${a}:${b}`, (api) => api.classifiers.report({ run, a, b }));
+  const { data: r, error } = useQuery(`cls:${run}:${a}:${b}`, (api) => api.classifiers.report({ run, a, b }));
   const set = (patch: Record<string, string>) =>
     setSp((cur) => {
       const n = new URLSearchParams(cur);
       for (const [k, v] of Object.entries(patch)) v ? n.set(k, v) : n.delete(k);
       return n;
     }, { replace: true });
-  if (!r) return <div className="p-6 text-ink/50">Loading…</div>;
+  if (!r) return <Pending error={error} />;
   if (!r.runs.length)
     return <div className="p-6 text-ink/60">No item has been judged by two classifiers in the same run yet.</div>;
 

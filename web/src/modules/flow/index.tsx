@@ -85,7 +85,7 @@ function FlowView(_: ViewProps) {
         <div className="mx-auto max-w-[1400px] px-4 pb-12 pt-5 md:px-6">
           <div className="flex flex-wrap items-start gap-x-4 gap-y-3">
             <div className="min-w-0 flex-1">
-              <h1 className="text-xl font-semibold">Pipeline</h1>
+              <h1 className="text-xl font-semibold">Pipeline flow</h1>
               {flow && (
                 <p className="mt-0.5 text-sm text-ink/55">
                   {num(open)} open items{repo ? ` in ${repo}` : ""} · last sync {flow.lastSync ? `${ago(flow.lastSync)} ago` : "never"}

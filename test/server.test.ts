@@ -269,7 +269,7 @@ describe("frontend", () => {
     const page = await c.get("/item/x/1");
     assert.equal(page.status, 200);
     assert.ok((await page.text()).includes(APP_MARKER));
-    assert.equal(page.headers.get("cache-control"), "no-cache");
+    assert.equal(page.headers.get("cache-control"), "no-store");
     const csp = page.headers.get("content-security-policy")!;
     assert.equal(csp, APP_CSP);
     assert.match(csp, /default-src 'none'; script-src 'self'; style-src 'self' 'sha256-[\w+/=]+';/);

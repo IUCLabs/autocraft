@@ -143,7 +143,8 @@ export async function cost(db: DatabaseSync, req: Req): Promise<CostReport> {
   const run = req.query.get("run") ?? "";
   const p: Record<string, string | number> = { run };
   const hide = excludeHidden("repo", await hiddenRepos(db, req), p);
-  const flt = "(:run = '' OR run_id = :run)";
+  // Null-safe: calls without a repo (classification runs) stay in the totals.
+  const flt = `(:run = '' OR run_id = :run)${hide ? ` AND (repo IS NULL OR ${hide})` : ""}`;
   const q = <T>(sql: string) => (db.prepare(sql).all(p) as T[]).map((r) => ({ ...r }) as T);
   const total = (db.prepare(`SELECT ${TOTALS} FROM token_usage WHERE ${flt}`).get(p) as unknown as UsageTotals);
   const span = db.prepare(`SELECT MIN(COALESCE(ended_at, started_at)) AS a, MAX(COALESCE(ended_at, started_at)) AS b FROM token_usage WHERE ${flt}`).get(p) as { a: string | null; b: string | null };
@@ -156,7 +157,7 @@ export async function cost(db: DatabaseSync, req: Req): Promise<CostReport> {
     total: { ...(total as object) } as UsageTotals,
     itemsClassified: (db.prepare(`SELECT COUNT(*) AS n FROM (SELECT DISTINCT repo, number FROM classifications WHERE ${flt})`).get(p) as { n: number }).n,
     stages: q<CostReport["stages"][number]>(`SELECT COALESCE(stage, '') AS stage, COALESCE(model, '') AS model, ${TOTALS} FROM token_usage WHERE ${flt} GROUP BY stage, model ORDER BY stage, model`),
-    repos: q<CostReport["repos"][number]>(`SELECT repo, ${TOTALS} FROM token_usage WHERE ${flt} AND repo IS NOT NULL${hide ? ` AND ${hide}` : ""} GROUP BY repo ORDER BY COALESCE(SUM(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0) + COALESCE(cache_read_tokens, 0) + COALESCE(cache_write_tokens, 0)), 0) DESC`),
+    repos: q<CostReport["repos"][number]>(`SELECT repo, ${TOTALS} FROM token_usage WHERE ${flt} AND repo IS NOT NULL GROUP BY repo ORDER BY COALESCE(SUM(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0) + COALESCE(cache_read_tokens, 0) + COALESCE(cache_write_tokens, 0)), 0) DESC`),
     series: q<CostReport["series"][number]>(`SELECT substr(COALESCE(ended_at, started_at), 1, ${len}) AS bucket,
         COALESCE(SUM(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0) + COALESCE(cache_read_tokens, 0) + COALESCE(cache_write_tokens, 0)), 0) AS tokens, SUM(cost_usd) AS usd
       FROM token_usage WHERE ${flt} AND COALESCE(ended_at, started_at) IS NOT NULL GROUP BY bucket ORDER BY bucket`),

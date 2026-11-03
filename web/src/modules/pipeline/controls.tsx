@@ -216,8 +216,11 @@ export function PilotPanel({ className }: { className?: string }) {
         )}
         {operator && (
           <div className="mt-3 flex flex-col gap-2">
+            <label htmlFor="pilot-items" className="text-sm font-medium">
+              Items <span className="font-normal text-ink/55">(one repo#number per line, or separated by spaces)</span>
+            </label>
             <textarea
-              aria-label="Pilot items"
+              id="pilot-items"
               rows={3}
               value={text}
               onChange={(e) => setText(e.target.value)}

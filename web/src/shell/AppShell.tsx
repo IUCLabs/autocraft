@@ -26,7 +26,7 @@ const MockRoleMenu = import.meta.env.VITE_MOCK === "1" ? lazy(() => import("../a
 const GROUPS: { id: NavEntry["group"]; label: string }[] = [
   { id: "work", label: "" },
   { id: "insight", label: "Insight" },
-  { id: "operator", label: "Operator" },
+  { id: "operator", label: "Operations" },
 ];
 
 export function AppShell() {

@@ -164,7 +164,7 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
     headers["referrer-policy"] = "same-origin";
     headers["x-content-type-options"] = "nosniff";
     headers["cross-origin-opener-policy"] = "same-origin";
-    if (config.baseUrl?.startsWith("https:")) headers["strict-transport-security"] = "max-age=31536000";
+    if (config.baseUrl?.startsWith("https:")) headers["strict-transport-security"] = "max-age=31536000; includeSubDomains";
     return headers;
   }
 
@@ -456,7 +456,7 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
 <p>Build it with <code>pnpm -C web install</code> and <code>pnpm -C web build</code>, then reload.</p>`),
       });
     }
-    return sendFile(res, "text/html; charset=utf-8", "no-cache", APP_CSP, index);
+    return sendFile(res, "text/html; charset=utf-8", "no-store", APP_CSP, index);
   }
 
   return { handle, routes: opts.routes, provider };

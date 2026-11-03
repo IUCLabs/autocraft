@@ -2,6 +2,7 @@ import { useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { ActivityIcon, ArrowDownIcon, ArrowUpIcon, ChevronsUpDownIcon } from "lucide-react";
 import { useQuery } from "../../api/client";
+import { Pending } from "../../ui/Pending";
 import type { Progress, RepoProgress } from "../../api/types";
 import type { FeatureModule, ViewProps } from "../../registry/types";
 import { cn } from "../../ui/cn";
@@ -36,9 +37,9 @@ function Block({ title, aside, children, className, flush }: { title: string; as
 const NOT_STARTED = <span className="text-xs text-ink/45">not started yet</span>;
 
 function Overview(_: ViewProps) {
-  const { data: p } = useQuery("progress", (api) => api.progress());
+  const { data: p, error } = useQuery("progress", (api) => api.progress());
   const phone = useIsPhone();
-  if (!p) return <div className="p-6 text-ink/50">Loading…</div>;
+  if (!p) return <Pending error={error} />;
   const done = doneTotal(p.done);
   const ours = p.done.mergedByPipeline + p.done.closedByPipeline;
   const lastDay = p.perHour.reduce((a, b) => a + b, 0);

@@ -516,7 +516,7 @@ function DetailPanel({ params }: ViewProps) {
 function EnvsView({ params }: ViewProps) {
   const id = params.id ? Number(params.id) : undefined;
   return (
-    <Page title="Build environments" sub="Where untrusted code runs, away from the tokens and logins of this box">
+    <Page title="Build environments" sub="Where builds and tests run">
       <div className="mt-4 space-y-4">
         <EnvsPanel />
         <Tasks selected={id} />

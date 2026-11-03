@@ -1,6 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { CheckIcon, ChevronRightIcon, CopyIcon, ScrollTextIcon } from "lucide-react";
 import { useQuery } from "../../api/client";
+import { Pending } from "../../ui/Pending";
 import type { CommentTemplate, PromptInfo } from "../../api/types";
 import type { FeatureModule, ViewProps } from "../../registry/types";
 import { Badge } from "../../ui/Badge";
@@ -259,7 +260,7 @@ function StageHeading({ children, count }: { children: ReactNode; count: number 
 function Prompts(_: ViewProps) {
   const { data: r, error } = useQuery("prompts", (api) => api.prompts());
   if (error && !r) return <div className="p-6 text-bad">{error.message}</div>;
-  if (!r) return <div className="p-6 text-ink/50">Loading…</div>;
+  if (!r) return <Pending error={error} />;
   const stages = [...new Set(r.prompts.map((p) => p.stage))]
     .map((s, i) => ({ s, i }))
     .sort((x, y) => stageRank(x.s) - stageRank(y.s) || x.i - y.i)

@@ -220,7 +220,6 @@ function RunnerLine({ o }: { o: PipelineOverview }) {
 
 function PipelineView({ user, params }: ViewProps) {
   const q = useQuery("pipeline", (a) => a.pipeline.overview());
-  const operator = can(user, "operator");
   const busy = (q.data?.counts.running ?? 0) + (q.data?.counts.queued ?? 0) > 0;
   usePoll(q.refetch, busy ? 4000 : 20000);
   const o = q.data;
@@ -228,7 +227,7 @@ function PipelineView({ user, params }: ViewProps) {
   return (
     <Page title="Pipeline" sub={o && <RunnerLine o={o} />}>
       <p className="mt-2 max-w-[80ch] text-sm text-ink/65">
-        The pipeline is either On, watching all issues and running every automation within its daily limits, or Off. {operator ? "As an operator you can switch it, change limits and cancel jobs; each change is in the audit log." : "Only operators switch it or change limits; you can see what runs, what it did and what it cost."}
+        The pipeline is either On, watching all issues and running every automation within its daily limits, or Off.
       </p>
       <ErrorLine error={q.error?.message} className="mt-3" />
       <PipelineSwitch className="mt-4" />
