@@ -106,6 +106,8 @@ export type JevAnswers = {
 
 /** Jev yes-probabilities at or above this count as true. */
 export const NOUL_YES = 0.5;
+/** Jev's security probability needs this much before the flag counts: lower scores flag feature work as security. */
+export const JEV_SECURITY_MIN = 0.8;
 
 export function jevVerdict(ref: string, a: JevAnswers): Verdict | null {
   const t = a.type;
@@ -113,7 +115,7 @@ export function jevVerdict(ref: string, a: JevAnswers): Verdict | null {
   const top = t.probabilities?.[t.choice] ?? t.confidence ?? 0;
   const probs = { type: t.probabilities ?? {}, top, security: a.security.noul, needs_decision: a.needs_decision.noul };
   return {
-    ref, type_label: t.choice, security: a.security.noul >= NOUL_YES, needs_decision: a.needs_decision.noul >= NOUL_YES,
+    ref, type_label: t.choice, security: a.security.noul >= JEV_SECURITY_MIN, needs_decision: a.needs_decision.noul >= NOUL_YES,
     reason: `${t.choice} ${top.toFixed(2)}; security ${a.security.noul.toFixed(2)}; needs decision ${a.needs_decision.noul.toFixed(2)}`,
     probs: JSON.stringify(probs),
   };

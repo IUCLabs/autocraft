@@ -26,7 +26,7 @@ describe("haiku reply", () => {
 describe("jev", () => {
   const answers = {
     type: { choice: "performance", confidence: 0.8, probabilities: { performance: 0.8, bugfix: 0.2 } },
-    security: { noul: 0.7 }, needs_decision: { noul: 0.1 },
+    security: { noul: 0.85 }, needs_decision: { noul: 0.1 },
   };
   test("maps an answer to a classification row with probabilities kept", () => {
     const v = jevVerdict("a#1", answers)!;
@@ -34,6 +34,10 @@ describe("jev", () => {
     assert.equal(v.security, true);
     assert.equal(v.needs_decision, false);
     assert.equal(JSON.parse(v.probs!).top, 0.8);
+  });
+  test("security counts only from 0.8: lower scores flag feature work", () => {
+    assert.equal(jevVerdict("a#1", { ...answers, security: { noul: 0.79 } })!.security, false);
+    assert.equal(jevVerdict("a#1", { ...answers, security: { noul: 0.8 } })!.security, true);
   });
   test("drops an answer with an unknown label or a missing question", () => {
     assert.equal(jevVerdict("a#1", { ...answers, type: { choice: "other" } }), null);
