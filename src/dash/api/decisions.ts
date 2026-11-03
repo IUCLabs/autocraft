@@ -1,5 +1,5 @@
-// Decisions over JSON: the queue, answers (operator only), opinions, claims
-// and comments. Opinions and comments are display-only: nothing the pipeline
+// Decisions over JSON: the queue, answers (operator only), feedback, claims
+// and the thread. Feedback (picks and comments) is display-only: nothing the pipeline
 // reads (src/decisions.ts `actionable`) touches their tables.
 import { priorityOf } from "../../priority/read.ts";
 import type { DatabaseSync } from "node:sqlite";
@@ -216,7 +216,7 @@ export async function listDecisions(db: DatabaseSync, req: Req, writeRepos: () =
     params.since = new Date(Date.now() - 7 * 86400_000).toISOString();
   } else if (status === "backlog") where.push(`answer = '${BACKLOG.key}'`);
   else where.push("answer IS NULL");
-  if (status === "opinions") where.push("EXISTS (SELECT 1 FROM decision_opinions o WHERE o.decision_id = decisions.id AND o.retracted_at IS NULL)");
+  if (status === "opinions") where.push("(EXISTS (SELECT 1 FROM decision_opinions o WHERE o.decision_id = decisions.id AND o.retracted_at IS NULL) OR EXISTS (SELECT 1 FROM decision_comments c WHERE c.decision_id = decisions.id))");
   const kinds = list(req, "kind").filter((k) => (KINDS as readonly string[]).includes(k));
   if (kinds.length) where.push(`kind IN (${kinds.map((k) => `'${k}'`).join(",")})`);
   const minAge = Math.min(Number(q.get("minAge") ?? 0), 36500);
@@ -421,30 +421,40 @@ function requireWriter(req: Req): void {
 
 // Maintainers: a fixed number of opinion and comment writes per login per hour.
 function limited(req: Req, limiter: RateLimiter): void {
-  if (!isOperator(req) && !limiter.allow(req.user.login.toLowerCase())) throw new HttpError(429, "too many opinions and comments this hour; try again later");
+  if (!isOperator(req) && !limiter.allow(req.user.login.toLowerCase())) throw new HttpError(429, "too many feedback posts this hour; try again later");
 }
 
-export async function opine(db: DatabaseSync, req: Req, limiter: RateLimiter): Promise<Decision> {
+/**
+ * One feedback box: an optional option pick and free text, at least one of them. A pick is the
+ * login's live opinion (its text is the note); text alone is a comment in the thread.
+ */
+export async function feedback(db: DatabaseSync, req: Req, limiter: RateLimiter): Promise<Decision> {
   requireWriter(req);
   const d = await needDecision(db, req, req.params.id!);
   limited(req, limiter);
-  if (d.answer) throw new HttpError(409, "the decision is answered; opinions are closed");
   const b = body(req);
   const option = b.option ?? null;
   if (option !== null && (typeof option !== "string" || !optionsOf(d).some((o) => o.key === option))) throw new HttpError(400, "option must be an option key or null");
-  const note = optionalText(b.note, NOTE_MAX, "note");
-  if (option === null && note === null) throw new HttpError(400, "give an option, a note, or both");
-  const permission = (await blockedRepos(req, d)).length ? "none" : "write";
+  const text = optionalText(b.text, COMMENT_MAX, "text");
+  if (option === null && text === null) throw new HttpError(400, "give an option, text, or both");
   const at = new Date().toISOString();
+  if (option === null) {
+    const id = randomToken(12);
+    db.prepare("INSERT INTO decision_comments (id, decision_id, login, at, body) VALUES (?, ?, ?, ?, ?)").run(id, d.id, req.user.login, at, text);
+    audit(db, req.user.login, "comment", d.id, { comment: id, length: text!.length });
+    return toDecision(db, getDecision(db, d.id)!, await viewerWith(db, req));
+  }
+  if (d.answer) throw new HttpError(409, "the decision is answered; picks are closed");
+  const permission = (await blockedRepos(req, d)).length ? "none" : "write";
   db.exec("BEGIN IMMEDIATE");
   try {
     // The permission check above can wait on GitHub; the operator may have answered meanwhile.
     if ((db.prepare("SELECT answer FROM decisions WHERE id = ?").get(d.id) as { answer: string | null }).answer !== null)
-      throw new HttpError(409, "the decision is answered; opinions are closed");
+      throw new HttpError(409, "the decision is answered; picks are closed");
     db.prepare("UPDATE decision_opinions SET retracted_at = ? WHERE decision_id = ? AND login = ? AND retracted_at IS NULL").run(at, d.id, req.user.login);
     db.prepare("INSERT INTO decision_opinions (id, decision_id, login, option, note, at, permission) VALUES (?, ?, ?, ?, ?, ?, ?)")
-      .run(randomToken(12), d.id, req.user.login, option, note, at, permission);
-    audit(db, req.user.login, "opinion", d.id, { option, note: note ? true : undefined });
+      .run(randomToken(12), d.id, req.user.login, option, text, at, permission);
+    audit(db, req.user.login, "opinion", d.id, { option, note: text ? true : undefined });
     db.exec("COMMIT");
   } catch (e) {
     db.exec("ROLLBACK");
@@ -457,24 +467,12 @@ export async function retract(db: DatabaseSync, req: Req, limiter: RateLimiter):
   requireWriter(req);
   const d = await needDecision(db, req, req.params.id!);
   limited(req, limiter);
-  if (d.answer) throw new HttpError(409, "the decision is answered; opinions are closed");
+  if (d.answer) throw new HttpError(409, "the decision is answered; picks are closed");
   const r = db.prepare("UPDATE decision_opinions SET retracted_at = ? WHERE decision_id = ? AND login = ? AND retracted_at IS NULL")
     .run(new Date().toISOString(), d.id, req.user.login);
   if (r.changes !== 1) throw new HttpError(404, "you have no opinion on this decision");
   audit(db, req.user.login, "opinion-retract", d.id);
   return toDecision(db, getDecision(db, d.id)!, await viewerWith(db, req));
-}
-
-export async function comment(db: DatabaseSync, req: Req, limiter: RateLimiter): Promise<DecisionComment> {
-  requireWriter(req);
-  const d = await needDecision(db, req, req.params.id!);
-  limited(req, limiter);
-  const text = optionalText(body(req).body, COMMENT_MAX, "body");
-  if (!text) throw new HttpError(400, "body is required");
-  const c: DecisionComment = { id: randomToken(12), login: req.user.login, at: new Date().toISOString(), body: text };
-  db.prepare("INSERT INTO decision_comments (id, decision_id, login, at, body) VALUES (?, ?, ?, ?, ?)").run(c.id, d.id, c.login, c.at, c.body);
-  audit(db, req.user.login, "comment", d.id, { comment: c.id, length: text.length });
-  return c;
 }
 
 // Presence, not content: refreshed while someone has the decision open, so

@@ -89,7 +89,7 @@ interface FeatureModule {
 
 Desktop, three panels: queue (28 %), decision (45 %), discussion (27 %, collapsible).
 
-- **Toolbar**: tabs Waiting / Commented / Answered with count pills; kind chips with counts; repo picker (multi-select); age picker; "My repos". All filters live in the URL.
+- **Toolbar**: tabs Waiting / Feedback / Answered with count pills; kind chips with counts; repo picker (multi-select); age picker; "My repos". All filters live in the URL.
 - **Queue**: count and one-line summary first ("38 decisions · 20 scope · 8 duplicate … · oldest 3d"), then rows grouped by kind (sticky group headers), then repo, oldest first. A row has three lines: the item title and age (amber from 2 days); the first sentence of the AI summary; the ref, batch size, recommendation, comment count (accent when one of them is yours) and the avatar of whoever is viewing it. Checkboxes select rows for a batch pick.
 - **Decision** leads with the item, not the question:
   1. kind pill, ref, age, "kiri-n is viewing · 3m", comment count; the item title (17 px semibold);
@@ -98,21 +98,21 @@ Desktop, three panels: queue (28 %), decision (45 %), discussion (27 %, collapsi
   4. **Key facts** as a key-value list;
   5. disclosures: Items (batch, with per-item overrides), Context, Comment posted on GitHub, Classifiers, Related.
 - **Decision bar**, pinned to the bottom of the decision panel: the question, one line saying what a pick means for this reader, the options in a 2 × 2 grid with the recommendation starred and the number of people who picked it on each, and a note field.
-- **Discussion** panel: every comment (avatar, login, GitHub permission badge `write` / `no write`, the option it picks or "commented", note, age), with "Use this answer" for operators on comments that pick an option; then the comment thread. Both say they are never sent to the pipeline.
+- **Feedback** panel: one list, newest first, of everything people wrote (avatar, login, age, the text). An entry with a pick also shows the option it suggests and a GitHub permission badge `write` / `no write`, with "Use this answer" for operators on picks by people with write access and "Retract" on your own pick. Below the list, one Feedback box: text and an optional option, at least one of them, sent with the Send button or Ctrl Enter. Feedback is never sent to the pipeline.
 - **Answering**: an operator's click or number key answers and moves to the next decision. The answered row stays at the top of the queue as a one-line confirmation with Undo; `u` undoes the last one until the pipeline applies it.
 
 Description rendering is for untrusted input: raw HTML is dropped, only `http(s)`, `mailto`, relative and anchor links survive, links open in a new tab with `rel="noopener noreferrer nofollow"`, and only GitHub-hosted images load inline. The CSP allows only same-origin images, so the renderer sends images on the hosts the server's image proxy serves (`GET /img`, see the README) through it: lazy-loaded, at most the column's width and 480 px tall, and a click opens the original on GitHub in a new tab. Every other image, and one the proxy refuses, becomes a chip with its alt text that opens the image in a new tab on click.
 
-Phone: one decision per screen. A header strip with the count, summary and a Filter button (filters in a bottom sheet). The page scrolls through title, summary, description, facts, the question with full-width options, comments and the disclosures. A bottom bar holds previous / next, the position ("15 of 38"), the question in one line and a button that jumps to the options ("Answer", "Give opinion" or "Change").
+Phone: one decision per screen. A header strip with the count, summary and a Filter button (filters in a bottom sheet). The page scrolls through title, summary, description, facts, the question with full-width options, feedback (list and box) and the disclosures. A bottom bar holds previous / next, the position ("15 of 38"), the question in one line, a Feedback button that jumps to the box and a button that jumps to the options.
 
-### Answers and comments (spec: Trust boundary)
+### Answers and feedback (spec: Trust boundary)
 
 | Reader | A pick means | Also sees |
 |---|---|---|
 | Operator with GitHub write on the repo | the answer; it is actionable | "Use this answer" on every comment that picks an option: answers with that option and credits the person |
-| Anyone else signed in (maintainer, viewer, or operator without write on the repo) | a comment that may pick an option: shown to everyone with their permission badge and counted in the tally, never acted on | their own pick highlighted, "Retract mine", a note field that saves with Enter |
+| Maintainer, or operator without write on the repo | feedback that may pick an option: shown to everyone with their permission badge and counted in the tally, never acted on | their own pick highlighted, "Retract mine", a note field that saves with Enter |
 
-Maintainers and operators can comment, with or without picking an option; viewers are read-only (rate-limited and audited on the server). The top bar shows the reader's role badge (Operator / Maintainer / Viewer), and the line above the options says in words what a pick does. Answered decisions say "by ochre-fox, using kiri-n's answer" when an operator used someone's pick. The mock API enforces the same rules the server will (`decisionAccess` in `web/src/registry/permissions.ts`); in the mock, the user menu has "Mock data: view as" and URLs accept `?as=operator|maintainer|viewer`.
+Operators and maintainers can send feedback, with or without picking an option (rate-limited and audited on the server); viewers are read-only. The top bar shows the reader's role badge (Operator / Maintainer / Viewer), and the line above the options says in words what a pick does. Answered decisions say "by ochre-fox, using kiri-n's answer" when an operator used someone's pick. The mock API enforces the same rules the server will (`decisionAccess` in `web/src/registry/permissions.ts`); in the mock, the user menu has "Mock data: view as" and URLs accept `?as=operator|maintainer|viewer`.
 
 ### Item detail
 
@@ -146,13 +146,13 @@ Charts are hand-written SVG and HTML (no chart library): every bar has a 2 px su
 | `[` | Collapse or expand the sidebar |
 | `g d`, `g p` | Go to decisions, progress |
 | `j` / `k` | Next / previous decision |
-| `1`–`4` | Answer (operator) or comment (everyone else) with that option |
+| `1`–`4` | Answer (operator) or feedback with that option (everyone else) |
 | `n` | Focus the note |
 | `x` | Check the row for a batch answer; `Esc` clears |
 | `u` | Undo the last answer |
 | `o` | Open the item page |
 | `g a` | Toggle the Answered tab |
-| `Ctrl Enter` | Send a comment |
+| `Ctrl Enter` | Send feedback |
 
 Keys are ignored while typing, except `Esc` and `Ctrl Enter`.
 
@@ -168,5 +168,5 @@ Keys are ignored while typing, except `Esc` and `Ctrl Enter`.
 ## 9. Open points
 
 - Claim indicator: the mock records a claim when a decision opens; the server needs a short-lived claim table and a "being looked at" expiry (proposed: 10 minutes).
-- Comments need the `decision_opinions` table (storing picks and notes) and the summary columns now in `dashboard-spec.md`; the pipeline must write `summary` when it asks a decision.
+- Feedback needs the `decision_opinions` and `decision_comments` tables (storing picks and notes) and the summary columns now in `dashboard-spec.md`; the pipeline must write `summary` when it asks a decision.
 - Layout persistence is localStorage only; a `PUT /api/me/layout/:key` endpoint would make layouts follow the user.

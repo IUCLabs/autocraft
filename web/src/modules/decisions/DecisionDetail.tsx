@@ -17,12 +17,12 @@ import { Count } from "../../ui/Heading";
 import { Markdown, Collapsible } from "../../ui/Markdown";
 import { cn } from "../../ui/cn";
 import { ago } from "../../lib/format";
-import { ClaimPill, ClassifierLines, Disclosure, Facts, KindTag, OpinionList, RelatedList } from "./parts";
+import { ClaimPill, ClassifierLines, Disclosure, Facts, KindTag, RelatedList } from "./parts";
 import { Refs } from "./Refs";
-import { ReviewBox } from "./ReviewBox";
+import { FeedbackBox } from "./FeedbackBox";
 import { localActions, ordered, refOf, useDecisionFilter, useDecisionList, useLocal, usePinned, useSelection, useUndo } from "./state";
 import { Conversation } from "./Conversation";
-import { Thread } from "./Thread";
+import { FeedbackList } from "./Thread";
 import { WorkflowBox, scrollToWorkflow } from "./Workflow";
 import { useNow } from "../../lib/useNow";
 
@@ -160,7 +160,7 @@ export function DecisionBody({
   const isBatch = d.number === null;
   const operator = canActOn(user, [d]);
   const commenter = canComment(user);
-  const reviewRef = useRef<HTMLDivElement>(null);
+  const feedbackRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!d.answer && commenter) void api.decisions.claim(d.id);
@@ -243,15 +243,16 @@ export function DecisionBody({
     </Section>
   );
 
-  const opinions = (
+  const feedback = (
     <Section
       title={
         <>
-          Comments <Count n={d.opinions.length} />
+          Feedback <Count n={d.opinions.length + d.commentCount} />
         </>
       }
     >
-      <OpinionList d={d} me={user.login} onUse={operator && !d.answer ? use : undefined} onRetract={commenter ? () => void api.decisions.retract(d.id) : undefined} />
+      <FeedbackList d={d} me={user.login} compact onUse={operator && !d.answer ? use : undefined} onRetract={commenter ? () => void api.decisions.retract(d.id) : undefined} />
+      {commenter && <FeedbackBox d={d} className="mt-3" />}
     </Section>
   );
 
@@ -325,11 +326,6 @@ export function DecisionBody({
           <Conversation repo={d.repo} number={d.number} operator={operator} />
         </Disclosure>
       )}
-      {phone && (
-        <Disclosure title="Discussion" count={d.commentCount}>
-          <Thread decisionId={d.id} compact />
-        </Disclosure>
-      )}
     </div>
   );
 
@@ -343,13 +339,8 @@ export function DecisionBody({
             {description}
             {facts}
             {question}
-            {opinions}
+            <div ref={feedbackRef} className="scroll-mt-3">{feedback}</div>
             {rest}
-            {commenter && (
-              <div ref={reviewRef} className="mt-5 scroll-mt-3 border-t border-line pt-4">
-                <ReviewBox d={d} />
-              </div>
-            )}
             {workflow}
           </article>
         </div>
@@ -360,8 +351,8 @@ export function DecisionBody({
             <p className="truncate text-xs font-medium">{d.answer ? "Answered" : d.question}</p>
           </div>
           {commenter && (
-            <Button size="md" variant={operator && !d.answer ? "secondary" : "primary"} icon={ChatCircleIcon} className="h-10 px-3" onClick={() => reviewRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })}>
-              Comment
+            <Button size="md" variant={operator && !d.answer ? "secondary" : "primary"} icon={ChatCircleIcon} className="h-10 px-3" onClick={() => feedbackRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })}>
+              Feedback
             </Button>
           )}
           {operator && (

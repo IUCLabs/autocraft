@@ -74,7 +74,7 @@ export function createMockApi(): Api {
     if (status !== "answered" && d.answer) return false;
     if (status === "answered" && (!d.answer || d.answer === "backlog")) return false;
     if (status === "backlog" && d.answer !== "backlog") return false;
-    if (status === "opinions" && !d.opinions.length) return false;
+    if (status === "opinions" && !d.opinions.length && !d.commentCount) return false;
     if (f.repo?.length && !f.repo.includes(d.repo)) return false;
     if (f.kind?.length && !f.kind.includes(d.kind)) return false;
     if (f.minAge && NOW - Date.parse(d.askedAt) < f.minAge * 86400_000) return false;
@@ -127,11 +127,18 @@ export function createMockApi(): Api {
         changed();
         return wait(d, 30);
       },
-      async opine(id, input) {
+      async feedback(id, input) {
         const d = find(id);
-        if (d.answer) throw new Error("already answered");
-        d.opinions = d.opinions.filter((o) => o.login !== me.login);
-        d.opinions.unshift({ id: `${id}/o${Date.now()}`, login: me.login, option: input.option, note: input.note ?? null, at: nowIso(), permission: permFor(me.login, d.repo) });
+        const text = input.text?.trim() || null;
+        if (!input.option && !text) throw new Error("give an option, text, or both");
+        if (input.option) {
+          if (d.answer) throw new Error("already answered");
+          d.opinions = d.opinions.filter((o) => o.login !== me.login);
+          d.opinions.unshift({ id: `${id}/o${Date.now()}`, login: me.login, option: input.option, note: text, at: nowIso(), permission: permFor(me.login, d.repo) });
+        } else {
+          (threads[id] ??= []).push({ id: `${id}/c${Date.now()}`, login: me.login, at: nowIso(), body: text! });
+          d.commentCount++;
+        }
         changed();
         return wait(d, 30);
       },
@@ -152,14 +159,6 @@ export function createMockApi(): Api {
       },
       claim: () => wait(undefined, 10),
       thread: (id) => wait(threads[id] ?? []),
-      async comment(id, body) {
-        const d = find(id);
-        const c = { id: `${id}/c${Date.now()}`, login: me.login, at: nowIso(), body };
-        (threads[id] ??= []).push(c);
-        d.commentCount++;
-        changed();
-        return wait(c, 30);
-      },
     },
     release: () => wait(undefined, 60),
     item: (repo, number) => {

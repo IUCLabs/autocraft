@@ -1,19 +1,20 @@
 import { useState } from "react";
 import { useApi, useQuery } from "../../api/client";
+import type { Decision } from "../../api/types";
 import type { ViewProps } from "../../registry/types";
 import { Avatar } from "../../ui/Avatar";
+import { cn } from "../../ui/cn";
 import { Count } from "../../ui/Heading";
 import { ago } from "../../lib/format";
 import { localActions, useDecisionList, usePinned, useSelection } from "./state";
 import { scrollToWorkflow } from "./Workflow";
-import { OpinionList } from "./parts";
 import { canAct, canComment } from "../../registry/permissions";
-import { ReviewBox } from "./ReviewBox";
+import { FeedbackBox } from "./FeedbackBox";
 import { Conversation } from "./Conversation";
 import { Segmented } from "../../ui/Segmented";
 import { useNow } from "../../lib/useNow";
 
-/** Desktop side panel: everyone's comments (operators can select a suggestion in the Workflow box), then the comment thread. */
+/** Desktop side panel: the Opus conversation and the feedback on the decision. Operators select a pick in the Workflow box. */
 export function ThreadPanel({ user }: ViewProps) {
   const api = useApi();
   const { id } = useSelection();
@@ -27,16 +28,18 @@ export function ThreadPanel({ user }: ViewProps) {
     localActions.setPick(d.id, option);
     scrollToWorkflow();
   };
-  const [tab, setTab] = useState<"opus" | "comments">("opus");
+  const [tab, setTab] = useState<"opus" | "feedback">("feedback");
   const conversation = d && d.number !== null;
   const showOpus = !!conversation && tab === "opus";
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex h-10 shrink-0 items-center gap-2 border-b border-line px-4 pr-10">
         {conversation ? (
-          <Segmented label="Panel" value={tab} onChange={setTab} options={[{ value: "opus", label: "Opus" }, { value: "comments", label: "Comments", count: d.commentCount + d.opinions.length }]} />
+          <Segmented label="Panel" value={tab} onChange={setTab} options={[{ value: "feedback", label: "Feedback", count: d.commentCount + d.opinions.length }, { value: "opus", label: "Opus" }]} />
         ) : (
-          <span className="text-xs font-semibold text-ink/70">Discussion</span>
+          <span className="flex items-center gap-1.5 text-xs font-semibold text-ink/70">
+            Feedback {d && <Count n={d.commentCount + d.opinions.length} />}
+          </span>
         )}
       </div>
       {d && conversation && (
@@ -45,20 +48,11 @@ export function ThreadPanel({ user }: ViewProps) {
         </div>
       )}
       {d ? (
-        <div className={showOpus ? "hidden" : "flex min-h-0 flex-1 flex-col overflow-y-auto"}>
-          <section className="border-b border-line p-3">
-            <h2 className="mb-2 flex items-center gap-1.5 text-xs font-semibold text-ink/60">
-              Comments <Count n={d.opinions.length} />
-            </h2>
-            <OpinionList d={d} me={user.login} onUse={operator && !d.answer ? use : undefined} onRetract={canComment(user) ? () => void api.decisions.retract(d.id) : undefined} />
-          </section>
-          <h2 className="flex items-center gap-1.5 px-4 pt-3 text-xs font-semibold text-ink/60">
-            Thread <Count n={d.commentCount} />
-          </h2>
-          <Thread decisionId={d.id} />
+        <div className={showOpus ? "hidden" : "flex min-h-0 flex-1 flex-col"}>
+          <FeedbackList d={d} me={user.login} onUse={operator && !d.answer ? use : undefined} onRetract={canComment(user) ? () => void api.decisions.retract(d.id) : undefined} />
           {canComment(user) && (
-            <div className="mt-auto border-t border-line p-3">
-              <ReviewBox d={d} />
+            <div className="border-t border-line p-3">
+              <FeedbackBox d={d} />
             </div>
           )}
         </div>
@@ -69,40 +63,61 @@ export function ThreadPanel({ user }: ViewProps) {
   );
 }
 
-export function Thread({ decisionId, compact }: { decisionId: string; compact?: boolean }) {
+/**
+ * Everything people said about a decision, newest first: picks (with their text) and plain
+ * text. `onUse` selects a pick's option in the Workflow box; `onRetract` withdraws the viewer's own pick.
+ */
+export function FeedbackList({ d, me, onUse, onRetract, compact }: { d: Decision; me: string; onUse?: (option: string) => void; onRetract?: () => void; compact?: boolean }) {
   useNow();
-  const { data } = useQuery(`thread:${decisionId}`, (a) => a.decisions.thread(decisionId));
-  const { data: list } = useDecisionList();
-  const d = list?.decisions.find((x) => x.id === decisionId);
-  const activity = d
-    ? [
-        { at: d.askedAt, text: `Asked by ${d.askedBy}` },
-        ...(d.claim ? [{ at: d.claim.since, text: `${d.claim.login} opened it` }] : []),
-      ]
-    : [];
-
+  const { data: thread } = useQuery(`thread:${d.id}`, (a) => a.decisions.thread(d.id));
+  const label = (k: string) => d.options.find((o) => o.key === k)?.label ?? k;
+  const entries = [
+    ...d.opinions.map((o) => ({ id: o.id, login: o.login, at: o.at, text: o.note, pick: o.option, write: o.permission === "write", own: o.login === me })),
+    ...(thread ?? []).map((c) => ({ id: c.id, login: c.login, at: c.at, text: c.body, pick: null as string | null, write: false, own: false })),
+  ].sort((x, y) => y.at.localeCompare(x.at));
   return (
-    <div className={compact ? "" : "flex min-h-0 flex-1 flex-col"}>
-      <ol className={compact ? "space-y-4" : "min-h-0 flex-1 space-y-4 overflow-y-auto p-4"}>
-        {activity.map((a, i) => (
-          <li key={`a${i}`} className="flex items-center gap-2 text-xs text-ink/50">
-            <span className="size-1.5 rounded-full bg-ink/30" />
-            <span className="flex-1">{a.text}</span>
-            <span>{ago(a.at)}</span>
-          </li>
-        ))}
-        {data?.map((c) => (
-          <li key={c.id} className="animate-fadeIn">
-            <div className="flex items-center gap-2">
-              <Avatar login={c.login} size={20} />
-              <span className="text-sm font-semibold">{c.login}</span>
-              <span className="ml-auto text-xs text-ink/45">{ago(c.at)}</span>
+    <ol className={compact ? "space-y-3.5" : "min-h-0 flex-1 space-y-4 overflow-y-auto p-4"}>
+      {entries.map((e) => (
+        <li key={e.id} className="animate-fadeIn">
+          <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
+            <Avatar login={e.login} size={20} />
+            <span className="text-sm font-semibold">{e.login === me ? "You" : e.login}</span>
+            {e.pick && (
+              <>
+                <span className="text-sm text-ink/55">suggests</span>
+                <span className="text-sm font-medium">{label(e.pick)}</span>
+                <span
+                  className={cn("whitespace-nowrap rounded-full border px-1.5 text-2xs leading-4", e.write ? "border-ok/40 text-ok" : "border-line-strong text-ink/50")}
+                  title={e.write ? `Has write access to ${d.repo}` : `No write access to ${d.repo}`}
+                >
+                  {e.write ? "write" : "no write"}
+                </span>
+              </>
+            )}
+            <span className="ml-auto text-xs text-ink/45">{ago(e.at)}</span>
+          </div>
+          {e.text && <p className="mt-1 whitespace-pre-wrap break-words pl-7 text-sm leading-5 text-ink/80">{e.text}</p>}
+          {e.pick && (e.own ? onRetract : onUse) && (
+            <div className="mt-1 flex gap-3 pl-7">
+              {e.own && onRetract && (
+                <button onClick={onRetract} className="text-xs text-accent-ink hover:underline max-md:min-h-11">
+                  Retract
+                </button>
+              )}
+              {onUse && e.write && (
+                <button
+                  onClick={() => onUse(e.pick!)}
+                  className="rounded border border-line-strong px-2 py-0.5 text-left text-xs font-medium hover:border-accent/60 hover:text-accent-ink max-md:min-h-11"
+                  title={`Select "${label(e.pick)}" in the Workflow box`}
+                >
+                  Use this answer
+                </button>
+              )}
             </div>
-            <p className="mt-1 pl-7 text-sm leading-5 text-ink/80">{c.body}</p>
-          </li>
-        ))}
-        {data && data.length === 0 && <li className="text-sm text-ink/45">No comments yet.</li>}
-      </ol>
-    </div>
+          )}
+        </li>
+      ))}
+      {entries.length === 0 && <li className="text-sm text-ink/45">No feedback yet.</li>}
+    </ol>
   );
 }

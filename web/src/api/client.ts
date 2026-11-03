@@ -89,14 +89,13 @@ export interface Api {
     undo(id: string): Promise<Decision>;
     /** Operator: clear a Backlog answer so the decision is open again. */
     reopen(id: string): Promise<Decision>;
-    /** Give or change the signed-in user's opinion (anyone signed in). */
-    opine(id: string, input: { option: string | null; note?: string }): Promise<Decision>;
+    /** The feedback box: an optional pick (replaces the user's live one) and free text, at least one. Text alone joins the thread. */
+    feedback(id: string, input: { option?: string | null; text?: string }): Promise<Decision>;
     retract(id: string): Promise<Decision>;
     /** Operator only: answer with the opinion's option. */
     adopt(id: string, opinionId: string, textsHash?: string): Promise<Decision>;
     claim(id: string): Promise<void>;
     thread(id: string): Promise<DecisionComment[]>;
-    comment(id: string, body: string): Promise<DecisionComment>;
   };
   /** Opus conversations, one per item. Writes are for operators; a message is refused while Opus has not answered the last one. */
   conversations: {

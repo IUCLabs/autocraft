@@ -122,7 +122,7 @@ describe("api", () => {
     assert.equal(r.status, 401);
     assert.deepEqual(await r.json(), { error: "sign-in required" });
     for (const path of ["/api/classifiers", "/api/classifiers/disagreements", "/api/cost", "/api/items", "/api/items?q=wave"]) assert.equal((await c.req("GET", path)).status, 401, path);
-    assert.equal((await c.req("POST", dpath(P1, "/opinion"), { body: { option: "small" }, csrf: "x" })).status, 401);
+    assert.equal((await c.req("POST", dpath(P1, "/feedback"), { body: { option: "small" }, csrf: "x" })).status, 401);
   });
 
   test("me and reads: role, write repos, item, search and progress", async () => {
@@ -182,8 +182,8 @@ describe("api", () => {
     }
     const audits = () => (db.prepare("SELECT COUNT(*) AS n FROM audit WHERE login = 'viewer1'").get() as { n: number }).n;
     const before = audits();
-    await viewer.post(dpath(P1, "/opinion"), { option: "plugin", note: `viewer ${MARKER}` }, 403);
-    await viewer.post(dpath(P1, "/comments"), { body: `viewer ${MARKER}` }, 403);
+    await viewer.post(dpath(P1, "/feedback"), { option: "plugin", text: `viewer ${MARKER}` }, 403);
+    await viewer.post(dpath(P1, "/feedback"), { text: `viewer ${MARKER}` }, 403);
     await viewer.post(dpath(P1, "/retract"), undefined, 403);
     await viewer.post(dpath(P1, "/claim"), undefined, 403);
     assert.equal(audits(), before);
@@ -191,18 +191,20 @@ describe("api", () => {
     assert.equal((await maint.get<DecisionComment[]>(dpath(P1, "/thread"))).length, 0);
     assert.equal((db.prepare("SELECT COUNT(*) AS n FROM decision_claims WHERE login = 'viewer1'").get() as { n: number }).n, 0);
 
-    const d1 = await pal.post<Decision>(dpath(P1, "/opinion"), { option: "plugin", note: `pal ${MARKER}` });
+    const d1 = await pal.post<Decision>(dpath(P1, "/feedback"), { option: "plugin", text: `pal ${MARKER}` });
     const pOp = d1.opinions.find((o) => o.login === "pal")!;
     assert.equal(pOp.permission, "none");
     await maint.post(dpath(P1, "/adopt"), { opinionId: pOp.id }, 403);
-    const d2 = await maint.post<Decision>(dpath(P1, "/opinion"), { option: "small" });
+    const d2 = await maint.post<Decision>(dpath(P1, "/feedback"), { option: "small" });
     assert.equal(d2.opinions.find((o) => o.login === "maint")!.permission, "write");
     // changing replaces the live opinion
-    const d3 = await maint.post<Decision>(dpath(P1, "/opinion"), { option: "plugin", note: `maint ${MARKER}` });
+    const d3 = await maint.post<Decision>(dpath(P1, "/feedback"), { option: "plugin", text: `maint ${MARKER}` });
     assert.deepEqual(d3.opinions.filter((o) => o.login === "maint").map((o) => o.option), ["plugin"]);
-    await pal.post(dpath(P1, "/opinion"), { option: "nope" }, 400);
-    const c = await pal.post<DecisionComment>(dpath(P1, "/comments"), { body: `comment ${MARKER}` });
-    assert.deepEqual((await maint.get<DecisionComment[]>(dpath(P1, "/thread"))).map((x) => x.id), [c.id]);
+    await pal.post(dpath(P1, "/feedback"), { option: "nope" }, 400);
+    await pal.post(dpath(P1, "/feedback"), {}, 400);
+    const d5 = await pal.post<Decision>(dpath(P1, "/feedback"), { text: `comment ${MARKER}` });
+    assert.equal(d5.opinions.filter((o) => o.login === "pal").length, 1, "text alone is no pick");
+    assert.deepEqual((await maint.get<DecisionComment[]>(dpath(P1, "/thread"))).map((x) => x.body), [`comment ${MARKER}`]);
     assert.equal((await maint.get<Decision>(dpath(P1))).commentCount, 1);
     const d4 = await pal.post<Decision>(dpath(P1, "/retract"));
     assert.equal(d4.opinions.some((o) => o.login === "pal"), false);
@@ -259,7 +261,7 @@ describe("api", () => {
   test("adopt records the operator's answer and credits the opinion; opinions close once answered", async () => {
     const maint = await signedIn("maint");
     const boss = await signedIn("boss");
-    const op = (await maint.post<Decision>(dpath(P4, "/opinion"), { option: "plugin", note: `adopt me ${MARKER}` })).opinions.find((o) => o.login === "maint")!;
+    const op = (await maint.post<Decision>(dpath(P4, "/feedback"), { option: "plugin", text: `adopt me ${MARKER}` })).opinions.find((o) => o.login === "maint")!;
     const d = await boss.post<Decision>(dpath(P4, "/adopt"), { opinionId: op.id });
     assert.equal(d.answer, "plugin");
     assert.equal(d.answeredBy, "boss");
@@ -267,7 +269,7 @@ describe("api", () => {
     assert.equal(d.adoptedOpinion?.login, "maint");
     // The group decision test above adopted once as well.
     assert.equal(auditCount("adopt", "boss"), 2);
-    await maint.post(dpath(P4, "/opinion"), { option: "small" }, 409);
+    await maint.post(dpath(P4, "/feedback"), { option: "small" }, 409);
     await maint.post(dpath(P4, "/retract"), undefined, 409);
   });
 
@@ -277,23 +279,23 @@ describe("api", () => {
       { csrf: null }, { csrf: "wrong" }, { headers: { origin: "https://evil.example" } }, { headers: { "sec-fetch-site": "cross-site" } },
     ];
     for (const opts of refused) {
-      const r = await pal.req("POST", dpath(P1, "/comments"), { body: { body: "x" }, ...opts });
+      const r = await pal.req("POST", dpath(P1, "/feedback"), { body: { text: "x" }, ...opts });
       assert.equal(r.status, 403, JSON.stringify(opts));
       assert.match(r.headers.get("content-type") ?? "", /application\/json/);
     }
-    const same = await pal.req("POST", dpath(P1, "/comments"), { body: { body: "same origin" }, headers: { origin: base } });
+    const same = await pal.req("POST", dpath(P1, "/feedback"), { body: { text: "same origin" }, headers: { origin: base } });
     assert.equal(same.status, 200);
   });
 
   test("non-operator opinions and comments are limited per login per hour; the operator's are not", async () => {
     const c = await signedIn("chatty");
-    for (let i = 0; i < LIMIT; i++) await c.post(dpath(P1, "/comments"), { body: `n${i}` });
-    await c.post(dpath(P1, "/comments"), { body: "one more" }, 429);
-    await c.post(dpath(P1, "/opinion"), { option: "small" }, 429);
+    for (let i = 0; i < LIMIT; i++) await c.post(dpath(P1, "/feedback"), { text: `n${i}` });
+    await c.post(dpath(P1, "/feedback"), { text: "one more" }, 429);
+    await c.post(dpath(P1, "/feedback"), { option: "small" }, 429);
     // a second session of the same login shares the limit
-    await (await signedIn("chatty")).post(dpath(P1, "/comments"), { body: "again" }, 429);
+    await (await signedIn("chatty")).post(dpath(P1, "/feedback"), { text: "again" }, 429);
     const boss = await signedIn("boss");
-    for (let i = 0; i <= LIMIT; i++) await boss.post(dpath(P1, "/comments"), { body: `b${i}` });
+    for (let i = 0; i <= LIMIT; i++) await boss.post(dpath(P1, "/feedback"), { text: `b${i}` });
   });
 
   test("claims show to others and lapse after 10 minutes", async () => {

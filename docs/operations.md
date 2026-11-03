@@ -81,7 +81,7 @@ The frontend in `web/` talks to `/api/`; the wire types are `web/src/api/types.t
 | `GET /api/prompts` (every registered model prompt: template, model, call settings, output checks and a rendered example on made-up items, plus the commit the server runs) | anyone signed in |
 | `GET /api/decisions?status=open\|opinions\|answered&repo=&kind=&minAge=&mine=1&limit=&offset=`, `/api/decisions/<id>`, `/api/decisions/<id>/thread` | anyone signed in; answer notes only for operators |
 | `POST /api/decisions/<id>/answer` `{answer, note?, exceptions?}`, `/undo`, `/adopt` `{opinionId}` | operator with write, maintain or admin on every repo the decision covers |
-| `POST /api/decisions/<id>/opinion` `{option, note?}`, `/retract`, `/comments` `{body}` | maintainers and operators; audited; maintainers get 60 an hour per login; viewers get 403 |
+| `POST /api/decisions/<id>/feedback` `{option?, text?}` (at least one; a pick replaces the login's live pick, text alone joins the thread), `/retract` (withdraws the pick) | maintainers and operators; audited; maintainers get 60 an hour per login; viewers get 403 |
 | `POST /api/decisions/<id>/claim` | maintainers and operators: marks the decision as being looked at for 10 minutes |
 | `GET /api/contributors?q=&tier=&repo=&sort=&desc=&limit=&offset=` | anyone signed in; override notes only for operators |
 | `GET /api/contributors/rule-preview?minMerged=&minRate=`; `POST /api/contributors/rule` `{minMerged, minRate}`, `/api/contributors/<login>/override` `{status: "allow"\|"deny"\|null, note?}` | operator |
@@ -94,7 +94,7 @@ The frontend in `web/` talks to `/api/`; the wire types are `web/src/api/types.t
 | `POST /api/signout` | anyone signed in |
 | `GET /api/similar/<repo>/<n>?limit=` (nearest items across the tracked repos, with score; default 10, at most 50), `/api/search?q=&mode=semantic` (search by meaning, same hits plus a score) | anyone signed in; 503 until `autocraft embed` has run |
 
-Opinions and comments are display-only. The pipeline reads answers with `autocraft decisions list --actionable` (one JSON object per line: option keys of unapplied answers by a current operator), which never includes them.
+Feedback (picks and text) is display-only. The pipeline reads answers with `autocraft decisions list --actionable` (one JSON object per line: option keys of unapplied answers by a current operator), which never includes them.
 
 ## Pipeline runner
 

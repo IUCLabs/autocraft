@@ -114,13 +114,12 @@ export function createHttpApi(): Api {
       answer: (id, input) => post(dec(id, "/answer"), input),
       undo: (id) => post(dec(id, "/undo")),
       reopen: (id) => post(dec(id, "/reopen")),
-      opine: (id, input) => post(dec(id, "/opinion"), input),
+      feedback: (id, input) => post(dec(id, "/feedback"), input),
       retract: (id) => post(dec(id, "/retract")),
       adopt: (id, opinionId, textsHash) => post(dec(id, "/adopt"), { opinionId, textsHash }),
       // A claim changes nothing anyone is looking at, so open views don't refetch.
       claim: (id) => call("POST", dec(id, "/claim")),
       thread: (id) => get(dec(id, "/thread")),
-      comment: (id, body) => post(dec(id, "/comments"), { body }),
     },
     release: async (repo, number, action) => {
       await post(`/api/items/${encodeURIComponent(repo)}/${encodeURIComponent(String(number))}/${action}`);

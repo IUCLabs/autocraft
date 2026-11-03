@@ -23,7 +23,7 @@ export function DecisionsToolbar(props: ViewProps & { phone?: boolean }) {
   const { data: withOpinions } = useQuery("count:opinions", (api) => api.decisions.list({ status: "opinions", limit: 1 }));
   const tabs = [
     { t: "open" as const, label: "Waiting", n: open?.total },
-    { t: "opinions" as const, label: "Commented", n: withOpinions?.total },
+    { t: "opinions" as const, label: "Feedback", n: withOpinions?.total },
     { t: "answered" as const, label: "Answered", n: answered?.total },
     { t: "backlog" as const, label: "Backlog", n: backlog?.total },
   ];

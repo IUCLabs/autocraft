@@ -103,56 +103,6 @@ export function Facts({ facts, repo = null }: { facts: string[]; repo?: string |
  * a suggestion in the Workflow box; suggestions from logins without write access on the repo
  * cannot be used.
  */
-export function OpinionList({ d, onUse, onRetract, me }: { d: Decision; onUse?: (option: string) => void; onRetract?: () => void; me: string }) {
-  useNow();
-  if (!d.opinions.length) return <p className="text-sm text-ink/50">No comments yet.</p>;
-  const label = (k: string) => d.options.find((o) => o.key === k)?.label ?? k;
-  return (
-    <ul className="divide-y divide-line overflow-hidden rounded-md border border-line">
-      {d.opinions.map((o) => (
-        <li key={o.id} className="flex items-start gap-2.5 px-3 py-2">
-          <Avatar login={o.login} size={20} className="mt-0.5" />
-          <div className="min-w-0 flex-1 text-sm">
-            <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
-              <span className="font-semibold">{o.login === me ? "You" : o.login}</span>
-              <span
-                className={cn("rounded-full border px-1.5 text-2xs leading-4", o.permission === "write" ? "border-ok/40 text-ok" : "border-line-strong text-ink/50")}
-                title={o.permission === "write" ? `Has write access to ${d.repo}` : `No write access to ${d.repo}`}
-              >
-                {o.permission === "write" ? "write" : "no write"}
-              </span>
-              {o.option ? (
-                <>
-                  <span className="text-ink/55">suggests</span>
-                  <span className="font-medium">{label(o.option)}</span>
-                </>
-              ) : (
-                <span className="text-ink/55">commented</span>
-              )}
-              <span className="text-xs text-ink/45">· {ago(o.at)} ago</span>
-            </div>
-            {o.note && <p className="mt-0.5 text-ink/70">{o.note}</p>}
-            {onRetract && o.login === me && (
-              <button onClick={onRetract} className="mt-1 text-xs text-accent-ink hover:underline max-md:min-h-11">
-                Retract
-              </button>
-            )}
-            {onUse && o.option && o.permission === "write" && (
-              <button
-                onClick={() => onUse(o.option!)}
-                className="mt-1.5 rounded border border-line-strong px-2 py-0.5 text-left text-xs font-medium hover:border-accent/60 hover:text-accent-ink max-md:min-h-11"
-                title={`Select "${label(o.option)}" in the Workflow box`}
-              >
-                Use this answer
-              </button>
-            )}
-          </div>
-        </li>
-      ))}
-    </ul>
-  );
-}
-
 export function tallyOf(d: Decision) {
   const t: Record<string, number> = {};
   for (const o of d.opinions) if (o.option) t[o.option] = (t[o.option] ?? 0) + 1;
