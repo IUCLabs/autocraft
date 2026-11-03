@@ -9,9 +9,16 @@ import { Badge, type Tone } from "../../ui/atoms/Badge";
 import { Button } from "../../ui/atoms/Button";
 import { cn } from "../../ui/cn";
 import { Count } from "../../ui/atoms/Heading";
-import { num } from "../../lib/format";
+import { num, when } from "../../lib/format";
 import { useIsPhone } from "../../shell/useMedia";
-import { Block, ErrorLine, Page, Pager, selectCls, SortTh, TextInput, useUrlState, useWrite, when } from "./parts";
+import { Block } from "../../ui/molecules/Block";
+import { ErrorLine } from "../../ui/atoms/ErrorLine";
+import { Input } from "../../ui/atoms/Input";
+import { Page } from "../../ui/organisms/Page";
+import { Pager } from "../../ui/molecules/Pager";
+import { Select } from "../../ui/atoms/Select";
+import { Th } from "../../ui/atoms/Th";
+import { useUrlState, useWrite } from "../../lib/hooks";
 
 const PAGE = 50;
 
@@ -116,14 +123,14 @@ function SearchField({ value, onChange }: { value: string; onChange: (v: string)
 function RepoSelect({ value, onChange }: { value: string | undefined; onChange: (v: string) => void }) {
   const { data: repos } = useQuery("repos", (api) => api.repos());
   return (
-    <select aria-label="Repo" value={value ?? ""} onChange={(e) => onChange(e.target.value)} className={cn(selectCls, "sm:ml-auto", value ? "text-accent-ink" : "text-ink/70")}>
+    <Select aria-label="Repo" value={value ?? ""} onChange={(e) => onChange(e.target.value)} className={cn("sm:ml-auto", value ? "text-accent-ink" : "text-ink/70")}>
       <option value="">Every repo</option>
       {repos?.map((r) => (
         <option key={r} value={r}>
           {r}
         </option>
       ))}
-    </select>
+    </Select>
   );
 }
 
@@ -151,14 +158,14 @@ function Table({ list, operator, filter, onSort }: { list: ContributorList; oper
       <table className="w-full min-w-[1040px] border-collapse text-sm">
         <thead className="bg-ink/[0.03] text-xs">
           <tr className="border-b border-line">
-            <SortTh k="login" sort={sort} onSort={onSort}>Login</SortTh>
-            <SortTh k="tier" sort={sort} onSort={onSort} className="w-[220px]">Status</SortTh>
-            <SortTh k="merged" sort={sort} onSort={onSort} right className="w-[80px]">Merged</SortTh>
-            <SortTh k="closed" sort={sort} onSort={onSort} right className="w-[90px]">Closed unmerged</SortTh>
-            <SortTh k="open" sort={sort} onSort={onSort} right className="w-[64px]">Open</SortTh>
-            <SortTh k="rate" sort={sort} onSort={onSort} right className="w-[90px]">Merge rate</SortTh>
-            <SortTh k="last" sort={sort} onSort={onSort} className="w-[100px]">Last merge</SortTh>
-            <SortTh k="repos" sort={sort} onSort={onSort} className="w-[150px]">Repos</SortTh>
+            <Th k="login" sort={sort} onSort={onSort}>Login</Th>
+            <Th k="tier" sort={sort} onSort={onSort} className="w-[220px]">Status</Th>
+            <Th k="merged" sort={sort} onSort={onSort} right className="w-[80px]">Merged</Th>
+            <Th k="closed" sort={sort} onSort={onSort} right className="w-[90px]">Closed unmerged</Th>
+            <Th k="open" sort={sort} onSort={onSort} right className="w-[64px]">Open</Th>
+            <Th k="rate" sort={sort} onSort={onSort} right className="w-[90px]">Merge rate</Th>
+            <Th k="last" sort={sort} onSort={onSort} className="w-[100px]">Last merge</Th>
+            <Th k="repos" sort={sort} onSort={onSort} className="w-[150px]">Repos</Th>
             {operator && <th className="w-[110px]" aria-label="Override" />}
           </tr>
         </thead>
@@ -322,11 +329,11 @@ function RuleBlock({ rule, operator }: { rule: WhitelistRule; operator: boolean 
       <div className="flex flex-wrap items-end gap-3">
         <label className="text-xs text-ink/60">
           Minimum merged PRs
-          <TextInput type="number" min={0} step={1} value={merged} onChange={(e) => setMerged(e.target.value)} className="mt-1 block w-28" />
+          <Input type="number" min={0} step={1} value={merged} onChange={(e) => setMerged(e.target.value)} className="mt-1 block w-28" />
         </label>
         <label className="text-xs text-ink/60">
           Minimum merge rate (%)
-          <TextInput type="number" min={0} max={100} step={1} value={ratePct} onChange={(e) => setRatePct(e.target.value)} className="mt-1 block w-28" />
+          <Input type="number" min={0} max={100} step={1} value={ratePct} onChange={(e) => setRatePct(e.target.value)} className="mt-1 block w-28" />
         </label>
         <Button
           variant="primary"

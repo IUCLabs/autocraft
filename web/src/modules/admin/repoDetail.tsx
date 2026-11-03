@@ -5,7 +5,11 @@ import type { ViewProps } from "../../registry/types";
 import { Badge } from "../../ui/atoms/Badge";
 import { num } from "../../lib/format";
 import { useUser } from "../../shell/UserContext";
-import { Block, ConfirmButton, ErrorLine, Page, useWrite } from "./parts";
+import { Block } from "../../ui/molecules/Block";
+import { ConfirmButton } from "../../ui/molecules/ConfirmButton";
+import { ErrorLine } from "../../ui/atoms/ErrorLine";
+import { Page } from "../../ui/organisms/Page";
+import { useWrite } from "../../lib/hooks";
 import { PipelineBadge, PipelineToggle, Toggle, WRITES, maybe, synced, type Write, type WriteKind } from "./repoParts";
 import { useNow } from "../../lib/useNow";
 

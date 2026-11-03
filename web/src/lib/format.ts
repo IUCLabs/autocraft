@@ -29,3 +29,6 @@ export function span(ms: number): string {
   if (m < 1440) return `${Math.floor(m / 60)} h ${m % 60} m`;
   return `${Math.floor(m / 1440)} d ${Math.floor((m % 1440) / 60)} h`;
 }
+
+/** "2026-11-02 10:40" in UTC. */
+export const when = (iso: string | null | undefined) => (iso ? iso.slice(0, 16).replace("T", " ") : "–");

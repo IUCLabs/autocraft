@@ -60,12 +60,21 @@ Not taken: Archivo display headings, uppercase letter-spaced mono labels, regist
 
 Shared components in `web/src/ui/` are grouped by size:
 
-- `atoms/`: single elements with no knowledge of other components (Avatar, Badge, Button, Heading, Kbd, Logo, Tooltip, PriorityBadge, Pending, ItemIcon).
-- `molecules/`: small groups of atoms with one job (ItemRef, QueueBadge, RepoSelect, Segmented, Markdown).
-- `organisms/`: larger self-contained sections (Swimlane).
+- `atoms/`: one element, no data fetching, no app domain types, styled only with tokens. Avatar, Badge, Button, Card, Chip, EmptyState, ErrorLine, Heading, Input, ItemIcon, Kbd, Logo, Pending, PriorityBadge, Select, Textarea, TextLink, Th, TimeAgo, Tooltip.
+- `molecules/`: a few atoms doing one job, props only (no queries, no routing except `Link`). Block, ConfirmButton, ItemRef, LabelledSelect, Markdown, Pager, QueueBadge, RateBar, RepoSelect, Segmented, Stat.
+- `organisms/`: a self-contained block with layout and behaviour (sorting, the phone switch). It may take domain-shaped props and never fetches. Page, Swimlane.
 - `ui/` itself holds helpers that are not components (`cn.ts`, `markdownHtml.ts`).
+- `modules/<m>/`: anything bound to one feature's data or wording. Pages compose the folders above and own their queries.
 
-A new shared piece goes into one of these folders. A component inside a page module moves here when that page is next changed and the piece is used, or would be used, by another page.
+Rules:
+
+- The second module that needs a component moves it to `ui/` in the same change. Modules never import from another module's files.
+- Buttons, inputs, selects, textareas, links, pills, cards, table header cells and empty states are not styled by hand outside `ui/`. A class string of more than about six utilities that appears twice becomes a component.
+- Phone touch heights (44 px, `max-md:h-11`) are built into the atoms. Callers do not append them.
+- Names: the component name is the file name, with one exported component per file. Controlled inputs take `{value, onChange}`; `tone` sets colour, `size` is `sm | md | lg`, `label` is accessible text. Status label and tone maps live in `lib/status.ts`, not in components.
+- Items are always drawn with `ItemRef` or `ItemIcon` (see Items above).
+- Check `ui/` before writing a component. New shared components are added to the lists above with their folder.
+- Hooks shared by modules (`useWrite`, `useUrlState`) live in `web/src/lib/hooks.ts`.
 
 ## 4. Layout model
 

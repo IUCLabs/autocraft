@@ -4,7 +4,8 @@ import { Badge } from "../../ui/atoms/Badge";
 import { Button } from "../../ui/atoms/Button";
 import { ago, num } from "../../lib/format";
 import { useUser } from "../../shell/UserContext";
-import { ConfirmButton, useWrite } from "./parts";
+import { ConfirmButton } from "../../ui/molecules/ConfirmButton";
+import { useWrite } from "../../lib/hooks";
 
 export type Write = ReturnType<typeof useWrite>;
 type WriteField = "labels" | "commenting" | "pushing" | "fixing" | "merging";

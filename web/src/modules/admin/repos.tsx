@@ -9,7 +9,12 @@ import { Button } from "../../ui/atoms/Button";
 import { cn } from "../../ui/cn";
 import { useIsPhone } from "../../shell/useMedia";
 import { useUser } from "../../shell/UserContext";
-import { Block, ErrorLine, Page, SortTh, TextInput, useWrite } from "./parts";
+import { Block } from "../../ui/molecules/Block";
+import { ErrorLine } from "../../ui/atoms/ErrorLine";
+import { Input } from "../../ui/atoms/Input";
+import { Page } from "../../ui/organisms/Page";
+import { Th } from "../../ui/atoms/Th";
+import { useWrite } from "../../lib/hooks";
 import {
   PipelineBadge,
   PipelineToggle,
@@ -91,7 +96,7 @@ function ReposView(_: ViewProps) {
             add();
           }}
         >
-          <TextInput
+          <Input
             value={name}
             onChange={(e) => setName(e.target.value)}
             placeholder="Repo name"
@@ -133,17 +138,17 @@ function Table({ rows }: { rows: TrackedRepo[] }) {
       <table className="w-full border-collapse text-sm">
         <thead className="bg-ink/[0.03] text-xs">
           <tr className="border-b border-line">
-            <SortTh className="w-[220px]">Repo</SortTh>
-            <SortTh className="w-[120px]">Status</SortTh>
-            <SortTh className="w-[190px]">Pipeline</SortTh>
-            <SortTh right className="w-[100px]">
+            <Th className="w-[220px]">Repo</Th>
+            <Th className="w-[120px]">Status</Th>
+            <Th className="w-[190px]">Pipeline</Th>
+            <Th right className="w-[100px]">
               Open PRs
-            </SortTh>
-            <SortTh right className="w-[110px]">
+            </Th>
+            <Th right className="w-[110px]">
               Open issues
-            </SortTh>
-            <SortTh className="w-[150px] pl-6">Last synced</SortTh>
-            <SortTh>GitHub writes</SortTh>
+            </Th>
+            <Th className="w-[150px] pl-6">Last synced</Th>
+            <Th>GitHub writes</Th>
           </tr>
         </thead>
         <tbody>
