@@ -142,7 +142,7 @@ interface Seed {
   ageH: number;
   author?: string;
   size?: [number, number, number];
-  items?: { repo: string; number: number; title: string }[];
+  items?: { repo: string; number: number; title: string }[];  // batch members: open PRs
   claim?: [string, number];
   comments?: [string, number, string][];
   related?: RelatedItem[];
@@ -200,7 +200,7 @@ const SEEDS: Seed[] = [
       ["kiri-n", 5 * H, "Preview shader matches the reference output at default settings. Checked against three test images."],
       ["mosswood", 3 * H, "Fine by me. The CPU path is slow above 8K but that's true of every distort filter we have."],
     ],
-    related: [{ repo: "photocraft", number: 3880, relation: "fixes", title: "Filter › Distort is missing Wave and Ripple", state: "open" }],
+    related: [{ repo: "photocraft", number: 3880, relation: "fixes", title: "Filter › Distort is missing Wave and Ripple", state: "open", kind: "issue" }],
   },
   {
     kind: "scope",
@@ -278,7 +278,7 @@ const SEEDS: Seed[] = [
     author: "brushstroke42",
     size: [88, 12, 3],
     cls: [["haiku", "bugfix", "yes"], ["jev", "bugfix", "yes"]],
-    related: [{ repo: "filmcraft", number: 3302, relation: "duplicate-of", title: "Audio slowly drifts out of sync on long timelines", state: "open" }],
+    related: [{ repo: "filmcraft", number: 3302, relation: "duplicate-of", title: "Audio slowly drifts out of sync on long timelines", state: "open", kind: "issue" }],
   },
   {
     kind: "scope",
@@ -418,8 +418,8 @@ const SEEDS: Seed[] = [
     author: "okapi-codes",
     cls: [["haiku", "bugfix", "yes"], ["jev", "bugfix", "yes"]],
     related: [
-      { repo: "photocraft", number: 4098, relation: "duplicate-of", title: "Healing brush: seams at tile edges in 16-bit mode", state: "open" },
-      { repo: "photocraft", number: 4102, relation: "links", title: "Fix tile-edge blending in healing brush (16-bit)", state: "open" },
+      { repo: "photocraft", number: 4098, relation: "duplicate-of", title: "Healing brush: seams at tile edges in 16-bit mode", state: "open", kind: "issue" },
+      { repo: "photocraft", number: 4102, relation: "links", title: "Fix tile-edge blending in healing brush (16-bit)", state: "open", kind: "pr" },
     ],
   },
   {
@@ -653,7 +653,7 @@ function toDecision(s: Seed): Decision {
     kind: s.kind,
     repo: s.repo,
     number: s.number,
-    items: s.items ?? [],
+    items: (s.items ?? []).map((i) => ({ ...i, kind: "pr" as const, state: "open" as const })),
     title: s.title,
     question: s.question,
     summary: text.summary,

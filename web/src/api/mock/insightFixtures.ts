@@ -41,6 +41,7 @@ function build(): Row[] {
       const la = pickLabel();
       out.push({
         repo, number: n, kind: r() < 0.6 ? "pr" : "issue",
+        state: n % 4 === 0 ? "closed" : "open",
         title: `${verbs[Math.floor(r() * verbs.length)]} ${things[Math.floor(r() * things.length)]}`,
         a: { label: la, prob: Math.round(top * 1000) / 1000 },
         b: { label: agree ? la : LABELS.filter((l) => l !== la)[Math.floor(r() * 5)]!, prob: null },

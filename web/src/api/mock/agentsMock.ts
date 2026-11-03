@@ -42,12 +42,16 @@ const OUTPUT = `{"verdicts":[{"repo":"photocraft","number":2214,"verdict":"take"
 const PROMPT = (r: AgentRun) =>
   `You are reviewing ${r.itemCount} item${r.itemCount === 1 ? "" : "s"} for the ${r.step} step.\n\n${r.items.map((i) => `## ${i.repo}#${i.number}\nTitle: example title for ${i.repo}#${i.number}\nBody: (trimmed) ...`).join("\n\n")}\n\nAnswer with JSON only.`;
 
+const shown = (i: { repo: string; number: number }): AgentRun["items"][number] => ({
+  ...i, kind: i.number % 3 === 0 ? "issue" : "pr", state: i.number % 5 === 0 ? "closed" : "open", title: `Example title for ${i.repo}#${i.number}`,
+});
+
 function makeRun(id: number, startedMsAgo: number, running: boolean): AgentRun {
   const s = pick(STEPS);
   const acct = s.provider === "jev" ? null : running ? pick(accounts.filter((a) => a.enabled)) : pick(accounts);
   const n = s.step === "classify-new" ? 1 + Math.floor(rnd() * 30) : s.step === "opus-review" ? 1 + Math.floor(rnd() * 4) : 1 + Math.floor(rnd() * 8);
   const repo = pick(REPOS);
-  const items = Array.from({ length: Math.min(n, 50) }, (_, i) => ({ repo: i % 3 === 2 ? pick(REPOS) : repo, number: 1000 + Math.floor(rnd() * 1400) }));
+  const items = Array.from({ length: Math.min(n, 50) }, (_, i) => ({ repo: i % 3 === 2 ? pick(REPOS) : repo, number: 1000 + Math.floor(rnd() * 1400) })).map(shown);
   const failed = !running && rnd() < 0.08;
   const dur = (20 + rnd() * 240) * 1000;
   const tokens = Math.round(n * (1500 + rnd() * 3000));
@@ -65,7 +69,7 @@ function makeRun(id: number, startedMsAgo: number, running: boolean): AgentRun {
 const RUNNING: AgentRun[] = Array.from({ length: 12 }, (_, i) => makeRun(5000 + i, (1 + i * 1.7) * MIN + rnd() * 30_000, true));
 for (const r of RUNNING) if (r.accountId) accounts.find((a) => a.id === r.accountId)!.running++;
 RUNNING[0]!.itemCount = 64;
-RUNNING[0]!.items = Array.from({ length: 50 }, (_, i) => ({ repo: REPOS[i % REPOS.length]!, number: 1100 + i * 7 }));
+RUNNING[0]!.items = Array.from({ length: 50 }, (_, i) => ({ repo: REPOS[i % REPOS.length]!, number: 1100 + i * 7 })).map(shown);
 RUNNING[0]!.step = "classify-new";
 RUNNING[0]!.promptId = "classify.haiku";
 RUNNING[0]!.model = "haiku";

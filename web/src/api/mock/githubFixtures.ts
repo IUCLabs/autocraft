@@ -12,7 +12,7 @@ const ROWS: GithubActivityRow[] = Array.from({ length: 120 }, (_, i) => {
   const number = 100 + i;
   return {
     id: String(1000 - i), at: new Date(NOW - i * 37 * 60_000).toISOString(), action: a.action, label: a.label, repo, number, branch: null,
-    title: `Fix the thing in module ${number}`,
+    title: `Fix the thing in module ${number}`, kind: "pr", state: i % 4 === 3 ? "merged" : "open",
     detail: a.action === "labels-apply" ? "bugfix, size-S" : a.action === "act-comment" ? "Closing as a duplicate of an earlier report." : a.action === "merge" ? "squash 3f9a2c1" : "",
     url: `https://github.com/storytold/${repo}/pull/${number}`, source: a.action === "labels-apply" ? "kiri-n" : `act act-${repo}-20261102`, error: i === 5 ? "gh failed: HTTP 502" : null, outcome: i === 5 ? "failed" : i === 7 ? "unknown" : "done",
   };

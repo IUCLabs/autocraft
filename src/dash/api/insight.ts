@@ -7,6 +7,7 @@ import { BANDS, bandIndex } from "../../classify/report.ts";
 import { LABELS } from "../../classify/rules.ts";
 import { HttpError } from "../server/util.ts";
 import type { Req } from "../types.ts";
+import { itemState } from "./shown.ts";
 import { excludeHidden, hiddenRepos } from "./visible.ts";
 
 const FLAGS = ["security", "needs decision"];
@@ -121,13 +122,13 @@ export async function disagreements(db: DatabaseSync, req: Req): Promise<Disagre
   const from = `FROM classifications x JOIN classifications y ON y.run_id = x.run_id AND y.repo = x.repo AND y.number = x.number AND y.classifier = :b
     LEFT JOIN items i ON i.repo = x.repo AND i.number = x.number WHERE ${where.join(" AND ")}`;
   const total = (db.prepare(`SELECT COUNT(*) AS n ${from}`).get(p) as { n: number }).n;
-  const rows = db.prepare(`SELECT x.repo, x.number, i.kind, i.title, x.type_label AS la, y.type_label AS lb,
+  const rows = db.prepare(`SELECT x.repo, x.number, i.kind, i.state, i.title, x.type_label AS la, y.type_label AS lb,
       json_extract(x.probs, '$.top') AS pa, json_extract(y.probs, '$.top') AS pb ${from} ORDER BY x.repo, x.number LIMIT :lim OFFSET :off`).all({ ...p, lim, off }) as
-    { repo: string; number: number; kind: string | null; title: string | null; la: string; lb: string; pa: number | null; pb: number | null }[];
+    { repo: string; number: number; kind: string | null; state: string | null; title: string | null; la: string; lb: string; pa: number | null; pb: number | null }[];
   return {
     total,
     rows: rows.map((r): Disagreement => ({
-      repo: r.repo, number: r.number, kind: r.kind === "pr" ? "pr" : "issue", title: r.title ?? "",
+      repo: r.repo, number: r.number, kind: r.kind === "pr" ? "pr" : "issue", state: r.state ? itemState(r.state) : null, title: r.title ?? "",
       a: { label: r.la, prob: r.pa }, b: { label: r.lb, prob: r.pb },
     })),
   };

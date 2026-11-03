@@ -1,10 +1,10 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { GitPullRequestIcon, RadioButtonIcon, MagnifyingGlassIcon, SparkleIcon } from "@phosphor-icons/react";
+import { MagnifyingGlassIcon, SparkleIcon } from "@phosphor-icons/react";
 import { useApi } from "../api/client";
 import type { SearchHit, SimilarHit } from "../api/types";
 import { Kbd } from "../ui/atoms/Kbd";
-import { RefLink } from "../ui/RefLink";
+import { ItemRef } from "../ui/molecules/ItemRef";
 import { cn } from "../ui/cn";
 import { itemPath } from "../lib/links";
 
@@ -110,11 +110,13 @@ export function SearchBox({ autoFocus, onPick, fullscreen }: { autoFocus?: boole
           {hits.length === 0 && <li className="px-3 py-2 text-sm text-ink/50">No matches in titles, descriptions or logins</li>}
           {hits.map((h, i) => (
             <li key={`${h.repo}#${h.number}`} role="option" aria-selected={i === sel}>
-              <div onMouseDown={() => pick(h)} onMouseEnter={() => setSel(i)} className={cn("flex w-full cursor-pointer items-center gap-2.5 rounded px-2 text-left", fullscreen ? "flex-wrap gap-y-0.5 py-2" : "h-8", i === sel && "bg-ink/[0.07]")}>
-                {h.kind === "pr" ? <GitPullRequestIcon className={cn("text-xs", h.state === "merged" ? "text-merged" : "text-ok")} /> : <RadioButtonIcon className="text-xs text-ok" />}
-                <RefLink repo={h.repo} number={h.number} kind={h.kind} stop className="shrink-0 text-ink/60" />
-                <span className={cn("truncate text-sm", fullscreen && "order-last w-full pl-5")}>{h.title}</span>
-                <span className="ml-auto shrink-0 text-xs text-ink/45">{h.author}</span>
+              <div
+                onMouseDown={(e) => e.button === 0 && !(e.target as HTMLElement).closest("a[target]") && pick(h)}
+                onMouseEnter={() => setSel(i)}
+                className={cn("relative flex w-full cursor-pointer items-start gap-2.5 rounded px-2 py-1.5 text-left", i === sel && "bg-ink/[0.07]")}
+              >
+                <ItemRef repo={h.repo} number={h.number} kind={h.kind} state={h.state} title={h.title} stretch className="flex-1" />
+                <span className="shrink-0 text-xs text-ink/45">{h.author}</span>
                 {"score" in h && <span className="num w-8 shrink-0 text-right text-xs text-ink/45">{h.score.toFixed(2)}</span>}
               </div>
             </li>

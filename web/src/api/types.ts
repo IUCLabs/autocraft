@@ -9,6 +9,15 @@ export interface ItemRef {
   number: number;
 }
 
+export type ItemKind = "pr" | "issue";
+
+/** What an item reference shows next to `repo#number`; null when the item is not in the mirror. */
+export interface ItemShown {
+  kind: ItemKind | null;
+  state: ItemState | null;
+  title: string | null;
+}
+
 export type DecisionKind = "scope" | "duplicate" | "close" | "merge" | "split" | "other";
 
 export interface OptionTexts {
@@ -32,6 +41,7 @@ export interface RelatedItem extends ItemRef {
   relation: Relation;
   title: string;
   state: ItemState;
+  kind: ItemKind;
 }
 
 export type Classifier = "haiku" | "jev" | "sonnet" | "owner";
@@ -73,7 +83,7 @@ export interface Decision {
   repo: RepoName;
   /** null for a batch */
   number: number | null;
-  items: (ItemRef & { title: string })[];
+  items: (ItemRef & ItemShown)[];
   title: string;
   question: string;
   /** AI summary of the item or batch, 2–6 sentences. */
@@ -179,7 +189,7 @@ export interface PriorityInfo {
 }
 
 export interface Item extends ItemRef {
-  kind: "pr" | "issue";
+  kind: ItemKind;
   title: string;
   body: string;
   state: ItemState;
@@ -364,7 +374,7 @@ export interface ItemFilter {
   /** Only `text`; other search modes may be added. */
   mode?: "text";
   repo?: RepoName[];
-  kind?: "pr" | "issue";
+  kind?: ItemKind;
   /** Default `open`. */
   state?: ItemState | "all";
   /** Settled label. */
@@ -388,7 +398,7 @@ export interface ItemFilter {
 }
 
 export interface ItemListRow extends ItemRef {
-  kind: "pr" | "issue";
+  kind: ItemKind;
   state: ItemState;
   title: string;
   author: string;
@@ -413,7 +423,7 @@ export interface ItemList {
 }
 
 export interface SearchHit extends ItemRef {
-  kind: "pr" | "issue";
+  kind: ItemKind;
   title: string;
   author: string;
   state: ItemState;
@@ -719,7 +729,8 @@ export interface ClassifierReport {
 export interface Disagreement {
   repo: string;
   number: number;
-  kind: "pr" | "issue";
+  kind: ItemKind;
+  state: ItemState | null;
   title: string;
   a: { label: string | null; prob: number | null };
   b: { label: string | null; prob: number | null };
@@ -1078,7 +1089,7 @@ export interface WorkBreakdown {
 export interface WorkRow {
   repo: RepoName;
   number: number;
-  kind: "pr" | "issue";
+  kind: ItemKind;
   title: string;
   /** Sort key (see src/rank/score.ts); for a tooltip only. */
   score: number;
@@ -1094,7 +1105,7 @@ export interface WorkRow {
 
 export interface WorkFilter {
   repo?: RepoName;
-  kind?: "pr" | "issue";
+  kind?: ItemKind;
   limit?: number;
   offset?: number;
 }
@@ -1236,7 +1247,7 @@ export type AgentRun = {
   model: string;             // e.g. "sonnet", "haiku", "jev"
   accountId: string | null;  // null for Jev
   accountLabel: string | null;
-  items: ItemRef[];          // at most 50
+  items: (ItemRef & ItemShown)[];   // at most 50
   itemCount: number;         // all items in the call
   state: AgentRunState;
   startedAt: string;
@@ -1354,6 +1365,9 @@ export interface GithubActivityRow {
   number: number | null;
   branch: string | null;
   title: string | null;
+  /** null with `number` null, or when the item is not in the mirror */
+  kind: ItemKind | null;
+  state: ItemState | null;
   detail: string;
   url: string;
   /** the stage and its run, a decision, or the operator who did it */

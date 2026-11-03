@@ -6,6 +6,7 @@ import { ORG } from "../../act/templates.ts";
 import { GITHUB_ACTIONS } from "../../github/actions.ts";
 import { HttpError } from "../server/util.ts";
 import type { Req } from "../types.ts";
+import { itemState } from "./shown.ts";
 import { visibleRepos } from "./visible.ts";
 import { canSeeInternals } from "./staff.ts";
 
@@ -95,7 +96,7 @@ export async function githubActivity(db: DatabaseSync, req: Req): Promise<Github
   const more = rows.length > limit;
   const page = rows.slice(0, limit);
 
-  const item = db.prepare("SELECT title, kind FROM main.items WHERE repo = ? AND number = ?");
+  const item = db.prepare("SELECT title, kind, state FROM main.items WHERE repo = ? AND number = ?");
   const out: GithubActivityRow[] = page.map((r) => {
     let d: Record<string, unknown> = {};
     try {
@@ -103,11 +104,11 @@ export async function githubActivity(db: DatabaseSync, req: Req): Promise<Github
       if (j && typeof j === "object" && !Array.isArray(j)) d = j as Record<string, unknown>;
     } catch { /* not JSON: shown without details */ }
     const t = parseTarget(r.target);
-    const it = t.number !== null ? item.get(t.repo, t.number) as { title: string | null; kind: string } | undefined : undefined;
+    const it = t.number !== null ? item.get(t.repo, t.number) as { title: string | null; kind: string; state: string } | undefined : undefined;
     const source = typeof d.decision === "string" ? `decision ${d.decision}` : typeof d.run === "string" ? `${r.login} ${d.run}` : r.login;
     return {
       id: String(r.rowid), at: r.at, action: r.action, label: GITHUB_ACTIONS[r.action]!, repo: t.repo, number: t.number, branch: t.branch,
-      title: it?.title ?? null, detail: detailOf(r.action, d), url: urlOf({ action: r.action, ...t, kind: it?.kind }, d), source,
+      title: it?.title ?? null, kind: it ? (it.kind === "pr" ? "pr" : "issue") : null, state: it ? itemState(it.state) : null, detail: detailOf(r.action, d), url: urlOf({ action: r.action, ...t, kind: it?.kind }, d), source,
       error: typeof d.error === "string" ? d.error : null,
       outcome: d.state === "started" ? "unknown" : d.error !== undefined ? "failed" : "done",
     };

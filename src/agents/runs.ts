@@ -1,7 +1,7 @@
 // Agent runs: one row per model call made through the prompt registry. Written
 // by the callers in src/classify/run.ts, read by the API.
 import type { DatabaseSync } from "node:sqlite";
-import type { AgentRun, AgentRunDetail, AgentRunFilter, AgentRunPage, AgentRunState, ItemRef, RateBucket, Rates } from "../../web/src/api/types.ts";
+import type { AgentRun, AgentRunDetail, AgentRunFilter, AgentRunPage, AgentRunState, ItemRef, ItemShown, RateBucket, Rates } from "../../web/src/api/types.ts";
 
 export const MAX_ITEM_REFS = 50;
 export const TEXT_KEEP_MS = 14 * 86_400_000;
@@ -21,6 +21,7 @@ export type RunEnd = {
   summary?: string | null; error?: string | null; output?: string | null;
 };
 
+import { shownLookup } from "../dash/api/shown.ts";
 import { scrub } from "../runner/scrub.ts";
 
 const now = (): string => new Date().toISOString();
@@ -77,11 +78,11 @@ function refs(s: string): ItemRef[] {
   }
 }
 
-function toRun(r: RunRow): AgentRun {
+function toRun(r: RunRow, shown: (repo: string, number: number) => ItemShown): AgentRun {
   return {
     id: r.id, jobId: r.job_id, step: r.step, stage: r.stage, promptId: r.prompt_id, promptVersion: r.prompt_version,
     provider: r.provider === "jev" ? "jev" : "claude", model: r.model, accountId: r.account_id, accountLabel: r.account_id ? (r.account_label ?? r.account_id) : null,
-    items: refs(r.items), itemCount: r.item_count, state: r.state, startedAt: r.started_at, endedAt: r.ended_at,
+    items: refs(r.items).map((x) => ({ ...x, ...shown(x.repo, x.number) })), itemCount: r.item_count, state: r.state, startedAt: r.started_at, endedAt: r.ended_at,
     inputTokens: r.input_tokens, outputTokens: r.output_tokens, cacheReadTokens: r.cache_read_tokens, cacheWriteTokens: r.cache_write_tokens, summary: r.summary,
     ...(r.state === "running" && r.progress && { progress: r.progress }),
   };
@@ -128,8 +129,9 @@ export function listRuns(db: DatabaseSync, f: AgentRunFilter, hidden: string[] =
     sql = `${SELECT} ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY r.id DESC LIMIT ?`;
   }
   const rows = db.prepare(sql).all(...args, limit + 1) as RunRow[];
+  const shown = shownLookup(db);
   const page = rows.slice(0, limit);
-  return { runs: page.map(toRun), nextCursor: rows.length > limit ? String(page[page.length - 1]!.id) : null };
+  return { runs: page.map((x) => toRun(x, shown)), nextCursor: rows.length > limit ? String(page[page.length - 1]!.id) : null };
 }
 
 /** SQL (with one `?` per name) true when a run has an item in a hidden repo. */
@@ -144,9 +146,9 @@ export function getRun(db: DatabaseSync, id: unknown, view: { hidden?: string[];
   if (view.hidden?.length && !db.prepare(`SELECT 1 FROM agent_runs r WHERE r.id = ? AND ${touchesHidden(view.hidden)}`).get(id, ...view.hidden)) {
     throw new RunQueryError(404, `no agent run ${id}`);
   }
-  if (!view.texts) return { ...toRun(r), prompt: null, output: null, error: r.error };
+  if (!view.texts) return { ...toRun(r, shownLookup(db)), prompt: null, output: null, error: r.error };
   const t = db.prepare("SELECT prompt, output FROM agent_run_texts WHERE run_id = ?").get(id) as { prompt: string | null; output: string | null } | undefined;
-  return { ...toRun(r), prompt: t?.prompt ?? null, output: t?.output ?? null, error: r.error };
+  return { ...toRun(r, shownLookup(db)), prompt: t?.prompt ?? null, output: t?.output ?? null, error: r.error };
 }
 
 /** Labels of the accounts each job's runs used, for a page of jobs. */

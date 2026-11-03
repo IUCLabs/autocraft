@@ -1,6 +1,12 @@
 // Readable URLs for decisions and items, and the rules that turn a decision route back into a lookup.
 // No framework imports: the server shares `pickDecision` and the tests load this file directly.
-import type { Decision } from "../api/types.ts";
+import type { Decision, ItemKind } from "../api/types.ts";
+
+export const GITHUB_ORG = "storytold";
+
+/** The issue or PR on GitHub. Without a known `kind` the issue URL is used; GitHub redirects /issues/N to the PR when N is one. */
+export const githubItemUrl = (repo: string, number: number, kind?: ItemKind | null): string =>
+  `https://github.com/${GITHUB_ORG}/${encodeURIComponent(shortRepo(repo))}/${kind === "pr" ? "pull" : "issues"}/${number}`;
 
 const KIND_ORDER = ["scope", "duplicate", "close", "merge", "split", "other"];
 
