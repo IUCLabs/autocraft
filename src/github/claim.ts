@@ -15,10 +15,12 @@ export async function issueInfo(q: Querier, org: string, repo: string, number: n
   return i ? { id: i.id, state: i.state, assignees: (i.assignees?.nodes ?? []).map((a) => a.login) } : null;
 }
 
-/** True when the last assign or unassign in the audit for the item is an assignment of `login` that succeeded. */
-export function weAssigned(db: DatabaseSync, repo: string, number: number, login: string): boolean {
+/** True when the last assign or unassign in the audit for the item is an assignment of `login` that succeeded, made by a run whose id starts with `runPrefix` (any run when omitted). */
+export function weAssigned(db: DatabaseSync, repo: string, number: number, login: string, runPrefix = ""): boolean {
   const last = db.prepare("SELECT action, details FROM audit WHERE target = ? AND action IN ('assign', 'unassign') AND COALESCE(details, '') NOT LIKE '%\"error\":%' ORDER BY rowid DESC LIMIT 1").get(`${repo}#${number}`) as { action: string; details: string | null } | undefined;
-  return last?.action === "assign" && (JSON.parse(last.details ?? "{}") as { assignee?: string }).assignee === login;
+  if (last?.action !== "assign") return false;
+  const d = JSON.parse(last.details ?? "{}") as { assignee?: string; run?: string };
+  return d.assignee === login && (d.run ?? "").startsWith(runPrefix) && (!runPrefix || !!d.run);
 }
 
 /** Assigns the open item to `me` when nobody is assigned. Returns true when it did. */
@@ -29,8 +31,8 @@ export async function claimItem(w: Writer, q: Querier, repo: string, number: num
 }
 
 /** Removes our assignment when the audit shows we made it and we are still the only assignee. Returns true when it did. */
-export async function releaseItem(w: Writer, q: Querier, repo: string, number: number, info: Assignable | null, me: Me, details: Record<string, unknown> = {}): Promise<boolean> {
-  if (!info || info.assignees.length !== 1 || info.assignees[0] !== me.login || !weAssigned(w.db, repo, number, me.login)) return false;
+export async function releaseItem(w: Writer, q: Querier, repo: string, number: number, info: Assignable | null, me: Me, details: Record<string, unknown> = {}, runPrefix = ""): Promise<boolean> {
+  if (!info || info.assignees.length !== 1 || info.assignees[0] !== me.login || !weAssigned(w.db, repo, number, me.login, runPrefix)) return false;
   await unassignFrom(w, q, { repo, number, id: info.id }, me, details);
   return true;
 }

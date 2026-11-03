@@ -7,7 +7,7 @@ import { staleReviews } from "../review/discussion.ts";
 import { commentApprovalOf } from "../act/approval.ts";
 import { pushApprovalOf } from "./approval.ts";
 import { FORMAT_REASONS, safePath } from "./patch.ts";
-import { pushable } from "./pushable.ts";
+import { longLivedOf, pushable } from "./pushable.ts";
 import { classifyConflicts, type ConflictCandidate } from "./conflict-state.ts";
 import { pilotSql } from "../pilot.ts";
 
@@ -35,7 +35,7 @@ export type FixSelection = {
 type Row = {
   repo: string; number: number; head_oid: string | null; updated_at: string | null; is_draft: number | null;
   c_head: string | null; c_state: string | null; c_draft: number | null; c_at: string | null;
-  mergeable: string | null; can_modify: number | null; head_repo: string | null;
+  mergeable: string | null; can_modify: number | null; head_repo: string | null; head_ref: string | null;
 };
 
 export function parseFixes(s: string | null): Fix[] {
@@ -70,7 +70,7 @@ export type Classified = { c: FixCandidate; bucket: FixupBucket; done: boolean }
  */
 export function classifyFixups(db: DatabaseSync, repo: string): Classified[] {
   const rows = db.prepare(`SELECT i.repo, i.number, i.head_oid, i.updated_at, i.is_draft,
-      c.head_oid AS c_head, c.state AS c_state, c.is_draft AS c_draft, c.fetched_at AS c_at, c.mergeable, c.maintainer_can_modify AS can_modify, i.head_repo
+      c.head_oid AS c_head, c.state AS c_state, c.is_draft AS c_draft, c.fetched_at AS c_at, c.mergeable, c.maintainer_can_modify AS can_modify, i.head_repo, i.head_ref
     FROM items i JOIN pr_checks c ON c.repo = i.repo AND c.number = i.number
     LEFT JOIN item_rank p ON p.repo = i.repo AND p.number = i.number
     WHERE i.repo = ? AND i.kind = 'pr' AND i.state = 'OPEN' AND ${notHeldSql("i")} ORDER BY ${fastScoreSql("i.repo", "i.number", "p.score")} IS NULL, ${fastScoreSql("i.repo", "i.number", "p.score")} DESC, i.number`).all(repo) as Row[];
@@ -78,6 +78,7 @@ export function classifyFixups(db: DatabaseSync, repo: string): Classified[] {
   const commenting = commentApprovalOf(db, repo) !== null;
   const approved = pushApprovalOf(db, repo) !== null;
   const stale = staleReviews(db, repo);
+  const longLived = longLivedOf(db, repo);
   const out: Classified[] = [];
   for (const r of rows) {
     const fresh = r.c_at && (!r.updated_at || r.c_at > r.updated_at);
@@ -99,11 +100,11 @@ export function classifyFixups(db: DatabaseSync, repo: string): Classified[] {
     const has = (state: string) => recorded.some((x) => x.state === state);
     // Heads held before the repo got comment approval are asked once it has it.
     const ask = (held: boolean): Classified => commenting ? { c, done: false, bucket: "ask" } : { c, done: held, bucket: "cannot-push" };
-    const canPush = pushable(r.head_repo, r.repo, r.can_modify);
+    const canPush = pushable(r.head_repo, r.repo, r.can_modify, r.head_ref, longLived);
     // An ask is superseded by a push once the PR turns out to be pushable.
     if (has("asked") && !canPush) out.push({ c, done: true, bucket: "asked" });
     else if (has("pushed")) out.push({ c, done: true, bucket: "hold" });
-    else if (has("cannot-push")) out.push(ask(true));
+    else if (has("cannot-push") && !canPush) out.push(ask(true));
     else if (has("too-large")) out.push({ c, done: true, bucket: "cannot-push" });
     else if (!canPush) out.push(ask(false));
     else if (c.attempt > MAX_ATTEMPTS) out.push({ c, done: false, bucket: "hold" });
@@ -116,12 +117,13 @@ export function classifyFixups(db: DatabaseSync, repo: string): Classified[] {
 export function carryCandidates(db: DatabaseSync, repo: string): { fix: FixCandidate[]; ask: FixCandidate[] } {
   const out = { fix: [] as FixCandidate[], ask: [] as FixCandidate[] };
   const rows = db.prepare(`SELECT k.decision_id, k.attempts, i.number, i.head_oid, i.updated_at, i.is_draft,
-      c.head_oid AS c_head, c.state AS c_state, c.is_draft AS c_draft, c.fetched_at AS c_at, c.maintainer_can_modify AS can_modify, c.mergeable, i.head_repo
+      c.head_oid AS c_head, c.state AS c_state, c.is_draft AS c_draft, c.fetched_at AS c_at, c.maintainer_can_modify AS can_modify, c.mergeable, i.head_repo, i.head_ref
     FROM dupe_carries k JOIN items i ON i.repo = k.repo AND i.number = k.number AND i.kind = 'pr' AND i.state = 'OPEN' AND ${pilotSql("i")} AND NOT ${backlogHeldSql("i")}
     LEFT JOIN pr_checks c ON c.repo = i.repo AND c.number = i.number
     WHERE k.repo = ? AND k.state = 'queued' ORDER BY k.number`).all(repo) as (Row & { decision_id: string; attempts: number })[];
   const commenting = commentApprovalOf(db, repo) !== null;
   const approved = pushApprovalOf(db, repo) !== null;
+  const longLived = longLivedOf(db, repo);
   for (const r of rows) {
     const fresh = r.c_at && (!r.updated_at || r.c_at > r.updated_at);
     if (fresh ? r.c_state !== "OPEN" || r.c_draft : r.is_draft) continue;
@@ -137,7 +139,7 @@ export function carryCandidates(db: DatabaseSync, repo: string): { fix: FixCandi
     if (!sources.length) continue;
     const suggestion = (db.prepare("SELECT t.text FROM dupe_group_texts t JOIN dupe_groups g ON g.decision_id = t.decision_id AND g.applied_answer = t.option WHERE t.decision_id = ? AND t.number = ? AND t.step = 'suggestion'").get(r.decision_id, r.number) as { text: string } | undefined)?.text ?? null;
     const c: FixCandidate = { repo, number: r.number, head, reason: `Parts of ${sources.map((x) => `#${x.number}`).join(", ")}, closed as duplicates, to carry over.`, fixes: [], attempt: r.attempts + 1, carry: { decisionId: r.decision_id, suggestion, sources } };
-    if (pushable(r.head_repo, repo, r.can_modify) && approved && c.attempt <= MAX_ATTEMPTS) out.fix.push(c);
+    if (pushable(r.head_repo, repo, r.can_modify, r.head_ref, longLived) && approved && c.attempt <= MAX_ATTEMPTS) out.fix.push(c);
     else if (commenting) out.ask.push(c);
   }
   return out;

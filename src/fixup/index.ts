@@ -29,7 +29,8 @@ import { pushApprovalOf } from "./approval.ts";
 import { MAX_ATTEMPTS, parseFixes, selectFixups, type FixCandidate } from "./candidates.ts";
 import { Git, exec, fixupDir, type Exec } from "./git.ts";
 import { scrubGitError } from "../worker/patch.ts";
-import { pushable, BASE_ORG } from "./pushable.ts";
+import { activeBatches, membersOf } from "../merge/batch-store.ts";
+import { longLivedOf, pushable, BASE_ORG } from "./pushable.ts";
 import { askConflict, mergeConflict, type ConflictRun } from "./conflict.ts";
 import type { ConflictCandidate } from "./conflict-state.ts";
 import { editable, validatePatch, type ConflictPr, type FixupPr } from "./patch.ts";
@@ -203,7 +204,7 @@ export async function runFixup(db: DatabaseSync, params: FixupParams, log: (line
     summary.held.push({ ref: refOf(c), reason: HOLD_CANNOT_PUSH });
     log(`  ${refOf(c)}: held: ${HOLD_CANNOT_PUSH}`);
   }
-  let handled = 0;
+  const handled = { n: 0 };
   const askOne = async (c: FixCandidate, count = true) => {
     const ref = refOf(c);
     try {
@@ -224,7 +225,7 @@ export async function runFixup(db: DatabaseSync, params: FixupParams, log: (line
       const cm = await ghComment(gw, d.exec, "fixup-comment", { repo, number: c.number, pr: true }, body, { run: runId, head: c.head });
       if (cm.code !== 0) { log(`  ${ref}: comment failed: ${oneLine(cm.stderr)}`); return; }
       rec.fixup(c, "asked", null, [...new Set(c.fixes.map((f) => f.file))]);
-      if (count) params.onHandled?.(++handled);
+      if (count) params.onHandled?.(++handled.n);
       summary.asked.push(ref);
       log(`  ${ref}: asked the contributor for changes at ${short(c.head)}`);
     } catch (e) {
@@ -245,13 +246,14 @@ export async function runFixup(db: DatabaseSync, params: FixupParams, log: (line
   /** Takes our assignment back when the stage gives the PR up. */
   const release = async (c: FixCandidate | ConflictCandidate): Promise<void> => {
     try {
+      if (activeBatches(db, repo).some((b) => membersOf(db, b.id).some((m) => m.number === c.number))) return;
       const r = await d.querier.query(PR_QUERY, { name: repo, n: c.number }) as { repository?: { pullRequest?: PrNode | null } };
-      if (await releaseItem(gw, d.querier, repo, c.number, infoOf(r.repository?.pullRequest), await me(), { run: runId })) log(`  ${refOf(c)}: unassigned`);
+      if (await releaseItem(gw, d.querier, repo, c.number, infoOf(r.repository?.pullRequest), await me(), { run: runId }, "fixup-")) log(`  ${refOf(c)}: unassigned`);
     } catch (e) { log(`  ${refOf(c)}: could not unassign: ${oneLine(String((e as Error).message ?? e))}`); }
   };
   const conflictRun: ConflictRun = {
     repo, runId, log, d, gw, at, summary, prQuery: PR_QUERY, scrub: (raw) => scrubReason(raw, d.root), git: () => git,
-    who: () => (whoP ??= whoAmI(d.exec)), onHandled: params.onHandled, handled: { n: handled }, claim, release,
+    who: () => (whoP ??= whoAmI(d.exec)), onHandled: params.onHandled, handled, claim, release,
   };
   for (const c of cAsks) await askConflict(db, conflictRun, c);
   if (!picks.length && !cMerges.length) return summary;
@@ -263,7 +265,7 @@ export async function runFixup(db: DatabaseSync, params: FixupParams, log: (line
     let files = [...new Set(c.fixes.map((f) => f.file))];
     let gaveUp = false;
     const fail = (state: "failed" | "refused" | "rejected", raw: string) => {
-      if (state === "rejected" || c.attempt >= MAX_ATTEMPTS) gaveUp = true;
+      if (c.attempt >= MAX_ATTEMPTS) gaveUp = true;
       const reason = scrubReason(raw, d.root);
       rec.fixup(c, state, reason, files);
       summary.failed.push({ ref, reason });
@@ -283,8 +285,8 @@ export async function runFixup(db: DatabaseSync, params: FixupParams, log: (line
       noteLive(db, repo, c.number, pr, at());
       if (!pr || pr.state !== "OPEN" || pr.isDraft) { log(`  ${ref}: skipped: no longer an open, non-draft PR`); continue; }
       if (pr.headRefOid !== c.head) { log(`  ${ref}: skipped: head moved to ${short(pr.headRefOid)} since the review`); continue; }
-      params.onHandled?.(++handled);
-      if (!pr.headRepository || !pushable(pr.headRepository.nameWithOwner, repo, pr.maintainerCanModify)) {
+      params.onHandled?.(++handled.n);
+      if (!pr.headRepository || !pushable(pr.headRepository.nameWithOwner, repo, pr.maintainerCanModify, pr.headRefName, longLivedOf(db, repo))) {
         // A carry-over we can't push is suggested on the PR instead, when the repo allows comments.
         if (c.carry && commentApprovalOf(db, repo)) await askOne(c, false);
         else hold("cannot-push", HOLD_CANNOT_PUSH);
@@ -299,11 +301,10 @@ export async function runFixup(db: DatabaseSync, params: FixupParams, log: (line
         files = [...new Set(c.fixes.map((f) => f.file))];
       }
       if (pr.mergeable === "CONFLICTING") { log(`  ${ref}: skipped: conflicts with the base branch; the conflict merge handles it`); continue; }
-      // Claimed as soon as the live check passes, before the model calls, so nobody else starts on it.
-      if (!c.carry) await claim(c, pr);
-
       const head = await git.fetchPr(ORG, repo, c.number);
       if (head !== c.head) { log(`  ${ref}: skipped: fetched head ${short(head)} is not the reviewed ${short(c.head)}`); continue; }
+      // Claimed once the cheap checks pass, before the model calls, so nobody else starts on it.
+      if (!c.carry) await claim(c, pr);
 
       const shown: FixupPr["files"] = [];
       let total = 0, tooBig: string | null = null, bad: string | null = null;
@@ -382,7 +383,6 @@ export async function runFixup(db: DatabaseSync, params: FixupParams, log: (line
       if (gaveUp && !c.carry) await release(c);
     }
   }
-  conflictRun.handled.n = handled;
   for (const c of cMerges) await mergeConflict(db, conflictRun, c);
   log(`fixup ${repo}: ${summary.pushed.length} pushed, ${summary.asked.length} asked, ${summary.failed.length} failed, ${summary.held.length} held; run ${runId}`);
   return summary;

@@ -596,6 +596,14 @@ describe("fix step assignment", () => {
     assert.deepEqual(g.calls, []);
   });
 
+  test("no claim comment on an issue someone else is assigned to", async () => {
+    const w = world();
+    setCommentApproval(w.db, "op", "app", true);
+    withQuerier(w, ["someone"]);
+    await runFixIssue(w.db, { repo: "app", dryRun: false }, quiet, w.deps);
+    assert.deepEqual(w.log.filter((l) => l.startsWith("comment")), []);
+  });
+
   test("a failed fix releases our assignment when we are the sole assignee", async () => {
     const w = world();
     const g = withQuerier(w, []);

@@ -40,7 +40,7 @@ export const HARDENING = [
   "-c", "credential.helper=",
   "-c", "credential.helper=!gh auth git-credential",
 ];
-export const GIT_ENV = { GIT_LFS_SKIP_SMUDGE: "1", GIT_TERMINAL_PROMPT: "0", GIT_CONFIG_NOSYSTEM: "1", GIT_ATTR_NOSYSTEM: "1" };
+export const GIT_ENV = { GIT_LFS_SKIP_SMUDGE: "1", GIT_TERMINAL_PROMPT: "0", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_ATTR_NOSYSTEM: "1" };
 
 export class Git {
   readonly dir: string;
@@ -136,8 +136,9 @@ export class Git {
   /** Fetches the base branch of the base repository and returns its commit. */
   async fetchBase(org: string, repo: string, branch: string): Promise<string> {
     await this.init();
-    await this.must(["fetch", "--quiet", "--no-tags", "--no-recurse-submodules", "--no-write-fetch-head", `https://github.com/${org}/${repo}.git`, `+refs/heads/${branch}:refs/fixup/base`]);
-    return (await this.must(["rev-parse", "refs/fixup/base"])).trim();
+    const ref = `refs/fixup/base/${branch}`;
+    await this.must(["fetch", "--quiet", "--no-tags", "--no-recurse-submodules", "--no-write-fetch-head", `https://github.com/${org}/${repo}.git`, `+refs/heads/${branch}:${ref}`]);
+    return (await this.must(["rev-parse", ref])).trim();
   }
 
   /**
@@ -145,7 +146,7 @@ export class Git {
    * conflicted paths when it has conflicts. The tree then holds conflict markers in those files.
    */
   async mergeInto(head: string, base: string): Promise<{ clean: boolean; tree: string; conflicted: string[] }> {
-    const r = await this.git(["merge-tree", "--write-tree", "--name-only", "-z", head, base]);
+    const r = await this.git(["-c", "merge.conflictStyle=merge", "merge-tree", "--write-tree", "--name-only", "-z", head, base]);
     if (r.code !== 0 && r.code !== 1) throw new Error(`git merge-tree failed: ${r.stderr.trim().split("\n").pop() ?? r.code}`);
     const parts = r.stdout.split("\0");
     const tree = parts[0]!.trim();

@@ -238,7 +238,7 @@ describe("fixup step", () => {
     assert.deepEqual(s.pushed, []);
     assert.equal(s.failed.length, 1);
     assert.equal(git(w.fork, "rev-parse", "refs/heads/fix"), before);
-    assert.deepEqual(w.log.filter((l) => !l.startsWith("pr-info")), ["assign", "model", "check", "unassign"]);
+    assert.deepEqual(w.log.filter((l) => !l.startsWith("pr-info")), ["assign", "model", "check"]);
     const f = rows(db, "SELECT state, reason, attempt FROM fixups");
     assert.equal(f.length, 1);
     assert.equal(f[0]!.state, "rejected");
@@ -422,9 +422,12 @@ describe("fixup step", () => {
     assert.ok(!w.log.includes("unassign"));
   });
 
-  test("an Opus reject releases our assignment at once; a push keeps it", async () => {
+  test("a first Opus reject keeps our assignment (the PR is tried again); a second releases it; a push keeps it", async () => {
     const r = world({ check: REJECT });
-    await runFixup(fresh(r.head), { repo: "app", dryRun: false }, () => {}, r.deps);
+    const rdb = fresh(r.head);
+    await runFixup(rdb, { repo: "app", dryRun: false }, () => {}, r.deps);
+    assert.deepEqual(r.log.filter((l) => l === "assign" || l === "unassign"), ["assign"]);
+    await runFixup(rdb, { repo: "app", dryRun: false }, () => {}, r.deps);
     assert.deepEqual(r.log.filter((l) => l === "assign" || l === "unassign"), ["assign", "unassign"]);
     const p = world();
     await runFixup(fresh(p.head), { repo: "app", dryRun: false }, () => {}, p.deps);

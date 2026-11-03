@@ -18,8 +18,8 @@ const FIXES = JSON.stringify([{ file: "src/lib.rs", change: "rename a to b" }]);
 
 function pr(headRepo: string | null, canModify: boolean): DatabaseSync {
   const db = connect(join(mkdtempSync(join(dir, "db-")), "t.db"));
-  db.prepare(`INSERT INTO items (repo, number, kind, state, title, author, additions, deletions, head_oid, head_repo, created_at, updated_at)
-    VALUES ('app', 7, 'pr', 'OPEN', 'Fix', 'someone', 5, 0, 'h1', ?, '${T0}', '${T0}')`).run(headRepo);
+  db.prepare(`INSERT INTO items (repo, number, kind, state, title, author, additions, deletions, head_oid, head_repo, head_ref, created_at, updated_at)
+    VALUES ('app', 7, 'pr', 'OPEN', 'Fix', 'someone', 5, 0, 'h1', ?, 'fix-typo', '${T0}', '${T0}')`).run(headRepo);
   db.prepare(`INSERT INTO reviews (repo, number, head_oid, run_id, at, model, size, verdict, reason, fixes) VALUES ('app', 7, 'h1', 'rv', '${T0}', 'm', 'S', 'take-fix', 'nearly', ?)`).run(FIXES);
   db.prepare(`INSERT INTO pr_checks (repo, number, head_oid, state, is_draft, overall, checks, mergeable, maintainer_can_modify, fetched_at)
     VALUES ('app', 7, 'h1', 'OPEN', 0, 'success', '[]', 'MERGEABLE', ?, '${T1}')`).run(canModify ? 1 : 0);
@@ -31,11 +31,11 @@ function pr(headRepo: string | null, canModify: boolean): DatabaseSync {
 
 describe("pushable", () => {
   test("the rule: same repository or maintainer edits", () => {
-    assert.equal(pushable("storytold/app", "app", false), true);
-    assert.equal(pushable("Storytold/App", "app", false), true);
-    assert.equal(pushable("someone/app", "app", false), false);
-    assert.equal(pushable("someone/app", "app", true), true);
-    assert.equal(pushable(null, "app", false), false);
+    assert.equal(pushable("storytold/app", "app", false, "fix-typo"), true);
+    assert.equal(pushable("Storytold/App", "app", false, "fix-typo"), true);
+    assert.equal(pushable("someone/app", "app", false, "fix-typo"), false);
+    assert.equal(pushable("someone/app", "app", true, "fix-typo"), true);
+    assert.equal(pushable(null, "app", false, "fix-typo"), false);
   });
 
   test("a same-repo PR with canModify false is a fix candidate; a fork without edits is not", () => {
@@ -55,5 +55,27 @@ describe("pushable", () => {
     assert.equal(x!.c.attempt, 1);
     db.prepare("INSERT INTO fixups (repo, number, from_head, state, attempt, created_at) VALUES ('app', 7, 'h1', 'failed', 1, ?), ('app', 7, 'h1', 'refused', 2, ?)").run(T1, T1);
     assert.equal(classifyFixups(db, "app")[0]!.bucket, "hold");
+  });
+
+  test("a same-repo head is never pushable on a long-lived branch", () => {
+    for (const b of ["main", "release/1.2", "release-2", "master", "develop", "stable", "hotfix-x", "integration-app-20260101-1"]) assert.equal(pushable("storytold/app", "app", false, b), false, b);
+    assert.equal(pushable("storytold/app", "app", false, null), false);
+    const db = pr("storytold/app", false);
+    db.prepare("INSERT INTO repos (name, default_branch) VALUES ('app', 'trunk')").run();
+    db.prepare("UPDATE items SET head_ref = 'trunk' WHERE number = 7").run();
+    assert.equal(selectFixups(db, "app").fix.length, 0);
+    db.prepare("UPDATE items SET head_ref = 'topic' WHERE number = 7").run();
+    assert.equal(selectFixups(db, "app").fix.length, 1);
+    db.prepare("INSERT INTO items (repo, number, kind, state, title, author, head_ref, base_ref, head_repo, created_at, updated_at) VALUES ('app', 8, 'pr', 'OPEN', 't', 'x', 'other', 'topic', 'someone/app', ?, ?)").run(T0, T0);
+    assert.equal(selectFixups(db, "app").fix.length, 0);
+  });
+
+  test("asked and cannot-push rows at a head do not ask again once the PR is pushable", () => {
+    const db = pr("someone/app", false);
+    db.prepare("INSERT INTO fixups (repo, number, from_head, state, files, attempt, created_at) VALUES ('app', 7, 'h1', 'cannot-push', '[]', 1, ?), ('app', 7, 'h1', 'asked', '[]', 1, ?)").run(T1, T1);
+    db.prepare("UPDATE items SET head_repo = 'storytold/app' WHERE number = 7").run();
+    const sel = selectFixups(db, "app");
+    assert.equal(sel.ask.length, 0);
+    assert.equal(sel.fix.length, 1);
   });
 });

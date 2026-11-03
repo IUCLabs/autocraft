@@ -209,3 +209,40 @@ export function resolvablePath(p: string): boolean {
 
 /** True when the text holds conflict markers (the merge tree's files do before resolving). */
 export const hasMarkers = (text: string): boolean => MARKER.test(text);
+
+/**
+ * The text of a merge-tree file outside its conflict sections, as the pieces between sections (one more piece than
+ * sections), or null when the markers are not well formed (a `<<<<<<<` ... `=======` ... `>>>>>>>` sequence each).
+ */
+export function outsideConflicts(text: string): string[] | null {
+  const pieces: string[] = [];
+  let cur = "";
+  let part: "out" | "ours" | "theirs" = "out";
+  for (const line of text.split(/(?<=\n)/)) {
+    const t = line.replace(/\r?\n$/, "");
+    if (/^<{7}( |$)/.test(t)) { if (part !== "out") return null; pieces.push(cur); cur = ""; part = "ours"; }
+    else if (/^={7}$/.test(t)) { if (part !== "ours") return null; part = "theirs"; }
+    else if (/^>{7}( |$)/.test(t)) { if (part !== "theirs") return null; part = "out"; }
+    else if (part === "out") cur += line;
+  }
+  if (part !== "out") return null;
+  pieces.push(cur);
+  return pieces;
+}
+
+/** True when `resolved` keeps every piece outside the conflict sections of `conflicted` unchanged and in order. */
+export function keepsOutside(conflicted: string, resolved: string): boolean {
+  const pieces = outsideConflicts(conflicted);
+  if (!pieces || pieces.length < 2) return false;
+  const last = pieces.length - 1;
+  if (!resolved.startsWith(pieces[0]!)) return false;
+  let cursor = pieces[0]!.length;
+  const end = resolved.length - pieces[last]!.length;
+  if (end < cursor || !resolved.endsWith(pieces[last]!)) return false;
+  for (const mid of pieces.slice(1, last)) {
+    const at = resolved.indexOf(mid, cursor);
+    if (at < 0 || at + mid.length > end) return false;
+    cursor = at + mid.length;
+  }
+  return true;
+}

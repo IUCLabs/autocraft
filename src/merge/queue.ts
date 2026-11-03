@@ -14,7 +14,7 @@ import { pilotSql } from "../pilot.ts";
 import { pushApprovalOf } from "../fixup/approval.ts";
 import { commentApprovalOf } from "../act/approval.ts";
 import { conflictBucket, conflictNote } from "../fixup/conflict-state.ts";
-import { pushable } from "../fixup/pushable.ts";
+import { longLivedOf, pushable, type LongLived } from "../fixup/pushable.ts";
 
 export const QUEUE_STATES = [
   "ready", "decision-answered-merge", "refused", "waiting-ci", "ci-failed", "conflict",
@@ -98,7 +98,7 @@ type Row = {
   repo: string; number: number; title: string | null; author: string | null; state: string; head_oid: string | null; updated_at: string | null;
   c_head: string | null; c_at: string | null; overall: string | null; c_mergeable: string | null; i_mergeable: string | null;
   r_head: string; o_at: string | null; o_seen: string | null; o_hash: string | null; verdict: "take" | "take-fix"; reason: string; fixes: string | null; size: string | null; r_at: string; r_final: number;
-  head_repo: string | null; base_ref: string | null; i_can: number | null; c_can: number | null;
+  head_repo: string | null; head_ref: string | null; base_ref: string | null; i_can: number | null; c_can: number | null;
 };
 
 /** Tiers of the given logins, from one stats query. */
@@ -163,7 +163,7 @@ export function buildQueue(db: DatabaseSync, opts: QueueOptions = {}): QueueEntr
     SELECT i.repo, i.number, i.title, i.author, i.state, i.head_oid, i.updated_at, i.mergeable AS i_mergeable,
       c.head_oid AS c_head, c.fetched_at AS c_at, c.overall, c.mergeable AS c_mergeable,
       l.head_oid AS r_head, o.at AS o_at, o.seen_at AS o_seen, o.disc_hash AS o_hash, l.verdict, l.reason, l.fixes, l.size, l.at AS r_at, l.final AS r_final,
-      i.head_repo, i.base_ref, i.maintainer_can_modify AS i_can, c.maintainer_can_modify AS c_can
+      i.head_repo, i.head_ref, i.base_ref, i.maintainer_can_modify AS i_can, c.maintainer_can_modify AS c_can
     FROM items i
     JOIN final_reviews l ON l.repo = i.repo AND l.number = i.number AND l.head_oid = (
       SELECT r.head_oid FROM reviews r WHERE r.repo = i.repo AND r.number = i.number ORDER BY r.at DESC, r.rowid DESC LIMIT 1)
@@ -187,6 +187,7 @@ export function buildQueue(db: DatabaseSync, opts: QueueOptions = {}): QueueEntr
   const noCiMemo = new Map<string, boolean>();
   const noCi = (repo: string) => noCiMemo.get(repo) ?? (noCiMemo.set(repo, repoHasNoCi(db, repo)), noCiMemo.get(repo)!);
   const approvals = new Map<string, { push: boolean; comment: boolean }>();
+  const longLivedBy = new Map<string, LongLived>();
   const out: QueueEntry[] = [];
   for (const r of rows) {
     const last = merges.get(r.repo, r.number, r.r_head) as { outcome: string; reason: string | null } | undefined;
@@ -226,7 +227,7 @@ export function buildQueue(db: DatabaseSync, opts: QueueOptions = {}): QueueEntr
     e.state = stateOf(e, r.state === "MERGED" || mergedByUs, last, open && (backlogHeld(db, r.repo, r.number) ? "backlog" : duplicateHeld(db, r.repo, r.number) ? "duplicate" : null), r.r_final === 1 && !(open && (stale.has(`${r.repo}#${r.number}@${r.r_head}`) || (r.o_at !== null && changedSince(state.get(`${r.repo}#${r.number}`), r.o_seen ?? r.o_at, r.o_hash)))));
     if (open && mergeable === "CONFLICTING" && r.base_ref) {
       const ap = approvals.get(r.repo) ?? (approvals.set(r.repo, { push: pushApprovalOf(db, r.repo) !== null, comment: commentApprovalOf(db, r.repo) !== null }), approvals.get(r.repo)!);
-      e.conflictNote = conflictNote(conflictBucket(db, { repo: r.repo, number: r.number, head: r.r_head, pushable: pushable(r.head_repo, r.repo, checksHere ? r.c_can : r.i_can) }, ap), r.base_ref);
+      e.conflictNote = conflictNote(conflictBucket(db, { repo: r.repo, number: r.number, head: r.r_head, pushable: pushable(r.head_repo, r.repo, checksHere ? r.c_can : r.i_can, r.head_ref, (longLivedBy.get(r.repo) ?? (longLivedBy.set(r.repo, longLivedOf(db, r.repo)), longLivedBy.get(r.repo)!))) }, ap), r.base_ref);
     }
     const batch = inBatch.get(`${r.repo}#${r.number}@${r.r_head}`);
     if (batch && BATCHABLE.includes(e.state)) e.state = batch;

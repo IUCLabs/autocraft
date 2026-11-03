@@ -257,8 +257,11 @@ async function claimIssue(x: Ctx, c: IssueCandidate): Promise<void> {
     if (!info || info.state !== "OPEN") return;
     const me = await viewerOf(q);
     const w: Writer = { db, login: ACTOR };
+    if (attemptOf(db, c.repo, c.number)?.state === "failed") return;
     if (await claimItem(w, q, c.repo, c.number, info, me, { run: x.runId })) log(`  ${ref}: assigned to ${me.login}`);
-    if (commentApprovalOf(db, c.repo) && !db.prepare("SELECT 1 FROM audit WHERE action = 'fixissue-claim' AND target = ?").get(ref)) {
+    // Only when the issue is ours: nobody assigned, or only us.
+    const assigned = info.assignees.length === 0 || info.assignees.every((a) => a === me.login);
+    if (assigned && commentApprovalOf(db, c.repo) && !db.prepare("SELECT 1 FROM audit WHERE action = 'fixissue-claim' AND target = ?").get(ref)) {
       const cm = await ghComment(w, d.exec, "fixissue-claim", { repo: c.repo, number: c.number, pr: false }, claimCommentText(), { run: x.runId });
       if (cm.code !== 0) log(`  ${ref}: claim comment failed: ${oneLine(cm.stderr)}`);
     }
@@ -276,8 +279,8 @@ async function releaseGivenUp(x: Ctx, repo: string): Promise<void> {
   for (const r of rows) {
     try {
       const me = await viewerOf(q);
-      if (!weAssigned(db, repo, r.number, me.login)) continue;
-      if (await releaseItem({ db, login: ACTOR }, q, repo, r.number, await issueInfo(q, ORG, repo, r.number), me, { run: x.runId })) log(`  ${repo}#${r.number}: unassigned from ${me.login}`);
+      if (!weAssigned(db, repo, r.number, me.login, "fixissue-")) continue;
+      if (await releaseItem({ db, login: ACTOR }, q, repo, r.number, await issueInfo(q, ORG, repo, r.number), me, { run: x.runId }, "fixissue-")) log(`  ${repo}#${r.number}: unassigned from ${me.login}`);
     } catch (e) {
       log(`  ${repo}#${r.number}: could not unassign: ${oneLine(String((e as Error).message ?? e))}`);
     }
