@@ -7,7 +7,9 @@ import { claudeRoom } from "../agents/call.ts";
 import { askClaude, pool, saveUsage, type Usage } from "../classify/run.ts";
 import { PROGRESS_KEEP, coalesce } from "../classify/progress.ts";
 import { CLAUDE_PROMPTS } from "../prompts/index.ts";
-import { parseReply } from "./cards.ts";
+import { defaultSemanticDeps, referenceProblems, type SemanticDeps } from "../reference-lint.ts";
+import { dropTexts, type Lint } from "../replylint.ts";
+import { commentTexts, parseReply } from "./cards.ts";
 import { sweepRunningCards } from "./act.ts";
 import { claimPending, failTurn, pendingConversations, promptParts, refreshItem, setTurnProgress, storeReply, type DiffSource } from "./store.ts";
 
@@ -24,6 +26,8 @@ export type ConversationParams = {
   onHandled?: (n: number) => void;
   cancelled?: () => boolean;
   log: (line: string) => void;
+  /** The Jev and Haiku calls of the semantic reference check; absent: the real ones. */
+  semantic?: SemanticDeps;
 };
 
 const now = () => new Date().toISOString();
@@ -61,12 +65,17 @@ export async function answerPending(db: DatabaseSync, p: ConversationParams): Pr
       recent = [...recent, line].slice(-PROGRESS_KEEP);
       shown.push(recent);
     };
+    const dir = referenceDir(repo);
+    const semantic = dir ? p.semantic ?? defaultSemanticDeps(db, `${repo}#${n}`) : undefined;
+    // Comment cards are public text: a reference mention or quote goes back to the model as one fix turn. A reply without text is not linted and keeps the whole-call retry.
+    const lint: Lint = async (text) => (parseReply(db, repo, n, text) ? referenceProblems(commentTexts(text), dir, semantic) : null);
     for (let attempt = 0; attempt < CONVERSATION_PROMPT.limits.attempts && !parsed; attempt++) {
-      const reply = await askClaude("conversation.turn", model, [{ ref: `${repo}#${n}`, item: parts.item, turns: parts.turns, ...(checkout && { repo_dir: REPO_PATH }) }], db, { checkout: checkout ?? undefined, reference: checkout ? referenceDir(repo) : undefined, onProgress });
+      const reply = await askClaude("conversation.turn", model, [{ ref: `${repo}#${n}`, item: parts.item, turns: parts.turns, ...(checkout && { repo_dir: REPO_PATH }) }], db, { checkout: checkout ?? undefined, reference: checkout ? dir : undefined, onProgress, lint });
       shown.flush();
       if (!reply) continue;
       usage = sum(usage, reply.usage);
-      parsed = parseReply(db, repo, n, reply.text);
+      if (reply.fixTurn) p.log(`conversation: ${repo}#${n}: reply lint: ${reply.problems?.length ? `${reply.problems.length} problems left after the fix turn` : "fixed by one fix turn"}`);
+      parsed = parseReply(db, repo, n, reply.text, dropTexts(reply.problems));
     }
     if (parsed) {
       if (storeReply(db, repo, n, claim, parsed.text, parsed.cards, parsed.notes) !== null) answered++;

@@ -17,10 +17,11 @@ import { CLAUDE_PROMPTS } from "../prompts/index.ts";
 import { checksOf } from "../review/checks.ts";
 import { cachedDiff, codeDiff, ghDiff, type DiffFetcher } from "../review/diff.ts";
 import { REPO_PATH } from "../sandbox/command.ts";
+import type { Lint } from "../replylint.ts";
 import { compareCanonical, canonInfo, pickCanonical } from "./canonical.ts";
 import { askGroupDecisions } from "./decide.ts";
 import {
-  GROUP_DIFF_CHARS, GROUP_MAX, parseIssueComparison, parsePrComparison, prsRef, type IssueComparison, type PrComparison,
+  GROUP_DIFF_CHARS, GROUP_MAX, lintComparison, parseIssueComparison, parsePrComparison, prsRef, type IssueComparison, type PrComparison,
   type CompareIssue, type CompareIssues, type ComparePr, type ComparePrs,
 } from "./group.ts";
 import { dueSets, rememberDrop, saveComparison, storedComparison, type ComparisonResult, type KindSet, type StoredComparison } from "./plan.ts";
@@ -39,7 +40,8 @@ export type CompareDeps = {
   fetchDiff: DiffFetcher;
   /** Host directory with a read-only checkout of the base for a sandboxed call, or null to ask without tools. Absent: no tools. */
   baseCheckout?: (repo: string) => Promise<string | null>;
-  ask(id: "dupes.compare-prs.opus", model: string, input: ComparePrs, checkout?: string): Promise<Reply>;
+  /** `lint`: see AskOptions; a reply of the real `ask` may carry the lint's remaining problems and whether a fix turn ran. */
+  ask(id: "dupes.compare-prs.opus", model: string, input: ComparePrs, checkout?: string, lint?: Lint): Promise<Reply>;
   ask(id: "dupes.compare-issues.sonnet", model: string, input: CompareIssues): Promise<Reply>;
   now(): Date;
 };
@@ -60,8 +62,8 @@ export function defaultCompareDeps(db: DatabaseSync): CompareDeps {
   return {
     querier: new Client(500), fetchDiff: ghDiff,
     baseCheckout: (repo) => baseCheckout(db, repo),
-    ask: ((id: "dupes.compare-prs.opus" | "dupes.compare-issues.sonnet", model: string, input: ComparePrs | CompareIssues, checkout?: string) =>
-      askClaude(id, model, [input] as never, db, { checkout, reference: checkout ? referenceDir(input.ref.split("#")[0]!) : undefined })) as CompareDeps["ask"],
+    ask: ((id: "dupes.compare-prs.opus" | "dupes.compare-issues.sonnet", model: string, input: ComparePrs | CompareIssues, checkout?: string, lint?: Lint) =>
+      askClaude(id, model, [input] as never, db, { checkout, reference: checkout ? referenceDir(input.ref.split("#")[0]!) : undefined, lint })) as CompareDeps["ask"],
     now: () => new Date(),
   };
 }
@@ -149,17 +151,17 @@ async function compareChunk(x: Ctx, s: KindSet, numbers: number[], usage: { u: U
     if (checkout) input.repo_dir = REPO_PATH;
     const model = PR_PROMPT.models[0]!;
     usage.model = model;
-    let fallback: PrComparison | null = null;
+    // A long summary or why goes back to the model as a fix turn (src/replylint.ts); a reply that is not a valid comparison is asked for again.
+    const lint: Lint = (text) => lintComparison(text, numbers);
     for (let attempt = 0; attempt < PR_PROMPT.limits.attempts; attempt++) {
-      const reply = await deps.ask("dupes.compare-prs.opus", model, input, checkout ?? undefined);
+      const reply = await deps.ask("dupes.compare-prs.opus", model, input, checkout ?? undefined, lint);
       if (!reply) continue;
       usage.u = add(usage.u, reply.usage);
-      const r = parsePrComparison(reply.text, numbers, attempt === PR_PROMPT.limits.attempts - 1);
+      // Anything the fix turn did not clear is cut to its first sentence; the call is never repeated for it.
+      const r = parsePrComparison(reply.text, numbers, true);
       if (r) return r;
-      // Valid except for a long summary: kept in case the retry gives nothing.
-      fallback ??= parsePrComparison(reply.text, numbers, true);
     }
-    return fallback;
+    return null;
   }
   const input = issueInput(x.db, s.repo, numbers);
   const model = ISSUE_PROMPT.models[0]!;

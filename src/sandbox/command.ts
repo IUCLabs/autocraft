@@ -34,6 +34,8 @@ export type SandboxSpec = {
   shared?: { name: string; dir: string }[];
   /** Host file with the agents definition, mounted read-only at /agents.json. */
   agentsFile?: string;
+  /** Writable host directory for the session store (`projects` under the config directory), so a later `--resume` finds the session; without it nothing of the session outlives the call. */
+  sessionDir?: string;
   /** Further read-only mounts (item data, MCP server code and configs); `path` is absolute inside the sandbox. */
   extraMounts?: { host: string; path: string }[];
 };
@@ -56,6 +58,7 @@ export function sandboxCommand(s: SandboxSpec): { cmd: string; args: string[] } 
     "--tmpfs", HOME, "--tmpfs", CONFIG,
     // Read-only: the sandbox never refreshes the token (src/sandbox/index.ts `tokenNearExpiry` keeps calls with an expiring token out).
     "--ro-bind", s.credentials, `${CONFIG}/.credentials.json`,
+    ...(s.sessionDir ? ["--bind", s.sessionDir, `${CONFIG}/projects`] : []),
     "--ro-bind", s.claudeBin, CLAUDE_PATH,
     // The working directory is empty and the checkout sits beside it (claude gets it with --add-dir), so no project instructions or settings from the checkout are found.
     "--tmpfs", WORK_PATH, "--ro-bind", s.checkout, REPO_PATH,

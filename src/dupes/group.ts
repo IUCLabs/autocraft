@@ -1,7 +1,8 @@
 // Group comparison input and reply handling for the duplicate groups. Pure: no I/O,
 // no Node imports, because the prompt registry (shared with the web mockup) imports it.
 
-import { proseField, SUMMARY_MAX_WORDS, WHY_MAX_WORDS } from "../prose.ts";
+import { firstSentence, proseField, SUMMARY_MAX_WORDS, WHY_MAX_WORDS, wordCount } from "../prose.ts";
+import type { LintProblem } from "../replylint.ts";
 
 /** Most members compared in one call; a larger group is compared in rounds. */
 export const GROUP_MAX = 10;
@@ -80,6 +81,19 @@ export function parsePrComparison(text: string, numbers: number[], last = true):
     others.push({ number, duplicate: x.duplicate, better: list(x.better), carry: list(x.carry) });
   }
   return { keep: s.keep, reason: s.reason, summary: s.summary, why: s.why, others: others.sort((p, q) => p.number - q.number) };
+}
+
+/** The problems of a valid comparison reply that the model can fix itself: a summary or why over its cap, a why of more than one sentence. Null when the reply is not a valid comparison. */
+export function lintComparison(text: string, numbers: number[]): LintProblem[] | null {
+  if (!shape(text, numbers, true)) return null;
+  const o = object(text)!;
+  const out: LintProblem[] = [];
+  if (typeof o.summary === "string" && wordCount(o.summary) > SUMMARY_MAX_WORDS) out.push({ field: "summary", message: `has ${wordCount(o.summary)} words; at most ${SUMMARY_MAX_WORDS}, in 2 or 3 sentences` });
+  if (typeof o.why === "string" && o.why.trim()) {
+    if (wordCount(o.why) > WHY_MAX_WORDS) out.push({ field: "why", message: `has ${wordCount(o.why)} words; at most ${WHY_MAX_WORDS}, in one sentence` });
+    else if (firstSentence(o.why) !== o.why.replace(/\s+/g, " ").trim()) out.push({ field: "why", message: "has more than one sentence; write one" });
+  }
+  return out;
 }
 
 export function parseIssueComparison(text: string, numbers: number[], last = true): IssueComparison | null {

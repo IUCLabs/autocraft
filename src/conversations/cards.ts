@@ -115,7 +115,7 @@ export function otherTypeLabel(db: DatabaseSync, repo: string, n: number, label:
 }
 
 /** One card as the model wrote it, checked against the item, or why it is dropped. */
-export function validateCard(db: DatabaseSync, repo: string, n: number, raw: unknown): { card: NewCard } | { note: string } {
+export function validateCard(db: DatabaseSync, repo: string, n: number, raw: unknown, drop: ReadonlySet<string> = new Set()): { card: NewCard } | { note: string } {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return { note: "dropped a card that is not an object" };
   const c = raw as Record<string, unknown>;
   const kind = c.kind;
@@ -124,7 +124,7 @@ export function validateCard(db: DatabaseSync, repo: string, n: number, raw: unk
     case "comment": {
       const text = typeof c.text === "string" ? cleanComment(c.text) : "";
       if (!text) return { note: "dropped a comment card without text" };
-      if (REFERENCE_LEAK.test(text)) return { note: "dropped a comment card that mentions the reference folder" };
+      if (REFERENCE_LEAK.test(text) || drop.has(text)) return { note: "dropped a comment card that mentions the reference folder or its documentation" };
       if (text.length > COMMENT_MAX) return { note: `dropped a comment card longer than ${COMMENT_MAX} characters` };
       return done({ kind: "comment", text }, text);
     }
@@ -164,8 +164,21 @@ export type Parsed = { text: string; cards: NewCard[]; notes: string[] };
 const MAX_CARDS = 8;
 const FENCE = /```actions[ \t]*\r?\n([\s\S]*?)```[ \t]*$/;
 
-/** The reply's text and its valid cards. A reply with no text gets null. */
-export function parseReply(db: DatabaseSync, repo: string, n: number, reply: string): Parsed | null {
+/** The cleaned text of each comment card of a reply, with its field (`cards[i].text`, i the position in the actions block), for the reference checks. */
+export function commentTexts(reply: string): { field: string; text: string }[] {
+  const m = FENCE.exec(reply.trimEnd());
+  if (!m) return [];
+  let list: unknown;
+  try { list = JSON.parse(m[1]!); } catch { return []; }
+  if (!Array.isArray(list)) return [];
+  return list.slice(0, 20).flatMap((c: { kind?: unknown; text?: unknown }, i) => {
+    const text = c && c.kind === "comment" && typeof c.text === "string" ? cleanComment(c.text) : "";
+    return text ? [{ field: `cards[${i}].text`, text }] : [];
+  });
+}
+
+/** The reply's text and its valid cards. A reply with no text gets null. `drop`: cleaned comment texts the reply lint still flagged after the fix turn; their cards are dropped. */
+export function parseReply(db: DatabaseSync, repo: string, n: number, reply: string, drop: ReadonlySet<string> = new Set()): Parsed | null {
   const m = FENCE.exec(reply.trimEnd());
   const text = (m ? reply.trimEnd().slice(0, m.index) : reply).trim();
   if (!text) return null;
@@ -177,7 +190,7 @@ export function parseReply(db: DatabaseSync, repo: string, n: number, reply: str
     if (!Array.isArray(list)) notes.push("dropped the actions block: it is not a JSON list");
     else {
       for (const raw of list.slice(0, 20)) {
-        const v = validateCard(db, repo, n, raw);
+        const v = validateCard(db, repo, n, raw, drop);
         if (!("card" in v)) notes.push(v.note);
         else if (cards.length < MAX_CARDS) cards.push(v.card);
         else notes.push(`dropped a card beyond the ${MAX_CARDS} allowed per reply`);

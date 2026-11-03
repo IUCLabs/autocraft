@@ -1,7 +1,8 @@
 // Opus review prompt input and reply validation. No I/O and no Node imports: the
 // prompt registry (also loaded by the web mockup) imports this file.
 import { VERDICTS, type DiscussionEntry, type ReviewVerdict } from "./parse.ts";
-import { proseField, SUMMARY_MAX_WORDS, WHY_MAX_WORDS } from "../prose.ts";
+import { firstSentence, proseField, SUMMARY_MAX_WORDS, WHY_MAX_WORDS, wordCount } from "../prose.ts";
+import type { LintProblem } from "../replylint.ts";
 
 export type EarlierOpus = { head: string; verdict: string; sure: boolean; reason: string; fixes: { file: string; change: string }[] };
 
@@ -52,14 +53,15 @@ export const OPUS_PUBLIC_POINTS = 8;
 /** Text that points at the private reference folder; such public text is dropped. */
 export const REFERENCE_LEAK = /\/reference\b|\bp\d{4}\.txt\b/i;
 
-export function parsePublic(v: unknown): PublicReview | null {
+/** `drop`: texts the reply lint still flagged after the fix turn (a reference mention, a quote, a reference to outside documentation); they are left out like a reference mention. */
+export function parsePublic(v: unknown, drop: ReadonlySet<string> = new Set()): PublicReview | null {
   if (!v || typeof v !== "object") return null;
   const o = v as Record<string, unknown>;
   if (typeof o.summary !== "string" || !o.summary.trim() || !Array.isArray(o.points)) return null;
-  if (REFERENCE_LEAK.test(o.summary)) { console.log("public review dropped: it mentions the reference folder"); return null; }
+  if (REFERENCE_LEAK.test(o.summary) || drop.has(o.summary)) { console.log("public review dropped: its summary mentions the reference documentation"); return null; }
   const kept = o.points.filter((x): x is string => typeof x === "string" && !!x.trim());
-  const points = kept.filter((x) => !REFERENCE_LEAK.test(x)).slice(0, OPUS_PUBLIC_POINTS).map((x) => x.trim().slice(0, 600));
-  if (points.length < kept.length) console.log("public review: dropped a point that mentions the reference folder");
+  const points = kept.filter((x) => !REFERENCE_LEAK.test(x) && !drop.has(x)).slice(0, OPUS_PUBLIC_POINTS).map((x) => x.trim().slice(0, 600));
+  if (points.length < kept.length) console.log("public review: dropped a point that mentions the reference documentation");
   return { summary: o.summary.trim().slice(0, 600), points };
 }
 
@@ -67,19 +69,24 @@ export const OPUS_REASON_WORDS = 60;
 export const OPUS_MAX_FIXES = 20;
 const words = (s: string, n: number) => s.trim().split(/\s+/).slice(0, n).join(" ");
 
-/**
- * The one review for `ref` in a reply, or null. The text from the first "{" to the
- * last "}" is parsed (a one-element array is read too); take-fix needs at least one fix.
- * A summary or why over its word cap fails the reply unless `last` (the final attempt), which keeps its first sentence.
- */
-export function parseOpusReply(text: string, ref: string, last = true): OpusReview | null {
-  let o: unknown;
+/** The reply's JSON object (a one-element array is read too), or null. */
+function replyObject(text: string): unknown {
   const a = text.indexOf("["), b = text.lastIndexOf("]");
   const c = text.indexOf("{"), d = text.lastIndexOf("}");
   try {
-    if (a >= 0 && b > a && (c < 0 || a < c)) o = (JSON.parse(text.slice(a, b + 1)) as unknown[])[0];
-    else o = c >= 0 && d > c ? JSON.parse(text.slice(c, d + 1)) : null;
+    if (a >= 0 && b > a && (c < 0 || a < c)) return (JSON.parse(text.slice(a, b + 1)) as unknown[])[0];
+    return c >= 0 && d > c ? JSON.parse(text.slice(c, d + 1)) : null;
   } catch { return null; }
+}
+
+/**
+ * The one review for `ref` in a reply, or null. The text from the first "{" to the
+ * last "}" is parsed (a one-element array is read too); take-fix needs at least one fix.
+ * A summary or why over its word cap fails the reply unless `last`, which keeps its first sentence.
+ * `drop`: see parsePublic.
+ */
+export function parseOpusReply(text: string, ref: string, last = true, drop: ReadonlySet<string> = new Set()): OpusReview | null {
+  const o = replyObject(text);
   if (!o || typeof o !== "object") return null;
   const r = o as Record<string, unknown>;
   if (r.ref !== ref) return null;
@@ -87,11 +94,43 @@ export function parseOpusReply(text: string, ref: string, last = true): OpusRevi
   if (typeof verdict !== "string" || !(VERDICTS as readonly string[]).includes(verdict)) return null;
   if (typeof r.reason !== "string" || !r.reason.trim() || typeof r.sure !== "boolean") return null;
   const fixes = (Array.isArray(r.fixes) ? r.fixes : [])
-    .filter((f): f is { file: string; change: string } => !!f && typeof f.file === "string" && typeof f.change === "string" && !!f.change.trim() && !REFERENCE_LEAK.test(f.file))
+    .filter((f): f is { file: string; change: string } => !!f && typeof f.file === "string" && typeof f.change === "string" && !!f.change.trim() && !REFERENCE_LEAK.test(f.file) && !REFERENCE_LEAK.test(f.change))
     .slice(0, OPUS_MAX_FIXES).map((f) => ({ file: f.file.slice(0, 200), change: f.change.slice(0, 800) }));
   if (verdict === "take-fix" && !fixes.length) return null;
   const risks = Array.isArray(r.risks) ? r.risks.filter((x): x is string => typeof x === "string").slice(0, 8).map((x) => x.slice(0, 300)) : [];
   const summary = proseField(r.summary, SUMMARY_MAX_WORDS, last), why = proseField(r.why, WHY_MAX_WORDS, last);
   if (!summary.ok || !why.ok) return null;
-  return { ref, verdict: verdict as ReviewVerdict, sure: r.sure, reason: words(r.reason, OPUS_REASON_WORDS), fixes: verdict === "take-fix" ? fixes : [], risks, summary: summary.text, why: why.text, public: parsePublic(r.public) };
+  return { ref, verdict: verdict as ReviewVerdict, sure: r.sure, reason: words(r.reason, OPUS_REASON_WORDS), fixes: verdict === "take-fix" ? fixes : [], risks, summary: summary.text, why: why.text, public: parsePublic(r.public, drop) };
+}
+
+const squash = (s: string) => s.replace(/\s+/g, " ").trim();
+
+/**
+ * The problems of a reply that the model can fix itself: a reference mention in a fix, a summary or why over its cap,
+ * a why of more than one sentence. Null when the reply is not a valid review (the whole call is asked again then).
+ */
+export function lintOpusReply(text: string, ref: string): LintProblem[] | null {
+  if (!parseOpusReply(text, ref, true)) return null;
+  const r = replyObject(text) as Record<string, unknown>;
+  const out: LintProblem[] = [];
+  (Array.isArray(r.fixes) ? r.fixes : []).forEach((f: { file?: unknown; change?: unknown }, i) => {
+    for (const k of ["file", "change"] as const) if (typeof f?.[k] === "string" && REFERENCE_LEAK.test(f[k] as string)) out.push({ field: `fixes[${i}].${k}`, message: "mentions the reference folder or one of its pages; state the behaviour in your own words" });
+  });
+  if (typeof r.summary === "string" && wordCount(r.summary) > SUMMARY_MAX_WORDS) out.push({ field: "summary", message: `has ${wordCount(r.summary)} words; at most ${SUMMARY_MAX_WORDS}, in 2 or 3 sentences` });
+  if (typeof r.why === "string" && squash(r.why)) {
+    if (wordCount(r.why) > WHY_MAX_WORDS) out.push({ field: "why", message: `has ${wordCount(r.why)} words; at most ${WHY_MAX_WORDS}, in one sentence` });
+    else if (firstSentence(r.why) !== squash(r.why)) out.push({ field: "why", message: "has more than one sentence; write one" });
+  }
+  return out;
+}
+
+/** The public texts of a reply for the reference checks, with the field each is in (the index is the position in the reply's `points` array). */
+export function publicTexts(text: string): { field: string; text: string }[] {
+  const r = replyObject(text) as { public?: { summary?: unknown; points?: unknown } } | null;
+  const p = r?.public;
+  if (!p || typeof p !== "object") return [];
+  return [
+    ...(typeof p.summary === "string" && p.summary.trim() ? [{ field: "public.summary", text: p.summary }] : []),
+    ...(Array.isArray(p.points) ? p.points.flatMap((x, i) => (typeof x === "string" && x.trim() ? [{ field: `public.points[${i}]`, text: x }] : [])) : []),
+  ];
 }

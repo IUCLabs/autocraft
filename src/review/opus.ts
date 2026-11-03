@@ -12,10 +12,12 @@ import { withdrawMergeQuestion } from "../merge/withdraw.ts";
 import type { DiscussionEntry } from "./parse.ts";
 import { cachedDiff, codeDiff, ghDelta, ghDiff, type DeltaFetcher, type DiffFetcher } from "./diff.ts";
 import { selectOpusCandidates, type OpusCandidate } from "./opus-candidates.ts";
-import { parseOpusReply, type EarlierOpus, type OpusPr, type OpusReview } from "./opus-parse.ts";
+import { lintOpusReply, parseOpusReply, publicTexts, type EarlierOpus, type OpusPr, type OpusReview } from "./opus-parse.ts";
 import { REPO_PATH } from "../sandbox/command.ts";
 import { checkoutForPr } from "../sandbox/index.ts";
 import { referenceDir } from "../reference.ts";
+import { defaultSemanticDeps, referenceProblems, type SemanticDeps } from "../reference-lint.ts";
+import { dropTexts, type Lint } from "../replylint.ts";
 
 const PROMPT = CLAUDE_PROMPTS["review.opus"];
 /** Diff characters above which a PR is held as too large to review. */
@@ -33,6 +35,8 @@ export type OpusDeps = {
   fetchDiff: DiffFetcher; fetchDelta: DeltaFetcher; model: string; maxChars: number;
   /** Host directory with a read-only checkout of the PR head for a sandboxed call, or null to ask without tools. Absent: no tools. */
   checkout?: (repo: string, number: number, head: string) => Promise<string | null>;
+  /** The Jev and Haiku calls of the semantic reference check; absent: the real ones. */
+  semantic?: SemanticDeps;
 };
 export type OpusSummary = {
   runId: string; repo: string; candidates: number; reviewed: number; dropped: number;
@@ -184,16 +188,22 @@ export async function runOpusReview(db: DatabaseSync, params: OpusParams, log: (
     if (checkout) input.repo_dir = REPO_PATH;
     let usage: Usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: null };
     let got: OpusReview | null = null;
-    // A reply valid except for a long summary is kept in case the retry gives nothing.
-    let fallback: OpusReview | null = null;
+    const dir = referenceDir(repo);
+    const semantic = dir ? deps.semantic ?? defaultSemanticDeps(db, input.ref) : undefined;
+    // A reply that is not a valid review is lint-free here: it keeps the whole-call retry. Problems of a valid one go back to the model as one fix turn.
+    const lint: Lint = async (text) => {
+      const own = lintOpusReply(text, input.ref);
+      return own === null ? null : [...own, ...await referenceProblems(publicTexts(text), dir, semantic)];
+    };
     for (let attempt = 0; attempt < PROMPT.limits.attempts && !got; attempt++) {
-      const reply = await askClaude("review.opus", deps.model, [input], db, { checkout, reference: checkout ? referenceDir(repo) : undefined });
+      const reply = await askClaude("review.opus", deps.model, [input], db, { checkout, reference: checkout ? dir : undefined, lint });
       if (!reply) continue;
       usage = add(usage, reply.usage);
-      got = parseOpusReply(reply.text, input.ref, attempt === PROMPT.limits.attempts - 1);
-      if (!got) fallback ??= parseOpusReply(reply.text, input.ref, true);
+      if (reply.fixTurn) log(`  ${refOf(c)}: reply lint: ${reply.problems?.length ? `${reply.problems.length} problems left after the fix turn` : "fixed by one fix turn"}`);
+      else if (reply.problems?.length) log(`  ${refOf(c)}: reply lint: ${reply.problems.length} problems, no fix turn possible`);
+      // Whatever the lint still found is left out (reference text) or cut to its first sentence (long summary or why); the call is never repeated for it.
+      got = parseOpusReply(reply.text, input.ref, true, dropTexts(reply.problems));
     }
-    got ??= fallback;
     if (got) {
       saveOpus(db, runId, c, { mode, base, model: deps.model, review: got, snap });
       tally(got);

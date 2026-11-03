@@ -1,6 +1,6 @@
 // Runs the classifiers: Jev (one `jev ask` per item) and Haiku (batches through `claude -p`).
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
@@ -8,8 +8,9 @@ import type { ItemRef } from "../../web/src/api/types.ts";
 import { createHash } from "node:crypto";
 import { jevParallel } from "../agents/accounts.ts";
 import { jevAvailable, jevFailure, markJevUnavailable, markJevWorking } from "../agents/jev.ts";
-import { claudeRoom, startClaudeRun, startJevRun } from "../agents/call.ts";
-import { finishRun, setRunProgress } from "../agents/runs.ts";
+import { claudeRoom, startClaudeRun, startJevRun, stepOf } from "../agents/call.ts";
+import { finishRun, insertRun, setRunProgress } from "../agents/runs.ts";
+import { fixTurnMessage, type Lint, type LintProblem } from "../replylint.ts";
 import { coalesce, lineFeed } from "./progress.ts";
 import { scrubError } from "../agents/text.ts";
 import { scrub } from "../runner/scrub.ts";
@@ -17,8 +18,9 @@ import { itemTools } from "../itemtools/index.ts";
 import { agentsFile, mcpFile } from "../sandbox/agent-files.ts";
 import { MCP_PATH } from "../sandbox/agents.ts";
 import { resolveClaudeBin, sandboxCommand, tokenNearExpiry } from "../sandbox/index.ts";
-import { REFERENCE_PATH } from "../sandbox/command.ts";
+import { REFERENCE_PATH, type SandboxSpec } from "../sandbox/command.ts";
 import { holdCheckouts } from "../sandbox/checkout.ts";
+import { sessionStore } from "../sandbox/session-store.ts";
 import { defaultWorkspace } from "../sandbox/workspace.ts";
 import { CLAUDE_PROMPTS, JEV_ARGS, JEV_USD_PER_INPUT_TOKEN, JEV_PROMPTS, claudeArgs, claudeParts, claudePromptOf, jevPromptOf, joinParts, renderClaude, withoutRepoDir, renderJev, type ClaudeInput, type ClaudePromptId, type JevPromptId } from "../prompts/index.ts";
 import type { DupePair } from "../dupes/pair.ts";
@@ -255,8 +257,9 @@ export function claudeCwd(): string {
  * `reference`: host directory of the repo's reference documentation; a sandboxed call mounts it read-only at /reference and its prompt says so (src/reference.ts).
  * `shared`: for a prompt with the workspace, replaces the default workspace (every tracked repository's default branch, src/sandbox/workspace.ts).
  * `itemTools`: the item tools' read-only mounts and MCP servers (`mcpServers` as in an MCP config), for the call and its explorer; null means none, absent means `itemTools()` (src/itemtools).
+ * `lint`: checks the parsed reply (src/replylint.ts). With problems, and for a sandboxed call of a prompt that registers `lint`, one follow-up message goes to the same session and its reply is linted too.
  */
-export type AskOptions = { onProgress?: (line: string) => void; checkout?: string; reference?: string; shared?: { name: string; dir: string }[]; itemTools?: { mounts: { host: string; path: string }[]; mcpServers: Record<string, unknown> } | null };
+export type AskOptions = { lint?: Lint; onProgress?: (line: string) => void; checkout?: string; reference?: string; shared?: { name: string; dir: string }[]; itemTools?: { mounts: { host: string; path: string }[]; mcpServers: Record<string, unknown> } | null };
 
 type WorkspaceFn = (db: DatabaseSync) => Promise<{ name: string; dir: string }[]>;
 let workspaceOf: WorkspaceFn = defaultWorkspace;
@@ -275,7 +278,11 @@ export function setWorkspace(f: WorkspaceFn): () => void {
  * and headroom, runs with that account's CLAUDE_CONFIG_DIR, and is recorded from
  * start to end (src/agents).
  */
-export async function askClaude<K extends ClaudePromptId>(id: K, model: string, input: ClaudeInput[K], db: DatabaseSync, opts: AskOptions = {}): Promise<{ text: string; usage: Usage; turns?: number } | null> {
+export type Reply = { text: string; usage: Usage; turns?: number };
+/** `problems` are what the lint still found in `text` (absent when there was no lint or the reply could not be linted); `fixTurn` is true when a follow-up message was sent. */
+export type LintedReply = Reply & { problems?: LintProblem[]; fixTurn?: boolean };
+
+export async function askClaude<K extends ClaudePromptId>(id: K, model: string, input: ClaudeInput[K], db: DatabaseSync, opts: AskOptions = {}): Promise<LintedReply | null> {
   let sandboxed = opts.checkout !== undefined && CLAUDE_PROMPTS[id].sandbox !== undefined;
   const reference = sandboxed && CLAUDE_PROMPTS[id].sandbox?.reference ? opts.reference : undefined;
   if (reference) input = input.map((x) => ({ ...x, reference: true })) as ClaudeInput[K];
@@ -283,7 +290,7 @@ export async function askClaude<K extends ClaudePromptId>(id: K, model: string, 
   const items = refsOf(input);
   const run = await startClaudeRun(db, { promptId: id, promptVersion: promptVersion(id), provider: "claude", model, items, prompt: joinParts(parts) });
   const end = (e: Parameters<typeof finishRun>[2]) => finishRun(db, run.runId, e);
-  const runProgress = coalesce((line: string) => setRunProgress(db, run.runId, line));
+  let sessions: string | undefined;
   try {
     // The sandbox never refreshes the token: with little lifetime left the call runs on the host without tools, where a refresh is safe.
     if (sandboxed && tokenNearExpiry(join(run.configDir, ".credentials.json"))) {
@@ -297,54 +304,105 @@ export async function askClaude<K extends ClaudePromptId>(id: K, model: string, 
     const shared = workspace ? opts.shared ?? await workspaceOf(db) : undefined;
     const it = workspace ? opts.itemTools === undefined ? itemTools() : opts.itemTools : null;
     const tools = it ? { mounts: it.mounts, servers: Object.keys(it.mcpServers).sort(), file: mcpFile(it.mcpServers) } : undefined;
-    const args = claudeArgs(id, model, sandboxed, tools && { config: MCP_PATH, servers: tools.servers }, parts.system, reference !== undefined);
+    // Only a sandboxed call can be continued: its session store is a directory of ours. A call on the host keeps no session (it would land in the account's own config directory).
+    const persist = sandboxed && opts.lint !== undefined && CLAUDE_PROMPTS[id].lint === true;
+    if (persist) sessions = sessionStore();
+    const args = claudeArgs(id, model, sandboxed, tools && { config: MCP_PATH, servers: tools.servers }, parts.system, reference !== undefined, persist);
     const cwd = claudeCwd();
-    let r: Proc;
+    const timeoutMs = CLAUDE_PROMPTS[id].limits.timeoutSeconds * 1000;
+    let spec: SandboxSpec | undefined;
     if (sandboxed) {
       const claudeBin = resolveClaudeBin(), credentials = join(run.configDir, ".credentials.json");
       if (!claudeBin || !existsSync(credentials)) throw new Error("sandboxed call: claude binary or the account's credentials file not found");
-      const c = sandboxCommand({ claudeBin, checkout: opts.checkout!, credentials, claudeArgs: args, shared, ...(workspace && { agentsFile: agentsFile(tools?.servers) }), extraMounts: tools || reference ? [...(tools ? [...tools.mounts, { host: tools.file, path: MCP_PATH }] : []), ...(reference ? [{ host: reference, path: REFERENCE_PATH }] : [])] : undefined });
-      const feed = lineFeed((line) => { opts.onProgress?.(line); runProgress.push(line); });
-      const release = holdCheckouts([opts.checkout!, ...(shared ?? []).map((x) => x.dir)]);
-      try {
-        r = await runner(c.cmd, c.args, parts.stdin, cwd, CLAUDE_PROMPTS[id].limits.timeoutSeconds * 1000, undefined, feed);
-      } finally {
-        release();
-      }
-      runProgress.flush();
-    } else r = await runner("claude", args, parts.stdin, cwd, CLAUDE_PROMPTS[id].limits.timeoutSeconds * 1000, { CLAUDE_CONFIG_DIR: run.configDir });
-    // Stderr is scrubbed up front. For a sandboxed call the reply text is scrubbed after parsing, so a match cannot break the JSON.
-    if (sandboxed) r = { ...r, stderr: scrub(r.stderr) };
-    try {
-      // `--output-format json` prints the event list (older CLI versions only the final result object); stream-json prints one event per line.
-      const parsed = parseOutput(r.stdout);
-      const j = lastResult(parsed) as { result?: string; is_error?: boolean; total_cost_usd?: number; num_turns?: number; usage?: Record<string, number>; modelUsage?: ModelUsage } | undefined;
-      if (!j) {
-        end({ state: "failed", error: `no result (${exitClass(r.code)}) ${r.stderr}`.slice(0, 400), summary: "no result", output: sandboxed ? scrub(r.stdout) : r.stdout });
-        return null;
-      }
-      const { usage, all: tokens } = resultUsage(j, model);
-      if (j.is_error || typeof j.result !== "string") {
-        end({ state: "failed", tokens, error: scrubError(`model error ${typeof j.result === "string" ? j.result : ""}`), summary: "model error", output: sandboxed ? scrub(r.stdout) : r.stdout });
-        return null;
-      }
-      const turns = sandboxed ? j.num_turns : undefined;
-      // Backstop: nothing that looks like a token or key leaves the sandbox call.
-      const text = sandboxed ? scrub(j.result) : j.result;
-      end({ state: "done", tokens, summary: turns === undefined ? replySummary(text, items.length) : `answered in ${turns} turns`, output: text });
-      return { text, usage, ...(turns !== undefined && { turns }) };
-    } catch {
-      end({ state: "failed", error: scrubError(`unreadable output (${exitClass(r.code)}) ${r.stderr}`), summary: r.code === 0 ? "unreadable output" : exitClass(r.code), output: sandboxed ? scrub(r.stdout) : r.stdout });
-      return null;
+      spec = { claudeBin, checkout: opts.checkout!, credentials, claudeArgs: args, shared, ...(workspace && { agentsFile: agentsFile(tools?.servers) }), ...(sessions && { sessionDir: sessions }), extraMounts: tools || reference ? [...(tools ? [...tools.mounts, { host: tools.file, path: MCP_PATH }] : []), ...(reference ? [{ host: reference, path: REFERENCE_PATH }] : [])] : undefined };
     }
+
+    /** One `claude -p` process on the run `runId`: the first message, or with `resume` a follow-up on the same session. Never throws for a failed call. */
+    const turn = async (runId: number, stdin: string, resume?: string): Promise<(Reply & { sessionId?: string }) | null> => {
+      const finish = (e: Parameters<typeof finishRun>[2]) => finishRun(db, runId, e);
+      const extra = resume ? ["--resume", resume] : [];
+      let r: Proc;
+      if (spec) {
+        const c = sandboxCommand({ ...spec, claudeArgs: [...args, ...extra] });
+        const runProgress = coalesce((line: string) => setRunProgress(db, runId, line));
+        const feed = lineFeed((line) => { opts.onProgress?.(line); runProgress.push(line); });
+        const release = holdCheckouts([opts.checkout!, ...(shared ?? []).map((x) => x.dir)]);
+        try {
+          r = await runner(c.cmd, c.args, stdin, cwd, timeoutMs, undefined, feed);
+        } finally {
+          release();
+        }
+        runProgress.flush();
+      } else r = await runner("claude", [...args, ...extra], stdin, cwd, timeoutMs, { CLAUDE_CONFIG_DIR: run.configDir });
+      // Stderr is scrubbed up front. For a sandboxed call the reply text is scrubbed after parsing, so a match cannot break the JSON.
+      if (sandboxed) r = { ...r, stderr: scrub(r.stderr) };
+      try {
+        // `--output-format json` prints the event list (older CLI versions only the final result object); stream-json prints one event per line.
+        const parsed = parseOutput(r.stdout);
+        const j = lastResult(parsed) as { result?: string; is_error?: boolean; session_id?: string; total_cost_usd?: number; num_turns?: number; usage?: Record<string, number>; modelUsage?: ModelUsage } | undefined;
+        if (!j) {
+          finish({ state: "failed", error: `no result (${exitClass(r.code)}) ${r.stderr}`.slice(0, 400), summary: "no result", output: sandboxed ? scrub(r.stdout) : r.stdout });
+          return null;
+        }
+        const { usage, all: tokens } = resultUsage(j, model);
+        if (j.is_error || typeof j.result !== "string") {
+          finish({ state: "failed", tokens, error: scrubError(`model error ${typeof j.result === "string" ? j.result : ""}`), summary: "model error", output: sandboxed ? scrub(r.stdout) : r.stdout });
+          return null;
+        }
+        const turns = sandboxed ? j.num_turns : undefined;
+        // Backstop: nothing that looks like a token or key leaves the sandbox call.
+        const text = sandboxed ? scrub(j.result) : j.result;
+        const sessionId = typeof j.session_id === "string" ? j.session_id : (Array.isArray(parsed) ? parsed.find((e) => typeof (e as { session_id?: unknown }).session_id === "string") as { session_id?: string } | undefined : undefined)?.session_id;
+        finish({ state: "done", tokens, summary: resume ? "fix turn answered" : turns === undefined ? replySummary(text, items.length) : `answered in ${turns} turns`, output: text });
+        return { text, usage, ...(turns !== undefined && { turns }), ...(sessionId && { sessionId }) };
+      } catch {
+        finish({ state: "failed", error: scrubError(`unreadable output (${exitClass(r.code)}) ${r.stderr}`), summary: r.code === 0 ? "unreadable output" : exitClass(r.code), output: sandboxed ? scrub(r.stdout) : r.stdout });
+        return null;
+      }
+    };
+
+    const first = await turn(run.runId, parts.stdin);
+    if (!first) return null;
+    const { sessionId, ...reply } = first;
+    if (!opts.lint) return reply;
+    let problems: LintProblem[] | null = null;
+    try { problems = await opts.lint(reply.text); } catch (e) { console.log(`lint failed: ${(e as Error).message}`); }
+    if (problems === null) return reply;
+    if (!problems.length) return { ...reply, problems };
+    if (!sessions || !sessionId) return { ...reply, problems };
+
+    // One fix turn on the same session and account; its own agent run, so its tokens and outcome show on the Agents page.
+    const message = fixTurnMessage(problems);
+    let fixRun: number;
+    try {
+      fixRun = insertRun(db, { ...stepOf(id), promptId: id, promptVersion: promptVersion(id), provider: "claude", model, accountId: run.accountId, items, prompt: message });
+    } catch (e) {
+      console.log(`fix turn not started: ${(e as Error).message}`);
+      return { ...reply, problems };
+    }
+    let fix: (Reply & { sessionId?: string }) | null = null;
+    try {
+      fix = await turn(fixRun, message, sessionId);
+    } catch (e) {
+      finishRun(db, fixRun, { state: "failed", error: scrubError(String((e as Error).message ?? e)), summary: "failed before the call" });
+    }
+    if (!fix) return { ...reply, problems, fixTurn: true };
+    const total = add(reply.usage, fix.usage);
+    let after: LintProblem[] | null = null;
+    try { after = await opts.lint(fix.text); } catch (e) { console.log(`lint failed: ${(e as Error).message}`); }
+    // A fix reply the lint cannot read (or that is not in the format) is not used; the first reply stands.
+    if (after === null) return { text: reply.text, usage: total, ...(reply.turns !== undefined && { turns: reply.turns }), problems, fixTurn: true };
+    return { text: fix.text, usage: total, ...(reply.turns !== undefined && { turns: reply.turns }), problems: after, fixTurn: true };
   } catch (e) {
     end({ state: "failed", error: scrubError(String((e as Error).message ?? e)), summary: "failed before the call" });
     throw e;
+  } finally {
+    if (sessions) rmSync(sessions, { recursive: true, force: true });
   }
 }
 
 /** Sends a registered Jev request (src/prompts) for one item to `jev ask`; the same rule as `askClaude`. Recorded as an agent run without an account. */
-export async function askJev(id: JevPromptId, item: Item | DupePair, db: DatabaseSync, body: string = renderJev(id, item)): Promise<Proc> {
+export async function askJev(id: JevPromptId, item: Item | DupePair | { ref: string }, db: DatabaseSync, body: string = renderJev(id, item as Item | DupePair)): Promise<Proc> {
   const runId = startJevRun(db, { promptId: id, promptVersion: promptVersion(id), provider: "jev", model: "jev", items: refsOf([item]), prompt: body });
   const start = now();
   try {

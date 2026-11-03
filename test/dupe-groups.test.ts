@@ -148,12 +148,12 @@ describe("PR group", () => {
     assert.match(dec.summary!, /by rule/);
   });
 
-  test("a summary over the cap is asked again once, then stored as its first sentence; a reply without one keeps the reason whole", async () => {
+  test("a summary over the cap is stored as its first sentence without a second call; a reply without one keeps the reason whole", async () => {
     const long = `First sentence stays. ${WORDS(100)}.`;
     const db = fresh(specs, [[1, 2], [2, 3]]);
     const d = deps(() => pr(2, [{ number: 1, duplicate: true, better: [], carry: [] }, { number: 3, duplicate: true, better: [], carry: [] }], "most complete", { summary: long }));
     await runDupeCompare(db, {}, () => {}, d);
-    assert.equal(d.calls.length, 2, "asked again once");
+    assert.equal(d.calls.length, 1, "a long summary never repeats the call");
     assert.equal(getDecision(db, GROUP_ID)!.summary, "First sentence stays.");
 
     const old = fresh(specs, [[1, 2], [2, 3]]);
@@ -165,7 +165,7 @@ describe("PR group", () => {
     assert.ok(!dec.summary!.includes("does better"));
   });
 
-  test("a long summary on the first attempt is kept when the retry gives nothing", async () => {
+  test("a long summary of the first reply is cut to its first sentence", async () => {
     const db = fresh(specs, [[1, 2], [2, 3]]);
     let n = 0;
     const d = deps(() => (n++ === 0 ? pr(2, [{ number: 1, duplicate: true, better: [], carry: [] }, { number: 3, duplicate: true, better: [], carry: [] }], "most complete", { summary: `Keep #2 it is. ${WORDS(100)}.` }) : null));
