@@ -45,7 +45,7 @@ export function parseFixes(s: string | null): Fix[] {
   } catch { return []; }
 }
 
-export const FIXUP_STATES = ["pushed", "failed", "refused", "rejected", "cannot-push", "too-large", "asked"] as const;
+export const FIXUP_STATES = ["pushed", "failed", "refused", "rejected", "cannot-push", "too-large", "asked", "push-denied"] as const;
 export type FixupState = (typeof FIXUP_STATES)[number];
 
 /** States that count as a try; the other three are recorded once per head and end the step's work on that head. */
@@ -74,7 +74,7 @@ export function classifyFixups(db: DatabaseSync, repo: string): Classified[] {
     FROM items i JOIN pr_checks c ON c.repo = i.repo AND c.number = i.number
     LEFT JOIN item_rank p ON p.repo = i.repo AND p.number = i.number
     WHERE i.repo = ? AND i.kind = 'pr' AND i.state = 'OPEN' AND ${notHeldSql("i")} ORDER BY ${fastScoreSql("i.repo", "i.number", "p.score")} IS NULL, ${fastScoreSql("i.repo", "i.number", "p.score")} DESC, i.number`).all(repo) as Row[];
-  const done = db.prepare("SELECT state FROM fixups WHERE repo = ? AND number = ? AND from_head = ? AND state IN ('pushed', 'cannot-push', 'too-large', 'asked')");
+  const done = db.prepare("SELECT state FROM fixups WHERE repo = ? AND number = ? AND from_head = ? AND state IN ('pushed', 'cannot-push', 'too-large', 'asked', 'push-denied')");
   const commenting = commentApprovalOf(db, repo) !== null;
   const approved = pushApprovalOf(db, repo) !== null;
   const stale = staleReviews(db, repo);
@@ -103,7 +103,7 @@ export function classifyFixups(db: DatabaseSync, repo: string): Classified[] {
     const canPush = pushable(r.head_repo, r.repo, r.can_modify, r.head_ref, longLived);
     // An ask is superseded by a push once the PR turns out to be pushable.
     if (has("asked") && !canPush) out.push({ c, done: true, bucket: "asked" });
-    else if (has("pushed")) out.push({ c, done: true, bucket: "hold" });
+    else if (has("pushed") || has("push-denied")) out.push({ c, done: true, bucket: "hold" });
     else if (has("cannot-push") && !canPush) out.push(ask(true));
     else if (has("too-large")) out.push({ c, done: true, bucket: "cannot-push" });
     else if (!canPush) out.push(ask(false));

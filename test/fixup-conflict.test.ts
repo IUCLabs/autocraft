@@ -10,9 +10,10 @@ import { setPushApproval } from "../src/fixup/approval.ts";
 import { selectFixups } from "../src/fixup/candidates.ts";
 import { classifyFixups } from "../src/fixup/candidates.ts";
 import { classifyConflicts, conflictTries } from "../src/fixup/conflict-state.ts";
+import { pushable } from "../src/fixup/pushable.ts";
 import { exec, type Exec, type ExecResult } from "../src/fixup/git.ts";
 import { runFixup, type FixupDeps } from "../src/fixup/index.ts";
-import { keepsOutside, outsideConflicts, parseResolution } from "../src/fixup/patch.ts";
+import { endNewline, keepsOutside, outsideConflicts, parseResolution } from "../src/fixup/patch.ts";
 import { CONFLICT_COMMENT_TEMPLATE, conflictCommentText } from "../src/fixup/template.ts";
 import { finalizeReviews } from "./fixture.ts";
 import { SCRATCH } from "./scratch.ts";
@@ -246,12 +247,52 @@ describe("conflict merge guards", () => {
     assert.equal(classifyConflicts(db, "app").length, 0);
   });
 
-  test("a protected-branch push rejection is recorded as cannot-push, not as a try", async () => {
+  test("a protected-branch push rejection is recorded as push-denied, not as a try", async () => {
     const w = world({ conflicting: false });
     const deps: FixupDeps = { ...w.deps, exec: async (cmd, args, io) => (args.includes("push") ? { code: 1, stdout: "", stderr: "! [remote rejected] feat (protected branch hook declined)" } : w.deps.exec(cmd, args, io)) };
     const db = fresh(w.head);
     await runFixup(db, { repo: "app", dryRun: false }, () => {}, deps);
-    assert.deepEqual(db.prepare("SELECT state FROM conflict_merges").all().map((r) => ({ ...r })), [{ state: "cannot-push" }]);
+    assert.deepEqual(db.prepare("SELECT state FROM conflict_merges").all().map((r) => ({ ...r })), [{ state: "push-denied" }]);
     assert.equal(conflictTries(db, "app", 7, w.head), 0);
+  });
+
+  test("a conflict section may only hold lines from its sides plus a few harmless ones", () => {
+    const c = "a\n<<<<<<< h\nx\n=======\ny\n>>>>>>> b\nz\n";
+    assert.equal(keepsOutside(c, "a\ny\nx\nz\n"), true);
+    assert.equal(keepsOutside(c, "a\nx\nx and y\nz\n"), true);
+    assert.equal(keepsOutside(c, "a\nx\nfn evil() {}\nz\n"), false);
+    assert.equal(keepsOutside(c, "a\nx\nuse evil::Thing;\nz\n"), false);
+    assert.equal(keepsOutside(c, "a\nx\n1\n2\n3\n4\nz\n"), false);
+    const t = "[dependencies]\n<<<<<<< h\nfoo = \"1\"\n=======\nbar = \"2\"\n>>>>>>> b\n";
+    assert.equal(keepsOutside(t, "[dependencies]\nfoo = \"1\"\nbar = \"2\"\n", "Cargo.toml"), true);
+    assert.equal(keepsOutside(t, "[dependencies]\nfoo = \"1\"\nevil = \"9\"\n", "Cargo.toml"), false);
+  });
+
+  test("a resolution missing the final newline gets it back", () => {
+    assert.equal(endNewline("a\n", "a"), "a\n");
+    assert.equal(endNewline("a", "a"), "a");
+    assert.equal(endNewline("a\n", "a\n"), "a\n");
+  });
+
+  test("a push denied at push time is held for the head: no repeat of the model calls or the push", async () => {
+    const w = world({ conflicting: false });
+    const deps: FixupDeps = { ...w.deps, exec: async (cmd, args, io) => (args.includes("push") ? { code: 1, stdout: "", stderr: "remote: GH013: Repository rule violations found" } : w.deps.exec(cmd, args, io)) };
+    const db = fresh(w.head);
+    await runFixup(db, { repo: "app", dryRun: false }, () => {}, deps);
+    assert.deepEqual(db.prepare("SELECT state FROM conflict_merges").all().map((r) => ({ ...r })), [{ state: "push-denied" }]);
+    assert.equal(classifyConflicts(db, "app")[0]!.bucket, "held");
+    assert.equal(selectFixups(db, "app").conflictMerge.length, 0);
+  });
+
+  test("a branch protected on GitHub, shared by two open PRs, or based on by a closed PR is not pushable", () => {
+    const db = fresh("h1", { headRepo: "storytold/app" });
+    assert.equal(classifyConflicts(db, "app")[0]!.c.pushable, true);
+    db.prepare("INSERT INTO items (repo, number, kind, state, title, author, head_ref, base_ref, head_repo, created_at, updated_at) VALUES ('app', 9, 'pr', 'OPEN', 't', 'x', 'topic', 'main', 'storytold/app', ?, ?)").run(T0, T0);
+    assert.equal(classifyConflicts(db, "app")[0]!.c.pushable, false);
+    db.prepare("DELETE FROM items WHERE number = 9").run();
+    db.prepare("INSERT INTO items (repo, number, kind, state, title, author, head_ref, base_ref, head_repo, created_at, updated_at) VALUES ('app', 9, 'pr', 'CLOSED', 't', 'x', 'y', 'topic', 'someone/app', ?, ?)").run(T0, T0);
+    assert.equal(classifyConflicts(db, "app")[0]!.c.pushable, false);
+    assert.equal(pushable("storytold/app", "app", false, "v1.2"), false);
+    assert.equal(pushable("storytold/app", "app", false, "topic", () => false, true), false);
   });
 });

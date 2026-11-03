@@ -102,6 +102,7 @@ export const PR_QUERY = `query($name: String!, $n: Int!) {
     pullRequest(number: $n) {
       id state isDraft headRefOid headRefName maintainerCanModify mergeable
       headRepository { nameWithOwner }
+      headRef { branchProtectionRule { id } }
       assignees(first: 10) { nodes { login } }
     }
   }
@@ -109,7 +110,7 @@ export const PR_QUERY = `query($name: String!, $n: Int!) {
 
 export type PrNode = {
   id: string; state: string; isDraft: boolean; headRefOid: string; headRefName: string; maintainerCanModify: boolean; mergeable: string | null;
-  headRepository: { nameWithOwner: string } | null; assignees?: { nodes?: { login: string }[] };
+  headRepository: { nameWithOwner: string } | null; headRef?: { branchProtectionRule?: { id: string } | null } | null; assignees?: { nodes?: { login: string }[] };
 };
 
 /**
@@ -149,11 +150,11 @@ class Recorder {
   }
 
   /** A fixups row and a stages row: `hold` for the two states that need a person, else the PR's `take` stage with a note. */
-  fixup(c: FixCandidate, state: "pushed" | "failed" | "refused" | "rejected" | "cannot-push" | "too-large" | "asked", reason: string | null, files: string[], toHead: string | null = null): void {
+  fixup(c: FixCandidate, state: "pushed" | "failed" | "refused" | "rejected" | "cannot-push" | "too-large" | "asked" | "push-denied", reason: string | null, files: string[], toHead: string | null = null): void {
     const at = this.at();
     if (c.carry) {
       // A carry-over keeps its own record; the PR's take-fix tries and stage are not touched.
-      const ended = state === "pushed" || state === "asked" || state === "cannot-push" || state === "too-large";
+      const ended = state === "pushed" || state === "asked" || state === "cannot-push" || state === "too-large" || state === "push-denied";
       const tried = !ended;
       const next = ended || c.attempt >= MAX_ATTEMPTS ? (state === "pushed" || state === "asked" ? "done" : "held") : "queued";
       this.db.prepare("UPDATE dupe_carries SET state = ?, attempts = attempts + ?, outcome = ?, to_head = ?, updated_at = ? WHERE decision_id = ? AND number = ?")
@@ -162,7 +163,7 @@ class Recorder {
     }
     this.db.prepare("INSERT INTO fixups (repo, number, from_head, to_head, state, reason, files, attempt, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
       .run(c.repo, c.number, c.head, toHead, state, reason, JSON.stringify(files), c.attempt, at);
-    const hold = state === "cannot-push" || state === "too-large";
+    const hold = state === "cannot-push" || state === "too-large" || state === "push-denied";
     const note = state === "pushed" ? `fix-up pushed at ${short(c.head)}: ${files.join(", ")}`
       : state === "asked" ? `asked the contributor for changes at ${short(c.head)}: ${files.join(", ")}` : `fix-up ${state} at ${short(c.head)}: ${reason}`;
     this.db.prepare("INSERT INTO stages (repo, number, stage, at, actor, note) VALUES (?, ?, ?, ?, ?, ?)")
@@ -271,7 +272,7 @@ export async function runFixup(db: DatabaseSync, params: FixupParams, log: (line
       summary.failed.push({ ref, reason });
       log(`  ${ref}: ${state}: ${reason}`);
     };
-    const hold = (state: "cannot-push" | "too-large", raw: string) => {
+    const hold = (state: "cannot-push" | "too-large" | "push-denied", raw: string) => {
       gaveUp = true;
       const reason = scrubReason(raw, d.root);
       rec.fixup(c, state, reason, files);
@@ -286,7 +287,7 @@ export async function runFixup(db: DatabaseSync, params: FixupParams, log: (line
       if (!pr || pr.state !== "OPEN" || pr.isDraft) { log(`  ${ref}: skipped: no longer an open, non-draft PR`); continue; }
       if (pr.headRefOid !== c.head) { log(`  ${ref}: skipped: head moved to ${short(pr.headRefOid)} since the review`); continue; }
       params.onHandled?.(++handled.n);
-      if (!pr.headRepository || !pushable(pr.headRepository.nameWithOwner, repo, pr.maintainerCanModify, pr.headRefName, longLivedOf(db, repo))) {
+      if (!pr.headRepository || !pushable(pr.headRepository.nameWithOwner, repo, pr.maintainerCanModify, pr.headRefName, longLivedOf(db, repo), !!pr.headRef?.branchProtectionRule)) {
         // A carry-over we can't push is suggested on the PR instead, when the repo allows comments.
         if (c.carry && commentApprovalOf(db, repo)) await askOne(c, false);
         else hold("cannot-push", HOLD_CANNOT_PUSH);
@@ -366,7 +367,7 @@ export async function runFixup(db: DatabaseSync, params: FixupParams, log: (line
       if (push.code !== 0) {
         const err = oneLine(push.stderr);
         if (/stale info|rejected|fetch first/i.test(err)) fail("refused", "the branch moved since the review");
-        else if (/denied|403|permission|not allowed|protected branch/i.test(err)) hold("cannot-push", HOLD_CANNOT_PUSH);
+        else if (/denied|403|permission|not allowed|protected branch|declined|GH013/i.test(err)) hold("push-denied", HOLD_CANNOT_PUSH);
         else fail("failed", `push failed: ${err}`);
         continue;
       }

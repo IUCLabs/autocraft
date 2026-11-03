@@ -78,4 +78,11 @@ describe("pushable", () => {
     assert.equal(sel.ask.length, 0);
     assert.equal(sel.fix.length, 1);
   });
+
+  test("a push denied at push time records push-denied and the head is not tried again", async () => {
+    const db = pr("storytold/app", false);
+    db.prepare("INSERT INTO fixups (repo, number, from_head, state, files, attempt, created_at) VALUES ('app', 7, 'h1', 'push-denied', '[]', 1, ?)").run(T1);
+    assert.equal(selectFixups(db, "app").fix.length, 0);
+    assert.equal(classifyFixups(db, "app")[0]!.bucket, "hold");
+  });
 });

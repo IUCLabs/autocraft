@@ -15,7 +15,7 @@ import { CLAUDE_PROMPTS } from "../prompts/index.ts";
 import { BASE_NAME, classifyConflicts, MAX_CONFLICT_TRIES, type ConflictCandidate } from "./conflict-state.ts";
 import type { Git } from "./git.ts";
 import { noteLive, type FixupDeps, type FixupSummary, type PrNode, type Who } from "./index.ts";
-import { hasMarkers, keepsOutside, parseResolution, resolvablePath, type ConflictPr } from "./patch.ts";
+import { endNewline, hasMarkers, keepsOutside, parseResolution, resolvablePath, type ConflictPr } from "./patch.ts";
 import { BASE_ORG, longLivedOf, pushable } from "./pushable.ts";
 import { conflictAskText, conflictCommentText, mergeMessage } from "./template.ts";
 
@@ -94,7 +94,7 @@ export async function mergeConflict(db: DatabaseSync, x: ConflictRun, c: Conflic
   };
   /** A skip that holds at every run for this head: recorded once so the PR is not selected again. */
   const skip = (why: string) => { x.log(`  ${ref}: skipped: ${why}`); record(db, x.at(), c, "skipped", why, [], baseSha); };
-  const held = (state: "cannot-push", reason: string) => {
+  const held = (state: "push-denied", reason: string) => {
     gaveUp = true;
     record(db, x.at(), c, state, reason, files, baseSha);
     x.summary.held.push({ ref, reason });
@@ -105,7 +105,7 @@ export async function mergeConflict(db: DatabaseSync, x: ConflictRun, c: Conflic
     const pr = await live(db, x, c);
     if (!pr) return;
     if (pr.mergeable !== "CONFLICTING") { x.log(`  ${ref}: skipped: GitHub no longer reports a conflict`); return; }
-    if (!pr.headRepository || !pushable(pr.headRepository.nameWithOwner, x.repo, pr.maintainerCanModify, pr.headRefName, longLivedOf(db, x.repo))) { x.log(`  ${ref}: skipped: the branch is no longer pushable`); return; }
+    if (!pr.headRepository || !pushable(pr.headRepository.nameWithOwner, x.repo, pr.maintainerCanModify, pr.headRefName, longLivedOf(db, x.repo), !!pr.headRef?.branchProtectionRule)) { x.log(`  ${ref}: skipped: the branch is no longer pushable`); return; }
     x.onHandled?.(++x.handled.n);
     const git = x.git();
     const head = await git.fetchPr(BASE_ORG, x.repo, c.number);
@@ -145,17 +145,18 @@ export async function mergeConflict(db: DatabaseSync, x: ConflictRun, c: Conflic
       if (reply === null) { fail("failed", "the model gave no answer"); return; }
       const res = parseResolution(reply, files);
       if (!res.ok) { fail("refused", res.reason); return; }
+      const resFiles = res.files.map((f) => ({ path: f.path, content: endNewline(shown.find((s) => s.path === f.path)!.content, f.content) }));
       const scratch = mkdtempSync(join(x.d.root, ".index-"));
       try {
-        tree = await git.withFiles(merge.tree, res.files.map((f) => ({ path: f.path, mode: modes.get(f.path)!, content: f.content })), join(scratch, "index"));
+        tree = await git.withFiles(merge.tree, resFiles.map((f) => ({ path: f.path, mode: modes.get(f.path)!, content: f.content })), join(scratch, "index"));
       } finally {
         rmSync(scratch, { recursive: true, force: true });
       }
-      const moved = res.files.find((f) => !keepsOutside(shown.find((s) => s.path === f.path)!.content, f.content));
-      if (moved) { fail("refused", `the resolution changes ${moved.path} outside its conflict sections`); return; }
+      const moved = resFiles.find((f) => !keepsOutside(shown.find((s) => s.path === f.path)!.content, f.content, f.path));
+      if (moved) { fail("refused", `the resolution changes ${moved.path} outside its conflict sections or adds lines that are neither side`); return; }
       const changes = await git.rawChanges(merge.tree, tree);
       if (changes.some((ch) => !files.includes(ch[3]!) || ch[0] !== ch[1])) { fail("refused", "the resolution would change files or modes outside the conflicted files"); return; }
-      resolved = res.files.map((f) => ({ path: f.path, conflicted: shown.find((s) => s.path === f.path)!.content, resolved: f.content }));
+      resolved = resFiles.map((f) => ({ path: f.path, conflicted: shown.find((s) => s.path === f.path)!.content, resolved: f.content }));
       const tentative = await git.commitMerge(tree, [head, baseSha], mergeMessage(c.base, pr.headRefName), { name: who.login, email: who.email });
       diff = await git.diffText(head, tentative);
       if (diff.length > CHECK_PATCH_CAP) { fail("refused", `the merge is over the ${CHECK_PATCH_CAP} character limit for the check`); return; }
@@ -174,7 +175,7 @@ export async function mergeConflict(db: DatabaseSync, x: ConflictRun, c: Conflic
     const push = await pushBranch(x.gw, git, "conflict-push", { repo: x.repo, number: c.number, remote: pr.headRepository.nameWithOwner, branch: pr.headRefName, sha: commit, expected: head }, { run: x.runId, from: head, to: commit, base: c.base, files });
     if (push.code !== 0) {
       const err = oneLine(push.stderr);
-      if (/denied|403|permission|not allowed|protected branch/i.test(err)) { held("cannot-push", "the branch cannot be pushed to"); return; }
+      if (/denied|403|permission|not allowed|protected branch|declined|GH013/i.test(err)) { held("push-denied", "the branch cannot be pushed to"); return; }
       if (/stale info|rejected|fetch first/i.test(err)) fail("refused", "the branch moved since the review");
       else fail("failed", `push failed: ${err}`);
       return;

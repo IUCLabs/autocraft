@@ -210,39 +210,72 @@ export function resolvablePath(p: string): boolean {
 /** True when the text holds conflict markers (the merge tree's files do before resolving). */
 export const hasMarkers = (text: string): boolean => MARKER.test(text);
 
+type Sections = { pieces: string[]; sections: { ours: string[]; theirs: string[] }[] };
+
 /**
- * The text of a merge-tree file outside its conflict sections, as the pieces between sections (one more piece than
- * sections), or null when the markers are not well formed (a `<<<<<<<` ... `=======` ... `>>>>>>>` sequence each).
+ * A merge-tree file split on its conflict markers: the pieces outside the sections (one more piece than sections) and
+ * each section's two sides as lines, or null when the markers are not well formed (`<<<<<<<`, `=======`, `>>>>>>>` in turn).
  */
-export function outsideConflicts(text: string): string[] | null {
+function parseSections(text: string): Sections | null {
   const pieces: string[] = [];
+  const sections: Sections["sections"] = [];
   let cur = "";
   let part: "out" | "ours" | "theirs" = "out";
   for (const line of text.split(/(?<=\n)/)) {
     const t = line.replace(/\r?\n$/, "");
-    if (/^<{7}( |$)/.test(t)) { if (part !== "out") return null; pieces.push(cur); cur = ""; part = "ours"; }
+    if (/^<{7}( |$)/.test(t)) { if (part !== "out") return null; pieces.push(cur); cur = ""; part = "ours"; sections.push({ ours: [], theirs: [] }); }
     else if (/^={7}$/.test(t)) { if (part !== "ours") return null; part = "theirs"; }
     else if (/^>{7}( |$)/.test(t)) { if (part !== "theirs") return null; part = "out"; }
     else if (part === "out") cur += line;
+    else sections[sections.length - 1]![part].push(t);
   }
   if (part !== "out") return null;
   pieces.push(cur);
-  return pieces;
+  return { pieces, sections };
 }
 
-/** True when `resolved` keeps every piece outside the conflict sections of `conflicted` unchanged and in order. */
-export function keepsOutside(conflicted: string, resolved: string): boolean {
-  const pieces = outsideConflicts(conflicted);
-  if (!pieces || pieces.length < 2) return false;
+/** The text of a merge-tree file outside its conflict sections, as the pieces between sections, or null when the markers are malformed. */
+export const outsideConflicts = (text: string): string[] | null => parseSections(text)?.pieces ?? null;
+
+/** Lines a resolution may not introduce unless a side of the conflict already has them. */
+const RISKY_LINE = /^\s*(pub\s+)?(use|extern|mod|fn|impl|macro_rules!|import)\b|\bunsafe\b|include(_str|_bytes)?!|build\.rs|\brequire\(/;
+const DEPENDENCY_LINE = /^\s*"?[\w@/.-]+"?\s*(=\s*("|\{)|:\s*("|\{))/;
+const MAX_OTHER_LINES = 3;
+
+/** A resolution's text ends with a newline when the conflicted file's does. */
+export function endNewline(conflicted: string, resolved: string): string {
+  return conflicted.endsWith("\n") && !resolved.endsWith("\n") ? `${resolved}\n` : resolved;
+}
+
+/**
+ * True when `resolved` keeps every piece outside the conflict sections of `conflicted` unchanged and in order, and each
+ * conflict section's resolution is made of lines from its two sides (any order or subset) plus at most three other
+ * lines, none of which declares code, imports, dependencies or build hooks.
+ */
+export function keepsOutside(conflicted: string, resolved: string, path = ""): boolean {
+  const parsed = parseSections(conflicted);
+  if (!parsed || parsed.pieces.length < 2) return false;
+  const { pieces, sections } = parsed;
   const last = pieces.length - 1;
   if (!resolved.startsWith(pieces[0]!)) return false;
-  let cursor = pieces[0]!.length;
   const end = resolved.length - pieces[last]!.length;
-  if (end < cursor || !resolved.endsWith(pieces[last]!)) return false;
-  for (const mid of pieces.slice(1, last)) {
-    const at = resolved.indexOf(mid, cursor);
-    if (at < 0 || at + mid.length > end) return false;
-    cursor = at + mid.length;
+  if (end < pieces[0]!.length || !resolved.endsWith(pieces[last]!)) return false;
+  const dep = /(^|\/)(Cargo\.toml|package\.json)$/.test(path);
+  let cursor = pieces[0]!.length;
+  for (let i = 0; i < sections.length; i++) {
+    let stop = end;
+    if (i < last - 1) {
+      const at = resolved.indexOf(pieces[i + 1]!, cursor);
+      if (at < 0 || at + pieces[i + 1]!.length > end) return false;
+      stop = at;
+    }
+    const sides = new Set([...sections[i]!.ours, ...sections[i]!.theirs]);
+    let other = 0;
+    for (const line of resolved.slice(cursor, stop).split("\n").filter((l, k, all) => k < all.length - 1 || l !== "")) {
+      if (sides.has(line)) continue;
+      if (++other > MAX_OTHER_LINES || RISKY_LINE.test(line) || (dep && DEPENDENCY_LINE.test(line))) return false;
+    }
+    cursor = i < last - 1 ? stop + pieces[i + 1]!.length : stop;
   }
   return true;
 }

@@ -16,7 +16,7 @@ export const BASE_NAME = /^[A-Za-z0-9._/-]+$/;
 /** Merge tries per head (pushed, failed, refused or rejected) before the PR is left to a person. */
 export const MAX_CONFLICT_TRIES = 2;
 
-export const CONFLICT_STATES = ["merged", "failed", "refused", "rejected", "asked", "skipped", "cannot-push"] as const;
+export const CONFLICT_STATES = ["merged", "failed", "refused", "rejected", "asked", "skipped", "cannot-push", "push-denied"] as const;
 export type ConflictState = (typeof CONFLICT_STATES)[number];
 const TRY_STATES: ConflictState[] = ["merged", "failed", "refused", "rejected"];
 
@@ -36,7 +36,7 @@ export function conflictTries(db: DatabaseSync, repo: string, number: number, he
 export function conflictBucket(db: DatabaseSync, p: { repo: string; number: number; head: string; pushable: boolean }, approvals: { push: boolean; comment: boolean }): ConflictBucket {
   const has = (state: string) => !!db.prepare("SELECT 1 FROM conflict_merges WHERE repo = ? AND number = ? AND from_head = ? AND state = ?").get(p.repo, p.number, p.head, state);
   if (has("merged")) return "done";
-  if (has("skipped")) return "held";
+  if (has("skipped") || has("push-denied")) return "held";
   if (!p.pushable || has("cannot-push")) return has("asked") ? "asked" : approvals.comment ? "ask" : "held";
   if (conflictTries(db, p.repo, p.number, p.head) >= MAX_CONFLICT_TRIES) return "held";
   return approvals.push ? "merge" : "unapproved";

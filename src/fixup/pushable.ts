@@ -8,7 +8,7 @@ import type { DatabaseSync } from "node:sqlite";
 export const BASE_ORG = "storytold";
 
 /** Branch names that are long-lived whatever the repository says. */
-const LONG_LIVED = /^(release|main|master|develop|stable|hotfix|integration)([/._-].*)?$/i;
+const LONG_LIVED = /^(release|main|master|develop|stable|hotfix|integration|next|staging|production|beta|trunk|gh-pages)([/._-].*)?$|^v?\d+(\.\d+)*(\.x)?$/i;
 
 /** True when the head branch lives in the base repository (`headRepo` is `owner/name`). */
 export function sameRepo(headRepo: string | null | undefined, repo: string): boolean {
@@ -17,12 +17,14 @@ export function sameRepo(headRepo: string | null | undefined, repo: string): boo
 
 export type LongLived = (branch: string) => boolean;
 
-/** Decides whether a branch of `repo` is long-lived: its default branch, the base of an open PR, or a release-like name. */
+/** Decides whether a branch of `repo` is long-lived: its default branch, the base of any PR, a release-like name, or a head shared by several open PRs. */
 export function longLivedOf(db: DatabaseSync, repo: string): LongLived {
   const names = new Set<string>();
   const d = (db.prepare("SELECT default_branch FROM repos WHERE name = ?").get(repo) as { default_branch: string | null } | undefined)?.default_branch;
   if (d) names.add(d);
-  for (const r of db.prepare("SELECT DISTINCT base_ref FROM items WHERE repo = ? AND kind = 'pr' AND state = 'OPEN' AND base_ref IS NOT NULL").all(repo) as { base_ref: string }[]) names.add(r.base_ref);
+  for (const r of db.prepare("SELECT DISTINCT base_ref FROM items WHERE repo = ? AND kind = 'pr' AND base_ref IS NOT NULL").all(repo) as { base_ref: string }[]) names.add(r.base_ref);
+  // A same-repo branch that several open PRs use as their head is shared, not one contributor's.
+  for (const r of db.prepare("SELECT head_ref FROM items WHERE repo = ? AND kind = 'pr' AND state = 'OPEN' AND lower(head_repo) = ? AND head_ref IS NOT NULL GROUP BY head_ref HAVING COUNT(*) > 1").all(repo, `${BASE_ORG}/${repo}`.toLowerCase()) as { head_ref: string }[]) names.add(r.head_ref);
   return (branch) => names.has(branch) || LONG_LIVED.test(branch);
 }
 
@@ -30,7 +32,7 @@ export function longLivedOf(db: DatabaseSync, repo: string): LongLived {
  * A PR is pushable when its head is in the base repository (on a branch that isn't long-lived) or maintainers may
  * modify it. `branch` is the head branch name; a same-repo head without one is not pushable.
  */
-export function pushable(headRepo: string | null | undefined, repo: string, canModify: boolean | number | null | undefined, branch: string | null | undefined, longLived: LongLived = (b) => LONG_LIVED.test(b)): boolean {
-  if (sameRepo(headRepo, repo)) return !!branch && !longLived(branch);
+export function pushable(headRepo: string | null | undefined, repo: string, canModify: boolean | number | null | undefined, branch: string | null | undefined, longLived: LongLived = (b) => LONG_LIVED.test(b), protectedBranch = false): boolean {
+  if (sameRepo(headRepo, repo)) return !!branch && !protectedBranch && !longLived(branch);
   return !!canModify;
 }
