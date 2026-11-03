@@ -253,6 +253,13 @@ describe("review fixes: answers, undo and refresh", () => {
     assert.deepEqual(roles(db), ["1:keep", "2:close", "3:close"]);
   });
 
+  test("asking again with nothing changed keeps the open decision as it was", async () => {
+    const db = await three();
+    const before = getDecision(db, GROUP_ID)!.asked_at;
+    assert.deepEqual(askGroupDecisions(db, undefined, "2030-01-01T00:00:00.000Z"), []);
+    assert.equal(getDecision(db, GROUP_ID)!.asked_at, before);
+  });
+
   test("a refresh drops the applied answer and restores the comparison's roles", async () => {
     const db = await three();
     db.prepare("UPDATE dupe_group_items SET role = 'keep' WHERE decision_id = ? AND number = 2").run(GROUP_ID);

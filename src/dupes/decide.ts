@@ -7,7 +7,7 @@
 // by the group decision.
 import type { DatabaseSync } from "node:sqlite";
 import { audit } from "../dash/audit.ts";
-import { actionable, ask, factsOf, getDecision } from "../decisions.ts";
+import { actionable, ask, factsOf, getDecision, validateAsk } from "../decisions.ts";
 import { compareCanonical, canonInfo } from "./canonical.ts";
 import { backlogHeldSql, DUP_FACT, GROUP_OPTIONS, groupId, keepKey, keptOf } from "./held.ts";
 import { duplicateGroups, kindSetsOf, currentComparison, type Group, type KindSet, type StoredComparison } from "./plan.ts";
@@ -107,6 +107,23 @@ function supersede(db: DatabaseSync, p: GroupPlan, id: string, at: string): void
   }
 }
 
+function unchanged(db: DatabaseSync, q: Record<string, unknown>, p: GroupPlan): boolean {
+  const id = q.id as string;
+  const cur = db.prepare("SELECT question, context, facts, options, recommended, summary FROM decisions WHERE id = ? AND answer IS NULL").get(id) as Record<string, string | null> | undefined;
+  if (!cur) return false;
+  const next = validateAsk(q);
+  if (["question", "context", "facts", "options", "recommended", "summary"].some((c) => cur[c] !== next[c])) return false;
+  const g = db.prepare("SELECT source, applied_answer FROM dupe_groups WHERE decision_id = ?").get(id) as { source: string; applied_answer: string | null } | undefined;
+  if (!g || g.source !== p.source || g.applied_answer !== null) return false;
+  type Row = { number: number; role: string; target: number | null; base_role: string; base_target: number | null; detail: string | null; head: string | null };
+  const rows = db.prepare("SELECT number, role, target, base_role, base_target, detail, head FROM dupe_group_items WHERE decision_id = ?").all(id) as Row[];
+  if (rows.some((r) => r.role !== r.base_role || r.target !== r.base_target)) return false;
+  const key = (number: number, role: string, target: number | null, detail: string | null, head: string | null) => JSON.stringify([number, role, target, detail, head]);
+  const stored = rows.map((r) => key(r.number, r.base_role, r.base_target, r.detail, r.head)).sort();
+  const planned = p.items.map((i) => key(i.number, i.role, i.target, i.detail ? JSON.stringify(i.detail) : null, headOf(db, p.repo, i.number, i.kind))).sort();
+  return stored.length === planned.length && stored.every((s, k) => s === planned[k]);
+}
+
 /** The open group decision that already lists one of the plan's members, else the first unused id. */
 function idFor(db: DatabaseSync, p: GroupPlan): string {
   const ph = p.group.members.map(() => "?").join(",");
@@ -180,13 +197,19 @@ export function askGroupDecisions(db: DatabaseSync, repo: string | undefined, at
       const t = textOf(db, p);
       const primary = p.items.find((i) => i.number === p.number)!;
       const alts = canonInfo(db, p.repo, p.items.filter((i) => i.kind === primary.kind && i.number !== p.number && i.role !== "stay").map((i) => i.number)).sort(compareCanonical).slice(0, 3);
-      ask(db, [{
+      const q = {
         id, kind: "duplicate", repo: p.repo, number: p.number, question: t.question, context: t.context, facts: t.facts,
         options: [GROUP_OPTIONS.accept, ...alts.map((a) => ({ key: keepKey(a.number), label: `Keep #${a.number} instead`, hint: `Posts the comments shown under it: keeps #${a.number}, closes the others, #${p.number} too.` })), GROUP_OPTIONS.distinct],
         recommended: p.source === "rule" ? null : "accept",
         asked_by: ACTOR, asked_at: at, summary: t.summary, summary_by: p.source === "rule" ? "rule" : p.model ?? "rule", summary_at: at,
-      }], true);
+      };
       supersede(db, p, id, at);
+      // An open decision whose question and member roles are unchanged keeps its asked time and stored texts.
+      if (unchanged(db, q, p)) {
+        db.exec("COMMIT");
+        continue;
+      }
+      ask(db, [q], true);
       // A refresh restores the comparison's roles; an answer is applied to them again.
       db.prepare("INSERT INTO dupe_groups (decision_id, repo, source) VALUES (?, ?, ?) ON CONFLICT(decision_id) DO UPDATE SET source = excluded.source, applied_answer = NULL").run(id, p.repo, p.source);
       db.prepare("DELETE FROM dupe_group_items WHERE decision_id = ?").run(id);
