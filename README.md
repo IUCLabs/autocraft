@@ -33,7 +33,7 @@ The image is the dashboard's home page (mock data). Each column is a stage with 
 ### Trust boundaries
 
 - Untrusted code runs only in a separate build environment (a worker as another OS user, with rootless Podman), never where GitHub or Claude credentials are.
-- Model calls that use tools run inside a bubblewrap sandbox with `Read`, `Grep` and `Glob` on read-only checkouts. Other calls run without tools.
+- Model calls that use tools run inside a bubblewrap sandbox. They get `Read`, `Grep` and `Glob` on read-only checkouts of the public tracked repos, a Haiku explorer subagent, and read-only item tools (search, item, similar items, PR diff) over a snapshot of the public items. Other calls run without tools.
 - Only `src/github/write.ts` writes to GitHub. Every write is recorded in an audit table, and a test fails if another file writes.
 - Every GitHub write needs an operator's approval for that repo. Approvals are given on the dashboard and cannot be set from the CLI.
 - The dashboard needs GitHub sign-in. Roles are `operator` (answers, approvals, switches, accounts), `maintainer` and `viewer` (read and comment).
@@ -52,7 +52,7 @@ See [Trust boundary](docs/pipeline.md#trust-boundary).
 | `git` | Clones, diffs and pushes |
 | `claude` (Claude Code CLI) | All Claude calls |
 | `bwrap` (bubblewrap, `/usr/bin/bwrap`) | Sandbox for tool-using calls. Without it, those calls run without tools; `CRAFT_AUTO_NO_SANDBOX=1` forces that |
-| `jev` | Jev classification steps |
+| `jev` | CLI for TypeSafe's Jev model, used by the classify, priority and duplicate steps (`jev --compact ask`) |
 | Podman and a second OS user | Build environments for Verify and Fix (optional) |
 | `sqlite3`, `curl` | `deploy/backup.sh` and `deploy/hook.sh` |
 
