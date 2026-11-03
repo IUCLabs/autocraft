@@ -336,6 +336,7 @@ const STAGE: Record<Stage, [string, LucideIcon]> = {
   "verify-planned": ["Verification planned", SparklesIcon],
   "verify-ci-enough": ["CI is enough", CircleCheckIcon],
   "verify-error": ["Verification not planned", MinusIcon],
+  "verify-unavailable": ["Not verified: cannot build here", MinusIcon],
   verified: ["Verified", CircleCheckIcon],
   "verify-failed": ["Verification failed", XIcon],
 };

@@ -15,9 +15,9 @@ import { Client, type Querier } from "../mirror.ts";
 import { refreshChecks } from "../review/checks.ts";
 import { verificationOf } from "../verify/results.ts";
 import { TIER_LABEL } from "../whitelist.ts";
-import { buildQueue, countStates, eligible, HEAD_FACT, MERGE_OPTIONS, mergeDecisionId, QUEUE_STATES, verifyOk, type QueueEntry } from "./queue.ts";
+import { buildQueue, ciAllows, toAsk, countStates, eligible, HEAD_FACT, MERGE_OPTIONS, mergeDecisionId, QUEUE_STATES, VERIFY_UNAVAILABLE, verifyAllows, type QueueEntry } from "./queue.ts";
 
-export { buildQueue, countStates, QUEUE_STATES, type QueueEntry, type QueueState } from "./queue.ts";
+export { buildQueue, countStates, QUEUE_STATES, toAsk, type QueueEntry, type QueueState } from "./queue.ts";
 
 const ORG = "storytold";
 export const DEFAULT_MERGE_COMMAND = "safe-merge";
@@ -137,8 +137,10 @@ export function mergeQuestion(e: QueueEntry): Record<string, unknown> & { id: st
     context: `The review says take, but the merge-without-asking rule doesn't cover it: ${e.outsideRule.join(", ")}.`,
     facts: [
       `size ${e.size}, label ${e.label ?? "not settled"}; author: ${e.author ?? "unknown"}, ${TIER_LABEL[e.tier]}`,
-      `CI ${e.ci}, mergeable ${e.mergeable.toLowerCase()}`,
-      `verify: ${e.verify ? `${e.verify.kind ?? "unknown"}, ${e.verify.state}${e.verify.note ? `: ${e.verify.note}` : ""}` : "none"}`,
+      `CI ${e.ci === "none" ? "none: the repo has no CI checks" : e.ci}, mergeable ${e.mergeable.toLowerCase()}`,
+      e.verify?.state === VERIFY_UNAVAILABLE
+        ? `not verified: ${e.verify.summary ?? "Verify cannot build this repo"}`
+        : `verify: ${e.verify ? `${e.verify.kind ?? "unknown"}, ${e.verify.state}${e.verify.note ? `: ${e.verify.note}` : ""}` : "none"}`,
       `review: ${e.verdict}: ${e.reason}${fixes}`,
       `${HEAD_FACT}${e.head}`,
     ],
@@ -155,8 +157,18 @@ export function answeredHead(db: DatabaseSync, id: string): string | null {
   return f ? f.slice(HEAD_FACT.length).trim() : null;
 }
 
-/** Merge? questions still to ask: take PRs outside the rule with no decision at their head. */
-export const toAsk = (queue: QueueEntry[]): QueueEntry[] => queue.filter((e) => e.state === "needs-decision" && !e.decisionId);
+
+/**
+ * Asks the Merge? decisions that are due in the given repos (default: all), whether or not the repo has
+ * a merge approval or a PR the rule could merge. Writes decisions only, nothing to GitHub.
+ */
+export function askMergeDecisions(db: DatabaseSync, opts: { repos?: string[]; run?: string | null; at?: string } = {}): string[] {
+  const repos = opts.repos && new Set(opts.repos);
+  const queue = buildQueue(db, { merged: "exclude", ...(opts.run === undefined ? {} : { run: opts.run }) });
+  const qs = toAsk(queue.filter((e) => !repos || repos.has(e.repo))).map(mergeQuestion);
+  if (qs.length) ask(db, qs.map((q) => ({ ...q, asked_at: opts.at ?? new Date().toISOString() })));
+  return qs.map((q) => q.id);
+}
 
 // ---- the step ----------------------------------------------------------------
 
@@ -223,14 +235,14 @@ export async function runMerge(db: DatabaseSync, params: MergeParams, log: (line
     if (ch.state !== "OPEN") { refuse(e, null, `no longer open on GitHub (${ch.state.toLowerCase()})`); continue; }
     if (ch.head_oid !== e.head) { refuse(e, null, `head moved from ${short(e.head)} to ${short(ch.head_oid)} since the review`); continue; }
     const ver = verificationOf(db, repo, e.number, ch.head_oid);
-    if (!verifyOk(ver?.state)) { refuse(e, null, `verification at ${short(ch.head_oid)} is ${ver?.state ?? "missing"}, not passed`); continue; }
+    if (!verifyAllows(e.path, ver?.state)) { refuse(e, null, `verification at ${short(ch.head_oid)} is ${ver?.state ?? "missing"}, not passed`); continue; }
     if (e.path === "operator") {
       const still = actionable(db).some((a) => a.id === e.decisionId && a.answer === MERGE_OPTIONS.merge.key);
       if (!still) { refuse(e, null, "the operator's merge answer is gone"); continue; }
       const h = answeredHead(db, e.decisionId!);
       if (h !== ch.head_oid) { refuse(e, null, `head moved since the operator's answer (${h ? short(h) : "no head recorded"} → ${short(ch.head_oid)})`); continue; }
     }
-    if (ch.overall !== "success" || ch.mergeable !== "MERGEABLE") {
+    if (!ciAllows(e.path, ch.overall) || ch.mergeable !== "MERGEABLE") {
       refuse(e, null, `not ready at merge time: CI ${ch.overall}, mergeable ${(ch.mergeable ?? "unknown").toLowerCase()}`);
       continue;
     }
@@ -279,6 +291,13 @@ function parseArgs(args: string[]): { repo: string; limit?: number; apply: boole
 }
 
 export const commands = {
+  "merge-ask": {
+    summary: "merge-ask: ask the Merge? decisions that are due in every repo (writes decisions only)",
+    run(): void {
+      const ids = askMergeDecisions(connect());
+      console.log(`${ids.length} Merge? decisions asked`);
+    },
+  },
   merge: {
     summary: "merge --repo R [--limit N] [--apply]: merge queued PRs that may merge, ask Merge? for the rest (dry run unless --apply)",
     async run(args: string[]): Promise<void> {

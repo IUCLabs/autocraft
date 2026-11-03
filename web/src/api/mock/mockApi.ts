@@ -147,6 +147,7 @@ export function createMockApi(): Api {
         return wait(c, 30);
       },
     },
+    release: () => wait(undefined, 60),
     item: (repo, number) => {
       const it = itemFor(repo, number);
       return wait({ ...it, settled: settledFor(number), ...prWorkFor(number, it.kind) });

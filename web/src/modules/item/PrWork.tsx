@@ -1,8 +1,11 @@
 // Verify, Fix-ups and Actions sections of the Item page.
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
-import type { Item, ItemAction, ItemFixup, ItemVerification, TaskResult } from "../../api/types";
+import type { Item, ItemAction, ItemFixup, ItemVerification, ReleaseAction, TaskResult } from "../../api/types";
+import { useApi } from "../../api/client";
 import { Badge, type Tone } from "../../ui/Badge";
+import { useUser } from "../../shell/UserContext";
+import { ConfirmButton, ErrorLine, useWrite } from "../admin/parts";
 import { ago, span } from "../../lib/format";
 
 function Box({ title, aside, children }: { title: string; aside?: ReactNode; children: ReactNode }) {
@@ -19,9 +22,9 @@ function Box({ title, aside, children }: { title: string; aside?: ReactNode; chi
 
 const V_STATE: Record<ItemVerification["state"], [string, Tone]> = {
   planned: ["Planned", "neutral"], running: ["Running", "accent"], passed: ["Passed", "ok"], failed: ["Failed", "bad"],
-  error: ["Error", "warn"], "ci-enough": ["CI is enough", "ok"], stale: ["Stale", "neutral"],
+  error: ["Error", "warn"], "ci-enough": ["CI is enough", "ok"], stale: ["Stale", "neutral"], unavailable: ["Not verified", "warn"],
 };
-const KIND: Record<ItemVerification["kind"], string> = { "ci-enough": "CI is enough", tests: "Run tests", regression: "Regression test", error: "No plan" };
+const KIND: Record<ItemVerification["kind"], string> = { "ci-enough": "CI is enough", tests: "Run tests", regression: "Regression test", error: "No plan", unavailable: "Cannot build here" };
 const T_TONE: Record<string, Tone> = { queued: "neutral", claimed: "accent", running: "accent", done: "ok", failed: "bad", cancelled: "neutral", lost: "bad" };
 
 const stepText = (r: TaskResult) => `${r.timedOut ? "timed out" : `exit ${r.exitCode ?? "none"}`} · ${r.durationMs < 60_000 ? `${(r.durationMs / 1000).toFixed(1)} s` : span(r.durationMs)}`;
@@ -155,9 +158,43 @@ function Actions({ rows }: { rows: ItemAction[] }) {
   );
 }
 
+const RELEASES: { key: keyof Item["releases"]; action: ReleaseAction; label: string; confirm: string; help: string }[] = [
+  { key: "reviewAgain", action: "review-again", label: "Review again at this head", confirm: "Delete the hold, review again", help: "Removes the hold review of the current head; the Review stage reviews it again." },
+  { key: "verifyAgain", action: "verify-again", label: "Verify again", confirm: "Plan Verify again", help: "Plans the verification of the current head again, with new build tasks." },
+  { key: "fixAgain", action: "fix-again", label: "Try the fix again", confirm: "Forget the attempt, try again", help: "Forgets the skipped or failed fix attempt, so the issue is eligible for Fix once more with a fresh attempt count." },
+];
+
+/** Operator releases for an item that waits for a person. They change the pipeline's tables only; nothing is written to GitHub. */
+function Releases({ it }: { it: Item }) {
+  const api = useApi();
+  const write = useWrite();
+  const shown = RELEASES.filter((r) => it.releases[r.key]);
+  if (!shown.length) return null;
+  return (
+    <Box title="Release" aside="nothing is written to GitHub; the pipeline picks the item up on its next pass">
+      <ErrorLine error={write.error} />
+      <ul className="divide-y divide-line rounded-md border border-line text-sm">
+        {shown.map((r) => (
+          <li key={r.action} className="flex flex-wrap items-center gap-2 px-4 py-2.5">
+            <span className="min-w-0 flex-1 text-ink/75">{r.help}</span>
+            <ConfirmButton
+              label={r.label}
+              confirmLabel={r.confirm}
+              loading={write.busy === r.action}
+              onConfirm={() => void write.run(r.action, () => api.release(it.repo, it.number, r.action))}
+            />
+          </li>
+        ))}
+      </ul>
+    </Box>
+  );
+}
+
 export function PrWork({ it }: { it: Item }) {
+  const operator = useUser().role === "operator";
   return (
     <>
+      {operator && <Releases it={it} />}
       {it.verification && (
         <Box title="Verify" aside="builds and tests of this PR">
           <Verify v={it.verification} />

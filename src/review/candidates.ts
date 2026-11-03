@@ -118,10 +118,10 @@ export function selectCandidates(db: DatabaseSync, repo: string, run: string | n
  * The answer of the latest answered scope decision per item ("repo#n"), for
  * every item at once: the same rule as scopeAnswer(), in one query.
  */
-export function scopeAnswers(db: DatabaseSync): Map<string, string> {
+export function scopeAnswers(db: DatabaseSync, operatorsOnly = false): Map<string, string> {
   const out = new Map<string, string>();
   const rows = db.prepare(`SELECT repo, number, items, answer, exceptions FROM decisions
-    WHERE kind = 'scope' AND answer IS NOT NULL ORDER BY answered_at DESC`).all() as
+    WHERE kind = 'scope' AND answer IS NOT NULL ${operatorsOnly ? "AND answered_by IN (SELECT login FROM access WHERE role = 'operator')" : ""} ORDER BY answered_at DESC`).all() as
     { repo: string | null; number: number | null; items: string | null; answer: string; exceptions: string | null }[];
   for (const r of rows) {
     if (r.number !== null) {

@@ -27,14 +27,14 @@ const list = <T>(s: string | null): T[] => {
 export type RustCheck = (repo: string, sha: string) => boolean | null;
 export const cachedRust: RustCheck = (repo, sha) => cachedCratesOf(repo, sha)?.rust ?? null;
 
-/**
- * Open, non-draft PRs of a public repo whose review at the current head is `take` (take-fix gets a fix-up
- * push first, which is reviewed again), whose CI does not fail at that head, and that have no verification
- * at that head (a `stale` one does not count). A repo known to have no Cargo.toml at the root is left out.
- */
-export function selectCandidates(db: DatabaseSync, repo: string, run: string | null = latestRun(db), rust: RustCheck = cachedRust): VerifyCandidate[] {
-  const pub = db.prepare("SELECT 1 FROM repos WHERE name = ? AND visibility = 'public'").get(repo);
-  if (!pub) return [];
+type Scanned = { c: VerifyCandidate; unavailable: string | null };
+
+/** Why Verify cannot run for the repo's PRs, or null: it builds only public Rust workspaces. */
+export const PRIVATE_REASON = "the repo is private";
+export const NOT_RUST_REASON = "the repo is not a Rust workspace";
+
+function scan(db: DatabaseSync, repo: string, run: string | null, rust: RustCheck): Scanned[] {
+  const pub = !!db.prepare("SELECT 1 FROM repos WHERE name = ? AND visibility = 'public'").get(repo);
   const rows = db.prepare(`SELECT i.repo, i.number, i.title, i.body, i.head_oid, i.updated_at, i.is_draft,
       c.head_oid AS c_head, c.state AS c_state, c.is_draft AS c_draft, c.fetched_at AS c_at, c.overall AS c_overall,
       r.verdict AS r_verdict, r.reason AS r_reason, r.risks AS r_risks, r.fixes AS r_fixes
@@ -45,7 +45,7 @@ export function selectCandidates(db: DatabaseSync, repo: string, run: string | n
     WHERE i.repo = ? AND i.kind = 'pr' AND i.state = 'OPEN' AND ${notHeldSql("i")} ORDER BY p.score IS NULL, p.score DESC, i.number`).all(repo) as Row[];
   const done = db.prepare("SELECT 1 FROM verifications WHERE repo = ? AND number = ? AND head_sha = ? AND state != 'stale'");
   const settled = settledLookup(db, run);
-  const out: VerifyCandidate[] = [];
+  const out: Scanned[] = [];
   for (const r of rows) {
     const fresh = r.c_at && (!r.updated_at || r.c_at > r.updated_at);
     if (fresh ? r.c_state !== "OPEN" || r.c_draft : r.is_draft) continue;
@@ -53,11 +53,28 @@ export function selectCandidates(db: DatabaseSync, repo: string, run: string | n
     if (!head || r.r_verdict !== "take") continue;
     if (r.c_head === head && r.c_overall === "failure") continue;
     if (done.get(r.repo, r.number, head)) continue;
-    if (rust(r.repo, head) === false) continue;
+    const unavailable = !pub ? PRIVATE_REASON : rust(r.repo, head) === false ? NOT_RUST_REASON : null;
     out.push({
-      repo: r.repo, number: r.number, title: r.title ?? "", body: r.body ?? "", head_oid: head, label: settled(r.repo, r.number).label ?? null,
-      review: { verdict: r.r_verdict, reason: r.r_reason ?? "", risks: list<string>(r.r_risks), fixes: list<{ file: string; change: string }>(r.r_fixes) },
+      unavailable,
+      c: {
+        repo: r.repo, number: r.number, title: r.title ?? "", body: r.body ?? "", head_oid: head, label: settled(r.repo, r.number).label ?? null,
+        review: { verdict: r.r_verdict, reason: r.r_reason ?? "", risks: list<string>(r.r_risks), fixes: list<{ file: string; change: string }>(r.r_fixes) },
+      },
     });
   }
   return out;
+}
+
+/**
+ * Open, non-draft PRs of a public repo whose review at the current head is `take` (take-fix gets a fix-up
+ * push first, which is reviewed again), whose CI does not fail at that head, and that have no verification
+ * at that head (a `stale` one does not count). A repo known to have no Cargo.toml at the root is left out.
+ */
+export function selectCandidates(db: DatabaseSync, repo: string, run: string | null = latestRun(db), rust: RustCheck = cachedRust): VerifyCandidate[] {
+  return scan(db, repo, run, rust).filter((x) => !x.unavailable).map((x) => x.c);
+}
+
+/** The PRs selectCandidates leaves out only because Verify cannot build the repo (private, or no Cargo.toml at the root), with why. */
+export function unavailableCandidates(db: DatabaseSync, repo: string, run: string | null = latestRun(db), rust: RustCheck = cachedRust): { c: VerifyCandidate; reason: string }[] {
+  return scan(db, repo, run, rust).flatMap((x) => (x.unavailable ? [{ c: x.c, reason: x.unavailable }] : []));
 }

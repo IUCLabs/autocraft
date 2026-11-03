@@ -25,6 +25,8 @@ import { queue } from "./queue.ts";
 import { work } from "./work.ts";
 import { flow } from "./flow.ts";
 import * as items from "./items.ts";
+import * as operator from "./operator.ts";
+import { actionsOf as releasesOf } from "../../operator-actions.ts";
 import { verificationOf } from "../../verify/results.ts";
 import { settledOf } from "../../classify/settled.ts";
 import { classificationsOf, itemState, relatedOf } from "./decisions.ts";
@@ -114,7 +116,7 @@ async function item(db: DatabaseSync, req: Req): Promise<Item> {
     comments: comments.map((x) => ({ ...x, author: x.author ?? "", body: x.body ?? "" })),
     decisionIds, settled: settledOf(db, repo, n) as Item["settled"], priority: priorityOf(db, repo, n),
     ...(it.kind === "pr" ? prWork(db, repo, n) : { verification: null, fixups: [] }),
-    actions: actionsOf(db, repo, n),
+    actions: actionsOf(db, repo, n), releases: releasesOf(db, repo, n),
   };
 }
 
@@ -264,6 +266,9 @@ export function apiRoutes(opts: ApiOptions = {}): Route[] {
     post("/api/decisions/:id/comments", (db, req) => dec.comment(db, req, limiter)),
     post("/api/decisions/:id/claim", dec.claim),
     get("/api/items/:repo/:n", item),
+    { method: "POST", pattern: "/api/items/:repo/:n/review-again", operator: true, handler: ok(operator.reviewItemAgain) },
+    { method: "POST", pattern: "/api/items/:repo/:n/verify-again", operator: true, handler: ok(operator.verifyItemAgain) },
+    { method: "POST", pattern: "/api/items/:repo/:n/fix-again", operator: true, handler: ok(operator.fixItemAgain) },
     get("/api/items", items.listItems),
     get("/api/search", (db, req) => req.query.get("mode") === "semantic" ? sim.semanticSearch(db, req, vectors) : items.quickSearch(db, req)),
     get("/api/progress", async (db, req) => progress(db, await hiddenRepos(db, req))),

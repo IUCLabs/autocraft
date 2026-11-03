@@ -741,6 +741,7 @@ export function itemFor(repo: string, number: number): Item {
     verification: null,
     fixups: [],
     actions: [],
+    releases: { reviewAgain: false, verifyAgain: false, fixAgain: false },
   };
 }
 

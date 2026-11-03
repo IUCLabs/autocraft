@@ -125,6 +125,7 @@ export type Stage =
   | "verify-planned"
   | "verify-ci-enough"
   | "verify-error"
+  | "verify-unavailable"
   | "verified"
   | "verify-failed";
 
@@ -200,12 +201,14 @@ export interface Item extends ItemRef {
   fixups: ItemFixup[];
   /** The Act step's GitHub writes after an operator's answer, oldest first. */
   actions: ItemAction[];
+  /** Releases an operator can use on this item now (the item waits for a person). */
+  releases: ItemReleases;
   /** null or absent before the item was rated. */
   priority?: PriorityInfo | null;
 }
 
-export type VerificationKind = "ci-enough" | "tests" | "regression" | "error";
-export type VerificationState = "planned" | "running" | "passed" | "failed" | "error" | "ci-enough" | "stale";
+export type VerificationKind = "ci-enough" | "tests" | "regression" | "error" | "unavailable";
+export type VerificationState = "planned" | "running" | "passed" | "failed" | "error" | "ci-enough" | "stale" | "unavailable";
 export interface ItemVerification {
   headSha: string;
   baseSha: string | null;
@@ -225,6 +228,19 @@ export interface ItemVerification {
 }
 
 export type FixupState = "pushed" | "failed" | "refused" | "cannot-push" | "too-large" | "asked";
+/** The operator releases of an item: the last path segment of POST /api/items/:repo/:n/<action>. */
+export type ReleaseAction = "review-again" | "verify-again" | "fix-again";
+
+/** Operator releases that apply to an item right now. */
+export interface ItemReleases {
+  /** A hold review at the current head can be cleared so the head is reviewed again. */
+  reviewAgain: boolean;
+  /** A failed or errored verification at the current head can be planned again. */
+  verifyAgain: boolean;
+  /** A skipped or failed fix attempt can be tried again. */
+  fixAgain: boolean;
+}
+
 export interface ItemFixup {
   fromHead: string;
   toHead: string | null;
@@ -846,7 +862,8 @@ export interface CommentTemplate {
  * waiting-ci (CI pending or none, or GitHub still computing mergeability), ci-failed, conflict,
  * needs-fix-up (take-fix), waiting-verify (no passed verification at the head yet), verify-failed, verify-error,
  * needs-decision (outside the rule; Merge? asked or about to be),
- * declined (the operator answered hold or close), merged.
+ * declined (the operator answered hold or close), merged,
+ * held-duplicate (an open Duplicate? decision keeps it out of every later stage).
  */
 export type QueueState =
   | "ready"
@@ -861,7 +878,8 @@ export type QueueState =
   | "verify-error"
   | "needs-decision"
   | "declined"
-  | "merged";
+  | "merged"
+  | "held-duplicate";
 
 export interface QueueRow {
   repo: RepoName;
@@ -938,6 +956,8 @@ export interface WorkRow {
   label: TypeLabel | null;
   /** The pipeline step the item waits for, in words. */
   next: string;
+  /** App path of the list where a person resolves what the item waits for, or null. */
+  nextHref: string | null;
 }
 
 export interface WorkFilter {

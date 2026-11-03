@@ -158,6 +158,7 @@ Writes each settled type label and flag to GitHub. No model.
 - Only settled types are labelled. A label a person set is never changed: items with a different type label are skipped and reported.
 - Needs the repo's **label approval**. Without it the stage only plans.
 - Writes in batches, at most 60 a minute. A re-run skips items already labelled.
+- An operator's `plugin` scope answer sets the plugin candidate type, also where the classifiers disagreed; the label goes through the same approval.
 
 ## Review
 
@@ -203,13 +204,13 @@ For a take-fix review, Sonnet applies the listed small fixes to the contributor'
 
 ## Verify
 
-Builds and tests `take` PRs in the sandbox. Only Rust repos (a `Cargo.toml` at the root), public PRs whose CI does not fail.
+Builds and tests `take` PRs in the sandbox. Only Rust repos (a `Cargo.toml` at the root), public PRs whose CI does not fail. For a private or non-Rust repo Verify records `unavailable` ("not verified") instead, and the PR goes on to the Merge? decision.
 
 - **Plan.** Sonnet, no tools, picks one kind: `ci-enough` (no task), `tests` (up to 5 crates, optional test filters) or `regression` (bugfixes only: a test that fails on the base commit and passes on the head). Our code validates the plan; anything invalid is an error.
 - **Result.** Pass or fail comes from exit codes only, never from a model.
 - **Regression.** The test must fail on the base commit and pass on the head. If it also passes on the base, the verification fails with "regression test passes on base" and the PR is held.
 - **Failure.** Haiku writes a summary of at most 60 words from the failing step's log (credentials scrubbed, quoted as untrusted). The PR is held.
-- **Errors.** An environment error is retried once per head.
+- **Errors.** An environment error is retried once per head. An operator can plan a failed or errored verification again from the Item page ("Verify again").
 - **Stale.** A verification counts only at the head it was made for (the checks table's head when newer than the mirror's, as in Review); a push or a close cancels its tasks.
 
 Models: Sonnet (plan), Haiku (failure summary). Daily limit 30 PRs.
@@ -228,7 +229,9 @@ The queue lists every PR whose latest review is take or take-fix at its current 
 - Verify passed, or planned "CI is enough"
 - GitHub reports it mergeable
 
-A take PR that fails any of the first four gets a "Merge this PR?" decision (Merge, Hold, Close) once Verify has passed. One decision per head, so a push asks again. An answer of merge still needs green CI, a passed Verify and a mergeable PR, and the head must not have moved.
+A take PR that fails any of the first four, is not verified (Verify `unavailable`) or has no CI checks gets a "Merge this PR?" decision (Merge, Hold, Close) once Verify has an outcome, and its question says "not verified: <reason>" or "no CI". Such a PR is never merged by the rule. The `merge-ask` step asks these decisions for every tracked repo, whether or not merging is approved there; it writes only decisions. One decision per head, so a push asks again. An answer of merge needs a mergeable PR and the head must not have moved; it also needs green CI and a passed Verify, except for a PR whose question said "no CI" or "not verified".
+
+A PR held by an open Duplicate? decision shows as `held-duplicate` and is not merged.
 
 **Merge step.** Needs the repo's **merge approval**. Per PR it refreshes checks, assigns the PR to the pipeline's account, then runs `safe-merge` (squash, or merge when the commits have more than one author). It never calls `gh pr merge` itself and never passes `--allow-pending`. A refusal is recorded with its reason and the PR stays queued; any other error stops the run. No model. Daily limit 10.
 
@@ -282,8 +285,14 @@ Untrusted code (a PR's build and tests) never runs where the GitHub token or a C
 - **Reference behaviour** that public sources don't settle.
 - **Merges outside the rule** (see Merge queue). Contributors shows who is on the whitelist and why.
 - **Closing a PR** the review says to close.
+- **A label** where Jev and Haiku disagree outside the scope labels: the Work queue says "Models disagree: needs a label" and links to the Items list of disagreements.
+- **Duplicate?** answers: an open one holds the item out of Review, Verify, Fix and the merge queue (Work queue: "Held").
 
 Everything else waits for a decision on this dashboard.
+
+**Releases.** An operator can release an item that stopped waiting for a person, from the Item page (two clicks, audited, nothing written to GitHub; the pipeline takes the item up on its next pass): *Review again at this head* (removes a hold review of the current head), *Verify again* (after failed or error) and *Try the fix again* (a skipped or failed issue fix; the attempt count starts over).
+
+**Applied answers.** An answer that writes nothing counts as applied once the pipeline used it (scope take / small-extra when the item is reviewed or fixed, plugin when the label is on the item, need-info and Close? hold / keep at the next pass). From then the dashboard offers no Undo.
 
 ## Trust boundary
 

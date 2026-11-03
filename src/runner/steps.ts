@@ -267,6 +267,23 @@ export const STEPS: StepDef[] = [
     },
   },
   {
+    name: "merge-ask",
+    title: "Ask Merge? decisions",
+    description: "Asks a \"Merge this PR?\" decision for every taken pull request the merge rule does not cover once its verification is in, in all tracked repos, whether or not merging is approved there. Calls no model and writes nothing to GitHub.",
+    stage: 6,
+    requires: "operator",
+    group: "local",
+    models: [],
+    params: [],
+    run: async (ctx) => {
+      const { askMergeDecisions } = await import("../merge/index.ts");
+      const { trackedNames } = await import("../repos.ts");
+      const ids = askMergeDecisions(ctx.db, { repos: trackedNames(ctx.db) });
+      ctx.handled(ids.length);
+      return `${ids.length} Merge? decisions asked`;
+    },
+  },
+  {
     name: "act",
     title: "Comment and close",
     description: "Posts one short comment and closes the items an operator answered Out of scope or Close, and asks a \"Close this PR?\" decision for each PR whose review says close. Skips an item that already closed or whose PR head moved. Calls no model.",

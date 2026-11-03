@@ -14,7 +14,7 @@ import { add, askClaude, saveUsage, type Usage } from "../classify/run.ts";
 import { CLAUDE_PROMPTS } from "../prompts/index.ts";
 import { cachedDiff, codeDiff, ghDiff, type DiffFetcher } from "../review/diff.ts";
 import { cachedCrates, ghApi, ghCrates, type CratesFetcher } from "./crates.ts";
-import { selectCandidates, type VerifyCandidate } from "./candidates.ts";
+import { NOT_RUST_REASON, selectCandidates, unavailableCandidates, type VerifyCandidate } from "./candidates.ts";
 import { parsePlanReply, type VerifyPlan } from "./plan.ts";
 import { queueTasks, queueWarmBuild } from "./tasks.ts";
 import type { Crate, VerifyPlanInput } from "./types.ts";
@@ -69,14 +69,17 @@ export function saveVerification(db: DatabaseSync, c: { repo: string; number: nu
   db.prepare(`INSERT OR REPLACE INTO verifications (repo, number, head_sha, base_sha, kind, reason, plan, model, head_task_id, base_task_id, state, summary, created_at, finished_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .run(c.repo, c.number, c.head_oid, v.baseSha, v.kind, v.reason, v.plan === null ? null : JSON.stringify(v.plan), v.model, v.headTask, v.baseTask, v.state, v.summary, at,
-      v.state === "ci-enough" || v.state === "error" ? at : null);
-  const stage = v.state === "planned" ? "verify-planned" : v.state === "ci-enough" ? "verify-ci-enough" : "verify-error";
+      v.state === "ci-enough" || v.state === "error" || v.state === "unavailable" ? at : null);
+  const stage = v.state === "planned" ? "verify-planned" : v.state === "ci-enough" ? "verify-ci-enough" : v.state === "unavailable" ? "verify-unavailable" : "verify-error";
   db.prepare("INSERT INTO stages (repo, number, stage, at, actor, note) VALUES (?, ?, ?, ?, ?, ?)")
     .run(c.repo, c.number, stage, at, "verify", `${v.kind} at ${c.head_oid.slice(0, 7)}: ${v.summary ?? v.reason}`.slice(0, 300));
 }
 
 /** The plan as stored: the patch is in the task row, so the plan column keeps its size. */
 const storedPlan = (p: VerifyPlan): unknown => (p.kind === "regression" ? { kind: p.kind, crate: p.crate, dir: p.dir, test_lines: p.patch.split("\n").length - 6 } : p);
+
+/** Verify cannot build this PR's repo: the Merge? decision says "not verified" and an operator decides. */
+const unavailableRow = (reason: string): Saved => ({ kind: "unavailable", reason, plan: null, model: null, headTask: null, baseTask: null, baseSha: null, state: "unavailable", summary: reason });
 
 const errorRow = (reason: string): Saved => ({ kind: "error", reason, plan: null, model: null, headTask: null, baseTask: null, baseSha: null, state: "error", summary: reason });
 
@@ -90,6 +93,13 @@ export async function runVerify(db: DatabaseSync, params: VerifyParams, log: (li
     return summary;
   }
   if (params.limit !== undefined) cands = cands.slice(0, params.limit);
+  // Nothing to build for these: recorded at once so the PR goes on to the Merge? decision.
+  for (const u of unavailableCandidates(db, repo)) {
+    saveVerification(db, u.c, unavailableRow(u.reason));
+    log(`  ${refOf(u.c)}: verification unavailable: ${u.reason}`);
+    summary.handled++;
+    params.onHandled?.(summary.handled);
+  }
   const branch = (db.prepare("SELECT default_branch FROM repos WHERE name = ?").get(repo) as { default_branch: string | null } | undefined)?.default_branch ?? "main";
   let queued = false;
 
@@ -98,7 +108,12 @@ export async function runVerify(db: DatabaseSync, params: VerifyParams, log: (li
     const handle = (): void => { summary.handled++; params.onHandled?.(summary.handled); };
     const cr = await cachedCrates(repo, c.head_oid, deps.fetchCrates);
     if (!cr.ok) { log(`  ${ref}: no crate list: ${cr.error}`); summary.skipped.push(ref); continue; }
-    if (!cr.rust) { log(`  ${ref}: not a Rust workspace`); continue; }
+    if (!cr.rust) {
+      saveVerification(db, c, unavailableRow(NOT_RUST_REASON));
+      log(`  ${ref}: verification unavailable: ${NOT_RUST_REASON}`);
+      handle();
+      continue;
+    }
     const d = await cachedDiff(repo, c.number, c.head_oid, deps.fetchDiff);
     if (!d.ok) {
       if (d.tooLarge) { saveVerification(db, c, errorRow("GitHub refuses the diff: too large to plan")); summary.errors++; handle(); }

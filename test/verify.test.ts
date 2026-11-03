@@ -345,7 +345,7 @@ describe("runVerify", () => {
     }
   });
 
-  test("a repo without a root Cargo.toml is not planned and calls no model", async () => {
+  test("a repo without a root Cargo.toml is not planned, calls no model and is recorded as unavailable", async () => {
     const db = fresh();
     const calls: Call[] = [];
     const restore = setRunner(fakeClaude(calls, {}));
@@ -354,7 +354,8 @@ describe("runVerify", () => {
       d.fetchCrates = async () => ({ ok: true, rust: false, crates: [] });
       await runVerify(db, { repo: "app" }, quiet, d);
       assert.equal(calls.length, 0);
-      assert.equal((db.prepare("SELECT COUNT(*) AS n FROM verifications WHERE state <> 'planned'").get() as { n: number }).n, 0);
+      const states = db.prepare("SELECT DISTINCT state FROM verifications").all() as { state: string }[];
+      assert.ok(states.length > 0 && states.every((r) => r.state === "unavailable" || r.state === "planned"));
       assert.deepEqual(selectCandidates(db, "app"), []); // remembered from the cached tree
     } finally {
       restore();

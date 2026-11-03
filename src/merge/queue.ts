@@ -3,12 +3,13 @@
 import type { DatabaseSync } from "node:sqlite";
 import { latestRun, settledLookup } from "../classify/settled.ts";
 import { actionable } from "../decisions.ts";
+import { duplicateHeld } from "../dupes/held.ts";
 import { headOf } from "../review/candidates.ts";
 import { getRule, STATS_SQL, tierOf, type Tier } from "../whitelist.ts";
 
 export const QUEUE_STATES = [
   "ready", "decision-answered-merge", "refused", "waiting-ci", "ci-failed", "conflict",
-  "needs-fix-up", "waiting-verify", "verify-failed", "verify-error", "needs-decision", "declined", "merged",
+  "needs-fix-up", "waiting-verify", "verify-failed", "verify-error", "needs-decision", "declined", "merged", "held-duplicate",
 ] as const;
 export type QueueState = (typeof QUEUE_STATES)[number];
 
@@ -33,6 +34,12 @@ export const HEAD_FACT = "head commit ";
 /** Verification states that let a PR merge. */
 export const VERIFY_OK = ["passed", "ci-enough"];
 export const verifyOk = (state: string | null | undefined): boolean => !!state && VERIFY_OK.includes(state);
+/** A PR in a repo Verify cannot build is merged only on an operator's answer, which says "not verified". */
+export const VERIFY_UNAVAILABLE = "unavailable";
+/** What the merge step needs of the verification and CI at merge time: the rule needs a pass and green CI; an operator's answer also accepts an unbuildable repo and a repo with no CI. */
+export const verifyAllows = (path: "rule" | "operator" | null, state: string | null | undefined): boolean =>
+  verifyOk(state) || (path === "operator" && state === VERIFY_UNAVAILABLE);
+export const ciAllows = (path: "rule" | "operator" | null, ci: string | null | undefined): boolean => ci === "success" || (path === "operator" && ci === "none");
 
 export type QueueEntry = {
   repo: string; number: number; title: string; author: string | null; tier: Tier;
@@ -54,7 +61,7 @@ export type QueueEntry = {
 
 /** True when the PR may be merged now (ready, approved, or retried after a refusal). */
 export const eligible = (e: QueueEntry): boolean =>
-  e.path !== null && verifyOk(e.verify?.state) && e.ci === "success" && e.mergeable === "MERGEABLE" && (e.state === "ready" || e.state === "decision-answered-merge" || e.state === "refused");
+  e.path !== null && verifyAllows(e.path, e.verify?.state) && ciAllows(e.path, e.ci) && e.mergeable === "MERGEABLE" && (e.state === "ready" || e.state === "decision-answered-merge" || e.state === "refused");
 
 type Row = {
   repo: string; number: number; title: string | null; author: string | null; state: string; head_oid: string | null; updated_at: string | null;
@@ -143,6 +150,8 @@ export function buildQueue(db: DatabaseSync, opts: QueueOptions = {}): QueueEntr
     if (!RULE_TIERS.includes(tier)) outsideRule.push(r.author ? "author not on the whitelist" : "author unknown");
 
     const verify = (verifs.get(r.repo, r.number, r.r_head) as QueueEntry["verify"] | undefined) ?? null;
+    if (verify?.state === VERIFY_UNAVAILABLE) outsideRule.push(`not verified: ${verify.summary ?? "Verify cannot build this repo"}`);
+    if (ci === "none") outsideRule.push("the repo has no CI checks");
     const id = mergeDecisionId(r.repo, r.number, r.r_head);
     const asked = decision.get(id) as { id: string; answer: string | null } | undefined;
     const answer = answers.get(id) ?? null;
@@ -151,7 +160,7 @@ export function buildQueue(db: DatabaseSync, opts: QueueOptions = {}): QueueEntr
       verdict: r.verdict, reason: r.reason, fixes, ci, mergeable, state: "needs-decision", path: null, outsideRule,
       decisionId: asked ? id : null, answer, refusedReason: null, reviewedAt: r.r_at, verify,
     };
-    e.state = stateOf(e, r.state === "MERGED" || mergedByUs, last);
+    e.state = stateOf(e, r.state === "MERGED" || mergedByUs, last, r.state === "OPEN" && !mergedByUs && duplicateHeld(db, r.repo, r.number));
     out.push(e);
   }
   return out;
@@ -160,12 +169,14 @@ export function buildQueue(db: DatabaseSync, opts: QueueOptions = {}): QueueEntr
 /** The queue state a PR is in until its verification passed (or said CI is enough); null once it did. */
 function verifyState(e: QueueEntry): QueueState | null {
   const s = e.verify?.state;
-  if (verifyOk(s)) return null;
+  if (verifyOk(s) || s === VERIFY_UNAVAILABLE) return null;
   return s === "failed" ? "verify-failed" : s === "error" ? "verify-error" : "waiting-verify";
 }
 
-function stateOf(e: QueueEntry, merged: boolean, last: { outcome: string; reason: string | null } | undefined): QueueState {
+function stateOf(e: QueueEntry, merged: boolean, last: { outcome: string; reason: string | null } | undefined, held = false): QueueState {
   if (merged) return "merged";
+  // An open Duplicate? decision (or a duplicate close) keeps the item out of every later stage.
+  if (held) return "held-duplicate";
   if (e.verdict === "take-fix") return "needs-fix-up";
   if (!e.outsideRule.length) e.path = "rule";
   else if (e.answer === "merge") e.path = "operator";
@@ -174,7 +185,7 @@ function stateOf(e: QueueEntry, merged: boolean, last: { outcome: string; reason
   if (e.ci === "failure") return "ci-failed";
   // A Merge? question is asked only once the operator can see the verification result.
   if (!e.path) return verifyState(e) ?? "needs-decision";
-  if (e.ci !== "success" || e.mergeable !== "MERGEABLE") return "waiting-ci";
+  if (!ciAllows(e.path, e.ci) || e.mergeable !== "MERGEABLE") return "waiting-ci";
   const v = verifyState(e);
   if (v) return v;
   if (last?.outcome === "refused") {
@@ -183,6 +194,9 @@ function stateOf(e: QueueEntry, merged: boolean, last: { outcome: string; reason
   }
   return e.path === "rule" ? "ready" : "decision-answered-merge";
 }
+
+/** Merge? questions still to ask: take PRs outside the rule with no decision at their head. */
+export const toAsk = (queue: QueueEntry[]): QueueEntry[] => queue.filter((e) => e.state === "needs-decision" && !e.decisionId);
 
 export function countStates(entries: QueueEntry[]): Record<QueueState, number> {
   const c = Object.fromEntries(QUEUE_STATES.map((s) => [s, 0])) as Record<QueueState, number>;

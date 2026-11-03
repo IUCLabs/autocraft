@@ -20,13 +20,14 @@ import { dupesWork } from "../dupes/index.ts";
 import { pushApprovalOf } from "../fixup/approval.ts";
 import { selectFixups } from "../fixup/candidates.ts";
 import { mergeApprovalOf } from "../merge/approval.ts";
-import { buildQueue, eligible } from "../merge/queue.ts";
+import { buildQueue, eligible, toAsk } from "../merge/queue.ts";
 import { trackedNames } from "../repos.ts";
 import { selectCandidates as reviewCandidates } from "../review/candidates.ts";
-import { selectCandidates as verifyCandidates } from "../verify/candidates.ts";
+import { selectCandidates as verifyCandidates, unavailableCandidates } from "../verify/candidates.ts";
 import { collectDue } from "../verify/results.ts";
 import { collectDue as fixCollectDue, fixDue } from "../fixissue/index.ts";
 import { audit } from "../dash/audit.ts";
+import { applyUsedAnswers } from "../decisions-used.ts";
 import { duePriorityCount } from "../priority/index.ts";
 import { rankDue } from "../rank/index.ts";
 import { selectIssues } from "../fixissue/candidates.ts";
@@ -201,6 +202,15 @@ export const LANES: Lane[] = [
     },
   },
   {
+    // Needs no merge approval: asking writes only decisions.
+    name: "merge-ask",
+    steps: ["merge-ask"],
+    detect: (db, { run, tracked }) => {
+      const repos = new Set(tracked);
+      return toAsk(buildQueue(db, { run, merged: "exclude" }).filter((e) => repos.has(e.repo))).length ? [{ step: "merge-ask", params: {} }] : [];
+    },
+  },
+  {
     name: "merge",
     steps: ["merge"],
     perRepo: true,
@@ -237,7 +247,7 @@ export const LANES: Lane[] = [
     detect: (db, { run, tracked }) => {
       const out: Candidate[] = [];
       for (const repo of roundRobin(tracked, getSetting(db, KEY_VERIFY_CURSOR))) {
-        if (!verifyCandidates(db, repo, run).length) continue;
+        if (!verifyCandidates(db, repo, run).length && !unavailableCandidates(db, repo, run).length) continue;
         const checks = lastJobEnd(db, "checks", repo);
         const fresh = checks?.state === "done" && Date.now() - Date.parse(checks.endedAt) < CHECKS_FRESH_MS;
         const verify = { step: "verify", params: { repo } };
@@ -460,6 +470,7 @@ export async function applyProposals(db: DatabaseSync, proposals: Proposal[], op
   const lanes = opts.lanes ?? LANES, log = opts.log ?? (() => {});
   const queued: number[] = [];
   const done = new Set<string>();
+  try { applyUsedAnswers(db); } catch (e) { log(`autopilot: answers: ${(e as Error).message}`); }
   for (const p of proposals) {
     if (done.has(p.lane)) continue;
     try {

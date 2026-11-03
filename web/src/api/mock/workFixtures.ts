@@ -28,7 +28,7 @@ const ROWS: WorkRow[] = (() => {
     const next = kind === "pr" ? NEXT_PR : NEXT_ISSUE;
     const repo = REPOS[k % REPOS.length]!;
     const number = 100 + Math.floor(r() * 3000);
-    out.push({ repo, number, kind, title: titleFor(repo, number), score, level, size, breakdown, label, next: next[k % next.length]! });
+    out.push({ repo, number, kind, title: titleFor(repo, number), score, level, size, breakdown, label, next: next[k % next.length]!, nextHref: null });
   }
   return out.sort((a, b) => b.score - a.score);
 })();

@@ -613,7 +613,7 @@ CREATE TABLE IF NOT EXISTS fixups (
 );
 CREATE INDEX IF NOT EXISTS fixups_item ON fixups(repo, number, created_at);
 -- One verification per PR head commit (Verify stage). kind: ci-enough | tests | regression.
--- state: planned (tasks queued) | running | passed | failed | error (the plan was invalid, no task) | ci-enough | stale (the PR moved on).
+-- state: planned (tasks queued) | running | passed | failed | error (the plan was invalid, no task) | ci-enough | stale (the PR moved on) | unavailable (private or non-Rust repo: nothing to build, the Merge? decision says so).
 CREATE TABLE IF NOT EXISTS verifications (
   repo TEXT NOT NULL, number INTEGER NOT NULL,
   head_sha TEXT NOT NULL,

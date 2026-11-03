@@ -3,7 +3,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import type { TypeLabel, WorkList, WorkRow } from "../../../web/src/api/types.ts";
 import { latestRun, settledLookup } from "../../classify/settled.ts";
-import { factsOf, nextStepOf } from "../../rank/next.ts";
+import { classifyListOf, factsOf, nextStepOf } from "../../rank/next.ts";
 import type { RankBreakdown } from "../../rank/score.ts";
 import { HttpError } from "../server/util.ts";
 import type { Req } from "../types.ts";
@@ -29,10 +29,11 @@ export async function work(db: DatabaseSync, req: Req): Promise<WorkList> {
   const settled = settledLookup(db, latestRun(db));
   const out: WorkRow[] = rows.map((r) => {
     const s = settled(r.repo, r.number), bd = JSON.parse(r.breakdown) as RankBreakdown;
+    const facts = factsOf(db, r.repo, r.number, r.kind, r.head_oid, s);
     return {
       repo: r.repo, number: r.number, kind: r.kind === "pr" ? "pr" : "issue", title: r.title ?? "", score: r.score, level: bd.level, size: bd.size,
       breakdown: bd, label: s.label as TypeLabel | null,
-      next: nextStepOf(factsOf(db, r.repo, r.number, r.kind, r.head_oid, s.label, s.status === "settled", s.flags)),
+      next: nextStepOf(facts), nextHref: facts.disagree && !facts.held ? classifyListOf(r.repo) : null,
     };
   });
   return { rows: out, total, next: offset + rows.length < total ? offset + rows.length : null };

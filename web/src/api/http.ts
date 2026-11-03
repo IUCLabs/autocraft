@@ -119,6 +119,9 @@ export function createHttpApi(): Api {
       thread: (id) => get(dec(id, "/thread")),
       comment: (id, body) => post(dec(id, "/comments"), { body }),
     },
+    release: async (repo, number, action) => {
+      await post(`/api/items/${encodeURIComponent(repo)}/${encodeURIComponent(String(number))}/${action}`);
+    },
     item: (repo, number) => get(`/api/items/${encodeURIComponent(repo)}/${encodeURIComponent(String(number))}`),
     search: (q) => (q.trim() ? get(`/api/search?${new URLSearchParams({ q })}`) : Promise.resolve([])),
     items: (f) => get(`/api/items${itemQuery(f)}`),

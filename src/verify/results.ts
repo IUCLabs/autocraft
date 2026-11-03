@@ -23,7 +23,7 @@ const CURRENT_HEAD_SQL = `CASE WHEN c.head_oid IS NOT NULL AND c.fetched_at IS N
   THEN c.head_oid ELSE COALESCE(i.head_oid, c.head_oid) END`;
 const ERROR_LIMIT = 200;
 
-export const VERIFICATION_STATES = ["planned", "running", "passed", "failed", "error", "ci-enough", "stale"] as const;
+export const VERIFICATION_STATES = ["planned", "running", "passed", "failed", "error", "ci-enough", "stale", "unavailable"] as const;
 export type VerificationState = (typeof VERIFICATION_STATES)[number];
 
 // ---- reading -----------------------------------------------------------------

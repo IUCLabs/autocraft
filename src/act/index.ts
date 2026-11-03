@@ -6,10 +6,12 @@
 //   - a duplicate decision answered `close` (Close as duplicate): "Duplicate of
 //     #y." (or "..., which is closed.") and a close. "Not a duplicate" and "Keep
 //     both" store the pair as distinct and write nothing (src/dupes/decide.ts).
-// Other scope answers need no write here (take and small-extra go on to
-// review, plugin is a label for the label stage, need-info is checked by
-// people). Only an operator's answer counts (actionable()), and only in repos
-// an operator approved for comments. No model calls.
+// Other scope answers need no write here: take and small-extra go on to
+// review, plugin makes the Label stage add the plugin candidate label (in
+// repos approved for labels), need-info is checked by people. They count as
+// applied once the pipeline used them (src/decisions-used.ts). Only an
+// operator's answer counts (actionable()), and only in repos an operator
+// approved for comments. No model calls.
 //
 //   craft-auto act --repo R [--limit N] [--apply]
 //   craft-auto comment-approval [--repo R]

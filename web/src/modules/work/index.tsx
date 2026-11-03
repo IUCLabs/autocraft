@@ -112,7 +112,7 @@ function Table({ rows, offset }: { rows: WorkRow[]; offset: number }) {
                 <Breakdown b={r.breakdown} />
               </td>
               <td className="px-3 py-2">
-                <Badge tone="neutral">{r.next}</Badge>
+                <NextBadge r={r} />
               </td>
             </tr>
           ))}
@@ -120,6 +120,11 @@ function Table({ rows, offset }: { rows: WorkRow[]; offset: number }) {
       </table>
     </div>
   );
+}
+
+function NextBadge({ r }: { r: WorkRow }) {
+  const badge = <Badge tone={r.nextHref ? "warn" : "neutral"}>{r.next}</Badge>;
+  return r.nextHref ? <Link to={r.nextHref}>{badge}</Link> : badge;
 }
 
 function Cards({ rows, offset }: { rows: WorkRow[]; offset: number }) {
@@ -138,7 +143,7 @@ function Cards({ rows, offset }: { rows: WorkRow[]; offset: number }) {
             {r.title}
           </Link>
           <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-2xs text-ink/60">
-            <Badge tone="neutral">{r.next}</Badge>
+            <NextBadge r={r} />
             <span>{r.label ?? "not settled"}</span>
             <span className="num">{r.size}</span>
           </div>

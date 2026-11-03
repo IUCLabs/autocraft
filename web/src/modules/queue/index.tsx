@@ -24,9 +24,10 @@ export const STATE: Record<QueueState, [string, Tone, string]> = {
   "waiting-verify": ["Waiting for Verify", "neutral", "No passed verification at this head yet: the build tasks are planned or running"],
   "verify-failed": ["Verify failed", "bad", "The build or tests failed at this head"],
   "verify-error": ["Verify error", "warn", "Verification could not run; it is retried once, then held"],
-  "needs-decision": ["Needs a decision", "warn", "Outside the merge rule: waits for the operator's Merge? answer"],
+  "needs-decision": ["Needs a decision", "warn", "Outside the merge rule (size, label, author, not verified or no CI): waits for the operator's Merge? answer"],
   declined: ["Declined", "neutral", "The operator answered hold or close"],
   merged: ["Merged", "merged", "Merged"],
+  "held-duplicate": ["Held: Duplicate?", "warn", "An open Duplicate? decision keeps it out of every later stage; answer it in Decisions"],
 };
 const STATES = Object.keys(STATE) as QueueState[];
 const TIER: Record<Tier, string> = { whitelisted: "whitelisted", not: "not whitelisted", "override-allow": "override allow", "override-deny": "override deny" };
@@ -168,8 +169,8 @@ function Why({ row }: { row: QueueRow }) {
   return null;
 }
 
-const V_TONE: Record<string, Tone> = { passed: "ok", "ci-enough": "ok", failed: "bad", error: "warn", running: "accent", planned: "neutral", stale: "neutral" };
-const V_LABEL: Record<string, string> = { passed: "Passed", "ci-enough": "CI is enough", failed: "Failed", error: "Error", running: "Running", planned: "Planned", stale: "Stale" };
+const V_TONE: Record<string, Tone> = { unavailable: "warn", passed: "ok", "ci-enough": "ok", failed: "bad", error: "warn", running: "accent", planned: "neutral", stale: "neutral" };
+const V_LABEL: Record<string, string> = { unavailable: "Not verified", passed: "Passed", "ci-enough": "CI is enough", failed: "Failed", error: "Error", running: "Running", planned: "Planned", stale: "Stale" };
 
 /** The Verify result at the reviewed head; the summary shows on hover and below the badge. */
 function VerifyCell({ row }: { row: QueueRow }) {

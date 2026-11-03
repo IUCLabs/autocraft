@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 import type {
+  ReleaseAction,
   AccessOverview,
   AccountInput,
   AgentRunDetail,
@@ -77,6 +78,8 @@ export interface Api {
     comment(id: string, body: string): Promise<DecisionComment>;
   };
   item(repo: RepoName, number: number): Promise<Item>;
+  /** Operator only: review the current head again, plan Verify again, or try the issue fix again. Writes nothing to GitHub. */
+  release(repo: RepoName, number: number, action: ReleaseAction): Promise<void>;
   /** Top bar: jumps by number, logins, words in titles and bodies. */
   search(q: string): Promise<SearchHit[]>;
   /** The Items browser: every tracked repo, full-text search over titles, bodies and comments. */
