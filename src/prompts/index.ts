@@ -323,7 +323,7 @@ const RECOMMEND: ClaudePrompt = {
   runner: "claude",
   purpose: "Recommends one answer to a scope decision, with a one-sentence reason, shown beside the options on the decision card. The maintainer decides; no answer is a valid result.",
   models: ["opus"],
-  effort: "high",
+  effort: "medium",
   placeholders: {
     decision: `The decision as a JSON object indented by one space: ref, item (ref, kind, title, body (first ${RECOMMEND_BODY_LIMIT} characters), author_association, labels, comments (the first ${COMMENTS_PER_ITEM} that are not by bots)), question, facts, summary (the earlier AI summary) and options (key, label, hint).`,
     repo_access: REPO_ACCESS_DOC,

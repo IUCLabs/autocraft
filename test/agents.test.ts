@@ -294,7 +294,7 @@ describe("API", () => {
     assert.equal((await rates(db, "7d", now)).stages[0]!.buckets.length, 7);
     await assert.rejects(rates(db, "30d", now), /window/);
     const job = getJob(db, 1);
-    assert.deepEqual([job.models, job.accounts], [["sonnet"], ["a"]]);
+    assert.deepEqual([job.models, job.accounts], [["sonnet", "opus"], ["a"]]);
   });
 
   test("retention: texts go after 14 days, runs after 90", () => {
