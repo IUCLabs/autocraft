@@ -180,8 +180,10 @@ export const STEPS: StepDef[] = [
       const { currentRun } = await import("./classify.ts");
       const runId = currentRun(ctx.db);
       if (!runId) throw new Error("there is no classification run yet");
-      const { applyLabels } = await import("../labels/github.ts");
+      const { applyLabels, ensureLabels } = await import("../labels/github.ts");
       const { Client } = await import("../mirror.ts");
+      // Approval for labelling covers creating the set's labels the repo lacks.
+      for (const l of await ensureLabels(new Client(500), repo, true)) ctx.log(`${repo}: created "${l.name}"`);
       const r = await applyLabels(ctx.db, new Client(500), repo, { runId, limit: Number(ctx.params.limit), apply: true, login: ctx.job.requestedBy, log: ctx.log, onLabeled: ctx.handled });
       return `${repo}: labelled ${r.labeled} of ${r.planned} items in ${r.batches} batches, ${r.failed.length} failed`;
     },
