@@ -157,8 +157,8 @@ class Recorder {
       const ended = state === "pushed" || state === "asked" || state === "cannot-push" || state === "too-large" || state === "push-denied";
       const tried = !ended;
       const next = ended || c.attempt >= MAX_ATTEMPTS ? (state === "pushed" || state === "asked" ? "done" : "held") : "queued";
-      this.db.prepare("UPDATE dupe_carries SET state = ?, attempts = attempts + ?, outcome = ?, to_head = ?, updated_at = ? WHERE decision_id = ? AND number = ?")
-        .run(next, tried || state === "pushed" ? 1 : 0, reason ? `${state}: ${reason}` : state, toHead, at, c.carry.decisionId, c.number);
+      this.db.prepare("UPDATE dupe_carries SET state = ?, attempts = attempts + ?, outcome = ?, to_head = ?, from_head = ?, updated_at = ? WHERE decision_id = ? AND number = ?")
+        .run(next, tried || state === "pushed" ? 1 : 0, reason ? `${state}: ${reason}` : state, toHead, toHead ? c.head : null, at, c.carry.decisionId, c.number);
       return;
     }
     this.db.prepare("INSERT INTO fixups (repo, number, from_head, to_head, state, reason, files, attempt, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")

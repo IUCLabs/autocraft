@@ -183,6 +183,15 @@ export function answeredHead(db: DatabaseSync, id: string): string | null {
 }
 
 
+/** Asks the Merge? questions of the entries and sets aside the PR's unanswered questions at its other heads. */
+function askDue(db: DatabaseSync, due: QueueEntry[], at: string): string[] {
+  if (!due.length) return [];
+  const qs = due.map(questionWithReason(db));
+  ask(db, qs.map((q) => ({ ...q, asked_at: at })));
+  for (const e of due) withdrawOtherHeadQuestions(db, e.repo, e.number, e.head, at);
+  return qs.map((q) => q.id);
+}
+
 /**
  * Asks the Merge? decisions that are due in the given repos (default: all), whether or not the repo has
  * a merge approval or a PR the rule could merge. Writes decisions only, nothing to GitHub.
@@ -190,14 +199,13 @@ export function answeredHead(db: DatabaseSync, id: string): string | null {
 export function askMergeDecisions(db: DatabaseSync, opts: { repos?: string[]; run?: string | null; at?: string } = {}): string[] {
   const repos = opts.repos && new Set(opts.repos);
   const queue = buildQueue(db, { merged: "exclude", ...(opts.run === undefined ? {} : { run: opts.run }) });
-  const qs = toAsk(db, queue.filter((e) => !repos || repos.has(e.repo))).map(questionWithReason(db));
+  const due = toAsk(db, queue.filter((e) => !repos || repos.has(e.repo)));
   const at = opts.at ?? new Date().toISOString();
   withdrawBlockedQuestions(db, queue.filter((e) => !repos || repos.has(e.repo)), at);
   for (const r of repos ?? new Set(queue.map((e) => e.repo))) withdrawGroupedQuestions(db, at, r);
-  if (qs.length) ask(db, qs.map((q) => ({ ...q, asked_at: at })));
-  for (const e of queue.filter((x) => qs.some((q) => q.id === mergeDecisionId(x.repo, x.number, x.head)))) withdrawOtherHeadQuestions(db, e.repo, e.number, e.head, at);
+  const ids = askDue(db, due, at);
   fillReviewSummaries(db, at);
-  return qs.map((q) => q.id);
+  return ids;
 }
 
 // ---- the step ----------------------------------------------------------------
@@ -255,10 +263,8 @@ export async function runMerge(db: DatabaseSync, params: MergeParams, log: (line
   }
 
   if (ask1.length) {
-    const qs = ask1.map(questionWithReason(db));
-    ask(db, qs.map((q) => ({ ...q, asked_at: at() })));
-    summary.asked = qs.map((q) => q.id);
-    log(`  asked ${qs.length} Merge? decision${qs.length === 1 ? "" : "s"}`);
+    summary.asked = askDue(db, ask1, at());
+    log(`  asked ${summary.asked.length} Merge? decision${summary.asked.length === 1 ? "" : "s"}`);
   }
   fillReviewSummaries(db, at());
 

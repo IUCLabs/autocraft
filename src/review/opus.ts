@@ -9,7 +9,8 @@ import { Client, type Querier } from "../mirror.ts";
 import { checksOf, refreshChecks } from "./checks.ts";
 import { MAX_RERUNS_PER_DAY, countRerun, discussionOf, ensurePipelineLogin, liveDiscussion, markedStaleSince, staleReviews, withRetry, type Snapshot } from "./discussion.ts";
 import { withdrawMergeQuestion } from "../merge/withdraw.ts";
-import { headWasUnsure } from "../merge/queue.ts";
+import { headWasUnsure, mergeDecisionId } from "../merge/queue.ts";
+import { HISTORY_COPY_SQL } from "../db.ts";
 import type { DiscussionEntry } from "./parse.ts";
 import { cachedDiff, codeDiff, ghDelta, ghDiff, type DeltaFetcher, type DiffFetcher } from "./diff.ts";
 import { selectOpusCandidates, type OpusCandidate } from "./opus-candidates.ts";
@@ -64,8 +65,12 @@ export function saveOpus(db: DatabaseSync, runId: string | null, c: { repo: stri
   const reviewed = db.prepare("SELECT at FROM opus_reviews WHERE repo = ? AND number = ? AND head_oid = ? AND verdict IS NOT NULL").get(c.repo, c.number, c.head_oid) as { at: string } | undefined;
   if (reviewed && !markedStaleSince(db, c.repo, c.number, reviewed.at)) countRerun(db, c.repo, c.number);
   // A head that was ever unsure keeps its Merge? question (and a person's answer to it) through a re-review that stays take or take-fix.
-  const keepsQuestion = !!again && (r.verdict === "take" || r.verdict === "take-fix") && headWasUnsure(db, c.repo, c.number, c.head_oid);
+  // An answered question is withdrawn as for any re-review: the head then needs a new answer.
+  const unanswered = !!db.prepare("SELECT 1 FROM decisions WHERE id = ? AND answer IS NULL").get(mergeDecisionId(c.repo, c.number, c.head_oid));
+  const keepsQuestion = !!again && unanswered && (r.verdict === "take" || r.verdict === "take-fix") && headWasUnsure(db, c.repo, c.number, c.head_oid);
   if (again && !keepsQuestion) withdrawMergeQuestion(db, c.repo, c.number, c.head_oid, at);
+  // The row about to be replaced may predate the history: copy it first.
+  db.prepare(`${HISTORY_COPY_SQL} AND o.repo = ? AND o.number = ? AND o.head_oid = ?`).run(c.repo, c.number, c.head_oid);
   const risks = JSON.stringify(r.risks), fixes = r.fixes.length ? JSON.stringify(r.fixes) : null, pub = r.public ? JSON.stringify(r.public) : null;
   db.prepare(`INSERT INTO opus_review_history (repo, number, head_oid, at, model, mode, verdict, sure, reason, risks, fixes, summary, why, public_review)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(c.repo, c.number, c.head_oid, at, s.model, s.mode, r.verdict, r.sure ? 1 : 0, r.reason, risks, fixes, r.summary, r.why, pub);

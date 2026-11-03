@@ -84,7 +84,7 @@ export function closeMergedQuestions(db: DatabaseSync, repo: string, number: num
 /** Sets aside the PR's unanswered Merge? questions at heads other than the one just asked about. */
 export function withdrawOtherHeadQuestions(db: DatabaseSync, repo: string, number: number, keepHead: string, at: string): void {
   const prefix = `${repo}#${number}:merge@`;
-  const rows = db.prepare("SELECT id FROM decisions WHERE kind = 'merge' AND answer IS NULL AND substr(id, 1, ?) = ? AND id NOT LIKE '%~replaced-%'").all(prefix.length, prefix) as { id: string }[];
+  const rows = db.prepare("SELECT id FROM decisions WHERE repo = ? AND number = ? AND kind = 'merge' AND answer IS NULL AND substr(id, 1, ?) = ? AND id NOT LIKE '%~replaced-%'").all(repo, number, prefix.length, prefix) as { id: string }[];
   for (const r of rows) {
     const head = r.id.slice(prefix.length);
     if (head !== keepHead) withdrawMergeQuestion(db, repo, number, head, at, "superseded by a question at a newer head");

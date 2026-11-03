@@ -68,6 +68,7 @@ const ADDED_COLUMNS: [table: string, column: string, type: string][] = [
   ["agent_runs", "progress", "TEXT"],
   // The commenter's association with the repository (OWNER, MEMBER, ...).
   ["comments", "author_association", "TEXT"],
+  ["dupe_carries", "from_head", "TEXT"],
 ];
 
 // Indexes on added columns: they can only be created once the column exists.
@@ -91,14 +92,21 @@ const ADDED_INDEXES = [
 // Columns removed after their first release.
 const DROPPED_COLUMNS: [table: string, column: string][] = [["classifications", "topics"], ["classifications", "area"]];
 
+/** Appends the stored review rows that the history does not hold yet. */
+export const HISTORY_COPY_SQL = `INSERT INTO main.opus_review_history (repo, number, head_oid, at, model, mode, verdict, sure, reason, risks, fixes, summary, why, public_review)
+  SELECT repo, number, head_oid, at, model, mode, verdict, sure, reason, risks, fixes, summary, why, public_review FROM main.opus_reviews o
+  WHERE NOT EXISTS (SELECT 1 FROM main.opus_review_history h WHERE h.repo = o.repo AND h.number = o.number AND h.head_oid = o.head_oid AND h.at = o.at)`;
+
 // Bump when migrateValues() or backfill() change what they do.
-const MIGRATION_VERSION = 7;
+const MIGRATION_VERSION = 8;
 
 // Rows written before their column existed.
 function backfill(db: DatabaseSync): void {
   // Reviews made before snapshots existed count as having read everything up to now: no wave of re-reviews.
   const now = new Date().toISOString();
   db.prepare("UPDATE main.opus_reviews SET seen_at = ? WHERE seen_at IS NULL").run(now);
+  // The history starts with the stored rows, so an unsure review made before it existed is not lost by a re-review.
+  db.exec(HISTORY_COPY_SQL);
   db.exec("UPDATE main.jobs SET repo = json_extract(params, '$.repo') WHERE repo IS NULL AND json_valid(params) AND json_type(params, '$.repo') = 'text'");
   // Jev's stored flags follow the yes thresholds of src/classify/parse.ts; only rows whose flags differ are written.
   db.prepare(`UPDATE main.classifications SET flags = CASE

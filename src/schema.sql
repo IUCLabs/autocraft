@@ -875,6 +875,7 @@ CREATE TABLE IF NOT EXISTS dupe_carries (
   attempts INTEGER NOT NULL DEFAULT 0,
   outcome TEXT,                       -- pushed | asked | gone | too-large | failed, with reason
   to_head TEXT,
+  from_head TEXT,                     -- the head the pushed commit was made on
   updated_at TEXT NOT NULL,
   PRIMARY KEY (decision_id, number)
 );
