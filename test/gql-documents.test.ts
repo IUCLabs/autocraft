@@ -11,6 +11,7 @@ import { checksQuery } from "../src/review/checks.ts";
 import { nodeIdsQuery, repoLabelsQuery } from "../src/labels/github.ts";
 import { addLabelsMutation } from "../src/github/write.ts";
 import { liveQuery } from "../src/dupes/compare.ts";
+import { FORMAL_REVIEWS } from "../src/merge/changes-requested.ts";
 import { DISCUSSION_QUERY } from "../src/review/discussion.ts";
 
 const SRC = new URL("../src", import.meta.url).pathname;
@@ -78,7 +79,7 @@ function scan(file: string, src: string): Found[] {
 const walk = (dir: string): string[] =>
   readdirSync(dir, { withFileTypes: true }).flatMap((e) => e.isDirectory() ? walk(join(dir, e.name)) : e.name.endsWith(".ts") ? [join(dir, e.name)] : []);
 
-const KNOWN: Record<string, string> = { ORG: "storytold", COMMON, COMMENTS, PR_EXTRA, PR_FULL };
+const KNOWN: Record<string, string> = { ORG: "storytold", COMMON, COMMENTS, PR_EXTRA, PR_FULL, FORMAL_REVIEWS };
 
 // Documents with computed parts, called with plausible arguments. Keyed by source file.
 const BUILT: Record<string, string[]> = {

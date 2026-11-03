@@ -29,6 +29,7 @@ const RULES: { what: string; re: RegExp; window?: number }[] = [
 const ALLOWED: Record<string, string[]> = {
   "dash/api/index.ts": ["HTTP write verb"], // this app's own routes
   "dash/server/provider.ts": ["HTTP write verb"], // OAuth token exchange for sign-in
+  "merge/safe-merge.ts": ["gh api write verb"], // -f/-F only pass variables to a read-only GraphQL query
   "merge/index.ts": ["safe-merge started"], // starts the built-in command; the write is recorded by mergeViaCommand
 };
 
