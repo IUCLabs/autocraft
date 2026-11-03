@@ -82,12 +82,17 @@ function make(state: TaskState, agoMin: number, over: Partial<BuildTask> = {}): 
     endedAt: active || state === "queued" ? null : iso((agoMin - 6) * MIN), heartbeatAt: active ? iso(8_000) : null,
     results, artifacts: state === "done" ? [{ name: "junit.xml", bytes: 18_400, contentType: "application/xml" }, { name: "shot-main.png", bytes: 212_000, contentType: "image/png" }] : [],
     summary: state === "done" ? "build and 412 tests passed" : state === "failed" ? "test failed: 3 of 412" : state === "cancelled" ? "Cancelled before it started." : null,
-    patchBytes: null, warm: id % 2 === 0 ? { key: "main-3f9a2c1", role: "use" } : null,
+    patchBytes: null, warm: id % 2 === 0 ? { key: "main-3f9a2c1", role: "use" } : null, batch: null, baseline: null,
     ...over,
   };
 }
 
 const TASKS: BuildTask[] = [
+  make("running", 4, {
+    step: "merge-batch", number: null, patchBytes: PATCH.length, warm: { key: "main-3f9a2c1", role: "use" },
+    batch: { id: 1, branch: "integration-app-20261102-1", fork: "bot/app", commitSha: "c0ffee00".repeat(5), baseSha: "ba5e0000".repeat(5), prs: [N[1]!, N[2]!, N[3]!] },
+  }),
+  make("done", 30, { number: null, warm: { key: "main-3f9a2c1", role: "build" }, baseline: { branch: "main" } }),
   make("queued", 2, { warm: { key: "main-3f9a2c1", role: "build" }, requires: { display: true, minMemGb: 64 } }), make("queued", 3, { patchBytes: PATCH.length }), make("queued", 7, { requires: { os: "macos" } }),
   make("running", 9, { envId: "build-a", envLabel: "Build server A", results: [{ step: "fetch deps", exitCode: 0, durationMs: 6_000, timedOut: false }] }),
   make("running", 14, { envId: "sandbox", envLabel: "Local sandbox", results: [] }),

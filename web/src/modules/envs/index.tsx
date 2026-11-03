@@ -5,7 +5,7 @@ import { Link, useNavigate } from "react-router-dom";
 import { Dialog } from "radix-ui";
 import { CheckIcon, CopyIcon, DownloadIcon, HammerIcon, PencilIcon, PlusIcon, XIcon } from "lucide-react";
 import { useApi, useQuery } from "../../api/client";
-import type { BuildEnv, BuildSummary, BuildTask, BuildTaskDetail, Capabilities, EnvKind, Requires, TaskFilter, TaskState } from "../../api/types";
+import type { BuildEnv, BuildSummary, BuildTask, BuildTaskDetail, Capabilities, EnvKind, Requires, TaskBatch, TaskFilter, TaskState } from "../../api/types";
 import type { FeatureModule, ViewProps } from "../../registry/types";
 import { ago, nowMs, num, span } from "../../lib/format";
 import { usePoll } from "../../lib/usePoll";
@@ -267,7 +267,50 @@ function EnvsPanel() {
 // ---- tasks -------------------------------------------------------------------------
 
 const duration = (t: BuildTask) => (t.startedAt ? span((t.endedAt ? Date.parse(t.endedAt) : nowMs()) - Date.parse(t.startedAt)) : "–");
-const sha = (t: { headSha: string }) => t.headSha.slice(0, 8);
+const sha = (t: BuildTask) => (t.batch?.commitSha ?? t.headSha).slice(0, 8);
+const gh = (path: string) => `https://github.com/${path}`;
+const extLink = "text-accent-ink hover:underline";
+
+function CommitLink({ href, sha: full, stop, className }: { href: string | null; sha: string; stop?: boolean; className?: string }) {
+  if (!href) return <span className={cn("code", className)}>{full}</span>;
+  return (
+    <a href={href} target="_blank" rel="noopener noreferrer" title="Open on GitHub" className={cn("code", extLink, className)} onClick={stop ? (e) => e.stopPropagation() : undefined}>
+      {full}
+    </a>
+  );
+}
+
+/** Branch name of an integration batch; a link once the batch's fork is known. */
+function BatchBranch({ b, stop }: { b: TaskBatch; stop?: boolean }) {
+  const cls = "font-mono text-xs [overflow-wrap:anywhere]";
+  return b.fork ? (
+    <a href={gh(`${b.fork}/tree/${b.branch}`)} target="_blank" rel="noopener noreferrer" title="Open the branch on GitHub" className={cn(cls, extLink)} onClick={stop ? (e) => e.stopPropagation() : undefined}>
+      {b.branch}
+    </a>
+  ) : (
+    <span className={cn(cls, "text-ink/70")}>{b.branch}</span>
+  );
+}
+
+/** What a task builds: the batch and its PRs, a baseline of the default branch, one PR, or only the repo. */
+function TaskSource({ t, stop }: { t: BuildTask; stop?: boolean }) {
+  if (t.batch) {
+    return (
+      <span className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5">
+        <span className="text-xs font-medium">Integration batch</span>
+        <BatchBranch b={t.batch} stop={stop} />
+        {t.batch.prs.map((n) => <RefLink key={n} repo={t.repo} number={n} kind="pr" stop={stop} className="text-xs" />)}
+      </span>
+    );
+  }
+  if (t.baseline) return <span className="text-xs"><span className="font-medium">Baseline build</span> of <span className="code">{t.baseline.branch ?? t.repo}</span> <span className="text-ink/50">({t.repo})</span></span>;
+  return (
+    <>
+      {t.number ? <RefLink repo={t.repo} number={t.number} kind="pr" stop={stop} className="text-xs" /> : <span className="code text-xs">{t.repo}</span>}
+      <span className="ml-2 text-xs text-ink/50 max-md:hidden">{t.step}</span>
+    </>
+  );
+}
 
 function useTasks(filter: Omit<TaskFilter, "cursor">) {
   const api = useApi();
@@ -352,9 +395,8 @@ function Tasks({ selected }: { selected?: number }) {
                   {ago(r.queuedAt, true)}
                   <span className="max-md:hidden"> ago</span>
                 </td>
-                <td className="whitespace-nowrap px-3">
-                  {r.number ? <RefLink repo={r.repo} number={r.number} kind="pr" stop className="text-xs" /> : <span className="code text-xs">{r.repo}</span>}
-                  <span className="ml-2 text-xs text-ink/50 max-md:hidden">{r.step}</span>
+                <td className={cn("px-3", r.batch ? "py-1.5" : "whitespace-nowrap")}>
+                  <TaskSource t={r} stop />
                 </td>
                 <td className="code px-3 text-xs max-md:hidden">{sha(r)}</td>
                 <td className="whitespace-nowrap px-3 text-ink/70 max-md:hidden">{r.envLabel ?? "–"}</td>
@@ -402,8 +444,29 @@ function DetailBody({ id }: { id: number }) {
       </div>
       <ErrorLine error={write.error} />
       <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
-        <dt className="text-ink/55">Source</dt>
-        <dd>{t.number ? <RefLink repo={t.repo} number={t.number} kind="pr" /> : <span className="code">{t.repo}</span>} <span className="code text-xs text-ink/50">{t.headSha}</span></dd>
+        {t.batch ? (
+          <>
+            <dt className="text-ink/55">Source</dt>
+            <dd className="min-w-0"><span className="font-medium">Integration batch</span> <BatchBranch b={t.batch} /></dd>
+            <dt className="text-ink/55">Pull requests</dt>
+            <dd className="flex min-w-0 flex-wrap gap-x-2">{t.batch.prs.map((n) => <RefLink key={n} repo={t.repo} number={n} kind="pr" />)}</dd>
+            <dt className="text-ink/55">Integration commit</dt>
+            {/* The commit exists only on the fork the branch was pushed to; without it there is no link. */}
+            <dd className="min-w-0 break-all"><CommitLink href={t.batch.fork ? gh(`${t.batch.fork}/commit/${t.batch.commitSha}`) : null} sha={t.batch.commitSha} className="text-xs" /></dd>
+            <dt className="text-ink/55">Base</dt>
+            <dd className="min-w-0 break-all"><CommitLink href={gh(`storytold/${t.repo}/commit/${t.batch.baseSha}`)} sha={t.batch.baseSha} className="text-xs" /></dd>
+          </>
+        ) : t.baseline ? (
+          <>
+            <dt className="text-ink/55">Source</dt>
+            <dd className="min-w-0 break-all"><span className="font-medium">Baseline build</span> of <span className="code">{t.baseline.branch ?? t.repo}</span> at <CommitLink href={gh(`storytold/${t.repo}/commit/${t.headSha}`)} sha={t.headSha} className="text-xs" /></dd>
+          </>
+        ) : (
+          <>
+            <dt className="text-ink/55">Source</dt>
+            <dd>{t.number ? <RefLink repo={t.repo} number={t.number} kind="pr" /> : <span className="code">{t.repo}</span>} <span className="code text-xs text-ink/50">{t.headSha}</span></dd>
+          </>
+        )}
         <dt className="text-ink/55">Needs</dt>
         <dd>{requiresText(t.requires)}</dd>
         <dt className="text-ink/55">Environment</dt>

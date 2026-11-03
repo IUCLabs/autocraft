@@ -1277,7 +1277,13 @@ export type BuildTask = {
   patchBytes: number | null;
   /** Shared build cache: `build` fills it, `use` reads it. */
   warm: { key: string; role: "use" | "build" } | null;
+  /** The integration batch this task checks (step merge-batch); null for other tasks. */
+  batch: TaskBatch | null;
+  /** Set for a build of the default branch head with no PR and no patch (warm and baseline runs). */
+  baseline: { branch: string | null } | null;
 };
+/** `fork` is the `<owner>/<repo>` the batch branch was pushed to; null before the push. `commitSha` is the integration commit, `baseSha` the default branch head it was built on. */
+export type TaskBatch = { id: number; branch: string; fork: string | null; commitSha: string; baseSha: string; prs: number[] };
 /** Worker-sent text: shown as plain text only, never as markup. */
 export type BuildTaskDetail = BuildTask & { logTail: string; logBytes: number; logTruncated: boolean; patch: string | null };
 export type TaskFilter = { state?: TaskState | "active"; env?: string; repo?: string; cursor?: string; limit?: number };
