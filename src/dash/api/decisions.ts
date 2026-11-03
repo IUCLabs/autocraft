@@ -151,12 +151,13 @@ const strings = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is
 
 function groupOf(db: DatabaseSync, d: DecisionRow): DuplicateMember[] {
   if (d.kind !== "duplicate" || !d.id.includes(":dupegroup:")) return [];
-  const rows = db.prepare("SELECT number, kind, role, detail FROM dupe_group_items WHERE decision_id = ?").all(d.id) as { number: number; kind: string; role: string; detail: string | null }[];
+  const rows = db.prepare(`SELECT gi.number, gi.kind, gi.role, gi.detail, i.title, i.state FROM dupe_group_items gi
+    LEFT JOIN items i ON i.repo = gi.repo AND i.number = gi.number WHERE gi.decision_id = ?`).all(d.id) as { number: number; kind: string; role: string; detail: string | null; title: string | null; state: string | null }[];
   return rows.map((r) => {
     let detail: Record<string, unknown> = {};
     try { detail = (JSON.parse(r.detail ?? "{}") as Record<string, unknown>) ?? {}; } catch { /* no detail */ }
     const role: DuplicateMember["role"] = r.role === "keep" || r.role === "close" ? r.role : "stay";
-    return { number: r.number, kind: r.kind === "pr" ? "pr" as const : "issue" as const, role, better: strings(detail.better), carry: strings(detail.carry), adds: strings(detail.adds) };
+    return { number: r.number, kind: r.kind === "pr" ? "pr" as const : "issue" as const, role, title: r.title, state: r.state ? itemState(r.state) : null, better: strings(detail.better), carry: strings(detail.carry), adds: strings(detail.adds) };
   }).sort((a, b) => ROLE_ORDER[a.role] - ROLE_ORDER[b.role] || a.number - b.number);
 }
 

@@ -9,16 +9,6 @@ const ROLE: Record<DuplicateMember["role"], { label: string; tone: Tone }> = {
   stay: { label: "Stays open", tone: "neutral" },
 };
 
-/** What the page knows about a member's item: its title and state come from the decision's items or related list. */
-function shownOf(d: Decision, m: DuplicateMember) {
-  const it = d.items.find((i) => i.number === m.number);
-  if (it) return { kind: it.kind ?? m.kind, state: it.state, title: it.title };
-  const rel = d.related.find((r) => r.number === m.number);
-  if (rel) return { kind: rel.kind, state: rel.state, title: rel.title };
-  if (d.number === m.number && d.shown) return { kind: d.shown.kind ?? m.kind, state: d.shown.state, title: d.shown.title };
-  return { kind: m.kind, state: null, title: null };
-}
-
 function Points({ title, items }: { title: string; items: string[] }) {
   if (items.length === 0) return null;
   return (
@@ -42,12 +32,11 @@ export function DuplicateGroup({ d }: { d: Decision }) {
   return (
     <ul className="mt-3 grid gap-2">
       {members.map((m) => {
-        const shown = shownOf(d, m);
         const role = ROLE[m.role];
         return (
           <Card as="li" key={m.number} padding="sm">
             <div className="flex items-start gap-2">
-              <ItemRef repo={d.repo} number={m.number} kind={shown.kind} state={shown.state} title={shown.title} className="flex-1" />
+              <ItemRef repo={d.repo} number={m.number} kind={m.kind} state={m.state} title={m.title} className="flex-1" />
               <Badge tone={role.tone}>{role.label}</Badge>
             </div>
             <Points title="Does better" items={m.better} />

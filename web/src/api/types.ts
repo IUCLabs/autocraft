@@ -82,6 +82,8 @@ export interface DuplicateMember {
   number: number;
   kind: "pr" | "issue";
   role: "keep" | "close" | "stay";
+  title: string | null;
+  state: ItemState | null;
   /** What this item does better than the kept one. */
   better: string[];
   /** Parts worth carrying over into the kept one. */

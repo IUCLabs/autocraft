@@ -249,11 +249,13 @@ const SEEDS: Seed[] = [
     recommended: "accept",
     recommendedReason: "#2007 clears the marker in the layout pass and has a regression test; #2017 repeats it without the test.",
     group: [
-      { number: 2007, kind: "pr", role: "keep", better: [], carry: [], adds: [] },
+      { number: 2007, kind: "pr", role: "keep", title: "Text frames: overset text indicator stays after the frame grows", state: "open", better: [], carry: [], adds: [] },
       {
         number: 2017,
         kind: "pr",
         role: "close",
+        title: "Clear the overset marker when a text frame is resized",
+        state: "open",
         better: ["Clears the marker when the frame shrinks and grows in one edit, which #2007 misses."],
         carry: ["The guard that skips frames that are not laid out yet, so marks do not land in the wrong place on spreads."],
         adds: [],
@@ -262,15 +264,12 @@ const SEEDS: Seed[] = [
         number: 2088,
         kind: "pr",
         role: "close",
+        title: "Overset marker: clear on linked frames and add a preview-mode switch",
+        state: "open",
         better: ["Handles the overset marker across linked frames."],
         carry: ["Linked-frame handling, in the same layout pass."],
         adds: ["A setting to hide the marker in preview mode."],
       },
-    ],
-    items: [
-      { repo: "designcraft", number: 2007, title: "Text frames: overset text indicator stays after the frame grows" },
-      { repo: "designcraft", number: 2017, title: "Clear the overset marker when a text frame is resized" },
-      { repo: "designcraft", number: 2088, title: "Overset marker: clear on linked frames and add a preview-mode switch" },
     ],
     optionTexts: [
       { option: "accept", hash: "a1", texts: [
