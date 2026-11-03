@@ -265,7 +265,7 @@ const LANE_CODE: Omit<Lane, "steps">[] = [
     name: "merge-ask",
     detect: (db, { run, tracked }) => {
       const repos = new Set(tracked);
-      return toAsk(buildQueue(db, { run, merged: "exclude" }).filter((e) => repos.has(e.repo))).length ? [{ step: "merge-ask", params: {} }] : [];
+      return toAsk(db, buildQueue(db, { run, merged: "exclude" }).filter((e) => repos.has(e.repo))).length ? [{ step: "merge-ask", params: {} }] : [];
     },
   },
   {

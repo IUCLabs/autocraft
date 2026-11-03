@@ -26,7 +26,7 @@ import { liveGateChecked } from "../review/discussion.ts";
 import { fillReviewSummaries } from "../review/summary.ts";
 import { verificationOf } from "../verify/results.ts";
 import { TIER_LABEL } from "../whitelist.ts";
-import { withdrawBlockedQuestions } from "./withdraw.ts";
+import { withdrawBlockedQuestions, withdrawGroupedQuestions } from "./withdraw.ts";
 import { buildQueue, UNSURE_REASON, ciAllows, toAsk, countStates, eligible, HEAD_FACT, MERGE_OPTIONS, mergeDecisionId, QUEUE_STATES, VERIFY_UNAVAILABLE, verifyAllows, type QueueEntry } from "./queue.ts";
 
 export { buildQueue, countStates, QUEUE_STATES, toAsk, type QueueEntry, type QueueState } from "./queue.ts";
@@ -186,9 +186,10 @@ export function answeredHead(db: DatabaseSync, id: string): string | null {
 export function askMergeDecisions(db: DatabaseSync, opts: { repos?: string[]; run?: string | null; at?: string } = {}): string[] {
   const repos = opts.repos && new Set(opts.repos);
   const queue = buildQueue(db, { merged: "exclude", ...(opts.run === undefined ? {} : { run: opts.run }) });
-  const qs = toAsk(queue.filter((e) => !repos || repos.has(e.repo))).map(mergeQuestion);
+  const qs = toAsk(db, queue.filter((e) => !repos || repos.has(e.repo))).map(mergeQuestion);
   const at = opts.at ?? new Date().toISOString();
   withdrawBlockedQuestions(db, queue.filter((e) => !repos || repos.has(e.repo)), at);
+  for (const r of repos ?? new Set(queue.map((e) => e.repo))) withdrawGroupedQuestions(db, at, r);
   if (qs.length) ask(db, qs.map((q) => ({ ...q, asked_at: at })));
   fillReviewSummaries(db, at);
   return qs.map((q) => q.id);
@@ -222,7 +223,7 @@ export async function runMerge(db: DatabaseSync, params: MergeParams, log: (line
   let picks = open.filter((e) => eligible(e) && (!params.only || params.only(e))).sort((a, b) =>
     fast(a) || fast(b) ? Number(fast(b)) - Number(fast(a)) || byRank(a, b) : a.path === b.path ? byRank(a, b) : a.path === "rule" ? -1 : 1);
   if (params.limit !== undefined) picks = picks.slice(0, params.limit);
-  const ask1 = toAsk(open);
+  const ask1 = toAsk(db, open);
   const summary: MergeSummary = { runId, repo, dryRun, states, attempted: [], merged: [], refused: [], asked: [] };
   log(`merge ${repo}: ${queue.length} in the queue (${QUEUE_STATES.filter((s) => states[s]).map((s) => `${states[s]} ${s}`).join(", ") || "none"})`);
 
@@ -238,6 +239,8 @@ export async function runMerge(db: DatabaseSync, params: MergeParams, log: (line
   // A Merge? question open for a PR a maintainer has since blocked no longer applies.
   const withdrawn = withdrawBlockedQuestions(db, open, at());
   if (withdrawn) log(`  withdrew ${withdrawn} Merge? decision${withdrawn === 1 ? "" : "s"} of PRs with changes requested`);
+  const grouped = withdrawGroupedQuestions(db, at(), repo);
+  if (grouped) log(`  set aside ${grouped} Merge? decision${grouped === 1 ? "" : "s"} of PRs in a duplicate group`);
 
   // Every taken PR in the queue gets one `batched` stage row per head.
   const batched = db.prepare("SELECT 1 FROM stages WHERE repo = ? AND number = ? AND stage = 'batched' AND note LIKE ?");

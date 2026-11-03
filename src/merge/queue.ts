@@ -295,8 +295,12 @@ function stateOf(e: QueueEntry, merged: boolean, last: { outcome: string; reason
   return e.path === "rule" ? "ready" : "decision-answered-merge";
 }
 
-/** Merge? questions still to ask: take PRs outside the rule with no decision at their head. */
-export const toAsk = (queue: QueueEntry[]): QueueEntry[] => queue.filter((e) => e.state === "needs-decision" && !e.decisionId);
+/** Merge? questions still to ask: take PRs outside the rule with no decision at their head. A member of an open duplicate group is asked after the group is answered: an item has one open decision. */
+export const toAsk = (db: DatabaseSync, queue: QueueEntry[]): QueueEntry[] => {
+  const grouped = new Set((db.prepare(`SELECT gi.repo || '#' || gi.number AS ref FROM dupe_group_items gi JOIN decisions g ON g.id = gi.decision_id
+    WHERE g.kind = 'duplicate' AND g.id LIKE '%:dupegroup:%' AND g.answer IS NULL`).all() as { ref: string }[]).map((r) => r.ref));
+  return queue.filter((e) => e.state === "needs-decision" && !e.decisionId && !grouped.has(`${e.repo}#${e.number}`));
+};
 
 export function countStates(entries: QueueEntry[]): Record<QueueState, number> {
   const c = Object.fromEntries(QUEUE_STATES.map((s) => [s, 0])) as Record<QueueState, number>;

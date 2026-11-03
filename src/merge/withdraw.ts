@@ -12,7 +12,7 @@ export const WITHDRAWN = "withdrawn";
  * The old row stays for the record and is closed: an open one is answered "withdrawn" by the pipeline, an
  * answered one that was not acted on yet is marked applied with a note.
  */
-export function withdrawMergeQuestion(db: DatabaseSync, repo: string, number: number, head: string, at: string): boolean {
+export function withdrawMergeQuestion(db: DatabaseSync, repo: string, number: number, head: string, at: string, why = "superseded by a new review"): boolean {
   const id = mergeDecisionId(repo, number, head);
   const row = db.prepare("SELECT answer, applied_at FROM decisions WHERE id = ?").get(id) as { answer: string | null; applied_at: string | null } | undefined;
   // An answer other than merge (close, hold) waiting for Act still stands: the new review doesn't change it.
@@ -24,10 +24,10 @@ export function withdrawMergeQuestion(db: DatabaseSync, repo: string, number: nu
       db.prepare(`UPDATE ${t} SET ${t === "decisions" ? "id" : "decision_id"} = ? WHERE ${t === "decisions" ? "id" : "decision_id"} = ?`).run(old, id);
     }
     if (row.answer === null) {
-      db.prepare("UPDATE decisions SET answer = ?, answered_by = 'pipeline', answered_at = ?, applied_at = ?, answer_note = 'superseded by a new review' WHERE id = ?").run(WITHDRAWN, at, at, old);
+      db.prepare("UPDATE decisions SET answer = ?, answered_by = 'pipeline', answered_at = ?, applied_at = ?, answer_note = ? WHERE id = ?").run(WITHDRAWN, at, at, why, old);
       audit(db, "pipeline", "merge-question-withdrawn", old, { repo, number, head });
     } else if (!row.applied_at) {
-      db.prepare("UPDATE decisions SET applied_at = ?, answer_note = COALESCE(answer_note || ' — ', '') || ? WHERE id = ?").run(at, "superseded by a new review; the answer was not applied", old);
+      db.prepare("UPDATE decisions SET applied_at = ?, answer_note = COALESCE(answer_note || ' — ', '') || ? WHERE id = ?").run(at, `${why}; the answer was not applied`, old);
       audit(db, "pipeline", "merge-answer-superseded", old, { repo, number, head, answer: row.answer });
     }
     db.exec("COMMIT");
@@ -50,6 +50,27 @@ export function withdrawBlockedQuestions(db: DatabaseSync, queue: QueueEntry[], 
     const row = db.prepare("SELECT answer, applied_at FROM decisions WHERE id = ?").get(e.decisionId) as { answer: string | null; applied_at: string | null } | undefined;
     if (!row || (row.answer !== null && (row.answer !== "merge" || row.applied_at))) continue;
     if (withdrawMergeQuestion(db, e.repo, e.number, e.head, at)) n++;
+  }
+  return n;
+}
+
+/** Why a Merge? question is set aside while its PR is in an open duplicate group. */
+export const IN_GROUP_NOTE = "set aside while the PR is in a duplicate group";
+
+/**
+ * Sets aside the open Merge? decision (or unapplied merge answer) of every PR that is a member of an open duplicate
+ * group decision, so an item has one current decision. The PR that stays open is asked again after the group is answered.
+ */
+export function withdrawGroupedQuestions(db: DatabaseSync, at: string, repo?: string): number {
+  const rows = db.prepare(`SELECT DISTINCT m.repo, m.number, m.id FROM decisions m
+    JOIN dupe_group_items gi ON gi.repo = m.repo AND gi.number = m.number
+    JOIN decisions g ON g.id = gi.decision_id AND g.kind = 'duplicate' AND g.id LIKE '%:dupegroup:%' AND g.answer IS NULL
+    WHERE m.kind = 'merge' AND m.id NOT LIKE '%~replaced-%' AND (m.answer IS NULL OR (m.answer = 'merge' AND m.applied_at IS NULL))
+    ${repo ? "AND m.repo = ?" : ""}`).all(...(repo ? [repo] : [])) as { repo: string; number: number; id: string }[];
+  let n = 0;
+  for (const r of rows) {
+    const head = r.id.slice(r.id.indexOf(":merge@") + ":merge@".length);
+    if (mergeDecisionId(r.repo, r.number, head) === r.id && withdrawMergeQuestion(db, r.repo, r.number, head, at, IN_GROUP_NOTE)) n++;
   }
   return n;
 }
