@@ -90,12 +90,18 @@ function settleLabel(jev: (Verdict & { top: number | null }) | null, haiku: Verd
   return { ...base, referee, status: "disagree", label: null, source: null, flags };
 }
 
+/** The run of the newest Jev or Haiku-alone verdict: two indexed lookups, the newer wins. */
+export function newestVerdictRun(db: DatabaseSync): string | null {
+  const jev = db.prepare("SELECT run_id, at FROM classifications WHERE classifier = 'jev' ORDER BY at DESC LIMIT 1").get() as { run_id: string; at: string } | undefined;
+  const alone = db.prepare("SELECT run_id, at FROM main.classifications INDEXED BY classifications_alone WHERE classifier = 'haiku' AND input_hash IS NOT NULL ORDER BY at DESC LIMIT 1").get() as { run_id: string; at: string } | undefined;
+  return (alone && (!jev || alone.at > jev.at) ? alone : jev)?.run_id ?? null;
+}
+
 // The run the dashboard shows: the current classification run (settings.classify_run), else the one with the newest Jev verdict.
 export function latestRun(db: DatabaseSync): string | null {
   const set = db.prepare("SELECT value FROM settings WHERE key = 'classify_run'").get() as { value: string } | undefined;
   if (set?.value) return set.value;
-  const r = db.prepare(`SELECT run_id FROM classifications WHERE ${VERDICT_SQL} ORDER BY at DESC LIMIT 1`).get() as { run_id: string } | undefined;
-  return r?.run_id ?? null;
+  return newestVerdictRun(db);
 }
 
 /** True when `run` has at least one Jev or Haiku verdict. */
@@ -182,7 +188,7 @@ type VerdictRow = { repo: string; number: number; jl: string | null; jf: string 
 // Items with a Jev or a Haiku verdict: Haiku alone settles an item when Jev was unavailable.
 const VERDICTS = `SELECT k.repo, k.number, j.type_label AS jl, j.flags AS jf, j.probs, h.type_label AS hl, h.flags AS hf,
     s.type_label AS sl, json_extract(CASE WHEN json_valid(s.probs) THEN s.probs END, '$.sure') AS ss, s.reason AS sr
-  FROM (SELECT repo, number FROM main.classifications WHERE run_id = :run AND ${VERDICT_SQL} GROUP BY repo, number) k
+  FROM (SELECT repo, number FROM main.classifications WHERE run_id = :run AND classifier = 'jev' UNION SELECT repo, number FROM main.classifications WHERE run_id = :run AND classifier = 'haiku' AND input_hash IS NOT NULL) k
   LEFT JOIN main.classifications j ON j.repo = k.repo AND j.number = k.number AND j.classifier = 'jev' AND j.run_id = :run
   LEFT JOIN main.classifications h ON h.repo = k.repo AND h.number = k.number AND h.classifier = 'haiku' AND h.run_id = :run
   LEFT JOIN main.classifications s ON s.repo = k.repo AND s.number = k.number AND s.classifier = 'sonnet' AND s.run_id = :run

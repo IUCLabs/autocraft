@@ -39,7 +39,7 @@ export function settleRows(rows: ClsRow[]): Settled | null {
 
 // Without a run, each classifier's latest row for the item counts, from the latest Jev run.
 export function settledLabel(db: DatabaseSync, repo: string, number: number, runId?: string): Settled | null {
-  const all = db.prepare("SELECT classifier, run_id, at, type_label, flags, probs FROM main.classifications WHERE repo = ? AND number = ? ORDER BY at DESC")
+  const all = db.prepare("SELECT classifier, run_id, at, type_label, flags, probs, input_hash FROM main.classifications WHERE repo = ? AND number = ? ORDER BY at DESC")
     .all(repo, number) as ClsRow[];
   return settleRows(forRun(all, runId));
 }

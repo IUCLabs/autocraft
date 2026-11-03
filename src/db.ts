@@ -67,6 +67,7 @@ const ADDED_COLUMNS: [table: string, column: string, type: string][] = [
 // Covering indexes on the hash columns let the planner compare stored hashes without reading item rows.
 // The trigger clears the hashes of an item whose hashed fields were edited without bringing its own (sync does).
 const ADDED_INDEXES = [
+  "CREATE INDEX IF NOT EXISTS main.classifications_alone ON classifications(at) WHERE classifier = 'haiku' AND input_hash IS NOT NULL",
   "CREATE INDEX IF NOT EXISTS main.jobs_step_repo ON jobs(step, repo, id)",
   "CREATE INDEX IF NOT EXISTS main.items_class ON items(state, repo, number, class_scheme, class_hash)",
   "CREATE INDEX IF NOT EXISTS main.items_embed ON items(repo, number, embed_hash)",

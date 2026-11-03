@@ -16,7 +16,7 @@ import { jevAvailable } from "../agents/jev.ts";
 import { runHaiku, runJev } from "../classify/run.ts";
 import { fillClassHashes, SCHEME_ID } from "../itemhash.ts";
 import type { StepContext } from "./steps.ts";
-import { VERDICT_SQL } from "../classify/settled.ts";
+import { newestVerdictRun } from "../classify/settled.ts";
 import { pilotSql } from "../pilot.ts";
 
 export { inputHash } from "../itemhash.ts";
@@ -30,8 +30,7 @@ const JEV_CHUNK = 40, HAIKU_PER_CALL = 25;
 export function currentRun(db: DatabaseSync): string | null {
   const set = db.prepare("SELECT value FROM settings WHERE key = 'classify_run'").get() as { value: string } | undefined;
   if (set?.value) return set.value;
-  const r = db.prepare(`SELECT run_id FROM classifications WHERE ${VERDICT_SQL} ORDER BY at DESC LIMIT 1`).get() as { run_id: string } | undefined;
-  return r?.run_id ?? null;
+  return newestVerdictRun(db);
 }
 
 type Row = Item & { updated_at: string | null; c_at: string | null; c_hash: string | null };

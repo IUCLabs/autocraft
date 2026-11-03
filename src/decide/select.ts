@@ -11,7 +11,7 @@ import { fastScoreSql } from "../fasttrack.ts";
 import { notHeldSql } from "../dupes/held.ts";
 import type { DatabaseSync } from "node:sqlite";
 import { trackedNames } from "../repos.ts";
-import { needsDecisionOf, settle, VERDICT_SQL, type Settled } from "../classify/settled.ts";
+import { needsDecisionOf, newestVerdictRun, settle, type Settled } from "../classify/settled.ts";
 
 export const SCOPE_LABELS = ["missing feature", "small extra", "plugin candidate"] as const;
 export const isScope = (l: string | null): boolean => l !== null && (SCOPE_LABELS as readonly string[]).includes(l);
@@ -25,8 +25,7 @@ const json = <T>(s: string | null, d: T): T => {
 };
 
 export function latestJevRun(db: DatabaseSync): string | null {
-  const r = db.prepare(`SELECT run_id FROM classifications WHERE ${VERDICT_SQL} ORDER BY at DESC LIMIT 1`).get() as { run_id: string } | undefined;
-  return r?.run_id ?? null;
+  return newestVerdictRun(db);
 }
 
 /** Why an item would become a decision, or null. */
@@ -59,7 +58,7 @@ export function selectCandidates(db: DatabaseSync, run: string, repos?: string[]
   if (!want.length) return [];
   const skip = covered(db);
   const rows = db.prepare(`SELECT k.repo, k.number, j.type_label AS jl, j.flags AS jf, j.probs, h.type_label AS hl, h.flags AS hf
-    FROM (SELECT repo, number FROM classifications WHERE run_id = :run AND ${VERDICT_SQL} GROUP BY repo, number) k
+    FROM (SELECT repo, number FROM classifications WHERE run_id = :run AND classifier = 'jev' UNION SELECT repo, number FROM classifications WHERE run_id = :run AND classifier = 'haiku' AND input_hash IS NOT NULL) k
     JOIN items i ON i.repo = k.repo AND i.number = k.number
     LEFT JOIN item_rank p ON p.repo = k.repo AND p.number = k.number
     LEFT JOIN classifications j ON j.repo = k.repo AND j.number = k.number AND j.classifier = 'jev' AND j.run_id = :run

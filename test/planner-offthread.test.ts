@@ -75,7 +75,7 @@ describe("planner off the runner loop", () => {
 });
 
 describe("classification run resolved once", () => {
-  const RUN_QUERY = /FROM classifications WHERE \(classifier = 'jev' OR .* ORDER BY at DESC/;
+  const RUN_QUERY = /FROM classifications WHERE classifier = 'jev' ORDER BY at DESC/;
 
   function counting(db: ReturnType<typeof connect>): { db: ReturnType<typeof connect>; runLookups: () => number } {
     let n = 0;
