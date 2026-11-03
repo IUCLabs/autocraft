@@ -1,10 +1,7 @@
 // The explorer subagent of a workspace call: a cheap model with read-only
 // search tools. The definition is a pure function of the MCP server names, so
 // the file is identical across calls and the prompt prefix caches.
-import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { checkoutRoot } from "./checkout.ts";
+// No Node imports: the prompt registry (shared with the web mockup) imports it; the file writers are in agent-files.ts.
 import { REPOS_ROOT, REPO_PATH } from "./command.ts";
 
 export const EXPLORER = "explore";
@@ -36,30 +33,4 @@ export function agentsDefinition(mcpServers: string[] = []): Record<string, unkn
       tools: [...EXPLORER_TOOLS, ...mcpTools(mcpServers)],
     },
   };
-}
-
-/** Writes the agents file on the host (once per distinct definition) and returns its path. */
-export function agentsFile(mcpServers: string[] = [], root = dirname(checkoutRoot())): string {
-  const text = JSON.stringify(agentsDefinition(mcpServers));
-  const f = join(root, `agents-${createHash("sha256").update(text).digest("hex").slice(0, 12)}.json`);
-  if (!existsSync(f)) {
-    mkdirSync(root, { recursive: true });
-    const tmp = `${f}.tmp-${process.pid}`;
-    writeFileSync(tmp, text, { mode: 0o644 });
-    renameSync(tmp, f);
-  }
-  return f;
-}
-
-/** Writes the MCP config (`{mcpServers}`, owner-only: server entries may carry environment values) and returns its host path. */
-export function mcpFile(mcpServers: Record<string, unknown>, root = dirname(checkoutRoot())): string {
-  const text = JSON.stringify({ mcpServers });
-  const f = join(root, `mcp-${createHash("sha256").update(text).digest("hex").slice(0, 12)}.json`);
-  if (!existsSync(f)) {
-    mkdirSync(root, { recursive: true });
-    const tmp = `${f}.tmp-${process.pid}`;
-    writeFileSync(tmp, text, { mode: 0o600 });
-    renameSync(tmp, f);
-  }
-  return f;
 }

@@ -1,5 +1,5 @@
 // The workspace of an Opus call: a read-only checkout of the default branch of
-// every tracked repository (except those the `workspace_exclude` setting
+// every public tracked repository (except those the `workspace_exclude` setting
 // lists), mounted at /repos/<name>. One checkout exists per repository and
 // head. The head is looked up when a call needs it (at most every few minutes
 // per repository); a checkout of a new head is built then, and a call waits
@@ -115,10 +115,12 @@ function branchOf(db: DatabaseSync, repo: string): string {
   return (db.prepare("SELECT default_branch FROM main.repos WHERE name = ?").get(repo) as { default_branch: string | null } | undefined)?.default_branch ?? "main";
 }
 
-/** Checkouts of every tracked repository's default branch (sorted by name) that could be had; the others are left out. */
+/** Checkouts of every public tracked repository's default branch (sorted by name) that could be had; the others are left out. */
 export async function workspaceCheckouts(db: DatabaseSync, log: (line: string) => void = console.log, deps: WorkspaceDeps = defaultWorkspaceDeps(), c: WorkspaceCache = cache): Promise<{ name: string; dir: string }[]> {
   const skip = new Set(workspaceExcluded(db));
-  const names = trackedNames(db).filter((n) => !skip.has(n) && SHARED_NAME.test(n));
+  // Opus replies reach everyone who may view the dashboard, so only public repositories are mounted.
+  const pub = new Set((db.prepare("SELECT name FROM main.repos WHERE visibility = 'public'").all() as { name: string }[]).map((r) => r.name));
+  const names = trackedNames(db).filter((n) => pub.has(n) && !skip.has(n) && SHARED_NAME.test(n));
   const dirs = await Promise.all(names.map((n) => c.dirOf(n, branchOf(db, n), deps, log).catch(() => null)));
   const out: { name: string; dir: string }[] = [];
   names.forEach((name, i) => { if (dirs[i]) out.push({ name, dir: dirs[i]! }); else log(`  workspace ${name}: no checkout yet; left out`); });

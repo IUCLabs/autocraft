@@ -17,7 +17,10 @@ const quiet = () => {};
 function setup(repos: string[]) {
   const db = connect(join(mkdtempSync(join(root, "db-")), "t.db"));
   db.exec("DELETE FROM tracked_repos");
-  for (const r of repos) db.prepare("INSERT INTO tracked_repos (name, pipeline) VALUES (?, 1)").run(r);
+  for (const r of repos) {
+    db.prepare("INSERT INTO tracked_repos (name, pipeline) VALUES (?, 1)").run(r);
+    db.prepare("INSERT OR REPLACE INTO repos (name, visibility) VALUES (?, 'public')").run(r);
+  }
   const heads = new Map<string, string>(repos.map((r) => [r, "a".repeat(40)]));
   let clock = 0;
   const built: string[] = [];
@@ -87,6 +90,16 @@ describe("workspace checkouts", () => {
     const got = await workspaceCheckouts(t.db, quiet, t.deps, new WorkspaceCache());
     assert.deepEqual(got.map((x) => x.name), ["alpha"]);
     assert.throws(() => setWorkspaceExcluded(t.db, ["../x"], "test"));
+  });
+});
+
+describe("workspace visibility", () => {
+  test("only public repositories are mounted", async () => {
+    const t = setup(["alpha", "beta", "gamma"]);
+    t.db.prepare("UPDATE repos SET visibility = 'private' WHERE name = 'beta'").run();
+    t.db.prepare("UPDATE repos SET visibility = NULL WHERE name = 'gamma'").run();
+    const got = await workspaceCheckouts(t.db, quiet, t.deps, new WorkspaceCache());
+    assert.deepEqual(got.map((x) => x.name), ["alpha"]);
   });
 });
 

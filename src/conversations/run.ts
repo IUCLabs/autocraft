@@ -1,5 +1,5 @@
 // The Conversation step: answers each operator message that waits for Opus with one sandboxed `claude -p` call
-// (the item's repository and the shared repositories, read-only) and stores the reply with its action cards.
+// (the item's repository and the workspace, read-only) and stores the reply with its action cards.
 import type { DatabaseSync } from "node:sqlite";
 import { claudeRoom } from "../agents/call.ts";
 import { askClaude, pool, saveUsage, type Usage } from "../classify/run.ts";
@@ -15,8 +15,6 @@ export type ConversationParams = {
   model?: string;
   /** Read-only checkout of the repo's default branch, or null to ask without tools. */
   checkout: (repo: string) => Promise<string | null>;
-  /** Read-only checkouts of the shared repositories, asked once per run; those that fail are left out. */
-  shared?: () => Promise<{ name: string; dir: string }[]>;
   diff?: DiffSource;
   usageRun: string;
   onHandled?: (n: number) => void;
@@ -32,7 +30,6 @@ export async function answerPending(db: DatabaseSync, p: ConversationParams): Pr
   const model = p.model ?? CONVERSATION_PROMPT.models[0]!;
   let todo = pendingConversations(db);
   if (p.limit !== undefined) todo = todo.slice(0, Math.max(0, p.limit));
-  let sharedAll: Promise<{ name: string; dir: string }[]> | undefined;
   const checkouts = new Map<string, Promise<string | null>>();
   let answered = 0, handled = 0;
   await pool(todo.map((c, k) => async () => {
@@ -48,15 +45,10 @@ export async function answerPending(db: DatabaseSync, p: ConversationParams): Pr
     if (!parts) return;
     if (!checkouts.has(repo)) checkouts.set(repo, p.checkout(repo).catch(() => null));
     const checkout = await checkouts.get(repo)!;
-    let shared: { name: string; dir: string }[] = [];
-    if (checkout && p.shared) {
-      sharedAll ??= p.shared().catch(() => []);
-      shared = (await sharedAll).filter((x) => x.name !== repo).sort((a, b) => a.name.localeCompare(b.name));
-    }
     let usage: Usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: null };
     let parsed: ReturnType<typeof parseReply> = null;
     for (let attempt = 0; attempt < CONVERSATION_PROMPT.limits.attempts && !parsed; attempt++) {
-      const reply = await askClaude("conversation.turn", model, [{ ref: `${repo}#${n}`, item: parts.item, turns: parts.turns }], db, { checkout: checkout ?? undefined, shared });
+      const reply = await askClaude("conversation.turn", model, [{ ref: `${repo}#${n}`, item: parts.item, turns: parts.turns }], db, { checkout: checkout ?? undefined });
       if (!reply) continue;
       usage = sum(usage, reply.usage);
       parsed = parseReply(db, repo, n, reply.text);
@@ -80,14 +72,13 @@ export const githubDiff: DiffSource = async (repo, n, head) => {
   return r.ok ? r.text : null;
 };
 
-/** The step's body: default checkouts (the item's default branch, the shared repositories) and diffs. Returns the answered count and the usage run id. */
+/** The step's body: the item's default checkout (the workspace comes with the prompt) and diffs. Returns the answered count and the usage run id. */
 export async function runConversations(db: DatabaseSync, p: { limit: number; onHandled?: (n: number) => void; cancelled?: () => boolean }, log: (line: string) => void = console.log): Promise<{ answered: number; waiting: number; usageRun: string }> {
   const usageRun = `conversation-${now().replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z")}`;
   const waiting = pendingConversations(db).length;
   const answered = await answerPending(db, {
     ...p, usageRun, log, diff: githubDiff,
     checkout: (repo) => import("../dupes/compare.ts").then((m) => m.baseCheckout(db, repo)),
-    shared: () => import("../sandbox/shared.ts").then((m) => m.sharedCheckouts(db, log)),
   });
   log(`conversation: ${answered} of ${waiting} messages answered`);
   return { answered, waiting, usageRun };

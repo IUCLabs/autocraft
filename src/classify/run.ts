@@ -11,7 +11,9 @@ import { claudeRoom, startClaudeRun, startJevRun } from "../agents/call.ts";
 import { finishRun } from "../agents/runs.ts";
 import { scrubError } from "../agents/text.ts";
 import { scrub } from "../runner/scrub.ts";
-import { MCP_PATH, agentsFile, mcpFile } from "../sandbox/agents.ts";
+import { itemTools } from "../itemtools/index.ts";
+import { agentsFile, mcpFile } from "../sandbox/agent-files.ts";
+import { MCP_PATH } from "../sandbox/agents.ts";
 import { resolveClaudeBin, sandboxCommand, tokenNearExpiry } from "../sandbox/index.ts";
 import { defaultWorkspace } from "../sandbox/workspace.ts";
 import { CLAUDE_PROMPTS, JEV_ARGS, JEV_USD_PER_INPUT_TOKEN, JEV_PROMPTS, claudeArgs, claudePromptOf, jevPromptOf, renderClaude, withoutRepoDir, renderJev, type ClaudeInput, type ClaudePromptId, type JevPromptId } from "../prompts/index.ts";
@@ -207,7 +209,7 @@ const exitClass = (code: number | null): string => (code === null ? "timed out o
 /**
  * `checkout`: host directory of a read-only checkout; with it, a prompt that registers a sandbox runs with its tools inside bubblewrap (src/sandbox).
  * `shared`: for a prompt with the workspace, replaces the default workspace (every tracked repository's default branch, src/sandbox/workspace.ts).
- * `itemTools`: the item tools' read-only mounts and MCP servers (`mcpServers` as in an MCP config), for the call and its explorer; null or absent means none.
+ * `itemTools`: the item tools' read-only mounts and MCP servers (`mcpServers` as in an MCP config), for the call and its explorer; null means none, absent means `itemTools()` (src/itemtools).
  */
 export type AskOptions = { checkout?: string; shared?: { name: string; dir: string }[]; itemTools?: { mounts: { host: string; path: string }[]; mcpServers: Record<string, unknown> } | null };
 
@@ -244,7 +246,8 @@ export async function askClaude<K extends ClaudePromptId>(id: K, model: string, 
     }
     const workspace = sandboxed && CLAUDE_PROMPTS[id].sandbox?.workspace === true;
     const shared = workspace ? opts.shared ?? await workspaceOf(db) : undefined;
-    const tools = workspace && opts.itemTools ? { mounts: opts.itemTools.mounts, servers: Object.keys(opts.itemTools.mcpServers).sort(), file: mcpFile(opts.itemTools.mcpServers) } : undefined;
+    const it = workspace ? opts.itemTools === undefined ? itemTools() : opts.itemTools : null;
+    const tools = it ? { mounts: it.mounts, servers: Object.keys(it.mcpServers).sort(), file: mcpFile(it.mcpServers) } : undefined;
     const args = claudeArgs(id, model, sandboxed, tools && { config: MCP_PATH, servers: tools.servers });
     const cwd = mkdtempSync(join(tmpdir(), "classify-"));
     let r: Proc;

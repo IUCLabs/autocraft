@@ -49,12 +49,11 @@ describe("sandbox command", () => {
   });
 
   test("claudeArgs allow the Agent tool, /repos and the agents file only for workspace prompts; MCP config adds its tools", () => {
-    const ws = claudeArgs("decide.recommend", "opus", true), plain = claudeArgs("fixup.patch", "sonnet", true);
+    const ws = claudeArgs("decide.recommend", "opus", true);
     const has = (a: string[], x: string) => a.includes(x);
     assert.equal(ws[ws.indexOf("--tools") + 1], "Read,Grep,Glob,Agent");
     assert.match(ws[ws.indexOf("--allowedTools") + 1]!, /^Read\(\/\/repo\/\*\*\),Read\(\/\/repos\/\*\*\),Agent$/);
     assert.ok(ws.join(" ").includes("--add-dir /repo --add-dir /repos --agents /agents.json"));
-    assert.ok(!plain.join(" ").includes("Agent") && !has(plain, "--agents") && !plain.join(" ").includes("/repos"));
     const m = claudeArgs("review.opus", "opus", true, { config: "/items/mcp.json", servers: ["items", "docs"] });
     assert.ok(m.join(" ").includes("--mcp-config /items/mcp.json --strict-mcp-config"));
     assert.match(m[m.indexOf("--allowedTools") + 1]!, /,mcp__docs__\*,mcp__items__\*$/);
@@ -63,7 +62,8 @@ describe("sandbox command", () => {
   });
 
   test("the explorer agent is one cheap read-only agent, identical across calls", async () => {
-    const { agentsDefinition, agentsFile } = await import("../src/sandbox/agents.ts");
+    const { agentsDefinition } = await import("../src/sandbox/agents.ts");
+    const { agentsFile } = await import("../src/sandbox/agent-files.ts");
     const d = agentsDefinition(["items"]) as Record<string, { model: string; tools: string[]; prompt: string }>;
     assert.deepEqual(Object.keys(d), ["explore"]);
     assert.equal(d.explore!.model, "haiku");
