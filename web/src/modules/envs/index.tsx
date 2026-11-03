@@ -3,7 +3,7 @@
 import { useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { Dialog } from "radix-ui";
-import { CheckIcon, CopyIcon, DownloadIcon, HammerIcon, PencilIcon, PlusIcon, XIcon } from "lucide-react";
+import { CheckIcon, CopyIcon, DownloadSimpleIcon, HammerIcon, PencilSimpleIcon, PlusIcon, XIcon } from "@phosphor-icons/react";
 import { useApi, usePagedQuery, useQuery } from "../../api/client";
 import type { BuildEnv, BuildSummary, BuildTask, BuildTaskDetail, Capabilities, EnvKind, Requires, TaskBatch, TaskFilter, TaskState } from "../../api/types";
 import type { FeatureModule, ViewProps } from "../../registry/types";
@@ -128,7 +128,7 @@ function EnvCard({ e, operator }: { e: BuildEnv; operator: boolean }) {
         <Badge>{KIND_LABEL[e.kind]}</Badge>
         {operator && (
           <button onClick={() => setEditing(!editing)} aria-label={`Edit ${e.label}`} className="ml-auto flex size-7 items-center justify-center text-ink/50 hover:bg-ink/[0.06] hover:text-ink max-md:size-11">
-            <PencilIcon className="text-[14px]" />
+            <PencilSimpleIcon className="text-[14px]" />
           </button>
         )}
       </div>
@@ -531,7 +531,7 @@ function DetailBody({ id }: { id: number }) {
                   {a.contentType} · {num(a.bytes)} bytes
                 </span>
                 <a href={`/api/tasks/${t.id}/artifacts/${encodeURIComponent(a.name)}`} download={a.name} className="ml-auto inline-flex items-center gap-1 text-xs text-accent-ink hover:underline max-md:min-h-11">
-                  <DownloadIcon className="text-[13px]" />
+                  <DownloadSimpleIcon className="text-[13px]" />
                   Download
                 </a>
               </li>

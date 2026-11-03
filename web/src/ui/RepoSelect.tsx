@@ -1,7 +1,7 @@
 // One repo or every repo, picked from a searchable list: built for a few hundred repos.
 import { useMemo, useState } from "react";
 import { Popover } from "radix-ui";
-import { CheckIcon, ChevronDownIcon, SearchIcon } from "lucide-react";
+import { CheckIcon, CaretDownIcon, MagnifyingGlassIcon } from "@phosphor-icons/react";
 import { useQuery } from "../api/client";
 import { cn } from "./cn";
 
@@ -31,7 +31,7 @@ export function RepoSelect({ value, onChange, className }: { value: string | nul
           className={cn("inline-flex h-8 max-w-[260px] items-center gap-1.5 rounded border border-line bg-sunken px-2.5 text-sm max-md:h-11", value ? "text-accent-ink" : "text-ink/70", className)}
         >
           <span className="truncate">{value ?? "Every repo"}</span>
-          <ChevronDownIcon className="shrink-0 text-[11px] opacity-60" />
+          <CaretDownIcon className="shrink-0 text-[11px] opacity-60" />
         </button>
       </Popover.Trigger>
       <Popover.Portal>
@@ -41,7 +41,7 @@ export function RepoSelect({ value, onChange, className }: { value: string | nul
           className="z-50 flex max-h-[min(60vh,420px)] w-[min(280px,calc(100vw-24px))] flex-col rounded-md border border-line-strong bg-raised shadow-[0_12px_32px_rgba(0,0,0,0.28)] animate-rise"
         >
           <div className="flex items-center gap-2 border-b border-line px-2.5">
-            <SearchIcon className="shrink-0 text-ink/45" />
+            <MagnifyingGlassIcon className="shrink-0 text-ink/45" />
             <input
               autoFocus
               value={q}

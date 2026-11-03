@@ -3,7 +3,7 @@
 // steps, limits, recent jobs and prompts. Stage and repo live in the URL.
 import { Link } from "react-router-dom";
 import { Dialog } from "radix-ui";
-import { WaypointsIcon } from "lucide-react";
+import { ShareNetworkIcon } from "@phosphor-icons/react";
 import { useQuery } from "../../api/client";
 import type { Flow } from "../../api/types";
 import type { FeatureModule, ViewProps } from "../../registry/types";
@@ -140,7 +140,7 @@ function FlowView(_: ViewProps) {
 export const flowModule: FeatureModule = {
   id: "flow",
   permission: "viewer",
-  nav: { label: "Pipeline flow", icon: WaypointsIcon, to: "/", group: "work", order: -1, phoneTab: true },
+  nav: { label: "Pipeline flow", icon: ShareNetworkIcon, to: "/", group: "work", order: -1, phoneTab: true },
   commands: [{ id: "go-flow", keys: "g h", label: "Go to the pipeline flow (home)", group: "Go to" }],
   routes: [{ path: "/", view: { id: "flow", title: "Pipeline flow", panels: [{ id: "main", title: "Pipeline flow", component: FlowView, defaultSize: 100 }] } }],
   prefetch: (api) => void api.flow(),

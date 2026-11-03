@@ -1,5 +1,5 @@
 import { DropdownMenu } from "radix-ui";
-import { CheckIcon } from "lucide-react";
+import { CheckIcon } from "@phosphor-icons/react";
 import { mockRole, setMockRole } from "./mockApi";
 import type { MockRole } from "./fixtures";
 

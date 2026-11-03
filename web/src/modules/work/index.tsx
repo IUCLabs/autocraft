@@ -1,7 +1,7 @@
 // Work queue: open issues and PRs in rank order, with level, type and size and the next pipeline
 // step. Read-only.
 import { Link } from "react-router-dom";
-import { ListOrderedIcon } from "lucide-react";
+import { ListNumbersIcon } from "@phosphor-icons/react";
 import { useQuery } from "../../api/client";
 import type { WorkBreakdown, WorkFilter, WorkRow } from "../../api/types";
 import type { FeatureModule, ViewProps } from "../../registry/types";
@@ -159,7 +159,7 @@ function Cards({ rows, offset }: { rows: WorkRow[]; offset: number }) {
 export const workModule: FeatureModule = {
   id: "work",
   permission: "viewer",
-  nav: { label: "Work queue", icon: ListOrderedIcon, to: "/work", group: "work", order: 0.4 },
+  nav: { label: "Work queue", icon: ListNumbersIcon, to: "/work", group: "work", order: 0.4 },
   commands: [{ id: "go-work", keys: "g w", label: "Go to work queue", group: "Go to" }],
   routes: [{ path: "work", view: { id: "work", title: "Work queue", panels: [{ id: "main", title: "Work queue", component: WorkView, defaultSize: 100 }] } }],
 };

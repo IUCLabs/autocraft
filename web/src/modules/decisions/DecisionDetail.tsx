@@ -2,7 +2,7 @@ import { PriorityBadge } from "../../ui/PriorityBadge";
 import { useEffect, useRef, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { RefLink } from "../../ui/RefLink";
-import { ChevronLeftIcon, ChevronRightIcon, CheckIcon, Undo2Icon, MessageSquareIcon, InboxIcon, SparklesIcon, ArrowDownIcon } from "lucide-react";
+import { CaretLeftIcon, CaretRightIcon, CheckIcon, ArrowUUpLeftIcon, ChatCircleIcon, TrayIcon, SparkleIcon, ArrowDownIcon } from "@phosphor-icons/react";
 import { useApi } from "../../api/client";
 import type { Decision, User } from "../../api/types";
 import type { ViewProps } from "../../registry/types";
@@ -47,8 +47,8 @@ export function DetailPanel({ user }: ViewProps) {
           </span>
         )}
         <div className="ml-auto flex items-center">
-          <IconButton size="sm" icon={ChevronLeftIcon} label="Previous (k)" disabled={idx <= 0} onClick={() => go(list[idx - 1]?.id)} />
-          <IconButton size="sm" icon={ChevronRightIcon} label="Next (j)" disabled={idx < 0 || idx >= list.length - 1} onClick={() => go(list[idx + 1]?.id)} />
+          <IconButton size="sm" icon={CaretLeftIcon} label="Previous (k)" disabled={idx <= 0} onClick={() => go(list[idx - 1]?.id)} />
+          <IconButton size="sm" icon={CaretRightIcon} label="Next (j)" disabled={idx < 0 || idx >= list.length - 1} onClick={() => go(list[idx + 1]?.id)} />
         </div>
       </div>
       {just && !d ? (
@@ -66,7 +66,7 @@ function EmptyDetail({ count }: { count: number }) {
   const { filter } = useDecisionFilter();
   return (
     <div className="flex h-full flex-col items-center justify-center gap-2 p-8 text-center">
-      <InboxIcon className="text-[28px] text-ink/25" />
+      <TrayIcon className="text-[28px] text-ink/25" />
       {count === 0 ? (
         <>
           {filter.status === "backlog" ? (
@@ -95,7 +95,7 @@ function AnsweredNotice({ entry }: { entry: { id: string; label: string; ref: st
         <CheckIcon className="text-ok" />
         <span className="code">{entry.ref}</span>
         <span className="text-ink/70">→ {entry.label}</span>
-        <Button size="sm" variant="ghost" icon={Undo2Icon} onClick={() => undo(entry.id)}>
+        <Button size="sm" variant="ghost" icon={ArrowUUpLeftIcon} onClick={() => undo(entry.id)}>
           Undo
         </Button>
       </div>
@@ -163,7 +163,7 @@ export function DecisionBody({
         <ClaimPill claim={d.claim} />
         {!phone && d.commentCount > 0 && (
           <span className="inline-flex items-center gap-1">
-            <MessageSquareIcon className="text-[12px]" /> {d.commentCount}
+            <ChatCircleIcon className="text-[12px]" /> {d.commentCount}
           </span>
         )}
       </div>
@@ -174,7 +174,7 @@ export function DecisionBody({
   const summary = d.summary && (
     <section className="mt-3 rounded-md border border-line bg-ink/[0.025] px-3 py-2.5">
       <div className="mb-1 flex items-center gap-1.5 text-xs text-ink/55">
-        <SparklesIcon className="text-[12px] text-accent-ink" />
+        <SparkleIcon className="text-[12px] text-accent-ink" />
         <span className="font-semibold text-ink/75">AI summary</span>
         <span>
           · {d.summaryBy} · {ago(d.summaryAt)} ago
@@ -315,12 +315,12 @@ export function DecisionBody({
           </article>
         </div>
         <div className="flex shrink-0 items-center gap-1 border-t border-line bg-bg px-1 py-1.5">
-          <IconButton size="lg" icon={ChevronLeftIcon} label="Previous decision" disabled={!pager?.prev} onClick={pager?.prev} />
+          <IconButton size="lg" icon={CaretLeftIcon} label="Previous decision" disabled={!pager?.prev} onClick={pager?.prev} />
           <div className="min-w-0 flex-1 px-1">
             <p className="num text-2xs text-ink/50">{pager?.pos}</p>
             <p className="truncate text-xs font-medium">{d.answer ? "Answered" : d.question}</p>
           </div>
-          <Button size="md" variant={operator && !d.answer ? "secondary" : "primary"} icon={MessageSquareIcon} className="h-10 px-3" onClick={() => reviewRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })}>
+          <Button size="md" variant={operator && !d.answer ? "secondary" : "primary"} icon={ChatCircleIcon} className="h-10 px-3" onClick={() => reviewRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })}>
             Comment
           </Button>
           {operator && (
@@ -328,7 +328,7 @@ export function DecisionBody({
               Workflow
             </Button>
           )}
-          <IconButton size="lg" icon={ChevronRightIcon} label="Next decision" disabled={!pager?.next} onClick={pager?.next} />
+          <IconButton size="lg" icon={CaretRightIcon} label="Next decision" disabled={!pager?.next} onClick={pager?.next} />
         </div>
       </div>
     );
@@ -373,7 +373,7 @@ export function AnsweredState({ d, canUndo }: { d: Decision; canUndo: boolean })
         </span>
       )}
       {!backlog && !d.appliedAt && canUndo && (
-        <Button size="sm" variant="ghost" icon={Undo2Icon} className="ml-auto" onClick={() => undo(d.id)}>
+        <Button size="sm" variant="ghost" icon={ArrowUUpLeftIcon} className="ml-auto" onClick={() => undo(d.id)}>
           Undo
         </Button>
       )}

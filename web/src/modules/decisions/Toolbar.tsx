@@ -1,5 +1,5 @@
 import { DropdownMenu } from "radix-ui";
-import { ChevronDownIcon } from "lucide-react";
+import { CaretDownIcon } from "@phosphor-icons/react";
 import { useQuery } from "../../api/client";
 import type { DecisionKind } from "../../api/types";
 import type { ViewProps } from "../../registry/types";
@@ -78,7 +78,7 @@ function Picker({ label, items, onPick }: { label: string; items: { v: string; l
   return (
     <DropdownMenu.Root>
       <DropdownMenu.Trigger className="chip">
-        {label} <ChevronDownIcon className="text-[10px]" />
+        {label} <CaretDownIcon className="text-[10px]" />
       </DropdownMenu.Trigger>
       <DropdownMenu.Portal>
         <DropdownMenu.Content align="end" sideOffset={4} className={menuCls}>
@@ -99,7 +99,7 @@ function RepoPicker({ selected, onChange }: { selected: string[]; onChange: (r: 
   return (
     <DropdownMenu.Root>
       <DropdownMenu.Trigger className="chip" data-active={selected.length > 0}>
-        {label} <ChevronDownIcon className="text-[10px]" />
+        {label} <CaretDownIcon className="text-[10px]" />
       </DropdownMenu.Trigger>
       <DropdownMenu.Portal>
         <DropdownMenu.Content align="end" sideOffset={4} className={menuCls}>

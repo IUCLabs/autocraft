@@ -1,6 +1,6 @@
 // Claude accounts: operator-set label, enabled state, 5-hour and weekly use, concurrency. Never an email or path.
 import { useEffect, useState } from "react";
-import { PencilIcon } from "lucide-react";
+import { PencilSimpleIcon } from "@phosphor-icons/react";
 import { useApi, useQuery } from "../../api/client";
 import type { ClaudeAccount, UsagePause } from "../../api/types";
 import { ago, nowMs, span } from "../../lib/format";
@@ -62,7 +62,7 @@ function PauseLevels({ operator }: { operator: boolean }) {
         </span>
         {operator && (
           <button onClick={() => setEditing(!editing)} aria-label="Edit pause levels" className="flex size-7 items-center justify-center text-ink/50 hover:bg-ink/[0.06] hover:text-ink max-md:size-11">
-            <PencilIcon className="text-[14px]" />
+            <PencilSimpleIcon className="text-[14px]" />
           </button>
         )}
       </div>
@@ -153,7 +153,7 @@ function AccountCard({ a, operator }: { a: ClaudeAccount; operator: boolean }) {
         {a.pausedReason && a.enabled && <Badge tone="warn">Paused</Badge>}
         {operator && (
           <button onClick={() => setEditing(!editing)} aria-label={`Edit ${a.label}`} className="ml-auto flex size-7 items-center justify-center text-ink/50 hover:bg-ink/[0.06] hover:text-ink max-md:size-11">
-            <PencilIcon className="text-[14px]" />
+            <PencilSimpleIcon className="text-[14px]" />
           </button>
         )}
       </div>

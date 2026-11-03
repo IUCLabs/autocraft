@@ -1,5 +1,5 @@
 import { useSearchParams } from "react-router-dom";
-import { CoinsIcon } from "lucide-react";
+import { CoinsIcon } from "@phosphor-icons/react";
 import { useQuery } from "../../api/client";
 import { Pending } from "../../ui/Pending";
 import type { CostReport, UsageTotals } from "../../api/types";

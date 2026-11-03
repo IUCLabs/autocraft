@@ -1,4 +1,4 @@
-import { InboxIcon } from "lucide-react";
+import { TrayIcon } from "@phosphor-icons/react";
 import { useQuery } from "../../api/client";
 import type { FeatureModule } from "../../registry/types";
 import { InboxList } from "./InboxList";
@@ -14,7 +14,7 @@ function useWaitingCount() {
 export const decisionsModule: FeatureModule = {
   id: "decisions",
   permission: "viewer",
-  nav: { label: "Decisions", icon: InboxIcon, to: "/decisions", group: "work", order: 0, phoneTab: true, useBadge: useWaitingCount },
+  nav: { label: "Decisions", icon: TrayIcon, to: "/decisions", group: "work", order: 0, phoneTab: true, useBadge: useWaitingCount },
   commands: [{ id: "go-decisions", keys: "g d", label: "Go to decisions", group: "Go to" }],
   routes: [
     {

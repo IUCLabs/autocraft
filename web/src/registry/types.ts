@@ -1,5 +1,5 @@
 import type { ComponentType } from "react";
-import type { LucideIcon } from "lucide-react";
+import type { Icon as PhosphorIcon } from "@phosphor-icons/react";
 import type { Api } from "../api/client";
 import type { User } from "../api/types";
 
@@ -47,7 +47,7 @@ export interface RouteDef {
 
 export interface NavEntry {
   label: string;
-  icon: LucideIcon;
+  icon: PhosphorIcon;
   to: string;
   group: "work" | "insight" | "operator";
   order: number;

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Popover } from "radix-ui";
-import { BadgeCheckIcon, PencilIcon, SearchIcon } from "lucide-react";
+import { SealCheckIcon, PencilSimpleIcon, MagnifyingGlassIcon } from "@phosphor-icons/react";
 import { useApi, useQuery } from "../../api/client";
 import type { Contributor, ContributorFilter, ContributorList, ContributorSort, RulePreview, Tier, WhitelistRule } from "../../api/types";
 import type { FeatureModule, ViewProps } from "../../registry/types";
@@ -107,7 +107,7 @@ function SearchField({ value, onChange }: { value: string; onChange: (v: string)
   }, [v, value, onChange]);
   return (
     <label className="flex h-8 w-full items-center gap-2 rounded border border-line bg-sunken px-2.5 focus-within:border-accent/60 max-md:h-11 sm:w-56">
-      <SearchIcon className="text-ink/40" />
+      <MagnifyingGlassIcon className="text-ink/40" />
       <input value={v} onChange={(e) => setV(e.target.value)} placeholder="Find a login" aria-label="Find a login" className="min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-ink/40" />
     </label>
   );
@@ -236,7 +236,7 @@ function OverrideEditor({ c }: { c: Contributor }) {
   return (
     <Popover.Root open={open} onOpenChange={setOpen}>
       <Popover.Trigger asChild>
-        <Button size="sm" variant="ghost" icon={PencilIcon} className="max-md:h-11" aria-label={`Override for ${c.login}`}>
+        <Button size="sm" variant="ghost" icon={PencilSimpleIcon} className="max-md:h-11" aria-label={`Override for ${c.login}`}>
           Override
         </Button>
       </Popover.Trigger>
@@ -312,7 +312,7 @@ function RuleBlock({ rule, operator }: { rule: WhitelistRule; operator: boolean 
   if (!operator)
     return (
       <p className="mt-3 flex items-start gap-2 text-sm text-ink/75">
-        <BadgeCheckIcon className="mt-0.5 text-ok" />
+        <SealCheckIcon className="mt-0.5 text-ok" />
         {text}
       </p>
     );
@@ -383,6 +383,6 @@ function PreviewLine({ p }: { p: RulePreview | null }) {
 export const contributorsModule: FeatureModule = {
   id: "contributors",
   permission: "viewer",
-  nav: { label: "Contributors", icon: BadgeCheckIcon, to: "/contributors", group: "insight", order: 10 },
+  nav: { label: "Contributors", icon: SealCheckIcon, to: "/contributors", group: "insight", order: 10 },
   routes: [{ path: "contributors", view: { id: "contributors", title: "Contributors", panels: [{ id: "main", title: "Contributors", component: ContributorsView, defaultSize: 100 }] } }],
 };

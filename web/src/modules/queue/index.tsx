@@ -2,7 +2,7 @@
 // what it waits on. Read-only; merges are started from the Pipeline page.
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { ChevronRightIcon, ChevronsDownUpIcon, ChevronsUpDownIcon, GitMergeIcon, XIcon } from "lucide-react";
+import { CaretRightIcon, ArrowsInLineVerticalIcon, CaretUpDownIcon, GitMergeIcon, XIcon } from "@phosphor-icons/react";
 import { useApi, useQuery, usePagedQuery } from "../../api/client";
 import type { BatchList, BatchState, QueueBatch, QueueFilter, QueueList, QueueRow, QueueState, Tier } from "../../api/types";
 import type { FeatureModule, ViewProps } from "../../registry/types";
@@ -204,7 +204,7 @@ function Batches({ repo, phone }: { repo: string | undefined; phone: boolean }) 
         <span className="flex items-center gap-3">
           {data && <span className="num">{num(data.total)}</span>}
           <button type="button" className="chip max-md:h-11" onClick={() => setAll(!anyOpen)} aria-label={anyOpen ? "Fold all batches" : "Unfold all batches"}>
-            {anyOpen ? <ChevronsDownUpIcon className="size-3.5" /> : <ChevronsUpDownIcon className="size-3.5" />}
+            {anyOpen ? <ArrowsInLineVerticalIcon className="size-3.5" /> : <CaretUpDownIcon className="size-3.5" />}
             {anyOpen ? "Fold all" : "Unfold all"}
           </button>
         </span>
@@ -263,7 +263,7 @@ function BatchFacts({ b }: { b: QueueBatch }) {
 }
 
 function FoldChevron({ open }: { open: boolean }) {
-  return <ChevronRightIcon className={cn("size-4 shrink-0 text-ink/45 transition-transform", open && "rotate-90")} />;
+  return <CaretRightIcon className={cn("size-4 shrink-0 text-ink/45 transition-transform", open && "rotate-90")} />;
 }
 
 function BatchTable({ batches, isOpen, toggle }: BatchProps) {
@@ -394,7 +394,7 @@ function ReviewText({ r }: { r: QueueRow }) {
     <div className="flex items-start gap-1.5">
       {canToggle ? (
         <button type="button" aria-expanded={open} aria-label={open ? "Collapse the review" : "Expand the review"} onClick={() => setOpen(!open)} className="mt-0.5 shrink-0 text-ink/45 hover:text-ink">
-          <ChevronRightIcon className={cn("size-3.5 transition-transform", open && "rotate-90")} />
+          <CaretRightIcon className={cn("size-3.5 transition-transform", open && "rotate-90")} />
         </button>
       ) : (
         <span className="size-3.5 shrink-0" />

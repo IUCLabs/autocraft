@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { Popover } from "radix-ui";
-import { ChevronDownIcon, CircleDotIcon, GitMergeIcon, GitPullRequestIcon, ListIcon, SearchIcon, CircleSlashIcon, ShieldAlertIcon, FlagIcon, XIcon } from "lucide-react";
+import { CaretDownIcon, RadioButtonIcon, GitMergeIcon, GitPullRequestIcon, ListIcon, MagnifyingGlassIcon, ProhibitIcon, ShieldWarningIcon, FlagIcon, XIcon } from "@phosphor-icons/react";
 import { useQuery } from "../../api/client";
 import type { ItemFilter, ItemList, ItemListRow, ItemSort, Settled, SettledStatus, Snippet, Stage, StatusFilter, TypeLabel } from "../../api/types";
 import type { FeatureModule, ViewProps } from "../../registry/types";
@@ -190,7 +190,7 @@ function DebouncedInput({ value, onChange, placeholder, label, className, icon }
   }, [v, value, onChange]);
   return (
     <label className={cn("flex h-8 items-center gap-2 rounded border border-line bg-sunken px-2.5 focus-within:border-accent/60 max-md:h-11", className)}>
-      {icon && <SearchIcon className="text-ink/40" />}
+      {icon && <MagnifyingGlassIcon className="text-ink/40" />}
       <input
         value={v}
         onChange={(e) => setV(e.target.value)}
@@ -214,7 +214,7 @@ function RepoPicker({ value, onChange }: { value: string[]; onChange: (v: string
     <Popover.Root>
       <Popover.Trigger asChild>
         <button className={cn(selectCls, "inline-flex items-center gap-1.5 px-2.5", value.length ? "text-accent-ink" : "text-ink/70")} aria-label="Repos">
-          {label} <ChevronDownIcon className="text-[11px] opacity-60" />
+          {label} <CaretDownIcon className="text-[11px] opacity-60" />
         </button>
       </Popover.Trigger>
       <Popover.Portal>
@@ -257,8 +257,8 @@ function SnippetText({ s }: { s: Snippet }) {
 
 function StateIcon({ it }: { it: ItemListRow }) {
   if (it.state === "merged") return <GitMergeIcon className="shrink-0 text-merged" aria-label="Merged" />;
-  if (it.state === "closed") return <CircleSlashIcon className="shrink-0 text-ink/45" aria-label="Closed" />;
-  return it.kind === "pr" ? <GitPullRequestIcon className="shrink-0 text-ok" aria-label="Open PR" /> : <CircleDotIcon className="shrink-0 text-ok" aria-label="Open issue" />;
+  if (it.state === "closed") return <ProhibitIcon className="shrink-0 text-ink/45" aria-label="Closed" />;
+  return it.kind === "pr" ? <GitPullRequestIcon className="shrink-0 text-ok" aria-label="Open PR" /> : <RadioButtonIcon className="shrink-0 text-ok" aria-label="Open issue" />;
 }
 
 /** The settled label, or why there is none. */
@@ -293,7 +293,7 @@ function Flags({ flags }: { flags: string[] }) {
   return (
     <span className="flex flex-wrap gap-1">
       {flags.includes("security") && (
-        <Badge tone="bad" icon={<ShieldAlertIcon className="text-[10px]" />}>
+        <Badge tone="bad" icon={<ShieldWarningIcon className="text-[10px]" />}>
           security
         </Badge>
       )}

@@ -1,7 +1,7 @@
 // Claude accounts: sign-in state, login end date and plan use for everyone;
 // operators add accounts, sign them in with a code, sign out, enable and refresh.
 import { useState } from "react";
-import { KeyRoundIcon } from "lucide-react";
+import { KeyIcon } from "@phosphor-icons/react";
 import { Dialog } from "radix-ui";
 import { useApi, useQuery } from "../../api/client";
 import type { ClaudeAccount } from "../../api/types";
@@ -110,7 +110,7 @@ function Row({ a, operator, onChanged }: { a: ClaudeAccount; operator: boolean; 
       </dl>
       {operator && (
         <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-line pt-3">
-          <Button size="sm" variant="primary" icon={KeyRoundIcon} loading={write.busy === "login"} className="max-md:h-11"
+          <Button size="sm" variant="primary" icon={KeyIcon} loading={write.busy === "login"} className="max-md:h-11"
             onClick={() => act("login", async () => { await api.accounts.loginStart(a.id); setSigning(true); })}>
             Sign in
           </Button>
@@ -179,6 +179,6 @@ function AccountsView() {
 export const accountsModule: FeatureModule = {
   id: "accounts",
   permission: "viewer",
-  nav: { label: "Accounts", icon: KeyRoundIcon, to: "/accounts", group: "operator", order: 7 },
+  nav: { label: "Accounts", icon: KeyIcon, to: "/accounts", group: "operator", order: 7 },
   routes: [{ path: "accounts", view: { id: "accounts", title: "Accounts", panels: [{ id: "main", title: "Accounts", component: AccountsView, defaultSize: 100 }] } }],
 };

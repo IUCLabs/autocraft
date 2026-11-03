@@ -1,7 +1,7 @@
 import { lazy, Suspense, useMemo, useState } from "react";
 import { NavLink, Route, Routes, matchPath, useLocation, useNavigate, useParams } from "react-router-dom";
 import { Dialog, DropdownMenu } from "radix-ui";
-import { LogOutIcon, MonitorIcon, MoonIcon, MoreHorizontalIcon, PanelLeftIcon, SearchIcon, SunIcon, KeyboardIcon, XIcon, CheckIcon } from "lucide-react";
+import { SignOutIcon, MonitorIcon, MoonIcon, DotsThreeIcon, SidebarSimpleIcon, MagnifyingGlassIcon, SunIcon, KeyboardIcon, XIcon, CheckIcon } from "@phosphor-icons/react";
 import { modules } from "../registry";
 import { can, roleLabel } from "../registry/permissions";
 import type { NavEntry, RouteDef } from "../registry/types";
@@ -75,7 +75,7 @@ export function AppShell() {
           <LiveDot />
           <RoleChip />
           <button aria-label="Search" onClick={() => setSearchOpen(true)} className="flex size-11 items-center justify-center text-ink/70">
-            <SearchIcon className="text-[18px]" />
+            <MagnifyingGlassIcon className="text-[18px]" />
           </button>
           <UserMenu theme={theme} setTheme={setTheme} onHelp={() => setHelp(true)} />
         </header>
@@ -119,7 +119,7 @@ export function AppShell() {
         <RunMeter open={railOpen} />
         <div className={cn("flex items-center border-t border-line p-2", !railOpen && "justify-center")}>
           <button onClick={() => setRailOpen(!railOpen)} className="flex size-7 items-center justify-center text-ink/50 hover:bg-ink/[0.06] hover:text-ink" aria-label={railOpen ? "Collapse sidebar" : "Expand sidebar"} title="Toggle sidebar  [">
-            <PanelLeftIcon className="text-[15px]" />
+            <SidebarSimpleIcon className="text-[15px]" />
           </button>
           {railOpen && (
             <button onClick={() => setHelp(true)} className="ml-auto flex h-7 items-center gap-2 px-2 text-xs text-ink/50 hover:bg-ink/[0.06] hover:text-ink">
@@ -210,7 +210,7 @@ function PhoneTabs({ nav }: { nav: NavEntry[] }) {
       ))}
       <DropdownMenu.Root>
         <DropdownMenu.Trigger className={cn("flex h-14 flex-col items-center justify-center gap-0.5 rounded-none text-2xs font-medium text-ink/55", moreActive && "text-accent-ink")}>
-          <MoreHorizontalIcon className="text-[20px]" />
+          <DotsThreeIcon className="text-[20px]" />
           More
         </DropdownMenu.Trigger>
         <DropdownMenu.Portal>
@@ -355,7 +355,7 @@ function UserMenu({ theme, setTheme, onHelp }: { theme: ThemePref; setTheme: (t:
             <KeyboardIcon className="text-ink/55" /> <span className="flex-1">Keyboard shortcuts</span> <Kbd keys="?" />
           </DropdownMenu.Item>
           <DropdownMenu.Item onSelect={() => void api.signOut()} className={itemCls}>
-            <LogOutIcon className="text-ink/55" /> Sign out
+            <SignOutIcon className="text-ink/55" /> Sign out
           </DropdownMenu.Item>
         </DropdownMenu.Content>
       </DropdownMenu.Portal>

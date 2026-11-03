@@ -42,7 +42,7 @@
   [role="button"] {
     border-radius: 3px;
   }
-  .lucide {
+  svg[viewBox="0 0 256 256"] {
     display: inline-block;
     width: 1.15em;
     height: 1.15em;

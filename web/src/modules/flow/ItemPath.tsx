@@ -1,7 +1,7 @@
 // One item's path through the pipeline flow, as a compact row on the item page:
 // the stages it has passed, the one it is in now, and what comes next.
 import { Link } from "react-router-dom";
-import { CheckIcon, ChevronRightIcon } from "lucide-react";
+import { CheckIcon, CaretRightIcon } from "@phosphor-icons/react";
 import { useQuery } from "../../api/client";
 import type { Decision, Item } from "../../api/types";
 import { cn } from "../../ui/cn";
@@ -41,7 +41,7 @@ function Row({ steps }: { steps: Step[] }) {
     <nav aria-label="Path through the pipeline" className="mt-3 flex flex-wrap items-center gap-x-1 gap-y-1.5 text-xs">
       {steps.map((s, i) => (
         <span key={s.node} className="flex items-center gap-1">
-          {i > 0 && <ChevronRightIcon className="text-ink/30" aria-hidden />}
+          {i > 0 && <CaretRightIcon className="text-ink/30" aria-hidden />}
           <Link
             to={`/?node=${s.node}`}
             aria-current={i === current ? "step" : undefined}
