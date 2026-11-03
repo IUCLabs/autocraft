@@ -111,7 +111,7 @@ Same blocks as Progress, filtered to one repo, plus its decisions and its batche
 
 One table over every tracked repo: ref, title, kind, state, author, updated, settled label with Jev's confidence, flags, latest stage. Filters, all kept in the URL: full-text query over titles, bodies and comments (words, "phrases", prefix\*, -excluded, OR; the matching snippet is shown), repo (several), kind, state (default open), settled label, settled status, flags, author, updated since. Sort by relevance, updated, created or number; 50 rows a page; cards on phones. The top-bar search jumps to `repo#n` and links here for full results.
 
-### Item (`/item/<repo>/<n>`)
+### Item (`/items/<repo>/<n>`)
 
 Title, link, author with tier, size, CI, mergeable state; the stage timeline; every classification side by side (classifier, type, want, reason); decisions about it; related items. This is where detail lives so cards can stay short.
 
