@@ -1,7 +1,7 @@
-// Verify, Fix-ups and Actions sections of the Item page.
+// Review, Verify, Fix-ups and Actions sections of the Item page.
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
-import type { Item, ItemAction, ItemFixup, ItemVerification, ReleaseAction, TaskResult } from "../../api/types";
+import type { Item, ItemAction, ItemFixup, ItemPatchCheck, ItemReviews, ItemVerification, ReleaseAction, ReviewSide, ReviewVerdictName, TaskResult } from "../../api/types";
 import { useApi } from "../../api/client";
 import { Badge, type Tone } from "../../ui/Badge";
 import { useUser } from "../../shell/UserContext";
@@ -95,6 +95,111 @@ function Verify({ v }: { v: ItemVerification }) {
       {v.summary && v.state !== "ci-enough" && v.state !== "planned" && <p className="mt-3 rounded border border-line bg-sunken px-3 py-2">{v.summary}</p>}
       {v.note && <p className="mt-2 text-xs text-warn">{v.note}</p>}
     </div>
+  );
+}
+
+const R_VERDICT: Record<ReviewVerdictName, [string, Tone]> = { take: ["Take", "ok"], "take-fix": ["Take with fixes", "ok"], hold: ["Hold", "warn"], close: ["Close", "bad"] };
+
+function ReviewCard({ title, side, isFinal, extra, children }: { title: string; side: ReviewSide | null; isFinal: boolean; extra?: ReactNode; children?: ReactNode }) {
+  const v = side && R_VERDICT[side.verdict];
+  return (
+    <div className="min-w-0 rounded-md border border-line px-4 py-3 text-sm">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="font-medium">{title}</span>
+        {v && <Badge tone={v[1]}>{v[0]}</Badge>}
+        {isFinal && <Badge tone="accent">Final</Badge>}
+        {side && <span className="ml-auto text-xs text-ink/50">{ago(side.at)} ago</span>}
+      </div>
+      {extra}
+      {side ? (
+        <>
+          <p className="mt-2 text-ink/80">{side.reason}</p>
+          {side.fixes.length > 0 && (
+            <div className="mt-2">
+              <h3 className="text-xs font-medium text-ink/55">Fixes</h3>
+              <ul className="mt-0.5 list-disc space-y-0.5 pl-5">
+                {side.fixes.map((f, i) => (
+                  <li key={i}>
+                    <span className="code break-all text-xs">{f.file}</span> {f.change}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {side.risks.length > 0 && (
+            <div className="mt-2">
+              <h3 className="text-xs font-medium text-ink/55">Risks</h3>
+              <ul className="mt-0.5 list-disc space-y-0.5 pl-5">
+                {side.risks.map((r, i) => (
+                  <li key={i}>{r}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </>
+      ) : (
+        children
+      )}
+    </div>
+  );
+}
+
+function Reviews({ r }: { r: ItemReviews }) {
+  const o = r.opus;
+  const [fv, ftone] = R_VERDICT[r.final.verdict];
+  return (
+    <div>
+      <div className="mb-2 flex flex-wrap items-center gap-2 text-sm">
+        <span className="text-ink/55">Final verdict</span>
+        <Badge tone={ftone}>{r.final.decided ? fv : "Waiting for the Opus review"}</Badge>
+        <span className="code text-xs text-ink/50" title={r.head}>{r.head.slice(0, 7)}</span>
+        {!r.current && <Badge tone="warn">Older head</Badge>}
+      </div>
+      <div className="grid gap-3 md:grid-cols-2">
+        <ReviewCard title="Sonnet, first pass" side={r.sonnet} isFinal={r.final.decided && r.final.source !== "opus"}>
+          <p className="mt-2 text-ink/60">No review</p>
+        </ReviewCard>
+        <ReviewCard
+          title="Opus, final review"
+          side={o}
+          isFinal={r.final.decided && r.final.source === "opus"}
+          extra={
+            o && (
+              <p className="mt-1 text-xs text-ink/60">
+                {o.sure ? "Sure" : "Unsure"} · {o.mode === "delta" ? `changes since ${(o.baseHead ?? "").slice(0, 7)}` : "full diff"}
+              </p>
+            )
+          }
+        >
+          <p className="mt-2 text-ink/80">{r.skipReason ? `Skipped: ${r.skipReason}` : r.final.decided ? "No review" : "Waiting for the Opus review"}</p>
+        </ReviewCard>
+      </div>
+    </div>
+  );
+}
+
+function PatchChecks({ rows }: { rows: ItemPatchCheck[] }) {
+  return (
+    <ul className="divide-y divide-line rounded-md border border-line text-sm">
+      {rows.map((c, i) => (
+        <li key={i} className="px-4 py-2.5">
+          <div className="flex flex-wrap items-center gap-2">
+            <Badge tone={c.verdict === "approve" ? "ok" : "bad"}>{c.verdict === "approve" ? "Approved" : "Rejected"}</Badge>
+            <span className="text-xs text-ink/55">Opus check · round {c.round}</span>
+            <span className="code text-xs text-ink/55" title={c.subject}>{c.subject.slice(0, 7)}</span>
+            <span className="ml-auto text-xs text-ink/50">{ago(c.createdAt)} ago</span>
+          </div>
+          {c.reasons && <p className="mt-1 text-ink/75">{c.reasons}</p>}
+          {c.problems.length > 0 && (
+            <ul className="mt-1 list-disc space-y-0.5 pl-5 text-ink/75">
+              {c.problems.map((p, j) => (
+                <li key={j}>{p}</li>
+              ))}
+            </ul>
+          )}
+        </li>
+      ))}
+    </ul>
   );
 }
 
@@ -192,17 +297,34 @@ function Releases({ it }: { it: Item }) {
 
 export function PrWork({ it }: { it: Item }) {
   const operator = useUser().role === "operator";
+  const fixupChecks = (it.patchChecks ?? []).filter((c) => c.kind === "fixup");
+  const fixChecks = (it.patchChecks ?? []).filter((c) => c.kind === "fixissue");
   return (
     <>
       {operator && <Releases it={it} />}
+      {it.reviews && (
+        <Box title="Review">
+          <Reviews r={it.reviews} />
+        </Box>
+      )}
       {it.verification && (
         <Box title="Verify" aside="builds and tests of this PR">
           <Verify v={it.verification} />
         </Box>
       )}
-      {it.fixups.length > 0 && (
-        <Box title="Fix-ups" aside={`${it.fixups.length} ${it.fixups.length === 1 ? "try" : "tries"}`}>
-          <Fixups rows={it.fixups} />
+      {(it.fixups.length > 0 || fixupChecks.length > 0) && (
+        <Box title="Fix-ups" aside={it.fixups.length > 0 ? `${it.fixups.length} ${it.fixups.length === 1 ? "try" : "tries"}` : undefined}>
+          {it.fixups.length > 0 && <Fixups rows={it.fixups} />}
+          {fixupChecks.length > 0 && (
+            <div className={it.fixups.length > 0 ? "mt-3" : ""}>
+              <PatchChecks rows={fixupChecks} />
+            </div>
+          )}
+        </Box>
+      )}
+      {fixChecks.length > 0 && (
+        <Box title="Fix">
+          <PatchChecks rows={fixChecks} />
         </Box>
       )}
       {it.actions.length > 0 && (

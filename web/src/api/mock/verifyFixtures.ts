@@ -1,5 +1,5 @@
 // Verify, Fix-up and Act results for the Item page, varied by item number.
-import type { Item, ItemAction, ItemFixup, ItemReviews, ItemVerification, TaskResult } from "../types";
+import type { Item, ItemAction, ItemFixup, ItemPatchCheck, ItemReviews, ItemVerification, TaskResult } from "../types";
 
 const H = 3600_000;
 const NOW = Date.parse("2026-11-02T10:40:00Z");
@@ -66,10 +66,25 @@ function reviewsFor(n: number): ItemReviews {
   const head = `${String(n).padStart(7, "0")}abcdef`;
   if (n % 4 === 0) return { head, current: true, sonnet, opus: null, skipReason: "docs, translations or comments only (6 changed lines)", final: { verdict: "take-fix", source: "skip-list", reason: sonnet.reason, decided: true } };
   if (n % 4 === 1) return { head, current: true, sonnet, opus: null, skipReason: null, final: { verdict: "take-fix", source: "sonnet", reason: sonnet.reason, decided: false } };
+  if (n % 8 === 2) {
+    const o = { verdict: "hold" as const, reason: "The change drops a bounds check that the decoder relies on.", fixes: [], risks: ["Reads past the buffer on short input."], at: iso(4 * H), sure: false, mode: "delta" as const, baseHead: `${String(n).padStart(7, "1")}abcdef` };
+    return { head, current: true, sonnet, opus: o, skipReason: null, final: { verdict: "hold", source: "opus", reason: "Needs a person.", decided: true } };
+  }
   const opus = { verdict: "take-fix" as const, reason: "Also drop the unused import.", fixes: [{ file: "src/lib.rs", change: "Rename `tmp` to `stride`." }, { file: "src/lib.rs", change: "Remove the unused `use std::fmt;`." }], risks: ["Depends on code outside the diff."], at: iso(4 * H), sure: true, mode: "full" as const, baseHead: null };
-  return { head, current: true, sonnet, opus, skipReason: null, final: { verdict: opus.verdict, source: "opus", reason: opus.reason, decided: true } };
+  return { head, current: n % 8 !== 6, sonnet, opus, skipReason: null, final: { verdict: opus.verdict, source: "opus", reason: opus.reason, decided: true } };
 }
 
-export function prWorkFor(n: number, kind: Item["kind"]): Pick<Item, "verification" | "fixups" | "actions" | "reviews"> {
-  return { verification: kind === "pr" ? verificationFor(n) : null, fixups: kind === "pr" ? fixupsFor(n) : [], reviews: kind === "pr" ? reviewsFor(n) : null, actions: actionsFor(n, kind) };
+function patchChecksFor(n: number): ItemPatchCheck[] {
+  if (n % 6 === 1) {
+    return [
+      { kind: "fixup", subject: sha(n - 1), patchHash: "a1b2c3", round: 1, verdict: "reject", reasons: "The patch changes the stride type but not the callers in encode.rs.", problems: ["encode.rs still passes a u16 stride", "No test covers the 16-bit path"], model: "opus", createdAt: iso(9 * H) },
+      { kind: "fixup", subject: sha(n - 1), patchHash: "d4e5f6", round: 2, verdict: "approve", reasons: "Callers are updated and the test covers the 16-bit path.", problems: [], model: "opus", createdAt: iso(7 * H) },
+    ];
+  }
+  if (n % 6 === 3) return [{ kind: "fixissue", subject: sha(n), patchHash: "0a9b8c", round: 1, verdict: "approve", reasons: "Minimal change that matches the reported crash.", problems: [], model: "opus", createdAt: iso(2 * H) }];
+  return [];
+}
+
+export function prWorkFor(n: number, kind: Item["kind"]): Pick<Item, "verification" | "fixups" | "actions" | "reviews" | "patchChecks"> {
+  return { verification: kind === "pr" ? verificationFor(n) : null, fixups: kind === "pr" ? fixupsFor(n) : [], reviews: kind === "pr" ? reviewsFor(n) : null, actions: actionsFor(n, kind), patchChecks: kind === "pr" ? patchChecksFor(n) : [] };
 }
