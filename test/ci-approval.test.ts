@@ -82,7 +82,7 @@ describe("runs waiting for approval", () => {
     assert.equal(after.ci, "pending");
     assert.notEqual(after.state, "ci-approval");
     // The moved head still waits and nothing more is approved on a second run.
-    assert.equal((await approveRuns(db, "app", { ...fakes([]), limit: 10 })).approved.length, 0);
+    assert.equal((await approveRuns(db, "app", { ...fakes([], { moved: [2] }), limit: 10 })).approved.length, 0);
   });
 
   test("the limit caps the PRs approved in one run", async () => {
