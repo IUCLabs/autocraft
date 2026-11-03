@@ -1,6 +1,7 @@
 // Wire types for the dashboard API. They mirror the server's tables
 // (docs/dashboard-spec.md, Data) in camelCase.
 
+import type { StageId } from "../../../src/stages/registry.ts";
 export type RepoName = string;
 
 export interface ItemRef {
@@ -1120,7 +1121,7 @@ export interface SimilarHit extends SearchHit {
 // ---- flowchart (home page) ----------------------------------------------------
 
 /** The nodes of the flowchart, in pipeline order (docs/pipeline.md). */
-export type FlowNodeId = "synced" | "dupes" | "classify" | "priority" | "decide" | "labels" | "review" | "fix" | "fixup" | "verify" | "merge" | "act";
+export type FlowNodeId = StageId;
 
 /** What items in a branch wait on: a model step, CI, a person, the runner (a step that needs no model), a build environment (a build task), or nothing. */
 export type FlowWait = "model" | "ci" | "person" | "runner" | "sandbox" | "nothing";

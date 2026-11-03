@@ -7,7 +7,6 @@ import { latestRun } from "../../classify/settled.ts";
 import { branchMembers, type Refs } from "../../flow/count.ts";
 import { buildFlow } from "../../flow/shape.ts";
 import { readSummary } from "../../flow/summary.ts";
-import { loadSteps } from "../../runner/steps.ts";
 import type { Req } from "../types.ts";
 import { needVisible, visibleRepos } from "./visible.ts";
 
@@ -17,8 +16,7 @@ export async function flow(db: DatabaseSync, req: Req): Promise<Flow> {
   const { counts, countedAt, uncounted } = readSummary(db, repo, undefined, await visibleRepos(db, req));
   const lastSync = (db.prepare("SELECT MAX(ended_at) AS t FROM sync_runs WHERE error IS NULL").get() as { t: string | null }).t
     ?? (db.prepare("SELECT value AS t FROM settings WHERE key = 'org_high_water'").get() as { t: string } | undefined)?.t ?? null;
-  const steps = [...(await loadSteps()).values()].map((s) => ({ name: s.name, stage: s.stage }));
-  return buildFlow(counts, { repo, now: new Date().toISOString(), lastSync, run: latestRun(db), countedAt, uncounted: uncounted.length, steps });
+  return buildFlow(counts, { repo, now: new Date().toISOString(), lastSync, run: latestRun(db), countedAt, uncounted: uncounted.length });
 }
 
 // The Items browser asks for the same branch page after page; its refs are kept briefly.

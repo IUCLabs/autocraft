@@ -62,7 +62,7 @@ function build() {
 }
 
 const flowOf = (db: ReturnType<typeof build>, repo: string | null) =>
-  buildFlow(readSummary(db, repo).counts, { repo, now: NOW, lastSync: null, run: null, countedAt: null, uncounted: 0, steps: [] });
+  buildFlow(readSummary(db, repo).counts, { repo, now: NOW, lastSync: null, run: null, countedAt: null, uncounted: 0 });
 const counts = (n: FlowNode) => Object.fromEntries(n.branches.map((b) => [b.id, b.count]));
 
 test("a repo not approved for merging moves its ready PRs out of 'May merge now'", async () => {

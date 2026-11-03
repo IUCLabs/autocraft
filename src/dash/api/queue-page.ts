@@ -18,13 +18,14 @@ import { HttpError } from "../server/util.ts";
 import type { Req } from "../types.ts";
 import { toBatch, toRow } from "./queue.ts";
 import { needVisible, visibleRepos } from "./visible.ts";
+import { stageById } from "../../stages/registry.ts";
 
 export const TABS: QueueTab[] = ["all", "review", "fix", "verify", "merge"];
 const NEXT_LIMIT = 10;
 
 /** The tab a work row belongs to besides All, from its next step. */
 export function tabOfNext(next: string): QueueTab | null {
-  if (next === "Review") return "review";
+  if (next === stageById("review").title) return "review";
   if (next.startsWith("Fix")) return "fix";
   if (next.startsWith("Verify")) return "verify";
   return null;

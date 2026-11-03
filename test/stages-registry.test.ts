@@ -10,7 +10,7 @@ import { STEPS } from "../src/runner/steps.ts";
 import { GLOBAL_WAITS, STAGES, defaultPerDay, lanesInOrder, limitSteps, stageById, stageOfStep, stagesInOrder, zeroOnlySteps } from "../src/stages/registry.ts";
 import { EDGES, STEPS as CARDS } from "../web/src/ui/swimlaneDef.ts";
 
-const META = { repo: null, now: "", lastSync: null, run: null, countedAt: null, uncounted: 0, steps: [] };
+const META = { repo: null, now: "", lastSync: null, run: null, countedAt: null, uncounted: 0 };
 const flow = buildFlow({}, META);
 const PIPELINE = readFileSync(new URL("../docs/pipeline.md", import.meta.url), "utf8");
 
@@ -116,4 +116,8 @@ test("every wait has a kind and a unique name, and equals the Waits table in pip
 test("every docSection heading exists in docs/pipeline.md", () => {
   const headings = new Set(PIPELINE.split("\n").filter((l) => l.startsWith("## ")).map((l) => l.slice(3)));
   for (const s of STAGES) assert.ok(headings.has(s.docSection), `${s.id}: ## ${s.docSection}`);
+});
+
+test("an edge's branch is a state of the stage it leaves", () => {
+  for (const s of STAGES) for (const e of s.edges) if (e.branch !== null) assert.ok(s.states.some((x) => x.id === e.branch), `${s.id}>${e.to}: ${e.branch}`);
 });

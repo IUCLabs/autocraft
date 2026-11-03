@@ -333,7 +333,7 @@ export const STAGES: StageDef[] = [
       { id: "verify", lane: "sandbox", row: 13, lines: ["Verify", "Sonnet plan, build + tests"] },
       { id: "vfail", lane: "models", row: 14, lines: ["Failure summary", "Haiku"] },
     ],
-    edges: [{ to: "merge", branch: "pass", label: "verified" }],
+    edges: [{ to: "merge", branch: "passed", label: "verified" }],
   },
   {
     id: "merge", title: "Merge queue", order: 11, runStage: 6, docSection: "Merge queue", mode: "steps",

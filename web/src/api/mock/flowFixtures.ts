@@ -31,10 +31,5 @@ export function flowFixture(repo?: string): Flow {
   const iso = (msAgo: number) => new Date(NOW - msAgo).toISOString();
   return buildFlow(counts, {
     repo: repo ?? null, now: iso(0), lastSync: iso(70_000), run: "org-1102", countedAt: iso(40_000), uncounted: 0,
-    steps: [
-      { name: "embed", stage: 1 }, { name: "dupes", stage: 3 }, { name: "classify-new", stage: 2 }, { name: "classify-all", stage: 2 }, { name: "prioritize", stage: 2 }, { name: "rank", stage: 8 }, { name: "decide", stage: 3 },
-      { name: "labels-ensure", stage: 4 }, { name: "labels-apply", stage: 4 }, { name: "opus-review", stage: 5 }, { name: "checks", stage: 5 }, { name: "fixissue", stage: 7 }, { name: "fixissue-collect", stage: 7 },
-      { name: "fixup", stage: 6 }, { name: "verify", stage: 6 }, { name: "verify-collect", stage: 6 }, { name: "merge", stage: 6 }, { name: "act", stage: 6 },
-    ],
   });
 }
