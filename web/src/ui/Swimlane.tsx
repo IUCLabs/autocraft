@@ -5,10 +5,10 @@ import { EDGES, LANES, STEPS, type Edge, type Step } from "./swimlaneDef";
 // app.css (the dashboard CSP allows no inline style), so the design tokens
 // drive both themes. Wider than a phone: the frame scrolls sideways.
 
-const COL_W = 200;
-const CARD_W = 178;
+const COL_W = 220;
+const CARD_W = 190;
 const CARD_H = 62;
-const ROW_PITCH = 140;
+const ROW_PITCH = 170;
 const PAD_X = 16;
 const HEAD_H = 36;
 const TOP = HEAD_H + 22;
@@ -118,7 +118,7 @@ function buildRoutes(): { route: Route; pts: Pt[] }[] {
     const tx = portX.get(key + "t")!;
     const sy = r.down ? cardTop(r.from) + CARD_H : cardTop(r.from);
     const ty = r.down ? cardTop(r.to) : cardTop(r.to) + CARD_H;
-    const gx = r.b1 !== r.b2 ? gutterX(r.gutter) + spread(take(gutterUse, r.gutter), gutterTotal.get(r.gutter) ?? 1, 5) : null;
+    const gx = r.b1 !== r.b2 ? gutterX(r.gutter) + spread(take(gutterUse, r.gutter), gutterTotal.get(r.gutter) ?? 1, 4) : null;
     geo.set(key, { sx, tx, sy, ty, gx, r });
     // The source card is above its channel for a downward edge, below it for an upward one; the target the other way round.
     const srcDir = r.down ? "up" : "down";
@@ -180,6 +180,16 @@ const overlaps = (a: Box, b: Box) => a.x < b.x + b.w && b.x < a.x + a.w && a.y <
 function placeLabels(): { key: string; x: number; y: number; w: number; text: string }[] {
   const cards: Box[] = STEPS.map((s) => ({ x: cx(s) - CARD_W / 2 - 2, y: cardTop(s) - 2, w: CARD_W + 4, h: CARD_H + 4 }));
   const placed: Box[] = [];
+  // A label should not sit on top of another edge's vertical run.
+  const crossesOther = (box: Box, self: Route) =>
+    LAID_OUT.some(({ route, pts }) => {
+      if (route === self) return false;
+      for (let i = 0; i + 1 < pts.length; i++) {
+        const [a, b] = [pts[i], pts[i + 1]];
+        if (a[0] === b[0] && a[0] > box.x - 2 && a[0] < box.x + box.w + 2 && Math.min(a[1], b[1]) < box.y + box.h && Math.max(a[1], b[1]) > box.y) return true;
+      }
+      return false;
+    });
   const out: { key: string; x: number; y: number; w: number; text: string }[] = [];
   for (const { route, pts } of LAID_OUT) {
     const text = route.edge.label;
@@ -203,10 +213,18 @@ function placeLabels(): { key: string; x: number; y: number; w: number; text: st
         if (r.x1 - r.x0 < w + 8) continue;
         const box = { x: r.x0 + (r.x1 - r.x0) * f - w / 2, y: r.y - 9, w, h: 18 };
         if (box.x < r.x0 + 2 || box.x + w > r.x1 - 2) continue;
-        if (!cards.some((c) => overlaps(c, box)) && !placed.some((c) => overlaps(c, box))) {
+        if (!cards.some((c) => overlaps(c, box)) && !placed.some((c) => overlaps(c, box)) && !crossesOther(box, route)) {
           choice = box;
           break;
         }
+      }
+      if (choice) break;
+    }
+    // Otherwise slide along the longest runs in small steps until the label clears everything.
+    for (const r of runs) {
+      for (let x = r.x0 + 4; !choice && x + w < r.x1 - 4; x += 6) {
+        const box = { x, y: r.y - 9, w, h: 18 };
+        if (!cards.some((c) => overlaps(c, box)) && !placed.some((c) => overlaps(c, box)) && !crossesOther(box, route)) choice = box;
       }
       if (choice) break;
     }
