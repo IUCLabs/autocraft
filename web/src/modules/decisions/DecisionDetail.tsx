@@ -8,7 +8,7 @@ import { CaretLeftIcon, CaretRightIcon, CheckIcon, ArrowUUpLeftIcon, ChatCircleI
 import { useApi } from "../../api/client";
 import type { Decision, User } from "../../api/types";
 import type { ViewProps } from "../../registry/types";
-import { canAct } from "../../registry/permissions";
+import { canAct, canComment } from "../../registry/permissions";
 import { Kbd } from "../../ui/Kbd";
 import { Button, IconButton } from "../../ui/Button";
 import { ConfirmButton, useWrite } from "../admin/parts";
@@ -158,11 +158,12 @@ export function DecisionBody({
   const api = useApi();
   const isBatch = d.number === null;
   const operator = canActOn(user, [d]);
+  const commenter = canComment(user);
   const reviewRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (!d.answer) void api.decisions.claim(d.id);
-  }, [api, d.id, d.answer]);
+    if (!d.answer && commenter) void api.decisions.claim(d.id);
+  }, [api, d.id, d.answer, commenter]);
 
   const use = (option: string) => {
     localActions.setPick(d.id, option);
@@ -248,7 +249,7 @@ export function DecisionBody({
         </>
       }
     >
-      <OpinionList d={d} me={user.login} onUse={operator && !d.answer ? use : undefined} onRetract={() => void api.decisions.retract(d.id)} />
+      <OpinionList d={d} me={user.login} onUse={operator && !d.answer ? use : undefined} onRetract={commenter ? () => void api.decisions.retract(d.id) : undefined} />
     </Section>
   );
 
@@ -342,9 +343,11 @@ export function DecisionBody({
             {question}
             {opinions}
             {rest}
-            <div ref={reviewRef} className="mt-5 scroll-mt-3 border-t border-line pt-4">
-              <ReviewBox d={d} />
-            </div>
+            {commenter && (
+              <div ref={reviewRef} className="mt-5 scroll-mt-3 border-t border-line pt-4">
+                <ReviewBox d={d} />
+              </div>
+            )}
             {workflow}
           </article>
         </div>
@@ -354,9 +357,11 @@ export function DecisionBody({
             <p className="num text-2xs text-ink/50">{pager?.pos}</p>
             <p className="truncate text-xs font-medium">{d.answer ? "Answered" : d.question}</p>
           </div>
-          <Button size="md" variant={operator && !d.answer ? "secondary" : "primary"} icon={ChatCircleIcon} className="h-10 px-3" onClick={() => reviewRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })}>
-            Comment
-          </Button>
+          {commenter && (
+            <Button size="md" variant={operator && !d.answer ? "secondary" : "primary"} icon={ChatCircleIcon} className="h-10 px-3" onClick={() => reviewRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })}>
+              Comment
+            </Button>
+          )}
           {operator && (
             <Button size="md" variant="primary" icon={ArrowDownIcon} className="h-10 px-3" onClick={scrollToWorkflow}>
               Workflow

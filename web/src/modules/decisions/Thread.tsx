@@ -7,7 +7,7 @@ import { ago } from "../../lib/format";
 import { localActions, useDecisionList, usePinned, useSelection } from "./state";
 import { scrollToWorkflow } from "./Workflow";
 import { OpinionList } from "./parts";
-import { canAct } from "../../registry/permissions";
+import { canAct, canComment } from "../../registry/permissions";
 import { ReviewBox } from "./ReviewBox";
 import { Conversation } from "./Conversation";
 import { Segmented } from "../../ui/Segmented";
@@ -50,15 +50,17 @@ export function ThreadPanel({ user }: ViewProps) {
             <h2 className="mb-2 flex items-center gap-1.5 text-xs font-semibold text-ink/60">
               Comments <Count n={d.opinions.length} />
             </h2>
-            <OpinionList d={d} me={user.login} onUse={operator && !d.answer ? use : undefined} onRetract={() => void api.decisions.retract(d.id)} />
+            <OpinionList d={d} me={user.login} onUse={operator && !d.answer ? use : undefined} onRetract={canComment(user) ? () => void api.decisions.retract(d.id) : undefined} />
           </section>
           <h2 className="flex items-center gap-1.5 px-4 pt-3 text-xs font-semibold text-ink/60">
             Thread <Count n={d.commentCount} />
           </h2>
           <Thread decisionId={d.id} />
-          <div className="mt-auto border-t border-line p-3">
-            <ReviewBox d={d} />
-          </div>
+          {canComment(user) && (
+            <div className="mt-auto border-t border-line p-3">
+              <ReviewBox d={d} />
+            </div>
+          )}
         </div>
       ) : (
         <p className="p-4 text-sm text-ink/50">No decision selected.</p>

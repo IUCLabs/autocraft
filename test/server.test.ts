@@ -62,7 +62,7 @@ before(async () => {
   setPerms({ maint: { photocraft: "write" }, boss: {} });
   addLogin(db, "cli", "boss", "operator", null);
   addLogin(db, "cli", "viewer1", "viewer", null);
-  addLogin(db, "cli", "maint", "viewer", null);
+  addLogin(db, "cli", "maint", "maintainer", null);
   const config = loadConfig({
     AUTOCRAFT_DEV_AUTH: "1", AUTOCRAFT_LISTEN: "127.0.0.1:0", AUTOCRAFT_DB: join(dir, "dash.db"), AUTOCRAFT_DEV_PERMS: permsFile,
     AUTOCRAFT_WEB_DIST: webDist,

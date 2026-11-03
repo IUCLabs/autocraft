@@ -36,7 +36,7 @@ The image is the dashboard's home page (mock data). Each column is a stage with 
 - Model calls that use tools run inside a bubblewrap sandbox. They get `Read`, `Grep` and `Glob` on read-only checkouts of the public tracked repos, a Haiku explorer subagent, and read-only item tools (search, item, similar items, PR diff) over a snapshot of the public items. Other calls run without tools.
 - Only `src/github/write.ts` writes to GitHub. Every write is recorded in an audit table, and a test fails if another file writes.
 - Every GitHub write needs an operator's approval for that repo. Approvals are given on the dashboard and cannot be set from the CLI.
-- The dashboard needs GitHub sign-in. Roles are `operator` (answers, approvals, switches, accounts), `maintainer` and `viewer` (read and comment).
+- The dashboard needs GitHub sign-in. Roles are `operator` (answers, approvals, switches, accounts), `maintainer` (read and comment) and `viewer` (read only).
 - A pipeline switch (on/off) turns the whole pipeline off, a per-repo pipeline switch limits it to chosen repos, and each step has a daily limit.
 
 See [Trust boundary](docs/pipeline.md#trust-boundary).

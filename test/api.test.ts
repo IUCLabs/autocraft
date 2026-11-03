@@ -52,8 +52,9 @@ before(async () => {
   ask(db, [{ id: "photocraft:dupegroup:4", kind: "duplicate", repo: "photocraft", number: 4, question: "Keep #4 and close #5?", options: [{ key: "accept", label: "Use this answer" }, { key: "distinct", label: "Not duplicates" }], recommended: "accept" }]);
   addLogin(db, "cli", "boss", "operator", null);
   addLogin(db, "cli", "viewer1", "viewer", null);
-  addLogin(db, "cli", "maint", "viewer", null);
-  addLogin(db, "cli", "chatty", "viewer", null);
+  addLogin(db, "cli", "maint", "maintainer", null);
+  addLogin(db, "cli", "chatty", "maintainer", null);
+  addLogin(db, "cli", "pal", "maintainer", null);
   scopeToTracked(db);
   const config = loadConfig({ AUTOCRAFT_DEV_AUTH: "1", AUTOCRAFT_LISTEN: "127.0.0.1:0", AUTOCRAFT_DB: dbFile, AUTOCRAFT_DEV_PERMS: permsFile });
   const s = await startServer({ config, db, provider: new FakeProvider(permsFile), routes: apiRoutes({ writesPerHour: LIMIT }) });
@@ -129,7 +130,7 @@ describe("api", () => {
     const me = await boss.get<User>("/api/me");
     assert.equal(me.role, "operator");
     assert.deepEqual(me.writeRepos, ["photocraft"]);
-    assert.equal((await (await signedIn("maint")).get<User>("/api/me")).role, "viewer");
+    assert.equal((await (await signedIn("maint")).get<User>("/api/me")).role, "maintainer");
     const it = await boss.get<Item>("/api/items/photocraft/1");
     assert.equal(it.body, "<script>x</script> body");
     assert.deepEqual([it.changedFiles, it.additions, it.deletions], [7, 40, 3]);
@@ -171,32 +172,44 @@ describe("api", () => {
     assert.equal(await forItem("untracked-repo", 6), null);
   });
 
-  test("a viewer and a maintainer can't answer or adopt, but can opine and comment", async () => {
+  test("a viewer's opinion, retract, comment and claim are refused and write nothing; a maintainer's succeed", async () => {
     const viewer = await signedIn("viewer1");
     const maint = await signedIn("maint");
+    const pal = await signedIn("pal");
     for (const c of [viewer, maint]) {
       await c.post(dpath(P1, "/answer"), { answer: "small" }, 403);
       await c.post(dpath(P1, "/undo"), undefined, 403);
     }
-    const d1 = await viewer.post<Decision>(dpath(P1, "/opinion"), { option: "plugin", note: `viewer ${MARKER}` });
-    const vOp = d1.opinions.find((o) => o.login === "viewer1")!;
-    assert.equal(vOp.permission, "none");
-    await maint.post(dpath(P1, "/adopt"), { opinionId: vOp.id }, 403);
+    const audits = () => (db.prepare("SELECT COUNT(*) AS n FROM audit WHERE login = 'viewer1'").get() as { n: number }).n;
+    const before = audits();
+    await viewer.post(dpath(P1, "/opinion"), { option: "plugin", note: `viewer ${MARKER}` }, 403);
+    await viewer.post(dpath(P1, "/comments"), { body: `viewer ${MARKER}` }, 403);
+    await viewer.post(dpath(P1, "/retract"), undefined, 403);
+    await viewer.post(dpath(P1, "/claim"), undefined, 403);
+    assert.equal(audits(), before);
+    assert.equal((await maint.get<Decision>(dpath(P1))).opinions.some((o) => o.login === "viewer1"), false);
+    assert.equal((await maint.get<DecisionComment[]>(dpath(P1, "/thread"))).length, 0);
+    assert.equal((db.prepare("SELECT COUNT(*) AS n FROM decision_claims WHERE login = 'viewer1'").get() as { n: number }).n, 0);
+
+    const d1 = await pal.post<Decision>(dpath(P1, "/opinion"), { option: "plugin", note: `pal ${MARKER}` });
+    const pOp = d1.opinions.find((o) => o.login === "pal")!;
+    assert.equal(pOp.permission, "none");
+    await maint.post(dpath(P1, "/adopt"), { opinionId: pOp.id }, 403);
     const d2 = await maint.post<Decision>(dpath(P1, "/opinion"), { option: "small" });
     assert.equal(d2.opinions.find((o) => o.login === "maint")!.permission, "write");
     // changing replaces the live opinion
     const d3 = await maint.post<Decision>(dpath(P1, "/opinion"), { option: "plugin", note: `maint ${MARKER}` });
     assert.deepEqual(d3.opinions.filter((o) => o.login === "maint").map((o) => o.option), ["plugin"]);
-    await viewer.post(dpath(P1, "/opinion"), { option: "nope" }, 400);
-    const c = await viewer.post<DecisionComment>(dpath(P1, "/comments"), { body: `comment ${MARKER}` });
+    await pal.post(dpath(P1, "/opinion"), { option: "nope" }, 400);
+    const c = await pal.post<DecisionComment>(dpath(P1, "/comments"), { body: `comment ${MARKER}` });
     assert.deepEqual((await maint.get<DecisionComment[]>(dpath(P1, "/thread"))).map((x) => x.id), [c.id]);
     assert.equal((await maint.get<Decision>(dpath(P1))).commentCount, 1);
-    const d4 = await viewer.post<Decision>(dpath(P1, "/retract"));
-    assert.equal(d4.opinions.some((o) => o.login === "viewer1"), false);
+    const d4 = await pal.post<Decision>(dpath(P1, "/retract"));
+    assert.equal(d4.opinions.some((o) => o.login === "pal"), false);
     assert.equal(getAnswer(P1), null);
     assert.equal(auditCount("opinion", "maint"), 2);
-    assert.equal(auditCount("comment", "viewer1"), 1);
-    assert.equal(auditCount("opinion-retract", "viewer1"), 1);
+    assert.equal(auditCount("comment", "pal"), 1);
+    assert.equal(auditCount("opinion-retract", "pal"), 1);
   });
 
   test("an operator without write on the repo can't answer; with it, answer and undo work and the note stays private", async () => {
@@ -259,16 +272,16 @@ describe("api", () => {
   });
 
   test("a POST without the CSRF header, or from another origin, is refused", async () => {
-    const viewer = await signedIn("viewer1");
+    const pal = await signedIn("pal");
     const refused: { csrf?: string | null; headers?: Record<string, string> }[] = [
       { csrf: null }, { csrf: "wrong" }, { headers: { origin: "https://evil.example" } }, { headers: { "sec-fetch-site": "cross-site" } },
     ];
     for (const opts of refused) {
-      const r = await viewer.req("POST", dpath(P1, "/comments"), { body: { body: "x" }, ...opts });
+      const r = await pal.req("POST", dpath(P1, "/comments"), { body: { body: "x" }, ...opts });
       assert.equal(r.status, 403, JSON.stringify(opts));
       assert.match(r.headers.get("content-type") ?? "", /application\/json/);
     }
-    const same = await viewer.req("POST", dpath(P1, "/comments"), { body: { body: "same origin" }, headers: { origin: base } });
+    const same = await pal.req("POST", dpath(P1, "/comments"), { body: { body: "same origin" }, headers: { origin: base } });
     assert.equal(same.status, 200);
   });
 
@@ -284,11 +297,11 @@ describe("api", () => {
   });
 
   test("claims show to others and lapse after 10 minutes", async () => {
-    const viewer = await signedIn("viewer1");
+    const pal = await signedIn("pal");
     const boss = await signedIn("boss");
-    await viewer.post(dpath(F3, "/claim"), undefined, 204);
-    assert.equal((await viewer.get<Decision>(dpath(F3))).claim, null, "your own claim isn't shown to you");
-    assert.equal((await boss.get<Decision>(dpath(F3))).claim?.login, "viewer1");
+    await pal.post(dpath(F3, "/claim"), undefined, 204);
+    assert.equal((await pal.get<Decision>(dpath(F3))).claim, null, "your own claim isn't shown to you");
+    assert.equal((await boss.get<Decision>(dpath(F3))).claim?.login, "pal");
     db.prepare("UPDATE decision_claims SET at = ? WHERE decision_id = ?").run(new Date(Date.now() - 11 * 60_000).toISOString(), F3);
     assert.equal((await boss.get<Decision>(dpath(F3))).claim, null);
   });

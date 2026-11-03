@@ -405,14 +405,20 @@ export async function adopt(db: DatabaseSync, req: Req): Promise<Decision> {
   return settled(db, req, d.id);
 }
 
-// ---- writes by anyone signed in ------------------------------------------
+// ---- writes by operators and maintainers ------------------------------------------
 
-// Non-operators: a fixed number of opinion and comment writes per login per hour.
+// Viewers are read-only; this runs before any other check so a refused viewer learns nothing about the decision.
+function requireWriter(req: Req): void {
+  if (req.user.role === "viewer") throw new HttpError(403, "viewers cannot write");
+}
+
+// Maintainers: a fixed number of opinion and comment writes per login per hour.
 function limited(req: Req, limiter: RateLimiter): void {
   if (!isOperator(req) && !limiter.allow(req.user.login.toLowerCase())) throw new HttpError(429, "too many opinions and comments this hour; try again later");
 }
 
 export async function opine(db: DatabaseSync, req: Req, limiter: RateLimiter): Promise<Decision> {
+  requireWriter(req);
   const d = await needDecision(db, req, req.params.id!);
   limited(req, limiter);
   if (d.answer) throw new HttpError(409, "the decision is answered; opinions are closed");
@@ -441,6 +447,7 @@ export async function opine(db: DatabaseSync, req: Req, limiter: RateLimiter): P
 }
 
 export async function retract(db: DatabaseSync, req: Req, limiter: RateLimiter): Promise<Decision> {
+  requireWriter(req);
   const d = await needDecision(db, req, req.params.id!);
   limited(req, limiter);
   if (d.answer) throw new HttpError(409, "the decision is answered; opinions are closed");
@@ -452,6 +459,7 @@ export async function retract(db: DatabaseSync, req: Req, limiter: RateLimiter):
 }
 
 export async function comment(db: DatabaseSync, req: Req, limiter: RateLimiter): Promise<DecisionComment> {
+  requireWriter(req);
   const d = await needDecision(db, req, req.params.id!);
   limited(req, limiter);
   const text = optionalText(body(req).body, COMMENT_MAX, "body");
@@ -465,6 +473,7 @@ export async function comment(db: DatabaseSync, req: Req, limiter: RateLimiter):
 // Presence, not content: refreshed while someone has the decision open, so
 // it is neither audited nor counted against the hourly limit.
 export async function claim(db: DatabaseSync, req: Req): Promise<void> {
+  requireWriter(req);
   const d = await needDecision(db, req, req.params.id!);
   if (d.answer) return;
   const now = new Date().toISOString();

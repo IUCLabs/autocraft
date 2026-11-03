@@ -12,7 +12,7 @@ The craft-app repos have about 25,000 open issues and PRs across about 20 active
 |---|---|---|
 | Owner (operator) | Phone first, sometimes desktop | Make decisions in bursts; see whether the run is on track; adjust the whitelist; manage who has access |
 | Maintainers | Desktop and phone | Decisions in the repos they can write to; what got merged or closed and why |
-| Viewers | Any | Read-only: progress, decisions and their outcomes; no answering |
+| Viewers | Any | Read-only: progress, decisions and their outcomes; no answering, opinions or comments |
 
 Every reader signs in with GitHub. See [Accounts and access](#accounts-and-access).
 
@@ -182,7 +182,7 @@ The pipeline runs Claude agents under the operator's own Claude account on the o
 - **Opinions and comments never reach the pipeline.** They are display-only: no agent prompt, brief or CLI output used by agents includes them, adopted or not.
 - **Writes by non-operators are rate-limited and audited**: opinions and comments per session and per login (proposed: 60 an hour), each with an audit row.
 - **`settings.maintainer_writes` is reserved** for a later deployment, on accounts and a machine meant for shared use, where an answer by a maintainer with write permission on the repo becomes actionable directly. It is off and has no effect in this deployment.
-- **What a compromised account can do**: add opinions and comments, which people can see and nothing acts on. A maintainer or viewer account cannot trigger a merge, close, post, label, push or any pipeline step, change the whitelist, settings or access list, or see private fields. An operator account can also turn the pipeline on and off, change its daily limits and cancel jobs; the steps run with the fixed settings their definitions allow, and every such request is audited.
+- **What a compromised account can do**: add opinions and comments (maintainer accounts only; a viewer account writes nothing), which people can see and nothing acts on. A maintainer or viewer account cannot trigger a merge, close, post, label, push or any pipeline step, change the whitelist, settings or access list, or see private fields. An operator account can also turn the pipeline on and off, change its daily limits and cancel jobs; the steps run with the fixed settings their definitions allow, and every such request is audited.
 - **Repo visibility**: a tracked repo whose `repos.visibility` is not `public` (private, internal, or unknown) is visible only to operators and to users whose own GitHub permission on it (the cached `repo_permissions` value, read with the user's token) is not `none`. For everyone else it does not exist: items, search (text and semantic), similar items, decisions and batches that touch it, the merge queue, flow counts and the repo list, progress, contributor repo lists, classifier reports, cost per repo, rates, pipeline parameter choices, agent runs, jobs and images that occur only in its text are all left out, and a direct request for one of them answers 404. Per-repo counts add up visible repos only. Contributor tiers still count merged and closed pull requests in every tracked repo, because the tier is a pipeline policy.
 - **Agent texts**: the prompt and output of an agent run hold item and comment text verbatim, so only operators receive them (others get `null`). They are passed through the credential scrubber when stored. Job logs of jobs that ran across all repos are withheld from non-operators while any tracked repo is hidden from them.
 - **What viewers can see**: public GitHub data and the pipeline's public-safe outputs. Private fields (override notes, answer notes, anything naming why a contributor gets extra scrutiny) are operator-only and never in the export.
@@ -194,12 +194,12 @@ The pipeline runs Claude agents under the operator's own Claude account on the o
 |---|---|
 | Read every page | anyone on the access list |
 | Answer, undo, adopt an opinion | operator; for a repo decision the operator also needs write, maintain or admin permission on `storytold/R` on GitHub |
-| Give, change or retract an opinion; comment on a decision | anyone signed in (rate-limited, audited); shown with their GitHub permission on the repo |
+| Give, change or retract an opinion; comment on a decision; mark a decision as open (presence) | operator or maintainer (rate-limited, audited; opinions shown with their GitHub permission on the repo). Viewers get 403 and see no such controls |
 | Whitelist overrides, whitelist rule, settings (including `maintainer_writes`) | operator |
 | Access list, sessions, audit log | operator |
 | Turn the pipeline on or off, change limits, cancel jobs | operator; everyone signed in sees the Pipeline page |
 
-Roles on the access list: `operator`, `maintainer`, `viewer`. Today `maintainer` and `viewer` differ only in the badge shown beside their opinions; `maintainer` gains direct answers once `maintainer_writes` is used. GitHub write permission on the repo is still required for an operator's answer about that repo.
+Roles on the access list: `operator`, `maintainer`, `viewer`. A `viewer` is read-only: every write returns 403 and the interface shows no write controls. A `maintainer` gives opinions and comments; maintainers gain direct answers once `maintainer_writes` is used. GitHub write permission on the repo is still required for an operator's answer about that repo.
 
 GitHub permissions: after sign-in, read the user's permission on each repo with the user's own token (`GET /repos/storytold/<repo>` returns `permissions` for the authenticated user), cache it per user and repo for 10 minutes, and re-check at the moment of any write if the cached value is older than one minute. A user without any write permission still signs in and can give opinions. The card says in one line whether the reader's pick is an answer or an opinion.
 
