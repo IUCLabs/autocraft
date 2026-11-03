@@ -67,7 +67,8 @@ export function createMockApi(): Api {
   const matches = (d: Decision, f: DecisionFilter) => {
     const status = f.status ?? "open";
     if (status !== "answered" && d.answer) return false;
-    if (status === "answered" && !d.answer) return false;
+    if (status === "answered" && (!d.answer || d.answer === "backlog")) return false;
+    if (status === "backlog" && d.answer !== "backlog") return false;
     if (status === "opinions" && !d.opinions.length) return false;
     if (f.repo?.length && !f.repo.includes(d.repo)) return false;
     if (f.kind?.length && !f.kind.includes(d.kind)) return false;
@@ -86,7 +87,7 @@ export function createMockApi(): Api {
       list(filter) {
         const all = decisions.filter((d) => matches(d, filter));
         const sorted =
-          (filter.status ?? "open") !== "answered"
+          !["answered", "backlog"].includes(filter.status ?? "open")
             ? all.sort((a, b) => a.askedAt.localeCompare(b.askedAt))
             : all.sort((a, b) => (b.answeredAt ?? "").localeCompare(a.answeredAt ?? ""));
         const byKind: Partial<Record<Decision["kind"], number>> = {};
@@ -108,6 +109,14 @@ export function createMockApi(): Api {
         const d = find(id);
         requireOperator(d);
         if (d.appliedAt) throw new Error("already applied");
+        Object.assign(d, { answer: null, answerNote: null, answeredBy: null, answeredAt: null, adoptedOpinion: null, exceptions: [] });
+        changed();
+        return wait(d, 30);
+      },
+      async reopen(id) {
+        const d = find(id);
+        requireOperator(d);
+        if (d.answer !== "backlog") throw new Error("that decision is not in the Backlog");
         Object.assign(d, { answer: null, answerNote: null, answeredBy: null, answeredAt: null, adoptedOpinion: null, exceptions: [] });
         changed();
         return wait(d, 30);

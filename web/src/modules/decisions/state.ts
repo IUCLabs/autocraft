@@ -22,7 +22,7 @@ export function useDecisionFilter() {
       kind: sp.get("kind")?.split(",").filter(Boolean) as DecisionKind[] | undefined,
       minAge: sp.get("age") ? Number(sp.get("age")) : undefined,
       mine: sp.get("mine") === "1",
-      status: sp.get("tab") === "answered" ? "answered" : sp.get("tab") === "opinions" ? "opinions" : "open",
+      status: sp.get("tab") === "answered" ? "answered" : sp.get("tab") === "backlog" ? "backlog" : sp.get("tab") === "opinions" ? "opinions" : "open",
     }),
     [sp],
   );

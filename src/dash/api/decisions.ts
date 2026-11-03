@@ -7,7 +7,7 @@ import type {
   Claim, Classification, Decision, DecisionComment, DecisionKind, DecisionList, ItemState, Opinion, RelatedItem, Relation,
 } from "../../../web/src/api/types.ts";
 import { resetGroupAnswer } from "../../dupes/decide.ts";
-import { exceptionsOf, factsOf, getDecision, isBatch, itemsOf, KINDS, optionsOf, reposOf, type DecisionRow, type Exception } from "../../decisions.ts";
+import { BACKLOG, backlogOpen, exceptionsOf, factsOf, getDecision, isBatch, itemsOf, KINDS, optionsOf, reposOf, type DecisionRow, type Exception } from "../../decisions.ts";
 import { commentPreview, writeEffect } from "../../act/index.ts";
 import { optionTextsOf, textsFor, textsHash } from "../../dupes/texts.ts";
 import { audit } from "../audit.ts";
@@ -199,13 +199,14 @@ export function withoutHidden(hidden: string[], params: Record<string, string>):
 export async function listDecisions(db: DatabaseSync, req: Req, writeRepos: () => Promise<string[]>): Promise<DecisionList> {
   const q = req.query;
   const status = q.get("status") ?? "open";
-  if (!["open", "opinions", "answered"].includes(status)) throw new HttpError(400, "status must be open, opinions or answered");
+  if (!["open", "opinions", "answered", "backlog"].includes(status)) throw new HttpError(400, "status must be open, opinions, answered or backlog");
   const where: string[] = [];
   const params: Record<string, string> = {};
   if (status === "answered") {
-    where.push("answer IS NOT NULL AND (applied_at IS NULL OR applied_at >= :since)");
+    where.push(`answer IS NOT NULL AND answer <> '${BACKLOG.key}' AND (applied_at IS NULL OR applied_at >= :since)`);
     params.since = new Date(Date.now() - 7 * 86400_000).toISOString();
-  } else where.push("answer IS NULL");
+  } else if (status === "backlog") where.push(`answer = '${BACKLOG.key}'`);
+  else where.push("answer IS NULL");
   if (status === "opinions") where.push("EXISTS (SELECT 1 FROM decision_opinions o WHERE o.decision_id = decisions.id AND o.retracted_at IS NULL)");
   const kinds = list(req, "kind").filter((k) => (KINDS as readonly string[]).includes(k));
   if (kinds.length) where.push(`kind IN (${kinds.map((k) => `'${k}'`).join(",")})`);
@@ -232,7 +233,7 @@ export async function listDecisions(db: DatabaseSync, req: Req, writeRepos: () =
     if (oldestAskedAt === null || r.oldest < oldestAskedAt) oldestAskedAt = r.oldest;
   }
 
-  const answered = status === "answered";
+  const answered = status === "answered" || status === "backlog";
   const sortKey = answered ? "answered_at" : "asked_at";
   const after = q.get("after");
   const page = [...where];
@@ -304,13 +305,13 @@ export async function answer(db: DatabaseSync, req: Req): Promise<Decision> {
     exceptions = [];
     for (const e of b.exceptions as Partial<Exception>[]) {
       const ref = `${e?.repo}#${e?.number}`;
-      if (!e || typeof e.repo !== "string" || !Number.isInteger(e.number) || !inBatch.has(ref) || seen.has(ref) || typeof e.answer !== "string" || !keys.has(e.answer))
+      if (!e || typeof e.repo !== "string" || !Number.isInteger(e.number) || !inBatch.has(ref) || seen.has(ref) || typeof e.answer !== "string" || !keys.has(e.answer) || e.answer === BACKLOG.key)
         throw new HttpError(400, "each exception needs an item of the batch and an option key");
       seen.add(ref);
       if (e.answer !== ans) exceptions.push({ repo: e.repo, number: e.number!, answer: e.answer });
     }
   }
-  if (isBatch(d) && exceptions === null) exceptions = [];
+  if (isBatch(d) && (exceptions === null || ans === BACKLOG.key)) exceptions = [];
   // A group answer approves the texts stored for its option; a page showing other texts is stale. Checked and written in one transaction.
   inTransaction(db, () => {
     const stored = d.kind === "duplicate" && d.id.includes(":dupegroup:") ? textsFor(db, d.id, ans) : [];
@@ -337,6 +338,30 @@ export async function undo(db: DatabaseSync, req: Req): Promise<Decision> {
   });
   audit(db, req.user.login, "undo", d.id, { answer: d.answer, adopted: d.adopted_opinion ?? undefined });
   return toDecision(db, getDecision(db, d.id)!, viewerOf(req));
+}
+
+export async function reopen(db: DatabaseSync, req: Req): Promise<Decision> {
+  const d = await needDecision(db, req, req.params.id!);
+  await requireOperator(req, d);
+  if (d.answer !== BACKLOG.key) throw new HttpError(409, "that decision is not in the Backlog");
+  const r = db.prepare(`UPDATE main.decisions SET answer = NULL, answer_note = NULL, exceptions = NULL, answered_by = NULL, answered_at = NULL, adopted_opinion = NULL
+    WHERE id = ? AND answer = ?`).run(d.id, BACKLOG.key);
+  if (r.changes !== 1) throw new HttpError(409, "someone changed this a moment ago");
+  audit(db, req.user.login, "reopen", d.id, { answer: d.answer });
+  return toDecision(db, getDecision(db, d.id)!, viewerOf(req));
+}
+
+/** Operator bulk: answers every open decision in scope (`outsidePilot`, `repo`) with Backlog. Dry run unless `apply` is true. */
+export async function backlogBulk(db: DatabaseSync, req: Req): Promise<{ applied: boolean; count: number; decisions: { id: string; kind: string; repo: string | null; number: number | null }[] }> {
+  if (!isOperator(req)) throw new HttpError(403, "only operators put decisions in the Backlog");
+  const b = body(req);
+  const repo = typeof b.repo === "string" && b.repo ? b.repo : undefined;
+  if (b.repo !== undefined && b.repo !== null && repo === undefined) throw new HttpError(400, "repo must be a repo name");
+  if (b.apply !== undefined && typeof b.apply !== "boolean") throw new HttpError(400, "apply must be true or false");
+  if (b.outsidePilot !== undefined && typeof b.outsidePilot !== "boolean") throw new HttpError(400, "outsidePilot must be true or false");
+  if (!b.outsidePilot && !repo) throw new HttpError(400, "give outsidePilot: true or a repo");
+  const res = backlogOpen(db, { outsidePilot: b.outsidePilot === true, repo }, req.user.login, b.apply === true);
+  return { applied: res.applied, count: res.decisions.length, decisions: res.decisions };
 }
 
 export async function adopt(db: DatabaseSync, req: Req): Promise<Decision> {

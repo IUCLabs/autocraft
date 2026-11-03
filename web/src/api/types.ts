@@ -474,7 +474,7 @@ export interface DecisionFilter {
   minAge?: number;
   mine?: boolean;
   /** "opinions": open decisions that have at least one opinion */
-  status?: "open" | "opinions" | "answered";
+  status?: "open" | "opinions" | "answered" | "backlog";
   /** page size (server default 100, at most 500); `total` counts every match */
   limit?: number;
   /** the `next` of the previous page */
