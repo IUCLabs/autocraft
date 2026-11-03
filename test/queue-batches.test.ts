@@ -18,7 +18,7 @@ test("batches page newest first with their member rows, fork link and base commi
   const db = connect(join(mkdtempSync(join(SCRATCH, "qb-")), "t.db"));
   for (const r of ["app", "lib"]) db.prepare("INSERT OR IGNORE INTO tracked_repos (name, pipeline) VALUES (?, 1)").run(r);
   const item = db.prepare("INSERT INTO items (repo, number, kind, state, title, author, head_oid, created_at, updated_at) VALUES (?, ?, 'pr', 'OPEN', ?, 'a', ?, ?, ?)");
-  const review = db.prepare("INSERT INTO reviews (repo, number, head_oid, run_id, at, size, verdict, reason) VALUES (?, ?, ?, 'r', ?, 'S', 'take', 'ok')");
+  const review = db.prepare("INSERT INTO opus_reviews (repo, number, head_oid, run_id, at, verdict, reason, sure, mode) VALUES (?, ?, ?, 'r', ?, 'take', 'ok', 1, 'full')");
   for (const n of [1, 2, 3]) { item.run("app", n, `PR ${n}`, `h${n}`, T, T); review.run("app", n, `h${n}`, T); }
   const members = (...ns: number[]) => ns.map((n) => ({ number: n, head_oid: `h${n}` }));
   const make = (repo: string, branch: string, ms: number[]) => insertBatch(db, { repo, branch, baseSha: "b".repeat(40), commitSha: "c".repeat(40), parentId: null, taskId: null, members: members(...ms), at: T });
@@ -54,7 +54,6 @@ test("batches page newest first with their member rows, fork link and base commi
   assert.equal(list.total, 0);
   updateBatch(db, checking, T, { state: "merged" });
   assert.deepEqual((await queue(db, req("repo=app"))).rows.map((r) => r.number), [1]);
-  assert.deepEqual((await queue(db, req("repo=app&state=waiting-opus"))).rows.map((r) => r.number), [1, 2, 3]);
 
   assert.equal((await queueBatches(db, req(""))).total, 4);
   await assert.rejects(async () => queueBatches(db, req("after=x")), /batch id/);

@@ -12,7 +12,6 @@ import { buildQueue, eligible, singleMergeOnly } from "../src/merge/queue.ts";
 import { askMergeDecisions } from "../src/merge/index.ts";
 import { selectCandidates } from "../src/review/candidates.ts";
 import { Git } from "../src/fixup/git.ts";
-import { finalizeReviews } from "./fixture.ts";
 import { validating } from "./gql.ts";
 
 mkdirSync(SCRATCH, { recursive: true });
@@ -28,13 +27,12 @@ function fresh(prs: { n: number; author?: string }[]): DatabaseSync {
   for (const p of prs) {
     db.prepare(`INSERT INTO items (repo, number, kind, state, title, author, additions, deletions, head_oid, created_at, updated_at) VALUES ('app', ?, 'pr', 'OPEN', ?, ?, 20, 0, ?, '${T0}', '${T0}')`).run(p.n, `PR ${p.n}`, p.author ?? "regular", `sha${p.n}`);
     db.prepare(`INSERT INTO classifications (repo, number, classifier, run_id, at, type_label, flags, probs) VALUES ('app', ?, 'jev', 'r1', '${T0}', 'bugfix', '[]', '{"top":0.95}')`).run(p.n);
-    db.prepare(`INSERT INTO reviews (repo, number, head_oid, run_id, at, model, size, verdict, reason, fixes) VALUES ('app', ?, ?, 'rv', '${T0}', 'm', 'S', 'take', 'ok', NULL)`).run(p.n, `sha${p.n}`);
+    db.prepare(`INSERT INTO opus_reviews (repo, number, head_oid, run_id, at, model, verdict, reason, fixes, sure, mode) VALUES ('app', ?, ?, 'rv', '${T0}', 'm', 'take', 'ok', NULL, 1, 'full')`).run(p.n, `sha${p.n}`);
     db.prepare(`INSERT INTO verifications (repo, number, head_sha, kind, reason, state, created_at) VALUES ('app', ?, ?, 'tests', 'r', 'passed', '${T0}')`).run(p.n, `sha${p.n}`);
     db.prepare(`INSERT INTO pr_checks (repo, number, head_oid, state, is_draft, overall, checks, mergeable, maintainer_can_modify, fetched_at) VALUES ('app', ?, ?, 'OPEN', 0, 'success', '[]', 'MERGEABLE', 1, '${T1}')`).run(p.n, `sha${p.n}`);
   }
   db.prepare("INSERT INTO whitelist_overrides (login, status, by, at) VALUES ('regular', 'allow', 'op', ?)").run(T0);
   db.prepare("INSERT INTO main.settings (key, value) VALUES ('merge_approved:app', ?)").run(JSON.stringify({ by: "op", at: T0 }));
-  finalizeReviews(db);
   return db;
 }
 
@@ -199,7 +197,7 @@ describe("opus review", () => {
     const db = newDb();
     useTestAccount(db);
     db.prepare(`INSERT INTO items (repo, number, kind, state, title, author, additions, deletions, head_oid, created_at, updated_at) VALUES ('app', 1, 'pr', 'OPEN', 'PR 1', 'regular', 5, 0, 'sha1a', '${T0}', '${T0}')`).run();
-    db.prepare(`INSERT INTO reviews (repo, number, head_oid, run_id, at, model, size, verdict, reason) VALUES ('app', 1, 'sha1a', 'rv', '${T0}', 'sonnet', 'S', 'take', 'ok')`).run();
+    db.prepare(`INSERT INTO classifications (repo, number, classifier, run_id, at, type_label, flags, probs) VALUES ('app', 1, 'jev', 'r1', '${T0}', 'bugfix', '[]', '{"top":0.95}')`).run();
     db.prepare(`INSERT INTO pr_checks (repo, number, head_oid, state, is_draft, overall, checks, mergeable, maintainer_can_modify, fetched_at) VALUES ('app', 1, 'sha1a', 'OPEN', 0, 'success', '[]', 'MERGEABLE', 1, '${T1}')`).run();
     db.prepare("INSERT INTO tracked_repos (name, added_by, added_at, pipeline) VALUES ('app', 'op', ?, 1) ON CONFLICT DO NOTHING").run(T0);
     return db;
@@ -260,12 +258,11 @@ describe("fixup", () => {
     sh(fork, "update-ref", "refs/pull/7/head", head);
     const db = newDb();
     db.prepare(`INSERT INTO items (repo, number, kind, state, title, author, additions, deletions, head_oid, created_at, updated_at) VALUES ('app', 7, 'pr', 'OPEN', 'Fix a thing', 'someone', 5, 0, ?, '${T0}', '${T0}')`).run(head);
-    db.prepare(`INSERT INTO reviews (repo, number, head_oid, run_id, at, model, size, verdict, reason, fixes) VALUES ('app', 7, ?, 'rv', '${T0}', 'm', 'S', 'take-fix', 'nearly right', ?)`)
+    db.prepare(`INSERT INTO opus_reviews (repo, number, head_oid, run_id, at, model, verdict, reason, fixes, sure, mode) VALUES ('app', 7, ?, 'rv', '${T0}', 'm', 'take-fix', 'nearly right', ?, 1, 'full')`)
       .run(head, JSON.stringify([{ file: "src/lib.rs", change: "rename a to b" }]));
     db.prepare(`INSERT INTO pr_checks (repo, number, head_oid, state, is_draft, overall, checks, mergeable, maintainer_can_modify, fetched_at) VALUES ('app', 7, ?, 'OPEN', 0, 'success', '[]', 'MERGEABLE', 1, '${T1}')`).run(head);
     db.prepare("INSERT INTO tracked_repos (name, added_by, added_at, pipeline) VALUES ('app', 'op', ?, 1) ON CONFLICT DO NOTHING").run(T0);
     setPushApproval(db, "op", "app", true);
-    finalizeReviews(db);
 
     const log: string[] = [];
     let moved = false;

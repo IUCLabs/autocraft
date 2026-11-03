@@ -18,7 +18,6 @@ import { settledOf } from "../src/classify/settled.ts";
 import { saveVerification } from "../src/verify/index.ts";
 import { unavailableCandidates } from "../src/verify/candidates.ts";
 import { LANES } from "../src/runner/autopilot.ts";
-import { finalizeReviews } from "./fixture.ts";
 import { SCRATCH } from "./scratch.ts";
 
 mkdirSync(SCRATCH, { recursive: true });
@@ -43,8 +42,7 @@ function add(db: DatabaseSync, o: Opts): void {
     VALUES ('app', ?, ?, 'OPEN', ?, 'regular', ?, 0, ?, ?, '${T0}', '${T0}')`).run(o.n, kind, `Item ${o.n}`, o.lines ?? 20, kind === "pr" ? `sha${o.n}` : null, JSON.stringify(o.labels ?? []));
   db.prepare(`INSERT INTO classifications (repo, number, classifier, run_id, at, type_label, flags, probs) VALUES ('app', ?, 'jev', 'r1', '${T0}', ?, '[]', '{"top":0.95}')`).run(o.n, o.label ?? "bugfix");
   if (kind !== "pr") return;
-  db.prepare(`INSERT INTO reviews (repo, number, head_oid, run_id, at, model, size, verdict, reason) VALUES ('app', ?, ?, 'rv', '${T0}', 'm', 'S', ?, 'looks right')`).run(o.n, `sha${o.n}`, o.verdict ?? "take");
-  finalizeReviews(db);
+  db.prepare(`INSERT INTO opus_reviews (repo, number, head_oid, run_id, at, model, verdict, reason, sure, mode) VALUES ('app', ?, ?, 'rv', '${T0}', 'm', ?, 'looks right', 1, 'full')`).run(o.n, `sha${o.n}`, o.verdict ?? "take");
   db.prepare(`INSERT INTO pr_checks (repo, number, head_oid, state, is_draft, overall, checks, mergeable, maintainer_can_modify, fetched_at)
     VALUES ('app', ?, ?, 'OPEN', 0, ?, '[]', 'MERGEABLE', 1, '${T1}')`).run(o.n, `sha${o.n}`, o.ci ?? "success");
   if (o.verify) {
@@ -169,7 +167,7 @@ describe("answers that write nothing are marked applied", () => {
     answer(db, "app#1:scope", "take");
     assert.equal(applyUsedAnswers(db, T1), 0);
     // A review made again needs its second pass again; the skip-list row is made again with it.
-    db.prepare("UPDATE reviews SET at = ? WHERE number = 1").run("2026-01-03T00:00:00Z");
+    db.prepare("UPDATE opus_reviews SET at = ? WHERE number = 1").run("2026-01-03T00:00:00Z");
     db.prepare("UPDATE opus_reviews SET at = ? WHERE number = 1").run("2026-01-03T00:00:00Z");
     assert.equal(applyUsedAnswers(db, T1), 1);
     assert.equal(appliedAt(db, "app#1:scope"), T1);
@@ -270,7 +268,7 @@ describe("operator releases", () => {
     add(db, { n: 1, verdict: "hold" });
     assert.equal(actionsOf(db, "app", 1).reviewAgain, true);
     reviewAgain(db, "op", "app", 1);
-    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM reviews").get()!.n, 0);
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM opus_reviews").get()!.n, 0);
     assert.equal(db.prepare("SELECT action FROM audit WHERE login = 'op'").get()!.action, "review-again");
     assert.throws(() => reviewAgain(db, "op", "app", 1), (e) => e instanceof ActionError && e.status === 409);
   });

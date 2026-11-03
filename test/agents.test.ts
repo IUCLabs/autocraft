@@ -141,9 +141,9 @@ describe("allocation", () => {
     assert.equal(pauseReason(db, "embed"), null);
     enable(db, "a");
     writeReading(box, "a", { five: 91 });
-    assert.match(pauseReason(db, "review-batch") ?? "", /5-hour use 91 % \(pauses at 80 %\)/);
+    assert.match(pauseReason(db, "opus-review") ?? "", /5-hour use 91 % \(pauses at 80 %\)/);
     writeReading(box, "a", { five: 20 });
-    assert.equal(pauseReason(db, "review-batch"), null);
+    assert.equal(pauseReason(db, "opus-review"), null);
   });
 });
 
@@ -160,9 +160,9 @@ describe("usage pause levels", () => {
     assert.deepEqual(usagePause(db), { fiveHour: 80, weekly: 80 });
     setUsagePause(db, { fiveHour: 60, weekly: 75 }, "op");
     writeReading(box, "a", { five: 61 });
-    assert.match(pauseReason(db, "review-batch") ?? "", /5-hour use 61 % \(pauses at 60 %\)/);
+    assert.match(pauseReason(db, "opus-review") ?? "", /5-hour use 61 % \(pauses at 60 %\)/);
     writeReading(box, "a", { five: 59 });
-    assert.equal(pauseReason(db, "review-batch"), null);
+    assert.equal(pauseReason(db, "opus-review"), null);
     db.prepare("UPDATE settings SET value = 'nonsense' WHERE key = 'usage_pause'").run();
     assert.deepEqual(usagePause(db), { fiveHour: 80, weekly: 80 });
   });

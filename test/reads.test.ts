@@ -54,7 +54,7 @@ describe("keyset paging", () => {
     const db = fresh();
     db.prepare("INSERT OR IGNORE INTO tracked_repos (name, pipeline) VALUES ('app', 1)").run();
     const item = db.prepare("INSERT INTO items (repo, number, kind, state, title, author, head_oid, created_at, updated_at) VALUES ('app', ?, 'pr', ?, ?, 'a', ?, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')");
-    const review = db.prepare("INSERT INTO reviews (repo, number, head_oid, run_id, at, size, verdict, reason) VALUES ('app', ?, ?, 'r', '2026-01-01T00:00:00Z', 'S', 'take', 'ok')");
+    const review = db.prepare("INSERT INTO opus_reviews (repo, number, head_oid, run_id, at, verdict, reason, sure, mode) VALUES ('app', ?, ?, 'r', '2026-01-01T00:00:00Z', 'take', 'ok', 1, 'full')");
     for (let n = 1; n <= 5; n++) { item.run(n, "OPEN", `PR ${n}`, `h${n}`); review.run(n, `h${n}`); }
     for (let n = 6; n <= 8; n++) { item.run(n, "MERGED", `PR ${n}`, `h${n}`); review.run(n, `h${n}`); }
     const get = (q: string) => queue(db, req(q));

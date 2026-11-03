@@ -14,7 +14,6 @@ const { setMergeApproval } = await import("../src/merge/approval.ts");
 const { setCommentApproval } = await import("../src/act/approval.ts");
 const { setPushApproval } = await import("../src/fixup/approval.ts");
 const { setFixIssueApproval } = await import("../src/fixissue/approval.ts");
-const { finalizeReviews } = await import("./fixture.ts");
 const { refreshChecks } = await import("../src/review/checks.ts");
 
 mkdirSync(SCRATCH, { recursive: true });
@@ -36,7 +35,7 @@ for (const repo of ["app", "other"]) {
     VALUES (?, ?, ?, 'OPEN', ?, 'b', 'someone', 20, 0, ?, ?, 'h', ?, ?)`);
   const jev = db.prepare(`INSERT INTO classifications (repo, number, classifier, run_id, at, type_label, flags, probs) VALUES (?, ?, 'jev', 'r1', ?, 'bugfix', '[]', '{"top":0.97}')`);
   const haiku = db.prepare(`INSERT INTO classifications (repo, number, classifier, run_id, at, type_label, flags, probs) VALUES (?, ?, 'haiku', 'r1', ?, 'missing feature', '[]', '{}')`);
-  const review = db.prepare(`INSERT INTO reviews (repo, number, head_oid, run_id, at, model, size, verdict, reason, fixes) VALUES (?, ?, ?, 'rv', ?, 'm', 'S', ?, 'r', ?)`);
+  const review = db.prepare(`INSERT INTO opus_reviews (repo, number, head_oid, run_id, at, model, verdict, reason, fixes, sure, mode) VALUES (?, ?, ?, 'rv', ?, 'm', ?, 'r', ?, 1, 'full')`);
   const checks = db.prepare(`INSERT INTO pr_checks (repo, number, head_oid, state, is_draft, overall, checks, mergeable, maintainer_can_modify, fetched_at)
     VALUES (?, ?, ?, 'OPEN', 0, 'success', '[]', 'MERGEABLE', 1, ?)`);
   const pr = (n: number, verdict: string | null) => {
@@ -58,7 +57,6 @@ for (const repo of ["app", "other"]) {
   setPushApproval(db, "op", repo, true);
   setFixIssueApproval(db, "op", repo, true);
 }
-finalizeReviews(db);
 
 const reposOf = (xs: { params: Record<string, unknown>; gate?: { params: Record<string, unknown> } }[]) =>
   xs.flatMap((x) => [x.params.repo, x.gate?.params.repo]).filter((r): r is string => typeof r === "string");

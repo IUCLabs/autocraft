@@ -96,7 +96,7 @@ describe("sandbox command", () => {
     assert.equal(at("--max-turns"), "20");
     assert.equal(at("--add-dir"), "/repo");
     for (const f of ["--restricted", "--strict-mcp-config", "--disable-slash-commands", "--no-session-persistence"]) assert.ok(a.includes(f), f);
-    assert.throws(() => claudeArgs("review.sonnet", "sonnet", true), /no sandbox mode/);
+    assert.throws(() => claudeArgs("referee.sonnet", "sonnet", true), /no sandbox mode/);
     const plain = claudeArgs("review.opus", "opus");
     assert.equal(plain[plain.indexOf("--tools") + 1], "");
   });
@@ -117,7 +117,7 @@ describe("sandbox command", () => {
     assert.match(rows["Sandbox"]!, /bubblewrap/);
     assert.match(p.command, /^\/usr\/bin\/bwrap --unshare-all/);
     assert.match(p.example, /repository at \/repo/);
-    assert.equal(promptsReport(null).prompts.find((x) => x.id === "review.sonnet")!.settings.find((s) => s.label === "Tools")!.value, "None");
+    assert.equal(promptsReport(null).prompts.find((x) => x.id === "referee.sonnet")!.settings.find((s) => s.label === "Tools")!.value, "None");
   });
 });
 

@@ -13,7 +13,6 @@ import { queue } from "../src/dash/api/queue.ts";
 import type { Req } from "../src/dash/types.ts";
 import { scopeToTracked } from "../src/repos.ts";
 import { candidateRefs, selectCandidates } from "../src/review/candidates.ts";
-import { finalizeReviews } from "./fixture.ts";
 import { SCRATCH } from "./scratch.ts";
 
 mkdirSync(SCRATCH, { recursive: true });
@@ -32,7 +31,7 @@ function build() {
   const haiku = db.prepare(`INSERT INTO classifications (repo, number, classifier, run_id, at, type_label, flags) VALUES ('${R}', ?, 'haiku', 'r1', '${T0}', ?, '[]')`);
   const sure = (n: number, label: string, flags: string[] = []) => jev.run(n, label, JSON.stringify(flags), '{"top":0.95}');
   const unsure = (n: number, label: string) => jev.run(n, label, "[]", '{"top":0.5}');
-  const review = db.prepare(`INSERT INTO reviews (repo, number, head_oid, run_id, at, model, size, verdict, reason) VALUES ('${R}', ?, ?, 'rv', ?, 'sonnet', 'S', ?, 'why')`);
+  const review = db.prepare(`INSERT INTO opus_reviews (repo, number, head_oid, run_id, at, model, verdict, reason, sure, mode) VALUES ('${R}', ?, ?, 'rv', ?, 'sonnet', ?, 'why', 1, 'full')`);
   const checks = db.prepare(`INSERT INTO pr_checks (repo, number, head_oid, state, is_draft, overall, checks, mergeable, maintainer_can_modify, fetched_at)
     VALUES ('${R}', ?, ?, 'OPEN', 0, ?, '[]', 'MERGEABLE', 1, '2026-01-02T00:00:00Z')`);
   const scope = db.prepare(`INSERT INTO decisions (id, kind, repo, number, question, options, asked_at, answer, answered_by, answered_at)
@@ -59,7 +58,6 @@ function build() {
   db.prepare(`INSERT INTO whitelist_overrides (login, status, by, at) VALUES ('regular', 'allow', 'op', '${T0}')`).run();
   db.prepare("INSERT INTO access (login, role) VALUES ('op', 'operator')").run();
   scopeToTracked(db);
-  finalizeReviews(db);
   return db;
 }
 
@@ -75,12 +73,12 @@ test("a repo not approved for merging moves its ready PRs out of 'May merge now'
   assert.deepEqual([counts(merge).eligible, counts(merge).unapproved], [0, 1]);
 });
 
-test("a take or take-fix without an Opus review counts as waiting for Opus, not under its verdict", async () => {
+test("a take or take-fix whose review is missing counts as not reviewed, not under its verdict", async () => {
   const db = build();
   db.prepare("DELETE FROM opus_reviews WHERE number IN (13, 14)").run();
   refreshSummary(db);
   const review = flowOf(db, null).nodes.find((n) => n.id === "review")!;
-  assert.deepEqual(counts(review), { "not-reviewed": 1, "waiting-opus": 2, take: 1, "take-fix": 0, hold: 1, close: 0 });
+  assert.deepEqual(counts(review), { "not-reviewed": 3, take: 1, "take-fix": 0, hold: 1, close: 0 });
 });
 
 test("flowchart counts every branch by the stages' own rules", async () => {
@@ -90,7 +88,7 @@ test("flowchart counts every branch by the stages' own rules", async () => {
   assert.deepEqual(counts(node("synced")), { issues: 6, prs: 5 });
   assert.deepEqual(counts(node("classify")), { settled: 8, waiting: 1, referee: 0, disagree: 1, unclassified: 1 });
   assert.deepEqual(counts(node("decide")), { "not-asked": 1, open: 1, take: 1, "small-extra": 0, plugin: 1, close: 0, "need-info": 0, backlog: 0 });
-  assert.deepEqual(counts(node("review")), { "not-reviewed": 1, "waiting-opus": 0, take: 2, "take-fix": 1, hold: 1, close: 0 });
+  assert.deepEqual(counts(node("review")), { "not-reviewed": 1, take: 2, "take-fix": 1, hold: 1, close: 0 });
   assert.deepEqual(counts(node("merge")), { eligible: 1, "in-batch": 0, unapproved: 0, "needs-decision": 0, "waiting-ci": 0, "ci-approval": 0, "ci-approval-person": 0, "ci-failed": 1, conflict: 0, "waiting-verify": 0, "verify-failed": 0, "verify-error": 0, "needs-fix-up": 1, "batch-failed": 0, declined: 0, merged: 1 });
   assert.deepEqual(counts(node("verify")), { waiting: 0, planned: 0, running: 0, passed: 1, "ci-enough": 0, failed: 0, error: 0 });
   assert.equal(node("verify").total, 1);
@@ -179,13 +177,12 @@ test("the duplicate, priority, fix, fix-up and act nodes count one item in each 
   // Fix-up: 13 can be pushed to, 40 cannot (closed to maintainers), 41 was pushed.
   const checks = db.prepare(`INSERT INTO main.pr_checks (repo, number, head_oid, state, is_draft, overall, checks, mergeable, maintainer_can_modify, fetched_at)
     VALUES ('${R}', ?, ?, 'OPEN', 0, 'success', '[]', 'MERGEABLE', ?, '2026-01-02T00:00:00Z')`);
-  const review = db.prepare(`INSERT INTO main.reviews (repo, number, head_oid, run_id, at, model, size, verdict, reason, fixes) VALUES ('${R}', ?, ?, 'rv', '${T0}', 'sonnet', 'S', ?, 'why', ?)`);
+  const review = db.prepare(`INSERT INTO main.opus_reviews (repo, number, head_oid, run_id, at, model, verdict, reason, fixes, sure, mode) VALUES ('${R}', ?, ?, 'rv', '${T0}', 'sonnet', ?, 'why', ?, 1, 'full')`);
   const fixes = '[{"file":"src/a.rs","change":"rename"}]';
-  db.prepare("UPDATE main.reviews SET fixes = ? WHERE number = 13").run(fixes);
+  db.prepare("UPDATE main.opus_reviews SET fixes = ? WHERE number = 13").run(fixes);
   checks.run(13, "h13", 1);
   item.run(40, "pr", "OPEN", "h40", null); review.run(40, "h40", "take-fix", fixes); checks.run(40, "h40", 0);
   item.run(41, "pr", "OPEN", "h41", null); review.run(41, "h41", "take", null); checks.run(41, "h41", 1);
-  finalizeReviews(db);
   db.prepare(`INSERT INTO main.fixups (repo, number, from_head, to_head, state, attempt, created_at) VALUES ('${R}', 41, 'g41', 'h41', 'pushed', 1, ?)`).run(NOW);
   assert.deepEqual(counts(node("fixup")), { fix: 0, pushed: 1, hold: 1, unapproved: 1, asked: 0 });
   setting(`push_approved:${R}`);

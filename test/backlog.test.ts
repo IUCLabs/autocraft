@@ -18,7 +18,6 @@ import { buildQueue } from "../src/merge/queue.ts";
 import { setPilot } from "../src/pilot.ts";
 import type { Querier } from "../src/mirror.ts";
 import { selectCandidates as reviewCandidates } from "../src/review/candidates.ts";
-import { finalizeReviews } from "./fixture.ts";
 import { validating } from "./gql.ts";
 import { SCRATCH } from "./scratch.ts";
 
@@ -42,13 +41,12 @@ function fresh(): DatabaseSync {
   const item = db.prepare(`INSERT INTO items (repo, number, kind, state, title, author, head_oid, additions, deletions, changed_files, created_at, updated_at)
     VALUES (?, ?, ?, 'OPEN', ?, 'stranger', ?, 10, 0, 1, '${T0}', '${T0}')`);
   const jev = db.prepare(`INSERT INTO classifications (repo, number, classifier, run_id, at, type_label, flags, probs) VALUES (?, ?, 'jev', 'r1', '${T0}', 'bugfix', ?, '{"top":0.95}')`);
-  const review = db.prepare(`INSERT INTO reviews (repo, number, head_oid, run_id, at, model, size, verdict, reason) VALUES (?, ?, ?, 'rv', '${T0}', 'm', 'S', 'take', 'fine')`);
+  const review = db.prepare(`INSERT INTO opus_reviews (repo, number, head_oid, run_id, at, model, verdict, reason, sure, mode) VALUES (?, ?, ?, 'rv', '${T0}', 'm', 'take', 'fine', 1, 'full')`);
   for (const [repo, n, kind] of [["app", 1, "issue"], ["app", 2, "issue"], ["app", 3, "issue"], ["app", 4, "pr"], ["app", 5, "pr"], ["app", 6, "pr"], ["app", 7, "pr"], ["app", 8, "pr"], ["app", 9, "pr"], ["other", 1, "issue"], ["other", 2, "pr"]] as const) {
     item.run(repo, n, kind, `${kind} ${n}`, kind === "pr" ? `sha${n}` : null);
     jev.run(repo, n, JSON.stringify(n <= 3 || repo === "other" ? ["needs decision"] : []));
     if (kind === "pr") review.run(repo, n, `sha${n}`);
   }
-  finalizeReviews(db);
   setCommentApproval(db, "op", "app", true);
   return db;
 }
@@ -124,7 +122,7 @@ describe("Backlog", () => {
     assert.equal(states.get(7), "held-backlog");
     assert.notEqual(states.get(8), "held-backlog");
     // Review takes up unreviewed PRs only: forget the reviews, then 4 (backlogged) and 5, 6 (group) and 7 (Merge?) stay out.
-    db.exec("DELETE FROM reviews");
+    db.exec("DELETE FROM opus_reviews");
     assert.deepEqual(reviewCandidates(db, "app").map((c) => c.number), [8, 9]);
   });
 

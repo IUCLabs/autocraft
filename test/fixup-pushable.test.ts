@@ -7,7 +7,6 @@ import { connect } from "../src/db.ts";
 import { setPushApproval } from "../src/fixup/approval.ts";
 import { classifyFixups, selectFixups } from "../src/fixup/candidates.ts";
 import { pushable } from "../src/fixup/pushable.ts";
-import { finalizeReviews } from "./fixture.ts";
 import { SCRATCH } from "./scratch.ts";
 
 mkdirSync(SCRATCH, { recursive: true });
@@ -20,12 +19,11 @@ function pr(headRepo: string | null, canModify: boolean): DatabaseSync {
   const db = connect(join(mkdtempSync(join(dir, "db-")), "t.db"));
   db.prepare(`INSERT INTO items (repo, number, kind, state, title, author, additions, deletions, head_oid, head_repo, head_ref, created_at, updated_at)
     VALUES ('app', 7, 'pr', 'OPEN', 'Fix', 'someone', 5, 0, 'h1', ?, 'fix-typo', '${T0}', '${T0}')`).run(headRepo);
-  db.prepare(`INSERT INTO reviews (repo, number, head_oid, run_id, at, model, size, verdict, reason, fixes) VALUES ('app', 7, 'h1', 'rv', '${T0}', 'm', 'S', 'take-fix', 'nearly', ?)`).run(FIXES);
+  db.prepare(`INSERT INTO opus_reviews (repo, number, head_oid, run_id, at, model, verdict, reason, fixes, sure, mode) VALUES ('app', 7, 'h1', 'rv', '${T0}', 'm', 'take-fix', 'nearly', ?, 1, 'full')`).run(FIXES);
   db.prepare(`INSERT INTO pr_checks (repo, number, head_oid, state, is_draft, overall, checks, mergeable, maintainer_can_modify, fetched_at)
     VALUES ('app', 7, 'h1', 'OPEN', 0, 'success', '[]', 'MERGEABLE', ?, '${T1}')`).run(canModify ? 1 : 0);
   db.prepare("INSERT INTO tracked_repos (name, added_by, added_at, pipeline) VALUES ('app', 'op', ?, 1)").run(T0);
   setPushApproval(db, "op", "app", true);
-  finalizeReviews(db);
   return db;
 }
 

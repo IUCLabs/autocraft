@@ -8,7 +8,6 @@ import { connect } from "../src/db.ts";
 import { batchStates, insertBatch, updateBatch } from "../src/merge/batch-store.ts";
 import { buildQueue } from "../src/merge/queue.ts";
 import { ActionError, actionsOf, batchAgain } from "../src/operator-actions.ts";
-import { finalizeReviews } from "./fixture.ts";
 import { SCRATCH } from "./scratch.ts";
 
 mkdirSync(SCRATCH, { recursive: true });
@@ -23,13 +22,12 @@ function fresh(): DatabaseSync {
   for (const n of [1, 2]) {
     db.prepare(`INSERT INTO items (repo, number, kind, state, title, author, additions, deletions, head_oid, labels, created_at, updated_at)
       VALUES ('app', ?, 'pr', 'OPEN', 'Item', 'regular', 20, 0, ?, '[]', '${T}', '${T}')`).run(n, `sha${n}`);
-    db.prepare(`INSERT INTO reviews (repo, number, head_oid, run_id, at, model, size, verdict, reason) VALUES ('app', ?, ?, 'rv', '${T}', 'm', 'S', 'take', 'ok')`).run(n, `sha${n}`);
+    db.prepare(`INSERT INTO opus_reviews (repo, number, head_oid, run_id, at, model, verdict, reason, sure, mode) VALUES ('app', ?, ?, 'rv', '${T}', 'm', 'take', 'ok', 1, 'full')`).run(n, `sha${n}`);
     db.prepare(`INSERT INTO pr_checks (repo, number, head_oid, state, is_draft, overall, checks, mergeable, maintainer_can_modify, fetched_at)
       VALUES ('app', ?, ?, 'OPEN', 0, 'success', '[]', 'MERGEABLE', 1, '${T}')`).run(n, `sha${n}`);
     db.prepare(`INSERT INTO classifications (repo, number, classifier, run_id, at, type_label, flags, probs) VALUES ('app', ?, 'jev', 'r1', '${T}', 'bugfix', '[]', '{"top":0.95}')`).run(n);
     db.prepare(`INSERT INTO verifications (repo, number, head_sha, kind, reason, state, created_at) VALUES ('app', ?, ?, 'tests', 'r', 'passed', '${T}')`).run(n, `sha${n}`);
   }
-  finalizeReviews(db);
   return db;
 }
 

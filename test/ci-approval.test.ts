@@ -7,7 +7,6 @@ import { connect } from "../src/db.ts";
 import type { Exec } from "../src/fixup/git.ts";
 import { approveRuns, markReread, overallAt, recordRuns, setCiApproval, type Suite } from "../src/merge/ci-approval.ts";
 import { buildQueue, eligible, refusedAsBefore } from "../src/merge/queue.ts";
-import { finalizeReviews } from "./fixture.ts";
 import { SCRATCH } from "./scratch.ts";
 
 mkdirSync(SCRATCH, { recursive: true });
@@ -24,13 +23,12 @@ function fresh(): DatabaseSync {
   for (let n = 1; n <= 9; n++) {
     db.prepare(`INSERT INTO items (repo, number, kind, state, title, author, additions, deletions, head_oid, created_at, updated_at)
       VALUES ('app', ?, 'pr', 'OPEN', ?, 'outsider', 10, 0, ?, '${T0}', '${T0}')`).run(n, `PR ${n}`, `sha${n}`);
-    if (n !== 3) db.prepare(`INSERT INTO reviews (repo, number, head_oid, run_id, at, model, size, verdict, reason) VALUES ('app', ?, ?, 'rv', '${T0}', 'm', 'S', ?, 'ok')`)
+    if (n !== 3) db.prepare(`INSERT INTO opus_reviews (repo, number, head_oid, run_id, at, model, verdict, reason, sure, mode) VALUES ('app', ?, ?, 'rv', '${T0}', 'm', ?, 'ok', 1, 'full')`)
       .run(n, `sha${n}`, n === 5 ? "take-fix" : "take");
     db.prepare(`INSERT INTO pr_checks (repo, number, head_oid, state, is_draft, overall, checks, mergeable, maintainer_can_modify, fetched_at)
       VALUES ('app', ?, ?, 'OPEN', ?, 'success', '[]', 'MERGEABLE', 1, '${T1}')`).run(n, `sha${n}`, n === 4 ? 1 : 0);
     recordRuns(db, { repo: "app", number: n, head_oid: `sha${n}`, state: "OPEN", cross_repo: n !== 6, suites: [waiting(n, n === 9 ? "pull_request_target" : "pull_request")] });
   }
-  finalizeReviews(db);
   db.prepare("INSERT INTO merge_holds (repo, number, held_by, held_at) VALUES ('app', 7, 'op', ?)").run(T0);
   db.prepare(`INSERT INTO decisions (id, kind, repo, number, question, options, asked_at, answer) VALUES ('app#8:merge@sha8', 'merge', 'app', 8, 'q', '[]', ?, 'hold')`).run(T0);
   db.prepare("INSERT INTO access (login, role) VALUES ('op', 'operator')").run();

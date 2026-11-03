@@ -9,11 +9,11 @@ import { connect } from "../src/db.ts";
 import { setPushApproval } from "../src/fixup/approval.ts";
 import { selectFixups } from "../src/fixup/candidates.ts";
 import { buildQueue } from "../src/merge/queue.ts";
+import { selectCandidates as verifyCandidates } from "../src/verify/candidates.ts";
 import { claudeArgs, claudeParts, renderClaude } from "../src/prompts/index.ts";
 import { selectOpusCandidates } from "../src/review/opus-candidates.ts";
 import { runOpusReview, type OpusDeps } from "../src/review/opus.ts";
 import { parseOpusReply, type OpusPr } from "../src/review/opus-parse.ts";
-import { skipReason } from "../src/review/skip.ts";
 import { useTestAccount } from "./accounts-fixture.ts";
 import { SCRATCH } from "./scratch.ts";
 
@@ -25,36 +25,6 @@ const T1 = "2026-01-02T00:00:00Z";
 
 const file = (path: string, removed: string[], added: string[]) =>
   `diff --git a/${path} b/${path}\n--- a/${path}\n+++ b/${path}\n@@ -1,${removed.length} +1,${added.length} @@\n${removed.map((l) => `-${l}\n`).join("")}${added.map((l) => `+${l}\n`).join("")}`;
-
-describe("skip list", () => {
-  test("docs, translations and comments under 20 lines", () => {
-    assert.match(skipReason(file("README.md", ["a"], ["b"]), null) ?? "", /docs/);
-    assert.match(skipReason(file("locales/de/app.ftl", ["a = x"], ["a = y"]), null) ?? "", /docs/);
-    assert.match(skipReason(file("docs/guide.txt", ["a"], ["b"]), null) ?? "", /docs/);
-    assert.equal(skipReason(file("crates/doc/src/vars.rs", ["let a = 1;"], ["let a = 2;"]), null), null);
-    assert.equal(skipReason(file("crates/i18n/src/lib.rs", ["let a = 1;"], ["let a = 2;"]), null), null);
-    assert.match(skipReason(file("src/lib.rs", ["// old"], ["// new", ""]), null) ?? "", /comments/);
-    assert.equal(skipReason(file("src/lib.rs", ["let a = 1;"], ["let a = 2; // note"]), null), null);
-    assert.equal(skipReason(file("README.md", [], Array.from({ length: 25 }, (_, i) => `line ${i}`)), null), null);
-    // one code line next to docs is not docs only
-    assert.equal(skipReason(file("README.md", ["a"], ["b"]) + file("src/lib.rs", ["x"], ["y"]), null), null);
-  });
-
-  test("dependency bumps need green CI and nothing but versions", () => {
-    const lock = file("Cargo.lock", ["version = \"1.0.0\""], ["version = \"1.0.1\""]);
-    const bump = file("Cargo.toml", ['serde = "1.0.1"'], ['serde = "1.0.2"']);
-    assert.match(skipReason(lock + bump, "success") ?? "", /dependency/);
-    assert.equal(skipReason(lock + bump, "pending"), null);
-    assert.equal(skipReason(file("Cargo.toml", ['serde = "1.0.1"'], ['serde = "1.0.2"', 'evil = "0.1.0"']), "success"), null);
-    assert.equal(skipReason(file("package.json", ['"build": "tsc"'], ['"build": "rm -rf /"']), "success"), null);
-  });
-
-  test("test-only changes", () => {
-    assert.equal(skipReason(file("tests/a.rs", ["a"], ["b"]) + file("src/x_test.rs", ["a"], ["b"]), null), "test files only");
-    assert.equal(skipReason(file("tests/a.rs", ["a"], ["b"]) + file("src/lib.rs", ["a"], ["b"]), null), null);
-    assert.equal(skipReason("", null), null);
-  });
-});
 
 describe("Opus reply", () => {
   test("keeps a valid object; take-fix needs fixes; sure must be a boolean", () => {
@@ -75,21 +45,22 @@ describe("Opus reply", () => {
 
 const CODE = file("src/lib.rs", ["let a = 1;"], ["let a = 2;"]);
 
-/** PR 1 take, PR 2 take-fix (both code), PR 3 Sonnet hold, PR 4 take with a docs-only diff, PR 5 take (code). */
+/** Five wanted PRs without a review (PR 4 changes only docs), and PR 6, whose label is not reviewed. */
 function fresh(): DatabaseSync {
   const db = connect(join(mkdtempSync(join(dir, "db-")), "t.db"));
   useTestAccount(db);
   const item = db.prepare(`INSERT INTO items (repo, number, kind, state, title, author, additions, deletions, head_oid, created_at, updated_at)
     VALUES ('app', ?, 'pr', 'OPEN', ?, 'regular', 5, 0, ?, '${T0}', '${T0}')`);
-  const review = db.prepare(`INSERT INTO reviews (repo, number, head_oid, run_id, at, model, size, verdict, reason, fixes) VALUES ('app', ?, ?, 'rv', '${T0}', 'sonnet', 'S', ?, 'sonnet says', ?)`);
+  const jev = db.prepare(`INSERT INTO classifications (repo, number, classifier, run_id, at, type_label, flags, probs) VALUES ('app', ?, 'jev', 'r1', '${T0}', ?, '[]', '{"top":0.95}')`);
   const checks = db.prepare(`INSERT INTO pr_checks (repo, number, head_oid, state, is_draft, overall, checks, mergeable, maintainer_can_modify, fetched_at)
     VALUES ('app', ?, ?, 'OPEN', 0, 'success', '[]', 'MERGEABLE', 1, '${T1}')`);
-  const SONNET_FIXES = JSON.stringify([{ file: "src/lib.rs", change: "sonnet fix" }]);
-  for (const [n, verdict] of [[1, "take"], [2, "take-fix"], [3, "hold"], [4, "take"], [5, "take"]] as const) {
+  for (const n of [1, 2, 3, 4, 5, 6]) {
     item.run(n, `PR ${n}`, `sha${n}a`);
-    review.run(n, `sha${n}a`, verdict, verdict === "take-fix" ? SONNET_FIXES : null);
+    jev.run(n, n === 6 ? "plugin candidate" : "bugfix");
     checks.run(n, `sha${n}a`);
   }
+  db.exec("INSERT INTO repos (name, visibility, default_branch) VALUES ('app', 'public', 'main')");
+  db.prepare("INSERT INTO whitelist_overrides (login, status, by, at) VALUES ('regular', 'allow', 'op', ?)").run(T0);
   db.prepare("INSERT INTO tracked_repos (name, added_by, added_at, pipeline) VALUES ('app', 'op', ?, 1) ON CONFLICT DO NOTHING").run(T0);
   return db;
 }
@@ -114,64 +85,74 @@ const deps = (over: Partial<OpusDeps> = {}): OpusDeps => ({
 });
 
 const final = (db: DatabaseSync, n: number) =>
-  db.prepare("SELECT verdict, reason, fixes, source, final, skip_reason FROM final_reviews WHERE number = ?").get(n) as { verdict: string; reason: string; fixes: string | null; source: string; final: number; skip_reason: string | null };
+  db.prepare("SELECT verdict, sure, reason, fixes FROM final_reviews WHERE number = ?").get(n) as { verdict: string; sure: number; reason: string; fixes: string | null };
 
 describe("Opus review pass", () => {
-  test("candidates are Sonnet take and take-fix at the current head", () => {
-    assert.deepEqual(selectOpusCandidates(fresh(), "app").map((c) => c.number), [1, 2, 4, 5]);
+  test("every wanted PR with no review is a candidate, docs-only ones too", () => {
+    assert.deepEqual(selectOpusCandidates(fresh(), "app").map((c) => c.number), [1, 2, 3, 4, 5]);
   });
 
-  test("a take waits for Opus in the queue; a hold is final at once", () => {
-    const db = fresh();
-    assert.equal(buildQueue(db, { run: null }).find((e) => e.number === 1)!.state, "waiting-opus");
-    assert.deepEqual([1, 2, 3, 4].map((n) => final(db, n).final), [0, 0, 1, 0]);
+  test("a PR without a review has no queue state", () => {
+    assert.equal(buildQueue(fresh(), { run: null }).length, 0);
+    assert.equal(final(fresh(), 1), undefined);
   });
 
-  test("one call per PR with the registered prompt; Opus's verdict and fix list replace Sonnet's; the skip list makes no call", async () => {
+  test("one call per PR with the registered prompt; Opus's verdict and fix list are the final review; the Opus take reaches Verify", async () => {
     const db = fresh();
     const calls: Call[] = [];
-    const restore = setRunner(fakeOpus(calls, { "app#2": { verdict: "take-fix", fixes: [{ file: "src/lib.rs", change: "opus fix" }] }, "app#5": { verdict: "close", sure: false } }));
+    const restore = setRunner(fakeOpus(calls, { "app#2": { verdict: "take-fix", fixes: [{ file: "src/lib.rs", change: "opus fix" }] }, "app#3": { verdict: "hold" } }));
     try {
       const s = await runOpusReview(db, { repo: "app" }, () => {}, deps());
-      assert.deepEqual([s.reviewed, s.skipListed, s.missing.length], [3, 1, 0]);
+      assert.deepEqual([s.reviewed, s.missing.length], [5, 0]);
     } finally {
       restore();
     }
-    assert.equal(calls.length, 3);
-        const input = JSON.parse(calls[0]!.input.split("<pr>\n")[1]!.split("\n</pr>")[0]!) as OpusPr;
+    assert.equal(calls.length, 5);
+    const input = JSON.parse(calls[0]!.input.split("<pr>\n")[1]!.split("\n</pr>")[0]!) as OpusPr;
     const parts = claudeParts("review.opus", [input], false);
     assert.equal(calls[0]!.input, parts.stdin);
     assert.deepEqual(calls[0]!.args, claudeArgs("review.opus", "opus", false, undefined, parts.system));
-    assert.deepEqual([input.mode, input.sonnet.verdict, input.earlier_opus], ["full", "take", null]);
+    assert.deepEqual([input.mode, input.earlier_opus], ["full", null]);
+    assert.ok(!("sonnet" in input));
 
-    assert.deepEqual([final(db, 1).verdict, final(db, 1).source, final(db, 1).final], ["take", "opus", 1]);
+    assert.equal(final(db, 1).verdict, "take");
+    assert.equal(final(db, 4).verdict, "take");
+    assert.equal(final(db, 3).verdict, "hold");
     assert.deepEqual(JSON.parse(final(db, 2).fixes!), [{ file: "src/lib.rs", change: "opus fix" }]);
-    assert.deepEqual([final(db, 4).verdict, final(db, 4).source, final(db, 4).final], ["take", "skip-list", 1]);
-    assert.match(final(db, 4).skip_reason ?? "", /docs/);
-    // Opus close while unsure and disagreeing with Sonnet: a person decides, both reviews in the reason
-    const f5 = final(db, 5);
-    assert.equal(f5.verdict, "hold");
-    assert.match(f5.reason, /Sonnet \(take\).*Opus \(close\)/);
-    assert.equal(final(db, 3).source, "sonnet");
     assert.equal(selectOpusCandidates(db, "app").length, 0);
-    assert.notEqual(buildQueue(db, { run: null }).find((e) => e.number === 1)!.state, "waiting-opus");
+    assert.deepEqual(verifyCandidates(db, "app", null, () => null).map((c) => c.number), [1, 4, 5]);
 
-    // Fix-up reads Opus's list, not Sonnet's
+    // Fix-up reads Opus's list
     setPushApproval(db, "op", "app", true);
-    const fix = selectFixups(db, "app").fix.find((c) => c.number === 2)!;
-    assert.deepEqual(fix.fixes, [{ file: "src/lib.rs", change: "opus fix" }]);
+    assert.deepEqual(selectFixups(db, "app").fix.find((c) => c.number === 2)!.fixes, [{ file: "src/lib.rs", change: "opus fix" }]);
   });
 
-  test("a sure Opus close becomes a Close? candidate; a sure disagreement stands without a person", async () => {
+  test("a sure Opus close becomes a Close? candidate", async () => {
     const db = fresh();
-    const restore = setRunner(fakeOpus([], { "app#1": { verdict: "close", sure: true }, "app#2": { verdict: "take", sure: true } }));
+    const restore = setRunner(fakeOpus([], { "app#1": { verdict: "close", sure: true } }));
     try {
       await runOpusReview(db, { repo: "app" }, () => {}, deps());
     } finally {
       restore();
     }
-    assert.deepEqual(closeCandidates(db, "app").map((r) => [r.number, r.source]), [[1, "opus"]]);
-    assert.deepEqual([final(db, 2).verdict, final(db, 2).fixes], ["take", null]);
+    assert.deepEqual(closeCandidates(db, "app").map((r) => r.number), [1]);
+  });
+
+  test("a second review of the same head counts against the daily cap", async () => {
+    const db = fresh();
+    for (let i = 0; i < 2; i++) {
+      const restore = setRunner(fakeOpus([], {}));
+      try {
+        await runOpusReview(db, { repo: "app", limit: 1 }, () => {}, deps());
+        db.prepare("DELETE FROM opus_reviews WHERE number <> 1").run();
+        db.prepare("UPDATE opus_reviews SET seen_at = '2020-01-01T00:00:00Z', disc_hash = 'x' WHERE number = 1").run();
+        db.prepare("INSERT INTO comments (id, repo, number, kind, author, author_association, body, created_at, counted) VALUES (?, 'app', 1, 'comment', 'rabbit', 'CONTRIBUTOR', 'new finding', '2026-02-01T00:00:00Z', 1)").run(`c${i}`);
+      } finally {
+        restore();
+      }
+    }
+    const day = new Date().toISOString().slice(0, 10);
+    assert.equal(db.prepare("SELECT value FROM settings WHERE key = ?").get(`review_rerun:app#1:${day}`)?.value, "1");
   });
 
   test("after a push Opus reads the delta with its earlier review; without a delta it reads the full diff", async () => {
@@ -185,7 +166,6 @@ describe("Opus review pass", () => {
     const push = (n: number, head: string) => {
       db.prepare("UPDATE pr_checks SET head_oid = ?, fetched_at = '2026-01-03T00:00:00Z' WHERE number = ?").run(head, n);
       db.prepare("UPDATE items SET head_oid = ? WHERE number = ?").run(head, n);
-      db.prepare(`INSERT INTO reviews (repo, number, head_oid, run_id, at, model, size, verdict, reason) VALUES ('app', ?, ?, 'rv2', '2026-01-03T00:00:00Z', 'sonnet', 'S', 'take', 'again')`).run(n, head);
     };
     push(1, "sha1b");
     push(2, "sha2b");

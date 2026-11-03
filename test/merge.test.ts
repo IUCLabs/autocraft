@@ -12,7 +12,6 @@ import { runSingles, setSingleMergeMax, singleMergeMax } from "../src/merge/sing
 import { setMergeApproval } from "../src/merge/approval.ts";
 import { insertBatch } from "../src/merge/batch-store.ts";
 import type { DiffFetcher } from "../src/review/diff.ts";
-import { finalizeReviews } from "./fixture.ts";
 import { SCRATCH } from "./scratch.ts";
 import { validating } from "./gql.ts";
 
@@ -51,7 +50,7 @@ function fresh(): DatabaseSync {
   const item = db.prepare(`INSERT INTO items (repo, number, kind, state, title, author, additions, deletions, head_oid, created_at, updated_at)
     VALUES ('app', ?, 'pr', 'OPEN', ?, ?, ?, 0, ?, '${T0}', '${T0}')`);
   const jev = db.prepare(`INSERT INTO classifications (repo, number, classifier, run_id, at, type_label, flags, probs) VALUES ('app', ?, 'jev', 'r1', '${T0}', ?, '[]', '{"top":0.95}')`);
-  const review = db.prepare(`INSERT INTO reviews (repo, number, head_oid, run_id, at, model, size, verdict, reason, fixes) VALUES ('app', ?, ?, 'rv', '${T0}', 'm', ?, ?, 'looks right', ?)`);
+  const review = db.prepare(`INSERT INTO opus_reviews (repo, number, head_oid, run_id, at, model, verdict, reason, fixes, sure, mode) VALUES ('app', ?, ?, 'rv', '${T0}', 'm', ?, 'looks right', ?, 1, 'full')`);
   const checks = db.prepare(`INSERT INTO pr_checks (repo, number, head_oid, state, is_draft, overall, checks, mergeable, maintainer_can_modify, fetched_at)
     VALUES ('app', ?, ?, 'OPEN', 0, ?, '[]', ?, 1, '${T1}')`);
   for (const p of PRS) {
@@ -59,7 +58,7 @@ function fresh(): DatabaseSync {
     item.run(p.n, `PR ${p.n}`, p.author ?? "regular", lines, `sha${p.n}`);
     jev.run(p.n, p.label ?? "bugfix");
     const verdict = p.verdict ?? "take";
-    review.run(p.n, p.reviewHead ?? `sha${p.n}`, lines <= 50 ? "S" : lines <= 300 ? "M" : "L", verdict, verdict === "take-fix" ? '[{"file":"a.rs","change":"x"}]' : null);
+    review.run(p.n, p.reviewHead ?? `sha${p.n}`, verdict, verdict === "take-fix" ? '[{"file":"a.rs","change":"x"}]' : null);
     if (p.verify !== null) {
       db.prepare(`INSERT INTO verifications (repo, number, head_sha, kind, reason, state, summary, note, created_at) VALUES ('app', ?, ?, 'tests', 'r', ?, ?, ?, '${T0}')`)
         .run(p.n, p.verifyHead ?? `sha${p.n}`, p.verify ?? "passed", (p.verify ?? "passed") === "failed" ? "cargo test failed" : null, (p.verify ?? "passed") === "passed" ? "also passes on base" : null);
@@ -68,7 +67,6 @@ function fresh(): DatabaseSync {
   }
   db.prepare("INSERT INTO whitelist_overrides (login, status, by, at) VALUES ('regular', 'allow', 'op', ?)").run(T0);
   db.prepare("INSERT INTO access (login, role) VALUES ('op', 'operator'), ('helper', 'maintainer')").run();
-  finalizeReviews(db);
   setMergeApproval(db, "op", "app", true);
   return db;
 }
@@ -188,7 +186,7 @@ describe("merge queue", () => {
     assert.ok(!log.some((l) => l.startsWith("safe-merge-test")));
     // A new review of the same head that read the comment: later than the stale mark, with the live snapshot's hash.
     const later = new Date(Date.now() + 60_000).toISOString();
-    db.prepare("UPDATE reviews SET at = ?, seen_at = ?, disc_hash = ? WHERE number = 1").run(later, later, discussionHash([{ id: "n1", body: note.body }]));
+    db.prepare("UPDATE opus_reviews SET at = ?, seen_at = ?, disc_hash = ? WHERE number = 1").run(later, later, discussionHash([{ id: "n1", body: note.body }]));
     db.prepare("UPDATE opus_reviews SET at = ?, seen_at = ?, disc_hash = ? WHERE number = 1").run(later, later, discussionHash([{ id: "n1", body: note.body }]));
     const again = await runMerge(db, { repo: "app", dryRun: false, limit: 1 }, quiet, fakes([], { discussion: [note] }));
     assert.deepEqual(again.merged, ["app#1"]);
@@ -227,6 +225,22 @@ describe("merge queue", () => {
     assert.deepEqual(s.merged, ["app#1", "app#11", "app#16", "app#5"]);
     assert.ok(!log.some((l) => / storytold\/app [34] /.test(l)));
     assert.ok((db.prepare("SELECT applied_at FROM decisions WHERE id = ?").get(mergeDecisionId("app", 5, "sha5")) as { applied_at: string | null }).applied_at);
+  });
+
+  test("an unsure Opus take never merges without a Merge? answer, which then lets it merge", async () => {
+    const db = fresh();
+    db.prepare("UPDATE opus_reviews SET sure = 0 WHERE number = 1").run();
+    assert.equal(stateOf(db, 1), "needs-decision");
+    assert.equal(eligible(buildQueue(db, { repo: "app" }).find((e) => e.number === 1)!), false);
+    const log: Log = [];
+    const s = await runMerge(db, { repo: "app", dryRun: false }, quiet, fakes(log));
+    assert.ok(!s.merged.includes("app#1"));
+    assert.ok(s.asked.includes(mergeDecisionId("app", 1, "sha1")));
+    const summary = (db.prepare("SELECT summary FROM decisions WHERE id = ?").get(mergeDecisionId("app", 1, "sha1")) as { summary: string | null }).summary ?? "";
+    assert.match(summary, /unsure/i);
+    answer(db, mergeDecisionId("app", 1, "sha1"), "op", "merge");
+    assert.equal(stateOf(db, 1), "decision-answered-merge");
+    assert.ok((await runMerge(db, { repo: "app", dryRun: false }, quiet, fakes([]))).merged.includes("app#1"));
   });
 
   test("a head that moved since the operator's answer is refused", async () => {

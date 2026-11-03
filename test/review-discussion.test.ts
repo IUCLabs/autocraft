@@ -27,8 +27,8 @@ function fresh(): DatabaseSync {
   db.prepare("INSERT INTO main.settings (key, value) VALUES ('pipeline_login', 'autobot')").run();
   db.prepare(`INSERT INTO items (repo, number, kind, state, title, author, additions, deletions, head_oid, created_at, updated_at)
     VALUES ('app', 1, 'pr', 'OPEN', 'PR 1', 'regular', 5, 0, 'sha1', '${T0}', '${T0}')`).run();
-  db.prepare(`INSERT INTO reviews (repo, number, head_oid, run_id, at, model, size, verdict, reason) VALUES ('app', 1, 'sha1', 'rv', '${T1}', 'sonnet', 'S', 'take', 'ok')`).run();
   db.prepare(`INSERT INTO opus_reviews (repo, number, head_oid, run_id, at, model, mode, verdict, sure, reason) VALUES ('app', 1, 'sha1', 'rv', '${T1}', 'opus', 'full', 'take', 1, 'ok')`).run();
+  db.prepare(`INSERT INTO classifications (repo, number, classifier, run_id, at, type_label, flags, probs) VALUES ('app', 1, 'jev', 'r1', '${T0}', 'bugfix', '[]', '{"top":0.95}')`).run();
   db.prepare(`INSERT INTO pr_checks (repo, number, head_oid, state, is_draft, overall, checks, mergeable, maintainer_can_modify, fetched_at)
     VALUES ('app', 1, 'sha1', 'OPEN', 0, 'success', '[]', 'MERGEABLE', 1, '${T1}')`).run();
   db.prepare("INSERT INTO tracked_repos (name, added_by, added_at, pipeline) VALUES ('app', 'op', ?, 1) ON CONFLICT DO NOTHING").run(T0);
@@ -65,7 +65,7 @@ describe("PR discussion in reviews", () => {
       const body = { ref: "app#1", verdict: "hold", sure: true, reason: "r", fixes: [], risks: ["checked: overlap: holds"] };
       return { code: 0, stdout: JSON.stringify({ type: "result", result: JSON.stringify(body), usage: { input_tokens: 1, output_tokens: 1 } }), stderr: "" };
     });
-    db.prepare("UPDATE opus_reviews SET at = ? WHERE number = 1").run(T0); // older than Sonnet's review: due again
+    db.prepare("DELETE FROM opus_reviews WHERE number = 1").run(); // not reviewed at this head yet
     const deps: OpusDeps = { querier: q, fetchDiff: async () => ({ ok: true, text: CODE }), fetchDelta: async () => ({ ok: false, tooLarge: false, error: "x" }), model: "opus", maxChars: 120_000 };
     try {
       const s = await runOpusReview(db, { repo: "app" }, () => {}, deps);
@@ -85,38 +85,29 @@ describe("PR discussion in reviews", () => {
 
   test("only new counted discussion that differs from what the review read makes it stale; the cap holds the 4th", () => {
     const db = fresh();
-    const state = () => buildQueue(db, { repo: "app", merged: "exclude" })[0]!;
+    const queued = () => buildQueue(db, { repo: "app", merged: "exclude" })[0];
     comment(db, "old", "rabbit", T0, "before the review");
     comment(db, "own", "autobot", T2, "ours, after the review");
     comment(db, "stranger", "drive-by", T2, "from a stranger", "comment", 0);
     assert.equal(staleReviews(db, "app").size, 0);
-    assert.notEqual(state().state, "waiting-opus");
+    assert.ok(queued(), "a review that read everything stays in the queue");
     comment(db, "new", "rabbit", T2, "Major: crossing subpaths still fill the overlap");
     assert.ok(staleReviews(db, "app").has("app#1@sha1"));
-    assert.equal(state().state, "waiting-opus");
-    assert.equal(eligible(state()), false);
+    assert.equal(queued(), undefined, "a stale review is no review until the PR is reviewed again");
     // the review read exactly this discussion: same hash, so nothing new
     const h = discussionHash([{ id: "old", body: "before the review" }, { id: "new", body: "Major: crossing subpaths still fill the overlap" }]);
-    db.prepare("UPDATE reviews SET seen_at = ?, disc_hash = ? WHERE number = 1").run(T0, h);
+    db.prepare("UPDATE opus_reviews SET seen_at = ?, disc_hash = ? WHERE number = 1").run(T0, h);
     assert.equal(staleReviews(db, "app").size, 0);
-    db.prepare("UPDATE reviews SET disc_hash = 'other' WHERE number = 1").run();
+    db.prepare("UPDATE opus_reviews SET disc_hash = 'other' WHERE number = 1").run();
     assert.equal(staleReviews(db, "app", true).size, 1);
     for (let i = 0; i < 3; i++) countRerun(db, "app", 1);
     assert.equal(staleReviews(db, "app", true).size, 0, "capped for today");
     assert.equal(staleReviews(db, "app").size, 1, "the queue still waits");
-  });
-
-  test("a Sonnet re-review at the same head that holds overrides the older Opus take", () => {
-    const db = fresh();
-    db.prepare("UPDATE reviews SET verdict = 'hold', at = ? WHERE number = 1").run(T2);
-    const f = db.prepare("SELECT verdict, final FROM final_reviews WHERE number = 1").get() as { verdict: string; final: number };
-    assert.deepEqual({ ...f }, { verdict: "hold", final: 1 });
-    assert.equal(buildQueue(db, { repo: "app", merged: "exclude" }).length, 0);
+    assert.equal(queued(), undefined);
   });
 
   test("a counted comment that is on GitHub but not in the mirror blocks the merge and marks the PR stale", async () => {
     const db = fresh();
-    db.prepare("UPDATE reviews SET seen_at = ?").run(T1);
     db.prepare("UPDATE opus_reviews SET seen_at = ?").run(T1);
     assert.equal(await discussionMovedSince(db, gh({}), "app", 1, "sha1"), false);
     assert.equal(await discussionMovedSince(db, gh({ comments: [note("n1", "someone", "Major finding", "NONE")] }), "app", 1, "sha1"), false, "a stranger does not count");
@@ -126,7 +117,6 @@ describe("PR discussion in reviews", () => {
 
   test("a review from a counted author with no body but inline comments makes the review stale", async () => {
     const db = fresh();
-    db.prepare("UPDATE reviews SET seen_at = ?").run(T1);
     db.prepare("UPDATE opus_reviews SET seen_at = ?").run(T1);
     const inline = (count: number, author = "rabbit", assoc = "CONTRIBUTOR") => ({ ...note("rv1", author, "", assoc), state: "COMMENTED", comments: { totalCount: count } });
     assert.equal(await discussionMovedSince(db, gh({ reviews: [inline(0)] }), "app", 1, "sha1"), false, "an empty review without inline comments is nothing");

@@ -42,7 +42,7 @@ before(async () => {
   db.exec("DELETE FROM tracked_repos; INSERT INTO tracked_repos (name, pipeline) VALUES ('open-app', 1), ('vault', 1)");
   db.exec("INSERT INTO repos (name, visibility) VALUES ('open-app', 'public'), ('vault', 'internal')");
   const item = db.prepare("INSERT INTO items (repo, number, kind, state, title, body, head_oid, author, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)");
-  const review = db.prepare("INSERT INTO reviews (repo, number, head_oid, run_id, at, size, verdict, reason) VALUES (?, ?, ?, 'r', ?, 'S', 'take', 'ok')");
+  const review = db.prepare("INSERT INTO opus_reviews (repo, number, head_oid, run_id, at, verdict, reason, sure, mode) VALUES (?, ?, ?, 'r', ?, 'take', 'ok', 1, 'full')");
   for (const repo of ["open-app", "vault"]) {
     item.run(repo, 1, "pr", "OPEN", `Wave filter in ${repo}`, "body", `h-${repo}`, "alice", now, now);
     review.run(repo, 1, `h-${repo}`, now);

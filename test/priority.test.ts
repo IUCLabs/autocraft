@@ -17,7 +17,6 @@ import { duplicateCounts } from "../src/priority/reach.ts";
 import { LEVELS, levelWith, parseHaikuImpacts, reachOf, reachScore, settleImpact, type Reach } from "../src/priority/score.ts";
 import { selectCandidates as reviewCandidates } from "../src/review/candidates.ts";
 import { selectCandidates as verifyCandidates } from "../src/verify/candidates.ts";
-import { finalizeReviews } from "./fixture.ts";
 import { SCRATCH } from "./scratch.ts";
 
 mkdirSync(SCRATCH, { recursive: true });
@@ -192,12 +191,11 @@ describe("ordering and API", () => {
     assert.deepEqual(nums(decideCandidates(db, "r1")), [3, 2, 1]);
     db.exec(`UPDATE classifications SET flags = '[]', probs = '{"top":0.95,"needs_decision":0.05}'`);
     assert.deepEqual(nums(reviewCandidates(db, "photocraft", "r1")), [3, 2, 1]);
-    for (const n of [1, 2, 3]) db.prepare("INSERT INTO reviews (repo, number, head_oid, verdict, reason, fixes, run_id, at) VALUES ('photocraft', ?, ?, 'take-fix', 'r', '[{\"file\":\"a\",\"change\":\"c\"}]', 'rv', '2026-10-02')").run(n, `sha${n}`);
-    finalizeReviews(db);
+    for (const n of [1, 2, 3]) db.prepare("INSERT INTO opus_reviews (repo, number, head_oid, verdict, reason, fixes, run_id, at, sure, mode) VALUES ('photocraft', ?, ?, 'take-fix', 'r', '[{\"file\":\"a\",\"change\":\"c\"}]', 'rv', '2026-10-02', 1, 'full')").run(n, `sha${n}`);
     db.exec("INSERT INTO settings (key, value) VALUES ('push_approved:photocraft', '{}')");
     const fix = selectFixups(db, "photocraft");
     assert.deepEqual(nums([...fix.fix, ...fix.cannotPush]), [3, 2, 1]);
-    db.exec("UPDATE reviews SET verdict = 'take'");
+    db.exec("UPDATE opus_reviews SET verdict = 'take'");
     assert.deepEqual(nums(verifyCandidates(db, "photocraft", "r1", () => true)), [3, 2, 1]);
   });
 

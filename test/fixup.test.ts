@@ -15,7 +15,6 @@ import { setCommentApproval } from "../src/act/approval.ts";
 import { ASK_ITEM_MAX, COMMENT_TEMPLATE, askText, commentText } from "../src/fixup/template.ts";
 import { checksOf } from "../src/patchcheck/index.ts";
 import { selectCandidates } from "../src/review/candidates.ts";
-import { finalizeReviews } from "./fixture.ts";
 import { SCRATCH } from "./scratch.ts";
 import { validating } from "./gql.ts";
 
@@ -39,13 +38,12 @@ function fresh(head: string, o: Opts = {}): DatabaseSync {
   const db = connect(join(mkdtempSync(join(dir, "db-")), "t.db"));
   db.prepare(`INSERT INTO items (repo, number, kind, state, title, author, additions, deletions, head_oid, created_at, updated_at)
     VALUES ('app', 7, 'pr', 'OPEN', 'Fix a thing', 'someone', 5, 0, ?, '${T0}', '${T0}')`).run(head);
-  db.prepare(`INSERT INTO reviews (repo, number, head_oid, run_id, at, model, size, verdict, reason, fixes) VALUES ('app', 7, ?, 'rv', '${T0}', 'm', 'S', ?, 'nearly right', ?)`)
+  db.prepare(`INSERT INTO opus_reviews (repo, number, head_oid, run_id, at, model, verdict, reason, fixes, sure, mode) VALUES ('app', 7, ?, 'rv', '${T0}', 'm', ?, 'nearly right', ?, 1, 'full')`)
     .run(o.reviewHead ?? head, o.verdict ?? "take-fix", FIXES);
   db.prepare(`INSERT INTO pr_checks (repo, number, head_oid, state, is_draft, overall, checks, mergeable, maintainer_can_modify, fetched_at)
     VALUES ('app', 7, ?, 'OPEN', 0, 'success', '[]', ?, ?, '${T1}')`).run(head, o.mergeable ?? "MERGEABLE", o.canModify === false ? 0 : 1);
   db.prepare("INSERT INTO tracked_repos (name, added_by, added_at, pipeline) VALUES ('app', 'op', ?, 1) ON CONFLICT DO NOTHING").run(T0);
   if (o.approved !== false) setPushApproval(db, "op", "app", true);
-  finalizeReviews(db);
   return db;
 }
 
@@ -327,7 +325,7 @@ describe("fixup step", () => {
     const w = world({ canModify: false });
     const db = fresh(w.head, { canModify: false });
     setCommentApproval(db, "op", "app", true);
-    db.prepare("UPDATE reviews SET fixes = ?").run(JSON.stringify([
+    db.prepare("UPDATE opus_reviews SET fixes = ?").run(JSON.stringify([
       { file: "src/lib.rs", change: "rename a to b, see [the guide](https://x.example/g) and ping @someone https://evil.example/y" },
       ...Array.from({ length: 8 }, (_, i) => ({ file: `src/f${i}.rs`, change: "x".repeat(300) })),
     ]));
@@ -385,7 +383,7 @@ describe("fixup step", () => {
   test("a fix list naming a workflow or manifest is held before any call", async () => {
     const w = world();
     const db = fresh(w.head);
-    db.prepare("UPDATE reviews SET fixes = ?").run(JSON.stringify([{ file: ".github/workflows/ci.yml", change: "x" }, { file: "Cargo.toml", change: "y" }]));
+    db.prepare("UPDATE opus_reviews SET fixes = ?").run(JSON.stringify([{ file: ".github/workflows/ci.yml", change: "x" }, { file: "Cargo.toml", change: "y" }]));
     await runFixup(db, { repo: "app", dryRun: false }, () => {}, w.deps);
     assert.deepEqual(w.log.filter((l) => !l.startsWith("pr-info")), []);
     assert.equal(rows(db, "SELECT state FROM fixups")[0]!.state, "too-large");
@@ -465,7 +463,7 @@ describe("fixup repost", () => {
     const db = fresh(w.head, { canModify: false });
     setCommentApproval(db, "op", "app", true);
     const long = "y".repeat(400);
-    db.prepare("UPDATE reviews SET fixes = ?").run(JSON.stringify([{ file: "src/lib.rs", change: long }]));
+    db.prepare("UPDATE opus_reviews SET fixes = ?").run(JSON.stringify([{ file: "src/lib.rs", change: long }]));
     const url = "https://github.com/storytold/app/pull/7#issuecomment-555";
     const edits: string[][] = [];
     const run: Exec = async (cmd, args, o) => {

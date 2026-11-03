@@ -253,7 +253,7 @@ describe("integration batches", () => {
     db.prepare("INSERT INTO main.settings (key, value) VALUES ('pipeline_login', 'bot')").run();
     db.prepare("INSERT INTO merge_batches (repo, branch, state, base_sha, commit_sha, pr_number, created_at, updated_at) VALUES ('app', 'integration-app-1', 'open', 'a', 'b', 5, ?, ?)").run(T0, T0);
     assert.deepEqual(Object.keys(states(db)), ["1"]);
-    db.prepare("DELETE FROM reviews").run();
+    db.prepare("DELETE FROM opus_reviews").run();
     assert.deepEqual(selectCandidates(db, "app").map((c) => c.number), [1]);
   });
 });

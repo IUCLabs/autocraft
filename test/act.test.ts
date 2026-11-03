@@ -29,10 +29,10 @@ function fresh(): DatabaseSync {
   item.run(2, "pr", "PR 2", "sha2");
   item.run(3, "pr", "PR 3", "sha3");
   item.run(4, "pr", "PR 4", "sha4");
-  const review = db.prepare(`INSERT INTO reviews (repo, number, head_oid, run_id, at, model, size, verdict, reason, duplicate_of) VALUES ('app', ?, ?, 'rv', '${T0}', 'm', 'S', ?, ?, ?)`);
-  review.run(2, "sha2", "close", "Does not match the reference app @bob", null);
-  review.run(3, "sha3", "close", "Same fix as #2", "app#2");
-  review.run(4, "sha4", "hold", "unsure", null);
+  const review = db.prepare(`INSERT INTO opus_reviews (repo, number, head_oid, run_id, at, model, verdict, reason, sure, mode) VALUES ('app', ?, ?, 'rv', '${T0}', 'm', ?, ?, 1, 'full')`);
+  review.run(2, "sha2", "close", "Does not match the reference app @bob");
+  review.run(3, "sha3", "close", "Same fix as #2");
+  review.run(4, "sha4", "hold", "unsure");
   setCommentApproval(db, "op", "app", true);
   return db;
 }
@@ -161,6 +161,7 @@ describe("act", () => {
     assert.equal(prCloseComment({ repo: "app", reason: "Too broad", duplicateOf: null }), "Closing this pull request.\nReason: Too broad.");
     const db = fresh();
     await run(db, fakes([]));
+    db.prepare("UPDATE decisions SET facts = json_insert(facts, '$[#]', 'duplicate of app#2') WHERE id = ?").run(closeDecisionId("app", 3, "sha3"));
     answer(db, closeDecisionId("app", 3, "sha3"), "op", "close");
     const log: string[] = [];
     await run(db, fakes(log));

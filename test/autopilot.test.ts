@@ -115,7 +115,7 @@ describe("autopilot", () => {
     const review = LANES.find((l) => l.name === "review")!;
     review.chosen!(db, { step: "checks", params: { repo: "a" } });
     assert.equal(db.prepare("SELECT value FROM settings WHERE key = 'pipeline_review_cursor'").get(), undefined, "checks do not move the cursor");
-    review.chosen!(db, { step: "review-batch", params: { repo: "b" } });
+    review.chosen!(db, { step: "opus-review", params: { repo: "b" } });
     const cursor = (db.prepare("SELECT value FROM settings WHERE key = 'pipeline_review_cursor'").get() as { value: string }).value;
     assert.deepEqual(roundRobin(["a", "b", "c"], cursor), ["c", "a", "b"]);
   });

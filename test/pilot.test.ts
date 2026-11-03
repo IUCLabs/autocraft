@@ -21,7 +21,6 @@ const { selectIssues } = await import("../src/fixissue/index.ts");
 const { selectFixups } = await import("../src/fixup/candidates.ts");
 const { setCommentApproval } = await import("../src/act/approval.ts");
 const { setPushApproval } = await import("../src/fixup/approval.ts");
-const { finalizeReviews } = await import("./fixture.ts");
 const { fixDue } = await import("../src/fixissue/index.ts");
 const { setFixIssueApproval } = await import("../src/fixissue/approval.ts");
 
@@ -122,7 +121,7 @@ W.prepare("INSERT INTO whitelist_overrides (login, status, by, at) VALUES ('regu
   const item = W.prepare(`INSERT INTO items (repo, number, kind, state, title, body, author, additions, deletions, head_oid, url, created_at, updated_at)
     VALUES ('app', ?, ?, 'OPEN', ?, 'b', 'regular', 20, 0, ?, ?, ?, ?)`);
   const jev = W.prepare(`INSERT INTO classifications (repo, number, classifier, run_id, at, type_label, flags, probs) VALUES ('app', ?, 'jev', 'r1', ?, 'bugfix', '[]', '{"top":0.97}')`);
-  const review = W.prepare(`INSERT INTO reviews (repo, number, head_oid, run_id, at, model, size, verdict, reason, fixes) VALUES ('app', ?, ?, 'rv', ?, 'm', 'S', ?, 'r', ?)`);
+  const review = W.prepare(`INSERT INTO opus_reviews (repo, number, head_oid, run_id, at, model, verdict, reason, fixes, sure, mode) VALUES ('app', ?, ?, 'rv', ?, 'm', ?, 'r', ?, 1, 'full')`);
   const checks = W.prepare(`INSERT INTO pr_checks (repo, number, head_oid, state, is_draft, overall, checks, mergeable, maintainer_can_modify, fetched_at)
     VALUES ('app', ?, ?, 'OPEN', 0, 'success', '[]', 'MERGEABLE', ?, ?)`);
   const pr = (n: number, verdict: string, canModify = 1) => {
@@ -145,7 +144,6 @@ W.prepare("INSERT INTO whitelist_overrides (login, status, by, at) VALUES ('regu
   setCommentApproval(W, "op", "app", true);
   setPushApproval(W, "op", "app", true);
   setFixIssueApproval(W, "op", "app", true);
-  finalizeReviews(W);
 }
 const queued = () => buildQueue(W, { repo: "app", merged: "exclude" });
 const nums = (xs: { number: number }[]) => xs.map((x) => x.number).sort((a, b) => a - b);

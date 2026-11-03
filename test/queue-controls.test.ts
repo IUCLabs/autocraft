@@ -15,7 +15,6 @@ import type { DiffFetcher } from "../src/review/diff.ts";
 import { queuePage } from "../src/dash/api/queue-page.ts";
 import type { Req } from "../src/dash/types.ts";
 import type { Exec } from "../src/fixup/git.ts";
-import { finalizeReviews } from "./fixture.ts";
 import { SCRATCH } from "./scratch.ts";
 
 mkdirSync(SCRATCH, { recursive: true });
@@ -35,7 +34,7 @@ function fresh(reviewed = true): DatabaseSync {
       db.prepare(`INSERT INTO classifications (repo, number, classifier, run_id, at, type_label, flags, probs) VALUES (?, ?, 'jev', 'r1', ?, 'bugfix', '[]', '{"top":0.95}')`).run(repo, n, T0);
       db.prepare("INSERT INTO item_rank (repo, number, score, breakdown, computed_at) VALUES (?, ?, ?, '{\"level\":\"P2\",\"rated\":\"P2\",\"security\":false,\"type\":\"bugfix\",\"size\":\"S\",\"sizeSource\":\"lines\",\"reach\":1}', ?)").run(repo, n, 400 - n * 100, T0);
       if (reviewed) {
-        db.prepare(`INSERT INTO reviews (repo, number, head_oid, run_id, at, model, size, verdict, reason) VALUES (?, ?, ?, 'rv', ?, 'm', 'S', 'take', 'looks right')`).run(repo, n, `sha${n}`, T0);
+        db.prepare(`INSERT INTO opus_reviews (repo, number, head_oid, run_id, at, model, verdict, reason, sure, mode) VALUES (?, ?, ?, 'rv', ?, 'm', 'take', 'looks right', 1, 'full')`).run(repo, n, `sha${n}`, T0);
         db.prepare(`INSERT INTO verifications (repo, number, head_sha, kind, reason, state, summary, note, created_at) VALUES (?, ?, ?, 'tests', 'r', 'passed', NULL, 'ok', ?)`).run(repo, n, `sha${n}`, T0);
         db.prepare(`INSERT INTO pr_checks (repo, number, head_oid, state, is_draft, overall, checks, mergeable, maintainer_can_modify, fetched_at) VALUES (?, ?, ?, 'OPEN', 0, 'success', '[]', 'MERGEABLE', 1, ?)`).run(repo, n, `sha${n}`, T1);
       }
@@ -44,7 +43,7 @@ function fresh(reviewed = true): DatabaseSync {
   db.prepare(`INSERT INTO items (repo, number, kind, state, title, author, created_at, updated_at) VALUES ('off', 4, 'issue', 'OPEN', 'Issue 4', 'regular', ?, ?)`).run(T0, T0);
   db.prepare("INSERT INTO whitelist_overrides (login, status, by, at) VALUES ('regular', 'allow', 'op', ?)").run(T0);
   db.prepare("INSERT INTO access (login, role) VALUES ('op', 'operator')").run();
-  if (reviewed) finalizeReviews(db);
+
   return db;
 }
 

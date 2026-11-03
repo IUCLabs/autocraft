@@ -15,7 +15,6 @@ import { exec, type Exec, type ExecResult } from "../src/fixup/git.ts";
 import { runFixup, type FixupDeps } from "../src/fixup/index.ts";
 import { conflictView, endNewline, spliceSections, keepsOutside, outsideConflicts, parseResolution, type ConflictFile } from "../src/fixup/patch.ts";
 import { CONFLICT_COMMENT_TEMPLATE, conflictCommentText } from "../src/fixup/template.ts";
-import { finalizeReviews } from "./fixture.ts";
 import { SCRATCH } from "./scratch.ts";
 import { validating } from "./gql.ts";
 
@@ -97,12 +96,11 @@ function fresh(head: string, o: { headRepo?: string; mergeable?: string; verdict
   const db = connect(join(mkdtempSync(join(dir, "db-")), "t.db"));
   db.prepare(`INSERT INTO items (repo, number, kind, state, title, body, author, additions, deletions, head_oid, head_repo, head_ref, base_ref, maintainer_can_modify, mergeable, created_at, updated_at)
     VALUES ('app', 7, 'pr', 'OPEN', 'Change g', 'Adds a line', 'someone', 1, 0, ?, ?, 'topic', 'main', 1, 'CONFLICTING', '${T0}', '${T0}')`).run(head, o.headRepo ?? "org-x/app");
-  db.prepare(`INSERT INTO reviews (repo, number, head_oid, run_id, at, model, size, verdict, reason, fixes) VALUES ('app', 7, ?, 'rv', '${T0}', 'm', 'S', ?, 'fine', '[]')`).run(head, o.verdict ?? "take");
+  db.prepare(`INSERT INTO opus_reviews (repo, number, head_oid, run_id, at, model, verdict, reason, fixes, sure, mode) VALUES ('app', 7, ?, 'rv', '${T0}', 'm', ?, 'fine', '[]', 1, 'full')`).run(head, o.verdict ?? "take");
   db.prepare(`INSERT INTO pr_checks (repo, number, head_oid, state, is_draft, overall, checks, mergeable, maintainer_can_modify, fetched_at)
     VALUES ('app', 7, ?, 'OPEN', 0, 'success', '[]', ?, 1, '${T1}')`).run(head, o.mergeable ?? "CONFLICTING");
   db.prepare("INSERT INTO tracked_repos (name, added_by, added_at, pipeline) VALUES ('app', 'op', ?, 1)").run(T0);
   setPushApproval(db, "op", "app", true);
-  finalizeReviews(db);
   return db;
 }
 
@@ -210,9 +208,8 @@ describe("live read of a candidate the mirror still shows as mergeable", () => {
   test("a live CONFLICTING is recorded, so the PR is not selected for a fix-up again and goes to the conflict path", async () => {
     const w = world({ conflicting: false });
     const db = fresh(w.head, { mergeable: "UNKNOWN", verdict: "take-fix", headRepo: "storytold/app" });
-    db.prepare("UPDATE reviews SET fixes = ? WHERE number = 7").run(JSON.stringify([{ file: "src/lib.rs", change: "x" }]));
+    db.prepare("UPDATE opus_reviews SET fixes = ? WHERE number = 7").run(JSON.stringify([{ file: "src/lib.rs", change: "x" }]));
     db.prepare("UPDATE items SET mergeable = 'UNKNOWN'").run();
-    finalizeReviews(db);
     assert.equal(selectFixups(db, "app").fix.length, 1);
     assert.equal(classifyFixups(db, "app").length, 1);
     await runFixup(db, { repo: "app", dryRun: false, limit: 1 }, () => {}, { ...w.deps, ask: async () => { throw new Error("no model call"); } });

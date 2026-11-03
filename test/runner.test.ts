@@ -93,7 +93,7 @@ describe("runner", () => {
 
   test("each pipeline stage has its own group, so stages run together and a step never runs twice at once", () => {
     const g = (n: string) => STEPS.find((s) => s.name === n)!.group;
-    const stages = ["classify-new", "decide", "review-batch", "labels-apply", "checks", "embed"].map(g);
+    const stages = ["classify-new", "decide", "opus-review", "labels-apply", "checks", "embed"].map(g);
     assert.equal(new Set(stages).size, stages.length);
     assert.equal(g("classify-new"), g("classify-all"));
     assert.equal(g("labels-ensure"), g("labels-apply"));

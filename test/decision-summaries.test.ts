@@ -30,24 +30,27 @@ function fresh(): DatabaseSync {
 }
 
 describe("merge and close summaries", () => {
-  test("Close? takes the Sonnet and Opus review text at its head; Merge? is filled from the stored reviews on a later run", () => {
+  test("Close? takes the Opus review text at its head; Merge? is filled from the stored reviews on a later run", () => {
     const db = fresh();
-    const review = db.prepare(`INSERT INTO reviews (repo, number, head_oid, run_id, at, model, size, verdict, reason, risks) VALUES ('app', ?, ?, 'rv', '${T0}', ?, 'S', ?, ?, ?)`);
-    review.run(3, "sha3", "sonnet", "close", "Not wanted in core", '["breaks saves"]');
-    db.prepare(`INSERT INTO opus_reviews (repo, number, head_oid, at, model, mode, verdict, sure, reason) VALUES ('app', 3, 'sha3', '${T0}', 'opus', 'full', 'close', 1, 'Agrees: out of scope')`).run();
+    const review = db.prepare(`INSERT INTO opus_reviews (repo, number, head_oid, run_id, at, model, verdict, reason, risks, sure, mode) VALUES ('app', ?, ?, 'rv', '${T0}', ?, ?, ?, ?, 1, 'full')`);
+    review.run(3, "sha3", "opus", "close", "Not wanted in core", '["breaks saves"]');
     askCloseDecisions(db, "app", T0);
     const c = getDecision(db, closeDecisionId("app", 3, "sha3"))!;
-    assert.deepEqual(c.summary_by, "sonnet, opus");
-    assert.match(c.summary!, /Sonnet's review says close: Not wanted in core\. Risks: breaks saves\. Opus's final review says close: Agrees: out of scope\./);
+    assert.deepEqual(c.summary_by, "opus");
+    assert.equal(c.summary, "Opus's review says close: Not wanted in core. Risks: breaks saves.");
 
     // A Merge? decision asked before summaries existed, at head sha4; a review at another head is not used.
-    review.run(4, "old", "sonnet", "take", "stale", null);
+    review.run(4, "old", "opus", "take", "stale", null);
     ask(db, [{ id: "app#4:merge@sha4", kind: "merge", repo: "app", number: 4, question: "Merge this PR?", facts: [`${HEAD_FACT}sha4`], options: Object.values(MERGE_OPTIONS).map((o) => ({ ...o })), asked_at: T0 }]);
     assert.equal(fillReviewSummaries(db, T0), 0);
-    review.run(4, "sha4", "sonnet", "take", "Small and tested", null);
+    review.run(4, "sha4", "opus", "take", "Small and tested", null);
     assert.equal(fillReviewSummaries(db, T0), 1);
     const m = getDecision(db, "app#4:merge@sha4")!;
-    assert.deepEqual([m.summary, m.summary_by], ["Sonnet's review says take: Small and tested.", "sonnet"]);
+    assert.deepEqual([m.summary, m.summary_by], ["Opus's review says take: Small and tested.", "opus"]);
+    db.prepare("UPDATE opus_reviews SET sure = 0 WHERE head_oid = 'sha4'").run();
+    db.prepare("UPDATE decisions SET summary = NULL WHERE id = 'app#4:merge@sha4'").run();
+    assert.equal(fillReviewSummaries(db, T0), 1);
+    assert.match(getDecision(db, "app#4:merge@sha4")!.summary!, /not sure.*unsure, so a person decides/);
     assert.equal(fillReviewSummaries(db, T0), 0);
   });
 });
