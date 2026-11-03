@@ -218,7 +218,7 @@ function RunnerLine({ o }: { o: PipelineOverview }) {
   );
 }
 
-function PipelineView({ user, params }: ViewProps) {
+function PipelineView({ params }: ViewProps) {
   const q = useQuery("pipeline", (a) => a.pipeline.overview());
   const busy = (q.data?.counts.running ?? 0) + (q.data?.counts.queued ?? 0) > 0;
   usePoll(q.refetch, busy ? 4000 : 20000);
