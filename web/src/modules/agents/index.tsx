@@ -140,7 +140,7 @@ function RecentRuns({ selected }: { selected?: number }) {
           <tbody>
             {recent.rows.map((r) => (
               <tr key={r.id} className={cn("relative border-t border-line hover:bg-ink/[0.03]", selected === r.id && "bg-accent/10")}>
-                <td className="whitespace-nowrap px-3 py-1.5 text-ink/70" title={r.startedAt}>
+                <td className="relative z-10 whitespace-nowrap px-3 py-1.5 text-ink/70" title={r.startedAt}>
                   <span className={cn("mr-1.5 inline-block size-2 rounded-full md:hidden", r.state === "failed" ? "bg-bad" : r.state === "running" ? "bg-accent" : "bg-ok")} role="img" aria-label={STATE_LABEL[r.state]} />
                   {ago(r.startedAt, true)}<span className="max-md:hidden"> ago</span>
                 </td>

@@ -260,7 +260,7 @@ export function SettledBadge({ s, detail }: { s: Settled; detail?: boolean }) {
   const conf = s.confidence !== null ? ` ${s.confidence.toFixed(2)}` : "";
   if (s.status === "settled")
     return (
-      <span className="inline-flex min-w-0 items-center gap-1.5" title={s.source === "jev" ? `Jev is sure (top probability${conf})` : `Jev unsure (${conf.trim()}), Haiku agrees`}>
+      <span className="relative z-10 inline-flex min-w-0 items-center gap-1.5" title={s.source === "jev" ? `Jev is sure (top probability${conf})` : `Jev unsure (${conf.trim()}), Haiku agrees`}>
         <Badge tone="ok">{s.label}</Badge>
         <span className="num text-2xs text-ink/45">{s.source === "jev" ? `Jev${conf}` : `Jev${conf} + Haiku`}</span>
       </span>
@@ -327,7 +327,7 @@ function Table({ rows }: { rows: ItemListRow[] }) {
                 )}
               </td>
               <td className="truncate px-3 py-2 text-ink/70">{it.author}</td>
-              <td className="num whitespace-nowrap px-3 py-2 text-ink/55" title={`created ${it.createdAt.slice(0, 10)}, updated ${it.updatedAt.slice(0, 16).replace("T", " ")}`}>
+              <td className="num relative z-10 whitespace-nowrap px-3 py-2 text-ink/55" title={`created ${it.createdAt.slice(0, 10)}, updated ${it.updatedAt.slice(0, 16).replace("T", " ")}`}>
                 {it.updatedAt ? `${ago(it.updatedAt)} ago` : "–"}
               </td>
               <td className="px-3 py-2">

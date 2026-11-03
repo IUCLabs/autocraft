@@ -371,8 +371,8 @@ function Tasks({ selected }: { selected?: number }) {
           <tbody>
             {t.rows.map((r) => (
               <tr key={r.id} className={cn("relative border-t border-line hover:bg-ink/[0.03]", selected === r.id && "bg-accent/10")}>
-                <td className="whitespace-nowrap px-3 py-1.5 text-ink/70" title={r.queuedAt}>
-                  <Link to={`/envs/${r.id}${location.search}`} className="after:absolute after:inset-0">
+                <td className="whitespace-nowrap px-3 py-1.5 text-ink/70">
+                  <Link to={`/envs/${r.id}${location.search}`} title={r.queuedAt} className="after:absolute after:inset-0">
                     {ago(r.queuedAt, true)}
                     <span className="max-md:hidden"> ago</span>
                   </Link>

@@ -13,7 +13,7 @@ const REASON: Record<NonNullable<SimilarHit["stateReason"]>, string> = { duplica
 /** Cosine similarity as shown: two decimals, strong matches highlighted. */
 export function Score({ score, className }: { score: number; className?: string }) {
   return (
-    <span className={cn("num text-xs", score >= 0.9 ? "font-semibold text-warn" : score >= 0.8 ? "text-ink/75" : "text-ink/45", className)} title="Similarity (cosine, 1 = same text)">
+    <span className={cn("num relative z-10 text-xs", score >= 0.9 ? "font-semibold text-warn" : score >= 0.8 ? "text-ink/75" : "text-ink/45", className)} title="Similarity (cosine, 1 = same text)">
       {score.toFixed(2)}
     </span>
   );

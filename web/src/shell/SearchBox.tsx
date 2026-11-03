@@ -111,7 +111,7 @@ export function SearchBox({ autoFocus, onPick, fullscreen }: { autoFocus?: boole
           {hits.map((h, i) => (
             <li key={`${h.repo}#${h.number}`} role="option" aria-selected={i === sel}>
               <div
-                onMouseDown={(e) => e.button === 0 && !(e.target as HTMLElement).closest("a[target]") && pick(h)}
+                onMouseDown={(e) => e.button === 0 && !e.metaKey && !e.ctrlKey && !e.shiftKey && !(e.target as HTMLElement).closest("a[target]") && pick(h)}
                 onMouseEnter={() => setSel(i)}
                 className={cn("relative flex w-full cursor-pointer items-start gap-2.5 rounded px-2 py-1.5 text-left", i === sel && "bg-ink/[0.07]")}
               >

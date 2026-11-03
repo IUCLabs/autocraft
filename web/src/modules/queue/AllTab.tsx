@@ -19,7 +19,7 @@ function Breakdown({ b }: { b: WorkBreakdown }) {
   return (
     <span className="flex flex-wrap gap-x-3 gap-y-0.5 text-2xs text-ink/60">
       {parts.map(([name, hint]) => (
-        <span key={name} title={hint}>
+        <span key={name} title={hint} className="relative z-10">
           {name}
         </span>
       ))}
@@ -60,7 +60,7 @@ function TableRow({ r, n, on }: { r: QueueWorkRow; n: number; on: boolean }) {
       <td className="px-3 py-2">
         <Title r={r} />
       </td>
-      <td className="px-3 py-2" title={`Sort key ${r.score}, reach ${r.breakdown.reach}`}>
+      <td className="relative z-10 px-3 py-2" title={`Sort key ${r.score}, reach ${r.breakdown.reach}`}>
         <LevelBadge level={r.level} />
       </td>
       <td className="px-3 py-2 text-xs text-ink/70">{r.label ?? <span className="text-ink/35">not settled</span>}</td>

@@ -13,7 +13,16 @@ function files(dir: string): string[] {
   return readdirSync(dir, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? files(join(dir, e.name)) : /\.tsx?$/.test(e.name) ? [join(dir, e.name)] : []));
 }
 
-const RULES: { what: string; re: RegExp }[] = [
+// Files that may build an item path: they navigate to an item without rendering one.
+const ITEM_PATH_USERS: Record<string, string> = {
+  "modules/decisions/Refs.tsx": "#123 mentions inside prose link to the item page",
+  "modules/decisions/InboxList.tsx": "the `o` key opens the selected decision's item page",
+  "shell/SearchBox.tsx": "picking a search hit navigates to its item page",
+};
+
+const RULES: { what: string; re: RegExp; allow?: Record<string, string> }[] = [
+  { what: "itemPath() outside ui/", re: /\bitemPath\(/, allow: ITEM_PATH_USERS },
+  { what: "shortRepo(...)#{ text in JSX", re: /\{shortRepo\([^}]*\)\}#\{/ },
   { what: "GitHub issue or PR URL", re: /\/(pull|issues)\/\$\{|["'`]\/?(pull|issues)\/?["'`]/ },
   { what: "repo#number text in JSX", re: /\{[\w.]*repo\}#\{[\w.]*\}/ },
 ];
@@ -24,7 +33,7 @@ test("pages render items with ItemRef, not hand-built links", () => {
     const rel = relative(WEB, f);
     if (SKIP.some((s) => rel.startsWith(s))) continue;
     readFileSync(f, "utf8").split("\n").forEach((line, i) => {
-      for (const r of RULES) if (r.re.test(line)) hits.push(`${rel}:${i + 1} ${r.what}`);
+      for (const r of RULES) if (r.re.test(line) && !(r.allow && rel in r.allow)) hits.push(`${rel}:${i + 1} ${r.what}`);
     });
   }
   assert.deepEqual(hits, []);

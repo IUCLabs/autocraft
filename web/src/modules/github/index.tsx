@@ -31,8 +31,8 @@ function Detail({ r }: { r: GithubActivityRow }) {
     <>
       {r.error && <Badge tone="bad">Failed</Badge>}
       {r.outcome === "unknown" && <span className="mr-1.5 text-ink/55">Unknown outcome.</span>}
-      {r.detail && <span className={cn("[overflow-wrap:anywhere]", r.error && "ml-1.5")}>{r.detail}</span>}
-      {r.error && <span className="block text-xs text-bad [overflow-wrap:anywhere]">{r.error}</span>}
+      {r.detail && <span className={cn("relative z-10 [overflow-wrap:anywhere]", r.error && "ml-1.5")}>{r.detail}</span>}
+      {r.error && <span className="relative z-10 block text-xs text-bad [overflow-wrap:anywhere]">{r.error}</span>}
     </>
   );
 }

@@ -7,7 +7,7 @@ export const LEVEL_NAME: Record<PriorityLevel, string> = { P0: "critical", P1: "
 /** A level badge, P0 to P4. */
 export function LevelBadge({ level, title }: { level: PriorityLevel; title?: string }) {
   return (
-    <span title={title ?? LEVEL_NAME[level]}>
+    <span className="relative z-10" title={title ?? LEVEL_NAME[level]}>
       <Badge tone={TONE[level]} className={level === "P4" ? "opacity-70" : undefined}>
         {level}
       </Badge>

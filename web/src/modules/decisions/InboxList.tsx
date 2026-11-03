@@ -145,7 +145,7 @@ function Row({ d, active, checked, mine, onOpen, activeRef }: { d: Decision; act
             </>
           ) : (
             // The row selects the decision; clicks on the item's links must not also select it.
-            <span className="min-w-0 flex-1" onClick={(e) => e.stopPropagation()}>
+            <span className="min-w-0 flex-1" onClick={(e) => { if ((e.target as HTMLElement).closest("a")) e.stopPropagation(); }}>
               <ItemRef repo={d.repo} number={d.number} kind={item?.kind} state={item?.state} title={null} size="sm" />
             </span>
           )}

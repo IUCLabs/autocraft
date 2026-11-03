@@ -83,7 +83,7 @@ export function StateChip({ row }: { row: QueueRow }) {
   const [text, tone, hint] = STATE[row.state];
   const title = row.state === "refused" && row.refusedReason ? row.refusedReason : row.state === "declined" && row.answer ? `The operator answered ${row.answer}` : hint;
   return (
-    <span title={title}>
+    <span title={title} className="relative z-10">
       <Badge tone={tone}>{text}</Badge>
       {row.conflictNote && <span className="ml-1.5 text-2xs text-ink/55">{row.conflictNote}</span>}
     </span>
@@ -116,7 +116,7 @@ function VerifyCell({ row, detail = true }: { row: QueueRow; detail?: boolean })
   if (!v) return <span className="text-ink/30">–</span>;
   const text = [v.summary, v.note].filter(Boolean).join(" · ");
   return (
-    <span className="block" title={text || undefined}>
+    <span className="relative z-10 block" title={text || undefined}>
       <Badge tone={V_TONE[v.state] ?? "neutral"}>{V_LABEL[v.state] ?? v.state}</Badge>
       {detail && v.kind && <span className="ml-1.5 text-2xs text-ink/50">{v.kind}</span>}
       {detail && text && <span className="mt-0.5 line-clamp-2 block text-2xs text-ink/55">{text}</span>}
@@ -182,14 +182,14 @@ export function PrRows({ r, inBatch }: { r: QueueMergeRow; inBatch?: boolean }) 
           </div>
         </td>
         <td className={cell}>
-          <div className="truncate text-ink/75" title={`${r.author || "unknown"}, ${TIER[r.tier]}`}>
+          <div className="relative z-10 truncate text-ink/75" title={`${r.author || "unknown"}, ${TIER[r.tier]}`}>
             {r.author || "unknown"}
             {r.tier === "whitelisted" && <span className="ml-1 text-2xs text-ok">●</span>}
           </div>
         </td>
         <td className={cn(cell, "num text-ink/70")}>{r.size}</td>
-        <td className={cn(cell, "truncate text-xs text-ink/70")} title={r.label ?? undefined}>
-          {r.label ?? <span className="text-ink/35">not settled</span>}
+        <td className={cn(cell, "truncate text-xs text-ink/70")}>
+          <span className="relative z-10" title={r.label ?? undefined}>{r.label ?? <span className="text-ink/35">not settled</span>}</span>
         </td>
         <td className={cell}>
           <Badge tone={r.verdict === "take" ? "ok" : "warn"}>{r.verdict}</Badge>
