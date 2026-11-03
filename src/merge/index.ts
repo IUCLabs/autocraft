@@ -70,7 +70,7 @@ export function spawnRun(cmd: string, args: string[]): Promise<CommandResult> {
 
 /** Runs the merge command; the built-in name runs `craft-auto safe-merge` from this checkout. */
 export function mergeRun(cmd: string, args: string[]): Promise<CommandResult> {
-  return cmd === DEFAULT_MERGE_COMMAND ? spawnRun(process.execPath, [CLI, "safe-merge", ...args]) : spawnRun(cmd, args);
+  return cmd === DEFAULT_MERGE_COMMAND ? spawnRun(process.execPath, ["--no-warnings", CLI, "safe-merge", ...args]) : spawnRun(cmd, args);
 }
 
 export function defaultDeps(): MergeDeps {
