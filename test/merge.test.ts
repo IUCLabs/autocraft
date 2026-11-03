@@ -226,6 +226,21 @@ describe("merge queue", () => {
     assert.ok((db.prepare("SELECT applied_at FROM decisions WHERE id = ?").get(mergeDecisionId("app", 5, "sha5")) as { applied_at: string | null }).applied_at);
   });
 
+  test("a PR answered merge that joins an open duplicate group is not picked, and is not refused", async () => {
+    const db = fresh();
+    await runMerge(db, { repo: "app", dryRun: false, limit: 0 }, quiet, fakes([]));
+    answer(db, mergeDecisionId("app", 5, "sha5"), "op", "merge");
+    db.prepare("INSERT INTO decisions (id, kind, repo, number, question, options, asked_at) VALUES ('app:dupegroup:1', 'duplicate', 'app', 5, 'q', '[]', ?)").run(T1);
+    db.prepare("INSERT INTO dupe_groups (decision_id, repo, source) VALUES ('app:dupegroup:1', 'app', 'model')").run();
+    for (const [n, role] of [[5, "keep"], [3, "close"]] as const)
+      db.prepare("INSERT INTO dupe_group_items (decision_id, repo, number, kind, role, base_role) VALUES ('app:dupegroup:1', 'app', ?, 'pr', ?, ?)").run(n, role, role);
+    const log: Log = [];
+    const s = await runMerge(db, { repo: "app", dryRun: false }, quiet, fakes(log));
+    assert.ok(!s.merged.includes("app#5"));
+    assert.ok(!log.some((l) => / storytold\/app 5 /.test(l)));
+    assert.equal((db.prepare("SELECT COUNT(*) AS n FROM merges WHERE number = 5").get() as { n: number }).n, 0);
+  });
+
   test("an unsure Opus take never merges without a Merge? answer, which then lets it merge", async () => {
     const db = fresh();
     db.prepare("UPDATE opus_reviews SET sure = 0 WHERE number = 1").run();

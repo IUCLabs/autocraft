@@ -69,6 +69,15 @@ describe("PR group", () => {
     { number: 3, duplicate: true, better: [], carry: [] },
   ], "most complete", { summary: SUMMARY, why: "#2 fixes the layout guard that #1 and #3 leave out." });
 
+  test("asking the group sets aside the Merge? of its members, without a merge run", async () => {
+    const db = fresh(specs, [[1, 2], [2, 3]]);
+    ask(db, [{ id: "app#1:merge@sha1", kind: "merge", repo: "app", number: 1, question: "Merge?", options: [{ key: "merge", label: "Merge" }, { key: "hold", label: "Hold" }], asked_at: T0 }]);
+    await runDupeCompare(db, {}, () => {}, deps(reply));
+    const m = db.prepare("SELECT answer, answered_by, applied_at FROM decisions WHERE kind = 'merge'").all() as { answer: string; answered_by: string; applied_at: string | null }[];
+    assert.equal(m.length, 1);
+    assert.deepEqual([m[0]!.answer, m[0]!.answered_by, m[0]!.applied_at !== null], ["withdrawn", "pipeline", true]);
+  });
+
   test("three PRs are compared in one Opus call with a base checkout and give one decision", async () => {
     const db = fresh(specs, [[1, 2], [2, 3]]);
     const d = deps(reply);

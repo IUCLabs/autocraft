@@ -216,6 +216,12 @@ export async function runMerge(db: DatabaseSync, params: MergeParams, log: (line
   // A PR in changes-requested is read live again each run: the mirror alone can block wrongly (the association is relative to the viewer) and a blocked PR never reaches the merge-time read.
   if (!dryRun) {
     for (const e of buildQueue(db, { repo, merged: "exclude" })) if (e.state === "changes-requested") await readGate(db, d.querier, ORG, repo, e.number, log);
+    // Set aside before the picks are made: a PR whose merge answer goes away here must not be picked and refused.
+    // A Merge? question open for a PR a maintainer has since blocked no longer applies.
+    const withdrawn = withdrawBlockedQuestions(db, buildQueue(db, { repo }).filter((e) => e.state !== "merged"), at());
+    if (withdrawn) log(`  withdrew ${withdrawn} Merge? decision${withdrawn === 1 ? "" : "s"} of PRs with changes requested`);
+    const grouped = withdrawGroupedQuestions(db, at(), repo);
+    if (grouped) log(`  set aside ${grouped} Merge? decision${grouped === 1 ? "" : "s"} of PRs in a duplicate group`);
   }
   const queue = buildQueue(db, { repo });
   const open = queue.filter((e) => e.state !== "merged");
@@ -239,12 +245,6 @@ export async function runMerge(db: DatabaseSync, params: MergeParams, log: (line
     log(`merge ${repo}: dry run, nothing called or written`);
     return summary;
   }
-
-  // A Merge? question open for a PR a maintainer has since blocked no longer applies.
-  const withdrawn = withdrawBlockedQuestions(db, open, at());
-  if (withdrawn) log(`  withdrew ${withdrawn} Merge? decision${withdrawn === 1 ? "" : "s"} of PRs with changes requested`);
-  const grouped = withdrawGroupedQuestions(db, at(), repo);
-  if (grouped) log(`  set aside ${grouped} Merge? decision${grouped === 1 ? "" : "s"} of PRs in a duplicate group`);
 
   // Every taken PR in the queue gets one `batched` stage row per head.
   const batched = db.prepare("SELECT 1 FROM stages WHERE repo = ? AND number = ? AND stage = 'batched' AND note LIKE ?");

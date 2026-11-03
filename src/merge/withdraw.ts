@@ -1,7 +1,7 @@
 // A review made again at the same head commit replaces the one a "Merge this PR?" decision was asked from.
 import type { DatabaseSync } from "node:sqlite";
 import { audit } from "../dash/audit.ts";
-import { mergeDecisionId, type QueueEntry } from "./queue.ts";
+import { mergeDecisionId, OPEN_GROUP_SQL, type QueueEntry } from "./queue.ts";
 
 /** Answer value of a question the pipeline set aside; no operator wrote it, so no later step acts on it. */
 export const WITHDRAWN = "withdrawn";
@@ -64,8 +64,8 @@ export const IN_GROUP_NOTE = "set aside while the PR is in a duplicate group";
 export function withdrawGroupedQuestions(db: DatabaseSync, at: string, repo?: string): number {
   const rows = db.prepare(`SELECT DISTINCT m.repo, m.number, m.id FROM decisions m
     JOIN dupe_group_items gi ON gi.repo = m.repo AND gi.number = m.number
-    JOIN decisions g ON g.id = gi.decision_id AND g.kind = 'duplicate' AND g.id LIKE '%:dupegroup:%' AND g.answer IS NULL
-    WHERE m.kind = 'merge' AND m.id NOT LIKE '%~replaced-%' AND (m.answer IS NULL OR (m.answer = 'merge' AND m.applied_at IS NULL))
+    JOIN decisions g ON g.id = gi.decision_id AND gi.role <> 'stay'
+    WHERE ${OPEN_GROUP_SQL} AND m.kind = 'merge' AND m.id NOT LIKE '%~replaced-%' AND (m.answer IS NULL OR (m.answer = 'merge' AND m.applied_at IS NULL))
     ${repo ? "AND m.repo = ?" : ""}`).all(...(repo ? [repo] : [])) as { repo: string; number: number; id: string }[];
   let n = 0;
   for (const r of rows) {
