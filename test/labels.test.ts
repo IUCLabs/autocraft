@@ -124,3 +124,18 @@ describe("labels apply", () => {
     assert.deepEqual([r2.planned, r2.labeled], [1, 1]);
   });
 });
+
+describe("labelling steps and the pipeline scope", () => {
+  test("labels-ensure and labels-apply refuse a repo outside the scope, even when approved", async () => {
+    const { STEPS } = await import("../src/runner/steps.ts");
+    const db = connect(join(dir, "scope.db"));
+    db.exec("INSERT INTO tracked_repos (name) VALUES ('app')");
+    setApproval(db, "boss", "app", true);
+    for (const name of ["labels-ensure", "labels-apply"]) {
+      const step = STEPS.find((s) => s.name === name)!;
+      assert.match(String(await step.check!(db, { repo: "app" })), /not in the pipeline scope/);
+    }
+    db.exec("UPDATE tracked_repos SET pipeline = 1 WHERE name = 'app'");
+    for (const name of ["labels-ensure", "labels-apply"]) assert.equal(await STEPS.find((s) => s.name === name)!.check!(db, { repo: "app" }), null);
+  });
+});

@@ -66,7 +66,7 @@ export const TOPIC_TABLES: Record<string, Source[]> = {
   access: [{ table: "access" }, { table: "sessions", ops: ["INSERT", "DELETE"] }, { table: "audit" }],
   settings: [{ table: "settings", when: `${shownSettings("new_key")}` }],
   // Rows of the audit table that record a write on GitHub.
-  github: [{ table: "audit", ops: ["INSERT"], when: `new.action IN (${Object.keys(GITHUB_ACTIONS).map((a) => `'${a}'`).join(", ")})` }],
+  github: [{ table: "audit", ops: ["INSERT", "UPDATE"], when: `new.action IN (${Object.keys(GITHUB_ACTIONS).map((a) => `'${a}'`).join(", ")})` }],
 };
 
 export const TOPICS = Object.keys(TOPIC_TABLES);

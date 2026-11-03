@@ -61,9 +61,11 @@ export type StepDef = {
   run: (ctx: StepContext) => Promise<string>;
 };
 
-/** Labelling writes to GitHub only for repos an operator approved on the Repos page. */
+/** Labelling writes to GitHub only for repos in the pipeline scope that an operator approved on the Repos page. */
 async function checkApproved(db: DatabaseSync, p: Params): Promise<string | null> {
   const { approvalOf } = await import("../labels/approval.ts");
+  const { scopeRepos } = await import("../pilot.ts");
+  if (!scopeRepos(db).has(String(p.repo))) return `${p.repo} is not in the pipeline scope`;
   return approvalOf(db, String(p.repo)) ? null : `labelling ${p.repo} is not approved`;
 }
 

@@ -115,7 +115,7 @@ export const planCtx = (db: DatabaseSync): PlanCtx => {
 };
 
 /** Topics whose changes call for a plan: content the stages read. Job logs, usage, agent runs, sandbox environments and tasks, and audit entries do not. */
-export const INPUT_TOPICS = TOPICS.filter((t) => !["jobs", "usage", "agents", "envs", "tasks", "access"].includes(t));
+export const INPUT_TOPICS = TOPICS.filter((t) => !["jobs", "usage", "agents", "envs", "tasks", "access", "github"].includes(t));
 
 /** Sandbox tasks that ended, for lanes that read their results. */
 const tasksSig = (db: DatabaseSync): string =>

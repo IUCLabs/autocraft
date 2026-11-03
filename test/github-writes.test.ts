@@ -13,12 +13,13 @@ function files(dir: string): string[] {
   return readdirSync(dir, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? files(join(dir, e.name)) : e.name.endsWith(".ts") ? [join(dir, e.name)] : []));
 }
 
-const RULES: { what: string; re: RegExp }[] = [
+const RULES: { what: string; re: RegExp; window?: number }[] = [
   { what: "GraphQL mutation", re: /["'`]\s*mutation\b/ },
   { what: "git push", re: /["'`]push["'`]/ },
-  { what: "gh pr/issue write", re: /["'`](pr|issue)["'`]\s*,\s*["'`](merge|create|close|comment|edit|ready|reopen|delete|lock)["'`]/ },
-  { what: "gh repo/label/release write", re: /["'`](repo|label|release|gist)["'`]\s*,\s*["'`](fork|create|edit|delete|rename|archive)["'`]/ },
-  { what: "gh api write verb", re: /["'`]api["'`].*["'`](--method|-X|--field|-f|-F|--raw-field)["'`]/ },
+  { what: "gh pr/issue write", re: /["'`](pr|issue)["'`]\s*,\s*["'`](merge|create|close|comment|edit|ready|reopen|delete|lock|review|transfer|pin|unpin|unlock)["'`]/ },
+  { what: "gh workflow/run/secret write", re: /["'`](workflow|run|secret|variable)["'`]\s*,\s*["'`](run|rerun|cancel|enable|disable|set|delete|remove)["'`]/ },
+  { what: "gh repo/label/release write", re: /["'`](repo|label|release|gist)["'`]\s*,\s*["'`](fork|create|edit|delete|rename|archive|clone)["'`]/ },
+  { what: "gh api write verb", re: /["'`]api["'`][^\n]*["'`](--method|-X|--field|-f|-F|--raw-field)["'`]/, window: 3 },
   { what: "HTTP write verb", re: /method:\s*["'`](POST|PATCH|PUT|DELETE)["'`]/ },
   { what: "merge command run", re: /\.run\(\s*\w+\.mergeCommand/ },
   { what: "safe-merge started", re: /["'`]safe-merge["'`]\s*,\s*\.\.\./ },
@@ -39,7 +40,12 @@ test("only src/github/write.ts sends writes to GitHub", () => {
     const lines = readFileSync(f, "utf8").split("\n");
     lines.forEach((line, i) => {
       if (/^\s*(\/\/|\*|\/\*)/.test(line)) return;
-      for (const r of RULES) if (r.re.test(line) && !(ALLOWED[rel] ?? []).includes(r.what)) hits.push(`${rel}:${i + 1}: ${r.what}: ${line.trim().slice(0, 100)}`);
+      for (const r of RULES) {
+        // A rule with a window also matches a call written over a few lines.
+        const text = r.window ? lines.slice(i, i + r.window).join(" ") : line;
+        if (r.window && !/["'`]api["'`]/.test(line)) continue;
+        if (r.re.test(text) && !(ALLOWED[rel] ?? []).includes(r.what)) hits.push(`${rel}:${i + 1}: ${r.what}: ${line.trim().slice(0, 100)}`);
+      }
     });
   }
   assert.deepEqual(hits, [], "write through src/github/write.ts so the activity is recorded");

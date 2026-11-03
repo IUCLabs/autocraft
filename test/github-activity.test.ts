@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { connect } from "../src/db.ts";
-import { comment } from "../src/fixissue/index.ts";
+import { comment, openedToday } from "../src/fixissue/index.ts";
 import { githubActivity } from "../src/dash/api/github-activity.ts";
 import { addLabels, closeItem, commentOn, ghComment, mergeViaCommand, pushBranch, type Writer } from "../src/github/write.ts";
 import { readSeqs } from "../src/live.ts";
@@ -137,4 +137,32 @@ test("the row exists before the call; a crash leaves an unknown outcome and the 
   const x = { db, d: { exec: async (_c: string, a: string[]) => { calls.push(a); return { code: 0, stdout: "OPEN", stderr: "" }; } }, git: {}, log: () => {}, runId: "r2", usage: {} } as unknown as Parameters<typeof comment>[0];
   await comment(x, { repo: "app", number: 7 } as Parameters<typeof comment>[1], "https://github.com/storytold/app/pull/9");
   assert.deepEqual(calls, [], "no second comment after a started row");
+});
+
+test("a viewer sees only rows of repos visible to them; an operator also sees untracked repos", async () => {
+  const db = setup();
+  const w: Writer = { db, login: "act" };
+  const q = fakeQuerier();
+  await commentOn(w, q, "act-comment", { repo: "app", number: 1, id: "N1" }, "a");
+  await commentOn(w, q, "act-comment", { repo: "gone", number: 1, id: "G1" }, "b");
+  await pushBranch(w, { git: async () => ({ code: 0, stdout: "", stderr: "" }) }, "batch-push", { repo: "gone", remote: "bot/gone", branch: "b1", sha: "a".repeat(40) });
+  assert.deepEqual((await githubActivity(db, req("", "viewer"))).rows.map((r) => r.repo), ["app"]);
+  assert.equal((await githubActivity(db, req("", "operator"))).total, 3);
+});
+
+test("the daily fix-PR count leaves out failed attempts but counts started ones", () => {
+  const db = setup();
+  const add = (state: string) => db.prepare("INSERT INTO audit (at, login, action, target, details) VALUES (?, 'fixissue', 'fixissue-pr', 'app#1', ?)").run(new Date().toISOString(), JSON.stringify({ state }));
+  add("done"); add("failed"); add("started");
+  assert.equal(openedToday(db, new Date()), 2);
+});
+
+test("finishing a GitHub write row moves the github topic again", async () => {
+  const db = setup();
+  const before = readSeqs(db).github!;
+  const w: Writer = { db, login: "act" };
+  let mid = 0;
+  await commentOn(w, { ...fakeQuerier(), async query() { mid = readSeqs(db).github!; return {}; } }, "act-comment", { repo: "app", number: 1, id: "N1" }, "x");
+  assert.equal(mid, before + 1, "the started row moves it");
+  assert.equal(readSeqs(db).github, before + 2, "the finished row moves it again");
 });

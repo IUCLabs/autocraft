@@ -367,8 +367,8 @@ function perDay(db: DatabaseSync): number {
   return row?.per_day ?? Infinity;
 }
 
-const openedToday = (db: DatabaseSync, now: Date): number =>
-  (db.prepare("SELECT COUNT(*) AS n FROM audit WHERE action = 'fixissue-pr' AND at >= ?").get(`${now.toISOString().slice(0, 10)}T00:00:00.000Z`) as { n: number }).n;
+export const openedToday = (db: DatabaseSync, now: Date): number =>
+  (db.prepare("SELECT COUNT(*) AS n FROM audit WHERE action = 'fixissue-pr' AND COALESCE(details, '') NOT LIKE '%\"state\":\"failed\"%' AND at >= ?").get(`${now.toISOString().slice(0, 10)}T00:00:00.000Z`) as { n: number }).n;
 
 /** Whether a patch round is due or a candidate waits, for the autopilot's fixissue lane. */
 export function fixDue(db: DatabaseSync, repo: string): boolean {

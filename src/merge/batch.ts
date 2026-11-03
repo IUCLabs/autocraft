@@ -315,10 +315,13 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
       const me = await viewerOf(d.querier);
       await assignTo(w, d.querier, { repo, number: b.pr_number!, id: info.id }, me, { run: runId, batch: b.branch });
     }
-    const r = await mergeViaCommand(w, d.run, d.mergeCommand, [`${ORG}/${repo}`, String(b.pr_number), "--merge"], { run: runId, head: b.commit_sha, batch: b.branch });
+    let after: Awaited<ReturnType<typeof refreshChecks>>[number] | undefined;
+    const r = await mergeViaCommand(w, d.run, d.mergeCommand, [`${ORG}/${repo}`, String(b.pr_number), "--merge"], { run: runId, head: b.commit_sha, batch: b.branch }, async () => {
+      after = (await refreshChecks(db, d.querier, repo, [b.pr_number!]))[0];
+      return after?.state === "MERGED";
+    });
     if (r.code !== 0) {
       // The merge may have gone through although the command failed afterwards.
-      const [after] = await refreshChecks(db, d.querier, repo, [b.pr_number!]);
       if (after?.state === "MERGED") return recordLanded(b, members, q);
       const why = oneLine(r.stderr) || oneLine(r.stdout) || `exit code ${r.code}`;
       updateBatch(db, b.id, at(), { summary: `${d.mergeCommand}: ${why}`.slice(0, 400) });

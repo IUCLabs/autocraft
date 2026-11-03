@@ -19,6 +19,8 @@ type Retry = <T>(f: () => Promise<T>) => Promise<T>;
 
 const oneLine = (s: string): string => s.replace(/\s+/g, " ").trim().slice(0, 300);
 const direct: Retry = (f) => f();
+/** The repo as audit targets name it: bare for the organisation's repos, OWNER/REPO for any other owner. */
+const repoName = (slug: string): string => (slug.startsWith(`${ORG}/`) ? slug.slice(ORG.length + 1) : slug);
 const refOf = (repo: string, number: number): string => `${repo}#${number}`;
 
 /** Adds the row before the write, so a crash during the call leaves a "started" row: an unknown outcome. */
@@ -197,14 +199,28 @@ export type CommandResult = { code: number; stdout: string; stderr: string };
 export const MERGE_RECORDED_ENV = "CRAFT_AUTO_MERGE_RECORDED";
 
 /** Runs the merge command (`args` = OWNER/REPO PR --squash|--merge ...) and records the merge or the refusal. */
-export async function mergeViaCommand(w: Writer, run: (cmd: string, args: string[]) => Promise<CommandResult>, cmd: string, args: string[], details: Details = {}): Promise<CommandResult> {
+export async function mergeViaCommand(w: Writer, run: (cmd: string, args: string[]) => Promise<CommandResult>, cmd: string, args: string[], details: Details = {}, landed?: () => Promise<boolean>): Promise<CommandResult> {
   const [slug = "", pr = ""] = args;
-  const repo = slug.split("/").pop() ?? slug;
+  const repo = repoName(slug);
   const method = args.find((a) => a === "--squash" || a === "--merge")?.slice(2);
-  return recorded(w, "merge", refOf(repo, Number(pr)), { ...details, method },
-    () => run(cmd, args),
-    (r) => ({ commit: r.stdout.match(/\bMERGED ([0-9a-f]{7,40})\b/)?.[1] }),
-    (r) => (r.code === 0 ? null : oneLine(r.stderr || r.stdout) || `exit code ${r.code}`));
+  const base = { ...details, method };
+  const target = refOf(repo, Number(pr));
+  const id = begin(w, "merge", target, base);
+  let r: CommandResult;
+  try {
+    r = await run(cmd, args);
+  } catch (e) {
+    finish(w, id, base, oneLine(String((e as Error).message ?? e)));
+    throw e;
+  }
+  if (r.code === 0) {
+    finish(w, id, { ...base, commit: r.stdout.match(/\bMERGED ([0-9a-f]{7,40})\b/)?.[1] });
+    return r;
+  }
+  // The command can fail after GitHub merged (the check afterwards), so the caller may confirm the merge landed.
+  if (await landed?.().catch(() => false)) finish(w, id, { ...base, note: "landed after the command reported an error" });
+  else finish(w, id, base, oneLine(r.stderr || r.stdout) || `exit code ${r.code}`);
+  return r;
 }
 
 /**
@@ -227,7 +243,7 @@ export function cliMergeRecorder(repoSlug: string, pr: string, method: string, h
   return () => {
     const w: Writer = { db: connect(), login: "cli" };
     const details = { method: method.slice(2), head };
-    const id = begin(w, "merge", refOf(repoSlug.split("/").pop() ?? repoSlug, Number(pr)), details);
+    const id = begin(w, "merge", `${repoName(repoSlug)}#${Number(pr)}`, details);
     return (error) => {
       try {
         finish(w, id, details, error);

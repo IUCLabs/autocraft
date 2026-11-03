@@ -6,7 +6,7 @@ import { ORG } from "../../act/templates.ts";
 import { GITHUB_ACTIONS } from "../../github/actions.ts";
 import { HttpError } from "../server/util.ts";
 import type { Req } from "../types.ts";
-import { hiddenRepos, visibleRepos } from "./visible.ts";
+import { visibleRepos } from "./visible.ts";
 
 const PAGE = 50;
 const ACTIONS = Object.keys(GITHUB_ACTIONS);
@@ -45,9 +45,9 @@ function detailOf(action: string, d: Record<string, unknown>): string {
 
 function urlOf(r: { action: string; repo: string; number: number | null; branch: string | null; kind: string | undefined }, d: Record<string, unknown>): string {
   if (typeof d.url === "string" && d.url.startsWith("https://github.com/")) return d.url;
-  const base = `https://github.com/${ORG}/${r.repo}`;
+  const base = r.repo.includes("/") ? `https://github.com/${r.repo}` : `https://github.com/${ORG}/${r.repo}`;
   if (r.action.endsWith("-push")) {
-    const remote = typeof d.remote === "string" ? d.remote : `${ORG}/${r.repo}`;
+    const remote = typeof d.remote === "string" ? d.remote : r.repo.includes("/") ? r.repo : `${ORG}/${r.repo}`;
     return d.commit ? `https://github.com/${remote}/commit/${String(d.commit)}` : `https://github.com/${remote}/tree/${String(d.branch ?? "")}`;
   }
   if (r.action === "merge" && typeof d.commit === "string") return `${base}/commit/${d.commit}`;
@@ -81,9 +81,11 @@ export async function githubActivity(db: DatabaseSync, req: Req): Promise<Github
   if (number !== null) { where.push(repo ? "target = ?" : "target LIKE ? ESCAPE '\\'"); args.push(repo ? `${repo}#${number}` : `%#${number}`); }
   if (from) { where.push("at >= ?"); args.push(new Date(from).toISOString()); }
   if (to) { where.push("at <= ?"); args.push(new Date(/^\d{4}-\d{2}-\d{2}$/.test(to) ? `${to}T23:59:59.999Z` : to).toISOString()); }
-  for (const h of await hiddenRepos(db, req)) {
-    where.push("NOT (target = ? OR target LIKE ? ESCAPE '\\' OR target LIKE ? ESCAPE '\\')");
-    args.push(h, `${like(h)}#%`, `${like(h)}:%`);
+  // Allow-list: a viewer sees only rows of repos visible to them; operators see every row, untracked repos included.
+  if (req.user.role !== "operator") {
+    const visible = await visibleRepos(db, req);
+    where.push(`min(instr(target || '#', '#'), instr(target || ':', ':')) > 1 AND substr(target, 1, min(instr(target || '#', '#'), instr(target || ':', ':')) - 1) IN (${visible.map(() => "?").join(", ") || "NULL"})`);
+    args.push(...visible);
   }
   const w = where.join(" AND ");
   const total = Number((db.prepare(`SELECT COUNT(*) AS n FROM audit WHERE ${w}`).get(...args) as { n: number }).n);
