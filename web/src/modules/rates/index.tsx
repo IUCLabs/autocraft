@@ -3,7 +3,7 @@
 import { useLayoutEffect, useRef, useState } from "react";
 import { GaugeIcon } from "lucide-react";
 import { useQuery } from "../../api/client";
-import type { RateBucket, Rates } from "../../api/types";
+import type { RateBucket, Rates, UsagePause } from "../../api/types";
 import type { FeatureModule } from "../../registry/types";
 import { num } from "../../lib/format";
 import { Segmented } from "../../ui/Segmented";
@@ -83,7 +83,7 @@ function StageChart({ buckets, hourly, title }: { buckets: RateBucket[]; hourly:
 const SERIES = ["var(--st-c1)", "var(--st-c2)", "var(--st-c3)", "var(--st-c4)", "var(--st-c5)"];
 
 /** Lines of use (0-100 %) per account over time. Colour follows the account's position in the list, not its value. */
-function UseChart({ r, field, title }: { r: Rates; field: "fiveHourPct" | "weeklyPct"; title: string }) {
+function UseChart({ r, field, title, pause }: { r: Rates; field: "fiveHourPct" | "weeklyPct"; title: string; pause: number | undefined }) {
   const [box, W] = useWidth();
   const [hover, setHover] = useState<number | null>(null);
   const H = 170;
@@ -127,7 +127,7 @@ function UseChart({ r, field, title }: { r: Rates; field: "fiveHourPct" | "weekl
               </text>
             </g>
           ))}
-          <line x1={pad.l} x2={W - pad.r} y1={y(90)} y2={y(90)} className="stroke-bad" strokeOpacity={0.5} strokeDasharray="4 3" />
+          {pause !== undefined && <line x1={pad.l} x2={W - pad.r} y1={y(pause)} y2={y(pause)} className="stroke-bad" strokeOpacity={0.5} strokeDasharray="4 3" />}
           {ts.map((t, i) => i % every === 0 && (
             <text key={t} x={x(i)} y={H - 5} textAnchor={i === 0 ? "start" : "middle"} className="fill-current text-[11px] text-ink/45">
               {tickLabel(t, hourly)}
@@ -164,6 +164,7 @@ function UseChart({ r, field, title }: { r: Rates; field: "fiveHourPct" | "weekl
 function RatesView() {
   const [win, setWin] = useState<"24h" | "7d">("24h");
   const q = useQuery<Rates>(`rates-${win}`, (a) => a.rates(win));
+  const pause = useQuery<UsagePause>("accounts-pause", (a) => a.accounts.pause()).data;
   const r = q.data;
   const hourly = r?.bucket === "hour";
   const per = hourly ? "hour" : "day";
@@ -197,15 +198,15 @@ function RatesView() {
             </div>
             <StageTable r={r} />
           </Block>
-          <Block title="Account use over time" aside="dashed line: pause threshold, 90 %">
+          <Block title="Account use over time" aside="dashed line: pause level">
             <div className="grid gap-x-6 gap-y-5 md:grid-cols-2">
               <div className="min-w-0">
                 <h3 className="mb-1 text-sm font-semibold">5-hour use</h3>
-                <UseChart r={r} field="fiveHourPct" title="5-hour use per account over time" />
+                <UseChart r={r} field="fiveHourPct" title="5-hour use per account over time" pause={pause?.fiveHour} />
               </div>
               <div className="min-w-0">
                 <h3 className="mb-1 text-sm font-semibold">Weekly use</h3>
-                <UseChart r={r} field="weeklyPct" title="Weekly use per account over time" />
+                <UseChart r={r} field="weeklyPct" title="Weekly use per account over time" pause={pause?.weekly} />
               </div>
             </div>
           </Block>

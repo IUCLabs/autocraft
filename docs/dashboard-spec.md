@@ -155,7 +155,7 @@ Operator navigation group; everyone signed in reads. Concept and trust rules: [p
 
 ### Rates (`/rates`)
 
-Items moved per stage per hour (last 24 hours) or per day (last 7 days), with runs and failed runs, drawn as one small chart per stage; and each account's 5-hour and weekly use over time as lines on a 0 to 100 % scale with the 90 % pause threshold marked. A table view gives the stage totals as text. The charts redraw to the container width and stay readable at 390 px.
+Items moved per stage per hour (last 24 hours) or per day (last 7 days), with runs and failed runs, drawn as one small chart per stage; and each account's 5-hour and weekly use over time as lines on a 0 to 100 % scale with each window's pause level marked. A table view gives the stage totals as text. The charts redraw to the container width and stay readable at 390 px.
 
 ## Behaviour
 
