@@ -38,6 +38,7 @@ import { fixIssueApprovalOf } from "./approval.ts";
 import { hasOpenPr, notRustKey, selectIssues, type IssueCandidate } from "./candidates.ts";
 import { parseTriage, sourcePaths, validateFixPatch } from "./parse.ts";
 import { branchName, commentText, commitMessage, prBody, prTitle } from "./template.ts";
+import { ghComment, ghFork, ghOpenPr, pushBranch, type Writer } from "../github/write.ts";
 import { COMMENTS_SHOWN, COMMENT_CHARS, FILE_CAP, ISSUE_BODY_LIMIT, MAX_PATHS, MAX_ROUNDS, TOTAL_CAP, type IssueText, type PatchInput, type TriageInput } from "./types.ts";
 import { inPilot, pilotSqlFor } from "../pilot.ts";
 import { backlogHeld, backlogHeldSql } from "../dupes/held.ts";
@@ -459,7 +460,7 @@ async function checkPatch(x: Ctx, r: AttemptRow): Promise<boolean> {
 }
 
 /** The pipeline account's fork of the repo as owner/name, created when missing. */
-export async function forkOf(run: Exec, login: string, repo: string): Promise<string> {
+export async function forkOf(w: Writer, run: Exec, login: string, repo: string, details: Record<string, unknown> = {}): Promise<string> {
   const find = async (): Promise<string | null> => {
     const r = await run("gh", ["api", `repos/${ORG}/${repo}/forks?per_page=100`, "--jq", `.[] | select(.owner.login == "${login}") | .full_name`]);
     return r.code === 0 ? r.stdout.trim().split("\n")[0] || null : null;
@@ -468,7 +469,7 @@ export async function forkOf(run: Exec, login: string, repo: string): Promise<st
   if (same.code === 0 && same.stdout.trim() === `${ORG}/${repo}`) return `${login}/${repo}`;
   const known = await find();
   if (known) return known;
-  const f = await run("gh", ["repo", "fork", `${ORG}/${repo}`, "--clone=false"]);
+  const f = await ghFork(w, run, repo, details);
   if (f.code !== 0) throw new Error(`could not fork ${repo}: ${oneLine(f.stderr)}`);
   const made = await find();
   if (!made) throw new Error(`the fork of ${repo} is not visible yet`);
@@ -492,15 +493,14 @@ async function closedLive(x: Ctx, r: AttemptRow): Promise<boolean> {
   return true;
 }
 
-/** Comments on the issue at most once: the audit row is written before the post, so a crash or a failed post is not retried. */
+/** Comments on the issue at most once: the activity row is written for every attempt, so a failed post is not retried. */
 async function comment(x: Ctx, r: AttemptRow, url: string): Promise<void> {
   const { db, d, log } = x;
   const ref = refOf(r);
   if (db.prepare("SELECT 1 FROM audit WHERE action = 'fixissue-comment' AND target = ?").get(ref)) return;
   if (await closedLive(x, r)) { log(`  ${ref}: not commenting, the issue is closed`); return; }
   const text = commentText(url);
-  audit(db, ACTOR, "fixissue-comment", ref, { run: x.runId, text });
-  const cm = await d.exec("gh", ["issue", "comment", String(r.number), "--repo", `${ORG}/${r.repo}`, "--body-file", "-"], { input: text });
+  const cm = await ghComment({ db, login: ACTOR }, d.exec, "fixissue-comment", { repo: r.repo, number: r.number, pr: false }, text, { run: x.runId });
   if (cm.code !== 0) log(`  ${ref}: comment failed: ${oneLine(cm.stderr)}`);
 }
 
@@ -557,17 +557,15 @@ export async function openPr(x: Ctx, r: AttemptRow): Promise<boolean> {
       return false;
     }
     if (!permitted()) return false;
-    const fork = await forkOf(d.exec, who.login, r.repo);
-    const push = await git.pushNew(fork, branch, commit);
+    const fork = await forkOf({ db, login: ACTOR }, d.exec, who.login, r.repo, { run: x.runId });
+    const push = await pushBranch({ db, login: ACTOR }, git, "fixissue-push", { repo: r.repo, number: r.number, remote: fork, branch, sha: commit }, { run: x.runId, fork });
     if (push.code !== 0) { log(`  ${ref}: push failed: ${oneLine(push.stderr)}`); tried(); return false; }
-    audit(db, ACTOR, "fixissue-push", ref, { run: x.runId, branch, commit, fork });
     if (await closedLive(x, r)) { fail(db, d, r, "the issue is closed"); return false; }
     const body = prBody(r.number, files, testPath);
-    const pr = await d.exec("gh", ["pr", "create", "--repo", `${ORG}/${r.repo}`, "--base", branchOf(db, r.repo), "--head", `${fork.split("/")[0]}:${branch}`, "--title", prTitle(title), "--body-file", "-"], { input: body });
+    const pr = await ghOpenPr({ db, login: ACTOR }, d.exec, "fixissue-pr", { repo: r.repo, target: ref, base: branchOf(db, r.repo), head: `${fork.split("/")[0]}:${branch}`, title: prTitle(title), body }, { run: x.runId, branch });
     const url = pr.stdout.trim().split("\n").pop() ?? "";
     if (pr.code !== 0 || !urlOk(url, r.repo)) { log(`  ${ref}: PR not opened: ${oneLine(pr.stderr || pr.stdout)}`); tried(); return false; }
     update(db, d, r, { state: "pr-opened", pr_url: url });
-    audit(db, ACTOR, "fixissue-pr", ref, { run: x.runId, url, branch });
     stage(db, d, r, "take", `fix PR opened: ${url}`);
     log(`  ${ref}: opened ${url}`);
     await comment(x, r, url);

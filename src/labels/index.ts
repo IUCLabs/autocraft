@@ -40,7 +40,7 @@ const cacheDir = () => join(process.env.XDG_CACHE_HOME ?? join(homedir(), ".cach
 
 async function ensure(args: string[]): Promise<void> {
   const o = parse(args);
-  const missing = await ensureLabels(new Client(500), o.repo, o.apply);
+  const missing = await ensureLabels(new Client(500), o.repo, o.apply, { db: connect(), login: "cli" });
   if (!missing.length) return console.log(`${o.repo}: all labels exist`);
   for (const l of missing) console.log(`${o.repo}: ${o.apply ? "created" : "would create"} "${l.name}" #${l.color} (${l.description})`);
   if (!o.apply) console.log("dry run; add --apply to create them");

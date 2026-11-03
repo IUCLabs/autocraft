@@ -13,6 +13,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { audit } from "../dash/audit.ts";
 import { connect } from "../db.ts";
 import { actionable, ask, factsOf, getDecision } from "../decisions.ts";
+import { assignTo, mergeViaCommand, MERGE_RECORDED_ENV, type Writer } from "../github/write.ts";
 import { Client, type Querier } from "../mirror.ts";
 import { refreshChecks } from "../review/checks.ts";
 import { fillReviewSummaries } from "../review/summary.ts";
@@ -59,9 +60,9 @@ export type MergeSummary = {
   asked: string[];
 };
 
-export function spawnRun(cmd: string, args: string[]): Promise<CommandResult> {
+export function spawnRun(cmd: string, args: string[], env?: Record<string, string>): Promise<CommandResult> {
   return new Promise((resolve, reject) => {
-    const p = spawn(cmd, args, { stdio: ["ignore", "pipe", "pipe"] });
+    const p = spawn(cmd, args, { stdio: ["ignore", "pipe", "pipe"], env: env ? { ...process.env, ...env } : process.env });
     let stdout = "", stderr = "";
     p.stdout.on("data", (d) => (stdout += d));
     p.stderr.on("data", (d) => (stderr += d));
@@ -72,7 +73,7 @@ export function spawnRun(cmd: string, args: string[]): Promise<CommandResult> {
 
 /** Runs the merge command; the built-in name runs `craft-auto safe-merge` from this checkout. */
 export function mergeRun(cmd: string, args: string[]): Promise<CommandResult> {
-  return cmd === DEFAULT_MERGE_COMMAND ? spawnRun(process.execPath, ["--no-warnings", CLI, "safe-merge", ...args]) : spawnRun(cmd, args);
+  return cmd === DEFAULT_MERGE_COMMAND ? spawnRun(process.execPath, ["--no-warnings", CLI, "safe-merge", ...args], { [MERGE_RECORDED_ENV]: "1" }) : spawnRun(cmd, args);
 }
 
 export function defaultDeps(): MergeDeps {
@@ -134,9 +135,6 @@ export async function prInfo(q: Querier, repo: string, n: number): Promise<PrInf
 /** Squash keeps one author; a PR with commits by several (or more commits than we can read) is merged as is. */
 export const methodOf = (info: PrInfo): "squash" | "merge" => (info.authors > 1 || info.commits > 100 ? "merge" : "squash");
 
-export const ASSIGN = `mutation($id: ID!, $user: ID!) {
-  addAssigneesToAssignable(input: { assignableId: $id, assigneeIds: [$user] }) { clientMutationId }
-}`;
 
 // ---- decisions ---------------------------------------------------------------
 
@@ -188,6 +186,7 @@ export function askMergeDecisions(db: DatabaseSync, opts: { repos?: string[]; ru
 
 export async function runMerge(db: DatabaseSync, params: MergeParams, log: (line: string) => void = console.log, deps?: MergeDeps): Promise<MergeSummary> {
   const { repo } = params;
+  const w: Writer = { db, login: ACTOR };
   const dryRun = params.dryRun ?? true;
   if (params.limit !== undefined && !(Number.isInteger(params.limit) && params.limit >= 0)) throw new Error("limit must be a whole number ≥ 0");
   const at = () => (deps?.now() ?? new Date()).toISOString();
@@ -271,12 +270,11 @@ export async function runMerge(db: DatabaseSync, params: MergeParams, log: (line
     if (info.head !== e.head) { refuse(e, null, `head moved from ${short(e.head)} to ${short(info.head)} since the review`); continue; }
     if (!info.assignees.length) {
       const me = await viewerOf(d.querier);
-      await d.querier.query(ASSIGN, { id: info.id, user: me.id });
-      audit(db, ACTOR, "assign", refOf(e), { run: runId, assignee: me.login });
+      await assignTo(w, d.querier, { repo, number: e.number, id: info.id }, me, { run: runId });
       log(`  ${refOf(e)}: assigned to ${me.login}`);
     }
     const method = methodOf(info);
-    const r = await d.run(d.mergeCommand, [`${ORG}/${repo}`, String(e.number), `--${method}`]);
+    const r = await mergeViaCommand(w, d.run, d.mergeCommand, [`${ORG}/${repo}`, String(e.number), `--${method}`], { run: runId, head: e.head, path: e.path });
     if (r.code !== 0) {
       const why = oneLine(r.stderr) || oneLine(r.stdout) || `exit code ${r.code}`;
       refuse(e, method, `${d.mergeCommand}: ${why}`);
@@ -284,7 +282,6 @@ export async function runMerge(db: DatabaseSync, params: MergeParams, log: (line
     }
     saveAttempt(e, method, "merged", null);
     stage.run(e.repo, e.number, "merged", at(), ACTOR, `${method} at ${short(e.head)}${e.path === "operator" ? ", operator answered merge" : ""}`);
-    audit(db, ACTOR, "merge", refOf(e), { run: runId, head: e.head, path: e.path, method });
     if (e.path === "operator") db.prepare("UPDATE decisions SET applied_at = ? WHERE id = ? AND applied_at IS NULL").run(at(), e.decisionId);
     summary.merged.push(refOf(e));
     params.onMerged?.(summary.merged.length);
