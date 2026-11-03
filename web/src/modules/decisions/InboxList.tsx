@@ -11,6 +11,8 @@ import { cn } from "../../ui/cn";
 import { ago, ageDays } from "../../lib/format";
 import { ItemRef } from "../../ui/molecules/ItemRef";
 import { ClaimPill, KIND_ICON } from "./parts";
+import { canActOn } from "./DecisionDetail";
+import { AnswerNotice } from "./AnswerNotice";
 import { KIND_LABEL, KINDS, localActions, ordered, useDecisionFilter, useDecisionList, useLocal, useSelection, useUndo } from "./state";
 import { useNow } from "../../lib/useNow";
 import { itemPath } from "../../lib/links";
@@ -82,10 +84,10 @@ export function InboxList({ user }: ViewProps) {
         <span className="truncate text-ink/50">{summaryLine(data) || (loading ? "loading…" : "nothing matches")}</span>
         {oldest && <span className="ml-auto shrink-0 text-ink/50">oldest {ago(oldest)}</span>}
       </div>
+      {loc.justAnswered.map((a) => (
+        <AnswerNotice key={a.id} entry={a} className="shrink-0 border-b border-line" />
+      ))}
       <div className="min-h-0 flex-1 overflow-y-auto" role="listbox" aria-label="Decisions">
-        {loc.justAnswered.slice(0, 3).map((a) => (
-          <JustAnswered key={a.id} entry={a} />
-        ))}
         {groups.map((g) => {
           const Icon = KIND_ICON[g.kind];
           return (
@@ -96,7 +98,7 @@ export function InboxList({ user }: ViewProps) {
                 <Count n={g.items.length} />
               </div>
               {g.items.map((d) => (
-                <Row key={d.id} d={d} active={d.id === id} checked={loc.checked.has(d.id)} mine={d.opinions.find((o) => o.login === user.login)?.option ?? undefined} onOpen={() => go(d)} activeRef={d.id === id ? activeRef : undefined} />
+                <Row key={d.id} d={d} canUndo={canActOn(user, [d])} active={d.id === id} checked={loc.checked.has(d.id)} mine={d.opinions.find((o) => o.login === user.login)?.option ?? undefined} onOpen={() => go(d)} activeRef={d.id === id ? activeRef : undefined} />
               ))}
             </div>
           );
@@ -116,7 +118,7 @@ export function InboxList({ user }: ViewProps) {
   );
 }
 
-function Row({ d, active, checked, mine, onOpen, activeRef }: { d: Decision; active: boolean; checked: boolean; mine?: string; onOpen: () => void; activeRef?: React.Ref<HTMLDivElement> }) {
+function Row({ d, canUndo, active, checked, mine, onOpen, activeRef }: { d: Decision; canUndo: boolean; active: boolean; checked: boolean; mine?: string; onOpen: () => void; activeRef?: React.Ref<HTMLDivElement> }) {
   useNow();
   const old = ageDays(d.askedAt) >= 2;
   const opinions = d.opinions.length;
@@ -158,6 +160,7 @@ function Row({ d, active, checked, mine, onOpen, activeRef }: { d: Decision; act
             )}
             {d.number !== null && <QueueBadge slot={d.queue} repo={d.repo} number={d.number} />}
             <ClaimPill claim={d.claim} compact />
+            {d.answer && d.undoable && canUndo && <RowUndo id={d.id} />}
           </span>
         </div>
       </div>
@@ -165,16 +168,15 @@ function Row({ d, active, checked, mine, onOpen, activeRef }: { d: Decision; act
   );
 }
 
-function JustAnswered({ entry }: { entry: { id: string; label: string; ref: string } }) {
+function RowUndo({ id }: { id: string }) {
   const undo = useUndo();
+  const error = useLocal().undoError;
   return (
-    <div className="flex h-9 items-center gap-2 border-b border-line bg-ok/[0.06] pl-4 pr-2 text-xs animate-fadeIn">
-      <CheckIcon className="shrink-0 text-ok" />
-      <span className="code shrink-0 text-ink/70">{entry.ref}</span>
-      <span className="truncate text-ink/60">→ {entry.label}</span>
-      <Button size="sm" variant="ghost" icon={ArrowUUpLeftIcon} className="ml-auto" onClick={() => void undo(entry.id)}>
+    <>
+      {error?.id === id && <span className="text-bad">{error.message}</span>}
+      <Button size="sm" variant="ghost" icon={ArrowUUpLeftIcon} onClick={(e) => { e.stopPropagation(); void undo(id); }}>
         Undo
       </Button>
-    </div>
+    </>
   );
 }

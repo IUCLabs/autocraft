@@ -83,7 +83,7 @@ export function createMockApi(): Api {
   };
 
   const settle = (d: Decision, answer: string, note: string | null, adoptedOpinion: Decision["adoptedOpinion"], exceptions: Decision["exceptions"] = []) =>
-    Object.assign(d, { answer, answerNote: note, exceptions, answeredBy: me.login, answeredAt: nowIso(), adoptedOpinion, claim: null });
+    Object.assign(d, { answer, answerNote: note, exceptions, answeredBy: me.login, answeredAt: nowIso(), adoptedOpinion, claim: null, undoable: true });
 
   return {
     me: () => wait(me, 10),
@@ -114,8 +114,8 @@ export function createMockApi(): Api {
       async undo(id) {
         const d = find(id);
         requireOperator(d);
-        if (d.appliedAt) throw new Error("already applied");
-        Object.assign(d, { answer: null, answerNote: null, answeredBy: null, answeredAt: null, adoptedOpinion: null, exceptions: [] });
+        if (!d.undoable) throw new Error("already applied");
+        Object.assign(d, { answer: null, answerNote: null, answeredBy: null, answeredAt: null, adoptedOpinion: null, exceptions: [], undoable: false });
         changed();
         return wait(d, 30);
       },

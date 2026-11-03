@@ -3,10 +3,11 @@ import { Dialog } from "radix-ui";
 import { SlidersHorizontalIcon, XIcon } from "@phosphor-icons/react";
 import type { ViewProps } from "../../registry/types";
 import { cn } from "../../ui/cn";
+import { AnswerNotice } from "./AnswerNotice";
 import { DecisionBody, NoDecision } from "./DecisionDetail";
 import { useInboxKeys, summaryLine } from "./InboxList";
 import { DecisionsToolbar } from "./Toolbar";
-import { ordered, useDecisionFilter, useDecisionList, useLocal, usePinned, useSelection, useUndo } from "./state";
+import { ordered, useDecisionFilter, useDecisionList, useLocal, usePinned, useSelection } from "./state";
 
 /** Phone flow: one decision per screen with previous/next, filters in a sheet. */
 export function PhoneInbox(props: ViewProps) {
@@ -14,7 +15,6 @@ export function PhoneInbox(props: ViewProps) {
   const { filter } = useDecisionFilter();
   const { id, go, byLink, item, missing } = useSelection();
   const loc = useLocal();
-  const undo = useUndo();
   const [sheet, setSheet] = useState(false);
   const list = ordered(data?.decisions ?? []);
   useInboxKeys(list);
@@ -22,7 +22,6 @@ export function PhoneInbox(props: ViewProps) {
   const pinned = usePinned(id, idx >= 0);
   const d = list[idx] ?? pinned;
   const active = (filter.kind?.length ?? 0) + (filter.repo?.length ?? 0) + (filter.minAge ? 1 : 0) + (filter.mine ? 1 : 0);
-  const last = loc.justAnswered[0];
 
   useEffect(() => {
     if (!id && !byLink && list.length) go(list[0], true);
@@ -41,15 +40,9 @@ export function PhoneInbox(props: ViewProps) {
           {active > 0 ? active : "Filter"}
         </button>
       </div>
-      {last && (
-        <div className="flex h-10 shrink-0 items-center gap-2 border-b border-line bg-ok/[0.07] px-4 animate-fadeIn">
-          <span className="code shrink-0 text-ink/70">{last.ref}</span>
-          <span className="min-w-0 flex-1 truncate text-xs text-ink/60">→ {last.label}</span>
-          <button onClick={() => void undo()} className="flex h-10 items-center px-2 text-sm font-medium text-accent-ink">
-            Undo
-          </button>
-        </div>
-      )}
+      {loc.justAnswered.map((a) => (
+        <AnswerNotice key={a.id} entry={a} className="shrink-0 border-b border-line px-4" />
+      ))}
       <div className="flex min-h-0 flex-1 flex-col">
         {d ? <DecisionBody key={d.id} d={d} user={props.user} phone onAnswered={() => go(list[idx + 1] ?? list[idx - 1], true)} pager={{ pos: `${idx + 1} of ${list.length}`, prev: idx > 0 ? () => go(list[idx - 1]) : undefined, next: idx < list.length - 1 ? () => go(list[idx + 1]) : undefined }} /> : missing && item ? <NoDecision repo={item.repo} number={item.number} /> : <p className="py-16 text-center text-sm text-ink/60">Nothing waiting.</p>}
       </div>

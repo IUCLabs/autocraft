@@ -19,6 +19,7 @@ import type {
   StageEntry,
   Tier,
   User,
+  DuplicateMember,
 } from "../types";
 
 /** Mirrors the server's WRITES table (src/act): the GitHub write each option causes. */
@@ -137,6 +138,8 @@ interface Seed {
   options: DecisionOption[];
   recommended: string;
   recommendedReason?: string;
+  group?: DuplicateMember[];
+  risks?: string[];
   publicText?: string;
   optionTexts?: OptionTexts[];
   ageH: number;
@@ -168,6 +171,8 @@ const SEEDS: Seed[] = [
       { key: "changes", label: "Ask to use the language pack" },
     ],
     recommended: "changes",
+    recommendedReason: "Almost all of the diff is dictionary data that the language pack already ships, so merging would duplicate it.",
+    risks: ["Adds about 270,000 lines of data to the repository, which makes every clone larger.", "The hyphenation rules differ from the language pack's, so two versions would be in use."],
     ageH: 5,
     author: "rhea-m",
     size: [270412, 96, 41],
@@ -242,6 +247,31 @@ const SEEDS: Seed[] = [
       { key: "distinct", label: "Not duplicates" },
     ],
     recommended: "accept",
+    recommendedReason: "#2007 clears the marker in the layout pass and has a regression test; #2017 repeats it without the test.",
+    group: [
+      { number: 2007, kind: "pr", role: "keep", better: [], carry: [], adds: [] },
+      {
+        number: 2017,
+        kind: "pr",
+        role: "close",
+        better: ["Clears the marker when the frame shrinks and grows in one edit, which #2007 misses."],
+        carry: ["The guard that skips frames that are not laid out yet, so marks do not land in the wrong place on spreads."],
+        adds: [],
+      },
+      {
+        number: 2088,
+        kind: "pr",
+        role: "close",
+        better: ["Handles the overset marker across linked frames."],
+        carry: ["Linked-frame handling, in the same layout pass."],
+        adds: ["A setting to hide the marker in preview mode."],
+      },
+    ],
+    items: [
+      { repo: "designcraft", number: 2007, title: "Text frames: overset text indicator stays after the frame grows" },
+      { repo: "designcraft", number: 2017, title: "Clear the overset marker when a text frame is resized" },
+      { repo: "designcraft", number: 2088, title: "Overset marker: clear on linked frames and add a preview-mode switch" },
+    ],
     optionTexts: [
       { option: "accept", hash: "a1", texts: [
         { number: 2017, step: "close", text: "Closing as a duplicate of #2007." },
@@ -667,7 +697,7 @@ function toDecision(s: Seed): Decision {
     options: [...s.options.map((o) => ({ ...o, ...(WRITES[s.kind]?.[o.key] ? { writes: WRITES[s.kind]![o.key] } : {}) })), { key: "backlog", label: "Backlog" }],
     recommended: s.recommended,
     recommendedReason: s.recommended ? (s.recommendedReason ?? "") : "",
-    group: [], risks: [], undoable: !!s.answer,
+    group: s.group ?? [], risks: s.risks ?? [], undoable: !!s.answer && !s.answer[3],
     publicText: s.publicText ?? null,
     optionTexts: s.optionTexts ?? [],
     queue: s.number === null || s.answer ? null : mockSlot(s.number),
