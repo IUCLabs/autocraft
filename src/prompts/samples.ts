@@ -51,7 +51,7 @@ export const SAMPLE_FIXUP_PRS: FixupPr[] = [{
 export const SAMPLE_CONFLICT_PRS: ConflictPr[] = [{
   ref: "photocraft#1287", title: SAMPLE_ITEMS[0]!.title, body: "Fixes the stride for 16-bit samples.",
   review_reason: "Fixes the 16-bit stride in decode_rows.", base: "main",
-  files: [{ path: "crates/codecs/src/png.rs", lines: 8, sections: [{ id: 1, line: 2, before: "fn decode_rows(info: &Info) -> usize {\n", ours: "    let sample_bytes = if info.bit_depth == 16 { 2 } else { 1 };", theirs: "    let bytes_per_sample = (info.bit_depth as usize).div_ceil(8);", after: "    info.width as usize * bytes_per_sample\n}\n" }] }],
+  files: [{ path: "crates/codecs/src/png.rs", lines: 8, sections: [{ id: 1, line: 2, before: "fn decode_rows(info: &Info) -> usize {\n", ours: "    let sample_bytes = if info.bit_depth == 16 { 2 } else { 1 };\n", theirs: "    let bytes_per_sample = (info.bit_depth as usize).div_ceil(8);\n", after: "    info.width as usize * bytes_per_sample\n}\n" }] }],
 }];
 
 export const SAMPLE_DUPE_PAIRS: DupePair[] = [{

@@ -13,7 +13,7 @@ import { classifyConflicts, conflictTries } from "../src/fixup/conflict-state.ts
 import { pushable } from "../src/fixup/pushable.ts";
 import { exec, type Exec, type ExecResult } from "../src/fixup/git.ts";
 import { runFixup, type FixupDeps } from "../src/fixup/index.ts";
-import { endNewline, keepsOutside, outsideConflicts, parseResolution, type ConflictFile } from "../src/fixup/patch.ts";
+import { conflictView, endNewline, spliceSections, keepsOutside, outsideConflicts, parseResolution, type ConflictFile } from "../src/fixup/patch.ts";
 import { CONFLICT_COMMENT_TEMPLATE, conflictCommentText } from "../src/fixup/template.ts";
 import { finalizeReviews } from "./fixture.ts";
 import { SCRATCH } from "./scratch.ts";
@@ -130,7 +130,7 @@ describe("conflict merge", () => {
   test("a conflicting merge is resolved by the injected resolver, checked by Opus and pushed without markers", async () => {
     const w = world({ conflicting: true, resolve: (files) => {
       assert.equal(files[0]!.sections.length, 1);
-      assert.deepEqual([files[0]!.sections[0]!.ours, files[0]!.sections[0]!.theirs], ["B-pr", "B-main"]);
+      assert.deepEqual([files[0]!.sections[0]!.ours, files[0]!.sections[0]!.theirs], ["B-pr\n", "B-main\n"]);
       return JSON.stringify({ sections: [{ id: 1, content: "B-pr and B-main\n" }] });
     } });
     const db = fresh(w.head);
@@ -238,6 +238,27 @@ describe("conflict merge guards", () => {
     const pad = "padding line\n".repeat(20_000);
     assert.equal(git(w.fork, "show", `${pushed}:f.txt`), `${pad}a\nB-pr and B-main\nc\n${pad}`.trimEnd());
     assert.ok(JSON.stringify(w.checkInput[0]).length < 10_000, "the check gets the sections, not the merge diff");
+    assert.equal((w.checkInput[0] as { files: { sections: { line: number }[] }[] }).files[0]!.sections[0]!.line, 20_002);
+  });
+
+  test("conflictView numbers sections across files, shows no line twice, and spliceSections rebuilds the file", () => {
+    const n = (p: string, a: number, b: number) => Array.from({ length: b - a + 1 }, (_, i) => `${p}${a + i}\n`).join("");
+    const f1 = `${n("a", 1, 40)}<<<<<<< x\nours1\n=======\ntheirs1\n>>>>>>> y\n${n("m", 1, 10)}<<<<<<< x\nours2\n=======\ntheirs2a\ntheirs2b\n>>>>>>> y\n${n("z", 1, 3)}`;
+    const f2 = `top\n<<<<<<< x\n=======\ngone\n>>>>>>> y\n`;
+    const v1 = conflictView("f1", f1, 1, 3)!, v2 = conflictView("f2", f2, 3, 3)!;
+    assert.deepEqual([...v1.sections, ...v2.sections].map((s) => s.id), [1, 2, 3]);
+    const shown = v1.sections.flatMap((s) => (s.before + s.after).split("\n").filter(Boolean));
+    assert.equal(new Set(shown).size, shown.length, "no context line twice");
+    assert.deepEqual(v1.sections.map((s) => [s.ours, s.theirs]), [["ours1\n", "theirs1\n"], ["ours2\n", "theirs2a\ntheirs2b\n"]]);
+    assert.equal(spliceSections(f1, ["ours1\ntheirs1", "theirs2b\n"]), `${n("a", 1, 40)}ours1\ntheirs1\n${n("m", 1, 10)}theirs2b\n${n("z", 1, 3)}`);
+    assert.equal(spliceSections(f2, [""]), "top\n");
+  });
+
+  test("a side with no lines differs from a side with one blank line", () => {
+    const v = conflictView("f", "a\n<<<<<<< x\n=======\n\n>>>>>>> y\nb\n", 1)!;
+    assert.deepEqual([v.sections[0]!.ours, v.sections[0]!.theirs], ["", "\n"]);
+    assert.equal(spliceSections("a\n<<<<<<< x\n=======\n\n>>>>>>> y\nb\n", ["\n"]), "a\n\nb\n");
+    assert.equal(spliceSections("a\n<<<<<<< x\n=======\n\n>>>>>>> y\nb\n", [""]), "a\nb\n");
   });
 
   test("a section answered twice or an unknown section is refused", async () => {

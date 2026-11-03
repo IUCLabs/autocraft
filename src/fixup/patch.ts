@@ -169,7 +169,7 @@ export type ConflictPr = {
 };
 
 /** One conflict section with the lines around it. `ours` is the PR's side, `theirs` the base branch's. */
-export type ConflictSection = { id: number; line: number; before: string; ours: string; theirs: string; after: string };
+export type ConflictSection = { id: number; /** First line of `ours` in the PR head's version of the file (where `before` ends), or null when not found. */ line: number | null; before: string; ours: string; theirs: string; after: string };
 export type ConflictFile = { path: string; lines: number; sections: ConflictSection[] };
 
 const MARKER = /^(<{7}|>{7})( |$)|^={7}$/m;
@@ -261,7 +261,7 @@ function sectionOk(section: { ours: string[]; theirs: string[] }, text: string, 
 
 /** A resolution's text ends with a newline when the conflicted file's does. */
 export function endNewline(conflicted: string, resolved: string): string {
-  return conflicted.endsWith("\n") && !resolved.endsWith("\n") ? `${resolved}\n` : resolved;
+  return resolved !== "" && conflicted.endsWith("\n") && !resolved.endsWith("\n") ? `${resolved}\n` : resolved;
 }
 
 /**
@@ -311,19 +311,31 @@ export function conflictView(path: string, text: string, firstId: number, contex
     before[i + 1] = i + 1 < sections.length ? Math.min(context, gap - after[i]!) : 0;
   }
   before[0] = Math.min(context, lines[0]!.length);
-  let at = lines[0]!.length + 1;
   const out: ConflictSection[] = sections.map((sec, i) => {
     const section: ConflictSection = {
-      id: firstId + i, line: at,
+      id: firstId + i, line: null,
       before: lines[i]!.slice(lines[i]!.length - (i === 0 ? before[0]! : before[i]!)).join(""),
-      ours: sec.ours.join("\n"), theirs: sec.theirs.join("\n"),
+      ours: sec.ours.map((l) => `${l}\n`).join(""), theirs: sec.theirs.map((l) => `${l}\n`).join(""),
       after: lines[i + 1]!.slice(0, after[i]).join(""),
     };
-    at += sec.ours.length + sec.theirs.length + 3 + lines[i + 1]!.length;
     return section;
   });
   return { path, lines: text.split("\n").length - (text.endsWith("\n") ? 1 : 0), sections: out };
 }
+
+/** Fills each section's `line` from the PR head's version of the file, searching for its context and PR side in order. */
+export function locateInHead(view: ConflictFile, head: string): void {
+  let from = 0;
+  for (const sec of view.sections) {
+    const at = head.indexOf(sec.before + sec.ours + sec.after, from);
+    if (at < 0) continue;
+    sec.line = head.slice(0, at + sec.before.length).split("\n").length;
+    from = at + sec.before.length + sec.ours.length;
+  }
+}
+
+/** A section's answer as spliced: empty for no lines, otherwise ending with a newline. */
+export const answerText = (a: string): string => (a === "" || a.endsWith("\n") ? a : `${a}\n`);
 
 /** The merge-tree file with each section replaced by its resolved text (`answers` in section order), or null when the markers are malformed or a resolution breaks the section rules. */
 export function spliceSections(text: string, answers: string[], path = ""): string | null {
@@ -332,8 +344,7 @@ export function spliceSections(text: string, answers: string[], path = ""): stri
   const dep = /(^|\/)(Cargo\.toml|package\.json)$/.test(path);
   let out = parsed.pieces[0]!;
   for (let i = 0; i < answers.length; i++) {
-    const a = answers[i]!;
-    const resolved = a === "" || a.endsWith("\n") ? a : `${a}\n`;
+    const resolved = answerText(answers[i]!);
     if (!sectionOk(parsed.sections[i]!, resolved, dep)) return null;
     out += resolved + parsed.pieces[i + 1]!;
   }

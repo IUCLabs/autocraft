@@ -10,22 +10,28 @@ import { audit } from "../dash/audit.ts";
 import { ghComment, pushBranch, type Writer } from "../github/write.ts";
 import { cachedDiff } from "../review/diff.ts";
 import { checkLine, parseCheck, recordCheck } from "../patchcheck/index.ts";
-import { CHECK_DIFF_CAP, CHECK_PATCH_CAP } from "../patchcheck/types.ts";
-import { CLAUDE_PROMPTS } from "../prompts/index.ts";
+import { CHECK_DIFF_CAP, CHECK_PATCH_CAP, type FixupCheckInput } from "../patchcheck/types.ts";
+import { CLAUDE_PROMPTS, untrustedJson } from "../prompts/index.ts";
 import { BASE_NAME, classifyConflicts, MAX_CONFLICT_TRIES, type ConflictCandidate } from "./conflict-state.ts";
 import type { Git } from "./git.ts";
 import { noteLive, type FixupDeps, type FixupSummary, type PrNode, type Who } from "./index.ts";
-import { conflictView, endNewline, hasMarkers, parseResolution, resolvablePath, spliceSections, type ConflictFile } from "./patch.ts";
+import { answerText, conflictView, endNewline, hasMarkers, locateInHead, parseResolution, resolvablePath, spliceSections, type ConflictFile, type ConflictSection } from "./patch.ts";
 import { BASE_ORG, longLivedOf, pushable } from "./pushable.ts";
 import { conflictAskText, conflictCommentText, mergeMessage } from "./template.ts";
 
 const CHECK = CLAUDE_PROMPTS["fixup.check"];
-/** Caps on what the resolver is shown: all sections with their context, and one section's two sides. */
+/** Caps on what the resolver is shown (all sections with 30 lines of context, and one section's two sides). The check's own limit is applied separately, to what it receives. */
 const SECTIONS_CAP = 120_000;
 const SECTION_CAP = 40_000;
 /** Lines of context per section the check gets. */
 const CHECK_CONTEXT = 10;
 const lastLines = (text: string, n: number): string => text.split(/(?<=\n)/).slice(-n).join("");
+
+type CheckSections = NonNullable<FixupCheckInput["conflict"]>["files"];
+/** The check's view of the sections; `answer(s)` gives the resolved text of a section. Measured as the prompt renders it. */
+const checkSections = (shown: ConflictFile[], answer: (s: ConflictSection) => string): CheckSections =>
+  shown.map((f) => ({ path: f.path, sections: f.sections.map((s) => ({ id: s.id, line: s.line, before: lastLines(s.before, CHECK_CONTEXT), ours: s.ours, theirs: s.theirs, resolved: answer(s), after: s.after.split(/(?<=\n)/).slice(0, CHECK_CONTEXT).join("") })) }));
+const checkSize = (files: CheckSections): number => untrustedJson({ files }).length;
 
 
 export type ConflictRun = {
@@ -137,12 +143,16 @@ export async function mergeConflict(db: DatabaseSync, x: ConflictRun, c: Conflic
         if (f.content.includes("\r") || f.content.includes("\uFFFD")) { refuse(`${path} has CRLF line endings or is not UTF-8`); return; }
         const view = conflictView(path, f.content, nextId);
         if (!view) { refuse(`${path} has malformed conflict markers`); return; }
+        const headFile = await git.file(head, path);
+        if (headFile.ok) locateInHead(view, headFile.content);
         nextId += view.sections.length;
         size += view.sections.reduce((n, s) => n + s.before.length + s.ours.length + s.theirs.length + s.after.length, 0);
         if (size > SECTIONS_CAP || view.sections.some((s) => s.ours.length + s.theirs.length > SECTION_CAP)) { refuse("the conflict sections are over the size limit"); return; }
         texts.set(path, { content: f.content, mode: f.mode });
         shown.push(view);
       }
+      // The check gets each section with its resolution, which is at most as long as the longer side plus three lines: refused here, before the claim, when even that bound is too big.
+      if (checkSize(checkSections(shown, (s) => (s.ours.length > s.theirs.length ? s.ours : s.theirs))) > CHECK_PATCH_CAP) { refuse(`the conflict sections are over the ${CHECK_PATCH_CAP} character limit for the check`); return; }
       const prDiff = await cachedDiff(x.repo, c.number, head, x.d.fetchDiff);
       if (!prDiff.ok) { fail("failed", `no diff: ${oneLine(prDiff.error)}`); return; }
       await x.claim(c, pr);
@@ -168,9 +178,8 @@ export async function mergeConflict(db: DatabaseSync, x: ConflictRun, c: Conflic
       }
       const changes = await git.rawChanges(merge.tree, tree);
       if (changes.some((ch) => !files.includes(ch[3]!) || ch[0] !== ch[1])) { fail("refused", "the resolution would change files or modes outside the conflicted files"); return; }
-      const sections = shown.map((f) => ({ path: f.path, sections: f.sections.map((s) => ({ id: s.id, before: lastLines(s.before, CHECK_CONTEXT), ours: s.ours, theirs: s.theirs, resolved: res.sections.get(s.id)!, after: s.after.split(/(?<=\n)/).slice(0, CHECK_CONTEXT).join("") })) }));
-      const sent = JSON.stringify(sections).length;
-      if (sent > CHECK_PATCH_CAP) { refuse(`the resolved sections are over the ${CHECK_PATCH_CAP} character limit for the check`); return; }
+      const sections = checkSections(shown, (s) => answerText(res.sections.get(s.id)!));
+      if (checkSize(sections) > CHECK_PATCH_CAP) { fail("refused", `the resolved sections are over the ${CHECK_PATCH_CAP} character limit for the check`); return; }
       const repoDir = checkout ? { repo_dir: REPO_PATH } : {};
       const checkReply = await x.d.check(db, [{ ref, title: c.title, review_reason: c.reason, fixes: [], diff: prDiff.text.slice(0, CHECK_DIFF_CAP), patch: "", conflict: { base: c.base, files: sections }, ...repoDir }], checkout);
       if (checkReply === null) { fail("failed", "the patch check gave no answer"); return; }
