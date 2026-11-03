@@ -598,7 +598,7 @@ function fillerSeed(i: number): Seed {
   if (kind === "close")
     return { ...base, kind, question: "Close as out of scope?", context: [], facts, options: [{ key: "close", label: "Close with note" }, { key: "hold", label: "Hold" }], recommended: "close", cls: [["haiku", "plugin candidate", "no"], ["jev", "plugin candidate", "no"]] };
   if (kind === "merge")
-    return { ...base, kind, question: "Reviewed and green. Merge now?", context: [], facts, options: [{ key: "merge", label: "Merge" }, { key: "hold", label: "Hold" }], recommended: "merge", cls: [["sonnet", "bugfix", "yes"]] };
+    return { ...base, kind, question: "Reviewed and green. Merge now?", context: [], facts, options: [{ key: "merge", label: "Merge" }, { key: "hold", label: "Hold" }], recommended: "merge", recommendedReason: "Small fix in one module; CI and Verify passed and the author has merged PRs before.", cls: [["sonnet", "bugfix", "yes"]] };
   return { ...base, kind, question: `${title}?`, context: [], facts, options: [{ key: "yes", label: "Yes" }, { key: "no", label: "No" }, { key: "discuss", label: "Discuss" }], recommended: "no", cls: [["haiku", "small extra", "unclear"]] };
 }
 
@@ -644,7 +644,8 @@ function toDecision(s: Seed): Decision {
     body: text.body,
     context: s.context,
     facts: s.facts.slice(0, 5),
-    options: s.options.map((o) => ({ ...o, ...(WRITES[s.kind]?.[o.key] ? { writes: WRITES[s.kind]![o.key] } : {}) })),
+    // The server offers Backlog last on every decision.
+    options: [...s.options.map((o) => ({ ...o, ...(WRITES[s.kind]?.[o.key] ? { writes: WRITES[s.kind]![o.key] } : {}) })), { key: "backlog", label: "Backlog" }],
     recommended: s.recommended,
     recommendedReason: s.recommended ? (s.recommendedReason ?? "") : "",
     publicText: s.publicText ?? null,

@@ -102,6 +102,7 @@ const usage = (l: StageLimit) => (l.perDay === null ? `${num(l.usedToday)}` : `$
 function ResetCount({ l }: { l: StageLimit }) {
   const api = useApi();
   const write = useWrite();
+  if (l.perDay === null || l.usedToday === 0) return null;
   return (
     <>
       <ConfirmButton label="Reset count" confirmLabel="Confirm reset" loading={write.busy === "reset"} onConfirm={() => void write.run("reset", () => api.pipeline.resetLimit(l.step))} />
@@ -187,11 +188,14 @@ export function StageLimits() {
                   <td className="px-3 py-1.5">
                     {l.title} <span className="code text-xs text-ink/45">{l.step}</span>
                   </td>
-                  <td className="px-3 text-right">
-                    {operator && <ResetCount l={l} />} {usage(l)}
-                  </td>
+                  <td className="whitespace-nowrap px-3 text-right">{usage(l)}</td>
                   <td className="px-3 py-1.5">{operator ? <LimitEditor l={l} /> : limitText(l)}</td>
-                  <td className="px-3">{l.pausedReason ? <Badge tone="warn">{l.pausedReason}</Badge> : <span className="text-ink/45">{l.status ?? "ready"}</span>}</td>
+                  <td className="px-3">
+                    <div className="flex flex-wrap items-center gap-2">
+                      {l.pausedReason ? <Badge tone="warn">{l.pausedReason}</Badge> : <span className="text-ink/45">{l.status ?? "ready"}</span>}
+                      {operator && <ResetCount l={l} />}
+                    </div>
+                  </td>
                 </tr>
               ))}
             </tbody>

@@ -17,7 +17,7 @@ import { ago } from "../../lib/format";
 import { ClaimPill, ClassifierLines, Disclosure, Facts, KindTag, OpinionList, RelatedList } from "./parts";
 import { Refs } from "./Refs";
 import { ReviewBox } from "./ReviewBox";
-import { localActions, ordered, refOf, useDecisionList, useLocal, useSelection, useUndo } from "./state";
+import { localActions, ordered, refOf, useDecisionFilter, useDecisionList, useLocal, useSelection, useUndo } from "./state";
 import { Thread } from "./Thread";
 import { WorkflowBox, scrollToWorkflow } from "./Workflow";
 import { useNow } from "../../lib/useNow";
@@ -63,13 +63,20 @@ export function DetailPanel({ user }: ViewProps) {
 }
 
 function EmptyDetail({ count }: { count: number }) {
+  const { filter } = useDecisionFilter();
   return (
     <div className="flex h-full flex-col items-center justify-center gap-2 p-8 text-center">
       <InboxIcon className="text-[28px] text-ink/25" />
       {count === 0 ? (
         <>
-          <p className="text-md font-semibold">Nothing waiting</p>
-          <p className="text-sm text-ink/55">Every decision in this view has an answer.</p>
+          {filter.status === "backlog" ? (
+            <p className="text-md font-semibold">Nothing in the backlog</p>
+          ) : (
+            <>
+              <p className="text-md font-semibold">Nothing waiting</p>
+              <p className="text-sm text-ink/55">Every decision in this view has an answer.</p>
+            </>
+          )}
         </>
       ) : (
         <p className="text-sm text-ink/55">
