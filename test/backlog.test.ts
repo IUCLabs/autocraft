@@ -151,7 +151,7 @@ describe("Backlog", () => {
     const db = fresh();
     ask(db, [question("a1", "scope", "app", 1), question("a2", "scope", "app", 2), question("o1", "scope", "other", 1), question("o2", "merge", "other", 2), question("done", "scope", "other", 1)]);
     db.prepare("UPDATE decisions SET answer = 'yes', answered_by = 'op', answered_at = ? WHERE id = 'done'").run(T1);
-    // No pilot set: nothing is outside it.
+    // Every repo is on and no pilot is set: nothing is outside the scope.
     assert.deepEqual(backlogOpen(db, { outsidePilot: true }, "cli", true).decisions, []);
     setPilot(db, "op", ["app#1", "app#2"]);
     const dry = backlogOpen(db, { outsidePilot: true }, "cli", false);

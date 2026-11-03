@@ -137,12 +137,12 @@ export type BacklogResult = { applied: boolean; decisions: { id: string; kind: K
 export function backlogCandidates(db: DatabaseSync, scope: BacklogScope): DecisionRow[] {
   if (!scope.outsidePilot && !scope.repo) throw new Error("name a scope: outsidePilot or a repo");
   const rows = db.prepare("SELECT * FROM decisions WHERE answer IS NULL ORDER BY asked_at, id").all() as DecisionRow[];
-  const pilot = !!db.prepare("SELECT 1 FROM settings WHERE key = 'pilot_items' AND json_valid(value) AND json_array_length(value) > 0").get();
   const members = db.prepare("SELECT repo, number FROM dupe_group_items WHERE decision_id = ?");
   return rows.filter((d) => {
     const refs = [...itemsOf(d), ...(members.all(d.id) as Ref[])];
     if (scope.repo && !reposOf(d).includes(scope.repo) && !refs.some((x) => x.repo === scope.repo)) return false;
-    return !scope.outsidePilot || (pilot && !refs.some((x) => inPilot(db, x.repo, x.number)));
+    // Outside the scope: no item in a repo whose pipeline is on and, with an item pilot, in that pilot.
+    return !scope.outsidePilot || !refs.some((x) => inPilot(db, x.repo, x.number));
   });
 }
 
