@@ -73,6 +73,19 @@ describe("task source", () => {
 });
 
 describe("claim", () => {
+  test("with a pilot set, only pilot repos and operator smoke tests are handed out", () => {
+    clear();
+    const e = env({ slots: 4 });
+    const inside = task(), outside = task({ repo: "vault" }), smoke = task({ repo: "vault", step: "smoke-test" });
+    db.prepare("INSERT INTO settings (key, value) VALUES ('pilot_items', '[\"open-app\"]')").run();
+    try {
+      assert.deepEqual(ids(claim(db, e.id, 4)), [inside, smoke]);
+      assert.equal(getTask(db, outside)!.state, "queued");
+    } finally {
+      db.prepare("DELETE FROM settings WHERE key = 'pilot_items'").run();
+    }
+  });
+
   test("hands out the oldest of the highest priority, up to min(free, slots - running)", () => {
     clear();
     const e = env({ slots: 3 });

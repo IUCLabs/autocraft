@@ -13,6 +13,7 @@ import { settle } from "../src/classify/settled.ts";
 import { connect } from "../src/db.ts";
 import { buildDecision, shapeOf } from "../src/decide/decision.ts";
 import { runDecide } from "../src/decide/index.ts";
+import { backfillIds } from "../src/decide/recommend.ts";
 import type { Candidate } from "../src/decide/select.ts";
 import { SCRATCH } from "./scratch.ts";
 
@@ -93,6 +94,19 @@ describe("scope recommendation", () => {
     assert.equal(row(db, answered).by, null);
     assert.equal(row(db, outside).by, null);
     assert.equal(row(db, done).by, "opus");
+  });
+
+  test("a decision whose recommendation keeps failing waits an hour between tries and stops after three", () => {
+    const { db } = fixture();
+    const id = decision(db, 1);
+    const fail = (at: string) => db.prepare("UPDATE decisions SET recommend_failures = COALESCE(recommend_failures, 0) + 1, recommend_failed_at = ? WHERE id = ?").run(at, id);
+    const t = Date.parse("2026-11-03T12:00:00Z");
+    assert.deepEqual(backfillIds(db, 5, t), [id]);
+    fail("2026-11-03T11:30:00.000Z");
+    assert.deepEqual(backfillIds(db, 5, t), [], "within the hour");
+    assert.deepEqual(backfillIds(db, 5, t + 31 * 60_000), [id], "after the hour");
+    fail("2026-11-03T11:30:00.000Z"); fail("2026-11-03T11:30:00.000Z");
+    assert.deepEqual(backfillIds(db, 5, t + 2 * 3600_000), [], "three failures");
   });
 
   test("recommendations without a model are cleared from open decisions at connect", () => {

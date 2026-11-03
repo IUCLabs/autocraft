@@ -42,6 +42,8 @@ const ADDED_COLUMNS: [table: string, column: string, type: string][] = [
   ["merge_batches", "fork", "TEXT"],
   ["build_tasks", "sandbox_env", "TEXT"],
   ["decisions", "recommended_reason", "TEXT"],
+  ["decisions", "recommend_failures", "INTEGER"],
+  ["decisions", "recommend_failed_at", "TEXT"],
   ["decisions", "recommended_by", "TEXT"],
 ];
 

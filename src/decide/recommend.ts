@@ -46,11 +46,17 @@ export function parseRecommendReply(text: string, keys: string[]): Recommendatio
 type Row = { id: string; repo: string; number: number; question: string; facts: string | null; options: string; summary: string | null };
 
 /** Ids of open scope decisions without a recommendation from this prompt, on open pilot items, oldest first. */
-export function backfillIds(db: DatabaseSync, limit: number): string[] {
+/** Tries after which a decision keeps no recommendation, and the wait after a failed try. */
+export const RECOMMEND_MAX_FAILURES = 3;
+export const RECOMMEND_RETRY_MS = 60 * 60_000;
+
+export function backfillIds(db: DatabaseSync, limit: number, nowMs: number = Date.now()): string[] {
   if (limit <= 0) return [];
+  // A call that keeps failing must not re-run Decide back to back: wait an hour after a failure, stop after three.
   return (db.prepare(`SELECT d.id FROM decisions d JOIN items i ON i.repo = d.repo AND i.number = d.number
     WHERE d.kind = 'scope' AND d.answer IS NULL AND d.recommended_by IS NULL AND i.state = 'OPEN' AND ${notHeldSql("i")}
-    ORDER BY d.asked_at, d.id LIMIT ?`).all(limit) as { id: string }[]).map((r) => r.id);
+      AND COALESCE(d.recommend_failures, 0) < ? AND (d.recommend_failed_at IS NULL OR d.recommend_failed_at < ?)
+    ORDER BY d.asked_at, d.id LIMIT ?`).all(RECOMMEND_MAX_FAILURES, new Date(nowMs - RECOMMEND_RETRY_MS).toISOString(), limit) as { id: string }[]).map((r) => r.id);
 }
 
 export type RecommendParams = {
@@ -70,6 +76,7 @@ export async function recommend(db: DatabaseSync, ids: string[], p: RecommendPar
   const checkouts = new Map<string, Promise<string | null>>();
   const select = db.prepare("SELECT id, repo, number, question, facts, options, summary FROM decisions WHERE id = ? AND kind = 'scope' AND answer IS NULL");
   const store = db.prepare("UPDATE decisions SET recommended = ?, recommended_reason = ?, recommended_by = ? WHERE id = ? AND answer IS NULL");
+  const failed = db.prepare("UPDATE decisions SET recommend_failures = COALESCE(recommend_failures, 0) + 1, recommend_failed_at = ? WHERE id = ?");
   let stored = 0;
   await pool(ids.map((id, n) => async () => {
     const d = select.get(id) as Row | undefined;
@@ -98,7 +105,10 @@ export async function recommend(db: DatabaseSync, ids: string[], p: RecommendPar
     if (got) {
       store.run(got.recommended, got.reason || null, model, d.id);
       stored++;
-    } else p.log(`decide: no valid recommendation for ${d.id}; the next run retries it`);
+    } else {
+      failed.run(now(), d.id);
+      p.log(`decide: no valid recommendation for ${d.id}; retried in an hour, at most ${RECOMMEND_MAX_FAILURES} tries`);
+    }
     saveUsage(db, p.usageRun, `recommend-${String(n).padStart(3, "0")}`, "decide", model, 1, usage, start, now());
   }), () => claudeRoom(db), { first: true });
   return stored;

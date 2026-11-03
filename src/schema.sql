@@ -139,7 +139,8 @@ CREATE TABLE IF NOT EXISTS decisions (
   facts TEXT,                         -- JSON array of short strings
   options TEXT NOT NULL,              -- JSON [{key, label}]
   recommended TEXT,
-  recommended_reason TEXT, recommended_by TEXT,  -- one-sentence reason and the model that gave the recommendation (null: none from a model)
+  recommended_reason TEXT, recommended_by TEXT,
+  recommend_failures INTEGER, recommend_failed_at TEXT,  -- recommendation calls that gave no valid answer, and the last one  -- one-sentence reason and the model that gave the recommendation (null: none from a model)
   public_text TEXT,
   asked_at TEXT NOT NULL, asked_by TEXT,
   docket TEXT,
