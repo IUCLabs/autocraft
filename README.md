@@ -254,6 +254,21 @@ The shared crate cache (`<workDir>/crate-cache`) is never mounted into a contain
 
 A remote worker is the same program with a config whose `coordinatorUrl` points to the coordinator's worker listener (`CRAFT_AUTO_WORKER_LISTEN`, exposed over the tailnet behind TLS) and its own key. Register it as another environment; the coordinator hands tasks to whichever environment has a free slot that satisfies the task's requirements.
 
+## Production install
+
+A production install runs the dashboard, the runner, the sync timer and a daily database backup as system services of one unprivileged user, and deploys by `git push`. `<root>` is that user's home. Files in `deploy/`:
+
+| File | Use |
+|---|---|
+| `autocraft.env.example` | The settings file, `<root>/config/autocraft.env`: every path (database, caches, secrets, accounts), the listen addresses and the public URL. |
+| `systemd/autocraft-*.service`, `*.timer` | System units with `@ROOT@` and `@USER@` placeholders: dashboard, runner, sync (every minute) and backup (daily). They read the settings file. |
+| `post-receive` | Bootstrap hook for `<root>/repo.git` (a bare repo). Install it once; it runs `deploy/hook.sh` from the pushed commit. |
+| `hook.sh` | Checks out into `<root>/app`, installs dependencies, builds `web/dist` beside the live one and swaps it in, snapshots the database, updates the sandbox worker code (when `AUTOCRAFT_WORKER_SSH` is set) and restarts the units named by `AUTOCRAFT_UNITS`. |
+| `push.sh` | `deploy/push.sh REMOTE [REF]`: pushes a branch to the bare repo. |
+| `backup.sh` | `backup.sh [PREFIX [KEEP]]`: consistent snapshot with `sqlite3 .backup`, compressed, newest KEEP kept. |
+
+Layout: `<root>/{repo.git,app,data,cache,config}`. `<root>/config` holds the settings file, `secrets.json` (mode 0600), `accounts.json` and the per-account Claude config directories. The user needs `node` 24, `git`, `pnpm`, `sqlite3`, `curl`, `bwrap`, `gh` (logged in, with its git credential helper), `claude` (logged in per account) and `jev` on its PATH (`<root>/.local/bin` comes first). The restart needs a sudoers entry allowing the user `systemctl restart` of its own units without a password. The worker runs as a separate user (see Running a worker); `AUTOCRAFT_WORKER_SSH` and an SSH key at `<root>/.ssh/id_craftsandbox` let the hook install its code through the worker's forced-command key.
+
 ## Similar items and semantic search
 
 `craft-auto embed [--all] [--threads N] [--batch N]` embeds every tracked item whose text changed since its last embedding (`--all`: every tracked item) into `item_embeddings`, and removes vectors of items that left the mirror or the tracked repos. Each batch commits on its own, so an interrupted run continues where it stopped. The dashboard reads the table for "Similar items" on the Item page and for the search box's meaning toggle; it embeds search queries, and items without a vector yet, itself.
