@@ -34,6 +34,9 @@ import { Markdown, Collapsible } from "../../ui/Markdown";
 import { useIsPhone } from "../../shell/useMedia";
 import { SettledBadge } from "../items";
 import { PrWork } from "./PrWork";
+import { useUser } from "../../shell/UserContext";
+import { canAct } from "../../registry/permissions";
+import { Conversation } from "../decisions/Conversation";
 import { useNow } from "../../lib/useNow";
 import { decisionPath, itemPath } from "../../lib/links";
 
@@ -73,6 +76,7 @@ function Section({ title, aside, children }: { title: string; aside?: ReactNode;
 
 function ItemMain({ params }: ViewProps) {
   const { data: it, error } = useItem(params);
+  const user = useUser();
   if (!it) return <Pending error={error} />;
   return (
     <div className="h-full overflow-y-auto">
@@ -93,6 +97,9 @@ function ItemMain({ params }: ViewProps) {
           <Verdicts cls={it.classifications} />
         </Section>
         <PrWork it={it} />
+        <Section title="Opus">
+          <Conversation repo={it.repo} number={it.number} operator={canAct(user, [it.repo])} />
+        </Section>
         <Section title="Timeline">
           <Timeline it={it} />
         </Section>

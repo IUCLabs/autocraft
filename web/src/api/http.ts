@@ -77,6 +77,7 @@ export function createHttpApi(): Api {
     changed();
     return v;
   }
+  const conv = (repo: string, n: number, rest = "") => `/api/conversations/${encodeURIComponent(repo)}/${encodeURIComponent(String(n))}${rest}`;
   const dec = (id: string, rest = "") => `/api/decisions/${encodeURIComponent(id)}${rest}`;
 
   function query(f: DecisionFilter): string {
@@ -123,6 +124,13 @@ export function createHttpApi(): Api {
     },
     release: async (repo, number, action) => {
       await post(`/api/items/${encodeURIComponent(repo)}/${encodeURIComponent(String(number))}/${action}`);
+    },
+    conversations: {
+      get: (repo, number) => get(conv(repo, number)),
+      say: (repo, number, text) => post(conv(repo, number, "/messages"), { text }),
+      editCard: (id, text) => post(`/api/conversation-cards/${id}/edit`, { text }),
+      doCard: (id) => post(`/api/conversation-cards/${id}/do`),
+      dismissCard: (id) => post(`/api/conversation-cards/${id}/dismiss`),
     },
     item: (repo, number) => get(`/api/items/${encodeURIComponent(repo)}/${encodeURIComponent(String(number))}`),
     search: (q) => (q.trim() ? get(`/api/search?${new URLSearchParams({ q })}`) : Promise.resolve([])),

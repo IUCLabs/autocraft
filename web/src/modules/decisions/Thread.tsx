@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { useApi, useQuery } from "../../api/client";
 import type { ViewProps } from "../../registry/types";
 import { Avatar } from "../../ui/Avatar";
@@ -8,6 +9,8 @@ import { scrollToWorkflow } from "./Workflow";
 import { OpinionList } from "./parts";
 import { canAct } from "../../registry/permissions";
 import { ReviewBox } from "./ReviewBox";
+import { Conversation } from "./Conversation";
+import { Segmented } from "../../ui/Segmented";
 import { useNow } from "../../lib/useNow";
 
 /** Desktop side panel: everyone's comments (operators can select a suggestion in the Workflow box), then the comment thread. */
@@ -24,13 +27,25 @@ export function ThreadPanel({ user }: ViewProps) {
     localActions.setPick(d.id, option);
     scrollToWorkflow();
   };
+  const [tab, setTab] = useState<"opus" | "comments">("opus");
+  const conversation = d && d.number !== null;
+  const showOpus = !!conversation && tab === "opus";
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex h-10 shrink-0 items-center gap-2 border-b border-line px-4 pr-10">
-        <span className="text-xs font-semibold text-ink/70">Discussion</span>
+        {conversation ? (
+          <Segmented label="Panel" value={tab} onChange={setTab} options={[{ value: "opus", label: "Opus" }, { value: "comments", label: "Comments", count: d.commentCount + d.opinions.length }]} />
+        ) : (
+          <span className="text-xs font-semibold text-ink/70">Discussion</span>
+        )}
       </div>
+      {d && conversation && (
+        <div className={showOpus ? "min-h-0 flex-1 overflow-y-auto p-4" : "hidden"}>
+          <Conversation repo={d.repo} number={d.number!} operator={operator} />
+        </div>
+      )}
       {d ? (
-        <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+        <div className={showOpus ? "hidden" : "flex min-h-0 flex-1 flex-col overflow-y-auto"}>
           <section className="border-b border-line p-3">
             <h2 className="mb-2 flex items-center gap-1.5 text-xs font-semibold text-ink/60">
               Comments <Count n={d.opinions.length} />

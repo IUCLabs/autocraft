@@ -154,6 +154,25 @@ interface Seed {
 
 const SEEDS: Seed[] = [
   {
+    kind: "merge",
+    repo: "designcraft",
+    number: 1484,
+    title: "Add Hungarian spellchecking and nonstandard hyphenation",
+    question: "Reviewed and green, but most of the diff is dictionary data. Merge now?",
+    context: ["About 270,000 of the added lines are dictionary and hyphenation pattern files.", "The language pack in craft-i18n already carries Hungarian."],
+    facts: ["+270,412 −96 · 41 files", "author: 2 merged, whitelisted", "review: no issues found", "CI passing · mergeable"],
+    options: [
+      { key: "merge", label: "Merge" },
+      { key: "hold", label: "Hold for a second review" },
+      { key: "changes", label: "Ask to use the language pack" },
+    ],
+    recommended: "changes",
+    ageH: 5,
+    author: "rhea-m",
+    size: [270412, 96, 41],
+    cls: [["haiku", "missing feature", "yes"], ["jev", "missing feature", "yes"]],
+  },
+  {
     kind: "scope",
     repo: "photocraft",
     number: 4127,
