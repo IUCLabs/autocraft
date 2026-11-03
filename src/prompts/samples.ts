@@ -1,6 +1,7 @@
 // Made-up items for the Prompts page's rendered examples. Not mirror data.
 import type { Item } from "../classify/parse.ts";
 import type { FixupPr } from "../fixup/patch.ts";
+import type { CompareIssues, ComparePrs } from "../dupes/group.ts";
 import type { DupePair } from "../dupes/pair.ts";
 import type { OpusPr } from "../review/opus-parse.ts";
 import type { ReviewPr } from "../review/parse.ts";
@@ -60,4 +61,22 @@ export const SAMPLE_OPUS_PRS: OpusPr[] = [{
   sonnet: { verdict: "take-fix", reason: "Correct stride fix; one local name is unclear.", fixes: [{ file: "crates/codecs/src/png.rs", change: "Rename `bytes_per_sample` to `sample_bytes` in decode_rows." }], risks: [] },
   mode: "full", earlier_opus: null,
   diff: PNG_DIFF,
+}];
+
+export const SAMPLE_COMPARE_PRS: ComparePrs[] = [{
+  ref: "photocraft#1287+1296+1301",
+  prs: [
+    { ref: "#1287", title: "Fix 16-bit PNG row stride", body: "Rows were read with the 8-bit stride when an alpha channel is present.", state: "open", author_association: "CONTRIBUTOR", linked_issues: ["#1279"], ci: "success", review: "take", files: ["crates/codecs/src/png.rs"], diff: PNG_DIFF },
+    { ref: "#1296", title: "Handle RGBA16 PNG", body: "Same crash, fixed in the decoder and the thumbnail path.", state: "open", author_association: "NONE", linked_issues: ["#1279"], ci: "failure", review: "take-fix", files: ["crates/codecs/src/png.rs", "crates/ui/src/thumb.rs"], diff: PNG_DIFF },
+    { ref: "#1301", title: "png: stride for 16-bit samples", body: "Fixes the stride.", state: "open", author_association: "NONE", linked_issues: [], ci: "pending", review: null, files: ["crates/codecs/src/png.rs"], diff: PNG_DIFF },
+  ],
+}];
+
+export const SAMPLE_COMPARE_ISSUES: CompareIssues[] = [{
+  ref: "photocraft#1279+1301+1310",
+  issues: [
+    { ref: "#1279", title: "Crash when opening a 16-bit PNG with an alpha channel", body: "Opening scan_0042.png closes the app without a message. Other PNGs open fine.", state: "open", author_association: "NONE", comments: 3 },
+    { ref: "#1301", title: "App quits on a 16-bit PNG that has transparency", body: "Any 16-bit RGBA PNG makes the app quit right after the file dialog. Version 0.9.2 on Linux, log attached.", state: "open", author_association: "NONE", comments: 0 },
+    { ref: "#1310", title: "16-bit PNG crash", body: "Same on Windows 11, version 0.9.3.", state: "open", author_association: "NONE", comments: 1 },
+  ],
 }];

@@ -8,7 +8,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import { commentApprovalOf } from "../act/approval.ts";
 import { audit } from "../dash/audit.ts";
-import { notOwnIntegrationSql } from "../dupes/held.ts";
+import { groupHeldSql, notOwnIntegrationSql } from "../dupes/held.ts";
 import { Client, type Querier } from "../mirror.ts";
 import { prInfo } from "../merge/index.ts";
 import { pilotSql } from "../pilot.ts";
@@ -55,6 +55,7 @@ export function postCandidates(db: DatabaseSync, repo: string): PostCandidate[] 
       AND NOT EXISTS (SELECT 1 FROM main.merge_batches mb WHERE mb.repo = i.repo AND mb.pr_number = i.number)
       AND COALESCE(i.author, '') <> COALESCE((SELECT value FROM main.settings WHERE key = 'pipeline_login'), '')
       AND NOT EXISTS (SELECT 1 FROM decisions dh WHERE dh.kind = 'duplicate' AND dh.repo = i.repo AND dh.number = i.number AND (dh.answer IS NULL OR dh.answer = 'close'))
+      AND NOT ${groupHeldSql("i")}
     ORDER BY i.number`).all(repo) as Row[];
   const out: PostCandidate[] = [];
   const mergeApproved = !!mergeApprovalOf(db, repo), pushApproved = !!pushApprovalOf(db, repo);

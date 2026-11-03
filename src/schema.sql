@@ -827,3 +827,44 @@ CREATE TABLE IF NOT EXISTS review_posts (
   PRIMARY KEY (repo, number)
 );
 INSERT OR IGNORE INTO stage_limits (step, per_day) VALUES ('review-post', 40);
+
+-- Duplicate groups compared in one pass (src/dupes/compare.ts). One row per set of
+-- same-kind group members (kind pr | issue), keyed by the sorted numbers. hash covers
+-- each member's state, head commit and text hash: a change re-runs the comparison.
+-- source: model | closed (a closed or merged member wins without a call) | rule (the
+-- model failed; canonical.ts decided) | single. result is the model's JSON per other member.
+CREATE TABLE IF NOT EXISTS dupe_comparisons (
+  repo TEXT NOT NULL,
+  key TEXT NOT NULL,                  -- kind:n1,n2,...
+  kind TEXT NOT NULL,                 -- pr | issue
+  members TEXT NOT NULL,              -- JSON [numbers]
+  hash TEXT NOT NULL,
+  kept INTEGER NOT NULL,
+  source TEXT NOT NULL,
+  model TEXT,
+  reason TEXT,
+  result TEXT,                        -- JSON {others: [...], rounds: n}
+  error TEXT,
+  at TEXT NOT NULL,
+  PRIMARY KEY (repo, key)
+);
+-- The group decision (kind duplicate, id repo:dupegroup:<lowest member>) and its members.
+-- role: keep (one per kind) | close (a duplicate of the keep of its kind: target) | stay (open, not closed).
+-- detail is the comparison's JSON for the member (better, carry, adds, duplicate) for the Act step.
+-- applied_answer is the answer whose roles were written to dupe_group_items.
+CREATE TABLE IF NOT EXISTS dupe_groups (
+  decision_id TEXT PRIMARY KEY,
+  repo TEXT NOT NULL,
+  source TEXT NOT NULL,               -- model | closed | rule
+  applied_answer TEXT
+);
+CREATE TABLE IF NOT EXISTS dupe_group_items (
+  decision_id TEXT NOT NULL,
+  repo TEXT NOT NULL, number INTEGER NOT NULL,
+  kind TEXT NOT NULL,                 -- pr | issue
+  role TEXT NOT NULL,
+  target INTEGER,
+  detail TEXT,
+  PRIMARY KEY (decision_id, number)
+);
+CREATE INDEX IF NOT EXISTS dupe_group_items_item ON dupe_group_items(repo, number);

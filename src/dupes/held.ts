@@ -13,6 +13,25 @@ export const DUP_OPTIONS = {
   keep: { key: "keep", label: "Keep both", hint: "They overlap but both stay open; do not ask about this pair again." },
 } as const;
 
+/** Option keys of a group decision: use the compared answer, keep another member instead (`keep:<number>`), or not duplicates. */
+export const GROUP_OPTIONS = {
+  accept: { key: "accept", label: "Use this answer", hint: "Keep the chosen item and close the others as duplicates of it." },
+  distinct: { key: "distinct", label: "Not duplicates", hint: "They are different; do not ask about this group again." },
+} as const;
+export const keepKey = (n: number): string => `keep:${n}`;
+/** The member an answer keeps instead, or null. */
+export const keptOf = (answer: string): number | null => {
+  const m = /^keep:(\d+)$/.exec(answer);
+  return m ? Number(m[1]) : null;
+};
+/** The id of the group decision whose lowest member is `lowest`. */
+export const groupId = (repo: string, lowest: number): string => `${repo}:dupegroup:${lowest}`;
+
+/** SQL condition, true when the item `alias` is a member a group decision closes and the group is still open or was answered other than "not duplicates". */
+export const groupHeldSql = (alias: string): string =>
+  `EXISTS (SELECT 1 FROM dupe_group_items gi JOIN decisions dg ON dg.id = gi.decision_id WHERE gi.repo = ${alias}.repo AND gi.number = ${alias}.number
+    AND gi.role = 'close' AND dg.kind = 'duplicate' AND (dg.answer IS NULL OR dg.answer = 'accept' OR dg.answer LIKE 'keep:%'))`;
+
 /** SQL condition, true when the item `alias` (a row of items) is not an integration batch PR the pipeline opened itself (see src/merge/batch.ts). Such PRs only carry reviewed PRs and never enter the pipeline as contributor PRs. */
 export const notOwnIntegrationSql = (alias: string): string =>
   `NOT EXISTS (SELECT 1 FROM main.merge_batches mb WHERE mb.repo = ${alias}.repo AND mb.pr_number = ${alias}.number
@@ -20,14 +39,18 @@ export const notOwnIntegrationSql = (alias: string): string =>
 
 /** SQL condition, true when the item `alias` (a row of items) is not held by a duplicate decision, is not one of our integration PRs and is in the pilot (when one is set). For WHERE clauses of candidate queries. */
 export const notHeldSql = (alias: string): string =>
-  `${notOwnIntegrationSql(alias)} AND ${pilotSql(alias)} AND NOT EXISTS (SELECT 1 FROM decisions dh WHERE dh.kind = 'duplicate' AND dh.repo = ${alias}.repo AND dh.number = ${alias}.number AND (dh.answer IS NULL OR dh.answer = 'close'))`;
+  `${notOwnIntegrationSql(alias)} AND ${pilotSql(alias)} AND NOT EXISTS (SELECT 1 FROM decisions dh WHERE dh.kind = 'duplicate' AND dh.repo = ${alias}.repo AND dh.number = ${alias}.number AND (dh.answer IS NULL OR dh.answer = 'close')) AND NOT ${groupHeldSql(alias)}`;
 
 export function duplicateHeld(db: DatabaseSync, repo: string, number: number): boolean {
-  return !!db.prepare(`SELECT 1 FROM decisions WHERE kind = 'duplicate' AND repo = ? AND number = ? AND (answer IS NULL OR answer = 'close')`).get(repo, number);
+  return !!db.prepare(`SELECT 1 FROM decisions WHERE kind = 'duplicate' AND repo = ? AND number = ? AND (answer IS NULL OR answer = 'close')`).get(repo, number)
+    || !!db.prepare(`SELECT 1 FROM items i WHERE i.repo = ? AND i.number = ? AND ${groupHeldSql("i")}`).get(repo, number);
 }
 
 /** Open duplicates pointing at the canonical item: items held by a decision that names it as the original. */
 export function duplicateCount(db: DatabaseSync, repo: string, canonical: number): number {
-  return (db.prepare(`SELECT COUNT(*) AS n FROM decisions WHERE kind = 'duplicate' AND repo = ? AND (answer IS NULL OR answer = 'close')
+  const pairs = (db.prepare(`SELECT COUNT(*) AS n FROM decisions WHERE kind = 'duplicate' AND repo = ? AND (answer IS NULL OR answer = 'close')
     AND EXISTS (SELECT 1 FROM json_each(facts) WHERE value = ?)`).get(repo, `${DUP_FACT}${repo}#${canonical}`) as { n: number }).n;
+  const groups = (db.prepare(`SELECT COUNT(*) AS n FROM dupe_group_items gi JOIN decisions dg ON dg.id = gi.decision_id
+    WHERE gi.repo = ? AND gi.target = ? AND gi.role = 'close' AND (dg.answer IS NULL OR dg.answer = 'accept' OR dg.answer LIKE 'keep:%')`).get(repo, canonical) as { n: number }).n;
+  return pairs + groups;
 }

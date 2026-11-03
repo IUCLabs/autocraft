@@ -302,6 +302,11 @@ function dupes(c: Ctx): NodeCount {
     JOIN main.items i ON i.repo = d.repo AND i.number = d.number
     WHERE d.kind = 'duplicate' AND (d.answer IS NULL OR d.answer = 'close') ${c.tracked("d.repo")}`).all(c.rp) as { repo: string; number: number; answer: string | null; state: string }[];
   for (const r of rows) members.get(r.answer === null ? (r.state === "OPEN" ? "dupes.waiting" : "") : r.state === "OPEN" ? "dupes.held" : "dupes.closed")?.add(ref(r));
+  // Group decisions hold the members they close.
+  const groupRows = c.db.prepare(`SELECT gi.repo, gi.number, d.answer, i.state FROM main.dupe_group_items gi
+    JOIN main.decisions d ON d.id = gi.decision_id JOIN main.items i ON i.repo = gi.repo AND i.number = gi.number
+    WHERE gi.role = 'close' AND d.kind = 'duplicate' AND (d.answer IS NULL OR d.answer = 'accept' OR d.answer LIKE 'keep:%') ${c.tracked("gi.repo")}`).all(c.rp) as { repo: string; number: number; answer: string | null; state: string }[];
+  for (const r of groupRows) members.get(r.answer === null ? (r.state === "OPEN" ? "dupes.waiting" : "") : r.state === "OPEN" ? "dupes.held" : "dupes.closed")?.add(ref(r));
   const open = c.open().length;
   return {
     counts: {
