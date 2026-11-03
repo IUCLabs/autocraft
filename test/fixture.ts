@@ -157,3 +157,9 @@ export function buildFixture(path: string, scale: Scale = FULL): DatabaseSync {
   db.exec("ANALYZE");
   return db;
 }
+
+/** Marks every stored Sonnet review as final, as the skip list does, so stages after Review treat it as the verdict. */
+export function finalizeReviews(db: import("node:sqlite").DatabaseSync): void {
+  db.exec(`INSERT OR IGNORE INTO main.opus_reviews (repo, number, head_oid, at, mode, skip_reason)
+    SELECT repo, number, head_oid, at, 'skipped', 'test fixture' FROM main.reviews`);
+}

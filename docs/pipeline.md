@@ -105,7 +105,9 @@ Writes each settled type label and flag to GitHub. No model.
 
 Code review of open, non-draft PRs whose settled type is bugfix, performance, missing feature, small extra or infra. A PR flagged needs-decision waits for a `take` or `small-extra` answer. A PR already reviewed at its current head is skipped; a push brings it back. Reads GitHub, writes nothing.
 
-- **Model.** Sonnet, no tools, one call per batch of related PRs (at most 15 PRs). PR text and diffs are quoted as untrusted data.
+Two passes. Sonnet reviews first; Opus then reviews every PR Sonnet rated take or take-fix. Opus's verdict is the **final** one.
+
+- **First pass.** Sonnet, no tools, one call per batch of related PRs (at most 15 PRs). PR text and diffs are quoted as untrusted data.
 - **Input.** Title, body, size (S up to 50 changed lines, M up to 300, L above), CI and merge state, changed files, and the diff of code files. Tests and lockfiles are listed, not diffed.
 - **Too large.** Over 1,500 changed code lines, or no diff from GitHub: held without a model call.
 
@@ -118,7 +120,18 @@ Code review of open, non-draft PRs whose settled type is bugfix, performance, mi
 
 The weaker of two duplicate PRs is held, never closed, until the better one merges. Daily limit 40 PRs.
 
-Hand-off: take goes to Verify, take-fix to Fix-up, close to a "Close this PR?" decision (answered yes, Act closes it), hold waits for a person.
+### Second pass: Opus
+
+Step `opus-review`, one PR per call, no tools, untrusted data quoted as in the first pass. Opus gets the full diff and Sonnet's verdict and fix list, and returns a verdict (take, take-fix, hold or close), a complete fix list for take-fix (it may keep, drop or add to Sonnet's), its reasons and `sure`. Highest work rank first; daily limit 40 PRs. Sonnet hold and close verdicts get no second pass.
+
+- **Final verdict.** Opus's for the head. Sonnet's when the skip list applies. While a Sonnet take or take-fix has neither, there is no final verdict yet and later stages wait (the queue shows `waiting-opus`).
+- **Disagreement.** When Opus's verdict differs from Sonnet's (take and take-fix count as the same) and Opus is not sure, the PR is held for a person; the hold reason shows both reviews. Otherwise Opus's verdict stands without a person.
+- **Skip list.** No Opus call when the whole diff is one of: docs, translations or comments only, under 20 changed lines in total (`*.md`, `docs/`, `*.ftl` and locale directories, or code files where every changed line is a comment or blank); dependency bumps only (lockfiles, and version-string changes in `Cargo.toml` or `package.json`) with green CI; test files only. The rule is code, not a model's opinion. The skip reason is stored with the review and shown on the Item page.
+- **New push.** Sonnet reviews the new head as usual. Opus then reads only the changes from the head it reviewed last to the new head, with its earlier review as context. If GitHub's compare fails or the old head is not an ancestor (force push), it reads the full diff. The skip list is checked on the full diff.
+- **Too large** for one call: held without a call.
+- **Stored** per PR and head in `opus_reviews` (verdict, sure, reason, fixes, risks, mode full / delta / skipped, base head, skip reason). The `final_reviews` view joins both passes; every later stage reads it. Integration batches get no Opus review of their combined diff.
+
+Hand-off, by final verdict: take goes to Verify, take-fix to Fix-up (with Opus's fix list), close to a "Close this PR?" decision (answered yes, Act closes it), hold waits for a person.
 
 ## Fix
 
@@ -162,11 +175,11 @@ Models: Sonnet (plan), Haiku (failure summary). Daily limit 30 PRs.
 
 ## Merge queue
 
-The queue lists every PR whose latest review is take or take-fix at its current head ([Merge queue](/queue), read-only), with one state each: ready, waiting-ci, ci-failed, conflict, needs-fix-up, waiting-verify, verify-failed, verify-error, needs-decision, decision-answered-merge, declined, refused, merged.
+The queue lists every PR whose final review (Review, second pass) is take or take-fix at its current head ([Merge queue](/queue), read-only), with one state each: ready, waiting-ci, ci-failed, conflict, needs-fix-up, waiting-opus (Sonnet's take or take-fix, Opus has not reviewed the head yet), waiting-verify, verify-failed, verify-error, needs-decision, decision-answered-merge, declined, refused, merged.
 
 **Merge without asking** only when all of these hold at the PR's current head:
 
-- review verdict is take (not take-fix)
+- final review verdict is take (not take-fix)
 - size S or M
 - type is bugfix or infra (tests, CI, docs, build)
 - author is on the whitelist (see Contributors)
@@ -200,8 +213,8 @@ Makes the GitHub comments and closes that follow an operator's answer. No model.
 |---|---|
 | Jev | First sort of every item (classes, duplicates). Very cheap and fast and reports how sure it is: at 90 % or more it matched maintainers' labels 98 % of the time |
 | Haiku | Second opinion where Jev is unsure; batch priority and duplicate checks; failure summaries |
-| Sonnet | Referee for label disagreements outside the scope labels (a person only when it is unsure), decision summaries, review, fix-ups, issue fixes, verify plans |
-| Opus | Planning and direction only; not called by the pipeline |
+| Sonnet | Referee for label disagreements outside the scope labels (a person only when it is unsure), decision summaries, first review pass, fix-ups, issue fixes, verify plans |
+| Opus | Final review of every PR Sonnet rates take or take-fix (verdict, complete fix list, how sure it is); checks of the patches Fix-up and Fix write |
 
 [Prompts](/prompts) shows every prompt exactly as sent. The code can call a model only with a registered prompt. Classifiers and Cost show how often the models agree and what each stage costs.
 
@@ -278,6 +291,7 @@ Limits count items handled per stage per day (from 00:00 UTC), including by fail
 | Decide | 100 | Fix-up | 20 |
 | Review | 40 | Fix | 10 |
 | Referee | 500 | | |
+| Opus review | 40 | | |
 
 Embed, checks and Label have no limit.
 

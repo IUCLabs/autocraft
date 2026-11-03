@@ -1,5 +1,5 @@
 // Verify, Fix-up and Act results for the Item page, varied by item number.
-import type { Item, ItemAction, ItemFixup, ItemVerification, TaskResult } from "../types";
+import type { Item, ItemAction, ItemFixup, ItemReviews, ItemVerification, TaskResult } from "../types";
 
 const H = 3600_000;
 const NOW = Date.parse("2026-11-02T10:40:00Z");
@@ -61,6 +61,15 @@ function actionsFor(n: number, kind: Item["kind"]): ItemAction[] {
   return [];
 }
 
-export function prWorkFor(n: number, kind: Item["kind"]): Pick<Item, "verification" | "fixups" | "actions"> {
-  return { verification: kind === "pr" ? verificationFor(n) : null, fixups: kind === "pr" ? fixupsFor(n) : [], actions: actionsFor(n, kind) };
+function reviewsFor(n: number): ItemReviews {
+  const sonnet = { verdict: "take-fix" as const, reason: "Correct fix; one name is unclear.", fixes: [{ file: "src/lib.rs", change: "Rename `tmp` to `stride`." }], risks: [], at: iso(5 * H) };
+  const head = `${String(n).padStart(7, "0")}abcdef`;
+  if (n % 4 === 0) return { head, current: true, sonnet, opus: null, skipReason: "docs, translations or comments only (6 changed lines)", final: { verdict: "take-fix", source: "skip-list", reason: sonnet.reason, decided: true } };
+  if (n % 4 === 1) return { head, current: true, sonnet, opus: null, skipReason: null, final: { verdict: "take-fix", source: "sonnet", reason: sonnet.reason, decided: false } };
+  const opus = { verdict: "take-fix" as const, reason: "Also drop the unused import.", fixes: [{ file: "src/lib.rs", change: "Rename `tmp` to `stride`." }, { file: "src/lib.rs", change: "Remove the unused `use std::fmt;`." }], risks: ["Depends on code outside the diff."], at: iso(4 * H), sure: true, mode: "full" as const, baseHead: null };
+  return { head, current: true, sonnet, opus, skipReason: null, final: { verdict: opus.verdict, source: "opus", reason: opus.reason, decided: true } };
+}
+
+export function prWorkFor(n: number, kind: Item["kind"]): Pick<Item, "verification" | "fixups" | "actions" | "reviews"> {
+  return { verification: kind === "pr" ? verificationFor(n) : null, fixups: kind === "pr" ? fixupsFor(n) : [], reviews: kind === "pr" ? reviewsFor(n) : null, actions: actionsFor(n, kind) };
 }

@@ -1,5 +1,6 @@
 // The merge queue: every PR with a take or take-fix review at its current
-// head commit, and what it waits on. Reads only local tables; no GitHub calls.
+// head commit, and what it waits on. The verdict is the final one (Opus's, or
+// Sonnet's when the skip list applies): see the `final_reviews` view. Reads only local tables; no GitHub calls.
 import type { DatabaseSync } from "node:sqlite";
 import { latestRun, settledLookup } from "../classify/settled.ts";
 import { actionable } from "../decisions.ts";
@@ -9,7 +10,7 @@ import { getRule, STATS_SQL, tierOf, type Tier } from "../whitelist.ts";
 
 export const QUEUE_STATES = [
   "ready", "decision-answered-merge", "refused", "waiting-ci", "ci-failed", "conflict",
-  "needs-fix-up", "waiting-verify", "verify-failed", "verify-error", "needs-decision", "declined", "merged", "held-duplicate",
+  "needs-fix-up", "waiting-opus", "waiting-verify", "verify-failed", "verify-error", "needs-decision", "declined", "merged", "held-duplicate",
 ] as const;
 export type QueueState = (typeof QUEUE_STATES)[number];
 
@@ -77,7 +78,7 @@ export const eligible = (e: QueueEntry): boolean =>
 type Row = {
   repo: string; number: number; title: string | null; author: string | null; state: string; head_oid: string | null; updated_at: string | null;
   c_head: string | null; c_at: string | null; overall: string | null; c_mergeable: string | null; i_mergeable: string | null;
-  r_head: string; verdict: "take" | "take-fix"; reason: string; fixes: string | null; size: string | null; r_at: string;
+  r_head: string; verdict: "take" | "take-fix"; reason: string; fixes: string | null; size: string | null; r_at: string; r_final: number;
 };
 
 /** Tiers of the given logins, from one stats query. */
@@ -123,10 +124,10 @@ export function buildQueue(db: DatabaseSync, opts: QueueOptions = {}): QueueEntr
   const rows = db.prepare(`
     SELECT i.repo, i.number, i.title, i.author, i.state, i.head_oid, i.updated_at, i.mergeable AS i_mergeable,
       c.head_oid AS c_head, c.fetched_at AS c_at, c.overall, c.mergeable AS c_mergeable,
-      l.head_oid AS r_head, l.verdict, l.reason, l.fixes, l.size, l.at AS r_at
+      l.head_oid AS r_head, l.verdict, l.reason, l.fixes, l.size, l.at AS r_at, l.final AS r_final
     FROM items i
-    JOIN reviews l ON l.repo = i.repo AND l.number = i.number AND l.rowid = (
-      SELECT r.rowid FROM reviews r WHERE r.repo = i.repo AND r.number = i.number ORDER BY r.at DESC, r.rowid DESC LIMIT 1)
+    JOIN final_reviews l ON l.repo = i.repo AND l.number = i.number AND l.head_oid = (
+      SELECT r.head_oid FROM reviews r WHERE r.repo = i.repo AND r.number = i.number ORDER BY r.at DESC, r.rowid DESC LIMIT 1)
     LEFT JOIN pr_checks c ON c.repo = l.repo AND c.number = l.number
     WHERE l.verdict IN ('take', 'take-fix') AND i.kind = 'pr' AND i.state IN (${states}) ${where.map((w) => `AND ${w}`).join(" ")}
     ORDER BY i.repo, i.number ${opts.limit ? `LIMIT ${Math.floor(opts.limit)}` : ""}`).all(params) as Row[];
@@ -173,7 +174,7 @@ export function buildQueue(db: DatabaseSync, opts: QueueOptions = {}): QueueEntr
       verdict: r.verdict, reason: r.reason, fixes, ci, mergeable, state: "needs-decision", path: null, outsideRule,
       decisionId: asked ? id : null, noCi: ci === "none" && noCi(r.repo), answer, refusedReason: null, reviewedAt: r.r_at, verify,
     };
-    e.state = stateOf(e, r.state === "MERGED" || mergedByUs, last, r.state === "OPEN" && !mergedByUs && duplicateHeld(db, r.repo, r.number));
+    e.state = stateOf(e, r.state === "MERGED" || mergedByUs, last, r.state === "OPEN" && !mergedByUs && duplicateHeld(db, r.repo, r.number), r.r_final === 1);
     out.push(e);
   }
   return out;
@@ -186,10 +187,12 @@ function verifyState(e: QueueEntry): QueueState | null {
   return s === "failed" ? "verify-failed" : s === "error" ? "verify-error" : "waiting-verify";
 }
 
-function stateOf(e: QueueEntry, merged: boolean, last: { outcome: string; reason: string | null } | undefined, held = false): QueueState {
+function stateOf(e: QueueEntry, merged: boolean, last: { outcome: string; reason: string | null } | undefined, held = false, final = true): QueueState {
   if (merged) return "merged";
   // An open Duplicate? decision (or a duplicate close) keeps the item out of every later stage.
   if (held) return "held-duplicate";
+  // Sonnet's take or take-fix is not final until Opus has reviewed the head or the skip list exempted it.
+  if (!final) return "waiting-opus";
   if (e.verdict === "take-fix") return "needs-fix-up";
   if (!e.outsideRule.length) e.path = "rule";
   else if (e.answer === "merge") e.path = "operator";
@@ -217,13 +220,13 @@ export function countStates(entries: QueueEntry[]): Record<QueueState, number> {
   return c;
 }
 
-/** How many merged PRs have a take or take-fix review as their latest. */
+/** How many merged PRs have a take or take-fix final review as their latest. */
 export function countMerged(db: DatabaseSync, repo?: string, exclude: string[] = []): number {
   const params: Record<string, string> = repo ? { repo } : {};
   exclude.forEach((r, k) => { params[`ex${k}`] = r; });
   return (db.prepare(`SELECT COUNT(*) AS n FROM items i
-    JOIN reviews l ON l.repo = i.repo AND l.number = i.number AND l.rowid = (
-      SELECT r.rowid FROM reviews r WHERE r.repo = i.repo AND r.number = i.number ORDER BY r.at DESC, r.rowid DESC LIMIT 1)
+    JOIN final_reviews l ON l.repo = i.repo AND l.number = i.number AND l.head_oid = (
+      SELECT r.head_oid FROM reviews r WHERE r.repo = i.repo AND r.number = i.number ORDER BY r.at DESC, r.rowid DESC LIMIT 1)
     WHERE l.verdict IN ('take', 'take-fix') AND i.kind = 'pr' AND i.state = 'MERGED' ${repo ? "AND i.repo = :repo" : ""}${exclude.map((_, k) => ` AND i.repo <> :ex${k}`).join("")}`)
     .get(params) as { n: number }).n;
 }

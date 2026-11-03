@@ -203,6 +203,8 @@ export interface Item extends ItemRef {
   fixups: ItemFixup[];
   /** Opus checks of the patches we wrote for this item (Fix-up, Fix), oldest first. */
   patchChecks?: ItemPatchCheck[];
+  /** PRs: the Sonnet and Opus reviews of the newest reviewed head, and the verdict later stages use; null before the first review. */
+  reviews: ItemReviews | null;
   /** The Act step's GitHub writes after an operator's answer, oldest first. */
   actions: ItemAction[];
   /** Releases an operator can use on this item now (the item waits for a person). */
@@ -881,7 +883,7 @@ export interface CommentTemplate {
  * ready (may merge by the rule now), decision-answered-merge (the operator answered merge),
  * refused (the merge command or a pre-merge check said no; tried again next run),
  * waiting-ci (CI pending or none, or GitHub still computing mergeability), ci-failed, conflict,
- * needs-fix-up (take-fix), waiting-verify (no passed verification at the head yet), verify-failed, verify-error,
+ * needs-fix-up (take-fix), waiting-opus (Sonnet's take or take-fix; Opus has not reviewed the head yet), waiting-verify (no passed verification at the head yet), verify-failed, verify-error,
  * needs-decision (outside the rule; Merge? asked or about to be),
  * declined (the operator answered hold or close), merged,
  * held-duplicate (an open Duplicate? decision keeps it out of every later stage).
@@ -894,6 +896,7 @@ export type QueueState =
   | "ci-failed"
   | "conflict"
   | "needs-fix-up"
+  | "waiting-opus"
   | "waiting-verify"
   | "verify-failed"
   | "verify-error"

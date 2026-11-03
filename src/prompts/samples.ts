@@ -2,6 +2,7 @@
 import type { Item } from "../classify/parse.ts";
 import type { FixupPr } from "../fixup/patch.ts";
 import type { DupePair } from "../dupes/pair.ts";
+import type { OpusPr } from "../review/opus-parse.ts";
 import type { ReviewPr } from "../review/parse.ts";
 
 export const SAMPLE_ITEMS: Item[] = [
@@ -50,4 +51,13 @@ export const SAMPLE_DUPE_PAIRS: DupePair[] = [{
   ref: "photocraft#1279~1301", repo: "photocraft",
   a: { number: 1279, kind: "issue", state: "OPEN", title: "Crash when opening a 16-bit PNG with an alpha channel", body: "Opening scan_0042.png closes the app without a message. Other PNGs open fine." },
   b: { number: 1301, kind: "issue", state: "OPEN", title: "App quits on a 16-bit PNG that has transparency", body: "Any 16-bit RGBA PNG makes the app quit right after the file dialog." },
+}];
+
+export const SAMPLE_OPUS_PRS: OpusPr[] = [{
+  ref: "photocraft#1287", title: SAMPLE_ITEMS[0]!.title, body: SAMPLE_ITEMS[0]!.body,
+  author_association: "CONTRIBUTOR", size: "S", lines_changed: 46, ci: "success", mergeable: "MERGEABLE",
+  files: ["crates/codecs/src/png.rs"], tests_omitted: ["crates/codecs/tests/png16.rs", "crates/codecs/tests/data/rgba16.png"], lockfiles_omitted: [],
+  sonnet: { verdict: "take-fix", reason: "Correct stride fix; one local name is unclear.", fixes: [{ file: "crates/codecs/src/png.rs", change: "Rename `bytes_per_sample` to `sample_bytes` in decode_rows." }], risks: [] },
+  mode: "full", earlier_opus: null,
+  diff: PNG_DIFF,
 }];

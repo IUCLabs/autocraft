@@ -39,7 +39,7 @@ function scan(db: DatabaseSync, repo: string, run: string | null, rust: RustChec
       c.head_oid AS c_head, c.state AS c_state, c.is_draft AS c_draft, c.fetched_at AS c_at, c.overall AS c_overall,
       r.verdict AS r_verdict, r.reason AS r_reason, r.risks AS r_risks, r.fixes AS r_fixes
     FROM items i LEFT JOIN pr_checks c ON c.repo = i.repo AND c.number = i.number
-    LEFT JOIN reviews r ON r.repo = i.repo AND r.number = i.number AND r.head_oid = COALESCE(
+    LEFT JOIN final_reviews r ON r.final = 1 AND r.repo = i.repo AND r.number = i.number AND r.head_oid = COALESCE(
       CASE WHEN c.fetched_at IS NOT NULL AND (i.updated_at IS NULL OR c.fetched_at > i.updated_at) THEN c.head_oid END, i.head_oid, c.head_oid)
     LEFT JOIN item_rank p ON p.repo = i.repo AND p.number = i.number
     WHERE i.repo = ? AND i.kind = 'pr' AND i.state = 'OPEN' AND ${notHeldSql("i")} ORDER BY p.score IS NULL, p.score DESC, i.number`).all(repo) as Row[];

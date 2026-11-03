@@ -2,7 +2,7 @@
 import type { QueueFilter, QueueList, QueueRow, QueueState, TypeLabel } from "../types";
 import { AUTHORS, DECISIONS, NOW, REPOS, rng, titleFor } from "./fixtures";
 
-const STATES: QueueState[] = ["ready", "decision-answered-merge", "refused", "waiting-ci", "ci-failed", "conflict", "needs-fix-up", "waiting-verify", "verify-failed", "verify-error", "needs-decision", "declined", "merged"];
+const STATES: QueueState[] = ["ready", "decision-answered-merge", "refused", "waiting-ci", "ci-failed", "conflict", "needs-fix-up", "waiting-opus", "waiting-verify", "verify-failed", "verify-error", "needs-decision", "declined", "merged"];
 const REASONS = [
   "Fixes the off-by-one in the page range and adds a test.",
   "Small, correct guard against an empty selection.",

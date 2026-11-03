@@ -17,6 +17,7 @@ import { duplicateCounts } from "../src/priority/reach.ts";
 import { LEVELS, levelWith, parseHaikuImpacts, reachOf, reachScore, settleImpact, type Reach } from "../src/priority/score.ts";
 import { selectCandidates as reviewCandidates } from "../src/review/candidates.ts";
 import { selectCandidates as verifyCandidates } from "../src/verify/candidates.ts";
+import { finalizeReviews } from "./fixture.ts";
 
 const SCRATCH = join(homedir(), ".cache/craft-automation-scratch");
 mkdirSync(SCRATCH, { recursive: true });
@@ -163,6 +164,7 @@ describe("ordering and API", () => {
     db.exec("UPDATE classifications SET flags = '[]'");
     assert.deepEqual(nums(reviewCandidates(db, "photocraft", "r1")), [3, 2, 1]);
     for (const n of [1, 2, 3]) db.prepare("INSERT INTO reviews (repo, number, head_oid, verdict, reason, fixes, run_id, at) VALUES ('photocraft', ?, ?, 'take-fix', 'r', '[{\"file\":\"a\",\"change\":\"c\"}]', 'rv', '2026-10-02')").run(n, `sha${n}`);
+    finalizeReviews(db);
     db.exec("INSERT INTO settings (key, value) VALUES ('push_approved:photocraft', '{}')");
     const fix = selectFixups(db, "photocraft");
     assert.deepEqual(nums([...fix.fix, ...fix.cannotPush]), [3, 2, 1]);
