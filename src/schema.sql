@@ -597,7 +597,8 @@ CREATE TABLE IF NOT EXISTS build_tasks (
   artifact_bytes INTEGER NOT NULL DEFAULT 0,
   patch TEXT,                         -- unified git diff the worker applies to the checkout (at most 1 MiB)
   warm_key TEXT,                      -- build-cache key shared by tasks of one repo
-  warm_role TEXT                      -- use | build
+  warm_role TEXT,                     -- use | build
+  sandbox_env TEXT                    -- JSON SandboxEnv: image and CI-gate inputs the worker used
 );
 CREATE INDEX IF NOT EXISTS build_tasks_queue ON build_tasks(priority DESC, id) WHERE state = 'queued';
 CREATE INDEX IF NOT EXISTS build_tasks_env ON build_tasks(env_id, state);

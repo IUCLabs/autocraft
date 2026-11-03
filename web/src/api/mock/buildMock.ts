@@ -83,6 +83,7 @@ function make(state: TaskState, agoMin: number, over: Partial<BuildTask> = {}): 
     results, artifacts: state === "done" ? [{ name: "junit.xml", bytes: 18_400, contentType: "application/xml" }, { name: "shot-main.png", bytes: 212_000, contentType: "image/png" }] : [],
     summary: state === "done" ? "build and 412 tests passed" : state === "failed" ? "test failed: 3 of 412" : state === "cancelled" ? "Cancelled before it started." : null,
     patchBytes: null, warm: id % 2 === 0 ? { key: "main-3f9a2c1", role: "use" } : null,
+    sandbox: id % 2 === 0 ? { image: "craft-sandbox/rust-stable-0123456789abcdef", baseImage: "docker.io/library/rust:1-bookworm", packages: ["mesa-vulkan-drivers", "pkg-config"], craftFontsRef: "b076417b5880bd4154bd22f00695b1d28c6bea83", craftI18nRev: null } : null,
     ...over,
   };
 }

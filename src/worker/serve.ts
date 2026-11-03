@@ -142,11 +142,11 @@ async function runTask(d: ServeDeps, task: ClaimedTask, ac: AbortController, run
       log(`task ${task.id} cancelled`);
       return;
     }
-    finishArgs = [r.results, r.summary];
+    finishArgs = [r.results, r.summary, r.environment];
   } catch (e) {
     log(`task ${task.id} crashed (${(e as Error).message})`);
     if (ac.signal.aborted) return;
-    finishArgs = [[], `worker error: ${(e as Error).message}`.slice(0, 300)];
+    finishArgs = [[], `worker error: ${(e as Error).message}`.slice(0, 300), undefined];
   } finally {
     clearInterval(hb);
     await sink.close();

@@ -1277,7 +1277,11 @@ export type BuildTask = {
   patchBytes: number | null;
   /** Shared build cache: `build` fills it, `use` reads it. */
   warm: { key: string; role: "use" | "build" } | null;
+  /** The environment the worker ran the steps in; null until the task finishes, or when it failed before the steps. */
+  sandbox: SandboxEnv | null;
 };
+/** Image and CI-gate inputs a task ran with. Worker-sent: shown as plain text only. */
+export type SandboxEnv = { image: string; baseImage: string; packages: string[]; craftFontsRef: string | null; craftI18nRev: string | null };
 /** Worker-sent text: shown as plain text only, never as markup. */
 export type BuildTaskDetail = BuildTask & { logTail: string; logBytes: number; logTruncated: boolean; patch: string | null };
 export type TaskFilter = { state?: TaskState | "active"; env?: string; repo?: string; cursor?: string; limit?: number };
