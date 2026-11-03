@@ -48,7 +48,7 @@ function fixture(): DatabaseSync {
   for (const s of SPECS) {
     const created = `2026-01-${String(s.n).padStart(2, "0")}T00:00:00Z`;
     item.run(s.repo, s.n, s.kind ?? "issue", s.state ?? "OPEN", `Item ${s.n}`, `Body of ${s.repo}#${s.n}`, created, created, s.draft ? 1 : 0);
-    cls.run(s.repo, s.n, "jev", s.jev.label, JSON.stringify(s.jev.flags ?? []), JSON.stringify({ top: s.jev.top }));
+    cls.run(s.repo, s.n, "jev", s.jev.label, JSON.stringify(s.jev.flags ?? []), JSON.stringify({ top: s.jev.top, needs_decision: s.haiku ? 0.5 : (s.jev.flags ?? []).includes("needs decision") ? 0.95 : 0.05 }));
     if (s.haiku) cls.run(s.repo, s.n, "haiku", s.haiku.label, JSON.stringify(s.haiku.flags ?? []), null);
   }
   db.prepare(`INSERT INTO decisions (id, kind, repo, number, question, options, asked_at) VALUES ('x', 'duplicate', 'photocraft', 6, 'Dup?', '[]', '2026-10-01')`).run();

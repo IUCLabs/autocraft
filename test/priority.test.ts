@@ -162,7 +162,7 @@ describe("ordering and API", () => {
     db.exec("INSERT OR REPLACE INTO repos (name, visibility) VALUES ('photocraft', 'public')");
     const nums = (xs: { number: number }[]) => xs.map((x) => x.number);
     assert.deepEqual(nums(decideCandidates(db, "r1")), [3, 2, 1]);
-    db.exec("UPDATE classifications SET flags = '[]'");
+    db.exec(`UPDATE classifications SET flags = '[]', probs = '{"top":0.95,"needs_decision":0.05}'`);
     assert.deepEqual(nums(reviewCandidates(db, "photocraft", "r1")), [3, 2, 1]);
     for (const n of [1, 2, 3]) db.prepare("INSERT INTO reviews (repo, number, head_oid, verdict, reason, fixes, run_id, at) VALUES ('photocraft', ?, ?, 'take-fix', 'r', '[{\"file\":\"a\",\"change\":\"c\"}]', 'rv', '2026-10-02')").run(n, `sha${n}`);
     finalizeReviews(db);

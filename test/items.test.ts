@@ -27,8 +27,9 @@ describe("settled type label", () => {
     const s = settle(jev("bugfix", 0.95, ["security"]), { label: "infra", flags: ["needs decision"] });
     assert.deepEqual([s.status, s.label, s.source, s.flags], ["settled", "bugfix", "jev", ["security"]]);
   });
-  test("Jev unsure and Haiku agrees: settled by Haiku, flags of both", async () => {
-    const s = settle(jev("small extra", 0.6, ["security"]), { label: "small extra", flags: ["needs decision"] });
+  test("Jev unsure and Haiku agrees: settled by Haiku; each flag follows its own band", async () => {
+    const j = { ...jev("small extra", 0.6, ["security"]), sec: 0.95, nd: 0.5 };
+    const s = settle(j, { label: "small extra", flags: ["needs decision"] });
     assert.deepEqual([s.status, s.label, s.source, s.flags], ["settled", "small extra", "haiku", ["security", "needs decision"]]);
   });
   test("Jev unsure and Haiku pending: waiting", async () => {
@@ -56,9 +57,9 @@ function seed(db: DatabaseSync): void {
   com.run("photocraft", 2, "c1", "comment", "erin", now, "The quokka plugin causes it");
   com.run("photocraft", 1, "c2", "comment", "erin", now, "looks good");
   const cls = db.prepare("INSERT INTO classifications (repo, number, classifier, run_id, at, type_label, flags, probs) VALUES (?,?,?,?,?,?,?,?)");
-  const p = (top: number) => JSON.stringify({ top });
+  const p = (top: number, security?: number) => JSON.stringify({ top, security, needs_decision: 0.95 });
   cls.run("photocraft", 1, "jev", "r1", now, "small extra", '["needs decision"]', p(0.97));
-  cls.run("photocraft", 2, "jev", "r1", now, "bugfix", "[]", p(0.6));
+  cls.run("photocraft", 2, "jev", "r1", now, "bugfix", "[]", p(0.6, 0.5)); // security unsure: Haiku decides
   cls.run("photocraft", 2, "haiku", "r1", now, "bugfix", '["security"]', null);
   cls.run("photocraft", 3, "jev", "r1", now, "performance", "[]", p(0.5));
   cls.run("filmcraft", 4, "jev", "r1", now, "small extra", "[]", p(0.7));
