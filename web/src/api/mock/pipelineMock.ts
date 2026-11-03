@@ -57,7 +57,7 @@ const job = (id: number, step: string, state: Job["state"], startMin: number | n
   id, step, params: {}, requestedBy: "ochre-fox", requestedAt: iso((startMin ?? 0) + 1), state,
   startedAt: startMin === null ? null : iso(startMin), endedAt: state === "running" || state === "queued" ? null : iso((startMin ?? 0) - minutes),
   progress: null, summary: null, error: null, cancelRequested: false, usage: null,
-  models: step.startsWith("classify") ? ["jev", "haiku"] : step === "review-batch" || step === "decide" ? ["sonnet"] : [], accounts: state === "queued" ? [] : step === "review-batch" || step === "decide" || step.startsWith("classify") ? ["Account B"] : [], ...extra,
+  models: step.startsWith("classify") ? ["jev", "haiku"] : step === "opus-review" ? ["opus"] : step === "decide" ? ["sonnet"] : [], accounts: state === "queued" ? [] : step === "opus-review" || step === "decide" || step.startsWith("classify") ? ["Account B"] : [], ...extra,
 });
 
 function seed(): Job[] {
@@ -85,7 +85,7 @@ export function createPipelineMock(me: User, changed: () => void): Pick<Api, "pi
   const flag = { enabled: true, changedBy: "ochre-fox" as string | null, changedAt: iso(300) as string | null };
   const limits: StageLimit[] = [
     ["classify-new", "Classify new and changed items", 2000, 412], ["embed", "Embed items", null, 0], ["decide", "Ask decisions", 100, 100],
-    ["checks", "Refresh CI and merge state", null, 38], ["review-batch", "Review pull requests", 40, 14], ["labels-apply", "Apply labels on GitHub", null, 0], ["merge", "Merge queued pull requests", 10, 2],
+    ["checks", "Refresh CI and merge state", null, 38], ["opus-review", "Review pull requests", 40, 14], ["labels-apply", "Apply labels on GitHub", null, 0], ["merge", "Merge queued pull requests", 10, 2],
     ["verify", "Plan verification of taken pull requests", 40, 12], ["fixup", "Fix up take-fix pull requests", 10, 3], ["act", "Comment and close", 20, 20],
   ].map(([step, title, perDay, usedToday]) => ({
     step: step as string, title: title as string, perDay: perDay as number | null, usedToday: usedToday as number,

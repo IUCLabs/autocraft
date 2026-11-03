@@ -12,7 +12,7 @@ const ALL: Record<string, number> = {
   "decide.not-asked": 4_239, "decide.open": 38, "decide.take": 61, "decide.small-extra": 23, "decide.plugin": 31, "decide.close": 19, "decide.need-info": 9, "decide.backlog": 12,
   "decide.total": 4_420, "decide.recent.asked": 50, "decide.recent.answered": 27, "x.openDecisions": 38, "edge.classify.decide": 4_420,
   "labels.labelled": 2_140, "labels.pending": 1_310, "labels.unapproved": 14_456, "labels.total": 17_906, "labels.recent.labelled": 400, "x.repos": REPOS.length, "x.approved": 3,
-  "review.not-reviewed": 5_640, "review.waiting-opus": 12, "review.take": 58, "review.take-fix": 31, "review.hold": 36, "review.close": 21, "review.total": 5_786, "review.recent.reviewed": 40,
+  "review.not-reviewed": 5_640, "review.take": 58, "review.take-fix": 31, "review.hold": 36, "review.close": 21, "review.total": 5_786, "review.recent.reviewed": 40,
   "edge.labels.review": 5_786, "edge.review.verify": 58, "edge.review.fixup": 31,
   "fix.candidates": 64, "fix.retry": 3, "fix.testing": 2, "fix.passed": 1, "fix.pr-opened": 7, "fix.skipped": 41, "fix.failed": 5, "fix.unapproved": 410, "fix.total": 533,
   "edge.labels.fix": 533, "edge.fix.review": 7,
@@ -33,7 +33,7 @@ export function flowFixture(repo?: string): Flow {
     repo: repo ?? null, now: iso(0), lastSync: iso(70_000), run: "org-1102", countedAt: iso(40_000), uncounted: 0,
     steps: [
       { name: "embed", stage: 1 }, { name: "dupes", stage: 3 }, { name: "classify-new", stage: 2 }, { name: "classify-all", stage: 2 }, { name: "prioritize", stage: 2 }, { name: "rank", stage: 8 }, { name: "decide", stage: 3 },
-      { name: "labels-ensure", stage: 4 }, { name: "labels-apply", stage: 4 }, { name: "review-batch", stage: 5 }, { name: "checks", stage: 5 }, { name: "fixissue", stage: 7 }, { name: "fixissue-collect", stage: 7 },
+      { name: "labels-ensure", stage: 4 }, { name: "labels-apply", stage: 4 }, { name: "opus-review", stage: 5 }, { name: "checks", stage: 5 }, { name: "fixissue", stage: 7 }, { name: "fixissue-collect", stage: 7 },
       { name: "fixup", stage: 6 }, { name: "verify", stage: 6 }, { name: "verify-collect", stage: 6 }, { name: "merge", stage: 6 }, { name: "act", stage: 6 },
     ],
   });

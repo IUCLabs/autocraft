@@ -19,7 +19,7 @@ Stages run in this order. Details, limits and rules for each are in [docs/pipeli
 | Priority | P0 to P4 per item | Jev, Haiku | no |
 | Decide | Scope questions with a summary and a recommendation | Sonnet, Opus | yes: an operator answers |
 | Label | Writes settled labels to GitHub | none | per-repo approval |
-| Review | First pass, then a final review of PRs rated take | Sonnet, Opus | hold, close and merge-outside-rule verdicts |
+| Review | Opus review of every wanted PR; reads the repo | Opus | hold, close and merge-outside-rule verdicts |
 | Fix | Writes a patch for clear bugs, opens a PR | Sonnet, Opus check | per-repo approval |
 | Fix-up | Pushes fixes to a PR branch | Sonnet, Opus check | per-repo approval |
 | Verify | Builds and tests the PR in a build environment | Sonnet plans | failures and errors |

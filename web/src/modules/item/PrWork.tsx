@@ -103,7 +103,7 @@ function Verify({ v }: { v: ItemVerification }) {
 
 const R_VERDICT: Record<ReviewVerdictName, [string, Tone]> = { take: ["Take", "ok"], "take-fix": ["Take with fixes", "ok"], hold: ["Hold", "warn"], close: ["Close", "bad"] };
 
-function ReviewCard({ title, side, isFinal, extra, children }: { title: string; side: ReviewSide | null; isFinal: boolean; extra?: ReactNode; children?: ReactNode }) {
+function ReviewCard({ title, side, extra, children }: { title: string; side: ReviewSide | null; extra?: ReactNode; children?: ReactNode }) {
   useNow();
   const v = side && R_VERDICT[side.verdict];
   return (
@@ -111,7 +111,6 @@ function ReviewCard({ title, side, isFinal, extra, children }: { title: string; 
       <div className="flex flex-wrap items-center gap-2">
         <span className="font-medium">{title}</span>
         {v && <Badge tone={v[1]}>{v[0]}</Badge>}
-        {isFinal && <Badge tone="accent">Final</Badge>}
         {side && <span className="ml-auto text-xs text-ink/50">{ago(side.at)} ago</span>}
       </div>
       {extra}
@@ -154,30 +153,24 @@ function Reviews({ r }: { r: ItemReviews }) {
   return (
     <div>
       <div className="mb-2 flex flex-wrap items-center gap-2 text-sm">
-        <span className="text-ink/55">Final verdict</span>
-        <Badge tone={ftone}>{r.final.decided ? fv : "Waiting for the Opus review"}</Badge>
+        <span className="text-ink/55">Verdict</span>
+        <Badge tone={ftone}>{fv}</Badge>
         <span className="code text-xs text-ink/50" title={r.head}>{r.head.slice(0, 7)}</span>
         {!r.current && <Badge tone="warn">Older head</Badge>}
       </div>
-      <div className="grid gap-3 md:grid-cols-2">
-        <ReviewCard title="Sonnet, first pass" side={r.sonnet} isFinal={r.final.decided && r.final.source !== "opus"}>
-          <p className="mt-2 text-ink/60">No review</p>
-        </ReviewCard>
-        <ReviewCard
-          title="Opus, final review"
-          side={o}
-          isFinal={r.final.decided && r.final.source === "opus"}
-          extra={
-            o && (
-              <p className="mt-1 text-xs text-ink/60">
-                {o.sure ? "Sure" : "Unsure"} · {o.mode === "delta" ? `changes since ${(o.baseHead ?? "").slice(0, 7)}` : "full diff"}
-              </p>
-            )
-          }
-        >
-          <p className="mt-2 text-ink/80">{r.skipReason ? `Skipped: ${r.skipReason}` : r.final.decided ? "No review" : "Waiting for the Opus review"}</p>
-        </ReviewCard>
-      </div>
+      <ReviewCard
+        title="Opus review"
+        side={o}
+        extra={
+          o && (
+            <p className="mt-1 text-xs text-ink/60">
+              {o.sure ? "Sure" : "Unsure"} · {o.mode === "delta" ? `changes since ${(o.baseHead ?? "").slice(0, 7)}` : "full diff"}
+            </p>
+          )
+        }
+      >
+        <p className="mt-2 text-ink/80">No review</p>
+      </ReviewCard>
     </div>
   );
 }

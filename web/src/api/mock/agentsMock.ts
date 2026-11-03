@@ -14,7 +14,7 @@ const pick = <T,>(a: T[]): T => a[Math.floor(rnd() * a.length)]!;
 
 const STEPS = [
   { step: "decide", stage: 3, title: "Ask decisions", promptId: "decide.summary", provider: "claude" as const, model: "sonnet" },
-  { step: "review-batch", stage: 5, title: "Review pull requests", promptId: "review.sonnet", provider: "claude" as const, model: "sonnet" },
+  { step: "opus-review", stage: 5, title: "Review pull requests", promptId: "review.opus", provider: "claude" as const, model: "opus" },
   { step: "classify-new", stage: 2, title: "Classify new and changed items", promptId: "classify.haiku", provider: "claude" as const, model: "haiku" },
   { step: "classify-new", stage: 2, title: "Classify new and changed items", promptId: "classify.jev", provider: "jev" as const, model: "jev" },
 ];
@@ -45,7 +45,7 @@ const PROMPT = (r: AgentRun) =>
 function makeRun(id: number, startedMsAgo: number, running: boolean): AgentRun {
   const s = pick(STEPS);
   const acct = s.provider === "jev" ? null : running ? pick(accounts.filter((a) => a.enabled)) : pick(accounts);
-  const n = s.step === "classify-new" ? 1 + Math.floor(rnd() * 30) : s.step === "review-batch" ? 1 + Math.floor(rnd() * 4) : 1 + Math.floor(rnd() * 8);
+  const n = s.step === "classify-new" ? 1 + Math.floor(rnd() * 30) : s.step === "opus-review" ? 1 + Math.floor(rnd() * 4) : 1 + Math.floor(rnd() * 8);
   const repo = pick(REPOS);
   const items = Array.from({ length: Math.min(n, 50) }, (_, i) => ({ repo: i % 3 === 2 ? pick(REPOS) : repo, number: 1000 + Math.floor(rnd() * 1400) }));
   const failed = !running && rnd() < 0.08;
@@ -77,7 +77,7 @@ function rates(window: "24h" | "7d"): Rates {
   const step = hourly ? HOUR : 24 * HOUR;
   const t = (i: number) => iso((n - 1 - i) * step);
   const stages = [
-    ["classify-new", "Classify new and changed items", 30], ["decide", "Ask decisions", 6], ["review-batch", "Review pull requests", 9], ["merge", "Merge queued pull requests", 1.5],
+    ["classify-new", "Classify new and changed items", 30], ["decide", "Ask decisions", 6], ["opus-review", "Review pull requests", 9], ["merge", "Merge queued pull requests", 1.5],
   ].map(([s, title, base]) => ({
     step: s as string, title: title as string,
     buckets: Array.from({ length: n }, (_, i) => {

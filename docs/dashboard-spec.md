@@ -62,7 +62,7 @@ Stage vocabulary (`stages.stage`, latest row per item wins): `classified`, `revi
 | Open | open in the mirror |
 | Classified | has a settled type label in the latest classification run (below) |
 | Waiting for a second opinion / disagreement | Jev unsure and Haiku hasn't answered / Haiku gave another label |
-| Reviewed | has a `reviewed` stage or a `sonnet` classification |
+| Reviewed | has a `reviewed` stage |
 | Taken / held / to close / waiting for a decision | latest stage `take` / `hold` / `close` / `needs-decision` |
 | In a batch | latest stage `batched` |
 | Done | item closed or merged since tracking began, split by: merged by the pipeline, closed by the pipeline, closed by others |

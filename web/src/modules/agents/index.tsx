@@ -109,7 +109,7 @@ function Filters({ f, update }: { f: Record<string, string | undefined>; update:
   );
   return (
     <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-line px-4 py-2">
-      {sel("Step", "step", (steps.data?.steps ?? []).filter((s) => s.group === "classify").map((s) => ({ value: s.name, label: s.name })).concat([{ value: "decide", label: "decide" }, { value: "review-batch", label: "review-batch" }]).filter((o, i, a) => a.findIndex((x) => x.value === o.value) === i))}
+      {sel("Step", "step", (steps.data?.steps ?? []).filter((s) => s.group === "classify").map((s) => ({ value: s.name, label: s.name })).concat([{ value: "decide", label: "decide" }, { value: "opus-review", label: "opus-review" }]).filter((o, i, a) => a.findIndex((x) => x.value === o.value) === i))}
       {sel("Account", "account", (accounts.data ?? []).map((a) => ({ value: a.id, label: a.label })))}
       {sel("State", "state", [{ value: "done", label: "Done" }, { value: "failed", label: "Failed" }])}
       {sel("Repo", "repo", (repos.data ?? []).map((r) => ({ value: r, label: r })))}

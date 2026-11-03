@@ -13,7 +13,6 @@ const WAITS: Record<string, [MergeWait, string, number]> = {
   "batch-checking": ["batch-check", "In a batch; checked in the sandbox", 1],
   "waiting-ci": ["ci", "Waiting for CI", 2],
   "waiting-verify": ["verify", "Waiting for Verify", 2],
-  "waiting-opus": ["re-review", "Waiting for re-review", 3],
 };
 
 const tabOf = (next: string): QueueTab | null =>

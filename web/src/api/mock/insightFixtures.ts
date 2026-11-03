@@ -110,7 +110,7 @@ export function costReport(run = ""): CostReport {
   const stages = [
     { stage: "classify", model: "haiku", ...s(t(420, 21000, 1_700_000, 4_500_000, 2_000_000, 27_700_000, 7.8, 6300)) },
     { stage: "classify", model: "jev-latest", ...s(t(21000, 21000, 30_400_000, 2_100_000, 0, 0, null, 920)) },
-    { stage: "review", model: "sonnet", ...s(t(1650, 1650, 3_200_000, 1_400_000, 41_000_000, 6_800_000, 58.4, 14200)) },
+    { stage: "review", model: "opus", ...s(t(1650, 1650, 3_200_000, 1_400_000, 41_000_000, 6_800_000, 58.4, 14200)) },
     { stage: "fix", model: "sonnet", ...s(t(210, 210, 900_000, 700_000, 22_000_000, 3_100_000, 29.9, 21000)) },
   ];
   const repoShare = REPO_OPEN.map(([repo, n]) => [repo, n / 12000] as const);
