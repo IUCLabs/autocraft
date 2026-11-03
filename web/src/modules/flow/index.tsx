@@ -5,7 +5,6 @@ import { Link } from "react-router-dom";
 import { Dialog } from "radix-ui";
 import { WaypointsIcon } from "lucide-react";
 import { useQuery } from "../../api/client";
-import { usePoll } from "../../lib/usePoll";
 import type { Flow } from "../../api/types";
 import type { FeatureModule, ViewProps } from "../../registry/types";
 import { useMedia } from "../../shell/useMedia";
@@ -17,6 +16,7 @@ import { Chart } from "./Chart";
 import { FlowPanel } from "./Panel";
 import { PhoneFlow } from "./PhoneFlow";
 import { hrefOf, nodeOf, peopleWork, WAIT } from "./parts";
+import { useNow } from "../../lib/useNow";
 
 const usePhoneFlow = () => useMedia("(max-width: 699px)");
 
@@ -66,11 +66,11 @@ function Legend() {
 }
 
 function FlowView(_: ViewProps) {
+  useNow();
   const { state, update } = useUrlState();
   const repo = state.repo || null;
   const { data: flow, error } = useQuery(`flow:${repo ?? ""}`, (api) => api.flow(repo ?? undefined));
   const running = useQuery("flow-running", (api) => api.agents.list({ state: "running" }));
-  usePoll(running.refetch, 5000);
   const runs = running.data?.runs ?? [];
   const phone = usePhoneFlow();
   const selected = flow && state.node ? nodeOf(flow, state.node) : undefined;

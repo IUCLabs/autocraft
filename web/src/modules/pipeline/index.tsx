@@ -15,6 +15,7 @@ import { ago, num } from "../../lib/format";
 import { Block, ConfirmButton, ErrorLine, Page, useWrite, when } from "../admin/parts";
 import { AccountsPanel } from "../agents/accounts";
 import { PilotPanel, PipelineSwitch, StageLimits } from "./controls";
+import { useNow } from "../../lib/useNow";
 
 // ---- helpers -------------------------------------------------------------------
 
@@ -70,6 +71,7 @@ function Stages({ o }: { o: PipelineOverview }) {
 }
 
 function SyncRuns({ runs, last }: { runs: SyncRun[]; last: string | null }) {
+  useNow();
   return (
     <Block flush title="Sync" aside={last ? `last finished ${ago(last, false)}; runs on its own timer` : "runs on its own timer"}>
       {runs.length === 0 ? (
@@ -111,6 +113,7 @@ function Jobs({ selected }: { selected?: number }) {
   const [state, setState] = useState<JobState | "">("");
   const [limit, setLimit] = useState(25);
   const q = useQuery(`pipeline-jobs:${state}:${limit}`, (a) => a.pipeline.jobs({ state: state || undefined, limit }));
+  useNow(q.data?.jobs.some((j) => j.state === "running") ? 1000 : undefined);
   return (
     <Block
       flush
@@ -195,6 +198,7 @@ function Jobs({ selected }: { selected?: number }) {
 // ---- views -----------------------------------------------------------------------
 
 function RunnerLine({ o }: { o: PipelineOverview }) {
+  useNow();
   return (
     <span className="inline-flex items-center gap-1.5">
       <span className={cn("size-2 rounded-full", o.runner.alive ? "bg-ok" : "bg-bad")} aria-hidden />
@@ -246,6 +250,7 @@ function JobDetailView({ id, operator, back }: { id: number; operator: boolean; 
   // The log tail is read from a file the job writes, which raises no change event: poll while the job runs.
   const q = useQuery(`pipeline-job:${id}`, (a) => a.pipeline.job(id), { pollMs: (d) => (!d || d.state === "queued" || d.state === "running" ? 2000 : false) });
   const j = q.data;
+  useNow(j && (j.state === "queued" || j.state === "running") ? 1000 : undefined);
   const write = useWrite();
   const logRef = useRef<HTMLPreElement>(null);
   useEffect(() => {

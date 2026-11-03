@@ -1,18 +1,22 @@
 import { useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 
-/** Emits the topics that changed; null means "unknown, refresh everything". Returns a stop function. */
+/**
+ * Emits the topics that changed; null means "unknown, refresh everything". With `before` (a time in
+ * ms), only queries last fetched earlier than that are refreshed. Returns a stop function.
+ */
 export type LiveStatus = "connecting" | "open" | "down";
-export type LiveSource = (emit: (topics: string[] | null) => void, status: (s: LiveStatus) => void) => () => void;
+export type LiveSource = (emit: (topics: string[] | null, before?: number) => void, status: (s: LiveStatus) => void) => () => void;
 
 const LiveStatusContext = createContext<LiveStatus>("connecting");
 export const useLiveStatus = () => useContext(LiveStatusContext);
 
 /** Refetches the active queries that read any of `topics`. */
-export function invalidateTopics(qc: QueryClient, topics: string[] | null): void {
+export function invalidateTopics(qc: QueryClient, topics: string[] | null, before?: number): void {
   const changed = topics && new Set(topics);
   void qc.invalidateQueries({
     predicate: (q) => {
+      if (before !== undefined && q.state.dataUpdatedAt >= before) return false;
       const read = q.meta?.topics as string[] | null | undefined;
       return !changed || !read || read.some((t) => changed.has(t));
     },
@@ -23,7 +27,8 @@ export function invalidateTopics(qc: QueryClient, topics: string[] | null): void
  * The server's event stream (GET /api/live). The browser reconnects by itself; every
  * connection starts with the current counter of each topic, and the topics whose counter
  * differs from the last one seen here are invalidated, so changes made while the stream was
- * down are not lost. The first connection only records the counters.
+ * down are not lost. The first connection has no earlier counters: it refreshes every query
+ * fetched before the stream opened, which closes the gap between the first fetch and the stream.
  */
 export function eventSource(url = "/api/live"): LiveSource {
   return (emit, status) => {
@@ -35,8 +40,10 @@ export function eventSource(url = "/api/live"): LiveSource {
       return changed;
     };
     es.addEventListener("hello", (e) => {
+      const first = seen === null;
       const changed = merge((JSON.parse((e as MessageEvent<string>).data) as { seqs: Record<string, number> }).seqs);
-      if (changed.length) emit(changed);
+      if (first) emit(null, Date.now());
+      else if (changed.length) emit(changed);
       status("open");
     });
     es.addEventListener("change", (e) => {
@@ -60,7 +67,7 @@ export function LiveProvider({ source, children }: { source: LiveSource; childre
   const qc = useQueryClient();
   const [status, setStatus] = useState<LiveStatus>("connecting");
   useEffect(() => {
-    return source((topics) => invalidateTopics(qc, topics), setStatus);
+    return source((topics, before) => invalidateTopics(qc, topics, before), setStatus);
   }, [qc, source]);
   return <LiveStatusContext.Provider value={status}>{children}</LiveStatusContext.Provider>;
 }

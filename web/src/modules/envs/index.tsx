@@ -1,20 +1,20 @@
 // Build environments: the workers that run untrusted code, the tasks queued for and running on them, and a
 // task's steps, results, log and artifacts. Everything a worker reported is shown as plain text.
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { Dialog } from "radix-ui";
 import { CheckIcon, CopyIcon, DownloadIcon, HammerIcon, PencilIcon, PlusIcon, XIcon } from "lucide-react";
-import { useApi, useQuery } from "../../api/client";
+import { useApi, usePagedQuery, useQuery } from "../../api/client";
 import type { BuildEnv, BuildSummary, BuildTask, BuildTaskDetail, Capabilities, EnvKind, Requires, TaskBatch, TaskFilter, TaskState } from "../../api/types";
 import type { FeatureModule, ViewProps } from "../../registry/types";
 import { ago, nowMs, num, span } from "../../lib/format";
-import { usePoll } from "../../lib/usePoll";
 import { useUser } from "../../shell/UserContext";
 import { Badge, type Tone } from "../../ui/Badge";
 import { Button } from "../../ui/Button";
 import { RefLink } from "../../ui/RefLink";
 import { cn } from "../../ui/cn";
 import { Block, ConfirmButton, ErrorLine, Page, selectCls, TextInput, useUrlState, useWrite } from "../admin/parts";
+import { useNow } from "../../lib/useNow";
 
 const STATE_TONE: Record<TaskState, Tone> = { queued: "neutral", claimed: "accent", running: "accent", done: "ok", failed: "bad", cancelled: "neutral", lost: "bad" };
 const STATE_LABEL: Record<TaskState, string> = { queued: "Queued", claimed: "Starting", running: "Running", done: "Done", failed: "Failed", cancelled: "Cancelled", lost: "Lost" };
@@ -113,6 +113,7 @@ function EditEnv({ e, onDone }: { e: BuildEnv; onDone: () => void }) {
 }
 
 function EnvCard({ e, operator }: { e: BuildEnv; operator: boolean }) {
+  useNow();
   const api = useApi();
   const write = useWrite();
   const [editing, setEditing] = useState(false);
@@ -224,11 +225,11 @@ function AddEnv({ onDone }: { onDone: () => void }) {
   );
 }
 
-const useEnvs = () => useQuery<BuildEnv[]>("envs", (a) => a.envs.list());
+// "Online" ages out of last_seen_at with no database write, so the list also refreshes on a timer.
+const useEnvs = () => useQuery<BuildEnv[]>("envs", (a) => a.envs.list(), { pollMs: 30_000 });
 
 function EnvsPanel() {
   const q = useEnvs();
-  usePoll(q.refetch, 5000);
   const operator = useUser().role === "operator";
   const [adding, setAdding] = useState(false);
   const free = (q.data ?? []).filter((e) => e.enabled && e.online && !e.pausedReason).reduce((s, e) => s + Math.max(0, e.slots - e.running), 0);
@@ -313,34 +314,8 @@ function TaskSource({ t, stop }: { t: BuildTask; stop?: boolean }) {
 }
 
 function useTasks(filter: Omit<TaskFilter, "cursor">) {
-  const api = useApi();
-  const key = JSON.stringify(filter);
-  const [rows, setRows] = useState<BuildTask[]>([]);
-  const [cursor, setCursor] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string>();
-  const seq = useRef(0);
-  const load = useCallback(
-    (from: string | null, replace: boolean) => {
-      const mine = ++seq.current;
-      setLoading(true);
-      api.tasks.list({ ...JSON.parse(key), cursor: from ?? undefined }).then(
-        (p) => {
-          if (mine !== seq.current) return;
-          setRows((r) => (replace ? p.tasks : [...r, ...p.tasks]));
-          setCursor(p.next);
-          setError(undefined);
-          setLoading(false);
-        },
-        (e: Error) => mine === seq.current && (setError(e.message), setLoading(false)),
-      );
-    },
-    [api, key],
-  );
-  useEffect(() => load(null, true), [load]);
-  useEffect(() => api.subscribe(() => load(null, true)), [api, load]);
-  usePoll(() => load(null, true), 8000);
-  return { rows, loading, error, more: cursor !== null, loadMore: () => load(cursor, false) };
+  const q = usePagedQuery(`tasks:${JSON.stringify(filter)}`, (api, cursor) => api.tasks.list({ ...filter, cursor }), (p) => p.next);
+  return { rows: q.pages?.flatMap((p) => p.tasks) ?? [], loading: q.loading || q.loadingMore, error: q.error?.message, more: q.hasMore, loadMore: q.loadMore };
 }
 
 function Filters({ f, update }: { f: Record<string, string | undefined>; update: (p: Record<string, string | null>) => void }) {
@@ -372,6 +347,7 @@ function Tasks({ selected }: { selected?: number }) {
   const { state: f, update } = useUrlState();
   const nav = useNavigate();
   const t = useTasks({ state: f.state as TaskFilter["state"], env: f.env, repo: f.repo, limit: 50 });
+  useNow(t.rows.some((r) => ACTIVE.includes(r.state)) ? 1000 : undefined);
   return (
     <Block flush title="Recent tasks" aside="newest first">
       <Filters f={f} update={update} />
@@ -427,7 +403,7 @@ function DetailBody({ id }: { id: number }) {
   const api = useApi();
   const write = useWrite();
   const q = useQuery<BuildTaskDetail>(`task-${id}`, (a) => a.tasks.get(id));
-  usePoll(q.refetch, 5000);
+  useNow(q.data && ACTIVE.includes(q.data.state) ? 1000 : undefined);
   const operator = useUser().role === "operator";
   const t = q.data;
   if (!t) return <div className="p-4">{q.error ? <ErrorLine error={q.error.message} /> : <span className="text-sm text-ink/50">Loading.</span>}</div>;
@@ -624,8 +600,7 @@ function PhoneEnvs(props: ViewProps) {
 
 /** Queued and running tasks and free slots in the Verify stage's panel (slot flow.panel). */
 function FlowVerify({ params }: ViewProps) {
-  const q = useQuery<BuildSummary>("build-summary", (a) => a.tasks.summary());
-  usePoll(q.refetch, 5000);
+  const q = useQuery<BuildSummary>("build-summary", (a) => a.tasks.summary(), { pollMs: 30_000 });
   if (params.node !== "verify") return null;
   const s = q.data;
   return (

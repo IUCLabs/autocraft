@@ -1,9 +1,9 @@
 // Merge queue: every PR with a take or take-fix review at its current head, and
 // what it waits on. Read-only; merges are started from the Pipeline page.
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { ChevronRightIcon, ChevronsDownUpIcon, ChevronsUpDownIcon, GitMergeIcon, XIcon } from "lucide-react";
-import { useApi, useQuery } from "../../api/client";
+import { useQuery, usePagedQuery } from "../../api/client";
 import type { BatchList, BatchState, QueueBatch, QueueFilter, QueueList, QueueRow, QueueState, Tier } from "../../api/types";
 import type { FeatureModule, ViewProps } from "../../registry/types";
 import { Badge, type Tone } from "../../ui/Badge";
@@ -12,6 +12,7 @@ import { cn } from "../../ui/cn";
 import { ago, num } from "../../lib/format";
 import { useIsPhone } from "../../shell/useMedia";
 import { Block, ErrorLine, Page, selectCls, useUrlState } from "../admin/parts";
+import { useNow } from "../../lib/useNow";
 
 export const STATE: Record<QueueState, [string, Tone, string]> = {
   ready: ["Ready", "ok", "Covered by the merge rule; merges on the next run"],
@@ -48,32 +49,12 @@ function useFilter() {
   return { filter, update };
 }
 
-// The first page for a filter, then more on request: pages append, a new filter starts over.
+// Pages append on "Show more"; a change refetches every loaded page, so the list keeps its length.
 function usePagedQueue(filter: QueueFilter) {
-  const api = useApi();
-  const key = JSON.stringify(filter);
-  const [data, setData] = useState<QueueList>();
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<Error>();
-  const seq = useRef(0);
-  const load = useCallback(
-    (after: string | undefined) => {
-      const mine = ++seq.current;
-      setLoading(true);
-      api.queue({ ...(JSON.parse(key) as QueueFilter), after }).then(
-        (p) => {
-          if (mine !== seq.current) return;
-          setData((d) => (after && d ? { ...p, rows: [...d.rows, ...p.rows] } : p));
-          setError(undefined);
-          setLoading(false);
-        },
-        (e: Error) => mine === seq.current && (setError(e), setLoading(false)),
-      );
-    },
-    [api, key],
-  );
-  useEffect(() => load(undefined), [load]);
-  return { data, error, loading, loadMore: () => data?.next && load(data.next) };
+  const q = usePagedQuery(`queue:${JSON.stringify(filter)}`, (api, after) => api.queue({ ...filter, after }), (p) => p.next);
+  const last = q.pages?.[q.pages.length - 1];
+  const data: QueueList | undefined = last && { ...last, rows: q.pages!.flatMap((p) => p.rows) };
+  return { data, error: q.error, loading: q.loading || q.loadingMore, loadMore: q.loadMore };
 }
 
 function QueueView(_: ViewProps) {
@@ -159,29 +140,10 @@ const BATCH_STATE: Record<BatchState, [string, Tone]> = {
 
 // Batches page in like the PR rows: newest first, "Show more" for the next page.
 function usePagedBatches(repo: string | undefined) {
-  const api = useApi();
-  const [data, setData] = useState<BatchList>();
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<Error>();
-  const seq = useRef(0);
-  const load = useCallback(
-    (after: string | undefined) => {
-      const mine = ++seq.current;
-      setLoading(true);
-      api.queueBatches({ repo, after }).then(
-        (p) => {
-          if (mine !== seq.current) return;
-          setData((d) => (after && d ? { ...p, batches: [...d.batches, ...p.batches] } : p));
-          setError(undefined);
-          setLoading(false);
-        },
-        (e: Error) => mine === seq.current && (setError(e), setLoading(false)),
-      );
-    },
-    [api, repo],
-  );
-  useEffect(() => load(undefined), [load]);
-  return { data, error, loading, loadMore: () => data?.next && load(data.next) };
+  const q = usePagedQuery(`queue-batches:${repo ?? ""}`, (api, after) => api.queueBatches({ repo, after }), (p) => p.next);
+  const last = q.pages?.[q.pages.length - 1];
+  const data: BatchList | undefined = last && { ...last, batches: q.pages!.flatMap((p) => p.batches) };
+  return { data, error: q.error, loading: q.loading || q.loadingMore, loadMore: q.loadMore };
 }
 
 const gh = (path: string) => `https://github.com/${path}`;
@@ -234,6 +196,7 @@ type BatchProps = { batches: QueueBatch[]; isOpen: (b: QueueBatch) => boolean; t
 
 /** The batch's facts in one run: used by the table header row and the phone card. */
 function BatchFacts({ b }: { b: QueueBatch }) {
+  useNow();
   const stop = { onClick: (e: React.MouseEvent) => e.stopPropagation() };
   const branch = b.fork ? (
     <a href={gh(`${b.fork}/tree/${b.branch}`)} target="_blank" rel="noopener noreferrer" title="Open the branch on GitHub" className={cn("font-mono text-xs [overflow-wrap:anywhere]", extLink)} {...stop}>
@@ -377,6 +340,7 @@ function VerifyCell({ row, detail = true }: { row: QueueRow; detail?: boolean })
 
 /** The review text, clamped to two lines; it opens and closes by click only when the text is longer than that. */
 function ReviewText({ r }: { r: QueueRow }) {
+  useNow();
   const [open, setOpen] = useState(false);
   const [clamped, setClamped] = useState(false);
   const ref = useRef<HTMLParagraphElement>(null);

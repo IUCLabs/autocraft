@@ -9,11 +9,13 @@ import { Badge } from "../../ui/Badge";
 import { Button } from "../../ui/Button";
 import { cn } from "../../ui/cn";
 import { Block, ErrorLine, TextInput, useWrite } from "../admin/parts";
+import { useNow } from "../../lib/useNow";
 
 export const useAccounts = () => useQuery<ClaudeAccount[]>("accounts", (a) => a.accounts.list());
 
 /** One usage bar: width is the share used; the colour warns from 75 % and goes critical from 90 %. */
 export function UsageBar({ label, pct, resetsAt }: { label: string; pct: number | null; resetsAt: string | null }) {
+  useNow();
   const tone = pct === null ? "bg-ink/20" : pct >= 90 ? "bg-bad" : pct >= 75 ? "bg-warn" : "bg-c1";
   const resets = resetsAt ? Date.parse(resetsAt) - nowMs() : null;
   return (
@@ -141,6 +143,7 @@ function EditForm({ a, onDone }: { a: ClaudeAccount; onDone: () => void }) {
 }
 
 function AccountCard({ a, operator }: { a: ClaudeAccount; operator: boolean }) {
+  useNow();
   const [editing, setEditing] = useState(false);
   return (
     <li className={cn("min-w-0 rounded-md border border-line p-4", !a.enabled && "bg-ink/[0.02]")}>

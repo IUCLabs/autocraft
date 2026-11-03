@@ -1,13 +1,14 @@
 // The Agents page: model calls running now, recent calls with server-side filters and keyset paging,
 // and a detail panel with the rendered prompt and the output.
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { Dialog } from "radix-ui";
 import { BotIcon, ChevronDownIcon, ChevronRightIcon, XIcon } from "lucide-react";
-import { useApi, useQuery } from "../../api/client";
+import { usePagedQuery, useQuery } from "../../api/client";
 import type { AgentRun, AgentRunDetail, AgentRunFilter, AgentRunPage, AgentRunState } from "../../api/types";
 import type { FeatureModule, ViewProps } from "../../registry/types";
 import { ago, nowMs, num, span } from "../../lib/format";
+import { useNow } from "../../lib/useNow";
 import { Badge, type Tone } from "../../ui/Badge";
 import { Button } from "../../ui/Button";
 import { RefLink } from "../../ui/RefLink";
@@ -52,6 +53,7 @@ function RunningNow({ selected }: { selected?: number }) {
   const q = useQuery<AgentRunPage>("agents-running", (a) => a.agents.list({ state: "running" }));
   const nav = useNavigate();
   const runs = q.data?.runs ?? [];
+  useNow(runs.length ? 1000 : undefined);
   return (
     <Block flush title={<>Running now {q.data && <span className="num ml-1 font-normal text-ink/50">{runs.length}</span>}</>} aside="live">
       <ErrorLine error={q.error?.message} className="p-4" />
@@ -83,32 +85,8 @@ function RunningNow({ selected }: { selected?: number }) {
 // ---- recent runs ---------------------------------------------------------------
 
 function useRecent(filter: Omit<AgentRunFilter, "cursor">) {
-  const api = useApi();
-  const key = JSON.stringify(filter);
-  const [rows, setRows] = useState<AgentRun[]>([]);
-  const [cursor, setCursor] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string>();
-  const seq = useRef(0);
-  const load = useCallback(
-    (from: string | null, replace: boolean) => {
-      const mine = ++seq.current;
-      setLoading(true);
-      api.agents.list({ ...JSON.parse(key), cursor: from ?? undefined }).then(
-        (p) => {
-          if (mine !== seq.current) return;
-          setRows((r) => (replace ? p.runs : [...r, ...p.runs]));
-          setCursor(p.nextCursor);
-          setError(undefined);
-          setLoading(false);
-        },
-        (e: Error) => mine === seq.current && (setError(e.message), setLoading(false)),
-      );
-    },
-    [api, key],
-  );
-  useEffect(() => load(null, true), [load]);
-  return { rows, loading, error, more: cursor !== null, loadMore: () => load(cursor, false) };
+  const q = usePagedQuery(`agents-recent:${JSON.stringify(filter)}`, (api, cursor) => api.agents.list({ ...filter, cursor }), (p) => p.nextCursor);
+  return { rows: q.pages?.flatMap((p) => p.runs) ?? [], loading: q.loading || q.loadingMore, error: q.error?.message, more: q.hasMore, loadMore: q.loadMore };
 }
 
 function Filters({ f, update }: { f: Record<string, string | undefined>; update: (p: Record<string, string | null>) => void }) {
@@ -142,6 +120,7 @@ function RecentRuns({ selected }: { selected?: number }) {
   const { state: f, update } = useUrlState();
   const nav = useNavigate();
   const recent = useRecent({ state: (f.state as AgentRunState | undefined) ?? "recent", step: f.step, account: f.account, repo: f.repo, limit: 50 });
+  useNow(recent.rows.some((r) => r.state === "running") ? 1000 : undefined);
   return (
     <Block flush title="Recent runs" aside="newest first">
       <Filters f={f} update={update} />
@@ -218,6 +197,7 @@ function Collapsible({ title, text, empty, open: initial = false }: { title: str
 function DetailBody({ id }: { id: number }) {
   const q = useQuery<AgentRunDetail>(`agent-${id}`, (a) => a.agents.get(id));
   const r = q.data;
+  useNow(r && !r.endedAt ? 1000 : undefined);
   if (!r) return <div className="p-4">{q.error ? <ErrorLine error={q.error.message} /> : <span className="text-sm text-ink/50">Loading.</span>}</div>;
   return (
     <div className="flex flex-col gap-3 p-4">
@@ -327,8 +307,9 @@ function PhoneAgents(props: ViewProps) {
 function FlowRunning({ params }: ViewProps) {
   const steps = (params.steps ?? "").split(",").filter(Boolean);
   const q = useQuery<AgentRunPage>("agents-running", (a) => a.agents.list({ state: "running" }));
-  if (steps.length === 0) return null;
   const runs = (q.data?.runs ?? []).filter((r) => steps.includes(r.step));
+  useNow(runs.length ? 1000 : undefined);
+  if (steps.length === 0) return null;
   return (
     <section className="border-t border-line px-4 py-3">
       <div className="mb-1.5 flex flex-wrap items-baseline gap-x-2">

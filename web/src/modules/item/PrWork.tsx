@@ -7,6 +7,7 @@ import { Badge, type Tone } from "../../ui/Badge";
 import { useUser } from "../../shell/UserContext";
 import { ConfirmButton, ErrorLine, useWrite } from "../admin/parts";
 import { ago, span } from "../../lib/format";
+import { useNow } from "../../lib/useNow";
 
 function Box({ title, aside, children }: { title: string; aside?: ReactNode; children: ReactNode }) {
   return (
@@ -30,6 +31,7 @@ const T_TONE: Record<string, Tone> = { queued: "neutral", claimed: "accent", run
 const stepText = (r: TaskResult) => `${r.timedOut ? "timed out" : `exit ${r.exitCode ?? "none"}`} · ${r.durationMs < 60_000 ? `${(r.durationMs / 1000).toFixed(1)} s` : span(r.durationMs)}`;
 
 function Verify({ v }: { v: ItemVerification }) {
+  useNow();
   const [label, tone] = V_STATE[v.state];
   const p = v.plan;
   return (
@@ -101,6 +103,7 @@ function Verify({ v }: { v: ItemVerification }) {
 const R_VERDICT: Record<ReviewVerdictName, [string, Tone]> = { take: ["Take", "ok"], "take-fix": ["Take with fixes", "ok"], hold: ["Hold", "warn"], close: ["Close", "bad"] };
 
 function ReviewCard({ title, side, isFinal, extra, children }: { title: string; side: ReviewSide | null; isFinal: boolean; extra?: ReactNode; children?: ReactNode }) {
+  useNow();
   const v = side && R_VERDICT[side.verdict];
   return (
     <div className="min-w-0 rounded-md border border-line px-4 py-3 text-sm">
@@ -179,6 +182,7 @@ function Reviews({ r }: { r: ItemReviews }) {
 }
 
 function PatchChecks({ rows }: { rows: ItemPatchCheck[] }) {
+  useNow();
   return (
     <ul className="divide-y divide-line rounded-md border border-line text-sm">
       {rows.map((c, i) => (
@@ -208,6 +212,7 @@ const F_STATE: Record<ItemFixup["state"], [string, Tone]> = {
 };
 
 function Fixups({ rows }: { rows: ItemFixup[] }) {
+  useNow();
   return (
     <ol className="divide-y divide-line rounded-md border border-line text-sm">
       {rows.map((f, i) => {
@@ -235,6 +240,7 @@ function Fixups({ rows }: { rows: ItemFixup[] }) {
 const A_STATE: Record<ItemAction["state"], [string, Tone]> = { done: ["Done", "ok"], skipped: ["Skipped", "neutral"], failed: ["Failed", "bad"] };
 
 function Actions({ rows }: { rows: ItemAction[] }) {
+  useNow();
   return (
     <ul className="divide-y divide-line rounded-md border border-line text-sm">
       {rows.map((a, i) => {

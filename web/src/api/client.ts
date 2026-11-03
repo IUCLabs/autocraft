@@ -1,4 +1,4 @@
-import { keepPreviousData, useQuery as useTanstackQuery } from "@tanstack/react-query";
+import { keepPreviousData, useInfiniteQuery, useQuery as useTanstackQuery } from "@tanstack/react-query";
 import { createContext, useCallback, useContext } from "react";
 import { topicsFor } from "./topics";
 import type {
@@ -234,4 +234,42 @@ export function useQuery<T>(key: string, fn: (api: Api) => Promise<T>, opts: { p
   const { refetch } = q;
   const again = useCallback(() => void refetch(), [refetch]);
   return { data: q.data, error: q.error ?? undefined, loading: q.isFetching, refetch: again };
+}
+
+export interface PagedQuery<P> {
+  /** Every loaded page, first to last; undefined until the first one arrives. */
+  pages?: P[];
+  error?: Error;
+  /** True while the first page loads or a refetch of the loaded pages runs. */
+  loading: boolean;
+  hasMore: boolean;
+  loadingMore: boolean;
+  loadMore: () => void;
+  refetch: () => void;
+}
+
+/**
+ * A cursor-paged list in the shared cache. A change event refetches every loaded page in order, so
+ * "Show more" keeps its place. `next` gives the cursor of the page after `page`, or null on the last one.
+ */
+export function usePagedQuery<P>(key: string, fn: (api: Api, cursor: string | undefined) => Promise<P>, next: (page: P) => string | null | undefined): PagedQuery<P> {
+  const api = useApi();
+  const q = useInfiniteQuery<P, Error, { pages: P[] }, string[], string | undefined>({
+    queryKey: [key],
+    queryFn: ({ pageParam }) => fn(api, pageParam),
+    initialPageParam: undefined,
+    getNextPageParam: (last) => next(last) ?? undefined,
+    meta: { topics: topicsFor(key) },
+    placeholderData: keepPreviousData,
+  });
+  const { refetch, fetchNextPage } = q;
+  return {
+    pages: q.data?.pages,
+    error: q.error ?? undefined,
+    loading: q.isFetching && !q.isFetchingNextPage,
+    hasMore: !!q.hasNextPage,
+    loadingMore: q.isFetchingNextPage,
+    loadMore: useCallback(() => void fetchNextPage(), [fetchNextPage]),
+    refetch: useCallback(() => void refetch(), [refetch]),
+  };
 }

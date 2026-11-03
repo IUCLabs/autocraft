@@ -10,6 +10,7 @@ import { useUser } from "../../shell/UserContext";
 import { Badge } from "../../ui/Badge";
 import { Button } from "../../ui/Button";
 import { Block, ConfirmButton, ErrorLine, TextInput, useWrite, when } from "../admin/parts";
+import { useNow } from "../../lib/useNow";
 
 const usePipelineState = () => useQuery<PipelineState>("pipeline-state", (a) => a.pipeline.state());
 
@@ -50,6 +51,7 @@ function ConfirmOn({ limits, open, busy, onCancel, onConfirm }: { limits: StageL
 
 /** The On/Off switch with who set it and when. Operators get the control; everyone else sees the state. */
 export function PipelineSwitch({ className }: { className?: string }) {
+  useNow();
   const api = useApi();
   const operator = useUser().role === "operator";
   const q = usePipelineState();
