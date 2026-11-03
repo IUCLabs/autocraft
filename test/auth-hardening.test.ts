@@ -10,7 +10,7 @@ import { addLogin } from "../src/access.ts";
 import { connect } from "../src/db.ts";
 import { ConfigError, loadConfig } from "../src/dash/server/config.ts";
 import { startServer } from "../src/dash/server/index.ts";
-import { FakeProvider } from "../src/dash/server/provider.ts";
+import { FakeProvider, GitHubProvider } from "../src/dash/server/provider.ts";
 import { OPERATOR_SESSION_MAX, SESSION_MAX, loadSession } from "../src/dash/server/sessions.ts";
 import { safeReturnTo } from "../src/dash/server/util.ts";
 
@@ -47,6 +47,14 @@ async function signIn(login: string, returnTo = "/"): Promise<{ status: number; 
   const session = done.headers.getSetCookie().find((c) => c.startsWith("__Host-craft_session=") && !/Max-Age=0/.test(c));
   return { status: done.status, location: done.headers.get("location"), cookie: session ? session.split(";")[0]! : null };
 }
+
+describe("GitHub sign-in", () => {
+  test("signing in again after a sign-out shows GitHub's account picker; a plain sign-in does not", () => {
+    const gh = new GitHubProvider("id", "secret");
+    assert.equal(new URL(gh.authorizeUrl("s", "c", "https://x/auth/callback", true)).searchParams.get("prompt"), "select_account");
+    assert.equal(new URL(gh.authorizeUrl("s", "c", "https://x/auth/callback")).searchParams.get("prompt"), null);
+  });
+});
 
 describe("return_to", () => {
   test("only same-site paths survive", () => {

@@ -259,7 +259,7 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
       db.prepare("INSERT INTO oauth_states (state, verifier, return_to, created_at) VALUES (?, ?, ?, ?)")
         .run(state, verifier, returnTo, new Date().toISOString());
       return {
-        r: { redirect: provider.authorizeUrl(state, pkceChallenge(verifier), callbackUrl) },
+        r: { redirect: provider.authorizeUrl(state, pkceChallenge(verifier), callbackUrl, url.searchParams.get("select") === "1") },
         cookies: [cookie(STATE_COOKIE, state, 600)],
       };
     }
@@ -317,7 +317,7 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
       return { r: { redirect: "/auth/signed-out" }, cookies: [cookie(SESSION_COOKIE, "", 0)] };
     }
     if (req.method === "GET" && path === "/auth/signed-out") {
-      return { r: { html: plainPage(nonce, "Signed out", `<p class="muted">You are signed out of the dashboard on this device.</p><p><a class="button" href="/auth/signin">Sign in again</a></p>`) } };
+      return { r: { html: plainPage(nonce, "Signed out", `<p class="muted">You are signed out of the dashboard on this device.</p><p><a class="button" href="/auth/signin?select=1">Sign in again</a></p>`) } };
     }
     if (req.method === "GET" && path === "/auth/dev/authorize" && provider instanceof FakeProvider) {
       const q = url.searchParams;

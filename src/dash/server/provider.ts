@@ -24,7 +24,8 @@ export type Tokens = {
 export type GithubUser = { login: string; id: number };
 
 export interface Provider {
-  authorizeUrl(state: string, challenge: string, redirectUri: string): string;
+  /** With selectAccount the provider shows its account picker even when someone is already signed in there. */
+  authorizeUrl(state: string, challenge: string, redirectUri: string, selectAccount?: boolean): string;
   // Each returns null when the provider rejects the code or refresh token, and
   // throws on a transport failure.
   exchange(code: string, verifier: string, redirectUri: string): Promise<Tokens | null>;
@@ -55,12 +56,13 @@ export class GitHubProvider implements Provider {
     this.#id = clientId;
     this.#secret = clientSecret;
   }
-  authorizeUrl(state: string, challenge: string, redirectUri: string): string {
+  authorizeUrl(state: string, challenge: string, redirectUri: string, selectAccount = false): string {
     // No scopes: the token reads public data, which is all a permission check on a public repo needs.
     const q = new URLSearchParams({
       client_id: this.#id, redirect_uri: redirectUri, state,
       code_challenge: challenge, code_challenge_method: "S256", allow_signup: "false",
     });
+    if (selectAccount) q.set("prompt", "select_account");
     return `https://github.com/login/oauth/authorize?${q}`;
   }
   exchange(code: string, verifier: string, redirectUri: string): Promise<Tokens | null> {
