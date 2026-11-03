@@ -9,7 +9,7 @@ export type Assignable = { id: string; state: string; assignees: string[] };
 
 /** An issue's id, state and assignees, or null when it does not exist. */
 export async function issueInfo(q: Querier, org: string, repo: string, number: number): Promise<Assignable | null> {
-  const r = await q.query(`query($name: String!, $n: Int!) { repository(owner: "${org}", name: $name) { issue(number: $n) { id state assignees(first: 10) { nodes { login } } } } }`, { name: repo, n: number }) as
+  const r = await q.query(`query($owner: String!, $name: String!, $n: Int!) { repository(owner: $owner, name: $name) { issue(number: $n) { id state assignees(first: 10) { nodes { login } } } } }`, { owner: org, name: repo, n: number }) as
     { repository?: { issue?: { id: string; state: string; assignees?: { nodes?: { login: string }[] } } | null } };
   const i = r.repository?.issue;
   return i ? { id: i.id, state: i.state, assignees: (i.assignees?.nodes ?? []).map((a) => a.login) } : null;
