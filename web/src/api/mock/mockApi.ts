@@ -11,7 +11,7 @@ import { semanticHits, similarFor } from "./similarFixtures";
 import { classifierReport, costReport, disagreementList } from "./insightFixtures";
 import { itemList, settledFor } from "./itemsFixtures";
 import { prWorkFor } from "./verifyFixtures";
-import { queueList } from "./queueFixtures";
+import { queueBatchList, queueList } from "./queueFixtures";
 import { workList } from "./workFixtures";
 import { flowFixture } from "./flowFixtures";
 import { DECISIONS, MOCK_USERS, NOW, REPOS, SEARCH_POOL, THREADS, itemFor, permFor, progress, type MockRole } from "./fixtures";
@@ -175,6 +175,7 @@ export function createMockApi(): Api {
     ...createBuildMock(me, changed),
     prompts: () => wait(promptsReport(null), 60),
     queue: (f) => wait(queueList(f), 60),
+    queueBatches: (f) => wait(queueBatchList(f), 60),
     flow: (repo) => wait(flowFixture(repo), 60),
     signOut: () => wait(undefined),
     subscribe(fn) {

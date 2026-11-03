@@ -146,7 +146,7 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
   // GET endpoints that aggregate the mirror or run the embedder: a burst, then 30 a minute, per session.
   const expensiveGets = new TokenBucket(20, 0.5);
   const isExpensive = (path: string, q: URLSearchParams) =>
-    path === "/api/queue" || path.startsWith("/api/contributors") || (path === "/api/search" && q.get("mode") === "semantic");
+    path === "/api/queue" || path === "/api/queue/batches" || path.startsWith("/api/contributors") || (path === "/api/search" && q.get("mode") === "semantic");
   const callbackUrl = `${config.baseUrl ?? ""}/auth/callback`;
   let lastPrune = 0;
 

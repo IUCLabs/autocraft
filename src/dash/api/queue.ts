@@ -1,9 +1,9 @@
 // The merge queue for the dashboard: read-only, anyone signed in.
 import type { DatabaseSync } from "node:sqlite";
-import type { BatchState, Mergeable, QueueBatch, QueueList, QueueRow, QueueState, Tier, TypeLabel } from "../../../web/src/api/types.ts";
+import type { BatchList, BatchState, Mergeable, QueueBatch, QueueList, QueueRow, QueueState, Tier, TypeLabel } from "../../../web/src/api/types.ts";
 import { latestRun } from "../../classify/settled.ts";
 import { buildQueue, countMerged, countStates, QUEUE_STATES, type QueueEntry } from "../../merge/queue.ts";
-import { listBatches } from "../../merge/batch-store.ts";
+import { pageBatches } from "../../merge/batch-store.ts";
 import { HttpError } from "../server/util.ts";
 import { trackedNames } from "../../repos.ts";
 import type { Req } from "../types.ts";
@@ -81,7 +81,7 @@ export async function queue(db: DatabaseSync, req: Req): Promise<QueueList> {
     const rest = from < 0 ? [] : entries.slice(from);
     const rows = rest.slice(0, limit);
     return {
-      rows: rows.map(toRow), counts: countStates(entries), total: entries.length, batches: [],
+      rows: rows.map(toRow), counts: countStates(entries), total: entries.length,
       next: rest.length > limit ? cursorOf(rows[rows.length - 1]!) : null,
     };
   }
@@ -103,9 +103,26 @@ export async function queue(db: DatabaseSync, req: Req): Promise<QueueList> {
     more = rest.length > limit;
   }
   const total = state === "merged" ? counts.merged : Object.entries(counts).reduce((a, [k, n]) => a + (k === "merged" || (state && k !== state) ? 0 : n), 0);
-  const batches = listBatches(db, { repo, exclude: hidden }).map((b): QueueBatch => ({
-    id: b.id, repo: b.repo, branch: b.branch, state: b.state as BatchState, prs: b.prs.map((p) => ({ number: p.number, head: p.head_oid })),
+  return { rows: page.map(toRow), counts, total, next: more ? cursorOf(page[page.length - 1]!) : null };
+}
+
+/** One page of integration batches, newest first, each with its member PRs as queue rows. `after` is the id of the last batch of the previous page. */
+export async function queueBatches(db: DatabaseSync, req: Req): Promise<BatchList> {
+  const repo = req.query.get("repo") || undefined;
+  const limit = Math.min(Math.max(Number(req.query.get("limit")) || 20, 1), 100);
+  const afterRaw = req.query.get("after");
+  const after = afterRaw ? Number(afterRaw) : undefined;
+  if (after !== undefined && !Number.isInteger(after)) throw new HttpError(400, "after must be a batch id");
+  const visible = new Set(await visibleRepos(db, req));
+  const hidden = trackedNames(db).filter((r) => !visible.has(r));
+  if (repo && !visible.has(repo)) throw new HttpError(404, `${repo} is not a tracked repo`);
+  const { batches, total, more } = pageBatches(db, { repo, exclude: hidden, before: after, limit });
+  const refs = batches.flatMap((b) => b.prs.map((p) => `${b.repo}#${p.number}`));
+  const rows = new Map(refs.length ? buildQueue(db, { merged: "all", refs, run: latestRun(db) }).map((e) => [`${e.repo}#${e.number}`, toRow(e)]) : []);
+  const out = batches.map((b): QueueBatch => ({
+    id: b.id, repo: b.repo, branch: b.branch, fork: b.fork, state: b.state as BatchState, baseSha: b.base_sha, size: b.prs.length,
+    prs: b.prs.flatMap((p) => rows.get(`${b.repo}#${p.number}`) ?? []),
     prNumber: b.pr_number, prUrl: b.pr_url, summary: b.summary, createdAt: b.created_at, updatedAt: b.updated_at,
   }));
-  return { rows: page.map(toRow), counts, total, batches, next: more ? cursorOf(page[page.length - 1]!) : null };
+  return { batches: out, total, next: more ? String(out[out.length - 1]!.id) : null };
 }

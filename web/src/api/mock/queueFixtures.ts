@@ -1,5 +1,5 @@
 // Fake merge queue: a few PRs in every state, over the mock repos.
-import type { QueueBatch, QueueFilter, QueueList, QueueRow, QueueState, TypeLabel } from "../types";
+import type { BatchFilter, BatchList, QueueBatch, QueueFilter, QueueList, QueueRow, QueueState, TypeLabel } from "../types";
 import { AUTHORS, DECISIONS, NOW, REPOS, rng, titleFor } from "./fixtures";
 
 const STATES: QueueState[] = ["ready", "decision-answered-merge", "refused", "waiting-ci", "ci-failed", "conflict", "needs-fix-up", "waiting-opus", "waiting-verify", "verify-failed", "verify-error", "needs-decision", "declined", "merged"];
@@ -62,11 +62,27 @@ const ROWS: QueueRow[] = (() => {
   return out.sort((a, b) => a.repo.localeCompare(b.repo) || a.number - b.number);
 })();
 
-const BATCHES: QueueBatch[] = [
-  { id: 3, repo: "photocraft", branch: "integration-photocraft-20261103-2", state: "open", prs: [{ number: 412, head: "a1b2c3d" }, { number: 418, head: "e4f5a6b" }, { number: 421, head: "c7d8e9f" }], prNumber: 430, prUrl: "https://github.com/storytold/photocraft/pull/430", summary: null, createdAt: "2026-11-03T08:10:00Z", updatedAt: "2026-11-03T08:40:00Z" },
-  { id: 2, repo: "photocraft", branch: "integration-photocraft-20261103-1", state: "split", prs: [{ number: 405, head: "1a2b3c4" }, { number: 407, head: "5d6e7f8" }], prNumber: 428, prUrl: "https://github.com/storytold/photocraft/pull/428", summary: "upstream CI failed on the batch PR", createdAt: "2026-11-03T06:00:00Z", updatedAt: "2026-11-03T07:30:00Z" },
-  { id: 1, repo: "designcraft", branch: "integration-designcraft-20261102-1", state: "merged", prs: [{ number: 88, head: "9a8b7c6" }], prNumber: 91, prUrl: "https://github.com/storytold/designcraft/pull/91", summary: null, createdAt: "2026-11-02T12:00:00Z", updatedAt: "2026-11-02T13:00:00Z" },
-];
+const BATCH_STATES: QueueBatch["state"][] = ["checking", "open", "merged", "merged", "failed", "split", "superseded", "merged"];
+
+// Newest first; every repo's rows are shared round-robin so a batch can hold up to five PRs.
+const BATCHES: QueueBatch[] = Array.from({ length: 45 }, (_, k) => {
+  const id = 45 - k;
+  const state = k < 2 ? (k ? "open" : "checking") : BATCH_STATES[k % BATCH_STATES.length]!;
+  const repo = REPOS[id % 3]!;
+  const pool = ROWS.filter((r) => r.repo === repo);
+  const size = 1 + (id % 5);
+  const prs = pool.length ? Array.from({ length: Math.min(size, pool.length) }, (_, i) => pool[(id + i) % pool.length]!) : [];
+  const created = new Date(NOW - (k * 7 + 1) * 3_600_000).toISOString();
+  const day = created.slice(0, 10).replace(/-/g, "");
+  const branch = `integration-${repo}-${day}-${(id % 3) + 1}`;
+  const opened = state !== "checking";
+  return {
+    id, repo, branch, fork: opened ? `pipeline-bot/${repo}` : null, state, baseSha: (id * 2654435761 >>> 0).toString(16).padStart(8, "0") + "b3d5a9f1c2e4078615a4d3b2c1f0e9d8",
+    size, prs, prNumber: opened ? 500 + id : null, prUrl: opened ? `https://github.com/storytold/${repo}/pull/${500 + id}` : null,
+    summary: state === "failed" ? "the regression test panics at png.rs:91: the decoded stride is 4096 where 8192 is expected" : state === "split" ? "upstream CI failed on the batch PR" : state === "superseded" ? "main moved: a new batch took over" : null,
+    createdAt: created, updatedAt: new Date(NOW - k * 7 * 3_600_000 - 600_000).toISOString(),
+  };
+});
 
 export function queueList(f: QueueFilter): QueueList {
   const all = ROWS.filter((x) => !f.repo || x.repo === f.repo);
@@ -75,5 +91,12 @@ export function queueList(f: QueueFilter): QueueList {
   const from = f.after ? match.findIndex((x) => `${x.repo}#${x.number}` === f.after) + 1 : 0;
   const rows = match.slice(from, from + (f.limit ?? 100));
   const last = rows[rows.length - 1];
-  return { rows, counts, total: match.length, batches: BATCHES.filter((b) => !f.repo || b.repo === f.repo), next: last && from + rows.length < match.length ? `${last.repo}#${last.number}` : null };
+  return { rows, counts, total: match.length, next: last && from + rows.length < match.length ? `${last.repo}#${last.number}` : null };
+}
+
+export function queueBatchList(f: BatchFilter): BatchList {
+  const all = BATCHES.filter((b) => !f.repo || b.repo === f.repo);
+  const from = f.after ? all.findIndex((b) => String(b.id) === f.after) + 1 : 0;
+  const batches = all.slice(from, from + (f.limit ?? 20));
+  return { batches, total: all.length, next: batches.length && from + batches.length < all.length ? String(batches[batches.length - 1]!.id) : null };
 }

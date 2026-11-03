@@ -17,6 +17,8 @@ export const MAX_BATCH_LINES = 2000;
 export type BatchRow = {
   id: number; repo: string; branch: string; state: BatchState; base_sha: string; commit_sha: string; parent_id: number | null;
   task_id: number | null; retries: number; pr_number: number | null; pr_url: string | null; summary: string | null; created_at: string; updated_at: string;
+  /** `<owner>/<repo>` the branch was pushed to; null before the push and on rows from before it was stored. */
+  fork: string | null;
 };
 export type BatchMember = { number: number; head_oid: string };
 
@@ -48,7 +50,7 @@ export function getBatch(db: DatabaseSync, id: number): BatchRow {
   return db.prepare("SELECT * FROM main.merge_batches WHERE id = ?").get(id) as BatchRow;
 }
 
-export function updateBatch(db: DatabaseSync, id: number, at: string, set: Partial<Pick<BatchRow, "state" | "task_id" | "retries" | "pr_number" | "pr_url" | "summary">>): void {
+export function updateBatch(db: DatabaseSync, id: number, at: string, set: Partial<Pick<BatchRow, "state" | "task_id" | "retries" | "pr_number" | "pr_url" | "summary" | "fork">>): void {
   const cols = Object.keys(set);
   db.prepare(`UPDATE main.merge_batches SET ${cols.map((c) => `${c} = ?`).join(", ")}${cols.length ? ", " : ""}updated_at = ? WHERE id = ?`)
     .run(...(Object.values(set) as (string | number | null)[]), at, id);
@@ -114,4 +116,37 @@ export function listBatches(db: DatabaseSync, o: { repo?: string; exclude?: stri
     out.push({ ...b, prs: membersOf(db, b.id) });
   }
   return out;
+}
+
+/** One page of batches, newest first (ids below `before`), with their members in order: two queries, whatever the page size. */
+export function pageBatches(db: DatabaseSync, o: { repo?: string; exclude?: string[]; before?: number; limit: number }): { batches: (BatchRow & { prs: BatchMember[] })[]; total: number; more: boolean } {
+  const where: string[] = [];
+  const params: (string | number)[] = [];
+  if (o.repo) { where.push("repo = ?"); params.push(o.repo); }
+  for (const r of o.exclude ?? []) { where.push("repo <> ?"); params.push(r); }
+  const filter = where.length ? `WHERE ${where.join(" AND ")}` : "";
+  const total = (db.prepare(`SELECT COUNT(*) AS n FROM main.merge_batches ${filter}`).get(...params) as { n: number }).n;
+  const paged = o.before === undefined ? filter : `${filter ? `${filter} AND` : "WHERE"} id < ?`;
+  const rows = db.prepare(`SELECT * FROM main.merge_batches ${paged} ORDER BY id DESC LIMIT ?`).all(...params, ...(o.before === undefined ? [] : [o.before]), o.limit + 1) as BatchRow[];
+  const page = rows.slice(0, o.limit);
+  const members = new Map<number, BatchMember[]>();
+  if (page.length) {
+    const ms = db.prepare(`SELECT batch_id, number, head_oid FROM main.merge_batch_prs WHERE batch_id IN (SELECT value FROM json_each(?)) ORDER BY batch_id, position`)
+      .all(JSON.stringify(page.map((b) => b.id))) as { batch_id: number; number: number; head_oid: string }[];
+    for (const m of ms) (members.get(m.batch_id) ?? members.set(m.batch_id, []).get(m.batch_id)!).push({ number: m.number, head_oid: m.head_oid });
+  }
+  // Rows from before the fork was stored: the push is in the audit log.
+  const unknown = page.filter((b) => !b.fork && b.state !== "checking");
+  const forks = new Map<string, string>();
+  if (unknown.length) {
+    const as = db.prepare(`SELECT target, details FROM main.audit WHERE action = 'batch-push' AND target IN (SELECT value FROM json_each(?)) ORDER BY at, rowid`)
+      .all(JSON.stringify(unknown.map((b) => `${b.repo}:${b.branch}`))) as { target: string; details: string | null }[];
+    for (const a of as) {
+      try { const f = (JSON.parse(a.details ?? "{}") as { fork?: unknown }).fork; if (typeof f === "string" && f) forks.set(a.target, f); } catch { /* not JSON */ }
+    }
+  }
+  return {
+    batches: page.map((b) => ({ ...b, fork: b.fork ?? forks.get(`${b.repo}:${b.branch}`) ?? null, prs: members.get(b.id) ?? [] })),
+    total, more: rows.length > o.limit,
+  };
 }

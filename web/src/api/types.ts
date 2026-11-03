@@ -946,9 +946,15 @@ export interface QueueBatch {
   id: number;
   repo: RepoName;
   branch: string;
+  /** `<owner>/<repo>` the branch was pushed to; null while the batch is being checked. */
+  fork: string | null;
   state: BatchState;
-  /** The PRs merged into the batch, in order. */
-  prs: { number: number; head: string }[];
+  /** Default-branch commit the batch was built on. */
+  baseSha: string;
+  /** How many PRs the batch took; `prs` lists those still in the queue view. */
+  size: number;
+  /** The member PRs in batch order, as queue rows. */
+  prs: QueueRow[];
   /** The batch's own PR on the storytold repo, once opened. */
   prNumber: number | null;
   prUrl: string | null;
@@ -956,6 +962,21 @@ export interface QueueBatch {
   summary: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface BatchFilter {
+  repo?: RepoName;
+  /** page size (server default 20, at most 100) and the `next` cursor of the previous page */
+  limit?: number;
+  after?: string;
+}
+
+export interface BatchList {
+  /** Newest first. */
+  batches: QueueBatch[];
+  /** Batches matching the filter, every page. */
+  total: number;
+  next: string | null;
 }
 
 export interface QueueRow {
@@ -1004,8 +1025,6 @@ export interface QueueList {
   counts: Record<QueueState, number>;
   /** Rows matching the filters, every page. */
   total: number;
-  /** Batches in flight and the latest finished ones, newest first. */
-  batches: QueueBatch[];
   /** Cursor for the next page (`after`), or null on the last one. */
   next: string | null;
 }

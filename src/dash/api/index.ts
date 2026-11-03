@@ -22,7 +22,7 @@ import * as dec from "./decisions.ts";
 import * as insight from "./insight.ts";
 import * as pipeline from "./pipeline.ts";
 import { prompts } from "./prompts.ts";
-import { queue } from "./queue.ts";
+import { queue, queueBatches } from "./queue.ts";
 import { work } from "./work.ts";
 import { flow } from "./flow.ts";
 import * as items from "./items.ts";
@@ -355,6 +355,7 @@ export function apiRoutes(opts: ApiOptions = {}): Route[] {
     { method: "GET", pattern: "/api/tasks/:id/artifacts/:name", handler: build.artifact },
     get("/api/build/summary", build.buildSummary),
     get("/api/queue", queue),
+    get("/api/queue/batches", queueBatches),
     get("/api/work", work),
     get("/api/flow", flow),
     get("/api/similar/:repo/:n", (db, req) => sim.similar(db, req, vectors)),

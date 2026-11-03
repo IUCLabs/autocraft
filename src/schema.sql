@@ -792,7 +792,8 @@ CREATE TABLE IF NOT EXISTS merge_batches (
   retries INTEGER NOT NULL DEFAULT 0, -- task queued again after a build-environment error
   pr_number INTEGER, pr_url TEXT,
   summary TEXT,                       -- why it failed (public-safe, one line)
-  created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+  created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+  fork TEXT                           -- <owner>/<repo> the branch was pushed to; null before the push
 );
 CREATE INDEX IF NOT EXISTS merge_batches_repo ON merge_batches(repo, state);
 CREATE TABLE IF NOT EXISTS merge_batch_prs (

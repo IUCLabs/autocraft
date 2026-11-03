@@ -251,6 +251,7 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
     const fork = await forkOf(d.exec, who.login, repo);
     const push = await git.pushNew(fork, b.branch, b.commit_sha);
     if (push.code !== 0) { log(`  ${b.branch}: push failed: ${oneLine(push.stderr)}`); s.waiting.push(b.branch); return; }
+    updateBatch(db, b.id, at(), { fork });
     audit(db, ACTOR, "batch-push", `${repo}:${b.branch}`, { run: runId, commit: b.commit_sha, fork });
     const links = members.map((m) => `- [${repo}#${m.number}](https://github.com/${ORG}/${repo}/pull/${m.number})`).join("\n");
     const body = `Lands ${members.length} reviewed and verified pull request${members.length === 1 ? "" : "s"} together. Each one is merged with its own commits.\n\n${links}\n`;

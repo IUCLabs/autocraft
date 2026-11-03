@@ -1,10 +1,10 @@
 // Merge queue: every PR with a take or take-fix review at its current head, and
 // what it waits on. Read-only; merges are started from the Pipeline page.
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { ChevronRightIcon, GitMergeIcon, XIcon } from "lucide-react";
+import { ChevronRightIcon, ChevronsDownUpIcon, ChevronsUpDownIcon, GitMergeIcon, XIcon } from "lucide-react";
 import { useApi, useQuery } from "../../api/client";
-import type { BatchState, QueueBatch, QueueFilter, QueueList, QueueRow, QueueState, Tier } from "../../api/types";
+import type { BatchList, BatchState, QueueBatch, QueueFilter, QueueList, QueueRow, QueueState, Tier } from "../../api/types";
 import type { FeatureModule, ViewProps } from "../../registry/types";
 import { Badge, type Tone } from "../../ui/Badge";
 import { RefLink } from "../../ui/RefLink";
@@ -91,7 +91,7 @@ function QueueView(_: ViewProps) {
       sub={
         data && (
           <>
-            {num(all!)} taken PR{all === 1 ? "" : "s"} · {num(mergeable!)} may merge now · {num(data.counts["needs-decision"])} wait for a decision · merges run from the Pipeline page
+            {num(all!)} included PR{all === 1 ? "" : "s"} · {num(mergeable!)} may merge now · {num(data.counts["needs-decision"])} wait for a decision · merges run from the Pipeline page
           </>
         )
       }
@@ -132,9 +132,9 @@ function QueueView(_: ViewProps) {
         )}
       </div>
 
-      {data && data.batches.length > 0 && <Batches batches={data.batches} />}
+      {!filter.flow && <Batches repo={filter.repo} phone={phone} />}
 
-      <Block className="mt-3" flush title={filter.state ? STATE[filter.state][0] : "Taken PRs"} aside={loading && data ? "Updating…" : filter.state ? STATE[filter.state][2] : undefined}>
+      <Block className="mt-3" flush title={filter.state ? STATE[filter.state][0] : "Included PRs"} aside={loading && data ? "Updating…" : filter.state ? STATE[filter.state][2] : undefined}>
         <ErrorLine error={error?.message} className="p-4" />
         {data && data.rows.length === 0 && <p className="px-4 py-6 text-sm text-ink/50">No PR in the queue matches these filters.</p>}
         {data && data.rows.length > 0 && (phone ? <Cards rows={data.rows} /> : <Table rows={data.rows} />)}
@@ -157,31 +157,178 @@ const BATCH_STATE: Record<BatchState, [string, Tone]> = {
   checking: ["Checking", "neutral"], open: ["PR open", "ok"], merged: ["Merged", "merged"], failed: ["Failed", "bad"], split: ["Split", "warn"], superseded: ["Rebuilt", "neutral"],
 };
 
-function Batches({ batches }: { batches: QueueBatch[] }) {
+// Batches page in like the PR rows: newest first, "Show more" for the next page.
+function usePagedBatches(repo: string | undefined) {
+  const api = useApi();
+  const [data, setData] = useState<BatchList>();
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<Error>();
+  const seq = useRef(0);
+  const load = useCallback(
+    (after: string | undefined) => {
+      const mine = ++seq.current;
+      setLoading(true);
+      api.queueBatches({ repo, after }).then(
+        (p) => {
+          if (mine !== seq.current) return;
+          setData((d) => (after && d ? { ...p, batches: [...d.batches, ...p.batches] } : p));
+          setError(undefined);
+          setLoading(false);
+        },
+        (e: Error) => mine === seq.current && (setError(e), setLoading(false)),
+      );
+    },
+    [api, repo],
+  );
+  useEffect(() => load(undefined), [load]);
+  return { data, error, loading, loadMore: () => data?.next && load(data.next) };
+}
+
+const gh = (path: string) => `https://github.com/${path}`;
+const extLink = "text-accent-ink hover:underline";
+
+function Batches({ repo, phone }: { repo: string | undefined; phone: boolean }) {
+  const { data, error, loading, loadMore } = usePagedBatches(repo);
+  // Per-batch choice made by the person; batches without one follow their state: in flight are open, finished are folded.
+  const [chosen, setChosen] = useState<Record<number, boolean>>({});
+  useEffect(() => setChosen({}), [repo]);
+  if (!data && !error) return null;
+  if (data && data.batches.length === 0) return null;
+  const batches = data?.batches ?? [];
+  const isOpen = (b: QueueBatch) => chosen[b.id] ?? (b.state === "checking" || b.state === "open");
+  const toggle = (b: QueueBatch) => setChosen((c) => ({ ...c, [b.id]: !isOpen(b) }));
+  const setAll = (open: boolean) => setChosen(Object.fromEntries(batches.map((b) => [b.id, open])));
+  const anyOpen = batches.some(isOpen);
   return (
-    <Block className="mt-3" flush title="Integration batches" aside="PRs landed together through one integration branch">
-      <ul className="divide-y divide-line">
-        {batches.map((b) => (
-          <li key={b.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2 text-sm">
-            <Badge tone={BATCH_STATE[b.state][1]}>{BATCH_STATE[b.state][0]}</Badge>
-            <span className="font-mono text-xs text-ink/70" title={b.summary ?? undefined}>
-              {b.branch}
-            </span>
-            <span className="flex flex-wrap gap-x-1.5">
-              {b.prs.map((p) => (
-                <RefLink key={p.number} repo={b.repo} number={p.number} kind="pr" />
-              ))}
-            </span>
-            {b.prUrl && (
-              <a href={b.prUrl} className="ml-auto text-xs text-accent-ink hover:underline">
-                Batch PR #{b.prNumber}
-              </a>
-            )}
-            {b.summary && <span className="w-full text-2xs text-ink/50">{b.summary}</span>}
-          </li>
-        ))}
-      </ul>
+    <Block
+      className="mt-3"
+      flush
+      title="Integration batches"
+      aside={
+        <span className="flex items-center gap-3">
+          {data && <span className="num">{num(data.total)}</span>}
+          <button type="button" className="chip max-md:h-11" onClick={() => setAll(!anyOpen)} aria-label={anyOpen ? "Fold all batches" : "Unfold all batches"}>
+            {anyOpen ? <ChevronsDownUpIcon className="size-3.5" /> : <ChevronsUpDownIcon className="size-3.5" />}
+            {anyOpen ? "Fold all" : "Unfold all"}
+          </button>
+        </span>
+      }
+    >
+      <ErrorLine error={error?.message} className="p-4" />
+      {batches.length > 0 && (phone ? <BatchCards batches={batches} isOpen={isOpen} toggle={toggle} /> : <BatchTable batches={batches} isOpen={isOpen} toggle={toggle} />)}
+      {data?.next && (
+        <div className="flex items-center justify-between gap-3 border-t border-line px-4 py-2.5 text-xs text-ink/55">
+          <span className="num">
+            {num(batches.length)} of {num(data.total)}
+          </span>
+          <button className="chip max-md:h-11" disabled={loading} onClick={loadMore}>
+            {loading ? "Loading…" : "Show more"}
+          </button>
+        </div>
+      )}
     </Block>
+  );
+}
+
+type BatchProps = { batches: QueueBatch[]; isOpen: (b: QueueBatch) => boolean; toggle: (b: QueueBatch) => void };
+
+/** The batch's facts in one run: used by the table header row and the phone card. */
+function BatchFacts({ b }: { b: QueueBatch }) {
+  const stop = { onClick: (e: React.MouseEvent) => e.stopPropagation() };
+  const branch = b.fork ? (
+    <a href={gh(`${b.fork}/tree/${b.branch}`)} target="_blank" rel="noopener noreferrer" title="Open the branch on GitHub" className={cn("font-mono text-xs [overflow-wrap:anywhere]", extLink)} {...stop}>
+      {b.branch}
+    </a>
+  ) : (
+    <span className="font-mono text-xs text-ink/70 [overflow-wrap:anywhere]">{b.branch}</span>
+  );
+  return (
+    <>
+      <Badge tone={BATCH_STATE[b.state][1]}>{BATCH_STATE[b.state][0]}</Badge>
+      {branch}
+      <span className="text-xs text-ink/60">{b.repo}</span>
+      <span className="num text-xs text-ink/60">
+        {b.size} PR{b.size === 1 ? "" : "s"}
+      </span>
+      {b.prUrl && (
+        <a href={b.prUrl} target="_blank" rel="noopener noreferrer" title="Open the batch PR on GitHub" className={cn("code text-xs", extLink)} {...stop}>
+          #{b.prNumber}
+        </a>
+      )}
+      <a href={gh(`storytold/${b.repo}/commit/${b.baseSha}`)} target="_blank" rel="noopener noreferrer" title="Base commit on GitHub" className={cn("code text-xs", extLink)} {...stop}>
+        {b.baseSha.slice(0, 7)}
+      </a>
+      <span className="num text-2xs text-ink/50" title={`created ${b.createdAt.slice(0, 16).replace("T", " ")}, updated ${b.updatedAt.slice(0, 16).replace("T", " ")}`}>
+        {ago(b.createdAt)} ago · upd {ago(b.updatedAt)}
+      </span>
+    </>
+  );
+}
+
+function FoldChevron({ open }: { open: boolean }) {
+  return <ChevronRightIcon className={cn("size-4 shrink-0 text-ink/45 transition-transform", open && "rotate-90")} />;
+}
+
+function BatchTable({ batches, isOpen, toggle }: BatchProps) {
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full min-w-[960px] table-fixed border-collapse text-sm">
+        <PrTableHead />
+        {batches.map((b) => {
+          const open = isOpen(b);
+          return (
+            <tbody key={b.id} className="border-b border-line last:border-0">
+              <tr className="cursor-pointer bg-ink/[0.03] hover:bg-ink/[0.06]" onClick={() => toggle(b)}>
+                <td colSpan={9} className="px-3 py-2">
+                  <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                    <button type="button" aria-expanded={open} aria-label={open ? `Fold ${b.branch}` : `Unfold ${b.branch}`} className="shrink-0">
+                      <FoldChevron open={open} />
+                    </button>
+                    <BatchFacts b={b} />
+                    {b.summary && (
+                      <span className="min-w-[12rem] flex-1 truncate text-2xs text-ink/55" title={b.summary}>
+                        {b.summary}
+                      </span>
+                    )}
+                  </div>
+                </td>
+              </tr>
+              {open && b.prs.map((r) => <PrRows key={r.number} r={r} />)}
+            </tbody>
+          );
+        })}
+      </table>
+    </div>
+  );
+}
+
+function BatchCards({ batches, isOpen, toggle }: BatchProps) {
+  return (
+    <ul>
+      {batches.map((b) => {
+        const open = isOpen(b);
+        return (
+          <li key={b.id} className="border-b border-line last:border-0">
+            <div role="button" tabIndex={0} aria-expanded={open} onClick={() => toggle(b)} onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), toggle(b))} className="flex cursor-pointer items-start gap-2 bg-ink/[0.03] px-4 py-2.5 active:bg-ink/[0.06]">
+              <span className="mt-0.5 flex h-6 items-center">
+                <FoldChevron open={open} />
+              </span>
+              <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2.5 gap-y-1">
+                <BatchFacts b={b} />
+                {b.summary && <p className={cn("w-full text-2xs text-ink/55", !open && "line-clamp-1")}>{b.summary}</p>}
+              </div>
+            </div>
+            {open && b.prs.length > 0 && (
+              <ul className="border-t border-line">
+                {b.prs.map((r) => (
+                  <PrCard key={r.number} r={r} />
+                ))}
+              </ul>
+            )}
+          </li>
+        );
+      })}
+    </ul>
   );
 }
 
@@ -207,7 +354,6 @@ function DecisionLink({ row }: { row: QueueRow }) {
 /** Why it waits, in one line: refusal reason, or what keeps it outside the rule. */
 function Why({ row }: { row: QueueRow }) {
   if (row.state === "refused" && row.refusedReason) return <span className="text-2xs text-bad">{row.refusedReason}</span>;
-  if (row.path === "rule") return <span className="text-2xs text-ink/45">by the rule</span>;
   if (row.outsideRule.length) return <span className="text-2xs text-ink/50">outside the rule: {row.outsideRule.join(", ")}</span>;
   return null;
 }
@@ -229,12 +375,54 @@ function VerifyCell({ row, detail = true }: { row: QueueRow; detail?: boolean })
   );
 }
 
-/** Two lines per PR: the facts, then the review text clamped to two lines until opened. */
-function PrRows({ r }: { r: QueueRow }) {
+/** The review text, clamped to two lines; it opens and closes by click only when the text is longer than that. */
+function ReviewText({ r }: { r: QueueRow }) {
   const [open, setOpen] = useState(false);
+  const [clamped, setClamped] = useState(false);
+  const ref = useRef<HTMLParagraphElement>(null);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const measure = () => {
+      if (!open) setClamped(el.scrollHeight > el.clientHeight + 1);
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [open, r.reason, r.fixes]);
+  const canToggle = clamped || open;
+  return (
+    <div className="flex items-start gap-1.5">
+      {canToggle ? (
+        <button type="button" aria-expanded={open} aria-label={open ? "Collapse the review" : "Expand the review"} onClick={() => setOpen(!open)} className="mt-0.5 shrink-0 text-ink/45 hover:text-ink">
+          <ChevronRightIcon className={cn("size-3.5 transition-transform", open && "rotate-90")} />
+        </button>
+      ) : (
+        <span className="size-3.5 shrink-0" />
+      )}
+      <div className="min-w-0 flex-1 text-xs text-ink/65">
+        <p ref={ref} className={cn(!open && "line-clamp-2", canToggle && "cursor-pointer")} onClick={canToggle ? () => setOpen(!open) : undefined}>
+          {r.fixes > 0 && <span className="mr-1.5 text-ink/50">{r.fixes} fix{r.fixes === 1 ? "" : "es"}</span>}
+          {r.reason}
+        </p>
+        <div className="mt-0.5 flex flex-wrap items-center gap-x-3 text-2xs">
+          <Why row={r} />
+          <DecisionLink row={r} />
+          <span className="num text-ink/40" title={`reviewed ${r.reviewedAt.slice(0, 16).replace("T", " ")} at ${r.head.slice(0, 7)}`}>
+            reviewed {ago(r.reviewedAt)} ago
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** Two rows per PR: the facts, then the review text. A fragment, so a table group can hold several. */
+function PrRows({ r }: { r: QueueRow }) {
   const cell = "px-3 pt-2 align-top";
   return (
-    <tbody className="border-b border-line last:border-0 hover:bg-ink/[0.03]">
+    <>
       <tr>
         <td className={cell}>
           <RefLink repo={r.repo} number={r.number} kind="pr" className="block text-xs" />
@@ -268,29 +456,43 @@ function PrRows({ r }: { r: QueueRow }) {
           <StateChip row={r} />
         </td>
       </tr>
-      <tr>
+      <tr className="border-b border-line/60 last:border-0">
         <td colSpan={9} className="px-3 pb-2 pt-0.5">
-          <div className="flex items-start gap-1.5">
-            <button type="button" aria-expanded={open} aria-label={open ? "Collapse the review" : "Expand the review"} onClick={() => setOpen(!open)} className="mt-0.5 shrink-0 text-ink/45 hover:text-ink">
-              <ChevronRightIcon className={cn("size-3.5 transition-transform", open && "rotate-90")} />
-            </button>
-            <div className="min-w-0 flex-1 cursor-pointer text-xs text-ink/65" onClick={() => setOpen(!open)}>
-              <p className={cn(!open && "line-clamp-2")}>
-                {r.fixes > 0 && <span className="mr-1.5 text-ink/50">{r.fixes} fix{r.fixes === 1 ? "" : "es"}</span>}
-                {r.reason}
-              </p>
-              <div className="mt-0.5 flex flex-wrap items-center gap-x-3 text-2xs">
-                <Why row={r} />
-                <DecisionLink row={r} />
-                <span className="num text-ink/40" title={`reviewed ${r.reviewedAt.slice(0, 16).replace("T", " ")} at ${r.head.slice(0, 7)}`}>
-                  reviewed {ago(r.reviewedAt)} ago
-                </span>
-              </div>
-            </div>
-          </div>
+          <ReviewText r={r} />
         </td>
       </tr>
-    </tbody>
+    </>
+  );
+}
+
+function PrTableHead() {
+  return (
+    <>
+      <colgroup>
+        <col />
+        <col className="w-[120px]" />
+        <col className="w-[50px]" />
+        <col className="w-[90px]" />
+        <col className="w-[70px]" />
+        <col className="w-[75px]" />
+        <col className="w-[100px]" />
+        <col className="w-[90px]" />
+        <col className="w-[150px]" />
+      </colgroup>
+      <thead className="bg-ink/[0.03] text-xs text-ink/55">
+        <tr className="border-b border-line text-left">
+          <th className="h-8 px-3 font-medium">PR</th>
+          <th className="px-3 font-medium">Author</th>
+          <th className="px-3 font-medium">Size</th>
+          <th className="px-3 font-medium">Label</th>
+          <th className="px-3 font-medium">Verdict</th>
+          <th className="px-3 font-medium">CI</th>
+          <th className="px-3 font-medium">Verify</th>
+          <th className="px-3 font-medium">Mergeable</th>
+          <th className="px-3 font-medium">State</th>
+        </tr>
+      </thead>
+    </>
   );
 }
 
@@ -298,35 +500,54 @@ function Table({ rows }: { rows: QueueRow[] }) {
   return (
     <div className="overflow-x-auto">
       <table className="w-full min-w-[960px] table-fixed border-collapse text-sm">
-        <colgroup>
-          <col />
-          <col className="w-[120px]" />
-          <col className="w-[50px]" />
-          <col className="w-[90px]" />
-          <col className="w-[70px]" />
-          <col className="w-[75px]" />
-          <col className="w-[100px]" />
-          <col className="w-[90px]" />
-          <col className="w-[150px]" />
-        </colgroup>
-        <thead className="bg-ink/[0.03] text-xs text-ink/55">
-          <tr className="border-b border-line text-left">
-            <th className="h-8 px-3 font-medium">PR</th>
-            <th className="px-3 font-medium">Author</th>
-            <th className="px-3 font-medium">Size</th>
-            <th className="px-3 font-medium">Label</th>
-            <th className="px-3 font-medium">Verdict</th>
-            <th className="px-3 font-medium">CI</th>
-            <th className="px-3 font-medium">Verify</th>
-            <th className="px-3 font-medium">Mergeable</th>
-            <th className="px-3 font-medium">State</th>
-          </tr>
-        </thead>
+        <PrTableHead />
         {rows.map((r) => (
-          <PrRows key={`${r.repo}#${r.number}`} r={r} />
+          <tbody key={`${r.repo}#${r.number}`} className="border-b border-line last:border-0 hover:bg-ink/[0.03]">
+            <PrRows r={r} />
+          </tbody>
         ))}
       </table>
     </div>
+  );
+}
+
+function PrCard({ r }: { r: QueueRow }) {
+  return (
+    <li className="border-b border-line px-4 py-2.5 last:border-0">
+      <div className="flex items-center gap-2 text-xs text-ink/55">
+        <RefLink repo={r.repo} number={r.number} kind="pr" className="text-xs" />
+        <span className="truncate">
+          {r.author || "unknown"} · {TIER[r.tier]}
+        </span>
+        <span className="ml-auto shrink-0">
+          <StateChip row={r} />
+        </span>
+      </div>
+      <Link to={`/item/${r.repo}/${r.number}`} className="mt-1 block text-sm font-medium leading-5 active:text-accent-ink">
+        {r.title}
+      </Link>
+      <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-2xs text-ink/60">
+        <Badge tone={r.verdict === "take" ? "ok" : "warn"}>{r.verdict}</Badge>
+        <span>size {r.size}</span>
+        <span>{r.label ?? "not settled"}</span>
+        <Badge tone={CI_TONE[r.ci]}>CI {r.ci}</Badge>
+        <Badge tone={MERGEABLE[r.mergeable][1]}>{MERGEABLE[r.mergeable][0]}</Badge>
+      </div>
+      <p className="mt-1 text-xs text-ink/65">{r.reason}</p>
+      {r.verify && (
+        <div className="mt-1.5">
+          <VerifyCell row={r} />
+        </div>
+      )}
+      <div className="mt-1 flex flex-wrap items-center justify-between gap-2">
+        <Why row={r} />
+        {r.decisionId && (
+          <Link to={`/decisions/${encodeURIComponent(r.decisionId)}`} className="inline-flex h-11 items-center text-xs text-accent-ink">
+            {r.answer ? `Answered ${r.answer}` : "Open decision"}
+          </Link>
+        )}
+      </div>
+    </li>
   );
 }
 
@@ -334,41 +555,7 @@ function Cards({ rows }: { rows: QueueRow[] }) {
   return (
     <ul>
       {rows.map((r) => (
-        <li key={`${r.repo}#${r.number}`} className="border-b border-line px-4 py-2.5 last:border-0">
-          <div className="flex items-center gap-2 text-xs text-ink/55">
-            <RefLink repo={r.repo} number={r.number} kind="pr" className="text-xs" />
-            <span className="truncate">
-              {r.author || "unknown"} · {TIER[r.tier]}
-            </span>
-            <span className="ml-auto shrink-0">
-              <StateChip row={r} />
-            </span>
-          </div>
-          <Link to={`/item/${r.repo}/${r.number}`} className="mt-1 block text-sm font-medium leading-5 active:text-accent-ink">
-            {r.title}
-          </Link>
-          <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-2xs text-ink/60">
-            <Badge tone={r.verdict === "take" ? "ok" : "warn"}>{r.verdict}</Badge>
-            <span>size {r.size}</span>
-            <span>{r.label ?? "not settled"}</span>
-            <Badge tone={CI_TONE[r.ci]}>CI {r.ci}</Badge>
-            <Badge tone={MERGEABLE[r.mergeable][1]}>{MERGEABLE[r.mergeable][0]}</Badge>
-          </div>
-          <p className="mt-1 text-xs text-ink/65">{r.reason}</p>
-          {r.verify && (
-            <div className="mt-1.5">
-              <VerifyCell row={r} />
-            </div>
-          )}
-          <div className="mt-1 flex flex-wrap items-center justify-between gap-2">
-            <Why row={r} />
-            {r.decisionId && (
-              <Link to={`/decisions/${encodeURIComponent(r.decisionId)}`} className="inline-flex h-11 items-center text-xs text-accent-ink">
-                {r.answer ? `Answered ${r.answer}` : "Open decision"}
-              </Link>
-            )}
-          </div>
-        </li>
+        <PrCard key={`${r.repo}#${r.number}`} r={r} />
       ))}
     </ul>
   );

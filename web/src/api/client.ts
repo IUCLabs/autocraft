@@ -30,6 +30,8 @@ import type {
   OverrideInput,
   Progress,
   PromptsReport,
+  BatchFilter,
+  BatchList,
   QueueFilter,
   QueueList,
   WorkFilter,
@@ -127,6 +129,8 @@ export interface Api {
   cost(run?: string): Promise<CostReport>;
   /** The merge queue: every PR with a take or take-fix review at its head, and what it waits on. */
   queue(filter: QueueFilter): Promise<QueueList>;
+  /** Integration batches of the merge queue, newest first, with their member PRs. */
+  queueBatches(filter: BatchFilter): Promise<BatchList>;
   /** Steps, jobs, the on/off switch and the stage limits: everyone reads; run, cancel, switch and limits are for operators. */
   pipeline: {
     overview(): Promise<PipelineOverview>;
