@@ -50,9 +50,18 @@ describe("change markers", () => {
     const b = readSeqs(db);
     db.exec("INSERT INTO settings (key, value) VALUES ('runner_heartbeat', '1') ON CONFLICT (key) DO UPDATE SET value = excluded.value");
     db.exec("UPDATE sessions SET last_seen = 'b'");
-    assert.deepEqual(changed(b), []);
+    db.exec("INSERT INTO build_envs (id, label, kind, slots, key_hash, created_at, updated_by, updated_at) VALUES ('e', 'E', 'local', 1, 'k', 'a', 'boss', 'a')");
+    const e = readSeqs(db);
+    db.exec("UPDATE build_envs SET last_seen_at = 'b' WHERE id = 'e'");
+    assert.deepEqual(changed(e), [], "a worker poll alone");
+    db.exec("UPDATE build_envs SET paused_reason = 'disk' WHERE id = 'e'");
+    assert.deepEqual(changed(e), ["envs"]);
+    db.exec("DELETE FROM build_envs");
+    const b2 = readSeqs(db);
+    db.exec("UPDATE sessions SET last_seen = 'c'");
+    assert.deepEqual(changed(b2), []);
     db.exec("INSERT INTO settings (key, value) VALUES ('pipeline_enabled', '1')");
-    assert.deepEqual(changed(b), ["settings"]);
+    assert.deepEqual(changed(b2), ["settings"]);
   });
 });
 
