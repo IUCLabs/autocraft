@@ -21,11 +21,15 @@ const isHeading = (line) => {
 const pages = readFileSync(input, "utf8").split("\f");
 if (pages.length > 1 && pages[pages.length - 1].trim() === "") pages.pop();
 mkdirSync(outDir, { recursive: true });
+// Running headers and footers (chapter names, "last updated" lines) repeat on many pages; they are not a page's topic.
+const seen = new Map();
+for (const text of pages) for (const t of new Set(text.split("\n").map((l) => l.trim()).filter(Boolean))) seen.set(t, (seen.get(t) ?? 0) + 1);
+const running = (t) => pages.length >= 20 && (seen.get(t) ?? 0) > pages.length * 0.02;
 const index = [];
 pages.forEach((text, i) => {
   const name = `p${String(i + 1).padStart(4, "0")}.txt`;
   writeFileSync(join(outDir, name), text);
-  const heading = text.split("\n").find(isHeading);
+  const heading = text.split("\n").find((l) => isHeading(l) && !running(l.trim()));
   index.push(`${name}\t${heading ? heading.trim() : "(no heading)"}`);
 });
 writeFileSync(join(outDir, "index.txt"), index.join("\n") + "\n");
