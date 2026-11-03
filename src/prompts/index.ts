@@ -546,7 +546,7 @@ function info(p: ClaudePrompt | JevPrompt): PromptInfo {
   const base = {
     id: p.id, stage: p.stage, purpose: p.purpose, models: p.models, runner: p.runner,
     placeholders: Object.entries(p.placeholders).map(([name, meaning]) => ({ name, meaning })),
-    output: p.output, validation: p.validation, settings: settings(p),
+    output: p.output, validation: p.validation, settings: settings(p), limits: p.limits,
   };
   if (p.runner === "claude") {
     const id = p.id as ClaudePromptId;
