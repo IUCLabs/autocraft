@@ -15,7 +15,7 @@ function NextRow({ n, i }: { n: NextMerge; i: number }) {
     <li className="relative flex flex-wrap items-start gap-x-3 gap-y-1 border-b border-line px-4 py-2 last:border-0 hover:bg-ink/[0.03]">
       <span className="num mt-0.5 w-4 text-xs text-ink/45">{i + 1}</span>
       <FastMark fast={n.fast} />
-      <ItemRef repo={n.repo} number={n.number} kind="pr" state="open" title={n.title} stretch className="min-w-[10rem] flex-1 max-md:basis-full" />
+      <ItemRef repo={n.repo} number={n.number} kind="pr" state="open" title={n.title} stretch className="min-w-[10rem] flex-1" />
       {n.batch && <span className="font-mono text-2xs text-ink/55">{n.batch.branch}</span>}
       <Badge tone={WAIT_TONE[n.waitsFor]}>{n.label}</Badge>
     </li>
