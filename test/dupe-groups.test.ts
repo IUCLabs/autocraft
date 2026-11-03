@@ -7,7 +7,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { describe, test } from "node:test";
 import { connect } from "../src/db.ts";
 import { ask, getDecision, optionsOf, factsOf } from "../src/decisions.ts";
-import { runDupeCompare, type CompareDeps, type Reply } from "../src/dupes/compare.ts";
+import { compareAgain, runDupeCompare, type CompareDeps, type Reply } from "../src/dupes/compare.ts";
 import { applyDuplicateAnswers } from "../src/dupes/decide.ts";
 import { duplicateHeld, notHeldSql } from "../src/dupes/held.ts";
 import { compareWork, dupesWork } from "../src/dupes/index.ts";
@@ -118,6 +118,19 @@ describe("PR group", () => {
     await runDupeCompare(db, {}, () => {}, d);
     assert.equal(d.calls.length, 2);
     assert.equal(db.prepare("SELECT COUNT(*) AS n FROM decisions WHERE kind = 'duplicate'").get()!.n, 1);
+  });
+
+  test("compare again re-runs the sets of one item and keeps a single open decision", async () => {
+    const db = fresh(specs, [[1, 2], [2, 3]]);
+    const d = deps(reply);
+    await runDupeCompare(db, {}, () => {}, d);
+    assert.equal(compareAgain(db, "op", "app", 3), 1);
+    assert.equal(compareAgain(db, "op", "app", 3), 0);
+    assert.equal(compareWork(db), true);
+    await runDupeCompare(db, {}, () => {}, d);
+    assert.equal(d.calls.length, 2);
+    assert.equal(compareWork(db), false);
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM decisions WHERE kind = 'duplicate' AND answer IS NULL").get()!.n, 1);
   });
 
   test("a model failure falls back to the rule and the decision says so", async () => {

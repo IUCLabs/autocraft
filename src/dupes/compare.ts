@@ -9,6 +9,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import { claudeRoom } from "../agents/call.ts";
 import { add, askClaude, pool, saveUsage, type Usage } from "../classify/run.ts";
+import { audit } from "../dash/audit.ts";
 import { connect } from "../db.ts";
 import { Client, type Querier } from "../mirror.ts";
 import { CLAUDE_PROMPTS } from "../prompts/index.ts";
@@ -292,11 +293,27 @@ function parseArgs(args: string[]): CompareParams {
   return p;
 }
 
+/** Makes the stored comparisons that include the item not current, so the next dupe-compare step compares their sets again and refreshes the open group decision. Returns how many it marked. */
+export function compareAgain(db: DatabaseSync, by: string, repo: string, number: number): number {
+  const n = Number(db.prepare(`UPDATE dupe_comparisons SET hash = 'again:' || hash WHERE repo = ? AND hash NOT LIKE 'again:%'
+    AND EXISTS (SELECT 1 FROM json_each(dupe_comparisons.members) WHERE value = ?)`).run(repo, number).changes);
+  if (n) audit(db, by, "compare-again", `${repo}#${number}`, { sets: n });
+  return n;
+}
+
 export const commands = {
   "dupe-compare": {
-    summary: "dupe-compare [--limit N] [--dry-run]: compare each duplicate group in one pass (Opus for PRs, Sonnet for issues) and ask the group decisions",
+    summary: "dupe-compare [--limit N] [--dry-run] | again REPO#N [--by LOGIN]: compare each duplicate group in one pass (Opus for PRs, Sonnet for issues) and ask the group decisions; again compares the sets that include the item once more",
     async run(args: string[]): Promise<void> {
       const db = connect();
+      if (args[0] === "again") {
+        const m = /^([\w.-]+)#(\d+)$/.exec(args[1] ?? "");
+        const by = args[2] === "--by" && args[3] ? args[3] : "cli";
+        if (!m || args.length !== (args[2] ? 4 : 2)) throw new Error("usage: autocraft dupe-compare again <repo>#<number> [--by <login>]");
+        const n = compareAgain(db, by, m[1]!, Number(m[2]));
+        console.log(n ? `${args[1]}: ${n} comparison${n === 1 ? "" : "s"} marked; the next dupe-compare step compares again` : `${args[1]}: no stored comparison includes it`);
+        return;
+      }
       console.log(JSON.stringify(await runDupeCompare(db, parseArgs(args), (l) => console.error(l))));
     },
   },
