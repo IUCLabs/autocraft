@@ -276,7 +276,8 @@ export async function forItem(db: DatabaseSync, req: Req): Promise<Decision | nu
   const viewer = viewerOf(req);
   // A batch that also covers the item counts only when no single-item decision exists; it is the item's decision only by membership.
   const single = rows.filter((d) => d.number === n);
-  const shown = (single.length ? single : rows).filter((d) => reposOf(d).every((r) => visible.has(r))).map((d) => toDecision(db, d, viewer));
+  const kind = req.query.get("kind");
+  const shown = (single.length ? single : rows).filter((d) => !kind || d.kind === kind).filter((d) => reposOf(d).every((r) => visible.has(r))).map((d) => toDecision(db, d, viewer));
   return pickDecision(shown) ?? null;
 }
 

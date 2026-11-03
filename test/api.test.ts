@@ -164,6 +164,9 @@ describe("api", () => {
     assert.equal((await forItem("photocraft", 1))?.id, P1);
     assert.equal((await forItem("photocraft", 4))?.id, "photocraft:dupegroup:4", "duplicate comes before close");
     assert.equal((await forItem("storytold/photocraft", 1))?.id, P1, "the full repo name works too");
+    const ofKind = (n: number, kind: string) => boss.get<Decision | null>(`/api/items/photocraft/${n}/decision?kind=${kind}`);
+    assert.equal((await ofKind(4, "close"))?.id, P4, "the kind picks that decision");
+    assert.equal(await ofKind(4, "merge"), null);
     assert.equal(await forItem("photocraft", 999), null);
     assert.equal(await forItem("untracked-repo", 6), null);
   });

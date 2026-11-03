@@ -479,7 +479,7 @@ function ItemSide(props: ViewProps) {
         {ds?.length === 0 && <p className="text-sm text-ink/50">No decisions about this item.</p>}
         <div className="space-y-2">
           {ds?.map((d) => (
-            <Link key={d.id} to={decisionPath(d, { sharesItem: ds.length > 1 })} className="block rounded-md border border-line p-2.5 transition-colors duration-fast hover:border-line-strong hover:bg-ink/[0.03]">
+            <Link key={d.id} to={decisionPath(d, { siblings: ds })} className="block rounded-md border border-line p-2.5 transition-colors duration-fast hover:border-line-strong hover:bg-ink/[0.03]">
               <div className="flex items-center gap-2">
                 <KindTag kind={d.kind} />
                 <span className="ml-auto text-xs text-ink/50">{d.answer ? `answered ${ago(d.answeredAt!)} ago` : `waiting ${ago(d.askedAt)}`}</span>

@@ -100,7 +100,7 @@ export function createMockApi(): Api {
         return wait({ decisions: page, total: sorted.length, byKind, oldestAskedAt: sorted[0]?.askedAt ?? null, next: more ? page[page.length - 1]!.id : null });
       },
       get: (id) => wait(find(id)),
-      forItem: (repo, number) => wait(pickDecision(decisions.filter((d) => d.repo === shortRepo(repo) && d.number === number)) ?? null),
+      forItem: (repo, number, kind) => wait(pickDecision(decisions.filter((d) => d.repo === shortRepo(repo) && d.number === number && (!kind || d.kind === kind))) ?? null),
       async answer(id, input) {
         const d = find(id);
         requireOperator(d);

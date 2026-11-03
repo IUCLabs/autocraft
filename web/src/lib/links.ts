@@ -11,26 +11,35 @@ export const itemPath = (repo: string, number: number): string => `/items/${enco
 export const shortRepo = (repo: string): string => repo.slice(repo.lastIndexOf("/") + 1);
 
 type DecisionRef = Pick<Decision, "id" | "repo" | "number">;
+type Sibling = Pick<Decision, "id" | "repo" | "number" | "kind">;
 
 /**
- * `/decisions/<repo>/<n>` for a decision about one item, `/decisions/<encoded id>` for a batch.
- * The readable form opens the item's first open decision, so a decision that shares its item
- * with another (`sharesItem`) keeps the id form.
+ * The link to a decision about one item. `/decisions/<repo>/<n>` opens the item's first open decision,
+ * `/decisions/<repo>/<n>/<kind>` its open decision of that kind. The id form stays for batches
+ * (number null) and when a kind does not identify the decision: `siblings` (the decisions known
+ * for the item) hold another one of its kind. Without `kind` the plain form is used; with it, the kind form.
  */
-export function decisionPath(d: DecisionRef | undefined, opts: { search?: string; sharesItem?: boolean } = {}): string {
+export function decisionPath(d: (DecisionRef & { kind?: string; answer?: string | null }) | undefined, opts: { search?: string; siblings?: Sibling[] } = {}): string {
   const tail = opts.search ? `?${opts.search}` : "";
   if (!d) return `/decisions${tail}`;
-  if (d.number == null || opts.sharesItem) return `/decisions/${encodeURIComponent(d.id)}${tail}`;
-  return `/decisions/${encodeURIComponent(shortRepo(d.repo))}/${d.number}${tail}`;
+  const idForm = `/decisions/${encodeURIComponent(d.id)}${tail}`;
+  if (d.number == null) return idForm;
+  const base = `/decisions/${encodeURIComponent(shortRepo(d.repo))}/${d.number}`;
+  const others = (opts.siblings ?? []).filter((x) => x.id !== d.id && x.repo === d.repo && x.number === d.number);
+  if (d.kind && others.some((x) => x.kind === d.kind)) return idForm;
+  if (!d.kind) return `${base}${tail}`;
+  // The plain form opens the first open decision, so it is only safe for the sole, open one.
+  if (opts.siblings && !others.length && !d.answer) return `${base}${tail}`;
+  return `${base}/${d.kind}${tail}`;
 }
 
-export type DecisionRoute = { by: "id"; id: string } | { by: "item"; repo: string; number: number } | { by: "none" };
+export type DecisionRoute = { by: "id"; id: string } | { by: "item"; repo: string; number: number; kind?: string } | { by: "none" };
 
-/** What a `decisions/:id?` or `decisions/:repo/:n` route asks for. */
-export function parseDecisionRoute(p: { id?: string; repo?: string; n?: string }): DecisionRoute {
+/** What a `decisions/:id?`, `decisions/:repo/:n` or `decisions/:repo/:n/:kind` route asks for. */
+export function parseDecisionRoute(p: { id?: string; repo?: string; n?: string; kind?: string }): DecisionRoute {
   if (p.repo !== undefined && p.n !== undefined) {
     const number = Number(p.n);
-    return Number.isInteger(number) && number > 0 ? { by: "item", repo: shortRepo(decodeURIComponent(p.repo)), number } : { by: "none" };
+    return Number.isInteger(number) && number > 0 ? { by: "item", repo: shortRepo(decodeURIComponent(p.repo)), number, ...(p.kind ? { kind: p.kind } : {}) } : { by: "none" };
   }
   return p.id ? { by: "id", id: decodeURIComponent(p.id) } : { by: "none" };
 }

@@ -66,16 +66,14 @@ export function useSelection() {
   const navigate = useNavigate();
   const { search } = useDecisionFilter();
   const { data: loaded } = useDecisionList();
-  const route = parseDecisionRoute({ id: params.id, repo: params.repo, n: params.n });
+  const route = parseDecisionRoute({ id: params.id, repo: params.repo, n: params.n, kind: params.kind });
   const byItem = route.by === "item" ? route : undefined;
-  const found = useQuery(`decision:for:${byItem ? `${byItem.repo}#${byItem.number}` : ""}`, (a) => (byItem ? a.decisions.forItem(byItem.repo, byItem.number) : Promise.resolve(null)), { enabled: !!byItem });
+  const found = useQuery(`decision:for:${byItem ? `${byItem.repo}#${byItem.number}:${byItem.kind ?? ""}` : ""}`, (a) => (byItem ? a.decisions.forItem(byItem.repo, byItem.number, byItem.kind as DecisionKind | undefined) : Promise.resolve(null)), { enabled: !!byItem });
   const id = route.by === "id" ? route.id : byItem && !found.loading ? found.data?.id : undefined;
   const go = useCallback(
-    (next: Pick<Decision, "id" | "repo" | "number" | "answer"> | undefined, auto = false) => {
+    (next: Pick<Decision, "id" | "repo" | "number" | "kind" | "answer"> | undefined, auto = false) => {
       userSelection.id = auto ? undefined : next?.id;
-      // A readable link opens the item's first open decision; any other decision keeps its id in the URL.
-      const shared = !!next && (!!next.answer || !!loaded?.decisions.some((x) => x.id !== next.id && x.repo === next.repo && x.number === next.number));
-      navigate(decisionPath(next, { search, sharesItem: shared }));
+      navigate(decisionPath(next, { search, siblings: loaded?.decisions }));
     },
     [navigate, search, loaded],
   );

@@ -109,7 +109,7 @@ export function createHttpApi(): Api {
     decisions: {
       list: (filter) => get(`/api/decisions${query(filter)}`),
       get: (id) => get(dec(id)),
-      forItem: (repo, number) => get(`/api/items/${encodeURIComponent(repo)}/${encodeURIComponent(String(number))}/decision`),
+      forItem: (repo, number, kind) => get(`/api/items/${encodeURIComponent(repo)}/${encodeURIComponent(String(number))}/decision${qs({ kind })}`),
       answer: (id, input) => post(dec(id, "/answer"), input),
       undo: (id) => post(dec(id, "/undo")),
       reopen: (id) => post(dec(id, "/reopen")),

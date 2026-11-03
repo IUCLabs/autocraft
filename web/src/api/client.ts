@@ -3,6 +3,7 @@ import { createContext, useCallback, useContext } from "react";
 import { topicsFor } from "./topics";
 import type {
   ReleaseAction,
+  DecisionKind,
   AccessOverview,
   AccountInput,
   AgentRunDetail,
@@ -74,7 +75,7 @@ export interface Api {
     list(filter: DecisionFilter): Promise<DecisionList>;
     get(id: string): Promise<Decision>;
     /** The decision a readable link opens: the item's first open one, else its latest; null when it has none. */
-    forItem(repo: RepoName, number: number): Promise<Decision | null>;
+    forItem(repo: RepoName, number: number, kind?: DecisionKind): Promise<Decision | null>;
     answer(id: string, input: AnswerInput): Promise<Decision>;
     undo(id: string): Promise<Decision>;
     /** Operator: clear a Backlog answer so the decision is open again. */

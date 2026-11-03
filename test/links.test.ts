@@ -13,12 +13,18 @@ describe("links", () => {
     assert.deepEqual(parseDecisionRoute({}), { by: "none" });
   });
 
-  test("links are readable except for batches and decisions that share their item", () => {
-    const d = { id: "scope:designcraft#5", repo: "designcraft", number: 5 };
-    assert.equal(decisionPath(d, { search: "tab=answered" }), "/decisions/designcraft/5?tab=answered");
-    assert.equal(decisionPath(d, { sharesItem: true }), `/decisions/${encodeURIComponent(d.id)}`);
+  test("links carry the kind when the plain form would be ambiguous, and keep the id when a kind is not enough", () => {
+    const d = { id: "scope:designcraft#5", repo: "designcraft", number: 5, kind: "scope" as const, answer: null };
+    const merge = { id: "merge:designcraft#5", repo: "designcraft", number: 5, kind: "merge" as const };
+    const twin = { id: "scope2:designcraft#5", repo: "designcraft", number: 5, kind: "scope" as const };
+    assert.equal(decisionPath(d, { search: "tab=answered", siblings: [d] }), "/decisions/designcraft/5?tab=answered");
+    assert.equal(decisionPath(d, { siblings: [d, merge] }), "/decisions/designcraft/5/scope");
+    assert.equal(decisionPath({ ...d, answer: "x" }, { siblings: [d] }), "/decisions/designcraft/5/scope");
+    assert.equal(decisionPath(d, { siblings: [d, twin] }), `/decisions/${encodeURIComponent(d.id)}`);
+    assert.equal(decisionPath({ id: "m", repo: "storytold/designcraft", number: 5, kind: "merge" }), "/decisions/designcraft/5/merge");
     assert.equal(decisionPath({ id: "batch:1", repo: "designcraft", number: null }), "/decisions/batch%3A1");
     assert.equal(itemPath("storytold/designcraft", 5), "/items/designcraft/5");
+    assert.deepEqual(parseDecisionRoute({ repo: "designcraft", n: "5", kind: "merge" }), { by: "item", repo: "designcraft", number: 5, kind: "merge" });
   });
 
   test("a readable link opens the first open decision in inbox order, else the latest", () => {
