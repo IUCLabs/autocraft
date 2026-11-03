@@ -253,14 +253,18 @@ export async function listDecisions(db: DatabaseSync, req: Req, writeRepos: () =
     params.cid = after.slice(k + 1);
     page.push(`(${sortKey} ${answered ? "<" : ">"} :ck OR (${sortKey} = :ck AND id > :cid))`);
   }
-  const limit = Math.min(Math.max(Number(q.get("limit")) || 100, 1), 500);
+  // limit=0 asks for the counts only: no page, and no queue slots to compute.
+  const rawLimit = q.get("limit");
+  const countOnly = rawLimit !== null && rawLimit !== "" && Number(rawLimit) === 0;
+  if (countOnly) return { decisions: [], total, byKind, oldestAskedAt, next: null };
+  const limit = Math.min(Math.max(Number(rawLimit) || 100, 1), 500);
   const offset = after ? 0 : Math.max(Number(q.get("offset")) || 0, 0);
   const rows = db.prepare(`SELECT * FROM decisions WHERE ${page.join(" AND ")} ORDER BY ${sortKey} ${answered ? "DESC" : "ASC"}, id LIMIT :limit OFFSET :offset`)
     .all({ ...params, limit: limit + 1, offset }) as DecisionRow[];
   const more = rows.length > limit;
   const shown = rows.slice(0, limit);
   const last = shown[shown.length - 1] as (DecisionRow & Record<string, string>) | undefined;
-  const viewer = await viewerWith(db, req);
+  const viewer = shown.length ? await viewerWith(db, req) : viewerOf(req);
   return {
     decisions: shown.map((d) => toDecision(db, d, viewer)), total, byKind, oldestAskedAt,
     next: more && last ? `${last[sortKey]}|${last.id}` : null,

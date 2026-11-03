@@ -48,6 +48,15 @@ const gh = (nodes: { comments?: unknown[]; reviews?: unknown[]; threads?: unknow
 });
 const note = (id: string, login: string, body: string, assoc = "CONTRIBUTOR", type = "User") => ({ id, author: { login, __typename: type }, authorAssociation: assoc, createdAt: T2, body });
 
+describe("discussion hash memo", () => {
+  test("an edited comment hashes by its new text, and cleaning does not change the hash", () => {
+    const a = discussionHash([{ id: "memo1", body: "<!-- x -->Fix this" }]);
+    assert.equal(discussionHash([{ id: "memo1", body: "<!-- x -->Fix this" }]), a);
+    assert.equal(a, discussionHash([{ id: "memo-other", body: "Fix this" }].map((x) => ({ ...x, id: "memo1" }))));
+    assert.notEqual(discussionHash([{ id: "memo1", body: "<!-- x -->Fix that" }]), a);
+  });
+});
+
 describe("PR discussion in reviews", () => {
   test("the Opus prompt shows live comments and unresolved threads by others, never our own posts, and cannot be closed early", async () => {
     const db = fresh();

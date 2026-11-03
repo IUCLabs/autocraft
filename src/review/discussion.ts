@@ -62,9 +62,26 @@ export function isCounted(w: Written): boolean {
   return !!login && (login === w.prAuthor || !!w.bot || login.endsWith("[bot]") || COUNTED_ASSOCIATIONS.includes(w.association ?? ""));
 }
 
+/**
+ * Cleaned text per comment id. The queue and the Decisions page recompute discussion state on every change, and
+ * cleaning every body dominated that cost. An entry is used only while its raw body is unchanged, so an edit is seen.
+ */
+const cleanMemo = new Map<string, { raw: string; clean: string }>();
+const CLEAN_MEMO_MAX = 100_000;
+
+function cleanedOf(id: string, body: string | null): string {
+  const raw = body ?? "";
+  const hit = cleanMemo.get(id);
+  if (hit && hit.raw === raw) return hit.clean;
+  const clean = cleanBody(raw);
+  if (cleanMemo.size >= CLEAN_MEMO_MAX) cleanMemo.clear();
+  cleanMemo.set(id, { raw, clean });
+  return clean;
+}
+
 /** A hash of the counted entries (id and cleaned text): two snapshots with the same hash read the same discussion. */
 export function discussionHash(xs: { id: string; body: string | null }[]): string {
-  return createHash("sha256").update(JSON.stringify(xs.map((x) => [x.id, cleanBody(x.body)]).sort())).digest("hex").slice(0, 16);
+  return createHash("sha256").update(JSON.stringify(xs.map((x) => [x.id, cleanedOf(x.id, x.body)]).sort())).digest("hex").slice(0, 16);
 }
 
 /** What a review read: when, and a hash of the counted entries. */

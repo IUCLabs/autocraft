@@ -83,6 +83,8 @@ describe("keyset paging", () => {
       asked_at: `2026-01-0${6 - n}T00:00:00Z`,
     })));
     const get = (q: string, mine: string[] = ["app"]): Promise<DecisionList> => listDecisions(db, req(q), async () => mine);
+    const counts = await get("limit=0");
+    assert.deepEqual([counts.decisions, counts.total, counts.byKind, counts.next], [[], 5, { scope: 3, close: 2 }, null]);
     const ids: string[] = [];
     let page = await get("limit=2");
     assert.equal(page.total, 5);

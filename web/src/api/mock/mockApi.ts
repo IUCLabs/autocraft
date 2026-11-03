@@ -99,7 +99,7 @@ export function createMockApi(): Api {
         for (const d of sorted) byKind[d.kind] = (byKind[d.kind] ?? 0) + 1;
         const from = filter.after ? sorted.findIndex((d) => d.id === filter.after) + 1 : (filter.offset ?? 0);
         const page = sorted.slice(from, from + (filter.limit ?? 100));
-        const more = from + page.length < sorted.length;
+        const more = page.length > 0 && from + page.length < sorted.length;
         return wait({ decisions: page, total: sorted.length, byKind, oldestAskedAt: sorted[0]?.askedAt ?? null, next: more ? page[page.length - 1]!.id : null });
       },
       get: (id) => wait(find(id)),

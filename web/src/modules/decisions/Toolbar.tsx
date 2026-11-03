@@ -17,10 +17,10 @@ const AGES = [
 export function DecisionsToolbar(props: ViewProps & { phone?: boolean }) {
   const { phone } = props;
   const { filter, update } = useDecisionFilter();
-  const { data: open } = useQuery("count:open", (api) => api.decisions.list({ status: "open", limit: 1 }));
-  const { data: answered } = useQuery("count:answered", (api) => api.decisions.list({ status: "answered", limit: 1 }));
-  const { data: backlog } = useQuery("count:backlog", (api) => api.decisions.list({ status: "backlog", limit: 1 }));
-  const { data: withOpinions } = useQuery("count:opinions", (api) => api.decisions.list({ status: "opinions", limit: 1 }));
+  const { data: open } = useQuery("count:open", (api) => api.decisions.list({ status: "open", limit: 0 }));
+  const { data: answered } = useQuery("count:answered", (api) => api.decisions.list({ status: "answered", limit: 0 }));
+  const { data: backlog } = useQuery("count:backlog", (api) => api.decisions.list({ status: "backlog", limit: 0 }));
+  const { data: withOpinions } = useQuery("count:opinions", (api) => api.decisions.list({ status: "opinions", limit: 0 }));
   const tabs = [
     { t: "open" as const, label: "Waiting", n: open?.total },
     { t: "opinions" as const, label: "Feedback", n: withOpinions?.total },
