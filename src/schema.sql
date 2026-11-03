@@ -845,6 +845,7 @@ CREATE TABLE IF NOT EXISTS dupe_comparisons (
   reason TEXT,
   result TEXT,                        -- JSON {others: [...], rounds: n}
   error TEXT,
+  attempts INTEGER NOT NULL DEFAULT 0, -- consecutive rule results at this hash; a rule result is tried again after 24 h, three times at most
   at TEXT NOT NULL,
   PRIMARY KEY (repo, key)
 );
@@ -865,6 +866,8 @@ CREATE TABLE IF NOT EXISTS dupe_group_items (
   role TEXT NOT NULL,
   target INTEGER,
   detail TEXT,
+  base_role TEXT NOT NULL,            -- the roles as the comparison gave them; an answer's roles are rebuilt from these
+  base_target INTEGER,
   PRIMARY KEY (decision_id, number)
 );
 CREATE INDEX IF NOT EXISTS dupe_group_items_item ON dupe_group_items(repo, number);

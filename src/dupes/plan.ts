@@ -57,7 +57,15 @@ export function setHash(members: Member[]): string {
 
 export function kindSetsOf(db: DatabaseSync, g: Group): KindSet[] {
   const get = db.prepare("SELECT number, kind, state, title, head_oid, embed_hash, comments_count FROM items WHERE repo = ? AND number = ?");
-  const members = g.members.map((n) => get.get(g.repo, n) as Member | undefined).filter((m): m is Member => !!m);
+  // Left out: a rejected (closed, unmerged) PR; an item already closed as a duplicate, or whose pair decision is answered close (the act step closes it).
+  const gone = db.prepare(`SELECT 1 FROM decisions WHERE kind = 'duplicate' AND repo = ? AND number = ? AND id LIKE '%:duplicate@%' AND answer = 'close'`);
+  const reason = db.prepare("SELECT state_reason FROM items WHERE repo = ? AND number = ?");
+  const members = g.members.map((n) => get.get(g.repo, n) as Member | undefined).filter((m): m is Member => {
+    if (!m) return false;
+    if (m.kind === "pr" && m.state === "CLOSED") return false;
+    if (gone.get(g.repo, m.number)) return false;
+    return (reason.get(g.repo, m.number) as { state_reason: string | null }).state_reason !== "DUPLICATE";
+  });
   return (["pr", "issue"] as const).flatMap((kind) => {
     const ms = members.filter((m) => m.kind === kind);
     return ms.length ? [{ repo: g.repo, kind, key: setKey(kind, ms.map((m) => m.number)), members: ms, hash: setHash(ms) }] : [];
@@ -66,7 +74,7 @@ export function kindSetsOf(db: DatabaseSync, g: Group): KindSet[] {
 
 export type StoredComparison = {
   repo: string; key: string; kind: Kind; members: number[]; hash: string; kept: number; source: "model" | "closed" | "rule" | "single";
-  model: string | null; reason: string | null; result: ComparisonResult | null; error: string | null; at: string;
+  model: string | null; reason: string | null; result: ComparisonResult | null; error: string | null; attempts: number; at: string;
 };
 /** The per-member answers of a comparison, in the shape of the prompt replies. */
 export type ComparisonResult = {
@@ -84,8 +92,8 @@ export function storedComparison(db: DatabaseSync, repo: string, key: string): S
 }
 
 export function saveComparison(db: DatabaseSync, c: StoredComparison): void {
-  db.prepare(`INSERT OR REPLACE INTO dupe_comparisons (repo, key, kind, members, hash, kept, source, model, reason, result, error, at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(c.repo, c.key, c.kind, JSON.stringify(c.members), c.hash, c.kept, c.source, c.model, c.reason, c.result ? JSON.stringify(c.result) : null, c.error, c.at);
+  db.prepare(`INSERT OR REPLACE INTO dupe_comparisons (repo, key, kind, members, hash, kept, source, model, reason, result, error, attempts, at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(c.repo, c.key, c.kind, JSON.stringify(c.members), c.hash, c.kept, c.source, c.model, c.reason, c.result ? JSON.stringify(c.result) : null, c.error, c.attempts, c.at);
 }
 
 /** The stored comparison of the set when it is current. */
@@ -94,11 +102,39 @@ export const currentComparison = (db: DatabaseSync, s: KindSet): StoredCompariso
   return c && c.hash === s.hash ? c : null;
 };
 
-/** Sets that need a comparison: an open member is in the pilot and no current result is stored. */
-export function dueSets(db: DatabaseSync, repo?: string): KindSet[] {
+export const DROP_PAUSE_MS = 6 * 3600_000;
+export const RULE_RETRY_MS = 24 * 3600_000;
+export const RULE_ATTEMPTS = 3;
+const dropKey = (s: { repo: string; key: string }) => `dupe_drop:${s.repo}:${s.key}`;
+
+/** Remembers that the set changed on GitHub since the sync, so it is not tried again for a while. */
+export function rememberDrop(db: DatabaseSync, s: KindSet, at: string): void {
+  db.prepare("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(dropKey(s), `${s.hash}|${at}`);
+}
+
+function recentlyDropped(db: DatabaseSync, s: KindSet, nowMs: number): boolean {
+  const v = (db.prepare("SELECT value FROM settings WHERE key = ?").get(dropKey(s)) as { value: string } | undefined)?.value;
+  if (!v) return false;
+  const [hash, at] = v.split("|");
+  return hash === s.hash && nowMs - Date.parse(at!) < DROP_PAUSE_MS;
+}
+
+/** A stored rule result is tried again after a day, three times at most, while no decision of the group is answered. */
+function retryable(db: DatabaseSync, c: StoredComparison, nowMs: number): boolean {
+  if (c.source !== "rule" || c.attempts >= RULE_ATTEMPTS || nowMs - Date.parse(c.at) < RULE_RETRY_MS) return false;
+  const placeholders = c.members.map(() => "?").join(",");
+  return !db.prepare(`SELECT 1 FROM dupe_group_items gi JOIN decisions d ON d.id = gi.decision_id
+    WHERE gi.repo = ? AND gi.number IN (${placeholders}) AND d.answer IS NOT NULL AND d.answer <> 'superseded' LIMIT 1`).get(c.repo, ...c.members);
+}
+
+/** Sets that need a comparison: an open member is in the pilot and no current result is stored (or a rule result may be retried), and the set did not just change on GitHub. */
+export function dueSets(db: DatabaseSync, repo?: string, nowMs: number = Date.now()): KindSet[] {
   const out: KindSet[] = [];
   for (const g of duplicateGroups(db, repo))
-    for (const s of kindSetsOf(db, g))
-      if (s.members.some((m) => m.state === "OPEN" && inPilot(db, s.repo, m.number)) && !currentComparison(db, s)) out.push(s);
+    for (const s of kindSetsOf(db, g)) {
+      if (!s.members.some((m) => m.state === "OPEN" && inPilot(db, s.repo, m.number))) continue;
+      const c = currentComparison(db, s);
+      if ((!c || retryable(db, c, nowMs)) && !recentlyDropped(db, s, nowMs)) out.push(s);
+    }
   return out;
 }

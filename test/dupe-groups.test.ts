@@ -11,7 +11,9 @@ import { runDupeCompare, type CompareDeps, type Reply } from "../src/dupes/compa
 import { applyDuplicateAnswers } from "../src/dupes/decide.ts";
 import { duplicateHeld, notHeldSql } from "../src/dupes/held.ts";
 import { compareWork, dupesWork } from "../src/dupes/index.ts";
-import { dueSets } from "../src/dupes/plan.ts";
+import { dueSets, DROP_PAUSE_MS, RULE_RETRY_MS } from "../src/dupes/plan.ts";
+import { askGroupDecisions, resetGroupAnswer } from "../src/dupes/decide.ts";
+import { selectCandidates } from "../src/decide/select.ts";
 import { SCRATCH } from "./scratch.ts";
 
 mkdirSync(SCRATCH, { recursive: true });
@@ -144,7 +146,7 @@ describe("issue group", () => {
       return JSON.stringify({ keep: nums[0], reason: "r", others: nums.slice(1).map((number: number) => ({ number, adds: [] })) });
     });
     await runDupeCompare(db, {}, () => {}, d);
-    assert.deepEqual(d.calls.map((c) => c.input.issues.length), [10, 2, 2]);
+    assert.deepEqual(d.calls.map((c) => c.input.issues.length), [6, 6, 2]);
     const roles = db.prepare("SELECT COUNT(*) AS n FROM dupe_group_items WHERE decision_id = ? AND role = 'close'").get(GROUP_ID) as { n: number };
     assert.equal(roles.n, 11);
   });
@@ -217,5 +219,177 @@ describe("pair decisions and answers", () => {
     assert.equal(duplicateHeld(db, "app", 1), false);
     assert.equal((db.prepare("SELECT COUNT(*) AS n FROM duplicate_pairs WHERE verdict = 'distinct' AND by_operator = 1").get() as { n: number }).n, 3);
     assert.equal(dueSets(db).length, 0);
+  });
+});
+
+const issueReply = (keep: number, others: number[]) => JSON.stringify({ keep, reason: "r", others: others.map((number) => ({ number, adds: [] })) });
+const roles = (db: DatabaseSync, id = GROUP_ID) => (db.prepare("SELECT number, role FROM dupe_group_items WHERE decision_id = ? ORDER BY number").all(id) as { number: number; role: string }[]).map((r) => `${r.number}:${r.role}`);
+const answerAs = (db: DatabaseSync, a: string, id = GROUP_ID) => db.prepare("UPDATE decisions SET answer = ?, answered_by = 'op', answered_at = ? WHERE id = ?").run(a, T0, id);
+const undo = (db: DatabaseSync, id = GROUP_ID) => { db.prepare("UPDATE decisions SET answer = NULL, answered_by = NULL, answered_at = NULL WHERE id = ?").run(id); resetGroupAnswer(db, id); };
+
+describe("review fixes: answers, undo and refresh", () => {
+  async function three() {
+    const db = fresh([{ n: 1 }, { n: 2 }, { n: 3 }], [[1, 2], [1, 3]]);
+    await runDupeCompare(db, {}, () => {}, deps(() => issueReply(1, [2, 3])));
+    return db;
+  }
+  test("undo then answer again rebuilds the roles from the comparison", async () => {
+    const db = await three();
+    answerAs(db, "keep:2");
+    applyDuplicateAnswers(db, T0);
+    assert.deepEqual(roles(db), ["1:close", "2:keep", "3:close"]);
+    undo(db);
+    assert.deepEqual(roles(db), ["1:keep", "2:close", "3:close"]);
+    answerAs(db, "keep:2");
+    applyDuplicateAnswers(db, T0);
+    assert.deepEqual(roles(db), ["1:close", "2:keep", "3:close"]);
+    // keep:3, undo, then use the answer: the comparison's keep returns.
+    undo(db);
+    answerAs(db, "keep:3");
+    applyDuplicateAnswers(db, T0);
+    undo(db);
+    answerAs(db, "accept");
+    applyDuplicateAnswers(db, T0);
+    assert.deepEqual(roles(db), ["1:keep", "2:close", "3:close"]);
+  });
+
+  test("a refresh drops the applied answer and restores the comparison's roles", async () => {
+    const db = await three();
+    db.prepare("UPDATE dupe_group_items SET role = 'keep' WHERE decision_id = ? AND number = 2").run(GROUP_ID);
+    db.prepare("UPDATE dupe_groups SET applied_answer = 'keep:2'").run();
+    askGroupDecisions(db, undefined, T0);
+    assert.deepEqual(roles(db), ["1:keep", "2:close", "3:close"]);
+    assert.equal((db.prepare("SELECT applied_answer FROM dupe_groups").get() as any).applied_answer, null);
+  });
+
+  test("keep #N instead leaves the old keep as stay when it is not open", async () => {
+    const db = await three();
+    db.prepare("UPDATE items SET state = 'CLOSED' WHERE number = 1").run();
+    // The closed #1 keeps winning by the closed rule only after a new comparison; here the roles are set directly.
+    answerAs(db, "keep:2");
+    applyDuplicateAnswers(db, T0);
+    assert.equal(roles(db).includes("1:stay") || roles(db).includes("1:close"), true);
+    assert.equal(roles(db).includes("1:close"), false);
+  });
+});
+
+describe("review fixes: members already gone", () => {
+  test("a member closed as a duplicate, or with an answered close pair decision, is not part of the group", async () => {
+    const db = fresh([{ n: 10 }, { n: 11 }, { n: 12, state: "CLOSED" }], [[10, 12], [10, 11]]);
+    db.prepare("UPDATE items SET state_reason = 'DUPLICATE' WHERE number = 12").run();
+    const d = deps(() => issueReply(10, [11]));
+    await runDupeCompare(db, {}, () => {}, d);
+    assert.deepEqual(d.calls[0]!.input.issues.map((i: any) => i.ref), ["#10", "#11"]);
+    assert.equal(getDecision(db, "app:dupegroup:10")!.question, "Keep #10 and close #11 as a duplicate?");
+  });
+
+  test("a pair close answered but not acted yet keeps that member out of the keep", async () => {
+    const db = fresh([{ n: 1 }, { n: 2 }], [[1, 2]]);
+    ask(db, [{ id: "app#2:duplicate@1", kind: "duplicate", repo: "app", number: 2, question: "q", options: [{ key: "close", label: "c" }, { key: "distinct", label: "n" }], asked_at: T0 }]);
+    answerAs(db, "close", "app#2:duplicate@1");
+    const d = deps(() => issueReply(2, [1]));
+    await runDupeCompare(db, {}, () => {}, d);
+    assert.equal(d.calls.length, 0);
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM decisions WHERE id LIKE '%dupegroup%'").get()!.n, 0);
+  });
+
+  test("a closed, unmerged PR is left out; a merged one still wins", async () => {
+    const db = fresh([{ n: 1, kind: "pr" }, { n: 2, kind: "pr" }, { n: 3, kind: "pr", state: "CLOSED" }], [[1, 2], [2, 3]]);
+    const d = deps(() => pr(1, [{ number: 2, duplicate: true, better: [], carry: [] }]));
+    await runDupeCompare(db, {}, () => {}, d);
+    assert.deepEqual(d.calls[0]!.input.prs.map((p: any) => p.ref), ["#1", "#2"]);
+  });
+});
+
+describe("review fixes: queue, retries, atomic writes", () => {
+  test("a set dropped by the live check does not use the limit and is not retried for a while", async () => {
+    const db = fresh([{ n: 1 }, { n: 2 }, { n: 3 }, { n: 4 }], [[1, 2], [3, 4]]);
+    const d = deps(() => issueReply(3, [4]));
+    d.querier = { spent: 0, remaining: 1, async query() {
+      const repository: any = {};
+      for (const n of [1, 2, 3, 4]) repository[`i${n}`] = { state: n === 1 ? "CLOSED" : "OPEN" };
+      return { repository };
+    } } as never;
+    const r = await runDupeCompare(db, { limit: 1 }, () => {}, d);
+    assert.deepEqual([r.dropped, d.calls.length], [1, 1]);
+    assert.equal(dueSets(db, undefined, NOW.getTime() + 1000).length, 0);
+    db.prepare("DELETE FROM dupe_comparisons").run();
+    assert.equal(dueSets(db, undefined, NOW.getTime() + 1000).length, 1, "the set that was not dropped is due again, the dropped one waits");
+    assert.equal(dueSets(db, undefined, NOW.getTime() + DROP_PAUSE_MS + 1000).length, 2);
+  });
+
+  test("a rule result is compared again after a day, three times at most", async () => {
+    const db = fresh([{ n: 1 }, { n: 2 }], [[1, 2]]);
+    const run = (ms: number) => runDupeCompare(db, {}, () => {}, { ...deps(() => "no"), now: () => new Date(NOW.getTime() + ms) });
+    await run(0);
+    assert.equal(dueSets(db, undefined, NOW.getTime() + 1000).length, 0);
+    assert.equal(dueSets(db, undefined, NOW.getTime() + RULE_RETRY_MS + 1000).length, 1);
+    await run(RULE_RETRY_MS + 1000);
+    await run(2 * RULE_RETRY_MS + 2000);
+    assert.equal((db.prepare("SELECT attempts FROM dupe_comparisons").get() as any).attempts, 3);
+    assert.equal(dueSets(db, undefined, NOW.getTime() + 9 * RULE_RETRY_MS).length, 0);
+    // A model answer on a retry replaces the rule result.
+    db.prepare("UPDATE dupe_comparisons SET attempts = 1").run();
+    await runDupeCompare(db, {}, () => {}, { ...deps(() => issueReply(2, [1])), now: () => new Date(NOW.getTime() + 4 * RULE_RETRY_MS) });
+    assert.equal((db.prepare("SELECT source FROM dupe_comparisons").get() as any).source, "model");
+    assert.equal(getDecision(db, GROUP_ID)!.number, 2);
+  });
+
+  test("a failed refresh leaves nothing half written", async () => {
+    const db = fresh([{ n: 1 }, { n: 2 }], [[1, 2]]);
+    await runDupeCompare(db, {}, () => {}, deps(() => issueReply(1, [2])));
+    db.exec("CREATE TRIGGER boom BEFORE INSERT ON dupe_group_items BEGIN SELECT RAISE(ABORT, 'boom'); END");
+    db.prepare("UPDATE decisions SET question = 'old'").run();
+    assert.throws(() => askGroupDecisions(db, undefined, T0), /boom/);
+    assert.equal(getDecision(db, GROUP_ID)!.question, "old");
+    assert.equal(roles(db).length, 2);
+  });
+
+  test("the kept item of an open group decision is not held back from Decide", async () => {
+    const db = fresh([{ n: 1 }, { n: 2 }], [[1, 2]]);
+    await runDupeCompare(db, {}, () => {}, deps(() => issueReply(1, [2])));
+    db.prepare("INSERT INTO classifications (repo, number, classifier, run_id, at, type_label, flags, probs) VALUES ('app', 1, 'jev', 'r1', ?, 'missing feature', '[\"needs decision\"]', '{\"top\":0.95}')").run(T0);
+    assert.deepEqual(selectCandidates(db, "r1", ["app"]).map((c) => c.number), [1]);
+  });
+});
+
+describe("review fixes: groups that grow", () => {
+  test("a member joining after an answer is asked against the answered keep, and the answered members are not asked again", async () => {
+    const db = fresh([{ n: 3 }, { n: 7 }, { n: 9 }], [[3, 7]]);
+    await runDupeCompare(db, {}, () => {}, deps(() => issueReply(3, [7])));
+    answerAs(db, "accept", "app:dupegroup:3");
+    applyDuplicateAnswers(db, T0);
+    db.prepare("INSERT INTO duplicate_pairs (repo, a, b, a_hash, b_hash, similarity, jev_p, verdict, canonical, checked_at, created_at) VALUES ('app', 3, 9, 'h3', 'h9', 0.9, 0.95, 'duplicate', 3, ?, ?)").run(T0, T0);
+    // The model would now keep the new #9; the answered keep stays.
+    await runDupeCompare(db, {}, () => {}, deps(() => issueReply(9, [3, 7])));
+    const ids = (db.prepare("SELECT id FROM decisions WHERE id LIKE '%dupegroup%' ORDER BY id").all() as { id: string }[]).map((r) => r.id);
+    assert.deepEqual(ids, ["app:dupegroup:3", "app:dupegroup:9"]);
+    assert.deepEqual(roles(db, "app:dupegroup:9"), ["3:keep", "9:close"]);
+    assert.equal(getDecision(db, "app:dupegroup:9")!.question, "Keep #3 and close #9 as a duplicate?");
+  });
+
+  test("a lower member joining an open group refreshes the same decision", async () => {
+    const db = fresh([{ n: 1 }, { n: 5 }, { n: 6 }], [[5, 6]]);
+    await runDupeCompare(db, {}, () => {}, deps(() => issueReply(5, [6])));
+    assert.ok(getDecision(db, "app:dupegroup:5"));
+    db.prepare("INSERT INTO duplicate_pairs (repo, a, b, a_hash, b_hash, similarity, jev_p, verdict, canonical, checked_at, created_at) VALUES ('app', 1, 5, 'h1', 'h5', 0.9, 0.95, 'duplicate', 1, ?, ?)").run(T0, T0);
+    await runDupeCompare(db, {}, () => {}, deps(() => issueReply(5, [1, 6])));
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM decisions WHERE id LIKE '%dupegroup%'").get()!.n, 1);
+    assert.equal(getDecision(db, "app:dupegroup:5")!.question, "Keep #5 and close #1, #6 as duplicates?");
+  });
+
+  test("open pair decisions are superseded even when the group has nothing to close", async () => {
+    const db = fresh([{ n: 1, kind: "pr" }, { n: 2, kind: "pr" }], [[1, 2]]);
+    ask(db, [{ id: "app#2:duplicate@1", kind: "duplicate", repo: "app", number: 2, question: "q", options: [{ key: "close", label: "c" }, { key: "distinct", label: "n" }], asked_at: T0 }]);
+    await runDupeCompare(db, {}, () => {}, deps(() => pr(1, [{ number: 2, duplicate: false, better: ["x"], carry: [] }])));
+    assert.equal(getDecision(db, "app#2:duplicate@1")!.answer, "superseded");
+  });
+
+  test("a group answer is applied when any member is in the pilot", async () => {
+    const db = fresh([{ n: 1 }, { n: 2 }], [[1, 2]]);
+    await runDupeCompare(db, {}, () => {}, deps(() => issueReply(1, [2])));
+    answerAs(db, "accept");
+    db.prepare("INSERT INTO settings (key, value) VALUES ('pilot_items', '[\"app#2\"]') ON CONFLICT(key) DO UPDATE SET value = excluded.value").run();
+    assert.equal(dupesWork(db, "m"), true);
   });
 });
