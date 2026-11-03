@@ -89,13 +89,21 @@ if [ -n "$TIMER" ]; then
 		systemctl is-active --quiet "$SYNC_UNIT" || break
 		sleep 2
 	done
+	if systemctl is-active --quiet "$SYNC_UNIT"; then echo "!! warning: a sync run is still going after 300 s; deploying anyway" >&2; fi
 fi
 
-echo "-> Checking out..."
-rm -rf "$REL"
-mkdir -p "$REL"
-git --work-tree="$REL" checkout -f "$BRANCH"
-printf '%s\n' "$sha" >"$REL/.source-commit"
+# Redeploying the live commit (after a failure past the switch) reuses its release:
+# deleting it would pull the files from under the running services.
+if [ "$(readlink "$ROOT/app" 2>/dev/null)" = "releases/$sha" ] && [ -f "$REL/.source-commit" ]; then
+	echo "-> ${sha:0:12} is the live release; reusing it."
+	live=1
+else
+	echo "-> Checking out..."
+	rm -rf "$REL"
+	mkdir -p "$REL"
+	git --work-tree="$REL" checkout -f "$BRANCH"
+	printf '%s\n' "$sha" >"$REL/.source-commit"
+fi
 cd "$REL"
 
 if [ "${snapshot_pending:-0}" = 1 ]; then
@@ -103,13 +111,15 @@ if [ "${snapshot_pending:-0}" = 1 ]; then
 	bash "$REL/deploy/backup.sh" predeploy 3
 fi
 
-echo "-> Installing dependencies..."
-pnpm install --frozen-lockfile --prod
+if [ "${live:-0}" != 1 ]; then
+	echo "-> Installing dependencies..."
+	pnpm install --frozen-lockfile --prod
 
-echo "-> Building the web app..."
-pnpm -C web install --frozen-lockfile
-pnpm -C web exec tsc --noEmit
-pnpm -C web exec vite build --outDir dist --emptyOutDir
+	echo "-> Building the web app..."
+	pnpm -C web install --frozen-lockfile
+	pnpm -C web exec tsc --noEmit
+	pnpm -C web exec vite build --outDir dist --emptyOutDir
+fi
 
 echo "-> Checking that the CLI loads..."
 usage="$(node --no-warnings src/cli.ts)"
@@ -156,4 +166,4 @@ fi
 
 # Keep the current release and the newest few others.
 keep="${AUTOCRAFT_KEEP_RELEASES:-2}"
-ls -1t "$ROOT/releases" | grep -vx "$sha" | tail -n +$((keep + 1)) | while read -r old; do rm -rf "$ROOT/releases/$old"; done
+ls -1t "$ROOT/releases" | { grep -vx "$sha" || true; } | tail -n +$((keep + 1)) | while read -r old; do rm -rf "$ROOT/releases/$old"; done

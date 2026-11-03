@@ -34,7 +34,7 @@ describe("sandbox command", () => {
     assert.deepEqual(pairs(args, "--bind"), [], "nothing is writable");
     assert.equal(REPO_PATH, "/repo");
     assert.deepEqual(pairs(args, "--tmpfs").map((t) => t.split(" ")[0]), ["/tmp", "/home/sandbox", "/home/sandbox/.claude", "/work"]);
-    assert.ok(!args.some((a) => a === "--dev-bind" || a === "--bind-try" || a.startsWith("/home/user") || a === homedir()));
+    assert.ok(!args.some((a) => a === "--dev-bind" || a === "--bind-try" || a === homedir() || a.startsWith(`${homedir()}/`)));
   });
 
   test("new namespaces except the network, dies with the parent, clean environment", () => {
