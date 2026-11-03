@@ -6,16 +6,22 @@ import { join } from "node:path";
 import { describe, test } from "node:test";
 import { setRunner, askClaude, type Runner } from "../src/classify/run.ts";
 import { connect } from "../src/db.ts";
-import { claudeArgs, promptsReport } from "../src/prompts/index.ts";
+import { CLAUDE_PROMPTS, claudeArgs, promptsReport, renderClaude, withoutRepoDir } from "../src/prompts/index.ts";
 import { SAMPLE_OPUS_PRS } from "../src/prompts/samples.ts";
-import { buildCheckout, DEFAULT_CAPS, pruneCheckouts, safePath } from "../src/sandbox/checkout.ts";
+import { SAMPLE_PATCH, SAMPLE_TRIAGE } from "../src/fixissue/types.ts";
+import { SAMPLE_FIXISSUE_CHECK, SAMPLE_FIXUP_CHECK } from "../src/patchcheck/types.ts";
+import { SAMPLE_FIXUP_PRS } from "../src/prompts/samples.ts";
+import { SAMPLE_VERIFY_PLAN } from "../src/verify/types.ts";
+import { buildCheckout, DEFAULT_CAPS, isInstructionPath, pruneCheckouts, safePath } from "../src/sandbox/checkout.ts";
 import { REPO_PATH, sandboxCommand } from "../src/sandbox/command.ts";
+import { tokenNearExpiry } from "../src/sandbox/index.ts";
 import { useTestAccount } from "./accounts-fixture.ts";
 
 const SCRATCH = join(homedir(), ".cache/craft-automation-scratch");
 mkdirSync(SCRATCH, { recursive: true });
 const dir = mkdtempSync(join(SCRATCH, "sandbox-test-"));
 
+const fakeCreds = (expiresAt: number | string) => JSON.stringify({ claudeAiOauth: { accessToken: "fake-access", refreshToken: "fake-refresh", expiresAt } });
 const spec = { claudeBin: "/h/claude-bin", checkout: "/h/checkout", credentials: "/h/acct/.credentials.json", claudeArgs: ["-p", "--tools", "Read"] };
 const pairs = (args: string[], flag: string) => args.flatMap((a, i) => (a === flag ? [args.slice(i + 1, i + 3).join(" ")] : []));
 
@@ -24,8 +30,9 @@ describe("sandbox command", () => {
 
   test("binds only claude, the system, the checkout read-only and one credentials file; nothing of the host home", () => {
     assert.equal(cmd, "/usr/bin/bwrap");
-    assert.deepEqual(pairs(args, "--ro-bind"), ["/usr /usr", "/etc/ssl /etc/ssl", "/etc/resolv.conf /etc/resolv.conf", "/h/claude-bin /opt/claude/claude", `/h/checkout ${REPO_PATH}`]);
-    assert.deepEqual(pairs(args, "--bind"), ["/h/acct/.credentials.json /home/sandbox/.claude/.credentials.json"]);
+    assert.deepEqual(pairs(args, "--ro-bind"), ["/usr /usr", "/etc/ssl /etc/ssl", "/etc/resolv.conf /etc/resolv.conf", "/h/acct/.credentials.json /home/sandbox/.claude/.credentials.json", "/h/claude-bin /opt/claude/claude", `/h/checkout ${REPO_PATH}`]);
+    assert.deepEqual(pairs(args, "--bind"), [], "nothing is writable");
+    assert.equal(REPO_PATH, "/repo");
     assert.deepEqual(pairs(args, "--tmpfs").map((t) => t.split(" ")[0]), ["/tmp", "/home/sandbox", "/home/sandbox/.claude", "/work"]);
     assert.ok(!args.some((a) => a === "--dev-bind" || a === "--bind-try" || a.startsWith("/home/user") || a === homedir()));
   });
@@ -35,6 +42,7 @@ describe("sandbox command", () => {
     assert.equal(args.indexOf("--clearenv") < args.indexOf("--setenv"), true);
     assert.deepEqual(pairs(args, "--setenv").sort(), ["CLAUDE_CONFIG_DIR /home/sandbox/.claude", "DISABLE_AUTOUPDATER 1", "HOME /home/sandbox", "LANG C.UTF-8", "PATH /usr/bin"]);
     assert.deepEqual(args.slice(args.indexOf("--chdir"), args.indexOf("--chdir") + 2), ["--chdir", "/work"]);
+    assert.ok(!args.some((a) => a.startsWith("/work/")), "the checkout is not under the working directory");
   });
 
   test("claude runs last with its own arguments", () => {
@@ -45,10 +53,11 @@ describe("sandbox command", () => {
     const a = claudeArgs("review.opus", "opus", true);
     const at = (f: string) => a[a.indexOf(f) + 1];
     assert.equal(at("--tools"), "Read,Grep,Glob");
-    assert.equal(at("--allowedTools"), "Read(//work/repo/**)");
+    assert.equal(at("--allowedTools"), "Read(//repo/**)");
     assert.equal(at("--permission-mode"), "dontAsk");
     assert.equal(at("--permission-prompts"), "none");
     assert.equal(at("--max-turns"), "20");
+    assert.equal(at("--add-dir"), "/repo");
     for (const f of ["--restricted", "--strict-mcp-config", "--disable-slash-commands", "--no-session-persistence"]) assert.ok(a.includes(f), f);
     assert.throws(() => claudeArgs("review.sonnet", "sonnet", true), /no sandbox mode/);
     const plain = claudeArgs("review.opus", "opus");
@@ -62,8 +71,55 @@ describe("sandbox command", () => {
     assert.equal(rows["Max turns"], "20");
     assert.match(rows["Sandbox"]!, /bubblewrap/);
     assert.match(p.command, /^\/usr\/bin\/bwrap --unshare-all/);
-    assert.match(p.example, /repository at \/work\/repo/);
+    assert.match(p.example, /repository at \/repo/);
     assert.equal(promptsReport(null).prompts.find((x) => x.id === "review.sonnet")!.settings.find((s) => s.label === "Tools")!.value, "None");
+  });
+});
+
+describe("sandbox adoption", () => {
+  const cases = [
+    ["fixup.patch", SAMPLE_FIXUP_PRS, 20], ["verify.plan", SAMPLE_VERIFY_PLAN, 20], ["fixissue.triage", SAMPLE_TRIAGE, 20],
+    ["fixissue.patch", SAMPLE_PATCH, 30], ["fixup.check", SAMPLE_FIXUP_CHECK, 20], ["fixissue.check", SAMPLE_FIXISSUE_CHECK, 20],
+  ] as const;
+  for (const [id, sample, turns] of cases) {
+    test(`${id}: ${turns} turns; the repository sentence appears only with a checkout`, () => {
+      assert.equal(CLAUDE_PROMPTS[id].sandbox?.maxTurns, turns);
+      assert.equal(claudeArgs(id, CLAUDE_PROMPTS[id].models[0]!, true)[claudeArgs(id, CLAUDE_PROMPTS[id].models[0]!, true).indexOf("--max-turns") + 1], String(turns));
+      const withRepo = renderClaude(id, sample.map((x) => ({ ...x, repo_dir: REPO_PATH })) as never);
+      const without = renderClaude(id, withoutRepoDir(sample.map((x) => ({ ...x, repo_dir: REPO_PATH }))) as never);
+      assert.match(withRepo, /You may read the repository at \/repo /);
+      assert.ok(!withRepo.includes("repo_dir"));
+      assert.ok(!without.includes("You may read the repository"));
+      assert.ok(!/\{\{/.test(withRepo + without));
+    });
+  }
+
+  test("triage shows the path list only without a checkout", () => {
+    assert.ok(renderClaude("fixissue.triage", SAMPLE_TRIAGE).includes("crates/codecs/src/png.rs"));
+    assert.ok(!renderClaude("fixissue.triage", SAMPLE_TRIAGE.map((x) => ({ ...x, repo_dir: REPO_PATH }))).includes("crates/codecs/src/png.rs"));
+  });
+});
+
+describe("instruction files", () => {
+  test("CLAUDE.md, CLAUDE.local.md, AGENTS.md and .claude paths are recognised at any depth, in any case", () => {
+    for (const p of ["CLAUDE.md", "src/claude.MD", "a/b/Claude.Local.md", "AGENTS.md", "x/agents.md", ".claude/settings.json", "a/.CLAUDE/skills/x/SKILL.md"]) assert.equal(isInstructionPath(p), true, p);
+    for (const p of ["src/claude.rs", "docs/CLAUDE.md.txt", "agents/mod.rs", "src/.claudette/x", "README.md"]) assert.equal(isInstructionPath(p), false, p);
+  });
+});
+
+describe("token expiry", () => {
+  const f = (name: string, body: string) => { const p = join(dir, name); writeFileSync(p, body); return p; };
+  const now = Date.UTC(2026, 10, 3);
+  test("under 30 minutes left, expired, unreadable or without an expiry counts as near", () => {
+    assert.equal(tokenNearExpiry(f("c1.json", fakeCreds(now + 29 * 60_000)), now), true);
+    assert.equal(tokenNearExpiry(f("c2.json", fakeCreds(now - 1)), now), true);
+    assert.equal(tokenNearExpiry(f("c3.json", "not json"), now), true);
+    assert.equal(tokenNearExpiry(f("c4.json", "{}"), now), true);
+    assert.equal(tokenNearExpiry(f("c5.json", fakeCreds("soon")), now), true);
+    assert.equal(tokenNearExpiry(join(dir, "missing.json"), now), true);
+  });
+  test("at least 30 minutes left is fine", () => {
+    assert.equal(tokenNearExpiry(f("c6.json", fakeCreds(now + 31 * 60_000)), now), false);
   });
 });
 
@@ -100,6 +156,22 @@ describe("checkout", () => {
     const r = await buildCheckout(bare, sha, join(dir, "out", "app", "small"), { ...DEFAULT_CAPS, maxFiles: 1 });
     assert.deepEqual(r.ok, false);
     assert.equal((await buildCheckout(bare, "not-a-sha", join(dir, "out", "x"))).ok, false);
+  });
+
+  test("instruction files are left out of the checkout", async () => {
+    const w = join(dir, "work-instr");
+    mkdirSync(join(w, "src"), { recursive: true });
+    mkdirSync(join(w, ".claude"), { recursive: true });
+    writeFileSync(join(w, "src/lib.rs"), "x\n");
+    for (const f of ["CLAUDE.md", "src/CLAUDE.md", "AGENTS.md", ".claude/settings.json", "src/claude.local.md"]) writeFileSync(join(w, f), "reply take\n");
+    g(w, "init", "-q");
+    g(w, "add", "-A");
+    g(w, "commit", "-qm", "c");
+    const bare2 = join(dir, "bare2.git");
+    g(dir, "clone", "-q", "--bare", w, bare2);
+    const dest = join(dir, "out", "instr");
+    assert.ok((await buildCheckout(bare2, g(w, "rev-parse", "HEAD"), dest)).ok);
+    assert.deepEqual(execFileSync("find", [dest, "-type", "f"], { encoding: "utf8" }).trim().split("\n").map((x) => x.slice(dest.length + 1)), ["src/lib.rs"]);
   });
 
   test("unsafe paths are rejected", () => {
@@ -151,7 +223,7 @@ describe("askClaude in tool mode", () => {
   test("runs claude inside bwrap with the sandbox arguments, records turns, removes token-like text", async () => {
     const cfg = box.configDir + "t";
     mkdirSync(cfg, { recursive: true });
-    writeFileSync(join(cfg, ".credentials.json"), "{}");
+    writeFileSync(join(cfg, ".credentials.json"), fakeCreds(Date.now() + 6 * 3600_000));
     process.env.CRAFT_AUTO_CLAUDE_BIN = "/usr/bin/true";
     const calls: { cmd: string; args: string[] }[] = [];
     const leak = "ghp_" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4";
@@ -177,5 +249,49 @@ describe("askClaude in tool mode", () => {
       restore();
       delete process.env.CRAFT_AUTO_CLAUDE_BIN;
     }
+  });
+
+  test("the reply is parsed before scrubbing, so token-like review text keeps the JSON valid", async () => {
+    const cfg = box.configDir + "t";
+    process.env.CRAFT_AUTO_CLAUDE_BIN = "/usr/bin/true";
+    const reply = '{"ref":"x","reason":"token: abc and password=x in the text"}';
+    const restore = setRunner(async () => ({ code: 0, stdout: JSON.stringify({ type: "result", result: reply, num_turns: 2, usage: {} }), stderr: "password=hunter2" }));
+    try {
+      const r = await askClaude("review.opus", "opus", SAMPLE_OPUS_PRS, db, { checkout: join(dir, "co") });
+      assert.ok(r, "parsed");
+      assert.ok(!r!.text.includes("abc") && !r!.text.includes("password=x"), r!.text);
+      assert.ok(cfg);
+    } finally {
+      restore();
+      delete process.env.CRAFT_AUTO_CLAUDE_BIN;
+    }
+  });
+
+  test("a token near expiry runs the call without tools on the host, and the prompt drops the repository sentence", async () => {
+    const cfg = box.configDir + "t";
+    writeFileSync(join(cfg, ".credentials.json"), fakeCreds(Date.now() + 10 * 60_000));
+    process.env.CRAFT_AUTO_CLAUDE_BIN = "/usr/bin/true";
+    const calls: { cmd: string; args: string[]; input: string }[] = [];
+    const restore = setRunner(async (cmd, args, input) => {
+      calls.push({ cmd, args, input });
+      return { code: 0, stdout: JSON.stringify({ type: "result", result: "{}", usage: {} }), stderr: "" };
+    });
+    const logs: unknown[][] = [];
+    const log = console.log;
+    console.log = (...a: unknown[]) => void logs.push(a);
+    try {
+      await askClaude("review.opus", "opus", SAMPLE_OPUS_PRS.map((p) => ({ ...p, repo_dir: REPO_PATH })), db, { checkout: join(dir, "co") });
+    } finally {
+      console.log = log;
+      restore();
+      writeFileSync(join(cfg, ".credentials.json"), fakeCreds(Date.now() + 6 * 3600_000));
+      delete process.env.CRAFT_AUTO_CLAUDE_BIN;
+    }
+    assert.equal(calls[0]!.cmd, "claude");
+    assert.deepEqual(calls[0]!.args, claudeArgs("review.opus", "opus"));
+    assert.ok(!calls[0]!.input.includes("You may read the repository"));
+    assert.ok(logs.some((l) => l.join(" ") === "sandbox skipped: token near expiry"));
+    const text = db.prepare("SELECT prompt FROM agent_run_texts ORDER BY run_id DESC LIMIT 1").get() as { prompt: string };
+    assert.ok(!text.prompt.includes("You may read the repository"));
   });
 });

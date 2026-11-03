@@ -13,6 +13,8 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { askClaude } from "../classify/run.ts";
+import { REPO_PATH } from "../sandbox/command.ts";
+import { checkoutForPr } from "../sandbox/index.ts";
 import { audit } from "../dash/audit.ts";
 import { connect } from "../db.ts";
 import { Client, type Querier } from "../mirror.ts";
@@ -44,9 +46,11 @@ export type FixupDeps = {
   exec: Exec;
   fetchDiff: DiffFetcher;
   /** The model's reply to the fixup.patch prompt, or null when it gave none. */
-  ask: (db: DatabaseSync, input: FixupPr[]) => Promise<string | null>;
+  ask: (db: DatabaseSync, input: FixupPr[], checkout?: string) => Promise<string | null>;
   /** The model's reply to the fixup.check prompt (Opus), or null when it gave none. */
-  check: (db: DatabaseSync, input: FixupCheckInput[]) => Promise<string | null>;
+  check: (db: DatabaseSync, input: FixupCheckInput[], checkout?: string) => Promise<string | null>;
+  /** Host directory with a read-only checkout of the PR head for the sandboxed model calls, or null to ask without tools. Absent: no tools. */
+  checkout?: (repo: string, number: number, head: string) => Promise<string | null>;
   now: () => Date;
   /** Directory holding one bare cache repository per repo. */
   root: string;
@@ -55,8 +59,9 @@ export type FixupDeps = {
 export function defaultDeps(): FixupDeps {
   return {
     querier: new Client(1000), exec, fetchDiff: ghDiff, now: () => new Date(), root: fixupDir(),
-    ask: async (db, input) => (await askClaude("fixup.patch", PROMPT.models[0]!, input, db))?.text ?? null,
-    check: async (db, input) => (await askClaude("fixup.check", CHECK.models[0]!, input, db))?.text ?? null,
+    ask: async (db, input, checkout) => (await askClaude("fixup.patch", PROMPT.models[0]!, input, db, { checkout }))?.text ?? null,
+    check: async (db, input, checkout) => (await askClaude("fixup.check", CHECK.models[0]!, input, db, { checkout }))?.text ?? null,
+    checkout: (r, n, h) => checkoutForPr(r, n, h, console.log),
   };
 }
 
@@ -226,7 +231,9 @@ export async function runFixup(db: DatabaseSync, params: FixupParams, log: (line
       if (!diff.ok) { fail("failed", `no diff: ${oneLine(diff.error)}`); continue; }
       if (diff.text.length > DIFF_CAP) { hold("too-large", `the PR diff is over the ${DIFF_CAP} character limit`); continue; }
 
-      const reply = await d.ask(db, [{ ref, title: oneTitle(db, c), fixes: c.fixes, files: shown, diff: diff.text }]);
+      const checkout = (await d.checkout?.(repo, c.number, head)) ?? undefined;
+      const repoDir = checkout ? { repo_dir: REPO_PATH } : {};
+      const reply = await d.ask(db, [{ ref, title: oneTitle(db, c), fixes: c.fixes, files: shown, diff: diff.text, ...repoDir }], checkout);
       if (reply === null) { fail("failed", "the model gave no answer"); continue; }
       const v = validatePatch(reply, files);
       if (!v.ok) { fail("refused", v.reason); continue; }
@@ -249,7 +256,7 @@ export async function runFixup(db: DatabaseSync, params: FixupParams, log: (line
 
       // Opus checks the validated patch; only an approve goes on to the push.
       if (v.patch.length > CHECK_PATCH_CAP) { fail("refused", `the patch is over the ${CHECK_PATCH_CAP} character limit for the check`); continue; }
-      const checkReply = await d.check(db, [{ ref, title: oneTitle(db, c), review_reason: c.reason, fixes: c.fixes, diff: diff.text.slice(0, CHECK_DIFF_CAP), patch: v.patch }]);
+      const checkReply = await d.check(db, [{ ref, title: oneTitle(db, c), review_reason: c.reason, fixes: c.fixes, diff: diff.text.slice(0, CHECK_DIFF_CAP), patch: v.patch, ...repoDir }], checkout);
       if (checkReply === null) { fail("failed", "the patch check gave no answer"); continue; }
       const verdict = parseCheck(checkReply);
       if (!verdict.ok) { fail("failed", `the patch check gave no valid answer: ${verdict.error}`); continue; }

@@ -12,7 +12,7 @@ export type CheckoutCaps = { maxFiles: number; maxBytes: number; maxFileBytes: n
 export const DEFAULT_CAPS: CheckoutCaps = { maxFiles: 20_000, maxBytes: 150 * 1024 * 1024, maxFileBytes: 2 * 1024 * 1024 };
 
 export function checkoutRoot(): string {
-  return process.env.CRAFT_AUTO_CHECKOUT_DIR ?? join(homedir(), ".cache/craft-automation/checkouts");
+  return process.env.CRAFT_AUTO_CHECKOUT_DIR ?? join(homedir(), ".cache/craft-automation/checkouts-v2");
 }
 
 type Out = { code: number; stdout: Buffer };
@@ -34,16 +34,23 @@ export function safePath(p: string): boolean {
   return p.split("/").every((c) => c !== "" && c !== "." && c !== ".." && c.toLowerCase() !== ".git");
 }
 
+const INSTRUCTION_FILES = new Set(["claude.md", "claude.local.md", "agents.md"]);
+
+/** True for a path that claude could load as instructions or settings: CLAUDE.md, CLAUDE.local.md, AGENTS.md at any depth, or anything under a `.claude` directory (case-insensitive). */
+export function isInstructionPath(p: string): boolean {
+  return p.split("/").some((c) => INSTRUCTION_FILES.has(c.toLowerCase()) || c.toLowerCase() === ".claude");
+}
+
 type Entry = { oid: string; size: number; path: string };
 
-/** The regular files (modes 100644 and 100755) of `sha`; symlinks, submodules and unsafe paths are left out. */
+/** The regular files (modes 100644 and 100755) of `sha`; symlinks, submodules, unsafe paths and instruction files are left out. */
 export function parseTree(listing: string, caps: CheckoutCaps): Entry[] {
   const out: Entry[] = [];
   for (const rec of listing.split("\0")) {
     const m = /^(\d+) (\w+) ([0-9a-f]{40,64}) +(\d+|-)\t(.*)$/s.exec(rec);
     if (!m || m[2] !== "blob" || (m[1] !== "100644" && m[1] !== "100755")) continue;
     const size = Number(m[4]);
-    if (size > caps.maxFileBytes || !safePath(m[5]!)) continue;
+    if (size > caps.maxFileBytes || !safePath(m[5]!) || isInstructionPath(m[5]!)) continue;
     out.push({ oid: m[3]!, size, path: m[5]! });
   }
   return out;

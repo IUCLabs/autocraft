@@ -54,7 +54,7 @@ export const SAMPLE_DUPE_PAIRS: DupePair[] = [{
 }];
 
 export const SAMPLE_OPUS_PRS: OpusPr[] = [{
-  ref: "photocraft#1287", repo_dir: "/work/repo", title: SAMPLE_ITEMS[0]!.title, body: SAMPLE_ITEMS[0]!.body,
+  ref: "photocraft#1287", repo_dir: "/repo", title: SAMPLE_ITEMS[0]!.title, body: SAMPLE_ITEMS[0]!.body,
   author_association: "CONTRIBUTOR", size: "S", lines_changed: 46, ci: "success", mergeable: "MERGEABLE",
   files: ["crates/codecs/src/png.rs"], tests_omitted: ["crates/codecs/tests/png16.rs", "crates/codecs/tests/data/rgba16.png"], lockfiles_omitted: [],
   sonnet: { verdict: "take-fix", reason: "Correct stride fix; one local name is unclear.", fixes: [{ file: "crates/codecs/src/png.rs", change: "Rename `bytes_per_sample` to `sample_bytes` in decode_rows." }], risks: [] },

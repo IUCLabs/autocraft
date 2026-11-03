@@ -13,6 +13,8 @@ export type CheckKind = "fixup" | "fixissue";
 
 /** What the fixup.check prompt is rendered from. */
 export type FixupCheckInput = {
+  /** Where the call may read the repository in the sandbox; not part of the quoted JSON. */
+  repo_dir?: string;
   ref: string; title: string;
   /** The review's reason for taking the PR with fixes. */
   review_reason: string;
@@ -25,6 +27,8 @@ export type FixupCheckInput = {
 
 /** What the fixissue.check prompt is rendered from. */
 export type FixIssueCheckInput = {
+  /** Where the call may read the repository in the sandbox; not part of the quoted JSON. */
+  repo_dir?: string;
   ref: string; title: string; body: string; comments: { author: string; body: string }[];
   /** The triage's reasoning for calling the issue fixable. */
   triage_reason: string;

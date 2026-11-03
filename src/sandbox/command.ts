@@ -4,8 +4,9 @@
 // empty home and the one credentials file of the account used. Network is
 // shared because the API needs it; everything else is a new namespace.
 
-/** Where the checkout appears inside the sandbox. */
-export const REPO_PATH = "/work/repo";
+/** Where the checkout appears inside the sandbox: outside the working directory, so claude never loads its instruction files as project memory. */
+export const REPO_PATH = "/repo";
+/** The empty working directory. */
 export const WORK_PATH = "/work";
 const HOME = "/home/sandbox";
 const CONFIG = `${HOME}/.claude`;
@@ -34,10 +35,10 @@ export function sandboxCommand(s: SandboxSpec): { cmd: string; args: string[] } 
     "--ro-bind", "/etc/ssl", "/etc/ssl", "--ro-bind", "/etc/resolv.conf", "/etc/resolv.conf",
     "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp",
     "--tmpfs", HOME, "--tmpfs", CONFIG,
-    // Writable so claude can refresh the token in place.
-    "--bind", s.credentials, `${CONFIG}/.credentials.json`,
+    // Read-only: the sandbox never refreshes the token (src/sandbox/index.ts `tokenNearExpiry` keeps calls with an expiring token out).
+    "--ro-bind", s.credentials, `${CONFIG}/.credentials.json`,
     "--ro-bind", s.claudeBin, CLAUDE_PATH,
-    // The working directory is empty, so no project instructions or settings from the checkout are found.
+    // The working directory is empty and the checkout sits beside it (claude gets it with --add-dir), so no project instructions or settings from the checkout are found.
     "--tmpfs", WORK_PATH, "--ro-bind", s.checkout, REPO_PATH, "--chdir", WORK_PATH,
     ...env.flatMap(([k, v]) => ["--setenv", k, v]),
     CLAUDE_PATH, ...s.claudeArgs,
