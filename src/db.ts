@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { fillClassHashes, fillEmbedHashes } from "./itemhash.ts";
+import { liveSql } from "./live.ts";
 import { JEV_USD_PER_INPUT_TOKEN } from "./prompts/index.ts";
 
 export const DEFAULT_DB = join(homedir(), ".local/share/craft-automation/mirror.db");
@@ -144,7 +145,7 @@ function buildItemStage(db: DatabaseSync): void {
 
 /** Identifies the schema this code expects; the database stores the stamp it was last migrated with. */
 function schemaStamp(sql: string): string {
-  return createHash("sha256").update(sql).update(JSON.stringify([ADDED_COLUMNS, ADDED_INDEXES, MIGRATION_VERSION])).digest("hex").slice(0, 16);
+  return createHash("sha256").update(sql).update(JSON.stringify([ADDED_COLUMNS, ADDED_INDEXES, MIGRATION_VERSION, liveSql()])).digest("hex").slice(0, 16);
 }
 
 function stampOf(db: DatabaseSync): string | null {
@@ -174,6 +175,7 @@ export function connect(path: string = dbPath()): DatabaseSync {
   db.exec(schema);
   addColumns(db);
   for (const ix of ADDED_INDEXES) db.exec(ix);
+  db.exec(liveSql());
   migrateValues(db);
   backfill(db);
   buildSearchIndex(db);
