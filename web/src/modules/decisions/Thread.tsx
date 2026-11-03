@@ -28,14 +28,14 @@ export function ThreadPanel({ user }: ViewProps) {
     localActions.setPick(d.id, option);
     scrollToWorkflow();
   };
-  const [tab, setTab] = useState<"opus" | "feedback">("feedback");
+  const [tab, setTab] = useState<"opus" | "feedback">("opus");
   const conversation = d && d.number !== null;
   const showOpus = !!conversation && tab === "opus";
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex h-10 shrink-0 items-center gap-2 border-b border-line px-4 pr-10">
         {conversation ? (
-          <Segmented label="Panel" value={tab} onChange={setTab} options={[{ value: "feedback", label: "Feedback", count: d.commentCount + d.opinions.length }, { value: "opus", label: "Opus" }]} />
+          <Segmented label="Panel" value={tab} onChange={setTab} options={[{ value: "opus", label: "Opus" }, { value: "feedback", label: "Feedback", count: d.commentCount + d.opinions.length }]} />
         ) : (
           <span className="flex items-center gap-1.5 text-xs font-semibold text-ink/70">
             Feedback {d && <Count n={d.commentCount + d.opinions.length} />}
@@ -49,7 +49,7 @@ export function ThreadPanel({ user }: ViewProps) {
       )}
       {d ? (
         <div className={showOpus ? "hidden" : "flex min-h-0 flex-1 flex-col"}>
-          <FeedbackList d={d} me={user.login} onUse={operator && !d.answer ? use : undefined} onRetract={canComment(user) ? () => void api.decisions.retract(d.id) : undefined} />
+          <FeedbackList d={d} me={user.login} onUse={operator && !d.answer ? use : undefined} onRetract={canComment(user) && !d.answer ? () => void api.decisions.retract(d.id) : undefined} />
           {canComment(user) && (
             <div className="border-t border-line p-3">
               <FeedbackBox d={d} />
@@ -64,7 +64,7 @@ export function ThreadPanel({ user }: ViewProps) {
 }
 
 /**
- * Everything people said about a decision, newest first: picks (with their text) and plain
+ * Everything people said about a decision, oldest first: picks (with their text) and plain
  * text. `onUse` selects a pick's option in the Workflow box; `onRetract` withdraws the viewer's own pick.
  */
 export function FeedbackList({ d, me, onUse, onRetract, compact }: { d: Decision; me: string; onUse?: (option: string) => void; onRetract?: () => void; compact?: boolean }) {
@@ -74,7 +74,7 @@ export function FeedbackList({ d, me, onUse, onRetract, compact }: { d: Decision
   const entries = [
     ...d.opinions.map((o) => ({ id: o.id, login: o.login, at: o.at, text: o.note, pick: o.option, write: o.permission === "write", own: o.login === me })),
     ...(thread ?? []).map((c) => ({ id: c.id, login: c.login, at: c.at, text: c.body, pick: null as string | null, write: false, own: false })),
-  ].sort((x, y) => y.at.localeCompare(x.at));
+  ].sort((x, y) => x.at.localeCompare(y.at));
   return (
     <ol className={compact ? "space-y-3.5" : "min-h-0 flex-1 space-y-4 overflow-y-auto p-4"}>
       {entries.map((e) => (
@@ -103,14 +103,14 @@ export function FeedbackList({ d, me, onUse, onRetract, compact }: { d: Decision
             </span>
           </div>
           {e.text && <p className="mt-1 whitespace-pre-wrap break-words pl-7 text-sm leading-5 text-ink/80">{e.text}</p>}
-          {e.pick && (e.own ? onRetract : onUse) && (
+          {((e.own && onRetract) || (e.pick && onUse)) && (
             <div className="mt-1 flex gap-3 pl-7">
               {e.own && onRetract && (
                 <button onClick={onRetract} className="text-xs text-accent-ink hover:underline max-md:min-h-11">
                   Retract
                 </button>
               )}
-              {onUse && e.write && (
+              {onUse && e.pick && e.write && (
                 <button
                   onClick={() => onUse(e.pick!)}
                   className="rounded border border-line-strong px-2 py-0.5 text-left text-xs font-medium hover:border-accent/60 hover:text-accent-ink"

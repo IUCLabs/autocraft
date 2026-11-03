@@ -98,11 +98,6 @@ export function Facts({ facts, repo = null }: { facts: string[]; repo?: string |
   );
 }
 
-/**
- * Comments from everyone, newest first, with GitHub permission badges. Operators can select
- * a suggestion in the Workflow box; suggestions from logins without write access on the repo
- * cannot be used.
- */
 export function tallyOf(d: Decision) {
   const t: Record<string, number> = {};
   for (const o of d.opinions) if (o.option) t[o.option] = (t[o.option] ?? 0) + 1;

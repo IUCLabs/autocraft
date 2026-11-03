@@ -251,7 +251,7 @@ export function DecisionBody({
         </>
       }
     >
-      <FeedbackList d={d} me={user.login} compact onUse={operator && !d.answer ? use : undefined} onRetract={commenter ? () => void api.decisions.retract(d.id) : undefined} />
+      <FeedbackList d={d} me={user.login} compact onUse={operator && !d.answer ? use : undefined} onRetract={commenter && !d.answer ? () => void api.decisions.retract(d.id) : undefined} />
       {commenter && <FeedbackBox d={d} className="mt-3" />}
     </Section>
   );

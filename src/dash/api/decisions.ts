@@ -451,10 +451,13 @@ export async function feedback(db: DatabaseSync, req: Req, limiter: RateLimiter)
     // The permission check above can wait on GitHub; the operator may have answered meanwhile.
     if ((db.prepare("SELECT answer FROM decisions WHERE id = ?").get(d.id) as { answer: string | null }).answer !== null)
       throw new HttpError(409, "the decision is answered; picks are closed");
+    // A new pick without text keeps the login's earlier note.
+    const earlier = db.prepare("SELECT note FROM decision_opinions WHERE decision_id = ? AND login = ? AND retracted_at IS NULL").get(d.id, req.user.login) as { note: string | null } | undefined;
+    const note = text ?? earlier?.note ?? null;
     db.prepare("UPDATE decision_opinions SET retracted_at = ? WHERE decision_id = ? AND login = ? AND retracted_at IS NULL").run(at, d.id, req.user.login);
     db.prepare("INSERT INTO decision_opinions (id, decision_id, login, option, note, at, permission) VALUES (?, ?, ?, ?, ?, ?, ?)")
-      .run(randomToken(12), d.id, req.user.login, option, text, at, permission);
-    audit(db, req.user.login, "opinion", d.id, { option, note: text ? true : undefined });
+      .run(randomToken(12), d.id, req.user.login, option, note, at, permission);
+    audit(db, req.user.login, "opinion", d.id, { option, note: note ? true : undefined });
     db.exec("COMMIT");
   } catch (e) {
     db.exec("ROLLBACK");

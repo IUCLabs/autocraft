@@ -1,6 +1,6 @@
 // The JSON API through HTTP with the fake OAuth provider: who may answer,
-// adopt, opine and comment; CSRF; the hourly limit; claims; and that opinions
-// and comments never reach the CLI output the pipeline reads.
+// adopt, give feedback (a pick, text or both); CSRF; the hourly limit; claims; and that feedback
+// never reaches the CLI output the pipeline reads.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -200,6 +200,11 @@ describe("api", () => {
     // changing replaces the live opinion
     const d3 = await maint.post<Decision>(dpath(P1, "/feedback"), { option: "plugin", text: `maint ${MARKER}` });
     assert.deepEqual(d3.opinions.filter((o) => o.login === "maint").map((o) => o.option), ["plugin"]);
+    // a new pick without text keeps the earlier note; with text it replaces it
+    const d3b = await maint.post<Decision>(dpath(P1, "/feedback"), { option: "small" });
+    assert.deepEqual(d3b.opinions.filter((o) => o.login === "maint").map((o) => [o.option, o.note]), [["small", `maint ${MARKER}`]]);
+    const d3c = await maint.post<Decision>(dpath(P1, "/feedback"), { option: "plugin", text: "changed" });
+    assert.equal(d3c.opinions.find((o) => o.login === "maint")!.note, "changed");
     await pal.post(dpath(P1, "/feedback"), { option: "nope" }, 400);
     await pal.post(dpath(P1, "/feedback"), {}, 400);
     const d5 = await pal.post<Decision>(dpath(P1, "/feedback"), { text: `comment ${MARKER}` });
@@ -209,7 +214,7 @@ describe("api", () => {
     const d4 = await pal.post<Decision>(dpath(P1, "/retract"));
     assert.equal(d4.opinions.some((o) => o.login === "pal"), false);
     assert.equal(getAnswer(P1), null);
-    assert.equal(auditCount("opinion", "maint"), 2);
+    assert.equal(auditCount("opinion", "maint"), 4);
     assert.equal(auditCount("comment", "pal"), 1);
     assert.equal(auditCount("opinion-retract", "pal"), 1);
   });

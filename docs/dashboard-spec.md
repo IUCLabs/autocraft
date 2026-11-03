@@ -91,7 +91,7 @@ The pipeline as a flowchart, so maintainers see at a glance what moves, what is 
 ### Decisions
 
 - Summary line, then filter chips (repo, kind, age) and the cards, oldest first within each group, grouped by kind then repo.
-- Card: link label (`photocraft#1234`) and title, the AI summary, the issue or PR body (rendered, collapsed when long), the facts, then the question with option buttons (recommendation marked, opinion tally on each), an optional note field, everyone's opinions, and expanders with the context, latest classifications (one line per classifier) and related items (duplicates, linked issues, overlapping PRs). List rows show the item title and the summary's first sentence.
+- Card: link label (`photocraft#1234`) and title, the AI summary, the issue or PR body (rendered, collapsed when long), the facts, then the question with option buttons (recommendation marked, opinion tally on each), an optional note field, everyone's feedback, and expanders with the context, latest classifications (one line per classifier) and related items (duplicates, linked issues, overlapping PRs). List rows show the item title and the summary's first sentence.
 - Batch card: the shared question, the item count, the first five items with "show all", one set of option buttons, and a per-item override in the expanded list.
 - Answering a card replaces it with a one-line confirmation and an undo link (undo works until `applied_at` is set).
 - "Answered" tab: decisions answered but not yet applied, then applied ones (last 7 days).
