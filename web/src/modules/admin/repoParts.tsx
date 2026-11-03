@@ -3,6 +3,7 @@ import type { TrackedRepo } from "../../api/types";
 import { Badge } from "../../ui/Badge";
 import { Button } from "../../ui/Button";
 import { ago, num } from "../../lib/format";
+import { useUser } from "../../shell/UserContext";
 import { ConfirmButton, useWrite } from "./parts";
 
 export type Write = ReturnType<typeof useWrite>;
@@ -93,7 +94,9 @@ export function WriteBadges({ r }: { r: TrackedRepo }) {
 
 export function Toggle({ r, write }: { r: TrackedRepo; write: Write }) {
   const api = useApi();
+  const operator = useUser().role === "operator";
   const key = `${r.tracked ? "untrack" : "track"}:${r.name}`;
+  if (!operator) return null;
   if (!r.tracked)
     return (
       <Button
@@ -130,8 +133,9 @@ export function PipelineToggle({
   short?: boolean;
 }) {
   const api = useApi();
+  const operator = useUser().role === "operator";
   const key = `pipeline:${r.name}`;
-  if (!r.tracked) return null;
+  if (!r.tracked || !operator) return null;
   return r.pipeline ? (
     <ConfirmButton
       label={short ? "Turn off" : "Pipeline off"}

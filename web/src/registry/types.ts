@@ -4,7 +4,7 @@ import type { Api } from "../api/client";
 import type { User } from "../api/types";
 
 /** `viewer` = anyone signed in; `operator` = the operator role; `write:<repo>` = GitHub write on that repo. */
-export type Permission = "viewer" | "operator" | `write:${string}`;
+export type Permission = "viewer" | "staff" | "operator" | `write:${string}`;
 
 export interface ViewProps {
   /** Route params (`:id`, `:repo` ...). */

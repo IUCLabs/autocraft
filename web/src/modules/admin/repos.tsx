@@ -8,6 +8,7 @@ import { Badge } from "../../ui/Badge";
 import { Button } from "../../ui/Button";
 import { cn } from "../../ui/cn";
 import { useIsPhone } from "../../shell/useMedia";
+import { useUser } from "../../shell/UserContext";
 import { Block, ErrorLine, Page, SortTh, TextInput, useWrite } from "./parts";
 import {
   PipelineBadge,
@@ -27,6 +28,7 @@ function ReposView(_: ViewProps) {
   const [show, setShow] = useState<Show>("tracked");
   const [name, setName] = useState("");
   const write = useWrite();
+  const operator = useUser().role === "operator";
   const phone = useIsPhone();
   const tracked = data?.filter((r) => r.tracked).length ?? 0;
   const rows =
@@ -82,7 +84,7 @@ function ReposView(_: ViewProps) {
             </button>
           ))}
         </div>
-        <form
+        {operator && <form
           className="flex w-full items-center gap-2 sm:ml-auto sm:w-auto"
           onSubmit={(e) => {
             e.preventDefault();
@@ -104,7 +106,7 @@ function ReposView(_: ViewProps) {
           >
             Track
           </Button>
-        </form>
+        </form>}
       </div>
       <ErrorLine error={write.error ?? error?.message} className="mt-2" />
 
@@ -232,7 +234,7 @@ function Cards({ rows }: { rows: TrackedRepo[] }) {
 
 export const reposModule: FeatureModule = {
   id: "repos",
-  permission: "operator",
+  permission: "staff",
   nav: {
     label: "Repos",
     icon: FolderSimpleIcon,
@@ -243,7 +245,7 @@ export const reposModule: FeatureModule = {
   routes: [
     {
       path: "repos",
-      permission: "operator",
+      permission: "staff",
       view: {
         id: "repos",
         title: "Repos",
@@ -257,6 +259,6 @@ export const reposModule: FeatureModule = {
         ],
       },
     },
-    { path: "repos/:name", permission: "operator", view: repoDetailView },
+    { path: "repos/:name", permission: "staff", view: repoDetailView },
   ],
 };

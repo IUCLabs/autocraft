@@ -3,6 +3,7 @@ import type { Permission } from "./types";
 
 export function can(user: User, p: Permission): boolean {
   if (p === "viewer") return true;
+  if (p === "staff") return user.role !== "viewer";
   if (p === "operator") return user.role === "operator";
   return user.writeRepos.includes(p.slice("write:".length));
 }

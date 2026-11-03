@@ -261,7 +261,7 @@ export function createAdminMock(me: User, changed: () => void): AdminApi {
     },
     repoAdmin: {
       list() {
-        requireOperator("manage tracked repos");
+        if (me.role === "viewer") throw new Error("only operators and maintainers read the repo settings");
         return wait([...repos].sort((a, b) => Number(b.tracked) - Number(a.tracked) || a.name.localeCompare(b.name)));
       },
       async track(name) {
@@ -392,11 +392,12 @@ export function createAdminMock(me: User, changed: () => void): AdminApi {
         return write(overview());
       },
       audit(f) {
-        requireOperator("read the audit log");
+        if (me.role === "viewer") throw new Error("only operators and maintainers read the audit log");
+        const hidden = operator ? [] : ["access-add", "access-remove", "access-role", "session-revoke", "sign-in", "sign-in-refused"];
         const l = f.login?.trim().toLowerCase();
-        const rows = auditLog.filter((e) => (!l || e.login.toLowerCase() === l || e.target?.toLowerCase() === l) && (!f.action || e.action === f.action));
+        const rows = auditLog.filter((e) => !hidden.includes(e.action) && (!l || e.login.toLowerCase() === l || e.target?.toLowerCase() === l) && (!f.action || e.action === f.action));
         const from = f.offset ?? 0;
-        return wait({ entries: rows.slice(from, from + (f.limit ?? 50)), total: rows.length, actions: AUDIT_ACTIONS });
+        return wait({ entries: rows.slice(from, from + (f.limit ?? 50)), total: rows.length, actions: AUDIT_ACTIONS.filter((a) => !hidden.includes(a)) });
       },
     },
   };

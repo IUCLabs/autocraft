@@ -29,6 +29,8 @@ import { pipelineState } from "../../runner/autopilot.ts";
 import { PilotError, setPilot } from "../../pilot.ts";
 import { canSeeInternals } from "./staff.ts";
 
+// Who can sign in, their roles and sessions: audited rows only operators read.
+const ACCESS_ACTIONS = ["access-add", "access-remove", "access-role", "session-revoke", "sign-in", "sign-in-refused"];
 const NOTE_MAX = 300;
 const ACCESS_NOTE_MAX = 500;
 const AUDIT_PAGE = 50;
@@ -237,7 +239,7 @@ export function override(db: DatabaseSync, req: Req): Contributor {
 // ---- tracked repos ---------------------------------------------------------
 
 export function allRepos(db: DatabaseSync, req: Req): TrackedRepo[] {
-  requireOperator(req, "manage tracked repos");
+  if (!canSeeInternals(req)) throw new HttpError(403, "only operators and maintainers read the repo settings");
   return listAll(db).map((r) => ({
     name: r.name, tracked: !!r.tracked, openPrs: r.open_prs, openIssues: r.open_issues, mirrored: r.rows, syncedAt: r.synced_at,
     labels: r.tracked ? labelsInfo(db, r.name) : null,
@@ -476,11 +478,13 @@ export function revokeSession(db: DatabaseSync, req: Req): AccessOverview {
 }
 
 export function auditLog(db: DatabaseSync, req: Req): AuditPage {
-  requireOperator(req, "read the audit log");
+  if (!canSeeInternals(req)) throw new HttpError(403, "only operators and maintainers read the audit log");
   const q = req.query;
   const login = (q.get("login") ?? "").trim().slice(0, 100);
   const action = q.get("action") ?? "";
-  if (action && !AUDIT_ACTIONS.includes(action)) throw new HttpError(400, "unknown action");
+  const operator = isOperator(req);
+  const actions = operator ? AUDIT_ACTIONS : AUDIT_ACTIONS.filter((a) => !ACCESS_ACTIONS.includes(a));
+  if (action && !actions.includes(action)) throw new HttpError(400, "unknown action");
   const limit = int(q.get("limit"), AUDIT_PAGE, 1, 500, "limit");
   const offset = int(q.get("offset"), 0, 0, 1e9, "offset");
   const where: string[] = [];
@@ -492,6 +496,10 @@ export function auditLog(db: DatabaseSync, req: Req): AuditPage {
   if (action) {
     where.push("action = ?");
     args.push(action);
+  }
+  if (!operator) {
+    where.push(`action NOT IN (${ACCESS_ACTIONS.map(() => "?").join(", ")})`);
+    args.push(...ACCESS_ACTIONS);
   }
   const w = where.length ? `WHERE ${where.join(" AND ")}` : "";
   const total = Number((db.prepare(`SELECT COUNT(*) AS n FROM audit ${w}`).get(...args) as { n: number }).n);
@@ -505,7 +513,7 @@ export function auditLog(db: DatabaseSync, req: Req): AuditPage {
     } catch { /* not JSON: shown without details */ }
     return { at: r.at, login: r.login, action: r.action, target: r.target, details };
   });
-  return { entries, total, actions: AUDIT_ACTIONS };
+  return { entries, total, actions };
 }
 
 // Only an operator limits the pipeline to a list of items. An empty list clears the pilot.

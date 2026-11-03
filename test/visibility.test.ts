@@ -167,6 +167,19 @@ describe("repo visibility", () => {
       assert.equal(await note(login), staff ? "private note" : null, login);
       assert.equal(await c.status("/api/access"), login === "boss" ? 200 : 403, login);
     }
+    db.prepare("INSERT INTO audit (at, login, action, target) VALUES (?, 'boss', 'access-add', 'someone'), (?, 'boss', 'repo-track', 'vault')").run(new Date().toISOString(), new Date().toISOString());
+    const maint = await signedIn("maint");
+    assert.ok((await maint.get<{ name: string }[]>("/api/repos/all")).length > 0);
+    const audit = await maint.get<{ entries: { action: string }[]; actions: string[] }>("/api/audit");
+    assert.ok(audit.entries.some((e) => e.action === "repo-track"));
+    assert.ok(!audit.entries.some((e) => e.action === "access-add"));
+    assert.ok(!audit.actions.includes("access-add"));
+    assert.equal(await maint.status("/api/audit?action=access-add"), 400);
+    const boss = await signedIn("boss");
+    assert.ok((await boss.get<{ entries: { action: string }[] }>("/api/audit?action=access-add")).entries.length > 0);
+    const reader = await signedIn("reader");
+    for (const path of ["/api/repos/all", "/api/audit"]) assert.equal(await reader.status(path), 403, path);
+    db.prepare("DELETE FROM audit WHERE target IN ('someone', 'vault') AND login = 'boss' AND action IN ('access-add', 'repo-track')").run();
     db.prepare("UPDATE main.decisions SET answer = NULL, answer_note = NULL, answered_by = NULL, answered_at = NULL WHERE id = 'vault#1:scope'").run();
   });
 });

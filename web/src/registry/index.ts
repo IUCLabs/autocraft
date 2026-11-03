@@ -8,7 +8,7 @@ import { progressModule } from "../modules/progress";
 import { itemsModule } from "../modules/items";
 import { classifiersModule } from "../modules/classifiers";
 import { costModule } from "../modules/cost";
-import { accessModule, contributorsModule, reposModule } from "../modules/admin";
+import { accessModule, auditModule, contributorsModule, reposModule } from "../modules/admin";
 import { aboutModule } from "../modules/about";
 import { pipelineModule } from "../modules/pipeline";
 import { promptsModule } from "../modules/prompts";
@@ -20,4 +20,4 @@ import { queueModule } from "../modules/queue";
 import { githubModule } from "../modules/github";
 import { similarModule } from "../modules/similar";
 
-export const modules: FeatureModule[] = [flowModule, decisionsModule, queueModule, agentsModule, envsModule, ratesModule, itemModule, progressModule, itemsModule, contributorsModule, classifiersModule, costModule, reposModule, accessModule, aboutModule, pipelineModule, promptsModule, similarModule, accountsModule, githubModule];
+export const modules: FeatureModule[] = [flowModule, decisionsModule, queueModule, agentsModule, envsModule, ratesModule, itemModule, progressModule, itemsModule, contributorsModule, classifiersModule, costModule, reposModule, accessModule, auditModule, aboutModule, pipelineModule, promptsModule, similarModule, accountsModule, githubModule];

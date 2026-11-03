@@ -125,7 +125,11 @@ Agreement between classifiers on the same items (for the Jev vs Haiku trial, lat
 
 ### Access (operators)
 
-Access list with add, remove and role change; active sessions with revoke; the audit log, filterable by login and action.
+Access list with add, remove and role change; active sessions with revoke.
+
+### Audit (operators and maintainers)
+
+The audit log, filterable by login and action. Maintainers do not get the access-management rows (access changes, session revokes, sign-ins).
 
 ### Cost
 
@@ -196,7 +200,8 @@ The pipeline runs Claude agents under the operator's own Claude account on the o
 | Answer, undo, adopt an opinion | operator; for a repo decision the operator also needs write, maintain or admin permission on `storytold/R` on GitHub |
 | Give, change or retract an opinion; comment on a decision; mark a decision as open (presence) | operator or maintainer (rate-limited, audited; opinions shown with their GitHub permission on the repo). Viewers get 403 and see no such controls |
 | Whitelist overrides, whitelist rule, settings (including `maintainer_writes`) | operator |
-| Access list, sessions, audit log | operator |
+| Access list, sessions, access-management audit rows | operator |
+| Repo settings and the audit log (without access rows), read-only | operator or maintainer |
 | Turn the pipeline on or off, change limits, cancel jobs | operator; everyone signed in sees the Pipeline page |
 
 Roles on the access list: `operator`, `maintainer`, `viewer`. A `viewer` is read-only: every write returns 403 and the interface shows no write controls. A `maintainer` gives opinions and comments; maintainers gain direct answers once `maintainer_writes` is used. GitHub write permission on the repo is still required for an operator's answer about that repo.

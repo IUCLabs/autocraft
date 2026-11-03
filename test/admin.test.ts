@@ -112,7 +112,7 @@ describe("admin api", () => {
       const c = await signedIn(login);
       const before = auditRows();
       for (const [path, body] of WRITES) await c.post(path, body, 403);
-      for (const path of ["/api/contributors/rule-preview?minMerged=1&minRate=0", "/api/repos/all", "/api/access", "/api/audit"]) await c.get(path, 403);
+      for (const path of ["/api/contributors/rule-preview?minMerged=1&minRate=0", "/api/access"]) await c.get(path, 403);
       assert.equal(auditRows(), before, login);
       const list = await c.get<ContributorList>("/api/contributors");
       assert.equal(row(list, "steady").override, "deny");

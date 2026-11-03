@@ -4,6 +4,7 @@ import type { TrackedRepo } from "../../api/types";
 import type { ViewProps } from "../../registry/types";
 import { Badge } from "../../ui/Badge";
 import { num } from "../../lib/format";
+import { useUser } from "../../shell/UserContext";
 import { Block, ConfirmButton, ErrorLine, Page, useWrite } from "./parts";
 import { PipelineBadge, PipelineToggle, Toggle, WRITES, maybe, synced, type Write, type WriteKind } from "./repoParts";
 import { useNow } from "../../lib/useNow";
@@ -19,6 +20,7 @@ function Stat({ label, value, title }: { label: string; value: string; title?: s
 
 function WriteRow({ r, w, write }: { r: TrackedRepo; w: WriteKind; write: Write }) {
   const api = useApi();
+  const operator = useUser().role === "operator";
   const m = r[w.field];
   const key = `${w.field}:${r.name}`;
   return (
@@ -36,7 +38,7 @@ function WriteRow({ r, w, write }: { r: TrackedRepo; w: WriteKind; write: Write 
             </div>
           )}
         </div>
-        {m?.approved ? (
+        {!operator ? null : m?.approved ? (
           <ConfirmButton label="Stop" confirmLabel={w.stop} loading={write.busy === key} onConfirm={() => void write.run(key, () => w.run(api, r.name, false))} />
         ) : (
           <ConfirmButton label="Approve" confirmLabel={w.go} loading={write.busy === key} onConfirm={() => void write.run(key, () => w.run(api, r.name, true))} />
