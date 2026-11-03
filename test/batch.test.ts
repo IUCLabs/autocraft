@@ -48,6 +48,7 @@ function deps(w: World, root: string): BatchDeps {
   const querier: Querier = validating({
     spent: 0, remaining: 5000,
     async query(query: string, vars: object) {
+      if (query.includes("reviewThreads")) return { repository: { pullRequest: { author: null, comments: { nodes: [] }, reviews: { nodes: [] }, reviewThreads: { nodes: [] } } } };
       const v = vars as { n?: number };
       if (query.includes("viewer")) return { viewer: { login: "bot", id: "U1" } };
       if (query.startsWith("mutation")) return { addAssigneesToAssignable: {} };

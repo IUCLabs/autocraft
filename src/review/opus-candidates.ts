@@ -3,7 +3,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import { notHeldSql } from "../dupes/held.ts";
 import { headOf, sizeOf, type Size } from "./candidates.ts";
-import { newestOthers } from "./discussion.ts";
+import { changedSince, discussionState, staleReviews } from "./discussion.ts";
 import type { SonnetView } from "./opus-parse.ts";
 
 export type OpusCandidate = {
@@ -40,15 +40,18 @@ export function selectOpusCandidates(db: DatabaseSync, repo: string): OpusCandid
     ORDER BY p.score IS NULL, p.score DESC, i.number`).all(repo) as Row[];
   // A verdict older than Sonnet's review at the same head is out of date: Sonnet read newer discussion. A skip-list row has no verdict and stays.
   const rowsAt = new Map(rows.map((r) => [`${r.number}@${r.r_head}`, r.r_at]));
-  const newest = newestOthers(db, repo);
-  const done = new Set((db.prepare("SELECT number, head_oid, at, seen_at, verdict FROM opus_reviews WHERE repo = ?").all(repo) as { number: number; head_oid: string; at: string; seen_at: string | null; verdict: string | null }[])
-    .map((o) => ({ ...o, key: `${o.number}@${o.head_oid}` })).filter((o) => o.verdict === null || ((!rowsAt.get(o.key) || o.at >= rowsAt.get(o.key)!) && !((newest.get(`${repo}#${o.number}`) ?? "") > (o.seen_at ?? o.at)))).map((o) => o.key));
+  const state = discussionState(db, repo);
+  const sonnetStale = staleReviews(db, repo);
+  const done = new Set((db.prepare("SELECT number, head_oid, at, seen_at, disc_hash, verdict FROM opus_reviews WHERE repo = ?").all(repo) as { number: number; head_oid: string; at: string; seen_at: string | null; disc_hash: string | null; verdict: string | null }[])
+    .map((o) => ({ ...o, key: `${o.number}@${o.head_oid}` })).filter((o) => (!rowsAt.get(o.key) || o.at >= rowsAt.get(o.key)!) && !(o.verdict !== null && changedSince(state.get(`${repo}#${o.number}`), o.seen_at ?? o.at, o.disc_hash))).map((o) => o.key));
   const out: OpusCandidate[] = [];
   for (const r of rows) {
     const fresh = r.c_at && (!r.updated_at || r.c_at > r.updated_at);
     if (fresh ? r.c_state !== "OPEN" || r.c_draft : r.is_draft) continue;
     const head = headOf(r);
     if (!head || head !== r.r_head || done.has(`${r.number}@${head}`)) continue;
+    // Opus runs once, after Sonnet has read the new discussion.
+    if (sonnetStale.has(`${repo}#${r.number}@${head}`)) continue;
     const lines = (r.additions ?? 0) + (r.deletions ?? 0);
     out.push({
       repo: r.repo, number: r.number, title: r.title ?? "", body: r.body ?? "", author_association: r.author_association, head_oid: head,

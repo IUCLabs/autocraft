@@ -60,6 +60,8 @@ function fakeQuerier(heads: Map<number, string>): Querier & { calls: number } {
     spent: 0, remaining: 5000 as number | null, calls: 0,
     async query(query: string) {
       q.calls++;
+      if (query.includes("reviewThreads")) return { repository: { pullRequest: { author: null, comments: { nodes: [] }, reviews: { nodes: [] }, reviewThreads: { nodes: [] } } } };
+      if (query.includes("viewer")) return { viewer: { login: "pipeline-bot" } };
       const nums = [...query.matchAll(/pullRequest\(number: (\d+)\)/g)].map((m) => Number(m[1]));
       const repository = Object.fromEntries(nums.map((n) => [`pr${n}`, {
         number: n, state: "OPEN", isDraft: false, headRefOid: heads.get(n) ?? `sha${n}a`, mergeable: "MERGEABLE", maintainerCanModify: true,

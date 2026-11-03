@@ -97,7 +97,7 @@ async function item(db: DatabaseSync, req: Req): Promise<Item> {
   const stages = db.prepare("SELECT stage, at, actor AS \"by\", note FROM stages WHERE repo = ? AND number = ? ORDER BY at, rowid").all(repo, n) as
     { stage: Item["stages"][number]["stage"]; at: string; by: string | null; note: string | null }[];
   const comments = db.prepare(`SELECT id, author, created_at AS at, body, kind, review_state AS reviewState FROM comments
-    WHERE repo = ? AND number = ? ORDER BY created_at, rowid`).all(repo, n) as unknown as ItemComment[];
+    WHERE repo = ? AND number = ? AND NOT (kind = 'review' AND COALESCE(TRIM(body), '') = '') ORDER BY created_at, rowid`).all(repo, n) as unknown as ItemComment[];
   const decisionIds = (db.prepare(`SELECT id FROM decisions WHERE (repo = :repo AND number = :n) OR (number IS NULL AND EXISTS (
       SELECT 1 FROM json_each(CASE WHEN json_valid(items) THEN items ELSE '[]' END) j
       WHERE json_extract(j.value, '$.repo') = :repo AND json_extract(j.value, '$.number') = :n)) ORDER BY asked_at`).all({ repo, n }) as { id: string }[]).map((r) => r.id);
@@ -132,7 +132,7 @@ function reviewsOf(db: DatabaseSync, repo: string, n: number): ItemReviews | nul
   if (!f) return null;
   const list = <T>(s: string | null): T[] => { try { const v = JSON.parse(s ?? "[]") as unknown; return Array.isArray(v) ? (v as T[]) : []; } catch { return []; } };
   const risks = (db.prepare("SELECT risks FROM reviews WHERE repo = ? AND number = ? AND head_oid = ?").get(repo, n, f.head_oid) as { risks: string | null }).risks;
-  const o = db.prepare("SELECT at, mode, base_head, verdict, sure, reason, fixes, risks FROM opus_reviews WHERE repo = ? AND number = ? AND head_oid = ? AND verdict IS NOT NULL").get(repo, n, f.head_oid) as
+  const o = db.prepare("SELECT at, mode, base_head, verdict, sure, reason, fixes, risks FROM opus_reviews WHERE repo = ? AND number = ? AND head_oid = ? AND verdict IS NOT NULL AND at >= COALESCE((SELECT r.at FROM reviews r WHERE r.repo = opus_reviews.repo AND r.number = opus_reviews.number AND r.head_oid = opus_reviews.head_oid), '')").get(repo, n, f.head_oid) as
     { at: string; mode: "full" | "delta"; base_head: string | null; verdict: ReviewSide["verdict"]; sure: number; reason: string; fixes: string | null; risks: string | null } | undefined;
   const head = (db.prepare("SELECT head_oid FROM items WHERE repo = ? AND number = ?").get(repo, n) as { head_oid: string | null } | undefined)?.head_oid ?? null;
   return {

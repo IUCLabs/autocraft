@@ -19,7 +19,13 @@ const ADDED_COLUMNS: [table: string, column: string, type: string][] = [
   ["jobs", "acted", "INTEGER"],
   // When the discussion a review read was gathered; the review is stale for anything written after it.
   ["reviews", "seen_at", "TEXT"],
+  ["reviews", "disc_hash", "TEXT"],
   ["opus_reviews", "seen_at", "TEXT"],
+  ["opus_reviews", "disc_hash", "TEXT"],
+  // 1 when the comment or review counts as new discussion for the review stage.
+  ["comments", "counted", "INTEGER"],
+  // The Opus review (its `at`) the posted review describes.
+  ["review_posts", "opus_at", "TEXT"],
   ["access", "github_id", "INTEGER"],
   ["decisions", "summary", "TEXT"],
   ["decisions", "summary_by", "TEXT"],
@@ -73,6 +79,10 @@ const MIGRATION_VERSION = 3;
 
 // Rows written before their column existed.
 function backfill(db: DatabaseSync): void {
+  // Reviews made before snapshots existed count as having read everything up to now: no wave of re-reviews.
+  const now = new Date().toISOString();
+  db.prepare("UPDATE main.reviews SET seen_at = ? WHERE seen_at IS NULL").run(now);
+  db.prepare("UPDATE main.opus_reviews SET seen_at = ? WHERE seen_at IS NULL").run(now);
   db.exec("UPDATE main.jobs SET repo = json_extract(params, '$.repo') WHERE repo IS NULL AND json_valid(params) AND json_type(params, '$.repo') = 'text'");
 }
 

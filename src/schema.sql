@@ -396,7 +396,8 @@ CREATE TABLE IF NOT EXISTS opus_reviews (
 -- a person (take and take-fix count as agreeing). A skip-listed head keeps Sonnet's
 -- verdict. `final` is 0 while a Sonnet take or take-fix still waits for Opus; Sonnet
 -- hold and close verdicts are final at once.
-CREATE VIEW IF NOT EXISTS final_reviews AS
+DROP VIEW IF EXISTS final_reviews;
+CREATE VIEW final_reviews AS
 SELECT r.repo, r.number, r.head_oid, r.run_id, r.at, r.model, r.size, r.duplicate_of, r.overlaps,
   r.verdict AS sonnet_verdict, r.reason AS sonnet_reason, r.fixes AS sonnet_fixes,
   CASE WHEN o.verdict IS NULL THEN r.verdict
@@ -413,7 +414,8 @@ SELECT r.repo, r.number, r.head_oid, r.run_id, r.at, r.model, r.size, r.duplicat
   CASE WHEN o.verdict IS NOT NULL THEN 'opus' WHEN o.mode = 'skipped' THEN 'skip-list' ELSE 'sonnet' END AS source,
   o.skip_reason AS skip_reason,
   CASE WHEN r.verdict IN ('hold', 'close') OR o.head_oid IS NOT NULL THEN 1 ELSE 0 END AS final
-FROM reviews r LEFT JOIN opus_reviews o ON o.repo = r.repo AND o.number = r.number AND o.head_oid = r.head_oid;
+-- An Opus row older than Sonnet's review at the same head is out of date and ignored.
+FROM reviews r LEFT JOIN opus_reviews o ON o.repo = r.repo AND o.number = r.number AND o.head_oid = r.head_oid AND o.at >= r.at;
 
 -- Merge attempts by the Integrate stage, one row per try at a PR head.
 -- outcome: merged | refused (the merge command or a pre-merge check said no, with why).

@@ -20,7 +20,7 @@ const stop = (s: string): string => (/[.!?]$/.test(s) ? s : `${s}.`);
 /** The stored Sonnet review and, when present, Opus's final review of one PR head; null when there is no review text. */
 export function reviewSummary(db: DatabaseSync, repo: string, number: number, head: string): { summary: string; by: string } | null {
   const s = db.prepare("SELECT model, verdict, reason, risks FROM reviews WHERE repo = ? AND number = ? AND head_oid = ?").get(repo, number, head) as Sonnet | undefined;
-  const o = db.prepare("SELECT model, verdict, sure, reason, risks FROM opus_reviews WHERE repo = ? AND number = ? AND head_oid = ? AND verdict IS NOT NULL").get(repo, number, head) as Opus | undefined;
+  const o = db.prepare("SELECT model, verdict, sure, reason, risks FROM opus_reviews WHERE repo = ? AND number = ? AND head_oid = ? AND verdict IS NOT NULL AND at >= COALESCE((SELECT r.at FROM reviews r WHERE r.repo = opus_reviews.repo AND r.number = opus_reviews.number AND r.head_oid = opus_reviews.head_oid), '')").get(repo, number, head) as Opus | undefined;
   if (!s && !o) return null;
   const parts: string[] = [];
   const by: string[] = [];

@@ -92,7 +92,7 @@ export function selectCandidates(db: DatabaseSync, repo: string, run: string | n
     LEFT JOIN item_rank p ON p.repo = i.repo AND p.number = i.number
     WHERE i.repo = ? AND i.kind = 'pr' AND i.state = 'OPEN' AND ${notHeldSql("i")} ORDER BY p.score IS NULL, p.score DESC, i.number`).all(repo) as Row[];
   const reviewed = db.prepare("SELECT 1 FROM reviews WHERE repo = ? AND number = ? AND head_oid = ?");
-  const stale = staleReviews(db, repo);
+  const stale = staleReviews(db, repo, true);
   const settled = settledLookup(db, run);
   let scope: ScopeRow[] | undefined;
   const out: Candidate[] = [];
@@ -156,7 +156,7 @@ export function candidateRefs(db: DatabaseSync, repo?: string, run: string | nul
     (Pick<Row, "repo" | "number" | "head_oid" | "updated_at" | "is_draft" | "c_head" | "c_state" | "c_draft" | "c_at"> & { label: string | null; flags: string | null })[];
   const reviewed = new Set((db.prepare(`SELECT repo, number, head_oid FROM reviews ${repo ? "WHERE repo = ?" : ""}`).all(...(repo ? [repo] : [])) as
     { repo: string; number: number; head_oid: string }[]).map((r) => `${r.repo}#${r.number}@${r.head_oid}`));
-  const stale = staleReviews(db, repo);
+  const stale = staleReviews(db, repo, true);
   const out = new Set<string>();
   for (const r of rows) {
     const fresh = r.c_at && (!r.updated_at || r.c_at > r.updated_at);

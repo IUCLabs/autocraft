@@ -81,6 +81,7 @@ function fakes(log: Log, f: Fake = {}): MergeDeps & { calls: () => number } {
   const querier: Querier = validating({
     spent: 0, remaining: 5000,
     async query(query: string, vars: object) {
+      if (query.includes("reviewThreads")) return { repository: { pullRequest: { author: null, comments: { nodes: [] }, reviews: { nodes: [] }, reviewThreads: { nodes: [] } } } };
       n++;
       const v = vars as { n?: number; id?: string };
       if (query.includes("viewer")) { log.push("viewer"); return { viewer: { login: "pipeline-bot", id: "U1" } }; }

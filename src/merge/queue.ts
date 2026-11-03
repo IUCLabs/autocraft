@@ -6,7 +6,7 @@ import { latestRun, settledLookup } from "../classify/settled.ts";
 import { actionable } from "../decisions.ts";
 import { backlogHeld, duplicateHeld, notOwnIntegrationSql } from "../dupes/held.ts";
 import { headOf } from "../review/candidates.ts";
-import { newestOthers, staleReviews } from "../review/discussion.ts";
+import { changedSince, discussionState, staleReviews } from "../review/discussion.ts";
 import { batchStates } from "./batch-store.ts";
 import { getRule, STATS_SQL, tierOf, type Tier } from "../whitelist.ts";
 import { pilotSql } from "../pilot.ts";
@@ -88,7 +88,7 @@ export const eligible = (e: QueueEntry): boolean =>
 type Row = {
   repo: string; number: number; title: string | null; author: string | null; state: string; head_oid: string | null; updated_at: string | null;
   c_head: string | null; c_at: string | null; overall: string | null; c_mergeable: string | null; i_mergeable: string | null;
-  r_head: string; o_at: string | null; o_seen: string | null; verdict: "take" | "take-fix"; reason: string; fixes: string | null; size: string | null; r_at: string; r_final: number;
+  r_head: string; o_at: string | null; o_seen: string | null; o_hash: string | null; verdict: "take" | "take-fix"; reason: string; fixes: string | null; size: string | null; r_at: string; r_final: number;
 };
 
 /** Tiers of the given logins, from one stats query. */
@@ -152,10 +152,11 @@ export function buildQueue(db: DatabaseSync, opts: QueueOptions = {}): QueueEntr
   const rows = db.prepare(`
     SELECT i.repo, i.number, i.title, i.author, i.state, i.head_oid, i.updated_at, i.mergeable AS i_mergeable,
       c.head_oid AS c_head, c.fetched_at AS c_at, c.overall, c.mergeable AS c_mergeable,
-      l.head_oid AS r_head, (SELECT o.at FROM opus_reviews o WHERE o.repo = l.repo AND o.number = l.number AND o.head_oid = l.head_oid AND o.verdict IS NOT NULL) AS o_at, (SELECT o.seen_at FROM opus_reviews o WHERE o.repo = l.repo AND o.number = l.number AND o.head_oid = l.head_oid AND o.verdict IS NOT NULL) AS o_seen, l.verdict, l.reason, l.fixes, l.size, l.at AS r_at, l.final AS r_final
+      l.head_oid AS r_head, o.at AS o_at, o.seen_at AS o_seen, o.disc_hash AS o_hash, l.verdict, l.reason, l.fixes, l.size, l.at AS r_at, l.final AS r_final
     FROM items i
     JOIN final_reviews l ON l.repo = i.repo AND l.number = i.number AND l.head_oid = (
       SELECT r.head_oid FROM reviews r WHERE r.repo = i.repo AND r.number = i.number ORDER BY r.at DESC, r.rowid DESC LIMIT 1)
+    LEFT JOIN opus_reviews o ON o.repo = l.repo AND o.number = l.number AND o.head_oid = l.head_oid AND o.verdict IS NOT NULL AND o.at >= l.at
     LEFT JOIN pr_checks c ON c.repo = l.repo AND c.number = l.number
     WHERE l.verdict IN ('take', 'take-fix') AND i.kind = 'pr' AND i.state IN (${states}) AND ${notOwnIntegrationSql("i")} AND ${pilotSql("i")} ${where.map((w) => `AND ${w}`).join(" ")}
     ORDER BY i.repo, i.number ${opts.limit ? `LIMIT ${Math.floor(opts.limit)}` : ""}`).all(params) as Row[];
@@ -168,7 +169,7 @@ export function buildQueue(db: DatabaseSync, opts: QueueOptions = {}): QueueEntr
   const inBatch = batchStates(db, opts.repo);
   const own = ownFixPrs(db, opts.repo);
   const stale = staleReviews(db, opts.repo);
-  const newest = newestOthers(db, opts.repo);
+  const state = discussionState(db, opts.repo);
   const settled = settledLookup(db, opts.run !== undefined ? opts.run : latestRun(db));
 
   const noCiMemo = new Map<string, boolean>();
@@ -209,7 +210,7 @@ export function buildQueue(db: DatabaseSync, opts: QueueOptions = {}): QueueEntr
       decisionId: asked ? id : null, noCi: ci === "none" && noCi(r.repo), answer, refusedReason: null, reviewedAt: r.r_at, verify,
     };
     const open = r.state === "OPEN" && !mergedByUs;
-    e.state = stateOf(e, r.state === "MERGED" || mergedByUs, last, open && (backlogHeld(db, r.repo, r.number) ? "backlog" : duplicateHeld(db, r.repo, r.number) ? "duplicate" : null), r.r_final === 1 && !(open && (stale.has(`${r.repo}#${r.number}@${r.r_head}`) || (r.o_at !== null && (r.o_at < r.r_at || (newest.get(`${r.repo}#${r.number}`) ?? "") > (r.o_seen ?? r.o_at))))));
+    e.state = stateOf(e, r.state === "MERGED" || mergedByUs, last, open && (backlogHeld(db, r.repo, r.number) ? "backlog" : duplicateHeld(db, r.repo, r.number) ? "duplicate" : null), r.r_final === 1 && !(open && (stale.has(`${r.repo}#${r.number}@${r.r_head}`) || (r.o_at !== null && changedSince(state.get(`${r.repo}#${r.number}`), r.o_seen ?? r.o_at, r.o_hash)))));
     const batch = inBatch.get(`${r.repo}#${r.number}@${r.r_head}`);
     if (batch && BATCHABLE.includes(e.state)) e.state = batch;
     out.push(e);

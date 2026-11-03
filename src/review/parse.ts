@@ -16,6 +16,8 @@ export type DiscussionEntry = {
   line?: number | null;
   /** Threads: the code the comment is about has since changed. */
   outdated?: boolean;
+  /** Threads: the latest replies, ours left out. */
+  replies?: { author: string | null; body: string }[];
   body: string;
 };
 

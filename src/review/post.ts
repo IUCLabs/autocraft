@@ -25,6 +25,8 @@ export type PostCandidate = {
   repo: string; number: number; head_oid: string; body: string;
   /** The id of our earlier review of this PR (at another head), to edit; null for a first post. */
   editId: string | null;
+  /** The `at` of the Opus review the body describes. */
+  opusAt: string;
 };
 export type PostSummary = { repo: string; dryRun: boolean; candidates: number; posted: string[]; edited: string[]; skipped: { ref: string; reason: string }[]; failed: { ref: string; reason: string }[]; note: string | null };
 export type PostParams = { repo: string; limit?: number; dryRun?: boolean; onHandled?: (n: number) => void };
@@ -34,7 +36,7 @@ export const defaultPostDeps = (): PostDeps => ({ querier: new Client(1000), now
 
 type Row = {
   number: number; head_oid: string | null; updated_at: string | null; c_head: string | null; c_at: string | null;
-  o_head: string; model: string | null; verdict: string; sure: number | null; public_review: string;
+  o_head: string; o_at: string; p_opus_at: string | null; p_at: string | null; model: string | null; verdict: string; sure: number | null; public_review: string;
   p_id: string | null; p_head: string | null; can_modify: number | null;
 };
 const safeJson = (s: string): unknown => {
@@ -47,8 +49,9 @@ const safeJson = (s: string): unknown => {
  */
 export function postCandidates(db: DatabaseSync, repo: string): PostCandidate[] {
   const rows = db.prepare(`SELECT i.number, i.head_oid, i.updated_at, c.head_oid AS c_head, c.fetched_at AS c_at,
-      o.head_oid AS o_head, o.model, o.verdict, o.sure, o.public_review, p.review_id AS p_id, p.head_oid AS p_head, i.maintainer_can_modify AS can_modify
+      o.head_oid AS o_head, o.at AS o_at, p.opus_at AS p_opus_at, p.posted_at AS p_at, o.model, o.verdict, o.sure, o.public_review, p.review_id AS p_id, p.head_oid AS p_head, i.maintainer_can_modify AS can_modify
     FROM items i JOIN opus_reviews o ON o.repo = i.repo AND o.number = i.number AND o.verdict IS NOT NULL AND o.public_review IS NOT NULL
+    AND o.at >= COALESCE((SELECT r.at FROM reviews r WHERE r.repo = o.repo AND r.number = o.number AND r.head_oid = o.head_oid), '')
     LEFT JOIN pr_checks c ON c.repo = i.repo AND c.number = i.number
     LEFT JOIN review_posts p ON p.repo = i.repo AND p.number = i.number
     WHERE i.repo = ? AND i.kind = 'pr' AND i.state = 'OPEN' AND ${notOwnIntegrationSql("i")} AND ${pilotSql("i")}
@@ -63,10 +66,11 @@ export function postCandidates(db: DatabaseSync, repo: string): PostCandidate[] 
     const pub = parsePublic(safeJson(r.public_review));
     if (!pub) continue;
     const head = headOf(r);
-    if (!head || head !== r.o_head || r.p_head === head) continue;
+    // Posted for this head already, unless a newer Opus review of the same head exists: then the posted review is edited.
+    if (!head || head !== r.o_head || (r.p_head === head && r.o_at <= (r.p_opus_at ?? r.p_at ?? ""))) continue;
     const q = r.verdict === "take" ? buildQueue(db, { repo, refs: [`${repo}#${r.number}`], merged: "exclude" })[0] : undefined;
     out.push({
-      repo, number: r.number, head_oid: head, editId: r.p_id,
+      repo, number: r.number, head_oid: head, editId: r.p_id, opusAt: r.o_at,
       body: reviewBody({
         model: r.model, verdict: r.verdict, sure: r.sure !== 0, summary: pub.summary, points: pub.points, head,
         recommendation: recommendation({ verdict: r.verdict, queue: q ? { path: q.path, state: q.state } : null, mergeApproved, canPush: pushApproved && r.can_modify === 1 }),
@@ -109,12 +113,12 @@ export async function runReviewPost(db: DatabaseSync, params: PostParams, log: (
       const at = d.now().toISOString();
       if (c.editId) {
         await editReview(w, d.querier, repo, c.number, c.editId, c.head_oid, c.body);
-        db.prepare("UPDATE review_posts SET head_oid = ?, edited_at = ? WHERE repo = ? AND number = ?").run(c.head_oid, at, repo, c.number);
+        db.prepare("UPDATE review_posts SET head_oid = ?, edited_at = ?, opus_at = ? WHERE repo = ? AND number = ?").run(c.head_oid, at, c.opusAt, repo, c.number);
         s.edited.push(refOf(c));
       } else {
         const id = await postReview(w, d.querier, { repo, number: c.number, id: live.id }, c.head_oid, c.body);
         if (!id) throw new Error("GitHub returned no review");
-        db.prepare("INSERT OR REPLACE INTO review_posts (repo, number, review_id, head_oid, posted_at) VALUES (?, ?, ?, ?, ?)").run(repo, c.number, id, c.head_oid, at);
+        db.prepare("INSERT OR REPLACE INTO review_posts (repo, number, review_id, head_oid, posted_at, opus_at) VALUES (?, ?, ?, ?, ?, ?)").run(repo, c.number, id, c.head_oid, at, c.opusAt);
         s.posted.push(refOf(c));
       }
       log(`  ${refOf(c)}: ${c.editId ? "edited" : "posted"} at ${c.head_oid.slice(0, 7)}`);

@@ -18,6 +18,7 @@ import { actionable, ask, factsOf, getDecision } from "../decisions.ts";
 import { assignTo, mergeViaCommand, MERGE_RECORDED_ENV, type Writer } from "../github/write.ts";
 import { Client, type Querier } from "../mirror.ts";
 import { refreshChecks } from "../review/checks.ts";
+import { discussionMovedSince } from "../review/discussion.ts";
 import { fillReviewSummaries } from "../review/summary.ts";
 import { verificationOf } from "../verify/results.ts";
 import { TIER_LABEL } from "../whitelist.ts";
@@ -276,6 +277,7 @@ export async function runMerge(db: DatabaseSync, params: MergeParams, log: (line
     const info = await prInfo(d.querier, repo, e.number);
     if (!info) { refuse(e, null, "GitHub returned no such PR"); continue; }
     if (info.head !== e.head) { refuse(e, null, `head moved from ${short(e.head)} to ${short(info.head)} since the review`); continue; }
+    if (await discussionMovedSince(db, d.querier, repo, e.number, e.head)) { refuse(e, null, "new comments or reviews since the final review; it is reviewed again first"); continue; }
     if (!info.assignees.length) {
       const me = await viewerOf(d.querier);
       await assignTo(w, d.querier, { repo, number: e.number, id: info.id }, me, { run: runId });

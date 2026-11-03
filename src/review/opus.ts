@@ -9,7 +9,9 @@ import { add, askClaude, pool, saveUsage, type Usage } from "../classify/run.ts"
 import { DEFAULT_CAPS } from "./batch.ts";
 import { Client, type Querier } from "../mirror.ts";
 import { checksOf, refreshChecks } from "./checks.ts";
-import { discussionOf, ensurePipelineLogin, liveThreads } from "./discussion.ts";
+import { discussionOf, ensurePipelineLogin, liveDiscussion, withRetry, type Snapshot } from "./discussion.ts";
+import { withdrawMergeQuestion } from "../merge/withdraw.ts";
+import type { DiscussionEntry } from "./parse.ts";
 import { cachedDiff, codeDiff, ghDelta, ghDiff, type DeltaFetcher, type DiffFetcher } from "./diff.ts";
 import { selectOpusCandidates, type OpusCandidate } from "./opus-candidates.ts";
 import { parseOpusReply, type EarlierOpus, type OpusPr, type OpusReview } from "./opus-parse.ts";
@@ -43,7 +45,7 @@ export function defaultOpusDeps(): OpusDeps {
   return { querier: new Client(500), fetchDiff: ghDiff, fetchDelta: ghDelta, model: PROMPT.models[0]!, maxChars: DEFAULT_CAPS.charsPerCall, checkout: (r, n, h) => checkoutForPr(r, n, h, console.log) };
 }
 
-type Saved = { seen?: string; mode: "full" | "delta" | "skipped"; base: string | null; model: string | null; review: OpusReview | null; skip: string | null };
+type Saved = { snap?: Snapshot; mode: "full" | "delta" | "skipped"; base: string | null; model: string | null; review: OpusReview | null; skip: string | null };
 
 /**
  * Stores the Opus row of a head commit, then (for a verdict) a `reviewed` stages row and a
@@ -52,9 +54,10 @@ type Saved = { seen?: string; mode: "full" | "delta" | "skipped"; base: string |
  */
 export function saveOpus(db: DatabaseSync, runId: string | null, c: { repo: string; number: number; head_oid: string }, s: Saved): void {
   const at = now(), r = s.review;
-  db.prepare(`INSERT OR REPLACE INTO opus_reviews (repo, number, head_oid, run_id, at, model, mode, base_head, verdict, sure, reason, fixes, risks, skip_reason, public_review, seen_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(c.repo, c.number, c.head_oid, runId, at, s.model, s.mode, s.base, r?.verdict ?? null,
-    r ? (r.sure ? 1 : 0) : null, r?.reason ?? null, r?.fixes.length ? JSON.stringify(r.fixes) : null, r ? JSON.stringify(r.risks) : null, s.skip, r?.public ? JSON.stringify(r.public) : null, s.seen ?? null);
+  if (db.prepare("SELECT 1 FROM opus_reviews WHERE repo = ? AND number = ? AND head_oid = ?").get(c.repo, c.number, c.head_oid)) withdrawMergeQuestion(db, c.repo, c.number, c.head_oid, at);
+  db.prepare(`INSERT OR REPLACE INTO opus_reviews (repo, number, head_oid, run_id, at, model, mode, base_head, verdict, sure, reason, fixes, risks, skip_reason, public_review, seen_at, disc_hash)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(c.repo, c.number, c.head_oid, runId, at, s.model, s.mode, s.base, r?.verdict ?? null,
+    r ? (r.sure ? 1 : 0) : null, r?.reason ?? null, r?.fixes.length ? JSON.stringify(r.fixes) : null, r ? JSON.stringify(r.risks) : null, s.skip, r?.public ? JSON.stringify(r.public) : null, s.snap?.seen ?? at, s.snap?.hash ?? null);
   if (!r) return;
   const final = db.prepare("SELECT verdict, reason FROM final_reviews WHERE repo = ? AND number = ? AND head_oid = ?").get(c.repo, c.number, c.head_oid) as { verdict: string; reason: string } | undefined;
   const stage = db.prepare("INSERT INTO stages (repo, number, stage, at, actor, note) VALUES (?, ?, ?, ?, ?, ?)");
@@ -141,10 +144,9 @@ export async function runOpusReview(db: DatabaseSync, params: OpusParams, log: (
       params.onHandled?.(++handled);
       return;
     }
-    let discussion;
-    const seen = now();
+    let discussion: DiscussionEntry[], snap: Snapshot;
     try {
-      discussion = discussionOf(db, repo, c.number, deps.querier ? await liveThreads(deps.querier, db, repo, c.number) : []);
+      ({ entries: discussion, snap } = discussionOf(db, repo, c.number, deps.querier ? await withRetry(() => liveDiscussion(deps.querier!, db, repo, c.number)) : undefined));
     } catch (e) {
       log(`  ${refOf(c)}: review threads unavailable (${String((e as Error).message ?? e)}); not reviewed this pass`);
       summary.skipped.push(refOf(c));
@@ -166,7 +168,7 @@ export async function runOpusReview(db: DatabaseSync, params: OpusParams, log: (
       got = parseOpusReply(reply.text, input.ref);
     }
     if (got) {
-      saveOpus(db, runId, c, { mode, base, model: deps.model, review: got, skip: null, seen });
+      saveOpus(db, runId, c, { mode, base, model: deps.model, review: got, skip: null, snap });
       tally(got);
     } else {
       log(`  ${refOf(c)}: no valid Opus review`);

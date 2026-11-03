@@ -1,7 +1,8 @@
-// The discussion on a PR as the review prompts show it: top-level comments and review bodies from the
-// mirror, plus unresolved inline review threads read live from GitHub. Our own posts are left out.
+// The discussion on a PR as the review prompts show it: top-level comments, review bodies and unresolved
+// inline review threads, all read live from GitHub in one query. Our own posts are left out.
 // Also decides when a PR's reviews are stale because someone else wrote on it after them.
 // All text here is written by outsiders and is passed on as untrusted data.
+import { createHash } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { audit } from "../dash/audit.ts";
 import type { Querier } from "../mirror.ts";
@@ -13,7 +14,9 @@ const LOGIN_KEY = "pipeline_login";
 const STALE_KEY = "review_stale:";
 const ORG = "storytold";
 
-const MAX_THREADS = 50;
+/** Discussion-triggered re-reviews of one PR per UTC day; a head change or an operator request is not counted. */
+export const MAX_RERUNS_PER_DAY = 3;
+const RERUN_KEY = "review_rerun:";
 
 /** Sections whose text is tool output or instructions for other tools, not a claim about the change. */
 const NOISE_SUMMARY = /prompt for|analysis chain|scripts? executed|fingerprint|committable|additional context|learnings|ai agents|review info|walkthrough|sequence diagram|related pull requests|suggested labels/i;
@@ -34,57 +37,121 @@ export function cleanBody(s: string | null | undefined): string {
 }
 
 const clip = (s: string, n: number): string => (s.length > n ? `${s.slice(0, n)} [cut]` : s);
+const sec = (t: string): string => t.slice(0, 19);
 
 export function pipelineLogin(db: DatabaseSync): string {
   return (db.prepare("SELECT value FROM main.settings WHERE key = ?").get(LOGIN_KEY) as { value: string } | undefined)?.value ?? "";
 }
 
-/** SQL for "written by someone other than us": not the pipeline's login and not a review we posted (`c` is the comments table alias). */
+/** Authors whose words trigger a new review: the PR's author, people tied to the repository, and bot accounts. */
+const COUNTED_ASSOCIATIONS = ["OWNER", "MEMBER", "COLLABORATOR", "CONTRIBUTOR"];
+
+type Written = { author: string | null; association?: string | null; bot?: boolean; prAuthor?: string | null; state?: string | null; body: string | null };
+
+/** Whether a comment or review counts as new discussion: empty bodies and bare approvals never do, strangers' do not. */
+export function isCounted(w: Written): boolean {
+  const body = cleanBody(w.body);
+  if (!body || (w.state === "APPROVED" && body.length < 40)) return false;
+  const login = w.author ?? "";
+  return !!login && (login === w.prAuthor || !!w.bot || login.endsWith("[bot]") || COUNTED_ASSOCIATIONS.includes(w.association ?? ""));
+}
+
+/** A hash of the counted entries (id and cleaned text): two snapshots with the same hash read the same discussion. */
+export function discussionHash(xs: { id: string; body: string | null }[]): string {
+  return createHash("sha256").update(JSON.stringify(xs.map((x) => [x.id, cleanBody(x.body)]).sort())).digest("hex").slice(0, 16);
+}
+
+/** What a review read: when, and a hash of the counted entries. */
+export type Snapshot = { seen: string; hash: string | null };
+
+/** SQL for "written by someone other than us" (`c` is the comments table alias). */
 const NOT_OURS = `COALESCE(c.author, '') <> :own
   AND c.id NOT IN (SELECT review_id FROM review_posts WHERE repo = c.repo AND number = c.number)`;
 
-/** Comments and review bodies on the PR by others, oldest first, cleaned and clipped; reviews without a body are left out. */
-export function mirrorDiscussion(db: DatabaseSync, repo: string, number: number): DiscussionEntry[] {
-  const rows = db.prepare(`SELECT c.kind, c.author, c.created_at, c.body, c.review_state FROM comments c
-    WHERE c.repo = :repo AND c.number = :number AND ${NOT_OURS} ORDER BY c.created_at`).all({ repo, number, own: pipelineLogin(db) }) as
-    { kind: string; author: string | null; created_at: string | null; body: string | null; review_state: string | null }[];
-  const out: DiscussionEntry[] = [];
+type MirrorRow = { id: string; kind: string; author: string | null; created_at: string | null; body: string | null; review_state: string | null; counted: number | null };
+const mirrorRows = (db: DatabaseSync, repo: string, number: number): MirrorRow[] =>
+  db.prepare(`SELECT c.id, c.kind, c.author, c.created_at, c.body, c.review_state, c.counted FROM comments c
+    WHERE c.repo = :repo AND c.number = :number AND ${NOT_OURS} ORDER BY c.created_at`).all({ repo, number, own: pipelineLogin(db) }) as MirrorRow[];
+
+/** Comments and review bodies from the mirror: the fallback for a call that has no GitHub connection. */
+function mirrorDiscussion(db: DatabaseSync, repo: string, number: number): { entries: DiscussionEntry[]; hash: string } {
+  const rows = mirrorRows(db, repo, number);
+  const entries: DiscussionEntry[] = [];
   for (const r of rows) {
     const body = cleanBody(r.body);
     if (!body) continue;
-    out.push({ kind: r.kind === "review" ? "review" : "comment", author: r.author, at: r.created_at, ...(r.kind === "review" ? { state: r.review_state } : {}), body: clip(body, ENTRY_LIMIT) });
+    entries.push({ kind: r.kind === "review" ? "review" : "comment", author: r.author, at: r.created_at, ...(r.kind === "review" ? { state: r.review_state } : {}), body: clip(body, ENTRY_LIMIT) });
   }
-  return out;
+  return { entries, hash: discussionHash(rows.filter((r) => r.counted === 1)) };
 }
 
-export const THREADS_QUERY = `query($owner: String!, $name: String!, $number: Int!) {
+export const DISCUSSION_QUERY = `query($owner: String!, $name: String!, $number: Int!) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
-      reviewThreads(first: ${MAX_THREADS}) { nodes { isResolved isOutdated path line originalLine comments(first: 1) { nodes { author { login } createdAt body } } } }
+      author { login }
+      comments(last: 20) { nodes { id author { login __typename } authorAssociation createdAt body } }
+      reviews(last: 10) { nodes { id author { login __typename } authorAssociation createdAt body state } }
+      reviewThreads(last: 50) { nodes { isResolved isOutdated path line originalLine
+        head: comments(first: 1) { nodes { id author { login } createdAt body } }
+        tail: comments(last: 3) { nodes { id author { login } body } } } }
     }
   }
 }`;
 
+type Author = { login?: string; __typename?: string } | null;
+type Node = { id?: string; author?: Author; authorAssociation?: string; createdAt?: string; body?: string; state?: string };
 type ThreadNode = {
   isResolved?: boolean; isOutdated?: boolean; path?: string; line?: number | null; originalLine?: number | null;
-  comments?: { nodes?: { author?: { login?: string } | null; createdAt?: string; body?: string }[] };
+  head?: { nodes?: Node[] }; tail?: { nodes?: Node[] };
 };
 
-/** The unresolved inline review threads of the PR, read from GitHub (a read, never a write), excluding threads we started. */
-export async function liveThreads(q: Querier, db: DatabaseSync, repo: string, number: number): Promise<DiscussionEntry[]> {
-  const res = await q.query(THREADS_QUERY, { owner: ORG, name: repo, number });
+export type LiveDiscussion = { entries: DiscussionEntry[]; snap: Snapshot; newest: string | null };
+
+/**
+ * Everything others wrote on the PR, read from GitHub (a read, never a write) in one query: comments, review
+ * bodies and unresolved threads, ours excluded. `snap.seen` is the time just before the read.
+ */
+export async function liveDiscussion(q: Querier, db: DatabaseSync, repo: string, number: number): Promise<LiveDiscussion> {
+  const seen = new Date().toISOString();
+  const res = await q.query(DISCUSSION_QUERY, { owner: ORG, name: repo, number });
+  const pr = res?.repository?.pullRequest;
+  if (!pr) throw new Error(`${repo}#${number} not found on GitHub`);
   const own = pipelineLogin(db);
-  const out: DiscussionEntry[] = [];
-  for (const t of (res?.repository?.pullRequest?.reviewThreads?.nodes ?? []) as ThreadNode[]) {
-    const c = t.comments?.nodes?.[0];
-    if (!c || t.isResolved) continue;
-    const author = c.author?.login ?? null;
-    if (own && author === own) continue;
+  const posted = new Set((db.prepare("SELECT review_id FROM review_posts WHERE repo = ? AND number = ?").all(repo, number) as { review_id: string }[]).map((r) => r.review_id));
+  const mine = (a: Author | undefined, id?: string) => (!!own && a?.login === own) || (!!id && posted.has(id));
+  const prAuthor: string | null = pr.author?.login ?? null;
+  const entries: DiscussionEntry[] = [];
+  const counted: { id: string; body: string | null }[] = [];
+  let newest: string | null = null;
+  const take = (kind: "comment" | "review", n: Node) => {
+    if (mine(n.author, n.id)) return;
+    const body = cleanBody(n.body);
+    if (!body) return;
+    entries.push({ kind, author: n.author?.login ?? null, at: n.createdAt ?? null, ...(kind === "review" ? { state: n.state ?? null } : {}), body: clip(body, ENTRY_LIMIT) });
+    if (isCounted({ author: n.author?.login ?? null, association: n.authorAssociation, bot: n.author?.__typename === "Bot", prAuthor, state: n.state, body: n.body ?? null })) {
+      counted.push({ id: n.id ?? "", body: n.body ?? null });
+      if (n.createdAt && (!newest || n.createdAt > newest)) newest = n.createdAt;
+    }
+  };
+  for (const n of (pr.comments?.nodes ?? []) as Node[]) take("comment", n);
+  for (const n of (pr.reviews?.nodes ?? []) as Node[]) take("review", n);
+  for (const t of (pr.reviewThreads?.nodes ?? []) as ThreadNode[]) {
+    const c = t.head?.nodes?.[0];
+    if (!c || t.isResolved || mine(c.author, c.id)) continue;
     const body = cleanBody(c.body);
     if (!body) continue;
-    out.push({ kind: "thread", author, at: c.createdAt ?? null, path: t.path, line: t.line ?? t.originalLine ?? null, ...(t.isOutdated ? { outdated: true } : {}), body: clip(body, ENTRY_LIMIT) });
+    const replies = (t.tail?.nodes ?? []).filter((r) => r.id !== c.id && !mine(r.author, r.id))
+      .map((r) => ({ author: r.author?.login ?? null, body: clip(cleanBody(r.body), ENTRY_LIMIT / 2) })).filter((r) => r.body);
+    entries.push({ kind: "thread", author: c.author?.login ?? null, at: c.createdAt ?? null, path: t.path, line: t.line ?? t.originalLine ?? null, ...(t.isOutdated ? { outdated: true } : {}), body: clip(body, ENTRY_LIMIT), ...(replies.length ? { replies } : {}) });
   }
-  return out;
+  return { entries, snap: { seen, hash: discussionHash(counted) }, newest };
+}
+
+/** Retries a read a few times: a failed read must not silently drop what reviewers wrote. */
+export async function withRetry<T>(f: () => Promise<T>, tries = 3): Promise<T> {
+  for (let i = 1; ; i++) {
+    try { return await f(); } catch (e) { if (i >= tries) throw e; }
+  }
 }
 
 /**
@@ -97,7 +164,7 @@ export function fitBudget(entries: DiscussionEntry[], total = TOTAL_LIMIT): Disc
   let used = 0;
   const kept = new Set<number>();
   for (const { e, i } of order) {
-    const n = e.body.length + (e.path?.length ?? 0) + 40;
+    const n = e.body.length + (e.path?.length ?? 0) + (e.replies?.reduce((t, r) => t + r.body.length, 0) ?? 0) + 40;
     if (used + n > total) continue;
     used += n;
     kept.add(i);
@@ -108,24 +175,63 @@ export function fitBudget(entries: DiscussionEntry[], total = TOTAL_LIMIT): Disc
   return out;
 }
 
-/** The discussion of a PR for a review prompt: the mirror's comments and reviews, then `threads`, within the budget. */
-export function discussionOf(db: DatabaseSync, repo: string, number: number, threads: DiscussionEntry[] = []): DiscussionEntry[] {
-  return fitBudget([...mirrorDiscussion(db, repo, number), ...threads]);
+/** The discussion of a PR for a review prompt and the snapshot it came from: `live` when read from GitHub, else the mirror's. */
+export function discussionOf(db: DatabaseSync, repo: string, number: number, live?: LiveDiscussion): { entries: DiscussionEntry[]; snap: Snapshot } {
+  if (live) return { entries: fitBudget(live.entries), snap: live.snap };
+  const seen = new Date().toISOString();
+  const m = mirrorDiscussion(db, repo, number);
+  return { entries: fitBudget(m.entries), snap: { seen, hash: m.hash } };
 }
 
 const staleKey = (repo: string, number: number) => `${STALE_KEY}${repo}#${number}`;
 
+/** Newest counted comment or review by someone else, and the hash of those, per "repo#n" from the mirror. */
+export function discussionState(db: DatabaseSync, repo?: string): Map<string, { newest: string; hash: string }> {
+  const rows = db.prepare(`SELECT c.repo, c.number, c.id, c.body, c.created_at FROM comments c
+    WHERE (:repo IS NULL OR c.repo = :repo) AND c.counted = 1 AND ${NOT_OURS}`).all({ repo: repo ?? null, own: pipelineLogin(db) }) as { repo: string; number: number; id: string; body: string | null; created_at: string }[];
+  const by = new Map<string, typeof rows>();
+  for (const r of rows) {
+    const k = `${r.repo}#${r.number}`;
+    by.set(k, [...(by.get(k) ?? []), r]);
+  }
+  return new Map([...by].map(([k, v]) => [k, { newest: v.reduce((m, r) => (r.created_at > m ? r.created_at : m), ""), hash: discussionHash(v) }]));
+}
+
+/** True when the discussion has a counted entry newer than a review's snapshot and differs from what that review read (no hash: any newer entry). */
+export function changedSince(state: { newest: string; hash: string } | undefined, seen: string, hash: string | null): boolean {
+  return !!state && sec(state.newest) > sec(seen) && state.hash !== hash;
+}
+
+const day = () => new Date().toISOString().slice(0, 10);
+const rerunKey = (repo: string, number: number) => `${RERUN_KEY}${repo}#${number}:${day()}`;
+const reruns = (db: DatabaseSync, repo: string, number: number): number =>
+  Number((db.prepare("SELECT value FROM main.settings WHERE key = ?").get(rerunKey(repo, number)) as { value: string } | undefined)?.value ?? 0);
+
+/** Counts a same-head re-review against the PR's daily cap and forgets earlier days. */
+export function countRerun(db: DatabaseSync, repo: string, number: number): void {
+  db.prepare("DELETE FROM main.settings WHERE key LIKE ? AND key <> ?").run(`${RERUN_KEY}${repo}#${number}:%`, rerunKey(repo, number));
+  db.prepare("INSERT INTO main.settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = CAST(value AS INTEGER) + 1").run(rerunKey(repo, number), "1");
+}
+
 /**
- * PRs, as "repo#n@head", whose reviews read the discussion (seen_at, else the row time) before the newest comment or review
- * by someone else on the PR, or older than an operator's stale mark. One query for a repo or every repo.
+ * PRs, as "repo#n@head", whose Sonnet review read the discussion before a counted comment or review that it
+ * did not read, or that an operator marked stale. With `respectCap`, PRs that already had MAX_RERUNS_PER_DAY
+ * discussion-triggered re-reviews today are left out (an operator mark is never capped).
  */
-export function staleReviews(db: DatabaseSync, repo?: string): Set<string> {
-  const rows = db.prepare(`SELECT r.repo, r.number, r.head_oid FROM reviews r
-    WHERE (:repo IS NULL OR r.repo = :repo) AND (
-      (SELECT MAX(c.created_at) FROM comments c WHERE c.repo = r.repo AND c.number = r.number AND ${NOT_OURS}) > COALESCE(r.seen_at, r.at)
-      OR COALESCE((SELECT value FROM main.settings WHERE key = 'review_stale:' || r.repo || '#' || r.number), '') > r.at)`)
-    .all({ repo: repo ?? null, own: pipelineLogin(db) }) as { repo: string; number: number; head_oid: string }[];
-  return new Set(rows.map((r) => `${r.repo}#${r.number}@${r.head_oid}`));
+export function staleReviews(db: DatabaseSync, repo?: string, respectCap = false): Set<string> {
+  const rows = db.prepare(`SELECT r.repo, r.number, r.head_oid, r.at, r.seen_at, r.disc_hash FROM reviews r WHERE (:repo IS NULL OR r.repo = :repo)`)
+    .all({ repo: repo ?? null }) as { repo: string; number: number; head_oid: string; at: string; seen_at: string | null; disc_hash: string | null }[];
+  const state = discussionState(db, repo);
+  const marks = new Map((db.prepare("SELECT key, value FROM main.settings WHERE key LIKE ?").all(`${STALE_KEY}%`) as { key: string; value: string }[]).map((m) => [m.key.slice(STALE_KEY.length), m.value]));
+  const out = new Set<string>();
+  for (const r of rows) {
+    const ref = `${r.repo}#${r.number}`;
+    const marked = (marks.get(ref) ?? "") > r.at;
+    const talked = changedSince(state.get(ref), r.seen_at ?? r.at, r.disc_hash);
+    if (!marked && !(talked && !(respectCap && reruns(db, r.repo, r.number) >= MAX_RERUNS_PER_DAY))) continue;
+    out.add(`${ref}@${r.head_oid}`);
+  }
+  return out;
 }
 
 /** Records the login that posts for us (the token's viewer) when no stage has yet, so our posts can be told from others'. */
@@ -135,11 +241,20 @@ export async function ensurePipelineLogin(db: DatabaseSync, q: Querier): Promise
   if (typeof login === "string" && login) db.prepare("INSERT INTO main.settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO NOTHING").run(LOGIN_KEY, login);
 }
 
-/** The newest comment or review by someone else per PR number of the repo (or of every repo, keyed "repo#n"), for comparing with an Opus review's snapshot time. */
-export function newestOthers(db: DatabaseSync, repo?: string): Map<string, string> {
-  const rows = db.prepare(`SELECT c.repo, c.number, MAX(c.created_at) AS at FROM comments c
-    WHERE (:repo IS NULL OR c.repo = :repo) AND ${NOT_OURS} GROUP BY c.repo, c.number`).all({ repo: repo ?? null, own: pipelineLogin(db) }) as { repo: string; number: number; at: string }[];
-  return new Map(rows.map((r) => [`${r.repo}#${r.number}`, r.at]));
+/**
+ * Just before a merge: reads the PR's discussion live and says whether a counted entry newer than the final
+ * review's snapshot (and different from what it read) exists. If so the PR's reviews are marked stale so the
+ * pipeline reviews it again, and the caller must not merge.
+ */
+export async function discussionMovedSince(db: DatabaseSync, q: Querier, repo: string, number: number, head: string): Promise<boolean> {
+  const snap = (db.prepare(`SELECT COALESCE(o.seen_at, o.at) AS seen, o.disc_hash AS hash FROM opus_reviews o JOIN reviews r ON r.repo = o.repo AND r.number = o.number AND r.head_oid = o.head_oid AND o.at >= r.at
+      WHERE o.repo = ? AND o.number = ? AND o.head_oid = ? AND o.verdict IS NOT NULL`).get(repo, number, head)
+    ?? db.prepare("SELECT COALESCE(seen_at, at) AS seen, disc_hash AS hash FROM reviews WHERE repo = ? AND number = ? AND head_oid = ?").get(repo, number, head)) as { seen: string; hash: string | null } | undefined;
+  if (!snap) return false;
+  const live = await liveDiscussion(q, db, repo, number);
+  if (!live.newest || !changedSince({ newest: live.newest, hash: live.snap.hash! }, snap.seen, snap.hash)) return false;
+  db.prepare("INSERT INTO main.settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value").run(staleKey(repo, number), new Date().toISOString());
+  return true;
 }
 
 /** Operator request: every review of the PR counts as older than now, so Sonnet and then Opus review it again. */

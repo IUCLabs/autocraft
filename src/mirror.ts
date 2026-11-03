@@ -1,4 +1,5 @@
 // Mirror of every issue and PR of the storytold org into SQLite, via `gh api graphql`.
+import { isCounted } from "./review/discussion.ts";
 import { spawnSync } from "node:child_process";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { DatabaseSync, SQLInputValue } from "node:sqlite";
@@ -48,13 +49,13 @@ query($after: String) {
 export const COMMON = `number title body url author { login } authorAssociation createdAt updatedAt closedAt state
   labels(first: 10) { nodes { name } } assignees(first: 5) { nodes { login } }
   commentCount: comments { totalCount }`;
-export const COMMENTS = "comments(last: 20) { nodes { id author { login } createdAt body } }";
+export const COMMENTS = "comments(last: 20) { nodes { id author { login __typename } authorAssociation createdAt body } }";
 export const PR_EXTRA = `isDraft mergedAt mergedBy { login } additions deletions changedFiles
   headRefName headRefOid headRepository { nameWithOwner } baseRefName
   closingIssuesReferences(first: 10) { nodes { number } }`;
 export const PR_FULL = `maintainerCanModify mergeable reviewDecision
   commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }
-  reviews(last: 10) { nodes { id author { login } createdAt body state commit { oid } } }`;
+  reviews(last: 10) { nodes { id author { login __typename } authorAssociation createdAt body state commit { oid } } }`;
 
 export function itemsQuery(kind: Kind, detail: Detail): string {
   const [conn, stateType] = kind === "issue" ? ["issues", "IssueState"] : ["pullRequests", "PullRequestState"];
@@ -216,12 +217,14 @@ function baseRow(repo: string, kind: Kind, n: Node, detail: Detail): Record<stri
 }
 
 function commentRows(repo: string, kind: Kind, n: Node): SQLInputValue[][] {
+  // `counted`: whether the entry counts as new discussion for the review stage (src/review/discussion.ts).
+  const counted = (c: Node) => Number(isCounted({ author: login(c.author), association: c.authorAssociation, bot: c.author?.__typename === "Bot", prAuthor: login(n.author), state: c.state, body: c.body }));
   const rows = n.comments.nodes.map((c: Node) =>
-    [repo, n.number, c.id, "comment", login(c.author), c.createdAt, c.body, null, null]);
+    [repo, n.number, c.id, "comment", login(c.author), c.createdAt, c.body, null, null, counted(c)]);
   if (kind === "pr") {
     for (const c of n.reviews.nodes) {
       // A review without a body still counts: its inline threads are the discussion, and it makes earlier reviews stale.
-      rows.push([repo, n.number, c.id, "review", login(c.author), c.createdAt, c.body, c.state, c.commit?.oid ?? null]);
+      rows.push([repo, n.number, c.id, "review", login(c.author), c.createdAt, c.body, c.state, c.commit?.oid ?? null, counted(c)]);
     }
   }
   return rows;
@@ -233,9 +236,9 @@ function writePage(db: DatabaseSync, repo: string, kind: Kind, detail: Detail, n
     ON CONFLICT (repo, number) DO UPDATE SET ${COLUMNS.filter((c) => c !== "repo" && c !== "number").map((c) => `${c}=excluded.${c}`).join(",")}`);
   const stored = db.prepare(`SELECT ${COLUMNS.join(",")} FROM items WHERE repo=? AND number=?`);
   const del = db.prepare("DELETE FROM comments WHERE repo=? AND number=?");
-  const insComment = db.prepare(`INSERT INTO comments VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT (id) DO UPDATE SET
+  const insComment = db.prepare(`INSERT INTO comments VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT (id) DO UPDATE SET
     repo=excluded.repo, number=excluded.number, kind=excluded.kind, author=excluded.author, created_at=excluded.created_at,
-    body=excluded.body, review_state=excluded.review_state, commit_oid=excluded.commit_oid`);
+    body=excluded.body, review_state=excluded.review_state, commit_oid=excluded.commit_oid, counted=excluded.counted`);
   db.exec("BEGIN IMMEDIATE");
   try {
     for (const n of nodes) {
