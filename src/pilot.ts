@@ -1,6 +1,6 @@
 // The scope of the pipeline. A repo takes part only while its pipeline flag (tracked_repos.pipeline) is on; off means sync only.
 // The pilot is an operator setting that narrows the enabled repos further to a list of items ("repo#number").
-// Empty or absent means no pilot. A Fix PR the pipeline opened for a pilot issue counts as a pilot item.
+// Empty or absent means no pilot. A Fix PR the pipeline opened for a pilot issue, and a follow-up issue it filed for a pilot PR, count as pilot items.
 // A fast-tracked item (src/fasttrack.ts) is in scope whatever its repo's flag and the pilot say.
 // No Node imports besides the type, so candidate queries can use the SQL fragments.
 import type { DatabaseSync } from "node:sqlite";
@@ -94,7 +94,9 @@ export const pilotSqlFor = (repo: string, number: string): string =>
     AND (COALESCE(json_array_length(${LIST}), 0) = 0
       OR EXISTS (SELECT 1 FROM json_each(${LIST}) pj WHERE pj.value = ${repo} || '#' || ${number})
       OR EXISTS (SELECT 1 FROM main.fix_attempts pf, json_each(${LIST}) pj WHERE pf.repo = ${repo} AND pf.pr_url LIKE '%/pull/' || ${number}
-        AND pj.value = pf.repo || '#' || pf.number)))
+        AND pj.value = pf.repo || '#' || pf.number)
+      OR EXISTS (SELECT 1 FROM main.postmerge_followups pm, json_each(${LIST}) pj WHERE pm.repo = ${repo} AND pm.issue_number = ${number}
+        AND pj.value = pm.repo || '#' || pm.number)))
     OR EXISTS (SELECT 1 FROM main.fix_attempts pg JOIN main.fast_track pgt ON pgt.repo = pg.repo AND pgt.number = pg.number
       WHERE pg.repo = ${repo} AND pg.pr_url LIKE '%/pull/' || ${number}))`;
 

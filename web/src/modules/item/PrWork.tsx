@@ -1,9 +1,12 @@
 // Review, Verify, Fix-ups and Actions sections of the Item page.
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
-import type { Item, ItemAction, ItemFixup, ItemPatchCheck, ItemReviews, ItemVerification, ReleaseAction, ReviewSide, ReviewVerdictName, TaskResult } from "../../api/types";
+import { BugIcon, InfoIcon } from "@phosphor-icons/react";
+import type { Item, ItemAction, ItemFixup, ItemPatchCheck, ItemPostmerge, ItemReviews, ItemVerification, PostmergeFinding, ReleaseAction, ReviewSide, ReviewVerdictName, TaskResult } from "../../api/types";
 import { useApi } from "../../api/client";
 import { Badge, type Tone } from "../../ui/atoms/Badge";
+import { ItemRef } from "../../ui/molecules/ItemRef";
+import { Markdown } from "../../ui/molecules/Markdown";
 import { useUser } from "../../shell/UserContext";
 import { ConfirmButton, ErrorLine, useWrite } from "../admin/parts";
 import { decisionPath } from "../../lib/links";
@@ -175,6 +178,66 @@ function Reviews({ r }: { r: ItemReviews }) {
   );
 }
 
+function Finding({ f, repo }: { f: PostmergeFinding; repo: string }) {
+  const defect = f.severity === "defect";
+  const x = f.filing;
+  return (
+    <li className="px-4 py-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <Badge tone={defect ? "bad" : "neutral"} icon={defect ? <BugIcon /> : <InfoIcon />}>{defect ? "Defect" : "Minor"}</Badge>
+        <span className="font-medium">{f.title}</span>
+        {f.file && <span className="code break-all text-xs text-ink/55">{f.file}{f.line ? `:${f.line}` : ""}</span>}
+      </div>
+      <div className="mt-1.5 text-ink/80">
+        <Markdown source={f.body} />
+      </div>
+      {defect && (
+        <div className="mt-2 text-xs">
+          {x.state === "filed" && <ItemRef repo={repo} number={x.issue.number} kind="issue" state={x.issue.state} title={x.issue.title} size="sm" />}
+          {x.state === "duplicate" && <span className="text-ink/55">Not filed: duplicate of <span className="code">#{x.duplicateOf}</span></span>}
+          {x.state === "limit" && <span className="text-ink/55">Not filed: daily limit</span>}
+          {x.state === "pending" && <span className="text-ink/55">Not filed yet</span>}
+        </div>
+      )}
+      {(f.missedBy || f.missedWhy) && (
+        <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-xs">
+          {f.missedBy && (
+            <>
+              <dt className="text-ink/55">Missed by</dt>
+              <dd>{f.missedBy}</dd>
+            </>
+          )}
+          {f.missedWhy && (
+            <>
+              <dt className="text-ink/55">Why</dt>
+              <dd className="text-ink/75">{f.missedWhy}</dd>
+            </>
+          )}
+        </dl>
+      )}
+    </li>
+  );
+}
+
+function Postmerge({ p, repo }: { p: ItemPostmerge; repo: string }) {
+  useNow();
+  return (
+    <div className="text-sm">
+      <div className="mb-2 flex flex-wrap items-center gap-2">
+        {p.error ? <Badge tone="warn">No review</Badge> : p.findings.length === 0 ? <Badge tone="ok">No findings</Badge> : null}
+        {p.error && <span className="text-ink/75">{p.error}</span>}
+        <span className="code text-xs text-ink/50" title={p.mergeSha}>{p.mergeSha.slice(0, 7)}</span>
+        <span className="ml-auto text-xs text-ink/50">{ago(p.at)} ago</span>
+      </div>
+      {p.findings.length > 0 && (
+        <ul className="divide-y divide-line rounded-md border border-line">
+          {p.findings.map((f, i) => <Finding key={i} f={f} repo={repo} />)}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 function PatchChecks({ rows }: { rows: ItemPatchCheck[] }) {
   useNow();
   return (
@@ -326,6 +389,11 @@ export function PrWork({ it }: { it: Item }) {
       {fixChecks.length > 0 && (
         <Box title="Fix">
           <PatchChecks rows={fixChecks} />
+        </Box>
+      )}
+      {it.postmerge && (
+        <Box title="Post-merge review" aside={it.postmerge.findings.length > 0 ? `${it.postmerge.findings.length} ${it.postmerge.findings.length === 1 ? "finding" : "findings"}` : undefined}>
+          <Postmerge p={it.postmerge} repo={it.repo} />
         </Box>
       )}
       {it.actions.length > 0 && (

@@ -24,4 +24,5 @@ export const GITHUB_ACTIONS: Record<string, string> = {
   "fixissue-pr": "Opened PR",
   "fork-create": "Forked",
   "ci-run-approve": "Approved CI run",
+  "postmerge-file": "Opened issue",
 };

@@ -250,6 +250,8 @@ export interface Item extends ItemRef {
   verification: ItemVerification | null;
   /** PRs: the Fix-up step's tries, oldest first. */
   fixups: ItemFixup[];
+  /** PRs the pipeline merged: the post-merge review; null or absent when there is none. */
+  postmerge?: ItemPostmerge | null;
   /** Opus checks of the patches we wrote for this item (Fix-up, Fix), oldest first. */
   patchChecks?: ItemPatchCheck[];
   /** PRs: the Opus review of the newest reviewed head, and the verdict later stages use; null before the first review. */
@@ -305,6 +307,40 @@ export interface ItemReviews {
   current: boolean;
   opus: (ReviewSide & { sure: boolean; mode: "full" | "delta"; baseHead: string | null }) | null;
   final: { verdict: ReviewVerdictName; reason: string; decided: boolean };
+}
+
+export type PostmergeSeverity = "defect" | "minor";
+
+/** What became of one finding: filed as an issue, or why it was not. */
+export type PostmergeFiling =
+  | { state: "filed"; issue: { number: number; url: string | null; state: ItemState | null; title: string | null } }
+  | { state: "duplicate"; duplicateOf: number }
+  | { state: "limit" }
+  | { state: "minor" }
+  | { state: "pending" };
+
+export interface PostmergeFinding {
+  severity: PostmergeSeverity;
+  title: string;
+  /** Markdown, written for the public issue. */
+  body: string;
+  file: string | null;
+  line: number | null;
+  filing: PostmergeFiling;
+  /** Internal notes: the stage that should have caught it and why it did not. Present only for operators and maintainers. */
+  missedBy?: string | null;
+  missedWhy?: string | null;
+}
+
+/** The post-merge review of a PR the pipeline merged. */
+export interface ItemPostmerge {
+  at: string;
+  model: string | null;
+  /** The commit the review read. */
+  mergeSha: string;
+  /** Why there is no review yet (for example too large to review); null when there is one. */
+  error: string | null;
+  findings: PostmergeFinding[];
 }
 
 export type FixupState = "pushed" | "failed" | "refused" | "cannot-push" | "too-large" | "asked" | "rejected";

@@ -182,6 +182,15 @@ export function ghFork(w: Writer, exec: Exec, repo: string, details: Details = {
   return viaGh(w, exec, "fork-create", repo, details, ["repo", "fork", `${ORG}/${repo}`, "--clone=false"]);
 }
 
+/** Opens an issue; returns its number and URL. Throws when `gh` fails or prints no issue URL. `target` is the item the issue follows up. */
+export async function createIssue(w: Writer, exec: Exec, o: { repo: string; target: string; title: string; body: string }, details: Details = {}): Promise<{ number: number; url: string }> {
+  const r = await viaGh(w, exec, "postmerge-file", o.target, { ...details, title: o.title, text: o.body },
+    ["issue", "create", "--repo", `${ORG}/${o.repo}`, "--title", o.title, "--body-file", "-"], o.body);
+  const url = r.stdout.match(/https:\/\/github\.com\/\S+\/issues\/(\d+)/);
+  if (r.code !== 0 || !url) throw new Error(oneLine(r.stderr || r.stdout) || `exit code ${r.code}`);
+  return { number: Number(url[1]), url: url[0] };
+}
+
 /** Approves one Actions run that waits for a maintainer's approval (a run from an outside contributor's PR). */
 export function ghApproveRun(w: Writer, exec: Exec, o: { repo: string; number: number; runId: number }, details: Details = {}): Promise<ExecResult> {
   return viaGh(w, exec, "ci-run-approve", refOf(o.repo, o.number), { ...details, run: o.runId },

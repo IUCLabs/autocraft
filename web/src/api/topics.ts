@@ -7,13 +7,13 @@
  */
 export type Topic =
   | "repos" | "sync" | "items" | "ranks" | "stages" | "checks" | "classify" | "dupes" | "decisions" | "reviews" | "queue" | "jobs" | "usage" | "accounts" | "agents"
-  | "envs" | "tasks" | "actions" | "fixes" | "verify" | "access" | "settings" | "github" | "fasttrack" | "conversations" | "steps";
+  | "envs" | "tasks" | "actions" | "fixes" | "verify" | "postmerge" | "access" | "settings" | "github" | "fasttrack" | "conversations" | "steps";
 
 /** What moves an item's queue position (src/rank/position.ts), for every query that carries the badge. */
 const withSlot = (...topics: Topic[]): Topic[] => [...new Set<Topic>([...topics, "steps", "repos"])];
 
 /** Everything an item page shows about a pull request. */
-const ITEM: Topic[] = withSlot("items", "stages", "classify", "ranks", "decisions", "reviews", "verify", "fixes", "actions");
+const ITEM: Topic[] = withSlot("items", "stages", "classify", "ranks", "decisions", "reviews", "verify", "fixes", "postmerge", "actions");
 
 const RULES: [prefix: string, topics: Topic[]][] = [
   ["progress", ["items", "stages", "repos", "decisions"]],

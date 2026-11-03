@@ -131,3 +131,24 @@ export const ghDelta: DeltaFetcher = async (repo, base, head) => {
   if (diff.code !== 0) return { ok: false, tooLarge: /too_large|too large|406/i.test(diff.err), error: diff.err.trim().slice(0, 300) };
   return { ok: true, text: diff.out };
 };
+
+/** What a merged PR landed: the commit read (null when GitHub names none) and its diff restricted to the files of the PR's own diff. */
+export type MergedDiff = { ok: true; sha: string | null; text: string } | { ok: false; tooLarge: boolean; error: string };
+export type MergedFetcher = (repo: string, number: number) => Promise<MergedDiff>;
+
+/**
+ * The merge commit's diff against its first parent, kept to the files the PR changed (an integration batch's merge commit
+ * carries other PRs too). Without a merge commit, or when that diff is unreadable or empty, the PR's own diff.
+ */
+export const ghMerged: MergedFetcher = async (repo, number) => {
+  const own = await ghDiff(repo, number);
+  const view = await gh(["pr", "view", String(number), "--repo", `${ORG}/${repo}`, "--json", "mergeCommit", "--jq", ".mergeCommit.oid // empty"]);
+  const sha = view.code === 0 && /^[0-9a-f]{40}$/.test(view.out.trim()) ? view.out.trim() : null;
+  const fallback: MergedDiff = own.ok ? { ok: true, sha, text: own.text } : own;
+  if (!sha) return fallback;
+  const c = await gh(["api", "-H", "Accept: application/vnd.github.diff", `repos/${ORG}/${repo}/commits/${sha}`]);
+  if (c.code !== 0) return fallback;
+  const keep = own.ok ? new Set(splitDiff(own.text).map((f) => f.path)) : null;
+  const text = keep ? splitDiff(c.out).filter((f) => keep.has(f.path)).map((f) => f.text).join("") : c.out;
+  return text ? { ok: true, sha, text } : fallback;
+};

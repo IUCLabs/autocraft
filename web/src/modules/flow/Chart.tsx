@@ -14,7 +14,7 @@ import { BranchRow, recentText, RunningMarker, WaitIcon } from "./parts";
 /** Grid cell of each node: [column, row, row span]. */
 const CELL: Record<FlowNode["id"], [number, number, number]> = {
   synced: [1, 1, 1], dupes: [1, 2, 1], classify: [2, 1, 1], priority: [2, 2, 1], decide: [3, 1, 1], act: [3, 2, 1],
-  labels: [4, 1, 1], fix: [4, 2, 1], review: [5, 1, 1], fixup: [5, 2, 1], verify: [6, 1, 1], merge: [6, 2, 1],
+  labels: [4, 1, 1], fix: [4, 2, 1], review: [5, 1, 1], fixup: [5, 2, 1], verify: [6, 1, 1], merge: [6, 2, 1], postmerge: [7, 1, 1],
 };
 
 export function NodeCard({ n, selected, onSelect, runs }: { n: FlowNode; selected: boolean; onSelect: () => void; runs: AgentRun[] }) {
@@ -116,8 +116,8 @@ export function Chart({ flow, selected, onSelect, runs }: { flow: Flow; selected
     <div className="overflow-x-auto pb-2">
       <div
         ref={ref}
-        className="relative grid min-w-[1040px] items-start gap-x-12 gap-y-12"
-        style={{ gridTemplateColumns: "minmax(0,140fr) minmax(0,205fr) minmax(0,195fr) minmax(0,180fr) minmax(0,200fr) minmax(0,210fr)" }}
+        className="relative grid min-w-[1240px] items-start gap-x-12 gap-y-12"
+        style={{ gridTemplateColumns: "minmax(0,140fr) minmax(0,205fr) minmax(0,195fr) minmax(0,180fr) minmax(0,200fr) minmax(0,210fr) minmax(0,200fr)" }}
       >
         {flow.nodes.map((n) => {
           const [c, r, span] = CELL[n.id];

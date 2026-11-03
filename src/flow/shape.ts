@@ -52,6 +52,7 @@ export function buildFlow(c: Record<string, number>, meta: FlowMeta): Flow {
     fixup: { summary: `${fmt(v("fixup.fix"))} to fix up · ${fmt(v("fixup.pushed"))} pushed`, recent: ["pushed"] },
     verify: { summary: `${fmt(v("verify.passed") + v("verify.ci-enough"))} verified · ${fmt(v("verify.waiting"))} to plan`, recent: ["finished"] },
     merge: { summary: `${fmt(v("merge.eligible"))} may merge now · ${fmt(v("merge.total"))} in the queue`, recent: ["merged", "tries"], facts: [{ label: "Merged since tracking began", value: fmt(v("x.mergedAll")) }] },
+    postmerge: { summary: `${fmt(v("postmerge.todo"))} to review · ${fmt(v("postmerge.to-file"))} defects to file`, recent: ["reviewed"] },
     act: { summary: `${fmt(v("act.todo"))} to act · ${fmt(v("act.done"))} done in 24 h` },
   };
 

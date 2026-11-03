@@ -22,6 +22,7 @@ const ALL: Record<string, number> = {
   "verify.total": 89, "verify.recent.finished": 24, "edge.verify.merge": 51,
   "merge.waiting-verify": 27, "merge.verify-failed": 5, "merge.verify-error": 2,
   "merge.eligible": 12, "merge.in-batch": 5, "merge.batch-failed": 1, "merge.needs-decision": 14, "merge.waiting-ci": 19, "merge.ci-failed": 9, "merge.conflict": 4, "merge.needs-fix-up": 31, "merge.declined": 3,
+  "postmerge.todo": 3, "postmerge.to-file": 1, "postmerge.unapproved": 0, "postmerge.filed": 2, "postmerge.nothing": 4, "postmerge.total": 4, "postmerge.recent.reviewed": 6, "edge.merge.postmerge": 3, "edge.postmerge.fix": 2,
   "merge.merged": 7, "merge.total": 92, "merge.recent.merged": 7, "merge.recent.tries": 9, "x.mergedAll": 41,
 };
 
