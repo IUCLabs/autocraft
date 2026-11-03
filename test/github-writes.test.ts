@@ -31,6 +31,7 @@ const ALLOWED: Record<string, string[]> = {
   "dash/server/provider.ts": ["HTTP write verb"], // OAuth token exchange for sign-in
   "merge/safe-merge.ts": ["gh api write verb"], // -f/-F only pass variables to a read-only GraphQL query
   "merge/index.ts": ["safe-merge started"], // starts the built-in command; the write is recorded by mergeViaCommand
+  "stages/registry.ts": ["git push"], // stage descriptions, no code
 };
 
 test("only src/github/write.ts sends writes to GitHub", () => {
