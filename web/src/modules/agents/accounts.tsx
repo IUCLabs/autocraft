@@ -12,7 +12,7 @@ import { Block, ErrorLine, TextInput, useWrite } from "../admin/parts";
 
 export const useAccounts = () => useQuery<ClaudeAccount[]>("accounts", (a) => a.accounts.list());
 
-/** One usage bar: width is the share used; the colour warns from 75 % and goes critical from 90 % (the pause threshold). */
+/** One usage bar: width is the share used; the colour warns from 75 % and goes critical from 90 %. */
 export function UsageBar({ label, pct, resetsAt }: { label: string; pct: number | null; resetsAt: string | null }) {
   const tone = pct === null ? "bg-ink/20" : pct >= 90 ? "bg-bad" : pct >= 75 ? "bg-warn" : "bg-c1";
   const resets = resetsAt ? Date.parse(resetsAt) - nowMs() : null;

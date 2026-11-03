@@ -141,30 +141,30 @@ describe("allocation", () => {
     assert.equal(pauseReason(db, "embed"), null);
     enable(db, "a");
     writeReading(box, "a", { five: 91 });
-    assert.match(pauseReason(db, "review-batch") ?? "", /5-hour use 91 % \(pauses at 90 %\)/);
+    assert.match(pauseReason(db, "review-batch") ?? "", /5-hour use 91 % \(pauses at 80 %\)/);
     writeReading(box, "a", { five: 20 });
     assert.equal(pauseReason(db, "review-batch"), null);
   });
 });
 
 describe("usage pause levels", () => {
-  test("an operator's levels replace the 90/95 defaults; invalid input is rejected", () => {
+  test("an operator's levels replace the 80/80 defaults; invalid input is rejected", () => {
     const { db, box } = fresh(["a"]);
     enable(db, "a");
-    assert.deepEqual(usagePause(db), { fiveHour: 90, weekly: 95 });
+    assert.deepEqual(usagePause(db), { fiveHour: 80, weekly: 80 });
     assert.throws(() => setUsagePause(db, { fiveHour: 0, weekly: 75 }, "op"), /1 to 100/);
     assert.throws(() => setUsagePause(db, { fiveHour: 60.5, weekly: 75 }, "op"), /1 to 100/);
     assert.throws(() => setUsagePause(db, { fiveHour: 101, weekly: 75 }, "op"), /1 to 100/);
     assert.throws(() => setUsagePause(db, { fiveHour: "60", weekly: 75 }, "op"), /1 to 100/);
     assert.throws(() => setUsagePause(db, null, "op"), /1 to 100/);
-    assert.deepEqual(usagePause(db), { fiveHour: 90, weekly: 95 });
+    assert.deepEqual(usagePause(db), { fiveHour: 80, weekly: 80 });
     setUsagePause(db, { fiveHour: 60, weekly: 75 }, "op");
     writeReading(box, "a", { five: 61 });
     assert.match(pauseReason(db, "review-batch") ?? "", /5-hour use 61 % \(pauses at 60 %\)/);
     writeReading(box, "a", { five: 59 });
     assert.equal(pauseReason(db, "review-batch"), null);
     db.prepare("UPDATE settings SET value = 'nonsense' WHERE key = 'usage_pause'").run();
-    assert.deepEqual(usagePause(db), { fiveHour: 90, weekly: 95 });
+    assert.deepEqual(usagePause(db), { fiveHour: 80, weekly: 80 });
   });
 });
 

@@ -12,7 +12,7 @@ import { boxAccounts, iso, readUsage, type BoxAccount, type Reading } from "./bo
 
 export const USAGE_PAUSE_KEY = "usage_pause";
 export type UsagePause = { fiveHour: number; weekly: number };
-export const USAGE_PAUSE_DEFAULT: UsagePause = { fiveHour: 90, weekly: 95 };
+export const USAGE_PAUSE_DEFAULT: UsagePause = { fiveHour: 80, weekly: 80 };
 /** A reading older than this counts as unknown, and unknown is allowed. */
 export const STALE_MS = 30 * 60_000;
 /** A run still "running" after this long belongs to a process that is gone; it no longer takes a slot. */

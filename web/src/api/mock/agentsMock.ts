@@ -29,7 +29,7 @@ const accounts: ClaudeAccount[] = [
   {
     id: "c", label: "Team account C", enabled: true, maxConcurrent: 3, running: 0,
     usage: { fiveHourPct: 93, fiveHourResetsAt: iso(-(55 * MIN)), weeklyPct: 78, weeklyResetsAt: iso(-(1 * 24 * HOUR + 2 * HOUR)), readAt: iso(1 * MIN) },
-    pausedReason: "5-hour use 93 % (pauses at 90 %)", auth: { ...AUTH, expiresAt: new Date(NOW + 6 * 24 * HOUR).toISOString() }, login: null,
+    pausedReason: "5-hour use 93 % (pauses at 80 %)", auth: { ...AUTH, expiresAt: new Date(NOW + 6 * 24 * HOUR).toISOString() }, login: null,
   },
   {
     id: "d", label: "Spare account D", enabled: false, maxConcurrent: 2, running: 0,
@@ -109,7 +109,7 @@ export function createAgentsMock(me: User, changed: () => void): Pick<Api, "acco
     if (!a) throw new Error("no such account");
     return a;
   };
-  let pause: UsagePause = { fiveHour: 90, weekly: 95 };
+  let pause: UsagePause = { fiveHour: 80, weekly: 80 };
   const visible = () => accounts.filter((a) => me.role === "operator" || a.enabled);
   return {
     accounts: {
