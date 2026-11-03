@@ -77,7 +77,7 @@ export const COMMENT_TEMPLATES: CommentTemplate[] = [
     text: reviewBody({ model: "{{model}}", verdict: "take-fix", sure: true, summary: "{{summary}}", points: ["{{point}}"], head: "{{head}}" }),
     placeholders: [
       { name: "model", meaning: "The model that wrote the review, as a name and version (Opus 5.5)" },
-      { name: "verdict", meaning: "By verdict: take \"No blocking problems found.\", take-fix \"Small fixes needed before merging:\", hold \"Changes needed:\", close \"This does not look mergeable as it is:\"; \" The review was not certain.\" follows when the model was unsure" },
+      { name: "verdict", meaning: "By verdict: take \"No blocking problems found.\", take-fix \"Small fixes needed:\", hold \"Changes needed:\", close \"Significant problems found:\"; \" The review was not certain.\" follows when the model was unsure" },
       { name: "summary, point", meaning: "The review text Opus wrote for the PR author (its public field: summary and at most 8 points), cleaned to one line each (mentions and HTML tags removed, at most 600 characters); the whole body is cut at 6000 characters. Opus's internal reason, fixes and risks are never posted" },
       { name: "head", meaning: "The first 7 characters of the reviewed head commit" },
     ],

@@ -18,9 +18,9 @@ export function modelLabel(id: string | null | undefined): string {
 
 const VERDICT_LINE: Record<string, string> = {
   take: "No blocking problems found.",
-  "take-fix": "Small fixes needed before merging:",
+  "take-fix": "Small fixes needed:",
   hold: "Changes needed:",
-  close: "This does not look mergeable as it is:",
+  close: "Significant problems found:",
 };
 
 /** One line of plain text: no mentions (nobody gets pinged), no raw HTML tags, cut to `max` characters. */

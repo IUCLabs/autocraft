@@ -77,11 +77,11 @@ describe("review body", () => {
 
   test("starts with the disclaimer naming the model, lists the findings and ends with the short head", () => {
     const b = reviewBody(base);
-    assert.equal(b, "_AI-generated review (Opus 5.5). Not a maintainer decision._\n\nSmall fixes needed before merging:\n\nHandles errors badly.\n\n- `src/a.rs:12`: return the error.\n\nReviewed at 0123456.");
+    assert.equal(b, "_AI-generated review (Opus 5.5). Not a maintainer decision._\n\nSmall fixes needed:\n\nHandles errors badly.\n\n- `src/a.rs:12`: return the error.\n\nReviewed at 0123456.");
   });
 
   test("verdict wording", () => {
-    for (const [v, line] of [["take", "No blocking problems found."], ["hold", "Changes needed:"], ["close", "This does not look mergeable as it is:"]] as const)
+    for (const [v, line] of [["take", "No blocking problems found."], ["hold", "Changes needed:"], ["close", "Significant problems found:"]] as const)
       assert.match(reviewBody({ ...base, verdict: v, points: [] }), new RegExp(`\\n\\n${line}\\n`));
   });
 
