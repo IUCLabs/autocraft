@@ -98,3 +98,32 @@ test("Haiku decides alone while Jev is unavailable, and a repo without a list is
     assert.equal(itemAreaOf(db, "filmcraft", 1), null);
   } finally { restore(); }
 });
+
+test("an answer for a list edited during the pass is dropped, a stale name is unassigned and a removed operator choice is asked again", async () => {
+  const db = setup(2);
+  editAreas(db, "photocraft", { op: "add", name: "Canvas", description: "drawing surface" }, "op");
+  editAreas(db, "photocraft", { op: "add", name: "Text", description: "type" }, "op");
+  const inner = fake({ 1: ["Canvas", 0.95], 2: ["Canvas", 0.95] }, {}, []);
+  // The operator renames Canvas while Jev is answering item 1.
+  let edited = false;
+  const restore = setRunner(async (cmd, a, input, ...rest) => {
+    if (cmd === "jev" && !edited) {
+      edited = true;
+      editAreas(db, "photocraft", { op: "rename", from: "Canvas", to: "Drawing" }, "op");
+    }
+    return inner(cmd, a, input, ...rest);
+  });
+  try {
+    await run(db);
+  } finally { restore(); }
+  // Both answers named a version that is gone; neither is stored, and both are due again.
+  assert.deepEqual([1, 2].map((n) => itemAreaOf(db, "photocraft", n)), [null, null]);
+
+  // A name written by an older pass that is not in the new list becomes unassigned; an operator row of a removed area is deleted.
+  const v = currentList(db, "photocraft")!.version;
+  const put = db.prepare("INSERT INTO item_areas (repo, number, area, source, confidence, list_version, at) VALUES ('photocraft', ?, ?, ?, NULL, ?, 't')");
+  put.run(1, "Canvas", "jev", v); put.run(2, "Text", "operator", v);
+  editAreas(db, "photocraft", { op: "remove", name: "Text" }, "op");
+  assert.equal(itemAreaOf(db, "photocraft", 1)!.area, null);
+  assert.equal(itemAreaOf(db, "photocraft", 2), null);
+});

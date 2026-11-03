@@ -9,6 +9,7 @@ import { jevAvailable } from "../agents/jev.ts";
 import { notOwnIntegrationSql } from "../dupes/held.ts";
 import { refOf } from "../classify/parse.ts";
 import { add, askClaude, askJev, pool, saveUsage, type Usage } from "../classify/run.ts";
+import { JEV_USD_PER_INPUT_TOKEN } from "../prompts/index.ts";
 import { pilotSql } from "../pilot.ts";
 import { CLAUDE_PROMPTS, renderAreaJev } from "../prompts/index.ts";
 import { cachedDiff, ghDiff, splitDiff } from "../review/diff.ts";
@@ -22,11 +23,23 @@ const CHUNK = 40;
 /** Changed file paths of a pull request, or null when unavailable. */
 export type PathSource = (repo: string, number: number, head: string | null) => Promise<string[] | null>;
 
-/** From the diff cache or `gh pr diff` (a read). */
-export const diffPaths: PathSource = async (repo, number, head) => {
+/** Below this many GitHub points left (the sync's last reading) no diff is fetched; cached diffs are still read. */
+export const RATE_FLOOR = 500;
+// Heads whose diff could not be fetched in this process: not tried again.
+const failedHeads = new Set<string>();
+
+/** From the diff cache or `gh pr diff` (a read). `db` supplies the stored sync rate reading. */
+export const diffPaths = (db: DatabaseSync): PathSource => async (repo, number, head) => {
   if (!head) return null;
-  const r = await cachedDiff(repo, number, head, ghDiff);
-  return r.ok ? splitDiff(r.text).map((f) => f.path).slice(0, AREA_PATHS_MAX) : null;
+  const key = `${repo}#${number}@${head}`;
+  if (failedHeads.has(key)) return null;
+  const low = Number((db.prepare("SELECT value FROM settings WHERE key = 'sync_rate_remaining'").get() as { value: string } | undefined)?.value ?? Infinity) < RATE_FLOOR;
+  const r = await cachedDiff(repo, number, head, low ? async () => ({ ok: false, tooLarge: false, error: "rate low" }) : ghDiff);
+  if (!r.ok) {
+    if (!low) failedHeads.add(key);
+    return null;
+  }
+  return splitDiff(r.text).map((f) => f.path).slice(0, AREA_PATHS_MAX);
 };
 
 type Due = AreaItem & { head: string | null; version: number };
@@ -61,6 +74,12 @@ export type AssignParams = {
 };
 export type AssignResult = { due: number; jev: number; haiku: number; none: number; left: number };
 
+/** Usage rows of an earlier pass under the same agent name are renamed, so INSERT OR REPLACE does not overwrite their cost. */
+function keepUsage(db: DatabaseSync, run: string, agent: string, attempt = 0): void {
+  if (attempt > 0) return;
+  db.prepare("UPDATE token_usage SET agent = agent || '@' || COALESCE(started_at, '') WHERE run_id = ? AND agent = ?").run(run, agent);
+}
+
 const now = () => new Date().toISOString();
 const usageZero = (): Usage => ({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: null });
 
@@ -89,7 +108,9 @@ async function haikuAreas(db: DatabaseSync, repo: string, areas: Area[], items: 
       for (const [ref, area] of answers) out.set(ref, area);
       todo = todo.filter((x) => missing.includes(refOf(x)));
     }
-    saveUsage(db, p.usageRun, `areas-haiku-${repo}-${String(n).padStart(3, "0")}`, "areas", HAIKU.models[0]!, batch.length - todo.length, usage, start, now());
+    const agent = `areas-haiku-${repo}-${String(n).padStart(3, "0")}`;
+    keepUsage(db, p.usageRun, agent);
+    saveUsage(db, p.usageRun, agent, "areas", HAIKU.models[0]!, batch.length - todo.length, usage, start, now());
   }), () => claudeRoom(db));
   return out;
 }
@@ -99,20 +120,33 @@ async function assignRepo(db: DatabaseSync, repo: string, due: Due[], p: AssignP
   const list = currentList(db, repo)!;
   const version = list.version;
   const store = (x: AreaItem, area: string | null, source: "jev" | "haiku", conf: number | null) => {
+    // The list was edited while this pass ran: the answer is for a list that is gone.
+    if (currentList(db, repo)?.version !== version) return;
     setItemArea(db, x.repo, x.number, area, source, conf, version);
     if (source === "jev") r.jev++; else r.haiku++;
     if (area === null) r.none++;
   };
   for (let i = 0; i < due.length && !p.cancelled?.(); i += CHUNK) {
-    const chunk = await withPaths(due.slice(i, i + CHUNK), p.paths ?? diffPaths);
+    // With neither model available there is nothing to ask, so no diff is fetched.
+    if (!jevAvailable(db) && claudeRoom(db) <= 0 && !p.paths) { p.log?.(`areas: no model available for ${repo}`); break; }
+    const chunk = await withPaths(due.slice(i, i + CHUNK), p.paths ?? diffPaths(db));
     p.onSent?.(chunk.length);
     const answered = new Set<string>();
     const unsure: AreaItem[] = [];
+    const jevUsage = new Map<string, number>();
     if (jevAvailable(db)) {
       await pool(chunk.map((x) => async () => {
         if (!jevAvailable(db)) return;
         for (let attempt = 0; attempt < 2 && !answered.has(refOf(x)) && jevAvailable(db); attempt++) {
+          const t0 = now();
           const res = await askJev("areas.jev", x, db, renderAreaJev(x, list.areas));
+          try {
+            const j = JSON.parse(res.stdout) as { usage?: { input_tokens?: number; output_tokens?: number } };
+            const input = (jevUsage.get(refOf(x)) ?? 0) + (j.usage?.input_tokens ?? 0);
+            jevUsage.set(refOf(x), input);
+            keepUsage(db, p.usageRun, `areas-jev-${refOf(x)}`, attempt);
+            saveUsage(db, p.usageRun, `areas-jev-${refOf(x)}`, "areas", "jev-latest", 1, { input, output: j.usage?.output_tokens ?? 0, cacheRead: 0, cacheWrite: 0, cost: input * JEV_USD_PER_INPUT_TOKEN }, t0, now());
+          } catch { /* an unreadable answer is retried below */ }
           const a = res.code === 0 ? jevAreaAnswer(res.stdout, list.areas) : null;
           if (!a) continue;
           answered.add(refOf(x));

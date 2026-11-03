@@ -55,8 +55,8 @@ export async function suggestAreas(db: DatabaseSync, repo: string, p: Omit<Propo
   const model = p.model ?? SUGGEST.models[0]!, start = now();
   const items = (db.prepare(`SELECT i.repo || '#' || i.number AS ref, COALESCE(i.title, '') AS title, COALESCE(i.body, '') AS body FROM items i
     LEFT JOIN item_areas a ON a.repo = i.repo AND a.number = i.number
-    WHERE i.repo = ? AND i.state = 'OPEN' AND ${notOwnIntegrationSql("i")} AND a.area IS NULL AND (a.number IS NULL OR a.source <> 'operator')
-    ORDER BY i.updated_at DESC LIMIT ?`).all(repo, SUGGEST_ITEMS) as { ref: string; title: string; body: string }[]);
+    WHERE i.repo = ? AND i.state = 'OPEN' AND ${notOwnIntegrationSql("i")} AND a.area IS NULL AND a.source <> 'operator' AND a.list_version = ?
+    ORDER BY i.updated_at DESC LIMIT ?`).all(repo, list.version, SUGGEST_ITEMS) as { ref: string; title: string; body: string }[]);
   if (!items.length) return null;
   let usage = zero();
   let areas = null;

@@ -52,8 +52,17 @@ function save(db: DatabaseSync, repo: string, areas: Area[], by: string | null, 
     const version = (currentList(db, repo)?.version ?? 0) + 1;
     db.prepare("INSERT INTO area_lists (repo, version, areas, at, by, note) VALUES (?, ?, ?, ?, ?, ?)").run(repo, version, JSON.stringify(areas), now(), by, note);
     const move = db.prepare("UPDATE item_areas SET area = ? WHERE repo = ? AND area = ?");
-    for (const [from, to] of moved) move.run(to, repo, from);
-    db.prepare("UPDATE item_areas SET list_version = ? WHERE repo = ? AND area IS NOT NULL").run(version, repo);
+    // An operator's choice of a removed area is dropped, so the item is asked again.
+    const dropOperator = db.prepare("DELETE FROM item_areas WHERE repo = ? AND area = ? AND source = 'operator'");
+    for (const [from, to] of moved) {
+      if (to === null) dropOperator.run(repo, from);
+      move.run(to, repo, from);
+    }
+    // A pass that was running during the edit may have written a name that is gone: unassign it. Rows with a name in the list move to the new version.
+    const marks = areas.map(() => "?").join(",") || "NULL";
+    const names = areas.map((a) => a.name);
+    db.prepare(`UPDATE item_areas SET area = NULL WHERE repo = ? AND area IS NOT NULL AND area NOT IN (${marks})`).run(repo, ...names);
+    db.prepare(`UPDATE item_areas SET list_version = ? WHERE repo = ? AND area IN (${marks})`).run(version, repo, ...names);
     db.exec("COMMIT");
     return version;
   } catch (e) {

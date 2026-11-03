@@ -24,6 +24,8 @@ export { inputHash } from "../itemhash.ts";
 
 // Jev's top probability from which its label stands without a second opinion.
 export const SURE = 0.9;
+// Area questions per classify job, not counted against its limit: bulk assignment is the areas-rescan step.
+const AREAS_PER_CLASSIFY_JOB = 100;
 const JEV_CHUNK = 40, HAIKU_PER_CALL = 25;
 
 
@@ -166,7 +168,7 @@ async function pass(ctx: StepContext, run: string, mode: "new" | "all"): Promise
   const haiku = await haikuPass(ctx, run, unsure, sent);
   const jev = jevDone.size;
   // Items of repos with an area list that were not asked against its current version; Jev's answers share the job's limit with the type pass.
-  const areas = ctx.cancelled() ? { due: 0, jev: 0, haiku: 0, none: 0, left: 0 } : await assignAreas(ctx.db, { limit, usageRun: run, onSent: sent, cancelled: ctx.cancelled, progress: ctx.progress, log: ctx.log });
+  const areas = ctx.cancelled() ? { due: 0, jev: 0, haiku: 0, none: 0, left: 0 } : await assignAreas(ctx.db, { limit: Math.min(limit, AREAS_PER_CLASSIFY_JOB), usageRun: run, cancelled: ctx.cancelled, progress: ctx.progress, log: ctx.log });
   return { areas, jev, due: due.length, haiku, haikuDue: unsure.length, haikuAlone, aloneDue: alone.length, left: due.length - jev - haikuAlone };
 }
 
