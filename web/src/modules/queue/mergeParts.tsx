@@ -32,6 +32,7 @@ export const STATE: Record<QueueState, [string, Tone, string]> = {
   "batch-failed": ["Batch failed", "bad", "Failed alone in a batch: on hold until the PR has a new head"],
   "held-duplicate": ["Held: Duplicate?", "warn", "An open Duplicate? decision keeps it out of every later stage; answer it in Decisions"],
   "held-backlog": ["Backlog", "neutral", "Answered Backlog; reopen the decision to take it up again"],
+  "changes-requested": ["Changes requested", "bad", "A maintainer's changes-requested review stands; it waits for that reviewer to approve or for a maintainer to dismiss it"],
 };
 export const TIER: Record<Tier, string> = { whitelisted: "whitelisted", not: "not whitelisted", "override-allow": "override allow", "override-deny": "override deny" };
 const CI_TONE: Record<QueueRow["ci"], Tone> = { success: "ok", failure: "bad", pending: "warn", none: "neutral", unknown: "neutral" };

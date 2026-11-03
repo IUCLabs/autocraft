@@ -1,7 +1,7 @@
 // A review made again at the same head commit replaces the one a "Merge this PR?" decision was asked from.
 import type { DatabaseSync } from "node:sqlite";
 import { audit } from "../dash/audit.ts";
-import { mergeDecisionId } from "./queue.ts";
+import { mergeDecisionId, type QueueEntry } from "./queue.ts";
 
 /** Answer value of a question the pipeline set aside; no operator wrote it, so no later step acts on it. */
 export const WITHDRAWN = "withdrawn";
@@ -35,4 +35,15 @@ export function withdrawMergeQuestion(db: DatabaseSync, repo: string, number: nu
     db.exec("ROLLBACK");
     throw e;
   }
+}
+
+/** Sets aside the Merge? decisions of PRs a maintainer's "changes requested" review blocks; they are asked again if the block clears. */
+export function withdrawBlockedQuestions(db: DatabaseSync, queue: QueueEntry[], at: string): number {
+  let n = 0;
+  for (const e of queue) {
+    if (e.state !== "changes-requested" || !e.decisionId) continue;
+    withdrawMergeQuestion(db, e.repo, e.number, e.head, at);
+    n++;
+  }
+  return n;
 }

@@ -6,7 +6,8 @@ import { latestRun, settledLookup } from "../classify/settled.ts";
 import { actionable } from "../decisions.ts";
 import { backlogHeld, duplicateHeld, notOwnIntegrationSql } from "../dupes/held.ts";
 import { headOf } from "../review/candidates.ts";
-import { changedSince, discussionState, staleReviews } from "../review/discussion.ts";
+import { changedSince, discussionState, pipelineLogin, staleReviews } from "../review/discussion.ts";
+import { refuseReviews, type ReviewFact } from "./changes-requested.ts";
 import { batchStates } from "./batch-store.ts";
 import { mergeHolds } from "./holds.ts";
 import { getRule, STATS_SQL, tierOf, type Tier } from "../whitelist.ts";
@@ -15,7 +16,7 @@ import { pilotSql } from "../pilot.ts";
 export const QUEUE_STATES = [
   "ready", "decision-answered-merge", "refused", "waiting-ci", "ci-failed", "conflict",
   "needs-fix-up", "waiting-opus", "waiting-verify", "verify-failed", "verify-error", "needs-decision", "declined", "merged", "held-duplicate", "held-backlog",
-  "batch-checking", "in-batch", "batch-failed",
+  "batch-checking", "in-batch", "batch-failed", "changes-requested",
 ] as const;
 export type QueueState = (typeof QUEUE_STATES)[number];
 
@@ -89,7 +90,7 @@ export const eligible = (e: QueueEntry): boolean =>
   !e.held && e.path !== null && verifyAllows(e.path, e.verify?.state) && ciAllows(e.path, e.ci, e.noCi) && e.mergeable === "MERGEABLE" && (e.state === "ready" || e.state === "decision-answered-merge" || e.state === "refused");
 
 type Row = {
-  repo: string; number: number; title: string | null; author: string | null; state: string; head_oid: string | null; updated_at: string | null;
+  repo: string; number: number; title: string | null; author: string | null; state: string; review_decision: string | null; head_oid: string | null; updated_at: string | null;
   c_head: string | null; c_at: string | null; overall: string | null; c_mergeable: string | null; i_mergeable: string | null;
   r_head: string; o_at: string | null; o_seen: string | null; o_hash: string | null; verdict: "take" | "take-fix"; reason: string; fixes: string | null; size: string | null; r_at: string; r_final: number;
 };
@@ -153,7 +154,7 @@ export function buildQueue(db: DatabaseSync, opts: QueueOptions = {}): QueueEntr
   }
   // Latest review per PR (newest `at`, then rowid); only take and take-fix verdicts enter the queue.
   const rows = db.prepare(`
-    SELECT i.repo, i.number, i.title, i.author, i.state, i.head_oid, i.updated_at, i.mergeable AS i_mergeable,
+    SELECT i.repo, i.number, i.title, i.author, i.state, i.review_decision, i.head_oid, i.updated_at, i.mergeable AS i_mergeable,
       c.head_oid AS c_head, c.fetched_at AS c_at, c.overall, c.mergeable AS c_mergeable,
       l.head_oid AS r_head, o.at AS o_at, o.seen_at AS o_seen, o.disc_hash AS o_hash, l.verdict, l.reason, l.fixes, l.size, l.at AS r_at, l.final AS r_final
     FROM items i
@@ -175,6 +176,9 @@ export function buildQueue(db: DatabaseSync, opts: QueueOptions = {}): QueueEntr
   const state = discussionState(db, opts.repo);
   const settled = settledLookup(db, opts.run !== undefined ? opts.run : latestRun(db));
 
+  // The mirror keeps the latest 10 reviews of a PR; GitHub's review decision covers an older block that fell out of them.
+  const reviewRows = db.prepare("SELECT author, author_association AS association, review_state AS state, created_at AS at FROM comments WHERE repo = ? AND number = ? AND kind = 'review'");
+  const ownLogin = pipelineLogin(db);
   const holds = mergeHolds(db, opts.repo);
   const noCiMemo = new Map<string, boolean>();
   const noCi = (repo: string) => noCiMemo.get(repo) ?? (noCiMemo.set(repo, repoHasNoCi(db, repo)), noCiMemo.get(repo)!);
@@ -214,6 +218,8 @@ export function buildQueue(db: DatabaseSync, opts: QueueOptions = {}): QueueEntr
       decisionId: asked ? id : null, noCi: ci === "none" && noCi(r.repo), answer, refusedReason: null, reviewedAt: r.r_at, verify, held: holds.has(`${r.repo}#${r.number}`),
     };
     const open = r.state === "OPEN" && !mergedByUs;
+    // A maintainer's formal block comes before everything else: the PR is never asked about, batched or merged while it stands.
+    if (open && refuseReviews(reviewRows.all(r.repo, r.number) as ReviewFact[], r.review_decision, ownLogin)) { e.state = "changes-requested"; out.push(e); continue; }
     e.state = stateOf(e, r.state === "MERGED" || mergedByUs, last, open && (backlogHeld(db, r.repo, r.number) ? "backlog" : duplicateHeld(db, r.repo, r.number) ? "duplicate" : null), r.r_final === 1 && !(open && (stale.has(`${r.repo}#${r.number}@${r.r_head}`) || (r.o_at !== null && changedSince(state.get(`${r.repo}#${r.number}`), r.o_seen ?? r.o_at, r.o_hash)))));
     const batch = inBatch.get(`${r.repo}#${r.number}@${r.r_head}`);
     if (batch && BATCHABLE.includes(e.state)) e.state = batch;

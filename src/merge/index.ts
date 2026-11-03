@@ -24,6 +24,7 @@ import { discussionMovedChecked } from "../review/discussion.ts";
 import { fillReviewSummaries } from "../review/summary.ts";
 import { verificationOf } from "../verify/results.ts";
 import { TIER_LABEL } from "../whitelist.ts";
+import { withdrawBlockedQuestions } from "./withdraw.ts";
 import { buildQueue, ciAllows, toAsk, countStates, eligible, HEAD_FACT, MERGE_OPTIONS, mergeDecisionId, QUEUE_STATES, VERIFY_UNAVAILABLE, verifyAllows, type QueueEntry } from "./queue.ts";
 
 export { buildQueue, countStates, QUEUE_STATES, toAsk, type QueueEntry, type QueueState } from "./queue.ts";
@@ -185,6 +186,7 @@ export function askMergeDecisions(db: DatabaseSync, opts: { repos?: string[]; ru
   const queue = buildQueue(db, { merged: "exclude", ...(opts.run === undefined ? {} : { run: opts.run }) });
   const qs = toAsk(queue.filter((e) => !repos || repos.has(e.repo))).map(mergeQuestion);
   const at = opts.at ?? new Date().toISOString();
+  withdrawBlockedQuestions(db, queue.filter((e) => !repos || repos.has(e.repo)), at);
   if (qs.length) ask(db, qs.map((q) => ({ ...q, asked_at: at })));
   fillReviewSummaries(db, at);
   return qs.map((q) => q.id);
@@ -226,6 +228,10 @@ export async function runMerge(db: DatabaseSync, params: MergeParams, log: (line
     return summary;
   }
   const d = deps ?? defaultDeps();
+
+  // A Merge? question open for a PR a maintainer has since blocked no longer applies.
+  const withdrawn = withdrawBlockedQuestions(db, open, at());
+  if (withdrawn) log(`  withdrew ${withdrawn} Merge? decision${withdrawn === 1 ? "" : "s"} of PRs with changes requested`);
 
   // Every taken PR in the queue gets one `batched` stage row per head.
   const batched = db.prepare("SELECT 1 FROM stages WHERE repo = ? AND number = ? AND stage = 'batched' AND note LIKE ?");

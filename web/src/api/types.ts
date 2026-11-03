@@ -937,7 +937,8 @@ export interface CommentTemplate {
  * declined (the operator answered hold or close), merged,
  * held-duplicate (an open Duplicate? decision keeps it out of every later stage), held-backlog (answered Backlog),
  * batch-checking (in an integration batch whose combined tree is being checked), in-batch (the batch PR is open),
- * batch-failed (failed alone in a batch: on hold until a new head).
+ * batch-failed (failed alone in a batch: on hold until a new head), changes-requested (a maintainer's
+ * changes-requested review stands).
  */
 export type QueueState =
   | "ready"
@@ -958,7 +959,8 @@ export type QueueState =
   | "held-backlog"
   | "batch-checking"
   | "in-batch"
-  | "batch-failed";
+  | "batch-failed"
+  | "changes-requested";
 
 /** An integration batch: PRs landed together through one integration branch and one PR. */
 export type BatchState = "checking" | "open" | "merged" | "failed" | "split" | "superseded";

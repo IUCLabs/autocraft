@@ -62,6 +62,8 @@ const ADDED_COLUMNS: [table: string, column: string, type: string][] = [
   ["conversation_turns", "claimed_at", "TEXT"],
   ["conversation_turns", "progress", "TEXT"],
   ["agent_runs", "progress", "TEXT"],
+  // The commenter's association with the repository (OWNER, MEMBER, ...); the merge queue reads it from reviews.
+  ["comments", "author_association", "TEXT"],
 ];
 
 // Indexes on added columns: they can only be created once the column exists.

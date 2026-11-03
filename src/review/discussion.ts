@@ -6,6 +6,7 @@ import { createHash } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { audit } from "../dash/audit.ts";
 import type { Querier } from "../mirror.ts";
+import { refuseReviews, type ReviewFact } from "../merge/changes-requested.ts";
 import { ENTRY_LIMIT, TOTAL_LIMIT, type DiscussionEntry } from "./parse.ts";
 
 /** Setting that holds the pipeline account's login (also read by src/merge/queue.ts). */
@@ -96,6 +97,7 @@ export const DISCUSSION_QUERY = `query($owner: String!, $name: String!, $number:
       author { login }
       comments(last: 20) { nodes { id author { login __typename } authorAssociation createdAt body } }
       reviews(last: 10) { nodes { id author { login __typename } authorAssociation createdAt body state comments { totalCount } } }
+      formal: reviews(last: 100, states: [APPROVED, CHANGES_REQUESTED, DISMISSED]) { nodes { id author { login } authorAssociation createdAt submittedAt state } }
       reviewThreads(last: 50) { nodes { isResolved isOutdated path line originalLine
         head: comments(first: 1) { nodes { id author { login __typename } authorAssociation createdAt body } }
         tail: comments(last: 3) { nodes { id author { login } body } } } }
@@ -104,13 +106,13 @@ export const DISCUSSION_QUERY = `query($owner: String!, $name: String!, $number:
 }`;
 
 type Author = { login?: string; __typename?: string } | null;
-type Node = { id?: string; author?: Author; authorAssociation?: string; createdAt?: string; body?: string; state?: string; comments?: { totalCount?: number } };
+type Node = { id?: string; author?: Author; authorAssociation?: string; createdAt?: string; submittedAt?: string; body?: string; state?: string; comments?: { totalCount?: number } };
 type ThreadNode = {
   isResolved?: boolean; isOutdated?: boolean; path?: string; line?: number | null; originalLine?: number | null;
   head?: { nodes?: Node[] }; tail?: { nodes?: Node[] };
 };
 
-export type LiveDiscussion = { entries: DiscussionEntry[]; snap: Snapshot; newest: string | null };
+export type LiveDiscussion = { entries: DiscussionEntry[]; snap: Snapshot; newest: string | null; /** Reviews by others, for the changes-requested rule. */ reviews: ReviewFact[] };
 
 /**
  * Everything others wrote on the PR, read from GitHub (a read, never a write) in one query: comments, review
@@ -152,7 +154,19 @@ export async function liveDiscussion(q: Querier, db: DatabaseSync, repo: string,
       .map((r) => ({ author: r.author?.login ?? null, body: clip(cleanBody(r.body), ENTRY_LIMIT / 2) })).filter((r) => r.body);
     entries.push({ kind: "thread", author: c.author?.login ?? null, at: c.createdAt ?? null, path: t.path, line: t.line ?? t.originalLine ?? null, ...(t.isOutdated ? { outdated: true } : {}), body: clip(body, ENTRY_LIMIT), ...(replies.length ? { replies } : {}) });
   }
-  return { entries, snap: { seen, hash: discussionHash(counted) }, newest };
+  const reviews = ((pr.formal?.nodes ?? []) as Node[]).filter((n) => !mine(n.author, n.id))
+    .map((n) => ({ author: n.author?.login ?? null, association: n.authorAssociation ?? null, state: n.state ?? null, at: n.submittedAt ?? n.createdAt ?? null }));
+  return { entries, snap: { seen, hash: discussionHash(counted) }, newest, reviews };
+}
+
+/** Just before a merge: the reason a maintainer's changes-requested review blocks the PR, read live; null when none, undefined when the read failed. */
+export async function changesRequestedChecked(db: DatabaseSync, q: Querier, repo: string, number: number, log: (line: string) => void): Promise<string | null | undefined> {
+  try {
+    return refuseReviews((await withRetry(() => liveDiscussion(q, db, repo, number))).reviews);
+  } catch (e) {
+    log(`  ${repo}#${number}: could not read its reviews (${String((e as Error).message ?? e).replace(/\s+/g, " ").slice(0, 200)}); skipped this run`);
+    return undefined;
+  }
 }
 
 /** Retries a read a few times: a failed read must not silently drop what reviewers wrote. */

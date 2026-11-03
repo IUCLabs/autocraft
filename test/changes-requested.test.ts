@@ -1,0 +1,152 @@
+import assert from "node:assert/strict";
+import { join } from "node:path";
+import { describe, test } from "node:test";
+import type { DatabaseSync } from "node:sqlite";
+import { changesRequestedBy, type ReviewFact } from "../src/merge/changes-requested.ts";
+import { runBatches } from "../src/merge/batch.ts";
+import { activeBatches, membersOf, setBatchSize } from "../src/merge/batch-store.ts";
+import { askMergeDecisions } from "../src/merge/index.ts";
+import { buildQueue, eligible, mergeDecisionId } from "../src/merge/queue.ts";
+import { safeMerge } from "../src/merge/safe-merge.ts";
+import { dir, fresh, world, deps, finishTask, T0 } from "./batch-fixture.ts";
+
+const quiet = () => {};
+const states = (db: DatabaseSync) => Object.fromEntries(buildQueue(db, { repo: "app" }).map((e) => [e.number, e.state]));
+let seq = 0;
+/** Mirrors a review the way the sync stores it. */
+function review(db: DatabaseSync, n: number, author: string, state: string, association: string, at: string): void {
+  db.prepare("INSERT INTO comments (repo, number, id, kind, author, created_at, body, review_state, counted, author_association) VALUES ('app', ?, ?, 'review', ?, ?, '', ?, 0, ?)")
+    .run(n, `rv${++seq}`, author, at, state, association);
+}
+
+describe("changes requested: rule", () => {
+  const r = (author: string, state: string, at: string, association = "MEMBER"): ReviewFact => ({ author, association, state, at });
+  test("latest formal review per maintainer decides", () => {
+    assert.deepEqual(changesRequestedBy([r("ana", "CHANGES_REQUESTED", "1")]), ["ana"]);
+    assert.deepEqual(changesRequestedBy([r("ana", "CHANGES_REQUESTED", "1"), r("ana", "APPROVED", "2")]), []);
+    assert.deepEqual(changesRequestedBy([r("ana", "CHANGES_REQUESTED", "1"), r("ana", "DISMISSED", "2")]), []);
+    assert.deepEqual(changesRequestedBy([r("ana", "CHANGES_REQUESTED", "1"), r("ana", "COMMENTED", "2")]), ["ana"]);
+    assert.deepEqual(changesRequestedBy([r("ana", "APPROVED", "1"), r("ana", "CHANGES_REQUESTED", "2")]), ["ana"]);
+    assert.deepEqual(changesRequestedBy([r("ana", "CHANGES_REQUESTED", "1"), r("bo", "APPROVED", "2")]), ["ana"]);
+    assert.deepEqual(changesRequestedBy([r("stranger", "CHANGES_REQUESTED", "1", "NONE"), r("fan", "CHANGES_REQUESTED", "1", "CONTRIBUTOR")]), []);
+    assert.deepEqual(changesRequestedBy([r("pipeline-bot", "CHANGES_REQUESTED", "1")], "pipeline-bot"), []);
+  });
+});
+
+describe("changes requested: queue", () => {
+  test("a member's block makes the PR ineligible; approval, dismissal, comments and strangers behave as GitHub does", () => {
+    const db = fresh([{ n: 1 }, { n: 2 }, { n: 3 }, { n: 4 }, { n: 5 }]);
+    review(db, 1, "ana", "CHANGES_REQUESTED", "COLLABORATOR", "2026-01-01T01:00:00Z");
+    review(db, 2, "ana", "CHANGES_REQUESTED", "MEMBER", "2026-01-01T01:00:00Z");
+    review(db, 2, "ana", "APPROVED", "MEMBER", "2026-01-01T02:00:00Z");
+    review(db, 3, "ana", "CHANGES_REQUESTED", "OWNER", "2026-01-01T01:00:00Z");
+    review(db, 3, "ana", "DISMISSED", "OWNER", "2026-01-01T02:00:00Z");
+    review(db, 4, "visitor", "CHANGES_REQUESTED", "NONE", "2026-01-01T01:00:00Z");
+    review(db, 5, "ana", "CHANGES_REQUESTED", "MEMBER", "2026-01-01T01:00:00Z");
+    review(db, 5, "ana", "COMMENTED", "MEMBER", "2026-01-01T02:00:00Z");
+    assert.deepEqual(states(db), { 1: "changes-requested", 2: "ready", 3: "ready", 4: "ready", 5: "changes-requested" });
+    assert.deepEqual(buildQueue(db, { repo: "app" }).filter(eligible).map((e) => e.number), [2, 3, 4]);
+  });
+
+  test("GitHub's review decision blocks too, and our own account's review does not", () => {
+    const db = fresh([{ n: 1 }, { n: 2 }]);
+    db.prepare("UPDATE items SET review_decision = 'CHANGES_REQUESTED' WHERE number = 1").run();
+    db.prepare("INSERT INTO main.settings (key, value) VALUES ('pipeline_login', 'pipeline-bot')").run();
+    review(db, 2, "pipeline-bot", "CHANGES_REQUESTED", "MEMBER", "2026-01-01T01:00:00Z");
+    assert.deepEqual(states(db), { 1: "changes-requested", 2: "ready" });
+  });
+
+  test("no Merge? question is asked while blocked, and an open one is withdrawn", () => {
+    const db = fresh([{ n: 1, author: "newcomer" }, { n: 2, author: "newcomer" }]);
+    assert.deepEqual(askMergeDecisions(db, { at: T0 }).sort(), [mergeDecisionId("app", 1, "sha1"), mergeDecisionId("app", 2, "sha2")]);
+    review(db, 1, "ana", "CHANGES_REQUESTED", "MEMBER", "2026-01-01T01:00:00Z");
+    assert.deepEqual(askMergeDecisions(db, { at: "2026-01-03T00:00:00Z" }), []);
+    const d = db.prepare("SELECT id, answer, answered_by FROM decisions WHERE id LIKE 'app#1:merge@sha1%'").all() as { id: string; answer: string | null; answered_by: string }[];
+    assert.equal(d.length, 1);
+    assert.match(d[0]!.id, /~replaced-/);
+    assert.deepEqual([d[0]!.answer, d[0]!.answered_by], ["withdrawn", "pipeline"]);
+    assert.equal(states(db)[1], "changes-requested");
+    assert.equal(states(db)[2], "needs-decision");
+    // The block clears: the question is asked again.
+    review(db, 1, "ana", "APPROVED", "MEMBER", "2026-01-04T00:00:00Z");
+    assert.deepEqual(askMergeDecisions(db, { at: "2026-01-05T00:00:00Z" }), [mergeDecisionId("app", 1, "sha1")]);
+  });
+});
+
+describe("changes requested: safe-merge", () => {
+  const pr = { state: "OPEN", isDraft: false, mergeable: "MERGEABLE", headRefOid: "abc", statusCheckRollup: [{ name: "ci", status: "COMPLETED", conclusion: "SUCCESS" }] };
+  function gh(people: object, calls: string[] = []) {
+    return async (args: string[]): Promise<string> => {
+      const json = args[args.indexOf("--json") + 1] ?? "";
+      calls.push(args.slice(0, 2).join(" ") + " " + json);
+      if (args[0] === "api") return JSON.stringify({ workflow_runs: [] });
+      if (json.startsWith("state,isDraft")) return JSON.stringify(pr);
+      if (json.startsWith("author")) return JSON.stringify({ author: { login: "dev" }, commits: [{ authors: [{ login: "dev" }] }], ...people });
+      if (json === "state,mergeCommit") return JSON.stringify({ state: "MERGED", mergeCommit: { oid: "def" } });
+      return "";
+    };
+  }
+  const nap = async () => {};
+  const rev = (login: string, state: string, authorAssociation: string, submittedAt: string) => ({ author: { login }, authorAssociation, state, submittedAt });
+
+  test("refuses while a maintainer's changes-requested review stands", async () => {
+    const calls: string[] = [];
+    const r = await safeMerge("o/app", "5", "--merge", [], gh({ reviews: [rev("ana", "CHANGES_REQUESTED", "MEMBER", "2026-01-01T00:00:00Z"), rev("ana", "COMMENTED", "MEMBER", "2026-01-02T00:00:00Z")] }, calls), nap);
+    assert.deepEqual(r, { merged: false, reason: "REFUSED o/app#5: changes requested by a maintainer (ana)" });
+    assert.ok(!calls.some((c) => c.startsWith("pr merge")));
+  });
+
+  test("refuses on GitHub's review decision alone", async () => {
+    const r = await safeMerge("o/app", "5", "--merge", [], gh({ reviews: [], reviewDecision: "CHANGES_REQUESTED" }), nap);
+    assert.equal(r.merged, false);
+  });
+
+  test("merges after approval, after dismissal, and past a stranger's request", async () => {
+    for (const reviews of [
+      [rev("ana", "CHANGES_REQUESTED", "MEMBER", "2026-01-01T00:00:00Z"), rev("ana", "APPROVED", "MEMBER", "2026-01-02T00:00:00Z")],
+      [rev("ana", "DISMISSED", "MEMBER", "2026-01-02T00:00:00Z")],
+      [rev("visitor", "CHANGES_REQUESTED", "NONE", "2026-01-01T00:00:00Z")],
+    ]) {
+      const r = await safeMerge("o/app", "5", "--merge", [], gh({ reviews, reviewDecision: null }), nap);
+      assert.equal(r.merged, true);
+    }
+  });
+});
+
+describe("changes requested: batches", () => {
+  test("a blocked PR is left out of a batch", async () => {
+    const db = fresh([{ n: 1 }, { n: 2 }, { n: 3 }]);
+    setBatchSize(db, "app", 5);
+    review(db, 2, "ana", "CHANGES_REQUESTED", "MEMBER", "2026-01-01T01:00:00Z");
+    await runBatches(db, { repo: "app" }, quiet, deps(world(), join(dir, "cr1")));
+    const b = activeBatches(db, "app")[0]!;
+    assert.deepEqual(membersOf(db, b.id).map((m) => m.number), [1, 3]);
+    assert.deepEqual(states(db), { 1: "batch-checking", 2: "changes-requested", 3: "batch-checking" });
+  });
+
+  test("a member that gets a changes-requested review before the batch PR merges is dropped, and nothing merges", async () => {
+    const db = fresh([{ n: 1 }, { n: 2 }]);
+    setBatchSize(db, "app", 5);
+    const w = world();
+    const d = deps(w, join(dir, "cr2"));
+    const query = d.querier.query.bind(d.querier);
+    let blocked = false;
+    d.querier.query = async (q: string, v: object) => {
+      if (q.includes("reviewThreads") && blocked && (v as { number: number }).number === 2) {
+        return { repository: { pullRequest: { author: null, comments: { nodes: [] }, reviews: { nodes: [] }, reviewThreads: { nodes: [] },
+          formal: { nodes: [{ id: "x", author: { login: "ana" }, authorAssociation: "MEMBER", createdAt: "2026-01-03T00:00:00Z", submittedAt: "2026-01-03T00:00:00Z", state: "CHANGES_REQUESTED" }] } } } };
+      }
+      return query(q, v);
+    };
+    await runBatches(db, { repo: "app" }, quiet, d);
+    const first = activeBatches(db, "app")[0]!;
+    finishTask(db, first.task_id!);
+    await runBatches(db, { repo: "app" }, quiet, d);
+    w.tip.set("tip", activeBatches(db, "app")[0]!.commit_sha);
+    blocked = true;
+    const s = await runBatches(db, { repo: "app" }, quiet, d);
+    assert.deepEqual(s.merged, []);
+    assert.ok(s.superseded.length >= 1);
+    assert.ok(!w.log.some((l) => l.startsWith("safe-merge-test")));
+  });
+});
