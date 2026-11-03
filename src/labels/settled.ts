@@ -1,7 +1,7 @@
 // The settled type label and flags of one item, as the Label stage and the Items
 // browser need them. The rule itself lives in ../classify/settled.ts.
 import type { DatabaseSync } from "node:sqlite";
-import { settle } from "../classify/settled.ts";
+import { needsDecisionOf, settle } from "../classify/settled.ts";
 
 export type Settled = { type: string; security: boolean; needsDecision: boolean };
 export type ClsRow = { classifier: string; run_id: string; at: string; type_label: string | null; flags: string | null; probs: string | null };
@@ -29,7 +29,7 @@ export function settleRows(rows: ClsRow[]): Settled | null {
   const haiku = rows.find((r) => r.classifier === "haiku");
   if (!jev?.type_label) return null;
   const s = settle(
-    { label: jev.type_label, flags: flagList(jev.flags), top: topOf(jev.probs) },
+    { label: jev.type_label, flags: flagList(jev.flags), top: topOf(jev.probs), nd: needsDecisionOf(jev.probs) },
     haiku?.type_label ? { label: haiku.type_label, flags: flagList(haiku.flags) } : null,
   );
   if (s.status !== "settled" || s.label === null) return null;

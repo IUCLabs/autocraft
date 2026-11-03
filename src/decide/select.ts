@@ -10,13 +10,10 @@
 import { notHeldSql } from "../dupes/held.ts";
 import type { DatabaseSync } from "node:sqlite";
 import { trackedNames } from "../repos.ts";
-import { settle, type Settled } from "../classify/settled.ts";
+import { needsDecisionOf, settle, type Settled } from "../classify/settled.ts";
 
 export const SCOPE_LABELS = ["missing feature", "small extra", "plugin candidate"] as const;
 export const isScope = (l: string | null): boolean => l !== null && (SCOPE_LABELS as readonly string[]).includes(l);
-
-/** Jev's needs_decision probability a bugfix needs before it becomes a decision. */
-export const BUGFIX_NEEDS_DECISION = 0.7;
 
 export type Reason = "needs-decision" | "scope-disagreement";
 
@@ -73,15 +70,10 @@ export function selectCandidates(db: DatabaseSync, run: string, repos?: string[]
     if (skip.has(`${r.repo}#${r.number}`)) continue;
     const top = json<{ top?: unknown } | null>(r.probs, null)?.top;
     const s = settle(
-      { label: r.jl, flags: json<string[]>(r.jf, []), top: typeof top === "number" ? top : null },
+      { label: r.jl, flags: json<string[]>(r.jf, []), top: typeof top === "number" ? top : null, nd: needsDecisionOf(r.probs) },
       r.hl === null ? null : { label: r.hl, flags: json<string[]>(r.hf, []) },
     );
-    let reason = reasonOf(s);
-    // Jev raises needs_decision too freely on plain bugs: a bugfix needs a firm flag.
-    if (reason === "needs-decision" && s.label === "bugfix") {
-      const nd = json<{ needs_decision?: unknown } | null>(r.probs, null)?.needs_decision;
-      if (typeof nd !== "number" || nd < BUGFIX_NEEDS_DECISION) reason = null;
-    }
+    const reason = reasonOf(s);
     if (reason) out.push({ repo: r.repo, number: r.number, reason, settled: s });
   }
   return out;

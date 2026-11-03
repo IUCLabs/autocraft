@@ -52,7 +52,7 @@ index 0000000..e69de29
 const GOOD = FIX + NEWTEST;
 const TRIAGE_OK = (files = [LIB]) => JSON.stringify([{ ref: "app#5", fixable: true, reason: "panics on an empty slice", crate: "app", files }]);
 
-type Opts = { existingPr?: string; approved?: boolean; label?: string; flags?: string[]; score?: number; level?: string };
+type Opts = { existingPr?: string; approved?: boolean; label?: string; flags?: string[]; needsDecision?: number; score?: number; level?: string };
 
 function fresh(o: Opts = {}): DatabaseSync {
   const db = connect(join(mkdtempSync(join(dir, "db-")), "t.db"));
@@ -65,8 +65,8 @@ function fresh(o: Opts = {}): DatabaseSync {
 
 function issue(db: DatabaseSync, n: number, title: string, body: string, o: Opts = {}): void {
   db.prepare("INSERT INTO items (repo, number, kind, state, title, body, author, created_at, updated_at) VALUES ('app', ?, 'issue', 'OPEN', ?, ?, 'someone', ?, ?)").run(n, title, body, T0, T0);
-  db.prepare(`INSERT INTO classifications (repo, number, classifier, run_id, at, type_label, flags, probs) VALUES ('app', ?, 'jev', 'r1', ?, ?, ?, '{"top":0.97}')`)
-    .run(n, T0, o.label ?? "bugfix", JSON.stringify(o.flags ?? []));
+  db.prepare(`INSERT INTO classifications (repo, number, classifier, run_id, at, type_label, flags, probs) VALUES ('app', ?, 'jev', 'r1', ?, ?, ?, ?)`)
+    .run(n, T0, o.label ?? "bugfix", JSON.stringify(o.flags ?? []), JSON.stringify({ top: 0.97, ...(o.flags?.includes("needs decision") ? { needs_decision: o.needsDecision ?? 0.9 } : {}) }));
   if (o.level !== undefined) db.prepare("INSERT INTO item_priority (repo, number, text_hash, impact, score, model, at) VALUES ('app', ?, 'h', ?, 0, 'jev', ?)").run(n, o.level, T0);
   if (o.score !== undefined) db.prepare("INSERT INTO item_rank (repo, number, score, breakdown, computed_at) VALUES ('app', ?, ?, '{}', ?)").run(n, o.score, T0);
 }
@@ -89,6 +89,10 @@ describe("candidates", () => {
     const db = fresh();
     db.prepare("INSERT INTO settings (key, value) VALUES ('fixissue_not_rust:app', 'x')").run();
     assert.equal(selectIssues(db, "app").length, 0);
+  });
+
+  test("a weak needs-decision flag on a bugfix, which Decide does not ask about, does not hold the issue", () => {
+    assert.deepEqual(selectIssues(fresh({ flags: ["needs decision"], needsDecision: 0.4 }), "app").map((c) => c.number), [5]);
   });
 
   test("a scope decision answered take by an operator lets a needs-decision issue through; other answers do not", () => {

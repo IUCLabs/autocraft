@@ -36,7 +36,21 @@ export type Settled = {
   referee: Referee | null;
 };
 
-export function settle(jev: (Verdict & { top: number | null }) | null, haiku: Verdict | null, referee: Referee | null = null): Settled {
+/** Jev's needs_decision probability a settled bugfix needs before its "needs decision" flag counts. */
+export const BUGFIX_NEEDS_DECISION = 0.7;
+
+/** Jev raises needs_decision too freely on plain bugs: on a settled bugfix the flag counts only when Jev is firm. */
+function firmFlags(s: Settled, nd: number | null | undefined): Settled {
+  if (s.label !== "bugfix" || !s.flags.includes("needs decision") || (nd ?? 0) >= BUGFIX_NEEDS_DECISION) return s;
+  return { ...s, flags: s.flags.filter((f) => f !== "needs decision") };
+}
+
+/** `jev.nd` is Jev's needs_decision probability (needsDecisionOf). */
+export function settle(jev: (Verdict & { top: number | null; nd?: number | null }) | null, haiku: Verdict | null, referee: Referee | null = null): Settled {
+  return firmFlags(settleLabel(jev, haiku, referee), jev?.nd);
+}
+
+function settleLabel(jev: (Verdict & { top: number | null }) | null, haiku: Verdict | null, referee: Referee | null): Settled {
   if (!jev) return { status: "unclassified", label: null, source: null, confidence: null, jevLabel: null, haikuLabel: haiku?.label ?? null, flags: [], referee: null };
   const base = { confidence: jev.top, jevLabel: jev.label, haikuLabel: haiku?.label ?? null, referee: null };
   if ((jev.top ?? 0) >= SURE) return { ...base, status: "settled", label: jev.label, source: "jev", flags: [...jev.flags] };
@@ -82,7 +96,7 @@ export function settledLookup(db: DatabaseSync, run: string | null): (repo: stri
     const h = q.get(repo, number, "haiku", run) as { type_label: string; flags: string | null; at: string } | undefined;
     const r = j && h ? (q.get(repo, number, "sonnet", run) as { type_label: string; probs: string | null; reason: string | null; at: string } | undefined) : undefined;
     return settle(
-      j ? { label: j.type_label, flags: parseFlags(j.flags), top: topOf(j.probs) } : null,
+      j ? { label: j.type_label, flags: parseFlags(j.flags), top: topOf(j.probs), nd: needsDecisionOf(j.probs) } : null,
       h ? { label: h.type_label, flags: parseFlags(h.flags) } : null,
       r && j && h && r.at >= j.at && r.at >= h.at ? refereeOf(r.type_label, r.probs, r.reason) : null,
     );
@@ -99,6 +113,13 @@ function refereeOf(label: string, probs: string | null, reason: string | null): 
   try {
     const sure = (JSON.parse(probs ?? "null") as { sure?: unknown } | null)?.sure;
     return typeof sure === "boolean" ? { label, sure, reason: reason ?? "" } : null;
+  } catch { return null; }
+}
+
+export function needsDecisionOf(probs: string | null): number | null {
+  try {
+    const t = (JSON.parse(probs ?? "null") as { needs_decision?: unknown } | null)?.needs_decision;
+    return typeof t === "number" ? t : null;
   } catch { return null; }
 }
 
@@ -138,7 +159,7 @@ export function settledTable(db: DatabaseSync, run: string | null): void {
   const ins = db.prepare("INSERT OR REPLACE INTO temp.item_settled VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
   const put = (r: VerdictRow) => {
     const ref = r.sl !== null && r.ss !== null ? { label: r.sl, sure: !!r.ss, reason: r.sr ?? "" } : null;
-    const s = settle({ label: r.jl, flags: parseFlags(r.jf), top: topOf(r.probs) }, r.hl === null ? null : { label: r.hl, flags: parseFlags(r.hf) }, ref);
+    const s = settle({ label: r.jl, flags: parseFlags(r.jf), top: topOf(r.probs), nd: needsDecisionOf(r.probs) }, r.hl === null ? null : { label: r.hl, flags: parseFlags(r.hf) }, ref);
     ins.run(r.repo, r.number, s.status, s.label, s.source, s.confidence, s.jevLabel, s.haikuLabel, JSON.stringify(s.flags),
       s.flags.includes("security") ? 1 : 0, s.flags.includes("needs decision") ? 1 : 0, s.referee?.label ?? null, s.referee ? Number(s.referee.sure) : null, s.referee?.reason ?? null);
   };
