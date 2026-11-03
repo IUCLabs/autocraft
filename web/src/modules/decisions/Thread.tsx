@@ -80,21 +80,27 @@ export function FeedbackList({ d, me, onUse, onRetract, compact }: { d: Decision
       {entries.map((e) => (
         <li key={e.id} className="animate-fadeIn">
           <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
-            <Avatar login={e.login} size={20} />
-            <span className="text-sm font-semibold">{e.login === me ? "You" : e.login}</span>
-            {e.pick && (
-              <>
-                <span className="text-sm text-ink/55">suggests</span>
-                <span className="text-sm font-medium">{label(e.pick)}</span>
+            <span className="flex min-w-0 items-center gap-1.5">
+              <Avatar login={e.login} size={20} />
+              <span className="text-sm font-semibold">{e.login === me ? "You" : e.login}</span>
+              {e.pick && (
+                <>
+                  <span className="text-sm text-ink/55">suggests</span>
+                  <span className="text-sm font-medium">{label(e.pick)}</span>
+                </>
+              )}
+            </span>
+            <span className="ml-auto flex shrink-0 items-center gap-1.5">
+              {e.pick && (
                 <span
                   className={cn("whitespace-nowrap rounded-full border px-1.5 text-2xs leading-4", e.write ? "border-ok/40 text-ok" : "border-line-strong text-ink/50")}
                   title={e.write ? `Has write access to ${d.repo}` : `No write access to ${d.repo}`}
                 >
                   {e.write ? "write" : "no write"}
                 </span>
-              </>
-            )}
-            <span className="ml-auto text-xs text-ink/45">{ago(e.at)}</span>
+              )}
+              <span className="text-xs text-ink/45">{ago(e.at)}</span>
+            </span>
           </div>
           {e.text && <p className="mt-1 whitespace-pre-wrap break-words pl-7 text-sm leading-5 text-ink/80">{e.text}</p>}
           {e.pick && (e.own ? onRetract : onUse) && (
@@ -107,7 +113,7 @@ export function FeedbackList({ d, me, onUse, onRetract, compact }: { d: Decision
               {onUse && e.write && (
                 <button
                   onClick={() => onUse(e.pick!)}
-                  className="rounded border border-line-strong px-2 py-0.5 text-left text-xs font-medium hover:border-accent/60 hover:text-accent-ink max-md:min-h-11"
+                  className="rounded border border-line-strong px-2 py-0.5 text-left text-xs font-medium hover:border-accent/60 hover:text-accent-ink"
                   title={`Select "${label(e.pick)}" in the Workflow box`}
                 >
                   Use this answer
