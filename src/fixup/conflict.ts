@@ -94,7 +94,7 @@ export async function mergeConflict(db: DatabaseSync, x: ConflictRun, c: Conflic
   };
   /** A skip that holds at every run for this head: recorded once so the PR is not selected again. */
   const skip = (why: string) => { x.log(`  ${ref}: skipped: ${why}`); record(db, x.at(), c, "skipped", why, [], baseSha); };
-  const held = (state: "push-denied", reason: string) => {
+  const held = (state: "push-denied" | "skipped", reason: string) => {
     gaveUp = true;
     record(db, x.at(), c, state, reason, files, baseSha);
     x.summary.held.push({ ref, reason });
@@ -112,32 +112,35 @@ export async function mergeConflict(db: DatabaseSync, x: ConflictRun, c: Conflic
     if (head !== c.head) { x.log(`  ${ref}: skipped: fetched head ${short(head)} is not the reviewed ${short(c.head)}`); return; }
     baseSha = await git.fetchBase(BASE_ORG, x.repo, c.base);
     if ((await git.git(["merge-base", "--is-ancestor", baseSha, head])).code === 0) { skip(`${c.base} is already in the branch`); return; }
-    await x.claim(c, pr);
     const who = await x.who();
     const merge = await git.mergeInto(head, baseSha);
     let tree = merge.tree;
     let resolved: { path: string; conflicted: string; resolved: string }[] = [];
     let diff = "";
     let checkout: string | undefined;
-    if (!merge.clean) {
+    // Refused for the same reason at every run for this head: recorded as a skip so the head is not tried again, and never claimed.
+    const refuse = (reason: string) => { held("skipped", reason); };
+    if (merge.clean) await x.claim(c, pr);
+    else {
       files = merge.conflicted;
-      if (!files.length) { fail("refused", "the merge is not clean but names no conflicted file"); return; }
+      if (!files.length) { refuse("the merge is not clean but names no conflicted file"); return; }
       const shown: ConflictPr["files"] = [];
       const modes = new Map<string, string>();
       let total = 0;
       for (const path of files) {
-        if (!resolvablePath(path)) { fail("refused", `${path} is not a file a conflict resolution may touch`); return; }
+        if (!resolvablePath(path)) { refuse(`${path} is not a file a conflict resolution may touch`); return; }
         const f = await git.file(merge.tree, path);
         if (!f.ok) { fail("refused", f.reason); return; }
-        if (!hasMarkers(f.content)) { fail("refused", `${path} conflicts without content markers`); return; }
-        if (f.content.includes("\r") || f.content.includes("\uFFFD")) { fail("refused", `${path} has CRLF line endings or is not UTF-8`); return; }
+        if (!hasMarkers(f.content)) { refuse(`${path} conflicts without content markers`); return; }
+        if (f.content.includes("\r") || f.content.includes("\uFFFD")) { refuse(`${path} has CRLF line endings or is not UTF-8`); return; }
         total += f.content.length;
-        if (f.content.length > FILE_CAP || total > TOTAL_CAP) { fail("refused", "the conflicted files are over the size limit"); return; }
+        if (f.content.length > FILE_CAP || total > TOTAL_CAP) { refuse("the conflicted files are over the size limit"); return; }
         modes.set(path, f.mode);
         shown.push({ path, content: f.content });
       }
       const prDiff = await cachedDiff(x.repo, c.number, head, x.d.fetchDiff);
       if (!prDiff.ok) { fail("failed", `no diff: ${oneLine(prDiff.error)}`); return; }
+      await x.claim(c, pr);
       if (!x.d.resolve) { fail("failed", "no resolver"); return; }
       checkout = (await x.d.checkout?.(x.repo, c.number, head)) ?? undefined;
       const body = ((db.prepare("SELECT body FROM items WHERE repo = ? AND number = ?").get(x.repo, c.number) as { body: string | null } | undefined)?.body ?? "").slice(0, 4000);
@@ -159,7 +162,7 @@ export async function mergeConflict(db: DatabaseSync, x: ConflictRun, c: Conflic
       resolved = resFiles.map((f) => ({ path: f.path, conflicted: shown.find((s) => s.path === f.path)!.content, resolved: f.content }));
       const tentative = await git.commitMerge(tree, [head, baseSha], mergeMessage(c.base, pr.headRefName), { name: who.login, email: who.email });
       diff = await git.diffText(head, tentative);
-      if (diff.length > CHECK_PATCH_CAP) { fail("refused", `the merge is over the ${CHECK_PATCH_CAP} character limit for the check`); return; }
+      if (diff.length > CHECK_PATCH_CAP) { refuse(`the merge is over the ${CHECK_PATCH_CAP} character limit for the check`); return; }
       const repoDir = checkout ? { repo_dir: REPO_PATH } : {};
       const checkReply = await x.d.check(db, [{ ref, title: c.title, review_reason: c.reason, fixes: [], diff: prDiff.text.slice(0, CHECK_DIFF_CAP), patch: diff, conflict: { base: c.base, files: resolved.map((r) => ({ path: r.path, conflicted: r.conflicted.slice(0, 20_000), resolved: r.resolved.slice(0, 20_000) })) }, ...repoDir }], checkout);
       if (checkReply === null) { fail("failed", "the patch check gave no answer"); return; }

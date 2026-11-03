@@ -35,21 +35,22 @@ function git(cwd: string, ...args: string[]): string {
 type World = { fork: string; head: string; base: string; log: string[]; deps: FixupDeps; checkInput: unknown[] };
 
 /** `conflicting`: the PR and main edit the same line of f.txt; otherwise they edit different files. */
-function world(o: { conflicting: boolean; canModify?: boolean; resolve?: (files: { path: string; content: string }[]) => string | null; check?: string }): World {
+function world(o: { conflicting: boolean; big?: boolean; canModify?: boolean; resolve?: (files: { path: string; content: string }[]) => string | null; check?: string }): World {
   const root = mkdtempSync(join(dir, "w-"));
   const work = join(root, "work");
   mkdirSync(work);
   git(work, "init", "-q", "-b", "main");
-  writeFileSync(join(work, "f.txt"), "a\nb\nc\n");
+  const b = o.big ? "b".repeat(50_000) : "b";
+  writeFileSync(join(work, "f.txt"), `a\n${b}\nc\n`);
   writeFileSync(join(work, "g.txt"), "x\n");
   git(work, "add", "-A");
   git(work, "commit", "-q", "-m", "base");
   git(work, "checkout", "-q", "-b", "feat");
-  if (o.conflicting) writeFileSync(join(work, "f.txt"), "a\nB-pr\nc\n"); else writeFileSync(join(work, "g.txt"), "x\ny\n");
+  if (o.conflicting) writeFileSync(join(work, "f.txt"), `a\nB-pr${b}\nc\n`); else writeFileSync(join(work, "g.txt"), "x\ny\n");
   git(work, "commit", "-qam", "pr");
   const head = git(work, "rev-parse", "HEAD");
   git(work, "checkout", "-q", "main");
-  writeFileSync(join(work, "f.txt"), o.conflicting ? "a\nB-main\nc\n" : "a\nb\nc\nd\n");
+  writeFileSync(join(work, "f.txt"), o.conflicting ? `a\nB-main${b}\nc\n` : "a\nb\nc\nd\n");
   git(work, "commit", "-qam", "main moves");
   const base = git(work, "rev-parse", "HEAD");
   const fork = join(root, "fork.git");
@@ -139,6 +140,19 @@ describe("conflict merge", () => {
     assert.ok(!/<<<<<<<|>>>>>>>/.test(f));
     assert.deepEqual(w.log.filter((l) => ["resolve", "check"].includes(l)), ["resolve", "check"]);
     assert.deepEqual((w.checkInput[0] as { files: { path: string }[] }).files.map((x) => x.path), ["f.txt"]);
+  });
+
+  test("an oversized conflict is refused once for its head: never claimed, not selected again", async () => {
+    const w = world({ conflicting: true, big: true, resolve: () => null });
+    const db = fresh(w.head);
+    const s = await runFixup(db, { repo: "app", dryRun: false }, () => {}, w.deps);
+    assert.equal(s.pushed.length, 0);
+    assert.equal(s.held.length + s.failed.length, 1);
+    assert.deepEqual(w.log, []);
+    assert.deepEqual(classifyConflicts(db, "app").map((x) => x.bucket), ["held"]);
+    const again = await runFixup(db, { repo: "app", dryRun: false }, () => {}, w.deps);
+    assert.equal(again.held.length + again.failed.length, 0);
+    assert.deepEqual(w.log, []);
   });
 
   test("an Opus reject pushes nothing and counts as a try", async () => {
