@@ -1,6 +1,6 @@
 import type { Api } from "../client";
 import type { Decision, DecisionComment, DecisionFilter, User } from "../types";
-import { decisionAccess } from "../../registry/permissions";
+import { canAct } from "../../registry/permissions";
 import { setClock } from "../../lib/format";
 import { createAdminMock } from "./adminMock";
 import { createAgentsMock } from "./agentsMock";
@@ -61,8 +61,7 @@ export function createMockApi(): Api {
   const reposOf = (d: Decision) => (d.items.length ? d.items.map((i) => i.repo) : [d.repo]);
   // The server checks the same rules; the client only hides what would be refused.
   const requireOperator = (d: Decision) => {
-    const a = decisionAccess(me, reposOf(d));
-    if (a.mode !== "answer") throw new Error(a.reason);
+    if (!canAct(me, reposOf(d))) throw new Error("not allowed");
   };
 
   const matches = (d: Decision, f: DecisionFilter) => {

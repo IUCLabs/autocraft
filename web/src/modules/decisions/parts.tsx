@@ -7,8 +7,6 @@ import {
   CircleSlashIcon,
   CopyIcon,
   GitMergeIcon,
-  CheckIcon,
-  UsersIcon,
   StarIcon,
   SplitIcon,
   TargetIcon,
@@ -96,18 +94,13 @@ export function Facts({ facts }: { facts: string[]; compact?: boolean }) {
 }
 
 /**
- * The options. For an operator a pick answers; for everyone else it sets their
- * comment (`mine`), which they can change. Each option shows its tally. An option
- * that writes to GitHub needs a second pick: the parent holds `armed` and the
+ * The action buttons, shown only to people who may act. An option that writes to GitHub needs a second pick: the parent holds `armed` and the
  * button then names the effect.
  */
 export function OptionButtons({
   options,
   recommended,
   onPick,
-  mode,
-  mine,
-  tally,
   layout = "list",
   armed,
   confirmSuffix = "",
@@ -115,9 +108,6 @@ export function OptionButtons({
   options: DecisionOption[];
   recommended: string;
   onPick: (key: string) => void;
-  mode: "answer" | "opinion";
-  mine?: string | null;
-  tally?: Record<string, number>;
   /** "row" for the desktop decision bar, "list" for stacked full-width buttons. */
   layout?: "row" | "list";
   /** The option waiting for its confirming pick. */
@@ -125,57 +115,40 @@ export function OptionButtons({
   /** Added to the confirm label, e.g. " (3 decisions)". */
   confirmSuffix?: string;
 }) {
-  const answering = mode === "answer";
   return (
     <div>
-      <p className={cn("mb-1.5 flex items-baseline gap-1.5 text-xs font-semibold", answering ? "text-ink" : "text-ink/60")}>
-        {answering ? "Answer" : "Your pick"}
-      </p>
-      <div className={cn("grid gap-1.5", layout === "row" && options.length > 1 && "grid-cols-2")} role="group" aria-label={answering ? "Answer" : "Your pick, a comment"}>
+      <p className="mb-1.5 text-xs font-semibold text-ink">Answer</p>
+      <div className={cn("grid gap-1.5", layout === "row" && options.length > 1 && "grid-cols-2")} role="group" aria-label="Answer">
         {options.map((o, i) => {
           const rec = o.key === recommended;
-          const picked = mine === o.key;
-          const filled = answering ? rec : picked;
-          const isArmed = answering && armed === o.key && !!o.writes;
-          const n = tally?.[o.key] ?? 0;
+          const filled = rec;
+          const isArmed = armed === o.key && !!o.writes;
           return (
             <button
               key={o.key}
               onClick={() => onPick(o.key)}
               aria-keyshortcuts={String(i + 1)}
-              aria-pressed={!answering ? picked : undefined}
-              title={`${o.hint ? o.hint + " " : ""}${o.writes && answering ? `This ${o.writes}. ` : ""}(${i + 1})`}
+              title={`${o.hint ? o.hint + " " : ""}${o.writes ? `This ${o.writes}. ` : ""}(${i + 1})`}
               className={cn(
                 "group flex items-center gap-2 rounded-md border text-left transition-colors duration-fast",
                 layout === "row" ? "h-8 px-2.5" : "min-h-[44px] px-3 py-1.5",
-                isArmed
-                  ? "border-bad bg-bad text-white hover:bg-bad/90"
-                  : answering
-                    ? filled ? "border-accent bg-accent text-white hover:bg-accent/90" : rec ? "border-accent/60 bg-raised hover:bg-accent/[0.06]" : "border-line-strong bg-raised hover:border-ink/30 hover:bg-ink/[0.04]"
-                    : picked ? "border-ink/40 bg-ink/10 hover:bg-ink/15" : "border-dashed border-line-strong bg-transparent text-ink/80 hover:border-ink/30 hover:bg-ink/[0.04]",
+                isArmed ? "border-bad bg-bad text-white hover:bg-bad/90" : filled ? "border-accent bg-accent text-white hover:bg-accent/90" : rec ? "border-accent/60 bg-raised hover:bg-accent/[0.06]" : "border-line-strong bg-raised hover:border-ink/30 hover:bg-ink/[0.04]"
               )}
             >
-              {picked && <CheckIcon className="text-[13px]" />}
               <span className="min-w-0 flex-1 truncate text-sm font-medium">{isArmed ? `Confirm: ${o.writes}${confirmSuffix}` : o.label}</span>
-              {!isArmed && answering && o.writes && (
+              {!isArmed && o.writes && (
                 <span className="shrink-0 rounded-full border border-current px-1.5 text-2xs leading-4 opacity-70" title={`This ${o.writes}`}>
                   writes
                 </span>
               )}
-              {!isArmed && layout === "list" && o.hint && <span className={cn("hidden truncate text-xs sm:inline", filled && answering ? "text-white/75" : "text-ink/50")}>{o.hint}</span>}
+              {!isArmed && layout === "list" && o.hint && <span className={cn("hidden truncate text-xs sm:inline", filled ? "text-white/75" : "text-ink/50")}>{o.hint}</span>}
               {!isArmed && rec &&
                 (layout === "row" ? (
-                  <StarIcon className={cn("text-[12px]", filled && answering ? "text-white/85" : "text-accent-ink")} aria-label="Recommended" />
+                  <StarIcon className={cn("text-[12px]", filled ? "text-white/85" : "text-accent-ink")} aria-label="Recommended" />
                 ) : (
-                  <span className={cn("shrink-0 rounded-full px-1.5 text-2xs font-medium leading-[18px]", filled && answering ? "bg-white/20" : "bg-accent/15 text-accent-ink")}>Recommended</span>
+                  <span className={cn("shrink-0 rounded-full px-1.5 text-2xs font-medium leading-[18px]", filled ? "bg-white/20" : "bg-accent/15 text-accent-ink")}>Recommended</span>
                 ))}
-              {n > 0 && (
-                <span className={cn("num shrink-0 text-xs", isArmed || (filled && answering) ? "text-white/80" : "text-ink/50")} title={`picked by ${n}`}>
-                  <UsersIcon className="mr-0.5 text-[11px]" />
-                  {n}
-                </span>
-              )}
-              <kbd className={cn("hidden shrink-0 rounded-sm border px-1 text-[11px] leading-4", layout === "list" && "md:inline", isArmed || (filled && answering) ? "border-white/35 text-white/80" : "border-line-strong text-ink/45")}>{i + 1}</kbd>
+              <kbd className={cn("hidden shrink-0 rounded-sm border px-1 text-[11px] leading-4", layout === "list" && "md:inline", isArmed || filled ? "border-white/35 text-white/80" : "border-line-strong text-ink/45")}>{i + 1}</kbd>
             </button>
           );
         })}
@@ -189,7 +162,7 @@ export function OptionButtons({
  * pick as the answer after a confirm; picks from logins without write access on the repo
  * cannot be used.
  */
-export function OpinionList({ d, onAdopt, me }: { d: Decision; onAdopt?: (opinionId: string) => void; me: string }) {
+export function OpinionList({ d, onAdopt, onRetract, me }: { d: Decision; onAdopt?: (opinionId: string) => void; onRetract?: () => void; me: string }) {
   const [armed, setArmed] = useState<string | null>(null);
   useEffect(() => {
     if (!armed) return;
@@ -215,7 +188,7 @@ export function OpinionList({ d, onAdopt, me }: { d: Decision; onAdopt?: (opinio
               </span>
               {o.option ? (
                 <>
-                  <span className="text-ink/55">picks</span>
+                  <span className="text-ink/55">suggests</span>
                   <span className="font-medium">{label(o.option)}</span>
                 </>
               ) : (
@@ -224,6 +197,11 @@ export function OpinionList({ d, onAdopt, me }: { d: Decision; onAdopt?: (opinio
               <span className="text-xs text-ink/45">· {ago(o.at)} ago</span>
             </div>
             {o.note && <p className="mt-0.5 text-ink/70">{o.note}</p>}
+            {onRetract && o.login === me && (
+              <button onClick={onRetract} className="mt-1 text-xs text-accent-ink hover:underline max-md:min-h-11">
+                Retract
+              </button>
+            )}
             {onAdopt && o.option && o.permission === "write" && (
               <button
                 onClick={() => {
