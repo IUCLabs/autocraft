@@ -1,5 +1,7 @@
 // The Conversation step: answers each operator message that waits for Opus with one sandboxed `claude -p` call
 // (the item's repository and the workspace, read-only) and stores the reply with its action cards.
+import { referenceDir } from "../reference.ts";
+import { REPO_PATH } from "../sandbox/command.ts";
 import type { DatabaseSync } from "node:sqlite";
 import { claudeRoom } from "../agents/call.ts";
 import { askClaude, pool, saveUsage, type Usage } from "../classify/run.ts";
@@ -60,7 +62,7 @@ export async function answerPending(db: DatabaseSync, p: ConversationParams): Pr
       shown.push(recent);
     };
     for (let attempt = 0; attempt < CONVERSATION_PROMPT.limits.attempts && !parsed; attempt++) {
-      const reply = await askClaude("conversation.turn", model, [{ ref: `${repo}#${n}`, item: parts.item, turns: parts.turns }], db, { checkout: checkout ?? undefined, onProgress });
+      const reply = await askClaude("conversation.turn", model, [{ ref: `${repo}#${n}`, item: parts.item, turns: parts.turns, ...(checkout && { repo_dir: REPO_PATH }) }], db, { checkout: checkout ?? undefined, reference: checkout ? referenceDir(repo) : undefined, onProgress });
       shown.flush();
       if (!reply) continue;
       usage = sum(usage, reply.usage);

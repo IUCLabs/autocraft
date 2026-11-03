@@ -6,6 +6,8 @@
 
 /** Where the checkout appears inside the sandbox: outside the working directory, so claude never loads its instruction files as project memory. */
 export const REPO_PATH = "/repo";
+/** Where a repo's private reference documentation is mounted read-only. */
+export const REFERENCE_PATH = "/reference";
 /** Where each tracked repository's default-branch checkout appears: `/repos/<name>`. */
 export const REPOS_ROOT = "/repos";
 export const reposPath = (name: string): string => `${REPOS_ROOT}/${name}`;

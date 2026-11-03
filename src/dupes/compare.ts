@@ -6,6 +6,7 @@
 // state, diffs); never writes to it.
 //
 //   autocraft dupe-compare [--limit N] [--dry-run]
+import { referenceDir } from "../reference.ts";
 import type { DatabaseSync } from "node:sqlite";
 import { claudeRoom } from "../agents/call.ts";
 import { add, askClaude, pool, saveUsage, type Usage } from "../classify/run.ts";
@@ -60,7 +61,7 @@ export function defaultCompareDeps(db: DatabaseSync): CompareDeps {
     querier: new Client(500), fetchDiff: ghDiff,
     baseCheckout: (repo) => baseCheckout(db, repo),
     ask: ((id: "dupes.compare-prs.opus" | "dupes.compare-issues.sonnet", model: string, input: ComparePrs | CompareIssues, checkout?: string) =>
-      askClaude(id, model, [input] as never, db, { checkout })) as CompareDeps["ask"],
+      askClaude(id, model, [input] as never, db, { checkout, reference: checkout ? referenceDir(input.ref.split("#")[0]!) : undefined })) as CompareDeps["ask"],
     now: () => new Date(),
   };
 }

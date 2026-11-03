@@ -29,6 +29,8 @@ export type ComparePrs = {
   ref: string;
   /** Where the call may read the base checkout inside the sandbox; not part of the quoted JSON. */
   repo_dir?: string;
+  /** Set when the repo's reference folder is mounted at /reference; not part of the quoted JSON. */
+  reference?: boolean;
   prs: ComparePr[];
 };
 export type CompareIssue = { ref: string; title: string; body: string; state: string; author_association: string | null; comments: number };

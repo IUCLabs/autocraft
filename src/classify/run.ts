@@ -17,6 +17,7 @@ import { itemTools } from "../itemtools/index.ts";
 import { agentsFile, mcpFile } from "../sandbox/agent-files.ts";
 import { MCP_PATH } from "../sandbox/agents.ts";
 import { resolveClaudeBin, sandboxCommand, tokenNearExpiry } from "../sandbox/index.ts";
+import { REFERENCE_PATH } from "../sandbox/command.ts";
 import { holdCheckouts } from "../sandbox/checkout.ts";
 import { defaultWorkspace } from "../sandbox/workspace.ts";
 import { CLAUDE_PROMPTS, JEV_ARGS, JEV_USD_PER_INPUT_TOKEN, JEV_PROMPTS, claudeArgs, claudeParts, claudePromptOf, jevPromptOf, joinParts, renderClaude, withoutRepoDir, renderJev, type ClaudeInput, type ClaudePromptId, type JevPromptId } from "../prompts/index.ts";
@@ -251,10 +252,11 @@ export function claudeCwd(): string {
 /**
  * `onProgress`: called with a short plain line for each tool call of a sandboxed call, as it happens; the latest line is also kept on the agent run.
  * `checkout`: host directory of a read-only checkout; with it, a prompt that registers a sandbox runs with its tools inside bubblewrap (src/sandbox).
+ * `reference`: host directory of the repo's reference documentation; a sandboxed call mounts it read-only at /reference and its prompt says so (src/reference.ts).
  * `shared`: for a prompt with the workspace, replaces the default workspace (every tracked repository's default branch, src/sandbox/workspace.ts).
  * `itemTools`: the item tools' read-only mounts and MCP servers (`mcpServers` as in an MCP config), for the call and its explorer; null means none, absent means `itemTools()` (src/itemtools).
  */
-export type AskOptions = { onProgress?: (line: string) => void; checkout?: string; shared?: { name: string; dir: string }[]; itemTools?: { mounts: { host: string; path: string }[]; mcpServers: Record<string, unknown> } | null };
+export type AskOptions = { onProgress?: (line: string) => void; checkout?: string; reference?: string; shared?: { name: string; dir: string }[]; itemTools?: { mounts: { host: string; path: string }[]; mcpServers: Record<string, unknown> } | null };
 
 type WorkspaceFn = (db: DatabaseSync) => Promise<{ name: string; dir: string }[]>;
 let workspaceOf: WorkspaceFn = defaultWorkspace;
@@ -275,6 +277,8 @@ export function setWorkspace(f: WorkspaceFn): () => void {
  */
 export async function askClaude<K extends ClaudePromptId>(id: K, model: string, input: ClaudeInput[K], db: DatabaseSync, opts: AskOptions = {}): Promise<{ text: string; usage: Usage; turns?: number } | null> {
   let sandboxed = opts.checkout !== undefined && CLAUDE_PROMPTS[id].sandbox !== undefined;
+  const reference = sandboxed ? opts.reference : undefined;
+  if (reference) input = input.map((x) => ({ ...x, reference: true })) as ClaudeInput[K];
   let parts = claudeParts(id, input, sandboxed);
   const items = refsOf(input);
   const run = await startClaudeRun(db, { promptId: id, promptVersion: promptVersion(id), provider: "claude", model, items, prompt: joinParts(parts) });
@@ -285,7 +289,8 @@ export async function askClaude<K extends ClaudePromptId>(id: K, model: string, 
     if (sandboxed && tokenNearExpiry(join(run.configDir, ".credentials.json"))) {
       console.log("sandbox skipped: token near expiry");
       sandboxed = false;
-      parts = claudeParts(id, withoutRepoDir(input), false);
+      input = withoutRepoDir(input);
+      parts = claudeParts(id, input, false);
       db.prepare("UPDATE agent_run_texts SET prompt = ? WHERE run_id = ?").run(scrub(joinParts(parts).slice(0, 1_000_000)), run.runId);
     }
     const workspace = sandboxed && CLAUDE_PROMPTS[id].sandbox?.workspace === true;
@@ -298,7 +303,7 @@ export async function askClaude<K extends ClaudePromptId>(id: K, model: string, 
     if (sandboxed) {
       const claudeBin = resolveClaudeBin(), credentials = join(run.configDir, ".credentials.json");
       if (!claudeBin || !existsSync(credentials)) throw new Error("sandboxed call: claude binary or the account's credentials file not found");
-      const c = sandboxCommand({ claudeBin, checkout: opts.checkout!, credentials, claudeArgs: args, shared, ...(workspace && { agentsFile: agentsFile(tools?.servers) }), extraMounts: tools ? [...tools.mounts, { host: tools.file, path: MCP_PATH }] : undefined });
+      const c = sandboxCommand({ claudeBin, checkout: opts.checkout!, credentials, claudeArgs: args, shared, ...(workspace && { agentsFile: agentsFile(tools?.servers) }), extraMounts: tools || reference ? [...(tools ? [...tools.mounts, { host: tools.file, path: MCP_PATH }] : []), ...(reference ? [{ host: reference, path: REFERENCE_PATH }] : [])] : undefined });
       const feed = lineFeed((line) => { opts.onProgress?.(line); runProgress.push(line); });
       const release = holdCheckouts([opts.checkout!, ...(shared ?? []).map((x) => x.dir)]);
       try {
