@@ -13,6 +13,7 @@ import { askMergeDecisions } from "../src/merge/index.ts";
 import { selectCandidates } from "../src/review/candidates.ts";
 import { Git } from "../src/fixup/git.ts";
 import { finalizeReviews } from "./fixture.ts";
+import { validating } from "./gql.ts";
 
 mkdirSync(SCRATCH, { recursive: true });
 const dir = mkdtempSync(join(SCRATCH, "batch-test-"));
@@ -45,7 +46,7 @@ const world = (): World => ({ log: [], conflicts: new Set(), mainHead: MAIN, ci:
 
 function deps(w: World, root: string): BatchDeps {
   let commits = 0;
-  const querier: Querier = {
+  const querier: Querier = validating({
     spent: 0, remaining: 5000,
     async query(query: string, vars: object) {
       const v = vars as { n?: number };
@@ -63,7 +64,7 @@ function deps(w: World, root: string): BatchDeps {
         commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { nodes: [{ __typename: "CheckRun", name: "ci", status: w.ci === "PENDING" ? "IN_PROGRESS" : "COMPLETED", conclusion: w.ci === "PENDING" ? null : w.ci }] } } } }] },
       }])) };
     },
-  };
+  });
   return {
     querier, root, mergeCommand: "safe-merge-test", now: () => new Date(T1),
     mainHead: async () => w.mainHead,
@@ -135,7 +136,7 @@ describe("labels", () => {
     }
     setApproval(db, "boss", "app", true);
     const written: number[] = [];
-    const client = {
+    const client = validating({
       spent: 0, remaining: 5000 as number | null,
       async query(query: string, variables: Record<string, unknown>) {
         if (query.includes("label(name:")) {
@@ -155,7 +156,7 @@ describe("labels", () => {
         }
         return out;
       },
-    };
+    });
     const logs: string[] = [];
     const r = await applyLabels(db, client, "app", { runId: "org-1", apply: true, wait: async () => {}, log: (l) => logs.push(l) });
     assert.deepEqual(written, [1]);
@@ -203,12 +204,12 @@ describe("opus review", () => {
     return db;
   };
   const deps = (liveHead: string): OpusDeps => ({
-    querier: {
+    querier: validating({
       spent: 0, remaining: 5000,
       async query() {
         return { repository: { pr1: { number: 1, state: "OPEN", isDraft: false, headRefOid: liveHead, mergeable: "MERGEABLE", maintainerCanModify: true, commits: { nodes: [] } } } };
       },
-    },
+    }),
     fetchDiff: async () => ({ ok: true, text: CODE }),
     fetchDelta: async () => ({ ok: false, tooLarge: false, error: "none" }),
     model: "opus", maxChars: 120_000,
@@ -279,14 +280,14 @@ describe("fixup", () => {
     };
     const good = "diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1,2 +1,2 @@\n-fn a() {}\n-fn main() { a(); }\n+fn b() {}\n+fn main() { b(); }\n";
     const deps: FixupDeps = {
-      querier: {
+      querier: validating({
         spent: 0, remaining: 5000,
         async query(q: string) {
           if (q.startsWith("mutation")) { log.push("assign"); return {}; }
           return { repository: { pullRequest: { id: "PR7", state: "OPEN", isDraft: false, headRefOid: moved ? "f".repeat(40) : head, headRefName: "fix", maintainerCanModify: true, mergeable: "MERGEABLE",
             headRepository: { nameWithOwner: "contrib/app" }, assignees: { nodes: [] } } } };
         },
-      },
+      }),
       exec: run, now: () => new Date(T1), root: join(root, "cache"),
       fetchDiff: async () => ({ ok: true, text: "diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1 +1 @@\n-x\n+fn a() {}\n" }),
       ask: async () => { moved = true; return good; },

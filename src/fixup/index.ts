@@ -85,7 +85,7 @@ export function scrubReason(text: string, root: string): string {
 }
 const oneLine = (s: string) => s.replace(/\s+/g, " ").trim().slice(0, 200);
 
-const PR_QUERY = `query($name: String!, $n: Int!) {
+export const PR_QUERY = `query($name: String!, $n: Int!) {
   repository(owner: "${ORG}", name: $name) {
     pullRequest(number: $n) {
       id state isDraft headRefOid headRefName maintainerCanModify mergeable
@@ -94,7 +94,7 @@ const PR_QUERY = `query($name: String!, $n: Int!) {
     }
   }
 }`;
-const ASSIGN = `mutation($id: ID!, $user: ID!) {
+export const ASSIGN = `mutation($id: ID!, $user: ID!) {
   addAssigneesToAssignable(input: { assignableId: $id, assigneeIds: [$user] }) { clientMutationId }
 }`;
 

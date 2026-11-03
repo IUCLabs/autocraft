@@ -17,6 +17,7 @@ import { checksOf } from "../src/patchcheck/index.ts";
 import { selectCandidates } from "../src/review/candidates.ts";
 import { finalizeReviews } from "./fixture.ts";
 import { SCRATCH } from "./scratch.ts";
+import { validating } from "./gql.ts";
 
 mkdirSync(SCRATCH, { recursive: true });
 const dir = mkdtempSync(join(SCRATCH, "fixup-test-"));
@@ -160,7 +161,7 @@ function world(opts: { check?: string | null; reply?: string | null; moveBranch?
   const log: string[] = [];
   const w: World = { fork, base: root, head, log, deps: undefined as never };
   const good = "diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1,2 +1,2 @@\n-fn a() {}\n-fn main() { a(); }\n+fn b() {}\n+fn main() { b(); }\n";
-  const querier: Querier = {
+  const querier: Querier = validating({
     spent: 0, remaining: 5000,
     async query(q: string) {
       if (q.startsWith("mutation")) { log.push("assign"); return {}; }
@@ -170,7 +171,7 @@ function world(opts: { check?: string | null; reply?: string | null; moveBranch?
         headRepository: { nameWithOwner: "contrib/app" }, assignees: { nodes: (opts.assignees ?? []).map((login) => ({ login })) },
       } } };
     },
-  };
+  });
   // Real git on local repositories; gh and the two GitHub URLs are faked.
   const run: Exec = async (cmd, args, o = {}): Promise<ExecResult> => {
     if (cmd === "gh") {

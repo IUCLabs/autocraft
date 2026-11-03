@@ -27,7 +27,7 @@ import { ASSIGN, ORG, prInfo, viewerOf, mergeRun, DEFAULT_MERGE_COMMAND, type Co
 import { PIPELINE_LOGIN_KEY, buildQueue, eligible, singleMergeOnly, type QueueEntry } from "./queue.ts";
 
 const ACTOR = "batch";
-const UNASSIGN = `mutation($id: ID!, $user: ID!) {
+export const UNASSIGN = `mutation($id: ID!, $user: ID!) {
   removeAssigneesFromAssignable(input: { assignableId: $id, assigneeIds: [$user] }) { clientMutationId }
 }`;
 const PR_URL = new RegExp(`^https://github\\.com/${ORG}/[A-Za-z0-9._-]+/pull/(\\d+)$`);

@@ -9,6 +9,7 @@ import { setApproval } from "../src/labels/approval.ts";
 import { ALL_LABELS } from "../src/labels/set.ts";
 import { countPlan, planLabels } from "../src/labels/plan.ts";
 import { SCRATCH } from "./scratch.ts";
+import { validating } from "./gql.ts";
 
 mkdirSync(SCRATCH, { recursive: true });
 const dir = mkdtempSync(join(SCRATCH, "labels-test-"));
@@ -51,7 +52,7 @@ describe("labels plan", () => {
 type Call = { query: string; variables: Record<string, unknown> };
 function fakeClient(opts: { failNumber?: number } = {}) {
   const calls: Call[] = [];
-  return {
+  return validating({
     calls, spent: 0, remaining: 5000 as number | null,
     async query(query: string, variables: Record<string, unknown>) {
       calls.push({ query, variables });
@@ -72,7 +73,7 @@ function fakeClient(opts: { failNumber?: number } = {}) {
       }
       return out;
     },
-  };
+  });
 }
 
 describe("labels apply", () => {
