@@ -37,6 +37,15 @@ describe("sandbox command", () => {
     assert.ok(!args.some((a) => a === "--dev-bind" || a === "--bind-try" || a === homedir() || a.startsWith(`${homedir()}/`)));
   });
 
+  test("shared repositories are mounted read-only at /shared/<name>", () => {
+    const c = sandboxCommand({ ...spec, shared: [{ name: "craft-libs", dir: "/h/libs" }] });
+    assert.ok(pairs(c.args, "--ro-bind").includes("/h/libs /shared/craft-libs"));
+    assert.deepEqual(pairs(c.args, "--bind"), []);
+    const a = claudeArgs("decide.recommend", "opus", true, ["craft-libs"]);
+    assert.ok(a.join(" ").includes("--add-dir /repo --add-dir /shared/craft-libs"));
+    assert.throws(() => sandboxCommand({ ...spec, shared: [{ name: "../x", dir: "/h" }] }));
+  });
+
   test("new namespaces except the network, dies with the parent, clean environment", () => {
     for (const f of ["--unshare-all", "--share-net", "--die-with-parent", "--new-session", "--clearenv"]) assert.ok(args.includes(f), f);
     assert.equal(args.indexOf("--clearenv") < args.indexOf("--setenv"), true);

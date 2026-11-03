@@ -2,7 +2,7 @@
 // is validated against the decision's options, open decisions are backfilled, and
 // the old label-based recommendations are dropped. Model calls go to a fake runner.
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { describe, test } from "node:test";
@@ -13,7 +13,7 @@ import { settle } from "../src/classify/settled.ts";
 import { connect } from "../src/db.ts";
 import { buildDecision, shapeOf } from "../src/decide/decision.ts";
 import { runDecide } from "../src/decide/index.ts";
-import { backfillIds } from "../src/decide/recommend.ts";
+import { backfillIds, recommend } from "../src/decide/recommend.ts";
 import type { Candidate } from "../src/decide/select.ts";
 import { SCRATCH } from "./scratch.ts";
 
@@ -118,5 +118,38 @@ describe("scope recommendation", () => {
     assert.equal(row(again, old).recommended, null);
     assert.equal(row(again, modelled).recommended, "close");
     assert.equal(row(again, answered).recommended, "take");
+  });
+});
+
+describe("shared repositories", () => {
+  test("the recommendation call mounts the shared repos read-only (not the item's own) and names them in the prompt", async () => {
+    const { db } = fixture();
+    const id = decision(db, 1);
+    const cfg = join(mkdtempSync(join(SCRATCH, "shared-cfg-")), "x");
+    const box = useTestAccount(db);
+    mkdirSync(box.configDir + "t", { recursive: true });
+    writeFileSync(join(box.configDir + "t", ".credentials.json"), JSON.stringify({ claudeAiOauth: { expiresAt: Date.now() + 6 * 3600_000 } }));
+    process.env.CRAFT_AUTO_CLAUDE_BIN = "/usr/bin/true";
+    const calls: { cmd: string; args: string[]; input: string }[] = [];
+    const restore = setRunner(async (cmd, args, input) => {
+      calls.push({ cmd, args, input });
+      return { code: 0, stdout: JSON.stringify({ type: "result", result: '{"recommended": "plugin", "reason": "r"}', usage: {} }), stderr: "" };
+    });
+    try {
+      const n = await recommend(db, [id], {
+        checkout: async () => cfg, usageRun: "t", log: quiet,
+        shared: async () => [{ name: "craft-libs", dir: "/h/libs" }, { name: "craft-i18n", dir: "/h/i18n" }, { name: "photocraft", dir: "/h/own" }],
+      });
+      assert.equal(n, 1);
+      const a = calls[0]!.args.join(" ");
+      assert.match(a, /--ro-bind \/h\/i18n \/shared\/craft-i18n --ro-bind \/h\/libs \/shared\/craft-libs/);
+      assert.ok(!a.includes("/shared/photocraft"));
+      assert.match(a, /--add-dir \/repo --add-dir \/shared\/craft-i18n --add-dir \/shared\/craft-libs/);
+      assert.match(calls[0]!.input, /\/shared\/craft-i18n, \/shared\/craft-libs/);
+      assert.ok(!calls[0]!.input.includes("shared_repos"));
+    } finally {
+      restore();
+      delete process.env.CRAFT_AUTO_CLAUDE_BIN;
+    }
   });
 });

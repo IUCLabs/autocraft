@@ -12,6 +12,7 @@ import { commentApprovalOf, setCommentApproval } from "../../act/approval.ts";
 import { pushApprovalOf, setPushApproval } from "../../fixup/approval.ts";
 import { fixIssueApprovalOf, setFixIssueApproval } from "../../fixissue/approval.ts";
 import { mergeApprovalOf, setMergeApproval } from "../../merge/approval.ts";
+import { setSharedRepos, sharedRepos } from "../../sandbox/shared.ts";
 import { setSingleMergeMax, singleMergeMax } from "../../merge/single.ts";
 import { setRepoPipeline } from "../../pilot.ts";
 import { countPlan, planLabels } from "../../labels/plan.ts";
@@ -31,7 +32,7 @@ export const AUDIT_ACTIONS = [
   "answer", "undo", "adopt", "opinion", "opinion-retract", "comment", "override", "rule", "access-add", "access-remove", "access-role",
   "session-revoke", "sign-in", "sign-in-refused", "repo-track", "repo-untrack", "labels-approve", "labels-revoke", "labels-apply", "merge-approve", "merge-revoke", "comment-approve", "comment-revoke", "act-comment", "act-close", "act-skip", "push-approve", "push-revoke", "fixup-push", "fixup-comment", "fixup-comment-edit", "fixissue-approve", "fixissue-revoke", "fixissue-push", "fixissue-pr", "fixissue-comment",
   "job-request", "job-cancel", "pipeline-switch", "stage-limit", "limit-reset", "pilot-set", "pilot-clear", "repo-pipeline", "review-post", "review-edit", "batch-again", "reopen", "backlog-bulk", "withdraw",
-  "single-merge-max", "label-create", "batch-pr-close", "fork-create", "assign", "unassign", "merge", "batch-push", "batch-pr",
+  "single-merge-max", "label-create", "batch-pr-close", "fork-create", "assign", "unassign", "merge", "batch-push", "batch-pr", "shared-repos",
 ];
 
 const isOperator = (req: Req): boolean => req.user.role === "operator";
@@ -286,6 +287,18 @@ export function mergeApproval(db: DatabaseSync, req: Req, approved: boolean): Tr
   });
   if (!changed) throw new HttpError(409, `${name} is ${approved ? "already" : "not"} approved for merging`);
   return allRepos(db, req);
+}
+
+export const sharedReposInfo = (db: DatabaseSync): { repos: string[] } => ({ repos: sharedRepos(db) });
+
+// Only an operator changes which repositories Opus calls may read beside the item's own.
+export function setSharedReposInfo(db: DatabaseSync, req: Req): { repos: string[] } {
+  requireOperator(req, "change the shared repositories");
+  try {
+    return { repos: setSharedRepos(db, body(req).repos, req.user.login) };
+  } catch (e) {
+    throw new HttpError(400, (e as Error).message);
+  }
 }
 
 export const singleMerge = (db: DatabaseSync): { max: number } => ({ max: singleMergeMax(db) });

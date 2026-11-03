@@ -310,6 +310,8 @@ export function apiRoutes(opts: ApiOptions = {}): Route[] {
     post("/api/repos/labels-revoke", (db, req) => adm.labelsApproval(db, req, false)),
     post("/api/repos/merge-approve", (db, req) => adm.mergeApproval(db, req, true)),
     post("/api/repos/merge-revoke", (db, req) => adm.mergeApproval(db, req, false)),
+    get("/api/sandbox/shared-repos", adm.sharedReposInfo),
+    { method: "PUT", pattern: "/api/sandbox/shared-repos", operator: true, handler: ok(adm.setSharedReposInfo) },
     get("/api/merge/single", adm.singleMerge),
     { method: "PUT", pattern: "/api/merge/single", operator: true, handler: ok(adm.setSingleMerge) },
     post("/api/repos/comment-approve", (db, req) => adm.commentApproval(db, req, true)),

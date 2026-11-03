@@ -166,7 +166,7 @@ function replySummary(text: string, asked: number): string {
 const exitClass = (code: number | null): string => (code === null ? "timed out or killed" : code === -1 ? "could not start" : `exit code ${code}`);
 
 /** `checkout`: host directory of a read-only checkout; with it, a prompt that registers a sandbox runs with its tools inside bubblewrap (src/sandbox). */
-export type AskOptions = { checkout?: string };
+export type AskOptions = { checkout?: string; /** Further read-only checkouts mounted at /shared/<name>; used only together with `checkout`. */ shared?: { name: string; dir: string }[] };
 
 /**
  * Sends a registered prompt (src/prompts) to `claude -p`. Callers pass a prompt
@@ -191,13 +191,14 @@ export async function askClaude<K extends ClaudePromptId>(id: K, model: string, 
       prompt = renderClaude(id, withoutRepoDir(input));
       db.prepare("UPDATE agent_run_texts SET prompt = ? WHERE run_id = ?").run(scrub(prompt.slice(0, 1_000_000)), run.runId);
     }
-    const args = claudeArgs(id, model, sandboxed);
+    const shared = sandboxed && CLAUDE_PROMPTS[id].sandbox?.shared ? opts.shared ?? [] : [];
+    const args = claudeArgs(id, model, sandboxed, shared.map((x) => x.name));
     const cwd = mkdtempSync(join(tmpdir(), "classify-"));
     let r: Proc;
     if (sandboxed) {
       const claudeBin = resolveClaudeBin(), credentials = join(run.configDir, ".credentials.json");
       if (!claudeBin || !existsSync(credentials)) throw new Error("sandboxed call: claude binary or the account's credentials file not found");
-      const c = sandboxCommand({ claudeBin, checkout: opts.checkout!, credentials, claudeArgs: args });
+      const c = sandboxCommand({ claudeBin, checkout: opts.checkout!, credentials, claudeArgs: args, shared });
       r = await runner(c.cmd, c.args, prompt, cwd, CLAUDE_PROMPTS[id].limits.timeoutSeconds * 1000);
     } else r = await runner("claude", args, prompt, cwd, CLAUDE_PROMPTS[id].limits.timeoutSeconds * 1000, { CLAUDE_CONFIG_DIR: run.configDir });
     // Stderr is scrubbed up front. For a sandboxed call the reply text is scrubbed after parsing, so a match cannot break the JSON.

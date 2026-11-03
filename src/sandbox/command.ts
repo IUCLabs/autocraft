@@ -6,6 +6,11 @@
 
 /** Where the checkout appears inside the sandbox: outside the working directory, so claude never loads its instruction files as project memory. */
 export const REPO_PATH = "/repo";
+/** Where each shared repository's checkout appears: `/shared/<name>`. */
+export const SHARED_ROOT = "/shared";
+export const sharedPath = (name: string): string => `${SHARED_ROOT}/${name}`;
+/** A repository name that is safe as a mount point. */
+export const SHARED_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
 /** The empty working directory. */
 export const WORK_PATH = "/work";
 const HOME = "/home/sandbox";
@@ -21,11 +26,14 @@ export type SandboxSpec = {
   credentials: string;
   /** Arguments for claude (src/prompts `claudeArgs`). */
   claudeArgs: string[];
+  /** Further read-only checkouts, each mounted at `/shared/<name>`; `claudeArgs` must name them with --add-dir. */
+  shared?: { name: string; dir: string }[];
 };
 
 export const BWRAP = "/usr/bin/bwrap";
 
 export function sandboxCommand(s: SandboxSpec): { cmd: string; args: string[] } {
+  for (const x of s.shared ?? []) if (!SHARED_NAME.test(x.name)) throw new Error(`unsafe shared repository name: ${x.name}`);
   const env: [string, string][] = [
     ["HOME", HOME], ["CLAUDE_CONFIG_DIR", CONFIG], ["PATH", "/usr/bin"], ["LANG", "C.UTF-8"], ["DISABLE_AUTOUPDATER", "1"],
   ];
@@ -39,7 +47,9 @@ export function sandboxCommand(s: SandboxSpec): { cmd: string; args: string[] } 
     "--ro-bind", s.credentials, `${CONFIG}/.credentials.json`,
     "--ro-bind", s.claudeBin, CLAUDE_PATH,
     // The working directory is empty and the checkout sits beside it (claude gets it with --add-dir), so no project instructions or settings from the checkout are found.
-    "--tmpfs", WORK_PATH, "--ro-bind", s.checkout, REPO_PATH, "--chdir", WORK_PATH,
+    "--tmpfs", WORK_PATH, "--ro-bind", s.checkout, REPO_PATH,
+    ...(s.shared ?? []).flatMap((x) => ["--ro-bind", x.dir, sharedPath(x.name)]),
+    "--chdir", WORK_PATH,
     ...env.flatMap(([k, v]) => ["--setenv", k, v]),
     CLAUDE_PATH, ...s.claudeArgs,
   ];

@@ -6,6 +6,8 @@ export type RecommendInput = {
   ref: string;
   /** Where the call may read the default-branch checkout inside the sandbox; not part of the quoted JSON. */
   repo_dir?: string;
+  /** Names of the shared repositories mounted at /shared/<name> (sorted); not part of the quoted JSON. */
+  shared_repos?: string[];
   /** The item as the summary prompt sees it: title, body, author association, labels, first comments. */
   item: Record<string, unknown>;
   question: string;
