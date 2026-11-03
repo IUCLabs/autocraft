@@ -186,10 +186,17 @@ export async function approveRuns(db: DatabaseSync, repo: string, d: ApproveDeps
 
 export const commands = {
   "ci-approval": {
-    summary: "ci-approval [--repo R]: whether the pipeline may approve waiting CI runs of reviewed outside PRs, per tracked repo",
+    summary: "ci-approval [--repo R] [on|off]: whether the pipeline may approve waiting CI runs of reviewed outside PRs, per tracked repo; on or off with --repo sets it",
     run(args: string[]): void {
       const db = connect();
       const i = args.indexOf("--repo");
+      const set = args.find((a) => a === "on" || a === "off");
+      if (set) {
+        const repo = i >= 0 ? args[i + 1] ?? "" : "";
+        if (!repo) throw new Error("ci-approval --repo R on|off");
+        console.log(setCiApproval(db, "cli", repo, set === "on") ? `${repo}: CI run approval ${set}` : `${repo}: CI run approval was already ${set}`);
+        return;
+      }
       for (const repo of i >= 0 ? [args[i + 1] ?? ""] : trackedNames(db)) {
         const a = ciApprovalOf(db, repo);
         console.log(`${repo}\t${a ? `approved by ${a.by} at ${a.at}` : "not approved"}`);
