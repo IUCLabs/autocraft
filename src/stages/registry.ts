@@ -230,7 +230,7 @@ export const STAGES: StageDef[] = [
       { id: "close", label: "Close", waitsOn: "nothing", tone: "bad", hint: "Wrong, not wanted, already done or superseded" },
     ],
     models: [{ model: "opus", use: "Reviews every wanted PR", remark: "The review gives a verdict, a complete fix list and how sure Opus is" }],
-    promptIds: ["review.opus"], promptStage: "Review",
+    promptIds: ["review.opus", "lint.reference.jev", "lint.reference.haiku"], promptStage: "Review",
     waits: [
       { name: "Checks before Review and Verify", why: "CI data younger than 5 minutes is reused", howLong: "5 minutes", showsAs: "Job list", kind: "backoff" },
     ],

@@ -4,6 +4,7 @@
 import { accessSync, constants, existsSync, readFileSync, realpathSync } from "node:fs";
 import { delimiter, join } from "node:path";
 import { exec, fixupDir, Git } from "../fixup/git.ts";
+import { pruneSessionStores } from "./session-store.ts";
 import { buildCheckout, checkoutRoot, pruneCheckouts } from "./checkout.ts";
 
 export { REPO_PATH, REPOS_ROOT, AGENTS_PATH, reposPath, sandboxCommand, type SandboxSpec } from "./command.ts";
@@ -69,6 +70,7 @@ async function checkoutOf(repo: string, sha: string, label: string, log: (line: 
   try {
     const dest = join(checkoutRoot(), repo, sha);
     pruneCheckouts(checkoutRoot(), MAX_AGE_MS);
+    pruneSessionStores(2 * 3600_000);
     const g = new Git(exec, fixupDir(), repo);
     if (!existsSync(dest)) {
       const why = await fetch(g);

@@ -191,9 +191,9 @@ export async function runOpusReview(db: DatabaseSync, params: OpusParams, log: (
     const dir = referenceDir(repo);
     const semantic = dir ? deps.semantic ?? defaultSemanticDeps(db, input.ref) : undefined;
     // A reply that is not a valid review is lint-free here: it keeps the whole-call retry. Problems of a valid one go back to the model as one fix turn.
-    const lint: Lint = async (text) => {
+    const lint: Lint = async (text, stage) => {
       const own = lintOpusReply(text, input.ref);
-      return own === null ? null : [...own, ...await referenceProblems(publicTexts(text), dir, semantic)];
+      return own === null ? null : [...own, ...await referenceProblems(publicTexts(text), dir, semantic, { stage, otherProblems: own.length })];
     };
     for (let attempt = 0; attempt < PROMPT.limits.attempts && !got; attempt++) {
       const reply = await askClaude("review.opus", deps.model, [input], db, { checkout, reference: checkout ? dir : undefined, lint });

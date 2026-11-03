@@ -911,7 +911,7 @@ const REFERENCE_QUESTION = "Does this text quote, cite or refer to documentation
 
 const REFERENCE_JEV: JevPrompt = {
   id: "lint.reference.jev",
-  stage: "Reply lint",
+  stage: "Review (reply lint)",
   runner: "jev",
   purpose: "First check of text that is written for a public audience (a review's public summary and points, a comment card): the probability that it refers to documentation or a vendor of another product, one text per call. A yes becomes a lint problem that is sent back to the model as a fix turn.",
   models: ["jev-latest"],
@@ -930,7 +930,7 @@ const REFERENCE_JEV: JevPrompt = {
 
 const REFERENCE_HAIKU: ClaudePrompt = {
   id: "lint.reference.haiku",
-  stage: "Reply lint",
+  stage: "Review (reply lint)",
   runner: "claude",
   purpose: "Second opinion on whether a public-facing text refers to documentation or a vendor of another product, for the texts Jev is not sure about and for all of them while Jev is unavailable.",
   models: ["haiku"],

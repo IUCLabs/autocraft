@@ -1,7 +1,7 @@
 // Short model-written texts (summaries, one-sentence reasons). No I/O and no Node
 // imports: the prompt registry imports it. Code never cuts such a text mid-sentence:
-// an over-long one fails, the call is asked again once, and the last answer is
-// stored as its first sentence.
+// an over-long one is a reply-lint problem (src/replylint.ts) that goes back to the model once,
+// and what is still too long is stored as its first sentence.
 
 /** Words a summary may have; the prompts ask for about 60. */
 export const SUMMARY_MAX_WORDS = 80;
@@ -27,3 +27,6 @@ export function proseField(v: unknown, max: number, last: boolean): { ok: true; 
   if (wordCount(t) <= max) return { ok: true, text: t };
   return last ? { ok: true, text: firstSentence(t) } : { ok: false };
 }
+
+/** A one-sentence field (why): its first sentence when it has more than one, else the text unchanged; null stays null. */
+export const oneSentence = (s: string | null): string | null => (s === null ? null : firstSentence(s));

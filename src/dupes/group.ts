@@ -1,7 +1,7 @@
 // Group comparison input and reply handling for the duplicate groups. Pure: no I/O,
 // no Node imports, because the prompt registry (shared with the web mockup) imports it.
 
-import { firstSentence, proseField, SUMMARY_MAX_WORDS, WHY_MAX_WORDS, wordCount } from "../prose.ts";
+import { firstSentence, oneSentence, proseField, SUMMARY_MAX_WORDS, WHY_MAX_WORDS, wordCount } from "../prose.ts";
 import type { LintProblem } from "../replylint.ts";
 
 /** Most members compared in one call; a larger group is compared in rounds. */
@@ -68,7 +68,7 @@ function shape(text: string, numbers: number[], last: boolean): ({ keep: number;
   if (numbers.some((n) => n !== o.keep && !byNumber.has(n))) return null;
   const summary = proseField(o.summary, SUMMARY_MAX_WORDS, last), why = proseField(o.why, WHY_MAX_WORDS, last);
   if (!summary.ok || !why.ok) return null;
-  return { keep: o.keep, reason: words(o.reason, GROUP_REASON_WORDS), byNumber, summary: summary.text, why: why.text };
+  return { keep: o.keep, reason: words(o.reason, GROUP_REASON_WORDS), byNumber, summary: summary.text, why: oneSentence(why.text) };
 }
 
 /** A summary or why over its word cap fails the reply unless `last` (the final attempt), which keeps its first sentence. */

@@ -1,7 +1,7 @@
 // Starting a model call: picks the account (Claude) and records the agent run,
 // in one transaction so two job processes cannot both take the last slot.
 import type { DatabaseSync } from "node:sqlite";
-import { chooseAccount, freeSlots, type Choice } from "./accounts.ts";
+import { accountHasRoom, chooseAccount, freeSlots, type Choice } from "./accounts.ts";
 import { insertRun, type RunStart } from "./runs.ts";
 import { scrubError } from "./text.ts";
 
@@ -73,9 +73,13 @@ export function tryStartClaudeRun(db: DatabaseSync, s: RunInput): Started | Excl
   }
 }
 
-/** Waits for an enabled account with a free slot and headroom, then records the running agent run on it. */
-export async function startClaudeRun(db: DatabaseSync, s: RunInput, log: (line: string) => void = console.log): Promise<Started> {
+export class WaitLimitError extends Error {}
+
+/** Waits for an enabled account with a free slot and headroom (at most `maxWaitMs` when given, else for ever), then records the running agent run on it. */
+
+export async function startClaudeRun(db: DatabaseSync, s: RunInput, log: (line: string) => void = console.log, maxWaitMs?: number): Promise<Started> {
   let lastLog = 0;
+  const began = Date.now();
   // Counted until the claim, and decremented in the same synchronous step as it, so claudeRoom() is exact right after a call starts.
   waiting++;
   try {
@@ -83,6 +87,7 @@ export async function startClaudeRun(db: DatabaseSync, s: RunInput, log: (line: 
       const c = tryStartClaudeRun(db, s);
       if ("runId" in c) return c;
       if ("none" in c) throw new NoAccountError("no Claude account is enabled; an operator enables one on the Accounts page or with `autocraft accounts set <id> --enabled yes`");
+      if (maxWaitMs !== undefined && Date.now() - began >= maxWaitMs) throw new WaitLimitError("no Claude account slot became free in time");
       if (Date.now() - lastLog >= allocation.logEveryMs) {
         lastLog = Date.now();
         log(`waiting for a Claude account: ${scrubError(c.wait)}`);
@@ -99,4 +104,21 @@ export async function startClaudeRun(db: DatabaseSync, s: RunInput, log: (line: 
 /** Records a Jev call (no account, no slot). */
 export function startJevRun(db: DatabaseSync, s: Omit<RunStart, "accountId" | "jobId" | "step" | "stage">): number {
   return insertRun(db, { ...s, ...stepOf(s.promptId), accountId: null });
+}
+
+/** Records a follow-up run on the account of an earlier call (its session lives there), or returns null when that account is no longer enabled, has no headroom or no free slot. Same transaction rule as `tryStartClaudeRun`. */
+export function tryStartFollowUp(db: DatabaseSync, accountId: string, s: RunInput): number | null {
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    if (!accountHasRoom(db, accountId)) {
+      db.exec("COMMIT");
+      return null;
+    }
+    const id = insertRun(db, { ...s, ...stepOf(s.promptId), accountId });
+    db.exec("COMMIT");
+    return id;
+  } catch (e) {
+    try { db.exec("ROLLBACK"); } catch { /* already committed */ }
+    throw e;
+  }
 }

@@ -11,7 +11,8 @@ import { setRunner, setWorkspace, type Runner } from "../src/classify/run.ts";
 import { answerPending } from "../src/conversations/run.ts";
 import { addOperatorMessage, turnsOf } from "../src/conversations/store.ts";
 import { connect } from "../src/db.ts";
-import { refersToDocumentation, quotesReference, type SemanticDeps } from "../src/reference-lint.ts";
+import { CancelledError, NoAccountError } from "../src/agents/call.ts";
+import { refersToDocumentation, quotesReference, referenceProblems, type SemanticDeps } from "../src/reference-lint.ts";
 import { runOpusReview, type OpusDeps } from "../src/review/opus.ts";
 
 mkdirSync(SCRATCH, { recursive: true });
@@ -29,11 +30,13 @@ const T0 = "2026-01-01T00:00:00Z";
 const checkout = join(dir, "co");
 mkdirSync(checkout);
 
+let credentials = "";
 function fresh(): DatabaseSync {
   const db = connect(join(mkdtempSync(join(dir, "db-")), "t.db"));
   const box = useTestAccount(db);
   mkdirSync(`${box.configDir}t`, { recursive: true });
-  writeFileSync(`${box.configDir}t/.credentials.json`, JSON.stringify({ claudeAiOauth: { expiresAt: Date.now() + 86_400_000 } }));
+  credentials = `${box.configDir}t/.credentials.json`;
+  writeFileSync(credentials, JSON.stringify({ claudeAiOauth: { expiresAt: Date.now() + 86_400_000 } }));
   db.prepare(`INSERT INTO items (repo, number, kind, state, title, body, author, additions, deletions, head_oid, created_at, updated_at, labels)
     VALUES ('app', 1, 'pr', 'OPEN', 'PR 1', 'Body', 'regular', 5, 0, 'sha1', '${T0}', '${T0}', '[]')`).run();
   db.prepare(`INSERT INTO classifications (repo, number, classifier, run_id, at, type_label, flags, probs) VALUES ('app', 1, 'jev', 'r1', '${T0}', 'bugfix', '[]', '{"top":0.95}')`).run();
@@ -50,10 +53,11 @@ const sessionsLeft = () => (existsSync(join(dir, "sessions")) ? readdirSync(join
 
 type Call = { args: string[]; input: string; sessionDirExisted: boolean };
 /** Answers the k-th call with replies[k]; every result carries a session id. */
-function fakeModel(replies: string[], calls: Call[] = []): { calls: Call[]; restore: () => void } {
+function fakeModel(replies: string[], calls: Call[] = [], during?: (k: number) => void): { calls: Call[]; restore: () => void } {
   const restore = setRunner((async (_cmd, args, input) => {
     const bind = args.indexOf("--bind");
     calls.push({ args, input, sessionDirExisted: bind >= 0 && existsSync(args[bind + 1]!) });
+    during?.(calls.length);
     const text = replies[Math.min(calls.length - 1, replies.length - 1)]!;
     return { code: 0, stdout: `${JSON.stringify({ type: "system", subtype: "init", session_id: "sess-1" })}\n${JSON.stringify({ type: "result", session_id: "sess-1", result: text, num_turns: 2, usage: { input_tokens: 100, output_tokens: 10 } })}\n`, stderr: "" };
   }) as Runner);
@@ -129,6 +133,57 @@ describe("review.opus lint", () => {
     assert.deepEqual([stored(db2).summary, stored(db2).why], ["First sentence stays.", "First sentence stays."]);
   });
 
+  test("a two-sentence why within the cap is flagged and stored as its first sentence", async () => {
+    const db = fresh();
+    const m = fakeModel([review({ why: "It is small. It is safe.", public: null })]);
+    try {
+      await runOpusReview(db, { repo: "app" }, () => {}, opusDeps());
+    } finally {
+      m.restore();
+    }
+    assert.equal(m.calls.length, 2);
+    assert.match(m.calls[1]!.input, /- why: has more than one sentence/);
+    assert.equal(stored(db).why, "It is small.");
+  });
+
+  test("a take-fix whose fixes all mention the reference gets a fix turn, not a whole new call", async () => {
+    const db = fresh();
+    const m = fakeModel([review({ verdict: "take-fix", fixes: [{ file: "src/lib.rs", change: "see /reference/p0002.txt" }], public: null }), review({ verdict: "take-fix", fixes: [{ file: "src/lib.rs", change: "use 2" }], public: null })]);
+    try {
+      await runOpusReview(db, { repo: "app" }, () => {}, opusDeps());
+    } finally {
+      m.restore();
+    }
+    assert.equal(m.calls.length, 2);
+    assert.match(m.calls[1]!.input, /- fixes\[0\]\.change: mentions the reference folder/);
+    assert.match((db.prepare("SELECT fixes FROM opus_reviews WHERE number = 1").get() as { fixes: string }).fixes, /use 2/);
+  });
+
+  test("no fix turn when the token cannot last through it", async () => {
+    const db = fresh();
+    writeFileSync(credentials, JSON.stringify({ claudeAiOauth: { expiresAt: Date.now() + 40 * 60_000 } }));
+    const m = fakeModel([review()]);
+    try {
+      await runOpusReview(db, { repo: "app" }, () => {}, opusDeps());
+    } finally {
+      m.restore();
+    }
+    assert.equal(m.calls.length, 1, "40 minutes pass the first check but not a 20 minute fix turn plus the margin");
+    assert.deepEqual(JSON.parse(stored(db).public_review!).points, ["src/lib.rs:1 changes a to 2."]);
+  });
+
+  test("no fix turn when the account was disabled meanwhile", async () => {
+    const db = fresh();
+    const m = fakeModel([review()], [], () => void db.prepare("UPDATE claude_accounts SET enabled = 0").run());
+    try {
+      await runOpusReview(db, { repo: "app" }, () => {}, opusDeps());
+    } finally {
+      m.restore();
+    }
+    assert.equal(m.calls.length, 1);
+    assert.deepEqual(JSON.parse(stored(db).public_review!).points, ["src/lib.rs:1 changes a to 2."]);
+  });
+
   test("a reply that is not a valid review keeps the whole-call retry and gets no fix turn", async () => {
     const db = fresh();
     const m = fakeModel(["not json", review({ public: null })]);
@@ -185,6 +240,26 @@ describe("semantic reference check", () => {
     assert.equal(await refersToDocumentation("t", off.d), true);
     assert.equal(await refersToDocumentation("t", none.d), false);
     assert.deepEqual([unsure.calls.haiku, off.calls.jev, off.calls.haiku, none.calls.haiku], [1, 0, 1, 1]);
+  });
+});
+
+describe("lint survives a failing model check", () => {
+  const ref = join(dir, "data", "reference", "app");
+  const quote = REFERENCE_TEXT.split(" ").slice(0, 13).join(" ");
+  test("a failed Jev or Haiku call counts as no; the quote is still found; a cancel propagates", async () => {
+    const failing: SemanticDeps = { jev: async () => { throw new NoAccountError("none"); }, haiku: async () => { throw new NoAccountError("none"); } };
+    const p = await referenceProblems([{ field: "a", text: quote }, { field: "b", text: "Plain statement." }], ref, failing);
+    assert.deepEqual(p.map((x) => x.field), ["a"]);
+    const cancel: SemanticDeps = { jev: async () => { throw new CancelledError("stop"); }, haiku: async () => false };
+    await assert.rejects(referenceProblems([{ field: "b", text: "Plain statement." }], ref, cancel), CancelledError);
+  });
+  test("on the first reply the model checks wait while other problems force a fix turn", async () => {
+    let asked = 0;
+    const sem: SemanticDeps = { jev: async () => { asked++; return 0.95; }, haiku: async () => true };
+    const texts = [{ field: "a", text: quote }, { field: "b", text: "Plain statement." }];
+    assert.equal((await referenceProblems(texts, ref, sem, { stage: "first" })).length, 1);
+    assert.equal(asked, 0);
+    assert.equal((await referenceProblems(texts, ref, sem, { stage: "fix" })).length, 2);
   });
 });
 

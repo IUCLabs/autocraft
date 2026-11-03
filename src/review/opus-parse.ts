@@ -1,7 +1,7 @@
 // Opus review prompt input and reply validation. No I/O and no Node imports: the
 // prompt registry (also loaded by the web mockup) imports this file.
 import { VERDICTS, type DiscussionEntry, type ReviewVerdict } from "./parse.ts";
-import { firstSentence, proseField, SUMMARY_MAX_WORDS, WHY_MAX_WORDS, wordCount } from "../prose.ts";
+import { firstSentence, oneSentence, proseField, SUMMARY_MAX_WORDS, WHY_MAX_WORDS, wordCount } from "../prose.ts";
 import type { LintProblem } from "../replylint.ts";
 
 export type EarlierOpus = { head: string; verdict: string; sure: boolean; reason: string; fixes: { file: string; change: string }[] };
@@ -60,7 +60,7 @@ export function parsePublic(v: unknown, drop: ReadonlySet<string> = new Set()): 
   if (typeof o.summary !== "string" || !o.summary.trim() || !Array.isArray(o.points)) return null;
   if (REFERENCE_LEAK.test(o.summary) || drop.has(o.summary)) { console.log("public review dropped: its summary mentions the reference documentation"); return null; }
   const kept = o.points.filter((x): x is string => typeof x === "string" && !!x.trim());
-  const points = kept.filter((x) => !REFERENCE_LEAK.test(x) && !drop.has(x)).slice(0, OPUS_PUBLIC_POINTS).map((x) => x.trim().slice(0, 600));
+  const points = kept.slice(0, OPUS_PUBLIC_POINTS).filter((x) => !REFERENCE_LEAK.test(x) && !drop.has(x)).map((x) => x.trim().slice(0, 600));
   if (points.length < kept.length) console.log("public review: dropped a point that mentions the reference documentation");
   return { summary: o.summary.trim().slice(0, 600), points };
 }
@@ -83,9 +83,9 @@ function replyObject(text: string): unknown {
  * The one review for `ref` in a reply, or null. The text from the first "{" to the
  * last "}" is parsed (a one-element array is read too); take-fix needs at least one fix.
  * A summary or why over its word cap fails the reply unless `last`, which keeps its first sentence.
- * `drop`: see parsePublic.
+ * `drop`: see parsePublic. `keepLeaky`: keep fixes that mention the reference (the lint checks validity this way, so the fix turn can handle them; the stored review always drops them).
  */
-export function parseOpusReply(text: string, ref: string, last = true, drop: ReadonlySet<string> = new Set()): OpusReview | null {
+export function parseOpusReply(text: string, ref: string, last = true, drop: ReadonlySet<string> = new Set(), keepLeaky = false): OpusReview | null {
   const o = replyObject(text);
   if (!o || typeof o !== "object") return null;
   const r = o as Record<string, unknown>;
@@ -94,13 +94,13 @@ export function parseOpusReply(text: string, ref: string, last = true, drop: Rea
   if (typeof verdict !== "string" || !(VERDICTS as readonly string[]).includes(verdict)) return null;
   if (typeof r.reason !== "string" || !r.reason.trim() || typeof r.sure !== "boolean") return null;
   const fixes = (Array.isArray(r.fixes) ? r.fixes : [])
-    .filter((f): f is { file: string; change: string } => !!f && typeof f.file === "string" && typeof f.change === "string" && !!f.change.trim() && !REFERENCE_LEAK.test(f.file) && !REFERENCE_LEAK.test(f.change))
+    .filter((f): f is { file: string; change: string } => !!f && typeof f.file === "string" && typeof f.change === "string" && !!f.change.trim() && (keepLeaky || (!REFERENCE_LEAK.test(f.file) && !REFERENCE_LEAK.test(f.change))))
     .slice(0, OPUS_MAX_FIXES).map((f) => ({ file: f.file.slice(0, 200), change: f.change.slice(0, 800) }));
   if (verdict === "take-fix" && !fixes.length) return null;
   const risks = Array.isArray(r.risks) ? r.risks.filter((x): x is string => typeof x === "string").slice(0, 8).map((x) => x.slice(0, 300)) : [];
   const summary = proseField(r.summary, SUMMARY_MAX_WORDS, last), why = proseField(r.why, WHY_MAX_WORDS, last);
   if (!summary.ok || !why.ok) return null;
-  return { ref, verdict: verdict as ReviewVerdict, sure: r.sure, reason: words(r.reason, OPUS_REASON_WORDS), fixes: verdict === "take-fix" ? fixes : [], risks, summary: summary.text, why: why.text, public: parsePublic(r.public, drop) };
+  return { ref, verdict: verdict as ReviewVerdict, sure: r.sure, reason: words(r.reason, OPUS_REASON_WORDS), fixes: verdict === "take-fix" ? fixes : [], risks, summary: summary.text, why: oneSentence(why.text), public: parsePublic(r.public, drop) };
 }
 
 const squash = (s: string) => s.replace(/\s+/g, " ").trim();
@@ -110,7 +110,7 @@ const squash = (s: string) => s.replace(/\s+/g, " ").trim();
  * a why of more than one sentence. Null when the reply is not a valid review (the whole call is asked again then).
  */
 export function lintOpusReply(text: string, ref: string): LintProblem[] | null {
-  if (!parseOpusReply(text, ref, true)) return null;
+  if (!parseOpusReply(text, ref, true, new Set(), true)) return null;
   const r = replyObject(text) as Record<string, unknown>;
   const out: LintProblem[] = [];
   (Array.isArray(r.fixes) ? r.fixes : []).forEach((f: { file?: unknown; change?: unknown }, i) => {
@@ -131,6 +131,7 @@ export function publicTexts(text: string): { field: string; text: string }[] {
   if (!p || typeof p !== "object") return [];
   return [
     ...(typeof p.summary === "string" && p.summary.trim() ? [{ field: "public.summary", text: p.summary }] : []),
-    ...(Array.isArray(p.points) ? p.points.flatMap((x, i) => (typeof x === "string" && x.trim() ? [{ field: `public.points[${i}]`, text: x }] : [])) : []),
+    // Only the points parsePublic keeps (the first OPUS_PUBLIC_POINTS non-empty ones), so a long list makes no extra checks.
+    ...(Array.isArray(p.points) ? p.points.flatMap((x, i) => (typeof x === "string" && x.trim() ? [{ field: `public.points[${i}]`, text: x }] : [])).slice(0, OPUS_PUBLIC_POINTS) : []),
   ];
 }

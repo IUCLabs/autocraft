@@ -5,7 +5,8 @@
 export type LintProblem = { field: string; message: string; text?: string };
 
 /** Problems of a reply, or null when the reply cannot be read at all (the caller's own validation decides what happens then). */
-export type Lint = (text: string) => Promise<LintProblem[] | null> | LintProblem[] | null;
+/** `stage`: "first" for the model's first reply, "fix" for the reply to a fix turn (the costly checks may wait for the second). */
+export type Lint = (text: string, stage: "first" | "fix") => Promise<LintProblem[] | null> | LintProblem[] | null;
 
 /** The offending texts of problems the fix turn did not clear, for the fallback that leaves them out. */
 export const dropTexts = (problems: readonly LintProblem[] | undefined): Set<string> => new Set((problems ?? []).flatMap((p) => (p.text === undefined ? [] : [p.text])));

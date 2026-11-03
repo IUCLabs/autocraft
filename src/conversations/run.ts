@@ -68,7 +68,7 @@ export async function answerPending(db: DatabaseSync, p: ConversationParams): Pr
     const dir = referenceDir(repo);
     const semantic = dir ? p.semantic ?? defaultSemanticDeps(db, `${repo}#${n}`) : undefined;
     // Comment cards are public text: a reference mention or quote goes back to the model as one fix turn. A reply without text is not linted and keeps the whole-call retry.
-    const lint: Lint = async (text) => (parseReply(db, repo, n, text) ? referenceProblems(commentTexts(text), dir, semantic) : null);
+    const lint: Lint = async (text, stage) => (parseReply(db, repo, n, text) ? referenceProblems(commentTexts(text), dir, semantic, { stage }) : null);
     for (let attempt = 0; attempt < CONVERSATION_PROMPT.limits.attempts && !parsed; attempt++) {
       const reply = await askClaude("conversation.turn", model, [{ ref: `${repo}#${n}`, item: parts.item, turns: parts.turns, ...(checkout && { repo_dir: REPO_PATH }) }], db, { checkout: checkout ?? undefined, reference: checkout ? dir : undefined, onProgress, lint });
       shown.flush();

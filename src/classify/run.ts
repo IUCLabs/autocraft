@@ -8,8 +8,8 @@ import type { ItemRef } from "../../web/src/api/types.ts";
 import { createHash } from "node:crypto";
 import { jevParallel } from "../agents/accounts.ts";
 import { jevAvailable, jevFailure, markJevUnavailable, markJevWorking } from "../agents/jev.ts";
-import { claudeRoom, startClaudeRun, startJevRun, stepOf } from "../agents/call.ts";
-import { finishRun, insertRun, setRunProgress } from "../agents/runs.ts";
+import { claudeRoom, startClaudeRun, startJevRun, tryStartFollowUp, CancelledError } from "../agents/call.ts";
+import { finishRun, setRunProgress } from "../agents/runs.ts";
 import { fixTurnMessage, type Lint, type LintProblem } from "../replylint.ts";
 import { coalesce, lineFeed } from "./progress.ts";
 import { scrubError } from "../agents/text.ts";
@@ -17,7 +17,7 @@ import { scrub } from "../runner/scrub.ts";
 import { itemTools } from "../itemtools/index.ts";
 import { agentsFile, mcpFile } from "../sandbox/agent-files.ts";
 import { MCP_PATH } from "../sandbox/agents.ts";
-import { resolveClaudeBin, sandboxCommand, tokenNearExpiry } from "../sandbox/index.ts";
+import { resolveClaudeBin, sandboxCommand, TOKEN_MARGIN_MS, tokenNearExpiry } from "../sandbox/index.ts";
 import { REFERENCE_PATH, type SandboxSpec } from "../sandbox/command.ts";
 import { holdCheckouts } from "../sandbox/checkout.ts";
 import { sessionStore } from "../sandbox/session-store.ts";
@@ -257,9 +257,10 @@ export function claudeCwd(): string {
  * `reference`: host directory of the repo's reference documentation; a sandboxed call mounts it read-only at /reference and its prompt says so (src/reference.ts).
  * `shared`: for a prompt with the workspace, replaces the default workspace (every tracked repository's default branch, src/sandbox/workspace.ts).
  * `itemTools`: the item tools' read-only mounts and MCP servers (`mcpServers` as in an MCP config), for the call and its explorer; null means none, absent means `itemTools()` (src/itemtools).
+ * `maxWaitMs`: the longest wait for a free account slot; past it the call throws a WaitLimitError (src/agents/call.ts). Absent: wait as long as it takes.
  * `lint`: checks the parsed reply (src/replylint.ts). With problems, and for a sandboxed call of a prompt that registers `lint`, one follow-up message goes to the same session and its reply is linted too.
  */
-export type AskOptions = { lint?: Lint; onProgress?: (line: string) => void; checkout?: string; reference?: string; shared?: { name: string; dir: string }[]; itemTools?: { mounts: { host: string; path: string }[]; mcpServers: Record<string, unknown> } | null };
+export type AskOptions = { lint?: Lint; onProgress?: (line: string) => void; checkout?: string; reference?: string; maxWaitMs?: number; shared?: { name: string; dir: string }[]; itemTools?: { mounts: { host: string; path: string }[]; mcpServers: Record<string, unknown> } | null };
 
 type WorkspaceFn = (db: DatabaseSync) => Promise<{ name: string; dir: string }[]>;
 let workspaceOf: WorkspaceFn = defaultWorkspace;
@@ -288,7 +289,7 @@ export async function askClaude<K extends ClaudePromptId>(id: K, model: string, 
   if (reference) input = input.map((x) => ({ ...x, reference: true })) as ClaudeInput[K];
   let parts = claudeParts(id, input, sandboxed);
   const items = refsOf(input);
-  const run = await startClaudeRun(db, { promptId: id, promptVersion: promptVersion(id), provider: "claude", model, items, prompt: joinParts(parts) });
+  const run = await startClaudeRun(db, { promptId: id, promptVersion: promptVersion(id), provider: "claude", model, items, prompt: joinParts(parts) }, undefined, opts.maxWaitMs);
   const end = (e: Parameters<typeof finishRun>[2]) => finishRun(db, run.runId, e);
   let sessions: string | undefined;
   try {
@@ -366,16 +367,26 @@ export async function askClaude<K extends ClaudePromptId>(id: K, model: string, 
     const { sessionId, ...reply } = first;
     if (!opts.lint) return reply;
     let problems: LintProblem[] | null = null;
-    try { problems = await opts.lint(reply.text); } catch (e) { console.log(`lint failed: ${(e as Error).message}`); }
+    try { problems = await opts.lint(reply.text, "first"); } catch (e) { if (e instanceof CancelledError) throw e; console.log(`lint failed: ${(e as Error).message}`); }
     if (problems === null) return reply;
     if (!problems.length) return { ...reply, problems };
     if (!sessions || !sessionId) return { ...reply, problems };
+    // The fix turn can run as long as the call's own limit; with less token life than that (plus the sandbox's margin) it is skipped, because the sandbox never refreshes the token.
+    if (spec && tokenNearExpiry(spec.credentials, Date.now(), timeoutMs + TOKEN_MARGIN_MS)) {
+      console.log("fix turn skipped: token near expiry");
+      return { ...reply, problems };
+    }
 
     // One fix turn on the same session and account; its own agent run, so its tokens and outcome show on the Agents page.
     const message = fixTurnMessage(problems);
     let fixRun: number;
     try {
-      fixRun = insertRun(db, { ...stepOf(id), promptId: id, promptVersion: promptVersion(id), provider: "claude", model, accountId: run.accountId, items, prompt: message });
+      const started = tryStartFollowUp(db, run.accountId, { promptId: id, promptVersion: promptVersion(id), provider: "claude", model, items, prompt: message });
+      if (started === null) {
+        console.log("fix turn skipped: the account has no free slot or headroom");
+        return { ...reply, problems };
+      }
+      fixRun = started;
     } catch (e) {
       console.log(`fix turn not started: ${(e as Error).message}`);
       return { ...reply, problems };
@@ -389,7 +400,7 @@ export async function askClaude<K extends ClaudePromptId>(id: K, model: string, 
     if (!fix) return { ...reply, problems, fixTurn: true };
     const total = add(reply.usage, fix.usage);
     let after: LintProblem[] | null = null;
-    try { after = await opts.lint(fix.text); } catch (e) { console.log(`lint failed: ${(e as Error).message}`); }
+    try { after = await opts.lint(fix.text, "fix"); } catch (e) { if (e instanceof CancelledError) throw e; console.log(`lint failed: ${(e as Error).message}`); }
     // A fix reply the lint cannot read (or that is not in the format) is not used; the first reply stands.
     if (after === null) return { text: reply.text, usage: total, ...(reply.turns !== undefined && { turns: reply.turns }), problems, fixTurn: true };
     return { text: fix.text, usage: total, ...(reply.turns !== undefined && { turns: reply.turns }), problems: after, fixTurn: true };

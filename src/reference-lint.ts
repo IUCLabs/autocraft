@@ -5,6 +5,7 @@
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
+import { CancelledError } from "./agents/call.ts";
 import { jevAvailable } from "./agents/jev.ts";
 import { askClaude, askJev } from "./classify/run.ts";
 import { CLAUDE_PROMPTS, renderReferenceJev } from "./prompts/index.ts";
@@ -40,11 +41,22 @@ function textFiles(dir: string): string[] {
   return out;
 }
 
+/** Changes whenever a page is added, removed, replaced or edited in place: folder mtime, file count, total size and newest file mtime. */
+function stampOf(dir: string): string {
+  const st = statSync(dir);
+  let count = 0, size = 0, newest = 0;
+  for (const f of textFiles(dir)) {
+    const s = statSync(f);
+    count++; size += s.size; newest = Math.max(newest, s.mtimeMs);
+  }
+  return `${st.mtimeMs}:${st.ino}:${count}:${size}:${newest}`;
+}
+
 const cache = new Map<string, { stamp: string; hashes: Float64Array }>();
 
 /** Sorted window hashes of every page text of a reference folder, built once per process and rebuilt when the folder's mtime changes. */
 function windows(dir: string): Float64Array {
-  const st = statSync(dir), stamp = `${st.mtimeMs}:${st.ino}`;
+  const stamp = stampOf(dir);
   const hit = cache.get(dir);
   if (hit?.stamp === stamp) return hit.hashes;
   let all = new Float64Array(1 << 16), n = 0;
@@ -89,6 +101,9 @@ export type SemanticDeps = {
   jevUsable?(): boolean;
 };
 
+/** The longest wait for a free account slot before the Haiku check gives up (counts as no): the fix turn must follow while the prompt cache is warm. */
+export const HAIKU_WAIT_MS = 30_000;
+
 export function defaultSemanticDeps(db: DatabaseSync, ref: string): SemanticDeps {
   const HAIKU = CLAUDE_PROMPTS["lint.reference.haiku"];
   return {
@@ -104,7 +119,7 @@ export function defaultSemanticDeps(db: DatabaseSync, ref: string): SemanticDeps
     },
     async haiku(text) {
       for (let attempt = 0; attempt < HAIKU.limits.attempts; attempt++) {
-        const reply = await askClaude("lint.reference.haiku", HAIKU.models[0]!, [{ ref, text }], db);
+        const reply = await askClaude("lint.reference.haiku", HAIKU.models[0]!, [{ ref, text }], db, { maxWaitMs: HAIKU_WAIT_MS });
         if (!reply) continue;
         const a = reply.text.indexOf("["), b = reply.text.lastIndexOf("]");
         try {
@@ -120,10 +135,14 @@ export function defaultSemanticDeps(db: DatabaseSync, ref: string): SemanticDeps
 
 /** Whether the text refers to outside documentation or a vendor: Jev at 0.9 or more says yes and below 0.3 no; Haiku decides the rest and everything while Jev is unavailable. An unanswered check counts as no. */
 export async function refersToDocumentation(text: string, deps: SemanticDeps): Promise<boolean> {
-  const p = (deps.jevUsable?.() ?? true) ? await deps.jev(text) : null;
+  // A failed call (no account, a wait that ran out) counts as no for this text; a cancel stops the whole lint.
+  const guard = async <T>(f: () => Promise<T>): Promise<T | null> => {
+    try { return await f(); } catch (e) { if (e instanceof CancelledError) throw e; console.log(`reference check failed: ${(e as Error).message}`); return null; }
+  };
+  const p = (deps.jevUsable?.() ?? true) ? await guard(() => deps.jev(text)) : null;
   if (p !== null && p >= REFERENCE_JEV_ACCEPT) return true;
   if (p !== null && p < REFERENCE_JEV_REJECT) return false;
-  return (await deps.haiku(text)) === true;
+  return (await guard(() => deps.haiku(text))) === true;
 }
 
 export type PublicText = { field: string; text: string };
@@ -132,12 +151,16 @@ export type PublicText = { field: string; text: string };
  * Problems of public-facing texts: a mention of the reference folder or a page file, a verbatim quote of the reference
  * pages, and (when `semantic` is given) a reference to outside documentation. Only for a repo with a reference folder `dir`.
  */
-export async function referenceProblems(texts: PublicText[], dir: string | undefined, semantic?: SemanticDeps): Promise<LintProblem[]> {
+export async function referenceProblems(texts: PublicText[], dir: string | undefined, semantic?: SemanticDeps, opts: { stage?: "first" | "fix"; otherProblems?: number } = {}): Promise<LintProblem[]> {
   const out: LintProblem[] = [];
+  const clean: PublicText[] = [];
   for (const t of texts) {
     if (REFERENCE_LEAK.test(t.text)) out.push({ field: t.field, message: "mentions the reference folder or one of its pages; state the behaviour in your own words", text: t.text });
     else if (dir && quotesReference(t.text, dir)) out.push({ field: t.field, message: "quotes the reference documentation; state the behaviour in your own words", text: t.text });
-    else if (dir && semantic && await refersToDocumentation(t.text, semantic)) out.push({ field: t.field, message: "refers to outside documentation; state the behaviour in your own words", text: t.text });
+    else clean.push(t);
   }
+  // The model checks are the slow part: when other problems already force a fix turn, they wait for the fix reply.
+  if (!dir || !semantic || (opts.stage === "first" && out.length + (opts.otherProblems ?? 0) > 0)) return out;
+  for (const t of clean) if (await refersToDocumentation(t.text, semantic)) out.push({ field: t.field, message: "refers to outside documentation; state the behaviour in your own words", text: t.text });
   return out;
 }

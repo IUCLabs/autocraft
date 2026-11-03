@@ -182,6 +182,15 @@ export function chooseAccount(db: DatabaseSync, nowMs: number = Date.now()): Cho
   return { account: { id: pick.id, configDir: box.find((b) => b.id === pick.id)!.configDir } };
 }
 
+/** Whether the given account is still enabled, has headroom and a free slot (a follow-up on its session may start). */
+export function accountHasRoom(db: DatabaseSync, accountId: string, nowMs: number = Date.now()): boolean {
+  const box = boxAccounts(db);
+  syncAccounts(db, box);
+  const r = rows(db, box).find((x) => x.id === accountId);
+  if (!r || r.enabled !== 1 || headroomReason(readUsage(r.id), usagePause(db), nowMs)) return false;
+  return (runningCounts(db, nowMs).get(r.id) ?? 0) < r.max_concurrent;
+}
+
 /** Calls the enabled accounts with headroom can take right now: the sum of their free slots. */
 export function freeSlots(db: DatabaseSync, nowMs: number = Date.now()): number {
   const box = boxAccounts(db);
