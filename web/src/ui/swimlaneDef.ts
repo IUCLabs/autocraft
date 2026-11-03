@@ -1,6 +1,8 @@
 // Definition of the pipeline swimlane diagram (docs/pipeline.md, "The flow").
 // Lanes are columns, rows run in pipeline order. Swimlane.tsx draws it.
 
+import { STAGES } from "../../../src/stages/registry.ts";
+
 export type LaneId = "contributor" | "auto" | "models" | "sandbox" | "operator" | "writes";
 
 export interface Lane {
@@ -37,37 +39,8 @@ export const LANES: Lane[] = [
   { id: "writes", title: "GitHub writes" },
 ];
 
-export const STEPS: Step[] = [
-  { id: "open", lane: "contributor", row: 0, lines: ["Opens or updates", "an issue or PR"] },
-  { id: "sync", lane: "auto", row: 1, lines: ["Sync", "every minute, to local DB"] },
-  { id: "embed", lane: "auto", row: 2, lines: ["Embed", "vector per item, local"] },
-  { id: "dups", lane: "auto", row: 3, lines: ["Duplicates", "nearest neighbours"] },
-  { id: "dupcheck", lane: "models", row: 4, lines: ["Duplicate check", "Jev first, Haiku settles"] },
-  { id: "dupdec", lane: "operator", row: 5, lines: ["Duplicate?", "close / not / keep both"] },
-  { id: "classify", lane: "models", row: 6, lines: ["Classify", "Jev, Haiku backup"] },
-  { id: "act1", lane: "writes", row: 6, lines: ["Act", "comment, then close"], approval: "comment approval" },
-  { id: "priority", lane: "models", row: 8, lines: ["Priority", "Jev, level P0 to P4"] },
-  { id: "referee", lane: "models", row: 7, lines: ["Sonnet referee", "settles type disagreements"] },
-  { id: "decide", lane: "operator", row: 9, lines: ["Decide", "scope call, unsure type"] },
-  { id: "label", lane: "writes", row: 9, lines: ["Label", "type labels"], approval: "label approval" },
-  { id: "fix", lane: "sandbox", row: 10, lines: ["Fix (issues)", "Sonnet patch, Opus check"], approval: "fix approval" },
-  { id: "act2", lane: "writes", row: 10, lines: ["Act", "comment, then close"], approval: "comment approval" },
-  { id: "hold1", lane: "operator", row: 11, lines: ["Hold", "waits for a person"] },
-  { id: "prfork", lane: "writes", row: 11, lines: ["Open PR from fork", "our fix, as a PR"], approval: "fix approval" },
-  { id: "review", lane: "models", row: 12, lines: ["Opus review", "reads the repo"] },
-  { id: "verify", lane: "sandbox", row: 13, lines: ["Verify", "Sonnet plan, build + tests"] },
-  { id: "closeq", lane: "operator", row: 13, lines: ["Close this PR?", "close / hold / keep open"] },
-  { id: "fixup", lane: "writes", row: 13, lines: ["Fix-up", "Sonnet patch, Opus check"], approval: "push approval" },
-  { id: "vfail", lane: "models", row: 14, lines: ["Failure summary", "Haiku"] },
-  { id: "queue", lane: "auto", row: 14, lines: ["Merge queue", "rule met at this head?"] },
-  { id: "hold2", lane: "operator", row: 14, lines: ["Hold", "waits for a person"] },
-  { id: "ask", lane: "writes", row: 14, lines: ["Comment fixes", "asked the contributor"], approval: "comment approval" },
-  { id: "mergeq", lane: "operator", row: 15, lines: ["Merge?", "merge / hold / close"] },
-  { id: "push", lane: "contributor", row: 15, lines: ["Pushes a new head", "or answers"] },
-  { id: "act3", lane: "writes", row: 15, lines: ["Act", "comment, then close"], approval: "comment approval" },
-  { id: "batch", lane: "sandbox", row: 16, lines: ["Integration batch", "up to 10 PRs, sandbox check"] },
-  { id: "merge", lane: "writes", row: 17, lines: ["Merge", "batch PR, safe-merge --merge"], approval: "merge approval" },
-];
+/** The cards come from the stage registry, drawn by row and then by lane column. */
+export const STEPS: Step[] = STAGES.flatMap((s) => s.swimlane).sort((a, b) => a.row - b.row || LANES.findIndex((l) => l.id === a.lane) - LANES.findIndex((l) => l.id === b.lane));
 
 export const EDGES: Edge[] = [
   { from: "open", to: "sync", main: true },

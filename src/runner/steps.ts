@@ -10,6 +10,7 @@ import { pathToFileURL } from "node:url";
 import type { DatabaseSync } from "node:sqlite";
 import { DECIDE_MODELS } from "../decide/index.ts";
 import { envVar } from "../env.ts";
+import { stageOfStep } from "../stages/registry.ts";
 
 type Base = { name: string; label: string; help?: string; required?: boolean };
 export type ParamDef =
@@ -109,12 +110,19 @@ async function checkFixIssueApproved(db: DatabaseSync, p: Params): Promise<strin
   return fixIssueApprovalOf(db, String(p.repo)) ? null : `fixing issues in ${p.repo} is not approved`;
 }
 
+/** The run number a step records in agent_runs.stage: its stage's, from the registry. */
+function runStage(step: string): number {
+  const s = stageOfStep(step);
+  if (!s) throw new Error(`step ${step} is in no stage of the registry`);
+  return s.runStage;
+}
+
 export const STEPS: StepDef[] = [
   {
     name: "classify-new",
     title: "Classify new and changed items",
     description: "Jev labels open items that have no verdict in the current classification run, or whose text changed since; Haiku gives a second opinion where Jev is under 90 % sure.",
-    stage: 2,
+    stage: runStage("classify-new"),
     requires: "operator",
     group: "classify",
     models: ["jev", "haiku"],
@@ -125,7 +133,7 @@ export const STEPS: StepDef[] = [
     name: "classify-all",
     title: "Classification pass",
     description: "Jev labels every open item of the tracked repos into the given run, then Haiku the ones Jev is unsure of. A stopped pass continues where it left off when started again with the same run id; once complete, the run becomes the current one.",
-    stage: 2,
+    stage: runStage("classify-all"),
     requires: "operator",
     group: "classify",
     models: ["jev", "haiku"],
@@ -139,7 +147,7 @@ export const STEPS: StepDef[] = [
     name: "embed",
     title: "Embed items",
     description: "Computes local sentence embeddings of new and changed items for similar items and semantic search. Runs on this machine; no model quota.",
-    stage: 1,
+    stage: runStage("embed"),
     requires: "operator",
     group: "local",
     params: [
@@ -156,7 +164,7 @@ export const STEPS: StepDef[] = [
     name: "labels-ensure",
     title: "Create the pipeline labels on GitHub",
     description: "Creates the labels of the set that the repo is missing. Refused unless the operator has approved labelling for that repo.",
-    stage: 4,
+    stage: runStage("labels-ensure"),
     requires: "operator",
     group: "github-write",
     params: [{ name: "repo", label: "Repo", kind: "repo", required: true }],
@@ -176,7 +184,7 @@ export const STEPS: StepDef[] = [
     name: "labels-apply",
     title: "Apply labels on GitHub",
     description: "Puts the settled type label and flags of the current classification run onto the open items of one repo on GitHub. Refused unless the operator has approved labelling for that repo.",
-    stage: 4,
+    stage: runStage("labels-apply"),
     requires: "operator",
     group: "github-write",
     params: [
@@ -203,7 +211,7 @@ export const STEPS: StepDef[] = [
     name: "decide",
     title: "Ask decisions",
     description: "Turns items that need a decision, and items where Jev and Haiku disagree between scope labels, into decisions on the dashboard, each with a summary written by the chosen model. Opus then recommends an answer (or none) for each new decision and for open ones that have no recommendation yet; each Opus call counts as an item.",
-    stage: 3,
+    stage: runStage("decide"),
     requires: "operator",
     group: "decide",
     models: (p) => [String(p.model ?? "sonnet"), "opus"],
@@ -228,7 +236,7 @@ export const STEPS: StepDef[] = [
     name: "checks",
     title: "Refresh CI and merge state",
     description: "Reads the CI and merge state of every open pull request of one repo from GitHub. Writes nothing to GitHub.",
-    stage: 5,
+    stage: runStage("checks"),
     requires: "operator",
     group: "github-read",
     params: [{ name: "repo", label: "Repo", kind: "repo", required: true }],
@@ -243,7 +251,7 @@ export const STEPS: StepDef[] = [
     name: "merge",
     title: "Merge queued pull requests",
     description: "Lands the pull requests of one repo that may merge in integration batches: up to 10 at a time are merged into one integration branch, checked in the sandbox, opened as one pull request on the storytold repo and merged with merge commits through the safe-merge command once upstream CI is green. A failed batch is split in half; a single failing PR is held. Pull requests in a repo the sandbox cannot build are merged one at a time. When a few pull requests are ready (at most the single-merge limit, 3 by default), each is mergeable with green CI and no two change the same file, they are merged one at a time in order without a batch; each is checked again just before its merge and the first that is no longer ready ends the round.",
-    stage: 6,
+    stage: runStage("merge"),
     requires: "operator",
     group: "github-write",
     models: ["haiku"],
@@ -279,7 +287,7 @@ export const STEPS: StepDef[] = [
     name: "merge-ask",
     title: "Ask Merge? decisions",
     description: "Asks a \"Merge this PR?\" decision for every taken pull request the merge rule does not cover once its verification is in, in all tracked repos, whether or not merging is approved there. Calls no model and writes nothing to GitHub.",
-    stage: 6,
+    stage: runStage("merge-ask"),
     requires: "operator",
     group: "local",
     models: [],
@@ -296,7 +304,7 @@ export const STEPS: StepDef[] = [
     name: "act",
     title: "Comment and close",
     description: "Posts one short comment and closes the items an operator answered Out of scope or Close, and asks a \"Close this PR?\" decision for each PR whose review says close. Skips an item that already closed or whose PR head moved. Calls no model.",
-    stage: 6,
+    stage: runStage("act"),
     requires: "operator",
     group: "github-write",
     params: [
@@ -317,7 +325,7 @@ export const STEPS: StepDef[] = [
     name: "fixup",
     title: "Fix up take-fix pull requests",
     description: "For take-fix pull requests we may push to, Sonnet turns the review's fix list into a diff that is checked and applied on top of the reviewed head, checked by Opus, pushed to the contributor's branch and noted with one short comment. For a pull request it cannot push to, in a repo approved for comments, it posts the fixes as one comment instead. The new head is reviewed again.",
-    stage: 6,
+    stage: runStage("fixup"),
     requires: "operator",
     group: "github-write",
     models: ["sonnet", "opus"],
@@ -339,7 +347,7 @@ export const STEPS: StepDef[] = [
     name: "verify",
     title: "Plan verification of taken pull requests",
     description: "Sonnet decides per taken pull request of one repo whether CI is enough, or which crates and tests a build machine should run, or (bug fixes) a regression test that fails before the change. Queues the build tasks; reads GitHub, writes nothing to it.",
-    stage: 6,
+    stage: runStage("verify"),
     requires: "operator",
     group: "verify",
     models: ["sonnet"],
@@ -359,7 +367,7 @@ export const STEPS: StepDef[] = [
     name: "verify-collect",
     title: "Collect verification results",
     description: "Reads the finished build tasks of each pending verification and sets passed, failed or error from their exit codes. For a failure, Haiku summarises the log; the failure becomes a hold. Cancels the tasks of a PR whose head moved on, and queued warm builds of a branch that moved on.",
-    stage: 6,
+    stage: runStage("verify-collect"),
     requires: "operator",
     group: "verify",
     models: ["haiku"],
@@ -376,7 +384,7 @@ export const STEPS: StepDef[] = [
     name: "prioritize",
     title: "Prioritize open items",
     description: "Jev rates the priority level (P0 to P4, P4 = backlog) of open items whose text has no priority yet; Haiku decides where Jev is under 90 % sure. Then every item's reach (the tie-breaker inside a level) is recomputed from comments, linked PRs, duplicates, age and the security flag.",
-    stage: 2,
+    stage: runStage("prioritize"),
     requires: "operator",
     group: "priority",
     models: ["jev", "haiku"],
@@ -391,7 +399,7 @@ export const STEPS: StepDef[] = [
     name: "dupes",
     title: "Find duplicates",
     description: "Looks up the nearest neighbours of new and changed open items in the same repo, among open items and items closed in the last year. Jev checks each pair; Haiku gives a second opinion where Jev is under 90 % sure either way. Each confirmed duplicate becomes a \"Close as a duplicate?\" decision; the act step closes only on an operator's answer. Writes nothing to GitHub.",
-    stage: 3,
+    stage: runStage("dupes"),
     requires: "operator",
     group: "dupes",
     models: ["jev", "haiku"],
@@ -408,7 +416,7 @@ export const STEPS: StepDef[] = [
     name: "fixissue",
     title: "Fix issues",
     description: "The issue path of the pipeline. For open bugfix issues with a clear fix, Sonnet triages the issue, then writes a fix and a regression test as a diff that is checked and queued as build tasks: the test must fail on main and everything must pass with the fix. Rounds that fail are tried again, three at most.",
-    stage: 7,
+    stage: runStage("fixissue"),
     requires: "operator",
     group: "fixissue",
     models: ["sonnet", "haiku"],
@@ -430,7 +438,7 @@ export const STEPS: StepDef[] = [
     name: "fixissue-collect",
     title: "Collect fix results",
     description: "Reads the finished build tasks of each fix attempt. A fix passes when its tests pass and the regression test fails without it; Opus then checks the patch; on a reject the round fails and Opus's reasons go into the next round. Then the commit is pushed to the pipeline's fork, the pull request is opened and the issue gets one comment. For a failed round, Haiku summarises the log for the next round.",
-    stage: 7,
+    stage: runStage("fixissue-collect"),
     requires: "operator",
     group: "fixissue",
     models: ["haiku", "opus"],
@@ -447,7 +455,7 @@ export const STEPS: StepDef[] = [
     name: "rank",
     title: "Rank open items",
     description: "Computes the work rank of every open item: priority level (raised by one for the security flag), type label, size (changed lines of a PR, the Fix triage's estimate for an issue), then reach. Review, Fix (which skips P4), Verify, Fix-up, Decide and the merge queue take their items in this order. Calls no model and writes nothing to GitHub.",
-    stage: 2,
+    stage: runStage("rank"),
     requires: "operator",
     group: "local",
     models: [],
@@ -463,7 +471,7 @@ export const STEPS: StepDef[] = [
     name: "referee",
     title: "Referee label disagreements",
     description: "Sonnet settles items where Jev and Haiku chose different type labels and at least one is not a scope label (scope disagreements go to Decide). A sure answer settles the type; an unsure one leaves the label to a person.",
-    stage: 2,
+    stage: runStage("referee"),
     requires: "operator",
     group: "referee",
     models: ["sonnet"],
@@ -484,7 +492,7 @@ export const STEPS: StepDef[] = [
     name: "opus-review",
     title: "Review pull requests",
     description: "Opus reviews, one pull request per call, the pull requests we want from one repo: take, take with fixes, hold or close. After a new push it reads only the changes since the head it reviewed before. Its verdict and fix list are the ones every later stage reads.",
-    stage: 5,
+    stage: runStage("opus-review"),
     requires: "operator",
     group: "review",
     models: ["opus"],
@@ -504,7 +512,7 @@ export const STEPS: StepDef[] = [
     name: "review-post",
     title: "Post final reviews",
     description: "Posts the final Opus review of each pull request of one repo as one pull request review (a comment, never an approval or a change request) that says it is AI-generated and names the model. A review at a new head edits the earlier one. Skips a pull request that closed or moved on. Calls no model.",
-    stage: 5,
+    stage: runStage("review-post"),
     requires: "operator",
     group: "github-write",
     params: [
@@ -524,7 +532,7 @@ export const STEPS: StepDef[] = [
     name: "dupes-compare",
     title: "Compare duplicate groups",
     description: "Compares each group of duplicates in one pass: Opus, with read-only tools on the base checkout, for the pull requests of a group (diffs, titles, bodies and linked issues; CI and review state as background), Sonnet for its issues. It picks the best item to keep, lists what the others do better or add, and asks one decision per group. A closed or merged member wins without a call; a failed call falls back to the older-wins rule. A group is compared again only when a member's state, head or text changes. Writes nothing to GitHub.",
-    stage: 3,
+    stage: runStage("dupes-compare"),
     requires: "operator",
     group: "dupes",
     models: ["opus", "sonnet"],
@@ -539,7 +547,7 @@ export const STEPS: StepDef[] = [
     name: "conversation",
     title: "Answer conversations",
     description: "Answers each operator message in an item's conversation with one Opus call, with read-only tools on the item's repository, the workspace and the item tools. The reply may propose action cards that an operator runs with a button; nothing runs by itself. Messages are answered even for a repo whose pipeline is off. Each answered message counts as one item.",
-    stage: 3,
+    stage: runStage("conversation"),
     requires: "operator",
     group: "conversation",
     models: ["opus"],
@@ -555,7 +563,7 @@ export const STEPS: StepDef[] = [
     name: "areas-propose",
     title: "Propose areas",
     description: "One Opus call proposes the area list of a repo (10 to 25 areas with one-line descriptions), reading the repo's default branch, its docs and a sample of its open item titles. The proposal waits on the repo's page; nothing changes until an operator accepts it.",
-    stage: 2,
+    stage: runStage("areas-propose"),
     requires: "operator",
     group: "areas",
     models: ["opus"],
@@ -574,7 +582,7 @@ export const STEPS: StepDef[] = [
     name: "areas-suggest",
     title: "Suggest areas",
     description: "Sonnet reads a sample of the repo's open items that have no area and suggests new areas for them. An operator accepts or ignores each suggestion; accepting saves a new list version and re-scans the unassigned items.",
-    stage: 2,
+    stage: runStage("areas-suggest"),
     requires: "operator",
     group: "areas",
     models: ["sonnet"],
@@ -592,7 +600,7 @@ export const STEPS: StepDef[] = [
     name: "areas-rescan",
     title: "Re-scan areas",
     description: "Asks again for the open items of a repo that have no area (never asked, none of these, or unassigned by a removed area) against the repo's current area list: Jev first, Haiku where Jev is under 90 % sure or unavailable.",
-    stage: 2,
+    stage: runStage("areas-rescan"),
     requires: "operator",
     group: "classify",
     models: ["jev", "haiku"],
@@ -612,7 +620,7 @@ export const STEPS: StepDef[] = [
     name: "ci-approve",
     title: "Approve waiting CI runs",
     description: "Approves the Actions runs that GitHub holds for a maintainer's approval on outside contributors' pull requests, once the PR's current head has a final take or take-fix review. Skips a PR that is closed, a draft or at another head. Calls no model.",
-    stage: 6,
+    stage: runStage("ci-approve"),
     requires: "operator",
     group: "github-write",
     params: [

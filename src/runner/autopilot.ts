@@ -38,6 +38,7 @@ import { selectCandidates as verifyCandidates, unavailableCandidates } from "../
 import { collectDue } from "../verify/results.ts";
 import { collectDue as fixCollectDue, fixDue } from "../fixissue/index.ts";
 import { audit } from "../dash/audit.ts";
+import { defaultPerDay, lanesInOrder, limitSteps, zeroOnlySteps } from "../stages/registry.ts";
 import { applyUsedAnswers } from "../decisions-used.ts";
 import { duePriorityCount } from "../priority/index.ts";
 import { selectIssues } from "../fixissue/candidates.ts";
@@ -185,10 +186,10 @@ export function orderLanes<T extends { name: string }>(lanes: T[], tops: Map<str
   return lanes.map((l) => (tops.has(l.name) ? sorted[k++]! : l));
 }
 
-export const LANES: Lane[] = [
+/** The code of each lane, keyed by name. Names, steps and order come from the stage registry. */
+const LANE_CODE: Omit<Lane, "steps">[] = [
   {
     name: "classify",
-    steps: ["classify-new"],
     detect: (db, { run }) => {
       if (!run) return [];
       return dueItems(db, run, "new").due.length || haikuDue(db, run, 1).length ? [{ step: "classify-new", params: {} }] : [];
@@ -197,14 +198,12 @@ export const LANES: Lane[] = [
   {
     // Items without a priority at their current text hash; the scores of the others are refreshed by the same job.
     name: "priority",
-    steps: ["prioritize"],
     detect: (db) => (duePriorityCount(db) ? [{ step: "prioritize", params: {} }] : []),
   },
   {
     // Work score from the stored priority, size, type and security flag; no model. It is cheap and has no work test of its own:
     // the fingerprint (items, fix triage, priorities; not its own output) decides whether its input moved.
     name: "rank",
-    steps: ["rank"],
     topics: INPUT_TOPICS.filter((t) => t !== "ranks"),
     extra: (db) => String((db.prepare("SELECT COUNT(*) || ':' || COALESCE(MAX(at), '') AS s FROM main.item_priority").get() as { s: string }).s),
     minGapMs: 60_000,
@@ -212,24 +211,20 @@ export const LANES: Lane[] = [
   },
   {
     name: "embed",
-    steps: ["embed"],
     detect: (db) => (embedPending(db, embedderId(modelName())).length ? [{ step: "embed", params: {} }] : []),
   },
   {
     // Before Decide: items held as duplicates wait out the later stages.
     name: "dupes",
-    steps: ["dupes"],
     detect: (db) => (dupesWork(db) ? [{ step: "dupes", params: {} }] : []),
   },
   {
     // Each duplicate group is compared once its pairs are checked; the comparison asks the group decision.
     name: "dupes-compare",
-    steps: ["dupes-compare"],
     detect: (db) => (compareWork(db) ? [{ step: "dupes-compare", params: {} }] : []),
   },
   {
     name: "decide",
-    steps: ["decide"],
     detect: (db, { jevRun: run }) => {
       // Open scope decisions without a recommendation (asked before recommendations existed) also need a job; an answered-null one has recommended_by set.
       return (run && decideCandidates(db, run).length) || backfillIds(db, 1).length ? [{ step: "decide", params: {} }] : [];
@@ -238,7 +233,6 @@ export const LANES: Lane[] = [
   {
     // One repo per job, round robin; the repo's checks come before its review.
     name: "review",
-    steps: ["checks", "opus-review"],
     perRepo: true,
     detect: (db, { run, tracked }) => {
       const out: Candidate[] = [];
@@ -258,7 +252,6 @@ export const LANES: Lane[] = [
   },
   {
     name: "labels",
-    steps: ["labels-apply"],
     perRepo: true,
     detect: (db, { run, tracked }) => {
       if (!run) return [];
@@ -270,7 +263,6 @@ export const LANES: Lane[] = [
   {
     // Needs no merge approval: asking writes only decisions.
     name: "merge-ask",
-    steps: ["merge-ask"],
     detect: (db, { run, tracked }) => {
       const repos = new Set(tracked);
       return toAsk(buildQueue(db, { run, merged: "exclude" }).filter((e) => repos.has(e.repo))).length ? [{ step: "merge-ask", params: {} }] : [];
@@ -279,7 +271,6 @@ export const LANES: Lane[] = [
   {
     // Batches in flight and PRs waiting for CI are external waits: they are read again every WAITING_CI_RECHECK_MS, on unchanged inputs too.
     name: "merge",
-    steps: ["checks", "merge"],
     perRepo: true,
     extra: tasksSig,
     detect: (db, ctx) => {
@@ -314,14 +305,12 @@ export const LANES: Lane[] = [
   {
     // Comments and closes after operator answers, and Close? decisions for reviewed PRs.
     name: "act",
-    steps: ["act"],
     perRepo: true,
     detect: (db, { tracked }) =>
       tracked.filter((repo) => commentApprovalOf(db, repo) && (actPending(db, repo).length || closeCandidates(db, repo).length)).map((repo) => ({ step: "act", params: { repo } })),
   },
   {
     name: "fixup",
-    steps: ["fixup"],
     perRepo: true,
     detect: (db, { tracked }) => {
       const repos = tracked.filter((repo) => {
@@ -334,7 +323,6 @@ export const LANES: Lane[] = [
   {
     // One repo per job, round robin; the repo's checks come before its planning.
     name: "verify",
-    steps: ["checks", "verify"],
     perRepo: true,
     extra: tasksSig,
     detect: (db, { run, tracked }) => {
@@ -354,13 +342,11 @@ export const LANES: Lane[] = [
   },
   {
     name: "verify-collect",
-    steps: ["verify-collect"],
     extra: tasksSig,
     detect: (db) => (collectDue(db) ? [{ step: "verify-collect", params: {} }] : []),
   },
   {
     name: "fixissue",
-    steps: ["fixissue"],
     perRepo: true,
     extra: tasksSig,
     detect: (db, { tracked }) => fastFirst(db, tracked.filter((repo) => fixDue(db, repo)).sort(), (r) => selectIssues(db, r)[0]?.number).map((repo) => ({ step: "fixissue", params: { repo } })),
@@ -368,20 +354,17 @@ export const LANES: Lane[] = [
   },
   {
     name: "fixissue-collect",
-    steps: ["fixissue-collect"],
     extra: tasksSig,
     detect: (db) => (fixCollectDue(db) ? [{ step: "fixissue-collect", params: {} }] : []),
   },
   {
     // Label disagreements outside the scope labels, after Jev and Haiku have both answered.
     name: "referee",
-    steps: ["referee"],
     detect: (db, { run }) => (run && refereeCandidates(db, run, 1).length ? [{ step: "referee", params: {} }] : []),
   },
   {
     // The final Opus reviews, posted as one PR review each in repos approved for comments.
     name: "review-post",
-    steps: ["review-post"],
     perRepo: true,
     detect: (db, { tracked }) =>
       tracked.filter((repo) => commentApprovalOf(db, repo) && postCandidates(db, repo).length).sort().map((repo) => ({ step: "review-post", params: { repo } })),
@@ -389,17 +372,27 @@ export const LANES: Lane[] = [
   {
     // Operator messages in conversations; answered whether or not the item's repo is in scope, since an operator started them.
     name: "conversation",
-    steps: ["conversation"],
     detect: (db) => (pendingConversations(db).length ? [{ step: "conversation", params: {} }] : []),
   },
   {
     // Runs GitHub holds for approval on reviewed outside PRs; the checks job records them, the step approves.
     name: "ci-approve",
-    steps: ["ci-approve"],
     perRepo: true,
     detect: (db, { tracked }) => tracked.filter((repo) => ciApprovalOf(db, repo) && needsWork(db, repo).length).sort().map((repo) => ({ step: "ci-approve", params: { repo } })),
   },
 ];
+
+export const LANES: Lane[] = buildLanes(LANE_CODE);
+
+/** Every registry lane needs its code and every code entry a registry lane; a mismatch is a programming error. */
+export function buildLanes(code: Omit<Lane, "steps">[]): Lane[] {
+  const reg = lanesInOrder();
+  const names = new Set(reg.map((l) => l.name));
+  const missing = reg.filter((l) => !code.some((c) => c.name === l.name)).map((l) => l.name);
+  const extra = code.filter((c) => !names.has(c.name)).map((c) => c.name);
+  if (missing.length || extra.length) throw new Error(`autopilot lanes and the stage registry differ: no detect for [${missing}], no registry lane for [${extra}]`);
+  return reg.map((l) => ({ ...code.find((c) => c.name === l.name)!, steps: l.steps }));
+}
 
 // ---- limits and usage ----------------------------------------------------------
 
@@ -408,7 +401,7 @@ export const dayStart = (ms: number = Date.now()): string => `${new Date(ms).toI
 type LimitRow = { step: string; per_day: number | null; updated_by: string | null; updated_at: string | null };
 
 /** Daily limits that apply until an operator sets one. */
-export const DEFAULT_PER_DAY: Record<string, number> = { dupes: 2000, referee: 500, "dupes-compare": 200, conversation: 30, "ci-approve": 30 };
+export const DEFAULT_PER_DAY: Record<string, number> = defaultPerDay();
 
 export const limitRow = (db: DatabaseSync, step: string): LimitRow =>
   (db.prepare("SELECT * FROM stage_limits WHERE step = ?").get(step) as LimitRow | undefined) ?? { step, per_day: DEFAULT_PER_DAY[step] ?? null, updated_by: null, updated_at: null };
@@ -493,10 +486,10 @@ export function setEnabled(db: DatabaseSync, enabled: boolean, by: string): void
 }
 
 /** Steps that have a row in stage_limits, in pipeline order. */
-export const LIMIT_STEPS = ["classify-new", "embed", "dupes", "decide", "checks", "opus-review", "labels-apply", "merge", "act", "fixup", "verify", "prioritize", "fixissue", "referee", "review-post", "dupes-compare", "conversation", "ci-approve"];
+export const LIMIT_STEPS = limitSteps();
 
 /** Steps whose jobs cannot be sized to what remains of the day: only no limit or a pause makes sense. */
-export const ZERO_ONLY = ["checks"];
+export const ZERO_ONLY = zeroOnlySteps();
 
 export class LimitError extends Error {
   status = 400;
