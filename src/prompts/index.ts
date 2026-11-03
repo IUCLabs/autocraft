@@ -45,8 +45,12 @@ type Common = {
   extra?: { label: string; value: string }[];
 };
 
+export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
+
 export type ClaudePrompt = Common & {
   runner: "claude"; template: string;
+  /** Passed as --effort so the level never depends on the account's own settings. */
+  effort: Effort;
 };
 export type JevPrompt = Common & { runner: "jev"; request: JevRequest };
 
@@ -66,6 +70,7 @@ const HAIKU: ClaudePrompt = {
   runner: "claude",
   purpose: "Second opinion: one type label and the two flags for each item in a batch.",
   models: ["haiku"],
+  effort: "medium",
   placeholders: { items: ITEMS_JSON },
   template: `You classify GitHub issues and pull requests.
 
@@ -90,6 +95,7 @@ const REFEREE: ClaudePrompt = {
   runner: "claude",
   purpose: "Settles items where Jev and Haiku chose different type labels (outside the scope labels) and says whether it is sure; an unsure answer goes to a person.",
   models: ["sonnet"],
+  effort: "medium",
   placeholders: { items: ITEMS_JSON },
   template: `You referee type labels for GitHub issues and pull requests.
 
@@ -146,6 +152,7 @@ const REVIEW: ClaudePrompt = {
   runner: "claude",
   purpose: "Code review of a batch of related pull requests we want: a verdict, a reason, concrete fixes, duplicates and overlaps for each.",
   models: ["sonnet"],
+  effort: "medium",
   placeholders: { prs: `The pull requests as a JSON array indented by one space, one object per PR with ${PR_FIELDS}.` },
   template: `You review open pull requests on one of the storytold craft apps, open-source reimplementations of a reference application. Your verdicts decide which PRs we take into an integration batch. A wrong take costs more than a wrong hold.
 
@@ -190,6 +197,7 @@ const OPUS_REVIEW: ClaudePrompt = {
   runner: "claude",
   purpose: "Final code review of one pull request that the first review rated take or take-fix: its verdict replaces the first review's for every later stage. After a new push it reads only the changes since the head commit it reviewed before.",
   models: ["opus"],
+  effort: "high",
   placeholders: {
     pr: `The pull request as a JSON object indented by one space: ${OPUS_FIELDS}.`,
     repo_access: REPO_ACCESS_DOC,
@@ -240,6 +248,7 @@ const FIXUP: ClaudePrompt = {
   runner: "claude",
   purpose: "Turns the small mechanical fixes of a take-fix review into a unified diff for the contributor's branch.",
   models: ["sonnet"],
+  effort: "medium",
   placeholders: { pr: "The pull request as a JSON object indented by one space: ref, title, fixes (the review's list of file and change), files (path and full current content of each file the fixes name) and diff (the pull request's unified diff).", repo_access: REPO_ACCESS_DOC },
   sandbox: { tools: ["Read", "Grep", "Glob"], maxTurns: 20 },
   template: `You apply review fixes to a pull request on one of the storytold craft apps. The review listed small mechanical fixes. Make exactly those changes and nothing else.
@@ -273,6 +282,7 @@ const SUMMARY: ClaudePrompt = {
   runner: "claude",
   purpose: "A short plain summary for each item that becomes a scope decision, shown first on the decision card.",
   models: ["sonnet", "haiku"],
+  effort: "medium",
   placeholders: { items: `The items as a JSON array indented by one space, one object per item with ${ITEM_FIELDS}, labels (GitHub label names) and comments (the first ${COMMENTS_PER_ITEM} comments that are not by bots: author and the first ${COMMENT_LIMIT} characters of the body).` },
   template: `You summarise GitHub issues and pull requests for a maintainer who must decide whether each one is in scope. The project re-creates a reference application: an item is in scope when it brings the project closer to the reference application, and small extras beyond it are sometimes welcome. Niche or large additions belong in plug-ins.
 
@@ -302,6 +312,7 @@ const VERIFY_PLAN: ClaudePrompt = {
   runner: "claude",
   purpose: "Chooses what verification a taken pull request needs beyond GitHub CI: nothing, a build with named tests, or (for bug fixes) a regression test that fails before the change and passes after.",
   models: ["sonnet"],
+  effort: "medium",
   placeholders: { pr: `The pull request as a JSON object indented by one space: ref, title, body (first ${PLAN_BODY_LIMIT} characters), label (settled type label or null), review (verdict, reason, risks, fixes), crates (the workspace's crate names and directories), files (code files changed), tests_omitted (test paths left out of the diff) and diff (the unified diff of the code files).`, repo_access: REPO_ACCESS_DOC },
   sandbox: { tools: ["Read", "Grep", "Glob"], maxTurns: 20 },
   template: `You plan the automated verification of one open pull request on a Rust project, after it has been reviewed and taken. GitHub CI has run or will run too; you decide what extra evidence a build machine should produce. The machine builds the head commit, runs the tests you name and reports exit codes. You never judge the result.
@@ -335,6 +346,7 @@ const VERIFY_SUMMARY: ClaudePrompt = {
   runner: "claude",
   purpose: "Summarises in one short passage why a build or test step failed on a pull request, from the end of the step's log. Called only for a failure; pass or fail itself comes from exit codes.",
   models: ["haiku"],
+  effort: "medium",
   placeholders: { failure: `The failed step as a JSON object indented by one space: ref, step (its name), command and log (the last ${SUMMARY_LOG_BYTES / 1024} KiB of its output, scrubbed of credentials).` },
   template: `A build machine built and tested a pull request, and one step failed. You write the reason for the maintainer who reads the pull request.
 
@@ -358,6 +370,7 @@ const FIXISSUE_TRIAGE: ClaudePrompt = {
   runner: "claude",
   purpose: "Decides whether an issue has a clear bug and a clear fix, and names the crate and the files a fix would edit.",
   models: ["sonnet"],
+  effort: "medium",
   placeholders: { issue: `The issue as a JSON object indented by one space: ref, title, body (first ${ISSUE_BODY_LIMIT} characters), comments (author and body of the first comments), crates (the workspace's crate names and directories) and paths (the repository's Rust source file paths, at most ${MAX_PATHS}; left out when the call can read the repository).`, repo_access: REPO_ACCESS_DOC },
   sandbox: { tools: ["Read", "Grep", "Glob"], maxTurns: 20 },
   template: `You triage one open issue on a Rust project: is it a clear bug with a clear, small fix that can be shown by one automated test? You do not write the fix; you say whether it is fixable and which files to read.
@@ -388,6 +401,7 @@ const FIXISSUE_PATCH: ClaudePrompt = {
   runner: "claude",
   purpose: "Writes the fix for an issue and a regression test for it as one unified diff.",
   models: ["sonnet"],
+  effort: "high",
   placeholders: { issue: `The issue as a JSON object indented by one space: ref, title, body, comments, crate (name and dir), test_path (the one file to add), files (path and full current content of each file you may edit) and, from the second round on, previous (the last diff and why its build or tests failed, or why Opus rejected it).`, repo_access: REPO_ACCESS_DOC },
   sandbox: { tools: ["Read", "Grep", "Glob"], maxTurns: 30 },
   template: `You fix one bug on a Rust project and add a regression test for it. A build machine will apply your diff to the default branch, build it, and run the crate's tests. The test must fail on the code without your fix and pass with it.
@@ -425,6 +439,7 @@ const FIXUP_CHECK: ClaudePrompt = {
   runner: "claude",
   purpose: "Opus checks a fix-up patch we wrote before it is pushed to a contributor's branch: approve or reject, with reasons.",
   models: ["opus"],
+  effort: "high",
   placeholders: { pr: "The pull request as a JSON object indented by one space: ref, title, review_reason, fixes (the review's list of file and change), diff (the pull request's unified diff) and patch (our unified diff, applied on top of the PR's head).", repo_access: REPO_ACCESS_DOC },
   sandbox: { tools: ["Read", "Grep", "Glob"], maxTurns: 20 },
   template: `You check a patch before we push it to a contributor's branch on one of the storytold craft apps. A review listed small mechanical fixes for the pull request; our patch is meant to make exactly those fixes. A wrong push lands in someone else's branch, so reject when in doubt.
@@ -454,6 +469,7 @@ const FIXISSUE_CHECK: ClaudePrompt = {
   runner: "claude",
   purpose: "Opus checks the fix and regression test we wrote for an issue before we push it to our fork and open the pull request.",
   models: ["opus"],
+  effort: "high",
   placeholders: { issue: "The issue as a JSON object indented by one space: ref, title, body, comments, triage_reason (why the issue was judged fixable), test_path (the new regression test) and patch (our full unified diff: the fix and the test).", repo_access: REPO_ACCESS_DOC },
   sandbox: { tools: ["Read", "Grep", "Glob"], maxTurns: 20 },
   template: `You check a patch before we open a pull request with it on one of the storytold craft apps. The patch fixes a bug reported in an issue and adds a regression test. It already builds, its tests pass, and the new test fails without the fix. A maintainer will read it, so reject what they would reject.
@@ -510,6 +526,7 @@ const PRIORITY_HAIKU: ClaudePrompt = {
   runner: "claude",
   purpose: "Second opinion on the priority level of items where Jev is under 90 % sure.",
   models: ["haiku"],
+  effort: "medium",
   placeholders: { items: ITEMS_JSON },
   template: `You assign a priority level (P0 to P4) to GitHub issues and pull requests, by how much they matter to users of the application.
 
@@ -536,6 +553,7 @@ const DUPES_HAIKU: ClaudePrompt = {
   runner: "claude",
   purpose: "Second opinion on pairs of issues or pull requests of one repo that Jev is not sure are duplicates.",
   models: ["haiku"],
+  effort: "medium",
   placeholders: { pairs: `The pairs as a JSON array indented by one space, one object per pair with ${PAIR_FIELDS}.` },
   template: `You compare pairs of GitHub issues or pull requests of one project and say whether the two describe the same bug or request.
 
@@ -703,11 +721,11 @@ export function claudeArgs(id: ClaudePromptId, model: string, sandboxed = false)
   if (!p.models.includes(model)) throw new Error(`${id} is registered for ${p.models.join(", ")}, not ${model}`);
   if (sandboxed) {
     if (!p.sandbox) throw new Error(`${id} has no sandbox mode`);
-    return ["-p", "--model", model, "--output-format", "json", "--tools", p.sandbox.tools.join(","), "--allowedTools", `Read(/${REPO_PATH}/**)`,
+    return ["-p", "--model", model, "--effort", p.effort, "--output-format", "json", "--tools", p.sandbox.tools.join(","), "--allowedTools", `Read(/${REPO_PATH}/**)`,
       "--permission-mode", "dontAsk", "--permission-prompts", "none", "--restricted", "--add-dir", REPO_PATH, "--strict-mcp-config", "--disable-slash-commands",
       "--no-session-persistence", "--max-turns", String(p.sandbox.maxTurns)];
   }
-  return ["-p", "--model", model, "--output-format", "json", "--tools", "", "--strict-mcp-config", "--disable-slash-commands", "--no-session-persistence"];
+  return ["-p", "--model", model, "--effort", p.effort, "--output-format", "json", "--tools", "", "--strict-mcp-config", "--disable-slash-commands", "--no-session-persistence"];
 }
 
 export const JEV_ARGS = ["--compact", "ask"];
@@ -723,6 +741,7 @@ const shellWord = (a: string) => (a === "" ? '""' : /^[\w@%+=:,./-]+$/.test(a) ?
 function settings(p: ClaudePrompt | JevPrompt): PromptInfo["settings"] {
   const l = p.limits;
   const s: PromptInfo["settings"] = [
+    ...(p.runner === "claude" ? [{ label: "Effort", value: p.effort }] : []),
     { label: "Items per call", value: String(l.perCall) },
     { label: "Calls at once", value: p.runner === "claude" ? "As many as the enabled accounts have free slots for" : `The Jev setting (default ${JEV_PARALLEL_DEFAULT})` },
     { label: "Attempts", value: `${l.attempts} (a retry asks only for the items still missing)` },
@@ -735,7 +754,7 @@ function settings(p: ClaudePrompt | JevPrompt): PromptInfo["settings"] {
     s.push({ label: "Where", value: `An empty ${WORK_PATH} inside the sandbox with the checkout mounted at ${REPO_PATH} (--add-dir), so the checkout's own instructions and settings are not loaded; prompt on stdin` });
   } else if (p.runner === "claude") s.push({ label: "Where", value: "A new empty temporary directory, so no project instructions are loaded; prompt on stdin" });
   if (p.runner === "claude" && !p.sandbox) s.push({ label: "Tools", value: "None" });
-  else s.push({ label: "Where", value: "Request on stdin as one line of JSON" });
+  else if (p.runner === "jev") s.push({ label: "Where", value: "Request on stdin as one line of JSON" });
   if (p.extra) s.push(...p.extra);
   return s;
 }

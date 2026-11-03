@@ -64,6 +64,14 @@ describe("sandbox command", () => {
     assert.equal(plain[plain.indexOf("--tools") + 1], "");
   });
 
+  test("every Claude call sets its effort, so the account's settings never pick it", () => {
+    const effort = (id: keyof typeof CLAUDE_PROMPTS, sandboxed = false) => { const a = claudeArgs(id, CLAUDE_PROMPTS[id].models[0]!, sandboxed); return a[a.indexOf("--effort") + 1]; };
+    assert.equal(effort("review.opus", true), "high");
+    assert.equal(effort("review.opus"), "high");
+    assert.equal(effort("classify.haiku"), "medium");
+    assert.equal(effort("fixissue.patch", true), "high");
+  });
+
   test("the Prompts page shows tools, max turns and the sandbox", () => {
     const p = promptsReport(null).prompts.find((x) => x.id === "review.opus")!;
     const rows = Object.fromEntries(p.settings.map((s) => [s.label, s.value]));
