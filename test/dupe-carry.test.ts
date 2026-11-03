@@ -96,6 +96,10 @@ function world(o: { check?: string; canModify?: boolean } = {}): World {
   };
   return { head, fork, log, deps, asked, checked };
 }
+function storeSuggestion(db: DatabaseSync, text: string): void {
+  db.prepare("INSERT INTO dupe_groups (decision_id, repo, source, applied_answer) VALUES ('app:dupegroup:7', 'app', 'model', 'accept') ON CONFLICT DO NOTHING").run();
+  db.prepare("INSERT INTO dupe_group_texts (decision_id, option, number, step, text) VALUES ('app:dupegroup:7', 'accept', 7, 'suggestion', ?)").run(text);
+}
 const carry = (db: DatabaseSync) => db.prepare("SELECT state, attempts, outcome FROM dupe_carries").get() as { state: string; attempts: number; outcome: string };
 
 describe("carry-over", () => {
@@ -139,6 +143,7 @@ describe("carry-over", () => {
   test("without push permission the points go on the PR as a comment, with no model call", async () => {
     const w = world({ canModify: false });
     const db = fresh(w.head, { canModify: false, comment: true });
+    storeSuggestion(db, carryAskText([{ number: 8, points: [POINT] }]));
     const s = await runFixup(db, { repo: "app", dryRun: false }, () => {}, w.deps);
     assert.deepEqual(s.asked, ["app#7"]);
     assert.deepEqual(w.log, [`comment: ${carryAskText([{ number: 8, points: [POINT] }])}`]);
@@ -150,6 +155,7 @@ describe("carry-over", () => {
   test("a live PR that stopped accepting maintainer pushes falls back to the comment", async () => {
     const w = world({ canModify: false });
     const db = fresh(w.head, { canModify: true, comment: true });
+    storeSuggestion(db, carryAskText([{ number: 8, points: [POINT] }]));
     await runFixup(db, { repo: "app", dryRun: false }, () => {}, w.deps);
     assert.deepEqual(w.log, [`comment: ${carryAskText([{ number: 8, points: [POINT] }])}`]);
   });
@@ -157,8 +163,7 @@ describe("carry-over", () => {
   test("the stored suggestion text is posted as it is", async () => {
     const w = world({ canModify: false });
     const db = fresh(w.head, { canModify: false, comment: true });
-    db.prepare("INSERT INTO dupe_groups (decision_id, repo, source, applied_answer) VALUES ('app:dupegroup:7', 'app', 'model', 'accept') ON CONFLICT DO NOTHING").run();
-    db.prepare("INSERT INTO dupe_group_texts (decision_id, option, number, step, text) VALUES ('app:dupegroup:7', 'accept', 7, 'suggestion', 'stored suggestion text')").run();
+    storeSuggestion(db, "stored suggestion text");
     await runFixup(db, { repo: "app", dryRun: false }, () => {}, w.deps);
     assert.deepEqual(w.log, ["comment: stored suggestion text"]);
   });
@@ -168,5 +173,14 @@ describe("carry-over", () => {
     db.prepare("INSERT INTO settings (key, value) VALUES ('pilot_items', ?)").run(JSON.stringify(["app#999"]));
     const sel = selectFixups(db, "app");
     assert.equal(sel.fix.length + sel.ask.length, 0);
+  });
+
+  test("without a stored suggestion the carry is held and nothing is posted", async () => {
+    const w = world({ canModify: false });
+    const db = fresh(w.head, { canModify: false, comment: true });
+    const s = await runFixup(db, { repo: "app", dryRun: false }, () => {}, w.deps);
+    assert.deepEqual(w.log, []);
+    assert.deepEqual(s.held.map((h) => h.reason), ["no approved suggestion text"]);
+    assert.equal(carry(db).state, "held");
   });
 });

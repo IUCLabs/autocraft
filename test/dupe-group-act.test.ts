@@ -65,16 +65,16 @@ const answer = (db: DatabaseSync, id: string, key: string) => {
 };
 const state = (db: DatabaseSync, id: string) => getDecision(db, id)!;
 
-type Gh = { onRead?: (n: number) => void; heads?: Map<number, string>; closed?: Set<number>; failCloseOnce?: Set<number> };
+type Gh = { onRead?: (n: number) => void; onComment?: (id: string) => void; failClose?: Set<number>; heads?: Map<number, string>; closed?: Set<number>; failCloseOnce?: Set<number> };
 function fakes(log: string[], f: Gh = {}): ActDeps {
   const querier: Querier = validating({
     spent: 0, remaining: 5000,
     async query(query: string, vars: object) {
       const v = vars as { n?: number; id?: string; body?: string };
-      if (query.includes("addComment")) { log.push(`comment ${v.id}: ${v.body}`); return { addComment: { commentEdge: { node: { url: `https://x/${v.id}#c` } } } }; }
+      if (query.includes("addComment")) { f.onComment?.(v.id!); log.push(`comment ${v.id}: ${v.body}`); return { addComment: { commentEdge: { node: { url: `https://x/${v.id}#c` } } } }; }
       if (query.startsWith("mutation")) {
         const n = Number(v.id!.slice(1));
-        if (f.failCloseOnce?.delete(n)) throw new Error("boom");
+        if (f.failCloseOnce?.delete(n) || f.failClose?.has(n)) throw new Error("boom");
         log.push(`close ${v.id}`);
         return {};
       }
@@ -195,13 +195,36 @@ describe("act on group decisions", () => {
     assert.equal(db.prepare("SELECT COUNT(*) AS n FROM dupe_carries").get()!.n, 0);
   });
 
-  test("a kept item that was closed stops the decision before any write", async () => {
+  test("a kept item that was closed ends the group: members are released, the decision applied, nothing written", async () => {
     const db = await world();
     answer(db, PR_GROUP, "accept");
     const log: string[] = [];
     await run(db, fakes(log, { closed: new Set([11]) }));
     assert.deepEqual(writes(log), []);
-    assert.equal(state(db, PR_GROUP).applied_at, null);
+    assert.ok(state(db, PR_GROUP).applied_at);
+    assert.equal(duplicateHeld(db, "app", 12), false);
+    assert.equal(duplicateHeld(db, "app", 13), false);
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM audit WHERE action = 'duplicate-member-released'").get()!.n, 2);
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM audit WHERE action = 'duplicate-group-ended'").get()!.n, 1);
+  });
+
+  test("after the failure cap a member whose comment is public is settled, not released", async () => {
+    const db = await world();
+    answer(db, PR_GROUP, "accept");
+    const log: string[] = [];
+    for (let i = 0; i < 3; i++) await run(db, fakes(log, { failClose: new Set([12]) }));
+    assert.equal(log.filter((l) => l.startsWith("comment P12")).length, 1);
+    assert.equal(db.prepare("SELECT role FROM dupe_group_items WHERE decision_id = ? AND number = 12").get(PR_GROUP)!.role, "close");
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM dupe_group_posts WHERE decision_id = ? AND number = 12 AND step = 'released'").get(PR_GROUP)!.n, 0);
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM dupe_group_posts WHERE decision_id = ? AND number = 12 AND step = 'close'").get(PR_GROUP)!.n, 1);
+  });
+
+  test("an undo between the comment and the close stops before the close", async () => {
+    const db = await world();
+    answer(db, PR_GROUP, "accept");
+    const log: string[] = [];
+    await run(db, fakes(log, { onComment: (id) => { if (id === "P12") { db.prepare("UPDATE decisions SET answer = NULL, answered_by = NULL, answered_at = NULL WHERE id = ?").run(PR_GROUP); resetGroupAnswer(db, PR_GROUP); } } }));
+    assert.deepEqual(writes(log), [`comment P12: ${CLOSE_12}`]);
   });
 
   test("a member that keeps failing is skipped after three tries and later groups go on", async () => {

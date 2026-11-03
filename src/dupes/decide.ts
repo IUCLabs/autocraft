@@ -169,7 +169,8 @@ export function askGroupDecisions(db: DatabaseSync, repo: string | undefined, at
       // An answer waiting for Act that already lists every member to close: no second decision.
       const waiting = new Set((db.prepare(`SELECT gi.number FROM decisions d JOIN dupe_group_items gi ON gi.decision_id = d.id WHERE d.kind = 'duplicate' AND d.id LIKE '%:dupegroup:%' AND d.repo = ?
         AND d.answer IS NOT NULL AND d.answer NOT IN ('superseded', 'distinct') AND d.applied_at IS NULL`).all(p.repo) as { number: number }[]).map((r) => r.number));
-      if (p.items.filter((i) => i.role === "close").every((i) => waiting.has(i.number))) {
+      p.items = p.items.filter((i) => !(i.role === "close" && waiting.has(i.number)));
+      if (!p.items.some((i) => i.role === "close")) {
         db.exec("COMMIT");
         continue;
       }

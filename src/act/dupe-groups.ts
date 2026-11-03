@@ -92,7 +92,12 @@ export async function actOnGroups(db: DatabaseSync, run: GroupRun): Promise<Grou
         for (const k of items.filter((i) => i.role === "keep")) {
           const live = await run.io.live(k.number);
           if (!live || (live.state !== "OPEN" && !(live.type === "PullRequest" && live.state === "MERGED"))) {
-            run.log(`  ${dec.id}: the kept item ${ref(k.number)} is gone or closed; left for the next run`);
+            // Nothing stays held by a decision that can no longer close anything: the members are released and the next comparison asks again.
+            const reason = `the kept item ${ref(k.number)} is gone or closed`;
+            for (const c of closers) if (!posted.get(dec.id, c.number, "close")) skip(c.number, "close", reason, true);
+            db.prepare("UPDATE decisions SET applied_at = ? WHERE id = ? AND applied_at IS NULL").run(run.at(), dec.id);
+            audit(db, ACTOR, "duplicate-group-ended", dec.id, { reason });
+            run.log(`  ${dec.id}: ${reason}; group ended`);
             continue decisions;
           }
         }
@@ -135,6 +140,7 @@ export async function actOnGroups(db: DatabaseSync, run: GroupRun): Promise<Grou
           record(dec.id, c.number, "comment", url);
           audit(db, ACTOR, "act-comment", ref(c.number), { decision: dec.id, url, text });
         }
+        if (changed(c)) continue decisions;
         await run.io.close(live);
         record(dec.id, c.number, "close", url);
         audit(db, ACTOR, "act-close", ref(c.number), { decision: dec.id, head: live.head });
@@ -152,7 +158,9 @@ export async function actOnGroups(db: DatabaseSync, run: GroupRun): Promise<Grou
       db.prepare("INSERT INTO dupe_group_fails (decision_id, number, fails) VALUES (?, ?, 1) ON CONFLICT (decision_id, number) DO UPDATE SET fails = fails + 1").run(dec.id, cur.item.number);
       const n = (db.prepare("SELECT fails FROM dupe_group_fails WHERE decision_id = ? AND number = ?").get(dec.id, cur.item.number) as { fails: number }).fails;
       if (n < MAX_FAILS) return res;
-      skip(cur.item.number, cur.step, `${n} writes failed: ${why}`, cur.step === "close");
+      // A member whose comment is already public is settled, not released: re-asking would repeat the comment.
+      const commented = !!db.prepare("SELECT 1 FROM dupe_group_posts WHERE decision_id = ? AND number = ? AND step = 'comment' AND url IS NOT NULL").get(dec.id, cur.item.number);
+      skip(cur.item.number, cur.step, `${n} writes failed: ${why}`, cur.step === "close" && !commented);
     }
     // Applied once every member to close has a close record and the details comment is settled.
     if (closers.every((c) => posted.get(dec.id, c.number, "close")) && (!details || posted.get(dec.id, details.number, "details"))) {

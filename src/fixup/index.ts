@@ -27,7 +27,7 @@ import { MAX_ATTEMPTS, selectFixups, type FixCandidate } from "./candidates.ts";
 import { Git, exec, fixupDir, type Exec } from "./git.ts";
 import { scrubGitError } from "../worker/patch.ts";
 import { editable, validatePatch, type FixupPr } from "./patch.ts";
-import { HOLD_CANNOT_PUSH, askText, carryAskText, carryCommentText, commentText, commitMessage } from "./template.ts";
+import { HOLD_CANNOT_PUSH, askText, carryCommentText, commentText, commitMessage } from "./template.ts";
 import { commentApprovalOf } from "../act/approval.ts";
 
 export { selectFixups, MAX_ATTEMPTS, type FixCandidate, type FixSelection } from "./candidates.ts";
@@ -179,7 +179,15 @@ export async function runFixup(db: DatabaseSync, params: FixupParams, log: (line
       const pr = r.repository?.pullRequest;
       if (!pr || pr.state !== "OPEN" || pr.isDraft) { log(`  ${ref}: skipped: no longer an open, non-draft PR`); return; }
       if (pr.headRefOid !== c.head) { log(`  ${ref}: skipped: head moved to ${short(pr.headRefOid)} since the review`); return; }
-      const body = c.carry ? (c.carry.suggestion ?? carryAskText(c.carry.sources)) : askText(c.fixes);
+      if (c.carry && !c.carry.suggestion) {
+        // Only the text the operator saw and approved is ever posted.
+        const reason = "no approved suggestion text";
+        rec.fixup(c, "cannot-push", reason, []);
+        summary.held.push({ ref, reason });
+        log(`  ${ref}: held: ${reason}`);
+        return;
+      }
+      const body = c.carry ? c.carry.suggestion! : askText(c.fixes);
       const cm = await d.exec("gh", ["pr", "comment", String(c.number), "--repo", `${ORG}/${repo}`, "--body-file", "-"], { input: body });
       if (cm.code !== 0) { log(`  ${ref}: comment failed: ${oneLine(cm.stderr)}`); return; }
       rec.fixup(c, "asked", null, [...new Set(c.fixes.map((f) => f.file))]);
