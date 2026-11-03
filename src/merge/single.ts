@@ -3,6 +3,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import { audit } from "../dash/audit.ts";
 import { cachedDiff, ghDiff, type DiffFetcher } from "../review/diff.ts";
+import { mergeApprovalOf } from "./approval.ts";
 import { activeBatches } from "./batch-store.ts";
 import { runMerge, type MergeDeps, type MergeSummary } from "./index.ts";
 import { buildQueue, eligible } from "./queue.ts";
@@ -26,11 +27,14 @@ export function setSingleMergeMax(db: DatabaseSync, n: unknown, by: string): num
   return n;
 }
 
-/** Every path a unified diff touches (both sides of a rename). */
-export function pathsOfDiff(text: string): string[] {
+/** Every path a unified diff touches (both sides of a rename), or null when it has no files or a header cannot be read. */
+export function pathsOfDiff(text: string): string[] | null {
   const out = new Set<string>();
-  for (const m of text.matchAll(/^diff --git a\/(.+?) b\/(.+)$/gm)) { out.add(m[1]!); out.add(m[2]!); }
-  return [...out];
+  const headers = text.match(/^diff --git /gm)?.length ?? 0;
+  let parsed = 0;
+  for (const m of text.matchAll(/^diff --git a\/(.+?) b\/(.+)$/gm)) { out.add(m[1]!); out.add(m[2]!); parsed++; }
+  // Quoted (escaped) names are not parsed: the caller must not take such a diff as disjoint.
+  return headers === 0 || parsed !== headers ? null : [...out];
 }
 
 /**
@@ -46,12 +50,17 @@ export async function planSingles(db: DatabaseSync, repo: string, fetchDiff: Dif
   for (const e of ready) {
     const d = await cachedDiff(repo, e.number, e.head, fetchDiff);
     if (!d.ok) return null;
-    for (const p of pathsOfDiff(d.text)) {
+    const paths = pathsOfDiff(d.text);
+    if (!paths) return null;
+    for (const p of paths) {
       if (seen.has(p)) return null;
       seen.add(p);
     }
   }
-  return new Set(ready.map((e) => e.number));
+  // A PR refused at this state is left out until GitHub reports something new, so one that is always refused cannot block the rest.
+  const { refusedAsBefore } = await import("../runner/autopilot.ts");
+  const go = ready.filter((e) => !refusedAsBefore(db, e));
+  return go.length ? new Set(go.map((e) => e.number)) : null;
 }
 
 /**
@@ -63,6 +72,7 @@ export async function runSingles(
   db: DatabaseSync, params: { repo: string; limit?: number; onMerged?: (n: number) => void },
   log: (line: string) => void = console.log, deps?: MergeDeps, fetchDiff?: DiffFetcher,
 ): Promise<MergeSummary | null> {
+  if (!mergeApprovalOf(db, params.repo)) throw new Error(`merging in ${params.repo} is not approved`);
   if (activeBatches(db, params.repo).length) return null;
   const plan = await planSingles(db, params.repo, fetchDiff);
   if (!plan) return null;
@@ -77,7 +87,10 @@ export const commands = {
       const { connect } = await import("../db.ts");
       const db = connect();
       if (args.length > 1) throw new Error("usage: merge-single [N]");
-      if (args[0] !== undefined) setSingleMergeMax(db, Number(args[0]), "cli");
+      if (args[0] !== undefined) {
+        if (!/^\d{1,3}$/.test(args[0])) throw new Error("N must be a whole number from 0 to 100");
+        setSingleMergeMax(db, Number(args[0]), "cli");
+      }
       console.log(`single-merge limit: ${singleMergeMax(db)}`);
     },
   },

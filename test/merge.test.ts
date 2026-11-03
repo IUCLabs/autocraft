@@ -1,13 +1,15 @@
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
-import { describe, test } from "node:test";
+import { after, describe, test } from "node:test";
 import type { DatabaseSync } from "node:sqlite";
 import { connect } from "../src/db.ts";
 import type { Querier } from "../src/mirror.ts";
 import { runMerge, type CommandResult, type MergeDeps } from "../src/merge/index.ts";
 import { buildQueue, eligible, mergeDecisionId } from "../src/merge/queue.ts";
 import { runSingles, setSingleMergeMax, singleMergeMax } from "../src/merge/single.ts";
+import { setMergeApproval } from "../src/merge/approval.ts";
+import { insertBatch } from "../src/merge/batch-store.ts";
 import type { DiffFetcher } from "../src/review/diff.ts";
 import { finalizeReviews } from "./fixture.ts";
 import { SCRATCH } from "./scratch.ts";
@@ -274,7 +276,10 @@ describe("merging a few ready PRs one at a time", () => {
     const file = (f: string) => `diff --git a/${f} b/${f}\n--- a/${f}\n+++ b/${f}\n@@ -1 +1 @@\n-a\n+b\n`;
     return { ok: true, text: file(`src/pr${n}.rs`) + (shared.includes(n) ? file("Cargo.lock") : "") };
   };
+  const saved = process.env.CRAFT_AUTO_DIFF_CACHE;
+  after(() => { if (saved === undefined) delete process.env.CRAFT_AUTO_DIFF_CACHE; else process.env.CRAFT_AUTO_DIFF_CACHE = saved; });
   const attempt = async (db: DatabaseSync, fetchDiff: DiffFetcher, f: Fake = {}) => {
+    if (!db.prepare("SELECT 1 FROM settings WHERE key = 'merge_approved:app'").get()) setMergeApproval(db, "op", "app", true);
     process.env.CRAFT_AUTO_DIFF_CACHE = mkdtempSync(join(dir, "diffs-"));
     const log: Log = [];
     const r = await runSingles(db, { repo: "app" }, quiet, fakes(log, f), fetchDiff);
@@ -310,4 +315,23 @@ describe("merging a few ready PRs one at a time", () => {
     assert.ok((await attempt(db, diffs())).r);
     assert.equal((db.prepare("SELECT COUNT(*) AS n FROM audit WHERE action = 'single-merge-max'").get() as { n: number }).n, 3);
   });
+
+  test("a PR refused on a round does not hold up the next round, and an unreadable diff or a batch in flight leaves the work to the batches", async () => {
+    const db = fresh();
+    const bad = { exit: new Map([[1, { code: 1, stdout: "", stderr: "refused" }]]) };
+    const first = await attempt(db, diffs(), bad);
+    assert.deepEqual(first.r?.merged, []);
+    assert.equal(first.r?.refused.length, 1);
+    const second = await attempt(db, diffs(), bad);
+    assert.deepEqual(second.r?.merged, ["app#11", "app#16"]);
+
+    const odd: DiffFetcher = async () => ({ ok: true, text: 'diff --git "a/caf\\303\\251.rs" "b/caf\\303\\251.rs"\n' });
+    assert.equal((await attempt(fresh(), odd)).r, null);
+    assert.equal((await attempt(fresh(), async () => ({ ok: true, text: "" }))).r, null);
+
+    const busy = fresh();
+    insertBatch(busy, { repo: "app", branch: "integration-app-x-1", baseSha: "b", commitSha: "c", parentId: null, taskId: null, members: [{ number: 1, head_oid: "sha1" }], at: T1 });
+    assert.equal((await attempt(busy, diffs())).r, null);
+  });
 });
+

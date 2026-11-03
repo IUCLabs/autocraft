@@ -7,6 +7,8 @@
 // Without --apply it is a dry run: it reads the local tables only, calls
 // nothing and writes nothing.
 import { scopeRepos } from "../pilot.ts";
+import { backlogHeld, duplicateHeld } from "../dupes/held.ts";
+import { mergeApprovalOf } from "./approval.ts";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import type { DatabaseSync } from "node:sqlite";
@@ -248,9 +250,13 @@ export async function runMerge(db: DatabaseSync, params: MergeParams, log: (line
   // One PR at a time; any error that isn't a refusal stops the run.
   for (const e of picks) {
     if (params.stopOnRefusal && summary.refused.length) break;
+    if (params.stopOnRefusal && !mergeApprovalOf(db, repo)) { log(`  merging in ${repo} is no longer approved; stopping`); break; }
+    if (backlogHeld(db, repo, e.number) || duplicateHeld(db, repo, e.number)) { log(`  ${refOf(e)}: held since the queue was read; skipped`); continue; }
     summary.attempted.push(refOf(e));
     seen = null;
     const [ch] = await refreshChecks(db, d.querier, repo, [e.number]);
+    // GitHub often has no mergeable state yet right after a merge: end the round without a refusal on record.
+    if (params.stopOnRefusal && summary.merged.length && ch?.state === "OPEN" && ch.mergeable === "UNKNOWN") { log(`  ${refOf(e)}: GitHub has not computed its mergeable state yet; left for the next round`); summary.attempted.pop(); break; }
     if (ch) seen = { ci: ch.overall ?? "none", mergeable: ch.mergeable ?? "UNKNOWN" };
     if (!ch) { refuse(e, null, "GitHub returned no such PR"); continue; }
     if (ch.state !== "OPEN") { refuse(e, null, `no longer open on GitHub (${ch.state.toLowerCase()})`); continue; }
