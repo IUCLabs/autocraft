@@ -27,7 +27,7 @@ export function fixupDir(): string {
   return process.env.CRAFT_AUTO_FIXUP_DIR ?? join(homedir(), ".cache/craft-automation/fixups");
 }
 
-const HARDENING = [
+export const HARDENING = [
   "-c", "core.hooksPath=/dev/null",
   "-c", "protocol.file.allow=never",
   "-c", "protocol.ext.allow=never",
@@ -39,7 +39,7 @@ const HARDENING = [
   "-c", "credential.helper=",
   "-c", "credential.helper=!gh auth git-credential",
 ];
-const ENV = { GIT_LFS_SKIP_SMUDGE: "1", GIT_TERMINAL_PROMPT: "0", GIT_CONFIG_NOSYSTEM: "1", GIT_ATTR_NOSYSTEM: "1" };
+export const GIT_ENV = { GIT_LFS_SKIP_SMUDGE: "1", GIT_TERMINAL_PROMPT: "0", GIT_CONFIG_NOSYSTEM: "1", GIT_ATTR_NOSYSTEM: "1" };
 
 export class Git {
   readonly dir: string;
@@ -51,7 +51,7 @@ export class Git {
 
   /** git in the bare repository; `env` adds to the locked-down environment. */
   async git(args: string[], opts: { input?: string; env?: Record<string, string> } = {}): Promise<ExecResult> {
-    return this.run("git", [...HARDENING, ...args], { cwd: this.dir, input: opts.input, env: { ...ENV, ...opts.env } });
+    return this.run("git", [...HARDENING, ...args], { cwd: this.dir, input: opts.input, env: { ...GIT_ENV, ...opts.env } });
   }
 
   /** Like git(), failing on a non-zero exit. */

@@ -8,6 +8,8 @@ export type EarlierOpus = { head: string; verdict: string; sure: boolean; reason
 /** One PR as the Opus prompt shows it. Every string field is untrusted or derived from untrusted text. */
 export type OpusPr = {
   ref: string;
+  /** Where the call may read the repository inside the sandbox; not part of the quoted JSON. */
+  repo_dir?: string;
   title: string;
   body: string;
   author_association: string | null;
