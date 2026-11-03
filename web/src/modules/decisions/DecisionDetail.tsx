@@ -246,8 +246,8 @@ export function DecisionBody({
         </Disclosure>
       )}
       {d.publicText && (
-        <Disclosure title={d.kind === "merge" ? "Comment posted on GitHub if closed" : "Comment posted on GitHub"}>
-          <blockquote className="border-l-2 border-line-strong pl-3 text-sm leading-6 text-ink/75">{d.publicText}</blockquote>
+        <Disclosure title={d.kind === "merge" ? "Comment posted on GitHub if closed" : d.id.includes(":dupegroup:") ? "Comments posted on GitHub" : "Comment posted on GitHub"}>
+          <blockquote className="whitespace-pre-wrap border-l-2 border-line-strong pl-3 text-sm leading-6 text-ink/75">{d.publicText}</blockquote>
         </Disclosure>
       )}
       <Disclosure title="Classifiers" count={d.classifications.length}>

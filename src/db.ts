@@ -38,6 +38,7 @@ const ADDED_COLUMNS: [table: string, column: string, type: string][] = [
   ["repos", "reconciled_at", "TEXT"],
   ["opus_reviews", "public_review", "TEXT"],
   ["merge_batches", "fork", "TEXT"],
+  ["dupe_group_items", "comment", "TEXT"],
 ];
 
 // Indexes on added columns: they can only be created once the column exists.

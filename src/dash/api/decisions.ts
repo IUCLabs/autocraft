@@ -157,7 +157,7 @@ export function toDecision(db: DatabaseSync, d: DecisionRow, viewer: Viewer): De
     facts: factsOf(d),
     options: optionsOf(d).map((o) => ({ ...o, writes: writeEffect(d.kind, o.key) ?? undefined })),
     recommended: d.recommended ?? "",
-    publicText: commentPreview(d),
+    publicText: commentPreview(d, db),
     askedAt: d.asked_at, askedBy: d.asked_by ?? "the pipeline",
     docket: d.docket,
     answer: d.answer,

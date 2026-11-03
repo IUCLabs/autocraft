@@ -43,6 +43,32 @@ export function duplicateComment(o: { repo: string; original: string; closed: bo
   return `Duplicate of ${refText(o.repo, o.original)}${o.closed ? ", which is closed" : ""}.`;
 }
 
+
+/** The comment on a member closed in a duplicate group: the kept item, and for a PR the parts carried over. Carried points are model-written from untrusted text, so they are cleaned like a reason. */
+export function dupeGroupCloseComment(o: { kept: number; carry: string[] }): string {
+  const c = cleanReason(o.carry.slice(0, 2).join("; "));
+  return `Closing as a duplicate of #${o.kept}.${c ? `\nCarried over to #${o.kept}: ${c}` : ""}`;
+}
+
+export const DETAILS_MAX_BULLETS = 6;
+
+/** The comment on the kept issue listing what the closed reports add: one bullet per point, each crediting its source, the first point of every report before any second one. Null when no report adds anything. */
+export function dupeGroupDetailsComment(adds: { number: number; points: string[] }[]): string | null {
+  const bullets: string[] = [];
+  for (let round = 0; bullets.length < DETAILS_MAX_BULLETS; round++) {
+    let any = false;
+    for (const a of adds) {
+      const p = a.points[round];
+      if (p === undefined) continue;
+      any = true;
+      const t = cleanReason(p);
+      if (t && bullets.length < DETAILS_MAX_BULLETS) bullets.push(`- #${a.number}: ${t}`);
+    }
+    if (!any) break;
+  }
+  return bullets.length ? `Details from the closed duplicates:\n${bullets.join("\n")}` : null;
+}
+
 export const COMMENT_TEMPLATES: CommentTemplate[] = [
   {
     id: "act.scope-close", stage: "Act",
@@ -70,6 +96,26 @@ export const COMMENT_TEMPLATES: CommentTemplate[] = [
       { name: "closed", meaning: "When the original is no longer open on GitHub at the time of the comment, \", which is closed\" follows the number" },
     ],
     example: duplicateComment({ repo: "app", original: "app#12", closed: true }),
+  },
+  {
+    id: "act.duplicate-group-close", stage: "Act",
+    purpose: "Posted on each member of a duplicate group closed after an operator accepted (or changed) the group's answer. The exact text is written when the comparison runs and shown in the decision.",
+    text: dupeGroupCloseComment({ kept: 0, carry: ["{{carried}}"] }).replaceAll("#0", "#{{kept}}"),
+    placeholders: [
+      { name: "kept", meaning: "The number of the item that stays" },
+      { name: "carried", meaning: "For a pull request with parts carried over: the first two carry-over points of the comparison, cleaned to one line of at most 200 characters; the second line is left out when there are none" },
+    ],
+    example: dupeGroupCloseComment({ kept: 12, carry: ["master-page handling in src/pages.rs"] }),
+  },
+  {
+    id: "act.duplicate-group-details", stage: "Act",
+    purpose: "Posted once on the kept issue of a duplicate group, listing what the closed reports add.",
+    text: dupeGroupDetailsComment([{ number: 0, points: ["{{point}}"] }])!.replace("#0", "#{{source}}"),
+    placeholders: [
+      { name: "point", meaning: "A detail the closed report adds (steps, versions, logs), taken from the comparison and cleaned to one line of at most 200 characters; at most 6 bullets" },
+      { name: "source", meaning: "The number of the closed report the point comes from" },
+    ],
+    example: dupeGroupDetailsComment([{ number: 15, points: ["Happens on macOS 14 only."] }, { number: 18, points: ["Started after version 2.3."] }])!,
   },
   {
     id: "review.post", stage: "Review",

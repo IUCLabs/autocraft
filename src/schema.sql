@@ -865,6 +865,28 @@ CREATE TABLE IF NOT EXISTS dupe_group_items (
   role TEXT NOT NULL,
   target INTEGER,
   detail TEXT,
+  comment TEXT,                       -- the exact text the Act step posts: on a close member its closing comment, on the kept issue the details comment
   PRIMARY KEY (decision_id, number)
 );
 CREATE INDEX IF NOT EXISTS dupe_group_items_item ON dupe_group_items(repo, number);
+-- What the Act step already wrote for a group decision, per member and step (comment | details | close). Written right after each write so a retry never repeats it.
+CREATE TABLE IF NOT EXISTS dupe_group_posts (
+  decision_id TEXT NOT NULL,
+  number INTEGER NOT NULL,
+  step TEXT NOT NULL,
+  url TEXT,
+  at TEXT NOT NULL,
+  PRIMARY KEY (decision_id, number, step)
+);
+-- Carry-over of a kept PR's group: parts of the closed PRs to port onto it (Fix-up). queued | done | held.
+CREATE TABLE IF NOT EXISTS dupe_carries (
+  decision_id TEXT NOT NULL,
+  repo TEXT NOT NULL,
+  number INTEGER NOT NULL,            -- the kept PR
+  state TEXT NOT NULL,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  outcome TEXT,                       -- pushed | asked | gone | too-large | failed, with reason
+  to_head TEXT,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (decision_id, number)
+);

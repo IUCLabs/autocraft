@@ -23,11 +23,12 @@ import { cachedDiff, ghDiff, type DiffFetcher } from "../review/diff.ts";
 import { checkLine, parseCheck, recordCheck } from "../patchcheck/index.ts";
 import { CHECK_DIFF_CAP, CHECK_PATCH_CAP, type FixupCheckInput } from "../patchcheck/types.ts";
 import { pushApprovalOf } from "./approval.ts";
-import { selectFixups, type FixCandidate } from "./candidates.ts";
+import { MAX_ATTEMPTS, selectFixups, type FixCandidate } from "./candidates.ts";
 import { Git, exec, fixupDir, type Exec } from "./git.ts";
 import { scrubGitError } from "../worker/patch.ts";
 import { editable, validatePatch, type FixupPr } from "./patch.ts";
-import { HOLD_CANNOT_PUSH, askText, commentText, commitMessage } from "./template.ts";
+import { HOLD_CANNOT_PUSH, askText, carryAskText, carryCommentText, commentText, commitMessage } from "./template.ts";
+import { commentApprovalOf } from "../act/approval.ts";
 
 export { selectFixups, MAX_ATTEMPTS, type FixCandidate, type FixSelection } from "./candidates.ts";
 
@@ -124,6 +125,15 @@ class Recorder {
   /** A fixups row and a stages row: `hold` for the two states that need a person, else the PR's `take` stage with a note. */
   fixup(c: FixCandidate, state: "pushed" | "failed" | "refused" | "rejected" | "cannot-push" | "too-large" | "asked", reason: string | null, files: string[], toHead: string | null = null): void {
     const at = this.at();
+    if (c.carry) {
+      // A carry-over keeps its own record; the PR's take-fix tries and stage are not touched.
+      const ended = state === "pushed" || state === "asked" || state === "cannot-push" || state === "too-large";
+      const tried = !ended;
+      const next = ended || c.attempt >= MAX_ATTEMPTS ? (state === "pushed" || state === "asked" ? "done" : "held") : "queued";
+      this.db.prepare("UPDATE dupe_carries SET state = ?, attempts = attempts + ?, outcome = ?, to_head = ?, updated_at = ? WHERE decision_id = ? AND number = ?")
+        .run(next, tried || state === "pushed" ? 1 : 0, reason ? `${state}: ${reason}` : state, toHead, at, c.carry.decisionId, c.number);
+      return;
+    }
     this.db.prepare("INSERT INTO fixups (repo, number, from_head, to_head, state, reason, files, attempt, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
       .run(c.repo, c.number, c.head, toHead, state, reason, JSON.stringify(files), c.attempt, at);
     const hold = state === "cannot-push" || state === "too-large";
@@ -162,16 +172,16 @@ export async function runFixup(db: DatabaseSync, params: FixupParams, log: (line
     log(`  ${refOf(c)}: held: ${HOLD_CANNOT_PUSH}`);
   }
   let handled = 0;
-  for (const c of asks) {
+  const askOne = async (c: FixCandidate) => {
     const ref = refOf(c);
     try {
       const r = await d.querier.query(PR_QUERY, { name: repo, n: c.number }) as { repository?: { pullRequest?: PrNode | null } };
       const pr = r.repository?.pullRequest;
-      if (!pr || pr.state !== "OPEN" || pr.isDraft) { log(`  ${ref}: skipped: no longer an open, non-draft PR`); continue; }
-      if (pr.headRefOid !== c.head) { log(`  ${ref}: skipped: head moved to ${short(pr.headRefOid)} since the review`); continue; }
-      const body = askText(c.fixes);
+      if (!pr || pr.state !== "OPEN" || pr.isDraft) { log(`  ${ref}: skipped: no longer an open, non-draft PR`); return; }
+      if (pr.headRefOid !== c.head) { log(`  ${ref}: skipped: head moved to ${short(pr.headRefOid)} since the review`); return; }
+      const body = c.carry ? carryAskText(c.carry.sources) : askText(c.fixes);
       const cm = await d.exec("gh", ["pr", "comment", String(c.number), "--repo", `${ORG}/${repo}`, "--body-file", "-"], { input: body });
-      if (cm.code !== 0) { log(`  ${ref}: comment failed: ${oneLine(cm.stderr)}`); continue; }
+      if (cm.code !== 0) { log(`  ${ref}: comment failed: ${oneLine(cm.stderr)}`); return; }
       rec.fixup(c, "asked", null, [...new Set(c.fixes.map((f) => f.file))]);
       audit(db, ACTOR, "fixup-comment", ref, { run: runId, head: c.head, text: body });
       params.onHandled?.(++handled);
@@ -180,7 +190,8 @@ export async function runFixup(db: DatabaseSync, params: FixupParams, log: (line
     } catch (e) {
       log(`  ${ref}: not asked: ${oneLine(String((e as Error).message ?? e))}`);
     }
-  }
+  };
+  for (const c of asks) await askOne(c);
   if (!picks.length) return summary;
 
   const who = await whoAmI(d.exec);
@@ -188,8 +199,7 @@ export async function runFixup(db: DatabaseSync, params: FixupParams, log: (line
   mkdirSync(d.root, { recursive: true });
   for (const c of picks) {
     const ref = refOf(c);
-    const files = [...new Set(c.fixes.map((f) => f.file))];
-    const refusedPaths = files.filter((f) => !editable(f));
+    let files = [...new Set(c.fixes.map((f) => f.file))];
     const fail = (state: "failed" | "refused" | "rejected", raw: string) => {
       const reason = scrubReason(raw, d.root);
       rec.fixup(c, state, reason, files);
@@ -203,13 +213,26 @@ export async function runFixup(db: DatabaseSync, params: FixupParams, log: (line
       log(`  ${ref}: held: ${reason}`);
     };
     try {
-      if (refusedPaths.length) { hold("too-large", "the fixes name files a fix-up may not edit"); continue; }
+      if (!c.carry && files.some((f) => !editable(f))) { hold("too-large", "the fixes name files a fix-up may not edit"); continue; }
       const r = await d.querier.query(PR_QUERY, { name: repo, n: c.number }) as { repository?: { pullRequest?: PrNode | null } };
       const pr = r.repository?.pullRequest;
       if (!pr || pr.state !== "OPEN" || pr.isDraft) { log(`  ${ref}: skipped: no longer an open, non-draft PR`); continue; }
       if (pr.headRefOid !== c.head) { log(`  ${ref}: skipped: head moved to ${short(pr.headRefOid)} since the review`); continue; }
       params.onHandled?.(++handled);
-      if (!pr.maintainerCanModify || !pr.headRepository) { hold("cannot-push", HOLD_CANNOT_PUSH); continue; }
+      if (!pr.maintainerCanModify || !pr.headRepository) {
+        // A carry-over we can't push is suggested on the PR instead, when the repo allows comments.
+        if (c.carry && commentApprovalOf(db, repo)) await askOne(c);
+        else hold("cannot-push", HOLD_CANNOT_PUSH);
+        continue;
+      }
+      let carried: FixupPr["carried_from"];
+      if (c.carry) {
+        const w = await carryWork(c, d.fetchDiff);
+        if (!w.ok) { fail("refused", w.reason); continue; }
+        c.fixes = w.fixes;
+        carried = w.carried;
+        files = [...new Set(c.fixes.map((f) => f.file))];
+      }
       if (pr.mergeable === "CONFLICTING") { log(`  ${ref}: skipped: conflicts with the base branch`); continue; }
 
       const head = await git.fetchPr(ORG, repo, c.number);
@@ -233,7 +256,7 @@ export async function runFixup(db: DatabaseSync, params: FixupParams, log: (line
 
       const checkout = (await d.checkout?.(repo, c.number, head)) ?? undefined;
       const repoDir = checkout ? { repo_dir: REPO_PATH } : {};
-      const reply = await d.ask(db, [{ ref, title: oneTitle(db, c), fixes: c.fixes, files: shown, diff: diff.text, ...repoDir }], checkout);
+      const reply = await d.ask(db, [{ ref, title: oneTitle(db, c), fixes: c.fixes, files: shown, diff: diff.text, ...(carried ? { carried_from: carried } : {}), ...repoDir }], checkout);
       if (reply === null) { fail("failed", "the model gave no answer"); continue; }
       const v = validatePatch(reply, files);
       if (!v.ok) { fail("refused", v.reason); continue; }
@@ -271,7 +294,7 @@ export async function runFixup(db: DatabaseSync, params: FixupParams, log: (line
       if (now.headRefOid !== c.head) { log(`  ${ref}: skipped: head moved to ${short(now.headRefOid)} during the model calls`); continue; }
 
       // Claim after the patch is validated and approved, just before the push.
-      if (!(now.assignees?.nodes ?? []).length) {
+      if (!c.carry && !(now.assignees?.nodes ?? []).length) {
         await d.querier.query(ASSIGN, { id: now.id, user: who.nodeId });
         audit(db, ACTOR, "assign", ref, { run: runId, assignee: who.login });
         log(`  ${ref}: assigned to ${who.login}`);
@@ -290,7 +313,7 @@ export async function runFixup(db: DatabaseSync, params: FixupParams, log: (line
       summary.pushed.push(ref);
       log(`  ${ref}: pushed ${short(commit)} on ${short(head)}: ${v.files.join(", ")}`);
 
-      const body = commentText(v.files);
+      const body = c.carry ? carryCommentText(c.carry.sources.map((x) => x.number), v.files) : commentText(v.files);
       const cm = await d.exec("gh", ["pr", "comment", String(c.number), "--repo", `${ORG}/${repo}`, "--body-file", "-"], { input: body });
       if (cm.code === 0) audit(db, ACTOR, "fixup-comment", ref, { run: runId, text: body });
       else log(`  ${ref}: comment failed: ${oneLine(cm.stderr)}`);
@@ -300,6 +323,32 @@ export async function runFixup(db: DatabaseSync, params: FixupParams, log: (line
   }
   log(`fixup ${repo}: ${summary.pushed.length} pushed, ${summary.asked.length} asked, ${summary.failed.length} failed, ${summary.held.length} held; run ${runId}`);
   return summary;
+}
+
+const DIFF_FILE = /^diff --git a\/(\S+) b\/\S+$/gm;
+const CARRY_MAX_FIXES = 8;
+
+/**
+ * The fixes and the source diffs for a carry-over: each point is tied to the editable files of the source PR's diff it
+ * names, or to all of that PR's editable files when it names none. Reads the source diffs (cached by head).
+ */
+async function carryWork(c: FixCandidate, fetchDiff: DiffFetcher): Promise<{ ok: true; fixes: FixCandidate["fixes"]; carried: NonNullable<FixupPr["carried_from"]> } | { ok: false; reason: string }> {
+  const fixes: FixCandidate["fixes"] = [];
+  const carried: NonNullable<FixupPr["carried_from"]> = [];
+  for (const src of c.carry!.sources) {
+    if (!src.head) return { ok: false, reason: `#${src.number} has no recorded head` };
+    const diff = await cachedDiff(c.repo, src.number, src.head, fetchDiff);
+    if (!diff.ok) return { ok: false, reason: `no diff of #${src.number}: ${oneLine(diff.error)}` };
+    if (diff.text.length > DIFF_CAP) return { ok: false, reason: `the diff of #${src.number} is over the ${DIFF_CAP} character limit` };
+    const paths = [...new Set([...diff.text.matchAll(DIFF_FILE)].map((m) => m[1]!))].filter(editable);
+    for (const point of src.points) {
+      const named = paths.filter((p) => point.includes(p));
+      for (const file of named.length ? named : paths) fixes.push({ file, change: `from #${src.number}: ${point}` });
+    }
+    carried.push({ ref: `${c.repo}#${src.number}`, points: src.points, diff: diff.text });
+  }
+  if (!fixes.length) return { ok: false, reason: "the closed pull requests change no file a fix-up may edit" };
+  return { ok: true, fixes: fixes.slice(0, CARRY_MAX_FIXES), carried };
 }
 
 function oneTitle(db: DatabaseSync, c: FixCandidate): string {

@@ -10,7 +10,10 @@ import { safePath } from "./patch.ts";
 export const MAX_ATTEMPTS = 2;
 
 export type Fix = { file: string; change: string };
-export type FixCandidate = { repo: string; number: number; head: string; reason: string; fixes: Fix[]; attempt: number };
+/** Parts of PRs closed as duplicates that a duplicate group's kept PR should take over (src/act/dupe-groups.ts queues them). */
+export type Carry = { decisionId: string; sources: { number: number; head: string | null; points: string[] }[] };
+/** `carry` set: the candidate is a carry-over job; its fixes are worked out from the source PRs' diffs when it runs. */
+export type FixCandidate = { repo: string; number: number; head: string; reason: string; fixes: Fix[]; attempt: number; carry?: Carry };
 export type FixSelection = {
   /** Take-fix PRs we may push to, in a repo with push approval. */
   fix: FixCandidate[];
@@ -93,8 +96,41 @@ export function classifyFixups(db: DatabaseSync, repo: string): Classified[] {
   return out;
 }
 
+/** Queued carry-over jobs for open, non-draft kept PRs: pushed when we may push, else posted as a comment when the repo allows comments. */
+export function carryCandidates(db: DatabaseSync, repo: string): { fix: FixCandidate[]; ask: FixCandidate[] } {
+  const out = { fix: [] as FixCandidate[], ask: [] as FixCandidate[] };
+  const rows = db.prepare(`SELECT k.decision_id, k.attempts, i.number, i.head_oid, i.updated_at, i.is_draft,
+      c.head_oid AS c_head, c.state AS c_state, c.is_draft AS c_draft, c.fetched_at AS c_at, c.maintainer_can_modify AS can_modify, c.mergeable
+    FROM dupe_carries k JOIN items i ON i.repo = k.repo AND i.number = k.number AND i.kind = 'pr' AND i.state = 'OPEN'
+    LEFT JOIN pr_checks c ON c.repo = i.repo AND c.number = i.number
+    WHERE k.repo = ? AND k.state = 'queued' ORDER BY k.number`).all(repo) as (Row & { decision_id: string; attempts: number })[];
+  const commenting = commentApprovalOf(db, repo) !== null;
+  const approved = pushApprovalOf(db, repo) !== null;
+  for (const r of rows) {
+    const fresh = r.c_at && (!r.updated_at || r.c_at > r.updated_at);
+    if (fresh ? r.c_state !== "OPEN" || r.c_draft : r.is_draft) continue;
+    const head = headOf(r);
+    if (!head || r.mergeable === "CONFLICTING") continue;
+    const sources = (db.prepare("SELECT number, detail FROM dupe_group_items WHERE decision_id = ? AND kind = 'pr' AND role = 'close' ORDER BY number").all(r.decision_id) as { number: number; detail: string | null }[])
+      .map((x) => {
+        let pts: unknown = [];
+        try { pts = (JSON.parse(x.detail ?? "null") as { carry?: unknown } | null)?.carry ?? []; } catch { /* no points */ }
+        const sh = (db.prepare("SELECT head_oid FROM items WHERE repo = ? AND number = ?").get(repo, x.number) as { head_oid: string | null } | undefined)?.head_oid ?? null;
+        return { number: x.number, head: sh, points: Array.isArray(pts) ? pts.filter((p): p is string => typeof p === "string") : [] };
+      }).filter((x) => x.points.length);
+    if (!sources.length) continue;
+    const c: FixCandidate = { repo, number: r.number, head, reason: `Parts of ${sources.map((x) => `#${x.number}`).join(", ")}, closed as duplicates, to carry over.`, fixes: [], attempt: r.attempts + 1, carry: { decisionId: r.decision_id, sources } };
+    if (r.can_modify && approved && c.attempt <= MAX_ATTEMPTS) out.fix.push(c);
+    else if (commenting) out.ask.push(c);
+  }
+  return out;
+}
+
 export function selectFixups(db: DatabaseSync, repo: string): FixSelection {
   const out: FixSelection = { fix: [], cannotPush: [], ask: [] };
+  const carry = carryCandidates(db, repo);
+  out.fix.push(...carry.fix);
+  out.ask.push(...carry.ask);
   for (const x of classifyFixups(db, repo)) {
     if (x.bucket === "ask") out.ask.push(x.c);
     if (x.done) continue;

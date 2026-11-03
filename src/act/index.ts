@@ -28,10 +28,13 @@ import { headOf } from "../review/candidates.ts";
 import { notOwnIntegrationSql } from "../dupes/held.ts";
 import { applyDuplicateAnswers } from "../dupes/decide.ts";
 import { commentApprovalOf } from "./approval.ts";
+import { actOnGroups, type GroupIo } from "./dupe-groups.ts";
+import { previewOf } from "../dupes/texts.ts";
 import { cleanReason, duplicateComment, ORG, prCloseComment, scopeCloseComment } from "./templates.ts";
 import { inPilot, pilotSql } from "../pilot.ts";
 
 const ACTOR = "act";
+const NO_IO: GroupIo = { live: async () => null, comment: async () => "", close: async () => {} };
 const KIND = "comment-close";
 const DUP_FACT = "duplicate of ";
 const REASON_FACT = "review reason: ";
@@ -74,10 +77,11 @@ export const closeDecisionId = (repo: string, number: number, head: string): str
 const WRITES: Partial<Record<Kind, Record<string, string>>> = {
   scope: { close: "closes it on GitHub" },
   close: { close: "closes the PR on GitHub" },
-  duplicate: { close: "closes it on GitHub" },
+  duplicate: { close: "closes it on GitHub", accept: "posts the comments shown and closes the duplicates on GitHub" },
   merge: { merge: "merges on GitHub", close: "closes the PR on GitHub" },
 };
-export const writeEffect = (kind: Kind, optionKey: string): string | null => WRITES[kind]?.[optionKey] ?? null;
+export const writeEffect = (kind: Kind, optionKey: string): string | null =>
+  WRITES[kind]?.[optionKey] ?? (kind === "duplicate" && optionKey.startsWith("keep:") ? WRITES.duplicate!.accept! : null);
 
 const refOf = (e: { repo: string; number: number }) => `${e.repo}#${e.number}`;
 const short = (sha: string) => sha.slice(0, 7);
@@ -203,7 +207,8 @@ function commentFor(d: DecisionRow, t: Target): string {
 }
 
 /** The exact comment the act step posts for a decision, for the dashboard. Null when none is fixed in advance. */
-export function commentPreview(d: DecisionRow): string | null {
+export function commentPreview(d: DecisionRow, db?: DatabaseSync): string | null {
+  if (d.kind === "duplicate" && d.id.includes(":dupegroup:")) return db ? previewOf(db, d.id) : null;
   if (d.kind === "scope" || d.kind === "close" || d.kind === "merge") return commentFor(d, { decisionId: d.id, kind: d.kind, repo: d.repo ?? "", number: d.number ?? 0 });
   if (d.kind === "duplicate") {
     const orig = factValue(d, DUP_FACT);
@@ -231,6 +236,7 @@ export async function runAct(db: DatabaseSync, params: ActParams, log: (line: st
     summary.asked = closeCandidates(db, repo).map((r) => closeDecisionId(r.repo, r.number, r.head_oid));
     for (const id of summary.asked) log(`  would ask Close? ${id}`);
     for (const t of todo) log(`  would comment and close ${refOf(t)} (${t.decisionId})`);
+    await actOnGroups(db, { repo, io: NO_IO, at, log, left: () => Infinity, handled: () => {}, dryRun: true });
     log(`act ${repo}: dry run, nothing called or written`);
     summary.done = todo.map(refOf);
     return summary;
@@ -304,6 +310,25 @@ export async function runAct(db: DatabaseSync, params: ActParams, log: (line: st
       log(`  ${refOf(t)}: failed: ${why}`);
       break;
     }
+  }
+  // Duplicate groups: the stored comments and closes, within what is left of the limit.
+  if (!summary.failed.length) {
+    const io: GroupIo = {
+      live: (n) => readLive(d.querier, repo, n),
+      comment: async (live, body) => {
+        const r = await d.querier.query(COMMENT, { id: live.id, body }) as { addComment?: { commentEdge?: { node?: { url?: string } } } };
+        return r.addComment?.commentEdge?.node?.url ?? "";
+      },
+      close: async (live) => { await d.querier.query(live.type === "PullRequest" ? CLOSE_PR : CLOSE_ISSUE, { id: live.id }); },
+    };
+    const g = await actOnGroups(db, {
+      repo, io, at, log, dryRun: false,
+      left: () => (params.limit === undefined ? Infinity : params.limit - handled),
+      handled: () => { handled++; params.onHandled?.(handled); },
+    });
+    summary.done.push(...g.done);
+    summary.skipped.push(...g.skipped);
+    summary.failed.push(...g.failed);
   }
   log(`act ${repo}: ${summary.done.length} closed, ${summary.skipped.length} skipped, ${summary.failed.length} failed, ${summary.asked.length} asked`);
   return summary;

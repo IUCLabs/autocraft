@@ -11,6 +11,7 @@ import { actionable, ask, factsOf, getDecision } from "../decisions.ts";
 import { compareCanonical, canonInfo } from "./canonical.ts";
 import { DUP_FACT, GROUP_OPTIONS, groupId, keepKey, keptOf } from "./held.ts";
 import { duplicateGroups, kindSetsOf, currentComparison, type Group, type KindSet, type StoredComparison } from "./plan.ts";
+import { storeTexts } from "./texts.ts";
 import { inPilot, pilotSqlFor } from "../pilot.ts";
 
 export { duplicateEdges, duplicateGroups, type Group } from "./plan.ts";
@@ -149,6 +150,7 @@ export function askGroupDecisions(db: DatabaseSync, repo: string | undefined, at
     db.prepare("DELETE FROM dupe_group_items WHERE decision_id = ?").run(id);
     const ins = db.prepare("INSERT INTO dupe_group_items (decision_id, repo, number, kind, role, target, detail) VALUES (?, ?, ?, ?, ?, ?, ?)");
     for (const i of p.items) ins.run(id, p.repo, i.number, i.kind, i.role, i.target, i.detail ? JSON.stringify(i.detail) : null);
+    storeTexts(db, id);
     asked.push(id);
   }
   return asked;
@@ -208,7 +210,7 @@ export function applyDuplicateAnswers(db: DatabaseSync, at: string): number {
       if (a.answer === "distinct") {
         markDistinct(db, a.repo, members, at);
         db.prepare("UPDATE decisions SET applied_at = ? WHERE id = ? AND applied_at IS NULL").run(at, a.id);
-      } else if (kept !== null) rekeep(db, a.id, kept);
+      } else if (kept !== null) { rekeep(db, a.id, kept); storeTexts(db, a.id); }
       db.prepare("UPDATE dupe_groups SET applied_answer = ? WHERE decision_id = ?").run(a.answer, a.id);
       audit(db, ACTOR, "duplicate-answer", `${a.repo}#${a.number}`, { decision: a.id, answer: a.answer });
       n++;
