@@ -1,5 +1,4 @@
 // `autocraft worker serve`: runs build tasks of the coordinator in containers.
-import { envVar } from "../env.ts";
 import { mkdirSync, readFileSync } from "node:fs";
 import { detectCapabilities, loadWorkerConfig, readKey } from "./config.ts";
 import { WorkerApi } from "./client.ts";
@@ -9,6 +8,7 @@ import { requestUpdate, statusLines } from "../build/worker-update.ts";
 
 export { rustPlan, hasCargoLock } from "./rust.ts";
 export type { Capabilities, TaskStep, ClaimedTask } from "./types.ts";
+import { envVar } from "../env.ts";
 
 const USAGE = `usage: autocraft worker serve [--config FILE]   (default: $AUTOCRAFT_WORKER_CONFIG)
        autocraft worker update-code --sha SHA --ssh USER@HOST --key FILE --git-dir BARE_REPO

@@ -1,13 +1,13 @@
 // Sandboxed tool access for model calls: what a call needs to run claude with
 // read-only file tools on a checkout, and the default way to get a checkout of
 // a pull request's head commit from the cached bare clone.
-import { envVar } from "../env.ts";
 import { accessSync, constants, existsSync, readFileSync, realpathSync } from "node:fs";
 import { delimiter, join } from "node:path";
 import { exec, fixupDir, Git } from "../fixup/git.ts";
 import { buildCheckout, checkoutRoot, pruneCheckouts } from "./checkout.ts";
 
 export { REPO_PATH, REPOS_ROOT, AGENTS_PATH, reposPath, sandboxCommand, type SandboxSpec } from "./command.ts";
+import { envVar } from "../env.ts";
 
 export const ORG = "storytold";
 const MAX_AGE_MS = 24 * 3600_000;

@@ -6,7 +6,6 @@
 //
 // Without --apply it is a dry run: it reads the local tables only, calls
 // nothing and writes nothing.
-import { envVar } from "../env.ts";
 import { scopeRepos } from "../pilot.ts";
 import { FAST_FLOOR, workScores } from "../fasttrack.ts";
 import { mergeHeld } from "./holds.ts";
@@ -28,6 +27,7 @@ import { TIER_LABEL } from "../whitelist.ts";
 import { buildQueue, ciAllows, toAsk, countStates, eligible, HEAD_FACT, MERGE_OPTIONS, mergeDecisionId, QUEUE_STATES, VERIFY_UNAVAILABLE, verifyAllows, type QueueEntry } from "./queue.ts";
 
 export { buildQueue, countStates, QUEUE_STATES, toAsk, type QueueEntry, type QueueState } from "./queue.ts";
+import { envVar } from "../env.ts";
 
 export const ORG = "storytold";
 /** Name of the built-in guarded merge (`autocraft safe-merge`); any other `$AUTOCRAFT_MERGE_CMD` is run as an external command. */

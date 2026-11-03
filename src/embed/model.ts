@@ -1,9 +1,9 @@
 // Sentence-embedding models run locally on the CPU through ONNX Runtime
 // (@huggingface/transformers). Model files are downloaded from Hugging Face
 // once into the model cache and read from there afterwards.
-import { envVar } from "../env.ts";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { envVar } from "../env.ts";
 
 export type Role = "item" | "query";
 

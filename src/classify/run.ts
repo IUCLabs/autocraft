@@ -1,5 +1,4 @@
 // Runs the classifiers: Jev (one `jev ask` per item) and Haiku (batches through `claude -p`).
-import { envVar } from "../env.ts";
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -23,6 +22,7 @@ import { defaultWorkspace } from "../sandbox/workspace.ts";
 import { CLAUDE_PROMPTS, JEV_ARGS, JEV_USD_PER_INPUT_TOKEN, JEV_PROMPTS, claudeArgs, claudeParts, claudePromptOf, jevPromptOf, joinParts, renderClaude, withoutRepoDir, renderJev, type ClaudeInput, type ClaudePromptId, type JevPromptId } from "../prompts/index.ts";
 import type { DupePair } from "../dupes/pair.ts";
 import { flagsOf, jevVerdict, parseHaikuReply, parseRef, refOf, type Item, type JevAnswers, type Verdict } from "./parse.ts";
+import { envVar } from "../env.ts";
 
 export function loadRefs(file: string): { repo: string; number: number }[] {
   const out: { repo: string; number: number }[] = [];

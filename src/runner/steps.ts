@@ -5,11 +5,11 @@
 //
 // Params are only enums, tracked repo names, bounded integers and run ids:
 // nothing a person types can reach a model's prompt or a shell.
-import { envVar } from "../env.ts";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { DatabaseSync } from "node:sqlite";
 import { DECIDE_MODELS } from "../decide/index.ts";
+import { envVar } from "../env.ts";
 
 type Base = { name: string; label: string; help?: string; required?: boolean };
 export type ParamDef =

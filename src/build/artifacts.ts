@@ -2,12 +2,12 @@
 // build_artifacts. The bytes are untrusted. Their type comes from sniffing
 // them, only a few kinds are accepted, and nothing here ever executes or
 // renders them.
-import { envVar } from "../env.ts";
 import { mkdirSync, readFileSync, renameSync, statSync, unlinkSync, rmSync } from "node:fs";
 import { dirname, join, resolve, sep } from "node:path";
 import { createHash } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { dbPath } from "../db.ts";
+import { envVar } from "../env.ts";
 
 export const MAX_ARTIFACT_BYTES = 50 * 1024 * 1024;
 export const MAX_TASK_ARTIFACT_BYTES = 200 * 1024 * 1024;

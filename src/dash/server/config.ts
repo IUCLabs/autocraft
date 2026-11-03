@@ -1,4 +1,3 @@
-import { envVar } from "../../env.ts";
 import { readFileSync, statSync } from "node:fs";
 import { isIP } from "node:net";
 import { resolve } from "node:path";
@@ -6,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { randomToken } from "./crypto.ts";
 import { dbPath } from "../../db.ts";
 import { defaultImageCacheDir } from "./images.ts";
+import { envVar } from "../../env.ts";
 
 export type Secrets = { githubClientId: string; githubClientSecret: string; sessionKey: string };
 

@@ -5,10 +5,10 @@
 //   AUTOCRAFT_ACCOUNTS_ROOT  directory holding one config directory per account an operator added (<root>/<id>)
 //   AUTOCRAFT_USAGE_DIR      directory with one <id>.json usage reading per account (default <root>/.usage)
 //   AUTOCRAFT_CLAUDE_BIN     the claude command (default: claude on the PATH)
-import { envVar } from "../env.ts";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
+import { envVar } from "../env.ts";
 
 export const ACCOUNT_ID = /^[a-z0-9][a-z0-9_-]{0,31}$/;
 

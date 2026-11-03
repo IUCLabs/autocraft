@@ -8,7 +8,6 @@
 // One run advances every batch of the repo in flight, then starts the next batch when none is left. A failed
 // batch is split in half and each half retried; a single PR that fails goes on hold. When the default branch
 // moves, the batch is rebuilt on the new head. Every GitHub write goes through `exec` / `run`.
-import { envVar } from "../env.ts";
 import { baseScopeRepos, scopeRepos } from "../pilot.ts";
 import { isFastTracked, workScores } from "../fasttrack.ts";
 import { mergeHeld } from "./holds.ts";
@@ -31,6 +30,7 @@ import { mergeApprovalOf } from "./approval.ts";
 import { ORG, prInfo, viewerOf, mergeRun, DEFAULT_MERGE_COMMAND, type CommandResult } from "./index.ts";
 import { discussionMovedChecked } from "../review/discussion.ts";
 import { PIPELINE_LOGIN_KEY, buildQueue, eligible, singleMergeOnly, type QueueEntry } from "./queue.ts";
+import { envVar } from "../env.ts";
 
 const ACTOR = "batch";
 const PR_URL = new RegExp(`^https://github\\.com/${ORG}/[A-Za-z0-9._-]+/pull/(\\d+)$`);

@@ -2,11 +2,11 @@
 // checkout is untrusted: a bare repository only (no working tree, so no
 // filters, textconv drivers or hooks run), reached over HTTPS with the gh
 // credential helper, with every command given the same locked-down config.
-import { envVar } from "../env.ts";
 import { spawn } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { envVar } from "../env.ts";
 
 export type ExecResult = { code: number; stdout: string; stderr: string };
 export type ExecOpts = { cwd?: string; env?: Record<string, string>; input?: string };

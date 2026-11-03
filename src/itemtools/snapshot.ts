@@ -4,11 +4,11 @@
 // read it through the item tools (src/itemtools/server). Nothing written on the
 // dashboard (notes, opinions, comments), no settings, audit, accounts, access
 // lists, tokens or host paths goes in. Only public repositories are copied.
-import { envVar } from "../env.ts";
 import { existsSync, mkdirSync, renameSync, rmSync, statSync, unlinkSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { dbPath } from "../db.ts";
+import { envVar } from "../env.ts";
 
 export function snapshotDir(): string {
   return envVar("SNAPSHOT_DIR") ?? join(dirname(dbPath()), "item-snapshot");

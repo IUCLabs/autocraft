@@ -1,5 +1,4 @@
 // autocraft runner serve | exec | enqueue | jobs | cancel | steps; autocraft pipeline on | off | status | limit
-import { envVar } from "../env.ts";
 import { startWorkerServer } from "../build/worker-api.ts";
 import { acquireLock } from "../mirror.ts";
 import { connect } from "../db.ts";
@@ -11,6 +10,7 @@ import { PilotError, pilotItems, setPilot } from "../pilot.ts";
 import { enqueue, JobError, listJobs, requestCancel } from "./jobs.ts";
 import { DEFAULT_MAX_JOBS, Runner, runnerLockPath } from "./runner.ts";
 import { loadSteps } from "./steps.ts";
+import { envVar } from "../env.ts";
 
 const USAGE = `usage: autocraft runner serve
        autocraft runner steps

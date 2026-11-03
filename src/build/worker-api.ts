@@ -2,7 +2,6 @@
 // default 127.0.0.1:8981), separate from the dashboard. Workers authenticate with a bearer
 // key; every call refreshes the environment's heartbeat. Bodies are size-capped and
 // everything a worker sends is stored as data, never executed, rendered or put in a prompt.
-import { envVar } from "../env.ts";
 import { createWriteStream, unlinkSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -13,6 +12,7 @@ import { RateLimiter } from "../dash/server/util.ts";
 import { ArtifactError, MAX_ARTIFACT_BYTES, NAME_RE, storeArtifact, tempPath } from "./artifacts.ts";
 import { authenticate, BuildError, hello, touch } from "./envs.ts";
 import { appendLog, claim, finishTask, heartbeat, MAX_CHUNK_BYTES, ownedTask, startTask } from "./tasks.ts";
+import { envVar } from "../env.ts";
 
 export const DEFAULT_WORKER_LISTEN = "127.0.0.1:8981";
 /** Largest JSON body: a log chunk of 64 KB with its JSON escaping, or a result list. */

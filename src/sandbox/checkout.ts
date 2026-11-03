@@ -2,12 +2,12 @@
 // built from the bare cached clone without a working tree. Only regular files
 // are written, one by one, under validated paths: no symlinks, submodules,
 // devices or `.git` entries exist in the copy, and nothing in it is executed.
-import { envVar } from "../env.ts";
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { GIT_ENV, HARDENING } from "../fixup/git.ts";
+import { envVar } from "../env.ts";
 
 export type CheckoutCaps = { maxFiles: number; maxBytes: number; maxFileBytes: number };
 export const DEFAULT_CAPS: CheckoutCaps = { maxFiles: 20_000, maxBytes: 150 * 1024 * 1024, maxFileBytes: 2 * 1024 * 1024 };

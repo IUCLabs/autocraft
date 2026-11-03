@@ -1,4 +1,3 @@
-import { envVar } from "./env.ts";
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -8,6 +7,7 @@ import { fillClassHashes, fillEmbedHashes } from "./itemhash.ts";
 import { BOOKKEEPING_COLUMNS, liveSql } from "./live.ts";
 import { JEV_USD_PER_INPUT_TOKEN } from "./prompts/index.ts";
 import { JEV_NEEDS_DECISION_YES, JEV_SECURITY_YES } from "./classify/parse.ts";
+import { envVar } from "./env.ts";
 
 export const DEFAULT_DB = join(homedir(), ".local/share/autocraft/mirror.db");
 

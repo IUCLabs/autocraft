@@ -4,7 +4,6 @@
 // stops jobs whose cancel was requested, runs the autopilot (queues jobs while the
 // pipeline switch is on) and marks
 // jobs left running by an earlier runner as failed.
-import { envVar } from "../env.ts";
 import { spawn, type ChildProcess } from "node:child_process";
 import { closeSync, mkdirSync, openSync, readFileSync, utimesSync } from "node:fs";
 import { homedir } from "node:os";
@@ -20,6 +19,7 @@ import { checkPendingUpdate } from "../build/worker-update.ts";
 import { jobRow, now, pruneJobs, RUNNER_STOPPED } from "./jobs.ts";
 import { OffThread } from "./offthread.ts";
 import { loadSteps } from "./steps.ts";
+import { envVar } from "../env.ts";
 
 export const logsDir = (): string => envVar("RUNNER_LOGS") ?? join(homedir(), ".cache/autocraft-logs/jobs");
 

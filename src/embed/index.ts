@@ -1,10 +1,10 @@
 // `autocraft embed`: embed new and changed tracked items for similar items and
 // semantic search.
-import { envVar } from "../env.ts";
 import { refreshSnapshot } from "../itemtools/snapshot.ts";
 import { connect } from "../db.ts";
 import { localEmbedder, modelCacheDir, modelName } from "./model.ts";
 import { embedItems } from "./store.ts";
+import { envVar } from "../env.ts";
 
 const USAGE = "usage: autocraft embed [--all] [--threads N] [--batch N]";
 const MAX_THREADS = 8;

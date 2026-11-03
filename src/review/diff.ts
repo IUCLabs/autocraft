@@ -1,11 +1,11 @@
 // PR diffs: fetched with `gh pr diff`, cached by head commit, and cut down to
 // the code a reviewer reads (tests and lockfiles are listed, not shown).
-import { envVar } from "../env.ts";
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
+import { envVar } from "../env.ts";
 
 const ORG = "storytold";
 // gh picks its account from the working directory, so it runs in this repo.

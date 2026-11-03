@@ -4,7 +4,6 @@
 // in mirrored text of tracked repos (the `repos` lookup, see image-index.ts);
 // redirects are followed by hand and re-checked; the bot's token goes only to
 // github.com. Upstream fetches are limited to a few at a time, 5 MB each.
-import { envVar } from "../../env.ts";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdir, readdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
@@ -13,6 +12,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Semaphore } from "./limits.ts";
+import { envVar } from "../../env.ts";
 
 export const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 export const MAX_UPSTREAM_FETCHES = 4;

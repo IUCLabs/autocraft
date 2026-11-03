@@ -1,5 +1,4 @@
 // Mirror of every issue and PR of the storytold org into SQLite, via `gh api graphql`.
-import { envVar } from "./env.ts";
 import { refreshSnapshot } from "./itemtools/snapshot.ts";
 import { isCounted } from "./review/discussion.ts";
 import { spawnSync } from "node:child_process";
@@ -12,6 +11,7 @@ import { connect, dbPath } from "./db.ts";
 import { trackedNames } from "./repos.ts";
 import { audit } from "./dash/audit.ts";
 import { hashColumns } from "./itemhash.ts";
+import { envVar } from "./env.ts";
 
 const ORG = "storytold";
 const OVERLAP_MS = 10 * 60 * 1000;

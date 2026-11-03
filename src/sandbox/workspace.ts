@@ -5,7 +5,6 @@
 // per repository); a checkout of a new head is built then, and a call waits
 // for it only briefly: it mounts the previous checkout when the new one is
 // not ready.
-import { envVar } from "../env.ts";
 import { existsSync, rmSync, statSync } from "node:fs";
 import type { DatabaseSync } from "node:sqlite";
 import { audit } from "../dash/audit.ts";
@@ -13,6 +12,7 @@ import { trackedNames } from "../repos.ts";
 import { SHARED_NAME } from "./command.ts";
 import { checkoutHeld, touchCheckout } from "./checkout.ts";
 import { checkoutForCommit, sandboxAvailable } from "./index.ts";
+import { envVar } from "../env.ts";
 
 export const EXCLUDE_KEY = "workspace_exclude";
 export const EXCLUDE_MAX = 100;
