@@ -233,6 +233,33 @@ export interface ItemVerification {
   tasks: { id: number; role: "head" | "base"; state: TaskState; results: TaskResult[]; endedAt: string | null }[];
 }
 
+export type ReviewVerdictName = "take" | "take-fix" | "hold" | "close";
+
+/** One reviewer's verdict on a head commit. */
+export interface ReviewSide {
+  verdict: ReviewVerdictName;
+  reason: string;
+  fixes: { file: string; change: string }[];
+  risks: string[];
+  at: string;
+}
+
+/**
+ * The two review passes of a PR head. `opus` is null while Opus has not reviewed the head or when the skip list
+ * exempted it (then `skipReason` says why). `final` is the verdict every later stage reads: Opus's, or Sonnet's when
+ * skip-listed or when Sonnet held or closed; `decided` is false while a Sonnet take or take-fix waits for Opus.
+ * When Opus is unsure and disagrees with Sonnet, `final.verdict` is hold and its reason shows both reviews.
+ */
+export interface ItemReviews {
+  head: string;
+  /** The head is the PR's current head. */
+  current: boolean;
+  sonnet: ReviewSide | null;
+  opus: (ReviewSide & { sure: boolean; mode: "full" | "delta"; baseHead: string | null }) | null;
+  skipReason: string | null;
+  final: { verdict: ReviewVerdictName; source: "opus" | "sonnet" | "skip-list"; reason: string; decided: boolean };
+}
+
 export type FixupState = "pushed" | "failed" | "refused" | "cannot-push" | "too-large" | "asked" | "rejected";
 /** The operator releases of an item: the last path segment of POST /api/items/:repo/:n/<action>. */
 export type ReleaseAction = "review-again" | "verify-again" | "fix-again";
