@@ -4,6 +4,86 @@ The pipeline sorts the craft apps' open issues and PRs (about 21,000), reviews a
 
 ## The flow
 
+### Who does what
+
+Each column is an actor. Rows run top to bottom in pipeline order. Arrows are hand-offs, dashed arrows are rarer branches. Cards that write to GitHub name the approval they need.
+
+```swimlane
+pipeline
+```
+
+### Sequence
+
+```mermaid
+sequenceDiagram
+  participant C as Contributor
+  participant A as AutoCraft (rules)
+  participant M as Models
+  participant S as Sandbox
+  participant O as Operator
+  participant G as GitHub writes
+
+  C->>A: opens or updates an issue or PR
+  A->>A: Sync every minute, Embed, find neighbours
+  A->>M: Duplicate check (Jev, then Haiku)
+  alt duplicate
+    M->>O: Duplicate? (close / not a duplicate / keep both)
+    opt answered close
+      O->>G: Act: comment and close
+    end
+  end
+  A->>M: Classify (Jev, Haiku backup), Priority (Jev)
+  opt needs decision or the two disagree
+    M->>O: Decide (scope call)
+  end
+  alt out of scope
+    O->>G: Act: comment and close
+  else type settled
+    O->>G: Label (label approval)
+  end
+  alt issue
+    G->>M: Fix: Sonnet writes patch and test
+    M->>S: build and test the patch
+    alt clear fix
+      S->>G: open PR from fork (fix approval)
+      G->>M: our PR goes to Review
+    else no clear fix
+      S->>O: Hold
+    end
+  else PR
+    G->>M: Review (Sonnet)
+  end
+  alt take-fix
+    M->>G: Fix-up: patch pushed to PR branch (push approval)
+    G->>M: new head, Review again
+    opt cannot push
+      G->>C: comment lists the fixes (comment approval)
+      C->>M: pushes a new head, Review again
+    end
+  else hold
+    M->>O: waits for a person
+  else close
+    M->>O: Close this PR?
+    O->>G: Act: comment and close (comment approval)
+  else take
+    M->>S: Verify: Sonnet plan, build and tests
+    alt passed
+      S->>A: Merge queue: rule met?
+      alt rule met
+        A->>G: Merge via safe-merge (merge approval)
+      else rule not met
+        A->>O: Merge?
+        O->>G: Merge (merge approval)
+      end
+    else failed
+      S->>M: Haiku failure summary
+      M->>O: Hold
+    end
+  end
+```
+
+### Flowchart
+
 Yellow boxes are decisions a person answers, blue boxes are model calls, green boxes run in the sandbox, red boxes write to GitHub. Every red box needs the operator's approval for that repo (Repos page) and stays within its daily limit.
 
 ```mermaid

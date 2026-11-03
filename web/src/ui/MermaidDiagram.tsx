@@ -127,6 +127,7 @@ export function MermaidDiagram({ source }: { source: string }) {
           themeVariables: t.themeVariables,
           // Natural size: a wide diagram scrolls sideways instead of shrinking.
           flowchart: { useMaxWidth: false, htmlLabels: false, curve: "basis", padding: 10 },
+          sequence: { useMaxWidth: false },
         });
         const src = source.replace(/^\s*classDef .*$/gm, "");
         // Mermaid measures text in a scratch element whose <style> the CSP drops, so

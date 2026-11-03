@@ -3,6 +3,7 @@ import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { ImageIcon, ExternalLinkIcon } from "lucide-react";
 import { cn } from "./cn";
+import { Swimlane } from "./Swimlane";
 import { proxiedImage, remarkHtmlToMarkdown, safeUrl } from "./markdownHtml";
 
 export { proxiedImage };
@@ -38,6 +39,12 @@ function Image({ src, alt }: { src?: string; alt?: string }) {
 // can choose to open.
 const MermaidDiagram = lazy(() => import("./MermaidDiagram").then((m) => ({ default: m.MermaidDiagram })));
 
+function fenceLang(children: React.ReactNode): string | null {
+  const child = Children.toArray(children)[0];
+  if (!isValidElement<{ className?: string }>(child)) return null;
+  return /\blanguage-swimlane\b/.test(child.props.className ?? "") ? "swimlane" : null;
+}
+
 function mermaidSource(children: React.ReactNode): string | null {
   const child = Children.toArray(children)[0];
   if (!isValidElement<{ className?: string; children?: React.ReactNode }>(child)) return null;
@@ -52,6 +59,7 @@ const components: Components = {
     </a>
   ),
   pre: ({ children }) => {
+    if (fenceLang(children) === "swimlane") return <Swimlane />;
     const src = mermaidSource(children);
     if (src === null) return <pre>{children}</pre>;
     return (

@@ -5,7 +5,7 @@ import pipeline from "../../../../docs/pipeline.md?raw";
 
 function HowItWorks(_: ViewProps) {
   return (
-    <div className="h-full overflow-y-auto">
+    <div className="sw-container h-full overflow-y-auto">
       <Markdown source={pipeline} className="mx-auto max-w-4xl px-6 py-6 [&_td]:align-top [&_td]:[overflow-wrap:normal] [&_th]:[overflow-wrap:normal]" />
     </div>
   );
