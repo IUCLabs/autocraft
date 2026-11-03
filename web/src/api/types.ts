@@ -966,7 +966,8 @@ export type QueueState =
   | "held-backlog"
   | "batch-checking"
   | "in-batch"
-  | "batch-failed";
+  | "batch-failed"
+  | "ci-approval";
 
 /** An integration batch: PRs landed together through one integration branch and one PR. */
 export type BatchState = "checking" | "open" | "merged" | "failed" | "split" | "superseded";

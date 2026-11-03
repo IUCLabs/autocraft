@@ -232,7 +232,9 @@ Models: Sonnet (plan), Haiku (failure summary). Daily limit 30 PRs.
 
 ## Merge queue
 
-The queue lists every PR whose final review (Review, second pass) is take or take-fix at its current head ([Merge queue](/queue), read-only), with one state each: ready, waiting-ci, ci-failed, conflict, needs-fix-up, waiting-opus (Sonnet's take or take-fix, Opus has not reviewed the head yet), waiting-verify, verify-failed, verify-error, needs-decision, decision-answered-merge, declined, refused, merged, and for PRs in an integration batch batch-checking, in-batch and batch-failed.
+The queue lists every PR whose final review (Review, second pass) is take or take-fix at its current head ([Merge queue](/queue), read-only), with one state each: ready, waiting-ci, ci-failed, conflict, needs-fix-up, waiting-opus (Sonnet's take or take-fix, Opus has not reviewed the head yet), waiting-verify, verify-failed, verify-error, needs-decision, decision-answered-merge, declined, refused, merged, and for PRs in an integration batch batch-checking, in-batch and batch-failed. A PR whose Actions runs wait for a maintainer's approval shows `ci-approval` (see below).
+
+**Runs waiting for approval.** GitHub holds the workflow runs of an outside contributor's PR (`action_required`) until a maintainer approves them; the check rollup does not list them, and `safe-merge` refuses such a head. The checks job reads the runs of each PR whose latest review is a final take or take-fix at the head the checks describe (one request per PR, again while runs wait) and records them in `ci_run_approvals`. A PR with runs waiting is in state `ci-approval`, never ready, and shows no Merge? question until they ran. The **CI approval** (an operator's per-repo approval, setting `ci_approved:<repo>`, audited as `ci-approve` and `ci-revoke`; `autocraft ci-approval` shows it) lets the `ci-approve` step approve those runs (`POST .../actions/runs/{id}/approve`, audit action `ci-run-approve`). It reads the PR again first and does nothing when it is closed, a draft or at another head than the reviewed one. It never acts on PRs without a final take or take-fix review at the head, or on the pipeline's own integration PRs. Daily limit 30 PRs. After the approval the PR counts as waiting for CI until the next checks read, and then follows the usual flow.
 
 **Merge without asking** only when all of these hold at the PR's current head:
 
@@ -434,7 +436,7 @@ Limits count items handled per stage per day (from 00:00 UTC), including by fail
 | Review | 40 | Fix | 10 |
 | Referee | 500 | Compare duplicate groups | 200 |
 | Opus review | 40 | Post reviews | 40 |
-| Conversations | 30 | | |
+| Conversations | 30 | Approve CI runs | 30 |
 
 Embed, checks and Label have no limit.
 
@@ -448,6 +450,7 @@ Automated work waits only for the reasons below. A stage that is not running sho
 | Failed recommendation | A scope recommendation call that keeps failing must not re-run Decide | 1 hour between tries, at most 3; then the decision keeps no recommendation | none (the decision shows no recommendation) |
 | Upstream CI of PRs and open batch PRs | External | Read again every minute per repo while any waits | "waiting for CI on N PRs in repo" |
 | Sandbox build | External | Until the task ends; build-environment errors queue it again after 0, 5, 10, 20, 30 minutes | Batch state `checking` |
+| Runs waiting for approval | GitHub holds the runs of an outside contributor's PR until a maintainer approves them; the pipeline approves them once the head has a final take or take-fix review and the repo's CI approval is on | Until the step runs (read again with each checks job) | Queue state `ci-approval` |
 | Checks before Review and Verify | CI data younger than 5 minutes is reused | 5 minutes | Job list |
 | Daily limit | Cost control | Until 00:00 UTC | "daily limit of N items reached; resumes at 00:00 UTC" |
 | Jev unavailable | Jev is switched off (`autocraft accounts jev off`), the `jev` command is missing, or its account fails: out of credit, or a missing or rejected key (status 401, 402, 403, or a message about credit, billing, quota or the key). Haiku does Jev's classify, priority and duplicate work through the Claude accounts. Off or not installed: no retry until it is switched on or the command exists (checked on each pass). Account failure: the first pass an hour after the last failure tries Jev again; no timer runs. Other Jev errors (timeouts, server errors, bad answers) are retried as before | 1 hour after an account failure | Accounts page and run logs |

@@ -2,6 +2,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import type { Querier } from "../mirror.ts";
 import { pilotSql } from "../pilot.ts";
+import { overallAt, recordRuns, type Suite } from "../merge/ci-approval.ts";
 
 const ORG = "storytold";
 /** PRs per query: 100 check contexts each keeps a query well under GitHub's node limit. */
@@ -14,13 +15,17 @@ export type PrChecks = {
   repo: string; number: number; head_oid: string; state: string; is_draft: boolean;
   overall: Overall; checks: { name: string; state: CheckState }[];
   mergeable: string | null; maintainer_can_modify: boolean;
+  /** The PR comes from a fork, and the workflow runs' check suites at its head. */
+  cross_repo?: boolean; suites?: Suite[];
 };
 
 export function checksQuery(numbers: number[]): string {
   const prs = numbers.map((n) => `
     pr${n}: pullRequest(number: ${n}) {
-      number state isDraft headRefOid mergeable maintainerCanModify
-      commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { nodes {
+      number state isDraft headRefOid mergeable maintainerCanModify isCrossRepository
+      commits(last: 1) { nodes { commit {
+        checkSuites(last: 20, filterBy: { appId: 15368 }) { nodes { status conclusion workflowRun { databaseId event workflow { name } } } }
+        statusCheckRollup { contexts(first: 100) { nodes {
         __typename
         ... on CheckRun { name status conclusion }
         ... on StatusContext { context state }
@@ -56,9 +61,18 @@ export function overallOf(states: CheckState[]): Overall {
 }
 
 type PrNode = {
-  number: number; state: string; isDraft: boolean; headRefOid: string; mergeable: string | null; maintainerCanModify: boolean;
-  commits?: { nodes?: { commit?: { statusCheckRollup?: { contexts?: { nodes?: Ctx[] } } | null } }[] };
+  number: number; state: string; isDraft: boolean; headRefOid: string; mergeable: string | null; maintainerCanModify: boolean; isCrossRepository?: boolean;
+  commits?: { nodes?: { commit?: { checkSuites?: { nodes?: ({ status?: string; conclusion?: string | null; workflowRun?: { databaseId?: number | null; event?: string; workflow?: { name?: string } | null } | null } | null)[] }; statusCheckRollup?: { contexts?: { nodes?: Ctx[] } } | null } }[] };
 };
+
+function suitesOf(node: PrNode): Suite[] {
+  const out: Suite[] = [];
+  for (const s of node.commits?.nodes?.[0]?.commit?.checkSuites?.nodes ?? []) {
+    const id = s?.workflowRun?.databaseId;
+    if (s && typeof id === "number") out.push({ id, name: s.workflowRun?.workflow?.name ?? "", event: (s.workflowRun?.event ?? "").toLowerCase(), status: s.status ?? "", conclusion: s.conclusion ?? null });
+  }
+  return out;
+}
 
 /** Parses the repository object of a checks query; PRs that GitHub returned as null are left out. */
 export function parseChecks(repo: string, repository: Record<string, PrNode | null>): PrChecks[] {
@@ -71,6 +85,7 @@ export function parseChecks(repo: string, repository: Record<string, PrNode | nu
       repo, number: node.number, head_oid: node.headRefOid, state: node.state, is_draft: !!node.isDraft,
       overall: overallOf(checks.map((c) => c.state)), checks,
       mergeable: node.mergeable ?? null, maintainer_can_modify: !!node.maintainerCanModify,
+      cross_repo: !!node.isCrossRepository, suites: suitesOf(node),
     });
   }
   return out;
@@ -83,6 +98,7 @@ export function saveChecks(db: DatabaseSync, rows: PrChecks[], at = new Date().t
       checks = excluded.checks, mergeable = excluded.mergeable, maintainer_can_modify = excluded.maintainer_can_modify, fetched_at = excluded.fetched_at`);
   for (const r of rows)
     ins.run(r.repo, r.number, r.head_oid, r.state, r.is_draft ? 1 : 0, r.overall, JSON.stringify(r.checks), r.mergeable, r.maintainer_can_modify ? 1 : 0, at);
+  for (const r of rows) recordRuns(db, r, at);
 }
 
 /** Fetches and stores the checks of the given PRs (all open PRs of the repo when none are given). */
@@ -100,6 +116,8 @@ export async function refreshChecks(db: DatabaseSync, client: Querier, repo: str
   return all;
 }
 
+/** The stored checks of a PR; `overall` reads "pending" while workflow runs wait for approval at that head (see overallAt). */
 export function checksOf(db: DatabaseSync, repo: string, number: number): { head_oid: string; overall: Overall; mergeable: string | null; maintainer_can_modify: number } | undefined {
-  return db.prepare("SELECT head_oid, overall, mergeable, maintainer_can_modify FROM pr_checks WHERE repo = ? AND number = ?").get(repo, number) as never;
+  const r = db.prepare("SELECT head_oid, overall, mergeable, maintainer_can_modify FROM pr_checks WHERE repo = ? AND number = ?").get(repo, number) as { head_oid: string; overall: Overall; mergeable: string | null; maintainer_can_modify: number } | undefined;
+  return r && { ...r, overall: overallAt(db, repo, number, r.head_oid, r.overall) as Overall };
 }

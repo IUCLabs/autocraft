@@ -331,6 +331,8 @@ export function apiRoutes(opts: ApiOptions = {}): Route[] {
     post("/api/repos/merge-approve", (db, req) => adm.mergeApproval(db, req, true)),
     post("/api/repos/merge-revoke", (db, req) => adm.mergeApproval(db, req, false)),
     post("/api/repos/review-batch-size", adm.reviewBatchSize),
+    post("/api/repos/ci-approve", (db, req) => adm.ciApproval(db, req, true)),
+    post("/api/repos/ci-revoke", (db, req) => adm.ciApproval(db, req, false)),
     get("/api/sandbox/workspace", adm.workspaceInfo),
     { method: "PUT", pattern: "/api/sandbox/workspace", operator: true, handler: ok(adm.setWorkspaceInfo) },
     get("/api/merge/single", adm.singleMerge),

@@ -131,6 +131,8 @@ export function buildFlow(c: Record<string, number>, meta: FlowMeta): Flow {
       { id: "unapproved", label: "Repo not approved for merging", waitsOn: "person", gate: true, tone: "warn", hint: "Ready to merge, but an operator has not approved merging in this repo; approve it on the Repos page", link: queue("unapproved") },
       { id: "needs-decision", label: "Waiting for a Merge? answer", waitsOn: "person", gate: true, tone: "accent", hint: "Outside the merge rule, not verified, no CI, or held by an open Duplicate?", link: queue("needs-decision") },
       { id: "waiting-ci", label: "Waiting for CI", waitsOn: "ci", tone: "neutral", link: queue("waiting-ci") },
+      { id: "ci-approval", label: "Waiting for CI run approval", waitsOn: "runner", tone: "neutral", hint: "GitHub holds the workflow runs of an outside contributor's PR; the pipeline approves them", link: queue("ci-approval") },
+      { id: "ci-approval-person", label: "CI runs need a person to approve", waitsOn: "person", tone: "warn", hint: "The repo's CI approval is off, or approving a run failed twice; approve the runs on GitHub or the repo on the Repos page", link: queue("ci-approval") },
       { id: "ci-failed", label: "Blocked: CI fails", waitsOn: "ci", tone: "bad", link: queue("ci-failed") },
       { id: "conflict", label: "Blocked: conflicts", waitsOn: "person", tone: "bad", link: queue("conflict") },
       { id: "waiting-verify", label: "Waiting for Verify", waitsOn: "model", tone: "neutral", hint: "No passed verification at the head commit yet", link: queue("waiting-verify") },

@@ -13,6 +13,7 @@ import { pushApprovalOf, setPushApproval } from "../../fixup/approval.ts";
 import { fixIssueApprovalOf, setFixIssueApproval } from "../../fixissue/approval.ts";
 import { mergeApprovalOf, setMergeApproval } from "../../merge/approval.ts";
 import { batchSizeOf, setBatchSize } from "../../review/batch-size.ts";
+import { ciApprovalOf, setCiApproval } from "../../merge/ci-approval.ts";
 import { setWorkspaceExcluded, workspaceExcluded } from "../../sandbox/workspace.ts";
 import { setSingleMergeMax, singleMergeMax } from "../../merge/single.ts";
 import { setRepoPipeline } from "../../pilot.ts";
@@ -34,7 +35,7 @@ export const AUDIT_ACTIONS = [
   "session-revoke", "sign-in", "sign-in-refused", "repo-track", "repo-untrack", "labels-approve", "labels-revoke", "labels-apply", "merge-approve", "merge-revoke", "comment-approve", "comment-revoke", "act-comment", "act-close", "act-skip", "push-approve", "push-revoke", "fixup-push", "fixup-comment", "fixup-comment-edit", "fixissue-approve", "fixissue-revoke", "fixissue-push", "fixissue-pr", "fixissue-comment",
   "job-request", "job-cancel", "pipeline-switch", "stage-limit", "limit-reset", "pilot-set", "pilot-clear", "repo-pipeline", "review-post", "review-edit", "batch-again", "reopen", "backlog-bulk", "withdraw",
   "single-merge-max", "label-create", "batch-pr-close", "fork-create", "assign", "unassign", "merge", "batch-push", "batch-pr", "shared-repos",
-  "fasttrack-add", "fasttrack-remove", "merge-hold", "merge-release", "batch-remove", "batch-stop", "areas-edit", "areas-accept", "review-batch-size",
+  "fasttrack-add", "fasttrack-remove", "merge-hold", "merge-release", "batch-remove", "batch-stop", "areas-edit", "areas-accept", "review-batch-size", "ci-approve", "ci-revoke", "ci-run-approve",
 ];
 
 const isOperator = (req: Req): boolean => req.user.role === "operator";
@@ -242,6 +243,7 @@ export function allRepos(db: DatabaseSync, req: Req): TrackedRepo[] {
     pushing: r.tracked ? approvalInfo(pushApprovalOf(db, r.name)) : null,
     commenting: r.tracked ? approvalInfo(commentApprovalOf(db, r.name)) : null,
     fixing: r.tracked ? approvalInfo(fixIssueApprovalOf(db, r.name)) : null,
+    ciApproving: r.tracked ? approvalInfo(ciApprovalOf(db, r.name)) : null,
     pipeline: !!r.tracked && !!r.pipeline,
   }));
 }
@@ -303,6 +305,21 @@ export function reviewBatchSize(db: DatabaseSync, req: Req): { repo: string; siz
     throw new RepoError((e as Error).message);
   }
   return { repo, size: batchSizeOf(db, repo) };
+}
+
+// Only an operator lets the pipeline approve the CI runs GitHub holds for outside contributors' PRs in a repo.
+export function ciApproval(db: DatabaseSync, req: Req, approved: boolean): TrackedRepo[] {
+  requireOperator(req, "approve CI runs");
+  const name = required(body(req).name, "name");
+  const changed = refused(() => {
+    try {
+      return setCiApproval(db, req.user.login, name, approved);
+    } catch (e) {
+      throw new RepoError((e as Error).message);
+    }
+  });
+  if (!changed) throw new HttpError(409, `${name} is ${approved ? "already" : "not"} approved for approving CI runs`);
+  return allRepos(db, req);
 }
 
 export const workspaceInfo = (db: DatabaseSync): { excluded: string[] } => ({ excluded: workspaceExcluded(db) });

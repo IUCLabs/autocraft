@@ -182,6 +182,12 @@ export function ghFork(w: Writer, exec: Exec, repo: string, details: Details = {
   return viaGh(w, exec, "fork-create", repo, details, ["repo", "fork", `${ORG}/${repo}`, "--clone=false"]);
 }
 
+/** Approves one Actions run that waits for a maintainer's approval (a run from an outside contributor's PR). */
+export function ghApproveRun(w: Writer, exec: Exec, o: { repo: string; number: number; runId: number }, details: Details = {}): Promise<ExecResult> {
+  return viaGh(w, exec, "ci-run-approve", refOf(o.repo, o.number), { ...details, run: o.runId },
+    ["api", "-X", "POST", `repos/${ORG}/${o.repo}/actions/runs/${o.runId}/approve`]);
+}
+
 // ---- git pushes ---------------------------------------------------------------
 
 /**

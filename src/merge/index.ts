@@ -11,6 +11,7 @@ import { FAST_FLOOR, workScores } from "../fasttrack.ts";
 import { mergeHeld } from "./holds.ts";
 import { backlogHeld, duplicateHeld } from "../dupes/held.ts";
 import { mergeApprovalOf } from "./approval.ts";
+import { markReread } from "./ci-approval.ts";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import type { DatabaseSync } from "node:sqlite";
@@ -249,6 +250,7 @@ export async function runMerge(db: DatabaseSync, params: MergeParams, log: (line
       .run(e.repo, e.number, e.head, runId, at(), e.path!, method, outcome, reason, seen?.ci ?? e.ci, seen?.mergeable ?? e.mergeable);
   const refuse = (e: QueueEntry, method: string | null, reason: string) => {
     saveAttempt(e, method, "refused", reason);
+    if (/action_required/.test(reason)) markReread(db, e.repo, e.number, e.head);
     audit(db, ACTOR, "merge-refused", refOf(e), { run: runId, head: e.head, path: e.path, method, reason });
     summary.refused.push({ ref: refOf(e), reason });
     log(`  ${refOf(e)}: refused: ${reason}`);
