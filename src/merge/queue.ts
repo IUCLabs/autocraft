@@ -8,6 +8,7 @@ import { backlogHeld, duplicateHeld, notOwnIntegrationSql } from "../dupes/held.
 import { headOf } from "../review/candidates.ts";
 import { changedSince, discussionState, staleReviews } from "../review/discussion.ts";
 import { batchStates } from "./batch-store.ts";
+import { mergeHolds } from "./holds.ts";
 import { getRule, STATS_SQL, tierOf, type Tier } from "../whitelist.ts";
 import { pilotSql } from "../pilot.ts";
 
@@ -71,6 +72,8 @@ export type QueueEntry = {
   answer: string | null;
   refusedReason: string | null;
   reviewedAt: string;
+  /** An operator holds the PR's merge (src/merge/controls.ts): it is reviewed and fixed as usual but does not merge, alone or in a batch. */
+  held: boolean;
   /** The verification of the PR's current head, or null when there is none. */
   verify: { state: string; kind: string | null; summary: string | null; note: string | null } | null;
 };
@@ -83,7 +86,7 @@ export const singleMergeOnly = (e: QueueEntry): boolean => e.verify?.state === V
 
 /** True when the PR may be merged now (ready, approved, or retried after a refusal). */
 export const eligible = (e: QueueEntry): boolean =>
-  e.path !== null && verifyAllows(e.path, e.verify?.state) && ciAllows(e.path, e.ci, e.noCi) && e.mergeable === "MERGEABLE" && (e.state === "ready" || e.state === "decision-answered-merge" || e.state === "refused");
+  !e.held && e.path !== null && verifyAllows(e.path, e.verify?.state) && ciAllows(e.path, e.ci, e.noCi) && e.mergeable === "MERGEABLE" && (e.state === "ready" || e.state === "decision-answered-merge" || e.state === "refused");
 
 type Row = {
   repo: string; number: number; title: string | null; author: string | null; state: string; head_oid: string | null; updated_at: string | null;
@@ -172,6 +175,7 @@ export function buildQueue(db: DatabaseSync, opts: QueueOptions = {}): QueueEntr
   const state = discussionState(db, opts.repo);
   const settled = settledLookup(db, opts.run !== undefined ? opts.run : latestRun(db));
 
+  const holds = mergeHolds(db, opts.repo);
   const noCiMemo = new Map<string, boolean>();
   const noCi = (repo: string) => noCiMemo.get(repo) ?? (noCiMemo.set(repo, repoHasNoCi(db, repo)), noCiMemo.get(repo)!);
   const out: QueueEntry[] = [];
@@ -207,7 +211,7 @@ export function buildQueue(db: DatabaseSync, opts: QueueOptions = {}): QueueEntr
     const e: QueueEntry = {
       repo: r.repo, number: r.number, title: r.title ?? "", author: r.author, tier, head: r.r_head, size, label,
       verdict: r.verdict, reason: r.reason, fixes, ci, mergeable, state: "needs-decision", path: null, outsideRule,
-      decisionId: asked ? id : null, noCi: ci === "none" && noCi(r.repo), answer, refusedReason: null, reviewedAt: r.r_at, verify,
+      decisionId: asked ? id : null, noCi: ci === "none" && noCi(r.repo), answer, refusedReason: null, reviewedAt: r.r_at, verify, held: holds.has(`${r.repo}#${r.number}`),
     };
     const open = r.state === "OPEN" && !mergedByUs;
     e.state = stateOf(e, r.state === "MERGED" || mergedByUs, last, open && (backlogHeld(db, r.repo, r.number) ? "backlog" : duplicateHeld(db, r.repo, r.number) ? "duplicate" : null), r.r_final === 1 && !(open && (stale.has(`${r.repo}#${r.number}@${r.r_head}`) || (r.o_at !== null && changedSince(state.get(`${r.repo}#${r.number}`), r.o_seen ?? r.o_at, r.o_hash)))));

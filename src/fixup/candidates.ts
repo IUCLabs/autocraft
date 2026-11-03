@@ -1,4 +1,5 @@
 // Which take-fix PRs the fix-up step works on, from the local tables only.
+import { fastScoreSql } from "../fasttrack.ts";
 import { backlogHeldSql, notHeldSql } from "../dupes/held.ts";
 import type { DatabaseSync } from "node:sqlite";
 import { headOf } from "../review/candidates.ts";
@@ -64,7 +65,7 @@ export function classifyFixups(db: DatabaseSync, repo: string): Classified[] {
       c.head_oid AS c_head, c.state AS c_state, c.is_draft AS c_draft, c.fetched_at AS c_at, c.mergeable, c.maintainer_can_modify AS can_modify
     FROM items i JOIN pr_checks c ON c.repo = i.repo AND c.number = i.number
     LEFT JOIN item_rank p ON p.repo = i.repo AND p.number = i.number
-    WHERE i.repo = ? AND i.kind = 'pr' AND i.state = 'OPEN' AND ${notHeldSql("i")} ORDER BY p.score IS NULL, p.score DESC, i.number`).all(repo) as Row[];
+    WHERE i.repo = ? AND i.kind = 'pr' AND i.state = 'OPEN' AND ${notHeldSql("i")} ORDER BY ${fastScoreSql("i.repo", "i.number", "p.score")} IS NULL, ${fastScoreSql("i.repo", "i.number", "p.score")} DESC, i.number`).all(repo) as Row[];
   const done = db.prepare("SELECT state FROM fixups WHERE repo = ? AND number = ? AND from_head = ? AND state IN ('pushed', 'cannot-push', 'too-large', 'asked')");
   const commenting = commentApprovalOf(db, repo) !== null;
   const approved = pushApprovalOf(db, repo) !== null;

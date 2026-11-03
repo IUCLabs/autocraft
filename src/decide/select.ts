@@ -7,6 +7,7 @@
 //   (missing feature, small extra, plugin candidate): that is a scope call too.
 // Items already covered are skipped: any open decision on the item, any scope
 // decision on it (answered ones too), or a stage row past "classified".
+import { fastScoreSql } from "../fasttrack.ts";
 import { notHeldSql } from "../dupes/held.ts";
 import type { DatabaseSync } from "node:sqlite";
 import { trackedNames } from "../repos.ts";
@@ -64,7 +65,7 @@ export function selectCandidates(db: DatabaseSync, run: string, repos?: string[]
     LEFT JOIN classifications h ON h.repo = j.repo AND h.number = j.number AND h.classifier = 'haiku' AND h.run_id = j.run_id
     WHERE j.run_id = ? AND j.classifier = 'jev' AND i.state = 'OPEN' AND COALESCE(i.is_draft, 0) = 0
       AND j.repo IN (SELECT value FROM json_each(?)) AND ${notHeldSql("i")}
-    ORDER BY p.score IS NULL, p.score DESC, i.kind = 'pr' DESC, i.created_at, j.repo, j.number`).all(run, JSON.stringify(want)) as Row[];
+    ORDER BY ${fastScoreSql("i.repo", "i.number", "p.score")} IS NULL, ${fastScoreSql("i.repo", "i.number", "p.score")} DESC, i.kind = 'pr' DESC, i.created_at, j.repo, j.number`).all(run, JSON.stringify(want)) as Row[];
   const out: Candidate[] = [];
   for (const r of rows) {
     if (skip.has(`${r.repo}#${r.number}`)) continue;

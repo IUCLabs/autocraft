@@ -7,7 +7,7 @@
  */
 export type Topic =
   | "repos" | "sync" | "items" | "ranks" | "stages" | "checks" | "classify" | "dupes" | "decisions" | "reviews" | "queue" | "jobs" | "usage" | "accounts" | "agents"
-  | "envs" | "tasks" | "actions" | "fixes" | "verify" | "access" | "settings" | "github";
+  | "envs" | "tasks" | "actions" | "fixes" | "verify" | "access" | "settings" | "github" | "fasttrack";
 
 /** Everything an item page shows about a pull request. */
 const ITEM: Topic[] = ["items", "stages", "classify", "ranks", "decisions", "reviews", "verify", "fixes", "actions"];
@@ -49,6 +49,8 @@ const RULES: [prefix: string, topics: Topic[]][] = [
   ["agent-", ["agents"]],
   ["queue:", ["queue", "items", "checks", "classify", "decisions", "reviews", "verify", "fixes", "tasks", "settings", "repos"]],
   ["queue-batches:", ["queue", "tasks", "items"]],
+  ["queue-page:", ["queue", "fasttrack", "ranks", "items", "checks", "classify", "decisions", "reviews", "verify", "fixes", "tasks", "settings", "repos"]],
+  ["fast-track", ["fasttrack", "items"]],
   ["accounts", ["accounts", "settings"]],
   ["envs-repos", ["repos"]],
   ["envs", ["envs", "tasks"]],

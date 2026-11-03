@@ -1,4 +1,5 @@
 // Which open PRs the Review stage looks at, and at which head commit.
+import { fastScoreSql } from "../fasttrack.ts";
 import { notHeldSql } from "../dupes/held.ts";
 import type { DatabaseSync } from "node:sqlite";
 import { latestRun, settledLookup, settledTable } from "../classify/settled.ts";
@@ -87,10 +88,10 @@ export function headOf(r: { head_oid: string | null; updated_at: string | null; 
 export function selectCandidates(db: DatabaseSync, repo: string, run: string | null = latestRun(db)): Candidate[] {
   const rows = db.prepare(`SELECT i.repo, i.number, i.title, i.body, i.author, i.author_association, i.head_oid,
       i.additions, i.deletions, i.changed_files, i.updated_at, i.is_draft,
-      c.head_oid AS c_head, c.state AS c_state, c.is_draft AS c_draft, c.fetched_at AS c_at, p.score AS score
+      c.head_oid AS c_head, c.state AS c_state, c.is_draft AS c_draft, c.fetched_at AS c_at, ${fastScoreSql("i.repo", "i.number", "p.score")} AS score
     FROM items i LEFT JOIN pr_checks c ON c.repo = i.repo AND c.number = i.number
     LEFT JOIN item_rank p ON p.repo = i.repo AND p.number = i.number
-    WHERE i.repo = ? AND i.kind = 'pr' AND i.state = 'OPEN' AND ${notHeldSql("i")} ORDER BY p.score IS NULL, p.score DESC, i.number`).all(repo) as Row[];
+    WHERE i.repo = ? AND i.kind = 'pr' AND i.state = 'OPEN' AND ${notHeldSql("i")} ORDER BY ${fastScoreSql("i.repo", "i.number", "p.score")} IS NULL, ${fastScoreSql("i.repo", "i.number", "p.score")} DESC, i.number`).all(repo) as Row[];
   const reviewed = db.prepare("SELECT 1 FROM reviews WHERE repo = ? AND number = ? AND head_oid = ?");
   const stale = staleReviews(db, repo, true);
   const settled = settledLookup(db, run);
