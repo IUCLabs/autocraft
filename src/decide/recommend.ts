@@ -10,10 +10,12 @@ import { notHeldSql } from "../dupes/held.ts";
 import { CLAUDE_PROMPTS } from "../prompts/index.ts";
 import { REPO_PATH } from "../sandbox/command.ts";
 import { loadSummaryItems } from "./index.ts";
+import { OPENING_MAX } from "../conversations/types.ts";
+import { startFromOpus, type DiffSource } from "../conversations/store.ts";
 import { RECOMMEND_REASON_MAX, type RecommendInput } from "./recommend-types.ts";
 
 export const RECOMMEND_PROMPT = CLAUDE_PROMPTS["decide.recommend"];
-export type Recommendation = { recommended: string | null; reason: string };
+export type Recommendation = { recommended: string | null; reason: string; /** An opening question or proposal for the item's conversation. */ conversation?: string };
 
 /** The last balanced `{...}` in the text that parses and has the property (string quoting respected), or null. For replies with prose braces around the answer. */
 function lastObjectWith(text: string, prop: string): unknown {
@@ -38,9 +40,10 @@ export function parseRecommendReply(text: string, keys: string[]): Recommendatio
   let o: unknown;
   try { o = a >= 0 && b > a ? JSON.parse(text.slice(a, b + 1)) : null; } catch { o = lastObjectWith(text, "recommended"); }
   if (!o || typeof o !== "object" || Array.isArray(o)) return null;
-  const { recommended, reason } = o as Record<string, unknown>;
+  const { recommended, reason, conversation } = o as Record<string, unknown>;
   const text1 = typeof reason === "string" ? reason.replace(/\s+/g, " ").trim().slice(0, RECOMMEND_REASON_MAX) : "";
-  return { recommended: typeof recommended === "string" && keys.includes(recommended) ? recommended : null, reason: text1 };
+  const opening = typeof conversation === "string" ? conversation.trim().slice(0, OPENING_MAX) : "";
+  return { recommended: typeof recommended === "string" && keys.includes(recommended) ? recommended : null, reason: text1, ...(opening && { conversation: opening }) };
 }
 
 type Row = { id: string; repo: string; number: number; question: string; facts: string | null; options: string; summary: string | null };
@@ -65,6 +68,8 @@ export type RecommendParams = {
   checkout: (repo: string) => Promise<string | null>;
   /** Read-only checkouts of the shared repositories (framework, language packs), asked once per batch; those that fail are left out. Default: none. */
   shared?: () => Promise<{ name: string; dir: string }[]>;
+  /** PR diffs for the item block of a conversation Opus starts. Default: none. */
+  diff?: DiffSource;
   usageRun: string;
   onSent?: () => void;
   log: (line: string) => void;
@@ -116,6 +121,7 @@ export async function recommend(db: DatabaseSync, ids: string[], p: RecommendPar
     if (got) {
       store.run(got.recommended, got.reason || null, model, d.id);
       stored++;
+      if (got.conversation) await startFromOpus(db, d.repo, d.number, got.conversation, { diff: p.diff }).catch((e) => p.log(`decide: no conversation for ${d.id}: ${(e as Error).message}`));
     } else {
       failed.run(now(), d.id);
       p.log(`decide: no valid recommendation for ${d.id}; retried in an hour, at most ${RECOMMEND_MAX_FAILURES} tries`);

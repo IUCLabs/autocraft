@@ -1430,3 +1430,52 @@ export interface QueuePage {
   /** `offset` of the next page, or null on the last one. */
   next: number | null;
 }
+
+// ---- conversations with Opus (src/dash/api/conversations.ts) ----
+
+export type ConversationCardState = "proposed" | "running" | "done" | "failed" | "dismissed";
+
+/** An action Opus proposed. `title` is written by the server from the card's parameters; `text` is a comment card's editable text. */
+export interface ConversationCard {
+  id: number;
+  kind: "comment" | "answer" | "label" | "backlog" | "duplicate";
+  title: string;
+  text?: string;
+  state: ConversationCardState;
+  /** Set when state is done; `link` is empty when the action wrote nothing on GitHub. */
+  done?: { at: string; link: string; label: string };
+  /** Set when state is failed. */
+  error?: string;
+  /** Who pressed Do it or dismissed the card, and when. */
+  by?: string;
+  at?: string;
+  /** The text was edited by an operator before it ran. */
+  edited?: boolean;
+}
+
+export interface ConversationTurn {
+  id: number;
+  kind: "operator" | "opus" | "system";
+  /** The operator's login, "opus" or "system". */
+  login: string;
+  at: string;
+  body: string;
+  /** Opus turns: the cards, in the order Opus proposed them. */
+  actions: ConversationCard[];
+  /** Opus turns: why proposed cards were dropped. */
+  notes: string[];
+  /** Operator turns: pending while Opus has not answered, failed when it gave no usable reply. */
+  status?: "pending" | "answered" | "failed";
+  error?: string;
+}
+
+export interface Conversation {
+  repo: RepoName;
+  number: number;
+  /** False when the item has no conversation yet; turns is then empty. */
+  exists: boolean;
+  /** An operator message waits for Opus's reply. */
+  pending: boolean;
+  startedBy: string | null;
+  turns: ConversationTurn[];
+}
