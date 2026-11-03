@@ -144,7 +144,7 @@ describe("the workspace", () => {
       assert.match(a, /--ro-bind \S+agents-[0-9a-f]+\.json \/agents\.json/);
       assert.match(a, /--add-dir \/repo --add-dir \/repos --agents \/agents\.json/);
       assert.match(calls[0]!.input, /checkouts of the default branch of every tracked repository are at \/repos\/<name>/);
-      assert.match(calls[0]!.input, /ask the explore agent with the Agent tool/);
+      assert.match(calls[0]!.input, /use the Agent tool with subagent_type workspace-search/);
     } finally {
       restoreWs();
       restore();

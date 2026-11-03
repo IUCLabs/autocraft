@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { describe, test } from "node:test";
-import { resultUsage, saveUsage, add } from "../src/classify/run.ts";
+import { lastResult, resultUsage, saveUsage, add } from "../src/classify/run.ts";
 import { connect } from "../src/db.ts";
 import { WorkspaceCache, setWorkspaceExcluded, workspaceCheckouts, workspaceExcluded, type WorkspaceDeps } from "../src/sandbox/workspace.ts";
 import { SCRATCH } from "./scratch.ts";
@@ -104,6 +104,12 @@ describe("workspace visibility", () => {
 });
 
 describe("usage of a call with a subagent", () => {
+  test("the last of several result events is the final one", () => {
+    const events = [{ type: "system" }, { type: "result", result: "started the subagent" }, { type: "result", result: "final" }];
+    assert.equal((lastResult(events) as { result: string }).result, "final");
+    assert.equal(lastResult({ type: "result" })?.type, "result");
+  });
+
   const result = {
     usage: { input_tokens: 10, output_tokens: 5, cache_read_input_tokens: 100, cache_creation_input_tokens: 20 }, total_cost_usd: 0.5,
     modelUsage: {

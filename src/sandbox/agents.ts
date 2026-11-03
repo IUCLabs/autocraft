@@ -4,7 +4,7 @@
 // No Node imports: the prompt registry (shared with the web mockup) imports it; the file writers are in agent-files.ts.
 import { REPOS_ROOT, REPO_PATH } from "./command.ts";
 
-export const EXPLORER = "explore";
+export const EXPLORER = "workspace-search";
 /** Where the generated MCP config appears inside the sandbox. */
 export const MCP_PATH = "/mcp.json";
 /** The tool the main call uses to start a subagent (the CLI's name for it). */

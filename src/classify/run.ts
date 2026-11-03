@@ -204,6 +204,9 @@ function replySummary(text: string, asked: number): string {
   }
 }
 
+/** The result of a `--output-format json` run: with a subagent the event list holds several `result` events and the last one is final. */
+export const lastResult = <T extends { type?: string }>(parsed: T[] | T): T | undefined => (Array.isArray(parsed) ? parsed.findLast((e) => e.type === "result") : parsed);
+
 const exitClass = (code: number | null): string => (code === null ? "timed out or killed" : code === -1 ? "could not start" : `exit code ${code}`);
 
 /**
@@ -262,7 +265,7 @@ export async function askClaude<K extends ClaudePromptId>(id: K, model: string, 
     try {
       // Some CLI versions print the event list, others only the final result object.
       const parsed = JSON.parse(r.stdout) as { type?: string }[] | { type?: string };
-      const j = (Array.isArray(parsed) ? parsed.find((e) => e.type === "result") : parsed) as { result?: string; is_error?: boolean; total_cost_usd?: number; num_turns?: number; usage?: Record<string, number>; modelUsage?: ModelUsage } | undefined;
+      const j = lastResult(parsed) as { result?: string; is_error?: boolean; total_cost_usd?: number; num_turns?: number; usage?: Record<string, number>; modelUsage?: ModelUsage } | undefined;
       if (!j) {
         end({ state: "failed", error: `no result (${exitClass(r.code)}) ${r.stderr}`.slice(0, 400), summary: "no result", output: sandboxed ? scrub(r.stdout) : r.stdout });
         return null;
