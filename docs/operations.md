@@ -108,6 +108,7 @@ It reads the same variables as the CLI (`AUTOCRAFT_DB` and the rest), plus:
 | `AUTOCRAFT_RUNNER_JOBS` | Most jobs running at once. Default 8, enough for every concurrency group to have a job running; jobs of one group always run one at a time. |
 | `AUTOCRAFT_RUNNER_POLL_MS` | Poll interval. Default 2000. |
 | `AUTOCRAFT_LOCK_DIR` | Directory of the lock file, shared with `sync`. Default `~/.cache/autocraft-logs`. |
+| `AUTOCRAFT_REVIEW_BOTS` | Comma-separated logins of review bots whose comments never make a review stale, besides accounts of type Bot or ending in `[bot]`. Default `coderabbitai`. |
 | `AUTOCRAFT_EXTRA_STEPS` | A module exporting `steps: StepDef[]` that is added to the step list, for tests and development (`test/runner-steps.ts` has fake steps). Set it for the dashboard and the runner alike, or not at all. |
 
 The classify steps call `jev` and `claude`, so the runner's `PATH` must reach them.

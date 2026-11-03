@@ -6,6 +6,9 @@ import type { LintProblem } from "../replylint.ts";
 
 export type EarlierOpus = { head: string; verdict: string; sure: boolean; reason: string; fixes: { file: string; change: string }[] };
 
+/** A change an earlier review asked for (a take-fix at `head`) that was never made or posted. */
+export type UnappliedFix = { head: string; file: string; change: string };
+
 /** One PR as the Opus prompt shows it. Every string field is untrusted or derived from untrusted text. */
 export type OpusPr = {
   ref: string;
@@ -26,6 +29,8 @@ export type OpusPr = {
   /** full: the whole diff of the PR. delta: only the changes since `earlier_opus.head`. */
   mode: "full" | "delta";
   earlier_opus: EarlierOpus | null;
+  /** Present only when an earlier take-fix's fixes were never applied; the reply must keep or explain each. */
+  unapplied_fixes?: UnappliedFix[];
   diff: string;
   /** What others wrote on the PR; shown in its own block after the diff, not inside the PR's JSON. */
   discussion?: DiscussionEntry[];
@@ -103,16 +108,30 @@ export function parseOpusReply(text: string, ref: string, last = true, drop: Rea
   return { ref, verdict: verdict as ReviewVerdict, sure: r.sure, reason: words(r.reason, OPUS_REASON_WORDS), fixes: verdict === "take-fix" ? fixes : [], risks, summary: summary.text, why: oneSentence(why.text), public: parsePublic(r.public, drop) };
 }
 
+/** How a review treats an earlier fix: kept in its fix list, explained in its reason (which names the file), or neither. */
+export function carriedOutcome(r: { verdict: string; reason: string; fixes: { file: string }[] }, fix: { file: string }): "kept" | "explained" | "unaddressed" {
+  if (r.verdict === "take-fix" && r.fixes.some((f) => f.file === fix.file)) return "kept";
+  const reason = r.reason.toLowerCase(), path = fix.file.toLowerCase();
+  return reason.includes(path) || reason.includes(path.slice(path.lastIndexOf("/") + 1)) ? "explained" : "unaddressed";
+}
+
 const squash = (s: string) => s.replace(/\s+/g, " ").trim();
 
 /**
  * The problems of a reply that the model can fix itself: a reference mention in a fix, a summary or why over its cap,
- * a why of more than one sentence. Null when the reply is not a valid review (the whole call is asked again then).
+ * a why of more than one sentence, an unapplied fix a take ignores. Null when the reply is not a valid review (the whole call is asked again then).
  */
-export function lintOpusReply(text: string, ref: string): LintProblem[] | null {
-  if (!parseOpusReply(text, ref, true, new Set(), true)) return null;
+export function lintOpusReply(text: string, ref: string, unapplied: readonly UnappliedFix[] = []): LintProblem[] | null {
+  const parsed = parseOpusReply(text, ref, true, new Set(), true);
+  if (!parsed) return null;
   const r = replyObject(text) as Record<string, unknown>;
   const out: LintProblem[] = [];
+  // A take-fix keeps the list the model chose; a hold or close makes the old fixes moot. Only a take that ignores them is a problem.
+  if (parsed.verdict === "take" && !parsed.fixes.length) {
+    unapplied.forEach((u, i) => {
+      if (carriedOutcome(parsed, u) === "unaddressed") out.push({ field: `unapplied_fixes[${i}]`, message: `(${u.file}) is neither in fixes nor explained in reason` });
+    });
+  }
   (Array.isArray(r.fixes) ? r.fixes : []).forEach((f: { file?: unknown; change?: unknown }, i) => {
     for (const k of ["file", "change"] as const) if (typeof f?.[k] === "string" && REFERENCE_LEAK.test(f[k] as string)) out.push({ field: `fixes[${i}].${k}`, message: "mentions the reference folder or one of its pages; state the behaviour in your own words" });
   });

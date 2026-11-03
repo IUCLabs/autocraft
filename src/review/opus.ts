@@ -14,7 +14,7 @@ import { HISTORY_COPY_SQL } from "../db.ts";
 import type { DiscussionEntry } from "./parse.ts";
 import { cachedDiff, codeDiff, ghDelta, ghDiff, type DeltaFetcher, type DiffFetcher } from "./diff.ts";
 import { selectOpusCandidates, type OpusCandidate } from "./opus-candidates.ts";
-import { lintOpusReply, parseOpusReply, publicTexts, type EarlierOpus, type OpusPr, type OpusReview } from "./opus-parse.ts";
+import { carriedOutcome, lintOpusReply, parseOpusReply, publicTexts, type EarlierOpus, type OpusPr, type OpusReview, type UnappliedFix } from "./opus-parse.ts";
 import { REPO_PATH } from "../sandbox/command.ts";
 import { checkoutForPr } from "../sandbox/index.ts";
 import { referenceDir } from "../reference.ts";
@@ -52,7 +52,7 @@ export function defaultOpusDeps(): OpusDeps {
   return { querier: new Client(500), fetchDiff: ghDiff, fetchDelta: ghDelta, model: PROMPT.models[0]!, maxChars: MAX_DIFF_CHARS, checkout: (r, n, h) => checkoutForPr(r, n, h, console.log) };
 }
 
-type Saved = { snap?: Snapshot; mode: "full" | "delta"; base: string | null; model: string | null; review: OpusReview };
+type Saved = { snap?: Snapshot; mode: "full" | "delta"; base: string | null; model: string | null; review: OpusReview; /** The fixes this review was given as unapplied; their outcome is stored with it. */ unapplied?: UnappliedFix[] };
 
 /**
  * Stores the Opus row of a head commit, then a `reviewed` stages row and a take/hold/close
@@ -77,13 +77,18 @@ export function saveOpus(db: DatabaseSync, runId: string | null, c: { repo: stri
   db.prepare(`INSERT OR REPLACE INTO opus_reviews (repo, number, head_oid, run_id, at, model, mode, base_head, verdict, sure, reason, fixes, risks, public_review, seen_at, disc_hash, summary, why)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(c.repo, c.number, c.head_oid, runId, at, s.model, s.mode, s.base, r.verdict,
     r.sure ? 1 : 0, r.reason, fixes, risks, pub, s.snap?.seen ?? at, s.snap?.hash ?? null, r.summary, r.why);
+  db.prepare("DELETE FROM opus_carried_fixes WHERE repo = ? AND number = ? AND head_oid = ?").run(c.repo, c.number, c.head_oid);
+  for (const u of s.unapplied ?? []) {
+    db.prepare("INSERT INTO opus_carried_fixes (repo, number, head_oid, from_head, file, change, outcome, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(c.repo, c.number, c.head_oid, u.head, u.file, u.change, carriedOutcome(r, u), at);
+  }
   const stage = db.prepare("INSERT INTO stages (repo, number, stage, at, actor, note) VALUES (?, ?, ?, ?, ?, ?)");
   stage.run(c.repo, c.number, "reviewed", at, "opus-review", `${r.verdict}${r.sure ? "" : " (unsure)"} at ${c.head_oid.slice(0, 7)}: ${r.reason}`);
   stage.run(c.repo, c.number, r.verdict === "take-fix" ? "take" : r.verdict, at, "opus-review", r.reason);
 }
 
 /** The Opus review of the PR's latest earlier head that a model wrote (not a too-large hold), for the delta. */
-function earlierOpus(db: DatabaseSync, c: OpusCandidate): EarlierOpus | null {
+function earlierOpus(db: DatabaseSync, c: { repo: string; number: number; head_oid: string }): EarlierOpus | null {
   const o = db.prepare(`SELECT head_oid, verdict, sure, reason, fixes FROM opus_reviews
     WHERE repo = ? AND number = ? AND head_oid <> ? AND verdict IS NOT NULL AND model IS NOT NULL ORDER BY at DESC, rowid DESC LIMIT 1`).get(c.repo, c.number, c.head_oid) as
     { head_oid: string; verdict: string; sure: number; reason: string; fixes: string | null } | undefined;
@@ -91,6 +96,17 @@ function earlierOpus(db: DatabaseSync, c: OpusCandidate): EarlierOpus | null {
   let fixes: EarlierOpus["fixes"] = [];
   try { fixes = JSON.parse(o.fixes ?? "[]") as EarlierOpus["fixes"]; } catch { /* none */ }
   return { head: o.head_oid, verdict: o.verdict, sure: o.sure === 1, reason: o.reason, fixes };
+}
+
+/**
+ * The fixes of the PR's latest earlier reviewed head, when that review was a take-fix whose fixes were never pushed
+ * and never posted as a comment (a conflict merge of ours or an author push made a new head first).
+ */
+export function unappliedFixes(db: DatabaseSync, c: { repo: string; number: number; head_oid: string }): UnappliedFix[] {
+  const e = earlierOpus(db, c);
+  if (!e || e.verdict !== "take-fix") return [];
+  if (db.prepare("SELECT 1 FROM fixups WHERE repo = ? AND number = ? AND from_head = ? AND state IN ('pushed', 'asked')").get(c.repo, c.number, e.head)) return [];
+  return e.fixes.filter((f) => typeof f?.file === "string" && typeof f.change === "string").map((f) => ({ head: e.head, file: f.file, change: f.change }));
 }
 
 export type PreparedOpus =
@@ -130,10 +146,11 @@ export async function prepareOpusInput(db: DatabaseSync, repo: string, c: OpusCa
   } catch (e) {
     return { kind: "no-threads", error: String((e as Error).message ?? e) };
   }
+  const unapplied = unappliedFixes(db, c);
   const input: OpusPr = {
     ref: refOf(c), title: c.title, body: c.body, author_association: c.author_association, size: c.size, lines_changed: c.lines_changed,
     ci: ch?.overall ?? "unknown", mergeable: ch?.mergeable ?? null, files: cd.files, tests_omitted: cd.testsOmitted, lockfiles_omitted: cd.lockfilesOmitted,
-    mode, earlier_opus: mode === "delta" ? earlier : null, diff, discussion,
+    mode, earlier_opus: mode === "delta" ? earlier : null, ...(unapplied.length ? { unapplied_fixes: unapplied } : {}), diff, discussion,
   };
   return { kind: "ready", input, snap, mode, base };
 }
@@ -203,7 +220,7 @@ export async function runOpusReview(db: DatabaseSync, params: OpusParams, log: (
     const semantic = dir ? deps.semantic ?? defaultSemanticDeps(db, input.ref) : undefined;
     // A reply that is not a valid review is lint-free here: it keeps the whole-call retry. Problems of a valid one go back to the model as one fix turn.
     const lint: Lint = async (text, stage) => {
-      const own = lintOpusReply(text, input.ref);
+      const own = lintOpusReply(text, input.ref, input.unapplied_fixes);
       return own === null ? null : [...own, ...await referenceProblems(publicTexts(text), dir, semantic, { stage, otherProblems: own.length })];
     };
     for (let attempt = 0; attempt < PROMPT.limits.attempts && !got; attempt++) {
@@ -216,7 +233,7 @@ export async function runOpusReview(db: DatabaseSync, params: OpusParams, log: (
       got = parseOpusReply(reply.text, input.ref, true, dropTexts(reply.problems));
     }
     if (got) {
-      saveOpus(db, runId, c, { mode, base, model: deps.model, review: got, snap });
+      saveOpus(db, runId, c, { mode, base, model: deps.model, review: got, snap, unapplied: input.unapplied_fixes });
       tally(got);
     } else {
       log(`  ${refOf(c)}: no valid Opus review`);
