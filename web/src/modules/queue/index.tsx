@@ -134,7 +134,7 @@ function QueueView(_: ViewProps) {
 
       {!filter.flow && <Batches repo={filter.repo} phone={phone} />}
 
-      <Block className="mt-3" flush title={filter.state ? STATE[filter.state][0] : "Included PRs"} aside={loading && data ? "Updating…" : filter.state ? STATE[filter.state][2] : undefined}>
+      <Block className="mt-3" flush title={filter.state ? STATE[filter.state][0] : "Not in a batch"} aside={loading && data ? "Updating…" : filter.state ? STATE[filter.state][2] : undefined}>
         <ErrorLine error={error?.message} className="p-4" />
         {data && data.rows.length === 0 && <p className="px-4 py-6 text-sm text-ink/50">No PR in the queue matches these filters.</p>}
         {data && data.rows.length > 0 && (phone ? <Cards rows={data.rows} /> : <Table rows={data.rows} />)}

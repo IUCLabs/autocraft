@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { connect } from "../src/db.ts";
 import { insertBatch, updateBatch } from "../src/merge/batch-store.ts";
-import { queueBatches } from "../src/dash/api/queue.ts";
+import { queue, queueBatches } from "../src/dash/api/queue.ts";
 import type { Req } from "../src/dash/types.ts";
 import { SCRATCH } from "./scratch.ts";
 
@@ -47,6 +47,14 @@ test("batches page newest first with their member rows, fork link and base commi
   assert.deepEqual(second.batches.map((b) => b.id), [old]);
   assert.equal(second.next, null);
   assert.equal(second.batches[0]!.fork, "bot/app");
+
+  // PRs in a batch in flight are listed under it, not in the PR list, unless a state filter asks for them.
+  const list = await queue(db, req("repo=app"));
+  assert.deepEqual(list.rows.map((r) => r.number), []);
+  assert.equal(list.total, 0);
+  updateBatch(db, checking, T, { state: "merged" });
+  assert.deepEqual((await queue(db, req("repo=app"))).rows.map((r) => r.number), [1]);
+  assert.deepEqual((await queue(db, req("repo=app&state=waiting-opus"))).rows.map((r) => r.number), [1, 2, 3]);
 
   assert.equal((await queueBatches(db, req(""))).total, 4);
   await assert.rejects(async () => queueBatches(db, req("after=x")), /batch id/);

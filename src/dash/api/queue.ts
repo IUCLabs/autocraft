@@ -61,6 +61,10 @@ function openQueue(db: DatabaseSync, repo: string | undefined, hidden: string[],
 // records, so counts and the state filter need all of them) and cut into pages
 // by (repo, number). Merged PRs, the bulk of the table, are read a page at a time
 // and only when state=merged.
+/** PRs (repo#number@head) in an integration batch in flight: without a state filter they are listed under their batch, not in the PR list. */
+const inFlight = (db: DatabaseSync): Set<string> => new Set((db.prepare(`SELECT b.repo || '#' || p.number || '@' || p.head_oid AS k
+  FROM main.merge_batch_prs p JOIN main.merge_batches b ON b.id = p.batch_id WHERE b.state IN ('checking', 'open')`).all() as { k: string }[]).map((r) => r.k));
+
 export async function queue(db: DatabaseSync, req: Req): Promise<QueueList> {
   const repo = req.query.get("repo") || undefined;
   const state = req.query.get("state") || undefined;
@@ -91,18 +95,20 @@ export async function queue(db: DatabaseSync, req: Req): Promise<QueueList> {
   counts.merged += merged;
   let page: QueueEntry[];
   let more: boolean;
+  let match: QueueEntry[] | undefined;
   if (state === "merged") {
     page = buildQueue(db, { repo, merged: "only", run, after, limit: limit + 1, exclude: hidden });
     more = page.length > limit;
     page = page.slice(0, limit);
   } else {
-    const match = open.filter((e) => e.state !== "merged" && (!state || e.state === state));
+    const batched = state ? null : inFlight(db);
+    match = open.filter((e) => e.state !== "merged" && (state ? e.state === state : !batched!.has(`${e.repo}#${e.number}@${e.head}`)));
     const from = after ? match.findIndex((e) => e.repo > after.repo || (e.repo === after.repo && e.number > after.number)) : 0;
     const rest = from < 0 ? [] : match.slice(from);
     page = rest.slice(0, limit);
     more = rest.length > limit;
   }
-  const total = state === "merged" ? counts.merged : Object.entries(counts).reduce((a, [k, n]) => a + (k === "merged" || (state && k !== state) ? 0 : n), 0);
+  const total = state === "merged" ? counts.merged : state ? counts[state as keyof typeof counts] : match!.length;
   return { rows: page.map(toRow), counts, total, next: more ? cursorOf(page[page.length - 1]!) : null };
 }
 

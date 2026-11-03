@@ -486,7 +486,7 @@ export async function detectAutopilot(db: DatabaseSync, opts: PlanOptions = {}):
       return null;
     }
     const last = cooldown ? lastJobEnd(db, stepName, typeof params.repo === "string" ? params.repo : null, AUTOPILOT_USER) : undefined;
-    if (last && !last.items && ms - Date.parse(last.endedAt) < COOLDOWN_MS) return null;
+    if (last && !last.items && ms - Date.parse(last.endedAt) < COOLDOWN_MS && !((releasedAt(db, stepName) ?? "") > last.endedAt)) return null;
     if (!limitLeft.has(stepName)) {
       const lp = step.params.find((p) => p.name === "limit" && p.kind === "int");
       if (!lp || lp.kind !== "int") limitLeft.set(stepName, {});
