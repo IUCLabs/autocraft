@@ -40,7 +40,7 @@ export const HARDENING = [
   "-c", "credential.helper=",
   "-c", "credential.helper=!gh auth git-credential",
 ];
-export const GIT_ENV = { GIT_LFS_SKIP_SMUDGE: "1", GIT_TERMINAL_PROMPT: "0", GIT_CONFIG_NOSYSTEM: "1", GIT_ATTR_NOSYSTEM: "1" };
+export const GIT_ENV = { GIT_LFS_SKIP_SMUDGE: "1", GIT_TERMINAL_PROMPT: "0", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_ATTR_NOSYSTEM: "1" };
 
 export class Git {
   readonly dir: string;
@@ -131,5 +131,53 @@ export class Git {
   async commit(tree: string, parent: string, message: string, who: { name: string; email: string }): Promise<string> {
     const env = { GIT_AUTHOR_NAME: who.name, GIT_AUTHOR_EMAIL: who.email, GIT_COMMITTER_NAME: who.name, GIT_COMMITTER_EMAIL: who.email };
     return (await this.must(["commit-tree", tree, "-p", parent, "-F", "-"], { input: message, env })).trim();
+  }
+
+  /** Fetches the base branch of the base repository and returns its commit. */
+  async fetchBase(org: string, repo: string, branch: string): Promise<string> {
+    await this.init();
+    const ref = `refs/fixup/base/${branch}`;
+    await this.must(["fetch", "--quiet", "--no-tags", "--no-recurse-submodules", "--no-write-fetch-head", `https://github.com/${org}/${repo}.git`, `+refs/heads/${branch}:${ref}`]);
+    return (await this.must(["rev-parse", ref])).trim();
+  }
+
+  /**
+   * The merge of `base` into `head` in memory (`git merge-tree --write-tree`, no working tree): the result tree, and the
+   * conflicted paths when it has conflicts. The tree then holds conflict markers in those files.
+   */
+  async mergeInto(head: string, base: string): Promise<{ clean: boolean; tree: string; conflicted: string[] }> {
+    const r = await this.git(["-c", "merge.conflictStyle=merge", "merge-tree", "--write-tree", "--name-only", "-z", head, base]);
+    if (r.code !== 0 && r.code !== 1) throw new Error(`git merge-tree failed: ${r.stderr.trim().split("\n").pop() ?? r.code}`);
+    const parts = r.stdout.split("\0");
+    const tree = parts[0]!.trim();
+    const conflicted: string[] = [];
+    for (const f of parts.slice(1)) {
+      if (f === "") break;
+      conflicted.push(f);
+    }
+    if (!/^[0-9a-f]{40,64}$/.test(tree)) throw new Error("git merge-tree gave no tree");
+    return { clean: r.code === 0, tree, conflicted };
+  }
+
+  /** The tree `tree` with the given files replaced by new content (same mode), built in a private index file. */
+  async withFiles(tree: string, files: { path: string; mode: string; content: string }[], indexFile: string): Promise<string> {
+    const env = { GIT_INDEX_FILE: indexFile };
+    await this.must(["read-tree", tree], { env });
+    for (const f of files) {
+      const oid = (await this.must(["hash-object", "-w", "--no-filters", "--stdin"], { input: f.content })).trim();
+      await this.must(["update-index", "--add", "--cacheinfo", `${f.mode},${oid},${f.path}`], { env });
+    }
+    return (await this.must(["write-tree"], { env })).trim();
+  }
+
+  /** The unified diff from commit `from` to commit `to`, without external diff drivers or text conversion. */
+  async diffText(from: string, to: string): Promise<string> {
+    return this.must(["diff-tree", "-p", "-r", "--no-renames", "--no-ext-diff", "--no-textconv", from, to]);
+  }
+
+  /** A commit of `tree` with the given parents, first parent first. */
+  async commitMerge(tree: string, parents: string[], message: string, who: { name: string; email: string }): Promise<string> {
+    const env = { GIT_AUTHOR_NAME: who.name, GIT_AUTHOR_EMAIL: who.email, GIT_COMMITTER_NAME: who.name, GIT_COMMITTER_EMAIL: who.email };
+    return (await this.must(["commit-tree", tree, ...parents.flatMap((p) => ["-p", p]), "-F", "-"], { input: message, env })).trim();
   }
 }

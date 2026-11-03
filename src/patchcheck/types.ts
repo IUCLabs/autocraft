@@ -25,6 +25,8 @@ export type FixupCheckInput = {
   patch: string;
   /** For a carry-over: the closed duplicates with the parts to port and their diffs (each cut to a share of the cap). */
   carried_from?: { ref: string; points: string[]; diff: string }[];
+  /** For a merge of the default branch into the PR: `patch` is the merge's effect on the PR head; each conflicted file with markers and our resolution. */
+  conflict?: { base: string; files: { path: string; conflicted: string; resolved: string }[] };
 };
 
 /** What the fixissue.check prompt is rendered from. */

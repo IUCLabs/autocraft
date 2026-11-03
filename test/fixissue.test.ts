@@ -12,7 +12,11 @@ import { fixIssueApprovalOf, setFixIssueApproval } from "../src/fixissue/approva
 import { attemptOf, collectDue, fixDue, warmKeyOf, runFixIssue, runFixIssueCollect, selectIssues, type CollectDeps } from "../src/fixissue/index.ts";
 import { parseTriage, validateFixPatch } from "../src/fixissue/parse.ts";
 import { branchName, commentText, prBody, prTitle } from "../src/fixissue/template.ts";
+import { setCommentApproval } from "../src/act/approval.ts";
+import type { Querier } from "../src/mirror.ts";
+import { CLAIM_COMMENT_TEMPLATE } from "../src/fixissue/template.ts";
 import { SCRATCH } from "./scratch.ts";
+import { validating } from "./gql.ts";
 
 mkdirSync(SCRATCH, { recursive: true });
 const dir = mkdtempSync(join(SCRATCH, "fixissue-test-"));
@@ -548,5 +552,65 @@ describe("lane helpers", () => {
     for (const n of ["App.Core", "_x", "Foo_Bar", "a".repeat(80), "-lead", "ok-name"]) assert.match(warmKeyOf(n), ok);
     assert.equal(warmKeyOf("Foo_Bar.rs"), "foo-bar-rs");
     assert.equal(warmKeyOf("a".repeat(80)).length, 64);
+  });
+});
+
+describe("fix step assignment", () => {
+  function withQuerier(w: World, assignees: string[]) {
+    const calls: string[] = [];
+    let assigned = [...assignees];
+    w.deps.querier = validating({
+      spent: 0, remaining: 5000,
+      async query(q: string) {
+        if (q.includes("viewer")) return { viewer: { login: LOGIN, id: "U42" } };
+        if (q.startsWith("mutation")) {
+          const add = q.includes("addAssignees");
+          calls.push(add ? "assign" : "unassign");
+          assigned = add ? [...assigned, LOGIN] : assigned.filter((l) => l !== LOGIN);
+          return {};
+        }
+        return { repository: { issue: { id: "I5", state: "OPEN", assignees: { nodes: assigned.map((login) => ({ login })) } } } };
+      },
+    } as Querier);
+    return { calls, assigned: () => assigned };
+  }
+
+  test("an unassigned issue is assigned and gets one claim comment when the fix starts", async () => {
+    const w = world();
+    setCommentApproval(w.db, "op", "app", true);
+    const g = withQuerier(w, []);
+    await runFixIssue(w.db, { repo: "app", dryRun: false }, quiet, w.deps);
+    assert.deepEqual(g.calls, ["assign"]);
+    assert.deepEqual(w.log.filter((l) => l.startsWith("comment")), [`comment ${CLAIM_COMMENT_TEMPLATE}`]);
+    assert.equal(CLAIM_COMMENT_TEMPLATE, "A PR for this is in progress.");
+    await runFixIssue(w.db, { repo: "app", dryRun: false }, quiet, w.deps);
+    assert.equal(w.log.filter((l) => l.startsWith("comment")).length, 1);
+  });
+
+  test("an issue someone else is assigned to is not assigned, and nothing is released when the fix fails", async () => {
+    const w = world();
+    const g = withQuerier(w, ["someone"]);
+    await runFixIssue(w.db, { repo: "app", dryRun: false }, quiet, w.deps);
+    w.db.prepare("UPDATE fix_attempts SET state = 'failed'").run();
+    await runFixIssue(w.db, { repo: "app", dryRun: false }, quiet, w.deps);
+    assert.deepEqual(g.calls, []);
+  });
+
+  test("no claim comment on an issue someone else is assigned to", async () => {
+    const w = world();
+    setCommentApproval(w.db, "op", "app", true);
+    withQuerier(w, ["someone"]);
+    await runFixIssue(w.db, { repo: "app", dryRun: false }, quiet, w.deps);
+    assert.deepEqual(w.log.filter((l) => l.startsWith("comment")), []);
+  });
+
+  test("a failed fix releases our assignment when we are the sole assignee", async () => {
+    const w = world();
+    const g = withQuerier(w, []);
+    await runFixIssue(w.db, { repo: "app", dryRun: false }, quiet, w.deps);
+    w.db.prepare("UPDATE fix_attempts SET state = 'failed'").run();
+    await runFixIssue(w.db, { repo: "app", dryRun: false }, quiet, w.deps);
+    assert.deepEqual(g.calls, ["assign", "unassign"]);
+    assert.deepEqual(g.assigned(), []);
   });
 });

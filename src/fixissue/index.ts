@@ -22,6 +22,10 @@ import { audit } from "../dash/audit.ts";
 import { connect } from "../db.ts";
 import { Git, exec, fixupDir, type Exec } from "../fixup/git.ts";
 import { whoAmI } from "../fixup/index.ts";
+import { Client, type Querier } from "../mirror.ts";
+import { viewerOf } from "../merge/index.ts";
+import { commentApprovalOf } from "../act/approval.ts";
+import { claimItem, issueInfo, releaseItem, weAssigned } from "../github/claim.ts";
 import { CLAUDE_PROMPTS } from "../prompts/index.ts";
 import { diffCacheDir } from "../review/diff.ts";
 import { rustPlan } from "../worker/rust.ts";
@@ -37,7 +41,7 @@ import { CHECK_PATCH_CAP, type FixIssueCheckInput } from "../patchcheck/types.ts
 import { fixIssueApprovalOf } from "./approval.ts";
 import { hasOpenPr, notRustKey, selectIssues, type IssueCandidate } from "./candidates.ts";
 import { parseTriage, sourcePaths, validateFixPatch } from "./parse.ts";
-import { branchName, commentText, commitMessage, prBody, prTitle } from "./template.ts";
+import { branchName, claimCommentText, commentText, commitMessage, prBody, prTitle } from "./template.ts";
 import { ghComment, ghFork, ghOpenPr, pushBranch, type Writer } from "../github/write.ts";
 import { COMMENTS_SHOWN, COMMENT_CHARS, FILE_CAP, ISSUE_BODY_LIMIT, MAX_PATHS, MAX_ROUNDS, TOTAL_CAP, type IssueText, type PatchInput, type TriageInput } from "./types.ts";
 import { inPilot, pilotSqlFor } from "../pilot.ts";
@@ -71,6 +75,8 @@ export type FixIssueDeps = {
   now: () => Date;
   /** Directory holding one bare cache repository per repo. */
   root: string;
+  /** GitHub GraphQL, for assigning issues. Absent: issues are not assigned. */
+  querier?: Querier;
 };
 
 async function shaOf(path: string): Promise<string | null> {
@@ -88,7 +94,7 @@ export const ghPaths: FixIssueDeps["fetchPaths"] = async (repo, sha) => {
 
 export function defaultDeps(): FixIssueDeps {
   return {
-    exec, now: () => new Date(), root: fixupDir(), fetchCrates: ghCrates, fetchPaths: ghPaths,
+    exec, now: () => new Date(), root: fixupDir(), querier: new Client(500), fetchCrates: ghCrates, fetchPaths: ghPaths,
     mainHead: (repo, branch) => shaOf(`repos/${ORG}/${repo}/commits/${encodeURIComponent(branch)}`),
     checkout: (repo, branch, sha) => checkoutForCommit(repo, branch, sha, console.log),
     ask: async (db, id, input, runId, checkout) => {
@@ -237,6 +243,50 @@ async function startAttempt(x: Ctx, c: IssueCandidate): Promise<"started" | "ski
   return "started";
 }
 
+/**
+ * Assigns the issue to the pipeline's account when nobody is assigned and posts the one claim comment (when commenting is
+ * approved), once per issue, as the fix starts. A failure here never stops the fix.
+ */
+async function claimIssue(x: Ctx, c: IssueCandidate): Promise<void> {
+  const { db, d, log } = x;
+  const q = d.querier;
+  if (!q) return;
+  const ref = refOf(c);
+  try {
+    const info = await issueInfo(q, ORG, c.repo, c.number);
+    if (!info || info.state !== "OPEN") return;
+    const me = await viewerOf(q);
+    const w: Writer = { db, login: ACTOR };
+    if (attemptOf(db, c.repo, c.number)?.state === "failed") return;
+    if (await claimItem(w, q, c.repo, c.number, info, me, { run: x.runId })) log(`  ${ref}: assigned to ${me.login}`);
+    // Only when the issue is ours: nobody assigned, or only us.
+    const assigned = info.assignees.length === 0 || info.assignees.every((a) => a === me.login);
+    if (assigned && commentApprovalOf(db, c.repo) && !db.prepare("SELECT 1 FROM audit WHERE action = 'fixissue-claim' AND target = ?").get(ref)) {
+      const cm = await ghComment(w, d.exec, "fixissue-claim", { repo: c.repo, number: c.number, pr: false }, claimCommentText(), { run: x.runId });
+      if (cm.code !== 0) log(`  ${ref}: claim comment failed: ${oneLine(cm.stderr)}`);
+    }
+  } catch (e) {
+    log(`  ${ref}: could not claim: ${oneLine(String((e as Error).message ?? e))}`);
+  }
+}
+
+/** Takes our assignment back from open issues whose fix failed, when the audit shows we made it and we are still the only assignee. */
+async function releaseGivenUp(x: Ctx, repo: string): Promise<void> {
+  const { db, d, log } = x;
+  const q = d.querier;
+  if (!q) return;
+  const rows = (db.prepare("SELECT a.number FROM fix_attempts a JOIN items i ON i.repo = a.repo AND i.number = a.number AND i.state = 'OPEN' WHERE a.repo = ? AND a.state = 'failed'").all(repo) as { number: number }[]);
+  for (const r of rows) {
+    try {
+      const me = await viewerOf(q);
+      if (!weAssigned(db, repo, r.number, me.login, "fixissue-")) continue;
+      if (await releaseItem({ db, login: ACTOR }, q, repo, r.number, await issueInfo(q, ORG, repo, r.number), me, { run: x.runId }, "fixissue-")) log(`  ${repo}#${r.number}: unassigned from ${me.login}`);
+    } catch (e) {
+      log(`  ${repo}#${r.number}: could not unassign: ${oneLine(String((e as Error).message ?? e))}`);
+    }
+  }
+}
+
 /** The next round of an attempt: patch, validate, check it applies, queue the tasks. */
 async function patchRound(x: Ctx, r: AttemptRow): Promise<boolean> {
   const { db, d, git, log } = x;
@@ -323,13 +373,14 @@ export async function runFixIssue(db: DatabaseSync, params: FixIssueParams, log:
     try {
       params.onHandled?.(++handled);
       const o = await startAttempt(x, c);
-      if (o === "started") s.started.push(refOf(c));
+      if (o === "started") { s.started.push(refOf(c)); await claimIssue(x, c); }
       else if (o === "skipped") s.skipped.push(refOf(c));
       if (attemptOf(db, c.repo, c.number)?.state === "failed") s.failed.push(refOf(c));
     } catch (e) {
       log(`  ${refOf(c)}: ${oneLine(String((e as Error).message ?? e))}`);
     }
   }
+  await releaseGivenUp(x, repo);
   log(`fixissue ${repo}: ${s.started.length} started, ${s.skipped.length} skipped, ${s.queued.length} rounds queued; run ${runId}`);
   return s;
 }
@@ -434,6 +485,7 @@ export async function runFixIssueCollect(db: DatabaseSync, params: CollectParams
       log(`  ${ref}: ${oneLine(String((e as Error).message ?? e))}`);
     }
   }
+  for (const repo of new Set((db.prepare("SELECT DISTINCT repo FROM fix_attempts WHERE state = 'failed'").all() as { repo: string }[]).map((r) => r.repo))) await releaseGivenUp(x(repo), repo);
   log(`fixissue-collect: ${s.looked} pending: ${s.passed} passed, ${s.opened} PRs opened, ${s.failedRounds} failed rounds, ${s.failed} failed, ${s.retried} retried`);
   return s;
 }

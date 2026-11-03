@@ -49,3 +49,20 @@ export function carryAskText(sources: { number: number; points: string[] }[]): s
   })).slice(0, ASK_MAX_ITEMS);
   return CARRY_ASK_TEMPLATE.replace("{{points}}", lines.join("\n"));
 }
+
+/** The one comment posted on the PR after the default branch was merged into it; `{{base}}` is the branch name. */
+export const CONFLICT_COMMENT_TEMPLATE = "Merged {{base}} into this branch to resolve the conflict.";
+export function conflictCommentText(base: string): string {
+  return CONFLICT_COMMENT_TEMPLATE.replace("{{base}}", base);
+}
+
+/** The one comment on a conflicted PR we can't push to. */
+export const CONFLICT_ASK_TEMPLATE = "This branch conflicts with {{base}}. Please merge or rebase {{base}} into it.";
+export function conflictAskText(base: string): string {
+  return CONFLICT_ASK_TEMPLATE.replaceAll("{{base}}", base);
+}
+
+/** The merge commit's message. */
+export function mergeMessage(base: string, branch: string): string {
+  return `Merge ${base} into ${branch}\n`;
+}

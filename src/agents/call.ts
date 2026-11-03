@@ -23,6 +23,7 @@ const PROMPT_STEP: Record<string, { step: string; stage: number }> = {
   "conversation.turn": { step: "conversation", stage: 3 },
   "areas.jev": { step: "classify-new", stage: 2 }, "areas.haiku": { step: "classify-new", stage: 2 },
   "areas.propose": { step: "areas-propose", stage: 2 }, "areas.suggest": { step: "areas-suggest", stage: 2 },
+  "fixup.conflict": { step: "fixup", stage: 6 },
 };
 
 export function stepOf(promptId: string): { jobId: number | null; step: string; stage: number } {

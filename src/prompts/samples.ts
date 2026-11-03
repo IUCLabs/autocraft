@@ -1,6 +1,6 @@
 // Made-up items for the Prompts page's rendered examples. Not mirror data.
 import type { Item } from "../classify/parse.ts";
-import type { FixupPr } from "../fixup/patch.ts";
+import type { ConflictPr, FixupPr } from "../fixup/patch.ts";
 import type { CompareIssues, ComparePrs } from "../dupes/group.ts";
 import type { DupePair } from "../dupes/pair.ts";
 import type { OpusPr } from "../review/opus-parse.ts";
@@ -46,6 +46,12 @@ export const SAMPLE_FIXUP_PRS: FixupPr[] = [{
   fixes: [{ file: "crates/codecs/src/png.rs", change: "Rename `bytes_per_sample` to `sample_bytes` in decode_rows." }],
   files: [{ path: "crates/codecs/src/png.rs", content: "fn decode_rows(info: &Info, data: &[u8]) -> Result<Image, DecodeError> {\n    let bytes_per_sample = if info.bit_depth == 16 { 2 } else { 1 };\n    let stride = info.width as usize * info.channels as usize * bytes_per_sample;\n    // ...\n}\n" }],
   diff: PNG_DIFF,
+}];
+
+export const SAMPLE_CONFLICT_PRS: ConflictPr[] = [{
+  ref: "photocraft#1287", title: SAMPLE_ITEMS[0]!.title, body: "Fixes the stride for 16-bit samples.",
+  review_reason: "Fixes the 16-bit stride in decode_rows.", base: "main",
+  files: [{ path: "crates/codecs/src/png.rs", content: "fn decode_rows(info: &Info) -> usize {\n<<<<<<< pr\n    let sample_bytes = if info.bit_depth == 16 { 2 } else { 1 };\n=======\n    let bytes_per_sample = (info.bit_depth as usize).div_ceil(8);\n>>>>>>> main\n    info.width as usize * bytes_per_sample\n}\n" }],
 }];
 
 export const SAMPLE_DUPE_PAIRS: DupePair[] = [{

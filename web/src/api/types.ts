@@ -1036,6 +1036,8 @@ export interface QueueRow {
   reviewedAt: string;
   /** The Verify stage's result at the reviewed head; null when none. `summary` is the failure or error text, or the plan's reason. */
   verify: { state: string; kind: string | null; summary: string | null; note: string | null } | null;
+  /** For a conflicting PR: what Fix-up does about it, e.g. "conflict: merging main". */
+  conflictNote?: string | null;
 }
 
 export interface QueueFilter {

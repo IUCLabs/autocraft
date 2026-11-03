@@ -198,6 +198,7 @@ Opens a PR for open bugfix issues in public Rust repos where the fix is clear. N
 - **Patch.** Sonnet writes a diff to the listed files plus one regression test. Our code validates it: only listed files, at most 300 changed lines, no binary, symlink or mode changes.
 - **Sandbox.** The patched head must build and pass; the test alone on the base commit must fail. Untrusted code runs only there.
 - **Opus check.** After the sandbox passes and before anything is pushed, Opus reads the issue, the triage reasoning and the full patch with its test. A reject counts as a failed round and its reasons go into the next round's prompt; the check is recorded with the patch hash.
+- **Assignment.** When the fix starts (triage said fixable and the first round is written), the issue is assigned to the pipeline account if nobody is assigned, and, in a repo approved for comments, gets one comment, "A PR for this is in progress.", once per issue. When the attempt ends failed, the assignment is removed (audit action `unassign`) only if the audit shows we made it and we are still the only assignee. A passing fix keeps it.
 - **Rounds.** A failure gets a Haiku summary and a new round. Three failed rounds end the attempt (held).
 - **PR.** Pushed to our fork, opened against the repo with "Fixes #N.", and the issue gets one comment, "A PR for this is in progress". The PR then goes through Review like any other.
 
@@ -207,15 +208,18 @@ Models: Sonnet, Haiku, Opus (patch check). Daily limit 10 attempts.
 
 For a take-fix review, Sonnet applies the listed small fixes to the contributor's branch, so the PR need not wait for them.
 
-- **Needs** the repo's **push approval**, a PR that maintainers may modify, and no conflict. Otherwise the PR is held ("cannot push"), with no write.
-- **Cannot push.** In a repo with **comment approval**, one comment lists the fixes (at most 6, cleaned of links and mentions), once per head, if the head is still the reviewed one. The PR shows as "asked the contributor"; a new head goes back to Review. Without the approval it stays held.
-- **Safety.** The checkout is untrusted: no working tree, hooks or filters run. The diff may touch only the files named in the review, at most 300 lines.
+- **Needs** the repo's **push approval**, a pushable PR and no conflict. A PR is pushable when its head branch is in the base repository itself (GitHub reports no maintainer edits for those) or maintainers may modify it. A head branch in the base repository is never pushable when it is the repo's default branch, the base of any open PR, or named like a long-lived branch (release, main, master, develop, stable, hotfix, integration). Otherwise the PR is held ("cannot push"), with no write.
+- **Cannot push.** In a repo with **comment approval**, one comment lists the fixes (at most 6, cleaned of links and mentions), once per head, if the head is still the reviewed one. The PR shows as "asked the contributor"; a new head goes back to Review. Without the approval it stays held. A head recorded as asked becomes a fix candidate again when the PR is now pushable.
+- **Safety.** The checkout is untrusted: no working tree, hooks or filters run. The diff may touch only the files named in the review, at most 300 lines. Hunk header line counts are recomputed from the hunk bodies before the checks, since models often miscount; a refusal for a wrong count is not one of the 2 tries.
 - **Opus check.** Before the push, Opus reads the PR, the review's fix list and our patch. A reject pushes nothing, records the try as "rejected" with Opus's reason and counts as one of the 2 tries; the check is recorded with the patch hash.
+- **Assignment.** A PR is assigned to the pipeline account as soon as the live check passes for a PR the stage will work on (a fix-up or a conflict merge), before the model calls, only when nobody is assigned. It is left alone when someone else is assigned. When the stage gives the PR up (Opus rejected the patch, the 2 tries are used up, or the branch can't be pushed to) the assignment is removed (audit action `unassign`), only if the audit shows we made it and we are still the only assignee. After a push the PR keeps it while it goes back to Review. No "in progress" comment is posted: the comment after the push covers it.
 - **Live check.** The PR is read from GitHub before the model calls and again after the Opus check. If it is no longer open, is a draft or its head moved, nothing is assigned or pushed and the PR is tried again on a later run.
 - **Push.** One commit "Apply review fixes", pushed with a lease so a branch that moved is left alone, plus one comment from a fixed template.
+- **Conflicts.** An open, non-draft PR whose final review at the current head is take or take-fix and that GitHub reports as conflicting gets the default branch merged into its branch (same scope, push approval and pushable rule as above; the PR need not be take-fix). Nothing is checked out. `git merge-tree` computes the merge. A clean merge becomes a commit with two parents (the PR head first), "Merge <base> into <branch>", pushed with a lease; there is no rebase and no force-push. With conflicts, Sonnet (sandboxed, read-only tools) gets the conflicted files with markers, quoted as untrusted, with the PR title, description and review summary, and returns resolved file contents. Our code accepts only the conflicted files, each free of conflict markers, within the size caps, with the text outside the conflict sections unchanged and in order (files with CRLF line endings or invalid UTF-8 are refused); merge-tree and the file reads use the plain two-sided marker style, ignoring user and system git config; Opus then checks the resolution like a patch, and a reject pushes nothing and counts as a try. Afterwards one comment from a fixed template ("Merged <base> into this branch to resolve the conflict."). At most 2 tries per head; they count against the daily limit. A PR we can't push to gets, in a repo with comment approval, one comment per head asking the contributor to merge or rebase <base>; without the approval it is held with no write. The new head goes through Review (Opus reads the PR's full diff for a merge commit of ours, not a delta that would include the base branch's changes) and Verify like any new head.
+- **Live read.** What the live read shows (conflicting, closed, draft, head moved) is written to the checks table, so a PR that is no longer a candidate is not selected again until the checks sync changes it. A PR that reads as conflicting goes to the conflict merge.
 - **Hand-off.** The new head is reviewed again. At most 2 tries per PR. Daily limit 20 PRs, pushes and comments together.
 
-Models: Sonnet (patch), Opus (patch check).
+Models: Sonnet (patch, conflict resolution), Opus (patch check).
 
 ## Verify
 
@@ -247,6 +251,8 @@ The queue lists every PR whose final review (Review, second pass) is take or tak
 - GitHub reports it mergeable
 
 A take PR that fails any of the first four, is not verified (Verify `unavailable`) or has no CI checks gets a "Merge this PR?" decision (Merge, Hold, Close) once Verify has an outcome, and its question says "not verified: <reason>" or "no CI". Such a PR is never merged by the rule. The `merge-ask` step asks these decisions for every tracked repo, whether or not merging is approved there; it writes only decisions. One decision per head, so a push asks again. An answer of merge needs a mergeable PR and the head must not have moved; it also needs green CI and a passed Verify, except for a PR whose question said "no CI" or "not verified".
+
+A conflicting PR also shows what Fix-up does about it next to its state: "conflict: merging <base>" while the merge is queued or active, "conflict: asked the contributor", or "conflict: held" after 2 tries (or when the branch can't be pushed and commenting is not approved).
 
 A PR held by an open Duplicate? decision shows as `held-duplicate` and is not merged.
 

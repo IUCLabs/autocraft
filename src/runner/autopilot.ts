@@ -339,9 +339,9 @@ export const LANES: Lane[] = [
     detect: (db, { tracked }) => {
       const repos = tracked.filter((repo) => {
         const sel = selectFixups(db, repo);
-        return (pushApprovalOf(db, repo) && sel.fix.length > 0) || sel.ask.length > 0;
+        return (pushApprovalOf(db, repo) && (sel.fix.length > 0 || sel.conflictMerge.length > 0)) || sel.ask.length > 0 || sel.conflictAsk.length > 0;
       });
-      return fastFirst(db, repos.sort(), (r) => { const sel = selectFixups(db, r); return (sel.fix[0] ?? sel.ask[0])?.number; }).map((repo) => ({ step: "fixup", params: { repo } }));
+      return fastFirst(db, repos.sort(), (r) => { const sel = selectFixups(db, r); return (sel.fix[0] ?? sel.ask[0] ?? sel.conflictMerge[0] ?? sel.conflictAsk[0])?.number; }).map((repo) => ({ step: "fixup", params: { repo } }));
     },
   },
   {
