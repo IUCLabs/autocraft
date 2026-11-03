@@ -16,7 +16,7 @@ The dashboard is a working tool for issue and code review, so it follows the con
 | Surfaces | App `--st-bg #121316`, `--st-panel #101014`, controls `#1e1f22`; site paper `#f2f1ee`, ink `#101014` | Dark: chrome `#101014`, content `#141518`, menus `#1e1f22`. Light: chrome `#f2f1ee`, content `#fbfaf8`, menus white |
 | Accent | Primary `#2d81ff`, accent ink `#74aaff` | Primary buttons, the recommended option, links, focus ring, selected row |
 | Corners | 3 px on pressable controls | 3 px controls, 4–6 px on boxes and menus |
-| Icons | `lucide-react`, sized 1.15 em by a global rule | Same |
+| Icons | Lucide-style line icons, sized 1.15 em by a global rule | Phosphor (`@phosphor-icons/react`), sized the same way |
 | Motion | `--ease-out`, short durations, reduced-motion collapse | Same, 120–180 ms |
 | Chart hues | Timeline track colours (character, camera, object, audio, keyframe) | Categorical chart slots, re-stepped to pass colour-vision checks on both themes |
 
@@ -48,12 +48,24 @@ Not taken: Archivo display headings, uppercase letter-spaced mono labels, regist
 
 - **Buttons**: primary (accent fill) for the one main action; secondary (raised, hairline) for the rest; ghost for icon and toolbar actions. Sentence-case labels.
 - **Decision options**: a vertical list of 40 px buttons, label then a short hint, key number on the right. The recommended option uses the accent fill and a "Recommended" pill.
-- **Refs** (`photocraft#4127`) are mono; accent-coloured only when they are links.
+- **Refs** (`photocraft#4127`) are mono. A ref is only ever shown as part of an item (see Items below) or as a mention inside prose.
+- **Items**: every issue or PR is drawn by `ItemRef` (`web/src/ui/molecules/ItemRef.tsx`): the kind and state icon, `repo#number` in mono, then the full title. The title wraps; it is never truncated or clamped. The icon (`ItemIcon`) opens the item on GitHub in a new tab. The text, and with `stretch` the whole row or card, opens the item page. A row that is an item uses `stretch`, so the row is a `relative` container, and the controls inside it (queue badge, menu, buttons, selects) sit above the link with `relative z-10`. A row that is something else (a decision, an agent run) keeps its own target and shows its items as `ItemRef` without `stretch`. Prose mentions such as `#123` in a summary stay inline and use `ItemIcon` for the GitHub link. Nothing outside `web/src/ui/` builds an item link by hand; `githubItemUrl` in `web/src/lib/links.ts` is the one URL builder. Icon colours follow GitHub: open green, draft grey, merged purple, closed PR red, closed issue purple.
 - **Filter chips** are 28 px outlined chips with counts; active chips take an accent tint.
 - **Tabs** are segmented text buttons with count pills.
 - **Lists** are rows with hairlines, no cards. The selected row gets an accent tint and a 2 px accent bar.
 - **Disclosures** are chevron rows with a sentence-case title and a count pill.
 - **Empty states** use a muted icon and one line of text.
+
+### Component folders
+
+Shared components in `web/src/ui/` are grouped by size:
+
+- `atoms/`: single elements with no knowledge of other components (Avatar, Badge, Button, Heading, Kbd, Logo, Tooltip, PriorityBadge, Pending, ItemIcon).
+- `molecules/`: small groups of atoms with one job (ItemRef, QueueBadge, RepoSelect, Segmented, Markdown).
+- `organisms/`: larger self-contained sections (Swimlane).
+- `ui/` itself holds helpers that are not components (`cn.ts`, `markdownHtml.ts`).
+
+A new shared piece goes into one of these folders. A component inside a page module moves here when that page is next changed and the piece is used, or would be used, by another page.
 
 ## 4. Layout model
 
@@ -118,7 +130,7 @@ Operators and maintainers can send feedback, with or without picking an option (
 
 Two panels: the item (68 %) and a collapsible side panel (32 %).
 
-- Header as on GitHub: title with `#number`, a state pill (Open / Merged / Closed), author with avatar, age and repo. The `repo#number` in the header links to the issue or PR on GitHub (new tab); everywhere else a `repo#number` reference (inbox rows, decision detail, item page, search results) does the same, and there is no separate "Open on GitHub" link.
+- Header as on GitHub: title with `#number`, a state pill (Open / Merged / Closed), author with avatar, age and repo. The header shows the item's `ItemIcon`, which links to the issue or PR on GitHub (new tab); there is no separate "Open on GitHub" link.
 - Properties as a key-value list: author with whitelist tier badge and merged / closed-unmerged counts; size (+/−, file count, S/M/L/XL); checks; mergeable; labels; updated.
 - Classifier verdicts as a table, one column per classifier (type, want, reference, topics, reason). Values that disagree with the majority get an amber highlight; the heading says "2 of 3 agree on type". On phones, one block per classifier.
 - Timeline with an icon per stage in plain words ("Waiting for a decision", "Merged by the pipeline"), actor and age; the current stage is highlighted.

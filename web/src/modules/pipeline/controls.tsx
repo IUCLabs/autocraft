@@ -7,8 +7,10 @@ import { useApi, useQuery } from "../../api/client";
 import type { PipelineState, StageLimit } from "../../api/types";
 import { ago, num } from "../../lib/format";
 import { useUser } from "../../shell/UserContext";
-import { Badge } from "../../ui/Badge";
-import { Button } from "../../ui/Button";
+import { Badge } from "../../ui/atoms/Badge";
+import { Button } from "../../ui/atoms/Button";
+import { ItemRef } from "../../ui/molecules/ItemRef";
+import { GITHUB_ORG } from "../../lib/links";
 import { Block, ConfirmButton, ErrorLine, TextInput, useWrite, when } from "../admin/parts";
 import { useNow } from "../../lib/useNow";
 
@@ -212,10 +214,7 @@ const pilotCount = (pilot: string[]) => {
   return [repos && plural(repos, "repo"), items && plural(items, "item")].filter(Boolean).join(", ");
 };
 
-const refLink = (ref: string) => {
-  const [repo, n] = ref.split("#");
-  return n ? `https://github.com/storytold/${repo}/issues/${n}` : `https://github.com/storytold/${repo}`;
-};
+const repoUrl = (repo: string) => `https://github.com/${GITHUB_ORG}/${repo}`;
 
 /** The items the pipeline is limited to, with links; operators set or clear the list. Nothing shows when there is no pilot and the viewer is no operator. */
 export function PilotPanel({ className }: { className?: string }) {
@@ -234,12 +233,17 @@ export function PilotPanel({ className }: { className?: string }) {
       <div className="rounded-md border border-line p-4">
         <div className="text-sm font-semibold">{pilot.length ? `Pilot: ${pilotCount(pilot)}` : "Pilot"}</div>
         {pilot.length > 0 && (
-          <div className="num mt-2 flex flex-wrap gap-x-3 gap-y-1 text-sm">
-            {pilot.map((r) => (
-              <a key={r} href={refLink(r)} target="_blank" rel="noopener noreferrer" className="hover:text-accent-ink hover:underline">
-                {r}
-              </a>
-            ))}
+          <div className="mt-2 flex flex-col gap-1.5">
+            {pilot.map((r) => {
+              const [repo = "", n] = r.split("#");
+              return n ? (
+                <ItemRef key={r} repo={repo} number={Number(n)} title={null} />
+              ) : (
+                <a key={r} href={repoUrl(repo)} target="_blank" rel="noopener noreferrer" className="code text-sm hover:text-accent-ink hover:underline">
+                  {r}
+                </a>
+              );
+            })}
           </div>
         )}
         {operator && (

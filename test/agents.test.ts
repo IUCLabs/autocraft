@@ -196,7 +196,7 @@ describe("agent runs", () => {
     const run = getRun(db, 1);
     assert.equal(run.state, "done");
     assert.deepEqual([run.jobId, run.step, run.stage, run.provider, run.model, run.accountId], [7, "classify-new", 2, "claude", "haiku", "a"]);
-    assert.deepEqual(run.items, [{ repo: "photocraft", number: 1 }]);
+    assert.deepEqual(run.items, [{ repo: "photocraft", number: 1, kind: null, state: null, title: null }]);
     assert.deepEqual([run.inputTokens, run.outputTokens, run.cacheReadTokens, run.cacheWriteTokens], [11, 7, 3, 2]);
     assert.equal(run.summary, "1 of 1 answered: 1 bugfix");
     assert.match(run.prompt ?? "", /You classify GitHub issues/);

@@ -1,12 +1,11 @@
 // The All, Review, Fix and Verify tabs: open items in work-rank order with the next pipeline step.
-import { QueueBadge } from "../../ui/QueueBadge";
-import { Link, useNavigate } from "react-router-dom";
+import { QueueBadge } from "../../ui/molecules/QueueBadge";
+import { Link } from "react-router-dom";
 import type { QueueWorkRow, WorkBreakdown } from "../../api/types";
-import { itemPath } from "../../lib/links";
-import { Badge } from "../../ui/Badge";
+import { Badge } from "../../ui/atoms/Badge";
 import { cn } from "../../ui/cn";
-import { LevelBadge } from "../../ui/PriorityBadge";
-import { RefLink } from "../../ui/RefLink";
+import { LevelBadge } from "../../ui/atoms/PriorityBadge";
+import { ItemRef } from "../../ui/molecules/ItemRef";
 import { FastMark } from "./fastTrack";
 import { RowMenu } from "./RowMenu";
 
@@ -30,41 +29,33 @@ function Breakdown({ b }: { b: WorkBreakdown }) {
 
 function Title({ r }: { r: QueueWorkRow }) {
   return (
-    <>
-      <span className="flex items-center gap-1">
-        <FastMark fast={r.fast} />
-        <RefLink repo={r.repo} number={r.number} kind={r.kind} className="text-xs" />
-      </span>
-      <Link to={itemPath(r.repo, r.number)} className="line-clamp-2 font-medium hover:text-accent-ink hover:underline" title={r.title}>
-        {r.title}
-      </Link>
-    </>
+    <div className="flex items-start gap-1">
+      <FastMark fast={r.fast} />
+      <ItemRef repo={r.repo} number={r.number} kind={r.kind} state="open" title={r.title} stretch />
+    </div>
   );
 }
 
 function NextBadge({ r }: { r: QueueWorkRow }) {
   // A queued next step shows as its place in line; the plain step otherwise.
-  if (r.queue) return <QueueBadge slot={r.queue} repo={r.repo} number={r.number} />;
+  if (r.queue) return <QueueBadge slot={r.queue} repo={r.repo} number={r.number} className="relative z-10" />;
   const badge = <Badge tone={r.nextHref ? "warn" : "neutral"}>{r.next}</Badge>;
-  return r.nextHref ? <Link to={r.nextHref}>{badge}</Link> : badge;
+  return r.nextHref ? (
+    <Link to={r.nextHref} className="relative z-10">
+      {badge}
+    </Link>
+  ) : (
+    badge
+  );
 }
 
 function WorkMenu({ r }: { r: QueueWorkRow }) {
   return <RowMenu repo={r.repo} number={r.number} fast={r.fast} held={r.held} pr={r.kind === "pr"} />;
 }
 
-/** Row click that leaves links and buttons inside the row to themselves. */
-function useOpen(r: QueueWorkRow) {
-  const navigate = useNavigate();
-  return (e: React.MouseEvent) => {
-    if (!(e.target as HTMLElement).closest("a,button,[role=menuitem]")) navigate(itemPath(r.repo, r.number));
-  };
-}
-
 function TableRow({ r, n, on }: { r: QueueWorkRow; n: number; on: boolean }) {
-  const open = useOpen(r);
   return (
-    <tr onClick={open} data-item={`${r.repo}:${r.number}`} className={cn("cursor-pointer border-b border-line align-top last:border-0 hover:bg-ink/[0.03]", on && "bg-accent/10")}>
+    <tr data-item={`${r.repo}:${r.number}`} className={cn("relative border-b border-line align-top last:border-0 hover:bg-ink/[0.03]", on && "bg-accent/10")}>
       <td className="num px-3 py-2 text-xs text-ink/45">{n}</td>
       <td className="px-3 py-2">
         <Title r={r} />
@@ -117,21 +108,17 @@ export function WorkTable({ rows, highlight }: { rows: QueueWorkRow[]; highlight
 }
 
 function Card({ r, n, on }: { r: QueueWorkRow; n: number; on: boolean }) {
-  const open = useOpen(r);
   return (
-    <li onClick={open} data-item={`${r.repo}:${r.number}`} className={cn("cursor-pointer border-b border-line px-4 py-2.5 last:border-0", on && "bg-accent/10")}>
-      <div className="flex items-center gap-2 text-xs text-ink/55">
-        <span className="num">{n}.</span>
+    <li data-item={`${r.repo}:${r.number}`} className={cn("relative border-b border-line px-4 py-2.5 last:border-0", on && "bg-accent/10")}>
+      <div className="flex items-start gap-2 text-xs text-ink/55">
+        <span className="num mt-0.5">{n}.</span>
         <FastMark fast={r.fast} />
-        <RefLink repo={r.repo} number={r.number} kind={r.kind} className="text-xs" />
-        <span className="ml-auto flex shrink-0 items-center gap-1.5">
+        <ItemRef repo={r.repo} number={r.number} kind={r.kind} state="open" title={r.title} stretch className="flex-1" />
+        <span className="flex shrink-0 items-center gap-1.5">
           <LevelBadge level={r.level} />
           <WorkMenu r={r} />
         </span>
       </div>
-      <Link to={itemPath(r.repo, r.number)} className="mt-1 block text-sm font-medium leading-5 active:text-accent-ink">
-        {r.title}
-      </Link>
       <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-2xs text-ink/60">
         <NextBadge r={r} />
         {r.held && <Badge tone="warn">Held</Badge>}

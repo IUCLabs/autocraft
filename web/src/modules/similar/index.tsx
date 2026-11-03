@@ -1,23 +1,14 @@
 // "Similar items" on the Item page: the nearest items by embedding across the
 // tracked repos, open and closed, for spotting duplicates.
-import { Link } from "react-router-dom";
-import { RadioButtonIcon, ProhibitIcon, GitMergeIcon, GitPullRequestIcon } from "@phosphor-icons/react";
 import { useQuery } from "../../api/client";
 import type { SimilarHit } from "../../api/types";
 import type { FeatureModule, ViewProps } from "../../registry/types";
-import { Badge } from "../../ui/Badge";
-import { Count } from "../../ui/Heading";
-import { RefLink } from "../../ui/RefLink";
+import { Badge } from "../../ui/atoms/Badge";
+import { Count } from "../../ui/atoms/Heading";
+import { ItemRef } from "../../ui/molecules/ItemRef";
 import { cn } from "../../ui/cn";
-import { itemPath } from "../../lib/links";
 
 const REASON: Record<NonNullable<SimilarHit["stateReason"]>, string> = { duplicate: "closed as duplicate", "not-planned": "closed, not planned", completed: "closed, completed" };
-
-export function StateIcon({ h }: { h: Pick<SimilarHit, "kind" | "state"> }) {
-  if (h.state === "merged") return <GitMergeIcon className="text-xs text-merged" aria-label="merged" />;
-  if (h.state === "closed") return <ProhibitIcon className="text-xs text-ink/45" aria-label="closed" />;
-  return h.kind === "pr" ? <GitPullRequestIcon className="text-xs text-ok" aria-label="open PR" /> : <RadioButtonIcon className="text-xs text-ok" aria-label="open issue" />;
-}
 
 /** Cosine similarity as shown: two decimals, strong matches highlighted. */
 export function Score({ score, className }: { score: number; className?: string }) {
@@ -44,18 +35,14 @@ function SimilarItems({ params }: ViewProps) {
         {data?.map((h) => {
           const closed = h.state !== "open";
           return (
-            <li key={`${h.repo}#${h.number}`} className="text-sm">
-              <div className="flex items-center gap-1.5 text-xs">
-                <StateIcon h={h} />
-                <RefLink repo={h.repo} number={h.number} kind={h.kind} className="text-xs" />
-                {h.label && <Badge className="ml-0.5">{h.label}</Badge>}
-                <Score score={h.score} className="ml-auto" />
+            <li key={`${h.repo}#${h.number}`} className="relative text-sm">
+              <div className="flex items-start gap-1.5">
+                <ItemRef repo={h.repo} number={h.number} kind={h.kind} state={h.state} title={h.title} stretch className={cn("flex-1", closed && "opacity-70")} />
+                <Score score={h.score} className="mt-0.5 shrink-0" />
               </div>
-              <Link to={itemPath(h.repo, h.number)} className={cn("mt-0.5 block leading-5 hover:underline", closed && "text-ink/55")}>
-                {h.title}
-              </Link>
+              {h.label && <Badge className="mt-0.5">{h.label}</Badge>}
               {closed && (
-                <div className={cn("text-xs", h.stateReason === "duplicate" ? "text-warn" : "text-ink/45")}>
+                <div className={cn("pl-6 text-xs", h.stateReason === "duplicate" ? "text-warn" : "text-ink/45")}>
                   {h.state === "merged" ? "merged" : h.stateReason ? REASON[h.stateReason] : "closed"}
                 </div>
               )}

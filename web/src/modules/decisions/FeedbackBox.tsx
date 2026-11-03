@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useApi } from "../../api/client";
 import type { Decision } from "../../api/types";
-import { Button } from "../../ui/Button";
+import { Button } from "../../ui/atoms/Button";
 
 /** The one feedback box: free text and an optional pick among the decision's options. It never answers. */
 export function FeedbackBox({ d, className }: { d: Decision; className?: string }) {

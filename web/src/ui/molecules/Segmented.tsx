@@ -1,4 +1,4 @@
-import { cn } from "./cn";
+import { cn } from "../cn";
 
 export function Segmented<T extends string>({ value, options, onChange, label, className }: { value: T; options: { value: T; label: string; count?: number }[]; onChange: (v: T) => void; label: string; className?: string }) {
   return (

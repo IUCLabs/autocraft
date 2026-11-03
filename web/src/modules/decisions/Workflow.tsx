@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 import type { Decision, User } from "../../api/types";
-import { Button } from "../../ui/Button";
-import { Kbd } from "../../ui/Kbd";
+import { Button } from "../../ui/atoms/Button";
+import { Kbd } from "../../ui/atoms/Kbd";
 import { cn } from "../../ui/cn";
 import { AnsweredState, canActOn } from "./DecisionDetail";
 import { localActions, useAnswer, useArmed, useLocal, userSelection } from "./state";

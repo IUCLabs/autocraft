@@ -8,7 +8,7 @@ import { useQuery } from "../../api/client";
 import type { Flow } from "../../api/types";
 import type { FeatureModule, ViewProps } from "../../registry/types";
 import { useMedia } from "../../shell/useMedia";
-import { RepoSelect } from "../../ui/RepoSelect";
+import { RepoSelect } from "../../ui/molecules/RepoSelect";
 import { ago, num } from "../../lib/format";
 import { ErrorLine, useUrlState } from "../admin/parts";
 import { PipelineSwitch } from "../pipeline/controls";

@@ -1,4 +1,4 @@
-import type { PriorityInfo, PriorityLevel } from "../api/types";
+import type { PriorityInfo, PriorityLevel } from "../../api/types";
 import { Badge, type Tone } from "./Badge";
 
 const TONE: Record<PriorityLevel, Tone> = { P0: "bad", P1: "warn", P2: "neutral", P3: "neutral", P4: "neutral" };

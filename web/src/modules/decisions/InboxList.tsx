@@ -1,12 +1,12 @@
 import { useEffect, useRef } from "react";
-import { QueueBadge } from "../../ui/QueueBadge";
+import { QueueBadge } from "../../ui/molecules/QueueBadge";
 import { useNavigate } from "react-router-dom";
 import { CheckIcon, ArrowUUpLeftIcon, UsersIcon } from "@phosphor-icons/react";
 import type { Decision, DecisionList } from "../../api/types";
 import type { Command, ViewProps } from "../../registry/types";
 import { useHotkeys, useShortcutHelp } from "../../shell/keyboard";
-import { Count } from "../../ui/Heading";
-import { Button } from "../../ui/Button";
+import { Count } from "../../ui/atoms/Heading";
+import { Button } from "../../ui/atoms/Button";
 import { cn } from "../../ui/cn";
 import { ago, ageDays } from "../../lib/format";
 import { RefLink } from "../../ui/RefLink";

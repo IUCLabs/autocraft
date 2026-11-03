@@ -4,7 +4,7 @@ import { FastForwardIcon, PauseIcon, PlayIcon } from "@phosphor-icons/react";
 import { useApi, useQuery } from "../../api/client";
 import type { FastPosition } from "../../api/types";
 import { useUser } from "../../shell/UserContext";
-import { Button } from "../../ui/Button";
+import { Button } from "../../ui/atoms/Button";
 import { ErrorLine, TextInput, useWrite } from "../admin/parts";
 
 export const refOf = (repo: string, number: number) => `${repo}#${number}`;
@@ -24,7 +24,7 @@ export function FastMark({ fast }: { fast: FastPosition | null | undefined }) {
   if (!fast) return null;
   const text = `Fast track ${fast.position} of ${fast.of}`;
   return (
-    <span title={text} className="inline-flex shrink-0 text-accent-ink">
+    <span title={text} className="relative z-10 mt-0.5 inline-flex shrink-0 text-accent-ink">
       <FastForwardIcon size={14} weight="regular" aria-label={text} />
     </span>
   );

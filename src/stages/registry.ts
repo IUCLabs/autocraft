@@ -2,7 +2,7 @@
 // prompts, swimlane cards, waits and edges. Plain data with type-only imports, so the
 // dashboard bundle and the runner both load it. No Node imports, no prompt texts.
 import type { FlowBranch, FlowWait } from "../../web/src/api/types.ts";
-import type { LaneId } from "../../web/src/ui/swimlaneDef.ts";
+import type { LaneId } from "../../web/src/ui/organisms/swimlaneDef.ts";
 
 export type Wait = FlowWait;
 export type Tone = FlowBranch["tone"];

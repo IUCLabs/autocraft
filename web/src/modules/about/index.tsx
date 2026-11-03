@@ -1,6 +1,6 @@
 import { InfoIcon } from "@phosphor-icons/react";
 import type { FeatureModule, ViewProps } from "../../registry/types";
-import { Markdown } from "../../ui/Markdown";
+import { Markdown } from "../../ui/molecules/Markdown";
 import pipeline from "../../../../docs/pipeline.md?raw";
 
 function HowItWorks(_: ViewProps) {

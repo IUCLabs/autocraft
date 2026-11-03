@@ -9,8 +9,8 @@ import type { BuildEnv, BuildSummary, BuildTask, BuildTaskDetail, Capabilities, 
 import type { FeatureModule, ViewProps } from "../../registry/types";
 import { ago, nowMs, num, span } from "../../lib/format";
 import { useUser } from "../../shell/UserContext";
-import { Badge, type Tone } from "../../ui/Badge";
-import { Button } from "../../ui/Button";
+import { Badge, type Tone } from "../../ui/atoms/Badge";
+import { Button } from "../../ui/atoms/Button";
 import { RefLink } from "../../ui/RefLink";
 import { cn } from "../../ui/cn";
 import { Block, ConfirmButton, ErrorLine, Page, selectCls, TextInput, useUrlState, useWrite } from "../admin/parts";

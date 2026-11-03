@@ -26,8 +26,8 @@ const COMMENT_MAX = 4000;
 
 export const isOperator = (req: Req): boolean => req.user.role === "operator";
 
-const STATE: Record<string, ItemState> = { OPEN: "open", MERGED: "merged", CLOSED: "closed" };
-export const itemState = (s: string | null | undefined): ItemState => STATE[s ?? ""] ?? "open";
+export { itemState, shownLookup, withShown } from "./shown.ts";
+import { itemState, withShown } from "./shown.ts";
 
 const json = <T>(s: string | null | undefined, d: T): T => {
   if (!s) return d;
@@ -119,11 +119,11 @@ export function relatedOf(db: DatabaseSync, repo: string, n: number): RelatedIte
       .all(repo, `%${n}%`) as { number: number; closing_issues: string }[];
     for (const p of prs) if (json<unknown[]>(p.closing_issues, []).includes(n)) add(p.number, "links");
   }
-  const look = db.prepare("SELECT title, state FROM items WHERE repo = ? AND number = ?");
+  const look = db.prepare("SELECT title, state, kind FROM items WHERE repo = ? AND number = ?");
   const res: RelatedItem[] = [];
   for (const { number, relation } of [...out.values()].slice(0, 10)) {
-    const row = look.get(repo, number) as { title: string | null; state: string } | undefined;
-    if (row) res.push({ repo, number, relation, title: row.title ?? "", state: itemState(row.state) });
+    const row = look.get(repo, number) as { title: string | null; state: string; kind: string } | undefined;
+    if (row) res.push({ repo, number, relation, title: row.title ?? "", state: itemState(row.state), kind: row.kind === "pr" ? "pr" : "issue" });
   }
   return res;
 }
@@ -158,7 +158,7 @@ export function toDecision(db: DatabaseSync, d: DecisionRow, viewer: Viewer): De
     id: d.id, kind: d.kind as DecisionKind,
     repo: d.repo ?? refs[0]?.repo ?? "",
     number: d.number,
-    items: batch ? refs.map((r) => ({ ...r, title: (look.get(r.repo, r.number) as { title: string | null } | undefined)?.title ?? "" })) : [],
+    items: batch ? withShown(db, refs) : [],
     title: batch ? d.question : (item?.title ?? `${d.repo}#${d.number}`),
     question: d.question,
     summary: d.summary ?? "", summaryBy: d.summary_by ?? "", summaryAt: d.summary_at ?? d.asked_at,

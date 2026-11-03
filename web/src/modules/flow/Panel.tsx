@@ -7,7 +7,7 @@ import { useQuery } from "../../api/client";
 import type { Flow, FlowNode, Job } from "../../api/types";
 import { Slot } from "../../registry/Slot";
 import { useUser } from "../../shell/UserContext";
-import { Badge } from "../../ui/Badge";
+import { Badge } from "../../ui/atoms/Badge";
 import { cn } from "../../ui/cn";
 import { ago, num } from "../../lib/format";
 import { JobBadge } from "../pipeline";

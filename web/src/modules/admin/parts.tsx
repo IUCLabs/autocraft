@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState, type InputHTMLAttributes, ty
 import { useSearchParams } from "react-router-dom";
 import { ArrowDownIcon, ArrowUpIcon, CaretUpDownIcon, WarningCircleIcon } from "@phosphor-icons/react";
 import type { Role } from "../../api/types";
-import { Button } from "../../ui/Button";
+import { Button } from "../../ui/atoms/Button";
 import { cn } from "../../ui/cn";
 import { num } from "../../lib/format";
 

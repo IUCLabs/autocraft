@@ -1,5 +1,5 @@
 // Adapted from ArtCraft libs/components/keybinds/src/lib/components/Kbd.tsx (MIT OR Apache-2.0).
-import { cn } from "./cn";
+import { cn } from "../cn";
 
 export function Kbd({ keys, className }: { keys: string; className?: string }) {
   return (

@@ -1,7 +1,7 @@
 // Definition of the pipeline swimlane diagram (docs/pipeline.md, "The flow").
 // Lanes are columns, rows run in pipeline order. Swimlane.tsx draws it.
 
-import { STAGES } from "../../../src/stages/registry.ts";
+import { STAGES } from "../../../../src/stages/registry.ts";
 
 export type LaneId = "contributor" | "auto" | "models" | "sandbox" | "operator" | "writes";
 

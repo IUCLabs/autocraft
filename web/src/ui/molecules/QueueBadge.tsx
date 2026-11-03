@@ -1,6 +1,6 @@
 import { useNavigate } from "react-router-dom";
-import type { QueueSlot } from "../api/types";
-import { cn } from "./cn";
+import type { QueueSlot } from "../../api/types";
+import { cn } from "../cn";
 
 /** `/queue/<tab>?item=<repo>:<number>`: the stage's Queue tab with the item scrolled into view and highlighted. */
 export const queueItemPath = (slot: QueueSlot, repo: string, number: number): string => `/queue/${slot.tab}?item=${encodeURIComponent(`${repo}:${number}`)}`;

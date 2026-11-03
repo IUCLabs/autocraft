@@ -24,7 +24,7 @@ const CACHE_TTL_MS = 7 * 86_400_000;
 const CACHE_MAX_BYTES = 512 * 1024 * 1024;
 const REPO_DIR = fileURLToPath(new URL("../../..", import.meta.url));
 
-// The web renderer (web/src/ui/Markdown.tsx) keeps a copy of these rules to
+// The web renderer (web/src/ui/molecules/Markdown.tsx) keeps a copy of these rules to
 // decide which images to send through the proxy.
 const SOURCES: { host: string; path: RegExp; token?: boolean }[] = [
   { host: "github.com", path: /^\/user-attachments\/assets\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i, token: true },
