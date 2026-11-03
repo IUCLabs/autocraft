@@ -17,7 +17,7 @@ RestartSec=10
 KillMode=mixed
 TimeoutStopSec=30
 # Lighter than the dashboard: jobs run git, gh, claude (in bubblewrap) and jev.
-NoNewPrivileges=true
+# No NoNewPrivileges=: bwrap needs its AppArmor profile transition to create user namespaces.
 PrivateTmp=true
 ProtectSystem=full
 
