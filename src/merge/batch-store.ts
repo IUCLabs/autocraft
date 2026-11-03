@@ -54,6 +54,11 @@ export function updateBatch(db: DatabaseSync, id: number, at: string, set: Parti
     .run(...(Object.values(set) as (string | number | null)[]), at, id);
 }
 
+/** Points a checking batch at a new sandbox task. The summary of the earlier task is dropped: the batch line shows the current task's state. */
+export function restartCheck(db: DatabaseSync, b: BatchRow, at: string, taskId: number): void {
+  updateBatch(db, b.id, at, { task_id: taskId, retries: b.retries + 1, summary: null });
+}
+
 /** `integration-<repo>-<yyyymmdd>-<n>`, n counting the repo's batches of that day. */
 export function nextBranch(db: DatabaseSync, repo: string, now: Date): string {
   const day = now.toISOString().slice(0, 10).replace(/-/g, "");

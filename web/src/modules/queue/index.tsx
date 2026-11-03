@@ -2,7 +2,7 @@
 // what it waits on. Read-only; merges are started from the Pipeline page.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { GitMergeIcon, XIcon } from "lucide-react";
+import { ChevronRightIcon, GitMergeIcon, XIcon } from "lucide-react";
 import { useApi, useQuery } from "../../api/client";
 import type { BatchState, QueueBatch, QueueFilter, QueueList, QueueRow, QueueState, Tier } from "../../api/types";
 import type { FeatureModule, ViewProps } from "../../registry/types";
@@ -216,89 +216,117 @@ const V_TONE: Record<string, Tone> = { unavailable: "warn", passed: "ok", "ci-en
 const V_LABEL: Record<string, string> = { unavailable: "Not verified", passed: "Passed", "ci-enough": "CI is enough", failed: "Failed", error: "Error", running: "Running", planned: "Planned", stale: "Stale" };
 
 /** The Verify result at the reviewed head; the summary shows on hover and below the badge. */
-function VerifyCell({ row }: { row: QueueRow }) {
+function VerifyCell({ row, detail = true }: { row: QueueRow; detail?: boolean }) {
   const v = row.verify;
   if (!v) return <span className="text-ink/30">–</span>;
   const text = [v.summary, v.note].filter(Boolean).join(" · ");
   return (
     <span className="block" title={text || undefined}>
       <Badge tone={V_TONE[v.state] ?? "neutral"}>{V_LABEL[v.state] ?? v.state}</Badge>
-      {v.kind && <span className="ml-1.5 text-2xs text-ink/50">{v.kind}</span>}
-      {text && <span className="mt-0.5 line-clamp-2 block text-2xs text-ink/55">{text}</span>}
+      {detail && v.kind && <span className="ml-1.5 text-2xs text-ink/50">{v.kind}</span>}
+      {detail && text && <span className="mt-0.5 line-clamp-2 block text-2xs text-ink/55">{text}</span>}
     </span>
   );
 }
 
-function Review({ row }: { row: QueueRow }) {
+/** Two lines per PR: the facts, then the review text clamped to two lines until opened. */
+function PrRows({ r }: { r: QueueRow }) {
+  const [open, setOpen] = useState(false);
+  const cell = "px-3 pt-2 align-middle";
   return (
-    <span className="block">
-      <Badge tone={row.verdict === "take" ? "ok" : "warn"}>{row.verdict}</Badge>
-      {row.fixes > 0 && <span className="ml-1.5 text-2xs text-ink/50">{row.fixes} fix{row.fixes === 1 ? "" : "es"}</span>}
-      <span className="mt-0.5 block text-xs text-ink/65">{row.reason}</span>
-    </span>
+    <tbody className="border-b border-line last:border-0 hover:bg-ink/[0.03]">
+      <tr>
+        <td className={cell}>
+          <div className="flex min-w-0 items-baseline gap-2">
+            <RefLink repo={r.repo} number={r.number} kind="pr" className="shrink-0 text-xs" />
+            <Link to={`/item/${r.repo}/${r.number}`} className="truncate font-medium hover:text-accent-ink hover:underline" title={r.title}>
+              {r.title}
+            </Link>
+          </div>
+        </td>
+        <td className={cell}>
+          <div className="truncate text-ink/75" title={`${r.author || "unknown"}, ${TIER[r.tier]}`}>
+            {r.author || "unknown"}
+            {r.tier === "whitelisted" && <span className="ml-1 text-2xs text-ok">●</span>}
+          </div>
+        </td>
+        <td className={cn(cell, "num text-ink/70")}>{r.size}</td>
+        <td className={cn(cell, "truncate text-xs text-ink/70")} title={r.label ?? undefined}>
+          {r.label ?? <span className="text-ink/35">not settled</span>}
+        </td>
+        <td className={cell}>
+          <Badge tone={r.verdict === "take" ? "ok" : "warn"}>{r.verdict}</Badge>
+        </td>
+        <td className={cell}>
+          <Badge tone={CI_TONE[r.ci]}>{r.ci}</Badge>
+        </td>
+        <td className={cell}>
+          <VerifyCell row={r} detail={false} />
+        </td>
+        <td className={cell}>
+          <Badge tone={MERGEABLE[r.mergeable][1]}>{MERGEABLE[r.mergeable][0]}</Badge>
+        </td>
+        <td className={cell}>
+          <StateChip row={r} />
+        </td>
+      </tr>
+      <tr>
+        <td colSpan={9} className="px-3 pb-2 pt-0.5">
+          <div className="flex items-start gap-1.5">
+            <button type="button" aria-expanded={open} aria-label={open ? "Collapse the review" : "Expand the review"} onClick={() => setOpen(!open)} className="mt-0.5 shrink-0 text-ink/45 hover:text-ink">
+              <ChevronRightIcon className={cn("size-3.5 transition-transform", open && "rotate-90")} />
+            </button>
+            <div className="min-w-0 flex-1 cursor-pointer text-xs text-ink/65" onClick={() => setOpen(!open)}>
+              <p className={cn(!open && "line-clamp-2")}>
+                {r.fixes > 0 && <span className="mr-1.5 text-ink/50">{r.fixes} fix{r.fixes === 1 ? "" : "es"}</span>}
+                {r.reason}
+              </p>
+              <div className="mt-0.5 flex flex-wrap items-center gap-x-3 text-2xs">
+                <Why row={r} />
+                <DecisionLink row={r} />
+                <span className="num text-ink/40" title={`reviewed ${r.reviewedAt.slice(0, 16).replace("T", " ")} at ${r.head.slice(0, 7)}`}>
+                  reviewed {ago(r.reviewedAt)} ago
+                </span>
+              </div>
+            </div>
+          </div>
+        </td>
+      </tr>
+    </tbody>
   );
 }
 
 function Table({ rows }: { rows: QueueRow[] }) {
   return (
     <div className="overflow-x-auto">
-      <table className="w-full min-w-[1300px] border-collapse text-sm">
+      <table className="w-full min-w-[960px] table-fixed border-collapse text-sm">
+        <colgroup>
+          <col />
+          <col className="w-[120px]" />
+          <col className="w-[50px]" />
+          <col className="w-[90px]" />
+          <col className="w-[70px]" />
+          <col className="w-[75px]" />
+          <col className="w-[100px]" />
+          <col className="w-[90px]" />
+          <col className="w-[150px]" />
+        </colgroup>
         <thead className="bg-ink/[0.03] text-xs text-ink/55">
           <tr className="border-b border-line text-left">
             <th className="h-8 px-3 font-medium">PR</th>
-            <th className="w-[130px] px-3 font-medium">Author</th>
-            <th className="w-[50px] px-3 font-medium">Size</th>
-            <th className="w-[100px] px-3 font-medium">Label</th>
-            <th className="w-[220px] px-3 font-medium">Review</th>
-            <th className="w-[80px] px-3 font-medium">CI</th>
-            <th className="w-[200px] px-3 font-medium">Verify</th>
-            <th className="w-[90px] px-3 font-medium">Mergeable</th>
-            <th className="w-[130px] px-3 font-medium">State</th>
-            <th className="w-[110px] px-3 font-medium">Decision</th>
+            <th className="px-3 font-medium">Author</th>
+            <th className="px-3 font-medium">Size</th>
+            <th className="px-3 font-medium">Label</th>
+            <th className="px-3 font-medium">Verdict</th>
+            <th className="px-3 font-medium">CI</th>
+            <th className="px-3 font-medium">Verify</th>
+            <th className="px-3 font-medium">Mergeable</th>
+            <th className="px-3 font-medium">State</th>
           </tr>
         </thead>
-        <tbody>
-          {rows.map((r) => (
-            <tr key={`${r.repo}#${r.number}`} className="border-b border-line align-top last:border-0 hover:bg-ink/[0.03]">
-              <td className="px-3 py-2">
-                <RefLink repo={r.repo} number={r.number} kind="pr" className="text-xs" />
-                <Link to={`/item/${r.repo}/${r.number}`} className="line-clamp-2 font-medium hover:text-accent-ink hover:underline" title={r.title}>
-                  {r.title}
-                </Link>
-                <div className="mt-0.5">
-                  <Why row={r} />
-                </div>
-              </td>
-              <td className="px-3 py-2">
-                <div className="truncate text-ink/75">{r.author || "unknown"}</div>
-                <div className="text-2xs text-ink/45">{TIER[r.tier]}</div>
-              </td>
-              <td className="num px-3 py-2 text-ink/70">{r.size}</td>
-              <td className="px-3 py-2 text-xs text-ink/70">{r.label ?? <span className="text-ink/35">not settled</span>}</td>
-              <td className="px-3 py-2">
-                <Review row={r} />
-              </td>
-              <td className="px-3 py-2">
-                <Badge tone={CI_TONE[r.ci]}>{r.ci}</Badge>
-              </td>
-              <td className="px-3 py-2">
-                <VerifyCell row={r} />
-              </td>
-              <td className="px-3 py-2">
-                <Badge tone={MERGEABLE[r.mergeable][1]}>{MERGEABLE[r.mergeable][0]}</Badge>
-              </td>
-              <td className="px-3 py-2">
-                <StateChip row={r} />
-                <div className="num mt-0.5 text-2xs text-ink/40" title={`reviewed ${r.reviewedAt.slice(0, 16).replace("T", " ")} at ${r.head.slice(0, 7)}`}>
-                  reviewed {ago(r.reviewedAt)} ago
-                </div>
-              </td>
-              <td className="px-3 py-2">
-                <DecisionLink row={r} />
-              </td>
-            </tr>
-          ))}
-        </tbody>
+        {rows.map((r) => (
+          <PrRows key={`${r.repo}#${r.number}`} r={r} />
+        ))}
       </table>
     </div>
   );
