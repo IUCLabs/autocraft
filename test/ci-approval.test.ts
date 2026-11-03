@@ -5,8 +5,8 @@ import { describe, test } from "node:test";
 import type { DatabaseSync } from "node:sqlite";
 import { connect } from "../src/db.ts";
 import type { Exec } from "../src/fixup/git.ts";
-import { approveRuns, markReread, recordRuns, setCiApproval, type Suite } from "../src/merge/ci-approval.ts";
-import { buildQueue, eligible } from "../src/merge/queue.ts";
+import { approveRuns, markReread, overallAt, recordRuns, setCiApproval, type Suite } from "../src/merge/ci-approval.ts";
+import { buildQueue, eligible, refusedAsBefore } from "../src/merge/queue.ts";
 import { finalizeReviews } from "./fixture.ts";
 import { SCRATCH } from "./scratch.ts";
 
@@ -38,7 +38,7 @@ function fresh(): DatabaseSync {
   return db;
 }
 
-type Opts = { moved?: number[]; failWrites?: boolean };
+type Opts = { moved?: number[]; failWrites?: boolean; transient?: boolean };
 /** GitHub stand-in: every read and write is logged. PR 6 is a branch of the base repo. */
 function fakes(log: string[], o: Opts = {}) {
   const gh = async (args: string[]): Promise<string> => {
@@ -51,7 +51,7 @@ function fakes(log: string[], o: Opts = {}) {
   };
   const exec: Exec = async (_cmd, args) => {
     log.push(`write ${args[args.length - 1]}`);
-    return o.failWrites ? { code: 1, stdout: "", stderr: "boom" } : { code: 0, stdout: "", stderr: "" };
+    return o.transient ? { code: 1, stdout: "", stderr: "HTTP 502" } : o.failWrites ? { code: 1, stdout: "", stderr: "gh: Forbidden (HTTP 403)" } : { code: 0, stdout: "", stderr: "" };
   };
   return { gh, exec };
 }
@@ -136,5 +136,50 @@ describe("runs waiting for approval", () => {
     assert.deepEqual(log.filter((l) => l.includes("101")), []);
     const failed = db.prepare("SELECT details FROM audit WHERE action = 'ci-run-approve' AND target = 'app#1'").all() as { details: string }[];
     assert.equal(failed.length, 2);
+  });
+
+  test("transient errors are not counted against a run", async () => {
+    const db = fresh();
+    for (let k = 0; k < 4; k++) await approveRuns(db, "app", { ...fakes([], { transient: true }), limit: 10 });
+    assert.equal(buildQueue(db).find((x) => x.number === 1)!.runsBlocked, null);
+  });
+
+  test("runs the step never approves go to a person", () => {
+    const q = buildQueue(fresh());
+    assert.equal(q.find((x) => x.number === 6)!.runsBlocked, "unsupported", "same-repo branch");
+    assert.equal(q.find((x) => x.number === 9)!.runsBlocked, "unsupported", "not a pull_request run");
+  });
+
+  test("a mark the suites do not confirm is cleared by the sync only while the approval is off", () => {
+    const db = fresh();
+    const sync = () => recordRuns(db, { repo: "app", number: 3, head_oid: "sha3", state: "OPEN", cross_repo: true, suites: [] });
+    markReread(db, "app", 3, "sha3");
+    sync();
+    assert.equal(db.prepare("SELECT reread FROM ci_run_approvals WHERE number = 3").get()!.reread, 1);
+    setCiApproval(db, "op", "app", false);
+    sync();
+    assert.equal(db.prepare("SELECT reread FROM ci_run_approvals WHERE number = 3").get()!.reread, 0);
+  });
+
+  test("CI reads pending while runs wait, for the review and skip paths", () => {
+    const db = fresh();
+    assert.equal(overallAt(db, "app", 1, "sha1", "success"), "pending");
+    assert.equal(overallAt(db, "app", 1, "other", "success"), "success");
+  });
+
+  test("a merge refused for action_required is tried again once the approved runs passed", async () => {
+    const db = fresh();
+    const entry = () => buildQueue(db).find((x) => x.number === 1)!;
+    // The sync did not list the run (as at the refusal); safe-merge's refusal marks the head.
+    db.prepare("DELETE FROM ci_run_approvals WHERE number = 1").run();
+    db.prepare(`INSERT INTO merges (repo, number, head_oid, run_id, at, path, outcome, reason, ci, mergeable) VALUES ('app', 1, 'sha1', 'r', '2026-01-03T00:00:00.000Z', 'operator', 'refused', 'workflow runs not green: CI: action_required', 'success', 'MERGEABLE')`).run();
+    markReread(db, "app", 1, "sha1", "2026-01-03T00:00:01.000Z");
+    await approveRuns(db, "app", { ...fakes([]), limit: 10 });
+    const suite: Suite = { id: 777, name: "CI", event: "pull_request", status: "COMPLETED", conclusion: "SUCCESS" };
+    recordRuns(db, { repo: "app", number: 1, head_oid: "sha1", state: "OPEN", cross_repo: true, suites: [suite] });
+    const e = entry();
+    assert.equal(e.ci, "success");
+    // Same ci and mergeable as at the refusal, but the approval came later: not "refused as before".
+    assert.equal(refusedAsBefore(db, { ...e, state: "refused" }), false);
   });
 });

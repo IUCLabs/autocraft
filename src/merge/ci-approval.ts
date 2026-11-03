@@ -42,6 +42,8 @@ export function setCiApproval(db: DatabaseSync, by: string, repo: string, approv
 export const ACTOR = "ci-approve";
 /** Approval attempts per run before the PR is left to a person. */
 export const MAX_FAILURES = 2;
+/** Refusals by GitHub that repeat when asked again; other errors (network, 5xx) are retried without counting. */
+const REPEATABLE = /HTTP (403|422)/;
 /** How long approved runs may stay unfinished before the PR is trusted to CI's own state again. */
 const APPROVED_TTL_MS = 2 * 3_600_000;
 
@@ -63,11 +65,12 @@ export function recordRuns(db: DatabaseSync, c: { repo: string; number: number; 
   const left = approved.filter((id) => fresh && !(byId.get(id)?.status === "COMPLETED" && byId.get(id)?.conclusion !== "ACTION_REQUIRED"));
   const waiting: WaitingRun[] = suites.filter((x) => x.conclusion === "ACTION_REQUIRED" && !approved.includes(x.id)).map((x) => ({ id: x.id, name: x.name, event: x.event }));
   if (!prev && !waiting.length) return;
-  const reread = same?.reread ?? 0;
+  // With the approval off nothing clears a mark the suites do not confirm, so the sync does.
+  const reread = same?.reread && (suites.some((x) => x.conclusion === "ACTION_REQUIRED") || ciApprovalOf(db, c.repo)) ? 1 : 0;
   db.prepare(`INSERT INTO ci_run_approvals (repo, number, head_oid, cross_repo, runs, approved, reread, failed, checked_at, approved_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT (repo, number) DO UPDATE SET head_oid = excluded.head_oid, cross_repo = excluded.cross_repo, runs = excluded.runs, approved = excluded.approved,
       reread = excluded.reread, failed = excluded.failed, checked_at = excluded.checked_at, approved_at = excluded.approved_at`)
-    .run(c.repo, c.number, c.head_oid, c.cross_repo ? 1 : 0, JSON.stringify(waiting), JSON.stringify(left), reread, same?.failed ?? "{}", at, left.length ? same?.approved_at ?? null : null);
+    .run(c.repo, c.number, c.head_oid, c.cross_repo ? 1 : 0, JSON.stringify(waiting), JSON.stringify(left), reread, same?.failed ?? "{}", at, same?.approved_at ?? null);
 }
 
 /** A merge was refused because of `action_required` runs the sync does not list: the step reads that head's runs. */
@@ -75,6 +78,13 @@ export function markReread(db: DatabaseSync, repo: string, number: number, head:
   db.prepare("DELETE FROM ci_run_approvals WHERE repo = ? AND number = ? AND head_oid <> ?").run(repo, number, head);
   db.prepare(`INSERT INTO ci_run_approvals (repo, number, head_oid, cross_repo, runs, approved, reread, failed, checked_at) VALUES (?, ?, ?, 1, '[]', '[]', 1, '{}', ?)
     ON CONFLICT (repo, number) DO UPDATE SET reread = 1, checked_at = excluded.checked_at`).run(repo, number, head, at);
+}
+
+/** `overall` as CI reads for the PR's head: "pending" while runs wait for approval or the ones we approved have not finished, since the check rollup does not list them. */
+export function overallAt(db: DatabaseSync, repo: string, number: number, head: string, overall: string): string {
+  const r = db.prepare("SELECT runs, approved, reread FROM ci_run_approvals WHERE repo = ? AND number = ? AND head_oid = ?").get(repo, number, head) as { runs: string; approved: string; reread: number } | undefined;
+  if (!r) return overall;
+  return r.reread || JSON.parse(r.runs).length || JSON.parse(r.approved).length ? "pending" : overall;
 }
 
 export type Candidate = { number: number; head: string; runs: WaitingRun[]; reread: boolean; failed: Record<string, number>; crossRepo: boolean };
@@ -163,7 +173,8 @@ export async function approveRuns(db: DatabaseSync, repo: string, d: ApproveDeps
       if (!ciApprovalOf(db, repo)) throw new Error(`approving CI runs in ${repo} is not approved`);
       const r = await ghApproveRun(w, d.exec, { repo, number: c.number, runId: run.id }, { head: c.head, workflow: run.name });
       if (r.code === 0) done.push(run.id);
-      else failed[run.id] = (failed[run.id] ?? 0) + 1;
+      else if (REPEATABLE.test(`${r.stderr} ${r.stdout}`)) failed[run.id] = (failed[run.id] ?? 0) + 1;
+      else log(`${ref}: run ${run.id}: ${(r.stderr || r.stdout).trim().slice(0, 120)}; will retry`);
     }
     save(c, runs.filter((r) => !done.includes(r.id)), done, failed);
     const bad = todo.length - done.length;

@@ -2,7 +2,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import type { Querier } from "../mirror.ts";
 import { pilotSql } from "../pilot.ts";
-import { recordRuns, type Suite } from "../merge/ci-approval.ts";
+import { overallAt, recordRuns, type Suite } from "../merge/ci-approval.ts";
 
 const ORG = "storytold";
 /** PRs per query: 100 check contexts each keeps a query well under GitHub's node limit. */
@@ -24,7 +24,7 @@ export function checksQuery(numbers: number[]): string {
     pr${n}: pullRequest(number: ${n}) {
       number state isDraft headRefOid mergeable maintainerCanModify isCrossRepository
       commits(last: 1) { nodes { commit {
-        checkSuites(first: 20) { nodes { status conclusion workflowRun { databaseId event workflow { name } } } }
+        checkSuites(last: 20, filterBy: { appId: 15368 }) { nodes { status conclusion workflowRun { databaseId event workflow { name } } } }
         statusCheckRollup { contexts(first: 100) { nodes {
         __typename
         ... on CheckRun { name status conclusion }
@@ -116,6 +116,8 @@ export async function refreshChecks(db: DatabaseSync, client: Querier, repo: str
   return all;
 }
 
+/** The stored checks of a PR; `overall` reads "pending" while workflow runs wait for approval at that head (see overallAt). */
 export function checksOf(db: DatabaseSync, repo: string, number: number): { head_oid: string; overall: Overall; mergeable: string | null; maintainer_can_modify: number } | undefined {
-  return db.prepare("SELECT head_oid, overall, mergeable, maintainer_can_modify FROM pr_checks WHERE repo = ? AND number = ?").get(repo, number) as never;
+  const r = db.prepare("SELECT head_oid, overall, mergeable, maintainer_can_modify FROM pr_checks WHERE repo = ? AND number = ?").get(repo, number) as { head_oid: string; overall: Overall; mergeable: string | null; maintainer_can_modify: number } | undefined;
+  return r && { ...r, overall: overallAt(db, repo, number, r.head_oid, r.overall) as Overall };
 }

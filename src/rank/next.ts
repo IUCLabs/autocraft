@@ -3,6 +3,7 @@ import type { DatabaseSync } from "node:sqlite";
 import type { Settled } from "../classify/settled.ts";
 import { reasonOf } from "../decide/select.ts";
 import { duplicateHeld } from "../dupes/held.ts";
+import { overallAt } from "../merge/ci-approval.ts";
 import { repoHasNoCi } from "../merge/queue.ts";
 
 export type NextFacts = {
@@ -72,6 +73,6 @@ export function factsOf(db: DatabaseSync, repo: string, number: number, kind: st
   return {
     kind: kind === "pr" ? "pr" : "issue", label: s.label, settled: s.status === "settled", scopeOpen: !!scope && scope.answer === null, needsDecision: s.flags.includes("needs decision"),
     review: review && review.head_oid === head ? (review.final ? review.verdict : "awaiting-opus") : null, verify: verify?.state ?? null, attempt: attempt?.state ?? null,
-    held: duplicateHeld(db, repo, number), refereeDue: s.status === "disagree" && reasonOf(s) !== "scope-disagreement" && s.referee === null, disagree: s.status === "disagree" && reasonOf(s) !== "scope-disagreement" && s.referee !== null, ci: ci?.overall ?? null, noCi: repoHasNoCi(db, repo),
+    held: duplicateHeld(db, repo, number), refereeDue: s.status === "disagree" && reasonOf(s) !== "scope-disagreement" && s.referee === null, disagree: s.status === "disagree" && reasonOf(s) !== "scope-disagreement" && s.referee !== null, ci: ci?.overall ? overallAt(db, repo, number, head!, ci.overall) : null, noCi: repoHasNoCi(db, repo),
   };
 }
