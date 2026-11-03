@@ -16,6 +16,8 @@ import type { DatabaseSync } from "node:sqlite";
 import { TERMINAL, cancelTask, getTask } from "../build/tasks.ts";
 import { BuildError } from "../build/envs.ts";
 import { askClaude, saveUsage, type Usage } from "../classify/run.ts";
+import { REPO_PATH } from "../sandbox/command.ts";
+import { checkoutForCommit } from "../sandbox/index.ts";
 import { audit } from "../dash/audit.ts";
 import { connect } from "../db.ts";
 import { Git, exec, fixupDir, type Exec } from "../fixup/git.ts";
@@ -55,7 +57,9 @@ export type FixIssueDeps = {
   /** Every git and gh command. */
   exec: Exec;
   /** The model's reply to a fixissue prompt, or null when it gave none. */
-  ask: (db: DatabaseSync, id: Id, input: TriageInput | PatchInput | FixIssueCheckInput, runId: string) => Promise<string | null>;
+  ask: (db: DatabaseSync, id: Id, input: TriageInput | PatchInput | FixIssueCheckInput, runId: string, checkout?: string) => Promise<string | null>;
+  /** Host directory with a read-only checkout of `sha` (reachable from `branch`) for the sandboxed model calls, or null to ask without tools. Absent: no tools. */
+  checkout?: (repo: string, branch: string, sha: string) => Promise<string | null>;
   /** The head commit of the repo's default branch, or null. */
   mainHead: (repo: string, branch: string) => Promise<string | null>;
   fetchCrates: CratesFetcher;
@@ -83,10 +87,11 @@ export function defaultDeps(): FixIssueDeps {
   return {
     exec, now: () => new Date(), root: fixupDir(), fetchCrates: ghCrates, fetchPaths: ghPaths,
     mainHead: (repo, branch) => shaOf(`repos/${ORG}/${repo}/commits/${encodeURIComponent(branch)}`),
-    ask: async (db, id, input, runId) => {
+    checkout: (repo, branch, sha) => checkoutForCommit(repo, branch, sha, console.log),
+    ask: async (db, id, input, runId, checkout) => {
       const model = CLAUDE_PROMPTS[id].models[0]!;
       const start = new Date().toISOString();
-      const reply = await askClaude(id, model, [input] as never, db);
+      const reply = await askClaude(id, model, [input] as never, db, { checkout });
       saveUsage(db, runId, `fixissue-${input.ref.replace(/[^A-Za-z0-9]/g, "-")}`, "fixissue", model, reply ? 1 : 0, reply?.usage ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: null }, start, new Date().toISOString());
       return reply?.text ?? null;
     },
@@ -181,8 +186,10 @@ export const branchOf = (db: DatabaseSync, repo: string): string =>
 
 type Ctx = { db: DatabaseSync; d: FixIssueDeps; git: Git; log: (l: string) => void; runId: string; usage: Usage };
 
-async function ask(x: Ctx, id: Id, input: TriageInput | PatchInput | FixIssueCheckInput): Promise<string | null> {
-  return x.d.ask(x.db, id, input, x.runId);
+/** Asks with a checkout of the base commit when there is one; the input then carries the repository path. */
+async function ask(x: Ctx, id: Id, input: TriageInput | PatchInput | FixIssueCheckInput, base: { repo: string; sha: string }): Promise<string | null> {
+  const checkout = (await x.d.checkout?.(base.repo, branchOf(x.db, base.repo), base.sha)) ?? undefined;
+  return x.d.ask(x.db, id, checkout ? { ...input, repo_dir: REPO_PATH } : input, x.runId, checkout);
 }
 
 /** Triage of a new candidate, then its first patch round. */
@@ -204,7 +211,7 @@ async function startAttempt(x: Ctx, c: IssueCandidate): Promise<"started" | "ski
   const input: TriageInput = { ...issueText(db, c), crates: cr.crates, paths };
   let parsed: ReturnType<typeof parseTriage> | null = null;
   for (let attempt = 0; attempt < TRIAGE.limits.attempts && !(parsed && parsed.ok); attempt++) {
-    const reply = await ask(x, "fixissue.triage", input);
+    const reply = await ask(x, "fixissue.triage", input, { repo: c.repo, sha: main });
     if (reply !== null) parsed = parseTriage(reply, ref, cr.crates, paths);
   }
   const at = iso(d);
@@ -256,7 +263,7 @@ async function patchRound(x: Ctx, r: AttemptRow): Promise<boolean> {
     crate: { name: r.crate!, dir: r.crate_dir! }, test_path: testPath, files: shown,
     ...(round > 1 && r.patch ? { previous: { patch: r.patch.slice(0, 60_000), failure: r.summary ?? "it did not pass" } } : {}),
   };
-  const reply = await ask(x, "fixissue.patch", input);
+  const reply = await ask(x, "fixissue.patch", input, { repo: r.repo, sha: r.main_sha });
   if (reply === null) { roundFailed(db, d, row, round, "the model gave no answer", r.patch, log); return false; }
   const v = validateFixPatch(reply, files, testPath, r.crate_dir!);
   if (!v.ok) { roundFailed(db, d, row, round, v.reason, reply.slice(0, 60_000), log); return false; }
@@ -439,7 +446,7 @@ async function checkPatch(x: Ctx, r: AttemptRow): Promise<boolean> {
     ...issueText(db, { repo: r.repo, number: r.number, title: issue?.title ?? "", body: issue?.body ?? "" }),
     triage_reason: r.reason ?? "", patch, test_path: regressionPath(r.crate_dir!),
   };
-  const reply = await ask(x, "fixissue.check", input);
+  const reply = await ask(x, "fixissue.check", input, { repo: r.repo, sha: r.main_sha });
   if (reply === null) return failRound("the patch check gave no answer");
   const v = parseCheck(reply);
   if (!v.ok) return failRound(`the patch check gave no valid answer: ${v.error}`);

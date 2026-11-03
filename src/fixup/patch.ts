@@ -105,6 +105,8 @@ export function validatePatch(text: string, allowed: string[]): PatchCheck {
 
 /** What the fix-up prompt shows for one PR. Every string field is untrusted. */
 export type FixupPr = {
+  /** Where the call may read the repository in the sandbox; not part of the quoted JSON. */
+  repo_dir?: string;
   ref: string;
   title: string;
   /** The review's fix list for this PR. */

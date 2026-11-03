@@ -12,6 +12,8 @@ import { BuildError } from "../build/envs.ts";
 import { connect } from "../db.ts";
 import { add, askClaude, saveUsage, type Usage } from "../classify/run.ts";
 import { CLAUDE_PROMPTS } from "../prompts/index.ts";
+import { REPO_PATH } from "../sandbox/command.ts";
+import { checkoutForPr } from "../sandbox/index.ts";
 import { cachedDiff, codeDiff, ghDiff, type DiffFetcher } from "../review/diff.ts";
 import { cachedCrates, ghApi, ghCrates, type CratesFetcher } from "./crates.ts";
 import { NOT_RUST_REASON, selectCandidates, unavailableCandidates, type VerifyCandidate } from "./candidates.ts";
@@ -35,6 +37,8 @@ export type VerifyDeps = {
   /** The head commit of the repo's default branch, or null. */
   mainHead: (repo: string, branch: string) => Promise<string | null>;
   model: string;
+  /** Host directory with a read-only checkout of the PR head for the sandboxed planner call, or null to ask without tools. Absent: no tools. */
+  checkout?: (repo: string, number: number, head: string) => Promise<string | null>;
 };
 
 async function sha(path: string, jq: string): Promise<string | null> {
@@ -46,7 +50,7 @@ async function sha(path: string, jq: string): Promise<string | null> {
 
 export function defaultDeps(): VerifyDeps {
   return {
-    fetchDiff: ghDiff, fetchCrates: ghCrates, model: PROMPT.models[0]!,
+    fetchDiff: ghDiff, fetchCrates: ghCrates, model: PROMPT.models[0]!, checkout: (r, n, h) => checkoutForPr(r, n, h, console.log),
     baseOf: (repo, n) => sha(`repos/${ORG}/${repo}/pulls/${n}`, ".base.sha"),
     mainHead: (repo, branch) => sha(`repos/${ORG}/${repo}/commits/${encodeURIComponent(branch)}`, ".sha"),
   };
@@ -127,11 +131,13 @@ export async function runVerify(db: DatabaseSync, params: VerifyParams, log: (li
     if (!base) { log(`  ${ref}: no base commit`); summary.skipped.push(ref); continue; }
 
     const input = planInput(c, cr.crates, cd);
+    const checkout = (await deps.checkout?.(repo, c.number, c.head_oid)) ?? undefined;
+    if (checkout) input.repo_dir = REPO_PATH;
     const start = now();
     let usage: Usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: null };
     let result: ReturnType<typeof parsePlanReply> | null = null;
     for (let attempt = 0; attempt < PROMPT.limits.attempts && !(result && result.ok); attempt++) {
-      const reply = await askClaude("verify.plan", deps.model, [input], db);
+      const reply = await askClaude("verify.plan", deps.model, [input], db, { checkout });
       if (!reply) continue;
       usage = add(usage, reply.usage);
       result = parsePlanReply(reply.text, ref, cr.crates, c.label);

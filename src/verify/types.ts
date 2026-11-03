@@ -16,6 +16,8 @@ export type Crate = { name: string; dir: string };
 
 /** What the planner prompt is rendered from: one PR. `ref` is "repo#number". */
 export type VerifyPlanInput = {
+  /** Where the call may read the repository in the sandbox; not part of the quoted JSON. */
+  repo_dir?: string;
   ref: string; title: string; body: string;
   /** The settled type label; regression is allowed only for bugfix. */
   label: string | null;

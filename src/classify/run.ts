@@ -11,8 +11,8 @@ import { claudeRoom, startClaudeRun, startJevRun } from "../agents/call.ts";
 import { finishRun } from "../agents/runs.ts";
 import { scrubError } from "../agents/text.ts";
 import { scrub } from "../runner/scrub.ts";
-import { resolveClaudeBin, sandboxCommand } from "../sandbox/index.ts";
-import { CLAUDE_PROMPTS, JEV_ARGS, JEV_PROMPTS, claudeArgs, claudePromptOf, jevPromptOf, renderClaude, renderJev, type ClaudeInput, type ClaudePromptId, type JevPromptId } from "../prompts/index.ts";
+import { resolveClaudeBin, sandboxCommand, tokenNearExpiry } from "../sandbox/index.ts";
+import { CLAUDE_PROMPTS, JEV_ARGS, JEV_PROMPTS, claudeArgs, claudePromptOf, jevPromptOf, renderClaude, withoutRepoDir, renderJev, type ClaudeInput, type ClaudePromptId, type JevPromptId } from "../prompts/index.ts";
 import type { DupePair } from "../dupes/pair.ts";
 import { flagsOf, jevVerdict, parseHaikuReply, parseRef, refOf, type Item, type JevAnswers, type Verdict } from "./parse.ts";
 
@@ -178,13 +178,20 @@ export type AskOptions = { checkout?: string };
  * start to end (src/agents).
  */
 export async function askClaude<K extends ClaudePromptId>(id: K, model: string, input: ClaudeInput[K], db: DatabaseSync, opts: AskOptions = {}): Promise<{ text: string; usage: Usage; turns?: number } | null> {
-  const sandboxed = opts.checkout !== undefined && CLAUDE_PROMPTS[id].sandbox !== undefined;
-  const args = claudeArgs(id, model, sandboxed);
-  const prompt = renderClaude(id, input);
+  let sandboxed = opts.checkout !== undefined && CLAUDE_PROMPTS[id].sandbox !== undefined;
+  let prompt = renderClaude(id, input);
   const items = refsOf(input);
   const run = await startClaudeRun(db, { promptId: id, promptVersion: promptVersion(id), provider: "claude", model, items, prompt });
   const end = (e: Parameters<typeof finishRun>[2]) => finishRun(db, run.runId, e);
   try {
+    // The sandbox never refreshes the token: with little lifetime left the call runs on the host without tools, where a refresh is safe.
+    if (sandboxed && tokenNearExpiry(join(run.configDir, ".credentials.json"))) {
+      console.log("sandbox skipped: token near expiry");
+      sandboxed = false;
+      prompt = renderClaude(id, withoutRepoDir(input));
+      db.prepare("UPDATE agent_run_texts SET prompt = ? WHERE run_id = ?").run(scrub(prompt.slice(0, 1_000_000)), run.runId);
+    }
+    const args = claudeArgs(id, model, sandboxed);
     const cwd = mkdtempSync(join(tmpdir(), "classify-"));
     let r: Proc;
     if (sandboxed) {
@@ -192,29 +199,31 @@ export async function askClaude<K extends ClaudePromptId>(id: K, model: string, 
       if (!claudeBin || !existsSync(credentials)) throw new Error("sandboxed call: claude binary or the account's credentials file not found");
       const c = sandboxCommand({ claudeBin, checkout: opts.checkout!, credentials, claudeArgs: args });
       r = await runner(c.cmd, c.args, prompt, cwd, CLAUDE_PROMPTS[id].limits.timeoutSeconds * 1000);
-      // Backstop: nothing that looks like a token or key leaves the sandbox call.
-      r = { ...r, stdout: scrub(r.stdout), stderr: scrub(r.stderr) };
     } else r = await runner("claude", args, prompt, cwd, CLAUDE_PROMPTS[id].limits.timeoutSeconds * 1000, { CLAUDE_CONFIG_DIR: run.configDir });
+    // Stderr is scrubbed up front. For a sandboxed call the reply text is scrubbed after parsing, so a match cannot break the JSON.
+    if (sandboxed) r = { ...r, stderr: scrub(r.stderr) };
     try {
       // Some CLI versions print the event list, others only the final result object.
       const parsed = JSON.parse(r.stdout) as { type?: string }[] | { type?: string };
       const j = (Array.isArray(parsed) ? parsed.find((e) => e.type === "result") : parsed) as { result?: string; is_error?: boolean; total_cost_usd?: number; num_turns?: number; usage?: Record<string, number> } | undefined;
       if (!j) {
-        end({ state: "failed", error: `no result (${exitClass(r.code)}) ${r.stderr}`.slice(0, 400), summary: "no result", output: r.stdout });
+        end({ state: "failed", error: `no result (${exitClass(r.code)}) ${r.stderr}`.slice(0, 400), summary: "no result", output: sandboxed ? scrub(r.stdout) : r.stdout });
         return null;
       }
       const u = j.usage ?? {};
       const usage: Usage = { input: u.input_tokens ?? 0, output: u.output_tokens ?? 0, cacheRead: u.cache_read_input_tokens ?? 0, cacheWrite: u.cache_creation_input_tokens ?? 0, cost: j.total_cost_usd ?? null };
       const tokens = { input: usage.input, output: usage.output, cacheRead: usage.cacheRead, cacheWrite: usage.cacheWrite };
       if (j.is_error || typeof j.result !== "string") {
-        end({ state: "failed", tokens, error: scrubError(`model error ${typeof j.result === "string" ? j.result : ""}`), summary: "model error", output: r.stdout });
+        end({ state: "failed", tokens, error: scrubError(`model error ${typeof j.result === "string" ? j.result : ""}`), summary: "model error", output: sandboxed ? scrub(r.stdout) : r.stdout });
         return null;
       }
       const turns = sandboxed ? j.num_turns : undefined;
-      end({ state: "done", tokens, summary: turns === undefined ? replySummary(j.result, items.length) : `answered in ${turns} turns`, output: j.result });
-      return { text: j.result, usage, ...(turns !== undefined && { turns }) };
+      // Backstop: nothing that looks like a token or key leaves the sandbox call.
+      const text = sandboxed ? scrub(j.result) : j.result;
+      end({ state: "done", tokens, summary: turns === undefined ? replySummary(text, items.length) : `answered in ${turns} turns`, output: text });
+      return { text, usage, ...(turns !== undefined && { turns }) };
     } catch {
-      end({ state: "failed", error: scrubError(`unreadable output (${exitClass(r.code)}) ${r.stderr}`), summary: r.code === 0 ? "unreadable output" : exitClass(r.code), output: r.stdout });
+      end({ state: "failed", error: scrubError(`unreadable output (${exitClass(r.code)}) ${r.stderr}`), summary: r.code === 0 ? "unreadable output" : exitClass(r.code), output: sandboxed ? scrub(r.stdout) : r.stdout });
       return null;
     }
   } catch (e) {
