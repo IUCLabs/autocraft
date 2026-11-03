@@ -24,9 +24,9 @@ export function ItemIcon({ repo, number, kind, state, draft, className }: { repo
       rel="noopener noreferrer"
       aria-label={`Open ${repo}#${number} on GitHub`}
       title={`${what[0]!.toUpperCase()}${what.slice(1)}: open on GitHub`}
-      className={cn("relative z-10 -m-1 inline-flex shrink-0 rounded p-1 hover:bg-ink/10", tone, className)}
+      className={cn("relative z-10 -m-1.5 inline-flex shrink-0 rounded p-1.5 hover:bg-ink/10 [@media(pointer:coarse)]:-m-2.5 [@media(pointer:coarse)]:p-2.5", tone, className)}
     >
-      <Icon aria-hidden />
+      <Icon aria-hidden size="1.2em" weight="bold" />
     </a>
   );
 }

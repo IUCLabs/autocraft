@@ -92,7 +92,7 @@ export function InboxList({ user }: ViewProps) {
           const Icon = KIND_ICON[g.kind];
           return (
             <div key={g.kind}>
-              <div className="sticky top-0 z-[1] flex h-8 items-center gap-1.5 border-b border-line bg-bg px-4 text-xs font-semibold text-ink/70">
+              <div className="sticky top-0 z-20 flex h-8 items-center gap-1.5 border-b border-line bg-bg px-4 text-xs font-semibold text-ink/70">
                 <Icon className="text-[12px] text-ink/45" />
                 {KIND_LABEL[g.kind]}
                 <Count n={g.items.length} />
