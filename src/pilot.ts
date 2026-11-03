@@ -43,11 +43,16 @@ export function setRepoPipeline(db: DatabaseSync, by: string, repo: string, on: 
   return changed;
 }
 
-/** The repos in scope: pipeline flag on, and, with a pilot set, named by one of its items. */
-export function scopeRepos(db: DatabaseSync): Set<string> {
+/** The repos in scope without fast track: pipeline flag on, and, with a pilot set, named by one of its items. */
+export function baseScopeRepos(db: DatabaseSync): Set<string> {
   const on = pipelineRepos(db);
   const items = pilotItems(db);
-  const out = items.length ? new Set([...on].filter((r) => new Set(items.map((i) => i.split("#")[0]!)).has(r))) : on;
+  return items.length ? new Set([...on].filter((r) => new Set(items.map((i) => i.split("#")[0]!)).has(r))) : on;
+}
+
+/** The repos that take part: those of `baseScopeRepos` and those with a fast-tracked open item. */
+export function scopeRepos(db: DatabaseSync): Set<string> {
+  const out = baseScopeRepos(db);
   // A repo with a fast-tracked open item takes part for that item alone (see pilotSqlFor).
   for (const r of db.prepare(`SELECT DISTINCT f.repo FROM main.fast_track f JOIN main.tracked_repos t ON t.name = f.repo
     JOIN main.items i ON i.repo = f.repo AND i.number = f.number AND i.state = 'OPEN'`).all() as { repo: string }[]) out.add(r.repo);
@@ -89,7 +94,9 @@ export const pilotSqlFor = (repo: string, number: string): string =>
     AND (COALESCE(json_array_length(${LIST}), 0) = 0
       OR EXISTS (SELECT 1 FROM json_each(${LIST}) pj WHERE pj.value = ${repo} || '#' || ${number})
       OR EXISTS (SELECT 1 FROM main.fix_attempts pf, json_each(${LIST}) pj WHERE pf.repo = ${repo} AND pf.pr_url LIKE '%/pull/' || ${number}
-        AND pj.value = pf.repo || '#' || pf.number))))`;
+        AND pj.value = pf.repo || '#' || pf.number)))
+    OR EXISTS (SELECT 1 FROM main.fix_attempts pg JOIN main.fast_track pgt ON pgt.repo = pg.repo AND pgt.number = pg.number
+      WHERE pg.repo = ${repo} AND pg.pr_url LIKE '%/pull/' || ${number}))`;
 
 /** The same for a row `alias` of items. */
 export const pilotSql = (alias: string): string => pilotSqlFor(`${alias}.repo`, `${alias}.number`);

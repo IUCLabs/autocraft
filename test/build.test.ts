@@ -73,6 +73,18 @@ describe("task source", () => {
 });
 
 describe("claim", () => {
+  test("a fast-tracked item of a repo with the pipeline off is handed out; other tasks of that repo are not", () => {
+    clear();
+    db.exec(`INSERT INTO items (repo, number, kind, state, created_at, updated_at) VALUES ('vault', 5, 'pr', 'OPEN', 't', 't'), ('vault', 6, 'pr', 'OPEN', 't', 't');
+      INSERT INTO fast_track (repo, number, added_by, added_at) VALUES ('vault', 5, 'op', 't')`);
+    const e = env({ slots: 4 });
+    const fast = task({ repo: "vault", number: 5 }), other = task({ repo: "vault", number: 6 }), baseline = task({ repo: "vault" });
+    assert.deepEqual(ids(claim(db, e.id, 4)), [fast]);
+    assert.equal(getTask(db, other)!.state, "queued");
+    assert.equal(getTask(db, baseline)!.state, "queued");
+    db.exec("DELETE FROM fast_track; DELETE FROM items WHERE repo = 'vault'");
+  });
+
   test("only repos with the pipeline on and operator smoke tests are handed out", () => {
     clear();
     const e = env({ slots: 4 });

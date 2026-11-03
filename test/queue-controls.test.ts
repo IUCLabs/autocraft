@@ -185,7 +185,7 @@ describe("batch controls", () => {
     await assert.rejects(() => removeFromBatch(db, "op", "app", 1, gh.run), /not in a batch/);
   });
 
-  test("a batch still being checked has no PR to close, and a failed close is reported after the batch is ended", async () => {
+  test("a batch still being checked has no PR to close, and a failed close is reported and leaves the batch in flight to retry", async () => {
     const db = fresh();
     const a = withBatch(db, "integration-app-20260101-1", [1], null);
     const quiet = fakeGh();
@@ -193,6 +193,7 @@ describe("batch controls", () => {
     assert.equal(quiet.calls.length, 0);
     const b = withBatch(db, "integration-app-20260101-2", [3]);
     await assert.rejects(() => stopBatch(db, "op", b, fakeGh(1).run), (e: unknown) => (e as { status: number }).status === 502);
+    assert.equal(stateOf(db, b), "open");
     const row = db.prepare("SELECT details FROM audit WHERE action = 'batch-pr-close'").get() as { details: string };
     assert.equal(JSON.parse(row.details).state, "failed");
   });
