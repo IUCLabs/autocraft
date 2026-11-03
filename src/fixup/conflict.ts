@@ -15,13 +15,17 @@ import { CLAUDE_PROMPTS } from "../prompts/index.ts";
 import { BASE_NAME, classifyConflicts, MAX_CONFLICT_TRIES, type ConflictCandidate } from "./conflict-state.ts";
 import type { Git } from "./git.ts";
 import { noteLive, type FixupDeps, type FixupSummary, type PrNode, type Who } from "./index.ts";
-import { endNewline, hasMarkers, keepsOutside, parseResolution, resolvablePath, type ConflictPr } from "./patch.ts";
+import { conflictView, endNewline, hasMarkers, parseResolution, resolvablePath, spliceSections, type ConflictFile } from "./patch.ts";
 import { BASE_ORG, longLivedOf, pushable } from "./pushable.ts";
 import { conflictAskText, conflictCommentText, mergeMessage } from "./template.ts";
 
 const CHECK = CLAUDE_PROMPTS["fixup.check"];
-const FILE_CAP = 40_000;
-const TOTAL_CAP = 120_000;
+/** Caps on what the resolver is shown: all sections with their context, and one section's two sides. */
+const SECTIONS_CAP = 120_000;
+const SECTION_CAP = 40_000;
+/** Lines of context per section the check gets. */
+const CHECK_CONTEXT = 10;
+const lastLines = (text: string, n: number): string => text.split(/(?<=\n)/).slice(-n).join("");
 
 
 export type ConflictRun = {
@@ -115,8 +119,6 @@ export async function mergeConflict(db: DatabaseSync, x: ConflictRun, c: Conflic
     const who = await x.who();
     const merge = await git.mergeInto(head, baseSha);
     let tree = merge.tree;
-    let resolved: { path: string; conflicted: string; resolved: string }[] = [];
-    let diff = "";
     let checkout: string | undefined;
     // Refused for the same reason at every run for this head: recorded as a skip so the head is not tried again, and never claimed.
     const refuse = (reason: string) => { held("skipped", reason); };
@@ -124,19 +126,22 @@ export async function mergeConflict(db: DatabaseSync, x: ConflictRun, c: Conflic
     else {
       files = merge.conflicted;
       if (!files.length) { refuse("the merge is not clean but names no conflicted file"); return; }
-      const shown: ConflictPr["files"] = [];
-      const modes = new Map<string, string>();
-      let total = 0;
+      const shown: ConflictFile[] = [];
+      const texts = new Map<string, { content: string; mode: string }>();
+      let size = 0, nextId = 1;
       for (const path of files) {
         if (!resolvablePath(path)) { refuse(`${path} is not a file a conflict resolution may touch`); return; }
         const f = await git.file(merge.tree, path);
         if (!f.ok) { fail("refused", f.reason); return; }
         if (!hasMarkers(f.content)) { refuse(`${path} conflicts without content markers`); return; }
         if (f.content.includes("\r") || f.content.includes("\uFFFD")) { refuse(`${path} has CRLF line endings or is not UTF-8`); return; }
-        total += f.content.length;
-        if (f.content.length > FILE_CAP || total > TOTAL_CAP) { refuse("the conflicted files are over the size limit"); return; }
-        modes.set(path, f.mode);
-        shown.push({ path, content: f.content });
+        const view = conflictView(path, f.content, nextId);
+        if (!view) { refuse(`${path} has malformed conflict markers`); return; }
+        nextId += view.sections.length;
+        size += view.sections.reduce((n, s) => n + s.before.length + s.ours.length + s.theirs.length + s.after.length, 0);
+        if (size > SECTIONS_CAP || view.sections.some((s) => s.ours.length + s.theirs.length > SECTION_CAP)) { refuse("the conflict sections are over the size limit"); return; }
+        texts.set(path, { content: f.content, mode: f.mode });
+        shown.push(view);
       }
       const prDiff = await cachedDiff(x.repo, c.number, head, x.d.fetchDiff);
       if (!prDiff.ok) { fail("failed", `no diff: ${oneLine(prDiff.error)}`); return; }
@@ -146,29 +151,32 @@ export async function mergeConflict(db: DatabaseSync, x: ConflictRun, c: Conflic
       const body = ((db.prepare("SELECT body FROM items WHERE repo = ? AND number = ?").get(x.repo, c.number) as { body: string | null } | undefined)?.body ?? "").slice(0, 4000);
       const reply = await x.d.resolve(db, [{ ref, title: c.title, body, review_reason: c.reason, base: c.base, files: shown, ...(checkout ? { repo_dir: REPO_PATH } : {}) }], checkout);
       if (reply === null) { fail("failed", "the model gave no answer"); return; }
-      const res = parseResolution(reply, files);
+      const res = parseResolution(reply, shown.flatMap((f) => f.sections.map((s) => s.id)));
       if (!res.ok) { fail("refused", res.reason); return; }
-      const resFiles = res.files.map((f) => ({ path: f.path, content: endNewline(shown.find((s) => s.path === f.path)!.content, f.content) }));
+      const resFiles: { path: string; mode: string; content: string }[] = [];
+      for (const f of shown) {
+        const t = texts.get(f.path)!;
+        const spliced = spliceSections(t.content, f.sections.map((s) => res.sections.get(s.id)!), f.path);
+        if (spliced === null) { fail("refused", `the resolution of ${f.path} adds lines that are neither side, or declares code, imports or dependencies`); return; }
+        resFiles.push({ path: f.path, mode: t.mode, content: endNewline(t.content, spliced) });
+      }
       const scratch = mkdtempSync(join(x.d.root, ".index-"));
       try {
-        tree = await git.withFiles(merge.tree, resFiles.map((f) => ({ path: f.path, mode: modes.get(f.path)!, content: f.content })), join(scratch, "index"));
+        tree = await git.withFiles(merge.tree, resFiles, join(scratch, "index"));
       } finally {
         rmSync(scratch, { recursive: true, force: true });
       }
-      const moved = resFiles.find((f) => !keepsOutside(shown.find((s) => s.path === f.path)!.content, f.content, f.path));
-      if (moved) { fail("refused", `the resolution changes ${moved.path} outside its conflict sections or adds lines that are neither side`); return; }
       const changes = await git.rawChanges(merge.tree, tree);
       if (changes.some((ch) => !files.includes(ch[3]!) || ch[0] !== ch[1])) { fail("refused", "the resolution would change files or modes outside the conflicted files"); return; }
-      resolved = resFiles.map((f) => ({ path: f.path, conflicted: shown.find((s) => s.path === f.path)!.content, resolved: f.content }));
-      const tentative = await git.commitMerge(tree, [head, baseSha], mergeMessage(c.base, pr.headRefName), { name: who.login, email: who.email });
-      diff = await git.diffText(head, tentative);
-      if (diff.length > CHECK_PATCH_CAP) { refuse(`the merge is over the ${CHECK_PATCH_CAP} character limit for the check`); return; }
+      const sections = shown.map((f) => ({ path: f.path, sections: f.sections.map((s) => ({ id: s.id, before: lastLines(s.before, CHECK_CONTEXT), ours: s.ours, theirs: s.theirs, resolved: res.sections.get(s.id)!, after: s.after.split(/(?<=\n)/).slice(0, CHECK_CONTEXT).join("") })) }));
+      const sent = JSON.stringify(sections).length;
+      if (sent > CHECK_PATCH_CAP) { refuse(`the resolved sections are over the ${CHECK_PATCH_CAP} character limit for the check`); return; }
       const repoDir = checkout ? { repo_dir: REPO_PATH } : {};
-      const checkReply = await x.d.check(db, [{ ref, title: c.title, review_reason: c.reason, fixes: [], diff: prDiff.text.slice(0, CHECK_DIFF_CAP), patch: diff, conflict: { base: c.base, files: resolved.map((r) => ({ path: r.path, conflicted: r.conflicted.slice(0, 20_000), resolved: r.resolved.slice(0, 20_000) })) }, ...repoDir }], checkout);
+      const checkReply = await x.d.check(db, [{ ref, title: c.title, review_reason: c.reason, fixes: [], diff: prDiff.text.slice(0, CHECK_DIFF_CAP), patch: "", conflict: { base: c.base, files: sections }, ...repoDir }], checkout);
       if (checkReply === null) { fail("failed", "the patch check gave no answer"); return; }
       const verdict = parseCheck(checkReply);
       if (!verdict.ok) { fail("failed", `the patch check gave no valid answer: ${verdict.error}`); return; }
-      recordCheck(db, { kind: "fixup", repo: x.repo, number: c.number, subject: head, patch: diff, round: c.attempt, model: CHECK.models[0]!, check: verdict.check, at: x.at() });
+      recordCheck(db, { kind: "fixup", repo: x.repo, number: c.number, subject: head, patch: JSON.stringify(sections), round: c.attempt, model: CHECK.models[0]!, check: verdict.check, at: x.at() });
       audit(db, "fixup", "fixup-check", ref, { run: x.runId, head, verdict: verdict.check.verdict, reasons: verdict.check.reasons, conflict: true });
       if (verdict.check.verdict === "reject") { fail("rejected", `Opus rejected the resolution: ${checkLine(verdict.check)}`); return; }
       const again = await live(db, x, c);

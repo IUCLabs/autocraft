@@ -13,7 +13,7 @@ import { classifyConflicts, conflictTries } from "../src/fixup/conflict-state.ts
 import { pushable } from "../src/fixup/pushable.ts";
 import { exec, type Exec, type ExecResult } from "../src/fixup/git.ts";
 import { runFixup, type FixupDeps } from "../src/fixup/index.ts";
-import { endNewline, keepsOutside, outsideConflicts, parseResolution } from "../src/fixup/patch.ts";
+import { endNewline, keepsOutside, outsideConflicts, parseResolution, type ConflictFile } from "../src/fixup/patch.ts";
 import { CONFLICT_COMMENT_TEMPLATE, conflictCommentText } from "../src/fixup/template.ts";
 import { finalizeReviews } from "./fixture.ts";
 import { SCRATCH } from "./scratch.ts";
@@ -35,22 +35,24 @@ function git(cwd: string, ...args: string[]): string {
 type World = { fork: string; head: string; base: string; log: string[]; deps: FixupDeps; checkInput: unknown[] };
 
 /** `conflicting`: the PR and main edit the same line of f.txt; otherwise they edit different files. */
-function world(o: { conflicting: boolean; big?: boolean; canModify?: boolean; resolve?: (files: { path: string; content: string }[]) => string | null; check?: string }): World {
+function world(o: { conflicting: boolean; big?: boolean; pad?: boolean; canModify?: boolean; resolve?: (files: ConflictFile[]) => string | null; check?: string }): World {
   const root = mkdtempSync(join(dir, "w-"));
   const work = join(root, "work");
   mkdirSync(work);
   git(work, "init", "-q", "-b", "main");
-  const b = o.big ? "b".repeat(50_000) : "b";
-  writeFileSync(join(work, "f.txt"), `a\n${b}\nc\n`);
+  const sfx = o.big ? "x".repeat(50_000) : "";
+  const b = `b${sfx}`;
+  const pad = o.pad ? "padding line\n".repeat(20_000) : "";
+  writeFileSync(join(work, "f.txt"), `${pad}a\n${b}\nc\n${pad}`);
   writeFileSync(join(work, "g.txt"), "x\n");
   git(work, "add", "-A");
   git(work, "commit", "-q", "-m", "base");
   git(work, "checkout", "-q", "-b", "feat");
-  if (o.conflicting) writeFileSync(join(work, "f.txt"), `a\nB-pr${b}\nc\n`); else writeFileSync(join(work, "g.txt"), "x\ny\n");
+  if (o.conflicting) writeFileSync(join(work, "f.txt"), `${pad}a\nB-pr${sfx}\nc\n${pad}`); else writeFileSync(join(work, "g.txt"), "x\ny\n");
   git(work, "commit", "-qam", "pr");
   const head = git(work, "rev-parse", "HEAD");
   git(work, "checkout", "-q", "main");
-  writeFileSync(join(work, "f.txt"), o.conflicting ? `a\nB-main${b}\nc\n` : "a\nb\nc\nd\n");
+  writeFileSync(join(work, "f.txt"), o.conflicting ? `${pad}a\nB-main${sfx}\nc\n${pad}` : `${pad}a\nb\nc\nd\n${pad}`);
   git(work, "commit", "-qam", "main moves");
   const base = git(work, "rev-parse", "HEAD");
   const fork = join(root, "fork.git");
@@ -127,8 +129,9 @@ describe("conflict merge", () => {
 
   test("a conflicting merge is resolved by the injected resolver, checked by Opus and pushed without markers", async () => {
     const w = world({ conflicting: true, resolve: (files) => {
-      assert.match(files[0]!.content, /<<<<<<< /);
-      return JSON.stringify({ files: [{ path: "f.txt", content: "a\nB-pr and B-main\nc\n" }] });
+      assert.equal(files[0]!.sections.length, 1);
+      assert.deepEqual([files[0]!.sections[0]!.ours, files[0]!.sections[0]!.theirs], ["B-pr", "B-main"]);
+      return JSON.stringify({ sections: [{ id: 1, content: "B-pr and B-main\n" }] });
     } });
     const db = fresh(w.head);
     const s = await runFixup(db, { repo: "app", dryRun: false }, () => {}, w.deps);
@@ -156,7 +159,7 @@ describe("conflict merge", () => {
   });
 
   test("an Opus reject pushes nothing and counts as a try", async () => {
-    const w = world({ conflicting: true, resolve: () => JSON.stringify({ files: [{ path: "f.txt", content: "a\nzzz\nc\n" }] }), check: JSON.stringify({ verdict: "reject", reasons: "drops the PR's line", problems: [] }) });
+    const w = world({ conflicting: true, resolve: () => JSON.stringify({ sections: [{ id: 1, content: "zzz\n" }] }), check: JSON.stringify({ verdict: "reject", reasons: "drops the PR's line", problems: [] }) });
     const db = fresh(w.head);
     await runFixup(db, { repo: "app", dryRun: false }, () => {}, w.deps);
     assert.ok(!w.log.some((l) => l.startsWith("push")));
@@ -167,8 +170,11 @@ describe("conflict merge", () => {
 
   test("leftover markers or an extra file are refused; nothing is pushed; two tries end in held", async () => {
     for (const reply of [
-      JSON.stringify({ files: [{ path: "f.txt", content: "<<<<<<< pr\nB-pr\n=======\nB-main\n>>>>>>> main\n" }] }),
-      JSON.stringify({ files: [{ path: "f.txt", content: "a\nok\nc\n" }, { path: "g.txt", content: "changed\n" }] }),
+      JSON.stringify({ sections: [{ id: 1, content: "<<<<<<< pr\nB-pr\n=======\nB-main\n>>>>>>> main\n" }] }),
+      JSON.stringify({ sections: [{ id: 1, content: "ok\n" }, { id: 2, content: "changed\n" }] }),
+      JSON.stringify({ sections: [{ id: 1, content: "ok\n" }, { id: 1, content: "ok\n" }] }),
+      JSON.stringify({ sections: [] }),
+      JSON.stringify({ sections: [{ id: 1, content: "B-pr\nuse evil::Thing;\n" }] }),
     ]) {
       const w = world({ conflicting: true, resolve: () => reply });
       const db = fresh(w.head);
@@ -178,7 +184,8 @@ describe("conflict merge", () => {
       await runFixup(db, { repo: "app", dryRun: false }, () => {}, w.deps);
       assert.equal(classifyConflicts(db, "app")[0]!.bucket, "held");
     }
-    assert.ok(!parseResolution('{"files":[{"path":"f.txt","content":"ok"}]}', ["f.txt", "h.txt"]).ok);
+    assert.ok(!parseResolution('{"sections":[{"id":1,"content":"ok"}]}', [1, 2]).ok);
+    assert.ok(parseResolution('{"sections":[{"id":1,"content":"ok"},{"id":2,"content":""}]}', [1, 2]).ok);
   });
 
   test("a fork without maintainer edits is asked once with comment approval, else held without a write", async () => {
@@ -216,14 +223,44 @@ describe("live read of a candidate the mirror still shows as mergeable", () => {
 });
 
 describe("conflict merge guards", () => {
-  test("a resolution that changes text outside the conflict sections is refused", async () => {
-    const w = world({ conflicting: true, resolve: () => JSON.stringify({ files: [{ path: "f.txt", content: "A\nB-pr and B-main\nc\n" }] }) });
+  test("a large file with one small conflict is resolved from its section and pushed; the text outside the section is untouched", async () => {
+    let shownSize = 0;
+    const w = world({ conflicting: true, pad: true, resolve: (files) => {
+      shownSize = JSON.stringify(files).length;
+      assert.equal(files[0]!.lines > 40_000, true);
+      return JSON.stringify({ sections: [{ id: 1, content: "B-pr and B-main\n" }] });
+    } });
     const db = fresh(w.head);
-    await runFixup(db, { repo: "app", dryRun: false }, () => {}, w.deps);
-    assert.ok(!w.log.some((l) => l.startsWith("push") || l === "check"));
-    const [row] = db.prepare("SELECT state, reason FROM conflict_merges").all() as { state: string; reason: string }[];
-    assert.equal(row!.state, "refused");
-    assert.match(row!.reason, /outside its conflict sections/);
+    const s = await runFixup(db, { repo: "app", dryRun: false }, () => {}, w.deps);
+    assert.deepEqual(s.pushed, ["app#7"]);
+    assert.ok(shownSize < 10_000, "only the section and its context are sent");
+    const pushed = git(w.fork, "rev-parse", "refs/heads/feat");
+    const pad = "padding line\n".repeat(20_000);
+    assert.equal(git(w.fork, "show", `${pushed}:f.txt`), `${pad}a\nB-pr and B-main\nc\n${pad}`.trimEnd());
+    assert.ok(JSON.stringify(w.checkInput[0]).length < 10_000, "the check gets the sections, not the merge diff");
+  });
+
+  test("a section answered twice or an unknown section is refused", async () => {
+    for (const sections of [[{ id: 1, content: "x\n" }, { id: 1, content: "x\n" }], [{ id: 9, content: "x\n" }]]) {
+      const w = world({ conflicting: true, resolve: () => JSON.stringify({ sections }) });
+      const db = fresh(w.head);
+      await runFixup(db, { repo: "app", dryRun: false }, () => {}, w.deps);
+      assert.ok(!w.log.some((l) => l.startsWith("push") || l === "check"));
+      assert.equal((db.prepare("SELECT state FROM conflict_merges").get() as { state: string }).state, "refused");
+    }
+  });
+
+  test("heads skipped for size under the whole-file rule are tried again after connecting", () => {
+    const path = join(mkdtempSync(join(dir, "mig-")), "t.db");
+    const db = connect(path);
+    const ins = db.prepare("INSERT INTO conflict_merges (repo, number, from_head, state, reason, files, attempt, created_at) VALUES ('app', ?, 'h', 'skipped', ?, '[]', 1, ?)");
+    ins.run(1, "the conflicted files are over the size limit", T0);
+    ins.run(2, "the merge is over the 80000 character limit for the check", T0);
+    ins.run(3, "the conflict sections are over the size limit", T0);
+    ins.run(4, "main is already in the branch", T0);
+    db.close();
+    const again = connect(path);
+    assert.deepEqual(again.prepare("SELECT number FROM conflict_merges ORDER BY number").all().map((r) => (r as { number: number }).number), [3, 4]);
   });
 
   test("outsideConflicts and keepsOutside", () => {

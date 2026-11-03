@@ -164,42 +164,48 @@ export type ConflictPr = {
   review_reason: string;
   /** The base branch being merged in. */
   base: string;
-  /** Each conflicted file with conflict markers: `<<<<<<<` is the PR's side, `>>>>>>>` the base branch's. */
-  files: { path: string; content: string }[];
+  /** Each conflicted file as its conflict sections. */
+  files: ConflictFile[];
 };
 
-const MARKER = /^(<{7}|>{7})( |$)|^={7}$/m;
-const RESOLVE_MAX_FILE = 80_000;
-export const RESOLVE_MAX_TOTAL = 160_000;
+/** One conflict section with the lines around it. `ours` is the PR's side, `theirs` the base branch's. */
+export type ConflictSection = { id: number; line: number; before: string; ours: string; theirs: string; after: string };
+export type ConflictFile = { path: string; lines: number; sections: ConflictSection[] };
 
-export type Resolution = { ok: true; files: { path: string; content: string }[] } | { ok: false; reason: string };
+const MARKER = /^(<{7}|>{7})( |$)|^={7}$/m;
+const RESOLVE_MAX_SECTION = 40_000;
+export const RESOLVE_MAX_TOTAL = 120_000;
+/** Lines of the file shown before and after each conflict section. */
+export const CONTEXT_LINES = 30;
+
+export type Resolution = { ok: true; sections: Map<number, string> } | { ok: false; reason: string };
 
 /**
- * The resolver's reply: a JSON object {"files": [{"path", "content"}]} that names exactly the conflicted files, each with
- * full resolved content free of conflict markers, within the size caps. Nothing else may be touched.
+ * The resolver's reply: a JSON object {"sections": [{"id", "content"}]} that answers each shown section id exactly once
+ * with the resolved lines for it, free of conflict markers and within the size caps.
  */
-export function parseResolution(text: string, conflicted: string[]): Resolution {
+export function parseResolution(text: string, ids: number[]): Resolution {
   const a = text.indexOf("{"), b = text.lastIndexOf("}");
   let v: unknown;
   try { v = JSON.parse(text.slice(a, b + 1)); } catch { return { ok: false, reason: "the resolution is not valid JSON" }; }
-  const list = (v as { files?: unknown } | null)?.files;
-  if (!Array.isArray(list)) return { ok: false, reason: "the resolution has no files list" };
-  const files: { path: string; content: string }[] = [];
+  const list = (v as { sections?: unknown } | null)?.sections;
+  if (!Array.isArray(list)) return { ok: false, reason: "the resolution has no sections list" };
+  const out = new Map<number, string>();
   let total = 0;
-  for (const f of list as { path?: unknown; content?: unknown }[]) {
-    if (typeof f?.path !== "string" || typeof f.content !== "string") return { ok: false, reason: "a resolved file lacks a path or content" };
-    if (!conflicted.includes(f.path)) return { ok: false, reason: `${f.path} is not one of the conflicted files` };
-    if (files.some((x) => x.path === f.path)) return { ok: false, reason: `${f.path} appears twice` };
-    if (MARKER.test(f.content)) return { ok: false, reason: `${f.path} still has conflict markers` };
-    if (f.content.includes("\0")) return { ok: false, reason: `${f.path} has a NUL byte` };
-    if (f.content.length > RESOLVE_MAX_FILE) return { ok: false, reason: `${f.path} is over the size limit` };
+  for (const f of list as { id?: unknown; content?: unknown }[]) {
+    if (typeof f?.id !== "number" || typeof f.content !== "string") return { ok: false, reason: "a resolved section lacks an id or content" };
+    if (!ids.includes(f.id)) return { ok: false, reason: `section ${f.id} is not one of the conflict sections` };
+    if (out.has(f.id)) return { ok: false, reason: `section ${f.id} is answered twice` };
+    if (MARKER.test(f.content)) return { ok: false, reason: `section ${f.id} still has conflict markers` };
+    if (f.content.includes("\0")) return { ok: false, reason: `section ${f.id} has a NUL byte` };
+    if (f.content.length > RESOLVE_MAX_SECTION) return { ok: false, reason: `section ${f.id} is over the size limit` };
     total += f.content.length;
-    files.push({ path: f.path, content: f.content });
+    out.set(f.id, f.content);
   }
-  if (total > RESOLVE_MAX_TOTAL) return { ok: false, reason: "the resolved files are over the size limit" };
-  const missing = conflicted.find((p) => !files.some((f) => f.path === p));
-  if (missing) return { ok: false, reason: `${missing} is conflicted but not resolved` };
-  return { ok: true, files };
+  if (total > RESOLVE_MAX_TOTAL) return { ok: false, reason: "the resolved sections are over the size limit" };
+  const missing = ids.find((i) => !out.has(i));
+  if (missing !== undefined) return { ok: false, reason: `section ${missing} is not resolved` };
+  return { ok: true, sections: out };
 }
 
 /** Conflicted files a resolution may be written for: safe paths outside CI, cargo config and build scripts. */
@@ -242,6 +248,17 @@ const RISKY_LINE = /^\s*(pub\s+)?(use|extern|mod|fn|impl|macro_rules!|import)\b|
 const DEPENDENCY_LINE = /^\s*"?[\w@/.-]+"?\s*(=\s*("|\{)|:\s*("|\{))/;
 const MAX_OTHER_LINES = 3;
 
+/** True when a section's resolved text is made of lines from its two sides plus at most three others, none risky. */
+function sectionOk(section: { ours: string[]; theirs: string[] }, text: string, dep: boolean): boolean {
+  const sides = new Set([...section.ours, ...section.theirs]);
+  let other = 0;
+  for (const line of text.split("\n").filter((l, k, all) => k < all.length - 1 || l !== "")) {
+    if (sides.has(line)) continue;
+    if (++other > MAX_OTHER_LINES || RISKY_LINE.test(line) || (dep && DEPENDENCY_LINE.test(line))) return false;
+  }
+  return true;
+}
+
 /** A resolution's text ends with a newline when the conflicted file's does. */
 export function endNewline(conflicted: string, resolved: string): string {
   return conflicted.endsWith("\n") && !resolved.endsWith("\n") ? `${resolved}\n` : resolved;
@@ -269,13 +286,56 @@ export function keepsOutside(conflicted: string, resolved: string, path = ""): b
       if (at < 0 || at + pieces[i + 1]!.length > end) return false;
       stop = at;
     }
-    const sides = new Set([...sections[i]!.ours, ...sections[i]!.theirs]);
-    let other = 0;
-    for (const line of resolved.slice(cursor, stop).split("\n").filter((l, k, all) => k < all.length - 1 || l !== "")) {
-      if (sides.has(line)) continue;
-      if (++other > MAX_OTHER_LINES || RISKY_LINE.test(line) || (dep && DEPENDENCY_LINE.test(line))) return false;
-    }
+    if (!sectionOk(sections[i]!, resolved.slice(cursor, stop), dep)) return false;
     cursor = i < last - 1 ? stop + pieces[i + 1]!.length : stop;
   }
   return true;
+}
+
+const lineList = (text: string): string[] => text.split(/(?<=\n)/).filter((l) => l !== "");
+
+/**
+ * A merge-tree file as its conflict sections, numbered from `firstId`, each with up to `context` lines before and after.
+ * Where two sections are close, the lines between them are shared out so no line is shown twice. Null when the markers
+ * are not well formed.
+ */
+export function conflictView(path: string, text: string, firstId: number, context = CONTEXT_LINES): ConflictFile | null {
+  const parsed = parseSections(text);
+  if (!parsed) return null;
+  const { pieces, sections } = parsed;
+  const lines = pieces.map(lineList);
+  const after: number[] = [], before: number[] = [];
+  for (let i = 0; i < sections.length; i++) {
+    const gap = lines[i + 1]!.length;
+    after[i] = Math.min(context, gap);
+    before[i + 1] = i + 1 < sections.length ? Math.min(context, gap - after[i]!) : 0;
+  }
+  before[0] = Math.min(context, lines[0]!.length);
+  let at = lines[0]!.length + 1;
+  const out: ConflictSection[] = sections.map((sec, i) => {
+    const section: ConflictSection = {
+      id: firstId + i, line: at,
+      before: lines[i]!.slice(lines[i]!.length - (i === 0 ? before[0]! : before[i]!)).join(""),
+      ours: sec.ours.join("\n"), theirs: sec.theirs.join("\n"),
+      after: lines[i + 1]!.slice(0, after[i]).join(""),
+    };
+    at += sec.ours.length + sec.theirs.length + 3 + lines[i + 1]!.length;
+    return section;
+  });
+  return { path, lines: text.split("\n").length - (text.endsWith("\n") ? 1 : 0), sections: out };
+}
+
+/** The merge-tree file with each section replaced by its resolved text (`answers` in section order), or null when the markers are malformed or a resolution breaks the section rules. */
+export function spliceSections(text: string, answers: string[], path = ""): string | null {
+  const parsed = parseSections(text);
+  if (!parsed || parsed.sections.length !== answers.length) return null;
+  const dep = /(^|\/)(Cargo\.toml|package\.json)$/.test(path);
+  let out = parsed.pieces[0]!;
+  for (let i = 0; i < answers.length; i++) {
+    const a = answers[i]!;
+    const resolved = a === "" || a.endsWith("\n") ? a : `${a}\n`;
+    if (!sectionOk(parsed.sections[i]!, resolved, dep)) return null;
+    out += resolved + parsed.pieces[i + 1]!;
+  }
+  return out;
 }

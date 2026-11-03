@@ -156,6 +156,9 @@ function migrateValues(db: DatabaseSync): void {
     for (const t of db.prepare(`SELECT id, repo, number FROM main.conversation_turns WHERE ${UNSEQ} ORDER BY id`).all() as { id: number; repo: string; number: number }[])
       set.run((next.get(t.repo, t.number) as { n: number }).n, t.id);
   }
+  // Conflict merges skipped for size under the whole-file rule are tried again under the section rule.
+  const OLD_SIZE = "state = 'skipped' AND (reason = 'the conflicted files are over the size limit' OR reason LIKE 'the merge is over the % character limit for the check')";
+  if (db.prepare(`SELECT 1 FROM main.conflict_merges WHERE ${OLD_SIZE} LIMIT 1`).get()) db.exec(`DELETE FROM main.conflict_merges WHERE ${OLD_SIZE}`);
   // Whole-repo pilot entries became the repo's pipeline flag.
   const pilot = db.prepare("SELECT value FROM main.settings WHERE key = 'pilot_items'").get() as { value: string } | undefined;
   if (pilot) wholeRepoPilot(db, pilot.value);
