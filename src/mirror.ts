@@ -7,6 +7,7 @@ import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { connect, dbPath } from "./db.ts";
 import { trackedNames } from "./repos.ts";
+import { audit } from "./dash/audit.ts";
 import { hashColumns } from "./itemhash.ts";
 
 const ORG = "storytold";
@@ -229,6 +230,7 @@ function writePage(db: DatabaseSync, repo: string, kind: Kind, detail: Detail, n
   // Upserts keep each row's rowid, which the full-text index (schema.sql) is keyed on.
   const insert = db.prepare(`INSERT INTO items (${COLUMNS.join(",")}) VALUES (${COLUMNS.map((c) => `:${c}`).join(",")})
     ON CONFLICT (repo, number) DO UPDATE SET ${COLUMNS.filter((c) => c !== "repo" && c !== "number").map((c) => `${c}=excluded.${c}`).join(",")}`);
+  const stored = db.prepare(`SELECT ${COLUMNS.join(",")} FROM items WHERE repo=? AND number=?`);
   const del = db.prepare("DELETE FROM comments WHERE repo=? AND number=?");
   const insComment = db.prepare(`INSERT INTO comments VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT (id) DO UPDATE SET
     repo=excluded.repo, number=excluded.number, kind=excluded.kind, author=excluded.author, created_at=excluded.created_at,
@@ -236,7 +238,11 @@ function writePage(db: DatabaseSync, repo: string, kind: Kind, detail: Detail, n
   db.exec("BEGIN");
   try {
     for (const n of nodes) {
-      insert.run(toRow(repo, kind, n, detail));
+      const row = toRow(repo, kind, n, detail);
+      // A row identical to the stored one (overlapping reads re-fetch many) writes nothing.
+      const old = stored.get(repo, n.number) as Record<string, SQLInputValue> | undefined;
+      if (old && COLUMNS.every((c) => old[c] === row[c])) continue;
+      insert.run(row);
       if (detail === "full") {
         del.run(repo, n.number);
         for (const row of commentRows(repo, kind, n)) insComment.run(...row);
@@ -262,12 +268,9 @@ async function listRepos(client: Querier): Promise<Node[]> {
 
 const iso = (d: Date): string => d.toISOString().replace(/\.\d+Z$/, "Z");
 
-// high_water is written only when the whole repo finished, so a crash leaves the repo incomplete.
-async function syncRepo(db: DatabaseSync, client: Querier, name: string, full: boolean): Promise<number> {
-  const row = db.prepare("SELECT high_water FROM repos WHERE name=?").get(name) as { high_water: string | null } | undefined;
-  const high = row?.high_water ?? null;
-  const cutoff = high && !full ? iso(new Date(new Date(high).getTime() - OVERLAP_MS)) : null;
-  let newest = high ?? "";
+// Reads a repo's items, newest first, down to `cutoff` (everything when null). Moves no high water.
+async function readRepoSince(db: DatabaseSync, client: Querier, name: string, cutoff: string | null): Promise<{ count: number; newest: string }> {
+  let newest = "";
   let count = 0;
   for (const kind of ["issue", "pr"] as const) {
     const passes: [Detail, string[]][] = [["full", ["OPEN"]], ["light", kind === "issue" ? ["CLOSED"] : ["CLOSED", "MERGED"]]];
@@ -279,6 +282,17 @@ async function syncRepo(db: DatabaseSync, client: Querier, name: string, full: b
       }
     }
   }
+  return { count, newest };
+}
+
+// high_water is written only when the whole repo finished, so a crash leaves the repo incomplete.
+async function syncRepo(db: DatabaseSync, client: Querier, name: string, full: boolean): Promise<number> {
+  const row = db.prepare("SELECT high_water FROM repos WHERE name=?").get(name) as { high_water: string | null } | undefined;
+  const high = row?.high_water ?? null;
+  const cutoff = high && !full ? iso(new Date(new Date(high).getTime() - OVERLAP_MS)) : null;
+  const read = await readRepoSince(db, client, name, cutoff);
+  const count = read.count;
+  const newest = read.newest > (high ?? "") ? read.newest : (high ?? "");
   // max(): an incremental sync may have moved the high water further while a full pass ran.
   db.prepare(`UPDATE repos SET synced_at=:at, high_water=CASE WHEN :hw IS NOT NULL AND (high_water IS NULL OR high_water < :hw) THEN :hw ELSE high_water END
     WHERE name=:name`).run({ at: iso(new Date()), hw: newest || null, name });
@@ -296,11 +310,13 @@ export function selectSyncRepos(listed: string[], tracked: string[], opts: { onl
   return opts.all ? listed : listed.filter((n) => tracked.includes(n));
 }
 
-const SEARCH_OVERLAP_MS = 2 * 60 * 1000;
-// GitHub's search index can lag several minutes, so once an hour the search also re-reads the
-// half hour before the high water.
+// GitHub's search index can lag several minutes, so every search starts 10 minutes before the high
+// water, and once an hour it also re-reads the 6 hours before it.
+const SEARCH_OVERLAP_MS = 10 * 60 * 1000;
 const CATCHUP_EVERY_MS = 60 * 60 * 1000;
-const CATCHUP_SPAN_MS = 30 * 60 * 1000;
+const CATCHUP_SPAN_MS = 6 * 60 * 60 * 1000;
+// Each tracked repo's open items are listed and reconciled with the mirror once a day.
+const RECONCILE_EVERY_MS = 24 * 60 * 60 * 1000;
 const SEARCH_PAGE = 20;
 const SEARCH_CAP = 1000;
 // Rate-limit points a full re-sync leaves for the minute sync.
@@ -322,7 +338,7 @@ query($q: String!, $first: Int!, $after: String) {
   }
 }`;
 
-// GitHub's search index lags a little, so each query starts before the newest updatedAt stored.
+// The index lags, so each query starts before the newest updatedAt stored.
 export function searchSince(orgHighWater: string): string {
   return iso(new Date(new Date(orgHighWater).getTime() - SEARCH_OVERLAP_MS));
 }
@@ -337,17 +353,20 @@ const setSetting = (db: DatabaseSync, key: string, value: string): void => {
 
 // Search returns at most SEARCH_CAP results per query. A window with more matches is cut in half
 // (`updated:A..B` is inclusive, in whole seconds) until every slice fits. A one-second slice with
-// more matches than the cap is read as far as the search goes.
-export type SearchResult = { count: number; newest: string | null; slices: number };
+// more matches than the cap cannot be read by search; the tracked repos are listed for that
+// second instead.
+export type SearchResult = { count: number; newest: string | null; slices: number; fallbacks: number };
 
 // Everything updated from `since` to `until`, oldest slice first. `newest` is the largest updatedAt
 // returned (tracked repos or not), the next sync's starting point; null when nothing matched.
 export async function syncBySearch(db: DatabaseSync, client: Querier, tracked: string[], since: string, until: string): Promise<SearchResult> {
   const trackedSet = new Set(tracked);
   const bump = db.prepare("UPDATE repos SET high_water=? WHERE name=? AND (high_water IS NULL OR high_water < ?)");
+  // Applied once every window has been read, so a failed run leaves the repos' high water alone.
+  const repoNewest = new Map<string, string>();
   let size = SEARCH_PAGE;
   let failures = 0;
-  const out: SearchResult = { count: 0, newest: null, slices: 0 };
+  const out: SearchResult = { count: 0, newest: null, slices: 0, fallbacks: 0 };
 
   async function page(q: string, cursor: string | null): Promise<Node> {
     for (;;) {
@@ -364,7 +383,6 @@ export async function syncBySearch(db: DatabaseSync, client: Querier, tracked: s
 
   function write(nodes: Node[]): void {
     const groups = new Map<string, Node[]>();
-    const newest = new Map<string, string>();
     for (const n of nodes) {
       if (n?.updatedAt && n.updatedAt > (out.newest ?? "")) out.newest = n.updatedAt;
       // Untracked repos are dropped here, before anything else is done with the node.
@@ -373,14 +391,13 @@ export async function syncBySearch(db: DatabaseSync, client: Querier, tracked: s
       const detail: Detail = n.state === "OPEN" ? "full" : "light";
       const key = `${n.repository.name}\t${kind}\t${detail}`;
       groups.set(key, [...(groups.get(key) ?? []), n]);
-      if (n.updatedAt > (newest.get(n.repository.name) ?? "")) newest.set(n.repository.name, n.updatedAt);
+      if (n.updatedAt > (repoNewest.get(n.repository.name) ?? "")) repoNewest.set(n.repository.name, n.updatedAt);
     }
     for (const [key, group] of groups) {
       const [repo, kind, detail] = key.split("\t");
       writePage(db, repo, kind as Kind, detail as Detail, group);
       out.count += group.length;
     }
-    for (const [repo, t] of newest) bump.run(t, repo, t);
   }
 
   async function window(from: Date, to: Date): Promise<void> {
@@ -393,7 +410,17 @@ export async function syncBySearch(db: DatabaseSync, client: Querier, tracked: s
       await window(new Date(mid.getTime() + 1000), to);
       return;
     }
-    if (conn.issueCount > SEARCH_CAP) console.log(`  ${conn.issueCount} items updated in ${iso(from)}: reading the first ${SEARCH_CAP}`);
+    if (conn.issueCount > SEARCH_CAP) {
+      console.warn(`  warning: ${conn.issueCount} items updated in ${iso(from)}, more than search returns: listing the tracked repos for it`);
+      out.fallbacks++;
+      for (const name of tracked) {
+        const r = await readRepoSince(db, client, name, iso(from));
+        out.count += r.count;
+        if (r.newest > (repoNewest.get(name) ?? "")) repoNewest.set(name, r.newest);
+        if (r.newest > (out.newest ?? "")) out.newest = r.newest;
+      }
+      return;
+    }
     out.slices++;
     for (;;) {
       write(conn.nodes);
@@ -404,6 +431,7 @@ export async function syncBySearch(db: DatabaseSync, client: Querier, tracked: s
 
   const from = new Date(since);
   await window(from, new Date(Math.max(from.getTime(), new Date(until).getTime())));
+  for (const [repo, t] of repoNewest) bump.run(t, repo, t);
   return out;
 }
 
@@ -529,8 +557,62 @@ async function syncPerRepo(db: DatabaseSync, client: Querier, opts: SyncOpts): P
   return total;
 }
 
-// Runs one sync. `org_high_water` is the newest updatedAt stored, so the next search starts a
-// minute before it; it does not move for --repo runs, and a full re-sync leaves an existing one alone.
+// One item by number, any state, for the daily reconcile. A deleted or transferred item comes back null.
+const ONE_QUERY = `
+query($name: String!, $number: Int!) {
+  rateLimit { cost remaining resetAt }
+  repository(owner: "${ORG}", name: $name) {
+    issueOrPullRequest(number: $number) {
+      __typename
+      ... on Issue { repository { name } ${COMMON} stateReason ${COMMENTS} }
+      ... on PullRequest { repository { name } ${COMMON} ${PR_EXTRA} ${COMMENTS} ${PR_FULL} }
+    }
+  }
+}`;
+
+// Lists a repo's open issues and PRs and reconciles the mirror with them. Mirror rows that are
+// open here but not listed as open on GitHub are read one by one: closed or merged ones are
+// updated, deleted or transferred ones (not found, or found in another repo) are marked CLOSED
+// (no consumer reads a state other than OPEN, CLOSED and MERGED) and audited.
+export async function reconcileRepo(db: DatabaseSync, client: Querier, name: string, now: Date = new Date()): Promise<{ open: number; updated: number; gone: number }> {
+  const listed = new Set<string>();
+  for (const kind of ["issue", "pr"] as const) {
+    for await (const nodes of fetchPages(client, kind, "full", name, ["OPEN"])) {
+      writePage(db, name, kind, "full", nodes);
+      for (const n of nodes) listed.add(`${kind}\t${n.number}`);
+    }
+  }
+  const stale = (db.prepare("SELECT kind, number FROM items WHERE repo = ? AND state = 'OPEN'").all(name) as { kind: Kind; number: number }[])
+    .filter((r) => !listed.has(`${r.kind}\t${r.number}`));
+  let updated = 0;
+  let gone = 0;
+  for (const r of stale) {
+    const n: Node = (await client.query(ONE_QUERY, { name, number: r.number })).repository?.issueOrPullRequest;
+    if (n && n.repository?.name === name) {
+      writePage(db, name, n.__typename === "PullRequest" ? "pr" : "issue", n.state === "OPEN" ? "full" : "light", [n]);
+      updated++;
+    } else {
+      db.prepare("UPDATE items SET state = 'CLOSED', closed_at = COALESCE(closed_at, ?) WHERE repo = ? AND number = ? AND state = 'OPEN'")
+        .run(iso(now), name, r.number);
+      audit(db, "sync", "item-gone", `${name}#${r.number}`, { reason: "not found or transferred on GitHub; marked CLOSED" });
+      gone++;
+    }
+  }
+  db.prepare("UPDATE repos SET reconciled_at = ? WHERE name = ?").run(iso(now), name);
+  return { open: listed.size, updated, gone };
+}
+
+// The tracked repo whose last reconcile is oldest, when it is over a day old (never: first).
+function reconcileDue(db: DatabaseSync, tracked: string[], now: Date): string | null {
+  const at = new Map((db.prepare("SELECT name, reconciled_at FROM repos").all() as { name: string; reconciled_at: string | null }[]).map((r) => [r.name, r.reconciled_at ?? ""]));
+  const oldest = [...tracked].filter((n) => at.has(n)).sort((a, b) => at.get(a)!.localeCompare(at.get(b)!))[0];
+  if (oldest === undefined) return null;
+  const last = at.get(oldest)!;
+  return !last || now.getTime() - new Date(last).getTime() >= RECONCILE_EVERY_MS ? oldest : null;
+}
+
+// Runs one sync. `org_high_water` is the newest updatedAt stored, so the next search starts ten
+// minutes before it; it does not move for --repo runs, and a full re-sync leaves an existing one alone.
 export async function runSync(db: DatabaseSync, client: Querier, opts: SyncOpts, now: Date = new Date()): Promise<{ mode: string; items: number }> {
   const started = iso(now);
   const orgHigh = getSetting(db, "org_high_water");
@@ -557,7 +639,12 @@ export async function runSync(db: DatabaseSync, client: Querier, opts: SyncOpts,
       // One org-wide search covers every tracked repo, so each counts as synced now.
       const mark = db.prepare("UPDATE repos SET synced_at = ? WHERE name = ?");
       for (const n of tracked) mark.run(started, n);
-      console.log(`search: ${r.slices} slice${r.slices === 1 ? "" : "s"}`);
+      console.log(`search: ${r.slices} slice${r.slices === 1 ? "" : "s"}${r.fallbacks ? `, ${r.fallbacks} listed per repo` : ""}`);
+      const due = reconcileDue(db, tracked, now);
+      if (due) {
+        const c = await reconcileRepo(db, client, due, now);
+        console.log(`reconcile ${due}: ${c.open} open, ${c.updated} re-read, ${c.gone} gone`);
+      }
       const at = getSetting(db, "repos_refreshed_at");
       if (!at || now.getTime() - new Date(at).getTime() >= META_REFRESH_MS) await refreshRepoList(db, client);
     } else {

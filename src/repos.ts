@@ -18,7 +18,11 @@ export function trackRepo(db: DatabaseSync, by: string, name: string): boolean {
   if (!NAME.test(name)) throw new RepoError("Not a repo name.");
   const r = db.prepare("INSERT OR IGNORE INTO main.tracked_repos (name, added_by, added_at) VALUES (?, ?, ?)")
     .run(name, by, new Date().toISOString());
-  if (r.changes) audit(db, by, "repo-track", name);
+  if (r.changes) {
+    // Items updated while the repo was untracked were never read; the next sync reads the repo in full.
+    db.prepare("UPDATE main.repos SET high_water = NULL, synced_at = NULL, reconciled_at = NULL WHERE name = ?").run(name);
+    audit(db, by, "repo-track", name);
+  }
   return r.changes > 0;
 }
 
@@ -35,7 +39,7 @@ export function purgeRepo(db: DatabaseSync, name: string): { items: number; comm
   try {
     const comments = Number(db.prepare("DELETE FROM main.comments WHERE repo = ?").run(name).changes);
     const items = Number(db.prepare("DELETE FROM main.items WHERE repo = ?").run(name).changes);
-    db.prepare("UPDATE main.repos SET high_water = NULL, synced_at = NULL WHERE name = ?").run(name);
+    db.prepare("UPDATE main.repos SET high_water = NULL, synced_at = NULL, reconciled_at = NULL WHERE name = ?").run(name);
     db.exec("COMMIT");
     return { items, comments };
   } catch (e) {

@@ -16,6 +16,8 @@ Sync, Embed, Duplicates, Classify, Priority and Decide cover the whole org. Labe
 
 Every issue, PR and comment of the tracked repos is mirrored into the local database every minute (one org-wide search for changes). Later stages read the mirror and never GitHub directly. Automatic; no model.
 
+Each run searches from 10 minutes before the newest `updatedAt` stored, and once an hour it also re-reads the 6 hours before it, because GitHub's search index can show an item late. An item whose stored row already matches GitHub is not written again. A window of one second with more than 1,000 matches cannot be read by search: the run logs a warning and lists every tracked repo for it instead, and no high-water mark moves until the run finishes. Once a day per tracked repo (the repo reconciled longest ago, one per run) the sync lists the repo's open issues and PRs. Mirror rows that are open here but not listed as open are read individually: closed or merged ones are updated, and deleted or transferred ones are marked CLOSED and recorded in the audit log as `item-gone`. Tracking a repo again clears its high-water mark, so the next sync reads it in full. Only the last 20 comments and 10 reviews of an item are mirrored.
+
 ## Embed
 
 Each item gets a vector from its title and body. A new vector is made only when the text changes. Runs locally on this machine; no model quota and no limit.
