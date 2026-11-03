@@ -554,6 +554,9 @@ export async function runSync(db: DatabaseSync, client: Querier, opts: SyncOpts,
         items += c.count;
         setSetting(db, "search_catchup_at", started);
       }
+      // One org-wide search covers every tracked repo, so each counts as synced now.
+      const mark = db.prepare("UPDATE repos SET synced_at = ? WHERE name = ?");
+      for (const n of tracked) mark.run(started, n);
       console.log(`search: ${r.slices} slice${r.slices === 1 ? "" : "s"}`);
       const at = getSetting(db, "repos_refreshed_at");
       if (!at || now.getTime() - new Date(at).getTime() >= META_REFRESH_MS) await refreshRepoList(db, client);

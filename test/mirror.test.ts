@@ -82,6 +82,8 @@ test("search mode writes tracked results, ignores untracked, advances the high w
   const rows = db.prepare("SELECT repo, number, detail_level FROM items ORDER BY number").all();
   assert.deepEqual(rows.map((x) => ({ ...x })), [{ repo: "a", number: 1, detail_level: "full" }, { repo: "b", number: 3, detail_level: "light" }]);
   assert.equal(hw(db), "2026-11-02T10:00:00Z", "the high water is the newest updatedAt, not the start time");
+  const at = db.prepare("SELECT name, synced_at FROM repos ORDER BY name").all().map((x) => ({ ...x }));
+  assert.deepEqual(at, [{ name: "a", synced_at: "2026-11-02T10:05:00Z" }, { name: "b", synced_at: "2026-11-02T10:05:00Z" }], "every tracked repo counts as synced");
 });
 
 // A fake search over `all`: honours `updated:A..B`, pages by cursor, and reports the true match count.
