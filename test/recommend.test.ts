@@ -7,7 +7,7 @@ import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { describe, test } from "node:test";
 import { useTestAccount } from "./accounts-fixture.ts";
-import { setRunner } from "../src/classify/run.ts";
+import { setRunner, setWorkspace } from "../src/classify/run.ts";
 import { LABELS } from "../src/classify/rules.ts";
 import { settle } from "../src/classify/settled.ts";
 import { connect } from "../src/db.ts";
@@ -121,8 +121,8 @@ describe("scope recommendation", () => {
   });
 });
 
-describe("shared repositories", () => {
-  test("the recommendation call mounts the shared repos read-only (not the item's own) and names them in the prompt", async () => {
+describe("the workspace", () => {
+  test("the recommendation call mounts every repository read-only at /repos and describes it in the prompt", async () => {
     const { db } = fixture();
     const id = decision(db, 1);
     const cfg = join(mkdtempSync(join(SCRATCH, "shared-cfg-")), "x");
@@ -135,19 +135,18 @@ describe("shared repositories", () => {
       calls.push({ cmd, args, input });
       return { code: 0, stdout: JSON.stringify({ type: "result", result: '{"recommended": "plugin", "reason": "r"}', usage: {} }), stderr: "" };
     });
+    const restoreWs = setWorkspace(async () => [{ name: "craft-i18n", dir: "/h/i18n" }, { name: "craft-libs", dir: "/h/libs" }]);
     try {
-      const n = await recommend(db, [id], {
-        checkout: async () => cfg, usageRun: "t", log: quiet,
-        shared: async () => [{ name: "craft-libs", dir: "/h/libs" }, { name: "craft-i18n", dir: "/h/i18n" }, { name: "photocraft", dir: "/h/own" }],
-      });
+      const n = await recommend(db, [id], { checkout: async () => cfg, usageRun: "t", log: quiet });
       assert.equal(n, 1);
       const a = calls[0]!.args.join(" ");
-      assert.match(a, /--ro-bind \/h\/i18n \/shared\/craft-i18n --ro-bind \/h\/libs \/shared\/craft-libs/);
-      assert.ok(!a.includes("/shared/photocraft"));
-      assert.match(a, /--add-dir \/repo --add-dir \/shared\/craft-i18n --add-dir \/shared\/craft-libs/);
-      assert.match(calls[0]!.input, /\/shared\/craft-i18n, \/shared\/craft-libs/);
-      assert.ok(!calls[0]!.input.includes("shared_repos"));
+      assert.match(a, /--ro-bind \/h\/i18n \/repos\/craft-i18n --ro-bind \/h\/libs \/repos\/craft-libs/);
+      assert.match(a, /--ro-bind \S+agents-[0-9a-f]+\.json \/agents\.json/);
+      assert.match(a, /--add-dir \/repo --add-dir \/repos --agents \/agents\.json/);
+      assert.match(calls[0]!.input, /checkouts of the default branch of every tracked repository are at \/repos\/<name>/);
+      assert.match(calls[0]!.input, /ask the explore agent with the Agent tool/);
     } finally {
+      restoreWs();
       restore();
       delete process.env.CRAFT_AUTO_CLAUDE_BIN;
     }

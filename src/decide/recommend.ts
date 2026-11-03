@@ -5,7 +5,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import { claudeRoom } from "../agents/call.ts";
 import { summaryInput } from "../classify/parse.ts";
-import { askClaude, pool, saveUsage, type Usage } from "../classify/run.ts";
+import { add, askClaude, pool, saveUsage, type Usage } from "../classify/run.ts";
 import { notHeldSql } from "../dupes/held.ts";
 import { CLAUDE_PROMPTS } from "../prompts/index.ts";
 import { REPO_PATH } from "../sandbox/command.ts";
@@ -63,8 +63,6 @@ export type RecommendParams = {
   model?: string;
   /** Host directory with a read-only checkout of the repo's default branch, or null to ask without tools. */
   checkout: (repo: string) => Promise<string | null>;
-  /** Read-only checkouts of the shared repositories (framework, language packs), asked once per batch; those that fail are left out. Default: none. */
-  shared?: () => Promise<{ name: string; dir: string }[]>;
   usageRun: string;
   onSent?: () => void;
   log: (line: string) => void;
@@ -75,7 +73,6 @@ const now = () => new Date().toISOString();
 /** Asks Opus about each decision (one call each) and stores the answers. Returns how many decisions got an answer. */
 export async function recommend(db: DatabaseSync, ids: string[], p: RecommendParams): Promise<number> {
   const model = p.model ?? RECOMMEND_PROMPT.models[0]!;
-  let sharedAll: Promise<{ name: string; dir: string }[]> | undefined;
   const checkouts = new Map<string, Promise<string | null>>();
   const select = db.prepare("SELECT id, repo, number, question, facts, options, summary FROM decisions WHERE id = ? AND kind = 'scope' AND answer IS NULL");
   const store = db.prepare("UPDATE decisions SET recommended = ?, recommended_reason = ?, recommended_by = ? WHERE id = ? AND answer IS NULL");
@@ -95,22 +92,14 @@ export async function recommend(db: DatabaseSync, ids: string[], p: RecommendPar
       facts: JSON.parse(d.facts ?? "[]") as string[], summary: d.summary ?? "",
       options: options.map((o) => ({ key: o.key, label: o.label, hint: o.hint ?? "" })),
     };
-    let shared: { name: string; dir: string }[] = [];
-    if (checkout) {
-      input.repo_dir = REPO_PATH;
-      if (p.shared) {
-        sharedAll ??= p.shared().catch(() => []);
-        shared = (await sharedAll).filter((x) => x.name !== d.repo).sort((a, b) => a.name.localeCompare(b.name));
-        if (shared.length) input.shared_repos = shared.map((x) => x.name);
-      }
-    }
+    if (checkout) input.repo_dir = REPO_PATH;
     p.onSent?.();
     let usage: Usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: null };
     let got: Recommendation | null = null;
     for (let attempt = 0; attempt < RECOMMEND_PROMPT.limits.attempts && !got; attempt++) {
-      const reply = await askClaude("decide.recommend", model, [input], db, { checkout: checkout ?? undefined, shared });
+      const reply = await askClaude("decide.recommend", model, [input], db, { checkout: checkout ?? undefined });
       if (!reply) continue;
-      usage = { input: usage.input + reply.usage.input, output: usage.output + reply.usage.output, cacheRead: usage.cacheRead + reply.usage.cacheRead, cacheWrite: usage.cacheWrite + reply.usage.cacheWrite, cost: usage.cost === null && reply.usage.cost === null ? null : (usage.cost ?? 0) + (reply.usage.cost ?? 0) };
+      usage = add(usage, reply.usage);
       got = parseRecommendReply(reply.text, options.map((o) => o.key));
     }
     if (got) {

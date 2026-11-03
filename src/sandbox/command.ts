@@ -6,9 +6,11 @@
 
 /** Where the checkout appears inside the sandbox: outside the working directory, so claude never loads its instruction files as project memory. */
 export const REPO_PATH = "/repo";
-/** Where each shared repository's checkout appears: `/shared/<name>`. */
-export const SHARED_ROOT = "/shared";
-export const sharedPath = (name: string): string => `${SHARED_ROOT}/${name}`;
+/** Where each tracked repository's default-branch checkout appears: `/repos/<name>`. */
+export const REPOS_ROOT = "/repos";
+export const reposPath = (name: string): string => `${REPOS_ROOT}/${name}`;
+/** Where the generated agents file (src/sandbox/agents.ts) appears. */
+export const AGENTS_PATH = "/agents.json";
 /** A repository name that is safe as a mount point. */
 export const SHARED_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
 /** The empty working directory. */
@@ -26,14 +28,21 @@ export type SandboxSpec = {
   credentials: string;
   /** Arguments for claude (src/prompts `claudeArgs`). */
   claudeArgs: string[];
-  /** Further read-only checkouts, each mounted at `/shared/<name>`; `claudeArgs` must name them with --add-dir. */
+  /** The workspace: further read-only checkouts, each mounted at `/repos/<name>`. Present (even empty) means `/repos` exists and `claudeArgs` names it with --add-dir. */
   shared?: { name: string; dir: string }[];
+  /** Host file with the agents definition, mounted read-only at /agents.json. */
+  agentsFile?: string;
+  /** Further read-only mounts (item data, MCP server code and configs); `path` is absolute inside the sandbox. */
+  extraMounts?: { host: string; path: string }[];
 };
+
+const MOUNT_PATH = /^\/[A-Za-z0-9._\/-]{1,200}$/;
 
 export const BWRAP = "/usr/bin/bwrap";
 
 export function sandboxCommand(s: SandboxSpec): { cmd: string; args: string[] } {
-  for (const x of s.shared ?? []) if (!SHARED_NAME.test(x.name)) throw new Error(`unsafe shared repository name: ${x.name}`);
+  for (const x of s.shared ?? []) if (!SHARED_NAME.test(x.name)) throw new Error(`unsafe repository name: ${x.name}`);
+  for (const m of s.extraMounts ?? []) if (!MOUNT_PATH.test(m.path) || m.path.includes("..")) throw new Error(`unsafe mount path: ${m.path}`);
   const env: [string, string][] = [
     ["HOME", HOME], ["CLAUDE_CONFIG_DIR", CONFIG], ["PATH", "/usr/bin"], ["LANG", "C.UTF-8"], ["DISABLE_AUTOUPDATER", "1"],
   ];
@@ -48,7 +57,10 @@ export function sandboxCommand(s: SandboxSpec): { cmd: string; args: string[] } 
     "--ro-bind", s.claudeBin, CLAUDE_PATH,
     // The working directory is empty and the checkout sits beside it (claude gets it with --add-dir), so no project instructions or settings from the checkout are found.
     "--tmpfs", WORK_PATH, "--ro-bind", s.checkout, REPO_PATH,
-    ...(s.shared ?? []).flatMap((x) => ["--ro-bind", x.dir, sharedPath(x.name)]),
+    ...(s.shared ? ["--dir", REPOS_ROOT] : []),
+    ...(s.shared ?? []).flatMap((x) => ["--ro-bind", x.dir, reposPath(x.name)]),
+    ...(s.agentsFile ? ["--ro-bind", s.agentsFile, AGENTS_PATH] : []),
+    ...(s.extraMounts ?? []).flatMap((m) => ["--ro-bind", m.host, m.path]),
     "--chdir", WORK_PATH,
     ...env.flatMap(([k, v]) => ["--setenv", k, v]),
     CLAUDE_PATH, ...s.claudeArgs,
