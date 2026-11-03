@@ -344,6 +344,7 @@ function Verdicts({ cls }: { cls: Classification[] }) {
 
 const STAGE: Record<Stage, [string, PhosphorIcon]> = {
   classified: ["Classified", TagIcon],
+  labeled: ["Labelled", TagIcon],
   reviewed: ["Reviewed", SparkleIcon],
   take: ["Taken", CheckCircleIcon],
   hold: ["Held", MinusIcon],
@@ -368,7 +369,8 @@ type Event = { label: string; Icon: PhosphorIcon; at: string; by: string; note: 
 function events(it: Item): Event[] {
   const out: Event[] = [{ label: "Opened", Icon: it.kind === "pr" ? GitPullRequestIcon : RadioButtonIcon, at: it.createdAt, by: it.author, note: null }];
   for (const s of it.stages) {
-    const [label, Icon] = STAGE[s.stage];
+    // A stage this build doesn't know yet shows by its name rather than breaking the page.
+    const [label, Icon] = STAGE[s.stage] ?? [s.stage, FlagIcon];
     out.push({ label, Icon, at: s.at, by: s.by, note: s.note });
   }
   const has = (st: Stage) => it.stages.some((s) => s.stage === st);

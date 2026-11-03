@@ -140,6 +140,7 @@ export type Mergeable = "clean" | "conflicts" | "unknown";
 export type Tier = "whitelisted" | "not" | "override-allow" | "override-deny";
 export type Stage =
   | "classified"
+  | "labeled"
   | "reviewed"
   | "take"
   | "hold"

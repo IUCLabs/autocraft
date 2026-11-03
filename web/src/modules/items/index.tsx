@@ -28,7 +28,7 @@ const FLAGS: [string, string][] = [["security", "Security"], ["needs decision", 
 const SORTS: [ItemSort, string][] = [["relevance", "Relevance"], ["updated", "Updated"], ["created", "Created"], ["number", "Number"]];
 const STATES = [["open", "Open"], ["closed", "Closed"], ["merged", "Merged"], ["all", "Any state"]] as const;
 const STAGE: Record<Stage, string> = {
-  classified: "Classified", reviewed: "Reviewed", take: "Taken", hold: "Held", close: "To close", "needs-decision": "Waiting for a decision",
+  classified: "Classified", labeled: "Labelled", reviewed: "Reviewed", take: "Taken", hold: "Held", close: "To close", "needs-decision": "Waiting for a decision",
   batched: "In a batch", merged: "Merged by the pipeline", closed: "Closed by the pipeline", "fixed-by-us": "Fixed by us",
   "verify-planned": "Being verified", "verify-ci-enough": "CI is enough", "verify-error": "Verification not planned", "verify-unavailable": "Not verified",
   verified: "Verified", "verify-failed": "Verification failed",
@@ -337,7 +337,7 @@ function Table({ rows }: { rows: ItemListRow[] }) {
                 <Flags flags={it.settled.flags} />
               </td>
               <td className="px-3 py-2 text-xs text-ink/60">
-                {it.stage && <span className="mr-1">{STAGE[it.stage]}</span>}
+                {it.stage && <span className="mr-1">{STAGE[it.stage] ?? it.stage}</span>}
                 {it.queue ? <QueueBadge slot={it.queue} repo={it.repo} number={it.number} className="relative z-10" /> : !it.stage && <span className="text-ink/30">–</span>}
               </td>
             </tr>
@@ -368,7 +368,7 @@ function Cards({ rows }: { rows: ItemListRow[] }) {
             <SettledBadge s={it.settled} />
             <QueueBadge slot={it.queue} repo={it.repo} number={it.number} className="relative z-10" />
             {it.settled.flags.length > 0 && <Flags flags={it.settled.flags} />}
-            {it.stage && <span className="text-2xs text-ink/55">{STAGE[it.stage]}</span>}
+            {it.stage && <span className="text-2xs text-ink/55">{STAGE[it.stage] ?? it.stage}</span>}
           </div>
         </li>
       ))}
