@@ -1,8 +1,8 @@
-// The desktop flowchart: nodes on a three-column grid in two bands. The main line
-// runs left to right along the first row of each band (Synced to Decide, then
-// Labels to Merge queue), the side stages sit below it (Duplicates, Priority, Act,
-// Fix, Fix-up). Edges are drawn over the grid from the measured positions of the
-// nodes and their branch rows; the edge between the bands runs around the right side.
+// The desktop flowchart: nodes on a grid, the main line left to right along the
+// top row (Synced to Merge queue), the side stages below it (Duplicates, Priority,
+// Act, Fix, Fix-up), edges drawn over the grid from the measured positions of the
+// nodes and their branch rows. The columns shrink with the window down to a floor,
+// so the whole flow fits on a laptop screen without scrolling sideways.
 import { useLayoutEffect, useRef, useState } from "react";
 import { ChevronRightIcon } from "lucide-react";
 import type { AgentRun, Flow, FlowEdge, FlowNode } from "../../api/types";
@@ -14,7 +14,7 @@ import { BranchRow, recentText, RunningMarker, WaitIcon } from "./parts";
 /** Grid cell of each node: [column, row, row span]. */
 const CELL: Record<FlowNode["id"], [number, number, number]> = {
   synced: [1, 1, 1], dupes: [1, 2, 1], classify: [2, 1, 1], priority: [2, 2, 1], decide: [3, 1, 1], act: [3, 2, 1],
-  labels: [1, 3, 1], fix: [1, 4, 1], review: [2, 3, 1], fixup: [2, 4, 1], verify: [3, 3, 1], merge: [3, 4, 1],
+  labels: [4, 1, 1], fix: [4, 2, 1], review: [5, 1, 1], fixup: [5, 2, 1], verify: [6, 1, 1], merge: [6, 2, 1],
 };
 
 export function NodeCard({ n, selected, onSelect, runs }: { n: FlowNode; selected: boolean; onSelect: () => void; runs: AgentRun[] }) {
@@ -31,8 +31,8 @@ export function NodeCard({ n, selected, onSelect, runs }: { n: FlowNode; selecte
         selected && "outline outline-2 outline-offset-2 outline-accent-ink",
       )}
     >
-      <button onClick={onSelect} aria-expanded={selected} className="block w-full rounded-t-md px-3 pb-2 pt-2.5 text-left hover:bg-ink/[0.04]">
-        <span className="flex items-center gap-2">
+      <button onClick={onSelect} aria-expanded={selected} className="block w-full rounded-t-md px-2.5 pb-2 pt-2.5 text-left hover:bg-ink/[0.04]">
+        <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
           <span className="code text-2xs text-ink/40">{n.stage}</span>
           <span className="text-md font-semibold">{n.title}</span>
           {gate && <Badge tone="accent">People decide</Badge>}
@@ -48,7 +48,7 @@ export function NodeCard({ n, selected, onSelect, runs }: { n: FlowNode; selecte
         ))}
       </ul>
       {(recent || n.waitsOn.length > 0) && (
-        <div className="flex items-center gap-1.5 border-t border-line px-3 py-1.5 text-2xs text-ink/55">
+        <div className="flex items-center gap-1.5 border-t border-line px-2.5 py-1.5 text-2xs text-ink/55">
           {recent && <span className="min-w-0">24 h: {recent}</span>}
           <span className="ml-auto flex items-center gap-1">
             {n.waitsOn.map((w) => (
@@ -78,12 +78,7 @@ function geometry(el: HTMLElement, edges: FlowEdge[]): Geo[] {
     const s = box(`[data-node="${e.from}"]`), t = box(`[data-node="${e.to}"]`);
     if (!s || !t) continue;
     const a = e.branch ? box(`[data-anchor="${e.from}.${e.branch}"]`) : null;
-    if (t.t >= s.b && t.r <= s.l + 2) {
-      // to the next band: out of the right side, down the margin, left along the gap above the target
-      const R = 10, sx = s.r, sy = a ? (a.t + a.b) / 2 : s.t + HEAD;
-      const xr = base.width - 8, ym = t.t - 32, ex = (t.l + t.r) / 2;
-      out.push({ e, d: `M${sx},${sy} H${xr - R} Q${xr},${sy} ${xr},${sy + R} V${ym - R} Q${xr},${ym} ${xr - R},${ym} H${ex + R} Q${ex},${ym} ${ex},${ym + R} V${t.t - 1}`, x: (xr + ex) / 2, y: ym });
-    } else if (t.l >= s.r - 2) {
+    if (t.l >= s.r - 2) {
       // to the right: out of the branch row (or the node's lower edge when the target is lower down) into the target's header
       const sx = s.r, sy = a ? (a.t + a.b) / 2 : t.t > s.b - 40 ? s.b - 28 : s.t + HEAD;
       const ex = t.l, ey = t.t + HEAD;
@@ -121,7 +116,8 @@ export function Chart({ flow, selected, onSelect, runs }: { flow: Flow; selected
     <div className="overflow-x-auto pb-2">
       <div
         ref={ref}
-        className="relative grid min-w-[700px] grid-cols-3 items-start gap-x-14 gap-y-16 pr-6"
+        className="relative grid min-w-[1040px] items-start gap-x-12 gap-y-12"
+        style={{ gridTemplateColumns: "minmax(0,140fr) minmax(0,205fr) minmax(0,195fr) minmax(0,180fr) minmax(0,200fr) minmax(0,210fr)" }}
       >
         {flow.nodes.map((n) => {
           const [c, r, span] = CELL[n.id];
@@ -153,7 +149,7 @@ export function Chart({ flow, selected, onSelect, runs }: { flow: Flow; selected
         {geo.map((g) => (
           <div
             key={`${g.e.from}-${g.e.to}-label`}
-            className="pointer-events-none absolute z-[2] flex w-[56px] -translate-x-1/2 -translate-y-1/2 flex-col items-center text-center"
+            className="pointer-events-none absolute z-[2] flex w-[48px] -translate-x-1/2 -translate-y-1/2 flex-col items-center text-center"
             style={{ left: g.x, top: g.y }}
           >
             {g.e.count !== null && <span className="num rounded-full border border-line-strong bg-panel px-1.5 text-2xs font-semibold leading-[18px]">{num(g.e.count)}</span>}

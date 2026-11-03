@@ -65,8 +65,8 @@ export function BranchRow({ node, b, dense, showHint }: { node: FlowNode; b: Flo
     </>
   );
   const cls = cn(
-    "flex items-center gap-2 rounded px-2 text-sm",
-    dense ? "min-h-7" : "min-h-9 max-md:min-h-11",
+    "flex items-center rounded",
+    dense ? "min-h-7 gap-1.5 px-1.5 text-xs" : "min-h-9 gap-2 px-2 text-sm max-md:min-h-11",
     b.gate && !zero && "bg-accent/10",
     b.link && "hover:bg-ink/[0.06]",
   );
