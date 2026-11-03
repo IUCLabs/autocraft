@@ -58,7 +58,7 @@ export async function ensureLabels(client: Querier, repo: string, apply: boolean
   return missing;
 }
 
-export type ApplyResult = { planned: number; labeled: number; failed: number[]; batches: number; dryRun: boolean };
+export type ApplyResult = { planned: number; labeled: number; failed: number[]; skipped: number; batches: number; dryRun: boolean };
 export type ApplyOpts = { runId: string; limit?: number; apply: boolean; login?: string; wait?: Wait; log?: (s: string) => void;
   /** Called with the running count of items labelled, after each batch. */
   onLabeled?: (labeled: number) => void };
@@ -81,7 +81,7 @@ export async function applyLabels(db: DatabaseSync, client: Querier, repo: strin
   }
   let todo = planLabels(db, repo, o.runId).filter((r) => r.status === "add" && !alreadyApplied(db, repo, r));
   if (o.limit !== undefined) todo = todo.slice(0, o.limit);
-  const res: ApplyResult = { planned: todo.length, labeled: 0, failed: [], batches: 0, dryRun: !o.apply };
+  const res: ApplyResult = { planned: todo.length, labeled: 0, failed: [], skipped: 0, batches: 0, dryRun: !o.apply };
   if (!o.apply) {
     for (const r of todo) log(`${repo}#${r.number}: would add ${r.add.join(", ")}`);
     return res;
@@ -95,9 +95,17 @@ export async function applyLabels(db: DatabaseSync, client: Querier, repo: strin
     const chunk = todo.slice(i, i + BATCH);
     const started = Date.now();
     const ids = await nodeIds(client, repo, chunk.map((r) => r.number), wait);
-    const writable = chunk.filter((r) => ids.get(r.number));
-    for (const r of chunk) if (!ids.get(r.number)) res.failed.push(r.number);
-    const done = writable.length ? await mutate(client, writable, ids, have, wait) : [];
+    const live = (r: PlanRow) => ids.get(r.number);
+    const gone = chunk.filter((r) => live(r)?.id && live(r)!.state && live(r)!.state !== "OPEN");
+    for (const r of gone) {
+      db.prepare("UPDATE main.items SET state = ? WHERE repo = ? AND number = ? AND state = 'OPEN'").run(live(r)!.state, repo, r.number);
+      log(`${repo}#${r.number}: skipped, now ${live(r)!.state} on GitHub`);
+    }
+    res.skipped += gone.length;
+    const writable = chunk.filter((r) => live(r)?.id && !gone.includes(r));
+    for (const r of chunk) if (!live(r)?.id) res.failed.push(r.number);
+    const idMap = new Map([...ids].map(([n, v]) => [n, v.id] as [number, string | null]));
+    const done = writable.length ? await mutate(client, writable, idMap, have, wait) : [];
     for (const r of writable) if (!done.includes(r.number)) res.failed.push(r.number);
     const ok = writable.filter((r) => done.includes(r.number));
     if (ok.length) {
@@ -107,7 +115,7 @@ export async function applyLabels(db: DatabaseSync, client: Querier, repo: strin
         db.prepare("INSERT INTO main.stages (repo, number, stage, at, actor, note) VALUES (?, ?, 'labeled', ?, 'labels', ?)")
           .run(repo, r.number, at, `added: ${r.add.join(", ")}`);
       }
-      audit(db, o.login ?? "cli", "labels-apply", repo, { run: o.runId, items: ok.map((r) => r.number), labels: ok.reduce((n, r) => n + r.add.length, 0) });
+      audit(db, o.login ?? "cli", "labels-apply", repo, { run: o.runId, items: ok.map((r) => r.number), skipped: gone.map((r) => r.number), labels: ok.reduce((n, r) => n + r.add.length, 0) });
       db.exec("COMMIT");
       res.labeled += ok.length;
       o.onLabeled?.(res.labeled);
@@ -121,14 +129,20 @@ export async function applyLabels(db: DatabaseSync, client: Querier, repo: strin
   return res;
 }
 
-async function nodeIds(client: Querier, repo: string, numbers: number[], wait: Wait): Promise<Map<number, string | null>> {
-  const out = new Map<number, string | null>();
+type Live = { id: string | null; state: string | null };
+
+// One batched read per chunk: the node id to write to and the live state, which can be ahead of the mirror.
+async function nodeIds(client: Querier, repo: string, numbers: number[], wait: Wait): Promise<Map<number, Live>> {
+  const out = new Map<number, Live>();
   for (let i = 0; i < numbers.length; i += NODE_LOOKUP) {
     const part = numbers.slice(i, i + NODE_LOOKUP);
     const q = `query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) {
-      ${part.map((n) => `n${n}: issueOrPullRequest(number: ${n}) { ... on Labelable { id } }`).join("\n")} } }`;
+      ${part.map((n) => `n${n}: issueOrPullRequest(number: ${n}) { ... on Labelable { id } ... on Issue { state } ... on PullRequest { state } }`).join("\n")} } }`;
     const d = await retrying(() => client.query(q, { owner: ORG, name: repo }), wait);
-    for (const n of part) out.set(n, d.repository?.[`n${n}`]?.id ?? null);
+    for (const n of part) {
+      const node = d.repository?.[`n${n}`];
+      out.set(n, { id: node?.id ?? null, state: node?.state ?? null });
+    }
   }
   return out;
 }

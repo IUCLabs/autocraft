@@ -27,6 +27,9 @@ import { ASSIGN, ORG, prInfo, viewerOf, mergeRun, DEFAULT_MERGE_COMMAND, type Co
 import { PIPELINE_LOGIN_KEY, buildQueue, eligible, singleMergeOnly, type QueueEntry } from "./queue.ts";
 
 const ACTOR = "batch";
+const UNASSIGN = `mutation($id: ID!, $user: ID!) {
+  removeAssigneesFromAssignable(input: { assignableId: $id, assigneeIds: [$user] }) { clientMutationId }
+}`;
 const PR_URL = new RegExp(`^https://github\\.com/${ORG}/[A-Za-z0-9._-]+/pull/(\\d+)$`);
 /** Wait before the sandbox task of a batch is queued again after a build-environment error: none for the first retry, then doubling from 5 minutes up to 6 hours. */
 export const retryDelayMs = (retries: number): number => (retries === 0 ? 0 : Math.min(5 * 60_000 * 2 ** (retries - 1), 6 * 3_600_000));
@@ -103,6 +106,46 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
     if (r.code !== 0) log(`  ${b.branch}: could not close the batch PR: ${oneLine(r.stderr)}`);
   };
 
+  /** Takes a member PR that nobody is assigned to, so others do not spend time on it. A failure here never stops the batch. */
+  async function claim(n: number): Promise<void> {
+    try {
+      const info = await prInfo(d.querier, repo, n);
+      if (!info || info.state !== "OPEN" || info.assignees.length) return;
+      const me = await viewerOf(d.querier);
+      await d.querier.query(ASSIGN, { id: info.id, user: me.id });
+      audit(db, ACTOR, "assign", refOf(n), { run: runId, assignee: me.login });
+      log(`  ${refOf(n)}: assigned to ${me.login}`);
+    } catch (e) {
+      log(`  ${refOf(n)}: could not assign: ${oneLine(String((e as Error).message ?? e))}`);
+    }
+  }
+
+  /** Removes our assignment from a PR that left the pipeline, when the audit shows we made it and we are still the only assignee. */
+  async function release(n: number): Promise<void> {
+    try {
+      const me = await viewerOf(d.querier);
+      const last = db.prepare("SELECT action, details FROM audit WHERE target = ? AND action IN ('assign', 'unassign') ORDER BY rowid DESC LIMIT 1").get(refOf(n)) as { action: string; details: string | null } | undefined;
+      if (last?.action !== "assign" || (JSON.parse(last.details ?? "{}") as { assignee?: string }).assignee !== me.login) return;
+      const inBatch = activeBatches(db, repo).some((b) => membersOf(db, b.id).some((m) => m.number === n));
+      if (inBatch) return;
+      const info = await prInfo(d.querier, repo, n);
+      if (!info || info.assignees.length !== 1 || info.assignees[0] !== me.login) return;
+      await d.querier.query(UNASSIGN, { id: info.id, user: me.id });
+      audit(db, ACTOR, "unassign", refOf(n), { run: runId, assignee: me.login });
+      log(`  ${refOf(n)}: unassigned from ${me.login}`);
+    } catch (e) {
+      log(`  ${refOf(n)}: could not unassign: ${oneLine(String((e as Error).message ?? e))}`);
+    }
+  }
+
+  /** PRs dropped from a rebuilt batch are released unless they are still eligible for a later batch. */
+  async function releaseDropped(all: BatchMember[], keep: BatchMember[]): Promise<void> {
+    const dropped = all.filter((m) => !keep.some((k) => k.number === m.number));
+    if (!dropped.length) return;
+    const q = buildQueue(db, { repo, merged: "exclude" });
+    for (const m of dropped) if (!q.some((e) => e.number === m.number && eligible(e) && !singleMergeOnly(e))) await release(m.number);
+  }
+
   /** Builds a batch of the candidates, in order, from the current head of the default branch; null when no PR could be merged. */
   async function startBatch(cands: Cand[], max: number, parentId: number | null): Promise<number | null> {
     const base = await git.fetchMain(ORG, repo, branch);
@@ -141,6 +184,7 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
     const id = insertBatch(db, { repo, branch: name, baseSha: base, commitSha: tip, parentId, taskId, members, at: at() });
     audit(db, ACTOR, "batch-start", `${repo}:${name}`, { run: runId, base, prs: members.map((m) => m.number) });
     s.started.push(name);
+    for (const m of members) await claim(m.number);
     log(`  ${name}: ${members.length} PR${members.length === 1 ? "" : "s"} (${members.map((m) => `#${m.number}`).join(", ")}) on ${short(base)}; checking in the sandbox`);
     return id;
   }
@@ -153,6 +197,7 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
     await closePr(b, `Closing: ${why}. The PRs are rebuilt in a new batch.`);
     s.superseded.push(b.branch);
     log(`  ${b.branch}: ${why}`);
+    await releaseDropped(membersOf(db, b.id), keep);
     if (keep.length && left() > 0) await startBatch(asCands(keep), left(), b.id);
   }
 
@@ -180,6 +225,7 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
       stage.run(repo, m.number, "hold", at(), ACTOR, `batch failed at ${short(m.head_oid)}: ${oneLine(summary, 200)}`);
       audit(db, ACTOR, "batch-hold", refOf(m.number), { run: runId, batch: b.branch, summary: oneLine(summary, 200) });
       s.failed.push(m.number);
+      await release(m.number);
       log(`  ${b.branch}: ${refOf(m.number)} failed alone; on hold: ${oneLine(summary, 120)}`);
       return;
     }
@@ -197,6 +243,10 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
   async function publish(b: BatchRow, members: BatchMember[]): Promise<void> {
     const moved = await movedAway(b);
     if (moved) return supersede(b, members, moved);
+    // The sandbox run took a while: the members must still be open at the batched heads before anything is pushed.
+    const checks = await refreshChecks(db, d.querier, repo, members.map((m) => m.number));
+    const live = members.filter((m) => checks.some((c) => c.number === m.number && c.state === "OPEN" && c.head_oid === m.head_oid));
+    if (live.length < members.length) return supersede(b, live, "a PR in the batch was closed, merged or pushed to");
     const who = await whoAmI(d.exec);
     const fork = await forkOf(d.exec, who.login, repo);
     const push = await git.pushNew(fork, b.branch, b.commit_sha);
@@ -248,6 +298,7 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
       updateBatch(db, b.id, at(), { state: "failed", summary: CLOSED_BY_PERSON });
       for (const m of members) stage.run(repo, m.number, "hold", at(), ACTOR, `the batch PR ${b.branch} was closed; held at ${short(m.head_oid)}`);
       s.failed.push(...members.map((m) => m.number));
+      for (const m of members) await release(m.number);
       log(`  ${b.branch}: the batch PR was closed; its PRs are held until they change`);
       return;
     }
