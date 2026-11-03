@@ -989,6 +989,8 @@ export interface QueueFilter {
   repo?: RepoName;
   /** "merged" lists merged PRs; without a state they are left out. */
   state?: QueueState;
+  /** `merge.<branch>` of the flowchart: lists that branch's PRs and ignores `state`. */
+  flow?: string;
   /** page size (server default 100, at most 500) and the `next` cursor of the previous page */
   limit?: number;
   after?: string;

@@ -123,11 +123,14 @@ function synced(c: Ctx): NodeCount {
 }
 
 function classify(c: Ctx): NodeCount {
+  const members = new Map<string, Refs>(["settled", "waiting", "referee", "disagree", "unclassified"].map((k) => [`classify.${k}`, new Set()]));
   const by: Counts = { settled: 0, waiting: 0, referee: 0, disagree: 0, unclassified: 0 };
   for (const r of c.open()) {
     // A label disagreement waits on the Sonnet referee until it answers; scope-vs-scope goes to Decide, an unsure referee to a person.
     const toReferee = r.status === "disagree" && r.referee_sure === null && !(isScope(r.jev_label) && isScope(r.haiku_label));
-    by[toReferee ? "referee" : (r.status ?? "unclassified")]!++;
+    const k = toReferee ? "referee" : (r.status ?? "unclassified");
+    by[k]!++;
+    members.get(`classify.${k}`)!.add(ref(r));
   }
   const run = c.run;
   const recent = run ? c.n(`SELECT COUNT(*) AS n FROM main.classifications INDEXED BY classifications_run WHERE run_id = :run AND classifier = 'jev' AND at >= :since
@@ -137,7 +140,7 @@ function classify(c: Ctx): NodeCount {
       ...Object.fromEntries(Object.entries(by).map(([k, v]) => [`classify.${k}`, v])),
       "classify.total": c.open().length, "classify.recent.classified": recent, "edge.decide.labels": by.settled!, "edge.classify.priority": c.open().length,
     },
-    members: new Map(),
+    members,
   };
 }
 
@@ -232,25 +235,28 @@ function verify(c: Ctx): NodeCount {
 function merge(c: Ctx): NodeCount {
   const tracked = new Set(trackedNames(c.db));
   const queue = buildQueue(c.db, { ...(c.repo ? { repo: c.repo } : {}), run: c.run }).filter((e) => tracked.has(e.repo));
-  const st = (s: QueueState) => queue.filter((e) => e.state === s).length;
   const approvedRepos = new Set([...new Set(queue.map((e) => e.repo))].filter((r) => mergeApprovalOf(c.db, r)));
   const ready = queue.filter(eligible);
   const since = { since: c.since };
+  const of = (...states: QueueState[]): Refs => new Set(queue.filter((e) => states.includes(e.state)).map(ref));
+  const members = new Map<string, Refs>([
+    ["merge.eligible", new Set(ready.filter((e) => approvedRepos.has(e.repo)).map(ref))],
+    ["merge.unapproved", new Set(ready.filter((e) => !approvedRepos.has(e.repo)).map(ref))],
+    ["merge.in-batch", of("batch-checking", "in-batch")],
+    ["merge.batch-failed", of("batch-failed")],
+    ["merge.needs-decision", of("needs-decision", "held-duplicate")],
+    ...(["waiting-ci", "ci-failed", "conflict", "needs-fix-up", "waiting-verify", "verify-failed", "verify-error", "declined"] as const).map((s) => [`merge.${s}`, of(s)] as [string, Refs]),
+    ["merge.merged", c.refs(`SELECT DISTINCT repo, number FROM merges WHERE outcome = 'merged' AND at >= :since ${c.andRepo()}`, since)],
+  ]);
   return {
     counts: {
-      "merge.eligible": ready.filter((e) => approvedRepos.has(e.repo)).length,
-      "merge.unapproved": ready.filter((e) => !approvedRepos.has(e.repo)).length,
-      "merge.in-batch": st("batch-checking") + st("in-batch"),
-      "merge.batch-failed": st("batch-failed"),
-      "merge.needs-decision": st("needs-decision") + st("held-duplicate"),
-      ...Object.fromEntries((["waiting-ci", "ci-failed", "conflict", "needs-fix-up", "waiting-verify", "verify-failed", "verify-error", "declined"] as const).map((s) => [`merge.${s}`, st(s)])),
-      "merge.merged": c.n(`SELECT COUNT(DISTINCT repo || '#' || number) AS n FROM merges WHERE outcome = 'merged' AND at >= :since ${c.andRepo()}`, since),
-      "merge.total": queue.length - st("merged"),
+      ...Object.fromEntries([...members].map(([k, v]) => [k, v.size])),
+      "merge.total": queue.length - of("merged").size,
       "merge.recent.merged": c.n(`SELECT COUNT(DISTINCT repo || '#' || number) AS n FROM merges WHERE outcome = 'merged' AND at >= :since ${c.andRepo()}`, since),
       "merge.recent.tries": c.n(`SELECT COUNT(*) AS n FROM merges WHERE at >= :since ${c.andRepo()}`, since),
-      "x.mergedAll": st("merged"),
+      "x.mergedAll": of("merged").size,
     },
-    members: new Map(),
+    members,
   };
 }
 

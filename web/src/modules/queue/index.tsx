@@ -2,7 +2,7 @@
 // what it waits on. Read-only; merges are started from the Pipeline page.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { GitMergeIcon } from "lucide-react";
+import { GitMergeIcon, XIcon } from "lucide-react";
 import { useApi, useQuery } from "../../api/client";
 import type { BatchState, QueueBatch, QueueFilter, QueueList, QueueRow, QueueState, Tier } from "../../api/types";
 import type { FeatureModule, ViewProps } from "../../registry/types";
@@ -43,6 +43,7 @@ function useFilter() {
   const filter: QueueFilter = {
     repo: state.repo || undefined,
     state: STATES.includes(state.state as QueueState) ? (state.state as QueueState) : undefined,
+    flow: /^merge\.[a-z-]+$/.test(state.flow ?? "") ? state.flow : undefined,
   };
   return { filter, update };
 }
@@ -104,7 +105,11 @@ function QueueView(_: ViewProps) {
             </option>
           ))}
         </select>
-        {phone ? (
+        {filter.flow ? (
+          <button data-active className="chip max-md:h-11" onClick={() => update({ flow: null })} aria-label="Clear the flowchart branch">
+            From the pipeline flow: Merge queue › {filter.flow.slice(6).replace(/-/g, " ")} <XIcon className="opacity-60" />
+          </button>
+        ) : phone ? (
           <select aria-label="State" value={filter.state ?? ""} onChange={(e) => update({ state: e.target.value || null })} className={cn(selectCls, filter.state ? "text-accent-ink" : "text-ink/70")}>
             <option value="">Any state{all !== undefined ? ` (${num(all)})` : ""}</option>
             {STATES.map((s) => (

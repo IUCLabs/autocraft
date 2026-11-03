@@ -129,6 +129,8 @@ export type QueueOptions = {
   limit?: number;
   /** Repos left out. */
   exclude?: string[];
+  /** Only these PRs, as "repo#number". */
+  refs?: Iterable<string>;
   /** The classification run for labels, resolved once by the caller (default: latestRun). */
   run?: string | null;
 };
@@ -139,6 +141,7 @@ export function buildQueue(db: DatabaseSync, opts: QueueOptions = {}): QueueEntr
   const where: string[] = [];
   if (opts.repo) { where.push("i.repo = :repo"); params.repo = opts.repo; }
   opts.exclude?.forEach((r, k) => { where.push(`i.repo <> :ex${k}`); params[`ex${k}`] = r; });
+  if (opts.refs) { where.push("i.repo || '#' || i.number IN (SELECT value FROM json_each(:refs))"); params.refs = JSON.stringify([...opts.refs]); }
   if (opts.after) {
     where.push("(i.repo > :ar OR (i.repo = :ar AND i.number > :an))");
     params.ar = opts.after.repo;

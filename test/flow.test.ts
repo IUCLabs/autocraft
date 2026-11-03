@@ -10,6 +10,7 @@ import { connect } from "../src/db.ts";
 import { buildFlow } from "../src/flow/shape.ts";
 import { readSummary, refreshSummary } from "../src/flow/summary.ts";
 import { listItems } from "../src/dash/api/items.ts";
+import { queue } from "../src/dash/api/queue.ts";
 import type { Req } from "../src/dash/types.ts";
 import { scopeToTracked } from "../src/repos.ts";
 import { candidateRefs, selectCandidates } from "../src/review/candidates.ts";
@@ -210,4 +211,19 @@ test("the duplicate, priority, fix, fix-up and act nodes count one item in each 
   assert.deepEqual(await numbers("dupes.checking"), [20, 21]);
   assert.deepEqual(await numbers("fixup.hold"), [40]);
   assert.deepEqual(await numbers("act.failed"), [4]);
+});
+
+test("every count that links to a flow filter opens exactly its items", async () => {
+  const db = build();
+  refreshSummary(db);
+  const req = (p: Record<string, string>) => ({ query: new URLSearchParams(p), user: { login: "op", role: "operator" } }) as unknown as Req;
+  let linked = 0;
+  for (const n of flowOf(db, null).nodes)
+    for (const b of n.branches) {
+      if (!b.link?.params.flow || b.count === null) continue;
+      linked++;
+      const rows = b.link.page === "queue" ? (await queue(db, req(b.link.params))).total : (await listItems(db, req(b.link.params))).total;
+      assert.equal(rows, b.count, `${n.id}.${b.id}`);
+    }
+  assert.ok(linked >= 30);
 });

@@ -34,8 +34,8 @@ export function buildFlow(c: Record<string, number>, meta: FlowMeta): Flow {
   const v = (k: string) => c[k] ?? 0;
   const withRepo = (p: Record<string, string>) => (meta.repo ? { ...p, repo: meta.repo } : p);
   const items = (node: string, b: string): FlowLink => ({ page: "items", params: withRepo({ flow: `${node}.${b}` }) });
-  const decisions = (kind: string): FlowLink => ({ page: "decisions", params: withRepo({ kind }) });
-  const queue = (state?: string): FlowLink => ({ page: "queue", params: withRepo(state ? { state } : {}) });
+  const anyState = (flow: string): FlowLink => ({ page: "items", params: withRepo({ flow, state: "all" }) });
+  const queue = (b: string): FlowLink => ({ page: "queue", params: withRepo({ flow: `merge.${b}` }) });
 
   const node = (id: FlowNode["id"], title: string, stage: number, mode: FlowNode["mode"], summary: string, bs: B[], extra: { recent?: string[]; facts?: FlowNode["facts"]; promptStage?: string } = {}): FlowNode => {
     const branches = bs.map((b): FlowBranch => ({
@@ -60,25 +60,25 @@ export function buildFlow(c: Record<string, number>, meta: FlowMeta): Flow {
     ], { recent: ["new", "closed"], facts: [{ label: "Last sync", value: meta.lastSync ?? "never" }] }),
     node("dupes", "Duplicates", 2, "steps", `${plural(v("x.pairsUnchecked"), "pair")} to check · ${fmt(v("dupes.waiting"))} waiting for an answer`, [
       { id: "checking", label: "In a pair being checked", waitsOn: "model", tone: "neutral", hint: "Jev and Haiku have not judged the pair yet" },
-      { id: "waiting", label: "Waiting for an answer", waitsOn: "person", gate: true, tone: "accent", hint: "A person decides whether it duplicates another item", link: decisions("duplicate") },
+      { id: "waiting", label: "Waiting for an answer", waitsOn: "person", gate: true, tone: "accent", hint: "A person decides whether it duplicates another item" },
       { id: "held", label: "Held out", waitsOn: "runner", tone: "warn", hint: "Answered close: held out of later steps until Act closes it" },
-      { id: "closed", label: "Closed as duplicate", waitsOn: "nothing", tone: "neutral" },
+      { id: "closed", label: "Closed as duplicate", waitsOn: "nothing", tone: "neutral", link: anyState("dupes.closed") },
     ], { facts: [{ label: "Pairs to check", value: fmt(v("x.pairsUnchecked")) }], promptStage: "Duplicates" }),
     node("classify", "Classify", 3, "steps", `${fmt(v("classify.settled"))} settled of ${fmt(open)}`, [
-      { id: "settled", label: "Settled", waitsOn: "nothing", tone: "ok", hint: "Jev at 90 % or more, or Haiku agreeing with Jev", link: { page: "items", params: withRepo({ status: "settled" }) } },
-      { id: "waiting", label: "Waiting for a second opinion", waitsOn: "model", tone: "warn", hint: "Jev is unsure; Haiku hasn't answered yet", link: { page: "items", params: withRepo({ status: "waiting" }) } },
-      { id: "referee", label: "Waiting for the referee", waitsOn: "model", tone: "warn", hint: "Jev and Haiku chose different labels; Sonnet settles it unless it is a scope call", link: { page: "items", params: withRepo({ status: "disagree" }) } },
-      { id: "disagree", label: "Models disagree", waitsOn: "person", tone: "bad", hint: "Scope calls go to Decide; other disagreements are here when Sonnet was unsure", link: { page: "items", params: withRepo({ status: "disagree" }) } },
-      { id: "unclassified", label: "Not classified yet", waitsOn: "model", tone: "neutral", hint: "No Jev verdict in the current run", link: { page: "items", params: withRepo({ status: "unclassified" }) } },
+      { id: "settled", label: "Settled", waitsOn: "nothing", tone: "ok", hint: "Jev at 90 % or more, or Haiku agreeing with Jev" },
+      { id: "waiting", label: "Waiting for a second opinion", waitsOn: "model", tone: "warn", hint: "Jev is unsure; Haiku hasn't answered yet" },
+      { id: "referee", label: "Waiting for the referee", waitsOn: "model", tone: "warn", hint: "Jev and Haiku chose different labels; Sonnet settles it unless it is a scope call" },
+      { id: "disagree", label: "Models disagree", waitsOn: "person", tone: "bad", hint: "Scope calls go to Decide; other disagreements are here when Sonnet was unsure" },
+      { id: "unclassified", label: "Not classified yet", waitsOn: "model", tone: "neutral", hint: "No Jev verdict in the current run" },
     ], { recent: ["classified"], facts: [{ label: "Run", value: meta.run ?? "none yet" }], promptStage: "Classify" }),
     node("priority", "Priority", 4, "steps", `${fmt(v("priority.scored") + v("priority.unsure"))} scored · ${fmt(v("priority.todo"))} not yet`, [
-      { id: "scored", label: "Scored", waitsOn: "nothing", tone: "ok", hint: "Impact and reach give the work score", link: { page: "work", params: withRepo({}) } },
+      { id: "scored", label: "Scored", waitsOn: "nothing", tone: "ok", hint: "Impact and reach give the work score" },
       { id: "unsure", label: "Waiting for a second opinion", waitsOn: "model", tone: "warn", hint: "Jev is unsure; Haiku hasn't answered yet" },
       { id: "todo", label: "Not scored yet", waitsOn: "model", tone: "neutral", hint: "No score at the item's current text" },
     ], { facts: [{ label: "Top level", value: v("max.topRank") ? `P${4 - Math.floor(v("max.topRank") / 10000)}` : "none yet" }, { label: "Items ranked", value: fmt(v("x.ranked")) }], promptStage: "Priority" }),
     node("decide", "Decide", 5, "gate", openDec ? `${plural(openDec, "decision")} waiting` : "Nothing waiting", [
       { id: "not-asked", label: "Not asked yet", waitsOn: "model", tone: "neutral", hint: "Needs a decision; the decide step writes the question and summary" },
-      { id: "open", label: "Waiting for an answer", waitsOn: "person", gate: true, tone: "accent", hint: `${plural(openDec, "open scope decision")}`, link: { page: "decisions", params: withRepo({ kind: "scope" }) } },
+      { id: "open", label: "Waiting for an answer", waitsOn: "person", gate: true, tone: "accent", hint: `${plural(openDec, "open scope decision")}` },
       { id: "take", label: "Wanted in core", waitsOn: "nothing", tone: "ok", hint: "Answered take: PRs go to review" },
       { id: "small-extra", label: "Small extra", waitsOn: "nothing", tone: "ok", hint: "Answered small extra: kept in core, PRs go to review" },
       { id: "plugin", label: "Plug-in candidate", waitsOn: "nothing", tone: "neutral", hint: "Answered plugin: kept open, labelled plugin candidate" },
@@ -125,10 +125,10 @@ export function buildFlow(c: Record<string, number>, meta: FlowMeta): Flow {
       { id: "error", label: "Error", waitsOn: "person", tone: "bad", hint: "The plan was invalid or a task errored; retried once" },
     ], { recent: ["finished"], promptStage: "Verify" }),
     node("merge", "Merge queue", 11, "steps", `${fmt(v("merge.eligible"))} may merge now · ${fmt(v("merge.total"))} in the queue`, [
-      { id: "eligible", label: "May merge now", waitsOn: "runner", tone: "ok", hint: "Covered by the merge rule or answered merge; CI green, Verify passed and mergeable", link: queue() },
+      { id: "eligible", label: "May merge now", waitsOn: "runner", tone: "ok", hint: "Covered by the merge rule or answered merge; CI green, Verify passed and mergeable", link: queue("eligible") },
       { id: "in-batch", label: "In an integration batch", waitsOn: "ci", tone: "accent", hint: "Merged into an integration branch; being checked in the sandbox or waiting for upstream CI on the batch PR", link: queue("in-batch") },
-      { id: "unapproved", label: "Repo not approved for merging", waitsOn: "person", gate: true, tone: "warn", hint: "Ready to merge, but an operator has not approved merging in this repo; approve it on the Repos page", link: null },
-      { id: "needs-decision", label: "Waiting for a Merge? answer", waitsOn: "person", gate: true, tone: "accent", hint: "Outside the merge rule, not verified, no CI, or held by an open Duplicate?", link: { page: "decisions", params: withRepo({ kind: "merge" }) } },
+      { id: "unapproved", label: "Repo not approved for merging", waitsOn: "person", gate: true, tone: "warn", hint: "Ready to merge, but an operator has not approved merging in this repo; approve it on the Repos page", link: queue("unapproved") },
+      { id: "needs-decision", label: "Waiting for a Merge? answer", waitsOn: "person", gate: true, tone: "accent", hint: "Outside the merge rule, not verified, no CI, or held by an open Duplicate?", link: queue("needs-decision") },
       { id: "waiting-ci", label: "Waiting for CI", waitsOn: "ci", tone: "neutral", link: queue("waiting-ci") },
       { id: "ci-failed", label: "Blocked: CI fails", waitsOn: "ci", tone: "bad", link: queue("ci-failed") },
       { id: "conflict", label: "Blocked: conflicts", waitsOn: "person", tone: "bad", link: queue("conflict") },
@@ -141,9 +141,9 @@ export function buildFlow(c: Record<string, number>, meta: FlowMeta): Flow {
       { id: "merged", label: "Merged in the last 24 h", waitsOn: "nothing", tone: "merged", link: queue("merged") },
     ], { recent: ["merged", "tries"], facts: [{ label: "Merged since tracking began", value: fmt(v("x.mergedAll")) }] }),
     node("act", "Act", 12, "steps", `${fmt(v("act.todo"))} to act · ${fmt(v("act.done"))} done in 24 h`, [
-      { id: "todo", label: "To comment and close", waitsOn: "runner", tone: "neutral", hint: "Answered close: out of scope, Close this PR or duplicate" },
-      { id: "failed", label: "Failed, retried", waitsOn: "runner", tone: "bad", hint: "The next run tries again" },
-      { id: "unapproved", label: "Repo not approved for commenting", waitsOn: "person", gate: true, tone: "warn", hint: "An operator approves commenting per repo on the Repos page" },
+      { id: "todo", label: "To comment and close", waitsOn: "runner", tone: "neutral", hint: "Answered close: out of scope, Close this PR or duplicate", link: anyState("act.todo") },
+      { id: "failed", label: "Failed, retried", waitsOn: "runner", tone: "bad", hint: "The next run tries again", link: anyState("act.failed") },
+      { id: "unapproved", label: "Repo not approved for commenting", waitsOn: "person", gate: true, tone: "warn", hint: "An operator approves commenting per repo on the Repos page", link: anyState("act.unapproved") },
       { id: "done", label: "Done in the last 24 h", waitsOn: "nothing", tone: "merged", link: null },
     ]),
   ];
