@@ -11,6 +11,7 @@ import { applyUsedAnswers } from "../src/decisions-used.ts";
 import { factsOf as decisionFacts, getDecision } from "../src/decisions.ts";
 import { planLabels } from "../src/labels/plan.ts";
 import { askMergeDecisions } from "../src/merge/index.ts";
+import { setMergeApproval } from "../src/merge/approval.ts";
 import { buildQueue, eligible } from "../src/merge/queue.ts";
 import { ActionError, actionsOf, fixAgain, reviewAgain, verifyAgain } from "../src/operator-actions.ts";
 import { classifyListOf, factsOf, nextStepOf } from "../src/rank/next.ts";
@@ -116,6 +117,23 @@ describe("Merge? asked without a merge approval", () => {
     assert.equal(e.noCi, false);
     assert.equal(e.state, "waiting-ci");
     assert.ok(!e.outsideRule.some((r) => r.includes("no CI")));
+  });
+
+  test("the merge lane refreshes checks for a repo whose PRs wait for CI or the mergeable state", () => {
+    const db = fresh();
+    add(db, { n: 1, verify: "passed" });
+    db.prepare("UPDATE pr_checks SET mergeable = 'UNKNOWN'").run();
+    assert.equal(buildQueue(db, { run: "r1" })[0]!.state, "waiting-ci");
+    const lane = LANES.find((l) => l.name === "merge")!;
+    const ctx = { run: "r1", jevRun: "r1", tracked: ["app"] };
+    assert.deepEqual(lane.detect(db, ctx), [], "no merge approval");
+    setMergeApproval(db, "op", "app", true);
+    assert.deepEqual(lane.detect(db, ctx), [{ step: "checks", params: { repo: "app" }, gate: { step: "merge", params: { repo: "app" } } }]);
+    const at = new Date().toISOString();
+    db.prepare("INSERT INTO jobs (step, params, repo, requested_by, requested_at, state, started_at, ended_at, items) VALUES ('checks', '{}', 'app', 'pipeline', ?, 'done', ?, ?, 1)").run(at, at, at);
+    assert.deepEqual(lane.detect(db, ctx), [], "checks just ran");
+    db.prepare("UPDATE pr_checks SET mergeable = 'MERGEABLE'").run();
+    assert.deepEqual(lane.detect(db, ctx), [{ step: "merge", params: { repo: "app" } }]);
   });
 
   test("a PR held by an open Duplicate? decision is held-duplicate and not eligible", () => {

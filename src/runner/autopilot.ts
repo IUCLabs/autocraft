@@ -48,6 +48,8 @@ export const BACKOFF_MS = 60 * 60_000;
 export const BACKOFF_AFTER = 3;
 /** Checks younger than this count as current for the review that follows. */
 export const CHECKS_FRESH_MS = 30 * 60_000;
+/** How often the CI and mergeable state of a repo with PRs waiting for CI is read again. */
+export const WAITING_CI_RECHECK_MS = 10 * 60_000;
 export const AUTOPILOT_USER = "pipeline";
 
 export const KEY_ENABLED = "pipeline_enabled";
@@ -228,12 +230,22 @@ export const LANES: Lane[] = [
   },
   {
     name: "merge",
-    steps: ["merge"],
+    steps: ["checks", "merge"],
     perRepo: true,
     detect: (db, { run }) => {
-      const due = buildQueue(db, { run }).filter((e) => eligible(e) && mergeApprovalOf(db, e.repo) && !refusedAsBefore(db, e)).map((e) => e.repo);
+      const queue = buildQueue(db, { run }).filter((e) => mergeApprovalOf(db, e.repo));
+      const due = queue.filter((e) => eligible(e) && !refusedAsBefore(db, e)).map((e) => e.repo);
       const repos = [...new Set([...due, ...batchesDue(db)])].sort();
-      return repos.map((repo) => ({ step: "merge", params: { repo } }));
+      // No other stage refreshes a PR that waits only for CI or for GitHub to compute its mergeable state.
+      const waiting = [...new Set(queue.filter((e) => e.state === "waiting-ci").map((e) => e.repo))].filter((repo) => {
+        if (repos.includes(repo)) return false;
+        const checks = lastJobEnd(db, "checks", repo);
+        return !(checks?.state === "done" && Date.now() - Date.parse(checks.endedAt) < WAITING_CI_RECHECK_MS);
+      }).sort();
+      return [
+        ...repos.map((repo) => ({ step: "merge", params: { repo } })),
+        ...waiting.map((repo) => ({ step: "checks", params: { repo }, gate: { step: "merge", params: { repo } } })),
+      ];
     },
   },
   {
