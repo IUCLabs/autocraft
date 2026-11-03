@@ -1,5 +1,6 @@
 // `craft-auto embed`: embed new and changed tracked items for similar items and
 // semantic search.
+import { refreshSnapshot } from "../itemtools/snapshot.ts";
 import { connect } from "../db.ts";
 import { localEmbedder, modelCacheDir, modelName } from "./model.ts";
 import { embedItems } from "./store.ts";
@@ -51,6 +52,8 @@ export async function embedCommand(args: string[], onEmbedded?: (n: number) => v
   });
   db.close();
   console.log(`embedded ${r.embedded} items, removed ${r.pruned} stale vectors, ${(r.ms / 1000).toFixed(1)} s`);
+  // The item snapshot carries the vectors; similar_items sees new ones after this.
+  if (r.embedded > 0) refreshSnapshot();
   return r.embedded;
 }
 
