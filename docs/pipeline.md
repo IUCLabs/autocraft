@@ -55,6 +55,19 @@ Every open item gets one type label (bugfix, performance, missing feature, small
 - Other disagreements (for example bugfix against missing feature) go to the Sonnet referee, which applies the classification rules and says whether it is sure. A sure label settles the type, and a scope label then follows the normal scope path. An unsure answer leaves the label to a person. The referee has its own step and daily limit.
 - Started by the operator for a full pass; the pipeline classifies new and changed items on its own. Daily limit 2000.
 
+### Areas
+
+A repo can have an area list: 10 to 25 parts of the app, each with a name and a one-line description. Repos without a list skip this question. A list is saved in versions; the highest version is current.
+
+- Classify asks Jev one more `choice` question per item, among the repo's areas plus "none of these". The descriptions are the criteria; a pull request's evidence includes its changed file paths (from the cached diff). Jev at 90 % or more settles it. Below that Haiku decides, and Haiku decides alone while Jev is unavailable. "None of these" is a valid answer.
+- `item_areas` holds one row per item: area (empty for none of these), source (jev, haiku or operator), Jev's confidence, the list version asked against, and the time. An item asked against the current version is not asked again; operator-set rows are never asked.
+- An operator edits the list on the repo's page: add, rename, merge two areas, remove, edit a description. Each save is a new version. Renamed and merged areas re-point their items; the items of a removed area become unassigned. Items whose area survives move to the new version.
+- Unassigned items (no row, none of these, or removed area) are counted per repo. Re-scan (`areas-rescan`) asks them again against the current list.
+- Propose (`areas-propose`): one Opus call per repo, with read-only tools on the default branch and the workspace (docs, `docs/gaps.md`) and a sample of open item titles. It returns a list that waits as a proposal; accepting it (as it is or edited) saves a version.
+- Suggest (`areas-suggest`): Sonnet reads a sample of unassigned items and suggests up to 8 new areas. The operator accepts or ignores each one; accepting saves a version and queues a re-scan.
+- Propose, suggest and re-scan are started by an operator only. The assignment itself runs inside `classify-new` and `classify-all` and counts against their limit.
+- CLI: `autocraft areas list|propose|accept|edit|rescan|suggest --repo R`.
+
 ## Priority
 
 Each open item gets a level from P0 to P4.
@@ -299,7 +312,7 @@ Each item can have one conversation with Opus, shown beside its decision. Everyo
 | Jev | First sort of every item (classes, duplicates). Very cheap and fast and reports how sure it is: at 90 % or more it matched maintainers' labels 98 % of the time |
 | Haiku | Second opinion where Jev is unsure, and every item while Jev is unavailable; batch priority and duplicate checks; duplicate decision summaries; failure summaries |
 | Sonnet | Referee for label disagreements outside the scope labels (a person only when it is unsure), decision summaries, first review pass, fix-ups, issue fixes, verify plans |
-| Opus | Final review of every PR Sonnet rates take or take-fix (verdict, complete fix list, how sure it is); checks of the patches Fix-up and Fix write; the scope recommendation; replies in item conversations |
+| Opus | Area list proposals; final review of every PR Sonnet rates take or take-fix (verdict, complete fix list, how sure it is); checks of the patches Fix-up and Fix write; the scope recommendation; replies in item conversations |
 
 These calls run with tools: Read, Grep and Glob on a read-only checkout inside a sandbox (see Trust boundary): the Opus review, the Fix-up patch and its Opus check, the Verify planner (checkouts of the PR head), Fix triage, patch and Opus check (checkouts of the base commit), the scope recommendation and conversation replies (the default branch). Every one of them also gets the workspace and, when a snapshot exists, the item tools (see Trust boundary). Every other call runs without tools. The Prompts page shows each prompt's tools, turn limit and sandbox mode.
 
@@ -456,6 +469,7 @@ Dry run is the default for every writing command; `--apply` writes (and still re
 | Command | Stage |
 |---|---|
 | `autocraft sync`, `embed`, `dupes`, `classify`, `prioritize` | Sync to Priority |
+| `autocraft areas list\|propose\|accept\|edit\|rescan\|suggest --repo R` | Classify (areas) |
 | `autocraft rank`, `rank show <repo> <n>` | Work rank |
 | `autocraft decide [--repo R]` | Decide |
 | `autocraft labels ensure\|plan\|apply --repo R` | Label |

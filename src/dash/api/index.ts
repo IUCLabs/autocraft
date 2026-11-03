@@ -20,6 +20,7 @@ import * as agents from "./agents.ts";
 import * as build from "./build.ts";
 import * as dec from "./decisions.ts";
 import * as conv from "./conversations.ts";
+import * as areas from "./areas.ts";
 import * as insight from "./insight.ts";
 import * as pipeline from "./pipeline.ts";
 import { prompts } from "./prompts.ts";
@@ -31,6 +32,7 @@ import * as items from "./items.ts";
 import * as operator from "./operator.ts";
 import { actionsOf as releasesOf } from "../../operator-actions.ts";
 import { verificationOf } from "../../verify/results.ts";
+import { areaNameOf } from "../../areas/store.ts";
 import { settledOf } from "../../classify/settled.ts";
 import { classificationsOf, itemState, relatedOf } from "./decisions.ts";
 import * as sim from "./similar.ts";
@@ -118,7 +120,7 @@ async function item(db: DatabaseSync, req: Req): Promise<Item> {
     mergeable: MERGEABLE[it.mergeable ?? ""] ?? "unknown",
     labels, createdAt: it.created_at ?? "", updatedAt: it.updated_at ?? "",
     closedAt: it.closed_at, mergedAt: it.merged_at, mergedBy: it.merged_by,
-    related: relatedOf(db, repo, n), classifications: classificationsOf(db, repo, n),
+    related: relatedOf(db, repo, n), classifications: classificationsOf(db, repo, n), area: areaNameOf(db, repo, n),
     stages: stages.map((s) => ({ ...s, by: s.by ?? "" })),
     comments: comments.map((x) => ({ ...x, author: x.author ?? "", body: x.body ?? "" })),
     decisionIds, settled: settledOf(db, repo, n) as Item["settled"], priority: priorityOf(db, repo, n),
@@ -306,6 +308,11 @@ export function apiRoutes(opts: ApiOptions = {}): Route[] {
     { method: "POST", pattern: "/api/items/:repo/:n/review-again", operator: true, handler: ok(operator.reviewItemAgain) },
     { method: "POST", pattern: "/api/items/:repo/:n/verify-again", operator: true, handler: ok(operator.verifyItemAgain) },
     { method: "POST", pattern: "/api/items/:repo/:n/fix-again", operator: true, handler: ok(operator.fixItemAgain) },
+    get("/api/areas/:repo", areas.repoAreas),
+    { method: "POST", pattern: "/api/areas/:repo/edit", operator: true, handler: ok(areas.edit) },
+    { method: "POST", pattern: "/api/areas/:repo/run", operator: true, handler: ok(areas.run) },
+    { method: "POST", pattern: "/api/area-proposals/:id/accept", operator: true, handler: ok(areas.acceptProposalApi) },
+    { method: "POST", pattern: "/api/area-proposals/:id/dismiss", operator: true, handler: ok(areas.dismiss) },
     { method: "POST", pattern: "/api/items/:repo/:n/batch-again", operator: true, handler: ok(operator.batchItemAgain) },
     get("/api/items", items.listItems),
     get("/api/search", (db, req) => req.query.get("mode") === "semantic" ? sim.semanticSearch(db, req, vectors) : items.quickSearch(db, req)),

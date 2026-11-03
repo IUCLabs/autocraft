@@ -634,8 +634,6 @@ function classification(c: [string, string, string], s: Seed, i: number): Classi
     typeLabel: c[1] as Classification["typeLabel"],
     want: c[2] as Classification["want"],
     reference: s.reference ?? null,
-    topics: s.kind === "split" ? "many" : "1",
-    area: s.title.split(/[: ]/)[0].toLowerCase(),
     reason: c[1] === "plugin candidate" ? "Self-contained addition the reference app does not ship; fits the plugin API." : reasons[c[0]],
     dupOf: s.kind === "duplicate" && s.related?.[0] ? s.related[0].number : null,
   };

@@ -565,6 +565,63 @@ export const STEPS: StepDef[] = [
       return `${r.answered} of ${r.waiting} messages answered`;
     },
   },
+  {
+    name: "areas-propose",
+    title: "Propose areas",
+    description: "One Opus call proposes the area list of a repo (10 to 25 areas with one-line descriptions), reading the repo's default branch, its docs and a sample of its open item titles. The proposal waits on the repo's page; nothing changes until an operator accepts it.",
+    stage: 2,
+    requires: "operator",
+    group: "areas",
+    models: ["opus"],
+    params: [{ name: "repo", label: "Repo", kind: "repo", required: true }],
+    run: async (ctx) => {
+      const { proposeAreas } = await import("../areas/propose.ts");
+      const { baseCheckout } = await import("../dupes/compare.ts");
+      const repo = String(ctx.params.repo), usageRun = `areas-${ctx.job.id}`;
+      ctx.usageRun(usageRun);
+      ctx.handled(1);
+      const id = await proposeAreas(ctx.db, repo, { by: ctx.job.requestedBy, checkout: (r) => baseCheckout(ctx.db, r), usageRun, log: ctx.log });
+      return id === null ? `${repo}: no usable proposal` : `${repo}: proposal ${id} is waiting for an operator`;
+    },
+  },
+  {
+    name: "areas-suggest",
+    title: "Suggest areas",
+    description: "Sonnet reads a sample of the repo's open items that have no area and suggests new areas for them. An operator accepts or ignores each suggestion; accepting saves a new list version and re-scans the unassigned items.",
+    stage: 2,
+    requires: "operator",
+    group: "areas",
+    models: ["sonnet"],
+    params: [{ name: "repo", label: "Repo", kind: "repo", required: true }],
+    run: async (ctx) => {
+      const { suggestAreas } = await import("../areas/propose.ts");
+      const repo = String(ctx.params.repo), usageRun = `areas-${ctx.job.id}`;
+      ctx.usageRun(usageRun);
+      ctx.handled(1);
+      const id = await suggestAreas(ctx.db, repo, { by: ctx.job.requestedBy, usageRun, log: ctx.log });
+      return id === null ? `${repo}: no new area suggested` : `${repo}: suggestion ${id} is waiting for an operator`;
+    },
+  },
+  {
+    name: "areas-rescan",
+    title: "Re-scan areas",
+    description: "Asks again for the open items of a repo that have no area (never asked, none of these, or unassigned by a removed area) against the repo's current area list: Jev first, Haiku where Jev is under 90 % sure or unavailable.",
+    stage: 2,
+    requires: "operator",
+    group: "classify",
+    models: ["jev", "haiku"],
+    params: [
+      { name: "repo", label: "Repo", kind: "repo", required: true },
+      { name: "limit", label: "At most", kind: "int", min: 1, max: 30000, default: 5000, help: "items in this job" },
+    ],
+    run: async (ctx) => {
+      const { assignAreas } = await import("../areas/assign.ts");
+      const usageRun = `areas-${ctx.job.id}`;
+      ctx.usageRun(usageRun);
+      const r = await assignAreas(ctx.db, { repo: String(ctx.params.repo), limit: Number(ctx.params.limit), rescan: true, usageRun, onSent: ctx.handled, cancelled: ctx.cancelled, progress: ctx.progress, log: ctx.log });
+      return `${ctx.params.repo}: ${r.due} items asked; Jev settled ${r.jev}, Haiku ${r.haiku}; ${r.none} fit none of the areas, ${r.left} unanswered`;
+    },
+  },
 ];
 
 let loaded: Promise<Map<string, StepDef>> | null = null;

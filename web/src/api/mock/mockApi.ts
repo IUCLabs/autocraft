@@ -4,6 +4,7 @@ import { canAct } from "../../registry/permissions";
 import { setClock } from "../../lib/format";
 import { createAdminMock } from "./adminMock";
 import { createAgentsMock } from "./agentsMock";
+import { createAreasMock } from "./areasMock";
 import { createConversationMock } from "./conversationMock";
 import { createBuildMock } from "./buildMock";
 import { createPipelineMock } from "./pipelineMock";
@@ -179,6 +180,7 @@ export function createMockApi(): Api {
     },
     progress: () => wait(progress(decisions.filter((d) => !d.answer).length)),
     ...createConversationMock(me, changed),
+    ...createAreasMock(me, changed),
     ...createAdminMock(me, changed),
     classifiers: {
       report: (sel) => wait(classifierReport(sel), 80),

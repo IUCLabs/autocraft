@@ -43,8 +43,6 @@ export interface Classification {
   typeLabel: TypeLabel;
   want: Want;
   reference: string | null;
-  topics: "1" | "many";
-  area: string;
   reason: string;
   dupOf: number | null;
 }
@@ -108,6 +106,8 @@ export interface Decision {
   commentCount: number;
   related: RelatedItem[];
   classifications: Classification[];
+  /** The item's area; null when it has none, absent in mocks. */
+  area?: string | null;
   /** null or absent for a batch and before the item was rated. */
   priority?: PriorityInfo | null;
 }
@@ -202,6 +202,8 @@ export interface Item extends ItemRef {
   mergedBy: string | null;
   related: RelatedItem[];
   classifications: Classification[];
+  /** The item's area; null when it has none, absent in mocks. */
+  area?: string | null;
   stages: StageEntry[];
   comments: ItemComment[];
   decisionIds: string[];
@@ -1488,3 +1490,43 @@ export interface Conversation {
   startedBy: string | null;
   turns: ConversationTurn[];
 }
+
+// ---- Areas -------------------------------------------------------------------
+
+export interface AreaDef {
+  name: string;
+  description: string;
+}
+export interface AreaProposalArea extends AreaDef {
+  state: "open" | "accepted" | "ignored";
+}
+/** A model's proposal waiting for an operator: kind "propose" is a whole list, "suggest" is areas to add. */
+export interface AreaProposal {
+  id: number;
+  kind: "propose" | "suggest";
+  areas: AreaProposalArea[];
+  createdAt: string;
+  createdBy: string | null;
+}
+export interface RepoAreas {
+  repo: RepoName;
+  /** null until a list is saved. */
+  version: number | null;
+  areas: AreaDef[];
+  savedAt: string | null;
+  savedBy: string | null;
+  /** Open items without an area (never asked, none of these, or unassigned by a removed area). */
+  unassigned: number;
+  /** Open items per area, most first; areas without open items are left out. */
+  counts: { area: string; open: number }[];
+  versions: { version: number; at: string; by: string | null; note: string | null }[];
+  proposals: AreaProposal[];
+}
+export type AreaEditBody =
+  | { op: "add"; name: string; description: string }
+  | { op: "rename"; from: string; to: string }
+  | { op: "merge"; from: string; into: string }
+  | { op: "remove"; name: string }
+  | { op: "describe"; name: string; description: string };
+/** Which model step to queue: propose a list, suggest new areas, or re-scan the unassigned items. */
+export type AreaStep = "propose" | "suggest" | "rescan";

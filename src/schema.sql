@@ -62,10 +62,8 @@ CREATE TABLE IF NOT EXISTS classifications (
   type_label TEXT,                    -- bugfix | performance | missing feature | small extra | plugin candidate | infra
   want TEXT,                          -- yes | no | unclear
   reference TEXT,                     -- claimed reference-app behaviour, or NULL
-  topics TEXT,                        -- '1' | 'many'
   flags TEXT,                         -- JSON array
   dup_of INTEGER,
-  area TEXT,
   reason TEXT,
   probs TEXT,                         -- JSON, Jev: {type: {label: p}, top, security, needs_decision}
   PRIMARY KEY (repo, number, classifier, run_id)
@@ -991,3 +989,41 @@ CREATE TABLE IF NOT EXISTS conversation_cards (
 );
 CREATE INDEX IF NOT EXISTS conversation_cards_turn ON conversation_cards(turn_id);
 CREATE INDEX IF NOT EXISTS conversation_cards_item ON conversation_cards(repo, number);
+
+-- A repo's area list, one row per saved version; the current version is the highest.
+CREATE TABLE IF NOT EXISTS area_lists (
+  repo TEXT NOT NULL,
+  version INTEGER NOT NULL,
+  areas TEXT NOT NULL,                -- JSON [{name, description}]
+  at TEXT NOT NULL,
+  by TEXT,                            -- operator login, or NULL for a CLI save
+  note TEXT,                          -- what the save did, one line
+  PRIMARY KEY (repo, version)
+);
+
+-- The area of each item. area NULL with a list_version means "none of these" was the answer for that version.
+-- A row whose area survived a list change moves to the new version; a NULL row stays on the version it was asked against.
+CREATE TABLE IF NOT EXISTS item_areas (
+  repo TEXT NOT NULL, number INTEGER NOT NULL,
+  area TEXT,
+  source TEXT NOT NULL,               -- jev | haiku | operator
+  confidence REAL,                    -- Jev's top probability, else NULL
+  list_version INTEGER NOT NULL,
+  at TEXT NOT NULL,
+  PRIMARY KEY (repo, number)
+);
+CREATE INDEX IF NOT EXISTS item_areas_area ON item_areas(repo, area);
+
+-- Area lists proposed by a model, waiting for the operator. kind 'propose' is a whole list; 'suggest' is areas to add.
+CREATE TABLE IF NOT EXISTS area_proposals (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  repo TEXT NOT NULL,
+  kind TEXT NOT NULL,                 -- propose | suggest
+  areas TEXT NOT NULL,                -- JSON [{name, description, state}] with state open | accepted | ignored
+  created_at TEXT NOT NULL,
+  created_by TEXT,
+  state TEXT NOT NULL DEFAULT 'open', -- open | accepted | dismissed (a suggest closes once every area is decided)
+  decided_by TEXT,
+  decided_at TEXT
+);
+CREATE INDEX IF NOT EXISTS area_proposals_repo ON area_proposals(repo, state);
