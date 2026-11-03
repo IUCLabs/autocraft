@@ -91,7 +91,8 @@ export function createPipelineMock(me: User, changed: () => void): Pick<Api, "pi
     step: step as string, title: title as string, perDay: perDay as number | null, usedToday: usedToday as number,
     pausedReason: perDay !== null && (usedToday as number) >= (perDay as number) ? `daily limit of ${perDay} items reached` : null,
   }));
-  const state = (): PipelineState => ({ ...flag, heartbeat: iso(0), limits });
+  const pilot: string[] = [];
+  const state = (): PipelineState => ({ ...flag, heartbeat: iso(0), limits, pilot: [...pilot] });
   const requireOperator = () => {
     if (me.role !== "operator") throw new Error("only operators run or cancel pipeline steps and change the pipeline switch and limits");
   };
@@ -157,6 +158,14 @@ export function createPipelineMock(me: User, changed: () => void): Pick<Api, "pi
       async setEnabled(enabled) {
         requireOperator();
         Object.assign(flag, { enabled, changedBy: me.login, changedAt: new Date(NOW).toISOString() });
+        changed();
+        return wait(state(), 30);
+      },
+      async setPilot(items) {
+        requireOperator();
+        const bad = items.find((x) => !/^[A-Za-z0-9._-]+#[1-9][0-9]*$/.test(x));
+        if (bad) throw new Error(`not a repo#number reference: ${bad}`);
+        pilot.splice(0, pilot.length, ...items);
         changed();
         return wait(state(), 30);
       },

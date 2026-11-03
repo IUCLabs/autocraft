@@ -7,6 +7,7 @@ import { audit } from "../dash/audit.ts";
 import { actionable, ask, factsOf, getDecision } from "../decisions.ts";
 import { pickCanonical } from "./canonical.ts";
 import { DUP_FACT, DUP_OPTIONS } from "./held.ts";
+import { inPilot } from "../pilot.ts";
 
 const ACTOR = "dupes";
 
@@ -61,7 +62,7 @@ export function duplicateAskTargets(db: DatabaseSync, repo?: string): { g: Group
     for (const x of g.members) {
       if (x === g.canonical) continue;
       const xi = info.get(g.repo, x) as Info;
-      if (xi.state !== "OPEN") continue;
+      if (xi.state !== "OPEN" || !inPilot(db, g.repo, x)) continue;
       const id = decisionId(g.repo, x, g.canonical);
       if (getDecision(db, id)?.answer) continue;
       if (openElsewhere.get(g.repo, x, id)) continue;

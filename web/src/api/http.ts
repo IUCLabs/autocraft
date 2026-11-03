@@ -164,6 +164,7 @@ export function createHttpApi(): Api {
       state: () => get("/api/pipeline/state"),
       setEnabled: (enabled) => put("/api/pipeline/state", { enabled }),
       setLimit: (step, limit) => put(`/api/pipeline/limits/${encodeURIComponent(step)}`, limit),
+      setPilot: (items) => put("/api/pipeline/pilot", { items }),
     },
     accounts: {
       list: () => get("/api/accounts"),

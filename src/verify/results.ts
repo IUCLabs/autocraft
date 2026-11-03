@@ -10,6 +10,7 @@ import { CLAUDE_PROMPTS } from "../prompts/index.ts";
 import { scrub } from "../runner/scrub.ts";
 import { cloneTask } from "./tasks.ts";
 import { MAX_SUMMARY_WORDS, SUMMARY_LOG_BYTES, type VerifySummaryInput } from "./types.ts";
+import { pilotSqlFor } from "../pilot.ts";
 
 const PROMPT = CLAUDE_PROMPTS["verify.summary"];
 const ACTOR = "verify";
@@ -92,7 +93,7 @@ export function collectDue(db: DatabaseSync): boolean {
     LEFT JOIN pr_checks c ON c.repo = v.repo AND c.number = v.number
     LEFT JOIN build_tasks h ON h.id = v.head_task_id
     LEFT JOIN build_tasks b ON b.id = v.base_task_id
-    WHERE v.state IN ('planned', 'running') AND (
+    WHERE v.state IN ('planned', 'running') AND ${pilotSqlFor("v.repo", "v.number")} AND (
       i.state IS NOT 'OPEN' OR (${CURRENT_HEAD_SQL}) IS NOT v.head_sha
       OR (h.state IN (${TERMINAL_SQL}) AND (b.id IS NULL OR b.state IN (${TERMINAL_SQL})))
       OR (v.state = 'planned' AND (h.state IN ('claimed', 'running') OR b.state IN ('claimed', 'running'))))

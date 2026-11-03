@@ -13,6 +13,7 @@ import { fillEmbedHashes } from "../itemhash.ts";
 import { CLAUDE_PROMPTS, JEV_PROMPTS } from "../prompts/index.ts";
 import { reachOfOpenItems } from "./reach.ts";
 import { jevImpact, parseHaikuImpacts, reachScore, settleImpact, SURE, type Impact, type JevImpactAnswers } from "./score.ts";
+import { pilotSql } from "../pilot.ts";
 
 const JEV = JEV_PROMPTS["priority.jev"], HAIKU = CLAUDE_PROMPTS["priority.haiku"];
 const JEV_CHUNK = 40;
@@ -23,7 +24,7 @@ type Due = Item & { hash: string };
 const ITEM_COLUMNS = `i.repo, i.number, i.kind, COALESCE(i.title, '') AS title, COALESCE(i.body, '') AS body,
   i.additions + i.deletions AS lines_changed, i.changed_files AS files_changed, i.author_association, i.embed_hash AS hash`;
 
-const DUE_WHERE = `i.state = 'OPEN' AND i.embed_hash IS NOT NULL AND (p.repo IS NULL OR p.text_hash <> i.embed_hash)`;
+const DUE_WHERE = `i.state = 'OPEN' AND i.embed_hash IS NOT NULL AND (p.repo IS NULL OR p.text_hash <> i.embed_hash) AND ${pilotSql("i")}`;
 
 /** Number of open tracked items without a priority row at their current text hash. Read-only, for the autopilot. */
 export function duePriorityCount(db: DatabaseSync): number {

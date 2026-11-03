@@ -6,6 +6,7 @@ import { audit } from "../dash/audit.ts";
 import { scopeToTracked } from "../repos.ts";
 import { execJob } from "./exec.ts";
 import { LimitError, pipelineState, setEnabled, setLimit } from "./autopilot.ts";
+import { PilotError, pilotItems, setPilot } from "../pilot.ts";
 import { enqueue, JobError, listJobs, requestCancel } from "./jobs.ts";
 import { DEFAULT_MAX_JOBS, Runner, runnerLockPath } from "./runner.ts";
 import { loadSteps } from "./steps.ts";
@@ -120,7 +121,8 @@ export const commands = {
 };
 
 const PIPELINE_USAGE = `usage: craft-auto pipeline on | off | status
-       craft-auto pipeline limit <step> --per-day <N|none>`;
+       craft-auto pipeline limit <step> --per-day <N|none>
+       craft-auto pipeline pilot set <repo#number>... | show | clear`;
 
 // Recorded as `cli`: only someone with a shell on the host can run this.
 async function pipeline(args: string[]): Promise<void> {
@@ -139,6 +141,20 @@ async function pipeline(args: string[]): Promise<void> {
       if (e instanceof LimitError) die(e.message);
       throw e;
     }
+  } else if (sub === "pilot") {
+    const [action, ...refs] = rest;
+    if (action === "set" && refs.length) {
+      try {
+        setPilot(db, "cli", refs);
+      } catch (e) {
+        if (e instanceof PilotError) die(e.message);
+        throw e;
+      }
+    } else if (action === "clear") setPilot(db, "cli", []);
+    else if (action !== "show") die(PIPELINE_USAGE);
+    const p = pilotItems(db);
+    console.log(p.length ? `pilot: ${p.length} items: ${p.join(" ")}` : "no pilot");
+    return;
   } else if (sub !== "status") die(PIPELINE_USAGE);
   const s = await pipelineState(db);
   console.log(`pipeline ${s.enabled ? "ON" : "OFF"}${s.changedAt ? ` (set by ${s.changedBy} at ${s.changedAt.slice(0, 16)})` : ""}`);

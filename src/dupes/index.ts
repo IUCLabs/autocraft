@@ -12,6 +12,7 @@ import { VectorIndex } from "../embed/vectors.ts";
 import { checkPairs, defaultCheckDeps, uncheckedPairs, type CheckDeps } from "./check.ts";
 import { applyDuplicateAnswers, askDuplicateDecisions, duplicateAskTargets } from "./decide.ts";
 import { scanItem, scanPending } from "./scan.ts";
+import { pilotSqlFor } from "../pilot.ts";
 
 export { duplicateCount, duplicateHeld, notHeldSql } from "./held.ts";
 
@@ -39,7 +40,7 @@ export function defaultDeps(db: DatabaseSync): DupesDeps {
 /** Work left: items to scan, pairs to check, decisions to ask or apply. Reads only, for the autopilot. */
 export function dupesWork(db: DatabaseSync, modelId: string = embedderId(modelName())): boolean {
   if (scanPending(db, modelId, 1).length || uncheckedPairs(db, 1).length) return true;
-  const answered = db.prepare("SELECT 1 FROM decisions WHERE kind = 'duplicate' AND answer IS NOT NULL AND answer <> 'close' AND applied_at IS NULL LIMIT 1").get();
+  const answered = db.prepare(`SELECT 1 FROM decisions WHERE kind = 'duplicate' AND answer IS NOT NULL AND answer <> 'close' AND applied_at IS NULL AND ${pilotSqlFor("repo", "number")} LIMIT 1`).get();
   if (answered) return true;
   // Asked-but-unanswered ones need no job: asking again only refreshes them.
   const asked = db.prepare("SELECT 1 FROM decisions WHERE id = ?");

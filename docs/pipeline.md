@@ -302,6 +302,8 @@ The pipeline starts **Off**. An operator switches it on the Pipeline page or wit
 
 While On, the runner looks for work after each sync, at least every 15 minutes, and when a job ends. It queues a job for each stage that has work, no job queued or running, and limit left. Per-repo stages (Label, Review, Merge, Act, Fix-up, Fix) queue only for repos with the matching approval. A stage whose last three automatic jobs failed, or ended with no items although there was work, waits an hour; one whose last job handled nothing waits 15 minutes. The full classification pass is never started automatically.
 
+**Pilot.** The setting `pilot_items` (a list of `repo#number`) limits every stage to those items. Classify, Priority, Dupes (the listed items as subjects; their neighbours may be any item), Referee, Decide, Review, Opus review, Label, Verify, Fix-up, Fix, Merge and Act pick candidates among them only; Embed and Rank stay unrestricted because they are local and cheap. A Fix PR the pipeline opened for a pilot issue counts as a pilot item. Integration batches in flight finish. Empty or absent means no pilot. Operators set it on the Pipeline page or with `craft-auto pipeline pilot set <repo#number>...`, `pilot show` and `pilot clear`; each change is in the audit log.
+
 ### Daily limits
 
 Limits count items handled per stage per day (from 00:00 UTC), including by failed or stopped jobs. Operators change them on the Pipeline page or with `craft-auto pipeline limit`. Empty means no limit; 0 pauses the stage. The page shows why a stage cannot start.

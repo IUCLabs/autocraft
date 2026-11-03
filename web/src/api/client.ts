@@ -136,6 +136,8 @@ export interface Api {
     state(): Promise<PipelineState>;
     setEnabled(enabled: boolean): Promise<PipelineState>;
     setLimit(step: string, limit: { perDay: number | null }): Promise<StageLimit>;
+    /** Limits the whole pipeline to these items ("repo#number"); an empty list clears the pilot. */
+    setPilot(items: string[]): Promise<PipelineState>;
   };
   /** The pipeline as a flowchart: every stage with its branches and counts, for every tracked repo or one. */
   flow(repo?: RepoName): Promise<Flow>;

@@ -39,6 +39,7 @@ import { hasOpenPr, notRustKey, selectIssues, type IssueCandidate } from "./cand
 import { parseTriage, sourcePaths, validateFixPatch } from "./parse.ts";
 import { branchName, commentText, commitMessage, prBody, prTitle } from "./template.ts";
 import { COMMENTS_SHOWN, COMMENT_CHARS, FILE_CAP, ISSUE_BODY_LIMIT, MAX_PATHS, MAX_ROUNDS, TOTAL_CAP, type IssueText, type PatchInput, type TriageInput } from "./types.ts";
+import { pilotSqlFor } from "../pilot.ts";
 
 export { selectIssues, type IssueCandidate } from "./candidates.ts";
 
@@ -353,8 +354,8 @@ export function collectDue(db: DatabaseSync): boolean {
   const terminal = TERMINAL.map((s) => `'${s}'`).join(", ");
   if (db.prepare(`SELECT 1 FROM fix_attempts a
     LEFT JOIN build_tasks h ON h.id = a.head_task_id LEFT JOIN build_tasks b ON b.id = a.base_task_id
-    WHERE a.state = 'testing' AND h.state IN (${terminal}) AND (b.id IS NULL OR b.state IN (${terminal})) LIMIT 1`).get()) return true;
-  const passed = db.prepare("SELECT DISTINCT repo FROM fix_attempts WHERE state = 'passed'").all() as { repo: string }[];
+    WHERE a.state = 'testing' AND h.state IN (${terminal}) AND (b.id IS NULL OR b.state IN (${terminal})) AND ${pilotSqlFor("a.repo", "a.number")} LIMIT 1`).get()) return true;
+  const passed = db.prepare(`SELECT DISTINCT repo FROM fix_attempts a WHERE state = 'passed' AND ${pilotSqlFor("a.repo", "a.number")}`).all() as { repo: string }[];
   return passed.some((p) => !!fixIssueApprovalOf(db, p.repo)) && openedToday(db, new Date()) < perDay(db);
 }
 
@@ -370,7 +371,7 @@ const openedToday = (db: DatabaseSync, now: Date): number =>
 /** Whether a patch round is due or a candidate waits, for the autopilot's fixissue lane. */
 export function fixDue(db: DatabaseSync, repo: string): boolean {
   if (!fixIssueApprovalOf(db, repo)) return false;
-  return !!db.prepare("SELECT 1 FROM fix_attempts WHERE repo = ? AND state = 'retry' LIMIT 1").get(repo) || selectIssues(db, repo).length > 0;
+  return !!db.prepare(`SELECT 1 FROM fix_attempts a WHERE repo = ? AND state = 'retry' AND ${pilotSqlFor("a.repo", "a.number")} LIMIT 1`).get(repo) || selectIssues(db, repo).length > 0;
 }
 
 export async function runFixIssueCollect(db: DatabaseSync, params: CollectParams = {}, log: (line: string) => void = console.log, deps?: CollectDeps): Promise<CollectSummary> {

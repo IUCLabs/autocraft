@@ -19,6 +19,8 @@ import { audit } from "../audit.ts";
 import { HttpError } from "../server/util.ts";
 import type { Req } from "../types.ts";
 import { hiddenRepos } from "./visible.ts";
+import { pipelineState } from "../../runner/autopilot.ts";
+import { PilotError, setPilot } from "../../pilot.ts";
 
 const NOTE_MAX = 300;
 const ACCESS_NOTE_MAX = 500;
@@ -26,7 +28,7 @@ const AUDIT_PAGE = 50;
 export const AUDIT_ACTIONS = [
   "answer", "undo", "adopt", "opinion", "opinion-retract", "comment", "override", "rule", "access-add", "access-remove", "access-role",
   "session-revoke", "sign-in", "sign-in-refused", "repo-track", "repo-untrack", "labels-approve", "labels-revoke", "labels-apply", "merge-approve", "merge-revoke", "comment-approve", "comment-revoke", "act-comment", "act-close", "act-skip", "push-approve", "push-revoke", "fixup-push", "fixup-comment", "fixissue-approve", "fixissue-revoke", "fixissue-push", "fixissue-pr", "fixissue-comment",
-  "job-request", "job-cancel", "pipeline-switch", "stage-limit",
+  "job-request", "job-cancel", "pipeline-switch", "stage-limit", "pilot-set", "pilot-clear",
 ];
 
 const isOperator = (req: Req): boolean => req.user.role === "operator";
@@ -425,4 +427,18 @@ export function auditLog(db: DatabaseSync, req: Req): AuditPage {
     return { at: r.at, login: r.login, action: r.action, target: r.target, details };
   });
   return { entries, total, actions: AUDIT_ACTIONS };
+}
+
+// Only an operator limits the pipeline to a list of items. An empty list clears the pilot.
+export async function putPilot(db: DatabaseSync, req: Req) {
+  requireOperator(req, "set the pilot");
+  const items = body(req).items;
+  if (!Array.isArray(items)) throw new HttpError(400, "items must be a list of repo#number");
+  try {
+    setPilot(db, req.user.login, items);
+  } catch (e) {
+    if (e instanceof PilotError) throw new HttpError(e.status, e.message);
+    throw e;
+  }
+  return pipelineState(db);
 }

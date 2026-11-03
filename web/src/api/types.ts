@@ -817,7 +817,7 @@ export interface JobFilter {
 }
 
 export type StageLimit = { step: string; title: string; perDay: number | null; usedToday: number; pausedReason: string | null };
-export type PipelineState = { enabled: boolean; changedBy: string | null; changedAt: string | null; heartbeat: string | null; limits: StageLimit[] };
+export type PipelineState = { enabled: boolean; changedBy: string | null; changedAt: string | null; heartbeat: string | null; limits: StageLimit[]; /** "repo#number" refs the pipeline is limited to; empty when there is no pilot. */ pilot: string[] };
 
 export interface PipelineStep {
   name: string;

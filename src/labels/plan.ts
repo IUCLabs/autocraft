@@ -4,6 +4,7 @@ import { notOwnIntegrationSql } from "../dupes/held.ts";
 import { forRun, settleRows, type ClsRow } from "./settled.ts";
 import { scopeAnswers } from "../review/candidates.ts";
 import { isTypeLabel, sameLabel } from "./set.ts";
+import { pilotSql } from "../pilot.ts";
 
 /** The type label an operator's `plugin` scope answer asks for. */
 export const PLUGIN_LABEL = "plugin candidate";
@@ -16,7 +17,7 @@ export type PlanRow = {
 export type PlanCounts = { toAdd: number; already: number; unsettled: number; conflicts: number };
 
 export function planLabels(db: DatabaseSync, repo: string, runId?: string): PlanRow[] {
-  const items = db.prepare(`SELECT number, kind, url, labels FROM main.items i WHERE repo = ? AND state = 'OPEN' AND ${notOwnIntegrationSql("i")} ORDER BY number`).all(repo) as
+  const items = db.prepare(`SELECT number, kind, url, labels FROM main.items i WHERE repo = ? AND state = 'OPEN' AND ${notOwnIntegrationSql("i")} AND ${pilotSql("i")} ORDER BY number`).all(repo) as
     { number: number; kind: string; url: string | null; labels: string | null }[];
   const byItem = new Map<number, ClsRow[]>();
   const cls = db.prepare(`SELECT number, classifier, run_id, at, type_label, flags, probs FROM main.classifications WHERE repo = ?

@@ -7,6 +7,7 @@ import { askClaude, askJev, pool } from "../classify/run.ts";
 import { CLAUDE_PROMPTS } from "../prompts/index.ts";
 import { pickCanonical } from "./canonical.ts";
 import { pairRef, parsePairReply, settlePair, type DupePair, type PairVerdict } from "./pair.ts";
+import { pilotSqlFor } from "../pilot.ts";
 
 const HAIKU = CLAUDE_PROMPTS["dupes.haiku"];
 
@@ -18,6 +19,7 @@ export function uncheckedPairs(db: DatabaseSync, limit: number): PairKey[] {
     JOIN items ia ON ia.repo = p.repo AND ia.number = p.a AND ia.embed_hash = p.a_hash
     JOIN items ib ON ib.repo = p.repo AND ib.number = p.b AND ib.embed_hash = p.b_hash
     WHERE p.verdict IS NULL AND (ia.state = 'OPEN' OR ib.state = 'OPEN') AND p.repo IN (SELECT name FROM tracked_repos)
+      AND (${pilotSqlFor("p.repo", "p.a")} OR ${pilotSqlFor("p.repo", "p.b")})
     ORDER BY p.similarity DESC, p.repo, p.a, p.b LIMIT ?`).all(limit) as PairKey[];
 }
 

@@ -9,7 +9,7 @@ import { ago, num } from "../../lib/format";
 import { useUser } from "../../shell/UserContext";
 import { Badge } from "../../ui/Badge";
 import { Button } from "../../ui/Button";
-import { Block, ErrorLine, TextInput, useWrite, when } from "../admin/parts";
+import { Block, ConfirmButton, ErrorLine, TextInput, useWrite, when } from "../admin/parts";
 
 const usePipelineState = () => useQuery<PipelineState>("pipeline-state", (a) => a.pipeline.state());
 
@@ -181,5 +181,56 @@ export function StageLimits() {
         </div>
       )}
     </Block>
+  );
+}
+
+const refLink = (ref: string) => {
+  const [repo, n] = ref.split("#");
+  return `https://github.com/storytold/${repo}/issues/${n}`;
+};
+
+/** The items the pipeline is limited to, with links; operators set or clear the list. Nothing shows when there is no pilot and the viewer is no operator. */
+export function PilotPanel({ className }: { className?: string }) {
+  const api = useApi();
+  const operator = useUser().role === "operator";
+  const q = usePipelineState();
+  const write = useWrite();
+  const pilot = q.data?.pilot ?? [];
+  const [text, setText] = useState(pilot.join("\n"));
+  useEffect(() => setText(pilot.join("\n")), [pilot.join(" ")]);
+  if (!q.data || (!pilot.length && !operator)) return null;
+  const refs = text.split(/[\s,]+/).filter(Boolean);
+  const save = (items: string[]) => void write.run("pilot", () => api.pipeline.setPilot(items));
+  return (
+    <div className={className}>
+      <div className="rounded-md border border-line p-4">
+        <div className="text-sm font-semibold">{pilot.length ? `Pilot: ${pilot.length} items` : "Pilot"}</div>
+        {pilot.length > 0 && (
+          <div className="num mt-2 flex flex-wrap gap-x-3 gap-y-1 text-sm">
+            {pilot.map((r) => (
+              <a key={r} href={refLink(r)} target="_blank" rel="noopener noreferrer" className="hover:text-accent-ink hover:underline">
+                {r}
+              </a>
+            ))}
+          </div>
+        )}
+        {operator && (
+          <div className="mt-3 flex flex-col gap-2">
+            <textarea
+              aria-label="Pilot items"
+              rows={3}
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+              className="num w-full rounded border border-line bg-sunken px-2.5 py-1.5 text-sm outline-none focus:border-accent/60"
+            />
+            <div className="flex flex-wrap items-center gap-2">
+              <ConfirmButton label="Save" confirmLabel="Confirm save" loading={write.busy === "pilot"} onConfirm={() => save(refs)} />
+              {pilot.length > 0 && <ConfirmButton label="Clear" confirmLabel="Confirm clear" loading={write.busy === "pilot"} onConfirm={() => save([])} />}
+            </div>
+            <ErrorLine error={write.error} />
+          </div>
+        )}
+      </div>
+    </div>
   );
 }

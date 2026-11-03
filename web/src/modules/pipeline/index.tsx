@@ -14,7 +14,7 @@ import { cn } from "../../ui/cn";
 import { ago, num } from "../../lib/format";
 import { Block, ConfirmButton, ErrorLine, Page, useWrite, when } from "../admin/parts";
 import { AccountsPanel } from "../agents/accounts";
-import { PipelineSwitch, StageLimits } from "./controls";
+import { PilotPanel, PipelineSwitch, StageLimits } from "./controls";
 
 // ---- helpers -------------------------------------------------------------------
 
@@ -232,6 +232,7 @@ function PipelineView({ user, params }: ViewProps) {
       </p>
       <ErrorLine error={q.error?.message} className="mt-3" />
       <PipelineSwitch className="mt-4" />
+      <PilotPanel className="mt-4" />
       <div className="mt-4">
         <StageLimits />
         <AccountsPanel />

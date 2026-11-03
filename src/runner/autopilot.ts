@@ -38,6 +38,7 @@ import { currentRun, dueItems, haikuDue } from "./classify.ts";
 import { enqueue, JobError, now, requestCancel, RUNNER_STOPPED } from "./jobs.ts";
 import { claudePauseReason } from "../agents/accounts.ts";
 import { knownStep, loadSteps, modelsOf, usesClaude, type Params } from "./steps.ts";
+import { pilotItems } from "../pilot.ts";
 
 export const PLAN_EVERY_MS = 15 * 60_000;
 /** A stage that handled nothing waits this long before it is tried again. */
@@ -398,7 +399,7 @@ export async function stageLimits(db: DatabaseSync): Promise<StageLimit[]> {
 export async function pipelineState(db: DatabaseSync): Promise<PipelineState> {
   return {
     enabled: isEnabled(db), changedBy: getSetting(db, KEY_BY), changedAt: getSetting(db, KEY_AT),
-    heartbeat: getSetting(db, "runner_heartbeat"), limits: await stageLimits(db),
+    heartbeat: getSetting(db, "runner_heartbeat"), limits: await stageLimits(db), pilot: pilotItems(db),
   };
 }
 
