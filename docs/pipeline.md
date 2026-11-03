@@ -378,6 +378,7 @@ Automated work waits only for the reasons below. A stage that is not running sho
 | Duplicate set changed on GitHub | Wait for the sync to bring the set | 10 minutes | Duplicates stage |
 | Rule fallback of a duplicate group | The model call failed; retried up to 3 times | 15 minutes | Duplicates stage |
 | Planner fallback | Safety net; the planner normally runs on a change | 5 minutes | none |
+| Work rank recompute | Its input moves in bursts while a sync writes; nothing waits on it | at most once a minute | none |
 | Sync | Poll of GitHub | 1 minute; the search catch-up runs hourly, the reconcile daily | Syncs list |
 | Warm build of the default branch | Limits sandbox load; never blocks a PR | Once a day per repo | Sandbox tasks |
 | Flow summary and vector index | Display and search caches | 10 and 30 minutes at most; also rebuilt on change | none |

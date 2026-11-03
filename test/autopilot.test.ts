@@ -186,6 +186,19 @@ describe("autopilot", () => {
     assert.equal(jobs("test-limited").length, 2);
   });
 
+  test("the rank lane runs at most once a minute while its input keeps moving", async () => {
+    setEnabled(db, true, "boss");
+    const rank = LANES.filter((l) => l.name === "rank");
+    finish("rank", "done", 3, new Date(Date.now() - 20_000).toISOString());
+    touch();
+    await planAutopilot(db, { lanes: rank });
+    assert.equal(jobs("rank").filter((j) => j.state === "queued").length, 0, "20 s after the last run");
+    db.prepare("UPDATE jobs SET ended_at = ? WHERE step = 'rank'").run(new Date(Date.now() - 61_000).toISOString());
+    touch();
+    await planAutopilot(db, { lanes: rank });
+    assert.equal(jobs("rank").filter((j) => j.state === "queued").length, 1, "a minute later");
+  });
+
   test("switching off cancels the queued automatic jobs (audited) and a queued one never starts while off", async () => {
     setEnabled(db, true, "boss");
     await planAutopilot(db, { lanes });

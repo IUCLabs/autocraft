@@ -88,6 +88,8 @@ export type Lane = {
   topics?: string[];
   /** Input that no topic reports, e.g. the state of sandbox tasks. */
   extra?: (db: DatabaseSync) => string;
+  /** Least time between two of the lane's jobs: for cheap recomputes whose input moves in bursts (a sync writes in several transactions) and that no stage waits on. */
+  minGapMs?: number;
   detect: (db: DatabaseSync, ctx: PlanCtx) => Candidate[];
   /** Work score of the lane's best item, null when it has none. Lanes that define it share capacity: see orderLanes(). */
   topScore?: (db: DatabaseSync, ctx: PlanCtx) => number | null;
@@ -203,6 +205,7 @@ export const LANES: Lane[] = [
     steps: ["rank"],
     topics: INPUT_TOPICS.filter((t) => t !== "ranks"),
     extra: (db) => String((db.prepare("SELECT COUNT(*) || ':' || COALESCE(MAX(at), '') AS s FROM main.item_priority").get() as { s: string }).s),
+    minGapMs: 60_000,
     detect: () => [{ step: "rank", params: {} }],
   },
   {
@@ -594,6 +597,11 @@ export async function detectAutopilot(db: DatabaseSync, opts: PlanOptions = {}):
         return null;
       }
       if (!poll && unchangedSinceIdle(db, stepName, repo, fp)) { note(stepName, "nothing to do: its input has not changed since the last run"); return null; }
+      if (lane.minGapMs) {
+        const last = lastJobEnd(db, stepName, repo, AUTOPILOT_USER);
+        const next = last ? Date.parse(last.endedAt) + lane.minGapMs : 0;
+        if (next > ms) { ctx.wake?.push(next); return null; }
+      }
     }
     if (!limitLeft.has(stepName)) {
       const lp = step.params.find((p) => p.name === "limit" && p.kind === "int");
