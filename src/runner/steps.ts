@@ -641,6 +641,48 @@ export const STEPS: StepDef[] = [
       return `${repo}: runs approved on ${r.approved.length} PRs, ${r.skipped.length} skipped`;
     },
   },
+  {
+    name: "cifix",
+    title: "Fix failing CI on wanted pull requests",
+    description: "For a take or take-fix pull request whose gate check fails at its reviewed head, reads the failed jobs' logs and sorts the failure. A formatter-only failure is fixed by running the formatter in a build environment. A code failure gets a Sonnet patch, checked by Opus, pushed to the contributor's branch or posted as a comment where the branch is closed to us. An infrastructure failure is left to the cifix-rerun step. At most two tries per head.",
+    stage: runStage("cifix"),
+    requires: "operator",
+    group: "github-write",
+    models: ["sonnet", "opus"],
+    params: [
+      { name: "repo", label: "Repo", kind: "repo", required: true },
+      { name: "limit", label: "At most", kind: "int", min: 1, max: 50, default: 5, help: "pull requests to work on in this job" },
+    ],
+    check: checkPushApproved,
+    run: async (ctx) => {
+      const { runCifix } = await import("../cifix/index.ts");
+      const refused = await checkPushApproved(ctx.db, ctx.params);
+      if (refused) throw new Error(refused);
+      const r = await runCifix(ctx.db, { repo: String(ctx.params.repo), limit: Number(ctx.params.limit), dryRun: false, onHandled: ctx.handled }, ctx.log);
+      ctx.acted(r.pushed.length + r.asked.length + r.queued.length + r.failed.length + r.held.length + r.infra.length);
+      return `${r.repo}: pushed ${r.pushed.length}, ${r.asked.length} commented, ${r.queued.length} formatter runs queued, ${r.infra.length} infrastructure failures, ${r.failed.length} failed or refused, ${r.held.length} held`;
+    },
+  },
+  {
+    name: "cifix-rerun",
+    title: "Rerun CI jobs that failed on infrastructure",
+    description: "Reruns the failed jobs of a wanted pull request whose failure the cifix step read as a network or runner error, once per head. Calls no model.",
+    stage: runStage("cifix-rerun"),
+    requires: "operator",
+    group: "github-write",
+    params: [
+      { name: "repo", label: "Repo", kind: "repo", required: true },
+      { name: "limit", label: "At most", kind: "int", min: 1, max: 50, default: 30, help: "pull requests to rerun in this job" },
+    ],
+    check: checkCiApproved,
+    run: async (ctx) => {
+      const { runRerun } = await import("../cifix/index.ts");
+      const refused = await checkCiApproved(ctx.db, ctx.params);
+      if (refused) throw new Error(refused);
+      const r = await runRerun(ctx.db, { repo: String(ctx.params.repo), limit: Number(ctx.params.limit), dryRun: false, onHandled: ctx.handled }, ctx.log);
+      return `${r.repo}: reran ${r.reran.length} PRs, ${r.skipped.length} skipped`;
+    },
+  },
 ];
 
 let loaded: Promise<Map<string, StepDef>> | null = null;

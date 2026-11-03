@@ -188,6 +188,12 @@ export function ghApproveRun(w: Writer, exec: Exec, o: { repo: string; number: n
     ["api", "-X", "POST", `repos/${ORG}/${o.repo}/actions/runs/${o.runId}/approve`]);
 }
 
+/** Reruns the failed jobs of one Actions run (same head commit). */
+export function ghRerunFailed(w: Writer, exec: Exec, o: { repo: string; number: number; runId: number }, details: Details = {}): Promise<ExecResult> {
+  return viaGh(w, exec, "ci-rerun", refOf(o.repo, o.number), { ...details, run: o.runId },
+    ["run", "rerun", String(o.runId), "--failed", "--repo", `${ORG}/${o.repo}`]);
+}
+
 // ---- git pushes ---------------------------------------------------------------
 
 /**

@@ -64,7 +64,7 @@ export const TOPIC_TABLES: Record<string, Source[]> = {
   actions: [{ table: "actions" }],
   conversations: [{ table: "conversations" }, { table: "conversation_turns" }, { table: "conversation_cards" }],
   fixes: [{ table: "fix_attempts" }, { table: "patch_checks" }, { table: "dupe_carries" }],
-  verify: [{ table: "verifications" }, { table: "fixups" }],
+  verify: [{ table: "verifications" }, { table: "fixups" }, { table: "ci_fixes" }],
   // Sessions change on every request (last_seen); only sign-ins and revocations matter.
   access: [{ table: "access" }, { table: "sessions", ops: ["INSERT", "DELETE"] }, { table: "audit" }],
   settings: [{ table: "settings", when: `${shownSettings("new_key")}` }],

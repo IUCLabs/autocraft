@@ -25,6 +25,7 @@ import { closeCandidates, pending as actPending } from "../act/index.ts";
 import { compareWork, dupesWork } from "../dupes/index.ts";
 import { pushApprovalOf } from "../fixup/approval.ts";
 import { selectFixups } from "../fixup/candidates.ts";
+import { selectCifix } from "../cifix/candidates.ts";
 import { mergeApprovalOf } from "../merge/approval.ts";
 import { ciApprovalOf, needsWork } from "../merge/ci-approval.ts";
 import { batchesDue } from "../merge/batch-store.ts";
@@ -379,6 +380,18 @@ const LANE_CODE: Omit<Lane, "steps">[] = [
     name: "ci-approve",
     perRepo: true,
     detect: (db, { tracked }) => tracked.filter((repo) => ciApprovalOf(db, repo) && needsWork(db, repo).length).sort().map((repo) => ({ step: "ci-approve", params: { repo } })),
+  },
+  {
+    // Failing gate checks of wanted PRs: the log is read, a formatter run is queued or collected, or a patch is written and pushed.
+    name: "cifix",
+    perRepo: true,
+    extra: tasksSig,
+    detect: (db, { tracked }) => tracked.filter((repo) => { const sel = selectCifix(db, repo); return sel.work.length > 0 || sel.collect.length > 0; }).sort().map((repo) => ({ step: "cifix", params: { repo } })),
+  },
+  {
+    name: "cifix-rerun",
+    perRepo: true,
+    detect: (db, { tracked }) => tracked.filter((repo) => selectCifix(db, repo).rerun.length > 0).sort().map((repo) => ({ step: "cifix-rerun", params: { repo } })),
   },
 ];
 

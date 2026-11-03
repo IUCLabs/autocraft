@@ -161,6 +161,16 @@ function prWork(db: DatabaseSync, repo: string, n: number): Pick<Item, "verifica
       try { files = strings(JSON.parse(f.files ?? "[]")); } catch { /* malformed: none */ }
       return { fromHead: f.from_head, toHead: f.to_head, state: f.state as ItemFixup["state"], reason: f.reason, files, attempt: f.attempt, createdAt: f.created_at };
     });
+  // CI fix tries are listed with the fix-ups, oldest first.
+  const ciFixes = (db.prepare("SELECT head, to_head, state, reason, files, attempt, created_at FROM ci_fixes WHERE repo = ? AND number = ? ORDER BY created_at, rowid").all(repo, n) as
+    { head: string; to_head: string | null; state: string; reason: string | null; files: string | null; attempt: number; created_at: string }[])
+    .map((f): ItemFixup => {
+      let files: string[] = [];
+      try { files = strings(JSON.parse(f.files ?? "[]")); } catch { /* malformed: none */ }
+      return { kind: "ci-fix", fromHead: f.head, toHead: f.to_head, state: f.state as ItemFixup["state"], reason: f.reason, files, attempt: f.attempt, createdAt: f.created_at };
+    });
+  fixups.push(...ciFixes);
+  fixups.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   return {
     fixups,
     verification: !v ? null : {

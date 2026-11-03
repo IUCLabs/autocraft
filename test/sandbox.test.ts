@@ -1,3 +1,4 @@
+import { SAMPLE_CIFIX_PRS } from "../src/cifix/types.ts";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
@@ -123,7 +124,7 @@ describe("sandbox command", () => {
 
 describe("sandbox adoption", () => {
   const cases = [
-    ["fixup.patch", SAMPLE_FIXUP_PRS, 20], ["verify.plan", SAMPLE_VERIFY_PLAN, 20], ["fixissue.triage", SAMPLE_TRIAGE, 20],
+    ["fixup.patch", SAMPLE_FIXUP_PRS, 20], ["cifix.patch", SAMPLE_CIFIX_PRS, 20], ["verify.plan", SAMPLE_VERIFY_PLAN, 20], ["fixissue.triage", SAMPLE_TRIAGE, 20],
     ["fixissue.patch", SAMPLE_PATCH, 30], ["fixup.check", SAMPLE_FIXUP_CHECK, 20], ["fixissue.check", SAMPLE_FIXISSUE_CHECK, 20],
   ] as const;
   for (const [id, sample, turns] of cases) {

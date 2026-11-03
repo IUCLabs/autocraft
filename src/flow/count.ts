@@ -21,6 +21,7 @@ import { pending as actPending } from "../act/index.ts";
 import { fixIssueApprovalOf } from "../fixissue/approval.ts";
 import { candidateIssues } from "../fixissue/candidates.ts";
 import { classifyFixups } from "../fixup/candidates.ts";
+import { classifyCifix } from "../cifix/candidates.ts";
 import { approvalOf } from "../labels/approval.ts";
 import { mergeApprovalOf } from "../merge/approval.ts";
 import { buildQueue, eligible, type QueueState } from "../merge/queue.ts";
@@ -359,7 +360,7 @@ function fix(c: Ctx): NodeCount {
 
 /** Fix-up: take-fix PRs by whether the step may push (src/fixup). */
 function fixup(c: Ctx): NodeCount {
-  const members = new Map<string, Refs>(["fix", "pushed", "hold", "unapproved", "asked"].map((k) => [`fixup.${k}`, new Set()]));
+  const members = new Map<string, Refs>(["fix", "pushed", "hold", "unapproved", "asked", "cifix-queued", "cifix-rerun", "cifix-pushed", "cifix-failed"].map((k) => [`fixup.${k}`, new Set()]));
   const hold = members.get("fixup.hold")!;
   for (const repo of c.repos())
     for (const x of classifyFixups(c.db, repo)) {
@@ -370,6 +371,11 @@ function fixup(c: Ctx): NodeCount {
   const pushed = members.get("fixup.pushed")!;
   for (const r of c.refs(`SELECT DISTINCT f.repo, f.number FROM main.fixups f JOIN main.items i ON i.repo = f.repo AND i.number = f.number AND i.state = 'OPEN'
       WHERE f.state = 'pushed' ${c.tracked("f.repo")}`)) if (![...members.values()].some((s) => s !== pushed && s.has(r))) pushed.add(r);
+  // CI fix: PRs whose gate check fails, by what the step does next; a pushed CI fix counts like a pushed fix-up.
+  const bucket: Record<string, string> = { work: "cifix-queued", formatting: "cifix-queued", rerun: "cifix-rerun", "rerun-wait": "cifix-rerun", failed: "cifix-failed" };
+  for (const repo of c.repos()) for (const x of classifyCifix(c.db, repo)) if (bucket[x.bucket]) members.get(`fixup.${bucket[x.bucket]}`)!.add(ref(x.c));
+  for (const r of c.refs(`SELECT DISTINCT f.repo, f.number FROM main.ci_fixes f JOIN main.items i ON i.repo = f.repo AND i.number = f.number AND i.state = 'OPEN'
+      WHERE f.state = 'pushed' ${c.tracked("f.repo")}`)) members.get("fixup.cifix-pushed")!.add(r);
   return {
     counts: {
       ...Object.fromEntries([...members].map(([k, v]) => [k, v.size])),

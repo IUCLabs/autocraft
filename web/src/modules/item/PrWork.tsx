@@ -203,6 +203,7 @@ function PatchChecks({ rows }: { rows: ItemPatchCheck[] }) {
 
 const F_STATE: Record<ItemFixup["state"], [string, Tone]> = {
   pushed: ["Pushed", "ok"], failed: ["Failed", "bad"], refused: ["Refused", "warn"], rejected: ["Rejected by Opus", "warn"], "cannot-push": ["Cannot push", "warn"], "too-large": ["Too large", "warn"], asked: ["Asked for changes", "neutral"],
+  "push-denied": ["Push denied", "warn"], infra: ["Infrastructure failure", "neutral"], rerun: ["Jobs rerun", "neutral"], formatting: ["Formatter running", "neutral"],
 };
 
 function Fixups({ rows }: { rows: ItemFixup[] }) {
@@ -215,7 +216,8 @@ function Fixups({ rows }: { rows: ItemFixup[] }) {
           <li key={i} className="px-4 py-2.5">
             <div className="flex flex-wrap items-center gap-2">
               <Badge tone={tone}>{label}</Badge>
-              <span className="text-xs text-ink/55">try {f.attempt}</span>
+              {f.kind === "ci-fix" && <span className="text-xs text-ink/70">CI fix</span>}
+              {f.attempt > 0 && <span className="text-xs text-ink/55">try {f.attempt}</span>}
               <span className="code text-xs text-ink/55">
                 {f.fromHead.slice(0, 7)}
                 {f.toHead && ` → ${f.toHead.slice(0, 7)}`}

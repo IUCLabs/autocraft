@@ -64,6 +64,7 @@ function build() {
 
 const flowOf = (db: ReturnType<typeof build>, repo: string | null) =>
   buildFlow(readSummary(db, repo).counts, { repo, now: NOW, lastSync: null, run: null, countedAt: null, uncounted: 0 });
+const NO_CIFIX = { "cifix-queued": 0, "cifix-rerun": 0, "cifix-pushed": 0, "cifix-failed": 0 };
 const counts = (n: FlowNode) => Object.fromEntries(n.branches.map((b) => [b.id, b.count]));
 
 test("a repo not approved for merging moves its ready PRs out of 'May merge now'", async () => {
@@ -185,9 +186,9 @@ test("the duplicate, priority, fix, fix-up and act nodes count one item in each 
   item.run(40, "pr", "OPEN", "h40", null); review.run(40, "h40", "take-fix", fixes); checks.run(40, "h40", 0);
   item.run(41, "pr", "OPEN", "h41", null); review.run(41, "h41", "take", null); checks.run(41, "h41", 1);
   db.prepare(`INSERT INTO main.fixups (repo, number, from_head, to_head, state, attempt, created_at) VALUES ('${R}', 41, 'g41', 'h41', 'pushed', 1, ?)`).run(NOW);
-  assert.deepEqual(counts(node("fixup")), { fix: 0, pushed: 1, hold: 1, unapproved: 1, asked: 0 });
+  assert.deepEqual(counts(node("fixup")), { fix: 0, pushed: 1, hold: 1, unapproved: 1, asked: 0, ...NO_CIFIX });
   setting(`push_approved:${R}`);
-  assert.deepEqual(counts(node("fixup")), { fix: 1, pushed: 1, hold: 1, unapproved: 0, asked: 0 });
+  assert.deepEqual(counts(node("fixup")), { fix: 1, pushed: 1, hold: 1, unapproved: 0, asked: 0, ...NO_CIFIX, "cifix-queued": 1 });
 
   // Act: scope decision 4 and the duplicate decision 24 are answered close by an operator.
   dec.run(`${R}#4:scope`, "scope", 4, "close", "op", NOW, null);
@@ -201,7 +202,7 @@ test("the duplicate, priority, fix, fix-up and act nodes count one item in each 
   assert.deepEqual(counts(node("dupes")), { checking: 2, waiting: 1, held: 1, closed: 1 });
   assert.deepEqual(counts(node("priority")), { scored: 1, unsure: 1, todo: 2 });
   assert.deepEqual(node("priority").facts[0], { label: "Top level", value: "P1" });
-  assert.deepEqual(counts(node("fixup")), { fix: 1, pushed: 1, hold: 1, unapproved: 0, asked: 0 });
+  assert.deepEqual(counts(node("fixup")), { fix: 1, pushed: 1, hold: 1, unapproved: 0, asked: 0, ...NO_CIFIX, "cifix-queued": 1 });
 
   // The Items browser lists a branch's items.
   const req = (qs: string) => ({ query: new URLSearchParams(qs), user: { login: "op", role: "operator" } }) as unknown as Req;
@@ -209,6 +210,17 @@ test("the duplicate, priority, fix, fix-up and act nodes count one item in each 
   assert.deepEqual(await numbers("dupes.checking"), [20, 21]);
   assert.deepEqual(await numbers("fixup.hold"), [40]);
   assert.deepEqual(await numbers("act.failed"), [4]);
+
+  // CI fix: a taken PR whose gate check fails is queued; a pushed CI fix counts as pushed.
+  db.prepare(`INSERT INTO main.items (repo, number, kind, state, title, author, additions, deletions, head_oid, created_at, updated_at) VALUES ('${R}', 42, 'pr', 'OPEN', 't', 'regular', 1, 0, 'h42', '${T0}', '${T0}')`).run();
+  db.prepare(`INSERT INTO main.opus_reviews (repo, number, head_oid, run_id, at, model, verdict, reason, fixes, sure, mode) VALUES ('${R}', 42, 'h42', 'rv', '${T0}', 'sonnet', 'take', 'why', NULL, 1, 'full')`).run();
+  db.prepare(`INSERT INTO main.pr_checks (repo, number, head_oid, state, is_draft, overall, checks, mergeable, maintainer_can_modify, fetched_at)
+    VALUES ('${R}', 42, 'h42', 'OPEN', 0, 'failure', '[{"name":"gate / test","state":"failure"}]', 'MERGEABLE', 1, '2026-01-02T00:00:00Z')`).run();
+  // #14 (take, CI fails) is queued too once the repo has push approval.
+  assert.equal(counts(node("fixup"))["cifix-queued"], 2);
+  assert.deepEqual(await numbers("fixup.cifix-queued"), [14, 42]);
+  db.prepare("INSERT INTO main.ci_fixes (repo, number, head, to_head, kind, state, attempt, created_at) VALUES (?, 42, 'h42', 'h42b', 'code', 'pushed', 1, ?)").run(R, NOW);
+  assert.deepEqual(await numbers("fixup.cifix-pushed"), [42]);
 });
 
 test("every count that links to a flow filter opens exactly its items", async () => {

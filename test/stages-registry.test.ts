@@ -26,7 +26,7 @@ test("every runner step sits in exactly one stage, with that stage's run number"
 test("lanes: the autopilot's lanes are the registry's, in its order, with its steps", () => {
   assert.deepEqual(lanesInOrder().map((l) => l.name), [
     "classify", "priority", "rank", "embed", "dupes", "dupes-compare", "decide", "review", "labels", "merge-ask", "merge",
-    "act", "fixup", "verify", "verify-collect", "fixissue", "fixissue-collect", "referee", "review-post", "conversation", "ci-approve",
+    "act", "fixup", "verify", "verify-collect", "fixissue", "fixissue-collect", "referee", "review-post", "conversation", "ci-approve", "cifix", "cifix-rerun",
   ]);
   assert.deepEqual(LANES.map((l) => l.name), lanesInOrder().map((l) => l.name));
   for (const lane of lanesInOrder()) assert.deepEqual(LANES.find((l) => l.name === lane.name)?.steps, lane.steps, lane.name);
@@ -48,6 +48,7 @@ test("limits: the autopilot's lists are derived from the registry", () => {
   for (const step of LIMIT_STEPS) assert.ok(STEPS.some((x) => x.name === step), step);
   assert.deepEqual(ZERO_ONLY, ["checks"]);
   assert.equal(DEFAULT_PER_DAY["ci-approve"], 30);
+  assert.equal(DEFAULT_PER_DAY["cifix-rerun"], 30);
 });
 
 test("stages: ids, order, titles and modes equal the flow nodes", () => {
@@ -117,16 +118,16 @@ test("snapshot: the run stage of every step", () => {
   assert.deepEqual(got, {
     embed: 1, dupes: 3, "dupes-compare": 3, "classify-new": 2, "classify-all": 2, referee: 2, "areas-propose": 2, "areas-suggest": 2, "areas-rescan": 2,
     prioritize: 2, rank: 2, decide: 3, conversation: 3, "labels-ensure": 4, "labels-apply": 4, "opus-review": 5, checks: 5, "review-post": 5,
-    fixissue: 7, "fixissue-collect": 7, fixup: 6, verify: 6, "verify-collect": 6, merge: 6, "merge-ask": 6, "ci-approve": 6, act: 6,
+    fixissue: 7, "fixissue-collect": 7, fixup: 6, verify: 6, "verify-collect": 6, merge: 6, "merge-ask": 6, "ci-approve": 6, act: 6, cifix: 6, "cifix-rerun": 6,
   });
 });
 
 test("snapshot: the steps with a limit setting and the fallback limits", () => {
   assert.deepEqual([...LIMIT_STEPS].sort(), [
-    "act", "checks", "ci-approve", "classify-new", "conversation", "decide", "dupes", "dupes-compare", "embed", "fixissue", "fixup",
+    "act", "checks", "ci-approve", "cifix", "cifix-rerun", "classify-new", "conversation", "decide", "dupes", "dupes-compare", "embed", "fixissue", "fixup",
     "labels-apply", "merge", "opus-review", "prioritize", "referee", "review-post", "verify",
   ]);
-  assert.deepEqual(DEFAULT_PER_DAY, { dupes: 2000, "dupes-compare": 200, referee: 500, conversation: 30, "ci-approve": 30 });
+  assert.deepEqual(DEFAULT_PER_DAY, { dupes: 2000, "dupes-compare": 200, referee: 500, conversation: 30, "ci-approve": 30, "cifix-rerun": 30 });
 });
 
 test("a new database starts every limit at the registry's value", () => {

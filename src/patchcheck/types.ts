@@ -25,6 +25,8 @@ export type FixupCheckInput = {
   patch: string;
   /** For a carry-over: the closed duplicates with the parts to port and their diffs (each cut to a share of the cap). */
   carried_from?: { ref: string; points: string[]; diff: string }[];
+  /** For a CI fix (`fixes` is empty): the failing checks and the tails of their failed steps' logs (untrusted text from the PR's CI run). `patch` is meant only to make them pass. */
+  ci_failure?: { checks: string[]; log: string };
   /** For a merge of the default branch into the PR (`patch` is empty): each conflict section with the lines around it, both sides and our resolution. `ours` is the PR's side; `line` is where it starts in the PR head's file; sides and resolved keep their newlines, so no lines and one blank line differ. */
   conflict?: { base: string; files: { path: string; sections: { id: number; line: number | null; before: string; ours: string; theirs: string; resolved: string; after: string }[] }[] };
 };

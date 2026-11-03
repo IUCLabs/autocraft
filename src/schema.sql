@@ -654,6 +654,23 @@ CREATE TABLE IF NOT EXISTS fixups (
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS fixups_item ON fixups(repo, number, created_at);
+-- CI fix tries (src/cifix): one row per try at a head whose gate check failed. kind: format | code | infra.
+-- state: infra (waiting for the one rerun) | rerun | formatting (formatter task queued, task_id) | pushed | asked (patch posted as a comment) |
+-- failed | refused | rejected | cannot-push | push-denied. Tries are the rows in formatting, pushed, failed, refused and rejected.
+CREATE TABLE IF NOT EXISTS ci_fixes (
+  repo TEXT NOT NULL, number INTEGER NOT NULL,
+  head TEXT NOT NULL,                 -- the head commit whose check failed
+  to_head TEXT,                       -- the pushed commit; NULL unless pushed
+  kind TEXT NOT NULL,
+  state TEXT NOT NULL,
+  reason TEXT,                        -- one line, public-safe
+  files TEXT,                         -- JSON [path] changed
+  attempt INTEGER NOT NULL,
+  task_id INTEGER,                    -- build task of a formatter run
+  runs TEXT,                          -- JSON [run id] of the failed Actions runs (infra rows: what the rerun targets)
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ci_fixes_item ON ci_fixes(repo, number, head);
 -- One verification per PR head commit (Verify stage). kind: ci-enough | tests | regression.
 -- state: planned (tasks queued) | running | passed | failed | error (the plan was invalid, no task) | ci-enough | stale (the PR moved on) | unavailable (private or non-Rust repo: nothing to build, the Merge? decision says so).
 CREATE TABLE IF NOT EXISTS verifications (

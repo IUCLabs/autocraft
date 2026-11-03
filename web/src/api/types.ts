@@ -307,7 +307,7 @@ export interface ItemReviews {
   final: { verdict: ReviewVerdictName; reason: string; decided: boolean };
 }
 
-export type FixupState = "pushed" | "failed" | "refused" | "cannot-push" | "too-large" | "asked" | "rejected";
+export type FixupState = "pushed" | "failed" | "refused" | "cannot-push" | "too-large" | "asked" | "rejected" | "push-denied" | "infra" | "rerun" | "formatting";
 /** The operator releases of an item: the last path segment of POST /api/items/:repo/:n/<action>. */
 export type ReleaseAction = "review-again" | "verify-again" | "fix-again" | "batch-again";
 
@@ -337,6 +337,8 @@ export interface ItemPatchCheck {
 }
 
 export interface ItemFixup {
+  /** ci-fix: a try of the CI fix kind (the head is the one whose check failed); absent for a review fix-up. */
+  kind?: "ci-fix";
   fromHead: string;
   toHead: string | null;
   state: FixupState;

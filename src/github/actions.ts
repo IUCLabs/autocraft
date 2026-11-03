@@ -24,4 +24,7 @@ export const GITHUB_ACTIONS: Record<string, string> = {
   "fixissue-pr": "Opened PR",
   "fork-create": "Forked",
   "ci-run-approve": "Approved CI run",
+  "ci-rerun": "Reran failed CI jobs",
+  "cifix-push": "Pushed",
+  "cifix-comment": "Commented",
 };

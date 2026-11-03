@@ -34,7 +34,8 @@ export const UNSURE_REASON = "Opus was unsure";
 function pushChainOf(db: DatabaseSync): (repo: string, number: number, head: string) => string[] {
   const from = db.prepare(`SELECT from_head FROM conflict_merges WHERE repo = ?1 AND number = ?2 AND to_head = ?3 AND state = 'merged'
     UNION SELECT from_head FROM fixups WHERE repo = ?1 AND number = ?2 AND to_head = ?3 AND state = 'pushed'
-    UNION SELECT from_head FROM dupe_carries WHERE repo = ?1 AND number = ?2 AND to_head = ?3 AND from_head IS NOT NULL`);
+    UNION SELECT from_head FROM dupe_carries WHERE repo = ?1 AND number = ?2 AND to_head = ?3 AND from_head IS NOT NULL
+    UNION SELECT head FROM ci_fixes WHERE repo = ?1 AND number = ?2 AND to_head = ?3 AND state = 'pushed'`);
   return (repo, number, head) => {
     const chain = [head];
     for (let k = 0; k < chain.length; k++) for (const f of from.all(repo, number, chain[k]!) as { from_head: string }[]) if (!chain.includes(f.from_head)) chain.push(f.from_head);
