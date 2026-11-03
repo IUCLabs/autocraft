@@ -97,10 +97,10 @@ export type Candidate = { number: number; head: string; runs: WaitingRun[]; rere
 export function reviewedHeads(db: DatabaseSync, repo: string): Candidate[] {
   const rows = db.prepare(`SELECT i.number, l.head_oid AS head, a.runs, a.reread, a.failed, a.cross_repo FROM items i
     JOIN final_reviews l ON l.repo = i.repo AND l.number = i.number AND l.head_oid = (
-      SELECT r.head_oid FROM reviews r WHERE r.repo = i.repo AND r.number = i.number ORDER BY r.at DESC, r.rowid DESC LIMIT 1)
+      SELECT r.head_oid FROM opus_reviews r WHERE r.repo = i.repo AND r.number = i.number AND r.verdict IS NOT NULL ORDER BY r.at DESC, r.rowid DESC LIMIT 1)
     JOIN pr_checks c ON c.repo = i.repo AND c.number = i.number AND c.head_oid = l.head_oid AND c.state = 'OPEN' AND c.is_draft = 0
     JOIN ci_run_approvals a ON a.repo = i.repo AND a.number = i.number AND a.head_oid = l.head_oid
-    WHERE i.repo = ? AND i.kind = 'pr' AND i.state = 'OPEN' AND l.verdict IN ('take', 'take-fix') AND l.final = 1 AND ${notHeldSql("i")}
+    WHERE i.repo = ? AND i.kind = 'pr' AND i.state = 'OPEN' AND l.verdict IN ('take', 'take-fix') AND ${notHeldSql("i")}
       AND NOT EXISTS (SELECT 1 FROM decisions d WHERE d.id = i.repo || '#' || i.number || ':merge@' || l.head_oid AND d.answer IS NOT NULL AND d.answer <> 'merge')
     ORDER BY i.number`).all(repo) as { number: number; head: string; runs: string; reread: number; failed: string; cross_repo: number }[];
   return rows.filter((r) => !mergeHeld(db, repo, r.number)).map((r) => ({

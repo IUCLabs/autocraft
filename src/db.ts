@@ -20,8 +20,6 @@ export function dbPath(): string {
 const ADDED_COLUMNS: [table: string, column: string, type: string][] = [
   ["jobs", "acted", "INTEGER"],
   // When the discussion a review read was gathered; the review is stale for anything written after it.
-  ["reviews", "seen_at", "TEXT"],
-  ["reviews", "disc_hash", "TEXT"],
   ["opus_reviews", "seen_at", "TEXT"],
   ["opus_reviews", "disc_hash", "TEXT"],
   // 1 when the comment or review counts as new discussion for the review stage.
@@ -62,9 +60,7 @@ const ADDED_COLUMNS: [table: string, column: string, type: string][] = [
   ["conversation_turns", "claimed_at", "TEXT"],
   ["conversation_turns", "progress", "TEXT"],
   ["agent_runs", "progress", "TEXT"],
-  // PRs in the first-pass call that produced the review; NULL for holds made without a call and for older rows.
-  ["reviews", "call_size", "INTEGER"],
-  // The commenter's association with the repository (OWNER, MEMBER, ...); the merge queue reads it from reviews.
+  // The commenter's association with the repository (OWNER, MEMBER, ...).
   ["comments", "author_association", "TEXT"],
 ];
 
@@ -90,13 +86,12 @@ const ADDED_INDEXES = [
 const DROPPED_COLUMNS: [table: string, column: string][] = [["classifications", "topics"], ["classifications", "area"]];
 
 // Bump when migrateValues() or backfill() change what they do.
-const MIGRATION_VERSION = 5;
+const MIGRATION_VERSION = 6;
 
 // Rows written before their column existed.
 function backfill(db: DatabaseSync): void {
   // Reviews made before snapshots existed count as having read everything up to now: no wave of re-reviews.
   const now = new Date().toISOString();
-  db.prepare("UPDATE main.reviews SET seen_at = ? WHERE seen_at IS NULL").run(now);
   db.prepare("UPDATE main.opus_reviews SET seen_at = ? WHERE seen_at IS NULL").run(now);
   db.exec("UPDATE main.jobs SET repo = json_extract(params, '$.repo') WHERE repo IS NULL AND json_valid(params) AND json_type(params, '$.repo') = 'text'");
   // Jev's stored flags follow the yes thresholds of src/classify/parse.ts; only rows whose flags differ are written.
@@ -162,6 +157,10 @@ function migrateValues(db: DatabaseSync): void {
   // Whole-repo pilot entries became the repo's pipeline flag.
   const pilot = db.prepare("SELECT value FROM main.settings WHERE key = 'pilot_items'").get() as { value: string } | undefined;
   if (pilot) wholeRepoPilot(db, pilot.value);
+  // The cross-check table, batch-size settings and review-batch stage limit of the removed first-pass review.
+  if (db.prepare("SELECT 1 FROM main.sqlite_master WHERE type = 'table' AND name = 'review_crosschecks'").get()) db.exec("DROP TABLE main.review_crosschecks");
+  if (db.prepare("SELECT 1 FROM main.settings WHERE key LIKE 'review\\_batch\\_size:%' ESCAPE '\\' LIMIT 1").get()) db.exec("DELETE FROM main.settings WHERE key LIKE 'review\\_batch\\_size:%' ESCAPE '\\'");
+  if (db.prepare("SELECT 1 FROM main.stage_limits WHERE step = 'review-batch'").get()) db.exec("DELETE FROM main.stage_limits WHERE step = 'review-batch'");
   // Jev usage saved without a cost is priced from its input tokens.
   const JEV_UNPRICED = "model LIKE 'jev%' AND cost_usd IS NULL AND input_tokens IS NOT NULL";
   if (db.prepare(`SELECT 1 FROM main.token_usage WHERE ${JEV_UNPRICED} LIMIT 1`).get()) {

@@ -1,15 +1,13 @@
-// Stage 5, Review, second pass: Opus reviews every PR Sonnet rated take or take-fix,
-// one PR per call, and its verdict replaces Sonnet's (the `final_reviews` view). Diffs
-// on the skip list get no call. After a new push Opus reads only the delta since the
-// head it reviewed before. Reads GitHub (diffs); never writes to it.
+// Stage 5, Review: Opus reviews every wanted PR, one PR per call, and its verdict is the
+// one every later stage reads (the `final_reviews` view). After a new push Opus reads only
+// the delta since the head it reviewed before. Reads GitHub (diffs); never writes to it.
 import type { DatabaseSync } from "node:sqlite";
 import { CLAUDE_PROMPTS } from "../prompts/index.ts";
 import { claudeRoom } from "../agents/call.ts";
 import { add, askClaude, pool, saveUsage, type Usage } from "../classify/run.ts";
-import { DEFAULT_CAPS } from "./batch.ts";
 import { Client, type Querier } from "../mirror.ts";
 import { checksOf, refreshChecks } from "./checks.ts";
-import { discussionOf, ensurePipelineLogin, liveDiscussion, withRetry, type Snapshot } from "./discussion.ts";
+import { MAX_RERUNS_PER_DAY, countRerun, discussionOf, ensurePipelineLogin, liveDiscussion, markedStaleSince, staleReviews, withRetry, type Snapshot } from "./discussion.ts";
 import { withdrawMergeQuestion } from "../merge/withdraw.ts";
 import type { DiscussionEntry } from "./parse.ts";
 import { cachedDiff, codeDiff, ghDelta, ghDiff, type DeltaFetcher, type DiffFetcher } from "./diff.ts";
@@ -17,13 +15,15 @@ import { selectOpusCandidates, type OpusCandidate } from "./opus-candidates.ts";
 import { parseOpusReply, type EarlierOpus, type OpusPr, type OpusReview } from "./opus-parse.ts";
 import { REPO_PATH } from "../sandbox/command.ts";
 import { checkoutForPr } from "../sandbox/index.ts";
-import { skipReason } from "./skip.ts";
 
 const PROMPT = CLAUDE_PROMPTS["review.opus"];
+/** Diff characters above which a PR is held as too large to review. */
+export const MAX_DIFF_CHARS = 120_000;
+export const TOO_LARGE = "too large to review automatically";
 
 export type OpusParams = {
   repo: string; limit?: number; dryRun?: boolean;
-  /** Called with the running count of PRs handled (asked or skip-listed). */
+  /** Called with the running count of PRs handled. */
   onHandled?: (n: number) => void;
 };
 export type OpusDeps = {
@@ -34,7 +34,7 @@ export type OpusDeps = {
   checkout?: (repo: string, number: number, head: string) => Promise<string | null>;
 };
 export type OpusSummary = {
-  runId: string; repo: string; candidates: number; reviewed: number; skipListed: number; dropped: number;
+  runId: string; repo: string; candidates: number; reviewed: number; dropped: number;
   verdicts: Record<string, number>; missing: string[]; skipped: string[];
 };
 
@@ -42,27 +42,27 @@ const now = () => new Date().toISOString();
 const refOf = (c: { repo: string; number: number }) => `${c.repo}#${c.number}`;
 
 export function defaultOpusDeps(): OpusDeps {
-  return { querier: new Client(500), fetchDiff: ghDiff, fetchDelta: ghDelta, model: PROMPT.models[0]!, maxChars: DEFAULT_CAPS.charsPerCall, checkout: (r, n, h) => checkoutForPr(r, n, h, console.log) };
+  return { querier: new Client(500), fetchDiff: ghDiff, fetchDelta: ghDelta, model: PROMPT.models[0]!, maxChars: MAX_DIFF_CHARS, checkout: (r, n, h) => checkoutForPr(r, n, h, console.log) };
 }
 
-type Saved = { snap?: Snapshot; mode: "full" | "delta" | "skipped"; base: string | null; model: string | null; review: OpusReview | null; skip: string | null };
+type Saved = { snap?: Snapshot; mode: "full" | "delta"; base: string | null; model: string | null; review: OpusReview };
 
 /**
- * Stores the Opus row of a head commit, then (for a verdict) a `reviewed` stages row and a
- * take/hold/close stages row for the final verdict, which can differ from Opus's own when
- * Opus is unsure and disagrees with Sonnet.
+ * Stores the Opus row of a head commit, then a `reviewed` stages row and a take/hold/close
+ * stages row (take-fix counts as take). A second review of the same head counts against
+ * the PR's daily cap unless an operator or a merge-time check asked for it.
  */
 export function saveOpus(db: DatabaseSync, runId: string | null, c: { repo: string; number: number; head_oid: string }, s: Saved): void {
   const at = now(), r = s.review;
-  if (db.prepare("SELECT 1 FROM opus_reviews WHERE repo = ? AND number = ? AND head_oid = ?").get(c.repo, c.number, c.head_oid)) withdrawMergeQuestion(db, c.repo, c.number, c.head_oid, at);
-  db.prepare(`INSERT OR REPLACE INTO opus_reviews (repo, number, head_oid, run_id, at, model, mode, base_head, verdict, sure, reason, fixes, risks, skip_reason, public_review, seen_at, disc_hash)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(c.repo, c.number, c.head_oid, runId, at, s.model, s.mode, s.base, r?.verdict ?? null,
-    r ? (r.sure ? 1 : 0) : null, r?.reason ?? null, r?.fixes.length ? JSON.stringify(r.fixes) : null, r ? JSON.stringify(r.risks) : null, s.skip, r?.public ? JSON.stringify(r.public) : null, s.snap?.seen ?? at, s.snap?.hash ?? null);
-  if (!r) return;
-  const final = db.prepare("SELECT verdict, reason FROM final_reviews WHERE repo = ? AND number = ? AND head_oid = ?").get(c.repo, c.number, c.head_oid) as { verdict: string; reason: string } | undefined;
+  const again = db.prepare("SELECT at FROM opus_reviews WHERE repo = ? AND number = ? AND head_oid = ?").get(c.repo, c.number, c.head_oid) as { at: string } | undefined;
+  if (again && !markedStaleSince(db, c.repo, c.number, again.at)) countRerun(db, c.repo, c.number);
+  if (again) withdrawMergeQuestion(db, c.repo, c.number, c.head_oid, at);
+  db.prepare(`INSERT OR REPLACE INTO opus_reviews (repo, number, head_oid, run_id, at, model, mode, base_head, verdict, sure, reason, fixes, risks, public_review, seen_at, disc_hash)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(c.repo, c.number, c.head_oid, runId, at, s.model, s.mode, s.base, r.verdict,
+    r.sure ? 1 : 0, r.reason, r.fixes.length ? JSON.stringify(r.fixes) : null, JSON.stringify(r.risks), r.public ? JSON.stringify(r.public) : null, s.snap?.seen ?? at, s.snap?.hash ?? null);
   const stage = db.prepare("INSERT INTO stages (repo, number, stage, at, actor, note) VALUES (?, ?, ?, ?, ?, ?)");
-  stage.run(c.repo, c.number, "reviewed", at, "opus-review", `opus ${r.verdict}${r.sure ? "" : " (unsure)"} at ${c.head_oid.slice(0, 7)}: ${r.reason}`);
-  if (final) stage.run(c.repo, c.number, final.verdict === "take-fix" ? "take" : final.verdict, at, "opus-review", final.reason);
+  stage.run(c.repo, c.number, "reviewed", at, "opus-review", `${r.verdict}${r.sure ? "" : " (unsure)"} at ${c.head_oid.slice(0, 7)}: ${r.reason}`);
+  stage.run(c.repo, c.number, r.verdict === "take-fix" ? "take" : r.verdict, at, "opus-review", r.reason);
 }
 
 /** The Opus review of the PR's latest earlier head that has a verdict, for the delta. */
@@ -78,21 +78,18 @@ function earlierOpus(db: DatabaseSync, c: OpusCandidate): EarlierOpus | null {
 
 export type PreparedOpus =
   | { kind: "no-diff"; error: string }
-  | { kind: "skip"; why: string }
   | { kind: "large"; mode: "full" | "delta"; base: string | null }
   | { kind: "no-threads"; error: string }
   | { kind: "ready"; input: OpusPr; snap: Snapshot; mode: "full" | "delta"; base: string | null };
 
 /**
  * Builds the Opus prompt input of a candidate: diff (full, or the delta since the last Opus review),
- * skip list, size cap and discussion. Shared with the review cross-check so both ask the same question.
+ * size cap and discussion.
  */
 export async function prepareOpusInput(db: DatabaseSync, repo: string, c: OpusCandidate, deps: OpusDeps, log: (line: string) => void): Promise<PreparedOpus> {
   const d = await cachedDiff(repo, c.number, c.head_oid, deps.fetchDiff);
-  if (!d.ok) return { kind: "no-diff", error: d.error };
+  if (!d.ok) return d.tooLarge ? { kind: "large", mode: "full", base: null } : { kind: "no-diff", error: d.error };
   const ch = checksOf(db, repo, c.number);
-  const why = skipReason(d.text, ch?.head_oid === c.head_oid ? ch.overall : null);
-  if (why) return { kind: "skip", why };
   let cd = codeDiff(d.text);
   if (!cd.files.length && cd.testsOmitted.length) cd = codeDiff(d.text, true);
   let mode: "full" | "delta" = "full", diff = cd.text, base: string | null = null;
@@ -117,7 +114,7 @@ export async function prepareOpusInput(db: DatabaseSync, repo: string, c: OpusCa
   const input: OpusPr = {
     ref: refOf(c), title: c.title, body: c.body, author_association: c.author_association, size: c.size, lines_changed: c.lines_changed,
     ci: ch?.overall ?? "unknown", mergeable: ch?.mergeable ?? null, files: cd.files, tests_omitted: cd.testsOmitted, lockfiles_omitted: cd.lockfilesOmitted,
-    sonnet: c.sonnet, mode, earlier_opus: mode === "delta" ? earlier : null, diff, discussion,
+    mode, earlier_opus: mode === "delta" ? earlier : null, diff, discussion,
   };
   return { kind: "ready", input, snap, mode, base };
 }
@@ -126,7 +123,10 @@ export async function runOpusReview(db: DatabaseSync, params: OpusParams, log: (
   const { repo } = params;
   const runId = `opus-review-${repo}-${now().replace(/[-:]/g, "").slice(0, 15)}`;
   let cands = selectOpusCandidates(db, repo);
-  const summary: OpusSummary = { runId, repo, candidates: cands.length, reviewed: 0, skipListed: 0, dropped: 0, verdicts: {}, missing: [], skipped: [] };
+  const uncapped = staleReviews(db, repo, true);
+  const capped = [...staleReviews(db, repo)].filter((k) => !uncapped.has(k));
+  if (capped.length) log(`opus-review ${repo}: ${capped.join(", ")} not reviewed again: already ${MAX_RERUNS_PER_DAY} re-reviews today after new discussion`);
+  const summary: OpusSummary = { runId, repo, candidates: cands.length, reviewed: 0, dropped: 0, verdicts: {}, missing: [], skipped: [] };
   if (params.limit !== undefined) cands = cands.slice(0, params.limit);
   if (params.dryRun || !cands.length) {
     log(`opus-review ${repo}: ${summary.candidates} candidates${params.dryRun ? "; dry run, nothing fetched or asked" : ""}`);
@@ -163,15 +163,9 @@ export async function runOpusReview(db: DatabaseSync, params: OpusParams, log: (
       summary.skipped.push(refOf(c));
       return;
     }
-    if (p.kind === "skip") {
-      saveOpus(db, runId, c, { mode: "skipped", base: null, model: null, review: null, skip: p.why });
-      summary.skipListed++;
-      params.onHandled?.(++handled);
-      return;
-    }
     if (p.kind === "large") {
-      const r: OpusReview = { ref: refOf(c), verdict: "hold", sure: true, reason: "too large for the final review", fixes: [], risks: [], public: null };
-      saveOpus(db, runId, c, { mode: p.mode, base: p.base, model: null, review: r, skip: null });
+      const r: OpusReview = { ref: refOf(c), verdict: "hold", sure: true, reason: TOO_LARGE, fixes: [], risks: [], public: null };
+      saveOpus(db, runId, c, { mode: p.mode, base: p.base, model: null, review: r });
       tally(r);
       params.onHandled?.(++handled);
       return;
@@ -193,7 +187,7 @@ export async function runOpusReview(db: DatabaseSync, params: OpusParams, log: (
       got = parseOpusReply(reply.text, input.ref);
     }
     if (got) {
-      saveOpus(db, runId, c, { mode, base, model: deps.model, review: got, skip: null, snap });
+      saveOpus(db, runId, c, { mode, base, model: deps.model, review: got, snap });
       tally(got);
     } else {
       log(`  ${refOf(c)}: no valid Opus review`);
@@ -202,14 +196,14 @@ export async function runOpusReview(db: DatabaseSync, params: OpusParams, log: (
     params.onHandled?.(++handled);
     saveUsage(db, runId, `opus-${refOf(c).replace("#", "-")}`, "review", deps.model, got ? 1 : 0, usage, start, now());
   }), () => claudeRoom(db));
-  log(`opus-review ${repo}: ${summary.reviewed} reviewed (${Object.entries(summary.verdicts).map(([v, k]) => `${k} ${v}`).join(", ")}); ${summary.skipListed} skip-listed; ${summary.skipped.length} without a diff, ${summary.missing.length} without an answer`);
+  log(`opus-review ${repo}: ${summary.reviewed} reviewed (${Object.entries(summary.verdicts).map(([v, k]) => `${k} ${v}`).join(", ")}); ${summary.skipped.length} without a diff, ${summary.missing.length} without an answer`);
   return summary;
 }
 
 
 export const commands = {
   "opus-review": {
-    summary: "opus-review --repo R [--limit N] [--dry-run]: final Opus review of PRs Sonnet rated take or take-fix",
+    summary: "opus-review --repo R [--limit N] [--dry-run]: Opus code review of wanted PRs, one verdict per head commit",
     async run(args: string[]): Promise<void> {
       const f: Record<string, string | true> = {};
       for (let i = 0; i < args.length; i++) {

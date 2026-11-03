@@ -23,7 +23,7 @@ type B = { id: string; label: string; waitsOn: FlowWait; tone: FlowBranch["tone"
 /** Runner steps (src/runner/steps.ts) each node shows. */
 const NODE_STEPS: Record<FlowNode["id"], string[]> = {
   synced: ["embed"], dupes: ["dupes"], classify: ["classify-new", "classify-all", "referee"], priority: ["prioritize", "rank"], decide: ["decide"],
-  labels: ["labels-ensure", "labels-apply"], review: ["review-batch", "opus-review", "checks"], fix: ["fixissue", "fixissue-collect"], fixup: ["fixup"],
+  labels: ["labels-ensure", "labels-apply"], review: ["opus-review", "checks"], fix: ["fixissue", "fixissue-collect"], fixup: ["fixup"],
   verify: ["verify", "verify-collect"], merge: ["merge"], act: ["act"],
 };
 
@@ -93,10 +93,9 @@ export function buildFlow(c: Record<string, number>, meta: FlowMeta): Flow {
     ], { recent: ["labelled"], facts: [{ label: "Repos approved", value: `${fmt(v("x.approved"))} of ${fmt(repos)}` }] }),
     node("review", "Review", 7, "steps", `${fmt(v("review.not-reviewed"))} to review · ${fmt(v("review.total") - v("review.not-reviewed"))} reviewed`, [
       { id: "not-reviewed", label: "Not reviewed yet", waitsOn: "model", tone: "neutral", hint: "No review at the PR's current head commit" },
-      { id: "waiting-opus", label: "Waiting for the Opus review", waitsOn: "model", tone: "neutral", hint: "Sonnet rated take or take with fixes; Opus has not reviewed this head" },
       { id: "take", label: "Take", waitsOn: "nothing", tone: "ok" },
       { id: "take-fix", label: "Take with fixes", waitsOn: "nothing", tone: "ok" },
-      { id: "hold", label: "Hold", waitsOn: "person", tone: "warn", hint: "Needs a person: reference behaviour, scope, overlaps or too large" },
+      { id: "hold", label: "Hold", waitsOn: "person", tone: "warn", hint: "Needs a person: reference behaviour, a design or scope choice, or too large" },
       { id: "close", label: "Close", waitsOn: "nothing", tone: "bad", hint: "Wrong, not wanted, already done or superseded" },
     ], { recent: ["reviewed"], promptStage: "Review" }),
     node("fix", "Fix", 8, "steps", `${fmt(v("fix.candidates"))} candidates · ${fmt(v("fix.testing"))} in sandbox · ${fmt(v("fix.pr-opened"))} PRs`, [

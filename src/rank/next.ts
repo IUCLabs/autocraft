@@ -12,7 +12,7 @@ export type NextFacts = {
   settled: boolean;
   scopeOpen: boolean;
   needsDecision: boolean;
-  /** Latest final review verdict at the PR's current head, if any; "awaiting-opus" while a Sonnet take or take-fix waits for Opus. */
+  /** Latest review verdict at the PR's current head, if any. */
   review: string | null;
   /** Verification state at the PR's current head, if any. */
   verify: string | null;
@@ -50,7 +50,6 @@ export function nextStepOf(f: NextFacts): string {
   if (f.needsDecision && !f.review) return "Decide";
   switch (f.review) {
     case null: return "Review";
-    case "awaiting-opus": return "Opus review";
     case "take-fix": return "Fix-up";
     case "hold": return "Needs a person";
     case "close": return "Close";
@@ -72,14 +71,14 @@ export function memoNoCi(db: DatabaseSync): (repo: string) => boolean {
 /** Facts of one item from the stored tables. */
 /** `noCi` answers repoHasNoCi; callers that visit many items of a repo pass a memoized one. */
 export function factsOf(db: DatabaseSync, repo: string, number: number, kind: string, head: string | null, s: Settled, noCi: (repo: string) => boolean = (r) => repoHasNoCi(db, r)): NextFacts {
-  const review = kind === "pr" ? (db.prepare("SELECT f.verdict, f.head_oid, f.final FROM final_reviews f WHERE f.repo = ? AND f.number = ? ORDER BY f.at DESC, f.head_oid DESC LIMIT 1").get(repo, number) as { verdict: string; head_oid: string; final: number } | undefined) : undefined;
+  const review = kind === "pr" ? (db.prepare("SELECT f.verdict, f.head_oid FROM final_reviews f WHERE f.repo = ? AND f.number = ? ORDER BY f.at DESC, f.head_oid DESC LIMIT 1").get(repo, number) as { verdict: string; head_oid: string } | undefined) : undefined;
   const verify = kind === "pr" && head ? (db.prepare("SELECT state FROM verifications WHERE repo = ? AND number = ? AND head_sha = ?").get(repo, number, head) as { state: string } | undefined) : undefined;
   const attempt = kind === "issue" ? (db.prepare("SELECT state FROM fix_attempts WHERE repo = ? AND number = ?").get(repo, number) as { state: string } | undefined) : undefined;
   const scope = db.prepare("SELECT answer FROM decisions WHERE kind = 'scope' AND repo = ? AND number = ? ORDER BY asked_at DESC LIMIT 1").get(repo, number) as { answer: string | null } | undefined;
   const ci = kind === "pr" && head ? (db.prepare("SELECT overall FROM pr_checks WHERE repo = ? AND number = ? AND head_oid = ?").get(repo, number, head) as { overall: string | null } | undefined) : undefined;
   return {
     kind: kind === "pr" ? "pr" : "issue", label: s.label, settled: s.status === "settled", scopeOpen: !!scope && scope.answer === null, needsDecision: s.flags.includes("needs decision"),
-    review: review && review.head_oid === head ? (review.final ? review.verdict : "awaiting-opus") : null, verify: verify?.state ?? null, attempt: attempt?.state ?? null,
+    review: review && review.head_oid === head ? review.verdict : null, verify: verify?.state ?? null, attempt: attempt?.state ?? null,
     held: duplicateHeld(db, repo, number), refereeDue: s.status === "disagree" && reasonOf(s) !== "scope-disagreement" && s.referee === null, disagree: s.status === "disagree" && reasonOf(s) !== "scope-disagreement" && s.referee !== null, ci: ci?.overall ? overallAt(db, repo, number, head!, ci.overall) : null, noCi: noCi(repo),
   };
 }

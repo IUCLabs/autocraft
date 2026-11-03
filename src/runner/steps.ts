@@ -225,26 +225,6 @@ export const STEPS: StepDef[] = [
     },
   },
   {
-    name: "review-batch",
-    title: "Review pull requests",
-    description: "Sonnet reviews the pull requests we want from one repo in batches of related PRs: take, take with fixes, hold or close.",
-    stage: 5,
-    requires: "operator",
-    group: "review",
-    models: ["sonnet"],
-    params: [
-      { name: "repo", label: "Repo", kind: "repo", required: true },
-      { name: "limit", label: "At most", kind: "int", min: 1, max: 50, default: 10, help: "PRs to review in this job" },
-    ],
-    run: async (ctx) => {
-      const { runReview } = await import("../review/index.ts");
-      const r = await runReview(ctx.db, { repo: String(ctx.params.repo), limit: Number(ctx.params.limit), onHandled: ctx.handled }, ctx.log);
-      ctx.usageRun(r.runId);
-      const v = Object.entries(r.verdicts).map(([k, n]) => `${n} ${k}`).join(", ");
-      return `${r.repo}: reviewed ${r.reviewed} of ${r.candidates} candidates${v ? ` (${v})` : ""}; ${r.skipped.length} skipped, ${r.missing.length} without an answer`;
-    },
-  },
-  {
     name: "checks",
     title: "Refresh CI and merge state",
     description: "Reads the CI and merge state of every open pull request of one repo from GitHub. Writes nothing to GitHub.",
@@ -502,22 +482,22 @@ export const STEPS: StepDef[] = [
   },
   {
     name: "opus-review",
-    title: "Final review by Opus",
-    description: "Opus reviews, one pull request per call, the pull requests of one repo that Sonnet rated take or take-fix, unless the skip list exempts the diff. After a new push it reads only the changes since the head it reviewed before. Its verdict and fix list replace Sonnet's for every later stage.",
+    title: "Review pull requests",
+    description: "Opus reviews, one pull request per call, the pull requests we want from one repo: take, take with fixes, hold or close. After a new push it reads only the changes since the head it reviewed before. Its verdict and fix list are the ones every later stage reads.",
     stage: 5,
     requires: "operator",
     group: "review",
     models: ["opus"],
     params: [
       { name: "repo", label: "Repo", kind: "repo", required: true },
-      { name: "limit", label: "At most", kind: "int", min: 1, max: 50, default: 5, help: "pull requests to review in this job" },
+      { name: "limit", label: "At most", kind: "int", min: 1, max: 50, default: 10, help: "pull requests to review in this job" },
     ],
     run: async (ctx) => {
       const { runOpusReview } = await import("../review/opus.ts");
       const r = await runOpusReview(ctx.db, { repo: String(ctx.params.repo), limit: Number(ctx.params.limit), onHandled: ctx.handled }, ctx.log);
       ctx.usageRun(r.runId);
       const v = Object.entries(r.verdicts).map(([k, n]) => `${n} ${k}`).join(", ");
-      return `${r.repo}: reviewed ${r.reviewed} of ${r.candidates} candidates${v ? ` (${v})` : ""}; ${r.skipListed} skip-listed, ${r.skipped.length} without a diff, ${r.missing.length} without an answer`;
+      return `${r.repo}: reviewed ${r.reviewed} of ${r.candidates} candidates${v ? ` (${v})` : ""}; ${r.skipped.length} without a diff, ${r.missing.length} without an answer`;
     },
   },
   {
@@ -626,26 +606,6 @@ export const STEPS: StepDef[] = [
       ctx.usageRun(usageRun);
       const r = await assignAreas(ctx.db, { repo: String(ctx.params.repo), limit: Number(ctx.params.limit), rescan: true, usageRun, onSent: ctx.handled, cancelled: ctx.cancelled, progress: ctx.progress, log: ctx.log });
       return `${ctx.params.repo}: ${r.due} items asked; Jev settled ${r.jev}, Haiku ${r.haiku}; ${r.none} fit none of the areas, ${r.left} unanswered`;
-    },
-  },
-  {
-    name: "review-crosscheck",
-    title: "Review cross-check",
-    description: "Checks Sonnet batch holds: Opus reviews a random sample of the held pull requests of one repo exactly as in the final review, and optionally Sonnet reviews each alone in its call. Results go to a report table only; no review, post, queue entry or merge changes; it only refreshes the CI cache of the pull requests it samples.",
-    stage: 5,
-    requires: "operator",
-    group: "review-crosscheck",
-    models: (p) => (p.single === "yes" ? ["opus", "sonnet"] : ["opus"]),
-    params: [
-      { name: "repo", label: "Repo", kind: "repo", required: true },
-      { name: "sample", label: "Sample", kind: "int", min: 1, max: 50, default: 10, help: "held pull requests to check" },
-      { name: "single", label: "Single-PR Sonnet", kind: "enum", options: ["no", "yes"], default: "no", help: "also review each alone in a Sonnet call" },
-    ],
-    run: async (ctx) => {
-      const { runCrosscheck } = await import("../review/crosscheck.ts");
-      const r = await runCrosscheck(ctx.db, { repo: String(ctx.params.repo), sample: Number(ctx.params.sample), single: ctx.params.single === "yes", onHandled: ctx.handled }, ctx.log);
-      ctx.usageRun(r.runId);
-      return `${r.repo}: ${r.stored} of ${r.picked.length} sampled holds checked (${r.eligible} eligible), ${r.skipped.length} left out, ${r.missing.length} without an answer; report: autocraft review crosscheck-report --run ${r.runId}`;
     },
   },
   {

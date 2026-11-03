@@ -9,7 +9,7 @@ import { countAll, type Counts } from "./count.ts";
 export const MAX_AGE_MS = 10 * 60_000;
 const MARKS_KEY = "flow_summary_marks";
 
-type Marks = { items: string; cls: number; stages: number; reviews: number; opus: number; merges: number; checks: string; global: string; vers?: Record<string, string> };
+type Marks = { items: string; cls: number; stages: number; opus: number; merges: number; checks: string; global: string; vers?: Record<string, string> };
 
 const getMarks = (db: DatabaseSync): Marks | null => {
   const v = (db.prepare("SELECT value FROM main.settings WHERE key = ?").get(MARKS_KEY) as { value: string } | undefined)?.value;
@@ -49,7 +49,6 @@ export function markChanged(db: DatabaseSync): number {
       COALESCE((SELECT MAX(updated_at) FROM main.items), '') AS items,
       COALESCE((SELECT MAX(rowid) FROM main.classifications), 0) AS cls,
       COALESCE((SELECT MAX(rowid) FROM main.stages), 0) AS stages,
-      COALESCE((SELECT MAX(rowid) FROM main.reviews), 0) AS reviews,
       COALESCE((SELECT MAX(rowid) FROM main.opus_reviews), 0) AS opus,
       COALESCE((SELECT MAX(rowid) FROM main.merges), 0) AS merges,
       COALESCE((SELECT MAX(fetched_at) FROM main.pr_checks), '') AS checks`).get() as unknown as Marks;
@@ -64,7 +63,6 @@ export function markChanged(db: DatabaseSync): number {
     add("SELECT DISTINCT repo FROM main.items INDEXED BY items_updated WHERE updated_at > ?", prev.items);
     add("SELECT DISTINCT repo FROM main.classifications WHERE rowid > ?", prev.cls);
     add("SELECT DISTINCT repo FROM main.stages WHERE rowid > ?", prev.stages);
-    add("SELECT DISTINCT repo FROM main.reviews WHERE rowid > ?", prev.reviews);
     add("SELECT DISTINCT repo FROM main.opus_reviews WHERE rowid > ?", prev.opus ?? 0);
     add("SELECT DISTINCT repo FROM main.merges WHERE rowid > ?", prev.merges);
     add("SELECT DISTINCT repo FROM main.pr_checks WHERE fetched_at > ?", prev.checks);

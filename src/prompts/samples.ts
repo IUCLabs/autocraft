@@ -4,7 +4,6 @@ import type { ConflictPr, FixupPr } from "../fixup/patch.ts";
 import type { CompareIssues, ComparePrs } from "../dupes/group.ts";
 import type { DupePair } from "../dupes/pair.ts";
 import type { OpusPr } from "../review/opus-parse.ts";
-import type { ReviewPr } from "../review/parse.ts";
 
 export const SAMPLE_ITEMS: Item[] = [
   {
@@ -33,14 +32,6 @@ const PNG_DIFF = `diff --git a/crates/codecs/src/png.rs b/crates/codecs/src/png.
      for (y, row) in data.chunks_exact(stride).enumerate() {
 `;
 
-export const SAMPLE_REVIEW_PRS: ReviewPr[] = [{
-  ref: "photocraft#1287", title: SAMPLE_ITEMS[0]!.title, body: SAMPLE_ITEMS[0]!.body,
-  author_association: "CONTRIBUTOR", size: "S", lines_changed: 46, ci: "success", mergeable: "MERGEABLE",
-  files: ["crates/codecs/src/png.rs"], tests_omitted: ["crates/codecs/tests/png16.rs", "crates/codecs/tests/data/rgba16.png"], lockfiles_omitted: [],
-  same_files_as: [{ ref: "photocraft#1301", title: "PNG: read gamma chunk" }],
-  diff: PNG_DIFF,
-}];
-
 export const SAMPLE_FIXUP_PRS: FixupPr[] = [{
   ref: "photocraft#1287", title: SAMPLE_ITEMS[0]!.title,
   fixes: [{ file: "crates/codecs/src/png.rs", change: "Rename `bytes_per_sample` to `sample_bytes` in decode_rows." }],
@@ -64,7 +55,6 @@ export const SAMPLE_OPUS_PRS: OpusPr[] = [{
   ref: "photocraft#1287", repo_dir: "/repo", title: SAMPLE_ITEMS[0]!.title, body: SAMPLE_ITEMS[0]!.body,
   author_association: "CONTRIBUTOR", size: "S", lines_changed: 46, ci: "success", mergeable: "MERGEABLE",
   files: ["crates/codecs/src/png.rs"], tests_omitted: ["crates/codecs/tests/png16.rs", "crates/codecs/tests/data/rgba16.png"], lockfiles_omitted: [],
-  sonnet: { verdict: "take-fix", reason: "Correct stride fix; one local name is unclear.", fixes: [{ file: "crates/codecs/src/png.rs", change: "Rename `bytes_per_sample` to `sample_bytes` in decode_rows." }], risks: [] },
   mode: "full", earlier_opus: null,
   diff: PNG_DIFF,
 }];

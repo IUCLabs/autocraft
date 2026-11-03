@@ -25,7 +25,7 @@ import { actionable, ask, factsOf, getDecision, type Actionable, type DecisionRo
 import { HEAD_FACT } from "../merge/queue.ts";
 import { fillReviewSummaries } from "../review/summary.ts";
 import { Client, type Querier } from "../mirror.ts";
-import { headOf } from "../review/candidates.ts";
+import { headOf, sizeOf } from "../review/candidates.ts";
 import { backlogHeld, backlogHeldSql, notOwnIntegrationSql } from "../dupes/held.ts";
 import { applyDuplicateAnswers } from "../dupes/decide.ts";
 import { commentApprovalOf } from "./approval.ts";
@@ -88,20 +88,19 @@ const short = (sha: string) => sha.slice(0, 7);
 
 // ---- Close this PR? ------------------------------------------------------------
 
-type ReviewRow = { repo: string; number: number; head_oid: string; reason: string; duplicate_of: string | null; size: string | null; title: string | null; author: string | null;
-  source: string; sonnet_verdict: string; sonnet_reason: string;
+type ReviewRow = { repo: string; number: number; head_oid: string; reason: string; sure: number | null; lines: number; title: string | null; author: string | null;
   i_head: string | null; updated_at: string | null; c_head: string | null; c_at: string | null };
 
-/** Open PRs whose latest final review (Opus's when it reviewed the head) says close at the PR's current head and that have no Close? decision at that head. */
+/** Open PRs whose latest Opus review says close at the PR's current head and that have no Close? decision at that head. */
 export function closeCandidates(db: DatabaseSync, repo: string): ReviewRow[] {
   const rows = db.prepare(`
-    SELECT r.repo, r.number, r.head_oid, r.reason, r.duplicate_of, r.size, i.title, i.author, r.source, r.sonnet_verdict, r.sonnet_reason,
+    SELECT r.repo, r.number, r.head_oid, r.reason, r.sure, COALESCE(i.additions, 0) + COALESCE(i.deletions, 0) AS lines, i.title, i.author,
            i.head_oid AS i_head, i.updated_at, c.head_oid AS c_head, c.fetched_at AS c_at
     FROM final_reviews r
     JOIN items i ON i.repo = r.repo AND i.number = r.number AND i.kind = 'pr' AND i.state = 'OPEN' AND ${notOwnIntegrationSql("i")} AND ${pilotSql("i")} AND NOT ${backlogHeldSql("i")}
     LEFT JOIN pr_checks c ON c.repo = r.repo AND c.number = r.number
     WHERE r.repo = ? AND r.verdict = 'close'
-      AND r.head_oid = (SELECT r2.head_oid FROM reviews r2 WHERE r2.repo = r.repo AND r2.number = r.number ORDER BY r2.at DESC, r2.rowid DESC LIMIT 1)
+      AND r.head_oid = (SELECT r2.head_oid FROM opus_reviews r2 WHERE r2.repo = r.repo AND r2.number = r.number AND r2.verdict IS NOT NULL ORDER BY r2.at DESC, r2.rowid DESC LIMIT 1)
     ORDER BY r.number`).all(repo) as ReviewRow[];
   const has = db.prepare("SELECT 1 FROM decisions WHERE id = ?");
   return rows.filter((r) => headOf({ head_oid: r.i_head, updated_at: r.updated_at, c_head: r.c_head, c_at: r.c_at }) === r.head_oid && !has.get(closeDecisionId(r.repo, r.number, r.head_oid)));
@@ -112,12 +111,10 @@ export function closeQuestion(r: ReviewRow): Record<string, unknown> & { id: str
   return {
     id: closeDecisionId(r.repo, r.number, r.head_oid), kind: "close", repo: r.repo, number: r.number,
     question: "Close this PR?",
-    context: `The ${r.source === "opus" ? "final (Opus) " : ""}review says close${r.duplicate_of ? `: it duplicates ${r.duplicate_of}` : ""}.`,
+    context: `The Opus review says close${r.sure === 0 ? " (Opus was unsure)" : ""}.`,
     facts: [
       `${REASON_FACT}${r.reason.replace(/\s+/g, " ").trim().slice(0, 300)}`,
-      ...(r.duplicate_of ? [`${DUP_FACT}${r.duplicate_of}`] : []),
-      ...(r.source === "opus" ? [`first review (Sonnet): ${r.sonnet_verdict}, ${r.sonnet_reason.replace(/\s+/g, " ").trim().slice(0, 200)}`] : []),
-      `author: ${r.author ?? "unknown"}${r.size ? `, size ${r.size}` : ""}`,
+      `author: ${r.author ?? "unknown"}, size ${sizeOf(r.lines)}`,
       `${HEAD_FACT}${r.head_oid}`,
     ],
     options: Object.values(CLOSE_OPTIONS).map((o) => ({ ...o })),

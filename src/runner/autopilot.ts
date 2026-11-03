@@ -33,7 +33,6 @@ import { buildQueue, eligible, refusedAsBefore, toAsk } from "../merge/queue.ts"
 export { refusedAsBefore };
 import { trackedNames } from "../repos.ts";
 import { selectCandidates as reviewCandidates } from "../review/candidates.ts";
-import { selectOpusCandidates } from "../review/opus-candidates.ts";
 import { postCandidates } from "../review/post.ts";
 import { selectCandidates as verifyCandidates, unavailableCandidates } from "../verify/candidates.ts";
 import { collectDue } from "../verify/results.ts";
@@ -239,7 +238,7 @@ export const LANES: Lane[] = [
   {
     // One repo per job, round robin; the repo's checks come before its review.
     name: "review",
-    steps: ["checks", "review-batch"],
+    steps: ["checks", "opus-review"],
     perRepo: true,
     detect: (db, { run, tracked }) => {
       const out: Candidate[] = [];
@@ -247,27 +246,15 @@ export const LANES: Lane[] = [
         if (!reviewCandidates(db, repo, run).length) continue;
         const checks = lastJobEnd(db, "checks", repo);
         const fresh = checks?.state === "done" && Date.now() - Date.parse(checks.endedAt) < CHECKS_FRESH_MS;
-        const review = { step: "review-batch", params: { repo } };
+        const review = { step: "opus-review", params: { repo } };
         out.push(fresh ? review : { step: "checks", params: { repo }, poll: true, gate: review });
       }
       return out;
     },
     topScore: (db, { run, tracked }) => bestScore(tracked.map((repo) => reviewCandidates(db, repo, run)[0]?.score)),
     chosen: (db, c) => {
-      if (c.step === "review-batch") setSetting(db, KEY_CURSOR, String(c.params.repo));
+      if (c.step === "opus-review") setSetting(db, KEY_CURSOR, String(c.params.repo));
     },
-  },
-  {
-    // Opus reviews what Sonnet rated take or take-fix; one repo per job, the repo with the highest-ranked PR first.
-    name: "opus-review",
-    steps: ["opus-review"],
-    perRepo: true,
-    detect: (db, { tracked }) => {
-      const best = tracked.map((repo) => ({ repo, c: selectOpusCandidates(db, repo) })).filter((x) => x.c.length);
-      best.sort((a, b) => (b.c[0]!.score ?? -1) - (a.c[0]!.score ?? -1) || a.repo.localeCompare(b.repo));
-      return best.map((x) => ({ step: "opus-review", params: { repo: x.repo } }));
-    },
-    topScore: (db, { tracked }) => bestScore(tracked.map((repo) => selectOpusCandidates(db, repo)[0]?.score)),
   },
   {
     name: "labels",
@@ -434,7 +421,7 @@ export function usageToday(db: DatabaseSync, step: string, ms: number = Date.now
 
 /** The steps an operator release (operator-actions.ts) hands new work to. */
 const RELEASE_STEPS: Record<string, string[]> = {
-  "batch-again": ["merge"], "review-again": ["review-batch", "opus-review"], "verify-again": ["verify"], "fix-again": ["fixissue"],
+  "batch-again": ["merge"], "review-again": ["opus-review"], "verify-again": ["verify"], "fix-again": ["fixissue"],
 };
 
 /** When an operator last released work for the step, or null. */
@@ -480,7 +467,7 @@ export function pauseReason(db: DatabaseSync, step: string, ms: number = Date.no
   if (l.per_day !== null && used >= l.per_day) return `daily limit of ${l.per_day} items reached; resumes at 00:00 UTC`;
   const b = o.backoff === false ? null : failureBackoff(db, step, ms);
   if (b !== null) return `failed ${b.failures} time${b.failures === 1 ? "" : "s"} in a row; retry at ${hhmm(b.until)}`;
-  // Steps that call Claude (decide, review-batch, the Haiku part of classify-new) wait for an account with headroom.
+  // Steps that call Claude (decide, opus-review, the Haiku part of classify-new) wait for an account with headroom.
   if (usesClaude(modelsOf(knownStep(step), {}))) return claudePauseReason(db, ms);
   return null;
 }
@@ -506,7 +493,7 @@ export function setEnabled(db: DatabaseSync, enabled: boolean, by: string): void
 }
 
 /** Steps that have a row in stage_limits, in pipeline order. */
-export const LIMIT_STEPS = ["classify-new", "embed", "dupes", "decide", "checks", "review-batch", "labels-apply", "merge", "act", "fixup", "verify", "prioritize", "fixissue", "referee", "opus-review", "review-post", "dupes-compare", "conversation", "ci-approve"];
+export const LIMIT_STEPS = ["classify-new", "embed", "dupes", "decide", "checks", "opus-review", "labels-apply", "merge", "act", "fixup", "verify", "prioritize", "fixissue", "referee", "review-post", "dupes-compare", "conversation", "ci-approve"];
 
 /** Steps whose jobs cannot be sized to what remains of the day: only no limit or a pause makes sense. */
 export const ZERO_ONLY = ["checks"];

@@ -15,7 +15,6 @@ import { factsOf, memoNoCi, nextStepOf } from "./next.ts";
 /** Next step text → queued stage and the Queue tab that lists it. Steps not listed here are not queued. */
 const QUEUED: Record<string, Pick<QueueSlot, "stage" | "tab">> = {
   Review: { stage: "Review", tab: "review" },
-  "Opus review": { stage: "Opus review", tab: "review" },
   Fix: { stage: "Fix", tab: "fix" },
   "Fix-up": { stage: "Fix-up", tab: "fix" },
   Verify: { stage: "Verify", tab: "verify" },

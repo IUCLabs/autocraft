@@ -45,7 +45,7 @@ const safeJson = (s: string): unknown => {
 };
 
 /**
- * Open PRs of `repo` with an Opus review (a verdict, not a skip; with public text unless it edits an earlier post) at their current head that no review of ours
+ * Open PRs of `repo` with an Opus review (with public text unless it edits an earlier post) at their current head that no review of ours
  * describes yet. Leaves out PRs by the pipeline's own account, integration batch PRs, held duplicates and items outside the pilot.
  */
 export function postCandidates(db: DatabaseSync, repo: string): PostCandidate[] {
@@ -53,7 +53,6 @@ export function postCandidates(db: DatabaseSync, repo: string): PostCandidate[] 
   const rows = db.prepare(`SELECT i.number, i.head_oid, i.updated_at, c.head_oid AS c_head, c.fetched_at AS c_at,
       o.head_oid AS o_head, o.at AS o_at, p.opus_at AS p_opus_at, p.posted_at AS p_at, o.model, o.verdict, o.sure, o.public_review, p.review_id AS p_id, p.head_oid AS p_head, i.maintainer_can_modify AS can_modify, i.head_repo, i.head_ref
     FROM items i JOIN opus_reviews o ON o.repo = i.repo AND o.number = i.number AND o.verdict IS NOT NULL
-    AND o.at >= COALESCE((SELECT r.at FROM reviews r WHERE r.repo = o.repo AND r.number = o.number AND r.head_oid = o.head_oid), '')
     LEFT JOIN pr_checks c ON c.repo = i.repo AND c.number = i.number
     LEFT JOIN review_posts p ON p.repo = i.repo AND p.number = i.number
     WHERE i.repo = ? AND i.kind = 'pr' AND i.state = 'OPEN' AND (o.public_review IS NOT NULL OR p.review_id IS NOT NULL) AND ${notOwnIntegrationSql("i")} AND ${pilotSql("i")}

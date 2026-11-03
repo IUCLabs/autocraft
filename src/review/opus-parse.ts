@@ -2,7 +2,6 @@
 // prompt registry (also loaded by the web mockup) imports this file.
 import { VERDICTS, type DiscussionEntry, type ReviewVerdict } from "./parse.ts";
 
-export type SonnetView = { verdict: string; reason: string; fixes: { file: string; change: string }[]; risks: string[] };
 export type EarlierOpus = { head: string; verdict: string; sure: boolean; reason: string; fixes: { file: string; change: string }[] };
 
 /** One PR as the Opus prompt shows it. Every string field is untrusted or derived from untrusted text. */
@@ -20,12 +19,9 @@ export type OpusPr = {
   files: string[];
   tests_omitted: string[];
   lockfiles_omitted: string[];
-  sonnet: SonnetView;
   /** full: the whole diff of the PR. delta: only the changes since `earlier_opus.head`. */
   mode: "full" | "delta";
   earlier_opus: EarlierOpus | null;
-  /** Set only by the review cross-check, where the first review rated the PR hold. */
-  first_review_note?: string;
   diff: string;
   /** What others wrote on the PR; shown in its own block after the diff, not inside the PR's JSON. */
   discussion?: DiscussionEntry[];

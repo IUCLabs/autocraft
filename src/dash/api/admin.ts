@@ -13,7 +13,6 @@ import { commentApprovalOf, setCommentApproval } from "../../act/approval.ts";
 import { pushApprovalOf, setPushApproval } from "../../fixup/approval.ts";
 import { fixIssueApprovalOf, setFixIssueApproval } from "../../fixissue/approval.ts";
 import { mergeApprovalOf, setMergeApproval } from "../../merge/approval.ts";
-import { batchSizeOf, setBatchSize } from "../../review/batch-size.ts";
 import { ciApprovalOf, setCiApproval } from "../../merge/ci-approval.ts";
 import { setWorkspaceExcluded, workspaceExcluded } from "../../sandbox/workspace.ts";
 import { setSingleMergeMax, singleMergeMax } from "../../merge/single.ts";
@@ -39,7 +38,7 @@ export const AUDIT_ACTIONS = [
   "session-revoke", "sign-in", "sign-in-refused", "account-add", "account-change", "account-login-start", "account-login-code", "account-login-cancel", "account-sign-out", "account-refresh", "repo-track", "repo-untrack", "labels-approve", "labels-revoke", "labels-apply", "merge-approve", "merge-revoke", "comment-approve", "comment-revoke", "act-comment", "act-close", "act-skip", "push-approve", "push-revoke", "fixup-push", "fixup-comment", "fixup-comment-edit", "fixissue-approve", "fixissue-revoke", "fixissue-push", "fixissue-pr", "fixissue-comment",
   "job-request", "job-cancel", "pipeline-switch", "stage-limit", "limit-reset", "pilot-set", "pilot-clear", "repo-pipeline", "review-post", "review-edit", "batch-again", "reopen", "backlog-bulk", "withdraw",
   "single-merge-max", "label-create", "batch-pr-close", "fork-create", "assign", "unassign", "merge", "batch-push", "batch-pr", "shared-repos",
-  "fasttrack-add", "fasttrack-remove", "merge-hold", "merge-release", "batch-remove", "batch-stop", "areas-edit", "areas-accept", "review-batch-size", "ci-approve", "ci-revoke", "ci-run-approve",
+  "fasttrack-add", "fasttrack-remove", "merge-hold", "merge-release", "batch-remove", "batch-stop", "areas-edit", "areas-accept", "ci-approve", "ci-revoke", "ci-run-approve",
   "act-group-applied", "answer-used", "batch-end-too-late", "batch-hold", "batch-merged-after-end", "batch-start", "carry-queued", "classify-run", "conflict-comment", "conflict-push", "conversation-card", "conversation-card-dismiss", "conversation-card-edit", "duplicate-answer", "duplicate-group-ended", "duplicate-member-released", "duplicate-superseded", "env-change", "env-create", "env-rotate-key", "fix-again", "fixissue-check", "fixissue-claim", "fixup-check", "item-gone", "merge-answer-superseded", "merge-held-for-discussion", "merge-question-withdrawn", "merge-refused", "review-again", "task-cancel", "verify-again", "workspace-exclude",
 ];
 
@@ -296,20 +295,6 @@ export function mergeApproval(db: DatabaseSync, req: Req, approved: boolean): Tr
   });
   if (!changed) throw new HttpError(409, `${name} is ${approved ? "already" : "not"} approved for merging`);
   return allRepos(db, req);
-}
-
-// Only an operator changes how many PRs the Sonnet first pass reviews per call in a repo; size null restores the default.
-export function reviewBatchSize(db: DatabaseSync, req: Req): { repo: string; size: number | null } {
-  requireOperator(req, "change the review batch size");
-  const repo = required(body(req).name, "name");
-  const raw = body(req).size;
-  const size = raw === null || raw === undefined ? null : Number(raw);
-  try {
-    setBatchSize(db, req.user.login, repo, size);
-  } catch (e) {
-    throw new RepoError((e as Error).message);
-  }
-  return { repo, size: batchSizeOf(db, repo) };
 }
 
 // Only an operator lets the pipeline approve the CI runs GitHub holds for outside contributors' PRs in a repo.

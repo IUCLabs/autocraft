@@ -60,7 +60,6 @@ export function reviewAgain(db: DatabaseSync, by: string, repo: string, n: numbe
   const held = heldReview(db, repo, n, it.head);
   if (!held) throw new ActionError(409, `${repo}#${n} has no review hold at its current head`);
   db.prepare("DELETE FROM opus_reviews WHERE repo = ? AND number = ? AND head_oid = ?").run(repo, n, it.head);
-  db.prepare("DELETE FROM reviews WHERE repo = ? AND number = ? AND head_oid = ?").run(repo, n, it.head);
   audit(db, by, "review-again", `${repo}#${n}`, { head: it.head, reason: held.reason });
 }
 

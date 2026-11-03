@@ -24,7 +24,7 @@ const NEXT_LIMIT = 10;
 
 /** The tab a work row belongs to besides All, from its next step. */
 export function tabOfNext(next: string): QueueTab | null {
-  if (next === "Review" || next === "Opus review") return "review";
+  if (next === "Review") return "review";
   if (next.startsWith("Fix")) return "fix";
   if (next.startsWith("Verify")) return "verify";
   return null;
@@ -39,7 +39,6 @@ const WAITS: Record<string, [MergeWait, string, number]> = {
   "waiting-ci": ["ci", "Waiting for CI", 2],
   "ci-approval": ["ci", "Waiting for CI run approval", 2],
   "waiting-verify": ["verify", "Waiting for Verify", 2],
-  "waiting-opus": ["re-review", "Waiting for re-review", 3],
 };
 const HELD: [MergeWait, string, number] = ["held", "Merge held by an operator", 9];
 

@@ -83,7 +83,7 @@ export function headOf(r: { head_oid: string | null; updated_at: string | null; 
 /**
  * Open, non-draft PRs of `repo` whose settled label is one we review, that
  * carry no `needs decision` flag unless a scope decision answered `take` or `small-extra`, and
- * that have no review at their current head commit, or whose review there is older than a comment or review by someone else. Any other scope answer keeps a PR out.
+ * that have no Opus review at their current head commit, or whose review there is older than a comment or review by someone else. Any other scope answer keeps a PR out.
  */
 export function selectCandidates(db: DatabaseSync, repo: string, run: string | null = latestRun(db)): Candidate[] {
   const rows = db.prepare(`SELECT i.repo, i.number, i.title, i.body, i.author, i.author_association, i.head_oid,
@@ -92,7 +92,7 @@ export function selectCandidates(db: DatabaseSync, repo: string, run: string | n
     FROM items i LEFT JOIN pr_checks c ON c.repo = i.repo AND c.number = i.number
     LEFT JOIN item_rank p ON p.repo = i.repo AND p.number = i.number
     WHERE i.repo = ? AND i.kind = 'pr' AND i.state = 'OPEN' AND ${notHeldSql("i")} ORDER BY ${fastScoreSql("i.repo", "i.number", "p.score")} IS NULL, ${fastScoreSql("i.repo", "i.number", "p.score")} DESC, i.number`).all(repo) as Row[];
-  const reviewed = db.prepare("SELECT 1 FROM reviews WHERE repo = ? AND number = ? AND head_oid = ?");
+  const reviewed = db.prepare("SELECT 1 FROM opus_reviews WHERE repo = ? AND number = ? AND head_oid = ? AND verdict IS NOT NULL");
   const stale = staleReviews(db, repo, true);
   const settled = settledLookup(db, run);
   let scope: ScopeRow[] | undefined;
@@ -155,7 +155,7 @@ export function candidateRefs(db: DatabaseSync, repo?: string, run: string | nul
     LEFT JOIN temp.item_settled s ON s.repo = i.repo AND s.number = i.number
     WHERE i.kind = 'pr' AND i.state = 'OPEN' AND ${notHeldSql("i")} ${repo ? "AND i.repo = :repo" : ""}`).all(repo ? { repo } : {}) as
     (Pick<Row, "repo" | "number" | "head_oid" | "updated_at" | "is_draft" | "c_head" | "c_state" | "c_draft" | "c_at"> & { label: string | null; flags: string | null })[];
-  const reviewed = new Set((db.prepare(`SELECT repo, number, head_oid FROM reviews ${repo ? "WHERE repo = ?" : ""}`).all(...(repo ? [repo] : [])) as
+  const reviewed = new Set((db.prepare(`SELECT repo, number, head_oid FROM opus_reviews WHERE verdict IS NOT NULL ${repo ? "AND repo = ?" : ""}`).all(...(repo ? [repo] : [])) as
     { repo: string; number: number; head_oid: string }[]).map((r) => `${r.repo}#${r.number}@${r.head_oid}`));
   const stale = staleReviews(db, repo, true);
   const out = new Set<string>();

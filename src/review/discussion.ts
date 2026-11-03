@@ -1,6 +1,6 @@
 // The discussion on a PR as the review prompts show it: top-level comments, review bodies and unresolved
 // inline review threads, all read live from GitHub in one query. Our own posts are left out.
-// Also decides when a PR's reviews are stale because someone else wrote on it after them.
+// Also decides when a PR's review is stale because someone else wrote on it after them.
 // All text here is written by outsiders and is passed on as untrusted data.
 import { createHash } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
@@ -232,12 +232,12 @@ export function countRerun(db: DatabaseSync, repo: string, number: number): void
 }
 
 /**
- * PRs, as "repo#n@head", whose Sonnet review read the discussion before a counted comment or review that it
+ * PRs, as "repo#n@head", whose Opus review read the discussion before a counted comment or review that it
  * did not read, or that an operator marked stale. With `respectCap`, PRs that already had MAX_RERUNS_PER_DAY
  * discussion-triggered re-reviews today are left out (an operator mark is never capped).
  */
 export function staleReviews(db: DatabaseSync, repo?: string, respectCap = false): Set<string> {
-  const rows = db.prepare(`SELECT r.repo, r.number, r.head_oid, r.at, r.seen_at, r.disc_hash FROM reviews r WHERE (:repo IS NULL OR r.repo = :repo)`)
+  const rows = db.prepare(`SELECT r.repo, r.number, r.head_oid, r.at, r.seen_at, r.disc_hash FROM opus_reviews r WHERE r.verdict IS NOT NULL AND (:repo IS NULL OR r.repo = :repo)`)
     .all({ repo: repo ?? null }) as { repo: string; number: number; head_oid: string; at: string; seen_at: string | null; disc_hash: string | null }[];
   const state = discussionState(db, repo);
   const marks = new Map((db.prepare("SELECT key, value FROM main.settings WHERE key LIKE ?").all(`${STALE_KEY}%`) as { key: string; value: string }[]).map((m) => [m.key.slice(STALE_KEY.length), m.value]));
@@ -274,15 +274,13 @@ export async function ensurePipelineLogin(db: DatabaseSync, q: Querier): Promise
 export async function liveGate(db: DatabaseSync, q: Querier, repo: string, number: number, head: string): Promise<{ moved: boolean; blocked: string | null }> {
   const live = await liveDiscussion(q, db, repo, number);
   const blocked = recordGate(db, repo, number, live.formal, live.reviewDecision);
-  const snap = (db.prepare(`SELECT COALESCE(o.seen_at, o.at) AS seen, o.disc_hash AS hash FROM opus_reviews o JOIN reviews r ON r.repo = o.repo AND r.number = o.number AND r.head_oid = o.head_oid AND o.at >= r.at
-      WHERE o.repo = ? AND o.number = ? AND o.head_oid = ? AND o.verdict IS NOT NULL`).get(repo, number, head)
-    ?? db.prepare("SELECT COALESCE(seen_at, at) AS seen, disc_hash AS hash FROM reviews WHERE repo = ? AND number = ? AND head_oid = ?").get(repo, number, head)) as { seen: string; hash: string | null } | undefined;
+  const snap = db.prepare("SELECT COALESCE(seen_at, at) AS seen, disc_hash AS hash FROM opus_reviews WHERE repo = ? AND number = ? AND head_oid = ? AND verdict IS NOT NULL").get(repo, number, head) as { seen: string; hash: string | null } | undefined;
   if (!snap || !live.newest || !changedSince({ newest: live.newest, hash: live.snap.hash! }, snap.seen, snap.hash)) return { moved: false, blocked };
   db.prepare("INSERT INTO main.settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value").run(staleKey(repo, number), new Date().toISOString());
   return { moved: true, blocked };
 }
 
-/** Operator request: every review of the PR counts as older than now, so Sonnet and then Opus review it again. */
+/** Operator request: its review counts as older than now, so Opus reviews it again. */
 export function markReviewsStale(db: DatabaseSync, by: string, repo: string, number: number): void {
   const at = new Date().toISOString();
   db.prepare("INSERT INTO main.settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value").run(staleKey(repo, number), at);

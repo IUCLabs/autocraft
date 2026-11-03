@@ -434,7 +434,7 @@ export async function repostAsk(db: DatabaseSync, repo: string, number: number, 
   const url = ds.find((r) => r.action === "fixup-comment" && r.d.url)?.d.url;
   const id = /#issuecomment-(\d+)$/.exec(url ?? "")?.[1];
   if (!last || !id) throw new Error(`no recorded ask comment for ${repo}#${number}`);
-  const review = db.prepare("SELECT fixes FROM final_reviews WHERE repo = ? AND number = ? AND head_oid = ? AND final = 1 AND verdict = 'take-fix'").get(repo, number, state.from_head) as { fixes: string | null } | undefined;
+  const review = db.prepare("SELECT fixes FROM final_reviews WHERE repo = ? AND number = ? AND head_oid = ? AND verdict = 'take-fix'").get(repo, number, state.from_head) as { fixes: string | null } | undefined;
   const fixes = parseFixes(review?.fixes ?? null);
   if (!fixes.length) throw new Error(`no fix list for ${repo}#${number} at ${state.from_head.slice(0, 7)}`);
   const old = last.d.text ?? "";

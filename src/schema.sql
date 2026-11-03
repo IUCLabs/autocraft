@@ -321,7 +321,7 @@ CREATE TABLE IF NOT EXISTS stage_limits (
 );
 INSERT OR IGNORE INTO stage_limits (step, per_day) VALUES
   ('classify-new', 2000), ('embed', NULL), ('decide', 100), ('checks', NULL),
-  ('review-batch', 40), ('labels-apply', NULL), ('merge', 10), ('act', 20), ('fixup', 20), ('verify', 30), ('opus-review', 40);
+  ('labels-apply', NULL), ('merge', 10), ('act', 20), ('fixup', 20), ('verify', 30), ('opus-review', 40);
 
 -- One row per `autocraft sync` run, kept for two days, for the Pipeline page.
 CREATE TABLE IF NOT EXISTS sync_runs (
@@ -358,72 +358,31 @@ CREATE TABLE IF NOT EXISTS pr_checks (
   PRIMARY KEY (repo, number)
 );
 
--- One code review per PR head commit. A new push gets a new review; the
--- latest row per item is its current verdict. Each review also writes a
--- `reviewed` stages row and a take/hold/close stages row.
-CREATE TABLE IF NOT EXISTS reviews (
-  repo TEXT NOT NULL, number INTEGER NOT NULL,
-  head_oid TEXT NOT NULL,
-  run_id TEXT NOT NULL,
-  at TEXT NOT NULL,
-  model TEXT,                         -- NULL when no model was asked (too large)
-  size TEXT,                          -- S | M | L by lines changed
-  verdict TEXT NOT NULL,              -- take | take-fix | hold | close
-  reason TEXT NOT NULL,
-  fixes TEXT,                         -- JSON [{file, change}], take-fix only
-  duplicate_of TEXT,                  -- "repo#n" of the better PR
-  overlaps TEXT,                      -- JSON ["repo#n"]: open PRs changing the same code
-  risks TEXT,                         -- JSON [string]
-  PRIMARY KEY (repo, number, head_oid)
-);
-CREATE INDEX IF NOT EXISTS reviews_run ON reviews(run_id);
-
--- The second review pass: Opus reads every PR Sonnet rated take or take-fix,
--- one row per PR head commit. A row with `mode = 'skipped'` has no verdict: the
--- rule-based skip list (src/review/skip.ts) exempted the diff from the pass.
+-- The code review: one Opus pass per PR head commit.
 CREATE TABLE IF NOT EXISTS opus_reviews (
   repo TEXT NOT NULL, number INTEGER NOT NULL,
   head_oid TEXT NOT NULL,
   run_id TEXT,
   at TEXT NOT NULL,
-  model TEXT,                         -- NULL when skipped
-  mode TEXT NOT NULL,                 -- full | delta | skipped
+  model TEXT,
+  mode TEXT NOT NULL,                 -- full | delta
   base_head TEXT,                     -- delta: the head Opus had reviewed before
-  verdict TEXT,                       -- take | take-fix | hold | close; NULL when skipped
+  verdict TEXT,                       -- take | take-fix | hold | close
   sure INTEGER,                       -- 1 when Opus is sure of its verdict
   reason TEXT,
   fixes TEXT,                         -- JSON [{file, change}], the complete list for take-fix
   risks TEXT,                         -- JSON [string]
-  skip_reason TEXT,                   -- mode = 'skipped' only
   -- public_review (added column): JSON {summary, points}, the text posted on the PR; NULL when the reply had none
   PRIMARY KEY (repo, number, head_oid)
 );
 
--- The verdict every later stage reads, per reviewed head commit. Opus's replaces
--- Sonnet's, except that Opus disagreeing with Sonnet while unsure makes a hold for
--- a person (take and take-fix count as agreeing). A skip-listed head keeps Sonnet's
--- verdict. `final` is 0 while a Sonnet take or take-fix still waits for Opus; Sonnet
--- hold and close verdicts are final at once.
+-- The verdict every later stage reads, per reviewed head commit: the Opus verdict.
+-- A PR with no row here is not reviewed yet. An unsure take or take-fix keeps its verdict;
+-- the merge queue asks a person before merging it.
 DROP VIEW IF EXISTS final_reviews;
 CREATE VIEW final_reviews AS
-SELECT r.repo, r.number, r.head_oid, r.run_id, r.at, r.model, r.size, r.duplicate_of, r.overlaps,
-  r.verdict AS sonnet_verdict, r.reason AS sonnet_reason, r.fixes AS sonnet_fixes,
-  CASE WHEN o.verdict IS NULL THEN r.verdict
-    WHEN o.sure = 0 AND replace(o.verdict, 'take-fix', 'take') <> replace(r.verdict, 'take-fix', 'take') THEN 'hold'
-    ELSE o.verdict END AS verdict,
-  CASE WHEN o.verdict IS NULL THEN r.reason
-    WHEN o.sure = 0 AND replace(o.verdict, 'take-fix', 'take') <> replace(r.verdict, 'take-fix', 'take')
-      THEN 'Needs a person: Opus is unsure and disagrees with Sonnet. Sonnet (' || r.verdict || '): ' || r.reason || ' Opus (' || o.verdict || '): ' || o.reason
-    ELSE o.reason END AS reason,
-  CASE WHEN o.verdict IS NULL THEN r.fixes
-    WHEN o.sure = 0 AND replace(o.verdict, 'take-fix', 'take') <> replace(r.verdict, 'take-fix', 'take') THEN NULL
-    ELSE o.fixes END AS fixes,
-  CASE WHEN o.verdict IS NULL THEN r.risks ELSE o.risks END AS risks,
-  CASE WHEN o.verdict IS NOT NULL THEN 'opus' WHEN o.mode = 'skipped' THEN 'skip-list' ELSE 'sonnet' END AS source,
-  o.skip_reason AS skip_reason,
-  CASE WHEN r.verdict IN ('hold', 'close') OR o.head_oid IS NOT NULL THEN 1 ELSE 0 END AS final
--- An Opus row older than Sonnet's review at the same head is out of date and ignored.
-FROM reviews r LEFT JOIN opus_reviews o ON o.repo = r.repo AND o.number = r.number AND o.head_oid = r.head_oid AND o.at >= r.at;
+SELECT repo, number, head_oid, run_id, at, model, verdict, reason, fixes, risks, sure, mode, base_head, seen_at, disc_hash
+FROM opus_reviews WHERE verdict IS NOT NULL;
 
 -- Merge attempts by the Integrate stage, one row per try at a PR head.
 -- outcome: merged | refused (the merge command or a pre-merge check said no, with why).
@@ -1037,26 +996,6 @@ CREATE TABLE IF NOT EXISTS area_proposals (
   decided_at TEXT
 );
 CREATE INDEX IF NOT EXISTS area_proposals_repo ON area_proposals(repo, state);
-
--- Review quality cross-check (operator-run, never feeds the pipeline): for PRs whose final review
--- at the head is a Sonnet hold from a batch call, the Opus verdict and, with --single, a
--- Sonnet verdict for the PR alone in its call. Nothing else reads this table except the report.
-CREATE TABLE IF NOT EXISTS review_crosschecks (
-  run_id TEXT NOT NULL,
-  repo TEXT NOT NULL,
-  number INTEGER NOT NULL,
-  head_oid TEXT NOT NULL,
-  seed TEXT,                          -- the sample's seed, recorded so the pick can be repeated
-  batch_verdict TEXT NOT NULL,        -- the stored Sonnet verdict (hold)
-  batch_reason TEXT,
-  opus_verdict TEXT,
-  opus_sure INTEGER,
-  opus_reason TEXT,
-  single_verdict TEXT,
-  single_reason TEXT,
-  at TEXT NOT NULL,
-  PRIMARY KEY (run_id, repo, number)
-);
 
 -- Actions runs waiting for a maintainer's approval (check suite conclusion action_required) at a PR head, one row per PR
 -- (src/merge/ci-approval.ts). runs: JSON [{id, name, event}] still waiting; approved: ids of runs we approved whose

@@ -39,7 +39,7 @@ const OPEN_TTL = 20_000;
 const openCache = new WeakMap<DatabaseSync, { key: string; at: number; open: QueueEntry[]; merged: number }>();
 
 function openQueue(db: DatabaseSync, repo: string | undefined, hidden: string[], run: string | null): { open: QueueEntry[]; merged: number } {
-  const sig = db.prepare(`SELECT (SELECT COUNT(*) || ':' || COALESCE(MAX(rowid), 0) FROM main.reviews) AS rv,
+  const sig = db.prepare(`SELECT (SELECT COUNT(*) || ':' || COALESCE(MAX(rowid), 0) FROM main.opus_reviews) AS rv,
       (SELECT COUNT(*) || ':' || COALESCE(MAX(rowid), 0) FROM main.merges) AS mg,
       (SELECT COUNT(*) || ':' || COALESCE(MAX(answered_at), '') FROM main.decisions WHERE kind = 'merge') AS dc,
       (SELECT COUNT(*) || ':' || COALESCE(MAX(fetched_at), '') FROM main.pr_checks) AS ck,

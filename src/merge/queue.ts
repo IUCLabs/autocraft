@@ -1,11 +1,11 @@
 // The merge queue: every PR with a take or take-fix review at its current
-// head commit, and what it waits on. The verdict is the final one (Opus's, or
-// Sonnet's when the skip list applies): see the `final_reviews` view. Reads only local tables; no GitHub calls.
+// head commit, and what it waits on. The verdict is Opus's (see the `final_reviews` view); a PR whose
+// review is out of date after new discussion is left out until it is reviewed again. Reads only local tables; no GitHub calls.
 import type { DatabaseSync } from "node:sqlite";
 import { latestRun, settledLookup } from "../classify/settled.ts";
 import { actionable } from "../decisions.ts";
 import { backlogHeld, duplicateHeld, notOwnIntegrationSql } from "../dupes/held.ts";
-import { headOf } from "../review/candidates.ts";
+import { headOf, sizeOf } from "../review/candidates.ts";
 import { changedSince, discussionState, staleReviews } from "../review/discussion.ts";
 import { failureNote, GATE_FAILURES, gatesOf, reasonFor, refuseReviews, type ReviewFact } from "./changes-requested.ts";
 import { batchStates } from "./batch-store.ts";
@@ -20,7 +20,7 @@ import { longLivedOf, pushable, type LongLived } from "../fixup/pushable.ts";
 
 export const QUEUE_STATES = [
   "ready", "decision-answered-merge", "refused", "waiting-ci", "ci-failed", "conflict",
-  "needs-fix-up", "waiting-opus", "waiting-verify", "verify-failed", "verify-error", "needs-decision", "declined", "merged", "held-duplicate", "held-backlog",
+  "needs-fix-up", "waiting-verify", "verify-failed", "verify-error", "needs-decision", "declined", "merged", "held-duplicate", "held-backlog",
   "batch-checking", "in-batch", "batch-failed", "ci-approval", "changes-requested",
 ] as const;
 export type QueueState = (typeof QUEUE_STATES)[number];
@@ -107,7 +107,7 @@ export const eligible = (e: QueueEntry): boolean =>
 type Row = {
   repo: string; number: number; title: string | null; author: string | null; state: string; review_decision: string | null; head_oid: string | null; updated_at: string | null;
   c_head: string | null; c_at: string | null; overall: string | null; c_mergeable: string | null; i_mergeable: string | null;
-  r_head: string; o_at: string | null; o_seen: string | null; o_hash: string | null; verdict: "take" | "take-fix"; reason: string; fixes: string | null; size: string | null; r_at: string; r_final: number;
+  r_head: string; r_seen: string | null; r_hash: string | null; sure: number | null; verdict: "take" | "take-fix"; reason: string; fixes: string | null; lines: number; r_at: string;
   head_repo: string | null; head_ref: string | null; base_ref: string | null; i_can: number | null; c_can: number | null;
 };
 
@@ -172,12 +172,11 @@ export function buildQueue(db: DatabaseSync, opts: QueueOptions = {}): QueueEntr
   const rows = db.prepare(`
     SELECT i.repo, i.number, i.title, i.author, i.state, i.review_decision, i.head_oid, i.updated_at, i.mergeable AS i_mergeable,
       c.head_oid AS c_head, c.fetched_at AS c_at, c.overall, c.mergeable AS c_mergeable,
-      l.head_oid AS r_head, o.at AS o_at, o.seen_at AS o_seen, o.disc_hash AS o_hash, l.verdict, l.reason, l.fixes, l.size, l.at AS r_at, l.final AS r_final,
+      l.head_oid AS r_head, l.seen_at AS r_seen, l.disc_hash AS r_hash, l.sure, l.verdict, l.reason, l.fixes, COALESCE(i.additions, 0) + COALESCE(i.deletions, 0) AS lines, l.at AS r_at,
       i.head_repo, i.head_ref, i.base_ref, i.maintainer_can_modify AS i_can, c.maintainer_can_modify AS c_can
     FROM items i
     JOIN final_reviews l ON l.repo = i.repo AND l.number = i.number AND l.head_oid = (
-      SELECT r.head_oid FROM reviews r WHERE r.repo = i.repo AND r.number = i.number ORDER BY r.at DESC, r.rowid DESC LIMIT 1)
-    LEFT JOIN opus_reviews o ON o.repo = l.repo AND o.number = l.number AND o.head_oid = l.head_oid AND o.verdict IS NOT NULL AND o.at >= l.at
+      SELECT r.head_oid FROM opus_reviews r WHERE r.repo = i.repo AND r.number = i.number AND r.verdict IS NOT NULL ORDER BY r.at DESC, r.rowid DESC LIMIT 1)
     LEFT JOIN pr_checks c ON c.repo = l.repo AND c.number = l.number
     WHERE l.verdict IN ('take', 'take-fix') AND i.kind = 'pr' AND i.state IN (${states}) AND ${notOwnIntegrationSql("i")} AND ${pilotSql("i")} ${where.map((w) => `AND ${w}`).join(" ")}
     ORDER BY i.repo, i.number ${opts.limit ? `LIMIT ${Math.floor(opts.limit)}` : ""}`).all(params) as Row[];
@@ -206,6 +205,8 @@ export function buildQueue(db: DatabaseSync, opts: QueueOptions = {}): QueueEntr
   for (const r of rows) {
     const last = merges.get(r.repo, r.number, r.r_head) as { outcome: string; reason: string | null } | undefined;
     const mergedByUs = last?.outcome === "merged";
+    // A review older than a comment or review by someone else waits for the review again: the PR has no review until then.
+    if (r.state === "OPEN" && !mergedByUs && (stale.has(`${r.repo}#${r.number}@${r.r_head}`) || changedSince(state.get(`${r.repo}#${r.number}`), r.r_seen ?? r.r_at, r.r_hash))) continue;
     // A merged PR keeps the review of the head it merged at; an open one must be reviewed at its current head.
     if (r.state === "OPEN" && !mergedByUs && headOf(r) !== r.r_head) continue;
     // Checks describe the reviewed head only when they were fetched for it.
@@ -224,12 +225,13 @@ export function buildQueue(db: DatabaseSync, opts: QueueOptions = {}): QueueEntr
     // The pipeline's own Fix PRs count as whitelisted; an operator's deny still wins.
     if (tier === "not" && r.author && r.author === own.login && own.prs.has(`${r.repo}#${r.number}`)) tier = "whitelisted";
     const label = settled(r.repo, r.number).label;
-    const size = r.size ?? "L";
+    const size = sizeOf(r.lines);
     let fixes = 0;
     try { fixes = (JSON.parse(r.fixes ?? "[]") as unknown[]).length; } catch { /* none */ }
 
     const outsideRule: string[] = [];
     if (r.verdict !== "take") outsideRule.push("review asks for fixes");
+    if (r.sure === 0) outsideRule.push("Opus was unsure");
     if (!RULE_SIZES.includes(size)) outsideRule.push(`size ${size}`);
     if (!label || !RULE_LABELS.includes(label)) outsideRule.push(label ? `label ${label}` : "no settled label");
     if (!RULE_TIERS.includes(tier)) outsideRule.push(r.author ? "author not on the whitelist" : "author unknown");
@@ -253,7 +255,7 @@ export function buildQueue(db: DatabaseSync, opts: QueueOptions = {}): QueueEntr
     const why = live ? (live.blocked ? reasonFor(live.by) : null) : refuseReviews(reviewRows.all(r.repo, r.number) as ReviewFact[], r.review_decision);
     if (open && gate && gate.failures >= GATE_FAILURES) e.note = failureNote(gate.failures);
     if (open && why) { e.state = "changes-requested"; e.note = why; e.blockedLive = !!live; out.push(e); continue; }
-    e.state = stateOf(e, r.state === "MERGED" || mergedByUs, last, open && (backlogHeld(db, r.repo, r.number) ? "backlog" : duplicateHeld(db, r.repo, r.number) ? "duplicate" : null), r.r_final === 1 && !(open && (stale.has(`${r.repo}#${r.number}@${r.r_head}`) || (r.o_at !== null && changedSince(state.get(`${r.repo}#${r.number}`), r.o_seen ?? r.o_at, r.o_hash)))));
+    e.state = stateOf(e, r.state === "MERGED" || mergedByUs, last, open && (backlogHeld(db, r.repo, r.number) ? "backlog" : duplicateHeld(db, r.repo, r.number) ? "duplicate" : null));
     if (open && mergeable === "CONFLICTING" && r.base_ref) {
       const ap = approvals.get(r.repo) ?? (approvals.set(r.repo, { push: pushApprovalOf(db, r.repo) !== null, comment: commentApprovalOf(db, r.repo) !== null }), approvals.get(r.repo)!);
       e.conflictNote = conflictNote(conflictBucket(db, { repo: r.repo, number: r.number, head: r.r_head, pushable: pushable(r.head_repo, r.repo, checksHere ? r.c_can : r.i_can, r.head_ref, (longLivedBy.get(r.repo) ?? (longLivedBy.set(r.repo, longLivedOf(db, r.repo)), longLivedBy.get(r.repo)!))) }, ap), r.base_ref);
@@ -272,14 +274,11 @@ function verifyState(e: QueueEntry): QueueState | null {
   return s === "failed" ? "verify-failed" : s === "error" ? "verify-error" : "waiting-verify";
 }
 
-function stateOf(e: QueueEntry, merged: boolean, last: { outcome: string; reason: string | null } | undefined, held: "backlog" | "duplicate" | null | false = null, final = true): QueueState {
+function stateOf(e: QueueEntry, merged: boolean, last: { outcome: string; reason: string | null } | undefined, held: "backlog" | "duplicate" | null | false = null): QueueState {
   if (merged) return "merged";
   // A Backlog answer, an open Duplicate? decision or a duplicate close keeps the item out of every later stage.
   if (held === "backlog") return "held-backlog";
   if (held) return "held-duplicate";
-  // Sonnet's take or take-fix is not final until Opus has reviewed the head or the skip list exempted it. A review older than a
-  // comment or review by someone else (or older than Sonnet's own latest) waits for the review again.
-  if (!final) return "waiting-opus";
   if (e.verdict === "take-fix") return "needs-fix-up";
   if (!e.outsideRule.length) e.path = "rule";
   else if (e.answer === "merge") e.path = "operator";
@@ -314,7 +313,7 @@ export function countMerged(db: DatabaseSync, repo?: string, exclude: string[] =
   exclude.forEach((r, k) => { params[`ex${k}`] = r; });
   return (db.prepare(`SELECT COUNT(*) AS n FROM items i
     JOIN final_reviews l ON l.repo = i.repo AND l.number = i.number AND l.head_oid = (
-      SELECT r.head_oid FROM reviews r WHERE r.repo = i.repo AND r.number = i.number ORDER BY r.at DESC, r.rowid DESC LIMIT 1)
+      SELECT r.head_oid FROM opus_reviews r WHERE r.repo = i.repo AND r.number = i.number AND r.verdict IS NOT NULL ORDER BY r.at DESC, r.rowid DESC LIMIT 1)
     WHERE l.verdict IN ('take', 'take-fix') AND i.kind = 'pr' AND i.state = 'MERGED' ${repo ? "AND i.repo = :repo" : ""}${exclude.map((_, k) => ` AND i.repo <> :ex${k}`).join("")}`)
     .get(params) as { n: number }).n;
 }

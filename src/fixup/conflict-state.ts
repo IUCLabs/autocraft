@@ -76,7 +76,7 @@ export function classifyConflicts(db: DatabaseSync, repo: string): ConflictClass
     const head = headOf({ head_oid: r.head_oid, updated_at: r.updated_at, c_head: r.c_head, c_at: r.c_at });
     if (!head || !r.base_ref || !BASE_NAME.test(r.base_ref)) continue;
     if (mergeHeld(db, r.repo, r.number) || batched.has(r.number) || stale.has(`${r.repo}#${r.number}@${head}`)) continue;
-    const review = db.prepare("SELECT reason FROM final_reviews WHERE repo = ? AND number = ? AND head_oid = ? AND final = 1 AND verdict IN ('take', 'take-fix')").get(r.repo, r.number, head) as { reason: string } | undefined;
+    const review = db.prepare("SELECT reason FROM final_reviews WHERE repo = ? AND number = ? AND head_oid = ? AND verdict IN ('take', 'take-fix')").get(r.repo, r.number, head) as { reason: string } | undefined;
     if (!review) continue;
     const can = pushable(r.head_repo, r.repo, fresh ? r.c_can : r.i_can, r.head_ref, longLived);
     const c: ConflictCandidate = { repo: r.repo, number: r.number, head, base: r.base_ref, title: (r.title ?? "").slice(0, 300), reason: review.reason, attempt: conflictTries(db, r.repo, r.number, head) + 1, pushable: can };

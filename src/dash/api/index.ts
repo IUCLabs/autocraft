@@ -133,23 +133,18 @@ async function item(db: DatabaseSync, req: Req): Promise<Item> {
   };
 }
 
-/** The Sonnet and Opus reviews of the newest reviewed head, and the final verdict. */
+/** The Opus review of the newest reviewed head, which is also the final verdict. */
 function reviewsOf(db: DatabaseSync, repo: string, n: number): ItemReviews | null {
-  const f = db.prepare(`SELECT head_oid, at, model, sonnet_verdict, sonnet_reason, sonnet_fixes, verdict, reason, source, skip_reason, final FROM final_reviews
+  const o = db.prepare(`SELECT head_oid, at, mode, base_head, verdict, sure, reason, fixes, risks FROM final_reviews
     WHERE repo = ? AND number = ? ORDER BY at DESC, head_oid DESC LIMIT 1`).get(repo, n) as
-    { head_oid: string; at: string; model: string | null; sonnet_verdict: ReviewSide["verdict"]; sonnet_reason: string; sonnet_fixes: string | null; verdict: ReviewSide["verdict"]; reason: string; source: ItemReviews["final"]["source"]; skip_reason: string | null; final: number } | undefined;
-  if (!f) return null;
+    { head_oid: string; at: string; mode: "full" | "delta"; base_head: string | null; verdict: ReviewSide["verdict"]; sure: number; reason: string; fixes: string | null; risks: string | null } | undefined;
+  if (!o) return null;
   const list = <T>(s: string | null): T[] => { try { const v = JSON.parse(s ?? "[]") as unknown; return Array.isArray(v) ? (v as T[]) : []; } catch { return []; } };
-  const risks = (db.prepare("SELECT risks FROM reviews WHERE repo = ? AND number = ? AND head_oid = ?").get(repo, n, f.head_oid) as { risks: string | null }).risks;
-  const o = db.prepare("SELECT at, mode, base_head, verdict, sure, reason, fixes, risks FROM opus_reviews WHERE repo = ? AND number = ? AND head_oid = ? AND verdict IS NOT NULL AND at >= COALESCE((SELECT r.at FROM reviews r WHERE r.repo = opus_reviews.repo AND r.number = opus_reviews.number AND r.head_oid = opus_reviews.head_oid), '')").get(repo, n, f.head_oid) as
-    { at: string; mode: "full" | "delta"; base_head: string | null; verdict: ReviewSide["verdict"]; sure: number; reason: string; fixes: string | null; risks: string | null } | undefined;
   const head = (db.prepare("SELECT head_oid FROM items WHERE repo = ? AND number = ?").get(repo, n) as { head_oid: string | null } | undefined)?.head_oid ?? null;
   return {
-    head: f.head_oid, current: f.head_oid === head,
-    sonnet: { verdict: f.sonnet_verdict, reason: f.sonnet_reason, fixes: list(f.sonnet_fixes), risks: list(risks), at: f.at },
-    opus: o ? { verdict: o.verdict, reason: o.reason, fixes: list(o.fixes), risks: list(o.risks), at: o.at, sure: o.sure === 1, mode: o.mode, baseHead: o.base_head } : null,
-    skipReason: f.skip_reason,
-    final: { verdict: f.verdict, source: f.source, reason: f.reason, decided: f.final === 1 },
+    head: o.head_oid, current: o.head_oid === head,
+    opus: { verdict: o.verdict, reason: o.reason, fixes: list(o.fixes), risks: list(o.risks), at: o.at, sure: o.sure === 1, mode: o.mode, baseHead: o.base_head },
+    final: { verdict: o.verdict, reason: o.reason, decided: true },
   };
 }
 
@@ -329,7 +324,6 @@ export function apiRoutes(opts: ApiOptions = {}): Route[] {
     post("/api/repos/labels-revoke", (db, req) => adm.labelsApproval(db, req, false)),
     post("/api/repos/merge-approve", (db, req) => adm.mergeApproval(db, req, true)),
     post("/api/repos/merge-revoke", (db, req) => adm.mergeApproval(db, req, false)),
-    post("/api/repos/review-batch-size", adm.reviewBatchSize),
     post("/api/repos/ci-approve", (db, req) => adm.ciApproval(db, req, true)),
     post("/api/repos/ci-revoke", (db, req) => adm.ciApproval(db, req, false)),
     get("/api/sandbox/workspace", adm.workspaceInfo),

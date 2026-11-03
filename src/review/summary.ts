@@ -5,7 +5,6 @@ import { HEAD_FACT } from "../merge/queue.ts";
 import { factsOf, type DecisionRow } from "../decisions.ts";
 import { inPilot } from "../pilot.ts";
 
-type Sonnet = { model: string | null; verdict: string; reason: string; risks: string | null };
 type Opus = { model: string | null; verdict: string | null; sure: number | null; reason: string | null; risks: string | null };
 
 const one = (s: string | null | undefined, n: number): string => (s ?? "").replace(/\s+/g, " ").trim().slice(0, n);
@@ -17,22 +16,12 @@ const risks = (s: string | null): string => {
 };
 const stop = (s: string): string => (/[.!?]$/.test(s) ? s : `${s}.`);
 
-/** The stored Sonnet review and, when present, Opus's final review of one PR head; null when there is no review text. */
+/** Opus's review of one PR head; null when there is no review text. */
 export function reviewSummary(db: DatabaseSync, repo: string, number: number, head: string): { summary: string; by: string } | null {
-  const s = db.prepare("SELECT model, verdict, reason, risks FROM reviews WHERE repo = ? AND number = ? AND head_oid = ?").get(repo, number, head) as Sonnet | undefined;
-  const o = db.prepare("SELECT model, verdict, sure, reason, risks FROM opus_reviews WHERE repo = ? AND number = ? AND head_oid = ? AND verdict IS NOT NULL AND at >= COALESCE((SELECT r.at FROM reviews r WHERE r.repo = opus_reviews.repo AND r.number = opus_reviews.number AND r.head_oid = opus_reviews.head_oid), '')").get(repo, number, head) as Opus | undefined;
-  if (!s && !o) return null;
-  const parts: string[] = [];
-  const by: string[] = [];
-  if (s) {
-    parts.push(`Sonnet's review says ${s.verdict}: ${stop(one(s.reason, 450))}${risks(s.risks)}`);
-    by.push(s.model ?? "sonnet");
-  }
-  if (o) {
-    parts.push(`Opus's final review says ${o.verdict}${o.sure === 0 ? " (not sure)" : ""}: ${stop(one(o.reason, 450))}${risks(o.risks)}`);
-    by.push(o.model ?? "opus");
-  }
-  return { summary: parts.join(" "), by: by.join(", ") };
+  const o = db.prepare("SELECT model, verdict, sure, reason, risks FROM opus_reviews WHERE repo = ? AND number = ? AND head_oid = ? AND verdict IS NOT NULL").get(repo, number, head) as Opus | undefined;
+  if (!o) return null;
+  const unsure = o.sure === 0 && (o.verdict === "take" || o.verdict === "take-fix") ? " Opus was unsure, so a person decides." : "";
+  return { summary: `Opus's review says ${o.verdict}${o.sure === 0 ? " (not sure)" : ""}: ${stop(one(o.reason, 450))}${risks(o.risks)}${unsure}`, by: o.model ?? "opus" };
 }
 
 /** Fills the summary of open Merge? and Close? decisions that have none, from the stored reviews at their head. Returns how many it filled. */

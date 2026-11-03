@@ -86,11 +86,11 @@ export function classifyFixups(db: DatabaseSync, repo: string): Classified[] {
     const head = headOf(r);
     if (!head) continue;
     // The review row must be the one at the current head; reviews of older heads don't count.
-    // The final verdict (Opus's, or Sonnet's when skip-listed) and its fix list.
-    const review = db.prepare("SELECT reason, fixes FROM final_reviews WHERE repo = ? AND number = ? AND head_oid = ? AND final = 1 AND verdict = 'take-fix'").get(r.repo, r.number, head) as
+    // The Opus verdict and its fix list.
+    const review = db.prepare("SELECT reason, fixes FROM final_reviews WHERE repo = ? AND number = ? AND head_oid = ? AND verdict = 'take-fix'").get(r.repo, r.number, head) as
       { reason: string; fixes: string | null } | undefined;
     if (!review) continue;
-    // Sonnet is about to read newer discussion; its fix list may be out of date.
+    // Opus is about to read newer discussion; its fix list may be out of date.
     if (stale.has(`${r.repo}#${r.number}@${head}`)) continue;
     if (r.mergeable === "CONFLICTING") continue;
     const fixes = parseFixes(review.fixes);
