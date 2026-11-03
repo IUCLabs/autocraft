@@ -424,7 +424,8 @@ export const STAGES: StageDef[] = [
     models: [{ model: "opus", use: "Reviews each merged PR", remark: "Reads the merge commit and lists findings; the reply is linted like the Review stage's" }],
     promptIds: ["postmerge.opus"], promptStage: "Post-merge review",
     waits: [
-      { name: "Failed post-merge review", why: "The model gave no valid reply twice", howLong: "1 hour", showsAs: "Post-merge review on the item page: no review yet", kind: "backoff" },
+      { name: "Failed post-merge review", why: "The model gave no valid reply twice", howLong: "1 hour, three tries in all", showsAs: "Post-merge review on the item page: no review yet", kind: "backoff" },
+      { name: "Failed post-merge filing", why: "GitHub refused to create the issue", howLong: "1 hour, then 6 hours; stops after three attempts", showsAs: "Post-merge review on the item page: not filed, with the attempts", kind: "backoff" },
     ],
     writes: [{ what: "Follow-up issue", approval: "comment" }],
     person: "Per-repo approval",

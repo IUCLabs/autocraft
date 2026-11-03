@@ -237,7 +237,7 @@ Reply with ONLY one JSON object:
   limits: { perCall: 1, attempts: 2, timeoutSeconds: 1200 },
 };
 
-const POSTMERGE_FIELDS = `ref, title, body (first ${REVIEW_BODY_LIMIT} characters), author, merge_sha (the commit you can read in the repository), method (merge or squash), files (code files changed), tests_omitted and lockfiles_omitted (paths left out of the diff), pipeline_commits (commits our pipeline added to the PR before it merged: a merge of the base branch, a fix-up, a part carried over from a duplicate), review_history (our earlier reviews of the PR, oldest first, with verdict, reason, risks and fixes), related_open (open issues and PRs that mention the PR or its files: number, kind and title only) and diff (the unified diff of the code files as merged, at most ${MAX_MERGED_DIFF_CHARS} characters)`;
+const POSTMERGE_FIELDS = `ref, title, body (first ${REVIEW_BODY_LIMIT} characters), author, merge_sha (the commit you can read in the repository), method (merge or squash), files (code files changed), tests_omitted and lockfiles_omitted (paths left out of the diff), pipeline_commits (commits our pipeline added to the PR before it merged: a merge of the base branch, a fix-up, a part carried over from a duplicate), review_history (our earlier reviews of the PR, oldest first, with verdict, reason, risks and fixes), related_open (issues and PRs that mention the PR or its files, open or closed in the last 30 days: number, kind, state and title only), filed_before (follow-up issues earlier reviews of this PR filed, with their state and title) and diff (the unified diff of the code files as merged, at most ${MAX_MERGED_DIFF_CHARS} characters)`;
 
 const POSTMERGE: ClaudePrompt = {
   id: "postmerge.opus",
@@ -265,7 +265,7 @@ Findings:
 - severity "defect": wrong behaviour, a crash, data loss or a correctness bug in what merged. Each defect becomes one public issue on the repository, so report one only when you have verified it.
 - severity "minor": style, documentation wording, history (commit titles), stale comments, and gaps that only affect tests. Minor findings are kept for the maintainers and never filed.
 - Never invent. Open the cited file in the repository and check that the line shows what you say; a finding you cannot verify is left out. An empty list is a valid reply.
-- duplicate_of: the number from related_open when one of those items already reports the same problem; otherwise null.
+- duplicate_of: the number from related_open or filed_before when one of those items already reports the same problem, closed or not; otherwise null. Report nothing that filed_before already covers.
 - missed_by: the stage that should have caught the problem, one of "classify", "review", "fix-up", "conflict merge", "verify", "merge queue" or "duplicate carry-over"; missed_why: one sentence on why it got through. Both are internal notes and are never posted.
 
 Never name the reference application or its vendor in what you write; say "reference app behaviour".
@@ -274,6 +274,7 @@ title and body are posted as a public issue by the pipeline. Rules for them:
 - Plain and factual, about the code only: what is wrong, where (file:line), the failure scenario, and the suggested fix.
 - They do not mention this pipeline, models, reviews or reviewers, CI state, labels, priority, whitelists or who may merge.
 - No greetings, no offers, no maintainer tone.
+- No URLs, links or issue and PR numbers (#n): they are removed before posting.
 - They never mention /reference or any documentation outside the repository.
 - title: at most ${TITLE_CHARS} characters. body: at most ${BODY_CHARS} characters, Markdown allowed.
 At most ${MAX_FINDINGS} findings.

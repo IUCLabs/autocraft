@@ -1065,9 +1065,13 @@ CREATE TABLE IF NOT EXISTS postmerge_reviews (
   run_id TEXT,
   findings TEXT,
   error TEXT,
+  tries INTEGER NOT NULL DEFAULT 0,   -- consecutive reviews that ended in a retry: error; the third becomes held
   PRIMARY KEY (repo, number)
 );
--- What the filing step did with each finding of a review (review_at identifies the review). state: filed | skipped-duplicate | skipped-limit | skipped-minor.
+-- What the filing step did with each finding of a review (review_at identifies the review).
+-- state: filing (written before gh issue create runs; one left in this state has an unknown outcome and is never retried) | filed |
+-- failed (gh refused with no possible side effect; attempts counts the tries, retried after 1 h and then 6 h, three at most) |
+-- skipped-duplicate (duplicate_of: the PR or issue number that covers it) | skipped-limit | skipped-minor | skipped-stale (the cited file is gone).
 -- A skipped-limit row is replaced when the finding is filed later.
 CREATE TABLE IF NOT EXISTS postmerge_followups (
   repo TEXT NOT NULL, number INTEGER NOT NULL,
@@ -1078,6 +1082,9 @@ CREATE TABLE IF NOT EXISTS postmerge_followups (
   url TEXT,
   state TEXT NOT NULL,
   at TEXT NOT NULL,
+  duplicate_of INTEGER,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  note TEXT,                          -- one line: why a failed attempt failed
   PRIMARY KEY (repo, number, review_at, finding)
 );
 CREATE INDEX IF NOT EXISTS postmerge_followups_issue ON postmerge_followups(repo, issue_number);

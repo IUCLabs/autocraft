@@ -194,9 +194,16 @@ function Finding({ f, repo }: { f: PostmergeFinding; repo: string }) {
       {defect && (
         <div className="mt-2 text-xs">
           {x.state === "filed" && <ItemRef repo={repo} number={x.issue.number} kind="issue" state={x.issue.state} title={x.issue.title} size="sm" />}
-          {x.state === "duplicate" && <span className="text-ink/55">Not filed: duplicate of <span className="code">#{x.duplicateOf}</span></span>}
+          {x.state === "duplicate" && (
+            <span className="inline-flex flex-wrap items-center gap-1.5 text-ink/55">Not filed: duplicate of <ItemRef repo={repo} number={x.duplicateOf} title={null} size="sm" /></span>
+          )}
           {x.state === "limit" && <span className="text-ink/55">Not filed: daily limit</span>}
           {x.state === "pending" && <span className="text-ink/55">Not filed yet</span>}
+          {x.state === "unknown" && <span className="text-warn">Outcome unknown, check GitHub</span>}
+          {x.state === "failed" && <span className="text-ink/55">Not filed: GitHub refused it ({x.attempts} {x.attempts === 1 ? "try" : "tries"}){x.attempts < 3 ? "; tried again later" : ""}</span>}
+          {x.state === "stale" && <span className="text-ink/55">Not filed: the file is no longer on the default branch</span>}
+          {x.state === "refused" && <span className="text-ink/55">Not filed: the text names the product or the pipeline</span>}
+          {x.state === "held" && <span className="text-ink/55">{x.reason === "earlier" ? "Not filed: earlier follow-ups exist" : "Not filed: this PR fixes a follow-up issue"}</span>}
         </div>
       )}
       {(f.missedBy || f.missedWhy) && (
@@ -229,6 +236,14 @@ function Postmerge({ p, repo }: { p: ItemPostmerge; repo: string }) {
         <span className="code text-xs text-ink/50" title={p.mergeSha}>{p.mergeSha.slice(0, 7)}</span>
         <span className="ml-auto text-xs text-ink/50">{ago(p.at)} ago</span>
       </div>
+      {p.earlier.length > 0 && (
+        <div className="mb-2 flex flex-wrap items-center gap-2 text-xs text-ink/70">
+          <span>Follow-ups of earlier reviews:</span>
+          {p.earlier.map((e, i) => e.state === "filed"
+            ? <ItemRef key={i} repo={repo} number={e.issue.number} kind="issue" state={e.issue.state} title={e.issue.title} size="sm" />
+            : <span key={i} className="text-warn">{e.title}: outcome unknown, check GitHub</span>)}
+        </div>
+      )}
       {p.findings.length > 0 && (
         <ul className="divide-y divide-line rounded-md border border-line">
           {p.findings.map((f, i) => <Finding key={i} f={f} repo={repo} />)}

@@ -28,7 +28,9 @@ export type Finding = {
 
 export type PostmergeCommit = { kind: "conflict-merge" | "fix-up" | "duplicate-carry"; sha: string | null; note: string | null };
 export type PostmergeReviewRow = { head: string; verdict: string; sure: boolean; reason: string; risks: string[]; fixes: { file: string; change: string }[]; at: string };
-export type RelatedItem = { number: number; kind: "issue" | "pr"; title: string };
+export type RelatedItem = { number: number; kind: "issue" | "pr"; state: "open" | "closed"; title: string };
+/** A follow-up issue this stage already filed for the PR (any state), or is filing with an unknown outcome. */
+export type FiledBefore = { number: number | null; state: "open" | "closed" | "unknown"; title: string };
 
 /** One merged PR as the prompt shows it. Every string field is untrusted or derived from untrusted text. */
 export type PostmergePr = {
@@ -49,8 +51,10 @@ export type PostmergePr = {
   pipeline_commits: PostmergeCommit[];
   /** Our reviews of the PR, oldest first. */
   review_history: PostmergeReviewRow[];
-  /** Open issues and PRs that mention this PR or its files: number and title only, for deduplication. */
+  /** Issues and PRs that mention this PR or its files, open or closed in the last 30 days: number, kind, state and title only, for deduplication. */
   related_open: RelatedItem[];
+  /** Follow-up issues already filed for this PR by earlier reviews, with their current state. */
+  filed_before: FiledBefore[];
   diff: string;
 };
 
@@ -121,6 +125,7 @@ export const SAMPLE_POSTMERGE_PRS: PostmergePr[] = [{
   merge_sha: "0123456789abcdef0123456789abcdef01234567", method: "merge", files: ["src/png.rs"], tests_omitted: ["tests/png16.rs"], lockfiles_omitted: [],
   pipeline_commits: [{ kind: "conflict-merge", sha: "89abcdef0123456789abcdef0123456789abcdef", note: "merged the base branch into the PR" }],
   review_history: [{ head: "fedcba9876543210fedcba9876543210fedcba98", verdict: "take-fix", sure: true, reason: "Rename tmp to stride.", risks: [], fixes: [{ file: "src/png.rs", change: "Rename `tmp` to `stride`." }], at: "2026-11-01T10:00:00.000Z" }],
-  related_open: [{ number: 14, kind: "issue", title: "Resize crops the last row of 16-bit PNGs" }],
+  related_open: [{ number: 14, kind: "issue", state: "open", title: "Resize crops the last row of 16-bit PNGs" }],
+  filed_before: [],
   diff: "diff --git a/src/png.rs b/src/png.rs\n--- a/src/png.rs\n+++ b/src/png.rs\n@@ -88,7 +88,7 @@ fn resize(img: &Image) -> Image {\n-    let stride = img.width * 4;\n+    let stride = img.width * img.bytes_per_pixel();\n",
 }];

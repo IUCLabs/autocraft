@@ -89,6 +89,7 @@ export function postmergeFor(n: number, kind: Item["kind"], staff: boolean): Ite
   return {
     at: iso(3 * H), model: "claude-opus-5-5", mergeSha: sha(n + 3),
     error: null,
+    earlier: [],
     findings: [
       {
         severity: "defect", title: "Stride is read before the image is checked for 16-bit data",

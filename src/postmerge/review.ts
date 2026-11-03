@@ -13,8 +13,8 @@ import { codeDiff, ghMerged, type MergedFetcher } from "../review/diff.ts";
 import { MAX_DIFF_CHARS } from "../review/opus.ts";
 import { REPO_PATH } from "../sandbox/command.ts";
 import { checkoutForCommit, checkoutForPr } from "../sandbox/index.ts";
-import { lintReply, MAX_MERGED_DIFF_CHARS, parseFindings, publicTexts, type Finding, type PostmergeCommit, type PostmergePr, type PostmergeReviewRow, type RelatedItem } from "./parse.ts";
-import { mergedPr, selectPostmerge, type MergedPr } from "./select.ts";
+import { lintReply, MAX_MERGED_DIFF_CHARS, parseFindings, publicTexts, type FiledBefore, type Finding, type PostmergeCommit, type PostmergePr, type PostmergeReviewRow, type RelatedItem } from "./parse.ts";
+import { followupsOf, MAX_RETRIES, mergedPr, selectPostmerge, type MergedPr } from "./select.ts";
 
 const PROMPT = CLAUDE_PROMPTS["postmerge.opus"];
 const now = () => new Date().toISOString();
@@ -65,23 +65,37 @@ function reviewHistory(db: DatabaseSync, repo: string, number: number): Postmerg
     .map((r) => ({ head: r.head_oid, verdict: r.verdict, sure: r.sure === 1, reason: r.reason, risks: list<string>(r.risks), fixes: list(r.fixes), at: r.at }));
 }
 
-/** Open items of the repo that mention the PR by number or one of its files by path: number, kind and title, for deduplication. */
-export function relatedOpen(db: DatabaseSync, repo: string, number: number, files: string[]): RelatedItem[] {
+/** Items closed within this long still count as related: a defect reported and closed recently is not reported again. */
+export const RELATED_CLOSED_DAYS = 30;
+
+/** Items of the repo, open or closed in the last 30 days, that mention the PR by number or one of its files by path: number, kind, state and title, for deduplication. */
+export function relatedOpen(db: DatabaseSync, repo: string, number: number, files: string[], at = Date.now()): RelatedItem[] {
   const needles = [`#${number}`, ...files.slice(0, 30)];
   const where = needles.map(() => "(i.title LIKE ? ESCAPE '\\' OR i.body LIKE ? ESCAPE '\\')").join(" OR ");
   const args = needles.flatMap((n) => { const like = `%${n.replace(/[\\%_]/g, "\\$&")}%`; return [like, like]; });
-  const rows = db.prepare(`SELECT i.number, i.kind, i.title, i.body FROM items i WHERE i.repo = ? AND i.state = 'OPEN' AND i.number <> ? AND (${where}) ORDER BY i.number LIMIT 60`).all(repo, number, ...args) as
-    { number: number; kind: "issue" | "pr"; title: string | null; body: string | null }[];
+  const since = new Date(at - RELATED_CLOSED_DAYS * 86400_000).toISOString();
+  const rows = db.prepare(`SELECT i.number, i.kind, i.state, i.title, i.body FROM items i WHERE i.repo = ?
+    AND (i.state = 'OPEN' OR COALESCE(i.closed_at, i.merged_at, i.updated_at) >= ?) AND i.number <> ? AND (${where}) ORDER BY i.number LIMIT 60`).all(repo, since, number, ...args) as
+    { number: number; kind: "issue" | "pr"; state: string; title: string | null; body: string | null }[];
   const byNumber = new RegExp(String.raw`(?<![\w/])#${number}(?!\d)`);
   return rows
     .filter((r) => { const text = `${r.title ?? ""}\n${r.body ?? ""}`; return byNumber.test(text) || files.some((f) => text.includes(f)); })
-    .slice(0, 40).map((r) => ({ number: r.number, kind: r.kind, title: (r.title ?? "").slice(0, 160) }));
+    .slice(0, 40).map((r) => ({ number: r.number, kind: r.kind, state: r.state === "OPEN" ? "open" as const : "closed" as const, title: (r.title ?? "").slice(0, 160) }));
+}
+
+/** Follow-up issues earlier reviews of the PR filed, with their current state; one still in `filing` has an unknown outcome. */
+export function filedBefore(db: DatabaseSync, repo: string, number: number): FiledBefore[] {
+  const stateOf = db.prepare("SELECT state FROM items WHERE repo = ? AND number = ?");
+  return followupsOf(db, repo, number).filter((f) => f.state === "filed" || f.state === "filing").map((f) => {
+    const it = f.issue_number === null ? undefined : stateOf.get(repo, f.issue_number) as { state: string } | undefined;
+    return { number: f.issue_number, state: f.state === "filing" ? "unknown" as const : it?.state === "OPEN" || !it ? "open" as const : "closed" as const, title: f.title };
+  });
 }
 
 type Prepared = { kind: "ready"; input: PostmergePr; sha: string | null } | { kind: "error"; error: string };
 
 async function prepare(db: DatabaseSync, c: MergedPr, deps: PostmergeDeps): Promise<Prepared> {
-  const d = await deps.fetchMerged(c.repo, c.number);
+  const d = await deps.fetchMerged(c.repo, c.number, { batch: c.batch === 1 });
   if (!d.ok) return { kind: "error", error: d.tooLarge ? "held: too large to review automatically" : `retry: no merged diff: ${d.error}` };
   let cd = codeDiff(d.text);
   if (!cd.files.length && cd.testsOmitted.length) cd = codeDiff(d.text, true);
@@ -92,26 +106,31 @@ async function prepare(db: DatabaseSync, c: MergedPr, deps: PostmergeDeps): Prom
     ref: refOf(c), title: it?.title ?? "", body: it?.body ?? "", author: it?.author ?? null, merge_sha: d.sha ?? c.head_oid, method: c.method,
     files: cd.files, tests_omitted: cd.testsOmitted, lockfiles_omitted: cd.lockfilesOmitted,
     pipeline_commits: pipelineCommits(db, c.repo, c.number), review_history: reviewHistory(db, c.repo, c.number),
-    related_open: relatedOpen(db, c.repo, c.number, cd.files), diff: cd.text,
+    related_open: relatedOpen(db, c.repo, c.number, cd.files), filed_before: filedBefore(db, c.repo, c.number), diff: cd.text,
   };
   return { kind: "ready", input, sha: d.sha };
 }
 
 /**
  * Stores the review and one `postmerge_followups` row for each finding that is never filed: a minor one (skipped-minor)
- * or a defect another open item already covers (skipped-duplicate). A review that replaces an earlier one keeps the
- * earlier one's follow-up rows, so a defect filed before is not filed again.
+ * or a defect another item already covers (skipped-duplicate). A review that replaces an earlier one keeps the earlier
+ * one's follow-up rows, so the PR's filed follow-ups stay known. A `retry:` error is stored as held at the third try.
  */
 export function saveReview(db: DatabaseSync, c: { repo: string; number: number }, r: { sha: string; runId: string | null; model: string | null; findings: Finding[] | null; error: string | null; at?: string }): void {
   const at = r.at ?? now();
   // A failed second try never replaces a stored review.
   if (r.error && db.prepare("SELECT 1 FROM postmerge_reviews WHERE repo = ? AND number = ? AND error IS NULL").get(c.repo, c.number)) return;
-  db.prepare("INSERT OR REPLACE INTO postmerge_reviews (repo, number, merge_sha, at, model, run_id, findings, error) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
-    .run(c.repo, c.number, r.sha, at, r.model, r.runId, r.findings ? JSON.stringify(r.findings) : null, r.error);
-  const skip = db.prepare("INSERT OR IGNORE INTO postmerge_followups (repo, number, review_at, finding, title, issue_number, url, state, at) VALUES (?, ?, ?, ?, ?, NULL, NULL, ?, ?)");
+  let error = r.error, tries = 0;
+  if (error?.startsWith("retry:")) {
+    tries = ((db.prepare("SELECT tries FROM postmerge_reviews WHERE repo = ? AND number = ?").get(c.repo, c.number) as { tries: number } | undefined)?.tries ?? 0) + 1;
+    if (tries >= MAX_RETRIES) error = `held: gave up after ${tries} tries (${error.slice("retry:".length).trim()})`;
+  }
+  db.prepare("INSERT OR REPLACE INTO postmerge_reviews (repo, number, merge_sha, at, model, run_id, findings, error, tries) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+    .run(c.repo, c.number, r.sha, at, r.model, r.runId, r.findings ? JSON.stringify(r.findings) : null, error, tries);
+  const skip = db.prepare("INSERT OR IGNORE INTO postmerge_followups (repo, number, review_at, finding, title, issue_number, url, state, at, duplicate_of) VALUES (?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?)");
   (r.findings ?? []).forEach((f, i) => {
-    if (f.severity === "minor") skip.run(c.repo, c.number, at, i, f.title, "skipped-minor", at);
-    else if (f.duplicate_of !== null) skip.run(c.repo, c.number, at, i, f.title, "skipped-duplicate", at);
+    if (f.severity === "minor") skip.run(c.repo, c.number, at, i, f.title, "skipped-minor", at, null);
+    else if (f.duplicate_of !== null) skip.run(c.repo, c.number, at, i, f.title, "skipped-duplicate", at, f.duplicate_of);
   });
 }
 
@@ -166,10 +185,15 @@ export async function runPostmerge(db: DatabaseSync, params: PostmergeParams, lo
   return s;
 }
 
-export function queueBackfill(db: DatabaseSync, by: string, since: string): number {
+/** A backfill reaching further back than this needs the operator's confirmation. */
+export const BACKFILL_FREE_DAYS = 14;
+
+export function queueBackfill(db: DatabaseSync, by: string, since: string, o: { yes?: boolean; now?: number } = {}): number {
   const iso = new Date(since).toISOString();
+  const days = ((o.now ?? Date.now()) - Date.parse(iso)) / 86400_000;
+  if (days > BACKFILL_FREE_DAYS && !o.yes) throw new Error(`--since is ${Math.floor(days)} days back; every merged PR since then gets a model review and its defects are filed publicly. Add --yes to confirm`);
   db.prepare("INSERT INTO settings (key, value) VALUES ('postmerge_since', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value").run(iso);
-  audit(db, by, "postmerge-backfill", null, { since: iso });
+  audit(db, by, "postmerge-backfill", null, { since: iso, confirmed: o.yes === true });
   return (db.prepare(`SELECT COUNT(*) AS n FROM (SELECT DISTINCT m.repo, m.number FROM merges m WHERE m.outcome = 'merged' AND m.at >= ?
     AND NOT EXISTS (SELECT 1 FROM postmerge_reviews r WHERE r.repo = m.repo AND r.number = m.number))`).get(iso) as { n: number }).n;
 }

@@ -317,7 +317,21 @@ export type PostmergeFiling =
   | { state: "duplicate"; duplicateOf: number }
   | { state: "limit" }
   | { state: "minor" }
-  | { state: "pending" };
+  | { state: "pending" }
+  /** `gh issue create` was started and its answer is not recorded: the issue may exist. */
+  | { state: "unknown" }
+  | { state: "failed"; attempts: number }
+  /** The file the finding cites is no longer on the default branch. */
+  | { state: "stale" }
+  /** The text names the product or the pipeline's account. */
+  | { state: "refused" }
+  /** Never filed automatically: `earlier` follow-ups of the PR exist, or `fix`: the PR itself fixes a follow-up issue. */
+  | { state: "held"; reason: "earlier" | "fix" };
+
+/** A follow-up issue filed for the PR by an earlier review of it. */
+export type PostmergeEarlier =
+  | { state: "filed"; title: string; issue: { number: number; url: string | null; state: ItemState | null; title: string | null } }
+  | { state: "unknown"; title: string };
 
 export interface PostmergeFinding {
   severity: PostmergeSeverity;
@@ -341,6 +355,8 @@ export interface ItemPostmerge {
   /** Why there is no review yet (for example too large to review); null when there is one. */
   error: string | null;
   findings: PostmergeFinding[];
+  /** Follow-ups of earlier reviews of the PR. */
+  earlier: PostmergeEarlier[];
 }
 
 export type FixupState = "pushed" | "failed" | "refused" | "cannot-push" | "too-large" | "asked" | "rejected";
