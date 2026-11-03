@@ -132,6 +132,15 @@ export function createHttpApi(): Api {
       doCard: (id) => post(`/api/conversation-cards/${id}/do`),
       dismissCard: (id) => post(`/api/conversation-cards/${id}/dismiss`),
     },
+    areas: {
+      get: (repo) => get(`/api/areas/${encodeURIComponent(repo)}`),
+      edit: (repo, edit) => post(`/api/areas/${encodeURIComponent(repo)}/edit`, edit),
+      run: (repo, step) => post(`/api/areas/${encodeURIComponent(repo)}/run`, { step }),
+      accept: (id, body) => post(`/api/area-proposals/${id}/accept`, body ?? {}),
+      dismiss: async (id) => {
+        await post(`/api/area-proposals/${id}/dismiss`);
+      },
+    },
     item: (repo, number) => get(`/api/items/${encodeURIComponent(repo)}/${encodeURIComponent(String(number))}`),
     search: (q) => (q.trim() ? get(`/api/search?${new URLSearchParams({ q })}`) : Promise.resolve([])),
     items: (f) => get(`/api/items${itemQuery(f)}`),

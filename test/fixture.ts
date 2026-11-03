@@ -80,13 +80,13 @@ export function buildFixture(path: string, scale: Scale = FULL): DatabaseSync {
   for (let i = 0; i < scale.open; i++) add("OPEN");
   for (let i = 0; i < scale.closed; i++) add(r() < 0.66 ? "MERGED" : "CLOSED");
 
-  const clsIns = db.prepare("INSERT INTO classifications (repo, number, classifier, run_id, at, type_label, want, reference, topics, flags, dup_of, area, reason) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)");
+  const clsIns = db.prepare("INSERT INTO classifications (repo, number, classifier, run_id, at, type_label, want, reference, flags, dup_of, reason) VALUES (?,?,?,?,?,?,?,?,?,?,?)");
   open.forEach((it, i) => {
     const truth = pick(TYPES);
     const want = pick(WANTS);
     const at = iso(start + (now - start) * r());
     const vote = (cls: string, acc: number) => clsIns.run(it.repo, it.number, cls, `run-${cls}-1`, at, r() < acc ? truth : pick(TYPES), r() < acc ? want : pick(WANTS),
-      r() < 0.1 ? "Filter › Distort › Wave" : null, "1", "[]", r() < 0.02 ? Math.max(1, it.number - 1) : null, pick(["canvas", "export", "ui", "io"]), `Looks like ${truth}`);
+      r() < 0.1 ? "Filter › Distort › Wave" : null, "[]", r() < 0.02 ? Math.max(1, it.number - 1) : null, `Looks like ${truth}`);
     if (i % 5 !== 4) vote("haiku", 0.8);
     if (i % 2 === 0) vote("jev", 0.75);
     if (i % 16 === 0) vote("sonnet", 0.9);

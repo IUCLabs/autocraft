@@ -18,11 +18,14 @@ import { fillClassHashes, SCHEME_ID } from "../itemhash.ts";
 import type { StepContext } from "./steps.ts";
 import { newestVerdictRun } from "../classify/settled.ts";
 import { pilotSql } from "../pilot.ts";
+import { assignAreas, type AssignResult } from "../areas/assign.ts";
 
 export { inputHash } from "../itemhash.ts";
 
 // Jev's top probability from which its label stands without a second opinion.
 export const SURE = 0.9;
+// Area questions per classify job, not counted against its limit: bulk assignment is the areas-rescan step.
+const AREAS_PER_CLASSIFY_JOB = 100;
 const JEV_CHUNK = 40, HAIKU_PER_CALL = 25;
 
 
@@ -146,7 +149,7 @@ export function dueItems(db: DatabaseSync, run: string, mode: "new" | "all"): { 
   return { open, due, hashes };
 }
 
-async function pass(ctx: StepContext, run: string, mode: "new" | "all"): Promise<{ jev: number; due: number; haiku: number; haikuDue: number; haikuAlone: number; aloneDue: number; left: number }> {
+async function pass(ctx: StepContext, run: string, mode: "new" | "all"): Promise<{ areas: AssignResult; jev: number; due: number; haiku: number; haikuDue: number; haikuAlone: number; aloneDue: number; left: number }> {
   const limit = Number(ctx.params.limit);
   ctx.usageRun(run);
   ctx.progress("Finding items to classify");
@@ -164,8 +167,12 @@ async function pass(ctx: StepContext, run: string, mode: "new" | "all"): Promise
   ctx.log(`Haiku: ${unsure.length} items where Jev is unsure of the type (under ${SURE * 100} %) or of a flag`);
   const haiku = await haikuPass(ctx, run, unsure, sent);
   const jev = jevDone.size;
-  return { jev, due: due.length, haiku, haikuDue: unsure.length, haikuAlone, aloneDue: alone.length, left: due.length - jev - haikuAlone };
+  // Items of repos with an area list that were not asked against its current version; Jev's answers share the job's limit with the type pass.
+  const areas = ctx.cancelled() ? { due: 0, jev: 0, haiku: 0, none: 0, left: 0 } : await assignAreas(ctx.db, { limit: Math.min(limit, AREAS_PER_CLASSIFY_JOB), usageRun: run, cancelled: ctx.cancelled, progress: ctx.progress, log: ctx.log });
+  return { areas, jev, due: due.length, haiku, haikuDue: unsure.length, haikuAlone, aloneDue: alone.length, left: due.length - jev - haikuAlone };
 }
+
+const areaNote = (r: { areas: AssignResult }): string => (r.areas.due ? ` Areas: ${r.areas.jev} by Jev, ${r.areas.haiku} by Haiku of ${r.areas.due} items asked.` : "");
 
 const aloneNote = (r: { haikuAlone: number; aloneDue: number }): string => (r.aloneDue ? `Jev unavailable: Haiku classified ${r.haikuAlone} items. ` : "");
 
@@ -173,8 +180,8 @@ export async function classifyNew(ctx: StepContext): Promise<string> {
   const run = currentRun(ctx.db);
   if (!run) throw new Error("There is no classification run yet; start a classification pass first.");
   const r = await pass(ctx, run, "new");
-  if (!r.due && !r.haikuDue) return `Nothing to classify in run ${run}.`;
-  return `Run ${run}: ${aloneNote(r)}Jev classified ${r.jev} of ${r.due} new or changed items${r.left ? ` (${r.left} left)` : ""}; Haiku gave a second opinion on ${r.haiku} of ${r.haikuDue}.`;
+  if (!r.due && !r.haikuDue && !r.areas.due) return `Nothing to classify in run ${run}.`;
+  return `Run ${run}: ${aloneNote(r)}Jev classified ${r.jev} of ${r.due} new or changed items${r.left ? ` (${r.left} left)` : ""}; Haiku gave a second opinion on ${r.haiku} of ${r.haikuDue}.${areaNote(r)}`;
 }
 
 export async function classifyAll(ctx: StepContext): Promise<string> {
@@ -182,5 +189,5 @@ export async function classifyAll(ctx: StepContext): Promise<string> {
   const r = await pass(ctx, run, "all");
   const complete = r.left === 0 && !ctx.cancelled();
   if (complete) ctx.db.prepare("INSERT INTO settings (key, value) VALUES ('classify_run', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value").run(run);
-  return `Run ${run}: ${aloneNote(r)}Jev classified ${r.jev} of ${r.due} items without a verdict${r.left ? ` (${r.left} left; start it again to continue)` : ""}; Haiku gave a second opinion on ${r.haiku} of ${r.haikuDue}.${complete ? " The run is now the current one." : ""}`;
+  return `Run ${run}: ${aloneNote(r)}Jev classified ${r.jev} of ${r.due} items without a verdict${r.left ? ` (${r.left} left; start it again to continue)` : ""}; Haiku gave a second opinion on ${r.haiku} of ${r.haikuDue}.${areaNote(r)}${complete ? " The run is now the current one." : ""}`;
 }

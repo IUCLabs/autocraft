@@ -310,7 +310,6 @@ function Verdicts({ cls }: { cls: Classification[] }) {
     { label: "Type", render: (c) => c.typeLabel, off: (c) => c.typeLabel !== typeMaj },
     { label: "Want", render: (c) => <span className={WANT[c.want]}>{c.want}</span>, off: (c) => c.want !== wantMaj },
     { label: "Reference", render: (c) => c.reference ?? <span className="text-ink/35">none</span> },
-    { label: "Topics", render: (c) => (c.topics === "many" ? "several topics" : "one topic") },
     { label: "Reason", render: (c) => <span className="text-ink/70"><Reason reason={c.reason} /></span> },
   ];
   return (

@@ -187,8 +187,10 @@ function promptVersion(id: ClaudePromptId | JevPromptId): string {
 /** Item refs of a prompt's input: items carry repo and number, review PRs a `repo#number` ref. */
 function refsOf(input: readonly unknown[]): ItemRef[] {
   const out: ItemRef[] = [];
-  for (const x of input as { repo?: string; number?: number; ref?: string; a?: { number: number }; b?: { number: number } }[]) {
+  for (const x of input as { repo?: string; number?: number; ref?: string; a?: { number: number }; b?: { number: number }; items?: unknown[] }[]) {
     if (typeof x.repo === "string" && typeof x.number === "number") out.push({ repo: x.repo, number: x.number });
+    // An area batch: one repo's list and its items.
+    else if (typeof x.repo === "string" && Array.isArray((x as { items?: unknown }).items)) out.push(...refsOf((x as { items: unknown[] }).items));
     // A duplicate pair: both items.
     else if (typeof x.repo === "string" && x.a && x.b) out.push({ repo: x.repo, number: x.a.number }, { repo: x.repo, number: x.b.number });
     else if (typeof x.ref === "string") {
@@ -337,8 +339,7 @@ export async function askClaude<K extends ClaudePromptId>(id: K, model: string, 
 }
 
 /** Sends a registered Jev request (src/prompts) for one item to `jev ask`; the same rule as `askClaude`. Recorded as an agent run without an account. */
-export async function askJev(id: JevPromptId, item: Item | DupePair, db: DatabaseSync): Promise<Proc> {
-  const body = renderJev(id, item);
+export async function askJev(id: JevPromptId, item: Item | DupePair, db: DatabaseSync, body: string = renderJev(id, item)): Promise<Proc> {
   const runId = startJevRun(db, { promptId: id, promptVersion: promptVersion(id), provider: "jev", model: "jev", items: refsOf([item]), prompt: body });
   const start = now();
   try {
@@ -349,7 +350,7 @@ export async function askJev(id: JevPromptId, item: Item | DupePair, db: Databas
       if (j.usage) tokens = { input: j.usage.input_tokens ?? 0, output: j.usage.output_tokens ?? 0, cacheRead: 0, cacheWrite: 0 };
     } catch { /* the caller reports an unreadable answer */ }
     // classify.jev is saved per item by runJev, which sums its retries
-    if (tokens && id !== "classify.jev") saveUsage(db, String(runId), "jev", id.split(".")[0]!, JEV_PROMPTS[id].models[0]!, 1, { ...tokens, cost: tokens.input * JEV_USD_PER_INPUT_TOKEN }, start, now());
+    if (tokens && id !== "classify.jev" && id !== "areas.jev") saveUsage(db, String(runId), "jev", id.split(".")[0]!, JEV_PROMPTS[id].models[0]!, 1, { ...tokens, cost: tokens.input * JEV_USD_PER_INPUT_TOKEN }, start, now());
     const outage = jevFailure(r);
     if (outage) markJevUnavailable(db, outage.kind, outage.reason);
     else if (r.code === 0) markJevWorking(db, Date.parse(start));

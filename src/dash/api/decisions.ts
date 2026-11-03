@@ -14,6 +14,7 @@ import { audit } from "../audit.ts";
 import { randomToken } from "../server/crypto.ts";
 import { HttpError, type RateLimiter } from "../server/util.ts";
 import type { Req } from "../types.ts";
+import { areaNameOf } from "../../areas/store.ts";
 import { hiddenRepos, visibleRepos } from "./visible.ts";
 import { pickDecision, shortRepo } from "../../../web/src/lib/links.ts";
 
@@ -82,18 +83,18 @@ const toOpinion = (o: OpinionRow): Opinion => ({
 
 type ClassRow = {
   classifier: string; at: string; type_label: string | null; want: string | null; reference: string | null;
-  topics: string | null; area: string | null; reason: string | null; dup_of: number | null;
+  reason: string | null; dup_of: number | null;
 };
 
 export function classificationsOf(db: DatabaseSync, repo: string, n: number): Classification[] {
   // latest verdict per classifier
-  const rows = db.prepare(`SELECT classifier, at, type_label, want, reference, topics, area, reason, dup_of FROM classifications c
+  const rows = db.prepare(`SELECT classifier, at, type_label, want, reference, reason, dup_of FROM classifications c
     WHERE repo = ? AND number = ? AND at = (SELECT MAX(at) FROM classifications x WHERE x.repo = c.repo AND x.number = c.number AND x.classifier = c.classifier)
     ORDER BY classifier`).all(repo, n) as ClassRow[];
   return rows.map((r) => ({
     classifier: r.classifier as Classification["classifier"], at: r.at,
     typeLabel: r.type_label as Classification["typeLabel"], want: (r.want ?? "unclear") as Classification["want"],
-    reference: r.reference, topics: r.topics === "many" ? "many" : "1", area: r.area ?? "", reason: r.reason ?? "", dupOf: r.dup_of,
+    reference: r.reference, reason: r.reason ?? "", dupOf: r.dup_of,
   }));
 }
 
@@ -175,6 +176,7 @@ export function toDecision(db: DatabaseSync, d: DecisionRow, viewer: Viewer): De
     commentCount,
     related: batch ? [] : relatedOf(db, d.repo!, d.number!),
     classifications: batch ? [] : classificationsOf(db, d.repo!, d.number!),
+    area: batch ? null : areaNameOf(db, d.repo!, d.number!),
     priority: batch ? null : priorityOf(db, d.repo!, d.number!),
   };
 }

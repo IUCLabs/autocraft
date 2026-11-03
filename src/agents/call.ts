@@ -21,6 +21,8 @@ const PROMPT_STEP: Record<string, { step: string; stage: number }> = {
   "dupes.compare-prs.opus": { step: "dupes-compare", stage: 3 }, "dupes.compare-issues.sonnet": { step: "dupes-compare", stage: 3 },
   "decide.recommend": { step: "decide", stage: 3 }, "fixup.check": { step: "fixup", stage: 6 }, "fixissue.check": { step: "fixissue", stage: 7 },
   "conversation.turn": { step: "conversation", stage: 3 },
+  "areas.jev": { step: "classify-new", stage: 2 }, "areas.haiku": { step: "classify-new", stage: 2 },
+  "areas.propose": { step: "areas-propose", stage: 2 }, "areas.suggest": { step: "areas-suggest", stage: 2 },
 };
 
 export function stepOf(promptId: string): { jobId: number | null; step: string; stage: number } {

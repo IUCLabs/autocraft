@@ -24,6 +24,7 @@ import type {
   ClassifierReport,
   CostReport,
   Decision,
+  RepoAreas,
   Flow,
   DecisionComment,
   DecisionFilter,
@@ -68,6 +69,9 @@ import type {
   EnvInput,
   TaskFilter,
   TaskPage,
+  AreaDef,
+  AreaEditBody,
+  AreaStep,
   Conversation,
   ConversationCard,
 } from "./types";
@@ -102,6 +106,17 @@ export interface Api {
     editCard(id: number, text: string): Promise<ConversationCard>;
     doCard(id: number): Promise<ConversationCard>;
     dismissCard(id: number): Promise<ConversationCard>;
+  };
+  /** A repo's area list. Reading is for everyone who sees the repo; every write is operator only. */
+  areas: {
+    get(repo: RepoName): Promise<RepoAreas>;
+    /** Each edit saves a new list version and returns the repo's areas. Adding or removing an area also queues a re-scan. */
+    edit(repo: RepoName, edit: AreaEditBody): Promise<RepoAreas>;
+    /** Queues the model step; returns the job id. */
+    run(repo: RepoName, step: AreaStep): Promise<{ jobId: number }>;
+    /** A "propose" proposal: accepts the stored list or the edited `areas`. A "suggest" proposal: accepts the named areas and ignores the others in `ignore`. Starts a re-scan when a version was saved. */
+    accept(id: number, body?: { areas?: AreaDef[]; accept?: string[]; ignore?: string[] }): Promise<RepoAreas>;
+    dismiss(id: number): Promise<void>;
   };
   item(repo: RepoName, number: number): Promise<Item>;
   /** Operator only: review the current head again, plan Verify again, or try the issue fix again. Writes nothing to GitHub. */

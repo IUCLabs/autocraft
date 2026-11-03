@@ -82,6 +82,9 @@ const ADDED_INDEXES = [
     END`,
 ];
 
+// Columns removed after their first release.
+const DROPPED_COLUMNS: [table: string, column: string][] = [["classifications", "topics"], ["classifications", "area"]];
+
 // Bump when migrateValues() or backfill() change what they do.
 const MIGRATION_VERSION = 5;
 
@@ -115,6 +118,16 @@ function addColumns(db: DatabaseSync): void {
       have.set(table, cols);
     }
     if (!cols.has(column)) db.exec(`ALTER TABLE main.${table} ADD COLUMN ${column} ${type}`);
+  }
+}
+
+function dropColumns(db: DatabaseSync): void {
+  for (const [table, column] of DROPPED_COLUMNS) {
+    const cols = (db.prepare(`PRAGMA main.table_info(${table})`).all() as { name: string }[]).map((c) => c.name);
+    if (!cols.includes(column)) continue;
+    // The live-change triggers name the column; connect() recreates them after this.
+    for (const t of db.prepare("SELECT name FROM main.sqlite_master WHERE type = 'trigger' AND tbl_name = ? AND name LIKE 'live\\_%' ESCAPE '\\'").all(table) as { name: string }[]) db.exec(`DROP TRIGGER main.${t.name}`);
+    db.exec(`ALTER TABLE main.${table} DROP COLUMN ${column}`);
   }
 }
 
@@ -218,7 +231,7 @@ function buildItemStage(db: DatabaseSync): void {
 
 /** Identifies the schema this code expects; the database stores the stamp it was last migrated with. */
 function schemaStamp(sql: string): string {
-  return createHash("sha256").update(sql).update(JSON.stringify([ADDED_COLUMNS, ADDED_INDEXES, MIGRATION_VERSION, liveSql(), BOOKKEEPING_COLUMNS])).digest("hex").slice(0, 16);
+  return createHash("sha256").update(sql).update(JSON.stringify([ADDED_COLUMNS, DROPPED_COLUMNS, ADDED_INDEXES, MIGRATION_VERSION, liveSql(), BOOKKEEPING_COLUMNS])).digest("hex").slice(0, 16);
 }
 
 function stampOf(db: DatabaseSync): string | null {
@@ -247,6 +260,7 @@ export function connect(path: string = dbPath()): DatabaseSync {
   }
   db.exec(schema);
   addColumns(db);
+  dropColumns(db);
   for (const ix of ADDED_INDEXES) db.exec(ix);
   db.exec(liveSql(db));
   migrateValues(db);
