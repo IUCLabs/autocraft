@@ -43,13 +43,10 @@ function Title({ r }: { r: QueueWorkRow }) {
 }
 
 function NextBadge({ r }: { r: QueueWorkRow }) {
+  // A queued next step shows as its place in line; the plain step otherwise.
+  if (r.queue) return <QueueBadge slot={r.queue} repo={r.repo} number={r.number} />;
   const badge = <Badge tone={r.nextHref ? "warn" : "neutral"}>{r.next}</Badge>;
-  return (
-    <>
-      {r.nextHref ? <Link to={r.nextHref}>{badge}</Link> : badge}
-      <QueueBadge slot={r.queue} repo={r.repo} number={r.number} />
-    </>
-  );
+  return r.nextHref ? <Link to={r.nextHref}>{badge}</Link> : badge;
 }
 
 function WorkMenu({ r }: { r: QueueWorkRow }) {

@@ -345,15 +345,15 @@ function Table({ rows }: { rows: ItemListRow[] }) {
                 {it.updatedAt ? `${ago(it.updatedAt)} ago` : "–"}
               </td>
               <td className="px-3 py-2">
-                <span className="flex flex-wrap items-center gap-1">
-                  <SettledBadge s={it.settled} />
-                  <QueueBadge slot={it.queue} repo={it.repo} number={it.number} />
-                </span>
+                <SettledBadge s={it.settled} />
               </td>
               <td className="px-3 py-2">
                 <Flags flags={it.settled.flags} />
               </td>
-              <td className="px-3 py-2 text-xs text-ink/60">{it.stage ? STAGE[it.stage] : <span className="text-ink/30">–</span>}</td>
+              <td className="px-3 py-2 text-xs text-ink/60">
+                {it.stage && <span className="mr-1">{STAGE[it.stage]}</span>}
+                {it.queue ? <QueueBadge slot={it.queue} repo={it.repo} number={it.number} /> : !it.stage && <span className="text-ink/30">–</span>}
+              </td>
             </tr>
           ))}
         </tbody>
