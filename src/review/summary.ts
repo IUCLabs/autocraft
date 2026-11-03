@@ -24,6 +24,7 @@ export type ReviewText = {
   /** One sentence for the recommendation, or null. */
   why: string | null;
   verdict: string;
+  sure: boolean;
   reason: string;
   fixes: number;
 };
@@ -36,7 +37,7 @@ export function reviewText(db: DatabaseSync, repo: string, number: number, head:
   if (!summary && !reason) return null;
   let fixes = 0;
   try { fixes = (JSON.parse(o.fixes ?? "[]") as unknown[]).length; } catch { /* none */ }
-  return { summary: summary || reason, by: summary ? (o.model ?? "opus") : "", why: oneSentence(o.why) ?? oneSentence(o.reason), verdict: o.verdict, reason, fixes };
+  return { summary: summary || reason, by: summary ? (o.model ?? "opus") : "", why: oneSentence(o.why) ?? oneSentence(o.reason), verdict: o.verdict, sure: o.sure !== 0, reason, fixes };
 }
 
 /** The "review:" fact of a Merge? decision. */
@@ -60,7 +61,8 @@ export function fillReviewSummaries(db: DatabaseSync, at: string, repo?: string)
     if (!r) continue;
     const line = (f: string) => (d.kind === "merge" && f.startsWith("review: ") ? reviewFact(r) : d.kind === "close" && f.startsWith("review reason: ") ? `review reason: ${r.reason.slice(0, 300)}` : f);
     const facts = JSON.stringify(factsOf(d).map(line));
-    const recommended = d.recommended && r.why ? d.recommended : null;
+    // The same rule as the ask: Merge? recommends unless Opus was unsure, Close? always; both only with a reason.
+    const recommended = r.why && (d.kind === "close" || r.sure) ? (d.kind === "close" ? "close" : "merge") : null;
     const same = d.summary === r.summary && (d.summary_by ?? "") === r.by && d.facts === facts && d.recommended === recommended && d.recommended_reason === (recommended ? r.why : null);
     if (same) continue;
     upd.run(r.summary, r.by || null, d.summary === r.summary ? (d.summary_at ?? at) : at, facts, recommended, recommended ? r.why : null, d.id);

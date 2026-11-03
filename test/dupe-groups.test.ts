@@ -143,6 +143,15 @@ describe("PR group", () => {
     assert.ok(!dec.summary!.includes("does better"));
   });
 
+  test("a long summary on the first attempt is kept when the retry gives nothing", async () => {
+    const db = fresh(specs, [[1, 2], [2, 3]]);
+    let n = 0;
+    const d = deps(() => (n++ === 0 ? pr(2, [{ number: 1, duplicate: true, better: [], carry: [] }, { number: 3, duplicate: true, better: [], carry: [] }], "most complete", { summary: `Keep #2 it is. ${WORDS(100)}.` }) : null));
+    const r = await runDupeCompare(db, {}, () => {}, d);
+    assert.equal(r.byRule, 0);
+    assert.equal(getDecision(db, GROUP_ID)!.summary, "Keep #2 it is.");
+  });
+
   test("a PR the model says is not a duplicate stays open", async () => {
     const db = fresh(specs, [[1, 2], [2, 3]]);
     await runDupeCompare(db, {}, () => {}, deps(() => pr(2, [{ number: 1, duplicate: false, better: ["other file"], carry: [] }, { number: 3, duplicate: true, better: [], carry: [] }])));

@@ -155,7 +155,7 @@ function textOf(db: DatabaseSync, p: GroupPlan) {
   const by = used.length && used.every((c) => c.source === "model" && c.summary) ? p.model ?? "" : "";
   // One sentence for the recommendation; none from a rule or when the model gave nothing to say.
   const lead = p.sets.find((s) => s.cmp.kept === primary.number) ?? p.sets[0]!;
-  const why = byRule || lead.cmp.source === "single" ? null : lead.cmp.why || oneSentence(lead.cmp.reason);
+  const why = byRule || lead.cmp.source === "single" ? null : oneSentence(lead.cmp.why) ?? oneSentence(lead.cmp.reason);
   const keepFacts = keeps.map((k) => {
     const r = info.get(p.repo, k.number) as { kind: string; state: string; title: string | null; comments_count: number | null };
     return `Keep: #${k.number} (${r.kind === "pr" ? "PR" : "issue"}, ${r.state === "OPEN" ? "open" : r.state === "MERGED" ? "merged" : "closed"}, ${r.comments_count ?? 0} comments): ${clip(r.title)}`;

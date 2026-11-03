@@ -183,12 +183,16 @@ export async function runOpusReview(db: DatabaseSync, params: OpusParams, log: (
     if (checkout) input.repo_dir = REPO_PATH;
     let usage: Usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: null };
     let got: OpusReview | null = null;
+    // A reply valid except for a long summary is kept in case the retry gives nothing.
+    let fallback: OpusReview | null = null;
     for (let attempt = 0; attempt < PROMPT.limits.attempts && !got; attempt++) {
       const reply = await askClaude("review.opus", deps.model, [input], db, { checkout });
       if (!reply) continue;
       usage = add(usage, reply.usage);
       got = parseOpusReply(reply.text, input.ref, attempt === PROMPT.limits.attempts - 1);
+      if (!got) fallback ??= parseOpusReply(reply.text, input.ref, true);
     }
+    got ??= fallback;
     if (got) {
       saveOpus(db, runId, c, { mode, base, model: deps.model, review: got, snap });
       tally(got);

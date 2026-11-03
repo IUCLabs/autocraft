@@ -18,7 +18,7 @@ import { REPO_PATH } from "../sandbox/command.ts";
 import { compareCanonical, canonInfo, pickCanonical } from "./canonical.ts";
 import { askGroupDecisions } from "./decide.ts";
 import {
-  GROUP_DIFF_CHARS, GROUP_MAX, parseIssueComparison, parsePrComparison, prsRef,
+  GROUP_DIFF_CHARS, GROUP_MAX, parseIssueComparison, parsePrComparison, prsRef, type IssueComparison, type PrComparison,
   type CompareIssue, type CompareIssues, type ComparePr, type ComparePrs,
 } from "./group.ts";
 import { dueSets, rememberDrop, saveComparison, storedComparison, type ComparisonResult, type KindSet, type StoredComparison } from "./plan.ts";
@@ -147,26 +147,31 @@ async function compareChunk(x: Ctx, s: KindSet, numbers: number[], usage: { u: U
     if (checkout) input.repo_dir = REPO_PATH;
     const model = PR_PROMPT.models[0]!;
     usage.model = model;
+    let fallback: PrComparison | null = null;
     for (let attempt = 0; attempt < PR_PROMPT.limits.attempts; attempt++) {
       const reply = await deps.ask("dupes.compare-prs.opus", model, input, checkout ?? undefined);
       if (!reply) continue;
       usage.u = add(usage.u, reply.usage);
       const r = parsePrComparison(reply.text, numbers, attempt === PR_PROMPT.limits.attempts - 1);
       if (r) return r;
+      // Valid except for a long summary: kept in case the retry gives nothing.
+      fallback ??= parsePrComparison(reply.text, numbers, true);
     }
-    return null;
+    return fallback;
   }
   const input = issueInput(x.db, s.repo, numbers);
   const model = ISSUE_PROMPT.models[0]!;
   usage.model = model;
+  let fallback: IssueComparison | null = null;
   for (let attempt = 0; attempt < ISSUE_PROMPT.limits.attempts; attempt++) {
     const reply = await deps.ask("dupes.compare-issues.sonnet", model, input);
     if (!reply) continue;
     usage.u = add(usage.u, reply.usage);
     const r = parseIssueComparison(reply.text, numbers, attempt === ISSUE_PROMPT.limits.attempts - 1);
     if (r) return r;
+    fallback ??= parseIssueComparison(reply.text, numbers, true);
   }
-  return null;
+  return fallback;
 }
 
 /** Compares the whole set, in rounds when it is larger than GROUP_MAX. */

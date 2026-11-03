@@ -66,6 +66,15 @@ describe("merge and close summaries", () => {
     assert.deepEqual([m.summary, m.summary_by, m.recommended, m.recommended_reason], ["A small, tested fix. The review says take.", "opus", "merge", "It is small and tested."]);
     assert.ok(factsOf(m).includes("review: take: Small and tested") && factsOf(m).includes(`${HEAD_FACT}sha4`));
     assert.equal(fillReviewSummaries(db, T0), 0);
+    // A reason that appears later at the same head adds the recommendation to a Close? that had none.
+    review(db).run(3, "sha3", "opus", "close", `${Array.from({ length: 50 }, (_, i) => `w${i}`).join(" ")}.`, null, null, null);
+    askCloseDecisions(db, "app", T0);
+    const cid = closeDecisionId("app", 3, "sha3");
+    assert.equal(getDecision(db, cid)!.recommended, null);
+    review(db).run(3, "sha3", "opus", "close", "Not wanted.", null, "Sum.", "Not wanted in core.");
+    assert.equal(fillReviewSummaries(db, T0), 1);
+    assert.deepEqual([getDecision(db, cid)!.recommended, getDecision(db, cid)!.recommended_reason], ["close", "Not wanted in core."]);
+    assert.equal(fillReviewSummaries(db, T0), 0);
     // A new review at the same head with no usable reason leaves the Merge? without a recommendation.
     review(db).run(4, "sha4", "opus", "take", `${Array.from({ length: 50 }, (_, i) => `w${i}`).join(" ")}.`, null, null, null);
     assert.equal(fillReviewSummaries(db, T0), 1);
