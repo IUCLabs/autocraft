@@ -77,10 +77,8 @@ function SingleMergeLimit() {
         void write.run("single-merge", () => api.repoAdmin.setSingleMerge(Number(max))).then((ok) => ok && q.refetch());
       }}
     >
-      <label className="flex flex-wrap items-center gap-2">
-        Merge one at a time when at most
-        <TextInput inputMode="numeric" value={max} onChange={(e) => setMax(e.target.value)} className="w-16 text-ink" />
-        PRs are ready
+      <label className="leading-[2.75rem] md:leading-8">
+        Merge one at a time when at most <TextInput inputMode="numeric" value={max} onChange={(e) => setMax(e.target.value)} className="mx-1 w-16 align-middle text-ink" /> PRs are ready
       </label>
       <Button type="submit" size="sm" disabled={!valid || q.data?.max === Number(max)} loading={write.busy === "single-merge"} className="max-md:h-11">
         Save
