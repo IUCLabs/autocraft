@@ -111,7 +111,7 @@ export function createBuildMock(me: User, changed: () => void): Pick<Api, "envs"
   };
   return {
     envs: {
-      list: () => wait(envs.filter((e) => e.enabled || me.role === "operator")),
+      list: () => wait(envs.filter((e) => e.enabled || me.role !== "viewer")),
       async create(input) {
         operator();
         if (!/^[a-z][a-z0-9-]{1,30}[a-z0-9]$/.test(input.id)) throw new Error("id must be 3 to 32 lowercase letters, digits or hyphens, starting with a letter");

@@ -29,14 +29,14 @@ import { pipelineState } from "../../runner/autopilot.ts";
 import { PilotError, setPilot } from "../../pilot.ts";
 import { canSeeInternals } from "./staff.ts";
 
-// Who can sign in, their roles and sessions: audited rows only operators read.
-const ACCESS_ACTIONS = ["access-add", "access-remove", "access-role", "session-revoke", "sign-in", "sign-in-refused"];
 const NOTE_MAX = 300;
 const ACCESS_NOTE_MAX = 500;
 const AUDIT_PAGE = 50;
+// Accounts and access (who can sign in, sessions, the Claude accounts) are audited for operators only.
+const operatorOnly = (a: string) => a.startsWith("access-") || a.startsWith("account-") || ["session-revoke", "sign-in", "sign-in-refused"].includes(a);
 export const AUDIT_ACTIONS = [
   "answer", "undo", "adopt", "opinion", "opinion-retract", "comment", "override", "rule", "access-add", "access-remove", "access-role",
-  "session-revoke", "sign-in", "sign-in-refused", "repo-track", "repo-untrack", "labels-approve", "labels-revoke", "labels-apply", "merge-approve", "merge-revoke", "comment-approve", "comment-revoke", "act-comment", "act-close", "act-skip", "push-approve", "push-revoke", "fixup-push", "fixup-comment", "fixup-comment-edit", "fixissue-approve", "fixissue-revoke", "fixissue-push", "fixissue-pr", "fixissue-comment",
+  "session-revoke", "sign-in", "sign-in-refused", "account-add", "account-change", "account-login-start", "account-login-code", "account-login-cancel", "account-sign-out", "account-refresh", "repo-track", "repo-untrack", "labels-approve", "labels-revoke", "labels-apply", "merge-approve", "merge-revoke", "comment-approve", "comment-revoke", "act-comment", "act-close", "act-skip", "push-approve", "push-revoke", "fixup-push", "fixup-comment", "fixup-comment-edit", "fixissue-approve", "fixissue-revoke", "fixissue-push", "fixissue-pr", "fixissue-comment",
   "job-request", "job-cancel", "pipeline-switch", "stage-limit", "limit-reset", "pilot-set", "pilot-clear", "repo-pipeline", "review-post", "review-edit", "batch-again", "reopen", "backlog-bulk", "withdraw",
   "single-merge-max", "label-create", "batch-pr-close", "fork-create", "assign", "unassign", "merge", "batch-push", "batch-pr", "shared-repos",
   "fasttrack-add", "fasttrack-remove", "merge-hold", "merge-release", "batch-remove", "batch-stop", "areas-edit", "areas-accept", "review-batch-size", "ci-approve", "ci-revoke", "ci-run-approve",
@@ -483,7 +483,8 @@ export function auditLog(db: DatabaseSync, req: Req): AuditPage {
   const login = (q.get("login") ?? "").trim().slice(0, 100);
   const action = q.get("action") ?? "";
   const operator = isOperator(req);
-  const actions = operator ? AUDIT_ACTIONS : AUDIT_ACTIONS.filter((a) => !ACCESS_ACTIONS.includes(a));
+  // Maintainers see only listed actions that are not operator-only; an action nobody listed stays hidden.
+  const actions = operator ? AUDIT_ACTIONS : AUDIT_ACTIONS.filter((a) => !operatorOnly(a));
   if (action && !actions.includes(action)) throw new HttpError(400, "unknown action");
   const limit = int(q.get("limit"), AUDIT_PAGE, 1, 500, "limit");
   const offset = int(q.get("offset"), 0, 0, 1e9, "offset");
@@ -498,8 +499,8 @@ export function auditLog(db: DatabaseSync, req: Req): AuditPage {
     args.push(action);
   }
   if (!operator) {
-    where.push(`action NOT IN (${ACCESS_ACTIONS.map(() => "?").join(", ")})`);
-    args.push(...ACCESS_ACTIONS);
+    where.push(`action IN (${actions.map(() => "?").join(", ")})`);
+    args.push(...actions);
   }
   const w = where.length ? `WHERE ${where.join(" AND ")}` : "";
   const total = Number((db.prepare(`SELECT COUNT(*) AS n FROM audit ${w}`).get(...args) as { n: number }).n);

@@ -197,7 +197,7 @@ export function createAdminMock(me: User, changed: () => void): AdminApi {
       login: a.login, tier: tierOf(a, rule), autoTier: autoTier(a, rule), override: a.override, overrideBy: a.by, overrideAt: a.at,
       merged: a.merged, closedUnmerged: a.closed, open: a.open, mergeRate: rate(a), lastMerge: a.lastMerge, repos: a.repos,
     };
-    if (operator) c.overrideNote = a.note;
+    if (me.role !== "viewer") c.overrideNote = a.note;
     return c;
   };
 
@@ -393,7 +393,7 @@ export function createAdminMock(me: User, changed: () => void): AdminApi {
       },
       audit(f) {
         if (me.role === "viewer") throw new Error("only operators and maintainers read the audit log");
-        const hidden = operator ? [] : ["access-add", "access-remove", "access-role", "session-revoke", "sign-in", "sign-in-refused"];
+        const hidden = operator ? [] : ["access-add", "access-remove", "access-role", "session-revoke", "sign-in", "sign-in-refused", "account-change"];
         const l = f.login?.trim().toLowerCase();
         const rows = auditLog.filter((e) => !hidden.includes(e.action) && (!l || e.login.toLowerCase() === l || e.target?.toLowerCase() === l) && (!f.action || e.action === f.action));
         const from = f.offset ?? 0;

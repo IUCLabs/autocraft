@@ -4,7 +4,7 @@ import { Dialog, DropdownMenu } from "radix-ui";
 import { SignOutIcon, MonitorIcon, MoonIcon, DotsThreeIcon, SidebarSimpleIcon, MagnifyingGlassIcon, SunIcon, KeyboardIcon, XIcon, CheckIcon } from "@phosphor-icons/react";
 import { modules } from "../registry";
 import { can, roleLabel } from "../registry/permissions";
-import type { NavEntry, RouteDef } from "../registry/types";
+import type { NavEntry, Permission, RouteDef } from "../registry/types";
 import { useUser } from "./UserContext";
 import { Workspace } from "./Workspace";
 import { useIsPhone } from "./useMedia";
@@ -42,7 +42,7 @@ export function AppShell() {
   const visible = useMemo(() => modules.filter((m) => can(user, m.permission)), [user]);
   const nav = visible.flatMap((m) => (m.nav ? [m.nav] : [])).sort((a, b) => a.order - b.order);
   const routes = visible.flatMap((m) => m.routes);
-  const hiddenPaths = useMemo(() => modules.filter((m) => !can(user, m.permission)).flatMap((m) => m.routes.map((r) => r.path)), [user]);
+  const hiddenPaths = useMemo(() => modules.filter((m) => !can(user, m.permission)).flatMap((m) => m.routes.map((r) => ({ path: r.path, permission: m.permission }))), [user]);
 
   useHotkeys({
     "/": () => (phone ? setSearchOpen(true) : document.getElementById("global-search")?.focus()),
@@ -434,10 +434,11 @@ function RunMeter({ open }: { open: boolean }) {
 }
 
 /** A page this reader's role doesn't open says so; anything else is unknown. */
-function NoRoute({ hidden }: { hidden: string[] }) {
+function NoRoute({ hidden }: { hidden: { path: string; permission: Permission }[] }) {
   const { pathname } = useLocation();
-  const restricted = hidden.some((p) => matchPath({ path: `/${p}`, end: false }, pathname));
-  return <div className="p-8 text-ink/60">{restricted ? "Operators only." : "Nothing here."}</div>;
+  const found = hidden.find((h) => matchPath({ path: `/${h.path}`, end: false }, pathname));
+  const text = !found ? "Nothing here." : found.permission === "staff" ? "Operators and maintainers only." : "Operators only.";
+  return <div className="p-8 text-ink/60">{text}</div>;
 }
 
 /** The reader's role decides what every button means, so it stays visible. */

@@ -129,7 +129,7 @@ Access list with add, remove and role change; active sessions with revoke.
 
 ### Audit (operators and maintainers)
 
-The audit log, filterable by login and action. Maintainers do not get the access-management rows (access changes, session revokes, sign-ins).
+The audit log, filterable by login and action. Maintainers get only listed actions, and none for accounts or access (access changes, session revokes, sign-ins, account changes and logins); an action nobody listed stays hidden from them.
 
 ### Cost
 

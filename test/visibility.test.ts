@@ -60,6 +60,7 @@ before(async () => {
   addLogin(db, "cli", "boss", "operator", null);
   addLogin(db, "cli", "reader", "viewer", null);
   addLogin(db, "cli", "maint", "maintainer", null);
+  addLogin(db, "cli", "maint2", "maintainer", null);
   addLogin(db, "cli", "outsider", "viewer", null);
   scopeToTracked(db);
   const config = loadConfig({ AUTOCRAFT_DEV_AUTH: "1", AUTOCRAFT_LISTEN: "127.0.0.1:0", AUTOCRAFT_DB: dbFile, AUTOCRAFT_DEV_PERMS: permsFile });
@@ -169,6 +170,13 @@ describe("repo visibility", () => {
     }
     db.prepare("INSERT INTO audit (at, login, action, target) VALUES (?, 'boss', 'access-add', 'someone'), (?, 'boss', 'repo-track', 'vault')").run(new Date().toISOString(), new Date().toISOString());
     const maint = await signedIn("maint");
+    db.prepare("INSERT INTO audit (at, login, action, target) VALUES (?, 'boss', 'account-change', 'account:a')").run(new Date().toISOString());
+    const all = await maint.get<{ total: number }>("/api/audit");
+    const rows = await (await signedIn("boss")).get<{ total: number }>("/api/audit");
+    const hiddenRows = (db.prepare("SELECT COUNT(*) AS n FROM audit WHERE action LIKE 'access-%' OR action LIKE 'account-%' OR action IN ('session-revoke', 'sign-in', 'sign-in-refused')").get() as { n: number }).n;
+    assert.equal(rows.total - all.total, hiddenRows);
+    assert.equal(await maint.status("/api/audit?action=account-change"), 400);
+    assert.ok(!JSON.stringify(await maint.get("/api/audit?login=boss")).includes("account-change"));
     assert.ok((await maint.get<{ name: string }[]>("/api/repos/all")).length > 0);
     const audit = await maint.get<{ entries: { action: string }[]; actions: string[] }>("/api/audit");
     assert.ok(audit.entries.some((e) => e.action === "repo-track"));
@@ -179,7 +187,21 @@ describe("repo visibility", () => {
     assert.ok((await boss.get<{ entries: { action: string }[] }>("/api/audit?action=access-add")).entries.length > 0);
     const reader = await signedIn("reader");
     for (const path of ["/api/repos/all", "/api/audit"]) assert.equal(await reader.status(path), 403, path);
-    db.prepare("DELETE FROM audit WHERE target IN ('someone', 'vault') AND login = 'boss' AND action IN ('access-add', 'repo-track')").run();
+    db.prepare("DELETE FROM audit WHERE target IN ('someone', 'vault', 'account:a') AND login = 'boss' AND action IN ('access-add', 'repo-track', 'account-change')").run();
     db.prepare("UPDATE main.decisions SET answer = NULL, answer_note = NULL, answered_by = NULL, answered_at = NULL WHERE id = 'vault#1:scope'").run();
+  });
+
+  test("maintainers read the log of a job across all repos and disabled build environments; viewers do not", async () => {
+    const logFile = join(dir, "job.log");
+    writeFileSync(logFile, "log line from the job\n");
+    const id = Number(db.prepare("INSERT INTO jobs (step, params, requested_by, requested_at, state, log_path) VALUES ('decide', '{}', 'boss', ?, 'done', ?)").run(new Date().toISOString(), logFile).lastInsertRowid);
+    db.prepare("INSERT INTO build_envs (id, label, kind, slots, key_hash, created_at, updated_by, updated_at, enabled) VALUES ('off-env', 'Off', 'linux', 1, 'h', ?, 'boss', ?, 0)").run(new Date().toISOString(), new Date().toISOString());
+    // maint2 and outsider have no read access to the internal repo, so the log of an all-repos job is withheld from non-staff.
+    for (const [login, staff] of [["outsider", false], ["maint2", true], ["boss", true]] as const) {
+      const c = await signedIn(login);
+      const job = await c.get<{ log: string }>(`/api/pipeline/jobs/${id}`);
+      assert.equal(job.log.includes("log line"), staff, login);
+      assert.equal((await c.get<{ id: string }[]>("/api/envs")).some((e) => e.id === "off-env"), staff, login);
+    }
   });
 });
