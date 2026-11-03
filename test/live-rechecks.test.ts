@@ -298,7 +298,8 @@ describe("fixup", () => {
     const before = sh(fork, "rev-parse", "refs/heads/fix");
     const s = await runFixup(db, { repo: "app", dryRun: false }, () => {}, deps);
     assert.deepEqual([s.pushed, s.failed], [[], []]);
-    assert.deepEqual(log, []);
+    // The PR is claimed (assigned) when work starts; nothing is pushed or commented after the head moved.
+    assert.deepEqual(log, ["assign"]);
     assert.equal(sh(fork, "rev-parse", "refs/heads/fix"), before);
     assert.equal((db.prepare("SELECT COUNT(*) AS n FROM fixups").get() as { n: number }).n, 0);
   });
