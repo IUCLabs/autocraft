@@ -146,7 +146,7 @@ export const ROLES: Role[] = ["operator", "maintainer", "viewer"];
 export const when = (iso: string | null | undefined) => (iso ? iso.slice(0, 16).replace("T", " ") : "–");
 
 /** A destructive action that takes a second click within four seconds. */
-export function ConfirmButton({ label, confirmLabel, loading, onConfirm, className }: { label: string; confirmLabel: string; loading?: boolean; onConfirm: () => void; className?: string }) {
+export function ConfirmButton({ label, confirmLabel, loading, onConfirm, className, idle = "ghost" }: { label: string; confirmLabel: string; loading?: boolean; onConfirm: () => void; className?: string; idle?: "ghost" | "secondary" }) {
   const [armed, setArmed] = useState(false);
   useEffect(() => {
     if (!armed) return;
@@ -156,7 +156,7 @@ export function ConfirmButton({ label, confirmLabel, loading, onConfirm, classNa
   return (
     <Button
       size="sm"
-      variant={armed ? "destructive" : "ghost"}
+      variant={armed ? "destructive" : idle}
       loading={loading}
       className={cn("max-md:h-11", className)}
       onClick={() => {

@@ -31,7 +31,7 @@ const ROWS: QueueRow[] = (() => {
   for (const state of STATES) {
     const n = state === "ready" || state === "waiting-verify" || state === "needs-decision" || state === "waiting-ci" ? 4 : 2;
     for (let i = 0; i < n; i++, k++) {
-      const repo = REPOS[k % 6]!;
+      const repo = k % 3 === 0 || k < 6 ? "designcraft" : REPOS[k % 6]!;
       const number = 200 + Math.floor(r() * 3000);
       const [author, tier] = AUTHORS[k % AUTHORS.length]!;
       const ruleTier = tier === "whitelisted" || tier === "override-allow";
@@ -62,13 +62,15 @@ const ROWS: QueueRow[] = (() => {
   return out.sort((a, b) => a.repo.localeCompare(b.repo) || a.number - b.number);
 })();
 
+export const PIPELINE_REPOS = ["designcraft"];
+
 const BATCH_STATES: QueueBatch["state"][] = ["checking", "open", "merged", "merged", "failed", "split", "superseded", "merged"];
 
 // Newest first; every repo's rows are shared round-robin so a batch can hold up to five PRs.
 const BATCHES: QueueBatch[] = Array.from({ length: 45 }, (_, k) => {
   const id = 45 - k;
   const state = k < 2 ? (k ? "open" : "checking") : BATCH_STATES[k % BATCH_STATES.length]!;
-  const repo = REPOS[id % 3]!;
+  const repo = REPOS[id % 2]!;
   const pool = ROWS.filter((r) => r.repo === repo);
   const size = 1 + (id % 5);
   const prs = pool.length ? Array.from({ length: Math.min(size, pool.length) }, (_, i) => pool[(id + i) % pool.length]!) : [];
@@ -84,8 +86,22 @@ const BATCHES: QueueBatch[] = Array.from({ length: 45 }, (_, k) => {
   };
 });
 
+export const QUEUE_ROWS = ROWS;
+
+// An open integration batch on designcraft: its members are the repo's first ready PRs, shown as in the batch.
+const OPEN_BATCH: QueueBatch = (() => {
+  const prs = ROWS.filter((r) => r.repo === "designcraft" && (r.state === "ready" || r.state === "decision-answered-merge")).slice(0, 3).map((r): QueueRow => ({ ...r, state: "in-batch" }));
+  const created = new Date(NOW - 50 * 60_000).toISOString();
+  return {
+    id: 99, repo: "designcraft", branch: "integration-designcraft-20261103-4", fork: "pipeline-bot/designcraft", state: "open", baseSha: "7c1e9a04b3d5a9f1c2e4078615a4d3b2",
+    size: prs.length, prs, prNumber: 2202, prUrl: "https://github.com/storytold/designcraft/pull/2202", summary: null, createdAt: created, updatedAt: new Date(NOW - 12 * 60_000).toISOString(),
+  };
+})();
+const BATCH_MEMBERS = new Set(OPEN_BATCH.prs.map((r) => r.number));
+BATCHES.unshift(OPEN_BATCH);
+
 export function queueList(f: QueueFilter): QueueList {
-  const all = ROWS.filter((x) => !f.repo || x.repo === f.repo);
+  const all = ROWS.filter((x) => (!f.repo || x.repo === f.repo) && !(x.repo === "designcraft" && BATCH_MEMBERS.has(x.number)));
   const counts = Object.fromEntries(STATES.map((s) => [s, all.filter((x) => x.state === s).length])) as Record<QueueState, number>;
   const match = all.filter((x) => (f.state ? x.state === f.state : x.state !== "merged"));
   const from = f.after ? match.findIndex((x) => `${x.repo}#${x.number}` === f.after) + 1 : 0;

@@ -262,7 +262,7 @@ Operators control what merges next from the Queue page, the CLI or the API. Ever
 - A fast-tracked item runs through every stage even when its repo's Pipeline switch is off, and it ignores the pilot list. The global pipeline switch, per-repo approvals, daily limits and the merge rule are unchanged.
 - An item that is closed or merged is ignored: it drops out of the list and its positions, and its row stays in the `fast_track` table.
 
-The Queue page API (`GET /api/queue/page?tab=all|review|fix|verify|merge&repos=pipeline|all|<repo>`) serves the tabs. The default repo filter is the repos whose pipeline is on plus fast-tracked items of any repo. Rows carry their fast-track place ("2 of 5") and hold. The Merge tab adds "Next merges": what merges next and what each PR waits for (CI, Verify, re-review, batch check, hold), read from the merge queue states.
+The Queue page API (`GET /api/queue/page?tab=all|review|fix|verify|merge&repos=pipeline|all|<repo>`) serves the tabs. The default repo filter is the repos whose pipeline is on plus fast-tracked items of any repo. Rows carry their fast-track place ("2 of 5") and hold. `GET /api/merge/held` lists the held PRs as `repo#n`. The Merge tab adds "Next merges": what merges next and what each PR waits for (CI, Verify, re-review, batch check, hold), read from the merge queue states.
 
 ## Act
 

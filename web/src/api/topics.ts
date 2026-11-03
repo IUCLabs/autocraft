@@ -51,6 +51,7 @@ const RULES: [prefix: string, topics: Topic[]][] = [
   ["queue-batches:", ["queue", "tasks", "items"]],
   ["queue-page:", ["queue", "fasttrack", "ranks", "items", "checks", "classify", "decisions", "reviews", "verify", "fixes", "tasks", "settings", "repos"]],
   ["fast-track", ["fasttrack", "items"]],
+  ["merge-held", ["queue"]],
   ["accounts", ["accounts", "settings"]],
   ["envs-repos", ["repos"]],
   ["envs", ["envs", "tasks"]],

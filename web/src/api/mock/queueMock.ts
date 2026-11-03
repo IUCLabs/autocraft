@@ -1,0 +1,129 @@
+// Fake Queue page: the work and merge fixtures behind one repo filter, with in-memory fast track, holds and batch controls.
+import type { Api } from "../client";
+import type { FastPosition, MergeWait, NextMerge, QueueBatch, QueueMergeRow, QueuePage, QueueTab, QueueWorkRow, User } from "../types";
+import { PIPELINE_REPOS, queueBatchList, queueList } from "./queueFixtures";
+import { FAST_TRACK_SEED, workList } from "./workFixtures";
+
+const WAITS: Record<string, [MergeWait, string, number]> = {
+  ready: ["ready", "Ready", 0],
+  "decision-answered-merge": ["ready", "Merge approved", 0],
+  refused: ["refused", "Refused; tried again when GitHub reports something new", 1],
+  "in-batch": ["batch-ci", "In a batch; waiting for the batch PR's CI", 1],
+  "batch-checking": ["batch-check", "In a batch; checked in the sandbox", 1],
+  "waiting-ci": ["ci", "Waiting for CI", 2],
+  "waiting-verify": ["verify", "Waiting for Verify", 2],
+  "waiting-opus": ["re-review", "Waiting for re-review", 3],
+};
+
+const tabOf = (next: string): QueueTab | null =>
+  next === "Review" || next === "Opus review" ? "review" : next.startsWith("Fix") ? "fix" : next.startsWith("Verify") ? "verify" : null;
+
+export function createQueueMock(me: User, changed: () => void): Pick<Api, "pipelineRepos" | "fastTrack" | "heldMerges" | "queuePage" | "queueControl"> {
+  const wait = <T,>(v: T) => new Promise<T>((r) => setTimeout(() => r(structuredClone(v)), 40));
+  const allWork = workList({ limit: 10000 }).rows;
+  const allMerge = queueList({ limit: 10000 }).rows;
+  const fixtureBatches = queueBatchList({ limit: 100 }).batches;
+  let fast = [...FAST_TRACK_SEED];
+  // One designcraft PR starts out held, so the Merge tab shows a held row.
+  const first = allMerge.find((r) => r.repo === "designcraft" && r.state === "ready");
+  const held = new Set<string>(first ? [`${first.repo}#${first.number}`] : []);
+  const removed = new Set<string>();
+  const stopped = new Set<number>();
+  const key = (r: { repo: string; number: number }) => `${r.repo}#${r.number}`;
+  const need = () => {
+    if (me.role !== "operator") throw new Error("not allowed");
+  };
+  const pos = (r: { repo: string; number: number }): FastPosition | null => {
+    const i = fast.indexOf(key(r));
+    return i < 0 ? null : { position: i + 1, of: fast.length };
+  };
+  const rank = (r: { repo: string; number: number }) => {
+    const i = fast.indexOf(key(r));
+    return i < 0 ? Infinity : i;
+  };
+  const firstFast = <T extends { repo: string; number: number }>(rows: T[]) => [...rows].sort((a, b) => rank(a) - rank(b));
+
+  return {
+    pipelineRepos: () => wait(PIPELINE_REPOS),
+    fastTrack: () => wait(fast),
+    heldMerges: () => wait([...held]),
+    async queuePage(f) {
+      const tab = f.tab ?? "all";
+      const repos = f.repos ?? "pipeline";
+      const inScope = (repo: string, number: number) => (repos === "all" ? true : repos === "pipeline" ? PIPELINE_REPOS.includes(repo) || fast.includes(`${repo}#${number}`) : repo === repos);
+      const work: QueueWorkRow[] = firstFast(allWork.filter((r) => inScope(r.repo, r.number))).map((r) => ({ ...r, fast: pos(r), held: held.has(key(r)) }));
+      const batches: QueueBatch[] = fixtureBatches
+        .filter((b) => (b.state === "open" || b.state === "checking") && b.prs.some((p) => inScope(b.repo, p.number)))
+        .map((b) => ({ ...b, prs: b.prs.filter((p) => !removed.has(key(p)) && !stopped.has(b.id)) }))
+        .filter((b) => !stopped.has(b.id));
+      const inBatch = new Set(batches.flatMap((b) => b.prs.map(key)));
+      const returned = fixtureBatches.filter((b) => stopped.has(b.id)).flatMap((b) => b.prs);
+      const base = [...allMerge, ...returned, ...fixtureBatches.flatMap((b) => b.prs).filter((p) => removed.has(key(p)))];
+      const seen = new Set<string>();
+      const entries = base
+        .filter((r) => !seen.has(key(r)) && !!seen.add(key(r)))
+        .map((r): QueueMergeRow => ({ ...r, state: inBatch.has(key(r)) ? r.state : r.state === "in-batch" || r.state === "batch-checking" ? "ready" : r.state, fast: pos(r), held: held.has(key(r)) }))
+        .filter((r) => r.state !== "merged" && inScope(r.repo, r.number));
+      const count = (t: QueueTab) => (t === "all" ? work.length : t === "merge" ? entries.length : work.filter((w) => tabOf(w.next) === t).length);
+      const counts = { all: count("all"), review: count("review"), fix: count("fix"), verify: count("verify"), merge: count("merge") };
+      const out: QueuePage = { tab, repos, counts, rows: [], mergeRows: [], nextMerges: [], batches: [], total: 0, next: null };
+      const offset = f.offset ?? 0, limit = f.limit ?? 100;
+      if (tab !== "merge") {
+        const match = tab === "all" ? work : work.filter((w) => tabOf(w.next) === tab);
+        out.rows = match.slice(offset, offset + limit);
+        out.total = match.length;
+        out.next = offset + out.rows.length < match.length ? offset + out.rows.length : null;
+        return wait(out);
+      }
+      const free = firstFast(entries.filter((e) => !inBatch.has(key(e))));
+      out.mergeRows = free.slice(offset, offset + limit);
+      out.total = free.length;
+      out.next = offset + out.mergeRows.length < free.length ? offset + out.mergeRows.length : null;
+      out.batches = batches.map((b) => ({ ...b, prs: b.prs.map((p): QueueMergeRow => ({ ...p, fast: pos(p), held: held.has(key(p)) })) }));
+      const batchOf = new Map(batches.flatMap((b) => b.prs.map((p) => [key(p), { id: b.id, branch: b.branch }] as const)));
+      const items = entries.flatMap((e) => {
+        const w: [MergeWait, string, number] | undefined = held.has(key(e)) && e.state in WAITS ? ["held", "Merge held by an operator", 9] : WAITS[e.state];
+        return w ? [{ e, w }] : [];
+      });
+      items.sort((a, b) => (a.w[2] === 9 ? 1 : 0) - (b.w[2] === 9 ? 1 : 0) || rank(a.e) - rank(b.e) || a.w[2] - b.w[2]);
+      out.nextMerges = items.slice(0, 10).map(({ e, w }): NextMerge => ({ repo: e.repo, number: e.number, title: e.title, waitsFor: w[0], label: w[1], fast: pos(e), batch: batchOf.get(key(e)) ?? null }));
+      return wait(out);
+    },
+    queueControl: {
+      async fastTrackAdd(item) {
+        need();
+        if (!fast.includes(item)) fast = [...fast, item];
+        changed();
+        return [...fast];
+      },
+      async fastTrackRemove(item) {
+        need();
+        fast = fast.filter((x) => x !== item);
+        changed();
+        return [...fast];
+      },
+      async hold(item) {
+        need();
+        held.add(item);
+        changed();
+      },
+      async release(item) {
+        need();
+        held.delete(item);
+        changed();
+      },
+      async batchRemove(item) {
+        need();
+        removed.add(item);
+        held.add(item);
+        changed();
+      },
+      async stopBatch(id) {
+        need();
+        stopped.add(id);
+        for (const p of fixtureBatches.find((b) => b.id === id)?.prs ?? []) held.add(key(p));
+        changed();
+      },
+    },
+  };
+}

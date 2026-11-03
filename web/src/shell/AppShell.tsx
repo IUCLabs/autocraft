@@ -1,5 +1,5 @@
 import { lazy, Suspense, useMemo, useState } from "react";
-import { NavLink, Route, Routes, matchPath, useLocation, useNavigate, useParams } from "react-router-dom";
+import { Navigate, NavLink, Route, Routes, matchPath, useLocation, useNavigate, useParams } from "react-router-dom";
 import { Dialog, DropdownMenu } from "radix-ui";
 import { SignOutIcon, MonitorIcon, MoonIcon, DotsThreeIcon, SidebarSimpleIcon, MagnifyingGlassIcon, SunIcon, KeyboardIcon, XIcon, CheckIcon } from "@phosphor-icons/react";
 import { modules } from "../registry";
@@ -54,7 +54,6 @@ export function AppShell() {
     "g p": () => navigate("/progress"),
     "g i": () => navigate("/items"),
     "g q": () => navigate("/queue"),
-    "g w": () => navigate("/work"),
   });
 
   const content = (
@@ -62,6 +61,8 @@ export function AppShell() {
       {routes.map((r) => (
         <Route key={r.path} path={r.path} element={<RouteView route={r} />} />
       ))}
+      <Route path="work" element={<RedirectTo to="/queue" />} />
+      <Route path="merge-queue" element={<RedirectTo to="/queue/merge" />} />
       <Route path="*" element={<NoRoute hidden={hiddenPaths} />} />
     </Routes>
   );
@@ -240,6 +241,10 @@ function PhoneTab({ entry }: { entry: NavEntry }) {
       {entry.label}
     </NavLink>
   );
+}
+
+function RedirectTo({ to }: { to: string }) {
+  return <Navigate to={`${to}${useLocation().search}`} replace />;
 }
 
 function Breadcrumb({ routes }: { routes: RouteDef[] }) {

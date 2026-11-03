@@ -1,569 +1,117 @@
-// Merge queue: every PR with a take or take-fix review at its current head, and
-// what it waits on. Read-only; merges are started from the Pipeline page.
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { Link } from "react-router-dom";
-import { CaretRightIcon, ArrowsInLineVerticalIcon, CaretUpDownIcon, GitMergeIcon, XIcon } from "@phosphor-icons/react";
-import { useApi, useQuery, usePagedQuery } from "../../api/client";
-import type { BatchList, BatchState, QueueBatch, QueueFilter, QueueList, QueueRow, QueueState, Tier } from "../../api/types";
-import type { FeatureModule, ViewProps } from "../../registry/types";
-import { Badge, type Tone } from "../../ui/Badge";
-import { RefLink } from "../../ui/RefLink";
-import { cn } from "../../ui/cn";
-import { ago, num } from "../../lib/format";
+// Queue: one page for everything waiting on the pipeline. Tabs filter by next step; the Merge tab
+// adds the merge queue's columns and the operator's merge controls. The repo filter is the `repos` URL parameter.
+import { Link, Navigate, useLocation, useParams } from "react-router-dom";
+import { ListNumbersIcon } from "@phosphor-icons/react";
+import { usePagedQuery, useQuery } from "../../api/client";
+import type { QueuePage, QueueTab } from "../../api/types";
+import type { FeatureModule } from "../../registry/types";
+import { num } from "../../lib/format";
 import { useIsPhone } from "../../shell/useMedia";
-import { useUser } from "../../shell/UserContext";
-import { Button } from "../../ui/Button";
-import { Block, ErrorLine, Page, selectCls, TextInput, useUrlState, useWrite } from "../admin/parts";
-import { useNow } from "../../lib/useNow";
-import { decisionPath, itemPath } from "../../lib/links";
+import { cn } from "../../ui/cn";
+import { Block, ErrorLine, Page, selectCls, useUrlState } from "../admin/parts";
+import { WorkCards, WorkTable } from "./AllTab";
+import { FastTrackAdd } from "./fastTrack";
+import { MergeTab } from "./MergeTab";
 
-export const STATE: Record<QueueState, [string, Tone, string]> = {
-  ready: ["Ready", "ok", "Covered by the merge rule; merges on the next run"],
-  "decision-answered-merge": ["Merge approved", "ok", "The operator answered merge at this head; merges on the next run"],
-  refused: ["Refused", "bad", "The merge command or a pre-merge check said no; tried again next run"],
-  "waiting-ci": ["Waiting for CI", "neutral", "CI is pending or hasn't run, or GitHub is still checking mergeability"],
-  "ci-failed": ["CI failed", "bad", "CI fails at this head"],
-  conflict: ["Conflict", "bad", "Conflicts with the base branch"],
-  "needs-fix-up": ["Needs fix-up", "warn", "The review lists small fixes; a later step makes them"],
-  "waiting-opus": ["Waiting for Opus", "neutral", "Sonnet rated it take or take-fix; the final review by Opus is not done at this head yet"],
-  "waiting-verify": ["Waiting for Verify", "neutral", "No passed verification at this head yet: the build tasks are planned or running"],
-  "verify-failed": ["Verify failed", "bad", "The build or tests failed at this head"],
-  "verify-error": ["Verify error", "warn", "Verification could not run; it is retried once, then held"],
-  "needs-decision": ["Needs a decision", "warn", "Outside the merge rule (size, label, author, not verified or no CI): waits for the operator's Merge? answer"],
-  declined: ["Declined", "neutral", "The operator answered hold or close"],
-  merged: ["Merged", "merged", "Merged"],
-  "batch-checking": ["In batch: checking", "neutral", "Part of an integration batch whose combined tree is being built and tested in the sandbox"],
-  "in-batch": ["In batch", "ok", "Part of an integration batch with an open PR; lands when upstream CI is green"],
-  "batch-failed": ["Batch failed", "bad", "Failed alone in a batch: on hold until the PR has a new head"],
-  "held-duplicate": ["Held: Duplicate?", "warn", "An open Duplicate? decision keeps it out of every later stage; answer it in Decisions"],
-  "held-backlog": ["Backlog", "neutral", "Answered Backlog; reopen the decision to take it up again"],
-};
-const STATES = Object.keys(STATE) as QueueState[];
-const TIER: Record<Tier, string> = { whitelisted: "whitelisted", not: "not whitelisted", "override-allow": "override allow", "override-deny": "override deny" };
-const CI_TONE: Record<QueueRow["ci"], Tone> = { success: "ok", failure: "bad", pending: "warn", none: "neutral", unknown: "neutral" };
-const MERGEABLE: Record<QueueRow["mergeable"], [string, Tone]> = { clean: ["clean", "ok"], conflicts: ["conflicts", "bad"], unknown: ["unknown", "neutral"] };
+const TABS: [QueueTab, string][] = [
+  ["all", "All"],
+  ["review", "Review"],
+  ["fix", "Fix"],
+  ["verify", "Verify"],
+  ["merge", "Merge"],
+];
 
-function useFilter() {
-  const { state, update } = useUrlState();
-  const filter: QueueFilter = {
-    repo: state.repo || undefined,
-    state: STATES.includes(state.state as QueueState) ? (state.state as QueueState) : undefined,
-    flow: /^merge\.[a-z-]+$/.test(state.flow ?? "") ? state.flow : undefined,
-  };
-  return { filter, update };
-}
-
-// Pages append on "Show more"; a change refetches every loaded page, so the list keeps its length.
-function usePagedQueue(filter: QueueFilter) {
-  const q = usePagedQuery(`queue:${JSON.stringify(filter)}`, (api, after) => api.queue({ ...filter, after }), (p) => p.next);
-  const last = q.pages?.[q.pages.length - 1];
-  const data: QueueList | undefined = last && { ...last, rows: q.pages!.flatMap((p) => p.rows) };
-  return { data, error: q.error, loading: q.loading || q.loadingMore, loadMore: q.loadMore };
-}
-
-function SingleMergeLimit() {
-  const api = useApi();
-  const write = useWrite();
-  const q = useQuery("single-merge", (a) => a.repoAdmin.singleMerge());
-  const [max, setMax] = useState("");
-  useEffect(() => {
-    if (q.data) setMax(String(q.data.max));
-  }, [q.data]);
-  const valid = /^\d{1,3}$/.test(max) && Number(max) <= 100;
-  return (
-    <form
-      className="mt-3 flex flex-wrap items-center gap-2 text-sm text-ink/70"
-      onSubmit={(e) => {
-        e.preventDefault();
-        void write.run("single-merge", () => api.repoAdmin.setSingleMerge(Number(max))).then((ok) => ok && q.refetch());
-      }}
-    >
-      <label className="leading-[2.75rem] md:leading-8">
-        Merge one at a time when at most <TextInput inputMode="numeric" value={max} onChange={(e) => setMax(e.target.value)} className="mx-1 w-16 align-middle text-ink" /> PRs are ready
-      </label>
-      <Button type="submit" size="sm" disabled={!valid || q.data?.max === Number(max)} loading={write.busy === "single-merge"} className="max-md:h-11">
-        Save
-      </Button>
-      <ErrorLine error={write.error ?? q.error?.message} className="basis-full" />
-    </form>
+function usePage(tab: QueueTab, repos: string) {
+  const q = usePagedQuery(
+    `queue-page:${tab}:${repos}`,
+    (api, after) => api.queuePage({ tab, repos, offset: after ? Number(after) : 0, limit: 100 }),
+    (p) => (p.next === null ? null : String(p.next)),
   );
+  // After a tab or filter change the cache shows the previous page until the new one arrives.
+  const pages = q.pages?.filter((p) => p.tab === tab);
+  return { pages: pages?.length ? pages : undefined, counts: q.pages?.[0]?.counts, error: q.error, hasMore: q.hasMore, loadingMore: q.loadingMore, loadMore: q.loadMore };
 }
 
-function QueueView(_: ViewProps) {
-  const { filter, update } = useFilter();
-  const { data, error, loading, loadMore } = usePagedQueue(filter);
-  const { data: repos } = useQuery("repos", (api) => api.repos());
-  const phone = useIsPhone();
-  const operator = useUser().role === "operator";
-  // Merged PRs are listed only under their own state, so "any state" leaves them out.
-  const all = data ? Object.entries(data.counts).reduce((a, [k, n]) => a + (k === "merged" ? 0 : n), 0) : undefined;
-  const mergeable = data ? data.counts.ready + data.counts["decision-answered-merge"] : undefined;
-
+function RepoFilter({ repos, update }: { repos: string; update: (patch: Record<string, string | null>) => void }) {
+  const { data: names } = useQuery("repos", (api) => api.repos());
+  const single = repos !== "pipeline" && repos !== "all";
   return (
-    <Page
-      title="Merge queue"
-      sub={
-        data && (
-          <>
-            {num(all!)} included PR{all === 1 ? "" : "s"} · {num(mergeable!)} may merge now · {num(data.counts["needs-decision"])} wait for a decision · merges run from the Pipeline page
-          </>
-        )
-      }
-    >
-      <div className="mt-4 flex flex-wrap items-center gap-1.5">
-        <select aria-label="Repo" value={filter.repo ?? ""} onChange={(e) => update({ repo: e.target.value || null })} className={cn(selectCls, filter.repo ? "text-accent-ink" : "text-ink/70")}>
-          <option value="">Every repo</option>
-          {repos?.map((r) => (
-            <option key={r} value={r}>
-              {r}
-            </option>
-          ))}
-        </select>
-        {filter.flow ? (
-          <button data-active className="chip max-md:h-11" onClick={() => update({ flow: null })} aria-label="Clear the flowchart branch">
-            From the pipeline flow: Merge queue › {filter.flow.slice(6).replace(/-/g, " ")} <XIcon className="opacity-60" />
-          </button>
-        ) : phone ? (
-          <select aria-label="State" value={filter.state ?? ""} onChange={(e) => update({ state: e.target.value || null })} className={cn(selectCls, filter.state ? "text-accent-ink" : "text-ink/70")}>
-            <option value="">Any state{all !== undefined ? ` (${num(all)})` : ""}</option>
-            {STATES.map((s) => (
-              <option key={s} value={s}>
-                {`${STATE[s][0]}${data ? ` (${num(data.counts[s])})` : ""}`}
-              </option>
-            ))}
-          </select>
-        ) : (
-          <div role="group" aria-label="State" className="flex flex-wrap items-center gap-1">
-            <button aria-pressed={!filter.state} data-active={!filter.state} className="chip max-md:h-11" onClick={() => update({ state: null })}>
-              Any state <span className="num opacity-60">{all !== undefined ? num(all) : ""}</span>
-            </button>
-            {STATES.map((s) => (
-              <button key={s} aria-pressed={filter.state === s} data-active={filter.state === s} title={STATE[s][2]} className="chip max-md:h-11" onClick={() => update({ state: filter.state === s ? null : s })}>
-                {STATE[s][0]} <span className="num opacity-60">{data ? num(data.counts[s]) : ""}</span>
-              </button>
-            ))}
-          </div>
-        )}
-      </div>
-
-      {operator && <SingleMergeLimit />}
-
-      {!filter.flow && <Batches repo={filter.repo} phone={phone} />}
-
-      <Block className="mt-3" flush title={filter.state ? STATE[filter.state][0] : "Not in a batch"} aside={loading && data ? "Updating…" : filter.state ? STATE[filter.state][2] : undefined}>
-        <ErrorLine error={error?.message} className="p-4" />
-        {data && data.rows.length === 0 && <p className="px-4 py-6 text-sm text-ink/50">No PR in the queue matches these filters.</p>}
-        {data && data.rows.length > 0 && (phone ? <Cards rows={data.rows} /> : <Table rows={data.rows} />)}
-        {data?.next && (
-          <div className="flex items-center justify-between gap-3 border-t border-line px-4 py-2.5 text-xs text-ink/55">
-            <span className="num">
-              {num(data.rows.length)} of {num(data.total)}
-            </span>
-            <button className="chip max-md:h-11" disabled={loading} onClick={loadMore}>
-              {loading ? "Loading…" : "Show more"}
-            </button>
-          </div>
-        )}
-      </Block>
-    </Page>
-  );
-}
-
-const BATCH_STATE: Record<BatchState, [string, Tone]> = {
-  checking: ["Checking", "neutral"], open: ["PR open", "ok"], merged: ["Merged", "merged"], failed: ["Failed", "bad"], split: ["Split", "warn"], superseded: ["Rebuilt", "neutral"],
-};
-
-// Batches page in like the PR rows: newest first, "Show more" for the next page.
-function usePagedBatches(repo: string | undefined) {
-  const q = usePagedQuery(`queue-batches:${repo ?? ""}`, (api, after) => api.queueBatches({ repo, after }), (p) => p.next);
-  const last = q.pages?.[q.pages.length - 1];
-  const data: BatchList | undefined = last && { ...last, batches: q.pages!.flatMap((p) => p.batches) };
-  return { data, error: q.error, loading: q.loading || q.loadingMore, loadMore: q.loadMore };
-}
-
-const gh = (path: string) => `https://github.com/${path}`;
-const extLink = "text-accent-ink hover:underline";
-
-function Batches({ repo, phone }: { repo: string | undefined; phone: boolean }) {
-  const { data, error, loading, loadMore } = usePagedBatches(repo);
-  // Per-batch choice made by the person; batches without one follow their state: in flight are open, finished are folded.
-  const [chosen, setChosen] = useState<Record<number, boolean>>({});
-  useEffect(() => setChosen({}), [repo]);
-  if (!data && !error) return null;
-  if (data && data.batches.length === 0) return null;
-  const batches = data?.batches ?? [];
-  const isOpen = (b: QueueBatch) => chosen[b.id] ?? (b.state === "checking" || b.state === "open");
-  const toggle = (b: QueueBatch) => setChosen((c) => ({ ...c, [b.id]: !isOpen(b) }));
-  const setAll = (open: boolean) => setChosen(Object.fromEntries(batches.map((b) => [b.id, open])));
-  const anyOpen = batches.some(isOpen);
-  return (
-    <Block
-      className="mt-3"
-      flush
-      title="Integration batches"
-      aside={
-        <span className="flex items-center gap-3">
-          {data && <span className="num">{num(data.total)}</span>}
-          <button type="button" className="chip max-md:h-11" onClick={() => setAll(!anyOpen)} aria-label={anyOpen ? "Fold all batches" : "Unfold all batches"}>
-            {anyOpen ? <ArrowsInLineVerticalIcon className="size-3.5" /> : <CaretUpDownIcon className="size-3.5" />}
-            {anyOpen ? "Fold all" : "Unfold all"}
-          </button>
-        </span>
-      }
-    >
-      <ErrorLine error={error?.message} className="p-4" />
-      {batches.length > 0 && (phone ? <BatchCards batches={batches} isOpen={isOpen} toggle={toggle} /> : <BatchTable batches={batches} isOpen={isOpen} toggle={toggle} />)}
-      {data?.next && (
-        <div className="flex items-center justify-between gap-3 border-t border-line px-4 py-2.5 text-xs text-ink/55">
-          <span className="num">
-            {num(batches.length)} of {num(data.total)}
-          </span>
-          <button className="chip max-md:h-11" disabled={loading} onClick={loadMore}>
-            {loading ? "Loading…" : "Show more"}
-          </button>
-        </div>
-      )}
-    </Block>
-  );
-}
-
-type BatchProps = { batches: QueueBatch[]; isOpen: (b: QueueBatch) => boolean; toggle: (b: QueueBatch) => void };
-
-/** The batch's facts in one run: used by the table header row and the phone card. */
-function BatchFacts({ b }: { b: QueueBatch }) {
-  useNow();
-  const stop = { onClick: (e: React.MouseEvent) => e.stopPropagation() };
-  const branch = b.fork ? (
-    <a href={gh(`${b.fork}/tree/${b.branch}`)} target="_blank" rel="noopener noreferrer" title="Open the branch on GitHub" className={cn("font-mono text-xs [overflow-wrap:anywhere]", extLink)} {...stop}>
-      {b.branch}
-    </a>
-  ) : (
-    <span className="font-mono text-xs text-ink/70 [overflow-wrap:anywhere]">{b.branch}</span>
-  );
-  return (
-    <>
-      <Badge tone={BATCH_STATE[b.state][1]}>{BATCH_STATE[b.state][0]}</Badge>
-      {branch}
-      <span className="text-xs text-ink/60">{b.repo}</span>
-      <span className="num text-xs text-ink/60">
-        {b.size} PR{b.size === 1 ? "" : "s"}
-      </span>
-      {b.prUrl && (
-        <a href={b.prUrl} target="_blank" rel="noopener noreferrer" title="Open the batch PR on GitHub" className={cn("code text-xs", extLink)} {...stop}>
-          #{b.prNumber}
-        </a>
-      )}
-      <a href={gh(`storytold/${b.repo}/commit/${b.baseSha}`)} target="_blank" rel="noopener noreferrer" title="Base commit on GitHub" className={cn("code text-xs", extLink)} {...stop}>
-        {b.baseSha.slice(0, 7)}
-      </a>
-      <span className="num text-2xs text-ink/50" title={`created ${b.createdAt.slice(0, 16).replace("T", " ")}, updated ${b.updatedAt.slice(0, 16).replace("T", " ")}`}>
-        {ago(b.updatedAt)} ago
-      </span>
-    </>
-  );
-}
-
-function FoldChevron({ open }: { open: boolean }) {
-  return <CaretRightIcon className={cn("size-4 shrink-0 text-ink/45 transition-transform", open && "rotate-90")} />;
-}
-
-function BatchTable({ batches, isOpen, toggle }: BatchProps) {
-  return (
-    <div className="overflow-x-auto">
-      <table className="w-full min-w-[960px] table-fixed border-collapse text-sm">
-        <PrTableHead />
-        {batches.map((b) => {
-          const open = isOpen(b);
-          return (
-            <tbody key={b.id} className="border-b border-line last:border-0">
-              <tr className="cursor-pointer bg-ink/[0.03] hover:bg-ink/[0.06]" onClick={() => toggle(b)}>
-                <td colSpan={9} className="px-3 py-2">
-                  <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-                    <button type="button" aria-expanded={open} aria-label={open ? `Fold ${b.branch}` : `Unfold ${b.branch}`} className="shrink-0">
-                      <FoldChevron open={open} />
-                    </button>
-                    <BatchFacts b={b} />
-                    {b.summary && (
-                      <span className="min-w-[12rem] flex-1 truncate text-2xs text-ink/55" title={b.summary}>
-                        {b.summary}
-                      </span>
-                    )}
-                  </div>
-                </td>
-              </tr>
-              {open && b.prs.map((r) => <PrRows key={r.number} r={r} />)}
-            </tbody>
-          );
-        })}
-      </table>
-    </div>
-  );
-}
-
-function BatchCards({ batches, isOpen, toggle }: BatchProps) {
-  return (
-    <ul>
-      {batches.map((b) => {
-        const open = isOpen(b);
-        return (
-          <li key={b.id} className="border-b border-line last:border-0">
-            <div role="button" tabIndex={0} aria-expanded={open} onClick={() => toggle(b)} onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && (e.preventDefault(), toggle(b))} className="flex cursor-pointer items-start gap-2 bg-ink/[0.03] px-4 py-2.5 active:bg-ink/[0.06]">
-              <span className="mt-0.5 flex h-6 items-center">
-                <FoldChevron open={open} />
-              </span>
-              <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2.5 gap-y-1">
-                <BatchFacts b={b} />
-                {b.summary && <p className={cn("w-full text-2xs text-ink/55", !open && "line-clamp-1")}>{b.summary}</p>}
-              </div>
-            </div>
-            {open && b.prs.length > 0 && (
-              <ul className="border-t border-line">
-                {b.prs.map((r) => (
-                  <PrCard key={r.number} r={r} />
-                ))}
-              </ul>
-            )}
-          </li>
-        );
-      })}
-    </ul>
-  );
-}
-
-function StateChip({ row }: { row: QueueRow }) {
-  const [text, tone, hint] = STATE[row.state];
-  const title = row.state === "refused" && row.refusedReason ? row.refusedReason : row.state === "declined" && row.answer ? `The operator answered ${row.answer}` : hint;
-  return (
-    <span title={title}>
-      <Badge tone={tone}>{text}</Badge>
-    </span>
-  );
-}
-
-function DecisionLink({ row }: { row: QueueRow }) {
-  if (!row.decisionId) return row.state === "needs-decision" ? <span className="text-2xs text-ink/45">asked on the next run</span> : <span className="text-ink/30">–</span>;
-  return (
-    <Link to={decisionPath({ id: row.decisionId, repo: row.repo, number: row.number, kind: "merge" })} className="text-xs text-accent-ink hover:underline">
-      {row.answer ? `Answered ${row.answer}` : "Open decision"}
-    </Link>
-  );
-}
-
-/** Why it waits, in one line: refusal reason, or what keeps it outside the rule. */
-function Why({ row }: { row: QueueRow }) {
-  if (row.state === "refused" && row.refusedReason) return <span className="text-2xs text-bad">{row.refusedReason}</span>;
-  if (row.outsideRule.length) return <span className="text-2xs text-ink/50">outside the rule: {row.outsideRule.join(", ")}</span>;
-  return null;
-}
-
-const V_TONE: Record<string, Tone> = { unavailable: "warn", passed: "ok", "ci-enough": "ok", failed: "bad", error: "warn", running: "accent", planned: "neutral", stale: "neutral" };
-const V_LABEL: Record<string, string> = { unavailable: "Not verified", passed: "Passed", "ci-enough": "CI is enough", failed: "Failed", error: "Error", running: "Running", planned: "Planned", stale: "Stale" };
-
-/** The Verify result at the reviewed head; the summary shows on hover and below the badge. */
-function VerifyCell({ row, detail = true }: { row: QueueRow; detail?: boolean }) {
-  const v = row.verify;
-  if (!v) return <span className="text-ink/30">–</span>;
-  const text = [v.summary, v.note].filter(Boolean).join(" · ");
-  return (
-    <span className="block" title={text || undefined}>
-      <Badge tone={V_TONE[v.state] ?? "neutral"}>{V_LABEL[v.state] ?? v.state}</Badge>
-      {detail && v.kind && <span className="ml-1.5 text-2xs text-ink/50">{v.kind}</span>}
-      {detail && text && <span className="mt-0.5 line-clamp-2 block text-2xs text-ink/55">{text}</span>}
-    </span>
-  );
-}
-
-/** The review text, clamped to two lines; it opens and closes by click only when the text is longer than that. */
-function ReviewText({ r }: { r: QueueRow }) {
-  useNow();
-  const [open, setOpen] = useState(false);
-  const [clamped, setClamped] = useState(false);
-  const ref = useRef<HTMLParagraphElement>(null);
-  useLayoutEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    const measure = () => {
-      if (!open) setClamped(el.scrollHeight > el.clientHeight + 1);
-    };
-    measure();
-    const ro = new ResizeObserver(measure);
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, [open, r.reason, r.fixes]);
-  const canToggle = clamped || open;
-  return (
-    <div className="flex items-start gap-1.5">
-      {canToggle ? (
-        <button type="button" aria-expanded={open} aria-label={open ? "Collapse the review" : "Expand the review"} onClick={() => setOpen(!open)} className="mt-0.5 shrink-0 text-ink/45 hover:text-ink">
-          <CaretRightIcon className={cn("size-3.5 transition-transform", open && "rotate-90")} />
-        </button>
-      ) : (
-        <span className="size-3.5 shrink-0" />
-      )}
-      <div className="min-w-0 flex-1 text-xs text-ink/65">
-        <p ref={ref} className={cn(!open && "line-clamp-2", canToggle && "cursor-pointer")} onClick={canToggle ? () => setOpen(!open) : undefined}>
-          {r.fixes > 0 && <span className="mr-1.5 text-ink/50">{r.fixes} fix{r.fixes === 1 ? "" : "es"}</span>}
-          {r.reason}
-        </p>
-        <div className="mt-0.5 flex flex-wrap items-center gap-x-3 text-2xs">
-          <Why row={r} />
-          <DecisionLink row={r} />
-          <span className="num text-ink/40" title={`reviewed ${r.reviewedAt.slice(0, 16).replace("T", " ")} at ${r.head.slice(0, 7)}`}>
-            reviewed {ago(r.reviewedAt)} ago
-          </span>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/** Two rows per PR: the facts, then the review text. A fragment, so a table group can hold several. */
-function PrRows({ r }: { r: QueueRow }) {
-  const cell = "px-3 pt-2 align-top";
-  return (
-    <>
-      <tr>
-        <td className={cell}>
-          <RefLink repo={r.repo} number={r.number} kind="pr" className="block text-xs" />
-          <Link to={itemPath(r.repo, r.number)} className="block font-medium [overflow-wrap:anywhere] hover:text-accent-ink hover:underline">
-            {r.title}
-          </Link>
-        </td>
-        <td className={cell}>
-          <div className="truncate text-ink/75" title={`${r.author || "unknown"}, ${TIER[r.tier]}`}>
-            {r.author || "unknown"}
-            {r.tier === "whitelisted" && <span className="ml-1 text-2xs text-ok">●</span>}
-          </div>
-        </td>
-        <td className={cn(cell, "num text-ink/70")}>{r.size}</td>
-        <td className={cn(cell, "truncate text-xs text-ink/70")} title={r.label ?? undefined}>
-          {r.label ?? <span className="text-ink/35">not settled</span>}
-        </td>
-        <td className={cell}>
-          <Badge tone={r.verdict === "take" ? "ok" : "warn"}>{r.verdict}</Badge>
-        </td>
-        <td className={cell}>
-          <Badge tone={CI_TONE[r.ci]}>{r.ci}</Badge>
-        </td>
-        <td className={cell}>
-          <VerifyCell row={r} detail={false} />
-        </td>
-        <td className={cell}>
-          <Badge tone={MERGEABLE[r.mergeable][1]}>{MERGEABLE[r.mergeable][0]}</Badge>
-        </td>
-        <td className={cell}>
-          <StateChip row={r} />
-        </td>
-      </tr>
-      <tr className="border-b border-line last:border-0">
-        <td colSpan={9} className="px-3 pb-2 pt-0.5">
-          <ReviewText r={r} />
-        </td>
-      </tr>
-    </>
-  );
-}
-
-function PrTableHead() {
-  return (
-    <>
-      <colgroup>
-        <col />
-        <col className="w-[120px]" />
-        <col className="w-[50px]" />
-        <col className="w-[90px]" />
-        <col className="w-[70px]" />
-        <col className="w-[75px]" />
-        <col className="w-[100px]" />
-        <col className="w-[90px]" />
-        <col className="w-[150px]" />
-      </colgroup>
-      <thead className="bg-ink/[0.03] text-xs text-ink/55">
-        <tr className="border-b border-line text-left">
-          <th className="h-8 px-3 font-medium">PR</th>
-          <th className="px-3 font-medium">Author</th>
-          <th className="px-3 font-medium">Size</th>
-          <th className="px-3 font-medium">Label</th>
-          <th className="px-3 font-medium">Verdict</th>
-          <th className="px-3 font-medium">CI</th>
-          <th className="px-3 font-medium">Verify</th>
-          <th className="px-3 font-medium">Mergeable</th>
-          <th className="px-3 font-medium">State</th>
-        </tr>
-      </thead>
-    </>
-  );
-}
-
-function Table({ rows }: { rows: QueueRow[] }) {
-  return (
-    <div className="overflow-x-auto">
-      <table className="w-full min-w-[960px] table-fixed border-collapse text-sm">
-        <PrTableHead />
-        {rows.map((r) => (
-          <tbody key={`${r.repo}#${r.number}`} className="border-b border-line last:border-0 hover:bg-ink/[0.03]">
-            <PrRows r={r} />
-          </tbody>
+    <div role="group" aria-label="Repos" className="flex items-center gap-1">
+      <button aria-pressed={repos === "pipeline"} data-active={repos === "pipeline"} className="chip max-md:h-11" onClick={() => update({ repos: null, repo: null })}>
+        Pipeline on
+      </button>
+      <button aria-pressed={repos === "all"} data-active={repos === "all"} className="chip max-md:h-11" onClick={() => update({ repos: "all", repo: null })}>
+        All repos
+      </button>
+      <select aria-label="Repo" value={single ? repos : ""} onChange={(e) => update({ repos: e.target.value || null, repo: null })} className={cn(selectCls, "h-7 max-md:h-11", single ? "text-accent-ink" : "text-ink/70")}>
+        <option value="">One repo</option>
+        {names?.map((r) => (
+          <option key={r} value={r}>
+            {r}
+          </option>
         ))}
-      </table>
+      </select>
     </div>
   );
 }
 
-function PrCard({ r }: { r: QueueRow }) {
-  return (
-    <li className="border-b border-line px-4 py-2.5 last:border-0">
-      <div className="flex items-center gap-2 text-xs text-ink/55">
-        <RefLink repo={r.repo} number={r.number} kind="pr" className="text-xs" />
-        <span className="truncate">
-          {r.author || "unknown"} · {TIER[r.tier]}
-        </span>
-        <span className="ml-auto shrink-0">
-          <StateChip row={r} />
-        </span>
-      </div>
-      <Link to={itemPath(r.repo, r.number)} className="mt-1 block text-sm font-medium leading-5 active:text-accent-ink">
-        {r.title}
-      </Link>
-      <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-2xs text-ink/60">
-        <Badge tone={r.verdict === "take" ? "ok" : "warn"}>{r.verdict}</Badge>
-        <span>size {r.size}</span>
-        <span>{r.label ?? "not settled"}</span>
-        <Badge tone={CI_TONE[r.ci]}>CI {r.ci}</Badge>
-        <Badge tone={MERGEABLE[r.mergeable][1]}>{MERGEABLE[r.mergeable][0]}</Badge>
-      </div>
-      <p className="mt-1 text-xs text-ink/65">{r.reason}</p>
-      {r.verify && (
-        <div className="mt-1.5">
-          <VerifyCell row={r} />
-        </div>
-      )}
-      <div className="mt-1 flex flex-wrap items-center justify-between gap-2">
-        <Why row={r} />
-        {r.decisionId && (
-          <Link to={decisionPath({ id: r.decisionId, repo: r.repo, number: r.number, kind: "merge" })} className="inline-flex h-11 items-center text-xs text-accent-ink">
-            {r.answer ? `Answered ${r.answer}` : "Open decision"}
-          </Link>
-        )}
-      </div>
-    </li>
-  );
-}
+function QueueView() {
+  const { tab: param } = useParams();
+  const { search } = useLocation();
+  const { state, update } = useUrlState();
+  const phone = useIsPhone();
+  const tab = param ? TABS.find(([t]) => t === param)?.[0] : "all";
+  const repos = state.repos || state.repo || "pipeline";
+  const { pages, counts, error, hasMore, loadingMore, loadMore } = usePage(tab ?? "all", repos);
+  if (!tab) return <Navigate to={`/queue${search}`} replace />;
 
-function Cards({ rows }: { rows: QueueRow[] }) {
+  const first: QueuePage | undefined = pages?.[0];
+  const rows = pages?.flatMap((p) => p.rows) ?? [];
+  const mergeRows = pages?.flatMap((p) => p.mergeRows) ?? [];
+  const more = hasMore && first ? { total: first.total, count: tab === "merge" ? mergeRows.length : rows.length } : null;
+
   return (
-    <ul>
-      {rows.map((r) => (
-        <PrCard key={`${r.repo}#${r.number}`} r={r} />
-      ))}
-    </ul>
+    <Page title="Queue">
+      <div className="mt-4 flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+        <div role="tablist" aria-label="Queue" className="flex flex-wrap items-center gap-1">
+          {TABS.map(([t, label]) => (
+            <Link key={t} role="tab" aria-selected={tab === t} data-active={tab === t} to={`/queue${t === "all" ? "" : `/${t}`}${search}`} replace className="chip max-md:h-11">
+              {label} {counts && <span className="num opacity-60">{num(counts[t])}</span>}
+            </Link>
+          ))}
+        </div>
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+          <FastTrackAdd />
+          <RepoFilter repos={repos} update={update} />
+        </div>
+      </div>
+      <ErrorLine error={error?.message} className="mt-3" />
+      {tab === "merge" ? (
+        first && <MergeTab page={first} rows={mergeRows} phone={phone} more={more ? { total: more.total, loading: loadingMore, load: loadMore } : undefined} />
+      ) : (
+        <Block className="mt-3" flush title={tab === "all" ? "Open items" : TABS.find(([t]) => t === tab)![1]}>
+          {first && rows.length === 0 && <p className="px-4 py-6 text-sm text-ink/50">No item here.</p>}
+          {rows.length > 0 && (phone ? <WorkCards rows={rows} /> : <WorkTable rows={rows} />)}
+          {more && (
+            <div className="flex items-center justify-between gap-3 border-t border-line px-4 py-2.5 text-xs text-ink/55">
+              <span className="num">
+                {num(more.count)} of {num(more.total)}
+              </span>
+              <button className="chip max-md:h-11" disabled={loadingMore} onClick={loadMore}>
+                Show more
+              </button>
+            </div>
+          )}
+        </Block>
+      )}
+    </Page>
   );
 }
 
 export const queueModule: FeatureModule = {
   id: "queue",
   permission: "viewer",
-  nav: { label: "Merge queue", icon: GitMergeIcon, to: "/queue", group: "work", order: 0.5 },
-  commands: [{ id: "go-queue", keys: "g q", label: "Go to merge queue", group: "Go to" }],
-  routes: [{ path: "queue", view: { id: "queue", title: "Merge queue", panels: [{ id: "main", title: "Merge queue", component: QueueView, defaultSize: 100 }] } }],
+  nav: { label: "Queue", icon: ListNumbersIcon, to: "/queue", group: "work", order: 0.4 },
+  commands: [{ id: "go-queue", keys: "g q", label: "Go to queue", group: "Go to" }],
+  routes: [{ path: "queue/:tab?", view: { id: "queue", title: "Queue", panels: [{ id: "main", title: "Queue", component: QueueView, defaultSize: 100 }] } }],
 };

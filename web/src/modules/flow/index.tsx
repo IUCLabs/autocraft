@@ -108,7 +108,7 @@ function FlowView(_: ViewProps) {
               <Legend />
               <p className="mt-2 text-xs text-ink/50">
                 Full lists: <Link to="/pipeline" className="text-accent-ink hover:underline">Pipeline</Link> (switch, limits, jobs) ·{" "}
-                <Link to="/prompts" className="text-accent-ink hover:underline">Prompts</Link> · <Link to="/queue" className="text-accent-ink hover:underline">Merge queue</Link>
+                <Link to="/prompts" className="text-accent-ink hover:underline">Prompts</Link> · <Link to="/queue/merge" className="text-accent-ink hover:underline">Merge queue</Link>
               </p>
             </>
           )}

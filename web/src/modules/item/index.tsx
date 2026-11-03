@@ -24,6 +24,7 @@ import type { FeatureModule, ViewProps } from "../../registry/types";
 import { Slot } from "../../registry/Slot";
 import { Avatar } from "../../ui/Avatar";
 import { RefLink } from "../../ui/RefLink";
+import { FastMarkFor, FastToggle, HoldToggle } from "../queue/fastTrack";
 import { Badge, type Tone } from "../../ui/Badge";
 import { PriorityBadge } from "../../ui/PriorityBadge";
 import { Count } from "../../ui/Heading";
@@ -127,9 +128,12 @@ function Header({ it }: { it: Item }) {
     <div className="border-b border-line pb-4">
       <h1 className="text-xl font-semibold text-ink">
         {it.title}{" "}
-        <RefLink repo={it.repo} number={it.number} kind={it.kind} className="font-normal">
-          {it.repo}#{it.number}
-        </RefLink>
+        <span className="inline-flex items-center gap-1 align-middle">
+          <FastMarkFor repo={it.repo} number={it.number} />
+          <RefLink repo={it.repo} number={it.number} kind={it.kind} className="font-normal">
+            {it.repo}#{it.number}
+          </RefLink>
+        </span>
       </h1>
       <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1.5 text-sm text-ink/60">
         <StatePill it={it} />
@@ -139,6 +143,12 @@ function Header({ it }: { it: Item }) {
             <span className="font-medium text-ink">{it.author}</span> opened {ago(it.createdAt)} ago in <span className="code text-ink/80">{it.repo}</span>
           </span>
         </span>
+        {it.state === "open" && (
+          <span className="ml-auto flex flex-wrap items-center gap-1.5">
+            <FastToggle repo={it.repo} number={it.number} />
+            {it.kind === "pr" && <HoldToggle repo={it.repo} number={it.number} />}
+          </span>
+        )}
       </div>
     </div>
   );
