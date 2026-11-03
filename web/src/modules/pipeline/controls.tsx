@@ -187,9 +187,15 @@ export function StageLimits() {
   );
 }
 
+const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? "" : "s"}`;
+const pilotCount = (pilot: string[]) => {
+  const repos = pilot.filter((r) => !r.includes("#")).length, items = pilot.length - repos;
+  return [repos && plural(repos, "repo"), items && plural(items, "item")].filter(Boolean).join(", ");
+};
+
 const refLink = (ref: string) => {
   const [repo, n] = ref.split("#");
-  return `https://github.com/storytold/${repo}/issues/${n}`;
+  return n ? `https://github.com/storytold/${repo}/issues/${n}` : `https://github.com/storytold/${repo}`;
 };
 
 /** The items the pipeline is limited to, with links; operators set or clear the list. Nothing shows when there is no pilot and the viewer is no operator. */
@@ -207,7 +213,7 @@ export function PilotPanel({ className }: { className?: string }) {
   return (
     <div className={className}>
       <div className="rounded-md border border-line p-4">
-        <div className="text-sm font-semibold">{pilot.length ? `Pilot: ${pilot.length} items` : "Pilot"}</div>
+        <div className="text-sm font-semibold">{pilot.length ? `Pilot: ${pilotCount(pilot)}` : "Pilot"}</div>
         {pilot.length > 0 && (
           <div className="num mt-2 flex flex-wrap gap-x-3 gap-y-1 text-sm">
             {pilot.map((r) => (
@@ -220,7 +226,7 @@ export function PilotPanel({ className }: { className?: string }) {
         {operator && (
           <div className="mt-3 flex flex-col gap-2">
             <label htmlFor="pilot-items" className="text-sm font-medium">
-              Items <span className="font-normal text-ink/55">(one repo#number per line, or separated by spaces)</span>
+              Items <span className="font-normal text-ink/55">(repo#number or a whole repo, one per line or separated by spaces)</span>
             </label>
             <textarea
               id="pilot-items"

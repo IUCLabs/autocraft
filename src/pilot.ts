@@ -1,4 +1,4 @@
-// The pilot: an operator setting that limits the whole pipeline to a list of items ("repo#number").
+// The pilot: an operator setting that limits the whole pipeline to a list of items ("repo#number") and whole repos ("repo").
 // Empty or absent means no pilot. A Fix PR the pipeline opened for a pilot issue counts as a pilot item.
 // No Node imports besides the type, so candidate queries can use the SQL fragments.
 import type { DatabaseSync } from "node:sqlite";
@@ -10,7 +10,7 @@ export class PilotError extends Error {
   status = 400;
 }
 
-const REF = /^([A-Za-z0-9._-]+)#([1-9][0-9]*)$/;
+const REF = /^([A-Za-z0-9._-]+)(?:#([1-9][0-9]*))?$/;
 
 /** The stored list; an unreadable value counts as no pilot. */
 export function pilotItems(db: DatabaseSync): string[] {
@@ -27,12 +27,12 @@ export function pilotItems(db: DatabaseSync): string[] {
 /** Parses refs separated by whitespace or commas; throws on a malformed one or an untracked repo. */
 export function parsePilotRefs(db: DatabaseSync, input: unknown): string[] {
   const parts = Array.isArray(input) ? input : typeof input === "string" ? input.split(/[\s,]+/).filter(Boolean) : null;
-  if (!parts || parts.some((p) => typeof p !== "string")) throw new PilotError("items must be a list of repo#number");
+  if (!parts || parts.some((p) => typeof p !== "string")) throw new PilotError("items must be a list of repo#number or repo");
   const tracked = new Set((db.prepare("SELECT name FROM main.tracked_repos").all() as { name: string }[]).map((r) => r.name));
   const out: string[] = [];
   for (const p of parts as string[]) {
     const m = REF.exec(p);
-    if (!m) throw new PilotError(`not a repo#number reference: ${p}`);
+    if (!m) throw new PilotError(`not a repo#number or repo: ${p}`);
     if (!tracked.has(m[1]!)) throw new PilotError(`${m[1]} is not tracked`);
     if (!out.includes(p)) out.push(p);
   }
@@ -51,10 +51,10 @@ export function setPilot(db: DatabaseSync, by: string, input: unknown): string[]
 
 const LIST = `(SELECT CASE WHEN json_valid(ps.value) THEN ps.value ELSE '[]' END FROM main.settings ps WHERE ps.key = '${PILOT_KEY}')`;
 
-/** SQL condition on an item given by its repo and number expressions: true with no pilot, else when it is a pilot item or the Fix PR of a pilot issue. */
+/** SQL condition on an item given by its repo and number expressions: true with no pilot, else when it is a pilot item, in a pilot repo, or the Fix PR of a pilot issue. */
 export const pilotSqlFor = (repo: string, number: string): string =>
   `(COALESCE(json_array_length(${LIST}), 0) = 0
-    OR EXISTS (SELECT 1 FROM json_each(${LIST}) pj WHERE pj.value = ${repo} || '#' || ${number})
+    OR EXISTS (SELECT 1 FROM json_each(${LIST}) pj WHERE pj.value = ${repo} || '#' || ${number} OR pj.value = ${repo})
     OR EXISTS (SELECT 1 FROM main.fix_attempts pf, json_each(${LIST}) pj WHERE pf.repo = ${repo} AND pf.pr_url LIKE '%/pull/' || ${number}
       AND pj.value = pf.repo || '#' || pf.number))`;
 

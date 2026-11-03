@@ -344,7 +344,7 @@ A stage does not wait on a timer when it has work. Two rules decide when a stage
 
 Stages that watch an outside system (upstream CI of PRs waiting for it, open batch PRs, finished sandbox tasks) are exempt from the first rule and read it again every minute. The full classification pass is never started automatically.
 
-**Pilot.** The setting `pilot_items` (a list of `repo#number`) limits every stage to those items. Classify, Priority, Dupes (the listed items as subjects; their neighbours may be any item), Referee, Decide, Review, Opus review, Post reviews, Label, Verify, Fix-up, Fix, Merge and Act pick candidates among them only; Embed and Rank stay unrestricted because they are local and cheap. A Fix PR the pipeline opened for a pilot issue counts as a pilot item. Integration batches in flight finish. Empty or absent means no pilot. Operators set it on the Pipeline page or with `craft-auto pipeline pilot set <repo#number>...`, `pilot show` and `pilot clear`; each change is in the audit log.
+**Pilot.** The setting `pilot_items` (a list of `repo#number` items and whole `repo`s) limits every stage to those items and repos. Classify, Priority, Dupes (the listed items as subjects; their neighbours may be any item), Referee, Decide, Review, Opus review, Post reviews, Label, Verify, Fix-up, Fix, Merge and Act pick candidates among them only; Embed and Rank stay unrestricted because they are local and cheap. A Fix PR the pipeline opened for a pilot issue counts as a pilot item. Integration batches in flight finish. Empty or absent means no pilot. Operators set it on the Pipeline page or with `craft-auto pipeline pilot set <repo#number|repo>...`, `pilot show` and `pilot clear`; each change is in the audit log.
 
 ### Daily limits
 

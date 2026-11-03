@@ -73,6 +73,14 @@ test("with a pilot, candidates are the listed items and the Fix PRs of listed is
   assert.equal(inPilot(db, "app", 12), false);
 });
 
+test("a pilot repo covers all its items", () => {
+  setPilot(db, "tester", ["app"]);
+  assert.deepEqual(held(), [1, 2, 3, 4, 10, 11, 12, 111]);
+  assert.equal(inPilot(db, "app", 12), true);
+  assert.equal(inPilot(db, "other", 1), false);
+  setPilot(db, "tester", []);
+});
+
 test("a fix retry is due only for a pilot issue", () => {
   setFixIssueApproval(db, "tester", "app", true);
   db.prepare("UPDATE fix_attempts SET state = 'retry' WHERE number = 2").run();
@@ -90,7 +98,7 @@ test("a pilot is validated and clearing it lifts the limit", () => {
   assert.deepEqual(pilotItems(db), []);
   assert.deepEqual(held(), [1, 2, 3, 4, 10, 11, 12, 111]);
   const audited = db.prepare("SELECT action FROM audit WHERE action LIKE 'pilot-%' ORDER BY rowid").all() as { action: string }[];
-  assert.deepEqual(audited.map((a) => a.action), ["pilot-set", "pilot-set", "pilot-set", "pilot-clear", "pilot-clear"]);
+  assert.deepEqual(audited.map((a) => a.action), ["pilot-set", "pilot-set", "pilot-clear", "pilot-set", "pilot-set", "pilot-clear", "pilot-clear"]);
 });
 
 // ---- the stages that write to GitHub ----------------------------------------------
