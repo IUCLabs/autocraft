@@ -63,14 +63,3 @@ export function RiskList({ risks }: { risks: string[] }) {
     </section>
   );
 }
-
-/** "Recommended: <option> — <reason>", only when the model gave a reason. */
-export function RecommendationLine({ d }: { d: Decision }) {
-  const label = d.options.find((o) => o.key === d.recommended)?.label;
-  if (!label || !d.recommendedReason) return null;
-  return (
-    <p className="text-sm leading-[21px] text-ink/85">
-      <span className="font-medium">Recommended: {label}</span> — {d.recommendedReason}
-    </p>
-  );
-}

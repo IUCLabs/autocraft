@@ -4,7 +4,7 @@ import { Button } from "../../ui/atoms/Button";
 import { Kbd } from "../../ui/atoms/Kbd";
 import { cn } from "../../ui/cn";
 import { AnsweredState, canActOn } from "./DecisionDetail";
-import { RecommendationLine } from "./Group";
+import { RecommendationLine } from "../../ui/molecules/RecommendationLine";
 import { localActions, useAnswer, useArmed, useLocal, userSelection } from "./state";
 
 export const WORKFLOW_ID = "workflow-box";

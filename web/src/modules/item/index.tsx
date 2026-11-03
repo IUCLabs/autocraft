@@ -32,7 +32,7 @@ import { Count } from "../../ui/atoms/Heading";
 import { cn } from "../../ui/cn";
 import { ago, num } from "../../lib/format";
 import { KindTag, tallyOf } from "../decisions/parts";
-import { RecommendationLine } from "../decisions/Group";
+import { RecommendationLine } from "../../ui/molecules/RecommendationLine";
 import { Markdown, Collapsible } from "../../ui/molecules/Markdown";
 import { useIsPhone } from "../../shell/useMedia";
 import { SettledBadge } from "../items";
