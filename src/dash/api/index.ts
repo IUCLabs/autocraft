@@ -6,7 +6,7 @@ import { checksOf } from "../../patchcheck/index.ts";
 import { priorityOf } from "../../priority/read.ts";
 import type { DatabaseSync, SQLInputValue } from "node:sqlite";
 import type {
-  CiState, Done, Funnel, Item, ItemAction, ItemComment, ItemFixup, ItemReviews, ItemVerification, ReviewSide, Mergeable, Progress, RepoProgress, Tier, User,
+  CiState, DecisionKind, Done, Funnel, Item, ItemAction, ItemComment, ItemFixup, ItemReviews, ItemVerification, ReviewSide, Mergeable, Progress, RepoProgress, Tier, User,
 } from "../../../web/src/api/types.ts";
 import { trackedNames } from "../../repos.ts";
 import { excludeHidden, hiddenRepos, needVisible, visibleRepos } from "./visible.ts";
@@ -169,9 +169,9 @@ function prWork(db: DatabaseSync, repo: string, n: number): Pick<Item, "verifica
 }
 
 function actionsOf(db: DatabaseSync, repo: string, n: number): ItemAction[] {
-  return (db.prepare("SELECT decision_id, kind, state, comment_url, reason, created_at FROM actions WHERE repo = ? AND number = ? ORDER BY created_at, id").all(repo, n) as
-    { decision_id: string; kind: string; state: string; comment_url: string | null; reason: string | null; created_at: string }[])
-    .map((a): ItemAction => ({ decisionId: a.decision_id, kind: a.kind, state: a.state as ItemAction["state"], commentUrl: a.comment_url, reason: a.reason, createdAt: a.created_at }));
+  return (db.prepare("SELECT decision_id, kind, state, comment_url, reason, created_at, (SELECT d.kind FROM decisions d WHERE d.id = actions.decision_id) AS decision_kind FROM actions WHERE repo = ? AND number = ? ORDER BY created_at, id").all(repo, n) as
+    { decision_id: string; kind: string; state: string; comment_url: string | null; reason: string | null; created_at: string; decision_kind: string | null }[])
+    .map((a): ItemAction => ({ decisionId: a.decision_id, decisionKind: a.decision_kind as DecisionKind | null, kind: a.kind, state: a.state as ItemAction["state"], commentUrl: a.comment_url, reason: a.reason, createdAt: a.created_at }));
 }
 
 // ---- progress ----------------------------------------------------------------
@@ -292,6 +292,7 @@ export function apiRoutes(opts: ApiOptions = {}): Route[] {
     post("/api/decisions/:id/comments", (db, req) => dec.comment(db, req, limiter)),
     post("/api/decisions/:id/claim", dec.claim),
     get("/api/items/:repo/:n", item),
+    get("/api/items/:repo/:n/decision", dec.forItem),
     { method: "POST", pattern: "/api/items/:repo/:n/review-again", operator: true, handler: ok(operator.reviewItemAgain) },
     { method: "POST", pattern: "/api/items/:repo/:n/verify-again", operator: true, handler: ok(operator.verifyItemAgain) },
     { method: "POST", pattern: "/api/items/:repo/:n/fix-again", operator: true, handler: ok(operator.fixItemAgain) },

@@ -3,7 +3,7 @@ import type { ViewProps } from "../../registry/types";
 import { Avatar } from "../../ui/Avatar";
 import { Count } from "../../ui/Heading";
 import { ago } from "../../lib/format";
-import { localActions, useDecisionList, useSelection } from "./state";
+import { localActions, useDecisionList, usePinned, useSelection } from "./state";
 import { scrollToWorkflow } from "./Workflow";
 import { OpinionList } from "./parts";
 import { canAct } from "../../registry/permissions";
@@ -15,7 +15,9 @@ export function ThreadPanel({ user }: ViewProps) {
   const api = useApi();
   const { id } = useSelection();
   const { data } = useDecisionList();
-  const d = data?.decisions.find((x) => x.id === id);
+  const inList = data?.decisions.find((x) => x.id === id);
+  const pinned = usePinned(id, !!inList);
+  const d = inList ?? pinned;
   const operator = d ? canAct(user, d.items.length ? d.items.map((i) => i.repo) : [d.repo]) : false;
   const use = (option: string) => {
     if (!d) return;

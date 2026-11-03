@@ -35,6 +35,7 @@ import { useIsPhone } from "../../shell/useMedia";
 import { SettledBadge } from "../items";
 import { PrWork } from "./PrWork";
 import { useNow } from "../../lib/useNow";
+import { decisionPath, itemPath } from "../../lib/links";
 
 function useItem(params: ViewProps["params"]) {
   const repo = params.repo!;
@@ -478,7 +479,7 @@ function ItemSide(props: ViewProps) {
         {ds?.length === 0 && <p className="text-sm text-ink/50">No decisions about this item.</p>}
         <div className="space-y-2">
           {ds?.map((d) => (
-            <Link key={d.id} to={`/decisions/${encodeURIComponent(d.id)}`} className="block rounded-md border border-line p-2.5 transition-colors duration-fast hover:border-line-strong hover:bg-ink/[0.03]">
+            <Link key={d.id} to={decisionPath(d, { siblings: ds })} className="block rounded-md border border-line p-2.5 transition-colors duration-fast hover:border-line-strong hover:bg-ink/[0.03]">
               <div className="flex items-center gap-2">
                 <KindTag kind={d.kind} />
                 <span className="ml-auto text-xs text-ink/50">{d.answer ? `answered ${ago(d.answeredAt!)} ago` : `waiting ${ago(d.askedAt)}`}</span>
@@ -512,7 +513,7 @@ function ItemSide(props: ViewProps) {
               <RefLink repo={r.repo} number={r.number} className="mr-1.5">
                 #{r.number}
               </RefLink>
-              <Link to={`/item/${r.repo}/${r.number}`} className="hover:underline">
+              <Link to={itemPath(r.repo, r.number)} className="hover:underline">
                 {r.title}
               </Link>
             </li>
@@ -544,6 +545,17 @@ export const itemModule: FeatureModule = {
   id: "item",
   permission: "viewer",
   routes: [
+    {
+      path: "items/:repo/:number",
+      view: {
+        id: "item",
+        title: "Item",
+        panels: [
+          { id: "main", title: "Item", component: ItemMain, defaultSize: 72, minSize: 45 },
+          { id: "side", title: "Decisions and links", component: ItemSide, defaultSize: 28, minSize: 20, maxSize: 45, collapsible: true },
+        ],
+      },
+    },
     {
       path: "item/:repo/:number",
       view: {

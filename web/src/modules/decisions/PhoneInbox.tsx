@@ -3,28 +3,29 @@ import { Dialog } from "radix-ui";
 import { SlidersHorizontalIcon, XIcon } from "@phosphor-icons/react";
 import type { ViewProps } from "../../registry/types";
 import { cn } from "../../ui/cn";
-import { DecisionBody } from "./DecisionDetail";
+import { DecisionBody, NoDecision } from "./DecisionDetail";
 import { useInboxKeys, summaryLine } from "./InboxList";
 import { DecisionsToolbar } from "./Toolbar";
-import { ordered, useDecisionFilter, useDecisionList, useLocal, useSelection, useUndo } from "./state";
+import { ordered, useDecisionFilter, useDecisionList, useLocal, usePinned, useSelection, useUndo } from "./state";
 
 /** Phone flow: one decision per screen with previous/next, filters in a sheet. */
 export function PhoneInbox(props: ViewProps) {
   const { data } = useDecisionList();
   const { filter } = useDecisionFilter();
-  const { id, go } = useSelection();
+  const { id, go, byLink, item, missing } = useSelection();
   const loc = useLocal();
   const undo = useUndo();
   const [sheet, setSheet] = useState(false);
   const list = ordered(data?.decisions ?? []);
   useInboxKeys(list);
   const idx = list.findIndex((d) => d.id === id);
-  const d = list[idx];
+  const pinned = usePinned(id, idx >= 0);
+  const d = list[idx] ?? pinned;
   const active = (filter.kind?.length ?? 0) + (filter.repo?.length ?? 0) + (filter.minAge ? 1 : 0) + (filter.mine ? 1 : 0);
   const last = loc.justAnswered[0];
 
   useEffect(() => {
-    if (!id && list.length) go(list[0].id, true);
+    if (!id && !byLink && list.length) go(list[0], true);
   }, [id, list.length]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     window.scrollTo(0, 0);
@@ -50,7 +51,7 @@ export function PhoneInbox(props: ViewProps) {
         </div>
       )}
       <div className="flex min-h-0 flex-1 flex-col">
-        {d ? <DecisionBody key={d.id} d={d} user={props.user} phone onAnswered={() => go(list[idx + 1]?.id ?? list[idx - 1]?.id, true)} pager={{ pos: `${idx + 1} of ${list.length}`, prev: idx > 0 ? () => go(list[idx - 1].id) : undefined, next: idx < list.length - 1 ? () => go(list[idx + 1].id) : undefined }} /> : <p className="py-16 text-center text-sm text-ink/60">Nothing waiting.</p>}
+        {d ? <DecisionBody key={d.id} d={d} user={props.user} phone onAnswered={() => go(list[idx + 1] ?? list[idx - 1], true)} pager={{ pos: `${idx + 1} of ${list.length}`, prev: idx > 0 ? () => go(list[idx - 1]) : undefined, next: idx < list.length - 1 ? () => go(list[idx + 1]) : undefined }} /> : missing && item ? <NoDecision repo={item.repo} number={item.number} /> : <p className="py-16 text-center text-sm text-ink/60">Nothing waiting.</p>}
       </div>
       <Dialog.Root open={sheet} onOpenChange={setSheet}>
         <Dialog.Portal>

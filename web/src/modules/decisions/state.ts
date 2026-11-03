@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { useApi, usePagedQuery } from "../../api/client";
+import { useApi, usePagedQuery, useQuery } from "../../api/client";
+import { decisionPath, parseDecisionRoute } from "../../lib/links";
 import type { Decision, DecisionFilter, DecisionKind } from "../../api/types";
 
 export const KIND_LABEL: Record<DecisionKind, string> = {
@@ -64,15 +65,27 @@ export function useSelection() {
   const params = useParams();
   const navigate = useNavigate();
   const { search } = useDecisionFilter();
-  const id = params.id ? decodeURIComponent(params.id) : undefined;
+  const { data: loaded } = useDecisionList();
+  const route = parseDecisionRoute({ id: params.id, repo: params.repo, n: params.n, kind: params.kind });
+  const byItem = route.by === "item" ? route : undefined;
+  const found = useQuery(`decision:for:${byItem ? `${byItem.repo}#${byItem.number}:${byItem.kind ?? ""}` : ""}`, (a) => (byItem ? a.decisions.forItem(byItem.repo, byItem.number, byItem.kind as DecisionKind | undefined) : Promise.resolve(null)), { enabled: !!byItem });
+  const id = route.by === "id" ? route.id : byItem && !found.loading ? found.data?.id : undefined;
   const go = useCallback(
-    (next: string | undefined, auto = false) => {
-      userSelection.id = auto ? undefined : next;
-      navigate(`/decisions${next ? `/${encodeURIComponent(next)}` : ""}${search ? `?${search}` : ""}`);
+    (next: Pick<Decision, "id" | "repo" | "number" | "kind" | "answer"> | undefined, auto = false) => {
+      userSelection.id = auto ? undefined : next?.id;
+      navigate(decisionPath(next, { search, siblings: loaded?.decisions }));
     },
-    [navigate, search],
+    [navigate, search, loaded],
   );
-  return { id, go };
+  /** True while a repo/number link has not resolved yet, and when it resolved to nothing: the list must not pick another decision. */
+  const byLink = !!byItem;
+  return { id, go, byLink, item: byItem, missing: !!byItem && !found.loading && !found.data };
+}
+
+/** The decision with this id when the open list does not hold it (a link to an answered one, or to another tab's). */
+export function usePinned(id: string | undefined, inList: boolean) {
+  const d = useQuery(`decision:${id ?? ""}`, (a) => (id ? a.decisions.get(id) : Promise.reject(new Error("no decision"))), { enabled: !!id && !inList }).data;
+  return d && d.id === id ? d : undefined;
 }
 
 // ---- view-local state shared by the list, detail and thread panels ----

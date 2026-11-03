@@ -9,6 +9,7 @@ import { Badge } from "../../ui/Badge";
 import { Count } from "../../ui/Heading";
 import { RefLink } from "../../ui/RefLink";
 import { cn } from "../../ui/cn";
+import { itemPath } from "../../lib/links";
 
 const REASON: Record<NonNullable<SimilarHit["stateReason"]>, string> = { duplicate: "closed as duplicate", "not-planned": "closed, not planned", completed: "closed, completed" };
 
@@ -50,7 +51,7 @@ function SimilarItems({ params }: ViewProps) {
                 {h.label && <Badge className="ml-0.5">{h.label}</Badge>}
                 <Score score={h.score} className="ml-auto" />
               </div>
-              <Link to={`/item/${h.repo}/${h.number}`} className={cn("mt-0.5 block leading-5 hover:underline", closed && "text-ink/55")}>
+              <Link to={itemPath(h.repo, h.number)} className={cn("mt-0.5 block leading-5 hover:underline", closed && "text-ink/55")}>
                 {h.title}
               </Link>
               {closed && (

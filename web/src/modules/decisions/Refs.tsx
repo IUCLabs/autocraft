@@ -1,6 +1,7 @@
 import { Fragment } from "react";
 import { Link } from "react-router-dom";
 import { RefLink } from "../../ui/RefLink";
+import { itemPath } from "../../lib/links";
 
 // A "#123" not preceded by a word character or slash; "repo#123" and URLs are left alone.
 const REF = /(?<![\w/])#(\d+)\b/g;
@@ -15,7 +16,7 @@ export function Refs({ text, repo }: { text: string; repo: string | null }) {
     out.push(text.slice(last, m.index));
     out.push(
       <Fragment key={m.index}>
-        <Link to={`/item/${repo}/${n}`} className="code text-accent-ink hover:underline">
+        <Link to={itemPath(repo, n)} className="code text-accent-ink hover:underline">
           #{n}
         </Link>
         <RefLink repo={repo} number={n} className="ml-0.5 text-ink/40" stop>

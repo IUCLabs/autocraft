@@ -311,6 +311,8 @@ export interface ItemFixup {
 
 export interface ItemAction {
   decisionId: string;
+  /** Kind of the decision the action came from; null when that decision is gone. */
+  decisionKind?: DecisionKind | null;
   kind: string;
   state: "done" | "skipped" | "failed";
   commentUrl: string | null;

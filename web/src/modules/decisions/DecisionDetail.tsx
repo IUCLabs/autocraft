@@ -1,6 +1,7 @@
 import { PriorityBadge } from "../../ui/PriorityBadge";
 import { useEffect, useRef, type ReactNode } from "react";
 import { Link } from "react-router-dom";
+import { itemPath } from "../../lib/links";
 import { RefLink } from "../../ui/RefLink";
 import { CaretLeftIcon, CaretRightIcon, CheckIcon, ArrowUUpLeftIcon, ChatCircleIcon, TrayIcon, SparkleIcon, ArrowDownIcon } from "@phosphor-icons/react";
 import { useApi } from "../../api/client";
@@ -17,7 +18,7 @@ import { ago } from "../../lib/format";
 import { ClaimPill, ClassifierLines, Disclosure, Facts, KindTag, OpinionList, RelatedList } from "./parts";
 import { Refs } from "./Refs";
 import { ReviewBox } from "./ReviewBox";
-import { localActions, ordered, refOf, useDecisionFilter, useDecisionList, useLocal, useSelection, useUndo } from "./state";
+import { localActions, ordered, refOf, useDecisionFilter, useDecisionList, useLocal, usePinned, useSelection, useUndo } from "./state";
 import { Thread } from "./Thread";
 import { WorkflowBox, scrollToWorkflow } from "./Workflow";
 import { useNow } from "../../lib/useNow";
@@ -28,15 +29,17 @@ export const canActOn = (user: User, ds: Decision[]): boolean =>
 /** Desktop detail panel: the selected decision, or the batch answer for checked rows. */
 export function DetailPanel({ user }: ViewProps) {
   const { data } = useDecisionList();
-  const { id, go } = useSelection();
+  const { id, go, item, missing } = useSelection();
   const loc = useLocal();
   const list = ordered(data?.decisions ?? []);
   const checked = list.filter((d) => loc.checked.has(d.id));
 
   if (checked.length > 1) return <MultiAnswer ds={checked} user={user} />;
-  const d = list.find((x) => x.id === id) ?? null;
-  const idx = d ? list.indexOf(d) : -1;
   const just = loc.justAnswered.find((x) => x.id === id);
+  const inList = list.find((x) => x.id === id);
+  const pinned = usePinned(id, !!inList || !!just);
+  const d = inList ?? pinned ?? null;
+  const idx = d ? list.indexOf(d) : -1;
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -47,17 +50,32 @@ export function DetailPanel({ user }: ViewProps) {
           </span>
         )}
         <div className="ml-auto flex items-center">
-          <IconButton size="sm" icon={CaretLeftIcon} label="Previous (k)" disabled={idx <= 0} onClick={() => go(list[idx - 1]?.id)} />
-          <IconButton size="sm" icon={CaretRightIcon} label="Next (j)" disabled={idx < 0 || idx >= list.length - 1} onClick={() => go(list[idx + 1]?.id)} />
+          <IconButton size="sm" icon={CaretLeftIcon} label="Previous (k)" disabled={idx <= 0} onClick={() => go(list[idx - 1])} />
+          <IconButton size="sm" icon={CaretRightIcon} label="Next (j)" disabled={idx < 0 || idx >= list.length - 1} onClick={() => go(list[idx + 1])} />
         </div>
       </div>
       {just && !d ? (
         <AnsweredNotice entry={just} />
       ) : d ? (
-        <DecisionBody key={d.id} d={d} user={user} onAnswered={() => go(list[idx + 1]?.id ?? list[idx - 1]?.id, true)} />
+        <DecisionBody key={d.id} d={d} user={user} onAnswered={() => go(list[idx + 1] ?? list[idx - 1], true)} />
+      ) : missing && item ? (
+        <NoDecision repo={item.repo} number={item.number} />
       ) : (
         <EmptyDetail count={list.length} />
       )}
+    </div>
+  );
+}
+
+export function NoDecision({ repo, number }: { repo: string; number: number }) {
+  return (
+    <div className="flex h-full flex-col items-center justify-center gap-2 p-8 text-center">
+      <p className="text-md font-semibold">
+        No decision for {repo}#{number}
+      </p>
+      <Link to={itemPath(repo, number)} className="text-sm text-accent-ink hover:underline">
+        Open the item
+      </Link>
     </div>
   );
 }
@@ -191,7 +209,7 @@ export function DecisionBody({
       title="Description"
       aside={
         isBatch ? undefined : (
-          <Link to={`/item/${d.repo}/${d.number}`} className="text-accent-ink hover:underline">
+          <Link to={itemPath(d.repo, d.number!)} className="text-accent-ink hover:underline">
             Item page
           </Link>
         )

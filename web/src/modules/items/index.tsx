@@ -14,6 +14,7 @@ import { ago, num } from "../../lib/format";
 import { useIsPhone } from "../../shell/useMedia";
 import { Block, ErrorLine, Page, Pager, selectCls, TextInput, useUrlState } from "../admin/parts";
 import { useNow } from "../../lib/useNow";
+import { itemPath } from "../../lib/links";
 
 const PAGE = 50;
 const LABELS: TypeLabel[] = ["bugfix", "performance", "missing feature", "small extra", "plugin candidate", "infra"];
@@ -328,7 +329,7 @@ function Table({ rows }: { rows: ItemListRow[] }) {
                 <div className="flex min-w-0 items-center gap-2">
                   <StateIcon it={it} />
                   <RefLink repo={it.repo} number={it.number} kind={it.kind} className="shrink-0 text-xs" />
-                  <Link to={`/item/${it.repo}/${it.number}`} className="truncate font-medium hover:text-accent-ink hover:underline" title={it.title}>
+                  <Link to={itemPath(it.repo, it.number)} className="truncate font-medium hover:text-accent-ink hover:underline" title={it.title}>
                     {it.title}
                   </Link>
                 </div>
@@ -363,7 +364,7 @@ function Cards({ rows }: { rows: ItemListRow[] }) {
     <ul>
       {rows.map((it) => (
         <li key={`${it.repo}#${it.number}`} className="border-b border-line last:border-0">
-          <Link to={`/item/${it.repo}/${it.number}`} className="block px-4 py-2.5 active:bg-ink/[0.05]">
+          <Link to={itemPath(it.repo, it.number)} className="block px-4 py-2.5 active:bg-ink/[0.05]">
             <div className="flex items-center gap-2 text-xs text-ink/55">
               <StateIcon it={it} />
               <span className="code">

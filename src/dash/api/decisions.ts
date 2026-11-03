@@ -15,6 +15,7 @@ import { randomToken } from "../server/crypto.ts";
 import { HttpError, type RateLimiter } from "../server/util.ts";
 import type { Req } from "../types.ts";
 import { hiddenRepos, visibleRepos } from "./visible.ts";
+import { pickDecision, shortRepo } from "../../../web/src/lib/links.ts";
 
 export const CLAIM_TTL = 10 * 60_000;
 const NOTE_MAX = 500;
@@ -261,6 +262,23 @@ export async function listDecisions(db: DatabaseSync, req: Req, writeRepos: () =
 
 export async function getOne(db: DatabaseSync, req: Req): Promise<Decision> {
   return toDecision(db, await needDecision(db, req, req.params.id!), viewerOf(req));
+}
+
+/** The decision a readable link `/decisions/<repo>/<n>` opens, or null when the item has none the viewer may see. */
+export async function forItem(db: DatabaseSync, req: Req): Promise<Decision | null> {
+  const n = Number(req.params.n);
+  if (!Number.isInteger(n)) throw new HttpError(400, "not an item number");
+  const repo = shortRepo(req.params.repo!);
+  const visible = new Set(await visibleRepos(db, req));
+  const rows = db.prepare(`SELECT * FROM decisions WHERE (repo = :repo AND number = :n) OR (number IS NULL AND EXISTS (
+      SELECT 1 FROM json_each(CASE WHEN json_valid(items) THEN items ELSE '[]' END) j
+      WHERE json_extract(j.value, '$.repo') = :repo AND json_extract(j.value, '$.number') = :n))`).all({ repo, n }) as unknown as DecisionRow[];
+  const viewer = viewerOf(req);
+  // A batch that also covers the item counts only when no single-item decision exists; it is the item's decision only by membership.
+  const single = rows.filter((d) => d.number === n);
+  const kind = req.query.get("kind");
+  const shown = (single.length ? single : rows).filter((d) => !kind || d.kind === kind).filter((d) => reposOf(d).every((r) => visible.has(r))).map((d) => toDecision(db, d, viewer));
+  return pickDecision(shown) ?? null;
 }
 
 export async function thread(db: DatabaseSync, req: Req): Promise<DecisionComment[]> {

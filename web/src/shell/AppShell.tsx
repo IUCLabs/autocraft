@@ -247,10 +247,11 @@ function Breadcrumb({ routes }: { routes: RouteDef[] }) {
   const first = loc.pathname.split("/")[1] ?? "";
   const r = routes.find((x) => x.path.split("/")[0] === first);
   const rest = decodeURIComponent(loc.pathname.split("/").slice(2).join("/"));
+  const isItem = (first === "item" || first === "items") && rest.includes("/");
   return (
     <div className="flex w-[200px] shrink-0 items-center gap-1.5 truncate text-sm">
-      <span className="font-medium">{r?.view.title ?? ""}</span>
-      {rest && first === "item" && (
+      <span className="font-medium">{isItem ? "Item" : (r?.view.title ?? "")}</span>
+      {isItem && (
         <>
           <span className="text-ink/35">/</span>
           <span className="code truncate text-ink/60">{rest.replace("/", "#")}</span>

@@ -12,6 +12,7 @@ import { RefLink } from "../../ui/RefLink";
 import { ClaimPill, KIND_ICON } from "./parts";
 import { KIND_LABEL, KINDS, localActions, ordered, useDecisionFilter, useDecisionList, useLocal, useSelection, useUndo } from "./state";
 import { useNow } from "../../lib/useNow";
+import { itemPath } from "../../lib/links";
 
 const SHORTCUTS: Command[] = [
   { id: "d-next", keys: "j", label: "Next decision", group: "Decisions" },
@@ -40,11 +41,11 @@ export function useInboxKeys(list: Decision[]) {
   const cur = list[idx];
   useShortcutHelp(SHORTCUTS);
   useHotkeys({
-    j: () => go(list[Math.min(idx + 1, list.length - 1)]?.id),
-    k: () => go(list[Math.max(idx - 1, 0)]?.id),
+    j: () => go(list[Math.min(idx + 1, list.length - 1)]),
+    k: () => go(list[Math.max(idx - 1, 0)]),
     x: () => cur && localActions.toggle(cur.id),
     u: () => void undo(),
-    o: () => cur?.number != null && navigate(`/item/${cur.repo}/${cur.number}`),
+    o: () => cur?.number != null && navigate(itemPath(cur.repo, cur.number)),
     escape: () => localActions.clearChecked(),
     "g a": () => update({ tab: filter.status === "answered" ? null : "answered" }),
   });
@@ -53,7 +54,7 @@ export function useInboxKeys(list: Decision[]) {
 export function InboxList({ user }: ViewProps) {
   useNow();
   const { data, loading, hasMore, loadMore, loadingMore } = useDecisionList();
-  const { id, go } = useSelection();
+  const { id, go, byLink } = useSelection();
   const loc = useLocal();
   const list = ordered(data?.decisions ?? []);
   useInboxKeys(list);
@@ -63,8 +64,8 @@ export function InboxList({ user }: ViewProps) {
   }, [id]);
   // Open the oldest decision when nothing is selected, so the detail pane is never empty on arrival.
   useEffect(() => {
-    if (!id && list.length && !loc.justAnswered.length) go(list[0].id, true);
-  }, [id, list.length]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (!id && !byLink && list.length && !loc.justAnswered.length) go(list[0], true);
+  }, [id, byLink, list.length]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const groups: { kind: Decision["kind"]; items: Decision[] }[] = [];
   for (const d of list) {
@@ -94,7 +95,7 @@ export function InboxList({ user }: ViewProps) {
                 <Count n={g.items.length} />
               </div>
               {g.items.map((d) => (
-                <Row key={d.id} d={d} active={d.id === id} checked={loc.checked.has(d.id)} mine={d.opinions.find((o) => o.login === user.login)?.option ?? undefined} onOpen={() => go(d.id)} activeRef={d.id === id ? activeRef : undefined} />
+                <Row key={d.id} d={d} active={d.id === id} checked={loc.checked.has(d.id)} mine={d.opinions.find((o) => o.login === user.login)?.option ?? undefined} onOpen={() => go(d)} activeRef={d.id === id ? activeRef : undefined} />
               ))}
             </div>
           );

@@ -6,6 +6,7 @@ import { useApi } from "../../api/client";
 import { Badge, type Tone } from "../../ui/Badge";
 import { useUser } from "../../shell/UserContext";
 import { ConfirmButton, ErrorLine, useWrite } from "../admin/parts";
+import { decisionPath } from "../../lib/links";
 import { ago, span } from "../../lib/format";
 import { useNow } from "../../lib/useNow";
 
@@ -239,7 +240,7 @@ function Fixups({ rows }: { rows: ItemFixup[] }) {
 
 const A_STATE: Record<ItemAction["state"], [string, Tone]> = { done: ["Done", "ok"], skipped: ["Skipped", "neutral"], failed: ["Failed", "bad"] };
 
-function Actions({ rows }: { rows: ItemAction[] }) {
+function Actions({ rows, repo, number }: { rows: ItemAction[]; repo: string; number: number }) {
   useNow();
   return (
     <ul className="divide-y divide-line rounded-md border border-line text-sm">
@@ -256,7 +257,7 @@ function Actions({ rows }: { rows: ItemAction[] }) {
                 </a>
               )}
               {a.state === "done" && <span className="text-xs text-ink/55">closed</span>}
-              <Link to={`/decisions/${encodeURIComponent(a.decisionId)}`} className="code text-xs text-ink/50 hover:underline">
+              <Link to={decisionPath({ id: a.decisionId, repo, number: a.decisionKind ? number : null, kind: a.decisionKind ?? undefined })} className="code text-xs text-ink/50 hover:underline">
                 {a.decisionId}
               </Link>
               <span className="ml-auto text-xs text-ink/50">{ago(a.createdAt)} ago</span>
@@ -336,7 +337,7 @@ export function PrWork({ it }: { it: Item }) {
       )}
       {it.actions.length > 0 && (
         <Box title="Actions" aside="GitHub writes after a decision">
-          <Actions rows={it.actions} />
+          <Actions rows={it.actions} repo={it.repo} number={it.number} />
         </Box>
       )}
     </>
