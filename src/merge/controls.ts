@@ -11,6 +11,8 @@ import { FastTrackError, parseItemRef } from "../fasttrack.ts";
 import { type Exec, exec as defaultExec } from "../fixup/git.ts";
 import { ghClosePr } from "../github/write.ts";
 import { isTracked } from "../repos.ts";
+import { ORG } from "../act/templates.ts";
+import { cancelTask, getTask, TERMINAL } from "../build/tasks.ts";
 import { ACTIVE_BATCH, activeBatches, getBatch, membersOf, updateBatch } from "./batch-store.ts";
 
 export class ControlError extends Error {
@@ -46,13 +48,26 @@ export function releaseMerge(db: DatabaseSync, by: string, repo: string, number:
   return r.changes > 0;
 }
 
-/** Marks the batch superseded and closes its integration PR, when it has one. The PRs go back to the queue; the next merge run builds batches from what is eligible. */
+/** Marks the batch superseded and closes its integration PR, when it has one; the row goes back to its state if the close fails, so a later Stop, Remove or merge run retries. A batch still checking has its sandbox task cancelled. The PRs go back to the queue; the next merge run builds batches from what is eligible. */
 async function endBatch(db: DatabaseSync, by: string, id: number, why: string, comment: string, run: Exec): Promise<{ closed: number | null }> {
   const b = getBatch(db, id);
   updateBatch(db, id, new Date().toISOString(), { state: "superseded", summary: why });
-  if (b.pr_number === null) return { closed: null };
-  const r = await ghClosePr({ db, login: by }, run, { repo: b.repo, number: b.pr_number }, `Closing: ${why}.`, { batch: b.branch });
-  if (r.code !== 0) throw new ControlError(`the batch was ended but its PR #${b.pr_number} could not be closed: ${r.stderr.replace(/\s+/g, " ").trim().slice(0, 200)}`, 502);
+  if (b.pr_number === null) {
+    const t = b.task_id === null ? null : getTask(db, b.task_id);
+    if (t && !TERMINAL.includes(t.state)) cancelTask(db, t.id, by);
+    return { closed: null };
+  }
+  const r = await ghClosePr({ db, login: by }, run, { repo: b.repo, number: b.pr_number }, `Closing: ${comment}.`, { batch: b.branch });
+  if (r.code !== 0) {
+    const state = await run("gh", ["pr", "view", String(b.pr_number), "--repo", `${ORG}/${b.repo}`, "--json", "state", "--jq", ".state"]);
+    if (state.code === 0 && state.stdout.trim() === "MERGED") {
+      // The merge went through while the batch was being ended: the merge bookkeeping records it.
+      audit(db, by, "batch-end-too-late", `${b.repo}:${b.branch}`, { pr: b.pr_number });
+      return { closed: null };
+    }
+    updateBatch(db, id, new Date().toISOString(), { state: b.state, summary: b.summary });
+    throw new ControlError(`the batch PR #${b.pr_number} could not be closed: ${r.stderr.replace(/\s+/g, " ").trim().slice(0, 200)}`, 502);
+  }
   return { closed: b.pr_number };
 }
 

@@ -8,7 +8,8 @@ import { excludeHidden } from "../dash/api/visible.ts";
 import { removeArtifacts } from "./artifacts.ts";
 import { BuildError, slotsOf } from "./envs.ts";
 import { draining } from "./worker-update.ts";
-import { scopeRepos } from "../pilot.ts";
+import { baseScopeRepos } from "../pilot.ts";
+import { fastTask } from "../fasttrack.ts";
 
 export const LOST_AFTER_MS = 2 * 60_000;
 /** A task is claimed at most this often: the first time and one requeue after a lost worker. */
@@ -177,14 +178,14 @@ export function claim(db: DatabaseSync, envId: string, free: number, nowMs: numb
       const room = Math.min(free, slotsOf(env) - running);
       if (room > 0) {
         const queued = db.prepare("SELECT * FROM build_tasks WHERE state = 'queued' ORDER BY priority DESC, id LIMIT 500").all() as TaskRow[];
-        const scope = scopeRepos(db);
+        const scope = baseScopeRepos(db);
         const at = new Date(nowMs).toISOString();
         const take = db.prepare("UPDATE build_tasks SET state = 'claimed', env_id = ?, attempts = attempts + 1, claimed_at = ?, heartbeat_at = ? WHERE id = ? AND state = 'queued'");
         for (const t of queued) {
           if (out.length >= room) break;
           if (!satisfies(caps, json<Requires>(t.requires, {}))) continue;
-          // Operator smoke tests run anywhere; pipeline builds only for repos in scope.
-          if (t.step !== "smoke-test" && !scope.has(t.repo)) continue;
+          // Operator smoke tests run anywhere; pipeline builds only for repos in scope, or for fast-tracked items of any repo.
+          if (t.step !== "smoke-test" && !scope.has(t.repo) && !fastTask(db, t)) continue;
           take.run(envId, at, at, t.id);
           out.push({
             id: t.id, repo: t.repo, headSha: t.head_sha, baseSha: t.base_sha, requires: json<Requires>(t.requires, {}), plan: json<TaskStep[]>(t.plan, []),

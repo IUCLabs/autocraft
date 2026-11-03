@@ -297,6 +297,8 @@ export async function runMerge(db: DatabaseSync, params: MergeParams, log: (line
       log(`  ${refOf(e)}: assigned to ${me.login}`);
     }
     const method = methodOf(info);
+    // A hold may have been set during the calls above.
+    if (mergeHeld(db, repo, e.number)) { log(`  ${refOf(e)}: merge held meanwhile; skipped`); summary.attempted.pop(); continue; }
     const r = await mergeViaCommand(w, d.run, d.mergeCommand, [`${ORG}/${repo}`, String(e.number), `--${method}`], { run: runId, head: e.head, path: e.path });
     if (r.code !== 0) {
       const why = oneLine(r.stderr) || oneLine(r.stdout) || `exit code ${r.code}`;

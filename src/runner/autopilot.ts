@@ -47,6 +47,7 @@ import { enqueue, JobError, now, requestCancel, RUNNER_STOPPED } from "./jobs.ts
 import { claudePauseReason } from "../agents/accounts.ts";
 import { knownStep, loadSteps, modelsOf, usesClaude, type Params } from "./steps.ts";
 import { pilotItems, scopeRepos } from "../pilot.ts";
+import { fastFirst, fastScoreOf } from "../fasttrack.ts";
 
 /** Fallback only: the planner normally runs on a content change, a finished job or a release. */
 export const PLAN_EVERY_MS = 5 * 60_000;
@@ -241,7 +242,7 @@ export const LANES: Lane[] = [
     perRepo: true,
     detect: (db, { run, tracked }) => {
       const out: Candidate[] = [];
-      for (const repo of roundRobin(tracked, getSetting(db, KEY_CURSOR))) {
+      for (const repo of fastFirst(db, roundRobin(tracked, getSetting(db, KEY_CURSOR)), (r) => reviewCandidates(db, r, run)[0]?.number)) {
         if (!reviewCandidates(db, repo, run).length) continue;
         const checks = lastJobEnd(db, "checks", repo);
         const fresh = checks?.state === "done" && Date.now() - Date.parse(checks.endedAt) < CHECKS_FRESH_MS;
@@ -309,7 +310,9 @@ export const LANES: Lane[] = [
         }
         return false;
       };
-      for (const repo of [...new Set([...due, ...batches])].sort()) {
+      // The repo whose eligible PR is fast-tracked first goes first.
+      const topEligible = (r: string): number | undefined => queue.filter((e) => e.repo === r && eligible(e)).sort((a, b) => (fastScoreOf(db, r, b.number) ?? -1) - (fastScoreOf(db, r, a.number) ?? -1))[0]?.number;
+      for (const repo of fastFirst(db, [...new Set([...due, ...batches])].sort(), topEligible)) {
         const poll = batches.has(repo);
         if (poll && later("merge", repo)) continue;
         out.push({ step: "merge", params: { repo }, ...(poll ? { poll } : {}) });
@@ -337,7 +340,7 @@ export const LANES: Lane[] = [
         const sel = selectFixups(db, repo);
         return (pushApprovalOf(db, repo) && sel.fix.length > 0) || sel.ask.length > 0;
       });
-      return repos.sort().map((repo) => ({ step: "fixup", params: { repo } }));
+      return fastFirst(db, repos.sort(), (r) => { const sel = selectFixups(db, r); return (sel.fix[0] ?? sel.ask[0])?.number; }).map((repo) => ({ step: "fixup", params: { repo } }));
     },
   },
   {
@@ -348,7 +351,7 @@ export const LANES: Lane[] = [
     extra: tasksSig,
     detect: (db, { run, tracked }) => {
       const out: Candidate[] = [];
-      for (const repo of roundRobin(tracked, getSetting(db, KEY_VERIFY_CURSOR))) {
+      for (const repo of fastFirst(db, roundRobin(tracked, getSetting(db, KEY_VERIFY_CURSOR)), (r) => (verifyCandidates(db, r, run)[0] ?? unavailableCandidates(db, r, run)[0]?.c)?.number)) {
         if (!verifyCandidates(db, repo, run).length && !unavailableCandidates(db, repo, run).length) continue;
         const checks = lastJobEnd(db, "checks", repo);
         const fresh = checks?.state === "done" && Date.now() - Date.parse(checks.endedAt) < CHECKS_FRESH_MS;
@@ -372,7 +375,7 @@ export const LANES: Lane[] = [
     steps: ["fixissue"],
     perRepo: true,
     extra: tasksSig,
-    detect: (db, { tracked }) => tracked.filter((repo) => fixDue(db, repo)).sort().map((repo) => ({ step: "fixissue", params: { repo } })),
+    detect: (db, { tracked }) => fastFirst(db, tracked.filter((repo) => fixDue(db, repo)).sort(), (r) => selectIssues(db, r)[0]?.number).map((repo) => ({ step: "fixissue", params: { repo } })),
     topScore: (db, { tracked }) => bestScore(tracked.map((repo) => selectIssues(db, repo)[0]?.score)),
   },
   {

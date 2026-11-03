@@ -8,8 +8,9 @@
 // One run advances every batch of the repo in flight, then starts the next batch when none is left. A failed
 // batch is split in half and each half retried; a single PR that fails goes on hold. When the default branch
 // moves, the batch is rebuilt on the new head. Every GitHub write goes through `exec` / `run`.
-import { scopeRepos } from "../pilot.ts";
-import { workScores } from "../fasttrack.ts";
+import { baseScopeRepos, scopeRepos } from "../pilot.ts";
+import { isFastTracked, workScores } from "../fasttrack.ts";
+import { mergeHeld } from "./holds.ts";
 import { mkdirSync } from "node:fs";
 import type { DatabaseSync } from "node:sqlite";
 import { createTask, getTask, MAX_PATCH_BYTES, TERMINAL, warmKeyOf } from "../build/tasks.ts";
@@ -93,6 +94,10 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
   const runId = `batch-${repo}-${at().replace(/[-:]/g, "").slice(0, 15)}`;
   const s: BatchSummary = { runId, repo, started: [], published: [], merged: [], failed: [], split: [], superseded: [], waiting: [], skipped: [] };
   if (!scopeRepos(db).has(repo)) { log(`batch ${repo}: not in the pipeline scope; nothing done`); return s; }
+  // A repo in scope only through fast track: only batches made of fast-tracked PRs are touched.
+  const fullScope = baseScopeRepos(db).has(repo);
+  const mine = (b: BatchRow): boolean => fullScope || membersOf(db, b.id).every((m) => isFastTracked(db, repo, m.number));
+  const myBatches = (): BatchRow[] => activeBatches(db, repo).filter(mine);
   mkdirSync(d.root, { recursive: true });
   const git = new BatchGit(d.exec, d.root, repo);
   const stage = db.prepare("INSERT INTO stages (repo, number, stage, at, actor, note) VALUES (?, ?, ?, ?, ?, ?)");
@@ -248,6 +253,8 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
     const checks = await refreshChecks(db, d.querier, repo, members.map((m) => m.number));
     const live = members.filter((m) => checks.some((c) => c.number === m.number && c.state === "OPEN" && c.head_oid === m.head_oid));
     if (live.length < members.length) return supersede(b, live, "a PR in the batch was closed, merged or pushed to");
+    // An operator may have stopped the batch while the checks were read.
+    if (getBatch(db, b.id).state !== "checking") return;
     const who = await whoAmI(d.exec);
     const fork = await forkOf(w, d.exec, who.login, repo, { run: runId });
     const push = await pushBranch(w, git, "batch-push", { repo, remote: fork, branch: b.branch, sha: b.commit_sha }, { run: runId, fork });
@@ -264,6 +271,12 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
     const url = pr.stdout.trim().split("\n").pop() ?? "";
     const m = url.match(PR_URL);
     if (pr.code !== 0 || !m) { log(`  ${b.branch}: batch PR not opened: ${oneLine(pr.stderr || pr.stdout)}`); s.waiting.push(b.branch); return; }
+    if (getBatch(db, b.id).state !== "checking") {
+      // Ended while the PR was being opened: close it again and leave the row as it is.
+      await ghClosePr(w, d.exec, { repo, number: Number(m[1]) }, "Closing: the batch was ended by an operator.", { run: runId, batch: b.branch });
+      log(`  ${b.branch}: ended while its PR was opened; closed ${url}`);
+      return;
+    }
     updateBatch(db, b.id, at(), { state: "open", pr_number: Number(m[1]), pr_url: url });
     s.published.push(b.branch);
     log(`  ${b.branch}: opened ${url}`);
@@ -271,6 +284,9 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
 
   /** Bookkeeping once the batch PR is merged, whoever merged it. */
   function recordLanded(b: BatchRow, members: BatchMember[], q: QueueEntry[]): void {
+    // A control may have ended the batch while the merge ran: the merge still happened, so the row says so and the audit shows the order of events.
+    const was = getBatch(db, b.id).state;
+    if (was !== "open" && was !== "checking") audit(db, ACTOR, "batch-merged-after-end", `${repo}:${b.branch}`, { run: runId, was, prs: members.map((m) => m.number) });
     updateBatch(db, b.id, at(), { state: "merged", summary: null });
     for (const m of members) {
       const e = q.find((x) => x.number === m.number);
@@ -293,6 +309,8 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
     const ch = checks.find((c) => c.number === b.pr_number);
     if (!ch) { s.waiting.push(b.branch); return; }
     if (ch.state === "MERGED") return recordLanded(b, members, q);
+    // A control (stop, remove) may have ended the batch while the checks were read; it closes the PR itself.
+    if (getBatch(db, b.id).state !== "open") { log(`  ${b.branch}: ended meanwhile; left alone`); return; }
     if (ch.state === "CLOSED") {
       // Our own closes mark the batch first, so a closed active batch was closed by a person: hold its PRs for their current heads.
       updateBatch(db, b.id, at(), { state: "failed", summary: CLOSED_BY_PERSON });
@@ -322,6 +340,9 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
       const me = await viewerOf(d.querier);
       await assignTo(w, d.querier, { repo, number: b.pr_number!, id: info.id }, me, { run: runId, batch: b.branch });
     }
+    // Holds and controls may have changed during the calls above: look again right before merging.
+    if (getBatch(db, b.id).state !== "open") { log(`  ${b.branch}: ended meanwhile; not merged`); return; }
+    if (members.some((m) => mergeHeld(db, repo, m.number))) { log(`  ${b.branch}: a PR in the batch was held meanwhile; not merged`); s.waiting.push(b.branch); return; }
     let after: Awaited<ReturnType<typeof refreshChecks>>[number] | undefined;
     const r = await mergeViaCommand(w, d.run, d.mergeCommand, [`${ORG}/${repo}`, String(b.pr_number), "--merge"], { run: runId, head: b.commit_sha, batch: b.branch }, async () => {
       after = (await refreshChecks(db, d.querier, repo, [b.pr_number!]))[0];
@@ -363,9 +384,9 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
     return;
   }
 
-  for (const b of activeBatches(db, repo)) await advance(b.id);
+  for (const b of myBatches()) await advance(b.id);
 
-  if (!activeBatches(db, repo).length && (params.limit === undefined || params.limit > 0)) {
+  if (!myBatches().length && (params.limit === undefined || params.limit > 0)) {
     const q = buildQueue(db, { repo, merged: "exclude" });
     const scores = workScores(db, repo);
     const lines = db.prepare("SELECT COALESCE(additions, 0) + COALESCE(deletions, 0) AS n FROM items WHERE repo = ? AND number = ?");

@@ -75,13 +75,46 @@ export const FAST_FLOOR = FAST_BASE / 2;
  * the others keep `scoreExpr`. `repo` and `number` are SQL expressions of the item.
  */
 export const fastScoreSql = (repo: string, number: string, scoreExpr: string): string =>
-  `COALESCE(${FAST_BASE} - (SELECT fq.id FROM main.fast_track fq WHERE fq.repo = ${repo} AND fq.number = ${number}), ${scoreExpr})`;
+  `COALESCE(${FAST_BASE} - (SELECT MIN(fq.id) FROM main.fast_track fq WHERE fq.repo = ${repo} AND (fq.number = ${number}
+    OR EXISTS (SELECT 1 FROM main.fix_attempts fa WHERE fa.repo = ${repo} AND fa.number = fq.number AND fa.pr_url LIKE '%/pull/' || ${number}))), ${scoreExpr})`;
 
+/** The fast-track score of the item (see `fastScoreSql`), or null when it is not fast-tracked. */
+export function fastScoreOf(db: DatabaseSync, repo: string, number: number): number | null {
+  const r = db.prepare(`SELECT ${fastScoreSql("?1", "CAST(?2 AS INTEGER)", "NULL")} AS s`).get(repo, number) as { s: number | null };
+  return r.s;
+}
+
+export const isFastTracked = (db: DatabaseSync, repo: string, number: number): boolean => fastScoreOf(db, repo, number) !== null;
+
+/** True when the sandbox task belongs to a fast-tracked item: its PR or issue, or a batch of fast-tracked PRs only. */
+export function fastTask(db: DatabaseSync, t: { id: number; repo: string; number: number | null }): boolean {
+  if (t.number !== null) return isFastTracked(db, t.repo, t.number);
+  const b = db.prepare("SELECT id FROM main.merge_batches WHERE task_id = ?").get(t.id) as { id: number } | undefined;
+  if (!b) return false;
+  const ms = db.prepare("SELECT number FROM main.merge_batch_prs WHERE batch_id = ?").all(b.id) as { number: number }[];
+  return ms.length > 0 && ms.every((m) => isFastTracked(db, t.repo, m.number));
+}
+
+/**
+ * Repos whose best candidate (`top` gives its number) is fast-tracked come first, the earliest fast-tracked first; the others follow in the given order.
+ * Planners that visit repos one per job use it so fast track also orders across repos.
+ */
+export function fastFirst(db: DatabaseSync, repos: string[], top: (repo: string) => number | undefined): string[] {
+  const score = new Map(repos.map((r) => { const n = top(r); return [r, n === undefined ? null : fastScoreOf(db, r, n)] as const; }));
+  const fast = repos.filter((r) => (score.get(r) ?? 0) >= FAST_FLOOR).sort((x, y) => score.get(y)! - score.get(x)!);
+  return [...fast, ...repos.filter((r) => !fast.includes(r))];
+}
 
 /** Work score of every ranked open item of the repo, with fast-tracked items raised above all others. */
 export function workScores(db: DatabaseSync, repo: string): Map<number, number> {
   const out = new Map((db.prepare("SELECT number, score FROM main.item_rank WHERE repo = ?").all(repo) as { number: number; score: number }[]).map((r) => [r.number, r.score]));
   for (const f of db.prepare("SELECT number, id FROM main.fast_track WHERE repo = ?").all(repo) as { number: number; id: number }[]) out.set(f.number, FAST_BASE - f.id);
+  // A fast-tracked issue's Fix PR takes the issue's place.
+  for (const f of db.prepare(`SELECT fa.pr_url, ft.id FROM main.fast_track ft JOIN main.fix_attempts fa ON fa.repo = ft.repo AND fa.number = ft.number
+    WHERE ft.repo = ? AND fa.pr_url IS NOT NULL`).all(repo) as { pr_url: string; id: number }[]) {
+    const n = Number(/\/pull\/(\d+)$/.exec(f.pr_url)?.[1]);
+    if (n && !((out.get(n) ?? 0) >= FAST_FLOOR)) out.set(n, FAST_BASE - f.id);
+  }
   return out;
 }
 
