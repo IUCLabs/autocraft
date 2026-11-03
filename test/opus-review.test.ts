@@ -155,6 +155,32 @@ describe("Opus review pass", () => {
     assert.equal(db.prepare("SELECT value FROM settings WHERE key = ?").get(`review_rerun:app#1:${day}`)?.value, "1");
   });
 
+  test("a too-large PR stays too large after a small push; its hold is not the base of a delta", async () => {
+    const db = fresh();
+    process.env.AUTOCRAFT_DIFF_CACHE = join(dir, "diffs-large");
+    const big = file("src/a.rs", ["x"], ["y".repeat(300)]);
+    const calls: Call[] = [];
+    const asked: string[] = [];
+    const restore = setRunner(fakeOpus(calls, {}));
+    const d = deps({
+      maxChars: 200, fetchDiff: async () => ({ ok: true, text: big }),
+      fetchDelta: async (_r, base, head) => { asked.push(`${base}..${head}`); return { ok: true, text: file("src/a.rs", ["a"], ["b"]) }; },
+    });
+    try {
+      await runOpusReview(db, { repo: "app", limit: 1 }, () => {}, d);
+      assert.equal(final(db, 1).verdict, "hold");
+      db.prepare("UPDATE pr_checks SET head_oid = 'sha1b', fetched_at = '2026-01-03T00:00:00Z' WHERE number = 1").run();
+      db.prepare("UPDATE items SET head_oid = 'sha1b' WHERE number = 1").run();
+      await runOpusReview(db, { repo: "app", limit: 1 }, () => {}, d);
+    } finally {
+      restore();
+    }
+    assert.equal(calls.length, 0);
+    assert.deepEqual(asked, []);
+    const row = db.prepare("SELECT verdict, model FROM opus_reviews WHERE number = 1 AND head_oid = 'sha1b'").get() as { verdict: string; model: string | null };
+    assert.deepEqual({ ...row }, { verdict: "hold", model: null });
+  });
+
   test("after a push Opus reads the delta with its earlier review; without a delta it reads the full diff", async () => {
     const db = fresh();
     let restore = setRunner(fakeOpus([], {}));

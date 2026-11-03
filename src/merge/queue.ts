@@ -26,6 +26,8 @@ export const QUEUE_STATES = [
 export type QueueState = (typeof QUEUE_STATES)[number];
 
 /** Type labels whose PRs may merge without asking. */
+/** Why an unsure Opus take is asked about instead of merged by the rule. */
+export const UNSURE_REASON = "Opus was unsure";
 export const RULE_LABELS = ["bugfix", "infra"];
 /** Sizes that may merge without asking. */
 export const RULE_SIZES = ["S", "M"];
@@ -231,7 +233,7 @@ export function buildQueue(db: DatabaseSync, opts: QueueOptions = {}): QueueEntr
 
     const outsideRule: string[] = [];
     if (r.verdict !== "take") outsideRule.push("review asks for fixes");
-    if (r.sure === 0) outsideRule.push("Opus was unsure");
+    if (r.sure === 0) outsideRule.push(UNSURE_REASON);
     if (!RULE_SIZES.includes(size)) outsideRule.push(`size ${size}`);
     if (!label || !RULE_LABELS.includes(label)) outsideRule.push(label ? `label ${label}` : "no settled label");
     if (!RULE_TIERS.includes(tier)) outsideRule.push(r.author ? "author not on the whitelist" : "author unknown");

@@ -27,7 +27,7 @@ import { fillReviewSummaries } from "../review/summary.ts";
 import { verificationOf } from "../verify/results.ts";
 import { TIER_LABEL } from "../whitelist.ts";
 import { withdrawBlockedQuestions } from "./withdraw.ts";
-import { buildQueue, ciAllows, toAsk, countStates, eligible, HEAD_FACT, MERGE_OPTIONS, mergeDecisionId, QUEUE_STATES, VERIFY_UNAVAILABLE, verifyAllows, type QueueEntry } from "./queue.ts";
+import { buildQueue, UNSURE_REASON, ciAllows, toAsk, countStates, eligible, HEAD_FACT, MERGE_OPTIONS, mergeDecisionId, QUEUE_STATES, VERIFY_UNAVAILABLE, verifyAllows, type QueueEntry } from "./queue.ts";
 
 export { buildQueue, countStates, QUEUE_STATES, toAsk, type QueueEntry, type QueueState } from "./queue.ts";
 import { envVar } from "../env.ts";
@@ -166,7 +166,7 @@ export function mergeQuestion(e: QueueEntry): Record<string, unknown> & { id: st
       `${HEAD_FACT}${e.head}`,
     ],
     options: Object.values(MERGE_OPTIONS).map((o) => ({ ...o })),
-    recommended: "merge",
+    ...(e.outsideRule.includes(UNSURE_REASON) ? {} : { recommended: "merge" }),
     asked_by: ACTOR,
   };
 }

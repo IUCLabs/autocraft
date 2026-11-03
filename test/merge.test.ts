@@ -187,7 +187,6 @@ describe("merge queue", () => {
     // A new review of the same head that read the comment: later than the stale mark, with the live snapshot's hash.
     const later = new Date(Date.now() + 60_000).toISOString();
     db.prepare("UPDATE opus_reviews SET at = ?, seen_at = ?, disc_hash = ? WHERE number = 1").run(later, later, discussionHash([{ id: "n1", body: note.body }]));
-    db.prepare("UPDATE opus_reviews SET at = ?, seen_at = ?, disc_hash = ? WHERE number = 1").run(later, later, discussionHash([{ id: "n1", body: note.body }]));
     const again = await runMerge(db, { repo: "app", dryRun: false, limit: 1 }, quiet, fakes([], { discussion: [note] }));
     assert.deepEqual(again.merged, ["app#1"]);
   });

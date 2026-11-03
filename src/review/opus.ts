@@ -55,7 +55,8 @@ type Saved = { snap?: Snapshot; mode: "full" | "delta"; base: string | null; mod
 export function saveOpus(db: DatabaseSync, runId: string | null, c: { repo: string; number: number; head_oid: string }, s: Saved): void {
   const at = now(), r = s.review;
   const again = db.prepare("SELECT at FROM opus_reviews WHERE repo = ? AND number = ? AND head_oid = ?").get(c.repo, c.number, c.head_oid) as { at: string } | undefined;
-  if (again && !markedStaleSince(db, c.repo, c.number, again.at)) countRerun(db, c.repo, c.number);
+  const reviewed = db.prepare("SELECT at FROM opus_reviews WHERE repo = ? AND number = ? AND head_oid = ? AND verdict IS NOT NULL").get(c.repo, c.number, c.head_oid) as { at: string } | undefined;
+  if (reviewed && !markedStaleSince(db, c.repo, c.number, reviewed.at)) countRerun(db, c.repo, c.number);
   if (again) withdrawMergeQuestion(db, c.repo, c.number, c.head_oid, at);
   db.prepare(`INSERT OR REPLACE INTO opus_reviews (repo, number, head_oid, run_id, at, model, mode, base_head, verdict, sure, reason, fixes, risks, public_review, seen_at, disc_hash)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(c.repo, c.number, c.head_oid, runId, at, s.model, s.mode, s.base, r.verdict,
@@ -65,10 +66,10 @@ export function saveOpus(db: DatabaseSync, runId: string | null, c: { repo: stri
   stage.run(c.repo, c.number, r.verdict === "take-fix" ? "take" : r.verdict, at, "opus-review", r.reason);
 }
 
-/** The Opus review of the PR's latest earlier head that has a verdict, for the delta. */
+/** The Opus review of the PR's latest earlier head that a model wrote (not a too-large hold), for the delta. */
 function earlierOpus(db: DatabaseSync, c: OpusCandidate): EarlierOpus | null {
   const o = db.prepare(`SELECT head_oid, verdict, sure, reason, fixes FROM opus_reviews
-    WHERE repo = ? AND number = ? AND head_oid <> ? AND verdict IS NOT NULL ORDER BY at DESC, rowid DESC LIMIT 1`).get(c.repo, c.number, c.head_oid) as
+    WHERE repo = ? AND number = ? AND head_oid <> ? AND verdict IS NOT NULL AND model IS NOT NULL ORDER BY at DESC, rowid DESC LIMIT 1`).get(c.repo, c.number, c.head_oid) as
     { head_oid: string; verdict: string; sure: number; reason: string; fixes: string | null } | undefined;
   if (!o) return null;
   let fixes: EarlierOpus["fixes"] = [];
@@ -92,6 +93,8 @@ export async function prepareOpusInput(db: DatabaseSync, repo: string, c: OpusCa
   const ch = checksOf(db, repo, c.number);
   let cd = codeDiff(d.text);
   if (!cd.files.length && cd.testsOmitted.length) cd = codeDiff(d.text, true);
+  // The size cap applies to the whole PR, so a small push never lets a too-large PR through as a delta.
+  if (cd.text.length > deps.maxChars) return { kind: "large", mode: "full", base: null };
   let mode: "full" | "delta" = "full", diff = cd.text, base: string | null = null;
   const earlier = earlierOpus(db, c);
   // A merge commit of ours carries the base branch's changes since the earlier head; the PR's own diff excludes them, so a delta would show unrelated changes.
