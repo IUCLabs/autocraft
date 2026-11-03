@@ -267,6 +267,7 @@ const RELEASES: { key: keyof Item["releases"]; action: ReleaseAction; label: str
   { key: "reviewAgain", action: "review-again", label: "Review again at this head", confirm: "Delete the hold, review again", help: "Removes the hold review of the current head; the Review stage reviews it again." },
   { key: "verifyAgain", action: "verify-again", label: "Verify again", confirm: "Plan Verify again", help: "Plans the verification of the current head again, with new build tasks." },
   { key: "fixAgain", action: "fix-again", label: "Try the fix again", confirm: "Forget the attempt, try again", help: "Forgets the skipped or failed fix attempt, so the issue is eligible for Fix once more with a fresh attempt count." },
+  { key: "batchAgain", action: "batch-again", label: "Try the batch again", confirm: "Release the PR, try the batch again", help: "Releases the PR from its failed batch, so the merge queue considers it again and puts it in a new batch." },
 ];
 
 /** Operator releases for an item that waits for a person. They change the pipeline's tables only; nothing is written to GitHub. */

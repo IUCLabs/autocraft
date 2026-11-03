@@ -292,6 +292,7 @@ export function apiRoutes(opts: ApiOptions = {}): Route[] {
     { method: "POST", pattern: "/api/items/:repo/:n/review-again", operator: true, handler: ok(operator.reviewItemAgain) },
     { method: "POST", pattern: "/api/items/:repo/:n/verify-again", operator: true, handler: ok(operator.verifyItemAgain) },
     { method: "POST", pattern: "/api/items/:repo/:n/fix-again", operator: true, handler: ok(operator.fixItemAgain) },
+    { method: "POST", pattern: "/api/items/:repo/:n/batch-again", operator: true, handler: ok(operator.batchItemAgain) },
     get("/api/items", items.listItems),
     get("/api/search", (db, req) => req.query.get("mode") === "semantic" ? sim.semanticSearch(db, req, vectors) : items.quickSearch(db, req)),
     get("/api/progress", async (db, req) => progress(db, await hiddenRepos(db, req))),
