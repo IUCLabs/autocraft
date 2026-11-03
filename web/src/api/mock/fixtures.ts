@@ -135,6 +135,7 @@ interface Seed {
   facts: string[];
   options: DecisionOption[];
   recommended: string;
+  recommendedReason?: string;
   publicText?: string;
   optionTexts?: OptionTexts[];
   ageH: number;
@@ -473,6 +474,7 @@ const SEEDS: Seed[] = [
       { key: "ping", label: "Ping the author once more" },
     ],
     recommended: "close",
+    recommendedReason: "Draft with no activity for three months and two unanswered review requests.",
     publicText: "Closing this draft after three months without activity. Feel free to reopen when you pick it up again.",
     ageH: 82,
     author: "vt100kid",
@@ -644,6 +646,7 @@ function toDecision(s: Seed): Decision {
     facts: s.facts.slice(0, 5),
     options: s.options.map((o) => ({ ...o, ...(WRITES[s.kind]?.[o.key] ? { writes: WRITES[s.kind]![o.key] } : {}) })),
     recommended: s.recommended,
+    recommendedReason: s.recommended ? (s.recommendedReason ?? "") : "",
     publicText: s.publicText ?? null,
     optionTexts: s.optionTexts ?? [],
     askedAt: iso(s.ageH * H),
@@ -728,6 +731,7 @@ export function itemFor(repo: string, number: number): Item {
       facts: [],
       options: [],
       recommended: "",
+      recommendedReason: "",
       ageH: 10 + (number % 90),
       author: AUTHORS[number % AUTHORS.length][0],
       size: [20 + (number % 400), number % 37, 1 + (number % 7)],

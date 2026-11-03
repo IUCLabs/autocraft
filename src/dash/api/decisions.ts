@@ -159,6 +159,7 @@ export function toDecision(db: DatabaseSync, d: DecisionRow, viewer: Viewer): De
     facts: factsOf(d),
     options: optionsOf(d).map((o) => ({ ...o, writes: writeEffect(d.kind, o.key) ?? undefined })),
     recommended: d.recommended ?? "",
+    recommendedReason: d.recommended ? (d.recommended_reason ?? "") : "",
     publicText: commentPreview(d),
     optionTexts: d.kind === "duplicate" && d.id.includes(":dupegroup:") ? optionTextsOf(db, d.id) : [],
     askedAt: d.asked_at, askedBy: d.asked_by ?? "the pipeline",

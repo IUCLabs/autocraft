@@ -28,30 +28,29 @@ const OPTION_OF_LABEL: Record<string, OptionKey> = {
   bugfix: "take", performance: "take", infra: "take",
 };
 
-type Shape = { question: string; options: OptionKey[]; recommended: OptionKey | null };
+type Shape = { question: string; options: OptionKey[] };
 
-/** Question and options by the settled label, or by the two labels in a disagreement. */
+/** Question and options by the settled label, or by the two labels in a disagreement. The decision asks because the item needs a maintainer's call, so no option is recommended here (see recommend.ts). */
 export function shapeOf(c: Candidate): Shape {
   const s = c.settled;
   if (c.reason === "scope-disagreement") {
     const pair = new Set([s.jevLabel, s.haikuLabel]);
     if (pair.has("small extra") && pair.has("plugin candidate"))
-      // The classify rules say: unsure between the two, plugin candidate.
-      return { question: "Keep this in core as a small extra, or treat it as a plug-in?", options: ["small-extra", "plugin", "take", "need-info", "close"], recommended: "plugin" };
+      return { question: "Keep this in core as a small extra, or treat it as a plug-in?", options: ["small-extra", "plugin", "take", "need-info", "close"] };
     const other = OPTION_OF_LABEL[pair.has("small extra") ? "small extra" : "plugin candidate"]!;
-    return { question: "Does the reference app have this, and do we want it in core?", options: ["take", other, "need-info", "close"], recommended: null };
+    return { question: "Does the reference app have this, and do we want it in core?", options: ["take", other, "need-info", "close"] };
   }
   switch (s.label) {
     case "missing feature":
-      return { question: "Is this wanted in core?", options: ["take", "plugin", "need-info", "close"], recommended: "take" };
+      return { question: "Is this wanted in core?", options: ["take", "plugin", "need-info", "close"] };
     case "small extra":
-      return { question: "Keep this small extra in core?", options: ["small-extra", "plugin", "need-info", "close"], recommended: "small-extra" };
+      return { question: "Keep this small extra in core?", options: ["small-extra", "plugin", "need-info", "close"] };
     case "plugin candidate":
-      return { question: "Keep this in core, or treat it as a plug-in?", options: ["take", "plugin", "need-info", "close"], recommended: "plugin" };
+      return { question: "Keep this in core, or treat it as a plug-in?", options: ["take", "plugin", "need-info", "close"] };
     case "bugfix":
-      return { question: "Is this change in behaviour wanted?", options: ["take", "need-info", "close"], recommended: "take" };
+      return { question: "Is this change in behaviour wanted?", options: ["take", "need-info", "close"] };
     default:
-      return { question: "Is this wanted?", options: ["take", "need-info", "close"], recommended: "take" };
+      return { question: "Is this wanted?", options: ["take", "need-info", "close"] };
   }
 }
 
@@ -118,7 +117,7 @@ export function buildDecision(db: DatabaseSync, c: Candidate, now = Date.now()):
   return {
     id: decisionId(c), kind: "scope", repo: c.repo, number: c.number,
     question: shape.question, context: contextOf(c), facts: factsOf(db, c, now),
-    options: shape.options.map((k) => ({ ...SCOPE_OPTIONS[k] })), recommended: shape.recommended,
+    options: shape.options.map((k) => ({ ...SCOPE_OPTIONS[k] })), recommended: null,
     asked_by: "decide",
   };
 }

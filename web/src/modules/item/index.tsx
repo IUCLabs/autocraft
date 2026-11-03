@@ -488,8 +488,8 @@ function ItemSide(props: ViewProps) {
                 <div className="mt-1 flex items-center gap-1 text-xs text-ok">
                   <CheckIcon /> {d.options.find((o) => o.key === d.answer)?.label} · {d.answeredBy}
                 </div>
-              ) : (
-                <div className="mt-1 text-xs text-ink/55">Recommended: {d.options.find((o) => o.key === d.recommended)?.label}</div>
+              ) : d.recommended && (
+                <div className="mt-1 text-xs text-ink/55">Recommended: {d.options.find((o) => o.key === d.recommended)?.label}{d.recommendedReason && ` · ${d.recommendedReason}`}</div>
               )}
               {!d.answer && d.opinions.length > 0 && (
                 <div className="mt-0.5 text-xs text-ink/55">

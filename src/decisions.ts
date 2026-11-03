@@ -14,7 +14,7 @@ export type Exception = Ref & { answer: string };
 export type DecisionRow = {
   id: string; kind: Kind; repo: string | null; number: number | null; items: string | null;
   question: string; context: string | null; facts: string | null; options: string;
-  recommended: string | null; public_text: string | null; asked_at: string; asked_by: string | null;
+  recommended: string | null; recommended_reason: string | null; recommended_by: string | null; public_text: string | null; asked_at: string; asked_by: string | null;
   docket: string | null; answer: string | null; answer_note: string | null; exceptions: string | null;
   answered_by: string | null; answered_at: string | null; applied_at: string | null;
   summary: string | null; summary_by: string | null; summary_at: string | null; adopted_opinion: string | null;

@@ -116,6 +116,7 @@ export function WorkflowBox({
                     {o.key === rec && <span className="text-2xs font-normal text-accent-ink">Recommended</span>}
                   </span>
                   {o.hint && <span className="block text-xs text-ink/55">{o.hint}</span>}
+                  {o.key === rec && !many && d.recommendedReason && <span className="block text-xs text-ink/55">{d.recommendedReason}</span>}
                   {o.writes && <span className="block text-xs text-ink/55">{cap(o.writes)}</span>}
                 </span>
                 {!phone && <Kbd keys={String(i + 1)} />}

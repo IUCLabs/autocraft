@@ -45,17 +45,19 @@ export type CompareDeps = {
 export type CompareParams = { limit?: number; repo?: string; dryRun?: boolean; onHandled?: (n: number) => void };
 export type CompareSummary = { due: number; compared: number; byRule: number; closedWins: number; single: number; dropped: number; asked: string[]; dryRun: boolean };
 
+/** A read-only checkout of the repo's default branch at its current head, or null (no sandbox, no head, fetch failed). */
+export async function baseCheckout(db: DatabaseSync, repo: string): Promise<string | null> {
+  const { branchOf, defaultDeps } = await import("../fixissue/index.ts");
+  const { checkoutForCommit } = await import("../sandbox/index.ts");
+  const branch = branchOf(db, repo);
+  const sha = await defaultDeps().mainHead(repo, branch);
+  return sha ? checkoutForCommit(repo, branch, sha, console.log) : null;
+}
+
 export function defaultCompareDeps(db: DatabaseSync): CompareDeps {
   return {
     querier: new Client(500), fetchDiff: ghDiff,
-    baseCheckout: async (repo) => {
-      const { branchOf, defaultDeps } = await import("../fixissue/index.ts");
-      const { checkoutForCommit } = await import("../sandbox/index.ts");
-      const d = defaultDeps();
-      const branch = branchOf(db, repo);
-      const sha = await d.mainHead(repo, branch);
-      return sha ? checkoutForCommit(repo, branch, sha, console.log) : null;
-    },
+    baseCheckout: (repo) => baseCheckout(db, repo),
     ask: ((id: "dupes.compare-prs.opus" | "dupes.compare-issues.sonnet", model: string, input: ComparePrs | CompareIssues, checkout?: string) =>
       askClaude(id, model, [input] as never, db, { checkout })) as CompareDeps["ask"],
     now: () => new Date(),
