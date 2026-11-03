@@ -11,6 +11,8 @@ type Step = { node: string; label: string; detail: string; done: boolean };
 const ANSWER: Record<string, string> = { take: "wanted in core", "small-extra": "small extra", plugin: "plug-in candidate", close: "out of scope", "need-info": "check the reference app" };
 const STATUS: Record<string, string> = { waiting: "waiting for a second opinion", disagree: "models disagree", unclassified: "not classified yet" };
 
+const FINAL = { take: "take", "take-fix": "take with fixes", hold: "hold", close: "close" } as const;
+
 function stepsOf(it: Item, scope: Decision | null | undefined): Step[] {
   const has = (s: string) => it.stages.some((x) => (x.stage as string) === s);
   const verdict = [...it.stages].reverse().find((x) => x.stage === "take" || x.stage === "hold" || x.stage === "close")?.stage;
@@ -23,8 +25,11 @@ function stepsOf(it: Item, scope: Decision | null | undefined): Step[] {
     out.push({ node: "decide", label: "Decide", detail: scope ? (scope.answer ? ANSWER[scope.answer] ?? scope.answer : "waiting for an answer") : "not asked yet", done: !!scope?.answer });
   if (settled) out.push({ node: "labels", label: "Labels", detail: has("labeled") ? "labelled" : "not labelled yet", done: has("labeled") });
   if (it.kind === "pr") {
-    out.push({ node: "review", label: "Review", detail: has("reviewed") ? (verdict ?? "reviewed") : "not reviewed yet", done: has("reviewed") });
-    if (verdict === "take" || has("merged") || it.state === "merged")
+    const r = it.reviews;
+    const reviewed = r ? r.current && r.final.decided : has("reviewed");
+    const detail = r ? (!r.current ? "not reviewed at this head" : r.final.decided ? FINAL[r.final.verdict] : "waiting for the Opus review") : has("reviewed") ? (verdict ?? "reviewed") : "not reviewed yet";
+    out.push({ node: "review", label: "Review", detail, done: reviewed });
+    if ((r ? r.current && r.final.decided && r.final.verdict === "take" : verdict === "take") || has("merged") || it.state === "merged")
       out.push({ node: "merge", label: "Merge queue", detail: it.state === "merged" ? "merged" : "in the queue", done: it.state === "merged" });
   }
   return out;

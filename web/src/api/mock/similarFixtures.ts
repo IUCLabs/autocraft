@@ -8,7 +8,13 @@ const words = (s: string) => new Set(s.toLowerCase().match(/[a-z]{3,}/g) ?? []);
 
 function rank(text: string, limit: number, skip?: string): SimilarHit[] {
   const q = words(text);
-  return SEARCH_POOL.filter((h) => `${h.repo}#${h.number}` !== skip)
+  const seen = new Set<string>();
+  return SEARCH_POOL.filter((h) => {
+    const key = `${h.repo}#${h.number}`;
+    if (key === skip || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  })
     .map((h) => {
       const w = words(h.title);
       const shared = [...w].filter((x) => q.has(x)).length;
