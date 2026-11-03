@@ -23,6 +23,10 @@ const changed = (before: Record<string, number>): string[] => {
   return Object.keys(now).filter((t) => now[t] !== before[t]).sort();
 };
 
+/** Topics changed since `before`, leaving out `steps`: it also follows the tables that decide an item's next step, and is checked on its own. */
+const own = (before: Record<string, number>): string[] => changed(before).filter((t) => t !== "steps");
+const stepsMoved = (before: Record<string, number>): boolean => readSeqs(db).steps !== before.steps;
+
 describe("change markers", () => {
   test("every topic has a row, starting at zero", () => {
     const seqs = readSeqs(db);
@@ -32,17 +36,20 @@ describe("change markers", () => {
   test("a write bumps the topic of its table, per row and per operation", () => {
     let b = readSeqs(db);
     db.exec("INSERT INTO items (repo, number, kind, state, title) VALUES ('r', 1, 'pr', 'open', 't'), ('r', 2, 'pr', 'open', 't')");
-    assert.deepEqual(changed(b), ["items"]);
+    assert.deepEqual(own(b), ["items"]);
     assert.equal(readSeqs(db).items! - b.items!, 2);
+    assert.ok(stepsMoved(b), "a new item can change a next step");
     b = readSeqs(db);
     db.exec("UPDATE items SET title = 'u' WHERE number = 1");
-    assert.deepEqual(changed(b), ["items"]);
+    assert.deepEqual(own(b), ["items"]);
+    assert.ok(!stepsMoved(b), "a title does not change a next step");
     b = readSeqs(db);
     db.exec("DELETE FROM items WHERE number = 2");
-    assert.deepEqual(changed(b), ["items"]);
+    assert.deepEqual(own(b), ["items"]);
+    assert.ok(stepsMoved(b));
     b = readSeqs(db);
     db.exec("INSERT INTO jobs (step, state, requested_by, requested_at, params) VALUES ('s', 'queued', 'x', 'now', '{}')");
-    assert.deepEqual(changed(b), ["jobs"]);
+    assert.deepEqual(own(b), ["jobs"]);
   });
 
   test("the runner heartbeat and session activity do not bump anything", () => {
@@ -84,33 +91,47 @@ describe("no-op writes", () => {
   test("each table reports to its own topic and ignores its bookkeeping columns", () => {
     let b = readSeqs(db);
     db.exec("INSERT INTO item_rank (repo, number, score, breakdown, computed_at) VALUES ('x', 1, 5, '{}', 'a')");
-    assert.deepEqual(changed(b), ["ranks"]);
+    assert.deepEqual(own(b), ["ranks"]);
+    assert.ok(stepsMoved(b));
     b = readSeqs(db);
     db.exec("UPDATE item_rank SET computed_at = 'b'");
     assert.deepEqual(changed(b), [], "recomputed to the same rank");
     db.exec("UPDATE item_rank SET score = 6");
-    assert.deepEqual(changed(b), ["ranks"]);
+    assert.deepEqual(own(b), ["ranks"]);
+    assert.ok(stepsMoved(b));
 
     b = readSeqs(db);
     const row = { repo: "x", number: 1, head_oid: "o", state: "OPEN", is_draft: false, overall: "success" as const, checks: [{ name: "ci", state: "success" as const }], mergeable: "MERGEABLE", maintainer_can_modify: true };
     saveChecks(db, [row], "t1");
-    assert.deepEqual(changed(b), ["checks"]);
+    assert.deepEqual(own(b), ["checks"]);
     b = readSeqs(db);
     saveChecks(db, [row], "t2");
-    assert.deepEqual(changed(b), [], "same checks fetched again");
+    assert.deepEqual(own(b), [], "same checks fetched again");
     saveChecks(db, [{ ...row, overall: "failure" }], "t3");
-    assert.deepEqual(changed(b), ["checks"]);
+    assert.deepEqual(own(b), ["checks"]);
 
     b = readSeqs(db);
     db.exec("INSERT INTO classifications (repo, number, classifier, run_id, at, type_label) VALUES ('x', 1, 'jev', 'r', 'a', 'bugfix')");
-    assert.deepEqual(changed(b), ["classify"]);
+    assert.deepEqual(own(b), ["classify"]);
+    assert.ok(stepsMoved(b), "a classification changes a next step");
     db.exec("INSERT INTO duplicate_scans (repo, number, hash, at) VALUES ('x', 1, 'h', 'a')");
     db.exec("INSERT INTO stages (repo, number, stage, at, actor) VALUES ('x', 1, 'reviewed', 'a', 'me')");
-    assert.deepEqual(changed(b), ["classify", "dupes", "stages"]);
+    assert.deepEqual(own(b), ["classify", "dupes", "stages"]);
     b = readSeqs(db);
     db.exec("UPDATE duplicate_scans SET at = 'b'");
     db.exec("UPDATE classifications SET at = 'b', input_hash = 'x'");
-    assert.deepEqual(changed(b), []);
+    assert.deepEqual(own(b), []);
+    b = readSeqs(db);
+    db.exec("UPDATE duplicate_scans SET at = 'c'");
+    db.exec("UPDATE classifications SET at = 'c', input_hash = 'y'");
+    assert.deepEqual(changed(b), [], "bookkeeping columns bump nothing, steps included");
+  });
+
+  test("decision claims and comments bump their topic but not the next-step topic", () => {
+    const b = readSeqs(db);
+    db.exec("INSERT INTO decision_claims (decision_id, login, since, at) VALUES ('d', 'me', 'a', 'a')");
+    db.exec("INSERT INTO decision_comments (id, decision_id, login, at, body) VALUES ('c', 'd', 'me', 'a', 'hi')");
+    assert.deepEqual(changed(b), ["decisions"]);
   });
 
   test("settings the runner and the sync write for themselves bump nothing", () => {
