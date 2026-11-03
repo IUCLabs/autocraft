@@ -7,6 +7,7 @@
 // Without --apply it is a dry run: it reads the local tables only, calls
 // nothing and writes nothing.
 import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import type { DatabaseSync } from "node:sqlite";
 import { audit } from "../dash/audit.ts";
 import { connect } from "../db.ts";
@@ -20,7 +21,9 @@ import { buildQueue, ciAllows, toAsk, countStates, eligible, HEAD_FACT, MERGE_OP
 export { buildQueue, countStates, QUEUE_STATES, toAsk, type QueueEntry, type QueueState } from "./queue.ts";
 
 export const ORG = "storytold";
+/** Name of the built-in guarded merge (`craft-auto safe-merge`); any other `$CRAFT_AUTO_MERGE_CMD` is run as an external command. */
 export const DEFAULT_MERGE_COMMAND = "safe-merge";
+const CLI = fileURLToPath(new URL("../cli.ts", import.meta.url));
 const ACTOR = "merge";
 
 export type CommandResult = { code: number; stdout: string; stderr: string };
@@ -29,7 +32,7 @@ export type MergeDeps = {
   /** Runs the merge command; throws only when it can't be started. */
   run: (cmd: string, args: string[]) => Promise<CommandResult>;
   now: () => Date;
-  /** `$CRAFT_AUTO_MERGE_CMD`, default `safe-merge`. */
+  /** `$CRAFT_AUTO_MERGE_CMD`, default the built-in `safe-merge`. */
   mergeCommand: string;
 };
 
@@ -65,8 +68,13 @@ export function spawnRun(cmd: string, args: string[]): Promise<CommandResult> {
   });
 }
 
+/** Runs the merge command; the built-in name runs `craft-auto safe-merge` from this checkout. */
+export function mergeRun(cmd: string, args: string[]): Promise<CommandResult> {
+  return cmd === DEFAULT_MERGE_COMMAND ? spawnRun(process.execPath, [CLI, "safe-merge", ...args]) : spawnRun(cmd, args);
+}
+
 export function defaultDeps(): MergeDeps {
-  return { querier: new Client(1000), run: spawnRun, now: () => new Date(), mergeCommand: process.env.CRAFT_AUTO_MERGE_CMD || DEFAULT_MERGE_COMMAND };
+  return { querier: new Client(1000), run: mergeRun, now: () => new Date(), mergeCommand: process.env.CRAFT_AUTO_MERGE_CMD || DEFAULT_MERGE_COMMAND };
 }
 
 const refOf = (e: { repo: string; number: number }) => `${e.repo}#${e.number}`;

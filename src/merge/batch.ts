@@ -23,7 +23,7 @@ import { rustPlan } from "../worker/rust.ts";
 import { BatchGit } from "./batch-git.ts";
 import { ACTIVE_BATCH, CLOSED_BY_PERSON, activeBatches, admits, batchSizeOf, getBatch, growBatchSize, insertBatch, membersOf, nextBranch, shrinkBatchSize, updateBatch, type BatchMember, type BatchRow } from "./batch-store.ts";
 import { mergeApprovalOf } from "./approval.ts";
-import { ASSIGN, ORG, prInfo, viewerOf, spawnRun, type CommandResult } from "./index.ts";
+import { ASSIGN, ORG, prInfo, viewerOf, mergeRun, DEFAULT_MERGE_COMMAND, type CommandResult } from "./index.ts";
 import { PIPELINE_LOGIN_KEY, buildQueue, eligible, singleMergeOnly, type QueueEntry } from "./queue.ts";
 
 const ACTOR = "batch";
@@ -75,7 +75,7 @@ export async function defaultBatchDeps(): Promise<BatchDeps> {
   const { CLAUDE_PROMPTS } = await import("../prompts/index.ts");
   const model = CLAUDE_PROMPTS["verify.summary"].models[0]!;
   return {
-    exec, querier: new Client(1000), run: spawnRun, mergeCommand: process.env.CRAFT_AUTO_MERGE_CMD || "safe-merge",
+    exec, querier: new Client(1000), run: mergeRun, mergeCommand: process.env.CRAFT_AUTO_MERGE_CMD || DEFAULT_MERGE_COMMAND,
     mainHead: defaultDeps().mainHead, now: () => new Date(), root: fixupDir(),
     summarise: (db, v, taskId, f, runId) => summariseFailure(db, v, taskId, f, { model }, runId),
   };
