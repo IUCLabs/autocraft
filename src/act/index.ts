@@ -19,6 +19,7 @@
 //   craft-auto comment-approval [--repo R]
 import type { DatabaseSync } from "node:sqlite";
 import { audit } from "../dash/audit.ts";
+import { closeItem, commentOn, type Writer } from "../github/write.ts";
 import { connect } from "../db.ts";
 import { actionable, ask, factsOf, getDecision, type Actionable, type DecisionRow, type Kind } from "../decisions.ts";
 import { HEAD_FACT } from "../merge/queue.ts";
@@ -176,11 +177,6 @@ export const READ = `query($name: String!, $n: Int!) {
     }
   }
 }`;
-export const COMMENT = `mutation($id: ID!, $body: String!) {
-  addComment(input: { subjectId: $id, body: $body }) { commentEdge { node { url } } }
-}`;
-export const CLOSE_ISSUE = `mutation($id: ID!) { closeIssue(input: { issueId: $id }) { clientMutationId } }`;
-export const CLOSE_PR = `mutation($id: ID!) { closePullRequest(input: { pullRequestId: $id }) { clientMutationId } }`;
 
 async function readLive(q: Querier, repo: string, n: number): Promise<Live | null> {
   const d = await q.query(READ, { name: repo, n }) as { repository?: { issueOrPullRequest?: { __typename: string; id: string; state: string; headRefOid?: string } | null } };
@@ -222,6 +218,7 @@ export async function runAct(db: DatabaseSync, params: ActParams, log: (line: st
   const dryRun = params.dryRun ?? true;
   if (params.limit !== undefined && !(Number.isInteger(params.limit) && params.limit >= 0)) throw new Error("limit must be a whole number ≥ 0");
   const at = () => (deps?.now() ?? new Date()).toISOString();
+  const w: Writer = { db, login: ACTOR };
   const summary: ActSummary = { repo, dryRun, asked: [], done: [], skipped: [], failed: [], note: null };
   // Answers that need no GitHub write are applied whether or not commenting is approved.
   if (!dryRun) applyDuplicateAnswers(db, at());
@@ -289,15 +286,12 @@ export async function runAct(db: DatabaseSync, params: ActParams, log: (line: st
           if (!o) { skip(t, "GitHub returned no such original"); continue; }
           body = duplicateComment({ repo: t.repo, original: `${orig[1]}#${orig[2]}`, closed: o.state !== "OPEN" });
         } else body = commentFor(dec, t);
-        const r = await d.querier.query(COMMENT, { id: live.id, body }) as { addComment?: { commentEdge?: { node?: { url?: string } } } };
-        url = r.addComment?.commentEdge?.node?.url ?? "";
+        url = await commentOn(w, d.querier, "act-comment", { repo: t.repo, number: t.number, id: live.id }, body, { decision: t.decisionId });
         // Saved before the close so a retry after a failed close does not comment twice.
         save(t, "failed", "comment posted; close not done yet", url);
-        audit(db, ACTOR, "act-comment", refOf(t), { decision: t.decisionId, url });
       }
-      await d.querier.query(live.type === "PullRequest" ? CLOSE_PR : CLOSE_ISSUE, { id: live.id });
+      await closeItem(w, d.querier, { repo: t.repo, number: t.number, id: live.id, pr: live.type === "PullRequest" }, { decision: t.decisionId, head: live.head });
       save(t, "done", null, url);
-      audit(db, ACTOR, "act-close", refOf(t), { decision: t.decisionId, head: live.head });
       db.prepare("INSERT INTO stages (repo, number, stage, at, actor, note) VALUES (?, ?, 'closed', ?, ?, ?)").run(t.repo, t.number, at(), ACTOR, `closed after ${t.kind} decision ${t.decisionId}`);
       summary.done.push(refOf(t));
       log(`  ${refOf(t)}: commented and closed`);
@@ -315,11 +309,8 @@ export async function runAct(db: DatabaseSync, params: ActParams, log: (line: st
   if (!summary.failed.length) {
     const io: GroupIo = {
       live: (n) => readLive(d.querier, repo, n),
-      comment: async (live, body) => {
-        const r = await d.querier.query(COMMENT, { id: live.id, body }) as { addComment?: { commentEdge?: { node?: { url?: string } } } };
-        return r.addComment?.commentEdge?.node?.url ?? "";
-      },
-      close: async (live) => { await d.querier.query(live.type === "PullRequest" ? CLOSE_PR : CLOSE_ISSUE, { id: live.id }); },
+      comment: (live, body, at) => commentOn(w, d.querier, "act-comment", { repo, number: at.number, id: live.id }, body, { decision: at.decision }),
+      close: (live, at) => closeItem(w, d.querier, { repo, number: at.number, id: live.id, pr: live.type === "PullRequest" }, { decision: at.decision, head: live.head }),
     };
     const g = await actOnGroups(db, {
       repo, io, at, log, dryRun: false,

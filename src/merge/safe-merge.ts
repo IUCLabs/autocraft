@@ -8,6 +8,7 @@
 // Exit 0 when merged, 1 on a refusal or gh failure (reason on stderr), 2 on usage.
 // The decisions are pure functions over the fetched JSON; `safeMerge` is the gh layer.
 import { spawn } from "node:child_process";
+import { cliMergeRecorder, ghMergePr, MERGE_RECORDED_ENV } from "../github/write.ts";
 
 export type Method = "--squash" | "--merge";
 export type Gh = (args: string[]) => Promise<string>;
@@ -77,6 +78,8 @@ export type SafeMergeResult = { merged: true; message: string } | { merged: fals
 export async function safeMerge(
   repo: string, pr: string, method: Method, allow: string[],
   gh: Gh = ghExec, sleep: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms)),
+  /** Record the merge in the database (the command line; a calling pipeline stage records its own). */
+  recordMerge = false,
 ): Promise<SafeMergeResult> {
   const refuse = (why: string): SafeMergeResult => ({ merged: false, reason: `REFUSED ${repo}#${pr}: ${why}` });
   const v = JSON.parse(await gh(["pr", "view", pr, "-R", repo, "--json", "state,isDraft,mergeable,headRefOid,statusCheckRollup"])) as PrView;
@@ -88,7 +91,7 @@ export async function safeMerge(
   if (why) return refuse(why);
   why = refuseAuthors(JSON.parse(await gh(["pr", "view", pr, "-R", repo, "--json", "author,commits"])) as Commits, method);
   if (why) return refuse(why);
-  await gh(["pr", "merge", pr, "-R", repo, method, "--match-head-commit", head]);
+  await ghMergePr(gh, repo, pr, method, head, recordMerge && !process.env[MERGE_RECORDED_ENV] ? cliMergeRecorder(repo, pr, method, head) : undefined);
   await sleep(3000);
   const after = JSON.parse(await gh(["pr", "view", pr, "-R", repo, "--json", "state,mergeCommit"])) as { state: string; mergeCommit?: { oid?: string } | null };
   const line = `${after.state} ${after.mergeCommit?.oid ?? ""}`;
@@ -117,7 +120,7 @@ export const commands = {
       const a = parseSafeMergeArgs(args);
       if (!a) { console.error(USAGE); process.exit(2); }
       try {
-        const r = await safeMerge(a.repo, a.pr, a.method, a.allow);
+        const r = await safeMerge(a.repo, a.pr, a.method, a.allow, ghExec, undefined, true);
         if (r.merged) console.log(`safe-merge: ${r.message}`);
         else { console.error(`safe-merge: ${r.reason}`); process.exit(1); }
       } catch (e) {

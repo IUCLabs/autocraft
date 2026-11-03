@@ -7,7 +7,7 @@
 // Without --apply it is a dry run: it reads the local tables only and lists what would be posted.
 import type { DatabaseSync } from "node:sqlite";
 import { commentApprovalOf } from "../act/approval.ts";
-import { audit } from "../dash/audit.ts";
+import { editReview, postReview, type Writer } from "../github/write.ts";
 import { backlogHeldSql, groupHeldSql, notOwnIntegrationSql } from "../dupes/held.ts";
 import { Client, type Querier } from "../mirror.ts";
 import { prInfo } from "../merge/index.ts";
@@ -76,13 +76,6 @@ export function postCandidates(db: DatabaseSync, repo: string): PostCandidate[] 
   return out;
 }
 
-export const ADD_REVIEW = `mutation($pr: ID!, $oid: GitObjectID!, $body: String!) {
-  addPullRequestReview(input: { pullRequestId: $pr, commitOID: $oid, body: $body, event: COMMENT }) { pullRequestReview { id } }
-}`;
-export const EDIT_REVIEW = `mutation($id: ID!, $body: String!) {
-  updatePullRequestReview(input: { pullRequestReviewId: $id, body: $body }) { pullRequestReview { id } }
-}`;
-
 const refOf = (c: { repo: string; number: number }) => `${c.repo}#${c.number}`;
 
 export async function runReviewPost(db: DatabaseSync, params: PostParams, log: (line: string) => void = console.log, deps?: PostDeps): Promise<PostSummary> {
@@ -104,6 +97,7 @@ export async function runReviewPost(db: DatabaseSync, params: PostParams, log: (
     return s;
   }
   const d = deps ?? defaultPostDeps();
+  const w: Writer = { db, login: ACTOR };
   let handled = 0;
   for (const c of todo) {
     const skip = (reason: string) => { s.skipped.push({ ref: refOf(c), reason }); log(`  ${refOf(c)}: skipped: ${reason}`); };
@@ -114,16 +108,13 @@ export async function runReviewPost(db: DatabaseSync, params: PostParams, log: (
       if (live.head !== c.head_oid) { skip(`head moved to ${live.head.slice(0, 7)}`); continue; }
       const at = d.now().toISOString();
       if (c.editId) {
-        await d.querier.query(EDIT_REVIEW, { id: c.editId, body: c.body });
+        await editReview(w, d.querier, repo, c.number, c.editId, c.head_oid, c.body);
         db.prepare("UPDATE review_posts SET head_oid = ?, edited_at = ? WHERE repo = ? AND number = ?").run(c.head_oid, at, repo, c.number);
-        audit(db, ACTOR, "review-edit", refOf(c), { head: c.head_oid, review: c.editId });
         s.edited.push(refOf(c));
       } else {
-        const r = await d.querier.query(ADD_REVIEW, { pr: live.id, oid: c.head_oid, body: c.body }) as { addPullRequestReview?: { pullRequestReview?: { id?: string } | null } | null };
-        const id = r.addPullRequestReview?.pullRequestReview?.id;
+        const id = await postReview(w, d.querier, { repo, number: c.number, id: live.id }, c.head_oid, c.body);
         if (!id) throw new Error("GitHub returned no review");
         db.prepare("INSERT OR REPLACE INTO review_posts (repo, number, review_id, head_oid, posted_at) VALUES (?, ?, ?, ?, ?)").run(repo, c.number, id, c.head_oid, at);
-        audit(db, ACTOR, "review-post", refOf(c), { head: c.head_oid, review: id });
         s.posted.push(refOf(c));
       }
       log(`  ${refOf(c)}: ${c.editId ? "edited" : "posted"} at ${c.head_oid.slice(0, 7)}`);

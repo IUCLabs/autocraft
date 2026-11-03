@@ -14,6 +14,8 @@ import type {
   AnswerInput,
   AuditFilter,
   AuditPage,
+  GithubActivityFilter,
+  GithubActivityPage,
   Contributor,
   ContributorFilter,
   ContributorList,
@@ -135,6 +137,8 @@ export interface Api {
   cost(run?: string): Promise<CostReport>;
   /** The merge queue: every PR with a take or take-fix review at its head, and what it waits on. */
   queue(filter: QueueFilter): Promise<QueueList>;
+  /** Every write the app made on GitHub, newest first. */
+  githubActivity(filter: GithubActivityFilter): Promise<GithubActivityPage>;
   /** Integration batches of the merge queue, newest first, with their member PRs. */
   queueBatches(filter: BatchFilter): Promise<BatchList>;
   /** Steps, jobs, the on/off switch and the stage limits: everyone reads; run, cancel, switch and limits are for operators. */

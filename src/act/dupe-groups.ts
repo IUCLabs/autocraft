@@ -17,8 +17,8 @@ export type GroupLive = { id: string; type: "Issue" | "PullRequest"; state: stri
 export type GroupIo = {
   live(number: number): Promise<GroupLive | null>;
   /** Returns the comment's URL. */
-  comment(live: GroupLive, body: string): Promise<string>;
-  close(live: GroupLive): Promise<void>;
+  comment(live: GroupLive, body: string, at: { number: number; decision: string }): Promise<string>;
+  close(live: GroupLive, at: { number: number; decision: string }): Promise<void>;
 };
 export type GroupRun = {
   repo: string; io: GroupIo; at: () => string; log: (line: string) => void;
@@ -112,9 +112,8 @@ export async function actOnGroups(db: DatabaseSync, run: GroupRun): Promise<Grou
         else {
           if (changed(details)) continue decisions;
           const text = texts.get(`${details.number}:details`)!;
-          const url = await run.io.comment(live, text);
+          const url = await run.io.comment(live, text, { number: details.number, decision: dec.id });
           record(dec.id, details.number, "details", url);
-          audit(db, ACTOR, "act-comment", ref(details.number), { decision: dec.id, url, text });
           run.handled();
           run.log(`  ${ref(details.number)}: posted the details comment`);
         }
@@ -137,14 +136,12 @@ export async function actOnGroups(db: DatabaseSync, run: GroupRun): Promise<Grou
         let url = (db.prepare("SELECT url FROM dupe_group_posts WHERE decision_id = ? AND number = ? AND step = 'comment'").get(dec.id, c.number) as { url: string | null } | undefined)?.url ?? null;
         if (url === null) {
           if (changed(c)) continue decisions;
-          url = await run.io.comment(live, text);
+          url = await run.io.comment(live, text, { number: c.number, decision: dec.id });
           record(dec.id, c.number, "comment", url);
-          audit(db, ACTOR, "act-comment", ref(c.number), { decision: dec.id, url, text });
         }
         if (changed(c)) continue decisions;
-        await run.io.close(live);
+        await run.io.close(live, { number: c.number, decision: dec.id });
         record(dec.id, c.number, "close", url);
-        audit(db, ACTOR, "act-close", ref(c.number), { decision: dec.id, head: live.head });
         db.prepare("INSERT INTO stages (repo, number, stage, at, actor, note) VALUES (?, ?, 'closed', ?, ?, ?)").run(run.repo, c.number, run.at(), ACTOR, `closed after duplicate group decision ${dec.id}`);
         res.done.push(ref(c.number));
         run.handled();

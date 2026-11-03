@@ -90,11 +90,6 @@ export class Git {
     return have;
   }
 
-  /** Pushes `sha` to a branch of the pipeline's own fork, replacing what an earlier try of the same fix left there. */
-  async pushNew(repoFullName: string, branch: string, sha: string): Promise<ExecResult> {
-    return this.git(["push", "--quiet", "--force", `https://github.com/${repoFullName}.git`, `${sha}:refs/heads/${branch}`]);
-  }
-
   /** The blob at `sha:path` as text with its mode, or why it can't be used. */
   async file(sha: string, path: string): Promise<{ ok: true; mode: string; content: string } | { ok: false; reason: string }> {
     const t = await this.git(["ls-tree", sha, "--", path]);
@@ -135,10 +130,5 @@ export class Git {
   async commit(tree: string, parent: string, message: string, who: { name: string; email: string }): Promise<string> {
     const env = { GIT_AUTHOR_NAME: who.name, GIT_AUTHOR_EMAIL: who.email, GIT_COMMITTER_NAME: who.name, GIT_COMMITTER_EMAIL: who.email };
     return (await this.must(["commit-tree", tree, "-p", parent, "-F", "-"], { input: message, env })).trim();
-  }
-
-  /** Pushes `sha` to the contributor's branch; refuses when the branch is no longer at `expected`. */
-  async push(headRepo: string, branch: string, sha: string, expected: string): Promise<ExecResult> {
-    return this.git(["push", "--quiet", `--force-with-lease=refs/heads/${branch}:${expected}`, `https://github.com/${headRepo}.git`, `${sha}:refs/heads/${branch}`]);
   }
 }

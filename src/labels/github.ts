@@ -2,7 +2,7 @@
 // Every call goes through the mirror's Querier (gh api graphql, rate-limit aware).
 import { setTimeout as sleepMs } from "node:timers/promises";
 import type { DatabaseSync } from "node:sqlite";
-import { audit } from "../dash/audit.ts";
+import { addLabels, createLabel, type Writer } from "../github/write.ts";
 import { Transient, type Querier } from "../mirror.ts";
 import { approvalOf } from "./approval.ts";
 import { planLabels, type PlanRow } from "./plan.ts";
@@ -45,14 +45,12 @@ export async function repoLabels(client: Querier, repo: string, wait: Wait = sle
 }
 
 // Creates the missing labels of the set. Returns the names missing (created when apply).
-export async function ensureLabels(client: Querier, repo: string, apply: boolean, wait: Wait = sleepMs as Wait): Promise<LabelDef[]> {
+export async function ensureLabels(client: Querier, repo: string, apply: boolean, w: Writer, wait: Wait = sleepMs as Wait): Promise<LabelDef[]> {
   const have = await repoLabels(client, repo, wait);
   const missing = ALL_LABELS.filter((l) => !have.labels.has(l.name.toLowerCase()));
   if (apply) {
     for (const l of missing) {
-      await retrying(() => client.query(
-        `mutation($input: CreateLabelInput!) { createLabel(input: $input) { label { id } } }`,
-        { input: { repositoryId: have.id, name: l.name, color: l.color, description: l.description } }), wait);
+      await createLabel(w, client, repo, have.id, { name: l.name, color: l.color, description: l.description }, (f) => retrying(f, wait));
       await wait(1_000);
     }
   }
@@ -81,6 +79,7 @@ export function labelsToApply(db: DatabaseSync, repo: string, runId?: string): P
 export async function applyLabels(db: DatabaseSync, client: Querier, repo: string, o: ApplyOpts): Promise<ApplyResult> {
   const wait = o.wait ?? (sleepMs as Wait);
   const log = o.log ?? (() => {});
+  const w: Writer = { db, login: o.login ?? "cli" };
   const approval = approvalOf(db, repo);
   if (o.apply && !approval) {
     throw new LabelsError(`${repo} is not approved for labelling. An operator approves it on the dashboard Repos page.`);
@@ -111,7 +110,7 @@ export async function applyLabels(db: DatabaseSync, client: Querier, repo: strin
     const writable = chunk.filter((r) => live(r)?.id && !gone.includes(r));
     for (const r of chunk) if (!live(r)?.id) res.failed.push(r.number);
     const idMap = new Map([...ids].map(([n, v]) => [n, v.id] as [number, string | null]));
-    const done = writable.length ? await mutate(client, writable, idMap, have, wait) : [];
+    const done = writable.length ? await mutate(w, client, repo, writable, idMap, have, wait, o.runId) : [];
     for (const r of writable) if (!done.includes(r.number)) res.failed.push(r.number);
     const ok = writable.filter((r) => done.includes(r.number));
     if (ok.length) {
@@ -121,7 +120,6 @@ export async function applyLabels(db: DatabaseSync, client: Querier, repo: strin
         db.prepare("INSERT INTO main.stages (repo, number, stage, at, actor, note) VALUES (?, ?, 'labeled', ?, 'labels', ?)")
           .run(repo, r.number, at, `added: ${r.add.join(", ")}`);
       }
-      audit(db, o.login ?? "cli", "labels-apply", repo, { run: o.runId, items: ok.map((r) => r.number), skipped: gone.map((r) => r.number), labels: ok.reduce((n, r) => n + r.add.length, 0) });
       db.exec("COMMIT");
       res.labeled += ok.length;
       o.onLabeled?.(res.labeled);
@@ -154,25 +152,11 @@ async function nodeIds(client: Querier, repo: string, numbers: number[], wait: W
   return out;
 }
 
-/** One aliased `addLabelsToLabelable` per item, with variables `i<k>` (node id) and `l<k>` (label ids). */
-export function addLabelsMutation(count: number): string {
-  const ks = Array.from({ length: count }, (_, k) => k);
-  const decl = ks.flatMap((k) => [`$i${k}: ID!`, `$l${k}: [ID!]!`]);
-  const body = ks.map((k) => `m${k}: addLabelsToLabelable(input: {labelableId: $i${k}, labelIds: $l${k}}) { clientMutationId }`);
-  return `mutation(${decl.join(", ")}) { ${body.join("\n")} }`;
-}
-
 // Returns the numbers whose mutation succeeded. A failed batch is retried item by item.
-async function mutate(client: Querier, rows: PlanRow[], ids: Map<number, string | null>, have: Repo, wait: Wait): Promise<number[]> {
-  const run = async (part: PlanRow[]): Promise<number[]> => {
-    const vars: Record<string, unknown> = {};
-    part.forEach((r, k) => {
-      vars[`i${k}`] = ids.get(r.number);
-      vars[`l${k}`] = r.add.map((a) => have.labels.get(a.toLowerCase()));
-    });
-    const d = await retrying(() => client.query(addLabelsMutation(part.length), vars), wait);
-    return part.filter((_, k) => d && d[`m${k}`] !== null && d[`m${k}`] !== undefined).map((r) => r.number);
-  };
+async function mutate(w: Writer, client: Querier, repo: string, rows: PlanRow[], ids: Map<number, string | null>, have: Repo, wait: Wait, runId: string): Promise<number[]> {
+  const run = (part: PlanRow[]): Promise<number[]> => addLabels(w, client, repo,
+    part.map((r) => ({ number: r.number, id: ids.get(r.number)!, labelIds: r.add.map((a) => have.labels.get(a.toLowerCase())!), names: r.add })),
+    (f) => retrying(f, wait), { run: runId });
   try {
     return await run(rows);
   } catch (e) {

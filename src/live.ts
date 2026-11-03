@@ -2,6 +2,7 @@
 // tables the dashboard reads. Triggers fire for writes from every process (runner,
 // sync, sandbox worker, dashboard), so no code path can forget to signal.
 import type { DatabaseSync } from "node:sqlite";
+import { GITHUB_ACTIONS } from "./github/actions.ts";
 
 type Source = { table: string; ops?: ("INSERT" | "UPDATE" | "DELETE")[]; when?: string };
 
@@ -64,6 +65,8 @@ export const TOPIC_TABLES: Record<string, Source[]> = {
   // Sessions change on every request (last_seen); only sign-ins and revocations matter.
   access: [{ table: "access" }, { table: "sessions", ops: ["INSERT", "DELETE"] }, { table: "audit" }],
   settings: [{ table: "settings", when: `${shownSettings("new_key")}` }],
+  // Rows of the audit table that record a write on GitHub.
+  github: [{ table: "audit", ops: ["INSERT"], when: `new.action IN (${Object.keys(GITHUB_ACTIONS).map((a) => `'${a}'`).join(", ")})` }],
 };
 
 export const TOPICS = Object.keys(TOPIC_TABLES);

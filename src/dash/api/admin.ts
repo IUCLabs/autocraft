@@ -30,6 +30,7 @@ export const AUDIT_ACTIONS = [
   "answer", "undo", "adopt", "opinion", "opinion-retract", "comment", "override", "rule", "access-add", "access-remove", "access-role",
   "session-revoke", "sign-in", "sign-in-refused", "repo-track", "repo-untrack", "labels-approve", "labels-revoke", "labels-apply", "merge-approve", "merge-revoke", "comment-approve", "comment-revoke", "act-comment", "act-close", "act-skip", "push-approve", "push-revoke", "fixup-push", "fixup-comment", "fixissue-approve", "fixissue-revoke", "fixissue-push", "fixissue-pr", "fixissue-comment",
   "job-request", "job-cancel", "pipeline-switch", "stage-limit", "limit-reset", "pilot-set", "pilot-clear", "repo-pipeline", "review-post", "review-edit", "batch-again", "reopen", "backlog-bulk", "withdraw",
+  "label-create", "batch-pr-close", "fork-create", "assign", "unassign", "merge", "batch-push", "batch-pr",
 ];
 
 const isOperator = (req: Req): boolean => req.user.role === "operator";

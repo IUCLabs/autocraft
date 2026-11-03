@@ -94,7 +94,7 @@ describe("labels apply", () => {
     assert.deepEqual([r.dryRun, r.planned, c.calls.length], [true, 1, 0]);
   });
 
-  test("approved: batches mutations, writes stages and one audit row per batch, and resumes", async () => {
+  test("approved: batches mutations, writes stages and one audit row per item, and resumes", async () => {
     const { db, item, jev } = setup("apply");
     const n = BATCH + 3;
     for (let i = 1; i <= n; i++) { item.run(i, "[]"); jev(i, "bugfix", 0.99, i === 1 ? ["security"] : []); }
@@ -111,7 +111,12 @@ describe("labels apply", () => {
     const stages = db.prepare("SELECT number, note FROM stages WHERE stage = 'labeled' ORDER BY number").all() as { number: number; note: string }[];
     assert.equal(stages.length, n - 1);
     assert.equal(stages[0]!.note, "added: bugfix, security");
-    assert.equal((db.prepare("SELECT COUNT(*) AS n FROM audit WHERE action = 'labels-apply'").get() as { n: number }).n, 2);
+    const rows = db.prepare("SELECT target, details FROM audit WHERE action = 'labels-apply' ORDER BY rowid").all() as { target: string; details: string }[];
+    const ok = rows.filter((x) => !x.details.includes('"error"'));
+    assert.equal(ok.length, n - 1, "one row per labelled item");
+    assert.deepEqual(JSON.parse(ok[0]!.details), { run: RUN, labels: ["bugfix", "security"], state: "done" });
+    assert.equal(ok[0]!.target, "app#1");
+    assert.ok(rows.some((x) => x.target === "app#2" && x.details.includes('"error"')), "the item GitHub did not label has a failure row");
 
     // second run: only the failed item remains
     const again = fakeClient();

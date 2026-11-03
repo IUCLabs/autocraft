@@ -16,6 +16,7 @@ import { askClaude } from "../classify/run.ts";
 import { REPO_PATH } from "../sandbox/command.ts";
 import { checkoutForPr } from "../sandbox/index.ts";
 import { audit } from "../dash/audit.ts";
+import { assignTo, ghComment, pushBranch, type Writer } from "../github/write.ts";
 import { connect } from "../db.ts";
 import { Client, type Querier } from "../mirror.ts";
 import { CLAUDE_PROMPTS } from "../prompts/index.ts";
@@ -95,9 +96,6 @@ export const PR_QUERY = `query($name: String!, $n: Int!) {
     }
   }
 }`;
-export const ASSIGN = `mutation($id: ID!, $user: ID!) {
-  addAssigneesToAssignable(input: { assignableId: $id, assigneeIds: [$user] }) { clientMutationId }
-}`;
 
 type PrNode = {
   id: string; state: string; isDraft: boolean; headRefOid: string; headRefName: string; maintainerCanModify: boolean; mergeable: string | null;
@@ -150,6 +148,7 @@ export async function runFixup(db: DatabaseSync, params: FixupParams, log: (line
   if (params.limit !== undefined && !(Number.isInteger(params.limit) && params.limit >= 0)) throw new Error("limit must be a whole number ≥ 0");
   const at = () => (deps?.now() ?? new Date()).toISOString();
   const runId = `fixup-${repo}-${at().replace(/[-:]/g, "").slice(0, 15)}`;
+  const gw: Writer = { db, login: ACTOR };
   const summary: FixupSummary = { runId, repo, dryRun, pushed: [], asked: [], failed: [], held: [] };
   const sel = selectFixups(db, repo);
   const asks = params.limit === undefined ? sel.ask : sel.ask.slice(0, params.limit);
@@ -188,10 +187,9 @@ export async function runFixup(db: DatabaseSync, params: FixupParams, log: (line
         return;
       }
       const body = c.carry ? c.carry.suggestion! : askText(c.fixes);
-      const cm = await d.exec("gh", ["pr", "comment", String(c.number), "--repo", `${ORG}/${repo}`, "--body-file", "-"], { input: body });
+      const cm = await ghComment(gw, d.exec, "fixup-comment", { repo, number: c.number, pr: true }, body, { run: runId, head: c.head });
       if (cm.code !== 0) { log(`  ${ref}: comment failed: ${oneLine(cm.stderr)}`); return; }
       rec.fixup(c, "asked", null, [...new Set(c.fixes.map((f) => f.file))]);
-      audit(db, ACTOR, "fixup-comment", ref, { run: runId, head: c.head, text: body });
       if (count) params.onHandled?.(++handled);
       summary.asked.push(ref);
       log(`  ${ref}: asked the contributor for changes at ${short(c.head)}`);
@@ -303,12 +301,11 @@ export async function runFixup(db: DatabaseSync, params: FixupParams, log: (line
 
       // Claim after the patch is validated and approved, just before the push.
       if (!c.carry && !(now.assignees?.nodes ?? []).length) {
-        await d.querier.query(ASSIGN, { id: now.id, user: who.nodeId });
-        audit(db, ACTOR, "assign", ref, { run: runId, assignee: who.login });
+        await assignTo(gw, d.querier, { repo, number: c.number, id: now.id }, { id: who.nodeId, login: who.login }, { run: runId });
         log(`  ${ref}: assigned to ${who.login}`);
       }
 
-      const push = await git.push(pr.headRepository.nameWithOwner, pr.headRefName, commit, head);
+      const push = await pushBranch(gw, git, "fixup-push", { repo, number: c.number, remote: pr.headRepository.nameWithOwner, branch: pr.headRefName, sha: commit, expected: head }, { run: runId, from: head, to: commit, files: v.files, changed: v.changed });
       if (push.code !== 0) {
         const err = oneLine(push.stderr);
         if (/stale info|rejected|fetch first/i.test(err)) fail("refused", "the branch moved since the review");
@@ -316,15 +313,13 @@ export async function runFixup(db: DatabaseSync, params: FixupParams, log: (line
         else fail("failed", `push failed: ${err}`);
         continue;
       }
-      audit(db, ACTOR, "fixup-push", ref, { run: runId, from: head, to: commit, files: v.files, changed: v.changed });
       rec.fixup(c, "pushed", null, v.files, commit);
       summary.pushed.push(ref);
       log(`  ${ref}: pushed ${short(commit)} on ${short(head)}: ${v.files.join(", ")}`);
 
       const body = c.carry ? carryCommentText(c.carry.sources.map((x) => x.number), v.files) : commentText(v.files);
-      const cm = await d.exec("gh", ["pr", "comment", String(c.number), "--repo", `${ORG}/${repo}`, "--body-file", "-"], { input: body });
-      if (cm.code === 0) audit(db, ACTOR, "fixup-comment", ref, { run: runId, text: body });
-      else log(`  ${ref}: comment failed: ${oneLine(cm.stderr)}`);
+      const cm = await ghComment(gw, d.exec, "fixup-comment", { repo, number: c.number, pr: true }, body, { run: runId });
+      if (cm.code !== 0) log(`  ${ref}: comment failed: ${oneLine(cm.stderr)}`);
     } catch (e) {
       fail("failed", oneLine(String((e as Error).message ?? e)));
     }

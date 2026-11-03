@@ -14,6 +14,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { createTask, getTask, MAX_PATCH_BYTES, TERMINAL, warmKeyOf } from "../build/tasks.ts";
 import { cloneTask } from "../verify/tasks.ts";
 import { audit } from "../dash/audit.ts";
+import { assignTo, ghClosePr, ghOpenPr, mergeViaCommand, pushBranch, unassignFrom, type Writer } from "../github/write.ts";
 import { type Exec, exec, fixupDir } from "../fixup/git.ts";
 import { whoAmI } from "../fixup/index.ts";
 import { branchOf, forkOf } from "../fixissue/index.ts";
@@ -24,13 +25,10 @@ import { rustPlan } from "../worker/rust.ts";
 import { BatchGit } from "./batch-git.ts";
 import { ACTIVE_BATCH, CLOSED_BY_PERSON, activeBatches, admits, batchSizeOf, getBatch, growBatchSize, insertBatch, membersOf, nextBranch, restartCheck, shrinkBatchSize, updateBatch, type BatchMember, type BatchRow } from "./batch-store.ts";
 import { mergeApprovalOf } from "./approval.ts";
-import { ASSIGN, ORG, prInfo, viewerOf, mergeRun, DEFAULT_MERGE_COMMAND, type CommandResult } from "./index.ts";
+import { ORG, prInfo, viewerOf, mergeRun, DEFAULT_MERGE_COMMAND, type CommandResult } from "./index.ts";
 import { PIPELINE_LOGIN_KEY, buildQueue, eligible, singleMergeOnly, type QueueEntry } from "./queue.ts";
 
 const ACTOR = "batch";
-export const UNASSIGN = `mutation($id: ID!, $user: ID!) {
-  removeAssigneesFromAssignable(input: { assignableId: $id, assigneeIds: [$user] }) { clientMutationId }
-}`;
 const PR_URL = new RegExp(`^https://github\\.com/${ORG}/[A-Za-z0-9._-]+/pull/(\\d+)$`);
 /** Wait before the sandbox task of a batch is queued again after a build-environment error: none for the first retry, then doubling from 5 minutes up to 30 minutes. */
 export const retryDelayMs = (retries: number): number => (retries === 0 ? 0 : Math.min(5 * 60_000 * 2 ** (retries - 1), 30 * 60_000));
@@ -100,11 +98,12 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
   /** PRs this run may still start or land under the stage's daily limit. */
   const left = () => (params.limit === undefined ? Infinity : params.limit - landed);
 
+  const w: Writer = { db, login: ACTOR };
   const refOf = (n: number) => `${repo}#${n}`;
   const branch = branchOf(db, repo);
   const closePr = async (b: BatchRow, why: string) => {
     if (b.pr_number === null) return;
-    const r = await d.exec("gh", ["pr", "close", String(b.pr_number), "--repo", `${ORG}/${repo}`, "--comment", why]);
+    const r = await ghClosePr(w, d.exec, { repo, number: b.pr_number }, why, { run: runId, batch: b.branch });
     if (r.code !== 0) log(`  ${b.branch}: could not close the batch PR: ${oneLine(r.stderr)}`);
   };
 
@@ -114,8 +113,7 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
       const info = await prInfo(d.querier, repo, n);
       if (!info || info.state !== "OPEN" || info.assignees.length) return;
       const me = await viewerOf(d.querier);
-      await d.querier.query(ASSIGN, { id: info.id, user: me.id });
-      audit(db, ACTOR, "assign", refOf(n), { run: runId, assignee: me.login });
+      await assignTo(w, d.querier, { repo, number: n, id: info.id }, me, { run: runId });
       log(`  ${refOf(n)}: assigned to ${me.login}`);
     } catch (e) {
       log(`  ${refOf(n)}: could not assign: ${oneLine(String((e as Error).message ?? e))}`);
@@ -126,14 +124,13 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
   async function release(n: number): Promise<void> {
     try {
       const me = await viewerOf(d.querier);
-      const last = db.prepare("SELECT action, details FROM audit WHERE target = ? AND action IN ('assign', 'unassign') ORDER BY rowid DESC LIMIT 1").get(refOf(n)) as { action: string; details: string | null } | undefined;
+      const last = db.prepare("SELECT action, details FROM audit WHERE target = ? AND action IN ('assign', 'unassign') AND COALESCE(details, '') NOT LIKE '%\"error\":%' ORDER BY rowid DESC LIMIT 1").get(refOf(n)) as { action: string; details: string | null } | undefined;
       if (last?.action !== "assign" || (JSON.parse(last.details ?? "{}") as { assignee?: string }).assignee !== me.login) return;
       const inBatch = activeBatches(db, repo).some((b) => membersOf(db, b.id).some((m) => m.number === n));
       if (inBatch) return;
       const info = await prInfo(d.querier, repo, n);
       if (!info || info.assignees.length !== 1 || info.assignees[0] !== me.login) return;
-      await d.querier.query(UNASSIGN, { id: info.id, user: me.id });
-      audit(db, ACTOR, "unassign", refOf(n), { run: runId, assignee: me.login });
+      await unassignFrom(w, d.querier, { repo, number: n, id: info.id }, me, { run: runId });
       log(`  ${refOf(n)}: unassigned from ${me.login}`);
     } catch (e) {
       log(`  ${refOf(n)}: could not unassign: ${oneLine(String((e as Error).message ?? e))}`);
@@ -250,11 +247,10 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
     const live = members.filter((m) => checks.some((c) => c.number === m.number && c.state === "OPEN" && c.head_oid === m.head_oid));
     if (live.length < members.length) return supersede(b, live, "a PR in the batch was closed, merged or pushed to");
     const who = await whoAmI(d.exec);
-    const fork = await forkOf(d.exec, who.login, repo);
-    const push = await git.pushNew(fork, b.branch, b.commit_sha);
+    const fork = await forkOf(w, d.exec, who.login, repo, { run: runId });
+    const push = await pushBranch(w, git, "batch-push", { repo, remote: fork, branch: b.branch, sha: b.commit_sha }, { run: runId, fork });
     if (push.code !== 0) { log(`  ${b.branch}: push failed: ${oneLine(push.stderr)}`); s.waiting.push(b.branch); return; }
     updateBatch(db, b.id, at(), { fork });
-    audit(db, ACTOR, "batch-push", `${repo}:${b.branch}`, { run: runId, commit: b.commit_sha, fork });
     const links = members.map((m) => `- [${repo}#${m.number}](https://github.com/${ORG}/${repo}/pull/${m.number})`).join("\n");
     const body = `Lands ${members.length} reviewed and verified pull request${members.length === 1 ? "" : "s"} together. Each one is merged with its own commits.\n\n${links}\n`;
     // A crash after `gh pr create` leaves a PR for this branch: adopt it instead of failing on "already exists".
@@ -262,12 +258,11 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
     const found = await d.exec("gh", ["pr", "list", "--repo", `${ORG}/${repo}`, "--state", "open", "--head", b.branch, "--json", "url,headRepositoryOwner", "--jq", `.[] | select(.headRepositoryOwner.login == "${owner}") | .url`]);
     const existing = found.code === 0 ? found.stdout.trim().split("\n")[0] ?? "" : "";
     const pr = PR_URL.test(existing) ? { code: 0, stdout: existing, stderr: "" }
-      : await d.exec("gh", ["pr", "create", "--repo", `${ORG}/${repo}`, "--base", branch, "--head", `${owner}:${b.branch}`, "--title", `Integration batch ${b.branch}`, "--body-file", "-"], { input: body });
+      : await ghOpenPr(w, d.exec, "batch-pr", { repo, target: `${repo}:${b.branch}`, base: branch, head: `${owner}:${b.branch}`, title: `Integration batch ${b.branch}`, body }, { run: runId });
     const url = pr.stdout.trim().split("\n").pop() ?? "";
     const m = url.match(PR_URL);
     if (pr.code !== 0 || !m) { log(`  ${b.branch}: batch PR not opened: ${oneLine(pr.stderr || pr.stdout)}`); s.waiting.push(b.branch); return; }
     updateBatch(db, b.id, at(), { state: "open", pr_number: Number(m[1]), pr_url: url });
-    audit(db, ACTOR, "batch-pr", `${repo}:${b.branch}`, { run: runId, url });
     s.published.push(b.branch);
     log(`  ${b.branch}: opened ${url}`);
   }
@@ -318,9 +313,9 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
     if (info.head !== b.commit_sha) { log(`  ${b.branch}: the batch branch moved from ${short(b.commit_sha)} to ${short(info.head)}; not merged`); s.waiting.push(b.branch); return; }
     if (!info.assignees.length) {
       const me = await viewerOf(d.querier);
-      await d.querier.query(ASSIGN, { id: info.id, user: me.id });
+      await assignTo(w, d.querier, { repo, number: b.pr_number!, id: info.id }, me, { run: runId, batch: b.branch });
     }
-    const r = await d.run(d.mergeCommand, [`${ORG}/${repo}`, String(b.pr_number), "--merge"]);
+    const r = await mergeViaCommand(w, d.run, d.mergeCommand, [`${ORG}/${repo}`, String(b.pr_number), "--merge"], { run: runId, head: b.commit_sha, batch: b.branch });
     if (r.code !== 0) {
       // The merge may have gone through although the command failed afterwards.
       const [after] = await refreshChecks(db, d.querier, repo, [b.pr_number!]);
