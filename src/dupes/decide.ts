@@ -14,6 +14,7 @@ import { duplicateGroups, kindSetsOf, currentComparison, type Group, type KindSe
 import { oneSentence } from "../review/summary.ts";
 import { storeOptionTexts } from "./texts.ts";
 import { inPilot, pilotSqlFor } from "../pilot.ts";
+import { withdrawGroupedQuestions } from "../merge/withdraw.ts";
 
 export { duplicateEdges, duplicateGroups, type Group } from "./plan.ts";
 
@@ -220,6 +221,7 @@ export function askGroupDecisions(db: DatabaseSync, repo: string | undefined, at
       });
       db.exec("COMMIT");
       asked.push(id);
+      withdrawGroupedQuestions(db, at, p.repo);
     } catch (e) {
       db.exec("ROLLBACK");
       throw e;

@@ -298,9 +298,13 @@ function stateOf(e: QueueEntry, merged: boolean, last: { outcome: string; reason
 /** Merge? questions still to ask: take PRs outside the rule with no decision at their head. A member of an open duplicate group is asked after the group is answered: an item has one open decision. */
 export const toAsk = (db: DatabaseSync, queue: QueueEntry[]): QueueEntry[] => {
   const grouped = new Set((db.prepare(`SELECT gi.repo || '#' || gi.number AS ref FROM dupe_group_items gi JOIN decisions g ON g.id = gi.decision_id
-    WHERE g.kind = 'duplicate' AND g.id LIKE '%:dupegroup:%' AND g.answer IS NULL`).all() as { ref: string }[]).map((r) => r.ref));
+    WHERE ${OPEN_GROUP_SQL} AND gi.role <> 'stay'`).all() as { ref: string }[]).map((r) => r.ref));
   return queue.filter((e) => e.state === "needs-decision" && !e.decisionId && !grouped.has(`${e.repo}#${e.number}`));
 };
+
+/** SQL condition on `g` (a decisions row): a duplicate group decision that is unanswered or answered "keep #N instead" with the new roles not applied yet. */
+export const OPEN_GROUP_SQL = `(g.kind = 'duplicate' AND g.id LIKE '%:dupegroup:%' AND (g.answer IS NULL
+  OR (g.answer LIKE 'keep:%' AND COALESCE((SELECT dg.applied_answer FROM dupe_groups dg WHERE dg.decision_id = g.id), '') <> g.answer)))`;
 
 export function countStates(entries: QueueEntry[]): Record<QueueState, number> {
   const c = Object.fromEntries(QUEUE_STATES.map((s) => [s, 0])) as Record<QueueState, number>;
