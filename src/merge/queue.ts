@@ -6,6 +6,7 @@ import { latestRun, settledLookup } from "../classify/settled.ts";
 import { actionable } from "../decisions.ts";
 import { backlogHeld, duplicateHeld, notOwnIntegrationSql } from "../dupes/held.ts";
 import { headOf } from "../review/candidates.ts";
+import { staleReviews } from "../review/discussion.ts";
 import { batchStates } from "./batch-store.ts";
 import { getRule, STATS_SQL, tierOf, type Tier } from "../whitelist.ts";
 import { pilotSql } from "../pilot.ts";
@@ -87,7 +88,7 @@ export const eligible = (e: QueueEntry): boolean =>
 type Row = {
   repo: string; number: number; title: string | null; author: string | null; state: string; head_oid: string | null; updated_at: string | null;
   c_head: string | null; c_at: string | null; overall: string | null; c_mergeable: string | null; i_mergeable: string | null;
-  r_head: string; verdict: "take" | "take-fix"; reason: string; fixes: string | null; size: string | null; r_at: string; r_final: number;
+  r_head: string; o_at: string | null; verdict: "take" | "take-fix"; reason: string; fixes: string | null; size: string | null; r_at: string; r_final: number;
 };
 
 /** Tiers of the given logins, from one stats query. */
@@ -151,7 +152,7 @@ export function buildQueue(db: DatabaseSync, opts: QueueOptions = {}): QueueEntr
   const rows = db.prepare(`
     SELECT i.repo, i.number, i.title, i.author, i.state, i.head_oid, i.updated_at, i.mergeable AS i_mergeable,
       c.head_oid AS c_head, c.fetched_at AS c_at, c.overall, c.mergeable AS c_mergeable,
-      l.head_oid AS r_head, l.verdict, l.reason, l.fixes, l.size, l.at AS r_at, l.final AS r_final
+      l.head_oid AS r_head, (SELECT o.at FROM opus_reviews o WHERE o.repo = l.repo AND o.number = l.number AND o.head_oid = l.head_oid AND o.verdict IS NOT NULL) AS o_at, l.verdict, l.reason, l.fixes, l.size, l.at AS r_at, l.final AS r_final
     FROM items i
     JOIN final_reviews l ON l.repo = i.repo AND l.number = i.number AND l.head_oid = (
       SELECT r.head_oid FROM reviews r WHERE r.repo = i.repo AND r.number = i.number ORDER BY r.at DESC, r.rowid DESC LIMIT 1)
@@ -166,6 +167,7 @@ export function buildQueue(db: DatabaseSync, opts: QueueOptions = {}): QueueEntr
   const tiers = tiersOf(db, [...new Set(rows.map((r) => r.author).filter((a): a is string => !!a))]);
   const inBatch = batchStates(db, opts.repo);
   const own = ownFixPrs(db, opts.repo);
+  const stale = staleReviews(db, opts.repo);
   const settled = settledLookup(db, opts.run !== undefined ? opts.run : latestRun(db));
 
   const noCiMemo = new Map<string, boolean>();
@@ -206,7 +208,7 @@ export function buildQueue(db: DatabaseSync, opts: QueueOptions = {}): QueueEntr
       decisionId: asked ? id : null, noCi: ci === "none" && noCi(r.repo), answer, refusedReason: null, reviewedAt: r.r_at, verify,
     };
     const open = r.state === "OPEN" && !mergedByUs;
-    e.state = stateOf(e, r.state === "MERGED" || mergedByUs, last, open && (backlogHeld(db, r.repo, r.number) ? "backlog" : duplicateHeld(db, r.repo, r.number) ? "duplicate" : null), r.r_final === 1);
+    e.state = stateOf(e, r.state === "MERGED" || mergedByUs, last, open && (backlogHeld(db, r.repo, r.number) ? "backlog" : duplicateHeld(db, r.repo, r.number) ? "duplicate" : null), r.r_final === 1 && !(open && (stale.has(`${r.repo}#${r.number}@${r.r_head}`) || (r.o_at !== null && r.o_at < r.r_at))));
     const batch = inBatch.get(`${r.repo}#${r.number}@${r.r_head}`);
     if (batch && BATCHABLE.includes(e.state)) e.state = batch;
     out.push(e);
@@ -226,7 +228,8 @@ function stateOf(e: QueueEntry, merged: boolean, last: { outcome: string; reason
   // A Backlog answer, an open Duplicate? decision or a duplicate close keeps the item out of every later stage.
   if (held === "backlog") return "held-backlog";
   if (held) return "held-duplicate";
-  // Sonnet's take or take-fix is not final until Opus has reviewed the head or the skip list exempted it.
+  // Sonnet's take or take-fix is not final until Opus has reviewed the head or the skip list exempted it. A review older than a
+  // comment or review by someone else (or older than Sonnet's own latest) waits for the review again.
   if (!final) return "waiting-opus";
   if (e.verdict === "take-fix") return "needs-fix-up";
   if (!e.outsideRule.length) e.path = "rule";

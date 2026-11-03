@@ -1,6 +1,6 @@
 // Opus review prompt input and reply validation. No I/O and no Node imports: the
 // prompt registry (also loaded by the web mockup) imports this file.
-import { VERDICTS, type ReviewVerdict } from "./parse.ts";
+import { VERDICTS, type DiscussionEntry, type ReviewVerdict } from "./parse.ts";
 
 export type SonnetView = { verdict: string; reason: string; fixes: { file: string; change: string }[]; risks: string[] };
 export type EarlierOpus = { head: string; verdict: string; sure: boolean; reason: string; fixes: { file: string; change: string }[] };
@@ -25,6 +25,8 @@ export type OpusPr = {
   mode: "full" | "delta";
   earlier_opus: EarlierOpus | null;
   diff: string;
+  /** What others wrote on the PR; shown in its own block after the diff, not inside the PR's JSON. */
+  discussion?: DiscussionEntry[];
 };
 
 export type OpusReview = {

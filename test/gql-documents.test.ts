@@ -11,6 +11,7 @@ import { checksQuery } from "../src/review/checks.ts";
 import { nodeIdsQuery, repoLabelsQuery } from "../src/labels/github.ts";
 import { addLabelsMutation } from "../src/github/write.ts";
 import { liveQuery } from "../src/dupes/compare.ts";
+import { THREADS_QUERY } from "../src/review/discussion.ts";
 
 const SRC = new URL("../src", import.meta.url).pathname;
 
@@ -86,6 +87,7 @@ const BUILT: Record<string, string[]> = {
   "labels/github.ts": [repoLabelsQuery(), nodeIdsQuery([1, 2])],
   "github/write.ts": [addLabelsMutation(3)],
   "dupes/compare.ts": [liveQuery([1, 2])],
+  "review/discussion.ts": [THREADS_QUERY],
 };
 
 // Documents the scan finds but cannot reconstruct and no builder covers.

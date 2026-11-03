@@ -1,6 +1,24 @@
 // Review prompt input and reply validation. No I/O and no Node imports: the
 // prompt registry (also loaded by the web mockup) imports this file.
 
+/** Characters kept of one discussion entry and of a PR's whole discussion. */
+export const ENTRY_LIMIT = 1200;
+export const TOTAL_LIMIT = 9000;
+
+export type DiscussionEntry = {
+  kind: "thread" | "review" | "comment" | "note";
+  author?: string | null;
+  at?: string | null;
+  /** Reviews: APPROVED, CHANGES_REQUESTED or COMMENTED. */
+  state?: string | null;
+  /** Threads: where the comment sits. */
+  path?: string;
+  line?: number | null;
+  /** Threads: the code the comment is about has since changed. */
+  outdated?: boolean;
+  body: string;
+};
+
 /** One PR as the review prompt shows it. Every string field is untrusted. */
 export type ReviewPr = {
   ref: string;
@@ -17,6 +35,8 @@ export type ReviewPr = {
   /** Other candidate PRs that change at least one of the same files. */
   same_files_as: { ref: string; title: string }[];
   diff: string;
+  /** What others wrote on the PR; shown in its own block after the diff, not inside the PR's JSON. */
+  discussion?: DiscussionEntry[];
 };
 
 export const REVIEW_BODY_LIMIT = 2000;

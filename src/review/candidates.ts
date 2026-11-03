@@ -3,6 +3,7 @@ import { notHeldSql } from "../dupes/held.ts";
 import type { DatabaseSync } from "node:sqlite";
 import { latestRun, settledLookup, settledTable } from "../classify/settled.ts";
 import { SCOPE_OPTIONS } from "../decide/decision.ts";
+import { staleReviews } from "./discussion.ts";
 
 /** Type labels whose PRs get a code review; plugin candidates do not. */
 export const REVIEW_LABELS = ["bugfix", "performance", "missing feature", "small extra", "infra"];
@@ -81,7 +82,7 @@ export function headOf(r: { head_oid: string | null; updated_at: string | null; 
 /**
  * Open, non-draft PRs of `repo` whose settled label is one we review, that
  * carry no `needs decision` flag unless a scope decision answered `take` or `small-extra`, and
- * that have no review at their current head commit. Any other scope answer keeps a PR out.
+ * that have no review at their current head commit, or whose review there is older than a comment or review by someone else. Any other scope answer keeps a PR out.
  */
 export function selectCandidates(db: DatabaseSync, repo: string, run: string | null = latestRun(db)): Candidate[] {
   const rows = db.prepare(`SELECT i.repo, i.number, i.title, i.body, i.author, i.author_association, i.head_oid,
@@ -91,6 +92,7 @@ export function selectCandidates(db: DatabaseSync, repo: string, run: string | n
     LEFT JOIN item_rank p ON p.repo = i.repo AND p.number = i.number
     WHERE i.repo = ? AND i.kind = 'pr' AND i.state = 'OPEN' AND ${notHeldSql("i")} ORDER BY p.score IS NULL, p.score DESC, i.number`).all(repo) as Row[];
   const reviewed = db.prepare("SELECT 1 FROM reviews WHERE repo = ? AND number = ? AND head_oid = ?");
+  const stale = staleReviews(db, repo);
   const settled = settledLookup(db, run);
   let scope: ScopeRow[] | undefined;
   const out: Candidate[] = [];
@@ -103,7 +105,7 @@ export function selectCandidates(db: DatabaseSync, repo: string, run: string | n
     if (!s.label || !REVIEW_LABELS.includes(s.label)) continue;
     const answer = scopeAnswerIn(scope ??= scopeRows(db, repo), r.repo, r.number);
     if (answer !== null ? !KEEP_IN_CORE.includes(answer) : s.flags.includes("needs decision")) continue;
-    if (reviewed.get(r.repo, r.number, head)) continue;
+    if (reviewed.get(r.repo, r.number, head) && !stale.has(`${r.repo}#${r.number}@${head}`)) continue;
     const lines = (r.additions ?? 0) + (r.deletions ?? 0);
     out.push({
       repo: r.repo, number: r.number, title: r.title ?? "", body: r.body ?? "", author: r.author,
@@ -154,6 +156,7 @@ export function candidateRefs(db: DatabaseSync, repo?: string, run: string | nul
     (Pick<Row, "repo" | "number" | "head_oid" | "updated_at" | "is_draft" | "c_head" | "c_state" | "c_draft" | "c_at"> & { label: string | null; flags: string | null })[];
   const reviewed = new Set((db.prepare(`SELECT repo, number, head_oid FROM reviews ${repo ? "WHERE repo = ?" : ""}`).all(...(repo ? [repo] : [])) as
     { repo: string; number: number; head_oid: string }[]).map((r) => `${r.repo}#${r.number}@${r.head_oid}`));
+  const stale = staleReviews(db, repo);
   const out = new Set<string>();
   for (const r of rows) {
     const fresh = r.c_at && (!r.updated_at || r.c_at > r.updated_at);
@@ -164,7 +167,7 @@ export function candidateRefs(db: DatabaseSync, repo?: string, run: string | nul
     const answer = answers.get(ref) ?? null;
     const flags = r.flags ? (JSON.parse(r.flags) as string[]) : [];
     if (answer !== null ? !KEEP_IN_CORE.includes(answer) : flags.includes("needs decision")) continue;
-    if (reviewed.has(`${ref}@${head}`)) continue;
+    if (reviewed.has(`${ref}@${head}`) && !stale.has(`${ref}@${head}`)) continue;
     out.add(ref);
   }
   return out;

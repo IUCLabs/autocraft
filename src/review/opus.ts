@@ -9,6 +9,7 @@ import { add, askClaude, pool, saveUsage, type Usage } from "../classify/run.ts"
 import { DEFAULT_CAPS } from "./batch.ts";
 import { Client, type Querier } from "../mirror.ts";
 import { checksOf, refreshChecks } from "./checks.ts";
+import { discussionOf, liveThreads } from "./discussion.ts";
 import { cachedDiff, codeDiff, ghDelta, ghDiff, type DeltaFetcher, type DiffFetcher } from "./diff.ts";
 import { selectOpusCandidates, type OpusCandidate } from "./opus-candidates.ts";
 import { parseOpusReply, type EarlierOpus, type OpusPr, type OpusReview } from "./opus-parse.ts";
@@ -139,10 +140,18 @@ export async function runOpusReview(db: DatabaseSync, params: OpusParams, log: (
       params.onHandled?.(++handled);
       return;
     }
+    let discussion;
+    try {
+      discussion = discussionOf(db, repo, c.number, deps.querier ? await liveThreads(deps.querier, db, repo, c.number) : []);
+    } catch (e) {
+      log(`  ${refOf(c)}: review threads unavailable (${String((e as Error).message ?? e)}); not reviewed this pass`);
+      summary.skipped.push(refOf(c));
+      return;
+    }
     const input: OpusPr = {
       ref: refOf(c), title: c.title, body: c.body, author_association: c.author_association, size: c.size, lines_changed: c.lines_changed,
       ci: ch?.overall ?? "unknown", mergeable: ch?.mergeable ?? null, files: cd.files, tests_omitted: cd.testsOmitted, lockfiles_omitted: cd.lockfilesOmitted,
-      sonnet: c.sonnet, mode, earlier_opus: mode === "delta" ? earlier : null, diff,
+      sonnet: c.sonnet, mode, earlier_opus: mode === "delta" ? earlier : null, diff, discussion,
     };
     const checkout = (await deps.checkout?.(repo, c.number, c.head_oid)) ?? undefined;
     if (checkout) input.repo_dir = REPO_PATH;

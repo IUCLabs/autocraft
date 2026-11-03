@@ -12,6 +12,7 @@ import { add, askClaude, pool, saveUsage, type Usage } from "../classify/run.ts"
 import { DEFAULT_CAPS, makeBatches, type Caps } from "./batch.ts";
 import { selectCandidates, type Candidate } from "./candidates.ts";
 import { checksOf, refreshChecks } from "./checks.ts";
+import { discussionOf, liveThreads, markReviewsStale } from "./discussion.ts";
 import { areaOf, cachedDiff, codeDiff, ghDiff, type DiffFetcher } from "./diff.ts";
 import { applyDuplicateRule, parseReviewReply, type Review, type ReviewPr } from "./parse.ts";
 
@@ -111,11 +112,20 @@ export async function runReview(db: DatabaseSync, params: ReviewParams, log: (li
       continue;
     }
     const ch = checksOf(db, repo, c.number);
+    // The threads are where inline findings sit; without them the review would miss what a reviewer already found.
+    let discussion;
+    try {
+      discussion = discussionOf(db, repo, c.number, await withRetry(() => liveThreads(deps.querier, db, repo, c.number)));
+    } catch (e) {
+      log(`  ${refOf(c)}: review threads unavailable (${String((e as Error).message ?? e)}); not reviewed this pass`);
+      summary.skipped.push(refOf(c));
+      continue;
+    }
     inputs.push({
       c, area: areaOf(cd.files), diffChars: cd.text.length,
       ref: refOf(c), title: c.title, body: c.body, author_association: c.author_association, size: c.size,
       lines_changed: c.lines_changed, ci: ch?.overall ?? "unknown", mergeable: ch?.mergeable ?? null,
-      files: cd.files, tests_omitted: cd.testsOmitted, lockfiles_omitted: cd.lockfilesOmitted, same_files_as: [], diff: cd.text,
+      files: cd.files, tests_omitted: cd.testsOmitted, lockfiles_omitted: cd.lockfilesOmitted, same_files_as: [], diff: cd.text, discussion,
     });
   }
   for (const p of inputs) {
@@ -185,8 +195,19 @@ function parseArgs(args: string[], allowed: string[]): Record<string, string | t
 
 export const commands = {
   review: {
-    summary: "review --repo R [--limit N] [--dry-run]: Sonnet code review of wanted PRs, one verdict per head commit",
+    summary: "review --repo R [--limit N] [--dry-run]: Sonnet code review of wanted PRs, one verdict per head commit; review again REPO#N [--by LOGIN]: review a PR again",
     async run(args: string[]): Promise<void> {
+      if (args[0] === "again") {
+        const m = /^([\w.-]+)#(\d+)$/.exec(args[1] ?? "");
+        const by = args[2] === "--by" && args[3] ? args[3] : "cli";
+        if (!m || args.length !== (args[2] ? 4 : 2)) throw new Error("usage: craft-auto review again <repo>#<number> [--by <login>]");
+        const db = connect();
+        const open = db.prepare("SELECT 1 FROM items WHERE repo = ? AND number = ? AND kind = 'pr' AND state = 'OPEN'").get(m[1]!, Number(m[2]));
+        if (!open) throw new Error(`${args[1]} is not an open pull request in the mirror`);
+        markReviewsStale(db, by, m[1]!, Number(m[2]));
+        console.log(`${args[1]}: its reviews are stale; Sonnet and then Opus review it again`);
+        return;
+      }
       const f = parseArgs(args, ["repo", "limit", "dry-run"]);
       if (typeof f.repo !== "string") throw new Error("missing --repo");
       const limit = typeof f.limit === "string" ? Number(f.limit) : undefined;

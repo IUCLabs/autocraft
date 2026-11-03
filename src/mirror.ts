@@ -220,7 +220,8 @@ function commentRows(repo: string, kind: Kind, n: Node): SQLInputValue[][] {
     [repo, n.number, c.id, "comment", login(c.author), c.createdAt, c.body, null, null]);
   if (kind === "pr") {
     for (const c of n.reviews.nodes) {
-      if (c.body) rows.push([repo, n.number, c.id, "review", login(c.author), c.createdAt, c.body, c.state, c.commit?.oid ?? null]);
+      // A review without a body still counts: its inline threads are the discussion, and it makes earlier reviews stale.
+      rows.push([repo, n.number, c.id, "review", login(c.author), c.createdAt, c.body, c.state, c.commit?.oid ?? null]);
     }
   }
   return rows;
