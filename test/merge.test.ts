@@ -68,11 +68,12 @@ function fresh(): DatabaseSync {
   db.prepare("INSERT INTO whitelist_overrides (login, status, by, at) VALUES ('regular', 'allow', 'op', ?)").run(T0);
   db.prepare("INSERT INTO access (login, role) VALUES ('op', 'operator'), ('helper', 'maintainer')").run();
   finalizeReviews(db);
+  setMergeApproval(db, "op", "app", true);
   return db;
 }
 
 type Log = string[];
-type Fake = { heads?: Map<number, string>; authors?: Map<number, string[]>; assignees?: Map<number, string[]>; exit?: Map<number, CommandResult> };
+type Fake = { mergeable?: Map<number, string>; heads?: Map<number, string>; authors?: Map<number, string[]>; assignees?: Map<number, string[]>; exit?: Map<number, CommandResult> };
 
 /** GitHub and merge-command stand-ins; every call goes into `log` in order. */
 function fakes(log: Log, f: Fake = {}): MergeDeps & { calls: () => number } {
@@ -96,7 +97,7 @@ function fakes(log: Log, f: Fake = {}): MergeDeps & { calls: () => number } {
       const nums = [...query.matchAll(/pullRequest\(number: (\d+)\)/g)].map((m) => Number(m[1]));
       log.push(`checks ${nums.join(",")}`);
       return { repository: Object.fromEntries(nums.map((x) => [`pr${x}`, {
-        number: x, state: "OPEN", isDraft: false, headRefOid: f.heads?.get(x) ?? `sha${x}`, mergeable: "MERGEABLE", maintainerCanModify: true,
+        number: x, state: "OPEN", isDraft: false, headRefOid: f.heads?.get(x) ?? `sha${x}`, mergeable: f.mergeable?.get(x) ?? "MERGEABLE", maintainerCanModify: true,
         commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { nodes: [{ __typename: "CheckRun", name: "ci", status: "COMPLETED", conclusion: "SUCCESS" }] } } } }] },
       }])) };
     },
@@ -279,7 +280,6 @@ describe("merging a few ready PRs one at a time", () => {
   const saved = process.env.CRAFT_AUTO_DIFF_CACHE;
   after(() => { if (saved === undefined) delete process.env.CRAFT_AUTO_DIFF_CACHE; else process.env.CRAFT_AUTO_DIFF_CACHE = saved; });
   const attempt = async (db: DatabaseSync, fetchDiff: DiffFetcher, f: Fake = {}) => {
-    if (!db.prepare("SELECT 1 FROM settings WHERE key = 'merge_approved:app'").get()) setMergeApproval(db, "op", "app", true);
     process.env.CRAFT_AUTO_DIFF_CACHE = mkdtempSync(join(dir, "diffs-"));
     const log: Log = [];
     const r = await runSingles(db, { repo: "app" }, quiet, fakes(log, f), fetchDiff);
@@ -333,5 +333,24 @@ describe("merging a few ready PRs one at a time", () => {
     insertBatch(busy, { repo: "app", branch: "integration-app-x-1", baseSha: "b", commitSha: "c", parentId: null, taskId: null, members: [{ number: 1, head_oid: "sha1" }], at: T1 });
     assert.equal((await attempt(busy, diffs())).r, null);
   });
-});
 
+  test("a PR whose mergeable state GitHub has not computed after a merge, or one put on Backlog since planning, is left without a record", async () => {
+    const db = fresh();
+    const unknown = await attempt(db, diffs(), { mergeable: new Map([[11, "UNKNOWN"]]) });
+    assert.deepEqual(unknown.r?.merged, ["app#1"]);
+    assert.deepEqual(unknown.r?.attempted, ["app#1"]);
+    assert.deepEqual(unknown.r?.refused, []);
+    assert.equal(count(db, "merges"), 1);
+    assert.ok(!unknown.log.some((l) => l.startsWith("checks 16")));
+
+    const db2 = fresh();
+    const backlog = (inner: DiffFetcher): DiffFetcher => async (repo, n) => {
+      if (n === 16) db2.prepare("INSERT INTO decisions (id, kind, repo, number, question, options, asked_at, answer) VALUES ('bk', 'scope', 'app', 11, 'q', '[]', ?, 'backlog')").run(T0);
+      return inner(repo, n);
+    };
+    const held = await attempt(db2, backlog(diffs()));
+    assert.deepEqual(held.r?.merged, ["app#1", "app#16"]);
+    assert.deepEqual(held.r?.refused, []);
+    assert.equal(count(db2, "merges"), 2);
+  });
+});

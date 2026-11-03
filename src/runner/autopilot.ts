@@ -26,7 +26,9 @@ import { pushApprovalOf } from "../fixup/approval.ts";
 import { selectFixups } from "../fixup/candidates.ts";
 import { mergeApprovalOf } from "../merge/approval.ts";
 import { batchesDue } from "../merge/batch-store.ts";
-import { buildQueue, eligible, toAsk } from "../merge/queue.ts";
+import { buildQueue, eligible, refusedAsBefore, toAsk } from "../merge/queue.ts";
+
+export { refusedAsBefore };
 import { trackedNames } from "../repos.ts";
 import { selectCandidates as reviewCandidates } from "../review/candidates.ts";
 import { selectOpusCandidates } from "../review/opus-candidates.ts";
@@ -161,15 +163,6 @@ export function roundRobin(repos: string[], cursor: string | null): string[] {
   const sorted = [...repos].sort();
   const after = sorted.filter((r) => cursor !== null && r > cursor);
   return [...after, ...sorted.filter((r) => !after.includes(r))];
-}
-
-/** A PR refused at its current head waits for its CI or mergeable state to differ from what GitHub reported at the refusal. */
-export function refusedAsBefore(db: DatabaseSync, e: { repo: string; number: number; head: string; state: string; ci: string; mergeable: string }): boolean {
-  if (e.state !== "refused") return false;
-  const r = db.prepare("SELECT outcome, ci, mergeable FROM merges WHERE repo = ? AND number = ? AND head_oid = ? ORDER BY at DESC, rowid DESC LIMIT 1")
-    .get(e.repo, e.number, e.head) as { outcome: string; ci: string | null; mergeable: string | null } | undefined;
-  if (r?.outcome !== "refused") return false;
-  return r.ci === null || r.mergeable === null || (r.ci === e.ci && r.mergeable === e.mergeable);
 }
 
 /** The highest of the scores, null when there is none. */

@@ -265,3 +265,12 @@ export function countMerged(db: DatabaseSync, repo?: string, exclude: string[] =
     WHERE l.verdict IN ('take', 'take-fix') AND i.kind = 'pr' AND i.state = 'MERGED' ${repo ? "AND i.repo = :repo" : ""}${exclude.map((_, k) => ` AND i.repo <> :ex${k}`).join("")}`)
     .get(params) as { n: number }).n;
 }
+
+/** A PR refused at its current head waits for its CI or mergeable state to differ from what GitHub reported at the refusal. */
+export function refusedAsBefore(db: DatabaseSync, e: { repo: string; number: number; head: string; state: string; ci: string; mergeable: string }): boolean {
+  if (e.state !== "refused") return false;
+  const r = db.prepare("SELECT outcome, ci, mergeable FROM merges WHERE repo = ? AND number = ? AND head_oid = ? ORDER BY at DESC, rowid DESC LIMIT 1")
+    .get(e.repo, e.number, e.head) as { outcome: string; ci: string | null; mergeable: string | null } | undefined;
+  if (r?.outcome !== "refused") return false;
+  return r.ci === null || r.mergeable === null || (r.ci === e.ci && r.mergeable === e.mergeable);
+}

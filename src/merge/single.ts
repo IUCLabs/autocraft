@@ -6,7 +6,7 @@ import { cachedDiff, ghDiff, type DiffFetcher } from "../review/diff.ts";
 import { mergeApprovalOf } from "./approval.ts";
 import { activeBatches } from "./batch-store.ts";
 import { runMerge, type MergeDeps, type MergeSummary } from "./index.ts";
-import { buildQueue, eligible } from "./queue.ts";
+import { buildQueue, eligible, refusedAsBefore } from "./queue.ts";
 
 export const SINGLE_MERGE_KEY = "single_merge_max";
 export const SINGLE_MERGE_DEFAULT = 3;
@@ -58,7 +58,6 @@ export async function planSingles(db: DatabaseSync, repo: string, fetchDiff: Dif
     }
   }
   // A PR refused at this state is left out until GitHub reports something new, so one that is always refused cannot block the rest.
-  const { refusedAsBefore } = await import("../runner/autopilot.ts");
   const go = ready.filter((e) => !refusedAsBefore(db, e));
   return go.length ? new Set(go.map((e) => e.number)) : null;
 }

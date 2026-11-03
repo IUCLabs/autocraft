@@ -250,7 +250,7 @@ export async function runMerge(db: DatabaseSync, params: MergeParams, log: (line
   // One PR at a time; any error that isn't a refusal stops the run.
   for (const e of picks) {
     if (params.stopOnRefusal && summary.refused.length) break;
-    if (params.stopOnRefusal && !mergeApprovalOf(db, repo)) { log(`  merging in ${repo} is no longer approved; stopping`); break; }
+    if (!mergeApprovalOf(db, repo)) { log(`  merging in ${repo} is no longer approved; stopping`); break; }
     if (backlogHeld(db, repo, e.number) || duplicateHeld(db, repo, e.number)) { log(`  ${refOf(e)}: held since the queue was read; skipped`); continue; }
     summary.attempted.push(refOf(e));
     seen = null;

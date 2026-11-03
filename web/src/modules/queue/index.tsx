@@ -3,7 +3,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { ChevronRightIcon, ChevronsDownUpIcon, ChevronsUpDownIcon, GitMergeIcon, XIcon } from "lucide-react";
-import { useQuery, usePagedQuery } from "../../api/client";
+import { useApi, useQuery, usePagedQuery } from "../../api/client";
 import type { BatchList, BatchState, QueueBatch, QueueFilter, QueueList, QueueRow, QueueState, Tier } from "../../api/types";
 import type { FeatureModule, ViewProps } from "../../registry/types";
 import { Badge, type Tone } from "../../ui/Badge";
@@ -11,7 +11,9 @@ import { RefLink } from "../../ui/RefLink";
 import { cn } from "../../ui/cn";
 import { ago, num } from "../../lib/format";
 import { useIsPhone } from "../../shell/useMedia";
-import { Block, ErrorLine, Page, selectCls, useUrlState } from "../admin/parts";
+import { useUser } from "../../shell/UserContext";
+import { Button } from "../../ui/Button";
+import { Block, ErrorLine, Page, selectCls, TextInput, useUrlState, useWrite } from "../admin/parts";
 import { useNow } from "../../lib/useNow";
 
 export const STATE: Record<QueueState, [string, Tone, string]> = {
@@ -58,11 +60,42 @@ function usePagedQueue(filter: QueueFilter) {
   return { data, error: q.error, loading: q.loading || q.loadingMore, loadMore: q.loadMore };
 }
 
+function SingleMergeLimit() {
+  const api = useApi();
+  const write = useWrite();
+  const q = useQuery("single-merge", (a) => a.repoAdmin.singleMerge());
+  const [max, setMax] = useState("");
+  useEffect(() => {
+    if (q.data) setMax(String(q.data.max));
+  }, [q.data]);
+  const valid = /^\d{1,3}$/.test(max) && Number(max) <= 100;
+  return (
+    <form
+      className="mt-3 flex flex-wrap items-center gap-2 text-sm text-ink/70"
+      onSubmit={(e) => {
+        e.preventDefault();
+        void write.run("single-merge", () => api.repoAdmin.setSingleMerge(Number(max))).then((ok) => ok && q.refetch());
+      }}
+    >
+      <label className="flex flex-wrap items-center gap-2">
+        Merge one at a time when at most
+        <TextInput inputMode="numeric" value={max} onChange={(e) => setMax(e.target.value)} className="w-16 text-ink" />
+        PRs are ready
+      </label>
+      <Button type="submit" size="sm" disabled={!valid || q.data?.max === Number(max)} loading={write.busy === "single-merge"} className="max-md:h-11">
+        Save
+      </Button>
+      <ErrorLine error={write.error ?? q.error?.message} className="basis-full" />
+    </form>
+  );
+}
+
 function QueueView(_: ViewProps) {
   const { filter, update } = useFilter();
   const { data, error, loading, loadMore } = usePagedQueue(filter);
   const { data: repos } = useQuery("repos", (api) => api.repos());
   const phone = useIsPhone();
+  const operator = useUser().role === "operator";
   // Merged PRs are listed only under their own state, so "any state" leaves them out.
   const all = data ? Object.entries(data.counts).reduce((a, [k, n]) => a + (k === "merged" ? 0 : n), 0) : undefined;
   const mergeable = data ? data.counts.ready + data.counts["decision-answered-merge"] : undefined;
@@ -113,6 +146,8 @@ function QueueView(_: ViewProps) {
           </div>
         )}
       </div>
+
+      {operator && <SingleMergeLimit />}
 
       {!filter.flow && <Batches repo={filter.repo} phone={phone} />}
 

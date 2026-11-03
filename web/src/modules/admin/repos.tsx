@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { FolderGit2Icon } from "lucide-react";
 import { Link, useNavigate } from "react-router-dom";
 import { useApi, useQuery } from "../../api/client";
@@ -8,7 +8,6 @@ import { Badge } from "../../ui/Badge";
 import { Button } from "../../ui/Button";
 import { cn } from "../../ui/cn";
 import { useIsPhone } from "../../shell/useMedia";
-import { useUser } from "../../shell/UserContext";
 import { Block, ErrorLine, Page, SortTh, TextInput, useWrite } from "./parts";
 import {
   PipelineBadge,
@@ -20,35 +19,6 @@ import {
 import { repoDetailView } from "./repoDetail";
 import { useNow } from "../../lib/useNow";
 
-function SingleMergeLimit() {
-  const api = useApi();
-  const write = useWrite();
-  const q = useQuery("single-merge", (a) => a.repoAdmin.singleMerge());
-  const [max, setMax] = useState("");
-  useEffect(() => {
-    if (q.data) setMax(String(q.data.max));
-  }, [q.data]);
-  const valid = /^\d{1,3}$/.test(max) && Number(max) <= 100;
-  return (
-    <form
-      className="mt-3 flex flex-wrap items-end gap-2"
-      onSubmit={(e) => {
-        e.preventDefault();
-        void write.run("single-merge", () => api.repoAdmin.setSingleMerge(Number(max))).then((ok) => ok && q.refetch());
-      }}
-    >
-      <label className="flex flex-col gap-1 text-xs text-ink/60">
-        Merge one at a time up to
-        <TextInput inputMode="numeric" value={max} onChange={(e) => setMax(e.target.value)} className="w-24 text-ink" />
-      </label>
-      <Button type="submit" size="sm" disabled={!valid || q.data?.max === Number(max)} loading={write.busy === "single-merge"} className="max-md:h-11">
-        Save
-      </Button>
-      <ErrorLine error={write.error ?? q.error?.message} className="basis-full" />
-    </form>
-  );
-}
-
 type Show = "all" | "tracked" | "untracked";
 
 function ReposView(_: ViewProps) {
@@ -58,7 +28,6 @@ function ReposView(_: ViewProps) {
   const [name, setName] = useState("");
   const write = useWrite();
   const phone = useIsPhone();
-  const operator = useUser().role === "operator";
   const tracked = data?.filter((r) => r.tracked).length ?? 0;
   const rows =
     data?.filter((r) => show === "all" || (show === "tracked") === r.tracked) ??
@@ -138,7 +107,6 @@ function ReposView(_: ViewProps) {
         </form>
       </div>
       <ErrorLine error={write.error ?? error?.message} className="mt-2" />
-      {operator && <SingleMergeLimit />}
 
       <Block
         className="mt-3"
