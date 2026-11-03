@@ -1340,6 +1340,8 @@ export interface GithubActivityRow {
   source: string;
   /** why the write failed; null when it went through */
   error: string | null;
+  /** "unknown": the write was started and the app never recorded how it ended */
+  outcome: "done" | "failed" | "unknown";
 }
 
 export interface GithubActivityPage {

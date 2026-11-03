@@ -37,6 +37,7 @@ function Detail({ r }: { r: GithubActivityRow }) {
   return (
     <>
       {r.error && <Badge tone="bad">Failed</Badge>}
+      {r.outcome === "unknown" && <span className="mr-1.5 text-ink/55">Unknown outcome.</span>}
       {r.detail && <span className={cn("[overflow-wrap:anywhere]", r.error && "ml-1.5")}>{r.detail}</span>}
       {r.error && <span className="block text-xs text-bad [overflow-wrap:anywhere]">{r.error}</span>}
     </>
@@ -104,7 +105,7 @@ function Cards({ rows }: { rows: GithubActivityRow[] }) {
               <span className="font-medium">{r.label}</span>
               <Item r={r} />
             </div>
-            {(r.detail || r.error) && (
+            {(r.detail || r.error || r.outcome === "unknown") && (
               <div className="mt-0.5 text-ink/75">
                 <Detail r={r} />
               </div>

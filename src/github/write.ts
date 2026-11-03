@@ -6,7 +6,6 @@
 // injected so tests fake them and assert the rows.
 import type { DatabaseSync } from "node:sqlite";
 import { ORG } from "../act/templates.ts";
-import { audit } from "../dash/audit.ts";
 import { connect } from "../db.ts";
 import type { Exec, ExecResult, Git } from "../fixup/git.ts";
 import type { Querier } from "../mirror.ts";
@@ -22,22 +21,31 @@ const oneLine = (s: string): string => s.replace(/\s+/g, " ").trim().slice(0, 30
 const direct: Retry = (f) => f();
 const refOf = (repo: string, number: number): string => `${repo}#${number}`;
 
-function row(w: Writer, action: string, target: string, details: Details, error?: string): void {
-  audit(w.db, w.login, action, target, error === undefined ? details : { ...details, error });
+/** Adds the row before the write, so a crash during the call leaves a "started" row: an unknown outcome. */
+function begin(w: Writer, action: string, target: string, details: Details): number {
+  const r = w.db.prepare("INSERT INTO audit (at, login, action, target, details) VALUES (?, ?, ?, ?, ?)")
+    .run(new Date().toISOString(), w.login, action, target, JSON.stringify({ ...details, state: "started" }));
+  return Number(r.lastInsertRowid);
 }
 
-/** Runs the write, records one row with `view`'s extra details on success or the error on failure, and returns the result. */
+function finish(w: Writer, id: number, details: Details, error?: string): void {
+  const d = error === undefined ? { ...details, state: "done" } : { ...details, state: "failed", error };
+  w.db.prepare("UPDATE audit SET details = ? WHERE rowid = ?").run(JSON.stringify(d), id);
+}
+
+/** Records the row first, runs the write, then marks the row done with `view`'s extra details or failed with the error. */
 async function recorded<T>(w: Writer, action: string, target: string, details: Details, f: () => Promise<T>, view?: (r: T) => Details, failure?: (r: T) => string | null): Promise<T> {
+  const id = begin(w, action, target, details);
   let r: T;
   try {
     r = await f();
   } catch (e) {
-    row(w, action, target, details, oneLine(String((e as Error).message ?? e)));
+    finish(w, id, details, oneLine(String((e as Error).message ?? e)));
     throw e;
   }
   const bad = failure?.(r) ?? null;
-  if (bad !== null) row(w, action, target, details, bad);
-  else row(w, action, target, { ...details, ...view?.(r) });
+  if (bad !== null) finish(w, id, details, bad);
+  else finish(w, id, { ...details, ...view?.(r) });
   return r;
 }
 
@@ -115,20 +123,22 @@ export type LabelWrite = { number: number; id: string; labelIds: string[]; names
 export async function addLabels(w: Writer, q: Querier, repo: string, items: LabelWrite[], retry: Retry = direct, details: Details = {}): Promise<number[]> {
   const vars: Record<string, unknown> = {};
   items.forEach((it, k) => { vars[`i${k}`] = it.id; vars[`l${k}`] = it.labelIds; });
+  const det = (it: LabelWrite): Details => ({ ...details, labels: it.names });
+  const ids = items.map((it) => begin(w, "labels-apply", refOf(repo, it.number), det(it)));
   let d: Record<string, unknown> | null;
   try {
     d = await retry(() => q.query(addLabelsMutation(items.length), vars));
   } catch (e) {
     const msg = oneLine(String((e as Error).message ?? e));
-    for (const it of items) row(w, "labels-apply", refOf(repo, it.number), { ...details, labels: it.names }, msg);
+    items.forEach((it, k) => finish(w, ids[k]!, det(it), msg));
     throw e;
   }
   const done: number[] = [];
   items.forEach((it, k) => {
     if (d && d[`m${k}`] !== null && d[`m${k}`] !== undefined) {
       done.push(it.number);
-      row(w, "labels-apply", refOf(repo, it.number), { ...details, labels: it.names });
-    } else row(w, "labels-apply", refOf(repo, it.number), { ...details, labels: it.names }, "GitHub did not apply the labels");
+      finish(w, ids[k]!, det(it));
+    } else finish(w, ids[k]!, det(it), "GitHub did not apply the labels");
   });
   return done;
 }
@@ -198,27 +208,32 @@ export async function mergeViaCommand(w: Writer, run: (cmd: string, args: string
 }
 
 /**
- * The merge itself: `gh pr merge` pinned to `head`. `record` receives the outcome for the built-in command
- * line; it is absent when a parent process already records the merge.
+ * The merge itself: `gh pr merge` pinned to `head`. `record` starts the activity row and returns the function that
+ * finishes it; it is absent when a parent process already records the merge.
  */
-export async function ghMergePr(gh: (args: string[]) => Promise<string>, repo: string, pr: string, method: "--squash" | "--merge", head: string, record?: (error?: string) => void): Promise<void> {
+export async function ghMergePr(gh: (args: string[]) => Promise<string>, repo: string, pr: string, method: "--squash" | "--merge", head: string, record?: () => (error?: string) => void): Promise<void> {
+  const end = record?.();
   try {
     await gh(["pr", "merge", pr, "-R", repo, method, "--match-head-commit", head]);
   } catch (e) {
-    record?.(oneLine(String((e as Error).message ?? e)));
+    end?.(oneLine(String((e as Error).message ?? e)));
     throw e;
   }
-  record?.();
+  end?.();
 }
 
 /** Records a merge made from the command line, in the database `connect()` opens, under the login `cli`. */
-export function cliMergeRecorder(repoSlug: string, pr: string, method: string, head: string): (error?: string) => void {
-  return (error) => {
-    const db = connect();
-    try {
-      row({ db, login: "cli" }, "merge", refOf(repoSlug.split("/").pop() ?? repoSlug, Number(pr)), { method: method.slice(2), head }, error);
-    } finally {
-      db.close();
-    }
+export function cliMergeRecorder(repoSlug: string, pr: string, method: string, head: string): () => (error?: string) => void {
+  return () => {
+    const w: Writer = { db: connect(), login: "cli" };
+    const details = { method: method.slice(2), head };
+    const id = begin(w, "merge", refOf(repoSlug.split("/").pop() ?? repoSlug, Number(pr)), details);
+    return (error) => {
+      try {
+        finish(w, id, details, error);
+      } finally {
+        w.db.close();
+      }
+    };
   };
 }

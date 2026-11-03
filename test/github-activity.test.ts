@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { connect } from "../src/db.ts";
+import { comment } from "../src/fixissue/index.ts";
 import { githubActivity } from "../src/dash/api/github-activity.ts";
 import { addLabels, closeItem, commentOn, ghComment, mergeViaCommand, pushBranch, type Writer } from "../src/github/write.ts";
 import { readSeqs } from "../src/live.ts";
@@ -116,4 +117,24 @@ test("filters, paging and visibility", async () => {
   assert.equal((await githubActivity(db, req("from=2999-01-01"))).total, 0);
   assert.equal((await githubActivity(db, req(`to=${new Date().toISOString().slice(0, 10)}`))).total, 7);
   await assert.rejects(githubActivity(db, req("action=nope")), /unknown action/);
+});
+
+test("the row exists before the call; a crash leaves an unknown outcome and the issue comment is not posted again", async () => {
+  const db = setup();
+  const w: Writer = { db, login: "act" };
+  const state = () => (db.prepare("SELECT details FROM audit WHERE action = 'act-comment'").all() as { details: string }[]).map((r) => (JSON.parse(r.details) as { state: string }).state);
+  let during: string[] = [];
+  await commentOn(w, { ...fakeQuerier(), async query() { during = state(); return {}; } }, "act-comment", { repo: "app", number: 7, id: "N7" }, "x");
+  assert.deepEqual(during, ["started"], "recorded before the GitHub call");
+  assert.deepEqual(state(), ["done"]);
+
+  // A process that died inside the call leaves the started row.
+  db.prepare("INSERT INTO audit (at, login, action, target, details) VALUES (?, 'fixissue', 'fixissue-comment', 'app#7', ?)").run(new Date().toISOString(), JSON.stringify({ run: "r", state: "started" }));
+  const p = await githubActivity(db, req("action=fixissue-comment"));
+  assert.equal(p.rows[0]!.outcome, "unknown");
+
+  const calls: string[][] = [];
+  const x = { db, d: { exec: async (_c: string, a: string[]) => { calls.push(a); return { code: 0, stdout: "OPEN", stderr: "" }; } }, git: {}, log: () => {}, runId: "r2", usage: {} } as unknown as Parameters<typeof comment>[0];
+  await comment(x, { repo: "app", number: 7 } as Parameters<typeof comment>[1], "https://github.com/storytold/app/pull/9");
+  assert.deepEqual(calls, [], "no second comment after a started row");
 });

@@ -106,6 +106,7 @@ export async function githubActivity(db: DatabaseSync, req: Req): Promise<Github
       id: String(r.rowid), at: r.at, action: r.action, label: GITHUB_ACTIONS[r.action]!, repo: t.repo, number: t.number, branch: t.branch,
       title: it?.title ?? null, detail: detailOf(r.action, d), url: urlOf({ action: r.action, ...t, kind: it?.kind }, d), source,
       error: typeof d.error === "string" ? d.error : null,
+      outcome: d.state === "started" ? "unknown" : d.error !== undefined ? "failed" : "done",
     };
   });
   return { rows: out, total, next: more ? out[out.length - 1]!.id : null, actions: ACTIONS.map((a) => ({ action: a, label: GITHUB_ACTIONS[a]! })) };

@@ -493,8 +493,8 @@ async function closedLive(x: Ctx, r: AttemptRow): Promise<boolean> {
   return true;
 }
 
-/** Comments on the issue at most once: the activity row is written for every attempt, so a failed post is not retried. */
-async function comment(x: Ctx, r: AttemptRow, url: string): Promise<void> {
+/** Comments on the issue at most once: the activity row is written before the post, so a failed post or a crash is not retried. */
+export async function comment(x: Ctx, r: AttemptRow, url: string): Promise<void> {
   const { db, d, log } = x;
   const ref = refOf(r);
   if (db.prepare("SELECT 1 FROM audit WHERE action = 'fixissue-comment' AND target = ?").get(ref)) return;

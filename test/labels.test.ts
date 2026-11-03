@@ -114,7 +114,7 @@ describe("labels apply", () => {
     const rows = db.prepare("SELECT target, details FROM audit WHERE action = 'labels-apply' ORDER BY rowid").all() as { target: string; details: string }[];
     const ok = rows.filter((x) => !x.details.includes('"error"'));
     assert.equal(ok.length, n - 1, "one row per labelled item");
-    assert.deepEqual(JSON.parse(ok[0]!.details), { run: RUN, labels: ["bugfix", "security"] });
+    assert.deepEqual(JSON.parse(ok[0]!.details), { run: RUN, labels: ["bugfix", "security"], state: "done" });
     assert.equal(ok[0]!.target, "app#1");
     assert.ok(rows.some((x) => x.target === "app#2" && x.details.includes('"error"')), "the item GitHub did not label has a failure row");
 
