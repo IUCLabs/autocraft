@@ -7,7 +7,6 @@ import { BotIcon, ChevronDownIcon, ChevronRightIcon, XIcon } from "lucide-react"
 import { useApi, useQuery } from "../../api/client";
 import type { AgentRun, AgentRunDetail, AgentRunFilter, AgentRunPage, AgentRunState } from "../../api/types";
 import type { FeatureModule, ViewProps } from "../../registry/types";
-import { usePoll } from "../../lib/usePoll";
 import { ago, nowMs, num, span } from "../../lib/format";
 import { Badge, type Tone } from "../../ui/Badge";
 import { Button } from "../../ui/Button";
@@ -51,11 +50,10 @@ const who = (r: AgentRun) => (r.provider === "jev" ? "Jev (no account)" : (r.acc
 
 function RunningNow({ selected }: { selected?: number }) {
   const q = useQuery<AgentRunPage>("agents-running", (a) => a.agents.list({ state: "running" }));
-  usePoll(q.refetch, 5000);
   const nav = useNavigate();
   const runs = q.data?.runs ?? [];
   return (
-    <Block flush title={<>Running now {q.data && <span className="num ml-1 font-normal text-ink/50">{runs.length}</span>}</>} aside="updates every 5 s">
+    <Block flush title={<>Running now {q.data && <span className="num ml-1 font-normal text-ink/50">{runs.length}</span>}</>} aside="live">
       <ErrorLine error={q.error?.message} className="p-4" />
       {q.data && runs.length === 0 && <p className="p-4 text-sm text-ink/55">No agent is running.</p>}
       <ul>
@@ -329,7 +327,6 @@ function PhoneAgents(props: ViewProps) {
 function FlowRunning({ params }: ViewProps) {
   const steps = (params.steps ?? "").split(",").filter(Boolean);
   const q = useQuery<AgentRunPage>("agents-running", (a) => a.agents.list({ state: "running" }));
-  usePoll(q.refetch, 5000);
   if (steps.length === 0) return null;
   const runs = (q.data?.runs ?? []).filter((r) => steps.includes(r.step));
   return (

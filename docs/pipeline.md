@@ -317,6 +317,10 @@ Three processes share one database. None needs a terminal or Claude session kept
 
 Each step has a fixed list of settings (a choice, a tracked repo, a bounded number or a run id). Nothing typed on the dashboard can reach a prompt or a shell. Steps in the same concurrency group run one at a time.
 
+### Live updates
+
+Pages update without a reload. The database is the single source of truth and the browser only caches views of it. Triggers on the tables the dashboard reads bump a per-topic counter in `change_seq` (topics: items, decisions, jobs, queue and others, listed in `src/live.ts`), whichever process wrote the row. The dashboard reads the counters twice a second and sends the changed topic names over a server-sent event stream (`GET /api/live`, one per browser tab, with a heartbeat every 25 s). The browser refetches the cached views that read those topics (`web/src/api/topics.ts`). A reconnecting tab gets the full counter map first and refetches what changed while it was away. Actions are ordinary POSTs; their effects come back through the same stream. Views that change without a database write, such as a job's log tail and the runner's heartbeat age, poll slowly.
+
 ### On and Off
 
 The pipeline starts **Off**. An operator switches it on the Pipeline page or with `craft-auto pipeline on|off`; the switch records who and when. Off cancels waiting automatic jobs and queues no new ones; running jobs finish.
