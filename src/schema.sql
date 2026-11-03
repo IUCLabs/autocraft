@@ -774,3 +774,30 @@ CREATE TABLE IF NOT EXISTS patch_checks (
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS patch_checks_item ON patch_checks(repo, number, id);
+
+-- Integration batches of the merge queue (src/merge/batch.ts): merge-eligible PRs of one repo landed together through one
+-- integration branch and one PR. state: checking (sandbox task running) | open (batch PR open, upstream CI running) |
+-- merged | failed (a single PR that failed: on hold) | split (failed with several PRs: two child batches retry the halves) |
+-- superseded (main moved or a member changed: a new batch took over).
+CREATE TABLE IF NOT EXISTS merge_batches (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  repo TEXT NOT NULL,
+  branch TEXT NOT NULL,               -- integration-<repo>-<yyyymmdd>-<n>
+  state TEXT NOT NULL,
+  base_sha TEXT NOT NULL,             -- default branch head the batch was built on
+  commit_sha TEXT NOT NULL,           -- head of the integration branch
+  parent_id INTEGER,                  -- the batch this one split or replaced
+  task_id INTEGER,                    -- sandbox task of the combined tree
+  retries INTEGER NOT NULL DEFAULT 0, -- task queued again after a build-environment error
+  pr_number INTEGER, pr_url TEXT,
+  summary TEXT,                       -- why it failed (public-safe, one line)
+  created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS merge_batches_repo ON merge_batches(repo, state);
+CREATE TABLE IF NOT EXISTS merge_batch_prs (
+  batch_id INTEGER NOT NULL, number INTEGER NOT NULL,
+  head_oid TEXT NOT NULL,             -- the PR head merged into the batch
+  position INTEGER NOT NULL,
+  PRIMARY KEY (batch_id, number)
+);
+CREATE INDEX IF NOT EXISTS merge_batch_prs_pr ON merge_batch_prs(number, head_oid);

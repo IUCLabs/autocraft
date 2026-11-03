@@ -6,11 +6,13 @@ import { latestRun, settledLookup } from "../classify/settled.ts";
 import { actionable } from "../decisions.ts";
 import { duplicateHeld } from "../dupes/held.ts";
 import { headOf } from "../review/candidates.ts";
+import { batchStates } from "./batch-store.ts";
 import { getRule, STATS_SQL, tierOf, type Tier } from "../whitelist.ts";
 
 export const QUEUE_STATES = [
   "ready", "decision-answered-merge", "refused", "waiting-ci", "ci-failed", "conflict",
   "needs-fix-up", "waiting-opus", "waiting-verify", "verify-failed", "verify-error", "needs-decision", "declined", "merged", "held-duplicate",
+  "batch-checking", "in-batch", "batch-failed",
 ] as const;
 export type QueueState = (typeof QUEUE_STATES)[number];
 
@@ -71,6 +73,9 @@ export type QueueEntry = {
   verify: { state: string; kind: string | null; summary: string | null; note: string | null } | null;
 };
 
+/** States a PR leaves for its batch's state while it is in a batch. */
+const BATCHABLE: QueueState[] = ["ready", "decision-answered-merge", "refused", "waiting-ci", "needs-decision"];
+
 /** True when the PR may be merged now (ready, approved, or retried after a refusal). */
 export const eligible = (e: QueueEntry): boolean =>
   e.path !== null && verifyAllows(e.path, e.verify?.state) && ciAllows(e.path, e.ci, e.noCi) && e.mergeable === "MERGEABLE" && (e.state === "ready" || e.state === "decision-answered-merge" || e.state === "refused");
@@ -94,6 +99,21 @@ function tiersOf(db: DatabaseSync, logins: string[]): Map<string, Tier> {
     out.set(l, tierOf(s?.merged ?? 0, s?.closed ?? 0, over.get(l) ?? null, rule));
   }
   return out;
+}
+
+/** Setting that holds the pipeline account's login, recorded wherever the pipeline pushes as that account. */
+export const PIPELINE_LOGIN_KEY = "pipeline_login";
+
+/** PRs the pipeline opened itself from a Fix issues attempt, as `repo#number`, when authored by its own account. */
+function ownFixPrs(db: DatabaseSync, repo?: string): { login: string | null; prs: Set<string> } {
+  const login = (db.prepare("SELECT value FROM main.settings WHERE key = ?").get(PIPELINE_LOGIN_KEY) as { value: string } | undefined)?.value ?? null;
+  const prs = new Set<string>();
+  if (!login) return { login, prs };
+  for (const r of db.prepare("SELECT repo, pr_url FROM main.fix_attempts WHERE pr_url IS NOT NULL" + (repo ? " AND repo = ?" : "")).all(...(repo ? [repo] : [])) as { repo: string; pr_url: string }[]) {
+    const m = r.pr_url.match(/\/pull\/(\d+)$/);
+    if (m) prs.add(`${r.repo}#${m[1]}`);
+  }
+  return { login, prs };
 }
 
 export type QueueOptions = {
@@ -137,6 +157,8 @@ export function buildQueue(db: DatabaseSync, opts: QueueOptions = {}): QueueEntr
   const decision = db.prepare("SELECT id, answer FROM decisions WHERE id = ?");
   const answers = new Map(actionable(db).filter((a) => a.kind === "merge").map((a) => [a.id, a.answer]));
   const tiers = tiersOf(db, [...new Set(rows.map((r) => r.author).filter((a): a is string => !!a))]);
+  const inBatch = batchStates(db, opts.repo);
+  const own = ownFixPrs(db, opts.repo);
   const settled = settledLookup(db, opts.run !== undefined ? opts.run : latestRun(db));
 
   const noCiMemo = new Map<string, boolean>();
@@ -151,7 +173,9 @@ export function buildQueue(db: DatabaseSync, opts: QueueOptions = {}): QueueEntr
     const checksHere = r.c_head === r.r_head;
     const ci = checksHere ? (r.overall ?? "none") : "unknown";
     const mergeable = (checksHere ? r.c_mergeable : r.i_mergeable) ?? "UNKNOWN";
-    const tier = r.author ? tiers.get(r.author)! : "not";
+    let tier = r.author ? tiers.get(r.author)! : "not";
+    // The pipeline's own Fix PRs count as whitelisted; an operator's deny still wins.
+    if (tier === "not" && r.author && r.author === own.login && own.prs.has(`${r.repo}#${r.number}`)) tier = "whitelisted";
     const label = settled(r.repo, r.number).label;
     const size = r.size ?? "L";
     let fixes = 0;
@@ -175,6 +199,8 @@ export function buildQueue(db: DatabaseSync, opts: QueueOptions = {}): QueueEntr
       decisionId: asked ? id : null, noCi: ci === "none" && noCi(r.repo), answer, refusedReason: null, reviewedAt: r.r_at, verify,
     };
     e.state = stateOf(e, r.state === "MERGED" || mergedByUs, last, r.state === "OPEN" && !mergedByUs && duplicateHeld(db, r.repo, r.number), r.r_final === 1);
+    const batch = inBatch.get(`${r.repo}#${r.number}@${r.r_head}`);
+    if (batch && BATCHABLE.includes(e.state)) e.state = batch;
     out.push(e);
   }
   return out;

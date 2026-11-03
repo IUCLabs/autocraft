@@ -19,7 +19,7 @@ import { buildQueue, ciAllows, toAsk, countStates, eligible, HEAD_FACT, MERGE_OP
 
 export { buildQueue, countStates, QUEUE_STATES, toAsk, type QueueEntry, type QueueState } from "./queue.ts";
 
-const ORG = "storytold";
+export const ORG = "storytold";
 export const DEFAULT_MERGE_COMMAND = "safe-merge";
 const ACTOR = "merge";
 
@@ -39,6 +39,8 @@ export type MergeParams = {
   limit?: number;
   /** Default true: only `dryRun: false` merges, assigns or asks. */
   dryRun?: boolean;
+  /** Only PRs this accepts are merged (the rest are left to the integration batches). */
+  only?: (e: QueueEntry) => boolean;
   /** Called with the running count of PRs merged, after each merge. */
   onMerged?: (merged: number) => void;
 };
@@ -77,7 +79,7 @@ type Viewer = { login: string; id: string };
 const viewers = new WeakMap<Querier, Viewer>();
 
 /** The pipeline's GitHub account, asked once per querier. */
-async function viewerOf(q: Querier): Promise<Viewer> {
+export async function viewerOf(q: Querier): Promise<Viewer> {
   let v = viewers.get(q);
   if (!v) {
     const d = await q.query("query { viewer { login id } }", {}) as { viewer?: Viewer };
@@ -106,7 +108,7 @@ type InfoNode = {
   commits?: { totalCount: number; nodes?: { commit?: { authors?: { nodes?: { email?: string | null; name?: string | null; user?: { login: string } | null }[] } } }[] };
 };
 
-async function prInfo(q: Querier, repo: string, n: number): Promise<PrInfo | null> {
+export async function prInfo(q: Querier, repo: string, n: number): Promise<PrInfo | null> {
   const d = await q.query(PR_INFO_QUERY, { name: repo, n }) as { repository?: { pullRequest?: InfoNode | null } };
   const p = d.repository?.pullRequest;
   if (!p) return null;
@@ -122,7 +124,7 @@ async function prInfo(q: Querier, repo: string, n: number): Promise<PrInfo | nul
 /** Squash keeps one author; a PR with commits by several (or more commits than we can read) is merged as is. */
 export const methodOf = (info: PrInfo): "squash" | "merge" => (info.authors > 1 || info.commits > 100 ? "merge" : "squash");
 
-const ASSIGN = `mutation($id: ID!, $user: ID!) {
+export const ASSIGN = `mutation($id: ID!, $user: ID!) {
   addAssigneesToAssignable(input: { assignableId: $id, assigneeIds: [$user] }) { clientMutationId }
 }`;
 
@@ -183,7 +185,7 @@ export async function runMerge(db: DatabaseSync, params: MergeParams, log: (line
   const states = countStates(queue);
   const scores = new Map((db.prepare("SELECT number, score FROM item_rank WHERE repo = ?").all(repo) as { number: number; score: number }[]).map((r) => [r.number, r.score]));
   // Rule merges first; within a path the higher work score first, unranked last.
-  let picks = open.filter(eligible).sort((a, b) => (a.path === b.path ? (scores.get(b.number) ?? -1) - (scores.get(a.number) ?? -1) || a.number - b.number : a.path === "rule" ? -1 : 1));
+  let picks = open.filter((e) => eligible(e) && (!params.only || params.only(e))).sort((a, b) => (a.path === b.path ? (scores.get(b.number) ?? -1) - (scores.get(a.number) ?? -1) || a.number - b.number : a.path === "rule" ? -1 : 1));
   if (params.limit !== undefined) picks = picks.slice(0, params.limit);
   const ask1 = toAsk(open);
   const summary: MergeSummary = { runId, repo, dryRun, states, attempted: [], merged: [], refused: [], asked: [] };

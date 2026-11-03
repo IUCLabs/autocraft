@@ -175,7 +175,7 @@ Models: Sonnet (plan), Haiku (failure summary). Daily limit 30 PRs.
 
 ## Merge queue
 
-The queue lists every PR whose final review (Review, second pass) is take or take-fix at its current head ([Merge queue](/queue), read-only), with one state each: ready, waiting-ci, ci-failed, conflict, needs-fix-up, waiting-opus (Sonnet's take or take-fix, Opus has not reviewed the head yet), waiting-verify, verify-failed, verify-error, needs-decision, decision-answered-merge, declined, refused, merged.
+The queue lists every PR whose final review (Review, second pass) is take or take-fix at its current head ([Merge queue](/queue), read-only), with one state each: ready, waiting-ci, ci-failed, conflict, needs-fix-up, waiting-opus (Sonnet's take or take-fix, Opus has not reviewed the head yet), waiting-verify, verify-failed, verify-error, needs-decision, decision-answered-merge, declined, refused, merged, and for PRs in an integration batch batch-checking, in-batch and batch-failed.
 
 **Merge without asking** only when all of these hold at the PR's current head:
 
@@ -191,7 +191,16 @@ A take PR that fails any of the first four, is not verified (Verify `unavailable
 
 A PR held by an open Duplicate? decision shows as `held-duplicate` and is not merged.
 
-**Merge step.** Needs the repo's **merge approval**. Per PR it refreshes checks, assigns the PR to the pipeline's account, then runs `safe-merge` (squash, or merge when the commits have more than one author). It never calls `gh pr merge` itself and never passes `--allow-pending`. A refusal is recorded with its reason and the PR stays queued; any other error stops the run. No model. Daily limit 10.
+**Merge step.** Needs the repo's **merge approval**. It lands the PRs that may merge in integration batches (below), assigns the batch PR to the pipeline's account and runs `safe-merge --merge`. It never calls `gh pr merge` itself and never passes `--allow-pending`. A refusal is recorded with its reason and the batch stays open; any other error stops the run. A PR in a repo Verify cannot build (`unavailable`) is merged on its own through `safe-merge` (squash, or merge when the commits have more than one author). Haiku writes the failure summary of a held PR. Daily limit 10 PRs: a batch of 6 uses 6.
+
+**Integration batches.** A batch starts whenever a repo has PRs that may merge and no batch in flight there; nothing waits for more PRs. It takes PRs in work-rank order, up to the repo's batch size (1 to 10, starting at 10), at most about 2,000 changed lines in all; an L-size PR goes alone. A PR that conflicts with the batch so far waits for the next batch.
+
+1. Build `integration-<repo>-<yyyymmdd>-<n>` from the current default branch by merging each PR head with a merge commit in the cached bare clone (`git merge-tree`, no working tree, no hooks or filters). Contributor commits stay, so GitHub marks each PR merged when the batch lands.
+2. Check the combined tree in the sandbox: a build task on the default branch head with the combined diff as its patch, running the same fetch, build and test steps Verify uses.
+3. Push the branch to the pipeline account's fork and open a PR to the storytold repo that lists the batch's PRs as links. Upstream CI runs on it.
+4. When upstream CI is green and the PR is mergeable, `safe-merge --merge` lands it. The repo's batch size grows by one.
+
+If the sandbox check or upstream CI fails, the batch is split in half and each half is retried, and the repo's batch size halves (minimum 1). A single PR that fails goes on hold (`batch-failed`) with Haiku's summary, until it has a new head. If the default branch moves, or a PR in the batch changes, the batch PR is closed and the PRs are rebuilt on the new head (merge, not rebase). A build-environment error is retried once. There is no Opus review of the combined diff. The Merge queue page lists the batches with their PRs, state and batch PR.
 
 ## Act
 
@@ -243,7 +252,7 @@ Untrusted code (a PR's build and tests) never runs where the GitHub token or a C
 
 - **Scope calls**: is this in scope, closer to the reference app, a plug-in rather than core?
 - **Reference behaviour** that public sources don't settle.
-- **Merges outside the rule** (see Merge queue). Contributors shows who is on the whitelist and why.
+- **Merges outside the rule** (see Merge queue). Contributors shows who is on the whitelist and why. The pipeline's own account counts as whitelisted for the Fix PRs it opened from issues (S or M bugfix after Verify can merge by the rule); an operator's deny still wins.
 - **Closing a PR** the review says to close.
 - **A label** where Jev and Haiku disagree outside the scope labels, and the Sonnet referee is unsure: the Work queue says "Models disagree: needs a label" and links to the Items list of disagreements, which shows the referee's label and reason. Until the referee answers, the Work queue says "Referee: waiting for Sonnet".
 - **Duplicate?** answers: an open one holds the item out of Review, Verify, Fix and the merge queue (Work queue: "Held").

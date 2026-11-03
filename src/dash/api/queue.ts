@@ -1,8 +1,9 @@
 // The merge queue for the dashboard: read-only, anyone signed in.
 import type { DatabaseSync } from "node:sqlite";
-import type { Mergeable, QueueList, QueueRow, QueueState, Tier, TypeLabel } from "../../../web/src/api/types.ts";
+import type { BatchState, Mergeable, QueueBatch, QueueList, QueueRow, QueueState, Tier, TypeLabel } from "../../../web/src/api/types.ts";
 import { latestRun } from "../../classify/settled.ts";
 import { buildQueue, countMerged, countStates, QUEUE_STATES, type QueueEntry } from "../../merge/queue.ts";
+import { listBatches } from "../../merge/batch-store.ts";
 import { HttpError } from "../server/util.ts";
 import { trackedNames } from "../../repos.ts";
 import type { Req } from "../types.ts";
@@ -41,6 +42,7 @@ function openQueue(db: DatabaseSync, repo: string | undefined, hidden: string[],
       (SELECT COUNT(*) || ':' || COALESCE(MAX(rowid), 0) FROM main.merges) AS mg,
       (SELECT COUNT(*) || ':' || COALESCE(MAX(answered_at), '') FROM main.decisions WHERE kind = 'merge') AS dc,
       (SELECT COUNT(*) || ':' || COALESCE(MAX(fetched_at), '') FROM main.pr_checks) AS ck,
+      (SELECT COUNT(*) || ':' || COALESCE(MAX(updated_at), '') FROM main.merge_batches) AS bt,
       (SELECT MAX(rowid) FROM main.classifications) AS cl,
       (SELECT value FROM main.settings WHERE key = 'org_high_water') AS hw,
       (SELECT group_concat(name) FROM main.tracked_repos) AS tr`).get();
@@ -86,5 +88,9 @@ export async function queue(db: DatabaseSync, req: Req): Promise<QueueList> {
     more = rest.length > limit;
   }
   const total = state === "merged" ? counts.merged : Object.entries(counts).reduce((a, [k, n]) => a + (k === "merged" || (state && k !== state) ? 0 : n), 0);
-  return { rows: page.map(toRow), counts, total, next: more ? cursorOf(page[page.length - 1]!) : null };
+  const batches = listBatches(db, { repo, exclude: hidden }).map((b): QueueBatch => ({
+    id: b.id, repo: b.repo, branch: b.branch, state: b.state as BatchState, prs: b.prs.map((p) => ({ number: p.number, head: p.head_oid })),
+    prNumber: b.pr_number, prUrl: b.pr_url, summary: b.summary, createdAt: b.created_at, updatedAt: b.updated_at,
+  }));
+  return { rows: page.map(toRow), counts, total, batches, next: more ? cursorOf(page[page.length - 1]!) : null };
 }

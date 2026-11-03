@@ -176,7 +176,7 @@ export function tasksFor(r: { repo: string; number: number; main_sha: string; cr
 export type FixIssueParams = { repo: string; limit?: number; dryRun?: boolean; onHandled?: (n: number) => void };
 export type FixIssueSummary = { runId: string; repo: string; dryRun: boolean; started: string[]; queued: string[]; skipped: string[]; failed: string[] };
 
-const branchOf = (db: DatabaseSync, repo: string): string =>
+export const branchOf = (db: DatabaseSync, repo: string): string =>
   (db.prepare("SELECT default_branch FROM repos WHERE name = ?").get(repo) as { default_branch: string | null } | undefined)?.default_branch ?? "main";
 
 type Ctx = { db: DatabaseSync; d: FixIssueDeps; git: Git; log: (l: string) => void; runId: string; usage: Usage };
@@ -450,7 +450,7 @@ async function checkPatch(x: Ctx, r: AttemptRow): Promise<boolean> {
 }
 
 /** The pipeline account's fork of the repo as owner/name, created when missing. */
-async function forkOf(run: Exec, login: string, repo: string): Promise<string> {
+export async function forkOf(run: Exec, login: string, repo: string): Promise<string> {
   const find = async (): Promise<string | null> => {
     const r = await run("gh", ["api", `repos/${ORG}/${repo}/forks?per_page=100`, "--jq", `.[] | select(.owner.login == "${login}") | .full_name`]);
     return r.code === 0 ? r.stdout.trim().split("\n")[0] || null : null;
@@ -500,6 +500,7 @@ async function openPr(x: Ctx, r: AttemptRow): Promise<boolean> {
     const issueNow = db.prepare("SELECT state, title FROM items WHERE repo = ? AND number = ?").get(r.repo, r.number) as { state: string; title: string | null } | undefined;
     if (issueNow && issueNow.state !== "OPEN") { fail(db, d, r, "the issue is closed"); return false; }
     const who = await whoAmI(d.exec);
+    db.prepare("INSERT INTO main.settings (key, value) VALUES ('pipeline_login', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value").run(who.login);
     const branch = branchName(r.number, issueNow?.title ?? "", who.login);
     const found = await d.exec("gh", ["pr", "list", "--repo", `${ORG}/${r.repo}`, "--state", "open", "--head", branch, "--json", "url,headRepositoryOwner", "--jq", `.[] | select(.headRepositoryOwner.login == "${who.login}") | .url`]);
     const existing = found.code === 0 ? found.stdout.trim().split("\n")[0] ?? "" : "";

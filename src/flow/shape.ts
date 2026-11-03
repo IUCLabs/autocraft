@@ -126,6 +126,7 @@ export function buildFlow(c: Record<string, number>, meta: FlowMeta): Flow {
     ], { recent: ["finished"], promptStage: "Verify" }),
     node("merge", "Merge queue", 11, "steps", `${fmt(v("merge.eligible"))} may merge now · ${fmt(v("merge.total"))} in the queue`, [
       { id: "eligible", label: "May merge now", waitsOn: "runner", tone: "ok", hint: "Covered by the merge rule or answered merge; CI green, Verify passed and mergeable", link: queue() },
+      { id: "in-batch", label: "In an integration batch", waitsOn: "ci", tone: "accent", hint: "Merged into an integration branch; being checked in the sandbox or waiting for upstream CI on the batch PR", link: queue("in-batch") },
       { id: "unapproved", label: "Repo not approved for merging", waitsOn: "person", gate: true, tone: "warn", hint: "Ready to merge, but an operator has not approved merging in this repo; approve it on the Repos page", link: null },
       { id: "needs-decision", label: "Waiting for a Merge? answer", waitsOn: "person", gate: true, tone: "accent", hint: "Outside the merge rule, not verified, no CI, or held by an open Duplicate?", link: { page: "decisions", params: withRepo({ kind: "merge" }) } },
       { id: "waiting-ci", label: "Waiting for CI", waitsOn: "ci", tone: "neutral", link: queue("waiting-ci") },
@@ -135,6 +136,7 @@ export function buildFlow(c: Record<string, number>, meta: FlowMeta): Flow {
       { id: "verify-failed", label: "Blocked: Verify failed", waitsOn: "person", tone: "bad", link: queue("verify-failed") },
       { id: "verify-error", label: "Blocked: Verify error", waitsOn: "person", tone: "bad", link: queue("verify-error") },
       { id: "needs-fix-up", label: "Needs fix-up", waitsOn: "model", tone: "warn", hint: "Take with fixes: waits for the fix-up step", link: queue("needs-fix-up") },
+      { id: "batch-failed", label: "Blocked: failed in a batch", waitsOn: "person", tone: "bad", hint: "Failed alone in a batch; on hold until it has a new head", link: queue("batch-failed") },
       { id: "declined", label: "Declined", waitsOn: "nothing", tone: "neutral", hint: "The operator answered hold or close", link: queue("declined") },
       { id: "merged", label: "Merged in the last 24 h", waitsOn: "nothing", tone: "merged", link: queue("merged") },
     ], { recent: ["merged", "tries"], facts: [{ label: "Merged since tracking began", value: fmt(v("x.mergedAll")) }] }),
