@@ -77,9 +77,13 @@ export async function queuePage(db: DatabaseSync, req: Req): Promise<QueuePage> 
 
   // A linked item (`item=repo:number`) comes with the first page: it is cut long enough to include the item.
   const item = req.query.get("item");
+  const indexOf = (list: { repo: string; number: number }[]): number | null => {
+    const at = item ? list.findIndex((r) => `${r.repo}:${r.number}` === item) : -1;
+    return at < 0 ? null : at;
+  };
   const sizeFor = (list: { repo: string; number: number }[], from: number): number => {
-    const at = from === 0 && item ? list.findIndex((r) => `${r.repo}:${r.number}` === item) : -1;
-    return at < 0 ? limit : Math.min(500, Math.max(limit, Math.ceil((at + 1) / 100) * 100));
+    const at = from === 0 ? indexOf(list) : null;
+    return at === null ? limit : Math.min(500, Math.max(limit, Math.ceil((at + 1) / 100) * 100));
   };
 
   // Work rows (All, Review, Fix, Verify)
@@ -124,6 +128,7 @@ export async function queuePage(db: DatabaseSync, req: Req): Promise<QueuePage> 
   const out: QueuePage = { tab, repos: reposParam, counts, rows: [], mergeRows: [], nextMerges: [], batches: [], total: 0, next: null };
   if (tab !== "merge") {
     const match = tab === "all" ? work : work.filter((w) => tabOfNext(w.next) === tab);
+    out.itemIndex = indexOf(match);
     out.rows = match.slice(offset, offset + sizeFor(match, offset));
     out.total = match.length;
     out.next = offset + out.rows.length < match.length ? offset + out.rows.length : null;
@@ -135,6 +140,7 @@ export async function queuePage(db: DatabaseSync, req: Req): Promise<QueuePage> 
   const batchOf = new Map(active.flatMap((b) => b.prs.map((p) => [`${b.repo}#${p.number}`, { id: b.id, branch: b.branch }] as const)));
   const scores = new Map((db.prepare("SELECT repo, number, score FROM item_rank").all() as { repo: string; number: number; score: number }[]).map((r) => [`${r.repo}#${r.number}`, r.score]));
   const free = mergeOrder(db, entries).map(asRow);
+  out.itemIndex = indexOf(free);
   out.mergeRows = free.slice(offset, offset + sizeFor(free, offset));
   out.total = free.length;
   out.next = offset + out.mergeRows.length < free.length ? offset + out.mergeRows.length : null;

@@ -7,7 +7,7 @@ import type { DatabaseSync } from "node:sqlite";
 import type { QueueSlot } from "../../web/src/api/types.ts";
 import { latestRun, settledLookup } from "../classify/settled.ts";
 import { notOwnIntegrationSql } from "../dupes/held.ts";
-import { FAST_FLOOR, workScores } from "../fasttrack.ts";
+import { workScores } from "../fasttrack.ts";
 import { buildQueue, type QueueEntry } from "../merge/queue.ts";
 import { pilotSql } from "../pilot.ts";
 import { factsOf, memoNoCi, nextStepOf } from "./next.ts";
@@ -45,11 +45,11 @@ export function scoreLookup(db: DatabaseSync): (repo: string, number: number) =>
   };
 }
 
-/** The Merge tab's order: fast-tracked first (the same order as every other stage), then the queue's own. Batched PRs are listed under their batch, not here. */
+/** The Merge tab's order, the same as every other stage's: fast-tracked first, then the work rank, then repo and number. Batched PRs are listed under their batch, not here. */
 export function mergeOrder<T extends { repo: string; number: number; state?: string }>(db: DatabaseSync, entries: T[]): T[] {
   const score = scoreLookup(db);
-  const fast = (e: T): number => { const s = score(e.repo, e.number) ?? 0; return s >= FAST_FLOOR ? s : 0; };
-  return entries.filter((e) => !BATCHED.has(e.state ?? "")).map((e, i) => ({ e, i })).sort((a, b) => fast(b.e) - fast(a.e) || a.i - b.i).map((x) => x.e);
+  const s = (e: T): number => score(e.repo, e.number) ?? 0;
+  return entries.filter((e) => !BATCHED.has(e.state ?? "")).sort((a, b) => s(b) - s(a) || a.repo.localeCompare(b.repo) || a.number - b.number);
 }
 
 /** Orders items by stage: best first by score. */
@@ -90,24 +90,24 @@ export function computeStages(db: DatabaseSync, inputs: StageInputs = {}): Stage
     (step === "Merge queue" ? merge : out).push({ repo: r.repo, number: r.number, score: score(r.repo, r.number) ?? 0, next: step });
   }
   if (merge.length) {
-    // Below every fast-tracked score, in the Merge tab's order; an item the queue does not list goes last.
-    const order = new Map(mergeOrder(db, inputs.entries ?? buildQueue(db, { merged: "exclude" })).map((e, i) => [`${e.repo}#${e.number}`, i]));
-    for (const m of merge) out.push({ ...m, score: m.score >= FAST_FLOOR ? m.score : -(order.get(`${m.repo}#${m.number}`) ?? 1e9) });
+    // Batched PRs are listed under their batch on the Merge tab, not in its place order.
+    const batched = new Set((inputs.entries ?? buildQueue(db, { merged: "exclude" })).filter((e) => BATCHED.has(e.state)).map((e) => `${e.repo}#${e.number}`));
+    for (const m of merge) if (!batched.has(`${m.repo}#${m.number}`)) out.push(m);
   }
   return orderStages(out);
 }
 
-const FLOOR_MS = 5_000;
-const cache = new WeakMap<DatabaseSync, { sig: string; at: number; stages: Stages }>();
+const cache = new WeakMap<DatabaseSync, { sig: string; stages: Stages }>();
 
+// No time floor: the `steps` topic moves only for writes that change a next step, and a floor without a trailing
+// recompute would leave a badge stale until some later event. A caller that passes its own next steps (the Queue
+// page) always recomputes, so its rows and badges agree.
 function stages(db: DatabaseSync, inputs?: StageInputs): Stages {
   const sig = JSON.stringify(db.prepare("SELECT seq FROM change_seq WHERE topic = 'steps'").get() ?? null);
   const hit = cache.get(db);
-  const now = Date.now();
-  // A burst of writes (a sync) would otherwise recompute on every request.
-  if (hit && (hit.sig === sig || now - hit.at < FLOOR_MS)) return hit.stages;
+  if (hit && hit.sig === sig && !inputs?.nextOf) return hit.stages;
   const fresh = computeStages(db, inputs);
-  cache.set(db, { sig, at: now, stages: fresh });
+  cache.set(db, { sig, stages: fresh });
   return fresh;
 }
 

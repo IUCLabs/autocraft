@@ -1438,6 +1438,8 @@ export interface QueuePageFilter {
 
 export interface QueuePage {
   tab: QueueTab;
+  /** Index of the requested `item` in this tab's list (rows or merge rows), or null when the tab does not list it. */
+  itemIndex?: number | null;
   repos: QueueRepos;
   counts: QueuePageCounts;
   /** All, Review, Fix, Verify tabs (empty on Merge). */

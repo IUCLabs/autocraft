@@ -65,9 +65,18 @@ function QueueView() {
   const tab = param ? TABS.find(([t]) => t === param)?.[0] : "all";
   const repos = state.repos || state.repo || "pipeline";
   const { pages, counts, error, hasMore, loadingMore, loadMore } = usePage(tab ?? "all", repos, state.item);
+  const first: QueuePage | undefined = pages?.[0];
+  const rows = pages?.flatMap((p) => p.rows) ?? [];
+  const mergeRows = pages?.flatMap((p) => p.mergeRows) ?? [];
   // The server cuts the first page long enough to include the linked item; when the tab does not list it, nothing is marked.
   const target = state.item;
   const found = !!target && !!pages?.some((p) => [...p.rows, ...p.mergeRows, ...p.batches.flatMap((b) => b.prs)].some((r) => `${r.repo}:${r.number}` === target));
+  // The server's first page reaches the item up to 500 rows; past that, load pages up to the item's index and no further.
+  const index = first?.itemIndex ?? null;
+  const loaded = tab === "merge" ? mergeRows.length : rows.length;
+  useEffect(() => {
+    if (index !== null && !found && loaded <= index && hasMore && !loadingMore) loadMore();
+  }, [index, found, loaded, hasMore, loadingMore, loadMore]);
   useEffect(() => {
     if (found) document.querySelector(`[data-item="${CSS.escape(target!)}"]`)?.scrollIntoView({ block: "center" });
   }, [found, target, tab]);
@@ -75,9 +84,6 @@ function QueueView() {
   const tabSearch = (() => { const sp = new URLSearchParams(search); sp.delete("item"); const q = sp.toString(); return q ? `?${q}` : ""; })();
   if (!tab) return <Navigate to={`/queue${search}`} replace />;
 
-  const first: QueuePage | undefined = pages?.[0];
-  const rows = pages?.flatMap((p) => p.rows) ?? [];
-  const mergeRows = pages?.flatMap((p) => p.mergeRows) ?? [];
   const more = hasMore && first ? { total: first.total, count: tab === "merge" ? mergeRows.length : rows.length } : null;
 
   return (

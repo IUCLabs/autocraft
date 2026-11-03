@@ -10,24 +10,23 @@ export type Topic =
   | "envs" | "tasks" | "actions" | "fixes" | "verify" | "access" | "settings" | "github" | "fasttrack" | "conversations" | "steps";
 
 /** What moves an item's queue position (src/rank/position.ts), for every query that carries the badge. */
-const SLOT: Topic[] = ["steps", "repos"];
-const withSlot = (...topics: Topic[]): Topic[] => [...new Set([...topics, ...SLOT])];
+const withSlot = (...topics: Topic[]): Topic[] => [...new Set<Topic>([...topics, "steps", "repos"])];
 
 /** Everything an item page shows about a pull request. */
-const ITEM: Topic[] = withSlot("stages", "actions");
+const ITEM: Topic[] = withSlot("items", "stages", "classify", "ranks", "decisions", "reviews", "verify", "fixes", "actions");
 
 const RULES: [prefix: string, topics: Topic[]][] = [
   ["progress", ["items", "stages", "repos", "decisions"]],
   ["item:", ITEM],
-  ["item-decisions:", withSlot()],
-  ["items:", withSlot("stages")],
+  ["item-decisions:", withSlot("decisions", "items")],
+  ["items:", withSlot("items", "stages", "classify", "decisions")],
   ["similar:", ["items"]],
   ["work:", ["items", "ranks", "classify", "checks", "decisions", "reviews", "verify", "fixes"]],
   ["cost:", ["usage", "agents"]],
   ["rates-", ["usage", "agents", "accounts"]],
   ["count:", ["decisions"]],
-  ["decisions?", withSlot()],
-  ["decision:", withSlot()],
+  ["decisions?", withSlot("decisions")],
+  ["decision:", withSlot("decisions")],
   ["thread:", ["decisions"]],
   ["conversation:", ["conversations"]],
   ["repos", ["repos"]],

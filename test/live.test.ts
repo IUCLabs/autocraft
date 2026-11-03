@@ -124,7 +124,8 @@ describe("no-op writes", () => {
     b = readSeqs(db);
     db.exec("UPDATE duplicate_scans SET at = 'c'");
     db.exec("UPDATE classifications SET at = 'c', input_hash = 'y'");
-    assert.deepEqual(changed(b), [], "bookkeeping columns bump nothing, steps included");
+    assert.deepEqual(own(b), [], "bookkeeping columns bump no page topic");
+    assert.ok(stepsMoved(b), "a re-run classification can change a next step");
   });
 
   test("decision claims and comments bump their topic but not the next-step topic", () => {
