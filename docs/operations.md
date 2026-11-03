@@ -81,8 +81,8 @@ The frontend in `web/` talks to `/api/`; the wire types are `web/src/api/types.t
 | `GET /api/prompts` (every registered model prompt: template, model, call settings, output checks and a rendered example on made-up items, plus the commit the server runs) | anyone signed in |
 | `GET /api/decisions?status=open\|opinions\|answered&repo=&kind=&minAge=&mine=1&limit=&offset=`, `/api/decisions/<id>`, `/api/decisions/<id>/thread` | anyone signed in; answer notes only for operators |
 | `POST /api/decisions/<id>/answer` `{answer, note?, exceptions?}`, `/undo`, `/adopt` `{opinionId}` | operator with write, maintain or admin on every repo the decision covers |
-| `POST /api/decisions/<id>/opinion` `{option, note?}`, `/retract`, `/comments` `{body}` | anyone signed in; audited; non-operators get 60 an hour per login |
-| `POST /api/decisions/<id>/claim` | anyone signed in: marks the decision as being looked at for 10 minutes |
+| `POST /api/decisions/<id>/opinion` `{option, note?}`, `/retract`, `/comments` `{body}` | maintainers and operators; audited; maintainers get 60 an hour per login |
+| `POST /api/decisions/<id>/claim` | maintainers and operators: marks the decision as being looked at for 10 minutes |
 | `GET /api/contributors?q=&tier=&repo=&sort=&desc=&limit=&offset=` | anyone signed in; override notes only for operators |
 | `GET /api/contributors/rule-preview?minMerged=&minRate=`; `POST /api/contributors/rule` `{minMerged, minRate}`, `/api/contributors/<login>/override` `{status: "allow"\|"deny"\|null, note?}` | operator |
 | `GET /api/repos/all`; `POST /api/repos/track` `{name}`, `/api/repos/untrack` `{name}`, `/api/repos/pipeline-on` `{name}`, `/api/repos/pipeline-off` `{name}` | operator |
