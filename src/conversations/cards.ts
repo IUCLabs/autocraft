@@ -1,5 +1,6 @@
 // Action cards: what Opus may propose, checked by our code, and the one-line description of each that the operator reads.
 // Descriptions are built here from the parameters; the model never writes them.
+import { REFERENCE_LEAK } from "../review/opus-parse.ts";
 import type { DatabaseSync } from "node:sqlite";
 import { writeEffect } from "../act/index.ts";
 import { optionsOf, getDecision, type DecisionRow, type Kind } from "../decisions.ts";
@@ -123,6 +124,7 @@ export function validateCard(db: DatabaseSync, repo: string, n: number, raw: unk
     case "comment": {
       const text = typeof c.text === "string" ? cleanComment(c.text) : "";
       if (!text) return { note: "dropped a comment card without text" };
+      if (REFERENCE_LEAK.test(text)) return { note: "dropped a comment card that mentions the reference folder" };
       if (text.length > COMMENT_MAX) return { note: `dropped a comment card longer than ${COMMENT_MAX} characters` };
       return done({ kind: "comment", text }, text);
     }

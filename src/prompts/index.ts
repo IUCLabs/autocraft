@@ -46,7 +46,7 @@ type Common = {
   validation: string;
   limits: Limits;
   /** Present when a call may read a checkout of the repository with these tools inside the sandbox (src/sandbox); absent means the call runs without tools. */
-  sandbox?: { tools: string[]; maxTurns: number; /** The call also gets the workspace: every tracked repository at /repos/<name> and the explorer subagent. */ workspace?: boolean };
+  sandbox?: { tools: string[]; maxTurns: number; /** The call also gets the workspace: every tracked repository at /repos/<name> and the explorer subagent. */ workspace?: boolean; /** The call may get the repo's reference documentation at /reference when it exists. */ reference?: boolean };
   /** Further rows for the Prompts page's settings table, such as texts the stage posts itself. */
   extra?: { label: string; value: string }[];
 };
@@ -170,7 +170,7 @@ const OPUS_REVIEW: ClaudePrompt = {
     discussion: DISCUSSION_DOC,
     repo_access: REPO_ACCESS_DOC,
   },
-  sandbox: { tools: ["Read", "Grep", "Glob"], maxTurns: 20, workspace: true },
+  sandbox: { tools: ["Read", "Grep", "Glob"], maxTurns: 20, workspace: true, reference: true },
   template: `You review a pull request on one of the storytold craft apps, open-source reimplementations of a reference application. Your verdict decides what happens next: only a PR you rate take or take-fix is merged or fixed up. A wrong take costs more than a wrong hold.
 
 What we want: real bug fixes; behaviour that matches the reference application; one clear topic per PR.
@@ -204,6 +204,7 @@ public: the review as it will be posted on the pull request for its author and t
 - Plain and factual, about the code only: what the change does right, and what should change, with file:line where it applies.
 - It does not mention other reviews or reviewers, models, this pipeline, CI state, mergeability, integration branches, labels, priority, whitelists or who may merge.
 - No greetings, no offers, no maintainer tone, no verdict words such as "approve" or "merge".
+- It never mentions /reference or any documentation outside the repository.
 - At most 8 points. In mode "delta" it covers the whole pull request at its new head, not only the new changes.
 
 summary: 2 or 3 plain sentences: what the pull request does, your verdict, and the main risk. ${SUMMARY_RULES}
@@ -301,7 +302,7 @@ const RECOMMEND: ClaudePrompt = {
     decision: `The decision as a JSON object indented by one space: ref, item (ref, kind, title, body (first ${RECOMMEND_BODY_LIMIT} characters), author_association, labels, comments (the first ${COMMENTS_PER_ITEM} that are not by bots)), question, facts, summary (the earlier AI summary) and options (key, label, hint).`,
     repo_access: REPO_ACCESS_DOC,
   },
-  sandbox: { tools: ["Read", "Grep", "Glob"], maxTurns: 20, workspace: true },
+  sandbox: { tools: ["Read", "Grep", "Glob"], maxTurns: 20, workspace: true, reference: true },
   template: `You advise the maintainers of one of the storytold craft apps, open-source reimplementations of a reference application. A classifier flagged one issue or pull request as needing a maintainer's scope call. Recommend one of the options, or none.
 
 The project wants what the reference application has, with fixes. Small extras beyond it are sometimes welcome; niche or large additions belong in plug-ins. {{repo_access}}
@@ -665,7 +666,7 @@ const DUPES_COMPARE_PRS: ClaudePrompt = {
     group: `The group as a JSON object indented by one space: ${COMPARE_PR_FIELDS}.`,
     repo_access: REPO_ACCESS_DOC,
   },
-  sandbox: { tools: ["Read", "Grep", "Glob"], maxTurns: 20, workspace: true },
+  sandbox: { tools: ["Read", "Grep", "Glob"], maxTurns: 20, workspace: true, reference: true },
   template: `You compare pull requests of one of the storytold craft apps, open-source reimplementations of a reference application. Earlier checks found that these pull requests do the same job (duplicates). Choose the one to keep and say what the others add. A maintainer reads your answer and decides.
 
 Choose by the code, not by order of arrival: which pull request solves the problem most correctly and completely, fits the surrounding code, and is the easiest to merge as one clear topic. {{repo_access}}
@@ -738,7 +739,7 @@ const CONVERSATION: ClaudePrompt = {
     repo_access: "One or two sentences, only when the call has a checkout: where the repository's parity docs are, and, when the repo has private reference documentation, that it is at /reference and must never be quoted, cited, named or mentioned.",
     turns: "The earlier turns oldest first, each as stored, then the new message, one `<turn>` block after the other. A turn is from an operator, from Opus, or from the system (a note that the item changed or what an action did); a turn from Opus lists the action cards it proposed.",
   },
-  sandbox: { tools: ["Read", "Grep", "Glob"], maxTurns: 20, workspace: true },
+  sandbox: { tools: ["Read", "Grep", "Glob"], maxTurns: 20, workspace: true, reference: true },
   template: `You talk with the maintainers of one of the storytold craft apps, open-source reimplementations of a reference application, about one issue or pull request. A maintainer writes to you; you answer, and you may propose actions that the maintainer can run with one button. Nothing you propose runs until an operator presses it.
 
 The project wants what the reference application has, with fixes. Small extras beyond it are sometimes welcome; niche or large additions belong in plug-ins. Be direct and brief. Say what you checked and what you could not verify. Never name the reference application or its vendor; write "the reference app".
@@ -1106,14 +1107,14 @@ export function renderJev(id: JevPromptId, input: Item | DupePair): string {
  * session. With `sandboxed` (only for prompts that register a sandbox) it gets read-only file tools that may
  * touch the checkout path and nothing else; anything not allowed is denied without asking.
  */
-export function claudeArgs(id: ClaudePromptId, model: string, sandboxed = false, mcp?: { config: string; servers: string[] }, system?: string | null): string[] {
+export function claudeArgs(id: ClaudePromptId, model: string, sandboxed = false, mcp?: { config: string; servers: string[] }, system?: string | null, reference = false): string[] {
   const p = claudePromptOf(id);
   if (!p.models.includes(model)) throw new Error(`${id} is registered for ${p.models.join(", ")}, not ${model}`);
   if (sandboxed) {
     if (!p.sandbox) throw new Error(`${id} has no sandbox mode`);
     const ws = p.sandbox.workspace === true;
     // The workspace gives the call the Agent tool for the explorer and the whole /repos tree; the arguments do not depend on which repositories are mounted.
-    const dirs = ws ? [REPO_PATH, REPOS_ROOT] : [REPO_PATH];
+    const dirs = [...(ws ? [REPO_PATH, REPOS_ROOT] : [REPO_PATH]), ...(reference && p.sandbox.reference ? [REFERENCE_PATH] : [])];
     const tools = [...p.sandbox.tools, ...(ws ? [AGENT_TOOL] : [])];
     const allowed = [...dirs.map((d) => `Read(/${d}/**)`), ...(ws ? [AGENT_TOOL] : []), ...(mcp ? mcpTools(mcp.servers) : [])];
     return ["-p", "--model", model, "--effort", p.effort, "--output-format", "stream-json", "--verbose", "--tools", tools.join(","), "--allowedTools", allowed.join(","),

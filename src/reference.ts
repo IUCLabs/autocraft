@@ -2,7 +2,7 @@
 // read-only at /reference for the calls that judge reference-app behaviour. Operators import it with
 // `autocraft reference import`; nothing in it is ever quoted, cited or posted.
 import { execFileSync } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { audit } from "./dash/audit.ts";
@@ -12,6 +12,7 @@ import { isTracked } from "./repos.ts";
 export class ReferenceError extends Error {}
 
 export const MAX_BYTES = 100 * 1024 * 1024;
+const MAX_MEMBERS = 5000;
 const REPO_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
 const SEGMENT = /^[A-Za-z0-9_-][A-Za-z0-9._-]*$/;
 const EXTENSION = /\.(txt|md|pdf)$/;
@@ -31,10 +32,16 @@ export function referenceDir(repo: string): string | undefined {
 
 /** Lists the archive and refuses any member that is not a plain .txt/.md file (or a directory) under the rules; returns the file count and byte total. */
 function checkArchive(tarFile: string): { files: number; bytes: number } {
-  const out = execFileSync("tar", ["-tvf", tarFile], { encoding: "utf8", env: { ...process.env, LC_ALL: "C" }, maxBuffer: 64 * 1024 * 1024 });
-  let files = 0, bytes = 0;
+  let out: string;
+  try {
+    out = execFileSync("tar", ["-tvf", tarFile], { encoding: "utf8", env: { ...process.env, LC_ALL: "C" }, maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "ignore"] });
+  } catch {
+    throw new ReferenceError("the input is not a readable tar archive");
+  }
+  let files = 0, bytes = 0, members = 0;
   for (const line of out.split("\n")) {
     if (!line) continue;
+    if (++members > MAX_MEMBERS) throw new ReferenceError(`the archive has more than ${MAX_MEMBERS} members`);
     const m = /^([^\s])\S+\s+\S+\s+(\d+)\s+\S+\s+\S+\s+(.+)$/.exec(line);
     if (!m) throw new ReferenceError("unreadable archive listing");
     const [, type, size, rawName] = m as unknown as [string, string, string, string];
@@ -54,12 +61,14 @@ function checkArchive(tarFile: string): { files: number; bytes: number } {
   return { files, bytes };
 }
 
-/** Rechecks what tar wrote: only regular files and directories, no more than the listed bytes. */
+/** Makes the extracted tree readable by the mount and removable (archive modes survive extraction for a non-root user), and refuses anything but plain files and directories. */
 function checkTree(dir: string, depth = 0): void {
+  chmodSync(dir, 0o755);
   for (const e of readdirSync(dir)) {
-    const st = lstatSync(join(dir, e));
-    if (st.isDirectory() && depth === 0) checkTree(join(dir, e), 1);
-    else if (!st.isFile()) throw new ReferenceError("the extracted tree holds something other than plain files");
+    const p = join(dir, e), st = lstatSync(p);
+    if (st.isDirectory() && depth === 0) checkTree(p, 1);
+    else if (st.isFile()) chmodSync(p, 0o644);
+    else throw new ReferenceError("the extracted tree holds something other than plain files");
   }
 }
 
@@ -76,8 +85,14 @@ export function importReference(db: DatabaseSync, by: string, repo: string, tarF
     checkTree(staging);
     const old = existsSync(target) ? `${staging}-old` : undefined;
     if (old) renameSync(target, old);
-    renameSync(staging, target);
-    if (old) rmSync(old, { recursive: true, force: true });
+    try {
+      renameSync(staging, target);
+    } catch (e) {
+      if (old) renameSync(old, target);
+      throw e;
+    }
+    // The new folder is live; a leftover old copy is only clutter.
+    if (old) try { rmSync(old, { recursive: true, force: true }); } catch (e) { console.log(`could not remove the replaced reference folder ${old}: ${(e as Error).message}`); }
   } catch (e) {
     rmSync(staging, { recursive: true, force: true });
     throw e;

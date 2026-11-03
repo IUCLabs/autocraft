@@ -1,7 +1,7 @@
 // Progress lines for a running sandboxed `claude -p` call, read from its `--output-format stream-json` output.
 // Every string in an event is written by the model (tool inputs), so the lines are plain text of bounded length
 // and never carry file contents.
-import { REPO_PATH, REPOS_ROOT } from "../sandbox/command.ts";
+import { REFERENCE_PATH, REPO_PATH, REPOS_ROOT } from "../sandbox/command.ts";
 
 export const PROGRESS_MAX = 120;
 /** Lines kept for the dashboard's short history. */
@@ -26,6 +26,7 @@ const ref = (i: Record<string, unknown>): string => `${clean(i.repo, 40)}#${type
 /** The line for one tool call, or null for a tool we do not describe. */
 export function toolLine(name: string, input: unknown): string | null {
   const i = (input && typeof input === "object" ? input : {}) as Record<string, unknown>;
+  if (["Read", "Grep", "Glob"].includes(name) && [i.file_path, i.path, i.pattern].some((v) => typeof v === "string" && v.includes(REFERENCE_PATH))) return "Checking reference documentation";
   switch (name) {
     case "Read": return `Reading ${rel(i.file_path)}`;
     case "Grep": return `Searching for "${clean(i.pattern, 50)}"${i.path ? ` in ${rel(i.path)}` : ""}`;

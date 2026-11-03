@@ -277,7 +277,7 @@ export function setWorkspace(f: WorkspaceFn): () => void {
  */
 export async function askClaude<K extends ClaudePromptId>(id: K, model: string, input: ClaudeInput[K], db: DatabaseSync, opts: AskOptions = {}): Promise<{ text: string; usage: Usage; turns?: number } | null> {
   let sandboxed = opts.checkout !== undefined && CLAUDE_PROMPTS[id].sandbox !== undefined;
-  const reference = sandboxed ? opts.reference : undefined;
+  const reference = sandboxed && CLAUDE_PROMPTS[id].sandbox?.reference ? opts.reference : undefined;
   if (reference) input = input.map((x) => ({ ...x, reference: true })) as ClaudeInput[K];
   let parts = claudeParts(id, input, sandboxed);
   const items = refsOf(input);
@@ -297,7 +297,7 @@ export async function askClaude<K extends ClaudePromptId>(id: K, model: string, 
     const shared = workspace ? opts.shared ?? await workspaceOf(db) : undefined;
     const it = workspace ? opts.itemTools === undefined ? itemTools() : opts.itemTools : null;
     const tools = it ? { mounts: it.mounts, servers: Object.keys(it.mcpServers).sort(), file: mcpFile(it.mcpServers) } : undefined;
-    const args = claudeArgs(id, model, sandboxed, tools && { config: MCP_PATH, servers: tools.servers }, parts.system);
+    const args = claudeArgs(id, model, sandboxed, tools && { config: MCP_PATH, servers: tools.servers }, parts.system, reference !== undefined);
     const cwd = claudeCwd();
     let r: Proc;
     if (sandboxed) {

@@ -1,8 +1,12 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { test } from "node:test";
+import { parseOpusReply } from "../src/review/opus-parse.ts";
+import { parseReply } from "../src/conversations/cards.ts";
+import { toolLine } from "../src/classify/progress.ts";
+import { claudeArgs } from "../src/prompts/index.ts";
 import { askClaude, setRunner } from "../src/classify/run.ts";
 import { connect } from "../src/db.ts";
 import { SAMPLE_OPUS_PRS } from "../src/prompts/samples.ts";
@@ -23,7 +27,10 @@ trackRepo(db, "test", "app");
 function tarOf(name: string, files: Record<string, string>, extra: string[] = [], links: Record<string, string> = {}): string {
   const src = join(dir, `src-${name}`);
   mkdirSync(src);
-  for (const [f, text] of Object.entries(files)) writeFileSync(join(src, f), text);
+  for (const [f, text] of Object.entries(files)) {
+    mkdirSync(dirname(join(src, f)), { recursive: true });
+    writeFileSync(join(src, f), text);
+  }
   for (const [f, to] of Object.entries(links)) symlinkSync(to, join(src, f));
   const out = join(dir, `${name}.tar`);
   execFileSync("tar", ["-cf", out, "-C", src, ...extra, ...readdirSync(src)]);
@@ -56,6 +63,37 @@ test("import installs a good archive and refuses unsafe ones without writing any
   assert.deepEqual(JSON.parse(row.details), { repo: "app", files: 1, bytes: 4 });
 });
 
+test("archive modes cannot make the tree unreadable or block a later replace", () => {
+  for (const [name, mode] of [["m000", "u-rwx,go-rwx"], ["m500", "u=rx,go="]] as const) {
+    const t = tarOf(name, { "sub/a.txt": "x", "b.txt": "y" }, [`--mode=${mode}`]);
+    importReference(db, "test", "app", t, true);
+    const root = referenceDir("app")!;
+    assert.equal(readFileSync(join(root, "sub", "a.txt"), "utf8"), "x");
+    assert.equal(readFileSync(join(root, "b.txt"), "utf8"), "y");
+    assert.deepEqual(leftovers(), []);
+  }
+  assert.throws(() => importReference(db, "test", "app", join(dir, "nope.tar"), true), /not a readable tar/);
+});
+
+test("the reference mount's read permission and the public-text backstop", () => {
+  assert.ok(!claudeArgs("review.opus", "opus", true).join(" ").includes("reference"));
+  const on = claudeArgs("review.opus", "opus", true, undefined, null, true);
+  assert.ok(on.join(",").includes("Read(//reference/**)"));
+  assert.ok(on.join(" ").includes("--add-dir /reference"));
+  assert.ok(!claudeArgs("fixup.patch", "sonnet", true, undefined, null, true).join(" ").includes("reference"));
+  assert.equal(toolLine("Grep", { pattern: "x", path: "/reference" }), "Checking reference documentation");
+  assert.equal(toolLine("Read", { file_path: "/reference/p0003.txt" }), "Checking reference documentation");
+
+  const r = JSON.stringify({ ref: "app#1", verdict: "take", sure: true, reason: "ok", fixes: [], risks: [], summary: "s", why: "w",
+    public: { summary: "Fine.", points: ["Good change in a.rs:3", "See /reference/p0003.txt", "as on page p0012.txt"] } });
+  assert.deepEqual(parseOpusReply(r, "app#1")!.public!.points, ["Good change in a.rs:3"]);
+  const leakSummary = r.replace('"Fine."', '"Matches /reference"');
+  assert.equal(parseOpusReply(leakSummary, "app#1")!.public, null);
+  const cards = parseReply(db, "app", 1, 'Text\n```actions\n[{"kind":"comment","text":"Per p0004.txt this differs"},{"kind":"backlog"}]\n```');
+  assert.deepEqual(cards!.cards, []);
+  assert.ok(cards!.notes.some((n) => /reference folder/.test(n)));
+});
+
 test("a sandboxed call mounts /reference only when the repo has a reference folder", async () => {
   const box = useTestAccount(db);
   const cfg = box.configDir + "t";
@@ -72,7 +110,7 @@ test("a sandboxed call mounts /reference only when the repo has a reference fold
     await askClaude("review.opus", "opus", prs, db, { checkout: co, reference: referenceDir("app") });
     const bind = (a: string[]) => a.join(" ").includes(` ${REFERENCE_PATH}`);
     assert.equal(bind(calls[0]!.args), false);
-    assert.equal(calls[0]!.stdin.includes(REFERENCE_PATH), false);
+    assert.equal(calls[0]!.stdin.includes("Reference documentation for the reference app"), false);
     assert.ok(calls[0]!.stdin.includes("docs/gaps.md"));
     assert.ok(calls[1]!.args.join(" ").includes(`--ro-bind ${referenceDir("app")} ${REFERENCE_PATH}`));
     assert.ok(calls[1]!.stdin.includes(`at ${REFERENCE_PATH} (read-only`));

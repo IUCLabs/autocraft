@@ -49,11 +49,17 @@ export type PublicReview = { summary: string; points: string[] };
 
 export const OPUS_PUBLIC_POINTS = 8;
 
+/** Text that points at the private reference folder; such public text is dropped. */
+export const REFERENCE_LEAK = /\/reference\b|\bp\d{4}\.txt\b/i;
+
 export function parsePublic(v: unknown): PublicReview | null {
   if (!v || typeof v !== "object") return null;
   const o = v as Record<string, unknown>;
   if (typeof o.summary !== "string" || !o.summary.trim() || !Array.isArray(o.points)) return null;
-  const points = o.points.filter((x): x is string => typeof x === "string" && !!x.trim()).slice(0, OPUS_PUBLIC_POINTS).map((x) => x.trim().slice(0, 600));
+  if (REFERENCE_LEAK.test(o.summary)) { console.log("public review dropped: it mentions the reference folder"); return null; }
+  const kept = o.points.filter((x): x is string => typeof x === "string" && !!x.trim());
+  const points = kept.filter((x) => !REFERENCE_LEAK.test(x)).slice(0, OPUS_PUBLIC_POINTS).map((x) => x.trim().slice(0, 600));
+  if (points.length < kept.length) console.log("public review: dropped a point that mentions the reference folder");
   return { summary: o.summary.trim().slice(0, 600), points };
 }
 
@@ -81,7 +87,7 @@ export function parseOpusReply(text: string, ref: string, last = true): OpusRevi
   if (typeof verdict !== "string" || !(VERDICTS as readonly string[]).includes(verdict)) return null;
   if (typeof r.reason !== "string" || !r.reason.trim() || typeof r.sure !== "boolean") return null;
   const fixes = (Array.isArray(r.fixes) ? r.fixes : [])
-    .filter((f): f is { file: string; change: string } => !!f && typeof f.file === "string" && typeof f.change === "string" && !!f.change.trim())
+    .filter((f): f is { file: string; change: string } => !!f && typeof f.file === "string" && typeof f.change === "string" && !!f.change.trim() && !REFERENCE_LEAK.test(f.file))
     .slice(0, OPUS_MAX_FIXES).map((f) => ({ file: f.file.slice(0, 200), change: f.change.slice(0, 800) }));
   if (verdict === "take-fix" && !fixes.length) return null;
   const risks = Array.isArray(r.risks) ? r.risks.filter((x): x is string => typeof x === "string").slice(0, 8).map((x) => x.slice(0, 300)) : [];
