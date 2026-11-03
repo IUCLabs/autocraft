@@ -8,9 +8,9 @@ Local mirror of every storytold issue and PR, the triage pipeline's state, and t
 - `autocraft labels ensure|plan|apply --repo R` is the pipeline's Label stage: puts each item's settled type label and flags on GitHub. `plan` and dry runs only read; `apply --apply` writes, and only for repos an operator approved on the dashboard Repos page. See docs/pipeline.md.
 - `autocraft dash serve` serves the dashboard.
 - `autocraft runner serve` runs the pipeline: while the pipeline is On (switch on the dashboard's Pipeline page, or `autocraft pipeline on`), it queues and runs the steps that have work, within each stage's daily limit. Turning it Off cancels queued automatic jobs; running ones finish.
-- `autocraft review --repo R [--limit N] [--dry-run]` runs the Review stage on one repo; `autocraft checks --repo R` refreshes CI and merge state of its open PRs. See docs/pipeline.md, Review.
+- `autocraft opus-review --repo R [--limit N] [--dry-run]` runs the Review stage on one repo; `autocraft checks --repo R` refreshes CI and merge state of its open PRs. See docs/pipeline.md, Review.
 - `autocraft merge --repo R [--limit N] [--apply]` merges the repo's queued PRs that may merge, through the built-in `autocraft safe-merge` (`$AUTOCRAFT_MERGE_CMD` overrides it with another command), and asks a Merge? decision for the other taken PRs; without `--apply` it is a dry run. `autocraft queue [--repo R]` prints the merge queue. The runner's `merge` step and the autopilot merge only in repos an operator approved for merging on the Repos page. See docs/pipeline.md, Merge queue.
-- Runner steps (`autocraft runner steps`): `classify-new`, `classify-all`, `embed`, `labels-ensure`, `labels-apply`, `decide`, `review-batch`, `checks` and `merge` (operator only, group `github-write`, params `repo` and `limit`; it runs the merge command with `--apply`, so it merges for real).
+- Runner steps (`autocraft runner steps`): `classify-new`, `classify-all`, `embed`, `labels-ensure`, `labels-apply`, `decide`, `opus-review`, `checks` and `merge` (operator only, group `github-write`, params `repo` and `limit`; it runs the merge command with `--apply`, so it merges for real).
 
 ### Sync
 
@@ -175,17 +175,22 @@ A step is one entry in `STEPS` in `src/runner/steps.ts`:
 
 ```ts
 {
-  name: "review-batch",
-  title: "Review PRs",
-  description: "Sonnet reviews the open PRs of one repo that are marked for review.",
+  name: "opus-review",
+  title: "Review pull requests",
+  description: "Opus reviews, one pull request per call, the wanted pull requests of one repo that have no review at their current head. After a new push it reads only the changes since the head it reviewed before.",
   stage: 5,                      // docs/pipeline.md stage
   requires: "operator",
   group: "review",               // one job of a group at a time; groups: classify, decide, review, github-write, github-read, local
+  models: ["opus"],
   params: [
     { name: "repo", label: "Repo", kind: "repo", required: true },
-    { name: "limit", label: "At most", kind: "int", min: 1, max: 50, default: 10 },
+    { name: "limit", label: "At most", kind: "int", min: 1, max: 50, default: 5 },
   ],
-  run: async (ctx) => (await import("../review/step.ts")).reviewBatch(ctx),
+  run: async (ctx) => {
+    const { runOpusReview } = await import("../review/opus.ts");
+    const r = await runOpusReview(ctx.db, { repo: String(ctx.params.repo), limit: Number(ctx.params.limit), onHandled: ctx.handled }, ctx.log);
+    return `${r.repo}: reviewed ${r.reviewed} of ${r.candidates} candidates`;
+  },
 }
 ```
 
