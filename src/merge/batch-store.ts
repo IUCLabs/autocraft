@@ -7,6 +7,9 @@ export type BatchState = (typeof BATCH_STATES)[number];
 /** States of a batch that is still being worked on. */
 export const ACTIVE_BATCH: BatchState[] = ["checking", "open"];
 
+/** Summary of a batch whose PR a person closed: its PRs stay out of batches until they change. */
+export const CLOSED_BY_PERSON = "the batch PR was closed by a person";
+
 export const MAX_BATCH = 10;
 /** Changed lines (additions plus deletions) a batch may carry, beyond its first PR. */
 export const MAX_BATCH_LINES = 2000;
@@ -77,12 +80,12 @@ export function admits(taken: { size: string; lines: number }[], c: { size: stri
 
 /** Queue state each PR head in an active or failed batch is in: `repo#number@head` → batch-checking | in-batch | batch-failed. */
 export function batchStates(db: DatabaseSync, repo?: string): Map<string, "batch-checking" | "in-batch" | "batch-failed"> {
-  const rows = db.prepare(`SELECT b.repo, p.number, p.head_oid, b.state, (SELECT COUNT(*) FROM main.merge_batch_prs q WHERE q.batch_id = b.id) AS n
+  const rows = db.prepare(`SELECT b.repo, p.number, p.head_oid, b.state, b.summary, (SELECT COUNT(*) FROM main.merge_batch_prs q WHERE q.batch_id = b.id) AS n
     FROM main.merge_batch_prs p JOIN main.merge_batches b ON b.id = p.batch_id
-    WHERE b.state IN ('checking', 'open', 'failed') ${repo ? "AND b.repo = ?" : ""} ORDER BY b.id`).all(...(repo ? [repo] : [])) as { repo: string; number: number; head_oid: string; state: string; n: number }[];
+    WHERE b.state IN ('checking', 'open', 'failed') ${repo ? "AND b.repo = ?" : ""} ORDER BY b.id`).all(...(repo ? [repo] : [])) as { repo: string; number: number; head_oid: string; state: string; summary: string | null; n: number }[];
   const out = new Map<string, "batch-checking" | "in-batch" | "batch-failed">();
   for (const r of rows) {
-    if (r.state === "failed" && r.n !== 1) continue;
+    if (r.state === "failed" && r.n !== 1 && r.summary !== CLOSED_BY_PERSON) continue;
     out.set(`${r.repo}#${r.number}@${r.head_oid}`, r.state === "checking" ? "batch-checking" : r.state === "open" ? "in-batch" : "batch-failed");
   }
   return out;

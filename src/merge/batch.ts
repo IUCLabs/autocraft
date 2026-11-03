@@ -21,14 +21,15 @@ import { refreshChecks } from "../review/checks.ts";
 import { type Verdict, outcomeOf, summariseFailure } from "../verify/results.ts";
 import { rustPlan } from "../worker/rust.ts";
 import { BatchGit } from "./batch-git.ts";
-import { ACTIVE_BATCH, activeBatches, admits, batchSizeOf, getBatch, growBatchSize, insertBatch, membersOf, nextBranch, shrinkBatchSize, updateBatch, type BatchMember, type BatchRow } from "./batch-store.ts";
+import { ACTIVE_BATCH, CLOSED_BY_PERSON, activeBatches, admits, batchSizeOf, getBatch, growBatchSize, insertBatch, membersOf, nextBranch, shrinkBatchSize, updateBatch, type BatchMember, type BatchRow } from "./batch-store.ts";
 import { mergeApprovalOf } from "./approval.ts";
 import { ASSIGN, ORG, prInfo, viewerOf, spawnRun, type CommandResult } from "./index.ts";
-import { PIPELINE_LOGIN_KEY, VERIFY_UNAVAILABLE, buildQueue, eligible, type QueueEntry } from "./queue.ts";
+import { PIPELINE_LOGIN_KEY, buildQueue, eligible, singleMergeOnly, type QueueEntry } from "./queue.ts";
 
 const ACTOR = "batch";
 const PR_URL = new RegExp(`^https://github\\.com/${ORG}/[A-Za-z0-9._-]+/pull/(\\d+)$`);
-const MAX_RETRIES = 1;
+/** Wait before the sandbox task of a batch is queued again after a build-environment error: none for the first retry, then doubling from 5 minutes up to 6 hours. */
+export const retryDelayMs = (retries: number): number => (retries === 0 ? 0 : Math.min(5 * 60_000 * 2 ** (retries - 1), 6 * 3_600_000));
 
 export type BatchDeps = {
   /** Every git and gh command. */
@@ -54,10 +55,17 @@ export type BatchParams = {
   onMerged?: (merged: number) => void;
 };
 
-export type BatchSummary = { runId: string; repo: string; started: string[]; published: string[]; merged: number[]; failed: number[]; split: string[]; superseded: string[]; waiting: string[] };
+export type BatchSummary = { runId: string; repo: string; started: string[]; published: string[]; merged: number[]; failed: number[]; split: string[]; superseded: string[]; waiting: string[];
+  /** PRs whose own diff cannot go through a batch (binary or too large); the single-merge path takes them. */
+  skipped: number[];
+};
 
 const short = (sha: string) => sha.slice(0, 7);
 const oneLine = (s: string, n = 200) => s.replace(/\s+/g, " ").trim().slice(0, n);
+
+/** Why a text diff cannot be applied by a sandbox task, or "". */
+const diffProblem = (patch: string): string =>
+  Buffer.byteLength(patch) > MAX_PATCH_BYTES ? "larger than the task limit" : /^Binary files |^GIT binary patch/m.test(patch) ? "binary" : "";
 
 type Cand = { number: number; head: string; size: string; lines: number };
 
@@ -79,11 +87,13 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
   if (!mergeApprovalOf(db, repo)) throw new Error(`merging in ${repo} is not approved`);
   const at = () => d.now().toISOString();
   const runId = `batch-${repo}-${at().replace(/[-:]/g, "").slice(0, 15)}`;
-  const s: BatchSummary = { runId, repo, started: [], published: [], merged: [], failed: [], split: [], superseded: [], waiting: [] };
+  const s: BatchSummary = { runId, repo, started: [], published: [], merged: [], failed: [], split: [], superseded: [], waiting: [], skipped: [] };
   mkdirSync(d.root, { recursive: true });
   const git = new BatchGit(d.exec, d.root, repo);
   const stage = db.prepare("INSERT INTO stages (repo, number, stage, at, actor, note) VALUES (?, ?, ?, ?, ?, ?)");
   let landed = 0;
+  /** PRs this run may still start or land under the stage's daily limit. */
+  const left = () => (params.limit === undefined ? Infinity : params.limit - landed);
 
   const refOf = (n: number) => `${repo}#${n}`;
   const branch = branchOf(db, repo);
@@ -104,6 +114,8 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
       if (chain.length && !admits(chain.map((x) => x.cand), c, max)) continue;
       const sha = await git.fetchPr(ORG, repo, c.number);
       if (sha !== c.head) { log(`  ${refOf(c.number)}: head moved to ${short(sha)}; left out`); continue; }
+      const own = diffProblem(await git.prDiff(base, sha));
+      if (own) { log(`  ${refOf(c.number)}: its diff is ${own}; left out of batches`); s.skipped.push(c.number); continue; }
       const tree = await git.mergeTree(cur, sha);
       if (!tree) { log(`  ${refOf(c.number)}: conflicts with the batch so far; waits for the next one`); continue; }
       cur = await git.mergeCommit(tree, [cur, sha], `Merge pull request #${c.number}`, { name: who.login, email: who.email });
@@ -113,7 +125,7 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
     let patch = "";
     while (chain.length) {
       patch = await git.diff(base, chain[chain.length - 1]!.commit);
-      const bad = Buffer.byteLength(patch) > MAX_PATCH_BYTES ? "larger than the task limit" : /^Binary files /m.test(patch) ? "binary content" : "";
+      const bad = diffProblem(patch);
       if (!bad) break;
       log(`  ${refOf(chain[chain.length - 1]!.cand.number)}: the combined diff is ${bad}; left out`);
       chain.pop();
@@ -141,7 +153,18 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
     await closePr(b, `Closing: ${why}. The PRs are rebuilt in a new batch.`);
     s.superseded.push(b.branch);
     log(`  ${b.branch}: ${why}`);
-    if (keep.length) await startBatch(asCands(keep), Infinity, b.id);
+    if (keep.length && left() > 0) await startBatch(asCands(keep), left(), b.id);
+  }
+
+  /** Why the batch must be rebuilt because the default branch moved, or null: a move that merges cleanly with the batch tip does not matter (GitHub and upstream CI re-check the batch PR). */
+  async function movedAway(b: BatchRow): Promise<string | null> {
+    const head = await d.mainHead(repo, branch);
+    if (!head || head === b.base_sha) return null;
+    try {
+      const now = await git.fetchMain(ORG, repo, branch);
+      if (await git.mergeTree(now, b.commit_sha)) return null;
+    } catch { /* the batch commit is gone from the cache: rebuild */ }
+    return `${branch} moved to ${short(head)} and conflicts with the batch`;
   }
 
   /** A failed batch: several PRs split in half and each half retried; one PR goes on hold. */
@@ -166,13 +189,14 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
     const mid = Math.ceil(members.length / 2);
     for (const half of [members.slice(0, mid), members.slice(mid)]) {
       if (activeBatches(db, repo).length >= 8) break;
-      await startBatch(asCands(half), Infinity, b.id);
+      if (left() <= 0) break;
+      await startBatch(asCands(half), left(), b.id);
     }
   }
 
   async function publish(b: BatchRow, members: BatchMember[]): Promise<void> {
-    const head = await d.mainHead(repo, branch);
-    if (head && head !== b.base_sha) return supersede(b, members, `${branch} moved to ${short(head)}`);
+    const moved = await movedAway(b);
+    if (moved) return supersede(b, members, moved);
     const who = await whoAmI(d.exec);
     const fork = await forkOf(d.exec, who.login, repo);
     const push = await git.pushNew(fork, b.branch, b.commit_sha);
@@ -180,7 +204,12 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
     audit(db, ACTOR, "batch-push", `${repo}:${b.branch}`, { run: runId, commit: b.commit_sha, fork });
     const links = members.map((m) => `- [${repo}#${m.number}](https://github.com/${ORG}/${repo}/pull/${m.number})`).join("\n");
     const body = `Lands ${members.length} reviewed and verified pull request${members.length === 1 ? "" : "s"} together. Each one is merged with its own commits.\n\n${links}\n`;
-    const pr = await d.exec("gh", ["pr", "create", "--repo", `${ORG}/${repo}`, "--base", branch, "--head", `${fork.split("/")[0]}:${b.branch}`, "--title", `Integration batch ${b.branch}`, "--body-file", "-"], { input: body });
+    // A crash after `gh pr create` leaves a PR for this branch: adopt it instead of failing on "already exists".
+    const owner = fork.split("/")[0]!;
+    const found = await d.exec("gh", ["pr", "list", "--repo", `${ORG}/${repo}`, "--state", "open", "--head", b.branch, "--json", "url,headRepositoryOwner", "--jq", `.[] | select(.headRepositoryOwner.login == "${owner}") | .url`]);
+    const existing = found.code === 0 ? found.stdout.trim().split("\n")[0] ?? "" : "";
+    const pr = PR_URL.test(existing) ? { code: 0, stdout: existing, stderr: "" }
+      : await d.exec("gh", ["pr", "create", "--repo", `${ORG}/${repo}`, "--base", branch, "--head", `${owner}:${b.branch}`, "--title", `Integration batch ${b.branch}`, "--body-file", "-"], { input: body });
     const url = pr.stdout.trim().split("\n").pop() ?? "";
     const m = url.match(PR_URL);
     if (pr.code !== 0 || !m) { log(`  ${b.branch}: batch PR not opened: ${oneLine(pr.stderr || pr.stdout)}`); s.waiting.push(b.branch); return; }
@@ -190,29 +219,8 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
     log(`  ${b.branch}: opened ${url}`);
   }
 
-  async function land(b: BatchRow, members: BatchMember[], q: QueueEntry[]): Promise<void> {
-    const head = await d.mainHead(repo, branch);
-    if (head && head !== b.base_sha) return supersede(b, members, `${branch} moved to ${short(head)}`);
-    const [ch] = await refreshChecks(db, d.querier, repo, [b.pr_number!]);
-    if (!ch) { s.waiting.push(b.branch); return; }
-    if (ch.state === "CLOSED") { updateBatch(db, b.id, at(), { state: "failed", summary: "the batch PR was closed" }); s.failed.push(...members.map((m) => m.number)); return; }
-    if (ch.overall === "failure") return fail(b, "upstream CI failed on the batch PR");
-    if (ch.overall !== "success" || ch.mergeable !== "MERGEABLE") { s.waiting.push(b.branch); return; }
-    const info = await prInfo(d.querier, repo, b.pr_number!);
-    if (!info) { s.waiting.push(b.branch); return; }
-    if (info.head !== b.commit_sha) { log(`  ${b.branch}: the batch branch moved from ${short(b.commit_sha)} to ${short(info.head)}; not merged`); s.waiting.push(b.branch); return; }
-    if (!info.assignees.length) {
-      const me = await viewerOf(d.querier);
-      await d.querier.query(ASSIGN, { id: info.id, user: me.id });
-    }
-    const r = await d.run(d.mergeCommand, [`${ORG}/${repo}`, String(b.pr_number), "--merge"]);
-    if (r.code !== 0) {
-      const why = oneLine(r.stderr) || oneLine(r.stdout) || `exit code ${r.code}`;
-      updateBatch(db, b.id, at(), { summary: `${d.mergeCommand}: ${why}`.slice(0, 400) });
-      log(`  ${b.branch}: refused: ${why}`);
-      s.waiting.push(b.branch);
-      return;
-    }
+  /** Bookkeeping once the batch PR is merged, whoever merged it. */
+  function recordLanded(b: BatchRow, members: BatchMember[], q: QueueEntry[]): void {
     updateBatch(db, b.id, at(), { state: "merged", summary: null });
     for (const m of members) {
       const e = q.find((x) => x.number === m.number);
@@ -229,12 +237,56 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
     log(`  ${b.branch}: merged ${members.length} PR${members.length === 1 ? "" : "s"}`);
   }
 
+  async function land(b: BatchRow, members: BatchMember[], q: QueueEntry[]): Promise<void> {
+    // One query for the batch PR and its members: the members must still be open at the head that was batched.
+    const checks = await refreshChecks(db, d.querier, repo, [b.pr_number!, ...members.map((m) => m.number)]);
+    const ch = checks.find((c) => c.number === b.pr_number);
+    if (!ch) { s.waiting.push(b.branch); return; }
+    if (ch.state === "MERGED") return recordLanded(b, members, q);
+    if (ch.state === "CLOSED") {
+      // Our own closes mark the batch first, so a closed active batch was closed by a person: hold its PRs for their current heads.
+      updateBatch(db, b.id, at(), { state: "failed", summary: CLOSED_BY_PERSON });
+      for (const m of members) stage.run(repo, m.number, "hold", at(), ACTOR, `the batch PR ${b.branch} was closed; held at ${short(m.head_oid)}`);
+      s.failed.push(...members.map((m) => m.number));
+      log(`  ${b.branch}: the batch PR was closed; its PRs are held until they change`);
+      return;
+    }
+    const live = members.filter((m) => checks.some((c) => c.number === m.number && c.state === "OPEN" && c.head_oid === m.head_oid));
+    if (live.length < members.length) return supersede(b, live, "a PR in the batch was closed, merged or pushed to");
+    if (ch.overall === "failure") return fail(b, "upstream CI failed on the batch PR");
+    if (ch.mergeable === "CONFLICTING") return supersede(b, members, `the batch PR conflicts with ${branch}`);
+    const moved = await movedAway(b);
+    if (moved) return supersede(b, members, moved);
+    if (members.length > left()) { log(`  ${b.branch}: ${members.length} PRs exceed the ${Math.max(left(), 0)} left of the daily limit; waits`); s.waiting.push(b.branch); return; }
+    if (ch.overall !== "success" || ch.mergeable !== "MERGEABLE") { s.waiting.push(b.branch); return; }
+    const info = await prInfo(d.querier, repo, b.pr_number!);
+    if (!info) { s.waiting.push(b.branch); return; }
+    if (info.head !== b.commit_sha) { log(`  ${b.branch}: the batch branch moved from ${short(b.commit_sha)} to ${short(info.head)}; not merged`); s.waiting.push(b.branch); return; }
+    if (!info.assignees.length) {
+      const me = await viewerOf(d.querier);
+      await d.querier.query(ASSIGN, { id: info.id, user: me.id });
+    }
+    const r = await d.run(d.mergeCommand, [`${ORG}/${repo}`, String(b.pr_number), "--merge"]);
+    if (r.code !== 0) {
+      // The merge may have gone through although the command failed afterwards.
+      const [after] = await refreshChecks(db, d.querier, repo, [b.pr_number!]);
+      if (after?.state === "MERGED") return recordLanded(b, members, q);
+      const why = oneLine(r.stderr) || oneLine(r.stdout) || `exit code ${r.code}`;
+      updateBatch(db, b.id, at(), { summary: `${d.mergeCommand}: ${why}`.slice(0, 400) });
+      log(`  ${b.branch}: refused: ${why}`);
+      s.waiting.push(b.branch);
+      return;
+    }
+    recordLanded(b, members, q);
+  }
+
   async function advance(id: number): Promise<void> {
     const b = getBatch(db, id);
     if (!ACTIVE_BATCH.includes(b.state)) return;
     const members = membersOf(db, b.id);
     const q = buildQueue(db, { repo, merged: "exclude" });
-    const keep = members.filter((m) => q.some((e) => e.number === m.number && e.head === m.head_oid && (e.state === "batch-checking" || e.state === "in-batch")));
+    // The batch state overrides a PR's own only while it would still be mergeable (see BATCHABLE), and its merge path must still exist.
+    const keep = members.filter((m) => q.some((e) => e.number === m.number && e.head === m.head_oid && e.path !== null && (e.state === "batch-checking" || e.state === "in-batch")));
     if (keep.length < members.length) return supersede(b, keep, "a PR in the batch changed or is no longer ready");
     if (b.state === "open") return land(b, members, q);
     const task = b.task_id === null ? null : getTask(db, b.task_id);
@@ -245,12 +297,11 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
       const failed = { role: "head" as const, step: out.step, exitCode: out.exitCode, timedOut: out.timedOut };
       return fail(b, `the combined tree failed at ${out.step}`, { taskId: task.id, failed });
     }
-    if (b.retries < MAX_RETRIES) {
-      updateBatch(db, b.id, at(), { task_id: cloneTask(db, task.id), retries: b.retries + 1 });
-      log(`  ${b.branch}: ${out.reason}; queued the sandbox task again`);
-      return;
-    }
-    return fail(b, `the sandbox could not check the batch: ${out.reason}`);
+    // A build-environment error says nothing about the PRs: keep checking with growing waits, never split or hold.
+    if (d.now().getTime() - Date.parse(b.updated_at) < retryDelayMs(b.retries)) { s.waiting.push(b.branch); return; }
+    updateBatch(db, b.id, at(), { task_id: cloneTask(db, task.id), retries: b.retries + 1, summary: oneLine(`sandbox: ${out.reason}`, 400) });
+    log(`  ${b.branch}: ${out.reason}; queued the sandbox task again (retry ${b.retries + 1})`);
+    return;
   }
 
   for (const b of activeBatches(db, repo)) await advance(b.id);
@@ -259,8 +310,8 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
     const q = buildQueue(db, { repo, merged: "exclude" });
     const scores = new Map((db.prepare("SELECT number, score FROM item_rank WHERE repo = ?").all(repo) as { number: number; score: number }[]).map((r) => [r.number, r.score]));
     const lines = db.prepare("SELECT COALESCE(additions, 0) + COALESCE(deletions, 0) AS n FROM items WHERE repo = ? AND number = ?");
-    // Verify-unavailable repos cannot be built in the sandbox: the single-PR merge handles those.
-    const ranked = q.filter((e) => eligible(e) && e.verify?.state !== VERIFY_UNAVAILABLE)
+    // PRs the sandbox cannot build or CI cannot confirm are left to the single-PR merge.
+    const ranked = q.filter((e) => eligible(e) && !singleMergeOnly(e))
       .sort((a, b) => (scores.get(b.number) ?? -1) - (scores.get(a.number) ?? -1) || a.number - b.number)
       .map((e): Cand => ({ number: e.number, head: e.head, size: e.size, lines: (lines.get(repo, e.number) as { n: number } | undefined)?.n ?? 0 }));
     if (ranked.length) {

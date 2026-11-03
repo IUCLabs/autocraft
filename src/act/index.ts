@@ -24,6 +24,7 @@ import { actionable, ask, factsOf, getDecision, type Actionable, type DecisionRo
 import { HEAD_FACT } from "../merge/queue.ts";
 import { Client, type Querier } from "../mirror.ts";
 import { headOf } from "../review/candidates.ts";
+import { notOwnIntegrationSql } from "../dupes/held.ts";
 import { applyDuplicateAnswers } from "../dupes/decide.ts";
 import { commentApprovalOf } from "./approval.ts";
 import { cleanReason, duplicateComment, ORG, prCloseComment, scopeCloseComment } from "./templates.ts";
@@ -91,7 +92,7 @@ export function closeCandidates(db: DatabaseSync, repo: string): ReviewRow[] {
     SELECT r.repo, r.number, r.head_oid, r.reason, r.duplicate_of, r.size, i.title, i.author, r.source, r.sonnet_verdict, r.sonnet_reason,
            i.head_oid AS i_head, i.updated_at, c.head_oid AS c_head, c.fetched_at AS c_at
     FROM final_reviews r
-    JOIN items i ON i.repo = r.repo AND i.number = r.number AND i.kind = 'pr' AND i.state = 'OPEN'
+    JOIN items i ON i.repo = r.repo AND i.number = r.number AND i.kind = 'pr' AND i.state = 'OPEN' AND ${notOwnIntegrationSql("i")}
     LEFT JOIN pr_checks c ON c.repo = r.repo AND c.number = r.number
     WHERE r.repo = ? AND r.verdict = 'close'
       AND r.head_oid = (SELECT r2.head_oid FROM reviews r2 WHERE r2.repo = r.repo AND r2.number = r.number ORDER BY r2.at DESC, r2.rowid DESC LIMIT 1)

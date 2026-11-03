@@ -200,7 +200,13 @@ A PR held by an open Duplicate? decision shows as `held-duplicate` and is not me
 3. Push the branch to the pipeline account's fork and open a PR to the storytold repo that lists the batch's PRs as links. Upstream CI runs on it.
 4. When upstream CI is green and the PR is mergeable, `safe-merge --merge` lands it. The repo's batch size grows by one.
 
-If the sandbox check or upstream CI fails, the batch is split in half and each half is retried, and the repo's batch size halves (minimum 1). A single PR that fails goes on hold (`batch-failed`) with Haiku's summary, until it has a new head. If the default branch moves, or a PR in the batch changes, the batch PR is closed and the PRs are rebuilt on the new head (merge, not rebase). A build-environment error is retried once. There is no Opus review of the combined diff. The Merge queue page lists the batches with their PRs, state and batch PR.
+If the sandbox check or upstream CI fails, the batch is split in half and each half is retried, and the repo's batch size halves (minimum 1). A single PR that fails goes on hold (`batch-failed`) with Haiku's summary, until it has a new head. A person closing the batch PR holds its PRs the same way.
+
+Rebuilds. A PR in the batch that is no longer mergeable by the rule or the operator's answer, or that was closed, merged or pushed to on GitHub, leaves the batch: right before the merge command one query checks every member for state OPEN at the batched head, and the rest are rebuilt in a new batch (merge, not rebase). When the default branch moves, the batch is kept if its tip still merges cleanly with the new head (GitHub's mergeable flag and upstream CI on the batch PR cover the rest); a conflict, or GitHub reporting one, closes the batch PR and rebuilds. A batch PR merged by someone else is recorded as merged.
+
+Limits and exclusions. A PR whose own diff is binary or larger than the task limit is left out of batches and merged on its own, like PRs in repos with no CI (a batch PR would never turn green). A batch with more PRs than the daily limit has left waits, and rebuilds and splits take at most what is left. A build-environment error keeps the batch checking: the task is queued again at once, then after 5 minutes doubling up to 6 hours; the batch is never split or held for it. Merge jobs that only advance batches in flight do not count towards the stage's backoff. A crash after the batch PR was created is repaired by adopting the open PR of the branch. Fetches into the shared cache retry on ref-lock errors.
+
+The pipeline's own integration PRs (author the pipeline account, number in `merge_batches`) are left out of classify, labels, review, Opus review, duplicates, decide, act, fix-up, verify and the queue. There is no Opus review of the combined diff. The Merge queue page lists the batches with their PRs, state and batch PR.
 
 ## Act
 

@@ -51,7 +51,15 @@ export class Git {
 
   /** git in the bare repository; `env` adds to the locked-down environment. */
   async git(args: string[], opts: { input?: string; env?: Record<string, string> } = {}): Promise<ExecResult> {
-    return this.run("git", [...HARDENING, ...args], { cwd: this.dir, input: opts.input, env: { ...GIT_ENV, ...opts.env } });
+    const go = () => this.run("git", [...HARDENING, ...args], { cwd: this.dir, input: opts.input, env: { ...GIT_ENV, ...opts.env } });
+    if (args[0] !== "fetch") return go();
+    // Sessions fetch into the same bare cache at once; a ref lock held by another fetch clears within moments.
+    let r = await go();
+    for (let i = 1; i <= 4 && r.code !== 0 && /cannot lock ref|Unable to create '.*\.lock'/.test(r.stderr); i++) {
+      await new Promise((ok) => setTimeout(ok, 250 * i));
+      r = await go();
+    }
+    return r;
   }
 
   /** Like git(), failing on a non-zero exit. */

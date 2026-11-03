@@ -12,9 +12,14 @@ export const DUP_OPTIONS = {
   keep: { key: "keep", label: "Keep both", hint: "They overlap but both stay open; do not ask about this pair again." },
 } as const;
 
-/** SQL condition, true when the item `alias` (a row of items) is not held by a duplicate decision. For WHERE clauses of candidate queries. */
+/** SQL condition, true when the item `alias` (a row of items) is not an integration batch PR the pipeline opened itself (see src/merge/batch.ts). Such PRs only carry reviewed PRs and never enter the pipeline as contributor PRs. */
+export const notOwnIntegrationSql = (alias: string): string =>
+  `NOT EXISTS (SELECT 1 FROM main.merge_batches mb WHERE mb.repo = ${alias}.repo AND mb.pr_number = ${alias}.number
+    AND ${alias}.author = (SELECT value FROM main.settings WHERE key = 'pipeline_login'))`;
+
+/** SQL condition, true when the item `alias` (a row of items) is not held by a duplicate decision and is not one of our integration PRs. For WHERE clauses of candidate queries. */
 export const notHeldSql = (alias: string): string =>
-  `NOT EXISTS (SELECT 1 FROM decisions dh WHERE dh.kind = 'duplicate' AND dh.repo = ${alias}.repo AND dh.number = ${alias}.number AND (dh.answer IS NULL OR dh.answer = 'close'))`;
+  `${notOwnIntegrationSql(alias)} AND NOT EXISTS (SELECT 1 FROM decisions dh WHERE dh.kind = 'duplicate' AND dh.repo = ${alias}.repo AND dh.number = ${alias}.number AND (dh.answer IS NULL OR dh.answer = 'close'))`;
 
 export function duplicateHeld(db: DatabaseSync, repo: string, number: number): boolean {
   return !!db.prepare(`SELECT 1 FROM decisions WHERE kind = 'duplicate' AND repo = ? AND number = ? AND (answer IS NULL OR answer = 'close')`).get(repo, number);

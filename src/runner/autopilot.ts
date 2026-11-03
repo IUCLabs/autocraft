@@ -319,6 +319,8 @@ export function usageToday(db: DatabaseSync, step: string, ms: number = Date.now
 
 /** After BACKOFF_AFTER failed autopilot jobs in a row: when the stage may run again, else null. */
 export function backoffUntil(db: DatabaseSync, step: string, ms: number = Date.now()): number | null {
+  // Merge jobs that only advance batches in flight handle nothing; that is progress, not idleness.
+  if (step === "merge" && db.prepare("SELECT 1 FROM main.merge_batches WHERE state IN ('checking', 'open')").get()) return null;
   // Failed, or done without handling anything although the autopilot saw work; jobs a runner restart ended do not count.
   const rows = db.prepare(`SELECT state, ended_at, items FROM jobs WHERE step = ? AND requested_by = ? AND state IN ('done', 'failed')
     AND COALESCE(error, '') <> ? ORDER BY id DESC LIMIT ?`).all(step, AUTOPILOT_USER, RUNNER_STOPPED, BACKOFF_AFTER) as { state: string; ended_at: string | null; items: number | null }[];

@@ -4,7 +4,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import { latestRun, settledLookup } from "../classify/settled.ts";
 import { actionable } from "../decisions.ts";
-import { duplicateHeld } from "../dupes/held.ts";
+import { duplicateHeld, notOwnIntegrationSql } from "../dupes/held.ts";
 import { headOf } from "../review/candidates.ts";
 import { batchStates } from "./batch-store.ts";
 import { getRule, STATS_SQL, tierOf, type Tier } from "../whitelist.ts";
@@ -74,7 +74,10 @@ export type QueueEntry = {
 };
 
 /** States a PR leaves for its batch's state while it is in a batch. */
-const BATCHABLE: QueueState[] = ["ready", "decision-answered-merge", "refused", "waiting-ci", "needs-decision"];
+const BATCHABLE: QueueState[] = ["ready", "decision-answered-merge", "refused", "waiting-ci"];
+
+/** PRs the integration batches leave to the single-PR merge: the sandbox cannot build the repo, or the repo has no CI for the batch PR to wait on. */
+export const singleMergeOnly = (e: QueueEntry): boolean => e.verify?.state === VERIFY_UNAVAILABLE || e.noCi;
 
 /** True when the PR may be merged now (ready, approved, or retried after a refusal). */
 export const eligible = (e: QueueEntry): boolean =>
@@ -149,7 +152,7 @@ export function buildQueue(db: DatabaseSync, opts: QueueOptions = {}): QueueEntr
     JOIN final_reviews l ON l.repo = i.repo AND l.number = i.number AND l.head_oid = (
       SELECT r.head_oid FROM reviews r WHERE r.repo = i.repo AND r.number = i.number ORDER BY r.at DESC, r.rowid DESC LIMIT 1)
     LEFT JOIN pr_checks c ON c.repo = l.repo AND c.number = l.number
-    WHERE l.verdict IN ('take', 'take-fix') AND i.kind = 'pr' AND i.state IN (${states}) ${where.map((w) => `AND ${w}`).join(" ")}
+    WHERE l.verdict IN ('take', 'take-fix') AND i.kind = 'pr' AND i.state IN (${states}) AND ${notOwnIntegrationSql("i")} ${where.map((w) => `AND ${w}`).join(" ")}
     ORDER BY i.repo, i.number ${opts.limit ? `LIMIT ${Math.floor(opts.limit)}` : ""}`).all(params) as Row[];
 
   const merges = db.prepare("SELECT outcome, reason FROM merges WHERE repo = ? AND number = ? AND head_oid = ? ORDER BY at DESC, rowid DESC LIMIT 1");

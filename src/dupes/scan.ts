@@ -2,6 +2,7 @@
 // stored embed_hash differs from the one at its last scan), its nearest
 // neighbours in the same repo from the vector index.
 import type { DatabaseSync } from "node:sqlite";
+import { notOwnIntegrationSql } from "../dupes/held.ts";
 import type { VectorIndex } from "../embed/vectors.ts";
 
 /** Cosine similarity of the embedding model (bge-small): about the top quartile of nearest-neighbour scores in the real data; true duplicates sit above it. */
@@ -24,7 +25,7 @@ export function scanPending(db: DatabaseSync, modelId: string, max = 5000): Scan
   return db.prepare(`SELECT ${COLS} FROM items i
     JOIN item_embeddings e ON e.repo = i.repo AND e.number = i.number AND e.model = ? AND e.hash = i.embed_hash
     LEFT JOIN duplicate_scans s ON s.repo = i.repo AND s.number = i.number AND s.hash = i.embed_hash
-    WHERE i.state = 'OPEN' AND i.repo IN (SELECT name FROM tracked_repos) AND s.hash IS NULL
+    WHERE i.state = 'OPEN' AND i.repo IN (SELECT name FROM tracked_repos) AND s.hash IS NULL AND ${notOwnIntegrationSql("i")}
     ORDER BY i.repo, i.number LIMIT ?`).all(modelId, max) as ScanItem[];
 }
 
@@ -50,7 +51,7 @@ export type Pair = { repo: string; a: number; b: number; a_hash: string; b_hash:
 export function neighbourPairs(db: DatabaseSync, index: VectorIndex, item: ScanItem, nowMs: number, threshold = SIM_THRESHOLD, cap = MAX_NEIGHBOURS): Pair[] {
   const v = index.vectorOf(db, item.repo, item.number);
   if (!v) return [];
-  const get = db.prepare(`SELECT ${COLS} FROM items i WHERE i.repo = ? AND i.number = ?`);
+  const get = db.prepare(`SELECT ${COLS} FROM items i WHERE i.repo = ? AND i.number = ? AND ${notOwnIntegrationSql("i")}`);
   const out: Pair[] = [];
   for (const h of index.nearest(db, v, LOOKUP, `${item.repo}#${item.number}`, item.repo)) {
     if (h.score < threshold || out.length >= cap) break;

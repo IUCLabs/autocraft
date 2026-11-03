@@ -24,6 +24,11 @@ export class BatchGit extends Git {
     return (await this.must(["commit-tree", tree, ...parents.flatMap((p) => ["-p", p]), "-F", "-"], { input: message, env })).trim();
   }
 
+  /** The text diff of one PR head against its merge base with `base`. */
+  async prDiff(base: string, head: string): Promise<string> {
+    return this.must(["diff", "--no-ext-diff", "--no-textconv", "--no-color", "--no-renames", `${base}...${head}`]);
+  }
+
   /** The text diff from `base` to `tip`, as a build task applies it. */
   async diff(base: string, tip: string): Promise<string> {
     return this.must(["diff", "--no-ext-diff", "--no-textconv", "--no-color", "--no-renames", base, tip]);

@@ -262,6 +262,7 @@ export const STEPS: StepDef[] = [
     run: async (ctx) => {
       const { runMerge } = await import("../merge/index.ts");
       const { runBatches } = await import("../merge/batch.ts");
+      const { singleMergeOnly } = await import("../merge/queue.ts");
       const refused = await checkMergeApproved(ctx.db, ctx.params);
       if (refused) throw new Error(refused);
       const repo = String(ctx.params.repo), limit = Number(ctx.params.limit);
@@ -269,7 +270,7 @@ export const STEPS: StepDef[] = [
       ctx.usageRun(b.runId);
       let single = { merged: [] as string[], attempted: [] as string[], refused: [] as unknown[], asked: [] as string[] };
       if (limit > b.merged.length) {
-        single = await runMerge(ctx.db, { repo, limit: limit - b.merged.length, dryRun: false, only: (e) => e.verify?.state === "unavailable", onMerged: (n) => ctx.handled(b.merged.length + n) }, ctx.log);
+        single = await runMerge(ctx.db, { repo, limit: limit - b.merged.length, dryRun: false, only: (e) => singleMergeOnly(e) || b.skipped.includes(e.number), onMerged: (n) => ctx.handled(b.merged.length + n) }, ctx.log);
       }
       return `${repo}: ${b.merged.length} merged in batches (${b.started.length} started, ${b.published.length} opened, ${b.split.length} split), ${single.merged.length} merged singly, ${single.asked.length} decisions asked`;
     },

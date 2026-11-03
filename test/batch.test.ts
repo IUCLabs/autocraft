@@ -8,7 +8,10 @@ import { connect } from "../src/db.ts";
 import type { Querier } from "../src/mirror.ts";
 import { runBatches, type BatchDeps } from "../src/merge/batch.ts";
 import { activeBatches, admits, batchSizeOf, membersOf, setBatchSize } from "../src/merge/batch-store.ts";
-import { buildQueue } from "../src/merge/queue.ts";
+import { buildQueue, eligible, singleMergeOnly } from "../src/merge/queue.ts";
+import { askMergeDecisions } from "../src/merge/index.ts";
+import { selectCandidates } from "../src/review/candidates.ts";
+import { Git } from "../src/fixup/git.ts";
 import { finalizeReviews } from "./fixture.ts";
 
 const SCRATCH = join(homedir(), ".cache/craft-automation-scratch");
@@ -34,8 +37,10 @@ function fresh(prs: { n: number; author?: string }[]): DatabaseSync {
   return db;
 }
 
-type World = { log: string[]; conflicts: Set<string>; mainHead: string; ci: "SUCCESS" | "FAILURE" | "PENDING"; mergeExit: number; tip: Map<string, string> };
-const world = (): World => ({ log: [], conflicts: new Set(), mainHead: MAIN, ci: "SUCCESS", mergeExit: 0, tip: new Map() });
+type World = { log: string[]; conflicts: Set<string>; mainHead: string; ci: "SUCCESS" | "FAILURE" | "PENDING"; mergeExit: number; tip: Map<string, string>;
+  /** Head commits and states GitHub reports instead of the defaults (`sha<n>`, OPEN); 900 is the batch PR. */
+  heads: Map<number, string>; prState: Map<number, string>; binary: Set<string>; existingPr: string };
+const world = (): World => ({ log: [], conflicts: new Set(), mainHead: MAIN, ci: "SUCCESS", mergeExit: 0, tip: new Map(), heads: new Map(), prState: new Map(), binary: new Set(), existingPr: "" });
 
 function deps(w: World, root: string): BatchDeps {
   let commits = 0;
@@ -45,11 +50,11 @@ function deps(w: World, root: string): BatchDeps {
       const v = vars as { n?: number };
       if (query.includes("viewer")) return { viewer: { login: "bot", id: "U1" } };
       if (query.startsWith("mutation")) return { addAssigneesToAssignable: {} };
-      const head = (n: number) => w.tip.get("tip") ?? `sha${n}`;
-      if (v.n !== undefined) return { repository: { pullRequest: { id: `PR${v.n}`, headRefOid: head(v.n), state: "OPEN", assignees: { nodes: [] }, commits: { totalCount: 1, nodes: [] } } } };
+      const head = (n: number) => w.heads.get(n) ?? (n === 900 ? w.tip.get("tip") ?? "none" : `sha${n}`);
+      if (v.n !== undefined) return { repository: { pullRequest: { id: `PR${v.n}`, headRefOid: head(v.n), state: w.prState.get(v.n) ?? "OPEN", assignees: { nodes: [] }, commits: { totalCount: 1, nodes: [] } } } };
       const nums = [...query.matchAll(/pullRequest\(number: (\d+)\)/g)].map((m) => Number(m[1]));
       return { repository: Object.fromEntries(nums.map((x) => [`pr${x}`, {
-        number: x, state: "OPEN", isDraft: false, headRefOid: head(x), mergeable: "MERGEABLE", maintainerCanModify: true,
+        number: x, state: w.prState.get(x) ?? "OPEN", isDraft: false, headRefOid: head(x), mergeable: "MERGEABLE", maintainerCanModify: true,
         commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { nodes: [{ __typename: "CheckRun", name: "ci", status: w.ci === "PENDING" ? "IN_PROGRESS" : "COMPLETED", conclusion: w.ci === "PENDING" ? null : w.ci }] } } } }] },
       }])) };
     },
@@ -73,12 +78,14 @@ function deps(w: World, root: string): BatchDeps {
           return w.conflicts.has(b) ? { code: 1, stdout: "", stderr: "" } : ok(`tree-${a[a.length - 2]}-${b}\n`);
         }
         if (a[0] === "commit-tree") { const c = `commit${++commits}`; w.log.push(`commit-tree ${a.filter((x) => x.startsWith("sha") || x.startsWith("commit") || /^a+$/.test(x) || /^b+$/.test(x)).join(" ")}`); w.tip.set("tip", c); return ok(`${c}\n`); }
+        if (a[0] === "diff" && w.binary.has(a[a.length - 1]!.split("...")[1] ?? "")) return ok("diff --git a/x b/x\nBinary files a/x and b/x differ\n");
         if (a[0] === "diff") return ok("diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n");
         if (a[0] === "push") { w.log.push(`push ${a.slice(-2).join(" ")}`); return ok(); }
       }
       if (cmd === "gh") {
         if (key === "gh api user") return ok(JSON.stringify({ login: "bot", id: 7, node_id: "N7" }));
         if (a[0] === "api") return ok("storytold/app\n");
+        if (a[0] === "pr" && a[1] === "list") return ok(w.existingPr);
         if (a[0] === "pr" && a[1] === "create") { w.log.push(`pr create ${opts?.input?.split("\n").filter((l) => l.startsWith("- ")).join(" ")}`); return ok("https://github.com/storytold/app/pull/900\n"); }
         if (a[0] === "pr" && a[1] === "close") { w.log.push(`pr close ${a[2]}`); return ok(); }
       }
@@ -164,6 +171,7 @@ describe("integration batches", () => {
     await runBatches(db, { repo: "app" }, quiet, d);
     finishTask(db, activeBatches(db, "app")[0]!.task_id!);
     await runBatches(db, { repo: "app" }, quiet, d);
+    w.conflicts.add(activeBatches(db, "app")[0]!.commit_sha);
     w.mainHead = MAIN2;
     const moved = await runBatches(db, { repo: "app" }, quiet, d);
     assert.equal(moved.superseded.length, 1);
@@ -202,5 +210,141 @@ describe("integration batches", () => {
     db.prepare("INSERT INTO main.settings (key, value) VALUES ('pipeline_login', 'pipeline-bot')").run();
     db.prepare(`INSERT INTO fix_attempts (repo, number, main_sha, text_hash, state, pr_url, created_at, updated_at) VALUES ('app', 50, 'x', 'h', 'pr-opened', 'https://github.com/storytold/app/pull/1', '${T0}', '${T0}')`).run();
     assert.deepEqual(states(db), { 1: "ready", 2: "needs-decision" });
+  });
+
+  /** Builds a batch of PRs 1..n, finishes its sandbox task and publishes it; returns the open batch. */
+  async function open(n: number, w: World, root: string, limit?: number) {
+    const db = fresh(Array.from({ length: n }, (_, k) => ({ n: k + 1, author: k === 1 ? "other" : "regular" })));
+    db.prepare("INSERT INTO whitelist_overrides (login, status, by, at) VALUES ('other', 'allow', 'op', ?)").run(T0);
+    const d = deps(w, join(dir, root));
+    await runBatches(db, { repo: "app" }, quiet, d);
+    finishTask(db, activeBatches(db, "app")[0]!.task_id!);
+    await runBatches(db, { repo: "app", limit }, quiet, d);
+    const b = activeBatches(db, "app")[0]!;
+    assert.equal(b.state, "open");
+    w.tip.set("tip", b.commit_sha);
+    return { db, d, b };
+  }
+  const merged = (w: World) => w.log.some((l) => l.startsWith("safe-merge-test"));
+
+  test("a member that loses its merge path while the batch is open is dropped before landing", async () => {
+    const w = world();
+    const { db, d } = await open(3, w, "f1");
+    db.prepare("UPDATE whitelist_overrides SET status = 'deny' WHERE login = 'other'").run();
+    assert.equal(states(db)[2], "needs-decision");
+    const s = await runBatches(db, { repo: "app" }, quiet, d);
+    assert.equal(s.superseded.length, 1);
+    assert.deepEqual(s.merged, []);
+    assert.equal(merged(w), false);
+    assert.deepEqual(activeBatches(db, "app").map((b) => membersOf(db, b.id).map((m) => m.number)), [[1, 3]]);
+  });
+
+  test("a member closed or pushed to after the batch PR opened is not landed at the old head", async () => {
+    const w = world();
+    const { db, d } = await open(3, w, "f2");
+    w.heads.set(2, "pushed");
+    w.prState.set(3, "CLOSED");
+    const s = await runBatches(db, { repo: "app" }, quiet, d);
+    assert.equal(s.superseded.length, 1);
+    assert.equal(merged(w), false);
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM merges").get()!.n, 0);
+    assert.deepEqual(activeBatches(db, "app").map((b) => membersOf(db, b.id).map((m) => m.number)), [[1]]);
+  });
+
+  test("a PR with a binary diff is skipped for the single-merge path and does not block the others", async () => {
+    const db = fresh([{ n: 1 }, { n: 2 }, { n: 3 }]);
+    const w = world();
+    w.binary.add("sha3");
+    const s = await runBatches(db, { repo: "app" }, quiet, deps(w, join(dir, "f3")));
+    assert.deepEqual(s.skipped, [3]);
+    assert.deepEqual(membersOf(db, activeBatches(db, "app")[0]!.id).map((m) => m.number), [1, 2]);
+  });
+
+  test("a batch larger than the daily limit left waits", async () => {
+    const w = world();
+    const { db, d } = await open(3, w, "f5");
+    const s = await runBatches(db, { repo: "app", limit: 2 }, quiet, d);
+    assert.deepEqual([s.merged, s.waiting.length, merged(w)], [[], 1, false]);
+    assert.equal(activeBatches(db, "app")[0]!.state, "open");
+  });
+
+  test("PRs of a repo without CI go to the single-merge path, not into a batch", async () => {
+    const db = fresh([{ n: 1, author: "stranger" }]);
+    db.prepare("UPDATE pr_checks SET overall = 'none'").run();
+    db.prepare("INSERT INTO access (login, role) VALUES ('op', 'operator')").run();
+    askMergeDecisions(db, { run: "r1" });
+    db.prepare("UPDATE decisions SET answer = 'merge', answered_by = 'op', answered_at = '2099-01-01'").run();
+    const [e] = buildQueue(db, { repo: "app" });
+    assert.ok(eligible(e!) && singleMergeOnly(e!));
+    const s = await runBatches(db, { repo: "app" }, quiet, deps(world(), join(dir, "f6")));
+    assert.deepEqual(s.started, []);
+  });
+
+  test("environment errors of the sandbox retry with a wait and never split or hold the batch", async () => {
+    const db = fresh([{ n: 1 }, { n: 2 }]);
+    const w = world();
+    const d = deps(w, join(dir, "f9"));
+    await runBatches(db, { repo: "app" }, quiet, d);
+    const lose = () => db.prepare("UPDATE build_tasks SET state = 'lost', results = '[]' WHERE id = ?").run(activeBatches(db, "app")[0]!.task_id!);
+    for (let k = 0; k < 3; k++) {
+      lose();
+      const s = await runBatches(db, { repo: "app" }, quiet, d);
+      assert.deepEqual([s.split, s.failed], [[], []]);
+    }
+    const [b] = activeBatches(db, "app");
+    assert.deepEqual([activeBatches(db, "app").length, b!.state, b!.retries], [1, "checking", 1]);
+  });
+
+  test("a batch PR merged outside the command is recorded as merged; one closed by a person holds its PRs", async () => {
+    const w = world();
+    const { db, d, b } = await open(2, w, "l1");
+    w.prState.set(900, "MERGED");
+    w.mainHead = MAIN2;
+    const s = await runBatches(db, { repo: "app" }, quiet, d);
+    assert.deepEqual(s.merged, [1, 2]);
+    assert.equal((db.prepare("SELECT state FROM merge_batches WHERE id = ?").get(b.id) as { state: string }).state, "merged");
+
+    const w2 = world();
+    const o = await open(2, w2, "l2");
+    w2.prState.set(900, "CLOSED");
+    await runBatches(o.db, { repo: "app" }, quiet, o.d);
+    assert.deepEqual(states(o.db), { 1: "batch-failed", 2: "batch-failed" });
+    assert.equal(activeBatches(o.db, "app").length, 0);
+  });
+
+  test("a main move that merges cleanly keeps the batch", async () => {
+    const w = world();
+    const { db, d } = await open(2, w, "f8");
+    w.mainHead = MAIN2;
+    const s = await runBatches(db, { repo: "app" }, quiet, d);
+    assert.deepEqual([s.superseded, s.merged], [[], [1, 2]]);
+  });
+
+  test("a batch PR left by a crash is adopted instead of created again", async () => {
+    const db = fresh([{ n: 1 }]);
+    const w = world();
+    w.existingPr = "https://github.com/storytold/app/pull/900\n";
+    const d = deps(w, join(dir, "l3"));
+    await runBatches(db, { repo: "app" }, quiet, d);
+    finishTask(db, activeBatches(db, "app")[0]!.task_id!);
+    await runBatches(db, { repo: "app" }, quiet, d);
+    assert.equal(w.log.some((l) => l.startsWith("pr create")), false);
+    assert.equal(activeBatches(db, "app")[0]!.pr_number, 900);
+  });
+
+  test("a fetch that fails on a ref lock is tried again", async () => {
+    let calls = 0;
+    const g = new Git(async () => (++calls < 3 ? { code: 1, stdout: "", stderr: "error: cannot lock ref 'refs/x': is at a but expected b" } : { code: 0, stdout: "ok", stderr: "" }), dir, "lock");
+    assert.equal((await g.git(["fetch", "x"])).code, 0);
+    assert.equal(calls, 3);
+  });
+
+  test("our integration PRs do not enter the queue or the review candidates", () => {
+    const db = fresh([{ n: 1 }, { n: 5, author: "bot" }]);
+    db.prepare("INSERT INTO main.settings (key, value) VALUES ('pipeline_login', 'bot')").run();
+    db.prepare("INSERT INTO merge_batches (repo, branch, state, base_sha, commit_sha, pr_number, created_at, updated_at) VALUES ('app', 'integration-app-1', 'open', 'a', 'b', 5, ?, ?)").run(T0, T0);
+    assert.deepEqual(Object.keys(states(db)), ["1"]);
+    db.prepare("DELETE FROM reviews").run();
+    assert.deepEqual(selectCandidates(db, "app").map((c) => c.number), [1]);
   });
 });

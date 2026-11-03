@@ -7,6 +7,7 @@
 // due again; a new comment or label does not. Verdicts from before input_hash
 // existed count as changed when the item was updated after the verdict.
 import type { DatabaseSync } from "node:sqlite";
+import { notOwnIntegrationSql } from "../dupes/held.ts";
 import { refOf, type Item } from "../classify/parse.ts";
 import { freeSlots } from "../agents/accounts.ts";
 import { runHaiku, runJev } from "../classify/run.ts";
@@ -72,7 +73,7 @@ export function haikuDue(db: DatabaseSync, run: string, limit: number): Item[] {
   return db.prepare(`SELECT ${ITEM_COLUMNS} FROM items i JOIN tracked_repos t ON t.name = i.repo
     JOIN classifications j ON j.repo = i.repo AND j.number = i.number AND j.classifier = 'jev' AND j.run_id = :run
     LEFT JOIN classifications h ON h.repo = i.repo AND h.number = i.number AND h.classifier = 'haiku' AND h.run_id = :run
-    WHERE i.state = 'OPEN' AND COALESCE(json_extract(CASE WHEN json_valid(j.probs) THEN j.probs END, '$.top'), 0) < :sure
+    WHERE i.state = 'OPEN' AND ${notOwnIntegrationSql("i")} AND COALESCE(json_extract(CASE WHEN json_valid(j.probs) THEN j.probs END, '$.top'), 0) < :sure
       AND (h.at IS NULL OR h.at < j.at)
     ORDER BY j.at DESC LIMIT :limit`).all({ run, sure: SURE, limit }) as unknown as Item[];
 }
@@ -105,7 +106,7 @@ export function dueItems(db: DatabaseSync, run: string, mode: "new" | "all"): { 
   const due = db.prepare(`SELECT ${ITEM_COLUMNS}, i.updated_at, c.at AS c_at, c.input_hash AS c_hash, i.class_hash AS h
     FROM items i JOIN tracked_repos t ON t.name = i.repo
     LEFT JOIN classifications c ON c.repo = i.repo AND c.number = i.number AND c.classifier = 'jev' AND c.run_id = :run
-    WHERE i.state = 'OPEN' AND i.class_scheme = :scheme
+    WHERE i.state = 'OPEN' AND ${notOwnIntegrationSql("i")} AND i.class_scheme = :scheme
       AND (c.at IS NULL OR (:new AND CASE WHEN c.input_hash IS NOT NULL THEN c.input_hash != i.class_hash ELSE COALESCE(i.updated_at, '') > c.at END))
     ORDER BY c.at IS NOT NULL, i.updated_at DESC, i.repo, i.number`).all({ run, scheme: SCHEME_ID, new: mode === "new" ? 1 : 0 }) as unknown as (Row & { h: string })[];
   const hashes = new Map<string, string>();
