@@ -20,7 +20,7 @@ import { actionable, ask, factsOf, getDecision } from "../decisions.ts";
 import { assignTo, mergeViaCommand, MERGE_RECORDED_ENV, type Writer } from "../github/write.ts";
 import { Client, markMerged, type Querier } from "../mirror.ts";
 import { refreshChecks } from "../review/checks.ts";
-import { discussionMovedChecked } from "../review/discussion.ts";
+import { liveGateChecked } from "../review/discussion.ts";
 import { fillReviewSummaries } from "../review/summary.ts";
 import { verificationOf } from "../verify/results.ts";
 import { TIER_LABEL } from "../whitelist.ts";
@@ -291,9 +291,11 @@ export async function runMerge(db: DatabaseSync, params: MergeParams, log: (line
     if (!info) { refuse(e, null, "GitHub returned no such PR"); continue; }
     if (info.head !== e.head) { refuse(e, null, `head moved from ${short(e.head)} to ${short(info.head)} since the review`); continue; }
     // Not a refusal: no merges row, so the queue keeps the PR and takes it up again once it is reviewed again.
-    const moved = await discussionMovedChecked(db, d.querier, repo, e.number, e.head, log);
-    if (moved === null) continue;
-    if (moved) {
+    // The same read checks for a maintainer's changes-requested review, whatever merge command runs next.
+    const gate = await liveGateChecked(db, d.querier, repo, e.number, e.head, log);
+    if (gate === null) continue;
+    if (gate.blocked) { log(`  ${refOf(e)}: ${gate.blocked}; not merged`); continue; }
+    if (gate.moved) {
       audit(db, ACTOR, "merge-held-for-discussion", refOf(e), { run: runId, head: e.head, path: e.path });
       log(`  ${refOf(e)}: new comments or reviews since the final review; not merged, it is reviewed again first`);
       continue;

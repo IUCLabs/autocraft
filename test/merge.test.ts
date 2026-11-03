@@ -74,7 +74,7 @@ function fresh(): DatabaseSync {
 }
 
 type Log = string[];
-type Fake = { mergeable?: Map<number, string>; heads?: Map<number, string>; authors?: Map<number, string[]>; assignees?: Map<number, string[]>; exit?: Map<number, CommandResult>; /** Counted comments the live discussion query returns for every PR. */ discussion?: unknown[] };
+type Fake = { mergeable?: Map<number, string>; heads?: Map<number, string>; authors?: Map<number, string[]>; assignees?: Map<number, string[]>; exit?: Map<number, CommandResult>; /** Counted comments the live discussion query returns for every PR. */ discussion?: unknown[]; /** Latest formal reviews of writers the live query returns for every PR. */ formal?: unknown[] };
 
 /** GitHub and merge-command stand-ins; every call goes into `log` in order. */
 function fakes(log: Log, f: Fake = {}): MergeDeps & { calls: () => number } {
@@ -82,7 +82,7 @@ function fakes(log: Log, f: Fake = {}): MergeDeps & { calls: () => number } {
   const querier: Querier = validating({
     spent: 0, remaining: 5000,
     async query(query: string, vars: object) {
-      if (query.includes("reviewThreads")) return { repository: { pullRequest: { author: null, comments: { nodes: f.discussion ?? [] }, reviews: { nodes: [] }, reviewThreads: { nodes: [] } } } };
+      if (query.includes("reviewThreads")) return { repository: { pullRequest: { author: null, comments: { nodes: f.discussion ?? [] }, reviews: { nodes: [] }, formal: { nodes: f.formal ?? [] }, reviewThreads: { nodes: [] } } } };
       n++;
       const v = vars as { n?: number; id?: string };
       if (query.includes("viewer")) { log.push("viewer"); return { viewer: { login: "pipeline-bot", id: "U1" } }; }
@@ -191,6 +191,16 @@ describe("merge queue", () => {
     db.prepare("UPDATE opus_reviews SET at = ?, seen_at = ?, disc_hash = ? WHERE number = 1").run(later, later, discussionHash([{ id: "n1", body: note.body }]));
     const again = await runMerge(db, { repo: "app", dryRun: false, limit: 1 }, quiet, fakes([], { discussion: [note] }));
     assert.deepEqual(again.merged, ["app#1"]);
+  });
+
+  test("a maintainer's changes-requested review found at merge time stops the merge command and shows in the queue", async () => {
+    const db = fresh();
+    const cr = { id: "r1", author: { login: "ana" }, authorAssociation: "NONE", createdAt: "2026-01-03T00:00:00Z", submittedAt: "2026-01-03T00:00:00Z", state: "CHANGES_REQUESTED" };
+    const log: Log = [];
+    const s = await runMerge(db, { repo: "app", dryRun: false, limit: 1 }, quiet, fakes(log, { formal: [cr] }));
+    assert.deepEqual([s.merged, s.refused], [[], []]);
+    assert.ok(!log.some((l) => l.startsWith("safe-merge-test")));
+    assert.equal(stateOf(db, 1), "changes-requested");
   });
 
   test("an operator's merge answer makes a PR eligible; others' answers are ignored", async () => {

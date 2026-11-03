@@ -6,7 +6,7 @@ import { latestRun, settledLookup } from "../classify/settled.ts";
 import { actionable } from "../decisions.ts";
 import { backlogHeld, duplicateHeld, notOwnIntegrationSql } from "../dupes/held.ts";
 import { headOf } from "../review/candidates.ts";
-import { changedSince, discussionState, pipelineLogin, staleReviews } from "../review/discussion.ts";
+import { changedSince, discussionState, staleReviews } from "../review/discussion.ts";
 import { refuseReviews, type ReviewFact } from "./changes-requested.ts";
 import { batchStates } from "./batch-store.ts";
 import { mergeHolds } from "./holds.ts";
@@ -178,7 +178,6 @@ export function buildQueue(db: DatabaseSync, opts: QueueOptions = {}): QueueEntr
 
   // The mirror keeps the latest 10 reviews of a PR; GitHub's review decision covers an older block that fell out of them.
   const reviewRows = db.prepare("SELECT author, author_association AS association, review_state AS state, created_at AS at FROM comments WHERE repo = ? AND number = ? AND kind = 'review'");
-  const ownLogin = pipelineLogin(db);
   const holds = mergeHolds(db, opts.repo);
   const noCiMemo = new Map<string, boolean>();
   const noCi = (repo: string) => noCiMemo.get(repo) ?? (noCiMemo.set(repo, repoHasNoCi(db, repo)), noCiMemo.get(repo)!);
@@ -219,7 +218,7 @@ export function buildQueue(db: DatabaseSync, opts: QueueOptions = {}): QueueEntr
     };
     const open = r.state === "OPEN" && !mergedByUs;
     // A maintainer's formal block comes before everything else: the PR is never asked about, batched or merged while it stands.
-    if (open && refuseReviews(reviewRows.all(r.repo, r.number) as ReviewFact[], r.review_decision, ownLogin)) { e.state = "changes-requested"; out.push(e); continue; }
+    if (open && refuseReviews(reviewRows.all(r.repo, r.number) as ReviewFact[], r.review_decision)) { e.state = "changes-requested"; out.push(e); continue; }
     e.state = stateOf(e, r.state === "MERGED" || mergedByUs, last, open && (backlogHeld(db, r.repo, r.number) ? "backlog" : duplicateHeld(db, r.repo, r.number) ? "duplicate" : null), r.r_final === 1 && !(open && (stale.has(`${r.repo}#${r.number}@${r.r_head}`) || (r.o_at !== null && changedSince(state.get(`${r.repo}#${r.number}`), r.o_seen ?? r.o_at, r.o_hash)))));
     const batch = inBatch.get(`${r.repo}#${r.number}@${r.r_head}`);
     if (batch && BATCHABLE.includes(e.state)) e.state = batch;

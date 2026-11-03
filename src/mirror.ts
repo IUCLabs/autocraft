@@ -238,7 +238,7 @@ function writePage(db: DatabaseSync, repo: string, kind: Kind, detail: Detail, n
     ON CONFLICT (repo, number) DO UPDATE SET ${COLUMNS.filter((c) => c !== "repo" && c !== "number").map((c) => `${c}=excluded.${c}`).join(",")}`);
   const stored = db.prepare(`SELECT ${COLUMNS.join(",")} FROM items WHERE repo=? AND number=?`);
   const del = db.prepare("DELETE FROM comments WHERE repo=? AND number=?");
-  const insComment = db.prepare(`INSERT INTO comments VALUES (?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT (id) DO UPDATE SET
+  const insComment = db.prepare(`INSERT INTO comments (repo, number, id, kind, author, created_at, body, review_state, commit_oid, counted, author_association) VALUES (?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT (id) DO UPDATE SET
     repo=excluded.repo, number=excluded.number, kind=excluded.kind, author=excluded.author, created_at=excluded.created_at,
     body=excluded.body, review_state=excluded.review_state, commit_oid=excluded.commit_oid, counted=excluded.counted, author_association=excluded.author_association`);
   db.exec("BEGIN IMMEDIATE");

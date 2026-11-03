@@ -29,7 +29,7 @@ import { BatchGit } from "./batch-git.ts";
 import { ACTIVE_BATCH, CLOSED_BY_PERSON, activeBatches, admits, batchSizeOf, getBatch, growBatchSize, insertBatch, membersOf, nextBranch, restartCheck, shrinkBatchSize, updateBatch, type BatchMember, type BatchRow } from "./batch-store.ts";
 import { mergeApprovalOf } from "./approval.ts";
 import { ORG, prInfo, viewerOf, mergeRun, DEFAULT_MERGE_COMMAND, type CommandResult } from "./index.ts";
-import { changesRequestedChecked, discussionMovedChecked } from "../review/discussion.ts";
+import { liveGateChecked } from "../review/discussion.ts";
 import { PIPELINE_LOGIN_KEY, buildQueue, eligible, singleMergeOnly, type QueueEntry } from "./queue.ts";
 import { envVar } from "../env.ts";
 
@@ -343,13 +343,15 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
     const info = await prInfo(d.querier, repo, b.pr_number!);
     if (!info) { s.waiting.push(b.branch); return; }
     if (info.head !== b.commit_sha) { log(`  ${b.branch}: the batch branch moved from ${short(b.commit_sha)} to ${short(info.head)}; not merged`); s.waiting.push(b.branch); return; }
+    // The batch PR is ours but a maintainer may review it too.
+    const own = await liveGateChecked(db, d.querier, repo, b.pr_number!, "", log);
+    if (own === null) { s.waiting.push(b.branch); return; }
+    if (own.blocked) return supersede(b, members, `the batch PR has a review: ${own.blocked}`);
     for (const m of members) {
-      const blocked = await changesRequestedChecked(db, d.querier, repo, m.number, log);
-      if (blocked === undefined) { s.waiting.push(b.branch); return; }
-      if (blocked) return supersede(b, members.filter((x) => x !== m), `a PR in the batch has a review: ${blocked}`);
-      const moved = await discussionMovedChecked(db, d.querier, repo, m.number, m.head_oid, log);
-      if (moved === null) { s.waiting.push(b.branch); return; }
-      if (moved) return supersede(b, members.filter((x) => x !== m), "a PR in the batch has new comments or reviews to be reviewed first");
+      const gate = await liveGateChecked(db, d.querier, repo, m.number, m.head_oid, log);
+      if (gate === null) { s.waiting.push(b.branch); return; }
+      if (gate.blocked) return supersede(b, members.filter((x) => x !== m), `a PR in the batch has a review: ${gate.blocked}`);
+      if (gate.moved) return supersede(b, members.filter((x) => x !== m), "a PR in the batch has new comments or reviews to be reviewed first");
     }
     if (!info.assignees.length) {
       const me = await viewerOf(d.querier);
