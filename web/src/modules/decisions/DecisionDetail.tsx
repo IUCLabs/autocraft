@@ -20,6 +20,7 @@ import { ClaimPill, ClassifierLines, Disclosure, Facts, KindTag, OpinionList, Re
 import { Refs } from "./Refs";
 import { ReviewBox } from "./ReviewBox";
 import { localActions, ordered, refOf, useDecisionFilter, useDecisionList, useLocal, usePinned, useSelection, useUndo } from "./state";
+import { Conversation } from "./Conversation";
 import { Thread } from "./Thread";
 import { WorkflowBox, scrollToWorkflow } from "./Workflow";
 import { useNow } from "../../lib/useNow";
@@ -314,6 +315,11 @@ export function DecisionBody({
       {d.related.length > 0 && (
         <Disclosure title="Related" count={d.related.length}>
           <RelatedList d={d} />
+        </Disclosure>
+      )}
+      {phone && d.number !== null && (
+        <Disclosure title="Opus" defaultOpen>
+          <Conversation repo={d.repo} number={d.number} operator={operator} />
         </Disclosure>
       )}
       {phone && (

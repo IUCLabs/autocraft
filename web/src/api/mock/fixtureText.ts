@@ -2,6 +2,15 @@
 // Written to read like real contributions; the reference apps are never named.
 
 export const TEXT: Record<string, { summary: string; body: string | null }> = {
+  "designcraft#1484": {
+    summary:
+      "Adds Hungarian spellchecking and nonstandard hyphenation by committing the LibreOffice dictionary and the TeX hyphenation patterns, about 270,000 lines of data. The code change is small and review found no issues. craft-i18n already ships a Hungarian language pack.",
+    body: `This adds Hungarian to the text engine.
+
+- Spellcheck: the LibreOffice \`hu_HU\` dictionary, committed under \`crates/text/data/hu/\`.
+- Hyphenation: the TeX patterns for Hungarian, including the nonstandard rules.
+- A loader in \`crates/text/src/lang/hu.rs\` and tests for both.`,
+  },
   "photocraft#4127": {
     summary:
       "Adds a Wave distortion filter under Filter › Distort with the five parameters the reference app exposes (generators, wavelength, amplitude, scale, type). Rendering runs in a new WGSL shader with a CPU fallback for machines without compute support. The live preview matches the reference output at default settings on the three test images the author attached. The risk is low: the filter is self-contained and follows the existing distort module, but the CPU path takes about 4 s on an 8K image. Classifiers and the review agree it is a missing reference-app feature.",

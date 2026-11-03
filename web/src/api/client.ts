@@ -67,6 +67,8 @@ import type {
   EnvInput,
   TaskFilter,
   TaskPage,
+  Conversation,
+  ConversationCard,
 } from "./types";
 
 /** The dashboard API as the frontend sees it. The mock and the HTTP client both implement it. */
@@ -90,6 +92,15 @@ export interface Api {
     claim(id: string): Promise<void>;
     thread(id: string): Promise<DecisionComment[]>;
     comment(id: string, body: string): Promise<DecisionComment>;
+  };
+  /** Opus conversations, one per item. Writes are for operators; a message is refused while Opus has not answered the last one. */
+  conversations: {
+    get(repo: RepoName, number: number): Promise<Conversation>;
+    say(repo: RepoName, number: number, text: string): Promise<Conversation>;
+    /** A proposed comment card's text. */
+    editCard(id: number, text: string): Promise<ConversationCard>;
+    doCard(id: number): Promise<ConversationCard>;
+    dismissCard(id: number): Promise<ConversationCard>;
   };
   item(repo: RepoName, number: number): Promise<Item>;
   /** Operator only: review the current head again, plan Verify again, or try the issue fix again. Writes nothing to GitHub. */

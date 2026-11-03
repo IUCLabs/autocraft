@@ -7,7 +7,7 @@
  */
 export type Topic =
   | "repos" | "sync" | "items" | "ranks" | "stages" | "checks" | "classify" | "dupes" | "decisions" | "reviews" | "queue" | "jobs" | "usage" | "accounts" | "agents"
-  | "envs" | "tasks" | "actions" | "fixes" | "verify" | "access" | "settings" | "github" | "fasttrack";
+  | "envs" | "tasks" | "actions" | "fixes" | "verify" | "access" | "settings" | "github" | "fasttrack" | "conversations";
 
 /** Everything an item page shows about a pull request. */
 const ITEM: Topic[] = ["items", "stages", "classify", "ranks", "decisions", "reviews", "verify", "fixes", "actions"];
@@ -25,6 +25,7 @@ const RULES: [prefix: string, topics: Topic[]][] = [
   ["decisions?", ["decisions"]],
   ["decision:", ["decisions"]],
   ["thread:", ["decisions"]],
+  ["conversation:", ["conversations"]],
   ["repos", ["repos"]],
   ["repo-admin", ["repos", "sync", "settings"]],
   ["cls:", ["classify", "items"]],

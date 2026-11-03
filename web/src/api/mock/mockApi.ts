@@ -4,6 +4,7 @@ import { canAct } from "../../registry/permissions";
 import { setClock } from "../../lib/format";
 import { createAdminMock } from "./adminMock";
 import { createAgentsMock } from "./agentsMock";
+import { createConversationMock } from "./conversationMock";
 import { createBuildMock } from "./buildMock";
 import { createPipelineMock } from "./pipelineMock";
 import { promptsReport } from "../../../../src/prompts/index.ts";
@@ -177,6 +178,7 @@ export function createMockApi(): Api {
       return wait(hits.slice(0, 8), 40);
     },
     progress: () => wait(progress(decisions.filter((d) => !d.answer).length)),
+    ...createConversationMock(me, changed),
     ...createAdminMock(me, changed),
     classifiers: {
       report: (sel) => wait(classifierReport(sel), 80),
