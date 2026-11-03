@@ -310,7 +310,8 @@ describe("batch assignment", () => {
     w.assignees.set(2, ["maintainer"]);
     await runBatches(db, { repo: "app" }, quiet, deps(w, join(dir, "a1")));
     assert.deepEqual(w.ops, ["assign 1"]);
-    assert.deepEqual(db.prepare("SELECT target, details FROM audit WHERE action = 'assign'").all().map((r) => `${r.target} ${r.details}`), [`app#1 {"run":"${activeRun(db)}","assignee":"bot"}`]);
+    const rows = db.prepare("SELECT target, details FROM audit WHERE action = 'assign'").all() as { target: string; details: string }[];
+    assert.deepEqual(rows.map((r) => { const d = JSON.parse(r.details) as { run: string; assignee: string }; return [r.target, d.run, d.assignee]; }), [["app#1", activeRun(db), "bot"]]);
   });
 
   test("a member held after failing alone loses our assignment; a person's assignment stays", async () => {
