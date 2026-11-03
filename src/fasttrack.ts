@@ -113,7 +113,9 @@ export function workScores(db: DatabaseSync, repo: string): Map<number, number> 
   for (const f of db.prepare(`SELECT fa.pr_url, ft.id FROM main.fast_track ft JOIN main.fix_attempts fa ON fa.repo = ft.repo AND fa.number = ft.number
     WHERE ft.repo = ? AND fa.pr_url IS NOT NULL`).all(repo) as { pr_url: string; id: number }[]) {
     const n = Number(/\/pull\/(\d+)$/.exec(f.pr_url)?.[1]);
-    if (n && !((out.get(n) ?? 0) >= FAST_FLOOR)) out.set(n, FAST_BASE - f.id);
+    const own = out.get(n) ?? 0;
+    // The smaller mark id (earlier addition) counts, like fastScoreSql.
+    if (n && FAST_BASE - f.id > own) out.set(n, FAST_BASE - f.id);
   }
   return out;
 }

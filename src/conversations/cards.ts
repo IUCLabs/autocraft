@@ -10,9 +10,9 @@ import { COMMENT_MAX, type CardKind } from "./types.ts";
 
 export type CardParams =
   | { kind: "comment"; text: string }
-  | { kind: "answer"; option: string; decision: string }
+  | { kind: "answer"; option: string; decision: string; stamp?: string }
   | { kind: "label"; label: string }
-  | { kind: "backlog"; decision: string }
+  | { kind: "backlog"; decision: string; stamp?: string }
   | { kind: "duplicate"; of: number };
 
 export type NewCard = { params: CardParams; text: string | null; description: string };
@@ -25,9 +25,15 @@ export function openDecision(db: DatabaseSync, repo: string, n: number): Decisio
     ORDER BY asked_at DESC, id DESC LIMIT 1`).get(repo, n) as DecisionRow | undefined;
 }
 
+/** Identifies the state of a decision a card was written for: its ask time and how often it was answered, undone or reopened. A re-ask or Reopen keeps the id, so the id alone cannot tell. */
+export function decisionStamp(db: DatabaseSync, d: DecisionRow): string {
+  const n = (db.prepare("SELECT COUNT(*) AS n FROM audit WHERE target = ? AND action IN ('answer', 'undo', 'reopen')").get(d.id) as { n: number }).n;
+  return `${d.asked_at}|${n}`;
+}
+
 /** The GitHub write that answering with this card's option causes later (the Act step does it), or null when it writes nothing. */
 export function cardEffect(db: DatabaseSync, p: CardParams): string | null {
-  if (p.kind !== "answer") return null;
+  if (p.kind !== "answer" || !p.decision) return null;
   const d = getDecision(db, p.decision);
   return d ? writeEffect(d.kind as Kind, p.option) : null;
 }
@@ -124,7 +130,7 @@ export function validateCard(db: DatabaseSync, repo: string, n: number, raw: unk
       const d = openDecision(db, repo, n);
       if (!d) return { note: "dropped an answer card: the item has no open decision" };
       if (typeof c.option !== "string" || !optionsOf(d).some((o) => o.key === c.option)) return { note: `dropped an answer card: "${String(c.option).slice(0, 40)}" is not an option of the open decision` };
-      return done({ kind: "answer", option: c.option, decision: d.id });
+      return done({ kind: "answer", option: c.option, decision: d.id, stamp: decisionStamp(db, d) });
     }
     case "label": {
       const l = typeof c.label === "string" ? ALL_LABELS.find((x) => sameLabel(x.name, c.label as string)) : undefined;
@@ -136,7 +142,7 @@ export function validateCard(db: DatabaseSync, repo: string, n: number, raw: unk
     case "backlog": {
       const d = openDecision(db, repo, n);
       if (!d) return { note: "dropped a Backlog card: the item has no open decision" };
-      return done({ kind: "backlog", decision: d.id });
+      return done({ kind: "backlog", decision: d.id, stamp: decisionStamp(db, d) });
     }
     case "duplicate": {
       const of = c.of;

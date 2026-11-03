@@ -63,6 +63,9 @@ async function endBatch(db: DatabaseSync, by: string, id: number, why: string, c
     if (state.code === 0 && state.stdout.trim() === "MERGED") {
       // The merge went through while the batch was being ended: the merge bookkeeping records it.
       audit(db, by, "batch-end-too-late", `${b.repo}:${b.branch}`, { pr: b.pr_number });
+      const at = new Date().toISOString();
+      updateBatch(db, id, at, { state: "merged", summary: null });
+      for (const m of membersOf(db, id)) db.prepare("INSERT INTO stages (repo, number, stage, at, actor, note) VALUES (?, ?, 'merged', ?, ?, ?)").run(b.repo, m.number, at, by, `merge in ${b.branch} at ${m.head_oid.slice(0, 7)}`);
       return { closed: null };
     }
     updateBatch(db, id, new Date().toISOString(), { state: b.state, summary: b.summary });

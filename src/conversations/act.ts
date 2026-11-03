@@ -10,7 +10,7 @@ import { addLabels, closeItem, commentOn, type Writer } from "../github/write.ts
 import { approvalOf as labelsApprovalOf } from "../labels/approval.ts";
 import { repoLabels } from "../labels/github.ts";
 import { Client, type Querier } from "../mirror.ts";
-import { closeRefusal, otherTypeLabel, type CardParams } from "./cards.ts";
+import { closeRefusal, decisionStamp, otherTypeLabel, type CardParams } from "./cards.ts";
 import { ConversationError, insertTurn, systemBlock, type StoreDeps } from "./store.ts";
 import { COMMENT_MAX } from "./types.ts";
 
@@ -61,15 +61,15 @@ export function dismissCard(db: DatabaseSync, id: number, by: string, deps?: Sto
 type Outcome = { result: string; url: string | null };
 
 /** Answers the decision the card was written for, like a dashboard answer: one transaction, the decision's claims cleared. */
-async function answerDecision(db: DatabaseSync, c: CardRow, decisionId: string | undefined, key: string, by: string, at: string, canWrite?: ActDeps["canWrite"]): Promise<Outcome> {
+async function answerDecision(db: DatabaseSync, c: CardRow, decisionId: string | undefined, stamp: string | undefined, key: string, by: string, at: string, canWrite?: ActDeps["canWrite"]): Promise<Outcome> {
   if (!decisionId) throw new Error("the card names no decision: the decision changed");
   const d0 = getDecision(db, decisionId);
-  if (!d0 || d0.answer !== null || d0.repo !== c.repo || d0.number !== c.number) throw new Error("the decision changed");
+  if (!d0 || d0.answer !== null || d0.repo !== c.repo || d0.number !== c.number || (stamp !== undefined && decisionStamp(db, d0) !== stamp)) throw new Error("the decision changed");
   if (canWrite) for (const r of reposOf(d0)) if (!(await canWrite(r).catch(() => false))) throw new Error(`no write access to storytold/${r}`);
   db.exec("BEGIN IMMEDIATE");
   try {
     const d = getDecision(db, decisionId);
-    if (!d || d.answer !== null) throw new Error("the decision changed");
+    if (!d || d.answer !== null || (stamp !== undefined && decisionStamp(db, d) !== stamp)) throw new Error("the decision changed");
     const o = optionsOf(d).find((x) => x.key === key);
     if (!o) throw new Error(`"${key}" is not an option of the decision`);
     const r = db.prepare(`UPDATE main.decisions SET answer = ?, answer_note = NULL, exceptions = NULL, answered_by = ?, answered_at = ?, adopted_opinion = NULL
@@ -96,8 +96,8 @@ async function run(db: DatabaseSync, c: CardRow, p: CardParams, by: string, q: Q
   const w: Writer = { db, login: by };
   const source = { source: "conversation", card: c.id };
   switch (p.kind) {
-    case "answer": return answerDecision(db, c, p.decision, p.option, by, at, canWrite);
-    case "backlog": return answerDecision(db, c, p.decision, BACKLOG.key, by, at, canWrite);
+    case "answer": return answerDecision(db, c, p.decision, p.stamp, p.option, by, at, canWrite);
+    case "backlog": return answerDecision(db, c, p.decision, p.stamp, BACKLOG.key, by, at, canWrite);
     case "comment": {
       if (!commentApprovalOf(db, c.repo)) throw new Error(`commenting in ${c.repo} is not approved`);
       const live = await liveOpen(q, c.repo, c.number);

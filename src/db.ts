@@ -116,6 +116,14 @@ function migrateValues(db: DatabaseSync): void {
   // Scope recommendations written by the old label mapping (no model behind them) are dropped from open decisions.
   const MECHANICAL = "kind = 'scope' AND answer IS NULL AND recommended IS NOT NULL AND recommended_by IS NULL";
   if (db.prepare(`SELECT 1 FROM main.decisions WHERE ${MECHANICAL} LIMIT 1`).get()) db.exec(`UPDATE main.decisions SET recommended = NULL WHERE ${MECHANICAL}`);
+  // Turns stored before seq existed take their place in id order, after the turns that have one; queued, claimed and held turns get theirs when answered.
+  const UNSEQ = "seq IS NULL AND (status IS NULL OR status NOT IN ('pending', 'answering', 'held'))";
+  if (db.prepare(`SELECT 1 FROM main.conversation_turns WHERE ${UNSEQ} LIMIT 1`).get()) {
+    const next = db.prepare("SELECT COALESCE(MAX(seq), 0) + 1 AS n FROM main.conversation_turns WHERE repo = ? AND number = ?");
+    const set = db.prepare("UPDATE main.conversation_turns SET seq = ? WHERE id = ?");
+    for (const t of db.prepare(`SELECT id, repo, number FROM main.conversation_turns WHERE ${UNSEQ} ORDER BY id`).all() as { id: number; repo: string; number: number }[])
+      set.run((next.get(t.repo, t.number) as { n: number }).n, t.id);
+  }
   // Whole-repo pilot entries became the repo's pipeline flag.
   const pilot = db.prepare("SELECT value FROM main.settings WHERE key = 'pilot_items'").get() as { value: string } | undefined;
   if (pilot) wholeRepoPilot(db, pilot.value);

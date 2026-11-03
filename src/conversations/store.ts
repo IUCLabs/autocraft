@@ -257,6 +257,11 @@ export function claimPending(db: DatabaseSync, repo: string, n: number, deps?: S
   const stale = new Date(Date.parse(at) - STALE_CLAIM_MS).toISOString();
   return inTx(db, () => {
     db.prepare("UPDATE conversation_turns SET status = 'pending', claim = NULL, claimed_at = NULL, progress = NULL WHERE repo = ? AND number = ? AND kind = 'operator' AND status = 'answering' AND claimed_at < ?").run(repo, n, stale);
+    // A run that died while answering left system turns held without a seq; the next prompt must include them.
+    if (!db.prepare("SELECT 1 FROM conversation_turns WHERE repo = ? AND number = ? AND status = 'answering'").get(repo, n)) {
+      for (const h of db.prepare("SELECT id FROM conversation_turns WHERE repo = ? AND number = ? AND status = 'held' ORDER BY id").all(repo, n) as { id: number }[])
+        db.prepare("UPDATE conversation_turns SET status = NULL, seq = ? WHERE id = ?").run(nextSeq(db, repo, n), h.id);
+    }
     const claim = randomUUID();
     const r = db.prepare("UPDATE conversation_turns SET status = 'answering', claim = ?, claimed_at = ? WHERE repo = ? AND number = ? AND kind = 'operator' AND status = 'pending'").run(claim, at, repo, n);
     if (r.changes !== 1) return null;

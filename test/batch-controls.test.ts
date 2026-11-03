@@ -83,6 +83,25 @@ describe("controls against a running batch", () => {
     assert.equal(db.prepare("SELECT COUNT(*) AS n FROM audit WHERE action = 'batch-merged-after-end'").get()!.n, 1);
   });
 
+  test("a batch stopped while the default branch is read is not superseded: no close, no new batch for its held PRs", async () => {
+    const w = world();
+    const { db, d, b } = await open(w, "c7");
+    w.mainHead = "b".repeat(40);
+    w.conflicts.add(b.commit_sha);
+    const read = d.mainHead;
+    d.mainHead = async (r, br) => {
+      // A Stop lands during the call: the batch is ended and its PRs are held.
+      updateBatch(db, b.id, T0, { state: "superseded", summary: "stopped by an operator" });
+      holdMerge(db, "op", "app", 1);
+      holdMerge(db, "op", "app", 2);
+      return read(r, br);
+    };
+    const s = await runBatches(db, { repo: "app" }, quiet, d);
+    assert.deepEqual([s.superseded, s.started], [[], []]);
+    assert.equal(w.log.filter((l) => l.startsWith("pr close")).length, 0);
+    assert.equal(activeBatches(db, "app").length, 0);
+  });
+
   test("stopping a batch that is still checking cancels its sandbox task", async () => {
     const w = world();
     const db = fresh([{ n: 1 }]);
@@ -107,5 +126,18 @@ describe("fast track across repos and Fix PRs", () => {
     const scores = workScores(db, "app");
     assert.ok(scores.get(2)! > (scores.get(1) ?? 0));
     assert.deepEqual(fastFirst(db, ["app", "zed"], (r) => (r === "zed" ? 7 : 2)), ["zed", "app"]);
+  });
+});
+
+describe("fast-track score of a Fix PR", () => {
+  test("a PR marked after its issue takes the issue's earlier place", () => {
+    const db = fresh([{ n: 1 }, { n: 2 }]);
+    db.prepare("INSERT INTO items (repo, number, kind, state, created_at, updated_at) VALUES ('app', 9, 'issue', 'OPEN', ?, ?)").run(T0, T0);
+    db.prepare("INSERT INTO fix_attempts (repo, number, main_sha, text_hash, state, pr_url, created_at, updated_at) VALUES ('app', 9, 'x', 'h', 'pr-opened', 'https://github.com/storytold/app/pull/2', ?, ?)").run(T0, T0);
+    addFastTrack(db, "op", "app#9");
+    addFastTrack(db, "op", "app#1");
+    addFastTrack(db, "op", "app#2");
+    const scores = workScores(db, "app");
+    assert.ok(scores.get(2)! > scores.get(1)!, "the issue was marked first, so its PR goes before #1");
   });
 });

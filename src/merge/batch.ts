@@ -199,12 +199,15 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
 
   /** The batch's PRs are rebuilt on the current default branch head, leaving out `members` that changed. */
   async function supersede(b: BatchRow, keep: BatchMember[], why: string): Promise<void> {
+    // A control may have ended the batch while the caller's GitHub calls ran.
+    if (!ACTIVE_BATCH.includes(getBatch(db, b.id).state)) return;
     updateBatch(db, b.id, at(), { state: "superseded", summary: why });
     await closePr(b, `Closing: ${why}. The PRs are rebuilt in a new batch.`);
     s.superseded.push(b.branch);
     log(`  ${b.branch}: ${why}`);
     await releaseDropped(membersOf(db, b.id), keep);
-    if (keep.length && left() > 0) await startBatch(asCands(keep), left(), b.id);
+    const rebuild = keep.filter((m) => !mergeHeld(db, repo, m.number));
+    if (rebuild.length && left() > 0) await startBatch(asCands(rebuild), left(), b.id);
   }
 
   /** Why the batch must be rebuilt because the default branch moved, or null: a move that merges cleanly with the batch tip does not matter (GitHub and upstream CI re-check the batch PR). */
@@ -273,7 +276,13 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
     if (pr.code !== 0 || !m) { log(`  ${b.branch}: batch PR not opened: ${oneLine(pr.stderr || pr.stdout)}`); s.waiting.push(b.branch); return; }
     if (getBatch(db, b.id).state !== "checking") {
       // Ended while the PR was being opened: close it again and leave the row as it is.
-      await ghClosePr(w, d.exec, { repo, number: Number(m[1]) }, "Closing: the batch was ended by an operator.", { run: runId, batch: b.branch });
+      const closed = await ghClosePr(w, d.exec, { repo, number: Number(m[1]) }, "Closing: the batch was ended by an operator.", { run: runId, batch: b.branch });
+      if (closed.code !== 0) {
+        // Keep the PR on the row so a later control or run can close it.
+        updateBatch(db, b.id, at(), { pr_number: Number(m[1]), pr_url: url });
+        log(`  ${b.branch}: ended while its PR was opened; could not close ${url}: ${oneLine(closed.stderr)}`);
+        return;
+      }
       log(`  ${b.branch}: ended while its PR was opened; closed ${url}`);
       return;
     }
@@ -385,6 +394,8 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
   }
 
   for (const b of myBatches()) await advance(b.id);
+  // A batch in a repo that is off only through fast track loses its place when a mark is removed: it is only closed, never advanced.
+  for (const b of activeBatches(db, repo).filter((x) => !mine(x))) await supersede(b, [], "a PR in the batch is no longer fast-tracked and the repo's pipeline is off");
 
   if (!myBatches().length && (params.limit === undefined || params.limit > 0)) {
     const q = buildQueue(db, { repo, merged: "exclude" });

@@ -2,7 +2,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import type { Conversation, ConversationCard, ConversationTurn } from "../../../web/src/api/types.ts";
 import { cardEffect, type CardParams } from "../../conversations/cards.ts";
-import { cardOf, dismissCard, doCard, editCard, type ActDeps, type CardRow } from "../../conversations/act.ts";
+import { cardOf, dismissCard, doCard, editCard, sweepRunningCards, type ActDeps, type CardRow } from "../../conversations/act.ts";
 import { ConversationError, addOperatorMessage, conversationOf, pendingTurn, turnsOf, type StoreDeps } from "../../conversations/store.ts";
 import { HttpError } from "../server/util.ts";
 import type { Req } from "../types.ts";
@@ -43,6 +43,8 @@ export function cardView(db: DatabaseSync, c: CardRow): ConversationCard {
 }
 
 export function conversationView(db: DatabaseSync, repo: string, n: number): Conversation {
+  // A card left Running by a crash must not show as running until the next restart.
+  sweepRunningCards(db);
   const c = conversationOf(db, repo, n);
   if (!c) return { repo, number: n, exists: false, pending: false, startedBy: null, turns: [] };
   const cards = db.prepare("SELECT * FROM conversation_cards WHERE repo = ? AND number = ? ORDER BY id").all(repo, n) as unknown as CardRow[];

@@ -13,7 +13,8 @@ import { setRunner } from "../src/classify/run.ts";
 import { cleanComment, parseReply } from "../src/conversations/cards.ts";
 import { doCard, dismissCard, editCard, sweepRunningCards } from "../src/conversations/act.ts";
 import { answerPending } from "../src/conversations/run.ts";
-import { addOperatorMessage, claimPending, conversationOf, refreshItem, startFromOpus, turnsOf } from "../src/conversations/store.ts";
+import { audit } from "../src/dash/audit.ts";
+import { addOperatorMessage, claimPending, conversationOf, insertTurn, promptParts, refreshItem, startFromOpus, turnsOf } from "../src/conversations/store.ts";
 import { connect } from "../src/db.ts";
 import { recommend } from "../src/decide/recommend.ts";
 import { ask } from "../src/decisions.ts";
@@ -131,6 +132,39 @@ describe("turn order and claims", () => {
     }
   });
 
+  test("a Do it while Opus answers is held after the reply and the next prompt includes it", async () => {
+    const db = fresh();
+    const [card] = await withCards(db, [{ kind: "comment", text: "Hello." }]);
+    const prompts: string[] = [];
+    const { restore } = fakeModel(["Second answer.", "Third answer."], prompts, async () => {
+      if (prompts.length === 1) await doCard(db, card!, "op", { querier: fakeGithub([]) });
+    });
+    try {
+      await say(db, "Next?");
+      assert.equal(await answerAll(db), 1);
+      const kinds = turnsOf(db, "app", 1).map((t) => t.kind);
+      assert.deepEqual(kinds.slice(-3), ["operator", "opus", "system"], "the run's turn comes first, the held Do it after it");
+      assert.ok(!prompts[0]!.includes("ran the proposed action"), "the prompt already sent does not change");
+      await say(db, "And then?");
+      await answerAll(db);
+      assert.match(prompts[1]!, /ran the proposed action[\s\S]*And then\?/);
+    } finally {
+      restore();
+    }
+  });
+
+  test("system turns held by a run that died get their place when the stale claim is released", async () => {
+    const db = fresh();
+    await say(db, "Hi");
+    assert.ok(claimPending(db, "app", 1));
+    insertTurn(db, "app", 1, { kind: "system", login: "system", body: "Update.", block: "<turn from=\"system\">\nHeld update.\n</turn>\n" });
+    assert.equal(db.prepare("SELECT status FROM conversation_turns WHERE kind = 'system'").get()!.status, "held");
+    const later = { now: () => new Date(Date.now() + 3 * 3600_000) };
+    const c = claimPending(db, "app", 1, later)!;
+    assert.ok(c);
+    assert.match(promptParts(db, "app", 1, c.turn)!.earlier, /Held update\./);
+  });
+
   test("a message is claimed once, and a stale claim is released", async () => {
     const db = fresh();
     await say(db, "Hi");
@@ -156,7 +190,8 @@ describe("cards", () => {
     const p = parseReply(db, "app", 1, `Text.\n\`\`\`actions\n${JSON.stringify([{ kind: "label", label: "infra" }, { kind: "label", label: "security" }, { kind: "answer", option: "close" }])}\n\`\`\``)!;
     assert.deepEqual(p.cards.map((c) => c.params.kind), ["label", "answer"]);
     assert.equal(p.notes.length, 1);
-    assert.deepEqual(p.cards[1]!.params, { kind: "answer", option: "close", decision: "app#1:scope" });
+    assert.deepEqual(p.cards[1]!.params, { kind: "answer", option: "close", decision: "app#1:scope", stamp: (p.cards[1]!.params as { stamp: string }).stamp });
+    assert.match((p.cards[1]!.params as { stamp: string }).stamp, /\|0$/);
     assert.match(p.cards[1]!.description, /\(closes it on GitHub\)$/);
     // Act's checks apply to the duplicate close: not outside the pilot, not held by Backlog.
     const dup = `Text.\n\`\`\`actions\n[{"kind":"duplicate","of":3}]\n\`\`\``;
@@ -177,6 +212,18 @@ describe("cards", () => {
     assert.equal(await refreshItem(db, "app", 1), true);
     assert.match(turnsOf(db, "app", 1).at(-1)!.block, /updated \(labels, decision\)/);
     assert.equal(await refreshItem(db, "app", 1), false);
+  });
+
+  test("a card written before the decision was answered and reopened fails: the decision id is the same", async () => {
+    const db = fresh();
+    const [id] = await withCards(db, [{ kind: "answer", option: "take" }]);
+    // An operator answers, then reopens: nothing in the row tells, but the audit does.
+    audit(db, "other", "answer", "app#1:scope", { answer: "close" });
+    audit(db, "other", "reopen", "app#1:scope", { answer: "close" });
+    const r = await doCard(db, id!, "op", { querier: fakeGithub([]) });
+    assert.equal(r.card.state, "failed");
+    assert.match(r.card.error!, /decision changed/);
+    assert.equal(db.prepare("SELECT answer FROM decisions WHERE id = 'app#1:scope'").get()!.answer, null);
   });
 
   test("running cards left by a crash are failed after ten minutes", async () => {
