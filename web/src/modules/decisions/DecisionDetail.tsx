@@ -202,12 +202,10 @@ export function DecisionBody({
       )}
     </>
   );
-  // An operator who can only comment here must not read the buttons as answers.
+  // An operator without write access on a repo of the decision picks instead of answering.
   const banner =
-    !operator && user.role === "operator" ? (
-      <div role="note" className="mb-2 rounded-md border border-warn/50 bg-warn/[0.08] px-3 py-2 text-xs text-ink/85">
-        Comment mode: {access.mode === "opinion" ? access.reason : ""} Nothing you pick here is answered or acted on.
-      </div>
+    !operator && user.role === "operator" && access.mode === "opinion" ? (
+      <div role="note" className="mb-2 text-xs text-ink/60">{access.reason}</div>
     ) : null;
 
   const note = (

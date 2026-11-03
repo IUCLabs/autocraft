@@ -129,8 +129,7 @@ export function OptionButtons({
   return (
     <div>
       <p className={cn("mb-1.5 flex items-baseline gap-1.5 text-xs font-semibold", answering ? "text-ink" : "text-ink/60")}>
-        {answering ? "Answer" : "Your pick (a comment, not an answer)"}
-        {answering && <span className="font-normal text-ink/50">the pipeline carries it out</span>}
+        {answering ? "Answer" : "Your pick"}
       </p>
       <div className={cn("grid gap-1.5", layout === "row" && options.length > 1 && "grid-cols-2")} role="group" aria-label={answering ? "Answer" : "Your pick, a comment"}>
         {options.map((o, i) => {

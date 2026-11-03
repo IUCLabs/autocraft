@@ -15,9 +15,9 @@ export function can(user: User, p: Permission): boolean {
 export type DecisionAccess = { mode: "answer" } | { mode: "opinion"; reason: string };
 
 export function decisionAccess(user: User, repos: string[]): DecisionAccess {
-  if (user.role !== "operator") return { mode: "opinion", reason: "Your pick is a comment: maintainers see it, the operator decides." };
+  if (user.role !== "operator") return { mode: "opinion", reason: "Operators answer. Your pick is shown with the decision." };
   const missing = [...new Set(repos)].filter((r) => !user.writeRepos.includes(r));
-  if (missing.length) return { mode: "opinion", reason: `You don't have write access to ${missing.join(", ")}, so your pick is a comment.` };
+  if (missing.length) return { mode: "opinion", reason: `No write access to ${missing.join(", ")}.` };
   return { mode: "answer" };
 }
 
