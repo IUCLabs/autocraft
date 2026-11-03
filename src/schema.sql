@@ -915,3 +915,52 @@ CREATE TABLE IF NOT EXISTS dupe_group_fails (
   fails INTEGER NOT NULL,
   PRIMARY KEY (decision_id, number)
 );
+
+-- Conversations with Opus: one per item, shown to everyone with access to the repo (src/conversations).
+-- item_block is written once, when the conversation starts, and sent byte for byte on every turn so the prompt's start stays cached.
+CREATE TABLE IF NOT EXISTS conversations (
+  repo TEXT NOT NULL,
+  number INTEGER NOT NULL,
+  item_block TEXT NOT NULL,
+  item_sig TEXT NOT NULL,             -- hash of the item's head commit and text as the block (or the last update turn) described them
+  created_at TEXT NOT NULL,
+  created_by TEXT NOT NULL,           -- operator login, or 'opus' when a recommendation started it
+  PRIMARY KEY (repo, number)
+);
+-- Turns in prompt order (id order). block is the exact text the prompt carries for the turn, written with the turn.
+-- An operator turn waits for its reply while status is 'pending'; there is at most one per conversation, and it stays last in id order.
+CREATE TABLE IF NOT EXISTS conversation_turns (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  repo TEXT NOT NULL,
+  number INTEGER NOT NULL,
+  kind TEXT NOT NULL,                 -- operator | opus | system
+  login TEXT NOT NULL,                -- operator login, 'opus' or 'system'
+  at TEXT NOT NULL,
+  body TEXT NOT NULL,
+  block TEXT NOT NULL,
+  status TEXT,                        -- operator turns: pending | answered | failed
+  error TEXT,
+  notes TEXT                          -- opus turns: JSON array of notes about dropped cards
+);
+CREATE INDEX IF NOT EXISTS conversation_turns_item ON conversation_turns(repo, number, id);
+-- Action cards Opus proposed on a turn. params are the exact parameters; text is the editable comment of a comment card.
+CREATE TABLE IF NOT EXISTS conversation_cards (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  turn_id INTEGER NOT NULL,
+  repo TEXT NOT NULL,
+  number INTEGER NOT NULL,
+  kind TEXT NOT NULL,                 -- comment | answer | label | backlog | duplicate
+  params TEXT NOT NULL,               -- JSON
+  text TEXT,
+  description TEXT NOT NULL,          -- one plain line written by our code from the parameters
+  state TEXT NOT NULL DEFAULT 'proposed',  -- proposed | running | done | failed | dismissed
+  result TEXT,                        -- what happened, in one line
+  result_url TEXT,
+  error TEXT,
+  acted_by TEXT,
+  acted_at TEXT,
+  edited_by TEXT,
+  edited_at TEXT
+);
+CREATE INDEX IF NOT EXISTS conversation_cards_turn ON conversation_cards(turn_id);
+CREATE INDEX IF NOT EXISTS conversation_cards_item ON conversation_cards(repo, number);

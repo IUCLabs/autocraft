@@ -548,6 +548,22 @@ export const STEPS: StepDef[] = [
       return `${r.due} due: ${r.compared} compared by a model, ${r.byRule} by rule, ${r.closedWins} won by a closed member, ${r.single} single, ${r.dropped} dropped; ${r.asked.length} decisions asked`;
     },
   },
+  {
+    name: "conversation",
+    title: "Answer conversations",
+    description: "Answers each operator message in an item's conversation with one Opus call, with read-only tools on the item's repository and the shared repositories. The reply may propose action cards that an operator runs with a button; nothing runs by itself. Messages are answered even for a repo whose pipeline is off. Each answered message counts as one item.",
+    stage: 3,
+    requires: "operator",
+    group: "conversation",
+    models: ["opus"],
+    params: [{ name: "limit", label: "At most", kind: "int", min: 1, max: 200, default: 30, help: "messages to answer in this job" }],
+    run: async (ctx) => {
+      const { runConversations } = await import("../conversations/run.ts");
+      const r = await runConversations(ctx.db, { limit: Number(ctx.params.limit), onHandled: ctx.handled, cancelled: ctx.cancelled }, ctx.log);
+      ctx.usageRun(r.usageRun);
+      return `${r.answered} of ${r.waiting} messages answered`;
+    },
+  },
 ];
 
 let loaded: Promise<Map<string, StepDef>> | null = null;

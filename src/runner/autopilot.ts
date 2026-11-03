@@ -14,6 +14,7 @@ import type { DatabaseSync } from "node:sqlite";
 import type { PipelineState, StageLimit } from "../../web/src/api/types.ts";
 import { readSeqs, TOPICS } from "../live.ts";
 import { backfillIds } from "../decide/recommend.ts";
+import { pendingConversations } from "../conversations/store.ts";
 import { latestJevRun, selectCandidates as decideCandidates } from "../decide/select.ts";
 import { embedderId, modelName } from "../embed/model.ts";
 import { pending as embedPending } from "../embed/store.ts";
@@ -394,6 +395,12 @@ export const LANES: Lane[] = [
     detect: (db, { tracked }) =>
       tracked.filter((repo) => commentApprovalOf(db, repo) && postCandidates(db, repo).length).sort().map((repo) => ({ step: "review-post", params: { repo } })),
   },
+  {
+    // Operator messages in conversations; answered whether or not the item's repo is in scope, since an operator started them.
+    name: "conversation",
+    steps: ["conversation"],
+    detect: (db) => (pendingConversations(db).length ? [{ step: "conversation", params: {} }] : []),
+  },
 ];
 
 // ---- limits and usage ----------------------------------------------------------
@@ -403,7 +410,7 @@ export const dayStart = (ms: number = Date.now()): string => `${new Date(ms).toI
 type LimitRow = { step: string; per_day: number | null; updated_by: string | null; updated_at: string | null };
 
 /** Daily limits that apply until an operator sets one. */
-const DEFAULT_PER_DAY: Record<string, number> = { dupes: 2000, referee: 500, "dupes-compare": 200 };
+const DEFAULT_PER_DAY: Record<string, number> = { dupes: 2000, referee: 500, "dupes-compare": 200, conversation: 30 };
 
 export const limitRow = (db: DatabaseSync, step: string): LimitRow =>
   (db.prepare("SELECT * FROM stage_limits WHERE step = ?").get(step) as LimitRow | undefined) ?? { step, per_day: DEFAULT_PER_DAY[step] ?? null, updated_by: null, updated_at: null };
@@ -488,7 +495,7 @@ export function setEnabled(db: DatabaseSync, enabled: boolean, by: string): void
 }
 
 /** Steps that have a row in stage_limits, in pipeline order. */
-export const LIMIT_STEPS = ["classify-new", "embed", "dupes", "decide", "checks", "review-batch", "labels-apply", "merge", "act", "fixup", "verify", "prioritize", "fixissue", "referee", "opus-review", "review-post", "dupes-compare"];
+export const LIMIT_STEPS = ["classify-new", "embed", "dupes", "decide", "checks", "review-batch", "labels-apply", "merge", "act", "fixup", "verify", "prioritize", "fixissue", "referee", "opus-review", "review-post", "dupes-compare", "conversation"];
 
 /** Steps whose jobs cannot be sized to what remains of the day: only no limit or a pause makes sense. */
 export const ZERO_ONLY = ["checks"];

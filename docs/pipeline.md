@@ -263,6 +263,17 @@ Makes the GitHub comments and closes that follow an operator's answer. No model.
 - **Comment rules.** Comments are fixed templates in code (listed on [Prompts](/prompts)): one or two short factual lines, a fixed first sentence and at most `Reason: <text>`, cut to one line of 200 characters with `@`, URLs and Markdown links removed. The reason text may come from a model; the decision page shows the exact comment, and the operator's answer approves that text.
 - **Before writing,** the step re-reads the item and skips it, without a comment, when it is already closed or merged, gone, or its head moved. A comment is never posted twice.
 
+## Conversations
+
+Each item can have one conversation with Opus, shown beside its decision. Everyone with access to the repo reads it; only operators write, edit, run and dismiss. It belongs to the item, so it stays when a decision is asked again.
+
+- **Start.** An operator writes the first message, or Decide stores an opening question or proposal from Opus as the first Opus turn when a recommendation is unsure or proposes a variant.
+- **Reply.** The Conversation step (daily limit 30 messages, Opus, effort high) answers each operator message with one `claude -p` call in the sandbox: the item's repository and the shared repositories, read-only, Read, Grep and Glob only. It runs while the pipeline is On, for any tracked repo, including one whose pipeline is off. Tool output is not stored; Opus reads again when it needs to.
+- **Prompt order** (`conversation.turn` on [Prompts](/prompts)): the fixed prompt and action list; the item block, written once when the conversation starts and sent byte for byte afterwards; the earlier turns oldest first, each as stored; the new message last. Nothing that changes comes before the newest turn, so each call reuses the cached start of the one before. When the PR head or the item text changes after the block was written, a system turn ("The PR was updated: ...") carries the new state before the next call. All GitHub text is quoted as untrusted data.
+- **Cards.** A reply may carry action cards: post a comment (the text is editable), answer the item's open decision with one of its options, add a label of the managed set, Backlog, close as a duplicate of another item of the repo. Our code validates each card and drops invalid ones with a note, and writes the one-line description from the parameters. A card runs only when an operator presses Do it, once, through the existing write path with the repo's approvals (comments and closes need comment approval, labels need label approval) and the operator's login on the audit rows. A card ends as Done with a link, Failed with the reason, or Dismissed. What an operator ran or dismissed is added to the conversation as a system turn.
+- **One message at a time.** A new message waits until Opus has answered the previous one. A message that got no usable reply is marked failed and can be written again.
+- **Shell.** `craft-auto conversation show <repo>#<n>`, `conversation say <repo>#<n> <text> [--by LOGIN] [--now]` (queues the message; `--now` answers it at once), `conversation do <card> --by LOGIN`.
+
 ## Which model does what
 
 | Model | Used for |
@@ -270,9 +281,9 @@ Makes the GitHub comments and closes that follow an operator's answer. No model.
 | Jev | First sort of every item (classes, duplicates). Very cheap and fast and reports how sure it is: at 90 % or more it matched maintainers' labels 98 % of the time |
 | Haiku | Second opinion where Jev is unsure; batch priority and duplicate checks; duplicate decision summaries; failure summaries |
 | Sonnet | Referee for label disagreements outside the scope labels (a person only when it is unsure), decision summaries, first review pass, fix-ups, issue fixes, verify plans |
-| Opus | Final review of every PR Sonnet rates take or take-fix (verdict, complete fix list, how sure it is); checks of the patches Fix-up and Fix write |
+| Opus | Final review of every PR Sonnet rates take or take-fix (verdict, complete fix list, how sure it is); checks of the patches Fix-up and Fix write; the scope recommendation; replies in item conversations |
 
-These calls run with tools: Read, Grep and Glob on a read-only checkout inside a sandbox (see Trust boundary): the Opus review, the Fix-up patch and its Opus check, the Verify planner (checkouts of the PR head), Fix triage, patch and Opus check (checkouts of the base commit), and the scope recommendation (the default branch, plus read-only checkouts of the shared repositories at `/shared/<name>`). Every other call runs without tools. The Prompts page shows each prompt's tools, turn limit and sandbox mode.
+These calls run with tools: Read, Grep and Glob on a read-only checkout inside a sandbox (see Trust boundary): the Opus review, the Fix-up patch and its Opus check, the Verify planner (checkouts of the PR head), Fix triage, patch and Opus check (checkouts of the base commit), the scope recommendation and conversation replies (the default branch, plus read-only checkouts of the shared repositories at `/shared/<name>`). Every other call runs without tools. The Prompts page shows each prompt's tools, turn limit and sandbox mode.
 
 [Prompts](/prompts) shows every prompt exactly as sent. The code can call a model only with a registered prompt. Classifiers and Cost show how often the models agree and what each stage costs.
 
@@ -379,6 +390,7 @@ Limits count items handled per stage per day (from 00:00 UTC), including by fail
 | Review | 40 | Fix | 10 |
 | Referee | 500 | Compare duplicate groups | 200 |
 | Opus review | 40 | Post reviews | 40 |
+| Conversations | 30 | | |
 
 Embed, checks and Label have no limit.
 
@@ -428,4 +440,5 @@ Dry run is the default for every writing command; `--apply` writes (and still re
 | `craft-auto verify --repo R`, `verify-collect` | Verify |
 | `craft-auto queue`, `merge --repo R` | Merge queue |
 | `craft-auto act --repo R` | Act |
+| `craft-auto conversation show\|say\|do` | Conversations |
 | `craft-auto pipeline on\|off\|limit`, `accounts list\|set\|jev` | Switch, limits, accounts |

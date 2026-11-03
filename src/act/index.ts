@@ -166,7 +166,7 @@ export function pending(db: DatabaseSync, repo: string): Target[] {
 
 // ---- GitHub ----------------------------------------------------------------------
 
-type Live = { id: string; type: "Issue" | "PullRequest"; state: string; head: string | null };
+export type Live = { id: string; type: "Issue" | "PullRequest"; state: string; head: string | null };
 
 export const READ = `query($name: String!, $n: Int!) {
   repository(owner: "${ORG}", name: $name) {
@@ -178,7 +178,7 @@ export const READ = `query($name: String!, $n: Int!) {
   }
 }`;
 
-async function readLive(q: Querier, repo: string, n: number): Promise<Live | null> {
+export async function readLive(q: Querier, repo: string, n: number): Promise<Live | null> {
   const d = await q.query(READ, { name: repo, n }) as { repository?: { issueOrPullRequest?: { __typename: string; id: string; state: string; headRefOid?: string } | null } };
   const x = d.repository?.issueOrPullRequest;
   if (!x) return null;
