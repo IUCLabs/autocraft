@@ -38,7 +38,7 @@ export function reasonOf(s: Settled): Reason | null {
 /** Refs ("repo#n") that already have a decision or a stage past classification. */
 function covered(db: DatabaseSync): Set<string> {
   const out = new Set<string>();
-  const rows = db.prepare(`SELECT repo, number, items FROM decisions WHERE answer IS NULL OR kind = 'scope'`).all() as
+  const rows = db.prepare(`SELECT repo, number, items FROM decisions WHERE (answer IS NULL OR kind = 'scope') AND id NOT LIKE '%:dupegroup:%'`).all() as
     { repo: string | null; number: number | null; items: string | null }[];
   for (const d of rows) {
     if (d.number !== null) out.add(`${d.repo}#${d.number}`);

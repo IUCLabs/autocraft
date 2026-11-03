@@ -6,6 +6,7 @@ import type { DatabaseSync } from "node:sqlite";
 import type {
   Claim, Classification, Decision, DecisionComment, DecisionKind, DecisionList, ItemState, Opinion, RelatedItem, Relation,
 } from "../../../web/src/api/types.ts";
+import { resetGroupAnswer } from "../../dupes/decide.ts";
 import { exceptionsOf, factsOf, getDecision, isBatch, itemsOf, KINDS, optionsOf, reposOf, type DecisionRow, type Exception } from "../../decisions.ts";
 import { commentPreview, writeEffect } from "../../act/index.ts";
 import { audit } from "../audit.ts";
@@ -310,6 +311,7 @@ export async function undo(db: DatabaseSync, req: Req): Promise<Decision> {
   const r = db.prepare(`UPDATE main.decisions SET answer = NULL, answer_note = NULL, exceptions = NULL, answered_by = NULL, answered_at = NULL, adopted_opinion = NULL
     WHERE id = ? AND answer IS NOT NULL AND applied_at IS NULL`).run(d.id);
   if (r.changes !== 1) throw new HttpError(409, "the pipeline acted on this a moment ago");
+  resetGroupAnswer(db, d.id);
   audit(db, req.user.login, "undo", d.id, { answer: d.answer, adopted: d.adopted_opinion ?? undefined });
   return toDecision(db, getDecision(db, d.id)!, viewerOf(req));
 }

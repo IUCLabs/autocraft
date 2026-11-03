@@ -21,7 +21,7 @@ import {
   GROUP_DIFF_CHARS, GROUP_MAX, parseIssueComparison, parsePrComparison, prsRef,
   type CompareIssue, type CompareIssues, type ComparePr, type ComparePrs,
 } from "./group.ts";
-import { dueSets, saveComparison, type ComparisonResult, type KindSet, type StoredComparison } from "./plan.ts";
+import { dueSets, rememberDrop, saveComparison, storedComparison, type ComparisonResult, type KindSet, type StoredComparison } from "./plan.ts";
 
 const PR_PROMPT = CLAUDE_PROMPTS["dupes.compare-prs.opus"];
 const ISSUE_PROMPT = CLAUDE_PROMPTS["dupes.compare-issues.sonnet"];
@@ -86,7 +86,7 @@ function viaRule(db: DatabaseSync, s: KindSet, at: string, error: string | null,
   const c = pickCanonical(db, s.repo, numbers);
   const others = numbers.filter((n) => n !== c.number).map((number) => (s.kind === "pr" ? { number, duplicate: true, better: [], carry: [] } : { number, adds: [] }));
   const reason = source === "closed" ? c.why : source === "single" ? "the only one" : `kept by rule: ${c.why}`;
-  return { repo: s.repo, key: s.key, kind: s.kind, members: numbers, hash: s.hash, kept: c.number, source, model: null, reason, result: { others, rounds: 0 }, error, at };
+  return { repo: s.repo, key: s.key, kind: s.kind, members: numbers, hash: s.hash, kept: c.number, source, model: null, reason, result: { others, rounds: 0 }, error, attempts: 0, at };
 }
 
 type Ctx = { db: DatabaseSync; deps: CompareDeps; log: (l: string) => void; checkouts: Map<string, Promise<string | null>>; runId: string };
@@ -178,9 +178,10 @@ async function compareSet(x: Ctx, s: KindSet): Promise<StoredComparison> {
   const lost = new Map<number, { winner: number; other: ComparisonResult["others"][number] }>();
   let rounds = 0, last: Chunk | null = null;
   for (;;) {
-    const chunks: number[][] = [];
-    if (current.length <= GROUP_MAX) chunks.push(current);
-    else for (let i = 0; i < current.length; i += GROUP_MAX) chunks.push(current.slice(i, i + GROUP_MAX));
+    // Dealt round-robin, so every chunk holds a mix of strong and weak members.
+    const count = Math.ceil(current.length / GROUP_MAX);
+    const chunks: number[][] = Array.from({ length: count }, () => []);
+    current.forEach((n, i) => chunks[i % count]!.push(n));
     const winners: number[] = [];
     for (const chunk of chunks) {
       if (chunk.length === 1) { winners.push(chunk[0]!); continue; }
@@ -205,7 +206,7 @@ async function compareSet(x: Ctx, s: KindSet): Promise<StoredComparison> {
   });
   return {
     repo: s.repo, key: s.key, kind: s.kind, members: s.members.map((m) => m.number), hash: s.hash, kept, source: "model", model: usage.model,
-    reason: last?.reason ?? null, result: { others, rounds }, error: null, at,
+    reason: last?.reason ?? null, result: { others, rounds }, error: null, attempts: 0, at,
   };
 }
 
@@ -213,7 +214,7 @@ export async function runDupeCompare(db: DatabaseSync, params: CompareParams = {
   if (params.limit !== undefined && !(Number.isInteger(params.limit) && params.limit >= 0)) throw new Error("limit must be a whole number ≥ 0");
   const d = deps ?? defaultCompareDeps(db);
   const s: CompareSummary = { due: 0, compared: 0, byRule: 0, closedWins: 0, single: 0, dropped: 0, asked: [], dryRun: !!params.dryRun };
-  const sets = dueSets(db, params.repo);
+  const sets = dueSets(db, params.repo, d.now().getTime());
   s.due = sets.length;
   if (params.dryRun) {
     log(`dupe-compare: ${sets.length} sets to compare; dry run, nothing written`);
@@ -232,7 +233,6 @@ export async function runDupeCompare(db: DatabaseSync, params: CompareParams = {
       s.single++;
     } else calls.push(set);
   }
-  if (params.limit !== undefined) calls = calls.slice(0, params.limit);
   if (d.querier && calls.length) {
     // The mirror can be minutes behind: a set with a member closed or pushed since is compared on a later pass.
     const live = new Map<string, Map<number, { state: string; head: string | null }>>();
@@ -246,14 +246,22 @@ export async function runDupeCompare(db: DatabaseSync, params: CompareParams = {
     calls = calls.filter((c) => {
       const l = live.get(c.repo)!;
       const bad = c.members.find((m) => { const v = l.get(m.number); return !v || v.state !== m.state || (m.kind === "pr" && v.head !== m.head_oid); });
-      if (bad) log(`  ${c.repo}#${bad.number}: dropped from ${c.key}, it changed on GitHub since the last sync`);
+      if (bad) {
+        log(`  ${c.repo}#${bad.number}: dropped from ${c.key}, it changed on GitHub since the last sync`);
+        rememberDrop(db, c, NOW_ISO(d));
+      }
       return !bad;
     });
     s.dropped = asked - calls.length;
   }
+  if (params.limit !== undefined) calls = calls.slice(0, params.limit);
   let handled = 0;
   await pool(calls.map((set) => async () => {
     const r = await compareSet(x, set);
+    if (r.source === "rule") {
+      const prev = storedComparison(db, set.repo, set.key);
+      r.attempts = (prev && prev.source === "rule" && prev.hash === set.hash ? prev.attempts : 0) + 1;
+    }
     saveComparison(db, r);
     if (r.source === "rule") {
       s.byRule++;
