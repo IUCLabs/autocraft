@@ -1,15 +1,17 @@
 // Approves the Actions runs that GitHub holds for approval (`action_required`) on pull requests from outside
 // contributors, once the current head has a final take or take-fix review: the review read that code, and the
-// runs use GitHub's runners. The checks sync records the waiting runs per PR head (detectRuns); the ci-approve
-// step approves them (approveRuns) for repos an operator approved. Set only from the dashboard (src/dash/api/admin.ts).
+// runs use GitHub's runners. The checks sync records the waiting runs per PR head from the check suites in its
+// query (recordRuns); a merge refused for `action_required` marks the head for a read of its runs (markReread).
+// The ci-approve step approves them (approveRuns) for repos an operator approved. Set only from the dashboard
+// (src/dash/api/admin.ts).
 import type { DatabaseSync } from "node:sqlite";
 import { ORG } from "../act/templates.ts";
 import { audit } from "../dash/audit.ts";
 import { connect } from "../db.ts";
-import { notOwnIntegrationSql } from "../dupes/held.ts";
+import { notHeldSql } from "../dupes/held.ts";
 import type { Exec } from "../fixup/git.ts";
 import { ghApproveRun, type Writer } from "../github/write.ts";
-import { pilotSql } from "../pilot.ts";
+import { mergeHeld } from "./holds.ts";
 import { trackedNames } from "../repos.ts";
 import { ghExec, type Gh } from "./safe-merge.ts";
 
@@ -36,47 +38,78 @@ export function setCiApproval(db: DatabaseSync, by: string, repo: string, approv
   return true;
 }
 
-export type WaitingRun = { id: number; name: string };
-type Candidate = { number: number; head: string; runs: WaitingRun[] | null };
+/** The stage's audit login. */
+export const ACTOR = "ci-approve";
+/** Approval attempts per run before the PR is left to a person. */
+export const MAX_FAILURES = 2;
+/** How long approved runs may stay unfinished before the PR is trusted to CI's own state again. */
+const APPROVED_TTL_MS = 2 * 3_600_000;
+
+export type WaitingRun = { id: number; name: string; event: string };
+/** A workflow run's check suite as the checks query returns it. */
+export type Suite = { id: number; name: string; event: string; status: string; conclusion: string | null };
+type Row = { head_oid: string; cross_repo: number; runs: string; approved: string; reread: number; failed: string; approved_at: string | null };
+
+/** Records the workflow runs waiting for approval at the PR's head, from the check suites the sync read. Called with every PR the checks job stores. */
+export function recordRuns(db: DatabaseSync, c: { repo: string; number: number; head_oid: string; state: string; cross_repo?: boolean; suites?: Suite[] }, at = new Date().toISOString()): void {
+  if (c.state !== "OPEN") return;
+  const prev = db.prepare("SELECT * FROM ci_run_approvals WHERE repo = ? AND number = ?").get(c.repo, c.number) as Row | undefined;
+  const suites = c.suites ?? [];
+  const same = prev?.head_oid === c.head_oid ? prev : undefined;
+  const approved = (JSON.parse(same?.approved ?? "[]") as number[]);
+  const byId = new Map(suites.map((x) => [x.id, x]));
+  const fresh = !!same?.approved_at && Date.now() - Date.parse(same.approved_at) < APPROVED_TTL_MS;
+  // An approved run is settled once its suite completed with something other than the old action_required.
+  const left = approved.filter((id) => fresh && !(byId.get(id)?.status === "COMPLETED" && byId.get(id)?.conclusion !== "ACTION_REQUIRED"));
+  const waiting: WaitingRun[] = suites.filter((x) => x.conclusion === "ACTION_REQUIRED" && !approved.includes(x.id)).map((x) => ({ id: x.id, name: x.name, event: x.event }));
+  if (!prev && !waiting.length) return;
+  const reread = same?.reread ?? 0;
+  db.prepare(`INSERT INTO ci_run_approvals (repo, number, head_oid, cross_repo, runs, approved, reread, failed, checked_at, approved_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT (repo, number) DO UPDATE SET head_oid = excluded.head_oid, cross_repo = excluded.cross_repo, runs = excluded.runs, approved = excluded.approved,
+      reread = excluded.reread, failed = excluded.failed, checked_at = excluded.checked_at, approved_at = excluded.approved_at`)
+    .run(c.repo, c.number, c.head_oid, c.cross_repo ? 1 : 0, JSON.stringify(waiting), JSON.stringify(left), reread, same?.failed ?? "{}", at, left.length ? same?.approved_at ?? null : null);
+}
+
+/** A merge was refused because of `action_required` runs the sync does not list: the step reads that head's runs. */
+export function markReread(db: DatabaseSync, repo: string, number: number, head: string, at = new Date().toISOString()): void {
+  db.prepare("DELETE FROM ci_run_approvals WHERE repo = ? AND number = ? AND head_oid <> ?").run(repo, number, head);
+  db.prepare(`INSERT INTO ci_run_approvals (repo, number, head_oid, cross_repo, runs, approved, reread, failed, checked_at) VALUES (?, ?, ?, 1, '[]', '[]', 1, '{}', ?)
+    ON CONFLICT (repo, number) DO UPDATE SET reread = 1, checked_at = excluded.checked_at`).run(repo, number, head, at);
+}
+
+export type Candidate = { number: number; head: string; runs: WaitingRun[]; reread: boolean; failed: Record<string, number>; crossRepo: boolean };
 
 /**
- * Open, non-draft PRs of the repo whose latest review is a final take or take-fix at the head the checks describe,
- * with the waiting runs recorded for that head (null when none were read yet). Our own integration PRs are left out.
+ * Open, non-draft PRs of the repo whose latest review is a final take or take-fix at the head the checks describe and that have
+ * waiting runs recorded at that head (or a refusal that says so). Left out: our own integration PRs, held PRs, and PRs whose Merge?
+ * question was answered with something other than merge.
  */
 export function reviewedHeads(db: DatabaseSync, repo: string): Candidate[] {
-  const rows = db.prepare(`SELECT i.number, l.head_oid AS head, a.runs FROM items i
+  const rows = db.prepare(`SELECT i.number, l.head_oid AS head, a.runs, a.reread, a.failed, a.cross_repo FROM items i
     JOIN final_reviews l ON l.repo = i.repo AND l.number = i.number AND l.head_oid = (
       SELECT r.head_oid FROM reviews r WHERE r.repo = i.repo AND r.number = i.number ORDER BY r.at DESC, r.rowid DESC LIMIT 1)
     JOIN pr_checks c ON c.repo = i.repo AND c.number = i.number AND c.head_oid = l.head_oid AND c.state = 'OPEN' AND c.is_draft = 0
-    LEFT JOIN ci_run_approvals a ON a.repo = i.repo AND a.number = i.number AND a.head_oid = l.head_oid
-    WHERE i.repo = ? AND i.kind = 'pr' AND i.state = 'OPEN' AND l.verdict IN ('take', 'take-fix') AND l.final = 1
-      AND ${notOwnIntegrationSql("i")} AND ${pilotSql("i")} ORDER BY i.number`).all(repo) as { number: number; head: string; runs: string | null }[];
-  return rows.map((r) => ({ number: r.number, head: r.head, runs: r.runs === null ? null : (JSON.parse(r.runs) as WaitingRun[]) }));
+    JOIN ci_run_approvals a ON a.repo = i.repo AND a.number = i.number AND a.head_oid = l.head_oid
+    WHERE i.repo = ? AND i.kind = 'pr' AND i.state = 'OPEN' AND l.verdict IN ('take', 'take-fix') AND l.final = 1 AND ${notHeldSql("i")}
+      AND NOT EXISTS (SELECT 1 FROM decisions d WHERE d.id = i.repo || '#' || i.number || ':merge@' || l.head_oid AND d.answer IS NOT NULL AND d.answer <> 'merge')
+    ORDER BY i.number`).all(repo) as { number: number; head: string; runs: string; reread: number; failed: string; cross_repo: number }[];
+  return rows.filter((r) => !mergeHeld(db, repo, r.number)).map((r) => ({
+    number: r.number, head: r.head, runs: JSON.parse(r.runs) as WaitingRun[], reread: !!r.reread, failed: JSON.parse(r.failed) as Record<string, number>, crossRepo: !!r.cross_repo,
+  }));
 }
 
-/** Reviewed heads whose runs were not read yet or were waiting at the last read: the ones the sync (or the step) must read. */
-export const needsRead = (db: DatabaseSync, repo: string): Candidate[] => reviewedHeads(db, repo).filter((c) => c.runs === null || c.runs.length > 0);
+/** Runs of a candidate the step may still try: pull_request runs with fewer than MAX_FAILURES failed attempts. */
+export const approvable = (c: Candidate): WaitingRun[] => c.runs.filter((r) => r.event === "pull_request" && (c.failed[r.id] ?? 0) < MAX_FAILURES);
+/** Candidates the step has work on: approvable runs of a fork PR, or a head to read. */
+export const needsWork = (db: DatabaseSync, repo: string): Candidate[] => reviewedHeads(db, repo).filter((c) => c.reread || (c.crossRepo && approvable(c).length));
 
-type RunsReply = { workflow_runs?: { id: number; name?: string | null; head_sha?: string }[] };
+type RunsReply = { workflow_runs?: { id: number; name?: string | null; event?: string; head_sha?: string; head_repository?: { full_name?: string } | null; repository?: { full_name?: string } | null }[] };
 
-/** Reads the runs waiting for approval at each reviewed head that needs it (one request per PR) and records them. Returns the PRs read. */
-export async function detectRuns(db: DatabaseSync, repo: string, gh: Gh = ghExec, log: (line: string) => void = () => {}): Promise<number> {
-  let n = 0;
-  for (const c of needsRead(db, repo)) {
-    let runs: WaitingRun[];
-    try {
-      const r = JSON.parse(await gh(["api", `repos/${ORG}/${repo}/actions/runs?head_sha=${c.head}&status=action_required&per_page=100`])) as RunsReply;
-      runs = (r.workflow_runs ?? []).filter((w) => w.head_sha === c.head).map((w) => ({ id: w.id, name: w.name ?? "" }));
-    } catch (e) {
-      log(`ci-approval: ${repo}#${c.number}: ${(e as Error).message}`);
-      continue;
-    }
-    n++;
-    db.prepare(`INSERT INTO ci_run_approvals (repo, number, head_oid, runs, checked_at) VALUES (?, ?, ?, ?, ?)
-      ON CONFLICT (repo, number) DO UPDATE SET head_oid = excluded.head_oid, runs = excluded.runs, checked_at = excluded.checked_at, approved_at = NULL`)
-      .run(repo, c.number, c.head, JSON.stringify(runs), new Date().toISOString());
-  }
-  return n;
+/** Reads the runs waiting for approval at a head (one request); only runs of a fork's PR count. */
+async function readRuns(gh: Gh, repo: string, head: string): Promise<WaitingRun[]> {
+  const r = JSON.parse(await gh(["api", `repos/${ORG}/${repo}/actions/runs?head_sha=${head}&status=action_required&per_page=100`])) as RunsReply;
+  return (r.workflow_runs ?? []).filter((w) => w.head_sha === head && w.head_repository?.full_name !== w.repository?.full_name)
+    .map((w) => ({ id: w.id, name: w.name ?? "", event: w.event ?? "" }));
 }
 
 export type ApproveDeps = {
@@ -90,37 +123,52 @@ export type ApproveDeps = {
 };
 export type ApproveResult = { approved: string[]; skipped: string[]; failed: string[] };
 
-/** Approves the waiting runs of every reviewed head whose PR is still open, not a draft and at that head. The caller checks the repo's approval. */
+/** Approves the waiting runs of every candidate whose PR is still open, not a draft, a fork's, and at the reviewed head. */
 export async function approveRuns(db: DatabaseSync, repo: string, d: ApproveDeps): Promise<ApproveResult> {
   const log = d.log ?? (() => {});
-  const w: Writer = { db, login: "ci-approve" };
-  await detectRuns(db, repo, d.gh, log);
+  const w: Writer = { db, login: ACTOR };
   const out: ApproveResult = { approved: [], skipped: [], failed: [] };
-  for (const c of reviewedHeads(db, repo).filter((x) => x.runs?.length)) {
+  const save = (c: Candidate, runs: WaitingRun[], approved: number[], failed: Record<string, number>): void => {
+    const prev = db.prepare("SELECT approved FROM ci_run_approvals WHERE repo = ? AND number = ? AND head_oid = ?").get(repo, c.number, c.head) as { approved: string } | undefined;
+    const all = [...new Set([...(JSON.parse(prev?.approved ?? "[]") as number[]), ...approved])];
+    db.prepare("UPDATE ci_run_approvals SET runs = ?, approved = ?, reread = 0, failed = ?, approved_at = CASE WHEN ? THEN ? ELSE approved_at END WHERE repo = ? AND number = ? AND head_oid = ?")
+      .run(JSON.stringify(runs), JSON.stringify(all), JSON.stringify(failed), approved.length ? 1 : 0, new Date().toISOString(), repo, c.number, c.head);
+  };
+  for (const c of needsWork(db, repo)) {
     if (out.approved.length + out.failed.length >= d.limit) break;
+    if (!ciApprovalOf(db, repo)) throw new Error(`approving CI runs in ${repo} is not approved`);
+    if (mergeHeld(db, repo, c.number)) continue;
     const ref = `${repo}#${c.number}`;
-    let pr: { state?: string; draft?: boolean; head?: { sha?: string } };
+    let runs = c.runs;
+    let pr: { state?: string; draft?: boolean; head?: { sha?: string; repo?: { full_name?: string } | null }; base?: { repo?: { full_name?: string } | null } };
     try {
+      if (c.reread) runs = await readRuns(d.gh, repo, c.head);
       pr = JSON.parse(await d.gh(["api", `repos/${ORG}/${repo}/pulls/${c.number}`]));
     } catch (e) {
       log(`${ref}: ${(e as Error).message}`);
       out.failed.push(ref);
       continue;
     }
-    if (pr.state !== "open" || pr.draft !== false || pr.head?.sha !== c.head) {
-      log(`${ref}: no longer open, a draft, or at another head; skipped`);
+    const sameRepo = !pr.head?.repo || pr.head.repo.full_name === pr.base?.repo?.full_name;
+    if (pr.state !== "open" || pr.draft !== false || pr.head?.sha !== c.head || sameRepo) {
+      log(`${ref}: closed, a draft, at another head or not from a fork; skipped`);
+      if (c.reread) save(c, c.runs, [], c.failed);
       out.skipped.push(ref);
       continue;
     }
-    const left: WaitingRun[] = [];
-    for (const run of c.runs!) {
+    const todo = runs.filter((r) => r.event === "pull_request" && (c.failed[r.id] ?? 0) < MAX_FAILURES);
+    const failed = { ...c.failed };
+    const done: number[] = [];
+    for (const run of todo) {
+      if (!ciApprovalOf(db, repo)) throw new Error(`approving CI runs in ${repo} is not approved`);
       const r = await ghApproveRun(w, d.exec, { repo, number: c.number, runId: run.id }, { head: c.head, workflow: run.name });
-      if (r.code !== 0) left.push(run);
+      if (r.code === 0) done.push(run.id);
+      else failed[run.id] = (failed[run.id] ?? 0) + 1;
     }
-    db.prepare("UPDATE ci_run_approvals SET runs = ?, approved_at = ? WHERE repo = ? AND number = ? AND head_oid = ?")
-      .run(JSON.stringify(left), left.length ? null : new Date().toISOString(), repo, c.number, c.head);
-    (left.length ? out.failed : out.approved).push(ref);
-    log(`${ref}: ${left.length ? `${left.length} of ${c.runs!.length} runs not approved` : `approved ${c.runs!.length} runs`}`);
+    save(c, runs.filter((r) => !done.includes(r.id)), done, failed);
+    const bad = todo.length - done.length;
+    (bad ? out.failed : out.approved).push(ref);
+    log(`${ref}: ${bad ? `${bad} of ${todo.length} runs not approved` : `approved ${todo.length} runs`}`);
   }
   return out;
 }

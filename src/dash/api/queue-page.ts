@@ -36,6 +36,7 @@ const WAITS: Record<string, [MergeWait, string, number]> = {
   "in-batch": ["batch-ci", "In a batch; waiting for the batch PR's CI", 1],
   "batch-checking": ["batch-check", "In a batch; checked in the sandbox", 1],
   "waiting-ci": ["ci", "Waiting for CI", 2],
+  "ci-approval": ["ci", "Waiting for CI run approval", 2],
   "waiting-verify": ["verify", "Waiting for Verify", 2],
   "waiting-opus": ["re-review", "Waiting for re-review", 3],
 };
@@ -44,7 +45,7 @@ const HELD: [MergeWait, string, number] = ["held", "Merge held by an operator", 
 /** What merges next and what each PR waits for, from the queue states (src/merge/queue.ts). Fast-tracked first, held last. */
 export function nextMerges(entries: QueueEntry[], fast: Map<string, FastPosition>, batchOf: Map<string, { id: number; branch: string }>, scores: Map<string, number>): NextMerge[] {
   const items = entries.flatMap((e) => {
-    const w = e.held && e.state in WAITS ? HELD : WAITS[e.state];
+    const w = e.held && e.state in WAITS ? HELD : e.state === "ci-approval" && e.runsBlocked ? WAITS[e.state]!.map((x, k) => (k === 1 ? "CI runs need a person to approve" : x)) as [MergeWait, string, number] : WAITS[e.state];
     return w ? [{ e, w }] : [];
   });
   items.sort((a, b) => {

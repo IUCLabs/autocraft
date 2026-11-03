@@ -992,13 +992,18 @@ CREATE TABLE IF NOT EXISTS conversation_cards (
 CREATE INDEX IF NOT EXISTS conversation_cards_turn ON conversation_cards(turn_id);
 CREATE INDEX IF NOT EXISTS conversation_cards_item ON conversation_cards(repo, number);
 
--- Actions runs waiting for a maintainer's approval (conclusion action_required) at a reviewed PR head, one row per PR
--- (src/merge/ci-approval.ts). runs is a JSON [{id, name}] of the waiting runs, empty once none wait; approved_at is set
--- after the pipeline approved them.
+-- Actions runs waiting for a maintainer's approval (check suite conclusion action_required) at a PR head, one row per PR
+-- (src/merge/ci-approval.ts). runs: JSON [{id, name, event}] still waiting; approved: ids of runs we approved whose
+-- suites have not finished yet; reread: a refused merge said runs wait, the step reads them; failed: JSON {runId: failed
+-- approvals}; cross_repo: the PR comes from a fork.
 CREATE TABLE IF NOT EXISTS ci_run_approvals (
   repo TEXT NOT NULL, number INTEGER NOT NULL,
   head_oid TEXT NOT NULL,
+  cross_repo INTEGER NOT NULL DEFAULT 0,
   runs TEXT NOT NULL,
+  approved TEXT NOT NULL,
+  reread INTEGER NOT NULL DEFAULT 0,
+  failed TEXT NOT NULL,
   checked_at TEXT NOT NULL,
   approved_at TEXT,
   PRIMARY KEY (repo, number)

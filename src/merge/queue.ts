@@ -9,6 +9,7 @@ import { headOf } from "../review/candidates.ts";
 import { changedSince, discussionState, staleReviews } from "../review/discussion.ts";
 import { batchStates } from "./batch-store.ts";
 import { mergeHolds } from "./holds.ts";
+import { ciApprovalOf, MAX_FAILURES } from "./ci-approval.ts";
 import { getRule, STATS_SQL, tierOf, type Tier } from "../whitelist.ts";
 import { pilotSql } from "../pilot.ts";
 
@@ -68,6 +69,8 @@ export type QueueEntry = {
   decisionId: string | null;
   /** Actions runs at the reviewed head that wait for a maintainer's approval (see ci-approval.ts); 0 when none or unknown. */
   runsWaiting: number;
+  /** Why the pipeline does not approve them: the repo's CI approval is off, or approving failed twice; null when it will. */
+  runsBlocked: "off" | "failed" | null;
   /** The repo has no CI at all (not just no checks on this PR yet). */
   noCi: boolean;
   /** The operator's answer to the Merge? decision at this head, when there is one. */
@@ -167,7 +170,7 @@ export function buildQueue(db: DatabaseSync, opts: QueueOptions = {}): QueueEntr
     ORDER BY i.repo, i.number ${opts.limit ? `LIMIT ${Math.floor(opts.limit)}` : ""}`).all(params) as Row[];
 
   const merges = db.prepare("SELECT outcome, reason FROM merges WHERE repo = ? AND number = ? AND head_oid = ? ORDER BY at DESC, rowid DESC LIMIT 1");
-  const waiting = db.prepare("SELECT runs, approved_at FROM ci_run_approvals WHERE repo = ? AND number = ? AND head_oid = ?");
+  const waiting = db.prepare("SELECT runs, approved, reread, failed FROM ci_run_approvals WHERE repo = ? AND number = ? AND head_oid = ?");
   const verifs = db.prepare("SELECT state, kind, summary, note FROM verifications WHERE repo = ? AND number = ? AND head_sha = ?");
   const decision = db.prepare("SELECT id, answer FROM decisions WHERE id = ?");
   const answers = new Map(actionable(db).filter((a) => a.kind === "merge").map((a) => [a.id, a.answer]));
@@ -189,11 +192,14 @@ export function buildQueue(db: DatabaseSync, opts: QueueOptions = {}): QueueEntr
     if (r.state === "OPEN" && !mergedByUs && headOf(r) !== r.r_head) continue;
     // Checks describe the reviewed head only when they were fetched for it.
     const checksHere = r.c_head === r.r_head;
-    const held = waiting.get(r.repo, r.number, r.r_head) as { runs: string; approved_at: string | null } | undefined;
-    const runsWaiting = (JSON.parse(held?.runs ?? "[]") as unknown[]).length;
-    // The rollup does not list runs that waited for approval; until a sync after the approval, CI is not known to be green.
-    const approvedSince = !!held?.approved_at && (!r.c_at || r.c_at <= held.approved_at);
-    const ci = checksHere ? (approvedSince ? "pending" : (r.overall ?? "none")) : "unknown";
+    const wait = waiting.get(r.repo, r.number, r.r_head) as { runs: string; approved: string; reread: number; failed: string } | undefined;
+    const waitRuns = JSON.parse(wait?.runs ?? "[]") as { id: number }[];
+    const runsWaiting = waitRuns.length + (wait?.reread ? 1 : 0);
+    // The rollup does not list runs that waited for approval: CI is not known to be green until the runs we approved have finished.
+    const approvedPending = (JSON.parse(wait?.approved ?? "[]") as unknown[]).length > 0;
+    const ci = checksHere ? (approvedPending ? "pending" : (r.overall ?? "none")) : "unknown";
+    const failedRuns = JSON.parse(wait?.failed ?? "{}") as Record<string, number>;
+    const runsBlocked: QueueEntry["runsBlocked"] = !runsWaiting ? null : !ciApprovalOf(db, r.repo) ? "off" : waitRuns.some((x) => (failedRuns[x.id] ?? 0) >= MAX_FAILURES) ? "failed" : null;
     const mergeable = (checksHere ? r.c_mergeable : r.i_mergeable) ?? "UNKNOWN";
     let tier = r.author ? tiers.get(r.author)! : "not";
     // The pipeline's own Fix PRs count as whitelisted; an operator's deny still wins.
@@ -217,7 +223,7 @@ export function buildQueue(db: DatabaseSync, opts: QueueOptions = {}): QueueEntr
     const answer = answers.get(id) ?? null;
     const e: QueueEntry = {
       repo: r.repo, number: r.number, title: r.title ?? "", author: r.author, tier, head: r.r_head, size, label,
-      verdict: r.verdict, reason: r.reason, fixes, ci, mergeable, state: "needs-decision", path: null, outsideRule, runsWaiting,
+      verdict: r.verdict, reason: r.reason, fixes, ci, mergeable, state: "needs-decision", path: null, outsideRule, runsWaiting, runsBlocked,
       decisionId: asked ? id : null, noCi: ci === "none" && noCi(r.repo), answer, refusedReason: null, reviewedAt: r.r_at, verify, held: holds.has(`${r.repo}#${r.number}`),
     };
     const open = r.state === "OPEN" && !mergedByUs;

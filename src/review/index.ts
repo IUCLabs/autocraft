@@ -12,8 +12,6 @@ import { add, askClaude, pool, saveUsage, type Usage } from "../classify/run.ts"
 import { DEFAULT_CAPS, makeBatches, type Caps } from "./batch.ts";
 import { selectCandidates, type Candidate } from "./candidates.ts";
 import { checksOf, refreshChecks } from "./checks.ts";
-import { detectRuns } from "../merge/ci-approval.ts";
-import { ghExec, type Gh } from "../merge/safe-merge.ts";
 import { MAX_RERUNS_PER_DAY, countRerun, discussionOf, ensurePipelineLogin, liveDiscussion, markReviewsStale, markedStaleSince, staleReviews, type Snapshot } from "./discussion.ts";
 import { withdrawMergeQuestion } from "../merge/withdraw.ts";
 import { areaOf, cachedDiff, codeDiff, ghDiff, type DiffFetcher } from "./diff.ts";
@@ -184,11 +182,8 @@ export async function runReview(db: DatabaseSync, params: ReviewParams, log: (li
 export type ChecksParams = { repo: string };
 
 /** For the runner: refreshes CI and merge state of every open PR of the repo. */
-export async function runChecks(db: DatabaseSync, params: ChecksParams, log: (line: string) => void = console.log, querier: Querier = new Client(1000), gh: Gh = ghExec): Promise<{ prs: number }> {
+export async function runChecks(db: DatabaseSync, params: ChecksParams, log: (line: string) => void = console.log, querier: Querier = new Client(1000)): Promise<{ prs: number }> {
   const rows = await withRetry(() => refreshChecks(db, querier, params.repo, undefined, log));
-  // Runs waiting for approval do not show in the check rollup: read them for reviewed heads, so the queue does not call such a PR green.
-  const read = await detectRuns(db, params.repo, gh, log);
-  if (read) log(`ci-approval: ${params.repo}: read the runs of ${read} PRs`);
   return { prs: rows.length };
 }
 

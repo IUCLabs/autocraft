@@ -26,7 +26,7 @@ import { compareWork, dupesWork } from "../dupes/index.ts";
 import { pushApprovalOf } from "../fixup/approval.ts";
 import { selectFixups } from "../fixup/candidates.ts";
 import { mergeApprovalOf } from "../merge/approval.ts";
-import { ciApprovalOf, needsRead } from "../merge/ci-approval.ts";
+import { ciApprovalOf, needsWork } from "../merge/ci-approval.ts";
 import { batchesDue } from "../merge/batch-store.ts";
 import { buildQueue, eligible, refusedAsBefore, toAsk } from "../merge/queue.ts";
 
@@ -406,11 +406,11 @@ export const LANES: Lane[] = [
     detect: (db) => (pendingConversations(db).length ? [{ step: "conversation", params: {} }] : []),
   },
   {
-    // Runs GitHub holds for approval on reviewed outside PRs; the step reads the waiting runs itself for heads not read yet.
+    // Runs GitHub holds for approval on reviewed outside PRs; the checks job records them, the step approves.
     name: "ci-approve",
     steps: ["ci-approve"],
     perRepo: true,
-    detect: (db, { tracked }) => tracked.filter((repo) => ciApprovalOf(db, repo) && needsRead(db, repo).length).sort().map((repo) => ({ step: "ci-approve", params: { repo } })),
+    detect: (db, { tracked }) => tracked.filter((repo) => ciApprovalOf(db, repo) && needsWork(db, repo).length).sort().map((repo) => ({ step: "ci-approve", params: { repo } })),
   },
 ];
 
