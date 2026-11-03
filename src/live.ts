@@ -24,11 +24,11 @@ export const BOOKKEEPING_COLUMNS: Record<string, string[]> = {
 /** Settings the runner, the sync and the planner write for their own use; the dashboard shows none of them. */
 const BOOKKEEPING_SETTINGS = [
   "runner_heartbeat", "schema_stamp", "fts_built", "hashes_built", "item_stage_built", "tracking_started_at",
-  "pipeline_planned_at", "pipeline_sync_seen", "pipeline_sync_at", "pipeline_review_cursor", "pipeline_verify_cursor",
+  "pipeline_planned_at", "pipeline_seqs_seen", "pipeline_wake_at", "pipeline_status", "pipeline_sync_seen", "pipeline_sync_at", "pipeline_review_cursor", "pipeline_verify_cursor",
   "full_sync_cursor", "org_high_water", "search_catchup_at", "repos_refreshed_at", "sync_rate_remaining",
   "flow_summary_marks", "classify_run", "worker_update_pending", "worker_update_failures",
 ];
-const BOOKKEEPING_SETTING_LIKE = ["%\\_points\\_last\\_run"];
+const BOOKKEEPING_SETTING_LIKE = ["%\\_points\\_last\\_run", "pipeline\\_fp:%"];
 
 /** SQL condition on `key` that is true for the settings that matter to a page. */
 function shownSettings(key: string): string {

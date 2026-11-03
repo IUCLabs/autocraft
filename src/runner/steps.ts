@@ -33,6 +33,8 @@ export type StepContext = {
   usageRun(runId: string): void;
   /** Items this job has handled so far (units attempted, such as items sent to a model), counted against the stage's daily limit. Pass the running total as work goes: it is saved at once, so a failed or stopped job keeps its count. */
   handled(n: number): void;
+  /** Progress that is not an item: a batch started, opened or advanced, a decision asked. A job with no items and no acted is recorded as having done nothing, and the autopilot does not queue it again until its input changes. */
+  acted(n: number): void;
   /** Set when a cancel was requested; long loops should stop between units of work. */
   cancelled(): boolean;
 };
@@ -274,6 +276,7 @@ export const STEPS: StepDef[] = [
       if (limit > b.merged.length) {
         single = await runMerge(ctx.db, { repo, limit: limit - b.merged.length, dryRun: false, only: (e) => singleMergeOnly(e) || b.skipped.includes(e.number), onMerged: (n) => ctx.handled(b.merged.length + n) }, ctx.log);
       }
+      ctx.acted(b.started.length + b.published.length + b.split.length + b.superseded.length + b.failed.length + single.merged.length + single.asked.length + b.merged.length);
       return `${repo}: ${b.merged.length} merged in batches (${b.started.length} started, ${b.published.length} opened, ${b.split.length} split), ${single.merged.length} merged singly, ${single.asked.length} decisions asked`;
     },
   },
@@ -311,6 +314,7 @@ export const STEPS: StepDef[] = [
       const refused = await checkCommentApproved(ctx.db, ctx.params);
       if (refused) throw new Error(refused);
       const r = await runAct(ctx.db, { repo: String(ctx.params.repo), limit: Number(ctx.params.limit), dryRun: false, onHandled: ctx.handled }, ctx.log);
+      ctx.acted(r.done.length + r.skipped.length + r.failed.length + r.asked.length);
       return `${r.repo}: ${r.done.length} closed, ${r.skipped.length} skipped, ${r.failed.length} failed, ${r.asked.length} decisions asked`;
     },
   },
@@ -332,6 +336,7 @@ export const STEPS: StepDef[] = [
       const refused = await checkPushApproved(ctx.db, ctx.params);
       if (refused) throw new Error(refused);
       const r = await runFixup(ctx.db, { repo: String(ctx.params.repo), limit: Number(ctx.params.limit), dryRun: false, onHandled: ctx.handled }, ctx.log);
+      ctx.acted(r.pushed.length + r.asked.length + r.failed.length + r.held.length);
       return `${r.repo}: pushed ${r.pushed.length}, ${r.asked.length} asked, ${r.failed.length} failed or refused, ${r.held.length} held`;
     },
   },
@@ -400,6 +405,7 @@ export const STEPS: StepDef[] = [
       const { runDupes } = await import("../dupes/index.ts");
       const r = await runDupes(ctx.db, { limit: Number(ctx.params.limit), onHandled: ctx.handled }, ctx.log);
       const v = Object.entries(r.verdicts).map(([k, n]) => `${n} ${k}`).join(", ");
+      ctx.acted(r.scanned + r.pairsAdded + r.asked.length + r.answersApplied);
       return `scanned ${r.scanned} items, ${r.pairsAdded} new pairs; checked ${r.checked}${v ? ` (${v})` : ""}; ${r.asked.length} decisions asked, ${r.answersApplied} answers applied`;
     },
   },
@@ -454,7 +460,7 @@ export const STEPS: StepDef[] = [
     run: async (ctx) => {
       const { runRank } = await import("../rank/index.ts");
       const r = runRank(ctx.db);
-      ctx.handled(r.items);
+      ctx.handled(r.changed + r.removed);
       return `${r.items} open items ranked, ${r.changed} changed, ${r.removed} removed`;
     },
   },

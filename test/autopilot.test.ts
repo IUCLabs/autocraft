@@ -11,7 +11,7 @@ import { SCRATCH } from "./scratch.ts";
 process.env.CRAFT_AUTO_EXTRA_STEPS = fileURLToPath(new URL("./autopilot-steps.ts", import.meta.url));
 
 const { connect } = await import("../src/db.ts");
-const { autopilotTick, backoffUntil, LANES, planAutopilot, planDue, refusedAsBefore, roundRobin, setEnabled, BACKOFF_MS, COOLDOWN_MS } = await import("../src/runner/autopilot.ts");
+const { autopilotTick, backoffUntil, detectAutopilot, failureBackoff, failureDelayMs, LANES, planAutopilot, planDue, refusedAsBefore, roundRobin, setEnabled, FAIL_BACKOFF_MAX_MS, PLAN_EVERY_MS } = await import("../src/runner/autopilot.ts");
 const { enqueue, JobError, RUNNER_STOPPED } = await import("../src/runner/jobs.ts");
 const { Runner } = await import("../src/runner/runner.ts");
 const { setMergeApproval } = await import("../src/merge/approval.ts");
@@ -34,17 +34,20 @@ const jobs = (step: string) => db.prepare("SELECT * FROM jobs WHERE step = ? ORD
 const finish = (step: string, state: "done" | "failed", items: number | null, endedAt = new Date().toISOString()) =>
   db.prepare("INSERT INTO jobs (step, params, requested_by, requested_at, state, started_at, ended_at, items) VALUES (?, '{}', 'pipeline', ?, ?, ?, ?, ?)")
     .run(step, endedAt, state, endedAt, endedAt, items);
+/** A content change: bumps the counter of a topic the planner watches. */
+const touch = (topic = "items") => db.prepare("UPDATE change_seq SET seq = seq + 1 WHERE topic = ?").run(topic);
 const setLimit = (step: string, perDay: number | null) => db.prepare("INSERT OR REPLACE INTO stage_limits (step, per_day) VALUES (?, ?)").run(step, perDay);
 
 beforeEach(() => {
   db.exec("DELETE FROM jobs; DELETE FROM stage_limits; DELETE FROM settings WHERE key LIKE 'pipeline_%' OR key = 'org_high_water'");
+  touch();
   work = true;
 });
 
 describe("autopilot", () => {
   test("a stage with work gets a job sized to the day's remaining limit", async () => {
     setLimit("test-limited", 80);
-    finish("test-limited", "done", 50, new Date(Date.now() - 2 * COOLDOWN_MS).toISOString());
+    finish("test-limited", "done", 50, new Date(Date.now() - 2 * 60 * 60_000).toISOString());
     const ids = await planAutopilot(db, { lanes });
     assert.equal(ids.length, 2, "one job per lane");
     const j = jobs("test-limited").at(-1)!;
@@ -66,7 +69,7 @@ describe("autopilot", () => {
   test("a used-up or zero limit queues nothing for that stage while others go on", async () => {
     setLimit("test-limited", 50);
     setLimit("test-plain", 0);
-    finish("test-limited", "done", 50, new Date(Date.now() - 2 * COOLDOWN_MS).toISOString());
+    finish("test-limited", "done", 50, new Date(Date.now() - 2 * 60 * 60_000).toISOString());
     await planAutopilot(db, { lanes });
     assert.equal(jobs("test-limited").length, 1, "only the finished job");
     assert.equal(jobs("test-plain").length, 0, "0 pauses the stage");
@@ -75,17 +78,34 @@ describe("autopilot", () => {
     assert.equal(jobs("test-plain").length, 1);
   });
 
-  test("switched off, the tick queues nothing; switched on, it plans after a sync and not again until something changes", async () => {
+  test("switched off, the tick queues nothing; switched on, it plans at once and again only when something changed", async () => {
     assert.deepEqual(await autopilotTick(db, { lanes }), []);
     setEnabled(db, true, "boss");
-    db.prepare("INSERT INTO settings (key, value) VALUES ('org_high_water', 't1')").run();
     assert.equal((await autopilotTick(db, { lanes })).length, 2);
-    assert.equal((await autopilotTick(db, { lanes })).length, 0, "nothing changed");
     db.prepare("UPDATE jobs SET state = 'cancelled'").run();
-    assert.equal((await autopilotTick(db, { lanes, nowMs: Date.now() + 16 * 60_000 })).length, 2, "15 minutes later");
+    assert.equal((await autopilotTick(db, { lanes, nowMs: Date.now() + 60_000 })).length, 0, "nothing changed in a minute");
+    touch("classify");
+    assert.equal((await autopilotTick(db, { lanes, nowMs: Date.now() + 61_000 })).length, 2, "a topic change plans at once");
+    db.prepare("UPDATE jobs SET state = 'cancelled'").run();
+    assert.equal((await autopilotTick(db, { lanes, nowMs: Date.now() + PLAN_EVERY_MS + 120_000 })).length, 2, "the fallback timer");
     setEnabled(db, false, "boss");
     db.prepare("UPDATE jobs SET state = 'cancelled'").run();
     assert.deepEqual(await autopilotTick(db, { lanes, nowMs: Date.now() + 40 * 60_000 }), []);
+  });
+
+  test("changes the planner does not read (job logs, usage) do not wake it; a limit change does", () => {
+    setEnabled(db, true, "boss");
+    assert.equal(planDue(db), true);
+    assert.equal(planDue(db), false);
+    touch("jobs");
+    touch("usage");
+    touch("agents");
+    assert.equal(planDue(db), false);
+    setLimit("test-plain", 5);
+    assert.equal(planDue(db), true, "a limit change");
+    assert.equal(planDue(db), false);
+    db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('pipeline_wake_at', ?)").run(new Date(Date.now() - 1000).toISOString());
+    assert.equal(planDue(db), true, "a wait the last pass found has ended");
   });
 
   test("the review lane's repos go round robin and the cursor moves on a review", () => {
@@ -100,24 +120,70 @@ describe("autopilot", () => {
     assert.deepEqual(roundRobin(["a", "b", "c"], cursor), ["c", "a", "b"]);
   });
 
-  test("three failed automatic jobs in a row make the stage wait an hour; other stages go on", async () => {
-    for (let i = 0; i < 3; i++) finish("test-limited", "failed", null, new Date(Date.now() - 20 * 60_000 - i * 60_000).toISOString());
-    const until = backoffUntil(db, "test-limited");
-    assert.ok(until !== null && until > Date.now() && until <= Date.now() + BACKOFF_MS);
+  test("failed automatic jobs back off 1, 2, 4 minutes; other stages go on; a success resets", async () => {
+    assert.deepEqual([1, 2, 3, 4, 5, 6, 9].map(failureDelayMs), [60_000, 120_000, 240_000, 480_000, 960_000, FAIL_BACKOFF_MAX_MS, FAIL_BACKOFF_MAX_MS]);
+    const ago = (s: number) => new Date(Date.now() - s * 1000).toISOString();
+    finish("test-limited", "failed", null, ago(30));
+    let b = failureBackoff(db, "test-limited");
+    assert.ok(b && b.failures === 1 && b.until > Date.now() && b.until <= Date.now() + 60_000);
+    assert.equal(failureBackoff(db, "test-limited", Date.now() + 61_000), null, "a minute later it is free");
+    finish("test-limited", "failed", null, ago(20));
+    b = failureBackoff(db, "test-limited");
+    assert.ok(b && b.failures === 2 && b.until > Date.now() + 60_000 && b.until <= Date.now() + 120_000, "the second failure waits 2 minutes");
     const logs: string[] = [];
     await planAutopilot(db, { lanes, log: (l) => logs.push(l) });
-    assert.equal(jobs("test-limited").length, 3, "no new job");
+    assert.equal(jobs("test-limited").length, 2, "no new job");
     assert.equal(jobs("test-plain").length, 1);
-    assert.ok(logs.some((l) => /test-limited.*failed/.test(l)), logs.join("\n"));
-    assert.equal(backoffUntil(db, "test-limited", Date.now() + BACKOFF_MS + 60 * 60_000), null, "an hour later it is free");
-    db.prepare("UPDATE jobs SET state = 'done', items = 3 WHERE id = (SELECT MAX(id) FROM jobs WHERE step = 'test-limited')").run();
-    assert.equal(backoffUntil(db, "test-limited"), null, "a success in the last three ends it");
+    assert.ok(logs.some((l) => /test-limited.*failed 2 times.*retry at/.test(l)), logs.join("\n"));
+    const found = await detectAutopilot(db, { lanes });
+    assert.match(found.status?.["test-limited"] ?? "", /failed 2 times in a row; retry at \d\d:\d\d UTC/);
+    assert.ok(found.wakeAt && found.wakeAt > Date.now(), "the planner wakes when the backoff ends");
+    finish("test-limited", "failed", null, ago(10));
+    assert.equal(failureBackoff(db, "test-limited")?.failures, 3);
+    assert.equal(backoffUntil(db, "test-limited", Date.now() + 5 * 60_000), null, "after 4 minutes it is free");
+    finish("test-limited", "done", 3, ago(5));
+    assert.equal(backoffUntil(db, "test-limited"), null, "a success resets the count");
   });
 
-  test("a stage that handled nothing is not retried within 15 minutes", async () => {
-    finish("test-limited", "done", 0);
+  test("a changed input ends a failure backoff", async () => {
+    setEnabled(db, true, "boss");
     await planAutopilot(db, { lanes });
-    assert.equal(jobs("test-limited").length, 1);
+    const j = jobs("test-limited")[0]!;
+    db.prepare("UPDATE jobs SET state = 'failed', ended_at = ?, error = 'x' WHERE id = ?").run(new Date().toISOString(), j.id);
+    await planAutopilot(db, { lanes });
+    assert.equal(jobs("test-limited").length, 1, "same input: backing off");
+    touch();
+    await planAutopilot(db, { lanes });
+    assert.equal(jobs("test-limited").length, 2, "new input: tried at once");
+  });
+
+  test("a job that handled nothing is not queued again on the same input; a changed input queues it at once", async () => {
+    await planAutopilot(db, { lanes });
+    const first = jobs("test-limited")[0]!;
+    db.prepare("UPDATE jobs SET state = 'done', started_at = ?, ended_at = ?, items = 0 WHERE id = ?").run(new Date().toISOString(), new Date().toISOString(), first.id);
+    await planAutopilot(db, { lanes });
+    assert.equal(jobs("test-limited").length, 1, "same input");
+    const found = await detectAutopilot(db, { lanes });
+    assert.match(found.status?.["test-limited"] ?? "", /nothing to do/);
+    touch("decisions");
+    await planAutopilot(db, { lanes });
+    assert.equal(jobs("test-limited").length, 2, "changed input");
+  });
+
+  test("a job that made progress without items (a batch advanced, a PR opened) counts as handled", async () => {
+    await planAutopilot(db, { lanes });
+    const first = jobs("test-limited")[0]!;
+    db.prepare("UPDATE jobs SET state = 'done', started_at = ?, ended_at = ?, items = 0, acted = 2 WHERE id = ?").run(new Date().toISOString(), new Date().toISOString(), first.id);
+    await planAutopilot(db, { lanes });
+    assert.equal(jobs("test-limited").length, 2, "queued again without a change");
+  });
+
+  test("a polling candidate runs again on an unchanged input", async () => {
+    const polling: Lane[] = [{ name: "poll", detect: () => [{ step: "test-limited", params: {}, poll: true }] }];
+    await planAutopilot(db, { lanes: polling });
+    db.prepare("UPDATE jobs SET state = 'done', started_at = ?, ended_at = ?, items = 0").run(new Date().toISOString(), new Date().toISOString());
+    await planAutopilot(db, { lanes: polling });
+    assert.equal(jobs("test-limited").length, 2);
   });
 
   test("switching off cancels the queued automatic jobs (audited) and a queued one never starts while off", async () => {
@@ -141,23 +207,16 @@ describe("autopilot", () => {
     await runner.stop();
   });
 
-  test("a done job that handled nothing counts as a failure for backoff; one that handled something ends the streak", () => {
-    for (let i = 0; i < 3; i++) finish("test-limited", "done", 0, new Date(Date.now() - 20 * 60_000 - i * 60_000).toISOString());
-    assert.ok(backoffUntil(db, "test-limited") !== null);
-    db.prepare("UPDATE jobs SET items = 5 WHERE id = (SELECT MAX(id) FROM jobs WHERE step = 'test-limited')").run();
-    assert.equal(backoffUntil(db, "test-limited"), null);
-  });
-
   test("jobs a runner stop ended do not count toward backoff", () => {
     for (let i = 0; i < 3; i++) {
-      finish("test-limited", "failed", null, new Date(Date.now() - 20 * 60_000 - i * 60_000).toISOString());
+      finish("test-limited", "failed", null, new Date(Date.now() - 30_000 - i * 1000).toISOString());
     }
     db.prepare("UPDATE jobs SET error = ?").run(RUNNER_STOPPED);
     assert.equal(backoffUntil(db, "test-limited"), null);
   });
 
   test("an operator release ends the released stage's backoff and makes the planner due", () => {
-    for (let i = 0; i < 3; i++) finish("merge", "done", 0, new Date(Date.now() - 20 * 60_000 - i * 60_000).toISOString());
+    for (let i = 0; i < 3; i++) finish("merge", "failed", null, new Date(Date.now() - 30_000 - i * 1000).toISOString());
     assert.ok(backoffUntil(db, "merge") !== null);
     setEnabled(db, true, "boss");
     assert.equal(planDue(db), true, "first plan");
@@ -166,13 +225,6 @@ describe("autopilot", () => {
     assert.equal(backoffUntil(db, "merge"), null);
     assert.equal(planDue(db, Date.now() + 2000), true, "the release wakes the planner");
     db.exec("DELETE FROM audit WHERE action = 'batch-again'");
-  });
-
-  test("with no sync recorded, only the first plan and the 15-minute timer trigger", async () => {
-    setEnabled(db, true, "boss");
-    assert.equal((await autopilotTick(db, { lanes })).length, 2);
-    db.prepare("UPDATE jobs SET state = 'cancelled', ended_at = NULL").run();
-    assert.equal((await autopilotTick(db, { lanes })).length, 0, "a missing sync is not a new sync");
   });
 
   test("a PR refused at its head waits until its CI or mergeable state differs from the refusal", () => {

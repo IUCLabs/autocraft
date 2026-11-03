@@ -10,18 +10,6 @@ import { isSize, rankOf, sizeOfLines, type RankBreakdown, type RankInput, type S
 
 const now = () => new Date().toISOString();
 
-/** A rank older than this is recomputed even when nothing is missing, so size and priority changes arrive. */
-export const RANK_STALE_MS = 30 * 60_000;
-
-/** Open tracked items without a rank row, or the oldest row older than RANK_STALE_MS. Read-only, for the autopilot. */
-export function rankDue(db: DatabaseSync, nowMs: number = Date.now()): boolean {
-  const missing = db.prepare(`SELECT 1 FROM items i JOIN tracked_repos t ON t.name = i.repo LEFT JOIN item_rank r ON r.repo = i.repo AND r.number = i.number
-    WHERE i.state = 'OPEN' AND r.repo IS NULL LIMIT 1`).get();
-  if (missing) return true;
-  const oldest = (db.prepare("SELECT MIN(computed_at) AS at FROM item_rank").get() as { at: string | null }).at;
-  return oldest !== null && nowMs - Date.parse(oldest) > RANK_STALE_MS;
-}
-
 type ItemRow = { repo: string; number: number; kind: string; lines: number | null; level: Level | null; reach: number | null; fix_size: string | null };
 
 /** Size of an item: the fix triage's estimate for an issue, the changed lines for a PR. */

@@ -104,8 +104,8 @@ export const currentComparison = (db: DatabaseSync, s: KindSet): StoredCompariso
   return c && c.hash === s.hash ? c : null;
 };
 
-export const DROP_PAUSE_MS = 6 * 3600_000;
-export const RULE_RETRY_MS = 24 * 3600_000;
+export const DROP_PAUSE_MS = 10 * 60_000;
+export const RULE_RETRY_MS = 15 * 60_000;
 export const RULE_ATTEMPTS = 3;
 const dropKey = (s: { repo: string; key: string }) => `dupe_drop:${s.repo}:${s.key}`;
 
@@ -121,7 +121,7 @@ function recentlyDropped(db: DatabaseSync, s: KindSet, nowMs: number): boolean {
   return hash === s.hash && nowMs - Date.parse(at!) < DROP_PAUSE_MS;
 }
 
-/** A stored rule result is tried again after a day, three times at most, while no decision of the group is answered. */
+/** A stored rule result is tried again after 15 minutes, three times at most, while no decision of the group is answered. */
 function retryable(db: DatabaseSync, c: StoredComparison, nowMs: number): boolean {
   if (c.source !== "rule" || c.attempts >= RULE_ATTEMPTS || nowMs - Date.parse(c.at) < RULE_RETRY_MS) return false;
   const placeholders = c.members.map(() => "?").join(",");

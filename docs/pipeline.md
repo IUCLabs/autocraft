@@ -73,7 +73,7 @@ Each open item gets a level from P0 to P4.
 
 ## Work rank
 
-One key per open item decides what the pipeline works on next, for issues and PRs alike. No model; recomputed every 30 minutes from stored results. Items are ordered by, in turn:
+One key per open item decides what the pipeline works on next, for issues and PRs alike. No model; recomputed whenever the items, priorities or fix estimates change. Items are ordered by, in turn:
 
 1. Level, P0 first.
 2. Type: bugfix, performance, infra, missing feature, small extra, plugin candidate; not settled last.
@@ -228,7 +228,7 @@ Rebuilds. A PR in the batch that is no longer mergeable by the rule or the opera
 
 Assignment. When a batch is created, each member PR with no assignee is assigned to the pipeline account (audit action `assign`). When a member leaves the pipeline without merging (it failed alone and is held, was dropped from a rebuilt batch and is no longer eligible, or its batch PR was closed by a person), the assignment is removed (audit action `unassign`) only if the audit shows we made it and we are still the only assignee. A member that goes into a new batch keeps it. Single merges are assigned when they merge.
 
-Limits and exclusions. A PR whose own diff is binary or larger than the task limit is left out of batches and merged on its own, like PRs in repos with no CI (a batch PR would never turn green). A batch with more PRs than the daily limit has left waits, and rebuilds and splits take at most what is left. A build-environment error keeps the batch checking: the task is queued again at once, then after 5 minutes doubling up to 6 hours; the batch is never split or held for it. Merge jobs that only advance batches in flight do not count towards the stage's backoff. A crash after the batch PR was created is repaired by adopting the open PR of the branch. Fetches into the shared cache retry on ref-lock errors.
+Limits and exclusions. A PR whose own diff is binary or larger than the task limit is left out of batches and merged on its own, like PRs in repos with no CI (a batch PR would never turn green). A batch with more PRs than the daily limit has left waits, and rebuilds and splits take at most what is left. A build-environment error keeps the batch checking: the task is queued again at once, then after 5 minutes doubling up to 30 minutes; the batch is never split or held for it. A merge job that started, opened, advanced, split or merged a batch counts as having made progress. A crash after the batch PR was created is repaired by adopting the open PR of the branch. Fetches into the shared cache retry on ref-lock errors.
 
 The pipeline's own integration PRs (author the pipeline account, number in `merge_batches`) are left out of classify, labels, review, Opus review, duplicates, decide, act, fix-up, verify and the queue. There is no Opus review of the combined diff. The Merge queue page lists the batches with their PRs, state and batch PR.
 
@@ -335,7 +335,14 @@ Pages update without a reload. The database is the single source of truth and th
 
 The pipeline starts **Off**. An operator switches it on the Pipeline page or with `craft-auto pipeline on|off`; the switch records who and when. Off cancels waiting automatic jobs and queues no new ones; running jobs finish.
 
-While On, the runner looks for work after each sync, at least every 15 minutes, and when a job ends. It queues a job for each stage that has work, no job queued or running, and limit left. Per-repo stages (Label, Review, Merge, Act, Fix-up, Fix) queue only for repos with the matching approval. A stage whose last three automatic jobs failed, or ended with no items although there was work, waits an hour; one whose last job handled nothing waits 15 minutes. The full classification pass is never started automatically.
+While On, the runner plans whenever the content the stages read changed (a change-counter topic other than jobs, usage, agent runs, sandbox environments and audit moved, or a sandbox task ended), a job ended, an operator changed a limit or released work, or a wait the last pass found ended. A 5-minute timer is only a fallback. The planner queues a job for each stage that has work, no job queued or running, and limit left. Per-repo stages (Label, Review, Merge, Act, Fix-up, Fix) queue only for repos with the matching approval.
+
+A stage does not wait on a timer when it has work. Two rules decide when a stage that has work is held back:
+
+- **Same input.** Each queued job stores a fingerprint of the input it saw (the stage, the repo and the counters of the topics the stage reads). A job that handled no items and made no other progress (no batch started, opened or advanced, no decision asked) is not queued again until the fingerprint changes. A step reports such progress with `acted`, next to `items`.
+- **Failures.** After a failed job the stage waits 1 minute, then 2, 4, 8 and 16, then 30 minutes, until a job succeeds. A changed fingerprint or an operator release ends the wait at once. Jobs a runner stop ended do not count.
+
+Stages that watch an outside system (upstream CI of PRs waiting for it, open batch PRs, finished sandbox tasks) are exempt from the first rule and read it again every minute. The full classification pass is never started automatically.
 
 **Pilot.** The setting `pilot_items` (a list of `repo#number`) limits every stage to those items. Classify, Priority, Dupes (the listed items as subjects; their neighbours may be any item), Referee, Decide, Review, Opus review, Post reviews, Label, Verify, Fix-up, Fix, Merge and Act pick candidates among them only; Embed and Rank stay unrestricted because they are local and cheap. A Fix PR the pipeline opened for a pilot issue counts as a pilot item. Integration batches in flight finish. Empty or absent means no pilot. Operators set it on the Pipeline page or with `craft-auto pipeline pilot set <repo#number>...`, `pilot show` and `pilot clear`; each change is in the audit log.
 
@@ -354,6 +361,27 @@ Limits count items handled per stage per day (from 00:00 UTC), including by fail
 | Opus review | 40 | Post reviews | 40 |
 
 Embed, checks and Label have no limit.
+
+### Waits
+
+Automated work waits only for the reasons below. A stage that is not running shows its reason on the Pipeline page: nothing to do, waiting for CI on N PRs, failed with the retry time, the daily limit, or a pause.
+
+| Wait | Why | How long | Shows as |
+|---|---|---|---|
+| Failed job | Retry a real failure without hammering | 1, 2, 4, 8, 16, then 30 minutes; ends on a changed input or a release | "failed N times in a row; retry at HH:MM UTC" |
+| Upstream CI of PRs and open batch PRs | External | Read again every minute per repo while any waits | "waiting for CI on N PRs in repo" |
+| Sandbox build | External | Until the task ends; build-environment errors queue it again after 0, 5, 10, 20, 30 minutes | Batch state `checking` |
+| Checks before Review and Verify | CI data younger than 5 minutes is reused | 5 minutes | Job list |
+| Daily limit | Cost control | Until 00:00 UTC | "daily limit of N items reached; resumes at 00:00 UTC" |
+| Claude usage pause | Account headroom | Until usage reading recovers; re-read every minute | Claude pause reason |
+| Rate limits | GitHub | Per the API's reset | Job log |
+| Duplicate set changed on GitHub | Wait for the sync to bring the set | 10 minutes | Duplicates stage |
+| Rule fallback of a duplicate group | The model call failed; retried up to 3 times | 15 minutes | Duplicates stage |
+| Planner fallback | Safety net; the planner normally runs on a change | 5 minutes | none |
+| Sync | Poll of GitHub | 1 minute; the search catch-up runs hourly, the reconcile daily | Syncs list |
+| Warm build of the default branch | Limits sandbox load; never blocks a PR | Once a day per repo | Sandbox tasks |
+| Flow summary and vector index | Display and search caches | 10 and 30 minutes at most; also rebuilt on change | none |
+| Retention | Pruning old rows and logs | Days to months | none |
 
 | Who | On the Pipeline page |
 |---|---|

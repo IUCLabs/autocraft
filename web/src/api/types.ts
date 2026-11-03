@@ -828,7 +828,9 @@ export interface JobFilter {
   offset?: number;
 }
 
-export type StageLimit = { step: string; title: string; perDay: number | null; usedToday: number; pausedReason: string | null };
+export type StageLimit = { step: string; title: string; perDay: number | null; usedToday: number; pausedReason: string | null;
+  /** What the stage is doing when nothing pauses it: "running", "queued", or why it is not starting ("nothing to do", "waiting for CI on 3 PRs in x"). */
+  status?: string | null };
 export type PipelineState = { enabled: boolean; changedBy: string | null; changedAt: string | null; heartbeat: string | null; limits: StageLimit[]; /** "repo#number" refs the pipeline is limited to; empty when there is no pilot. */ pilot: string[] };
 
 export interface PipelineStep {

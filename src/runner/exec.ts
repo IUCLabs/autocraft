@@ -72,6 +72,7 @@ export async function execJob(id: number): Promise<number> {
     log: (line) => console.log(line),
     usageRun: (r) => void runs.add(r),
     handled: (n) => void db.prepare("UPDATE jobs SET items = ? WHERE id = ?").run(n, id),
+    acted: (n) => void db.prepare("UPDATE jobs SET acted = ? WHERE id = ?").run(n, id),
     cancelled: () => !!(db.prepare("SELECT cancel_requested_at FROM jobs WHERE id = ?").get(id) as { cancel_requested_at: string | null }).cancel_requested_at,
   };
   setCallContext({ jobId: id, step: step.name, stage: step.stage, cancelled: ctx.cancelled });

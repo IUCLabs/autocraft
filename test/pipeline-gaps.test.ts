@@ -127,10 +127,10 @@ describe("Merge? asked without a merge approval", () => {
     const ctx = { run: "r1", jevRun: "r1", tracked: ["app"] };
     assert.deepEqual(lane.detect(db, ctx), [], "no merge approval");
     setMergeApproval(db, "op", "app", true);
-    assert.deepEqual(lane.detect(db, ctx), [{ step: "checks", params: { repo: "app" }, gate: { step: "merge", params: { repo: "app" } } }]);
+    assert.deepEqual(lane.detect(db, ctx), [{ step: "checks", params: { repo: "app" }, poll: true, gate: { step: "merge", params: { repo: "app" }, poll: true } }]);
     const at = new Date().toISOString();
     db.prepare("INSERT INTO jobs (step, params, repo, requested_by, requested_at, state, started_at, ended_at, items) VALUES ('checks', '{}', 'app', 'pipeline', ?, 'done', ?, ?, 1)").run(at, at, at);
-    assert.deepEqual(lane.detect(db, ctx), [], "checks just ran");
+    assert.deepEqual(lane.detect(db, ctx), [], "checks ran less than a minute ago");
     db.prepare("UPDATE pr_checks SET mergeable = 'MERGEABLE'").run();
     assert.deepEqual(lane.detect(db, ctx), [{ step: "merge", params: { repo: "app" } }]);
   });

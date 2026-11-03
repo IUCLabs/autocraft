@@ -73,6 +73,11 @@ function alreadyApplied(db: DatabaseSync, repo: string, r: PlanRow): boolean {
   return r.add.every((a) => done.some((d) => d.toLowerCase() === a.toLowerCase()));
 }
 
+/** The label additions an apply pass would make now: planned adds the previous apply has not already done. */
+export function labelsToApply(db: DatabaseSync, repo: string, runId?: string): PlanRow[] {
+  return planLabels(db, repo, runId).filter((r) => r.status === "add" && !alreadyApplied(db, repo, r));
+}
+
 export async function applyLabels(db: DatabaseSync, client: Querier, repo: string, o: ApplyOpts): Promise<ApplyResult> {
   const wait = o.wait ?? (sleepMs as Wait);
   const log = o.log ?? (() => {});
@@ -80,7 +85,7 @@ export async function applyLabels(db: DatabaseSync, client: Querier, repo: strin
   if (o.apply && !approval) {
     throw new LabelsError(`${repo} is not approved for labelling. An operator approves it on the dashboard Repos page.`);
   }
-  let todo = planLabels(db, repo, o.runId).filter((r) => r.status === "add" && !alreadyApplied(db, repo, r));
+  let todo = labelsToApply(db, repo, o.runId);
   if (o.limit !== undefined) todo = todo.slice(0, o.limit);
   const res: ApplyResult = { planned: todo.length, labeled: 0, failed: [], skipped: 0, batches: 0, dryRun: !o.apply };
   if (!o.apply) {

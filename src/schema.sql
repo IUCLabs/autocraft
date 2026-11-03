@@ -303,7 +303,8 @@ CREATE TABLE IF NOT EXISTS jobs (
   cancel_requested_at TEXT,
   cancel_requested_by TEXT,
   repo TEXT,                          -- params.repo, for the autopilot's per-repo lookups
-  items INTEGER                       -- items the job handled (classified, asked, reviewed, merged ...), for the daily limits
+  items INTEGER,                      -- items the job handled (classified, asked, reviewed, merged ...), for the daily limits
+  acted INTEGER                       -- other progress the job made (a batch advanced or opened, a decision asked ...); with items 0, the job was idle
 );
 CREATE INDEX IF NOT EXISTS jobs_state ON jobs(state, id);
 CREATE INDEX IF NOT EXISTS jobs_step ON jobs(step, id);

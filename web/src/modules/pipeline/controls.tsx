@@ -99,7 +99,8 @@ export function PipelineSwitch({ className }: { className?: string }) {
 const usage = (l: StageLimit) => (l.perDay === null ? `${num(l.usedToday)}` : `${num(l.usedToday)} of ${num(l.perDay)}`);
 
 function PauseBadge({ l }: { l: StageLimit }) {
-  return l.pausedReason ? <Badge tone="warn">{l.pausedReason}</Badge> : null;
+  if (l.pausedReason) return <Badge tone="warn">{l.pausedReason}</Badge>;
+  return l.status ? <span className="text-xs text-ink/50">{l.status}</span> : null;
 }
 
 /** Number input for the daily limit: empty means no limit, 0 pauses the stage. */
@@ -175,7 +176,7 @@ export function StageLimits() {
                   </td>
                   <td className="px-3 text-right">{usage(l)}</td>
                   <td className="px-3 py-1.5">{operator ? <LimitEditor l={l} /> : limitText(l)}</td>
-                  <td className="px-3">{l.pausedReason ? <Badge tone="warn">{l.pausedReason}</Badge> : <span className="text-ink/45">ready</span>}</td>
+                  <td className="px-3">{l.pausedReason ? <Badge tone="warn">{l.pausedReason}</Badge> : <span className="text-ink/45">{l.status ?? "ready"}</span>}</td>
                 </tr>
               ))}
             </tbody>

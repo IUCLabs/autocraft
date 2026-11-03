@@ -31,8 +31,8 @@ export const UNASSIGN = `mutation($id: ID!, $user: ID!) {
   removeAssigneesFromAssignable(input: { assignableId: $id, assigneeIds: [$user] }) { clientMutationId }
 }`;
 const PR_URL = new RegExp(`^https://github\\.com/${ORG}/[A-Za-z0-9._-]+/pull/(\\d+)$`);
-/** Wait before the sandbox task of a batch is queued again after a build-environment error: none for the first retry, then doubling from 5 minutes up to 6 hours. */
-export const retryDelayMs = (retries: number): number => (retries === 0 ? 0 : Math.min(5 * 60_000 * 2 ** (retries - 1), 6 * 3_600_000));
+/** Wait before the sandbox task of a batch is queued again after a build-environment error: none for the first retry, then doubling from 5 minutes up to 30 minutes. */
+export const retryDelayMs = (retries: number): number => (retries === 0 ? 0 : Math.min(5 * 60_000 * 2 ** (retries - 1), 30 * 60_000));
 
 export type BatchDeps = {
   /** Every git and gh command. */

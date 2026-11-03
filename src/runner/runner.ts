@@ -155,7 +155,7 @@ export class Runner {
       for (const l of found.logs) this.o.log(l);
       try {
         // Detection read the database a moment ago; the switch may have been turned off since.
-        if (isEnabled(this.db)) await applyProposals(this.db, found.proposals, { log: this.o.log });
+        if (isEnabled(this.db)) await applyProposals(this.db, found.proposals, { log: this.o.log, wakeAt: found.wakeAt ?? null, ...(found.status ? { status: found.status } : {}) });
       } catch (e) {
         this.o.log(`autopilot: ${(e as Error).message}`);
       }
