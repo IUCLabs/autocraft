@@ -6,7 +6,15 @@ import type { FeatureModule } from "../../registry/types";
 import { Button } from "../../ui/atoms/Button";
 import { Count } from "../../ui/atoms/Heading";
 import { useIsPhone } from "../../shell/useMedia";
-import { Block, ErrorLine, Page, Pager, selectCls, SortTh, TextInput, useUrlState, when } from "./parts";
+import { Block } from "../../ui/molecules/Block";
+import { ErrorLine } from "../../ui/atoms/ErrorLine";
+import { Input } from "../../ui/atoms/Input";
+import { Page } from "../../ui/organisms/Page";
+import { Pager } from "../../ui/molecules/Pager";
+import { Select } from "../../ui/atoms/Select";
+import { Th } from "../../ui/atoms/Th";
+import { useUrlState } from "../../lib/hooks";
+import { when } from "../../lib/format";
 
 const AUDIT_PAGE = 50;
 
@@ -48,15 +56,15 @@ function AuditLog() {
           update({ login: login.trim() || null, offset: null });
         }}
       >
-        <TextInput value={login} onChange={(e) => setLogin(e.target.value)} placeholder="Login (by or about)" aria-label="Filter by login" className="w-full sm:w-52" />
-        <select aria-label="Filter by action" value={state.action ?? ""} onChange={(e) => update({ action: e.target.value || null, offset: null })} className={selectCls}>
+        <Input value={login} onChange={(e) => setLogin(e.target.value)} placeholder="Login (by or about)" aria-label="Filter by login" className="w-full sm:w-52" />
+        <Select aria-label="Filter by action" value={state.action ?? ""} onChange={(e) => update({ action: e.target.value || null, offset: null })}>
           <option value="">Every action</option>
           {data?.actions.map((a) => (
             <option key={a} value={a}>
               {a}
             </option>
           ))}
-        </select>
+        </Select>
         <Button type="submit" className="max-md:h-11">
           Filter
         </Button>
@@ -92,11 +100,11 @@ function AuditLog() {
             <table className="w-full min-w-[820px] border-collapse text-sm">
               <thead className="bg-ink/[0.03] text-xs">
                 <tr className="border-b border-line">
-                  <SortTh className="w-[150px]">When</SortTh>
-                  <SortTh className="w-[150px]">By</SortTh>
-                  <SortTh className="w-[140px]">Action</SortTh>
-                  <SortTh className="w-[240px]">Target</SortTh>
-                  <SortTh>Details</SortTh>
+                  <Th className="w-[150px]">When</Th>
+                  <Th className="w-[150px]">By</Th>
+                  <Th className="w-[140px]">Action</Th>
+                  <Th className="w-[240px]">Target</Th>
+                  <Th>Details</Th>
                 </tr>
               </thead>
               <tbody>

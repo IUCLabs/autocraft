@@ -8,9 +8,17 @@ import { Badge } from "../../ui/atoms/Badge";
 import { Button } from "../../ui/atoms/Button";
 import { cn } from "../../ui/cn";
 import { Count } from "../../ui/atoms/Heading";
-import { ago } from "../../lib/format";
+import { ago, when } from "../../lib/format";
 import { useIsPhone } from "../../shell/useMedia";
-import { Block, ConfirmButton, ErrorLine, Page, ROLE_LABEL, ROLES, selectCls, SortTh, TextInput, useWrite, when } from "./parts";
+import { Block } from "../../ui/molecules/Block";
+import { ConfirmButton } from "../../ui/molecules/ConfirmButton";
+import { ErrorLine } from "../../ui/atoms/ErrorLine";
+import { Input } from "../../ui/atoms/Input";
+import { Page } from "../../ui/organisms/Page";
+import { Select } from "../../ui/atoms/Select";
+import { Th } from "../../ui/atoms/Th";
+import { ROLE_LABEL, ROLES } from "./parts";
+import { useWrite } from "../../lib/hooks";
 import { useNow } from "../../lib/useNow";
 
 function AccessView({ user }: ViewProps) {
@@ -55,15 +63,15 @@ function AccessList({ entries, me }: { entries: AccessEntry[]; me: string }) {
           if (login.trim()) add();
         }}
       >
-        <TextInput value={login} onChange={(e) => setLogin(e.target.value)} placeholder="GitHub login" aria-label="GitHub login" className="w-full sm:w-44" />
-        <select aria-label="Role" value={role} onChange={(e) => setRole(e.target.value as Role)} className={selectCls}>
+        <Input value={login} onChange={(e) => setLogin(e.target.value)} placeholder="GitHub login" aria-label="GitHub login" className="w-full sm:w-44" />
+        <Select aria-label="Role" value={role} onChange={(e) => setRole(e.target.value as Role)}>
           {ROLES.map((r) => (
             <option key={r} value={r}>
               {ROLE_LABEL[r]}
             </option>
           ))}
-        </select>
-        <TextInput value={note} onChange={(e) => setNote(e.target.value)} maxLength={500} placeholder="Note, seen only by operators" aria-label="Note" className="min-w-[12rem] flex-1" />
+        </Select>
+        <Input value={note} onChange={(e) => setNote(e.target.value)} maxLength={500} placeholder="Note, seen only by operators" aria-label="Note" className="min-w-[12rem] flex-1" />
         <Button type="submit" variant="primary" disabled={!login.trim()} loading={write.busy === "add"} className="max-md:h-11">
           Add
         </Button>
@@ -93,11 +101,11 @@ function AccessList({ entries, me }: { entries: AccessEntry[]; me: string }) {
           <table className="w-full min-w-[820px] border-collapse text-sm">
             <thead className="bg-ink/[0.03] text-xs">
               <tr className="border-b border-line">
-                <SortTh>Login</SortTh>
-                <SortTh className="w-[150px]">Role</SortTh>
-                <SortTh className="w-[230px]">Added</SortTh>
-                <SortTh>Note</SortTh>
-                <SortTh right className="w-[80px]">Sessions</SortTh>
+                <Th>Login</Th>
+                <Th className="w-[150px]">Role</Th>
+                <Th className="w-[230px]">Added</Th>
+                <Th>Note</Th>
+                <Th right className="w-[80px]">Sessions</Th>
                 <th className="w-[170px]" aria-label="Remove" />
               </tr>
             </thead>
@@ -145,19 +153,19 @@ type Write = ReturnType<typeof useWrite>;
 function RolePicker({ e, write }: { e: AccessEntry; write: Write }) {
   const api = useApi();
   return (
-    <select
+    <Select size="sm"
       aria-label={`Role of ${e.login}`}
       value={e.role}
       disabled={write.busy === `role:${e.login}`}
       onChange={(ev) => void write.run(`role:${e.login}`, () => api.access.setRole(e.login, ev.target.value as Role))}
-      className={cn(selectCls, "h-7 text-xs", e.role === "operator" && "text-accent-ink")}
+      className={cn(e.role === "operator" && "text-accent-ink")}
     >
       {ROLES.map((r) => (
         <option key={r} value={r}>
           {ROLE_LABEL[r]}
         </option>
       ))}
-    </select>
+    </Select>
   );
 }
 
@@ -221,11 +229,11 @@ function Sessions({ sessions }: { sessions: SessionInfo[] }) {
             <table className="w-full min-w-[820px] border-collapse text-sm">
               <thead className="bg-ink/[0.03] text-xs">
                 <tr className="border-b border-line">
-                  <SortTh>Login</SortTh>
-                  <SortTh className="w-[170px]">Browser</SortTh>
-                  <SortTh className="w-[150px]">Signed in (UTC)</SortTh>
-                  <SortTh className="w-[150px]">Last seen</SortTh>
-                  <SortTh className="w-[150px]">Expires (UTC)</SortTh>
+                  <Th>Login</Th>
+                  <Th className="w-[170px]">Browser</Th>
+                  <Th className="w-[150px]">Signed in (UTC)</Th>
+                  <Th className="w-[150px]">Last seen</Th>
+                  <Th className="w-[150px]">Expires (UTC)</Th>
                   <th className="w-[160px]" aria-label="Revoke" />
                 </tr>
               </thead>
