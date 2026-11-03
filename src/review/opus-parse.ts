@@ -24,6 +24,8 @@ export type OpusPr = {
   /** full: the whole diff of the PR. delta: only the changes since `earlier_opus.head`. */
   mode: "full" | "delta";
   earlier_opus: EarlierOpus | null;
+  /** Set only by the review cross-check, where the first review rated the PR hold. */
+  first_review_note?: string;
   diff: string;
   /** What others wrote on the PR; shown in its own block after the diff, not inside the PR's JSON. */
   discussion?: DiscussionEntry[];

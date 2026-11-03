@@ -171,6 +171,12 @@ Step `opus-review`, one PR per call, no tools, untrusted data quoted as in the f
 - **Too large** for one call: held without a call.
 - **Stored** per PR and head in `opus_reviews` (verdict, sure, reason, fixes, risks, mode full / delta / skipped, base head, skip reason). The `final_reviews` view joins both passes; every later stage reads it. Integration batches get no Opus review of their combined diff.
 
+### Batch size and cross-check
+
+The first pass puts at most 15 PRs in one call. A repo can lower that with `autocraft review batch-size --repo R --set N` (1 means one PR per call; `--set default` restores 15; no `--set` shows it), or by `POST /api/repos/review-batch-size` (operator). It is stored in settings as `review_batch_size:<repo>` and read when the first pass forms its calls.
+
+A Sonnet hold is final, so its quality is checked by hand. The operator-run step `review-crosscheck` (`autocraft review crosscheck --repo R --sample N [--single] [--seed S]`) draws a random sample of open PRs whose final review at the current head is a Sonnet hold from a model call (not "too large"; a head already checked is not drawn again; the seed is recorded). For each it runs the Opus review as in the second pass (same prompt, read-only tools, input and discussion) and, with `--single`, a Sonnet first-pass review of the PR alone in its call. PRs on the skip list or too large for one call are left out. Results go to `review_crosschecks`; no review row, post, queue entry, Fix-up, Verify or merge reads or changes. It is not in the autopilot. `autocraft review crosscheck-report [--run ID]` prints the counts of Opus and single-PR verdicts against the batch hold, and the PRs where they differ with the one-line reasons.
+
 ### Posting the final review
 
 Step `review-post`, only in repos with **comment approval**; calls no model. For each open PR with an Opus review (a verdict, not a skip) and a public text at its current head that no review of ours describes yet, it posts one pull request review with event COMMENT (never an approval or a change request). PRs by the pipeline's own account, integration batch PRs, PRs held as duplicates and items outside the pilot are left out. Daily limit 40 posts and edits. A dry run (`autocraft review-post --repo R`) lists the bodies without posting.
