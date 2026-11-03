@@ -25,6 +25,39 @@ export function extractDiff(text: string): string {
   return i > 0 ? t.slice(i) : t;
 }
 
+/** Refusal reasons that only a wrong hunk header line count produces; recounting removes them, so rows with them are not tries. */
+export const FORMAT_REASONS = ["hunk longer than its header", "truncated hunk"];
+
+const HUNK_HEAD = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@(.*)$/;
+
+/**
+ * Rewrites every hunk header's line counts from the hunk body, like `git apply --recount`: models often get them
+ * wrong. A body runs to the next hunk or file header; blank lines at its end are separators, not context.
+ */
+export function recountHunks(patch: string): string {
+  const lines = patch.split("\n");
+  const out: string[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const h = HUNK_HEAD.exec(lines[i]!);
+    if (!h) { out.push(lines[i]!); continue; }
+    let end = i + 1;
+    while (end < lines.length && !lines[end]!.startsWith("@@ ") && !lines[end]!.startsWith("diff --git ")) end++;
+    let last = end;
+    while (last > i + 1 && lines[last - 1] === "") last--;
+    let oldN = 0, newN = 0;
+    for (let k = i + 1; k < last; k++) {
+      const c = lines[k]![0];
+      if (c === "+") newN++;
+      else if (c === "-") oldN++;
+      else if (c === " " || lines[k] === "") { oldN++; newN++; }
+    }
+    out.push(`@@ -${h[1]},${oldN} +${h[2]},${newN} @@${h[3]}`);
+    for (let k = i + 1; k < end; k++) out.push(lines[k]!);
+    i = end - 1;
+  }
+  return out.join("\n");
+}
+
 const REJECT_HEADER = /^(old mode|new mode|new file mode|deleted file mode|rename from|rename to|copy from|copy to|similarity index|dissimilarity index|GIT binary patch|Binary files )/;
 const HUNK = /^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@/;
 
@@ -34,7 +67,7 @@ const HUNK = /^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@/;
  * MAX_CHANGED_LINES added plus removed lines.
  */
 export function validatePatch(text: string, allowed: string[]): PatchCheck {
-  const patch = extractDiff(text);
+  const patch = recountHunks(extractDiff(text));
   if (!patch.startsWith("diff --git ")) return { ok: false, reason: "the reply is not a unified diff" };
   const lines = patch.split("\n");
   if (lines[lines.length - 1] === "") lines.pop();

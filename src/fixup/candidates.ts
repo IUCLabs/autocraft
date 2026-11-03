@@ -6,7 +6,7 @@ import { headOf } from "../review/candidates.ts";
 import { staleReviews } from "../review/discussion.ts";
 import { commentApprovalOf } from "../act/approval.ts";
 import { pushApprovalOf } from "./approval.ts";
-import { safePath } from "./patch.ts";
+import { FORMAT_REASONS, safePath } from "./patch.ts";
 import { pushable } from "./pushable.ts";
 import { pilotSql } from "../pilot.ts";
 
@@ -46,9 +46,11 @@ export type FixupState = (typeof FIXUP_STATES)[number];
 /** States that count as a try; the other three are recorded once per head and end the step's work on that head. */
 const ATTEMPT_STATES: FixupState[] = ["pushed", "failed", "refused", "rejected"];
 
+/** Refusals for a wrong hunk header count (fixed by recounting since) are not tries. */
 export function attemptsOf(db: DatabaseSync, repo: string, number: number): number {
-  return (db.prepare(`SELECT COUNT(*) AS n FROM fixups WHERE repo = ? AND number = ? AND state IN (${ATTEMPT_STATES.map(() => "?").join(",")})`)
-    .get(repo, number, ...ATTEMPT_STATES) as { n: number }).n;
+  return (db.prepare(`SELECT COUNT(*) AS n FROM fixups WHERE repo = ? AND number = ? AND state IN (${ATTEMPT_STATES.map(() => "?").join(",")})
+      AND NOT (state = 'refused' AND (${FORMAT_REASONS.map(() => "COALESCE(reason, '') LIKE ?").join(" OR ")}))`)
+    .get(repo, number, ...ATTEMPT_STATES, ...FORMAT_REASONS.map((r) => `${r}%`)) as { n: number }).n;
 }
 
 export type FixupBucket = "fix" | "unapproved" | "cannot-push" | "ask" | "asked" | "hold";
