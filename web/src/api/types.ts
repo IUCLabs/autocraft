@@ -841,6 +841,8 @@ export interface PromptInfo {
   /** The command line, as a shell would show it; the prompt or request goes on stdin. */
   command: string;
   settings: { label: string; value: string }[];
+  /** Items per call, attempts per item and the time limit per call. */
+  limits: { perCall: number; attempts: number; timeoutSeconds: number };
   /** Static text with `{{name}}` placeholders; for Jev, the request body. */
   template: string;
   placeholders: { name: string; meaning: string }[];
