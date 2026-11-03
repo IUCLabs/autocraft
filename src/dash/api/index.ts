@@ -292,6 +292,7 @@ export function apiRoutes(opts: ApiOptions = {}): Route[] {
     post("/api/decisions/:id/comments", (db, req) => dec.comment(db, req, limiter)),
     post("/api/decisions/:id/claim", dec.claim),
     get("/api/items/:repo/:n", item),
+    get("/api/items/:repo/:n/decision", dec.forItem),
     { method: "POST", pattern: "/api/items/:repo/:n/review-again", operator: true, handler: ok(operator.reviewItemAgain) },
     { method: "POST", pattern: "/api/items/:repo/:n/verify-again", operator: true, handler: ok(operator.verifyItemAgain) },
     { method: "POST", pattern: "/api/items/:repo/:n/fix-again", operator: true, handler: ok(operator.fixItemAgain) },

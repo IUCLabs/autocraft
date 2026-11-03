@@ -15,6 +15,7 @@ import { useUser } from "../../shell/UserContext";
 import { Button } from "../../ui/Button";
 import { Block, ErrorLine, Page, selectCls, TextInput, useUrlState, useWrite } from "../admin/parts";
 import { useNow } from "../../lib/useNow";
+import { decisionPath, itemPath } from "../../lib/links";
 
 export const STATE: Record<QueueState, [string, Tone, string]> = {
   ready: ["Ready", "ok", "Covered by the merge rule; merges on the next run"],
@@ -342,7 +343,7 @@ function StateChip({ row }: { row: QueueRow }) {
 function DecisionLink({ row }: { row: QueueRow }) {
   if (!row.decisionId) return row.state === "needs-decision" ? <span className="text-2xs text-ink/45">asked on the next run</span> : <span className="text-ink/30">–</span>;
   return (
-    <Link to={`/decisions/${encodeURIComponent(row.decisionId)}`} className="text-xs text-accent-ink hover:underline">
+    <Link to={decisionPath({ id: row.decisionId, repo: row.repo, number: row.number })} className="text-xs text-accent-ink hover:underline">
       {row.answer ? `Answered ${row.answer}` : "Open decision"}
     </Link>
   );
@@ -424,7 +425,7 @@ function PrRows({ r }: { r: QueueRow }) {
       <tr>
         <td className={cell}>
           <RefLink repo={r.repo} number={r.number} kind="pr" className="block text-xs" />
-          <Link to={`/item/${r.repo}/${r.number}`} className="block font-medium [overflow-wrap:anywhere] hover:text-accent-ink hover:underline">
+          <Link to={itemPath(r.repo, r.number)} className="block font-medium [overflow-wrap:anywhere] hover:text-accent-ink hover:underline">
             {r.title}
           </Link>
         </td>
@@ -521,7 +522,7 @@ function PrCard({ r }: { r: QueueRow }) {
           <StateChip row={r} />
         </span>
       </div>
-      <Link to={`/item/${r.repo}/${r.number}`} className="mt-1 block text-sm font-medium leading-5 active:text-accent-ink">
+      <Link to={itemPath(r.repo, r.number)} className="mt-1 block text-sm font-medium leading-5 active:text-accent-ink">
         {r.title}
       </Link>
       <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-2xs text-ink/60">
@@ -540,7 +541,7 @@ function PrCard({ r }: { r: QueueRow }) {
       <div className="mt-1 flex flex-wrap items-center justify-between gap-2">
         <Why row={r} />
         {r.decisionId && (
-          <Link to={`/decisions/${encodeURIComponent(r.decisionId)}`} className="inline-flex h-11 items-center text-xs text-accent-ink">
+          <Link to={decisionPath({ id: r.decisionId, repo: r.repo, number: r.number })} className="inline-flex h-11 items-center text-xs text-accent-ink">
             {r.answer ? `Answered ${r.answer}` : "Open decision"}
           </Link>
         )}

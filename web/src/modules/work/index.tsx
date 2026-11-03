@@ -12,6 +12,7 @@ import { cn } from "../../ui/cn";
 import { num } from "../../lib/format";
 import { useIsPhone } from "../../shell/useMedia";
 import { Block, ErrorLine, Page, Pager, selectCls, useUrlState } from "../admin/parts";
+import { itemPath } from "../../lib/links";
 
 const LIMIT = 100;
 
@@ -37,7 +38,7 @@ function Title({ r }: { r: WorkRow }) {
   return (
     <>
       <RefLink repo={r.repo} number={r.number} kind={r.kind} className="text-xs" />
-      <Link to={`/item/${r.repo}/${r.number}`} className="line-clamp-2 font-medium hover:text-accent-ink hover:underline" title={r.title}>
+      <Link to={itemPath(r.repo, r.number)} className="line-clamp-2 font-medium hover:text-accent-ink hover:underline" title={r.title}>
         {r.title}
       </Link>
     </>
@@ -139,7 +140,7 @@ function Cards({ rows, offset }: { rows: WorkRow[]; offset: number }) {
               <LevelBadge level={r.level} />
             </span>
           </div>
-          <Link to={`/item/${r.repo}/${r.number}`} className="mt-1 block text-sm font-medium leading-5 active:text-accent-ink">
+          <Link to={itemPath(r.repo, r.number)} className="mt-1 block text-sm font-medium leading-5 active:text-accent-ink">
             {r.title}
           </Link>
           <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-2xs text-ink/60">

@@ -20,6 +20,7 @@ import { ago } from "../../lib/format";
 import { Refs } from "./Refs";
 import { KIND_LABEL } from "./state";
 import { useNow } from "../../lib/useNow";
+import { itemPath } from "../../lib/links";
 
 export const KIND_ICON: Record<DecisionKind, LucideIcon> = {
   scope: TargetIcon,
@@ -201,7 +202,7 @@ export function RelatedList({ d }: { d: Decision }) {
         <li key={`${r.repo}#${r.number}`} className="flex items-baseline gap-2 text-sm">
           <span className="w-24 shrink-0 text-xs text-ink/50">{r.relation.replace(/-/g, " ")}</span>
           <RefLink repo={r.repo} number={r.number} className="shrink-0" />
-          <Link to={`/item/${r.repo}/${r.number}`} className="truncate text-ink/75 hover:underline">
+          <Link to={itemPath(r.repo, r.number)} className="truncate text-ink/75 hover:underline">
             {r.title}
           </Link>
         </li>

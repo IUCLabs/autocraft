@@ -9,6 +9,7 @@ import { createPipelineMock } from "./pipelineMock";
 import { promptsReport } from "../../../../src/prompts/index.ts";
 import { semanticHits, similarFor } from "./similarFixtures";
 import { classifierReport, costReport, disagreementList } from "./insightFixtures";
+import { pickDecision, shortRepo } from "../../lib/links";
 import { itemList, settledFor } from "./itemsFixtures";
 import { prWorkFor } from "./verifyFixtures";
 import { queueBatchList, queueList } from "./queueFixtures";
@@ -99,6 +100,7 @@ export function createMockApi(): Api {
         return wait({ decisions: page, total: sorted.length, byKind, oldestAskedAt: sorted[0]?.askedAt ?? null, next: more ? page[page.length - 1]!.id : null });
       },
       get: (id) => wait(find(id)),
+      forItem: (repo, number) => wait(pickDecision(decisions.filter((d) => d.repo === shortRepo(repo) && d.number === number)) ?? null),
       async answer(id, input) {
         const d = find(id);
         requireOperator(d);

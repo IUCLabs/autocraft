@@ -6,6 +6,7 @@ import type { SearchHit, SimilarHit } from "../api/types";
 import { Kbd } from "../ui/Kbd";
 import { RefLink } from "../ui/RefLink";
 import { cn } from "../ui/cn";
+import { itemPath } from "../lib/links";
 
 const SEMANTIC_KEY = "autocraft:search-semantic";
 const isRefQuery = (q: string) => /^([A-Za-z0-9._-]+)?#?\d+$/.test(q.trim());
@@ -58,7 +59,7 @@ export function SearchBox({ autoFocus, onPick, fullscreen }: { autoFocus?: boole
     onPick?.();
     (document.activeElement as HTMLElement | null)?.blur();
   };
-  const pick = (h: SearchHit) => go(`/item/${h.repo}/${h.number}`);
+  const pick = (h: SearchHit) => go(itemPath(h.repo, h.number));
   const isRef = /^([A-Za-z0-9._-]+)?#?\d+$/.test(q.trim());
   const seeAll = () => go(`/items?${new URLSearchParams({ q: q.trim(), state: "all" })}`);
   const open = (focus || fullscreen) && q.trim().length > 0;
