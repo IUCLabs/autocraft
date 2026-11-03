@@ -234,6 +234,8 @@ describe("what the Work queue says", () => {
     add(db, { n: 1, kind: "issue", label: "bugfix" });
     db.prepare("UPDATE classifications SET probs = '{\"top\":0.5}' WHERE number = 1").run();
     db.prepare(`INSERT INTO classifications (repo, number, classifier, run_id, at, type_label, flags) VALUES ('app', 1, 'haiku', 'r1', '${T0}', 'infra', '[]')`).run();
+    assert.equal(nextStepOf(facts(db, 1)), "Referee: waiting for Sonnet");
+    db.prepare(`INSERT INTO classifications (repo, number, classifier, run_id, at, type_label, flags, probs, reason) VALUES ('app', 1, 'sonnet', 'r1', '${T0}', 'bugfix', '[]', '{"sure":false}', 'unclear')`).run();
     const f = facts(db, 1);
     assert.equal(f.disagree, true);
     assert.equal(nextStepOf(f), "Models disagree: needs a label");

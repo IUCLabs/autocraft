@@ -447,6 +447,27 @@ export const STEPS: StepDef[] = [
       return `${r.items} open items ranked, ${r.changed} changed, ${r.removed} removed`;
     },
   },
+  {
+    name: "referee",
+    title: "Referee label disagreements",
+    description: "Sonnet settles items where Jev and Haiku chose different type labels and at least one is not a scope label (scope disagreements go to Decide). A sure answer settles the type; an unsure one leaves the label to a person.",
+    stage: 2,
+    requires: "operator",
+    group: "referee",
+    models: ["sonnet"],
+    params: [{ name: "limit", label: "At most", kind: "int", min: 1, max: 500, default: 100, help: "items sent to Sonnet in this job" }],
+    run: async (ctx) => {
+      const { currentRun } = await import("./classify.ts");
+      const { refereeCandidates, refereeItems } = await import("../classify/referee.ts");
+      const run = currentRun(ctx.db);
+      if (!run) throw new Error("There is no classification run yet; start a classification pass first.");
+      const items = refereeCandidates(ctx.db, run, Number(ctx.params.limit));
+      if (!items.length) return `Nothing to referee in run ${run}.`;
+      const got = await refereeItems(ctx.db, run, items, { pipeline: true, onSent: ctx.handled, cancelled: ctx.cancelled });
+      ctx.usageRun(run);
+      return `Run ${run}: Sonnet answered ${got} of ${items.length} disagreements.`;
+    },
+  },
 ];
 
 let loaded: Promise<Map<string, StepDef>> | null = null;

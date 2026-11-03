@@ -15,7 +15,7 @@
 // browser's flow filter.
 import type { DatabaseSync } from "node:sqlite";
 import { latestRun, settledTable } from "../classify/settled.ts";
-import { latestJevRun, selectCandidates as decideCandidates } from "../decide/select.ts";
+import { isScope, latestJevRun, selectCandidates as decideCandidates } from "../decide/select.ts";
 import { commentApprovalOf } from "../act/approval.ts";
 import { pending as actPending } from "../act/index.ts";
 import { fixIssueApprovalOf } from "../fixissue/approval.ts";
@@ -39,7 +39,7 @@ const ref = (r: { repo: string; number: number }) => `${r.repo}#${r.number}`;
 export const SCOPE_ANSWERS = ["take", "small-extra", "plugin", "close", "need-info"] as const;
 export const VERDICTS = ["take", "take-fix", "hold", "close"] as const;
 
-type OpenRow = { repo: string; number: number; kind: string; status: string | null };
+type OpenRow = { repo: string; number: number; kind: string; status: string | null; referee_sure: number | null; jev_label: string | null; haiku_label: string | null };
 
 /** What the node counters share for one repo (or all repos) on one connection. */
 export class Ctx {
@@ -87,7 +87,7 @@ export class Ctx {
   open(): OpenRow[] {
     if (!this.openRows) {
       settledTable(this.db, this.run);
-      this.openRows = this.db.prepare(`SELECT i.repo, i.number, i.kind, s.status FROM items i
+      this.openRows = this.db.prepare(`SELECT i.repo, i.number, i.kind, s.status, s.referee_sure, s.jev_label, s.haiku_label FROM items i
         LEFT JOIN temp.item_settled s ON s.repo = i.repo AND s.number = i.number
         WHERE i.state = 'OPEN' ${this.andRepo("i.repo")}`).all(this.rp) as OpenRow[];
     }
@@ -123,8 +123,12 @@ function synced(c: Ctx): NodeCount {
 }
 
 function classify(c: Ctx): NodeCount {
-  const by: Counts = { settled: 0, waiting: 0, disagree: 0, unclassified: 0 };
-  for (const r of c.open()) by[r.status ?? "unclassified"]!++;
+  const by: Counts = { settled: 0, waiting: 0, referee: 0, disagree: 0, unclassified: 0 };
+  for (const r of c.open()) {
+    // A label disagreement waits on the Sonnet referee until it answers; scope-vs-scope goes to Decide, an unsure referee to a person.
+    const toReferee = r.status === "disagree" && r.referee_sure === null && !(isScope(r.jev_label) && isScope(r.haiku_label));
+    by[toReferee ? "referee" : (r.status ?? "unclassified")]!++;
+  }
   const run = c.run;
   const recent = run ? c.n(`SELECT COUNT(*) AS n FROM main.classifications INDEXED BY classifications_run WHERE run_id = :run AND classifier = 'jev' AND at >= :since
       AND repo IN (SELECT name FROM main.tracked_repos) ${c.andRepo()}`, { run, since: c.since }) : 0;

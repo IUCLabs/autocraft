@@ -265,7 +265,7 @@ export interface ItemAction {
 /**
  * Settled type label for one classification run: Jev's label when its top
  * probability is at least 0.9, else Haiku's when Haiku agrees with Jev.
- * `waiting`: Jev unsure, Haiku hasn't answered; `disagree`: Haiku gave another label.
+ * `waiting`: Jev unsure, Haiku hasn't answered; `disagree`: Haiku gave another label and the Sonnet referee is unsure or has not answered yet; a referee that is sure settles it.
  */
 export type SettledStatus = "settled" | "waiting" | "disagree" | "unclassified";
 
@@ -273,13 +273,15 @@ export interface Settled {
   status: SettledStatus;
   /** Set only when `status` is `settled`. */
   label: TypeLabel | null;
-  source: "jev" | "haiku" | null;
+  source: "jev" | "haiku" | "sonnet" | null;
   /** Jev's top probability. */
   confidence: number | null;
   jevLabel: TypeLabel | null;
   haikuLabel: TypeLabel | null;
   /** Jev's flags when Jev is sure, otherwise every flag either classifier raised. */
   flags: string[];
+  /** The Sonnet referee's answer to a Jev/Haiku disagreement; settles the item when `sure`, else a person decides. */
+  referee: { label: TypeLabel; sure: boolean; reason: string } | null;
 }
 
 /** Where a text query matched. `text` marks each match with U+0002 before and U+0003 after it. */

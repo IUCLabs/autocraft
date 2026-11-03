@@ -38,7 +38,8 @@ Models: Jev, Haiku. Daily limit 2000 pairs. Writes nothing to GitHub.
 Every open item gets one type label (bugfix, performance, missing feature, small extra, plugin candidate, infra) and two flags (security, needs decision).
 
 - Jev first. Under 90 % sure, Haiku gives a second opinion.
-- A type is settled when Jev is at 90 % or more, or Haiku agrees with Jev. Disagreements go to Decide.
+- A type is settled when Jev is at 90 % or more, or Haiku agrees with Jev. Disagreements among the scope labels go to Decide.
+- Other disagreements (for example bugfix against missing feature) go to the Sonnet referee, which applies the classification rules and says whether it is sure. A sure label settles the type, and a scope label then follows the normal scope path. An unsure answer leaves the label to a person. The referee has its own step and daily limit.
 - Started by the operator for a full pass; the pipeline classifies new and changed items on its own. Daily limit 2000.
 
 ## Priority
@@ -195,7 +196,7 @@ Makes the GitHub comments and closes that follow an operator's answer. No model.
 |---|---|
 | Jev | First sort of every item (classes, duplicates). Very cheap and fast and reports how sure it is: at 90 % or more it matched maintainers' labels 98 % of the time |
 | Haiku | Second opinion where Jev is unsure; batch priority and duplicate checks; failure summaries |
-| Sonnet | Decision summaries, review, fix-ups, issue fixes, verify plans |
+| Sonnet | Referee for label disagreements outside the scope labels (a person only when it is unsure), decision summaries, review, fix-ups, issue fixes, verify plans |
 | Opus | Planning and direction only; not called by the pipeline |
 
 [Prompts](/prompts) shows every prompt exactly as sent. The code can call a model only with a registered prompt. Classifiers and Cost show how often the models agree and what each stage costs.
@@ -225,7 +226,7 @@ Untrusted code (a PR's build and tests) never runs where the GitHub token or a C
 - **Reference behaviour** that public sources don't settle.
 - **Merges outside the rule** (see Merge queue). Contributors shows who is on the whitelist and why.
 - **Closing a PR** the review says to close.
-- **A label** where Jev and Haiku disagree outside the scope labels: the Work queue says "Models disagree: needs a label" and links to the Items list of disagreements.
+- **A label** where Jev and Haiku disagree outside the scope labels, and the Sonnet referee is unsure: the Work queue says "Models disagree: needs a label" and links to the Items list of disagreements, which shows the referee's label and reason. Until the referee answers, the Work queue says "Referee: waiting for Sonnet".
 - **Duplicate?** answers: an open one holds the item out of Review, Verify, Fix and the merge queue (Work queue: "Held").
 
 Everything else waits for a decision on this dashboard.
@@ -272,6 +273,7 @@ Limits count items handled per stage per day (from 00:00 UTC), including by fail
 | Duplicates | 2000 | Act | 20 |
 | Decide | 100 | Fix-up | 20 |
 | Review | 40 | Fix | 10 |
+| Referee | 500 | | |
 
 Embed, checks and Label have no limit.
 

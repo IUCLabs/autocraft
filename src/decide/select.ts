@@ -13,7 +13,7 @@ import { trackedNames } from "../repos.ts";
 import { settle, type Settled } from "../classify/settled.ts";
 
 export const SCOPE_LABELS = ["missing feature", "small extra", "plugin candidate"] as const;
-const isScope = (l: string | null): boolean => l !== null && (SCOPE_LABELS as readonly string[]).includes(l);
+export const isScope = (l: string | null): boolean => l !== null && (SCOPE_LABELS as readonly string[]).includes(l);
 
 /** Jev's needs_decision probability a bugfix needs before it becomes a decision. */
 export const BUGFIX_NEEDS_DECISION = 0.7;

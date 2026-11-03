@@ -12,14 +12,14 @@ export function settledFor(seed: number): Settled {
   const jev = LABELS[Math.floor(r() * LABELS.length)];
   const top = Math.round((0.45 + r() * 0.55) * 100) / 100;
   const flags = r() < 0.08 ? ["security"] : r() < 0.2 ? ["needs decision"] : [];
-  if (r() < 0.04) return { status: "unclassified", label: null, source: null, confidence: null, jevLabel: null, haikuLabel: null, flags: [] };
-  if (top >= 0.9) return { status: "settled", label: jev, source: "jev", confidence: top, jevLabel: jev, haikuLabel: null, flags };
+  if (r() < 0.04) return { status: "unclassified", label: null, source: null, confidence: null, jevLabel: null, haikuLabel: null, flags: [], referee: null };
+  if (top >= 0.9) return { status: "settled", label: jev, source: "jev", confidence: top, jevLabel: jev, haikuLabel: null, flags, referee: null };
   const x = r();
-  if (x < 0.35) return { status: "waiting", label: null, source: null, confidence: top, jevLabel: jev, haikuLabel: null, flags };
+  if (x < 0.35) return { status: "waiting", label: null, source: null, confidence: top, jevLabel: jev, haikuLabel: null, flags, referee: null };
   const haiku = x < 0.85 ? jev : LABELS[(LABELS.indexOf(jev) + 1) % LABELS.length];
   return haiku === jev
-    ? { status: "settled", label: jev, source: "haiku", confidence: top, jevLabel: jev, haikuLabel: haiku, flags }
-    : { status: "disagree", label: null, source: null, confidence: top, jevLabel: jev, haikuLabel: haiku, flags };
+    ? { status: "settled", label: jev, source: "haiku", confidence: top, jevLabel: jev, haikuLabel: haiku, flags, referee: null }
+    : { status: "disagree", label: null, source: null, confidence: top, jevLabel: jev, haikuLabel: haiku, flags, referee: null };
 }
 
 const POOL: (ItemListRow & { comment: string })[] = (() => {
