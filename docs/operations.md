@@ -30,7 +30,7 @@ TypeScript on Node 24, run directly (type stripping, no build step): `node src/c
 
 ## Dashboard server
 
-`autocraft dash serve` serves the dashboard over plain HTTP; a proxy in front provides HTTPS. Every page needs GitHub sign-in, and only logins on the access list get a session. Roles are `operator` (answers decisions, manages the whitelist, repos and access), `maintainer` (reads everything except accounts and access, and gives opinions and comments) and `viewer` (read-only, without the internal fields below). Add the first operator from a shell: `autocraft access add <login> --operator`. Then manage the list on the Access page or with `autocraft access list|add|remove|role`.
+`autocraft dash serve` serves the dashboard over plain HTTP; a proxy in front provides HTTPS. Every page needs GitHub sign-in, and only logins on the access list get a session. Roles are `operator` (answers decisions, manages the whitelist, repos and access), `maintainer` (reads everything except accounts and access, and gives opinions and comments) and `viewer` (read-only, without prompts, logs or notes). Add the first operator from a shell: `autocraft access add <login> --operator`. Then manage the list on the Access page or with `autocraft access list|add|remove|role`.
 
 The frontend is the React app in `web/`. Build it before serving: `pnpm -C web install && pnpm -C web build` (writes `web/dist`). Without a build the server answers app pages with a 503 that says so. `VITE_MOCK=1 pnpm -C web build` builds a mockup on fake data that runs without the server.
 
