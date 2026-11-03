@@ -63,13 +63,14 @@ function activeBatch(db: DatabaseSync, id: number) {
   return b;
 }
 
-/** Stops the batch: closes its integration PR. Its PRs go back to the queue, not held. */
-export async function stopBatch(db: DatabaseSync, by: string, id: number, run: Exec = defaultExec): Promise<{ batch: string; prs: number[]; closed: number | null }> {
+/** Stops the batch: closes its integration PR and holds each member PR (audited per PR), so the next merge run does not rebuild the same batch. Release them one by one. */
+export async function stopBatch(db: DatabaseSync, by: string, id: number, run: Exec = defaultExec): Promise<{ batch: string; prs: number[]; held: number[]; closed: number | null }> {
   const b = activeBatch(db, id);
   const prs = membersOf(db, id).map((m) => m.number);
   audit(db, by, "batch-stop", `${b.repo}:${b.branch}`, { prs });
-  const { closed } = await endBatch(db, by, id, "stopped by an operator", "the batch was stopped by an operator. Its pull requests return to the merge queue", run);
-  return { batch: b.branch, prs, closed };
+  const held = prs.filter((n) => db.prepare("SELECT 1 FROM main.items WHERE repo = ? AND number = ? AND state = 'OPEN'").get(b.repo, n) && holdMerge(db, by, b.repo, n, { batch: b.branch }));
+  const { closed } = await endBatch(db, by, id, "stopped by an operator", "the batch was stopped by an operator. Its pull requests are held until released", run);
+  return { batch: b.branch, prs, held, closed };
 }
 
 /** Holds the PR and ends its batch: the others go back to the queue and the next merge run builds a batch without it. */
@@ -128,11 +129,11 @@ export const commands = {
     }),
   },
   "batch-stop": {
-    summary: "batch-stop <id>: close a batch's integration PR; its PRs return to the merge queue (writes to GitHub)",
+    summary: "batch-stop <id>: close a batch's integration PR; holds its PRs (writes to GitHub)",
     run: (args: string[]) => cli(async () => {
       const { connect } = await import("../db.ts");
       const out = await stopBatch(connect(), "cli", Number(args[0]));
-      return `${out.batch}: stopped${out.closed ? `; closed batch PR #${out.closed}` : ""}; ${out.prs.length} PR${out.prs.length === 1 ? "" : "s"} back in the queue`;
+      return `${out.batch}: stopped${out.closed ? `; closed batch PR #${out.closed}` : ""}; held ${out.held.length ? out.held.map((n) => `#${n}`).join(", ") : "no PRs"} (merge-release to let them merge)`;
     }),
   },
 };

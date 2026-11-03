@@ -255,7 +255,7 @@ Operators control what merges next from the Queue page, the CLI or the API. Ever
 
 - **Hold merge** (`craft-auto merge-hold <repo#n>`, `merge-release`): reviews, fix-ups and Verify go on, but the PR does not merge alone or in a batch until Release. It differs from Backlog, which stops all work on the item. A hold on a PR already in a batch does not change that batch; use Remove from batch.
 - **Remove from batch** (`craft-auto batch-remove <repo#n>`): holds the PR and ends its batch. The batch PR is closed through the GitHub write path (audited, on the GitHub activity page). The other PRs return to the queue and the next merge run builds a batch without the held PR. Neither control removes the pipeline account's assignment on the member PRs.
-- **Stop batch** (`craft-auto batch-stop <id>`): closes the batch's integration PR. Its PRs go back to the queue, not held.
+- **Stop batch** (`craft-auto batch-stop <id>`): closes the batch's integration PR. Each member PR is held (audited per PR), so the next merge run does not rebuild the same batch; release them one by one with Release or `merge-release`.
 
 **Fast track** (`craft-auto fasttrack add|remove|list`) marks PRs or issues, given as a GitHub URL, `repo#n` or `owner/repo#n`. Fast-tracked items go first in every stage that orders work by the work rank (Decide, Review, Opus review, Fix, Fix-up, Verify, merges and single merges), in the order they were added; new ones join the end. Removing the mark returns the item to normal ranking.
 

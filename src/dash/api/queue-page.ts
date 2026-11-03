@@ -183,7 +183,7 @@ export async function batchRemovePr(db: DatabaseSync, req: Req, run?: Exec): Pro
   return guarded(() => removeFromBatch(db, req.user.login, r.repo, r.number, run));
 }
 
-export async function batchStop(db: DatabaseSync, req: Req, run?: Exec): Promise<{ batch: string; prs: number[]; closed: number | null }> {
+export async function batchStop(db: DatabaseSync, req: Req, run?: Exec): Promise<{ batch: string; prs: number[]; held: number[]; closed: number | null }> {
   const id = Number(req.params.id);
   const repo = Number.isInteger(id) ? (db.prepare("SELECT repo FROM main.merge_batches WHERE id = ?").get(id) as { repo: string } | undefined)?.repo : undefined;
   if (!repo) throw new HttpError(404, `no batch ${req.params.id}`);

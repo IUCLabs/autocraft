@@ -150,17 +150,21 @@ describe("batch controls", () => {
   }
   const stateOf = (db: DatabaseSync, id: number) => (db.prepare("SELECT state, summary FROM merge_batches WHERE id = ?").get(id) as { state: string; summary: string }).state;
 
-  test("stop batch closes the batch PR through the write path, audits it and returns the PRs to the queue unheld", async () => {
+  test("stop batch closes the batch PR through the write path, audits it and holds each member so the next run does not re-batch them", async () => {
     const db = fresh();
     const id = withBatch(db, "integration-app-20260101-1", [1, 2]);
     assert.deepEqual(buildQueue(db, { repo: "app", merged: "exclude" }).filter((e) => e.state === "in-batch").map((e) => e.number), [1, 2]);
     const gh = fakeGh();
     const out = await stopBatch(db, "op", id, gh.run);
-    assert.deepEqual([out.closed, out.prs], [90, [1, 2]]);
+    assert.deepEqual([out.closed, out.prs, out.held], [90, [1, 2], [1, 2]]);
     assert.deepEqual(gh.calls.map((c) => c.slice(0, 4)), [["gh", "pr", "close", "90"]]);
     assert.equal(stateOf(db, id), "superseded");
     const q = buildQueue(db, { repo: "app", merged: "exclude" });
-    assert.deepEqual(q.filter((e) => e.number <= 2).map((e) => [e.state, e.held]), [["ready", false], ["ready", false]]);
+    assert.deepEqual(q.filter((e) => e.number <= 2).map((e) => [e.state, e.held]), [["ready", true], ["ready", true]]);
+    assert.deepEqual(await mergeOrder(db, "app"), ["app#3"]);
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM audit WHERE action = 'merge-hold'").get()!.n, 2);
+    releaseMerge(db, "op", "app", 1);
+    assert.deepEqual(await mergeOrder(db, "app"), ["app#1", "app#3"]);
     const actions = db.prepare("SELECT action, details FROM audit WHERE action IN ('batch-stop', 'batch-pr-close') ORDER BY rowid").all() as { action: string; details: string }[];
     assert.deepEqual(actions.map((a) => a.action), ["batch-stop", "batch-pr-close"]);
     assert.equal(JSON.parse(actions[1]!.details).state, "done");
