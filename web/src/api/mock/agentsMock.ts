@@ -1,6 +1,6 @@
 // Agents, accounts and rates on fake data: three accounts (one disabled), twelve runs in flight and a few hundred finished ones.
 import type { Api } from "../client";
-import type { AgentRun, AgentRunDetail, ClaudeAccount, Rates, User } from "../types";
+import type { AgentRun, AgentRunDetail, ClaudeAccount, Rates, UsagePause, User } from "../types";
 import { NOW, REPOS } from "./fixtures";
 
 const wait = <T>(v: T, ms = 60) => new Promise<T>((r) => setTimeout(() => r(structuredClone(v)), ms));
@@ -109,10 +109,19 @@ export function createAgentsMock(me: User, changed: () => void): Pick<Api, "acco
     if (!a) throw new Error("no such account");
     return a;
   };
+  let pause: UsagePause = { fiveHour: 90, weekly: 95 };
   const visible = () => accounts.filter((a) => me.role === "operator" || a.enabled);
   return {
     accounts: {
       list: () => wait(visible()),
+      pause: () => wait({ ...pause }),
+      async setPause(input) {
+        if (me.role !== "operator") throw new Error("only operators change accounts");
+        for (const n of [input.fiveHour, input.weekly]) if (!Number.isInteger(n) || n < 1 || n > 100) throw new Error("pause levels must be whole numbers from 1 to 100");
+        pause = { ...input };
+        changed();
+        return wait({ ...pause });
+      },
       async update(id, input) {
         if (me.role !== "operator") throw new Error("only operators change accounts");
         const a = accounts.find((x) => x.id === id);

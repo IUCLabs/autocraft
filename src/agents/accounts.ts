@@ -10,8 +10,9 @@ import { JEV_PARALLEL_DEFAULT } from "../prompts/index.ts";
 import { loginInfo } from "./login.ts";
 import { boxAccounts, iso, readUsage, type BoxAccount, type Reading } from "./box.ts";
 
-export const FIVE_HOUR_LIMIT = 90;
-export const WEEKLY_LIMIT = 95;
+export const USAGE_PAUSE_KEY = "usage_pause";
+export type UsagePause = { fiveHour: number; weekly: number };
+export const USAGE_PAUSE_DEFAULT: UsagePause = { fiveHour: 90, weekly: 95 };
 /** A reading older than this counts as unknown, and unknown is allowed. */
 export const STALE_MS = 30 * 60_000;
 /** A run still "running" after this long belongs to a process that is gone; it no longer takes a slot. */
@@ -44,12 +45,36 @@ export function syncAccounts(db: DatabaseSync, box: BoxAccount[] = boxAccounts(d
 
 const fresh = (r: Reading | null, nowMs: number): Reading | null => (r && nowMs - r.writtenAt * 1000 <= STALE_MS ? r : null);
 
-/** Why a fresh reading blocks new calls, or null. */
-export function headroomReason(r: Reading | null, nowMs: number = Date.now()): string | null {
+const validPct = (v: unknown): v is number => typeof v === "number" && Number.isInteger(v) && v >= 1 && v <= 100;
+
+/** The usage levels at which an account stops taking calls; absent or unreadable gives the defaults. */
+export function usagePause(db: DatabaseSync): UsagePause {
+  const row = db.prepare("SELECT value FROM settings WHERE key = ?").get(USAGE_PAUSE_KEY) as { value: string } | undefined;
+  if (!row) return USAGE_PAUSE_DEFAULT;
+  try {
+    const v = JSON.parse(row.value) as Partial<UsagePause> | null;
+    return v && validPct(v.fiveHour) && validPct(v.weekly) ? { fiveHour: v.fiveHour, weekly: v.weekly } : USAGE_PAUSE_DEFAULT;
+  } catch {
+    return USAGE_PAUSE_DEFAULT;
+  }
+}
+
+export function setUsagePause(db: DatabaseSync, input: unknown, by: string): UsagePause {
+  const v = input as Partial<UsagePause> | null;
+  if (!v || typeof v !== "object" || !validPct(v.fiveHour) || !validPct(v.weekly)) throw new AccountError(400, "pause levels must be whole numbers from 1 to 100");
+  const was = usagePause(db);
+  const next = { fiveHour: v.fiveHour, weekly: v.weekly };
+  db.prepare("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value").run(USAGE_PAUSE_KEY, JSON.stringify(next));
+  if (next.fiveHour !== was.fiveHour || next.weekly !== was.weekly) audit(db, by, "account-change", "usage-pause", { ...next, was });
+  return next;
+}
+
+/** Why a fresh reading blocks new calls at the given levels, or null. */
+export function headroomReason(r: Reading | null, limits: UsagePause, nowMs: number = Date.now()): string | null {
   const f = fresh(r, nowMs);
   if (!f) return null;
-  if (f.fiveHour && f.fiveHour.pct >= FIVE_HOUR_LIMIT) return `5-hour use ${Math.round(f.fiveHour.pct)} % (pauses at ${FIVE_HOUR_LIMIT} %)`;
-  if (f.weekly && f.weekly.pct >= WEEKLY_LIMIT) return `weekly use ${Math.round(f.weekly.pct)} % (pauses at ${WEEKLY_LIMIT} %)`;
+  if (f.fiveHour && f.fiveHour.pct >= limits.fiveHour) return `5-hour use ${Math.round(f.fiveHour.pct)} % (pauses at ${limits.fiveHour} %)`;
+  if (f.weekly && f.weekly.pct >= limits.weekly) return `weekly use ${Math.round(f.weekly.pct)} % (pauses at ${limits.weekly} %)`;
   return null;
 }
 
@@ -76,7 +101,7 @@ function authOf(db: DatabaseSync, id: string): AccountAuth {
     : { loggedIn: null, method: null, plan: null, expiresAt: null, checkedAt: null };
 }
 
-function toAccount(r: Row, running: number, reading: Reading | null, nowMs: number, auth: AccountAuth): ClaudeAccount {
+function toAccount(r: Row, running: number, reading: Reading | null, nowMs: number, auth: AccountAuth, limits: UsagePause): ClaudeAccount {
   return {
     auth, login: loginInfo(r.id),
     id: r.id, label: r.label, enabled: r.enabled === 1, maxConcurrent: r.max_concurrent, running,
@@ -87,7 +112,7 @@ function toAccount(r: Row, running: number, reading: Reading | null, nowMs: numb
       weeklyResetsAt: reading?.weekly?.resetsAt != null ? iso(reading.weekly.resetsAt) : null,
       readAt: reading ? iso(reading.writtenAt) : null,
     },
-    pausedReason: r.enabled === 1 ? headroomReason(reading, nowMs) : null,
+    pausedReason: r.enabled === 1 ? headroomReason(reading, limits, nowMs) : null,
   };
 }
 
@@ -95,8 +120,8 @@ function toAccount(r: Row, running: number, reading: Reading | null, nowMs: numb
 export function listAccounts(db: DatabaseSync, nowMs: number = Date.now()): ClaudeAccount[] {
   const box = boxAccounts(db);
   syncAccounts(db, box);
-  const counts = runningCounts(db, nowMs);
-  return rows(db, box).map((r) => toAccount(r, counts.get(r.id) ?? 0, readUsage(r.id), nowMs, authOf(db, r.id)));
+  const counts = runningCounts(db, nowMs), limits = usagePause(db);
+  return rows(db, box).map((r) => toAccount(r, counts.get(r.id) ?? 0, readUsage(r.id), nowMs, authOf(db, r.id), limits));
 }
 
 export function updateAccount(db: DatabaseSync, id: unknown, input: unknown, by: string): ClaudeAccount {
@@ -141,12 +166,12 @@ export function chooseAccount(db: DatabaseSync, nowMs: number = Date.now()): Cho
   syncAccounts(db, box);
   const enabled = rows(db, box).filter((r) => r.enabled === 1);
   if (!enabled.length) return { none: true };
-  const counts = runningCounts(db, nowMs);
+  const counts = runningCounts(db, nowMs), limits = usagePause(db);
   const reasons: string[] = [];
   const ok: { r: Row; weekly: number; running: number }[] = [];
   for (const r of enabled) {
     const reading = readUsage(r.id), running = counts.get(r.id) ?? 0;
-    const why = headroomReason(reading, nowMs);
+    const why = headroomReason(reading, limits, nowMs);
     if (why) reasons.push(`${r.label}: ${why}`);
     else if (running >= r.max_concurrent) reasons.push(`${r.label}: ${running} of ${r.max_concurrent} slots in use`);
     else ok.push({ r, weekly: fresh(reading, nowMs)?.weekly?.pct ?? 0, running });
@@ -161,10 +186,10 @@ export function chooseAccount(db: DatabaseSync, nowMs: number = Date.now()): Cho
 export function freeSlots(db: DatabaseSync, nowMs: number = Date.now()): number {
   const box = boxAccounts(db);
   syncAccounts(db, box);
-  const counts = runningCounts(db, nowMs);
+  const counts = runningCounts(db, nowMs), limits = usagePause(db);
   let free = 0;
   for (const r of rows(db, box)) {
-    if (r.enabled !== 1 || headroomReason(readUsage(r.id), nowMs)) continue;
+    if (r.enabled !== 1 || headroomReason(readUsage(r.id), limits, nowMs)) continue;
     free += Math.max(0, r.max_concurrent - (counts.get(r.id) ?? 0));
   }
   return free;
@@ -197,9 +222,9 @@ export function claudePauseReason(db: DatabaseSync, nowMs: number = Date.now()):
   syncAccounts(db, box);
   const enabled = rows(db, box).filter((r) => r.enabled === 1);
   if (!enabled.length) return "paused: no Claude account is enabled";
-  const reasons: string[] = [];
+  const reasons: string[] = [], limits = usagePause(db);
   for (const r of enabled) {
-    const why = headroomReason(readUsage(r.id), nowMs);
+    const why = headroomReason(readUsage(r.id), limits, nowMs);
     if (!why) return null;
     reasons.push(`${r.label}: ${why}`);
   }

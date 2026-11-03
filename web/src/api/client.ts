@@ -7,6 +7,7 @@ import type {
   AgentRunFilter,
   AgentRunPage,
   ClaudeAccount,
+  UsagePause,
   Rates,
   AnswerInput,
   AuditFilter,
@@ -145,6 +146,9 @@ export interface Api {
   /** Enabled accounts for everyone; operators also see disabled ones and edit label, enabled and max concurrent. Never an email or path. */
   accounts: {
     list(): Promise<ClaudeAccount[]>;
+    pause(): Promise<UsagePause>;
+    /** Operators. */
+    setPause(input: UsagePause): Promise<UsagePause>;
     update(id: string, input: AccountInput): Promise<ClaudeAccount>;
     /** Operators: a new, disabled, signed-out account with this label. */
     add(label: string): Promise<ClaudeAccount>;

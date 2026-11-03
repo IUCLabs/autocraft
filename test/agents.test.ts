@@ -5,7 +5,7 @@ import { mkdtempSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { describe, test } from "node:test";
-import { chooseAccount, claudePauseReason, freeSlots, jevParallel, listAccounts, recordUsageSamples, setJevParallel, updateAccount } from "../src/agents/accounts.ts";
+import { chooseAccount, claudePauseReason, freeSlots, jevParallel, listAccounts, recordUsageSamples, setJevParallel, setUsagePause, updateAccount, usagePause } from "../src/agents/accounts.ts";
 import { allocation, claudeRoom, setCallContext, startClaudeRun } from "../src/agents/call.ts";
 import { getRun, listRuns, pruneRuns, rates } from "../src/agents/runs.ts";
 import { askClaude, askJev, pool, setRunner, type Runner } from "../src/classify/run.ts";
@@ -144,6 +144,27 @@ describe("allocation", () => {
     assert.match(pauseReason(db, "review-batch") ?? "", /5-hour use 91 % \(pauses at 90 %\)/);
     writeReading(box, "a", { five: 20 });
     assert.equal(pauseReason(db, "review-batch"), null);
+  });
+});
+
+describe("usage pause levels", () => {
+  test("an operator's levels replace the 90/95 defaults; invalid input is rejected", () => {
+    const { db, box } = fresh(["a"]);
+    enable(db, "a");
+    assert.deepEqual(usagePause(db), { fiveHour: 90, weekly: 95 });
+    assert.throws(() => setUsagePause(db, { fiveHour: 0, weekly: 75 }, "op"), /1 to 100/);
+    assert.throws(() => setUsagePause(db, { fiveHour: 60.5, weekly: 75 }, "op"), /1 to 100/);
+    assert.throws(() => setUsagePause(db, { fiveHour: 101, weekly: 75 }, "op"), /1 to 100/);
+    assert.throws(() => setUsagePause(db, { fiveHour: "60", weekly: 75 }, "op"), /1 to 100/);
+    assert.throws(() => setUsagePause(db, null, "op"), /1 to 100/);
+    assert.deepEqual(usagePause(db), { fiveHour: 90, weekly: 95 });
+    setUsagePause(db, { fiveHour: 60, weekly: 75 }, "op");
+    writeReading(box, "a", { five: 61 });
+    assert.match(pauseReason(db, "review-batch") ?? "", /5-hour use 61 % \(pauses at 60 %\)/);
+    writeReading(box, "a", { five: 59 });
+    assert.equal(pauseReason(db, "review-batch"), null);
+    db.prepare("UPDATE settings SET value = 'nonsense' WHERE key = 'usage_pause'").run();
+    assert.deepEqual(usagePause(db), { fiveHour: 90, weekly: 95 });
   });
 });
 

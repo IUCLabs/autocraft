@@ -168,6 +168,8 @@ export function createHttpApi(): Api {
     },
     accounts: {
       list: () => get("/api/accounts"),
+      pause: () => get("/api/accounts/pause"),
+      setPause: (input) => put("/api/accounts/pause", input),
       update: (id, input) => put(`/api/accounts/${encodeURIComponent(id)}`, input),
       add: (label) => post("/api/accounts", { label }),
       loginStart: (id) => post(`/api/accounts/${encodeURIComponent(id)}/login`),

@@ -2,7 +2,7 @@
 import { useEffect, useState } from "react";
 import { PencilIcon } from "lucide-react";
 import { useApi, useQuery } from "../../api/client";
-import type { ClaudeAccount } from "../../api/types";
+import type { ClaudeAccount, UsagePause } from "../../api/types";
 import { ago, nowMs, span } from "../../lib/format";
 import { useUser } from "../../shell/UserContext";
 import { Badge } from "../../ui/Badge";
@@ -27,6 +27,70 @@ export function UsageBar({ label, pct, resetsAt }: { label: string; pct: number 
       <div className="mt-1 h-2 overflow-hidden rounded-sm bg-ink/[0.07]" role="img" aria-label={`${label}: ${pct === null ? "no reading" : `${pct} percent used`}`}>
         <div className={cn("h-full rounded-sm", tone)} style={{ width: `${pct ?? 0}%` }} />
       </div>
+    </div>
+  );
+}
+
+const usePause = () => useQuery<UsagePause>("accounts-pause", (a) => a.accounts.pause());
+
+const validLevel = (v: string) => /^\d{1,3}$/.test(v) && Number(v) >= 1 && Number(v) <= 100;
+
+function PauseLevels({ operator }: { operator: boolean }) {
+  const api = useApi();
+  const write = useWrite();
+  const q = usePause();
+  const [editing, setEditing] = useState(false);
+  const [five, setFive] = useState("");
+  const [week, setWeek] = useState("");
+  useEffect(() => {
+    if (q.data) {
+      setFive(String(q.data.fiveHour));
+      setWeek(String(q.data.weekly));
+    }
+  }, [q.data]);
+  if (!q.data) return <ErrorLine error={q.error?.message} />;
+  return (
+    <div className="mb-3 text-xs">
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+        <span className="text-ink/60">
+          Pauses at 5-hour use <span className="num font-medium text-ink">{q.data.fiveHour} %</span>
+        </span>
+        <span className="text-ink/60">
+          weekly use <span className="num font-medium text-ink">{q.data.weekly} %</span>
+        </span>
+        {operator && (
+          <button onClick={() => setEditing(!editing)} aria-label="Edit pause levels" className="flex size-7 items-center justify-center text-ink/50 hover:bg-ink/[0.06] hover:text-ink max-md:size-11">
+            <PencilIcon className="text-[14px]" />
+          </button>
+        )}
+      </div>
+      {operator && editing && (
+        <form
+          className="mt-2 flex flex-wrap items-end gap-3 border-t border-line pt-3"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void write.run("pause", () => api.accounts.setPause({ fiveHour: Number(five), weekly: Number(week) })).then((ok) => {
+              if (ok) {
+                setEditing(false);
+                q.refetch();
+              }
+            });
+          }}
+        >
+          <label className="flex flex-col gap-1 text-ink/60">
+            5-hour (1 to 100)
+            <TextInput inputMode="numeric" value={five} onChange={(e) => setFive(e.target.value)} className="w-24 text-ink" />
+          </label>
+          <label className="flex flex-col gap-1 text-ink/60">
+            Weekly (1 to 100)
+            <TextInput inputMode="numeric" value={week} onChange={(e) => setWeek(e.target.value)} className="w-24 text-ink" />
+          </label>
+          <Button type="submit" variant="primary" size="sm" disabled={!validLevel(five) || !validLevel(week)} loading={write.busy === "pause"} className="max-md:h-11">
+            Save
+          </Button>
+          <ErrorLine error={write.error} className="basis-full" />
+        </form>
+      )}
     </div>
   );
 }
@@ -120,6 +184,7 @@ export function AccountsPanel({ className }: { className?: string }) {
   return (
     <Block title="Claude accounts" aside={operator ? "label, enabled and concurrency are yours to set" : "set by operators"} className={className}>
       <ErrorLine error={q.error?.message} />
+      <PauseLevels operator={operator} />
       {q.data && q.data.length === 0 && <p className="text-sm text-ink/55">No account is enabled.</p>}
       {q.data && (
         <ul className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">

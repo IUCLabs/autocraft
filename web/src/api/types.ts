@@ -1163,6 +1163,8 @@ export type ClaudeAccount = {
 export type AccountAuth = { loggedIn: boolean | null; method: string | null; plan: string | null; expiresAt: string | null; checkedAt: string | null };
 export type AccountLoginState = "starting" | "waiting" | "checking" | "done" | "failed" | "cancelled";
 export type AccountLogin = { state: AccountLoginState; url: string | null; message: string | null };
+/** Usage levels (%, 1 to 100) at which an account stops taking calls. */
+export type UsagePause = { fiveHour: number; weekly: number };
 export type AccountInput = { label?: string; enabled?: boolean; maxConcurrent?: number };
 
 export type AgentRunState = "running" | "done" | "failed";

@@ -3,7 +3,7 @@
 // config's directories never reach a response: accounts are returned by id and label.
 import type { DatabaseSync } from "node:sqlite";
 import type { AgentRunFilter, AgentRunState, ClaudeAccount } from "../../../web/src/api/types.ts";
-import { AccountError, listAccounts, updateAccount } from "../../agents/accounts.ts";
+import { AccountError, listAccounts, setUsagePause, updateAccount, usagePause } from "../../agents/accounts.ts";
 import { addAccount, beginLogin, refreshNow, sendCode, signOut, stopLogin } from "../../agents/manage.ts";
 import { getRun, listRuns, rates as ratesOf, RunQueryError } from "../../agents/runs.ts";
 import { HttpError } from "../server/util.ts";
@@ -27,6 +27,9 @@ export const accounts = (db: DatabaseSync, req: Req): ClaudeAccount[] =>
     .map((a) => (req.user.role === "operator" ? a : { ...a, login: null }));
 
 export const putAccount = (db: DatabaseSync, req: Req) => wrap(() => updateAccount(db, req.params.id, req.json, req.user.login));
+
+export const getPause = (db: DatabaseSync) => usagePause(db);
+export const putPause = (db: DatabaseSync, req: Req) => wrap(() => setUsagePause(db, req.json, req.user.login));
 
 export const postAccount = (db: DatabaseSync, req: Req) => wrap(() => addAccount(db, req.json, req.user.login));
 export const loginStart = (db: DatabaseSync, req: Req) => wrap(() => beginLogin(db, req.params.id, req.user.login));
