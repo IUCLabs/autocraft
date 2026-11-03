@@ -8,6 +8,7 @@ import { connect } from "../src/db.ts";
 import type { Querier } from "../src/mirror.ts";
 import { runMerge, type CommandResult, type MergeDeps } from "../src/merge/index.ts";
 import { buildQueue, eligible, mergeDecisionId } from "../src/merge/queue.ts";
+import { finalizeReviews } from "./fixture.ts";
 
 const SCRATCH = join(homedir(), ".cache/craft-automation-scratch");
 mkdirSync(SCRATCH, { recursive: true });
@@ -61,6 +62,7 @@ function fresh(): DatabaseSync {
   }
   db.prepare("INSERT INTO whitelist_overrides (login, status, by, at) VALUES ('regular', 'allow', 'op', ?)").run(T0);
   db.prepare("INSERT INTO access (login, role) VALUES ('op', 'operator'), ('helper', 'maintainer')").run();
+  finalizeReviews(db);
   return db;
 }
 

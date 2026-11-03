@@ -201,6 +201,8 @@ export interface Item extends ItemRef {
   verification: ItemVerification | null;
   /** PRs: the Fix-up step's tries, oldest first. */
   fixups: ItemFixup[];
+  /** PRs: the Sonnet and Opus reviews of the newest reviewed head, and the verdict later stages use; null before the first review. */
+  reviews: ItemReviews | null;
   /** The Act step's GitHub writes after an operator's answer, oldest first. */
   actions: ItemAction[];
   /** Releases an operator can use on this item now (the item waits for a person). */
@@ -227,6 +229,33 @@ export interface ItemVerification {
   finishedAt: string | null;
   /** Head task first, then the base task of a regression. */
   tasks: { id: number; role: "head" | "base"; state: TaskState; results: TaskResult[]; endedAt: string | null }[];
+}
+
+export type ReviewVerdictName = "take" | "take-fix" | "hold" | "close";
+
+/** One reviewer's verdict on a head commit. */
+export interface ReviewSide {
+  verdict: ReviewVerdictName;
+  reason: string;
+  fixes: { file: string; change: string }[];
+  risks: string[];
+  at: string;
+}
+
+/**
+ * The two review passes of a PR head. `opus` is null while Opus has not reviewed the head or when the skip list
+ * exempted it (then `skipReason` says why). `final` is the verdict every later stage reads: Opus's, or Sonnet's when
+ * skip-listed or when Sonnet held or closed; `decided` is false while a Sonnet take or take-fix waits for Opus.
+ * When Opus is unsure and disagrees with Sonnet, `final.verdict` is hold and its reason shows both reviews.
+ */
+export interface ItemReviews {
+  head: string;
+  /** The head is the PR's current head. */
+  current: boolean;
+  sonnet: ReviewSide | null;
+  opus: (ReviewSide & { sure: boolean; mode: "full" | "delta"; baseHead: string | null }) | null;
+  skipReason: string | null;
+  final: { verdict: ReviewVerdictName; source: "opus" | "sonnet" | "skip-list"; reason: string; decided: boolean };
 }
 
 export type FixupState = "pushed" | "failed" | "refused" | "cannot-push" | "too-large" | "asked";
@@ -862,7 +891,7 @@ export interface CommentTemplate {
  * ready (may merge by the rule now), decision-answered-merge (the operator answered merge),
  * refused (the merge command or a pre-merge check said no; tried again next run),
  * waiting-ci (CI pending or none, or GitHub still computing mergeability), ci-failed, conflict,
- * needs-fix-up (take-fix), waiting-verify (no passed verification at the head yet), verify-failed, verify-error,
+ * needs-fix-up (take-fix), waiting-opus (Sonnet's take or take-fix; Opus has not reviewed the head yet), waiting-verify (no passed verification at the head yet), verify-failed, verify-error,
  * needs-decision (outside the rule; Merge? asked or about to be),
  * declined (the operator answered hold or close), merged,
  * held-duplicate (an open Duplicate? decision keeps it out of every later stage).
@@ -875,6 +904,7 @@ export type QueueState =
   | "ci-failed"
   | "conflict"
   | "needs-fix-up"
+  | "waiting-opus"
   | "waiting-verify"
   | "verify-failed"
   | "verify-error"

@@ -23,6 +23,7 @@ import { mergeApprovalOf } from "../merge/approval.ts";
 import { buildQueue, eligible, toAsk } from "../merge/queue.ts";
 import { trackedNames } from "../repos.ts";
 import { selectCandidates as reviewCandidates } from "../review/candidates.ts";
+import { selectOpusCandidates } from "../review/opus-candidates.ts";
 import { selectCandidates as verifyCandidates, unavailableCandidates } from "../verify/candidates.ts";
 import { collectDue } from "../verify/results.ts";
 import { collectDue as fixCollectDue, fixDue } from "../fixissue/index.ts";
@@ -191,6 +192,18 @@ export const LANES: Lane[] = [
     },
   },
   {
+    // Opus reviews what Sonnet rated take or take-fix; one repo per job, the repo with the highest-ranked PR first.
+    name: "opus-review",
+    steps: ["opus-review"],
+    perRepo: true,
+    detect: (db, { tracked }) => {
+      const best = tracked.map((repo) => ({ repo, c: selectOpusCandidates(db, repo) })).filter((x) => x.c.length);
+      best.sort((a, b) => (b.c[0]!.score ?? -1) - (a.c[0]!.score ?? -1) || a.repo.localeCompare(b.repo));
+      return best.map((x) => ({ step: "opus-review", params: { repo: x.repo } }));
+    },
+    topScore: (db, { tracked }) => bestScore(tracked.map((repo) => selectOpusCandidates(db, repo)[0]?.score)),
+  },
+  {
     name: "labels",
     steps: ["labels-apply"],
     perRepo: true,
@@ -338,7 +351,7 @@ export function setEnabled(db: DatabaseSync, enabled: boolean, by: string): void
 }
 
 /** Steps that have a row in stage_limits, in pipeline order. */
-export const LIMIT_STEPS = ["classify-new", "embed", "dupes", "decide", "checks", "review-batch", "labels-apply", "merge", "act", "fixup", "verify", "prioritize", "fixissue"];
+export const LIMIT_STEPS = ["classify-new", "embed", "dupes", "decide", "checks", "review-batch", "labels-apply", "merge", "act", "fixup", "verify", "prioritize", "fixissue", "opus-review"];
 
 /** Steps whose jobs cannot be sized to what remains of the day: only no limit or a pause makes sense. */
 export const ZERO_ONLY = ["checks"];

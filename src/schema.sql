@@ -320,7 +320,7 @@ CREATE TABLE IF NOT EXISTS stage_limits (
 );
 INSERT OR IGNORE INTO stage_limits (step, per_day) VALUES
   ('classify-new', 2000), ('embed', NULL), ('decide', 100), ('checks', NULL),
-  ('review-batch', 40), ('labels-apply', NULL), ('merge', 10), ('act', 20), ('fixup', 20), ('verify', 30);
+  ('review-batch', 40), ('labels-apply', NULL), ('merge', 10), ('act', 20), ('fixup', 20), ('verify', 30), ('opus-review', 40);
 
 -- One row per `craft-auto sync` run, kept for two days, for the Pipeline page.
 CREATE TABLE IF NOT EXISTS sync_runs (
@@ -366,6 +366,50 @@ CREATE TABLE IF NOT EXISTS reviews (
   PRIMARY KEY (repo, number, head_oid)
 );
 CREATE INDEX IF NOT EXISTS reviews_run ON reviews(run_id);
+
+-- The second review pass: Opus reads every PR Sonnet rated take or take-fix,
+-- one row per PR head commit. A row with `mode = 'skipped'` has no verdict: the
+-- rule-based skip list (src/review/skip.ts) exempted the diff from the pass.
+CREATE TABLE IF NOT EXISTS opus_reviews (
+  repo TEXT NOT NULL, number INTEGER NOT NULL,
+  head_oid TEXT NOT NULL,
+  run_id TEXT,
+  at TEXT NOT NULL,
+  model TEXT,                         -- NULL when skipped
+  mode TEXT NOT NULL,                 -- full | delta | skipped
+  base_head TEXT,                     -- delta: the head Opus had reviewed before
+  verdict TEXT,                       -- take | take-fix | hold | close; NULL when skipped
+  sure INTEGER,                       -- 1 when Opus is sure of its verdict
+  reason TEXT,
+  fixes TEXT,                         -- JSON [{file, change}], the complete list for take-fix
+  risks TEXT,                         -- JSON [string]
+  skip_reason TEXT,                   -- mode = 'skipped' only
+  PRIMARY KEY (repo, number, head_oid)
+);
+
+-- The verdict every later stage reads, per reviewed head commit. Opus's replaces
+-- Sonnet's, except that Opus disagreeing with Sonnet while unsure makes a hold for
+-- a person (take and take-fix count as agreeing). A skip-listed head keeps Sonnet's
+-- verdict. `final` is 0 while a Sonnet take or take-fix still waits for Opus; Sonnet
+-- hold and close verdicts are final at once.
+CREATE VIEW IF NOT EXISTS final_reviews AS
+SELECT r.repo, r.number, r.head_oid, r.run_id, r.at, r.model, r.size, r.duplicate_of, r.overlaps,
+  r.verdict AS sonnet_verdict, r.reason AS sonnet_reason, r.fixes AS sonnet_fixes,
+  CASE WHEN o.verdict IS NULL THEN r.verdict
+    WHEN o.sure = 0 AND replace(o.verdict, 'take-fix', 'take') <> replace(r.verdict, 'take-fix', 'take') THEN 'hold'
+    ELSE o.verdict END AS verdict,
+  CASE WHEN o.verdict IS NULL THEN r.reason
+    WHEN o.sure = 0 AND replace(o.verdict, 'take-fix', 'take') <> replace(r.verdict, 'take-fix', 'take')
+      THEN 'Needs a person: Opus is unsure and disagrees with Sonnet. Sonnet (' || r.verdict || '): ' || r.reason || ' Opus (' || o.verdict || '): ' || o.reason
+    ELSE o.reason END AS reason,
+  CASE WHEN o.verdict IS NULL THEN r.fixes
+    WHEN o.sure = 0 AND replace(o.verdict, 'take-fix', 'take') <> replace(r.verdict, 'take-fix', 'take') THEN NULL
+    ELSE o.fixes END AS fixes,
+  CASE WHEN o.verdict IS NULL THEN r.risks ELSE o.risks END AS risks,
+  CASE WHEN o.verdict IS NOT NULL THEN 'opus' WHEN o.mode = 'skipped' THEN 'skip-list' ELSE 'sonnet' END AS source,
+  o.skip_reason AS skip_reason,
+  CASE WHEN r.verdict IN ('hold', 'close') OR o.head_oid IS NOT NULL THEN 1 ELSE 0 END AS final
+FROM reviews r LEFT JOIN opus_reviews o ON o.repo = r.repo AND o.number = r.number AND o.head_oid = r.head_oid;
 
 -- Merge attempts by the Integrate stage, one row per try at a PR head.
 -- outcome: merged | refused (the merge command or a pre-merge check said no, with why).

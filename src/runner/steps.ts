@@ -447,6 +447,26 @@ export const STEPS: StepDef[] = [
       return `${r.items} open items ranked, ${r.changed} changed, ${r.removed} removed`;
     },
   },
+  {
+    name: "opus-review",
+    title: "Final review by Opus",
+    description: "Opus reviews, one pull request per call, the pull requests of one repo that Sonnet rated take or take-fix, unless the skip list exempts the diff. After a new push it reads only the changes since the head it reviewed before. Its verdict and fix list replace Sonnet's for every later stage.",
+    stage: 5,
+    requires: "operator",
+    group: "review",
+    models: ["opus"],
+    params: [
+      { name: "repo", label: "Repo", kind: "repo", required: true },
+      { name: "limit", label: "At most", kind: "int", min: 1, max: 50, default: 5, help: "pull requests to review in this job" },
+    ],
+    run: async (ctx) => {
+      const { runOpusReview } = await import("../review/opus.ts");
+      const r = await runOpusReview(ctx.db, { repo: String(ctx.params.repo), limit: Number(ctx.params.limit), onHandled: ctx.handled }, ctx.log);
+      ctx.usageRun(r.runId);
+      const v = Object.entries(r.verdicts).map(([k, n]) => `${n} ${k}`).join(", ");
+      return `${r.repo}: reviewed ${r.reviewed} of ${r.candidates} candidates${v ? ` (${v})` : ""}; ${r.skipListed} skip-listed, ${r.skipped.length} without a diff, ${r.missing.length} without an answer`;
+    },
+  },
 ];
 
 let loaded: Promise<Map<string, StepDef>> | null = null;

@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { describe, test } from "node:test";
 import { useTestAccount } from "./accounts-fixture.ts";
+import { finalizeReviews } from "./fixture.ts";
 import { createEnv, hello } from "../src/build/envs.ts";
 import { claim, createTask, getTask, warmKeyOf } from "../src/build/tasks.ts";
 import { setRunner, type Runner } from "../src/classify/run.ts";
@@ -58,6 +59,7 @@ function fresh() {
   // CI result of an older head, fetched before the mirror last saw the PR change
   db.prepare(`INSERT INTO pr_checks (repo, number, head_oid, state, is_draft, overall, checks, fetched_at) VALUES ('app', 8, ?, 'OPEN', 0, 'failure', '[]', '2025-12-01T00:00:00Z')`).run(sha(8, "e"));
   checks.run(1, sha(1), "pending");
+  finalizeReviews(db);
   return db;
 }
 
@@ -78,6 +80,7 @@ describe("verify candidates", () => {
     db.prepare("UPDATE items SET updated_at = '2026-01-05T00:00:00Z' WHERE repo = 'app' AND number = 1").run();
     db.prepare("UPDATE pr_checks SET head_oid = ?, fetched_at = '2026-02-01T00:00:00Z' WHERE number = 1").run(NEW);
     db.prepare("INSERT INTO reviews (repo, number, head_oid, run_id, at, model, size, verdict, reason, risks) VALUES ('app', 1, ?, 'rv', ?, 'sonnet', 'S', 'take', 'fine', '[]')").run(NEW, T0);
+    finalizeReviews(db);
     db.prepare("INSERT INTO verifications (repo, number, head_sha, kind, reason, state, created_at) VALUES ('app', 1, ?, 'tests', 'x', 'stale', ?)").run(NEW, T0);
     const heads = () => selectCandidates(db, "app").filter((c) => c.number === 1).map((c) => c.head_oid);
     assert.deepEqual(heads(), [NEW]);

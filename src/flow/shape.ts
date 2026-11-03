@@ -23,7 +23,7 @@ type B = { id: string; label: string; waitsOn: FlowWait; tone: FlowBranch["tone"
 /** Runner steps (src/runner/steps.ts) each node shows. */
 const NODE_STEPS: Record<FlowNode["id"], string[]> = {
   synced: ["embed"], dupes: ["dupes"], classify: ["classify-new", "classify-all"], priority: ["prioritize", "rank"], decide: ["decide"],
-  labels: ["labels-ensure", "labels-apply"], review: ["review-batch", "checks"], fix: ["fixissue", "fixissue-collect"], fixup: ["fixup"],
+  labels: ["labels-ensure", "labels-apply"], review: ["review-batch", "opus-review", "checks"], fix: ["fixissue", "fixissue-collect"], fixup: ["fixup"],
   verify: ["verify", "verify-collect"], merge: ["merge"], act: ["act"],
 };
 

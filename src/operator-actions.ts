@@ -26,7 +26,7 @@ function openItem(db: DatabaseSync, repo: string, n: number): ItemRow & { head: 
 }
 
 const heldReview = (db: DatabaseSync, repo: string, n: number, head: string | null) =>
-  head ? db.prepare("SELECT reason FROM reviews WHERE repo = ? AND number = ? AND head_oid = ? AND verdict = 'hold'").get(repo, n, head) as { reason: string } | undefined : undefined;
+  head ? db.prepare("SELECT reason FROM final_reviews WHERE repo = ? AND number = ? AND head_oid = ? AND verdict = 'hold'").get(repo, n, head) as { reason: string } | undefined : undefined;
 const failedVerify = (db: DatabaseSync, repo: string, n: number, head: string | null) =>
   head ? db.prepare("SELECT state, summary FROM verifications WHERE repo = ? AND number = ? AND head_sha = ? AND state IN ('failed', 'error')").get(repo, n, head) as { state: string; summary: string | null } | undefined : undefined;
 const stoppedFix = (db: DatabaseSync, repo: string, n: number) =>
@@ -50,6 +50,7 @@ export function reviewAgain(db: DatabaseSync, by: string, repo: string, n: numbe
   if (it.kind !== "pr") throw new ActionError(409, `${repo}#${n} is not a pull request`);
   const held = heldReview(db, repo, n, it.head);
   if (!held) throw new ActionError(409, `${repo}#${n} has no review hold at its current head`);
+  db.prepare("DELETE FROM opus_reviews WHERE repo = ? AND number = ? AND head_oid = ?").run(repo, n, it.head);
   db.prepare("DELETE FROM reviews WHERE repo = ? AND number = ? AND head_oid = ?").run(repo, n, it.head);
   audit(db, by, "review-again", `${repo}#${n}`, { head: it.head, reason: held.reason });
 }

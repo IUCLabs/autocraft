@@ -18,6 +18,7 @@ import { settledOf } from "../src/classify/settled.ts";
 import { saveVerification } from "../src/verify/index.ts";
 import { unavailableCandidates } from "../src/verify/candidates.ts";
 import { LANES } from "../src/runner/autopilot.ts";
+import { finalizeReviews } from "./fixture.ts";
 
 const SCRATCH = join(homedir(), ".cache/craft-automation-scratch");
 mkdirSync(SCRATCH, { recursive: true });
@@ -43,6 +44,7 @@ function add(db: DatabaseSync, o: Opts): void {
   db.prepare(`INSERT INTO classifications (repo, number, classifier, run_id, at, type_label, flags, probs) VALUES ('app', ?, 'jev', 'r1', '${T0}', ?, '[]', '{"top":0.95}')`).run(o.n, o.label ?? "bugfix");
   if (kind !== "pr") return;
   db.prepare(`INSERT INTO reviews (repo, number, head_oid, run_id, at, model, size, verdict, reason) VALUES ('app', ?, ?, 'rv', '${T0}', 'm', 'S', ?, 'looks right')`).run(o.n, `sha${o.n}`, o.verdict ?? "take");
+  finalizeReviews(db);
   db.prepare(`INSERT INTO pr_checks (repo, number, head_oid, state, is_draft, overall, checks, mergeable, maintainer_can_modify, fetched_at)
     VALUES ('app', ?, ?, 'OPEN', 0, ?, '[]', 'MERGEABLE', 1, '${T1}')`).run(o.n, `sha${o.n}`, o.ci ?? "success");
   if (o.verify) {

@@ -15,6 +15,7 @@ import { validatePatch } from "../src/fixup/patch.ts";
 import { setCommentApproval } from "../src/act/approval.ts";
 import { COMMENT_TEMPLATE, askText, commentText } from "../src/fixup/template.ts";
 import { selectCandidates } from "../src/review/candidates.ts";
+import { finalizeReviews } from "./fixture.ts";
 
 const SCRATCH = join(homedir(), ".cache/craft-automation-scratch");
 mkdirSync(SCRATCH, { recursive: true });
@@ -43,6 +44,7 @@ function fresh(head: string, o: Opts = {}): DatabaseSync {
     VALUES ('app', 7, ?, 'OPEN', 0, 'success', '[]', ?, ?, '${T1}')`).run(head, o.mergeable ?? "MERGEABLE", o.canModify === false ? 0 : 1);
   db.prepare("INSERT INTO tracked_repos (name, added_by, added_at) VALUES ('app', 'op', ?) ON CONFLICT DO NOTHING").run(T0);
   if (o.approved !== false) setPushApproval(db, "op", "app", true);
+  finalizeReviews(db);
   return db;
 }
 

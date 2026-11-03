@@ -748,6 +748,7 @@ export function itemFor(repo: string, number: number): Item {
     settled: { status: "unclassified", label: null, source: null, confidence: null, jevLabel: null, haikuLabel: null, flags: [] },
     verification: null,
     fixups: [],
+    reviews: null,
     actions: [],
     releases: { reviewAgain: false, verifyAgain: false, fixAgain: false },
   };

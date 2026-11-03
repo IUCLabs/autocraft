@@ -104,3 +104,29 @@ export function areaOf(files: string[]): string {
   }
   return [...count.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0]?.[0] ?? "(none)";
 }
+
+/** The diff between two heads of one PR, or a failure. Not cached: it is read once per new head. */
+export type DeltaFetcher = (repo: string, base: string, head: string) => Promise<DiffResult>;
+
+function gh(args: string[]): Promise<{ code: number | null; out: string; err: string }> {
+  return new Promise((resolve) => {
+    const p = spawn("gh", args, { cwd: REPO_DIR, timeout: 120_000 });
+    const out: Buffer[] = [];
+    let err = "";
+    p.stdout.on("data", (d: Buffer) => out.push(d));
+    p.stderr.on("data", (d) => (err += d));
+    p.on("error", (e) => resolve({ code: -1, out: "", err: String(e) }));
+    p.on("close", (code) => resolve({ code, out: Buffer.concat(out).toString("utf8"), err }));
+  });
+}
+
+/** GitHub's compare of base...head; fails unless head is ahead of base (so base is an ancestor). */
+export const ghDelta: DeltaFetcher = async (repo, base, head) => {
+  const path = `repos/${ORG}/${repo}/compare/${base}...${head}`;
+  const status = await gh(["api", path, "--jq", ".status"]);
+  if (status.code !== 0) return { ok: false, tooLarge: false, error: status.err.trim().slice(0, 300) };
+  if (status.out.trim() !== "ahead") return { ok: false, tooLarge: false, error: `compare status ${status.out.trim()}` };
+  const diff = await gh(["api", "-H", "Accept: application/vnd.github.diff", path]);
+  if (diff.code !== 0) return { ok: false, tooLarge: /too_large|too large|406/i.test(diff.err), error: diff.err.trim().slice(0, 300) };
+  return { ok: true, text: diff.out };
+};

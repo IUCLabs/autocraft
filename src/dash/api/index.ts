@@ -5,7 +5,7 @@
 import { priorityOf } from "../../priority/read.ts";
 import type { DatabaseSync, SQLInputValue } from "node:sqlite";
 import type {
-  CiState, Done, Funnel, Item, ItemAction, ItemComment, ItemFixup, ItemVerification, Mergeable, Progress, RepoProgress, Tier, User,
+  CiState, Done, Funnel, Item, ItemAction, ItemComment, ItemFixup, ItemReviews, ItemVerification, ReviewSide, Mergeable, Progress, RepoProgress, Tier, User,
 } from "../../../web/src/api/types.ts";
 import { trackedNames } from "../../repos.ts";
 import { excludeHidden, hiddenRepos, needVisible, visibleRepos } from "./visible.ts";
@@ -116,7 +116,28 @@ async function item(db: DatabaseSync, req: Req): Promise<Item> {
     comments: comments.map((x) => ({ ...x, author: x.author ?? "", body: x.body ?? "" })),
     decisionIds, settled: settledOf(db, repo, n) as Item["settled"], priority: priorityOf(db, repo, n),
     ...(it.kind === "pr" ? prWork(db, repo, n) : { verification: null, fixups: [] }),
+    reviews: it.kind === "pr" ? reviewsOf(db, repo, n) : null,
     actions: actionsOf(db, repo, n), releases: releasesOf(db, repo, n),
+  };
+}
+
+/** The Sonnet and Opus reviews of the newest reviewed head, and the final verdict. */
+function reviewsOf(db: DatabaseSync, repo: string, n: number): ItemReviews | null {
+  const f = db.prepare(`SELECT head_oid, at, model, sonnet_verdict, sonnet_reason, sonnet_fixes, verdict, reason, source, skip_reason, final FROM final_reviews
+    WHERE repo = ? AND number = ? ORDER BY at DESC, head_oid DESC LIMIT 1`).get(repo, n) as
+    { head_oid: string; at: string; model: string | null; sonnet_verdict: ReviewSide["verdict"]; sonnet_reason: string; sonnet_fixes: string | null; verdict: ReviewSide["verdict"]; reason: string; source: ItemReviews["final"]["source"]; skip_reason: string | null; final: number } | undefined;
+  if (!f) return null;
+  const list = <T>(s: string | null): T[] => { try { const v = JSON.parse(s ?? "[]") as unknown; return Array.isArray(v) ? (v as T[]) : []; } catch { return []; } };
+  const risks = (db.prepare("SELECT risks FROM reviews WHERE repo = ? AND number = ? AND head_oid = ?").get(repo, n, f.head_oid) as { risks: string | null }).risks;
+  const o = db.prepare("SELECT at, mode, base_head, verdict, sure, reason, fixes, risks FROM opus_reviews WHERE repo = ? AND number = ? AND head_oid = ? AND verdict IS NOT NULL").get(repo, n, f.head_oid) as
+    { at: string; mode: "full" | "delta"; base_head: string | null; verdict: ReviewSide["verdict"]; sure: number; reason: string; fixes: string | null; risks: string | null } | undefined;
+  const head = (db.prepare("SELECT head_oid FROM items WHERE repo = ? AND number = ?").get(repo, n) as { head_oid: string | null } | undefined)?.head_oid ?? null;
+  return {
+    head: f.head_oid, current: f.head_oid === head,
+    sonnet: { verdict: f.sonnet_verdict, reason: f.sonnet_reason, fixes: list(f.sonnet_fixes), risks: list(risks), at: f.at },
+    opus: o ? { verdict: o.verdict, reason: o.reason, fixes: list(o.fixes), risks: list(o.risks), at: o.at, sure: o.sure === 1, mode: o.mode, baseHead: o.base_head } : null,
+    skipReason: f.skip_reason,
+    final: { verdict: f.verdict, source: f.source, reason: f.reason, decided: f.final === 1 },
   };
 }
 

@@ -13,6 +13,7 @@ import { listItems } from "../src/dash/api/items.ts";
 import type { Req } from "../src/dash/types.ts";
 import { scopeToTracked } from "../src/repos.ts";
 import { candidateRefs, selectCandidates } from "../src/review/candidates.ts";
+import { finalizeReviews } from "./fixture.ts";
 
 const SCRATCH = join(homedir(), ".cache/craft-automation-scratch");
 mkdirSync(SCRATCH, { recursive: true });
@@ -57,6 +58,7 @@ function build() {
   db.prepare(`INSERT INTO whitelist_overrides (login, status, by, at) VALUES ('regular', 'allow', 'op', '${T0}')`).run();
   db.prepare("INSERT INTO access (login, role) VALUES ('op', 'operator')").run();
   scopeToTracked(db);
+  finalizeReviews(db);
   return db;
 }
 
@@ -174,6 +176,7 @@ test("the duplicate, priority, fix, fix-up and act nodes count one item in each 
   checks.run(13, "h13", 1);
   item.run(40, "pr", "OPEN", "h40", null); review.run(40, "h40", "take-fix", fixes); checks.run(40, "h40", 0);
   item.run(41, "pr", "OPEN", "h41", null); review.run(41, "h41", "take", null); checks.run(41, "h41", 1);
+  finalizeReviews(db);
   db.prepare(`INSERT INTO main.fixups (repo, number, from_head, to_head, state, attempt, created_at) VALUES ('${R}', 41, 'g41', 'h41', 'pushed', 1, ?)`).run(NOW);
   assert.deepEqual(counts(node("fixup")), { fix: 0, pushed: 1, hold: 1, unapproved: 1, asked: 0 });
   setting(`push_approved:${R}`);
