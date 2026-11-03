@@ -1,6 +1,7 @@
 // The scope of the pipeline. A repo takes part only while its pipeline flag (tracked_repos.pipeline) is on; off means sync only.
 // The pilot is an operator setting that narrows the enabled repos further to a list of items ("repo#number").
 // Empty or absent means no pilot. A Fix PR the pipeline opened for a pilot issue counts as a pilot item.
+// A fast-tracked item (src/fasttrack.ts) is in scope whatever its repo's flag and the pilot say.
 // No Node imports besides the type, so candidate queries can use the SQL fragments.
 import type { DatabaseSync } from "node:sqlite";
 import { audit } from "./dash/audit.ts";
@@ -46,9 +47,11 @@ export function setRepoPipeline(db: DatabaseSync, by: string, repo: string, on: 
 export function scopeRepos(db: DatabaseSync): Set<string> {
   const on = pipelineRepos(db);
   const items = pilotItems(db);
-  if (!items.length) return on;
-  const named = new Set(items.map((i) => i.split("#")[0]!));
-  return new Set([...on].filter((r) => named.has(r)));
+  const out = items.length ? new Set([...on].filter((r) => new Set(items.map((i) => i.split("#")[0]!)).has(r))) : on;
+  // A repo with a fast-tracked open item takes part for that item alone (see pilotSqlFor).
+  for (const r of db.prepare(`SELECT DISTINCT f.repo FROM main.fast_track f JOIN main.tracked_repos t ON t.name = f.repo
+    JOIN main.items i ON i.repo = f.repo AND i.number = f.number AND i.state = 'OPEN'`).all() as { repo: string }[]) out.add(r.repo);
+  return out;
 }
 
 /** Parses refs (repo#number) separated by whitespace or commas; throws on a malformed one, a whole-repo entry or an untracked repo. */
@@ -79,13 +82,14 @@ export function setPilot(db: DatabaseSync, by: string, input: unknown): string[]
 
 const LIST = `(SELECT CASE WHEN json_valid(ps.value) THEN ps.value ELSE '[]' END FROM main.settings ps WHERE ps.key = '${PILOT_KEY}')`;
 
-/** SQL condition on an item given by its repo and number expressions: its repo's pipeline flag is on and, with a pilot set, it is a pilot item or the Fix PR of a pilot issue. */
+/** SQL condition on an item given by its repo and number expressions: it is fast-tracked, or its repo's pipeline flag is on and, with a pilot set, it is a pilot item or the Fix PR of a pilot issue. */
 export const pilotSqlFor = (repo: string, number: string): string =>
-  `(EXISTS (SELECT 1 FROM main.tracked_repos pt WHERE pt.name = ${repo} AND pt.pipeline = 1)
+  `(EXISTS (SELECT 1 FROM main.fast_track pft WHERE pft.repo = ${repo} AND pft.number = ${number})
+    OR (EXISTS (SELECT 1 FROM main.tracked_repos pt WHERE pt.name = ${repo} AND pt.pipeline = 1)
     AND (COALESCE(json_array_length(${LIST}), 0) = 0
       OR EXISTS (SELECT 1 FROM json_each(${LIST}) pj WHERE pj.value = ${repo} || '#' || ${number})
       OR EXISTS (SELECT 1 FROM main.fix_attempts pf, json_each(${LIST}) pj WHERE pf.repo = ${repo} AND pf.pr_url LIKE '%/pull/' || ${number}
-        AND pj.value = pf.repo || '#' || pf.number)))`;
+        AND pj.value = pf.repo || '#' || pf.number))))`;
 
 /** The same for a row `alias` of items. */
 export const pilotSql = (alias: string): string => pilotSqlFor(`${alias}.repo`, `${alias}.number`);

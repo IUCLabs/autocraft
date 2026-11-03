@@ -3,7 +3,7 @@ import type { DatabaseSync } from "node:sqlite";
 import type { BatchList, BatchState, Mergeable, QueueBatch, QueueList, QueueRow, QueueState, Tier, TypeLabel } from "../../../web/src/api/types.ts";
 import { latestRun } from "../../classify/settled.ts";
 import { buildQueue, countMerged, countStates, QUEUE_STATES, type QueueEntry } from "../../merge/queue.ts";
-import { pageBatches } from "../../merge/batch-store.ts";
+import { pageBatches, type BatchRow } from "../../merge/batch-store.ts";
 import { HttpError } from "../server/util.ts";
 import { trackedNames } from "../../repos.ts";
 import type { Req } from "../types.ts";
@@ -14,7 +14,7 @@ const TIER: Record<string, Tier> = { whitelisted: "whitelisted", not: "not", all
 const MERGEABLE: Record<string, Mergeable> = { MERGEABLE: "clean", CONFLICTING: "conflicts" };
 const CI = ["success", "failure", "pending", "none"];
 
-const toRow = (e: QueueEntry): QueueRow => ({
+export const toRow = (e: QueueEntry): QueueRow => ({
   repo: e.repo, number: e.number, title: e.title, author: e.author ?? "", tier: TIER[e.tier] ?? "not", head: e.head,
   size: (["S", "M", "L"].includes(e.size) ? e.size : "L") as QueueRow["size"], label: e.label as TypeLabel | null,
   verdict: e.verdict, reason: e.reason, fixes: e.fixes,
@@ -125,10 +125,14 @@ export async function queueBatches(db: DatabaseSync, req: Req): Promise<BatchLis
   const { batches, total, more } = pageBatches(db, { repo, exclude: hidden, before: after, limit });
   const refs = batches.flatMap((b) => b.prs.map((p) => `${b.repo}#${p.number}`));
   const rows = new Map(refs.length ? buildQueue(db, { merged: "all", refs, run: latestRun(db) }).map((e) => [`${e.repo}#${e.number}`, toRow(e)]) : []);
-  const out = batches.map((b): QueueBatch => ({
-    id: b.id, repo: b.repo, branch: b.branch, fork: b.fork, state: b.state as BatchState, baseSha: b.base_sha, size: b.prs.length,
-    prs: b.prs.flatMap((p) => rows.get(`${b.repo}#${p.number}`) ?? []),
-    prNumber: b.pr_number, prUrl: b.pr_url, summary: b.summary, createdAt: b.created_at, updatedAt: b.updated_at,
-  }));
+  const out = batches.map((b) => toBatch(b, b.prs.flatMap((p) => rows.get(`${b.repo}#${p.number}`) ?? [])));
   return { batches: out, total, next: more ? String(out[out.length - 1]!.id) : null };
+}
+
+/** A batch row with its member PRs as queue rows. */
+export function toBatch(b: BatchRow & { prs: unknown[] }, prs: QueueRow[]): QueueBatch {
+  return {
+    id: b.id, repo: b.repo, branch: b.branch, fork: b.fork, state: b.state as BatchState, baseSha: b.base_sha, size: b.prs.length, prs,
+    prNumber: b.pr_number, prUrl: b.pr_url, summary: b.summary, createdAt: b.created_at, updatedAt: b.updated_at,
+  };
 }

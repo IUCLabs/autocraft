@@ -34,6 +34,8 @@ import { settledOf } from "../../classify/settled.ts";
 import { classificationsOf, itemState, relatedOf } from "./decisions.ts";
 import * as sim from "./similar.ts";
 import { localEmbedder, type Embedder } from "../../embed/model.ts";
+import type { Exec } from "../../fixup/git.ts";
+import { batchRemovePr, batchStop, fastTrackAdd, fastTrackRefs, fastTrackRemove, mergeHoldPr, pipelineRepoNames, queuePage } from "./queue-page.ts";
 import { VectorIndex } from "../../embed/vectors.ts";
 
 export type ApiOptions = {
@@ -41,6 +43,8 @@ export type ApiOptions = {
   writesPerHour?: number;
   // Embeds search queries and items without a stored vector; default: the local model, loaded on first use.
   embedder?: Embedder;
+  // Runs `gh` for the batch controls that close a PR; default: the real one. Tests fake it.
+  exec?: Exec;
 };
 
 const ok = (fn: (db: DatabaseSync, req: Req) => unknown) => async (db: DatabaseSync, req: Req): Promise<Res> => {
@@ -369,6 +373,15 @@ export function apiRoutes(opts: ApiOptions = {}): Route[] {
     get("/api/queue/batches", queueBatches),
     get("/api/github-activity", githubActivity),
     get("/api/work", work),
+    get("/api/queue/page", queuePage),
+    get("/api/repos/pipeline", pipelineRepoNames),
+    get("/api/fast-track", fastTrackRefs),
+    { method: "POST", pattern: "/api/fast-track", operator: true, handler: ok(fastTrackAdd) },
+    { method: "POST", pattern: "/api/fast-track/remove", operator: true, handler: ok(fastTrackRemove) },
+    { method: "POST", pattern: "/api/merge/hold", operator: true, handler: ok((db, req) => mergeHoldPr(db, req, true)) },
+    { method: "POST", pattern: "/api/merge/release", operator: true, handler: ok((db, req) => mergeHoldPr(db, req, false)) },
+    { method: "POST", pattern: "/api/merge/batch-remove", operator: true, handler: ok((db, req) => batchRemovePr(db, req, opts.exec)) },
+    { method: "POST", pattern: "/api/queue/batches/:id/stop", operator: true, handler: ok((db, req) => batchStop(db, req, opts.exec)) },
     get("/api/flow", flow),
     get("/api/similar/:repo/:n", (db, req) => sim.similar(db, req, vectors)),
   ];

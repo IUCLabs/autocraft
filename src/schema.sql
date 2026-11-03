@@ -915,3 +915,23 @@ CREATE TABLE IF NOT EXISTS dupe_group_fails (
   fails INTEGER NOT NULL,
   PRIMARY KEY (decision_id, number)
 );
+
+-- Fast track (src/fasttrack.ts): items an operator moved to the front of every stage that orders work by the work rank.
+-- id is the order they were added in; the lowest id runs first. Rows of closed or merged items are ignored, not deleted.
+CREATE TABLE IF NOT EXISTS fast_track (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  repo TEXT NOT NULL,
+  number INTEGER NOT NULL,
+  added_by TEXT NOT NULL,
+  added_at TEXT NOT NULL,
+  UNIQUE (repo, number)
+);
+
+-- Merge holds (src/merge/controls.ts): a PR held here is reviewed and fixed as usual but does not merge, alone or in a batch, until released.
+CREATE TABLE IF NOT EXISTS merge_holds (
+  repo TEXT NOT NULL,
+  number INTEGER NOT NULL,
+  held_by TEXT NOT NULL,
+  held_at TEXT NOT NULL,
+  PRIMARY KEY (repo, number)
+);

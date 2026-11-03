@@ -1354,3 +1354,79 @@ export interface GithubActivityPage {
   next: string | null;
   actions: { action: string; label: string }[];
 }
+
+// ---- Queue page (/api/queue/page) -------------------------------------------
+
+export type QueueTab = "all" | "review" | "fix" | "verify" | "merge";
+
+/** Place of a fast-tracked item among the open fast-tracked items, first to run first. */
+export interface FastPosition {
+  /** From 1. */
+  position: number;
+  of: number;
+}
+
+/** One row of the All, Review, Fix and Verify tabs: a work row with its fast-track place. */
+export interface QueueWorkRow extends WorkRow {
+  fast: FastPosition | null;
+  /** A PR whose merge an operator holds. */
+  held: boolean;
+}
+
+/** One row of the Merge tab: a merge queue row with its fast-track place and hold. */
+export interface QueueMergeRow extends QueueRow {
+  fast: FastPosition | null;
+  held: boolean;
+}
+
+/** What a PR waits for before it merges. */
+export type MergeWait = "ready" | "refused" | "ci" | "verify" | "re-review" | "batch-check" | "batch-ci" | "held";
+
+/** A PR in "Next merges", in the order it merges. */
+export interface NextMerge {
+  repo: RepoName;
+  number: number;
+  title: string;
+  waitsFor: MergeWait;
+  /** The wait in words. */
+  label: string;
+  fast: FastPosition | null;
+  /** The integration batch the PR is in, if any. */
+  batch: { id: number; branch: string } | null;
+}
+
+export interface QueuePageCounts {
+  all: number;
+  review: number;
+  fix: number;
+  verify: number;
+  merge: number;
+}
+
+/** `pipeline`: repos with the pipeline on, plus fast-tracked items of any repo; `all`: every repo; otherwise one repo. */
+export type QueueRepos = "pipeline" | "all" | RepoName;
+
+export interface QueuePageFilter {
+  tab?: QueueTab;
+  repos?: QueueRepos;
+  limit?: number;
+  offset?: number;
+}
+
+export interface QueuePage {
+  tab: QueueTab;
+  repos: QueueRepos;
+  counts: QueuePageCounts;
+  /** All, Review, Fix, Verify tabs (empty on Merge). */
+  rows: QueueWorkRow[];
+  /** Merge tab only: open PRs that are not in a batch in flight. */
+  mergeRows: QueueMergeRow[];
+  /** Merge tab only: up to ten PRs in merge order. */
+  nextMerges: NextMerge[];
+  /** Merge tab only: batches in flight, with their PRs. */
+  batches: QueueBatch[];
+  /** Rows matching the tab, every page. */
+  total: number;
+  /** `offset` of the next page, or null on the last one. */
+  next: number | null;
+}

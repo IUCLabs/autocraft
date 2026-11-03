@@ -7,6 +7,8 @@
 // Without --apply it is a dry run: it reads the local tables only, calls
 // nothing and writes nothing.
 import { scopeRepos } from "../pilot.ts";
+import { FAST_FLOOR, workScores } from "../fasttrack.ts";
+import { mergeHeld } from "./holds.ts";
 import { backlogHeld, duplicateHeld } from "../dupes/held.ts";
 import { mergeApprovalOf } from "./approval.ts";
 import { spawn } from "node:child_process";
@@ -203,9 +205,12 @@ export async function runMerge(db: DatabaseSync, params: MergeParams, log: (line
   const queue = buildQueue(db, { repo });
   const open = queue.filter((e) => e.state !== "merged");
   const states = countStates(queue);
-  const scores = new Map((db.prepare("SELECT number, score FROM item_rank WHERE repo = ?").all(repo) as { number: number; score: number }[]).map((r) => [r.number, r.score]));
-  // Rule merges first; within a path the higher work score first, unranked last.
-  let picks = open.filter((e) => eligible(e) && (!params.only || params.only(e))).sort((a, b) => (a.path === b.path ? (scores.get(b.number) ?? -1) - (scores.get(a.number) ?? -1) || a.number - b.number : a.path === "rule" ? -1 : 1));
+  const scores = workScores(db, repo);
+  const fast = (e: QueueEntry) => (scores.get(e.number) ?? 0) >= FAST_FLOOR;
+  const byRank = (a: QueueEntry, b: QueueEntry) => (scores.get(b.number) ?? -1) - (scores.get(a.number) ?? -1) || a.number - b.number;
+  // Fast-tracked PRs first, in the order added (their score falls with the order); then rule merges before answered ones, each by work score, unranked last.
+  let picks = open.filter((e) => eligible(e) && (!params.only || params.only(e))).sort((a, b) =>
+    fast(a) || fast(b) ? Number(fast(b)) - Number(fast(a)) || byRank(a, b) : a.path === b.path ? byRank(a, b) : a.path === "rule" ? -1 : 1);
   if (params.limit !== undefined) picks = picks.slice(0, params.limit);
   const ask1 = toAsk(open);
   const summary: MergeSummary = { runId, repo, dryRun, states, attempted: [], merged: [], refused: [], asked: [] };
@@ -252,6 +257,7 @@ export async function runMerge(db: DatabaseSync, params: MergeParams, log: (line
   for (const e of picks) {
     if (params.stopOnRefusal && summary.refused.length) break;
     if (!mergeApprovalOf(db, repo)) { log(`  merging in ${repo} is no longer approved; stopping`); break; }
+    if (mergeHeld(db, repo, e.number)) { log(`  ${refOf(e)}: merge held since the queue was read; skipped`); continue; }
     if (backlogHeld(db, repo, e.number) || duplicateHeld(db, repo, e.number)) { log(`  ${refOf(e)}: held since the queue was read; skipped`); continue; }
     summary.attempted.push(refOf(e));
     seen = null;

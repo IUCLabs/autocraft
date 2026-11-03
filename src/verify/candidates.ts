@@ -1,4 +1,5 @@
 // Which open PRs the Verify stage plans: taken at their current head commit, CI not failing, not planned yet.
+import { fastScoreSql } from "../fasttrack.ts";
 import { notHeldSql } from "../dupes/held.ts";
 import type { DatabaseSync } from "node:sqlite";
 import { latestRun, settledLookup } from "../classify/settled.ts";
@@ -43,7 +44,7 @@ function scan(db: DatabaseSync, repo: string, run: string | null, rust: RustChec
     LEFT JOIN final_reviews r ON r.final = 1 AND r.repo = i.repo AND r.number = i.number AND r.head_oid = COALESCE(
       CASE WHEN c.fetched_at IS NOT NULL AND (i.updated_at IS NULL OR c.fetched_at > i.updated_at) THEN c.head_oid END, i.head_oid, c.head_oid)
     LEFT JOIN item_rank p ON p.repo = i.repo AND p.number = i.number
-    WHERE i.repo = ? AND i.kind = 'pr' AND i.state = 'OPEN' AND ${notHeldSql("i")} ORDER BY p.score IS NULL, p.score DESC, i.number`).all(repo) as Row[];
+    WHERE i.repo = ? AND i.kind = 'pr' AND i.state = 'OPEN' AND ${notHeldSql("i")} ORDER BY ${fastScoreSql("i.repo", "i.number", "p.score")} IS NULL, ${fastScoreSql("i.repo", "i.number", "p.score")} DESC, i.number`).all(repo) as Row[];
   const done = db.prepare("SELECT 1 FROM verifications WHERE repo = ? AND number = ? AND head_sha = ? AND state != 'stale'");
   const settled = settledLookup(db, run);
   const stale = staleReviews(db, repo);

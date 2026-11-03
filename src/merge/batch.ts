@@ -9,6 +9,7 @@
 // batch is split in half and each half retried; a single PR that fails goes on hold. When the default branch
 // moves, the batch is rebuilt on the new head. Every GitHub write goes through `exec` / `run`.
 import { scopeRepos } from "../pilot.ts";
+import { workScores } from "../fasttrack.ts";
 import { mkdirSync } from "node:fs";
 import type { DatabaseSync } from "node:sqlite";
 import { createTask, getTask, MAX_PATCH_BYTES, TERMINAL, warmKeyOf } from "../build/tasks.ts";
@@ -344,7 +345,7 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
     const members = membersOf(db, b.id);
     const q = buildQueue(db, { repo, merged: "exclude" });
     // The batch state overrides a PR's own only while it would still be mergeable (see BATCHABLE), and its merge path must still exist.
-    const keep = members.filter((m) => q.some((e) => e.number === m.number && e.head === m.head_oid && e.path !== null && (e.state === "batch-checking" || e.state === "in-batch")));
+    const keep = members.filter((m) => q.some((e) => e.number === m.number && e.head === m.head_oid && e.path !== null && !e.held && (e.state === "batch-checking" || e.state === "in-batch")));
     if (keep.length < members.length) return supersede(b, keep, "a PR in the batch changed or is no longer ready");
     if (b.state === "open") return land(b, members, q);
     const task = b.task_id === null ? null : getTask(db, b.task_id);
@@ -366,7 +367,7 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
 
   if (!activeBatches(db, repo).length && (params.limit === undefined || params.limit > 0)) {
     const q = buildQueue(db, { repo, merged: "exclude" });
-    const scores = new Map((db.prepare("SELECT number, score FROM item_rank WHERE repo = ?").all(repo) as { number: number; score: number }[]).map((r) => [r.number, r.score]));
+    const scores = workScores(db, repo);
     const lines = db.prepare("SELECT COALESCE(additions, 0) + COALESCE(deletions, 0) AS n FROM items WHERE repo = ? AND number = ?");
     // PRs the sandbox cannot build or CI cannot confirm are left to the single-PR merge.
     const ranked = q.filter((e) => eligible(e) && !singleMergeOnly(e))

@@ -1,4 +1,5 @@
 // Which open issues the Fix stage works on, from the local tables only.
+import { fastScoreSql } from "../fasttrack.ts";
 import { createHash } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { latestRun, settledLookup } from "../classify/settled.ts";
@@ -47,9 +48,9 @@ export function selectIssues(db: DatabaseSync, repo: string, run: string | null 
 export function candidateIssues(db: DatabaseSync, repo: string, run: string | null = latestRun(db)): IssueCandidate[] {
   if (!db.prepare("SELECT 1 FROM repos WHERE name = ? AND visibility = 'public'").get(repo)) return [];
   if (db.prepare("SELECT 1 FROM settings WHERE key = ?").get(notRustKey(repo))) return [];
-  const rows = db.prepare(`SELECT i.number, i.title, i.body, p.score, q.impact AS level FROM items i LEFT JOIN item_rank p ON p.repo = i.repo AND p.number = i.number
+  const rows = db.prepare(`SELECT i.number, i.title, i.body, ${fastScoreSql("i.repo", "i.number", "p.score")} AS score, q.impact AS level FROM items i LEFT JOIN item_rank p ON p.repo = i.repo AND p.number = i.number
     LEFT JOIN item_priority q ON q.repo = i.repo AND q.number = i.number
-    WHERE i.repo = ? AND i.kind = 'issue' AND i.state = 'OPEN' AND ${notHeldSql("i")} ORDER BY p.score IS NULL, p.score DESC, i.number`).all(repo) as Row[];
+    WHERE i.repo = ? AND i.kind = 'issue' AND i.state = 'OPEN' AND ${notHeldSql("i")} ORDER BY ${fastScoreSql("i.repo", "i.number", "p.score")} IS NULL, ${fastScoreSql("i.repo", "i.number", "p.score")} DESC, i.number`).all(repo) as Row[];
   const settled = settledLookup(db, run);
   const attempt = db.prepare("SELECT state, text_hash FROM fix_attempts WHERE repo = ? AND number = ?");
   const scope = db.prepare(`SELECT answer, answered_by FROM decisions WHERE kind = 'scope' AND repo = ? AND number = ? ORDER BY asked_at DESC LIMIT 1`);

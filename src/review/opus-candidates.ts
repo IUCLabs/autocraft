@@ -1,5 +1,6 @@
 // Which PRs the Opus review pass looks at: Sonnet's take or take-fix at the
 // current head commit, no Opus row (review or skip) for that head, or an Opus review older than Sonnet's at that head.
+import { fastScoreSql } from "../fasttrack.ts";
 import type { DatabaseSync } from "node:sqlite";
 import { notHeldSql } from "../dupes/held.ts";
 import { headOf, sizeOf, type Size } from "./candidates.ts";
@@ -31,13 +32,13 @@ const list = <T>(s: string | null): T[] => {
  */
 export function selectOpusCandidates(db: DatabaseSync, repo: string): OpusCandidate[] {
   const rows = db.prepare(`SELECT i.repo, i.number, i.title, i.body, i.author_association, i.head_oid, i.updated_at, i.is_draft, i.additions, i.deletions,
-      c.head_oid AS c_head, c.state AS c_state, c.is_draft AS c_draft, c.fetched_at AS c_at, p.score AS score,
+      c.head_oid AS c_head, c.state AS c_state, c.is_draft AS c_draft, c.fetched_at AS c_at, ${fastScoreSql("i.repo", "i.number", "p.score")} AS score,
       r.head_oid AS r_head, r.at AS r_at, r.verdict, r.reason, r.fixes, r.risks
     FROM items i JOIN reviews r ON r.repo = i.repo AND r.number = i.number AND r.verdict IN ('take', 'take-fix')
     LEFT JOIN pr_checks c ON c.repo = i.repo AND c.number = i.number
     LEFT JOIN item_rank p ON p.repo = i.repo AND p.number = i.number
     WHERE i.repo = ? AND i.kind = 'pr' AND i.state = 'OPEN' AND ${notHeldSql("i")}
-    ORDER BY p.score IS NULL, p.score DESC, i.number`).all(repo) as Row[];
+    ORDER BY ${fastScoreSql("i.repo", "i.number", "p.score")} IS NULL, ${fastScoreSql("i.repo", "i.number", "p.score")} DESC, i.number`).all(repo) as Row[];
   // A verdict older than Sonnet's review at the same head is out of date: Sonnet read newer discussion. A skip-list row has no verdict and stays.
   const rowsAt = new Map(rows.map((r) => [`${r.number}@${r.r_head}`, r.r_at]));
   const state = discussionState(db, repo);
