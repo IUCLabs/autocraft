@@ -1,7 +1,7 @@
 // The per-repo flowchart summary (table flow_summary): refreshed by the runner
 // for repos whose data changed, read and added up by GET /api/flow.
 import type { DatabaseSync } from "node:sqlite";
-import { latestRun } from "../classify/settled.ts";
+import { latestRun, VERDICT_SQL } from "../classify/settled.ts";
 import { trackedNames } from "../repos.ts";
 import { countAll, type Counts } from "./count.ts";
 
@@ -40,7 +40,7 @@ const globalSig = (db: DatabaseSync): string => JSON.stringify(db.prepare(`SELEC
     (SELECT group_concat(key || '=' || value) FROM main.settings WHERE key LIKE 'merge_approved:%') AS mergeApprovals,
     (SELECT group_concat(key || '=' || value) FROM main.settings WHERE key LIKE 'fixissue_approved:%' OR key LIKE 'push_approved:%' OR key LIKE 'comment_approved:%') AS writeApprovals,
     (SELECT group_concat(name) FROM (SELECT name FROM main.tracked_repos ORDER BY name)) AS tracked,
-    (SELECT run_id FROM main.classifications WHERE classifier = 'jev' ORDER BY at DESC LIMIT 1) AS jev`).get());
+    (SELECT run_id FROM main.classifications WHERE ${VERDICT_SQL} ORDER BY at DESC LIMIT 1) AS jev`).get());
 
 /** Marks the repos whose data changed since the last call as stale, and moves the marks. */
 export function markChanged(db: DatabaseSync): number {

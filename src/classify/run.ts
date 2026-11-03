@@ -351,7 +351,7 @@ export async function askJev(id: JevPromptId, item: Item | DupePair, db: Databas
     if (tokens && id !== "classify.jev") saveUsage(db, String(runId), "jev", id.split(".")[0]!, JEV_PROMPTS[id].models[0]!, 1, { ...tokens, cost: tokens.input * JEV_USD_PER_INPUT_TOKEN }, start, now());
     const outage = jevFailure(r);
     if (outage) markJevUnavailable(db, outage.kind, outage.reason);
-    else if (r.code === 0) markJevWorking(db);
+    else if (r.code === 0) markJevWorking(db, Date.parse(start));
     if (r.code === 0 && tokens) finishRun(db, runId, { state: "done", tokens, summary: "answered", output: r.stdout });
     else finishRun(db, runId, { state: "failed", error: scrubError(`${exitClass(r.code)} ${r.stderr}`), summary: r.code === 0 ? "unreadable answer" : exitClass(r.code), output: r.stdout });
     return r;

@@ -4,7 +4,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { needsDecisionOf, securityOf, settle } from "../classify/settled.ts";
 
 export type Settled = { type: string; security: boolean; needsDecision: boolean };
-export type ClsRow = { classifier: string; run_id: string; at: string; type_label: string | null; flags: string | null; probs: string | null };
+export type ClsRow = { classifier: string; run_id: string; at: string; type_label: string | null; flags: string | null; probs: string | null; input_hash?: string | null };
 
 const flagList = (s: string | null): string[] => {
   try {
@@ -26,7 +26,8 @@ const topOf = (s: string | null): number | null => {
 // rows: the classifications of one item in one run.
 export function settleRows(rows: ClsRow[]): Settled | null {
   const jev = rows.find((r) => r.classifier === "jev");
-  const haiku = rows.find((r) => r.classifier === "haiku");
+  // A Haiku row without a Jev row counts only when Haiku classified alone (it carries the item's input hash).
+  const haiku = rows.find((r) => r.classifier === "haiku" && (jev || r.input_hash != null));
   if (!jev?.type_label && !haiku?.type_label) return null;
   const s = settle(
     jev?.type_label ? { label: jev.type_label, flags: flagList(jev.flags), top: topOf(jev.probs), nd: needsDecisionOf(jev.probs), sec: securityOf(jev.probs) } : null,
@@ -44,6 +45,6 @@ export function settledLabel(db: DatabaseSync, repo: string, number: number, run
 }
 
 export function forRun(rows: ClsRow[], runId?: string): ClsRow[] {
-  const id = runId ?? rows.find((r) => r.classifier === "jev" || r.classifier === "haiku")?.run_id;
+  const id = runId ?? rows.find((r) => r.classifier === "jev" || (r.classifier === "haiku" && r.input_hash != null))?.run_id;
   return id === undefined ? [] : rows.filter((r) => r.run_id === id);
 }

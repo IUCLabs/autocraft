@@ -20,7 +20,7 @@ export function planLabels(db: DatabaseSync, repo: string, runId?: string): Plan
   const items = db.prepare(`SELECT number, kind, url, labels FROM main.items i WHERE repo = ? AND state = 'OPEN' AND ${notOwnIntegrationSql("i")} AND ${pilotSql("i")} AND NOT ${backlogHeldSql("i")} ORDER BY number`).all(repo) as
     { number: number; kind: string; url: string | null; labels: string | null }[];
   const byItem = new Map<number, ClsRow[]>();
-  const cls = db.prepare(`SELECT number, classifier, run_id, at, type_label, flags, probs FROM main.classifications WHERE repo = ?
+  const cls = db.prepare(`SELECT number, classifier, run_id, at, type_label, flags, probs, input_hash FROM main.classifications WHERE repo = ?
     ${runId ? "AND run_id = ?" : ""} ORDER BY at DESC`).all(...(runId ? [repo, runId] : [repo])) as (ClsRow & { number: number })[];
   for (const c of cls) (byItem.get(c.number) ?? byItem.set(c.number, []).get(c.number)!).push(c);
 

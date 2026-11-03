@@ -122,8 +122,8 @@ describe("prioritize", () => {
       assert.equal(jevAvailable(db), false);
       // Within the hour Jev is not asked again.
       const jevCalls = calls.filter((c) => c.cmd === "jev").length;
-      db.prepare("UPDATE items SET embed_hash = NULL").run();
-      await runPrioritize(db, { limit: 10 });
+      db.prepare("DELETE FROM item_priority").run();
+      assert.equal((await runPrioritize(db, { limit: 10 })).sent, 3);
       assert.equal(calls.filter((c) => c.cmd === "jev").length, jevCalls);
       // After the backoff the next pass tries Jev again.
       assert.equal(jevAvailable(db, Date.now() + JEV_RETRY_MS - 60_000), false);

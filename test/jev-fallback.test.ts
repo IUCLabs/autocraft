@@ -77,4 +77,15 @@ test("only account failures and a missing command count as Jev unavailable", () 
   assert.equal(jevFailure({ code: -1, stderr: "Error: spawn jev ENOENT" })?.kind, "missing");
   assert.equal(jevFailure({ code: 1, stderr: "jev: API error status=503 request_id=x: overloaded" }), null);
   assert.equal(jevFailure({ code: null, stderr: "" }), null);
+  assert.equal(jevFailure({ code: 1, stderr: "jev: API error status=429 request_id=x: monthly quota reached" }), null);
+  assert.equal(jevFailure({ code: 1, stderr: "jev: API error status=503 request_id=x: insufficient capacity" }), null);
+  assert.equal(jevFailure({ code: 127, stderr: "/usr/bin/jev: line 2: uv: No such file or directory" })?.kind, "missing");
+});
+
+test("a Haiku row that is only a second opinion or an evaluation does not settle an item", () => {
+  const db = setup();
+  db.exec("INSERT INTO classifications (repo, number, classifier, run_id, at, type_label, flags) VALUES ('photocraft', 1, 'haiku', 'eval', '2026-10-01', 'bugfix', '[]')");
+  assert.equal(settledOf(db, "photocraft", 1, "eval").status, "unclassified");
+  db.exec("UPDATE classifications SET input_hash = 'h'");
+  assert.equal(settledOf(db, "photocraft", 1, "eval").status, "settled");
 });

@@ -74,10 +74,10 @@ export function markJevUnavailable(db: DatabaseSync, kind: "missing" | "account"
   put(db, JEV_UNAVAILABLE_KEY, JSON.stringify({ kind, reason, since: prev?.kind === kind ? prev.since : at, at } satisfies JevOutage));
 }
 
-/** A call went through: an earlier outage is over. */
-export function markJevWorking(db: DatabaseSync): void {
+/** A call that started at `startedMs` went through: an earlier outage is over. An outage recorded after the call started (by a parallel call) stays. */
+export function markJevWorking(db: DatabaseSync, startedMs: number): void {
   const o = jevOutage(db);
-  if (o && o.kind !== "off") clear(db);
+  if (o && o.kind !== "off" && Date.parse(o.at) < startedMs) clear(db);
 }
 
 /**
@@ -87,10 +87,14 @@ export function markJevWorking(db: DatabaseSync): void {
  */
 export function jevFailure(r: { code: number | null; stderr: string }): { kind: "missing" | "account"; reason: string } | null {
   if (r.code === -1 && /ENOENT/.test(r.stderr)) return { kind: "missing", reason: "not installed" };
+  // The jev script exits 127 when the interpreter it starts through is missing.
+  if (r.code === 127 && /no such file or directory|not found/i.test(r.stderr)) return { kind: "missing", reason: "not installed" };
   if (r.code === 0 || r.code === null || r.code === -1) return null;
-  const status = Number(/API error status=(\d+)/.exec(r.stderr)?.[1]);
-  const money = /credit|balance|billing|payment|insufficient|quota/i.test(r.stderr);
-  if (status === 402 || money) return { kind: "account", reason: "out of credit" };
-  if (status === 401 || status === 403 || /api key/i.test(r.stderr)) return { kind: "account", reason: "key rejected" };
+  const line = r.stderr.split("\n").find((l) => l.startsWith("jev: ")) ?? "";
+  const status = /API error status=(\d+)/.exec(line)?.[1];
+  // With a status, the status decides: a 429 "quota" or a 503 "insufficient capacity" is not an account problem.
+  if (status !== undefined) return status === "402" ? { kind: "account", reason: "out of credit" } : status === "401" || status === "403" ? { kind: "account", reason: "key rejected" } : null;
+  if (/credit|balance|billing|payment|insufficient|quota/i.test(line)) return { kind: "account", reason: "out of credit" };
+  if (/api key/i.test(line)) return { kind: "account", reason: "key rejected" };
   return null;
 }

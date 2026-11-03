@@ -23,6 +23,12 @@ import { flagBand, JEV_NEEDS_DECISION_YES, JEV_SECURITY_YES } from "./parse.ts";
 
 export const SURE = 0.9;
 
+/**
+ * Rows that make an item or a run count as classified: Jev's, and Haiku's when it classified alone (Jev unavailable).
+ * Only that path sets input_hash on a Haiku row; a second opinion or an evaluation row has none.
+ */
+export const VERDICT_SQL = "(classifier = 'jev' OR (classifier = 'haiku' AND input_hash IS NOT NULL))";
+
 export type SettledStatus = "settled" | "waiting" | "disagree" | "unclassified";
 
 export type Verdict = { label: string; flags: string[] };
@@ -88,13 +94,13 @@ function settleLabel(jev: (Verdict & { top: number | null }) | null, haiku: Verd
 export function latestRun(db: DatabaseSync): string | null {
   const set = db.prepare("SELECT value FROM settings WHERE key = 'classify_run'").get() as { value: string } | undefined;
   if (set?.value) return set.value;
-  const r = db.prepare("SELECT run_id FROM classifications WHERE classifier IN ('jev', 'haiku') ORDER BY at DESC LIMIT 1").get() as { run_id: string } | undefined;
+  const r = db.prepare(`SELECT run_id FROM classifications WHERE ${VERDICT_SQL} ORDER BY at DESC LIMIT 1`).get() as { run_id: string } | undefined;
   return r?.run_id ?? null;
 }
 
 /** True when `run` has at least one Jev or Haiku verdict. */
 export const runExists = (db: DatabaseSync, run: string): boolean =>
-  !!db.prepare("SELECT 1 FROM classifications WHERE run_id = ? AND classifier IN ('jev', 'haiku') LIMIT 1").get(run);
+  !!db.prepare(`SELECT 1 FROM classifications WHERE run_id = ? AND ${VERDICT_SQL} LIMIT 1`).get(run);
 
 /** Makes `run` the current classification run (settings.classify_run), audited. */
 export function setCurrentRun(db: DatabaseSync, run: string, by: string): void {
@@ -113,10 +119,12 @@ const parseFlags = (s: string | null): string[] => {
 /** settledOf() for one run, with the statement prepared once: for loops over many items. */
 export function settledLookup(db: DatabaseSync, run: string | null): (repo: string, number: number) => Settled {
   if (!run) return () => settle(null, null);
-  const q = db.prepare("SELECT type_label, flags, probs, reason, at FROM classifications WHERE repo = ? AND number = ? AND classifier = ? AND run_id = ?");
+  const q = db.prepare("SELECT type_label, flags, probs, reason, at, input_hash FROM classifications WHERE repo = ? AND number = ? AND classifier = ? AND run_id = ?");
   return (repo, number) => {
     const j = q.get(repo, number, "jev", run) as { type_label: string; flags: string | null; probs: string | null; at: string } | undefined;
-    const h = q.get(repo, number, "haiku", run) as { type_label: string; flags: string | null; at: string } | undefined;
+    const h0 = q.get(repo, number, "haiku", run) as { type_label: string; flags: string | null; at: string; input_hash: string | null } | undefined;
+    // A Haiku row without a Jev row counts only when Haiku classified alone.
+    const h = h0 && (j || h0.input_hash !== null) ? h0 : undefined;
     const r = j && h ? (q.get(repo, number, "sonnet", run) as { type_label: string; probs: string | null; reason: string | null; at: string } | undefined) : undefined;
     return settle(
       j ? { label: j.type_label, flags: parseFlags(j.flags), top: topOf(j.probs), nd: needsDecisionOf(j.probs), sec: securityOf(j.probs) } : null,
@@ -174,7 +182,7 @@ type VerdictRow = { repo: string; number: number; jl: string | null; jf: string 
 // Items with a Jev or a Haiku verdict: Haiku alone settles an item when Jev was unavailable.
 const VERDICTS = `SELECT k.repo, k.number, j.type_label AS jl, j.flags AS jf, j.probs, h.type_label AS hl, h.flags AS hf,
     s.type_label AS sl, json_extract(CASE WHEN json_valid(s.probs) THEN s.probs END, '$.sure') AS ss, s.reason AS sr
-  FROM (SELECT repo, number FROM main.classifications WHERE run_id = :run AND classifier IN ('jev', 'haiku') GROUP BY repo, number) k
+  FROM (SELECT repo, number FROM main.classifications WHERE run_id = :run AND ${VERDICT_SQL} GROUP BY repo, number) k
   LEFT JOIN main.classifications j ON j.repo = k.repo AND j.number = k.number AND j.classifier = 'jev' AND j.run_id = :run
   LEFT JOIN main.classifications h ON h.repo = k.repo AND h.number = k.number AND h.classifier = 'haiku' AND h.run_id = :run
   LEFT JOIN main.classifications s ON s.repo = k.repo AND s.number = k.number AND s.classifier = 'sonnet' AND s.run_id = :run

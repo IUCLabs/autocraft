@@ -40,11 +40,11 @@ function current(args: string[]): void {
   }
   if (run === undefined) {
     const set = (db.prepare("SELECT value FROM settings WHERE key = 'classify_run'").get() as { value: string } | undefined)?.value;
-    console.log(set ? `current run: ${set}` : `no current run is set; the run with the newest Jev verdict is used: ${latestRun(db) ?? "none"}`);
+    console.log(set ? `current run: ${set}` : `no current run is set; the run with the newest Jev (or Haiku-alone) verdict is used: ${latestRun(db) ?? "none"}`);
     return;
   }
   if (!runExists(db, run)) {
-    console.error(`run ${run} has no Jev verdicts`);
+    console.error(`run ${run} has no Jev or Haiku-alone verdicts`);
     process.exit(1);
   }
   setCurrentRun(db, run, "cli");

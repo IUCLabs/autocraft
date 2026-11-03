@@ -16,6 +16,7 @@ import { jevAvailable } from "../agents/jev.ts";
 import { runHaiku, runJev } from "../classify/run.ts";
 import { fillClassHashes, SCHEME_ID } from "../itemhash.ts";
 import type { StepContext } from "./steps.ts";
+import { VERDICT_SQL } from "../classify/settled.ts";
 import { pilotSql } from "../pilot.ts";
 
 export { inputHash } from "../itemhash.ts";
@@ -29,7 +30,7 @@ const JEV_CHUNK = 40, HAIKU_PER_CALL = 25;
 export function currentRun(db: DatabaseSync): string | null {
   const set = db.prepare("SELECT value FROM settings WHERE key = 'classify_run'").get() as { value: string } | undefined;
   if (set?.value) return set.value;
-  const r = db.prepare("SELECT run_id FROM classifications WHERE classifier IN ('jev', 'haiku') ORDER BY at DESC LIMIT 1").get() as { run_id: string } | undefined;
+  const r = db.prepare(`SELECT run_id FROM classifications WHERE ${VERDICT_SQL} ORDER BY at DESC LIMIT 1`).get() as { run_id: string } | undefined;
   return r?.run_id ?? null;
 }
 
@@ -114,11 +115,12 @@ async function haikuOnlyPass(ctx: StepContext, run: string, items: Item[], hashe
   const t0 = new Date().toISOString();
   await haikuPass(ctx, run, items, sent);
   const setHash = db.prepare("UPDATE classifications SET input_hash = ? WHERE repo = ? AND number = ? AND classifier = 'haiku' AND run_id = ? AND at >= ?");
-  const dropStale = db.prepare("DELETE FROM classifications WHERE repo = ? AND number = ? AND classifier = 'jev' AND run_id = ?");
+  // A Jev row of the item's earlier text goes; one without a hash (older rows) is kept, it is current until the item changes.
+  const dropStale = db.prepare("DELETE FROM classifications WHERE repo = ? AND number = ? AND classifier = 'jev' AND run_id = ? AND input_hash IS NOT NULL AND input_hash <> ?");
   let n = 0;
   for (const x of items) {
     if (!setHash.run(hashes.get(refOf(x))!, x.repo, x.number, run, t0).changes) continue;
-    dropStale.run(x.repo, x.number, run);
+    dropStale.run(x.repo, x.number, run, hashes.get(refOf(x))!);
     n++;
   }
   return n;
@@ -137,7 +139,7 @@ export function dueItems(db: DatabaseSync, run: string, mode: "new" | "all"): { 
     LEFT JOIN classifications c ON c.repo = i.repo AND c.number = i.number AND c.classifier = 'jev' AND c.run_id = :run
     LEFT JOIN classifications hc ON hc.repo = i.repo AND hc.number = i.number AND hc.classifier = 'haiku' AND hc.run_id = :run
     WHERE i.state = 'OPEN' AND ${notOwnIntegrationSql("i")} AND ${pilotSql("i")} AND i.class_scheme = :scheme
-      AND (hc.input_hash IS NULL OR hc.input_hash <> i.class_hash)
+      AND NOT COALESCE(hc.input_hash = i.class_hash AND (c.at IS NULL OR hc.at > c.at), 0)
       AND (c.at IS NULL OR (:new AND CASE WHEN c.input_hash IS NOT NULL THEN c.input_hash != i.class_hash ELSE COALESCE(i.updated_at, '') > c.at END))
     ORDER BY c.at IS NOT NULL, i.updated_at DESC, i.repo, i.number`).all({ run, scheme: SCHEME_ID, new: mode === "new" ? 1 : 0 }) as unknown as (Row & { h: string })[];
   const hashes = new Map<string, string>();
