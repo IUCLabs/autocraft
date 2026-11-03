@@ -1,7 +1,7 @@
 // Build environments and tasks on fake data: a local sandbox, two remote servers (one paused for disk, one offline), a disabled one,
 // and a few dozen tasks in every state.
 import type { Api } from "../client";
-import type { BuildEnv, BuildTask, BuildTaskDetail, TaskResult, TaskState, TaskStep, User } from "../types";
+import type { ItemShown, BuildEnv, BuildTask, BuildTaskDetail, TaskResult, TaskState, TaskStep, User } from "../types";
 import { NOW, REPOS } from "./fixtures";
 
 const wait = <T>(v: T, ms = 60) => new Promise<T>((r) => setTimeout(() => r(structuredClone(v)), ms));
@@ -65,8 +65,13 @@ new file mode 100644
 `;
 
 const N = [2214, 2230, 1187, 640, 3302, 905, 2511, 77];
+const shownPr = (n: number): ItemShown => ({ kind: "pr", state: "open", title: `Example change for the batch build, part ${n % 100}` });
 let id = 900;
 function make(state: TaskState, agoMin: number, over: Partial<BuildTask> = {}): BuildTask {
+  const t = build(state, agoMin, over);
+  return { ...t, item: t.number === null ? null : shownPr(t.number) };
+}
+function build(state: TaskState, agoMin: number, over: Partial<BuildTask>): BuildTask {
   const repo = REPOS[id % REPOS.length]!;
   const queuedAt = iso(agoMin * MIN);
   const active = state === "claimed" || state === "running";
@@ -82,7 +87,7 @@ function make(state: TaskState, agoMin: number, over: Partial<BuildTask> = {}): 
     endedAt: active || state === "queued" ? null : iso((agoMin - 6) * MIN), heartbeatAt: active ? iso(8_000) : null,
     results, artifacts: state === "done" ? [{ name: "junit.xml", bytes: 18_400, contentType: "application/xml" }, { name: "shot-main.png", bytes: 212_000, contentType: "image/png" }] : [],
     summary: state === "done" ? "build and 412 tests passed" : state === "failed" ? "test failed: 3 of 412" : state === "cancelled" ? "Cancelled before it started." : null,
-    patchBytes: null, warm: id % 2 === 0 ? { key: "main-3f9a2c1", role: "use" } : null, batch: null, baseline: null,
+    patchBytes: null, warm: id % 2 === 0 ? { key: "main-3f9a2c1", role: "use" } : null, batch: null, item: null, baseline: null,
     sandbox: id % 2 === 0 ? { image: "craft-sandbox/rust-stable-0123456789abcdef", baseImage: "docker.io/library/rust:1-bookworm", packages: ["mesa-vulkan-drivers", "pkg-config"], craftFontsRef: "b076417b5880bd4154bd22f00695b1d28c6bea83", craftI18nRev: null } : null,
     ...over,
   };
@@ -91,7 +96,7 @@ function make(state: TaskState, agoMin: number, over: Partial<BuildTask> = {}): 
 const TASKS: BuildTask[] = [
   make("running", 4, {
     step: "merge-batch", number: null, patchBytes: PATCH.length, warm: { key: "main-3f9a2c1", role: "use" },
-    batch: { id: 1, branch: "integration-app-20261102-1", fork: "bot/app", commitSha: "c0ffee00".repeat(5), baseSha: "ba5e0000".repeat(5), prs: [N[1]!, N[2]!, N[3]!] },
+    batch: { id: 1, branch: "integration-app-20261102-1", fork: "bot/app", commitSha: "c0ffee00".repeat(5), baseSha: "ba5e0000".repeat(5), prs: [N[1]!, N[2]!, N[3]!], shown: [N[1]!, N[2]!, N[3]!].map(shownPr) },
   }),
   make("done", 30, { number: null, warm: { key: "main-3f9a2c1", role: "build" }, baseline: { branch: "main" } }),
   make("queued", 2, { warm: { key: "main-3f9a2c1", role: "build" }, requires: { display: true, minMemGb: 64 } }), make("queued", 3, { patchBytes: PATCH.length }), make("queued", 7, { requires: { os: "macos" } }),

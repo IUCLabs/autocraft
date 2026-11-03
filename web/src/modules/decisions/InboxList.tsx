@@ -9,7 +9,7 @@ import { Count } from "../../ui/atoms/Heading";
 import { Button } from "../../ui/atoms/Button";
 import { cn } from "../../ui/cn";
 import { ago, ageDays } from "../../lib/format";
-import { RefLink } from "../../ui/RefLink";
+import { ItemRef } from "../../ui/molecules/ItemRef";
 import { ClaimPill, KIND_ICON } from "./parts";
 import { KIND_LABEL, KINDS, localActions, ordered, useDecisionFilter, useDecisionList, useLocal, useSelection, useUndo } from "./state";
 import { useNow } from "../../lib/useNow";
@@ -120,6 +120,7 @@ function Row({ d, active, checked, mine, onOpen, activeRef }: { d: Decision; act
   useNow();
   const old = ageDays(d.askedAt) >= 2;
   const opinions = d.opinions.length;
+  const item = d.items[0];
   return (
     <div className={cn("group relative flex border-b border-line", active ? "bg-accent/[0.08]" : "hover:bg-ink/[0.03]")}>
       {active && <span className="absolute inset-y-0 left-0 w-0.5 bg-accent" />}
@@ -136,10 +137,19 @@ function Row({ d, active, checked, mine, onOpen, activeRef }: { d: Decision; act
             {ago(d.askedAt)}
           </span>
         </div>
-        <div className="mt-0.5 flex items-center gap-1.5 text-xs text-ink/50">
-          {d.number === null ? <span className="code shrink-0 text-[11.5px]">{d.repo}</span> : <RefLink repo={d.repo} number={d.number} stop className="shrink-0 text-[11.5px] text-ink/50" />}
-          {d.number === null && <span className="shrink-0">· {d.items.length} items</span>}
-          <span className="ml-auto flex shrink-0 items-center gap-1.5">
+        <div className="mt-0.5 flex items-start gap-1.5 text-xs text-ink/50">
+          {d.number === null ? (
+            <>
+              <span className="code shrink-0 text-[11.5px]">{d.repo}</span>
+              <span className="shrink-0">· {d.items.length} items</span>
+            </>
+          ) : (
+            // The row selects the decision; clicks on the item's links must not also select it.
+            <span className="min-w-0 flex-1" onClick={(e) => e.stopPropagation()}>
+              <ItemRef repo={d.repo} number={d.number} kind={item?.kind} state={item?.state} title={item?.title} size="sm" />
+            </span>
+          )}
+          <span className="ml-auto flex shrink-0 items-center gap-1.5 pt-0.5">
             {opinions > 0 && (
               <span className={cn("inline-flex items-center gap-0.5", mine && "text-accent-ink")} title={`picked by ${opinions}${mine ? ", including you" : ""}`}>
                 <UsersIcon className="text-[11px]" />

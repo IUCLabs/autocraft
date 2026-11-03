@@ -1,13 +1,11 @@
 import { PriorityBadge } from "../../ui/atoms/PriorityBadge";
 import { QueueBadge } from "../../ui/molecules/QueueBadge";
 import { useEffect, useRef, type ReactNode } from "react";
-import { Link } from "react-router-dom";
-import { itemPath } from "../../lib/links";
-import { RefLink } from "../../ui/RefLink";
+import { ItemRef } from "../../ui/molecules/ItemRef";
 import { FastMarkFor, FastToggle, HoldToggle } from "../queue/fastTrack";
 import { CaretLeftIcon, CaretRightIcon, CheckIcon, ArrowUUpLeftIcon, ChatCircleIcon, TrayIcon, SparkleIcon, ArrowDownIcon } from "@phosphor-icons/react";
 import { useApi } from "../../api/client";
-import type { Decision, User } from "../../api/types";
+import type { Decision, ItemKind, ItemState, User } from "../../api/types";
 import type { ViewProps } from "../../registry/types";
 import { canAct, canComment } from "../../registry/permissions";
 import { Kbd } from "../../ui/atoms/Kbd";
@@ -70,15 +68,11 @@ export function DetailPanel({ user }: ViewProps) {
   );
 }
 
-export function NoDecision({ repo, number }: { repo: string; number: number }) {
+export function NoDecision({ repo, number, kind, state, title }: { repo: string; number: number; kind?: ItemKind; state?: ItemState; title?: string }) {
   return (
     <div className="flex h-full flex-col items-center justify-center gap-2 p-8 text-center">
-      <p className="text-md font-semibold">
-        No decision for {repo}#{number}
-      </p>
-      <Link to={itemPath(repo, number)} className="text-sm text-accent-ink hover:underline">
-        Open the item
-      </Link>
+      <p className="text-md font-semibold">No decision for this item</p>
+      <ItemRef repo={repo} number={number} kind={kind} state={state} title={title ?? null} className="max-w-md text-left" />
     </div>
   );
 }
@@ -180,7 +174,6 @@ export function DecisionBody({
         ) : (
           <>
             <FastMarkFor repo={d.repo} number={d.number!} />
-            <RefLink repo={d.repo} number={d.number!} />
           </>
         )}
         <PriorityBadge p={d.priority} />
@@ -199,6 +192,7 @@ export function DecisionBody({
           </span>
         )}
       </div>
+      {!isBatch && <ItemRef repo={d.repo} number={d.number!} kind={d.items[0]?.kind} state={d.items[0]?.state} title={null} size="sm" className="mt-2 text-ink/55" />}
       <h1 className={cn("mt-2 text-pretty font-semibold text-ink", phone ? "text-[17px] leading-6" : "text-lg")}>{d.title}</h1>
     </>
   );
@@ -221,13 +215,6 @@ export function DecisionBody({
   const description = d.body && (
     <Section
       title="Description"
-      aside={
-        isBatch ? undefined : (
-          <Link to={itemPath(d.repo, d.number!)} className="text-accent-ink hover:underline">
-            Item page
-          </Link>
-        )
-      }
     >
       <Collapsible lines={phone ? 15 : 25}>
         <Markdown source={d.body} />
@@ -421,14 +408,13 @@ function BatchItems({ d }: { d: Decision }) {
       {d.items.map((it) => {
         const ref = `${it.repo}#${it.number}`;
         return (
-          <li key={ref} className="flex min-h-[34px] items-center gap-3 border-b border-line px-3 last:border-0">
-            <RefLink repo={it.repo} number={it.number} className="w-[112px] shrink-0" />
-            <span className="min-w-0 flex-1 truncate text-sm text-ink/85">{it.title}</span>
+          <li key={ref} className="flex min-h-[34px] items-start gap-3 border-b border-line px-3 py-1.5 last:border-0">
+            <ItemRef repo={it.repo} number={it.number} kind={it.kind} state={it.state} title={it.title} className="flex-1" />
             <select
               aria-label={`Answer for ${ref}`}
               value={ov[ref] ?? ""}
               onChange={(e) => localActions.setOverride(d.id, ref, e.target.value || null)}
-              className={cn("h-7 shrink-0 rounded border border-line bg-sunken px-1.5 text-xs", ov[ref] ? "text-warn" : "text-ink/55")}
+              className={cn("h-7 shrink-0 self-center rounded border border-line bg-sunken px-1.5 text-xs", ov[ref] ? "text-warn" : "text-ink/55")}
             >
               <option value="">Same as batch</option>
               {d.options.map((o) => (
@@ -465,10 +451,16 @@ function MultiAnswer({ ds, user }: { ds: Decision[]; user: User }) {
           <p className="mt-1 text-sm text-ink/60">{!operator ? "Open one decision to leave a comment." : same ? "One answer for all of them. Change single items afterwards from their own page." : "Select decisions of one kind to answer them together."}</p>
           <ul className="mt-4 overflow-hidden rounded-md border border-line">
             {ds.map((d) => (
-              <li key={d.id} className="flex h-9 items-center gap-3 border-b border-line px-3 last:border-0">
-                <span className="code w-[150px] shrink-0 truncate text-ink/60">{refOf(d)}</span>
-                <span className="min-w-0 flex-1 truncate text-sm">{d.title}</span>
-                <span className="shrink-0 text-xs text-ink/50">{d.options.find((o) => o.key === d.recommended)?.label}</span>
+              <li key={d.id} className="flex min-h-9 items-start gap-3 border-b border-line px-3 py-1.5 last:border-0">
+                <div className="min-w-0 flex-1">
+                  {d.number === null ? (
+                    <span className="code text-sm text-ink/60">{refOf(d)}</span>
+                  ) : (
+                    <ItemRef repo={d.repo} number={d.number} kind={d.items[0]?.kind} state={d.items[0]?.state} title={d.items[0]?.title ?? null} />
+                  )}
+                  <div className="text-sm text-ink/70">{d.title}</div>
+                </div>
+                <span className="shrink-0 pt-0.5 text-xs text-ink/50">{d.options.find((o) => o.key === d.recommended)?.label}</span>
               </li>
             ))}
           </ul>

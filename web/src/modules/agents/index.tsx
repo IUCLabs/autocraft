@@ -11,7 +11,7 @@ import { ago, nowMs, num, span } from "../../lib/format";
 import { useNow } from "../../lib/useNow";
 import { Badge, type Tone } from "../../ui/atoms/Badge";
 import { Button } from "../../ui/atoms/Button";
-import { RefLink } from "../../ui/RefLink";
+import { ItemRef } from "../../ui/molecules/ItemRef";
 import { cn } from "../../ui/cn";
 import { Block, ErrorLine, Page, selectCls, useUrlState } from "../admin/parts";
 import { AccountsPanel } from "./accounts";
@@ -22,20 +22,20 @@ const STATE_LABEL: Record<AgentRunState, string> = { running: "Running", done: "
 const tokensOf = (r: AgentRun) => (r.inputTokens === null && r.outputTokens === null ? null : (r.inputTokens ?? 0) + (r.outputTokens ?? 0));
 const elapsed = (r: AgentRun) => span((r.endedAt ? Date.parse(r.endedAt) : nowMs()) - Date.parse(r.startedAt));
 
-/** The items a run works on as links, with "+N more" past the ones the API lists. */
+/** The items a run works on, with "+N more" past the ones the API lists. */
 function Items({ r, max = 3, expandable }: { r: AgentRun; max?: number; expandable?: boolean }) {
   const [all, setAll] = useState(false);
   if (expandable) max = all ? r.items.length : max;
   const shown = r.items.slice(0, max);
   const more = r.itemCount - shown.length;
   return (
-    <span className="inline-flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+    <span className="flex flex-col items-start gap-0.5">
       {shown.map((i) => (
-        <RefLink key={`${i.repo}#${i.number}`} repo={i.repo} number={i.number} stop className="text-xs" />
+        <ItemRef key={`${i.repo}#${i.number}`} repo={i.repo} number={i.number} kind={i.kind} state={i.state} title={i.title} size="sm" className="relative z-10 w-fit max-w-full" />
       ))}
       {more > 0 &&
         (expandable && !all && r.items.length > shown.length ? (
-          <button onClick={() => setAll(true)} className="text-xs text-accent-ink hover:underline max-md:min-h-11">
+          <button onClick={() => setAll(true)} className="relative z-10 text-xs text-accent-ink hover:underline max-md:min-h-11">
             +{num(more)} more
           </button>
         ) : (
@@ -51,7 +51,6 @@ const who = (r: AgentRun) => (r.provider === "jev" ? "Jev (no account)" : (r.acc
 
 function RunningNow({ selected }: { selected?: number }) {
   const q = useQuery<AgentRunPage>("agents-running", (a) => a.agents.list({ state: "running" }));
-  const nav = useNavigate();
   const runs = q.data?.runs ?? [];
   useNow(runs.length ? 1000 : undefined);
   return (
@@ -60,22 +59,22 @@ function RunningNow({ selected }: { selected?: number }) {
       {q.data && runs.length === 0 && <p className="p-4 text-sm text-ink/55">No agent is running.</p>}
       <ul>
         {runs.map((r) => (
-          <li key={r.id} className="border-t border-line first:border-t-0">
-            <button onClick={() => nav(`/agents/${r.id}`)} aria-current={selected === r.id} className={cn("block w-full px-4 py-2.5 text-left hover:bg-ink/[0.03]", selected === r.id && "bg-accent/10")}>
-              <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                <span className="code text-sm font-medium">{r.step}</span>
-                <span className="text-xs text-ink/50">stage {r.stage}</span>
-                <Badge tone="accent">{r.model}</Badge>
-                <span className="text-xs text-ink/70">{who(r)}</span>
-                <span className="num ml-auto text-xs text-ink/70">
-                  {elapsed(r)} · {tokensOf(r) === null ? "–" : `${num(tokensOf(r)!)} tok`}
-                </span>
-              </div>
-              <div className="mt-1">
-                <Items r={r} />
-              </div>
-              {r.progress && <p className="mt-1 truncate text-xs text-ink/45">{r.progress}</p>}
-            </button>
+          <li key={r.id} className={cn("relative border-t border-line px-4 py-2.5 first:border-t-0 hover:bg-ink/[0.03]", selected === r.id && "bg-accent/10")}>
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+              <Link to={`/agents/${r.id}`} aria-current={selected === r.id} className="code text-sm font-medium after:absolute after:inset-0">
+                {r.step}
+              </Link>
+              <span className="text-xs text-ink/50">stage {r.stage}</span>
+              <Badge tone="accent">{r.model}</Badge>
+              <span className="text-xs text-ink/70">{who(r)}</span>
+              <span className="num ml-auto text-xs text-ink/70">
+                {elapsed(r)} · {tokensOf(r) === null ? "–" : `${num(tokensOf(r)!)} tok`}
+              </span>
+            </div>
+            <div className="mt-1">
+              <Items r={r} />
+            </div>
+            {r.progress && <p className="mt-1 text-xs text-ink/45 [overflow-wrap:anywhere]">{r.progress}</p>}
           </li>
         ))}
       </ul>
@@ -119,7 +118,6 @@ function Filters({ f, update }: { f: Record<string, string | undefined>; update:
 
 function RecentRuns({ selected }: { selected?: number }) {
   const { state: f, update } = useUrlState();
-  const nav = useNavigate();
   const recent = useRecent({ state: (f.state as AgentRunState | undefined) ?? "recent", step: f.step, account: f.account, repo: f.repo, limit: 50 });
   useNow(recent.rows.some((r) => r.state === "running") ? 1000 : undefined);
   return (
@@ -141,12 +139,16 @@ function RecentRuns({ selected }: { selected?: number }) {
           </thead>
           <tbody>
             {recent.rows.map((r) => (
-              <tr key={r.id} onClick={() => nav(`/agents/${r.id}${location.search}`)} className={cn("cursor-pointer border-t border-line hover:bg-ink/[0.03]", selected === r.id && "bg-accent/10")}>
+              <tr key={r.id} className={cn("relative border-t border-line hover:bg-ink/[0.03]", selected === r.id && "bg-accent/10")}>
                 <td className="whitespace-nowrap px-3 py-1.5 text-ink/70" title={r.startedAt}>
                   <span className={cn("mr-1.5 inline-block size-2 rounded-full md:hidden", r.state === "failed" ? "bg-bad" : r.state === "running" ? "bg-accent" : "bg-ok")} role="img" aria-label={STATE_LABEL[r.state]} />
                   {ago(r.startedAt, true)}<span className="max-md:hidden"> ago</span>
                 </td>
-                <td className="whitespace-nowrap px-3 code text-xs">{r.step}</td>
+                <td className="whitespace-nowrap px-3 code text-xs">
+                  <Link to={`/agents/${r.id}${location.search}`} className="after:absolute after:inset-0">
+                    {r.step}
+                  </Link>
+                </td>
                 <td className="px-3 max-md:hidden">{r.model}</td>
                 <td className="whitespace-nowrap px-3 text-ink/70 max-md:hidden">{r.provider === "jev" ? "–" : r.accountLabel}</td>
                 <td className="px-3">
