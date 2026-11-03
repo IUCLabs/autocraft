@@ -14,7 +14,9 @@
     "craft-auto": "src/cli.ts"
   },
   "scripts": {
-    "check": "tsc --noEmit",
+    "check": "tsc --noEmit && npm run docs:check",
+    "docs": "node scripts/gen-docs.ts",
+    "docs:check": "node scripts/gen-docs.ts --check",
     "gql-schema": "scripts/gql-schema.sh",
     "test": "node --test"
   },

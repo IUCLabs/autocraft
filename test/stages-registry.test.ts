@@ -1,7 +1,6 @@
 // Invariants of the stage registry (src/stages/registry.ts) and of the consumers that read it:
 // runner steps, autopilot lanes and limits, flow shape, prompts, swimlane cards and docs/pipeline.md.
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { buildFlow } from "../src/flow/shape.ts";
 import { PROMPTS } from "../src/prompts/index.ts";
@@ -12,7 +11,6 @@ import { EDGES, STEPS as CARDS } from "../web/src/ui/swimlaneDef.ts";
 
 const META = { repo: null, now: "", lastSync: null, run: null, countedAt: null, uncounted: 0 };
 const flow = buildFlow({}, META);
-const PIPELINE = readFileSync(new URL("../docs/pipeline.md", import.meta.url), "utf8");
 
 test("every runner step sits in exactly one stage, with that stage's run number", () => {
   const owned = STAGES.flatMap((s) => s.steps.map((x) => x.name));
@@ -104,18 +102,10 @@ test("swimlane cards are the registry's, unique, and every edge joins two cards"
   }
 });
 
-test("every wait has a kind and a unique name, and equals the Waits table in pipeline.md", () => {
+test("every wait has a kind and a unique name", () => {
   const all = [...STAGES.flatMap((s) => s.waits), ...GLOBAL_WAITS];
   for (const w of all) assert.ok(w.kind === "external" || w.kind === "backoff", w.name);
   assert.equal(new Set(all.map((w) => w.name)).size, all.length);
-  const table = PIPELINE.split("### Waits")[1]!.split("\n\n| Who")[0]!.split("\n").filter((l) => l.startsWith("|")).slice(2);
-  const rows = table.map((l) => l.slice(1, -1).split(" | ").map((c) => c.trim()));
-  assert.deepEqual(all.map((w) => [w.name, w.why, w.howLong, w.showsAs]).sort(), rows.sort());
-});
-
-test("every docSection heading exists in docs/pipeline.md", () => {
-  const headings = new Set(PIPELINE.split("\n").filter((l) => l.startsWith("## ")).map((l) => l.slice(3)));
-  for (const s of STAGES) assert.ok(headings.has(s.docSection), `${s.id}: ## ${s.docSection}`);
 });
 
 test("an edge's branch is a state of the stage it leaves", () => {

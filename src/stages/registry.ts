@@ -23,8 +23,8 @@ export type StageDef = {
   description: string;
   /** auto: runs on its own; steps: runner steps; gate: a person decides; planned: not built yet. */
   mode: "auto" | "steps" | "gate" | "planned";
-  /** Runner steps the stage owns. limit: default items per day (null: limited by setting only, absent: not limited). */
-  steps: { name: string; limit?: number | null; zeroOnly?: boolean }[];
+  /** Runner steps the stage owns. label: the name in the daily limits table, for steps with a limit. limit: default items per day (null: limited by setting only, absent: not limited). */
+  steps: { name: string; label?: string; limit?: number | null; zeroOnly?: boolean }[];
   /** Autopilot lanes. order is the lane's place in the autopilot's pass; a step may sit in lanes of other stages. */
   lanes: { name: string; steps: string[]; order: number }[];
   reads: string[];
@@ -47,7 +47,7 @@ export const STAGES: StageDef[] = [
   {
     id: "synced", title: "Synced", order: 1, runStage: 1, docSection: "Sync", mode: "auto",
     description: "Mirrors every issue, PR and comment of the tracked repos into the local database each minute, and makes a vector of each item's title and body for similar-item search.",
-    steps: [{ name: "embed", limit: null }],
+    steps: [{ name: "embed", label: "Embed", limit: null }],
     lanes: [{ name: "embed", steps: ["embed"], order: 3 }],
     reads: ["GitHub issues, PRs and comments"],
     sets: ["Mirror rows", "Item vectors"],
@@ -72,7 +72,7 @@ export const STAGES: StageDef[] = [
   {
     id: "dupes", title: "Duplicates", order: 2, runStage: 3, docSection: "Duplicates", mode: "steps",
     description: "Finds items that describe the same bug or request as another open item, or one closed in the last year, and compares each group.",
-    steps: [{ name: "dupes", limit: 2000 }, { name: "dupes-compare", limit: 200 }],
+    steps: [{ name: "dupes", label: "Duplicates", limit: 2000 }, { name: "dupes-compare", label: "Compare duplicate groups", limit: 200 }],
     lanes: [{ name: "dupes", steps: ["dupes"], order: 4 }, { name: "dupes-compare", steps: ["dupes-compare"], order: 5 }],
     reads: ["Item vectors", "Duplicate decisions already answered"],
     sets: ["Duplicate pair verdicts", "Duplicate decisions"],
@@ -105,7 +105,7 @@ export const STAGES: StageDef[] = [
   {
     id: "classify", title: "Classify", order: 3, runStage: 2, docSection: "Classify", mode: "steps",
     description: "Gives each open item one type label and two flags (security, needs decision). Jev goes first, Haiku gives a second opinion, and a referee settles disagreements outside the scope labels.",
-    steps: [{ name: "classify-new", limit: null }, { name: "classify-all" }, { name: "referee", limit: 500 }, { name: "areas-propose" }, { name: "areas-suggest" }, { name: "areas-rescan" }],
+    steps: [{ name: "classify-new", label: "Classify", limit: null }, { name: "classify-all" }, { name: "referee", label: "Referee", limit: 500 }, { name: "areas-propose" }, { name: "areas-suggest" }, { name: "areas-rescan" }],
     lanes: [{ name: "classify", steps: ["classify-new"], order: 0 }, { name: "referee", steps: ["referee"], order: 17 }],
     reads: ["Item text", "Area list"],
     sets: ["Type label and flags per item", "Area list"],
@@ -137,7 +137,7 @@ export const STAGES: StageDef[] = [
   {
     id: "priority", title: "Priority", order: 4, runStage: 2, docSection: "Priority", mode: "steps",
     description: "Gives each open item a level from P0 to P4, then orders the candidates of later stages by a work rank.",
-    steps: [{ name: "prioritize", limit: null }, { name: "rank" }],
+    steps: [{ name: "prioritize", label: "Priority", limit: null }, { name: "rank" }],
     lanes: [{ name: "priority", steps: ["prioritize"], order: 1 }, { name: "rank", steps: ["rank"], order: 2 }],
     reads: ["Item text", "Type, size and security flag"],
     sets: ["Priority level", "Work rank"],
@@ -161,7 +161,7 @@ export const STAGES: StageDef[] = [
   {
     id: "decide", title: "Decide", order: 5, runStage: 3, docSection: "Decide", mode: "gate",
     description: "Asks an operator for scope calls, with a summary and a recommendation, and answers questions about an item in its conversation.",
-    steps: [{ name: "decide", limit: null }, { name: "conversation", limit: 30 }],
+    steps: [{ name: "decide", label: "Decide", limit: null }, { name: "conversation", label: "Conversations", limit: 30 }],
     lanes: [{ name: "decide", steps: ["decide"], order: 6 }, { name: "conversation", steps: ["conversation"], order: 19 }],
     reads: ["Classified items", "Reviews", "Operator answers"],
     sets: ["Decisions with summary and recommendation", "Conversation replies"],
@@ -194,7 +194,7 @@ export const STAGES: StageDef[] = [
   {
     id: "labels", title: "Labels", order: 6, runStage: 4, docSection: "Label", mode: "steps",
     description: "Writes each settled type label and flag to GitHub. A label a person set is never changed.",
-    steps: [{ name: "labels-ensure" }, { name: "labels-apply", limit: null }],
+    steps: [{ name: "labels-ensure" }, { name: "labels-apply", label: "Label", limit: null }],
     lanes: [{ name: "labels", steps: ["labels-apply"], order: 8 }],
     reads: ["Settled types and flags", "Repo label approval"],
     sets: ["Labels on GitHub"],
@@ -218,7 +218,7 @@ export const STAGES: StageDef[] = [
   {
     id: "review", title: "Review", order: 7, runStage: 5, docSection: "Review", mode: "steps",
     description: "Opus reviews every wanted PR at its current head, reading the repo, and gives a verdict with the complete fix list. It writes nothing to GitHub until the final review is posted.",
-    steps: [{ name: "opus-review", limit: null }, { name: "checks", limit: null, zeroOnly: true }, { name: "review-post", limit: null }],
+    steps: [{ name: "opus-review", label: "Review (Opus)", limit: null }, { name: "checks", label: "Checks", limit: null, zeroOnly: true }, { name: "review-post", label: "Post reviews", limit: null }],
     lanes: [{ name: "review", steps: ["checks", "opus-review"], order: 7 }, { name: "review-post", steps: ["review-post"], order: 18 }],
     reads: ["PR head and diff", "CI results", "Repo checkout"],
     sets: ["Review verdict and fix list"],
@@ -245,7 +245,7 @@ export const STAGES: StageDef[] = [
   {
     id: "fix", title: "Fix", order: 8, runStage: 7, docSection: "Fix", mode: "steps",
     description: "Writes a patch for a bugfix issue where the fix is clear, tests it in the sandbox and opens a PR.",
-    steps: [{ name: "fixissue", limit: null }, { name: "fixissue-collect" }],
+    steps: [{ name: "fixissue", label: "Fix", limit: null }, { name: "fixissue-collect" }],
     lanes: [{ name: "fixissue", steps: ["fixissue"], order: 15 }, { name: "fixissue-collect", steps: ["fixissue-collect"], order: 16 }],
     reads: ["Open bugfix issues", "Repo checkout at the base commit"],
     sets: ["Fix attempts", "Pull requests"],
@@ -280,7 +280,7 @@ export const STAGES: StageDef[] = [
   {
     id: "fixup", title: "Fix-up", order: 9, runStage: 6, docSection: "Fix-up", mode: "steps",
     description: "For a take-with-fixes review, applies the listed small fixes to the contributor's branch, or posts them as a comment when the branch cannot be pushed to.",
-    steps: [{ name: "fixup", limit: null }],
+    steps: [{ name: "fixup", label: "Fix-up", limit: null }],
     lanes: [{ name: "fixup", steps: ["fixup"], order: 12 }],
     reads: ["Review fix lists", "Repo checkout at the PR head"],
     sets: ["Pushed commits", "Fix comments"],
@@ -308,7 +308,7 @@ export const STAGES: StageDef[] = [
   {
     id: "verify", title: "Verify", order: 10, runStage: 6, docSection: "Verify", mode: "steps",
     description: "Builds and tests taken PRs in a build environment. A model plans what to run and summarises failures.",
-    steps: [{ name: "verify", limit: null }, { name: "verify-collect" }],
+    steps: [{ name: "verify", label: "Verify", limit: null }, { name: "verify-collect" }],
     lanes: [{ name: "verify", steps: ["checks", "verify"], order: 13 }, { name: "verify-collect", steps: ["verify-collect"], order: 14 }],
     reads: ["Taken PRs", "CI results"],
     sets: ["Verification tasks and results"],
@@ -338,7 +338,7 @@ export const STAGES: StageDef[] = [
   {
     id: "merge", title: "Merge queue", order: 11, runStage: 6, docSection: "Merge queue", mode: "steps",
     description: "Merges PRs that pass the rules in integration batches through safe-merge, and asks for a Merge? decision on PRs outside the rules. Approves held CI runs of outside contributors where the repo allows it.",
-    steps: [{ name: "merge", limit: null }, { name: "merge-ask" }, { name: "ci-approve", limit: 30 }],
+    steps: [{ name: "merge", label: "Merge", limit: null }, { name: "merge-ask" }, { name: "ci-approve", label: "Approve CI runs", limit: 30 }],
     lanes: [{ name: "merge-ask", steps: ["merge-ask"], order: 9 }, { name: "merge", steps: ["checks", "merge"], order: 10 }, { name: "ci-approve", steps: ["ci-approve"], order: 20 }],
     reads: ["Reviews", "Verification results", "CI state", "Merge decisions"],
     sets: ["Integration batches", "Merged PRs", "Merge? decisions"],
@@ -381,7 +381,7 @@ export const STAGES: StageDef[] = [
   {
     id: "act", title: "Act", order: 12, runStage: 6, docSection: "Act", mode: "steps",
     description: "Makes the comments and closes that follow an operator's answer, from fixed templates.",
-    steps: [{ name: "act", limit: null }],
+    steps: [{ name: "act", label: "Act", limit: null }],
     lanes: [{ name: "act", steps: ["act"], order: 11 }],
     reads: ["Operator answers", "Close? decisions"],
     sets: ["Comments and closes on GitHub"],
