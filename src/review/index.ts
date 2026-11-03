@@ -12,7 +12,7 @@ import { add, askClaude, pool, saveUsage, type Usage } from "../classify/run.ts"
 import { DEFAULT_CAPS, makeBatches, type Caps } from "./batch.ts";
 import { selectCandidates, type Candidate } from "./candidates.ts";
 import { checksOf, refreshChecks } from "./checks.ts";
-import { discussionOf, liveThreads, markReviewsStale } from "./discussion.ts";
+import { discussionOf, ensurePipelineLogin, liveThreads, markReviewsStale } from "./discussion.ts";
 import { areaOf, cachedDiff, codeDiff, ghDiff, type DiffFetcher } from "./diff.ts";
 import { applyDuplicateRule, parseReviewReply, type Review, type ReviewPr } from "./parse.ts";
 
@@ -44,11 +44,11 @@ export function defaultDeps(): ReviewDeps {
  * Stores one review: a `reviews` row keyed to the head commit, then a
  * `reviewed` stages row and a take/hold/close stages row (take-fix counts as take).
  */
-export function saveReview(db: DatabaseSync, runId: string, c: Candidate, model: string | null, r: Review): void {
+export function saveReview(db: DatabaseSync, runId: string, c: Candidate, model: string | null, r: Review, seen: string | null = null): void {
   const at = now();
-  db.prepare(`INSERT OR REPLACE INTO reviews (repo, number, head_oid, run_id, at, model, size, verdict, reason, fixes, duplicate_of, overlaps, risks)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(c.repo, c.number, c.head_oid, runId, at, model, c.size, r.verdict, r.reason,
-    r.fixes.length ? JSON.stringify(r.fixes) : null, r.duplicate_of, JSON.stringify(r.overlaps), JSON.stringify(r.risks));
+  db.prepare(`INSERT OR REPLACE INTO reviews (repo, number, head_oid, run_id, at, model, size, verdict, reason, fixes, duplicate_of, overlaps, risks, seen_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(c.repo, c.number, c.head_oid, runId, at, model, c.size, r.verdict, r.reason,
+    r.fixes.length ? JSON.stringify(r.fixes) : null, r.duplicate_of, JSON.stringify(r.overlaps), JSON.stringify(r.risks), seen);
   const stage = db.prepare("INSERT INTO stages (repo, number, stage, at, actor, note) VALUES (?, ?, ?, ?, ?, ?)");
   stage.run(c.repo, c.number, "reviewed", at, "review", `${r.verdict} at ${c.head_oid.slice(0, 7)}: ${r.reason}`);
   stage.run(c.repo, c.number, r.verdict === "take-fix" ? "take" : r.verdict, at, "review", r.reason);
@@ -82,13 +82,14 @@ export async function runReview(db: DatabaseSync, params: ReviewParams, log: (li
 
   // Fresh head commits and CI first: a PR pushed, closed or turned draft since the last sync drops out here.
   await withRetry(() => refreshChecks(db, deps.querier, repo, cands.map((c) => c.number), log));
+  await ensurePipelineLogin(db, deps.querier);
   cands = selectCandidates(db, repo).sort((a, b) => (b.score ?? -1) - (a.score ?? -1) || SIZE_ORDER[a.size] - SIZE_ORDER[b.size] || a.number - b.number);
   if (params.limit !== undefined) cands = cands.slice(0, params.limit);
   summary.candidates = cands.length;
   summary.bySize = count(cands);
 
   const tally = (r: Review) => { summary.verdicts[r.verdict] = (summary.verdicts[r.verdict] ?? 0) + 1; summary.reviewed++; };
-  const inputs: (ReviewPr & { c: Candidate; area: string; diffChars: number })[] = [];
+  const inputs: (ReviewPr & { c: Candidate; area: string; diffChars: number; seen: string })[] = [];
   for (const c of cands) {
     const d = await cachedDiff(repo, c.number, c.head_oid, deps.fetchDiff);
     if (!d.ok) {
@@ -114,6 +115,7 @@ export async function runReview(db: DatabaseSync, params: ReviewParams, log: (li
     const ch = checksOf(db, repo, c.number);
     // The threads are where inline findings sit; without them the review would miss what a reviewer already found.
     let discussion;
+    const seen = now();
     try {
       discussion = discussionOf(db, repo, c.number, await withRetry(() => liveThreads(deps.querier, db, repo, c.number)));
     } catch (e) {
@@ -125,7 +127,7 @@ export async function runReview(db: DatabaseSync, params: ReviewParams, log: (li
       c, area: areaOf(cd.files), diffChars: cd.text.length,
       ref: refOf(c), title: c.title, body: c.body, author_association: c.author_association, size: c.size,
       lines_changed: c.lines_changed, ci: ch?.overall ?? "unknown", mergeable: ch?.mergeable ?? null,
-      files: cd.files, tests_omitted: cd.testsOmitted, lockfiles_omitted: cd.lockfilesOmitted, same_files_as: [], diff: cd.text, discussion,
+      files: cd.files, tests_omitted: cd.testsOmitted, lockfiles_omitted: cd.lockfilesOmitted, same_files_as: [], diff: cd.text, discussion, seen,
     });
   }
   for (const p of inputs) {
@@ -147,7 +149,7 @@ export async function runReview(db: DatabaseSync, params: ReviewParams, log: (li
     let usage: Usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: null };
     let todo = batch;
     for (let attempt = 0; attempt < PROMPT.limits.attempts && todo.length; attempt++) {
-      const strip = todo.map(({ c: _c, area: _a, diffChars: _d, ...pr }) => pr);
+      const strip = todo.map(({ c: _c, area: _a, diffChars: _d, seen: _s, ...pr }) => pr);
       const reply = await askClaude("review.sonnet", deps.model, strip, db);
       if (!reply) continue;
       usage = add(usage, reply.usage);
@@ -155,7 +157,7 @@ export async function runReview(db: DatabaseSync, params: ReviewParams, log: (li
       for (const r of reviews) {
         const p = todo.find((x) => x.ref === r.ref)!;
         const final = applyDuplicateRule(r, merged);
-        saveReview(db, runId, p.c, deps.model, final);
+        saveReview(db, runId, p.c, deps.model, final, p.seen);
         tally(final);
       }
       todo = todo.filter((p) => missing.includes(p.ref));

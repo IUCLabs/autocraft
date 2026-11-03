@@ -7,7 +7,7 @@ import { setRunner } from "../src/classify/run.ts";
 import { connect } from "../src/db.ts";
 import { buildQueue, eligible } from "../src/merge/queue.ts";
 import type { Querier } from "../src/mirror.ts";
-import { cleanBody, markReviewsStale, staleReviews } from "../src/review/discussion.ts";
+import { cleanBody, ensurePipelineLogin, markReviewsStale, staleReviews } from "../src/review/discussion.ts";
 import { runOpusReview, type OpusDeps } from "../src/review/opus.ts";
 import { useTestAccount } from "./accounts-fixture.ts";
 import { SCRATCH } from "./scratch.ts";
@@ -88,6 +88,26 @@ describe("PR discussion in reviews", () => {
     assert.ok(staleReviews(db, "app").has("app#1@sha1"));
     assert.equal(state().state, "waiting-opus");
     assert.equal(eligible(state()), false);
+  });
+
+  test("a comment written while the review ran (after its snapshot, before its row) makes it stale", () => {
+    const db = fresh();
+    comment(db, "mid", "rabbit", T1, "posted during the model call");
+    assert.equal(staleReviews(db, "app").size, 0, "the review row is newer than the comment");
+    db.prepare("UPDATE reviews SET seen_at = ? WHERE number = 1").run(T0);
+    assert.ok(staleReviews(db, "app").has("app#1@sha1"));
+    db.prepare("UPDATE reviews SET seen_at = ? WHERE number = 1").run(T2);
+    assert.equal(staleReviews(db, "app").size, 0);
+    db.prepare("UPDATE opus_reviews SET seen_at = ? WHERE number = 1").run(T0);
+    assert.equal(buildQueue(db, { repo: "app", merged: "exclude" })[0]!.state, "waiting-opus");
+  });
+
+  test("an unset pipeline login is read from the token's viewer", async () => {
+    const db = fresh();
+    db.prepare("DELETE FROM main.settings WHERE key = 'pipeline_login'").run();
+    await ensurePipelineLogin(db, { spent: 0, remaining: 1, query: async () => ({ viewer: { login: "autobot" } }) });
+    comment(db, "own", "autobot", T2, "ours");
+    assert.equal(staleReviews(db, "app").size, 0);
   });
 
   test("an operator mark makes the reviews stale and is audited", () => {

@@ -3,6 +3,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import { notHeldSql } from "../dupes/held.ts";
 import { headOf, sizeOf, type Size } from "./candidates.ts";
+import { newestOthers } from "./discussion.ts";
 import type { SonnetView } from "./opus-parse.ts";
 
 export type OpusCandidate = {
@@ -39,8 +40,9 @@ export function selectOpusCandidates(db: DatabaseSync, repo: string): OpusCandid
     ORDER BY p.score IS NULL, p.score DESC, i.number`).all(repo) as Row[];
   // A verdict older than Sonnet's review at the same head is out of date: Sonnet read newer discussion. A skip-list row has no verdict and stays.
   const rowsAt = new Map(rows.map((r) => [`${r.number}@${r.r_head}`, r.r_at]));
-  const done = new Set((db.prepare("SELECT number, head_oid, at, verdict FROM opus_reviews WHERE repo = ?").all(repo) as { number: number; head_oid: string; at: string; verdict: string | null }[])
-    .map((o) => ({ ...o, key: `${o.number}@${o.head_oid}` })).filter((o) => o.verdict === null || !rowsAt.get(o.key) || o.at >= rowsAt.get(o.key)!).map((o) => o.key));
+  const newest = newestOthers(db, repo);
+  const done = new Set((db.prepare("SELECT number, head_oid, at, seen_at, verdict FROM opus_reviews WHERE repo = ?").all(repo) as { number: number; head_oid: string; at: string; seen_at: string | null; verdict: string | null }[])
+    .map((o) => ({ ...o, key: `${o.number}@${o.head_oid}` })).filter((o) => o.verdict === null || ((!rowsAt.get(o.key) || o.at >= rowsAt.get(o.key)!) && !((newest.get(`${repo}#${o.number}`) ?? "") > (o.seen_at ?? o.at)))).map((o) => o.key));
   const out: OpusCandidate[] = [];
   for (const r of rows) {
     const fresh = r.c_at && (!r.updated_at || r.c_at > r.updated_at);

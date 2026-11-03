@@ -17,6 +17,9 @@ export function dbPath(): string {
 // NOT EXISTS leaves an older table as it was, so these are added here.
 const ADDED_COLUMNS: [table: string, column: string, type: string][] = [
   ["jobs", "acted", "INTEGER"],
+  // When the discussion a review read was gathered; the review is stale for anything written after it.
+  ["reviews", "seen_at", "TEXT"],
+  ["opus_reviews", "seen_at", "TEXT"],
   ["access", "github_id", "INTEGER"],
   ["decisions", "summary", "TEXT"],
   ["decisions", "summary_by", "TEXT"],

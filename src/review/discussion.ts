@@ -116,16 +116,30 @@ export function discussionOf(db: DatabaseSync, repo: string, number: number, thr
 const staleKey = (repo: string, number: number) => `${STALE_KEY}${repo}#${number}`;
 
 /**
- * PRs, as "repo#n@head", whose review (Sonnet's row at that head) is older than the newest comment or review
+ * PRs, as "repo#n@head", whose reviews read the discussion (seen_at, else the row time) before the newest comment or review
  * by someone else on the PR, or older than an operator's stale mark. One query for a repo or every repo.
  */
 export function staleReviews(db: DatabaseSync, repo?: string): Set<string> {
   const rows = db.prepare(`SELECT r.repo, r.number, r.head_oid FROM reviews r
     WHERE (:repo IS NULL OR r.repo = :repo) AND (
-      (SELECT MAX(c.created_at) FROM comments c WHERE c.repo = r.repo AND c.number = r.number AND ${NOT_OURS}) > r.at
+      (SELECT MAX(c.created_at) FROM comments c WHERE c.repo = r.repo AND c.number = r.number AND ${NOT_OURS}) > COALESCE(r.seen_at, r.at)
       OR COALESCE((SELECT value FROM main.settings WHERE key = 'review_stale:' || r.repo || '#' || r.number), '') > r.at)`)
     .all({ repo: repo ?? null, own: pipelineLogin(db) }) as { repo: string; number: number; head_oid: string }[];
   return new Set(rows.map((r) => `${r.repo}#${r.number}@${r.head_oid}`));
+}
+
+/** Records the login that posts for us (the token's viewer) when no stage has yet, so our posts can be told from others'. */
+export async function ensurePipelineLogin(db: DatabaseSync, q: Querier): Promise<void> {
+  if (pipelineLogin(db)) return;
+  const login = (await q.query("query { viewer { login } }", {}))?.viewer?.login;
+  if (typeof login === "string" && login) db.prepare("INSERT INTO main.settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO NOTHING").run(LOGIN_KEY, login);
+}
+
+/** The newest comment or review by someone else per PR number of the repo (or of every repo, keyed "repo#n"), for comparing with an Opus review's snapshot time. */
+export function newestOthers(db: DatabaseSync, repo?: string): Map<string, string> {
+  const rows = db.prepare(`SELECT c.repo, c.number, MAX(c.created_at) AS at FROM comments c
+    WHERE (:repo IS NULL OR c.repo = :repo) AND ${NOT_OURS} GROUP BY c.repo, c.number`).all({ repo: repo ?? null, own: pipelineLogin(db) }) as { repo: string; number: number; at: string }[];
+  return new Map(rows.map((r) => [`${r.repo}#${r.number}`, r.at]));
 }
 
 /** Operator request: every review of the PR counts as older than now, so Sonnet and then Opus review it again. */
