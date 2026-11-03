@@ -332,6 +332,8 @@ export async function adopt(db: DatabaseSync, req: Req): Promise<Decision> {
     { id: string; login: string; option: string | null } | undefined;
   if (!o) throw new HttpError(404, "no such live opinion on this decision");
   if (!o.option || !optionsOf(d).some((x) => x.key === o.option)) throw new HttpError(400, "that opinion picks no option");
+  const stored = d.kind === "duplicate" && d.id.includes(":dupegroup:") ? textsFor(db, d.id, o.option) : [];
+  if (stored.length && body(req).textsHash !== textsHash(stored)) throw new HttpError(409, "the comments for this answer changed; reload the decision");
   const r = db.prepare(`UPDATE main.decisions SET answer = ?, answer_note = NULL, exceptions = ?, answered_by = ?, answered_at = ?, adopted_opinion = ?
     WHERE id = ? AND answer IS NULL`).run(o.option, isBatch(d) ? "[]" : null, req.user.login, new Date().toISOString(), o.id, d.id);
   if (r.changes !== 1) throw new HttpError(409, "someone answered this a moment ago");

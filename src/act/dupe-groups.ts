@@ -68,8 +68,14 @@ export async function actOnGroups(db: DatabaseSync, run: GroupRun): Promise<Grou
       for (const c of closers) if (!posted.get(dec.id, c.number, "close")) run.log(`  would comment and close ${ref(c.number)} (${dec.id})`);
       continue;
     }
-    const skip = (n: number, step: string, reason: string) => {
+    const skip = (n: number, step: string, reason: string, release = false) => {
       record(dec.id, n, step, null);
+      if (release) {
+        // Not closed by this decision: it stays open, is no longer held or settled by it, and the next comparison may ask about it again.
+        db.prepare("UPDATE dupe_group_items SET role = 'stay', target = NULL, base_role = 'stay', base_target = NULL WHERE decision_id = ? AND number = ?").run(dec.id, n);
+        record(dec.id, n, "released", null);
+        audit(db, ACTOR, "duplicate-member-released", ref(n), { decision: dec.id, reason });
+      }
       audit(db, ACTOR, "act-skip", ref(n), { decision: dec.id, reason });
       res.skipped.push({ ref: ref(n), reason });
       run.log(`  ${ref(n)}: skipped: ${reason}`);
@@ -115,10 +121,10 @@ export async function actOnGroups(db: DatabaseSync, run: GroupRun): Promise<Grou
         const live = await run.io.live(c.number);
         if (!live) { skip(c.number, "close", "GitHub returned no such item"); continue; }
         if (live.state !== "OPEN") { skip(c.number, "close", `already ${live.state.toLowerCase()} on GitHub`); continue; }
-        if (c.kind === "pr" && c.head && live.head !== c.head) { skip(c.number, "close", "the head moved since the comparison"); continue; }
+        if (c.kind === "pr" && c.head && live.head !== c.head) { skip(c.number, "close", "the head moved since the comparison", true); continue; }
         if (c.kind === "issue" && c.head) {
           const now = (db.prepare("SELECT embed_hash FROM items WHERE repo = ? AND number = ?").get(run.repo, c.number) as { embed_hash: string | null } | undefined)?.embed_hash;
-          if (now && now !== c.head) { skip(c.number, "close", "the text changed since the comparison"); continue; }
+          if (now && now !== c.head) { skip(c.number, "close", "the text changed since the comparison", true); continue; }
         }
         const text = texts.get(`${c.number}:close`);
         if (!text) { skip(c.number, "close", "the decision stores no comment for this answer"); continue; }
@@ -146,7 +152,7 @@ export async function actOnGroups(db: DatabaseSync, run: GroupRun): Promise<Grou
       db.prepare("INSERT INTO dupe_group_fails (decision_id, number, fails) VALUES (?, ?, 1) ON CONFLICT (decision_id, number) DO UPDATE SET fails = fails + 1").run(dec.id, cur.item.number);
       const n = (db.prepare("SELECT fails FROM dupe_group_fails WHERE decision_id = ? AND number = ?").get(dec.id, cur.item.number) as { fails: number }).fails;
       if (n < MAX_FAILS) return res;
-      skip(cur.item.number, cur.step, `${n} writes failed: ${why}`);
+      skip(cur.item.number, cur.step, `${n} writes failed: ${why}`, cur.step === "close");
     }
     // Applied once every member to close has a close record and the details comment is settled.
     if (closers.every((c) => posted.get(dec.id, c.number, "close")) && (!details || posted.get(dec.id, details.number, "details"))) {

@@ -9,6 +9,7 @@ import { setCommentApproval } from "../src/act/approval.ts";
 import { runAct, writeEffect, type ActDeps } from "../src/act/index.ts";
 import { connect } from "../src/db.ts";
 import { getDecision } from "../src/decisions.ts";
+import { duplicateHeld } from "../src/dupes/held.ts";
 import { kindSetsOf, duplicateGroups } from "../src/dupes/plan.ts";
 import { askGroupDecisions } from "../src/dupes/decide.ts";
 import { cleanReason } from "../src/act/templates.ts";
@@ -257,6 +258,31 @@ describe("act on group decisions", () => {
     answer(db, PR_GROUP, "accept");
     askGroupDecisions(db, "app", T1);
     assert.deepEqual(db.prepare("SELECT id FROM decisions WHERE id LIKE 'app:dupegroup:11%'").all().map((r: any) => r.id), [PR_GROUP]);
+  });
+});
+
+describe("released members", () => {
+  test("a member skipped as stale is released and the next comparison plans a new decision for it", async () => {
+    const db = await world();
+    answer(db, PR_GROUP, "accept");
+    assert.equal(duplicateHeld(db, "app", 12), true);
+    await run(db, fakes([], { heads: new Map([[12, "newsha"]]) }));
+    assert.equal(duplicateHeld(db, "app", 12), false);
+    assert.equal(db.prepare("SELECT role FROM dupe_group_items WHERE decision_id = ? AND number = 12").get(PR_GROUP)!.role, "stay");
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM audit WHERE action = 'duplicate-member-released'").get()!.n, 1);
+    // The mirror sees the new head; the comparison runs again for the released member.
+    db.prepare("UPDATE items SET head_oid = 'newsha' WHERE repo = 'app' AND number = 12").run();
+    const cd: CompareDeps = {
+      fetchDiff: async () => ({ ok: true, text: "diff --git a/src/a.rs b/src/a.rs\n--- a/src/a.rs\n+++ b/src/a.rs\n@@ -1 +1 @@\n-old\n+new\n" }),
+      baseCheckout: async () => "/checkout/base",
+      ask: (async (): Promise<Reply> => ({ text: JSON.stringify({ keep: 11, reason: "again", others: [{ number: 12, duplicate: true, better: [], carry: [] }] }), usage: USAGE })) as CompareDeps["ask"],
+      now: () => new Date(T1),
+    };
+    db.prepare("UPDATE items SET state = 'CLOSED' WHERE repo = 'app' AND number = 13").run();
+    const r = await runDupeCompare(db, {}, quiet, cd);
+    assert.ok(r.asked.includes("app:dupegroup:12"));
+    assert.deepEqual(db.prepare("SELECT number, role FROM dupe_group_items WHERE decision_id = 'app:dupegroup:12' ORDER BY number").all().map((x: any) => `${x.number}:${x.role}`), ["11:keep", "12:close"]);
+    assert.equal(duplicateHeld(db, "app", 12), true);
   });
 });
 

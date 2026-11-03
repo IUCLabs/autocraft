@@ -39,7 +39,8 @@ function answeredKeeps(db: DatabaseSync, repo: string, members: number[]): { set
     WHERE d.kind = 'duplicate' AND d.answer IS NOT NULL AND d.answer NOT IN ('superseded', 'distinct') AND gi.repo = ? AND gi.number IN (${ph}) ORDER BY d.asked_at, d.id`).all(repo, ...members) as { id: string }[];
   const settled = new Set<number>(), keep = new Map<string, number>();
   for (const { id } of ids)
-    for (const r of db.prepare("SELECT number, kind, role FROM dupe_group_items WHERE decision_id = ?").all(id) as { number: number; kind: string; role: string }[]) {
+    for (const r of db.prepare(`SELECT gi.number, gi.kind, gi.role FROM dupe_group_items gi WHERE gi.decision_id = ?
+      AND NOT EXISTS (SELECT 1 FROM dupe_group_posts p WHERE p.decision_id = gi.decision_id AND p.number = gi.number AND p.step = 'released')`).all(id) as { number: number; kind: string; role: string }[]) {
       settled.add(r.number);
       if (r.role === "keep") keep.set(r.kind, r.number);
     }

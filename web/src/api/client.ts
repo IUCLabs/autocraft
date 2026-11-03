@@ -77,7 +77,7 @@ export interface Api {
     opine(id: string, input: { option: string | null; note?: string }): Promise<Decision>;
     retract(id: string): Promise<Decision>;
     /** Operator only: answer with the opinion's option. */
-    adopt(id: string, opinionId: string): Promise<Decision>;
+    adopt(id: string, opinionId: string, textsHash?: string): Promise<Decision>;
     claim(id: string): Promise<void>;
     thread(id: string): Promise<DecisionComment[]>;
     comment(id: string, body: string): Promise<DecisionComment>;

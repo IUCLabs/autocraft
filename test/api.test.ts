@@ -217,10 +217,17 @@ describe("api", () => {
     db.prepare("UPDATE dupe_group_texts SET text = 'Closing as a duplicate of #4.\nParts to carry over to #4: x.' WHERE decision_id = ?").run(id);
     await boss.post(dpath(id, "/answer"), { answer: "accept", textsHash: ot.hash }, 409);
     const fresh = (await boss.get<Decision>(dpath(id))).optionTexts[0]!;
+    // Adopting an opinion approves the same texts, so it needs the same hash.
+    db.prepare("INSERT INTO decision_opinions (id, decision_id, login, option, note, at, permission) VALUES ('op1', ?, 'maint', 'accept', NULL, 'now', 'write')").run(id);
+    await boss.post(dpath(id, "/adopt"), { opinionId: "op1" }, 409);
+    await boss.post(dpath(id, "/adopt"), { opinionId: "op1", textsHash: ot.hash }, 409);
+    assert.equal((await boss.post<Decision>(dpath(id, "/adopt"), { opinionId: "op1", textsHash: fresh.hash })).answer, "accept");
+    await boss.post<Decision>(dpath(id, "/undo"));
     assert.equal((await boss.post<Decision>(dpath(id, "/answer"), { answer: "accept", textsHash: fresh.hash })).answer, "accept");
     db.prepare("INSERT INTO dupe_group_posts (decision_id, number, step, url, at) VALUES (?, 5, 'comment', 'https://x/c', 'now')").run(id);
     await boss.post(dpath(id, "/undo"), undefined, 409);
     db.prepare("UPDATE main.decisions SET applied_at = 'now' WHERE id = ?").run(id);
+    db.prepare("DELETE FROM decision_opinions WHERE id = 'op1'").run();
   });
 
   test("adopt records the operator's answer and credits the opinion; opinions close once answered", async () => {
@@ -232,7 +239,8 @@ describe("api", () => {
     assert.equal(d.answeredBy, "boss");
     assert.equal(d.adoptedOpinion?.id, op.id);
     assert.equal(d.adoptedOpinion?.login, "maint");
-    assert.equal(auditCount("adopt", "boss"), 1);
+    // The group decision test above adopted once as well.
+    assert.equal(auditCount("adopt", "boss"), 2);
     await maint.post(dpath(P4, "/opinion"), { option: "small" }, 409);
     await maint.post(dpath(P4, "/retract"), undefined, 409);
   });
