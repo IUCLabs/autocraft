@@ -6,7 +6,7 @@ import type { Decision, DecisionFilter, DecisionKind } from "../../api/types";
 
 export const KIND_LABEL: Record<DecisionKind, string> = {
   scope: "Scope",
-  duplicate: "Duplicate",
+  duplicate: "Duplicates",
   close: "Close",
   merge: "Merge",
   split: "Split",
@@ -90,16 +90,31 @@ export function usePinned(id: string | undefined, inList: boolean) {
 
 // ---- view-local state shared by the list, detail and thread panels ----
 
+export interface AnswerEntry {
+  id: string;
+  label: string;
+  ref: string;
+  /** From the answer's response; the live value comes from the decision itself. */
+  undoable: boolean;
+}
+
+const NOTICE_MS = 8000;
+const ERROR_MS = 4000;
+let noticeTimer: ReturnType<typeof setTimeout> | undefined;
+let errorTimer: ReturnType<typeof setTimeout> | undefined;
+
 interface Local {
   checked: Set<string>;
-  /** Decisions answered in this session, kept visible as a one-line confirmation. */
-  justAnswered: { id: string; label: string; ref: string }[];
+  /** The latest answer, shown as a short notice with Undo; it expires after `NOTICE_MS` or at the next answer. */
+  justAnswered: AnswerEntry[];
+  /** The server's refusal of the last Undo, shown briefly next to the decision it concerns. */
+  undoError: { id: string; message: string } | null;
   notes: Record<string, string>;
   /** The option picked in the Workflow box, by decision id (checked batches: ids joined with +). */
   picks: Record<string, string>;
   overrides: Record<string, Record<string, string>>;
 }
-let local: Local = { checked: new Set(), justAnswered: [], notes: {}, picks: {}, overrides: {} };
+let local: Local = { checked: new Set(), justAnswered: [], undoError: null, notes: {}, picks: {}, overrides: {} };
 const subs = new Set<() => void>();
 const set = (fn: (l: Local) => Local) => {
   local = fn(local);
@@ -132,9 +147,18 @@ export const localActions = {
       answer ? (cur[ref] = answer) : delete cur[ref];
       return { ...l, overrides: { ...l.overrides, [id]: cur } };
     }),
-  answered: (entries: { id: string; label: string; ref: string }[]) =>
-    set((l) => ({ ...l, justAnswered: [...entries, ...l.justAnswered.filter((x) => !entries.some((e) => e.id === x.id))], checked: new Set() })),
+  answered(entries: AnswerEntry[]) {
+    clearTimeout(noticeTimer);
+    noticeTimer = setTimeout(() => set((l) => ({ ...l, justAnswered: [] })), NOTICE_MS);
+    set((l) => ({ ...l, justAnswered: entries, undoError: null, checked: new Set() }));
+  },
   forget: (id: string) => set((l) => ({ ...l, justAnswered: l.justAnswered.filter((x) => x.id !== id) })),
+  /** Shows the refusal, then drops it and the notice of that decision. */
+  undoFailed(id: string, message: string) {
+    clearTimeout(errorTimer);
+    errorTimer = setTimeout(() => set((l) => ({ ...l, undoError: null, justAnswered: l.justAnswered.filter((x) => x.id !== id) })), ERROR_MS);
+    set((l) => ({ ...l, undoError: { id, message } }));
+  },
 };
 
 export const refOf = (d: Pick<Decision, "repo" | "number" | "items">) => (d.number === null ? `${d.repo} · ${d.items.length} items` : `${d.repo}#${d.number}`);
@@ -147,7 +171,7 @@ export function useAnswer() {
       const entries = [];
       for (const d of ds) {
         const overrides = local.overrides[d.id] ?? {};
-        await api.decisions.answer(d.id, {
+        const res = await api.decisions.answer(d.id, {
           answer: key,
           textsHash: d.optionTexts?.find((t) => t.option === key)?.hash,
           note: local.notes[d.id] || undefined,
@@ -156,7 +180,7 @@ export function useAnswer() {
             return { repo, number: Number(n), answer };
           }),
         });
-        entries.push({ id: d.id, ref: refOf(d), label: d.options.find((o) => o.key === key)?.label ?? key });
+        entries.push({ id: d.id, ref: refOf(d), label: d.options.find((o) => o.key === key)?.label ?? key, undoable: res?.undoable ?? true });
       }
       localActions.answered(entries);
     },
@@ -170,11 +194,21 @@ export function useUndo() {
     async (id?: string) => {
       const target = id ?? local.justAnswered[0]?.id;
       if (!target) return;
-      await api.decisions.undo(target);
-      localActions.forget(target);
+      try {
+        await api.decisions.undo(target);
+        localActions.forget(target);
+      } catch (e) {
+        localActions.undoFailed(target, e instanceof Error ? e.message : "Could not undo");
+      }
     },
     [api],
   );
+}
+
+/** Whether Undo still works for a decision: the live decision when loaded, else what the answer returned. */
+export function useUndoable(id: string, fallback: boolean): boolean {
+  const d = useQuery(`decision:${id}`, (a) => a.decisions.get(id)).data;
+  return d && d.id === id ? d.undoable : fallback;
 }
 
 /** The option key waiting for its confirming pick; it lapses after four seconds. */

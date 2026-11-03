@@ -4,6 +4,7 @@ import { Button } from "../../ui/atoms/Button";
 import { Kbd } from "../../ui/atoms/Kbd";
 import { cn } from "../../ui/cn";
 import { AnsweredState, canActOn } from "./DecisionDetail";
+import { RecommendationLine } from "./Group";
 import { localActions, useAnswer, useArmed, useLocal, userSelection } from "./state";
 
 export const WORKFLOW_ID = "workflow-box";
@@ -89,6 +90,7 @@ export function WorkflowBox({
     <section id={WORKFLOW_ID} className="mt-8 scroll-mt-3 rounded-md border border-line-strong bg-raised">
       <h2 className="border-b border-line px-3 py-2 text-sm font-semibold">Workflow</h2>
       <div className="px-3 py-2.5">
+        {!many && <div className="mb-2 px-2"><RecommendationLine d={d} /></div>}
         <div role="radiogroup" aria-label="Workflow" className="grid gap-0.5">
           {d.options.map((o, i) => {
             const on = o.key === picked;
@@ -116,7 +118,6 @@ export function WorkflowBox({
                     {o.key === rec && <span className="text-2xs font-normal text-accent-ink">Recommended</span>}
                   </span>
                   {o.hint && <span className="block text-xs text-ink/55">{o.hint}</span>}
-                  {o.key === rec && !many && d.recommendedReason && <span className="block text-xs text-ink/55">{d.recommendedReason}</span>}
                   {o.writes && <span className="block text-xs text-ink/55">{cap(o.writes)}</span>}
                 </span>
                 {!phone && <Kbd keys={String(i + 1)} />}

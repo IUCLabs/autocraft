@@ -18,7 +18,9 @@ import { ago } from "../../lib/format";
 import { ClaimPill, ClassifierLines, Disclosure, Facts, KindTag, RelatedList } from "./parts";
 import { Refs } from "./Refs";
 import { FeedbackBox } from "./FeedbackBox";
-import { localActions, ordered, refOf, useDecisionFilter, useDecisionList, useLocal, usePinned, useSelection, useUndo } from "./state";
+import { AnswerNotice } from "./AnswerNotice";
+import { DuplicateGroup, RiskList } from "./Group";
+import { localActions, ordered, refOf, useDecisionFilter, useDecisionList, useLocal, usePinned, useSelection, useUndo, type AnswerEntry } from "./state";
 import { Conversation } from "./Conversation";
 import { FeedbackList } from "./Thread";
 import { WorkflowBox, scrollToWorkflow } from "./Workflow";
@@ -102,18 +104,10 @@ function EmptyDetail({ count }: { count: number }) {
   );
 }
 
-function AnsweredNotice({ entry }: { entry: { id: string; label: string; ref: string } }) {
-  const undo = useUndo();
+function AnsweredNotice({ entry }: { entry: AnswerEntry }) {
   return (
     <div className="flex h-full items-center justify-center p-8">
-      <div className="flex items-center gap-3 rounded-md border border-line px-4 py-2.5 text-sm">
-        <CheckIcon className="text-ok" />
-        <span className="code">{entry.ref}</span>
-        <span className="text-ink/70">→ {entry.label}</span>
-        <Button size="sm" variant="ghost" icon={ArrowUUpLeftIcon} onClick={() => undo(entry.id)}>
-          Undo
-        </Button>
-      </div>
+      <AnswerNotice entry={entry} className="max-w-md rounded-md border border-line px-4" />
     </div>
   );
 }
@@ -192,10 +186,13 @@ export function DecisionBody({
           </span>
         )}
       </div>
-      {!isBatch && <ItemRef repo={d.repo} number={d.number!} kind={d.shown?.kind} state={d.shown?.state} title={null} size="sm" className="mt-2 text-ink/55" />}
+      {!isBatch && d.group.length === 0 && <ItemRef repo={d.repo} number={d.number!} kind={d.shown?.kind} state={d.shown?.state} title={null} size="sm" className="mt-2 text-ink/55" />}
       <h1 className={cn("mt-2 text-pretty font-semibold text-ink", phone ? "text-[17px] leading-6" : "text-lg")}>{d.title}</h1>
     </>
   );
+
+  const group = d.group.length > 0 && <DuplicateGroup d={d} />;
+  const risks = d.risks.length > 0 && <RiskList risks={d.risks} />;
 
   const summary = d.summary && (
     <section className="mt-3 rounded-md border border-line bg-ink/[0.025] px-3 py-2.5">
@@ -322,7 +319,9 @@ export function DecisionBody({
         <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-6 pt-3">
           <article className="animate-rise">
             {header}
+            {group}
             {summary}
+            {risks}
             {description}
             {facts}
             {question}
@@ -357,7 +356,9 @@ export function DecisionBody({
       <div className="min-h-0 flex-1 overflow-y-auto">
         <article className="mx-auto max-w-[760px] px-6 pb-8 pt-5 animate-rise">
           {header}
+          {group}
           {summary}
+          {risks}
           {description}
           {facts}
           {question}
@@ -376,6 +377,7 @@ export function AnsweredState({ d, canUndo }: { d: Decision; canUndo: boolean })
   const write = useWrite();
   const label = d.options.find((o) => o.key === d.answer)?.label ?? d.answer;
   const backlog = d.answer === "backlog";
+  const error = useLocal().undoError;
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md border border-ok/35 bg-ok/[0.06] px-3 py-2.5">
       <CheckIcon className="text-ok" />
@@ -391,10 +393,13 @@ export function AnsweredState({ d, canUndo }: { d: Decision; canUndo: boolean })
           <ConfirmButton label="Reopen" confirmLabel="Reopen the decision" loading={write.busy === "reopen"} onConfirm={() => void write.run("reopen", () => api.decisions.reopen(d.id))} />
         </span>
       )}
-      {!backlog && !d.appliedAt && canUndo && (
-        <Button size="sm" variant="ghost" icon={ArrowUUpLeftIcon} className="ml-auto" onClick={() => undo(d.id)}>
-          Undo
-        </Button>
+      {!backlog && d.undoable && canUndo && (
+        <span className="ml-auto flex items-center gap-2">
+          {error?.id === d.id && <span className="text-xs text-bad">{error.message}</span>}
+          <Button size="sm" variant="ghost" icon={ArrowUUpLeftIcon} onClick={() => undo(d.id)}>
+            Undo
+          </Button>
+        </span>
       )}
     </div>
   );
