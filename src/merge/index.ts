@@ -26,7 +26,7 @@ import { liveGateChecked } from "../review/discussion.ts";
 import { fillReviewSummaries, reviewText } from "../review/summary.ts";
 import { verificationOf } from "../verify/results.ts";
 import { TIER_LABEL } from "../whitelist.ts";
-import { withdrawBlockedQuestions, withdrawGroupedQuestions } from "./withdraw.ts";
+import { closeMergedQuestions, withdrawBlockedQuestions, withdrawGroupedQuestions, withdrawOtherHeadQuestions } from "./withdraw.ts";
 import { buildQueue, UNSURE_REASON, ciAllows, toAsk, countStates, eligible, HEAD_FACT, MERGE_OPTIONS, mergeDecisionId, QUEUE_STATES, VERIFY_UNAVAILABLE, verifyAllows, type QueueEntry } from "./queue.ts";
 
 export { buildQueue, countStates, QUEUE_STATES, toAsk, type QueueEntry, type QueueState } from "./queue.ts";
@@ -195,6 +195,7 @@ export function askMergeDecisions(db: DatabaseSync, opts: { repos?: string[]; ru
   withdrawBlockedQuestions(db, queue.filter((e) => !repos || repos.has(e.repo)), at);
   for (const r of repos ?? new Set(queue.map((e) => e.repo))) withdrawGroupedQuestions(db, at, r);
   if (qs.length) ask(db, qs.map((q) => ({ ...q, asked_at: at })));
+  for (const e of queue.filter((x) => qs.some((q) => q.id === mergeDecisionId(x.repo, x.number, x.head)))) withdrawOtherHeadQuestions(db, e.repo, e.number, e.head, at);
   fillReviewSummaries(db, at);
   return qs.map((q) => q.id);
 }
@@ -330,6 +331,7 @@ export async function runMerge(db: DatabaseSync, params: MergeParams, log: (line
     }
     saveAttempt(e, method, "merged", null);
     markMerged(db, e.repo, e.number, at());
+    closeMergedQuestions(db, e.repo, e.number, at());
     stage.run(e.repo, e.number, "merged", at(), ACTOR, `${method} at ${short(e.head)}${e.path === "operator" ? ", operator answered merge" : ""}`);
     if (e.path === "operator") db.prepare("UPDATE decisions SET applied_at = ? WHERE id = ? AND applied_at IS NULL").run(at(), e.decisionId);
     summary.merged.push(refOf(e));

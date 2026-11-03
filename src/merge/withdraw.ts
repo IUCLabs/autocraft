@@ -74,3 +74,19 @@ export function withdrawGroupedQuestions(db: DatabaseSync, at: string, repo?: st
   }
   return n;
 }
+
+/** Closes the PR's open Merge? questions at every head once it merged, whatever path merged it. */
+export function closeMergedQuestions(db: DatabaseSync, repo: string, number: number, at: string): void {
+  db.prepare("UPDATE decisions SET answer = ?, answered_by = 'pipeline', answered_at = ?, applied_at = ?, answer_note = 'the PR merged' WHERE kind = 'merge' AND repo = ? AND number = ? AND answer IS NULL")
+    .run(WITHDRAWN, at, at, repo, number);
+}
+
+/** Sets aside the PR's unanswered Merge? questions at heads other than the one just asked about. */
+export function withdrawOtherHeadQuestions(db: DatabaseSync, repo: string, number: number, keepHead: string, at: string): void {
+  const prefix = `${repo}#${number}:merge@`;
+  const rows = db.prepare("SELECT id FROM decisions WHERE kind = 'merge' AND answer IS NULL AND substr(id, 1, ?) = ? AND id NOT LIKE '%~replaced-%'").all(prefix.length, prefix) as { id: string }[];
+  for (const r of rows) {
+    const head = r.id.slice(prefix.length);
+    if (head !== keepHead) withdrawMergeQuestion(db, repo, number, head, at, "superseded by a question at a newer head");
+  }
+}

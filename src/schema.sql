@@ -376,6 +376,17 @@ CREATE TABLE IF NOT EXISTS opus_reviews (
   PRIMARY KEY (repo, number, head_oid)
 );
 
+-- Every Opus review ever stored, appended with each write of opus_reviews (which keeps only the latest per head).
+-- A take or take-fix with sure = 0 here keeps its head needing a person's Merge? answer even after a later review of the same head is sure.
+CREATE TABLE IF NOT EXISTS opus_review_history (
+  repo TEXT NOT NULL, number INTEGER NOT NULL,
+  head_oid TEXT NOT NULL,
+  at TEXT NOT NULL,
+  model TEXT, mode TEXT, verdict TEXT, sure INTEGER,
+  reason TEXT, risks TEXT, fixes TEXT, summary TEXT, why TEXT, public_review TEXT
+);
+CREATE INDEX IF NOT EXISTS opus_review_history_head ON opus_review_history(repo, number, head_oid);
+
 -- The verdict every later stage reads, per reviewed head commit: the Opus verdict.
 -- A PR with no row here is not reviewed yet. An unsure take or take-fix keeps its verdict;
 -- the merge queue asks a person before merging it.

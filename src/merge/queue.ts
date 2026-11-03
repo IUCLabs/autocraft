@@ -29,6 +29,34 @@ export type QueueState = (typeof QUEUE_STATES)[number];
 /** Type labels whose PRs may merge without asking. */
 /** Why an unsure Opus take is asked about instead of merged by the rule. */
 export const UNSURE_REASON = "Opus was unsure";
+
+/** The head and the earlier heads AutoCraft itself pushed it from (conflict merges of the base, fix-up pushes), newest first. */
+export function pushChain(db: DatabaseSync, repo: string, number: number, head: string): string[] {
+  const from = db.prepare(`SELECT from_head FROM conflict_merges WHERE repo = ?1 AND number = ?2 AND to_head = ?3 AND state = 'merged'
+    UNION SELECT from_head FROM fixups WHERE repo = ?1 AND number = ?2 AND to_head = ?3 AND state = 'pushed'`);
+  const chain = [head];
+  for (let k = 0; k < chain.length; k++) for (const f of from.all(repo, number, chain[k]!) as { from_head: string }[]) if (!chain.includes(f.from_head)) chain.push(f.from_head);
+  return chain;
+}
+
+/** True when a person's merge answer exists for the Merge? question at any of the heads. */
+export function mergeAnsweredAt(db: DatabaseSync, repo: string, number: number, heads: string[]): boolean {
+  const q = db.prepare("SELECT 1 FROM decisions WHERE id = ? AND kind = 'merge' AND answer = 'merge'");
+  return heads.some((h) => !!q.get(mergeDecisionId(repo, number, h)));
+}
+
+/** True when the PR has an unanswered Merge? question at a head other than `head`. */
+export function openQuestionElsewhere(db: DatabaseSync, repo: string, number: number, head: string): boolean {
+  const prefix = `${repo}#${number}:merge@`;
+  return !!db.prepare("SELECT 1 FROM decisions WHERE kind = 'merge' AND answer IS NULL AND substr(id, 1, ?) = ? AND id <> ? AND id NOT LIKE '%~replaced-%' LIMIT 1")
+    .get(prefix.length, prefix, mergeDecisionId(repo, number, head));
+}
+
+/** True when any stored Opus review at the head (the current row or an overwritten one in the history) was a take or take-fix with sure = 0. */
+export function headWasUnsure(db: DatabaseSync, repo: string, number: number, head: string): boolean {
+  return !!db.prepare(`SELECT 1 FROM opus_review_history WHERE repo = ?1 AND number = ?2 AND head_oid = ?3 AND verdict IN ('take', 'take-fix') AND sure = 0
+    UNION ALL SELECT 1 FROM opus_reviews WHERE repo = ?1 AND number = ?2 AND head_oid = ?3 AND verdict IN ('take', 'take-fix') AND sure = 0 LIMIT 1`).get(repo, number, head);
+}
 export const RULE_LABELS = ["bugfix", "infra"];
 /** Sizes that may merge without asking. */
 export const RULE_SIZES = ["S", "M"];
@@ -104,7 +132,7 @@ export const eligible = (e: QueueEntry): boolean =>
 type Row = {
   repo: string; number: number; title: string | null; author: string | null; state: string; review_decision: string | null; head_oid: string | null; updated_at: string | null;
   c_head: string | null; c_at: string | null; overall: string | null; c_mergeable: string | null; i_mergeable: string | null;
-  r_head: string; r_seen: string | null; r_hash: string | null; sure: number | null; verdict: "take" | "take-fix"; reason: string; fixes: string | null; lines: number; r_at: string;
+  r_head: string; r_seen: string | null; r_hash: string | null; sure: number | null; mode: string | null; verdict: "take" | "take-fix"; reason: string; fixes: string | null; lines: number; r_at: string;
   head_repo: string | null; head_ref: string | null; base_ref: string | null; i_can: number | null; c_can: number | null;
 };
 
@@ -169,7 +197,7 @@ export function buildQueue(db: DatabaseSync, opts: QueueOptions = {}): QueueEntr
   const rows = db.prepare(`
     SELECT i.repo, i.number, i.title, i.author, i.state, i.review_decision, i.head_oid, i.updated_at, i.mergeable AS i_mergeable,
       c.head_oid AS c_head, c.fetched_at AS c_at, c.overall, c.mergeable AS c_mergeable,
-      l.head_oid AS r_head, l.seen_at AS r_seen, l.disc_hash AS r_hash, l.sure, l.verdict, l.reason, l.fixes, COALESCE(i.additions, 0) + COALESCE(i.deletions, 0) AS lines, l.at AS r_at,
+      l.head_oid AS r_head, l.seen_at AS r_seen, l.disc_hash AS r_hash, l.sure, l.mode, l.verdict, l.reason, l.fixes, COALESCE(i.additions, 0) + COALESCE(i.deletions, 0) AS lines, l.at AS r_at,
       i.head_repo, i.head_ref, i.base_ref, i.maintainer_can_modify AS i_can, c.maintainer_can_modify AS c_can
     FROM items i
     JOIN final_reviews l ON l.repo = i.repo AND l.number = i.number AND l.head_oid = (
@@ -228,7 +256,12 @@ export function buildQueue(db: DatabaseSync, opts: QueueOptions = {}): QueueEntr
 
     const outsideRule: string[] = [];
     if (r.verdict !== "take") outsideRule.push("review asks for fixes");
-    if (r.sure === 0) outsideRule.push(UNSURE_REASON);
+    // An unsure review at this head sticks until a person answers its Merge? question, whatever a later review of the head says.
+    // It carries over heads AutoCraft pushed itself; a person's merge answer at any head of that chain clears it.
+    const chain = pushChain(db, r.repo, r.number, r.r_head);
+    if (r.sure === 0 || (chain.some((h) => headWasUnsure(db, r.repo, r.number, h)) && !mergeAnsweredAt(db, r.repo, r.number, chain))) outsideRule.push(UNSURE_REASON);
+    if (r.state === "OPEN" && openQuestionElsewhere(db, r.repo, r.number, r.r_head)) outsideRule.push("a Merge? question for an earlier head is still open");
+    if (r.mode === "skipped") outsideRule.push("the review was skipped");
     if (!RULE_SIZES.includes(size)) outsideRule.push(`size ${size}`);
     if (!label || !RULE_LABELS.includes(label)) outsideRule.push(label ? `label ${label}` : "no settled label");
     if (!RULE_TIERS.includes(tier)) outsideRule.push(r.author ? "author not on the whitelist" : "author unknown");
