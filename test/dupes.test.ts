@@ -2,7 +2,6 @@
 // the act step's close, and the hold on later stages. No model or GitHub calls.
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { describe, test } from "node:test";
@@ -22,8 +21,8 @@ import type { Embedder } from "../src/embed/model.ts";
 import { VectorIndex } from "../src/embed/vectors.ts";
 import type { Querier } from "../src/mirror.ts";
 import { selectCandidates as reviewCandidates } from "../src/review/candidates.ts";
+import { SCRATCH } from "./scratch.ts";
 
-const SCRATCH = join(homedir(), ".cache/craft-automation-scratch");
 mkdirSync(SCRATCH, { recursive: true });
 const dir = mkdtempSync(join(SCRATCH, "dupes-test-"));
 const NOW = new Date("2026-06-01T00:00:00Z");

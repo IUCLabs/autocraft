@@ -3,7 +3,6 @@
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { request } from "node:http";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, test } from "node:test";
 import { addLogin } from "../src/access.ts";
@@ -13,8 +12,8 @@ import { startServer } from "../src/dash/server/index.ts";
 import { FakeProvider, GitHubProvider } from "../src/dash/server/provider.ts";
 import { OPERATOR_SESSION_MAX, SESSION_MAX, loadSession } from "../src/dash/server/sessions.ts";
 import { safeReturnTo } from "../src/dash/server/util.ts";
+import { SCRATCH } from "./scratch.ts";
 
-const SCRATCH = join(homedir(), ".cache/craft-automation-scratch");
 mkdirSync(SCRATCH, { recursive: true });
 const dir = mkdtempSync(join(SCRATCH, "hardening-test-"));
 const db = connect(join(dir, "dash.db"));

@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { after, describe, test } from "node:test";
 import { connect } from "../src/db.ts";
@@ -9,8 +8,8 @@ import { funnelByRepo } from "../src/dash/api/stats.ts";
 import type { Req } from "../src/dash/types.ts";
 import { selectSyncRepos } from "../src/mirror.ts";
 import { purgeRepo, RepoError, scopeToTracked, trackedNames, trackRepo, untrackRepo } from "../src/repos.ts";
+import { SCRATCH } from "./scratch.ts";
 
-const SCRATCH = join(homedir(), ".cache/craft-automation-scratch");
 mkdirSync(SCRATCH, { recursive: true });
 const dir = mkdtempSync(join(SCRATCH, "repos-test-"));
 after(() => rmSync(dir, { recursive: true, force: true }));

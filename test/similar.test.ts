@@ -4,7 +4,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, test } from "node:test";
 import type { SimilarHit } from "../web/src/api/types.ts";
@@ -17,6 +16,7 @@ import { startServer } from "../src/dash/server/index.ts";
 import { FakeProvider } from "../src/dash/server/provider.ts";
 import { normalize, type Embedder } from "../src/embed/model.ts";
 import { embedItems } from "../src/embed/store.ts";
+import { SCRATCH } from "./scratch.ts";
 
 // Bag of words hashed into 64 dimensions: texts sharing words score high.
 function fakeEmbedder(id = "fake:1"): Embedder & { seen: string[] } {
@@ -34,7 +34,6 @@ function fakeEmbedder(id = "fake:1"): Embedder & { seen: string[] } {
   };
 }
 
-const SCRATCH = join(homedir(), ".cache/craft-automation-scratch");
 mkdirSync(SCRATCH, { recursive: true });
 const dir = mkdtempSync(join(SCRATCH, "similar-test-"));
 const dbFile = join(dir, "dash.db");

@@ -1,7 +1,6 @@
 // Summaries on Duplicate?, Merge? and Close? decisions. Fake model calls, no GitHub.
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { describe, test } from "node:test";
@@ -12,8 +11,8 @@ import { dupesWork, runDupes, type DupesDeps } from "../src/dupes/index.ts";
 import { VectorIndex } from "../src/embed/vectors.ts";
 import { HEAD_FACT, MERGE_OPTIONS } from "../src/merge/queue.ts";
 import { fillReviewSummaries } from "../src/review/summary.ts";
+import { SCRATCH } from "./scratch.ts";
 
-const SCRATCH = join(homedir(), ".cache/craft-automation-scratch");
 mkdirSync(SCRATCH, { recursive: true });
 const dir = mkdtempSync(join(SCRATCH, "decision-summaries-test-"));
 const T0 = "2026-01-01T00:00:00Z";

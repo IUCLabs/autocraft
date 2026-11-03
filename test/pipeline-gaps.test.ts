@@ -2,7 +2,6 @@
 // applied, the plugin label, "not verified" and "no CI" merge decisions, visibility of holds, and operator releases.
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { describe, test } from "node:test";
 import type { DatabaseSync } from "node:sqlite";
@@ -20,8 +19,8 @@ import { saveVerification } from "../src/verify/index.ts";
 import { unavailableCandidates } from "../src/verify/candidates.ts";
 import { LANES } from "../src/runner/autopilot.ts";
 import { finalizeReviews } from "./fixture.ts";
+import { SCRATCH } from "./scratch.ts";
 
-const SCRATCH = join(homedir(), ".cache/craft-automation-scratch");
 mkdirSync(SCRATCH, { recursive: true });
 const dir = mkdtempSync(join(SCRATCH, "gaps-test-"));
 const T0 = "2026-01-01T00:00:00Z";

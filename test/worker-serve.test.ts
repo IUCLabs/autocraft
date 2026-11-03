@@ -1,7 +1,6 @@
 // The worker loop against a fake coordinator and a fake container runtime.
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { after, before, describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -11,8 +10,8 @@ import { backoffDelay, serve, type ServeDeps } from "../src/worker/serve.ts";
 import type { ClaimedTask, TaskStep } from "../src/worker/types.ts";
 import { startFakeCoordinator, type FakeCoordinator } from "./fake-coordinator.ts";
 import { makeTarGz } from "./tar-util.ts";
+import { SCRATCH } from "./scratch.ts";
 
-const SCRATCH = join(homedir(), ".cache/craft-automation-scratch");
 mkdirSync(SCRATCH, { recursive: true });
 const root = mkdtempSync(join(SCRATCH, "worker-serve-"));
 const rtDir = join(root, "rt");

@@ -2,7 +2,6 @@
 // the artifact type allowlist, and the dashboard API (visibility, operator-only writes, downloads).
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, test } from "node:test";
 import type { BuildTask, BuildTaskDetail, TaskPage } from "../web/src/api/types.ts";
@@ -17,8 +16,8 @@ import { loadConfig } from "../src/dash/server/config.ts";
 import { startServer } from "../src/dash/server/index.ts";
 import { FakeProvider } from "../src/dash/server/provider.ts";
 import { scopeToTracked } from "../src/repos.ts";
+import { SCRATCH } from "./scratch.ts";
 
-const SCRATCH = join(homedir(), ".cache/craft-automation-scratch");
 mkdirSync(SCRATCH, { recursive: true });
 const dir = mkdtempSync(join(SCRATCH, "build-test-"));
 process.env.CRAFT_AUTO_ARTIFACT_DIR = join(dir, "artifacts");

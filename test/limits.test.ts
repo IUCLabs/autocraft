@@ -2,7 +2,6 @@
 // Retry-After), the embedding gate, the semaphore, and the contributors cache.
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, test } from "node:test";
 import { addLogin } from "../src/access.ts";
@@ -17,8 +16,8 @@ import type { Req } from "../src/dash/types.ts";
 import { normalize, type Embedder } from "../src/embed/model.ts";
 import { embedItems } from "../src/embed/store.ts";
 import { VectorIndex } from "../src/embed/vectors.ts";
+import { SCRATCH } from "./scratch.ts";
 
-const SCRATCH = join(homedir(), ".cache/craft-automation-scratch");
 mkdirSync(SCRATCH, { recursive: true });
 const dir = mkdtempSync(join(SCRATCH, "limits-test-"));
 const permsFile = join(dir, "perms.json");

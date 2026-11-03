@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { describe, test } from "node:test";
 import type { DatabaseSync } from "node:sqlite";
@@ -13,8 +12,8 @@ import { askMergeDecisions } from "../src/merge/index.ts";
 import { selectCandidates } from "../src/review/candidates.ts";
 import { Git } from "../src/fixup/git.ts";
 import { finalizeReviews } from "./fixture.ts";
+import { SCRATCH } from "./scratch.ts";
 
-const SCRATCH = join(homedir(), ".cache/craft-automation-scratch");
 mkdirSync(SCRATCH, { recursive: true });
 const dir = mkdtempSync(join(SCRATCH, "batch-test-"));
 const T0 = "2026-01-01T00:00:00Z";

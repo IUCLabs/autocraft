@@ -3,9 +3,9 @@
 // fragment; the others are checked through their own candidate functions.
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
+import { SCRATCH } from "./scratch.ts";
 
 const { connect } = await import("../src/db.ts");
 const { inPilot, pilotItems, PilotError, setPilot } = await import("../src/pilot.ts");
@@ -25,7 +25,6 @@ const { finalizeReviews } = await import("./fixture.ts");
 const { fixDue } = await import("../src/fixissue/index.ts");
 const { setFixIssueApproval } = await import("../src/fixissue/approval.ts");
 
-const SCRATCH = join(homedir(), ".cache/craft-automation-scratch");
 mkdirSync(SCRATCH, { recursive: true });
 const dir = mkdtempSync(join(SCRATCH, "pilot-test-"));
 const db = connect(join(dir, "p.db"));

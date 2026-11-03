@@ -3,10 +3,10 @@
 // backing off after repeated failures, it queues nothing.
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { after, beforeEach, describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { SCRATCH } from "./scratch.ts";
 
 process.env.CRAFT_AUTO_EXTRA_STEPS = fileURLToPath(new URL("./autopilot-steps.ts", import.meta.url));
 
@@ -17,7 +17,6 @@ const { Runner } = await import("../src/runner/runner.ts");
 const { setMergeApproval } = await import("../src/merge/approval.ts");
 type Lane = import("../src/runner/autopilot.ts").Lane;
 
-const SCRATCH = join(homedir(), ".cache/craft-automation-scratch");
 mkdirSync(SCRATCH, { recursive: true });
 const dir = mkdtempSync(join(SCRATCH, "autopilot-test-"));
 const db = connect(join(dir, "a.db"));

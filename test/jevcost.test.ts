@@ -1,16 +1,16 @@
 import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { askJev, runJev, saveUsage, setRunner } from "../src/classify/run.ts";
 import { connect } from "../src/db.ts";
+import { SCRATCH } from "./scratch.ts";
 
 const answers = {
   type: { choice: "performance", confidence: 0.8, probabilities: { performance: 0.8, bugfix: 0.2 } },
   security: { noul: 0.7 }, needs_decision: { noul: 0.1 },
 };
-const fresh = () => connect(join(mkdtempSync(join(tmpdir(), "jevcost-")), "t.db"));
+const fresh = () => connect(join(mkdtempSync(join(SCRATCH, "jevcost-")), "t.db"));
 const cost = (db: ReturnType<typeof fresh>, agent: string) =>
   (db.prepare("SELECT cost_usd AS c FROM token_usage WHERE agent = ?").get(agent) as { c: number | null }).c;
 
@@ -25,7 +25,7 @@ test("a Jev call is priced by its input tokens", async () => {
 });
 
 test("the migration prices unpriced Jev rows and leaves other models alone", () => {
-  const dir = mkdtempSync(join(tmpdir(), "jevcost-"));
+  const dir = mkdtempSync(join(SCRATCH, "jevcost-"));
   const path = join(dir, "t.db");
   const db = connect(path);
   const u = { input: 2_000_000, output: 5, cacheRead: 0, cacheWrite: 0, cost: null };

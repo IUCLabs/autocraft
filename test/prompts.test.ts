@@ -2,7 +2,6 @@
 // registered command line: checked through each call site with a fake runner.
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { describe, test } from "node:test";
 import { runReferee } from "../src/classify/referee.ts";
@@ -13,8 +12,8 @@ import { connect } from "../src/db.ts";
 import { JEV_ARGS, PROMPTS, claudeArgs, promptsReport, renderClaude, renderJev, untrustedJson } from "../src/prompts/index.ts";
 import { SAMPLE_ITEMS } from "../src/prompts/samples.ts";
 import { SAMPLE_VERIFY_PLAN } from "../src/verify/types.ts";
+import { SCRATCH } from "./scratch.ts";
 
-const SCRATCH = join(homedir(), ".cache/craft-automation-scratch");
 mkdirSync(SCRATCH, { recursive: true });
 const db = connect(join(mkdtempSync(join(SCRATCH, "prompts-test-")), "t.db"));
 useTestAccount(db);

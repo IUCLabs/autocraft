@@ -1,7 +1,6 @@
 // Every stage that writes to GitHub or spends a model call reads the item's live state first (docs/pipeline.md, Sync); all GitHub access here is faked.
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { describe, test } from "node:test";
 import type { DatabaseSync } from "node:sqlite";
@@ -15,7 +14,6 @@ import { selectCandidates } from "../src/review/candidates.ts";
 import { Git } from "../src/fixup/git.ts";
 import { finalizeReviews } from "./fixture.ts";
 
-const SCRATCH = join(homedir(), ".cache/craft-automation-scratch");
 mkdirSync(SCRATCH, { recursive: true });
 const dir = mkdtempSync(join(SCRATCH, "batch-test-"));
 const T0 = "2026-01-01T00:00:00Z";
@@ -123,6 +121,7 @@ import { exec, type Exec, type ExecResult } from "../src/fixup/git.ts";
 import { runFixup, type FixupDeps } from "../src/fixup/index.ts";
 import { runOpusReview, type OpusDeps } from "../src/review/opus.ts";
 import { useTestAccount } from "./accounts-fixture.ts";
+import { SCRATCH } from "./scratch.ts";
 
 const newDb = () => connect(join(mkdtempSync(join(dir, "db-")), "t.db"));
 

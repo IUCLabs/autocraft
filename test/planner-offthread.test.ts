@@ -2,10 +2,10 @@
 // heartbeat or cancels) and every pass resolves the classification run once.
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { after, describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { SCRATCH } from "./scratch.ts";
 
 process.env.CRAFT_AUTO_EXTRA_STEPS = fileURLToPath(new URL("./autopilot-steps.ts", import.meta.url));
 
@@ -15,7 +15,6 @@ const { HEARTBEAT_KEY, Runner } = await import("../src/runner/runner.ts");
 const { selectCandidates } = await import("../src/review/candidates.ts");
 const { buildQueue } = await import("../src/merge/queue.ts");
 
-const SCRATCH = join(homedir(), ".cache/craft-automation-scratch");
 mkdirSync(SCRATCH, { recursive: true });
 const dir = mkdtempSync(join(SCRATCH, "planner-test-"));
 after(() => rmSync(dir, { recursive: true, force: true }));

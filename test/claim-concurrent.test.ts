@@ -3,7 +3,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { mkdtempSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -11,13 +10,14 @@ import { promisify } from "node:util";
 import { listAccounts } from "../src/agents/accounts.ts";
 import { connect } from "../src/db.ts";
 import { setupBox, writeReading } from "./accounts-fixture.ts";
+import { SCRATCH } from "./scratch.ts";
 
 const run = promisify(execFile);
 const WORKER = fileURLToPath(new URL("./claim-worker.ts", import.meta.url));
 
 test("two processes claiming at once never exceed an account's slots", async () => {
   const box = setupBox(["a", "b"]);
-  const file = join(mkdtempSync(join(homedir(), ".cache/craft-automation-scratch/claim-")), "t.db");
+  const file = join(mkdtempSync(join(SCRATCH, "claim-")), "t.db");
   const db = connect(file);
   listAccounts(db);
   db.prepare("UPDATE claude_accounts SET enabled = 1, max_concurrent = CASE id WHEN 'a' THEN 7 ELSE 5 END").run();

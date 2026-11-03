@@ -1,7 +1,6 @@
 // The image proxy (GET /img), with a fake upstream in place of fetch.
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { after, before, beforeEach, describe, test } from "node:test";
 import { addLogin } from "../src/access.ts";
@@ -11,8 +10,8 @@ import { ImageIndex } from "../src/dash/server/image-index.ts";
 import { ImageProxy, MAX_IMAGE_BYTES, imageRepo, imageTokenSource, registerImageRepos } from "../src/dash/server/images.ts";
 import { SESSION_COOKIE, startServer } from "../src/dash/server/index.ts";
 import { FakeProvider } from "../src/dash/server/provider.ts";
+import { SCRATCH } from "./scratch.ts";
 
-const SCRATCH = join(homedir(), ".cache/craft-automation-scratch");
 mkdirSync(SCRATCH, { recursive: true });
 const dir = mkdtempSync(join(SCRATCH, "images-test-"));
 const permsFile = join(dir, "perms.json");

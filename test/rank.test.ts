@@ -2,7 +2,6 @@
 // lanes and the size field of the Fix triage.
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { after, describe, test } from "node:test";
 import { connect } from "../src/db.ts";
@@ -10,8 +9,8 @@ import { parseTriage } from "../src/fixissue/parse.ts";
 import { rankOfItem, runRank } from "../src/rank/index.ts";
 import { rankOf, sizeOfLines, type RankInput } from "../src/rank/score.ts";
 import { bestScore, orderLanes } from "../src/runner/autopilot.ts";
+import { SCRATCH } from "./scratch.ts";
 
-const SCRATCH = join(homedir(), ".cache/craft-automation-scratch");
 mkdirSync(SCRATCH, { recursive: true });
 const dir = mkdtempSync(join(SCRATCH, "rank-test-"));
 after(() => rmSync(dir, { recursive: true, force: true }));

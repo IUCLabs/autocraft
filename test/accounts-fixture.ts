@@ -2,12 +2,11 @@
 // an empty usage directory and an enabled row in the database. No real config
 // directory exists behind it.
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { syncAccounts } from "../src/agents/accounts.ts";
+import { SCRATCH } from "./scratch.ts";
 
-const SCRATCH = join(homedir(), ".cache/craft-automation-scratch");
 
 export type TestBox = { dir: string; accountsFile: string; usageDir: string; configDir: string };
 

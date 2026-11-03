@@ -1,7 +1,6 @@
 // The Label stage: the plan, the approval gate and apply, with a fake Querier (nothing reaches GitHub).
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { after, describe, test } from "node:test";
 import { connect } from "../src/db.ts";
@@ -9,8 +8,8 @@ import { applyLabels, BATCH, LabelsError } from "../src/labels/github.ts";
 import { setApproval } from "../src/labels/approval.ts";
 import { ALL_LABELS } from "../src/labels/set.ts";
 import { countPlan, planLabels } from "../src/labels/plan.ts";
+import { SCRATCH } from "./scratch.ts";
 
-const SCRATCH = join(homedir(), ".cache/craft-automation-scratch");
 mkdirSync(SCRATCH, { recursive: true });
 const dir = mkdtempSync(join(SCRATCH, "labels-test-"));
 after(() => rmSync(dir, { recursive: true, force: true }));

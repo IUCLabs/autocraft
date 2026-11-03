@@ -3,7 +3,6 @@
 // each write takes effect and leaves one audit row.
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, test } from "node:test";
 import type { AccessOverview, AuditPage, Contributor, ContributorList, RulePreview, TrackedRepo } from "../web/src/api/types.ts";
@@ -14,9 +13,9 @@ import { apiRoutes } from "../src/dash/api/index.ts";
 import { loadConfig } from "../src/dash/server/config.ts";
 import { startServer } from "../src/dash/server/index.ts";
 import { FakeProvider } from "../src/dash/server/provider.ts";
+import { SCRATCH } from "./scratch.ts";
 
 const NOTE = "OVERRIDE-NOTE-m4x";
-const SCRATCH = join(homedir(), ".cache/craft-automation-scratch");
 mkdirSync(SCRATCH, { recursive: true });
 const dir = mkdtempSync(join(SCRATCH, "admin-test-"));
 const dbFile = join(dir, "dash.db");

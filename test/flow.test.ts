@@ -2,7 +2,6 @@
 // small database with one item for each branch.
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { FlowNode } from "../web/src/api/types.ts";
@@ -15,8 +14,8 @@ import type { Req } from "../src/dash/types.ts";
 import { scopeToTracked } from "../src/repos.ts";
 import { candidateRefs, selectCandidates } from "../src/review/candidates.ts";
 import { finalizeReviews } from "./fixture.ts";
+import { SCRATCH } from "./scratch.ts";
 
-const SCRATCH = join(homedir(), ".cache/craft-automation-scratch");
 mkdirSync(SCRATCH, { recursive: true });
 const R = "photocraft";
 const T0 = "2026-01-01T00:00:00Z";

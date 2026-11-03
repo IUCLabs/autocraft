@@ -4,7 +4,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, test } from "node:test";
 import type { Decision, DecisionComment, Item, Progress, SearchHit, User } from "../web/src/api/types.ts";
@@ -16,10 +15,10 @@ import { apiRoutes } from "../src/dash/api/index.ts";
 import { loadConfig } from "../src/dash/server/config.ts";
 import { startServer } from "../src/dash/server/index.ts";
 import { FakeProvider } from "../src/dash/server/provider.ts";
+import { SCRATCH } from "./scratch.ts";
 
 const MARKER = "OPINION-MARKER-k3v";
 const LIMIT = 8;
-const SCRATCH = join(homedir(), ".cache/craft-automation-scratch");
 mkdirSync(SCRATCH, { recursive: true });
 const dir = mkdtempSync(join(SCRATCH, "api-test-"));
 const dbFile = join(dir, "dash.db");

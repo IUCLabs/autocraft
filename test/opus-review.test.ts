@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { describe, test } from "node:test";
 import type { DatabaseSync } from "node:sqlite";
@@ -16,8 +15,8 @@ import { runOpusReview, type OpusDeps } from "../src/review/opus.ts";
 import { parseOpusReply, type OpusPr } from "../src/review/opus-parse.ts";
 import { skipReason } from "../src/review/skip.ts";
 import { useTestAccount } from "./accounts-fixture.ts";
+import { SCRATCH } from "./scratch.ts";
 
-const SCRATCH = join(homedir(), ".cache/craft-automation-scratch");
 mkdirSync(SCRATCH, { recursive: true });
 const dir = mkdtempSync(join(SCRATCH, "opus-review-test-"));
 process.env.CRAFT_AUTO_DIFF_CACHE = join(dir, "diffs");

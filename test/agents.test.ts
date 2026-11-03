@@ -2,7 +2,6 @@
 // Model calls go to a fake runner; no account directory exists behind the fake box config.
 import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { describe, test } from "node:test";
 import { chooseAccount, claudePauseReason, freeSlots, jevParallel, listAccounts, recordUsageSamples, setJevParallel, setUsagePause, updateAccount, usagePause } from "../src/agents/accounts.ts";
@@ -15,8 +14,8 @@ import { pauseReason } from "../src/runner/autopilot.ts";
 import { getJob } from "../src/runner/jobs.ts";
 import type { Req } from "../src/dash/types.ts";
 import { setupBox, writeReading } from "./accounts-fixture.ts";
+import { SCRATCH } from "./scratch.ts";
 
-const SCRATCH = join(homedir(), ".cache/craft-automation-scratch");
 const fresh = (ids: string[] = ["a", "b"]) => {
   const box = setupBox(ids);
   const db = connect(join(mkdtempSync(join(SCRATCH, "agents-test-")), "t.db"));

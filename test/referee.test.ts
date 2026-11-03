@@ -1,7 +1,6 @@
 // The pipeline referee: which disagreements go to Sonnet, how its answer settles an item, and what stays for a person.
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { describe, test } from "node:test";
 import { refereeCandidates, refereeItems } from "../src/classify/referee.ts";
@@ -9,8 +8,8 @@ import { setRunner, type Runner } from "../src/classify/run.ts";
 import { settledLookup, settledTable } from "../src/classify/settled.ts";
 import { connect } from "../src/db.ts";
 import { useTestAccount } from "./accounts-fixture.ts";
+import { SCRATCH } from "./scratch.ts";
 
-const SCRATCH = join(homedir(), ".cache/craft-automation-scratch");
 mkdirSync(SCRATCH, { recursive: true });
 const db = connect(join(mkdtempSync(join(SCRATCH, "referee-test-")), "t.db"));
 useTestAccount(db);

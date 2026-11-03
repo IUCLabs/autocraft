@@ -1,14 +1,13 @@
 // Classifier agreement, confidence bands and cost totals on a tiny fixture with known answers.
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, test } from "node:test";
 import { classifiersReport, cost, disagreements } from "../src/dash/api/insight.ts";
 import { connect } from "../src/db.ts";
 import type { Req } from "../src/dash/types.ts";
+import { SCRATCH } from "./scratch.ts";
 
-const SCRATCH = join(homedir(), ".cache/craft-automation-scratch");
 mkdirSync(SCRATCH, { recursive: true });
 const dir = mkdtempSync(join(SCRATCH, "insight-test-"));
 const db = connect(join(dir, "t.db"));

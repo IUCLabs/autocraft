@@ -16,8 +16,8 @@ import { buildCheckout, DEFAULT_CAPS, isInstructionPath, pruneCheckouts, safePat
 import { REPO_PATH, sandboxCommand } from "../src/sandbox/command.ts";
 import { tokenNearExpiry } from "../src/sandbox/index.ts";
 import { useTestAccount } from "./accounts-fixture.ts";
+import { SCRATCH } from "./scratch.ts";
 
-const SCRATCH = join(homedir(), ".cache/craft-automation-scratch");
 mkdirSync(SCRATCH, { recursive: true });
 const dir = mkdtempSync(join(SCRATCH, "sandbox-test-"));
 

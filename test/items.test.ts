@@ -1,7 +1,6 @@
 // Settled type labels, the full-text index and the Items browser.
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { describe, test } from "node:test";
@@ -13,8 +12,8 @@ import { funnelByRepo } from "../src/dash/api/stats.ts";
 import { runSync } from "../src/mirror.ts";
 import { scopeToTracked } from "../src/repos.ts";
 import type { Req } from "../src/dash/types.ts";
+import { SCRATCH } from "./scratch.ts";
 
-const SCRATCH = join(homedir(), ".cache/craft-automation-scratch");
 mkdirSync(SCRATCH, { recursive: true });
 const freshPath = () => join(mkdtempSync(join(SCRATCH, "items-test-")), "m.db");
 const fresh = () => connect(freshPath());

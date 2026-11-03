@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { connect } from "../src/db.ts";
 import { reconcileRepo, runSync } from "../src/mirror.ts";
 import { trackRepo, untrackRepo } from "../src/repos.ts";
+import { SCRATCH } from "./scratch.ts";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type N = any;
@@ -51,7 +51,7 @@ function fake(f: Fake) {
 }
 
 function scratch() {
-  const db = connect(join(mkdtempSync(join(tmpdir(), "syncgaps-")), "m.db"));
+  const db = connect(join(mkdtempSync(join(SCRATCH, "syncgaps-")), "m.db"));
   db.exec("DELETE FROM tracked_repos");
   db.exec("INSERT INTO tracked_repos VALUES ('a','t','x')");
   db.exec("INSERT INTO repos (name, synced_at, high_water, reconciled_at) VALUES ('a','2026-11-02T09:00:00Z','2026-11-02T09:00:00Z','2026-11-02T09:00:00Z')");

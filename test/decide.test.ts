@@ -2,7 +2,6 @@
 // prompt, and re-runs. Model calls go to a fake runner.
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { describe, test } from "node:test";
@@ -16,8 +15,8 @@ import { settle } from "../src/classify/settled.ts";
 import type { Candidate } from "../src/decide/select.ts";
 import { validateAsk, type DecisionRow } from "../src/decisions.ts";
 import { claudeArgs, renderClaude } from "../src/prompts/index.ts";
+import { SCRATCH } from "./scratch.ts";
 
-const SCRATCH = join(homedir(), ".cache/craft-automation-scratch");
 mkdirSync(SCRATCH, { recursive: true });
 
 type V = { label: string; top?: number; flags?: string[] };

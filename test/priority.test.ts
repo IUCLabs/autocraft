@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { describe, test } from "node:test";
@@ -18,8 +17,8 @@ import { LEVELS, levelWith, parseHaikuImpacts, reachOf, reachScore, settleImpact
 import { selectCandidates as reviewCandidates } from "../src/review/candidates.ts";
 import { selectCandidates as verifyCandidates } from "../src/verify/candidates.ts";
 import { finalizeReviews } from "./fixture.ts";
+import { SCRATCH } from "./scratch.ts";
 
-const SCRATCH = join(homedir(), ".cache/craft-automation-scratch");
 mkdirSync(SCRATCH, { recursive: true });
 
 const none: Reach = { comments: 0, commenters: 0, linked: 0, duplicates: 0, security: false, ageDays: 0 };

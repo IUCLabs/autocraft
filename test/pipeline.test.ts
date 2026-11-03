@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { after, before, describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import type { Job, JobDetail, JobList, PipelineOverview } from "../web/src/api/types.ts";
+import { SCRATCH } from "./scratch.ts";
 
 process.env.CRAFT_AUTO_EXTRA_STEPS = fileURLToPath(new URL("./runner-steps.ts", import.meta.url));
 
@@ -20,7 +21,6 @@ const { startServer } = await import("../src/dash/server/index.ts");
 const { FakeProvider } = await import("../src/dash/server/provider.ts");
 const { FAKE_TOKEN } = await import("./runner-steps.ts");
 
-const SCRATCH = join(homedir(), ".cache/craft-automation-scratch");
 mkdirSync(SCRATCH, { recursive: true });
 const dir = mkdtempSync(join(SCRATCH, "pipeline-test-"));
 const dbFile = join(dir, "dash.db");

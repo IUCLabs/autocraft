@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { describe, test } from "node:test";
 import type { DatabaseSync } from "node:sqlite";
@@ -13,8 +12,8 @@ import { fixIssueApprovalOf, setFixIssueApproval } from "../src/fixissue/approva
 import { attemptOf, collectDue, fixDue, warmKeyOf, runFixIssue, runFixIssueCollect, selectIssues, type CollectDeps } from "../src/fixissue/index.ts";
 import { parseTriage, validateFixPatch } from "../src/fixissue/parse.ts";
 import { branchName, commentText, prBody, prTitle } from "../src/fixissue/template.ts";
+import { SCRATCH } from "./scratch.ts";
 
-const SCRATCH = join(homedir(), ".cache/craft-automation-scratch");
 mkdirSync(SCRATCH, { recursive: true });
 const dir = mkdtempSync(join(SCRATCH, "fixissue-test-"));
 process.env.CRAFT_AUTO_DIFF_CACHE = join(dir, "diffs");

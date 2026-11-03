@@ -1,7 +1,6 @@
 // Worker pieces: tar extraction, container argv, executor with a fake runtime, cache, config.
 import assert from "node:assert/strict";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { after, before, describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -16,8 +15,8 @@ import { downloadAndExtract } from "../src/worker/tarball.ts";
 import type { ClaimedTask, TaskStep } from "../src/worker/types.ts";
 import { startFakeCoordinator, type FakeCoordinator } from "./fake-coordinator.ts";
 import { makeTarGz } from "./tar-util.ts";
+import { SCRATCH } from "./scratch.ts";
 
-const SCRATCH = join(homedir(), ".cache/craft-automation-scratch");
 mkdirSync(SCRATCH, { recursive: true });
 const root = mkdtempSync(join(SCRATCH, "worker-exec-"));
 const rtDir = join(root, "rt");

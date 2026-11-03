@@ -2,7 +2,6 @@
 // stage per item", and keyset paging of the merge queue and the decision list.
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { describe, test } from "node:test";
 import type { DatabaseSync } from "node:sqlite";
@@ -14,8 +13,8 @@ import { queue } from "../src/dash/api/queue.ts";
 import { VectorIndex } from "../src/embed/vectors.ts";
 import { toBlob } from "../src/embed/store.ts";
 import type { Req } from "../src/dash/types.ts";
+import { SCRATCH } from "./scratch.ts";
 
-const SCRATCH = join(homedir(), ".cache/craft-automation-scratch");
 mkdirSync(SCRATCH, { recursive: true });
 const dir = mkdtempSync(join(SCRATCH, "reads-test-"));
 const fresh = (): DatabaseSync => connect(join(mkdtempSync(join(dir, "db-")), "t.db"));

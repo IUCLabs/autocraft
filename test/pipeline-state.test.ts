@@ -2,11 +2,11 @@
 // only operators write; bodies are validated and every write is audited.
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import type { PipelineState, StageLimit } from "../web/src/api/types.ts";
+import { SCRATCH } from "./scratch.ts";
 
 process.env.CRAFT_AUTO_EXTRA_STEPS = fileURLToPath(new URL("./runner-steps.ts", import.meta.url));
 
@@ -18,7 +18,6 @@ const { loadConfig } = await import("../src/dash/server/config.ts");
 const { startServer } = await import("../src/dash/server/index.ts");
 const { FakeProvider } = await import("../src/dash/server/provider.ts");
 
-const SCRATCH = join(homedir(), ".cache/craft-automation-scratch");
 mkdirSync(SCRATCH, { recursive: true });
 const dir = mkdtempSync(join(SCRATCH, "pipeline-state-test-"));
 const dbFile = join(dir, "dash.db");

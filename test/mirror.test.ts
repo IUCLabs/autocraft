@@ -30,12 +30,12 @@ test("no cutoff keeps every page", async () => {
 
 // ---- search-based incremental sync ----
 import { mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { acquireLock, lowPriority, runSync, searchSince, type Client } from "../src/mirror.ts";
 import { connect } from "../src/db.ts";
 import { itemText, textHash } from "../src/embed/text.ts";
 import { inputHash } from "../src/runner/classify.ts";
+import { SCRATCH } from "./scratch.ts";
 
 const node = (repo: string, number: number, state = "OPEN", updatedAt = "2026-11-02T10:00:00Z") => ({
   __typename: "Issue", repository: { name: repo }, number, title: `t${number}`, body: "", url: "u", author: { login: "a" },
@@ -57,7 +57,7 @@ function fakeClient(nodes: unknown[], issueCount = nodes.length, failAfter = Inf
 }
 
 function scratch() {
-  const dir = mkdtempSync(join(tmpdir(), "fastsync-"));
+  const dir = mkdtempSync(join(SCRATCH, "fastsync-"));
   const db = connect(join(dir, "m.db"));
   db.exec("DELETE FROM tracked_repos");
   db.exec("INSERT INTO tracked_repos VALUES ('a','t','x'),('b','t','x')");
@@ -252,7 +252,7 @@ test("the repo list refreshes only when older than 15 minutes", async () => {
 });
 
 test("a second lock holder is refused, and a stale lock is taken over", () => {
-  const dir = mkdtempSync(join(tmpdir(), "lock-"));
+  const dir = mkdtempSync(join(SCRATCH, "lock-"));
   const path = join(dir, "x.lock");
   const release = acquireLock(path);
   assert.ok(release);

@@ -2,7 +2,6 @@
 // and usage readings, against a fake claude command (no real login, no model call).
 import assert from "node:assert/strict";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, statSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { describe, test } from "node:test";
 import { listAccounts } from "../src/agents/accounts.ts";
@@ -11,8 +10,8 @@ import { timing } from "../src/agents/login.ts";
 import { AccountWatcher, addAccount, beginLogin, refreshNow, sendCode, signOut, stopLogin } from "../src/agents/manage.ts";
 import { parseUsage } from "../src/agents/status.ts";
 import { connect } from "../src/db.ts";
+import { SCRATCH } from "./scratch.ts";
 
-const SCRATCH = join(homedir(), ".cache", "craft-automation-scratch");
 mkdirSync(SCRATCH, { recursive: true });
 const dir = mkdtempSync(join(SCRATCH, "claude-accounts-"));
 const FAKE = join(dir, "claude");

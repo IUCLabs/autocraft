@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { describe, test } from "node:test";
 import { useTestAccount } from "./accounts-fixture.ts";
@@ -12,8 +11,8 @@ import { renderClaude } from "../src/prompts/index.ts";
 import { saveVerification } from "../src/verify/index.ts";
 import { collectDue, listVerifications, runCollect, verificationOf, NOT_FAILING_REASON, type CollectDeps } from "../src/verify/results.ts";
 import { queueTasks, queueWarmBuild } from "../src/verify/tasks.ts";
+import { SCRATCH } from "./scratch.ts";
 
-const SCRATCH = join(homedir(), ".cache/craft-automation-scratch");
 mkdirSync(SCRATCH, { recursive: true });
 const dir = mkdtempSync(join(SCRATCH, "verify-results-test-"));
 process.env.CRAFT_AUTO_ARTIFACT_DIR = join(dir, "artifacts");
