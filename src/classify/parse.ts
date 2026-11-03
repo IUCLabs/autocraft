@@ -104,10 +104,14 @@ export type JevAnswers = {
   needs_decision?: { noul?: number };
 };
 
-/** Jev yes-probabilities at or above this count as true. */
-export const NOUL_YES = 0.5;
-/** Jev's security probability needs this much before the flag counts: lower scores flag feature work as security. */
-export const JEV_SECURITY_MIN = 0.8;
+/** Jev's yes/no flags: yes from the flag's own threshold, no below JEV_FLAG_NO, unsure in between (Haiku decides). */
+export const JEV_SECURITY_YES = 0.9;
+export const JEV_NEEDS_DECISION_YES = 0.8;
+export const JEV_FLAG_NO = 0.3;
+
+export type FlagBand = "yes" | "no" | "unsure";
+
+export const flagBand = (p: number, yesMin: number): FlagBand => (p >= yesMin ? "yes" : p < JEV_FLAG_NO ? "no" : "unsure");
 
 export function jevVerdict(ref: string, a: JevAnswers): Verdict | null {
   const t = a.type;
@@ -115,7 +119,7 @@ export function jevVerdict(ref: string, a: JevAnswers): Verdict | null {
   const top = t.probabilities?.[t.choice] ?? t.confidence ?? 0;
   const probs = { type: t.probabilities ?? {}, top, security: a.security.noul, needs_decision: a.needs_decision.noul };
   return {
-    ref, type_label: t.choice, security: a.security.noul >= JEV_SECURITY_MIN, needs_decision: a.needs_decision.noul >= NOUL_YES,
+    ref, type_label: t.choice, security: flagBand(a.security.noul, JEV_SECURITY_YES) === "yes", needs_decision: flagBand(a.needs_decision.noul, JEV_NEEDS_DECISION_YES) === "yes",
     reason: `${t.choice} ${top.toFixed(2)}; security ${a.security.noul.toFixed(2)}; needs decision ${a.needs_decision.noul.toFixed(2)}`,
     probs: JSON.stringify(probs),
   };

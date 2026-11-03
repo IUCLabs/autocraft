@@ -2,6 +2,7 @@
 // (about 21,000 items): no per-item query.
 import type { DatabaseSync } from "node:sqlite";
 import { parseRef } from "../classify/parse.ts";
+import { latestRun, settledTable } from "../classify/settled.ts";
 import type { Reach } from "./score.ts";
 
 const key = (repo: string, n: number) => `${repo}#${n}`;
@@ -28,7 +29,8 @@ export function reachOfOpenItems(db: DatabaseSync, nowMs: number = Date.now()): 
   for (const r of db.prepare("SELECT repo, number, COUNT(DISTINCT author) AS n FROM comments WHERE kind = 'comment' GROUP BY repo, number").all() as { repo: string; number: number; n: number }[])
     commenters.set(key(r.repo, r.number), r.n);
   const security = new Set<string>();
-  for (const r of db.prepare(`SELECT DISTINCT repo, number FROM classifications WHERE classifier IN ('jev', 'haiku') AND flags LIKE '%"security"%'`).all() as { repo: string; number: number }[])
+  settledTable(db, latestRun(db));
+  for (const r of db.prepare("SELECT repo, number FROM temp.item_settled WHERE security = 1").all() as { repo: string; number: number }[])
     security.add(key(r.repo, r.number));
   // A PR that closes issues counts for the PR and for each issue.
   const linked = new Map<string, number>();

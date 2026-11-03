@@ -6,7 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 import { fillClassHashes, fillEmbedHashes } from "./itemhash.ts";
 import { BOOKKEEPING_COLUMNS, liveSql } from "./live.ts";
 import { JEV_USD_PER_INPUT_TOKEN } from "./prompts/index.ts";
-import { JEV_SECURITY_MIN } from "./classify/parse.ts";
+import { JEV_NEEDS_DECISION_YES, JEV_SECURITY_YES } from "./classify/parse.ts";
 
 export const DEFAULT_DB = join(homedir(), ".local/share/craft-automation/mirror.db");
 
@@ -81,7 +81,7 @@ const ADDED_INDEXES = [
 ];
 
 // Bump when migrateValues() or backfill() change what they do.
-const MIGRATION_VERSION = 4;
+const MIGRATION_VERSION = 5;
 
 // Rows written before their column existed.
 function backfill(db: DatabaseSync): void {
@@ -90,9 +90,18 @@ function backfill(db: DatabaseSync): void {
   db.prepare("UPDATE main.reviews SET seen_at = ? WHERE seen_at IS NULL").run(now);
   db.prepare("UPDATE main.opus_reviews SET seen_at = ? WHERE seen_at IS NULL").run(now);
   db.exec("UPDATE main.jobs SET repo = json_extract(params, '$.repo') WHERE repo IS NULL AND json_valid(params) AND json_type(params, '$.repo') = 'text'");
-  // Jev security flags stored below JEV_SECURITY_MIN no longer count.
-  db.prepare(`UPDATE main.classifications SET flags = (SELECT json_group_array(f.value) FROM json_each(flags) f WHERE f.value <> 'security')
-    WHERE classifier = 'jev' AND json_valid(flags) AND flags LIKE '%"security"%' AND json_valid(probs) AND json_extract(probs, '$.security') < ?`).run(JEV_SECURITY_MIN);
+  // Jev's stored flags follow the yes thresholds of src/classify/parse.ts; only rows whose flags differ are written.
+  db.prepare(`UPDATE main.classifications SET flags = CASE
+      WHEN json_extract(probs, '$.security') >= :sec AND json_extract(probs, '$.needs_decision') >= :nd THEN '["security","needs decision"]'
+      WHEN json_extract(probs, '$.security') >= :sec THEN '["security"]'
+      WHEN json_extract(probs, '$.needs_decision') >= :nd THEN '["needs decision"]'
+      ELSE '[]' END
+    WHERE classifier = 'jev' AND json_valid(probs) AND json_type(probs, '$.security') IN ('integer', 'real') AND json_type(probs, '$.needs_decision') IN ('integer', 'real')
+      AND flags IS NOT CASE
+      WHEN json_extract(probs, '$.security') >= :sec AND json_extract(probs, '$.needs_decision') >= :nd THEN '["security","needs decision"]'
+      WHEN json_extract(probs, '$.security') >= :sec THEN '["security"]'
+      WHEN json_extract(probs, '$.needs_decision') >= :nd THEN '["needs decision"]'
+      ELSE '[]' END`).run({ sec: JEV_SECURITY_YES, nd: JEV_NEEDS_DECISION_YES });
 }
 
 function addColumns(db: DatabaseSync): void {

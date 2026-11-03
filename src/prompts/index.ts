@@ -144,7 +144,7 @@ const JEV: JevPrompt = {
     },
   },
   output: `{"answers": {"type": {"choice", "confidence", "probabilities": {label: p}}, "security": {"noul": p}, "needs_decision": {"noul": p}}, "usage": {"input_tokens", "output_tokens"}}`,
-  validation: "The answer is kept only when type.choice is one of the six labels and both noul answers are numbers. A noul of 0.5 or more counts as yes. The probabilities are stored with the verdict. A call without a valid answer is made once more; after that the item is logged and stays unclassified.",
+  validation: "The answer is kept only when type.choice is one of the six labels and both noul answers are numbers. Each flag is a yes from its own noul (security 0.9, needs_decision 0.8), a no below 0.3, and unsure in between; when Jev is unsure, Haiku's answer decides. The probabilities are stored with the verdict. A call without a valid answer is made once more; after that the item is logged and stays unclassified.",
   limits: { perCall: 1, attempts: 2, timeoutSeconds: 600 },
 };
 

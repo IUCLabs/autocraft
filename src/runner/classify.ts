@@ -8,7 +8,7 @@
 // existed count as changed when the item was updated after the verdict.
 import type { DatabaseSync } from "node:sqlite";
 import { notOwnIntegrationSql } from "../dupes/held.ts";
-import { refOf, type Item } from "../classify/parse.ts";
+import { JEV_FLAG_NO, JEV_NEEDS_DECISION_YES, JEV_SECURITY_YES, refOf, type Item } from "../classify/parse.ts";
 import { freeSlots } from "../agents/accounts.ts";
 import { runHaiku, runJev } from "../classify/run.ts";
 import { fillClassHashes, SCHEME_ID } from "../itemhash.ts";
@@ -69,14 +69,20 @@ async function jevPass(ctx: StepContext, run: string, todo: Item[], hashes: Map<
   return done;
 }
 
-/** Items Jev is unsure of in `run` without a Haiku verdict as new as Jev's. */
+/**
+ * Open items in `run` without a Haiku verdict as new as Jev's where Jev is unsure of the type or of a flag.
+ * Items of repos with the pipeline on come first, then the newest Jev verdicts.
+ */
 export function haikuDue(db: DatabaseSync, run: string, limit: number): Item[] {
+  const p = "CASE WHEN json_valid(j.probs) THEN j.probs END";
+  const unsureFlag = (key: string, yes: number) => `COALESCE(json_extract(${p}, '$.${key}') >= :flagNo AND json_extract(${p}, '$.${key}') < ${yes}, 0)`;
   return db.prepare(`SELECT ${ITEM_COLUMNS} FROM items i JOIN tracked_repos t ON t.name = i.repo
     JOIN classifications j ON j.repo = i.repo AND j.number = i.number AND j.classifier = 'jev' AND j.run_id = :run
     LEFT JOIN classifications h ON h.repo = i.repo AND h.number = i.number AND h.classifier = 'haiku' AND h.run_id = :run
-    WHERE i.state = 'OPEN' AND ${notOwnIntegrationSql("i")} AND ${pilotSql("i")} AND COALESCE(json_extract(CASE WHEN json_valid(j.probs) THEN j.probs END, '$.top'), 0) < :sure
+    WHERE i.state = 'OPEN' AND ${notOwnIntegrationSql("i")} AND ${pilotSql("i")}
+      AND (COALESCE(json_extract(${p}, '$.top'), 0) < :sure OR ${unsureFlag("security", JEV_SECURITY_YES)} OR ${unsureFlag("needs_decision", JEV_NEEDS_DECISION_YES)})
       AND (h.at IS NULL OR h.at < j.at)
-    ORDER BY j.at DESC LIMIT :limit`).all({ run, sure: SURE, limit }) as unknown as Item[];
+    ORDER BY t.pipeline DESC, j.at DESC LIMIT :limit`).all({ run, sure: SURE, flagNo: JEV_FLAG_NO, limit }) as unknown as Item[];
 }
 
 async function haikuPass(ctx: StepContext, run: string, todo: Item[], sent: (n: number) => void): Promise<number> {
@@ -125,7 +131,7 @@ async function pass(ctx: StepContext, run: string, mode: "new" | "all"): Promise
   const sent = sentCounter(ctx);
   const jev = await jevPass(ctx, run, todo, hashes, sent);
   const unsure = ctx.cancelled() ? [] : haikuDue(ctx.db, run, limit);
-  ctx.log(`Haiku: ${unsure.length} items where Jev is under ${SURE * 100} % sure`);
+  ctx.log(`Haiku: ${unsure.length} items where Jev is unsure of the type (under ${SURE * 100} %) or of a flag`);
   const haiku = await haikuPass(ctx, run, unsure, sent);
   return { jev, due: due.length, haiku, haikuDue: unsure.length, left: due.length - jev };
 }

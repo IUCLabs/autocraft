@@ -9,10 +9,16 @@
 //   "disagree" with the referee's answer attached, for a person.
 // - No Jev verdict in the run: "unclassified".
 //
+// Each flag (security, needs decision) follows the same rule on its own: Jev
+// sure yes sets it, Jev sure no clears it, and between the two bands Haiku's
+// flag counts once Haiku has answered (not set before). The type's state does
+// not matter for the flags.
+//
 // settle() is the rule; settledOf() applies it to one item and settledTable()
 // to a whole run for queries.
 import type { DatabaseSync } from "node:sqlite";
 import { audit } from "../dash/audit.ts";
+import { flagBand, JEV_NEEDS_DECISION_YES, JEV_SECURITY_YES } from "./parse.ts";
 
 export const SURE = 0.9;
 
@@ -30,7 +36,7 @@ export type Settled = {
   confidence: number | null;     // Jev's top probability
   jevLabel: string | null;
   haikuLabel: string | null;
-  // Jev's flags when Jev is sure; otherwise every flag either classifier raised.
+  // Flags that are set: see the rule above.
   flags: string[];
   // The referee's answer when one exists for the current verdicts, else null.
   referee: Referee | null;
@@ -45,16 +51,31 @@ function firmFlags(s: Settled, nd: number | null | undefined): Settled {
   return { ...s, flags: s.flags.filter((f) => f !== "needs decision") };
 }
 
-/** `jev.nd` is Jev's needs_decision probability (needsDecisionOf). */
-export function settle(jev: (Verdict & { top: number | null; nd?: number | null }) | null, haiku: Verdict | null, referee: Referee | null = null): Settled {
-  return firmFlags(settleLabel(jev, haiku, referee), jev?.nd);
+type JevVerdict = Verdict & { top: number | null; nd?: number | null; sec?: number | null };
+
+/** One flag: Jev's band decides; unsure takes Haiku's answer, if any. A missing probability falls back to Jev's stored flag. */
+function flagSet(name: string, p: number | null | undefined, yesMin: number, jev: JevVerdict, haiku: Verdict | null): boolean {
+  if (typeof p !== "number") return jev.flags.includes(name);
+  const band = flagBand(p, yesMin);
+  return band === "unsure" ? !!haiku?.flags.includes(name) : band === "yes";
+}
+
+/** `jev.nd` and `jev.sec` are Jev's needs_decision and security probabilities (needsDecisionOf, securityOf). */
+export function settle(jev: JevVerdict | null, haiku: Verdict | null, referee: Referee | null = null): Settled {
+  const s = settleLabel(jev, haiku, referee);
+  if (!jev) return s;
+  const flags = [
+    ...(flagSet("security", jev.sec, JEV_SECURITY_YES, jev, haiku) ? ["security"] : []),
+    ...(flagSet("needs decision", jev.nd, JEV_NEEDS_DECISION_YES, jev, haiku) ? ["needs decision"] : []),
+  ];
+  return firmFlags({ ...s, flags }, jev.nd);
 }
 
 function settleLabel(jev: (Verdict & { top: number | null }) | null, haiku: Verdict | null, referee: Referee | null): Settled {
   if (!jev) return { status: "unclassified", label: null, source: null, confidence: null, jevLabel: null, haikuLabel: haiku?.label ?? null, flags: [], referee: null };
   const base = { confidence: jev.top, jevLabel: jev.label, haikuLabel: haiku?.label ?? null, referee: null };
-  if ((jev.top ?? 0) >= SURE) return { ...base, status: "settled", label: jev.label, source: "jev", flags: [...jev.flags] };
-  const flags = [...new Set([...jev.flags, ...(haiku?.flags ?? [])])];
+  const flags: string[] = [];
+  if ((jev.top ?? 0) >= SURE) return { ...base, status: "settled", label: jev.label, source: "jev", flags };
   if (!haiku) return { ...base, status: "waiting", label: null, source: null, flags };
   if (haiku.label === jev.label) return { ...base, status: "settled", label: jev.label, source: "haiku", flags };
   if (referee?.sure) return { ...base, referee, status: "settled", label: referee.label, source: "sonnet", flags };
@@ -96,7 +117,7 @@ export function settledLookup(db: DatabaseSync, run: string | null): (repo: stri
     const h = q.get(repo, number, "haiku", run) as { type_label: string; flags: string | null; at: string } | undefined;
     const r = j && h ? (q.get(repo, number, "sonnet", run) as { type_label: string; probs: string | null; reason: string | null; at: string } | undefined) : undefined;
     return settle(
-      j ? { label: j.type_label, flags: parseFlags(j.flags), top: topOf(j.probs), nd: needsDecisionOf(j.probs) } : null,
+      j ? { label: j.type_label, flags: parseFlags(j.flags), top: topOf(j.probs), nd: needsDecisionOf(j.probs), sec: securityOf(j.probs) } : null,
       h ? { label: h.type_label, flags: parseFlags(h.flags) } : null,
       r && j && h && r.at >= j.at && r.at >= h.at ? refereeOf(r.type_label, r.probs, r.reason) : null,
     );
@@ -119,6 +140,13 @@ function refereeOf(label: string, probs: string | null, reason: string | null): 
 export function needsDecisionOf(probs: string | null): number | null {
   try {
     const t = (JSON.parse(probs ?? "null") as { needs_decision?: unknown } | null)?.needs_decision;
+    return typeof t === "number" ? t : null;
+  } catch { return null; }
+}
+
+export function securityOf(probs: string | null): number | null {
+  try {
+    const t = (JSON.parse(probs ?? "null") as { security?: unknown } | null)?.security;
     return typeof t === "number" ? t : null;
   } catch { return null; }
 }
@@ -159,7 +187,7 @@ export function settledTable(db: DatabaseSync, run: string | null): void {
   const ins = db.prepare("INSERT OR REPLACE INTO temp.item_settled VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
   const put = (r: VerdictRow) => {
     const ref = r.sl !== null && r.ss !== null ? { label: r.sl, sure: !!r.ss, reason: r.sr ?? "" } : null;
-    const s = settle({ label: r.jl, flags: parseFlags(r.jf), top: topOf(r.probs), nd: needsDecisionOf(r.probs) }, r.hl === null ? null : { label: r.hl, flags: parseFlags(r.hf) }, ref);
+    const s = settle({ label: r.jl, flags: parseFlags(r.jf), top: topOf(r.probs), nd: needsDecisionOf(r.probs), sec: securityOf(r.probs) }, r.hl === null ? null : { label: r.hl, flags: parseFlags(r.hf) }, ref);
     ins.run(r.repo, r.number, s.status, s.label, s.source, s.confidence, s.jevLabel, s.haikuLabel, JSON.stringify(s.flags),
       s.flags.includes("security") ? 1 : 0, s.flags.includes("needs decision") ? 1 : 0, s.referee?.label ?? null, s.referee ? Number(s.referee.sure) : null, s.referee?.reason ?? null);
   };

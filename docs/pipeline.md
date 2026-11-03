@@ -48,8 +48,9 @@ Models: Jev, Haiku (pair checks); Opus and Sonnet (group comparison). Daily limi
 
 Every open item gets one type label (bugfix, performance, missing feature, small extra, plugin candidate, infra) and two flags (security, needs decision).
 
-- Jev first. Under 90 % sure, Haiku gives a second opinion.
+- Jev first. Haiku gives a second opinion when Jev is under 90 % sure of the type or unsure of a flag. Items of repos with the pipeline on come first.
 - A type is settled when Jev is at 90 % or more, or Haiku agrees with Jev. Disagreements among the scope labels go to Decide.
+- Each flag follows the same rule on its own, whatever the type's state. Security: Jev at 0.9 or more sets it, under 0.3 clears it, in between Haiku's flag counts. Needs decision: the same with 0.8. Until Haiku has answered an unsure flag, the flag is not set (no label, no priority bump). A settled bugfix keeps needs decision only when Jev is at 0.7 or more.
 - Other disagreements (for example bugfix against missing feature) go to the Sonnet referee, which applies the classification rules and says whether it is sure. A sure label settles the type, and a scope label then follows the normal scope path. An unsure answer leaves the label to a person. The referee has its own step and daily limit.
 - Started by the operator for a full pass; the pipeline classifies new and changed items on its own. Daily limit 2000.
 
