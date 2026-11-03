@@ -11,6 +11,8 @@ import { checksOf } from "./checks.ts";
 import { cachedDiff, codeDiff, ghDelta, ghDiff, type DeltaFetcher, type DiffFetcher } from "./diff.ts";
 import { selectOpusCandidates, type OpusCandidate } from "./opus-candidates.ts";
 import { parseOpusReply, type EarlierOpus, type OpusPr, type OpusReview } from "./opus-parse.ts";
+import { REPO_PATH } from "../sandbox/command.ts";
+import { checkoutForPr } from "../sandbox/index.ts";
 import { skipReason } from "./skip.ts";
 
 const PROMPT = CLAUDE_PROMPTS["review.opus"];
@@ -20,7 +22,11 @@ export type OpusParams = {
   /** Called with the running count of PRs handled (asked or skip-listed). */
   onHandled?: (n: number) => void;
 };
-export type OpusDeps = { fetchDiff: DiffFetcher; fetchDelta: DeltaFetcher; model: string; maxChars: number };
+export type OpusDeps = {
+  fetchDiff: DiffFetcher; fetchDelta: DeltaFetcher; model: string; maxChars: number;
+  /** Host directory with a read-only checkout of the PR head for a sandboxed call, or null to ask without tools. Absent: no tools. */
+  checkout?: (repo: string, number: number, head: string) => Promise<string | null>;
+};
 export type OpusSummary = {
   runId: string; repo: string; candidates: number; reviewed: number; skipListed: number;
   verdicts: Record<string, number>; missing: string[]; skipped: string[];
@@ -30,7 +36,7 @@ const now = () => new Date().toISOString();
 const refOf = (c: { repo: string; number: number }) => `${c.repo}#${c.number}`;
 
 export function defaultOpusDeps(): OpusDeps {
-  return { fetchDiff: ghDiff, fetchDelta: ghDelta, model: PROMPT.models[0]!, maxChars: DEFAULT_CAPS.charsPerCall };
+  return { fetchDiff: ghDiff, fetchDelta: ghDelta, model: PROMPT.models[0]!, maxChars: DEFAULT_CAPS.charsPerCall, checkout: (r, n, h) => checkoutForPr(r, n, h, console.log) };
 }
 
 type Saved = { mode: "full" | "delta" | "skipped"; base: string | null; model: string | null; review: OpusReview | null; skip: string | null };
@@ -115,10 +121,12 @@ export async function runOpusReview(db: DatabaseSync, params: OpusParams, log: (
       ci: ch?.overall ?? "unknown", mergeable: ch?.mergeable ?? null, files: cd.files, tests_omitted: cd.testsOmitted, lockfiles_omitted: cd.lockfilesOmitted,
       sonnet: c.sonnet, mode, earlier_opus: mode === "delta" ? earlier : null, diff,
     };
+    const checkout = (await deps.checkout?.(repo, c.number, c.head_oid)) ?? undefined;
+    if (checkout) input.repo_dir = REPO_PATH;
     let usage: Usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: null };
     let got: OpusReview | null = null;
     for (let attempt = 0; attempt < PROMPT.limits.attempts && !got; attempt++) {
-      const reply = await askClaude("review.opus", deps.model, [input], db);
+      const reply = await askClaude("review.opus", deps.model, [input], db, { checkout });
       if (!reply) continue;
       usage = add(usage, reply.usage);
       got = parseOpusReply(reply.text, input.ref);

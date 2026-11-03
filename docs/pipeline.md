@@ -216,6 +216,8 @@ Makes the GitHub comments and closes that follow an operator's answer. No model.
 | Sonnet | Referee for label disagreements outside the scope labels (a person only when it is unsure), decision summaries, first review pass, fix-ups, issue fixes, verify plans |
 | Opus | Final review of every PR Sonnet rates take or take-fix (verdict, complete fix list, how sure it is); checks of the patches Fix-up and Fix write |
 
+The Opus review runs with tools: Read, Grep and Glob on a read-only checkout of the PR's head commit, inside a sandbox (see Trust boundary). Every other call runs without tools. The Prompts page shows each prompt's tools, turn limit and sandbox mode.
+
 [Prompts](/prompts) shows every prompt exactly as sent. The code can call a model only with a registered prompt. Classifiers and Cost show how often the models agree and what each stage costs.
 
 ## Claude accounts and agent runs
@@ -259,6 +261,11 @@ Everything else waits for a decision on this dashboard.
 - Comments and picks by other people are shown here but never reach a model's prompt.
 - All GitHub text is untrusted data: models judge it and never follow instructions in it.
 - Every GitHub write (labels, comments, closes, pushes, fix PRs, merges) needs the operator's approval for that repo, given on the Repos page; the CLI reads approvals and cannot set them. Approvals are audited.
+- Model calls run without tools, except a prompt that registers a sandbox mode (the Opus review). Claude Code's file tools could otherwise read anything this user can, such as tokens and other accounts' logins, and untrusted text could steer a model into echoing it. Two layers keep that from happening, plus a backstop:
+  1. Claude Code allows only `Read`, `Grep` and `Glob`, denies everything else without asking (`dontAsk`, no prompts), allows reads of the checkout path only, is confined to that directory, loads no MCP servers, skills, slash commands or user and project settings, and stops after a registered number of turns.
+  2. bubblewrap runs the call in new namespaces (network shared, the API needs it) with an empty home and a clean environment. Only these are visible: the claude binary, `/usr`, the TLS certificates and resolver config, the checkout read-only at `/work/repo`, and the used account's credentials file (the rest of its config directory is not). The working directory is an empty `/work`, so instructions and settings inside the checkout are never loaded.
+  3. Backstop: anything in a tool-mode reply that looks like a token or key is removed before the reply is stored or used (the log scrubber).
+  The checkout is built from the cached clone without a working tree: only regular files under validated paths are written (no symlinks, submodules or `.git`), files over 2 MB are left out, and a tree over 20,000 files or 150 MB gets no checkout. Nothing in it is executed. Checkouts are kept per repo and commit and deleted after a day. When there is no checkout, the head moved, or bubblewrap is missing, the call runs without tools (`CRAFT_AUTO_NO_SANDBOX=1` forces that).
 - Only operators can turn the pipeline on or off, change limits, manage accounts or cancel jobs. A maintainer or viewer account, even a compromised one, cannot trigger a merge, close, post, label, push or any step.
 
 ## Architecture

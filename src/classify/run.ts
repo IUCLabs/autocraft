@@ -1,6 +1,6 @@
 // Runs the classifiers: Jev (one `jev ask` per item) and Haiku (batches through `claude -p`).
 import { spawn } from "node:child_process";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
@@ -10,6 +10,8 @@ import { jevParallel } from "../agents/accounts.ts";
 import { claudeRoom, startClaudeRun, startJevRun } from "../agents/call.ts";
 import { finishRun } from "../agents/runs.ts";
 import { scrubError } from "../agents/text.ts";
+import { scrub } from "../runner/scrub.ts";
+import { resolveClaudeBin, sandboxCommand } from "../sandbox/index.ts";
 import { CLAUDE_PROMPTS, JEV_ARGS, JEV_PROMPTS, claudeArgs, claudePromptOf, jevPromptOf, renderClaude, renderJev, type ClaudeInput, type ClaudePromptId, type JevPromptId } from "../prompts/index.ts";
 import type { DupePair } from "../dupes/pair.ts";
 import { flagsOf, jevVerdict, parseHaikuReply, parseRef, refOf, type Item, type JevAnswers, type Verdict } from "./parse.ts";
@@ -163,6 +165,9 @@ function replySummary(text: string, asked: number): string {
 
 const exitClass = (code: number | null): string => (code === null ? "timed out or killed" : code === -1 ? "could not start" : `exit code ${code}`);
 
+/** `checkout`: host directory of a read-only checkout; with it, a prompt that registers a sandbox runs with its tools inside bubblewrap (src/sandbox). */
+export type AskOptions = { checkout?: string };
+
 /**
  * Sends a registered prompt (src/prompts) to `claude -p`. Callers pass a prompt
  * id and the prompt's input, never prompt text: that keeps every prompt on the
@@ -172,19 +177,28 @@ const exitClass = (code: number | null): string => (code === null ? "timed out o
  * and headroom, runs with that account's CLAUDE_CONFIG_DIR, and is recorded from
  * start to end (src/agents).
  */
-export async function askClaude<K extends ClaudePromptId>(id: K, model: string, input: ClaudeInput[K], db: DatabaseSync): Promise<{ text: string; usage: Usage } | null> {
-  const args = claudeArgs(id, model);
+export async function askClaude<K extends ClaudePromptId>(id: K, model: string, input: ClaudeInput[K], db: DatabaseSync, opts: AskOptions = {}): Promise<{ text: string; usage: Usage; turns?: number } | null> {
+  const sandboxed = opts.checkout !== undefined && CLAUDE_PROMPTS[id].sandbox !== undefined;
+  const args = claudeArgs(id, model, sandboxed);
   const prompt = renderClaude(id, input);
   const items = refsOf(input);
   const run = await startClaudeRun(db, { promptId: id, promptVersion: promptVersion(id), provider: "claude", model, items, prompt });
   const end = (e: Parameters<typeof finishRun>[2]) => finishRun(db, run.runId, e);
   try {
     const cwd = mkdtempSync(join(tmpdir(), "classify-"));
-    const r = await runner("claude", args, prompt, cwd, CLAUDE_PROMPTS[id].limits.timeoutSeconds * 1000, { CLAUDE_CONFIG_DIR: run.configDir });
+    let r: Proc;
+    if (sandboxed) {
+      const claudeBin = resolveClaudeBin(), credentials = join(run.configDir, ".credentials.json");
+      if (!claudeBin || !existsSync(credentials)) throw new Error("sandboxed call: claude binary or the account's credentials file not found");
+      const c = sandboxCommand({ claudeBin, checkout: opts.checkout!, credentials, claudeArgs: args });
+      r = await runner(c.cmd, c.args, prompt, cwd, CLAUDE_PROMPTS[id].limits.timeoutSeconds * 1000);
+      // Backstop: nothing that looks like a token or key leaves the sandbox call.
+      r = { ...r, stdout: scrub(r.stdout), stderr: scrub(r.stderr) };
+    } else r = await runner("claude", args, prompt, cwd, CLAUDE_PROMPTS[id].limits.timeoutSeconds * 1000, { CLAUDE_CONFIG_DIR: run.configDir });
     try {
       // Some CLI versions print the event list, others only the final result object.
       const parsed = JSON.parse(r.stdout) as { type?: string }[] | { type?: string };
-      const j = (Array.isArray(parsed) ? parsed.find((e) => e.type === "result") : parsed) as { result?: string; is_error?: boolean; total_cost_usd?: number; usage?: Record<string, number> } | undefined;
+      const j = (Array.isArray(parsed) ? parsed.find((e) => e.type === "result") : parsed) as { result?: string; is_error?: boolean; total_cost_usd?: number; num_turns?: number; usage?: Record<string, number> } | undefined;
       if (!j) {
         end({ state: "failed", error: `no result (${exitClass(r.code)}) ${r.stderr}`.slice(0, 400), summary: "no result", output: r.stdout });
         return null;
@@ -196,8 +210,9 @@ export async function askClaude<K extends ClaudePromptId>(id: K, model: string, 
         end({ state: "failed", tokens, error: scrubError(`model error ${typeof j.result === "string" ? j.result : ""}`), summary: "model error", output: r.stdout });
         return null;
       }
-      end({ state: "done", tokens, summary: replySummary(j.result, items.length), output: j.result });
-      return { text: j.result, usage };
+      const turns = sandboxed ? j.num_turns : undefined;
+      end({ state: "done", tokens, summary: turns === undefined ? replySummary(j.result, items.length) : `answered in ${turns} turns`, output: j.result });
+      return { text: j.result, usage, ...(turns !== undefined && { turns }) };
     } catch {
       end({ state: "failed", error: scrubError(`unreadable output (${exitClass(r.code)}) ${r.stderr}`), summary: r.code === 0 ? "unreadable output" : exitClass(r.code), output: r.stdout });
       return null;
