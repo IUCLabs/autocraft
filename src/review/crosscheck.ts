@@ -63,7 +63,7 @@ const list = <T>(s: string | null): T[] => {
 
 /**
  * Open, non-draft PRs of `repo` whose final review at the current head is a Sonnet hold from a call with
- * more than one PR (not "too large", not a duplicate hold, not an Opus or skip-list result), not held
+ * more than one PR (or from before call sizes were recorded) (not "too large", not a duplicate hold, not an Opus or skip-list result), not held
  * for duplicates or the backlog, not stale after new discussion, and not covered by an earlier cross-check at that head.
  */
 export function crosscheckEligible(db: DatabaseSync, repo: string): OpusCandidate[] {
@@ -74,7 +74,7 @@ export function crosscheckEligible(db: DatabaseSync, repo: string): OpusCandidat
     JOIN reviews rv ON rv.repo = f.repo AND rv.number = f.number AND rv.head_oid = f.head_oid
     LEFT JOIN pr_checks c ON c.repo = i.repo AND c.number = i.number
     WHERE i.repo = ? AND i.kind = 'pr' AND i.state = 'OPEN' AND f.source = 'sonnet' AND f.sonnet_verdict = 'hold' AND f.final = 1 AND f.model IS NOT NULL
-      AND rv.call_size > 1 AND f.duplicate_of IS NULL AND f.sonnet_reason NOT LIKE 'duplicate of %' AND ${notHeldSql("i")}
+      AND (rv.call_size IS NULL OR rv.call_size > 1) AND f.duplicate_of IS NULL AND f.sonnet_reason NOT LIKE 'duplicate of %' AND ${notHeldSql("i")}
       AND NOT EXISTS (SELECT 1 FROM review_crosschecks x WHERE x.repo = f.repo AND x.number = f.number AND x.head_oid = f.head_oid)
     ORDER BY i.number`).all(repo) as Row[];
   const stale = staleReviews(db, repo);
@@ -213,7 +213,7 @@ export function crosscheckReport(db: DatabaseSync, runId?: string): string {
     single_verdict: string | null; single_reason: string | null; batch_reason: string | null;
   }[];
   if (!rows.length) return `No results for run ${id}.`;
-  const out = [`Run ${id}: ${rows.length} PRs, each a Sonnet hold from a first-pass call with more than one PR (seed ${rows[0]!.seed ?? "?"}); Opus was told the first review rated it hold`];
+  const out = [`Run ${id}: ${rows.length} PRs, each a Sonnet hold from a first-pass call with more than one PR or an older review (seed ${rows[0]!.seed ?? "?"}); Opus was told the first review rated it hold`];
   const tally = (label: string, pick: (r: (typeof rows)[number]) => string | null) => {
     const asked = rows.filter((r) => pick(r) !== null);
     if (!asked.length) return;
