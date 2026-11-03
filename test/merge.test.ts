@@ -177,7 +177,7 @@ describe("merge queue", () => {
 
   test("new discussion at merge time holds the PR without a refusal record; once it is reviewed again it merges", async () => {
     const db = fresh();
-    const note = { id: "n1", author: { login: "rabbit", __typename: "Bot" }, authorAssociation: "NONE", createdAt: "2026-01-03T00:00:00Z", body: "Major: this breaks the overlap" };
+    const note = { id: "n1", author: { login: "reviewer", __typename: "User" }, authorAssociation: "CONTRIBUTOR", createdAt: "2026-01-03T00:00:00Z", body: "Major: this breaks the overlap" };
     const log: Log = [];
     const s = await runMerge(db, { repo: "app", dryRun: false, limit: 1 }, quiet, fakes(log, { discussion: [note] }));
     assert.deepEqual(s.merged, []);
