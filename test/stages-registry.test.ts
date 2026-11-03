@@ -1,12 +1,16 @@
 // Invariants of the stage registry (src/stages/registry.ts) and of the consumers that read it:
 // runner steps, autopilot lanes and limits, flow shape, prompts, swimlane cards and docs/pipeline.md.
 import assert from "node:assert/strict";
+import { mkdtempSync } from "node:fs";
+import { join } from "node:path";
 import { test } from "node:test";
+import { connect } from "../src/db.ts";
 import { buildFlow } from "../src/flow/shape.ts";
 import { PROMPTS } from "../src/prompts/index.ts";
-import { DEFAULT_PER_DAY, LANES, buildLanes, LIMIT_STEPS, ZERO_ONLY } from "../src/runner/autopilot.ts";
+import { DEFAULT_PER_DAY, LANES, buildLanes, LIMIT_STEPS, ZERO_ONLY, limitRow } from "../src/runner/autopilot.ts";
 import { STEPS } from "../src/runner/steps.ts";
 import { GLOBAL_WAITS, STAGES, defaultPerDay, lanesInOrder, limitSteps, stageById, stageOfStep, stagesInOrder, zeroOnlySteps } from "../src/stages/registry.ts";
+import { SCRATCH } from "./scratch.ts";
 import { EDGES, STEPS as CARDS } from "../web/src/ui/swimlaneDef.ts";
 
 const META = { repo: null, now: "", lastSync: null, run: null, countedAt: null, uncounted: 0 };
@@ -108,6 +112,31 @@ test("every wait has a kind and a unique name", () => {
   assert.equal(new Set(all.map((w) => w.name)).size, all.length);
 });
 
-test("an edge's branch is a state of the stage it leaves", () => {
+test("snapshot: the run stage of every step", () => {
+  const got = Object.fromEntries(STAGES.flatMap((s) => s.steps.map((x) => [x.name, s.runStage])));
+  assert.deepEqual(got, {
+    embed: 1, dupes: 3, "dupes-compare": 3, "classify-new": 2, "classify-all": 2, referee: 2, "areas-propose": 2, "areas-suggest": 2, "areas-rescan": 2,
+    prioritize: 2, rank: 2, decide: 3, conversation: 3, "labels-ensure": 4, "labels-apply": 4, "opus-review": 5, checks: 5, "review-post": 5,
+    fixissue: 7, "fixissue-collect": 7, fixup: 6, verify: 6, "verify-collect": 6, merge: 6, "merge-ask": 6, "ci-approve": 6, act: 6,
+  });
+});
+
+test("snapshot: the steps with a limit setting and the fallback limits", () => {
+  assert.deepEqual([...LIMIT_STEPS].sort(), [
+    "act", "checks", "ci-approve", "classify-new", "conversation", "decide", "dupes", "dupes-compare", "embed", "fixissue", "fixup",
+    "labels-apply", "merge", "opus-review", "prioritize", "referee", "review-post", "verify",
+  ]);
+  assert.deepEqual(DEFAULT_PER_DAY, { dupes: 2000, "dupes-compare": 200, referee: 500, conversation: 30, "ci-approve": 30 });
+});
+
+test("a new database starts every limit at the registry's value", () => {
+  const db = connect(join(mkdtempSync(join(SCRATCH, "limits-seed-")), "s.db"));
+  for (const s of STAGES) for (const x of s.steps) {
+    if (x.limit === undefined) continue;
+    assert.equal(limitRow(db, x.name).per_day, x.seeded ?? (typeof x.limit === "number" ? x.limit : null), x.name);
+  }
+});
+
+test("an edge's branch, if any, is a state of the stage it leaves", () => {
   for (const s of STAGES) for (const e of s.edges) if (e.branch !== null) assert.ok(s.states.some((x) => x.id === e.branch), `${s.id}>${e.to}: ${e.branch}`);
 });

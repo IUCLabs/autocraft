@@ -11,30 +11,34 @@ const cell = (s: string) => s.replace(/\|/g, "\\|");
 const table = (head: string[], rows: string[][]) =>
   [`| ${head.join(" | ")} |`, `|${head.map(() => "---").join("|")}|`, ...rows.map((r) => `| ${r.map(cell).join(" | ")} |`)].join("\n");
 
+const lower = (s: string) => s.charAt(0).toLowerCase() + s.slice(1);
+
 const MODEL_NAMES: Record<StageDef["models"][number]["model"], string> = { jev: "Jev", haiku: "Haiku", sonnet: "Sonnet", opus: "Opus", local: "Local embedding model" };
 
 function stageList(): string {
-  return stagesInOrder().map((s) => `${s.order}. ${s.title}: ${s.description}`).join("\n");
+  return stagesInOrder().map((s) => `${s.order}. ${s.docSection}: ${s.description}`).join("\n");
 }
 
 function modelTable(): string {
   const rows = (Object.keys(MODEL_NAMES) as (keyof typeof MODEL_NAMES)[]).filter((m) => m !== "local").map((m) => {
-    const uses = stagesInOrder().flatMap((s) => s.models.filter((x) => x.model === m).map((x) => x.use));
-    return [MODEL_NAMES[m], [...new Set(uses)].join("; ")];
+    const mine = stagesInOrder().flatMap((s) => s.models.filter((x) => x.model === m).map((x) => ({ stage: s.docSection, ...x })));
+    const uses = mine.map((x) => `${x.stage}: ${lower(x.use)}`);
+    const remarks = mine.flatMap((x) => (x.remark ? [x.remark] : []));
+    return [MODEL_NAMES[m], [...new Set([...uses, ...remarks])].join("<br>")];
   });
   return table(["Model", "Used for"], rows);
 }
 
 function limitsTable(): string {
   const steps = stagesInOrder().flatMap((s) => s.steps.filter((x) => x.limit !== undefined));
-  const shown = (x: (typeof steps)[number]) => (typeof x.limit === "number" ? String(x.limit) : x.zeroOnly ? "none (0 pauses it)" : "none");
+  const shown = (x: (typeof steps)[number]) => (x.seeded !== undefined ? String(x.seeded) : typeof x.limit === "number" ? String(x.limit) : x.zeroOnly ? "none (0 pauses it)" : "none");
   const rows: string[][] = [];
   const half = Math.ceil(steps.length / 2);
   for (let i = 0; i < half; i++) {
     const a = steps[i]!, b = steps[i + half];
     rows.push([a.label ?? a.name, shown(a), b ? (b.label ?? b.name) : "", b ? shown(b) : ""]);
   }
-  return table(["Step", "Default limit", "Step", "Default limit"], rows);
+  return table(["Step", "Default limit (new database)", "Step", "Default limit (new database)"], rows);
 }
 
 function waits(): string {
@@ -45,7 +49,7 @@ function waits(): string {
 function stageTable(): string {
   return table(["Stage", "What it does", "Model", "Stops for a person"], stagesInOrder().map((s) => {
     const models = [...new Set(s.models.map((m) => MODEL_NAMES[m.model]))];
-    return [s.title, s.description, models.length ? models.join(", ") : "none", s.person ? `yes: ${s.person}` : "no"];
+    return [s.docSection, s.description, models.length ? models.join(", ") : "none", s.person ? `yes: ${lower(s.person)}` : "no"];
   }));
 }
 

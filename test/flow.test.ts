@@ -12,6 +12,7 @@ import { listItems } from "../src/dash/api/items.ts";
 import { queue } from "../src/dash/api/queue.ts";
 import type { Req } from "../src/dash/types.ts";
 import { scopeToTracked } from "../src/repos.ts";
+import { STAGES } from "../src/stages/registry.ts";
 import { candidateRefs, selectCandidates } from "../src/review/candidates.ts";
 import { SCRATCH } from "./scratch.ts";
 
@@ -223,4 +224,14 @@ test("every count that links to a flow filter opens exactly its items", async ()
       assert.equal(rows, b.count, `${n.id}.${b.id}`);
     }
   assert.ok(linked >= 30);
+});
+
+test("the branch counts keep the registry's state ids", () => {
+  const db = build();
+  refreshSummary(db);
+  const { counts } = readSummary(db, null);
+  for (const s of STAGES) {
+    const keys = Object.keys(counts).filter((k) => k.startsWith(`${s.id}.`)).map((k) => k.slice(s.id.length + 1)).filter((k) => k !== "total" && !k.includes("."));
+    assert.deepEqual(keys.sort(), s.states.map((x) => x.id).sort(), s.id);
+  }
 });
