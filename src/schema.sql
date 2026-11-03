@@ -384,6 +384,7 @@ CREATE TABLE IF NOT EXISTS opus_reviews (
   fixes TEXT,                         -- JSON [{file, change}], the complete list for take-fix
   risks TEXT,                         -- JSON [string]
   skip_reason TEXT,                   -- mode = 'skipped' only
+  -- public_review (added column): JSON {summary, points}, the text posted on the PR; NULL when the reply had none
   PRIMARY KEY (repo, number, head_oid)
 );
 

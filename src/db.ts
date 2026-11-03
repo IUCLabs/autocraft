@@ -36,6 +36,7 @@ const ADDED_COLUMNS: [table: string, column: string, type: string][] = [
   ["verifications", "note", "TEXT"],
   ["fix_attempts", "size", "TEXT"],
   ["repos", "reconciled_at", "TEXT"],
+  ["opus_reviews", "public_review", "TEXT"],
 ];
 
 // Indexes on added columns: they can only be created once the column exists.

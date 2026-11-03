@@ -5,8 +5,7 @@
 
 export const REVIEW_BODY_MAX = 6000;
 const ITEM_MAX = 600;
-const MAX_FIXES = 20;
-const MAX_RISKS = 6;
+const MAX_POINTS = 8;
 
 /** "claude-opus-5-5" -> "Opus 5.5", "claude-opus-4-1-20250805" -> "Opus 4.1", "opus" -> "Opus". Other ids are returned as they are. */
 export function modelLabel(id: string | null | undefined): string {
@@ -37,28 +36,22 @@ export type ReviewPostInput = {
   model: string | null;
   verdict: string;
   sure: boolean;
-  reason: string | null;
-  fixes: { file: string; change: string }[];
-  risks: string[];
+  /** The Opus `public` field: the only review text that is posted. */
+  summary: string;
+  points: string[];
   head: string;
 };
 
 export function reviewBody(r: ReviewPostInput): string {
   const head = `_AI-generated review (${modelLabel(r.model)}). Not a maintainer decision._\n\n${VERDICT_LINE[r.verdict] ?? "Review:"}${r.sure ? "" : " The review was not certain."}`;
   const foot = `Reviewed at ${/^[0-9a-f]+$/i.test(r.head) ? r.head.slice(0, 7) : r.head}.`;
+  const summary = cleanLine(r.summary);
   const items: string[] = [];
-  const reason = cleanLine(r.reason);
-  if (reason) items.push(`- ${reason}`);
-  for (const f of r.fixes.slice(0, MAX_FIXES)) {
-    const file = cleanLine(f.file, 200).replace(/`/g, "'");
-    const change = cleanLine(f.change);
-    if (file || change) items.push(file ? `- \`${file}\`: ${change}` : `- ${change}`);
-  }
-  for (const k of r.risks.slice(0, MAX_RISKS)) {
-    const line = cleanLine(k);
+  for (const p of r.points.slice(0, MAX_POINTS)) {
+    const line = cleanLine(p);
     if (line) items.push(`- ${line}`);
   }
-  const fixed = head.length + foot.length + 8;
+  const fixed = head.length + foot.length + summary.length + 8;
   const kept: string[] = [];
   let used = fixed;
   for (const line of items) {
@@ -69,5 +62,5 @@ export function reviewBody(r: ReviewPostInput): string {
     kept.push(line);
     used += line.length + 1;
   }
-  return `${head}\n\n${kept.length ? `${kept.join("\n")}\n\n` : ""}${foot}`;
+  return `${head}\n\n${summary ? `${summary}\n\n` : ""}${kept.length ? `${kept.join("\n")}\n\n` : ""}${foot}`;
 }

@@ -61,6 +61,11 @@ describe("Opus reply", () => {
     assert.equal(parseOpusReply(JSON.stringify({ ...ok, fixes: [] }), "app#1"), null);
     assert.equal(parseOpusReply(JSON.stringify({ ...ok, sure: "yes" }), "app#1"), null);
     assert.equal(parseOpusReply(JSON.stringify(ok), "app#2"), null);
+    assert.equal(parseOpusReply(JSON.stringify(ok), "app#1")?.public, null);
+    const pub = { summary: "Fine.", points: ["a.rs:1: x"] };
+    assert.deepEqual(parseOpusReply(JSON.stringify({ ...ok, public: pub }), "app#1")?.public, pub);
+    assert.equal(parseOpusReply(JSON.stringify({ ...ok, public: { summary: "", points: [] } }), "app#1")?.public, null);
+    assert.equal(parseOpusReply(JSON.stringify({ ...ok, public: "text" }), "app#1")?.verdict, "take-fix");
     assert.deepEqual(parseOpusReply(JSON.stringify({ ...ok, verdict: "take", fixes: [{ file: "a", change: "b" }] }), "app#1")?.fixes, []);
   });
 });

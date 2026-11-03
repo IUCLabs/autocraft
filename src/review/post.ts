@@ -13,6 +13,7 @@ import { Client, type Querier } from "../mirror.ts";
 import { prInfo } from "../merge/index.ts";
 import { pilotSql } from "../pilot.ts";
 import { headOf } from "./candidates.ts";
+import { parsePublic } from "./opus-parse.ts";
 import { reviewBody } from "./post-template.ts";
 
 const ACTOR = "review-post";
@@ -30,14 +31,11 @@ export const defaultPostDeps = (): PostDeps => ({ querier: new Client(1000), now
 
 type Row = {
   number: number; head_oid: string | null; updated_at: string | null; c_head: string | null; c_at: string | null;
-  o_head: string; model: string | null; verdict: string; sure: number | null; reason: string | null; fixes: string | null; risks: string | null;
+  o_head: string; model: string | null; verdict: string; sure: number | null; public_review: string;
   p_id: string | null; p_head: string | null;
 };
-const list = <T>(s: string | null): T[] => {
-  try {
-    const v = JSON.parse(s ?? "[]") as unknown;
-    return Array.isArray(v) ? (v as T[]) : [];
-  } catch { return []; }
+const safeJson = (s: string): unknown => {
+  try { return JSON.parse(s); } catch { return null; }
 };
 
 /**
@@ -46,8 +44,8 @@ const list = <T>(s: string | null): T[] => {
  */
 export function postCandidates(db: DatabaseSync, repo: string): PostCandidate[] {
   const rows = db.prepare(`SELECT i.number, i.head_oid, i.updated_at, c.head_oid AS c_head, c.fetched_at AS c_at,
-      o.head_oid AS o_head, o.model, o.verdict, o.sure, o.reason, o.fixes, o.risks, p.review_id AS p_id, p.head_oid AS p_head
-    FROM items i JOIN opus_reviews o ON o.repo = i.repo AND o.number = i.number AND o.verdict IS NOT NULL
+      o.head_oid AS o_head, o.model, o.verdict, o.sure, o.public_review, p.review_id AS p_id, p.head_oid AS p_head
+    FROM items i JOIN opus_reviews o ON o.repo = i.repo AND o.number = i.number AND o.verdict IS NOT NULL AND o.public_review IS NOT NULL
     LEFT JOIN pr_checks c ON c.repo = i.repo AND c.number = i.number
     LEFT JOIN review_posts p ON p.repo = i.repo AND p.number = i.number
     WHERE i.repo = ? AND i.kind = 'pr' AND i.state = 'OPEN' AND ${notOwnIntegrationSql("i")} AND ${pilotSql("i")}
@@ -57,13 +55,14 @@ export function postCandidates(db: DatabaseSync, repo: string): PostCandidate[] 
     ORDER BY i.number`).all(repo) as Row[];
   const out: PostCandidate[] = [];
   for (const r of rows) {
+    const pub = parsePublic(safeJson(r.public_review));
+    if (!pub) continue;
     const head = headOf(r);
     if (!head || head !== r.o_head || r.p_head === head) continue;
     out.push({
       repo, number: r.number, head_oid: head, editId: r.p_id,
       body: reviewBody({
-        model: r.model, verdict: r.verdict, sure: r.sure !== 0, reason: r.reason,
-        fixes: list<{ file: string; change: string }>(r.fixes), risks: list<string>(r.risks), head,
+        model: r.model, verdict: r.verdict, sure: r.sure !== 0, summary: pub.summary, points: pub.points, head,
       }),
     });
   }

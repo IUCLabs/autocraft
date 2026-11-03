@@ -74,14 +74,13 @@ export const COMMENT_TEMPLATES: CommentTemplate[] = [
   {
     id: "review.post", stage: "Review",
     purpose: "Posted as a pull request review (event Comment, never an approval or a change request) on a pull request with a final Opus review at its current head. A later review at a new head edits this review instead of adding another.",
-    text: reviewBody({ model: "{{model}}", verdict: "take-fix", sure: true, reason: "{{reason}}", fixes: [{ file: "{{file}}", change: "{{change}}" }], risks: ["{{risk}}"], head: "{{head}}" }),
+    text: reviewBody({ model: "{{model}}", verdict: "take-fix", sure: true, summary: "{{summary}}", points: ["{{point}}"], head: "{{head}}" }),
     placeholders: [
       { name: "model", meaning: "The model that wrote the review, as a name and version (Opus 5.5)" },
       { name: "verdict", meaning: "By verdict: take \"No blocking problems found.\", take-fix \"Small fixes needed before merging:\", hold \"Changes needed:\", close \"This does not look mergeable as it is:\"; \" The review was not certain.\" follows when the model was unsure" },
-      { name: "reason, change, risk", meaning: "The review's own text, cleaned to one line each (mentions removed, at most 600 characters); the whole body is cut at 6000 characters" },
-      { name: "file", meaning: "The file a listed fix applies to" },
+      { name: "summary, point", meaning: "The review text Opus wrote for the PR author (its public field: summary and at most 8 points), cleaned to one line each (mentions and HTML tags removed, at most 600 characters); the whole body is cut at 6000 characters. Opus's internal reason, fixes and risks are never posted" },
       { name: "head", meaning: "The first 7 characters of the reviewed head commit" },
     ],
-    example: reviewBody({ model: "claude-opus-5-5", verdict: "take-fix", sure: true, reason: "The change does what the description says; one call can fail without being handled.", fixes: [{ file: "src/net.rs:42", change: "Return the error from send() instead of unwrapping it." }], risks: [], head: "0123456789abcdef" }),
+    example: reviewBody({ model: "claude-opus-5-5", verdict: "take-fix", sure: true, summary: "The change does what the description says; one call can fail without being handled.", points: ["`src/net.rs:42`: send() unwraps the result; return the error instead.", "`src/net.rs:60`: the retry count is read once and handled correctly."], head: "0123456789abcdef" }),
   },
 ];

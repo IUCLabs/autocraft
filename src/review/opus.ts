@@ -51,9 +51,9 @@ type Saved = { mode: "full" | "delta" | "skipped"; base: string | null; model: s
  */
 export function saveOpus(db: DatabaseSync, runId: string | null, c: { repo: string; number: number; head_oid: string }, s: Saved): void {
   const at = now(), r = s.review;
-  db.prepare(`INSERT OR REPLACE INTO opus_reviews (repo, number, head_oid, run_id, at, model, mode, base_head, verdict, sure, reason, fixes, risks, skip_reason)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(c.repo, c.number, c.head_oid, runId, at, s.model, s.mode, s.base, r?.verdict ?? null,
-    r ? (r.sure ? 1 : 0) : null, r?.reason ?? null, r?.fixes.length ? JSON.stringify(r.fixes) : null, r ? JSON.stringify(r.risks) : null, s.skip);
+  db.prepare(`INSERT OR REPLACE INTO opus_reviews (repo, number, head_oid, run_id, at, model, mode, base_head, verdict, sure, reason, fixes, risks, skip_reason, public_review)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(c.repo, c.number, c.head_oid, runId, at, s.model, s.mode, s.base, r?.verdict ?? null,
+    r ? (r.sure ? 1 : 0) : null, r?.reason ?? null, r?.fixes.length ? JSON.stringify(r.fixes) : null, r ? JSON.stringify(r.risks) : null, s.skip, r?.public ? JSON.stringify(r.public) : null);
   if (!r) return;
   const final = db.prepare("SELECT verdict, reason FROM final_reviews WHERE repo = ? AND number = ? AND head_oid = ?").get(c.repo, c.number, c.head_oid) as { verdict: string; reason: string } | undefined;
   const stage = db.prepare("INSERT INTO stages (repo, number, stage, at, actor, note) VALUES (?, ?, ?, ?, ?, ?)");
@@ -133,7 +133,7 @@ export async function runOpusReview(db: DatabaseSync, params: OpusParams, log: (
       } else log(`  ${refOf(c)}: delta since ${earlier.head.slice(0, 7)} unavailable (${delta.error}); full diff`);
     }
     if (diff.length > deps.maxChars) {
-      const r: OpusReview = { ref: refOf(c), verdict: "hold", sure: true, reason: "too large for the final review", fixes: [], risks: [] };
+      const r: OpusReview = { ref: refOf(c), verdict: "hold", sure: true, reason: "too large for the final review", fixes: [], risks: [], public: null };
       saveOpus(db, runId, c, { mode, base, model: null, review: r, skip: null });
       tally(r);
       params.onHandled?.(++handled);

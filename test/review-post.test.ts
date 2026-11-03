@@ -24,7 +24,7 @@ function fresh(opts: { approved?: boolean } = {}): DatabaseSync {
   return db;
 }
 
-function addPr(db: DatabaseSync, n: number, o: { repo?: string; author?: string; verdict?: string | null; fixes?: unknown[]; reason?: string; head?: string; model?: string } = {}): string {
+function addPr(db: DatabaseSync, n: number, o: { repo?: string; author?: string; verdict?: string | null; fixes?: unknown[]; reason?: string; head?: string; model?: string; pub?: boolean } = {}): string {
   const repo = o.repo ?? "app", head = o.head ?? sha(n);
   db.prepare(`INSERT INTO items (repo, number, kind, state, title, author, head_oid, created_at, updated_at) VALUES (?, ?, 'pr', 'OPEN', ?, ?, ?, ?, ?)`)
     .run(repo, n, `PR ${n}`, o.author ?? "contrib", head, T0, T0);
@@ -32,11 +32,12 @@ function addPr(db: DatabaseSync, n: number, o: { repo?: string; author?: string;
   return head;
 }
 
-function saveOpus(db: DatabaseSync, repo: string, n: number, head: string, o: { verdict?: string | null; fixes?: unknown[]; reason?: string; model?: string } = {}): void {
+function saveOpus(db: DatabaseSync, repo: string, n: number, head: string, o: { verdict?: string | null; fixes?: unknown[]; reason?: string; model?: string; pub?: boolean } = {}): void {
   const verdict = o.verdict === undefined ? "take" : o.verdict;
-  db.prepare(`INSERT OR REPLACE INTO opus_reviews (repo, number, head_oid, run_id, at, model, mode, verdict, sure, reason, fixes, risks)
-    VALUES (?, ?, ?, 'r', ?, ?, ?, ?, 1, ?, ?, '[]')`).run(repo, n, head, T0, verdict ? (o.model ?? "claude-opus-5-5") : null, verdict ? "full" : "skipped", verdict,
-    o.reason ?? "Looks fine.", o.fixes ? JSON.stringify(o.fixes) : null);
+  db.prepare(`INSERT OR REPLACE INTO opus_reviews (repo, number, head_oid, run_id, at, model, mode, verdict, sure, reason, fixes, risks, public_review)
+    VALUES (?, ?, ?, 'r', ?, ?, ?, ?, 1, ?, ?, '["internal risk text"]', ?)`).run(repo, n, head, T0, verdict ? (o.model ?? "claude-opus-5-5") : null, verdict ? "full" : "skipped", verdict,
+    o.reason ?? "Looks fine.", o.fixes ? JSON.stringify(o.fixes) : null,
+    o.pub === false ? null : JSON.stringify({ summary: `Public summary ${n}.`, points: ["`a.rs:3`: handle the error."] }));
 }
 
 type Live = { head: string; state: string };
@@ -72,24 +73,34 @@ describe("model label", () => {
 });
 
 describe("review body", () => {
-  const base = { model: "claude-opus-5-5", verdict: "take-fix", sure: true, reason: "Handles errors badly.", fixes: [{ file: "src/a.rs:12", change: "Return the error." }], risks: [], head: "0123456789abcdef" };
+  const base = { model: "claude-opus-5-5", verdict: "take-fix", sure: true, summary: "Handles errors badly.", points: ["`src/a.rs:12`: return the error."], head: "0123456789abcdef" };
 
   test("starts with the disclaimer naming the model, lists the findings and ends with the short head", () => {
     const b = reviewBody(base);
-    assert.equal(b, "_AI-generated review (Opus 5.5). Not a maintainer decision._\n\nSmall fixes needed before merging:\n\n- Handles errors badly.\n- `src/a.rs:12`: Return the error.\n\nReviewed at 0123456.");
+    assert.equal(b, "_AI-generated review (Opus 5.5). Not a maintainer decision._\n\nSmall fixes needed before merging:\n\nHandles errors badly.\n\n- `src/a.rs:12`: return the error.\n\nReviewed at 0123456.");
   });
 
   test("verdict wording", () => {
     for (const [v, line] of [["take", "No blocking problems found."], ["hold", "Changes needed:"], ["close", "This does not look mergeable as it is:"]] as const)
-      assert.match(reviewBody({ ...base, verdict: v, fixes: [] }), new RegExp(`\\n\\n${line}\\n`));
+      assert.match(reviewBody({ ...base, verdict: v, points: [] }), new RegExp(`\\n\\n${line}\\n`));
   });
 
-  test("mentions are removed, emails stay, and the body is cut at a line boundary under the cap", () => {
-    const b = reviewBody({ ...base, reason: "Ask @alice and @org/team, mail bob@example.com", fixes: Array.from({ length: 20 }, (_, i) => ({ file: `f${i}.rs`, change: `@carol ${"x".repeat(550)}` })) });
+  test("mentions and HTML tags are removed, emails stay, and the body stays under the cap", () => {
+    const b = reviewBody({ ...base, summary: "Ask @alice and @org/team, mail bob@example.com <b>now</b>", points: Array.from({ length: 8 }, (_, i) => `@carol ${i} ${"x".repeat(580)}`) });
     assert.ok(!/(^|[^\w])@\w/.test(b), b);
-    assert.match(b, /bob@example\.com/);
+    assert.match(b, /bob@example\.com now/);
     assert.ok(b.length <= REVIEW_BODY_MAX, String(b.length));
-    assert.match(b, /\n- …\n\nReviewed at 0123456\.$/);
+    assert.match(b, /\n\nReviewed at 0123456\.$/);
+    assert.equal(b.split("\n- ").length - 1, 8);
+  });
+
+  test("the body uses the public text only", async () => {
+    const db = fresh();
+    const h = addPr(db, 1, { reason: "I agree with the first review", fixes: [{ file: "z.rs", change: "internal fix text" }] });
+    const [c] = postCandidates(db, "app");
+    assert.equal(c!.head_oid, h);
+    assert.match(c!.body, /Public summary 1\.\n\n- `a\.rs:3`: handle the error\./);
+    for (const t of ["I agree", "internal fix text", "internal risk text", "z.rs"]) assert.ok(!c!.body.includes(t), t);
   });
 
   test("the Prompts page lists the template", () => {
@@ -191,6 +202,13 @@ describe("review-post", () => {
     db.prepare("INSERT INTO jobs (step, params, requested_by, requested_at, state, started_at, items) VALUES ('review-post', '{}', 'pipeline', ?, 'done', ?, 40)")
       .run(new Date().toISOString(), new Date().toISOString());
     assert.match(pauseReason(db, "review-post") ?? "", /daily limit of 40/);
+  });
+
+  test("a review without a public text is not a candidate until a later review has one", () => {
+    const db = fresh();
+    addPr(db, 1, { pub: false });
+    addPr(db, 2);
+    assert.deepEqual(postCandidates(db, "app").map((c) => c.number), [2]);
   });
 
   test("the pilot limits the candidates", () => {

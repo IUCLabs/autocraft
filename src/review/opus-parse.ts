@@ -34,7 +34,21 @@ export type OpusReview = {
   reason: string;
   fixes: { file: string; change: string }[];
   risks: string[];
+  /** The text written for the PR author; null when the reply had none or it was malformed. */
+  public: PublicReview | null;
 };
+
+export type PublicReview = { summary: string; points: string[] };
+
+export const OPUS_PUBLIC_POINTS = 8;
+
+export function parsePublic(v: unknown): PublicReview | null {
+  if (!v || typeof v !== "object") return null;
+  const o = v as Record<string, unknown>;
+  if (typeof o.summary !== "string" || !o.summary.trim() || !Array.isArray(o.points)) return null;
+  const points = o.points.filter((x): x is string => typeof x === "string" && !!x.trim()).slice(0, OPUS_PUBLIC_POINTS).map((x) => x.trim().slice(0, 600));
+  return { summary: o.summary.trim().slice(0, 600), points };
+}
 
 export const OPUS_REASON_WORDS = 60;
 export const OPUS_MAX_FIXES = 20;
@@ -63,5 +77,5 @@ export function parseOpusReply(text: string, ref: string): OpusReview | null {
     .slice(0, OPUS_MAX_FIXES).map((f) => ({ file: f.file.slice(0, 200), change: f.change.slice(0, 800) }));
   if (verdict === "take-fix" && !fixes.length) return null;
   const risks = Array.isArray(r.risks) ? r.risks.filter((x): x is string => typeof x === "string").slice(0, 8).map((x) => x.slice(0, 300)) : [];
-  return { ref, verdict: verdict as ReviewVerdict, sure: r.sure, reason: words(r.reason, OPUS_REASON_WORDS), fixes: verdict === "take-fix" ? fixes : [], risks };
+  return { ref, verdict: verdict as ReviewVerdict, sure: r.sure, reason: words(r.reason, OPUS_REASON_WORDS), fixes: verdict === "take-fix" ? fixes : [], risks, public: parsePublic(r.public) };
 }
