@@ -24,7 +24,7 @@ import { ItemPath } from "../flow/ItemPath";
 import type { FeatureModule, ViewProps } from "../../registry/types";
 import { Slot } from "../../registry/Slot";
 import { Avatar } from "../../ui/atoms/Avatar";
-import { RefLink } from "../../ui/RefLink";
+import { ItemRef } from "../../ui/molecules/ItemRef";
 import { FastMarkFor, FastToggle, HoldToggle } from "../queue/fastTrack";
 import { Badge, type Tone } from "../../ui/atoms/Badge";
 import { PriorityBadge } from "../../ui/atoms/PriorityBadge";
@@ -40,7 +40,7 @@ import { useUser } from "../../shell/UserContext";
 import { canAct } from "../../registry/permissions";
 import { Conversation } from "../decisions/Conversation";
 import { useNow } from "../../lib/useNow";
-import { decisionPath, itemPath } from "../../lib/links";
+import { decisionPath } from "../../lib/links";
 
 function useItem(params: ViewProps["params"]) {
   const repo = params.repo!;
@@ -134,15 +134,11 @@ function Header({ it }: { it: Item }) {
   useNow();
   return (
     <div className="border-b border-line pb-4">
-      <h1 className="text-xl font-semibold text-ink">
-        {it.title}{" "}
-        <span className="inline-flex items-center gap-1 align-middle">
-          <FastMarkFor repo={it.repo} number={it.number} />
-          <RefLink repo={it.repo} number={it.number} kind={it.kind} className="font-normal">
-            {it.repo}#{it.number}
-          </RefLink>
-        </span>
-      </h1>
+      <div className="mb-1 flex flex-wrap items-center gap-x-2 text-sm text-ink/60">
+        <FastMarkFor repo={it.repo} number={it.number} />
+        <ItemRef repo={it.repo} number={it.number} kind={it.kind} state={it.state} title={null} />
+      </div>
+      <h1 className="text-xl font-semibold text-ink">{it.title}</h1>
       <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1.5 text-sm text-ink/60">
         <StatePill it={it} />
         <span className="inline-flex items-center gap-1.5">
@@ -528,12 +524,7 @@ function ItemSide(props: ViewProps) {
           {it.related.map((r) => (
             <li key={`${r.repo}#${r.number}`} className="text-sm">
               <div className="text-xs text-ink/50">{r.relation.replace(/-/g, " ")}</div>
-              <RefLink repo={r.repo} number={r.number} className="mr-1.5">
-                #{r.number}
-              </RefLink>
-              <Link to={itemPath(r.repo, r.number)} className="hover:underline">
-                {r.title}
-              </Link>
+              <ItemRef repo={r.repo} number={r.number} kind={r.kind} state={r.state} title={r.title} />
             </li>
           ))}
         </ul>

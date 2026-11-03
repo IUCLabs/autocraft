@@ -5,7 +5,7 @@ import { useQuery, usePagedQuery } from "../../api/client";
 import type { GithubActivityFilter, GithubActivityRow } from "../../api/types";
 import type { FeatureModule, ViewProps } from "../../registry/types";
 import { Badge } from "../../ui/atoms/Badge";
-import { RefLink } from "../../ui/RefLink";
+import { ItemRef } from "../../ui/molecules/ItemRef";
 import { cn } from "../../ui/cn";
 import { num } from "../../lib/format";
 import { Block, ErrorLine, Page, selectCls, useUrlState, when } from "../admin/parts";
@@ -16,15 +16,8 @@ function useFilter() {
   return { filter, update };
 }
 
-function Item({ r }: { r: GithubActivityRow }) {
-  if (r.number !== null) {
-    return (
-      <>
-        <RefLink repo={r.repo} number={r.number} />
-        {r.title && <span className="ml-1.5 text-ink/70">{r.title}</span>}
-      </>
-    );
-  }
+function Item({ r, stretch }: { r: GithubActivityRow; stretch?: boolean }) {
+  if (r.number !== null) return <ItemRef repo={r.repo} number={r.number} kind={r.kind} state={r.state} title={r.title} stretch={stretch} />;
   return (
     <span className="code text-ink/80">
       {r.repo}
@@ -45,7 +38,7 @@ function Detail({ r }: { r: GithubActivityRow }) {
 }
 
 const Out = ({ url }: { url: string }) => (
-  <a href={url} target="_blank" rel="noopener noreferrer" title="Open on GitHub" aria-label="Open on GitHub" className="inline-flex size-6 items-center justify-center text-ink/55 hover:text-accent-ink max-md:size-11">
+  <a href={url} target="_blank" rel="noopener noreferrer" title="Open on GitHub" aria-label="Open on GitHub" className="relative z-10 inline-flex size-6 items-center justify-center text-ink/55 hover:text-accent-ink max-md:size-11">
     <ArrowSquareOutIcon className="size-4" />
   </a>
 );
@@ -74,11 +67,11 @@ function Table({ rows }: { rows: GithubActivityRow[] }) {
         </thead>
         <tbody>
           {rows.map((r) => (
-            <tr key={r.id} className="border-b border-line align-top last:border-0 hover:bg-ink/[0.03]">
+            <tr key={r.id} className="relative border-b border-line align-top last:border-0 hover:bg-ink/[0.03]">
               <td className="num px-3 py-2 text-xs text-ink/60">{when(r.at)}</td>
               <td className="px-3 py-2">{r.label}</td>
               <td className="px-3 py-2 [overflow-wrap:anywhere]">
-                <Item r={r} />
+                <Item r={r} stretch />
               </td>
               <td className="px-3 py-2 text-ink/75">
                 <Detail r={r} />
@@ -99,12 +92,10 @@ function Cards({ rows }: { rows: GithubActivityRow[] }) {
   return (
     <ul className="md:hidden">
       {rows.map((r) => (
-        <li key={r.id} className="flex items-start gap-2 border-b border-line px-3 py-2.5 last:border-0">
+        <li key={r.id} className="relative flex items-start gap-2 border-b border-line px-3 py-2.5 last:border-0">
           <div className="min-w-0 flex-1 text-sm">
-            <div className="flex flex-wrap items-baseline gap-x-2">
-              <span className="font-medium">{r.label}</span>
-              <Item r={r} />
-            </div>
+            <div className="font-medium">{r.label}</div>
+            <Item r={r} stretch />
             {(r.detail || r.error || r.outcome === "unknown") && (
               <div className="mt-0.5 text-ink/75">
                 <Detail r={r} />

@@ -2,9 +2,10 @@
 // on the worker, and reported back. Everything a worker sends is stored as
 // data; nothing here executes it, renders it or puts it in a prompt.
 import type { DatabaseSync, SQLInputValue } from "node:sqlite";
-import type { BuildSummary, BuildTask, BuildTaskDetail, Capabilities, Requires, SandboxEnv, TaskArtifact, TaskBatch, TaskFilter, TaskPage, TaskResult, TaskState, TaskStep } from "../../web/src/api/types.ts";
+import type { ItemShown, BuildSummary, BuildTask, BuildTaskDetail, Capabilities, Requires, SandboxEnv, TaskArtifact, TaskBatch, TaskFilter, TaskPage, TaskResult, TaskState, TaskStep } from "../../web/src/api/types.ts";
 import { audit } from "../dash/audit.ts";
 import { excludeHidden } from "../dash/api/visible.ts";
+import { shownLookup } from "../dash/api/shown.ts";
 import { removeArtifacts } from "./artifacts.ts";
 import { BuildError, slotsOf } from "./envs.ts";
 import { draining } from "./worker-update.ts";
@@ -353,22 +354,23 @@ function artifactsOf(db: DatabaseSync, ids: number[]): Map<number, TaskArtifact[
 }
 
 /** The integration batches whose sandbox task is one of `ids`. */
-function batchesOf(db: DatabaseSync, ids: number[]): Map<number, TaskBatch> {
+function batchesOf(db: DatabaseSync, ids: number[], shown: (repo: string, number: number) => ItemShown): Map<number, TaskBatch> {
   const out = new Map<number, TaskBatch>();
   if (!ids.length) return out;
   const rows = db.prepare(`SELECT * FROM main.merge_batches WHERE task_id IN (${ids.map(() => "?").join(",")})`).all(...ids) as
-    { id: number; task_id: number; branch: string; commit_sha: string; base_sha: string; fork?: string | null }[];
+    { id: number; task_id: number; repo?: string; branch: string; commit_sha: string; base_sha: string; fork?: string | null }[];
   const members = db.prepare("SELECT number FROM main.merge_batch_prs WHERE batch_id = ? ORDER BY position");
   for (const b of rows) {
+    const prs = (members.all(b.id) as { number: number }[]).map((m) => m.number);
     out.set(b.task_id, {
       id: b.id, branch: b.branch, fork: b.fork ?? null, commitSha: b.commit_sha, baseSha: b.base_sha,
-      prs: (members.all(b.id) as { number: number }[]).map((m) => m.number),
+      prs, shown: prs.map((n) => shown(b.repo ?? "", n)),
     });
   }
   return out;
 }
 
-function toTask(r: TaskRow, artifacts: TaskArtifact[], batch: TaskBatch | null = null): BuildTask {
+function toTask(r: TaskRow, artifacts: TaskArtifact[], batch: TaskBatch | null, shown: (repo: string, number: number) => ItemShown): BuildTask {
   return {
     id: r.id, jobId: r.job_id, step: r.step, repo: r.repo, number: r.number, headSha: r.head_sha, baseSha: r.base_sha,
     requires: json<Requires>(r.requires, {}), priority: r.priority, plan: json<TaskStep[]>(r.plan, []),
@@ -378,6 +380,7 @@ function toTask(r: TaskRow, artifacts: TaskArtifact[], batch: TaskBatch | null =
     patchBytes: r.patch ? Buffer.byteLength(r.patch) : null,
     warm: r.warm_key && (r.warm_role === "use" || r.warm_role === "build") ? { key: r.warm_key, role: r.warm_role } : null,
     batch,
+    item: r.number === null ? null : shown(r.repo, r.number),
     baseline: r.step === "verify" && r.number === null && !r.patch ? { branch: r.default_branch ?? null } : null,
     sandbox: r.sandbox_env ? json<SandboxEnv | null>(r.sandbox_env, null) : null,
   };
@@ -385,7 +388,8 @@ function toTask(r: TaskRow, artifacts: TaskArtifact[], batch: TaskBatch | null =
 
 export function getTask(db: DatabaseSync, id: number): BuildTask | null {
   const r = db.prepare(`${SELECT} WHERE t.id = ?`).get(id) as TaskRow | undefined;
-  return r ? toTask(r, artifactsOf(db, [r.id]).get(r.id) ?? [], batchesOf(db, [r.id]).get(r.id) ?? null) : null;
+  const shown = shownLookup(db);
+  return r ? toTask(r, artifactsOf(db, [r.id]).get(r.id) ?? [], batchesOf(db, [r.id], shown).get(r.id) ?? null, shown) : null;
 }
 
 /** The last bytes of the log, from whole chunks. */
@@ -435,8 +439,9 @@ export function listTasks(db: DatabaseSync, f: TaskFilter, hidden: string[] = []
   const rows = db.prepare(`${SELECT}${where.length ? ` WHERE ${where.join(" AND ")}` : ""} ORDER BY t.id DESC LIMIT ${limit + 1}`).all(params) as TaskRow[];
   const page = rows.slice(0, limit);
   const arts = artifactsOf(db, page.map((r) => r.id));
-  const batches = batchesOf(db, page.map((r) => r.id));
-  return { tasks: page.map((r) => toTask(r, arts.get(r.id) ?? [], batches.get(r.id) ?? null)), next: rows.length > limit ? String(page[page.length - 1]!.id) : null };
+  const shown = shownLookup(db);
+  const batches = batchesOf(db, page.map((r) => r.id), shown);
+  return { tasks: page.map((r) => toTask(r, arts.get(r.id) ?? [], batches.get(r.id) ?? null, shown)), next: rows.length > limit ? String(page[page.length - 1]!.id) : null };
 }
 
 export type { BuildSummary };

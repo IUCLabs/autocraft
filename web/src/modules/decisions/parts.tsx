@@ -1,6 +1,5 @@
 import { useState, type ReactNode } from "react";
-import { Link } from "react-router-dom";
-import { RefLink } from "../../ui/RefLink";
+import { ItemRef } from "../../ui/molecules/ItemRef";
 import {
   CaretRightIcon,
   QuestionIcon,
@@ -20,7 +19,6 @@ import { ago } from "../../lib/format";
 import { Refs } from "./Refs";
 import { KIND_LABEL } from "./state";
 import { useNow } from "../../lib/useNow";
-import { itemPath } from "../../lib/links";
 
 export const KIND_ICON: Record<DecisionKind, PhosphorIcon> = {
   scope: TargetIcon,
@@ -144,12 +142,9 @@ export function RelatedList({ d }: { d: Decision }) {
   return (
     <ul className="grid gap-1">
       {d.related.map((r) => (
-        <li key={`${r.repo}#${r.number}`} className="flex items-baseline gap-2 text-sm">
-          <span className="w-24 shrink-0 text-xs text-ink/50">{r.relation.replace(/-/g, " ")}</span>
-          <RefLink repo={r.repo} number={r.number} className="shrink-0" />
-          <Link to={itemPath(r.repo, r.number)} className="truncate text-ink/75 hover:underline">
-            {r.title}
-          </Link>
+        <li key={`${r.repo}#${r.number}`} className="flex items-start gap-2 text-sm">
+          <span className="w-24 shrink-0 pt-0.5 text-xs text-ink/50">{r.relation.replace(/-/g, " ")}</span>
+          <ItemRef repo={r.repo} number={r.number} kind={r.kind} state={r.state} title={r.title} className="flex-1" />
         </li>
       ))}
     </ul>

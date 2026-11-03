@@ -84,6 +84,8 @@ export interface Decision {
   /** null for a batch */
   number: number | null;
   items: (ItemRef & ItemShown)[];
+  /** Kind, state and title of the item of a single decision; null for a batch. */
+  shown: ItemShown | null;
   title: string;
   question: string;
   /** AI summary of the item or batch, 2–6 sentences. */
@@ -1325,13 +1327,15 @@ export type BuildTask = {
   warm: { key: string; role: "use" | "build" } | null;
   /** The integration batch this task checks (step merge-batch); null for other tasks. */
   batch: TaskBatch | null;
+  /** Kind, state and title of the PR in `number`; null with `number` null. */
+  item: ItemShown | null;
   /** Set for a build of the default branch head with no PR and no patch (warm and baseline runs). */
   baseline: { branch: string | null } | null;
   /** The environment the worker ran the steps in; null until the task finishes, or when it failed before the steps. */
   sandbox: SandboxEnv | null;
 };
-/** `fork` is the `<owner>/<repo>` the batch branch was pushed to; null before the push. `commitSha` is the integration commit, `baseSha` the default branch head it was built on. */
-export type TaskBatch = { id: number; branch: string; fork: string | null; commitSha: string; baseSha: string; prs: number[] };
+/** `fork` is the `<owner>/<repo>` the batch branch was pushed to; null before the push. `shown` lists kind, state and title of each of `prs`, in order. `commitSha` is the integration commit, `baseSha` the default branch head it was built on. */
+export type TaskBatch = { id: number; branch: string; fork: string | null; commitSha: string; baseSha: string; prs: number[]; shown: ItemShown[] };
 /** Image and CI-gate inputs a task ran with. Worker-sent: shown as plain text only. */
 export type SandboxEnv = { image: string; baseImage: string; packages: string[]; craftFontsRef: string | null; craftI18nRev: string | null };
 /** Worker-sent text: shown as plain text only, never as markup. */
