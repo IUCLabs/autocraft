@@ -77,6 +77,19 @@ export interface Opinion {
   permission: "write" | "none";
 }
 
+/** One item of a duplicate group decision, with the role the comparison gave it and the model's points about it, each shown whole. */
+export interface DuplicateMember {
+  number: number;
+  kind: "pr" | "issue";
+  role: "keep" | "close" | "stay";
+  /** What this item does better than the kept one. */
+  better: string[];
+  /** Parts worth carrying over into the kept one. */
+  carry: string[];
+  /** What it adds beyond the kept one. */
+  adds: string[];
+}
+
 export interface Decision {
   id: string;
   kind: DecisionKind;
@@ -100,6 +113,12 @@ export interface Decision {
   recommended: string;
   /** One sentence from the model that recommended it; empty when there is none. */
   recommendedReason: string;
+  /** Duplicate group decisions: every member with its role; empty for other decisions. */
+  group: DuplicateMember[];
+  /** Merge? and Close? decisions: the review's risks, each whole; empty otherwise. */
+  risks: string[];
+  /** True while Undo still works: answered and not yet applied or posted. */
+  undoable: boolean;
   publicText: string | null;
   /** Group decisions: per answer, the exact comments it posts and a hash of them that the answer sends back. */
   optionTexts: OptionTexts[];

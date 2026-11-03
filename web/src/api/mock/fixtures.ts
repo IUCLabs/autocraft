@@ -667,6 +667,7 @@ function toDecision(s: Seed): Decision {
     options: [...s.options.map((o) => ({ ...o, ...(WRITES[s.kind]?.[o.key] ? { writes: WRITES[s.kind]![o.key] } : {}) })), { key: "backlog", label: "Backlog" }],
     recommended: s.recommended,
     recommendedReason: s.recommended ? (s.recommendedReason ?? "") : "",
+    group: [], risks: [], undoable: !!s.answer,
     publicText: s.publicText ?? null,
     optionTexts: s.optionTexts ?? [],
     queue: s.number === null || s.answer ? null : mockSlot(s.number),
