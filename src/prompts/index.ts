@@ -916,10 +916,43 @@ export function jevPromptOf(id: JevPromptId): JevPrompt {
   return p;
 }
 
-/** The exact text sent on stdin to `claude -p`. */
+/** The exact text of a prompt, system and stdin parts joined; sandboxed calls send all of it on stdin. */
 export function renderClaude<K extends ClaudePromptId>(id: K, input: ClaudeInput[K]): string {
   return fill(claudePromptOf(id).template, VALUES[id](input));
 }
+
+/** Placeholders whose value is the same for every call of a prompt in one mode; every other one carries item data. */
+const FIXED_PLACEHOLDERS = new Set(["repo_access"]);
+
+/**
+ * Where a template's fixed text ends: the start of the line (or of the tag line just above it, such as
+ * `<items>`) that holds the first data placeholder. Everything before it is the same for every call.
+ */
+function dataStart(template: string): number {
+  for (const m of template.matchAll(/\{\{(\w+)\}\}/g)) {
+    if (FIXED_PLACEHOLDERS.has(m[1]!)) continue;
+    let at = template.lastIndexOf("\n", m.index) + 1;
+    const above = template.lastIndexOf("\n", at - 2) + 1;
+    if (/^<\w+>$/.test(template.slice(above, at - 1))) at = above;
+    return at;
+  }
+  return template.length;
+}
+
+/**
+ * What one call sends. A call without tools replaces the CLI's own system prompt with the template's fixed
+ * text (`system`, byte-identical for every call of the prompt) and sends only the item data on stdin, so the
+ * model's prompt cache covers the whole fixed part. A sandboxed call keeps the CLI's system prompt, which
+ * carries the tool guidance, and sends the whole template on stdin; its item data is last, so the start still caches.
+ */
+export function claudeParts<K extends ClaudePromptId>(id: K, input: ClaudeInput[K], sandboxed: boolean): { system: string | null; stdin: string } {
+  if (sandboxed) return { system: null, stdin: renderClaude(id, input) };
+  const t = claudePromptOf(id).template, values = VALUES[id](input), at = dataStart(t);
+  return { system: fill(t.slice(0, at), values).trimEnd(), stdin: fill(t.slice(at), values) };
+}
+
+/** The text of a call as one record: the system prompt, a blank line, then stdin. */
+export const joinParts = (p: { system: string | null; stdin: string }): string => (p.system === null ? p.stdin : `${p.system}\n\n${p.stdin}`);
 
 /** The exact request body sent on stdin to `jev ask`: one line of JSON. */
 export function renderJev(id: JevPromptId, input: Item | DupePair): string {
@@ -928,11 +961,11 @@ export function renderJev(id: JevPromptId, input: Item | DupePair): string {
 }
 
 /**
- * `claude` arguments. The CLI runs in an empty directory with no tools, MCP servers, slash commands or saved
+ * `claude` arguments. The CLI runs in one fixed empty directory (`claudeCwd`, src/classify/run.ts): its working directory is part of its system prompt, so a per-call directory would give every call a different prefix and no cache hits. It runs with no tools, MCP servers, slash commands or saved
  * session. With `sandboxed` (only for prompts that register a sandbox) it gets read-only file tools that may
  * touch the checkout path and nothing else; anything not allowed is denied without asking.
  */
-export function claudeArgs(id: ClaudePromptId, model: string, sandboxed = false, mcp?: { config: string; servers: string[] }): string[] {
+export function claudeArgs(id: ClaudePromptId, model: string, sandboxed = false, mcp?: { config: string; servers: string[] }, system?: string | null): string[] {
   const p = claudePromptOf(id);
   if (!p.models.includes(model)) throw new Error(`${id} is registered for ${p.models.join(", ")}, not ${model}`);
   if (sandboxed) {
@@ -947,7 +980,7 @@ export function claudeArgs(id: ClaudePromptId, model: string, sandboxed = false,
       ...(ws ? ["--agents", AGENTS_PATH] : []), ...(mcp ? ["--mcp-config", mcp.config] : []), "--strict-mcp-config", "--disable-slash-commands",
       "--no-session-persistence", "--max-turns", String(p.sandbox.maxTurns)];
   }
-  return ["-p", "--model", model, "--effort", p.effort, "--output-format", "json", "--tools", "", "--strict-mcp-config", "--disable-slash-commands", "--no-session-persistence"];
+  return ["-p", "--model", model, "--effort", p.effort, "--output-format", "json", "--tools", "", ...(system ? ["--system-prompt", system] : []), "--strict-mcp-config", "--disable-slash-commands", "--no-session-persistence"];
 }
 
 export const JEV_ARGS = ["--compact", "ask"];
@@ -959,6 +992,8 @@ function sandboxPreview(claudeArgs: string[], workspace: boolean): string[] {
 }
 
 const shellWord = (a: string) => (a === "" ? '""' : /^[\w@%+=:,./-]+$/.test(a) ? a : `'${a.replace(/'/g, `'\\''`)}'`);
+
+const FIXED_DIR = "One fixed empty directory under the app's cache directory, the same for every call and every account (the CLI puts its working directory into its system prompt, so a directory per call would defeat the prompt cache), with no project instructions in it";
 
 function settings(p: ClaudePrompt | JevPrompt): PromptInfo["settings"] {
   const l = p.limits;
@@ -973,13 +1008,13 @@ function settings(p: ClaudePrompt | JevPrompt): PromptInfo["settings"] {
     s.push({ label: "Tools", value: `${p.sandbox.tools.join(", ")} on a read-only checkout (the pull request's head commit, or the base commit for Fix) at ${REPO_PATH}; no tools (and no checkout) when the tree is too large, the head moved or the sandbox is unavailable` });
     s.push({ label: "Max turns", value: String(p.sandbox.maxTurns) });
     s.push({ label: "Sandbox", value: "bubblewrap: only the claude binary, the system libraries, the checkout (read-only; CLAUDE.md, AGENTS.md and .claude files left out) and the account's credentials file (read-only; the sandbox never refreshes the token, so a call whose token has under 30 minutes left runs without tools on the host) are visible; empty home; network only; any reply text that looks like a token or key is removed" });
-    s.push({ label: "Where", value: `An empty ${WORK_PATH} inside the sandbox with the checkout mounted at ${REPO_PATH} (--add-dir), so the checkout's own instructions and settings are not loaded; prompt on stdin` });
+    s.push({ label: "Where", value: `An empty ${WORK_PATH} inside the sandbox with the checkout mounted at ${REPO_PATH} (--add-dir), so the checkout's own instructions and settings are not loaded; the CLI's own system prompt, the whole prompt on stdin with the item data last. The call without tools (see Tools) runs like a prompt without a sandbox: ${FIXED_DIR}, the fixed text as the system prompt, the item data on stdin` });
     if (p.sandbox.workspace) {
       s.push({ label: "Workspace", value: `The default branch of every tracked repository except those in the workspace_exclude setting (default none), read-only, at ${REPOS_ROOT}/<name> (--add-dir ${REPOS_ROOT}); one checkout per repository and head, rebuilt when its default branch moves, and the previous one is mounted when a new one is not ready within a short wait; a repository that cannot be checked out is left out` });
       s.push({ label: "Explorer", value: `The ${AGENT_TOOL} tool starts one subagent, ${EXPLORER}, on ${EXPLORER_MODEL} with ${EXPLORER_TOOLS.join(", ")} (definition read-only at ${AGENTS_PATH}, --agents); its tokens are recorded as extra rows of the call's usage` });
       s.push({ label: "Item tools", value: `When an item snapshot exists, a read-only MCP server (--mcp-config ${MCP_PATH}) with search_items, item, similar_items and pr_diff over the synced issues and pull requests of public repositories (tools mcp__items__*, allowed for the call and the explorer); without a snapshot the call has none` });
     }
-  } else if (p.runner === "claude") s.push({ label: "Where", value: "A new empty temporary directory, so no project instructions are loaded; prompt on stdin" });
+  } else if (p.runner === "claude") s.push({ label: "Where", value: `${FIXED_DIR}; the prompt's fixed text is the system prompt (--system-prompt, replacing the CLI's own) and the item data is on stdin` });
   if (p.runner === "claude" && !p.sandbox) s.push({ label: "Tools", value: "None" });
   else if (p.runner === "jev") s.push({ label: "Where", value: "Request on stdin as one line of JSON" });
   if (p.extra) s.push(...p.extra);
@@ -995,12 +1030,14 @@ function info(p: ClaudePrompt | JevPrompt): PromptInfo {
   if (p.runner === "claude") {
     const id = p.id as ClaudePromptId;
     const ex = EXAMPLES[id] as { input: never; refs: string[] };
+    const parts = claudeParts(id, ex.input, p.sandbox !== undefined);
     return {
       ...base,
-      command: (p.sandbox ? sandboxPreview(claudeArgs(id, p.models[0]!, true), p.sandbox.workspace === true) : ["claude", ...claudeArgs(id, p.models[0]!)]).map(shellWord).join(" "),
+      command: (p.sandbox ? sandboxPreview(claudeArgs(id, p.models[0]!, true), p.sandbox.workspace === true) : ["claude", ...claudeArgs(id, p.models[0]!, false, undefined, "<system prompt, shown above>")]).map(shellWord).join(" "),
       template: p.template,
+      system: parts.system,
       questions: [],
-      example: renderClaude(id, ex.input),
+      example: parts.stdin,
       exampleItems: ex.refs,
     };
   }
@@ -1010,6 +1047,7 @@ function info(p: ClaudePrompt | JevPrompt): PromptInfo {
     ...base,
     command: ["jev", ...JEV_ARGS].join(" "),
     template: JSON.stringify(p.request, null, 2),
+    system: null,
     questions: Object.entries(p.request.questions).map(([id, q]) => ({ id, type: q.type, instructions: q.instructions, criteria: q.criteria ?? null })),
     example: renderJev(p.id as JevPromptId, pair ? SAMPLE_DUPE_PAIRS[0]! : item),
     exampleItems: pair ? [SAMPLE_DUPE_PAIRS[0]!.ref] : [`${item.repo}#${item.number}`],

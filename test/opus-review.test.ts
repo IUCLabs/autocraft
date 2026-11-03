@@ -9,7 +9,7 @@ import { connect } from "../src/db.ts";
 import { setPushApproval } from "../src/fixup/approval.ts";
 import { selectFixups } from "../src/fixup/candidates.ts";
 import { buildQueue } from "../src/merge/queue.ts";
-import { claudeArgs, renderClaude } from "../src/prompts/index.ts";
+import { claudeArgs, claudeParts, renderClaude } from "../src/prompts/index.ts";
 import { selectOpusCandidates } from "../src/review/opus-candidates.ts";
 import { runOpusReview, type OpusDeps } from "../src/review/opus.ts";
 import { parseOpusReply, type OpusPr } from "../src/review/opus-parse.ts";
@@ -135,9 +135,10 @@ describe("Opus review pass", () => {
       restore();
     }
     assert.equal(calls.length, 3);
-    assert.deepEqual(calls[0]!.args, claudeArgs("review.opus", "opus"));
-    const input = JSON.parse(calls[0]!.input.split("<pr>\n")[1]!.split("\n</pr>")[0]!) as OpusPr;
-    assert.equal(calls[0]!.input, renderClaude("review.opus", [input]));
+        const input = JSON.parse(calls[0]!.input.split("<pr>\n")[1]!.split("\n</pr>")[0]!) as OpusPr;
+    const parts = claudeParts("review.opus", [input], false);
+    assert.equal(calls[0]!.input, parts.stdin);
+    assert.deepEqual(calls[0]!.args, claudeArgs("review.opus", "opus", false, undefined, parts.system));
     assert.deepEqual([input.mode, input.sonnet.verdict, input.earlier_opus], ["full", "take", null]);
 
     assert.deepEqual([final(db, 1).verdict, final(db, 1).source, final(db, 1).final], ["take", "opus", 1]);

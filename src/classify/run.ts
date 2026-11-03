@@ -1,7 +1,7 @@
 // Runs the classifiers: Jev (one `jev ask` per item) and Haiku (batches through `claude -p`).
 import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import type { ItemRef } from "../../web/src/api/types.ts";
@@ -16,7 +16,7 @@ import { agentsFile, mcpFile } from "../sandbox/agent-files.ts";
 import { MCP_PATH } from "../sandbox/agents.ts";
 import { resolveClaudeBin, sandboxCommand, tokenNearExpiry } from "../sandbox/index.ts";
 import { defaultWorkspace } from "../sandbox/workspace.ts";
-import { CLAUDE_PROMPTS, JEV_ARGS, JEV_USD_PER_INPUT_TOKEN, JEV_PROMPTS, claudeArgs, claudePromptOf, jevPromptOf, renderClaude, withoutRepoDir, renderJev, type ClaudeInput, type ClaudePromptId, type JevPromptId } from "../prompts/index.ts";
+import { CLAUDE_PROMPTS, JEV_ARGS, JEV_USD_PER_INPUT_TOKEN, JEV_PROMPTS, claudeArgs, claudeParts, claudePromptOf, jevPromptOf, joinParts, renderClaude, withoutRepoDir, renderJev, type ClaudeInput, type ClaudePromptId, type JevPromptId } from "../prompts/index.ts";
 import type { DupePair } from "../dupes/pair.ts";
 import { flagsOf, jevVerdict, parseHaikuReply, parseRef, refOf, type Item, type JevAnswers, type Verdict } from "./parse.ts";
 
@@ -209,6 +209,21 @@ export const lastResult = <T extends { type?: string }>(parsed: T[] | T): T | un
 
 const exitClass = (code: number | null): string => (code === null ? "timed out or killed" : code === -1 ? "could not start" : `exit code ${code}`);
 
+const madeDirs = new Set<string>();
+/**
+ * The working directory of every `claude` call: one empty directory under the app's cache, never inside a
+ * git repository or below a CLAUDE.md. The CLI puts its working directory into its system prompt, so a
+ * directory per call would give each call its own prompt prefix and no call would read the prompt cache.
+ */
+export function claudeCwd(): string {
+  const dir = process.env.CRAFT_AUTO_CLAUDE_CWD ?? join(homedir(), ".cache/craft-automation/claude-cwd");
+  if (!madeDirs.has(dir)) {
+    mkdirSync(dir, { recursive: true });
+    madeDirs.add(dir);
+  }
+  return dir;
+}
+
 /**
  * `checkout`: host directory of a read-only checkout; with it, a prompt that registers a sandbox runs with its tools inside bubblewrap (src/sandbox).
  * `shared`: for a prompt with the workspace, replaces the default workspace (every tracked repository's default branch, src/sandbox/workspace.ts).
@@ -235,31 +250,31 @@ export function setWorkspace(f: WorkspaceFn): () => void {
  */
 export async function askClaude<K extends ClaudePromptId>(id: K, model: string, input: ClaudeInput[K], db: DatabaseSync, opts: AskOptions = {}): Promise<{ text: string; usage: Usage; turns?: number } | null> {
   let sandboxed = opts.checkout !== undefined && CLAUDE_PROMPTS[id].sandbox !== undefined;
-  let prompt = renderClaude(id, input);
+  let parts = claudeParts(id, input, sandboxed);
   const items = refsOf(input);
-  const run = await startClaudeRun(db, { promptId: id, promptVersion: promptVersion(id), provider: "claude", model, items, prompt });
+  const run = await startClaudeRun(db, { promptId: id, promptVersion: promptVersion(id), provider: "claude", model, items, prompt: joinParts(parts) });
   const end = (e: Parameters<typeof finishRun>[2]) => finishRun(db, run.runId, e);
   try {
     // The sandbox never refreshes the token: with little lifetime left the call runs on the host without tools, where a refresh is safe.
     if (sandboxed && tokenNearExpiry(join(run.configDir, ".credentials.json"))) {
       console.log("sandbox skipped: token near expiry");
       sandboxed = false;
-      prompt = renderClaude(id, withoutRepoDir(input));
-      db.prepare("UPDATE agent_run_texts SET prompt = ? WHERE run_id = ?").run(scrub(prompt.slice(0, 1_000_000)), run.runId);
+      parts = claudeParts(id, withoutRepoDir(input), false);
+      db.prepare("UPDATE agent_run_texts SET prompt = ? WHERE run_id = ?").run(scrub(joinParts(parts).slice(0, 1_000_000)), run.runId);
     }
     const workspace = sandboxed && CLAUDE_PROMPTS[id].sandbox?.workspace === true;
     const shared = workspace ? opts.shared ?? await workspaceOf(db) : undefined;
     const it = workspace ? opts.itemTools === undefined ? itemTools() : opts.itemTools : null;
     const tools = it ? { mounts: it.mounts, servers: Object.keys(it.mcpServers).sort(), file: mcpFile(it.mcpServers) } : undefined;
-    const args = claudeArgs(id, model, sandboxed, tools && { config: MCP_PATH, servers: tools.servers });
-    const cwd = mkdtempSync(join(tmpdir(), "classify-"));
+    const args = claudeArgs(id, model, sandboxed, tools && { config: MCP_PATH, servers: tools.servers }, parts.system);
+    const cwd = claudeCwd();
     let r: Proc;
     if (sandboxed) {
       const claudeBin = resolveClaudeBin(), credentials = join(run.configDir, ".credentials.json");
       if (!claudeBin || !existsSync(credentials)) throw new Error("sandboxed call: claude binary or the account's credentials file not found");
       const c = sandboxCommand({ claudeBin, checkout: opts.checkout!, credentials, claudeArgs: args, shared, ...(workspace && { agentsFile: agentsFile(tools?.servers) }), extraMounts: tools ? [...tools.mounts, { host: tools.file, path: MCP_PATH }] : undefined });
-      r = await runner(c.cmd, c.args, prompt, cwd, CLAUDE_PROMPTS[id].limits.timeoutSeconds * 1000);
-    } else r = await runner("claude", args, prompt, cwd, CLAUDE_PROMPTS[id].limits.timeoutSeconds * 1000, { CLAUDE_CONFIG_DIR: run.configDir });
+      r = await runner(c.cmd, c.args, parts.stdin, cwd, CLAUDE_PROMPTS[id].limits.timeoutSeconds * 1000);
+    } else r = await runner("claude", args, parts.stdin, cwd, CLAUDE_PROMPTS[id].limits.timeoutSeconds * 1000, { CLAUDE_CONFIG_DIR: run.configDir });
     // Stderr is scrubbed up front. For a sandboxed call the reply text is scrubbed after parsing, so a match cannot break the JSON.
     if (sandboxed) r = { ...r, stderr: scrub(r.stderr) };
     try {

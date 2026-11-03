@@ -6,7 +6,7 @@ import { useTestAccount } from "./accounts-fixture.ts";
 import { setRunner, type Runner } from "../src/classify/run.ts";
 import { connect } from "../src/db.ts";
 import type { Querier } from "../src/mirror.ts";
-import { claudeArgs, renderClaude } from "../src/prompts/index.ts";
+import { claudeArgs, claudeParts, renderClaude } from "../src/prompts/index.ts";
 import { DEFAULT_CAPS, makeBatches, type Batchable } from "../src/review/batch.ts";
 import { selectCandidates } from "../src/review/candidates.ts";
 import { checksQuery, parseChecks } from "../src/review/checks.ts";
@@ -122,9 +122,10 @@ describe("runReview", () => {
       const s = await runReview(db, { repo: "app" }, quiet, d);
       assert.equal(s.reviewed, 4);
       assert.equal(calls.length, 1);
-      assert.deepEqual(calls[0]!.args, claudeArgs("review.sonnet", "sonnet"));
-      const prs = JSON.parse(calls[0]!.input.split("<prs>\n")[1]!.split("\n</prs>")[0]!) as ReviewPr[];
-      assert.equal(calls[0]!.input, renderClaude("review.sonnet", prs));
+            const prs = JSON.parse(calls[0]!.input.split("<prs>\n")[1]!.split("\n</prs>")[0]!) as ReviewPr[];
+      const parts = claudeParts("review.sonnet", prs, false);
+      assert.equal(calls[0]!.input, parts.stdin);
+      assert.deepEqual(calls[0]!.args, claudeArgs("review.sonnet", "sonnet", false, undefined, parts.system));
       // code only: the test file and the lockfile are listed, not shown
       assert.deepEqual(prs[0]!.files, ["src/lib.rs"]);
       assert.deepEqual(prs[0]!.tests_omitted, ["tests/t.rs"]);

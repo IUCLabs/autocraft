@@ -156,8 +156,13 @@ function PromptBody({ p }: { p: PromptInfo }) {
             </ul>
           </Fold>
         )}
+        {p.system !== null && (
+          <Fold title="System prompt" hint="--system-prompt">
+            <Code text={p.system} title="Sent as the system prompt, the same for every call" />
+          </Fold>
+        )}
         <Fold title="Rendered example" hint={`item${p.exampleItems.length > 1 ? "s" : ""} ${p.exampleItems.join(", ")}`}>
-          <Code text={p.example} title="Exactly as sent, for made-up items" />
+          <Code text={p.example} title={p.system === null ? "Exactly as sent on stdin, for made-up items" : "Sent on stdin, for made-up items"} />
         </Fold>
         <Fold title="Call settings" hint={p.runner}>
           <Code text={p.command} title={jev ? "Command (request on stdin)" : "Command (prompt on stdin)"} />
