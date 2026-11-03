@@ -47,6 +47,8 @@ export type MergeParams = {
   dryRun?: boolean;
   /** Only PRs this accepts are merged (the rest are left to the integration batches). */
   only?: (e: QueueEntry) => boolean;
+  /** Stop at the first PR that is refused; the rest wait for the next round. */
+  stopOnRefusal?: boolean;
   /** Called with the running count of PRs merged, after each merge. */
   onMerged?: (merged: number) => void;
 };
@@ -245,6 +247,7 @@ export async function runMerge(db: DatabaseSync, params: MergeParams, log: (line
 
   // One PR at a time; any error that isn't a refusal stops the run.
   for (const e of picks) {
+    if (params.stopOnRefusal && summary.refused.length) break;
     summary.attempted.push(refOf(e));
     seen = null;
     const [ch] = await refreshChecks(db, d.querier, repo, [e.number]);

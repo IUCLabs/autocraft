@@ -7,6 +7,8 @@ import { connect } from "../src/db.ts";
 import type { Querier } from "../src/mirror.ts";
 import { runMerge, type CommandResult, type MergeDeps } from "../src/merge/index.ts";
 import { buildQueue, eligible, mergeDecisionId } from "../src/merge/queue.ts";
+import { runSingles, setSingleMergeMax, singleMergeMax } from "../src/merge/single.ts";
+import type { DiffFetcher } from "../src/review/diff.ts";
 import { finalizeReviews } from "./fixture.ts";
 import { SCRATCH } from "./scratch.ts";
 import { validating } from "./gql.ts";
@@ -263,5 +265,49 @@ describe("merge queue", () => {
     assert.deepEqual(s.merged, ["app#1"]);
     assert.match(s.refused.find((r) => r.ref === "app#11")!.reason, /verification at sha11 is stale/);
     assert.ok(!log.some((l) => l.includes("storytold/app 11 ")));
+  });
+});
+
+describe("merging a few ready PRs one at a time", () => {
+  // PRs 1, 11 and 16 are ready. Each changes its own file unless `shared` names a file two of them change.
+  const diffs = (shared: number[] = []): DiffFetcher => async (_repo, n) => {
+    const file = (f: string) => `diff --git a/${f} b/${f}\n--- a/${f}\n+++ b/${f}\n@@ -1 +1 @@\n-a\n+b\n`;
+    return { ok: true, text: file(`src/pr${n}.rs`) + (shared.includes(n) ? file("Cargo.lock") : "") };
+  };
+  const attempt = async (db: DatabaseSync, fetchDiff: DiffFetcher, f: Fake = {}) => {
+    process.env.CRAFT_AUTO_DIFF_CACHE = mkdtempSync(join(dir, "diffs-"));
+    const log: Log = [];
+    const r = await runSingles(db, { repo: "app" }, quiet, fakes(log, f), fetchDiff);
+    return { r, log };
+  };
+  const noBatch = (db: DatabaseSync) => count(db, "merge_batches");
+
+  test("PRs with disjoint files merge singly, each re-read from GitHub first, and the first one that is no longer ready ends the round", async () => {
+    const db = fresh();
+    assert.equal(singleMergeMax(db), 3);
+    const { r, log } = await attempt(db, diffs());
+    assert.deepEqual(r?.merged, ["app#1", "app#11", "app#16"]);
+    assert.deepEqual(log.filter((l) => l.startsWith("checks")), ["checks 1", "checks 11", "checks 16"]);
+    assert.equal(noBatch(db), 0);
+
+    const moved = await attempt(fresh(), diffs(), { heads: new Map([[11, "newer"]]) });
+    assert.deepEqual(moved.r?.merged, ["app#1"]);
+    assert.equal(moved.r?.refused.length, 1);
+    assert.ok(!moved.log.some((l) => l.startsWith("checks 16")), "PR 16 waits for the next round");
+  });
+
+  test("two PRs changing the same file, more PRs than the limit, or a limit of 0 leave the work to the batches", async () => {
+    const db = fresh();
+    const { r, log } = await attempt(db, diffs([1, 11]));
+    assert.equal(r, null);
+    assert.deepEqual(log, []);
+
+    setSingleMergeMax(db, 2, "op");
+    assert.equal((await attempt(db, diffs())).r, null);
+    setSingleMergeMax(db, 0, "op");
+    assert.equal((await attempt(db, diffs())).r, null);
+    setSingleMergeMax(db, 3, "op");
+    assert.ok((await attempt(db, diffs())).r);
+    assert.equal((db.prepare("SELECT COUNT(*) AS n FROM audit WHERE action = 'single-merge-max'").get() as { n: number }).n, 3);
   });
 });

@@ -110,6 +110,9 @@ export interface Api {
     approveLabels(name: RepoName, approved: boolean): Promise<TrackedRepo[]>;
     /** Lets the pipeline merge pull requests in this repo, or stops it. */
     approveMerging(name: RepoName, approved: boolean): Promise<TrackedRepo[]>;
+    /** Most ready pull requests of a repo that merge one at a time instead of in a batch; 0 always batches. */
+    singleMerge(): Promise<{ max: number }>;
+    setSingleMerge(max: number): Promise<{ max: number }>;
     /** Lets the Fix-up step push commits to contributor branches here, or stops it. */
     approvePushing(name: RepoName, approved: boolean): Promise<TrackedRepo[]>;
     /** Lets the Act step comment on and close items here, or stops it. */

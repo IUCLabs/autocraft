@@ -138,6 +138,8 @@ export function createHttpApi(): Api {
       track: (name) => post("/api/repos/track", { name }),
       untrack: (name) => post("/api/repos/untrack", { name }),
       approveMerging: (name, approved) => post(approved ? "/api/repos/merge-approve" : "/api/repos/merge-revoke", { name }),
+      singleMerge: () => get("/api/merge/single"),
+      setSingleMerge: (max) => put("/api/merge/single", { max }),
       approvePushing: (name, approved) => post(approved ? "/api/repos/push-approve" : "/api/repos/push-revoke", { name }),
       approveCommenting: (name, approved) => post(approved ? "/api/repos/comment-approve" : "/api/repos/comment-revoke", { name }),
       approveFixing: (name, approved) => post(approved ? "/api/repos/fixissue-approve" : "/api/repos/fixissue-revoke", { name }),

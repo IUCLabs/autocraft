@@ -255,7 +255,7 @@ export const STEPS: StepDef[] = [
   {
     name: "merge",
     title: "Merge queued pull requests",
-    description: "Lands the pull requests of one repo that may merge in integration batches: up to 10 at a time are merged into one integration branch, checked in the sandbox, opened as one pull request on the storytold repo and merged with merge commits through the safe-merge command once upstream CI is green. A failed batch is split in half; a single failing PR is held. Pull requests in a repo the sandbox cannot build are merged one at a time.",
+    description: "Lands the pull requests of one repo that may merge in integration batches: up to 10 at a time are merged into one integration branch, checked in the sandbox, opened as one pull request on the storytold repo and merged with merge commits through the safe-merge command once upstream CI is green. A failed batch is split in half; a single failing PR is held. Pull requests in a repo the sandbox cannot build are merged one at a time. When a few pull requests are ready (at most the single-merge limit, 3 by default), each is mergeable with green CI and no two change the same file, they are merged one at a time in order without a batch; each is checked again just before its merge and the first that is no longer ready ends the round.",
     stage: 6,
     requires: "operator",
     group: "github-write",
@@ -268,10 +268,16 @@ export const STEPS: StepDef[] = [
     run: async (ctx) => {
       const { runMerge } = await import("../merge/index.ts");
       const { runBatches } = await import("../merge/batch.ts");
+      const { runSingles } = await import("../merge/single.ts");
       const { singleMergeOnly } = await import("../merge/queue.ts");
       const refused = await checkMergeApproved(ctx.db, ctx.params);
       if (refused) throw new Error(refused);
       const repo = String(ctx.params.repo), limit = Number(ctx.params.limit);
+      const singly = await runSingles(ctx.db, { repo, limit, onMerged: ctx.handled }, ctx.log);
+      if (singly) {
+        ctx.acted(singly.merged.length + singly.asked.length);
+        return `${repo}: ${singly.merged.length} merged singly, ${singly.refused.length} refused, ${singly.asked.length} decisions asked`;
+      }
       const b = await runBatches(ctx.db, { repo, limit, onMerged: ctx.handled }, ctx.log);
       ctx.usageRun(b.runId);
       let single = { merged: [] as string[], attempted: [] as string[], refused: [] as unknown[], asked: [] as string[] };
