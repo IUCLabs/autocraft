@@ -6,6 +6,8 @@ export type RecommendInput = {
   ref: string;
   /** Where the call may read the default-branch checkout inside the sandbox; not part of the quoted JSON. */
   repo_dir?: string;
+  /** Set when the repo's reference folder is mounted at /reference; not part of the quoted JSON. */
+  reference?: boolean;
   /** The item as the summary prompt sees it: title, body, author association, labels, first comments. */
   item: Record<string, unknown>;
   question: string;

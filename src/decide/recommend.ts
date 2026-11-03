@@ -2,6 +2,7 @@
 // tools on a checkout of the default branch when there is one. The model may
 // answer with no recommendation. Our code accepts only a key of the decision's
 // own options.
+import { referenceDir } from "../reference.ts";
 import type { DatabaseSync } from "node:sqlite";
 import { claudeRoom } from "../agents/call.ts";
 import { summaryInput } from "../classify/parse.ts";
@@ -102,7 +103,7 @@ export async function recommend(db: DatabaseSync, ids: string[], p: RecommendPar
     let usage: Usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: null };
     let got: Recommendation | null = null;
     for (let attempt = 0; attempt < RECOMMEND_PROMPT.limits.attempts && !got; attempt++) {
-      const reply = await askClaude("decide.recommend", model, [input], db, { checkout: checkout ?? undefined });
+      const reply = await askClaude("decide.recommend", model, [input], db, { checkout: checkout ?? undefined, reference: checkout ? referenceDir(d.repo) : undefined });
       if (!reply) continue;
       usage = add(usage, reply.usage);
       got = parseRecommendReply(reply.text, options.map((o) => o.key));

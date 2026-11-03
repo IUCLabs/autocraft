@@ -10,6 +10,8 @@ export type OpusPr = {
   ref: string;
   /** Where the call may read the repository inside the sandbox; not part of the quoted JSON. */
   repo_dir?: string;
+  /** Set when the repo's reference folder is mounted at /reference; not part of the quoted JSON. */
+  reference?: boolean;
   title: string;
   body: string;
   author_association: string | null;

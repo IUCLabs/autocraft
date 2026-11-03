@@ -8,6 +8,10 @@ export type ConversationInput = {
   item: string;
   /** The stored blocks of the earlier turns, oldest first, then the new message; one block after the other. */
   turns: string;
+  /** Set when the call has a checkout (the docs sentence applies). */
+  repo_dir?: string;
+  /** Set when the reference folder is mounted at /reference. */
+  reference?: boolean;
 };
 
 export const CARD_KINDS = ["comment", "answer", "label", "backlog", "duplicate"] as const;

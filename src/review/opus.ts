@@ -15,6 +15,7 @@ import { selectOpusCandidates, type OpusCandidate } from "./opus-candidates.ts";
 import { parseOpusReply, type EarlierOpus, type OpusPr, type OpusReview } from "./opus-parse.ts";
 import { REPO_PATH } from "../sandbox/command.ts";
 import { checkoutForPr } from "../sandbox/index.ts";
+import { referenceDir } from "../reference.ts";
 
 const PROMPT = CLAUDE_PROMPTS["review.opus"];
 /** Diff characters above which a PR is held as too large to review. */
@@ -186,7 +187,7 @@ export async function runOpusReview(db: DatabaseSync, params: OpusParams, log: (
     // A reply valid except for a long summary is kept in case the retry gives nothing.
     let fallback: OpusReview | null = null;
     for (let attempt = 0; attempt < PROMPT.limits.attempts && !got; attempt++) {
-      const reply = await askClaude("review.opus", deps.model, [input], db, { checkout });
+      const reply = await askClaude("review.opus", deps.model, [input], db, { checkout, reference: checkout ? referenceDir(repo) : undefined });
       if (!reply) continue;
       usage = add(usage, reply.usage);
       got = parseOpusReply(reply.text, input.ref, attempt === PROMPT.limits.attempts - 1);
