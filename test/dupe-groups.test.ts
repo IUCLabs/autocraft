@@ -160,7 +160,7 @@ describe("PR group", () => {
     await runDupeCompare(old, {}, () => {}, deps(() => pr(2, [{ number: 1, duplicate: true, better: ["x"], carry: ["y"] }, { number: 3, duplicate: true, better: [], carry: [] }], `${WORDS(40)} end.`)));
     const dec = getDecision(old, GROUP_ID)!;
     assert.equal(dec.summary, `${WORDS(40)} end.`);
-    assert.ok(!dec.summary_by);
+    assert.equal(dec.summary_by, "opus");
     assert.equal(dec.recommended, null, "a reason that is not one short sentence gives no recommendation");
     assert.ok(!dec.summary!.includes("does better"));
   });
@@ -322,7 +322,7 @@ describe("review fixes: answers, undo and refresh", () => {
     db.prepare("UPDATE decisions SET summary = 'Sonnet said keep #1.', summary_by = 'sonnet', recommended = NULL, recommended_reason = NULL WHERE id = ?").run(GROUP_ID);
     askGroupDecisions(db, undefined, "2030-01-01T00:00:00.000Z");
     const d = getDecision(db, GROUP_ID)!;
-    assert.deepEqual([d.summary_by, d.recommended, d.summary?.startsWith("Sonnet")], [null, "accept", false]);
+    assert.deepEqual([d.summary_by, d.recommended, d.summary?.startsWith("Sonnet")], ["sonnet", "accept", false]);
     db.prepare("UPDATE dupe_comparisons SET summary = 'New view: keep #2.', why = 'It is the complete fix.'").run();
     askGroupDecisions(db, undefined, "2030-01-02T00:00:00.000Z");
     assert.deepEqual([getDecision(db, GROUP_ID)!.summary, getDecision(db, GROUP_ID)!.recommended_reason], ["New view: keep #2.", "It is the complete fix."]);
