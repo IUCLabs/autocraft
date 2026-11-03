@@ -28,6 +28,7 @@ import { queue, queueBatches } from "./queue.ts";
 import { githubActivity } from "./github-activity.ts";
 import { work } from "./work.ts";
 import { flow } from "./flow.ts";
+import { queueSlots } from "../../rank/position.ts";
 import * as items from "./items.ts";
 import * as operator from "./operator.ts";
 import { actionsOf as releasesOf } from "../../operator-actions.ts";
@@ -128,6 +129,7 @@ async function item(db: DatabaseSync, req: Req): Promise<Item> {
     patchChecks: checksOf(db, repo, n).map(({ kind, subject, patchHash, round, verdict, reasons, problems, model, createdAt }) => ({ kind, subject, patchHash, round, verdict, reasons, problems, model, createdAt })),
     reviews: it.kind === "pr" ? reviewsOf(db, repo, n) : null,
     actions: actionsOf(db, repo, n), releases: releasesOf(db, repo, n),
+    queue: queueSlots(db, await visibleRepos(db, req)).get(`${repo}#${n}`) ?? null,
   };
 }
 

@@ -110,6 +110,8 @@ export interface Decision {
   area?: string | null;
   /** null or absent for a batch and before the item was rated. */
   priority?: PriorityInfo | null;
+  /** Place in line for the item's next queued stage; null or absent when not queued and for a batch. */
+  queue?: QueueSlot | null;
 }
 
 export interface DecisionComment {
@@ -223,6 +225,8 @@ export interface Item extends ItemRef {
   releases: ItemReleases;
   /** null or absent before the item was rated. */
   priority?: PriorityInfo | null;
+  /** Place in line for the item's next queued stage; null or absent when not queued. */
+  queue?: QueueSlot | null;
 }
 
 export type VerificationKind = "ci-enough" | "tests" | "regression" | "error" | "unavailable";
@@ -399,6 +403,8 @@ export interface ItemListRow extends ItemRef {
   stage: Stage | null;
   /** With a text query only. */
   snippet: Snippet | null;
+  /** Place in line for the next queued stage; null when the next step is not queued. */
+  queue?: QueueSlot | null;
 }
 
 export interface ItemList {
@@ -1366,6 +1372,15 @@ export interface GithubActivityPage {
 
 export type QueueTab = "all" | "review" | "fix" | "verify" | "merge";
 
+/** An item's place in line for its next queued stage (src/rank/position.ts), 1-based among the visible items with the same next stage. */
+export interface QueueSlot {
+  /** Stage name as shown: Review, Opus review, Fix, Fix-up, Verify, Merge. */
+  stage: string;
+  /** The Queue tab that lists the stage. */
+  tab: Exclude<QueueTab, "all">;
+  place: number;
+}
+
 /** Place of a fast-tracked item among the open fast-tracked items, first to run first. */
 export interface FastPosition {
   /** From 1. */
@@ -1375,6 +1390,7 @@ export interface FastPosition {
 
 /** One row of the All, Review, Fix and Verify tabs: a work row with its fast-track place. */
 export interface QueueWorkRow extends WorkRow {
+  queue?: QueueSlot | null;
   fast: FastPosition | null;
   /** A PR whose merge an operator holds. */
   held: boolean;
@@ -1416,12 +1432,16 @@ export type QueueRepos = "pipeline" | "all" | RepoName;
 export interface QueuePageFilter {
   tab?: QueueTab;
   repos?: QueueRepos;
+  /** `repo:number`: the first page is cut long enough to include this item. */
+  item?: string;
   limit?: number;
   offset?: number;
 }
 
 export interface QueuePage {
   tab: QueueTab;
+  /** Index of the requested `item` in this tab's list (rows or merge rows), or null when the tab does not list it. */
+  itemIndex?: number | null;
   repos: QueueRepos;
   counts: QueuePageCounts;
   /** All, Review, Fix, Verify tabs (empty on Merge). */

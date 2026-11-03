@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { QueueBadge } from "../../ui/QueueBadge";
 import { useNavigate } from "react-router-dom";
 import { CheckIcon, ArrowUUpLeftIcon, UsersIcon } from "@phosphor-icons/react";
 import type { Decision, DecisionList } from "../../api/types";
@@ -145,6 +146,7 @@ function Row({ d, active, checked, mine, onOpen, activeRef }: { d: Decision; act
                 <span className="num">{opinions}</span>
               </span>
             )}
+            {d.number !== null && <QueueBadge slot={d.queue} repo={d.repo} number={d.number} />}
             <ClaimPill claim={d.claim} compact />
           </span>
         </div>

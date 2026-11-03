@@ -1,6 +1,7 @@
 // Deterministic fixture data shaped like the real craft-app backlog.
 // Handles are invented GitHub-style logins; the reference apps are never named.
 
+import { mockSlot } from "./queueSlotMock";
 import { BATCH_SUMMARY, TEXT, fillerText } from "./fixtureText";
 
 import type {
@@ -667,6 +668,7 @@ function toDecision(s: Seed): Decision {
     recommendedReason: s.recommended ? (s.recommendedReason ?? "") : "",
     publicText: s.publicText ?? null,
     optionTexts: s.optionTexts ?? [],
+    queue: s.number === null || s.answer ? null : mockSlot(s.number),
     askedAt: iso(s.ageH * H),
     askedBy: s.kind === "merge" ? "pipeline:review" : "pipeline:classify",
     docket: s.docket ?? null,
@@ -807,6 +809,7 @@ export function itemFor(repo: string, number: number): Item {
     reviews: null,
     actions: [],
     releases: { reviewAgain: false, verifyAgain: false, fixAgain: false, batchAgain: false },
+    queue: mockSlot(number),
   };
 }
 

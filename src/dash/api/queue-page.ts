@@ -10,7 +10,8 @@ import { ControlError, holdMerge, releaseMerge, removeFromBatch, stopBatch } fro
 import { pageBatches } from "../../merge/batch-store.ts";
 import { buildQueue, type QueueEntry } from "../../merge/queue.ts";
 import { pipelineRepos } from "../../pilot.ts";
-import { classifyListOf, factsOf, nextStepOf } from "../../rank/next.ts";
+import { mergeOrder, queueSlots, scopedKeys, scoreLookup, type Candidate } from "../../rank/position.ts";
+import { classifyListOf, factsOf, memoNoCi, nextStepOf, type NextFacts } from "../../rank/next.ts";
 import type { RankBreakdown } from "../../rank/score.ts";
 import { trackedNames } from "../../repos.ts";
 import { HttpError } from "../server/util.ts";
@@ -66,35 +67,60 @@ export async function queuePage(db: DatabaseSync, req: Req): Promise<QueuePage> 
   const visible = await visibleRepos(db, req);
   const visibleSet = new Set(visible);
   if (reposParam !== "pipeline" && reposParam !== "all" && !visibleSet.has(reposParam)) throw new HttpError(404, `${reposParam} is not a tracked repo`);
-  const on = pipelineRepos(db);
+  const scoped = reposParam === "pipeline" ? scopedKeys(db) : null;
   const fast = new Map([...fastPositions(db)].filter(([k]) => visibleSet.has(k.slice(0, k.lastIndexOf("#")))));
-  // Fast-tracked items run whatever their repo's pipeline switch says, so they stay in the default view.
+  // The default view is the pipeline's scope (src/rank/position.ts), the same one the position badges count.
   const inScope = (repo: string, number: number): boolean =>
-    reposParam === "all" ? visibleSet.has(repo) : reposParam === "pipeline" ? visibleSet.has(repo) && (on.has(repo) || fast.has(`${repo}#${number}`)) : repo === reposParam;
+    reposParam === "all" ? visibleSet.has(repo) : reposParam === "pipeline" ? visibleSet.has(repo) && scoped!.has(`${repo}#${number}`) : repo === reposParam;
   const fastOf = (repo: string, number: number): FastPosition | null => fast.get(`${repo}#${number}`) ?? null;
-  const fastFirst = <T extends { repo: string; number: number }>(rows: T[]): T[] =>
-    [...rows].sort((a, b) => (fastOf(a.repo, a.number)?.position ?? Infinity) - (fastOf(b.repo, b.number)?.position ?? Infinity));
   const held = new Set((db.prepare("SELECT repo, number FROM main.merge_holds").all() as { repo: string; number: number }[]).map((r) => `${r.repo}#${r.number}`));
+
+  // A linked item (`item=repo:number`) comes with the first page: it is cut long enough to include the item.
+  const item = req.query.get("item");
+  const indexOf = (list: { repo: string; number: number }[]): number | null => {
+    const at = item ? list.findIndex((r) => `${r.repo}:${r.number}` === item) : -1;
+    return at < 0 ? null : at;
+  };
+  const sizeFor = (list: { repo: string; number: number }[], from: number): number => {
+    const at = from === 0 ? indexOf(list) : null;
+    return at === null ? limit : Math.min(500, Math.max(limit, Math.ceil((at + 1) / 100) * 100));
+  };
 
   // Work rows (All, Review, Fix, Verify)
   const run = latestRun(db);
   const settled = settledLookup(db, run);
+  // Each item's next step is worked out once for the rows and the position badges.
+  const noCi = memoNoCi(db);
+  const steps = new Map<string, { facts: NextFacts; next: string }>();
+  const stepOf = (r: Candidate) => {
+    const k = `${r.repo}#${r.number}`;
+    let v = steps.get(k);
+    if (!v) { const facts = factsOf(db, r.repo, r.number, r.kind, r.head_oid, settled(r.repo, r.number), noCi); steps.set(k, (v = { facts, next: nextStepOf(facts) })); }
+    return v;
+  };
+  const allEntries = buildQueue(db, { merged: "exclude", run });
+  const slots = queueSlots(db, visible, { nextOf: (r) => stepOf(r).next, entries: allEntries });
+  const score = scoreLookup(db);
   type Row = { repo: string; number: number; kind: string; title: string | null; head_oid: string | null; score: number; breakdown: string };
   const ranked = db.prepare(`SELECT i.repo, i.number, i.kind, i.title, i.head_oid, r.score, r.breakdown FROM items i JOIN item_rank r ON r.repo = i.repo AND r.number = i.number
     WHERE i.state = 'OPEN' ORDER BY r.score DESC, i.repo, i.number`).all() as Row[];
-  const work: QueueWorkRow[] = fastFirst(ranked.filter((r) => visibleSet.has(r.repo) && inScope(r.repo, r.number))).map((r) => {
+  // Fast-tracked items (and the Fix PRs of fast-tracked issues) first, then the work rank.
+  const inView = ranked.filter((r) => visibleSet.has(r.repo) && inScope(r.repo, r.number)).map((r) => ({ r, s: score(r.repo, r.number) ?? r.score }));
+  inView.sort((a, b) => b.s - a.s);
+  const work: QueueWorkRow[] = inView.map(({ r }) => {
     const s = settled(r.repo, r.number), bd = JSON.parse(r.breakdown) as RankBreakdown;
-    const facts = factsOf(db, r.repo, r.number, r.kind, r.head_oid, s);
+    const { facts, next } = stepOf(r);
     return {
       repo: r.repo, number: r.number, kind: r.kind === "pr" ? "pr" : "issue", title: r.title ?? "", score: r.score, level: bd.level, size: bd.size, breakdown: bd,
-      label: s.label as TypeLabel | null, next: nextStepOf(facts), nextHref: facts.disagree && !facts.held ? classifyListOf(r.repo) : null,
-      fast: fastOf(r.repo, r.number), held: held.has(`${r.repo}#${r.number}`),
+      label: s.label as TypeLabel | null, next, nextHref: facts.disagree && !facts.held ? classifyListOf(r.repo) : null,
+      queue: slots.get(`${r.repo}#${r.number}`) ?? null, fast: fastOf(r.repo, r.number), held: held.has(`${r.repo}#${r.number}`),
     };
   });
 
   // Merge queue rows
   const hidden = trackedNames(db).filter((r) => !visibleSet.has(r));
-  const entries = buildQueue(db, { merged: "exclude", run, exclude: hidden }).filter((e) => e.state !== "merged" && inScope(e.repo, e.number));
+  const hiddenSet = new Set(hidden);
+  const entries = allEntries.filter((e) => e.state !== "merged" && !hiddenSet.has(e.repo) && inScope(e.repo, e.number));
   const asRow = (e: QueueEntry): QueueMergeRow => ({ ...toRow(e), fast: fastOf(e.repo, e.number), held: e.held });
   const count = (t: QueueTab): number => (t === "all" ? work.length : t === "merge" ? entries.length : work.filter((w) => tabOfNext(w.next) === t).length);
   const counts = { all: count("all"), review: count("review"), fix: count("fix"), verify: count("verify"), merge: count("merge") };
@@ -102,7 +128,8 @@ export async function queuePage(db: DatabaseSync, req: Req): Promise<QueuePage> 
   const out: QueuePage = { tab, repos: reposParam, counts, rows: [], mergeRows: [], nextMerges: [], batches: [], total: 0, next: null };
   if (tab !== "merge") {
     const match = tab === "all" ? work : work.filter((w) => tabOfNext(w.next) === tab);
-    out.rows = match.slice(offset, offset + limit);
+    out.itemIndex = indexOf(match);
+    out.rows = match.slice(offset, offset + sizeFor(match, offset));
     out.total = match.length;
     out.next = offset + out.rows.length < match.length ? offset + out.rows.length : null;
     return out;
@@ -112,8 +139,9 @@ export async function queuePage(db: DatabaseSync, req: Req): Promise<QueuePage> 
   const rowOf = new Map(entries.map((e) => [`${e.repo}#${e.number}`, asRow(e)]));
   const batchOf = new Map(active.flatMap((b) => b.prs.map((p) => [`${b.repo}#${p.number}`, { id: b.id, branch: b.branch }] as const)));
   const scores = new Map((db.prepare("SELECT repo, number, score FROM item_rank").all() as { repo: string; number: number; score: number }[]).map((r) => [`${r.repo}#${r.number}`, r.score]));
-  const free = fastFirst(entries.filter((e) => e.state !== "batch-checking" && e.state !== "in-batch")).map(asRow);
-  out.mergeRows = free.slice(offset, offset + limit);
+  const free = mergeOrder(db, entries).map(asRow);
+  out.itemIndex = indexOf(free);
+  out.mergeRows = free.slice(offset, offset + sizeFor(free, offset));
   out.total = free.length;
   out.next = offset + out.mergeRows.length < free.length ? offset + out.mergeRows.length : null;
   out.nextMerges = nextMerges(entries, fast, batchOf, scores);

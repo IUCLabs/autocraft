@@ -4,7 +4,7 @@
 import { priorityOf } from "../../priority/read.ts";
 import type { DatabaseSync } from "node:sqlite";
 import type {
-  Claim, Classification, Decision, DecisionComment, DecisionKind, DecisionList, ItemState, Opinion, RelatedItem, Relation,
+  Claim, Classification, Decision, DecisionComment, DecisionKind, DecisionList, ItemState, Opinion, QueueSlot, RelatedItem, Relation,
 } from "../../../web/src/api/types.ts";
 import { resetGroupAnswer } from "../../dupes/decide.ts";
 import { BACKLOG, backlogOpen, exceptionsOf, factsOf, getDecision, isBatch, itemsOf, KINDS, optionsOf, reposOf, type DecisionRow, type Exception } from "../../decisions.ts";
@@ -15,6 +15,7 @@ import { randomToken } from "../server/crypto.ts";
 import { HttpError, type RateLimiter } from "../server/util.ts";
 import type { Req } from "../types.ts";
 import { areaNameOf } from "../../areas/store.ts";
+import { queueSlots } from "../../rank/position.ts";
 import { hiddenRepos, visibleRepos } from "./visible.ts";
 import { pickDecision, shortRepo } from "../../../web/src/lib/links.ts";
 
@@ -132,8 +133,10 @@ function contextOf(c: string | null): string[] {
   return c.split(/\n+/).map((s) => s.trim()).filter(Boolean);
 }
 
-export type Viewer = { login: string; operator: boolean };
+export type Viewer = { login: string; operator: boolean; slots?: Map<string, QueueSlot> };
 export const viewerOf = (req: Req): Viewer => ({ login: req.user.login, operator: isOperator(req) });
+/** The viewer with the queue places of the items they may see, computed once for the response. */
+const viewerWith = async (db: DatabaseSync, req: Req): Promise<Viewer> => ({ ...viewerOf(req), slots: queueSlots(db, await visibleRepos(db, req)) });
 
 export function toDecision(db: DatabaseSync, d: DecisionRow, viewer: Viewer): Decision {
   const batch = isBatch(d);
@@ -178,6 +181,7 @@ export function toDecision(db: DatabaseSync, d: DecisionRow, viewer: Viewer): De
     classifications: batch ? [] : classificationsOf(db, d.repo!, d.number!),
     area: batch ? null : areaNameOf(db, d.repo!, d.number!),
     priority: batch ? null : priorityOf(db, d.repo!, d.number!),
+    queue: batch ? null : (viewer.slots?.get(`${d.repo}#${d.number}`) ?? null),
   };
 }
 
@@ -255,7 +259,7 @@ export async function listDecisions(db: DatabaseSync, req: Req, writeRepos: () =
   const more = rows.length > limit;
   const shown = rows.slice(0, limit);
   const last = shown[shown.length - 1] as (DecisionRow & Record<string, string>) | undefined;
-  const viewer = viewerOf(req);
+  const viewer = await viewerWith(db, req);
   return {
     decisions: shown.map((d) => toDecision(db, d, viewer)), total, byKind, oldestAskedAt,
     next: more && last ? `${last[sortKey]}|${last.id}` : null,
@@ -263,7 +267,7 @@ export async function listDecisions(db: DatabaseSync, req: Req, writeRepos: () =
 }
 
 export async function getOne(db: DatabaseSync, req: Req): Promise<Decision> {
-  return toDecision(db, await needDecision(db, req, req.params.id!), viewerOf(req));
+  return toDecision(db, await needDecision(db, req, req.params.id!), await viewerWith(db, req));
 }
 
 /** The decision a readable link `/decisions/<repo>/<n>` opens, or null when the item has none the viewer may see. */
@@ -275,7 +279,7 @@ export async function forItem(db: DatabaseSync, req: Req): Promise<Decision | nu
   const rows = db.prepare(`SELECT * FROM decisions WHERE (repo = :repo AND number = :n) OR (number IS NULL AND EXISTS (
       SELECT 1 FROM json_each(CASE WHEN json_valid(items) THEN items ELSE '[]' END) j
       WHERE json_extract(j.value, '$.repo') = :repo AND json_extract(j.value, '$.number') = :n))`).all({ repo, n }) as unknown as DecisionRow[];
-  const viewer = viewerOf(req);
+  const viewer = await viewerWith(db, req);
   // A batch that also covers the item counts only when no single-item decision exists; it is the item's decision only by membership.
   const single = rows.filter((d) => d.number === n);
   const kind = req.query.get("kind");
@@ -290,9 +294,9 @@ export async function thread(db: DatabaseSync, req: Req): Promise<DecisionCommen
 
 // ---- operator writes -----------------------------------------------------
 
-function settled(db: DatabaseSync, req: Req, id: string): Decision {
+async function settled(db: DatabaseSync, req: Req, id: string): Promise<Decision> {
   db.prepare("DELETE FROM decision_claims WHERE decision_id = ?").run(id);
-  return toDecision(db, getDecision(db, id)!, viewerOf(req));
+  return toDecision(db, getDecision(db, id)!, await viewerWith(db, req));
 }
 
 /** Runs `fn` in one write transaction, so a check and the write it guards cannot be separated by another process. */
@@ -342,7 +346,7 @@ export async function answer(db: DatabaseSync, req: Req): Promise<Decision> {
     if (r.changes !== 1) throw new HttpError(409, "someone answered this a moment ago");
   });
   audit(db, req.user.login, "answer", d.id, { answer: ans, exceptions: exceptions?.length ? exceptions : undefined, note: note ? true : undefined });
-  return settled(db, req, d.id);
+  return await settled(db, req, d.id);
 }
 
 export async function undo(db: DatabaseSync, req: Req): Promise<Decision> {
@@ -358,7 +362,7 @@ export async function undo(db: DatabaseSync, req: Req): Promise<Decision> {
     resetGroupAnswer(db, d.id);
   });
   audit(db, req.user.login, "undo", d.id, { answer: d.answer, adopted: d.adopted_opinion ?? undefined });
-  return toDecision(db, getDecision(db, d.id)!, viewerOf(req));
+  return toDecision(db, getDecision(db, d.id)!, await viewerWith(db, req));
 }
 
 export async function reopen(db: DatabaseSync, req: Req): Promise<Decision> {
@@ -369,7 +373,7 @@ export async function reopen(db: DatabaseSync, req: Req): Promise<Decision> {
     WHERE id = ? AND answer = ?`).run(d.id, BACKLOG.key);
   if (r.changes !== 1) throw new HttpError(409, "someone changed this a moment ago");
   audit(db, req.user.login, "reopen", d.id, { answer: d.answer });
-  return toDecision(db, getDecision(db, d.id)!, viewerOf(req));
+  return toDecision(db, getDecision(db, d.id)!, await viewerWith(db, req));
 }
 
 /** Operator bulk: answers every open decision in scope (`outsidePilot`, `repo`) with Backlog. Dry run unless `apply` is true. */
@@ -404,7 +408,7 @@ export async function adopt(db: DatabaseSync, req: Req): Promise<Decision> {
     if (r.changes !== 1) throw new HttpError(409, "someone answered this a moment ago");
   });
   audit(db, req.user.login, "adopt", d.id, { answer: o.option, opinion: o.id, of: o.login });
-  return settled(db, req, d.id);
+  return await settled(db, req, d.id);
 }
 
 // ---- writes by operators and maintainers ------------------------------------------
@@ -445,7 +449,7 @@ export async function opine(db: DatabaseSync, req: Req, limiter: RateLimiter): P
     db.exec("ROLLBACK");
     throw e;
   }
-  return toDecision(db, getDecision(db, d.id)!, viewerOf(req));
+  return toDecision(db, getDecision(db, d.id)!, await viewerWith(db, req));
 }
 
 export async function retract(db: DatabaseSync, req: Req, limiter: RateLimiter): Promise<Decision> {
@@ -457,7 +461,7 @@ export async function retract(db: DatabaseSync, req: Req, limiter: RateLimiter):
     .run(new Date().toISOString(), d.id, req.user.login);
   if (r.changes !== 1) throw new HttpError(404, "you have no opinion on this decision");
   audit(db, req.user.login, "opinion-retract", d.id);
-  return toDecision(db, getDecision(db, d.id)!, viewerOf(req));
+  return toDecision(db, getDecision(db, d.id)!, await viewerWith(db, req));
 }
 
 export async function comment(db: DatabaseSync, req: Req, limiter: RateLimiter): Promise<DecisionComment> {

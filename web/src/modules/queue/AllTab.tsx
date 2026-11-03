@@ -1,8 +1,10 @@
 // The All, Review, Fix and Verify tabs: open items in work-rank order with the next pipeline step.
+import { QueueBadge } from "../../ui/QueueBadge";
 import { Link, useNavigate } from "react-router-dom";
 import type { QueueWorkRow, WorkBreakdown } from "../../api/types";
 import { itemPath } from "../../lib/links";
 import { Badge } from "../../ui/Badge";
+import { cn } from "../../ui/cn";
 import { LevelBadge } from "../../ui/PriorityBadge";
 import { RefLink } from "../../ui/RefLink";
 import { FastMark } from "./fastTrack";
@@ -42,7 +44,12 @@ function Title({ r }: { r: QueueWorkRow }) {
 
 function NextBadge({ r }: { r: QueueWorkRow }) {
   const badge = <Badge tone={r.nextHref ? "warn" : "neutral"}>{r.next}</Badge>;
-  return r.nextHref ? <Link to={r.nextHref}>{badge}</Link> : badge;
+  return (
+    <>
+      {r.nextHref ? <Link to={r.nextHref}>{badge}</Link> : badge}
+      <QueueBadge slot={r.queue} repo={r.repo} number={r.number} />
+    </>
+  );
 }
 
 function WorkMenu({ r }: { r: QueueWorkRow }) {
@@ -57,10 +64,10 @@ function useOpen(r: QueueWorkRow) {
   };
 }
 
-function TableRow({ r, n }: { r: QueueWorkRow; n: number }) {
+function TableRow({ r, n, on }: { r: QueueWorkRow; n: number; on: boolean }) {
   const open = useOpen(r);
   return (
-    <tr onClick={open} className="cursor-pointer border-b border-line align-top last:border-0 hover:bg-ink/[0.03]">
+    <tr onClick={open} data-item={`${r.repo}:${r.number}`} className={cn("cursor-pointer border-b border-line align-top last:border-0 hover:bg-ink/[0.03]", on && "bg-accent/10")}>
       <td className="num px-3 py-2 text-xs text-ink/45">{n}</td>
       <td className="px-3 py-2">
         <Title r={r} />
@@ -86,7 +93,8 @@ function TableRow({ r, n }: { r: QueueWorkRow; n: number }) {
   );
 }
 
-export function WorkTable({ rows }: { rows: QueueWorkRow[] }) {
+/** `highlight` is the Queue page's `item` parameter (`repo:number`): that row is marked and scrolled to by the page. */
+export function WorkTable({ rows, highlight }: { rows: QueueWorkRow[]; highlight?: string }) {
   return (
     <div className="overflow-x-auto">
       <table className="w-full min-w-[900px] border-collapse text-sm">
@@ -103,7 +111,7 @@ export function WorkTable({ rows }: { rows: QueueWorkRow[] }) {
         </thead>
         <tbody>
           {rows.map((r, i) => (
-            <TableRow key={`${r.repo}#${r.number}`} r={r} n={i + 1} />
+            <TableRow key={`${r.repo}#${r.number}`} r={r} n={i + 1} on={highlight === `${r.repo}:${r.number}`} />
           ))}
         </tbody>
       </table>
@@ -111,10 +119,10 @@ export function WorkTable({ rows }: { rows: QueueWorkRow[] }) {
   );
 }
 
-function Card({ r, n }: { r: QueueWorkRow; n: number }) {
+function Card({ r, n, on }: { r: QueueWorkRow; n: number; on: boolean }) {
   const open = useOpen(r);
   return (
-    <li onClick={open} className="cursor-pointer border-b border-line px-4 py-2.5 last:border-0">
+    <li onClick={open} data-item={`${r.repo}:${r.number}`} className={cn("cursor-pointer border-b border-line px-4 py-2.5 last:border-0", on && "bg-accent/10")}>
       <div className="flex items-center gap-2 text-xs text-ink/55">
         <span className="num">{n}.</span>
         <FastMark fast={r.fast} />
@@ -140,11 +148,11 @@ function Card({ r, n }: { r: QueueWorkRow; n: number }) {
   );
 }
 
-export function WorkCards({ rows }: { rows: QueueWorkRow[] }) {
+export function WorkCards({ rows, highlight }: { rows: QueueWorkRow[]; highlight?: string }) {
   return (
     <ul>
       {rows.map((r, i) => (
-        <Card key={`${r.repo}#${r.number}`} r={r} n={i + 1} />
+        <Card key={`${r.repo}#${r.number}`} r={r} n={i + 1} on={highlight === `${r.repo}:${r.number}`} />
       ))}
     </ul>
   );

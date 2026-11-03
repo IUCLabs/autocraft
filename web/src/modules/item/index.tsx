@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { QueueBadge } from "../../ui/QueueBadge";
 import { Link } from "react-router-dom";
 import {
   RadioButtonIcon,
@@ -191,6 +192,7 @@ function Properties({ it }: { it: Item }) {
       <Prop label="Type">
         <SettledBadge s={it.settled} detail />
         <PriorityBadge p={it.priority} />
+        <QueueBadge slot={it.queue} repo={it.repo} number={it.number} />
         {it.settled.flags.map((f) => (
           <Badge key={f} tone={f === "security" ? "bad" : "warn"}>
             {f}

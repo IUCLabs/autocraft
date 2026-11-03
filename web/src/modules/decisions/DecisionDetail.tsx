@@ -1,4 +1,5 @@
 import { PriorityBadge } from "../../ui/PriorityBadge";
+import { QueueBadge } from "../../ui/QueueBadge";
 import { useEffect, useRef, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { itemPath } from "../../lib/links";
@@ -183,6 +184,7 @@ export function DecisionBody({
           </>
         )}
         <PriorityBadge p={d.priority} />
+        {!isBatch && <QueueBadge slot={d.queue} repo={d.repo} number={d.number!} />}
         <span>asked {ago(d.askedAt)} ago</span>
         <ClaimPill claim={d.claim} />
         {!isBatch && (
