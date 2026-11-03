@@ -5,12 +5,16 @@ import { isLockfile, isTestPath, splitDiff, type FileDiff } from "./diff.ts";
 /** Docs, translations and comments count only below this many changed lines in total. */
 export const DOCS_MAX_LINES = 20;
 
-const DOC_PATH = [/\.(md|mdx|markdown|rst)$/i, /(^|\/)docs?\//i];
-const TRANSLATION_PATH = [/\.(ftl|po|pot|xlf|xliff)$/i, /(^|\/)(locales?|i18n|l10n|translations?)\//i];
+const DOC_PATH = [/\.(md|mdx|markdown|rst)$/i];
+const TRANSLATION_PATH = [/\.(ftl|po|pot|xlf|xliff)$/i];
+// A docs or locale directory makes only non-code files docs: a code crate may be named `doc` or `i18n`.
+const DOC_DIR = [/(^|\/)docs?\//i, /(^|\/)(locales?|i18n|l10n|translations?)\//i];
 const SLASH_COMMENT = new Set(["rs", "ts", "tsx", "js", "jsx", "mjs", "kt", "java", "swift", "c", "h", "cc", "cpp", "hpp", "go", "cs", "scss", "css"]);
 const HASH_COMMENT = new Set(["py", "sh", "toml", "yaml", "yml", "rb"]);
 
 const extOf = (p: string): string => /\.([A-Za-z0-9]+)$/.exec(p)?.[1]?.toLowerCase() ?? "";
+const CODE_EXT = new Set(["py", "sh", "rb", "go", "kt", "java", "swift", "c", "h", "cc", "cpp", "hpp", "cs", "rs", "ts", "tsx", "js", "jsx", "mjs", "cjs", "wgsl", "glsl", "toml", "json", "yaml", "yml"]);
+const isCode = (p: string): boolean => CODE_EXT.has(extOf(p)) || SLASH_COMMENT.has(extOf(p)) || HASH_COMMENT.has(extOf(p));
 const matches = (rs: RegExp[], p: string) => rs.some((r) => r.test(p));
 
 /** The changed lines of one file diff, without their +/- mark. */
@@ -60,7 +64,8 @@ export function skipReason(diff: string, ci: string | null): string | null {
   const files = splitDiff(diff);
   if (!files.length) return null;
   const lines = files.reduce((s, f) => s + f.lines, 0);
-  if (files.every((f) => matches(DOC_PATH, f.path) || matches(TRANSLATION_PATH, f.path) || commentOnly(f)) && lines < DOCS_MAX_LINES) {
+  const docLike = (f: FileDiff) => matches(DOC_PATH, f.path) || matches(TRANSLATION_PATH, f.path) || (matches(DOC_DIR, f.path) && !isCode(f.path));
+  if (files.every((f) => docLike(f) || commentOnly(f)) && lines < DOCS_MAX_LINES) {
     return `docs, translations or comments only (${lines} changed lines)`;
   }
   if (files.every((f) => isLockfile(f.path) || (isManifest(f.path) && versionOnly(f)))) {

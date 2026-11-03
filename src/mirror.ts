@@ -722,3 +722,8 @@ export const commands = {
   sync: { summary: "mirror issues and PRs of the storytold org: [--repo NAME ...] [--all] [--full] [--per-repo] [--reserve N] [--keep N] [--restart] (default: org-wide search for changes; --full runs beside it and resumes after the last finished repo)", run: sync },
   "sync-status": { summary: "per repo: open PRs, open issues, mirrored rows, synced_at", run: syncStatus },
 };
+
+/** Marks a PR we just merged as merged in the mirror, so counts don't wait for the next sync; the sync later fills in what GitHub reports. */
+export function markMerged(db: DatabaseSync, repo: string, number: number, at: string): void {
+  db.prepare("UPDATE items SET state = 'MERGED', merged_at = COALESCE(merged_at, ?), closed_at = COALESCE(closed_at, ?) WHERE repo = ? AND number = ? AND state = 'OPEN'").run(at, at, repo, number);
+}

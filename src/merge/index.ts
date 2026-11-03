@@ -18,7 +18,7 @@ import { audit } from "../dash/audit.ts";
 import { connect } from "../db.ts";
 import { actionable, ask, factsOf, getDecision } from "../decisions.ts";
 import { assignTo, mergeViaCommand, MERGE_RECORDED_ENV, type Writer } from "../github/write.ts";
-import { Client, type Querier } from "../mirror.ts";
+import { Client, markMerged, type Querier } from "../mirror.ts";
 import { refreshChecks } from "../review/checks.ts";
 import { discussionMovedChecked } from "../review/discussion.ts";
 import { fillReviewSummaries } from "../review/summary.ts";
@@ -307,6 +307,7 @@ export async function runMerge(db: DatabaseSync, params: MergeParams, log: (line
       continue;
     }
     saveAttempt(e, method, "merged", null);
+    markMerged(db, e.repo, e.number, at());
     stage.run(e.repo, e.number, "merged", at(), ACTOR, `${method} at ${short(e.head)}${e.path === "operator" ? ", operator answered merge" : ""}`);
     if (e.path === "operator") db.prepare("UPDATE decisions SET applied_at = ? WHERE id = ? AND applied_at IS NULL").run(at(), e.decisionId);
     summary.merged.push(refOf(e));

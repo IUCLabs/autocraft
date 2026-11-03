@@ -11,6 +11,7 @@
 import { baseScopeRepos, scopeRepos } from "../pilot.ts";
 import { isFastTracked, workScores } from "../fasttrack.ts";
 import { mergeHeld } from "./holds.ts";
+import { markMerged } from "../mirror.ts";
 import { mkdirSync } from "node:fs";
 import type { DatabaseSync } from "node:sqlite";
 import { createTask, getTask, MAX_PATCH_BYTES, TERMINAL, warmKeyOf } from "../build/tasks.ts";
@@ -303,6 +304,7 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
       db.prepare("INSERT INTO merges (repo, number, head_oid, run_id, at, path, method, outcome, reason, ci, mergeable) VALUES (?, ?, ?, ?, ?, ?, 'merge', 'merged', NULL, ?, ?)")
         .run(repo, m.number, m.head_oid, runId, at(), e?.path ?? "rule", e?.ci ?? "success", e?.mergeable ?? "MERGEABLE");
       stage.run(repo, m.number, "merged", at(), ACTOR, `merge in ${b.branch} at ${short(m.head_oid)}`);
+      markMerged(db, repo, m.number, at());
       audit(db, ACTOR, "merge", refOf(m.number), { run: runId, head: m.head_oid, method: "merge", batch: b.branch });
       if (e?.path === "operator" && e.decisionId) db.prepare("UPDATE decisions SET applied_at = ? WHERE id = ? AND applied_at IS NULL").run(at(), e.decisionId);
       s.merged.push(m.number);

@@ -30,6 +30,9 @@ describe("skip list", () => {
   test("docs, translations and comments under 20 lines", () => {
     assert.match(skipReason(file("README.md", ["a"], ["b"]), null) ?? "", /docs/);
     assert.match(skipReason(file("locales/de/app.ftl", ["a = x"], ["a = y"]), null) ?? "", /docs/);
+    assert.match(skipReason(file("docs/guide.txt", ["a"], ["b"]), null) ?? "", /docs/);
+    assert.equal(skipReason(file("crates/doc/src/vars.rs", ["let a = 1;"], ["let a = 2;"]), null), null);
+    assert.equal(skipReason(file("crates/i18n/src/lib.rs", ["let a = 1;"], ["let a = 2;"]), null), null);
     assert.match(skipReason(file("src/lib.rs", ["// old"], ["// new", ""]), null) ?? "", /comments/);
     assert.equal(skipReason(file("src/lib.rs", ["let a = 1;"], ["let a = 2; // note"]), null), null);
     assert.equal(skipReason(file("README.md", [], Array.from({ length: 25 }, (_, i) => `line ${i}`)), null), null);
