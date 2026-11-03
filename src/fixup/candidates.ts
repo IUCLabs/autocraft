@@ -8,6 +8,7 @@ import { commentApprovalOf } from "../act/approval.ts";
 import { pushApprovalOf } from "./approval.ts";
 import { FORMAT_REASONS, safePath } from "./patch.ts";
 import { pushable } from "./pushable.ts";
+import { classifyConflicts, type ConflictCandidate } from "./conflict-state.ts";
 import { pilotSql } from "../pilot.ts";
 
 /** Fix-up tries per PR (pushed, failed, refused or rejected) before the step leaves it to a person. */
@@ -25,6 +26,10 @@ export type FixSelection = {
   cannotPush: FixCandidate[];
   /** Take-fix PRs we can't push to, in a repo with comment approval, with no comment at this head yet. */
   ask: FixCandidate[];
+  /** Conflicted take / take-fix PRs we may push to: the default branch is merged in. */
+  conflictMerge: ConflictCandidate[];
+  /** Conflicted PRs we can't push to, in a repo with comment approval, with no comment at this head yet. */
+  conflictAsk: ConflictCandidate[];
 };
 
 type Row = {
@@ -139,7 +144,11 @@ export function carryCandidates(db: DatabaseSync, repo: string): { fix: FixCandi
 }
 
 export function selectFixups(db: DatabaseSync, repo: string): FixSelection {
-  const out: FixSelection = { fix: [], cannotPush: [], ask: [] };
+  const out: FixSelection = { fix: [], cannotPush: [], ask: [], conflictMerge: [], conflictAsk: [] };
+  for (const x of classifyConflicts(db, repo)) {
+    if (x.bucket === "merge") out.conflictMerge.push(x.c);
+    else if (x.bucket === "ask") out.conflictAsk.push(x.c);
+  }
   const carry = carryCandidates(db, repo);
   out.fix.push(...carry.fix);
   out.ask.push(...carry.ask);

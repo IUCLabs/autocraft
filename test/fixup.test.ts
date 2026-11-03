@@ -319,7 +319,7 @@ describe("fixup step", () => {
   });
 
   test("with comment approval the cleaned fix list is posted once per head", async () => {
-    const w = world();
+    const w = world({ canModify: false });
     const db = fresh(w.head, { canModify: false });
     setCommentApproval(db, "op", "app", true);
     db.prepare("UPDATE reviews SET fixes = ?").run(JSON.stringify([

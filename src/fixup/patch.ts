@@ -151,3 +151,61 @@ export type FixupPr = {
   /** For a carry-over: the PRs closed as duplicates, their diffs and the parts to port onto this one. */
   carried_from?: { ref: string; points: string[]; diff: string }[];
 };
+
+/** What the fixup.conflict prompt shows for one PR. Every string field is untrusted. */
+export type ConflictPr = {
+  /** Where the call may read the repository in the sandbox; not part of the quoted JSON. */
+  repo_dir?: string;
+  ref: string;
+  title: string;
+  /** The PR description. */
+  body: string;
+  /** The review's summary of what the PR does. */
+  review_reason: string;
+  /** The base branch being merged in. */
+  base: string;
+  /** Each conflicted file with conflict markers: `<<<<<<<` is the PR's side, `>>>>>>>` the base branch's. */
+  files: { path: string; content: string }[];
+};
+
+const MARKER = /^(<{7}|>{7})( |$)|^={7}$/m;
+const RESOLVE_MAX_FILE = 80_000;
+export const RESOLVE_MAX_TOTAL = 160_000;
+
+export type Resolution = { ok: true; files: { path: string; content: string }[] } | { ok: false; reason: string };
+
+/**
+ * The resolver's reply: a JSON object {"files": [{"path", "content"}]} that names exactly the conflicted files, each with
+ * full resolved content free of conflict markers, within the size caps. Nothing else may be touched.
+ */
+export function parseResolution(text: string, conflicted: string[]): Resolution {
+  const a = text.indexOf("{"), b = text.lastIndexOf("}");
+  let v: unknown;
+  try { v = JSON.parse(text.slice(a, b + 1)); } catch { return { ok: false, reason: "the resolution is not valid JSON" }; }
+  const list = (v as { files?: unknown } | null)?.files;
+  if (!Array.isArray(list)) return { ok: false, reason: "the resolution has no files list" };
+  const files: { path: string; content: string }[] = [];
+  let total = 0;
+  for (const f of list as { path?: unknown; content?: unknown }[]) {
+    if (typeof f?.path !== "string" || typeof f.content !== "string") return { ok: false, reason: "a resolved file lacks a path or content" };
+    if (!conflicted.includes(f.path)) return { ok: false, reason: `${f.path} is not one of the conflicted files` };
+    if (files.some((x) => x.path === f.path)) return { ok: false, reason: `${f.path} appears twice` };
+    if (MARKER.test(f.content)) return { ok: false, reason: `${f.path} still has conflict markers` };
+    if (f.content.includes("\0")) return { ok: false, reason: `${f.path} has a NUL byte` };
+    if (f.content.length > RESOLVE_MAX_FILE) return { ok: false, reason: `${f.path} is over the size limit` };
+    total += f.content.length;
+    files.push({ path: f.path, content: f.content });
+  }
+  if (total > RESOLVE_MAX_TOTAL) return { ok: false, reason: "the resolved files are over the size limit" };
+  const missing = conflicted.find((p) => !files.some((f) => f.path === p));
+  if (missing) return { ok: false, reason: `${missing} is conflicted but not resolved` };
+  return { ok: true, files };
+}
+
+/** Conflicted files a resolution may be written for: safe paths outside CI, cargo config and build scripts. */
+export function resolvablePath(p: string): boolean {
+  return safePath(p) && p !== "build.rs" && !p.endsWith("/build.rs") && !p.split("/").some((s) => s === ".cargo" || s === ".github");
+}
+
+/** True when the text holds conflict markers (the merge tree's files do before resolving). */
+export const hasMarkers = (text: string): boolean => MARKER.test(text);

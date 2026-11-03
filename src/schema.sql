@@ -991,3 +991,19 @@ CREATE TABLE IF NOT EXISTS conversation_cards (
 );
 CREATE INDEX IF NOT EXISTS conversation_cards_turn ON conversation_cards(turn_id);
 CREATE INDEX IF NOT EXISTS conversation_cards_item ON conversation_cards(repo, number);
+
+-- Merges of the default branch into conflicted take / take-fix PRs by the Fix-up step (src/fixup/conflict.ts), one row per try (or
+-- per head for asked). state: merged (pushed) | failed | refused (validation said no) | rejected (the Opus check said no) | asked
+-- (a comment asked the contributor to merge or rebase). merged, failed, refused and rejected are tries; two per head.
+CREATE TABLE IF NOT EXISTS conflict_merges (
+  repo TEXT NOT NULL, number INTEGER NOT NULL,
+  from_head TEXT NOT NULL,            -- the PR head the base was merged into
+  to_head TEXT,                       -- the pushed merge commit; NULL unless merged
+  base_sha TEXT,                      -- the base branch commit merged in
+  state TEXT NOT NULL,
+  reason TEXT,                        -- one line, public-safe
+  files TEXT,                         -- JSON [path] the resolver resolved ([] for a clean merge)
+  attempt INTEGER NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS conflict_merges_item ON conflict_merges(repo, number, created_at);

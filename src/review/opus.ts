@@ -129,7 +129,9 @@ export async function runOpusReview(db: DatabaseSync, params: OpusParams, log: (
     if (!cd.files.length && cd.testsOmitted.length) cd = codeDiff(d.text, true);
     let mode: "full" | "delta" = "full", diff = cd.text, base: string | null = null;
     const earlier = earlierOpus(db, c);
-    if (earlier) {
+    // A merge commit of ours carries the base branch's changes since the earlier head; the PR's own diff excludes them, so a delta would show unrelated changes.
+    const ourMerge = !!db.prepare("SELECT 1 FROM conflict_merges WHERE repo = ? AND number = ? AND to_head = ? AND state = 'merged'").get(repo, c.number, c.head_oid);
+    if (earlier && !ourMerge) {
       const delta = await deps.fetchDelta(repo, earlier.head, c.head_oid);
       if (delta.ok) {
         let dd = codeDiff(delta.text);

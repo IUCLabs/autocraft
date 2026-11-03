@@ -88,6 +88,7 @@ export function StateChip({ row }: { row: QueueRow }) {
   return (
     <span title={title}>
       <Badge tone={tone}>{text}</Badge>
+      {row.conflictNote && <span className="ml-1.5 text-2xs text-ink/55">{row.conflictNote}</span>}
     </span>
   );
 }

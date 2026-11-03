@@ -29,7 +29,8 @@ import { MAX_ATTEMPTS, parseFixes, selectFixups, type FixCandidate } from "./can
 import { Git, exec, fixupDir, type Exec } from "./git.ts";
 import { scrubGitError } from "../worker/patch.ts";
 import { pushable, BASE_ORG } from "./pushable.ts";
-import { editable, validatePatch, type FixupPr } from "./patch.ts";
+import { askConflict, mergeConflict, type ConflictRun } from "./conflict.ts";
+import { editable, validatePatch, type ConflictPr, type FixupPr } from "./patch.ts";
 import { HOLD_CANNOT_PUSH, askText, carryCommentText, commentText, commitMessage } from "./template.ts";
 import { commentApprovalOf } from "../act/approval.ts";
 
@@ -39,6 +40,7 @@ const ORG = BASE_ORG;
 const ACTOR = "fixup";
 const PROMPT = CLAUDE_PROMPTS["fixup.patch"];
 const CHECK = CLAUDE_PROMPTS["fixup.check"];
+const CONFLICT = CLAUDE_PROMPTS["fixup.conflict"];
 /** Characters of one file, of all files, and of the PR diff shown to the model; over any of them the PR is held. */
 export const FILE_CAP = 40_000;
 export const TOTAL_CAP = 120_000;
@@ -53,6 +55,8 @@ export type FixupDeps = {
   ask: (db: DatabaseSync, input: FixupPr[], checkout?: string) => Promise<string | null>;
   /** The model's reply to the fixup.check prompt (Opus), or null when it gave none. */
   check: (db: DatabaseSync, input: FixupCheckInput[], checkout?: string) => Promise<string | null>;
+  /** The model's reply to the fixup.conflict prompt (Sonnet), or null when it gave none. Absent: conflicts are not resolved by a model. */
+  resolve?: (db: DatabaseSync, input: ConflictPr[], checkout?: string) => Promise<string | null>;
   /** Host directory with a read-only checkout of the PR head for the sandboxed model calls, or null to ask without tools. Absent: no tools. */
   checkout?: (repo: string, number: number, head: string) => Promise<string | null>;
   now: () => Date;
@@ -65,6 +69,7 @@ export function defaultDeps(): FixupDeps {
     querier: new Client(1000), exec, fetchDiff: ghDiff, now: () => new Date(), root: fixupDir(),
     ask: async (db, input, checkout) => (await askClaude("fixup.patch", PROMPT.models[0]!, input, db, { checkout }))?.text ?? null,
     check: async (db, input, checkout) => (await askClaude("fixup.check", CHECK.models[0]!, input, db, { checkout }))?.text ?? null,
+    resolve: async (db, input, checkout) => (await askClaude("fixup.conflict", CONFLICT.models[0]!, input, db, { checkout }))?.text ?? null,
     checkout: (r, n, h) => checkoutForPr(r, n, h, console.log),
   };
 }
@@ -99,10 +104,28 @@ export const PR_QUERY = `query($name: String!, $n: Int!) {
   }
 }`;
 
-type PrNode = {
+export type PrNode = {
   id: string; state: string; isDraft: boolean; headRefOid: string; headRefName: string; maintainerCanModify: boolean; mergeable: string | null;
   headRepository: { nameWithOwner: string } | null; assignees?: { nodes?: { login: string }[] };
 };
+
+/**
+ * Writes what the live read found into pr_checks, as the checks sync would, so a PR the live read shows is no candidate
+ * (conflicting, closed, a draft, head moved) is not selected again until the checks data changes.
+ */
+export function noteLive(db: DatabaseSync, repo: string, number: number, pr: PrNode | null | undefined, at: string): void {
+  if (!pr) return;
+  const row = db.prepare("SELECT head_oid FROM pr_checks WHERE repo = ? AND number = ?").get(repo, number) as { head_oid: string } | undefined;
+  if (!row) return;
+  if (row.head_oid === pr.headRefOid) {
+    db.prepare("UPDATE pr_checks SET state = ?, is_draft = ?, mergeable = ?, maintainer_can_modify = ?, fetched_at = ? WHERE repo = ? AND number = ?")
+      .run(pr.state, pr.isDraft ? 1 : 0, pr.mergeable, pr.maintainerCanModify ? 1 : 0, at, repo, number);
+  } else {
+    // The old head's checks say nothing about the new one: pending until the checks sync reads them.
+    db.prepare("UPDATE pr_checks SET head_oid = ?, state = ?, is_draft = ?, overall = 'pending', checks = '[]', mergeable = ?, maintainer_can_modify = ?, fetched_at = ? WHERE repo = ? AND number = ?")
+      .run(pr.headRefOid, pr.state, pr.isDraft ? 1 : 0, pr.mergeable, pr.maintainerCanModify ? 1 : 0, at, repo, number);
+  }
+}
 
 export type Who = { login: string; nodeId: string; email: string };
 
@@ -155,10 +178,16 @@ export async function runFixup(db: DatabaseSync, params: FixupParams, log: (line
   const sel = selectFixups(db, repo);
   const asks = params.limit === undefined ? sel.ask : sel.ask.slice(0, params.limit);
   const picks = params.limit === undefined ? sel.fix : sel.fix.slice(0, Math.max(0, params.limit - asks.length));
+  const left = params.limit === undefined ? Infinity : Math.max(0, params.limit - asks.length - picks.length);
+  const cAsks = sel.conflictAsk.slice(0, left);
+  const cMerges = sel.conflictMerge.slice(0, Math.max(0, left - cAsks.length));
+  log(`fixup ${repo}: ${sel.conflictMerge.length} conflicted PRs to merge into, ${sel.conflictAsk.length} to ask`);
   log(`fixup ${repo}: ${sel.fix.length} PRs to fix up, ${sel.cannotPush.length + sel.ask.length} we can't push to${pushApprovalOf(db, repo) ? "" : " (pushing is not approved for this repo)"}`);
   if (dryRun) {
     for (const c of picks) log(`  would fix up ${refOf(c)} at ${short(c.head)} (try ${c.attempt}): ${[...new Set(c.fixes.map((f) => f.file))].join(", ")}`);
     for (const c of asks) log(`  would comment the fixes on ${refOf(c)} at ${short(c.head)}`);
+    for (const c of cMerges) log(`  would merge ${c.base} into ${refOf(c)} at ${short(c.head)} (try ${c.attempt})`);
+    for (const c of cAsks) log(`  would ask the contributor of ${refOf(c)} to merge ${c.base}`);
     for (const c of sel.cannotPush) log(`  would hold ${refOf(c)}: ${HOLD_CANNOT_PUSH}`);
     log(`fixup ${repo}: dry run, nothing called or written`);
     return summary;
@@ -178,6 +207,7 @@ export async function runFixup(db: DatabaseSync, params: FixupParams, log: (line
     try {
       const r = await d.querier.query(PR_QUERY, { name: repo, n: c.number }) as { repository?: { pullRequest?: PrNode | null } };
       const pr = r.repository?.pullRequest;
+      noteLive(db, repo, c.number, pr, at());
       if (!pr || pr.state !== "OPEN" || pr.isDraft) { log(`  ${ref}: skipped: no longer an open, non-draft PR`); return; }
       if (pr.headRefOid !== c.head) { log(`  ${ref}: skipped: head moved to ${short(pr.headRefOid)} since the review`); return; }
       if (c.carry && !c.carry.suggestion) {
@@ -200,10 +230,16 @@ export async function runFixup(db: DatabaseSync, params: FixupParams, log: (line
     }
   };
   for (const c of asks) await askOne(c);
-  if (!picks.length) return summary;
-
-  const who = await whoAmI(d.exec);
   const git = new Git(d.exec, d.root, repo);
+  let whoP: Promise<Who> | undefined;
+  const conflictRun: ConflictRun = {
+    repo, runId, log, d, gw, at, summary, prQuery: PR_QUERY, scrub: (raw) => scrubReason(raw, d.root), git: () => git,
+    who: () => (whoP ??= whoAmI(d.exec)), onHandled: params.onHandled, handled: { n: handled },
+  };
+  for (const c of cAsks) await askConflict(db, conflictRun, c);
+  if (!picks.length && !cMerges.length) return summary;
+
+  const who = await (whoP ??= whoAmI(d.exec));
   mkdirSync(d.root, { recursive: true });
   for (const c of picks) {
     const ref = refOf(c);
@@ -224,6 +260,7 @@ export async function runFixup(db: DatabaseSync, params: FixupParams, log: (line
       if (!c.carry && files.some((f) => !editable(f))) { hold("too-large", "the fixes name files a fix-up may not edit"); continue; }
       const r = await d.querier.query(PR_QUERY, { name: repo, n: c.number }) as { repository?: { pullRequest?: PrNode | null } };
       const pr = r.repository?.pullRequest;
+      noteLive(db, repo, c.number, pr, at());
       if (!pr || pr.state !== "OPEN" || pr.isDraft) { log(`  ${ref}: skipped: no longer an open, non-draft PR`); continue; }
       if (pr.headRefOid !== c.head) { log(`  ${ref}: skipped: head moved to ${short(pr.headRefOid)} since the review`); continue; }
       params.onHandled?.(++handled);
@@ -241,7 +278,7 @@ export async function runFixup(db: DatabaseSync, params: FixupParams, log: (line
         carried = w.carried;
         files = [...new Set(c.fixes.map((f) => f.file))];
       }
-      if (pr.mergeable === "CONFLICTING") { log(`  ${ref}: skipped: conflicts with the base branch`); continue; }
+      if (pr.mergeable === "CONFLICTING") { log(`  ${ref}: skipped: conflicts with the base branch; the conflict merge handles it`); continue; }
 
       const head = await git.fetchPr(ORG, repo, c.number);
       if (head !== c.head) { log(`  ${ref}: skipped: fetched head ${short(head)} is not the reviewed ${short(c.head)}`); continue; }
@@ -298,6 +335,7 @@ export async function runFixup(db: DatabaseSync, params: FixupParams, log: (line
       // The model calls took minutes: read the PR again before claiming and pushing.
       const again = await d.querier.query(PR_QUERY, { name: repo, n: c.number }) as { repository?: { pullRequest?: PrNode | null } };
       const now = again.repository?.pullRequest;
+      noteLive(db, repo, c.number, now, at());
       if (!now || now.state !== "OPEN" || now.isDraft) { log(`  ${ref}: skipped: no longer an open, non-draft PR after the model calls`); continue; }
       if (now.headRefOid !== c.head) { log(`  ${ref}: skipped: head moved to ${short(now.headRefOid)} during the model calls`); continue; }
 
@@ -326,6 +364,8 @@ export async function runFixup(db: DatabaseSync, params: FixupParams, log: (line
       fail("failed", oneLine(String((e as Error).message ?? e)));
     }
   }
+  conflictRun.handled.n = handled;
+  for (const c of cMerges) await mergeConflict(db, conflictRun, c);
   log(`fixup ${repo}: ${summary.pushed.length} pushed, ${summary.asked.length} asked, ${summary.failed.length} failed, ${summary.held.length} held; run ${runId}`);
   return summary;
 }
