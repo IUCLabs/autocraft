@@ -94,9 +94,11 @@ interface Local {
   /** Decisions answered in this session, kept visible as a one-line confirmation. */
   justAnswered: { id: string; label: string; ref: string }[];
   notes: Record<string, string>;
+  /** The option picked in the Workflow box, by decision id (checked batches: ids joined with +). */
+  picks: Record<string, string>;
   overrides: Record<string, Record<string, string>>;
 }
-let local: Local = { checked: new Set(), justAnswered: [], notes: {}, overrides: {} };
+let local: Local = { checked: new Set(), justAnswered: [], notes: {}, picks: {}, overrides: {} };
 const subs = new Set<() => void>();
 const set = (fn: (l: Local) => Local) => {
   local = fn(local);
@@ -116,6 +118,12 @@ export const localActions = {
     });
   },
   clearChecked: () => set((l) => ({ ...l, checked: new Set() })),
+  setPick: (key: string, option: string | null) =>
+    set((l) => {
+      const picks = { ...l.picks };
+      option ? (picks[key] = option) : delete picks[key];
+      return { ...l, picks };
+    }),
   setNote: (id: string, note: string) => set((l) => ({ ...l, notes: { ...l.notes, [id]: note } })),
   setOverride: (id: string, ref: string, answer: string | null) =>
     set((l) => {

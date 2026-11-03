@@ -15,9 +15,9 @@ import { KIND_LABEL, KINDS, localActions, ordered, useDecisionFilter, useDecisio
 const SHORTCUTS: Command[] = [
   { id: "d-next", keys: "j", label: "Next decision", group: "Decisions" },
   { id: "d-prev", keys: "k", label: "Previous decision", group: "Decisions" },
-  { id: "d-answer", keys: "1 – 4", label: "Answer with option (only after you opened the decision)", group: "Decisions" },
+  { id: "d-answer", keys: "1 – 4", label: "Select a Workflow option (only after you opened the decision; it never submits)", group: "Decisions" },
   { id: "d-confirm", keys: "1 – 4 again, Enter", label: "Confirm an option that writes to GitHub (Esc cancels)", group: "Decisions" },
-  { id: "d-note", keys: "n", label: "Write a note", group: "Decisions" },
+  { id: "d-note", keys: "n", label: "Write the Workflow note", group: "Decisions" },
   { id: "d-check", keys: "x", label: "Check for a batch answer", group: "Decisions" },
   { id: "d-undo", keys: "u", label: "Undo last answer", group: "Decisions" },
   { id: "d-open", keys: "o", label: "Open the item page", group: "Decisions" },
