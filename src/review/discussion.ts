@@ -214,8 +214,27 @@ export function discussionOf(db: DatabaseSync, repo: string, number: number, liv
 
 const staleKey = (repo: string, number: number) => `${STALE_KEY}${repo}#${number}`;
 
-/** Newest counted comment or review by someone else, and the hash of those, per "repo#n" from the mirror. */
-export function discussionState(db: DatabaseSync, repo?: string): Map<string, { newest: string; hash: string }> {
+type DiscussionState = Map<string, { newest: string; hash: string }>;
+
+// The queue recomputes on every `steps` change, which comment writes don't move. Comments bump `items`, our posts
+// bump `reviews`, and the pipeline login is part of the key, so an unchanged signature means unchanged input.
+const stateMemo = new WeakMap<DatabaseSync, Map<string, { sig: string; state: DiscussionState }>>();
+
+/** Newest counted comment or review by someone else, and the hash of those, per "repo#n" from the mirror. Callers must not modify the result. */
+export function discussionState(db: DatabaseSync, repo?: string): DiscussionState {
+  const seqs = db.prepare("SELECT topic, seq FROM change_seq WHERE topic IN ('items', 'reviews') ORDER BY topic").all() as { topic: string; seq: number }[];
+  const sig = JSON.stringify([seqs, pipelineLogin(db)]);
+  const memo = stateMemo.get(db) ?? new Map<string, { sig: string; state: DiscussionState }>();
+  stateMemo.set(db, memo);
+  const key = repo ?? "";
+  const hit = memo.get(key);
+  if (hit && hit.sig === sig && seqs.length === 2) return hit.state;
+  const state = computeDiscussionState(db, repo);
+  memo.set(key, { sig, state });
+  return state;
+}
+
+function computeDiscussionState(db: DatabaseSync, repo?: string): DiscussionState {
   const rows = db.prepare(`SELECT c.repo, c.number, c.id, c.body, c.created_at FROM comments c
     WHERE (:repo IS NULL OR c.repo = :repo) AND c.counted = 1 AND ${NOT_OURS}`).all({ repo: repo ?? null, own: pipelineLogin(db) }) as { repo: string; number: number; id: string; body: string | null; created_at: string }[];
   const by = new Map<string, typeof rows>();
