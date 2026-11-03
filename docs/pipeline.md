@@ -187,8 +187,8 @@ Models: Sonnet, Haiku, Opus (patch check). Daily limit 10 attempts.
 
 For a take-fix review, Sonnet applies the listed small fixes to the contributor's branch, so the PR need not wait for them.
 
-- **Needs** the repo's **push approval**, a PR that maintainers may modify, and no conflict. Otherwise the PR is held ("cannot push"), with no write.
-- **Cannot push.** In a repo with **comment approval**, one comment lists the fixes (at most 6, cleaned of links and mentions), once per head, if the head is still the reviewed one. The PR shows as "asked the contributor"; a new head goes back to Review. Without the approval it stays held.
+- **Needs** the repo's **push approval**, a pushable PR and no conflict. A PR is pushable when its head branch is in the base repository itself (GitHub reports no maintainer edits for those) or maintainers may modify it. Otherwise the PR is held ("cannot push"), with no write.
+- **Cannot push.** In a repo with **comment approval**, one comment lists the fixes (at most 6, cleaned of links and mentions), once per head, if the head is still the reviewed one. The PR shows as "asked the contributor"; a new head goes back to Review. Without the approval it stays held. A head recorded as asked becomes a fix candidate again when the PR is now pushable.
 - **Safety.** The checkout is untrusted: no working tree, hooks or filters run. The diff may touch only the files named in the review, at most 300 lines.
 - **Opus check.** Before the push, Opus reads the PR, the review's fix list and our patch. A reject pushes nothing, records the try as "rejected" with Opus's reason and counts as one of the 2 tries; the check is recorded with the patch hash.
 - **Live check.** The PR is read from GitHub before the model calls and again after the Opus check. If it is no longer open, is a draft or its head moved, nothing is assigned or pushed and the PR is tried again on a later run.

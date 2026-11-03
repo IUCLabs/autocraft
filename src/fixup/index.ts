@@ -28,13 +28,14 @@ import { pushApprovalOf } from "./approval.ts";
 import { MAX_ATTEMPTS, parseFixes, selectFixups, type FixCandidate } from "./candidates.ts";
 import { Git, exec, fixupDir, type Exec } from "./git.ts";
 import { scrubGitError } from "../worker/patch.ts";
+import { pushable, BASE_ORG } from "./pushable.ts";
 import { editable, validatePatch, type FixupPr } from "./patch.ts";
 import { HOLD_CANNOT_PUSH, askText, carryCommentText, commentText, commitMessage } from "./template.ts";
 import { commentApprovalOf } from "../act/approval.ts";
 
 export { selectFixups, MAX_ATTEMPTS, type FixCandidate, type FixSelection } from "./candidates.ts";
 
-const ORG = "storytold";
+const ORG = BASE_ORG;
 const ACTOR = "fixup";
 const PROMPT = CLAUDE_PROMPTS["fixup.patch"];
 const CHECK = CLAUDE_PROMPTS["fixup.check"];
@@ -226,7 +227,7 @@ export async function runFixup(db: DatabaseSync, params: FixupParams, log: (line
       if (!pr || pr.state !== "OPEN" || pr.isDraft) { log(`  ${ref}: skipped: no longer an open, non-draft PR`); continue; }
       if (pr.headRefOid !== c.head) { log(`  ${ref}: skipped: head moved to ${short(pr.headRefOid)} since the review`); continue; }
       params.onHandled?.(++handled);
-      if (!pr.maintainerCanModify || !pr.headRepository) {
+      if (!pr.headRepository || !pushable(pr.headRepository.nameWithOwner, repo, pr.maintainerCanModify)) {
         // A carry-over we can't push is suggested on the PR instead, when the repo allows comments.
         if (c.carry && commentApprovalOf(db, repo)) await askOne(c, false);
         else hold("cannot-push", HOLD_CANNOT_PUSH);

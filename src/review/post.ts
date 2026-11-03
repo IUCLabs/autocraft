@@ -18,6 +18,7 @@ import { reviewBody, recommendation } from "./post-template.ts";
 import { buildQueue } from "../merge/queue.ts";
 import { mergeApprovalOf } from "../merge/approval.ts";
 import { pushApprovalOf } from "../fixup/approval.ts";
+import { pushable } from "../fixup/pushable.ts";
 
 const ACTOR = "review-post";
 
@@ -37,7 +38,7 @@ export const defaultPostDeps = (): PostDeps => ({ querier: new Client(1000), now
 type Row = {
   number: number; head_oid: string | null; updated_at: string | null; c_head: string | null; c_at: string | null;
   o_head: string; o_at: string; p_opus_at: string | null; p_at: string | null; model: string | null; verdict: string; sure: number | null; public_review: string | null;
-  p_id: string | null; p_head: string | null; can_modify: number | null;
+  p_id: string | null; p_head: string | null; can_modify: number | null; head_repo: string | null;
 };
 const safeJson = (s: string): unknown => {
   try { return JSON.parse(s); } catch { return null; }
@@ -49,7 +50,7 @@ const safeJson = (s: string): unknown => {
  */
 export function postCandidates(db: DatabaseSync, repo: string): PostCandidate[] {
   const rows = db.prepare(`SELECT i.number, i.head_oid, i.updated_at, c.head_oid AS c_head, c.fetched_at AS c_at,
-      o.head_oid AS o_head, o.at AS o_at, p.opus_at AS p_opus_at, p.posted_at AS p_at, o.model, o.verdict, o.sure, o.public_review, p.review_id AS p_id, p.head_oid AS p_head, i.maintainer_can_modify AS can_modify
+      o.head_oid AS o_head, o.at AS o_at, p.opus_at AS p_opus_at, p.posted_at AS p_at, o.model, o.verdict, o.sure, o.public_review, p.review_id AS p_id, p.head_oid AS p_head, i.maintainer_can_modify AS can_modify, i.head_repo
     FROM items i JOIN opus_reviews o ON o.repo = i.repo AND o.number = i.number AND o.verdict IS NOT NULL
     AND o.at >= COALESCE((SELECT r.at FROM reviews r WHERE r.repo = o.repo AND r.number = o.number AND r.head_oid = o.head_oid), '')
     LEFT JOIN pr_checks c ON c.repo = i.repo AND c.number = i.number
@@ -74,7 +75,7 @@ export function postCandidates(db: DatabaseSync, repo: string): PostCandidate[] 
       repo, number: r.number, head_oid: head, editId: r.p_id, opusAt: r.o_at,
       body: reviewBody({
         model: r.model, verdict: r.verdict, sure: r.sure !== 0, summary: pub.summary, points: pub.points, head,
-        recommendation: recommendation({ verdict: r.verdict, queue: q ? { path: q.path, state: q.state } : null, mergeApproved, canPush: pushApproved && r.can_modify === 1 }),
+        recommendation: recommendation({ verdict: r.verdict, queue: q ? { path: q.path, state: q.state } : null, mergeApproved, canPush: pushApproved && pushable(r.head_repo, repo, r.can_modify === 1) }),
       }),
     });
   }

@@ -1,0 +1,59 @@
+import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync } from "node:fs";
+import { join } from "node:path";
+import { describe, test } from "node:test";
+import type { DatabaseSync } from "node:sqlite";
+import { connect } from "../src/db.ts";
+import { setPushApproval } from "../src/fixup/approval.ts";
+import { classifyFixups, selectFixups } from "../src/fixup/candidates.ts";
+import { pushable } from "../src/fixup/pushable.ts";
+import { finalizeReviews } from "./fixture.ts";
+import { SCRATCH } from "./scratch.ts";
+
+mkdirSync(SCRATCH, { recursive: true });
+const dir = mkdtempSync(join(SCRATCH, "pushable-"));
+const T0 = "2026-01-01T00:00:00Z";
+const T1 = "2026-01-02T00:00:00Z";
+const FIXES = JSON.stringify([{ file: "src/lib.rs", change: "rename a to b" }]);
+
+function pr(headRepo: string | null, canModify: boolean): DatabaseSync {
+  const db = connect(join(mkdtempSync(join(dir, "db-")), "t.db"));
+  db.prepare(`INSERT INTO items (repo, number, kind, state, title, author, additions, deletions, head_oid, head_repo, created_at, updated_at)
+    VALUES ('app', 7, 'pr', 'OPEN', 'Fix', 'someone', 5, 0, 'h1', ?, '${T0}', '${T0}')`).run(headRepo);
+  db.prepare(`INSERT INTO reviews (repo, number, head_oid, run_id, at, model, size, verdict, reason, fixes) VALUES ('app', 7, 'h1', 'rv', '${T0}', 'm', 'S', 'take-fix', 'nearly', ?)`).run(FIXES);
+  db.prepare(`INSERT INTO pr_checks (repo, number, head_oid, state, is_draft, overall, checks, mergeable, maintainer_can_modify, fetched_at)
+    VALUES ('app', 7, 'h1', 'OPEN', 0, 'success', '[]', 'MERGEABLE', ?, '${T1}')`).run(canModify ? 1 : 0);
+  db.prepare("INSERT INTO tracked_repos (name, added_by, added_at, pipeline) VALUES ('app', 'op', ?, 1)").run(T0);
+  setPushApproval(db, "op", "app", true);
+  finalizeReviews(db);
+  return db;
+}
+
+describe("pushable", () => {
+  test("the rule: same repository or maintainer edits", () => {
+    assert.equal(pushable("storytold/app", "app", false), true);
+    assert.equal(pushable("Storytold/App", "app", false), true);
+    assert.equal(pushable("someone/app", "app", false), false);
+    assert.equal(pushable("someone/app", "app", true), true);
+    assert.equal(pushable(null, "app", false), false);
+  });
+
+  test("a same-repo PR with canModify false is a fix candidate; a fork without edits is not", () => {
+    assert.equal(selectFixups(pr("storytold/app", false), "app").fix.length, 1);
+    const fork = selectFixups(pr("someone/app", false), "app");
+    assert.equal(fork.fix.length, 0);
+    assert.equal(fork.cannotPush.length, 1);
+  });
+
+  test("an asked head becomes a fix candidate again once the PR is pushable, within the 2 tries", () => {
+    const db = pr("someone/app", false);
+    db.prepare("INSERT INTO fixups (repo, number, from_head, state, files, attempt, created_at) VALUES ('app', 7, 'h1', 'asked', '[]', 1, ?)").run(T1);
+    assert.equal(classifyFixups(db, "app")[0]!.bucket, "asked");
+    db.prepare("UPDATE items SET head_repo = 'storytold/app' WHERE number = 7").run();
+    const [x] = classifyFixups(db, "app");
+    assert.equal(x!.bucket, "fix");
+    assert.equal(x!.c.attempt, 1);
+    db.prepare("INSERT INTO fixups (repo, number, from_head, state, attempt, created_at) VALUES ('app', 7, 'h1', 'failed', 1, ?), ('app', 7, 'h1', 'refused', 2, ?)").run(T1, T1);
+    assert.equal(classifyFixups(db, "app")[0]!.bucket, "hold");
+  });
+});
