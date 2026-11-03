@@ -415,9 +415,43 @@ describe("public text", () => {
       "See [the docs](https://example.com/x) or https://example.com/y and storytold/app#12, also #7 and issue #8. Ping @someone.\n\n`@keep https://example.com/z #9`\n\n```\nlet a = \"#10 @x\";\n```" });
     assert.match(body, /^_AI-generated review \(Opus\)\. Not a maintainer decision\._\n\nFollow-up to #4\.\n\n/);
     assert.match(body, /See the docs or\s+and issue 12, also issue 7 and issue 8\. Ping someone\./);
-    assert.match(body, /`@keep https:\/\/example\.com\/z #9`/);
-    assert.match(body, /let a = "#10 @x";/);
+    assert.match(body, /`keep https:\/\/example\.com\/z #9`/);
+    assert.match(body, /let a = "#10 x";/);
     assert.match(body, /Location: `src\/a\.rs:3`/);
     assert.equal(issueTitle("Fix #5 in storytold/app#6 at https://x.y"), "Fix issue 5 in issue 6 at");
+  });
+
+  test("an unclosed fence does not shelter what follows it; GH-n references are cleaned", () => {
+    const body = issueBody({ number: 4, model: "opus", file: null, line: null, body: "The parser uses ``` delimiters. cc @octocat see #45 and https://evil.example/x and GH-12." });
+    assert.doesNotMatch(body, /@|https?:|#45|GH-12/);
+    assert.match(body, /Follow-up to #4\./);
+    assert.match(body, /issue 45/);
+    assert.match(body, /issue 12/);
+  });
+});
+
+describe("filing scope", () => {
+  test("a defect filed in an earlier run makes a later PR's repeat a duplicate", async () => {
+    const db = await reviewedWith([{ severity: "defect", title: "Stride is wrong in decode" }]);
+    const created: Created[] = [];
+    await runPostmergeFile(db, { repo: "app" }, () => {}, fakeGh(created));
+    const now = new Date().toISOString();
+    db.prepare("INSERT INTO items (repo, number, kind, state, title, created_at, updated_at) VALUES ('app', 2, 'pr', 'MERGED', 'Other', ?, ?)").run(now, now);
+    db.prepare("INSERT INTO merges (repo, number, head_oid, run_id, at, path, method, outcome) VALUES ('app', 2, 'head2', 'm1', ?, 'rule', 'merge', 'merged')").run(now);
+    db.prepare("INSERT INTO postmerge_reviews (repo, number, merge_sha, at, model, findings) VALUES ('app', 2, 'x', ?, 'opus', ?)").run(now, JSON.stringify([finding({ severity: "defect", title: "decode: wrong stride", line: 8 })]));
+    await runPostmergeFile(db, { repo: "app" }, () => {}, fakeGh(created, 60));
+    assert.equal(created.length, 1);
+    const dup = db.prepare("SELECT state, duplicate_of FROM postmerge_followups WHERE number = 2").get()!;
+    assert.deepEqual([dup.state, dup.duplicate_of], ["skipped-duplicate", 1]);
+  });
+
+  test("the file command refuses a PR outside the pilot or a repo whose pipeline is off", async () => {
+    const db = await reviewedWith([{ severity: "defect", title: "Stride is wrong" }]);
+    db.prepare("INSERT INTO items (repo, number, kind, state, title, created_at, updated_at) VALUES ('app', 9, 'pr', 'OPEN', 'x', 'z', 'z')").run();
+    setPilot(db, "op", ["app#9"]);
+    await assert.rejects(fileFinding(db, "app#1", 0, () => {}, fakeGh([])), /outside the pipeline's scope/);
+    setPilot(db, "op", []);
+    db.exec("UPDATE tracked_repos SET pipeline = 0 WHERE name = 'app'");
+    await assert.rejects(fileFinding(db, "app#1", 0, () => {}, fakeGh([])), /outside the pipeline's scope/);
   });
 });

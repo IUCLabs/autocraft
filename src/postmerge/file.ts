@@ -12,7 +12,8 @@ import { createIssue, IssueError, type Writer } from "../github/write.ts";
 import { pipelineLogin } from "../review/discussion.ts";
 import { ghFileExists, type FileChecker } from "../review/diff.ts";
 import { issueBody, issueTitle, refusal } from "./template.ts";
-import { dedupeDefects, pendingDefects, reviewOf, followupsOf, type FollowupState, type PendingDefect } from "./select.ts";
+import { pilotSqlFor } from "../pilot.ts";
+import { dedupeDefects, pendingDefects, recentFiled, reviewOf, followupsOf, type FollowupState, type PendingDefect } from "./select.ts";
 
 export const ACTOR = "postmerge-file";
 const OPERATOR = "cli";
@@ -114,7 +115,7 @@ export async function runPostmergeFile(db: DatabaseSync, params: FileParams, log
     log(`postmerge-file ${repo}: ${s.note}; nothing filed`);
     return s;
   }
-  const { keep, dupes } = dedupeDefects(pendingDefects(db, repo, deps.now().getTime()));
+  const { keep, dupes } = dedupeDefects(pendingDefects(db, repo, deps.now().getTime()), recentFiled(db, repo, deps.now().getTime()));
   for (const { d, of } of dupes) {
     setFollowup(db, rowOf(d), "skipped-duplicate", deps.now().toISOString(), { duplicateOf: of });
     log(`  ${repo}#${d.number}: not filed: repeats a defect of ${repo}#${of}`);
@@ -159,6 +160,7 @@ export async function fileFinding(db: DatabaseSync, ref: string, index: number, 
   if (!f) throw new Error(`${ref} has no finding ${index}; its review has ${r.findings.length} (counted from 0)`);
   if (f.severity !== "defect") throw new Error(`finding ${index} of ${ref} is minor; only defects are filed`);
   if (!commentApprovalOf(db, repo)) throw new Error(`commenting in ${repo} is not approved`);
+  if (!db.prepare(`SELECT 1 WHERE ${pilotSqlFor("?1", "CAST(?2 AS INTEGER)")}`).get(repo, number)) throw new Error(`${ref} is outside the pipeline's scope (pipeline flag or pilot)`);
   const have = followupsOf(db, repo, number).find((x) => x.review_at === r.at && x.finding === index);
   if (have?.state === "filed" || have?.state === "filing") throw new Error(`finding ${index} of ${ref} is already ${have.state === "filed" ? `filed as issue ${have.issue_number}` : "being filed with an unknown outcome; check GitHub"}`);
   audit(db, OPERATOR, "postmerge-file-one", ref, { finding: index });

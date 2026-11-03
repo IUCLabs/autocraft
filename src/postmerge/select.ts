@@ -130,11 +130,25 @@ export function similarTitles(a: string, b: string): boolean {
 export const sameDefect = (a: Finding, b: Finding): boolean =>
   a.file !== null && a.file === b.file && a.line !== null && b.line !== null && Math.abs(a.line - b.line) <= 20 && similarTitles(a.title, b.title);
 
-/** Keeps the first of each group of same defects (list order) and names, for each other, the PR number of the one kept. */
-export function dedupeDefects(list: PendingDefect[]): { keep: PendingDefect[]; dupes: { d: PendingDefect; of: number }[] } {
+/** Defects this stage filed (or is filing) in the last 30 days, with the finding's file and line from the review they came from. */
+export function recentFiled(db: DatabaseSync, repo: string, now = Date.now()): { number: number; f: Finding }[] {
+  const since = new Date(now - 30 * 86400_000).toISOString();
+  const rows = db.prepare("SELECT number, review_at, finding FROM postmerge_followups WHERE repo = ? AND state IN ('filed', 'filing') AND at >= ?").all(repo, since) as { number: number; review_at: string; finding: number }[];
+  return rows.flatMap((x) => {
+    const r = reviewOf(db, repo, x.number);
+    const f = r && r.at === x.review_at ? r.findings[x.finding] : undefined;
+    return f ? [{ number: x.number, f }] : [];
+  });
+}
+
+/**
+ * Keeps the first of each group of same defects (list order) and names, for each other, the PR number of the one kept.
+ * `seed` are defects filed earlier: a pending one that repeats one of them is a duplicate too.
+ */
+export function dedupeDefects(list: PendingDefect[], seed: { number: number; f: Finding }[] = []): { keep: PendingDefect[]; dupes: { d: PendingDefect; of: number }[] } {
   const keep: PendingDefect[] = [], dupes: { d: PendingDefect; of: number }[] = [];
   for (const d of list) {
-    const k = keep.find((x) => sameDefect(x.f, d.f));
+    const k = seed.find((x) => sameDefect(x.f, d.f)) ?? keep.find((x) => sameDefect(x.f, d.f));
     if (k) dupes.push({ d, of: k.number }); else keep.push(d);
   }
   return { keep, dupes };
