@@ -73,6 +73,8 @@ export interface Api {
     get(id: string): Promise<Decision>;
     answer(id: string, input: AnswerInput): Promise<Decision>;
     undo(id: string): Promise<Decision>;
+    /** Operator: clear a Backlog answer so the decision is open again. */
+    reopen(id: string): Promise<Decision>;
     /** Give or change the signed-in user's opinion (anyone signed in). */
     opine(id: string, input: { option: string | null; note?: string }): Promise<Decision>;
     retract(id: string): Promise<Decision>;

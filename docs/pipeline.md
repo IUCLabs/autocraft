@@ -105,6 +105,13 @@ Asks the operator for a scope call on open items that either carry the needs-dec
 
 Model: Sonnet (summaries). Daily limit 100.
 
+**Backlog.** Every decision of every kind (scope, duplicate group, Merge?, Close?, split, other) also offers `backlog` ("Backlog"), always last. The pipeline does not store it with the asked options; the dashboard and the CLI add it. Answering it holds the question undecided:
+
+- Nothing is written to GitHub (no label, comment, close or merge), and a duplicate group needs no `textsHash` for it because it stores no comment texts.
+- The item (every member of a batch or group) is held out of Decide, Review, Verify, Fix, Fix-up, Act and the merge queue, the same way an open Duplicate? decision holds it, and no new decision is asked for it. The Work queue shows a held PR as "Held". The Flow page counts scope items under their own bucket, "Backlog".
+- The decision leaves the Waiting list. The Decisions page has a Backlog view that lists them. An operator can Reopen one there (two clicks, audited as `reopen`, nothing written to GitHub): the answer is cleared and the decision is open again. Other users see the view without controls.
+- An operator can move many open decisions at once: `craft-auto decisions backlog --outside-pilot` (open decisions none of whose items is in the pilot; with no pilot set, none) or `--repo R`. It lists what it would change and writes only with `--apply`; each answer is recorded for the CLI user and audited. The admin API offers the same as `POST /api/decisions/backlog` with `{outsidePilot, repo, apply}` (operators only; a dry run unless `apply` is true).
+
 ## Label
 
 Writes each settled type label and flag to GitHub. No model.
@@ -300,7 +307,7 @@ Everything else waits for a decision on this dashboard.
 
 **Releases.** An operator can release an item that stopped waiting for a person, from the Item page (two clicks, audited, nothing written to GitHub; the pipeline takes the item up on its next pass): *Review again at this head* (removes a hold review of the current head), *Verify again* (after failed or error) and *Try the fix again* (a skipped or failed issue fix; the attempt count starts over).
 
-**Applied answers.** An answer that writes nothing counts as applied once the pipeline used it (scope take / small-extra when the item is reviewed or fixed, plugin when the label is on the item, need-info and Close? hold / keep at the next pass). From then the dashboard offers no Undo.
+**Applied answers.** An answer that writes nothing counts as applied once the pipeline used it (scope take / small-extra when the item is reviewed or fixed, plugin when the label is on the item, need-info and Close? hold / keep at the next pass). From then the dashboard offers no Undo. A Backlog answer is never applied; Reopen takes its place.
 
 ## Trust boundary
 

@@ -34,7 +34,7 @@ type Decision = { id: string; answer: string };
 /** Answered group decisions of the repo whose roles are written (applyDuplicateAnswers ran) and that are not applied yet. */
 export function groupDecisionsToAct(db: DatabaseSync, repo: string): Decision[] {
   return db.prepare(`SELECT d.id, d.answer FROM decisions d JOIN dupe_groups g ON g.decision_id = d.id
-    WHERE d.kind = 'duplicate' AND d.repo = ? AND d.answer IS NOT NULL AND d.answer <> 'distinct' AND d.applied_at IS NULL
+    WHERE d.kind = 'duplicate' AND d.repo = ? AND d.answer IS NOT NULL AND d.answer NOT IN ('distinct', 'backlog') AND d.applied_at IS NULL
       AND g.applied_answer = d.answer AND d.answered_by IN (SELECT login FROM access WHERE role = 'operator') ORDER BY d.answered_at`).all(repo) as Decision[];
 }
 

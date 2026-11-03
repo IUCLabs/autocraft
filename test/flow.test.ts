@@ -88,7 +88,7 @@ test("flowchart counts every branch by the stages' own rules", async () => {
   const node = (id: string) => flow.nodes.find((n) => n.id === id)!;
   assert.deepEqual(counts(node("synced")), { issues: 6, prs: 5 });
   assert.deepEqual(counts(node("classify")), { settled: 8, waiting: 1, referee: 0, disagree: 1, unclassified: 1 });
-  assert.deepEqual(counts(node("decide")), { "not-asked": 1, open: 1, take: 1, "small-extra": 0, plugin: 1, close: 0, "need-info": 0 });
+  assert.deepEqual(counts(node("decide")), { "not-asked": 1, open: 1, take: 1, "small-extra": 0, plugin: 1, close: 0, "need-info": 0, backlog: 0 });
   assert.deepEqual(counts(node("review")), { "not-reviewed": 1, "waiting-opus": 0, take: 2, "take-fix": 1, hold: 1, close: 0 });
   assert.deepEqual(counts(node("merge")), { eligible: 1, "in-batch": 0, unapproved: 0, "needs-decision": 0, "waiting-ci": 0, "ci-failed": 1, conflict: 0, "waiting-verify": 0, "verify-failed": 0, "verify-error": 0, "needs-fix-up": 1, "batch-failed": 0, declined: 0, merged: 1 });
   assert.deepEqual(counts(node("verify")), { waiting: 0, planned: 0, running: 0, passed: 1, "ci-enough": 0, failed: 0, error: 0 });

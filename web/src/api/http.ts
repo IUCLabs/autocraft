@@ -111,6 +111,7 @@ export function createHttpApi(): Api {
       get: (id) => get(dec(id)),
       answer: (id, input) => post(dec(id, "/answer"), input),
       undo: (id) => post(dec(id, "/undo")),
+      reopen: (id) => post(dec(id, "/reopen")),
       opine: (id, input) => post(dec(id, "/opinion"), input),
       retract: (id) => post(dec(id, "/retract")),
       adopt: (id, opinionId, textsHash) => post(dec(id, "/adopt"), { opinionId, textsHash }),

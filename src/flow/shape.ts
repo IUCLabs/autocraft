@@ -84,6 +84,7 @@ export function buildFlow(c: Record<string, number>, meta: FlowMeta): Flow {
       { id: "plugin", label: "Plug-in candidate", waitsOn: "nothing", tone: "neutral", hint: "Answered plugin: kept open, labelled plugin candidate" },
       { id: "close", label: "Out of scope", waitsOn: "nothing", tone: "neutral", hint: "Answered close: to be closed with a short reason" },
       { id: "need-info", label: "Check the reference app", waitsOn: "nothing", tone: "warn", hint: "Answered need info: asked again once the reference app's behaviour is known" },
+      { id: "backlog", label: "Backlog", waitsOn: "nothing", tone: "neutral", hint: "Answered backlog: held undecided, no later step takes it up" },
     ], { recent: ["asked", "answered"], facts: [{ label: "Open decisions", value: fmt(openDec) }], promptStage: "Decide" }),
     node("labels", "Labels", 6, "steps", `${fmt(v("labels.labelled"))} labelled · ${fmt(v("x.approved"))} of ${plural(repos, "repo")} approved`, [
       { id: "labelled", label: "Labelled on GitHub", waitsOn: "nothing", tone: "ok" },

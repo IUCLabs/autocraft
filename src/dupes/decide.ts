@@ -9,7 +9,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { audit } from "../dash/audit.ts";
 import { actionable, ask, factsOf, getDecision } from "../decisions.ts";
 import { compareCanonical, canonInfo } from "./canonical.ts";
-import { DUP_FACT, GROUP_OPTIONS, groupId, keepKey, keptOf } from "./held.ts";
+import { backlogHeldSql, DUP_FACT, GROUP_OPTIONS, groupId, keepKey, keptOf } from "./held.ts";
 import { duplicateGroups, kindSetsOf, currentComparison, type Group, type KindSet, type StoredComparison } from "./plan.ts";
 import { storeOptionTexts } from "./texts.ts";
 import { inPilot, pilotSqlFor } from "../pilot.ts";
@@ -36,7 +36,7 @@ const list = (ns: number[]) => ns.map((n) => `#${n}`).join(", ");
 function answeredKeeps(db: DatabaseSync, repo: string, members: number[]): { settled: Set<number>; keep: Map<string, number> } {
   const ph = members.map(() => "?").join(",");
   const ids = db.prepare(`SELECT DISTINCT d.id FROM decisions d JOIN dupe_group_items gi ON gi.decision_id = d.id
-    WHERE d.kind = 'duplicate' AND d.answer IS NOT NULL AND d.answer NOT IN ('superseded', 'distinct') AND gi.repo = ? AND gi.number IN (${ph}) ORDER BY d.asked_at, d.id`).all(repo, ...members) as { id: string }[];
+    WHERE d.kind = 'duplicate' AND d.answer IS NOT NULL AND d.answer NOT IN ('superseded', 'distinct', 'backlog') AND gi.repo = ? AND gi.number IN (${ph}) ORDER BY d.asked_at, d.id`).all(repo, ...members) as { id: string }[];
   const settled = new Set<number>(), keep = new Map<string, number>();
   for (const { id } of ids)
     for (const r of db.prepare(`SELECT gi.number, gi.kind, gi.role FROM dupe_group_items gi WHERE gi.decision_id = ?
@@ -53,6 +53,8 @@ export function groupPlans(db: DatabaseSync, repo?: string): GroupPlan[] {
   for (const g of duplicateGroups(db, repo)) {
     const sets = kindSetsOf(db, g).filter((s) => s.members.some((m) => m.state === "OPEN" && inPilot(db, s.repo, m.number)));
     if (!sets.length) continue;
+    // A member held by a Backlog answer is not asked about again.
+    if (g.members.some((n) => db.prepare(`SELECT 1 FROM items i WHERE i.repo = ? AND i.number = ? AND ${backlogHeldSql("i")}`).get(g.repo, n))) continue;
     const ready = sets.map((set) => ({ set, cmp: currentComparison(db, set) }));
     if (ready.some((r) => !r.cmp)) continue;
     const full = ready as { set: KindSet; cmp: StoredComparison }[];
@@ -168,7 +170,7 @@ export function askGroupDecisions(db: DatabaseSync, repo: string | undefined, at
       }
       // An answer waiting for Act that already lists every member to close: no second decision.
       const waiting = new Set((db.prepare(`SELECT gi.number FROM decisions d JOIN dupe_group_items gi ON gi.decision_id = d.id WHERE d.kind = 'duplicate' AND d.id LIKE '%:dupegroup:%' AND d.repo = ?
-        AND d.answer IS NOT NULL AND d.answer NOT IN ('superseded', 'distinct') AND d.applied_at IS NULL`).all(p.repo) as { number: number }[]).map((r) => r.number));
+        AND d.answer IS NOT NULL AND d.answer NOT IN ('superseded', 'distinct', 'backlog') AND d.applied_at IS NULL`).all(p.repo) as { number: number }[]).map((r) => r.number));
       p.items = p.items.filter((i) => !(i.role === "close" && waiting.has(i.number)));
       if (!p.items.some((i) => i.role === "close")) {
         db.exec("COMMIT");
@@ -214,7 +216,7 @@ export function groupsToAsk(db: DatabaseSync, repo?: string): GroupPlan[] {
 
 /** Answers to apply: pair decisions answered other than close, and group decisions whose answer is not yet in the roles. */
 export function answersToApply(db: DatabaseSync): boolean {
-  return !!db.prepare(`SELECT 1 FROM decisions d WHERE d.kind = 'duplicate' AND d.answer IS NOT NULL AND d.applied_at IS NULL
+  return !!db.prepare(`SELECT 1 FROM decisions d WHERE d.kind = 'duplicate' AND d.answer IS NOT NULL AND d.answer <> 'backlog' AND d.applied_at IS NULL
     AND d.answered_by IN (SELECT login FROM access WHERE role = 'operator')
     AND ((d.id NOT LIKE '%:dupegroup:%' AND d.answer <> 'close' AND ${pilotSqlFor("d.repo", "d.number")})
       OR (d.id LIKE '%:dupegroup:%' AND EXISTS (SELECT 1 FROM dupe_group_items gi WHERE gi.decision_id = d.id AND ${pilotSqlFor("gi.repo", "gi.number")}) AND COALESCE((SELECT g.applied_answer FROM dupe_groups g WHERE g.decision_id = d.id), '') <> d.answer)) LIMIT 1`).get();

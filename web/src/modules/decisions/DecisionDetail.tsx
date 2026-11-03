@@ -9,6 +9,7 @@ import type { ViewProps } from "../../registry/types";
 import { canAct } from "../../registry/permissions";
 import { Kbd } from "../../ui/Kbd";
 import { Button, IconButton } from "../../ui/Button";
+import { ConfirmButton, useWrite } from "../admin/parts";
 import { Count } from "../../ui/Heading";
 import { Markdown, Collapsible } from "../../ui/Markdown";
 import { cn } from "../../ui/cn";
@@ -345,17 +346,26 @@ export function DecisionBody({
 export function AnsweredState({ d, canUndo }: { d: Decision; canUndo: boolean }) {
   useNow();
   const undo = useUndo();
+  const api = useApi();
+  const write = useWrite();
   const label = d.options.find((o) => o.key === d.answer)?.label ?? d.answer;
+  const backlog = d.answer === "backlog";
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md border border-ok/35 bg-ok/[0.06] px-3 py-2.5">
       <CheckIcon className="text-ok" />
       <span className="text-sm font-medium">{label}</span>
       <span className="text-xs text-ink/55">
         by {d.answeredBy}
-        {d.adoptedOpinion ? `, using ${d.adoptedOpinion.login}'s answer` : ""} · {ago(d.answeredAt!)} ago · {d.appliedAt ? "applied" : "not applied yet"}
+        {d.adoptedOpinion ? `, using ${d.adoptedOpinion.login}'s answer` : ""} · {ago(d.answeredAt!)} ago{backlog ? "" : ` · ${d.appliedAt ? "applied" : "not applied yet"}`}
       </span>
       {d.answerNote && <span className="w-full text-sm text-ink/70">“{d.answerNote}”</span>}
-      {!d.appliedAt && canUndo && (
+      {backlog && canUndo && (
+        <span className="ml-auto flex items-center gap-2">
+          {write.error && <span className="text-xs text-bad">{write.error}</span>}
+          <ConfirmButton label="Reopen" confirmLabel="Reopen the decision" loading={write.busy === "reopen"} onConfirm={() => void write.run("reopen", () => api.decisions.reopen(d.id))} />
+        </span>
+      )}
+      {!backlog && !d.appliedAt && canUndo && (
         <Button size="sm" variant="ghost" icon={Undo2Icon} className="ml-auto" onClick={() => undo(d.id)}>
           Undo
         </Button>

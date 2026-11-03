@@ -1,8 +1,12 @@
 // Decisions for people. The pipeline asks them with the CLI; only a signed-in
-// person on the dashboard answers them, so no command here sets an answer.
+// person on the dashboard answers them. The one command that sets answers is
+// the operator's bulk Backlog (`decisions backlog`), which only holds items.
 import { readFileSync } from "node:fs";
+import { userInfo } from "node:os";
 import type { DatabaseSync } from "node:sqlite";
+import { audit } from "./dash/audit.ts";
 import { connect } from "./db.ts";
+import { inPilot } from "./pilot.ts";
 
 export const KINDS = ["scope", "duplicate", "close", "merge", "split", "other"] as const;
 export type Kind = (typeof KINDS)[number];
@@ -24,7 +28,15 @@ const j = <T>(s: string | null, d: T): T => {
   if (!s) return d;
   try { return JSON.parse(s) as T; } catch { return d; }
 };
-export const optionsOf = (d: DecisionRow): Option[] => j<Option[]>(d.options, []);
+/** The answer every decision offers last: nothing is written to GitHub and the items stay held (see src/dupes/held.ts). */
+export const BACKLOG: Option = { key: "backlog", label: "Backlog", hint: "Hold this undecided: nothing is written and no later step takes the item up." };
+export const isBacklog = (answer: string | null): boolean => answer === BACKLOG.key;
+
+/** The options the pipeline asked, then Backlog. */
+export const optionsOf = (d: DecisionRow): Option[] => {
+  const asked = j<Option[]>(d.options, []);
+  return asked.some((o) => o.key === BACKLOG.key) ? asked : [...asked, BACKLOG];
+};
 export const factsOf = (d: DecisionRow): string[] => j<string[]>(d.facts, []);
 export const itemsOf = (d: DecisionRow): Ref[] => (d.number === null ? j<Ref[]>(d.items, []) : [{ repo: d.repo!, number: d.number }]);
 export const exceptionsOf = (d: DecisionRow): Exception[] => j<Exception[]>(d.exceptions, []);
@@ -101,7 +113,7 @@ export function ask(db: DatabaseSync, questions: Record<string, unknown>[], inTr
 }
 
 // Answers the pipeline may act on: answered by someone who is an operator
-// (role operator) now, and not yet applied. Option keys only, never free text.
+// (role operator) now, not yet applied, and not Backlog (which only holds). Option keys only, never free text.
 // Opinions and comments are display-only and never read here.
 export type Actionable = { id: string; kind: Kind; repo: string | null; number: number | null; items: Ref[]; answer: string; exceptions: Exception[] };
 
@@ -110,12 +122,59 @@ function operators(db: DatabaseSync): Set<string> {
 }
 
 export function actionable(db: DatabaseSync): Actionable[] {
-  const rows = db.prepare(`SELECT * FROM decisions WHERE answer IS NOT NULL AND applied_at IS NULL
+  const rows = db.prepare(`SELECT * FROM decisions WHERE answer IS NOT NULL AND answer <> '${BACKLOG.key}' AND applied_at IS NULL
     AND answered_by IN (SELECT login FROM access WHERE role = 'operator') ORDER BY answered_at`).all() as DecisionRow[];
   return rows.map((d) => ({
     id: d.id, kind: d.kind, repo: d.repo, number: d.number, items: itemsOf(d), answer: d.answer!,
     exceptions: exceptionsOf(d).map((e) => ({ repo: e.repo, number: e.number, answer: e.answer })),
   }));
+}
+
+export type BacklogScope = { outsidePilot?: boolean; repo?: string };
+export type BacklogResult = { applied: boolean; decisions: { id: string; kind: Kind; repo: string | null; number: number | null }[] };
+
+/** Open decisions in scope: of the repo when given, and, with `outsidePilot`, none of whose items is in the pilot (with no pilot set, none is outside). */
+export function backlogCandidates(db: DatabaseSync, scope: BacklogScope): DecisionRow[] {
+  if (!scope.outsidePilot && !scope.repo) throw new Error("name a scope: outsidePilot or a repo");
+  const rows = db.prepare("SELECT * FROM decisions WHERE answer IS NULL ORDER BY asked_at, id").all() as DecisionRow[];
+  const pilot = !!db.prepare("SELECT 1 FROM settings WHERE key = 'pilot_items' AND json_valid(value) AND json_array_length(value) > 0").get();
+  const members = db.prepare("SELECT repo, number FROM dupe_group_items WHERE decision_id = ?");
+  return rows.filter((d) => {
+    const refs = [...itemsOf(d), ...(members.all(d.id) as Ref[])];
+    if (scope.repo && !reposOf(d).includes(scope.repo) && !refs.some((x) => x.repo === scope.repo)) return false;
+    return !scope.outsidePilot || (pilot && !refs.some((x) => inPilot(db, x.repo, x.number)));
+  });
+}
+
+/** Answers the open decisions in scope with Backlog and audits each; a dry run only lists them. The answer is written for `by`. */
+export function backlogOpen(db: DatabaseSync, scope: BacklogScope, by: string, apply: boolean, at: string = new Date().toISOString()): BacklogResult {
+  const rows = backlogCandidates(db, scope);
+  const decisions = rows.map((d) => ({ id: d.id, kind: d.kind, repo: d.repo, number: d.number }));
+  if (!apply) return { applied: false, decisions };
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const set = db.prepare(`UPDATE decisions SET answer = ?, answer_note = NULL, exceptions = ?, answered_by = ?, answered_at = ?, adopted_opinion = NULL WHERE id = ? AND answer IS NULL`);
+    for (const d of rows) {
+      if (set.run(BACKLOG.key, isBatch(d) ? "[]" : null, by, at, d.id).changes === 1) audit(db, by, "answer", d.id, { answer: BACKLOG.key, bulk: true });
+    }
+    audit(db, by, "backlog-bulk", null, { ...scope, count: rows.length });
+    db.exec("COMMIT");
+  } catch (e) {
+    db.exec("ROLLBACK");
+    throw e;
+  }
+  return { applied: true, decisions };
+}
+
+function backlogCmd(args: string[]): void {
+  const ri = args.indexOf("--repo");
+  const scope: BacklogScope = { outsidePilot: args.includes("--outside-pilot"), repo: ri >= 0 ? args[ri + 1] : undefined };
+  if (ri >= 0 && !scope.repo) throw new Error("--repo needs a repo name");
+  if (!scope.outsidePilot && !scope.repo) throw new Error("usage: decisions backlog (--outside-pilot | --repo R) [--apply]");
+  const apply = args.includes("--apply");
+  const res = backlogOpen(connect(), scope, userInfo().username, apply);
+  for (const d of res.decisions) console.log(`${d.id}\t${d.kind}\t${d.repo ?? ""}${d.number === null ? "" : `#${d.number}`}`);
+  console.log(`${res.decisions.length} open decision${res.decisions.length === 1 ? "" : "s"} ${apply ? "answered Backlog" : "would be answered Backlog (dry run; --apply writes)"}`);
 }
 
 function list(args: string[]): void {
@@ -135,7 +194,7 @@ function list(args: string[]): void {
   const rows = db.prepare(`SELECT * FROM decisions WHERE ${where.join(" AND ")} ORDER BY asked_at`).all(params) as DecisionRow[];
   for (const d of rows) {
     const target = isBatch(d) ? `batch of ${itemsOf(d).length}` : `${d.repo}#${d.number}`;
-    const by = d.answered_by && ops.has(d.answered_by) ? "" : " (not actionable: not answered by an operator)";
+    const by = isBacklog(d.answer) || (d.answered_by && ops.has(d.answered_by)) ? "" : " (not actionable: not answered by an operator)";
     const state = d.answer ? `answered ${d.answer}${d.applied_at ? ", applied" : ""}${by}` : "open";
     console.log(`${d.id}\t${d.kind}\t${target}\t${state}\t${d.question}`);
   }
@@ -150,7 +209,7 @@ function show(args: string[]): void {
   // Agents run this command: no free text from people (answer_note), and
   // adopted_opinion points at an opinion, which agents never see.
   const { adopted_opinion: _adopted, answer_note: _note, ...rest } = d;
-  const actionable = d.answer !== null && d.answered_by !== null && operators(db).has(d.answered_by);
+  const actionable = d.answer !== null && !isBacklog(d.answer) && d.answered_by !== null && operators(db).has(d.answered_by);
   const out = { ...rest, actionable, items: j(d.items, null), facts: factsOf(d), options: optionsOf(d), exceptions: j(d.exceptions, null) };
   console.log(JSON.stringify(out, null, 2));
 }
@@ -168,16 +227,16 @@ function askCmd(args: string[]): void {
   console.log(`${r.inserted} asked, ${r.updated} updated`);
 }
 
-const SUB: Record<string, (args: string[]) => void> = { list, show, ask: askCmd };
+const SUB: Record<string, (args: string[]) => void> = { list, show, ask: askCmd, backlog: backlogCmd };
 
 export const commands = {
   decisions: {
-    summary: "decisions for people: list [--open|--answered|--all|--actionable] [--repo R] | show ID | ask FILE.json (answers come only from the dashboard)",
+    summary: "decisions for people: list [--open|--answered|--all|--actionable] [--repo R] | show ID | ask FILE.json | backlog (--outside-pilot | --repo R) [--apply] (answers come from the dashboard; backlog is the operator bulk hold)",
     run(args: string[]): void {
       const [sub, ...rest] = args;
       const fn = sub ? SUB[sub] : undefined;
       if (!fn) {
-        console.log("usage: craft-auto decisions list|show|ask ...");
+        console.log("usage: craft-auto decisions list|show|ask|backlog ...");
         process.exit(sub ? 1 : 0);
       }
       fn(rest);

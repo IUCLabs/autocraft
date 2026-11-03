@@ -283,6 +283,8 @@ export function apiRoutes(opts: ApiOptions = {}): Route[] {
     get("/api/decisions/:id/thread", dec.thread),
     post("/api/decisions/:id/answer", dec.answer),
     post("/api/decisions/:id/undo", dec.undo),
+    post("/api/decisions/:id/reopen", dec.reopen),
+    { method: "POST", pattern: "/api/decisions/backlog", operator: true, handler: ok(dec.backlogBulk) },
     post("/api/decisions/:id/adopt", dec.adopt),
     post("/api/decisions/:id/opinion", (db, req) => dec.opine(db, req, limiter)),
     post("/api/decisions/:id/retract", (db, req) => dec.retract(db, req, limiter)),
