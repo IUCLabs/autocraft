@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { FolderGit2Icon } from "lucide-react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { useApi, useQuery } from "../../api/client";
 import type { TrackedRepo } from "../../api/types";
 import type { FeatureModule, ViewProps } from "../../registry/types";
@@ -17,7 +17,7 @@ type Show = "all" | "tracked" | "untracked";
 function ReposView(_: ViewProps) {
   const api = useApi();
   const { data, error } = useQuery("repo-admin", (a) => a.repoAdmin.list());
-  const [show, setShow] = useState<Show>("all");
+  const [show, setShow] = useState<Show>("tracked");
   const [name, setName] = useState("");
   const write = useWrite();
   const phone = useIsPhone();
@@ -73,30 +73,31 @@ function ReposView(_: ViewProps) {
 }
 
 function Table({ rows }: { rows: TrackedRepo[] }) {
+  const nav = useNavigate();
   return (
     <table className="w-full border-collapse text-sm">
       <thead className="bg-ink/[0.03] text-xs">
         <tr className="border-b border-line">
-          <SortTh>Repo</SortTh>
-          <SortTh className="w-[110px]">Status</SortTh>
-          <SortTh right className="w-[90px]">Open PRs</SortTh>
-          <SortTh right className="w-[100px]">Open issues</SortTh>
-          <SortTh className="w-[130px]">Last synced</SortTh>
-          <th className="px-3 text-left text-xs font-medium">GitHub writes</th>
+          <SortTh className="w-[220px]">Repo</SortTh>
+          <SortTh className="w-[120px]">Status</SortTh>
+          <SortTh right className="w-[100px]">Open PRs</SortTh>
+          <SortTh right className="w-[110px]">Open issues</SortTh>
+          <SortTh className="w-[150px] pl-6">Last synced</SortTh>
+          <SortTh>GitHub writes</SortTh>
         </tr>
       </thead>
       <tbody>
         {rows.map((r) => (
-          <tr key={r.name} className={cn("h-9 border-b border-line last:border-0 hover:bg-ink/[0.03]", !r.tracked && "text-ink/60")}>
+          <tr key={r.name} onClick={() => nav(`/repos/${r.name}`)} className={cn("h-9 cursor-pointer border-b border-line last:border-0 hover:bg-ink/[0.03]", !r.tracked && "text-ink/60")}>
             <td className="code px-3">
-              <Link to={`/repos/${r.name}`} className="hover:text-accent-ink hover:underline">
+              <Link to={`/repos/${r.name}`} onClick={(e) => e.stopPropagation()}>
                 {r.name}
               </Link>
             </td>
             <td className="px-3">{r.tracked ? <Badge tone="ok">Tracked</Badge> : <Badge>Not tracked</Badge>}</td>
             <td className="num px-3 text-right">{maybe(r.openPrs)}</td>
             <td className="num px-3 text-right">{maybe(r.openIssues)}</td>
-            <td className="px-3 text-ink/60" title={r.syncedAt ?? undefined}>
+            <td className="px-3 pl-6 text-ink/60" title={r.syncedAt ?? undefined}>
               {synced(r)}
             </td>
             <td className="px-3">{r.tracked ? <WriteBadges r={r} /> : <span className="text-ink/40">–</span>}</td>
