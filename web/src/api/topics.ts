@@ -6,19 +6,19 @@
  * correct before it is listed here.
  */
 export type Topic =
-  | "repos" | "items" | "decisions" | "reviews" | "queue" | "jobs" | "usage" | "accounts" | "agents"
+  | "repos" | "sync" | "items" | "ranks" | "stages" | "checks" | "classify" | "dupes" | "decisions" | "reviews" | "queue" | "jobs" | "usage" | "accounts" | "agents"
   | "envs" | "tasks" | "actions" | "fixes" | "verify" | "access" | "settings";
 
 /** Everything an item page shows about a pull request. */
-const ITEM: Topic[] = ["items", "decisions", "reviews", "verify", "fixes", "actions"];
+const ITEM: Topic[] = ["items", "stages", "classify", "ranks", "decisions", "reviews", "verify", "fixes", "actions"];
 
 const RULES: [prefix: string, topics: Topic[]][] = [
-  ["progress", ["items", "repos"]],
+  ["progress", ["items", "stages", "repos", "decisions"]],
   ["item:", ITEM],
   ["item-decisions:", ["decisions", "items"]],
-  ["items:", ["items", "decisions"]],
+  ["items:", ["items", "stages", "classify", "decisions"]],
   ["similar:", ["items"]],
-  ["work:", ["items", "decisions", "reviews", "queue", "verify"]],
+  ["work:", ["items", "ranks", "classify", "checks", "decisions", "reviews", "verify", "fixes"]],
   ["cost:", ["usage", "agents"]],
   ["rates-", ["usage", "agents", "accounts"]],
   ["count:", ["decisions"]],
@@ -26,27 +26,27 @@ const RULES: [prefix: string, topics: Topic[]][] = [
   ["decision:", ["decisions"]],
   ["thread:", ["decisions"]],
   ["repos", ["repos"]],
-  ["repo-admin", ["repos", "settings"]],
-  ["cls:", ["items"]],
-  ["dis:", ["items"]],
+  ["repo-admin", ["repos", "sync", "settings"]],
+  ["cls:", ["classify", "items"]],
+  ["dis:", ["dupes", "items"]],
   ["contributors:", ["items", "settings"]],
   ["access", ["access"]],
   ["audit:", ["access"]],
   ["prompts", []],
   ["flow-running", ["agents"]],
   ["flow-jobs:", ["jobs", "usage"]],
-  ["flow:", ["repos", "items", "decisions", "reviews", "queue", "jobs", "tasks", "verify", "fixes", "actions", "settings"]],
+  ["flow:", ["repos", "sync", "stages", "settings"]],
   ["pipeline-state", ["settings", "jobs"]],
   ["pipeline-jobs:", ["jobs", "usage"]],
   ["pipeline-job:", ["jobs", "usage", "agents"]],
-  ["pipeline", ["jobs", "settings", "repos"]],
+  ["pipeline", ["jobs", "settings", "repos", "sync"]],
   ["agents-accounts", ["accounts"]],
   ["agents-steps", ["jobs", "settings", "repos"]],
   ["agents-repos", ["repos"]],
   ["agents-running", ["agents"]],
   ["agents-recent:", ["agents"]],
   ["agent-", ["agents"]],
-  ["queue:", ["queue", "items", "decisions", "reviews", "verify", "fixes", "tasks", "settings", "repos"]],
+  ["queue:", ["queue", "items", "checks", "classify", "decisions", "reviews", "verify", "fixes", "tasks", "settings", "repos"]],
   ["queue-batches:", ["queue", "tasks", "items"]],
   ["accounts", ["accounts", "settings"]],
   ["envs-repos", ["repos"]],

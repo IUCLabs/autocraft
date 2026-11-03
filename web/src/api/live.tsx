@@ -11,16 +11,37 @@ export type LiveSource = (emit: (topics: string[] | null, before?: number) => vo
 const LiveStatusContext = createContext<LiveStatus>("connecting");
 export const useLiveStatus = () => useContext(LiveStatusContext);
 
-/** Refetches the active queries that read any of `topics`. */
-export function invalidateTopics(qc: QueryClient, topics: string[] | null, before?: number): void {
+/** A query is invalidated at most once per this many ms; a change inside the window is applied at its end. */
+export const COALESCE_MS = 3000;
+
+type Slot = { last: number; timer?: ReturnType<typeof setTimeout> };
+const slots = new WeakMap<QueryClient, Map<string, Slot>>();
+
+/**
+ * Refetches the active queries that read any of `topics`. A burst of changes (a sync writes many rows) causes one
+ * refetch per query per window: the first change goes through at once, later ones in the window share one
+ * trailing invalidation, so the last change always lands.
+ */
+export function invalidateTopics(qc: QueryClient, topics: string[] | null, before?: number, windowMs = COALESCE_MS): void {
   const changed = topics && new Set(topics);
-  void qc.invalidateQueries({
-    predicate: (q) => {
-      if (before !== undefined && q.state.dataUpdatedAt >= before) return false;
-      const read = q.meta?.topics as string[] | null | undefined;
-      return !changed || !read || read.some((t) => changed.has(t));
-    },
-  });
+  const per = slots.get(qc) ?? slots.set(qc, new Map()).get(qc)!;
+  const now = Date.now();
+  for (const q of qc.getQueryCache().findAll()) {
+    if (before !== undefined && q.state.dataUpdatedAt >= before) continue;
+    const read = q.meta?.topics as string[] | null | undefined;
+    if (changed && read && !read.some((t) => changed.has(t))) continue;
+    const slot = per.get(q.queryHash) ?? { last: 0 };
+    per.set(q.queryHash, slot);
+    const fire = () => {
+      slot.last = Date.now();
+      slot.timer = undefined;
+      void qc.invalidateQueries({ queryKey: q.queryKey, exact: true });
+    };
+    if (slot.timer) continue;
+    const wait = slot.last + windowMs - now;
+    if (wait <= 0) fire();
+    else slot.timer = setTimeout(fire, wait);
+  }
 }
 
 /**

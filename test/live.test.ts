@@ -9,6 +9,7 @@ import { loadConfig } from "../src/dash/server/config.ts";
 import { startServer } from "../src/dash/server/index.ts";
 import { FakeProvider } from "../src/dash/server/provider.ts";
 import { readSeqs, TOPICS } from "../src/live.ts";
+import { saveChecks } from "../src/review/checks.ts";
 import { SCRATCH } from "./scratch.ts";
 
 mkdirSync(SCRATCH, { recursive: true });
@@ -62,6 +63,68 @@ describe("change markers", () => {
     assert.deepEqual(changed(b2), []);
     db.exec("INSERT INTO settings (key, value) VALUES ('pipeline_enabled', '1')");
     assert.deepEqual(changed(b2), ["settings"]);
+  });
+});
+
+describe("no-op writes", () => {
+  test("an update that changes no watched column bumps nothing; a changed one does", () => {
+    db.exec("INSERT INTO items (repo, number, kind, state, title, body) VALUES ('x', 1, 'pr', 'open', 't', 'b')");
+    let b = readSeqs(db);
+    db.exec("UPDATE items SET title = 't', body = 'b' WHERE repo = 'x'");
+    assert.deepEqual(changed(b), [], "same values");
+    db.exec("UPDATE items SET embed_hash = 'h', class_hash = 'c', class_scheme = 's' WHERE repo = 'x'");
+    assert.deepEqual(changed(b), [], "derived hashes only");
+    db.exec("UPDATE items SET body = 'c' WHERE repo = 'x'");
+    assert.deepEqual(changed(b), ["items"]);
+    b = readSeqs(db);
+    db.exec("UPDATE items SET body = NULL WHERE repo = 'x'");
+    assert.deepEqual(changed(b), ["items"], "to NULL");
+  });
+
+  test("each table reports to its own topic and ignores its bookkeeping columns", () => {
+    let b = readSeqs(db);
+    db.exec("INSERT INTO item_rank (repo, number, score, breakdown, computed_at) VALUES ('x', 1, 5, '{}', 'a')");
+    assert.deepEqual(changed(b), ["ranks"]);
+    b = readSeqs(db);
+    db.exec("UPDATE item_rank SET computed_at = 'b'");
+    assert.deepEqual(changed(b), [], "recomputed to the same rank");
+    db.exec("UPDATE item_rank SET score = 6");
+    assert.deepEqual(changed(b), ["ranks"]);
+
+    b = readSeqs(db);
+    const row = { repo: "x", number: 1, head_oid: "o", state: "OPEN", is_draft: false, overall: "success" as const, checks: [{ name: "ci", state: "success" as const }], mergeable: "MERGEABLE", maintainer_can_modify: true };
+    saveChecks(db, [row], "t1");
+    assert.deepEqual(changed(b), ["checks"]);
+    b = readSeqs(db);
+    saveChecks(db, [row], "t2");
+    assert.deepEqual(changed(b), [], "same checks fetched again");
+    saveChecks(db, [{ ...row, overall: "failure" }], "t3");
+    assert.deepEqual(changed(b), ["checks"]);
+
+    b = readSeqs(db);
+    db.exec("INSERT INTO classifications (repo, number, classifier, run_id, at, type_label) VALUES ('x', 1, 'jev', 'r', 'a', 'bugfix')");
+    assert.deepEqual(changed(b), ["classify"]);
+    db.exec("INSERT INTO duplicate_scans (repo, number, hash, at) VALUES ('x', 1, 'h', 'a')");
+    db.exec("INSERT INTO stages (repo, number, stage, at, actor) VALUES ('x', 1, 'reviewed', 'a', 'me')");
+    assert.deepEqual(changed(b), ["classify", "dupes", "stages"]);
+    b = readSeqs(db);
+    db.exec("UPDATE duplicate_scans SET at = 'b'");
+    db.exec("UPDATE classifications SET at = 'b', input_hash = 'x'");
+    assert.deepEqual(changed(b), []);
+  });
+
+  test("settings the runner and the sync write for themselves bump nothing", () => {
+    const put = (k: string, v: string) => db.prepare("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value").run(k, v);
+    let b = readSeqs(db);
+    for (const k of ["pipeline_planned_at", "pipeline_sync_seen", "pipeline_review_cursor", "full_sync_cursor", "org_high_water", "worker_update_pending", "github_points_last_run"]) put(k, "1");
+    assert.deepEqual(changed(b), []);
+    for (const k of ["pipeline_planned_at", "org_high_water"]) put(k, "2");
+    assert.deepEqual(changed(b), []);
+    put("pipeline_enabled", "0");
+    assert.deepEqual(changed(b), ["settings"]);
+    b = readSeqs(db);
+    put("pipeline_enabled", "1");
+    assert.deepEqual(changed(b), ["settings"]);
   });
 });
 

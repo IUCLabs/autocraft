@@ -76,7 +76,7 @@ export function scanItem(db: DatabaseSync, index: VectorIndex, item: ScanItem, n
       if (ruled.get(p.repo, p.a, p.b)) continue;
       added += Number(put.run(p.repo, p.a, p.b, p.a_hash, p.b_hash, p.similarity, now.toISOString()).changes);
     }
-    db.prepare("INSERT OR REPLACE INTO duplicate_scans (repo, number, hash, at) VALUES (?, ?, ?, ?)").run(item.repo, item.number, item.embed_hash, now.toISOString());
+    db.prepare("INSERT INTO duplicate_scans (repo, number, hash, at) VALUES (?, ?, ?, ?) ON CONFLICT (repo, number) DO UPDATE SET hash = excluded.hash, at = excluded.at").run(item.repo, item.number, item.embed_hash, now.toISOString());
     db.exec("COMMIT");
   } catch (e) {
     db.exec("ROLLBACK");

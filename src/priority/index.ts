@@ -56,8 +56,10 @@ function save(db: DatabaseSync, item: Due, v: Verdict): boolean {
   const s = settleImpact(v.jev, v.haiku?.impact ?? null);
   if (!s) return false;
   const reason = s.model === "haiku" ? v.haiku!.reason : v.jev ? `${v.jev.impact} ${v.jev.p.toFixed(2)}` : "";
-  db.prepare(`INSERT OR REPLACE INTO item_priority (repo, number, text_hash, impact, jev_impact, jev_p, haiku_impact, score, model, reason, at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(item.repo, item.number, item.hash, s.impact, v.jev?.impact ?? null, v.jev?.p ?? null,
+  db.prepare(`INSERT INTO item_priority (repo, number, text_hash, impact, jev_impact, jev_p, haiku_impact, score, model, reason, at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT (repo, number) DO UPDATE SET text_hash = excluded.text_hash, impact = excluded.impact, jev_impact = excluded.jev_impact, jev_p = excluded.jev_p,
+      haiku_impact = excluded.haiku_impact, model = excluded.model, reason = excluded.reason, at = excluded.at`).run(item.repo, item.number, item.hash, s.impact, v.jev?.impact ?? null, v.jev?.p ?? null,
     v.haiku?.impact ?? null, 0, s.model, reason, now());
   return true;
 }
