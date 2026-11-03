@@ -13,6 +13,7 @@ import { selectCandidates } from "../src/review/candidates.ts";
 import { Git } from "../src/fixup/git.ts";
 import { finalizeReviews } from "./fixture.ts";
 import { SCRATCH } from "./scratch.ts";
+import { validating } from "./gql.ts";
 
 mkdirSync(SCRATCH, { recursive: true });
 const dir = mkdtempSync(join(SCRATCH, "batch-test-"));
@@ -43,7 +44,7 @@ const world = (): World => ({ log: [], conflicts: new Set(), mainHead: MAIN, ci:
 
 function deps(w: World, root: string): BatchDeps {
   let commits = 0;
-  const querier: Querier = {
+  const querier: Querier = validating({
     spent: 0, remaining: 5000,
     async query(query: string, vars: object) {
       const v = vars as { n?: number };
@@ -57,7 +58,7 @@ function deps(w: World, root: string): BatchDeps {
         commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { nodes: [{ __typename: "CheckRun", name: "ci", status: w.ci === "PENDING" ? "IN_PROGRESS" : "COMPLETED", conclusion: w.ci === "PENDING" ? null : w.ci }] } } } }] },
       }])) };
     },
-  };
+  });
   return {
     querier, root, mergeCommand: "safe-merge-test", now: () => new Date(T1),
     mainHead: async () => w.mainHead,

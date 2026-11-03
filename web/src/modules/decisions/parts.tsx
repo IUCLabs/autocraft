@@ -19,6 +19,7 @@ import { cn } from "../../ui/cn";
 import { ago } from "../../lib/format";
 import { Refs } from "./Refs";
 import { KIND_LABEL } from "./state";
+import { useNow } from "../../lib/useNow";
 
 export const KIND_ICON: Record<DecisionKind, LucideIcon> = {
   scope: TargetIcon,
@@ -41,6 +42,7 @@ export function KindTag({ kind, batch }: { kind: DecisionKind; batch?: number })
 }
 
 export function ClaimPill({ claim, compact }: { claim: Decision["claim"]; compact?: boolean }) {
+  useNow();
   if (!claim) return null;
   return (
     <span className="inline-flex items-center gap-1.5 text-xs text-warn" title={`${claim.login} opened this ${ago(claim.since, false)}`}>
@@ -101,6 +103,7 @@ export function Facts({ facts, repo = null }: { facts: string[]; repo?: string |
  * cannot be used.
  */
 export function OpinionList({ d, onUse, onRetract, me }: { d: Decision; onUse?: (option: string) => void; onRetract?: () => void; me: string }) {
+  useNow();
   if (!d.opinions.length) return <p className="text-sm text-ink/50">No comments yet.</p>;
   const label = (k: string) => d.options.find((o) => o.key === k)?.label ?? k;
   return (

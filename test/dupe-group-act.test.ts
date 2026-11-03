@@ -9,15 +9,14 @@ import { setCommentApproval } from "../src/act/approval.ts";
 import { commentPreview, runAct, writeEffect, type ActDeps } from "../src/act/index.ts";
 import { connect } from "../src/db.ts";
 import { getDecision } from "../src/decisions.ts";
+import { kindSetsOf, duplicateGroups } from "../src/dupes/plan.ts";
 import { runDupeCompare, type CompareDeps, type Reply } from "../src/dupes/compare.ts";
-import { applyDuplicateAnswers } from "../src/dupes/decide.ts";
+import { applyDuplicateAnswers, resetGroupAnswer } from "../src/dupes/decide.ts";
 import { dupeGroupCloseComment, dupeGroupDetailsComment } from "../src/act/templates.ts";
 import type { Querier } from "../src/mirror.ts";
+import { validating } from "./gql.ts";
 import { SCRATCH } from "./scratch.ts";
 
-// Documents are validated against GitHub's schema when the helper exists in this tree.
-const GQL = "./gql.ts";
-const validating: (q: Querier) => Querier = await import(GQL).then((m: any) => m.validating as (q: Querier) => Querier, () => (q: Querier) => q);
 
 mkdirSync(SCRATCH, { recursive: true });
 const dir = mkdtempSync(join(SCRATCH, "dupe-group-act-"));
@@ -61,7 +60,7 @@ const answer = (db: DatabaseSync, id: string, key: string) => {
 };
 const state = (db: DatabaseSync, id: string) => getDecision(db, id)!;
 
-type Gh = { heads?: Map<number, string>; closed?: Set<number>; failCloseOnce?: Set<number> };
+type Gh = { onRead?: (n: number) => void; heads?: Map<number, string>; closed?: Set<number>; failCloseOnce?: Set<number> };
 function fakes(log: string[], f: Gh = {}): ActDeps {
   const querier: Querier = validating({
     spent: 0, remaining: 5000,
@@ -75,6 +74,7 @@ function fakes(log: string[], f: Gh = {}): ActDeps {
         return {};
       }
       const n = v.n!;
+      f.onRead?.(n);
       const st = f.closed?.has(n) ? "CLOSED" : "OPEN";
       return { repository: { issueOrPullRequest: n < 10 ? { __typename: "Issue", id: `I${n}`, state: st } : { __typename: "PullRequest", id: `P${n}`, state: st, headRefOid: f.heads?.get(n) ?? `sha${n}` } } };
     },
@@ -191,5 +191,36 @@ describe("act on group decisions", () => {
     assert.deepEqual(writes(log2), [`comment P12: ${CLOSE_12}`, "close P12"]);
     assert.ok(state(db, PR_GROUP).applied_at);
     assert.equal(db.prepare("SELECT COUNT(*) AS n FROM dupe_carries").get()!.n, 1);
+  });
+
+  test("an undo while the run reads a member stops that decision before any write", async () => {
+    const db = await world();
+    answer(db, PR_GROUP, "accept");
+    const log: string[] = [];
+    await run(db, fakes(log, { onRead: (n) => { if (n === 12) { db.prepare("UPDATE decisions SET answer = NULL, answered_by = NULL, answered_at = NULL WHERE id = ?").run(PR_GROUP); resetGroupAnswer(db, PR_GROUP); } } }));
+    assert.deepEqual(writes(log), []);
+    assert.equal(state(db, PR_GROUP).applied_at, null);
+  });
+
+  test("texts follow the roles after undo and a new answer", async () => {
+    const db = await world();
+    answer(db, PR_GROUP, "keep:12");
+    db.prepare("UPDATE decisions SET answer = NULL, answered_by = NULL, answered_at = NULL WHERE id = ?").run(PR_GROUP);
+    resetGroupAnswer(db, PR_GROUP);
+    const text = (n: number) => (db.prepare("SELECT comment FROM dupe_group_items WHERE decision_id = ? AND number = ?").get(PR_GROUP, n) as { comment: string | null }).comment;
+    assert.equal(text(12), CLOSE_12);
+    assert.equal(text(11), null);
+    answer(db, PR_GROUP, "keep:13");
+    assert.equal(text(12), dupeGroupCloseComment({ kept: 13, carry: ["master-page handling in src/a.rs"] }));
+    assert.equal(text(13), null);
+  });
+
+  test("a PR our Act closed is no longer a member of its group's comparison sets", async () => {
+    const db = await world();
+    answer(db, PR_GROUP, "accept");
+    await run(db, fakes([]));
+    db.prepare("UPDATE items SET state = 'OPEN' WHERE repo = 'app' AND number IN (12, 13)").run();
+    const g = duplicateGroups(db, "app").find((x) => x.members.includes(11))!;
+    assert.deepEqual(kindSetsOf(db, g).flatMap((s) => s.members.map((m) => m.number)), [11]);
   });
 });

@@ -1,20 +1,20 @@
 // Build environments: the workers that run untrusted code, the tasks queued for and running on them, and a
 // task's steps, results, log and artifacts. Everything a worker reported is shown as plain text.
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { Dialog } from "radix-ui";
 import { CheckIcon, CopyIcon, DownloadIcon, HammerIcon, PencilIcon, PlusIcon, XIcon } from "lucide-react";
-import { useApi, useQuery } from "../../api/client";
-import type { BuildEnv, BuildSummary, BuildTask, BuildTaskDetail, Capabilities, EnvKind, Requires, TaskFilter, TaskState } from "../../api/types";
+import { useApi, usePagedQuery, useQuery } from "../../api/client";
+import type { BuildEnv, BuildSummary, BuildTask, BuildTaskDetail, Capabilities, EnvKind, Requires, TaskBatch, TaskFilter, TaskState } from "../../api/types";
 import type { FeatureModule, ViewProps } from "../../registry/types";
 import { ago, nowMs, num, span } from "../../lib/format";
-import { usePoll } from "../../lib/usePoll";
 import { useUser } from "../../shell/UserContext";
 import { Badge, type Tone } from "../../ui/Badge";
 import { Button } from "../../ui/Button";
 import { RefLink } from "../../ui/RefLink";
 import { cn } from "../../ui/cn";
 import { Block, ConfirmButton, ErrorLine, Page, selectCls, TextInput, useUrlState, useWrite } from "../admin/parts";
+import { useNow } from "../../lib/useNow";
 
 const STATE_TONE: Record<TaskState, Tone> = { queued: "neutral", claimed: "accent", running: "accent", done: "ok", failed: "bad", cancelled: "neutral", lost: "bad" };
 const STATE_LABEL: Record<TaskState, string> = { queued: "Queued", claimed: "Starting", running: "Running", done: "Done", failed: "Failed", cancelled: "Cancelled", lost: "Lost" };
@@ -113,6 +113,7 @@ function EditEnv({ e, onDone }: { e: BuildEnv; onDone: () => void }) {
 }
 
 function EnvCard({ e, operator }: { e: BuildEnv; operator: boolean }) {
+  useNow();
   const api = useApi();
   const write = useWrite();
   const [editing, setEditing] = useState(false);
@@ -224,11 +225,11 @@ function AddEnv({ onDone }: { onDone: () => void }) {
   );
 }
 
-const useEnvs = () => useQuery<BuildEnv[]>("envs", (a) => a.envs.list());
+// "Online" ages out of last_seen_at with no database write, so the list also refreshes on a timer.
+const useEnvs = () => useQuery<BuildEnv[]>("envs", (a) => a.envs.list(), { pollMs: 30_000 });
 
 function EnvsPanel() {
   const q = useEnvs();
-  usePoll(q.refetch, 5000);
   const operator = useUser().role === "operator";
   const [adding, setAdding] = useState(false);
   const free = (q.data ?? []).filter((e) => e.enabled && e.online && !e.pausedReason).reduce((s, e) => s + Math.max(0, e.slots - e.running), 0);
@@ -267,37 +268,54 @@ function EnvsPanel() {
 // ---- tasks -------------------------------------------------------------------------
 
 const duration = (t: BuildTask) => (t.startedAt ? span((t.endedAt ? Date.parse(t.endedAt) : nowMs()) - Date.parse(t.startedAt)) : "–");
-const sha = (t: { headSha: string }) => t.headSha.slice(0, 8);
+const sha = (t: BuildTask) => (t.batch?.commitSha ?? t.headSha).slice(0, 8);
+const gh = (path: string) => `https://github.com/${path}`;
+const extLink = "text-accent-ink hover:underline";
+
+function CommitLink({ href, sha: full, stop, className }: { href: string | null; sha: string; stop?: boolean; className?: string }) {
+  if (!href) return <span className={cn("code", className)}>{full}</span>;
+  return (
+    <a href={href} target="_blank" rel="noopener noreferrer" title="Open on GitHub" className={cn("code", extLink, className)} onClick={stop ? (e) => e.stopPropagation() : undefined}>
+      {full}
+    </a>
+  );
+}
+
+/** Branch name of an integration batch; a link once the batch's fork is known. */
+function BatchBranch({ b, stop }: { b: TaskBatch; stop?: boolean }) {
+  const cls = "font-mono text-xs [overflow-wrap:anywhere]";
+  return b.fork ? (
+    <a href={gh(`${b.fork}/tree/${b.branch}`)} target="_blank" rel="noopener noreferrer" title="Open the branch on GitHub" className={cn(cls, extLink)} onClick={stop ? (e) => e.stopPropagation() : undefined}>
+      {b.branch}
+    </a>
+  ) : (
+    <span className={cn(cls, "text-ink/70")}>{b.branch}</span>
+  );
+}
+
+/** What a task builds: the batch and its PRs, a baseline of the default branch, one PR, or only the repo. */
+function TaskSource({ t, stop }: { t: BuildTask; stop?: boolean }) {
+  if (t.batch) {
+    return (
+      <span className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5">
+        <span className="text-xs font-medium">Integration batch</span>
+        <BatchBranch b={t.batch} stop={stop} />
+        {t.batch.prs.map((n) => <RefLink key={n} repo={t.repo} number={n} kind="pr" stop={stop} className="text-xs" />)}
+      </span>
+    );
+  }
+  if (t.baseline) return <span className="text-xs"><span className="font-medium">Baseline build</span> of <span className="code">{t.baseline.branch ?? t.repo}</span> <span className="text-ink/50">({t.repo})</span></span>;
+  return (
+    <>
+      {t.number ? <RefLink repo={t.repo} number={t.number} kind="pr" stop={stop} className="text-xs" /> : <span className="code text-xs">{t.repo}</span>}
+      <span className="ml-2 text-xs text-ink/50 max-md:hidden">{t.step}</span>
+    </>
+  );
+}
 
 function useTasks(filter: Omit<TaskFilter, "cursor">) {
-  const api = useApi();
-  const key = JSON.stringify(filter);
-  const [rows, setRows] = useState<BuildTask[]>([]);
-  const [cursor, setCursor] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string>();
-  const seq = useRef(0);
-  const load = useCallback(
-    (from: string | null, replace: boolean) => {
-      const mine = ++seq.current;
-      setLoading(true);
-      api.tasks.list({ ...JSON.parse(key), cursor: from ?? undefined }).then(
-        (p) => {
-          if (mine !== seq.current) return;
-          setRows((r) => (replace ? p.tasks : [...r, ...p.tasks]));
-          setCursor(p.next);
-          setError(undefined);
-          setLoading(false);
-        },
-        (e: Error) => mine === seq.current && (setError(e.message), setLoading(false)),
-      );
-    },
-    [api, key],
-  );
-  useEffect(() => load(null, true), [load]);
-  useEffect(() => api.subscribe(() => load(null, true)), [api, load]);
-  usePoll(() => load(null, true), 8000);
-  return { rows, loading, error, more: cursor !== null, loadMore: () => load(cursor, false) };
+  const q = usePagedQuery(`tasks:${JSON.stringify(filter)}`, (api, cursor) => api.tasks.list({ ...filter, cursor }), (p) => p.next);
+  return { rows: q.pages?.flatMap((p) => p.tasks) ?? [], loading: q.loading || q.loadingMore, error: q.error?.message, more: q.hasMore, loadMore: q.loadMore };
 }
 
 function Filters({ f, update }: { f: Record<string, string | undefined>; update: (p: Record<string, string | null>) => void }) {
@@ -329,6 +347,7 @@ function Tasks({ selected }: { selected?: number }) {
   const { state: f, update } = useUrlState();
   const nav = useNavigate();
   const t = useTasks({ state: f.state as TaskFilter["state"], env: f.env, repo: f.repo, limit: 50 });
+  useNow(t.rows.some((r) => ACTIVE.includes(r.state)) ? 1000 : undefined);
   return (
     <Block flush title="Recent tasks" aside="newest first">
       <Filters f={f} update={update} />
@@ -352,9 +371,8 @@ function Tasks({ selected }: { selected?: number }) {
                   {ago(r.queuedAt, true)}
                   <span className="max-md:hidden"> ago</span>
                 </td>
-                <td className="whitespace-nowrap px-3">
-                  {r.number ? <RefLink repo={r.repo} number={r.number} kind="pr" stop className="text-xs" /> : <span className="code text-xs">{r.repo}</span>}
-                  <span className="ml-2 text-xs text-ink/50 max-md:hidden">{r.step}</span>
+                <td className={cn("px-3", r.batch ? "py-1.5" : "whitespace-nowrap")}>
+                  <TaskSource t={r} stop />
                 </td>
                 <td className="code px-3 text-xs max-md:hidden">{sha(r)}</td>
                 <td className="whitespace-nowrap px-3 text-ink/70 max-md:hidden">{r.envLabel ?? "–"}</td>
@@ -385,7 +403,7 @@ function DetailBody({ id }: { id: number }) {
   const api = useApi();
   const write = useWrite();
   const q = useQuery<BuildTaskDetail>(`task-${id}`, (a) => a.tasks.get(id));
-  usePoll(q.refetch, 5000);
+  useNow(q.data && ACTIVE.includes(q.data.state) ? 1000 : undefined);
   const operator = useUser().role === "operator";
   const t = q.data;
   if (!t) return <div className="p-4">{q.error ? <ErrorLine error={q.error.message} /> : <span className="text-sm text-ink/50">Loading.</span>}</div>;
@@ -402,8 +420,29 @@ function DetailBody({ id }: { id: number }) {
       </div>
       <ErrorLine error={write.error} />
       <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
-        <dt className="text-ink/55">Source</dt>
-        <dd>{t.number ? <RefLink repo={t.repo} number={t.number} kind="pr" /> : <span className="code">{t.repo}</span>} <span className="code text-xs text-ink/50">{t.headSha}</span></dd>
+        {t.batch ? (
+          <>
+            <dt className="text-ink/55">Source</dt>
+            <dd className="min-w-0"><span className="font-medium">Integration batch</span> <BatchBranch b={t.batch} /></dd>
+            <dt className="text-ink/55">Pull requests</dt>
+            <dd className="flex min-w-0 flex-wrap gap-x-2">{t.batch.prs.map((n) => <RefLink key={n} repo={t.repo} number={n} kind="pr" />)}</dd>
+            <dt className="text-ink/55">Integration commit</dt>
+            {/* The commit exists only on the fork the branch was pushed to; without it there is no link. */}
+            <dd className="min-w-0 break-all"><CommitLink href={t.batch.fork ? gh(`${t.batch.fork}/commit/${t.batch.commitSha}`) : null} sha={t.batch.commitSha} className="text-xs" /></dd>
+            <dt className="text-ink/55">Base</dt>
+            <dd className="min-w-0 break-all"><CommitLink href={gh(`storytold/${t.repo}/commit/${t.batch.baseSha}`)} sha={t.batch.baseSha} className="text-xs" /></dd>
+          </>
+        ) : t.baseline ? (
+          <>
+            <dt className="text-ink/55">Source</dt>
+            <dd className="min-w-0 break-all"><span className="font-medium">Baseline build</span> of <span className="code">{t.baseline.branch ?? t.repo}</span> at <CommitLink href={gh(`storytold/${t.repo}/commit/${t.headSha}`)} sha={t.headSha} className="text-xs" /></dd>
+          </>
+        ) : (
+          <>
+            <dt className="text-ink/55">Source</dt>
+            <dd>{t.number ? <RefLink repo={t.repo} number={t.number} kind="pr" /> : <span className="code">{t.repo}</span>} <span className="code text-xs text-ink/50">{t.headSha}</span></dd>
+          </>
+        )}
         <dt className="text-ink/55">Needs</dt>
         <dd>{requiresText(t.requires)}</dd>
         <dt className="text-ink/55">Environment</dt>
@@ -414,6 +453,16 @@ function DetailBody({ id }: { id: number }) {
         <dd className="num">{duration(t)}</dd>
         <dt className="text-ink/55">Warm build</dt>
         <dd>{t.warm ? <span>{t.warm.role === "build" ? "fills" : "uses"} cache <span className="code text-xs">{t.warm.key}</span></span> : "none"}</dd>
+        <dt className="text-ink/55">Image</dt>
+        <dd>{t.sandbox ? <span className="code text-xs break-all">{t.sandbox.image}</span> : "not reported"}</dd>
+        {t.sandbox && (
+          <>
+            <dt className="text-ink/55">CI parity</dt>
+            <dd className="text-xs">
+              {t.sandbox.packages.length} packages; craft-fonts <span className="code">{t.sandbox.craftFontsRef?.slice(0, 12) ?? "none"}</span>; craft-i18n <span className="code">{t.sandbox.craftI18nRev?.slice(0, 12) ?? "none"}</span>
+            </dd>
+          </>
+        )}
         <dt className="text-ink/55">Patch</dt>
         <dd className="num">{t.patchBytes ? `${num(t.patchBytes)} bytes applied before the steps` : "none"}</dd>
         {t.heartbeatAt && active && (
@@ -551,8 +600,7 @@ function PhoneEnvs(props: ViewProps) {
 
 /** Queued and running tasks and free slots in the Verify stage's panel (slot flow.panel). */
 function FlowVerify({ params }: ViewProps) {
-  const q = useQuery<BuildSummary>("build-summary", (a) => a.tasks.summary());
-  usePoll(q.refetch, 5000);
+  const q = useQuery<BuildSummary>("build-summary", (a) => a.tasks.summary(), { pollMs: 30_000 });
   if (params.node !== "verify") return null;
   const s = q.data;
   return (

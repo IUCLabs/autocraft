@@ -17,9 +17,15 @@ if (cmd === "ps") {
   if (existsSync(f)) process.stdout.write(readFileSync(f, "utf8"));
 } else if (cmd === "kill") {
   writeFileSync(join(dir, `killed-${argv[1]}`), "");
+} else if (cmd === "image") {
+  // image exists TAG: succeeds once `build --tag TAG` has run
+  process.exitCode = existsSync(join(dir, `image-${argv[2].replaceAll("/", "_")}`)) ? 0 : 1;
+} else if (cmd === "build") {
+  const tag = argv[argv.indexOf("--tag") + 1];
+  writeFileSync(join(dir, `image-${tag.replaceAll("/", "_")}`), readFileSync(argv[argv.indexOf("--file") + 1], "utf8"));
 } else if (cmd === "run") {
   const name = argv[argv.indexOf("--name") + 1];
-  const img = argv.findIndex((a) => a.startsWith("registry.test/"));
+  const img = argv.findIndex((a) => a.startsWith("registry.test/") || a.startsWith("craft-sandbox/"));
   const ops = argv.slice(img + 1);
   const mounts = argv.flatMap((a, i) => (argv[i - 1] === "--mount" ? [a] : []));
   const outMount = mounts.find((m) => m.includes("target=/out"));

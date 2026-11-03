@@ -18,6 +18,7 @@ import { Logo } from "../ui/Logo";
 import { Badge, type Tone } from "../ui/Badge";
 import { cn } from "../ui/cn";
 import { useApi, useQuery } from "../api/client";
+import { useLiveStatus, type LiveStatus } from "../api/live";
 import { num } from "../lib/format";
 
 // Mockup builds only; a normal build drops this branch and the fixture data with it.
@@ -71,6 +72,7 @@ export function AppShell() {
         <header className="flex h-12 shrink-0 items-center gap-1 border-b border-line bg-bg pl-4 pr-1.5">
           <Wordmark />
           <div className="flex-1" />
+          <LiveDot />
           <RoleChip />
           <button aria-label="Search" onClick={() => setSearchOpen(true)} className="flex size-11 items-center justify-center text-ink/70">
             <SearchIcon className="text-[18px]" />
@@ -132,6 +134,7 @@ export function AppShell() {
           <div className="mx-auto w-full max-w-[440px]">
             <SearchBox />
           </div>
+          <LiveDot />
           <LiveCounters />
           <RoleChip />
           <ThemeSwitch theme={theme} setTheme={setTheme} />
@@ -149,6 +152,18 @@ function RouteView({ route }: { route: RouteDef }) {
   const user = useUser();
   if (route.permission && !can(user, route.permission)) return <div className="p-8 text-ink/60">You can't open this page.</div>;
   return <Workspace view={route.view} props={{ params, user }} />;
+}
+
+const LIVE_DOT: Record<LiveStatus, [label: string, color: string]> = {
+  open: ["Live", "bg-ok"],
+  connecting: ["Reconnecting", "bg-warn"],
+  down: ["Offline", "bg-bad"],
+};
+
+/** The state of the server's event stream, as a colour and a tooltip. */
+function LiveDot() {
+  const [label, color] = LIVE_DOT[useLiveStatus()];
+  return <span role="img" aria-label={label} title={label} className={cn("inline-block size-2 shrink-0 rounded-full", color)} />;
 }
 
 function Wordmark() {

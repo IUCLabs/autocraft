@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { useApi, useQuery } from "../../api/client";
+import { useApi, usePagedQuery } from "../../api/client";
 import type { Decision, DecisionFilter, DecisionKind } from "../../api/types";
 
 export const KIND_LABEL: Record<DecisionKind, string> = {
@@ -37,25 +37,13 @@ export function useDecisionFilter() {
   return { filter, update, search: sp.toString() };
 }
 
-/** The first page of the list; `loadMore` appends the next one. A refetch starts over from the first page. */
+/** The loaded pages of the list; `loadMore` appends the next one. A change refetches every loaded page. */
 export function useDecisionList() {
   const { filter, search } = useDecisionFilter();
-  const api = useApi();
-  const q = useQuery(`decisions?${search}`, (a) => a.decisions.list(filter));
-  const [extra, setExtra] = useState<{ decisions: Decision[]; next: string | null }>();
-  const [busy, setBusy] = useState(false);
-  useEffect(() => setExtra(undefined), [q.data]);
-  const next = extra ? extra.next : (q.data?.next ?? null);
-  const loadMore = useCallback(() => {
-    if (!next || busy) return;
-    setBusy(true);
-    api.decisions.list({ ...filter, after: next }).then(
-      (p) => setExtra((e) => ({ decisions: [...(e?.decisions ?? []), ...p.decisions], next: p.next })),
-      () => undefined,
-    ).finally(() => setBusy(false));
-  }, [api, filter, next, busy]);
-  const data = q.data && { ...q.data, decisions: [...q.data.decisions, ...(extra?.decisions ?? [])] };
-  return { ...q, data, hasMore: next !== null, loadMore, loadingMore: busy };
+  const q = usePagedQuery(`decisions?${search}`, (a, after) => a.decisions.list({ ...filter, after }), (p) => p.next);
+  const last = q.pages?.[q.pages.length - 1];
+  const data = last && { ...last, decisions: q.pages!.flatMap((p) => p.decisions) };
+  return { data, error: q.error, loading: q.loading, refetch: q.refetch, hasMore: q.hasMore, loadMore: q.loadMore, loadingMore: q.loadingMore };
 }
 
 /** Kind, then repo, then oldest first: the order the list shows and j/k walks. */

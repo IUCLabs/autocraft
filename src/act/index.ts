@@ -168,7 +168,7 @@ export function pending(db: DatabaseSync, repo: string): Target[] {
 
 type Live = { id: string; type: "Issue" | "PullRequest"; state: string; head: string | null };
 
-const READ = `query($name: String!, $n: Int!) {
+export const READ = `query($name: String!, $n: Int!) {
   repository(owner: "${ORG}", name: $name) {
     issueOrPullRequest(number: $n) {
       __typename
@@ -177,11 +177,11 @@ const READ = `query($name: String!, $n: Int!) {
     }
   }
 }`;
-const COMMENT = `mutation($id: ID!, $body: String!) {
+export const COMMENT = `mutation($id: ID!, $body: String!) {
   addComment(input: { subjectId: $id, body: $body }) { commentEdge { node { url } } }
 }`;
-const CLOSE_ISSUE = `mutation($id: ID!) { closeIssue(input: { issueId: $id }) { clientMutationId } }`;
-const CLOSE_PR = `mutation($id: ID!) { closePullRequest(input: { pullRequestId: $id }) { clientMutationId } }`;
+export const CLOSE_ISSUE = `mutation($id: ID!) { closeIssue(input: { issueId: $id }) { clientMutationId } }`;
+export const CLOSE_PR = `mutation($id: ID!) { closePullRequest(input: { pullRequestId: $id }) { clientMutationId } }`;
 
 async function readLive(q: Querier, repo: string, n: number): Promise<Live | null> {
   const d = await q.query(READ, { name: repo, n }) as { repository?: { issueOrPullRequest?: { __typename: string; id: string; state: string; headRefOid?: string } | null } };

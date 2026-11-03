@@ -1,5 +1,6 @@
 // Client of the coordinator's worker API. The key goes only into the
 // Authorization header; errors carry the path and status, never the key.
+import type { SandboxInfo } from "./environment.ts";
 import type { Capabilities, ClaimResponse, StepResult } from "./types.ts";
 
 export class ApiError extends Error {
@@ -56,7 +57,7 @@ export class WorkerApi {
   upload(id: number, name: string, body: Buffer, contentType: string) {
     return this.#call<object>("PUT", `/worker/tasks/${id}/artifacts/${encodeURIComponent(name)}`, body, contentType);
   }
-  finish(id: number, results: StepResult[], summary: string) {
-    return this.#call<object>("POST", `/worker/tasks/${id}/finish`, { results, summary });
+  finish(id: number, results: StepResult[], summary: string, environment?: SandboxInfo) {
+    return this.#call<object>("POST", `/worker/tasks/${id}/finish`, { results, summary, ...(environment ? { environment } : {}) });
   }
 }

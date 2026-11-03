@@ -1,4 +1,6 @@
-import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
+import { keepPreviousData, useInfiniteQuery, useQuery as useTanstackQuery } from "@tanstack/react-query";
+import { createContext, useCallback, useContext } from "react";
+import { topicsFor } from "./topics";
 import type {
   ReleaseAction,
   AccessOverview,
@@ -215,27 +217,59 @@ export interface Query<T> {
 }
 
 /**
- * Minimal data hook: runs `fn` when `key` changes and after every API write.
- * Keeps the previous data while a refetch is in flight so lists don't flash.
+ * A server view in the shared cache. `key` identifies the view (it must contain every input of `fn`);
+ * the topics it reads come from api/topics.ts, and the server's change events refetch it. The
+ * previous data stays while a refetch is in flight so lists don't flash. `pollMs` is for views that
+ * change without a database write (a log file being written); it runs only while the tab is visible.
  */
-export function useQuery<T>(key: string, fn: (api: Api) => Promise<T>): Query<T> {
+export function useQuery<T>(key: string, fn: (api: Api) => Promise<T>, opts: { pollMs?: number | false | ((data: T | undefined) => number | false) } = {}): Query<T> {
   const api = useApi();
-  const [state, setState] = useState<{ data?: T; error?: Error; loading: boolean }>({ loading: true });
-  const fnRef = useRef(fn);
-  fnRef.current = fn;
-  const seq = useRef(0);
+  const q = useTanstackQuery<T, Error>({
+    queryKey: [key],
+    queryFn: () => fn(api),
+    meta: { topics: topicsFor(key) },
+    placeholderData: keepPreviousData,
+    refetchInterval: typeof opts.pollMs === "function" ? (query) => (opts.pollMs as (d: T | undefined) => number | false)(query.state.data) : opts.pollMs || false,
+  });
+  const { refetch } = q;
+  const again = useCallback(() => void refetch(), [refetch]);
+  return { data: q.data, error: q.error ?? undefined, loading: q.isFetching, refetch: again };
+}
 
-  const run = useCallback(() => {
-    const mine = ++seq.current;
-    setState((s) => ({ ...s, loading: true }));
-    fnRef.current(api).then(
-      (data) => mine === seq.current && setState({ data, loading: false }),
-      (error: Error) => mine === seq.current && setState((s) => ({ ...s, error, loading: false })),
-    );
-  }, [api]);
+export interface PagedQuery<P> {
+  /** Every loaded page, first to last; undefined until the first one arrives. */
+  pages?: P[];
+  error?: Error;
+  /** True while the first page loads or a refetch of the loaded pages runs. */
+  loading: boolean;
+  hasMore: boolean;
+  loadingMore: boolean;
+  loadMore: () => void;
+  refetch: () => void;
+}
 
-  useEffect(run, [run, key]);
-  useEffect(() => api.subscribe(run), [api, run]);
-
-  return { ...state, refetch: run };
+/**
+ * A cursor-paged list in the shared cache. A change event refetches every loaded page in order, so
+ * "Show more" keeps its place. `next` gives the cursor of the page after `page`, or null on the last one.
+ */
+export function usePagedQuery<P>(key: string, fn: (api: Api, cursor: string | undefined) => Promise<P>, next: (page: P) => string | null | undefined): PagedQuery<P> {
+  const api = useApi();
+  const q = useInfiniteQuery<P, Error, { pages: P[] }, string[], string | undefined>({
+    queryKey: [key],
+    queryFn: ({ pageParam }) => fn(api, pageParam),
+    initialPageParam: undefined,
+    getNextPageParam: (last) => next(last) ?? undefined,
+    meta: { topics: topicsFor(key) },
+    placeholderData: keepPreviousData,
+  });
+  const { refetch, fetchNextPage } = q;
+  return {
+    pages: q.data?.pages,
+    error: q.error ?? undefined,
+    loading: q.isFetching && !q.isFetchingNextPage,
+    hasMore: !!q.hasNextPage,
+    loadingMore: q.isFetchingNextPage,
+    loadMore: useCallback(() => void fetchNextPage(), [fetchNextPage]),
+    refetch: useCallback(() => void refetch(), [refetch]),
+  };
 }

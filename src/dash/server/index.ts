@@ -14,6 +14,7 @@ import { ImageIndex } from "./image-index.ts";
 import { visibleTo } from "../api/visible.ts";
 import { allowedImage, ImageProxy, imageTokenSource, registerImageRepos } from "./images.ts";
 import { TokenBucket } from "./limits.ts";
+import { LiveHub, type LiveOptions } from "./live.ts";
 import { FakeProvider, providerFor, type GithubUser, type Provider, type Tokens } from "./provider.ts";
 import { createSession, deleteSession, loadSession, makeUser, pruneExpired, SESSION_TTL, type Session } from "./sessions.ts";
 import { esc, HttpError, parseCookies, plainPage, RateLimiter, safeReturnTo } from "./util.ts";
@@ -48,6 +49,7 @@ export type AppOptions = {
   provider?: Provider;
   routes?: Route[];          // default: the JSON API
   images?: ImageProxy;       // default: fetches with global fetch and the bot's gh token
+  live?: LiveOptions;        // GET /api/live timing; defaults suit production
 };
 
 type Compiled = Route & { parts: string[] };
@@ -147,6 +149,7 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
   const expensiveGets = new TokenBucket(20, 0.5);
   const isExpensive = (path: string, q: URLSearchParams) =>
     path === "/api/queue" || path === "/api/queue/batches" || path.startsWith("/api/contributors") || (path === "/api/search" && q.get("mode") === "semantic");
+  const live = new LiveHub(db, opts.live);
   const callbackUrl = `${config.baseUrl ?? ""}/auth/callback`;
   let lastPrune = 0;
 
@@ -245,7 +248,24 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
       user: makeUser(db, box, provider, session, writes),
       csrf: session.csrf, nonce,
     };
-    return out(await route.handler(db, r));
+    const res2 = await route.handler(db, r);
+    // The writer sees its own change at once; other processes' writes arrive on the watcher's next read.
+    if (writes) live.poke();
+    return out(res2);
+  }
+
+  // GET /api/live: same session as /api, but no rate limit and no request timeout.
+  function handleLive(req: IncomingMessage, res: ServerResponse, nonce: string, session: Session): void {
+    if (live.full) return send(res, nonce, apiError(503, "too many live connections"));
+    req.socket.setTimeout(0);
+    req.socket.setNoDelay(true);
+    const cookieId = parseCookies(req.headers.cookie).get(SESSION_COOKIE);
+    const headers = secure({
+      "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-cache, no-transform", "x-accel-buffering": "no",
+      [CSRF_HEADER]: session.csrf,
+    }, "default-src 'none'");
+    res.writeHead(200, headers);
+    live.add(res, () => loadSession(db, cookieId) !== null);
   }
 
   async function auth(req: IncomingMessage, url: URL, nonce: string, cookies: Map<string, string>): Promise<{ r: Res; cookies?: string[] }> {
@@ -365,6 +385,7 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
         if (wantsPage) return send(res, nonce, { redirect: `/auth/signin?${new URLSearchParams({ return_to: url.pathname + url.search })}` });
         return send(res, nonce, { status: 401, json: { error: "sign-in required" } });
       }
+      if (method === "GET" && url.pathname === "/api/live") return handleLive(req, res, nonce, session);
       if (url.pathname.startsWith("/api/")) return await handleApi(req, res, url, nonce, session);
       if (url.pathname === "/img") return await sendImage(req, res, url, session);
       // Every other address belongs to the React app, which routes on the client.
@@ -459,7 +480,7 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
     return sendFile(res, "text/html; charset=utf-8", "no-store", APP_CSP, index);
   }
 
-  return { handle, routes: opts.routes, provider };
+  return { handle, routes: opts.routes, provider, live, close: () => live.close() };
 }
 
 export async function startServer(opts: AppOptions): Promise<{ server: Server; url: string; app: ReturnType<typeof createApp>; close(): Promise<void> }> {
@@ -475,6 +496,7 @@ export async function startServer(opts: AppOptions): Promise<{ server: Server; u
     server, app,
     url: `http://${host}:${addr.port}`,
     close: () => new Promise<void>((resolve) => {
+      app.close();
       server.closeAllConnections();
       server.close(() => resolve());
     }),

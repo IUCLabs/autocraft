@@ -30,7 +30,7 @@ type Detail = "full" | "light";
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Node = any;
 
-const REPOS_QUERY = `
+export const REPOS_QUERY = `
 query($after: String) {
   rateLimit { cost remaining resetAt }
   organization(login: "${ORG}") {
@@ -45,18 +45,18 @@ query($after: String) {
   }
 }`;
 
-const COMMON = `number title body url author { login } authorAssociation createdAt updatedAt closedAt state
+export const COMMON = `number title body url author { login } authorAssociation createdAt updatedAt closedAt state
   labels(first: 10) { nodes { name } } assignees(first: 5) { nodes { login } }
   commentCount: comments { totalCount }`;
-const COMMENTS = "comments(last: 20) { nodes { id author { login } createdAt body } }";
-const PR_EXTRA = `isDraft mergedAt mergedBy { login } additions deletions changedFiles
+export const COMMENTS = "comments(last: 20) { nodes { id author { login } createdAt body } }";
+export const PR_EXTRA = `isDraft mergedAt mergedBy { login } additions deletions changedFiles
   headRefName headRefOid headRepository { nameWithOwner } baseRefName
   closingIssuesReferences(first: 10) { nodes { number } }`;
-const PR_FULL = `maintainerCanModify mergeable reviewDecision
+export const PR_FULL = `maintainerCanModify mergeable reviewDecision
   commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }
   reviews(last: 10) { nodes { id author { login } createdAt body state commit { oid } } }`;
 
-function itemsQuery(kind: Kind, detail: Detail): string {
+export function itemsQuery(kind: Kind, detail: Detail): string {
   const [conn, stateType] = kind === "issue" ? ["issues", "IssueState"] : ["pullRequests", "PullRequestState"];
   let fields = `${COMMON} ${kind === "issue" ? "stateReason" : PR_EXTRA}`;
   if (detail === "full") fields += ` ${COMMENTS}${kind === "pr" ? ` ${PR_FULL}` : ""}`;
@@ -324,7 +324,7 @@ const FULL_KEEP = 2500;
 const META_REFRESH_MS = 15 * 60 * 1000;
 const LOCK_STALE_MS = 6 * 3600 * 1000;
 
-const SEARCH_QUERY = `
+export const SEARCH_QUERY = `
 query($q: String!, $first: Int!, $after: String) {
   rateLimit { cost remaining resetAt }
   search(type: ISSUE, query: $q, first: $first, after: $after) {
@@ -558,7 +558,7 @@ async function syncPerRepo(db: DatabaseSync, client: Querier, opts: SyncOpts): P
 }
 
 // One item by number, any state, for the daily reconcile. A deleted or transferred item comes back null.
-const ONE_QUERY = `
+export const ONE_QUERY = `
 query($name: String!, $number: Int!) {
   rateLimit { cost remaining resetAt }
   repository(owner: "${ORG}", name: $name) {

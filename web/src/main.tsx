@@ -1,4 +1,5 @@
-import { StrictMode, useEffect, useState } from "react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { StrictMode, useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { BrowserRouter } from "react-router-dom";
 import { Tooltip } from "radix-ui";
@@ -6,6 +7,7 @@ import { disableGlobalCursorStyles } from "react-resizable-panels";
 import "./styles/app.css";
 import { ApiContext, type Api } from "./api/client";
 import { createHttpApi } from "./api/http";
+import { eventSource, LiveProvider, mockSource } from "./api/live";
 import type { User } from "./api/types";
 import { UserContext } from "./shell/UserContext";
 import { AppShell } from "./shell/AppShell";
@@ -20,7 +22,12 @@ disableGlobalCursorStyles();
 const loadApi = async (): Promise<Api> =>
   import.meta.env.VITE_MOCK === "1" ? (await import("./api/mock/mockApi")).createMockApi() : createHttpApi();
 
+// The cache holds server views only and is never written locally. Retries are off: a failed view
+// shows its error, and the next change event or focus refetches it.
+const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
 function App({ api }: { api: Api }) {
+  const source = useMemo(() => (import.meta.env.VITE_MOCK === "1" ? mockSource(api.subscribe) : eventSource()), [api]);
   const [user, setUser] = useState<User | null>(null);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => void api.me().then(setUser, (e: Error) => setError(e.message)), [api]);
@@ -28,13 +35,17 @@ function App({ api }: { api: Api }) {
   if (!user) return null;
   return (
     <ApiContext.Provider value={api}>
-      <UserContext.Provider value={user}>
-        <Tooltip.Provider delayDuration={300}>
-          <BrowserRouter>
-            <AppShell />
-          </BrowserRouter>
-        </Tooltip.Provider>
-      </UserContext.Provider>
+      <QueryClientProvider client={queryClient}>
+        <LiveProvider source={source}>
+          <UserContext.Provider value={user}>
+            <Tooltip.Provider delayDuration={300}>
+              <BrowserRouter>
+                <AppShell />
+              </BrowserRouter>
+            </Tooltip.Provider>
+          </UserContext.Provider>
+        </LiveProvider>
+      </QueryClientProvider>
     </ApiContext.Provider>
   );
 }

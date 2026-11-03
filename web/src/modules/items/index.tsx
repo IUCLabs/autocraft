@@ -13,6 +13,7 @@ import { cn } from "../../ui/cn";
 import { ago, num } from "../../lib/format";
 import { useIsPhone } from "../../shell/useMedia";
 import { Block, ErrorLine, Page, Pager, selectCls, TextInput, useUrlState } from "../admin/parts";
+import { useNow } from "../../lib/useNow";
 
 const PAGE = 50;
 const LABELS: TypeLabel[] = ["bugfix", "performance", "missing feature", "small extra", "plugin candidate", "infra"];
@@ -306,6 +307,7 @@ function Flags({ flags }: { flags: string[] }) {
 }
 
 function Table({ rows }: { rows: ItemListRow[] }) {
+  useNow();
   return (
     <div className="overflow-x-auto">
       <table className="w-full min-w-[1000px] border-collapse text-sm">
@@ -356,6 +358,7 @@ function Table({ rows }: { rows: ItemListRow[] }) {
 }
 
 function Cards({ rows }: { rows: ItemListRow[] }) {
+  useNow();
   return (
     <ul>
       {rows.map((it) => (

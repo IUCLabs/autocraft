@@ -8,6 +8,7 @@ import { scrollToWorkflow } from "./Workflow";
 import { OpinionList } from "./parts";
 import { canAct } from "../../registry/permissions";
 import { ReviewBox } from "./ReviewBox";
+import { useNow } from "../../lib/useNow";
 
 /** Desktop side panel: everyone's comments (operators can select a suggestion in the Workflow box), then the comment thread. */
 export function ThreadPanel({ user }: ViewProps) {
@@ -50,6 +51,7 @@ export function ThreadPanel({ user }: ViewProps) {
 }
 
 export function Thread({ decisionId, compact }: { decisionId: string; compact?: boolean }) {
+  useNow();
   const { data } = useQuery(`thread:${decisionId}`, (a) => a.decisions.thread(decisionId));
   const { data: list } = useDecisionList();
   const d = list?.decisions.find((x) => x.id === decisionId);

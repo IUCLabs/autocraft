@@ -59,11 +59,13 @@ export function kindSetsOf(db: DatabaseSync, g: Group): KindSet[] {
   const get = db.prepare("SELECT number, kind, state, title, head_oid, embed_hash, comments_count FROM items WHERE repo = ? AND number = ?");
   // Left out: a rejected (closed, unmerged) PR; an item already closed as a duplicate, or whose pair decision is answered close (the act step closes it).
   const gone = db.prepare(`SELECT 1 FROM decisions WHERE kind = 'duplicate' AND repo = ? AND number = ? AND id LIKE '%:duplicate@%' AND answer = 'close'`);
+  // A member our own group Act closed can never become a kept item later.
+  const closedByUs = db.prepare("SELECT 1 FROM dupe_group_posts p JOIN dupe_groups g ON g.decision_id = p.decision_id WHERE g.repo = ? AND p.number = ? AND p.step = 'close' AND p.url IS NOT NULL");
   const reason = db.prepare("SELECT state_reason FROM items WHERE repo = ? AND number = ?");
   const members = g.members.map((n) => get.get(g.repo, n) as Member | undefined).filter((m): m is Member => {
     if (!m) return false;
     if (m.kind === "pr" && m.state === "CLOSED") return false;
-    if (gone.get(g.repo, m.number)) return false;
+    if (gone.get(g.repo, m.number) || closedByUs.get(g.repo, m.number)) return false;
     return (reason.get(g.repo, m.number) as { state_reason: string | null }).state_reason !== "DUPLICATE";
   });
   return (["pr", "issue"] as const).flatMap((kind) => {

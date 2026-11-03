@@ -11,6 +11,7 @@ import { useIsPhone } from "../../shell/useMedia";
 import { Block, ErrorLine, Page, SortTh, TextInput, useWrite } from "./parts";
 import { WriteBadges, maybe, synced } from "./repoParts";
 import { repoDetailView } from "./repoDetail";
+import { useNow } from "../../lib/useNow";
 
 type Show = "all" | "tracked" | "untracked";
 
@@ -73,6 +74,7 @@ function ReposView(_: ViewProps) {
 }
 
 function Table({ rows }: { rows: TrackedRepo[] }) {
+  useNow();
   const nav = useNavigate();
   return (
     <table className="w-full border-collapse text-sm">
@@ -109,6 +111,7 @@ function Table({ rows }: { rows: TrackedRepo[] }) {
 }
 
 function Cards({ rows }: { rows: TrackedRepo[] }) {
+  useNow();
   return (
     <ul>
       {rows.map((r) => (

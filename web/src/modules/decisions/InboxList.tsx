@@ -11,6 +11,7 @@ import { ago, ageDays } from "../../lib/format";
 import { RefLink } from "../../ui/RefLink";
 import { ClaimPill, KIND_ICON } from "./parts";
 import { KIND_LABEL, KINDS, localActions, ordered, useDecisionFilter, useDecisionList, useLocal, useSelection, useUndo } from "./state";
+import { useNow } from "../../lib/useNow";
 
 const SHORTCUTS: Command[] = [
   { id: "d-next", keys: "j", label: "Next decision", group: "Decisions" },
@@ -50,6 +51,7 @@ export function useInboxKeys(list: Decision[]) {
 }
 
 export function InboxList({ user }: ViewProps) {
+  useNow();
   const { data, loading, hasMore, loadMore, loadingMore } = useDecisionList();
   const { id, go } = useSelection();
   const loc = useLocal();
@@ -113,6 +115,7 @@ export function InboxList({ user }: ViewProps) {
 }
 
 function Row({ d, active, checked, mine, onOpen, activeRef }: { d: Decision; active: boolean; checked: boolean; mine?: string; onOpen: () => void; activeRef?: React.Ref<HTMLDivElement> }) {
+  useNow();
   const rec = d.options.find((o) => o.key === d.recommended);
   const old = ageDays(d.askedAt) >= 2;
   const opinions = d.opinions.length;

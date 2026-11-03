@@ -15,19 +15,9 @@ import { ago, num } from "../../lib/format";
 import { Block, ConfirmButton, ErrorLine, Page, useWrite, when } from "../admin/parts";
 import { AccountsPanel } from "../agents/accounts";
 import { PilotPanel, PipelineSwitch, StageLimits } from "./controls";
+import { useNow } from "../../lib/useNow";
 
 // ---- helpers -------------------------------------------------------------------
-
-/** Refetches every `ms` while `active`. */
-function usePoll(refetch: () => void, ms: number, active = true) {
-  const ref = useRef(refetch);
-  ref.current = refetch;
-  useEffect(() => {
-    if (!active) return;
-    const t = setInterval(() => ref.current(), ms);
-    return () => clearInterval(t);
-  }, [ms, active]);
-}
 
 const STATE_TONE: Record<JobState, Tone> = { queued: "neutral", running: "accent", done: "ok", failed: "bad", cancelled: "warn" };
 const STATE_LABEL: Record<JobState, string> = { queued: "Queued", running: "Running", done: "Done", failed: "Failed", cancelled: "Cancelled" };
@@ -81,6 +71,7 @@ function Stages({ o }: { o: PipelineOverview }) {
 }
 
 function SyncRuns({ runs, last }: { runs: SyncRun[]; last: string | null }) {
+  useNow();
   return (
     <Block flush title="Sync" aside={last ? `last finished ${ago(last, false)}; runs on its own timer` : "runs on its own timer"}>
       {runs.length === 0 ? (
@@ -122,8 +113,7 @@ function Jobs({ selected }: { selected?: number }) {
   const [state, setState] = useState<JobState | "">("");
   const [limit, setLimit] = useState(25);
   const q = useQuery(`pipeline-jobs:${state}:${limit}`, (a) => a.pipeline.jobs({ state: state || undefined, limit }));
-  const active = q.data?.jobs.some((j) => j.state === "queued" || j.state === "running") ?? false;
-  usePoll(q.refetch, active ? 3000 : 15000);
+  useNow(q.data?.jobs.some((j) => j.state === "running") ? 1000 : undefined);
   return (
     <Block
       flush
@@ -208,6 +198,7 @@ function Jobs({ selected }: { selected?: number }) {
 // ---- views -----------------------------------------------------------------------
 
 function RunnerLine({ o }: { o: PipelineOverview }) {
+  useNow();
   return (
     <span className="inline-flex items-center gap-1.5">
       <span className={cn("size-2 rounded-full", o.runner.alive ? "bg-ok" : "bg-bad")} aria-hidden />
@@ -219,9 +210,8 @@ function RunnerLine({ o }: { o: PipelineOverview }) {
 }
 
 function PipelineView({ params }: ViewProps) {
-  const q = useQuery("pipeline", (a) => a.pipeline.overview());
-  const busy = (q.data?.counts.running ?? 0) + (q.data?.counts.queued ?? 0) > 0;
-  usePoll(q.refetch, busy ? 4000 : 20000);
+  // "Runner alive" is the age of its heartbeat, which is not a change event, so this view also refetches slowly.
+  const q = useQuery("pipeline", (a) => a.pipeline.overview(), { pollMs: 30_000 });
   const o = q.data;
   const selected = params.id ? Number(params.id) : undefined;
   return (
@@ -257,10 +247,10 @@ function JobPanel({ params, user }: ViewProps) {
 
 function JobDetailView({ id, operator, back }: { id: number; operator: boolean; back?: boolean }) {
   const api = useApi();
-  const q = useQuery(`pipeline-job:${id}`, (a) => a.pipeline.job(id));
+  // The log tail is read from a file the job writes, which raises no change event: poll while the job runs.
+  const q = useQuery(`pipeline-job:${id}`, (a) => a.pipeline.job(id), { pollMs: (d) => (!d || d.state === "queued" || d.state === "running" ? 2000 : false) });
   const j = q.data;
-  const live = !j || j.state === "queued" || j.state === "running";
-  usePoll(q.refetch, 2000, live);
+  useNow(j && (j.state === "queued" || j.state === "running") ? 1000 : undefined);
   const write = useWrite();
   const logRef = useRef<HTMLPreElement>(null);
   useEffect(() => {

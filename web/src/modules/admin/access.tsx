@@ -11,6 +11,7 @@ import { Count } from "../../ui/Heading";
 import { ago } from "../../lib/format";
 import { useIsPhone } from "../../shell/useMedia";
 import { Block, ConfirmButton, ErrorLine, Page, Pager, ROLE_LABEL, ROLES, selectCls, SortTh, TextInput, useUrlState, useWrite, when } from "./parts";
+import { useNow } from "../../lib/useNow";
 
 const AUDIT_PAGE = 50;
 
@@ -184,6 +185,7 @@ function browser(ua: string | null): string {
 }
 
 function Sessions({ sessions }: { sessions: SessionInfo[] }) {
+  useNow();
   const api = useApi();
   const write = useWrite();
   const phone = useIsPhone();

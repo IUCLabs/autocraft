@@ -24,6 +24,7 @@ import { VectorIndex } from "../src/embed/vectors.ts";
 import type { Querier } from "../src/mirror.ts";
 import { selectCandidates as reviewCandidates } from "../src/review/candidates.ts";
 import { SCRATCH } from "./scratch.ts";
+import { validating } from "./gql.ts";
 
 mkdirSync(SCRATCH, { recursive: true });
 const dir = mkdtempSync(join(SCRATCH, "dupes-test-"));
@@ -249,7 +250,7 @@ describe("hold on later stages", () => {
 
 describe("act on close as duplicate", () => {
   const deps = (log: string[], closedOriginal = false): ActDeps => {
-    const querier: Querier = {
+    const querier: Querier = validating({
       spent: 0, remaining: 5000,
       async query(query: string, vars: object) {
         const v = vars as { n?: number; id?: string; body?: string };
@@ -258,7 +259,7 @@ describe("act on close as duplicate", () => {
         const state = v.n === 1 && closedOriginal ? "CLOSED" : "OPEN";
         return { repository: { issueOrPullRequest: { __typename: "Issue", id: `I${v.n}`, state } } };
       },
-    };
+    });
     return { querier, now: () => NOW };
   };
   const go = (db: DatabaseSync, d: ActDeps) => runAct(db, { repo: "app", dryRun: false }, () => {}, d);

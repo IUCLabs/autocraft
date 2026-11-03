@@ -35,6 +35,13 @@ export function groupDecisionsToAct(db: DatabaseSync, repo: string): Decision[] 
       AND g.applied_answer = d.answer AND d.answered_by IN (SELECT login FROM access WHERE role = 'operator') ORDER BY d.answered_at`).all(repo) as Decision[];
 }
 
+/** The decision's answer and the item's stored role and text are still what the run started from: an undo or a refresh in between changes them. */
+function unchanged(db: DatabaseSync, dec: Decision, item: Item): boolean {
+  const g = db.prepare(`SELECT 1 FROM decisions d JOIN dupe_groups g ON g.decision_id = d.id JOIN dupe_group_items gi ON gi.decision_id = d.id
+    WHERE d.id = ? AND d.answer = ? AND d.applied_at IS NULL AND g.applied_answer = ? AND gi.number = ? AND gi.role = ? AND gi.comment IS ?`).get(dec.id, dec.answer, dec.answer, item.number, item.role, item.comment);
+  return !!g;
+}
+
 const carryOf = (detail: string | null): string[] => {
   try {
     const v = (JSON.parse(detail ?? "null") as { carry?: unknown } | null)?.carry;
@@ -49,7 +56,7 @@ export async function actOnGroups(db: DatabaseSync, run: GroupRun): Promise<Grou
     db.prepare("INSERT OR IGNORE INTO dupe_group_posts (decision_id, number, step, url, at) VALUES (?, ?, ?, ?, ?)").run(id, n, step, url, run.at());
   const ref = (n: number) => `${run.repo}#${n}`;
 
-  for (const dec of groupDecisionsToAct(db, run.repo)) {
+  decisions: for (const dec of groupDecisionsToAct(db, run.repo)) {
     const items = db.prepare("SELECT number, kind, role, comment, detail FROM dupe_group_items WHERE decision_id = ? ORDER BY number").all(dec.id) as Item[];
     const closers = items.filter((i) => i.role === "close" && inPilot(db, run.repo, i.number));
     const details = items.find((i) => i.role === "keep" && i.kind === "issue" && i.comment && inPilot(db, run.repo, i.number));
@@ -67,9 +74,11 @@ export async function actOnGroups(db: DatabaseSync, run: GroupRun): Promise<Grou
     try {
       if (details && !posted.get(dec.id, details.number, "details")) {
         if (run.left() <= 0) return res;
+        if (!unchanged(db, dec, details)) { run.log(`  ${dec.id}: changed since the run started; left for the next run`); continue decisions; }
         const live = await run.io.live(details.number);
         if (!live || live.state !== "OPEN") skip(details.number, "details", "the kept issue is gone or closed; no details comment");
         else {
+          if (!unchanged(db, dec, details)) { run.log(`  ${dec.id}: changed since the run started; left for the next run`); continue decisions; }
           const url = await run.io.comment(live, details.comment!);
           record(dec.id, details.number, "details", url);
           audit(db, ACTOR, "act-comment", ref(details.number), { decision: dec.id, url, text: details.comment });
@@ -80,6 +89,7 @@ export async function actOnGroups(db: DatabaseSync, run: GroupRun): Promise<Grou
       for (const c of closers) {
         if (posted.get(dec.id, c.number, "close")) continue;
         if (run.left() <= 0) return res;
+        if (!unchanged(db, dec, c)) { run.log(`  ${dec.id}: changed since the run started; left for the next run`); continue decisions; }
         const live = await run.io.live(c.number);
         if (!live) { skip(c.number, "close", "GitHub returned no such item"); continue; }
         if (live.state !== "OPEN") { skip(c.number, "close", `already ${live.state.toLowerCase()} on GitHub`); continue; }
@@ -90,6 +100,7 @@ export async function actOnGroups(db: DatabaseSync, run: GroupRun): Promise<Grou
           run.log(`  ${ref(c.number)}: skipped for now: the head moved since the comparison`);
           continue;
         }
+        if (!unchanged(db, dec, c)) { run.log(`  ${dec.id}: changed since the run started; left for the next run`); continue decisions; }
         if (!c.comment) { res.failed.push({ ref: ref(c.number), reason: "the decision stores no comment for it" }); continue; }
         let url = (db.prepare("SELECT url FROM dupe_group_posts WHERE decision_id = ? AND number = ? AND step = 'comment'").get(dec.id, c.number) as { url: string | null } | undefined)?.url ?? null;
         if (url === null) {

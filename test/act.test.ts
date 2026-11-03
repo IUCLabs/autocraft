@@ -12,6 +12,7 @@ import { ask } from "../src/decisions.ts";
 import { connect } from "../src/db.ts";
 import type { Querier } from "../src/mirror.ts";
 import { SCRATCH } from "./scratch.ts";
+import { validating } from "./gql.ts";
 
 mkdirSync(SCRATCH, { recursive: true });
 const dir = mkdtempSync(join(SCRATCH, "act-test-"));
@@ -38,7 +39,7 @@ function fresh(): DatabaseSync {
 
 type Gh = { heads?: Map<number, string>; closed?: Set<number>; failClose?: Set<number> };
 function fakes(log: string[], f: Gh = {}): ActDeps {
-  const querier: Querier = {
+  const querier: Querier = validating({
     spent: 0, remaining: 5000,
     async query(query: string, vars: object) {
       const v = vars as { n?: number; id?: string; body?: string };
@@ -53,7 +54,7 @@ function fakes(log: string[], f: Gh = {}): ActDeps {
       const state = f.closed?.has(n) ? "CLOSED" : "OPEN";
       return { repository: { issueOrPullRequest: n === 1 ? { __typename: "Issue", id: "I1", state } : { __typename: "PullRequest", id: `P${n}`, state, headRefOid: f.heads?.get(n) ?? `sha${n}` } } };
     },
-  };
+  });
   return { querier, now: () => new Date(T1) };
 }
 

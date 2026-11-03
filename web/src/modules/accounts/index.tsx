@@ -6,7 +6,6 @@ import { Dialog } from "radix-ui";
 import { useApi, useQuery } from "../../api/client";
 import type { ClaudeAccount } from "../../api/types";
 import type { FeatureModule } from "../../registry/types";
-import { usePoll } from "../../lib/usePoll";
 import { ago } from "../../lib/format";
 import { useUser } from "../../shell/UserContext";
 import { Badge } from "../../ui/Badge";
@@ -14,6 +13,7 @@ import { Button } from "../../ui/Button";
 import { cn } from "../../ui/cn";
 import { UsageBar } from "../agents/accounts";
 import { Block, ConfirmButton, ErrorLine, Page, TextInput, useWrite, when } from "../admin/parts";
+import { useNow } from "../../lib/useNow";
 
 const useList = () => useQuery<ClaudeAccount[]>("accounts-page", (a) => a.accounts.list());
 
@@ -21,8 +21,13 @@ function LoginDialog({ a, onClose }: { a: ClaudeAccount; onClose: () => void }) 
   const api = useApi();
   const write = useWrite();
   const [code, setCode] = useState("");
-  const q = useQuery<ClaudeAccount[]>("accounts-login", (x) => x.accounts.list());
-  usePoll(q.refetch, 2000);
+  // The sign-in runs in the dashboard process and its progress is not stored, so no change event reports it: poll until it ends.
+  const q = useQuery<ClaudeAccount[]>("accounts-login", (x) => x.accounts.list(), {
+    pollMs: (d) => {
+      const s = (d?.find((x) => x.id === a.id)?.login ?? a.login)?.state;
+      return s === "done" || s === "failed" || s === "cancelled" ? false : 2000;
+    },
+  });
   const login = q.data?.find((x) => x.id === a.id)?.login ?? a.login;
   const state = login?.state ?? "starting";
   const status = { starting: "Starting…", waiting: "Waiting for the code", checking: "Checking the code…", done: "Signed in", failed: login?.message ?? "Sign-in failed", cancelled: "Cancelled" }[state];
@@ -75,6 +80,7 @@ function LoginDialog({ a, onClose }: { a: ClaudeAccount; onClose: () => void }) 
 }
 
 function Row({ a, operator, onChanged }: { a: ClaudeAccount; operator: boolean; onChanged: () => void }) {
+  useNow();
   const api = useApi();
   const write = useWrite();
   const [signing, setSigning] = useState(false);
@@ -149,7 +155,6 @@ function AddForm({ onAdded }: { onAdded: () => void }) {
 
 function AccountsView() {
   const q = useList();
-  usePoll(q.refetch, 30_000);
   const operator = useUser().role === "operator";
   return (
     <Page title="Accounts" sub="Claude accounts for agent runs">

@@ -34,6 +34,7 @@ import { Markdown, Collapsible } from "../../ui/Markdown";
 import { useIsPhone } from "../../shell/useMedia";
 import { SettledBadge } from "../items";
 import { PrWork } from "./PrWork";
+import { useNow } from "../../lib/useNow";
 
 function useItem(params: ViewProps["params"]) {
   const repo = params.repo!;
@@ -120,6 +121,7 @@ function StatePill({ it }: { it: Item }) {
 }
 
 function Header({ it }: { it: Item }) {
+  useNow();
   return (
     <div className="border-b border-line pb-4">
       <h1 className="text-xl font-semibold text-ink">
@@ -151,6 +153,7 @@ function Prop({ label, children }: { label: string; children: ReactNode }) {
 }
 
 function Properties({ it }: { it: Item }) {
+  useNow();
   const [tierLabel, tierTone] = TIER[it.tier];
   const total = it.additions + it.deletions;
   const passing = it.ciChecks.filter((c) => c.state === "passing").length;
@@ -260,6 +263,7 @@ function Reason({ reason }: { reason: string }) {
 const WANT: Record<string, string> = { yes: "text-ok", no: "text-bad", unclear: "text-warn" };
 
 function Verdicts({ cls }: { cls: Classification[] }) {
+  useNow();
   const phone = useIsPhone();
   if (!cls.length) return <p className="text-sm text-ink/50">Not classified yet.</p>;
   const typeMaj = majority(cls.map((c) => c.typeLabel))[0];
@@ -359,6 +363,7 @@ function events(it: Item): Event[] {
 }
 
 function Timeline({ it }: { it: Item }) {
+  useNow();
   const evs = events(it);
   return (
     <ol className="relative">
@@ -392,6 +397,7 @@ const REVIEW: Record<string, [string, Tone]> = {
 
 // GitHub comments and reviews, oldest first. Bodies are untrusted: the same Markdown renderer as the description.
 function Discussion({ comments }: { comments: ItemComment[] }) {
+  useNow();
   return (
     <ol className="space-y-3">
       {comments.map((c) => {
@@ -459,6 +465,7 @@ function SideSection({ title, count, children }: { title: string; count?: number
 }
 
 function ItemSide(props: ViewProps) {
+  useNow();
   const { data: it } = useItem(props.params);
   const { data: ds } = useQuery(`item-decisions:${props.params.repo}#${props.params.number}`, async (api) => {
     const all = await Promise.all([api.decisions.list({ status: "open" }), api.decisions.list({ status: "answered" })]);

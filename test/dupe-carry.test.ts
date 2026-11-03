@@ -14,10 +14,9 @@ import { exec, type Exec, type ExecResult } from "../src/fixup/git.ts";
 import { runFixup, type FixupDeps } from "../src/fixup/index.ts";
 import { carryAskText, carryCommentText } from "../src/fixup/template.ts";
 import type { Querier } from "../src/mirror.ts";
+import { validating } from "./gql.ts";
 import { SCRATCH } from "./scratch.ts";
 
-const GQL = "./gql.ts";
-const validating: (q: Querier) => Querier = await import(GQL).then((m: any) => m.validating as (q: Querier) => Querier, () => (q: Querier) => q);
 
 mkdirSync(SCRATCH, { recursive: true });
 const dir = mkdtempSync(join(SCRATCH, "dupe-carry-"));
@@ -43,7 +42,7 @@ function fresh(head: string, o: { canModify?: boolean; push?: boolean; comment?:
   item.run(8, "CLOSED", "Duplicate", "sha8");
   db.prepare(`INSERT INTO pr_checks (repo, number, head_oid, state, is_draft, overall, checks, mergeable, maintainer_can_modify, fetched_at)
     VALUES ('app', 7, ?, 'OPEN', 0, 'success', '[]', 'MERGEABLE', ?, '${T1}')`).run(head, o.canModify === false ? 0 : 1);
-  const ins = db.prepare("INSERT INTO dupe_group_items (decision_id, repo, number, kind, role, target, detail) VALUES ('app:dupegroup:7', 'app', ?, 'pr', ?, ?, ?)");
+  const ins = db.prepare("INSERT INTO dupe_group_items (decision_id, repo, number, kind, role, target, detail, base_role) VALUES ('app:dupegroup:7', 'app', ?, 'pr', ?, ?, ?, 'keep')");
   ins.run(7, "keep", null, null);
   ins.run(8, "close", 7, JSON.stringify({ carry: [POINT], better: [], duplicate: true }));
   db.prepare("INSERT INTO dupe_carries (decision_id, repo, number, state, updated_at) VALUES ('app:dupegroup:7', 'app', 7, 'queued', ?)").run(T0);

@@ -76,10 +76,10 @@ export function postCandidates(db: DatabaseSync, repo: string): PostCandidate[] 
   return out;
 }
 
-const ADD_REVIEW = `mutation($pr: ID!, $oid: GitObjectID!, $body: String!) {
+export const ADD_REVIEW = `mutation($pr: ID!, $oid: GitObjectID!, $body: String!) {
   addPullRequestReview(input: { pullRequestId: $pr, commitOID: $oid, body: $body, event: COMMENT }) { pullRequestReview { id } }
 }`;
-const EDIT_REVIEW = `mutation($id: ID!, $body: String!) {
+export const EDIT_REVIEW = `mutation($id: ID!, $body: String!) {
   updatePullRequestReview(input: { pullRequestReviewId: $id, body: $body }) { pullRequestReview { id } }
 }`;
 

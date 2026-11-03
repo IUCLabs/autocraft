@@ -2,7 +2,7 @@
 // on the worker, and reported back. Everything a worker sends is stored as
 // data; nothing here executes it, renders it or puts it in a prompt.
 import type { DatabaseSync, SQLInputValue } from "node:sqlite";
-import type { BuildSummary, BuildTask, BuildTaskDetail, Capabilities, Requires, TaskArtifact, TaskFilter, TaskPage, TaskResult, TaskState, TaskStep } from "../../web/src/api/types.ts";
+import type { BuildSummary, BuildTask, BuildTaskDetail, Capabilities, Requires, SandboxEnv, TaskArtifact, TaskBatch, TaskFilter, TaskPage, TaskResult, TaskState, TaskStep } from "../../web/src/api/types.ts";
 import { audit } from "../dash/audit.ts";
 import { excludeHidden } from "../dash/api/visible.ts";
 import { removeArtifacts } from "./artifacts.ts";
@@ -31,8 +31,8 @@ type TaskRow = {
   requires: string; priority: number; plan: string; state: TaskState; env_id: string | null; attempts: number;
   queued_at: string; claimed_at: string | null; started_at: string | null; ended_at: string | null; heartbeat_at: string | null;
   cancel_requested_at: string | null; results: string; summary: string | null; log_bytes: number; artifact_bytes: number;
-  patch?: string | null; warm_key?: string | null; warm_role?: string | null;
-  env_label?: string | null;
+  patch?: string | null; warm_key?: string | null; warm_role?: string | null; sandbox_env?: string | null;
+  env_label?: string | null; default_branch?: string | null;
 };
 
 const json = <T>(s: string, fallback: T): T => {
@@ -284,6 +284,25 @@ export function parseResults(v: unknown): TaskResult[] {
   });
 }
 
+const REF_RE = /^[0-9a-f]{40}$/;
+const IMAGE_RE = /^[A-Za-z0-9][A-Za-z0-9._\-/:@]{0,299}$/;
+const PKG_RE = /^[a-z0-9][a-z0-9+.-]{0,99}$/;
+
+/** The environment a worker reports for a task: image, packages and the craft-fonts / craft-i18n commits. */
+export function parseSandboxEnv(v: unknown): SandboxEnv | null {
+  if (v === undefined || v === null) return null;
+  const o = v as Record<string, unknown>;
+  if (typeof v !== "object" || Array.isArray(v)) throw new BuildError(400, "environment must be an object");
+  const ref = (x: unknown, name: string): string | null => {
+    if (x === null || x === undefined) return null;
+    if (typeof x !== "string" || !REF_RE.test(x)) throw new BuildError(400, `environment.${name} must be a commit id`);
+    return x;
+  };
+  if (typeof o.image !== "string" || !IMAGE_RE.test(o.image) || typeof o.baseImage !== "string" || !IMAGE_RE.test(o.baseImage)) throw new BuildError(400, "environment images are not valid");
+  if (!Array.isArray(o.packages) || o.packages.length > 100 || o.packages.some((p) => typeof p !== "string" || !PKG_RE.test(p))) throw new BuildError(400, "environment.packages is not valid");
+  return { image: o.image, baseImage: o.baseImage, packages: o.packages as string[], craftFontsRef: ref(o.craftFontsRef, "craftFontsRef"), craftI18nRev: ref(o.craftI18nRev, "craftI18nRev") };
+}
+
 /** The worker's last word: done when every step exited 0, cancelled when an operator asked, else failed. */
 export function finishTask(db: DatabaseSync, envId: string, id: number, body: unknown): { state: TaskState } {
   // A retried finish (the answer was lost) gets the state the first one set.
@@ -294,9 +313,11 @@ export function finishTask(db: DatabaseSync, envId: string, id: number, body: un
   const o = body as Record<string, unknown>;
   const results = parseResults(o.results);
   const summary = cleanLine(o.summary, 500);
+  const sandbox = parseSandboxEnv(o.environment);
   const ok = results.length > 0 && results.every((r) => r.exitCode === 0 && !r.timedOut);
   const state: TaskState = t.cancel_requested_at ? "cancelled" : ok ? "done" : "failed";
-  db.prepare("UPDATE build_tasks SET state = ?, ended_at = ?, results = ?, summary = ? WHERE id = ?").run(state, nowIso(), JSON.stringify(results), summary, id);
+  db.prepare("UPDATE build_tasks SET state = ?, ended_at = ?, results = ?, summary = ?, sandbox_env = ? WHERE id = ?")
+    .run(state, nowIso(), JSON.stringify(results), summary, sandbox ? JSON.stringify(sandbox) : null, id);
   return { state };
 }
 
@@ -315,7 +336,7 @@ export function cancelTask(db: DatabaseSync, id: unknown, by: string): BuildTask
 
 // ---- reading -----------------------------------------------------------------
 
-const SELECT = "SELECT t.*, e.label AS env_label FROM build_tasks t LEFT JOIN build_envs e ON e.id = t.env_id";
+const SELECT = "SELECT t.*, e.label AS env_label, r.default_branch AS default_branch FROM build_tasks t LEFT JOIN build_envs e ON e.id = t.env_id LEFT JOIN repos r ON r.name = t.repo";
 
 function artifactsOf(db: DatabaseSync, ids: number[]): Map<number, TaskArtifact[]> {
   const out = new Map<number, TaskArtifact[]>();
@@ -326,7 +347,23 @@ function artifactsOf(db: DatabaseSync, ids: number[]): Map<number, TaskArtifact[
   return out;
 }
 
-function toTask(r: TaskRow, artifacts: TaskArtifact[]): BuildTask {
+/** The integration batches whose sandbox task is one of `ids`. */
+function batchesOf(db: DatabaseSync, ids: number[]): Map<number, TaskBatch> {
+  const out = new Map<number, TaskBatch>();
+  if (!ids.length) return out;
+  const rows = db.prepare(`SELECT * FROM main.merge_batches WHERE task_id IN (${ids.map(() => "?").join(",")})`).all(...ids) as
+    { id: number; task_id: number; branch: string; commit_sha: string; base_sha: string; fork?: string | null }[];
+  const members = db.prepare("SELECT number FROM main.merge_batch_prs WHERE batch_id = ? ORDER BY position");
+  for (const b of rows) {
+    out.set(b.task_id, {
+      id: b.id, branch: b.branch, fork: b.fork ?? null, commitSha: b.commit_sha, baseSha: b.base_sha,
+      prs: (members.all(b.id) as { number: number }[]).map((m) => m.number),
+    });
+  }
+  return out;
+}
+
+function toTask(r: TaskRow, artifacts: TaskArtifact[], batch: TaskBatch | null = null): BuildTask {
   return {
     id: r.id, jobId: r.job_id, step: r.step, repo: r.repo, number: r.number, headSha: r.head_sha, baseSha: r.base_sha,
     requires: json<Requires>(r.requires, {}), priority: r.priority, plan: json<TaskStep[]>(r.plan, []),
@@ -335,12 +372,15 @@ function toTask(r: TaskRow, artifacts: TaskArtifact[]): BuildTask {
     results: json<TaskResult[]>(r.results, []), artifacts, summary: r.summary,
     patchBytes: r.patch ? Buffer.byteLength(r.patch) : null,
     warm: r.warm_key && (r.warm_role === "use" || r.warm_role === "build") ? { key: r.warm_key, role: r.warm_role } : null,
+    batch,
+    baseline: r.step === "verify" && r.number === null && !r.patch ? { branch: r.default_branch ?? null } : null,
+    sandbox: r.sandbox_env ? json<SandboxEnv | null>(r.sandbox_env, null) : null,
   };
 }
 
 export function getTask(db: DatabaseSync, id: number): BuildTask | null {
   const r = db.prepare(`${SELECT} WHERE t.id = ?`).get(id) as TaskRow | undefined;
-  return r ? toTask(r, artifactsOf(db, [r.id]).get(r.id) ?? []) : null;
+  return r ? toTask(r, artifactsOf(db, [r.id]).get(r.id) ?? [], batchesOf(db, [r.id]).get(r.id) ?? null) : null;
 }
 
 /** The last bytes of the log, from whole chunks. */
@@ -390,7 +430,8 @@ export function listTasks(db: DatabaseSync, f: TaskFilter, hidden: string[] = []
   const rows = db.prepare(`${SELECT}${where.length ? ` WHERE ${where.join(" AND ")}` : ""} ORDER BY t.id DESC LIMIT ${limit + 1}`).all(params) as TaskRow[];
   const page = rows.slice(0, limit);
   const arts = artifactsOf(db, page.map((r) => r.id));
-  return { tasks: page.map((r) => toTask(r, arts.get(r.id) ?? [])), next: rows.length > limit ? String(page[page.length - 1]!.id) : null };
+  const batches = batchesOf(db, page.map((r) => r.id));
+  return { tasks: page.map((r) => toTask(r, arts.get(r.id) ?? [], batches.get(r.id) ?? null)), next: rows.length > limit ? String(page[page.length - 1]!.id) : null };
 }
 
 export type { BuildSummary };

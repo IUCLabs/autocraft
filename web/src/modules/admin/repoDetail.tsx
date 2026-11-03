@@ -6,6 +6,7 @@ import { Badge } from "../../ui/Badge";
 import { num } from "../../lib/format";
 import { Block, ConfirmButton, ErrorLine, Page, useWrite } from "./parts";
 import { Toggle, WRITES, maybe, synced, type Write, type WriteKind } from "./repoParts";
+import { useNow } from "../../lib/useNow";
 
 function Stat({ label, value, title }: { label: string; value: string; title?: string }) {
   return (
@@ -46,6 +47,7 @@ function WriteRow({ r, w, write }: { r: TrackedRepo; w: WriteKind; write: Write 
 }
 
 function RepoDetailView({ params }: ViewProps) {
+  useNow();
   const name = params.name ?? "";
   const { data, error } = useQuery("repo-admin", (a) => a.repoAdmin.list());
   const write = useWrite();

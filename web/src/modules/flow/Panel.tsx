@@ -14,6 +14,7 @@ import { JobBadge } from "../pipeline";
 import { StageLimitRow } from "../pipeline/controls";
 import { PromptCard } from "../prompts";
 import { BranchRow, nodeOf, recentText, waitsText } from "./parts";
+import { useNow } from "../../lib/useNow";
 
 function Section({ title, aside, children }: { title: string; aside?: ReactNode; children: ReactNode }) {
   return (
@@ -34,6 +35,7 @@ const spend = (jobs: Job[]): string | null => {
 };
 
 function StepBlock({ name, title }: { name: string; title: string }) {
+  useNow();
   const { data, error } = useQuery(`flow-jobs:${name}`, (api) => api.pipeline.jobs({ step: name, limit: 4 }));
   const total = data ? spend(data.jobs) : null;
   return (
@@ -97,6 +99,7 @@ function PromptRow({ id }: { id: string }) {
 const APPROVES: Partial<Record<FlowNode["id"], string>> = { labels: "labelling", merge: "merging", fix: "fixing", fixup: "pushing", act: "commenting" };
 
 export function FlowPanel({ flow, node: n, onClose, onSelect }: { flow: Flow; node: FlowNode; onClose: () => void; onSelect: (id: string) => void }) {
+  useNow();
   const user = useUser();
   const { data: overview } = useQuery("pipeline", (api) => api.pipeline.overview());
   const into = flow.edges.filter((e) => e.to === n.id);

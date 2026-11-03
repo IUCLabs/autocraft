@@ -14,6 +14,7 @@ import { codeDiff } from "../src/review/diff.ts";
 import { runReview, type ReviewDeps } from "../src/review/index.ts";
 import { applyDuplicateRule, parseReviewReply, type ReviewPr } from "../src/review/parse.ts";
 import { SCRATCH } from "./scratch.ts";
+import { validating } from "./gql.ts";
 
 mkdirSync(SCRATCH, { recursive: true });
 const dir = mkdtempSync(join(SCRATCH, "review-test-"));
@@ -54,7 +55,7 @@ const diffOf = (n: number) =>
 
 /** GitHub stand-in: checks report the head stored in `heads` (default the mirror's), CI green. */
 function fakeQuerier(heads: Map<number, string>): Querier & { calls: number } {
-  const q = {
+  const q = validating({
     spent: 0, remaining: 5000 as number | null, calls: 0,
     async query(query: string) {
       q.calls++;
@@ -65,7 +66,7 @@ function fakeQuerier(heads: Map<number, string>): Querier & { calls: number } {
       }]));
       return { repository };
     },
-  };
+  });
   return q;
 }
 

@@ -19,6 +19,7 @@ import { ReviewBox } from "./ReviewBox";
 import { localActions, ordered, refOf, useDecisionList, useLocal, useSelection, useUndo } from "./state";
 import { Thread } from "./Thread";
 import { WorkflowBox, scrollToWorkflow } from "./Workflow";
+import { useNow } from "../../lib/useNow";
 
 export const canActOn = (user: User, ds: Decision[]): boolean =>
   canAct(user, ds.flatMap((d) => (d.items.length ? d.items.map((i) => i.repo) : [d.repo])));
@@ -125,6 +126,7 @@ export function DecisionBody({
   /** Phone only: previous/next in the queue, shown in the bottom bar. */
   pager?: { pos: string; prev?: () => void; next?: () => void };
 }) {
+  useNow();
   const api = useApi();
   const isBatch = d.number === null;
   const operator = canActOn(user, [d]);
@@ -321,6 +323,7 @@ export function DecisionBody({
 }
 
 export function AnsweredState({ d, canUndo }: { d: Decision; canUndo: boolean }) {
+  useNow();
   const undo = useUndo();
   const label = d.options.find((o) => o.key === d.answer)?.label ?? d.answer;
   return (

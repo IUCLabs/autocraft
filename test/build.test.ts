@@ -11,6 +11,7 @@ import { authenticate, createEnv, hello, listEnvs, rotateKey, touch, updateEnv }
 import { cancelTask, claim, createTask, getTask, LOST_AFTER_MS, pruneTasks, reapLost } from "../src/build/tasks.ts";
 import { startWorkerServer } from "../src/build/worker-api.ts";
 import { connect } from "../src/db.ts";
+import { insertBatch } from "../src/merge/batch-store.ts";
 import { apiRoutes } from "../src/dash/api/index.ts";
 import { loadConfig } from "../src/dash/server/config.ts";
 import { startServer } from "../src/dash/server/index.ts";
@@ -47,6 +48,28 @@ before(() => {
 after(() => {
   db.close();
   rmSync(dir, { recursive: true, force: true });
+});
+
+describe("task source", () => {
+  test("a merge-batch task lists its branch, PRs and commits; a PR-less verify task is a baseline of the default branch", () => {
+    clear();
+    db.exec("UPDATE repos SET default_branch = 'main' WHERE name = 'open-app'");
+    const tip = "c".repeat(40);
+    const t = task({ step: "merge-batch", patch: "diff --git a/x b/x\n" });
+    insertBatch(db, { repo: "open-app", branch: "integration-open-app-20261102-1", baseSha: SHA, commitSha: tip, parentId: null, taskId: t, members: [{ number: 7, head_oid: "h7" }, { number: 9, head_oid: "h9" }], at: "2026-11-02T00:00:00Z" });
+    const warm = task({ warm: { key: "open-app", role: "build" } });
+    const pr = task({ number: 12 });
+    const one = getTask(db, t)!;
+    assert.deepEqual(one.batch, { id: 1, branch: "integration-open-app-20261102-1", fork: null, commitSha: tip, baseSha: SHA, prs: [7, 9] });
+    assert.equal(one.baseline, null);
+    assert.deepEqual(getTask(db, warm)!.baseline, { branch: "main" });
+    assert.equal(getTask(db, warm)!.batch, null);
+    assert.equal(getTask(db, pr)!.baseline, null);
+    db.prepare("UPDATE merge_batches SET fork = 'bot/open-app' WHERE id = 1").run();
+    assert.equal(getTask(db, t)!.batch!.fork, "bot/open-app");
+    clear();
+    db.exec("DELETE FROM merge_batches; DELETE FROM merge_batch_prs");
+  });
 });
 
 describe("claim", () => {
