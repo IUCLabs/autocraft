@@ -1441,6 +1441,8 @@ export interface ConversationCard {
   kind: "comment" | "answer" | "label" | "backlog" | "duplicate";
   title: string;
   text?: string;
+  /** An answer card whose option writes to GitHub: what it does, e.g. "closes the PR on GitHub". Do it asks for a second confirmation. */
+  writes?: string;
   state: ConversationCardState;
   /** Set when state is done; `link` is empty when the action wrote nothing on GitHub. */
   done?: { at: string; link: string; label: string };

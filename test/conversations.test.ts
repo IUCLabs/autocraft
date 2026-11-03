@@ -10,10 +10,10 @@ import { validating } from "./gql.ts";
 import { SCRATCH } from "./scratch.ts";
 import { setCommentApproval } from "../src/act/approval.ts";
 import { setRunner } from "../src/classify/run.ts";
-import { parseReply } from "../src/conversations/cards.ts";
-import { doCard, dismissCard, editCard } from "../src/conversations/act.ts";
+import { cleanComment, parseReply } from "../src/conversations/cards.ts";
+import { doCard, dismissCard, editCard, sweepRunningCards } from "../src/conversations/act.ts";
 import { answerPending } from "../src/conversations/run.ts";
-import { addOperatorMessage, conversationOf, startFromOpus, turnsOf } from "../src/conversations/store.ts";
+import { addOperatorMessage, claimPending, conversationOf, refreshItem, startFromOpus, turnsOf } from "../src/conversations/store.ts";
 import { connect } from "../src/db.ts";
 import { recommend } from "../src/decide/recommend.ts";
 import { ask } from "../src/decisions.ts";
@@ -29,7 +29,7 @@ const T0 = "2026-01-01T00:00:00Z";
 
 function fresh(): DatabaseSync {
   const db = connect(join(mkdtempSync(join(SCRATCH, "conv-test-")), "t.db"));
-  db.prepare("INSERT OR IGNORE INTO tracked_repos (name, added_by, added_at, pipeline) VALUES ('app', 'op', ?, 0)").run(T0);
+  db.prepare("INSERT OR IGNORE INTO tracked_repos (name, added_by, added_at, pipeline) VALUES ('app', 'op', ?, 1)").run(T0);
   db.prepare("INSERT INTO repos (name, visibility) VALUES ('app', 'public')").run();
   useTestAccount(db);
   const item = db.prepare(`INSERT INTO items (repo, number, kind, state, title, body, author, head_oid, created_at, updated_at, labels) VALUES ('app', ?, ?, 'OPEN', ?, 'Body text', 'someone', ?, '${T0}', '${T0}', '[]')`);
@@ -42,10 +42,11 @@ function fresh(): DatabaseSync {
 }
 
 /** Answers every call with the next reply and records the prompts sent. */
-function fakeModel(replies: string[], prompts: string[] = []) {
+function fakeModel(replies: string[], prompts: string[] = [], during?: () => Promise<void>) {
   let k = 0;
   const restore = setRunner(async (_cmd, _args, input) => {
     prompts.push(input);
+    await during?.();
     return { code: 0, stdout: JSON.stringify({ type: "result", result: replies[Math.min(k++, replies.length - 1)], usage: { input_tokens: 10, output_tokens: 5 } }), stderr: "" };
   });
   return { prompts, restore };
@@ -81,7 +82,7 @@ describe("conversation prompt", () => {
       // The update comes before the new message, and the stored block is untouched.
       const tail = p3.slice(p2.length);
       assert.match(tail, /^<turn from="opus">\nSecond answer\.\n<\/turn>\n/);
-      assert.match(tail, /<turn from="system">\nThe issue text was updated[\s\S]*Edited body[\s\S]*<\/turn>\n<turn from="operator" login="op">\nAnything new\?/);
+      assert.match(tail, /<turn from="system">\nThe issue was updated \(text\)[\s\S]*Edited body[\s\S]*<\/turn>\n<turn from="operator" login="op">\nAnything new\?/);
       assert.equal(conversationOf(db, "app", 1)!.item_block, block);
       assert.equal(p3.split(block).length, 2, "the item block appears once, unchanged");
     } finally {
@@ -103,7 +104,91 @@ describe("conversation prompt", () => {
   });
 });
 
+describe("turn order and claims", () => {
+  test("an update or a Do it while Opus answers is held after the reply: one answer, stable order, cache prefix holds", async () => {
+    const db = fresh();
+    const prompts: string[] = [];
+    const { restore } = fakeModel(["First answer.\n```actions\n[{\"kind\":\"comment\",\"text\":\"Hello.\"}]\n```", "Second answer."], prompts, async () => {
+      if (prompts.length !== 1) return;
+      db.prepare("UPDATE items SET body = 'Edited during the call', labels = '[\"infra\"]' WHERE repo = 'app' AND number = 1").run();
+      assert.equal(await refreshItem(db, "app", 1), true);
+    });
+    try {
+      await say(db, "First?");
+      assert.equal(await answerAll(db), 1);
+      assert.equal(prompts.length, 1, "answered once");
+      assert.equal(turnsOf(db, "app", 1).filter((t) => t.kind === "operator")[0]!.status, "answered");
+      assert.deepEqual(turnsOf(db, "app", 1).map((t) => t.kind), ["operator", "opus", "system"]);
+      assert.equal(await answerAll(db), 0, "nothing left to answer");
+      await say(db, "Second?");
+      await answerAll(db);
+      const [p1, p2] = prompts as [string, string];
+      const m1 = "<turn from=\"operator\" login=\"op\">\nFirst?\n</turn>\n";
+      assert.ok(p2.startsWith(p1.slice(0, p1.length - m1.length) + m1), "the first prompt is a prefix of the second");
+      assert.match(p2.slice(p1.length), /^<turn from="opus">[\s\S]*<\/turn>\n<turn from="system">\nThe issue was updated \(text, labels\)[\s\S]*<turn from="operator" login="op">\nSecond\?/);
+    } finally {
+      restore();
+    }
+  });
+
+  test("a message is claimed once, and a stale claim is released", async () => {
+    const db = fresh();
+    await say(db, "Hi");
+    const a = claimPending(db, "app", 1), b = claimPending(db, "app", 1);
+    assert.ok(a);
+    assert.equal(b, null);
+    await assert.rejects(() => say(db, "More"), /has not answered/);
+    const later = { now: () => new Date(Date.now() + 3 * 3600_000) };
+    assert.ok(claimPending(db, "app", 1, later), "released after the prompt timeouts");
+  });
+});
+
 describe("cards", () => {
+  test("comment text loses entities that hide mentions, HTML, images and links", () => {
+    assert.equal(cleanComment("Thanks &#64;bob and &commat;amy and &amp;#x40;cy"), "Thanks bob and amy and cy");
+    assert.equal(cleanComment("See [the docs](https://x.test/a) <b>now</b> ![img](https://x.test/i.png) https://y.test/z"), "See the docs now");
+    assert.equal(cleanComment("Line one\n\n\n\nLine two @team"), "Line one\n\nLine two team");
+  });
+
+  test("a second type label is refused; an answer card names its decision", () => {
+    const db = fresh();
+    db.prepare("UPDATE items SET labels = '[\"bugfix\"]' WHERE repo = 'app' AND number = 1").run();
+    const p = parseReply(db, "app", 1, `Text.\n\`\`\`actions\n${JSON.stringify([{ kind: "label", label: "infra" }, { kind: "label", label: "security" }, { kind: "answer", option: "close" }])}\n\`\`\``)!;
+    assert.deepEqual(p.cards.map((c) => c.params.kind), ["label", "answer"]);
+    assert.equal(p.notes.length, 1);
+    assert.deepEqual(p.cards[1]!.params, { kind: "answer", option: "close", decision: "app#1:scope" });
+    assert.match(p.cards[1]!.description, /\(closes it on GitHub\)$/);
+    // Act's checks apply to the duplicate close: not outside the pilot, not held by Backlog.
+    const dup = `Text.\n\`\`\`actions\n[{"kind":"duplicate","of":3}]\n\`\`\``;
+    assert.equal(parseReply(db, "app", 1, dup)!.cards.length, 1);
+    db.prepare("UPDATE tracked_repos SET pipeline = 0").run();
+    assert.match(parseReply(db, "app", 1, dup)!.notes[0]!, /outside the pilot/);
+  });
+
+  test("a changed label or a new comment sends an update turn; a card for an answered decision fails", async () => {
+    const db = fresh();
+    const [id] = await withCards(db, [{ kind: "answer", option: "take" }]);
+    db.prepare("UPDATE decisions SET answer = 'close', answered_by = 'other', answered_at = ? WHERE id = 'app#1:scope'").run(T0);
+    const r = await doCard(db, id!, "op", { querier: fakeGithub([]) });
+    assert.equal(r.card.state, "failed");
+    assert.match(r.card.error!, /decision changed/);
+    assert.equal(db.prepare("SELECT answered_by FROM decisions WHERE id = 'app#1:scope'").get()!.answered_by, "other");
+    db.prepare("UPDATE items SET labels = '[\"infra\"]' WHERE repo = 'app' AND number = 1").run();
+    assert.equal(await refreshItem(db, "app", 1), true);
+    assert.match(turnsOf(db, "app", 1).at(-1)!.block, /updated \(labels, decision\)/);
+    assert.equal(await refreshItem(db, "app", 1), false);
+  });
+
+  test("running cards left by a crash are failed after ten minutes", async () => {
+    const db = fresh();
+    const [id] = await withCards(db, [{ kind: "backlog" }]);
+    db.prepare("UPDATE conversation_cards SET state = 'running', acted_at = ? WHERE id = ?").run(T0, id);
+    assert.equal(sweepRunningCards(db), 1);
+    const c = db.prepare("SELECT state, error FROM conversation_cards WHERE id = ?").get(id) as { state: string; error: string };
+    assert.deepEqual({ ...c }, { state: "failed", error: "outcome unknown; see the GitHub activity page" });
+  });
+
+
   test("invalid cards are dropped with a note and valid ones get a description from the parameters", () => {
     const db = fresh();
     const reply = `Text.\n\`\`\`actions\n${JSON.stringify([
@@ -122,7 +207,7 @@ describe("cards", () => {
     const p = parseReply(db, "app", 1, reply)!;
     assert.deepEqual(p.cards.map((c) => c.params.kind), ["answer", "label", "duplicate", "comment", "backlog"]);
     assert.equal(p.notes.length, 6);
-    assert.equal(p.cards[0]!.description, 'Answer the open decision on app#1 with "Out of scope"');
+    assert.equal(p.cards[0]!.description, 'Answer the open decision on app#1 with "Out of scope" (closes it on GitHub)');
     assert.equal(p.cards[1]!.description, 'Add the label "plugin candidate" to app#1');
     assert.equal(p.cards[3]!.text, "Thanks bob, see the pack.");
     assert.equal(parseReply(db, "app", 1, "```actions\n[]\n```"), null, "no text, no reply");

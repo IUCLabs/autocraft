@@ -1,3 +1,4 @@
+import { sweepRunningCards } from "../conversations/act.ts";
 import { connect } from "../db.ts";
 import { scopeToTracked } from "../repos.ts";
 import { ConfigError, loadConfig } from "./server/config.ts";
@@ -14,6 +15,7 @@ async function serve(): Promise<void> {
   }
   const db = connect(config.dbPath);
   scopeToTracked(db);
+  sweepRunningCards(db);
   const { url, close } = await startServer({ config, db });
   console.log(`dashboard listening on ${url}${config.devAuth ? " (development sign-in)" : ""}`);
   const stop = () => void close().then(() => {

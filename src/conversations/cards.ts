@@ -1,15 +1,18 @@
 // Action cards: what Opus may propose, checked by our code, and the one-line description of each that the operator reads.
 // Descriptions are built here from the parameters; the model never writes them.
 import type { DatabaseSync } from "node:sqlite";
-import { optionsOf, type DecisionRow } from "../decisions.ts";
-import { ALL_LABELS, sameLabel } from "../labels/set.ts";
+import { writeEffect } from "../act/index.ts";
+import { optionsOf, getDecision, type DecisionRow, type Kind } from "../decisions.ts";
+import { backlogHeldSql, notOwnIntegrationSql } from "../dupes/held.ts";
+import { ALL_LABELS, isTypeLabel, sameLabel } from "../labels/set.ts";
+import { pilotSql } from "../pilot.ts";
 import { COMMENT_MAX, type CardKind } from "./types.ts";
 
 export type CardParams =
   | { kind: "comment"; text: string }
-  | { kind: "answer"; option: string }
+  | { kind: "answer"; option: string; decision: string }
   | { kind: "label"; label: string }
-  | { kind: "backlog" }
+  | { kind: "backlog"; decision: string }
   | { kind: "duplicate"; of: number };
 
 export type NewCard = { params: CardParams; text: string | null; description: string };
@@ -22,14 +25,22 @@ export function openDecision(db: DatabaseSync, repo: string, n: number): Decisio
     ORDER BY asked_at DESC, id DESC LIMIT 1`).get(repo, n) as DecisionRow | undefined;
 }
 
+/** The GitHub write that answering with this card's option causes later (the Act step does it), or null when it writes nothing. */
+export function cardEffect(db: DatabaseSync, p: CardParams): string | null {
+  if (p.kind !== "answer") return null;
+  const d = getDecision(db, p.decision);
+  return d ? writeEffect(d.kind as Kind, p.option) : null;
+}
+
 export function describe(db: DatabaseSync, repo: string, n: number, p: CardParams): string {
   const it = ref(repo, n);
   switch (p.kind) {
     case "comment": return `Post the comment below on ${it}`;
     case "answer": {
-      const d = openDecision(db, repo, n);
+      const d = getDecision(db, p.decision);
       const o = d ? optionsOf(d).find((x) => x.key === p.option) : undefined;
-      return `Answer the open decision on ${it} with "${o?.label ?? p.option}"`;
+      const effect = cardEffect(db, p);
+      return `Answer the open decision on ${it} with "${o?.label ?? p.option}"${effect ? ` (${effect})` : ""}`;
     }
     case "label": return `Add the label "${p.label}" to ${it}`;
     case "backlog": return `Put ${it} in the Backlog: nothing is written to GitHub and no later step takes it up`;
@@ -37,8 +48,64 @@ export function describe(db: DatabaseSync, repo: string, n: number, p: CardParam
   }
 }
 
-/** Model text for a public comment: no @mentions, whitespace at the ends trimmed. */
-export const cleanComment = (s: string): string => s.replace(/@(?=\w)/g, "").trim();
+const ENTITIES: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " ", commat: "@", num: "#", lpar: "(", rpar: ")", lsqb: "[", rsqb: "]", lbrack: "[", rbrack: "]", colon: ":", sol: "/", period: ".", excl: "!", bsol: "\\" };
+
+/** Decodes numeric and the common named HTML entities, also when encoded twice (`&amp;#64;`). */
+export function decodeEntities(s: string): string {
+  let t = s;
+  for (let k = 0; k < 5; k++) {
+    const next = t.replace(/&(?:#(\d{1,7})|#x([0-9a-f]{1,6})|([a-z][a-z0-9]{1,8}));?/gi, (m, d: string | undefined, h: string | undefined, name: string | undefined) => {
+      if (name) return ENTITIES[name.toLowerCase()] ?? m;
+      const cp = d ? Number(d) : parseInt(h!, 16);
+      return cp > 0 && cp <= 0x10ffff ? String.fromCodePoint(cp) : m;
+    });
+    if (next === t) break;
+    t = next;
+  }
+  return t;
+}
+
+/**
+ * Model text for a public comment, cleaned like the Act step's comments: entities decoded first (so `&#64;user` cannot notify),
+ * then raw HTML, images, links (Markdown, autolinks and bare URLs, keeping a Markdown link's text), cross-repo references and every
+ * @ removed. An operator who edits a card may add links back.
+ */
+export function cleanComment(s: string): string {
+  let t = s;
+  for (let k = 0; k < 5; k++) {
+    const next = decodeEntities(t)
+      .replace(/<!--[\s\S]*?-->/g, "")
+      .replace(/!\[[^\]]*\](?:\([^)]*\)|\[[^\]]*\])/g, "")
+      .replace(/\[([^\]]*)\](?:\([^)]*\)|\[[^\]]*\])/g, "$1")
+      .replace(/^[ \t]*\[[^\]]+\]:[ \t]*\S+.*$/gm, "")
+      .replace(/<\/?[a-z!][^>]*>/gi, "")
+      .replace(/<?\b(?:[a-z][a-z0-9+.-]*:\/\/|www\.|mailto:)[^\s<>]*>?/gi, "")
+      .replace(/\b[\w.-]+\/[\w.-]+#\d+/g, "")
+      .replace(/[@\uFF20\uFE6B]/g, "");
+    if (next === t) break;
+    t = next;
+  }
+  return t.replace(/[ \t]+$/gm, "").replace(/\n{3,}/g, "\n\n").trim();
+}
+
+/** Why Act would not close this item (an integration PR of ours, held by Backlog, outside the pilot), or null. */
+export function closeRefusal(db: DatabaseSync, repo: string, n: number): string | null {
+  const has = (cond: string) => !!db.prepare(`SELECT 1 FROM items i WHERE i.repo = ? AND i.number = ? AND ${cond}`).get(repo, n);
+  if (!has("1 = 1")) return `${ref(repo, n)} is not in the mirror`;
+  if (!has(notOwnIntegrationSql("i"))) return `${ref(repo, n)} is an integration PR the pipeline opened`;
+  if (!has(pilotSql("i"))) return `${ref(repo, n)} is outside the pilot`;
+  if (has(backlogHeldSql("i"))) return `${ref(repo, n)} is held by a Backlog answer`;
+  return null;
+}
+
+/** The type label the item has besides `label` (type labels are exclusive), or null. */
+export function otherTypeLabel(db: DatabaseSync, repo: string, n: number, label: string): string | null {
+  if (!isTypeLabel(label)) return null;
+  const row = db.prepare("SELECT labels FROM items WHERE repo = ? AND number = ?").get(repo, n) as { labels: string | null } | undefined;
+  let have: unknown[] = [];
+  try { have = JSON.parse(row?.labels ?? "[]") as unknown[]; } catch { /* unreadable labels count as none */ }
+  return have.map(String).find((l) => isTypeLabel(l) && !sameLabel(l, label)) ?? null;
+}
 
 /** One card as the model wrote it, checked against the item, or why it is dropped. */
 export function validateCard(db: DatabaseSync, repo: string, n: number, raw: unknown): { card: NewCard } | { note: string } {
@@ -57,20 +124,26 @@ export function validateCard(db: DatabaseSync, repo: string, n: number, raw: unk
       const d = openDecision(db, repo, n);
       if (!d) return { note: "dropped an answer card: the item has no open decision" };
       if (typeof c.option !== "string" || !optionsOf(d).some((o) => o.key === c.option)) return { note: `dropped an answer card: "${String(c.option).slice(0, 40)}" is not an option of the open decision` };
-      return done({ kind: "answer", option: c.option });
+      return done({ kind: "answer", option: c.option, decision: d.id });
     }
     case "label": {
       const l = typeof c.label === "string" ? ALL_LABELS.find((x) => sameLabel(x.name, c.label as string)) : undefined;
       if (!l) return { note: `dropped a label card: "${String(c.label).slice(0, 40)}" is not a label the pipeline manages` };
+      const other = otherTypeLabel(db, repo, n, l.name);
+      if (other) return { note: `dropped a label card: the item already has the type label "${other}" and an item has one type label` };
       return done({ kind: "label", label: l.name });
     }
-    case "backlog":
-      if (!openDecision(db, repo, n)) return { note: "dropped a Backlog card: the item has no open decision" };
-      return done({ kind: "backlog" });
+    case "backlog": {
+      const d = openDecision(db, repo, n);
+      if (!d) return { note: "dropped a Backlog card: the item has no open decision" };
+      return done({ kind: "backlog", decision: d.id });
+    }
     case "duplicate": {
       const of = c.of;
       if (!Number.isInteger(of) || of === n) return { note: "dropped a duplicate card without another item number" };
       if (!db.prepare("SELECT 1 FROM items WHERE repo = ? AND number = ?").get(repo, of as number)) return { note: `dropped a duplicate card: ${ref(repo, of as number)} is not in the mirror` };
+      const why = closeRefusal(db, repo, n);
+      if (why) return { note: `dropped a duplicate card: ${why}` };
       return done({ kind: "duplicate", of: of as number });
     }
     default:

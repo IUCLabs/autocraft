@@ -946,8 +946,10 @@ CREATE TABLE IF NOT EXISTS conversations (
   created_by TEXT NOT NULL,           -- operator login, or 'opus' when a recommendation started it
   PRIMARY KEY (repo, number)
 );
--- Turns in prompt order (id order). block is the exact text the prompt carries for the turn, written with the turn.
--- An operator turn waits for its reply while status is 'pending'; there is at most one per conversation, and it stays last in id order.
+-- Turns in prompt order (seq order). block is the exact text the prompt carries for the turn, written with the turn.
+-- An operator turn waits for its reply while status is 'pending' (queued) or 'answering' (a run claimed it); there is at most one
+-- per conversation, and it has no seq until it is answered or failed. A system turn that arrives while a run answers is 'held'
+-- (no seq) and takes the next seq after the reply, so the prompt the run sent stays a prefix of the next one.
 CREATE TABLE IF NOT EXISTS conversation_turns (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   repo TEXT NOT NULL,
@@ -957,11 +959,15 @@ CREATE TABLE IF NOT EXISTS conversation_turns (
   at TEXT NOT NULL,
   body TEXT NOT NULL,
   block TEXT NOT NULL,
-  status TEXT,                        -- operator turns: pending | answered | failed
+  status TEXT,                        -- operator turns: pending | answering | answered | failed; system turns: held | NULL
   error TEXT,
-  notes TEXT                          -- opus turns: JSON array of notes about dropped cards
+  notes TEXT,                         -- opus turns: JSON array of notes about dropped cards
+  seq INTEGER,                        -- position in the prompt; NULL while pending, answering or held
+  claim TEXT,                         -- answering: token of the run that holds the message
+  claimed_at TEXT
 );
 CREATE INDEX IF NOT EXISTS conversation_turns_item ON conversation_turns(repo, number, id);
+CREATE UNIQUE INDEX IF NOT EXISTS conversation_turns_waiting ON conversation_turns(repo, number) WHERE status IN ('pending', 'answering');
 -- Action cards Opus proposed on a turn. params are the exact parameters; text is the editable comment of a comment card.
 CREATE TABLE IF NOT EXISTS conversation_cards (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
