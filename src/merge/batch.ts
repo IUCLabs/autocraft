@@ -8,7 +8,7 @@
 // One run advances every batch of the repo in flight, then starts the next batch when none is left. A failed
 // batch is split in half and each half retried; a single PR that fails goes on hold. When the default branch
 // moves, the batch is rebuilt on the new head. Every GitHub write goes through `exec` / `run`.
-import { pilotRepos } from "../pilot.ts";
+import { scopeRepos } from "../pilot.ts";
 import { mkdirSync } from "node:fs";
 import type { DatabaseSync } from "node:sqlite";
 import { createTask, getTask, MAX_PATCH_BYTES, TERMINAL, warmKeyOf } from "../build/tasks.ts";
@@ -92,8 +92,7 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
   const at = () => d.now().toISOString();
   const runId = `batch-${repo}-${at().replace(/[-:]/g, "").slice(0, 15)}`;
   const s: BatchSummary = { runId, repo, started: [], published: [], merged: [], failed: [], split: [], superseded: [], waiting: [], skipped: [] };
-  const pilot = pilotRepos(db);
-  if (pilot && !pilot.has(repo)) { log(`batch ${repo}: not in the pilot; nothing done`); return s; }
+  if (!scopeRepos(db).has(repo)) { log(`batch ${repo}: not in the pipeline scope; nothing done`); return s; }
   mkdirSync(d.root, { recursive: true });
   const git = new BatchGit(d.exec, d.root, repo);
   const stage = db.prepare("INSERT INTO stages (repo, number, stage, at, actor, note) VALUES (?, ?, ?, ?, ?, ?)");

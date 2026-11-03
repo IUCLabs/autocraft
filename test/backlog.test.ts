@@ -37,7 +37,7 @@ const question = (id: string, kind: string, repo: string, number: number | null,
 /** Issues 1-3 and PRs 4-9 in `app`, one issue and one PR in `other`; classified and (PRs) reviewed. */
 function fresh(): DatabaseSync {
   const db = connect(join(mkdtempSync(join(dir, "db-")), "t.db"));
-  for (const r of REPOS) db.prepare("INSERT OR IGNORE INTO tracked_repos (name, added_by, added_at) VALUES (?, 'op', ?)").run(r, T0);
+  for (const r of REPOS) db.prepare("INSERT OR IGNORE INTO tracked_repos (name, added_by, added_at, pipeline) VALUES (?, 'op', ?, 1)").run(r, T0);
   db.prepare("INSERT INTO access (login, role) VALUES ('op', 'operator'), ('viewer', 'viewer')").run();
   const item = db.prepare(`INSERT INTO items (repo, number, kind, state, title, author, head_oid, additions, deletions, changed_files, created_at, updated_at)
     VALUES (?, ?, ?, 'OPEN', ?, 'stranger', ?, 10, 0, 1, '${T0}', '${T0}')`);
@@ -153,7 +153,7 @@ describe("Backlog", () => {
     db.prepare("UPDATE decisions SET answer = 'yes', answered_by = 'op', answered_at = ? WHERE id = 'done'").run(T1);
     // No pilot set: nothing is outside it.
     assert.deepEqual(backlogOpen(db, { outsidePilot: true }, "cli", true).decisions, []);
-    setPilot(db, "op", ["app"]);
+    setPilot(db, "op", ["app#1", "app#2"]);
     const dry = backlogOpen(db, { outsidePilot: true }, "cli", false);
     assert.deepEqual(dry.decisions.map((d) => d.id).sort(), ["o1", "o2"]);
     assert.equal((db.prepare("SELECT COUNT(*) AS n FROM decisions WHERE answer = 'backlog'").get() as { n: number }).n, 0);
@@ -177,7 +177,7 @@ describe("Backlog", () => {
     stage.run("other", 1, "classified", T0, "classify", null);
     stage.run("other", 1, "needs-decision", T1, "decide", "scope decision o1");
     db.prepare("INSERT INTO decision_comments (id, decision_id, login, at, body) VALUES ('c1', 'o1', 'op', ?, 'x')").run(T1);
-    setPilot(db, "op", ["app"]);
+    setPilot(db, "op", ["app#1", "app#2"]);
     assert.deepEqual(withdrawOpen(db, { outsidePilot: true }, "cli", false).decisions.map((d) => d.id), ["o1"], "scope only");
     assert.ok(getDecision(db, "o1"), "dry run keeps it");
     withdrawOpen(db, { outsidePilot: true }, "cli", true);

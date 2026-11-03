@@ -9,7 +9,7 @@ import { Button } from "../../ui/Button";
 import { cn } from "../../ui/cn";
 import { useIsPhone } from "../../shell/useMedia";
 import { Block, ErrorLine, Page, SortTh, TextInput, useWrite } from "./parts";
-import { WriteBadges, maybe, synced } from "./repoParts";
+import { PipelineBadge, WriteBadges, maybe, synced } from "./repoParts";
 import { repoDetailView } from "./repoDetail";
 import { useNow } from "../../lib/useNow";
 
@@ -82,6 +82,7 @@ function Table({ rows }: { rows: TrackedRepo[] }) {
         <tr className="border-b border-line">
           <SortTh className="w-[220px]">Repo</SortTh>
           <SortTh className="w-[120px]">Status</SortTh>
+          <SortTh className="w-[90px]">Pipeline</SortTh>
           <SortTh right className="w-[100px]">Open PRs</SortTh>
           <SortTh right className="w-[110px]">Open issues</SortTh>
           <SortTh className="w-[150px] pl-6">Last synced</SortTh>
@@ -97,6 +98,9 @@ function Table({ rows }: { rows: TrackedRepo[] }) {
               </Link>
             </td>
             <td className="px-3">{r.tracked ? <Badge tone="ok">Tracked</Badge> : <Badge>Not tracked</Badge>}</td>
+            <td className="px-3">
+              <PipelineBadge r={r} />
+            </td>
             <td className="num px-3 text-right">{maybe(r.openPrs)}</td>
             <td className="num px-3 text-right">{maybe(r.openIssues)}</td>
             <td className="px-3 pl-6 text-ink/60" title={r.syncedAt ?? undefined}>
@@ -120,6 +124,7 @@ function Cards({ rows }: { rows: TrackedRepo[] }) {
             <div className="flex items-center gap-2">
               <span className="code truncate">{r.name}</span>
               {r.tracked ? <Badge tone="ok">Tracked</Badge> : <Badge>Not tracked</Badge>}
+              {r.tracked && <PipelineBadge r={r} />}
             </div>
             <div className="num mt-0.5 text-xs text-ink/55">
               {maybe(r.openPrs)} PRs · {maybe(r.openIssues)} issues · synced {synced(r)}

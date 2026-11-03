@@ -58,5 +58,21 @@ export function Toggle({ r, write }: { r: TrackedRepo; write: Write }) {
   return <ConfirmButton label="Untrack" confirmLabel="Untrack: hides its items" loading={write.busy === key} onConfirm={() => void write.run(key, () => api.repoAdmin.untrack(r.name))} />;
 }
 
+export function PipelineBadge({ r }: { r: TrackedRepo }) {
+  if (!r.tracked) return <span className="text-ink/40">–</span>;
+  return r.pipeline ? <Badge tone="ok">On</Badge> : <Badge>Off</Badge>;
+}
+
+export function PipelineToggle({ r, write }: { r: TrackedRepo; write: Write }) {
+  const api = useApi();
+  const key = `pipeline:${r.name}`;
+  if (!r.tracked) return null;
+  return r.pipeline ? (
+    <ConfirmButton label="Pipeline off" confirmLabel="Stop the pipeline here: sync only" loading={write.busy === key} onConfirm={() => void write.run(key, () => api.repoAdmin.setPipeline(r.name, false))} />
+  ) : (
+    <ConfirmButton label="Pipeline on" confirmLabel="Run the pipeline stages here" loading={write.busy === key} onConfirm={() => void write.run(key, () => api.repoAdmin.setPipeline(r.name, true))} />
+  );
+}
+
 export const synced = (r: TrackedRepo) => (r.syncedAt ? `${ago(r.syncedAt, false)}` : "never");
 export const maybe = (n: number | null) => (n === null ? "–" : num(n));

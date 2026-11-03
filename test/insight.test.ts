@@ -70,7 +70,7 @@ describe("insight", () => {
   });
 
   test("cost for a viewer leaves out hidden repos in every figure", async () => {
-    db.exec("DELETE FROM tracked_repos; DELETE FROM repos; INSERT INTO tracked_repos (name) VALUES ('photocraft'), ('vault'); INSERT INTO repos (name, visibility) VALUES ('photocraft', 'public'), ('vault', 'internal')");
+    db.exec("DELETE FROM tracked_repos; DELETE FROM repos; INSERT INTO tracked_repos (name, pipeline) VALUES ('photocraft', 1), ('vault', 1); INSERT INTO repos (name, visibility) VALUES ('photocraft', 'public'), ('vault', 'internal')");
     db.prepare("INSERT INTO token_usage (run_id, agent, stage, model, repo, items, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, started_at, ended_at, cost_usd) VALUES ('r1','a3','review','opus','vault',1,1000,0,0,0,'2026-11-01T10:04:00Z','2026-11-01T10:05:00Z',9)").run();
     try {
       const viewer = { query: new URLSearchParams("run=r1"), user: { login: "v", role: "viewer", canRead: async () => false } } as unknown as Req;

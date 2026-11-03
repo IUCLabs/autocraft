@@ -13,7 +13,7 @@ import { SCRATCH } from "./scratch.ts";
 mkdirSync(SCRATCH, { recursive: true });
 const db = connect(join(mkdtempSync(join(SCRATCH, "referee-test-")), "t.db"));
 useTestAccount(db);
-db.prepare("INSERT OR IGNORE INTO tracked_repos (name) VALUES ('app')").run();
+db.prepare("INSERT OR IGNORE INTO tracked_repos (name, pipeline) VALUES ('app', 1)").run();
 
 const T = (n: number) => `2026-01-01T00:00:0${n}Z`;
 // n: [jev label, haiku label]

@@ -43,7 +43,7 @@ function fresh(head: string, o: Opts = {}): DatabaseSync {
     .run(o.reviewHead ?? head, o.verdict ?? "take-fix", FIXES);
   db.prepare(`INSERT INTO pr_checks (repo, number, head_oid, state, is_draft, overall, checks, mergeable, maintainer_can_modify, fetched_at)
     VALUES ('app', 7, ?, 'OPEN', 0, 'success', '[]', ?, ?, '${T1}')`).run(head, o.mergeable ?? "MERGEABLE", o.canModify === false ? 0 : 1);
-  db.prepare("INSERT INTO tracked_repos (name, added_by, added_at) VALUES ('app', 'op', ?) ON CONFLICT DO NOTHING").run(T0);
+  db.prepare("INSERT INTO tracked_repos (name, added_by, added_at, pipeline) VALUES ('app', 'op', ?, 1) ON CONFLICT DO NOTHING").run(T0);
   if (o.approved !== false) setPushApproval(db, "op", "app", true);
   finalizeReviews(db);
   return db;

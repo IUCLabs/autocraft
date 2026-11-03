@@ -40,6 +40,7 @@ const ASKED = ["photocraft#1", "photocraft#2", "filmcraft#10"];
 
 function fixture(): DatabaseSync {
   const db = connect(join(mkdtempSync(join(SCRATCH, "decide-test-")), "t.db"));
+  db.exec("INSERT OR IGNORE INTO tracked_repos (name, pipeline) VALUES ('app', 1); UPDATE tracked_repos SET pipeline = 1");
   useTestAccount(db);
   const item = db.prepare(`INSERT INTO items (repo, number, kind, state, title, body, author, created_at, updated_at, is_draft, labels, additions, deletions, changed_files, comments_count)
     VALUES (?, ?, ?, ?, ?, ?, 'someone', ?, ?, ?, '["enhancement"]', 10, 2, 1, 2)`);

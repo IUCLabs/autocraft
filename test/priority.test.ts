@@ -67,6 +67,7 @@ function fake(calls: Call[], impacts: Record<string, string>, p: number): Runner
 
 function fixture(): DatabaseSync {
   const db = connect(join(mkdtempSync(join(SCRATCH, "priority-test-")), "t.db"));
+  db.exec("INSERT OR IGNORE INTO tracked_repos (name, pipeline) VALUES ('app', 1); UPDATE tracked_repos SET pipeline = 1");
   useTestAccount(db);
   const item = db.prepare(`INSERT INTO items (repo, number, kind, state, title, body, author, created_at, updated_at, comments_count, head_oid)
     VALUES ('photocraft', ?, ?, 'OPEN', ?, ?, 'someone', ?, ?, ?, ?)`);
@@ -143,6 +144,7 @@ describe("prioritize", () => {
 describe("ordering and API", () => {
   test("decide, review, verify and fix-up candidates take the highest score first; unscored last", () => {
     const db = connect(join(mkdtempSync(join(SCRATCH, "priority-order-")), "t.db"));
+    db.exec("INSERT OR IGNORE INTO tracked_repos (name, pipeline) VALUES ('app', 1); UPDATE tracked_repos SET pipeline = 1");
     const item = db.prepare(`INSERT INTO items (repo, number, kind, state, title, body, author, created_at, updated_at, head_oid, is_draft, additions, deletions, changed_files)
       VALUES ('photocraft', ?, 'pr', 'OPEN', 't', 'b', 'a', ?, ?, ?, 0, 5, 5, 1)`);
     const prio = db.prepare("INSERT INTO item_priority (repo, number, text_hash, impact, score, model, at) VALUES ('photocraft', ?, 'h', 'P2', ?, 'jev', 'x')");

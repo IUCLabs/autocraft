@@ -18,6 +18,7 @@ after(() => rmSync(dir, { recursive: true, force: true }));
 const RUN = "org-1";
 function setup(name: string) {
   const db = connect(join(dir, `${name}.db`));
+  db.exec("INSERT OR IGNORE INTO tracked_repos (name, pipeline) VALUES ('app', 1); UPDATE tracked_repos SET pipeline = 1");
   const item = db.prepare("INSERT INTO items (repo, number, kind, state, title, url, labels) VALUES ('app', ?, 'pr', 'OPEN', 't', 'u', ?)");
   const cls = db.prepare("INSERT INTO classifications (repo, number, classifier, run_id, at, type_label, flags, probs) VALUES ('app', ?, ?, ?, '2026-01-01T00:00:00Z', ?, ?, ?)");
   const jev = (n: number, type: string, top: number, flags: string[] = []) => cls.run(n, "jev", RUN, type, JSON.stringify(flags), JSON.stringify({ top }));
@@ -95,7 +96,6 @@ describe("labels apply", () => {
 
   test("approved: batches mutations, writes stages and one audit row per batch, and resumes", async () => {
     const { db, item, jev } = setup("apply");
-    db.exec("INSERT INTO tracked_repos (name) VALUES ('app')");
     const n = BATCH + 3;
     for (let i = 1; i <= n; i++) { item.run(i, "[]"); jev(i, "bugfix", 0.99, i === 1 ? ["security"] : []); }
     setApproval(db, "boss", "app", true);

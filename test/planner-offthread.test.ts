@@ -25,6 +25,7 @@ describe("planner off the runner loop", () => {
   test("a slow detection does not delay ticks; one pass at a time; its result is queued by a later tick", async () => {
     const file = join(dir, "slow.db");
     const db = connect(file);
+    db.exec("INSERT OR IGNORE INTO tracked_repos (name, pipeline) VALUES ('app', 1); UPDATE tracked_repos SET pipeline = 1");
     setEnabled(db, true, "boss");
     let calls = 0;
     const detect = async () => {
@@ -57,6 +58,7 @@ describe("planner off the runner loop", () => {
   test("the default detection runs on a worker thread with its own connection and finds the work", async () => {
     const file = join(dir, "worker.db");
     const db = connect(file);
+    db.exec("INSERT OR IGNORE INTO tracked_repos (name, pipeline) VALUES ('app', 1); UPDATE tracked_repos SET pipeline = 1");
     setEnabled(db, true, "boss");
     const logs: string[] = [];
     const runner = new Runner({ db, dbFile: file, logs: join(dir, "logs"), maxJobs: 0, log: (l) => logs.push(l), refreshFlow: async () => [] });
@@ -89,6 +91,7 @@ describe("classification run resolved once", () => {
 
   test("review candidates and the merge queue with a given run never look the run up; a pass looks it up once per kind", () => {
     const db = connect(join(dir, "run.db"));
+    db.exec("INSERT OR IGNORE INTO tracked_repos (name, pipeline) VALUES ('app', 1); UPDATE tracked_repos SET pipeline = 1");
     for (let n = 1; n <= 30; n++) {
       db.prepare(`INSERT INTO items (repo, number, kind, state, title, body, is_draft, additions, deletions, changed_files, head_oid, created_at, updated_at)
         VALUES ('app', ?, 'pr', 'OPEN', 't', 'b', 0, 5, 0, 1, ?, '${T0}', '${T0}')`).run(n, `sha${n}`);
@@ -115,7 +118,7 @@ describe("jobs table at scale", () => {
     const file = join(dir, "jobs.db");
     let db = connect(file);
     db.prepare("INSERT INTO repos (name, synced_at) VALUES ('app', ?)").run(T0);
-    db.prepare("INSERT OR IGNORE INTO tracked_repos (name) VALUES ('app')").run();
+    db.prepare("INSERT OR IGNORE INTO tracked_repos (name, pipeline) VALUES ('app', 1)").run();
     const job = await enqueue(db, "test-limited", { limit: 5 }, "boss");
     assert.equal(job.params.limit, 5);
     const old = new Date(Date.now() - JOB_KEEP_MS - 1000).toISOString();

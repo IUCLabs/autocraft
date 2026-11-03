@@ -63,7 +63,7 @@ describe("runRank", () => {
   test("ranks open tracked items from stored results; an issue takes the triage size", () => {
     const db = connect(join(dir, "r.db"));
     db.exec("INSERT INTO repos (name, visibility) VALUES ('app', 'public')");
-    db.exec("INSERT INTO tracked_repos (name, added_by, added_at) VALUES ('app', 'op', 'x')");
+    db.exec("INSERT INTO tracked_repos (name, added_by, added_at, pipeline) VALUES ('app', 'op', 'x', 1)");
     const item = db.prepare("INSERT INTO items (repo, number, kind, state, title, additions, deletions) VALUES ('app', ?, ?, ?, 't', ?, ?)");
     item.run(1, "pr", "OPEN", 10, 5);
     item.run(2, "pr", "OPEN", 900, 400);

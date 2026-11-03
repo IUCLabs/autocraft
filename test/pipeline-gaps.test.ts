@@ -30,7 +30,7 @@ function fresh(): DatabaseSync {
   const db = connect(join(mkdtempSync(join(dir, "db-")), "t.db"));
   db.prepare("INSERT INTO access (login, role) VALUES ('op', 'operator')").run();
   db.prepare("INSERT INTO whitelist_overrides (login, status, by, at) VALUES ('regular', 'allow', 'op', ?)").run(T0);
-  db.prepare("INSERT INTO tracked_repos (name) VALUES ('app')").run();
+  db.prepare("INSERT INTO tracked_repos (name, pipeline) VALUES ('app', 1)").run();
   return db;
 }
 

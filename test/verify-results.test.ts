@@ -29,6 +29,7 @@ type Ctl = { db: ReturnType<typeof connect>; calls: string[]; deps: CollectDeps;
 /** A database with an open PR app#1 at HEAD and a fake summariser. */
 function setup(answer: string | null = "test core::it_works failed: assertion left == right"): Ctl {
   const db = connect(join(mkdtempSync(join(dir, "db-")), "t.db"));
+  db.exec("INSERT OR IGNORE INTO tracked_repos (name, pipeline) VALUES ('app', 1)");
   useTestAccount(db);
   db.exec("INSERT INTO repos (name, visibility, default_branch) VALUES ('app', 'public', 'main')");
   db.prepare(`INSERT INTO items (repo, number, kind, state, title, body, is_draft, additions, deletions, changed_files, head_oid, created_at, updated_at)

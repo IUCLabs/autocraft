@@ -17,7 +17,7 @@ const T0 = "2026-01-01T00:00:00Z";
 
 function fresh(): DatabaseSync {
   const db = connect(join(mkdtempSync(join(dir, "db-")), "t.db"));
-  db.prepare("INSERT OR IGNORE INTO tracked_repos (name, added_by, added_at) VALUES ('app', 'op', ?)").run(T0);
+  db.prepare("INSERT OR IGNORE INTO tracked_repos (name, added_by, added_at, pipeline) VALUES ('app', 'op', ?, 1)").run(T0);
   const item = db.prepare(`INSERT INTO items (repo, number, kind, state, title, body, author, head_oid, embed_hash, created_at, updated_at)
     VALUES ('app', ?, ?, 'OPEN', ?, 'body', 'someone', ?, ?, '${T0}', '${T0}')`);
   item.run(1, "issue", "Crash on TIFF", null, "h1");

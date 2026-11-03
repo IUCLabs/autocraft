@@ -55,7 +55,7 @@ before(async () => {
   db.prepare("INSERT INTO classifications (repo, number, classifier, run_id, at, type_label) VALUES ('filmcraft', 3, 'haiku', 'r1', ?, 'infra')").run(now);
   db.exec("INSERT OR REPLACE INTO repos (name, visibility) VALUES ('photocraft', 'public'), ('filmcraft', 'public')");
   db.exec("DELETE FROM tracked_repos");
-  db.exec("INSERT INTO tracked_repos (name) VALUES ('photocraft'), ('filmcraft')");
+  db.exec("INSERT INTO tracked_repos (name, pipeline) VALUES ('photocraft', 1), ('filmcraft', 1)");
   addLogin(db, "cli", "viewer1", "viewer", null);
   await embedItems(db, fakeEmbedder());
   scopeToTracked(db);

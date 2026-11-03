@@ -24,6 +24,7 @@ const MAIN2 = "b".repeat(40);
 
 function fresh(prs: { n: number; author?: string }[]): DatabaseSync {
   const db = connect(join(mkdtempSync(join(dir, "db-")), "t.db"));
+  db.exec("INSERT OR IGNORE INTO tracked_repos (name, pipeline) VALUES ('app', 1); UPDATE tracked_repos SET pipeline = 1");
   for (const p of prs) {
     db.prepare(`INSERT INTO items (repo, number, kind, state, title, author, additions, deletions, head_oid, created_at, updated_at) VALUES ('app', ?, 'pr', 'OPEN', ?, ?, 20, 0, ?, '${T0}', '${T0}')`).run(p.n, `PR ${p.n}`, p.author ?? "regular", `sha${p.n}`);
     db.prepare(`INSERT INTO classifications (repo, number, classifier, run_id, at, type_label, flags, probs) VALUES ('app', ?, 'jev', 'r1', '${T0}', 'bugfix', '[]', '{"top":0.95}')`).run(p.n);
@@ -129,7 +130,7 @@ const newDb = () => connect(join(mkdtempSync(join(dir, "db-")), "t.db"));
 describe("labels", () => {
   test("a PR that GitHub reports MERGED is not labelled and its mirror row is updated", async () => {
     const db = newDb();
-    db.exec("INSERT INTO tracked_repos (name) VALUES ('app')");
+    db.exec("INSERT INTO tracked_repos (name, pipeline) VALUES ('app', 1)");
     for (const n of [1, 2]) {
       db.prepare("INSERT INTO items (repo, number, kind, state, title, url, labels) VALUES ('app', ?, 'pr', 'OPEN', 't', 'u', '[]')").run(n);
       db.prepare("INSERT INTO classifications (repo, number, classifier, run_id, at, type_label, flags, probs) VALUES ('app', ?, 'jev', 'org-1', ?, 'bugfix', '[]', '{\"top\":0.99}')").run(n, T0);
@@ -170,7 +171,7 @@ describe("fixissue", () => {
   test("a live CLOSED issue gets no PR and no comment; the attempt fails like the mirror's closed path", async () => {
     const db = newDb();
     db.prepare("INSERT INTO repos (name, visibility, default_branch) VALUES ('app', 'public', 'main')").run();
-    db.prepare("INSERT INTO tracked_repos (name, added_by, added_at) VALUES ('app', 'op', ?)").run(T0);
+    db.prepare("INSERT INTO tracked_repos (name, added_by, added_at, pipeline) VALUES ('app', 'op', ?, 1)").run(T0);
     db.prepare("INSERT INTO items (repo, number, kind, state, title, body, author, created_at, updated_at) VALUES ('app', 5, 'issue', 'OPEN', 'Panic', 'b', 'someone', ?, ?)").run(T0, T0);
     setFixIssueApproval(db, "op", "app", true);
     db.prepare("INSERT INTO fix_attempts (repo, number, main_sha, text_hash, state, round, files, crate_dir, patch, created_at, updated_at) VALUES ('app', 5, 'm', 'h', 'passed', 1, '[]', 'crates/app', 'p', ?, ?)").run(T0, T0);
@@ -200,7 +201,7 @@ describe("opus review", () => {
     db.prepare(`INSERT INTO items (repo, number, kind, state, title, author, additions, deletions, head_oid, created_at, updated_at) VALUES ('app', 1, 'pr', 'OPEN', 'PR 1', 'regular', 5, 0, 'sha1a', '${T0}', '${T0}')`).run();
     db.prepare(`INSERT INTO reviews (repo, number, head_oid, run_id, at, model, size, verdict, reason) VALUES ('app', 1, 'sha1a', 'rv', '${T0}', 'sonnet', 'S', 'take', 'ok')`).run();
     db.prepare(`INSERT INTO pr_checks (repo, number, head_oid, state, is_draft, overall, checks, mergeable, maintainer_can_modify, fetched_at) VALUES ('app', 1, 'sha1a', 'OPEN', 0, 'success', '[]', 'MERGEABLE', 1, '${T1}')`).run();
-    db.prepare("INSERT INTO tracked_repos (name, added_by, added_at) VALUES ('app', 'op', ?) ON CONFLICT DO NOTHING").run(T0);
+    db.prepare("INSERT INTO tracked_repos (name, added_by, added_at, pipeline) VALUES ('app', 'op', ?, 1) ON CONFLICT DO NOTHING").run(T0);
     return db;
   };
   const deps = (liveHead: string): OpusDeps => ({
@@ -261,7 +262,7 @@ describe("fixup", () => {
     db.prepare(`INSERT INTO reviews (repo, number, head_oid, run_id, at, model, size, verdict, reason, fixes) VALUES ('app', 7, ?, 'rv', '${T0}', 'm', 'S', 'take-fix', 'nearly right', ?)`)
       .run(head, JSON.stringify([{ file: "src/lib.rs", change: "rename a to b" }]));
     db.prepare(`INSERT INTO pr_checks (repo, number, head_oid, state, is_draft, overall, checks, mergeable, maintainer_can_modify, fetched_at) VALUES ('app', 7, ?, 'OPEN', 0, 'success', '[]', 'MERGEABLE', 1, '${T1}')`).run(head);
-    db.prepare("INSERT INTO tracked_repos (name, added_by, added_at) VALUES ('app', 'op', ?) ON CONFLICT DO NOTHING").run(T0);
+    db.prepare("INSERT INTO tracked_repos (name, added_by, added_at, pipeline) VALUES ('app', 'op', ?, 1) ON CONFLICT DO NOTHING").run(T0);
     setPushApproval(db, "op", "app", true);
     finalizeReviews(db);
 

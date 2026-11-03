@@ -18,7 +18,7 @@ const T = "2026-01-01T00:00:00Z";
 function fresh(): DatabaseSync {
   const db = connect(join(mkdtempSync(join(dir, "db-")), "t.db"));
   db.prepare("INSERT INTO access (login, role) VALUES ('op', 'operator')").run();
-  db.prepare("INSERT INTO tracked_repos (name) VALUES ('app')").run();
+  db.prepare("INSERT INTO tracked_repos (name, pipeline) VALUES ('app', 1)").run();
   db.prepare("INSERT INTO whitelist_overrides (login, status, by, at) VALUES ('regular', 'allow', 'op', ?)").run(T);
   for (const n of [1, 2]) {
     db.prepare(`INSERT INTO items (repo, number, kind, state, title, author, additions, deletions, head_oid, labels, created_at, updated_at)

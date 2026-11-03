@@ -610,6 +610,8 @@ export interface TrackedRepo {
   commenting: RepoApproval | null;
   /** Fix issues: pushes to the pipeline's fork and opens PRs and comments for issue fixes. */
   fixing: RepoApproval | null;
+  /** Whether the pipeline stages run on this repo; off means sync only. False for repos that are not tracked. */
+  pipeline: boolean;
 }
 
 export interface AccessEntry {

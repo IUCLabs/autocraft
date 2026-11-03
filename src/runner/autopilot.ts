@@ -43,7 +43,7 @@ import { currentRun, dueItems, haikuDue } from "./classify.ts";
 import { enqueue, JobError, now, requestCancel, RUNNER_STOPPED } from "./jobs.ts";
 import { claudePauseReason } from "../agents/accounts.ts";
 import { knownStep, loadSteps, modelsOf, usesClaude, type Params } from "./steps.ts";
-import { pilotItems, pilotRepos } from "../pilot.ts";
+import { pilotItems, scopeRepos } from "../pilot.ts";
 
 /** Fallback only: the planner normally runs on a content change, a finished job or a release. */
 export const PLAN_EVERY_MS = 5 * 60_000;
@@ -108,10 +108,10 @@ export type PlanCtx = {
   notes?: Record<string, string>;
 };
 
-/** With a pilot, only the repos it names are planned for; a job for another repo is never proposed. */
+/** Only the repos in scope (pipeline on, narrowed by the pilot) are planned for; a job for another repo is never proposed. */
 export const planCtx = (db: DatabaseSync): PlanCtx => {
-  const pilot = pilotRepos(db);
-  return { run: currentRun(db), jevRun: latestJevRun(db), tracked: trackedNames(db).filter((r) => !pilot || pilot.has(r)), wake: [], notes: {} };
+  const scope = scopeRepos(db);
+  return { run: currentRun(db), jevRun: latestJevRun(db), tracked: trackedNames(db).filter((r) => scope.has(r)), wake: [], notes: {} };
 };
 
 /** Topics whose changes call for a plan: content the stages read. Job logs, usage, agent runs, sandbox environments and tasks, and audit entries do not. */
@@ -579,7 +579,7 @@ export async function detectAutopilot(db: DatabaseSync, opts: PlanOptions = {}):
   const steps = await loadSteps();
   const proposals: Proposal[] = [];
   const ctx = planCtx(db);
-  const pilot = pilotRepos(db);
+  const scope = scopeRepos(db);
   const seqs = readSeqs(db);
   const status: Record<string, string> = {};
   // Pause and limit do not change during the pass: one answer per step.
@@ -649,8 +649,8 @@ export async function detectAutopilot(db: DatabaseSync, opts: PlanOptions = {}):
       if (!candidates.length) { for (const s of lane.steps ?? []) note(s, "nothing to do"); continue; }
       let taken = 0;
       for (const c of candidates) {
-        const outside = [c, c.gate].find((x) => x && typeof x.params.repo === "string" && pilot && !pilot.has(x.params.repo));
-        if (outside) { note(outside.step, "outside the pilot"); continue; }
+        const outside = [c, c.gate].find((x) => x && typeof x.params.repo === "string" && !scope.has(x.params.repo));
+        if (outside) { note(outside.step, "outside the pipeline scope"); continue; }
         if (c.gate && !gate(c.gate.step, c.gate.params, lane, c.gate.poll)) continue;
         const g = gate(c.step, c.params, lane, c.poll);
         if (!g) continue;

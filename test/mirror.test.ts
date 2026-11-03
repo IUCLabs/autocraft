@@ -61,7 +61,7 @@ function scratch() {
   const dir = mkdtempSync(join(SCRATCH, "fastsync-"));
   const db = connect(join(dir, "m.db"));
   db.exec("DELETE FROM tracked_repos");
-  db.exec("INSERT INTO tracked_repos VALUES ('a','t','x'),('b','t','x')");
+  db.exec("INSERT INTO tracked_repos VALUES ('a','t','x', 1),('b','t','x', 1)");
   db.exec("INSERT INTO repos (name, synced_at, high_water, reconciled_at) VALUES ('a','2026-11-02T09:00:00Z','2026-11-02T09:00:00Z','2026-11-02T09:00:00Z'),('b','2026-11-02T09:00:00Z','2026-11-02T09:00:00Z','2026-11-02T09:00:00Z')");
   db.exec("INSERT INTO settings VALUES ('org_high_water','2026-11-02T09:30:00Z'),('repos_refreshed_at','2999-01-01T00:00:00Z'),('search_catchup_at','2999-01-01T00:00:00Z')");
   return { dir, db };

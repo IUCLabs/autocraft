@@ -52,7 +52,7 @@ describe("item_stage", () => {
 describe("keyset paging", () => {
   test("the queue pages by repo and number, and lists merged PRs only on request", async () => {
     const db = fresh();
-    db.prepare("INSERT OR IGNORE INTO tracked_repos (name) VALUES ('app')").run();
+    db.prepare("INSERT OR IGNORE INTO tracked_repos (name, pipeline) VALUES ('app', 1)").run();
     const item = db.prepare("INSERT INTO items (repo, number, kind, state, title, author, head_oid, created_at, updated_at) VALUES ('app', ?, 'pr', ?, ?, 'a', ?, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')");
     const review = db.prepare("INSERT INTO reviews (repo, number, head_oid, run_id, at, size, verdict, reason) VALUES ('app', ?, ?, 'r', '2026-01-01T00:00:00Z', 'S', 'take', 'ok')");
     for (let n = 1; n <= 5; n++) { item.run(n, "OPEN", `PR ${n}`, `h${n}`); review.run(n, `h${n}`); }
@@ -76,7 +76,7 @@ describe("keyset paging", () => {
 
   test("decisions page in SQL by asked time, with filters and whole-list counts", async () => {
     const db = fresh();
-    db.prepare("INSERT OR IGNORE INTO tracked_repos (name) VALUES ('app'), ('other')").run();
+    db.prepare("INSERT OR IGNORE INTO tracked_repos (name, pipeline) VALUES ('app', 1), ('other', 1)").run();
     const opts = [{ key: "a", label: "A" }, { key: "b", label: "B" }];
     ask(db, [1, 2, 3, 4, 5].map((n) => ({
       id: `app#${n}:scope`, kind: n % 2 ? "scope" : "close", repo: n === 5 ? "other" : "app", number: n, question: "Q?", options: opts,
@@ -109,7 +109,7 @@ describe("keyset paging", () => {
 describe("vector index", () => {
   test("loads incrementally, takes rewritten rows, and finds the nearest by cosine", async () => {
     const db = fresh();
-    db.prepare("INSERT OR IGNORE INTO tracked_repos (name) VALUES ('app')").run();
+    db.prepare("INSERT OR IGNORE INTO tracked_repos (name, pipeline) VALUES ('app', 1)").run();
     const dim = 8;
     const unit = (i: number): Float32Array => { const v = new Float32Array(dim); v[i % dim] = 1; return v; };
     const put = db.prepare("INSERT OR REPLACE INTO item_embeddings (repo, number, model, hash, vec, at) VALUES ('app', ?, 'm', 'h', ?, 't')");

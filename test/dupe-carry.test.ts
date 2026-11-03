@@ -36,7 +36,7 @@ function git(cwd: string, ...args: string[]): string {
 /** Kept PR #7 at `head`, closed duplicate #8 with a carry point, one queued carry job. */
 function fresh(head: string, o: { canModify?: boolean; push?: boolean; comment?: boolean } = {}): DatabaseSync {
   const db = connect(join(mkdtempSync(join(dir, "db-")), "t.db"));
-  db.prepare("INSERT INTO tracked_repos (name, added_by, added_at) VALUES ('app', 'op', ?) ON CONFLICT DO NOTHING").run(T0);
+  db.prepare("INSERT INTO tracked_repos (name, added_by, added_at, pipeline) VALUES ('app', 'op', ?, 1) ON CONFLICT DO NOTHING").run(T0);
   const item = db.prepare(`INSERT INTO items (repo, number, kind, state, title, author, head_oid, created_at, updated_at) VALUES ('app', ?, 'pr', ?, ?, 'someone', ?, '${T0}', '${T0}')`);
   item.run(7, "OPEN", "Kept", head);
   item.run(8, "CLOSED", "Duplicate", "sha8");

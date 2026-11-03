@@ -123,7 +123,7 @@ export const commands = {
 const PIPELINE_USAGE = `usage: craft-auto pipeline on | off | status
        craft-auto pipeline limit <step> --per-day <N|none>
        craft-auto pipeline limit reset <step>|--all
-       craft-auto pipeline pilot set <repo#number|repo>... | show | clear`;
+       craft-auto pipeline pilot set <repo#number>... | show | clear`;
 
 // Recorded as `cli`: only someone with a shell on the host can run this.
 async function pipeline(args: string[]): Promise<void> {

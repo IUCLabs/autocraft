@@ -45,6 +45,7 @@ const ADDED_COLUMNS: [table: string, column: string, type: string][] = [
   ["decisions", "recommend_failures", "INTEGER"],
   ["decisions", "recommend_failed_at", "TEXT"],
   ["decisions", "recommended_by", "TEXT"],
+  ["tracked_repos", "pipeline", "INTEGER NOT NULL DEFAULT 0"],
 ];
 
 // Indexes on added columns: they can only be created once the column exists.
@@ -65,7 +66,7 @@ const ADDED_INDEXES = [
 ];
 
 // Bump when migrateValues() or backfill() change what they do.
-const MIGRATION_VERSION = 2;
+const MIGRATION_VERSION = 3;
 
 // Rows written before their column existed.
 function backfill(db: DatabaseSync): void {
@@ -97,10 +98,32 @@ function migrateValues(db: DatabaseSync): void {
   // Scope recommendations written by the old label mapping (no model behind them) are dropped from open decisions.
   const MECHANICAL = "kind = 'scope' AND answer IS NULL AND recommended IS NOT NULL AND recommended_by IS NULL";
   if (db.prepare(`SELECT 1 FROM main.decisions WHERE ${MECHANICAL} LIMIT 1`).get()) db.exec(`UPDATE main.decisions SET recommended = NULL WHERE ${MECHANICAL}`);
+  // Whole-repo pilot entries became the repo's pipeline flag.
+  const pilot = db.prepare("SELECT value FROM main.settings WHERE key = 'pilot_items'").get() as { value: string } | undefined;
+  if (pilot) wholeRepoPilot(db, pilot.value);
   // Jev usage saved without a cost is priced from its input tokens.
   const JEV_UNPRICED = "model LIKE 'jev%' AND cost_usd IS NULL AND input_tokens IS NOT NULL";
   if (db.prepare(`SELECT 1 FROM main.token_usage WHERE ${JEV_UNPRICED} LIMIT 1`).get()) {
     db.prepare(`UPDATE main.token_usage SET cost_usd = input_tokens * ? WHERE ${JEV_UNPRICED}`).run(JEV_USD_PER_INPUT_TOKEN);
+  }
+}
+
+function wholeRepoPilot(db: DatabaseSync, value: string): void {
+  let items: unknown;
+  try { items = JSON.parse(value); } catch { return; }
+  if (!Array.isArray(items)) return;
+  const whole = items.filter((x): x is string => typeof x === "string" && !x.includes("#"));
+  if (!whole.length) return;
+  const keep = items.filter((x) => !whole.includes(x as string));
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    for (const r of whole) db.prepare("UPDATE main.tracked_repos SET pipeline = 1 WHERE name = ?").run(r);
+    if (keep.length) db.prepare("UPDATE main.settings SET value = ? WHERE key = 'pilot_items'").run(JSON.stringify(keep));
+    else db.exec("DELETE FROM main.settings WHERE key = 'pilot_items'");
+    db.exec("COMMIT");
+  } catch (e) {
+    db.exec("ROLLBACK");
+    throw e;
   }
 }
 

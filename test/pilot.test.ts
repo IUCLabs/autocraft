@@ -8,7 +8,7 @@ import { after, test } from "node:test";
 import { SCRATCH } from "./scratch.ts";
 
 const { connect } = await import("../src/db.ts");
-const { inPilot, pilotItems, PilotError, setPilot } = await import("../src/pilot.ts");
+const { inPilot, pilotItems, PilotError, setPilot, setRepoPipeline } = await import("../src/pilot.ts");
 const { notHeldSql } = await import("../src/dupes/held.ts");
 const { dueItems } = await import("../src/runner/classify.ts");
 const { dueItems: priorityDue, duePriorityCount } = await import("../src/priority/index.ts");
@@ -35,7 +35,7 @@ after(() => {
 });
 
 const T = "2026-11-01T00:00:00Z";
-db.exec("DELETE FROM tracked_repos; INSERT INTO tracked_repos (name) VALUES ('app')");
+db.exec("DELETE FROM tracked_repos; INSERT INTO tracked_repos (name, pipeline) VALUES ('app', 1)");
 const ins = db.prepare("INSERT INTO items (repo, number, kind, state, title, body, author, url, embed_hash, created_at, updated_at) VALUES ('app', ?, ?, 'OPEN', 't', 'b', 'someone', ?, 'h', ?, ?)");
 for (const n of [1, 2, 3, 4]) ins.run(n, "issue", `https://github.com/storytold/app/issues/${n}`, T, T);
 for (const n of [10, 11, 12]) ins.run(n, "pr", `https://github.com/storytold/app/pull/${n}`, T, T);
@@ -73,12 +73,19 @@ test("with a pilot, candidates are the listed items and the Fix PRs of listed is
   assert.equal(inPilot(db, "app", 12), false);
 });
 
-test("a pilot repo covers all its items", () => {
-  setPilot(db, "tester", ["app"]);
-  assert.deepEqual(held(), [1, 2, 3, 4, 10, 11, 12, 111]);
-  assert.equal(inPilot(db, "app", 12), true);
-  assert.equal(inPilot(db, "other", 1), false);
+test("a repo with the pipeline off has no item in scope, with or without a pilot", () => {
+  assert.ok(setRepoPipeline(db, "tester", "app", false));
+  assert.deepEqual(held(), []);
+  assert.equal(inPilot(db, "app", 12), false);
+  assert.equal(duePriorityCount(db), 0);
+  setPilot(db, "tester", ["app#1"]);
+  assert.deepEqual(held(), []);
   setPilot(db, "tester", []);
+  assert.equal(setRepoPipeline(db, "tester", "app", false), false, "no change, no audit");
+  setRepoPipeline(db, "tester", "app", true);
+  assert.deepEqual(held(), [1, 2, 3, 4, 10, 11, 12, 111]);
+  assert.equal(inPilot(db, "other", 1), false);
+  assert.throws(() => setRepoPipeline(db, "tester", "other", true), PilotError);
 });
 
 test("a fix retry is due only for a pilot issue", () => {
@@ -94,11 +101,13 @@ test("a fix retry is due only for a pilot issue", () => {
 test("a pilot is validated and clearing it lifts the limit", () => {
   assert.throws(() => setPilot(db, "tester", ["app-1"]), PilotError);
   assert.throws(() => setPilot(db, "tester", ["other#1"]), PilotError);
+  assert.throws(() => setPilot(db, "tester", ["app"]), /Repos page/, "a whole repo is switched with the Pipeline toggle");
   setPilot(db, "tester", []);
   assert.deepEqual(pilotItems(db), []);
   assert.deepEqual(held(), [1, 2, 3, 4, 10, 11, 12, 111]);
   const audited = db.prepare("SELECT action FROM audit WHERE action LIKE 'pilot-%' ORDER BY rowid").all() as { action: string }[];
-  assert.deepEqual(audited.map((a) => a.action), ["pilot-set", "pilot-set", "pilot-clear", "pilot-set", "pilot-set", "pilot-clear", "pilot-clear"]);
+  assert.ok(audited.some((a) => a.action === "pilot-set") && audited.some((a) => a.action === "pilot-clear"));
+  assert.ok(db.prepare("SELECT 1 FROM audit WHERE action = 'repo-pipeline' AND target = 'app'").get());
 });
 
 // ---- the stages that write to GitHub ----------------------------------------------
@@ -106,7 +115,7 @@ test("a pilot is validated and clearing it lifts the limit", () => {
 const W = connect(join(dir, "w.db"));
 const T1 = "2026-01-02T00:00:00Z";
 W.prepare("INSERT INTO repos (name, visibility, default_branch) VALUES ('app', 'public', 'main')").run();
-W.prepare("INSERT INTO tracked_repos (name, added_by, added_at) VALUES ('app', 'op', ?)").run(T1);
+W.prepare("INSERT INTO tracked_repos (name, added_by, added_at, pipeline) VALUES ('app', 'op', ?, 1)").run(T1);
 W.prepare("INSERT INTO access (login, role) VALUES ('op', 'operator')").run();
 W.prepare("INSERT INTO whitelist_overrides (login, status, by, at) VALUES ('regular', 'allow', 'op', ?)").run(T1);
 {

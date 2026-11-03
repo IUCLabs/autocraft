@@ -16,7 +16,7 @@ const req = (query: string): Req =>
 
 test("batches page newest first with their member rows, fork link and base commit", async () => {
   const db = connect(join(mkdtempSync(join(SCRATCH, "qb-")), "t.db"));
-  for (const r of ["app", "lib"]) db.prepare("INSERT OR IGNORE INTO tracked_repos (name) VALUES (?)").run(r);
+  for (const r of ["app", "lib"]) db.prepare("INSERT OR IGNORE INTO tracked_repos (name, pipeline) VALUES (?, 1)").run(r);
   const item = db.prepare("INSERT INTO items (repo, number, kind, state, title, author, head_oid, created_at, updated_at) VALUES (?, ?, 'pr', 'OPEN', ?, 'a', ?, ?, ?)");
   const review = db.prepare("INSERT INTO reviews (repo, number, head_oid, run_id, at, size, verdict, reason) VALUES (?, ?, ?, 'r', ?, 'S', 'take', 'ok')");
   for (const n of [1, 2, 3]) { item.run("app", n, `PR ${n}`, `h${n}`, T, T); review.run("app", n, `h${n}`, T); }

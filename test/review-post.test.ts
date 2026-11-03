@@ -19,8 +19,8 @@ const sha = (n: number, v = "a") => `${String(n).repeat(7)}${v}`.padEnd(40, "0")
 
 function fresh(opts: { approved?: boolean } = {}): DatabaseSync {
   const db = connect(join(mkdtempSync(join(dir, "db-")), "t.db"));
-  db.prepare("INSERT INTO tracked_repos (name, added_by, added_at) VALUES ('app', 'op', ?) ON CONFLICT DO NOTHING").run(T0);
-  db.prepare("INSERT INTO tracked_repos (name, added_by, added_at) VALUES ('other', 'op', ?) ON CONFLICT DO NOTHING").run(T0);
+  db.prepare("INSERT INTO tracked_repos (name, added_by, added_at, pipeline) VALUES ('app', 'op', ?, 1) ON CONFLICT DO NOTHING").run(T0);
+  db.prepare("INSERT INTO tracked_repos (name, added_by, added_at, pipeline) VALUES ('other', 'op', ?, 1) ON CONFLICT DO NOTHING").run(T0);
   if (opts.approved !== false) setCommentApproval(db, "op", "app", true);
   return db;
 }

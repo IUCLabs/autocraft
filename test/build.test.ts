@@ -42,7 +42,7 @@ const ids = (r: { tasks: { id: number }[] }) => r.tasks.map((t) => t.id);
 const clear = () => db.exec("DELETE FROM build_tasks; DELETE FROM build_task_logs; DELETE FROM build_artifacts");
 
 before(() => {
-  db.exec("INSERT INTO tracked_repos (name) VALUES ('open-app'), ('vault')");
+  db.exec("INSERT INTO tracked_repos (name, pipeline) VALUES ('open-app', 1), ('vault', 0)");
   db.exec("INSERT INTO repos (name, visibility) VALUES ('open-app', 'public'), ('vault', 'internal')");
 });
 after(() => {
@@ -73,17 +73,12 @@ describe("task source", () => {
 });
 
 describe("claim", () => {
-  test("with a pilot set, only pilot repos and operator smoke tests are handed out", () => {
+  test("only repos with the pipeline on and operator smoke tests are handed out", () => {
     clear();
     const e = env({ slots: 4 });
     const inside = task(), outside = task({ repo: "vault" }), smoke = task({ repo: "vault", step: "smoke-test" });
-    db.prepare("INSERT INTO settings (key, value) VALUES ('pilot_items', '[\"open-app\"]')").run();
-    try {
-      assert.deepEqual(ids(claim(db, e.id, 4)), [inside, smoke]);
-      assert.equal(getTask(db, outside)!.state, "queued");
-    } finally {
-      db.prepare("DELETE FROM settings WHERE key = 'pilot_items'").run();
-    }
+    assert.deepEqual(ids(claim(db, e.id, 4)), [inside, smoke]);
+    assert.equal(getTask(db, outside)!.state, "queued");
   });
 
   test("hands out the oldest of the highest priority, up to min(free, slots - running)", () => {

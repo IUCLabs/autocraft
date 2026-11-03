@@ -5,7 +5,7 @@ import type { ViewProps } from "../../registry/types";
 import { Badge } from "../../ui/Badge";
 import { num } from "../../lib/format";
 import { Block, ConfirmButton, ErrorLine, Page, useWrite } from "./parts";
-import { Toggle, WRITES, maybe, synced, type Write, type WriteKind } from "./repoParts";
+import { PipelineBadge, PipelineToggle, Toggle, WRITES, maybe, synced, type Write, type WriteKind } from "./repoParts";
 import { useNow } from "../../lib/useNow";
 
 function Stat({ label, value, title }: { label: string; value: string; title?: string }) {
@@ -65,6 +65,13 @@ function RepoDetailView({ params }: ViewProps) {
         </a>
         {r && (r.tracked ? <Badge tone="ok">Tracked</Badge> : <Badge>Not tracked</Badge>)}
         {r && <Toggle r={r} write={write} />}
+        {r?.tracked && (
+          <>
+            <span className="text-ink/60">Pipeline</span>
+            <PipelineBadge r={r} />
+            <PipelineToggle r={r} write={write} />
+          </>
+        )}
       </div>
       <ErrorLine error={write.error ?? error?.message} className="mt-2" />
       {!data && !error && <p className="mt-4 text-sm text-ink/50">Loading…</p>}

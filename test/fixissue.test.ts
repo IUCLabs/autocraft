@@ -56,7 +56,7 @@ type Opts = { existingPr?: string; approved?: boolean; label?: string; flags?: s
 function fresh(o: Opts = {}): DatabaseSync {
   const db = connect(join(mkdtempSync(join(dir, "db-")), "t.db"));
   db.prepare("INSERT INTO repos (name, visibility, default_branch) VALUES ('app', 'public', 'main')").run();
-  db.prepare("INSERT INTO tracked_repos (name, added_by, added_at) VALUES ('app', 'op', ?)").run(T0);
+  db.prepare("INSERT INTO tracked_repos (name, added_by, added_at, pipeline) VALUES ('app', 'op', ?, 1)").run(T0);
   issue(db, 5, "Panic when the slice is empty", "first() indexes element 0.", o);
   if (o.approved !== false) setFixIssueApproval(db, "op", "app", true);
   return db;

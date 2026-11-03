@@ -26,7 +26,7 @@ const DIFF = "diff --git a/src/a.rs b/src/a.rs\n--- a/src/a.rs\n+++ b/src/a.rs\n
 type Spec = { n: number; kind?: "pr" | "issue"; state?: string; created?: string; comments?: number; closing?: number[] };
 function fresh(specs: Spec[], pairs: [number, number][]): DatabaseSync {
   const db = connect(join(mkdtempSync(join(dir, "db-")), "t.db"));
-  db.prepare("INSERT OR IGNORE INTO tracked_repos (name, added_by, added_at) VALUES ('app', 'op', ?)").run(T0);
+  db.prepare("INSERT OR IGNORE INTO tracked_repos (name, added_by, added_at, pipeline) VALUES ('app', 'op', ?, 1)").run(T0);
   db.prepare("INSERT INTO access (login, role) VALUES ('op', 'operator')").run();
   const item = db.prepare(`INSERT INTO items (repo, number, kind, state, title, body, created_at, updated_at, closed_at, closing_issues, comments_count, embed_hash, head_oid)
     VALUES ('app', ?, ?, ?, ?, 'body', ?, ?, ?, ?, ?, ?, ?)`);

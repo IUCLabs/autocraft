@@ -7,7 +7,6 @@ import { SCRATCH } from "./scratch.ts";
 import { parseRecommendReply } from "../src/decide/recommend.ts";
 
 const { connect } = await import("../src/db.ts");
-const { setPilot } = await import("../src/pilot.ts");
 const { setFixIssueApproval } = await import("../src/fixissue/approval.ts");
 const { runFixIssue, runFixIssueCollect } = await import("../src/fixissue/index.ts");
 const { runCollect } = await import("../src/verify/results.ts");
@@ -22,14 +21,13 @@ db.exec("DELETE FROM tracked_repos");
 db.prepare("INSERT INTO access (login, role) VALUES ('op', 'operator')").run();
 for (const repo of ["app", "other"]) {
   db.prepare("INSERT INTO repos (name, visibility, default_branch) VALUES (?, 'public', 'main')").run(repo);
-  db.prepare("INSERT INTO tracked_repos (name, added_by, added_at) VALUES (?, 'op', ?)").run(repo, T);
+  db.prepare("INSERT INTO tracked_repos (name, added_by, added_at, pipeline) VALUES (?, 'op', ?, ?)").run(repo, T, repo === "app" ? 1 : 0);
 }
 const attempt = db.prepare(`INSERT INTO fix_attempts (repo, number, main_sha, text_hash, state, files, crate_dir, patch, created_at, updated_at) VALUES ('other', ?, 'sha', 'h', ?, '[]', 'c', 'p', ?, ?)`);
 ["testing", "passed", "retry"].forEach((st, i) => attempt.run(i + 1, st, T, T));
 const verif = db.prepare(`INSERT INTO verifications (repo, number, head_sha, kind, reason, state, created_at) VALUES ('other', ?, 'h', 'test', 'r', ?, ?)`);
 ["planned", "running"].forEach((st, i) => verif.run(i + 1, st, T));
 setFixIssueApproval(db, "op", "other", true);
-setPilot(db, "op", ["app"]);
 
 const snapshot = () => JSON.stringify([
   db.prepare("SELECT * FROM fix_attempts ORDER BY number").all(), db.prepare("SELECT * FROM verifications ORDER BY number").all(),
@@ -38,7 +36,7 @@ const snapshot = () => JSON.stringify([
 const forbidden = async (): Promise<never> => { throw new Error("called"); };
 const quiet = () => {};
 
-test("collect and retry steps ignore repos outside the pilot", async () => {
+test("collect and retry steps ignore repos with the pipeline off", async () => {
   const before = snapshot();
   const deps = {
     exec: forbidden, ask: forbidden, mainHead: forbidden, fetchCrates: forbidden, fetchPaths: forbidden, summarise: forbidden,

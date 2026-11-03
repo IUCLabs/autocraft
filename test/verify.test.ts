@@ -31,6 +31,7 @@ const CRATES = [{ name: "core-lib", dir: "crates/core" }, { name: "app", dir: ".
 function fresh() {
   process.env.CRAFT_AUTO_DIFF_CACHE = mkdtempSync(join(dir, "cache-"));
   const db = connect(join(mkdtempSync(join(dir, "db-")), "t.db"));
+  db.exec("INSERT OR IGNORE INTO tracked_repos (name, pipeline) VALUES ('app', 1)");
   useTestAccount(db);
   db.exec("INSERT INTO repos (name, visibility, default_branch) VALUES ('app', 'public', 'main'), ('priv', 'internal', 'main')");
   const pr = db.prepare(`INSERT INTO items (repo, number, kind, state, title, body, is_draft, additions, deletions, changed_files, head_oid, created_at, updated_at)

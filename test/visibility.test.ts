@@ -39,7 +39,7 @@ const OPTS = [{ key: "a", label: "A" }, { key: "b", label: "B" }];
 
 before(async () => {
   const now = new Date().toISOString();
-  db.exec("DELETE FROM tracked_repos; INSERT INTO tracked_repos (name) VALUES ('open-app'), ('vault')");
+  db.exec("DELETE FROM tracked_repos; INSERT INTO tracked_repos (name, pipeline) VALUES ('open-app', 1), ('vault', 1)");
   db.exec("INSERT INTO repos (name, visibility) VALUES ('open-app', 'public'), ('vault', 'internal')");
   const item = db.prepare("INSERT INTO items (repo, number, kind, state, title, body, head_oid, author, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)");
   const review = db.prepare("INSERT INTO reviews (repo, number, head_oid, run_id, at, size, verdict, reason) VALUES (?, ?, ?, 'r', ?, 'S', 'take', 'ok')");

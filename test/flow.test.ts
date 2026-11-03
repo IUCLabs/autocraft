@@ -23,6 +23,7 @@ const NOW = new Date().toISOString();
 
 function build() {
   const db = connect(join(mkdtempSync(join(SCRATCH, "flow-test-")), "f.db"));
+  db.exec("INSERT OR IGNORE INTO tracked_repos (name, pipeline) VALUES ('app', 1); UPDATE tracked_repos SET pipeline = 1");
   // Only the test repo: counting stops after a time budget, so the seeded list would leave it uncounted on a loaded machine.
   db.prepare(`DELETE FROM tracked_repos WHERE name != '${R}'`).run();
   const item = db.prepare(`INSERT INTO items (repo, number, kind, state, title, author, additions, deletions, head_oid, created_at, updated_at)

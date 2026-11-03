@@ -12,6 +12,7 @@ import { commentApprovalOf, setCommentApproval } from "../../act/approval.ts";
 import { pushApprovalOf, setPushApproval } from "../../fixup/approval.ts";
 import { fixIssueApprovalOf, setFixIssueApproval } from "../../fixissue/approval.ts";
 import { mergeApprovalOf, setMergeApproval } from "../../merge/approval.ts";
+import { setRepoPipeline } from "../../pilot.ts";
 import { countPlan, planLabels } from "../../labels/plan.ts";
 import { listAll, RepoError, trackRepo, untrackRepo } from "../../repos.ts";
 import { contributors, getRule, setOverride, setRule, tierOf, type Contributor as Row, type Rule } from "../../whitelist.ts";
@@ -28,7 +29,7 @@ const AUDIT_PAGE = 50;
 export const AUDIT_ACTIONS = [
   "answer", "undo", "adopt", "opinion", "opinion-retract", "comment", "override", "rule", "access-add", "access-remove", "access-role",
   "session-revoke", "sign-in", "sign-in-refused", "repo-track", "repo-untrack", "labels-approve", "labels-revoke", "labels-apply", "merge-approve", "merge-revoke", "comment-approve", "comment-revoke", "act-comment", "act-close", "act-skip", "push-approve", "push-revoke", "fixup-push", "fixup-comment", "fixissue-approve", "fixissue-revoke", "fixissue-push", "fixissue-pr", "fixissue-comment",
-  "job-request", "job-cancel", "pipeline-switch", "stage-limit", "limit-reset", "pilot-set", "pilot-clear", "review-post", "review-edit", "batch-again", "reopen", "backlog-bulk", "withdraw",
+  "job-request", "job-cancel", "pipeline-switch", "stage-limit", "limit-reset", "pilot-set", "pilot-clear", "repo-pipeline", "review-post", "review-edit", "batch-again", "reopen", "backlog-bulk", "withdraw",
 ];
 
 const isOperator = (req: Req): boolean => req.user.role === "operator";
@@ -236,6 +237,7 @@ export function allRepos(db: DatabaseSync, req: Req): TrackedRepo[] {
     pushing: r.tracked ? approvalInfo(pushApprovalOf(db, r.name)) : null,
     commenting: r.tracked ? approvalInfo(commentApprovalOf(db, r.name)) : null,
     fixing: r.tracked ? approvalInfo(fixIssueApprovalOf(db, r.name)) : null,
+    pipeline: !!r.tracked && !!r.pipeline,
   }));
 }
 
@@ -326,6 +328,21 @@ export function fixIssueApproval(db: DatabaseSync, req: Req, approved: boolean):
     }
   });
   if (!changed) throw new HttpError(409, `${name} is ${approved ? "already" : "not"} approved for fixing issues`);
+  return allRepos(db, req);
+}
+
+// Only an operator switches the pipeline stages on or off for a repo (off: sync only).
+export function pipelineSwitch(db: DatabaseSync, req: Req, on: boolean): TrackedRepo[] {
+  requireOperator(req, "switch the pipeline");
+  const name = required(body(req).name, "name");
+  const changed = refused(() => {
+    try {
+      return setRepoPipeline(db, req.user.login, name, on);
+    } catch (e) {
+      throw new RepoError((e as Error).message);
+    }
+  });
+  if (!changed) throw new HttpError(409, `the pipeline is already ${on ? "on" : "off"} for ${name}`);
   return allRepos(db, req);
 }
 

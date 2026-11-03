@@ -3,6 +3,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import { audit } from "./dash/audit.ts";
 import { connect } from "./db.ts";
+import { PilotError, setRepoPipeline } from "./pilot.ts";
 
 export class RepoError extends Error {}
 
@@ -49,18 +50,19 @@ export function purgeRepo(db: DatabaseSync, name: string): { items: number; comm
 }
 
 export type RepoRow = {
-  name: string; tracked: number; open_prs: number | null; open_issues: number | null; rows: number; synced_at: string | null;
+  name: string; tracked: number; pipeline: number; open_prs: number | null; open_issues: number | null; rows: number; synced_at: string | null;
 };
 
 // Every known repo, tracked first.
 export function listAll(db: DatabaseSync): RepoRow[] {
   return db.prepare(`
     SELECT r.name, EXISTS (SELECT 1 FROM main.tracked_repos t WHERE t.name = r.name) AS tracked,
+           COALESCE((SELECT t.pipeline FROM main.tracked_repos t WHERE t.name = r.name), 0) AS pipeline,
            r.open_prs, r.open_issues, r.synced_at,
            (SELECT COUNT(*) FROM main.items i WHERE i.repo = r.name) AS rows
     FROM main.repos r
     UNION ALL
-    SELECT t.name, 1, NULL, NULL, NULL, (SELECT COUNT(*) FROM main.items i WHERE i.repo = t.name)
+    SELECT t.name, 1, t.pipeline, NULL, NULL, NULL, (SELECT COUNT(*) FROM main.items i WHERE i.repo = t.name)
     FROM main.tracked_repos t WHERE t.name NOT IN (SELECT name FROM main.repos)
     ORDER BY 2 DESC, 1`).all() as RepoRow[];
 }
@@ -89,9 +91,9 @@ export function scopeToTracked(db: DatabaseSync): void {
 
 function list(): void {
   const db = connect();
-  console.log(`${"repo".padEnd(28)} ${"tracked".padEnd(7)} ${"open PRs".padStart(8)} ${"open iss".padStart(8)} ${"mirrored".padStart(8)}  synced_at`);
+  console.log(`${"repo".padEnd(28)} ${"tracked".padEnd(7)} ${"pipeline".padEnd(8)} ${"open PRs".padStart(8)} ${"open iss".padStart(8)} ${"mirrored".padStart(8)}  synced_at`);
   for (const r of listAll(db)) {
-    console.log(`${r.name.padEnd(28)} ${(r.tracked ? "yes" : "-").padEnd(7)} ${String(r.open_prs ?? "-").padStart(8)} ${String(r.open_issues ?? "-").padStart(8)} ${String(r.rows).padStart(8)}  ${r.synced_at ?? "-"}`);
+    console.log(`${r.name.padEnd(28)} ${(r.tracked ? "yes" : "-").padEnd(7)} ${(r.tracked ? (r.pipeline ? "on" : "off") : "-").padEnd(8)} ${String(r.open_prs ?? "-").padStart(8)} ${String(r.open_issues ?? "-").padStart(8)} ${String(r.rows).padStart(8)}  ${r.synced_at ?? "-"}`);
   }
 }
 
@@ -113,6 +115,19 @@ const sub: Record<string, (args: string[]) => void> = {
     const name = need(a, "untrack <name>");
     console.log(untrackRepo(connect(), "cli", name) ? `untracked ${name}; its rows stay in the mirror (repos purge ${name} deletes them)` : `${name} was not tracked`);
   },
+  pipeline: (a) => {
+    const usage = "pipeline <name> on|off";
+    const name = need(a, usage);
+    if (a[1] !== "on" && a[1] !== "off") return need([], usage);
+    try {
+      const on = a[1] === "on";
+      console.log(setRepoPipeline(connect(), "cli", name, on) ? `${name}: pipeline ${a[1]}` : `${name}: pipeline was already ${a[1]}`);
+    } catch (e) {
+      if (!(e instanceof PilotError)) throw e;
+      console.error(e.message);
+      process.exit(1);
+    }
+  },
   purge: (a) => {
     const name = need(a, "purge <name>");
     try {
@@ -128,7 +143,7 @@ const sub: Record<string, (args: string[]) => void> = {
 
 export const commands = {
   repos: {
-    summary: "tracked repos: list | track <name> | untrack <name> | purge <name>",
+    summary: "tracked repos: list | track <name> | untrack <name> | pipeline <name> on|off | purge <name>",
     run: (args: string[]) => {
       const f = args[0] ? sub[args[0]] : undefined;
       if (!f) {

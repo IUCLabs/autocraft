@@ -87,7 +87,7 @@ function fresh(): DatabaseSync {
     review.run(n, `sha${n}a`, verdict, verdict === "take-fix" ? SONNET_FIXES : null);
     checks.run(n, `sha${n}a`);
   }
-  db.prepare("INSERT INTO tracked_repos (name, added_by, added_at) VALUES ('app', 'op', ?) ON CONFLICT DO NOTHING").run(T0);
+  db.prepare("INSERT INTO tracked_repos (name, added_by, added_at, pipeline) VALUES ('app', 'op', ?, 1) ON CONFLICT DO NOTHING").run(T0);
   return db;
 }
 

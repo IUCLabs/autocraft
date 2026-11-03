@@ -39,8 +39,8 @@ const at = (c: number) => [c, Math.sqrt(1 - c * c), 0, 0];
 type Spec = { n: number; kind?: "issue" | "pr"; state?: string; sim: number; repo?: string; closedAt?: string; closing?: number[]; created?: string; comments?: number; title?: string; hash?: string };
 function fresh(specs: Spec[]): { db: DatabaseSync; index: VectorIndex } {
   const db = connect(join(mkdtempSync(join(dir, "db-")), "t.db"));
-  db.prepare("INSERT OR IGNORE INTO tracked_repos (name, added_by, added_at) VALUES ('app', 'op', ?)").run(T0);
-  db.prepare("INSERT OR IGNORE INTO tracked_repos (name, added_by, added_at) VALUES ('other', 'op', ?)").run(T0);
+  db.prepare("INSERT OR IGNORE INTO tracked_repos (name, added_by, added_at, pipeline) VALUES ('app', 'op', ?, 1)").run(T0);
+  db.prepare("INSERT OR IGNORE INTO tracked_repos (name, added_by, added_at, pipeline) VALUES ('other', 'op', ?, 1)").run(T0);
   db.prepare("INSERT INTO access (login, role) VALUES ('op', 'operator'), ('helper', 'maintainer')").run();
   const item = db.prepare(`INSERT INTO items (repo, number, kind, state, title, body, created_at, updated_at, closed_at, merged_at, closing_issues, comments_count, embed_hash, head_oid)
     VALUES (?, ?, ?, ?, ?, 'body', ?, ?, ?, ?, ?, ?, ?, ?)`);
@@ -215,6 +215,7 @@ describe("decisions", () => {
 describe("hold on later stages", () => {
   function build(label: string, flags: string): DatabaseSync {
     const db = connect(join(mkdtempSync(join(dir, "db-")), "h.db"));
+    db.exec("INSERT OR IGNORE INTO tracked_repos (name, pipeline) VALUES ('app', 1); UPDATE tracked_repos SET pipeline = 1");
     const item = db.prepare(`INSERT INTO items (repo, number, kind, state, title, body, created_at, updated_at, head_oid, additions, deletions, changed_files)
       VALUES ('photocraft', ?, ?, 'OPEN', 't', 'b', ?, ?, ?, 5, 1, 1)`);
     const cls = db.prepare(`INSERT INTO classifications (repo, number, classifier, run_id, at, type_label, flags, probs) VALUES ('photocraft', ?, 'jev', 'r1', ?, ?, ?, '{"top":0.95}')`);

@@ -24,6 +24,7 @@ const T0 = "2026-01-01T00:00:00Z";
 
 function fresh() {
   const db = connect(join(mkdtempSync(join(dir, "db-")), "t.db"));
+  db.exec("INSERT OR IGNORE INTO tracked_repos (name, pipeline) VALUES ('app', 1)");
   useTestAccount(db);
   const pr = db.prepare(`INSERT INTO items (repo, number, kind, state, title, body, is_draft, additions, deletions, changed_files, head_oid, created_at, updated_at)
     VALUES ('app', ?, 'pr', ?, ?, 'body', ?, ?, 0, 1, ?, '${T0}', '${T0}')`);

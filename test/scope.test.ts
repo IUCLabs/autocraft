@@ -1,4 +1,4 @@
-// The pilot is a hard boundary for the planner: with a pilot set, no lane proposes a job for another repo,
+// The pipeline flag and the pilot are a hard boundary for the planner: no lane proposes a job for a repo that is off or outside the pilot,
 // and the checks step reads only pilot PRs. Also the reset of a stage's daily count.
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
@@ -7,7 +7,7 @@ import { after, test } from "node:test";
 import { SCRATCH } from "./scratch.ts";
 
 const { connect } = await import("../src/db.ts");
-const { setPilot, pilotRepos } = await import("../src/pilot.ts");
+const { setPilot, scopeRepos, setRepoPipeline } = await import("../src/pilot.ts");
 const { detectAutopilot, LANES, planCtx, pauseReason, resetLimitCount, LimitError, usageToday, stageLimits, LIMIT_STEPS } = await import("../src/runner/autopilot.ts");
 const { readSeqs } = await import("../src/live.ts");
 const { setMergeApproval } = await import("../src/merge/approval.ts");
@@ -31,7 +31,7 @@ db.prepare("INSERT INTO access (login, role) VALUES ('op', 'operator')").run();
 db.prepare("INSERT INTO settings (key, value) VALUES ('classify_run', 'r1')").run();
 for (const repo of ["app", "other"]) {
   db.prepare("INSERT INTO repos (name, visibility, default_branch) VALUES (?, 'public', 'main')").run(repo);
-  db.prepare("INSERT INTO tracked_repos (name, added_by, added_at) VALUES (?, 'op', ?)").run(repo, T);
+  db.prepare("INSERT INTO tracked_repos (name, added_by, added_at, pipeline) VALUES (?, 'op', ?, 1)").run(repo, T);
   const item = db.prepare(`INSERT INTO items (repo, number, kind, state, title, body, author, additions, deletions, head_oid, url, embed_hash, created_at, updated_at)
     VALUES (?, ?, ?, 'OPEN', ?, 'b', 'someone', 20, 0, ?, ?, 'h', ?, ?)`);
   const jev = db.prepare(`INSERT INTO classifications (repo, number, classifier, run_id, at, type_label, flags, probs) VALUES (?, ?, 'jev', 'r1', ?, 'bugfix', '[]', '{"top":0.97}')`);
@@ -63,12 +63,12 @@ finalizeReviews(db);
 const reposOf = (xs: { params: Record<string, unknown>; gate?: { params: Record<string, unknown> } }[]) =>
   xs.flatMap((x) => [x.params.repo, x.gate?.params.repo]).filter((r): r is string => typeof r === "string");
 
-test("with a pilot on one repo, no lane candidate or proposed job touches the other repo", async () => {
+test("with the pipeline off for one repo, no lane candidate or proposed job touches it", async () => {
   const before = await detectAutopilot(db, { lanes: LANES });
-  assert.ok(reposOf(before.proposals).includes("other"), "without a pilot the other repo has work");
+  assert.ok(reposOf(before.proposals).includes("other"), "with the pipeline on, the other repo has work");
 
-  setPilot(db, "tester", ["app"]);
-  assert.deepEqual([...pilotRepos(db)!], ["app"]);
+  assert.ok(setRepoPipeline(db, "tester", "other", false));
+  assert.deepEqual([...scopeRepos(db)], ["app"]);
   const ctx = planCtx(db);
   assert.deepEqual(ctx.tracked, ["app"]);
   for (const lane of LANES) {
@@ -78,14 +78,26 @@ test("with a pilot on one repo, no lane candidate or proposed job touches the ot
   const after = await detectAutopilot(db, { lanes: LANES });
   assert.ok(reposOf(after.proposals).length > 0, "the pilot repo still gets jobs");
   assert.ok(!reposOf(after.proposals).includes("other"));
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM audit WHERE action = 'repo-pipeline' AND target = 'other'").get()!.n, 1);
 });
 
-test("the planner drops a job whose repo is outside the pilot and says so", async () => {
+test("an item pilot narrows within the enabled repos and cannot enable a repo that is off", () => {
+  setRepoPipeline(db, "tester", "other", true);
+  setPilot(db, "tester", ["app#2"]);
+  assert.deepEqual([...scopeRepos(db)], ["app"]);
+  setRepoPipeline(db, "tester", "app", false);
+  assert.deepEqual([...scopeRepos(db)], []);
+  setRepoPipeline(db, "tester", "app", true);
+  setPilot(db, "tester", []);
+  assert.deepEqual([...scopeRepos(db)].sort(), ["app", "other"]);
+});
+
+test("the planner drops a job whose repo is outside the scope and says so", async () => {
   setPilot(db, "tester", ["app#2"]);
   const lanes = [{ name: "stray", steps: ["checks"], detect: () => [{ step: "checks", params: { repo: "other" } }] }];
   const d = await detectAutopilot(db, { lanes });
   assert.deepEqual(d.proposals, []);
-  assert.equal(d.status?.checks, "outside the pilot");
+  assert.equal(d.status?.checks, "outside the pipeline scope");
   const ok = await detectAutopilot(db, { lanes: [{ ...lanes[0]!, detect: () => [{ step: "checks", params: { repo: "app" } }] }] });
   assert.equal(ok.proposals.length, 1);
 });

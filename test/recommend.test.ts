@@ -26,6 +26,7 @@ const noCheckout = async () => null;
 function fixture(): { db: DatabaseSync; path: string } {
   const path = join(mkdtempSync(join(SCRATCH, "recommend-test-")), "t.db");
   const db = connect(path);
+  db.exec("INSERT OR IGNORE INTO tracked_repos (name, pipeline) VALUES ('app', 1); UPDATE tracked_repos SET pipeline = 1");
   useTestAccount(db);
   for (const n of [1, 2, 3, 4]) {
     db.prepare(`INSERT INTO items (repo, number, kind, state, title, body, author, created_at, updated_at, labels) VALUES ('photocraft', ?, 'issue', 'OPEN', ?, 'Body', 'someone', '2026-01-01', '2026-01-01', '[]')`).run(n, `Item ${n}`);

@@ -41,7 +41,7 @@ const queue = () => createTask(db, { step: "verify", repo: "open-app", headSha: 
 const reset = () => db.exec("DELETE FROM build_tasks; DELETE FROM settings WHERE key LIKE 'worker_update%'");
 
 before(() => {
-  db.exec("INSERT INTO tracked_repos (name) VALUES ('open-app')");
+  db.exec("INSERT INTO tracked_repos (name, pipeline) VALUES ('open-app', 1)");
   db.exec("INSERT INTO repos (name, visibility) VALUES ('open-app', 'public')");
 });
 after(() => {
