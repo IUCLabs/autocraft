@@ -200,6 +200,16 @@ Param kinds are `enum`, `repo` (a tracked repo), `int` and `run-id`; there is no
 
 After a change to a stage in `src/stages/registry.ts`, run `npm run docs` and `npm run docs:image`.
 
+`npm run docs:image -- <url>` screenshots the dashboard home page into `docs/images/flowchart.png`. Build the mock UI and serve it first:
+
+```sh
+(cd web && VITE_MOCK=1 npx vite build --outDir <dir> --emptyOutDir)
+node scripts/serve-spa.mjs <dir> 8980 &
+PLAYWRIGHT_DIR=<dir with node_modules/playwright-core> CHROMIUM_PATH=<chromium binary> npm run docs:image -- http://127.0.0.1:8980
+```
+
+Playwright is not a dependency of the repo; the header of `scripts/flowchart-shot.mjs` lists the two variables.
+
 ## Running a worker
 
 A worker runs untrusted build tasks for the coordinator (the runner process). It holds no GitHub token, no Claude login and no database access: it downloads public source tarballs anonymously, runs each plan step in a fresh container, and sends logs, results and artifacts back, all of which the coordinator treats as untrusted data.
