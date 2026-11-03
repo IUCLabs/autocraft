@@ -19,6 +19,14 @@ import type {
   User,
 } from "../types";
 
+/** Mirrors the server's WRITES table (src/act): the GitHub write each option causes. */
+const WRITES: Partial<Record<DecisionKind, Record<string, string>>> = {
+  scope: { close: "closes it on GitHub" },
+  close: { close: "closes the PR on GitHub" },
+  duplicate: { close: "closes it on GitHub" },
+  merge: { merge: "merges on GitHub", close: "closes the PR on GitHub" },
+};
+
 export const NOW = Date.parse("2026-11-02T10:40:00Z");
 export const TRACKING_SINCE = "2026-10-27T08:00:00Z";
 
@@ -601,7 +609,7 @@ function toDecision(s: Seed): Decision {
     body: text.body,
     context: s.context,
     facts: s.facts.slice(0, 5),
-    options: s.options,
+    options: s.options.map((o) => ({ ...o, ...(WRITES[s.kind]?.[o.key] ? { writes: WRITES[s.kind]![o.key] } : {}) })),
     recommended: s.recommended,
     publicText: s.publicText ?? null,
     askedAt: iso(s.ageH * H),

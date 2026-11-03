@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { RefLink } from "../../ui/RefLink";
 import {
@@ -7,12 +7,11 @@ import {
   CircleSlashIcon,
   CopyIcon,
   GitMergeIcon,
-  StarIcon,
   SplitIcon,
   TargetIcon,
   type LucideIcon,
 } from "lucide-react";
-import type { Decision, DecisionKind, DecisionOption } from "../../api/types";
+import type { Decision, DecisionKind } from "../../api/types";
 import { Avatar } from "../../ui/Avatar";
 import { Kbd } from "../../ui/Kbd";
 import { Count } from "../../ui/Heading";
@@ -94,84 +93,13 @@ export function Facts({ facts }: { facts: string[]; compact?: boolean }) {
 }
 
 /**
- * The action buttons, shown only to people who may act. An option that writes to GitHub needs a second pick: the parent holds `armed` and the
- * button then names the effect.
- */
-export function OptionButtons({
-  options,
-  recommended,
-  onPick,
-  layout = "list",
-  armed,
-  confirmSuffix = "",
-}: {
-  options: DecisionOption[];
-  recommended: string;
-  onPick: (key: string) => void;
-  /** "row" for the desktop decision bar, "list" for stacked full-width buttons. */
-  layout?: "row" | "list";
-  /** The option waiting for its confirming pick. */
-  armed?: string | null;
-  /** Added to the confirm label, e.g. " (3 decisions)". */
-  confirmSuffix?: string;
-}) {
-  return (
-    <div>
-      <p className="mb-1.5 text-xs font-semibold text-ink">Answer</p>
-      <div className={cn("grid gap-1.5", layout === "row" && options.length > 1 && "grid-cols-2")} role="group" aria-label="Answer">
-        {options.map((o, i) => {
-          const rec = o.key === recommended;
-          const filled = rec;
-          const isArmed = armed === o.key && !!o.writes;
-          return (
-            <button
-              key={o.key}
-              onClick={() => onPick(o.key)}
-              aria-keyshortcuts={String(i + 1)}
-              title={`${o.hint ? o.hint + " " : ""}${o.writes ? `This ${o.writes}. ` : ""}(${i + 1})`}
-              className={cn(
-                "group flex items-center gap-2 rounded-md border text-left transition-colors duration-fast",
-                layout === "row" ? "h-8 px-2.5" : "min-h-[44px] px-3 py-1.5",
-                isArmed ? "border-bad bg-bad text-white hover:bg-bad/90" : filled ? "border-accent bg-accent text-white hover:bg-accent/90" : rec ? "border-accent/60 bg-raised hover:bg-accent/[0.06]" : "border-line-strong bg-raised hover:border-ink/30 hover:bg-ink/[0.04]"
-              )}
-            >
-              <span className="min-w-0 flex-1 truncate text-sm font-medium">{isArmed ? `Confirm: ${o.writes}${confirmSuffix}` : o.label}</span>
-              {!isArmed && o.writes && (
-                <span className="shrink-0 rounded-full border border-current px-1.5 text-2xs leading-4 opacity-70" title={`This ${o.writes}`}>
-                  writes
-                </span>
-              )}
-              {!isArmed && layout === "list" && o.hint && <span className={cn("hidden truncate text-xs sm:inline", filled ? "text-white/75" : "text-ink/50")}>{o.hint}</span>}
-              {!isArmed && rec &&
-                (layout === "row" ? (
-                  <StarIcon className={cn("text-[12px]", filled ? "text-white/85" : "text-accent-ink")} aria-label="Recommended" />
-                ) : (
-                  <span className={cn("shrink-0 rounded-full px-1.5 text-2xs font-medium leading-[18px]", filled ? "bg-white/20" : "bg-accent/15 text-accent-ink")}>Recommended</span>
-                ))}
-              <kbd className={cn("hidden shrink-0 rounded-sm border px-1 text-[11px] leading-4", layout === "list" && "md:inline", isArmed || filled ? "border-white/35 text-white/80" : "border-line-strong text-ink/45")}>{i + 1}</kbd>
-            </button>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-/**
- * Comments from everyone, newest first, with GitHub permission badges. Operators can use a
- * pick as the answer after a confirm; picks from logins without write access on the repo
+ * Comments from everyone, newest first, with GitHub permission badges. Operators can select
+ * a suggestion in the Workflow box; suggestions from logins without write access on the repo
  * cannot be used.
  */
-export function OpinionList({ d, onAdopt, onRetract, me }: { d: Decision; onAdopt?: (opinionId: string) => void; onRetract?: () => void; me: string }) {
-  const [armed, setArmed] = useState<string | null>(null);
-  useEffect(() => {
-    if (!armed) return;
-    const t = setTimeout(() => setArmed(null), 6000);
-    return () => clearTimeout(t);
-  }, [armed]);
+export function OpinionList({ d, onUse, onRetract, me }: { d: Decision; onUse?: (option: string) => void; onRetract?: () => void; me: string }) {
   if (!d.opinions.length) return <p className="text-sm text-ink/50">No comments yet.</p>;
-  const opt = (k: string) => d.options.find((o) => o.key === k);
-  const label = (k: string) => opt(k)?.label ?? k;
+  const label = (k: string) => d.options.find((o) => o.key === k)?.label ?? k;
   return (
     <ul className="divide-y divide-line overflow-hidden rounded-md border border-line">
       {d.opinions.map((o) => (
@@ -202,20 +130,13 @@ export function OpinionList({ d, onAdopt, onRetract, me }: { d: Decision; onAdop
                 Retract
               </button>
             )}
-            {onAdopt && o.option && o.permission === "write" && (
+            {onUse && o.option && o.permission === "write" && (
               <button
-                onClick={() => {
-                  if (armed !== o.id) return setArmed(o.id);
-                  setArmed(null);
-                  onAdopt(o.id);
-                }}
-                className={cn(
-                  "mt-1.5 rounded border px-2 py-0.5 text-left text-xs font-medium max-md:min-h-11",
-                  armed === o.id ? "border-bad bg-bad text-white" : "border-line-strong hover:border-accent/60 hover:text-accent-ink",
-                )}
-                title={`Answer "${label(o.option)}" using ${o.login}'s pick`}
+                onClick={() => onUse(o.option!)}
+                className="mt-1.5 rounded border border-line-strong px-2 py-0.5 text-left text-xs font-medium hover:border-accent/60 hover:text-accent-ink max-md:min-h-11"
+                title={`Select "${label(o.option)}" in the Workflow box`}
               >
-                {armed === o.id ? `Confirm: answer "${label(o.option)}" with ${o.login}'s pick${opt(o.option)?.writes ? `; ${opt(o.option)!.writes}` : ""}` : "Use this answer"}
+                Use this answer
               </button>
             )}
           </div>

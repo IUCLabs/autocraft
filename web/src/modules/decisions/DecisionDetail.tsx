@@ -13,10 +13,11 @@ import { Count } from "../../ui/Heading";
 import { Markdown, Collapsible } from "../../ui/Markdown";
 import { cn } from "../../ui/cn";
 import { ago } from "../../lib/format";
-import { ClaimPill, ClassifierLines, Disclosure, Facts, KindTag, OpinionList, OptionButtons, RelatedList } from "./parts";
+import { ClaimPill, ClassifierLines, Disclosure, Facts, KindTag, OpinionList, RelatedList } from "./parts";
 import { ReviewBox } from "./ReviewBox";
-import { localActions, ordered, refOf, useAnswer, useArmed, useDecisionList, useLocal, useSelection, useUndo, userSelection } from "./state";
+import { localActions, ordered, refOf, useDecisionList, useLocal, useSelection, useUndo } from "./state";
 import { Thread } from "./Thread";
+import { WorkflowBox, scrollToWorkflow } from "./Workflow";
 
 export const canActOn = (user: User, ds: Decision[]): boolean =>
   canAct(user, ds.flatMap((d) => (d.items.length ? d.items.map((i) => i.repo) : [d.repo])));
@@ -124,10 +125,6 @@ export function DecisionBody({
   pager?: { pos: string; prev?: () => void; next?: () => void };
 }) {
   const api = useApi();
-  const answer = useAnswer();
-  const loc = useLocal();
-  const noteRef = useRef<HTMLInputElement>(null);
-  const decideRef = useRef<HTMLDivElement>(null);
   const isBatch = d.number === null;
   const operator = canActOn(user, [d]);
   const reviewRef = useRef<HTMLDivElement>(null);
@@ -136,68 +133,10 @@ export function DecisionBody({
     if (!d.answer) void api.decisions.claim(d.id);
   }, [api, d.id, d.answer]);
 
-  const [armed, setArmed] = useArmed();
-  // The GitHub write a pick causes: the option's own, or that of a per-item exception in a batch.
-  const effectOf = (key: string): string | null =>
-    d.options.find((o) => o.key === key)?.writes ??
-    Object.values(loc.overrides[d.id] ?? {}).map((k) => d.options.find((o) => o.key === k)?.writes).find(Boolean) ??
-    null;
-  const pick = async (key: string) => {
-    if (!operator) return;
-    if (effectOf(key) && armed !== key) return setArmed(key);
-    setArmed(null);
-    await answer([d], key);
-    onAnswered?.();
+  const use = (option: string) => {
+    localActions.setPick(d.id, option);
+    scrollToWorkflow();
   };
-  const adopt = async (oid: string) => {
-    const o = d.opinions.find((x) => x.id === oid);
-    await api.decisions.adopt(d.id, oid);
-    localActions.answered([{ id: d.id, ref: refOf(d), label: d.options.find((x) => x.key === o?.option)?.label ?? "" }]);
-    onAnswered?.();
-  };
-
-  // Number keys pick, but only on a decision the user opened themselves; n focuses the note.
-  // Bound here so they always target the decision on screen.
-  useEffect(() => {
-    const on = (e: KeyboardEvent) => {
-      const t = e.target as HTMLElement;
-      if (!operator || e.repeat || ["INPUT", "TEXTAREA", "SELECT", "BUTTON"].includes(t.tagName) || t.isContentEditable || e.metaKey || e.ctrlKey || e.altKey) return;
-      if (e.key === "Escape" && armed) return setArmed(null);
-      if (e.key === "Enter" && armed && !d.answer) {
-        e.preventDefault();
-        return void pick(armed);
-      }
-      const n = Number(e.key);
-      if (!d.answer && userSelection.id === d.id && n >= 1 && n <= d.options.length) {
-        e.preventDefault();
-        void pick(d.options[n - 1].key);
-      }
-      if (e.key === "n" && noteRef.current) {
-        e.preventDefault();
-        noteRef.current.focus();
-      }
-    };
-    window.addEventListener("keydown", on);
-    return () => window.removeEventListener("keydown", on);
-  });
-
-  const note = (
-    <label className="flex h-8 min-w-0 flex-1 items-center gap-2 rounded border border-line bg-sunken px-2.5 focus-within:border-accent/60">
-      <input
-        ref={noteRef}
-        value={loc.notes[d.id] ?? ""}
-        onChange={(e) => localActions.setNote(d.id, e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === "Escape") e.currentTarget.blur();
-        }}
-        placeholder="Note, kept with the answer (optional)"
-        aria-label="Note"
-        className="min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-ink/40"
-      />
-      {!phone && <Kbd keys="n" />}
-    </label>
-  );
-  const noteRow = <div className="mt-2 flex">{note}</div>;
 
   const header = (
     <>
@@ -267,9 +206,21 @@ export function DecisionBody({
         </>
       }
     >
-      <OpinionList d={d} me={user.login} onAdopt={operator && !d.answer ? (oid) => void adopt(oid) : undefined} onRetract={() => void api.decisions.retract(d.id)} />
+      <OpinionList d={d} me={user.login} onUse={operator && !d.answer ? use : undefined} onRetract={() => void api.decisions.retract(d.id)} />
     </Section>
   );
+
+  const question = (
+    <div className="mt-5">
+      <p className="text-sm font-semibold">{d.question}</p>
+      {d.answer && !operator && (
+        <div className="mt-2">
+          <AnsweredState d={d} canUndo={false} />
+        </div>
+      )}
+    </div>
+  );
+  const workflow = <WorkflowBox ds={[d]} user={user} phone={phone} onAnswered={onAnswered} />;
 
   const rest = (
     <div className="mt-5">
@@ -317,28 +268,13 @@ export function DecisionBody({
             {summary}
             {description}
             {facts}
-            <div ref={decideRef} className="mt-5 scroll-mt-3">
-              {d.answer ? (
-                <AnsweredState d={d} canUndo={operator} />
-              ) : (
-                <>
-                  <p className="text-sm font-semibold">{d.question}</p>
-                  {operator && (
-                    <>
-                      <div className="mt-2">
-                        <OptionButtons options={d.options} recommended={d.recommended} onPick={pick} armed={armed} />
-                      </div>
-                      {noteRow}
-                    </>
-                  )}
-                </>
-              )}
-            </div>
+            {question}
             {opinions}
             {rest}
             <div ref={reviewRef} className="mt-5 scroll-mt-3 border-t border-line pt-4">
               <ReviewBox d={d} />
             </div>
+            {workflow}
           </article>
         </div>
         <div className="flex shrink-0 items-center gap-1 border-t border-line bg-bg px-1 py-1.5">
@@ -347,9 +283,12 @@ export function DecisionBody({
             <p className="num text-2xs text-ink/50">{pager?.pos}</p>
             <p className="truncate text-xs font-medium">{d.answer ? "Answered" : d.question}</p>
           </div>
-          {(operator ? !d.answer : true) && (
-            <Button size="md" variant="primary" icon={ArrowDownIcon} className="h-10 px-3" onClick={() => (operator ? decideRef : reviewRef).current?.scrollIntoView({ behavior: "smooth", block: "start" })}>
-              {operator ? "Answer" : "Comment"}
+          <Button size="md" variant={operator && !d.answer ? "secondary" : "primary"} icon={MessageSquareIcon} className="h-10 px-3" onClick={() => reviewRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })}>
+            Comment
+          </Button>
+          {operator && (
+            <Button size="md" variant="primary" icon={ArrowDownIcon} className="h-10 px-3" onClick={scrollToWorkflow}>
+              Workflow
             </Button>
           )}
           <IconButton size="lg" icon={ChevronRightIcon} label="Next decision" disabled={!pager?.next} onClick={pager?.next} />
@@ -365,34 +304,16 @@ export function DecisionBody({
           {summary}
           {description}
           {facts}
-          {!operator && (
-            <div className="mt-5">{d.answer ? <AnsweredState d={d} canUndo={false} /> : <p className="text-sm font-semibold">{d.question}</p>}</div>
-          )}
+          {question}
           {rest}
+          {workflow}
         </article>
       </div>
-      {operator && (
-      <div className="shrink-0 border-t border-line bg-bg px-6 py-3">
-        <div className="mx-auto max-w-[760px]">
-          {d.answer ? (
-            <AnsweredState d={d} canUndo={operator} />
-          ) : (
-            <>
-              <p className="text-sm font-semibold">{d.question}</p>
-              <div className="mt-2">
-                <OptionButtons options={d.options} recommended={d.recommended} onPick={pick} layout="row" armed={armed} />
-              </div>
-              {noteRow}
-            </>
-          )}
-        </div>
-      </div>
-      )}
     </div>
   );
 }
 
-function AnsweredState({ d, canUndo }: { d: Decision; canUndo: boolean }) {
+export function AnsweredState({ d, canUndo }: { d: Decision; canUndo: boolean }) {
   const undo = useUndo();
   const label = d.options.find((o) => o.key === d.answer)?.label ?? d.answer;
   return (
@@ -444,21 +365,12 @@ function BatchItems({ d }: { d: Decision }) {
   );
 }
 
-/** Several checked rows of one kind: one answer (or comment) for all of them. */
+/** Several checked rows of one kind: one answer for all of them, through the Workflow box. */
 function MultiAnswer({ ds, user }: { ds: Decision[]; user: User }) {
-  const answer = useAnswer();
   const operator = canActOn(user, ds);
   const kinds = new Set(ds.map((d) => d.kind));
   const optionSig = new Set(ds.map((d) => d.options.map((o) => o.key).join()));
   const same = kinds.size === 1 && optionSig.size === 1;
-  const recs = ds.map((d) => d.recommended);
-  const rec = recs.every((r) => r === recs[0]) ? recs[0] : "";
-  const [armed, setArmed] = useArmed();
-  const pickAll = (k: string) => {
-    if (ds[0].options.find((o) => o.key === k)?.writes && armed !== k) return setArmed(k);
-    setArmed(null);
-    void answer(ds, k);
-  };
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -481,17 +393,7 @@ function MultiAnswer({ ds, user }: { ds: Decision[]; user: User }) {
               </li>
             ))}
           </ul>
-          {same && operator && (
-            <div className="mt-4">
-              <OptionButtons
-                options={ds[0].options}
-                recommended={rec}
-                onPick={pickAll}
-                armed={armed}
-                confirmSuffix={` for ${ds.length} decisions`}
-              />
-            </div>
-          )}
+          {same && operator && <WorkflowBox ds={ds} user={user} />}
         </div>
       </div>
     </div>

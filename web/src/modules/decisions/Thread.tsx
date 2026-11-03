@@ -3,23 +3,23 @@ import type { ViewProps } from "../../registry/types";
 import { Avatar } from "../../ui/Avatar";
 import { Count } from "../../ui/Heading";
 import { ago } from "../../lib/format";
-import { localActions, refOf, useDecisionList, useSelection } from "./state";
+import { localActions, useDecisionList, useSelection } from "./state";
+import { scrollToWorkflow } from "./Workflow";
 import { OpinionList } from "./parts";
 import { canAct } from "../../registry/permissions";
 import { ReviewBox } from "./ReviewBox";
 
-/** Desktop side panel: everyone's comments (operators can use a pick as the answer), then the comment thread. */
+/** Desktop side panel: everyone's comments (operators can select a suggestion in the Workflow box), then the comment thread. */
 export function ThreadPanel({ user }: ViewProps) {
   const api = useApi();
   const { id } = useSelection();
   const { data } = useDecisionList();
   const d = data?.decisions.find((x) => x.id === id);
   const operator = d ? canAct(user, d.items.length ? d.items.map((i) => i.repo) : [d.repo]) : false;
-  const adopt = async (oid: string) => {
+  const use = (option: string) => {
     if (!d) return;
-    const o = d.opinions.find((x) => x.id === oid);
-    await api.decisions.adopt(d.id, oid);
-    localActions.answered([{ id: d.id, ref: refOf(d), label: d.options.find((x) => x.key === o?.option)?.label ?? "" }]);
+    localActions.setPick(d.id, option);
+    scrollToWorkflow();
   };
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -32,7 +32,7 @@ export function ThreadPanel({ user }: ViewProps) {
             <h2 className="mb-2 flex items-center gap-1.5 text-xs font-semibold text-ink/60">
               Comments <Count n={d.opinions.length} />
             </h2>
-            <OpinionList d={d} me={user.login} onAdopt={operator && !d.answer ? (oid) => void adopt(oid) : undefined} onRetract={() => void api.decisions.retract(d.id)} />
+            <OpinionList d={d} me={user.login} onUse={operator && !d.answer ? use : undefined} onRetract={() => void api.decisions.retract(d.id)} />
           </section>
           <h2 className="flex items-center gap-1.5 px-4 pt-3 text-xs font-semibold text-ink/60">
             Thread <Count n={d.commentCount} />
