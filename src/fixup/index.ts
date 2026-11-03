@@ -304,8 +304,6 @@ export async function runFixup(db: DatabaseSync, params: FixupParams, log: (line
       if (pr.mergeable === "CONFLICTING") { log(`  ${ref}: skipped: conflicts with the base branch; the conflict merge handles it`); continue; }
       const head = await git.fetchPr(ORG, repo, c.number);
       if (head !== c.head) { log(`  ${ref}: skipped: fetched head ${short(head)} is not the reviewed ${short(c.head)}`); continue; }
-      // Claimed once the cheap checks pass, before the model calls, so nobody else starts on it.
-      if (!c.carry) await claim(c, pr);
 
       const shown: FixupPr["files"] = [];
       let total = 0, tooBig: string | null = null, bad: string | null = null;
@@ -322,6 +320,8 @@ export async function runFixup(db: DatabaseSync, params: FixupParams, log: (line
       const diff = await cachedDiff(repo, c.number, head, d.fetchDiff);
       if (!diff.ok) { fail("failed", `no diff: ${oneLine(diff.error)}`); continue; }
       if (diff.text.length > DIFF_CAP) { hold("too-large", `the PR diff is over the ${DIFF_CAP} character limit`); continue; }
+      // Claimed once the cheap checks pass, before the model calls, so nobody else starts on it.
+      if (!c.carry) await claim(c, pr);
 
       const checkout = (await d.checkout?.(repo, c.number, head)) ?? undefined;
       const repoDir = checkout ? { repo_dir: REPO_PATH } : {};

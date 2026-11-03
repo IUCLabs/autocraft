@@ -156,7 +156,7 @@ function RouteView({ route }: { route: RouteDef }) {
 }
 
 const LIVE_DOT: Record<LiveStatus, [label: string, color: string]> = {
-  open: ["Live", "bg-ok"],
+  open: ["Live", "bg-[#22e05a]"],
   connecting: ["Reconnecting", "bg-warn"],
   down: ["Offline", "bg-bad"],
 };
