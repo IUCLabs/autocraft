@@ -7,6 +7,7 @@ import { GITHUB_ACTIONS } from "../../github/actions.ts";
 import { HttpError } from "../server/util.ts";
 import type { Req } from "../types.ts";
 import { visibleRepos } from "./visible.ts";
+import { canSeeInternals } from "./staff.ts";
 
 const PAGE = 50;
 const ACTIONS = Object.keys(GITHUB_ACTIONS);
@@ -81,8 +82,8 @@ export async function githubActivity(db: DatabaseSync, req: Req): Promise<Github
   if (number !== null) { where.push(repo ? "target = ?" : "target LIKE ? ESCAPE '\\'"); args.push(repo ? `${repo}#${number}` : `%#${number}`); }
   if (from) { where.push("at >= ?"); args.push(new Date(from).toISOString()); }
   if (to) { where.push("at <= ?"); args.push(new Date(/^\d{4}-\d{2}-\d{2}$/.test(to) ? `${to}T23:59:59.999Z` : to).toISOString()); }
-  // Allow-list: a viewer sees only rows of repos visible to them; operators see every row, untracked repos included.
-  if (req.user.role !== "operator") {
+  // Allow-list: a viewer sees only rows of repos visible to them; operators and maintainers see every row, untracked repos included.
+  if (!canSeeInternals(req)) {
     const visible = await visibleRepos(db, req);
     where.push(`min(instr(target || '#', '#'), instr(target || ':', ':')) > 1 AND substr(target, 1, min(instr(target || '#', '#'), instr(target || ':', ':')) - 1) IN (${visible.map(() => "?").join(", ") || "NULL"})`);
     args.push(...visible);

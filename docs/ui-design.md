@@ -112,7 +112,7 @@ Phone: one decision per screen. A header strip with the count, summary and a Fil
 | Operator with GitHub write on the repo | the answer; it is actionable | "Use this answer" on every comment that picks an option: answers with that option and credits the person |
 | Anyone else signed in (maintainer, viewer, or operator without write on the repo) | a comment that may pick an option: shown to everyone with their permission badge and counted in the tally, never acted on | their own pick highlighted, "Retract mine", a note field that saves with Enter |
 
-Nobody is read-only: everyone signed in can comment, with or without picking an option (rate-limited and audited on the server). The top bar shows the reader's role badge (Operator / Maintainer / Viewer), and the line above the options says in words what a pick does. Answered decisions say "by ochre-fox, using kiri-n's answer" when an operator used someone's pick. The mock API enforces the same rules the server will (`decisionAccess` in `web/src/registry/permissions.ts`); in the mock, the user menu has "Mock data: view as" and URLs accept `?as=operator|maintainer|viewer`.
+Maintainers and operators can comment, with or without picking an option; viewers are read-only (rate-limited and audited on the server). The top bar shows the reader's role badge (Operator / Maintainer / Viewer), and the line above the options says in words what a pick does. Answered decisions say "by ochre-fox, using kiri-n's answer" when an operator used someone's pick. The mock API enforces the same rules the server will (`decisionAccess` in `web/src/registry/permissions.ts`); in the mock, the user menu has "Mock data: view as" and URLs accept `?as=operator|maintainer|viewer`.
 
 ### Item detail
 

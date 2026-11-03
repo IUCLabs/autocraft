@@ -1,7 +1,8 @@
 // Contributors (the whitelist), tracked repos and the access list over JSON.
-// Reads of contributors are open to anyone signed in, without override notes;
-// every other read and every write here is for operators. The server has
-// already checked the Origin, the CSRF header and the body size on POSTs.
+// Reads of contributors are open to anyone signed in; operators and
+// maintainers also see override notes. The access list and every write here
+// are for operators. The server has already checked the Origin, the CSRF
+// header and the body size on POSTs.
 import type { DatabaseSync } from "node:sqlite";
 import type {
   AccessOverview, AuditEntry, AuditPage, Contributor, ContributorList, ContributorSort, RulePreview, RepoApproval, RepoLabels, Tier, TrackedRepo, WhitelistRule,
@@ -26,6 +27,7 @@ import type { Req } from "../types.ts";
 import { hiddenRepos } from "./visible.ts";
 import { pipelineState } from "../../runner/autopilot.ts";
 import { PilotError, setPilot } from "../../pilot.ts";
+import { canSeeInternals } from "./staff.ts";
 
 const NOTE_MAX = 300;
 const ACCESS_NOTE_MAX = 500;
@@ -165,7 +167,7 @@ export async function listContributors(db: DatabaseSync, req: Req): Promise<Cont
   for (const c of rows) byTier[TIER[c.tier]]++;
   if (tier) rows = rows.filter((c) => TIER[c.tier] === tier);
   rows.sort((a, b) => (desc ? -sort(a, b) : sort(a, b)) || a.login.localeCompare(b.login));
-  const operator = isOperator(req);
+  const operator = canSeeInternals(req);
   return { rule, total: rows.length, byTier, contributors: rows.slice(offset, offset + limit).map((c) => toContributor(c, rule, operator)) };
 }
 

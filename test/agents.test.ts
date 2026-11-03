@@ -232,8 +232,8 @@ describe("agent runs", () => {
 });
 
 describe("API", () => {
-  const user = (role: "operator" | "viewer") => ({ login: `${role}-1`, role, canWrite: async () => false, canRead: async () => true });
-  const req = (role: "operator" | "viewer", query = "", params: Record<string, string> = {}, json?: unknown): Req =>
+  const user = (role: "operator" | "maintainer" | "viewer") => ({ login: `${role}-1`, role, canWrite: async () => false, canRead: async () => true });
+  const req = (role: "operator" | "maintainer" | "viewer", query = "", params: Record<string, string> = {}, json?: unknown): Req =>
     ({ method: "GET", path: "", params, query: new URLSearchParams(query), form: new URLSearchParams(), json, user: user(role), csrf: "", nonce: "" });
 
   test("accounts: labels and ids only, never a path; viewers see enabled ones; changes are audited", () => {
@@ -242,6 +242,7 @@ describe("API", () => {
     assert.deepEqual([out.id, out.label, out.enabled, out.maxConcurrent], ["b", "Main", true, 3]);
     assert.ok(!JSON.stringify(api.accounts(db, req("operator"))).includes(box.dir));
     assert.deepEqual(api.accounts(db, req("viewer")).map((a) => a.id), ["b"]);
+    assert.deepEqual(api.accounts(db, req("maintainer")).map((a) => a.id), ["b"]);
     assert.deepEqual(api.accounts(db, req("operator")).map((a) => a.id), ["a", "b"]);
     const a = db.prepare("SELECT login, action, target FROM audit").all() as object[];
     assert.deepEqual(a.map((x) => ({ ...x })), [{ login: "op", action: "account-change", target: "account:b" }]);

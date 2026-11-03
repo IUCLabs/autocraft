@@ -13,6 +13,7 @@ import { cancelTask, getTaskDetail, listTasks, summary } from "../../build/tasks
 import { HttpError } from "../server/util.ts";
 import type { Req, Res } from "../types.ts";
 import { hiddenRepos } from "./visible.ts";
+import { canSeeInternals } from "./staff.ts";
 
 const wrap = async <T>(f: () => T | Promise<T>): Promise<T> => {
   try {
@@ -24,7 +25,7 @@ const wrap = async <T>(f: () => T | Promise<T>): Promise<T> => {
 };
 
 /** Operators see every environment; others only the enabled ones. */
-export const envs = (db: DatabaseSync, req: Req): BuildEnv[] => listEnvs(db).filter((e) => e.enabled || req.user.role === "operator");
+export const envs = (db: DatabaseSync, req: Req): BuildEnv[] => listEnvs(db).filter((e) => e.enabled || canSeeInternals(req));
 
 export const postEnv = (db: DatabaseSync, req: Req) => wrap(() => createEnv(db, req.json, req.user.login));
 export const putEnv = (db: DatabaseSync, req: Req) => wrap(() => updateEnv(db, req.params.id, req.json, req.user.login));

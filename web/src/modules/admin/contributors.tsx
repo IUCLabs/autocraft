@@ -127,7 +127,7 @@ function RepoSelect({ value, onChange }: { value: string | undefined; onChange: 
   );
 }
 
-function StatusCell({ c, operator }: { c: Contributor; operator: boolean }) {
+function StatusCell({ c }: { c: Contributor }) {
   const [label, tone] = TIER[c.tier];
   return (
     <div className="flex min-w-0 flex-col gap-0.5">
@@ -135,7 +135,7 @@ function StatusCell({ c, operator }: { c: Contributor; operator: boolean }) {
         <Badge tone={tone}>{label}</Badge>
         {c.override && <span className="text-2xs text-ink/45">rule: {c.autoTier === "whitelisted" ? "whitelisted" : "not"}</span>}
       </span>
-      {operator && c.override && (
+      {c.overrideNote !== undefined && c.override && (
         <span className="truncate text-2xs text-ink/50" title={c.overrideNote ?? undefined}>
           {c.overrideNote ? `“${c.overrideNote}”` : "No note"} · {c.overrideBy ?? "?"}, {when(c.overrideAt).slice(0, 10)}
         </span>
@@ -172,7 +172,7 @@ function Table({ list, operator, filter, onSort }: { list: ContributorList; oper
                 </a>
               </td>
               <td className="max-w-[220px] px-3 py-1.5">
-                <StatusCell c={c} operator={operator} />
+                <StatusCell c={c} />
               </td>
               <td className="num px-3 text-right">{num(c.merged)}</td>
               <td className="num px-3 text-right">{num(c.closedUnmerged)}</td>
@@ -206,7 +206,7 @@ function Cards({ list, operator }: { list: ContributorList; operator: boolean })
             {operator && <OverrideEditor c={c} />}
           </div>
           <div className="mt-1.5">
-            <StatusCell c={c} operator={operator} />
+            <StatusCell c={c} />
           </div>
           <div className="num mt-1 flex flex-wrap gap-x-3 text-xs text-ink/55">
             <span>{num(c.merged)} merged</span>
@@ -247,7 +247,7 @@ function OverrideEditor({ c }: { c: Contributor }) {
             By the rule: {c.autoTier === "whitelisted" ? "whitelisted" : "not whitelisted"}. An override always wins.
           </p>
           <label className="mt-3 block text-xs text-ink/60">
-            Note, seen only by operators
+            Note
             <textarea
               value={note}
               maxLength={300}

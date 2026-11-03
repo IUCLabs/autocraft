@@ -10,6 +10,7 @@ import { getRun, listRuns, rates as ratesOf, RunQueryError } from "../../agents/
 import { HttpError } from "../server/util.ts";
 import type { Req } from "../types.ts";
 import { hiddenRepos } from "./visible.ts";
+import { canSeeInternals } from "./staff.ts";
 
 const wrap = async <T>(f: () => T | Promise<T>): Promise<T> => {
   try {
@@ -65,10 +66,10 @@ export const list = (db: DatabaseSync, req: Req) => wrap(async () => {
   return listRuns(db, f, await hiddenRepos(db, req));
 });
 
-// The prompt and output texts hold item and comment text verbatim: operators only.
+// The prompt and output texts hold item and comment text verbatim: operators and maintainers only.
 export const detail = (db: DatabaseSync, req: Req) => wrap(async () => {
   if (!/^\d{1,15}$/.test(req.params.id ?? "")) throw new HttpError(400, "not a run id");
-  return getRun(db, Number(req.params.id), { hidden: await hiddenRepos(db, req), texts: req.user.role === "operator" });
+  return getRun(db, Number(req.params.id), { hidden: await hiddenRepos(db, req), texts: canSeeInternals(req) });
 });
 
 export const rates = (db: DatabaseSync, req: Req) => wrap(async () => ratesOf(db, req.query.get("window") ?? "24h", Date.now(), await hiddenRepos(db, req)));

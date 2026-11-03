@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, before, describe, test } from "node:test";
-import type { AgentRunDetail, AgentRunPage, DecisionList, Flow, ItemList, Progress, QueueList, SearchHit } from "../web/src/api/types.ts";
+import type { AgentRunDetail, Decision as DecisionOne, AgentRunPage, DecisionList, Flow, ItemList, Progress, QueueList, SearchHit } from "../web/src/api/types.ts";
 import { addLogin } from "../src/access.ts";
 import { insertRun, finishRun } from "../src/agents/runs.ts";
 import { connect } from "../src/db.ts";
@@ -22,7 +22,7 @@ const dir = mkdtempSync(join(SCRATCH, "visibility-test-"));
 const dbFile = join(dir, "dash.db");
 const permsFile = join(dir, "perms.json");
 // reader has read on the internal repo; outsider has none.
-writeFileSync(permsFile, JSON.stringify({ reader: { vault: "read" } }));
+writeFileSync(permsFile, JSON.stringify({ reader: { vault: "read" }, maint: { vault: "read" } }));
 
 const db = connect(dbFile);
 let base = "";
@@ -59,6 +59,7 @@ before(async () => {
   }
   addLogin(db, "cli", "boss", "operator", null);
   addLogin(db, "cli", "reader", "viewer", null);
+  addLogin(db, "cli", "maint", "maintainer", null);
   addLogin(db, "cli", "outsider", "viewer", null);
   scopeToTracked(db);
   const config = loadConfig({ AUTOCRAFT_DEV_AUTH: "1", AUTOCRAFT_LISTEN: "127.0.0.1:0", AUTOCRAFT_DB: dbFile, AUTOCRAFT_DEV_PERMS: permsFile });
@@ -150,14 +151,22 @@ describe("repo visibility", () => {
     assert.equal(await (await signedIn("boss")).status(img(VAULT_IMG)), 200);
   });
 
-  test("agent texts go to operators only", async () => {
-    const reader = await signedIn("reader");
-    const seen = await reader.get<AgentRunDetail>("/api/agents/2");
-    assert.equal(seen.prompt, null);
-    assert.equal(seen.output, null);
-    const boss = await signedIn("boss");
-    const full = await boss.get<AgentRunDetail>("/api/agents/2");
-    assert.match(full.prompt ?? "", /prompt for vault/);
-    assert.match(full.output ?? "", /output for vault/);
+  test("operators and maintainers see prompts and answer notes; viewers do not; access stays operator-only", async () => {
+    db.prepare("UPDATE main.decisions SET answer = 'a', answer_note = 'private note', answered_by = 'boss', answered_at = ? WHERE id = 'vault#1:scope'").run(new Date().toISOString());
+    const note = async (login: string) => (await (await signedIn(login)).get<DecisionOne>("/api/decisions/vault%231%3Ascope")).answerNote;
+    for (const login of ["reader", "maint", "boss"]) {
+      const c = await signedIn(login);
+      const run = await c.get<AgentRunDetail>("/api/agents/2");
+      const staff = login !== "reader";
+      assert.equal(run.prompt === null, !staff, login);
+      assert.equal(run.output === null, !staff, login);
+      if (staff) {
+        assert.match(run.prompt ?? "", /prompt for vault/);
+        assert.match(run.output ?? "", /output for vault/);
+      }
+      assert.equal(await note(login), staff ? "private note" : null, login);
+      assert.equal(await c.status("/api/access"), login === "boss" ? 200 : 403, login);
+    }
+    db.prepare("UPDATE main.decisions SET answer = NULL, answer_note = NULL, answered_by = NULL, answered_at = NULL WHERE id = 'vault#1:scope'").run();
   });
 });

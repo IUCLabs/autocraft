@@ -30,7 +30,7 @@ TypeScript on Node 24, run directly (type stripping, no build step): `node src/c
 
 ## Dashboard server
 
-`autocraft dash serve` serves the dashboard over plain HTTP; a proxy in front provides HTTPS. Every page needs GitHub sign-in, and only logins on the access list get a session. Roles are `operator` (answers decisions, manages the whitelist, repos and access), `maintainer` and `viewer` (both read and give opinions). Add the first operator from a shell: `autocraft access add <login> --operator`. Then manage the list on the Access page or with `autocraft access list|add|remove|role`.
+`autocraft dash serve` serves the dashboard over plain HTTP; a proxy in front provides HTTPS. Every page needs GitHub sign-in, and only logins on the access list get a session. Roles are `operator` (answers decisions, manages the whitelist, repos and access), `maintainer` (reads everything except accounts and access, and gives opinions and comments) and `viewer` (read-only, without the internal fields below). Add the first operator from a shell: `autocraft access add <login> --operator`. Then manage the list on the Access page or with `autocraft access list|add|remove|role`.
 
 The frontend is the React app in `web/`. Build it before serving: `pnpm -C web install && pnpm -C web build` (writes `web/dist`). Without a build the server answers app pages with a 503 that says so. `VITE_MOCK=1 pnpm -C web build` builds a mockup on fake data that runs without the server.
 
@@ -81,7 +81,7 @@ The frontend in `web/` talks to `/api/`; the wire types are `web/src/api/types.t
 | `GET /api/prompts` (every registered model prompt: template, model, call settings, output checks and a rendered example on made-up items, plus the commit the server runs) | anyone signed in |
 | `GET /api/decisions?status=open\|opinions\|answered&repo=&kind=&minAge=&mine=1&limit=&offset=`, `/api/decisions/<id>`, `/api/decisions/<id>/thread` | anyone signed in; answer notes only for operators |
 | `POST /api/decisions/<id>/answer` `{answer, note?, exceptions?}`, `/undo`, `/adopt` `{opinionId}` | operator with write, maintain or admin on every repo the decision covers |
-| `POST /api/decisions/<id>/opinion` `{option, note?}`, `/retract`, `/comments` `{body}` | maintainers and operators; audited; maintainers get 60 an hour per login |
+| `POST /api/decisions/<id>/opinion` `{option, note?}`, `/retract`, `/comments` `{body}` | maintainers and operators; audited; maintainers get 60 an hour per login; viewers get 403 |
 | `POST /api/decisions/<id>/claim` | maintainers and operators: marks the decision as being looked at for 10 minutes |
 | `GET /api/contributors?q=&tier=&repo=&sort=&desc=&limit=&offset=` | anyone signed in; override notes only for operators |
 | `GET /api/contributors/rule-preview?minMerged=&minRate=`; `POST /api/contributors/rule` `{minMerged, minRate}`, `/api/contributors/<login>/override` `{status: "allow"\|"deny"\|null, note?}` | operator |

@@ -208,6 +208,6 @@ describe("ordering and API", () => {
     assert.deepEqual(priorityOf(db, "photocraft", 1), { level: "P0", model: "jev", reason: "P0 0.95" });
     db.prepare(`INSERT INTO decisions (id, kind, repo, number, question, options, asked_at) VALUES ('d1', 'scope', 'photocraft', 1, 'In scope?', '[]', '2026-10-01')`).run();
     const row = db.prepare("SELECT * FROM decisions WHERE id = 'd1'").get() as unknown as DecisionRow;
-    assert.equal(toDecision(db, row, { login: "x", operator: false }).priority?.level, "P0");
+    assert.equal(toDecision(db, row, { login: "x", operator: false, staff: false }).priority?.level, "P0");
   });
 });

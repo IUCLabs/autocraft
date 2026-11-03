@@ -18,6 +18,7 @@ import { areaNameOf } from "../../areas/store.ts";
 import { queueSlots } from "../../rank/position.ts";
 import { hiddenRepos, visibleRepos } from "./visible.ts";
 import { pickDecision, shortRepo } from "../../../web/src/lib/links.ts";
+import { canSeeInternals } from "./staff.ts";
 
 export const CLAIM_TTL = 10 * 60_000;
 const NOTE_MAX = 500;
@@ -133,8 +134,8 @@ function contextOf(c: string | null): string[] {
   return c.split(/\n+/).map((s) => s.trim()).filter(Boolean);
 }
 
-export type Viewer = { login: string; operator: boolean; slots?: Map<string, QueueSlot> };
-export const viewerOf = (req: Req): Viewer => ({ login: req.user.login, operator: isOperator(req) });
+export type Viewer = { login: string; operator: boolean; staff: boolean; slots?: Map<string, QueueSlot> };
+export const viewerOf = (req: Req): Viewer => ({ login: req.user.login, operator: isOperator(req), staff: canSeeInternals(req) });
 /** The viewer with the queue places of the items they may see, computed once for the response. */
 const viewerWith = async (db: DatabaseSync, req: Req): Promise<Viewer> => ({ ...viewerOf(req), slots: queueSlots(db, await visibleRepos(db, req)) });
 
@@ -170,7 +171,7 @@ export function toDecision(db: DatabaseSync, d: DecisionRow, viewer: Viewer): De
     askedAt: d.asked_at, askedBy: d.asked_by ?? "the pipeline",
     docket: d.docket,
     answer: d.answer,
-    answerNote: viewer.operator ? d.answer_note : null,
+    answerNote: viewer.staff ? d.answer_note : null,
     answeredBy: d.answered_by, answeredAt: d.answered_at, appliedAt: d.applied_at,
     adoptedOpinion: adopted ? toOpinion(adopted) : null,
     opinions,

@@ -105,7 +105,7 @@ const WRITES: [string, unknown][] = [
 ];
 
 describe("admin api", () => {
-  test("a non-operator gets 403 on every write and operator read, and sees no override notes", async () => {
+  test("a non-operator gets 403 on every write and operator read, and only operators and maintainers see override notes", async () => {
     const boss = await signedIn("boss");
     await boss.post("/api/contributors/steady/override", { status: "deny", note: NOTE });
     for (const login of ["viewer1", "maint"]) {
@@ -116,8 +116,7 @@ describe("admin api", () => {
       assert.equal(auditRows(), before, login);
       const list = await c.get<ContributorList>("/api/contributors");
       assert.equal(row(list, "steady").override, "deny");
-      assert.ok(!JSON.stringify(list).includes(NOTE), `${login} sees an override note`);
-      assert.ok(!("overrideNote" in row(list, "steady")));
+      assert.equal(JSON.stringify(list).includes(NOTE), login === "maint", login);
     }
     assert.equal(row(await boss.get<ContributorList>("/api/contributors"), "steady").overrideNote, NOTE);
     await boss.post("/api/contributors/steady/override", { status: null });

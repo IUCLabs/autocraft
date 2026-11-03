@@ -12,6 +12,7 @@ import { audit } from "../audit.ts";
 import { HttpError } from "../server/util.ts";
 import type { Req } from "../types.ts";
 import { hiddenRepos, visibleRepos } from "./visible.ts";
+import { canSeeInternals } from "./staff.ts";
 
 // Stages of docs/pipeline.md. A stage with registered steps shows them; the
 // mirror also runs on its own timer.
@@ -119,7 +120,7 @@ const jobId = (req: Req): number => {
   return id;
 };
 
-export const job = (db: DatabaseSync, req: Req) => wrap(async () => jobDetail(db, jobId(req), { hidden: await hiddenRepos(db, req), logs: req.user.role === "operator" }));
+export const job = (db: DatabaseSync, req: Req) => wrap(async () => jobDetail(db, jobId(req), { hidden: await hiddenRepos(db, req), logs: canSeeInternals(req) }));
 
 function body(req: Req): Record<string, unknown> {
   const b = req.json;
