@@ -913,7 +913,9 @@ export interface CommentTemplate {
  * needs-fix-up (take-fix), waiting-opus (Sonnet's take or take-fix; Opus has not reviewed the head yet), waiting-verify (no passed verification at the head yet), verify-failed, verify-error,
  * needs-decision (outside the rule; Merge? asked or about to be),
  * declined (the operator answered hold or close), merged,
- * held-duplicate (an open Duplicate? decision keeps it out of every later stage).
+ * held-duplicate (an open Duplicate? decision keeps it out of every later stage),
+ * batch-checking (in an integration batch whose combined tree is being checked), in-batch (the batch PR is open),
+ * batch-failed (failed alone in a batch: on hold until a new head).
  */
 export type QueueState =
   | "ready"
@@ -930,7 +932,29 @@ export type QueueState =
   | "needs-decision"
   | "declined"
   | "merged"
-  | "held-duplicate";
+  | "held-duplicate"
+  | "batch-checking"
+  | "in-batch"
+  | "batch-failed";
+
+/** An integration batch: PRs landed together through one integration branch and one PR. */
+export type BatchState = "checking" | "open" | "merged" | "failed" | "split" | "superseded";
+
+export interface QueueBatch {
+  id: number;
+  repo: RepoName;
+  branch: string;
+  state: BatchState;
+  /** The PRs merged into the batch, in order. */
+  prs: { number: number; head: string }[];
+  /** The batch's own PR on the storytold repo, once opened. */
+  prNumber: number | null;
+  prUrl: string | null;
+  /** Why it failed or was replaced; the failure summary of a held PR. */
+  summary: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
 
 export interface QueueRow {
   repo: RepoName;
@@ -976,6 +1000,8 @@ export interface QueueList {
   counts: Record<QueueState, number>;
   /** Rows matching the filters, every page. */
   total: number;
+  /** Batches in flight and the latest finished ones, newest first. */
+  batches: QueueBatch[];
   /** Cursor for the next page (`after`), or null on the last one. */
   next: string | null;
 }

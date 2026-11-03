@@ -20,6 +20,7 @@ import { dupesWork } from "../dupes/index.ts";
 import { pushApprovalOf } from "../fixup/approval.ts";
 import { selectFixups } from "../fixup/candidates.ts";
 import { mergeApprovalOf } from "../merge/approval.ts";
+import { batchesDue } from "../merge/batch-store.ts";
 import { buildQueue, eligible, toAsk } from "../merge/queue.ts";
 import { trackedNames } from "../repos.ts";
 import { selectCandidates as reviewCandidates } from "../review/candidates.ts";
@@ -229,7 +230,8 @@ export const LANES: Lane[] = [
     steps: ["merge"],
     perRepo: true,
     detect: (db, { run }) => {
-      const repos = [...new Set(buildQueue(db, { run }).filter((e) => eligible(e) && mergeApprovalOf(db, e.repo) && !refusedAsBefore(db, e)).map((e) => e.repo))].sort();
+      const due = buildQueue(db, { run }).filter((e) => eligible(e) && mergeApprovalOf(db, e.repo) && !refusedAsBefore(db, e)).map((e) => e.repo);
+      const repos = [...new Set([...due, ...batchesDue(db)])].sort();
       return repos.map((repo) => ({ step: "merge", params: { repo } }));
     },
   },

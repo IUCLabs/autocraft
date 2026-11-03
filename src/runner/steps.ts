@@ -249,21 +249,29 @@ export const STEPS: StepDef[] = [
   {
     name: "merge",
     title: "Merge queued pull requests",
-    description: "Merges the pull requests of one repo that the merge rule allows, one at a time, through the safe-merge command, and asks a \"Merge this PR?\" decision for taken ones the rule does not cover.",
+    description: "Lands the pull requests of one repo that may merge in integration batches: up to 10 at a time are merged into one integration branch, checked in the sandbox, opened as one pull request on the storytold repo and merged with merge commits through the safe-merge command once upstream CI is green. A failed batch is split in half; a single failing PR is held. Pull requests in a repo the sandbox cannot build are merged one at a time.",
     stage: 6,
     requires: "operator",
     group: "github-write",
+    models: ["haiku"],
     params: [
       { name: "repo", label: "Repo", kind: "repo", required: true },
-      { name: "limit", label: "At most", kind: "int", min: 1, max: 50, default: 5, help: "merges to attempt in this job" },
+      { name: "limit", label: "At most", kind: "int", min: 1, max: 50, default: 10, help: "pull requests to start or merge in this job" },
     ],
     check: checkMergeApproved,
     run: async (ctx) => {
       const { runMerge } = await import("../merge/index.ts");
+      const { runBatches } = await import("../merge/batch.ts");
       const refused = await checkMergeApproved(ctx.db, ctx.params);
       if (refused) throw new Error(refused);
-      const r = await runMerge(ctx.db, { repo: String(ctx.params.repo), limit: Number(ctx.params.limit), dryRun: false, onMerged: ctx.handled }, ctx.log);
-      return `${r.repo}: merged ${r.merged.length} of ${r.attempted.length} tried, ${r.refused.length} refused, ${r.asked.length} decisions asked`;
+      const repo = String(ctx.params.repo), limit = Number(ctx.params.limit);
+      const b = await runBatches(ctx.db, { repo, limit, onMerged: ctx.handled }, ctx.log);
+      ctx.usageRun(b.runId);
+      let single = { merged: [] as string[], attempted: [] as string[], refused: [] as unknown[], asked: [] as string[] };
+      if (limit > b.merged.length) {
+        single = await runMerge(ctx.db, { repo, limit: limit - b.merged.length, dryRun: false, only: (e) => e.verify?.state === "unavailable", onMerged: (n) => ctx.handled(b.merged.length + n) }, ctx.log);
+      }
+      return `${repo}: ${b.merged.length} merged in batches (${b.started.length} started, ${b.published.length} opened, ${b.split.length} split), ${single.merged.length} merged singly, ${single.asked.length} decisions asked`;
     },
   },
   {

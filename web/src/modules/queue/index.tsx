@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { GitMergeIcon } from "lucide-react";
 import { useApi, useQuery } from "../../api/client";
-import type { QueueFilter, QueueList, QueueRow, QueueState, Tier } from "../../api/types";
+import type { BatchState, QueueBatch, QueueFilter, QueueList, QueueRow, QueueState, Tier } from "../../api/types";
 import type { FeatureModule, ViewProps } from "../../registry/types";
 import { Badge, type Tone } from "../../ui/Badge";
 import { RefLink } from "../../ui/RefLink";
@@ -28,6 +28,9 @@ export const STATE: Record<QueueState, [string, Tone, string]> = {
   "needs-decision": ["Needs a decision", "warn", "Outside the merge rule (size, label, author, not verified or no CI): waits for the operator's Merge? answer"],
   declined: ["Declined", "neutral", "The operator answered hold or close"],
   merged: ["Merged", "merged", "Merged"],
+  "batch-checking": ["In batch: checking", "neutral", "Part of an integration batch whose combined tree is being built and tested in the sandbox"],
+  "in-batch": ["In batch", "ok", "Part of an integration batch with an open PR; lands when upstream CI is green"],
+  "batch-failed": ["Batch failed", "bad", "Failed alone in a batch: on hold until the PR has a new head"],
   "held-duplicate": ["Held: Duplicate?", "warn", "An open Duplicate? decision keeps it out of every later stage; answer it in Decisions"],
 };
 const STATES = Object.keys(STATE) as QueueState[];
@@ -124,6 +127,8 @@ function QueueView(_: ViewProps) {
         )}
       </div>
 
+      {data && data.batches.length > 0 && <Batches batches={data.batches} />}
+
       <Block className="mt-3" flush title={filter.state ? STATE[filter.state][0] : "Taken PRs"} aside={loading && data ? "Updating…" : filter.state ? STATE[filter.state][2] : undefined}>
         <ErrorLine error={error?.message} className="p-4" />
         {data && data.rows.length === 0 && <p className="px-4 py-6 text-sm text-ink/50">No PR in the queue matches these filters.</p>}
@@ -140,6 +145,38 @@ function QueueView(_: ViewProps) {
         )}
       </Block>
     </Page>
+  );
+}
+
+const BATCH_STATE: Record<BatchState, [string, Tone]> = {
+  checking: ["Checking", "neutral"], open: ["PR open", "ok"], merged: ["Merged", "merged"], failed: ["Failed", "bad"], split: ["Split", "warn"], superseded: ["Rebuilt", "neutral"],
+};
+
+function Batches({ batches }: { batches: QueueBatch[] }) {
+  return (
+    <Block className="mt-3" flush title="Integration batches" aside="PRs landed together through one integration branch">
+      <ul className="divide-y divide-line">
+        {batches.map((b) => (
+          <li key={b.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2 text-sm">
+            <Badge tone={BATCH_STATE[b.state][1]}>{BATCH_STATE[b.state][0]}</Badge>
+            <span className="font-mono text-xs text-ink/70" title={b.summary ?? undefined}>
+              {b.branch}
+            </span>
+            <span className="flex flex-wrap gap-x-1.5">
+              {b.prs.map((p) => (
+                <RefLink key={p.number} repo={b.repo} number={p.number} kind="pr" />
+              ))}
+            </span>
+            {b.prUrl && (
+              <a href={b.prUrl} className="ml-auto text-xs text-accent-ink hover:underline">
+                Batch PR #{b.prNumber}
+              </a>
+            )}
+            {b.summary && <span className="w-full text-2xs text-ink/50">{b.summary}</span>}
+          </li>
+        ))}
+      </ul>
+    </Block>
   );
 }
 

@@ -1,5 +1,5 @@
 // Fake merge queue: a few PRs in every state, over the mock repos.
-import type { QueueFilter, QueueList, QueueRow, QueueState, TypeLabel } from "../types";
+import type { QueueBatch, QueueFilter, QueueList, QueueRow, QueueState, TypeLabel } from "../types";
 import { AUTHORS, DECISIONS, NOW, REPOS, rng, titleFor } from "./fixtures";
 
 const STATES: QueueState[] = ["ready", "decision-answered-merge", "refused", "waiting-ci", "ci-failed", "conflict", "needs-fix-up", "waiting-opus", "waiting-verify", "verify-failed", "verify-error", "needs-decision", "declined", "merged"];
@@ -62,6 +62,12 @@ const ROWS: QueueRow[] = (() => {
   return out.sort((a, b) => a.repo.localeCompare(b.repo) || a.number - b.number);
 })();
 
+const BATCHES: QueueBatch[] = [
+  { id: 3, repo: "photocraft", branch: "integration-photocraft-20261103-2", state: "open", prs: [{ number: 412, head: "a1b2c3d" }, { number: 418, head: "e4f5a6b" }, { number: 421, head: "c7d8e9f" }], prNumber: 430, prUrl: "https://github.com/storytold/photocraft/pull/430", summary: null, createdAt: "2026-11-03T08:10:00Z", updatedAt: "2026-11-03T08:40:00Z" },
+  { id: 2, repo: "photocraft", branch: "integration-photocraft-20261103-1", state: "split", prs: [{ number: 405, head: "1a2b3c4" }, { number: 407, head: "5d6e7f8" }], prNumber: 428, prUrl: "https://github.com/storytold/photocraft/pull/428", summary: "upstream CI failed on the batch PR", createdAt: "2026-11-03T06:00:00Z", updatedAt: "2026-11-03T07:30:00Z" },
+  { id: 1, repo: "designcraft", branch: "integration-designcraft-20261102-1", state: "merged", prs: [{ number: 88, head: "9a8b7c6" }], prNumber: 91, prUrl: "https://github.com/storytold/designcraft/pull/91", summary: null, createdAt: "2026-11-02T12:00:00Z", updatedAt: "2026-11-02T13:00:00Z" },
+];
+
 export function queueList(f: QueueFilter): QueueList {
   const all = ROWS.filter((x) => !f.repo || x.repo === f.repo);
   const counts = Object.fromEntries(STATES.map((s) => [s, all.filter((x) => x.state === s).length])) as Record<QueueState, number>;
@@ -69,5 +75,5 @@ export function queueList(f: QueueFilter): QueueList {
   const from = f.after ? match.findIndex((x) => `${x.repo}#${x.number}` === f.after) + 1 : 0;
   const rows = match.slice(from, from + (f.limit ?? 100));
   const last = rows[rows.length - 1];
-  return { rows, counts, total: match.length, next: last && from + rows.length < match.length ? `${last.repo}#${last.number}` : null };
+  return { rows, counts, total: match.length, batches: BATCHES.filter((b) => !f.repo || b.repo === f.repo), next: last && from + rows.length < match.length ? `${last.repo}#${last.number}` : null };
 }

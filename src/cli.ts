@@ -3,7 +3,7 @@
 type Command = { summary: string; run: (args: string[]) => Promise<void> | void };
 type Module = { commands: Record<string, Command> };
 
-const MODULES = ["./mirror.ts", "./whitelist.ts", "./decisions.ts", "./access.ts", "./repos.ts", "./classify/index.ts", "./labels/index.ts", "./decide/index.ts", "./review/index.ts", "./merge/index.ts", "./dash/index.ts", "./runner/index.ts", "./worker/index.ts", "./embed/index.ts", "./agents/index.ts", "./build/cli.ts", "./act/index.ts", "./fixup/index.ts", "./verify/index.ts", "./priority/index.ts", "./dupes/index.ts", "./fixissue/index.ts", "./rank/index.ts", "./review/opus.ts"];
+const MODULES = ["./mirror.ts", "./whitelist.ts", "./decisions.ts", "./access.ts", "./repos.ts", "./classify/index.ts", "./labels/index.ts", "./decide/index.ts", "./review/index.ts", "./merge/index.ts", "./dash/index.ts", "./runner/index.ts", "./worker/index.ts", "./embed/index.ts", "./agents/index.ts", "./build/cli.ts", "./act/index.ts", "./fixup/index.ts", "./verify/index.ts", "./priority/index.ts", "./dupes/index.ts", "./fixissue/index.ts", "./rank/index.ts", "./review/opus.ts", "./merge/batch.ts"];
 
 async function main(): Promise<void> {
   const commands: Record<string, Command> = {};
