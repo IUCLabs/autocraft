@@ -45,7 +45,8 @@ export function withdrawMergeQuestion(db: DatabaseSync, repo: string, number: nu
 export function withdrawBlockedQuestions(db: DatabaseSync, queue: QueueEntry[], at: string): number {
   let n = 0;
   for (const e of queue) {
-    if (e.state !== "changes-requested" || !e.decisionId) continue;
+    // A block seen only in the mirror may be wrong (the association is relative to the viewer): wait for a live read.
+    if (e.state !== "changes-requested" || !e.blockedLive || !e.decisionId) continue;
     const row = db.prepare("SELECT answer, applied_at FROM decisions WHERE id = ?").get(e.decisionId) as { answer: string | null; applied_at: string | null } | undefined;
     if (!row || (row.answer !== null && (row.answer !== "merge" || row.applied_at))) continue;
     if (withdrawMergeQuestion(db, e.repo, e.number, e.head, at)) n++;

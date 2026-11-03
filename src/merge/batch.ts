@@ -347,6 +347,7 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
     const own = await liveGateChecked(db, d.querier, repo, b.pr_number!, "", log);
     if (own === null) { s.waiting.push(b.branch); return; }
     if (own.blocked) {
+      if (getBatch(db, b.id).state !== "open") { log(`  ${b.branch}: ended meanwhile; left alone`); return; }
       // Rebuilding would only open a new PR around the review: the batch fails and its PRs wait for a new head.
       updateBatch(db, b.id, at(), { state: "failed", summary: BLOCKED_BY_REVIEW });
       await closePr(b, `Closing: ${own.blocked}. The PRs in it are held until they change.`);

@@ -77,6 +77,8 @@ export type QueueEntry = {
   held: boolean;
   /** A line on the state: why a maintainer's review blocks it, or that its reviews cannot be read. */
   note: string | null;
+  /** The block (state changes-requested) comes from a live read newer than the PR's last update, not from the mirrored reviews alone. */
+  blockedLive: boolean;
   /** The verification of the PR's current head, or null when there is none. */
   verify: { state: string; kind: string | null; summary: string | null; note: string | null } | null;
 };
@@ -217,7 +219,7 @@ export function buildQueue(db: DatabaseSync, opts: QueueOptions = {}): QueueEntr
     const e: QueueEntry = {
       repo: r.repo, number: r.number, title: r.title ?? "", author: r.author, tier, head: r.r_head, size, label,
       verdict: r.verdict, reason: r.reason, fixes, ci, mergeable, state: "needs-decision", path: null, outsideRule,
-      decisionId: asked ? id : null, noCi: ci === "none" && noCi(r.repo), answer, refusedReason: null, reviewedAt: r.r_at, verify, held: holds.has(`${r.repo}#${r.number}`), note: null,
+      decisionId: asked ? id : null, noCi: ci === "none" && noCi(r.repo), answer, refusedReason: null, reviewedAt: r.r_at, verify, held: holds.has(`${r.repo}#${r.number}`), note: null, blockedLive: false,
     };
     const open = r.state === "OPEN" && !mergedByUs;
     // A maintainer's formal block comes before everything else: the PR is never asked about, batched or merged while it stands.
@@ -226,7 +228,7 @@ export function buildQueue(db: DatabaseSync, opts: QueueOptions = {}): QueueEntr
     const live = gate && gate.readAt > (r.updated_at ?? "") ? gate : null;
     const why = live ? (live.blocked ? reasonFor(live.by) : null) : refuseReviews(reviewRows.all(r.repo, r.number) as ReviewFact[], r.review_decision);
     if (open && gate && gate.failures >= GATE_FAILURES) e.note = failureNote(gate.failures);
-    if (open && why) { e.state = "changes-requested"; e.note = why; out.push(e); continue; }
+    if (open && why) { e.state = "changes-requested"; e.note = why; e.blockedLive = !!live; out.push(e); continue; }
     e.state = stateOf(e, r.state === "MERGED" || mergedByUs, last, open && (backlogHeld(db, r.repo, r.number) ? "backlog" : duplicateHeld(db, r.repo, r.number) ? "duplicate" : null), r.r_final === 1 && !(open && (stale.has(`${r.repo}#${r.number}@${r.r_head}`) || (r.o_at !== null && changedSince(state.get(`${r.repo}#${r.number}`), r.o_seen ?? r.o_at, r.o_hash)))));
     const batch = inBatch.get(`${r.repo}#${r.number}@${r.r_head}`);
     if (batch && BATCHABLE.includes(e.state)) e.state = batch;

@@ -61,6 +61,7 @@ describe("changes requested: queue", () => {
     const db = fresh([{ n: 1, author: "newcomer" }, { n: 2, author: "newcomer" }]);
     assert.deepEqual(askMergeDecisions(db, { at: T0 }).sort(), [mergeDecisionId("app", 1, "sha1"), mergeDecisionId("app", 2, "sha2")]);
     review(db, 1, "ana", "CHANGES_REQUESTED", "MEMBER", "2026-01-01T01:00:00Z");
+    recordGate(db, "app", 1, [{ id: "x", author: "ana", association: "NONE", state: "CHANGES_REQUESTED", at: "2026-01-03T00:00:00Z" }], null);
     assert.deepEqual(askMergeDecisions(db, { at: "2026-01-03T00:00:00Z" }), []);
     const d = db.prepare("SELECT id, answer, answered_by FROM decisions WHERE id LIKE 'app#1:merge@sha1%'").all() as { id: string; answer: string | null; answered_by: string }[];
     assert.equal(d.length, 1);
@@ -70,6 +71,7 @@ describe("changes requested: queue", () => {
     assert.equal(states(db)[2], "needs-decision");
     // The block clears: the question is asked again.
     review(db, 1, "ana", "APPROVED", "MEMBER", "2026-01-04T00:00:00Z");
+    recordGate(db, "app", 1, [], null);
     assert.deepEqual(askMergeDecisions(db, { at: "2026-01-05T00:00:00Z" }), [mergeDecisionId("app", 1, "sha1")]);
   });
 });
@@ -111,10 +113,27 @@ describe("changes requested: decisions", () => {
     db.prepare("UPDATE decisions SET answer = 'merge', answered_by = 'op', answered_at = ? WHERE id = ?").run(T0, mergeDecisionId("app", 2, "sha2"));
     review(db, 1, "ana", "CHANGES_REQUESTED", "MEMBER", "2026-01-01T01:00:00Z");
     review(db, 2, "ana", "CHANGES_REQUESTED", "MEMBER", "2026-01-01T01:00:00Z");
+    recordGate(db, "app", 1, [{ id: "x", author: "ana", association: "NONE", state: "CHANGES_REQUESTED", at: "2026-01-03T00:00:00Z" }], null);
+    recordGate(db, "app", 2, [{ id: "x", author: "ana", association: "NONE", state: "CHANGES_REQUESTED", at: "2026-01-03T00:00:00Z" }], null);
     // Declined PRs are not blocked-state entries in the queue; only the merge answer is withdrawn.
     askMergeDecisions(db, { at: "2026-01-03T00:00:00Z" });
     assert.equal((db.prepare("SELECT COUNT(*) AS n FROM decisions WHERE id = ?").get(mergeDecisionId("app", 1, "sha1")) as { n: number }).n, 1);
     assert.equal((db.prepare("SELECT COUNT(*) AS n FROM decisions WHERE id = ?").get(mergeDecisionId("app", 2, "sha2")) as { n: number }).n, 0);
+  });
+});
+
+describe("changes requested: withdrawal source", () => {
+  test("a mirror-only block leaves an operator's merge answer in place; a live block withdraws it", () => {
+    const db = fresh([{ n: 1, author: "newcomer" }]);
+    const id = mergeDecisionId("app", 1, "sha1");
+    askMergeDecisions(db, { at: T0 });
+    db.prepare("UPDATE decisions SET answer = 'merge', answered_by = 'op', answered_at = ? WHERE id = ?").run(T0, id);
+    review(db, 1, "ana", "CHANGES_REQUESTED", "CONTRIBUTOR", "2026-01-01T01:00:00Z");
+    askMergeDecisions(db, { at: "2026-01-03T00:00:00Z" });
+    assert.equal((db.prepare("SELECT COUNT(*) AS n FROM decisions WHERE id = ?").get(id) as { n: number }).n, 1);
+    recordGate(db, "app", 1, [{ id: "x", author: "ana", association: "NONE", state: "CHANGES_REQUESTED", at: "2026-01-03T00:00:00Z" }], null);
+    askMergeDecisions(db, { at: "2026-01-04T00:00:00Z" });
+    assert.equal((db.prepare("SELECT COUNT(*) AS n FROM decisions WHERE id = ?").get(id) as { n: number }).n, 0);
   });
 });
 
