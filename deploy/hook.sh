@@ -12,7 +12,8 @@
 #   AUTOCRAFT_ENV_FILE         default $AUTOCRAFT_ROOT/config/autocraft.env
 #   AUTOCRAFT_BRANCH           branch that deploys (default main)
 #   AUTOCRAFT_UNITS            systemd units restarted after the build
-#                              (default "autocraft-dashboard autocraft-runner"; empty for none)
+#                              (default "autocraft-dashboard autocraft-runner"; empty for none).
+#                              Not restarted while the database file does not exist yet.
 #   AUTOCRAFT_SUDO             command prefix for the restart (default "sudo -n")
 #   AUTOCRAFT_WORKER_SSH       user@host of the sandbox worker's admin SSH command; when set
 #                              and $AUTOCRAFT_ROOT/.ssh/id_craftsandbox exists, the worker code
@@ -89,6 +90,10 @@ if [ -n "${AUTOCRAFT_WORKER_SSH:-}" ] && [ -f "$ROOT/.ssh/id_craftsandbox" ]; th
 fi
 
 units="${AUTOCRAFT_UNITS-autocraft-dashboard autocraft-runner}"
+if [ -n "$units" ] && [ -n "${CRAFT_AUTO_DB:-}" ] && [ ! -f "$CRAFT_AUTO_DB" ]; then
+	echo "-> No database at $CRAFT_AUTO_DB yet; built, not restarting."
+	units=""
+fi
 if [ -n "$units" ]; then
 	echo "-> Restarting: $units"
 	# shellcheck disable=SC2086
