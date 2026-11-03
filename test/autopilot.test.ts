@@ -11,7 +11,7 @@ import { SCRATCH } from "./scratch.ts";
 process.env.CRAFT_AUTO_EXTRA_STEPS = fileURLToPath(new URL("./autopilot-steps.ts", import.meta.url));
 
 const { connect } = await import("../src/db.ts");
-const { autopilotTick, backoffUntil, LANES, planAutopilot, refusedAsBefore, roundRobin, setEnabled, BACKOFF_MS, COOLDOWN_MS } = await import("../src/runner/autopilot.ts");
+const { autopilotTick, backoffUntil, LANES, planAutopilot, planDue, refusedAsBefore, roundRobin, setEnabled, BACKOFF_MS, COOLDOWN_MS } = await import("../src/runner/autopilot.ts");
 const { enqueue, JobError, RUNNER_STOPPED } = await import("../src/runner/jobs.ts");
 const { Runner } = await import("../src/runner/runner.ts");
 const { setMergeApproval } = await import("../src/merge/approval.ts");
@@ -154,6 +154,18 @@ describe("autopilot", () => {
     }
     db.prepare("UPDATE jobs SET error = ?").run(RUNNER_STOPPED);
     assert.equal(backoffUntil(db, "test-limited"), null);
+  });
+
+  test("an operator release ends the released stage's backoff and makes the planner due", () => {
+    for (let i = 0; i < 3; i++) finish("merge", "done", 0, new Date(Date.now() - 20 * 60_000 - i * 60_000).toISOString());
+    assert.ok(backoffUntil(db, "merge") !== null);
+    setEnabled(db, true, "boss");
+    assert.equal(planDue(db), true, "first plan");
+    assert.equal(planDue(db), false);
+    db.prepare("INSERT INTO audit (at, login, action, target, details) VALUES (?, 'boss', 'batch-again', 'a#1', '{}')").run(new Date(Date.now() + 1000).toISOString());
+    assert.equal(backoffUntil(db, "merge"), null);
+    assert.equal(planDue(db, Date.now() + 2000), true, "the release wakes the planner");
+    db.exec("DELETE FROM audit WHERE action = 'batch-again'");
   });
 
   test("with no sync recorded, only the first plan and the 15-minute timer trigger", async () => {

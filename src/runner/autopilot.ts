@@ -339,7 +339,19 @@ export function usageToday(db: DatabaseSync, step: string, ms: number = Date.now
   return (db.prepare("SELECT COALESCE(SUM(items), 0) AS n FROM jobs WHERE step = ? AND started_at >= ?").get(step, dayStart(ms)) as { n: number }).n;
 }
 
-/** After BACKOFF_AFTER failed autopilot jobs in a row: when the stage may run again, else null. */
+/** The steps an operator release (operator-actions.ts) hands new work to. */
+const RELEASE_STEPS: Record<string, string[]> = {
+  "batch-again": ["merge"], "review-again": ["review-batch", "opus-review"], "verify-again": ["verify"], "fix-again": ["fixissue"],
+};
+
+/** When an operator last released work for the step, or null. */
+function releasedAt(db: DatabaseSync, step: string): string | null {
+  const actions = Object.keys(RELEASE_STEPS).filter((a) => RELEASE_STEPS[a]!.includes(step));
+  if (!actions.length) return null;
+  return (db.prepare(`SELECT MAX(at) AS at FROM audit WHERE action IN (${actions.map(() => "?").join(", ")})`).get(...actions) as { at: string | null }).at;
+}
+
+/** After BACKOFF_AFTER failed autopilot jobs in a row: when the stage may run again, else null. An operator release since the last job ends it. */
 export function backoffUntil(db: DatabaseSync, step: string, ms: number = Date.now()): number | null {
   // Merge jobs that only advance batches in flight handle nothing; that is progress, not idleness.
   if (step === "merge" && db.prepare("SELECT 1 FROM main.merge_batches WHERE state IN ('checking', 'open')").get()) return null;
@@ -347,6 +359,8 @@ export function backoffUntil(db: DatabaseSync, step: string, ms: number = Date.n
   const rows = db.prepare(`SELECT state, ended_at, items FROM jobs WHERE step = ? AND requested_by = ? AND state IN ('done', 'failed')
     AND COALESCE(error, '') <> ? ORDER BY id DESC LIMIT ?`).all(step, AUTOPILOT_USER, RUNNER_STOPPED, BACKOFF_AFTER) as { state: string; ended_at: string | null; items: number | null }[];
   if (rows.length < BACKOFF_AFTER || rows.some((r) => !r.ended_at || (r.state === "done" && (r.items ?? 0) > 0))) return null;
+  const released = releasedAt(db, step);
+  if (released && released > rows[0]!.ended_at!) return null;
   const until = Date.parse(rows[0]!.ended_at!) + BACKOFF_MS;
   return until > ms ? until : null;
 }
@@ -545,7 +559,7 @@ export async function planAutopilot(db: DatabaseSync, opts: PlanOptions = {}): P
 }
 
 /**
- * Whether the planner is due now: a sync, a finished autopilot job or 15 minutes call for it. Moves the
+ * Whether the planner is due now: a sync, a finished autopilot job, an operator release or 15 minutes call for it. Moves the
  * planner's marks when it is, so the caller must then plan.
  */
 export function planDue(db: DatabaseSync, nowMs: number = Date.now()): boolean {
@@ -556,7 +570,9 @@ export function planDue(db: DatabaseSync, nowMs: number = Date.now()): boolean {
   const plannedAt = getSetting(db, KEY_PLANNED_AT);
   const planned = plannedAt === null ? 0 : Date.parse(plannedAt);
   const finished = db.prepare("SELECT 1 FROM jobs WHERE requested_by = ? AND ended_at > ?").get(AUTOPILOT_USER, plannedAt ?? "");
-  if (!syncChanged && plannedAt !== null && t - planned < PLAN_EVERY_MS && !finished) return false;
+  const released = db.prepare(`SELECT 1 FROM audit WHERE action IN (${Object.keys(RELEASE_STEPS).map(() => "?").join(", ")}) AND at > ?`)
+    .get(...Object.keys(RELEASE_STEPS), plannedAt ?? "");
+  if (!syncChanged && plannedAt !== null && t - planned < PLAN_EVERY_MS && !finished && !released) return false;
   if (syncChanged) {
     setSetting(db, KEY_SYNC_SEEN, sync ?? "");
     setSetting(db, KEY_SYNC_AT, new Date(t).toISOString());
