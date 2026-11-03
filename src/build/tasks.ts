@@ -2,7 +2,7 @@
 // on the worker, and reported back. Everything a worker sends is stored as
 // data; nothing here executes it, renders it or puts it in a prompt.
 import type { DatabaseSync, SQLInputValue } from "node:sqlite";
-import type { BuildSummary, BuildTask, BuildTaskDetail, Capabilities, Requires, TaskArtifact, TaskBatch, TaskFilter, TaskPage, TaskResult, TaskState, TaskStep } from "../../web/src/api/types.ts";
+import type { BuildSummary, BuildTask, BuildTaskDetail, Capabilities, Requires, SandboxEnv, TaskArtifact, TaskBatch, TaskFilter, TaskPage, TaskResult, TaskState, TaskStep } from "../../web/src/api/types.ts";
 import { audit } from "../dash/audit.ts";
 import { excludeHidden } from "../dash/api/visible.ts";
 import { removeArtifacts } from "./artifacts.ts";
@@ -31,7 +31,7 @@ type TaskRow = {
   requires: string; priority: number; plan: string; state: TaskState; env_id: string | null; attempts: number;
   queued_at: string; claimed_at: string | null; started_at: string | null; ended_at: string | null; heartbeat_at: string | null;
   cancel_requested_at: string | null; results: string; summary: string | null; log_bytes: number; artifact_bytes: number;
-  patch?: string | null; warm_key?: string | null; warm_role?: string | null;
+  patch?: string | null; warm_key?: string | null; warm_role?: string | null; sandbox_env?: string | null;
   env_label?: string | null; default_branch?: string | null;
 };
 
@@ -284,6 +284,25 @@ export function parseResults(v: unknown): TaskResult[] {
   });
 }
 
+const REF_RE = /^[0-9a-f]{40}$/;
+const IMAGE_RE = /^[A-Za-z0-9][A-Za-z0-9._\-/:@]{0,299}$/;
+const PKG_RE = /^[a-z0-9][a-z0-9+.-]{0,99}$/;
+
+/** The environment a worker reports for a task: image, packages and the craft-fonts / craft-i18n commits. */
+export function parseSandboxEnv(v: unknown): SandboxEnv | null {
+  if (v === undefined || v === null) return null;
+  const o = v as Record<string, unknown>;
+  if (typeof v !== "object" || Array.isArray(v)) throw new BuildError(400, "environment must be an object");
+  const ref = (x: unknown, name: string): string | null => {
+    if (x === null || x === undefined) return null;
+    if (typeof x !== "string" || !REF_RE.test(x)) throw new BuildError(400, `environment.${name} must be a commit id`);
+    return x;
+  };
+  if (typeof o.image !== "string" || !IMAGE_RE.test(o.image) || typeof o.baseImage !== "string" || !IMAGE_RE.test(o.baseImage)) throw new BuildError(400, "environment images are not valid");
+  if (!Array.isArray(o.packages) || o.packages.length > 100 || o.packages.some((p) => typeof p !== "string" || !PKG_RE.test(p))) throw new BuildError(400, "environment.packages is not valid");
+  return { image: o.image, baseImage: o.baseImage, packages: o.packages as string[], craftFontsRef: ref(o.craftFontsRef, "craftFontsRef"), craftI18nRev: ref(o.craftI18nRev, "craftI18nRev") };
+}
+
 /** The worker's last word: done when every step exited 0, cancelled when an operator asked, else failed. */
 export function finishTask(db: DatabaseSync, envId: string, id: number, body: unknown): { state: TaskState } {
   // A retried finish (the answer was lost) gets the state the first one set.
@@ -294,9 +313,11 @@ export function finishTask(db: DatabaseSync, envId: string, id: number, body: un
   const o = body as Record<string, unknown>;
   const results = parseResults(o.results);
   const summary = cleanLine(o.summary, 500);
+  const sandbox = parseSandboxEnv(o.environment);
   const ok = results.length > 0 && results.every((r) => r.exitCode === 0 && !r.timedOut);
   const state: TaskState = t.cancel_requested_at ? "cancelled" : ok ? "done" : "failed";
-  db.prepare("UPDATE build_tasks SET state = ?, ended_at = ?, results = ?, summary = ? WHERE id = ?").run(state, nowIso(), JSON.stringify(results), summary, id);
+  db.prepare("UPDATE build_tasks SET state = ?, ended_at = ?, results = ?, summary = ?, sandbox_env = ? WHERE id = ?")
+    .run(state, nowIso(), JSON.stringify(results), summary, sandbox ? JSON.stringify(sandbox) : null, id);
   return { state };
 }
 
@@ -353,6 +374,7 @@ function toTask(r: TaskRow, artifacts: TaskArtifact[], batch: TaskBatch | null =
     warm: r.warm_key && (r.warm_role === "use" || r.warm_role === "build") ? { key: r.warm_key, role: r.warm_role } : null,
     batch,
     baseline: r.step === "verify" && r.number === null && !r.patch ? { branch: r.default_branch ?? null } : null,
+    sandbox: r.sandbox_env ? json<SandboxEnv | null>(r.sandbox_env, null) : null,
   };
 }
 

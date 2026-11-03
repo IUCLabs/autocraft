@@ -18,6 +18,10 @@ export type RunSpec = {
   network: "fetch" | "none";
   mounts: StepMounts;
   cmd: string[];
+  /** Extra env vars from the repo's CI gate (environment.ts); the worker's own vars win. */
+  env?: Record<string, string>;
+  /** Read-only bind mounts: craft-fonts and craft-i18n checkouts. */
+  extraMounts?: { source: string; target: string }[];
 };
 
 const overlay = (source: string, target: string) => {
@@ -25,6 +29,13 @@ const overlay = (source: string, target: string) => {
   return `${source}:${target}:O`;
 };
 const bind = (source: string, target: string) => `type=bind,source=${source},target=${target}`;
+
+function extraMounts(s: RunSpec): string[] {
+  return (s.extraMounts ?? []).flatMap((m) => {
+    if (/[,\s\0]/.test(m.source) || /[,\s\0]/.test(m.target)) throw new Error(`mount path must not contain commas or whitespace: ${m.source}`);
+    return ["--mount", `${bind(m.source, m.target)},readonly`];
+  });
+}
 
 export function runArgs(cfg: WorkerConfig, s: RunSpec): string[] {
   const mem = `${Math.round(cfg.limits.memoryGb * 1024)}m`;
@@ -50,6 +61,8 @@ export function runArgs(cfg: WorkerConfig, s: RunSpec): string[] {
     "--mount", bind(s.mounts.target, "/target"),
     "--mount", bind(s.mounts.cache, "/cache"),
     "--mount", bind(s.mounts.out, "/out"),
+    ...extraMounts(s),
+    ...Object.entries(s.env ?? {}).flatMap(([k, v]) => ["--env", `${k}=${v}`]),
     "--env", "HOME=/tmp",
     "--env", "CARGO_HOME=/cache/cargo",
     "--env", "CARGO_TARGET_DIR=/target",

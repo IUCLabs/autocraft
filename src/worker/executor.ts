@@ -5,6 +5,7 @@ import { globSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync
 import { basename, join, relative, sep } from "node:path";
 import { admitCrates, CrateVerifier, seedCargoHome } from "./cache.ts";
 import type { WorkerConfig } from "./config.ts";
+import { prepareEnvironment, type PreparedEnv, type SandboxInfo } from "./environment.ts";
 import { removeContainer, runContainer, type RunOutcome } from "./container.ts";
 import { applyPatch } from "./patch.ts";
 import { downloadAndExtract } from "./tarball.ts";
@@ -16,7 +17,7 @@ export type TaskSink = {
   artifact(name: string, body: Buffer, contentType: string): Promise<void>;
 };
 
-export type ExecResult = { results: StepResult[]; summary: string; cancelled: boolean };
+export type ExecResult = { results: StepResult[]; summary: string; cancelled: boolean; environment?: SandboxInfo };
 
 let defaultVerifier: CrateVerifier | undefined;
 
@@ -117,6 +118,14 @@ export async function executeTask(cfg: WorkerConfig, task: ClaimedTask, sink: Ta
       await emit("source", `${err ?? "patch applied"}\n`);
       if (err) return { results, summary: err, cancelled: false };
     }
+    let prepared: PreparedEnv;
+    try {
+      prepared = await prepareEnvironment(cfg, task, toolchain!, image, paths.src, { fetchImpl: o.fetchImpl, log: (s) => void emit("environment", s), note });
+    } catch (e) {
+      await emit("environment", `environment failed: ${(e as Error).message}\n`);
+      return { results, summary: `environment failed: ${(e as Error).message}`.slice(0, 300), cancelled: false };
+    }
+    const environment = prepared.info;
     if (task.warm?.role === "use") {
       try {
         const hit = await copyWarm(cfg, task.warm.key, paths.target);
@@ -145,7 +154,7 @@ export async function executeTask(cfg: WorkerConfig, task: ClaimedTask, sink: Ta
       const started = Date.now();
       let outcome: RunOutcome;
       try {
-        outcome = await runContainer(cfg, { name, image, network: step.network, mounts: { ...paths, out }, cmd: step.cmd }, {
+        outcome = await runContainer(cfg, { name, image: prepared.image, env: prepared.env, extraMounts: prepared.mounts, network: step.network, mounts: { ...paths, out }, cmd: step.cmd }, {
           timeoutMs: Math.min(step.timeoutSec, cfg.maxStepSec) * 1000,
           signal,
           onOutput: (b) => void sink.log(step.name, b.toString("utf8")).catch(() => {}),
@@ -179,7 +188,7 @@ export async function executeTask(cfg: WorkerConfig, task: ClaimedTask, sink: Ta
         break;
       }
     }
-    if (cancelled) return { results, summary: "cancelled", cancelled: true };
+    if (cancelled) return { results, summary: "cancelled", cancelled: true, environment };
     if (!failed && task.warm?.role === "build") {
       try {
         await storeWarm(cfg, task.warm.key, task.headSha, paths.target);
@@ -188,7 +197,7 @@ export async function executeTask(cfg: WorkerConfig, task: ClaimedTask, sink: Ta
         note(`warm store failed: ${(e as Error).message}`);
       }
     }
-    return { results, summary: failed ?? `${results.length} step${results.length === 1 ? "" : "s"} passed`, cancelled: false };
+    return { results, summary: failed ?? `${results.length} step${results.length === 1 ? "" : "s"} passed`, cancelled: false, environment };
   } finally {
     for (const n of names) await removeContainer(cfg, n);
     rmSync(dir, { recursive: true, force: true });

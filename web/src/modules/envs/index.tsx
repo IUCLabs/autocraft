@@ -477,6 +477,16 @@ function DetailBody({ id }: { id: number }) {
         <dd className="num">{duration(t)}</dd>
         <dt className="text-ink/55">Warm build</dt>
         <dd>{t.warm ? <span>{t.warm.role === "build" ? "fills" : "uses"} cache <span className="code text-xs">{t.warm.key}</span></span> : "none"}</dd>
+        <dt className="text-ink/55">Image</dt>
+        <dd>{t.sandbox ? <span className="code text-xs break-all">{t.sandbox.image}</span> : "not reported"}</dd>
+        {t.sandbox && (
+          <>
+            <dt className="text-ink/55">CI parity</dt>
+            <dd className="text-xs">
+              {t.sandbox.packages.length} packages; craft-fonts <span className="code">{t.sandbox.craftFontsRef?.slice(0, 12) ?? "none"}</span>; craft-i18n <span className="code">{t.sandbox.craftI18nRev?.slice(0, 12) ?? "none"}</span>
+            </dd>
+          </>
+        )}
         <dt className="text-ink/55">Patch</dt>
         <dd className="num">{t.patchBytes ? `${num(t.patchBytes)} bytes applied before the steps` : "none"}</dd>
         {t.heartbeatAt && active && (
