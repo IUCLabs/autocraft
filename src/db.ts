@@ -55,6 +55,9 @@ const ADDED_COLUMNS: [table: string, column: string, type: string][] = [
   ["decisions", "recommend_failed_at", "TEXT"],
   ["decisions", "recommended_by", "TEXT"],
   ["tracked_repos", "pipeline", "INTEGER NOT NULL DEFAULT 0"],
+  ["conversation_turns", "seq", "INTEGER"],
+  ["conversation_turns", "claim", "TEXT"],
+  ["conversation_turns", "claimed_at", "TEXT"],
 ];
 
 // Indexes on added columns: they can only be created once the column exists.

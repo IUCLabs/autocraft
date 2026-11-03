@@ -5,12 +5,12 @@ import { commentApprovalOf } from "../act/approval.ts";
 import { readLive } from "../act/index.ts";
 import { duplicateComment } from "../act/templates.ts";
 import { audit } from "../dash/audit.ts";
-import { optionsOf, BACKLOG } from "../decisions.ts";
+import { optionsOf, BACKLOG, getDecision, reposOf } from "../decisions.ts";
 import { addLabels, closeItem, commentOn, type Writer } from "../github/write.ts";
 import { approvalOf as labelsApprovalOf } from "../labels/approval.ts";
 import { repoLabels } from "../labels/github.ts";
 import { Client, type Querier } from "../mirror.ts";
-import { openDecision, type CardParams } from "./cards.ts";
+import { closeRefusal, otherTypeLabel, type CardParams } from "./cards.ts";
 import { ConversationError, insertTurn, systemBlock, type StoreDeps } from "./store.ts";
 import { COMMENT_MAX } from "./types.ts";
 
@@ -19,7 +19,8 @@ export type CardRow = {
   state: string; result: string | null; result_url: string | null; error: string | null; acted_by: string | null; acted_at: string | null; edited_by: string | null; edited_at: string | null;
 };
 
-export type ActDeps = StoreDeps & { querier?: Querier };
+/** `canWrite` is the signed-in operator's write access to a repo; the shell has none to check. */
+export type ActDeps = StoreDeps & { querier?: Querier; canWrite?: (repo: string) => Promise<boolean> };
 
 export const cardOf = (db: DatabaseSync, id: number): CardRow | undefined =>
   db.prepare("SELECT * FROM conversation_cards WHERE id = ?").get(id) as CardRow | undefined;
@@ -59,16 +60,29 @@ export function dismissCard(db: DatabaseSync, id: number, by: string, deps?: Sto
 
 type Outcome = { result: string; url: string | null };
 
-function answerDecision(db: DatabaseSync, c: CardRow, key: string, by: string, at: string): Outcome {
-  const d = openDecision(db, c.repo, c.number);
-  if (!d) throw new Error("the item has no open decision any more");
-  const o = optionsOf(d).find((x) => x.key === key);
-  if (!o) throw new Error(`"${key}" is not an option of the open decision`);
-  const r = db.prepare(`UPDATE main.decisions SET answer = ?, answer_note = NULL, exceptions = NULL, answered_by = ?, answered_at = ?, adopted_opinion = NULL
-    WHERE id = ? AND answer IS NULL`).run(key, by, at, d.id);
-  if (r.changes !== 1) throw new Error("someone answered the decision a moment ago");
-  audit(db, by, "answer", d.id, { answer: key, source: "conversation" });
-  return { result: `Answered the decision with "${o.label}"`, url: null };
+/** Answers the decision the card was written for, like a dashboard answer: one transaction, the decision's claims cleared. */
+async function answerDecision(db: DatabaseSync, c: CardRow, decisionId: string | undefined, key: string, by: string, at: string, canWrite?: ActDeps["canWrite"]): Promise<Outcome> {
+  if (!decisionId) throw new Error("the card names no decision: the decision changed");
+  const d0 = getDecision(db, decisionId);
+  if (!d0 || d0.answer !== null || d0.repo !== c.repo || d0.number !== c.number) throw new Error("the decision changed");
+  if (canWrite) for (const r of reposOf(d0)) if (!(await canWrite(r).catch(() => false))) throw new Error(`no write access to storytold/${r}`);
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const d = getDecision(db, decisionId);
+    if (!d || d.answer !== null) throw new Error("the decision changed");
+    const o = optionsOf(d).find((x) => x.key === key);
+    if (!o) throw new Error(`"${key}" is not an option of the decision`);
+    const r = db.prepare(`UPDATE main.decisions SET answer = ?, answer_note = NULL, exceptions = NULL, answered_by = ?, answered_at = ?, adopted_opinion = NULL
+      WHERE id = ? AND answer IS NULL`).run(key, by, at, d.id);
+    if (r.changes !== 1) throw new Error("the decision changed");
+    db.prepare("DELETE FROM main.decision_claims WHERE decision_id = ?").run(d.id);
+    audit(db, by, "answer", d.id, { answer: key, source: "conversation" });
+    db.exec("COMMIT");
+    return { result: `Answered the decision with "${o.label}"`, url: null };
+  } catch (e) {
+    db.exec("ROLLBACK");
+    throw e;
+  }
 }
 
 async function liveOpen(q: Querier, repo: string, n: number) {
@@ -78,12 +92,12 @@ async function liveOpen(q: Querier, repo: string, n: number) {
   return live;
 }
 
-async function run(db: DatabaseSync, c: CardRow, p: CardParams, by: string, q: Querier, at: string): Promise<Outcome> {
+async function run(db: DatabaseSync, c: CardRow, p: CardParams, by: string, q: Querier, at: string, canWrite?: ActDeps["canWrite"]): Promise<Outcome> {
   const w: Writer = { db, login: by };
   const source = { source: "conversation", card: c.id };
   switch (p.kind) {
-    case "answer": return answerDecision(db, c, p.option, by, at);
-    case "backlog": return answerDecision(db, c, BACKLOG.key, by, at);
+    case "answer": return answerDecision(db, c, p.decision, p.option, by, at, canWrite);
+    case "backlog": return answerDecision(db, c, p.decision, BACKLOG.key, by, at, canWrite);
     case "comment": {
       if (!commentApprovalOf(db, c.repo)) throw new Error(`commenting in ${c.repo} is not approved`);
       const live = await liveOpen(q, c.repo, c.number);
@@ -92,22 +106,31 @@ async function run(db: DatabaseSync, c: CardRow, p: CardParams, by: string, q: Q
     }
     case "label": {
       if (!labelsApprovalOf(db, c.repo)) throw new Error(`labelling ${c.repo} is not approved`);
+      const other = otherTypeLabel(db, c.repo, c.number, p.label);
+      if (other) throw new Error(`the item already has the type label "${other}" and an item has one type label`);
       const live = await liveOpen(q, c.repo, c.number);
       const have = await repoLabels(q, c.repo);
       const id = have.labels.get(p.label.toLowerCase());
       if (!id) throw new Error(`the label "${p.label}" does not exist on ${c.repo}`);
       const done = await addLabels(w, q, c.repo, [{ number: c.number, id: live.id, labelIds: [id], names: [p.label] }], undefined, source);
       if (!done.includes(c.number)) throw new Error("GitHub did not add the label");
-      db.prepare("INSERT INTO main.stages (repo, number, stage, at, actor, note) VALUES (?, ?, 'labeled', ?, 'labels', ?)").run(c.repo, c.number, at, `added: ${p.label}`);
+      db.prepare("INSERT INTO main.stages (repo, number, stage, at, actor, note) VALUES (?, ?, 'labeled', ?, ?, ?)").run(c.repo, c.number, at, by, `added: ${p.label}`);
       return { result: `Label "${p.label}" added`, url: null };
     }
     case "duplicate": {
       if (!commentApprovalOf(db, c.repo)) throw new Error(`commenting in ${c.repo} is not approved`);
+      const refusal = closeRefusal(db, c.repo, c.number);
+      if (refusal) throw new Error(refusal);
       const live = await liveOpen(q, c.repo, c.number);
       const orig = await readLive(q, c.repo, p.of);
       if (!orig) throw new Error(`GitHub returned no ${ref(c.repo, p.of)}`);
       const url = await commentOn(w, q, "act-comment", { repo: c.repo, number: c.number, id: live.id }, duplicateComment({ repo: c.repo, original: ref(c.repo, p.of), closed: orig.state !== "OPEN" }), source);
+      // Recorded like Act's close: saved after the comment so the failed close shows what was posted.
+      const action = (state: string, reason: string | null) => db.prepare(`INSERT INTO main.actions (decision_id, repo, number, kind, state, comment_url, reason, created_at) VALUES (?, ?, ?, 'comment-close', ?, ?, ?, ?)
+        ON CONFLICT (decision_id, repo, number, kind) DO UPDATE SET state = excluded.state, reason = excluded.reason, created_at = excluded.created_at`).run(`conversation-card:${c.id}`, c.repo, c.number, state, url || null, reason, at);
+      action("failed", "comment posted; close not done yet");
       await closeItem(w, q, { repo: c.repo, number: c.number, id: live.id, pr: live.type === "PullRequest" }, { ...source, head: live.head });
+      action("done", null);
       db.prepare("INSERT INTO main.stages (repo, number, stage, at, actor, note) VALUES (?, ?, 'closed', ?, ?, ?)").run(c.repo, c.number, at, by, `closed as a duplicate of ${ref(c.repo, p.of)} from a conversation`);
       return { result: `Closed as a duplicate of ${ref(c.repo, p.of)}`, url: url || null };
     }
@@ -126,7 +149,7 @@ export async function doCard(db: DatabaseSync, id: number, by: string, deps: Act
   const params = JSON.parse(c.params) as CardParams;
   let out: Outcome | null = null, error: string | null = null;
   try {
-    out = await run(db, c, params, by, deps.querier ?? new Client(1000), at);
+    out = await run(db, c, params, by, deps.querier ?? new Client(1000), at, deps.canWrite);
   } catch (e) {
     error = oneLine(String((e as Error).message ?? e));
   }
@@ -140,4 +163,11 @@ export async function doCard(db: DatabaseSync, id: number, by: string, deps: Act
     block: systemBlock(sentence, params.kind === "comment" ? { posted_text: c.text ?? params.text } : undefined),
   }, deps);
   return { card: need(db, id), ran: true };
+}
+
+/** A card left 'running' by a crashed process is marked failed: what it did on GitHub is unknown. */
+export const RUNNING_STALE_MS = 10 * 60_000;
+export function sweepRunningCards(db: DatabaseSync, deps?: StoreDeps): number {
+  const cutoff = new Date((deps?.now?.() ?? new Date()).getTime() - RUNNING_STALE_MS).toISOString();
+  return db.prepare("UPDATE conversation_cards SET state = 'failed', error = 'outcome unknown; see the GitHub activity page' WHERE state = 'running' AND acted_at < ?").run(cutoff).changes as number;
 }

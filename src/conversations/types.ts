@@ -30,13 +30,14 @@ export const SAMPLE_CONVERSATION: ConversationInput[] = [{
     author_association: "NONE", labels: ["enhancement"], lines: { additions: 270412, deletions: 96, files: 41 },
     decision: { question: "Merge now?", options: [{ key: "merge", label: "Merge", hint: "" }, { key: "backlog", label: "Backlog", hint: "" }], recommended: "backlog", recommended_reason: "Most of the diff is data." },
   }, null, 1),
-  turns: `<turn n="1" from="opus">
+  turns: `<turn from="opus">
 Most of this PR is dictionary data. craft-i18n already has a Hungarian pack. I suggest asking the author to use it.
 <actions>
 [{"kind":"comment","text":"craft-i18n already ships a Hungarian language pack. Could you load it instead of committing the data?"}]
 </actions>
 </turn>
-<turn n="2" from="operator" login="maintainer">
+<turn from="operator" login="maintainer">
 Does the pack load in this app today?
-</turn>`,
+</turn>
+`,
 }];

@@ -119,6 +119,8 @@ function ActionCard({ a, operator }: { a: ConversationCard; operator: boolean })
   const [text, setText] = useState(a.text ?? "");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
+  // An answer that writes to GitHub needs a second press, like the decision page.
+  const [armed, setArmed] = useState(false);
   const proposed = a.state === "proposed";
 
   const act = async (f: () => Promise<unknown>) => {
@@ -133,11 +135,14 @@ function ActionCard({ a, operator }: { a: ConversationCard; operator: boolean })
       setBusy(false);
     }
   };
-  const run = () =>
-    act(async () => {
+  const run = () => {
+    if (a.writes && !armed) return setArmed(true);
+    setArmed(false);
+    return act(async () => {
       if (editing && text !== a.text) await api.conversations.editCard(a.id, text);
       await api.conversations.doCard(a.id);
     });
+  };
 
   return (
     <div className={`ml-7 mt-2 rounded-md border border-line-strong px-3 py-2.5 ${a.state === "dismissed" ? "bg-transparent" : "bg-raised"}`}>
@@ -180,9 +185,20 @@ function ActionCard({ a, operator }: { a: ConversationCard; operator: boolean })
       {error && <p className="mt-2 text-xs text-bad">{error}</p>}
       {proposed && operator && (
         <div className="mt-2.5 flex items-center gap-2">
-          <Button size="sm" variant="primary" className="max-md:h-11" disabled={busy} onClick={() => void run()}>
-            Do it
+          <Button
+            size="sm"
+            variant="primary"
+            className={`max-md:h-11 ${armed ? "border-bad bg-bad text-white hover:bg-bad/90" : ""}`}
+            disabled={busy}
+            onClick={() => void run()}
+          >
+            {armed ? `Confirm: ${a.writes}` : "Do it"}
           </Button>
+          {armed && (
+            <Button size="sm" variant="ghost" className="max-md:h-11" disabled={busy} onClick={() => setArmed(false)}>
+              Cancel
+            </Button>
+          )}
           {editing ? (
             <Button size="sm" variant="ghost" className="max-md:h-11" disabled={busy} onClick={() => { setEditing(false); setText(a.text ?? ""); }}>
               Cancel

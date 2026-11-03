@@ -5,7 +5,8 @@ import { claudeRoom } from "../agents/call.ts";
 import { askClaude, pool, saveUsage, type Usage } from "../classify/run.ts";
 import { CLAUDE_PROMPTS } from "../prompts/index.ts";
 import { parseReply } from "./cards.ts";
-import { failTurn, pendingConversations, pendingTurn, promptParts, refreshItem, storeReply, type DiffSource } from "./store.ts";
+import { sweepRunningCards } from "./act.ts";
+import { claimPending, failTurn, pendingConversations, promptParts, refreshItem, storeReply, type DiffSource } from "./store.ts";
 
 export const CONVERSATION_PROMPT = CLAUDE_PROMPTS["conversation.turn"];
 
@@ -35,14 +36,16 @@ export async function answerPending(db: DatabaseSync, p: ConversationParams): Pr
   await pool(todo.map((c, k) => async () => {
     if (p.cancelled?.()) return;
     const { repo, number: n } = c;
-    const wait = pendingTurn(db, repo, n);
-    if (!wait) return;
     const start = now();
-    p.onHandled?.(++handled);
     // The item may have changed since the message was written; the update goes in front of the message.
     await refreshItem(db, repo, n, { diff: p.diff });
-    const parts = promptParts(db, repo, n);
-    if (!parts) return;
+    // One run holds the message; another run or a second start skips it.
+    const held = claimPending(db, repo, n);
+    if (!held) return;
+    const { turn: wait, claim } = held;
+    p.onHandled?.(++handled);
+    const parts = promptParts(db, repo, n, wait);
+    if (!parts) { failTurn(db, repo, n, claim, "the conversation has no item block; send the message again"); return; }
     if (!checkouts.has(repo)) checkouts.set(repo, p.checkout(repo).catch(() => null));
     const checkout = await checkouts.get(repo)!;
     let usage: Usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: null };
@@ -54,10 +57,9 @@ export async function answerPending(db: DatabaseSync, p: ConversationParams): Pr
       parsed = parseReply(db, repo, n, reply.text);
     }
     if (parsed) {
-      storeReply(db, repo, n, wait.id, parsed.text, parsed.cards, parsed.notes);
-      answered++;
+      if (storeReply(db, repo, n, claim, parsed.text, parsed.cards, parsed.notes) !== null) answered++;
     } else {
-      failTurn(db, wait.id, "Opus gave no usable reply; send the message again");
+      failTurn(db, repo, n, claim, "Opus gave no usable reply; send the message again");
       p.log(`conversation: no usable reply for ${repo}#${n}`);
     }
     saveUsage(db, p.usageRun, `conversation-${String(k).padStart(3, "0")}`, "conversation", model, 1, usage, start, now());
@@ -74,6 +76,7 @@ export const githubDiff: DiffSource = async (repo, n, head) => {
 
 /** The step's body: the item's default checkout (the workspace comes with the prompt) and diffs. Returns the answered count and the usage run id. */
 export async function runConversations(db: DatabaseSync, p: { limit: number; onHandled?: (n: number) => void; cancelled?: () => boolean }, log: (line: string) => void = console.log): Promise<{ answered: number; waiting: number; usageRun: string }> {
+  sweepRunningCards(db);
   const usageRun = `conversation-${now().replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z")}`;
   const waiting = pendingConversations(db).length;
   const answered = await answerPending(db, {

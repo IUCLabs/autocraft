@@ -1,6 +1,7 @@
 // Opus conversations on items. Everyone who may see the repo reads them; only operators write, edit, run and dismiss.
 import type { DatabaseSync } from "node:sqlite";
 import type { Conversation, ConversationCard, ConversationTurn } from "../../../web/src/api/types.ts";
+import { cardEffect, type CardParams } from "../../conversations/cards.ts";
 import { cardOf, dismissCard, doCard, editCard, type ActDeps, type CardRow } from "../../conversations/act.ts";
 import { ConversationError, addOperatorMessage, conversationOf, pendingTurn, turnsOf, type StoreDeps } from "../../conversations/store.ts";
 import { HttpError } from "../server/util.ts";
@@ -27,10 +28,12 @@ async function guardAsync<T>(f: () => Promise<T>): Promise<T> {
   }
 }
 
-export function cardView(c: CardRow): ConversationCard {
+export function cardView(db: DatabaseSync, c: CardRow): ConversationCard {
+  const effect = c.kind === "answer" ? cardEffect(db, JSON.parse(c.params) as CardParams) : null;
   return {
     id: c.id, kind: c.kind as ConversationCard["kind"], title: c.description, state: c.state as ConversationCard["state"],
     ...(c.text !== null && { text: c.text }),
+    ...(effect && { writes: effect }),
     ...(c.state === "done" && { done: { at: c.acted_at ?? "", link: c.result_url ?? "", label: c.result ?? "Done" } }),
     ...(c.state === "failed" && c.error && { error: c.error }),
     ...(c.acted_by && { by: c.acted_by }),
@@ -45,7 +48,7 @@ export function conversationView(db: DatabaseSync, repo: string, n: number): Con
   const cards = db.prepare("SELECT * FROM conversation_cards WHERE repo = ? AND number = ? ORDER BY id").all(repo, n) as unknown as CardRow[];
   const turns: ConversationTurn[] = turnsOf(db, repo, n).map((t) => ({
     id: t.id, kind: t.kind, login: t.login, at: t.at, body: t.body,
-    actions: cards.filter((x) => x.turn_id === t.id).map(cardView),
+    actions: cards.filter((x) => x.turn_id === t.id).map((x) => cardView(db, x)),
     notes: t.notes ? (JSON.parse(t.notes) as string[]) : [],
     ...(t.status && { status: t.status as ConversationTurn["status"] }),
     ...(t.error && { error: t.error }),
@@ -95,16 +98,16 @@ async function needCard(db: DatabaseSync, req: Req): Promise<CardRow> {
 
 export async function editCardText(db: DatabaseSync, req: Req): Promise<ConversationCard> {
   const c = await needCard(db, req);
-  return cardView(guard(() => editCard(db, c.id, req.user.login, text(req))));
+  return cardView(db, guard(() => editCard(db, c.id, req.user.login, text(req))));
 }
 
 export async function dismiss(db: DatabaseSync, req: Req): Promise<ConversationCard> {
   const c = await needCard(db, req);
-  return cardView(guard(() => dismissCard(db, c.id, req.user.login)));
+  return cardView(db, guard(() => dismissCard(db, c.id, req.user.login)));
 }
 
 /** Runs the card once; a second press returns the card as it is. */
 export async function doIt(db: DatabaseSync, req: Req, deps?: ActDeps): Promise<ConversationCard> {
   const c = await needCard(db, req);
-  return cardView((await guardAsync(() => doCard(db, c.id, req.user.login, deps))).card);
+  return cardView(db, (await guardAsync(() => doCard(db, c.id, req.user.login, { ...deps, canWrite: (r) => req.user.canWrite(r) }))).card);
 }

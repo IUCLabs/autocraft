@@ -1,9 +1,9 @@
 // Conversation storage: the item block (written once), the turns in prompt order, and the cards of each Opus turn.
 // Every turn stores the exact text its prompt block carries, so later prompts repeat earlier ones byte for byte.
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { factsOf, optionsOf, type DecisionRow } from "../decisions.ts";
-import { untrustedJson } from "../prompts/index.ts";
+import { CLAUDE_PROMPTS, untrustedJson } from "../prompts/index.ts";
 import { openDecision, type NewCard } from "./cards.ts";
 import { ITEM_BODY_LIMIT, ITEM_COMMENT_LIMIT, ITEM_COMMENTS, ITEM_DIFF_LIMIT, MESSAGE_MAX, OPENING_MAX, type TurnKind } from "./types.ts";
 
@@ -21,16 +21,21 @@ export type StoreDeps = { diff?: DiffSource; now?: () => Date };
 const nowOf = (d?: StoreDeps) => (d?.now?.() ?? new Date()).toISOString();
 
 export type ConversationRow = { repo: string; number: number; item_block: string; item_sig: string; created_at: string; created_by: string };
-export type TurnRow = { id: number; repo: string; number: number; kind: TurnKind; login: string; at: string; body: string; block: string; status: string | null; error: string | null; notes: string | null };
+export type TurnRow = { id: number; repo: string; number: number; kind: TurnKind; login: string; at: string; body: string; block: string; status: string | null; error: string | null; notes: string | null; seq: number | null; claim: string | null; claimed_at: string | null };
 
 export const conversationOf = (db: DatabaseSync, repo: string, n: number): ConversationRow | undefined =>
   db.prepare("SELECT * FROM conversations WHERE repo = ? AND number = ?").get(repo, n) as ConversationRow | undefined;
 
+/** All turns in display order: the prompt order, then the message Opus is answering, then turns held until its reply. */
 export const turnsOf = (db: DatabaseSync, repo: string, n: number): TurnRow[] =>
-  db.prepare("SELECT * FROM conversation_turns WHERE repo = ? AND number = ? ORDER BY id").all(repo, n) as unknown as TurnRow[];
+  db.prepare("SELECT * FROM conversation_turns WHERE repo = ? AND number = ? ORDER BY seq IS NULL, COALESCE(status, '') = 'held', seq, id").all(repo, n) as unknown as TurnRow[];
 
+/** The operator message that waits for its reply: queued or claimed by a run. */
 export const pendingTurn = (db: DatabaseSync, repo: string, n: number): TurnRow | undefined =>
-  db.prepare("SELECT * FROM conversation_turns WHERE repo = ? AND number = ? AND kind = 'operator' AND status = 'pending'").get(repo, n) as TurnRow | undefined;
+  db.prepare("SELECT * FROM conversation_turns WHERE repo = ? AND number = ? AND kind = 'operator' AND status IN ('pending', 'answering')").get(repo, n) as TurnRow | undefined;
+
+/** A claim older than this is released: a run makes `attempts` calls of at most the prompt timeout each. */
+const STALE_CLAIM_MS = (CLAUDE_PROMPTS["conversation.turn"].limits.timeoutSeconds * CLAUDE_PROMPTS["conversation.turn"].limits.attempts + 60) * 1000;
 
 // ---- blocks ------------------------------------------------------------------
 
@@ -58,11 +63,28 @@ type ItemRow = { repo: string; number: number; kind: string; state: string; titl
 const itemRow = (db: DatabaseSync, repo: string, n: number): ItemRow | undefined =>
   db.prepare("SELECT repo, number, kind, state, title, body, author, author_association, labels, head_oid, additions, deletions, changed_files FROM items WHERE repo = ? AND number = ?").get(repo, n) as ItemRow | undefined;
 
-/** Identifies the head commit and text a block or update turn described. */
-const sigOf = (i: ItemRow): string => createHash("sha256").update(JSON.stringify([i.head_oid, i.title, i.body])).digest("hex").slice(0, 16);
+const hash = (v: unknown, n = 16): string => createHash("sha256").update(JSON.stringify(v)).digest("hex").slice(0, n);
 
-const labelsOf = (i: ItemRow): string[] => {
+const labelsOf = (i: { labels: string | null }): string[] => {
   try { const l = JSON.parse(i.labels ?? "[]") as unknown; return Array.isArray(l) ? l.filter((x): x is string => typeof x === "string") : []; } catch { return []; }
+};
+
+/** What a block or update turn described of the item; a change in any field sends an update turn. */
+type Snapshot = { head: string | null; title: string; body: string; state: string; labels: string[]; comments: number; last_comment: string | null; decision: string | null; answer: string | null };
+
+const COMMENTS_WHERE = "repo = ? AND number = ? AND COALESCE(TRIM(body), '') <> '' AND COALESCE(author, '') NOT LIKE '%[bot]'";
+
+function snapshotOf(db: DatabaseSync, i: ItemRow): Snapshot {
+  const cnt = db.prepare(`SELECT COUNT(*) AS n FROM comments WHERE ${COMMENTS_WHERE}`).get(i.repo, i.number) as { n: number };
+  const last = db.prepare(`SELECT id FROM comments WHERE ${COMMENTS_WHERE} ORDER BY created_at DESC, id DESC LIMIT 1`).get(i.repo, i.number) as { id: string } | undefined;
+  const d = openDecision(db, i.repo, i.number) ?? latestDecision(db, i.repo, i.number);
+  return { head: i.head_oid, title: hash(i.title), body: hash(i.body), state: i.state, labels: labelsOf(i).sort(), comments: Number(cnt.n), last_comment: last?.id ?? null, decision: d?.id ?? null, answer: d?.answer ?? null };
+}
+
+const sigOf = (db: DatabaseSync, i: ItemRow): string => JSON.stringify(snapshotOf(db, i));
+
+const parseSig = (sig: string): Snapshot | null => {
+  try { const v = JSON.parse(sig) as Snapshot; return v && typeof v === "object" ? v : null; } catch { return null; }
 };
 
 const cut = (s: string | null, max: number): string => (s ?? "").slice(0, max);
@@ -81,8 +103,7 @@ export async function buildItemBlock(db: DatabaseSync, repo: string, n: number, 
   const i = itemRow(db, repo, n);
   if (!i) throw new ConversationError(404, `no item ${repo}#${n} in the mirror`);
   const pr = i.kind === "pr";
-  const comments = db.prepare(`SELECT author, body FROM comments WHERE repo = ? AND number = ? AND COALESCE(TRIM(body), '') <> ''
-    AND COALESCE(author, '') NOT LIKE '%[bot]' ORDER BY created_at, id LIMIT ?`).all(repo, n, ITEM_COMMENTS) as { author: string | null; body: string }[];
+  const comments = db.prepare(`SELECT author, body FROM comments WHERE ${COMMENTS_WHERE} ORDER BY created_at, id LIMIT ?`).all(repo, n, ITEM_COMMENTS) as { author: string | null; body: string }[];
   let diff: string | null = null;
   if (pr && i.head_oid && deps?.diff) diff = await deps.diff(repo, n, i.head_oid).catch(() => null);
   const data = {
@@ -92,7 +113,7 @@ export async function buildItemBlock(db: DatabaseSync, repo: string, n: number, 
     ...(pr ? { head: i.head_oid, lines: { additions: i.additions, deletions: i.deletions, files: i.changed_files }, diff: diff === null ? null : cut(diff, ITEM_DIFF_LIMIT) + (diff.length > ITEM_DIFF_LIMIT ? "\n[diff cut]" : "") } : {}),
     decision: decisionPart(openDecision(db, repo, n) ?? latestDecision(db, repo, n)),
   };
-  return { block: untrustedJson(data), sig: sigOf(i) };
+  return { block: untrustedJson(data), sig: sigOf(db, i) };
 }
 
 const latestDecision = (db: DatabaseSync, repo: string, n: number): DecisionRow | undefined =>
@@ -109,50 +130,93 @@ export async function ensureConversation(db: DatabaseSync, repo: string, n: numb
 
 type NewTurn = { kind: TurnKind; login: string; body: string; block: string; status?: string | null; notes?: string[]; cards?: NewCard[] };
 
-/**
- * Appends a turn. The operator turn that waits for its reply stays last: a turn added while it waits goes in front of it,
- * so the prompt keeps its order (earlier turns, then the new message). Returns the turn id.
- */
-export function insertTurn(db: DatabaseSync, repo: string, n: number, t: NewTurn, deps?: StoreDeps): number {
-  const insert = db.prepare("INSERT INTO conversation_turns (repo, number, kind, login, at, body, block, status, error, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+const nextSeq = (db: DatabaseSync, repo: string, n: number): number =>
+  Number((db.prepare("SELECT COALESCE(MAX(seq), 0) + 1 AS s FROM conversation_turns WHERE repo = ? AND number = ?").get(repo, n) as { s: number }).s);
+
+function inTx<T>(db: DatabaseSync, f: () => T): T {
   db.exec("BEGIN IMMEDIATE");
   try {
-    const wait = t.status === "pending" ? undefined : pendingTurn(db, repo, n);
-    if (wait) db.prepare("DELETE FROM conversation_turns WHERE id = ?").run(wait.id);
-    const id = Number(insert.run(repo, n, t.kind, t.login, nowOf(deps), t.body, t.block, t.status ?? null, null, t.notes?.length ? JSON.stringify(t.notes) : null).lastInsertRowid);
-    for (const c of t.cards ?? []) {
-      db.prepare("INSERT INTO conversation_cards (turn_id, repo, number, kind, params, text, description) VALUES (?, ?, ?, ?, ?, ?, ?)")
-        .run(id, repo, n, c.params.kind, JSON.stringify(c.params), c.text, c.description);
-    }
-    if (wait) insert.run(repo, n, wait.kind, wait.login, wait.at, wait.body, wait.block, wait.status, wait.error, wait.notes);
+    const r = f();
     db.exec("COMMIT");
-    return id;
+    return r;
   } catch (e) {
     db.exec("ROLLBACK");
     throw e;
   }
 }
 
+function insertRow(db: DatabaseSync, repo: string, n: number, t: NewTurn, seq: number | null, status: string | null, deps?: StoreDeps): number {
+  const id = Number(db.prepare("INSERT INTO conversation_turns (repo, number, kind, login, at, body, block, status, error, notes, seq) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)")
+    .run(repo, n, t.kind, t.login, nowOf(deps), t.body, t.block, status, t.notes?.length ? JSON.stringify(t.notes) : null, seq).lastInsertRowid);
+  for (const c of t.cards ?? []) {
+    db.prepare("INSERT INTO conversation_cards (turn_id, repo, number, kind, params, text, description) VALUES (?, ?, ?, ?, ?, ?, ?)")
+      .run(id, repo, n, c.params.kind, JSON.stringify(c.params), c.text, c.description);
+  }
+  return id;
+}
+
 /**
- * Adds a system turn when the item's head commit or text differs from what the stored block or the last update turn described.
- * The block itself is never rewritten.
+ * Appends a turn inside the caller's transaction. A turn has a stable id and takes the next seq. While a run is answering the
+ * message, a system turn is held without a seq (the run already sent the prompt without it) and is placed after the reply.
+ * An operator message has no seq until it is answered; only one may wait per conversation.
+ */
+function appendTurn(db: DatabaseSync, repo: string, n: number, t: NewTurn, deps?: StoreDeps): number {
+  const wait = pendingTurn(db, repo, n);
+  if (t.status === "pending") {
+    if (wait) throw new ConversationError(409, "Opus has not answered the last message yet");
+    return insertRow(db, repo, n, t, null, "pending", deps);
+  }
+  if (wait?.status === "answering") return insertRow(db, repo, n, t, null, "held", deps);
+  return insertRow(db, repo, n, t, nextSeq(db, repo, n), t.status ?? null, deps);
+}
+
+/** Appends a turn (see appendTurn). Returns the turn id. */
+export function insertTurn(db: DatabaseSync, repo: string, n: number, t: NewTurn, deps?: StoreDeps): number {
+  return inTx(db, () => appendTurn(db, repo, n, t, deps));
+}
+
+const NOTHING: Snapshot = { head: null, title: "", body: "", state: "", labels: [], comments: -1, last_comment: null, decision: null, answer: null };
+
+/**
+ * Adds a system turn carrying what changed in the item since the stored block or the last update turn described it: head commit,
+ * title or body, state, labels, comments, the open decision and its answer. The block itself is never rewritten.
  */
 export async function refreshItem(db: DatabaseSync, repo: string, n: number, deps?: StoreDeps): Promise<boolean> {
   const c = conversationOf(db, repo, n), i = itemRow(db, repo, n);
   if (!c || !i) return false;
-  const sig = sigOf(i);
+  const sig = sigOf(db, i);
   if (sig === c.item_sig) return false;
+  const was = parseSig(c.item_sig) ?? NOTHING, now = JSON.parse(sig) as Snapshot;
   const pr = i.kind === "pr";
-  let diff: string | null = null;
-  if (pr && i.head_oid && deps?.diff) diff = await deps.diff(repo, n, i.head_oid).catch(() => null);
-  const data = {
-    title: i.title ?? "", body: cut(i.body, ITEM_BODY_LIMIT), state: i.state, labels: labelsOf(i),
-    ...(pr ? { head: i.head_oid, lines: { additions: i.additions, deletions: i.deletions, files: i.changed_files }, diff: diff === null ? null : cut(diff, ITEM_DIFF_LIMIT) + (diff.length > ITEM_DIFF_LIMIT ? "\n[diff cut]" : "") } : {}),
-  };
-  const text = pr ? "The PR was updated: its head commit or text changed. The current state follows; it replaces the item block where they differ." : "The issue text was updated. The current text follows; it replaces the item block where they differ.";
-  insertTurn(db, repo, n, { kind: "system", login: "system", body: text, block: systemBlock(text, data) }, deps);
-  db.prepare("UPDATE conversations SET item_sig = ? WHERE repo = ? AND number = ?").run(sig, repo, n);
-  return true;
+  const changed: string[] = [];
+  const data: Record<string, unknown> = {};
+  if (pr && was.head !== now.head) {
+    changed.push("head commit");
+    let diff: string | null = null;
+    if (i.head_oid && deps?.diff) diff = await deps.diff(repo, n, i.head_oid).catch(() => null);
+    Object.assign(data, { head: i.head_oid, lines: { additions: i.additions, deletions: i.deletions, files: i.changed_files }, diff: diff === null ? null : cut(diff, ITEM_DIFF_LIMIT) + (diff.length > ITEM_DIFF_LIMIT ? "\n[diff cut]" : "") });
+  }
+  if (was.title !== now.title) { changed.push("title"); data.title = i.title ?? ""; }
+  if (was.body !== now.body) { changed.push("text"); data.body = cut(i.body, ITEM_BODY_LIMIT); }
+  if (was.state !== now.state) { changed.push("state"); data.state = i.state; }
+  if (JSON.stringify(was.labels) !== JSON.stringify(now.labels)) { changed.push("labels"); data.labels = labelsOf(i); }
+  if (was.comments !== now.comments || was.last_comment !== now.last_comment) {
+    changed.push("comments");
+    const rows = db.prepare(`SELECT author, body FROM comments WHERE ${COMMENTS_WHERE} ORDER BY created_at DESC, id DESC LIMIT 3`).all(repo, n) as { author: string | null; body: string }[];
+    data.comments = { total: now.comments, newest: rows.reverse().map((r) => ({ author: r.author, body: cut(r.body, ITEM_COMMENT_LIMIT) })) };
+  }
+  if (was.decision !== now.decision || was.answer !== now.answer) {
+    changed.push("decision");
+    data.decision = decisionPart(openDecision(db, repo, n) ?? latestDecision(db, repo, n));
+  }
+  const text = `The ${pr ? "PR" : "issue"} was updated (${changed.join(", ")}). The current values of these fields follow; they replace the item block where they differ.`;
+  return inTx(db, () => {
+    // Another run may have written the same update while the diff was fetched.
+    if (conversationOf(db, repo, n)?.item_sig !== c.item_sig) return false;
+    appendTurn(db, repo, n, { kind: "system", login: "system", body: text, block: systemBlock(text, data) }, deps);
+    db.prepare("UPDATE conversations SET item_sig = ? WHERE repo = ? AND number = ?").run(sig, repo, n);
+    return true;
+  });
 }
 
 /** An operator's message: creates the conversation when the item has none and queues the message for the Conversation step. */
@@ -164,7 +228,12 @@ export async function addOperatorMessage(db: DatabaseSync, repo: string, n: numb
   if (pendingTurn(db, repo, n)) throw new ConversationError(409, "Opus has not answered the last message yet");
   await ensureConversation(db, repo, n, login, deps);
   await refreshItem(db, repo, n, deps);
-  return insertTurn(db, repo, n, { kind: "operator", login, body, block: operatorBlock(login, body), status: "pending" }, deps);
+  try {
+    return insertTurn(db, repo, n, { kind: "operator", login, body, block: operatorBlock(login, body), status: "pending" }, deps);
+  } catch (e) {
+    if (/UNIQUE/i.test(String((e as Error).message))) throw new ConversationError(409, "Opus has not answered the last message yet");
+    throw e;
+  }
 }
 
 /** Opus's opening turn (a question or proposal from the recommendation). Does nothing when the item already has a conversation. */
@@ -176,28 +245,69 @@ export async function startFromOpus(db: DatabaseSync, repo: string, n: number, o
   return true;
 }
 
-/** The pieces of the next prompt: the stored item block and the turn blocks, the pending message last. */
-export function promptParts(db: DatabaseSync, repo: string, n: number): { item: string; turns: string; earlier: string; message: string } | null {
+/** The message Opus is answering and the token of the run that holds it. */
+export type Claim = { turn: TurnRow; claim: string };
+
+/**
+ * Takes the queued message of the conversation for one run, or null when none is queued or another run holds it.
+ * A claim older than the prompt timeouts is released first, so a crashed run does not block the conversation.
+ */
+export function claimPending(db: DatabaseSync, repo: string, n: number, deps?: StoreDeps): Claim | null {
+  const at = nowOf(deps);
+  const stale = new Date(Date.parse(at) - STALE_CLAIM_MS).toISOString();
+  return inTx(db, () => {
+    db.prepare("UPDATE conversation_turns SET status = 'pending', claim = NULL, claimed_at = NULL WHERE repo = ? AND number = ? AND kind = 'operator' AND status = 'answering' AND claimed_at < ?").run(repo, n, stale);
+    const claim = randomUUID();
+    const r = db.prepare("UPDATE conversation_turns SET status = 'answering', claim = ?, claimed_at = ? WHERE repo = ? AND number = ? AND kind = 'operator' AND status = 'pending'").run(claim, at, repo, n);
+    if (r.changes !== 1) return null;
+    return { turn: db.prepare("SELECT * FROM conversation_turns WHERE claim = ?").get(claim) as unknown as TurnRow, claim };
+  });
+}
+
+/** The pieces of the next prompt: the stored item block and the turns in prompt order, the claimed message last. */
+export function promptParts(db: DatabaseSync, repo: string, n: number, wait: TurnRow): { item: string; turns: string; earlier: string; message: string } | null {
   const c = conversationOf(db, repo, n);
-  const wait = pendingTurn(db, repo, n);
-  if (!c || !wait) return null;
-  const all = turnsOf(db, repo, n);
-  const earlier = all.filter((t) => t.id !== wait.id).map((t) => t.block).join("");
+  if (!c) return null;
+  const earlier = (db.prepare("SELECT block FROM conversation_turns WHERE repo = ? AND number = ? AND seq IS NOT NULL ORDER BY seq").all(repo, n) as { block: string }[]).map((t) => t.block).join("");
   return { item: c.item_block, turns: earlier + wait.block, earlier, message: wait.block };
 }
 
-/** Stores Opus's reply to the pending message and marks the message answered. */
-export function storeReply(db: DatabaseSync, repo: string, n: number, waitId: number, text: string, cards: NewCard[], notes: string[], deps?: StoreDeps): number {
-  // Marked answered first: a pending message would keep itself last and put the reply in front of it.
-  db.prepare("UPDATE conversation_turns SET status = 'answered', error = NULL WHERE id = ?").run(waitId);
-  return insertTurn(db, repo, n, { kind: "opus", login: "opus", body: text, block: opusBlock(text, cards), notes, cards }, deps);
+/** Gives the claimed message its place in the prompt order, then the turns held while it was answered, in the order they arrived. */
+function settleWait(db: DatabaseSync, repo: string, n: number, wait: TurnRow, status: string, error: string | null, between?: () => void): void {
+  db.prepare("UPDATE conversation_turns SET status = ?, error = ?, seq = ?, claim = NULL WHERE id = ?").run(status, error, nextSeq(db, repo, n), wait.id);
+  between?.();
+  const held = db.prepare("SELECT id FROM conversation_turns WHERE repo = ? AND number = ? AND status = 'held' ORDER BY id").all(repo, n) as { id: number }[];
+  for (const h of held) db.prepare("UPDATE conversation_turns SET status = NULL, seq = ? WHERE id = ?").run(nextSeq(db, repo, n), h.id);
 }
 
-export function failTurn(db: DatabaseSync, waitId: number, error: string): void {
-  db.prepare("UPDATE conversation_turns SET status = 'failed', error = ? WHERE id = ?").run(error.slice(0, 300), waitId);
+const claimed = (db: DatabaseSync, repo: string, n: number, claim: string): TurnRow | undefined =>
+  db.prepare("SELECT * FROM conversation_turns WHERE repo = ? AND number = ? AND status = 'answering' AND claim = ?").get(repo, n, claim) as TurnRow | undefined;
+
+/**
+ * Stores Opus's reply to the claimed message and marks the message answered, in one transaction. Returns the reply's turn id,
+ * or null when the run no longer holds the message (its claim was released and taken by another run).
+ */
+export function storeReply(db: DatabaseSync, repo: string, n: number, claim: string, text: string, cards: NewCard[], notes: string[], deps?: StoreDeps): number | null {
+  return inTx(db, () => {
+    const wait = claimed(db, repo, n, claim);
+    if (!wait) return null;
+    let id = 0;
+    settleWait(db, repo, n, wait, "answered", null, () => { id = insertRow(db, repo, n, { kind: "opus", login: "opus", body: text, block: opusBlock(text, cards), notes, cards }, nextSeq(db, repo, n), null, deps); });
+    return id;
+  });
 }
 
-/** Conversations with a message waiting for Opus, oldest message first. */
-export function pendingConversations(db: DatabaseSync): { repo: string; number: number; turnId: number }[] {
-  return (db.prepare("SELECT repo, number, id AS turnId FROM conversation_turns WHERE kind = 'operator' AND status = 'pending' ORDER BY id").all() as { repo: string; number: number; turnId: number }[]);
+export function failTurn(db: DatabaseSync, repo: string, n: number, claim: string, error: string): boolean {
+  return inTx(db, () => {
+    const wait = claimed(db, repo, n, claim);
+    if (!wait) return false;
+    settleWait(db, repo, n, wait, "failed", error.slice(0, 300));
+    return true;
+  });
+}
+
+/** Conversations with a message waiting for Opus (queued, or claimed by a run that went stale), oldest message first. */
+export function pendingConversations(db: DatabaseSync, deps?: StoreDeps): { repo: string; number: number; turnId: number }[] {
+  const stale = new Date(Date.parse(nowOf(deps)) - STALE_CLAIM_MS).toISOString();
+  return db.prepare("SELECT repo, number, id AS turnId FROM conversation_turns WHERE kind = 'operator' AND (status = 'pending' OR (status = 'answering' AND claimed_at < ?)) ORDER BY id").all(stale) as { repo: string; number: number; turnId: number }[];
 }
