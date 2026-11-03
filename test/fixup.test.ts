@@ -14,6 +14,7 @@ import { runFixup, scrubReason, type FixupDeps } from "../src/fixup/index.ts";
 import { validatePatch } from "../src/fixup/patch.ts";
 import { setCommentApproval } from "../src/act/approval.ts";
 import { COMMENT_TEMPLATE, askText, commentText } from "../src/fixup/template.ts";
+import { checksOf } from "../src/patchcheck/index.ts";
 import { selectCandidates } from "../src/review/candidates.ts";
 
 const SCRATCH = join(homedir(), ".cache/craft-automation-scratch");
@@ -138,7 +139,10 @@ describe("patch validation", () => {
 type World = { fork: string; base: string; head: string; log: string[]; deps: FixupDeps; movedBeforePush?: boolean };
 
 /** A fork repository with branch `fix` at `head`, standing in for both the base repo's pull ref and the contributor's fork. */
-function world(opts: { reply?: string | null; moveBranch?: boolean; assignees?: string[]; canModify?: boolean; pushError?: string } = {}): World {
+const APPROVE = JSON.stringify({ verdict: "approve", reasons: "matches the listed fix", problems: [] });
+const REJECT = JSON.stringify({ verdict: "reject", reasons: "renames more than the review asked", problems: ["touches main"] });
+
+function world(opts: { check?: string | null; reply?: string | null; moveBranch?: boolean; assignees?: string[]; canModify?: boolean; pushError?: string } = {}): World {
   const root = mkdtempSync(join(dir, "w-"));
   const work = join(root, "work");
   mkdirSync(work);
@@ -188,6 +192,7 @@ function world(opts: { reply?: string | null; moveBranch?: boolean; assignees?: 
     querier, exec: run, now: () => new Date(T1), root: join(root, "cache"),
     fetchDiff: async () => ({ ok: true, text: "diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1 +1 @@\n-x\n+fn a() {}\n" }),
     ask: async () => { log.push("model"); return opts.reply === undefined ? good : opts.reply; },
+    check: async (_db, input) => { log.push("check"); assert.match(input[0]!.patch, /^diff --git/); return opts.check === undefined ? APPROVE : opts.check; },
   };
   return w;
 }
@@ -207,7 +212,7 @@ describe("fixup step", () => {
     assert.equal(git(w.fork, "log", "-1", "--format=%an <%ae>%n%B", pushed).split("\n")[0], "pipeline-bot <42+pipeline-bot@users.noreply.github.com>");
     assert.match(git(w.fork, "log", "-1", "--format=%B", pushed), /^Apply review fixes\n\n- src\/lib\.rs/);
     assert.deepEqual(w.log.filter((l) => !l.startsWith("pr-info")), [
-      "model", "assign", `push --force-with-lease=refs/heads/fix:${w.head} ${pushed}:refs/heads/fix`, `comment: ${commentText(["src/lib.rs"])}`,
+      "model", "check", "assign", `push --force-with-lease=refs/heads/fix:${w.head} ${pushed}:refs/heads/fix`, `comment: ${commentText(["src/lib.rs"])}`,
     ]);
     assert.equal(commentText(["src/lib.rs"]), "Pushed the small fixes from review: `src/lib.rs`.");
     assert.ok(COMMENT_TEMPLATE.includes("{{files}}"));
@@ -216,6 +221,42 @@ describe("fixup step", () => {
     assert.equal(rows(db, "SELECT 1 FROM stages WHERE note LIKE 'fix-up pushed%'").length, 1);
     // Done at that head; the pushed head is new to the Review stage once the mirror sees it.
     assert.equal(selectFixups(db, "app").fix.length, 0);
+  });
+
+  test("Opus rejects the patch: nothing is pushed, the try is recorded as rejected and counts", async () => {
+    const w = world({ check: REJECT });
+    const db = fresh(w.head);
+    const before = git(w.fork, "rev-parse", "refs/heads/fix");
+    const s = await runFixup(db, { repo: "app", dryRun: false }, () => {}, w.deps);
+    assert.deepEqual(s.pushed, []);
+    assert.equal(s.failed.length, 1);
+    assert.equal(git(w.fork, "rev-parse", "refs/heads/fix"), before);
+    assert.deepEqual(w.log.filter((l) => !l.startsWith("pr-info")), ["model", "check"]);
+    const f = rows(db, "SELECT state, reason, attempt FROM fixups");
+    assert.equal(f.length, 1);
+    assert.equal(f[0]!.state, "rejected");
+    assert.match(String(f[0]!.reason), /Opus rejected the patch: renames more than the review asked; touches main/);
+    assert.equal(selectFixups(db, "app").fix[0]!.attempt, 2);
+    const c = checksOf(db, "app", 7);
+    assert.deepEqual(c.map((x) => [x.kind, x.verdict, x.model, x.subject, x.problems]), [["fixup", "reject", "opus", w.head, ["touches main"]]]);
+    assert.match(c[0]!.patchHash, /^[0-9a-f]{16}$/);
+  });
+
+  test("Opus approves: the check is recorded and the push goes on", async () => {
+    const w = world();
+    const db = fresh(w.head);
+    const s = await runFixup(db, { repo: "app", dryRun: false }, () => {}, w.deps);
+    assert.deepEqual(s.pushed, ["app#7"]);
+    assert.deepEqual(checksOf(db, "app", 7).map((x) => x.verdict), ["approve"]);
+  });
+
+  test("an unreadable or missing check answer pushes nothing", async () => {
+    for (const check of [null, "looks fine"]) {
+      const w = world({ check });
+      const s = await runFixup(fresh(w.head), { repo: "app", dryRun: false }, () => {}, w.deps);
+      assert.deepEqual(s.pushed, []);
+      assert.ok(!w.log.some((l) => l.startsWith("push")));
+    }
   });
 
   test("an already assigned PR is not assigned again", async () => {

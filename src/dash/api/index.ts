@@ -2,6 +2,7 @@
 // server has already checked the session, and on POSTs the Origin, the CSRF
 // header and the per-session limits; these handlers check roles and GitHub
 // permissions themselves. Item and comment text is returned as data only.
+import { checksOf } from "../../patchcheck/index.ts";
 import { priorityOf } from "../../priority/read.ts";
 import type { DatabaseSync, SQLInputValue } from "node:sqlite";
 import type {
@@ -116,6 +117,7 @@ async function item(db: DatabaseSync, req: Req): Promise<Item> {
     comments: comments.map((x) => ({ ...x, author: x.author ?? "", body: x.body ?? "" })),
     decisionIds, settled: settledOf(db, repo, n) as Item["settled"], priority: priorityOf(db, repo, n),
     ...(it.kind === "pr" ? prWork(db, repo, n) : { verification: null, fixups: [] }),
+    patchChecks: checksOf(db, repo, n).map(({ kind, subject, patchHash, round, verdict, reasons, problems, model, createdAt }) => ({ kind, subject, patchHash, round, verdict, reasons, problems, model, createdAt })),
     actions: actionsOf(db, repo, n), releases: releasesOf(db, repo, n),
   };
 }

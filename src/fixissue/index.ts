@@ -30,6 +30,8 @@ import { cachedCrates, ghApi, ghCrates, type CratesFetcher } from "../verify/cra
 import { cloneTask, queueWarmBuild } from "../verify/tasks.ts";
 import { outcomeOf, summariseFailure } from "../verify/results.ts";
 import { regressionPath } from "../verify/plan.ts";
+import { checkLine, parseCheck, recordCheck } from "../patchcheck/index.ts";
+import { CHECK_PATCH_CAP, type FixIssueCheckInput } from "../patchcheck/types.ts";
 import { fixIssueApprovalOf } from "./approval.ts";
 import { hasOpenPr, notRustKey, selectIssues, type IssueCandidate } from "./candidates.ts";
 import { parseTriage, sourcePaths, validateFixPatch } from "./parse.ts";
@@ -42,17 +44,18 @@ const ORG = "storytold";
 const ACTOR = "fixissue";
 const TRIAGE = CLAUDE_PROMPTS["fixissue.triage"];
 const PATCH = CLAUDE_PROMPTS["fixissue.patch"];
+const CHECK = CLAUDE_PROMPTS["fixissue.check"];
 const SHA = /^[0-9a-f]{40}$/;
 const MAX_PUSH_TRIES = 3;
 const REQUIRES = { os: "linux", toolchains: ["rust-stable"] } as const;
 
-type Id = "fixissue.triage" | "fixissue.patch";
+type Id = "fixissue.triage" | "fixissue.patch" | "fixissue.check";
 
 export type FixIssueDeps = {
   /** Every git and gh command. */
   exec: Exec;
   /** The model's reply to a fixissue prompt, or null when it gave none. */
-  ask: (db: DatabaseSync, id: Id, input: TriageInput | PatchInput, runId: string) => Promise<string | null>;
+  ask: (db: DatabaseSync, id: Id, input: TriageInput | PatchInput | FixIssueCheckInput, runId: string) => Promise<string | null>;
   /** The head commit of the repo's default branch, or null. */
   mainHead: (repo: string, branch: string) => Promise<string | null>;
   fetchCrates: CratesFetcher;
@@ -92,7 +95,7 @@ export function defaultDeps(): FixIssueDeps {
 
 const iso = (d: FixIssueDeps): string => d.now().toISOString();
 const refOf = (c: { repo: string; number: number }) => `${c.repo}#${c.number}`;
-const oneLine = (s: string) => s.replace(/\s+/g, " ").trim().slice(0, 200);
+const oneLine = (s: string, max = 200) => s.replace(/\s+/g, " ").trim().slice(0, max);
 
 /** Source paths of a commit, cached by sha next to the diff cache. */
 async function cachedPaths(repo: string, sha: string, fetch: FixIssueDeps["fetchPaths"]): Promise<string[] | null> {
@@ -137,8 +140,8 @@ function fail(db: DatabaseSync, d: FixIssueDeps, r: AttemptRow, reason: string):
 }
 
 /** A round that did not work out: another round, or `failed` after the last. */
-function roundFailed(db: DatabaseSync, d: FixIssueDeps, r: AttemptRow, round: number, reason: string, patch: string | null, log: (l: string) => void): void {
-  const why = oneLine(reason);
+function roundFailed(db: DatabaseSync, d: FixIssueDeps, r: AttemptRow, round: number, reason: string, patch: string | null, log: (l: string) => void, max = 200): void {
+  const why = oneLine(reason, max);
   log(`  ${refOf(r)}: round ${round} failed: ${why}`);
   if (round >= MAX_ROUNDS) {
     update(db, d, r, { round, patch, summary: why });
@@ -178,7 +181,7 @@ const branchOf = (db: DatabaseSync, repo: string): string =>
 
 type Ctx = { db: DatabaseSync; d: FixIssueDeps; git: Git; log: (l: string) => void; runId: string; usage: Usage };
 
-async function ask(x: Ctx, id: Id, input: TriageInput | PatchInput): Promise<string | null> {
+async function ask(x: Ctx, id: Id, input: TriageInput | PatchInput | FixIssueCheckInput): Promise<string | null> {
   return x.d.ask(x.db, id, input, x.runId);
 }
 
@@ -407,6 +410,8 @@ export async function runFixIssueCollect(db: DatabaseSync, params: CollectParams
       } else if (bo.kind === "fail" && (bo.step !== "test" || bo.timedOut)) {
         roundFailed(db, d, r, r.round, bo.timedOut ? "the regression test timed out without the fix" : `the regression test did not build without the fix (${bo.step} failed)`, r.patch, log);
         s.failedRounds++;
+      } else if (!(await checkPatch(x(r.repo), r))) {
+        s.failedRounds++;
       } else {
         update(db, d, r, { state: "passed" });
         s.passed++;
@@ -421,6 +426,27 @@ export async function runFixIssueCollect(db: DatabaseSync, params: CollectParams
   }
   log(`fixissue-collect: ${s.looked} pending: ${s.passed} passed, ${s.opened} PRs opened, ${s.failedRounds} failed rounds, ${s.failed} failed, ${s.retried} retried`);
   return s;
+}
+
+/** Opus checks the patch that passed the sandbox. True on approve; otherwise the round is failed with Opus's reasons, which the next round's prompt carries. */
+async function checkPatch(x: Ctx, r: AttemptRow): Promise<boolean> {
+  const { db, d, log } = x;
+  const patch = r.patch ?? "";
+  const failRound = (why: string): false => (roundFailed(db, d, r, r.round, why, r.patch, log, 600), false);
+  if (patch.length > CHECK_PATCH_CAP) return failRound(`the patch is over the ${CHECK_PATCH_CAP} character limit for the check`);
+  const issue = db.prepare("SELECT title, body FROM items WHERE repo = ? AND number = ?").get(r.repo, r.number) as { title: string | null; body: string | null } | undefined;
+  const input: FixIssueCheckInput = {
+    ...issueText(db, { repo: r.repo, number: r.number, title: issue?.title ?? "", body: issue?.body ?? "" }),
+    triage_reason: r.reason ?? "", patch, test_path: regressionPath(r.crate_dir!),
+  };
+  const reply = await ask(x, "fixissue.check", input);
+  if (reply === null) return failRound("the patch check gave no answer");
+  const v = parseCheck(reply);
+  if (!v.ok) return failRound(`the patch check gave no valid answer: ${v.error}`);
+  recordCheck(db, { kind: "fixissue", repo: r.repo, number: r.number, subject: r.main_sha, patch, round: r.round, model: CHECK.models[0]!, check: v.check, at: iso(d) });
+  audit(db, ACTOR, "fixissue-check", refOf(r), { run: x.runId, round: r.round, verdict: v.check.verdict, reasons: v.check.reasons });
+  if (v.check.verdict === "reject") return failRound(`Opus rejected the patch: ${checkLine(v.check)}`);
+  return true;
 }
 
 /** The pipeline account's fork of the repo as owner/name, created when missing. */

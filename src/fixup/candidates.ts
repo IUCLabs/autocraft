@@ -6,7 +6,7 @@ import { commentApprovalOf } from "../act/approval.ts";
 import { pushApprovalOf } from "./approval.ts";
 import { safePath } from "./patch.ts";
 
-/** Fix-up tries per PR (pushed, failed or refused) before the step leaves it to a person. */
+/** Fix-up tries per PR (pushed, failed, refused or rejected) before the step leaves it to a person. */
 export const MAX_ATTEMPTS = 2;
 
 export type Fix = { file: string; change: string };
@@ -33,11 +33,11 @@ export function parseFixes(s: string | null): Fix[] {
   } catch { return []; }
 }
 
-export const FIXUP_STATES = ["pushed", "failed", "refused", "cannot-push", "too-large", "asked"] as const;
+export const FIXUP_STATES = ["pushed", "failed", "refused", "rejected", "cannot-push", "too-large", "asked"] as const;
 export type FixupState = (typeof FIXUP_STATES)[number];
 
 /** States that count as a try; the other three are recorded once per head and end the step's work on that head. */
-const ATTEMPT_STATES: FixupState[] = ["pushed", "failed", "refused"];
+const ATTEMPT_STATES: FixupState[] = ["pushed", "failed", "refused", "rejected"];
 
 export function attemptsOf(db: DatabaseSync, repo: string, number: number): number {
   return (db.prepare(`SELECT COUNT(*) AS n FROM fixups WHERE repo = ? AND number = ? AND state IN (${ATTEMPT_STATES.map(() => "?").join(",")})`)

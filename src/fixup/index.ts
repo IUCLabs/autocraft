@@ -18,6 +18,8 @@ import { connect } from "../db.ts";
 import { Client, type Querier } from "../mirror.ts";
 import { CLAUDE_PROMPTS } from "../prompts/index.ts";
 import { cachedDiff, ghDiff, type DiffFetcher } from "../review/diff.ts";
+import { checkLine, parseCheck, recordCheck } from "../patchcheck/index.ts";
+import { CHECK_DIFF_CAP, CHECK_PATCH_CAP, type FixupCheckInput } from "../patchcheck/types.ts";
 import { pushApprovalOf } from "./approval.ts";
 import { selectFixups, type FixCandidate } from "./candidates.ts";
 import { Git, exec, fixupDir, type Exec } from "./git.ts";
@@ -30,6 +32,7 @@ export { selectFixups, MAX_ATTEMPTS, type FixCandidate, type FixSelection } from
 const ORG = "storytold";
 const ACTOR = "fixup";
 const PROMPT = CLAUDE_PROMPTS["fixup.patch"];
+const CHECK = CLAUDE_PROMPTS["fixup.check"];
 /** Characters of one file, of all files, and of the PR diff shown to the model; over any of them the PR is held. */
 export const FILE_CAP = 40_000;
 export const TOTAL_CAP = 120_000;
@@ -42,6 +45,8 @@ export type FixupDeps = {
   fetchDiff: DiffFetcher;
   /** The model's reply to the fixup.patch prompt, or null when it gave none. */
   ask: (db: DatabaseSync, input: FixupPr[]) => Promise<string | null>;
+  /** The model's reply to the fixup.check prompt (Opus), or null when it gave none. */
+  check: (db: DatabaseSync, input: FixupCheckInput[]) => Promise<string | null>;
   now: () => Date;
   /** Directory holding one bare cache repository per repo. */
   root: string;
@@ -51,6 +56,7 @@ export function defaultDeps(): FixupDeps {
   return {
     querier: new Client(1000), exec, fetchDiff: ghDiff, now: () => new Date(), root: fixupDir(),
     ask: async (db, input) => (await askClaude("fixup.patch", PROMPT.models[0]!, input, db))?.text ?? null,
+    check: async (db, input) => (await askClaude("fixup.check", CHECK.models[0]!, input, db))?.text ?? null,
   };
 }
 
@@ -111,7 +117,7 @@ class Recorder {
   }
 
   /** A fixups row and a stages row: `hold` for the two states that need a person, else the PR's `take` stage with a note. */
-  fixup(c: FixCandidate, state: "pushed" | "failed" | "refused" | "cannot-push" | "too-large" | "asked", reason: string | null, files: string[], toHead: string | null = null): void {
+  fixup(c: FixCandidate, state: "pushed" | "failed" | "refused" | "rejected" | "cannot-push" | "too-large" | "asked", reason: string | null, files: string[], toHead: string | null = null): void {
     const at = this.at();
     this.db.prepare("INSERT INTO fixups (repo, number, from_head, to_head, state, reason, files, attempt, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
       .run(c.repo, c.number, c.head, toHead, state, reason, JSON.stringify(files), c.attempt, at);
@@ -179,7 +185,7 @@ export async function runFixup(db: DatabaseSync, params: FixupParams, log: (line
     const ref = refOf(c);
     const files = [...new Set(c.fixes.map((f) => f.file))];
     const refusedPaths = files.filter((f) => !editable(f));
-    const fail = (state: "failed" | "refused", raw: string) => {
+    const fail = (state: "failed" | "refused" | "rejected", raw: string) => {
       const reason = scrubReason(raw, d.root);
       rec.fixup(c, state, reason, files);
       summary.failed.push({ ref, reason });
@@ -241,7 +247,17 @@ export async function runFixup(db: DatabaseSync, params: FixupParams, log: (line
         continue;
       }
 
-      // Claim after the patch is validated, just before the push.
+      // Opus checks the validated patch; only an approve goes on to the push.
+      if (v.patch.length > CHECK_PATCH_CAP) { fail("refused", `the patch is over the ${CHECK_PATCH_CAP} character limit for the check`); continue; }
+      const checkReply = await d.check(db, [{ ref, title: oneTitle(db, c), review_reason: c.reason, fixes: c.fixes, diff: diff.text.slice(0, CHECK_DIFF_CAP), patch: v.patch }]);
+      if (checkReply === null) { fail("failed", "the patch check gave no answer"); continue; }
+      const verdict = parseCheck(checkReply);
+      if (!verdict.ok) { fail("failed", `the patch check gave no valid answer: ${verdict.error}`); continue; }
+      recordCheck(db, { kind: "fixup", repo, number: c.number, subject: head, patch: v.patch, round: c.attempt, model: CHECK.models[0]!, check: verdict.check, at: at() });
+      audit(db, ACTOR, "fixup-check", ref, { run: runId, head, verdict: verdict.check.verdict, reasons: verdict.check.reasons });
+      if (verdict.check.verdict === "reject") { fail("rejected", `Opus rejected the patch: ${checkLine(verdict.check)}`); continue; }
+
+      // Claim after the patch is validated and approved, just before the push.
       if (!(pr.assignees?.nodes ?? []).length) {
         await d.querier.query(ASSIGN, { id: pr.id, user: who.nodeId });
         audit(db, ACTOR, "assign", ref, { run: runId, assignee: who.login });

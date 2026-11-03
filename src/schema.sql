@@ -713,3 +713,20 @@ CREATE TABLE IF NOT EXISTS item_rank (
   PRIMARY KEY (repo, number)
 );
 CREATE INDEX IF NOT EXISTS item_rank_score ON item_rank(score);
+
+-- Opus checks of the patches we write (src/patchcheck): one row per check, before a fix-up is pushed or a fix PR is opened.
+-- subject: the commit the patch applies to (the PR head for kind fixup, the default branch head for kind fixissue).
+CREATE TABLE IF NOT EXISTS patch_checks (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  kind TEXT NOT NULL,                 -- fixup | fixissue
+  repo TEXT NOT NULL, number INTEGER NOT NULL,
+  subject TEXT NOT NULL,
+  patch_hash TEXT NOT NULL,
+  round INTEGER NOT NULL DEFAULT 0,   -- the fix round, or the fix-up try
+  verdict TEXT NOT NULL,              -- approve | reject
+  reasons TEXT NOT NULL,
+  problems TEXT NOT NULL,             -- JSON [text]
+  model TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS patch_checks_item ON patch_checks(repo, number, id);

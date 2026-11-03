@@ -127,10 +127,11 @@ Opens a PR for open bugfix issues in public Rust repos where the fix is clear. N
 - **Triage.** Sonnet decides if the fix is clear. If not, the issue is held with the reason.
 - **Patch.** Sonnet writes a diff to the listed files plus one regression test. Our code validates it: only listed files, at most 300 changed lines, no binary, symlink or mode changes.
 - **Sandbox.** The patched head must build and pass; the test alone on the base commit must fail. Untrusted code runs only there.
+- **Opus check.** After the sandbox passes and before anything is pushed, Opus reads the issue, the triage reasoning and the full patch with its test. A reject counts as a failed round and its reasons go into the next round's prompt; the check is recorded with the patch hash.
 - **Rounds.** A failure gets a Haiku summary and a new round. Three failed rounds end the attempt (held).
 - **PR.** Pushed to our fork, opened against the repo with "Fixes #N.", and the issue gets one comment, "A PR for this is in progress". The PR then goes through Review like any other.
 
-Models: Sonnet, Haiku. Daily limit 10 attempts.
+Models: Sonnet, Haiku, Opus (patch check). Daily limit 10 attempts.
 
 ## Fix-up
 
@@ -139,8 +140,11 @@ For a take-fix review, Sonnet applies the listed small fixes to the contributor'
 - **Needs** the repo's **push approval**, a PR that maintainers may modify, and no conflict. Otherwise the PR is held ("cannot push"), with no write.
 - **Cannot push.** In a repo with **comment approval**, one comment lists the fixes (at most 6, cleaned of links and mentions), once per head, if the head is still the reviewed one. The PR shows as "asked the contributor"; a new head goes back to Review. Without the approval it stays held.
 - **Safety.** The checkout is untrusted: no working tree, hooks or filters run. The diff may touch only the files named in the review, at most 300 lines.
+- **Opus check.** Before the push, Opus reads the PR, the review's fix list and our patch. A reject pushes nothing, records the try as "rejected" with Opus's reason and counts as one of the 2 tries; the check is recorded with the patch hash.
 - **Push.** One commit "Apply review fixes", pushed with a lease so a branch that moved is left alone, plus one comment from a fixed template.
 - **Hand-off.** The new head is reviewed again. At most 2 tries per PR. Daily limit 20 PRs, pushes and comments together.
+
+Models: Sonnet (patch), Opus (patch check).
 
 ## Verify
 

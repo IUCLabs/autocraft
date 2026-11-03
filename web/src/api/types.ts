@@ -201,6 +201,8 @@ export interface Item extends ItemRef {
   verification: ItemVerification | null;
   /** PRs: the Fix-up step's tries, oldest first. */
   fixups: ItemFixup[];
+  /** Opus checks of the patches we wrote for this item (Fix-up, Fix), oldest first. */
+  patchChecks?: ItemPatchCheck[];
   /** The Act step's GitHub writes after an operator's answer, oldest first. */
   actions: ItemAction[];
   /** Releases an operator can use on this item now (the item waits for a person). */
@@ -229,7 +231,7 @@ export interface ItemVerification {
   tasks: { id: number; role: "head" | "base"; state: TaskState; results: TaskResult[]; endedAt: string | null }[];
 }
 
-export type FixupState = "pushed" | "failed" | "refused" | "cannot-push" | "too-large" | "asked";
+export type FixupState = "pushed" | "failed" | "refused" | "cannot-push" | "too-large" | "asked" | "rejected";
 /** The operator releases of an item: the last path segment of POST /api/items/:repo/:n/<action>. */
 export type ReleaseAction = "review-again" | "verify-again" | "fix-again";
 
@@ -241,6 +243,19 @@ export interface ItemReleases {
   verifyAgain: boolean;
   /** A skipped or failed fix attempt can be tried again. */
   fixAgain: boolean;
+}
+
+export interface ItemPatchCheck {
+  kind: "fixup" | "fixissue";
+  /** The commit the patch applies to. */
+  subject: string;
+  patchHash: string;
+  round: number;
+  verdict: "approve" | "reject";
+  reasons: string;
+  problems: string[];
+  model: string;
+  createdAt: string;
 }
 
 export interface ItemFixup {

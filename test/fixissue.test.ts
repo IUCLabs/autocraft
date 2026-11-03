@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { describe, test } from "node:test";
 import type { DatabaseSync } from "node:sqlite";
 import { spawnSync } from "node:child_process";
+import { checksOf } from "../src/patchcheck/index.ts";
 import { getTask } from "../src/build/tasks.ts";
 import { connect } from "../src/db.ts";
 import { exec, type Exec, type ExecResult } from "../src/fixup/git.ts";
@@ -207,7 +208,9 @@ describe("texts", () => {
 
 type World = { db: DatabaseSync; deps: CollectDeps; log: string[]; calls: string[]; sha: string; replies: (string | null)[]; fork: string; asked: string[] };
 
-function world(o: Opts & { triage?: string; patches?: (string | null)[]; title?: string } = {}): World {
+const APPROVE = JSON.stringify({ verdict: "approve", reasons: "fixes the cause", problems: [] });
+
+function world(o: Opts & { check?: string | null; triage?: string; patches?: (string | null)[]; title?: string } = {}): World {
   const root = mkdtempSync(join(dir, "w-"));
   const work = join(root, "work");
   mkdirSync(join(work, "crates/app/src"), { recursive: true });
@@ -255,6 +258,7 @@ function world(o: Opts & { triage?: string; patches?: (string | null)[]; title?:
     ask: async (_db, id, input) => {
       asked.push(`${id}:${JSON.stringify(input)}`);
       if (id === "fixissue.triage") return o.triage ?? TRIAGE_OK();
+      if (id === "fixissue.check") return o.check === undefined ? APPROVE : o.check;
       return replies.length > 1 ? replies.shift()! : (replies[0] ?? null);
     },
     summarise: async (_db, _r, _n, _id, step) => `step ${step} failed: assertion left 0 right 1`,
@@ -354,6 +358,36 @@ describe("fix step", () => {
     await runFixIssueCollect(w.db, {}, quiet, w.deps);
     assert.equal(w.log.filter((l) => l.startsWith("comment")).length, 1);
     assert.equal((w.db.prepare("SELECT COUNT(*) AS n FROM audit WHERE action IN ('fixissue-pr', 'fixissue-comment')").get() as { n: number }).n, 2);
+  });
+
+  test("Opus rejects a passing fix: nothing is pushed and round 2 gets the reasons", async () => {
+    const reject = JSON.stringify({ verdict: "reject", reasons: "the test asserts nothing about the panic", problems: ["no assertion"] });
+    const w = world({ check: reject });
+    await runFixIssue(w.db, { repo: "app", dryRun: false }, quiet, w.deps);
+    finishBoth(w.db, "pass", "fail-test");
+    const c = await runFixIssueCollect(w.db, {}, quiet, w.deps);
+    assert.equal(c.opened, 0);
+    assert.equal(c.failedRounds, 1);
+    const a = attemptOf(w.db, "app", 5)!;
+    assert.equal(a.state, "retry");
+    assert.match(a.summary!, /Opus rejected the patch: the test asserts nothing about the panic; no assertion/);
+    assert.ok(!w.calls.some((x) => x.startsWith("gh pr")));
+    const checks = checksOf(w.db, "app", 5);
+    assert.deepEqual(checks.map((x) => [x.kind, x.verdict, x.round, x.subject]), [["fixissue", "reject", 1, w.sha]]);
+    await runFixIssue(w.db, { repo: "app", dryRun: false }, quiet, w.deps);
+    const second = JSON.parse(w.asked.filter((x) => x.startsWith("fixissue.patch:")).at(-1)!.slice("fixissue.patch:".length));
+    assert.match(second.previous.failure, /the test asserts nothing about the panic/);
+    const seen = JSON.parse(w.asked.find((x) => x.startsWith("fixissue.check:"))!.slice("fixissue.check:".length));
+    assert.ok(seen.patch.includes(TEST));
+    assert.equal(seen.ref, "app#5");
+  });
+
+  test("Opus approves a passing fix: the check is recorded and the PR opens", async () => {
+    const w = world();
+    await runFixIssue(w.db, { repo: "app", dryRun: false }, quiet, w.deps);
+    finishBoth(w.db, "pass", "fail-test");
+    assert.equal((await runFixIssueCollect(w.db, {}, quiet, w.deps)).opened, 1);
+    assert.deepEqual(checksOf(w.db, "app", 5).map((x) => x.verdict), ["approve"]);
   });
 
   test("head failure: round 2 gets the previous patch and the failure summary", async () => {

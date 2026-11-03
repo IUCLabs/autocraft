@@ -306,11 +306,11 @@ export const STEPS: StepDef[] = [
   {
     name: "fixup",
     title: "Fix up take-fix pull requests",
-    description: "For take-fix pull requests we may push to, Sonnet turns the review's fix list into a diff that is checked and applied on top of the reviewed head, pushed to the contributor's branch and noted with one short comment. For a pull request it cannot push to, in a repo approved for comments, it posts the fixes as one comment instead. The new head is reviewed again.",
+    description: "For take-fix pull requests we may push to, Sonnet turns the review's fix list into a diff that is checked and applied on top of the reviewed head, checked by Opus, pushed to the contributor's branch and noted with one short comment. For a pull request it cannot push to, in a repo approved for comments, it posts the fixes as one comment instead. The new head is reviewed again.",
     stage: 6,
     requires: "operator",
     group: "github-write",
-    models: ["sonnet"],
+    models: ["sonnet", "opus"],
     params: [
       { name: "repo", label: "Repo", kind: "repo", required: true },
       { name: "limit", label: "At most", kind: "int", min: 1, max: 50, default: 5, help: "pull requests to fix up in this job" },
@@ -417,11 +417,11 @@ export const STEPS: StepDef[] = [
   {
     name: "fixissue-collect",
     title: "Collect fix results",
-    description: "Reads the finished build tasks of each fix attempt. A fix passes when its tests pass and the regression test fails without it; then the commit is pushed to the pipeline's fork, the pull request is opened and the issue gets one comment. For a failed round, Haiku summarises the log for the next round.",
+    description: "Reads the finished build tasks of each fix attempt. A fix passes when its tests pass and the regression test fails without it; Opus then checks the patch; on a reject the round fails and Opus's reasons go into the next round. Then the commit is pushed to the pipeline's fork, the pull request is opened and the issue gets one comment. For a failed round, Haiku summarises the log for the next round.",
     stage: 7,
     requires: "operator",
     group: "fixissue",
-    models: ["haiku"],
+    models: ["haiku", "opus"],
     params: [],
     run: async (ctx) => {
       const { runFixIssueCollect } = await import("../fixissue/index.ts");
