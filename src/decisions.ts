@@ -47,7 +47,7 @@ export function getDecision(db: DatabaseSync, id: string): DecisionRow | undefin
   return db.prepare("SELECT * FROM decisions WHERE id = ?").get(id) as DecisionRow | undefined;
 }
 
-const ASK_FIELDS = ["kind", "repo", "number", "items", "question", "context", "facts", "options", "recommended", "public_text", "asked_at", "asked_by", "docket", "summary", "summary_by", "summary_at"] as const;
+const ASK_FIELDS = ["kind", "repo", "number", "items", "question", "context", "facts", "options", "recommended", "recommended_reason", "public_text", "asked_at", "asked_by", "docket", "summary", "summary_by", "summary_at"] as const;
 
 // A re-ask without a summary keeps the one the decision has.
 const SUMMARY_FIELDS: readonly string[] = ["summary", "summary_by", "summary_at"];
@@ -83,19 +83,22 @@ export function validateAsk(q: Record<string, unknown>): Record<string, string |
     items: items ? JSON.stringify(items.map((r) => ({ repo: r.repo, number: r.number }))) : null,
     question: q.question.trim(), context: typeof q.context === "string" ? q.context : null,
     facts: JSON.stringify(facts), options: JSON.stringify(options.map((o) => ({ key: o.key, label: o.label, ...(o.hint ? { hint: o.hint } : {}) }))),
-    recommended: (q.recommended as string) ?? null, public_text: typeof q.public_text === "string" ? q.public_text : null,
+    recommended: (q.recommended as string) ?? null,
+    // A reason without a recommendation would be shown with nothing to explain.
+    recommended_reason: q.recommended ? str(q.recommended_reason) : null,
+    public_text: typeof q.public_text === "string" ? q.public_text : null,
     asked_at: typeof q.asked_at === "string" ? q.asked_at : new Date().toISOString(),
     asked_by: typeof q.asked_by === "string" ? q.asked_by : null, docket: typeof q.docket === "string" ? q.docket : null,
     summary: str(q.summary), summary_by: str(q.summary_by), summary_at: str(q.summary_at),
   };
 }
 
-// Inserts or updates the question by id; answer columns are never touched, a re-ask replaces the recommendation along with its author and reason, and neither is a summary the new question lacks.
+// Inserts or updates the question by id; answer columns are never touched, a re-ask replaces the recommendation along with its reason and clears its author, and neither is a summary the new question lacks.
 export function ask(db: DatabaseSync, questions: Record<string, unknown>[], inTransaction = false): { inserted: number; updated: number } {
   const rows = questions.map(validateAsk);
   const cols = ["id", ...ASK_FIELDS];
   const stmt = db.prepare(`INSERT INTO decisions (${cols.join(",")}) VALUES (${cols.map((c) => `:${c}`).join(",")})
-    ON CONFLICT(id) DO UPDATE SET ${ASK_FIELDS.map((c) => SUMMARY_FIELDS.includes(c) ? `${c} = COALESCE(excluded.${c}, ${c})` : `${c} = excluded.${c}`).join(", ")}, recommended_by = NULL, recommended_reason = NULL`);
+    ON CONFLICT(id) DO UPDATE SET ${ASK_FIELDS.map((c) => SUMMARY_FIELDS.includes(c) ? `${c} = COALESCE(excluded.${c}, ${c})` : `${c} = excluded.${c}`).join(", ")}, recommended_by = NULL`);
   const exists = db.prepare("SELECT 1 FROM decisions WHERE id = ?");
   let inserted = 0, updated = 0;
   if (!inTransaction) db.exec("BEGIN IMMEDIATE");

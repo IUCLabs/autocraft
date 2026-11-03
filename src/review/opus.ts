@@ -58,9 +58,9 @@ export function saveOpus(db: DatabaseSync, runId: string | null, c: { repo: stri
   const reviewed = db.prepare("SELECT at FROM opus_reviews WHERE repo = ? AND number = ? AND head_oid = ? AND verdict IS NOT NULL").get(c.repo, c.number, c.head_oid) as { at: string } | undefined;
   if (reviewed && !markedStaleSince(db, c.repo, c.number, reviewed.at)) countRerun(db, c.repo, c.number);
   if (again) withdrawMergeQuestion(db, c.repo, c.number, c.head_oid, at);
-  db.prepare(`INSERT OR REPLACE INTO opus_reviews (repo, number, head_oid, run_id, at, model, mode, base_head, verdict, sure, reason, fixes, risks, public_review, seen_at, disc_hash)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(c.repo, c.number, c.head_oid, runId, at, s.model, s.mode, s.base, r.verdict,
-    r.sure ? 1 : 0, r.reason, r.fixes.length ? JSON.stringify(r.fixes) : null, JSON.stringify(r.risks), r.public ? JSON.stringify(r.public) : null, s.snap?.seen ?? at, s.snap?.hash ?? null);
+  db.prepare(`INSERT OR REPLACE INTO opus_reviews (repo, number, head_oid, run_id, at, model, mode, base_head, verdict, sure, reason, fixes, risks, public_review, seen_at, disc_hash, summary, why)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(c.repo, c.number, c.head_oid, runId, at, s.model, s.mode, s.base, r.verdict,
+    r.sure ? 1 : 0, r.reason, r.fixes.length ? JSON.stringify(r.fixes) : null, JSON.stringify(r.risks), r.public ? JSON.stringify(r.public) : null, s.snap?.seen ?? at, s.snap?.hash ?? null, r.summary, r.why);
   const stage = db.prepare("INSERT INTO stages (repo, number, stage, at, actor, note) VALUES (?, ?, ?, ?, ?, ?)");
   stage.run(c.repo, c.number, "reviewed", at, "opus-review", `${r.verdict}${r.sure ? "" : " (unsure)"} at ${c.head_oid.slice(0, 7)}: ${r.reason}`);
   stage.run(c.repo, c.number, r.verdict === "take-fix" ? "take" : r.verdict, at, "opus-review", r.reason);
@@ -167,7 +167,7 @@ export async function runOpusReview(db: DatabaseSync, params: OpusParams, log: (
       return;
     }
     if (p.kind === "large") {
-      const r: OpusReview = { ref: refOf(c), verdict: "hold", sure: true, reason: TOO_LARGE, fixes: [], risks: [], public: null };
+      const r: OpusReview = { ref: refOf(c), verdict: "hold", sure: true, reason: TOO_LARGE, fixes: [], risks: [], summary: null, why: null, public: null };
       saveOpus(db, runId, c, { mode: p.mode, base: p.base, model: null, review: r });
       tally(r);
       params.onHandled?.(++handled);
@@ -187,7 +187,7 @@ export async function runOpusReview(db: DatabaseSync, params: OpusParams, log: (
       const reply = await askClaude("review.opus", deps.model, [input], db, { checkout });
       if (!reply) continue;
       usage = add(usage, reply.usage);
-      got = parseOpusReply(reply.text, input.ref);
+      got = parseOpusReply(reply.text, input.ref, attempt === PROMPT.limits.attempts - 1);
     }
     if (got) {
       saveOpus(db, runId, c, { mode, base, model: deps.model, review: got, snap });

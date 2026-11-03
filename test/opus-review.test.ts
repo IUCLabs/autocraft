@@ -34,6 +34,13 @@ describe("Opus reply", () => {
     assert.equal(parseOpusReply(JSON.stringify({ ...ok, fixes: [] }), "app#1"), null);
     assert.equal(parseOpusReply(JSON.stringify({ ...ok, sure: "yes" }), "app#1"), null);
     assert.equal(parseOpusReply(JSON.stringify(ok), "app#2"), null);
+    // A summary over the cap fails the reply until the last attempt, which keeps its first sentence; code never cuts mid-sentence.
+    const long = `Short first sentence. ${Array.from({ length: 90 }, (_, i) => `w${i}`).join(" ")}.`;
+    assert.equal(parseOpusReply(JSON.stringify({ ...ok, summary: long }), "app#1", false), null);
+    assert.equal(parseOpusReply(JSON.stringify({ ...ok, summary: long }), "app#1", true)?.summary, "Short first sentence.");
+    assert.equal(parseOpusReply(JSON.stringify({ ...ok, why: long }), "app#1", false), null);
+    const withText = parseOpusReply(JSON.stringify({ ...ok, summary: "Does X.  Take it.", why: "It is small." }), "app#1");
+    assert.deepEqual([withText?.summary, withText?.why, parseOpusReply(JSON.stringify(ok), "app#1")?.summary], ["Does X. Take it.", "It is small.", null]);
     assert.equal(parseOpusReply(JSON.stringify(ok), "app#1")?.public, null);
     const pub = { summary: "Fine.", points: ["a.rs:1: x"] };
     assert.deepEqual(parseOpusReply(JSON.stringify({ ...ok, public: pub }), "app#1")?.public, pub);

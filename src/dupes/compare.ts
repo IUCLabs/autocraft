@@ -132,7 +132,7 @@ function issueInput(db: DatabaseSync, repo: string, numbers: number[]): CompareI
   return { ref: prsRef(repo, numbers), issues };
 }
 
-type Chunk = { keep: number; reason: string; others: ComparisonResult["others"] };
+type Chunk = { keep: number; reason: string; summary: string | null; why: string | null; others: ComparisonResult["others"] };
 
 /** One call for up to GROUP_MAX members; null when the model gave no valid answer. */
 async function compareChunk(x: Ctx, s: KindSet, numbers: number[], usage: { u: Usage; model: string }): Promise<Chunk | null> {
@@ -151,7 +151,7 @@ async function compareChunk(x: Ctx, s: KindSet, numbers: number[], usage: { u: U
       const reply = await deps.ask("dupes.compare-prs.opus", model, input, checkout ?? undefined);
       if (!reply) continue;
       usage.u = add(usage.u, reply.usage);
-      const r = parsePrComparison(reply.text, numbers);
+      const r = parsePrComparison(reply.text, numbers, attempt === PR_PROMPT.limits.attempts - 1);
       if (r) return r;
     }
     return null;
@@ -163,7 +163,7 @@ async function compareChunk(x: Ctx, s: KindSet, numbers: number[], usage: { u: U
     const reply = await deps.ask("dupes.compare-issues.sonnet", model, input);
     if (!reply) continue;
     usage.u = add(usage.u, reply.usage);
-    const r = parseIssueComparison(reply.text, numbers);
+    const r = parseIssueComparison(reply.text, numbers, attempt === ISSUE_PROMPT.limits.attempts - 1);
     if (r) return r;
   }
   return null;
@@ -208,7 +208,7 @@ async function compareSet(x: Ctx, s: KindSet): Promise<StoredComparison> {
   });
   return {
     repo: s.repo, key: s.key, kind: s.kind, members: s.members.map((m) => m.number), hash: s.hash, kept, source: "model", model: usage.model,
-    reason: last?.reason ?? null, result: { others, rounds }, error: null, attempts: 0, at,
+    reason: last?.reason ?? null, summary: last?.summary ?? null, why: last?.why ?? null, result: { others, rounds }, error: null, attempts: 0, at,
   };
 }
 

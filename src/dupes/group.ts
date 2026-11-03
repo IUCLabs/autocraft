@@ -1,6 +1,8 @@
 // Group comparison input and reply handling for the duplicate groups. Pure: no I/O,
 // no Node imports, because the prompt registry (shared with the web mockup) imports it.
 
+import { proseField, SUMMARY_MAX_WORDS, WHY_MAX_WORDS } from "../prose.ts";
+
 /** Most members compared in one call; a larger group is compared in rounds. */
 export const GROUP_MAX = 10;
 export const GROUP_BODY_LIMIT = 3000;
@@ -33,9 +35,11 @@ export type CompareIssue = { ref: string; title: string; body: string; state: st
 export type CompareIssues = { ref: string; issues: CompareIssue[] };
 
 export type PrOther = { number: number; duplicate: boolean; better: string[]; carry: string[] };
-export type PrComparison = { keep: number; reason: string; others: PrOther[] };
+/** summary: 2 or 3 sentences for the decision; why: one sentence behind the recommendation. Null when the reply had none. */
+type Prose = { summary: string | null; why: string | null };
+export type PrComparison = { keep: number; reason: string; others: PrOther[] } & Prose;
 export type IssueOther = { number: number; adds: string[] };
-export type IssueComparison = { keep: number; reason: string; others: IssueOther[] };
+export type IssueComparison = { keep: number; reason: string; others: IssueOther[] } & Prose;
 
 const words = (s: string, n: number) => s.trim().split(/\s+/).slice(0, n).join(" ");
 const list = (v: unknown): string[] =>
@@ -51,7 +55,7 @@ function object(text: string): Record<string, unknown> | null {
 }
 
 /** The numbers of a reply's keep and others, checked against the asked numbers; null when keep is unknown or an other is missing. */
-function shape(text: string, numbers: number[]): { keep: number; reason: string; byNumber: Map<number, Record<string, unknown>> } | null {
+function shape(text: string, numbers: number[], last: boolean): ({ keep: number; reason: string; byNumber: Map<number, Record<string, unknown>> } & Prose) | null {
   const o = object(text);
   if (!o || typeof o.keep !== "number" || !numbers.includes(o.keep) || typeof o.reason !== "string" || !Array.isArray(o.others)) return null;
   const byNumber = new Map<number, Record<string, unknown>>();
@@ -59,25 +63,28 @@ function shape(text: string, numbers: number[]): { keep: number; reason: string;
     if (x && typeof x === "object" && typeof x.number === "number" && numbers.includes(x.number) && x.number !== o.keep && !byNumber.has(x.number)) byNumber.set(x.number, x);
   }
   if (numbers.some((n) => n !== o.keep && !byNumber.has(n))) return null;
-  return { keep: o.keep, reason: words(o.reason, GROUP_REASON_WORDS), byNumber };
+  const summary = proseField(o.summary, SUMMARY_MAX_WORDS, last), why = proseField(o.why, WHY_MAX_WORDS, last);
+  if (!summary.ok || !why.ok) return null;
+  return { keep: o.keep, reason: words(o.reason, GROUP_REASON_WORDS), byNumber, summary: summary.text, why: why.text };
 }
 
-export function parsePrComparison(text: string, numbers: number[]): PrComparison | null {
-  const s = shape(text, numbers);
+/** A summary or why over its word cap fails the reply unless `last` (the final attempt), which keeps its first sentence. */
+export function parsePrComparison(text: string, numbers: number[], last = true): PrComparison | null {
+  const s = shape(text, numbers, last);
   if (!s) return null;
   const others: PrOther[] = [];
   for (const [number, x] of s.byNumber) {
     if (typeof x.duplicate !== "boolean") return null;
     others.push({ number, duplicate: x.duplicate, better: list(x.better), carry: list(x.carry) });
   }
-  return { keep: s.keep, reason: s.reason, others: others.sort((p, q) => p.number - q.number) };
+  return { keep: s.keep, reason: s.reason, summary: s.summary, why: s.why, others: others.sort((p, q) => p.number - q.number) };
 }
 
-export function parseIssueComparison(text: string, numbers: number[]): IssueComparison | null {
-  const s = shape(text, numbers);
+export function parseIssueComparison(text: string, numbers: number[], last = true): IssueComparison | null {
+  const s = shape(text, numbers, last);
   if (!s) return null;
   const others = [...s.byNumber].map(([number, x]) => ({ number, adds: list(x.adds) })).sort((p, q) => p.number - q.number);
-  return { keep: s.keep, reason: s.reason, others };
+  return { keep: s.keep, reason: s.reason, summary: s.summary, why: s.why, others };
 }
 
 export const prsRef = (repo: string, numbers: number[]): string => `${repo}#${numbers.join("+")}`;

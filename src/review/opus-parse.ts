@@ -1,6 +1,7 @@
 // Opus review prompt input and reply validation. No I/O and no Node imports: the
 // prompt registry (also loaded by the web mockup) imports this file.
 import { VERDICTS, type DiscussionEntry, type ReviewVerdict } from "./parse.ts";
+import { proseField, SUMMARY_MAX_WORDS, WHY_MAX_WORDS } from "../prose.ts";
 
 export type EarlierOpus = { head: string; verdict: string; sure: boolean; reason: string; fixes: { file: string; change: string }[] };
 
@@ -34,6 +35,10 @@ export type OpusReview = {
   reason: string;
   fixes: { file: string; change: string }[];
   risks: string[];
+  /** Two or three plain sentences for the person who decides; null when the reply had none. */
+  summary: string | null;
+  /** One short sentence: why the verdict, for a recommendation; null when the reply had none. */
+  why: string | null;
   /** The text written for the PR author; null when the reply had none or it was malformed. */
   public: PublicReview | null;
 };
@@ -57,8 +62,9 @@ const words = (s: string, n: number) => s.trim().split(/\s+/).slice(0, n).join("
 /**
  * The one review for `ref` in a reply, or null. The text from the first "{" to the
  * last "}" is parsed (a one-element array is read too); take-fix needs at least one fix.
+ * A summary or why over its word cap fails the reply unless `last` (the final attempt), which keeps its first sentence.
  */
-export function parseOpusReply(text: string, ref: string): OpusReview | null {
+export function parseOpusReply(text: string, ref: string, last = true): OpusReview | null {
   let o: unknown;
   const a = text.indexOf("["), b = text.lastIndexOf("]");
   const c = text.indexOf("{"), d = text.lastIndexOf("}");
@@ -77,5 +83,7 @@ export function parseOpusReply(text: string, ref: string): OpusReview | null {
     .slice(0, OPUS_MAX_FIXES).map((f) => ({ file: f.file.slice(0, 200), change: f.change.slice(0, 800) }));
   if (verdict === "take-fix" && !fixes.length) return null;
   const risks = Array.isArray(r.risks) ? r.risks.filter((x): x is string => typeof x === "string").slice(0, 8).map((x) => x.slice(0, 300)) : [];
-  return { ref, verdict: verdict as ReviewVerdict, sure: r.sure, reason: words(r.reason, OPUS_REASON_WORDS), fixes: verdict === "take-fix" ? fixes : [], risks, public: parsePublic(r.public) };
+  const summary = proseField(r.summary, SUMMARY_MAX_WORDS, last), why = proseField(r.why, WHY_MAX_WORDS, last);
+  if (!summary.ok || !why.ok) return null;
+  return { ref, verdict: verdict as ReviewVerdict, sure: r.sure, reason: words(r.reason, OPUS_REASON_WORDS), fixes: verdict === "take-fix" ? fixes : [], risks, summary: summary.text, why: why.text, public: parsePublic(r.public) };
 }

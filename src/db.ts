@@ -49,6 +49,11 @@ const ADDED_COLUMNS: [table: string, column: string, type: string][] = [
   ["fix_attempts", "size", "TEXT"],
   ["repos", "reconciled_at", "TEXT"],
   ["opus_reviews", "public_review", "TEXT"],
+  // The model's 2 or 3 sentence summary and one-sentence reason, shown as the text of decisions about the PR.
+  ["opus_reviews", "summary", "TEXT"],
+  ["opus_reviews", "why", "TEXT"],
+  ["dupe_comparisons", "summary", "TEXT"],
+  ["dupe_comparisons", "why", "TEXT"],
   ["merge_batches", "fork", "TEXT"],
   ["build_tasks", "sandbox_env", "TEXT"],
   ["decisions", "recommended_reason", "TEXT"],
