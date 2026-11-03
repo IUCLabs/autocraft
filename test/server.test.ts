@@ -184,18 +184,21 @@ describe("sign-in", () => {
 
 describe("permissions", () => {
   test("a viewer can read, but every write returns 403", async () => {
-    const c = await signedIn("viewer1");
+    let c = await signedIn("viewer1");
     assert.equal((await c.get("/")).status, 200);
     assert.equal((await c.get("/api/access", false)).status, 403);
-    const csrf = await c.csrf();
-    const before = (db.prepare("SELECT COUNT(*) AS n FROM audit").get() as { n: number }).n;
-    for (const r of allRoutes.filter((r) => r.method === "POST")) {
+    let csrf = await c.csrf();
+    const before = (db.prepare("SELECT COUNT(*) AS n FROM audit WHERE action <> 'sign-in'").get() as { n: number }).n;
+    const posts = allRoutes.filter((r) => r.method === "POST");
+    for (const [i, r] of posts.entries()) {
+      // A new session every 50 routes stays under the per-session write limit.
+      if (i && i % 50 === 0) { c = await signedIn("viewer1"); csrf = await c.csrf(); }
       const status = (await c.post(sample(r.pattern), { csrf, login: "viewer1", role: "operator", repos: "photocraft", id: "1" })).status;
       if (r.operator) assert.equal(status, 403, r.pattern);
       else assert.ok(status >= 400, `${r.pattern}: ${status}`);
     }
     assert.equal((await c.post("/api/test/answer/photocraft", { csrf })).status, 403);
-    assert.equal((db.prepare("SELECT COUNT(*) AS n FROM audit").get() as { n: number }).n, before);
+    assert.equal((db.prepare("SELECT COUNT(*) AS n FROM audit WHERE action <> 'sign-in'").get() as { n: number }).n, before);
   });
 
   test("a maintainer answers only in repos where they have write", async () => {

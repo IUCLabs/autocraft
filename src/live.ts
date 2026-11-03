@@ -75,7 +75,7 @@ export const TOPIC_TABLES: Record<string, Source[]> = {
     { table: "decisions", ops: ["INSERT", "DELETE"] },
     { table: "decisions", ops: ["UPDATE"], when: "old.answer IS NOT new.answer OR old.kind IS NOT new.kind OR old.repo IS NOT new.repo OR old.number IS NOT new.number OR old.items IS NOT new.items" },
     { table: "dupe_group_items" }, { table: "item_rank" }, { table: "classifications", ops: ["INSERT", "DELETE"] },
-    { table: "classifications", ops: ["UPDATE"], when: ["classifier", "run_id", "at", "type_label", "want", "reference", "topics", "flags", "dup_of", "reason", "probs", "input_hash"].map((c) => `old.${c} IS NOT new.${c}`).join(" OR ") },
+    { table: "classifications", ops: ["UPDATE"], when: ["classifier", "run_id", "at", "type_label", "want", "reference", "flags", "dup_of", "reason", "probs", "input_hash"].map((c) => `old.${c} IS NOT new.${c}`).join(" OR ") },
     { table: "reviews" }, { table: "opus_reviews" }, { table: "verifications" },
     { table: "fix_attempts" }, { table: "pr_checks" }, { table: "fast_track" }, { table: "merge_holds" }, { table: "merges" }, { table: "merge_batches" },
     { table: "merge_batch_prs" }, { table: "tracked_repos" },
