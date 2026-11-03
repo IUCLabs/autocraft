@@ -12,7 +12,8 @@ import { selectFixups } from "../src/fixup/candidates.ts";
 import { exec, type Exec, type ExecResult } from "../src/fixup/git.ts";
 import { runFixup, scrubReason, type FixupDeps } from "../src/fixup/index.ts";
 import { validatePatch } from "../src/fixup/patch.ts";
-import { COMMENT_TEMPLATE, commentText } from "../src/fixup/template.ts";
+import { setCommentApproval } from "../src/act/approval.ts";
+import { COMMENT_TEMPLATE, askText, commentText } from "../src/fixup/template.ts";
 import { selectCandidates } from "../src/review/candidates.ts";
 
 const SCRATCH = join(homedir(), ".cache/craft-automation-scratch");
@@ -264,6 +265,68 @@ describe("fixup step", () => {
     assert.deepEqual(w.log, []);
     assert.deepEqual(rows(db, "SELECT stage, note FROM stages WHERE stage = 'hold'"), [{ stage: "hold", note: "can't push to the contributor's branch" }]);
     assert.deepEqual(rows(db, "SELECT state FROM fixups"), [{ state: "cannot-push" }]);
+  });
+
+  test("a PR we can't push to in a repo not approved for comments stays held and nothing is posted", async () => {
+    const w = world();
+    const db = fresh(w.head, { canModify: false });
+    await runFixup(db, { repo: "app", dryRun: false }, () => {}, w.deps);
+    assert.ok(!w.log.some((l) => l.startsWith("comment")));
+    assert.deepEqual(rows(db, "SELECT state FROM fixups"), [{ state: "cannot-push" }]);
+  });
+
+  test("with comment approval the cleaned fix list is posted once per head", async () => {
+    const w = world();
+    const db = fresh(w.head, { canModify: false });
+    setCommentApproval(db, "op", "app", true);
+    db.prepare("UPDATE reviews SET fixes = ?").run(JSON.stringify([
+      { file: "src/lib.rs", change: "rename a to b, see [the guide](https://x.example/g) and ping @someone https://evil.example/y" },
+      ...Array.from({ length: 8 }, (_, i) => ({ file: `src/f${i}.rs`, change: "x".repeat(300) })),
+    ]));
+    for (let i = 0; i < 2; i++) await runFixup(db, { repo: "app", dryRun: false }, () => {}, w.deps);
+    const posted = w.log.filter((l) => l.startsWith("comment: "));
+    assert.equal(posted.length, 1);
+    const body = posted[0]!.slice("comment: ".length);
+    assert.ok(body.startsWith("Before this can be merged, it needs these changes:\n- `src/lib.rs`: rename a to b, see the guide and ping someone."));
+    assert.ok(!/@|https?:|\]\(/.test(body));
+    const lines = body.split("\n");
+    assert.equal(lines.length, 7);
+    assert.ok(lines.slice(1).every((l) => l.length <= 150));
+    assert.ok(!w.log.includes("model") && !w.log.some((l) => l.startsWith("push")));
+    assert.deepEqual(rows(db, "SELECT state FROM fixups"), [{ state: "asked" }]);
+    assert.deepEqual(rows(db, "SELECT COUNT(*) AS n FROM audit WHERE action = 'fixup-comment'"), [{ n: 1 }]);
+  });
+
+  test("a head that moved before posting is skipped, and a new head is reviewed again", async () => {
+    const w = world();
+    const db = fresh("old-head", { canModify: false });
+    setCommentApproval(db, "op", "app", true);
+    await runFixup(db, { repo: "app", dryRun: false }, () => {}, w.deps);
+    assert.deepEqual(w.log, ["pr-info"]);
+    assert.deepEqual(rows(db, "SELECT state FROM fixups"), []);
+
+    const w2 = world();
+    const db2 = fresh(w2.head, { canModify: false });
+    setCommentApproval(db2, "op", "app", true);
+    await runFixup(db2, { repo: "app", dryRun: false }, () => {}, w2.deps);
+    assert.equal(selectFixups(db2, "app").ask.length, 0);
+    db2.prepare("INSERT INTO classifications (repo, number, classifier, run_id, at, type_label, flags, probs) VALUES ('app', 7, 'jev', 'r1', ?, 'bugfix', '[]', '{\"top\":0.95}')").run(T0);
+    assert.equal(selectCandidates(db2, "app").length, 0);
+    db2.prepare("UPDATE items SET head_oid = 'new', updated_at = '2026-01-03T00:00:00Z'").run();
+    assert.deepEqual(selectCandidates(db2, "app").map((c) => c.head_oid), ["new"]);
+    assert.equal(selectFixups(db2, "app").ask.length, 0);
+  });
+
+  test("approving comments later asks about a head already held", () => {
+    const db = fresh("h1", { canModify: false });
+    db.prepare("INSERT INTO fixups (repo, number, from_head, state, reason, attempt, created_at) VALUES ('app', 7, 'h1', 'cannot-push', 'x', 1, ?)").run(T1);
+    assert.equal(selectFixups(db, "app").ask.length, 0);
+    setCommentApproval(db, "op", "app", true);
+    assert.equal(selectFixups(db, "app").ask.length, 1);
+  });
+
+  test("the comment text caps items and drops empty ones", () => {
+    assert.equal(askText([{ file: "a.rs", change: "https://x.example" }]), "Before this can be merged, it needs these changes:\n");
   });
 
   test("a fix list naming a workflow or manifest is held before any call", async () => {

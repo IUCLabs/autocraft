@@ -10,7 +10,7 @@ import { BODY_LIMIT, COMMENT_LIMIT, COMMENTS_PER_ITEM, SUMMARY_MAX, SUMMARY_MIN,
 import { LABELS, LABEL_MEANING, RULES, UNTRUSTED_NOTE } from "../classify/rules.ts";
 import { REVIEW_BODY_LIMIT, VERDICTS, type ReviewPr } from "../review/parse.ts";
 import { COMMENT_TEMPLATES } from "../act/templates.ts";
-import { COMMENT_TEMPLATE } from "../fixup/template.ts";
+import { ASK_TEMPLATE, COMMENT_TEMPLATE } from "../fixup/template.ts";
 import { MAX_CHANGED_LINES, type FixupPr } from "../fixup/patch.ts";
 import { JEV_ACCEPT, JEV_REJECT, PAIR_BODY_LIMIT, VERDICTS as PAIR_VERDICTS, pairView, type DupePair } from "../dupes/pair.ts";
 import { SAMPLE_DUPE_PAIRS, SAMPLE_FIXUP_PRS, SAMPLE_ITEMS, SAMPLE_REVIEW_PRS } from "./samples.ts";
@@ -194,7 +194,10 @@ Reply with ONLY a unified diff in git format against the file contents shown: fo
   output: "A unified diff (git format) against the files as shown.",
   validation: `${CLAUDE_RESULT} The text is read as a diff, ignoring a surrounding Markdown fence. It is kept only when every file is one named in the review's fixes, it has no new, deleted, renamed, mode-changed, symlink or binary file, it changes at most ${MAX_CHANGED_LINES} lines, and \`git apply --check\` accepts it against the PR's head commit. Otherwise the try is recorded as refused and nothing is pushed.`,
   limits: { perCall: 1, attempts: 1, timeoutSeconds: 600 },
-  extra: [{ label: "Comment on the PR after a push", value: COMMENT_TEMPLATE }],
+  extra: [
+    { label: "Comment on the PR after a push", value: COMMENT_TEMPLATE },
+    { label: "Comment on a PR we can't push to, listing the fixes", value: ASK_TEMPLATE },
+  ],
 };
 
 const SUMMARY: ClaudePrompt = {

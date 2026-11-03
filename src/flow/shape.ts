@@ -109,7 +109,8 @@ export function buildFlow(c: Record<string, number>, meta: FlowMeta): Flow {
     node("fixup", "Fix-up", 9, "steps", `${fmt(v("fixup.fix"))} to fix up · ${fmt(v("fixup.pushed"))} pushed`, [
       { id: "fix", label: "To fix up", waitsOn: "model", tone: "neutral", hint: "Take with fixes: Sonnet patches, then pushes to the PR branch" },
       { id: "pushed", label: "Pushed", waitsOn: "model", tone: "ok", hint: "The new head goes back to Review" },
-      { id: "hold", label: "Cannot push (hold)", waitsOn: "person", tone: "warn", hint: "Branch closed to maintainers, patch refused or two tries used" },
+      { id: "hold", label: "Cannot push (hold)", waitsOn: "person", tone: "warn", hint: "Branch closed to maintainers, patch refused or two tries used; held until the repo is approved for comments" },
+      { id: "asked", label: "Asked the contributor", waitsOn: "person", tone: "neutral", hint: "The fixes were posted as a comment; a new head goes back to Review" },
       { id: "unapproved", label: "Repo not approved for pushing", waitsOn: "person", gate: true, tone: "warn", hint: "An operator approves pushing per repo on the Repos page" },
     ], { recent: ["pushed"], promptStage: "Integrate (fix-ups)" }),
     node("verify", "Verify", 10, "steps", `${fmt(v("verify.passed") + v("verify.ci-enough"))} verified · ${fmt(v("verify.waiting"))} to plan`, [

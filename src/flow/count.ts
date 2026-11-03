@@ -338,14 +338,14 @@ function fix(c: Ctx): NodeCount {
 
 /** Fix-up: take-fix PRs by whether the step may push (src/fixup). */
 function fixup(c: Ctx): NodeCount {
-  const members = new Map<string, Refs>(["fix", "pushed", "hold", "unapproved"].map((k) => [`fixup.${k}`, new Set()]));
+  const members = new Map<string, Refs>(["fix", "pushed", "hold", "unapproved", "asked"].map((k) => [`fixup.${k}`, new Set()]));
   const hold = members.get("fixup.hold")!;
   for (const repo of c.repos())
     for (const x of classifyFixups(c.db, repo)) {
-      if (x.bucket === "fix" || x.bucket === "unapproved") members.get(`fixup.${x.bucket}`)!.add(ref(x.c));
+      if (x.bucket === "fix" || x.bucket === "unapproved" || x.bucket === "asked") members.get(`fixup.${x.bucket}`)!.add(ref(x.c));
       else hold.add(ref(x.c));
     }
-  const waiting = hold.size + sizeOf(members, "fixup.fix") + sizeOf(members, "fixup.unapproved");
+  const waiting = hold.size + sizeOf(members, "fixup.fix") + sizeOf(members, "fixup.unapproved") + sizeOf(members, "fixup.asked");
   const pushed = members.get("fixup.pushed")!;
   for (const r of c.refs(`SELECT DISTINCT f.repo, f.number FROM main.fixups f JOIN main.items i ON i.repo = f.repo AND i.number = f.number AND i.state = 'OPEN'
       WHERE f.state = 'pushed' ${c.tracked("f.repo")}`)) if (![...members.values()].some((s) => s !== pushed && s.has(r))) pushed.add(r);

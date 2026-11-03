@@ -175,9 +175,9 @@ test("the duplicate, priority, fix, fix-up and act nodes count one item in each 
   item.run(40, "pr", "OPEN", "h40", null); review.run(40, "h40", "take-fix", fixes); checks.run(40, "h40", 0);
   item.run(41, "pr", "OPEN", "h41", null); review.run(41, "h41", "take", null); checks.run(41, "h41", 1);
   db.prepare(`INSERT INTO main.fixups (repo, number, from_head, to_head, state, attempt, created_at) VALUES ('${R}', 41, 'g41', 'h41', 'pushed', 1, ?)`).run(NOW);
-  assert.deepEqual(counts(node("fixup")), { fix: 0, pushed: 1, hold: 1, unapproved: 1 });
+  assert.deepEqual(counts(node("fixup")), { fix: 0, pushed: 1, hold: 1, unapproved: 1, asked: 0 });
   setting(`push_approved:${R}`);
-  assert.deepEqual(counts(node("fixup")), { fix: 1, pushed: 1, hold: 1, unapproved: 0 });
+  assert.deepEqual(counts(node("fixup")), { fix: 1, pushed: 1, hold: 1, unapproved: 0, asked: 0 });
 
   // Act: scope decision 4 and the duplicate decision 24 are answered close by an operator.
   dec.run(`${R}#4:scope`, "scope", 4, "close", "op", NOW, null);
@@ -191,7 +191,7 @@ test("the duplicate, priority, fix, fix-up and act nodes count one item in each 
   assert.deepEqual(counts(node("dupes")), { checking: 2, waiting: 1, held: 1, closed: 1 });
   assert.deepEqual(counts(node("priority")), { scored: 1, unsure: 1, todo: 2 });
   assert.deepEqual(node("priority").facts[0], { label: "Top level", value: "P1" });
-  assert.deepEqual(counts(node("fixup")), { fix: 1, pushed: 1, hold: 1, unapproved: 0 });
+  assert.deepEqual(counts(node("fixup")), { fix: 1, pushed: 1, hold: 1, unapproved: 0, asked: 0 });
 
   // The Items browser lists a branch's items.
   const req = (qs: string) => ({ query: new URLSearchParams(qs), user: { login: "op", role: "operator" } }) as unknown as Req;

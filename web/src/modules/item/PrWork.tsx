@@ -96,7 +96,7 @@ function Verify({ v }: { v: ItemVerification }) {
 }
 
 const F_STATE: Record<ItemFixup["state"], [string, Tone]> = {
-  pushed: ["Pushed", "ok"], failed: ["Failed", "bad"], refused: ["Refused", "warn"], "cannot-push": ["Cannot push", "warn"], "too-large": ["Too large", "warn"],
+  pushed: ["Pushed", "ok"], failed: ["Failed", "bad"], refused: ["Refused", "warn"], "cannot-push": ["Cannot push", "warn"], "too-large": ["Too large", "warn"], asked: ["Asked for changes", "neutral"],
 };
 
 function Fixups({ rows }: { rows: ItemFixup[] }) {

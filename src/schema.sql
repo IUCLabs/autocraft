@@ -598,7 +598,8 @@ CREATE TABLE IF NOT EXISTS actions (
 CREATE INDEX IF NOT EXISTS actions_item ON actions(repo, number);
 -- Fix-up tries by the Integrate stage on take-fix PRs, one row per try (or per
 -- head for cannot-push and too-large). state: pushed | failed | refused (the
--- patch or a pre-push check said no) | cannot-push | too-large. Only the first
+-- patch or a pre-push check said no) | cannot-push | too-large | asked (the fixes
+-- were posted as a comment on a PR we can't push to). Only the first
 -- three count against the two tries per PR.
 CREATE TABLE IF NOT EXISTS fixups (
   repo TEXT NOT NULL, number INTEGER NOT NULL,

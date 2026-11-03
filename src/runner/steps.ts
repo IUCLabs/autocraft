@@ -85,10 +85,11 @@ async function checkCommentApproved(db: DatabaseSync, p: Params): Promise<string
   return commentApprovalOf(db, String(p.repo)) ? null : `commenting in ${p.repo} is not approved`;
 }
 
-/** Pushing to contributors' branches is opt-in per repo. */
+/** Pushing to contributors' branches and commenting the fixes are each opt-in per repo; the fix-up step needs either. */
 async function checkPushApproved(db: DatabaseSync, p: Params): Promise<string | null> {
   const { pushApprovalOf } = await import("../fixup/approval.ts");
-  return pushApprovalOf(db, String(p.repo)) ? null : `pushing fix-ups in ${p.repo} is not approved`;
+  const { commentApprovalOf } = await import("../act/approval.ts");
+  return pushApprovalOf(db, String(p.repo)) || commentApprovalOf(db, String(p.repo)) ? null : `pushing fix-ups or commenting in ${p.repo} is not approved`;
 }
 
 /** Opening fix PRs from issues is opt-in per repo. */
@@ -288,7 +289,7 @@ export const STEPS: StepDef[] = [
   {
     name: "fixup",
     title: "Fix up take-fix pull requests",
-    description: "For take-fix pull requests we may push to, Sonnet turns the review's fix list into a diff that is checked and applied on top of the reviewed head, pushed to the contributor's branch and noted with one short comment. The new head is reviewed again.",
+    description: "For take-fix pull requests we may push to, Sonnet turns the review's fix list into a diff that is checked and applied on top of the reviewed head, pushed to the contributor's branch and noted with one short comment. For a pull request it cannot push to, in a repo approved for comments, it posts the fixes as one comment instead. The new head is reviewed again.",
     stage: 6,
     requires: "operator",
     group: "github-write",
@@ -303,7 +304,7 @@ export const STEPS: StepDef[] = [
       const refused = await checkPushApproved(ctx.db, ctx.params);
       if (refused) throw new Error(refused);
       const r = await runFixup(ctx.db, { repo: String(ctx.params.repo), limit: Number(ctx.params.limit), dryRun: false, onHandled: ctx.handled }, ctx.log);
-      return `${r.repo}: pushed ${r.pushed.length}, ${r.failed.length} failed or refused, ${r.held.length} held`;
+      return `${r.repo}: pushed ${r.pushed.length}, ${r.asked.length} asked, ${r.failed.length} failed or refused, ${r.held.length} held`;
     },
   },
   {

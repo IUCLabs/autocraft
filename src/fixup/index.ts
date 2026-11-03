@@ -23,7 +23,7 @@ import { selectFixups, type FixCandidate } from "./candidates.ts";
 import { Git, exec, fixupDir, type Exec } from "./git.ts";
 import { scrubGitError } from "../worker/patch.ts";
 import { editable, validatePatch, type FixupPr } from "./patch.ts";
-import { HOLD_CANNOT_PUSH, commentText, commitMessage } from "./template.ts";
+import { HOLD_CANNOT_PUSH, askText, commentText, commitMessage } from "./template.ts";
 
 export { selectFixups, MAX_ATTEMPTS, type FixCandidate, type FixSelection } from "./candidates.ts";
 
@@ -63,7 +63,7 @@ export type FixupParams = {
 };
 export type FixupSummary = {
   runId: string; repo: string; dryRun: boolean;
-  pushed: string[]; failed: { ref: string; reason: string }[]; held: { ref: string; reason: string }[];
+  pushed: string[]; asked: string[]; failed: { ref: string; reason: string }[]; held: { ref: string; reason: string }[];
 };
 
 const refOf = (c: { repo: string; number: number }) => `${c.repo}#${c.number}`;
@@ -111,12 +111,13 @@ class Recorder {
   }
 
   /** A fixups row and a stages row: `hold` for the two states that need a person, else the PR's `take` stage with a note. */
-  fixup(c: FixCandidate, state: "pushed" | "failed" | "refused" | "cannot-push" | "too-large", reason: string | null, files: string[], toHead: string | null = null): void {
+  fixup(c: FixCandidate, state: "pushed" | "failed" | "refused" | "cannot-push" | "too-large" | "asked", reason: string | null, files: string[], toHead: string | null = null): void {
     const at = this.at();
     this.db.prepare("INSERT INTO fixups (repo, number, from_head, to_head, state, reason, files, attempt, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
       .run(c.repo, c.number, c.head, toHead, state, reason, JSON.stringify(files), c.attempt, at);
     const hold = state === "cannot-push" || state === "too-large";
-    const note = state === "pushed" ? `fix-up pushed at ${short(c.head)}: ${files.join(", ")}` : `fix-up ${state} at ${short(c.head)}: ${reason}`;
+    const note = state === "pushed" ? `fix-up pushed at ${short(c.head)}: ${files.join(", ")}`
+      : state === "asked" ? `asked the contributor for changes at ${short(c.head)}: ${files.join(", ")}` : `fix-up ${state} at ${short(c.head)}: ${reason}`;
     this.db.prepare("INSERT INTO stages (repo, number, stage, at, actor, note) VALUES (?, ?, ?, ?, ?, ?)")
       .run(c.repo, c.number, hold ? "hold" : "take", at, ACTOR, hold ? reason : note);
   }
@@ -128,12 +129,14 @@ export async function runFixup(db: DatabaseSync, params: FixupParams, log: (line
   if (params.limit !== undefined && !(Number.isInteger(params.limit) && params.limit >= 0)) throw new Error("limit must be a whole number ≥ 0");
   const at = () => (deps?.now() ?? new Date()).toISOString();
   const runId = `fixup-${repo}-${at().replace(/[-:]/g, "").slice(0, 15)}`;
-  const summary: FixupSummary = { runId, repo, dryRun, pushed: [], failed: [], held: [] };
+  const summary: FixupSummary = { runId, repo, dryRun, pushed: [], asked: [], failed: [], held: [] };
   const sel = selectFixups(db, repo);
-  const picks = params.limit === undefined ? sel.fix : sel.fix.slice(0, params.limit);
-  log(`fixup ${repo}: ${sel.fix.length} PRs to fix up, ${sel.cannotPush.length} we can't push to${pushApprovalOf(db, repo) ? "" : " (pushing is not approved for this repo)"}`);
+  const asks = params.limit === undefined ? sel.ask : sel.ask.slice(0, params.limit);
+  const picks = params.limit === undefined ? sel.fix : sel.fix.slice(0, Math.max(0, params.limit - asks.length));
+  log(`fixup ${repo}: ${sel.fix.length} PRs to fix up, ${sel.cannotPush.length + sel.ask.length} we can't push to${pushApprovalOf(db, repo) ? "" : " (pushing is not approved for this repo)"}`);
   if (dryRun) {
     for (const c of picks) log(`  would fix up ${refOf(c)} at ${short(c.head)} (try ${c.attempt}): ${[...new Set(c.fixes.map((f) => f.file))].join(", ")}`);
+    for (const c of asks) log(`  would comment the fixes on ${refOf(c)} at ${short(c.head)}`);
     for (const c of sel.cannotPush) log(`  would hold ${refOf(c)}: ${HOLD_CANNOT_PUSH}`);
     log(`fixup ${repo}: dry run, nothing called or written`);
     return summary;
@@ -141,18 +144,37 @@ export async function runFixup(db: DatabaseSync, params: FixupParams, log: (line
   const d = deps ?? defaultDeps();
   const rec = new Recorder(db, at);
 
-  // No GitHub write: recorded once per head.
+  // Not approved for comments: no GitHub write, recorded once per head.
   for (const c of sel.cannotPush) {
     rec.fixup(c, "cannot-push", HOLD_CANNOT_PUSH, []);
     summary.held.push({ ref: refOf(c), reason: HOLD_CANNOT_PUSH });
     log(`  ${refOf(c)}: held: ${HOLD_CANNOT_PUSH}`);
+  }
+  let handled = 0;
+  for (const c of asks) {
+    const ref = refOf(c);
+    try {
+      const r = await d.querier.query(PR_QUERY, { name: repo, n: c.number }) as { repository?: { pullRequest?: PrNode | null } };
+      const pr = r.repository?.pullRequest;
+      if (!pr || pr.state !== "OPEN" || pr.isDraft) { log(`  ${ref}: skipped: no longer an open, non-draft PR`); continue; }
+      if (pr.headRefOid !== c.head) { log(`  ${ref}: skipped: head moved to ${short(pr.headRefOid)} since the review`); continue; }
+      const body = askText(c.fixes);
+      const cm = await d.exec("gh", ["pr", "comment", String(c.number), "--repo", `${ORG}/${repo}`, "--body-file", "-"], { input: body });
+      if (cm.code !== 0) { log(`  ${ref}: comment failed: ${oneLine(cm.stderr)}`); continue; }
+      rec.fixup(c, "asked", null, [...new Set(c.fixes.map((f) => f.file))]);
+      audit(db, ACTOR, "fixup-comment", ref, { run: runId, head: c.head, text: body });
+      params.onHandled?.(++handled);
+      summary.asked.push(ref);
+      log(`  ${ref}: asked the contributor for changes at ${short(c.head)}`);
+    } catch (e) {
+      log(`  ${ref}: not asked: ${oneLine(String((e as Error).message ?? e))}`);
+    }
   }
   if (!picks.length) return summary;
 
   const who = await whoAmI(d.exec);
   const git = new Git(d.exec, d.root, repo);
   mkdirSync(d.root, { recursive: true });
-  let handled = 0;
   for (const c of picks) {
     const ref = refOf(c);
     const files = [...new Set(c.fixes.map((f) => f.file))];
@@ -247,7 +269,7 @@ export async function runFixup(db: DatabaseSync, params: FixupParams, log: (line
       fail("failed", oneLine(String((e as Error).message ?? e)));
     }
   }
-  log(`fixup ${repo}: ${summary.pushed.length} pushed, ${summary.failed.length} failed, ${summary.held.length} held; run ${runId}`);
+  log(`fixup ${repo}: ${summary.pushed.length} pushed, ${summary.asked.length} asked, ${summary.failed.length} failed, ${summary.held.length} held; run ${runId}`);
   return summary;
 }
 

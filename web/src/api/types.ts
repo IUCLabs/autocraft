@@ -224,7 +224,7 @@ export interface ItemVerification {
   tasks: { id: number; role: "head" | "base"; state: TaskState; results: TaskResult[]; endedAt: string | null }[];
 }
 
-export type FixupState = "pushed" | "failed" | "refused" | "cannot-push" | "too-large";
+export type FixupState = "pushed" | "failed" | "refused" | "cannot-push" | "too-large" | "asked";
 export interface ItemFixup {
   fromHead: string;
   toHead: string | null;

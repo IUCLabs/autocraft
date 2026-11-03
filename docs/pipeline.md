@@ -196,9 +196,10 @@ Models: Sonnet, Haiku. Daily limit 10 attempts.
 For a take-fix review, Sonnet applies the listed small fixes to the contributor's branch, so the PR need not wait for them.
 
 - **Needs** the repo's **push approval**, a PR that maintainers may modify, and no conflict. Otherwise the PR is held ("cannot push"), with no write.
+- **Cannot push.** In a repo with **comment approval**, one comment lists the fixes (at most 6, cleaned of links and mentions), once per head, if the head is still the reviewed one. The PR shows as "asked the contributor"; a new head goes back to Review. Without the approval it stays held.
 - **Safety.** The checkout is untrusted: no working tree, hooks or filters run. The diff may touch only the files named in the review, at most 300 lines.
 - **Push.** One commit "Apply review fixes", pushed with a lease so a branch that moved is left alone, plus one comment from a fixed template.
-- **Hand-off.** The new head is reviewed again. At most 2 tries per PR. Daily limit 20 PRs.
+- **Hand-off.** The new head is reviewed again. At most 2 tries per PR. Daily limit 20 PRs, pushes and comments together.
 
 ## Verify
 

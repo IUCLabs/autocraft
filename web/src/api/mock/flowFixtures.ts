@@ -16,7 +16,7 @@ const ALL: Record<string, number> = {
   "edge.labels.review": 5_786, "edge.review.verify": 58, "edge.review.fixup": 31,
   "fix.candidates": 64, "fix.retry": 3, "fix.testing": 2, "fix.passed": 1, "fix.pr-opened": 7, "fix.skipped": 41, "fix.failed": 5, "fix.unapproved": 410, "fix.total": 533,
   "edge.labels.fix": 533, "edge.fix.review": 7,
-  "fixup.fix": 9, "fixup.pushed": 14, "fixup.hold": 6, "fixup.unapproved": 12, "fixup.total": 41, "fixup.recent.pushed": 4, "edge.fixup.review": 14,
+  "fixup.fix": 9, "fixup.pushed": 14, "fixup.hold": 6, "fixup.unapproved": 12, "fixup.asked": 5, "fixup.total": 46, "fixup.recent.pushed": 4, "edge.fixup.review": 14,
   "act.todo": 3, "act.failed": 1, "act.unapproved": 8, "act.done": 6, "act.total": 12, "edge.decide.act": 12,
   "verify.waiting": 21, "verify.planned": 6, "verify.running": 4, "verify.passed": 33, "verify.ci-enough": 18, "verify.failed": 5, "verify.error": 2,
   "verify.total": 89, "verify.recent.finished": 24, "edge.verify.merge": 51,

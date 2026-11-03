@@ -222,7 +222,10 @@ export const LANES: Lane[] = [
     steps: ["fixup"],
     perRepo: true,
     detect: (db, { tracked }) => {
-      const repos = tracked.filter((repo) => pushApprovalOf(db, repo) && selectFixups(db, repo).fix.length > 0);
+      const repos = tracked.filter((repo) => {
+        const sel = selectFixups(db, repo);
+        return (pushApprovalOf(db, repo) && sel.fix.length > 0) || sel.ask.length > 0;
+      });
       return repos.sort().map((repo) => ({ step: "fixup", params: { repo } }));
     },
   },
