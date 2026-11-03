@@ -62,7 +62,7 @@ export function defaultCompareDeps(db: DatabaseSync): CompareDeps {
   };
 }
 
-const LIVE = (numbers: number[]) => `query($name: String!) {
+export const liveQuery = (numbers: number[]) => `query($name: String!) {
   repository(owner: "${ORG}", name: $name) {${numbers.map((n) => `
     i${n}: issueOrPullRequest(number: ${n}) { __typename ... on Issue { state } ... on PullRequest { state headRefOid } }`).join("")}
   }
@@ -71,7 +71,7 @@ const LIVE = (numbers: number[]) => `query($name: String!) {
 /** Live state and head of the items; an item GitHub returned null for is left out. */
 async function liveOf(q: Querier, repo: string, numbers: number[]): Promise<Map<number, { state: string; head: string | null }>> {
   const out = new Map<number, { state: string; head: string | null }>();
-  const data = await q.query(LIVE(numbers), { name: repo }) as { repository?: Record<string, { state?: string; headRefOid?: string } | null> };
+  const data = await q.query(liveQuery(numbers), { name: repo }) as { repository?: Record<string, { state?: string; headRefOid?: string } | null> };
   for (const n of numbers) {
     const x = data.repository?.[`i${n}`];
     if (x?.state) out.set(n, { state: x.state, head: x.headRefOid ?? null });
