@@ -89,9 +89,9 @@ describe("pipeline state api", () => {
     for (const login of ["viewer1", "maint", "boss"]) {
       const s = await (await signedIn(login)).get<PipelineState>("/api/pipeline/state");
       assert.equal(s.enabled, false);
-      assert.deepEqual(s.limits.map((l) => l.step), ["classify-new", "embed", "dupes", "decide", "checks", "review-batch", "labels-apply", "merge", "act", "fixup", "verify", "prioritize", "fixissue", "referee", "opus-review"]);
+      assert.deepEqual(s.limits.map((l) => l.step), ["classify-new", "embed", "dupes", "decide", "checks", "review-batch", "labels-apply", "merge", "act", "fixup", "verify", "prioritize", "fixissue", "referee", "opus-review", "review-post"]);
       const by = (step: string) => s.limits.find((l) => l.step === step)!;
-      assert.deepEqual([by("classify-new").perDay, by("embed").perDay, by("decide").perDay, by("review-batch").perDay, by("merge").perDay, by("opus-review").perDay], [2000, null, 100, 40, 10, 40]);
+      assert.deepEqual([by("classify-new").perDay, by("embed").perDay, by("decide").perDay, by("review-batch").perDay, by("merge").perDay, by("opus-review").perDay, by("review-post").perDay], [2000, null, 100, 40, 10, 40, 40]);
       assert.equal(by("decide").usedToday, 0);
     }
   });

@@ -223,7 +223,7 @@ CREATE TABLE IF NOT EXISTS oauth_states (
 CREATE TABLE IF NOT EXISTS audit (
   at TEXT NOT NULL,
   login TEXT NOT NULL,
-  action TEXT NOT NULL,               -- answer | undo | adopt | opinion | opinion-retract | comment | override | rule | access-add | access-remove | access-role | session-revoke | sign-in | sign-in-refused (at most one row per login per hour; details.refused counts them) | repo-track | repo-untrack | labels-approve | labels-revoke | merge-approve | merge-revoke | labels-apply | assign | merge | merge-refused | comment-approve | comment-revoke | act-comment | act-close | act-skip | job-request | job-cancel | pipeline-switch | stage-limit | env-create | env-change | env-rotate-key | task-cancel | unassign
+  action TEXT NOT NULL,               -- answer | undo | adopt | opinion | opinion-retract | comment | override | rule | access-add | access-remove | access-role | session-revoke | sign-in | sign-in-refused (at most one row per login per hour; details.refused counts them) | repo-track | repo-untrack | labels-approve | labels-revoke | merge-approve | merge-revoke | labels-apply | assign | merge | merge-refused | comment-approve | comment-revoke | review-post | review-edit | act-comment | act-close | act-skip | job-request | job-cancel | pipeline-switch | stage-limit | env-create | env-change | env-rotate-key | task-cancel | unassign
   target TEXT,
   details TEXT                        -- JSON
 );
@@ -812,3 +812,16 @@ CREATE TABLE IF NOT EXISTS claude_account_status (
   login_expires_at TEXT,
   checked_at TEXT NOT NULL
 );
+
+-- The one pull request review we posted per PR (review-post): its GraphQL node
+-- id and the head commit its body describes. A later Opus review at a new head
+-- edits this review in place.
+CREATE TABLE IF NOT EXISTS review_posts (
+  repo TEXT NOT NULL, number INTEGER NOT NULL,
+  review_id TEXT NOT NULL,
+  head_oid TEXT NOT NULL,
+  posted_at TEXT NOT NULL,
+  edited_at TEXT,
+  PRIMARY KEY (repo, number)
+);
+INSERT OR IGNORE INTO stage_limits (step, per_day) VALUES ('review-post', 40);

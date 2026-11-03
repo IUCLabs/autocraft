@@ -133,6 +133,14 @@ Step `opus-review`, one PR per call, no tools, untrusted data quoted as in the f
 - **Too large** for one call: held without a call.
 - **Stored** per PR and head in `opus_reviews` (verdict, sure, reason, fixes, risks, mode full / delta / skipped, base head, skip reason). The `final_reviews` view joins both passes; every later stage reads it. Integration batches get no Opus review of their combined diff.
 
+### Posting the final review
+
+Step `review-post`, only in repos with **comment approval**; calls no model. For each open PR with an Opus review (a verdict, not a skip) at its current head that no review of ours describes yet, it posts one pull request review with event COMMENT (never an approval or a change request). PRs by the pipeline's own account, integration batch PRs, PRs held as duplicates and items outside the pilot are left out. Daily limit 40 posts and edits. A dry run (`craft-auto review-post --repo R`) lists the bodies without posting.
+
+- **Live check.** Right before posting the PR is read from GitHub. Only an open PR whose head is the reviewed head gets the review; any other is skipped and returns after a new review at its new head.
+- **One review per PR.** The review's node id and head are stored in `review_posts`. An Opus review at a later head edits our earlier review (`updatePullRequestReview`) instead of adding another. Each post and edit is audited (`review-post`, `review-edit`).
+- **Body.** A fixed template (listed on the Prompts page as `review.post`): an italic first line, `AI-generated review (Opus 5.5). Not a maintainer decision.`, with the model name and version taken from the model id stored on the review; a verdict line in neutral words (take: no blocking problems found; take-fix: small fixes needed before merging; hold: changes needed; close: does not look mergeable as it is; a note when Opus was not sure); the reason, the fix list (file and change) and the risks as a list; and `Reviewed at <short sha>.` Nothing else from the pipeline is included. The model's text is untrusted: mentions are removed, each item is one line of at most 600 characters, and the body is cut at 6000 characters.
+
 Hand-off, by final verdict: take goes to Verify, take-fix to Fix-up (with Opus's fix list), close to a "Close this PR?" decision (answered yes, Act closes it), hold waits for a person.
 
 ## Fix
@@ -314,7 +322,7 @@ The pipeline starts **Off**. An operator switches it on the Pipeline page or wit
 
 While On, the runner looks for work after each sync, at least every 15 minutes, and when a job ends. It queues a job for each stage that has work, no job queued or running, and limit left. Per-repo stages (Label, Review, Merge, Act, Fix-up, Fix) queue only for repos with the matching approval. A stage whose last three automatic jobs failed, or ended with no items although there was work, waits an hour; one whose last job handled nothing waits 15 minutes. The full classification pass is never started automatically.
 
-**Pilot.** The setting `pilot_items` (a list of `repo#number`) limits every stage to those items. Classify, Priority, Dupes (the listed items as subjects; their neighbours may be any item), Referee, Decide, Review, Opus review, Label, Verify, Fix-up, Fix, Merge and Act pick candidates among them only; Embed and Rank stay unrestricted because they are local and cheap. A Fix PR the pipeline opened for a pilot issue counts as a pilot item. Integration batches in flight finish. Empty or absent means no pilot. Operators set it on the Pipeline page or with `craft-auto pipeline pilot set <repo#number>...`, `pilot show` and `pilot clear`; each change is in the audit log.
+**Pilot.** The setting `pilot_items` (a list of `repo#number`) limits every stage to those items. Classify, Priority, Dupes (the listed items as subjects; their neighbours may be any item), Referee, Decide, Review, Opus review, Post reviews, Label, Verify, Fix-up, Fix, Merge and Act pick candidates among them only; Embed and Rank stay unrestricted because they are local and cheap. A Fix PR the pipeline opened for a pilot issue counts as a pilot item. Integration batches in flight finish. Empty or absent means no pilot. Operators set it on the Pipeline page or with `craft-auto pipeline pilot set <repo#number>...`, `pilot show` and `pilot clear`; each change is in the audit log.
 
 ### Daily limits
 
@@ -328,7 +336,7 @@ Limits count items handled per stage per day (from 00:00 UTC), including by fail
 | Decide | 100 | Fix-up | 20 |
 | Review | 40 | Fix | 10 |
 | Referee | 500 | | |
-| Opus review | 40 | | |
+| Opus review | 40 | Post reviews | 40 |
 
 Embed, checks and Label have no limit.
 
@@ -349,7 +357,7 @@ Dry run is the default for every writing command; `--apply` writes (and still re
 | `craft-auto rank`, `rank show <repo> <n>` | Work rank |
 | `craft-auto decide [--repo R]` | Decide |
 | `craft-auto labels ensure\|plan\|apply --repo R` | Label |
-| `craft-auto checks --repo R`, `review --repo R` | Review |
+| `craft-auto checks --repo R`, `review --repo R`, `opus-review --repo R`, `review-post --repo R [--apply]` | Review |
 | `craft-auto fixissue --repo R`, `fixissue-collect` | Fix |
 | `craft-auto fixup --repo R` | Fix-up |
 | `craft-auto verify --repo R`, `verify-collect` | Verify |

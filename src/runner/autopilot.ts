@@ -25,6 +25,7 @@ import { buildQueue, eligible, toAsk } from "../merge/queue.ts";
 import { trackedNames } from "../repos.ts";
 import { selectCandidates as reviewCandidates } from "../review/candidates.ts";
 import { selectOpusCandidates } from "../review/opus-candidates.ts";
+import { postCandidates } from "../review/post.ts";
 import { selectCandidates as verifyCandidates, unavailableCandidates } from "../verify/candidates.ts";
 import { collectDue } from "../verify/results.ts";
 import { collectDue as fixCollectDue, fixDue } from "../fixissue/index.ts";
@@ -311,6 +312,14 @@ export const LANES: Lane[] = [
     steps: ["referee"],
     detect: (db, { run }) => (run && refereeCandidates(db, run, 1).length ? [{ step: "referee", params: {} }] : []),
   },
+  {
+    // The final Opus reviews, posted as one PR review each in repos approved for comments.
+    name: "review-post",
+    steps: ["review-post"],
+    perRepo: true,
+    detect: (db, { tracked }) =>
+      tracked.filter((repo) => commentApprovalOf(db, repo) && postCandidates(db, repo).length).sort().map((repo) => ({ step: "review-post", params: { repo } })),
+  },
 ];
 
 // ---- limits and usage ----------------------------------------------------------
@@ -375,7 +384,7 @@ export function setEnabled(db: DatabaseSync, enabled: boolean, by: string): void
 }
 
 /** Steps that have a row in stage_limits, in pipeline order. */
-export const LIMIT_STEPS = ["classify-new", "embed", "dupes", "decide", "checks", "review-batch", "labels-apply", "merge", "act", "fixup", "verify", "prioritize", "fixissue", "referee", "opus-review"];
+export const LIMIT_STEPS = ["classify-new", "embed", "dupes", "decide", "checks", "review-batch", "labels-apply", "merge", "act", "fixup", "verify", "prioritize", "fixissue", "referee", "opus-review", "review-post"];
 
 /** Steps whose jobs cannot be sized to what remains of the day: only no limit or a pause makes sense. */
 export const ZERO_ONLY = ["checks"];

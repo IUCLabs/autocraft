@@ -499,6 +499,26 @@ export const STEPS: StepDef[] = [
       return `${r.repo}: reviewed ${r.reviewed} of ${r.candidates} candidates${v ? ` (${v})` : ""}; ${r.skipListed} skip-listed, ${r.skipped.length} without a diff, ${r.missing.length} without an answer`;
     },
   },
+  {
+    name: "review-post",
+    title: "Post final reviews",
+    description: "Posts the final Opus review of each pull request of one repo as one pull request review (a comment, never an approval or a change request) that says it is AI-generated and names the model. A review at a new head edits the earlier one. Skips a pull request that closed or moved on. Calls no model.",
+    stage: 5,
+    requires: "operator",
+    group: "github-write",
+    params: [
+      { name: "repo", label: "Repo", kind: "repo", required: true },
+      { name: "limit", label: "At most", kind: "int", min: 1, max: 50, default: 20, help: "reviews to post in this job" },
+    ],
+    check: checkCommentApproved,
+    run: async (ctx) => {
+      const { runReviewPost } = await import("../review/post.ts");
+      const refused = await checkCommentApproved(ctx.db, ctx.params);
+      if (refused) throw new Error(refused);
+      const r = await runReviewPost(ctx.db, { repo: String(ctx.params.repo), limit: Number(ctx.params.limit), dryRun: false, onHandled: ctx.handled }, ctx.log);
+      return `${r.repo}: ${r.posted.length} posted, ${r.edited.length} edited, ${r.skipped.length} skipped, ${r.failed.length} failed`;
+    },
+  },
 ];
 
 let loaded: Promise<Map<string, StepDef>> | null = null;
