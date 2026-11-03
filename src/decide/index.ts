@@ -13,6 +13,7 @@ import { ask } from "../decisions.ts";
 import { trackedNames } from "../repos.ts";
 import { CLAUDE_PROMPTS } from "../prompts/index.ts";
 import { buildDecision } from "./decision.ts";
+import { backfillIds, recommend } from "./recommend.ts";
 import { latestJevRun, selectCandidates, type Candidate, type Reason } from "./select.ts";
 
 const PROMPT = CLAUDE_PROMPTS["decide.summary"];
@@ -31,10 +32,15 @@ export type DecideParams = {
   run?: string;
   /** Called with the running count of items sent to the model. */
   onSent?: (n: number) => void;
+  /** Read-only checkout of a repo's default branch for the recommendation call, or null to ask without tools. Default: fetched from GitHub. */
+  checkout?: (repo: string) => Promise<string | null>;
 };
 
+/** Most recommendation calls per run when no limit is given. */
+const DEFAULT_RECOMMEND_LIMIT = 50;
+
 export type RepoCount = { candidates: number; needsDecision: number; scopeDisagreement: number; asked: number; noSummary: number };
-export type DecideResult = { run: string | null; dryRun: boolean; byRepo: Record<string, RepoCount>; asked: number; noSummary: number; usageRun: string | null };
+export type DecideResult = { run: string | null; dryRun: boolean; byRepo: Record<string, RepoCount>; asked: number; noSummary: number; recommended: number; usageRun: string | null };
 
 export type Log = (line: string) => void;
 
@@ -69,36 +75,54 @@ export async function runDecide(db: DatabaseSync, params: DecideParams = {}, log
   const untracked = (params.repos ?? []).filter((r) => !tracked.has(r));
   if (untracked.length) throw new Error(`not tracked: ${untracked.join(", ")}`);
   const run = params.run ?? latestJevRun(db);
-  const result: DecideResult = { run, dryRun: !!params.dryRun, byRepo: {}, asked: 0, noSummary: 0, usageRun: null };
-  if (!run) {
-    log("decide: no classification run with Jev verdicts");
-    return result;
+  const result: DecideResult = { run, dryRun: !!params.dryRun, byRepo: {}, asked: 0, noSummary: 0, recommended: 0, usageRun: null };
+  const picked: Candidate[] = [];
+  if (!run) log("decide: no classification run with Jev verdicts");
+  else {
+    const all = selectCandidates(db, run, params.repos);
+    picked.push(...(params.limit === undefined ? all : all.slice(0, params.limit)));
+    const reasonKey: Record<Reason, "needsDecision" | "scopeDisagreement"> = { "needs-decision": "needsDecision", "scope-disagreement": "scopeDisagreement" };
+    for (const c of picked) {
+      const n = count(result.byRepo, c.repo);
+      n.candidates++;
+      n[reasonKey[c.reason]]++;
+    }
+    log(`decide: run ${run}, ${all.length} items need a scope decision, ${picked.length} in this run${params.dryRun ? " (dry run)" : ""}`);
   }
-  const all = selectCandidates(db, run, params.repos);
-  const picked = params.limit === undefined ? all : all.slice(0, params.limit);
-  const reasonKey: Record<Reason, "needsDecision" | "scopeDisagreement"> = { "needs-decision": "needsDecision", "scope-disagreement": "scopeDisagreement" };
-  for (const c of picked) {
-    const n = count(result.byRepo, c.repo);
-    n.candidates++;
-    n[reasonKey[c.reason]]++;
-  }
-  log(`decide: run ${run}, ${all.length} items need a scope decision, ${picked.length} in this run${params.dryRun ? " (dry run)" : ""}`);
-  if (params.dryRun || !picked.length) return result;
+  if (params.dryRun) return result;
 
+  const usageRun = `decide-${now().replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z")}`;
+  let sent = 0;
+  const askedIds: string[] = [];
+  if (picked.length) await summarise(db, picked, model, usageRun, result, askedIds, (n) => { sent = n; params.onSent?.(n); }, log);
+
+  // New decisions first, then open ones that never had a model recommendation, within the step's limit.
+  const room = Math.max(0, (params.limit ?? DEFAULT_RECOMMEND_LIMIT) - askedIds.length);
+  const ids = [...askedIds, ...backfillIds(db, room).filter((id) => !askedIds.includes(id))];
+  if (picked.length || ids.length) result.usageRun = usageRun;
+  if (ids.length) {
+    result.recommended = await recommend(db, ids, {
+      checkout: params.checkout ?? ((repo) => import("../dupes/compare.ts").then((m) => m.baseCheckout(db, repo))),
+      usageRun, log, onSent: () => params.onSent?.(++sent),
+    });
+  }
+  for (const n of Object.values(result.byRepo)) { result.asked += n.asked; result.noSummary += n.noSummary; }
+  log(`decide: asked ${result.asked} decisions; ${result.noSummary} items without a summary; ${result.recommended} recommendations`);
+  return result;
+}
+
+async function summarise(db: DatabaseSync, picked: Candidate[], model: string, usageRun: string, result: DecideResult, askedIds: string[], onSent: (n: number) => void, log: Log): Promise<void> {
   // Batches stay within one repo so token use can be counted per repo.
   const byRepo = new Map<string, Candidate[]>();
   for (const c of picked) byRepo.set(c.repo, [...(byRepo.get(c.repo) ?? []), c]);
   const batches: Candidate[][] = [];
   for (const cs of byRepo.values()) for (let i = 0; i < cs.length; i += PROMPT.limits.perCall) batches.push(cs.slice(i, i + PROMPT.limits.perCall));
-
-  const usageRun = `decide-${now().replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z")}`;
-  result.usageRun = usageRun;
   const stage = db.prepare("INSERT INTO stages (repo, number, stage, at, actor, note) VALUES (?, ?, 'needs-decision', ?, 'decide', ?)");
   let sent = 0;
   await pool(batches.map((batch, b) => async () => {
     const repo = batch[0]!.repo, start = now();
     sent += batch.length;
-    params.onSent?.(sent);
+    onSent(sent);
     const items = loadSummaryItems(db, batch);
     const cand = new Map(batch.map((c) => [refOf(c), c]));
     let usage = zero(), done = 0;
@@ -112,7 +136,7 @@ export async function runDecide(db: DatabaseSync, params: DecideParams = {}, log
       const qs = summaries.map((s) => ({ ...buildDecision(db, cand.get(s.ref)!), asked_at: at, summary: s.summary, summary_by: model, summary_at: at }));
       if (qs.length) {
         ask(db, qs);
-        for (const q of qs) stage.run(q.repo, q.number, at, `scope decision ${q.id}`);
+        for (const q of qs) { stage.run(q.repo, q.number, at, `scope decision ${q.id}`); askedIds.push(q.id); }
         done += qs.length;
       }
       todo = todo.filter((i) => missing.includes(refOf(i)));
@@ -123,9 +147,6 @@ export async function runDecide(db: DatabaseSync, params: DecideParams = {}, log
     if (todo.length) log(`decide: no valid summary for ${todo.map(refOf).join(", ")}; the next run retries them`);
     saveUsage(db, usageRun, `decide-${String(b).padStart(3, "0")}`, "decide", model, done, usage, start, now());
   }), () => claudeRoom(db), { first: true });
-  for (const n of Object.values(result.byRepo)) { result.asked += n.asked; result.noSummary += n.noSummary; }
-  log(`decide: asked ${result.asked} decisions; ${result.noSummary} items without a summary`);
-  return result;
 }
 
 function parseArgs(args: string[]): DecideParams {

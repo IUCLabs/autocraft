@@ -87,6 +87,8 @@ export interface Decision {
   facts: string[];
   options: DecisionOption[];
   recommended: string;
+  /** One sentence from the model that recommended it; empty when there is none. */
+  recommendedReason: string;
   publicText: string | null;
   /** Group decisions: per answer, the exact comments it posts and a hash of them that the answer sends back. */
   optionTexts: OptionTexts[];

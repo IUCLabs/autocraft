@@ -193,14 +193,14 @@ export const STEPS: StepDef[] = [
   {
     name: "decide",
     title: "Ask decisions",
-    description: "Turns items that need a decision, and items where Jev and Haiku disagree between scope labels, into decisions on the dashboard, each with a summary written by the chosen model.",
+    description: "Turns items that need a decision, and items where Jev and Haiku disagree between scope labels, into decisions on the dashboard, each with a summary written by the chosen model. Opus then recommends an answer (or none) for each new decision and for open ones that have no recommendation yet; each Opus call counts as an item.",
     stage: 3,
     requires: "operator",
     group: "decide",
-    models: (p) => [String(p.model ?? "sonnet")],
+    models: (p) => [String(p.model ?? "sonnet"), "opus"],
     params: [
       { name: "repo", label: "Repo", kind: "repo", help: "every tracked repo when empty" },
-      { name: "limit", label: "At most", kind: "int", min: 1, max: 500, default: 50, help: "decisions to ask in this job" },
+      { name: "limit", label: "At most", kind: "int", min: 1, max: 500, default: 50, help: "decisions to ask in this job; also the most recommendation calls" },
       { name: "model", label: "Model", kind: "enum", options: [...DECIDE_MODELS], default: "sonnet" },
     ],
     run: async (ctx) => {
@@ -212,7 +212,7 @@ export const STEPS: StepDef[] = [
         onSent: ctx.handled,
       }, ctx.log);
       if (r.usageRun) ctx.usageRun(r.usageRun);
-      return `asked ${r.asked} decisions; ${r.noSummary} items without a summary`;
+      return `asked ${r.asked} decisions; ${r.noSummary} items without a summary; ${r.recommended} recommendations`;
     },
   },
   {

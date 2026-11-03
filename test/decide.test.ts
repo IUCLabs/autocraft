@@ -60,9 +60,11 @@ function fixture(): DatabaseSync {
 
 type Call = { cmd: string; args: string[]; input: string };
 
-/** Answers each asked ref with a summary, except refs in `silent`. */
+/** Answers each asked ref with a summary (and every recommendation call with none), except refs in `silent`. */
 function fake(calls: Call[], silent: string[] = []): Runner {
   return async (cmd, args, input) => {
+    // Recommendation calls are covered by recommend.test.ts.
+    if (input.includes("<decision>")) return { code: 0, stdout: JSON.stringify({ type: "result", result: '{"recommended": null, "reason": ""}', usage: { input_tokens: 0, output_tokens: 0 } }), stderr: "" };
     calls.push({ cmd, args, input });
     const refs = [...input.matchAll(/"ref": "([^"]+)"/g)].map((m) => m[1]!).filter((r) => !silent.includes(r));
     const reply = refs.map((ref) => ({ ref, summary: `It asks for something about ${ref}. Whether the reference application has it is unclear.` }));
@@ -80,7 +82,7 @@ describe("decide", () => {
     const calls: Call[] = [];
     const restore = setRunner(fake(calls));
     try {
-      const r = await runDecide(db, { dryRun: true }, quiet);
+      const r = await runDecide(db, { checkout: async () => null, dryRun: true }, quiet);
       assert.deepEqual(r.byRepo, {
         photocraft: { candidates: 2, needsDecision: 1, scopeDisagreement: 1, asked: 0, noSummary: 0 },
         filmcraft: { candidates: 1, needsDecision: 1, scopeDisagreement: 0, asked: 0, noSummary: 0 },
@@ -97,7 +99,7 @@ describe("decide", () => {
     const calls: Call[] = [];
     const restore = setRunner(fake(calls));
     try {
-      const r = await runDecide(db, {}, quiet);
+      const r = await runDecide(db, { checkout: async () => null }, quiet);
       assert.equal(r.asked, 3);
       // One call per repo batch, each exactly what the registry renders.
       const want = [["photocraft#2", "photocraft#1"], ["filmcraft#10"]] /* pull requests before issues */.map((refs) => ({
@@ -115,15 +117,15 @@ describe("decide", () => {
         assert.ok(JSON.parse(d.facts!).length <= 5);
       }
       const pr = ds.find((d) => d.number === 2)!;
-      assert.equal(pr.recommended, "plugin");
+      assert.equal(pr.recommended, null);
       assert.ok(JSON.parse(pr.facts!)[0].includes("+10 −2 in 1 file"));
       const stages = db.prepare("SELECT repo || '#' || number AS ref FROM stages WHERE stage = 'needs-decision' ORDER BY ref").all() as { ref: string }[];
       assert.deepEqual(stages.map((s) => s.ref), [...ASKED].sort());
-      const used = db.prepare("SELECT sum(items) AS items, sum(input_tokens) AS input FROM token_usage WHERE stage = 'decide'").get() as { items: number; input: number };
+      const used = db.prepare("SELECT sum(items) AS items, sum(input_tokens) AS input FROM token_usage WHERE stage = 'decide' AND agent LIKE 'decide-%'").get() as { items: number; input: number };
       assert.deepEqual({ ...used }, { items: 3, input: 200 });
 
       calls.length = 0;
-      const again = await runDecide(db, {}, quiet);
+      const again = await runDecide(db, { checkout: async () => null }, quiet);
       assert.equal(again.asked, 0);
       assert.equal(calls.length, 0);
       assert.equal(rows(db).length, 3);
@@ -135,11 +137,11 @@ describe("decide", () => {
     const calls: Call[] = [];
     let restore = setRunner(fake(calls, ["photocraft#2"]));
     try {
-      const r = await runDecide(db, { repos: ["photocraft"] }, quiet);
+      const r = await runDecide(db, { checkout: async () => null, repos: ["photocraft"] }, quiet);
       assert.deepEqual({ asked: r.asked, noSummary: r.noSummary, calls: calls.length }, { asked: 1, noSummary: 1, calls: 2 });
       restore();
       restore = setRunner(fake(calls));
-      const next = await runDecide(db, { repos: ["photocraft"], limit: 5 }, quiet);
+      const next = await runDecide(db, { checkout: async () => null, repos: ["photocraft"], limit: 5 }, quiet);
       assert.equal(next.asked, 1);
       assert.deepEqual(rows(db).map((d) => d.number), [1, 2]);
     } finally { restore(); }

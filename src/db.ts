@@ -41,6 +41,8 @@ const ADDED_COLUMNS: [table: string, column: string, type: string][] = [
   ["opus_reviews", "public_review", "TEXT"],
   ["merge_batches", "fork", "TEXT"],
   ["build_tasks", "sandbox_env", "TEXT"],
+  ["decisions", "recommended_reason", "TEXT"],
+  ["decisions", "recommended_by", "TEXT"],
 ];
 
 // Indexes on added columns: they can only be created once the column exists.
@@ -90,6 +92,9 @@ function migrateValues(db: DatabaseSync): void {
     const lv = (c: string) => `CASE ${c} WHEN 'critical' THEN 'P0' WHEN 'high' THEN 'P1' WHEN 'normal' THEN 'P2' WHEN 'low' THEN 'P3' ELSE ${c} END`;
     db.exec(`UPDATE main.item_priority SET impact = ${lv("impact")}, jev_impact = ${lv("jev_impact")}, haiku_impact = ${lv("haiku_impact")}`);
   }
+  // Scope recommendations written by the old label mapping (no model behind them) are dropped from open decisions.
+  const MECHANICAL = "kind = 'scope' AND answer IS NULL AND recommended IS NOT NULL AND recommended_by IS NULL";
+  if (db.prepare(`SELECT 1 FROM main.decisions WHERE ${MECHANICAL} LIMIT 1`).get()) db.exec(`UPDATE main.decisions SET recommended = NULL WHERE ${MECHANICAL}`);
   // Jev usage saved without a cost is priced from its input tokens.
   const JEV_UNPRICED = "model LIKE 'jev%' AND cost_usd IS NULL AND input_tokens IS NOT NULL";
   if (db.prepare(`SELECT 1 FROM main.token_usage WHERE ${JEV_UNPRICED} LIMIT 1`).get()) {
