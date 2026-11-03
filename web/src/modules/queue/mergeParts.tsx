@@ -1,15 +1,15 @@
 // Parts of the Merge tab: PR rows with CI, Verify and batch columns, and the batch header facts.
 import { useIsLinked } from "./highlight";
 import { useLayoutEffect, useRef, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link } from "react-router-dom";
 import { CaretRightIcon } from "@phosphor-icons/react";
 import type { BatchState, QueueBatch, QueueMergeRow, QueueRow, QueueState, Tier } from "../../api/types";
 import { Badge, type Tone } from "../../ui/atoms/Badge";
-import { RefLink } from "../../ui/RefLink";
+import { ItemRef } from "../../ui/molecules/ItemRef";
 import { cn } from "../../ui/cn";
 import { ago } from "../../lib/format";
 import { useNow } from "../../lib/useNow";
-import { decisionPath, itemPath } from "../../lib/links";
+import { decisionPath } from "../../lib/links";
 import { FastMark } from "./fastTrack";
 import { RowMenu } from "./RowMenu";
 
@@ -49,9 +49,8 @@ export const BATCH_STATE: Record<BatchState, [string, Tone]> = {
 /** The batch's facts in one run: used by the table header row and the phone card. */
 export function BatchFacts({ b }: { b: QueueBatch }) {
   useNow();
-  const stop = { onClick: (e: React.MouseEvent) => e.stopPropagation() };
   const branch = b.fork ? (
-    <a href={gh(`${b.fork}/tree/${b.branch}`)} target="_blank" rel="noopener noreferrer" title="Open the branch on GitHub" className={cn("font-mono text-xs [overflow-wrap:anywhere]", extLink)} {...stop}>
+    <a href={gh(`${b.fork}/tree/${b.branch}`)} target="_blank" rel="noopener noreferrer" title="Open the branch on GitHub" className={cn("font-mono text-xs [overflow-wrap:anywhere]", extLink)}>
       {b.branch}
     </a>
   ) : (
@@ -65,12 +64,8 @@ export function BatchFacts({ b }: { b: QueueBatch }) {
       <span className="num text-xs text-ink/60">
         {b.size} PR{b.size === 1 ? "" : "s"}
       </span>
-      {b.prUrl && (
-        <a href={b.prUrl} target="_blank" rel="noopener noreferrer" title="Open the batch PR on GitHub" className={cn("code text-xs", extLink)} {...stop}>
-          #{b.prNumber}
-        </a>
-      )}
-      <a href={gh(`storytold/${b.repo}/commit/${b.baseSha}`)} target="_blank" rel="noopener noreferrer" title="Base commit on GitHub" className={cn("code text-xs", extLink)} {...stop}>
+      {b.prNumber !== null && <ItemRef repo={b.repo} number={b.prNumber} kind="pr" state={b.state === "merged" ? "merged" : b.state === "open" || b.state === "checking" ? "open" : "closed"} title={null} size="sm" className="flex-none" />}
+      <a href={gh(`storytold/${b.repo}/commit/${b.baseSha}`)} target="_blank" rel="noopener noreferrer" title="Base commit on GitHub" className={cn("code text-xs", extLink)}>
         {b.baseSha.slice(0, 7)}
       </a>
       <span className="num text-2xs text-ink/50" title={`created ${b.createdAt.slice(0, 16).replace("T", " ")}, updated ${b.updatedAt.slice(0, 16).replace("T", " ")}`}>
@@ -98,7 +93,7 @@ export function StateChip({ row }: { row: QueueRow }) {
 function DecisionLink({ row }: { row: QueueRow }) {
   if (!row.decisionId) return row.state === "needs-decision" ? <span className="text-2xs text-ink/45">asked on the next run</span> : <span className="text-ink/30">–</span>;
   return (
-    <Link to={decisionPath({ id: row.decisionId, repo: row.repo, number: row.number, kind: "merge" })} className="text-xs text-accent-ink hover:underline">
+    <Link to={decisionPath({ id: row.decisionId, repo: row.repo, number: row.number, kind: "merge" })} className="relative z-10 text-xs text-accent-ink hover:underline">
       {row.answer ? `Answered ${row.answer}` : "Open decision"}
     </Link>
   );
@@ -150,14 +145,14 @@ function ReviewText({ r }: { r: QueueRow }) {
   return (
     <div className="flex items-start gap-1.5">
       {canToggle ? (
-        <button type="button" aria-expanded={open} aria-label={open ? "Collapse the review" : "Expand the review"} onClick={() => setOpen(!open)} className="mt-0.5 shrink-0 text-ink/45 hover:text-ink">
+        <button type="button" aria-expanded={open} aria-label={open ? "Collapse the review" : "Expand the review"} onClick={() => setOpen(!open)} className="relative z-10 mt-0.5 shrink-0 text-ink/45 hover:text-ink">
           <CaretRightIcon className={cn("size-3.5 transition-transform", open && "rotate-90")} />
         </button>
       ) : (
         <span className="size-3.5 shrink-0" />
       )}
       <div className="min-w-0 flex-1 text-xs text-ink/65">
-        <p ref={ref} className={cn(!open && "line-clamp-2", canToggle && "cursor-pointer")} onClick={canToggle ? (e) => (e.stopPropagation(), setOpen(!open)) : undefined}>
+        <p ref={ref} className={cn(!open && "line-clamp-2", canToggle && "relative z-10 cursor-pointer")} onClick={canToggle ? () => setOpen(!open) : undefined}>
           {r.fixes > 0 && <span className="mr-1.5 text-ink/50">{r.fixes} fix{r.fixes === 1 ? "" : "es"}</span>}
           {r.reason}
         </p>
@@ -173,34 +168,18 @@ function ReviewText({ r }: { r: QueueRow }) {
   );
 }
 
-/** Where a click on a queue row goes: its decision when it has one, else the item. */
-export const rowTarget = (r: QueueRow) => (r.decisionId ? decisionPath({ id: r.decisionId, repo: r.repo, number: r.number, kind: "merge" }) : itemPath(r.repo, r.number));
-
-/** Row click that leaves links and buttons inside the row to themselves. */
-export function useRowOpen(to: string) {
-  const navigate = useNavigate();
-  return (e: React.MouseEvent) => {
-    if ((e.target as HTMLElement).closest("a,button,select,[role=menuitem]")) return;
-    navigate(to);
-  };
-}
-
 /** Two rows per PR: the facts, then the review text. A fragment, so a table group can hold several. */
 export function PrRows({ r, inBatch }: { r: QueueMergeRow; inBatch?: boolean }) {
   const cell = "px-3 pt-2 align-top";
-  const open = useRowOpen(rowTarget(r));
   const linked = useIsLinked(r.repo, r.number);
   return (
     <>
-      <tr data-item={`${r.repo}:${r.number}`} className={cn("cursor-pointer", linked && "bg-accent/10")} onClick={open}>
+      <tr data-item={`${r.repo}:${r.number}`} className={cn("relative", linked && "bg-accent/10")}>
         <td className={cell}>
-          <span className="flex items-center gap-1">
+          <div className="flex items-start gap-1">
             <FastMark fast={r.fast} />
-            <RefLink repo={r.repo} number={r.number} kind="pr" className="text-xs" />
-          </span>
-          <Link to={itemPath(r.repo, r.number)} className="block font-medium [overflow-wrap:anywhere] hover:text-accent-ink hover:underline">
-            {r.title}
-          </Link>
+            <ItemRef repo={r.repo} number={r.number} kind="pr" state="open" title={r.title} stretch />
+          </div>
         </td>
         <td className={cell}>
           <div className="truncate text-ink/75" title={`${r.author || "unknown"}, ${TIER[r.tier]}`}>
@@ -234,7 +213,7 @@ export function PrRows({ r, inBatch }: { r: QueueMergeRow; inBatch?: boolean }) 
           </div>
         </td>
       </tr>
-      <tr className="cursor-pointer border-b border-line last:border-0" onClick={open}>
+      <tr className="border-b border-line last:border-0">
         <td colSpan={9} className="px-3 pb-2 pt-0.5">
           <ReviewText r={r} />
         </td>
@@ -290,25 +269,21 @@ export function Table({ rows }: { rows: QueueMergeRow[] }) {
 }
 
 export function PrCard({ r, inBatch }: { r: QueueMergeRow; inBatch?: boolean }) {
-  const open = useRowOpen(rowTarget(r));
   const linked = useIsLinked(r.repo, r.number);
   return (
-    <li data-item={`${r.repo}:${r.number}`} className={cn("cursor-pointer border-b border-line px-4 py-2.5 last:border-0", linked && "bg-accent/10")} onClick={open}>
-      <div className="flex items-center gap-2 text-xs text-ink/55">
+    <li data-item={`${r.repo}:${r.number}`} className={cn("relative border-b border-line px-4 py-2.5 last:border-0", linked && "bg-accent/10")}>
+      <div className="flex items-start gap-2 text-xs text-ink/55">
         <FastMark fast={r.fast} />
-        <RefLink repo={r.repo} number={r.number} kind="pr" className="text-xs" />
-        <span className="truncate">
-          {r.author || "unknown"} · {TIER[r.tier]}
-        </span>
-        <span className="ml-auto flex shrink-0 items-center gap-1.5">
+        <ItemRef repo={r.repo} number={r.number} kind="pr" state="open" title={r.title} stretch className="flex-1" />
+        <span className="flex shrink-0 items-center gap-1.5">
           <StateChip row={r} />
           {r.held && <Badge tone="warn">Held</Badge>}
           <MergeMenu r={r} inBatch={inBatch} />
         </span>
       </div>
-      <Link to={itemPath(r.repo, r.number)} className="mt-1 block text-sm font-medium leading-5 active:text-accent-ink">
-        {r.title}
-      </Link>
+      <div className="mt-1 text-xs text-ink/55">
+        {r.author || "unknown"} · {TIER[r.tier]}
+      </div>
       <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-2xs text-ink/60">
         <Badge tone={r.verdict === "take" ? "ok" : "warn"}>{r.verdict}</Badge>
         <span>size {r.size}</span>
@@ -325,7 +300,7 @@ export function PrCard({ r, inBatch }: { r: QueueMergeRow; inBatch?: boolean }) 
       <div className="mt-1 flex flex-wrap items-center justify-between gap-2">
         <Why row={r} />
         {r.decisionId && (
-          <Link to={decisionPath({ id: r.decisionId, repo: r.repo, number: r.number, kind: "merge" })} className="inline-flex h-11 items-center text-xs text-accent-ink">
+          <Link to={decisionPath({ id: r.decisionId, repo: r.repo, number: r.number, kind: "merge" })} className="relative z-10 inline-flex h-11 items-center text-xs text-accent-ink">
             {r.answer ? `Answered ${r.answer}` : "Open decision"}
           </Link>
         )}

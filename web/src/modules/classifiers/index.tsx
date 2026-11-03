@@ -6,7 +6,7 @@ import { Pending } from "../../ui/atoms/Pending";
 import type { Agreement, ClassifierReport } from "../../api/types";
 import type { FeatureModule, ViewProps } from "../../registry/types";
 import { cn } from "../../ui/cn";
-import { RefLink } from "../../ui/RefLink";
+import { ItemRef } from "../../ui/molecules/ItemRef";
 import { num } from "../../lib/format";
 import { Block, RateBar, Select, Stat, Th, rate } from "../insight/parts";
 
@@ -93,21 +93,17 @@ function Disagreements({ r, label, band, setFilter }: { r: ClassifierReport; lab
         <thead>
           <tr>
             <Th>Item</Th>
-            <Th>Title</Th>
             <Th className="hidden sm:table-cell">{r.a}</Th>
             <Th className="hidden sm:table-cell">{r.b}</Th>
           </tr>
         </thead>
         <tbody>
           {data?.rows.map((d) => (
-            <tr key={`${d.repo}#${d.number}`} className="border-t border-line align-top">
-              <td className="whitespace-nowrap px-3 py-1.5">
-                <RefLink repo={d.repo} number={d.number} kind={d.kind} />
-              </td>
-              <td className="px-3 py-1.5 text-ink/85 sm:min-w-[16rem]">
-                {d.title}
+            <tr key={`${d.repo}#${d.number}`} className="relative border-t border-line align-top">
+              <td className="px-3 py-1.5 sm:min-w-[16rem]">
+                <ItemRef repo={d.repo} number={d.number} kind={d.kind} state={d.state} title={d.title} stretch />
                 {/* Phones: the two answers under the title instead of in their own columns. */}
-                <dl className="mt-1 grid grid-cols-[auto_1fr] gap-x-2 text-xs sm:hidden">
+                <dl className="mt-1 grid grid-cols-[auto_1fr] gap-x-2 pl-6 text-xs sm:hidden">
                   <dt className="text-ink/50">{r.a}</dt>
                   <dd>
                     {d.a.label} <span className="num text-ink/50">{prob(d.a.prob)}</span>
@@ -128,7 +124,7 @@ function Disagreements({ r, label, band, setFilter }: { r: ClassifierReport; lab
           ))}
           {data && data.rows.length === 0 && (
             <tr>
-              <td colSpan={4} className="px-3 py-4 text-ink/55">
+              <td colSpan={3} className="px-3 py-4 text-ink/55">
                 No disagreements match.
               </td>
             </tr>

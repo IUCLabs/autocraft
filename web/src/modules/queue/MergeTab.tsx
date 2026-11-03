@@ -1,30 +1,21 @@
 // The Merge tab: what merges next, integration batches in flight, and the PRs not in a batch.
-import { Link } from "react-router-dom";
 import { useApi } from "../../api/client";
 import type { MergeWait, NextMerge, QueueBatch, QueueMergeRow, QueuePage } from "../../api/types";
-import { itemPath } from "../../lib/links";
 import { useUser } from "../../shell/UserContext";
 import { Badge, type Tone } from "../../ui/atoms/Badge";
-import { RefLink } from "../../ui/RefLink";
+import { ItemRef } from "../../ui/molecules/ItemRef";
 import { Block, ConfirmButton, ErrorLine, useWrite } from "../admin/parts";
 import { FastMark } from "./fastTrack";
-import { BatchFacts, Cards, PrCard, PrRows, PrTableHead, Table, useRowOpen } from "./mergeParts";
+import { BatchFacts, Cards, PrCard, PrRows, PrTableHead, Table } from "./mergeParts";
 
 const WAIT_TONE: Record<MergeWait, Tone> = { ready: "ok", refused: "bad", ci: "neutral", verify: "neutral", "re-review": "neutral", "batch-check": "neutral", "batch-ci": "neutral", held: "warn" };
 
 function NextRow({ n, i }: { n: NextMerge; i: number }) {
-  const to = itemPath(n.repo, n.number);
-  const open = useRowOpen(to);
   return (
-    <li onClick={open} className="flex cursor-pointer flex-wrap items-center gap-x-3 gap-y-1 border-b border-line px-4 py-2 last:border-0 hover:bg-ink/[0.03]">
-      <span className="num w-4 text-xs text-ink/45">{i + 1}</span>
-      <span className="flex items-center gap-1">
-        <FastMark fast={n.fast} />
-        <RefLink repo={n.repo} number={n.number} kind="pr" className="text-xs" />
-      </span>
-      <Link to={to} className="min-w-[10rem] flex-1 font-medium hover:text-accent-ink hover:underline max-md:basis-full md:truncate">
-        {n.title}
-      </Link>
+    <li className="relative flex flex-wrap items-start gap-x-3 gap-y-1 border-b border-line px-4 py-2 last:border-0 hover:bg-ink/[0.03]">
+      <span className="num mt-0.5 w-4 text-xs text-ink/45">{i + 1}</span>
+      <FastMark fast={n.fast} />
+      <ItemRef repo={n.repo} number={n.number} kind="pr" state="open" title={n.title} stretch className="min-w-[10rem] flex-1 max-md:basis-full" />
       {n.batch && <span className="font-mono text-2xs text-ink/55">{n.batch.branch}</span>}
       <Badge tone={WAIT_TONE[n.waitsFor]}>{n.label}</Badge>
     </li>
@@ -51,7 +42,7 @@ function StopBatch({ b }: { b: QueueBatch }) {
   const write = useWrite();
   if (useUser().role !== "operator") return null;
   return (
-    <span className="ml-auto flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+    <span className="ml-auto flex items-center gap-2">
       <ErrorLine error={write.error} className="text-2xs" />
       <ConfirmButton idle="secondary" label="Stop batch" confirmLabel="Confirm stop batch" loading={write.busy === "stop"} onConfirm={() => void write.run("stop", () => api.queueControl.stopBatch(b.id))} />
     </span>

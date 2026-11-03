@@ -2,20 +2,18 @@
 // settled type label. Every filter lives in the URL.
 import { QueueBadge } from "../../ui/molecules/QueueBadge";
 import { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
 import { Popover } from "radix-ui";
-import { CaretDownIcon, RadioButtonIcon, GitMergeIcon, GitPullRequestIcon, ListIcon, MagnifyingGlassIcon, ProhibitIcon, ShieldWarningIcon, FlagIcon, XIcon } from "@phosphor-icons/react";
+import { CaretDownIcon, ListIcon, MagnifyingGlassIcon, ShieldWarningIcon, FlagIcon, XIcon } from "@phosphor-icons/react";
 import { useQuery } from "../../api/client";
 import type { ItemFilter, ItemList, ItemListRow, ItemSort, Settled, SettledStatus, Snippet, Stage, StatusFilter, TypeLabel } from "../../api/types";
 import type { FeatureModule, ViewProps } from "../../registry/types";
 import { Badge, type Tone } from "../../ui/atoms/Badge";
-import { RefLink } from "../../ui/RefLink";
+import { ItemRef } from "../../ui/molecules/ItemRef";
 import { cn } from "../../ui/cn";
 import { ago, num } from "../../lib/format";
 import { useIsPhone } from "../../shell/useMedia";
 import { Block, ErrorLine, Page, Pager, selectCls, TextInput, useUrlState } from "../admin/parts";
 import { useNow } from "../../lib/useNow";
-import { itemPath } from "../../lib/links";
 
 const PAGE = 50;
 const LABELS: TypeLabel[] = ["bugfix", "performance", "missing feature", "small extra", "plugin candidate", "infra"];
@@ -257,12 +255,6 @@ function SnippetText({ s }: { s: Snippet }) {
   );
 }
 
-function StateIcon({ it }: { it: ItemListRow }) {
-  if (it.state === "merged") return <GitMergeIcon className="shrink-0 text-merged" aria-label="Merged" />;
-  if (it.state === "closed") return <ProhibitIcon className="shrink-0 text-ink/45" aria-label="Closed" />;
-  return it.kind === "pr" ? <GitPullRequestIcon className="shrink-0 text-ok" aria-label="Open PR" /> : <RadioButtonIcon className="shrink-0 text-ok" aria-label="Open issue" />;
-}
-
 /** The settled label, or why there is none. */
 export function SettledBadge({ s, detail }: { s: Settled; detail?: boolean }) {
   const conf = s.confidence !== null ? ` ${s.confidence.toFixed(2)}` : "";
@@ -325,15 +317,9 @@ function Table({ rows }: { rows: ItemListRow[] }) {
         </thead>
         <tbody>
           {rows.map((it) => (
-            <tr key={`${it.repo}#${it.number}`} className="border-b border-line align-top last:border-0 hover:bg-ink/[0.03]">
-              <td className="max-w-0 px-3 py-2">
-                <div className="flex min-w-0 items-center gap-2">
-                  <StateIcon it={it} />
-                  <RefLink repo={it.repo} number={it.number} kind={it.kind} className="shrink-0 text-xs" />
-                  <Link to={itemPath(it.repo, it.number)} className="truncate font-medium hover:text-accent-ink hover:underline" title={it.title}>
-                    {it.title}
-                  </Link>
-                </div>
+            <tr key={`${it.repo}#${it.number}`} className="relative border-b border-line align-top last:border-0 hover:bg-ink/[0.03]">
+              <td className="px-3 py-2">
+                <ItemRef repo={it.repo} number={it.number} kind={it.kind} state={it.state} title={it.title} stretch />
                 {it.snippet && it.snippet.field !== "title" && (
                   <div className="mt-0.5 line-clamp-2 pl-6">
                     <SnippetText s={it.snippet} />
@@ -352,7 +338,7 @@ function Table({ rows }: { rows: ItemListRow[] }) {
               </td>
               <td className="px-3 py-2 text-xs text-ink/60">
                 {it.stage && <span className="mr-1">{STAGE[it.stage]}</span>}
-                {it.queue ? <QueueBadge slot={it.queue} repo={it.repo} number={it.number} /> : !it.stage && <span className="text-ink/30">–</span>}
+                {it.queue ? <QueueBadge slot={it.queue} repo={it.repo} number={it.number} className="relative z-10" /> : !it.stage && <span className="text-ink/30">–</span>}
               </td>
             </tr>
           ))}
@@ -367,29 +353,23 @@ function Cards({ rows }: { rows: ItemListRow[] }) {
   return (
     <ul>
       {rows.map((it) => (
-        <li key={`${it.repo}#${it.number}`} className="border-b border-line last:border-0">
-          <Link to={itemPath(it.repo, it.number)} className="block px-4 py-2.5 active:bg-ink/[0.05]">
-            <div className="flex items-center gap-2 text-xs text-ink/55">
-              <StateIcon it={it} />
-              <span className="code">
-                {it.repo}#{it.number}
-              </span>
-              <span className="truncate">{it.author}</span>
-              <span className="num ml-auto shrink-0">{it.updatedAt ? `${ago(it.updatedAt)} ago` : ""}</span>
+        <li key={`${it.repo}#${it.number}`} className="relative border-b border-line px-4 py-2.5 last:border-0 active:bg-ink/[0.05]">
+          <ItemRef repo={it.repo} number={it.number} kind={it.kind} state={it.state} title={it.title} stretch />
+          <div className="mt-1 flex items-center gap-2 pl-6 text-xs text-ink/55">
+            <span className="truncate">{it.author}</span>
+            <span className="num ml-auto shrink-0">{it.updatedAt ? `${ago(it.updatedAt)} ago` : ""}</span>
+          </div>
+          {it.snippet && it.snippet.field !== "title" && (
+            <div className="mt-1 line-clamp-2 pl-6">
+              <SnippetText s={it.snippet} />
             </div>
-            <div className="mt-1 text-sm font-medium leading-5">{it.title}</div>
-            {it.snippet && it.snippet.field !== "title" && (
-              <div className="mt-1 line-clamp-2">
-                <SnippetText s={it.snippet} />
-              </div>
-            )}
-            <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-              <SettledBadge s={it.settled} />
-              <QueueBadge slot={it.queue} repo={it.repo} number={it.number} />
-              {it.settled.flags.length > 0 && <Flags flags={it.settled.flags} />}
-              {it.stage && <span className="text-2xs text-ink/55">{STAGE[it.stage]}</span>}
-            </div>
-          </Link>
+          )}
+          <div className="mt-1.5 flex flex-wrap items-center gap-1.5 pl-6">
+            <SettledBadge s={it.settled} />
+            <QueueBadge slot={it.queue} repo={it.repo} number={it.number} className="relative z-10" />
+            {it.settled.flags.length > 0 && <Flags flags={it.settled.flags} />}
+            {it.stage && <span className="text-2xs text-ink/55">{STAGE[it.stage]}</span>}
+          </div>
         </li>
       ))}
     </ul>

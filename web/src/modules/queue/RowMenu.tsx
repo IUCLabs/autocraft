@@ -17,7 +17,7 @@ export function RowMenu({ repo, number, fast, held, pr, inBatch }: { repo: strin
   const ref = refOf(repo, number);
   const run = (key: string, f: () => Promise<unknown>) => () => void write.run(key, f);
   return (
-    <span className="inline-flex flex-col items-end" onClick={(e) => e.stopPropagation()}>
+    <span className="relative z-10 inline-flex flex-col items-end">
       <DropdownMenu.Root>
         <DropdownMenu.Trigger asChild>
           <button type="button" aria-label={`Actions for ${ref}`} className="inline-flex size-7 items-center justify-center rounded text-ink/60 outline-none hover:bg-ink/[0.07] hover:text-ink data-[state=open]:bg-ink/[0.07] max-md:size-11">
