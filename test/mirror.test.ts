@@ -61,15 +61,15 @@ function scratch() {
   const db = connect(join(dir, "m.db"));
   db.exec("DELETE FROM tracked_repos");
   db.exec("INSERT INTO tracked_repos VALUES ('a','t','x'),('b','t','x')");
-  db.exec("INSERT INTO repos (name, synced_at, high_water) VALUES ('a','2026-11-02T09:00:00Z','2026-11-02T09:00:00Z'),('b','2026-11-02T09:00:00Z','2026-11-02T09:00:00Z')");
+  db.exec("INSERT INTO repos (name, synced_at, high_water, reconciled_at) VALUES ('a','2026-11-02T09:00:00Z','2026-11-02T09:00:00Z','2026-11-02T09:00:00Z'),('b','2026-11-02T09:00:00Z','2026-11-02T09:00:00Z','2026-11-02T09:00:00Z')");
   db.exec("INSERT INTO settings VALUES ('org_high_water','2026-11-02T09:30:00Z'),('repos_refreshed_at','2999-01-01T00:00:00Z'),('search_catchup_at','2999-01-01T00:00:00Z')");
   return { dir, db };
 }
 const opts = { only: [], all: false, full: false, perRepo: false };
 const hw = (db: ReturnType<typeof connect>) => (db.prepare("SELECT value FROM settings WHERE key='org_high_water'").get() as { value: string }).value;
 
-test("search starts two minutes before the stored high water", () => {
-  assert.equal(searchSince("2026-11-02T09:30:00Z"), "2026-11-02T09:28:00Z");
+test("search starts ten minutes before the stored high water", () => {
+  assert.equal(searchSince("2026-11-02T09:30:00Z"), "2026-11-02T09:20:00Z");
 });
 
 test("search mode writes tracked results, ignores untracked, advances the high water", async () => {
@@ -78,7 +78,7 @@ test("search mode writes tracked results, ignores untracked, advances the high w
   const r = await runSync(db, c, opts, new Date("2026-11-02T10:05:00Z"));
   assert.deepEqual(r, { mode: "search", items: 2 });
   assert.equal(c.calls.length, 1);
-  assert.match(String(c.calls[0].variables.q), /updated:2026-11-02T09:28:00Z\.\.2026-11-02T10:05:00Z/);
+  assert.match(String(c.calls[0].variables.q), /updated:2026-11-02T09:20:00Z\.\.2026-11-02T10:05:00Z/);
   const rows = db.prepare("SELECT repo, number, detail_level FROM items ORDER BY number").all();
   assert.deepEqual(rows.map((x) => ({ ...x })), [{ repo: "a", number: 1, detail_level: "full" }, { repo: "b", number: 3, detail_level: "light" }]);
   assert.equal(hw(db), "2026-11-02T10:00:00Z", "the high water is the newest updatedAt, not the start time");
@@ -123,14 +123,14 @@ test("a window with more than 1,000 matches is split into slices; nothing falls 
 test("an item the search index showed late is picked up by the hourly catch-up", async () => {
   const { db } = scratch();
   db.exec("DELETE FROM settings WHERE key='search_catchup_at'");
-  const late = node("a", 7, "OPEN", "2026-11-02T09:10:00Z"); // older than the high water minus the 2 minute overlap
+  const late = node("a", 7, "OPEN", "2026-11-02T04:00:00Z"); // older than the high water minus the 10 minute overlap
   const seen = [node("b", 8, "OPEN", "2026-11-02T09:31:00Z")];
   const all = [...seen, late];
-  // the index lagged: the minute window (from 09:28) misses the late item, the catch-up window reaches it
+  // the index lagged: the minute window (from 09:20) misses the late item, the catch-up window reaches it
   const c = searchClient(all);
   await runSync(db, c, opts, new Date("2026-11-02T10:05:00Z"));
   assert.equal(db.prepare("SELECT COUNT(*) AS n FROM items WHERE repo='a' AND number=7").get()!.n, 1);
-  assert.ok(c.windows.some((w) => w.from === "2026-11-02T09:01:00Z" && w.to === "2026-11-02T09:31:00Z"), "catch-up window is [high water - 30 min, high water]");
+  assert.ok(c.windows.some((w) => w.from === "2026-11-02T03:31:00Z" && w.to === "2026-11-02T09:31:00Z"), "catch-up window is [high water - 6 h, high water]");
   assert.equal(db.prepare("SELECT value FROM settings WHERE key='search_catchup_at'").get()!.value, "2026-11-02T10:05:00Z");
   const again = searchClient(all);
   await runSync(db, again, opts, new Date("2026-11-02T10:06:00Z"));
