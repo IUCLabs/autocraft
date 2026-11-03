@@ -57,15 +57,17 @@ function deps(replies: (c: Call) => string | null): CompareDeps & { calls: Call[
     now: () => NOW,
   };
 }
-const pr = (keep: number, others: object[], reason = "most complete") => JSON.stringify({ keep, reason, others });
+const pr = (keep: number, others: object[], reason = "most complete", extra: object = {}) => JSON.stringify({ keep, reason, ...extra, others });
+const WORDS = (n: number) => Array.from({ length: n }, (_, i) => `w${i}`).join(" ");
 const GROUP_ID = "app:dupegroup:1";
 
 describe("PR group", () => {
   const specs: Spec[] = [{ n: 1, kind: "pr" }, { n: 2, kind: "pr", closing: [9] }, { n: 3, kind: "pr" }];
+  const SUMMARY = "Keep #2: it fixes the layout guard in full. #1 only covers master pages, which are worth carrying over.";
   const reply = () => pr(2, [
     { number: 1, duplicate: true, better: ["handles master pages (src/a.rs)"], carry: ["master-page handling in src/a.rs"] },
     { number: 3, duplicate: true, better: [], carry: [] },
-  ]);
+  ], "most complete", { summary: SUMMARY, why: "#2 fixes the layout guard that #1 and #3 leave out." });
 
   test("three PRs are compared in one Opus call with a base checkout and give one decision", async () => {
     const db = fresh(specs, [[1, 2], [2, 3]]);
@@ -79,10 +81,14 @@ describe("PR group", () => {
     assert.deepEqual(r.asked, [GROUP_ID]);
     const dec = getDecision(db, GROUP_ID)!;
     assert.deepEqual([dec.kind, dec.number, dec.recommended], ["duplicate", 2, "accept"]);
-    assert.equal(dec.question, "Keep #2 and close #1, #3 as duplicates?");
+    assert.equal(dec.question, "Keep #2 and close #1, #3 as its duplicates?");
     assert.deepEqual(optionsOf(dec).map((o) => o.key).filter((k) => k !== "backlog"), ["accept", "keep:1", "keep:3", "distinct"]);
-    assert.ok(factsOf(dec).some((f) => f.startsWith("Carry over: #1 master-page handling")));
-    assert.ok(dec.summary!.includes("#1 does better: handles master pages"));
+    // The summary is the model's text, whole; the better/carry points stay structured in the stored detail.
+    assert.deepEqual([dec.summary, dec.summary_by], [SUMMARY, "opus"]);
+    assert.equal(dec.recommended_reason, "#2 fixes the layout guard that #1 and #3 leave out.");
+    assert.ok(!factsOf(dec).some((f) => f.startsWith("Carry over")));
+    assert.deepEqual(optionsOf(dec).slice(0, 4).map((o) => o.label), ["Keep #2", "Keep #1 instead", "Keep #3 instead", "Not duplicates"]);
+    assert.match(db.prepare("SELECT detail FROM dupe_group_items WHERE decision_id = ? AND number = 1").get(GROUP_ID)!.detail as string, /master-page handling/);
     const roles = db.prepare("SELECT number, role, target FROM dupe_group_items WHERE decision_id = ? ORDER BY number").all(GROUP_ID);
     assert.deepEqual(roles.map((x: any) => [x.number, x.role, x.target]), [[1, "close", 2], [2, "keep", null], [3, "close", 2]]);
     // The items to close wait out the later stages; the kept one does not.
@@ -115,27 +121,47 @@ describe("PR group", () => {
     assert.equal(dec.recommended, null);
     assert.ok(dec.context!.includes("rule"));
     assert.ok(factsOf(dec).some((f) => f.startsWith("Chosen by: rule")));
-    assert.equal(dec.summary_by, "rule");
+    assert.equal(dec.recommended_reason, null);
+    assert.ok(!dec.summary_by);
+    assert.match(dec.summary!, /by rule/);
+  });
+
+  test("a summary over the cap is asked again once, then stored as its first sentence; a reply without one keeps the reason whole", async () => {
+    const long = `First sentence stays. ${WORDS(100)}.`;
+    const db = fresh(specs, [[1, 2], [2, 3]]);
+    const d = deps(() => pr(2, [{ number: 1, duplicate: true, better: [], carry: [] }, { number: 3, duplicate: true, better: [], carry: [] }], "most complete", { summary: long }));
+    await runDupeCompare(db, {}, () => {}, d);
+    assert.equal(d.calls.length, 2, "asked again once");
+    assert.equal(getDecision(db, GROUP_ID)!.summary, "First sentence stays.");
+
+    const old = fresh(specs, [[1, 2], [2, 3]]);
+    await runDupeCompare(old, {}, () => {}, deps(() => pr(2, [{ number: 1, duplicate: true, better: ["x"], carry: ["y"] }, { number: 3, duplicate: true, better: [], carry: [] }], `${WORDS(40)} end.`)));
+    const dec = getDecision(old, GROUP_ID)!;
+    assert.equal(dec.summary, `${WORDS(40)} end.`);
+    assert.ok(!dec.summary_by);
+    assert.equal(dec.recommended, null, "a reason that is not one short sentence gives no recommendation");
+    assert.ok(!dec.summary!.includes("does better"));
   });
 
   test("a PR the model says is not a duplicate stays open", async () => {
     const db = fresh(specs, [[1, 2], [2, 3]]);
     await runDupeCompare(db, {}, () => {}, deps(() => pr(2, [{ number: 1, duplicate: false, better: ["other file"], carry: [] }, { number: 3, duplicate: true, better: [], carry: [] }])));
     assert.deepEqual(db.prepare("SELECT number, role FROM dupe_group_items WHERE decision_id = ? ORDER BY number").all(GROUP_ID).map((x: any) => x.role), ["stay", "keep", "close"]);
-    assert.equal(getDecision(db, GROUP_ID)!.question, "Keep #2 and close #3 as a duplicate?");
+    assert.equal(getDecision(db, GROUP_ID)!.question, "Keep #2 and close #3 as its duplicate?");
   });
 });
 
 describe("issue group", () => {
   test("all reports go to Sonnet in one call without tools; the decision lists what the others add", async () => {
     const db = fresh([{ n: 1 }, { n: 2 }, { n: 3 }], [[1, 2], [1, 3]]);
-    const d = deps(() => JSON.stringify({ keep: 1, reason: "clear steps", others: [{ number: 2, adds: ["Linux version 0.9.2"] }, { number: 3, adds: [] }] }));
+    const d = deps(() => JSON.stringify({ keep: 1, reason: "clear steps", summary: "Keep #1: it has the clearest steps. #2 adds the Linux version.", others: [{ number: 2, adds: ["Linux version 0.9.2"] }, { number: 3, adds: [] }] }));
     await runDupeCompare(db, {}, () => {}, d);
     assert.deepEqual([d.calls.length, d.calls[0]!.id, d.calls[0]!.model, d.calls[0]!.checkout], [1, "dupes.compare-issues.sonnet", "sonnet", undefined]);
     assert.equal(d.calls[0]!.input.issues.length, 3);
     const dec = getDecision(db, GROUP_ID)!;
-    assert.ok(factsOf(dec).includes("Carry over: #2 Linux version 0.9.2"));
-    assert.ok(dec.summary!.includes("#2 adds: Linux version 0.9.2"));
+    assert.equal(dec.summary, "Keep #1: it has the clearest steps. #2 adds the Linux version.");
+    assert.equal(dec.summary_by, "sonnet");
+    assert.match(db.prepare("SELECT detail FROM dupe_group_items WHERE decision_id = ? AND number = 2").get(GROUP_ID)!.detail as string, /Linux version 0\.9\.2/);
   });
 
   test("more than ten members are compared in rounds whose winners meet", async () => {
@@ -160,7 +186,7 @@ describe("closed members and mixed groups", () => {
     assert.equal(d.calls.length, 0);
     assert.equal(r.closedWins, 1);
     const dec = getDecision(db, GROUP_ID)!;
-    assert.deepEqual([dec.number, dec.question], [2, "Keep #2 and close #1, #3 as duplicates?"]);
+    assert.deepEqual([dec.number, dec.question], [2, "Keep #2 and close #1, #3 as its duplicates?"]);
     assert.ok(factsOf(dec).some((f) => f.includes("already merged")));
   });
 
@@ -197,7 +223,7 @@ describe("pair decisions and answers", () => {
     assert.equal((db.prepare("SELECT COUNT(*) AS n FROM audit WHERE action = 'duplicate-superseded'").get() as { n: number }).n, 1);
     // The group decision covers only #2: #3 is closed by its answered pair decision.
     assert.deepEqual(db.prepare("SELECT number FROM dupe_group_items WHERE decision_id = ? AND role = 'close'").all(GROUP_ID).map((x: any) => x.number), [2]);
-    assert.equal(getDecision(db, GROUP_ID)!.question, "Keep #1 and close #2 as a duplicate?");
+    assert.equal(getDecision(db, GROUP_ID)!.question, "Keep #1 and close #2 as its duplicate?");
   });
 
   test("keep #N instead rewrites the roles; not duplicates stores every pair as distinct and releases the items", async () => {
@@ -260,6 +286,20 @@ describe("review fixes: answers, undo and refresh", () => {
     assert.equal(getDecision(db, GROUP_ID)!.asked_at, before);
   });
 
+  test("a new comparison text replaces the stale summary and recommendation of the open decision, and a second run changes nothing", async () => {
+    const db = await three();
+    db.prepare("UPDATE decisions SET summary = 'Sonnet said keep #1.', summary_by = 'sonnet', recommended = NULL, recommended_reason = NULL WHERE id = ?").run(GROUP_ID);
+    askGroupDecisions(db, undefined, "2030-01-01T00:00:00.000Z");
+    const d = getDecision(db, GROUP_ID)!;
+    assert.deepEqual([d.summary_by, d.recommended, d.summary?.startsWith("Sonnet")], [null, "accept", false]);
+    db.prepare("UPDATE dupe_comparisons SET summary = 'New view: keep #2.', why = 'It is the complete fix.'").run();
+    askGroupDecisions(db, undefined, "2030-01-02T00:00:00.000Z");
+    assert.deepEqual([getDecision(db, GROUP_ID)!.summary, getDecision(db, GROUP_ID)!.recommended_reason], ["New view: keep #2.", "It is the complete fix."]);
+    const again = getDecision(db, GROUP_ID)!;
+    askGroupDecisions(db, undefined, "2030-01-03T00:00:00.000Z");
+    assert.deepEqual(getDecision(db, GROUP_ID), again);
+  });
+
   test("a refresh drops the applied answer and restores the comparison's roles", async () => {
     const db = await three();
     db.prepare("UPDATE dupe_group_items SET role = 'keep' WHERE decision_id = ? AND number = 2").run(GROUP_ID);
@@ -287,7 +327,7 @@ describe("review fixes: members already gone", () => {
     const d = deps(() => issueReply(10, [11]));
     await runDupeCompare(db, {}, () => {}, d);
     assert.deepEqual(d.calls[0]!.input.issues.map((i: any) => i.ref), ["#10", "#11"]);
-    assert.equal(getDecision(db, "app:dupegroup:10")!.question, "Keep #10 and close #11 as a duplicate?");
+    assert.equal(getDecision(db, "app:dupegroup:10")!.question, "Keep #10 and close #11 as its duplicate?");
   });
 
   test("a pair close answered but not acted yet keeps that member out of the keep", async () => {
@@ -372,7 +412,7 @@ describe("review fixes: groups that grow", () => {
     const ids = (db.prepare("SELECT id FROM decisions WHERE id LIKE '%dupegroup%' ORDER BY id").all() as { id: string }[]).map((r) => r.id);
     assert.deepEqual(ids, ["app:dupegroup:3", "app:dupegroup:9"]);
     assert.deepEqual(roles(db, "app:dupegroup:9"), ["3:keep", "9:close"]);
-    assert.equal(getDecision(db, "app:dupegroup:9")!.question, "Keep #3 and close #9 as a duplicate?");
+    assert.equal(getDecision(db, "app:dupegroup:9")!.question, "Keep #3 and close #9 as its duplicate?");
   });
 
   test("a lower member joining an open group refreshes the same decision", async () => {
@@ -382,7 +422,7 @@ describe("review fixes: groups that grow", () => {
     db.prepare("INSERT INTO duplicate_pairs (repo, a, b, a_hash, b_hash, similarity, jev_p, verdict, canonical, checked_at, created_at) VALUES ('app', 1, 5, 'h1', 'h5', 0.9, 0.95, 'duplicate', 1, ?, ?)").run(T0, T0);
     await runDupeCompare(db, {}, () => {}, deps(() => issueReply(5, [1, 6])));
     assert.equal(db.prepare("SELECT COUNT(*) AS n FROM decisions WHERE id LIKE '%dupegroup%'").get()!.n, 1);
-    assert.equal(getDecision(db, "app:dupegroup:5")!.question, "Keep #5 and close #1, #6 as duplicates?");
+    assert.equal(getDecision(db, "app:dupegroup:5")!.question, "Keep #5 and close #1, #6 as its duplicates?");
   });
 
   test("open pair decisions are superseded even when the group has nothing to close", async () => {

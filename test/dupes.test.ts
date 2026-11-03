@@ -190,7 +190,7 @@ describe("decisions", () => {
     await compareByRule(db);
     assert.deepEqual((db.prepare("SELECT id FROM decisions ORDER BY id").all() as { id: string }[]).map((r) => r.id), ["app:dupegroup:1", "app:dupegroup:4"]);
     const d = db.prepare("SELECT * FROM decisions WHERE id = 'app:dupegroup:1'").get() as { question: string; options: string; kind: string; number: number };
-    assert.equal(d.question, "Keep #1 and close #2, #3 as duplicates?");
+    assert.equal(d.question, "Keep #1 and close #2, #3 as its duplicates?");
     assert.deepEqual([d.kind, d.number], ["duplicate", 1]);
     assert.deepEqual((JSON.parse(d.options) as { key: string }[]).map((o) => o.key), ["accept", "keep:2", "keep:3", "distinct"]);
     askDuplicateDecisions(db, undefined, T0);

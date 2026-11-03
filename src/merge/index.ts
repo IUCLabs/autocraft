@@ -23,7 +23,7 @@ import { Client, markMerged, type Querier } from "../mirror.ts";
 import { refreshChecks } from "../review/checks.ts";
 import { readGate } from "./changes-requested.ts";
 import { liveGateChecked } from "../review/discussion.ts";
-import { fillReviewSummaries } from "../review/summary.ts";
+import { fillReviewSummaries, reviewText } from "../review/summary.ts";
 import { verificationOf } from "../verify/results.ts";
 import { TIER_LABEL } from "../whitelist.ts";
 import { withdrawBlockedQuestions, withdrawGroupedQuestions } from "./withdraw.ts";
@@ -150,7 +150,7 @@ export const methodOf = (info: PrInfo): "squash" | "merge" => (info.authors > 1 
 // ---- decisions ---------------------------------------------------------------
 
 /** The Merge? question for a take PR outside the rule; its facts carry the head commit. */
-export function mergeQuestion(e: QueueEntry): Record<string, unknown> & { id: string } {
+export function mergeQuestion(e: QueueEntry, why: string | null = null): Record<string, unknown> & { id: string } {
   const fixes = e.fixes ? `; ${e.fixes} fix${e.fixes === 1 ? "" : "es"} listed` : "";
   return {
     id: mergeDecisionId(e.repo, e.number, e.head), kind: "merge", repo: e.repo, number: e.number,
@@ -166,10 +166,14 @@ export function mergeQuestion(e: QueueEntry): Record<string, unknown> & { id: st
       `${HEAD_FACT}${e.head}`,
     ],
     options: Object.values(MERGE_OPTIONS).map((o) => ({ ...o })),
-    ...(e.outsideRule.includes(UNSURE_REASON) ? {} : { recommended: "merge" }),
+    // A recommendation always comes with the review's reason for it.
+    ...(e.outsideRule.includes(UNSURE_REASON) || !why ? {} : { recommended: "merge", recommended_reason: why }),
     asked_by: ACTOR,
   };
 }
+
+/** The Merge? question with the review's one-sentence reason as the reason of its recommendation. */
+const questionWithReason = (db: DatabaseSync) => (e: QueueEntry) => mergeQuestion(e, reviewText(db, e.repo, e.number, e.head)?.why ?? null);
 
 /** The head commit an answered Merge? decision was asked at, from its facts. */
 export function answeredHead(db: DatabaseSync, id: string): string | null {
@@ -186,7 +190,7 @@ export function answeredHead(db: DatabaseSync, id: string): string | null {
 export function askMergeDecisions(db: DatabaseSync, opts: { repos?: string[]; run?: string | null; at?: string } = {}): string[] {
   const repos = opts.repos && new Set(opts.repos);
   const queue = buildQueue(db, { merged: "exclude", ...(opts.run === undefined ? {} : { run: opts.run }) });
-  const qs = toAsk(db, queue.filter((e) => !repos || repos.has(e.repo))).map(mergeQuestion);
+  const qs = toAsk(db, queue.filter((e) => !repos || repos.has(e.repo))).map(questionWithReason(db));
   const at = opts.at ?? new Date().toISOString();
   withdrawBlockedQuestions(db, queue.filter((e) => !repos || repos.has(e.repo)), at);
   for (const r of repos ?? new Set(queue.map((e) => e.repo))) withdrawGroupedQuestions(db, at, r);
@@ -250,7 +254,7 @@ export async function runMerge(db: DatabaseSync, params: MergeParams, log: (line
   }
 
   if (ask1.length) {
-    const qs = ask1.map(mergeQuestion);
+    const qs = ask1.map(questionWithReason(db));
     ask(db, qs.map((q) => ({ ...q, asked_at: at() })));
     summary.asked = qs.map((q) => q.id);
     log(`  asked ${qs.length} Merge? decision${qs.length === 1 ? "" : "s"}`);

@@ -6,7 +6,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { describe, test } from "node:test";
 import { askCloseDecisions, closeDecisionId } from "../src/act/index.ts";
 import { connect } from "../src/db.ts";
-import { ask, getDecision } from "../src/decisions.ts";
+import { ask, factsOf, getDecision } from "../src/decisions.ts";
 import { HEAD_FACT, MERGE_OPTIONS } from "../src/merge/queue.ts";
 import { fillReviewSummaries } from "../src/review/summary.ts";
 import { SCRATCH } from "./scratch.ts";
@@ -30,27 +30,47 @@ function fresh(): DatabaseSync {
 }
 
 describe("merge and close summaries", () => {
-  test("Close? takes the Opus review text at its head; Merge? is filled from the stored reviews on a later run", () => {
+  const SUMMARY = "This PR drops the legacy export path. The review says close. The main risk is that saved files stop opening.";
+  const review = (db: DatabaseSync) => db.prepare(`INSERT OR REPLACE INTO opus_reviews (repo, number, head_oid, run_id, at, model, verdict, reason, risks, sure, mode, summary, why) VALUES ('app', ?, ?, 'rv', '${T0}', ?, ?, ?, ?, 1, 'full', ?, ?)`);
+
+  test("Close? text is the review's summary, whole, and the recommendation carries the review's one-sentence reason", () => {
     const db = fresh();
-    const review = db.prepare(`INSERT INTO opus_reviews (repo, number, head_oid, run_id, at, model, verdict, reason, risks, sure, mode) VALUES ('app', ?, ?, 'rv', '${T0}', ?, ?, ?, ?, 1, 'full')`);
-    review.run(3, "sha3", "opus", "close", "Not wanted in core", '["breaks saves"]');
+    review(db).run(3, "sha3", "opus", "close", "Not wanted in core", '["breaks saves"]', SUMMARY, "It removes a path users rely on.");
     askCloseDecisions(db, "app", T0);
     const c = getDecision(db, closeDecisionId("app", 3, "sha3"))!;
-    assert.deepEqual(c.summary_by, "opus");
-    assert.equal(c.summary, "Opus's review says close: Not wanted in core. Risks: breaks saves.");
+    assert.deepEqual([c.summary, c.summary_by, c.recommended, c.recommended_reason], [SUMMARY, "opus", "close", "It removes a path users rely on."]);
+    assert.ok(!c.summary!.includes("Risks:"));
+  });
 
-    // A Merge? decision asked before summaries existed, at head sha4; a review at another head is not used.
-    review.run(4, "old", "opus", "take", "stale", null);
-    ask(db, [{ id: "app#4:merge@sha4", kind: "merge", repo: "app", number: 4, question: "Merge this PR?", facts: [`${HEAD_FACT}sha4`], options: Object.values(MERGE_OPTIONS).map((o) => ({ ...o })), asked_at: T0 }]);
+  test("a review stored without a summary gives its reason whole and no model name; a long reason gives no recommendation", () => {
+    const db = fresh();
+    const long = `${Array.from({ length: 50 }, (_, i) => `word${i}`).join(" ")}. And a second sentence.`;
+    review(db).run(3, "sha3", "opus", "close", long, null, null, null);
+    review(db).run(4, "sha4", "opus", "close", "Not wanted in core.", null, null, null);
+    askCloseDecisions(db, "app", T0);
+    const a = getDecision(db, closeDecisionId("app", 3, "sha3"))!, b = getDecision(db, closeDecisionId("app", 4, "sha4"))!;
+    assert.deepEqual([a.summary, a.summary_by, a.recommended, a.recommended_reason], [long, null, null, null]);
+    assert.deepEqual([b.summary, b.summary_by, b.recommended, b.recommended_reason], ["Not wanted in core.", null, "close", "Not wanted in core."]);
+  });
+
+  test("an open Merge? is refreshed from the review at its head: stale text is replaced, a recommendation needs a reason, a second run changes nothing", () => {
+    const db = fresh();
+    const q = { id: "app#4:merge@sha4", kind: "merge", repo: "app", number: 4, question: "Merge this PR?", facts: ["review: take: stale", `${HEAD_FACT}sha4`],
+      options: Object.values(MERGE_OPTIONS).map((o) => ({ ...o })), recommended: "merge", summary: "Sonnet's review says take: stale.", summary_by: "sonnet", asked_at: T0 };
+    ask(db, [q]);
+    review(db).run(4, "old", "opus", "take", "stale", null, "Other head.", "Other head.");
+    assert.equal(fillReviewSummaries(db, T0), 0, "a review at another head is not used");
+    review(db).run(4, "sha4", "opus", "take", "Small and tested", null, "A small, tested fix. The review says take.", "It is small and tested.");
+    assert.equal(fillReviewSummaries(db, T0), 1);
+    const m = getDecision(db, q.id)!;
+    assert.deepEqual([m.summary, m.summary_by, m.recommended, m.recommended_reason], ["A small, tested fix. The review says take.", "opus", "merge", "It is small and tested."]);
+    assert.ok(factsOf(m).includes("review: take: Small and tested") && factsOf(m).includes(`${HEAD_FACT}sha4`));
     assert.equal(fillReviewSummaries(db, T0), 0);
-    review.run(4, "sha4", "opus", "take", "Small and tested", null);
+    // A new review at the same head with no usable reason leaves the Merge? without a recommendation.
+    review(db).run(4, "sha4", "opus", "take", `${Array.from({ length: 50 }, (_, i) => `w${i}`).join(" ")}.`, null, null, null);
     assert.equal(fillReviewSummaries(db, T0), 1);
-    const m = getDecision(db, "app#4:merge@sha4")!;
-    assert.deepEqual([m.summary, m.summary_by], ["Opus's review says take: Small and tested.", "opus"]);
-    db.prepare("UPDATE opus_reviews SET sure = 0 WHERE head_oid = 'sha4'").run();
-    db.prepare("UPDATE decisions SET summary = NULL WHERE id = 'app#4:merge@sha4'").run();
-    assert.equal(fillReviewSummaries(db, T0), 1);
-    assert.match(getDecision(db, "app#4:merge@sha4")!.summary!, /not sure.*unsure, so a person decides/);
+    const n = getDecision(db, q.id)!;
+    assert.deepEqual([n.summary_by, n.recommended, n.recommended_reason], [null, null, null]);
     assert.equal(fillReviewSummaries(db, T0), 0);
   });
 });

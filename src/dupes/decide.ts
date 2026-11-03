@@ -11,6 +11,7 @@ import { actionable, ask, factsOf, getDecision, validateAsk } from "../decisions
 import { compareCanonical, canonInfo } from "./canonical.ts";
 import { backlogHeldSql, DUP_FACT, GROUP_OPTIONS, groupId, keepKey, keptOf } from "./held.ts";
 import { duplicateGroups, kindSetsOf, currentComparison, type Group, type KindSet, type StoredComparison } from "./plan.ts";
+import { oneSentence } from "../review/summary.ts";
 import { storeOptionTexts } from "./texts.ts";
 import { inPilot, pilotSqlFor } from "../pilot.ts";
 
@@ -109,10 +110,10 @@ function supersede(db: DatabaseSync, p: GroupPlan, id: string, at: string): void
 
 function unchanged(db: DatabaseSync, q: Record<string, unknown>, p: GroupPlan): boolean {
   const id = q.id as string;
-  const cur = db.prepare("SELECT question, context, facts, options, recommended, summary FROM decisions WHERE id = ? AND answer IS NULL").get(id) as Record<string, string | null> | undefined;
+  const cur = db.prepare("SELECT question, context, facts, options, recommended, recommended_reason, summary, summary_by FROM decisions WHERE id = ? AND answer IS NULL").get(id) as Record<string, string | null> | undefined;
   if (!cur) return false;
   const next = validateAsk(q);
-  if (["question", "context", "facts", "options", "recommended", "summary"].some((c) => cur[c] !== next[c])) return false;
+  if (["question", "context", "facts", "options", "recommended", "recommended_reason", "summary", "summary_by"].some((c) => cur[c] !== next[c])) return false;
   const g = db.prepare("SELECT source, applied_answer FROM dupe_groups WHERE decision_id = ?").get(id) as { source: string; applied_answer: string | null } | undefined;
   if (!g || g.source !== p.source || g.applied_answer !== null) return false;
   type Row = { number: number; role: string; target: number | null; base_role: string; base_target: number | null; detail: string | null; head: string | null };
@@ -143,34 +144,30 @@ function textOf(db: DatabaseSync, p: GroupPlan) {
   const keeps = p.items.filter((i) => i.role === "keep");
   const closes = p.items.filter((i) => i.role === "close").map((i) => i.number);
   const stays = p.items.filter((i) => i.role === "stay").map((i) => i.number);
-  const carry: string[] = [], summary: string[] = [];
   const byRule = p.source === "rule";
-  for (const k of keeps) {
-    const why = p.sets.find((s) => s.cmp.kept === k.number)?.cmp.reason;
-    summary.push(`#${k.number} is kept${why ? `: ${clip(why, 300)}` : ""}.`);
-  }
-  for (const i of p.items.filter((x) => x.role !== "keep")) {
-    const d = i.detail as { better?: string[]; carry?: string[]; adds?: string[]; duplicate?: boolean } | null;
-    const parts: string[] = [];
-    if (i.role === "stay") parts.push(d?.duplicate === false ? "not a duplicate, stays open" : "stays open");
-    if (d?.better?.length) parts.push(`does better: ${d.better.map((x) => clip(x, 160)).join("; ")}`);
-    if (d?.carry?.length) { parts.push(`worth carrying over: ${d.carry.map((x) => clip(x, 160)).join("; ")}`); carry.push(`#${i.number} ${clip(d.carry[0]!, 100)}`); }
-    if (d?.adds?.length) { parts.push(`adds: ${d.adds.map((x) => clip(x, 160)).join("; ")}`); carry.push(`#${i.number} ${clip(d.adds[0]!, 100)}`); }
-    summary.push(`#${i.number}${parts.length ? ` ${parts.join("; ")}` : " adds nothing beyond the kept one"}.`);
-  }
+  const primary = keeps.find((k) => k.number === p.number)!;
+  // The model's own summary, whole. A comparison stored without one gives its reason whole; a rule-picked one says so.
+  const used = p.sets.filter((s) => s.cmp.source !== "single").map((s) => s.cmp);
+  const kept = (c: StoredComparison) => list(keeps.filter((k) => k.kind === c.kind).map((k) => k.number));
+  const texts = used.map((c) => c.summary
+    || (c.source === "rule" ? `Kept ${kept(c)} by rule: ${(c.reason ?? "").replace(/^kept by rule: /, "")}.` : c.source === "closed" ? `Kept ${kept(c)}: ${c.reason ?? ""}.` : c.reason ?? "")).filter(Boolean);
+  const summary = texts.join(" ") || `Keep ${list(keeps.map((k) => k.number))}.`;
+  const by = used.length && used.every((c) => c.source === "model" && c.summary) ? p.model ?? "" : "";
+  // One sentence for the recommendation; none from a rule or when the model gave nothing to say.
+  const lead = p.sets.find((s) => s.cmp.kept === primary.number) ?? p.sets[0]!;
+  const why = byRule || lead.cmp.source === "single" ? null : lead.cmp.why || oneSentence(lead.cmp.reason);
   const keepFacts = keeps.map((k) => {
     const r = info.get(p.repo, k.number) as { kind: string; state: string; title: string | null; comments_count: number | null };
     return `Keep: #${k.number} (${r.kind === "pr" ? "PR" : "issue"}, ${r.state === "OPEN" ? "open" : r.state === "MERGED" ? "merged" : "closed"}, ${r.comments_count ?? 0} comments): ${clip(r.title)}`;
   });
   const chosen = byRule ? `Chosen by: rule (${p.reasons.map((r) => r.replace(/^kept by rule: /, "")).join(", ") || "older"}); the model comparison gave no answer`
     : p.source === "closed" ? `Chosen by: ${clip(p.reasons.join("; "), 100) || "already closed"}` : `Chosen by: ${p.model ?? "model"}, all ${p.group.members.length} compared in one pass`;
-  const facts = [...keepFacts, `Close: ${refList(closes)}${stays.length ? `; stays open: ${refList(stays)}` : ""}`, ...(carry.length ? [`Carry over: ${carry.join("; ")}`] : []), chosen];
-  const primary = keeps.find((k) => k.number === p.number)!;
-  const question = `Keep #${primary.number}${keeps.length > 1 ? ` and #${keeps.find((k) => k !== primary)!.number}` : ""} and close ${refList(closes)} as ${closes.length === 1 ? "a duplicate" : "duplicates"}?`;
+  const facts = [...keepFacts, `Close: ${refList(closes)}${stays.length ? `; stays open: ${refList(stays)}` : ""}`, chosen];
+  const question = `Keep #${primary.number}${keeps.length > 1 ? ` and #${keeps.find((k) => k !== primary)!.number}` : ""} and close ${refList(closes)} as ${keeps.length > 1 ? "their" : "its"} ${closes.length === 1 ? "duplicate" : "duplicates"}?`;
   const context = byRule
     ? `The model comparison gave no valid answer, so the rule picked the item to keep: ${p.reasons.map((r) => r.replace(/^kept by rule: /, "")).join(", ")}.`
     : `${list(p.group.members)} describe the same bug or request. ${p.model ? `${p.model[0]!.toUpperCase()}${p.model.slice(1)} compared them together` : "They are compared together"}${p.source === "closed" ? "; one is already done, so the open ones duplicate it" : ""}.`;
-  return { facts: facts.slice(0, 5), question, context, summary: summary.join(" ") };
+  return { facts: facts.slice(0, 5), question, context, summary, by, why, keepLabel: `Keep ${list(keeps.map((k) => k.number))}` };
 }
 
 /** Asks (or refreshes) the group decisions of one repo (every repo when omitted). Returns the ids asked or refreshed. Each plan is written in one transaction, so no other process sees its members unheld in between. */
@@ -199,9 +196,9 @@ export function askGroupDecisions(db: DatabaseSync, repo: string | undefined, at
       const alts = canonInfo(db, p.repo, p.items.filter((i) => i.kind === primary.kind && i.number !== p.number && i.role !== "stay").map((i) => i.number)).sort(compareCanonical).slice(0, 3);
       const q = {
         id, kind: "duplicate", repo: p.repo, number: p.number, question: t.question, context: t.context, facts: t.facts,
-        options: [GROUP_OPTIONS.accept, ...alts.map((a) => ({ key: keepKey(a.number), label: `Keep #${a.number} instead`, hint: `Posts the comments shown under it: keeps #${a.number}, closes the others, #${p.number} too.` })), GROUP_OPTIONS.distinct],
-        recommended: p.source === "rule" ? null : "accept",
-        asked_by: ACTOR, asked_at: at, summary: t.summary, summary_by: p.source === "rule" ? "rule" : p.model ?? "rule", summary_at: at,
+        options: [{ ...GROUP_OPTIONS.accept, label: t.keepLabel }, ...alts.map((a) => ({ key: keepKey(a.number), label: `Keep #${a.number} instead`, hint: `Posts the comments shown under it: keeps #${a.number}, closes the others, #${p.number} too.` })), GROUP_OPTIONS.distinct],
+        recommended: t.why ? "accept" : null, recommended_reason: t.why,
+        asked_by: ACTOR, asked_at: at, summary: t.summary, summary_by: t.by, summary_at: at,
       };
       supersede(db, p, id, at);
       // An open decision whose question and member roles are unchanged keeps its asked time and stored texts.
@@ -210,6 +207,8 @@ export function askGroupDecisions(db: DatabaseSync, repo: string | undefined, at
         continue;
       }
       ask(db, [q], true);
+      // ask() keeps the stored summary_by when the new one is empty; the author must follow the text.
+      db.prepare("UPDATE decisions SET summary_by = ? WHERE id = ?").run(t.by || null, id);
       // A refresh restores the comparison's roles; an answer is applied to them again.
       db.prepare("INSERT INTO dupe_groups (decision_id, repo, source) VALUES (?, ?, ?) ON CONFLICT(decision_id) DO UPDATE SET source = excluded.source, applied_answer = NULL").run(id, p.repo, p.source);
       db.prepare("DELETE FROM dupe_group_items WHERE decision_id = ?").run(id);

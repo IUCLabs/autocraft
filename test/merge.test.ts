@@ -235,8 +235,10 @@ describe("merge queue", () => {
     const s = await runMerge(db, { repo: "app", dryRun: false }, quiet, fakes(log));
     assert.ok(!s.merged.includes("app#1"));
     assert.ok(s.asked.includes(mergeDecisionId("app", 1, "sha1")));
-    const summary = (db.prepare("SELECT summary FROM decisions WHERE id = ?").get(mergeDecisionId("app", 1, "sha1")) as { summary: string | null }).summary ?? "";
-    assert.match(summary, /unsure/i);
+    const asked = db.prepare("SELECT context, summary, recommended FROM decisions WHERE id = ?").get(mergeDecisionId("app", 1, "sha1")) as { context: string; summary: string | null; recommended: string | null };
+    assert.match(asked.context, /unsure/i);
+    assert.equal(asked.recommended, null);
+    assert.equal(asked.summary, "looks right");
     answer(db, mergeDecisionId("app", 1, "sha1"), "op", "merge");
     assert.equal(stateOf(db, 1), "decision-answered-merge");
     assert.ok((await runMerge(db, { repo: "app", dryRun: false }, quiet, fakes([]))).merged.includes("app#1"));

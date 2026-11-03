@@ -23,7 +23,7 @@ import { closeItem, commentOn, type Writer } from "../github/write.ts";
 import { connect } from "../db.ts";
 import { actionable, ask, factsOf, getDecision, type Actionable, type DecisionRow, type Kind } from "../decisions.ts";
 import { HEAD_FACT } from "../merge/queue.ts";
-import { fillReviewSummaries } from "../review/summary.ts";
+import { fillReviewSummaries, reviewText } from "../review/summary.ts";
 import { Client, type Querier } from "../mirror.ts";
 import { headOf, sizeOf } from "../review/candidates.ts";
 import { backlogHeld, backlogHeldSql, notOwnIntegrationSql } from "../dupes/held.ts";
@@ -106,7 +106,7 @@ export function closeCandidates(db: DatabaseSync, repo: string): ReviewRow[] {
   return rows.filter((r) => headOf({ head_oid: r.i_head, updated_at: r.updated_at, c_head: r.c_head, c_at: r.c_at }) === r.head_oid && !has.get(closeDecisionId(r.repo, r.number, r.head_oid)));
 }
 
-export function closeQuestion(r: ReviewRow): Record<string, unknown> & { id: string } {
+export function closeQuestion(r: ReviewRow, why: string | null = null): Record<string, unknown> & { id: string } {
   const reason = cleanReason(r.reason);
   return {
     id: closeDecisionId(r.repo, r.number, r.head_oid), kind: "close", repo: r.repo, number: r.number,
@@ -118,7 +118,8 @@ export function closeQuestion(r: ReviewRow): Record<string, unknown> & { id: str
       `${HEAD_FACT}${r.head_oid}`,
     ],
     options: Object.values(CLOSE_OPTIONS).map((o) => ({ ...o })),
-    recommended: "close",
+    // A recommendation always comes with the review's reason for it.
+    ...(why ? { recommended: "close", recommended_reason: why } : {}),
     // The reason the closing comment gives; the operator sees it in the facts.
     public_text: reason,
     asked_by: ACTOR,
@@ -126,7 +127,7 @@ export function closeQuestion(r: ReviewRow): Record<string, unknown> & { id: str
 }
 
 export function askCloseDecisions(db: DatabaseSync, repo: string, at: string): string[] {
-  const qs = closeCandidates(db, repo).map(closeQuestion);
+  const qs = closeCandidates(db, repo).map((r) => closeQuestion(r, reviewText(db, r.repo, r.number, r.head_oid)?.why ?? null));
   if (qs.length) ask(db, qs.map((q) => ({ ...q, asked_at: at })));
   fillReviewSummaries(db, at, repo);
   return qs.map((q) => q.id);

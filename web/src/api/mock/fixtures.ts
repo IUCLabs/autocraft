@@ -240,9 +240,9 @@ const SEEDS: Seed[] = [
     title: "Text frames: overset text indicator stays after the frame grows",
     question: "Keep #2007 and close #2017, #2088 as duplicates?",
     context: ["All three fix the overset marker not clearing when a frame is resized.", "#2007 clears it in the layout pass and adds a regression test; #2088 also handles linked frames."],
-    facts: ["Keep: #2007 (regression test, clears in layout)", "Close: #2017, #2088", "Carry over: #2088 linked-frame handling", "Chosen by: Opus"],
+    facts: ["Keep: #2007 (regression test, clears in layout)", "Close: #2017, #2088", "Chosen by: Opus"],
     options: [
-      { key: "accept", label: "Use this answer" },
+      { key: "accept", label: "Keep #2007" },
       { key: "keep:2088", label: "Keep #2088 instead" },
       { key: "distinct", label: "Not duplicates" },
     ],

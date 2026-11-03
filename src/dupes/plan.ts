@@ -77,6 +77,8 @@ export function kindSetsOf(db: DatabaseSync, g: Group): KindSet[] {
 export type StoredComparison = {
   repo: string; key: string; kind: Kind; members: number[]; hash: string; kept: number; source: "model" | "closed" | "rule" | "single";
   model: string | null; reason: string | null; result: ComparisonResult | null; error: string | null; attempts: number; at: string;
+  /** What the model wrote for the decision: 2 or 3 sentences, and one sentence of reason. Absent or null on rows stored earlier. */
+  summary?: string | null; why?: string | null;
 };
 /** The per-member answers of a comparison, in the shape of the prompt replies. */
 export type ComparisonResult = {
@@ -94,8 +96,8 @@ export function storedComparison(db: DatabaseSync, repo: string, key: string): S
 }
 
 export function saveComparison(db: DatabaseSync, c: StoredComparison): void {
-  db.prepare(`INSERT OR REPLACE INTO dupe_comparisons (repo, key, kind, members, hash, kept, source, model, reason, result, error, attempts, at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(c.repo, c.key, c.kind, JSON.stringify(c.members), c.hash, c.kept, c.source, c.model, c.reason, c.result ? JSON.stringify(c.result) : null, c.error, c.attempts, c.at);
+  db.prepare(`INSERT OR REPLACE INTO dupe_comparisons (repo, key, kind, members, hash, kept, source, model, reason, result, error, attempts, at, summary, why)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(c.repo, c.key, c.kind, JSON.stringify(c.members), c.hash, c.kept, c.source, c.model, c.reason, c.result ? JSON.stringify(c.result) : null, c.error, c.attempts, c.at, c.summary ?? null, c.why ?? null);
 }
 
 /** The stored comparison of the set when it is current. */
