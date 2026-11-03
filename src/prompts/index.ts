@@ -204,7 +204,7 @@ Reply with ONLY a JSON array, one object per PR, in the same order:
   limits: { perCall: 15, attempts: 2, timeoutSeconds: 900 },
 };
 
-const OPUS_FIELDS = `ref, title, body (first ${REVIEW_BODY_LIMIT} characters), author_association, size (S, M or L), lines_changed, ci (success, failure, pending or none), mergeable, files (code files changed), tests_omitted and lockfiles_omitted (paths left out of the diff), sonnet (the first review: verdict, reason, fixes, risks), mode ("full" or "delta"), earlier_opus (your review of an earlier head commit, or null) and diff (the unified diff of the code files)`;
+const OPUS_FIELDS = `ref, title, body (first ${REVIEW_BODY_LIMIT} characters), author_association, size (S, M or L), lines_changed, ci (success, failure, pending or none), mergeable, files (code files changed), tests_omitted and lockfiles_omitted (paths left out of the diff), sonnet (the first review: verdict, reason, fixes, risks), mode ("full" or "delta"), earlier_opus (your review of an earlier head commit, or null), first_review_note (present only in a review cross-check) and diff (the unified diff of the code files)`;
 
 const OPUS_REVIEW: ClaudePrompt = {
   id: "review.opus",
@@ -219,7 +219,7 @@ const OPUS_REVIEW: ClaudePrompt = {
     repo_access: REPO_ACCESS_DOC,
   },
   sandbox: { tools: ["Read", "Grep", "Glob"], maxTurns: 20, workspace: true },
-  template: `You are the final reviewer of a pull request on one of the storytold craft apps, open-source reimplementations of a reference application. A first review (field sonnet) rated this PR take or take-fix and may have missed problems. Your verdict decides what happens next: only a PR you rate take or take-fix is merged or fixed up. A wrong take costs more than a wrong hold.
+  template: `You are the final reviewer of a pull request on one of the storytold craft apps, open-source reimplementations of a reference application. A first review (field sonnet) rated this PR take or take-fix, unless first_review_note says otherwise, and may have missed problems. Your verdict decides what happens next: only a PR you rate take or take-fix is merged or fixed up. A wrong take costs more than a wrong hold.
 
 What we want: real bug fixes; behaviour that matches the reference application; one clear topic per PR.
 What we do not want: the contributor's own big ideas beyond the reference application; large change sets that are hard to analyse; many new dependencies.

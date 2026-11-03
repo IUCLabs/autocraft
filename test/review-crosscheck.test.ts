@@ -7,7 +7,7 @@ import { setRunner, type Runner } from "../src/classify/run.ts";
 import { connect } from "../src/db.ts";
 import { makeBatches } from "../src/review/batch.ts";
 import { reviewCaps, setBatchSize } from "../src/review/batch-size.ts";
-import { crosscheckEligible, crosscheckReport, runCrosscheck, type CrosscheckDeps } from "../src/review/crosscheck.ts";
+import { crosscheckEligible, crosscheckReport, runCrosscheck, sampleOf, type CrosscheckDeps } from "../src/review/crosscheck.ts";
 import { useTestAccount } from "./accounts-fixture.ts";
 import { SCRATCH } from "./scratch.ts";
 
@@ -17,16 +17,16 @@ process.env.AUTOCRAFT_DIFF_CACHE = join(dir, "diffs");
 const T0 = "2026-01-01T00:00:00Z";
 const CODE = "diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1,1 +1,1 @@\n-let a = 1;\n+let a = 2;\n";
 
-/** PRs 1-3: Sonnet holds from a model call. 4: hold without a call (too large). 5: take. 6: hold at an old head. */
+/** PRs 1-2: Sonnet holds from a batch call. 3: hold from a one-PR call. 4: hold without a call (too large). 5: take. 6: hold at an old head. 7: duplicate hold. */
 function fresh(): DatabaseSync {
   const db = connect(join(mkdtempSync(join(dir, "db-")), "t.db"));
   useTestAccount(db);
   const item = db.prepare(`INSERT INTO items (repo, number, kind, state, title, author, additions, deletions, head_oid, created_at, updated_at)
     VALUES ('shop', ?, 'pr', 'OPEN', ?, 'regular', 1, 1, ?, '${T0}', '${T0}')`);
-  const review = db.prepare(`INSERT INTO reviews (repo, number, head_oid, run_id, at, model, size, verdict, reason) VALUES ('shop', ?, ?, 'rv', '${T0}', ?, 'S', ?, ?)`);
-  for (const [n, verdict, model, head] of [[1, "hold", "sonnet", "a"], [2, "hold", "sonnet", "a"], [3, "hold", "sonnet", "a"], [4, "hold", null, "a"], [5, "take", "sonnet", "a"], [6, "hold", "sonnet", "old"]] as const) {
+  const review = db.prepare(`INSERT INTO reviews (repo, number, head_oid, run_id, at, model, size, verdict, reason, call_size) VALUES ('shop', ?, ?, 'rv', '${T0}', ?, 'S', ?, ?, ?)`);
+  for (const [n, verdict, model, head, size] of [[1, "hold", "sonnet", "a", 5], [2, "hold", "sonnet", "a", 5], [3, "hold", "sonnet", "a", 1], [4, "hold", null, "a", null], [5, "take", "sonnet", "a", 5], [6, "hold", "sonnet", "old", 5], [7, "hold", "sonnet", "a", 5]] as const) {
     item.run(n, `PR ${n}`, `sha${n}a`);
-    review.run(n, `sha${n}${head}`, model, verdict, `sonnet says ${verdict}`);
+    review.run(n, `sha${n}${head}`, model, verdict, n === 7 ? "duplicate of shop#1; close after it merges" : `sonnet says ${verdict}`, size);
   }
   db.prepare("INSERT INTO tracked_repos (name, added_by, added_at, pipeline) VALUES ('shop', 'op', ?, 1) ON CONFLICT DO NOTHING").run(T0);
   return db;
@@ -54,7 +54,7 @@ const fake = (calls: string[]): Runner => async (_cmd, args, input) => {
 describe("review cross-check", () => {
   test("samples only batch holds at the current head, stores results and leaves the review tables alone", async () => {
     const db = fresh();
-    assert.deepEqual(crosscheckEligible(db, "shop").map((c) => c.number), [1, 2, 3]);
+    assert.deepEqual(crosscheckEligible(db, "shop").map((c) => c.number), [1, 2]);
     const before = snapshot(db);
     const calls: string[] = [];
     const restore = setRunner(fake(calls));
@@ -65,19 +65,20 @@ describe("review cross-check", () => {
       restore();
     }
     assert.equal(s.picked.length, 2);
-    assert.ok(s.picked.every((r) => ["shop#1", "shop#2", "shop#3"].includes(r)));
+    assert.deepEqual([...s.picked].sort(), ["shop#1", "shop#2"]);
     assert.equal(calls.length, 4);
     assert.equal(snapshot(db), before);
     const rows = db.prepare("SELECT number, batch_verdict, opus_verdict, single_verdict, seed FROM review_crosschecks WHERE run_id = ? ORDER BY number").all(s.runId) as { number: number; batch_verdict: string; opus_verdict: string; single_verdict: string; seed: string }[];
     assert.equal(rows.length, 2);
     assert.ok(rows.every((r) => r.batch_verdict === "hold" && r.seed === "s1"));
     for (const r of rows) assert.equal(r.opus_verdict, r.number === 1 ? "take" : "hold");
-    // the same seed picks the same PRs; a checked head is not drawn again
-    const left = crosscheckEligible(db, "shop").map((c) => `shop#${c.number}`);
-    assert.equal(left.length, 1);
-    assert.ok(!s.picked.includes(left[0]!));
+    // a checked head is not drawn again; the same seed repeats the draw
+    assert.equal(crosscheckEligible(db, "shop").length, 0);
+    const again = fresh();
+    assert.deepEqual(sampleOf(crosscheckEligible(again, "shop"), 2, "s1").map((c) => `shop#${c.number}`), s.picked);
     const report = crosscheckReport(db, s.runId);
     assert.match(report, /Batch hold vs Opus \(2 reviewed\)/);
+    assert.match(report, /more than one PR/);
     assert.match(report, /Batch hold vs single-PR Sonnet/);
     assert.ok(report.includes("opus take") === s.picked.includes("shop#1"));
   });

@@ -568,7 +568,7 @@ export const STEPS: StepDef[] = [
   {
     name: "review-crosscheck",
     title: "Review cross-check",
-    description: "Checks Sonnet batch holds: Opus reviews a random sample of the held pull requests of one repo exactly as in the final review, and optionally Sonnet reviews each alone in its call. Results go to a report table only; no review, post, queue entry or merge changes.",
+    description: "Checks Sonnet batch holds: Opus reviews a random sample of the held pull requests of one repo exactly as in the final review, and optionally Sonnet reviews each alone in its call. Results go to a report table only; no review, post, queue entry or merge changes; it only refreshes the CI cache of the pull requests it samples.",
     stage: 5,
     requires: "operator",
     group: "review-crosscheck",

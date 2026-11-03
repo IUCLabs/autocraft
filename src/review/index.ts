@@ -46,14 +46,14 @@ export function defaultDeps(): ReviewDeps {
  * Stores one review: a `reviews` row keyed to the head commit, then a
  * `reviewed` stages row and a take/hold/close stages row (take-fix counts as take).
  */
-export function saveReview(db: DatabaseSync, runId: string, c: Candidate, model: string | null, r: Review, snap: Snapshot | null = null): void {
+export function saveReview(db: DatabaseSync, runId: string, c: Candidate, model: string | null, r: Review, snap: Snapshot | null = null, callSize: number | null = null): void {
   const at = now();
   const again = db.prepare("SELECT at FROM reviews WHERE repo = ? AND number = ? AND head_oid = ?").get(c.repo, c.number, c.head_oid) as { at: string } | undefined;
   if (again && !markedStaleSince(db, c.repo, c.number, again.at)) countRerun(db, c.repo, c.number);
   if (again) withdrawMergeQuestion(db, c.repo, c.number, c.head_oid, at);
-  db.prepare(`INSERT OR REPLACE INTO reviews (repo, number, head_oid, run_id, at, model, size, verdict, reason, fixes, duplicate_of, overlaps, risks, seen_at, disc_hash)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(c.repo, c.number, c.head_oid, runId, at, model, c.size, r.verdict, r.reason,
-    r.fixes.length ? JSON.stringify(r.fixes) : null, r.duplicate_of, JSON.stringify(r.overlaps), JSON.stringify(r.risks), snap?.seen ?? at, snap?.hash ?? null);
+  db.prepare(`INSERT OR REPLACE INTO reviews (repo, number, head_oid, run_id, at, model, size, verdict, reason, fixes, duplicate_of, overlaps, risks, seen_at, disc_hash, call_size)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(c.repo, c.number, c.head_oid, runId, at, model, c.size, r.verdict, r.reason,
+    r.fixes.length ? JSON.stringify(r.fixes) : null, r.duplicate_of, JSON.stringify(r.overlaps), JSON.stringify(r.risks), snap?.seen ?? at, snap?.hash ?? null, callSize);
   const stage = db.prepare("INSERT INTO stages (repo, number, stage, at, actor, note) VALUES (?, ?, ?, ?, ?, ?)");
   stage.run(c.repo, c.number, "reviewed", at, "review", `${r.verdict} at ${c.head_oid.slice(0, 7)}: ${r.reason}`);
   stage.run(c.repo, c.number, r.verdict === "take-fix" ? "take" : r.verdict, at, "review", r.reason);
@@ -138,9 +138,6 @@ export async function runReview(db: DatabaseSync, params: ReviewParams, log: (li
       files: cd.files, tests_omitted: cd.testsOmitted, lockfiles_omitted: cd.lockfilesOmitted, same_files_as: [], diff: cd.text, discussion, snap,
     });
   }
-  for (const p of inputs) {
-    p.same_files_as = inputs.filter((o) => o !== p && o.files.some((f) => p.files.includes(f))).map((o) => ({ ref: o.ref, title: o.title }));
-  }
 
   const merged = (ref: string) => {
     const [r, n] = ref.split("#");
@@ -149,6 +146,8 @@ export async function runReview(db: DatabaseSync, params: ReviewParams, log: (li
   let handled = summary.reviewed;
   params.onHandled?.(handled);
   const batches = makeBatches(inputs, reviewCaps(db, repo, deps.caps));
+  // Related PRs are named only within one call, so a duplicate verdict never points at a PR the model did not see.
+  for (const b of batches) for (const p of b) p.same_files_as = b.filter((o) => o !== p && o.files.some((f) => p.files.includes(f))).map((o) => ({ ref: o.ref, title: o.title }));
   log(`review ${repo}: ${inputs.length} PRs to ask in ${batches.length} calls; ${summary.reviewed} held without a call; run ${runId}`);
   await pool(batches.map((batch, n) => async () => {
     const start = now();
@@ -165,7 +164,7 @@ export async function runReview(db: DatabaseSync, params: ReviewParams, log: (li
       for (const r of reviews) {
         const p = todo.find((x) => x.ref === r.ref)!;
         const final = applyDuplicateRule(r, merged);
-        saveReview(db, runId, p.c, deps.model, final, p.snap);
+        saveReview(db, runId, p.c, deps.model, final, p.snap, batch.length);
         tally(final);
       }
       todo = todo.filter((p) => missing.includes(p.ref));

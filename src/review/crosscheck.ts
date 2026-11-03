@@ -2,6 +2,7 @@
 // `hold` from a batch call hold up? For a random sample of PRs whose final review at the head is such
 // a hold, Opus reviews the PR exactly as in the second pass and, with --single, Sonnet reviews it alone
 // in its call. Results go to `review_crosschecks` only: no review row, post, queue entry or merge changes.
+// The only other write is the refresh of `pr_checks` (CI and head state) that every review step does.
 // Reads GitHub (diffs, discussion); never writes to it.
 //
 //   autocraft review crosscheck --repo R --sample N [--single] [--seed S]
@@ -14,7 +15,8 @@ import { REPO_PATH } from "../sandbox/command.ts";
 import { cachedDiff, codeDiff } from "./diff.ts";
 import { headOf, sizeOf } from "./candidates.ts";
 import { checksOf, refreshChecks } from "./checks.ts";
-import { discussionOf, ensurePipelineLogin, liveDiscussion, withRetry } from "./discussion.ts";
+import { notHeldSql } from "../dupes/held.ts";
+import { discussionOf, ensurePipelineLogin, liveDiscussion, staleReviews, withRetry } from "./discussion.ts";
 import { defaultOpusDeps, prepareOpusInput, type OpusDeps } from "./opus.ts";
 import type { OpusCandidate } from "./opus-candidates.ts";
 import { parseOpusReply } from "./opus-parse.ts";
@@ -60,24 +62,28 @@ const list = <T>(s: string | null): T[] => {
 };
 
 /**
- * Open, non-draft PRs of `repo` whose final review at the current head is a Sonnet hold given by a model
- * call (not "too large", not an Opus or skip-list result) and that no earlier cross-check covered at that head.
+ * Open, non-draft PRs of `repo` whose final review at the current head is a Sonnet hold from a call with
+ * more than one PR (not "too large", not a duplicate hold, not an Opus or skip-list result), not held
+ * for duplicates or the backlog, not stale after new discussion, and not covered by an earlier cross-check at that head.
  */
 export function crosscheckEligible(db: DatabaseSync, repo: string): OpusCandidate[] {
   const rows = db.prepare(`SELECT i.number, i.title, i.body, i.author_association, i.head_oid, i.updated_at, i.is_draft, i.additions, i.deletions,
       c.head_oid AS c_head, c.state AS c_state, c.is_draft AS c_draft, c.fetched_at AS c_at,
       f.head_oid AS r_head, f.sonnet_verdict AS verdict, f.sonnet_reason AS reason, f.sonnet_fixes AS fixes, f.risks AS risks
     FROM items i JOIN final_reviews f ON f.repo = i.repo AND f.number = i.number
+    JOIN reviews rv ON rv.repo = f.repo AND rv.number = f.number AND rv.head_oid = f.head_oid
     LEFT JOIN pr_checks c ON c.repo = i.repo AND c.number = i.number
     WHERE i.repo = ? AND i.kind = 'pr' AND i.state = 'OPEN' AND f.source = 'sonnet' AND f.sonnet_verdict = 'hold' AND f.final = 1 AND f.model IS NOT NULL
+      AND rv.call_size > 1 AND f.duplicate_of IS NULL AND f.sonnet_reason NOT LIKE 'duplicate of %' AND ${notHeldSql("i")}
       AND NOT EXISTS (SELECT 1 FROM review_crosschecks x WHERE x.repo = f.repo AND x.number = f.number AND x.head_oid = f.head_oid)
     ORDER BY i.number`).all(repo) as Row[];
+  const stale = staleReviews(db, repo);
   const out: OpusCandidate[] = [];
   for (const r of rows) {
     const fresh = r.c_at && (!r.updated_at || r.c_at > r.updated_at);
     if (fresh ? r.c_state !== "OPEN" || r.c_draft : r.is_draft) continue;
     const head = headOf(r);
-    if (!head || head !== r.r_head) continue;
+    if (!head || head !== r.r_head || stale.has(`${repo}#${r.number}@${head}`)) continue;
     const lines = (r.additions ?? 0) + (r.deletions ?? 0);
     out.push({
       repo, number: r.number, title: r.title ?? "", body: r.body ?? "", author_association: r.author_association, head_oid: head,
@@ -122,23 +128,30 @@ export async function runCrosscheck(db: DatabaseSync, params: CrosscheckParams, 
   const runId = `review-crosscheck-${repo}-${stamp}`;
   const seed = params.seed ?? Math.random().toString(36).slice(2, 10);
   const eligible = crosscheckEligible(db, repo);
-  let picked = sampleOf(eligible, params.sample, seed);
-  const summary: CrosscheckSummary = { runId, repo, seed, eligible: eligible.length, picked: picked.map(refOf), stored: 0, skipped: [], missing: [] };
-  if (deps.querier && picked.length) {
+  // The draw is a seeded shuffle; PRs that changed on GitHub since the review are replaced by the next in the order.
+  const order = sampleOf(eligible, eligible.length, seed);
+  let picked: OpusCandidate[] = [];
+  const summary: CrosscheckSummary = { runId, repo, seed, eligible: eligible.length, picked: [], stored: 0, skipped: [], missing: [] };
+  if (!deps.querier) picked = order.slice(0, params.sample);
+  else {
     try {
-      const live = new Map((await refreshChecks(db, deps.querier, repo, picked.map((c) => c.number), log)).map((l) => [l.number, l]));
-      picked = picked.filter((c) => {
-        const l = live.get(c.number);
-        const ok = !!l && l.state === "OPEN" && !l.is_draft && l.head_oid === c.head_oid;
-        if (!ok) log(`  ${refOf(c)}: dropped, changed on GitHub since the review`);
-        return ok;
-      });
+      for (let at = 0; picked.length < params.sample && at < order.length;) {
+        const chunk = order.slice(at, at + params.sample - picked.length);
+        at += chunk.length;
+        const live = new Map((await refreshChecks(db, deps.querier, repo, chunk.map((c) => c.number), log)).map((l) => [l.number, l]));
+        for (const c of chunk) {
+          const l = live.get(c.number);
+          if (l && l.state === "OPEN" && !l.is_draft && l.head_oid === c.head_oid) picked.push(c);
+          else log(`  ${refOf(c)}: dropped, changed on GitHub since the review`);
+        }
+      }
       await ensurePipelineLogin(db, deps.querier).catch(() => {});
     } catch (e) {
       log(`crosscheck ${repo}: live state unavailable (${String((e as Error).message ?? e)}); nothing asked`);
       return summary;
     }
   }
+  summary.picked = picked.map(refOf);
   log(`crosscheck ${repo}: ${eligible.length} eligible batch holds, sample ${picked.length}, seed ${seed}; run ${runId}`);
   let handled = 0;
   await pool(picked.map((c) => async () => {
@@ -152,6 +165,7 @@ export async function runCrosscheck(db: DatabaseSync, params: CrosscheckParams, 
       return;
     }
     const checkout = (await deps.checkout?.(repo, c.number, c.head_oid)) ?? undefined;
+    p.input.first_review_note = "The first review rated this PR hold, in a call with other PRs. Review it on its merits.";
     if (checkout) p.input.repo_dir = REPO_PATH;
     let usage: Usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: null };
     let opus: { verdict: string; sure: boolean; reason: string } | null = null;
@@ -199,7 +213,7 @@ export function crosscheckReport(db: DatabaseSync, runId?: string): string {
     single_verdict: string | null; single_reason: string | null; batch_reason: string | null;
   }[];
   if (!rows.length) return `No results for run ${id}.`;
-  const out = [`Run ${id}: ${rows.length} PRs, each a Sonnet hold from a batch call (seed ${rows[0]!.seed ?? "?"})`];
+  const out = [`Run ${id}: ${rows.length} PRs, each a Sonnet hold from a first-pass call with more than one PR (seed ${rows[0]!.seed ?? "?"}); Opus was told the first review rated it hold`];
   const tally = (label: string, pick: (r: (typeof rows)[number]) => string | null) => {
     const asked = rows.filter((r) => pick(r) !== null);
     if (!asked.length) return;

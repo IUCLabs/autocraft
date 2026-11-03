@@ -62,6 +62,8 @@ const ADDED_COLUMNS: [table: string, column: string, type: string][] = [
   ["conversation_turns", "claimed_at", "TEXT"],
   ["conversation_turns", "progress", "TEXT"],
   ["agent_runs", "progress", "TEXT"],
+  // PRs in the first-pass call that produced the review; NULL for holds made without a call and for older rows.
+  ["reviews", "call_size", "INTEGER"],
 ];
 
 // Indexes on added columns: they can only be created once the column exists.
