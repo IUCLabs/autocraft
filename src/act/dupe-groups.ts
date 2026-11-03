@@ -5,6 +5,7 @@
 // is skipped, and so is a whole decision whose answer or roles changed (undo, refresh) while the run went on.
 import type { DatabaseSync } from "node:sqlite";
 import { audit } from "../dash/audit.ts";
+import { backlogHeld } from "../dupes/held.ts";
 import { inPilot } from "../pilot.ts";
 import { textsFor } from "../dupes/texts.ts";
 
@@ -61,7 +62,7 @@ export async function actOnGroups(db: DatabaseSync, run: GroupRun): Promise<Grou
   decisions: for (const dec of groupDecisionsToAct(db, run.repo)) {
     const items = db.prepare("SELECT number, kind, role, detail, head FROM dupe_group_items WHERE decision_id = ? ORDER BY number").all(dec.id) as Item[];
     const texts = new Map(textsFor(db, dec.id, dec.answer).map((t) => [`${t.number}:${t.step}`, t.text]));
-    const closers = items.filter((i) => i.role === "close" && inPilot(db, run.repo, i.number));
+    const closers = items.filter((i) => i.role === "close" && inPilot(db, run.repo, i.number) && !backlogHeld(db, run.repo, i.number));
     const details = items.find((i) => i.role === "keep" && i.kind === "issue" && texts.has(`${i.number}:details`) && inPilot(db, run.repo, i.number));
     if (run.dryRun) {
       if (details && !posted.get(dec.id, details.number, "details")) run.log(`  would post the details comment on ${ref(details.number)} (${dec.id})`);

@@ -90,12 +90,12 @@ export function validateAsk(q: Record<string, unknown>): Record<string, string |
   };
 }
 
-// Inserts or updates the question by id; answer columns are never touched, and neither is a summary the new question lacks.
+// Inserts or updates the question by id; answer columns are never touched, a re-ask replaces the recommendation along with its author and reason, and neither is a summary the new question lacks.
 export function ask(db: DatabaseSync, questions: Record<string, unknown>[], inTransaction = false): { inserted: number; updated: number } {
   const rows = questions.map(validateAsk);
   const cols = ["id", ...ASK_FIELDS];
   const stmt = db.prepare(`INSERT INTO decisions (${cols.join(",")}) VALUES (${cols.map((c) => `:${c}`).join(",")})
-    ON CONFLICT(id) DO UPDATE SET ${ASK_FIELDS.map((c) => SUMMARY_FIELDS.includes(c) ? `${c} = COALESCE(excluded.${c}, ${c})` : `${c} = excluded.${c}`).join(", ")}`);
+    ON CONFLICT(id) DO UPDATE SET ${ASK_FIELDS.map((c) => SUMMARY_FIELDS.includes(c) ? `${c} = COALESCE(excluded.${c}, ${c})` : `${c} = excluded.${c}`).join(", ")}, recommended_by = NULL, recommended_reason = NULL`);
   const exists = db.prepare("SELECT 1 FROM decisions WHERE id = ?");
   let inserted = 0, updated = 0;
   if (!inTransaction) db.exec("BEGIN IMMEDIATE");

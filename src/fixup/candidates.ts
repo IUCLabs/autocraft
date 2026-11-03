@@ -1,5 +1,5 @@
 // Which take-fix PRs the fix-up step works on, from the local tables only.
-import { notHeldSql } from "../dupes/held.ts";
+import { backlogHeldSql, notHeldSql } from "../dupes/held.ts";
 import type { DatabaseSync } from "node:sqlite";
 import { headOf } from "../review/candidates.ts";
 import { commentApprovalOf } from "../act/approval.ts";
@@ -102,7 +102,7 @@ export function carryCandidates(db: DatabaseSync, repo: string): { fix: FixCandi
   const out = { fix: [] as FixCandidate[], ask: [] as FixCandidate[] };
   const rows = db.prepare(`SELECT k.decision_id, k.attempts, i.number, i.head_oid, i.updated_at, i.is_draft,
       c.head_oid AS c_head, c.state AS c_state, c.is_draft AS c_draft, c.fetched_at AS c_at, c.maintainer_can_modify AS can_modify, c.mergeable
-    FROM dupe_carries k JOIN items i ON i.repo = k.repo AND i.number = k.number AND i.kind = 'pr' AND i.state = 'OPEN' AND ${pilotSql("i")}
+    FROM dupe_carries k JOIN items i ON i.repo = k.repo AND i.number = k.number AND i.kind = 'pr' AND i.state = 'OPEN' AND ${pilotSql("i")} AND NOT ${backlogHeldSql("i")}
     LEFT JOIN pr_checks c ON c.repo = i.repo AND c.number = i.number
     WHERE k.repo = ? AND k.state = 'queued' ORDER BY k.number`).all(repo) as (Row & { decision_id: string; attempts: number })[];
   const commenting = commentApprovalOf(db, repo) !== null;

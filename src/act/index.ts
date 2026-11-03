@@ -25,7 +25,7 @@ import { HEAD_FACT } from "../merge/queue.ts";
 import { fillReviewSummaries } from "../review/summary.ts";
 import { Client, type Querier } from "../mirror.ts";
 import { headOf } from "../review/candidates.ts";
-import { backlogHeldSql, notOwnIntegrationSql } from "../dupes/held.ts";
+import { backlogHeld, backlogHeldSql, notOwnIntegrationSql } from "../dupes/held.ts";
 import { applyDuplicateAnswers } from "../dupes/decide.ts";
 import { commentApprovalOf } from "./approval.ts";
 import { actOnGroups, type GroupIo } from "./dupe-groups.ts";
@@ -157,7 +157,7 @@ const rowOf = (db: DatabaseSync, t: Target): ActionRow | undefined =>
 
 /** Answered-close targets in the repo without a final (done or skipped) action row. */
 export function pending(db: DatabaseSync, repo: string): Target[] {
-  return actionable(db).flatMap((a) => targetsOf(a, repo)).filter((t) => inPilot(db, t.repo, t.number)).filter((t) => {
+  return actionable(db).flatMap((a) => targetsOf(a, repo)).filter((t) => inPilot(db, t.repo, t.number) && !backlogHeld(db, t.repo, t.number)).filter((t) => {
     const r = rowOf(db, t);
     return !r || r.state === "failed";
   });

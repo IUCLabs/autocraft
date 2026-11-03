@@ -13,6 +13,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import type { PipelineState, StageLimit } from "../../web/src/api/types.ts";
 import { readSeqs, TOPICS } from "../live.ts";
+import { backfillIds } from "../decide/recommend.ts";
 import { latestJevRun, selectCandidates as decideCandidates } from "../decide/select.ts";
 import { embedderId, modelName } from "../embed/model.ts";
 import { pending as embedPending } from "../embed/store.ts";
@@ -235,7 +236,8 @@ export const LANES: Lane[] = [
     name: "decide",
     steps: ["decide"],
     detect: (db, { jevRun: run }) => {
-      return run && decideCandidates(db, run).length ? [{ step: "decide", params: {} }] : [];
+      // Open scope decisions without a recommendation (asked before recommendations existed) also need a job; an answered-null one has recommended_by set.
+      return (run && decideCandidates(db, run).length) || backfillIds(db, 1).length ? [{ step: "decide", params: {} }] : [];
     },
   },
   {

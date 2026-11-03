@@ -161,3 +161,19 @@ describe("decide", () => {
     await assert.rejects(runDecide(fixture(), { repos: ["not-tracked"], dryRun: true }, quiet), /not tracked/);
   });
 });
+
+test("summary items and recommendation calls share the limit", async () => {
+  const db = fixture();
+  const item = db.prepare(`INSERT INTO items (repo, number, kind, state, title, body, author, created_at, updated_at, is_draft, labels, additions, deletions, changed_files, comments_count)
+    VALUES ('photocraft', ?, 'issue', 'OPEN', 'Extra', 'b', 'someone', '2026-02-01T00:00:00Z', '2026-02-01T00:00:00Z', 0, '[]', 1, 0, 1, 0)`);
+  const cls = db.prepare(`INSERT INTO classifications (repo, number, classifier, run_id, at, type_label, flags, probs) VALUES ('photocraft', ?, 'jev', 'r1', '2026-10-01T00:00:00Z', 'missing feature', '["needs decision"]', '{"top":0.95}')`);
+  for (let n = 100; n < 140; n++) { item.run(n); cls.run(n); }
+  const restore = setRunner(fake([]));
+  try {
+    let max = 0;
+    await runDecide(db, { checkout: async () => null, limit: 30, onSent: (n) => { max = Math.max(max, n); } }, quiet);
+    assert.ok(max > 0 && max <= 30, `counted ${max}`);
+    const r = await runDecide(db, { checkout: async () => null, limit: 30 }, quiet);
+    assert.ok(r.asked + r.recommended <= 30);
+  } finally { restore(); }
+});

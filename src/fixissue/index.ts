@@ -39,7 +39,8 @@ import { hasOpenPr, notRustKey, selectIssues, type IssueCandidate } from "./cand
 import { parseTriage, sourcePaths, validateFixPatch } from "./parse.ts";
 import { branchName, commentText, commitMessage, prBody, prTitle } from "./template.ts";
 import { COMMENTS_SHOWN, COMMENT_CHARS, FILE_CAP, ISSUE_BODY_LIMIT, MAX_PATHS, MAX_ROUNDS, TOTAL_CAP, type IssueText, type PatchInput, type TriageInput } from "./types.ts";
-import { pilotSqlFor } from "../pilot.ts";
+import { inPilot, pilotSqlFor } from "../pilot.ts";
+import { backlogHeld, backlogHeldSql } from "../dupes/held.ts";
 
 export { selectIssues, type IssueCandidate } from "./candidates.ts";
 
@@ -296,7 +297,7 @@ export async function runFixIssue(db: DatabaseSync, params: FixIssueParams, log:
   const d = deps ?? defaultDeps();
   const runId = `fixissue-${repo}-${iso(d).replace(/[-:]/g, "").slice(0, 15)}`;
   const s: FixIssueSummary = { runId, repo, dryRun, started: [], queued: [], skipped: [], failed: [] };
-  const retries = db.prepare("SELECT * FROM fix_attempts WHERE repo = ? AND state = 'retry' ORDER BY updated_at").all(repo) as AttemptRow[];
+  const retries = db.prepare(`SELECT * FROM fix_attempts a WHERE repo = ? AND state = 'retry' AND ${pilotSqlFor("a.repo", "a.number")} AND NOT ${backlogHeldSql("a")} ORDER BY updated_at`).all(repo) as AttemptRow[];
   const cands = selectIssues(db, repo);
   const picks = params.limit === undefined ? cands : cands.slice(0, params.limit);
   log(`fixissue ${repo}: ${cands.length} candidate issues, ${retries.length} rounds due${fixIssueApprovalOf(db, repo) ? "" : " (fixing issues is not approved for this repo)"}`);
@@ -377,7 +378,7 @@ export function fixDue(db: DatabaseSync, repo: string): boolean {
 export async function runFixIssueCollect(db: DatabaseSync, params: CollectParams = {}, log: (line: string) => void = console.log, deps?: CollectDeps): Promise<CollectSummary> {
   const d = deps ?? collectDefaults();
   const s: CollectSummary = { runId: `fixissue-collect-${iso(d).replace(/[-:]/g, "").slice(0, 15)}`, looked: 0, passed: 0, opened: 0, failedRounds: 0, failed: 0, retried: 0, changed: 0 };
-  const rows = db.prepare("SELECT * FROM fix_attempts WHERE state IN ('testing', 'passed') ORDER BY updated_at").all() as AttemptRow[];
+  const rows = db.prepare(`SELECT * FROM fix_attempts a WHERE state IN ('testing', 'passed') AND ${pilotSqlFor("a.repo", "a.number")} AND NOT ${backlogHeldSql("a")} ORDER BY updated_at`).all() as AttemptRow[];
   s.looked = rows.length;
   if (params.dryRun) { log(`fixissue-collect: ${rows.length} pending; dry run`); return s; }
   const x = (repo: string): Ctx => ({ db, d, git: new Git(d.exec, d.root, repo), log, runId: s.runId, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: null } });
@@ -515,6 +516,7 @@ export async function openPr(x: Ctx, r: AttemptRow): Promise<boolean> {
   };
   // Rechecked right before each GitHub write: the operator may revoke approval or the day's limit may be reached.
   const permitted = (): boolean => {
+    if (!inPilot(db, r.repo, r.number) || backlogHeld(db, r.repo, r.number)) { log(`  ${ref}: waiting: the issue is outside the pilot or held`); return false; }
     if (!fixIssueApprovalOf(db, r.repo)) { log(`  ${ref}: waiting: fixing issues is not approved for ${r.repo}`); return false; }
     if (openedToday(db, new Date()) >= perDay(db)) { log(`  ${ref}: waiting: the daily limit of opened PRs is reached`); return false; }
     return true;

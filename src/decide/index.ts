@@ -36,8 +36,8 @@ export type DecideParams = {
   checkout?: (repo: string) => Promise<string | null>;
 };
 
-/** Most recommendation calls per run when no limit is given. */
-const DEFAULT_RECOMMEND_LIMIT = 50;
+/** Most summary items plus recommendation calls per run when no limit is given. */
+const DEFAULT_LIMIT = 50;
 
 export type RepoCount = { candidates: number; needsDecision: number; scopeDisagreement: number; asked: number; noSummary: number };
 export type DecideResult = { run: string | null; dryRun: boolean; byRepo: Record<string, RepoCount>; asked: number; noSummary: number; recommended: number; usageRun: string | null };
@@ -71,6 +71,8 @@ export async function runDecide(db: DatabaseSync, params: DecideParams = {}, log
   const model = params.model ?? PROMPT.models[0]!;
   if (!DECIDE_MODELS.includes(model)) throw new Error(`model must be one of ${DECIDE_MODELS.join(", ")}`);
   if (params.limit !== undefined && !(Number.isInteger(params.limit) && params.limit >= 0)) throw new Error("limit must be a whole number ≥ 0");
+  // Summary items and recommendation calls share one budget.
+  const total = params.limit ?? DEFAULT_LIMIT;
   const tracked = new Set(trackedNames(db));
   const untracked = (params.repos ?? []).filter((r) => !tracked.has(r));
   if (untracked.length) throw new Error(`not tracked: ${untracked.join(", ")}`);
@@ -80,7 +82,7 @@ export async function runDecide(db: DatabaseSync, params: DecideParams = {}, log
   if (!run) log("decide: no classification run with Jev verdicts");
   else {
     const all = selectCandidates(db, run, params.repos);
-    picked.push(...(params.limit === undefined ? all : all.slice(0, params.limit)));
+    picked.push(...all.slice(0, total));
     const reasonKey: Record<Reason, "needsDecision" | "scopeDisagreement"> = { "needs-decision": "needsDecision", "scope-disagreement": "scopeDisagreement" };
     for (const c of picked) {
       const n = count(result.byRepo, c.repo);
@@ -97,8 +99,9 @@ export async function runDecide(db: DatabaseSync, params: DecideParams = {}, log
   if (picked.length) await summarise(db, picked, model, usageRun, result, askedIds, (n) => { sent = n; params.onSent?.(n); }, log);
 
   // New decisions first, then open ones that never had a model recommendation, within the step's limit.
-  const room = Math.max(0, (params.limit ?? DEFAULT_RECOMMEND_LIMIT) - askedIds.length);
-  const ids = [...askedIds, ...backfillIds(db, room).filter((id) => !askedIds.includes(id))];
+  const room = Math.max(0, total - picked.length);
+  const first = askedIds.slice(0, room);
+  const ids = [...first, ...backfillIds(db, room - first.length).filter((id) => !first.includes(id))];
   if (picked.length || ids.length) result.usageRun = usageRun;
   if (ids.length) {
     result.recommended = await recommend(db, ids, {

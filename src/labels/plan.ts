@@ -1,6 +1,6 @@
 // Which labels each open item should get. Reads the mirror and classifications only.
 import type { DatabaseSync } from "node:sqlite";
-import { notOwnIntegrationSql } from "../dupes/held.ts";
+import { backlogHeldSql, notOwnIntegrationSql } from "../dupes/held.ts";
 import { forRun, settleRows, type ClsRow } from "./settled.ts";
 import { scopeAnswers } from "../review/candidates.ts";
 import { isTypeLabel, sameLabel } from "./set.ts";
@@ -17,7 +17,7 @@ export type PlanRow = {
 export type PlanCounts = { toAdd: number; already: number; unsettled: number; conflicts: number };
 
 export function planLabels(db: DatabaseSync, repo: string, runId?: string): PlanRow[] {
-  const items = db.prepare(`SELECT number, kind, url, labels FROM main.items i WHERE repo = ? AND state = 'OPEN' AND ${notOwnIntegrationSql("i")} AND ${pilotSql("i")} ORDER BY number`).all(repo) as
+  const items = db.prepare(`SELECT number, kind, url, labels FROM main.items i WHERE repo = ? AND state = 'OPEN' AND ${notOwnIntegrationSql("i")} AND ${pilotSql("i")} AND NOT ${backlogHeldSql("i")} ORDER BY number`).all(repo) as
     { number: number; kind: string; url: string | null; labels: string | null }[];
   const byItem = new Map<number, ClsRow[]>();
   const cls = db.prepare(`SELECT number, classifier, run_id, at, type_label, flags, probs FROM main.classifications WHERE repo = ?

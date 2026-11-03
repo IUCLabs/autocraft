@@ -6,6 +6,7 @@
 //
 // Without --apply it is a dry run: it reads the local tables only, calls
 // nothing and writes nothing.
+import { pilotRepos } from "../pilot.ts";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import type { DatabaseSync } from "node:sqlite";
@@ -191,6 +192,11 @@ export async function runMerge(db: DatabaseSync, params: MergeParams, log: (line
   if (params.limit !== undefined && !(Number.isInteger(params.limit) && params.limit >= 0)) throw new Error("limit must be a whole number ≥ 0");
   const at = () => (deps?.now() ?? new Date()).toISOString();
   const runId = `merge-${repo}-${at().replace(/[-:]/g, "").slice(0, 15)}`;
+  const pilot = pilotRepos(db);
+  if (pilot && !pilot.has(repo)) {
+    log(`merge ${repo}: not in the pilot; nothing done`);
+    return { runId, repo, dryRun, states: {}, attempted: [], merged: [], refused: [], asked: [] };
+  }
   const queue = buildQueue(db, { repo });
   const open = queue.filter((e) => e.state !== "merged");
   const states = countStates(queue);

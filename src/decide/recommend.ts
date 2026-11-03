@@ -15,11 +15,28 @@ import { RECOMMEND_REASON_MAX, type RecommendInput } from "./recommend-types.ts"
 export const RECOMMEND_PROMPT = CLAUDE_PROMPTS["decide.recommend"];
 export type Recommendation = { recommended: string | null; reason: string };
 
+/** The last balanced `{...}` in the text that parses and has the property (string quoting respected), or null. For replies with prose braces around the answer. */
+function lastObjectWith(text: string, prop: string): unknown {
+  for (let end = text.lastIndexOf("}"); end > 0; end = text.lastIndexOf("}", end - 1)) {
+    let depth = 0, inStr = false;
+    for (let i = end; i >= 0; i--) {
+      const ch = text[i]!;
+      if (ch === '"' && text[i - 1] !== "\\") inStr = !inStr;
+      else if (!inStr && ch === "}") depth++;
+      else if (!inStr && ch === "{" && --depth === 0) {
+        try { const o = JSON.parse(text.slice(i, end + 1)); if (o && typeof o === "object" && prop in o) return o; } catch { /* try an earlier object */ }
+        break;
+      }
+    }
+  }
+  return null;
+}
+
 /** The recommendation in a reply, or null when it has no JSON object. A key that is not one of `keys` becomes null. */
 export function parseRecommendReply(text: string, keys: string[]): Recommendation | null {
   const a = text.indexOf("{"), b = text.lastIndexOf("}");
   let o: unknown;
-  try { o = a >= 0 && b > a ? JSON.parse(text.slice(a, b + 1)) : null; } catch { o = null; }
+  try { o = a >= 0 && b > a ? JSON.parse(text.slice(a, b + 1)) : null; } catch { o = lastObjectWith(text, "recommended"); }
   if (!o || typeof o !== "object" || Array.isArray(o)) return null;
   const { recommended, reason } = o as Record<string, unknown>;
   const text1 = typeof reason === "string" ? reason.replace(/\s+/g, " ").trim().slice(0, RECOMMEND_REASON_MAX) : "";
