@@ -98,6 +98,18 @@ export function PipelineSwitch({ className }: { className?: string }) {
 
 const usage = (l: StageLimit) => (l.perDay === null ? `${num(l.usedToday)}` : `${num(l.usedToday)} of ${num(l.perDay)}`);
 
+/** Operators start today's count of the stage from zero again. */
+function ResetCount({ l }: { l: StageLimit }) {
+  const api = useApi();
+  const write = useWrite();
+  return (
+    <>
+      <ConfirmButton label="Reset count" confirmLabel="Confirm reset" loading={write.busy === "reset"} onConfirm={() => void write.run("reset", () => api.pipeline.resetLimit(l.step))} />
+      <ErrorLine error={write.error} />
+    </>
+  );
+}
+
 function PauseBadge({ l }: { l: StageLimit }) {
   if (l.pausedReason) return <Badge tone="warn">{l.pausedReason}</Badge>;
   return l.status ? <span className="text-xs text-ink/50">{l.status}</span> : null;
@@ -144,6 +156,7 @@ export function StageLimitRow({ step }: { step: string }) {
         Today: {usage(l)} items
         {l.perDay === null && <span className="text-ink/50"> (no limit)</span>}
       </span>
+      {operator && <ResetCount l={l} />}
       <PauseBadge l={l} />
       {operator && <LimitEditor l={l} />}
     </div>
@@ -174,7 +187,9 @@ export function StageLimits() {
                   <td className="px-3 py-1.5">
                     {l.title} <span className="code text-xs text-ink/45">{l.step}</span>
                   </td>
-                  <td className="px-3 text-right">{usage(l)}</td>
+                  <td className="px-3 text-right">
+                    {operator && <ResetCount l={l} />} {usage(l)}
+                  </td>
                   <td className="px-3 py-1.5">{operator ? <LimitEditor l={l} /> : limitText(l)}</td>
                   <td className="px-3">{l.pausedReason ? <Badge tone="warn">{l.pausedReason}</Badge> : <span className="text-ink/45">{l.status ?? "ready"}</span>}</td>
                 </tr>

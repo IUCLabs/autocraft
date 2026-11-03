@@ -42,7 +42,7 @@ import { currentRun, dueItems, haikuDue } from "./classify.ts";
 import { enqueue, JobError, now, requestCancel, RUNNER_STOPPED } from "./jobs.ts";
 import { claudePauseReason } from "../agents/accounts.ts";
 import { knownStep, loadSteps, modelsOf, usesClaude, type Params } from "./steps.ts";
-import { pilotItems } from "../pilot.ts";
+import { pilotItems, pilotRepos } from "../pilot.ts";
 
 /** Fallback only: the planner normally runs on a content change, a finished job or a release. */
 export const PLAN_EVERY_MS = 5 * 60_000;
@@ -60,6 +60,7 @@ const KEY_BY = "pipeline_changed_by", KEY_AT = "pipeline_changed_at";
 const KEY_PLANNED_AT = "pipeline_planned_at", KEY_SEQS_SEEN = "pipeline_seqs_seen", KEY_WAKE_AT = "pipeline_wake_at", KEY_STATUS = "pipeline_status";
 const KEY_CURSOR = "pipeline_review_cursor";
 const KEY_VERIFY_CURSOR = "pipeline_verify_cursor";
+const KEY_RESET = "limit_reset_at:";
 
 const getSetting = (db: DatabaseSync, key: string): string | null =>
   (db.prepare("SELECT value FROM settings WHERE key = ?").get(key) as { value: string } | undefined)?.value ?? null;
@@ -106,7 +107,11 @@ export type PlanCtx = {
   notes?: Record<string, string>;
 };
 
-export const planCtx = (db: DatabaseSync): PlanCtx => ({ run: currentRun(db), jevRun: latestJevRun(db), tracked: trackedNames(db), wake: [], notes: {} });
+/** With a pilot, only the repos it names are planned for; a job for another repo is never proposed. */
+export const planCtx = (db: DatabaseSync): PlanCtx => {
+  const pilot = pilotRepos(db);
+  return { run: currentRun(db), jevRun: latestJevRun(db), tracked: trackedNames(db).filter((r) => !pilot || pilot.has(r)), wake: [], notes: {} };
+};
 
 /** Topics whose changes call for a plan: content the stages read. Job logs, usage, agent runs, sandbox environments and tasks, and audit entries do not. */
 export const INPUT_TOPICS = TOPICS.filter((t) => !["jobs", "usage", "agents", "envs", "tasks", "access"].includes(t));
@@ -117,7 +122,8 @@ const tasksSig = (db: DatabaseSync): string =>
 
 /** Daily limits are not a topic of their own (they share `jobs`). */
 const limitsSig = (db: DatabaseSync): string =>
-  String((db.prepare("SELECT group_concat(step || '=' || COALESCE(per_day, 'n'), ',') AS s FROM (SELECT step, per_day FROM stage_limits ORDER BY step)").get() as { s: string | null }).s ?? "");
+  String((db.prepare("SELECT group_concat(step || '=' || COALESCE(per_day, 'n'), ',') AS s FROM (SELECT step, per_day FROM stage_limits ORDER BY step)").get() as { s: string | null }).s ?? "")
+  + String((db.prepare(`SELECT group_concat(key || '=' || value, ',') AS s FROM (SELECT key, value FROM settings WHERE key LIKE '${KEY_RESET}%' ORDER BY key)`).get() as { s: string | null }).s ?? "");
 
 const repoOf = (c: Candidate): string | null => (typeof c.params.repo === "string" ? c.params.repo : null);
 
@@ -407,9 +413,10 @@ const DEFAULT_PER_DAY: Record<string, number> = { dupes: 2000, referee: 500, "du
 export const limitRow = (db: DatabaseSync, step: string): LimitRow =>
   (db.prepare("SELECT * FROM stage_limits WHERE step = ?").get(step) as LimitRow | undefined) ?? { step, per_day: DEFAULT_PER_DAY[step] ?? null, updated_by: null, updated_at: null };
 
-/** Items handled by the step's jobs that started today (UTC). */
+/** Items handled by the step's jobs that started today (UTC) and after the operator's last reset of its count. */
 export function usageToday(db: DatabaseSync, step: string, ms: number = Date.now()): number {
-  return (db.prepare("SELECT COALESCE(SUM(items), 0) AS n FROM jobs WHERE step = ? AND started_at >= ?").get(step, dayStart(ms)) as { n: number }).n;
+  const day = dayStart(ms), reset = getSetting(db, KEY_RESET + step);
+  return (db.prepare("SELECT COALESCE(SUM(items), 0) AS n FROM jobs WHERE step = ? AND started_at >= ?").get(step, reset && reset > day ? reset : day) as { n: number }).n;
 }
 
 /** The steps an operator release (operator-actions.ts) hands new work to. */
@@ -511,6 +518,16 @@ export function setLimit(db: DatabaseSync, step: unknown, input: unknown, by: st
   return { perDay };
 }
 
+/** Starts today's count of one step (or of all) again from zero. */
+export function resetLimitCount(db: DatabaseSync, step: unknown, by: string): { steps: string[] } {
+  const steps = step === "all" ? LIMIT_STEPS : typeof step === "string" && LIMIT_STEPS.includes(step) ? [step] : null;
+  if (!steps) throw Object.assign(new LimitError("no such stage"), { status: 404 });
+  const at = now();
+  for (const st of steps) setSetting(db, KEY_RESET + st, at);
+  audit(db, by, "limit-reset", step === "all" ? "step:all" : `step:${step}`, { steps });
+  return { steps };
+}
+
 /** What a stage is doing now: running, queued, or why it is not (the planner's last reading); null when unknown. */
 function stepStatus(db: DatabaseSync, step: string, why: string | undefined): string | null {
   const j = db.prepare("SELECT state FROM jobs WHERE step = ? AND state IN ('running', 'queued') ORDER BY state = 'running' DESC LIMIT 1").get(step) as { state: string } | undefined;
@@ -560,6 +577,7 @@ export async function detectAutopilot(db: DatabaseSync, opts: PlanOptions = {}):
   const steps = await loadSteps();
   const proposals: Proposal[] = [];
   const ctx = planCtx(db);
+  const pilot = pilotRepos(db);
   const seqs = readSeqs(db);
   const status: Record<string, string> = {};
   // Pause and limit do not change during the pass: one answer per step.
@@ -629,6 +647,8 @@ export async function detectAutopilot(db: DatabaseSync, opts: PlanOptions = {}):
       if (!candidates.length) { for (const s of lane.steps ?? []) note(s, "nothing to do"); continue; }
       let taken = 0;
       for (const c of candidates) {
+        const outside = [c, c.gate].find((x) => x && typeof x.params.repo === "string" && pilot && !pilot.has(x.params.repo));
+        if (outside) { note(outside.step, "outside the pilot"); continue; }
         if (c.gate && !gate(c.gate.step, c.gate.params, lane, c.gate.poll)) continue;
         const g = gate(c.step, c.params, lane, c.poll);
         if (!g) continue;

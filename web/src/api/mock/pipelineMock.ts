@@ -169,6 +169,17 @@ export function createPipelineMock(me: User, changed: () => void): Pick<Api, "pi
         changed();
         return wait(state(), 30);
       },
+      async resetLimit(step) {
+        requireOperator();
+        const hit = step === "all" ? limits : limits.filter((x) => x.step === step);
+        if (!hit.length) throw new Error("no such stage");
+        for (const l of hit) {
+          l.usedToday = 0;
+          l.pausedReason = l.perDay === 0 ? "paused: the daily limit is 0" : null;
+        }
+        changed();
+        return wait(state(), 30);
+      },
       async setLimit(step, input) {
         requireOperator();
         const l = limits.find((x) => x.step === step);

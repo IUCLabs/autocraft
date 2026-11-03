@@ -5,7 +5,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import type { Job, JobState, PipelineOverview, PipelineStage, PipelineStep, StepParam, SyncRun } from "../../../web/src/api/types.ts";
 import { enqueue, getJob, jobDetail, JobError, JOB_STATES, listJobs, requestCancel, toJob, toJobs } from "../../runner/jobs.ts";
-import { LimitError, pipelineState, setEnabled, setLimit } from "../../runner/autopilot.ts";
+import { LimitError, pipelineState, resetLimitCount, setEnabled, setLimit } from "../../runner/autopilot.ts";
 import { HEARTBEAT_KEY } from "../../runner/runner.ts";
 import { loadSteps, type StepDef } from "../../runner/steps.ts";
 import { audit } from "../audit.ts";
@@ -170,4 +170,16 @@ export async function putLimit(db: DatabaseSync, req: Req) {
     throw e;
   }
   return (await pipelineState(db)).limits.find((l) => l.step === req.params.step)!;
+}
+
+/** Starts today's count of a step again from zero; the step `all` resets every stage. */
+export async function resetLimit(db: DatabaseSync, req: Req) {
+  requireOperator(req);
+  try {
+    resetLimitCount(db, req.params.step, req.user.login);
+  } catch (e) {
+    if (e instanceof LimitError) throw new HttpError(e.status, e.message);
+    throw e;
+  }
+  return pipelineState(db);
 }

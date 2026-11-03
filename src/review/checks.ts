@@ -1,6 +1,7 @@
 // CI and merge state of PR heads: one GraphQL query per chunk of PRs, stored in pr_checks.
 import type { DatabaseSync } from "node:sqlite";
 import type { Querier } from "../mirror.ts";
+import { pilotSql } from "../pilot.ts";
 
 const ORG = "storytold";
 /** PRs per query: 100 check contexts each keeps a query well under GitHub's node limit. */
@@ -86,7 +87,7 @@ export function saveChecks(db: DatabaseSync, rows: PrChecks[], at = new Date().t
 
 /** Fetches and stores the checks of the given PRs (all open PRs of the repo when none are given). */
 export async function refreshChecks(db: DatabaseSync, client: Querier, repo: string, numbers?: number[], log: (line: string) => void = () => {}): Promise<PrChecks[]> {
-  const list = numbers ?? (db.prepare("SELECT number FROM items WHERE repo = ? AND kind = 'pr' AND state = 'OPEN' ORDER BY number").all(repo) as { number: number }[]).map((r) => r.number);
+  const list = numbers ?? (db.prepare(`SELECT number FROM items i WHERE repo = ? AND kind = 'pr' AND state = 'OPEN' AND ${pilotSql("i")} ORDER BY number`).all(repo) as { number: number }[]).map((r) => r.number);
   const all: PrChecks[] = [];
   for (let i = 0; i < list.length; i += CHECKS_PER_QUERY) {
     const chunk = list.slice(i, i + CHECKS_PER_QUERY);

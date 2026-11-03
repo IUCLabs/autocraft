@@ -24,6 +24,12 @@ export function pilotItems(db: DatabaseSync): string[] {
   }
 }
 
+/** The repos the pilot names (by item or whole), or null when no pilot is set. */
+export function pilotRepos(db: DatabaseSync): Set<string> | null {
+  const items = pilotItems(db);
+  return items.length ? new Set(items.map((i) => i.split("#")[0]!)) : null;
+}
+
 /** Parses refs separated by whitespace or commas; throws on a malformed one or an untracked repo. */
 export function parsePilotRefs(db: DatabaseSync, input: unknown): string[] {
   const parts = Array.isArray(input) ? input : typeof input === "string" ? input.split(/[\s,]+/).filter(Boolean) : null;

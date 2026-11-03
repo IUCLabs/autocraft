@@ -330,6 +330,7 @@ export function apiRoutes(opts: ApiOptions = {}): Route[] {
     get("/api/pipeline/state", (db) => pipeline.state(db)),
     { method: "PUT", pattern: "/api/pipeline/state", operator: true, handler: ok(pipeline.putState) },
     { method: "PUT", pattern: "/api/pipeline/limits/:step", operator: true, handler: ok(pipeline.putLimit) },
+    { method: "POST", pattern: "/api/pipeline/limits/:step/reset", operator: true, handler: ok(pipeline.resetLimit) },
     { method: "PUT", pattern: "/api/pipeline/pilot", operator: true, handler: ok(adm.putPilot) },
     get("/api/prompts", prompts),
     get("/api/accounts", agents.accounts),

@@ -5,7 +5,7 @@ import { connect } from "../db.ts";
 import { audit } from "../dash/audit.ts";
 import { scopeToTracked } from "../repos.ts";
 import { execJob } from "./exec.ts";
-import { LimitError, pipelineState, setEnabled, setLimit } from "./autopilot.ts";
+import { LimitError, pipelineState, resetLimitCount, setEnabled, setLimit } from "./autopilot.ts";
 import { PilotError, pilotItems, setPilot } from "../pilot.ts";
 import { enqueue, JobError, listJobs, requestCancel } from "./jobs.ts";
 import { DEFAULT_MAX_JOBS, Runner, runnerLockPath } from "./runner.ts";
@@ -122,6 +122,7 @@ export const commands = {
 
 const PIPELINE_USAGE = `usage: craft-auto pipeline on | off | status
        craft-auto pipeline limit <step> --per-day <N|none>
+       craft-auto pipeline limit reset <step>|--all
        craft-auto pipeline pilot set <repo#number|repo>... | show | clear`;
 
 // Recorded as `cli`: only someone with a shell on the host can run this.
@@ -132,6 +133,16 @@ async function pipeline(args: string[]): Promise<void> {
     setEnabled(db, sub === "on", "cli");
     audit(db, "cli", "pipeline-switch", "pipeline", { enabled: sub === "on" });
     console.log(`pipeline ${sub}`);
+  } else if (sub === "limit" && rest[0] === "reset") {
+    const target = rest[1] === "--all" ? "all" : rest[1];
+    if (!target || rest.length > 2) die(PIPELINE_USAGE);
+    try {
+      const { steps } = resetLimitCount(db, target, "cli");
+      console.log(`reset today's count of ${steps.length === 1 ? steps[0] : `${steps.length} stages`}`);
+    } catch (e) {
+      if (e instanceof LimitError) die(e.message);
+      throw e;
+    }
   } else if (sub === "limit") {
     const step = rest[0], n = rest[rest.indexOf("--per-day") + 1];
     if (!step || rest.indexOf("--per-day") < 0 || n === undefined) die(PIPELINE_USAGE);
