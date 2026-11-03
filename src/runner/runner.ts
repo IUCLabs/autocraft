@@ -15,6 +15,7 @@ import { recordUsageSamples } from "../agents/accounts.ts";
 import { AccountWatcher } from "../agents/manage.ts";
 import { failRunning, pruneRuns } from "../agents/runs.ts";
 import { pruneTasks, reapLost } from "../build/tasks.ts";
+import { checkPendingUpdate } from "../build/worker-update.ts";
 import { jobRow, now, pruneJobs, RUNNER_STOPPED } from "./jobs.ts";
 import { OffThread } from "./offthread.ts";
 import { loadSteps } from "./steps.ts";
@@ -134,6 +135,7 @@ export class Runner {
       this.o.log(`build tasks: ${(e as Error).message}`);
     }
     this.usageTick();
+    this.workerUpdateTick();
     await this.autopilot();
     await this.startJobs();
     if (!this.flowing && Date.now() - this.flowAt >= FLOW_EVERY_MS) {
@@ -162,6 +164,19 @@ export class Runner {
     this.planning = this.detect(Date.now())
       .then((d) => { this.detected = d; }, (e) => this.o.log(`autopilot: detection failed: ${(e as Error).message}`))
       .finally(() => (this.planning = null));
+  }
+
+  private updateAt = 0;
+  private updating = false;
+
+  /** About once a minute, runs the sandbox worker update that a deploy left pending once its tasks have finished. */
+  private workerUpdateTick(): void {
+    if (this.updating || Date.now() - this.updateAt < 60_000) return;
+    this.updateAt = Date.now();
+    this.updating = true;
+    checkPendingUpdate(this.db, undefined, this.o.log)
+      .catch((e) => this.o.log(`worker update: ${(e as Error).message}`))
+      .finally(() => (this.updating = false));
   }
 
   private usageAt = 0;

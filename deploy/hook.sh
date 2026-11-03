@@ -17,7 +17,7 @@
 #   AUTOCRAFT_SUDO             command prefix for the restart (default "sudo -n")
 #   AUTOCRAFT_WORKER_SSH       user@host of the sandbox worker's admin SSH command; when set
 #                              and $AUTOCRAFT_ROOT/.ssh/id_craftsandbox exists, the worker code
-#                              is updated to this commit (restarts the worker)
+#                              is updated to this commit once the worker has no running tasks
 #   AUTOCRAFT_HEALTH_URL       URL polled after the restart (default: http://$CRAFT_AUTO_LISTEN/)
 #
 # Order: snapshot the database, stop the sync timer, build the new release beside
@@ -128,13 +128,8 @@ for c in dash runner sync; do
 done
 
 if [ -n "${AUTOCRAFT_WORKER_SSH:-}" ] && [ -f "$ROOT/.ssh/id_craftsandbox" ]; then
-	ssh_worker=(ssh -i "$ROOT/.ssh/id_craftsandbox" -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=accept-new "$AUTOCRAFT_WORKER_SSH")
-	if [ "$("${ssh_worker[@]}" version 2>/dev/null || true)" != "$sha" ]; then
-		echo "-> Updating the sandbox worker code..."
-		git archive "$BRANCH" | "${ssh_worker[@]}" update "$sha"
-	else
-		echo "-> Sandbox worker code is current."
-	fi
+	# Records the update instead of running it while the worker has tasks; the runner applies it later.
+	node --no-warnings src/cli.ts worker update-code --sha "$sha" --ssh "$AUTOCRAFT_WORKER_SSH" --key "$ROOT/.ssh/id_craftsandbox" --git-dir "$GIT_DIR"
 fi
 
 echo "-> Switching app to ${sha:0:12}..."

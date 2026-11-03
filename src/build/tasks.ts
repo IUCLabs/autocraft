@@ -7,6 +7,7 @@ import { audit } from "../dash/audit.ts";
 import { excludeHidden } from "../dash/api/visible.ts";
 import { removeArtifacts } from "./artifacts.ts";
 import { BuildError, slotsOf } from "./envs.ts";
+import { draining } from "./worker-update.ts";
 
 export const LOST_AFTER_MS = 2 * 60_000;
 /** A task is claimed at most this often: the first time and one requeue after a lost worker. */
@@ -167,10 +168,10 @@ export function claim(db: DatabaseSync, envId: string, free: number, nowMs: numb
   db.exec("BEGIN IMMEDIATE");
   try {
     const env = db.prepare("SELECT * FROM build_envs WHERE id = ?").get(envId) as
-      { enabled: number; slots: number; reported_slots: number | null; capabilities: string | null; paused_reason: string | null } | undefined;
+      { enabled: number; kind: string; slots: number; reported_slots: number | null; capabilities: string | null; paused_reason: string | null } | undefined;
     const caps = env?.capabilities ? json<Capabilities | null>(env.capabilities, null) : null;
     const out: ClaimedTask[] = [];
-    if (env && env.enabled === 1 && caps && !env.paused_reason && Number.isInteger(free) && free > 0) {
+    if (env && env.enabled === 1 && caps && !env.paused_reason && !draining(db, env.kind) && Number.isInteger(free) && free > 0) {
       const running = (db.prepare("SELECT COUNT(*) AS n FROM build_tasks WHERE env_id = ? AND state IN ('claimed', 'running')").get(envId) as { n: number }).n;
       const room = Math.min(free, slotsOf(env) - running);
       if (room > 0) {
