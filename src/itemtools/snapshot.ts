@@ -108,7 +108,7 @@ export function writeSnapshot(src: string = dbPath(), dest: string = snapshotFil
   try {
     db.prepare("ATTACH DATABASE ? AS src").run(`file:${encodeURI(src).replace(/\?/g, "%3F").replace(/#/g, "%23")}?mode=ro`);
     const changed = { items: 0, comments: 0, embeddings: 0 };
-    db.exec("BEGIN");
+    db.exec("BEGIN IMMEDIATE");
     const pub = "repo IN (SELECT name FROM src.repos WHERE visibility = 'public')";
     db.exec(`CREATE TEMP VIEW pub_items AS SELECT * FROM src.items WHERE ${pub}`);
     db.exec(`CREATE TEMP VIEW pub_comments AS SELECT * FROM src.comments WHERE ${pub}`);
