@@ -3,6 +3,8 @@
 //   - a scope decision answered `close` (Out of scope), on an issue or PR;
 //   - a "Close this PR?" decision, which this step asks for each PR whose
 //     latest review says close, once per head commit.
+//   - a "Merge this PR?" decision answered `close`: the same comment and close
+//     as a "Close this PR?" close.
 //   - a duplicate decision answered `close` (Close as duplicate): "Duplicate of
 //     #y." (or "..., which is closed.") and a close. "Not a duplicate" and "Keep
 //     both" store the pair as distinct and write nothing (src/dupes/decide.ts).
@@ -18,7 +20,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import { audit } from "../dash/audit.ts";
 import { connect } from "../db.ts";
-import { actionable, ask, factsOf, getDecision, type Actionable, type DecisionRow } from "../decisions.ts";
+import { actionable, ask, factsOf, getDecision, type Actionable, type DecisionRow, type Kind } from "../decisions.ts";
 import { HEAD_FACT } from "../merge/queue.ts";
 import { Client, type Querier } from "../mirror.ts";
 import { headOf } from "../review/candidates.ts";
@@ -60,6 +62,19 @@ export const CLOSE_OPTIONS = {
 
 /** One decision per PR head: a push gets a new one. */
 export const closeDecisionId = (repo: string, number: number, head: string): string => `${repo}#${number}:close@${head}`;
+
+/**
+ * The GitHub write each option causes, by decision kind and option key. The
+ * dashboard asks for a second confirmation on these; options not listed write
+ * nothing.
+ */
+const WRITES: Partial<Record<Kind, Record<string, string>>> = {
+  scope: { close: "closes it on GitHub" },
+  close: { close: "closes the PR on GitHub" },
+  duplicate: { close: "closes it on GitHub" },
+  merge: { merge: "merges on GitHub", close: "closes the PR on GitHub" },
+};
+export const writeEffect = (kind: Kind, optionKey: string): string | null => WRITES[kind]?.[optionKey] ?? null;
 
 const refOf = (e: { repo: string; number: number }) => `${e.repo}#${e.number}`;
 const short = (sha: string) => sha.slice(0, 7);
@@ -112,11 +127,11 @@ export function askCloseDecisions(db: DatabaseSync, repo: string, at: string): s
 
 // ---- what to act on ------------------------------------------------------------
 
-type Target = { decisionId: string; kind: "scope" | "close" | "duplicate"; repo: string; number: number };
+type Target = { decisionId: string; kind: "scope" | "close" | "duplicate" | "merge"; repo: string; number: number };
 
 /** Items an operator's `close` answer applies to in this repo, minus those an exception changes. */
 function targetsOf(a: Actionable, repo: string): Target[] {
-  if (a.kind !== "scope" && a.kind !== "close" && a.kind !== "duplicate") return [];
+  if (a.kind !== "scope" && a.kind !== "close" && a.kind !== "duplicate" && a.kind !== "merge") return [];
   if (a.kind !== "scope" && a.number === null) return [];
   const out: Target[] = [];
   for (const it of a.items) {
@@ -183,7 +198,7 @@ function commentFor(d: DecisionRow, t: Target): string {
 
 /** The exact comment the act step posts for a decision, for the dashboard. Null when none is fixed in advance. */
 export function commentPreview(d: DecisionRow): string | null {
-  if (d.kind === "scope" || d.kind === "close") return commentFor(d, { decisionId: d.id, kind: d.kind, repo: d.repo ?? "", number: d.number ?? 0 });
+  if (d.kind === "scope" || d.kind === "close" || d.kind === "merge") return commentFor(d, { decisionId: d.id, kind: d.kind, repo: d.repo ?? "", number: d.number ?? 0 });
   if (d.kind === "duplicate") {
     const orig = factValue(d, DUP_FACT);
     return orig && d.repo ? duplicateComment({ repo: d.repo, original: orig, closed: false }) : null;
@@ -248,7 +263,7 @@ export async function runAct(db: DatabaseSync, params: ActParams, log: (line: st
       const live = await readLive(d.querier, t.repo, t.number);
       if (!live) { skip(t, "GitHub returned no such item"); continue; }
       if (live.state !== "OPEN") { skip(t, `already ${live.state.toLowerCase()} on GitHub`); continue; }
-      if (t.kind === "close") {
+      if (t.kind === "close" || t.kind === "merge") {
         const h = headFact(dec);
         if (live.type !== "PullRequest" || !h || live.head !== h) { skip(t, `head moved since the decision (${h ? short(h) : "no head recorded"} → ${live.head ? short(live.head) : "none"})`); continue; }
       }

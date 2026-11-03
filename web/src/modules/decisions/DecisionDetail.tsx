@@ -6,19 +6,20 @@ import { ChevronLeftIcon, ChevronRightIcon, CheckIcon, Undo2Icon, MessageSquareI
 import { useApi } from "../../api/client";
 import type { Decision, User } from "../../api/types";
 import type { ViewProps } from "../../registry/types";
-import { decisionAccess, type DecisionAccess } from "../../registry/permissions";
+import { canAct } from "../../registry/permissions";
 import { Kbd } from "../../ui/Kbd";
 import { Button, IconButton } from "../../ui/Button";
 import { Count } from "../../ui/Heading";
 import { Markdown, Collapsible } from "../../ui/Markdown";
 import { cn } from "../../ui/cn";
 import { ago } from "../../lib/format";
-import { ClaimPill, ClassifierLines, Disclosure, Facts, KindTag, OpinionList, OptionButtons, RelatedList, tallyOf } from "./parts";
-import { localActions, ordered, refOf, useAnswer, useDecisionList, useLocal, useSelection, useUndo } from "./state";
+import { ClaimPill, ClassifierLines, Disclosure, Facts, KindTag, OpinionList, OptionButtons, RelatedList } from "./parts";
+import { ReviewBox } from "./ReviewBox";
+import { localActions, ordered, refOf, useAnswer, useArmed, useDecisionList, useLocal, useSelection, useUndo, userSelection } from "./state";
 import { Thread } from "./Thread";
 
-export const accessFor = (user: User, ds: Decision[]): DecisionAccess =>
-  decisionAccess(user, ds.flatMap((d) => (d.items.length ? d.items.map((i) => i.repo) : [d.repo])));
+export const canActOn = (user: User, ds: Decision[]): boolean =>
+  canAct(user, ds.flatMap((d) => (d.items.length ? d.items.map((i) => i.repo) : [d.repo])));
 
 /** Desktop detail panel: the selected decision, or the batch answer for checked rows. */
 export function DetailPanel({ user }: ViewProps) {
@@ -49,7 +50,7 @@ export function DetailPanel({ user }: ViewProps) {
       {just && !d ? (
         <AnsweredNotice entry={just} />
       ) : d ? (
-        <DecisionBody key={d.id} d={d} user={user} onAnswered={() => go(list[idx + 1]?.id ?? list[idx - 1]?.id)} />
+        <DecisionBody key={d.id} d={d} user={user} onAnswered={() => go(list[idx + 1]?.id ?? list[idx - 1]?.id, true)} />
       ) : (
         <EmptyDetail count={list.length} />
       )}
@@ -127,22 +128,24 @@ export function DecisionBody({
   const loc = useLocal();
   const noteRef = useRef<HTMLInputElement>(null);
   const decideRef = useRef<HTMLDivElement>(null);
-  const access = accessFor(user, [d]);
   const isBatch = d.number === null;
-  const mine = d.opinions.find((o) => o.login === user.login);
-  const tally = tallyOf(d);
-  const operator = access.mode === "answer";
+  const operator = canActOn(user, [d]);
+  const reviewRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!d.answer) void api.decisions.claim(d.id);
   }, [api, d.id, d.answer]);
 
+  const [armed, setArmed] = useArmed();
+  // The GitHub write a pick causes: the option's own, or that of a per-item exception in a batch.
+  const effectOf = (key: string): string | null =>
+    d.options.find((o) => o.key === key)?.writes ??
+    Object.values(loc.overrides[d.id] ?? {}).map((k) => d.options.find((o) => o.key === k)?.writes).find(Boolean) ??
+    null;
   const pick = async (key: string) => {
-    if (!operator) {
-      await api.decisions.opine(d.id, { option: key, note: loc.notes[d.id] || mine?.note || undefined });
-      localActions.setNote(d.id, "");
-      return;
-    }
+    if (!operator) return;
+    if (effectOf(key) && armed !== key) return setArmed(key);
+    setArmed(null);
     await answer([d], key);
     onAnswered?.();
   };
@@ -153,13 +156,19 @@ export function DecisionBody({
     onAnswered?.();
   };
 
-  // Number keys pick; n focuses the note. Bound here so they always target the decision on screen.
+  // Number keys pick, but only on a decision the user opened themselves; n focuses the note.
+  // Bound here so they always target the decision on screen.
   useEffect(() => {
     const on = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement;
-      if (["INPUT", "TEXTAREA"].includes(t.tagName) || e.metaKey || e.ctrlKey || e.altKey) return;
+      if (!operator || e.repeat || ["INPUT", "TEXTAREA", "SELECT", "BUTTON"].includes(t.tagName) || t.isContentEditable || e.metaKey || e.ctrlKey || e.altKey) return;
+      if (e.key === "Escape" && armed) return setArmed(null);
+      if (e.key === "Enter" && armed && !d.answer) {
+        e.preventDefault();
+        return void pick(armed);
+      }
       const n = Number(e.key);
-      if (!d.answer && n >= 1 && n <= d.options.length) {
+      if (!d.answer && userSelection.id === d.id && n >= 1 && n <= d.options.length) {
         e.preventDefault();
         void pick(d.options[n - 1].key);
       }
@@ -172,19 +181,6 @@ export function DecisionBody({
     return () => window.removeEventListener("keydown", on);
   });
 
-  const modeLine = operator ? (
-    <>Your pick answers it.</>
-  ) : (
-    <>
-      {access.reason}
-      {mine && (
-        <button onClick={() => void api.decisions.retract(d.id)} className="ml-1.5 text-accent-ink hover:underline">
-          Retract mine
-        </button>
-      )}
-    </>
-  );
-
   const note = (
     <label className="flex h-8 min-w-0 flex-1 items-center gap-2 rounded border border-line bg-sunken px-2.5 focus-within:border-accent/60">
       <input
@@ -193,16 +189,15 @@ export function DecisionBody({
         onChange={(e) => localActions.setNote(d.id, e.target.value)}
         onKeyDown={(e) => {
           if (e.key === "Escape") e.currentTarget.blur();
-          const v = e.currentTarget.value.trim();
-          if (e.key === "Enter" && !operator && v) void api.decisions.opine(d.id, { option: mine?.option ?? null, note: v }).then(() => localActions.setNote(d.id, ""));
         }}
-        placeholder={operator ? "Note, kept with the answer (optional)" : mine ? "Add a note to your comment, Enter to save" : "Note with your comment (optional)"}
+        placeholder="Note, kept with the answer (optional)"
         aria-label="Note"
         className="min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-ink/40"
       />
       {!phone && <Kbd keys="n" />}
     </label>
   );
+  const noteRow = <div className="mt-2 flex">{note}</div>;
 
   const header = (
     <>
@@ -271,9 +266,8 @@ export function DecisionBody({
           Comments <Count n={d.opinions.length} />
         </>
       }
-      aside="Shown to people only, never sent to the pipeline"
     >
-      <OpinionList d={d} me={user.login} onAdopt={operator && !d.answer ? (oid) => void adopt(oid) : undefined} />
+      <OpinionList d={d} me={user.login} onAdopt={operator && !d.answer ? (oid) => void adopt(oid) : undefined} onRetract={() => void api.decisions.retract(d.id)} />
     </Section>
   );
 
@@ -294,7 +288,7 @@ export function DecisionBody({
         </Disclosure>
       )}
       {d.publicText && (
-        <Disclosure title="Comment posted on GitHub">
+        <Disclosure title={d.kind === "merge" ? "Comment posted on GitHub if closed" : "Comment posted on GitHub"}>
           <blockquote className="border-l-2 border-line-strong pl-3 text-sm leading-6 text-ink/75">{d.publicText}</blockquote>
         </Disclosure>
       )}
@@ -329,14 +323,22 @@ export function DecisionBody({
               ) : (
                 <>
                   <p className="text-sm font-semibold">{d.question}</p>
-                  <p className="mb-2 mt-0.5 text-xs text-ink/55">{modeLine}</p>
-                  <OptionButtons options={d.options} recommended={d.recommended} onPick={pick} mode={operator ? "answer" : "opinion"} mine={mine?.option} tally={tally} />
-                  <div className="mt-2 flex">{note}</div>
+                  {operator && (
+                    <>
+                      <div className="mt-2">
+                        <OptionButtons options={d.options} recommended={d.recommended} onPick={pick} armed={armed} />
+                      </div>
+                      {noteRow}
+                    </>
+                  )}
                 </>
               )}
             </div>
             {opinions}
             {rest}
+            <div ref={reviewRef} className="mt-5 scroll-mt-3 border-t border-line pt-4">
+              <ReviewBox d={d} />
+            </div>
           </article>
         </div>
         <div className="flex shrink-0 items-center gap-1 border-t border-line bg-bg px-1 py-1.5">
@@ -345,9 +347,9 @@ export function DecisionBody({
             <p className="num text-2xs text-ink/50">{pager?.pos}</p>
             <p className="truncate text-xs font-medium">{d.answer ? "Answered" : d.question}</p>
           </div>
-          {!d.answer && (
-            <Button size="md" variant="primary" icon={ArrowDownIcon} className="h-10 px-3" onClick={() => decideRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })}>
-              {operator ? "Answer" : mine ? "Change" : "Comment"}
+          {(operator ? !d.answer : true) && (
+            <Button size="md" variant="primary" icon={ArrowDownIcon} className="h-10 px-3" onClick={() => (operator ? decideRef : reviewRef).current?.scrollIntoView({ behavior: "smooth", block: "start" })}>
+              {operator ? "Answer" : "Comment"}
             </Button>
           )}
           <IconButton size="lg" icon={ChevronRightIcon} label="Next decision" disabled={!pager?.next} onClick={pager?.next} />
@@ -363,9 +365,13 @@ export function DecisionBody({
           {summary}
           {description}
           {facts}
+          {!operator && (
+            <div className="mt-5">{d.answer ? <AnsweredState d={d} canUndo={false} /> : <p className="text-sm font-semibold">{d.question}</p>}</div>
+          )}
           {rest}
         </article>
       </div>
+      {operator && (
       <div className="shrink-0 border-t border-line bg-bg px-6 py-3">
         <div className="mx-auto max-w-[760px]">
           {d.answer ? (
@@ -373,15 +379,15 @@ export function DecisionBody({
           ) : (
             <>
               <p className="text-sm font-semibold">{d.question}</p>
-              <p className="mt-0.5 text-xs text-ink/55">{modeLine}</p>
               <div className="mt-2">
-                <OptionButtons options={d.options} recommended={d.recommended} onPick={pick} mode={operator ? "answer" : "opinion"} mine={mine?.option} tally={tally} layout="row" />
+                <OptionButtons options={d.options} recommended={d.recommended} onPick={pick} layout="row" armed={armed} />
               </div>
-              <div className="mt-2 flex">{note}</div>
+              {noteRow}
             </>
           )}
         </div>
       </div>
+      )}
     </div>
   );
 }
@@ -441,13 +447,18 @@ function BatchItems({ d }: { d: Decision }) {
 /** Several checked rows of one kind: one answer (or comment) for all of them. */
 function MultiAnswer({ ds, user }: { ds: Decision[]; user: User }) {
   const answer = useAnswer();
-  const api = useApi();
-  const access = accessFor(user, ds);
+  const operator = canActOn(user, ds);
   const kinds = new Set(ds.map((d) => d.kind));
   const optionSig = new Set(ds.map((d) => d.options.map((o) => o.key).join()));
   const same = kinds.size === 1 && optionSig.size === 1;
   const recs = ds.map((d) => d.recommended);
   const rec = recs.every((r) => r === recs[0]) ? recs[0] : "";
+  const [armed, setArmed] = useArmed();
+  const pickAll = (k: string) => {
+    if (ds[0].options.find((o) => o.key === k)?.writes && armed !== k) return setArmed(k);
+    setArmed(null);
+    void answer(ds, k);
+  };
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -459,8 +470,8 @@ function MultiAnswer({ ds, user }: { ds: Decision[]; user: User }) {
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto max-w-[720px] px-6 pb-10 pt-5">
-          <h1 className="text-lg font-semibold">{same ? `${access.mode === "answer" ? "Answer" : "Comment on"} ${ds.length} ${ds[0].kind} decisions together` : "These decisions ask different questions"}</h1>
-          <p className="mt-1 text-sm text-ink/60">{same ? "One pick for all of them. Change single items afterwards from their own page." : "Select decisions of one kind to answer them together."}</p>
+          <h1 className="text-lg font-semibold">{same && operator ? `Answer ${ds.length} ${ds[0].kind} decisions together` : same ? `${ds.length} ${ds[0].kind} decisions selected` : "These decisions ask different questions"}</h1>
+          <p className="mt-1 text-sm text-ink/60">{!operator ? "Open one decision to leave a comment." : same ? "One answer for all of them. Change single items afterwards from their own page." : "Select decisions of one kind to answer them together."}</p>
           <ul className="mt-4 overflow-hidden rounded-md border border-line">
             {ds.map((d) => (
               <li key={d.id} className="flex h-9 items-center gap-3 border-b border-line px-3 last:border-0">
@@ -470,13 +481,14 @@ function MultiAnswer({ ds, user }: { ds: Decision[]; user: User }) {
               </li>
             ))}
           </ul>
-          {same && (
+          {same && operator && (
             <div className="mt-4">
               <OptionButtons
                 options={ds[0].options}
                 recommended={rec}
-                mode={access.mode}
-                onPick={(k) => void (access.mode === "opinion" ? Promise.all(ds.map((d) => api.decisions.opine(d.id, { option: k }))).then(localActions.clearChecked) : answer(ds, k))}
+                onPick={pickAll}
+                armed={armed}
+                confirmSuffix={` for ${ds.length} decisions`}
               />
             </div>
           )}

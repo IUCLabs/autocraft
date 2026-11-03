@@ -24,7 +24,7 @@ export function PhoneInbox(props: ViewProps) {
   const last = loc.justAnswered[0];
 
   useEffect(() => {
-    if (!id && list.length) go(list[0].id);
+    if (!id && list.length) go(list[0].id, true);
   }, [id, list.length]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     window.scrollTo(0, 0);
@@ -50,7 +50,7 @@ export function PhoneInbox(props: ViewProps) {
         </div>
       )}
       <div className="flex min-h-0 flex-1 flex-col">
-        {d ? <DecisionBody key={d.id} d={d} user={props.user} phone onAnswered={() => go(list[idx + 1]?.id ?? list[idx - 1]?.id)} pager={{ pos: `${idx + 1} of ${list.length}`, prev: idx > 0 ? () => go(list[idx - 1].id) : undefined, next: idx < list.length - 1 ? () => go(list[idx + 1].id) : undefined }} /> : <p className="py-16 text-center text-sm text-ink/60">Nothing waiting.</p>}
+        {d ? <DecisionBody key={d.id} d={d} user={props.user} phone onAnswered={() => go(list[idx + 1]?.id ?? list[idx - 1]?.id, true)} pager={{ pos: `${idx + 1} of ${list.length}`, prev: idx > 0 ? () => go(list[idx - 1].id) : undefined, next: idx < list.length - 1 ? () => go(list[idx + 1].id) : undefined }} /> : <p className="py-16 text-center text-sm text-ink/60">Nothing waiting.</p>}
       </div>
       <Dialog.Root open={sheet} onOpenChange={setSheet}>
         <Dialog.Portal>

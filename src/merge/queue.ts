@@ -24,7 +24,7 @@ export const RULE_TIERS: Tier[] = ["whitelisted", "allow"];
 export const MERGE_OPTIONS = {
   merge: { key: "merge", label: "Merge", hint: "Merge once CI is green at this head commit." },
   hold: { key: "hold", label: "Hold", hint: "Keep it open and out of the merge queue." },
-  close: { key: "close", label: "Close", hint: "Not wanted as it is; close it with a short reason." },
+  close: { key: "close", label: "Close", hint: "Not wanted as it is; post a short comment and close the PR." },
 } as const;
 
 /** One open decision per PR head: a push gets a new one. */

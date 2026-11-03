@@ -15,7 +15,8 @@ import { KIND_LABEL, KINDS, localActions, ordered, useDecisionFilter, useDecisio
 const SHORTCUTS: Command[] = [
   { id: "d-next", keys: "j", label: "Next decision", group: "Decisions" },
   { id: "d-prev", keys: "k", label: "Previous decision", group: "Decisions" },
-  { id: "d-answer", keys: "1 – 4", label: "Answer with option", group: "Decisions" },
+  { id: "d-answer", keys: "1 – 4", label: "Answer with option (only after you opened the decision)", group: "Decisions" },
+  { id: "d-confirm", keys: "1 – 4 again, Enter", label: "Confirm an option that writes to GitHub (Esc cancels)", group: "Decisions" },
   { id: "d-note", keys: "n", label: "Write a note", group: "Decisions" },
   { id: "d-check", keys: "x", label: "Check for a batch answer", group: "Decisions" },
   { id: "d-undo", keys: "u", label: "Undo last answer", group: "Decisions" },
@@ -60,7 +61,7 @@ export function InboxList({ user }: ViewProps) {
   }, [id]);
   // Open the oldest decision when nothing is selected, so the detail pane is never empty on arrival.
   useEffect(() => {
-    if (!id && list.length && !loc.justAnswered.length) go(list[0].id);
+    if (!id && list.length && !loc.justAnswered.length) go(list[0].id, true);
   }, [id, list.length]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const groups: { kind: Decision["kind"]; items: Decision[] }[] = [];
