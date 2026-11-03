@@ -6,7 +6,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { setCommentApproval } from "../src/act/approval.ts";
 import { connect } from "../src/db.ts";
 import type { Querier } from "../src/mirror.ts";
-import { modelLabel, reviewBody, REVIEW_BODY_MAX } from "../src/review/post-template.ts";
+import { modelLabel, recommendation, reviewBody, REVIEW_BODY_MAX } from "../src/review/post-template.ts";
 import { postCandidates, runReviewPost, type PostDeps } from "../src/review/post.ts";
 import { COMMENT_TEMPLATES } from "../src/act/templates.ts";
 import { pauseReason } from "../src/runner/autopilot.ts";
@@ -73,11 +73,11 @@ describe("model label", () => {
 });
 
 describe("review body", () => {
-  const base = { model: "claude-opus-5-5", verdict: "take-fix", sure: true, summary: "Handles errors badly.", points: ["`src/a.rs:12`: return the error."], head: "0123456789abcdef" };
+  const base = { model: "claude-opus-5-5", verdict: "take-fix", sure: true, summary: "Handles errors badly.", points: ["`src/a.rs:12`: return the error."], head: "0123456789abcdef", recommendation: "Recommendation: merge after the fixes above." };
 
   test("starts with the disclaimer naming the model, lists the findings and ends with the short head", () => {
     const b = reviewBody(base);
-    assert.equal(b, "_AI-generated review (Opus 5.5). Not a maintainer decision._\n\nSmall fixes needed:\n\nHandles errors badly.\n\n- `src/a.rs:12`: return the error.\n\nReviewed at 0123456.");
+    assert.equal(b, "_AI-generated review (Opus 5.5). Not a maintainer decision._\n\nSmall fixes needed:\n\nHandles errors badly.\n\n- `src/a.rs:12`: return the error.\n\nRecommendation: merge after the fixes above.\n\nReviewed at 0123456.");
   });
 
   test("verdict wording", () => {
@@ -103,8 +103,32 @@ describe("review body", () => {
     for (const t of ["I agree", "internal fix text", "internal risk text", "z.rs"]) assert.ok(!c!.body.includes(t), t);
   });
 
+  test("each verdict and path gives its line", () => {
+    const q = (path: "rule" | "operator" | null, state = "ready") => ({ path, state });
+    const rec = (verdict: string, queue: ReturnType<typeof q> | null, mergeApproved = true, canPush = false) => recommendation({ verdict, queue, mergeApproved, canPush });
+    assert.equal(rec("take", q("rule")), "Recommendation: merge after CI and checks pass.");
+    assert.equal(rec("take", q("rule"), false), "Recommendation: merge, after a maintainer's decision.");
+    assert.equal(rec("take", q("operator")), "Recommendation: merge, after a maintainer's decision.");
+    assert.equal(rec("take", q(null, "needs-decision")), "Recommendation: merge, after a maintainer's decision.");
+    assert.equal(rec("take", q(null, "declined")), "Recommendation: wait for maintainer feedback.");
+    assert.equal(rec("take", null), "Recommendation: wait for maintainer feedback.");
+    assert.equal(rec("take-fix", q(null)), "Recommendation: merge after the fixes above.");
+    assert.equal(rec("take-fix", q(null), true, true), "Recommendation: merge after the fixes above; they may be pushed to this branch.");
+    assert.equal(rec("hold", null), "Recommendation: update the pull request; it will be reviewed again.");
+    assert.equal(rec("close", null), "Recommendation: wait for maintainer feedback.");
+    assert.equal(rec("odd", null), "Recommendation: wait for maintainer feedback.");
+  });
+
+  test("a long body keeps the recommendation as the last line before Reviewed at", () => {
+    const recommendation = "Recommendation: merge after the fixes above; they may be pushed to this branch.";
+    const b = reviewBody({ ...base, recommendation, summary: "s".repeat(600), points: Array.from({ length: 8 }, () => "x".repeat(900)) });
+    assert.ok(b.length <= REVIEW_BODY_MAX, String(b.length));
+    assert.ok(b.endsWith(`\n\n${recommendation}\n\nReviewed at 0123456.`), b.slice(-200));
+  });
+
   test("the Prompts page lists the template", () => {
     const t = COMMENT_TEMPLATES.find((x) => x.id === "review.post")!;
+    assert.match(t.text, /\n\n\{\{recommendation\}\}\n\nReviewed at/);
     assert.equal(t.stage, "Review");
     assert.match(t.example, /^_AI-generated review \(Opus 5\.5\)\./);
   });
@@ -126,6 +150,23 @@ describe("review-post", () => {
     const again = await runReviewPost(db, { repo: "app", dryRun: false }, quiet, d);
     assert.equal(again.candidates, 0);
     assert.equal(d.calls.length, 1);
+  });
+
+  test("a posted body ends with the recommendation for its verdict and is recomputed at a new head", () => {
+    const db = fresh();
+    addPr(db, 1, { verdict: "hold" });
+    addPr(db, 2, { verdict: "close" });
+    addPr(db, 3, { verdict: "take-fix" });
+    addPr(db, 4);
+    const tail = (n: number) => postCandidates(db, "app").find((c) => c.number === n)!.body.split("\n\n").slice(-2)[0];
+    assert.equal(tail(1), "Recommendation: update the pull request; it will be reviewed again.");
+    assert.equal(tail(2), "Recommendation: wait for maintainer feedback.");
+    assert.equal(tail(3), "Recommendation: merge after the fixes above.");
+    assert.match(tail(4)!, /^Recommendation: /);
+    db.prepare("INSERT INTO settings (key, value) VALUES ('push_approved:app', ?)").run(JSON.stringify({ by: "op", at: T0 }));
+    assert.equal(tail(3), "Recommendation: merge after the fixes above.");
+    db.prepare("UPDATE items SET maintainer_can_modify = 1 WHERE number = 3").run();
+    assert.equal(tail(3), "Recommendation: merge after the fixes above; they may be pushed to this branch.");
   });
 
   test("a dry run lists the body and calls nothing", async () => {

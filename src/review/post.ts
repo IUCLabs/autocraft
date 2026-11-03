@@ -14,7 +14,10 @@ import { prInfo } from "../merge/index.ts";
 import { pilotSql } from "../pilot.ts";
 import { headOf } from "./candidates.ts";
 import { parsePublic } from "./opus-parse.ts";
-import { reviewBody } from "./post-template.ts";
+import { reviewBody, recommendation } from "./post-template.ts";
+import { buildQueue } from "../merge/queue.ts";
+import { mergeApprovalOf } from "../merge/approval.ts";
+import { pushApprovalOf } from "../fixup/approval.ts";
 
 const ACTOR = "review-post";
 
@@ -32,7 +35,7 @@ export const defaultPostDeps = (): PostDeps => ({ querier: new Client(1000), now
 type Row = {
   number: number; head_oid: string | null; updated_at: string | null; c_head: string | null; c_at: string | null;
   o_head: string; model: string | null; verdict: string; sure: number | null; public_review: string;
-  p_id: string | null; p_head: string | null;
+  p_id: string | null; p_head: string | null; can_modify: number | null;
 };
 const safeJson = (s: string): unknown => {
   try { return JSON.parse(s); } catch { return null; }
@@ -44,7 +47,7 @@ const safeJson = (s: string): unknown => {
  */
 export function postCandidates(db: DatabaseSync, repo: string): PostCandidate[] {
   const rows = db.prepare(`SELECT i.number, i.head_oid, i.updated_at, c.head_oid AS c_head, c.fetched_at AS c_at,
-      o.head_oid AS o_head, o.model, o.verdict, o.sure, o.public_review, p.review_id AS p_id, p.head_oid AS p_head
+      o.head_oid AS o_head, o.model, o.verdict, o.sure, o.public_review, p.review_id AS p_id, p.head_oid AS p_head, i.maintainer_can_modify AS can_modify
     FROM items i JOIN opus_reviews o ON o.repo = i.repo AND o.number = i.number AND o.verdict IS NOT NULL AND o.public_review IS NOT NULL
     LEFT JOIN pr_checks c ON c.repo = i.repo AND c.number = i.number
     LEFT JOIN review_posts p ON p.repo = i.repo AND p.number = i.number
@@ -54,15 +57,18 @@ export function postCandidates(db: DatabaseSync, repo: string): PostCandidate[] 
       AND NOT EXISTS (SELECT 1 FROM decisions dh WHERE dh.kind = 'duplicate' AND dh.repo = i.repo AND dh.number = i.number AND (dh.answer IS NULL OR dh.answer = 'close'))
     ORDER BY i.number`).all(repo) as Row[];
   const out: PostCandidate[] = [];
+  const mergeApproved = !!mergeApprovalOf(db, repo), pushApproved = !!pushApprovalOf(db, repo);
   for (const r of rows) {
     const pub = parsePublic(safeJson(r.public_review));
     if (!pub) continue;
     const head = headOf(r);
     if (!head || head !== r.o_head || r.p_head === head) continue;
+    const q = r.verdict === "take" ? buildQueue(db, { repo, refs: [`${repo}#${r.number}`], merged: "exclude" })[0] : undefined;
     out.push({
       repo, number: r.number, head_oid: head, editId: r.p_id,
       body: reviewBody({
         model: r.model, verdict: r.verdict, sure: r.sure !== 0, summary: pub.summary, points: pub.points, head,
+        recommendation: recommendation({ verdict: r.verdict, queue: q ? { path: q.path, state: q.state } : null, mergeApproved, canPush: pushApproved && r.can_modify === 1 }),
       }),
     });
   }

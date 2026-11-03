@@ -2,7 +2,7 @@
 // are a cleaned one-line reason and a duplicate reference. No Node imports:
 // the Prompts page lists these through src/prompts.
 import type { CommentTemplate } from "../../web/src/api/types.ts";
-import { reviewBody } from "../review/post-template.ts";
+import { recommendation, reviewBody } from "../review/post-template.ts";
 
 export const ORG = "storytold";
 export const REASON_MAX = 200;
@@ -74,13 +74,14 @@ export const COMMENT_TEMPLATES: CommentTemplate[] = [
   {
     id: "review.post", stage: "Review",
     purpose: "Posted as a pull request review (event Comment, never an approval or a change request) on a pull request with a final Opus review at its current head. A later review at a new head edits this review instead of adding another.",
-    text: reviewBody({ model: "{{model}}", verdict: "take-fix", sure: true, summary: "{{summary}}", points: ["{{point}}"], head: "{{head}}" }),
+    text: reviewBody({ model: "{{model}}", verdict: "take-fix", sure: true, summary: "{{summary}}", points: ["{{point}}"], head: "{{head}}", recommendation: "{{recommendation}}" }),
     placeholders: [
       { name: "model", meaning: "The model that wrote the review, as a name and version (Opus 5.5)" },
       { name: "verdict", meaning: "By verdict: take \"No blocking problems found.\", take-fix \"Small fixes needed:\", hold \"Changes needed:\", close \"Significant problems found:\"; \" The review was not certain.\" follows when the model was unsure" },
       { name: "summary, point", meaning: "The review text Opus wrote for the PR author (its public field: summary and at most 8 points), cleaned to one line each (mentions and HTML tags removed, at most 600 characters); the whole body is cut at 6000 characters. Opus's internal reason, fixes and risks are never posted" },
+      { name: "recommendation", meaning: "One closing line on what happens next, chosen when the review is posted: take \"merge after CI and checks pass.\" when the PR may merge without a decision and merging is approved in the repo, otherwise \"merge, after a maintainer's decision.\"; take-fix \"merge after the fixes above.\", with \"; they may be pushed to this branch.\" when the pipeline may push to the branch; hold \"update the pull request; it will be reviewed again.\"; close, or anything unclear, \"wait for maintainer feedback.\" The line is never cut off by the length limit" },
       { name: "head", meaning: "The first 7 characters of the reviewed head commit" },
     ],
-    example: reviewBody({ model: "claude-opus-5-5", verdict: "take-fix", sure: true, summary: "The change does what the description says; one call can fail without being handled.", points: ["`src/net.rs:42`: send() unwraps the result; return the error instead.", "`src/net.rs:60`: the retry count is read once and handled correctly."], head: "0123456789abcdef" }),
+    example: reviewBody({ model: "claude-opus-5-5", verdict: "take-fix", sure: true, summary: "The change does what the description says; one call can fail without being handled.", points: ["`src/net.rs:42`: send() unwraps the result; return the error instead.", "`src/net.rs:60`: the retry count is read once and handled correctly."], head: "0123456789abcdef", recommendation: recommendation({ verdict: "take-fix", queue: null, mergeApproved: true, canPush: false }) }),
   },
 ];
