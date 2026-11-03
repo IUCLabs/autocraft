@@ -519,6 +519,21 @@ export const STEPS: StepDef[] = [
       return `${r.repo}: ${r.posted.length} posted, ${r.edited.length} edited, ${r.skipped.length} skipped, ${r.failed.length} failed`;
     },
   },
+  {
+    name: "dupes-compare",
+    title: "Compare duplicate groups",
+    description: "Compares each group of duplicates in one pass: Opus, with read-only tools on the base checkout, for the pull requests of a group (diffs, titles, bodies and linked issues; CI and review state as background), Sonnet for its issues. It picks the best item to keep, lists what the others do better or add, and asks one decision per group. A closed or merged member wins without a call; a failed call falls back to the older-wins rule. A group is compared again only when a member's state, head or text changes. Writes nothing to GitHub.",
+    stage: 3,
+    requires: "operator",
+    group: "dupes",
+    models: ["opus", "sonnet"],
+    params: [{ name: "limit", label: "At most", kind: "int", min: 1, max: 200, default: 20, help: "groups (per kind) to compare in this job" }],
+    run: async (ctx) => {
+      const { runDupeCompare } = await import("../dupes/compare.ts");
+      const r = await runDupeCompare(ctx.db, { limit: Number(ctx.params.limit), onHandled: ctx.handled }, ctx.log);
+      return `${r.due} due: ${r.compared} compared by a model, ${r.byRule} by rule, ${r.closedWins} won by a closed member, ${r.single} single, ${r.dropped} dropped; ${r.asked.length} decisions asked`;
+    },
+  },
 ];
 
 let loaded: Promise<Map<string, StepDef>> | null = null;

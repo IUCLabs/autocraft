@@ -115,4 +115,6 @@ export type FixupPr = {
   files: { path: string; content: string }[];
   /** The PR's diff. */
   diff: string;
+  /** For a carry-over: the PRs closed as duplicates, their diffs and the parts to port onto this one. */
+  carried_from?: { ref: string; points: string[]; diff: string }[];
 };

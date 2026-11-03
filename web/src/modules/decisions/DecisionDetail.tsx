@@ -14,6 +14,7 @@ import { Markdown, Collapsible } from "../../ui/Markdown";
 import { cn } from "../../ui/cn";
 import { ago } from "../../lib/format";
 import { ClaimPill, ClassifierLines, Disclosure, Facts, KindTag, OpinionList, RelatedList } from "./parts";
+import { Refs } from "./Refs";
 import { ReviewBox } from "./ReviewBox";
 import { localActions, ordered, refOf, useDecisionList, useLocal, useSelection, useUndo } from "./state";
 import { Thread } from "./Thread";
@@ -171,7 +172,9 @@ export function DecisionBody({
           · {d.summaryBy} · {ago(d.summaryAt)} ago
         </span>
       </div>
-      <p className="text-sm leading-[21px] text-ink/90">{d.summary}</p>
+      <p className="text-sm leading-[21px] text-ink/90">
+        <Refs text={d.summary} repo={d.repo} />
+      </p>
     </section>
   );
 
@@ -195,7 +198,7 @@ export function DecisionBody({
   const facts = (
     <Section title="Key facts">
       <div className="rounded-md border border-line px-3 py-2.5">
-        <Facts facts={d.facts} />
+        <Facts facts={d.facts} repo={d.repo} />
       </div>
     </Section>
   );
@@ -214,7 +217,9 @@ export function DecisionBody({
 
   const question = (
     <div className="mt-5">
-      <p className="text-sm font-semibold">{d.question}</p>
+      <p className="text-sm font-semibold">
+        <Refs text={d.question} repo={d.repo} />
+      </p>
       {d.answer && !operator && (
         <div className="mt-2">
           <AnsweredState d={d} canUndo={false} />
@@ -235,14 +240,36 @@ export function DecisionBody({
         <Disclosure title="Context">
           <div className="space-y-1 text-sm leading-6 text-ink/80">
             {d.context.map((c, i) => (
-              <p key={i}>{c}</p>
+              <p key={i}>
+                <Refs text={c} repo={d.repo} />
+              </p>
             ))}
           </div>
         </Disclosure>
       )}
       {d.publicText && (
         <Disclosure title={d.kind === "merge" ? "Comment posted on GitHub if closed" : "Comment posted on GitHub"}>
-          <blockquote className="border-l-2 border-line-strong pl-3 text-sm leading-6 text-ink/75">{d.publicText}</blockquote>
+          <blockquote className="whitespace-pre-wrap border-l-2 border-line-strong pl-3 text-sm leading-6 text-ink/75">{d.publicText}</blockquote>
+        </Disclosure>
+      )}
+      {d.optionTexts?.length > 0 && (
+        <Disclosure title="Comments posted on GitHub" defaultOpen>
+          <div className="space-y-3">
+            {d.optionTexts.map((ot) => (
+              <div key={ot.option}>
+                <div className="text-xs font-medium text-ink/60">{d.options.find((o) => o.key === ot.option)?.label ?? ot.option}</div>
+                {ot.texts.length === 0 && <p className="text-sm text-ink/60">No comments.</p>}
+                {ot.texts.map((t) => (
+                  <div key={`${t.number}:${t.step}`} className="mt-1">
+                    <div className="text-xs text-ink/50">
+                      {t.step === "suggestion" ? "If the branch cannot be pushed to, on" : "On"} #{t.number}
+                    </div>
+                    <blockquote className="whitespace-pre-wrap border-l-2 border-line-strong pl-3 text-sm leading-6 text-ink/75">{t.text}</blockquote>
+                  </div>
+                ))}
+              </div>
+            ))}
+          </div>
         </Disclosure>
       )}
       <Disclosure title="Classifiers" count={d.classifications.length}>

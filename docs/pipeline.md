@@ -28,12 +28,21 @@ Finds open issues and PRs that describe the same bug or request as another open 
 
 - **Candidates.** Nearest neighbours by vector (similarity 0.86 or more, at most 3 per item, same kind). A pair an operator already ruled on is not asked again.
 - **Check.** Jev answers first (0.9 or more is a duplicate, 0.1 or less is distinct). Haiku settles the rest.
-- **Canonical item.** The closed or merged one, else the one with a merged fix, else the one with 5 or more extra comments, else the older one.
-- **Decision.** "Close #x as a duplicate of #y?" with Close, Not a duplicate, Keep both. Only an operator's answer counts. Haiku writes a 2 to 4 sentence summary of the pair (what each item says, what overlaps or differs), up to 40 pairs per run. A failed summary never blocks the decision: it is asked without one, and a later run fills it, including for open decisions that have none.
-- **Held out.** While the decision is open or answered close, the item is left out of Decide, Review, Verify, Fix-up and Fix. "Not a duplicate" and "Keep both" release it for good.
+- **Groups.** Items joined by duplicate pairs form a group. The members of each kind (PRs, issues) are compared together in one call by the Compare duplicate groups step (`craft-auto dupe-compare`).
+  - PRs: Opus, with read-only tools on a checkout of the default branch, gets each PR's title, body, linked issues and code diff; CI and review state are background, not rules. It picks the PR to keep and, for each other PR, says whether it is a duplicate, what it does better and which parts are worth carrying into the kept one.
+  - Issues: Sonnet, without tools, gets all reports in one call. It picks the report to keep and lists what each other report adds (steps, versions, logs).
+  - A PR is never closed as a duplicate of an issue; the kept PR is linked to the kept issue.
+  - A closed or merged member wins without a call. A set of more than 10 members is compared in rounds of 10 whose winners meet.
+  - A set is compared again only when a member's state, head commit or text changes. Live state is checked on GitHub before the calls; a set with a changed member waits for the next sync.
+  - When the model gives no valid answer twice, the rule decides: the closed or merged one, else the one with a merged fix, else the one with 5 or more extra comments, else the older one. The decision says it was kept by rule and recommends nothing.
+- **Decision.** One per group, asked once the group is compared: "Keep #A and close #B, #C as duplicates?" with Use this answer, Keep #N instead (up to three alternatives) and Not duplicates. The summary lists, per item, what it does better, what is worth carrying over or what it adds. Every `#number` in the decision links to the item page and to GitHub. Only an operator's answer counts. Open per-pair decisions of the group are superseded by it (audited); answered ones keep their effect.
+- **Held out.** While the decision is open or answered Use this answer / Keep #N instead, the items it closes are left out of Decide, Review, Verify, Fix-up and Fix. "Not duplicates" releases them for good and stores every pair of the group as distinct.
+- **Comments.** The exact texts are written when the decision is asked, one set per answer (Use this answer and each Keep #N instead), and shown under that answer, so the answer approves exactly the words it posts. The page sends a hash of the shown texts with the answer; a changed set is refused (409) and the page reloads. Each member to close gets "Closing as a duplicate of #A." and, for a PR with parts to carry over, a second line "Parts to carry over to #A: ..." naming the first two points. For issue groups the kept issue gets one comment, "Details from the closed duplicates:", with at most six bullets built from the points each closed report adds, each crediting its source (`- #n: ...`; links, HTML, cross-repo references and mentions removed). The kept PR's fallback suggestion (used when its branch can't be pushed to) is part of the set. No model writes these, and none is written after an answer.
+- **Act.** In a repo approved for comments, Act posts the stored texts for an answered group (Use this answer or Keep #N instead) and closes the members, within the step's limit and pilot. Each write is recorded in `dupe_group_posts` right after it happens, so a crash or retry never repeats a comment or a close. Before closing, Act reads the kept items (a closed, unmerged one stops the decision) and each member on GitHub: one already closed or merged, a PR whose head differs from the head stored when the decision was asked, or an issue whose text changed is skipped and recorded; such a member (and one whose close failed three times) is released: its role becomes stay, it is no longer held or settled by the decision, and the next comparison may ask about it again. Roles and answer are re-read before every write, so an undo or refresh stops the decision. A member whose writes fail three times is skipped. Undo is refused once Act wrote to GitHub. The decision is applied when every member to close has been closed.
+- **Carry-over.** When PRs closed in a group name parts worth carrying over, Act queues a job for the kept PR (`dupe_carries`). Fix-up works it with its take-fix rules: a model (sandboxed) writes a diff porting the listed parts, shown with the closed PRs' diffs; the patch check (Opus) must approve; the push to the PR's branch needs push approval and maintainer edits. Without them, in a repo approved for comments, the parts are posted on the kept PR as one comment instead. Two failed tries hold the job. Take-fix tries and stages of the PR are not touched.
 - **Hand-off.** A close goes to Act. Confirmed duplicates raise the original's priority.
 
-Models: Jev, Haiku (checks and summaries). Daily limit 2000 pairs. Writes nothing to GitHub.
+Models: Jev, Haiku (pair checks); Opus and Sonnet (group comparison). Daily limits: 2000 pairs for the check, 200 comparisons for the group comparison. Both honour the pilot list. Writes nothing to GitHub.
 
 ## Classify
 
@@ -81,7 +90,7 @@ One key per open item decides what the pipeline works on next, for issues and PR
 
 Asks the operator for a scope call on open items that either carry the needs-decision flag (settled), or where Jev and Haiku chose different labels among missing feature, small extra and plugin candidate.
 
-- Each decision has a question, up to four options, a recommendation, up to five facts and a 2 to 4 sentence Sonnet summary. Duplicate decisions are summarised by Haiku (see Duplicates); Merge? and Close? decisions show the stored review text at the PR's head (Sonnet's review and, when present, Opus's final review), written when the decision is asked and by the next Merge or Act run for open ones without a summary. No model call is made for those.
+- Each decision has a question, up to four options, a recommendation, up to five facts and a 2 to 4 sentence Sonnet summary. Duplicate decisions carry the group comparison as their summary (see Duplicates); Merge? and Close? decisions show the stored review text at the PR's head (Sonnet's review and, when present, Opus's final review), written when the decision is asked and by the next Merge or Act run for open ones without a summary. No model call is made for those.
 - An item with an open or answered scope decision is not asked again. Anyone signed in can comment and pick; only the operator's answer counts.
 
 | Answer | Effect |
@@ -341,7 +350,7 @@ Limits count items handled per stage per day (from 00:00 UTC), including by fail
 | Duplicates | 2000 | Act | 20 |
 | Decide | 100 | Fix-up | 20 |
 | Review | 40 | Fix | 10 |
-| Referee | 500 | | |
+| Referee | 500 | Compare duplicate groups | 200 |
 | Opus review | 40 | Post reviews | 40 |
 
 Embed, checks and Label have no limit.

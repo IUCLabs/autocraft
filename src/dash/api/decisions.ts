@@ -6,8 +6,10 @@ import type { DatabaseSync } from "node:sqlite";
 import type {
   Claim, Classification, Decision, DecisionComment, DecisionKind, DecisionList, ItemState, Opinion, RelatedItem, Relation,
 } from "../../../web/src/api/types.ts";
+import { resetGroupAnswer } from "../../dupes/decide.ts";
 import { exceptionsOf, factsOf, getDecision, isBatch, itemsOf, KINDS, optionsOf, reposOf, type DecisionRow, type Exception } from "../../decisions.ts";
 import { commentPreview, writeEffect } from "../../act/index.ts";
+import { optionTextsOf, textsFor, textsHash } from "../../dupes/texts.ts";
 import { audit } from "../audit.ts";
 import { randomToken } from "../server/crypto.ts";
 import { HttpError, type RateLimiter } from "../server/util.ts";
@@ -158,6 +160,7 @@ export function toDecision(db: DatabaseSync, d: DecisionRow, viewer: Viewer): De
     options: optionsOf(d).map((o) => ({ ...o, writes: writeEffect(d.kind, o.key) ?? undefined })),
     recommended: d.recommended ?? "",
     publicText: commentPreview(d),
+    optionTexts: d.kind === "duplicate" && d.id.includes(":dupegroup:") ? optionTextsOf(db, d.id) : [],
     askedAt: d.asked_at, askedBy: d.asked_by ?? "the pipeline",
     docket: d.docket,
     answer: d.answer,
@@ -270,6 +273,19 @@ function settled(db: DatabaseSync, req: Req, id: string): Decision {
   return toDecision(db, getDecision(db, id)!, viewerOf(req));
 }
 
+/** Runs `fn` in one write transaction, so a check and the write it guards cannot be separated by another process. */
+function inTransaction<T>(db: DatabaseSync, fn: () => T): T {
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const r = fn();
+    db.exec("COMMIT");
+    return r;
+  } catch (e) {
+    db.exec("ROLLBACK");
+    throw e;
+  }
+}
+
 export async function answer(db: DatabaseSync, req: Req): Promise<Decision> {
   const d = await needDecision(db, req, req.params.id!);
   await requireOperator(req, d);
@@ -295,9 +311,14 @@ export async function answer(db: DatabaseSync, req: Req): Promise<Decision> {
     }
   }
   if (isBatch(d) && exceptions === null) exceptions = [];
-  const r = db.prepare(`UPDATE main.decisions SET answer = ?, answer_note = ?, exceptions = ?, answered_by = ?, answered_at = ?, adopted_opinion = NULL
-    WHERE id = ? AND answer IS NULL`).run(ans, note, exceptions ? JSON.stringify(exceptions) : null, req.user.login, new Date().toISOString(), d.id);
-  if (r.changes !== 1) throw new HttpError(409, "someone answered this a moment ago");
+  // A group answer approves the texts stored for its option; a page showing other texts is stale. Checked and written in one transaction.
+  inTransaction(db, () => {
+    const stored = d.kind === "duplicate" && d.id.includes(":dupegroup:") ? textsFor(db, d.id, ans) : [];
+    if (stored.length && b.textsHash !== textsHash(stored)) throw new HttpError(409, "the comments for this answer changed; reload the decision");
+    const r = db.prepare(`UPDATE main.decisions SET answer = ?, answer_note = ?, exceptions = ?, answered_by = ?, answered_at = ?, adopted_opinion = NULL
+      WHERE id = ? AND answer IS NULL`).run(ans, note, exceptions ? JSON.stringify(exceptions) : null, req.user.login, new Date().toISOString(), d.id);
+    if (r.changes !== 1) throw new HttpError(409, "someone answered this a moment ago");
+  });
   audit(db, req.user.login, "answer", d.id, { answer: ans, exceptions: exceptions?.length ? exceptions : undefined, note: note ? true : undefined });
   return settled(db, req, d.id);
 }
@@ -307,9 +328,13 @@ export async function undo(db: DatabaseSync, req: Req): Promise<Decision> {
   await requireOperator(req, d);
   if (!d.answer) throw new HttpError(409, "that decision has no answer to undo");
   if (d.applied_at) throw new HttpError(409, "the pipeline already acted on this answer");
-  const r = db.prepare(`UPDATE main.decisions SET answer = NULL, answer_note = NULL, exceptions = NULL, answered_by = NULL, answered_at = NULL, adopted_opinion = NULL
-    WHERE id = ? AND answer IS NOT NULL AND applied_at IS NULL`).run(d.id);
-  if (r.changes !== 1) throw new HttpError(409, "the pipeline acted on this a moment ago");
+  inTransaction(db, () => {
+    if (db.prepare("SELECT 1 FROM dupe_group_posts WHERE decision_id = ? AND url IS NOT NULL LIMIT 1").get(d.id)) throw new HttpError(409, "the pipeline already wrote to GitHub for this answer");
+    const r = db.prepare(`UPDATE main.decisions SET answer = NULL, answer_note = NULL, exceptions = NULL, answered_by = NULL, answered_at = NULL, adopted_opinion = NULL
+      WHERE id = ? AND answer IS NOT NULL AND applied_at IS NULL`).run(d.id);
+    if (r.changes !== 1) throw new HttpError(409, "the pipeline acted on this a moment ago");
+    resetGroupAnswer(db, d.id);
+  });
   audit(db, req.user.login, "undo", d.id, { answer: d.answer, adopted: d.adopted_opinion ?? undefined });
   return toDecision(db, getDecision(db, d.id)!, viewerOf(req));
 }
@@ -324,9 +349,14 @@ export async function adopt(db: DatabaseSync, req: Req): Promise<Decision> {
     { id: string; login: string; option: string | null } | undefined;
   if (!o) throw new HttpError(404, "no such live opinion on this decision");
   if (!o.option || !optionsOf(d).some((x) => x.key === o.option)) throw new HttpError(400, "that opinion picks no option");
-  const r = db.prepare(`UPDATE main.decisions SET answer = ?, answer_note = NULL, exceptions = ?, answered_by = ?, answered_at = ?, adopted_opinion = ?
-    WHERE id = ? AND answer IS NULL`).run(o.option, isBatch(d) ? "[]" : null, req.user.login, new Date().toISOString(), o.id, d.id);
-  if (r.changes !== 1) throw new HttpError(409, "someone answered this a moment ago");
+  const option = o.option;
+  inTransaction(db, () => {
+    const stored = d.kind === "duplicate" && d.id.includes(":dupegroup:") ? textsFor(db, d.id, option) : [];
+    if (stored.length && body(req).textsHash !== textsHash(stored)) throw new HttpError(409, "the comments for this answer changed; reload the decision");
+    const r = db.prepare(`UPDATE main.decisions SET answer = ?, answer_note = NULL, exceptions = ?, answered_by = ?, answered_at = ?, adopted_opinion = ?
+      WHERE id = ? AND answer IS NULL`).run(option, isBatch(d) ? "[]" : null, req.user.login, new Date().toISOString(), o.id, d.id);
+    if (r.changes !== 1) throw new HttpError(409, "someone answered this a moment ago");
+  });
   audit(db, req.user.login, "adopt", d.id, { answer: o.option, opinion: o.id, of: o.login });
   return settled(db, req, d.id);
 }

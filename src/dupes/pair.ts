@@ -8,8 +8,6 @@ export const JEV_REJECT = 0.1;
 /** Jev's yes-probability a Haiku "duplicate" still needs, so the models do not contradict each other outright. */
 export const JEV_FLOOR = 0.5;
 
-/** Most pairs summarised by one Duplicates run, so a backlog fills over several runs. */
-export const DUPES_SUMMARY_PER_RUN = 40;
 
 export const VERDICTS = ["duplicate", "distinct", "unsure"] as const;
 export type PairVerdict = (typeof VERDICTS)[number];

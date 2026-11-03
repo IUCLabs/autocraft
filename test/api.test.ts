@@ -49,6 +49,7 @@ before(async () => {
     const [repo, rest] = id.split("#");
     return { id, kind: id.endsWith("close") ? "close" : "scope", repo, number: Number(rest!.split(":")[0]), question: "Small extra or plugin?", options: OPTS, recommended: "small", summary: "Adds a filter." };
   }));
+  ask(db, [{ id: "photocraft:dupegroup:4", kind: "duplicate", repo: "photocraft", number: 4, question: "Keep #4 and close #5?", options: [{ key: "accept", label: "Use this answer" }, { key: "distinct", label: "Not duplicates" }], recommended: "accept" }]);
   addLogin(db, "cli", "boss", "operator", null);
   addLogin(db, "cli", "viewer1", "viewer", null);
   addLogin(db, "cli", "maint", "viewer", null);
@@ -153,7 +154,7 @@ describe("api", () => {
     assert.deepEqual(byWords.map((h) => `${h.repo}#${h.number}`).sort(), ["photocraft#1", "photocraft#5"]);
     const p = await boss.get<Progress>("/api/progress");
     assert.equal(p.funnel.open, 5);
-    assert.equal(p.decisionsOpen, 4);
+    assert.equal(p.decisionsOpen, 5);
     assert.equal(p.perHour.length, 24);
   });
 
@@ -202,6 +203,33 @@ describe("api", () => {
     assert.equal(auditCount("undo", "boss"), 1);
   });
 
+  test("a group decision's answer must carry the hash of the shown comments, and an answer Act wrote for can't be undone", async () => {
+    const boss = await signedIn("boss");
+    const id = "photocraft:dupegroup:4";
+    db.prepare("INSERT INTO dupe_groups (decision_id, repo, source) VALUES (?, 'photocraft', 'model')").run(id);
+    db.prepare("INSERT INTO dupe_group_texts (decision_id, option, number, step, text) VALUES (?, 'accept', 5, 'close', 'Closing as a duplicate of #4.')").run(id);
+    const shown = await boss.get<Decision>(dpath(id));
+    const ot = shown.optionTexts.find((o) => o.option === "accept")!;
+    assert.equal(ot.texts[0]!.text, "Closing as a duplicate of #4.");
+    await boss.post(dpath(id, "/answer"), { answer: "accept" }, 409);
+    await boss.post(dpath(id, "/answer"), { answer: "accept", textsHash: "stale" }, 409);
+    // The comments changed after the page was loaded.
+    db.prepare("UPDATE dupe_group_texts SET text = 'Closing as a duplicate of #4.\nParts to carry over to #4: x.' WHERE decision_id = ?").run(id);
+    await boss.post(dpath(id, "/answer"), { answer: "accept", textsHash: ot.hash }, 409);
+    const fresh = (await boss.get<Decision>(dpath(id))).optionTexts[0]!;
+    // Adopting an opinion approves the same texts, so it needs the same hash.
+    db.prepare("INSERT INTO decision_opinions (id, decision_id, login, option, note, at, permission) VALUES ('op1', ?, 'maint', 'accept', NULL, 'now', 'write')").run(id);
+    await boss.post(dpath(id, "/adopt"), { opinionId: "op1" }, 409);
+    await boss.post(dpath(id, "/adopt"), { opinionId: "op1", textsHash: ot.hash }, 409);
+    assert.equal((await boss.post<Decision>(dpath(id, "/adopt"), { opinionId: "op1", textsHash: fresh.hash })).answer, "accept");
+    await boss.post<Decision>(dpath(id, "/undo"));
+    assert.equal((await boss.post<Decision>(dpath(id, "/answer"), { answer: "accept", textsHash: fresh.hash })).answer, "accept");
+    db.prepare("INSERT INTO dupe_group_posts (decision_id, number, step, url, at) VALUES (?, 5, 'comment', 'https://x/c', 'now')").run(id);
+    await boss.post(dpath(id, "/undo"), undefined, 409);
+    db.prepare("UPDATE main.decisions SET applied_at = 'now' WHERE id = ?").run(id);
+    db.prepare("DELETE FROM decision_opinions WHERE id = 'op1'").run();
+  });
+
   test("adopt records the operator's answer and credits the opinion; opinions close once answered", async () => {
     const maint = await signedIn("maint");
     const boss = await signedIn("boss");
@@ -211,7 +239,8 @@ describe("api", () => {
     assert.equal(d.answeredBy, "boss");
     assert.equal(d.adoptedOpinion?.id, op.id);
     assert.equal(d.adoptedOpinion?.login, "maint");
-    assert.equal(auditCount("adopt", "boss"), 1);
+    // The group decision test above adopted once as well.
+    assert.equal(auditCount("adopt", "boss"), 2);
     await maint.post(dpath(P4, "/opinion"), { option: "small" }, 409);
     await maint.post(dpath(P4, "/retract"), undefined, 409);
   });

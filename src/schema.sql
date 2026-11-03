@@ -828,3 +828,85 @@ CREATE TABLE IF NOT EXISTS review_posts (
   PRIMARY KEY (repo, number)
 );
 INSERT OR IGNORE INTO stage_limits (step, per_day) VALUES ('review-post', 40);
+
+-- Duplicate groups compared in one pass (src/dupes/compare.ts). One row per set of
+-- same-kind group members (kind pr | issue), keyed by the sorted numbers. hash covers
+-- each member's state, head commit and text hash: a change re-runs the comparison.
+-- source: model | closed (a closed or merged member wins without a call) | rule (the
+-- model failed; canonical.ts decided) | single. result is the model's JSON per other member.
+CREATE TABLE IF NOT EXISTS dupe_comparisons (
+  repo TEXT NOT NULL,
+  key TEXT NOT NULL,                  -- kind:n1,n2,...
+  kind TEXT NOT NULL,                 -- pr | issue
+  members TEXT NOT NULL,              -- JSON [numbers]
+  hash TEXT NOT NULL,
+  kept INTEGER NOT NULL,
+  source TEXT NOT NULL,
+  model TEXT,
+  reason TEXT,
+  result TEXT,                        -- JSON {others: [...], rounds: n}
+  error TEXT,
+  attempts INTEGER NOT NULL DEFAULT 0, -- consecutive rule results at this hash; a rule result is tried again after 24 h, three times at most
+  at TEXT NOT NULL,
+  PRIMARY KEY (repo, key)
+);
+-- The group decision (kind duplicate, id repo:dupegroup:<lowest member>) and its members.
+-- role: keep (one per kind) | close (a duplicate of the keep of its kind: target) | stay (open, not closed).
+-- detail is the comparison's JSON for the member (better, carry, adds, duplicate) for the Act step.
+-- applied_answer is the answer whose roles were written to dupe_group_items.
+CREATE TABLE IF NOT EXISTS dupe_groups (
+  decision_id TEXT PRIMARY KEY,
+  repo TEXT NOT NULL,
+  source TEXT NOT NULL,               -- model | closed | rule
+  applied_answer TEXT
+);
+CREATE TABLE IF NOT EXISTS dupe_group_items (
+  decision_id TEXT NOT NULL,
+  repo TEXT NOT NULL, number INTEGER NOT NULL,
+  kind TEXT NOT NULL,                 -- pr | issue
+  role TEXT NOT NULL,
+  target INTEGER,
+  detail TEXT,
+  base_role TEXT NOT NULL,            -- the roles as the comparison gave them; an answer's roles are rebuilt from these
+  base_target INTEGER,
+  head TEXT,                          -- a PR's head commit and an issue's text hash when the decision was asked; Act skips a member that differs
+  PRIMARY KEY (decision_id, number)
+);
+CREATE INDEX IF NOT EXISTS dupe_group_items_item ON dupe_group_items(repo, number);
+-- What the Act step already wrote for a group decision, per member and step (comment | details | close). Written right after each write so a retry never repeats it.
+CREATE TABLE IF NOT EXISTS dupe_group_posts (
+  decision_id TEXT NOT NULL,
+  number INTEGER NOT NULL,
+  step TEXT NOT NULL,
+  url TEXT,
+  at TEXT NOT NULL,
+  PRIMARY KEY (decision_id, number, step)
+);
+-- Carry-over of a kept PR's group: parts of the closed PRs to port onto it (Fix-up). queued | done | held.
+CREATE TABLE IF NOT EXISTS dupe_carries (
+  decision_id TEXT NOT NULL,
+  repo TEXT NOT NULL,
+  number INTEGER NOT NULL,            -- the kept PR
+  state TEXT NOT NULL,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  outcome TEXT,                       -- pushed | asked | gone | too-large | failed, with reason
+  to_head TEXT,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (decision_id, number)
+);
+-- The exact comments each answer of a group decision posts (src/dupes/texts.ts), written when the decision is asked. option: accept | keep:<n>.
+CREATE TABLE IF NOT EXISTS dupe_group_texts (
+  decision_id TEXT NOT NULL,
+  option TEXT NOT NULL,
+  number INTEGER NOT NULL,
+  step TEXT NOT NULL,                 -- close | details | suggestion
+  text TEXT NOT NULL,
+  PRIMARY KEY (decision_id, option, number, step)
+);
+-- Failed writes per member, so one permanent error does not block every later group.
+CREATE TABLE IF NOT EXISTS dupe_group_fails (
+  decision_id TEXT NOT NULL,
+  number INTEGER NOT NULL,
+  fails INTEGER NOT NULL,
+  PRIMARY KEY (decision_id, number)
+);

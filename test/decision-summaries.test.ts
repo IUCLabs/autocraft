@@ -7,8 +7,6 @@ import { describe, test } from "node:test";
 import { askCloseDecisions, closeDecisionId } from "../src/act/index.ts";
 import { connect } from "../src/db.ts";
 import { ask, getDecision } from "../src/decisions.ts";
-import { dupesWork, runDupes, type DupesDeps } from "../src/dupes/index.ts";
-import { VectorIndex } from "../src/embed/vectors.ts";
 import { HEAD_FACT, MERGE_OPTIONS } from "../src/merge/queue.ts";
 import { fillReviewSummaries } from "../src/review/summary.ts";
 import { SCRATCH } from "./scratch.ts";
@@ -16,7 +14,6 @@ import { SCRATCH } from "./scratch.ts";
 mkdirSync(SCRATCH, { recursive: true });
 const dir = mkdtempSync(join(SCRATCH, "decision-summaries-test-"));
 const T0 = "2026-01-01T00:00:00Z";
-const NOW = new Date("2026-06-01T00:00:00Z");
 
 function fresh(): DatabaseSync {
   const db = connect(join(mkdtempSync(join(dir, "db-")), "t.db"));
@@ -31,38 +28,6 @@ function fresh(): DatabaseSync {
     VALUES ('app', 1, 2, 'h1', 'h2', 0.93, 0.95, 'duplicate', 1, ?, ?)`).run(T0, T0);
   return db;
 }
-const index = () => new VectorIndex({ id: "m", dim: 4, embed: async () => [] });
-const deps = (summarize: DupesDeps["summarize"]): DupesDeps => ({ index: index(), check: { jev: async () => 0.5, haiku: async () => null, now: () => NOW }, summarize });
-const TEXT = "Both report that opening a TIFF file closes the app; #2 adds the file name and #1 only the symptom.";
-
-describe("duplicate summaries", () => {
-  test("a summary from the fake Haiku is saved; a failing call still asks the decision, and a later run fills it", async () => {
-    const db = fresh();
-    await runDupes(db, {}, () => {}, deps(async () => { throw new Error("no account"); }));
-    const id = "app#2:duplicate@1";
-    assert.equal(getDecision(db, id)?.summary, null);
-    assert.ok(getDecision(db, id));
-
-    const seen: string[] = [];
-    await runDupes(db, {}, () => {}, deps(async (pairs) => {
-      seen.push(...pairs.map((p) => p.ref));
-      return JSON.stringify(pairs.map((p) => ({ ref: p.ref, summary: TEXT })));
-    }));
-    const d = getDecision(db, id)!;
-    assert.deepEqual([seen, d.summary, d.summary_by], [["app#1~2"], TEXT, "haiku"]);
-
-    // Asking again keeps the summary and sends nothing.
-    await runDupes(db, {}, () => {}, deps(async () => { throw new Error("must not be called"); }));
-    assert.equal(getDecision(db, id)?.summary, TEXT);
-    assert.equal(dupesWork(db, "m"), false);
-  });
-
-  test("a reply without a valid summary leaves the decision asked and unsummarised", async () => {
-    const db = fresh();
-    await runDupes(db, {}, () => {}, deps(async () => "not json"));
-    assert.equal(getDecision(db, "app#2:duplicate@1")?.summary, null);
-  });
-});
 
 describe("merge and close summaries", () => {
   test("Close? takes the Sonnet and Opus review text at its head; Merge? is filled from the stored reviews on a later run", () => {

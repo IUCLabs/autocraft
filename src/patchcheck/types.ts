@@ -23,6 +23,8 @@ export type FixupCheckInput = {
   diff: string;
   /** Our patch, on top of the PR's head. */
   patch: string;
+  /** For a carry-over: the closed duplicates with the parts to port and their diffs (each cut to a share of the cap). */
+  carried_from?: { ref: string; points: string[]; diff: string }[];
 };
 
 /** What the fixissue.check prompt is rendered from. */

@@ -10,10 +10,9 @@ import { connect } from "../db.ts";
 import { embedderId, localEmbedder, modelName } from "../embed/model.ts";
 import { VectorIndex } from "../embed/vectors.ts";
 import { checkPairs, defaultCheckDeps, uncheckedPairs, type CheckDeps } from "./check.ts";
-import { applyDuplicateAnswers, askDuplicateDecisions, duplicateAskTargets } from "./decide.ts";
+import { answersToApply, applyDuplicateAnswers, askGroupDecisions, groupsToAsk } from "./decide.ts";
 import { scanItem, scanPending } from "./scan.ts";
-import { defaultSummarize, summarizeDuplicates, type Summarize } from "./summary.ts";
-import { pilotSqlFor } from "../pilot.ts";
+import { dueSets } from "./plan.ts";
 
 export { duplicateCount, duplicateHeld, notHeldSql } from "./held.ts";
 
@@ -28,25 +27,26 @@ export type DupesParams = {
   dryRun?: boolean;
   onHandled?: (n: number) => void;
 };
-export type DupesDeps = { index: VectorIndex; check: CheckDeps; summarize?: Summarize };
+export type DupesDeps = { index: VectorIndex; check: CheckDeps };
 export type DupesSummary = {
   scanned: number; pairsAdded: number; checked: number; jev: number; haiku: number; verdicts: Record<string, number>;
   unanswered: number; asked: string[]; answersApplied: number; dryRun: boolean;
 };
 
 export function defaultDeps(db: DatabaseSync): DupesDeps {
-  return { index: new VectorIndex(localEmbedder({ name: modelName(), threads: 1 })), check: defaultCheckDeps(db), summarize: defaultSummarize(db) };
+  return { index: new VectorIndex(localEmbedder({ name: modelName(), threads: 1 })), check: defaultCheckDeps(db) };
 }
 
 /** Work left: items to scan, pairs to check, decisions to ask or apply. Reads only, for the autopilot. */
 export function dupesWork(db: DatabaseSync, modelId: string = embedderId(modelName())): boolean {
   if (scanPending(db, modelId, 1).length || uncheckedPairs(db, 1).length) return true;
-  const answered = db.prepare(`SELECT 1 FROM decisions WHERE kind = 'duplicate' AND answer IS NOT NULL AND answer <> 'close' AND applied_at IS NULL AND ${pilotSqlFor("repo", "number")} LIMIT 1`).get();
-  if (answered) return true;
+  if (answersToApply(db)) return true;
   // Asked-but-unanswered ones need no job: asking again only refreshes them.
-  const asked = db.prepare("SELECT 1 FROM decisions WHERE id = ?");
-  return duplicateAskTargets(db).some((t) => !asked.get(t.id));
+  return groupsToAsk(db).length > 0;
 }
+
+/** Group comparisons due (the dupes-compare step's work). Reads only, for the autopilot. */
+export const compareWork = (db: DatabaseSync): boolean => dueSets(db).length > 0;
 
 export async function runDupes(db: DatabaseSync, params: DupesParams = {}, log: (line: string) => void = console.log, deps?: DupesDeps): Promise<DupesSummary> {
   if (params.limit !== undefined && !(Number.isInteger(params.limit) && params.limit >= 0)) throw new Error("limit must be a whole number ≥ 0");
@@ -76,8 +76,7 @@ export async function runDupes(db: DatabaseSync, params: DupesParams = {}, log: 
     log(`dupes: ${keys.length} pairs sent (${c.jev} to Jev, ${c.haiku} answered by Haiku): ${Object.entries(c.verdicts).map(([k, n]) => `${n} ${k}`).join(", ") || "no verdicts"}`);
   }
   const when = at().toISOString();
-  const summaries = d.summarize ? await summarizeDuplicates(db, d.summarize, when) : undefined;
-  s.asked = askDuplicateDecisions(db, undefined, when, summaries);
+  s.asked = askGroupDecisions(db, undefined, when);
   log(`dupes: ${s.asked.length} duplicate decisions asked, ${s.answersApplied} answers applied`);
   return s;
 }
@@ -95,7 +94,7 @@ function parseArgs(args: string[]): DupesParams {
 
 export const commands = {
   dupes: {
-    summary: "dupes [--limit N] [--dry-run]: find duplicate issues and PRs (Jev, then Haiku) and ask Close-as-duplicate decisions",
+    summary: "dupes [--limit N] [--dry-run]: find duplicate issues and PRs (Jev, then Haiku); the dupe-compare step compares each group and asks its decision",
     async run(args: string[]): Promise<void> {
       const db = connect();
       const r = await runDupes(db, parseArgs(args), (l) => console.error(l));

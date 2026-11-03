@@ -47,7 +47,8 @@ export const TOPIC_TABLES: Record<string, Source[]> = {
   checks: [{ table: "pr_checks" }],
   classify: [{ table: "classifications" }],
   dupes: [{ table: "duplicate_pairs" }, { table: "duplicate_scans" }],
-  decisions: [{ table: "decisions" }, { table: "decision_opinions" }, { table: "decision_comments" }, { table: "decision_claims" }],
+  decisions: [{ table: "decisions" }, { table: "decision_opinions" }, { table: "decision_comments" }, { table: "decision_claims" },
+    { table: "dupe_comparisons" }, { table: "dupe_groups" }, { table: "dupe_group_items" }, { table: "dupe_group_posts" }, { table: "dupe_group_texts" }],
   reviews: [{ table: "reviews" }, { table: "opus_reviews" }, { table: "review_posts" }],
   queue: [{ table: "merges" }, { table: "merge_batches" }, { table: "merge_batch_prs" }],
   jobs: [{ table: "jobs" }, { table: "stage_limits" }],
@@ -58,7 +59,7 @@ export const TOPIC_TABLES: Record<string, Source[]> = {
   envs: [{ table: "build_envs", ops: ["INSERT", "DELETE"] }, { table: "build_envs", ops: ["UPDATE"], when: "old.label IS NOT new.label OR old.kind IS NOT new.kind OR old.enabled IS NOT new.enabled OR old.slots IS NOT new.slots OR old.key_hash IS NOT new.key_hash OR old.capabilities IS NOT new.capabilities OR old.reported_slots IS NOT new.reported_slots OR old.version IS NOT new.version OR old.paused_reason IS NOT new.paused_reason" }],
   tasks: [{ table: "build_tasks" }, { table: "build_task_logs" }, { table: "build_artifacts" }],
   actions: [{ table: "actions" }],
-  fixes: [{ table: "fix_attempts" }, { table: "patch_checks" }],
+  fixes: [{ table: "fix_attempts" }, { table: "patch_checks" }, { table: "dupe_carries" }],
   verify: [{ table: "verifications" }, { table: "fixups" }],
   // Sessions change on every request (last_seen); only sign-ins and revocations matter.
   access: [{ table: "access" }, { table: "sessions", ops: ["INSERT", "DELETE"] }, { table: "audit" }],

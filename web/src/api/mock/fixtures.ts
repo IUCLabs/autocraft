@@ -4,6 +4,7 @@
 import { BATCH_SUMMARY, TEXT, fillerText } from "./fixtureText";
 
 import type {
+  OptionTexts,
   Classification,
   Decision,
   DecisionComment,
@@ -135,6 +136,7 @@ interface Seed {
   options: DecisionOption[];
   recommended: string;
   publicText?: string;
+  optionTexts?: OptionTexts[];
   ageH: number;
   author?: string;
   size?: [number, number, number];
@@ -204,6 +206,37 @@ const SEEDS: Seed[] = [
     cls: [["haiku", "small extra", "unclear"], ["jev", "plugin candidate", "no"], ["sonnet", "plugin candidate", "unclear"]],
     claim: ["kiri-n", 3],
     comments: [["kiri-n", 40 * M, "Looking at this now. The encoder could live behind a feature flag instead."]],
+  },
+  {
+    kind: "duplicate",
+    repo: "designcraft",
+    number: 2007,
+    title: "Text frames: overset text indicator stays after the frame grows",
+    question: "Keep #2007 and close #2017, #2088 as duplicates?",
+    context: ["All three fix the overset marker not clearing when a frame is resized.", "#2007 clears it in the layout pass and adds a regression test; #2088 also handles linked frames."],
+    facts: ["Keep: #2007 (regression test, clears in layout)", "Close: #2017, #2088", "Carry over: #2088 linked-frame handling", "Chosen by: Opus"],
+    options: [
+      { key: "accept", label: "Use this answer" },
+      { key: "keep:2088", label: "Keep #2088 instead" },
+      { key: "distinct", label: "Not duplicates" },
+    ],
+    recommended: "accept",
+    optionTexts: [
+      { option: "accept", hash: "a1", texts: [
+        { number: 2017, step: "close", text: "Closing as a duplicate of #2007." },
+        { number: 2088, step: "close", text: "Closing as a duplicate of #2007.\nParts to carry over to #2007: linked-frame overset handling in `crates/layout/src/thread.rs`." },
+        { number: 2007, step: "suggestion", text: "From #2088: the overset marker should also clear on linked frames (`crates/layout/src/thread.rs`)." },
+      ] },
+      { option: "keep:2088", hash: "b2", texts: [
+        { number: 2007, step: "close", text: "Closing as a duplicate of #2088." },
+        { number: 2017, step: "close", text: "Closing as a duplicate of #2088." },
+      ] },
+      { option: "distinct", hash: "c3", texts: [] },
+    ],
+    ageH: 2,
+    author: "onion3130",
+    size: [64, 8, 2],
+    cls: [["haiku", "bugfix", "yes"], ["jev", "bugfix", "yes"]],
   },
   {
     kind: "duplicate",
@@ -612,6 +645,7 @@ function toDecision(s: Seed): Decision {
     options: s.options.map((o) => ({ ...o, ...(WRITES[s.kind]?.[o.key] ? { writes: WRITES[s.kind]![o.key] } : {}) })),
     recommended: s.recommended,
     publicText: s.publicText ?? null,
+    optionTexts: s.optionTexts ?? [],
     askedAt: iso(s.ageH * H),
     askedBy: s.kind === "merge" ? "pipeline:review" : "pipeline:classify",
     docket: s.docket ?? null,
