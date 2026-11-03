@@ -5,6 +5,7 @@
 import { createHash } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { audit } from "../dash/audit.ts";
+import { isBotLogin } from "./bots.ts";
 import type { Querier } from "../mirror.ts";
 import { FORMAL_REVIEWS, recordGate, recordGateFailure, type ReviewFact } from "../merge/changes-requested.ts";
 import { ENTRY_LIMIT, TOTAL_LIMIT, type DiscussionEntry } from "./parse.ts";
@@ -44,13 +45,13 @@ export function pipelineLogin(db: DatabaseSync): string {
   return (db.prepare("SELECT value FROM main.settings WHERE key = ?").get(LOGIN_KEY) as { value: string } | undefined)?.value ?? "";
 }
 
-/** Authors whose words trigger a new review: the PR's author, people tied to the repository, and bot accounts. */
+/** Authors whose words trigger a new review: the PR's author and people tied to the repository. Bot accounts never do. */
 const COUNTED_ASSOCIATIONS = ["OWNER", "MEMBER", "COLLABORATOR", "CONTRIBUTOR"];
 
 type Written = { author: string | null; association?: string | null; bot?: boolean; prAuthor?: string | null; state?: string | null; body: string | null; inline?: number };
 
 /**
- * Whether a comment or review counts as new discussion: empty bodies and bare approvals never do, strangers' do not.
+ * Whether a comment or review counts as new discussion: empty bodies and bare approvals never do, and neither do strangers' or bots'.
  * A review with no body but inline comments counts (the findings are in the threads).
  */
 export function isCounted(w: Written): boolean {
@@ -59,7 +60,8 @@ export function isCounted(w: Written): boolean {
   if (!body && !inline) return false;
   if (w.state === "APPROVED" && !inline && body.length < 40) return false;
   const login = w.author ?? "";
-  return !!login && (login === w.prAuthor || !!w.bot || login.endsWith("[bot]") || COUNTED_ASSOCIATIONS.includes(w.association ?? ""));
+  if (!login || w.bot || isBotLogin(login)) return false;
+  return login === w.prAuthor || COUNTED_ASSOCIATIONS.includes(w.association ?? "");
 }
 
 /**

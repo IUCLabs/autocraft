@@ -387,6 +387,18 @@ CREATE TABLE IF NOT EXISTS opus_review_history (
 );
 CREATE INDEX IF NOT EXISTS opus_review_history_head ON opus_review_history(repo, number, head_oid);
 
+-- What a review did with the fixes of an earlier take-fix that were never applied (a new head came first): kept in
+-- its fix list, explained in its reason, or unaddressed. One row per fix, replaced with the review of the head.
+CREATE TABLE IF NOT EXISTS opus_carried_fixes (
+  repo TEXT NOT NULL, number INTEGER NOT NULL,
+  head_oid TEXT NOT NULL,             -- the head the review was made at
+  from_head TEXT NOT NULL,            -- the head of the take-fix that asked for the change
+  file TEXT NOT NULL, change TEXT NOT NULL,
+  outcome TEXT NOT NULL,              -- kept | explained | unaddressed
+  at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS opus_carried_fixes_head ON opus_carried_fixes(repo, number, head_oid);
+
 -- The verdict every later stage reads, per reviewed head commit: the Opus verdict.
 -- A PR with no row here is not reviewed yet. An unsure take or take-fix keeps its verdict;
 -- the merge queue asks a person before merging it.

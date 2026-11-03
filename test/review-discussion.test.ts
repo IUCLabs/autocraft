@@ -7,7 +7,7 @@ import { setRunner } from "../src/classify/run.ts";
 import { connect } from "../src/db.ts";
 import { buildQueue, eligible } from "../src/merge/queue.ts";
 import type { Querier } from "../src/mirror.ts";
-import { cleanBody, countRerun, discussionHash, discussionMovedSince, ensurePipelineLogin, markReviewsStale, staleReviews } from "../src/review/discussion.ts";
+import { cleanBody, countRerun, discussionHash, discussionMovedSince, ensurePipelineLogin, isCounted, markReviewsStale, staleReviews } from "../src/review/discussion.ts";
 import { runOpusReview, type OpusDeps } from "../src/review/opus.ts";
 import { useTestAccount } from "./accounts-fixture.ts";
 import { SCRATCH } from "./scratch.ts";
@@ -113,6 +113,33 @@ describe("PR discussion in reviews", () => {
     assert.equal(staleReviews(db, "app", true).size, 0, "capped for today");
     assert.equal(staleReviews(db, "app").size, 1, "the queue still waits");
     assert.equal(queued(), undefined);
+  });
+
+  test("a bot comment never makes a review stale; a contributor's does", async () => {
+    const counted = (author: string, bot = false, assoc = "NONE") => isCounted({ author, bot, association: assoc, prAuthor: "regular", body: "Major: the overlap is still filled" });
+    assert.deepEqual([counted("renovate[bot]"), counted("someone", true, "CONTRIBUTOR"), counted("CodeRabbitAI", false, "NONE"), counted("coderabbitai[bot]", false, "MEMBER")], [false, false, false, false]);
+    assert.deepEqual([counted("regular"), counted("dev", false, "CONTRIBUTOR")], [true, true]);
+    // The mirror stores `counted` per entry with this rule, so a bot's comment is stored as not counted and the review stays current.
+    const db = fresh();
+    comment(db, "bot", "coderabbitai", T2, "Major: the overlap is still filled", "comment", Number(counted("coderabbitai")));
+    assert.equal(staleReviews(db, "app").size, 0);
+    comment(db, "human", "dev", T2, "Major: the overlap is still filled", "comment", Number(counted("dev", false, "CONTRIBUTOR")));
+    assert.ok(staleReviews(db, "app").has("app#1@sha1"));
+  });
+
+  test("opening an older database recomputes counted for stored bot comments", () => {
+    const path = join(mkdtempSync(join(dir, "db-")), "old.db");
+    const db = connect(path);
+    db.prepare("INSERT INTO comments (repo, number, id, kind, author, created_at, body, counted) VALUES ('app', 1, ?, 'comment', ?, ?, 'Major: x', 1)").run("b1", "coderabbitai", T2);
+    db.prepare("INSERT INTO comments (repo, number, id, kind, author, created_at, body, counted) VALUES ('app', 1, ?, 'comment', ?, ?, 'Major: x', 1)").run("b2", "github-actions", T2);
+    db.prepare("INSERT INTO comments (repo, number, id, kind, author, created_at, body, counted) VALUES ('app', 1, ?, 'comment', ?, ?, 'Major: x', 1)").run("h1", "dev", T2);
+    db.exec("DELETE FROM main.settings WHERE key = 'schema_stamp'");
+    db.close();
+    // The mirror stores bot logins without the [bot] suffix, so a bot is known by the configured list.
+    process.env.AUTOCRAFT_REVIEW_BOTS = "coderabbitai,github-actions";
+    let again: DatabaseSync;
+    try { again = connect(path); } finally { delete process.env.AUTOCRAFT_REVIEW_BOTS; }
+    assert.deepEqual(again.prepare("SELECT id, counted FROM comments ORDER BY id").all().map((r) => ({ ...r })), [{ id: "b1", counted: 0 }, { id: "b2", counted: 0 }, { id: "h1", counted: 1 }]);
   });
 
   test("a counted comment that is on GitHub but not in the mirror blocks the merge and marks the PR stale", async () => {
