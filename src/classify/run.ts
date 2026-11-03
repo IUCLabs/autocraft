@@ -16,6 +16,7 @@ import { itemTools } from "../itemtools/index.ts";
 import { agentsFile, mcpFile } from "../sandbox/agent-files.ts";
 import { MCP_PATH } from "../sandbox/agents.ts";
 import { resolveClaudeBin, sandboxCommand, tokenNearExpiry } from "../sandbox/index.ts";
+import { holdCheckouts } from "../sandbox/checkout.ts";
 import { defaultWorkspace } from "../sandbox/workspace.ts";
 import { CLAUDE_PROMPTS, JEV_ARGS, JEV_USD_PER_INPUT_TOKEN, JEV_PROMPTS, claudeArgs, claudeParts, claudePromptOf, jevPromptOf, joinParts, renderClaude, withoutRepoDir, renderJev, type ClaudeInput, type ClaudePromptId, type JevPromptId } from "../prompts/index.ts";
 import type { DupePair } from "../dupes/pair.ts";
@@ -295,7 +296,12 @@ export async function askClaude<K extends ClaudePromptId>(id: K, model: string, 
       if (!claudeBin || !existsSync(credentials)) throw new Error("sandboxed call: claude binary or the account's credentials file not found");
       const c = sandboxCommand({ claudeBin, checkout: opts.checkout!, credentials, claudeArgs: args, shared, ...(workspace && { agentsFile: agentsFile(tools?.servers) }), extraMounts: tools ? [...tools.mounts, { host: tools.file, path: MCP_PATH }] : undefined });
       const feed = lineFeed((line) => { opts.onProgress?.(line); runProgress.push(line); });
-      r = await runner(c.cmd, c.args, parts.stdin, cwd, CLAUDE_PROMPTS[id].limits.timeoutSeconds * 1000, undefined, feed);
+      const release = holdCheckouts([opts.checkout!, ...(shared ?? []).map((x) => x.dir)]);
+      try {
+        r = await runner(c.cmd, c.args, parts.stdin, cwd, CLAUDE_PROMPTS[id].limits.timeoutSeconds * 1000, undefined, feed);
+      } finally {
+        release();
+      }
       runProgress.flush();
     } else r = await runner("claude", args, parts.stdin, cwd, CLAUDE_PROMPTS[id].limits.timeoutSeconds * 1000, { CLAUDE_CONFIG_DIR: run.configDir });
     // Stderr is scrubbed up front. For a sandboxed call the reply text is scrubbed after parsing, so a match cannot break the JSON.

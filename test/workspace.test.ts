@@ -2,11 +2,12 @@
 // rebuilt when the head moves, the previous one mounted while a new one is not
 // ready; the exclusion setting; usage of a subagent model.
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, statSync, utimesSync } from "node:fs";
 import { join } from "node:path";
 import { describe, test } from "node:test";
 import { lastResult, resultUsage, saveUsage, add } from "../src/classify/run.ts";
 import { connect } from "../src/db.ts";
+import { holdCheckouts } from "../src/sandbox/checkout.ts";
 import { WorkspaceCache, setWorkspaceExcluded, workspaceCheckouts, workspaceExcluded, type WorkspaceDeps } from "../src/sandbox/workspace.ts";
 import { SCRATCH } from "./scratch.ts";
 
@@ -64,6 +65,47 @@ describe("workspace checkouts", () => {
     t.heads.set("alpha", "c".repeat(40));
     await workspaceCheckouts(t.db, quiet, t.deps, c);
     assert.ok(!existsSync(old!.dir), "removed once past the keep time");
+  });
+
+  test("reusing the current checkout touches it, so the day-old prune does not take it", async () => {
+    const t = setup(["alpha"]);
+    const c = new WorkspaceCache();
+    const [w] = await workspaceCheckouts(t.db, quiet, t.deps, c);
+    const old = new Date(Date.now() - 3 * 86400_000);
+    utimesSync(w!.dir, old, old);
+    t.tick(2000);
+    await workspaceCheckouts(t.db, quiet, t.deps, c);
+    assert.ok(Date.now() - statSync(w!.dir).mtimeMs < 60_000);
+  });
+
+  test("a superseded checkout that was touched or is held is kept past the keep time", async () => {
+    const t = setup(["alpha"]);
+    const c = new WorkspaceCache();
+    const [old] = await workspaceCheckouts(t.db, quiet, t.deps, c);
+    t.heads.set("alpha", "b".repeat(40));
+    t.tick(2000);
+    await workspaceCheckouts(t.db, quiet, t.deps, c);
+    // Another stage asked for the same commit after the swap.
+    const later = new Date(Date.now() + 5000);
+    utimesSync(old!.dir, later, later);
+    t.tick(6000);
+    t.heads.set("alpha", "c".repeat(40));
+    await workspaceCheckouts(t.db, quiet, t.deps, c);
+    assert.ok(existsSync(old!.dir), "touched after it was superseded");
+    // A running call holds it.
+    const release = holdCheckouts([old!.dir]);
+    t.tick(6000);
+    t.heads.set("alpha", "d".repeat(40));
+    await workspaceCheckouts(t.db, quiet, t.deps, c);
+    assert.ok(existsSync(old!.dir), "held by a running call");
+    release();
+    // Releasing touches the directory, which defers removal by one more period.
+    for (const h of ["e", "f"]) {
+      t.tick(6000);
+      t.heads.set("alpha", h.repeat(40));
+      await workspaceCheckouts(t.db, quiet, t.deps, c);
+    }
+    assert.ok(!existsSync(old!.dir), "removed once released and untouched for a full period");
   });
 
   test("a call does not wait for a slow rebuild: it mounts the previous checkout", async () => {

@@ -12,7 +12,7 @@ import { SAMPLE_PATCH, SAMPLE_TRIAGE } from "../src/fixissue/types.ts";
 import { SAMPLE_FIXISSUE_CHECK, SAMPLE_FIXUP_CHECK } from "../src/patchcheck/types.ts";
 import { SAMPLE_FIXUP_PRS } from "../src/prompts/samples.ts";
 import { SAMPLE_VERIFY_PLAN } from "../src/verify/types.ts";
-import { buildCheckout, DEFAULT_CAPS, isInstructionPath, pruneCheckouts, safePath } from "../src/sandbox/checkout.ts";
+import { buildCheckout, DEFAULT_CAPS, holdCheckouts, isInstructionPath, pruneCheckouts, safePath } from "../src/sandbox/checkout.ts";
 import { REPO_PATH, sandboxCommand } from "../src/sandbox/command.ts";
 import { tokenNearExpiry } from "../src/sandbox/index.ts";
 import { useTestAccount } from "./accounts-fixture.ts";
@@ -232,6 +232,20 @@ describe("checkout", () => {
     utimesSync(join(root, "app", "aaa"), old, old);
     assert.equal(pruneCheckouts(root, 86400_000), 1);
     assert.equal(existsSync(join(root, "app", "bbb")), true);
+  });
+
+  test("a checkout held by a running call is not pruned", () => {
+    const root = join(dir, "prune-held");
+    mkdirSync(join(root, "app", "ccc"), { recursive: true });
+    const old = new Date(Date.now() - 3 * 86400_000);
+    utimesSync(join(root, "app", "ccc"), old, old);
+    const release = holdCheckouts([join(root, "app", "ccc")]);
+    assert.equal(pruneCheckouts(root, 86400_000), 0);
+    release();
+    // Releasing touches the directory: it counts as used just now.
+    assert.equal(pruneCheckouts(root, 86400_000), 0);
+    utimesSync(join(root, "app", "ccc"), old, old);
+    assert.equal(pruneCheckouts(root, 86400_000), 1);
   });
 });
 

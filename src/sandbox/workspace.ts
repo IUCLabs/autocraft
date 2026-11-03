@@ -5,11 +5,12 @@
 // per repository); a checkout of a new head is built then, and a call waits
 // for it only briefly: it mounts the previous checkout when the new one is
 // not ready.
-import { existsSync, rmSync } from "node:fs";
+import { existsSync, rmSync, statSync } from "node:fs";
 import type { DatabaseSync } from "node:sqlite";
 import { audit } from "../dash/audit.ts";
 import { trackedNames } from "../repos.ts";
 import { SHARED_NAME } from "./command.ts";
+import { checkoutHeld, touchCheckout } from "./checkout.ts";
 import { checkoutForCommit, sandboxAvailable } from "./index.ts";
 
 export const EXCLUDE_KEY = "workspace_exclude";
@@ -66,19 +67,21 @@ export function defaultWorkspaceDeps(): WorkspaceDeps {
 
 type State = { sha?: string; dir?: string; checkedAt?: number; job?: Promise<void> };
 
+const mtimeOf = (dir: string): number => { try { return statSync(dir).mtimeMs; } catch { return 0; } };
+
 /** What is known per repository: the newest ready checkout and its head. */
 export class WorkspaceCache {
   private repos = new Map<string, State>();
-  private superseded: { dir: string; at: number }[] = [];
+  private superseded: { dir: string; at: number; mtime: number }[] = [];
 
   private async refresh(repo: string, branch: string, s: State, d: WorkspaceDeps, log: (l: string) => void): Promise<void> {
     try {
       const head = await d.headOf(repo, branch);
       if (!head) return;
-      if (head === s.sha && s.dir && existsSync(s.dir)) { s.checkedAt = d.now(); return; }
+      if (head === s.sha && s.dir && existsSync(s.dir)) { touchCheckout(s.dir); s.checkedAt = d.now(); return; }
       const dir = await d.checkout(repo, branch, head);
       if (!dir) return;
-      if (s.dir && s.dir !== dir) this.superseded.push({ dir: s.dir, at: d.now() });
+      if (s.dir && s.dir !== dir) this.superseded.push({ dir: s.dir, at: d.now(), mtime: mtimeOf(s.dir) });
       Object.assign(s, { sha: head, dir, checkedAt: d.now() });
     } catch (e) {
       log(`  workspace ${repo}: ${String((e as Error).message).slice(0, 150)}`);
@@ -91,6 +94,9 @@ export class WorkspaceCache {
   private sweep(d: WorkspaceDeps): void {
     this.superseded = this.superseded.filter((x) => {
       if (d.now() - x.at < d.keepMs) return true;
+      // Another stage that asked for the same commit after the swap touched it (checkoutForCommit), and a running call holds it: both keep it for another period.
+      const m = mtimeOf(x.dir);
+      if (checkoutHeld(x.dir) || m > x.mtime) { x.at = d.now(); x.mtime = m; return true; }
       rmSync(x.dir, { recursive: true, force: true });
       return false;
     });
@@ -100,7 +106,7 @@ export class WorkspaceCache {
   async dirOf(repo: string, branch: string, d: WorkspaceDeps, log: (l: string) => void): Promise<string | null> {
     const s = this.repos.get(repo) ?? {};
     this.repos.set(repo, s);
-    if (s.dir && s.checkedAt !== undefined && d.now() - s.checkedAt < d.headTtlMs && existsSync(s.dir)) return s.dir;
+    if (s.dir && s.checkedAt !== undefined && d.now() - s.checkedAt < d.headTtlMs && existsSync(s.dir)) { touchCheckout(s.dir); return s.dir; }
     const job = (s.job ??= this.refresh(repo, branch, s, d, log));
     let timer: NodeJS.Timeout | undefined;
     await Promise.race([job, new Promise<void>((r) => { timer = setTimeout(r, d.boundMs); })]);
