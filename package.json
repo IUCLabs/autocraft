@@ -1,5 +1,5 @@
 {
-  "name": "craft-automation",
+  "name": "autocraft",
   "license": "MIT OR Apache-2.0",
   "version": "0.1.0",
   "description": "Backlog mirror, triage pipeline state and dashboard for the storytold craft apps",
