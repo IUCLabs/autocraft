@@ -14,7 +14,7 @@ const REPO = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
 
 /** GitHub text between markers; a marker inside the text is broken so the text cannot end the block early. */
 export function frame(label: string, text: string): string {
-  const safe = text.replace(/<<<|>>>/g, (m) => m.split("").join(" "));
+  const safe = text.replace(/<{3,}|>{3,}/g, (m) => m.split("").join(" "));
   return `${NOTE}\n<<<untrusted GitHub text: ${label}>>>\n${safe}\n<<<end untrusted>>>`;
 }
 
@@ -174,11 +174,11 @@ function item(db: DatabaseSync, a: Record<string, string | number>): ToolResult 
     const what = c.kind === "review" ? `review${c.review_state ? ` ${c.review_state.toLowerCase()}` : ""}` : "comment";
     parts.push(`--- ${what} by ${c.author ?? "?"} at ${c.created_at ?? ""}${c.commit_oid ? ` on ${c.commit_oid.slice(0, 8)}` : ""} ---\n${cut(c.body, 2000)}`);
   }
-  let text = frame(`${it.repo}#${it.number}`, cut(parts.join("\n"), MAX_RESULT - 2000));
+  let body = cut(parts.join("\n"), MAX_RESULT - 4000);
   const dec = db.prepare("SELECT kind, answer, answer_label, answered_at FROM decision_outcomes WHERE repo = ? AND number = ? ORDER BY answered_at").all(it.repo, it.number) as
     { kind: string; answer: string; answer_label: string | null; answered_at: string | null }[];
-  if (dec.length) text += `\n\nDecision outcomes (kind: chosen option, date):\n${dec.map((d) => `- ${d.kind}: ${d.answer}${d.answer_label ? ` (${d.answer_label})` : ""}, ${(d.answered_at ?? "").slice(0, 10)}`).join("\n")}`;
-  return { text };
+  if (dec.length) body += `\n\nDecision outcomes (kind: chosen option, date):\n${dec.map((d) => `- ${d.kind}: ${d.answer}${d.answer_label ? ` (${d.answer_label})` : ""}, ${(d.answered_at ?? "").slice(0, 10)}`).join("\n")}`;
+  return { text: frame(`${it.repo}#${it.number}`, body) };
 }
 
 function similar(db: DatabaseSync, a: Record<string, string | number>): ToolResult {
@@ -243,7 +243,7 @@ function prDiff(db: DatabaseSync, cfg: Config, a: Record<string, string | number
 }
 
 export function openDb(path: string): DatabaseSync {
-  return new DatabaseSync(path, { readOnly: true, timeout: 10_000 });
+  return new DatabaseSync(path, { readOnly: true, timeout: 30_000 });
 }
 
 /** Runs one tool. Bad arguments and missing items come back as an error result, never as a throw. */

@@ -5,7 +5,7 @@
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { GIT_ENV, HARDENING } from "../fixup/git.ts";
 
 export type CheckoutCaps = { maxFiles: number; maxBytes: number; maxFileBytes: number };
@@ -113,6 +113,28 @@ export async function buildCheckout(gitDir: string, sha: string, dest: string, c
   return { ok: true, dir: dest, files: entries.length, bytes };
 }
 
+const held = new Map<string, number>();
+
+/** Marks checkouts as in use by a running call, so pruning and sweeping skip them; the returned function releases them. */
+export function holdCheckouts(dirs: string[]): () => void {
+  const list = dirs.map((d) => resolve(d));
+  for (const d of list) { held.set(d, (held.get(d) ?? 0) + 1); touchCheckout(d); }
+  let done = false;
+  return () => {
+    if (done) return;
+    done = true;
+    for (const d of list) {
+      const n = (held.get(d) ?? 1) - 1;
+      if (n > 0) held.set(d, n); else held.delete(d);
+      touchCheckout(d);
+    }
+  };
+}
+
+export const checkoutHeld = (dir: string): boolean => held.has(resolve(dir));
+
+export function touchCheckout(dir: string): void { touch(dir); }
+
 function touch(dir: string): void {
   try { const t = new Date(); utimesSync(dir, t, t); } catch { /* pruning then sees an older time */ }
 }
@@ -125,6 +147,7 @@ export function pruneCheckouts(root: string, maxAgeMs: number, now = Date.now())
     const rd = join(root, repo);
     for (const d of readdirSync(rd)) {
       const p = join(rd, d);
+      if (checkoutHeld(p)) continue;
       const old = now - statSync(p).mtimeMs > (d.includes(".tmp-") ? 3600_000 : maxAgeMs);
       if (old) { rmSync(p, { recursive: true, force: true }); n++; }
     }

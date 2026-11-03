@@ -4,7 +4,7 @@
 // read it through the item tools (src/itemtools/server). Nothing written on the
 // dashboard (notes, opinions, comments), no settings, audit, accounts, access
 // lists, tokens or host paths goes in. Only public repositories are copied.
-import { existsSync, mkdirSync, renameSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, renameSync, rmSync, statSync, unlinkSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { dbPath } from "../db.ts";
@@ -92,6 +92,7 @@ const differs = (a: string, b: string, names: string[]) => names.filter((c) => c
  */
 export function writeSnapshot(src: string = dbPath(), dest: string = snapshotFile()): SnapshotStats {
   mkdirSync(dirname(dest), { recursive: true });
+  recoverJournal(dest);
   let rebuilt = false;
   let target = dest;
   if (!existsSync(dest) || !hasVersion(dest)) {
@@ -108,63 +109,97 @@ export function writeSnapshot(src: string = dbPath(), dest: string = snapshotFil
   try {
     db.prepare("ATTACH DATABASE ? AS src").run(`file:${encodeURI(src).replace(/\?/g, "%3F").replace(/#/g, "%23")}?mode=ro`);
     const changed = { items: 0, comments: 0, embeddings: 0 };
-    db.exec("BEGIN IMMEDIATE");
+    // A plain BEGIN: the comparison below only reads, so it holds no write lock; the lock is taken by the first write.
+    db.exec("BEGIN");
     const pub = "repo IN (SELECT name FROM src.repos WHERE visibility = 'public')";
     db.exec(`CREATE TEMP VIEW pub_items AS SELECT * FROM src.items WHERE ${pub}`);
-    db.exec(`CREATE TEMP VIEW pub_comments AS SELECT * FROM src.comments WHERE ${pub}`);
+    // A review still pending is the author's draft and is not public.
+    db.exec(`CREATE TEMP VIEW pub_comments AS SELECT * FROM src.comments WHERE ${pub} AND (review_state IS NULL OR review_state <> 'PENDING')`);
     db.exec(`CREATE TEMP VIEW pub_embeddings AS SELECT * FROM src.item_embeddings WHERE ${pub}`);
+    // Compare first (reads only), then apply what differs.
     // Items: the new or changed ones are replaced as a whole; the gone ones are deleted.
     db.exec(`CREATE TEMP TABLE chg AS SELECT s.repo, s.number FROM pub_items s LEFT JOIN main.items m ON m.repo = s.repo AND m.number = s.number
       WHERE m.number IS NULL OR ${differs("m", "s", ITEM_COLUMNS)}`);
     db.exec(`CREATE TEMP TABLE gone AS SELECT repo, number FROM main.items WHERE (repo, number) NOT IN (SELECT repo, number FROM pub_items)`);
-    changed.items = (db.prepare("SELECT (SELECT COUNT(*) FROM chg) + (SELECT COUNT(*) FROM gone) AS n").get() as { n: number }).n;
-    if (changed.items) {
-      db.exec("DELETE FROM main.items WHERE (repo, number) IN (SELECT repo, number FROM chg) OR (repo, number) IN (SELECT repo, number FROM gone)");
-      db.exec(`INSERT INTO main.items (${ITEM_COLUMNS.join(",")}) SELECT ${ITEM_COLUMNS.map((c) => `s.${c}`).join(",")} FROM pub_items s JOIN chg USING (repo, number)`);
-    }
+    const count = (...tables: string[]) => (db.prepare(`SELECT ${tables.map((t) => `(SELECT COUNT(*) FROM ${t})`).join(" + ")} AS n`).get() as { n: number }).n;
+    changed.items = count("chg", "gone");
     // Comments and reviews, by id.
     const cc = COMMENT_COLUMNS.filter((c) => c !== "id");
     db.exec(`CREATE TEMP TABLE cchg AS SELECT s.id FROM pub_comments s LEFT JOIN main.comments m ON m.id = s.id WHERE m.id IS NULL OR ${differs("m", "s", cc)}`);
     db.exec("CREATE TEMP TABLE cgone AS SELECT id FROM main.comments WHERE id NOT IN (SELECT id FROM pub_comments)");
-    changed.comments = (db.prepare("SELECT (SELECT COUNT(*) FROM cchg) + (SELECT COUNT(*) FROM cgone) AS n").get() as { n: number }).n;
-    if (changed.comments) {
-      db.exec("DELETE FROM main.comments WHERE id IN (SELECT id FROM cchg) OR id IN (SELECT id FROM cgone)");
-      db.exec(`INSERT INTO main.comments (${COMMENT_COLUMNS.join(",")}) SELECT ${COMMENT_COLUMNS.map((c) => `s.${c}`).join(",")} FROM pub_comments s JOIN cchg USING (id)`);
-    }
+    changed.comments = count("cchg", "cgone");
     // Embeddings, by item and write time.
     db.exec(`CREATE TEMP TABLE echg AS SELECT s.repo, s.number FROM pub_embeddings s LEFT JOIN main.item_embeddings m ON m.repo = s.repo AND m.number = s.number
       WHERE m.number IS NULL OR m.at IS NOT s.at OR m.model IS NOT s.model`);
     db.exec("CREATE TEMP TABLE egone AS SELECT repo, number FROM main.item_embeddings WHERE (repo, number) NOT IN (SELECT repo, number FROM pub_embeddings)");
-    changed.embeddings = (db.prepare("SELECT (SELECT COUNT(*) FROM echg) + (SELECT COUNT(*) FROM egone) AS n").get() as { n: number }).n;
-    if (changed.embeddings) {
-      db.exec("DELETE FROM main.item_embeddings WHERE (repo, number) IN (SELECT repo, number FROM echg) OR (repo, number) IN (SELECT repo, number FROM egone)");
-      db.exec("INSERT INTO main.item_embeddings (repo, number, model, at, vec) SELECT s.repo, s.number, s.model, s.at, s.vec FROM pub_embeddings s JOIN echg USING (repo, number)");
-    }
-    // Decision outcomes are few: replaced when the set differs.
+    changed.embeddings = count("echg", "egone");
+    // Decision outcomes are few: replaced when the set differs. After the apply step below main.items equals pub_items.
     const rows = db.prepare(`SELECT kind, repo, number, items, options, answer, exceptions, answered_at FROM src.decisions
       WHERE answer IS NOT NULL AND answered_at IS NOT NULL`).all() as unknown as DecisionRow[];
-    const have = new Set((db.prepare("SELECT repo, number FROM main.items").all() as { repo: string; number: number }[]).map((r) => `${r.repo}#${r.number}`));
+    const have = new Set((db.prepare("SELECT repo, number FROM pub_items").all() as { repo: string; number: number }[]).map((r) => `${r.repo}#${r.number}`));
     const want = outcomes(rows).filter((o) => have.has(`${o.repo}#${o.number}`)).map((o) => [o.repo, o.number, o.kind, o.answer, o.label, o.at] as const);
     const key = (xs: readonly (readonly unknown[])[]) => JSON.stringify([...xs].map((x) => JSON.stringify(x)).sort());
     const current = (db.prepare("SELECT repo, number, kind, answer, answer_label, answered_at FROM main.decision_outcomes").all() as Record<string, unknown>[]).map((r) => Object.values(r));
-    if (key(want) !== key(current)) {
-      db.exec("DELETE FROM main.decision_outcomes");
-      const ins = db.prepare("INSERT INTO main.decision_outcomes (repo, number, kind, answer, answer_label, answered_at) VALUES (?,?,?,?,?,?)");
-      for (const w of want) ins.run(...w);
-      changed.items += 1;
+    const outcomesDiffer = key(want) !== key(current);
+    if (outcomesDiffer) changed.items += 1;
+
+    if (changed.items || changed.comments || changed.embeddings) {
+      if (count("chg", "gone")) {
+        db.exec("DELETE FROM main.items WHERE (repo, number) IN (SELECT repo, number FROM chg) OR (repo, number) IN (SELECT repo, number FROM gone)");
+        db.exec(`INSERT INTO main.items (${ITEM_COLUMNS.join(",")}) SELECT ${ITEM_COLUMNS.map((c) => `s.${c}`).join(",")} FROM pub_items s JOIN chg USING (repo, number)`);
+      }
+      if (changed.comments) {
+        db.exec("DELETE FROM main.comments WHERE id IN (SELECT id FROM cchg) OR id IN (SELECT id FROM cgone)");
+        db.exec(`INSERT INTO main.comments (${COMMENT_COLUMNS.join(",")}) SELECT ${COMMENT_COLUMNS.map((c) => `s.${c}`).join(",")} FROM pub_comments s JOIN cchg USING (id)`);
+      }
+      if (changed.embeddings) {
+        db.exec("DELETE FROM main.item_embeddings WHERE (repo, number) IN (SELECT repo, number FROM echg) OR (repo, number) IN (SELECT repo, number FROM egone)");
+        db.exec("INSERT INTO main.item_embeddings (repo, number, model, at, vec) SELECT s.repo, s.number, s.model, s.at, s.vec FROM pub_embeddings s JOIN echg USING (repo, number)");
+      }
+      if (outcomesDiffer) {
+        db.exec("DELETE FROM main.decision_outcomes");
+        const ins = db.prepare("INSERT INTO main.decision_outcomes (repo, number, kind, answer, answer_label, answered_at) VALUES (?,?,?,?,?,?)");
+        for (const w of want) ins.run(...w);
+      }
+      db.prepare("INSERT OR REPLACE INTO meta VALUES ('refreshed_at', ?)").run(new Date().toISOString());
     }
-    if (changed.items || changed.comments || changed.embeddings) db.prepare("INSERT OR REPLACE INTO meta VALUES ('refreshed_at', ?)").run(new Date().toISOString());
     const n = (t: string) => Number((db.prepare(`SELECT COUNT(*) AS n FROM main.${t}`).get() as { n: number }).n);
     const counts = { items: n("items"), comments: n("comments") };
     db.exec("COMMIT");
     db.close();
-    if (rebuilt) renameSync(target, dest);
+    if (rebuilt) {
+      dropJournal(dest);
+      renameSync(target, dest);
+    }
     return { ...counts, bytes: statSync(dest).size, rebuilt, changed };
   } catch (e) {
     try { db.close(); } catch { /* already closed */ }
     if (rebuilt) rmSync(target, { force: true });
     throw e;
   }
+}
+
+/**
+ * A writer killed mid-transaction leaves `<file>-journal`. Readers cannot open
+ * the file until a read-write open has rolled it back, and a journal left next
+ * to a file renamed over it would later be rolled back into the new file. So
+ * the journal is rolled back before anything else, and one with no file to
+ * belong to is deleted.
+ */
+function recoverJournal(dest: string): void {
+  const journal = `${dest}-journal`;
+  if (!existsSync(journal)) return;
+  if (existsSync(dest)) {
+    try {
+      const db = new DatabaseSync(dest, { timeout: 30_000 });
+      try { db.prepare("SELECT COUNT(*) FROM sqlite_master").get(); } finally { db.close(); }
+    } catch { /* not a database: the file is rebuilt below */ }
+  }
+  dropJournal(dest);
+}
+
+function dropJournal(dest: string): void {
+  try { unlinkSync(`${dest}-journal`); } catch { /* none */ }
 }
 
 function hasVersion(file: string): boolean {

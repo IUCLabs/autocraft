@@ -4,9 +4,10 @@
 //   /data/snapshot       the directory of the item snapshot (src/itemtools/snapshot.ts), mounted as a
 //                        directory so a reader sees the journal of an interrupted refresh and fails
 //                        instead of reading a half-written page
-//   /data/diffs          the cache of PR diffs, when it exists
+//   /data/diffs/<repo>   the cached PR diffs of each repository in the snapshot (the public ones), when they exist
 import { existsSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 import { diffCacheDir } from "../review/diff.ts";
 import { snapshotFile, writeSnapshot } from "./snapshot.ts";
@@ -23,18 +24,35 @@ export type McpServer = { command: string; args: string[]; env: Record<string, s
 /** Names claude knows the tools by, for --allowedTools. */
 export const itemToolNames = (): string[] => TOOLS.map((t) => `mcp__${ITEM_SERVER}__${t.name}`);
 
+const REPO_DIR = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
+
+function snapshotRepos(file: string): string[] {
+  try {
+    const db = new DatabaseSync(file, { readOnly: true, timeout: 30_000 });
+    try {
+      return (db.prepare("SELECT DISTINCT repo FROM items").all() as { repo: string }[]).map((r) => r.repo).filter((r) => REPO_DIR.test(r));
+    } finally {
+      db.close();
+    }
+  } catch {
+    return [];
+  }
+}
+
 /** Read-only mounts and the stdio server definition; null when no snapshot has been built yet. */
 export function itemTools(): { mounts: Mount[]; mcpServers: Record<string, McpServer> } | null {
   const snapshot = snapshotFile();
   if (!existsSync(snapshot)) return null;
-  const diffs = diffCacheDir();
   const mounts: Mount[] = [
     { host: fileURLToPath(new URL("./server", import.meta.url)), path: APP_PATH },
     { host: dirname(snapshot), path: `${DATA_PATH}/snapshot` },
   ];
   const env: Record<string, string> = { ITEM_TOOLS_DB: `${DATA_PATH}/snapshot/items.db` };
-  if (existsSync(diffs)) {
-    mounts.push({ host: diffs, path: `${DATA_PATH}/diffs` });
+  // One mount per repository in the snapshot: the cache also holds the diffs of repositories that are not public.
+  const diffs = diffCacheDir();
+  const dirs = snapshotRepos(snapshot).filter((r) => existsSync(join(diffs, r)));
+  if (dirs.length) {
+    for (const r of dirs) mounts.push({ host: join(diffs, r), path: `${DATA_PATH}/diffs/${r}` });
     env.ITEM_TOOLS_DIFFS = `${DATA_PATH}/diffs`;
   }
   return { mounts, mcpServers: { [ITEM_SERVER]: { command: "/usr/bin/node", args: ["--no-warnings", `${APP_PATH}/main.ts`], env } } };
