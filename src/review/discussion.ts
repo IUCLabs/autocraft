@@ -221,7 +221,9 @@ export function discussionState(db: DatabaseSync, repo?: string): Map<string, { 
   const by = new Map<string, typeof rows>();
   for (const r of rows) {
     const k = `${r.repo}#${r.number}`;
-    by.set(k, [...(by.get(k) ?? []), r]);
+    const list = by.get(k);
+    if (list) list.push(r);
+    else by.set(k, [r]);
   }
   return new Map([...by].map(([k, v]) => [k, { newest: v.reduce((m, r) => (r.created_at > m ? r.created_at : m), ""), hash: discussionHash(v) }]));
 }
