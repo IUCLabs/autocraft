@@ -15,6 +15,13 @@ const { dueItems: priorityDue, duePriorityCount } = await import("../src/priorit
 const { planLabels } = await import("../src/labels/plan.ts");
 const { scanPending } = await import("../src/dupes/scan.ts");
 const { uncheckedPairs } = await import("../src/dupes/check.ts");
+const { buildQueue, eligible } = await import("../src/merge/queue.ts");
+const { closeCandidates, pending: actPending } = await import("../src/act/index.ts");
+const { selectIssues } = await import("../src/fixissue/index.ts");
+const { selectFixups } = await import("../src/fixup/candidates.ts");
+const { setCommentApproval } = await import("../src/act/approval.ts");
+const { setPushApproval } = await import("../src/fixup/approval.ts");
+const { finalizeReviews } = await import("./fixture.ts");
 const { fixDue } = await import("../src/fixissue/index.ts");
 const { setFixIssueApproval } = await import("../src/fixissue/approval.ts");
 
@@ -24,6 +31,7 @@ const dir = mkdtempSync(join(SCRATCH, "pilot-test-"));
 const db = connect(join(dir, "p.db"));
 after(() => {
   db.close();
+  W.close();
   rmSync(dir, { recursive: true, force: true });
 });
 
@@ -84,4 +92,80 @@ test("a pilot is validated and clearing it lifts the limit", () => {
   assert.deepEqual(held(), [1, 2, 3, 4, 10, 11, 12, 111]);
   const audited = db.prepare("SELECT action FROM audit WHERE action LIKE 'pilot-%' ORDER BY rowid").all() as { action: string }[];
   assert.deepEqual(audited.map((a) => a.action), ["pilot-set", "pilot-set", "pilot-set", "pilot-clear", "pilot-clear"]);
+});
+
+// ---- the stages that write to GitHub ----------------------------------------------
+
+const W = connect(join(dir, "w.db"));
+const T1 = "2026-01-02T00:00:00Z";
+W.prepare("INSERT INTO repos (name, visibility, default_branch) VALUES ('app', 'public', 'main')").run();
+W.prepare("INSERT INTO tracked_repos (name, added_by, added_at) VALUES ('app', 'op', ?)").run(T1);
+W.prepare("INSERT INTO access (login, role) VALUES ('op', 'operator')").run();
+W.prepare("INSERT INTO whitelist_overrides (login, status, by, at) VALUES ('regular', 'allow', 'op', ?)").run(T1);
+{
+  const item = W.prepare(`INSERT INTO items (repo, number, kind, state, title, body, author, additions, deletions, head_oid, url, created_at, updated_at)
+    VALUES ('app', ?, ?, 'OPEN', ?, 'b', 'regular', 20, 0, ?, ?, ?, ?)`);
+  const jev = W.prepare(`INSERT INTO classifications (repo, number, classifier, run_id, at, type_label, flags, probs) VALUES ('app', ?, 'jev', 'r1', ?, 'bugfix', '[]', '{"top":0.97}')`);
+  const review = W.prepare(`INSERT INTO reviews (repo, number, head_oid, run_id, at, model, size, verdict, reason, fixes) VALUES ('app', ?, ?, 'rv', ?, 'm', 'S', ?, 'r', ?)`);
+  const checks = W.prepare(`INSERT INTO pr_checks (repo, number, head_oid, state, is_draft, overall, checks, mergeable, maintainer_can_modify, fetched_at)
+    VALUES ('app', ?, ?, 'OPEN', 0, 'success', '[]', 'MERGEABLE', ?, ?)`);
+  const pr = (n: number, verdict: string, canModify = 1) => {
+    item.run(n, "pr", `PR ${n}`, `sha${n}`, `https://github.com/storytold/app/pull/${n}`, T1, T1);
+    jev.run(n, T1);
+    review.run(n, `sha${n}`, T1, verdict, verdict === "take-fix" ? '[{"file":"a.rs","change":"x"}]' : null);
+    checks.run(n, `sha${n}`, canModify, T1);
+    if (verdict === "take") W.prepare(`INSERT INTO verifications (repo, number, head_sha, kind, reason, state, note, created_at) VALUES ('app', ?, ?, 'tests', 'r', 'passed', 'also passes on base', ?)`).run(n, `sha${n}`, T1);
+  };
+  pr(21, "take"); pr(22, "take");
+  pr(23, "take"); // the Fix PR of issue 30
+  pr(24, "close"); pr(25, "close");
+  pr(26, "take-fix"); pr(27, "take-fix");
+  pr(28, "take-fix", 0); pr(29, "take-fix", 0); // no push permission: the "ask" side of fix-up
+  for (const n of [30, 31, 32]) {
+    item.run(n, "issue", `Issue ${n}`, null, `https://github.com/storytold/app/issues/${n}`, T1, T1);
+    jev.run(n, T1);
+  }
+  W.prepare("INSERT INTO fix_attempts (repo, number, main_sha, text_hash, state, pr_url, created_at, updated_at) VALUES ('app', 30, 'm', 'h', 'pr-opened', 'https://github.com/storytold/app/pull/23', ?, ?)").run(T1, T1);
+  setCommentApproval(W, "op", "app", true);
+  setPushApproval(W, "op", "app", true);
+  setFixIssueApproval(W, "op", "app", true);
+  finalizeReviews(W);
+}
+const queued = () => buildQueue(W, { repo: "app", merged: "exclude" });
+const nums = (xs: { number: number }[]) => xs.map((x) => x.number).sort((a, b) => a - b);
+
+test("the GitHub-writing stages see every item without a pilot", () => {
+  assert.deepEqual(nums(queued()), [21, 22, 23, 26, 27, 28, 29]);
+  assert.deepEqual(nums(queued().filter(eligible)), [21, 22, 23]);
+  assert.deepEqual(nums(closeCandidates(W, "app")), [24, 25]);
+  assert.deepEqual(nums(selectIssues(W, "app")), [31, 32]);
+  const fx = selectFixups(W, "app");
+  assert.deepEqual(nums(fx.fix), [26, 27]);
+  assert.deepEqual(nums(fx.ask), [28, 29]);
+  assert.deepEqual(nums(planLabels(W, "app")), [21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32]);
+});
+
+test("with a pilot they see only pilot items and the Fix PR of a pilot issue", () => {
+  setPilot(W, "tester", ["app#21", "app#24", "app#26", "app#29", "app#30", "app#31"]);
+  assert.deepEqual(nums(queued()), [21, 23, 26, 29], "merge queue (single and batch candidates)");
+  assert.deepEqual(nums(queued().filter(eligible)), [21, 23]);
+  assert.deepEqual(nums(closeCandidates(W, "app")), [24]);
+  assert.deepEqual(nums(selectIssues(W, "app")), [31]);
+  const fx = selectFixups(W, "app");
+  assert.deepEqual(nums(fx.fix), [26]);
+  assert.deepEqual(nums(fx.ask), [29]);
+  assert.deepEqual(nums(planLabels(W, "app")), [21, 23, 24, 26, 29, 30, 31]);
+  setPilot(W, "tester", []);
+});
+
+test("act applies answered closes only to pilot items", () => {
+  const at = "2026-01-03T00:00:00Z";
+  W.prepare("INSERT INTO decisions (id, kind, repo, number, question, options, asked_at, answer, answered_by, answered_at) VALUES (?, 'close', 'app', ?, 'q', '[]', ?, 'close', 'op', ?)")
+    .run("app#24:close@sha24", 24, at, at);
+  W.prepare("INSERT INTO decisions (id, kind, repo, number, question, options, asked_at, answer, answered_by, answered_at) VALUES (?, 'close', 'app', ?, 'q', '[]', ?, 'close', 'op', ?)")
+    .run("app#25:close@sha25", 25, at, at);
+  assert.deepEqual(nums(actPending(W, "app")), [24, 25]);
+  setPilot(W, "tester", ["app#24"]);
+  assert.deepEqual(nums(actPending(W, "app")), [24]);
+  setPilot(W, "tester", []);
 });
