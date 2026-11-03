@@ -54,7 +54,7 @@ export function postCandidates(db: DatabaseSync, repo: string): PostCandidate[] 
     WHERE i.repo = ? AND i.kind = 'pr' AND i.state = 'OPEN' AND ${notOwnIntegrationSql("i")} AND ${pilotSql("i")}
       AND NOT EXISTS (SELECT 1 FROM main.merge_batches mb WHERE mb.repo = i.repo AND mb.pr_number = i.number)
       AND COALESCE(i.author, '') <> COALESCE((SELECT value FROM main.settings WHERE key = 'pipeline_login'), '')
-      AND NOT EXISTS (SELECT 1 FROM decisions dh WHERE dh.kind = 'duplicate' AND dh.repo = i.repo AND dh.number = i.number AND (dh.answer IS NULL OR dh.answer = 'close'))
+      AND NOT EXISTS (SELECT 1 FROM decisions dh WHERE dh.kind = 'duplicate' AND dh.id NOT LIKE '%:dupegroup:%' AND dh.repo = i.repo AND dh.number = i.number AND (dh.answer IS NULL OR dh.answer = 'close'))
       AND NOT ${groupHeldSql("i")}
     ORDER BY i.number`).all(repo) as Row[];
   const out: PostCandidate[] = [];

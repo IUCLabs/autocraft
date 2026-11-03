@@ -17,6 +17,7 @@ import { Kbd } from "../../ui/Kbd";
 import { Count } from "../../ui/Heading";
 import { cn } from "../../ui/cn";
 import { ago } from "../../lib/format";
+import { Refs } from "./Refs";
 import { KIND_LABEL } from "./state";
 
 export const KIND_ICON: Record<DecisionKind, LucideIcon> = {
@@ -65,7 +66,7 @@ function factKey(f: string): [string, string] {
 
 const DIFF = /([+][\d,]+\s*[−-][\d,]+)/;
 
-export function Facts({ facts }: { facts: string[]; compact?: boolean }) {
+export function Facts({ facts, repo = null }: { facts: string[]; repo?: string | null; compact?: boolean }) {
   return (
     <dl className="grid grid-cols-[104px_1fr] gap-x-3 gap-y-1.5 text-sm">
       {facts.slice(0, 5).map((f, i) => {
@@ -81,7 +82,9 @@ export function Facts({ facts }: { facts: string[]; compact?: boolean }) {
                     <span className="text-ok">{p.split(/\s+/)[0]}</span> <span className="text-bad">{p.split(/\s+/)[1]}</span>
                   </span>
                 ) : (
-                  <span key={j}>{p}</span>
+                  <span key={j}>
+                    <Refs text={p} repo={repo} />
+                  </span>
                 ),
               )}
             </dd>

@@ -11,7 +11,9 @@ import { duplicateComment } from "../src/act/templates.ts";
 import { connect } from "../src/db.ts";
 import { selectCandidates as decideCandidates } from "../src/decide/select.ts";
 import { checkPairs, type CheckDeps } from "../src/dupes/check.ts";
+import { runDupeCompare } from "../src/dupes/compare.ts";
 import { applyDuplicateAnswers, askDuplicateDecisions } from "../src/dupes/decide.ts";
+import { ask as askDecision } from "../src/decisions.ts";
 import { duplicateCount, duplicateHeld } from "../src/dupes/held.ts";
 import { dupesWork, runDupes, type DupesDeps } from "../src/dupes/index.ts";
 import { pickCanonical } from "../src/dupes/canonical.ts";
@@ -164,37 +166,46 @@ function withDuplicates(): { db: DatabaseSync } {
   for (const [a, b] of [[1, 2], [2, 3], [4, 5]]) put.run(a, b, `h${a}`, `h${b}`, a, T0, T0);
   return { db };
 }
+/** Pair decisions as asked before groups existed; answered ones still take effect. */
+function legacyPairDecisions(db: DatabaseSync): string[] {
+  const ids: string[] = [];
+  for (const [x, y] of [[2, 1], [3, 1], [5, 4]] as const) {
+    const id = `app#${x}:duplicate@${y}`;
+    askDecision(db, [{ id, kind: "duplicate", repo: "app", number: x, question: `Close #${x} as a duplicate of #${y}?`, facts: [`duplicate of app#${y}`],
+      options: [{ key: "close", label: "Close as duplicate" }, { key: "distinct", label: "Not a duplicate" }, { key: "keep", label: "Keep both" }], asked_at: T0 }]);
+    ids.push(id);
+  }
+  return ids;
+}
+/** Compares every group with a model that gives no answer, so the rule decides. */
+const compareByRule = (db: DatabaseSync) => runDupeCompare(db, {}, () => {}, { fetchDiff: async () => ({ ok: false, tooLarge: false, error: "x" }), ask: (async () => null) as never, now: () => NOW });
+const getGroupCloses = (db: DatabaseSync, id: string): number[] => (db.prepare("SELECT number FROM dupe_group_items WHERE decision_id = ? AND role = 'close'").all(id) as { number: number }[]).map((r) => r.number);
 const answer = (db: DatabaseSync, id: string, by: string, key: string) => db.prepare("UPDATE decisions SET answer = ?, answered_by = ?, answered_at = ? WHERE id = ?").run(key, by, T0, id);
 
 describe("decisions", () => {
-  test("one decision per open member of a group, all pointing at the group's canonical; asking again adds none", () => {
+  test("nothing is asked before a group is compared; then one decision per group, and asking again adds none", async () => {
     const { db } = withDuplicates();
-    const ids = askDuplicateDecisions(db, undefined, T0).sort();
-    assert.deepEqual(ids, ["app#2:duplicate@1", "app#3:duplicate@1", "app#5:duplicate@4"]);
-    const d = db.prepare("SELECT * FROM decisions WHERE id = 'app#2:duplicate@1'").get() as { question: string; facts: string; options: string; kind: string; repo: string; number: number };
-    assert.equal(d.question, "Close #2 as a duplicate of #1?");
-    assert.equal(d.kind, "duplicate");
-    assert.deepEqual((JSON.parse(d.options) as { key: string }[]).map((o) => o.key), ["close", "distinct", "keep"]);
-    assert.ok((JSON.parse(d.facts) as string[]).includes("duplicate of app#1"));
+    assert.deepEqual(askDuplicateDecisions(db, undefined, T0), []);
+    await compareByRule(db);
+    assert.deepEqual(askDuplicateDecisions(db, undefined, T0).sort(), ["app:dupegroup:1", "app:dupegroup:4"]);
+    const d = db.prepare("SELECT * FROM decisions WHERE id = 'app:dupegroup:1'").get() as { question: string; options: string; kind: string; number: number };
+    assert.equal(d.question, "Keep #1 and close #2, #3 as duplicates?");
+    assert.deepEqual([d.kind, d.number], ["duplicate", 1]);
+    assert.deepEqual((JSON.parse(d.options) as { key: string }[]).map((o) => o.key), ["accept", "keep:2", "keep:3", "distinct"]);
     askDuplicateDecisions(db, undefined, T0);
-    assert.equal((db.prepare("SELECT COUNT(*) AS n FROM decisions").get() as { n: number }).n, 3);
+    assert.equal((db.prepare("SELECT COUNT(*) AS n FROM decisions").get() as { n: number }).n, 2);
     assert.equal(duplicateCount(db, "app", 1), 2);
   });
 
-  test("an item with another open duplicate decision is not asked a second one", () => {
+  test("Not a duplicate on a pair decision is stored as distinct and never asked again, even after the text changes", async () => {
     const { db } = withDuplicates();
-    db.prepare("INSERT INTO decisions (id, kind, repo, number, question, options, asked_at) VALUES ('app#3:duplicate@9', 'duplicate', 'app', 3, 'q', '[]', ?)").run(T0);
-    assert.ok(!askDuplicateDecisions(db, undefined, T0).includes("app#3:duplicate@1"));
-  });
-
-  test("Not a duplicate is stored as distinct and never asked again, even after the text changes", () => {
-    const { db } = withDuplicates();
-    askDuplicateDecisions(db, undefined, T0);
+    legacyPairDecisions(db);
     answer(db, "app#5:duplicate@4", "op", "distinct");
     assert.equal(applyDuplicateAnswers(db, T0), 1);
     const p = db.prepare("SELECT verdict, by_operator FROM duplicate_pairs WHERE a = 4 AND b = 5").get() as { verdict: string; by_operator: number };
     assert.deepEqual({ ...p }, { verdict: "distinct", by_operator: 1 });
-    assert.ok(!askDuplicateDecisions(db, undefined, T0).includes("app#5:duplicate@4"));
+    await compareByRule(db);
+    assert.ok(!askDuplicateDecisions(db, undefined, T0).includes("app:dupegroup:4"));
     assert.equal(applyDuplicateAnswers(db, T0), 0);
     assert.equal(duplicateHeld(db, "app", 5), false);
   });
@@ -254,7 +265,7 @@ describe("act on close as duplicate", () => {
 
   test("posts the duplicate comment and closes, only for an operator's answer in an approved repo", async () => {
     const { db } = withDuplicates();
-    askDuplicateDecisions(db, undefined, T0);
+    legacyPairDecisions(db);
     answer(db, "app#2:duplicate@1", "helper", "close");
     answer(db, "app#3:duplicate@1", "op", "close");
     const log: string[] = [];
@@ -269,7 +280,7 @@ describe("act on close as duplicate", () => {
 
   test("names a closed original", async () => {
     const { db } = withDuplicates();
-    askDuplicateDecisions(db, undefined, T0);
+    legacyPairDecisions(db);
     answer(db, "app#2:duplicate@1", "op", "close");
     setCommentApproval(db, "op", "app", true);
     const log: string[] = [];
@@ -281,23 +292,24 @@ describe("act on close as duplicate", () => {
 
   test("a not-a-duplicate answer writes nothing and releases the pair even without comment approval", async () => {
     const { db } = withDuplicates();
-    askDuplicateDecisions(db, undefined, T0);
+    legacyPairDecisions(db);
     answer(db, "app#2:duplicate@1", "op", "distinct");
     const log: string[] = [];
     await go(db, deps(log));
     assert.deepEqual(log, []);
     assert.equal((db.prepare("SELECT verdict FROM duplicate_pairs WHERE a = 1 AND b = 2").get() as { verdict: string }).verdict, "distinct");
-    assert.ok(!askDuplicateDecisions(db, undefined, T0).includes("app#2:duplicate@1"));
+    await compareByRule(db);
+    assert.ok(!askDuplicateDecisions(db, undefined, T0).some((id) => id.startsWith("app:dupegroup:1") && getGroupCloses(db, id).includes(2)));
   });
 });
 
 describe("dupesWork", () => {
-  test("is false when every member is closed or answered, true while an open member is unasked", () => {
+  test("is false until a group is compared, true while a compared group's decision is unasked, false once asked", async () => {
     const { db } = withDuplicates();
-    assert.equal(dupesWork(db, "no-embeddings"), true);
-    db.prepare("UPDATE items SET state = 'CLOSED' WHERE number IN (1, 2, 3, 4, 5)").run();
     assert.equal(dupesWork(db, "no-embeddings"), false);
-    db.prepare("UPDATE items SET state = 'OPEN' WHERE number = 5").run();
+    await compareByRule(db);                      // asks the decisions too
+    assert.equal(dupesWork(db, "no-embeddings"), false);
+    db.prepare("DELETE FROM decisions").run();
     assert.equal(dupesWork(db, "no-embeddings"), true);
     askDuplicateDecisions(db, undefined, T0);
     assert.equal(dupesWork(db, "no-embeddings"), false);

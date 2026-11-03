@@ -14,6 +14,7 @@ import { Markdown, Collapsible } from "../../ui/Markdown";
 import { cn } from "../../ui/cn";
 import { ago } from "../../lib/format";
 import { ClaimPill, ClassifierLines, Disclosure, Facts, KindTag, OpinionList, RelatedList } from "./parts";
+import { Refs } from "./Refs";
 import { ReviewBox } from "./ReviewBox";
 import { localActions, ordered, refOf, useDecisionList, useLocal, useSelection, useUndo } from "./state";
 import { Thread } from "./Thread";
@@ -169,7 +170,9 @@ export function DecisionBody({
           · {d.summaryBy} · {ago(d.summaryAt)} ago
         </span>
       </div>
-      <p className="text-sm leading-[21px] text-ink/90">{d.summary}</p>
+      <p className="text-sm leading-[21px] text-ink/90">
+        <Refs text={d.summary} repo={d.repo} />
+      </p>
     </section>
   );
 
@@ -193,7 +196,7 @@ export function DecisionBody({
   const facts = (
     <Section title="Key facts">
       <div className="rounded-md border border-line px-3 py-2.5">
-        <Facts facts={d.facts} />
+        <Facts facts={d.facts} repo={d.repo} />
       </div>
     </Section>
   );
@@ -212,7 +215,9 @@ export function DecisionBody({
 
   const question = (
     <div className="mt-5">
-      <p className="text-sm font-semibold">{d.question}</p>
+      <p className="text-sm font-semibold">
+        <Refs text={d.question} repo={d.repo} />
+      </p>
       {d.answer && !operator && (
         <div className="mt-2">
           <AnsweredState d={d} canUndo={false} />
@@ -233,7 +238,9 @@ export function DecisionBody({
         <Disclosure title="Context">
           <div className="space-y-1 text-sm leading-6 text-ink/80">
             {d.context.map((c, i) => (
-              <p key={i}>{c}</p>
+              <p key={i}>
+                <Refs text={c} repo={d.repo} />
+              </p>
             ))}
           </div>
         </Disclosure>

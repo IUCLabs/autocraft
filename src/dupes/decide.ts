@@ -79,7 +79,7 @@ function supersede(db: DatabaseSync, p: GroupPlan, id: string, at: string): void
   }
 }
 
-/** The decision id for the plan: the base id, or the first later one that is open or does not yet cover every item to close. Null: an answered decision already covers them. */
+/** The decision id for the plan: the base id, or the first later one that is open or does not yet cover every item to close (an answered decision covers every member it listed, whatever the operator kept). Null: an answered decision already covers them. */
 function idFor(db: DatabaseSync, p: GroupPlan): string | null {
   const closing = p.items.filter((i) => i.role === "close").map((i) => i.number);
   for (let k = 1; ; k++) {
@@ -87,7 +87,7 @@ function idFor(db: DatabaseSync, p: GroupPlan): string | null {
     const d = getDecision(db, id);
     if (!d || !d.answer) return id;
     if (d.answer === "superseded" || d.answer === "distinct") continue;
-    const covered = new Set((db.prepare("SELECT number FROM dupe_group_items WHERE decision_id = ? AND role = 'close'").all(id) as { number: number }[]).map((r) => r.number));
+    const covered = new Set((db.prepare("SELECT number FROM dupe_group_items WHERE decision_id = ?").all(id) as { number: number }[]).map((r) => r.number));
     if (closing.every((n) => covered.has(n))) return null;
   }
 }
