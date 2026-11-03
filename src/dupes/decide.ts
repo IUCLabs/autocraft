@@ -73,7 +73,7 @@ export function duplicateAskTargets(db: DatabaseSync, repo?: string): { g: Group
 }
 
 /** Asks the decisions for the groups of one repo (every repo when omitted). Returns the ids asked or refreshed. */
-export function askDuplicateDecisions(db: DatabaseSync, repo: string | undefined, at: string): string[] {
+export function askDuplicateDecisions(db: DatabaseSync, repo: string | undefined, at: string, summaries?: Map<string, { summary: string; by: string; at: string }>): string[] {
   const qs: Record<string, unknown>[] = [];
   for (const { g, x, id, xi, y } of duplicateAskTargets(db, repo)) {
       // The pair's own check when there is one, else the member's strongest.
@@ -93,6 +93,7 @@ export function askDuplicateDecisions(db: DatabaseSync, repo: string | undefined
         options: Object.values(DUP_OPTIONS).map((o) => ({ ...o })),
         recommended: e.jev_p !== null && e.jev_p >= 0.9 ? "close" : null,
         asked_by: ACTOR, asked_at: at,
+        ...(summaries?.has(id) ? { summary: summaries.get(id)!.summary, summary_by: summaries.get(id)!.by, summary_at: summaries.get(id)!.at } : {}),
       });
   }
   if (qs.length) ask(db, qs);

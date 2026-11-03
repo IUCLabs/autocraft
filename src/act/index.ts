@@ -22,6 +22,7 @@ import { audit } from "../dash/audit.ts";
 import { connect } from "../db.ts";
 import { actionable, ask, factsOf, getDecision, type Actionable, type DecisionRow, type Kind } from "../decisions.ts";
 import { HEAD_FACT } from "../merge/queue.ts";
+import { fillReviewSummaries } from "../review/summary.ts";
 import { Client, type Querier } from "../mirror.ts";
 import { headOf } from "../review/candidates.ts";
 import { notOwnIntegrationSql } from "../dupes/held.ts";
@@ -126,6 +127,7 @@ export function closeQuestion(r: ReviewRow): Record<string, unknown> & { id: str
 export function askCloseDecisions(db: DatabaseSync, repo: string, at: string): string[] {
   const qs = closeCandidates(db, repo).map(closeQuestion);
   if (qs.length) ask(db, qs.map((q) => ({ ...q, asked_at: at })));
+  fillReviewSummaries(db, at, repo);
   return qs.map((q) => q.id);
 }
 

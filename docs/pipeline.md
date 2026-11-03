@@ -27,11 +27,11 @@ Finds open issues and PRs that describe the same bug or request as another open 
 - **Candidates.** Nearest neighbours by vector (similarity 0.86 or more, at most 3 per item, same kind). A pair an operator already ruled on is not asked again.
 - **Check.** Jev answers first (0.9 or more is a duplicate, 0.1 or less is distinct). Haiku settles the rest.
 - **Canonical item.** The closed or merged one, else the one with a merged fix, else the one with 5 or more extra comments, else the older one.
-- **Decision.** "Close #x as a duplicate of #y?" with Close, Not a duplicate, Keep both. Only an operator's answer counts.
+- **Decision.** "Close #x as a duplicate of #y?" with Close, Not a duplicate, Keep both. Only an operator's answer counts. Haiku writes a 2 to 4 sentence summary of the pair (what each item says, what overlaps or differs), up to 40 pairs per run. A failed summary never blocks the decision: it is asked without one, and a later run fills it, including for open decisions that have none.
 - **Held out.** While the decision is open or answered close, the item is left out of Decide, Review, Verify, Fix-up and Fix. "Not a duplicate" and "Keep both" release it for good.
 - **Hand-off.** A close goes to Act. Confirmed duplicates raise the original's priority.
 
-Models: Jev, Haiku. Daily limit 2000 pairs. Writes nothing to GitHub.
+Models: Jev, Haiku (checks and summaries). Daily limit 2000 pairs. Writes nothing to GitHub.
 
 ## Classify
 
@@ -79,7 +79,7 @@ One key per open item decides what the pipeline works on next, for issues and PR
 
 Asks the operator for a scope call on open items that either carry the needs-decision flag (settled), or where Jev and Haiku chose different labels among missing feature, small extra and plugin candidate.
 
-- Each decision has a question, up to four options, a recommendation, up to five facts and a 2 to 4 sentence Sonnet summary.
+- Each decision has a question, up to four options, a recommendation, up to five facts and a 2 to 4 sentence Sonnet summary. Duplicate decisions are summarised by Haiku (see Duplicates); Merge? and Close? decisions show the stored review text at the PR's head (Sonnet's review and, when present, Opus's final review), written when the decision is asked and by the next Merge or Act run for open ones without a summary. No model call is made for those.
 - An item with an open or answered scope decision is not asked again. Anyone signed in can comment and pick; only the operator's answer counts.
 
 | Answer | Effect |
@@ -227,7 +227,7 @@ Makes the GitHub comments and closes that follow an operator's answer. No model.
 | Model | Used for |
 |---|---|
 | Jev | First sort of every item (classes, duplicates). Very cheap and fast and reports how sure it is: at 90 % or more it matched maintainers' labels 98 % of the time |
-| Haiku | Second opinion where Jev is unsure; batch priority and duplicate checks; failure summaries |
+| Haiku | Second opinion where Jev is unsure; batch priority and duplicate checks; duplicate decision summaries; failure summaries |
 | Sonnet | Referee for label disagreements outside the scope labels (a person only when it is unsure), decision summaries, first review pass, fix-ups, issue fixes, verify plans |
 | Opus | Final review of every PR Sonnet rates take or take-fix (verdict, complete fix list, how sure it is); checks of the patches Fix-up and Fix write |
 

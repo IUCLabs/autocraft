@@ -14,6 +14,7 @@ import { connect } from "../db.ts";
 import { actionable, ask, factsOf, getDecision } from "../decisions.ts";
 import { Client, type Querier } from "../mirror.ts";
 import { refreshChecks } from "../review/checks.ts";
+import { fillReviewSummaries } from "../review/summary.ts";
 import { verificationOf } from "../verify/results.ts";
 import { TIER_LABEL } from "../whitelist.ts";
 import { buildQueue, ciAllows, toAsk, countStates, eligible, HEAD_FACT, MERGE_OPTIONS, mergeDecisionId, QUEUE_STATES, VERIFY_UNAVAILABLE, verifyAllows, type QueueEntry } from "./queue.ts";
@@ -176,7 +177,9 @@ export function askMergeDecisions(db: DatabaseSync, opts: { repos?: string[]; ru
   const repos = opts.repos && new Set(opts.repos);
   const queue = buildQueue(db, { merged: "exclude", ...(opts.run === undefined ? {} : { run: opts.run }) });
   const qs = toAsk(queue.filter((e) => !repos || repos.has(e.repo))).map(mergeQuestion);
-  if (qs.length) ask(db, qs.map((q) => ({ ...q, asked_at: opts.at ?? new Date().toISOString() })));
+  const at = opts.at ?? new Date().toISOString();
+  if (qs.length) ask(db, qs.map((q) => ({ ...q, asked_at: at })));
+  fillReviewSummaries(db, at);
   return qs.map((q) => q.id);
 }
 
@@ -222,6 +225,7 @@ export async function runMerge(db: DatabaseSync, params: MergeParams, log: (line
     summary.asked = qs.map((q) => q.id);
     log(`  asked ${qs.length} Merge? decision${qs.length === 1 ? "" : "s"}`);
   }
+  fillReviewSummaries(db, at());
 
   // What GitHub reported for the PR being tried, once known; a refusal records it so the autopilot retries only when it changes.
   let seen: { ci: string; mergeable: string } | null = null;

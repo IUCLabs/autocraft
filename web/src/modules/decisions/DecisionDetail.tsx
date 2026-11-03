@@ -160,7 +160,7 @@ export function DecisionBody({
     </>
   );
 
-  const summary = (
+  const summary = d.summary && (
     <section className="mt-3 rounded-md border border-line bg-ink/[0.025] px-3 py-2.5">
       <div className="mb-1 flex items-center gap-1.5 text-xs text-ink/55">
         <SparklesIcon className="text-[12px] text-accent-ink" />

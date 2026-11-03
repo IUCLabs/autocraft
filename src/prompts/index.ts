@@ -14,7 +14,7 @@ import { OPUS_MAX_FIXES, OPUS_REASON_WORDS, type OpusPr } from "../review/opus-p
 import { COMMENT_TEMPLATES } from "../act/templates.ts";
 import { ASK_TEMPLATE, COMMENT_TEMPLATE } from "../fixup/template.ts";
 import { MAX_CHANGED_LINES, type FixupPr } from "../fixup/patch.ts";
-import { JEV_ACCEPT, JEV_REJECT, PAIR_BODY_LIMIT, VERDICTS as PAIR_VERDICTS, pairView, type DupePair } from "../dupes/pair.ts";
+import { DUPES_SUMMARY_PER_RUN, JEV_ACCEPT, JEV_REJECT, PAIR_BODY_LIMIT, VERDICTS as PAIR_VERDICTS, pairView, type DupePair } from "../dupes/pair.ts";
 import { CHECK_MAX_PROBLEMS, CHECK_REASON_WORDS, SAMPLE_FIXISSUE_CHECK, SAMPLE_FIXUP_CHECK, type FixIssueCheckInput, type FixupCheckInput } from "../patchcheck/types.ts";
 import { SAMPLE_DUPE_PAIRS, SAMPLE_FIXUP_PRS, SAMPLE_ITEMS, SAMPLE_OPUS_PRS, SAMPLE_REVIEW_PRS } from "./samples.ts";
 import { LEVELS, LEVEL_MEANING } from "../priority/score.ts";
@@ -575,6 +575,34 @@ Reply with ONLY a JSON array, one object per pair, in the same order:
   limits: { perCall: 10, attempts: 2, timeoutSeconds: 600 },
 };
 
+const DUPES_SUMMARY: ClaudePrompt = {
+  id: "dupes.summary",
+  stage: "Duplicates",
+  runner: "claude",
+  purpose: "A short plain summary for each Close-as-duplicate decision: what the two items say and where they overlap or differ, shown first on the decision card.",
+  models: ["haiku"],
+  effort: "medium",
+  placeholders: { pairs: `The pairs as a JSON array indented by one space, one object per pair with ${PAIR_FIELDS}.` },
+  template: `You summarise pairs of GitHub issues or pull requests of one project for a maintainer who must decide whether the first item should be closed as a duplicate of the second.
+
+${UNTRUSTED_NOTE}
+
+For each pair write 2 to 4 short plain sentences, at most 80 words in all:
+1. What the first item asks for or changes, and what the second does.
+2. What they share and where they differ (symptom, cause, scope, platform), so the maintainer can judge without opening both.
+Name the items as "#<number>". Write plain prose: no headings, lists, Markdown or recommendation, and do not repeat titles word for word. If the text is too thin to tell, say so.
+
+Reply with ONLY a JSON array, one object per pair, in the same order:
+{"ref": "<ref as given>", "summary": "<2 to 4 sentences>"}
+
+<pairs>
+{{pairs}}
+</pairs>`,
+  output: `A JSON array, one object per pair: {"ref", "summary"}.`,
+  validation: `${CLAUDE_RESULT} The text from the first "[" to the last "]" is parsed as JSON. An object is kept only when its ref is one that was asked and not seen before and its summary, with whitespace runs collapsed, is ${SUMMARY_MIN} to ${SUMMARY_MAX} characters. Pairs without a kept summary are sent once more; pairs still missing are asked without a summary and tried again in a later run. At most ${DUPES_SUMMARY_PER_RUN} pairs are summarised per run.`,
+  limits: { perCall: 10, attempts: 2, timeoutSeconds: 600 },
+};
+
 const DUPES_JEV: JevPrompt = {
   id: "dupes.jev",
   stage: "Duplicates",
@@ -594,17 +622,17 @@ const DUPES_JEV: JevPrompt = {
   limits: { perCall: 1, attempts: 2, timeoutSeconds: 600 },
 };
 
-export const CLAUDE_PROMPTS = { "classify.haiku": HAIKU, "referee.sonnet": REFEREE, "review.sonnet": REVIEW, "decide.summary": SUMMARY, "fixup.patch": FIXUP, "verify.plan": VERIFY_PLAN, "verify.summary": VERIFY_SUMMARY, "priority.haiku": PRIORITY_HAIKU, "dupes.haiku": DUPES_HAIKU, "fixissue.triage": FIXISSUE_TRIAGE, "fixissue.patch": FIXISSUE_PATCH, "fixup.check": FIXUP_CHECK, "fixissue.check": FIXISSUE_CHECK, "review.opus": OPUS_REVIEW } as const;
+export const CLAUDE_PROMPTS = { "classify.haiku": HAIKU, "referee.sonnet": REFEREE, "review.sonnet": REVIEW, "decide.summary": SUMMARY, "fixup.patch": FIXUP, "verify.plan": VERIFY_PLAN, "verify.summary": VERIFY_SUMMARY, "priority.haiku": PRIORITY_HAIKU, "dupes.haiku": DUPES_HAIKU, "dupes.summary": DUPES_SUMMARY, "fixissue.triage": FIXISSUE_TRIAGE, "fixissue.patch": FIXISSUE_PATCH, "fixup.check": FIXUP_CHECK, "fixissue.check": FIXISSUE_CHECK, "review.opus": OPUS_REVIEW } as const;
 /** TypeSafe's published price per input token for jev-1.13.0, jev-1.14.0 and jev-latest ($0.042 per million); output tokens are free. */
 export const JEV_USD_PER_INPUT_TOKEN = 0.042 / 1e6;
 
 export const JEV_PROMPTS = { "classify.jev": JEV, "priority.jev": PRIORITY_JEV, "dupes.jev": DUPES_JEV } as const;
 export type ClaudePromptId = keyof typeof CLAUDE_PROMPTS;
 export type JevPromptId = keyof typeof JEV_PROMPTS;
-export const PROMPTS: (ClaudePrompt | JevPrompt)[] = [JEV, HAIKU, REFEREE, REVIEW, SUMMARY, FIXUP, VERIFY_PLAN, VERIFY_SUMMARY, PRIORITY_JEV, PRIORITY_HAIKU, DUPES_JEV, DUPES_HAIKU, FIXISSUE_TRIAGE, FIXISSUE_PATCH, FIXUP_CHECK, FIXISSUE_CHECK, OPUS_REVIEW];
+export const PROMPTS: (ClaudePrompt | JevPrompt)[] = [JEV, HAIKU, REFEREE, REVIEW, SUMMARY, FIXUP, VERIFY_PLAN, VERIFY_SUMMARY, PRIORITY_JEV, PRIORITY_HAIKU, DUPES_JEV, DUPES_HAIKU, FIXISSUE_TRIAGE, FIXISSUE_PATCH, FIXUP_CHECK, FIXISSUE_CHECK, OPUS_REVIEW, DUPES_SUMMARY];
 
 /** What each Claude prompt is rendered from. */
-export type ClaudeInput = { "classify.haiku": Item[]; "referee.sonnet": Item[]; "review.sonnet": ReviewPr[]; "decide.summary": Item[]; "fixup.patch": FixupPr[]; "verify.plan": VerifyPlanInput[]; "verify.summary": VerifySummaryInput[]; "priority.haiku": Item[]; "dupes.haiku": DupePair[]; "fixissue.triage": TriageInput[]; "fixissue.patch": PatchInput[]; "fixup.check": FixupCheckInput[]; "fixissue.check": FixIssueCheckInput[], "review.opus": OpusPr[] };
+export type ClaudeInput = { "classify.haiku": Item[]; "referee.sonnet": Item[]; "review.sonnet": ReviewPr[]; "decide.summary": Item[]; "fixup.patch": FixupPr[]; "verify.plan": VerifyPlanInput[]; "verify.summary": VerifySummaryInput[]; "priority.haiku": Item[]; "dupes.haiku": DupePair[]; "dupes.summary": DupePair[]; "fixissue.triage": TriageInput[]; "fixissue.patch": PatchInput[]; "fixup.check": FixupCheckInput[]; "fixissue.check": FixIssueCheckInput[], "review.opus": OpusPr[] };
 
 /** Pretty JSON for text a stranger wrote, safe inside a tagged frame: JSON leaves "<" alone, so "</pr>" in a body would close the tag. */
 export const untrustedJson = (v: unknown): string => JSON.stringify(v, null, 1).replace(/</g, "\\u003c");
@@ -636,6 +664,7 @@ const VALUES: { [K in ClaudePromptId]: (input: ClaudeInput[K]) => Record<string,
   },
   "verify.summary": ([f]) => ({ failure: untrustedJson(f) }),
   "dupes.haiku": (pairs) => ({ pairs: untrustedJson(pairs.map(pairView)) }),
+  "dupes.summary": (pairs) => ({ pairs: untrustedJson(pairs.map(pairView)) }),
   "fixissue.triage": ([i]) => {
     // With a checkout the model lists files itself; the path list is only for a call without one.
     const { repo_dir, paths, ...rest } = i!;
@@ -675,6 +704,7 @@ const EXAMPLES: { [K in ClaudePromptId]: { input: ClaudeInput[K]; refs: string[]
   "verify.summary": { input: SAMPLE_VERIFY_SUMMARY, refs: SAMPLE_VERIFY_SUMMARY.map((p) => p.ref) },
   "priority.haiku": { input: SAMPLE_ITEMS.slice(0, 2), refs: SAMPLE_ITEMS.slice(0, 2).map((i) => `${i.repo}#${i.number}`) },
   "dupes.haiku": { input: SAMPLE_DUPE_PAIRS, refs: SAMPLE_DUPE_PAIRS.map((p) => p.ref) },
+  "dupes.summary": { input: SAMPLE_DUPE_PAIRS, refs: SAMPLE_DUPE_PAIRS.map((p) => p.ref) },
   "fixissue.triage": { input: withRepo(SAMPLE_TRIAGE), refs: SAMPLE_TRIAGE.map((p) => p.ref) },
   "fixissue.patch": { input: withRepo(SAMPLE_PATCH), refs: SAMPLE_PATCH.map((p) => p.ref) },
   "fixup.check": { input: withRepo(SAMPLE_FIXUP_CHECK), refs: SAMPLE_FIXUP_CHECK.map((p) => p.ref) },

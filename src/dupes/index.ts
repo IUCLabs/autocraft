@@ -12,6 +12,7 @@ import { VectorIndex } from "../embed/vectors.ts";
 import { checkPairs, defaultCheckDeps, uncheckedPairs, type CheckDeps } from "./check.ts";
 import { applyDuplicateAnswers, askDuplicateDecisions, duplicateAskTargets } from "./decide.ts";
 import { scanItem, scanPending } from "./scan.ts";
+import { defaultSummarize, summarizeDuplicates, type Summarize } from "./summary.ts";
 import { pilotSqlFor } from "../pilot.ts";
 
 export { duplicateCount, duplicateHeld, notHeldSql } from "./held.ts";
@@ -27,14 +28,14 @@ export type DupesParams = {
   dryRun?: boolean;
   onHandled?: (n: number) => void;
 };
-export type DupesDeps = { index: VectorIndex; check: CheckDeps };
+export type DupesDeps = { index: VectorIndex; check: CheckDeps; summarize?: Summarize };
 export type DupesSummary = {
   scanned: number; pairsAdded: number; checked: number; jev: number; haiku: number; verdicts: Record<string, number>;
   unanswered: number; asked: string[]; answersApplied: number; dryRun: boolean;
 };
 
 export function defaultDeps(db: DatabaseSync): DupesDeps {
-  return { index: new VectorIndex(localEmbedder({ name: modelName(), threads: 1 })), check: defaultCheckDeps(db) };
+  return { index: new VectorIndex(localEmbedder({ name: modelName(), threads: 1 })), check: defaultCheckDeps(db), summarize: defaultSummarize(db) };
 }
 
 /** Work left: items to scan, pairs to check, decisions to ask or apply. Reads only, for the autopilot. */
@@ -74,7 +75,9 @@ export async function runDupes(db: DatabaseSync, params: DupesParams = {}, log: 
     Object.assign(s, { checked: c.checked, jev: c.jev, haiku: c.haiku, verdicts: c.verdicts, unanswered: c.unanswered });
     log(`dupes: ${keys.length} pairs sent (${c.jev} to Jev, ${c.haiku} answered by Haiku): ${Object.entries(c.verdicts).map(([k, n]) => `${n} ${k}`).join(", ") || "no verdicts"}`);
   }
-  s.asked = askDuplicateDecisions(db, undefined, at().toISOString());
+  const when = at().toISOString();
+  const summaries = d.summarize ? await summarizeDuplicates(db, d.summarize, when) : undefined;
+  s.asked = askDuplicateDecisions(db, undefined, when, summaries);
   log(`dupes: ${s.asked.length} duplicate decisions asked, ${s.answersApplied} answers applied`);
   return s;
 }
