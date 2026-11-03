@@ -232,17 +232,15 @@ function VerifyCell({ row, detail = true }: { row: QueueRow; detail?: boolean })
 /** Two lines per PR: the facts, then the review text clamped to two lines until opened. */
 function PrRows({ r }: { r: QueueRow }) {
   const [open, setOpen] = useState(false);
-  const cell = "px-3 pt-2 align-middle";
+  const cell = "px-3 pt-2 align-top";
   return (
     <tbody className="border-b border-line last:border-0 hover:bg-ink/[0.03]">
       <tr>
         <td className={cell}>
-          <div className="flex min-w-0 items-baseline gap-2">
-            <RefLink repo={r.repo} number={r.number} kind="pr" className="shrink-0 text-xs" />
-            <Link to={`/item/${r.repo}/${r.number}`} className="truncate font-medium hover:text-accent-ink hover:underline" title={r.title}>
-              {r.title}
-            </Link>
-          </div>
+          <RefLink repo={r.repo} number={r.number} kind="pr" className="block text-xs" />
+          <Link to={`/item/${r.repo}/${r.number}`} className="block font-medium [overflow-wrap:anywhere] hover:text-accent-ink hover:underline">
+            {r.title}
+          </Link>
         </td>
         <td className={cell}>
           <div className="truncate text-ink/75" title={`${r.author || "unknown"}, ${TIER[r.tier]}`}>
