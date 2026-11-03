@@ -1,7 +1,7 @@
 // Which open items become scope decisions.
 //
 // An item is a candidate when it is open, not a draft, in a tracked repo, has a
-// Jev verdict in the run, and either
+// Jev or Haiku verdict in the run, and either
 // - its settled classification carries the "needs decision" flag, or
 // - it is unsettled because Jev and Haiku chose different scope labels
 //   (missing feature, small extra, plugin candidate): that is a scope call too.
@@ -25,7 +25,7 @@ const json = <T>(s: string | null, d: T): T => {
 };
 
 export function latestJevRun(db: DatabaseSync): string | null {
-  const r = db.prepare("SELECT run_id FROM classifications WHERE classifier = 'jev' ORDER BY at DESC LIMIT 1").get() as { run_id: string } | undefined;
+  const r = db.prepare("SELECT run_id FROM classifications WHERE classifier IN ('jev', 'haiku') ORDER BY at DESC LIMIT 1").get() as { run_id: string } | undefined;
   return r?.run_id ?? null;
 }
 
@@ -50,7 +50,7 @@ function covered(db: DatabaseSync): Set<string> {
   return out;
 }
 
-type Row = { repo: string; number: number; jl: string; jf: string | null; probs: string | null; hl: string | null; hf: string | null };
+type Row = { repo: string; number: number; jl: string | null; jf: string | null; probs: string | null; hl: string | null; hf: string | null };
 
 /** Candidates in the given repos (default: every tracked repo), pull requests before issues, oldest first. */
 export function selectCandidates(db: DatabaseSync, run: string, repos?: string[]): Candidate[] {
@@ -58,20 +58,21 @@ export function selectCandidates(db: DatabaseSync, run: string, repos?: string[]
   const want = (repos?.length ? repos : [...tracked]).filter((r) => tracked.has(r));
   if (!want.length) return [];
   const skip = covered(db);
-  const rows = db.prepare(`SELECT j.repo, j.number, j.type_label AS jl, j.flags AS jf, j.probs, h.type_label AS hl, h.flags AS hf
-    FROM classifications j
-    JOIN items i ON i.repo = j.repo AND i.number = j.number
-    LEFT JOIN item_rank p ON p.repo = j.repo AND p.number = j.number
-    LEFT JOIN classifications h ON h.repo = j.repo AND h.number = j.number AND h.classifier = 'haiku' AND h.run_id = j.run_id
-    WHERE j.run_id = ? AND j.classifier = 'jev' AND i.state = 'OPEN' AND COALESCE(i.is_draft, 0) = 0
-      AND j.repo IN (SELECT value FROM json_each(?)) AND ${notHeldSql("i")}
-    ORDER BY ${fastScoreSql("i.repo", "i.number", "p.score")} IS NULL, ${fastScoreSql("i.repo", "i.number", "p.score")} DESC, i.kind = 'pr' DESC, i.created_at, j.repo, j.number`).all(run, JSON.stringify(want)) as Row[];
+  const rows = db.prepare(`SELECT k.repo, k.number, j.type_label AS jl, j.flags AS jf, j.probs, h.type_label AS hl, h.flags AS hf
+    FROM (SELECT repo, number FROM classifications WHERE run_id = :run AND classifier IN ('jev', 'haiku') GROUP BY repo, number) k
+    JOIN items i ON i.repo = k.repo AND i.number = k.number
+    LEFT JOIN item_rank p ON p.repo = k.repo AND p.number = k.number
+    LEFT JOIN classifications j ON j.repo = k.repo AND j.number = k.number AND j.classifier = 'jev' AND j.run_id = :run
+    LEFT JOIN classifications h ON h.repo = k.repo AND h.number = k.number AND h.classifier = 'haiku' AND h.run_id = :run
+    WHERE i.state = 'OPEN' AND COALESCE(i.is_draft, 0) = 0
+      AND k.repo IN (SELECT value FROM json_each(:repos)) AND ${notHeldSql("i")}
+    ORDER BY ${fastScoreSql("i.repo", "i.number", "p.score")} IS NULL, ${fastScoreSql("i.repo", "i.number", "p.score")} DESC, i.kind = 'pr' DESC, i.created_at, k.repo, k.number`).all({ run, repos: JSON.stringify(want) }) as Row[];
   const out: Candidate[] = [];
   for (const r of rows) {
     if (skip.has(`${r.repo}#${r.number}`)) continue;
     const top = json<{ top?: unknown } | null>(r.probs, null)?.top;
     const s = settle(
-      { label: r.jl, flags: json<string[]>(r.jf, []), top: typeof top === "number" ? top : null, nd: needsDecisionOf(r.probs) },
+      r.jl === null ? null : { label: r.jl, flags: json<string[]>(r.jf, []), top: typeof top === "number" ? top : null, nd: needsDecisionOf(r.probs) },
       r.hl === null ? null : { label: r.hl, flags: json<string[]>(r.hf, []) },
     );
     const reason = reasonOf(s);

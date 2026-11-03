@@ -10,6 +10,7 @@ import { selectCandidates as decideCandidates } from "../src/decide/select.ts";
 import { toDecision } from "../src/dash/api/decisions.ts";
 import type { DecisionRow } from "../src/decisions.ts";
 import { selectFixups } from "../src/fixup/candidates.ts";
+import { jevAvailable, jevOutage, JEV_RETRY_MS } from "../src/agents/jev.ts";
 import { rescore, runPrioritize } from "../src/priority/index.ts";
 import { priorityOf } from "../src/priority/read.ts";
 import { duplicateCounts } from "../src/priority/reach.ts";
@@ -100,6 +101,33 @@ describe("prioritize", () => {
       // A changed body is rated again.
       db.prepare("UPDATE items SET body = 'Now it is about something else', embed_hash = NULL WHERE number = 2").run();
       assert.equal((await runPrioritize(db, { limit: 10 })).sent, 1);
+    } finally { restore(); }
+  });
+
+  test("a Jev account failure sends the items to Haiku, and Jev is tried again only after an hour", async () => {
+    const db = fixture();
+    const calls: Call[] = [];
+    const failing: Runner = async (cmd, _a, input) => {
+      calls.push({ cmd, input });
+      if (cmd === "jev") return { code: 1, stdout: "", stderr: "jev: API error status=402 request_id=r1: insufficient credit" };
+      const refs = [...input.matchAll(/"ref": "([^"]+)"/g)].map((m) => m[1]!);
+      return { code: 0, stdout: JSON.stringify({ type: "result", result: JSON.stringify(refs.map((ref) => ({ ref, impact: "P3", reason: "r" }))), usage: { input_tokens: 1, output_tokens: 1 } }), stderr: "" };
+    };
+    const restore = setRunner(failing);
+    try {
+      const r = await runPrioritize(db, { limit: 10 });
+      assert.equal(r.saved, 3);
+      assert.equal((db.prepare("SELECT COUNT(*) AS n FROM item_priority WHERE model = 'haiku'").get() as { n: number }).n, 3);
+      assert.equal(jevOutage(db)?.reason, "out of credit");
+      assert.equal(jevAvailable(db), false);
+      // Within the hour Jev is not asked again.
+      const jevCalls = calls.filter((c) => c.cmd === "jev").length;
+      db.prepare("UPDATE items SET embed_hash = NULL").run();
+      await runPrioritize(db, { limit: 10 });
+      assert.equal(calls.filter((c) => c.cmd === "jev").length, jevCalls);
+      // After the backoff the next pass tries Jev again.
+      assert.equal(jevAvailable(db, Date.now() + JEV_RETRY_MS - 60_000), false);
+      assert.equal(jevAvailable(db, Date.now() + JEV_RETRY_MS + 60_000), true);
     } finally { restore(); }
   });
 

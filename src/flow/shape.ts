@@ -69,7 +69,7 @@ export function buildFlow(c: Record<string, number>, meta: FlowMeta): Flow {
       { id: "waiting", label: "Waiting for a second opinion", waitsOn: "model", tone: "warn", hint: "Jev is unsure; Haiku hasn't answered yet" },
       { id: "referee", label: "Waiting for the referee", waitsOn: "model", tone: "warn", hint: "Jev and Haiku chose different labels; Sonnet settles it unless it is a scope call" },
       { id: "disagree", label: "Models disagree", waitsOn: "person", tone: "bad", hint: "Scope calls go to Decide; other disagreements are here when Sonnet was unsure" },
-      { id: "unclassified", label: "Not classified yet", waitsOn: "model", tone: "neutral", hint: "No Jev verdict in the current run" },
+      { id: "unclassified", label: "Not classified yet", waitsOn: "model", tone: "neutral", hint: "No Jev or Haiku verdict in the current run" },
     ], { recent: ["classified"], facts: [{ label: "Run", value: meta.run ?? "none yet" }], promptStage: "Classify" }),
     node("priority", "Priority", 4, "steps", `${fmt(v("priority.scored") + v("priority.unsure"))} scored · ${fmt(v("priority.todo"))} not yet`, [
       { id: "scored", label: "Scored", waitsOn: "nothing", tone: "ok", hint: "Impact and reach give the work score" },

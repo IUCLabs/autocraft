@@ -27,7 +27,7 @@ Each item gets a vector from its title and body. A new vector is made only when 
 Finds open issues and PRs that describe the same bug or request as another open item, or one closed within the last year, in the same repo.
 
 - **Candidates.** Nearest neighbours by vector (similarity 0.86 or more, at most 3 per item, same kind). A pair an operator already ruled on is not asked again.
-- **Check.** Jev answers first (0.9 or more is a duplicate, 0.1 or less is distinct). Haiku settles the rest.
+- **Check.** Jev answers first (0.9 or more is a duplicate, 0.1 or less is distinct). Haiku settles the rest. While Jev is unavailable (see Waits), Haiku decides every pair on its own: its answer is the verdict.
 - **Groups.** Items joined by duplicate pairs form a group. The members of each kind (PRs, issues) are compared together in one call by the Compare duplicate groups step (`craft-auto dupe-compare`).
   - PRs: Opus, with read-only tools on a checkout of the default branch, gets each PR's title, body, linked issues and code diff; CI and review state are background, not rules. It picks the PR to keep and, for each other PR, says whether it is a duplicate, what it does better and which parts are worth carrying into the kept one.
   - Issues: Sonnet, without tools, gets all reports in one call. It picks the report to keep and lists what each other report adds (steps, versions, logs).
@@ -49,6 +49,7 @@ Models: Jev, Haiku (pair checks); Opus and Sonnet (group comparison). Daily limi
 Every open item gets one type label (bugfix, performance, missing feature, small extra, plugin candidate, infra) and two flags (security, needs decision).
 
 - Jev first. Haiku gives a second opinion when Jev is under 90 % sure of the type or unsure of a flag. Items of repos with the pipeline on come first.
+- While Jev is unavailable (see Waits), Haiku classifies every due item and its label and flags settle the item (source Haiku). Items Haiku settled stay settled when Jev returns; Jev classifies them again only after their text changes.
 - A type is settled when Jev is at 90 % or more, or Haiku agrees with Jev. Disagreements among the scope labels go to Decide.
 - Each flag follows the same rule on its own, whatever the type's state. Security: Jev at 0.9 or more sets it, under 0.3 clears it, in between Haiku's flag counts. Needs decision: the same with 0.8. Until Haiku has answered an unsure flag, the flag is not set (no label, no priority bump). A settled bugfix keeps needs decision only when Jev is at 0.7 or more.
 - Other disagreements (for example bugfix against missing feature) go to the Sonnet referee, which applies the classification rules and says whether it is sure. A sure label settles the type, and a scope label then follows the normal scope path. An unsure answer leaves the label to a person. The referee has its own step and daily limit.
@@ -66,7 +67,7 @@ Each open item gets a level from P0 to P4.
 | P3 low | Cosmetic, wording, docs, nice-to-have |
 | P4 backlog | Kept open but not worked on now: vague or wishlist requests, ideas without a clear ask, very large asks with little reach. Plugin candidates are P4. |
 
-- Jev picks the level; under 90 % sure, Haiku decides. The security flag raises the level by one, up to P0.
+- Jev picks the level; under 90 % sure, Haiku decides. While Jev is unavailable (see Waits), Haiku rates every due item. The security flag raises the level by one, up to P0.
 - Reach (0 to 99) breaks ties inside a level: commenters, comments, linked PRs, confirmed duplicates, the security flag and age. No model. It is not shown.
 - Models run again only when the item's text changes; reach is recomputed from the mirror on every pass.
 - Unrated items count as P2. Daily limit 3000 items sent to Jev; raise it for the first pass over a new org.
@@ -296,7 +297,7 @@ Each item can have one conversation with Opus, shown beside its decision. Everyo
 | Model | Used for |
 |---|---|
 | Jev | First sort of every item (classes, duplicates). Very cheap and fast and reports how sure it is: at 90 % or more it matched maintainers' labels 98 % of the time |
-| Haiku | Second opinion where Jev is unsure; batch priority and duplicate checks; duplicate decision summaries; failure summaries |
+| Haiku | Second opinion where Jev is unsure, and every item while Jev is unavailable; batch priority and duplicate checks; duplicate decision summaries; failure summaries |
 | Sonnet | Referee for label disagreements outside the scope labels (a person only when it is unsure), decision summaries, first review pass, fix-ups, issue fixes, verify plans |
 | Opus | Final review of every PR Sonnet rates take or take-fix (verdict, complete fix list, how sure it is); checks of the patches Fix-up and Fix write; the scope recommendation; replies in item conversations |
 
@@ -320,7 +321,7 @@ Operators manage accounts on the Accounts page (under Operations); viewers see t
 - **Sign out** runs `claude auth logout`. **Enable** and **Disable** set whether the runner may use the account.
 - **Usage.** For each enabled, signed-in account the runner runs `claude -p /usage --output-format json --verbose` every minute (every 5 minutes after a failed reading, and on *Refresh*). `/usage` is a local command: it makes no model call and spends no tokens. Its report gives the 5-hour (`session`) and weekly (`weekly_all`) use and reset times; a limit whose window has not started is left out. The reading is saved as `<id>.json` in `CRAFT_AUTO_USAGE_DIR` (default `<CRAFT_AUTO_ACCOUNTS_ROOT>/.usage`) in the format below, and a reading older than 30 minutes counts as unknown.
 
-Before each call, the runner picks an enabled account with a free slot and headroom (5-hour and weekly use under the pause levels, which operators set; default 80 % for both; a reading older than 30 minutes counts as unknown), preferring the lowest weekly use. When none qualifies, the call waits. Stages that call Claude show as paused, with the reason, while no account has headroom. Jev calls use no account; their parallelism is the `jev_parallel` setting (default 4). The pause levels are the `usage_pause` setting (`{"fiveHour":80,"weekly":80}`), changed on the Accounts page or with `craft-auto accounts pause`.
+Before each call, the runner picks an enabled account with a free slot and headroom (5-hour and weekly use under the pause levels, which operators set; default 80 % for both; a reading older than 30 minutes counts as unknown), preferring the lowest weekly use. When none qualifies, the call waits. Stages that call Claude show as paused, with the reason, while no account has headroom. Jev calls use no account; their parallelism is the `jev_parallel` setting (default 4), and `jev_enabled` (default on) switches Jev off. The pause levels are the `usage_pause` setting (`{"fiveHour":80,"weekly":80}`), changed on the Accounts page or with `craft-auto accounts pause`.
 
 ## Build environments and tasks
 
@@ -429,6 +430,7 @@ Automated work waits only for the reasons below. A stage that is not running sho
 | Sandbox build | External | Until the task ends; build-environment errors queue it again after 0, 5, 10, 20, 30 minutes | Batch state `checking` |
 | Checks before Review and Verify | CI data younger than 5 minutes is reused | 5 minutes | Job list |
 | Daily limit | Cost control | Until 00:00 UTC | "daily limit of N items reached; resumes at 00:00 UTC" |
+| Jev unavailable | Jev is switched off (`craft-auto accounts jev off`, or the Accounts page), the `jev` command is missing, or its account fails: out of credit, or a missing or rejected key (status 401, 402, 403, or a message about credit, billing, quota or the key). Haiku does Jev's classify, priority and duplicate work through the Claude accounts. Off or not installed: no retry until it is switched on or the command exists (checked on each pass). Account failure: the first pass an hour after the last failure tries Jev again; no timer runs. Other Jev errors (timeouts, server errors, bad answers) are retried as before | 1 hour after an account failure | "Jev unavailable (out of credit) since HH:MM — Haiku does Jev's work" on the Accounts page; run logs say "Jev unavailable: Haiku classified N items" |
 | Claude usage pause | Account headroom | Until usage reading recovers; re-read every minute | Claude pause reason |
 | Rate limits | GitHub | Per the API's reset | Job log |
 | Duplicate set changed on GitHub | Wait for the sync to bring the set | 10 minutes | Duplicates stage |

@@ -2,8 +2,9 @@
 // only operators change an account (audited as `account-change`). The box
 // config's directories never reach a response: accounts are returned by id and label.
 import type { DatabaseSync } from "node:sqlite";
-import type { AgentRunFilter, AgentRunState, ClaudeAccount } from "../../../web/src/api/types.ts";
+import type { AgentRunFilter, AgentRunState, ClaudeAccount, JevStatus } from "../../../web/src/api/types.ts";
 import { AccountError, listAccounts, setUsagePause, updateAccount, usagePause } from "../../agents/accounts.ts";
+import { jevEnabled, jevOutage, setJevEnabled } from "../../agents/jev.ts";
 import { addAccount, beginLogin, refreshNow, sendCode, signOut, stopLogin } from "../../agents/manage.ts";
 import { getRun, listRuns, rates as ratesOf, RunQueryError } from "../../agents/runs.ts";
 import { HttpError } from "../server/util.ts";
@@ -30,6 +31,17 @@ export const putAccount = (db: DatabaseSync, req: Req) => wrap(() => updateAccou
 
 export const getPause = (db: DatabaseSync) => usagePause(db);
 export const putPause = (db: DatabaseSync, req: Req) => wrap(() => setUsagePause(db, req.json, req.user.login));
+
+export const getJev = (db: DatabaseSync): JevStatus => {
+  const o = jevOutage(db);
+  return { enabled: jevEnabled(db), unavailable: o ? { reason: o.reason, since: o.since } : null };
+};
+export const putJev = (db: DatabaseSync, req: Req) => wrap(() => {
+  const enabled = (req.json as { enabled?: unknown } | null)?.enabled;
+  if (typeof enabled !== "boolean") throw new HttpError(400, "enabled must be true or false");
+  setJevEnabled(db, enabled, req.user.login);
+  return getJev(db);
+});
 
 export const postAccount = (db: DatabaseSync, req: Req) => wrap(() => addAccount(db, req.json, req.user.login));
 export const loginStart = (db: DatabaseSync, req: Req) => wrap(() => beginLogin(db, req.params.id, req.user.login));

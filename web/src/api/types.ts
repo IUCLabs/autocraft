@@ -1209,6 +1209,8 @@ export type AccountLoginState = "starting" | "waiting" | "checking" | "done" | "
 export type AccountLogin = { state: AccountLoginState; url: string | null; message: string | null };
 /** Usage levels (%, 1 to 100) at which an account stops taking calls. */
 export type UsagePause = { fiveHour: number; weekly: number };
+/** Whether Jev is in use; `unavailable` says why not (Haiku then does its work) and since when. */
+export type JevStatus = { enabled: boolean; unavailable: { reason: string; since: string } | null };
 export type AccountInput = { label?: string; enabled?: boolean; maxConcurrent?: number };
 
 export type AgentRunState = "running" | "done" | "failed";

@@ -1,0 +1,96 @@
+// Whether Jev can be used right now. When it cannot, Haiku does Jev's work (classify, priority, duplicates).
+//
+// - Switched off (settings.jev_enabled = 'no'): stays off until an operator turns it on.
+// - Not installed (the `jev` command cannot start): checked on every pass, cheap, until the command exists.
+// - The account fails (out of credit, missing or rejected key): tried again on the first pass an hour after the last failure.
+//
+// The state is one settings row, settings.jev_unavailable, shown on the Accounts page.
+import { accessSync, constants } from "node:fs";
+import { delimiter, join } from "node:path";
+import type { DatabaseSync } from "node:sqlite";
+import { audit } from "../dash/audit.ts";
+
+export const JEV_ENABLED_KEY = "jev_enabled";
+export const JEV_UNAVAILABLE_KEY = "jev_unavailable";
+/** How long after the last account failure the next pass tries Jev again. */
+export const JEV_RETRY_MS = 60 * 60_000;
+
+export type JevOutage = { kind: "off" | "missing" | "account"; reason: string; since: string; at: string };
+
+const get = (db: DatabaseSync, key: string): string | undefined => (db.prepare("SELECT value FROM settings WHERE key = ?").get(key) as { value: string } | undefined)?.value;
+const put = (db: DatabaseSync, key: string, value: string): void => void db.prepare("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value").run(key, value);
+
+export const jevEnabled = (db: DatabaseSync): boolean => get(db, JEV_ENABLED_KEY) !== "no";
+
+export function jevOutage(db: DatabaseSync): JevOutage | null {
+  try {
+    const o = JSON.parse(get(db, JEV_UNAVAILABLE_KEY) ?? "null") as JevOutage | null;
+    return o && typeof o.since === "string" && typeof o.reason === "string" ? o : null;
+  } catch { return null; }
+}
+
+const clear = (db: DatabaseSync): void => void db.prepare("DELETE FROM settings WHERE key = ?").run(JEV_UNAVAILABLE_KEY);
+
+/** True when an executable `jev` is on PATH. */
+export function jevInstalled(): boolean {
+  for (const dir of (process.env.PATH ?? "").split(delimiter)) {
+    if (!dir) continue;
+    try { accessSync(join(dir, "jev"), constants.X_OK); return true; } catch { /* next directory */ }
+  }
+  return false;
+}
+
+/** Turns Jev on or off; turning it on also forgets an earlier failure so the next pass tries it. */
+export function setJevEnabled(db: DatabaseSync, on: boolean, by: string): void {
+  const was = jevEnabled(db);
+  put(db, JEV_ENABLED_KEY, on ? "yes" : "no");
+  if (on) clear(db);
+  else put(db, JEV_UNAVAILABLE_KEY, JSON.stringify({ kind: "off", reason: "switched off", since: new Date().toISOString(), at: new Date().toISOString() } satisfies JevOutage));
+  if (on !== was) audit(db, by, "account-change", "jev", { jevEnabled: on, was });
+}
+
+/** Whether a pass may call Jev now. Also keeps the stored state in step with the switch and the installed command. */
+export function jevAvailable(db: DatabaseSync, nowMs: number = Date.now()): boolean {
+  if (!jevEnabled(db)) {
+    if (jevOutage(db)?.kind !== "off") put(db, JEV_UNAVAILABLE_KEY, JSON.stringify({ kind: "off", reason: "switched off", since: new Date(nowMs).toISOString(), at: new Date(nowMs).toISOString() } satisfies JevOutage));
+    return false;
+  }
+  const o = jevOutage(db);
+  if (!o) return true;
+  if (o.kind === "missing") {
+    if (!jevInstalled()) return false;
+    clear(db);
+    return true;
+  }
+  if (o.kind === "account") return nowMs - Date.parse(o.at) >= JEV_RETRY_MS;
+  clear(db);
+  return true;
+}
+
+/** Records a failure; `since` stays at the first failure of an outage. */
+export function markJevUnavailable(db: DatabaseSync, kind: "missing" | "account", reason: string, nowMs: number = Date.now()): void {
+  const prev = jevOutage(db);
+  const at = new Date(nowMs).toISOString();
+  put(db, JEV_UNAVAILABLE_KEY, JSON.stringify({ kind, reason, since: prev?.kind === kind ? prev.since : at, at } satisfies JevOutage));
+}
+
+/** A call went through: an earlier outage is over. */
+export function markJevWorking(db: DatabaseSync): void {
+  const o = jevOutage(db);
+  if (o && o.kind !== "off") clear(db);
+}
+
+/**
+ * Whether a finished `jev` process failed because Jev is unavailable (as opposed to a timeout, a server error or a bad answer,
+ * which are retried): the command is missing, or the API refused the account.
+ * The CLI prints `jev: API error status=<N> request_id=...: <message>` or `jev: <message>` on stderr.
+ */
+export function jevFailure(r: { code: number | null; stderr: string }): { kind: "missing" | "account"; reason: string } | null {
+  if (r.code === -1 && /ENOENT/.test(r.stderr)) return { kind: "missing", reason: "not installed" };
+  if (r.code === 0 || r.code === null || r.code === -1) return null;
+  const status = Number(/API error status=(\d+)/.exec(r.stderr)?.[1]);
+  const money = /credit|balance|billing|payment|insufficient|quota/i.test(r.stderr);
+  if (status === 402 || money) return { kind: "account", reason: "out of credit" };
+  if (status === 401 || status === 403 || /api key/i.test(r.stderr)) return { kind: "account", reason: "key rejected" };
+  return null;
+}

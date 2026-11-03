@@ -1,5 +1,7 @@
 // The classify steps: Jev on every item that needs a verdict, then Haiku on the
-// items Jev is under 90 % sure of. Uses the classifiers in src/classify/run.ts.
+// items Jev is under 90 % sure of. When Jev is unavailable (src/agents/jev.ts),
+// Haiku classifies the due items itself and its verdict settles them. Uses the
+// classifiers in src/classify/run.ts.
 //
 // "Changed" means the classifier's input changed: input_hash is a hash of the
 // classification scheme (labels and rules) and the item as the classifier sees
@@ -10,6 +12,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { notOwnIntegrationSql } from "../dupes/held.ts";
 import { JEV_FLAG_NO, JEV_NEEDS_DECISION_YES, JEV_SECURITY_YES, refOf, type Item } from "../classify/parse.ts";
 import { freeSlots } from "../agents/accounts.ts";
+import { jevAvailable } from "../agents/jev.ts";
 import { runHaiku, runJev } from "../classify/run.ts";
 import { fillClassHashes, SCHEME_ID } from "../itemhash.ts";
 import type { StepContext } from "./steps.ts";
@@ -26,7 +29,7 @@ const JEV_CHUNK = 40, HAIKU_PER_CALL = 25;
 export function currentRun(db: DatabaseSync): string | null {
   const set = db.prepare("SELECT value FROM settings WHERE key = 'classify_run'").get() as { value: string } | undefined;
   if (set?.value) return set.value;
-  const r = db.prepare("SELECT run_id FROM classifications WHERE classifier = 'jev' ORDER BY at DESC LIMIT 1").get() as { run_id: string } | undefined;
+  const r = db.prepare("SELECT run_id FROM classifications WHERE classifier IN ('jev', 'haiku') ORDER BY at DESC LIMIT 1").get() as { run_id: string } | undefined;
   return r?.run_id ?? null;
 }
 
@@ -53,17 +56,17 @@ const sentCounter = (ctx: StepContext) => {
   return (n: number) => ctx.handled((sent += n));
 };
 
-async function jevPass(ctx: StepContext, run: string, todo: Item[], hashes: Map<string, string>, sent: (n: number) => void): Promise<number> {
+async function jevPass(ctx: StepContext, run: string, todo: Item[], hashes: Map<string, string>, sent: (n: number) => void): Promise<Set<string>> {
   const { db } = ctx;
   const setHash = db.prepare("UPDATE classifications SET input_hash = ? WHERE repo = ? AND number = ? AND classifier = 'jev' AND run_id = ? AND at >= ?");
-  let done = 0;
-  for (let i = 0; i < todo.length && !ctx.cancelled(); i += JEV_CHUNK) {
+  const done = new Set<string>();
+  for (let i = 0; i < todo.length && !ctx.cancelled() && jevAvailable(db); i += JEV_CHUNK) {
     const chunk = todo.slice(i, i + JEV_CHUNK);
     keepUsage(db, run, chunk.map((x) => `jev-${refOf(x)}`));
     const t0 = new Date().toISOString();
     sent(chunk.length);
     await runJev(db, run, chunk);
-    for (const x of chunk) done += Number(setHash.run(hashes.get(refOf(x))!, x.repo, x.number, run, t0).changes);
+    for (const x of chunk) if (setHash.run(hashes.get(refOf(x))!, x.repo, x.number, run, t0).changes) done.add(refOf(x));
     ctx.progress(`Jev: ${Math.min(i + JEV_CHUNK, todo.length)} of ${todo.length} items`);
   }
   return done;
@@ -103,6 +106,25 @@ async function haikuPass(ctx: StepContext, run: string, todo: Item[], sent: (n: 
 }
 
 /**
+ * Haiku classifies the items alone. Its verdict carries the item's input hash, which keeps the item from being due for Jev
+ * until it changes, and replaces a Jev verdict of the item's earlier text. Returns the number of items Haiku answered.
+ */
+async function haikuOnlyPass(ctx: StepContext, run: string, items: Item[], hashes: Map<string, string>, sent: (n: number) => void): Promise<number> {
+  const { db } = ctx;
+  const t0 = new Date().toISOString();
+  await haikuPass(ctx, run, items, sent);
+  const setHash = db.prepare("UPDATE classifications SET input_hash = ? WHERE repo = ? AND number = ? AND classifier = 'haiku' AND run_id = ? AND at >= ?");
+  const dropStale = db.prepare("DELETE FROM classifications WHERE repo = ? AND number = ? AND classifier = 'jev' AND run_id = ?");
+  let n = 0;
+  for (const x of items) {
+    if (!setHash.run(hashes.get(refOf(x))!, x.repo, x.number, run, t0).changes) continue;
+    dropStale.run(x.repo, x.number, run);
+    n++;
+  }
+  return n;
+}
+
+/**
  * Open items that need a Jev verdict in `run`, with each due item's input hash. "all" takes only items without a verdict.
  * The hashes are stored on the item row (src/itemhash.ts), so no body is read for items that are up to date.
  */
@@ -113,7 +135,9 @@ export function dueItems(db: DatabaseSync, run: string, mode: "new" | "all"): { 
   const due = db.prepare(`SELECT ${ITEM_COLUMNS}, i.updated_at, c.at AS c_at, c.input_hash AS c_hash, i.class_hash AS h
     FROM items i JOIN tracked_repos t ON t.name = i.repo
     LEFT JOIN classifications c ON c.repo = i.repo AND c.number = i.number AND c.classifier = 'jev' AND c.run_id = :run
+    LEFT JOIN classifications hc ON hc.repo = i.repo AND hc.number = i.number AND hc.classifier = 'haiku' AND hc.run_id = :run
     WHERE i.state = 'OPEN' AND ${notOwnIntegrationSql("i")} AND ${pilotSql("i")} AND i.class_scheme = :scheme
+      AND (hc.input_hash IS NULL OR hc.input_hash <> i.class_hash)
       AND (c.at IS NULL OR (:new AND CASE WHEN c.input_hash IS NOT NULL THEN c.input_hash != i.class_hash ELSE COALESCE(i.updated_at, '') > c.at END))
     ORDER BY c.at IS NOT NULL, i.updated_at DESC, i.repo, i.number`).all({ run, scheme: SCHEME_ID, new: mode === "new" ? 1 : 0 }) as unknown as (Row & { h: string })[];
   const hashes = new Map<string, string>();
@@ -121,7 +145,7 @@ export function dueItems(db: DatabaseSync, run: string, mode: "new" | "all"): { 
   return { open, due, hashes };
 }
 
-async function pass(ctx: StepContext, run: string, mode: "new" | "all"): Promise<{ jev: number; due: number; haiku: number; haikuDue: number; left: number }> {
+async function pass(ctx: StepContext, run: string, mode: "new" | "all"): Promise<{ jev: number; due: number; haiku: number; haikuDue: number; haikuAlone: number; aloneDue: number; left: number }> {
   const limit = Number(ctx.params.limit);
   ctx.usageRun(run);
   ctx.progress("Finding items to classify");
@@ -129,19 +153,27 @@ async function pass(ctx: StepContext, run: string, mode: "new" | "all"): Promise
   const todo = due.slice(0, limit).map(strip);
   ctx.log(`run ${run}: ${open} open items, ${due.length} due for Jev, taking ${todo.length}`);
   const sent = sentCounter(ctx);
-  const jev = await jevPass(ctx, run, todo, hashes, sent);
-  const unsure = ctx.cancelled() ? [] : haikuDue(ctx.db, run, limit);
+  const jevDone = await jevPass(ctx, run, todo, hashes, sent);
+  // Items Jev did not answer because it is unavailable go to Haiku, which settles them.
+  const alone = ctx.cancelled() || jevAvailable(ctx.db) ? [] : todo.filter((x) => !jevDone.has(refOf(x)));
+  const haikuAlone = alone.length ? await haikuOnlyPass(ctx, run, alone, hashes, sent) : 0;
+  if (alone.length) ctx.log(`Jev unavailable: Haiku classified ${haikuAlone} of ${alone.length} items`);
+  const aloneRefs = new Set(alone.map(refOf));
+  const unsure = ctx.cancelled() ? [] : haikuDue(ctx.db, run, limit).filter((x) => !aloneRefs.has(refOf(x)));
   ctx.log(`Haiku: ${unsure.length} items where Jev is unsure of the type (under ${SURE * 100} %) or of a flag`);
   const haiku = await haikuPass(ctx, run, unsure, sent);
-  return { jev, due: due.length, haiku, haikuDue: unsure.length, left: due.length - jev };
+  const jev = jevDone.size;
+  return { jev, due: due.length, haiku, haikuDue: unsure.length, haikuAlone, aloneDue: alone.length, left: due.length - jev - haikuAlone };
 }
+
+const aloneNote = (r: { haikuAlone: number; aloneDue: number }): string => (r.aloneDue ? `Jev unavailable: Haiku classified ${r.haikuAlone} items. ` : "");
 
 export async function classifyNew(ctx: StepContext): Promise<string> {
   const run = currentRun(ctx.db);
   if (!run) throw new Error("There is no classification run yet; start a classification pass first.");
   const r = await pass(ctx, run, "new");
   if (!r.due && !r.haikuDue) return `Nothing to classify in run ${run}.`;
-  return `Run ${run}: Jev classified ${r.jev} of ${r.due} new or changed items${r.left ? ` (${r.left} left)` : ""}; Haiku gave a second opinion on ${r.haiku} of ${r.haikuDue}.`;
+  return `Run ${run}: ${aloneNote(r)}Jev classified ${r.jev} of ${r.due} new or changed items${r.left ? ` (${r.left} left)` : ""}; Haiku gave a second opinion on ${r.haiku} of ${r.haikuDue}.`;
 }
 
 export async function classifyAll(ctx: StepContext): Promise<string> {
@@ -149,5 +181,5 @@ export async function classifyAll(ctx: StepContext): Promise<string> {
   const r = await pass(ctx, run, "all");
   const complete = r.left === 0 && !ctx.cancelled();
   if (complete) ctx.db.prepare("INSERT INTO settings (key, value) VALUES ('classify_run', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value").run(run);
-  return `Run ${run}: Jev classified ${r.jev} of ${r.due} items without a verdict${r.left ? ` (${r.left} left; start it again to continue)` : ""}; Haiku gave a second opinion on ${r.haiku} of ${r.haikuDue}.${complete ? " The run is now the current one." : ""}`;
+  return `Run ${run}: ${aloneNote(r)}Jev classified ${r.jev} of ${r.due} items without a verdict${r.left ? ` (${r.left} left; start it again to continue)` : ""}; Haiku gave a second opinion on ${r.haiku} of ${r.haikuDue}.${complete ? " The run is now the current one." : ""}`;
 }

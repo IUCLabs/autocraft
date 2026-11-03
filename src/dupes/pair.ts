@@ -44,8 +44,9 @@ export function parsePairReply(text: string, refs: string[]): { answers: PairAns
   return { answers, missing: refs.filter((r) => !seen.has(r)) };
 }
 
-/** The pair's verdict from Jev's probability and, when Jev is not sure either way, Haiku's answer. null: Haiku is needed and has not answered. */
-export function settlePair(jev: number | null, haiku: PairVerdict | null): PairVerdict | null {
+/** The pair's verdict from Jev's probability and, when Jev is not sure either way, Haiku's answer. With Jev unavailable, Haiku's answer alone. null: Haiku is needed and has not answered. */
+export function settlePair(jev: number | null, haiku: PairVerdict | null, jevUnavailable = false): PairVerdict | null {
+  if (jevUnavailable) return haiku;
   if (jev !== null && jev >= JEV_ACCEPT) return "duplicate";
   if (jev !== null && jev <= JEV_REJECT) return "distinct";
   if (haiku === null) return null;

@@ -27,9 +27,9 @@ const topOf = (s: string | null): number | null => {
 export function settleRows(rows: ClsRow[]): Settled | null {
   const jev = rows.find((r) => r.classifier === "jev");
   const haiku = rows.find((r) => r.classifier === "haiku");
-  if (!jev?.type_label) return null;
+  if (!jev?.type_label && !haiku?.type_label) return null;
   const s = settle(
-    { label: jev.type_label, flags: flagList(jev.flags), top: topOf(jev.probs), nd: needsDecisionOf(jev.probs), sec: securityOf(jev.probs) },
+    jev?.type_label ? { label: jev.type_label, flags: flagList(jev.flags), top: topOf(jev.probs), nd: needsDecisionOf(jev.probs), sec: securityOf(jev.probs) } : null,
     haiku?.type_label ? { label: haiku.type_label, flags: flagList(haiku.flags) } : null,
   );
   if (s.status !== "settled" || s.label === null) return null;
@@ -44,6 +44,6 @@ export function settledLabel(db: DatabaseSync, repo: string, number: number, run
 }
 
 export function forRun(rows: ClsRow[], runId?: string): ClsRow[] {
-  const id = runId ?? rows.find((r) => r.classifier === "jev")?.run_id;
+  const id = runId ?? rows.find((r) => r.classifier === "jev" || r.classifier === "haiku")?.run_id;
   return id === undefined ? [] : rows.filter((r) => r.run_id === id);
 }

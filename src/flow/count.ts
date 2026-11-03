@@ -133,7 +133,7 @@ function classify(c: Ctx): NodeCount {
     members.get(`classify.${k}`)!.add(ref(r));
   }
   const run = c.run;
-  const recent = run ? c.n(`SELECT COUNT(*) AS n FROM main.classifications INDEXED BY classifications_run WHERE run_id = :run AND classifier = 'jev' AND at >= :since
+  const recent = run ? c.n(`SELECT COUNT(*) AS n FROM main.classifications INDEXED BY classifications_run WHERE run_id = :run AND (classifier = 'jev' OR (classifier = 'haiku' AND input_hash IS NOT NULL)) AND at >= :since
       AND repo IN (SELECT name FROM main.tracked_repos) ${c.andRepo()}`, { run, since: c.since }) : 0;
   return {
     counts: {

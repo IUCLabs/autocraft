@@ -52,15 +52,15 @@ See [Trust boundary](docs/pipeline.md#trust-boundary).
 | `git` | Clones, diffs and pushes |
 | `claude` (Claude Code CLI) | All Claude calls |
 | `bwrap` (bubblewrap, `/usr/bin/bwrap`) | Sandbox for tool-using calls. Without it, those calls run without tools; `CRAFT_AUTO_NO_SANDBOX=1` forces that |
-| `jev` | CLI for TypeSafe's Jev model, used by the classify, priority and duplicate steps (`jev --compact ask`) |
+| `jev` (optional) | CLI for TypeSafe's Jev model, used by the classify, priority and duplicate steps (`jev --compact ask`). Without it, switched off (`craft-auto accounts jev off`), or when its account is out of credit or its key is rejected, Haiku does Jev's work through the Claude accounts (more Claude usage) |
 | Podman and a second OS user | Build environments for Verify and Fix (optional) |
 | `sqlite3`, `curl` | `deploy/backup.sh` and `deploy/hook.sh` |
 
 ### Install
 
 ```sh
-git clone https://github.com/aiongg/craft-automation.git
-cd craft-automation
+git clone https://github.com/aiongg/autocraft.git
+cd autocraft
 pnpm install
 pnpm -C web install && pnpm -C web build    # writes web/dist
 node src/cli.ts                             # lists every command
@@ -121,6 +121,7 @@ New accounts start disabled. Enable and size them:
 craft-auto accounts list
 craft-auto accounts set a --label main --enabled yes --max-concurrent 3
 craft-auto accounts jev 4        # parallel Jev calls
+craft-auto accounts jev off      # Haiku does Jev's work; `on` switches Jev back on
 ```
 
 See [Claude accounts and agent runs](docs/pipeline.md#claude-accounts-and-agent-runs).

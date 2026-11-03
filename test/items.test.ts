@@ -40,8 +40,8 @@ describe("settled type label", () => {
     const s = settle(jev("small extra", 0.5), { label: "plugin candidate", flags: [] });
     assert.deepEqual([s.status, s.label, s.jevLabel, s.haikuLabel], ["disagree", null, "small extra", "plugin candidate"]);
   });
-  test("no Jev verdict: unclassified", async () => {
-    assert.equal(settle(null, { label: "bugfix", flags: [] }).status, "unclassified");
+  test("no verdict at all: unclassified", async () => {
+    assert.equal(settle(null, null).status, "unclassified");
   });
 });
 

@@ -1,8 +1,9 @@
 // The pair check: Jev for every pair, accepted at 0.9 either way; Haiku for the
-// pairs Jev is not sure about.
+// pairs Jev is not sure about, and for every pair while Jev is unavailable.
 import type { DatabaseSync } from "node:sqlite";
 import { jevParallel } from "../agents/accounts.ts";
 import { claudeRoom } from "../agents/call.ts";
+import { jevAvailable } from "../agents/jev.ts";
 import { askClaude, askJev, pool } from "../classify/run.ts";
 import { CLAUDE_PROMPTS } from "../prompts/index.ts";
 import { pickCanonical } from "./canonical.ts";
@@ -37,13 +38,15 @@ export type CheckDeps = {
   jev(pair: DupePair): Promise<number | null>;
   /** Haiku's reply text for a batch of pairs; null when there was none. */
   haiku(pairs: DupePair[]): Promise<string | null>;
+  /** False while Jev is unavailable: Haiku then decides the pairs alone. Absent means available. */
+  jevUsable?(): boolean;
   now(): Date;
 };
 
 export function defaultCheckDeps(db: DatabaseSync): CheckDeps {
   return {
     async jev(pair) {
-      for (let attempt = 0; attempt < 2; attempt++) {
+      for (let attempt = 0; attempt < 2 && jevAvailable(db); attempt++) {
         const r = await askJev("dupes.jev", pair, db);
         try {
           const p = (JSON.parse(r.stdout) as { answers?: { same?: { noul?: unknown } } }).answers?.same?.noul;
@@ -55,11 +58,12 @@ export function defaultCheckDeps(db: DatabaseSync): CheckDeps {
     async haiku(pairs) {
       return (await askClaude("dupes.haiku", HAIKU.models[0]!, pairs, db))?.text ?? null;
     },
+    jevUsable: () => jevAvailable(db),
     now: () => new Date(),
   };
 }
 
-export type CheckCounts = { checked: number; jev: number; haiku: number; verdicts: Record<string, number>; unanswered: number };
+export type CheckCounts = { checked: number; jev: number; haiku: number; haikuAlone: number; verdicts: Record<string, number>; unanswered: number };
 
 function store(db: DatabaseSync, k: PairKey, jev: number | null, haiku: PairVerdict | null, verdict: PairVerdict, at: string): void {
   const canonical = verdict === "duplicate" ? pickCanonical(db, k.repo, [k.a, k.b]).number : null;
@@ -69,13 +73,18 @@ function store(db: DatabaseSync, k: PairKey, jev: number | null, haiku: PairVerd
 
 /** Checks the pairs and stores each answered one. `onHandled` gets the running count of pairs sent to a model. */
 export async function checkPairs(db: DatabaseSync, keys: PairKey[], deps: CheckDeps, onHandled?: (n: number) => void): Promise<CheckCounts> {
-  const c: CheckCounts = { checked: 0, jev: 0, haiku: 0, verdicts: {}, unanswered: 0 };
+  const c: CheckCounts = { checked: 0, jev: 0, haiku: 0, haikuAlone: 0, verdicts: {}, unanswered: 0 };
   const jevP = new Map<string, number | null>();
+  /** Pairs Jev could not be asked because it is unavailable. */
+  const alone = new Set<string>();
   const pairs = new Map(keys.map((k) => [pairRef(k.repo, k.a, k.b), { k, pair: pairInput(db, k) }]));
   let handled = 0;
   await pool([...pairs.entries()].map(([ref, e]) => async () => {
-    jevP.set(ref, await deps.jev(e.pair));
-    c.jev++;
+    const usable = deps.jevUsable?.() ?? true;
+    const p = usable ? await deps.jev(e.pair) : null;
+    jevP.set(ref, p);
+    if (p === null && !(deps.jevUsable?.() ?? true)) alone.add(ref);
+    else c.jev++;
     onHandled?.(++handled);
   }), jevParallel(db));
   const at = deps.now().toISOString();
@@ -86,7 +95,7 @@ export async function checkPairs(db: DatabaseSync, keys: PairKey[], deps: CheckD
   };
   const second: string[] = [];
   for (const ref of pairs.keys()) {
-    const v = settlePair(jevP.get(ref) ?? null, null);
+    const v = alone.has(ref) ? null : settlePair(jevP.get(ref) ?? null, null);
     if (v) done(ref, null, v);
     else second.push(ref);
   }
@@ -99,7 +108,10 @@ export async function checkPairs(db: DatabaseSync, keys: PairKey[], deps: CheckD
       if (text === null) continue;
       const { answers, missing } = parsePairReply(text, todo);
       c.haiku += answers.length;
-      for (const a of answers) done(a.ref, a.verdict, settlePair(jevP.get(a.ref) ?? null, a.verdict) ?? "unsure");
+      for (const a of answers) {
+        if (alone.has(a.ref)) c.haikuAlone++;
+        done(a.ref, a.verdict, settlePair(jevP.get(a.ref) ?? null, a.verdict, alone.has(a.ref)) ?? "unsure");
+      }
       todo = todo.filter((r) => missing.includes(r));
     }
     c.unanswered += todo.length;

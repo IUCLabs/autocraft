@@ -7,7 +7,8 @@
 //   it gave another label. A disagreement the Sonnet referee is sure about is
 //   settled with its label (source "sonnet"); when it was unsure, the item stays
 //   "disagree" with the referee's answer attached, for a person.
-// - No Jev verdict in the run: "unclassified".
+// - No Jev verdict in the run (Jev was unavailable): Haiku's label and flags
+//   settle the item, source "haiku". Without either verdict: "unclassified".
 //
 // Each flag (security, needs decision) follows the same rule on its own: Jev
 // sure yes sets it, Jev sure no clears it, and between the two bands Haiku's
@@ -72,7 +73,8 @@ export function settle(jev: JevVerdict | null, haiku: Verdict | null, referee: R
 }
 
 function settleLabel(jev: (Verdict & { top: number | null }) | null, haiku: Verdict | null, referee: Referee | null): Settled {
-  if (!jev) return { status: "unclassified", label: null, source: null, confidence: null, jevLabel: null, haikuLabel: haiku?.label ?? null, flags: [], referee: null };
+  if (!jev && haiku) return { status: "settled", label: haiku.label, source: "haiku", confidence: null, jevLabel: null, haikuLabel: haiku.label, flags: haiku.flags, referee: null };
+  if (!jev) return { status: "unclassified", label: null, source: null, confidence: null, jevLabel: null, haikuLabel: null, flags: [], referee: null };
   const base = { confidence: jev.top, jevLabel: jev.label, haikuLabel: haiku?.label ?? null, referee: null };
   const flags: string[] = [];
   if ((jev.top ?? 0) >= SURE) return { ...base, status: "settled", label: jev.label, source: "jev", flags };
@@ -86,13 +88,13 @@ function settleLabel(jev: (Verdict & { top: number | null }) | null, haiku: Verd
 export function latestRun(db: DatabaseSync): string | null {
   const set = db.prepare("SELECT value FROM settings WHERE key = 'classify_run'").get() as { value: string } | undefined;
   if (set?.value) return set.value;
-  const r = db.prepare("SELECT run_id FROM classifications WHERE classifier = 'jev' ORDER BY at DESC LIMIT 1").get() as { run_id: string } | undefined;
+  const r = db.prepare("SELECT run_id FROM classifications WHERE classifier IN ('jev', 'haiku') ORDER BY at DESC LIMIT 1").get() as { run_id: string } | undefined;
   return r?.run_id ?? null;
 }
 
-/** True when `run` has at least one Jev verdict. */
+/** True when `run` has at least one Jev or Haiku verdict. */
 export const runExists = (db: DatabaseSync, run: string): boolean =>
-  !!db.prepare("SELECT 1 FROM classifications WHERE run_id = ? AND classifier = 'jev' LIMIT 1").get(run);
+  !!db.prepare("SELECT 1 FROM classifications WHERE run_id = ? AND classifier IN ('jev', 'haiku') LIMIT 1").get(run);
 
 /** Makes `run` the current classification run (settings.classify_run), audited. */
 export function setCurrentRun(db: DatabaseSync, run: string, by: string): void {
@@ -161,21 +163,23 @@ export function topOf(probs: string | null): number | null {
 // Settled verdicts of one run as a temp table on this connection, for queries
 // that count or filter many items:
 //   temp.item_settled(repo, number, status, label, source, top, jev_label, haiku_label, flags JSON, security, needs_decision)
-// Items without a Jev verdict have no row ("unclassified"). Classifiers only
+// Items without a Jev or Haiku verdict have no row ("unclassified"). Classifiers only
 // insert (INSERT OR REPLACE gives a new rowid), so verdicts with a rowid above
 // the last one seen are applied item by item; a new run or fewer rows than
 // expected rebuilds the table.
 type Seen = { run: string | null; maxRowid: number; count: number };
 const seen = new WeakMap<DatabaseSync, Seen>();
 
-type VerdictRow = { repo: string; number: number; jl: string; jf: string | null; probs: string | null; hl: string | null; hf: string | null; sl: string | null; ss: number | null; sr: string | null };
-const VERDICTS = `SELECT j.repo, j.number, j.type_label AS jl, j.flags AS jf, j.probs, h.type_label AS hl, h.flags AS hf,
+type VerdictRow = { repo: string; number: number; jl: string | null; jf: string | null; probs: string | null; hl: string | null; hf: string | null; sl: string | null; ss: number | null; sr: string | null };
+// Items with a Jev or a Haiku verdict: Haiku alone settles an item when Jev was unavailable.
+const VERDICTS = `SELECT k.repo, k.number, j.type_label AS jl, j.flags AS jf, j.probs, h.type_label AS hl, h.flags AS hf,
     s.type_label AS sl, json_extract(CASE WHEN json_valid(s.probs) THEN s.probs END, '$.sure') AS ss, s.reason AS sr
-  FROM main.classifications j
-  LEFT JOIN main.classifications h ON h.repo = j.repo AND h.number = j.number AND h.classifier = 'haiku' AND h.run_id = j.run_id
-  LEFT JOIN main.classifications s ON s.repo = j.repo AND s.number = j.number AND s.classifier = 'sonnet' AND s.run_id = j.run_id
+  FROM (SELECT repo, number FROM main.classifications WHERE run_id = :run AND classifier IN ('jev', 'haiku') GROUP BY repo, number) k
+  LEFT JOIN main.classifications j ON j.repo = k.repo AND j.number = k.number AND j.classifier = 'jev' AND j.run_id = :run
+  LEFT JOIN main.classifications h ON h.repo = k.repo AND h.number = k.number AND h.classifier = 'haiku' AND h.run_id = :run
+  LEFT JOIN main.classifications s ON s.repo = k.repo AND s.number = k.number AND s.classifier = 'sonnet' AND s.run_id = :run
     AND s.at >= j.at AND s.at >= h.at AND json_extract(CASE WHEN json_valid(s.probs) THEN s.probs END, '$.sure') IS NOT NULL
-  WHERE j.run_id = :run AND j.classifier = 'jev'`;
+  WHERE 1 = 1`;
 
 export function settledTable(db: DatabaseSync, run: string | null): void {
   const now = db.prepare("SELECT COALESCE(MAX(rowid), 0) AS maxRowid, COUNT(*) AS count FROM main.classifications").get() as { maxRowid: number; count: number };
@@ -187,7 +191,7 @@ export function settledTable(db: DatabaseSync, run: string | null): void {
   const ins = db.prepare("INSERT OR REPLACE INTO temp.item_settled VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
   const put = (r: VerdictRow) => {
     const ref = r.sl !== null && r.ss !== null ? { label: r.sl, sure: !!r.ss, reason: r.sr ?? "" } : null;
-    const s = settle({ label: r.jl, flags: parseFlags(r.jf), top: topOf(r.probs), nd: needsDecisionOf(r.probs), sec: securityOf(r.probs) }, r.hl === null ? null : { label: r.hl, flags: parseFlags(r.hf) }, ref);
+    const s = settle(r.jl === null ? null : { label: r.jl, flags: parseFlags(r.jf), top: topOf(r.probs), nd: needsDecisionOf(r.probs), sec: securityOf(r.probs) }, r.hl === null ? null : { label: r.hl, flags: parseFlags(r.hf) }, ref);
     ins.run(r.repo, r.number, s.status, s.label, s.source, s.confidence, s.jevLabel, s.haikuLabel, JSON.stringify(s.flags),
       s.flags.includes("security") ? 1 : 0, s.flags.includes("needs decision") ? 1 : 0, s.referee?.label ?? null, s.referee ? Number(s.referee.sure) : null, s.referee?.reason ?? null);
   };
@@ -199,7 +203,7 @@ export function settledTable(db: DatabaseSync, run: string | null): void {
     const added = prev ? (db.prepare("SELECT COUNT(*) AS n FROM main.classifications WHERE rowid > ?").get(prev.maxRowid) as { n: number }).n : 0;
     // INSERT OR REPLACE removes one row for each it adds, so the count only falls when something was deleted.
     if (fresh && run && now.count >= prev!.count && now.count <= prev!.count + added) {
-      const one = db.prepare(`${VERDICTS} AND j.repo = :repo AND j.number = :number`);
+      const one = db.prepare(`${VERDICTS} AND k.repo = :repo AND k.number = :number`);
       for (const k of fresh) {
         const r = one.get({ run, repo: k.repo, number: k.number }) as VerdictRow | undefined;
         if (r) put(r);

@@ -1,10 +1,11 @@
-// craft-auto accounts list | set <id> [--label X] [--enabled yes|no] [--max-concurrent N] | jev [N] | pause [show | --five-hour N --weekly N]
+// craft-auto accounts list | set <id> [--label X] [--enabled yes|no] [--max-concurrent N] | jev [N | on | off] | pause [show | --five-hour N --weekly N]
 import { connect } from "../db.ts";
+import { jevEnabled, jevOutage, setJevEnabled } from "./jev.ts";
 import { AccountError, jevParallel, listAccounts, setJevParallel, setUsagePause, updateAccount, usagePause } from "./accounts.ts";
 
 const USAGE = `usage: craft-auto accounts list
        craft-auto accounts set <id> [--label <text>] [--enabled yes|no] [--max-concurrent <N>]   (N from 1 to 100)
-       craft-auto accounts jev [<N>]   Jev calls at once (shows the setting, or sets it; 1 to 100)
+       craft-auto accounts jev [<N> | on | off]   Jev calls at once (1 to 100), or switch Jev on or off; shows the setting and whether Jev is in use
        craft-auto accounts pause [show]   usage levels (%) at which an account stops taking calls
        craft-auto accounts pause --five-hour <N> --weekly <N>   set them (each 1 to 100)`;
 
@@ -50,7 +51,8 @@ function set(args: string[]): void {
 function jev(args: string[]): void {
   const db = connect();
   if (args.length > 1) die(USAGE);
-  if (args[0] !== undefined) {
+  if (args[0] === "on" || args[0] === "off") setJevEnabled(db, args[0] === "on", "cli");
+  else if (args[0] !== undefined) {
     try {
       setJevParallel(db, Number(args[0]), "cli");
     } catch (e) {
@@ -59,6 +61,8 @@ function jev(args: string[]): void {
     }
   }
   console.log(`Jev calls at once: ${jevParallel(db)}`);
+  const o = jevOutage(db);
+  console.log(o ? `Jev unavailable (${o.reason}) since ${o.since}; Haiku does its work` : jevEnabled(db) ? "Jev in use" : "Jev off");
 }
 
 function pause(args: string[]): void {
@@ -86,7 +90,7 @@ function pause(args: string[]): void {
 
 export const commands = {
   accounts: {
-    summary: "Claude accounts: list | set <id> [--label X] [--enabled yes|no] [--max-concurrent N] | jev [N] | pause [show | --five-hour N --weekly N]",
+    summary: "Claude accounts: list | set <id> [--label X] [--enabled yes|no] [--max-concurrent N] | jev [N | on | off] | pause [show | --five-hour N --weekly N]",
     run: (args: string[]) => {
       if (args[0] === "list") print();
       else if (args[0] === "set") set(args.slice(1));

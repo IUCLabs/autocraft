@@ -184,6 +184,8 @@ export function createHttpApi(): Api {
       list: () => get("/api/accounts"),
       pause: () => get("/api/accounts/pause"),
       setPause: (input) => put("/api/accounts/pause", input),
+      jev: () => get("/api/accounts/jev"),
+      setJev: (input) => put("/api/accounts/jev", input),
       update: (id, input) => put(`/api/accounts/${encodeURIComponent(id)}`, input),
       add: (label) => post("/api/accounts", { label }),
       loginStart: (id) => post(`/api/accounts/${encodeURIComponent(id)}/login`),

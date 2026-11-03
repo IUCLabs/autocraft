@@ -1,11 +1,13 @@
 // craft-auto prioritize [--limit N]: priority level (P0-P4) of open items and their reach (src/priority/score.ts).
 //
 // Jev classifies the impact of each item whose text has no priority row at its
-// current hash; Haiku decides where Jev is under 90 % sure. The reach is
+// current hash; Haiku decides where Jev is under 90 % sure, and for every item
+// while Jev is unavailable (src/agents/jev.ts). The reach is
 // recomputed from the mirror's reach signals on every pass, without a model.
 import type { DatabaseSync } from "node:sqlite";
 import { jevParallel } from "../agents/accounts.ts";
 import { claudeRoom } from "../agents/call.ts";
+import { jevAvailable } from "../agents/jev.ts";
 import { type Item, refOf } from "../classify/parse.ts";
 import { askClaude, askJev, pool } from "../classify/run.ts";
 import { connect } from "../db.ts";
@@ -42,7 +44,7 @@ export function dueItems(db: DatabaseSync, limit: number): Due[] {
 type Verdict = { jev: { impact: Impact; p: number } | null; haiku: { impact: Impact; reason: string } | null };
 
 async function askJevImpact(db: DatabaseSync, item: Item): Promise<{ impact: Impact; p: number } | null> {
-  for (let attempt = 0; attempt < JEV.limits.attempts; attempt++) {
+  for (let attempt = 0; attempt < JEV.limits.attempts && jevAvailable(db); attempt++) {
     const r = await askJev("priority.jev", item, db);
     try {
       const v = jevImpact((JSON.parse(r.stdout) as { answers?: JevImpactAnswers }).answers);
@@ -91,7 +93,7 @@ export function rescore(db: DatabaseSync, nowMs: number = Date.now()): number {
 }
 
 export type PrioritizeOptions = { limit: number; onSent?: (n: number) => void; cancelled?: () => boolean; log?: (line: string) => void };
-export type PrioritizeResult = { due: number; sent: number; jev: number; haiku: number; saved: number; rescored: number };
+export type PrioritizeResult = { due: number; sent: number; jev: number; haiku: number; saved: number; rescored: number; haikuAlone: number };
 
 export async function runPrioritize(db: DatabaseSync, opts: PrioritizeOptions): Promise<PrioritizeResult> {
   const log = opts.log ?? (() => {});
@@ -99,12 +101,13 @@ export async function runPrioritize(db: DatabaseSync, opts: PrioritizeOptions): 
   const due = duePriorityCount(db);
   const todo = dueItems(db, opts.limit);
   log(`prioritize: ${due} items due, taking ${todo.length}`);
-  const res: PrioritizeResult = { due, sent: 0, jev: 0, haiku: 0, saved: 0, rescored: 0 };
+  const res: PrioritizeResult = { due, sent: 0, jev: 0, haiku: 0, saved: 0, rescored: 0, haikuAlone: 0 };
   for (let i = 0; i < todo.length && !opts.cancelled?.(); i += JEV_CHUNK) {
     const chunk = todo.slice(i, i + JEV_CHUNK);
     res.sent += chunk.length;
     opts.onSent?.(res.sent);
     const jev = await pool(chunk.map((item) => () => askJevImpact(db, item)), () => jevParallel(db));
+    const jevDown = !jevAvailable(db);
     const verdicts = new Map<string, Verdict>();
     const unsure: Due[] = [];
     chunk.forEach((item, n) => {
@@ -112,6 +115,7 @@ export async function runPrioritize(db: DatabaseSync, opts: PrioritizeOptions): 
       verdicts.set(refOf(item), { jev: v, haiku: null });
       if (v) res.jev++;
       if (!v || v.p < SURE) unsure.push(item);
+      if (!v && jevDown) res.haikuAlone++;
     });
     const batches: Due[][] = [];
     for (let j = 0; j < unsure.length; j += HAIKU.limits.perCall) batches.push(unsure.slice(j, j + HAIKU.limits.perCall));
@@ -129,6 +133,7 @@ export async function runPrioritize(db: DatabaseSync, opts: PrioritizeOptions): 
     else log(`prioritize: no valid answer for ${refOf(item)}`);
   }
   res.rescored = rescore(db);
+  if (res.haikuAlone) log(`Jev unavailable: Haiku rated ${res.haikuAlone} items`);
   return res;
 }
 
@@ -140,7 +145,7 @@ export const commands = {
       const limit = i >= 0 ? Number(args[i + 1]) : 500;
       if (!Number.isInteger(limit) || limit < 1) throw new Error("--limit is a whole number of at least 1");
       const r = await runPrioritize(connect(), { limit, log: console.log });
-      console.log(`${r.saved} of ${r.sent} rated (${r.jev} by Jev, ${r.haiku} by Haiku); ${r.rescored} reach values changed`);
+      console.log(`${r.saved} of ${r.sent} rated (${r.jev} by Jev, ${r.haiku} by Haiku); ${r.rescored} reach values changed${r.haikuAlone ? `; Jev unavailable: Haiku rated ${r.haikuAlone} items` : ""}`);
     },
   },
 };

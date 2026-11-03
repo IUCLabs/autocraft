@@ -2,7 +2,7 @@
 import { useEffect, useState } from "react";
 import { PencilSimpleIcon } from "@phosphor-icons/react";
 import { useApi, useQuery } from "../../api/client";
-import type { ClaudeAccount, UsagePause } from "../../api/types";
+import type { ClaudeAccount, JevStatus, UsagePause } from "../../api/types";
 import { ago, nowMs, span } from "../../lib/format";
 import { useUser } from "../../shell/UserContext";
 import { Badge } from "../../ui/Badge";
@@ -93,6 +93,29 @@ function PauseLevels({ operator }: { operator: boolean }) {
           <ErrorLine error={write.error} className="basis-full" />
         </form>
       )}
+    </div>
+  );
+}
+
+const clock = (iso: string) => new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
+
+function JevLine({ operator }: { operator: boolean }) {
+  const api = useApi();
+  const write = useWrite();
+  const q = useQuery<JevStatus>("accounts-jev", (a) => a.accounts.jev());
+  if (!q.data) return <ErrorLine error={q.error?.message} />;
+  const { enabled, unavailable } = q.data;
+  return (
+    <div className="mb-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs">
+      <span className="text-ink/60">
+        {unavailable ? `Jev unavailable (${unavailable.reason}) since ${clock(unavailable.since)} — Haiku does Jev's work` : "Jev in use"}
+      </span>
+      {operator && (
+        <Button variant="secondary" size="sm" loading={write.busy === "jev"} onClick={() => void write.run("jev", () => api.accounts.setJev({ enabled: !enabled })).then((ok) => ok && q.refetch())} className="max-md:h-11">
+          {enabled ? "Turn Jev off" : "Turn Jev on"}
+        </Button>
+      )}
+      <ErrorLine error={write.error} className="basis-full" />
     </div>
   );
 }
@@ -188,6 +211,7 @@ export function AccountsPanel({ className }: { className?: string }) {
     <Block title="Claude accounts" aside={operator ? "label, enabled and concurrency are yours to set" : "set by operators"} className={className}>
       <ErrorLine error={q.error?.message} />
       <PauseLevels operator={operator} />
+      <JevLine operator={operator} />
       {q.data && q.data.length === 0 && <p className="text-sm text-ink/55">No account is enabled.</p>}
       {q.data && (
         <ul className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">

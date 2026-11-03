@@ -11,6 +11,7 @@ import type {
   AgentRunPage,
   ClaudeAccount,
   UsagePause,
+  JevStatus,
   Rates,
   AnswerInput,
   AuditFilter,
@@ -182,6 +183,9 @@ export interface Api {
   accounts: {
     list(): Promise<ClaudeAccount[]>;
     pause(): Promise<UsagePause>;
+    jev(): Promise<JevStatus>;
+    /** Operators: switches Jev on or off. */
+    setJev(input: { enabled: boolean }): Promise<JevStatus>;
     /** Operators. */
     setPause(input: UsagePause): Promise<UsagePause>;
     update(id: string, input: AccountInput): Promise<ClaudeAccount>;

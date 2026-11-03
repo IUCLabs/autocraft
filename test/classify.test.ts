@@ -62,3 +62,14 @@ describe("jev", () => {
     assert.equal(JSON.parse(req.state).files_changed, 2);
   });
 });
+
+describe("settle without Jev", () => {
+  test("a Haiku verdict alone settles the item with Haiku's label and flags", () => {
+    const s = settle(null, { label: "bugfix", flags: ["security"] });
+    assert.equal(s.status, "settled");
+    assert.equal(s.source, "haiku");
+    assert.equal(s.label, "bugfix");
+    assert.deepEqual(s.flags, ["security"]);
+    assert.equal(settle(null, null).status, "unclassified");
+  });
+});

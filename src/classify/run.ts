@@ -7,6 +7,7 @@ import type { DatabaseSync } from "node:sqlite";
 import type { ItemRef } from "../../web/src/api/types.ts";
 import { createHash } from "node:crypto";
 import { jevParallel } from "../agents/accounts.ts";
+import { jevAvailable, jevFailure, markJevUnavailable, markJevWorking } from "../agents/jev.ts";
 import { claudeRoom, startClaudeRun, startJevRun } from "../agents/call.ts";
 import { finishRun, setRunProgress } from "../agents/runs.ts";
 import { coalesce, lineFeed } from "./progress.ts";
@@ -348,6 +349,9 @@ export async function askJev(id: JevPromptId, item: Item | DupePair, db: Databas
     } catch { /* the caller reports an unreadable answer */ }
     // classify.jev is saved per item by runJev, which sums its retries
     if (tokens && id !== "classify.jev") saveUsage(db, String(runId), "jev", id.split(".")[0]!, JEV_PROMPTS[id].models[0]!, 1, { ...tokens, cost: tokens.input * JEV_USD_PER_INPUT_TOKEN }, start, now());
+    const outage = jevFailure(r);
+    if (outage) markJevUnavailable(db, outage.kind, outage.reason);
+    else if (r.code === 0) markJevWorking(db);
     if (r.code === 0 && tokens) finishRun(db, runId, { state: "done", tokens, summary: "answered", output: r.stdout });
     else finishRun(db, runId, { state: "failed", error: scrubError(`${exitClass(r.code)} ${r.stderr}`), summary: r.code === 0 ? "unreadable answer" : exitClass(r.code), output: r.stdout });
     return r;
@@ -389,10 +393,12 @@ const JEV = JEV_PROMPTS["classify.jev"];
 
 export async function runJev(db: DatabaseSync, runId: string, items: Item[], width = jevParallel(db)): Promise<void> {
   await pool(items.map((item) => async () => {
+    // Once a call shows Jev is unavailable, the items still waiting are left for Haiku.
+    if (!jevAvailable(db)) return;
     const ref = refOf(item), start = now();
     let v: Verdict | null = null;
     let usage: Usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: null };
-    for (let attempt = 0; attempt < JEV.limits.attempts && !v; attempt++) {
+    for (let attempt = 0; attempt < JEV.limits.attempts && !v && jevAvailable(db); attempt++) {
       const r = await askJev("classify.jev", item, db);
       try {
         const j = JSON.parse(r.stdout) as { answers?: JevAnswers; usage?: { input_tokens?: number; output_tokens?: number } };
@@ -401,6 +407,7 @@ export async function runJev(db: DatabaseSync, runId: string, items: Item[], wid
       } catch { /* retry once */ }
     }
     if (v) saveVerdict(db, "jev", runId, v);
+    else if (!jevAvailable(db)) return;
     else console.error(`jev: no valid answer for ${ref}`);
     saveUsage(db, runId, `jev-${ref}`, "classify", JEV.models[0]!, v ? 1 : 0, { ...usage, cost: usage.input * JEV_USD_PER_INPUT_TOKEN }, start, now());
   }), width);
