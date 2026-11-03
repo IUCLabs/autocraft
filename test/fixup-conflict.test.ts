@@ -271,17 +271,19 @@ describe("conflict merge guards", () => {
     }
   });
 
-  test("heads skipped for size under the whole-file rule are tried again after connecting", () => {
+  test("heads refused for size under the whole-file rule are tried again after connecting", () => {
     const path = join(mkdtempSync(join(dir, "mig-")), "t.db");
     const db = connect(path);
-    const ins = db.prepare("INSERT INTO conflict_merges (repo, number, from_head, state, reason, files, attempt, created_at) VALUES ('app', ?, 'h', 'skipped', ?, '[]', 1, ?)");
-    ins.run(1, "the conflicted files are over the size limit", T0);
-    ins.run(2, "the merge is over the 80000 character limit for the check", T0);
-    ins.run(3, "the conflict sections are over the size limit", T0);
-    ins.run(4, "main is already in the branch", T0);
+    const ins = db.prepare("INSERT INTO conflict_merges (repo, number, from_head, state, reason, files, attempt, created_at) VALUES ('app', ?, 'h', ?, ?, '[]', 1, ?)");
+    ins.run(1, "skipped", "the conflicted files are over the size limit", T0);
+    ins.run(2, "skipped", "the merge is over the 80000 character limit for the check", T0);
+    ins.run(3, "skipped", "the conflict sections are over the size limit", T0);
+    ins.run(4, "skipped", "main is already in the branch", T0);
+    ins.run(5, "refused", "the conflicted files are over the size limit", T0);
+    ins.run(6, "refused", "the resolution changes a.rs outside its conflict sections", T0);
     db.close();
     const again = connect(path);
-    assert.deepEqual(again.prepare("SELECT number FROM conflict_merges ORDER BY number").all().map((r) => (r as { number: number }).number), [3, 4]);
+    assert.deepEqual(again.prepare("SELECT number FROM conflict_merges ORDER BY number").all().map((r) => (r as { number: number }).number), [3, 4, 6]);
   });
 
   test("outsideConflicts and keepsOutside", () => {
