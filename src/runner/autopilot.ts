@@ -351,10 +351,12 @@ function releasedAt(db: DatabaseSync, step: string): string | null {
   return (db.prepare(`SELECT MAX(at) AS at FROM audit WHERE action IN (${actions.map(() => "?").join(", ")})`).get(...actions) as { at: string | null }).at;
 }
 
+// Merge jobs that only advance batches in flight handle nothing; that is progress, not idleness.
+const batchesInFlight = (db: DatabaseSync): boolean => !!db.prepare("SELECT 1 FROM main.merge_batches WHERE state IN ('checking', 'open')").get();
+
 /** After BACKOFF_AFTER failed autopilot jobs in a row: when the stage may run again, else null. An operator release since the last job ends it. */
 export function backoffUntil(db: DatabaseSync, step: string, ms: number = Date.now()): number | null {
-  // Merge jobs that only advance batches in flight handle nothing; that is progress, not idleness.
-  if (step === "merge" && db.prepare("SELECT 1 FROM main.merge_batches WHERE state IN ('checking', 'open')").get()) return null;
+  if (step === "merge" && batchesInFlight(db)) return null;
   // Failed, or done without handling anything although the autopilot saw work; jobs a runner restart ended do not count.
   const rows = db.prepare(`SELECT state, ended_at, items FROM jobs WHERE step = ? AND requested_by = ? AND state IN ('done', 'failed')
     AND COALESCE(error, '') <> ? ORDER BY id DESC LIMIT ?`).all(step, AUTOPILOT_USER, RUNNER_STOPPED, BACKOFF_AFTER) as { state: string; ended_at: string | null; items: number | null }[];
@@ -486,7 +488,8 @@ export async function detectAutopilot(db: DatabaseSync, opts: PlanOptions = {}):
       return null;
     }
     const last = cooldown ? lastJobEnd(db, stepName, typeof params.repo === "string" ? params.repo : null, AUTOPILOT_USER) : undefined;
-    if (last && !last.items && ms - Date.parse(last.endedAt) < COOLDOWN_MS && !((releasedAt(db, stepName) ?? "") > last.endedAt)) return null;
+    if (last && !last.items && ms - Date.parse(last.endedAt) < COOLDOWN_MS && !((releasedAt(db, stepName) ?? "") > last.endedAt)
+      && !(stepName === "merge" && batchesInFlight(db))) return null;
     if (!limitLeft.has(stepName)) {
       const lp = step.params.find((p) => p.name === "limit" && p.kind === "int");
       if (!lp || lp.kind !== "int") limitLeft.set(stepName, {});
