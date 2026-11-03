@@ -14,7 +14,7 @@ import { loadSummaryItems, runDecide } from "../src/decide/index.ts";
 import { settle } from "../src/classify/settled.ts";
 import type { Candidate } from "../src/decide/select.ts";
 import { validateAsk, type DecisionRow } from "../src/decisions.ts";
-import { claudeArgs, renderClaude } from "../src/prompts/index.ts";
+import { claudeArgs, claudeParts, renderClaude } from "../src/prompts/index.ts";
 import { SCRATCH } from "./scratch.ts";
 
 mkdirSync(SCRATCH, { recursive: true });
@@ -103,10 +103,10 @@ describe("decide", () => {
       const r = await runDecide(db, { checkout: async () => null }, quiet);
       assert.equal(r.asked, 3);
       // One call per repo batch, each exactly what the registry renders.
-      const want = [["photocraft#2", "photocraft#1"], ["filmcraft#10"]] /* pull requests before issues */.map((refs) => ({
-        cmd: "claude", args: claudeArgs("decide.summary", "sonnet"),
-        input: renderClaude("decide.summary", loadSummaryItems(db, refs.map((x) => ({ repo: x.split("#")[0]!, number: Number(x.split("#")[1]) })))),
-      }));
+      const want = [["photocraft#2", "photocraft#1"], ["filmcraft#10"]] /* pull requests before issues */.map((refs) => {
+        const parts = claudeParts("decide.summary", loadSummaryItems(db, refs.map((x) => ({ repo: x.split("#")[0]!, number: Number(x.split("#")[1]) }))), false);
+        return { cmd: "claude", args: claudeArgs("decide.summary", "sonnet", false, undefined, parts.system), input: parts.stdin };
+      });
       assert.deepEqual(calls.toSorted((a, b) => a.input.localeCompare(b.input)), want.toSorted((a, b) => a.input.localeCompare(b.input)));
       assert.ok(calls.some((c) => c.input.includes("I need this too")) && !calls.some((c) => c.input.includes("Build passed")), "non-bot comments only");
 

@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { describe, test } from "node:test";
 import { setRunner, askClaude, type Runner } from "../src/classify/run.ts";
 import { connect } from "../src/db.ts";
-import { CLAUDE_PROMPTS, claudeArgs, promptsReport, renderClaude, withoutRepoDir } from "../src/prompts/index.ts";
+import { CLAUDE_PROMPTS, claudeArgs, claudeParts, promptsReport, renderClaude, withoutRepoDir } from "../src/prompts/index.ts";
 import { SAMPLE_OPUS_PRS } from "../src/prompts/samples.ts";
 import { SAMPLE_PATCH, SAMPLE_TRIAGE } from "../src/fixissue/types.ts";
 import { SAMPLE_FIXISSUE_CHECK, SAMPLE_FIXUP_CHECK } from "../src/patchcheck/types.ts";
@@ -289,7 +289,7 @@ describe("askClaude in tool mode", () => {
       // Without a checkout the same prompt runs tool-free through plain claude.
       await askClaude("review.opus", "opus", SAMPLE_OPUS_PRS, db);
       assert.equal(calls[1]!.cmd, "claude");
-      assert.deepEqual(calls[1]!.args, claudeArgs("review.opus", "opus"));
+      assert.deepEqual(calls[1]!.args, claudeArgs("review.opus", "opus", false, undefined, claudeParts("review.opus", SAMPLE_OPUS_PRS, false).system));
     } finally {
       restore();
       delete process.env.CRAFT_AUTO_CLAUDE_BIN;
@@ -333,8 +333,8 @@ describe("askClaude in tool mode", () => {
       delete process.env.CRAFT_AUTO_CLAUDE_BIN;
     }
     assert.equal(calls[0]!.cmd, "claude");
-    assert.deepEqual(calls[0]!.args, claudeArgs("review.opus", "opus"));
-    assert.ok(!calls[0]!.input.includes("You may read the repository"));
+    assert.ok(calls[0]!.args.includes("--system-prompt"));
+    assert.ok(!calls[0]!.input.includes("You may read the repository") && !calls[0]!.args.join(" ").includes("You may read the repository"));
     assert.ok(logs.some((l) => l.join(" ") === "sandbox skipped: token near expiry"));
     const text = db.prepare("SELECT prompt FROM agent_run_texts ORDER BY run_id DESC LIMIT 1").get() as { prompt: string };
     assert.ok(!text.prompt.includes("You may read the repository"));

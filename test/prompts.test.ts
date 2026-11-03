@@ -9,7 +9,7 @@ import type { Pair, Row } from "../src/classify/report.ts";
 import { useTestAccount } from "./accounts-fixture.ts";
 import { runHaiku, runJev, setRunner, type Runner } from "../src/classify/run.ts";
 import { connect } from "../src/db.ts";
-import { JEV_ARGS, PROMPTS, claudeArgs, promptsReport, renderClaude, renderJev, untrustedJson } from "../src/prompts/index.ts";
+import { JEV_ARGS, PROMPTS, claudeArgs, claudeParts, promptsReport, renderClaude, renderJev, untrustedJson } from "../src/prompts/index.ts";
 import { SAMPLE_ITEMS } from "../src/prompts/samples.ts";
 import { SAMPLE_VERIFY_PLAN } from "../src/verify/types.ts";
 import { SCRATCH } from "./scratch.ts";
@@ -51,9 +51,9 @@ describe("prompt registry", () => {
       restore();
     }
     const want: Call[] = [
-      { cmd: "claude", args: claudeArgs("classify.haiku", "haiku"), input: renderClaude("classify.haiku", SAMPLE_ITEMS) },
+      { cmd: "claude", args: claudeArgs("classify.haiku", "haiku", false, undefined, claudeParts("classify.haiku", SAMPLE_ITEMS, false).system), input: claudeParts("classify.haiku", SAMPLE_ITEMS, false).stdin },
       ...SAMPLE_ITEMS.map((i) => ({ cmd: "jev", args: JEV_ARGS, input: renderJev("classify.jev", i) })),
-      { cmd: "claude", args: claudeArgs("referee.sonnet", "sonnet"), input: renderClaude("referee.sonnet", SAMPLE_ITEMS) },
+      { cmd: "claude", args: claudeArgs("referee.sonnet", "sonnet", false, undefined, claudeParts("referee.sonnet", SAMPLE_ITEMS, false).system), input: claudeParts("referee.sonnet", SAMPLE_ITEMS, false).stdin },
     ];
     assert.deepEqual(calls, want);
     const n = db.prepare("SELECT classifier, count(*) AS n FROM classifications WHERE run_id = 't' GROUP BY classifier ORDER BY classifier").all();

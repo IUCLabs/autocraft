@@ -8,7 +8,7 @@ import { createEnv, hello } from "../src/build/envs.ts";
 import { claim, createTask, getTask, warmKeyOf } from "../src/build/tasks.ts";
 import { setRunner, type Runner } from "../src/classify/run.ts";
 import { connect } from "../src/db.ts";
-import { claudeArgs, renderClaude } from "../src/prompts/index.ts";
+import { claudeArgs, claudeParts, renderClaude } from "../src/prompts/index.ts";
 import { selectCandidates } from "../src/verify/candidates.ts";
 import { cratesFromTree, packageName } from "../src/verify/crates.ts";
 import { runVerify, type VerifyDeps } from "../src/verify/index.ts";
@@ -284,9 +284,10 @@ describe("runVerify", () => {
     try {
       const s = await runVerify(db, { repo: "app" }, quiet, deps());
       assert.equal(calls.length, 2);
-      assert.deepEqual(calls[0]!.args, claudeArgs("verify.plan", "sonnet"));
-      const pr = (JSON.parse(calls[0]!.input.split("<pr>\n")[1]!.split("\n</pr>")[0]!)) as VerifyPlanInput;
-      assert.equal(calls[0]!.input, renderClaude("verify.plan", [pr]));
+            const pr = (JSON.parse(calls[0]!.input.split("<pr>\n")[1]!.split("\n</pr>")[0]!)) as VerifyPlanInput;
+      const parts = claudeParts("verify.plan", [pr], false);
+      assert.equal(calls[0]!.input, parts.stdin);
+      assert.deepEqual(calls[0]!.args, claudeArgs("verify.plan", "sonnet", false, undefined, parts.system));
       assert.deepEqual([pr.ref, pr.label, pr.crates], ["app#1", "bugfix", CRATES]);
       assert.ok(pr.diff.includes("+new"));
       assert.deepEqual([s.handled, s.errors, s.kinds], [2, 0, { regression: 1, "ci-enough": 1 }]);
