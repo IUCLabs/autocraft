@@ -27,9 +27,9 @@ function stepsOf(it: Item, scope: Decision | null | undefined): Step[] {
   if (it.kind === "pr") {
     const r = it.reviews;
     const reviewed = r ? r.current && r.final.decided : has("reviewed");
-    const detail = r ? (!r.current ? "not reviewed at this head" : r.final.decided ? FINAL[r.final.verdict] : "waiting for the Opus review") : has("reviewed") ? (verdict ?? "reviewed") : "not reviewed yet";
+    const detail = r ? (!r.current ? "not reviewed at this head" : FINAL[r.final.verdict]) : has("reviewed") ? (verdict ?? "reviewed") : "not reviewed yet";
     out.push({ node: "review", label: "Review", detail, done: reviewed });
-    if ((r ? r.current && r.final.decided && r.final.verdict === "take" : verdict === "take") || has("merged") || it.state === "merged")
+    if ((r ? r.current && r.final.verdict === "take" : verdict === "take") || has("merged") || it.state === "merged")
       out.push({ node: "merge", label: "Merge queue", detail: it.state === "merged" ? "merged" : "in the queue", done: it.state === "merged" });
   }
   return out;

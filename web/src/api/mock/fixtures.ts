@@ -333,7 +333,7 @@ const SEEDS: Seed[] = [
     title: "Formula bar: support array formulas entered with Ctrl+Shift+Enter",
     opinions: [["mosswood", "hold", "I want a second look at how ranges spill.", 32]],
     question: "Reviewed and green, but it touches the evaluator core. Merge now?",
-    context: ["Sonnet review found no issues; 140 new evaluator tests pass.", "It changes how ranges spill into neighbouring cells."],
+    context: ["Opus review found no issues; 140 new evaluator tests pass.", "It changes how ranges spill into neighbouring cells."],
     facts: ["+2,104 −310 · 14 files", "author: 22 merged, whitelisted", "review: no issues found", "CI passing · mergeable"],
     options: [
       { key: "merge", label: "Merge" },
@@ -731,7 +731,7 @@ function stagesFor(s: Seed, d: Decision): StageEntry[] {
     { stage: "classified", at: iso(t + 3 * H), by: "haiku", note: null },
     { stage: "classified", at: iso(t + 2 * H), by: "jev", note: null },
   ];
-  if (s.cls?.some((c) => c[0] === "sonnet")) st.push({ stage: "reviewed", at: iso(t + 50 * M), by: "sonnet", note: "No blocking issues" });
+  if (s.cls?.some((c) => c[0] === "sonnet")) st.push({ stage: "reviewed", at: iso(t + 50 * M), by: "opus", note: "No blocking issues" });
   st.push({ stage: d.number === null ? "batched" : "needs-decision", at: iso(t), by: d.askedBy, note: d.kind });
   if (d.answer) st.push({ stage: d.answer === "merge" ? "merged" : d.answer.startsWith("close") ? "closed" : "take", at: d.appliedAt ?? d.answeredAt!, by: d.answeredBy!, note: null });
   return st;

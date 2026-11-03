@@ -62,16 +62,13 @@ function actionsFor(n: number, kind: Item["kind"]): ItemAction[] {
 }
 
 function reviewsFor(n: number): ItemReviews {
-  const sonnet = { verdict: "take-fix" as const, reason: "Correct fix; one name is unclear.", fixes: [{ file: "src/lib.rs", change: "Rename `tmp` to `stride`." }], risks: [], at: iso(5 * H) };
   const head = `${String(n).padStart(7, "0")}abcdef`;
-  if (n % 4 === 0) return { head, current: true, sonnet, opus: null, skipReason: "docs, translations or comments only (6 changed lines)", final: { verdict: "take-fix", source: "skip-list", reason: sonnet.reason, decided: true } };
-  if (n % 4 === 1) return { head, current: true, sonnet, opus: null, skipReason: null, final: { verdict: "take-fix", source: "sonnet", reason: sonnet.reason, decided: false } };
   if (n % 8 === 2) {
     const o = { verdict: "hold" as const, reason: "The change drops a bounds check that the decoder relies on.", fixes: [], risks: ["Reads past the buffer on short input."], at: iso(4 * H), sure: false, mode: "delta" as const, baseHead: `${String(n).padStart(7, "1")}abcdef` };
-    return { head, current: true, sonnet, opus: o, skipReason: null, final: { verdict: "hold", source: "opus", reason: "Needs a person.", decided: true } };
+    return { head, current: true, opus: o, final: { verdict: "hold", reason: "Needs a person.", decided: true } };
   }
-  const opus = { verdict: "take-fix" as const, reason: "Also drop the unused import.", fixes: [{ file: "src/lib.rs", change: "Rename `tmp` to `stride`." }, { file: "src/lib.rs", change: "Remove the unused `use std::fmt;`." }], risks: ["Depends on code outside the diff."], at: iso(4 * H), sure: true, mode: "full" as const, baseHead: null };
-  return { head, current: n % 8 !== 6, sonnet, opus, skipReason: null, final: { verdict: opus.verdict, source: "opus", reason: opus.reason, decided: true } };
+  const opus = { verdict: "take-fix" as const, reason: "Also drop the unused import.", fixes: [{ file: "src/lib.rs", change: "Rename `tmp` to `stride`." }, { file: "src/lib.rs", change: "Remove the unused `use std::fmt;`." }], risks: ["Depends on code outside the diff."], at: iso(4 * H), sure: n % 4 !== 1, mode: "full" as const, baseHead: null };
+  return { head, current: n % 8 !== 6, opus, final: { verdict: opus.verdict, reason: opus.reason, decided: true } };
 }
 
 function patchChecksFor(n: number): ItemPatchCheck[] {
