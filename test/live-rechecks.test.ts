@@ -207,7 +207,8 @@ describe("opus review", () => {
   const deps = (liveHead: string): OpusDeps => ({
     querier: validating({
       spent: 0, remaining: 5000,
-      async query() {
+      async query(query: string) {
+        if (query.includes("reviewThreads")) return { repository: { pullRequest: { author: null, comments: { nodes: [] }, reviews: { nodes: [] }, reviewThreads: { nodes: [] } } } };
         return { repository: { pr1: { number: 1, state: "OPEN", isDraft: false, headRefOid: liveHead, mergeable: "MERGEABLE", maintainerCanModify: true, commits: { nodes: [] } } } };
       },
     }),

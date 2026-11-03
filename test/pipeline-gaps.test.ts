@@ -168,7 +168,9 @@ describe("answers that write nothing are marked applied", () => {
     decision(db, "app#1:scope", "scope", 1);
     answer(db, "app#1:scope", "take");
     assert.equal(applyUsedAnswers(db, T1), 0);
+    // A review made again needs its second pass again; the skip-list row is made again with it.
     db.prepare("UPDATE reviews SET at = ? WHERE number = 1").run("2026-01-03T00:00:00Z");
+    db.prepare("UPDATE opus_reviews SET at = ? WHERE number = 1").run("2026-01-03T00:00:00Z");
     assert.equal(applyUsedAnswers(db, T1), 1);
     assert.equal(appliedAt(db, "app#1:scope"), T1);
   });
