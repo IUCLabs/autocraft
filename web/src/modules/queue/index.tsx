@@ -1,5 +1,6 @@
 // Queue: one page for everything waiting on the pipeline. Tabs filter by next step; the Merge tab
 // adds the merge queue's columns and the operator's merge controls. The repo filter is the `repos` URL parameter.
+import { useEffect } from "react";
 import { Link, Navigate, useLocation, useParams } from "react-router-dom";
 import { ListNumbersIcon } from "@phosphor-icons/react";
 import { usePagedQuery, useQuery } from "../../api/client";
@@ -8,6 +9,7 @@ import type { FeatureModule } from "../../registry/types";
 import { num } from "../../lib/format";
 import { useIsPhone } from "../../shell/useMedia";
 import { cn } from "../../ui/cn";
+import { parseQueueItem } from "../../ui/QueueBadge";
 import { Block, ErrorLine, Page, selectCls, useUrlState } from "../admin/parts";
 import { WorkCards, WorkTable } from "./AllTab";
 import { FastTrackAdd } from "./fastTrack";
@@ -63,6 +65,16 @@ function QueueView() {
   const tab = param ? TABS.find(([t]) => t === param)?.[0] : "all";
   const repos = state.repos || state.repo || "pipeline";
   const { pages, counts, error, hasMore, loadingMore, loadMore } = usePage(tab ?? "all", repos);
+  const target = state.item;
+  const rowsLoaded = pages?.flatMap((p) => p.rows).length ?? 0;
+  const found = !!target && !!pages?.some((p) => p.rows.some((r) => `${r.repo}:${r.number}` === target));
+  // The linked item may sit past the first page: load further pages until it appears.
+  useEffect(() => {
+    if (target && parseQueueItem(target) && tab !== "merge" && pages && !found && hasMore && !loadingMore) loadMore();
+  }, [target, tab, pages, found, hasMore, loadingMore, loadMore, rowsLoaded]);
+  useEffect(() => {
+    if (found) document.querySelector(`[data-item="${CSS.escape(target!)}"]`)?.scrollIntoView({ block: "center" });
+  }, [found, target, tab]);
   if (!tab) return <Navigate to={`/queue${search}`} replace />;
 
   const first: QueuePage | undefined = pages?.[0];
@@ -91,7 +103,7 @@ function QueueView() {
       ) : (
         <Block className="mt-3" flush title={tab === "all" ? "Open items" : TABS.find(([t]) => t === tab)![1]}>
           {first && rows.length === 0 && <p className="px-4 py-6 text-sm text-ink/50">No item here.</p>}
-          {rows.length > 0 && (phone ? <WorkCards rows={rows} /> : <WorkTable rows={rows} />)}
+          {rows.length > 0 && (phone ? <WorkCards rows={rows} highlight={target} /> : <WorkTable rows={rows} highlight={target} />)}
           {more && (
             <div className="flex items-center justify-between gap-3 border-t border-line px-4 py-2.5 text-xs text-ink/55">
               <span className="num">

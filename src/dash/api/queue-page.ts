@@ -10,6 +10,7 @@ import { ControlError, holdMerge, releaseMerge, removeFromBatch, stopBatch } fro
 import { pageBatches } from "../../merge/batch-store.ts";
 import { buildQueue, type QueueEntry } from "../../merge/queue.ts";
 import { pipelineRepos } from "../../pilot.ts";
+import { queueSlots } from "../../rank/position.ts";
 import { classifyListOf, factsOf, nextStepOf } from "../../rank/next.ts";
 import type { RankBreakdown } from "../../rank/score.ts";
 import { trackedNames } from "../../repos.ts";
@@ -82,13 +83,14 @@ export async function queuePage(db: DatabaseSync, req: Req): Promise<QueuePage> 
   type Row = { repo: string; number: number; kind: string; title: string | null; head_oid: string | null; score: number; breakdown: string };
   const ranked = db.prepare(`SELECT i.repo, i.number, i.kind, i.title, i.head_oid, r.score, r.breakdown FROM items i JOIN item_rank r ON r.repo = i.repo AND r.number = i.number
     WHERE i.state = 'OPEN' ORDER BY r.score DESC, i.repo, i.number`).all() as Row[];
+  const slots = queueSlots(db, visible);
   const work: QueueWorkRow[] = fastFirst(ranked.filter((r) => visibleSet.has(r.repo) && inScope(r.repo, r.number))).map((r) => {
     const s = settled(r.repo, r.number), bd = JSON.parse(r.breakdown) as RankBreakdown;
     const facts = factsOf(db, r.repo, r.number, r.kind, r.head_oid, s);
     return {
       repo: r.repo, number: r.number, kind: r.kind === "pr" ? "pr" : "issue", title: r.title ?? "", score: r.score, level: bd.level, size: bd.size, breakdown: bd,
       label: s.label as TypeLabel | null, next: nextStepOf(facts), nextHref: facts.disagree && !facts.held ? classifyListOf(r.repo) : null,
-      fast: fastOf(r.repo, r.number), held: held.has(`${r.repo}#${r.number}`),
+      queue: slots.get(`${r.repo}#${r.number}`) ?? null, fast: fastOf(r.repo, r.number), held: held.has(`${r.repo}#${r.number}`),
     };
   });
 

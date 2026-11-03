@@ -1,5 +1,6 @@
 // Fake rows for the Items browser and the settled label on the Item page.
 import type { ItemFilter, ItemList, ItemListRow, Settled, SettledStatus, Stage, TypeLabel } from "../types";
+import { mockSlot } from "./queueSlotMock";
 import { AUTHORS, NOW, REPOS, rng, titleFor } from "./fixtures";
 
 const LABELS: TypeLabel[] = ["bugfix", "performance", "missing feature", "small extra", "plugin candidate", "infra"];
@@ -43,6 +44,7 @@ const POOL: (ItemListRow & { comment: string })[] = (() => {
         settled: settledFor(number),
         stage: (r() < 0.1 ? (["reviewed", "take", "needs-decision", "hold"] as Stage[])[Math.floor(r() * 4)] : null),
         snippet: null,
+        queue: st < 0.72 ? mockSlot(number) : null,
         comment: COMMENTS[Math.floor(r() * COMMENTS.length)],
       });
     }

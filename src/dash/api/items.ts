@@ -10,7 +10,8 @@ import { HttpError } from "../server/util.ts";
 import type { Req } from "../types.ts";
 import { itemState } from "./decisions.ts";
 import { flowMembers } from "./flow.ts";
-import { excludeHidden, hiddenRepos } from "./visible.ts";
+import { queueSlots } from "../../rank/position.ts";
+import { excludeHidden, hiddenRepos, visibleRepos } from "./visible.ts";
 
 const HAS_WORD = /[\p{L}\p{N}]/u;
 const quote = (s: string) => `"${s.replace(/"/g, "")}"`;
@@ -261,6 +262,7 @@ export async function listItems(db: DatabaseSync, req: Req): Promise<ItemList> {
 
   const stages = stagesOf(db, rows);
   const snips = b.text ? snippets(db, b.params.q as string, rows) : new Map<number, Snippet>();
+  const slots = queueSlots(db, await visibleRepos(db, req));
   return {
     total, byStatus, run: b.run,
     rows: rows.map((r): ItemListRow => ({
@@ -268,6 +270,7 @@ export async function listItems(db: DatabaseSync, req: Req): Promise<ItemList> {
       title: r.title ?? "", author: r.author ?? "", createdAt: r.created_at ?? "", updatedAt: r.updated_at ?? "",
       comments: r.comments_count ?? 0, settled: fromRow(r) as ItemListRow["settled"],
       stage: (stages.get(`${r.repo}#${r.number}`) ?? null) as Stage | null, snippet: snips.get(r.rid) ?? null,
+      queue: slots.get(`${r.repo}#${r.number}`) ?? null,
     })),
   };
 }

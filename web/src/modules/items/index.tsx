@@ -1,5 +1,6 @@
 // Items: every issue and PR in the tracked repos, with full-text search and the
 // settled type label. Every filter lives in the URL.
+import { QueueBadge } from "../../ui/QueueBadge";
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { Popover } from "radix-ui";
@@ -344,7 +345,10 @@ function Table({ rows }: { rows: ItemListRow[] }) {
                 {it.updatedAt ? `${ago(it.updatedAt)} ago` : "–"}
               </td>
               <td className="px-3 py-2">
-                <SettledBadge s={it.settled} />
+                <span className="flex flex-wrap items-center gap-1">
+                  <SettledBadge s={it.settled} />
+                  <QueueBadge slot={it.queue} repo={it.repo} number={it.number} />
+                </span>
               </td>
               <td className="px-3 py-2">
                 <Flags flags={it.settled.flags} />
@@ -381,6 +385,7 @@ function Cards({ rows }: { rows: ItemListRow[] }) {
             )}
             <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
               <SettledBadge s={it.settled} />
+              <QueueBadge slot={it.queue} repo={it.repo} number={it.number} />
               {it.settled.flags.length > 0 && <Flags flags={it.settled.flags} />}
               {it.stage && <span className="text-2xs text-ink/55">{STAGE[it.stage]}</span>}
             </div>

@@ -1,5 +1,6 @@
 // Fake Queue page: the work and merge fixtures behind one repo filter, with in-memory fast track, holds and batch controls.
 import type { Api } from "../client";
+import { slotsOfRows } from "./queueSlotMock";
 import type { FastPosition, MergeWait, NextMerge, QueueBatch, QueueMergeRow, QueuePage, QueueTab, QueueWorkRow, User } from "../types";
 import { PIPELINE_REPOS, queueBatchList, queueList } from "./queueFixtures";
 import { FAST_TRACK_SEED, workList } from "./workFixtures";
@@ -51,7 +52,9 @@ export function createQueueMock(me: User, changed: () => void): Pick<Api, "pipel
       const tab = f.tab ?? "all";
       const repos = f.repos ?? "pipeline";
       const inScope = (repo: string, number: number) => (repos === "all" ? true : repos === "pipeline" ? PIPELINE_REPOS.includes(repo) || fast.includes(`${repo}#${number}`) : repo === repos);
-      const work: QueueWorkRow[] = firstFast(allWork.filter((r) => inScope(r.repo, r.number))).map((r) => ({ ...r, fast: pos(r), held: held.has(key(r)) }));
+      const ordered = firstFast(allWork.filter((r) => inScope(r.repo, r.number)));
+      const slots = slotsOfRows(ordered);
+      const work: QueueWorkRow[] = ordered.map((r) => ({ ...r, queue: slots.get(key(r)) ?? null, fast: pos(r), held: held.has(key(r)) }));
       const batches: QueueBatch[] = fixtureBatches
         .filter((b) => (b.state === "open" || b.state === "checking") && b.prs.some((p) => inScope(b.repo, p.number)))
         .map((b) => ({ ...b, prs: b.prs.filter((p) => !removed.has(key(p)) && !stopped.has(b.id)) }))

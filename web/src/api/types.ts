@@ -110,6 +110,8 @@ export interface Decision {
   classifications: Classification[];
   /** null or absent for a batch and before the item was rated. */
   priority?: PriorityInfo | null;
+  /** Place in line for the item's next queued stage; null or absent when not queued and for a batch. */
+  queue?: QueueSlot | null;
 }
 
 export interface DecisionComment {
@@ -221,6 +223,8 @@ export interface Item extends ItemRef {
   releases: ItemReleases;
   /** null or absent before the item was rated. */
   priority?: PriorityInfo | null;
+  /** Place in line for the item's next queued stage; null or absent when not queued. */
+  queue?: QueueSlot | null;
 }
 
 export type VerificationKind = "ci-enough" | "tests" | "regression" | "error" | "unavailable";
@@ -397,6 +401,8 @@ export interface ItemListRow extends ItemRef {
   stage: Stage | null;
   /** With a text query only. */
   snippet: Snippet | null;
+  /** Place in line for the next queued stage; null when the next step is not queued. */
+  queue?: QueueSlot | null;
 }
 
 export interface ItemList {
@@ -1364,6 +1370,15 @@ export interface GithubActivityPage {
 
 export type QueueTab = "all" | "review" | "fix" | "verify" | "merge";
 
+/** An item's place in line for its next queued stage (src/rank/position.ts), 1-based among the visible items with the same next stage. */
+export interface QueueSlot {
+  /** Stage name as shown: Review, Opus review, Fix, Fix-up, Verify, Merge. */
+  stage: string;
+  /** The Queue tab that lists the stage. */
+  tab: Exclude<QueueTab, "all">;
+  place: number;
+}
+
 /** Place of a fast-tracked item among the open fast-tracked items, first to run first. */
 export interface FastPosition {
   /** From 1. */
@@ -1373,6 +1388,7 @@ export interface FastPosition {
 
 /** One row of the All, Review, Fix and Verify tabs: a work row with its fast-track place. */
 export interface QueueWorkRow extends WorkRow {
+  queue?: QueueSlot | null;
   fast: FastPosition | null;
   /** A PR whose merge an operator holds. */
   held: boolean;
