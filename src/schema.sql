@@ -225,7 +225,7 @@ CREATE TABLE IF NOT EXISTS oauth_states (
 CREATE TABLE IF NOT EXISTS audit (
   at TEXT NOT NULL,
   login TEXT NOT NULL,
-  action TEXT NOT NULL,               -- answer | undo | adopt | opinion | opinion-retract | comment | override | rule | access-add | access-remove | access-role | session-revoke | sign-in | sign-in-refused (at most one row per login per hour; details.refused counts them) | repo-track | repo-untrack | labels-approve | labels-revoke | merge-approve | merge-revoke | labels-apply | assign | merge | merge-refused | comment-approve | comment-revoke | review-post | review-edit | act-comment | act-close | act-skip | job-request | job-cancel | pipeline-switch | stage-limit | env-create | env-change | env-rotate-key | task-cancel | unassign | batch-again
+  action TEXT NOT NULL,               -- answer | undo | adopt | opinion | opinion-retract | comment | override | rule | access-add | access-remove | access-role | session-revoke | sign-in | sign-in-refused (at most one row per login per hour; details.refused counts them) | repo-track | repo-untrack | labels-approve | labels-revoke | merge-approve | merge-revoke | labels-apply | assign | merge | merge-refused | comment-approve | comment-revoke | review-post | review-edit | act-comment | act-close | act-skip | job-request | job-cancel | pipeline-switch | stage-limit | env-create | env-change | env-rotate-key | task-cancel | unassign | batch-again | ci-approve | ci-revoke | ci-run-approve
   target TEXT,
   details TEXT                        -- JSON
 );
@@ -991,3 +991,15 @@ CREATE TABLE IF NOT EXISTS conversation_cards (
 );
 CREATE INDEX IF NOT EXISTS conversation_cards_turn ON conversation_cards(turn_id);
 CREATE INDEX IF NOT EXISTS conversation_cards_item ON conversation_cards(repo, number);
+
+-- Actions runs waiting for a maintainer's approval (conclusion action_required) at a reviewed PR head, one row per PR
+-- (src/merge/ci-approval.ts). runs is a JSON [{id, name}] of the waiting runs, empty once none wait; approved_at is set
+-- after the pipeline approved them.
+CREATE TABLE IF NOT EXISTS ci_run_approvals (
+  repo TEXT NOT NULL, number INTEGER NOT NULL,
+  head_oid TEXT NOT NULL,
+  runs TEXT NOT NULL,
+  checked_at TEXT NOT NULL,
+  approved_at TEXT,
+  PRIMARY KEY (repo, number)
+);

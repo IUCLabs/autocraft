@@ -84,6 +84,12 @@ async function checkMergeApproved(db: DatabaseSync, p: Params): Promise<string |
   return mergeApprovalOf(db, String(p.repo)) ? null : `merging in ${p.repo} is not approved`;
 }
 
+/** Approving workflow runs of outside contributors' PRs is opt-in per repo. */
+async function checkCiApproved(db: DatabaseSync, p: Params): Promise<string | null> {
+  const { ciApprovalOf } = await import("../merge/ci-approval.ts");
+  return ciApprovalOf(db, String(p.repo)) ? null : `approving CI runs in ${p.repo} is not approved`;
+}
+
 /** Comments and closes are opt-in per repo: tracked repos include ones we do not maintain. */
 async function checkCommentApproved(db: DatabaseSync, p: Params): Promise<string | null> {
   const { commentApprovalOf } = await import("../act/approval.ts");
@@ -563,6 +569,31 @@ export const STEPS: StepDef[] = [
       const r = await runConversations(ctx.db, { limit: Number(ctx.params.limit), onHandled: ctx.handled, cancelled: ctx.cancelled }, ctx.log);
       ctx.usageRun(r.usageRun);
       return `${r.answered} of ${r.waiting} messages answered`;
+    },
+  },
+  {
+    name: "ci-approve",
+    title: "Approve waiting CI runs",
+    description: "Approves the Actions runs that GitHub holds for a maintainer's approval on outside contributors' pull requests, once the PR's current head has a final take or take-fix review. Skips a PR that is closed, a draft or at another head. Calls no model.",
+    stage: 6,
+    requires: "operator",
+    group: "github-write",
+    params: [
+      { name: "repo", label: "Repo", kind: "repo", required: true },
+      { name: "limit", label: "At most", kind: "int", min: 1, max: 50, default: 30, help: "pull requests to approve runs for in this job" },
+    ],
+    check: checkCiApproved,
+    run: async (ctx) => {
+      const { approveRuns } = await import("../merge/ci-approval.ts");
+      const { ghExec } = await import("../merge/safe-merge.ts");
+      const { exec } = await import("../fixup/git.ts");
+      const refused = await checkCiApproved(ctx.db, ctx.params);
+      if (refused) throw new Error(refused);
+      const repo = String(ctx.params.repo);
+      const r = await approveRuns(ctx.db, repo, { gh: ghExec, exec, limit: Number(ctx.params.limit), log: ctx.log });
+      ctx.handled(r.approved.length + r.failed.length);
+      if (r.failed.length) throw new Error(`${repo}: runs not approved on ${r.failed.join(", ")}`);
+      return `${repo}: runs approved on ${r.approved.length} PRs, ${r.skipped.length} skipped`;
     },
   },
 ];
