@@ -34,8 +34,6 @@ export type DecideParams = {
   onSent?: (n: number) => void;
   /** Read-only checkout of a repo's default branch for the recommendation call, or null to ask without tools. Default: fetched from GitHub. */
   checkout?: (repo: string) => Promise<string | null>;
-  /** Read-only checkouts of the shared repositories for the recommendation call. Default: the shared_repos setting, fetched from GitHub. */
-  shared?: () => Promise<{ name: string; dir: string }[]>;
   /** PR diffs for the item block of a conversation the recommendation starts. Default: the diff cache or GitHub. */
   diff?: (repo: string, number: number, head: string) => Promise<string | null>;
 };
@@ -110,7 +108,6 @@ export async function runDecide(db: DatabaseSync, params: DecideParams = {}, log
   if (ids.length) {
     result.recommended = await recommend(db, ids, {
       checkout: params.checkout ?? ((repo) => import("../dupes/compare.ts").then((m) => m.baseCheckout(db, repo))),
-      shared: params.shared ?? (() => import("../sandbox/shared.ts").then((m) => m.sharedCheckouts(db, log))),
       diff: params.diff ?? ((r, n, h) => import("../conversations/run.ts").then((m) => m.githubDiff(r, n, h))),
       usageRun, log, onSent: () => params.onSent?.(++sent),
     });

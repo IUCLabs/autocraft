@@ -6,7 +6,7 @@ import { delimiter, join } from "node:path";
 import { exec, fixupDir, Git } from "../fixup/git.ts";
 import { buildCheckout, checkoutRoot, pruneCheckouts } from "./checkout.ts";
 
-export { REPO_PATH, SHARED_ROOT, sharedPath, sandboxCommand, type SandboxSpec } from "./command.ts";
+export { REPO_PATH, REPOS_ROOT, AGENTS_PATH, reposPath, sandboxCommand, type SandboxSpec } from "./command.ts";
 
 export const ORG = "storytold";
 const MAX_AGE_MS = 24 * 3600_000;

@@ -12,7 +12,7 @@ import { commentApprovalOf, setCommentApproval } from "../../act/approval.ts";
 import { pushApprovalOf, setPushApproval } from "../../fixup/approval.ts";
 import { fixIssueApprovalOf, setFixIssueApproval } from "../../fixissue/approval.ts";
 import { mergeApprovalOf, setMergeApproval } from "../../merge/approval.ts";
-import { setSharedRepos, sharedRepos } from "../../sandbox/shared.ts";
+import { setWorkspaceExcluded, workspaceExcluded } from "../../sandbox/workspace.ts";
 import { setSingleMergeMax, singleMergeMax } from "../../merge/single.ts";
 import { setRepoPipeline } from "../../pilot.ts";
 import { countPlan, planLabels } from "../../labels/plan.ts";
@@ -290,13 +290,13 @@ export function mergeApproval(db: DatabaseSync, req: Req, approved: boolean): Tr
   return allRepos(db, req);
 }
 
-export const sharedReposInfo = (db: DatabaseSync): { repos: string[] } => ({ repos: sharedRepos(db) });
+export const workspaceInfo = (db: DatabaseSync): { excluded: string[] } => ({ excluded: workspaceExcluded(db) });
 
-// Only an operator changes which repositories Opus calls may read beside the item's own.
-export function setSharedReposInfo(db: DatabaseSync, req: Req): { repos: string[] } {
-  requireOperator(req, "change the shared repositories");
+// Only an operator changes which tracked repositories Opus calls cannot read.
+export function setWorkspaceInfo(db: DatabaseSync, req: Req): { excluded: string[] } {
+  requireOperator(req, "change the workspace");
   try {
-    return { repos: setSharedRepos(db, body(req).repos, req.user.login) };
+    return { excluded: setWorkspaceExcluded(db, body(req).excluded, req.user.login) };
   } catch (e) {
     throw new HttpError(400, (e as Error).message);
   }

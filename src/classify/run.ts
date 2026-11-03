@@ -11,7 +11,9 @@ import { claudeRoom, startClaudeRun, startJevRun } from "../agents/call.ts";
 import { finishRun } from "../agents/runs.ts";
 import { scrubError } from "../agents/text.ts";
 import { scrub } from "../runner/scrub.ts";
+import { MCP_PATH, agentsFile, mcpFile } from "../sandbox/agents.ts";
 import { resolveClaudeBin, sandboxCommand, tokenNearExpiry } from "../sandbox/index.ts";
+import { defaultWorkspace } from "../sandbox/workspace.ts";
 import { CLAUDE_PROMPTS, JEV_ARGS, JEV_USD_PER_INPUT_TOKEN, JEV_PROMPTS, claudeArgs, claudePromptOf, jevPromptOf, renderClaude, withoutRepoDir, renderJev, type ClaudeInput, type ClaudePromptId, type JevPromptId } from "../prompts/index.ts";
 import type { DupePair } from "../dupes/pair.ts";
 import { flagsOf, jevVerdict, parseHaikuReply, parseRef, refOf, type Item, type JevAnswers, type Verdict } from "./parse.ts";
@@ -97,7 +99,38 @@ export async function pool<T>(jobs: (() => Promise<T>)[], width: number | (() =>
 
 const now = () => new Date().toISOString();
 
-export type Usage = { input: number; output: number; cacheRead: number; cacheWrite: number; cost: number | null };
+export type Usage = {
+  input: number; output: number; cacheRead: number; cacheWrite: number; cost: number | null;
+  /** Subagent use on other models (the explorer), one entry per model; the fields above count the called model only. */
+  extra?: { model: string; usage: Usage }[];
+};
+
+const family = (m: string): string => /haiku/i.test(m) ? "haiku" : /sonnet/i.test(m) ? "sonnet" : /opus/i.test(m) ? "opus" : m;
+
+type ModelUsage = Record<string, { inputTokens?: number; outputTokens?: number; cacheReadInputTokens?: number; cacheCreationInputTokens?: number; costUSD?: number }>;
+
+/**
+ * Usage of one `claude -p` result. With `modelUsage` (per model, subagents included) the called model's
+ * tokens and cost go in the main fields and every other model in `extra`; without it, `usage` and
+ * `total_cost_usd` are the called model's. `all` sums the tokens of every model, for the agent run.
+ */
+export function resultUsage(j: { usage?: Record<string, number>; total_cost_usd?: number; modelUsage?: ModelUsage }, model: string): { usage: Usage; all: { input: number; output: number; cacheRead: number; cacheWrite: number } } {
+  const u = j.usage ?? {};
+  const plain: Usage = { input: u.input_tokens ?? 0, output: u.output_tokens ?? 0, cacheRead: u.cache_read_input_tokens ?? 0, cacheWrite: u.cache_creation_input_tokens ?? 0, cost: j.total_cost_usd ?? null };
+  const entries = Object.entries(j.modelUsage ?? {});
+  if (!entries.length) return { usage: plain, all: { input: plain.input, output: plain.output, cacheRead: plain.cacheRead, cacheWrite: plain.cacheWrite } };
+  const by = new Map<string, Usage>();
+  for (const [m, x] of entries) {
+    const f = family(m), cur = by.get(f) ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
+    by.set(f, { input: cur.input + (x.inputTokens ?? 0), output: cur.output + (x.outputTokens ?? 0), cacheRead: cur.cacheRead + (x.cacheReadInputTokens ?? 0), cacheWrite: cur.cacheWrite + (x.cacheCreationInputTokens ?? 0), cost: (cur.cost ?? 0) + (x.costUSD ?? 0) });
+  }
+  const mine = family(model);
+  const main = by.get(mine) ?? plain;
+  by.delete(mine);
+  const extra = [...by].sort(([a], [b]) => a.localeCompare(b)).map(([m, usage]) => ({ model: m, usage }));
+  const sum = (k: "input" | "output" | "cacheRead" | "cacheWrite") => main[k] + extra.reduce((a, e) => a + e.usage[k], 0);
+  return { usage: { ...main, ...(extra.length > 0 && { extra }) }, all: { input: sum("input"), output: sum("output"), cacheRead: sum("cacheRead"), cacheWrite: sum("cacheWrite") } };
+}
 
 export function saveVerdict(db: DatabaseSync, classifier: string, runId: string, v: Verdict): void {
   const [repo, num] = v.ref.split("#");
@@ -109,6 +142,12 @@ export function saveUsage(db: DatabaseSync, runId: string, agent: string, stage:
   db.prepare(`INSERT OR REPLACE INTO token_usage (run_id, agent, stage, model, items, input_tokens, output_tokens,
     cache_read_tokens, cache_write_tokens, started_at, ended_at, cost_usd) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .run(runId, agent, stage, model, items, u.input, u.output, u.cacheRead, u.cacheWrite, start, end, u.cost);
+  // Subagent models get their own rows (same run and stage), so the Cost page splits by model and its totals stay whole.
+  for (const e of u.extra ?? []) {
+    db.prepare(`INSERT OR REPLACE INTO token_usage (run_id, agent, stage, model, items, input_tokens, output_tokens,
+      cache_read_tokens, cache_write_tokens, started_at, ended_at, cost_usd) VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(runId, `${agent}+${e.model}`, stage, e.model, e.usage.input, e.usage.output, e.usage.cacheRead, e.usage.cacheWrite, start, end, e.usage.cost);
+  }
 }
 
 let runner: Runner = exec;
@@ -165,8 +204,20 @@ function replySummary(text: string, asked: number): string {
 
 const exitClass = (code: number | null): string => (code === null ? "timed out or killed" : code === -1 ? "could not start" : `exit code ${code}`);
 
-/** `checkout`: host directory of a read-only checkout; with it, a prompt that registers a sandbox runs with its tools inside bubblewrap (src/sandbox). */
-export type AskOptions = { checkout?: string; /** Further read-only checkouts mounted at /shared/<name>; used only together with `checkout`. */ shared?: { name: string; dir: string }[] };
+/**
+ * `checkout`: host directory of a read-only checkout; with it, a prompt that registers a sandbox runs with its tools inside bubblewrap (src/sandbox).
+ * `shared`: for a prompt with the workspace, replaces the default workspace (every tracked repository's default branch, src/sandbox/workspace.ts).
+ * `itemTools`: the item tools' read-only mounts and MCP servers (`mcpServers` as in an MCP config), for the call and its explorer; null or absent means none.
+ */
+export type AskOptions = { checkout?: string; shared?: { name: string; dir: string }[]; itemTools?: { mounts: { host: string; path: string }[]; mcpServers: Record<string, unknown> } | null };
+
+type WorkspaceFn = (db: DatabaseSync) => Promise<{ name: string; dir: string }[]>;
+let workspaceOf: WorkspaceFn = defaultWorkspace;
+/** Tests swap the workspace lookup; returns a function that restores the real one. */
+export function setWorkspace(f: WorkspaceFn): () => void {
+  workspaceOf = f;
+  return () => { workspaceOf = defaultWorkspace; };
+}
 
 /**
  * Sends a registered prompt (src/prompts) to `claude -p`. Callers pass a prompt
@@ -191,14 +242,16 @@ export async function askClaude<K extends ClaudePromptId>(id: K, model: string, 
       prompt = renderClaude(id, withoutRepoDir(input));
       db.prepare("UPDATE agent_run_texts SET prompt = ? WHERE run_id = ?").run(scrub(prompt.slice(0, 1_000_000)), run.runId);
     }
-    const shared = sandboxed && CLAUDE_PROMPTS[id].sandbox?.shared ? opts.shared ?? [] : [];
-    const args = claudeArgs(id, model, sandboxed, shared.map((x) => x.name));
+    const workspace = sandboxed && CLAUDE_PROMPTS[id].sandbox?.workspace === true;
+    const shared = workspace ? opts.shared ?? await workspaceOf(db) : undefined;
+    const tools = workspace && opts.itemTools ? { mounts: opts.itemTools.mounts, servers: Object.keys(opts.itemTools.mcpServers).sort(), file: mcpFile(opts.itemTools.mcpServers) } : undefined;
+    const args = claudeArgs(id, model, sandboxed, tools && { config: MCP_PATH, servers: tools.servers });
     const cwd = mkdtempSync(join(tmpdir(), "classify-"));
     let r: Proc;
     if (sandboxed) {
       const claudeBin = resolveClaudeBin(), credentials = join(run.configDir, ".credentials.json");
       if (!claudeBin || !existsSync(credentials)) throw new Error("sandboxed call: claude binary or the account's credentials file not found");
-      const c = sandboxCommand({ claudeBin, checkout: opts.checkout!, credentials, claudeArgs: args, shared });
+      const c = sandboxCommand({ claudeBin, checkout: opts.checkout!, credentials, claudeArgs: args, shared, ...(workspace && { agentsFile: agentsFile(tools?.servers) }), extraMounts: tools ? [...tools.mounts, { host: tools.file, path: MCP_PATH }] : undefined });
       r = await runner(c.cmd, c.args, prompt, cwd, CLAUDE_PROMPTS[id].limits.timeoutSeconds * 1000);
     } else r = await runner("claude", args, prompt, cwd, CLAUDE_PROMPTS[id].limits.timeoutSeconds * 1000, { CLAUDE_CONFIG_DIR: run.configDir });
     // Stderr is scrubbed up front. For a sandboxed call the reply text is scrubbed after parsing, so a match cannot break the JSON.
@@ -206,14 +259,12 @@ export async function askClaude<K extends ClaudePromptId>(id: K, model: string, 
     try {
       // Some CLI versions print the event list, others only the final result object.
       const parsed = JSON.parse(r.stdout) as { type?: string }[] | { type?: string };
-      const j = (Array.isArray(parsed) ? parsed.find((e) => e.type === "result") : parsed) as { result?: string; is_error?: boolean; total_cost_usd?: number; num_turns?: number; usage?: Record<string, number> } | undefined;
+      const j = (Array.isArray(parsed) ? parsed.find((e) => e.type === "result") : parsed) as { result?: string; is_error?: boolean; total_cost_usd?: number; num_turns?: number; usage?: Record<string, number>; modelUsage?: ModelUsage } | undefined;
       if (!j) {
         end({ state: "failed", error: `no result (${exitClass(r.code)}) ${r.stderr}`.slice(0, 400), summary: "no result", output: sandboxed ? scrub(r.stdout) : r.stdout });
         return null;
       }
-      const u = j.usage ?? {};
-      const usage: Usage = { input: u.input_tokens ?? 0, output: u.output_tokens ?? 0, cacheRead: u.cache_read_input_tokens ?? 0, cacheWrite: u.cache_creation_input_tokens ?? 0, cost: j.total_cost_usd ?? null };
-      const tokens = { input: usage.input, output: usage.output, cacheRead: usage.cacheRead, cacheWrite: usage.cacheWrite };
+      const { usage, all: tokens } = resultUsage(j, model);
       if (j.is_error || typeof j.result !== "string") {
         end({ state: "failed", tokens, error: scrubError(`model error ${typeof j.result === "string" ? j.result : ""}`), summary: "model error", output: sandboxed ? scrub(r.stdout) : r.stdout });
         return null;
@@ -256,7 +307,11 @@ export async function askJev(id: JevPromptId, item: Item | DupePair, db: Databas
   }
 }
 
-export const add = (a: Usage, b: Usage): Usage => ({ input: a.input + b.input, output: a.output + b.output, cacheRead: a.cacheRead + b.cacheRead, cacheWrite: a.cacheWrite + b.cacheWrite, cost: a.cost === null && b.cost === null ? null : (a.cost ?? 0) + (b.cost ?? 0) });
+export const add = (a: Usage, b: Usage): Usage => {
+  const extra = new Map<string, Usage>();
+  for (const e of [...(a.extra ?? []), ...(b.extra ?? [])]) extra.set(e.model, add(extra.get(e.model) ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: null }, e.usage));
+  return { input: a.input + b.input, output: a.output + b.output, cacheRead: a.cacheRead + b.cacheRead, cacheWrite: a.cacheWrite + b.cacheWrite, cost: a.cost === null && b.cost === null ? null : (a.cost ?? 0) + (b.cost ?? 0), ...(extra.size > 0 && { extra: [...extra].map(([model, usage]) => ({ model, usage })) }) };
+};
 
 const HAIKU = CLAUDE_PROMPTS["classify.haiku"];
 
