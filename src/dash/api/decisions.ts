@@ -4,7 +4,7 @@
 import { priorityOf } from "../../priority/read.ts";
 import type { DatabaseSync } from "node:sqlite";
 import type {
-  Claim, Classification, Decision, DecisionComment, DecisionKind, DecisionList, ItemState, Opinion, QueueSlot, RelatedItem, Relation,
+  Claim, Classification, Decision, DecisionComment, DecisionKind, DecisionList, DuplicateMember, ItemState, Opinion, QueueSlot, RelatedItem, Relation,
 } from "../../../web/src/api/types.ts";
 import { resetGroupAnswer } from "../../dupes/decide.ts";
 import { BACKLOG, backlogOpen, exceptionsOf, factsOf, getDecision, isBatch, itemsOf, KINDS, optionsOf, reposOf, type DecisionRow, type Exception } from "../../decisions.ts";
@@ -27,6 +27,7 @@ const COMMENT_MAX = 4000;
 export const isOperator = (req: Req): boolean => req.user.role === "operator";
 
 export { itemState, shownLookup, withShown } from "./shown.ts";
+import { HEAD_FACT } from "../../merge/queue.ts";
 import { itemState, withShown } from "./shown.ts";
 
 const json = <T>(s: string | null | undefined, d: T): T => {
@@ -141,6 +142,33 @@ export const viewerOf = (req: Req): Viewer => ({ login: req.user.login, operator
 /** The viewer with the queue places of the items they may see, computed once for the response. */
 const viewerWith = async (db: DatabaseSync, req: Req): Promise<Viewer> => ({ ...viewerOf(req), slots: queueSlots(db, await visibleRepos(db, req)) });
 
+/** Whether Undo would succeed: answered, not acted on, and nothing written to GitHub for a group answer. */
+export const canUndo = (db: DatabaseSync, d: DecisionRow): boolean =>
+  !!d.answer && !d.applied_at && !db.prepare("SELECT 1 FROM dupe_group_posts WHERE decision_id = ? AND url IS NOT NULL LIMIT 1").get(d.id);
+
+const ROLE_ORDER: Record<DuplicateMember["role"], number> = { keep: 0, close: 1, stay: 2 };
+const strings = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string" && !!x.trim()) : []);
+
+function groupOf(db: DatabaseSync, d: DecisionRow): DuplicateMember[] {
+  if (d.kind !== "duplicate" || !d.id.includes(":dupegroup:")) return [];
+  const rows = db.prepare("SELECT number, kind, role, detail FROM dupe_group_items WHERE decision_id = ?").all(d.id) as { number: number; kind: string; role: string; detail: string | null }[];
+  return rows.map((r) => {
+    let detail: Record<string, unknown> = {};
+    try { detail = (JSON.parse(r.detail ?? "{}") as Record<string, unknown>) ?? {}; } catch { /* no detail */ }
+    const role: DuplicateMember["role"] = r.role === "keep" || r.role === "close" ? r.role : "stay";
+    return { number: r.number, kind: r.kind === "pr" ? "pr" as const : "issue" as const, role, better: strings(detail.better), carry: strings(detail.carry), adds: strings(detail.adds) };
+  }).sort((a, b) => ROLE_ORDER[a.role] - ROLE_ORDER[b.role] || a.number - b.number);
+}
+
+/** The review's risks for the PR at the head the Merge? or Close? decision was asked at. */
+function risksOf(db: DatabaseSync, d: DecisionRow): string[] {
+  if ((d.kind !== "merge" && d.kind !== "close") || !d.repo || d.number === null) return [];
+  const head = factsOf(d).find((f) => f.startsWith(HEAD_FACT))?.slice(HEAD_FACT.length).trim();
+  if (!head) return [];
+  const o = db.prepare("SELECT risks FROM opus_reviews WHERE repo = ? AND number = ? AND head_oid = ? AND verdict IS NOT NULL").get(d.repo, d.number, head) as { risks: string | null } | undefined;
+  try { return strings(JSON.parse(o?.risks ?? "[]")); } catch { return []; }
+}
+
 export function toDecision(db: DatabaseSync, d: DecisionRow, viewer: Viewer): Decision {
   const batch = isBatch(d);
   const refs = itemsOf(d);
@@ -169,7 +197,7 @@ export function toDecision(db: DatabaseSync, d: DecisionRow, viewer: Viewer): De
     options: optionsOf(d).map((o) => ({ ...o, writes: writeEffect(d.kind, o.key) ?? undefined })),
     recommended: d.recommended ?? "",
     recommendedReason: d.recommended ? (d.recommended_reason ?? "") : "",
-    group: [], risks: [], undoable: false,
+    group: groupOf(db, d), risks: risksOf(db, d), undoable: canUndo(db, d),
     publicText: commentPreview(d),
     optionTexts: d.kind === "duplicate" && d.id.includes(":dupegroup:") ? optionTextsOf(db, d.id) : [],
     askedAt: d.asked_at, askedBy: d.asked_by ?? "the pipeline",
@@ -364,7 +392,7 @@ export async function undo(db: DatabaseSync, req: Req): Promise<Decision> {
   if (!d.answer) throw new HttpError(409, "that decision has no answer to undo");
   if (d.applied_at) throw new HttpError(409, "the pipeline already acted on this answer");
   inTransaction(db, () => {
-    if (db.prepare("SELECT 1 FROM dupe_group_posts WHERE decision_id = ? AND url IS NOT NULL LIMIT 1").get(d.id)) throw new HttpError(409, "the pipeline already wrote to GitHub for this answer");
+    if (!canUndo(db, d)) throw new HttpError(409, "the pipeline already wrote to GitHub for this answer");
     const r = db.prepare(`UPDATE main.decisions SET answer = NULL, answer_note = NULL, exceptions = NULL, answered_by = NULL, answered_at = NULL, adopted_opinion = NULL
       WHERE id = ? AND answer IS NOT NULL AND applied_at IS NULL`).run(d.id);
     if (r.changes !== 1) throw new HttpError(409, "the pipeline acted on this a moment ago");
