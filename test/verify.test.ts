@@ -92,8 +92,10 @@ describe("verify candidates", () => {
     }
   });
 
-  test("a repo without a root Cargo.toml is left out", () => {
+  test("a repo without a root Cargo.toml is left out when it has no CI, and kept when it has CI", () => {
     const db = fresh();
+    assert.deepEqual(selectCandidates(db, "app", null, (_r, s) => (s === sha(8) ? false : null)).map((c) => c.number), [1, 8]);
+    withoutCi(db);
     assert.deepEqual(selectCandidates(db, "app", null, (_r, s) => (s === sha(8) ? false : null)).map((c) => c.number), [1]);
   });
 
@@ -292,7 +294,7 @@ describe("runVerify", () => {
     }
   });
 
-  test("in a repo with CI, a bugfix that changes a test file is planned, and tests is refused", async () => {
+  test("in a repo with CI, a bugfix that changes a test file is planned, and a tests answer becomes ci-enough", async () => {
     const db = fresh();
     db.prepare("DELETE FROM items WHERE number = 8").run();
     const calls: Call[] = [];
@@ -301,9 +303,9 @@ describe("runVerify", () => {
       const d = deps();
       d.fetchDiff = async () => ({ ok: true, text: TEST_DIFF });
       const s = await runVerify(db, { repo: "app" }, quiet, d);
-      assert.equal(calls.length, 2);
-      assert.equal(s.errors, 1);
-      assert.match((db.prepare("SELECT summary FROM verifications WHERE number = 1").get() as { summary: string }).summary, /upstream CI/);
+      assert.equal(calls.length, 1);
+      assert.equal(s.errors, 0);
+      assert.equal((db.prepare("SELECT state FROM verifications WHERE number = 1").get() as { state: string }).state, "ci-enough");
       assert.equal((db.prepare("SELECT COUNT(*) AS n FROM build_tasks").get() as { n: number }).n, 0);
     } finally {
       restore();

@@ -5,6 +5,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { latestRun, settledLookup } from "../classify/settled.ts";
 import { headOf } from "../review/candidates.ts";
 import { staleReviews } from "../review/discussion.ts";
+import { repoHasNoCi } from "../merge/no-ci.ts";
 import { cachedCratesOf } from "./crates.ts";
 
 export type ReviewInfo = { verdict: string; reason: string; risks: string[]; fixes: { file: string; change: string }[] };
@@ -48,6 +49,8 @@ function scan(db: DatabaseSync, repo: string, run: string | null, rust: RustChec
   const done = db.prepare("SELECT 1 FROM verifications WHERE repo = ? AND number = ? AND head_sha = ? AND state != 'stale'");
   const settled = settledLookup(db, run);
   const stale = staleReviews(db, repo);
+  // A repo with CI is verified by it whatever its language; only a repo without CI needs a Rust workspace to build.
+  const noCi = repoHasNoCi(db, repo);
   const out: Scanned[] = [];
   for (const r of rows) {
     const fresh = r.c_at && (!r.updated_at || r.c_at > r.updated_at);
@@ -57,7 +60,7 @@ function scan(db: DatabaseSync, repo: string, run: string | null, rust: RustChec
     if (r.c_head === head && r.c_overall === "failure") continue;
     if (done.get(r.repo, r.number, head)) continue;
     if (stale.has(`${r.repo}#${r.number}@${head}`)) continue;
-    const unavailable = !pub ? PRIVATE_REASON : rust(r.repo, head) === false ? NOT_RUST_REASON : null;
+    const unavailable = !pub ? PRIVATE_REASON : noCi && rust(r.repo, head) === false ? NOT_RUST_REASON : null;
     out.push({
       unavailable,
       c: {
@@ -72,7 +75,7 @@ function scan(db: DatabaseSync, repo: string, run: string | null, rust: RustChec
 /**
  * Open, non-draft PRs of a public repo whose review at the current head is `take` (take-fix gets a fix-up
  * push first, which is reviewed again), whose CI does not fail at that head, and that have no verification
- * at that head (a `stale` one does not count). A repo known to have no Cargo.toml at the root is left out.
+ * at that head (a `stale` one does not count). A repo without CI that is known to have no Cargo.toml at the root is left out.
  */
 export function selectCandidates(db: DatabaseSync, repo: string, run: string | null = latestRun(db), rust: RustCheck = cachedRust): VerifyCandidate[] {
   return scan(db, repo, run, rust).filter((x) => !x.unavailable).map((x) => x.c);

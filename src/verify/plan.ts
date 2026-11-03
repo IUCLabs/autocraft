@@ -60,10 +60,10 @@ export function parsePlanReply(text: string, ref: string, crates: Crate[], label
   if (typeof o.reason !== "string" || !o.reason.trim()) return fail("reason is missing");
   const reason = clip(o.reason);
   const kind = o.kind as Kind;
-  if (kind === "ci-enough") return { ok: true, plan: { kind, reason } };
+  // CI already runs the tests: a planner that asks for them has nothing more to add.
+  if (kind === "ci-enough" || (kind === "tests" && ci)) return { ok: true, plan: { kind: "ci-enough", reason } };
   const names = new Set(crates.map((c) => c.name));
   if (kind === "tests") {
-    if (ci) return fail("tests is not used in a repo with upstream CI");
     const cs = o.crates, ts = o.tests ?? [];
     if (!Array.isArray(cs) || cs.length < 1 || cs.length > MAX_CRATES) return fail(`crates must list 1 to ${MAX_CRATES} names`);
     if (cs.some((c) => typeof c !== "string" || !names.has(c))) return fail("crates names a crate that is not in the workspace");

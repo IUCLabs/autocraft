@@ -3,7 +3,8 @@ import { join } from "node:path";
 import { describe, test } from "node:test";
 import type { DatabaseSync } from "node:sqlite";
 import { runBatches } from "../src/merge/batch.ts";
-import { activeBatches, admits, batchSizeOf, membersOf, setBatchSize } from "../src/merge/batch-store.ts";
+import { activeBatches, admits, batchesDue, batchSizeOf, membersOf, setBatchSize } from "../src/merge/batch-store.ts";
+import { reviewedHeads } from "../src/merge/ci-approval.ts";
 import { buildQueue, eligible, singleMergeOnly } from "../src/merge/queue.ts";
 import { askMergeDecisions } from "../src/merge/index.ts";
 import { selectCandidates } from "../src/review/candidates.ts";
@@ -57,7 +58,7 @@ describe("integration batches", () => {
     const next = await runBatches(db, { repo: "app" }, quiet, d);
     assert.deepEqual(next.failed, [3]);
     assert.equal(states(db)[3], "batch-failed");
-    assert.equal((db.prepare("SELECT summary FROM merge_batches WHERE id = ?").get(kids[1]!.id) as { summary: string }).summary, "upstream CI failed on the batch PR");
+    assert.equal((db.prepare("SELECT summary FROM merge_batches WHERE id = ?").get(kids[1]!.id) as { summary: string }).summary, "upstream CI failed on the batch PR: ci");
     assert.equal(batchSizeOf(db, "app"), 2);
     assert.equal(next.split.length, 1);
   });
@@ -142,6 +143,48 @@ describe("integration batches", () => {
     assert.equal(merged(w), false);
     assert.equal(db.prepare("SELECT COUNT(*) AS n FROM merges").get()!.n, 0);
     assert.deepEqual(activeBatches(db, "app").map((b) => membersOf(db, b.id).map((m) => m.number)), [[1]]);
+  });
+
+  test("a failing push is kept on the batch and retried with a growing wait; the fifth failure releases the PRs", async () => {
+    const db = fresh([{ n: 1 }, { n: 2 }]);
+    const w = world();
+    const d = deps(w, join(dir, "pf"));
+    const inner = d.exec;
+    d.exec = async (cmd, args, opts) => (cmd === "git" && args.includes("push") ? { code: 1, stdout: "", stderr: "remote: denied" } : inner(cmd, args, opts));
+    await runBatches(db, { repo: "app" }, quiet, d);
+    const b = activeBatches(db, "app")[0]!;
+    assert.deepEqual([b.state, b.retries, b.pr_number], ["checking", 1, null]);
+    assert.match(b.summary!, /push failed: remote: denied/);
+    const again = await runBatches(db, { repo: "app" }, quiet, d);
+    assert.deepEqual([again.waiting, activeBatches(db, "app")[0]!.retries], [[b.branch], 1]);
+    assert.deepEqual(batchesDue(db, new Date(T1)), []);
+
+    db.prepare("UPDATE merge_batches SET retries = 4, updated_at = '2020-01-01T00:00:00Z' WHERE id = ?").run(b.id);
+    assert.deepEqual(batchesDue(db, new Date(T1)), ["app"]);
+    await runBatches(db, { repo: "app" }, quiet, d);
+    const end = db.prepare("SELECT state, summary FROM merge_batches WHERE id = ?").get(b.id) as { state: string; summary: string };
+    assert.equal(end.state, "failed");
+    assert.match(end.summary, /^could not open the batch PR after 5 tries/);
+    assert.notEqual(states(db)[1], "batch-failed");
+  });
+
+  test("a failed batch PR names the failing checks", async () => {
+    const db = fresh([{ n: 1 }]);
+    const w = world();
+    const d = deps(w, join(dir, "fn"));
+    await runBatches(db, { repo: "app" }, quiet, d);
+    w.ci = "FAILURE";
+    await runBatches(db, { repo: "app" }, quiet, d);
+    assert.match((db.prepare("SELECT summary FROM merge_batches ORDER BY id LIMIT 1").get() as { summary: string }).summary, /^upstream CI failed on the batch PR: ci$/);
+  });
+
+  test("runs waiting for approval on the batch PR are approved only for a fully reviewed batch, and noted otherwise", async () => {
+    const w = world();
+    const { db, b } = await open(2, w, "ap");
+    db.prepare("INSERT INTO ci_run_approvals (repo, number, head_oid, cross_repo, runs, approved, reread, failed, checked_at) VALUES ('app', 900, ?, 1, '[{\"id\":5,\"name\":\"ci\",\"event\":\"pull_request\"}]', '[]', 0, '{}', ?)").run(b.commit_sha, T1);
+    assert.deepEqual(reviewedHeads(db, "app").map((c) => [c.number, c.head]), [[900, b.commit_sha]]);
+    db.prepare("DELETE FROM opus_reviews WHERE number = 2").run();
+    assert.deepEqual(reviewedHeads(db, "app"), []);
   });
 
   test("a batch larger than the daily limit left waits", async () => {

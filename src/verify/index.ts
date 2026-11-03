@@ -20,7 +20,7 @@ import { cachedDiff, codeDiff, ghDiff, type DiffFetcher } from "../review/diff.t
 import { cachedCrates, ghApi, ghCrates, type CratesFetcher } from "./crates.ts";
 import { NOT_RUST_REASON, selectCandidates, unavailableCandidates, type VerifyCandidate } from "./candidates.ts";
 import { parsePlanReply, type VerifyPlan } from "./plan.ts";
-import { repoHasNoCi } from "../merge/no-ci.ts";
+import { repoChecksKnown, repoHasNoCi } from "../merge/no-ci.ts";
 import { queueTasks, queueWarmBuild } from "./tasks.ts";
 import type { Crate, VerifyPlanInput } from "./types.ts";
 
@@ -100,6 +100,11 @@ export async function runVerify(db: DatabaseSync, params: VerifyParams, log: (li
     log(`verify ${repo}: ${cands.length} candidates; dry run, nothing fetched or asked`);
     return summary;
   }
+  // Whether the repo has CI is unknown until its checks were read: nothing is recorded before.
+  if (!repoChecksKnown(db, repo)) {
+    log(`verify ${repo}: no checks read yet; nothing recorded`);
+    return summary;
+  }
   if (params.limit !== undefined) cands = cands.slice(0, params.limit);
   // Nothing to build for these: recorded at once so the PR goes on to the Merge? decision.
   for (const u of unavailableCandidates(db, repo)) {
@@ -124,7 +129,8 @@ export async function runVerify(db: DatabaseSync, params: VerifyParams, log: (li
       // Only a bugfix that adds or changes a test file may get a regression test; everything else is covered by CI.
       if (c.label !== "bugfix") { byCi(); continue; }
       const pre = await cachedDiff(repo, c.number, c.head_oid, deps.fetchDiff);
-      if (pre.ok && !codeDiff(pre.text).testsOmitted.length) { byCi(); continue; }
+      // Without a readable diff there is no test file to find, so CI is the verification.
+      if (!pre.ok || !codeDiff(pre.text).testsOmitted.length) { byCi(); continue; }
     }
     const cr = await cachedCrates(repo, c.head_oid, deps.fetchCrates);
     if (!cr.ok) { log(`  ${ref}: no crate list: ${cr.error}`); summary.skipped.push(ref); continue; }

@@ -22,7 +22,7 @@ import { branchOf, forkOf } from "../fixissue/index.ts";
 import type { Querier } from "../mirror.ts";
 import { refreshChecks } from "../review/checks.ts";
 import { BatchGit } from "./batch-git.ts";
-import { ACTIVE_BATCH, BLOCKED_BY_REVIEW, CLOSED_BY_PERSON, activeBatches, admits, batchSizeOf, getBatch, growBatchSize, insertBatch, membersOf, nextBranch, shrinkBatchSize, updateBatch, type BatchMember, type BatchRow } from "./batch-store.ts";
+import { ACTIVE_BATCH, BLOCKED_BY_REVIEW, CLOSED_BY_PERSON, MAX_PUBLISH_FAILURES, PUBLISH_FAILED, RUNS_WAIT_NOTE, activeBatches, admits, batchSizeOf, getBatch, growBatchSize, insertBatch, membersOf, nextBranch, publishDelayMs, shrinkBatchSize, updateBatch, type BatchMember, type BatchRow } from "./batch-store.ts";
 import { mergeApprovalOf } from "./approval.ts";
 import { ORG, prInfo, viewerOf, mergeRun, DEFAULT_MERGE_COMMAND, type CommandResult } from "./index.ts";
 import { liveGateChecked } from "../review/discussion.ts";
@@ -218,6 +218,20 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
     }
   }
 
+  /** A push or PR creation failed: the error is kept on the batch, the next try waits longer, and the fifth failure ends the batch so its PRs go back to the queue. */
+  async function publishFailed(b: BatchRow, error: string): Promise<void> {
+    const failures = b.retries + 1;
+    log(`  ${b.branch}: ${error}`);
+    if (failures >= MAX_PUBLISH_FAILURES) {
+      updateBatch(db, b.id, at(), { state: "failed", retries: failures, summary: oneLine(`${PUBLISH_FAILED} after ${failures} tries: ${error}`, 400) });
+      s.failed.push(...membersOf(db, b.id).map((m) => m.number));
+      for (const m of membersOf(db, b.id)) await release(m.number);
+      return;
+    }
+    updateBatch(db, b.id, at(), { retries: failures, summary: oneLine(error, 400) });
+    s.waiting.push(b.branch);
+  }
+
   async function publish(b: BatchRow, members: BatchMember[]): Promise<void> {
     const moved = await movedAway(b);
     if (moved) return supersede(b, members, moved);
@@ -230,7 +244,7 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
     const who = await whoAmI(d.exec);
     const fork = await forkOf(w, d.exec, who.login, repo, { run: runId });
     const push = await pushBranch(w, git, "batch-push", { repo, remote: fork, branch: b.branch, sha: b.commit_sha }, { run: runId, fork });
-    if (push.code !== 0) { log(`  ${b.branch}: push failed: ${oneLine(push.stderr)}`); s.waiting.push(b.branch); return; }
+    if (push.code !== 0) return publishFailed(b, `push failed: ${oneLine(push.stderr)}`);
     updateBatch(db, b.id, at(), { fork });
     const links = members.map((m) => `- [${repo}#${m.number}](https://github.com/${ORG}/${repo}/pull/${m.number})`).join("\n");
     const body = `Lands ${members.length} reviewed and verified pull request${members.length === 1 ? "" : "s"} together. Each one is merged with its own commits.\n\n${links}\n`;
@@ -242,7 +256,7 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
       : await ghOpenPr(w, d.exec, "batch-pr", { repo, target: `${repo}:${b.branch}`, base: branch, head: `${owner}:${b.branch}`, title: `Integration batch ${b.branch}`, body }, { run: runId });
     const url = pr.stdout.trim().split("\n").pop() ?? "";
     const m = url.match(PR_URL);
-    if (pr.code !== 0 || !m) { log(`  ${b.branch}: batch PR not opened: ${oneLine(pr.stderr || pr.stdout)}`); s.waiting.push(b.branch); return; }
+    if (pr.code !== 0 || !m) return publishFailed(b, `batch PR not opened: ${oneLine(pr.stderr || pr.stdout)}`);
     if (getBatch(db, b.id).state !== "checking") {
       // Ended while the PR was being opened: close it again and leave the row as it is.
       const closed = await ghClosePr(w, d.exec, { repo, number: Number(m[1]) }, "Closing: the batch was ended by an operator.", { run: runId, batch: b.branch });
@@ -301,12 +315,22 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
     }
     const live = members.filter((m) => checks.some((c) => c.number === m.number && c.state === "OPEN" && c.head_oid === m.head_oid));
     if (live.length < members.length) return supersede(b, live, "a PR in the batch was closed, merged or pushed to");
-    if (ch.overall === "failure") return fail(b, "upstream CI failed on the batch PR");
+    if (ch.overall === "failure") {
+      const names = ch.checks.filter((c) => c.state === "failure").map((c) => c.name);
+      return fail(b, `upstream CI failed on the batch PR${names.length ? `: ${names.join(", ")}` : ""}`);
+    }
     if (ch.mergeable === "CONFLICTING") return supersede(b, members, `the batch PR conflicts with ${branch}`);
     const moved = await movedAway(b);
     if (moved) return supersede(b, members, moved);
     if (members.length > left()) { log(`  ${b.branch}: ${members.length} PRs exceed the ${Math.max(left(), 0)} left of the daily limit; waits`); s.waiting.push(b.branch); return; }
-    if (ch.overall !== "success" || ch.mergeable !== "MERGEABLE") { s.waiting.push(b.branch); return; }
+    if (ch.overall !== "success" || ch.mergeable !== "MERGEABLE") {
+      // A fork's runs wait for a maintainer's approval; the ci-approve step does it where the repo allows, and the note says so until the runs started.
+      const waiting = db.prepare("SELECT runs, reread FROM ci_run_approvals WHERE repo = ? AND number = ? AND head_oid = ?").get(repo, b.pr_number!, b.commit_sha) as { runs: string; reread: number } | undefined;
+      const note = waiting && (JSON.parse(waiting.runs).length || waiting.reread) ? RUNS_WAIT_NOTE : null;
+      if ((b.summary ?? null) !== note) updateBatch(db, b.id, at(), { summary: note });
+      s.waiting.push(b.branch);
+      return;
+    }
     const info = await prInfo(d.querier, repo, b.pr_number!);
     if (!info) { s.waiting.push(b.branch); return; }
     if (info.head !== b.commit_sha) { log(`  ${b.branch}: the batch branch moved from ${short(b.commit_sha)} to ${short(info.head)}; not merged`); s.waiting.push(b.branch); return; }
@@ -363,7 +387,8 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
     const keep = members.filter((m) => q.some((e) => e.number === m.number && e.head === m.head_oid && e.path !== null && !e.held && (e.state === "batch-checking" || e.state === "in-batch")));
     if (keep.length < members.length) return supersede(b, keep, "a PR in the batch changed or is no longer ready");
     if (b.state === "open") return land(b, members, q);
-    // A checking batch has no PR yet: its push or PR creation failed earlier, so it is tried again.
+    // A checking batch has no PR yet: its push or PR creation failed earlier, so it is tried again once the wait is over.
+    if (d.now().getTime() - Date.parse(b.updated_at) < publishDelayMs(b.retries)) { s.waiting.push(b.branch); return; }
     return publish(b, members);
   }
 

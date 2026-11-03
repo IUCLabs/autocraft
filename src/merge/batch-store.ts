@@ -11,6 +11,13 @@ export const ACTIVE_BATCH: BatchState[] = ["checking", "open"];
 /** Summary of a batch that failed because a maintainer requested changes on its PR: its members are held like those of a batch a person closed. */
 export const BLOCKED_BY_REVIEW = "a maintainer requested changes on the batch PR";
 export const CLOSED_BY_PERSON = "the batch PR was closed by a person";
+/** Summary of a batch that failed because its branch could not be pushed or its PR opened 5 times: its PRs go back to the queue, not on hold. */
+export const PUBLISH_FAILED = "could not open the batch PR";
+export const MAX_PUBLISH_FAILURES = 5;
+/** Wait before a batch whose push or PR creation failed is tried again: 1, 2, 4, 8 minutes, at most 30. */
+export const publishDelayMs = (failures: number): number => (failures === 0 ? 0 : Math.min(60_000 * 2 ** (failures - 1), 30 * 60_000));
+/** Shown on a batch PR whose workflow runs wait for a maintainer's approval. */
+export const RUNS_WAIT_NOTE = "batch PR runs wait for a maintainer's approval";
 
 export const MAX_BATCH = 50;
 /** A repo's batch size until its batches pass or fail. */
@@ -91,17 +98,19 @@ export function batchStates(db: DatabaseSync, repo?: string): Map<string, "batch
     WHERE b.state IN ('checking', 'open', 'failed') ${repo ? "AND b.repo = ?" : ""} ORDER BY b.id`).all(...(repo ? [repo] : [])) as { repo: string; number: number; head_oid: string; state: string; summary: string | null; n: number }[];
   const out = new Map<string, "batch-checking" | "in-batch" | "batch-failed">();
   for (const r of rows) {
+    if (r.state === "failed" && r.summary?.startsWith(PUBLISH_FAILED)) continue;
     if (r.state === "failed" && r.n !== 1 && r.summary !== CLOSED_BY_PERSON && r.summary !== BLOCKED_BY_REVIEW) continue;
     out.set(`${r.repo}#${r.number}@${r.head_oid}`, r.state === "checking" ? "batch-checking" : r.state === "open" ? "in-batch" : "batch-failed");
   }
   return out;
 }
 
-/** Repos with a batch that has something to do: a batch PR to watch, or a finished sandbox task to read. */
-export function batchesDue(db: DatabaseSync): string[] {
-  const rows = db.prepare(`SELECT DISTINCT b.repo FROM main.merge_batches b LEFT JOIN main.build_tasks t ON t.id = b.task_id
-    WHERE b.state = 'open' OR (b.state = 'checking' AND (t.id IS NULL OR t.state IN ('done', 'failed', 'cancelled', 'lost')))`).all() as { repo: string }[];
-  return rows.filter((r) => mergeApprovalOfSafe(db, r.repo)).map((r) => r.repo);
+/** Repos with a batch that has something to do: a batch PR to watch, or a batch still to be pushed whose retry wait is over. */
+export function batchesDue(db: DatabaseSync, now = new Date()): string[] {
+  const rows = db.prepare(`SELECT repo, state, pr_number, retries, updated_at FROM main.merge_batches WHERE state IN ('open', 'checking')`).all() as
+    { repo: string; state: string; pr_number: number | null; retries: number; updated_at: string }[];
+  const due = new Set(rows.filter((b) => b.state === "open" || now.getTime() - Date.parse(b.updated_at) >= publishDelayMs(b.retries)).map((b) => b.repo));
+  return [...due].filter((r) => mergeApprovalOfSafe(db, r));
 }
 
 /** Batches in flight plus the newest finished ones, newest first, with their PRs. */

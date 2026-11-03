@@ -103,7 +103,25 @@ export function reviewedHeads(db: DatabaseSync, repo: string): Candidate[] {
     WHERE i.repo = ? AND i.kind = 'pr' AND i.state = 'OPEN' AND l.verdict IN ('take', 'take-fix') AND ${notHeldSql("i")}
       AND NOT EXISTS (SELECT 1 FROM decisions d WHERE d.id = i.repo || '#' || i.number || ':merge@' || l.head_oid AND d.answer IS NOT NULL AND d.answer <> 'merge')
     ORDER BY i.number`).all(repo) as { number: number; head: string; runs: string; reread: number; failed: string; cross_repo: number }[];
-  return rows.filter((r) => !mergeHeld(db, repo, r.number)).map((r) => ({
+  const own = rows.filter((r) => !mergeHeld(db, repo, r.number)).map((r) => ({
+    number: r.number, head: r.head, runs: JSON.parse(r.runs) as WaitingRun[], reread: !!r.reread, failed: JSON.parse(r.failed) as Record<string, number>, crossRepo: !!r.cross_repo,
+  }));
+  return [...own, ...batchHeads(db, repo)];
+}
+
+/**
+ * Open integration batch PRs with waiting runs at the batch tip. Their code is the members' code, and every member is
+ * reviewed (final take or take-fix) at the head it was batched at, so the runs are as safe to approve as a member's own.
+ */
+function batchHeads(db: DatabaseSync, repo: string): Candidate[] {
+  const rows = db.prepare(`SELECT b.pr_number AS number, b.commit_sha AS head, a.runs, a.reread, a.failed, a.cross_repo FROM merge_batches b
+    JOIN ci_run_approvals a ON a.repo = b.repo AND a.number = b.pr_number AND a.head_oid = b.commit_sha
+    WHERE b.repo = ? AND b.state = 'open' AND b.pr_number IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM merge_batch_prs p WHERE p.batch_id = b.id AND NOT EXISTS (
+        SELECT 1 FROM final_reviews l WHERE l.repo = b.repo AND l.number = p.number AND l.head_oid = p.head_oid AND l.verdict IN ('take', 'take-fix')
+          AND l.head_oid = (SELECT r.head_oid FROM opus_reviews r WHERE r.repo = l.repo AND r.number = l.number AND r.verdict IS NOT NULL ORDER BY r.at DESC, r.rowid DESC LIMIT 1)))
+    ORDER BY b.id`).all(repo) as { number: number; head: string; runs: string; reread: number; failed: string; cross_repo: number }[];
+  return rows.map((r) => ({
     number: r.number, head: r.head, runs: JSON.parse(r.runs) as WaitingRun[], reread: !!r.reread, failed: JSON.parse(r.failed) as Record<string, number>, crossRepo: !!r.cross_repo,
   }));
 }

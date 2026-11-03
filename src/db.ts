@@ -193,7 +193,7 @@ function ciFirst(db: DatabaseSync): void {
       // A batch that was checking in the sandbox has its PR opened by the next merge run.
       for (const b of db.prepare("SELECT id, task_id FROM main.merge_batches WHERE state = 'checking' AND task_id IS NOT NULL").all() as { id: number; task_id: number }[]) {
         cancel.run(at, at, b.task_id);
-        db.prepare("UPDATE main.merge_batches SET task_id = NULL, summary = NULL, updated_at = ? WHERE id = ?").run(at, b.id);
+        db.prepare("UPDATE main.merge_batches SET task_id = NULL, summary = NULL, retries = 0, updated_at = ? WHERE id = ?").run(at, b.id);
       }
       db.prepare("UPDATE main.settings SET value = '20' WHERE key LIKE 'batch\\_size:%' ESCAPE '\\' AND CAST(value AS INTEGER) < 20").run();
       db.exec("INSERT INTO main.settings (key, value) VALUES ('ci_first_done', '1')");
