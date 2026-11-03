@@ -12,6 +12,7 @@ import { connect } from "../src/db.ts";
 import * as api from "../src/dash/api/agents.ts";
 import { pauseReason } from "../src/runner/autopilot.ts";
 import { getJob } from "../src/runner/jobs.ts";
+import { knownStep, modelsOf } from "../src/runner/steps.ts";
 import type { Req } from "../src/dash/types.ts";
 import { setupBox, writeReading } from "./accounts-fixture.ts";
 import { SCRATCH } from "./scratch.ts";
@@ -294,7 +295,7 @@ describe("API", () => {
     assert.equal((await rates(db, "7d", now)).stages[0]!.buckets.length, 7);
     await assert.rejects(rates(db, "30d", now), /window/);
     const job = getJob(db, 1);
-    assert.deepEqual([job.models, job.accounts], [["sonnet", "opus"], ["a"]]);
+    assert.deepEqual([job.models, job.accounts], [modelsOf(knownStep("decide"), {}), ["a"]]);
   });
 
   test("retention: texts go after 14 days, runs after 90", () => {

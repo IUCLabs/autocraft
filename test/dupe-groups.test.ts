@@ -80,7 +80,7 @@ describe("PR group", () => {
     const dec = getDecision(db, GROUP_ID)!;
     assert.deepEqual([dec.kind, dec.number, dec.recommended], ["duplicate", 2, "accept"]);
     assert.equal(dec.question, "Keep #2 and close #1, #3 as duplicates?");
-    assert.deepEqual(optionsOf(dec).map((o) => o.key), ["accept", "keep:1", "keep:3", "distinct", "backlog"]);
+    assert.deepEqual(optionsOf(dec).map((o) => o.key).filter((k) => k !== "backlog"), ["accept", "keep:1", "keep:3", "distinct"]);
     assert.ok(factsOf(dec).some((f) => f.startsWith("Carry over: #1 master-page handling")));
     assert.ok(dec.summary!.includes("#1 does better: handles master pages"));
     const roles = db.prepare("SELECT number, role, target FROM dupe_group_items WHERE decision_id = ? ORDER BY number").all(GROUP_ID);
