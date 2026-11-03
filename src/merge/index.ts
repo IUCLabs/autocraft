@@ -20,6 +20,7 @@ import { actionable, ask, factsOf, getDecision } from "../decisions.ts";
 import { assignTo, mergeViaCommand, MERGE_RECORDED_ENV, type Writer } from "../github/write.ts";
 import { Client, markMerged, type Querier } from "../mirror.ts";
 import { refreshChecks } from "../review/checks.ts";
+import { readGate } from "./changes-requested.ts";
 import { liveGateChecked } from "../review/discussion.ts";
 import { fillReviewSummaries } from "../review/summary.ts";
 import { verificationOf } from "../verify/results.ts";
@@ -205,6 +206,11 @@ export async function runMerge(db: DatabaseSync, params: MergeParams, log: (line
     log(`merge ${repo}: not in the pipeline scope; nothing done`);
     return { runId, repo, dryRun, states: {}, attempted: [], merged: [], refused: [], asked: [] };
   }
+  const d = deps ?? defaultDeps();
+  // A PR in changes-requested is read live again each run: the mirror alone can block wrongly (the association is relative to the viewer) and a blocked PR never reaches the merge-time read.
+  if (!dryRun) {
+    for (const e of buildQueue(db, { repo, merged: "exclude" })) if (e.state === "changes-requested") await readGate(db, d.querier, ORG, repo, e.number, log);
+  }
   const queue = buildQueue(db, { repo });
   const open = queue.filter((e) => e.state !== "merged");
   const states = countStates(queue);
@@ -227,7 +233,6 @@ export async function runMerge(db: DatabaseSync, params: MergeParams, log: (line
     log(`merge ${repo}: dry run, nothing called or written`);
     return summary;
   }
-  const d = deps ?? defaultDeps();
 
   // A Merge? question open for a PR a maintainer has since blocked no longer applies.
   const withdrawn = withdrawBlockedQuestions(db, open, at());

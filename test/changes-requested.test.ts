@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import { describe, test } from "node:test";
 import type { DatabaseSync } from "node:sqlite";
-import { changesRequestedBy, type ReviewFact } from "../src/merge/changes-requested.ts";
+import { changesRequestedBy, failureNote, recordGate, recordGateFailure, type ReviewFact } from "../src/merge/changes-requested.ts";
 import { runBatches } from "../src/merge/batch.ts";
 import { activeBatches, membersOf, setBatchSize } from "../src/merge/batch-store.ts";
 import { askMergeDecisions } from "../src/merge/index.ts";
@@ -74,6 +74,35 @@ describe("changes requested: queue", () => {
   });
 });
 
+describe("changes requested: live reads", () => {
+  const ana: ReviewFact = { id: "x", author: "ana", association: "NONE", state: "CHANGES_REQUESTED", at: "2026-01-03T00:00:00Z" };
+  test("a live read survives a sync, and decides over the mirror until the PR changes", () => {
+    const db = fresh([{ n: 1 }]);
+    recordGate(db, "app", 1, [ana], null);
+    // A sync rewrites the PR's comments and knows nothing of the block.
+    db.prepare("DELETE FROM comments WHERE repo = 'app' AND number = 1").run();
+    assert.equal(states(db)[1], "changes-requested");
+    // A newer live read that finds none clears it even though the mirror says otherwise.
+    review(db, 1, "bo", "CHANGES_REQUESTED", "CONTRIBUTOR", "2026-01-03T00:00:00Z");
+    recordGate(db, "app", 1, [], null);
+    assert.equal(states(db)[1], "ready");
+    // The PR changes after the read: the mirror decides again until the next read.
+    db.prepare("UPDATE items SET updated_at = '2999-01-01T00:00:00Z' WHERE number = 1").run();
+    assert.equal(states(db)[1], "changes-requested");
+  });
+
+  test("the queue says so after three failed reads in a row", () => {
+    const db = fresh([{ n: 1 }]);
+    const note = () => buildQueue(db, { repo: "app" })[0]!.note;
+    recordGateFailure(db, "app", 1); recordGateFailure(db, "app", 1);
+    assert.equal(note(), null);
+    recordGateFailure(db, "app", 1);
+    assert.equal(note(), failureNote(3));
+    recordGate(db, "app", 1, [], null);
+    assert.equal(note(), null);
+  });
+});
+
 describe("changes requested: decisions", () => {
   test("a hold answer stands when the PR becomes blocked; a merge answer is set aside", () => {
     const db = fresh([{ n: 1, author: "newcomer" }, { n: 2, author: "newcomer" }]);
@@ -142,7 +171,7 @@ describe("changes requested: batches", () => {
     assert.deepEqual(states(db), { 1: "batch-checking", 2: "changes-requested", 3: "batch-checking" });
   });
 
-  test("a review on the batch PR itself stops the merge", async () => {
+  test("a review on the batch PR itself fails the batch and holds its PRs", async () => {
     const db = fresh([{ n: 1 }, { n: 2 }]);
     const w = world();
     const d = deps(w, join(dir, "cr3"));
@@ -163,6 +192,9 @@ describe("changes requested: batches", () => {
     const s = await runBatches(db, { repo: "app" }, quiet, d);
     assert.deepEqual(s.merged, []);
     assert.ok(!w.log.some((l) => l.startsWith("safe-merge-test")));
+    assert.deepEqual(s.superseded, []);
+    assert.deepEqual(activeBatches(db, "app"), []);
+    assert.deepEqual(states(db), { 1: "batch-failed", 2: "batch-failed" });
   });
 
   test("a member that gets a changes-requested review before the batch PR merges is dropped, and nothing merges", async () => {

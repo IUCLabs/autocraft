@@ -26,7 +26,7 @@ import { refreshChecks } from "../review/checks.ts";
 import { type Verdict, outcomeOf, summariseFailure } from "../verify/results.ts";
 import { rustPlan } from "../worker/rust.ts";
 import { BatchGit } from "./batch-git.ts";
-import { ACTIVE_BATCH, CLOSED_BY_PERSON, activeBatches, admits, batchSizeOf, getBatch, growBatchSize, insertBatch, membersOf, nextBranch, restartCheck, shrinkBatchSize, updateBatch, type BatchMember, type BatchRow } from "./batch-store.ts";
+import { ACTIVE_BATCH, BLOCKED_BY_REVIEW, CLOSED_BY_PERSON, activeBatches, admits, batchSizeOf, getBatch, growBatchSize, insertBatch, membersOf, nextBranch, restartCheck, shrinkBatchSize, updateBatch, type BatchMember, type BatchRow } from "./batch-store.ts";
 import { mergeApprovalOf } from "./approval.ts";
 import { ORG, prInfo, viewerOf, mergeRun, DEFAULT_MERGE_COMMAND, type CommandResult } from "./index.ts";
 import { liveGateChecked } from "../review/discussion.ts";
@@ -346,7 +346,16 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
     // The batch PR is ours but a maintainer may review it too.
     const own = await liveGateChecked(db, d.querier, repo, b.pr_number!, "", log);
     if (own === null) { s.waiting.push(b.branch); return; }
-    if (own.blocked) return supersede(b, members, `the batch PR has a review: ${own.blocked}`);
+    if (own.blocked) {
+      // Rebuilding would only open a new PR around the review: the batch fails and its PRs wait for a new head.
+      updateBatch(db, b.id, at(), { state: "failed", summary: BLOCKED_BY_REVIEW });
+      await closePr(b, `Closing: ${own.blocked}. The PRs in it are held until they change.`);
+      for (const m of members) stage.run(repo, m.number, "hold", at(), ACTOR, `the batch PR ${b.branch} has changes requested; held at ${short(m.head_oid)}`);
+      s.failed.push(...members.map((m) => m.number));
+      for (const m of members) await release(m.number);
+      log(`  ${b.branch}: ${own.blocked}; its PRs are held until they change`);
+      return;
+    }
     for (const m of members) {
       const gate = await liveGateChecked(db, d.querier, repo, m.number, m.head_oid, log);
       if (gate === null) { s.waiting.push(b.branch); return; }

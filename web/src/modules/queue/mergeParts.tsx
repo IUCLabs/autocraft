@@ -105,6 +105,7 @@ function DecisionLink({ row }: { row: QueueRow }) {
 /** Why it waits, in one line: refusal reason, or what keeps it outside the rule. */
 function Why({ row }: { row: QueueRow }) {
   if (row.state === "refused" && row.refusedReason) return <span className="text-2xs text-bad">{row.refusedReason}</span>;
+  if (row.note) return <span className="text-2xs text-bad">{row.note}</span>;
   if (row.outsideRule.length) return <span className="text-2xs text-ink/50">outside the rule: {row.outsideRule.join(", ")}</span>;
   return null;
 }

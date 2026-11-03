@@ -54,6 +54,7 @@ const ROWS: QueueRow[] = (() => {
         outsideRule, decisionId: state === "needs-decision" || state === "decision-answered-merge" || state === "declined" ? mergeDecision : null,
         answer: state === "decision-answered-merge" ? "merge" : state === "declined" ? (i ? "close" : "hold") : null,
         refusedReason: state === "refused" ? "safe-merge: required check 'build (linux)' has not finished" : null,
+        note: state === "changes-requested" ? "changes requested by a maintainer (reviewer)" : null,
         reviewedAt: new Date(NOW - (k + 1) * 3_600_000 * 5).toISOString(),
         verify: verifyFor(state, i),
       });

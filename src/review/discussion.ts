@@ -6,7 +6,7 @@ import { createHash } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { audit } from "../dash/audit.ts";
 import type { Querier } from "../mirror.ts";
-import { FORMAL_REVIEWS, recordFormalReviews, refuseLive, type ReviewFact } from "../merge/changes-requested.ts";
+import { FORMAL_REVIEWS, recordGate, recordGateFailure, type ReviewFact } from "../merge/changes-requested.ts";
 import { ENTRY_LIMIT, TOTAL_LIMIT, type DiscussionEntry } from "./parse.ts";
 
 /** Setting that holds the pipeline account's login (also read by src/merge/queue.ts). */
@@ -269,12 +269,11 @@ export async function ensurePipelineLogin(db: DatabaseSync, q: Querier): Promise
  * Just before a merge: reads the PR's discussion and reviews live in one query. `moved`: a counted entry newer than
  * the final review's snapshot (and different from what it read) exists; the PR's reviews are then marked stale so the
  * pipeline reviews it again. `blocked`: a maintainer's changes-requested review stands. Either way the caller must
- * not merge. What the read saw of the formal reviews is written back to the mirror.
+ * not merge. What the read saw of the formal reviews is stored in review_gates.
  */
 export async function liveGate(db: DatabaseSync, q: Querier, repo: string, number: number, head: string): Promise<{ moved: boolean; blocked: string | null }> {
   const live = await liveDiscussion(q, db, repo, number);
-  recordFormalReviews(db, repo, number, live.formal);
-  const blocked = refuseLive(live.formal, live.reviewDecision);
+  const blocked = recordGate(db, repo, number, live.formal, live.reviewDecision);
   const snap = (db.prepare(`SELECT COALESCE(o.seen_at, o.at) AS seen, o.disc_hash AS hash FROM opus_reviews o JOIN reviews r ON r.repo = o.repo AND r.number = o.number AND r.head_oid = o.head_oid AND o.at >= r.at
       WHERE o.repo = ? AND o.number = ? AND o.head_oid = ? AND o.verdict IS NOT NULL`).get(repo, number, head)
     ?? db.prepare("SELECT COALESCE(seen_at, at) AS seen, disc_hash AS hash FROM reviews WHERE repo = ? AND number = ? AND head_oid = ?").get(repo, number, head)) as { seen: string; hash: string | null } | undefined;
@@ -300,6 +299,7 @@ export async function liveGateChecked(db: DatabaseSync, q: Querier, repo: string
   try {
     return await withRetry(() => liveGate(db, q, repo, number, head));
   } catch (e) {
+    recordGateFailure(db, repo, number);
     log(`  ${repo}#${number}: could not read its discussion and reviews (${String((e as Error).message ?? e).replace(/\s+/g, " ").slice(0, 200)}); skipped this run`);
     return null;
   }

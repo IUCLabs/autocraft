@@ -7,6 +7,7 @@
 // `authorAssociation` is relative to the viewer: a private org member can show as CONTRIBUTOR or NONE.
 // The mirror stores only the association, so there a reviewer blocks unless the association says a stranger.
 import type { DatabaseSync } from "node:sqlite";
+import type { Querier } from "../mirror.ts";
 
 export type ReviewFact = { id?: string | null; author: string | null; association: string | null; state: string | null; at: string | null };
 
@@ -48,12 +49,51 @@ export function refuseLive(formal: ReviewFact[], decision?: string | null): stri
   return decision === "CHANGES_REQUESTED" ? REASON : null;
 }
 
-/** Association stored for a review a writers-only read returned: the read's own association is relative to the viewer and may say NONE. */
-export const WRITER = "WRITER";
+/** Failed live reads in a row after which the queue says so. */
+export const GATE_FAILURES = 3;
 
-/** Writes what a live read saw back to the mirror, so the queue agrees with it before the next sync. Existing rows keep their text. */
-export function recordFormalReviews(db: DatabaseSync, repo: string, number: number, formal: ReviewFact[]): void {
-  const up = db.prepare(`INSERT INTO comments (repo, number, id, kind, author, created_at, body, review_state, counted, author_association)
-    VALUES (?, ?, ?, 'review', ?, ?, '', ?, 0, ?) ON CONFLICT (id) DO UPDATE SET review_state = excluded.review_state, author_association = excluded.author_association`);
-  for (const r of formal) if (r.id && r.author) up.run(repo, number, r.id, r.author, r.at, r.state, WRITER);
+export type Gate = { blocked: boolean; by: string[]; readAt: string; failures: number };
+
+/** What the live reads stored for the PRs, as `repo#number`. */
+export function gatesOf(db: DatabaseSync, repo?: string): Map<string, Gate> {
+  const rows = db.prepare(`SELECT repo, number, blocked, by_login, read_at, failures FROM review_gates ${repo ? "WHERE repo = ?" : ""}`).all(...(repo ? [repo] : [])) as
+    { repo: string; number: number; blocked: number | null; by_login: string | null; read_at: string | null; failures: number }[];
+  return new Map(rows.map((r) => [`${r.repo}#${r.number}`, { blocked: r.blocked === 1, by: r.by_login ? r.by_login.split(",") : [], readAt: r.read_at ?? "", failures: r.failures }]));
 }
+
+/** Stores a successful live read. The table is ours, so a sync cannot wipe it; the queue trusts it over the mirror until the PR changes. */
+export function recordGate(db: DatabaseSync, repo: string, number: number, formal: ReviewFact[], decision: string | null | undefined, at = new Date().toISOString()): string | null {
+  const reason = refuseLive(formal, decision);
+  db.prepare(`INSERT INTO review_gates (repo, number, blocked, by_login, read_at, failures) VALUES (?, ?, ?, ?, ?, 0)
+    ON CONFLICT (repo, number) DO UPDATE SET blocked = excluded.blocked, by_login = excluded.by_login, read_at = excluded.read_at, failures = 0`)
+    .run(repo, number, reason ? 1 : 0, blockedByWriters(formal).join(","), at);
+  return reason;
+}
+
+export function recordGateFailure(db: DatabaseSync, repo: string, number: number): void {
+  db.prepare("INSERT INTO review_gates (repo, number, failures) VALUES (?, ?, 1) ON CONFLICT (repo, number) DO UPDATE SET failures = failures + 1").run(repo, number);
+}
+
+const SMALL_QUERY = `query($owner: String!, $name: String!, $number: Int!) { repository(owner: $owner, name: $name) { pullRequest(number: $number) { reviewDecision ${FORMAL_REVIEWS} } } }`;
+type Formal = { id?: string; author?: { login?: string } | null; authorAssociation?: string; submittedAt?: string; createdAt?: string; state?: string };
+
+/** The writers-only reviews as facts. */
+export const factsOf = (nodes: Formal[]): ReviewFact[] =>
+  nodes.map((n) => ({ id: n.id ?? null, author: n.author?.login ?? null, association: n.authorAssociation ?? null, state: n.state ?? null, at: n.submittedAt ?? n.createdAt ?? null }));
+
+/** A small live read of one PR's formal reviews, stored. Returns the block reason or null; a failed read is counted and returns undefined. */
+export async function readGate(db: DatabaseSync, q: Querier, owner: string, repo: string, number: number, log: (line: string) => void = () => {}): Promise<string | null | undefined> {
+  try {
+    const res = await q.query(SMALL_QUERY, { owner, name: repo, number });
+    const pr = res?.repository?.pullRequest;
+    if (!pr) throw new Error("no such PR");
+    return recordGate(db, repo, number, factsOf((pr.latestOpinionatedReviews?.nodes ?? []) as Formal[]), pr.reviewDecision);
+  } catch (e) {
+    recordGateFailure(db, repo, number);
+    log(`  ${repo}#${number}: could not read its reviews (${String((e as Error).message ?? e).replace(/\s+/g, " ").slice(0, 200)})`);
+    return undefined;
+  }
+}
+
+/** The note the queue shows when live reads keep failing. */
+export const failureNote = (n: number): string => `reviews could not be read from GitHub ${n} times in a row`;
