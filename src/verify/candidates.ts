@@ -3,6 +3,7 @@ import { notHeldSql } from "../dupes/held.ts";
 import type { DatabaseSync } from "node:sqlite";
 import { latestRun, settledLookup } from "../classify/settled.ts";
 import { headOf } from "../review/candidates.ts";
+import { staleReviews } from "../review/discussion.ts";
 import { cachedCratesOf } from "./crates.ts";
 
 export type ReviewInfo = { verdict: string; reason: string; risks: string[]; fixes: { file: string; change: string }[] };
@@ -45,6 +46,7 @@ function scan(db: DatabaseSync, repo: string, run: string | null, rust: RustChec
     WHERE i.repo = ? AND i.kind = 'pr' AND i.state = 'OPEN' AND ${notHeldSql("i")} ORDER BY p.score IS NULL, p.score DESC, i.number`).all(repo) as Row[];
   const done = db.prepare("SELECT 1 FROM verifications WHERE repo = ? AND number = ? AND head_sha = ? AND state != 'stale'");
   const settled = settledLookup(db, run);
+  const stale = staleReviews(db, repo);
   const out: Scanned[] = [];
   for (const r of rows) {
     const fresh = r.c_at && (!r.updated_at || r.c_at > r.updated_at);
@@ -53,6 +55,7 @@ function scan(db: DatabaseSync, repo: string, run: string | null, rust: RustChec
     if (!head || r.r_verdict !== "take") continue;
     if (r.c_head === head && r.c_overall === "failure") continue;
     if (done.get(r.repo, r.number, head)) continue;
+    if (stale.has(`${r.repo}#${r.number}@${head}`)) continue;
     const unavailable = !pub ? PRIVATE_REASON : rust(r.repo, head) === false ? NOT_RUST_REASON : null;
     out.push({
       unavailable,

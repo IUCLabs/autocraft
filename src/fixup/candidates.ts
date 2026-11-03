@@ -2,6 +2,7 @@
 import { backlogHeldSql, notHeldSql } from "../dupes/held.ts";
 import type { DatabaseSync } from "node:sqlite";
 import { headOf } from "../review/candidates.ts";
+import { staleReviews } from "../review/discussion.ts";
 import { commentApprovalOf } from "../act/approval.ts";
 import { pushApprovalOf } from "./approval.ts";
 import { safePath } from "./patch.ts";
@@ -67,6 +68,7 @@ export function classifyFixups(db: DatabaseSync, repo: string): Classified[] {
   const done = db.prepare("SELECT state FROM fixups WHERE repo = ? AND number = ? AND from_head = ? AND state IN ('pushed', 'cannot-push', 'too-large', 'asked')");
   const commenting = commentApprovalOf(db, repo) !== null;
   const approved = pushApprovalOf(db, repo) !== null;
+  const stale = staleReviews(db, repo);
   const out: Classified[] = [];
   for (const r of rows) {
     const fresh = r.c_at && (!r.updated_at || r.c_at > r.updated_at);
@@ -78,6 +80,8 @@ export function classifyFixups(db: DatabaseSync, repo: string): Classified[] {
     const review = db.prepare("SELECT reason, fixes FROM final_reviews WHERE repo = ? AND number = ? AND head_oid = ? AND final = 1 AND verdict = 'take-fix'").get(r.repo, r.number, head) as
       { reason: string; fixes: string | null } | undefined;
     if (!review) continue;
+    // Sonnet is about to read newer discussion; its fix list may be out of date.
+    if (stale.has(`${r.repo}#${r.number}@${head}`)) continue;
     if (r.mergeable === "CONFLICTING") continue;
     const fixes = parseFixes(review.fixes);
     if (!fixes.length) continue;

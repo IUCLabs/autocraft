@@ -124,6 +124,17 @@ describe("PR discussion in reviews", () => {
     assert.ok(staleReviews(db, "app").has("app#1@sha1"));
   });
 
+  test("a review from a counted author with no body but inline comments makes the review stale", async () => {
+    const db = fresh();
+    db.prepare("UPDATE reviews SET seen_at = ?").run(T1);
+    db.prepare("UPDATE opus_reviews SET seen_at = ?").run(T1);
+    const inline = (count: number, author = "rabbit", assoc = "CONTRIBUTOR") => ({ ...note("rv1", author, "", assoc), state: "COMMENTED", comments: { totalCount: count } });
+    assert.equal(await discussionMovedSince(db, gh({ reviews: [inline(0)] }), "app", 1, "sha1"), false, "an empty review without inline comments is nothing");
+    assert.equal(await discussionMovedSince(db, gh({ reviews: [inline(2, "drive-by", "NONE")] }), "app", 1, "sha1"), false, "a stranger does not count");
+    assert.equal(await discussionMovedSince(db, gh({ reviews: [inline(2)] }), "app", 1, "sha1"), true);
+    assert.ok(staleReviews(db, "app").has("app#1@sha1"));
+  });
+
   test("an unset pipeline login is read from the token's viewer", async () => {
     const db = fresh();
     db.prepare("DELETE FROM main.settings WHERE key = 'pipeline_login'").run();

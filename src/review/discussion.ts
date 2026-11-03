@@ -46,12 +46,17 @@ export function pipelineLogin(db: DatabaseSync): string {
 /** Authors whose words trigger a new review: the PR's author, people tied to the repository, and bot accounts. */
 const COUNTED_ASSOCIATIONS = ["OWNER", "MEMBER", "COLLABORATOR", "CONTRIBUTOR"];
 
-type Written = { author: string | null; association?: string | null; bot?: boolean; prAuthor?: string | null; state?: string | null; body: string | null };
+type Written = { author: string | null; association?: string | null; bot?: boolean; prAuthor?: string | null; state?: string | null; body: string | null; inline?: number };
 
-/** Whether a comment or review counts as new discussion: empty bodies and bare approvals never do, strangers' do not. */
+/**
+ * Whether a comment or review counts as new discussion: empty bodies and bare approvals never do, strangers' do not.
+ * A review with no body but inline comments counts (the findings are in the threads).
+ */
 export function isCounted(w: Written): boolean {
   const body = cleanBody(w.body);
-  if (!body || (w.state === "APPROVED" && body.length < 40)) return false;
+  const inline = w.inline ?? 0;
+  if (!body && !inline) return false;
+  if (w.state === "APPROVED" && !inline && body.length < 40) return false;
   const login = w.author ?? "";
   return !!login && (login === w.prAuthor || !!w.bot || login.endsWith("[bot]") || COUNTED_ASSOCIATIONS.includes(w.association ?? ""));
 }
@@ -90,16 +95,16 @@ export const DISCUSSION_QUERY = `query($owner: String!, $name: String!, $number:
     pullRequest(number: $number) {
       author { login }
       comments(last: 20) { nodes { id author { login __typename } authorAssociation createdAt body } }
-      reviews(last: 10) { nodes { id author { login __typename } authorAssociation createdAt body state } }
+      reviews(last: 10) { nodes { id author { login __typename } authorAssociation createdAt body state comments { totalCount } } }
       reviewThreads(last: 50) { nodes { isResolved isOutdated path line originalLine
-        head: comments(first: 1) { nodes { id author { login } createdAt body } }
+        head: comments(first: 1) { nodes { id author { login __typename } authorAssociation createdAt body } }
         tail: comments(last: 3) { nodes { id author { login } body } } } }
     }
   }
 }`;
 
 type Author = { login?: string; __typename?: string } | null;
-type Node = { id?: string; author?: Author; authorAssociation?: string; createdAt?: string; body?: string; state?: string };
+type Node = { id?: string; author?: Author; authorAssociation?: string; createdAt?: string; body?: string; state?: string; comments?: { totalCount?: number } };
 type ThreadNode = {
   isResolved?: boolean; isOutdated?: boolean; path?: string; line?: number | null; originalLine?: number | null;
   head?: { nodes?: Node[] }; tail?: { nodes?: Node[] };
@@ -126,9 +131,8 @@ export async function liveDiscussion(q: Querier, db: DatabaseSync, repo: string,
   const take = (kind: "comment" | "review", n: Node) => {
     if (mine(n.author, n.id)) return;
     const body = cleanBody(n.body);
-    if (!body) return;
-    entries.push({ kind, author: n.author?.login ?? null, at: n.createdAt ?? null, ...(kind === "review" ? { state: n.state ?? null } : {}), body: clip(body, ENTRY_LIMIT) });
-    if (isCounted({ author: n.author?.login ?? null, association: n.authorAssociation, bot: n.author?.__typename === "Bot", prAuthor, state: n.state, body: n.body ?? null })) {
+    if (body) entries.push({ kind, author: n.author?.login ?? null, at: n.createdAt ?? null, ...(kind === "review" ? { state: n.state ?? null } : {}), body: clip(body, ENTRY_LIMIT) });
+    if (isCounted({ author: n.author?.login ?? null, association: n.authorAssociation, bot: n.author?.__typename === "Bot", prAuthor, state: n.state, body: n.body ?? null, inline: n.comments?.totalCount })) {
       counted.push({ id: n.id ?? "", body: n.body ?? null });
       if (n.createdAt && (!newest || n.createdAt > newest)) newest = n.createdAt;
     }
@@ -140,6 +144,10 @@ export async function liveDiscussion(q: Querier, db: DatabaseSync, repo: string,
     if (!c || t.isResolved || mine(c.author, c.id)) continue;
     const body = cleanBody(c.body);
     if (!body) continue;
+    if (isCounted({ author: c.author?.login ?? null, association: c.authorAssociation, bot: c.author?.__typename === "Bot", prAuthor, body: c.body ?? null })) {
+      counted.push({ id: c.id ?? "", body: c.body ?? null });
+      if (c.createdAt && (!newest || c.createdAt > newest)) newest = c.createdAt;
+    }
     const replies = (t.tail?.nodes ?? []).filter((r) => r.id !== c.id && !mine(r.author, r.id))
       .map((r) => ({ author: r.author?.login ?? null, body: clip(cleanBody(r.body), ENTRY_LIMIT / 2) })).filter((r) => r.body);
     entries.push({ kind: "thread", author: c.author?.login ?? null, at: c.createdAt ?? null, path: t.path, line: t.line ?? t.originalLine ?? null, ...(t.isOutdated ? { outdated: true } : {}), body: clip(body, ENTRY_LIMIT), ...(replies.length ? { replies } : {}) });
@@ -207,6 +215,12 @@ const rerunKey = (repo: string, number: number) => `${RERUN_KEY}${repo}#${number
 const reruns = (db: DatabaseSync, repo: string, number: number): number =>
   Number((db.prepare("SELECT value FROM main.settings WHERE key = ?").get(rerunKey(repo, number)) as { value: string } | undefined)?.value ?? 0);
 
+/** Whether an operator request or a merge-time check marked the PR stale after `since` (such re-reviews are not counted). */
+export function markedStaleSince(db: DatabaseSync, repo: string, number: number, since: string): boolean {
+  const v = (db.prepare("SELECT value FROM main.settings WHERE key = ?").get(staleKey(repo, number)) as { value: string } | undefined)?.value;
+  return !!v && v > since;
+}
+
 /** Counts a same-head re-review against the PR's daily cap and forgets earlier days. */
 export function countRerun(db: DatabaseSync, repo: string, number: number): void {
   db.prepare("DELETE FROM main.settings WHERE key LIKE ? AND key <> ?").run(`${RERUN_KEY}${repo}#${number}:%`, rerunKey(repo, number));
@@ -224,11 +238,17 @@ export function staleReviews(db: DatabaseSync, repo?: string, respectCap = false
   const state = discussionState(db, repo);
   const marks = new Map((db.prepare("SELECT key, value FROM main.settings WHERE key LIKE ?").all(`${STALE_KEY}%`) as { key: string; value: string }[]).map((m) => [m.key.slice(STALE_KEY.length), m.value]));
   const out = new Set<string>();
+  const todays = new Map<string, number>();
+  const capped = (r: { repo: string; number: number }) => {
+    const k = `${r.repo}#${r.number}`;
+    if (!todays.has(k)) todays.set(k, reruns(db, r.repo, r.number));
+    return todays.get(k)! >= MAX_RERUNS_PER_DAY;
+  };
   for (const r of rows) {
     const ref = `${r.repo}#${r.number}`;
     const marked = (marks.get(ref) ?? "") > r.at;
     const talked = changedSince(state.get(ref), r.seen_at ?? r.at, r.disc_hash);
-    if (!marked && !(talked && !(respectCap && reruns(db, r.repo, r.number) >= MAX_RERUNS_PER_DAY))) continue;
+    if (!marked && !(talked && !(respectCap && capped(r)))) continue;
     out.add(`${ref}@${r.head_oid}`);
   }
   return out;
@@ -262,4 +282,14 @@ export function markReviewsStale(db: DatabaseSync, by: string, repo: string, num
   const at = new Date().toISOString();
   db.prepare("INSERT INTO main.settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value").run(staleKey(repo, number), at);
   audit(db, by, "review-again", `${repo}#${number}`, { stale: true });
+}
+
+/** discussionMovedSince with retries; null when the read still fails, so the caller skips the PR this run instead of merging blind. */
+export async function discussionMovedChecked(db: DatabaseSync, q: Querier, repo: string, number: number, head: string, log: (line: string) => void): Promise<boolean | null> {
+  try {
+    return await withRetry(() => discussionMovedSince(db, q, repo, number, head));
+  } catch (e) {
+    log(`  ${repo}#${number}: could not read its discussion (${String((e as Error).message ?? e).replace(/\s+/g, " ").slice(0, 200)}); skipped this run`);
+    return null;
+  }
 }

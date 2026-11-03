@@ -12,7 +12,7 @@ import { add, askClaude, pool, saveUsage, type Usage } from "../classify/run.ts"
 import { DEFAULT_CAPS, makeBatches, type Caps } from "./batch.ts";
 import { selectCandidates, type Candidate } from "./candidates.ts";
 import { checksOf, refreshChecks } from "./checks.ts";
-import { MAX_RERUNS_PER_DAY, countRerun, discussionOf, ensurePipelineLogin, liveDiscussion, markReviewsStale, staleReviews, type Snapshot } from "./discussion.ts";
+import { MAX_RERUNS_PER_DAY, countRerun, discussionOf, ensurePipelineLogin, liveDiscussion, markReviewsStale, markedStaleSince, staleReviews, type Snapshot } from "./discussion.ts";
 import { withdrawMergeQuestion } from "../merge/withdraw.ts";
 import { areaOf, cachedDiff, codeDiff, ghDiff, type DiffFetcher } from "./diff.ts";
 import { applyDuplicateRule, parseReviewReply, type DiscussionEntry, type Review, type ReviewPr } from "./parse.ts";
@@ -47,8 +47,8 @@ export function defaultDeps(): ReviewDeps {
  */
 export function saveReview(db: DatabaseSync, runId: string, c: Candidate, model: string | null, r: Review, snap: Snapshot | null = null): void {
   const at = now();
-  const again = db.prepare("SELECT 1 FROM reviews WHERE repo = ? AND number = ? AND head_oid = ?").get(c.repo, c.number, c.head_oid);
-  if (again) countRerun(db, c.repo, c.number);
+  const again = db.prepare("SELECT at FROM reviews WHERE repo = ? AND number = ? AND head_oid = ?").get(c.repo, c.number, c.head_oid) as { at: string } | undefined;
+  if (again && !markedStaleSince(db, c.repo, c.number, again.at)) countRerun(db, c.repo, c.number);
   if (again) withdrawMergeQuestion(db, c.repo, c.number, c.head_oid, at);
   db.prepare(`INSERT OR REPLACE INTO reviews (repo, number, head_oid, run_id, at, model, size, verdict, reason, fixes, duplicate_of, overlaps, risks, seen_at, disc_hash)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(c.repo, c.number, c.head_oid, runId, at, model, c.size, r.verdict, r.reason,
@@ -88,7 +88,8 @@ export async function runReview(db: DatabaseSync, params: ReviewParams, log: (li
   await withRetry(() => refreshChecks(db, deps.querier, repo, cands.map((c) => c.number), log));
   await ensurePipelineLogin(db, deps.querier).catch((e) => log(`review ${repo}: could not read the pipeline login (${String((e as Error).message ?? e)})`));
   cands = selectCandidates(db, repo).sort((a, b) => (b.score ?? -1) - (a.score ?? -1) || SIZE_ORDER[a.size] - SIZE_ORDER[b.size] || a.number - b.number);
-  const capped = [...staleReviews(db, repo)].filter((k) => !staleReviews(db, repo, true).has(k));
+  const uncapped = staleReviews(db, repo, true);
+  const capped = [...staleReviews(db, repo)].filter((k) => !uncapped.has(k));
   if (capped.length) log(`review ${repo}: ${capped.join(", ")} not reviewed again: already ${MAX_RERUNS_PER_DAY} re-reviews today after new discussion`);
   if (params.limit !== undefined) cands = cands.slice(0, params.limit);
   summary.candidates = cands.length;

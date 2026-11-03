@@ -5,6 +5,7 @@ import { after, describe, test } from "node:test";
 import type { DatabaseSync } from "node:sqlite";
 import { connect } from "../src/db.ts";
 import type { Querier } from "../src/mirror.ts";
+import { discussionHash } from "../src/review/discussion.ts";
 import { runMerge, type CommandResult, type MergeDeps } from "../src/merge/index.ts";
 import { buildQueue, eligible, mergeDecisionId } from "../src/merge/queue.ts";
 import { runSingles, setSingleMergeMax, singleMergeMax } from "../src/merge/single.ts";
@@ -73,7 +74,7 @@ function fresh(): DatabaseSync {
 }
 
 type Log = string[];
-type Fake = { mergeable?: Map<number, string>; heads?: Map<number, string>; authors?: Map<number, string[]>; assignees?: Map<number, string[]>; exit?: Map<number, CommandResult> };
+type Fake = { mergeable?: Map<number, string>; heads?: Map<number, string>; authors?: Map<number, string[]>; assignees?: Map<number, string[]>; exit?: Map<number, CommandResult>; /** Counted comments the live discussion query returns for every PR. */ discussion?: unknown[] };
 
 /** GitHub and merge-command stand-ins; every call goes into `log` in order. */
 function fakes(log: Log, f: Fake = {}): MergeDeps & { calls: () => number } {
@@ -81,7 +82,7 @@ function fakes(log: Log, f: Fake = {}): MergeDeps & { calls: () => number } {
   const querier: Querier = validating({
     spent: 0, remaining: 5000,
     async query(query: string, vars: object) {
-      if (query.includes("reviewThreads")) return { repository: { pullRequest: { author: null, comments: { nodes: [] }, reviews: { nodes: [] }, reviewThreads: { nodes: [] } } } };
+      if (query.includes("reviewThreads")) return { repository: { pullRequest: { author: null, comments: { nodes: f.discussion ?? [] }, reviews: { nodes: [] }, reviewThreads: { nodes: [] } } } };
       n++;
       const v = vars as { n?: number; id?: string };
       if (query.includes("viewer")) { log.push("viewer"); return { viewer: { login: "pipeline-bot", id: "U1" } }; }
@@ -173,6 +174,23 @@ describe("merge queue", () => {
     assert.deepEqual(again.asked, []);
     assert.deepEqual(again.merged, []);
     assert.equal(count(db, "decisions"), 3);
+  });
+
+  test("new discussion at merge time holds the PR without a refusal record; once it is reviewed again it merges", async () => {
+    const db = fresh();
+    const note = { id: "n1", author: { login: "rabbit", __typename: "Bot" }, authorAssociation: "NONE", createdAt: "2026-01-03T00:00:00Z", body: "Major: this breaks the overlap" };
+    const log: Log = [];
+    const s = await runMerge(db, { repo: "app", dryRun: false, limit: 1 }, quiet, fakes(log, { discussion: [note] }));
+    assert.deepEqual(s.merged, []);
+    assert.deepEqual(s.refused, []);
+    assert.equal(count(db, "merges"), 0);
+    assert.ok(!log.some((l) => l.startsWith("safe-merge-test")));
+    // A new review of the same head that read the comment: later than the stale mark, with the live snapshot's hash.
+    const later = new Date(Date.now() + 60_000).toISOString();
+    db.prepare("UPDATE reviews SET at = ?, seen_at = ?, disc_hash = ? WHERE number = 1").run(later, later, discussionHash([{ id: "n1", body: note.body }]));
+    db.prepare("UPDATE opus_reviews SET at = ?, seen_at = ?, disc_hash = ? WHERE number = 1").run(later, later, discussionHash([{ id: "n1", body: note.body }]));
+    const again = await runMerge(db, { repo: "app", dryRun: false, limit: 1 }, quiet, fakes([], { discussion: [note] }));
+    assert.deepEqual(again.merged, ["app#1"]);
   });
 
   test("an operator's merge answer makes a PR eligible; others' answers are ignored", async () => {

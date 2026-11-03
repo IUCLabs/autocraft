@@ -36,7 +36,7 @@ export const defaultPostDeps = (): PostDeps => ({ querier: new Client(1000), now
 
 type Row = {
   number: number; head_oid: string | null; updated_at: string | null; c_head: string | null; c_at: string | null;
-  o_head: string; o_at: string; p_opus_at: string | null; p_at: string | null; model: string | null; verdict: string; sure: number | null; public_review: string;
+  o_head: string; o_at: string; p_opus_at: string | null; p_at: string | null; model: string | null; verdict: string; sure: number | null; public_review: string | null;
   p_id: string | null; p_head: string | null; can_modify: number | null;
 };
 const safeJson = (s: string): unknown => {
@@ -44,17 +44,17 @@ const safeJson = (s: string): unknown => {
 };
 
 /**
- * Open PRs of `repo` with an Opus review (a verdict, not a skip) at their current head that no review of ours
+ * Open PRs of `repo` with an Opus review (a verdict, not a skip; with public text unless it edits an earlier post) at their current head that no review of ours
  * describes yet. Leaves out PRs by the pipeline's own account, integration batch PRs, held duplicates and items outside the pilot.
  */
 export function postCandidates(db: DatabaseSync, repo: string): PostCandidate[] {
   const rows = db.prepare(`SELECT i.number, i.head_oid, i.updated_at, c.head_oid AS c_head, c.fetched_at AS c_at,
       o.head_oid AS o_head, o.at AS o_at, p.opus_at AS p_opus_at, p.posted_at AS p_at, o.model, o.verdict, o.sure, o.public_review, p.review_id AS p_id, p.head_oid AS p_head, i.maintainer_can_modify AS can_modify
-    FROM items i JOIN opus_reviews o ON o.repo = i.repo AND o.number = i.number AND o.verdict IS NOT NULL AND o.public_review IS NOT NULL
+    FROM items i JOIN opus_reviews o ON o.repo = i.repo AND o.number = i.number AND o.verdict IS NOT NULL
     AND o.at >= COALESCE((SELECT r.at FROM reviews r WHERE r.repo = o.repo AND r.number = o.number AND r.head_oid = o.head_oid), '')
     LEFT JOIN pr_checks c ON c.repo = i.repo AND c.number = i.number
     LEFT JOIN review_posts p ON p.repo = i.repo AND p.number = i.number
-    WHERE i.repo = ? AND i.kind = 'pr' AND i.state = 'OPEN' AND ${notOwnIntegrationSql("i")} AND ${pilotSql("i")}
+    WHERE i.repo = ? AND i.kind = 'pr' AND i.state = 'OPEN' AND (o.public_review IS NOT NULL OR p.review_id IS NOT NULL) AND ${notOwnIntegrationSql("i")} AND ${pilotSql("i")}
       AND NOT EXISTS (SELECT 1 FROM main.merge_batches mb WHERE mb.repo = i.repo AND mb.pr_number = i.number)
       AND COALESCE(i.author, '') <> COALESCE((SELECT value FROM main.settings WHERE key = 'pipeline_login'), '')
       AND NOT EXISTS (SELECT 1 FROM decisions dh WHERE dh.kind = 'duplicate' AND dh.id NOT LIKE '%:dupegroup:%' AND dh.repo = i.repo AND dh.number = i.number AND (dh.answer IS NULL OR dh.answer = 'close'))
@@ -63,7 +63,8 @@ export function postCandidates(db: DatabaseSync, repo: string): PostCandidate[] 
   const out: PostCandidate[] = [];
   const mergeApproved = !!mergeApprovalOf(db, repo), pushApproved = !!pushApprovalOf(db, repo);
   for (const r of rows) {
-    const pub = parsePublic(safeJson(r.public_review));
+    // A newer review with no public text still edits an earlier post, so the verdict line stays current.
+    const pub = r.public_review === null ? { summary: "", points: [] as string[] } : parsePublic(safeJson(r.public_review));
     if (!pub) continue;
     const head = headOf(r);
     // Posted for this head already, unless a newer Opus review of the same head exists: then the posted review is edited.

@@ -55,7 +55,7 @@ export const PR_EXTRA = `isDraft mergedAt mergedBy { login } additions deletions
   closingIssuesReferences(first: 10) { nodes { number } }`;
 export const PR_FULL = `maintainerCanModify mergeable reviewDecision
   commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }
-  reviews(last: 10) { nodes { id author { login __typename } authorAssociation createdAt body state commit { oid } } }`;
+  reviews(last: 10) { nodes { id author { login __typename } authorAssociation createdAt body state commit { oid } comments { totalCount } } }`;
 
 export function itemsQuery(kind: Kind, detail: Detail): string {
   const [conn, stateType] = kind === "issue" ? ["issues", "IssueState"] : ["pullRequests", "PullRequestState"];
@@ -218,7 +218,7 @@ function baseRow(repo: string, kind: Kind, n: Node, detail: Detail): Record<stri
 
 function commentRows(repo: string, kind: Kind, n: Node): SQLInputValue[][] {
   // `counted`: whether the entry counts as new discussion for the review stage (src/review/discussion.ts).
-  const counted = (c: Node) => Number(isCounted({ author: login(c.author), association: c.authorAssociation, bot: c.author?.__typename === "Bot", prAuthor: login(n.author), state: c.state, body: c.body }));
+  const counted = (c: Node) => Number(isCounted({ author: login(c.author), association: c.authorAssociation, bot: c.author?.__typename === "Bot", prAuthor: login(n.author), state: c.state, body: c.body, inline: c.comments?.totalCount }));
   const rows = n.comments.nodes.map((c: Node) =>
     [repo, n.number, c.id, "comment", login(c.author), c.createdAt, c.body, null, null, counted(c)]);
   if (kind === "pr") {
