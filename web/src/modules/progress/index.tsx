@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
-import { ActivityIcon, ArrowDownIcon, ArrowUpIcon, ChevronsUpDownIcon } from "lucide-react";
+import { PulseIcon, ArrowDownIcon, ArrowUpIcon, CaretUpDownIcon } from "@phosphor-icons/react";
 import { useQuery } from "../../api/client";
 import { Pending } from "../../ui/Pending";
 import type { Progress, RepoProgress } from "../../api/types";
@@ -131,7 +131,7 @@ function RepoTable({ p }: { p: Progress }) {
       {k ? (
         <button onClick={() => setSort({ k, desc: sort.k === k ? !sort.desc : k !== "repo" })} className={cn("inline-flex items-center gap-1", sort.k === k ? "text-ink" : "text-ink/55 hover:text-ink")}>
           {children}
-          {sort.k === k ? sort.desc ? <ArrowDownIcon className="text-[11px]" /> : <ArrowUpIcon className="text-[11px]" /> : <ChevronsUpDownIcon className="text-[11px] opacity-50" />}
+          {sort.k === k ? sort.desc ? <ArrowDownIcon className="text-[11px]" /> : <ArrowUpIcon className="text-[11px]" /> : <CaretUpDownIcon className="text-[11px] opacity-50" />}
         </button>
       ) : (
         <span className="text-ink/55">{children}</span>
@@ -238,7 +238,7 @@ function RepoCards({ p }: { p: Progress }) {
 export const progressModule: FeatureModule = {
   id: "progress",
   permission: "viewer",
-  nav: { label: "Progress", icon: ActivityIcon, to: "/progress", group: "work", order: 1, phoneTab: true },
+  nav: { label: "Progress", icon: PulseIcon, to: "/progress", group: "work", order: 1, phoneTab: true },
   commands: [{ id: "go-progress", keys: "g p", label: "Go to progress", group: "Go to" }],
   routes: [{ path: "progress", view: { id: "progress", title: "Progress", panels: [{ id: "overview", title: "Overview", component: Overview, defaultSize: 100 }] } }],
 };

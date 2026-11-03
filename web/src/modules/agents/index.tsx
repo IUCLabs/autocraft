@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { Dialog } from "radix-ui";
-import { BotIcon, ChevronDownIcon, ChevronRightIcon, XIcon } from "lucide-react";
+import { RobotIcon, CaretDownIcon, CaretRightIcon, XIcon } from "@phosphor-icons/react";
 import { usePagedQuery, useQuery } from "../../api/client";
 import type { AgentRun, AgentRunDetail, AgentRunFilter, AgentRunPage, AgentRunState } from "../../api/types";
 import type { FeatureModule, ViewProps } from "../../registry/types";
@@ -176,7 +176,7 @@ function RecentRuns({ selected }: { selected?: number }) {
 
 function Collapsible({ title, text, empty, open: initial = false }: { title: string; text: string | null; empty: string; open?: boolean }) {
   const [open, setOpen] = useState(initial);
-  const Icon = open ? ChevronDownIcon : ChevronRightIcon;
+  const Icon = open ? CaretDownIcon : CaretRightIcon;
   return (
     <div>
       <button onClick={() => setOpen(!open)} aria-expanded={open} className="flex min-h-7 items-center gap-1 text-xs font-semibold text-ink/65 max-md:min-h-11">
@@ -346,7 +346,7 @@ function FlowRunning({ params }: ViewProps) {
 export const agentsModule: FeatureModule = {
   id: "agents",
   permission: "viewer",
-  nav: { label: "Agents", icon: BotIcon, to: "/agents", group: "work", order: 0.8 },
+  nav: { label: "Agents", icon: RobotIcon, to: "/agents", group: "work", order: 0.8 },
   slots: [{ slot: "flow.panel", order: 10, component: FlowRunning }],
   routes: [
     {

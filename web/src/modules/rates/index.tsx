@@ -1,7 +1,7 @@
 // The Rates page: items moved per stage per hour or day, and each account's use over time.
 // One small chart per stage (a single measure and scale each); account lines share one 0-100 % scale.
 import { useLayoutEffect, useRef, useState } from "react";
-import { GaugeIcon } from "lucide-react";
+import { GaugeIcon } from "@phosphor-icons/react";
 import { useQuery } from "../../api/client";
 import type { RateBucket, Rates, UsagePause } from "../../api/types";
 import type { FeatureModule } from "../../registry/types";

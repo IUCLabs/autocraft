@@ -2,15 +2,15 @@ import { useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { RefLink } from "../../ui/RefLink";
 import {
-  ChevronRightIcon,
-  CircleHelpIcon,
-  CircleSlashIcon,
+  CaretRightIcon,
+  QuestionIcon,
+  ProhibitIcon,
   CopyIcon,
   GitMergeIcon,
-  SplitIcon,
+  ArrowsSplitIcon,
   TargetIcon,
-  type LucideIcon,
-} from "lucide-react";
+  type Icon as PhosphorIcon,
+} from "@phosphor-icons/react";
 import type { Decision, DecisionKind } from "../../api/types";
 import { Avatar } from "../../ui/Avatar";
 import { Kbd } from "../../ui/Kbd";
@@ -21,13 +21,13 @@ import { Refs } from "./Refs";
 import { KIND_LABEL } from "./state";
 import { useNow } from "../../lib/useNow";
 
-export const KIND_ICON: Record<DecisionKind, LucideIcon> = {
+export const KIND_ICON: Record<DecisionKind, PhosphorIcon> = {
   scope: TargetIcon,
   duplicate: CopyIcon,
-  close: CircleSlashIcon,
+  close: ProhibitIcon,
   merge: GitMergeIcon,
-  split: SplitIcon,
-  other: CircleHelpIcon,
+  split: ArrowsSplitIcon,
+  other: QuestionIcon,
 };
 
 export function KindTag({ kind, batch }: { kind: DecisionKind; batch?: number }) {
@@ -163,7 +163,7 @@ export function Disclosure({ title, count, children, defaultOpen, hotkey }: { ti
   return (
     <section className="border-t border-line">
       <button onClick={() => setOpen(!open)} aria-expanded={open} className="flex h-9 w-full items-center gap-1.5 rounded-none text-left text-sm font-medium text-ink/75 hover:text-ink">
-        <ChevronRightIcon className={cn("text-ink/45 transition-transform duration-fast", open && "rotate-90")} />
+        <CaretRightIcon className={cn("text-ink/45 transition-transform duration-fast", open && "rotate-90")} />
         {title}
         <Count n={count} />
         {hotkey && <Kbd keys={hotkey} className="ml-auto" />}

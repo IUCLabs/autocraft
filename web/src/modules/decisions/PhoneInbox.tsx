@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Dialog } from "radix-ui";
-import { SlidersHorizontalIcon, XIcon } from "lucide-react";
+import { SlidersHorizontalIcon, XIcon } from "@phosphor-icons/react";
 import type { ViewProps } from "../../registry/types";
 import { cn } from "../../ui/cn";
 import { DecisionBody } from "./DecisionDetail";

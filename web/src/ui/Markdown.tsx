@@ -1,7 +1,7 @@
 import { Children, isValidElement, useLayoutEffect, useRef, useState } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { ImageIcon, ExternalLinkIcon } from "lucide-react";
+import { ImageIcon, ArrowSquareOutIcon } from "@phosphor-icons/react";
 import { cn } from "./cn";
 import { Swimlane } from "./Swimlane";
 import { proxiedImage, remarkHtmlToMarkdown, safeUrl } from "./markdownHtml";
@@ -13,7 +13,7 @@ function ImageLink({ src, alt }: { src?: string; alt?: string }) {
     <a href={src} target="_blank" rel="noopener noreferrer nofollow" className="md-image" title={src}>
       <ImageIcon className="text-[13px]" />
       <span>{alt || "Image"}</span>
-      <ExternalLinkIcon className="text-[11px] opacity-60" />
+      <ArrowSquareOutIcon className="text-[11px] opacity-60" />
     </a>
   );
 }

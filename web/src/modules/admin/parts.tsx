@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, type InputHTMLAttributes, type ReactNode } from "react";
 import { useSearchParams } from "react-router-dom";
-import { ArrowDownIcon, ArrowUpIcon, ChevronsUpDownIcon, CircleAlertIcon } from "lucide-react";
+import { ArrowDownIcon, ArrowUpIcon, CaretUpDownIcon, WarningCircleIcon } from "@phosphor-icons/react";
 import type { Role } from "../../api/types";
 import { Button } from "../../ui/Button";
 import { cn } from "../../ui/cn";
@@ -51,7 +51,7 @@ export function ErrorLine({ error, className }: { error: string | null | undefin
   if (!error) return null;
   return (
     <p role="alert" className={cn("flex items-center gap-1.5 text-sm text-bad", className)}>
-      <CircleAlertIcon className="shrink-0" />
+      <WarningCircleIcon className="shrink-0" />
       {error}
     </p>
   );
@@ -113,7 +113,7 @@ export function SortTh<K extends string>({
       {k !== undefined && onSort ? (
         <button onClick={() => onSort(k)} className={cn("inline-flex items-center gap-1", active ? "text-ink" : "text-ink/55 hover:text-ink")}>
           {children}
-          {active ? sort!.desc ? <ArrowDownIcon className="text-[11px]" /> : <ArrowUpIcon className="text-[11px]" /> : <ChevronsUpDownIcon className="text-[11px] opacity-50" />}
+          {active ? sort!.desc ? <ArrowDownIcon className="text-[11px]" /> : <ArrowUpIcon className="text-[11px]" /> : <CaretUpDownIcon className="text-[11px] opacity-50" />}
         </button>
       ) : (
         <span className="text-ink/55">{children}</span>

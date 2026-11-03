@@ -2,7 +2,7 @@
 // runner steps with their daily limit and recent jobs, and the prompts it sends.
 import { useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
-import { ChevronRightIcon, XIcon } from "lucide-react";
+import { CaretRightIcon, XIcon } from "@phosphor-icons/react";
 import { useQuery } from "../../api/client";
 import type { Flow, FlowNode, Job } from "../../api/types";
 import { Slot } from "../../registry/Slot";
@@ -77,7 +77,7 @@ function PromptRow({ id }: { id: string }) {
   return (
     <li className="py-0.5">
       <button onClick={() => setOpen((v) => !v)} aria-expanded={open} className="flex min-h-8 w-full items-center gap-2 rounded px-1 text-left text-sm hover:bg-ink/[0.06] max-md:min-h-11">
-        <ChevronRightIcon className={cn("shrink-0 text-ink/45 transition-transform", open && "rotate-90")} />
+        <CaretRightIcon className={cn("shrink-0 text-ink/45 transition-transform", open && "rotate-90")} />
         <span className="code text-xs">{id}</span>
         {p && <span className="min-w-0 flex-1 truncate text-ink/60">{p.purpose}</span>}
         {p?.models.map((m) => (

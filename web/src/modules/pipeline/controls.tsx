@@ -2,7 +2,7 @@
 // in sees both; only operators change them. Exported for other pages too
 // (StageLimitRow sits inside a stage panel).
 import { useEffect, useRef, useState } from "react";
-import { PauseIcon, PlayIcon } from "lucide-react";
+import { PauseIcon, PlayIcon } from "@phosphor-icons/react";
 import { useApi, useQuery } from "../../api/client";
 import type { PipelineState, StageLimit } from "../../api/types";
 import { ago, num } from "../../lib/format";

@@ -1,6 +1,6 @@
 // Every write the app made on GitHub: comments, labels, closes, pushes, merges and the rest.
 import { useEffect, useRef } from "react";
-import { ExternalLinkIcon, HistoryIcon } from "lucide-react";
+import { ArrowSquareOutIcon, ClockCounterClockwiseIcon } from "@phosphor-icons/react";
 import { useQuery, usePagedQuery } from "../../api/client";
 import type { GithubActivityFilter, GithubActivityRow } from "../../api/types";
 import type { FeatureModule, ViewProps } from "../../registry/types";
@@ -46,7 +46,7 @@ function Detail({ r }: { r: GithubActivityRow }) {
 
 const Out = ({ url }: { url: string }) => (
   <a href={url} target="_blank" rel="noopener noreferrer" title="Open on GitHub" aria-label="Open on GitHub" className="inline-flex size-6 items-center justify-center text-ink/55 hover:text-accent-ink max-md:size-11">
-    <ExternalLinkIcon className="size-4" />
+    <ArrowSquareOutIcon className="size-4" />
   </a>
 );
 
@@ -185,6 +185,6 @@ function GithubActivityView(_: ViewProps) {
 export const githubModule: FeatureModule = {
   id: "github-activity",
   permission: "viewer",
-  nav: { label: "GitHub activity", icon: HistoryIcon, to: "/github-activity", group: "insight", order: 13 },
+  nav: { label: "GitHub activity", icon: ClockCounterClockwiseIcon, to: "/github-activity", group: "insight", order: 13 },
   routes: [{ path: "github-activity", view: { id: "github-activity", title: "GitHub activity", panels: [{ id: "main", title: "GitHub activity", component: GithubActivityView, defaultSize: 100 }] } }],
 };

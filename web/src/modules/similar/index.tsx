@@ -1,7 +1,7 @@
 // "Similar items" on the Item page: the nearest items by embedding across the
 // tracked repos, open and closed, for spotting duplicates.
 import { Link } from "react-router-dom";
-import { CircleDotIcon, CircleSlashIcon, GitMergeIcon, GitPullRequestIcon } from "lucide-react";
+import { RadioButtonIcon, ProhibitIcon, GitMergeIcon, GitPullRequestIcon } from "@phosphor-icons/react";
 import { useQuery } from "../../api/client";
 import type { SimilarHit } from "../../api/types";
 import type { FeatureModule, ViewProps } from "../../registry/types";
@@ -14,8 +14,8 @@ const REASON: Record<NonNullable<SimilarHit["stateReason"]>, string> = { duplica
 
 export function StateIcon({ h }: { h: Pick<SimilarHit, "kind" | "state"> }) {
   if (h.state === "merged") return <GitMergeIcon className="text-xs text-merged" aria-label="merged" />;
-  if (h.state === "closed") return <CircleSlashIcon className="text-xs text-ink/45" aria-label="closed" />;
-  return h.kind === "pr" ? <GitPullRequestIcon className="text-xs text-ok" aria-label="open PR" /> : <CircleDotIcon className="text-xs text-ok" aria-label="open issue" />;
+  if (h.state === "closed") return <ProhibitIcon className="text-xs text-ink/45" aria-label="closed" />;
+  return h.kind === "pr" ? <GitPullRequestIcon className="text-xs text-ok" aria-label="open PR" /> : <RadioButtonIcon className="text-xs text-ok" aria-label="open issue" />;
 }
 
 /** Cosine similarity as shown: two decimals, strong matches highlighted. */

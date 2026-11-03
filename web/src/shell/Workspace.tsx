@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState } from "react";
 import { Panel, PanelGroup, PanelResizeHandle, type ImperativePanelHandle } from "react-resizable-panels";
-import { PanelLeftCloseIcon, PanelRightCloseIcon } from "lucide-react";
+import { ArrowLineLeftIcon, ArrowLineRightIcon } from "@phosphor-icons/react";
 import type { PanelDef, ViewDef, ViewProps } from "../registry/types";
 import { layoutStorage } from "./layoutStorage";
 import { useIsPhone } from "./useMedia";
@@ -53,7 +53,7 @@ export function Workspace({ view, props }: { view: ViewDef; props: ViewProps }) 
 function PanelSlot({ def, index, last, props }: { def: PanelDef; index: number; last: boolean; props: ViewProps }) {
   const ref = useRef<ImperativePanelHandle>(null);
   const [collapsed, setCollapsed] = useState(false);
-  const Icon = last ? PanelRightCloseIcon : PanelLeftCloseIcon;
+  const Icon = last ? ArrowLineRightIcon : ArrowLineLeftIcon;
   return (
     <>
       {index > 0 && <PanelResizeHandle />}

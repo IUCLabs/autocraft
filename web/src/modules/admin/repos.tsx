@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { FolderGit2Icon } from "lucide-react";
+import { FolderSimpleIcon } from "@phosphor-icons/react";
 import { Link, useNavigate } from "react-router-dom";
 import { useApi, useQuery } from "../../api/client";
 import type { TrackedRepo } from "../../api/types";
@@ -235,7 +235,7 @@ export const reposModule: FeatureModule = {
   permission: "operator",
   nav: {
     label: "Repos",
-    icon: FolderGit2Icon,
+    icon: FolderSimpleIcon,
     to: "/repos",
     group: "operator",
     order: 20,

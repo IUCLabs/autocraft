@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
-import { CheckIcon, ChevronRightIcon, CopyIcon, ScrollTextIcon } from "lucide-react";
+import { CheckIcon, CaretRightIcon, CopyIcon, ScrollIcon } from "@phosphor-icons/react";
 import { useQuery } from "../../api/client";
 import { Pending } from "../../ui/Pending";
 import type { CommentTemplate, PromptInfo } from "../../api/types";
@@ -58,7 +58,7 @@ function Fold({ title, hint, children }: { title: string; hint?: string; childre
   return (
     <details className="group border-t border-line first:border-t-0">
       <summary className="flex min-h-9 cursor-pointer list-none items-center gap-1.5 py-1.5 text-sm font-medium marker:hidden [&::-webkit-details-marker]:hidden max-md:min-h-11">
-        <ChevronRightIcon className="shrink-0 text-ink/45 transition-transform group-open:rotate-90" />
+        <CaretRightIcon className="shrink-0 text-ink/45 transition-transform group-open:rotate-90" />
         {title}
         {hint && <span className="ml-1 truncate text-xs font-normal text-ink/50">{hint}</span>}
       </summary>
@@ -199,7 +199,7 @@ export function PromptCard({ p, fold }: { p: PromptInfo; fold?: boolean }) {
     <section id={p.id} className="min-w-0 scroll-mt-4 overflow-hidden rounded-md border border-line bg-raised/30 target:border-accent-ink/60">
       {fold ? (
         <button type="button" onClick={() => setOpen((v) => !v)} aria-expanded={open} className="flex w-full items-start gap-2 px-4 py-3 text-left hover:bg-ink/[0.03]">
-          <ChevronRightIcon className={cn("mt-0.5 shrink-0 text-ink/45 transition-transform", open && "rotate-90")} />
+          <CaretRightIcon className={cn("mt-0.5 shrink-0 text-ink/45 transition-transform", open && "rotate-90")} />
           <span className="min-w-0 flex-1">
             <PromptHeader p={p} />
           </span>
@@ -220,7 +220,7 @@ function CommentCard({ c }: { c: CommentTemplate }) {
   return (
     <section id={c.id} className="min-w-0 scroll-mt-4 overflow-hidden rounded-md border border-line bg-raised/30 target:border-accent-ink/60">
       <button type="button" onClick={() => setOpen((v) => !v)} aria-expanded={open} className="flex w-full items-start gap-2 px-4 py-3 text-left hover:bg-ink/[0.03]">
-        <ChevronRightIcon className={cn("mt-0.5 shrink-0 text-ink/45 transition-transform", open && "rotate-90")} />
+        <CaretRightIcon className={cn("mt-0.5 shrink-0 text-ink/45 transition-transform", open && "rotate-90")} />
         <span className="min-w-0 flex-1">
           <span className="block font-mono text-sm font-semibold [overflow-wrap:anywhere]">{c.id}</span>
           <span className="mt-1 block text-sm text-ink/75">{c.purpose}</span>
@@ -316,7 +316,7 @@ function Prompts(_: ViewProps) {
 export const promptsModule: FeatureModule = {
   id: "prompts",
   permission: "viewer",
-  nav: { label: "Prompts", icon: ScrollTextIcon, to: "/prompts", group: "insight", order: 21 },
+  nav: { label: "Prompts", icon: ScrollIcon, to: "/prompts", group: "insight", order: 21 },
   commands: [],
   routes: [{ path: "prompts", view: { id: "prompts", title: "Prompts", panels: [{ id: "main", title: "Prompts", component: Prompts, defaultSize: 100 }] } }],
 };

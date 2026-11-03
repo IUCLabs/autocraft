@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { GitPullRequestIcon, CircleDotIcon, SearchIcon, SparklesIcon } from "lucide-react";
+import { GitPullRequestIcon, RadioButtonIcon, MagnifyingGlassIcon, SparkleIcon } from "@phosphor-icons/react";
 import { useApi } from "../api/client";
 import type { SearchHit, SimilarHit } from "../api/types";
 import { Kbd } from "../ui/Kbd";
@@ -66,7 +66,7 @@ export function SearchBox({ autoFocus, onPick, fullscreen }: { autoFocus?: boole
   return (
     <div className={cn("relative", fullscreen && "min-w-0 flex-1")}>
       <label className={cn("flex h-7 items-center gap-2 rounded border border-line bg-sunken px-2 focus-within:border-accent/60", fullscreen && "h-11")}>
-        <SearchIcon className="text-xs text-ink/45" />
+        <MagnifyingGlassIcon className="text-xs text-ink/45" />
         <input
           id={fullscreen ? undefined : "global-search"}
           autoFocus={autoFocus}
@@ -99,7 +99,7 @@ export function SearchBox({ autoFocus, onPick, fullscreen }: { autoFocus?: boole
           onMouseDown={(e) => (e.preventDefault(), toggleSemantic())}
           className={cn("flex h-5 items-center gap-1 rounded px-1 text-2xs", semantic ? "bg-accent/15 text-accent-ink" : "text-ink/40 hover:text-ink/70")}
         >
-          <SparklesIcon className="text-xs" />
+          <SparkleIcon className="text-xs" />
           {(semantic || fullscreen) && <span>Meaning</span>}
         </button>
         {!fullscreen && !focus && <Kbd keys="/" />}
@@ -110,7 +110,7 @@ export function SearchBox({ autoFocus, onPick, fullscreen }: { autoFocus?: boole
           {hits.map((h, i) => (
             <li key={`${h.repo}#${h.number}`} role="option" aria-selected={i === sel}>
               <div onMouseDown={() => pick(h)} onMouseEnter={() => setSel(i)} className={cn("flex w-full cursor-pointer items-center gap-2.5 rounded px-2 text-left", fullscreen ? "flex-wrap gap-y-0.5 py-2" : "h-8", i === sel && "bg-ink/[0.07]")}>
-                {h.kind === "pr" ? <GitPullRequestIcon className={cn("text-xs", h.state === "merged" ? "text-merged" : "text-ok")} /> : <CircleDotIcon className="text-xs text-ok" />}
+                {h.kind === "pr" ? <GitPullRequestIcon className={cn("text-xs", h.state === "merged" ? "text-merged" : "text-ok")} /> : <RadioButtonIcon className="text-xs text-ok" />}
                 <RefLink repo={h.repo} number={h.number} kind={h.kind} stop className="shrink-0 text-ink/60" />
                 <span className={cn("truncate text-sm", fullscreen && "order-last w-full pl-5")}>{h.title}</span>
                 <span className="ml-auto shrink-0 text-xs text-ink/45">{h.author}</span>
@@ -121,7 +121,7 @@ export function SearchBox({ autoFocus, onPick, fullscreen }: { autoFocus?: boole
           {!isRef && (
             <li role="option" aria-selected={false}>
               <div onMouseDown={seeAll} className={cn("flex w-full cursor-pointer items-center gap-2 rounded border-t border-line px-2 text-sm text-accent-ink hover:bg-ink/[0.07]", fullscreen ? "h-12" : "h-8")}>
-                <SearchIcon className="text-xs" /> See all results, comments included
+                <MagnifyingGlassIcon className="text-xs" /> See all results, comments included
               </div>
             </li>
           )}

@@ -1,6 +1,6 @@
 // The flowchart on a phone: the stages top to bottom, each with its branches
 // indented and the stages it feeds; a tap on a stage opens its panel.
-import { ArrowDownIcon, ChevronRightIcon } from "lucide-react";
+import { ArrowDownIcon, CaretRightIcon } from "@phosphor-icons/react";
 import type { AgentRun, Flow, FlowNode } from "../../api/types";
 import { Badge } from "../../ui/Badge";
 import { cn } from "../../ui/cn";
@@ -38,7 +38,7 @@ export function PhoneFlow({ flow, onSelect, runs }: { flow: Flow; onSelect: (id:
                   </span>
                   <span className={cn("mt-0.5 block text-xs", n.mode === "gate" && n.summary !== "Nothing waiting" ? "font-medium text-accent-ink" : "text-ink/60")}>{n.summary}</span>
                 </span>
-                <ChevronRightIcon className="mt-1 shrink-0 text-ink/40" />
+                <CaretRightIcon className="mt-1 shrink-0 text-ink/40" />
               </button>
               <ul className="ml-4 border-l-2 border-line pb-1.5 pl-1 pr-1">
                 {n.branches.map((b) => (

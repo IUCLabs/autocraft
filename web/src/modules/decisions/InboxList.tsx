@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
-import { CheckIcon, Undo2Icon, UsersIcon } from "lucide-react";
+import { CheckIcon, ArrowUUpLeftIcon, UsersIcon } from "@phosphor-icons/react";
 import type { Decision, DecisionList } from "../../api/types";
 import type { Command, ViewProps } from "../../registry/types";
 import { useHotkeys, useShortcutHelp } from "../../shell/keyboard";
@@ -126,7 +126,7 @@ function Row({ d, active, checked, mine, onOpen, activeRef }: { d: Decision; act
       <label className="flex w-9 shrink-0 cursor-pointer items-start justify-center pt-[11px]" title="Select for a batch answer (x)">
         <input type="checkbox" checked={checked} onChange={() => localActions.toggle(d.id)} className="peer sr-only" aria-label={`Select ${d.title}`} />
         <span className={cn("flex size-3.5 items-center justify-center rounded-sm border peer-focus-visible:outline peer-focus-visible:outline-2 peer-focus-visible:outline-accent-ink", checked ? "border-accent bg-accent text-white" : "border-line-strong opacity-50 group-hover:opacity-100")}>
-          {checked && <CheckIcon className="text-[10px]" strokeWidth={3} />}
+          {checked && <CheckIcon className="text-[10px]" weight="bold" />}
         </span>
       </label>
       <div ref={activeRef} role="option" tabIndex={0} aria-selected={active} onClick={onOpen} onKeyDown={(e) => { if (e.target === e.currentTarget && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); onOpen(); } }} className="min-w-0 flex-1 cursor-pointer rounded-none py-2 pr-3 text-left">
@@ -165,7 +165,7 @@ function JustAnswered({ entry }: { entry: { id: string; label: string; ref: stri
       <CheckIcon className="shrink-0 text-ok" />
       <span className="code shrink-0 text-ink/70">{entry.ref}</span>
       <span className="truncate text-ink/60">→ {entry.label}</span>
-      <Button size="sm" variant="ghost" icon={Undo2Icon} className="ml-auto" onClick={() => void undo(entry.id)}>
+      <Button size="sm" variant="ghost" icon={ArrowUUpLeftIcon} className="ml-auto" onClick={() => void undo(entry.id)}>
         Undo
       </Button>
     </div>

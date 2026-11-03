@@ -1,21 +1,21 @@
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 import {
-  CircleDotIcon,
+  RadioButtonIcon,
   GitPullRequestIcon,
   GitMergeIcon,
   CheckIcon,
   XIcon,
-  LoaderIcon,
+  SpinnerIcon,
   MinusIcon,
   TagIcon,
-  SparklesIcon,
+  SparkleIcon,
   FlagIcon,
-  CircleCheckIcon,
-  CircleSlashIcon,
-  MessageSquareIcon,
-  type LucideIcon,
-} from "lucide-react";
+  CheckCircleIcon,
+  ProhibitIcon,
+  ChatCircleIcon,
+  type Icon as PhosphorIcon,
+} from "@phosphor-icons/react";
 import { useQuery } from "../../api/client";
 import { Pending } from "../../ui/Pending";
 import type { CiState, Classification, Item, ItemComment, Stage, Tier } from "../../api/types";
@@ -49,10 +49,10 @@ const TIER: Record<Tier, [string, Tone]> = {
   "override-deny": ["Override: deny", "bad"],
 };
 
-const CI_ICON: Record<CiState, [LucideIcon, string]> = {
+const CI_ICON: Record<CiState, [PhosphorIcon, string]> = {
   passing: [CheckIcon, "text-ok"],
   failing: [XIcon, "text-bad"],
-  pending: [LoaderIcon, "text-warn"],
+  pending: [SpinnerIcon, "text-warn"],
   none: [MinusIcon, "text-ink/40"],
 };
 
@@ -111,8 +111,8 @@ function ItemMain({ params }: ViewProps) {
 }
 
 function StatePill({ it }: { it: Item }) {
-  const [Icon, label, cls]: [LucideIcon, string, string] =
-    it.state === "merged" ? [GitMergeIcon, "Merged", "bg-merged"] : it.state === "closed" ? [CircleSlashIcon, "Closed", "bg-bad"] : [it.kind === "pr" ? GitPullRequestIcon : CircleDotIcon, "Open", "bg-[#238636]"];
+  const [Icon, label, cls]: [PhosphorIcon, string, string] =
+    it.state === "merged" ? [GitMergeIcon, "Merged", "bg-merged"] : it.state === "closed" ? [ProhibitIcon, "Closed", "bg-bad"] : [it.kind === "pr" ? GitPullRequestIcon : RadioButtonIcon, "Open", "bg-[#238636]"];
   return (
     <span className={cn("inline-flex h-7 items-center gap-1.5 rounded-full px-3 text-sm font-medium text-white", cls)}>
       <Icon className="text-[14px]" /> {label}
@@ -327,38 +327,38 @@ function Verdicts({ cls }: { cls: Classification[] }) {
   );
 }
 
-const STAGE: Record<Stage, [string, LucideIcon]> = {
+const STAGE: Record<Stage, [string, PhosphorIcon]> = {
   classified: ["Classified", TagIcon],
-  reviewed: ["Reviewed", SparklesIcon],
-  take: ["Taken", CircleCheckIcon],
+  reviewed: ["Reviewed", SparkleIcon],
+  take: ["Taken", CheckCircleIcon],
   hold: ["Held", MinusIcon],
-  close: ["Marked to close", CircleSlashIcon],
+  close: ["Marked to close", ProhibitIcon],
   "needs-decision": ["Waiting for a decision", FlagIcon],
   batched: ["Put in a batch", FlagIcon],
   merged: ["Merged by the pipeline", GitMergeIcon],
-  closed: ["Closed by the pipeline", CircleSlashIcon],
-  "fixed-by-us": ["Fixed by us", CircleCheckIcon],
-  "verify-planned": ["Verification planned", SparklesIcon],
-  "verify-ci-enough": ["CI is enough", CircleCheckIcon],
+  closed: ["Closed by the pipeline", ProhibitIcon],
+  "fixed-by-us": ["Fixed by us", CheckCircleIcon],
+  "verify-planned": ["Verification planned", SparkleIcon],
+  "verify-ci-enough": ["CI is enough", CheckCircleIcon],
   "verify-error": ["Verification not planned", MinusIcon],
   "verify-unavailable": ["Not verified: cannot build here", MinusIcon],
-  verified: ["Verified", CircleCheckIcon],
+  verified: ["Verified", CheckCircleIcon],
   "verify-failed": ["Verification failed", XIcon],
 };
 
-type Event = { label: string; Icon: LucideIcon; at: string; by: string; note: string | null };
+type Event = { label: string; Icon: PhosphorIcon; at: string; by: string; note: string | null };
 
 // GitHub's own events from the mirror, merged with the pipeline's stages.
 // A pipeline merge or close already says who did it, so GitHub's copy is left out.
 function events(it: Item): Event[] {
-  const out: Event[] = [{ label: "Opened", Icon: it.kind === "pr" ? GitPullRequestIcon : CircleDotIcon, at: it.createdAt, by: it.author, note: null }];
+  const out: Event[] = [{ label: "Opened", Icon: it.kind === "pr" ? GitPullRequestIcon : RadioButtonIcon, at: it.createdAt, by: it.author, note: null }];
   for (const s of it.stages) {
     const [label, Icon] = STAGE[s.stage];
     out.push({ label, Icon, at: s.at, by: s.by, note: s.note });
   }
   const has = (st: Stage) => it.stages.some((s) => s.stage === st);
   if (it.state === "merged" && it.mergedAt && !has("merged")) out.push({ label: "Merged", Icon: GitMergeIcon, at: it.mergedAt, by: it.mergedBy ?? "", note: null });
-  else if (it.state === "closed" && it.closedAt && !has("closed")) out.push({ label: "Closed", Icon: CircleSlashIcon, at: it.closedAt, by: "", note: null });
+  else if (it.state === "closed" && it.closedAt && !has("closed")) out.push({ label: "Closed", Icon: ProhibitIcon, at: it.closedAt, by: "", note: null });
   return out.filter((e) => e.at).sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
 }
 
@@ -405,7 +405,7 @@ function Discussion({ comments }: { comments: ItemComment[] }) {
         return (
           <li key={c.id} className="overflow-hidden rounded-md border border-line">
             <div className="flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-line bg-ink/[0.03] px-3 py-1.5 text-sm">
-              {c.author ? <Avatar login={c.author} size={18} /> : <MessageSquareIcon className="text-ink/40" />}
+              {c.author ? <Avatar login={c.author} size={18} /> : <ChatCircleIcon className="text-ink/40" />}
               <span className="font-medium">{c.author || "ghost"}</span>
               {review && <Badge tone={review[1]}>{review[0]}</Badge>}
               <span className="ml-auto text-xs text-ink/45" title={c.at}>

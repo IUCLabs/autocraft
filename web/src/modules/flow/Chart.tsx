@@ -4,7 +4,7 @@
 // nodes and their branch rows. The columns shrink with the window down to a floor,
 // so the whole flow fits on a laptop screen without scrolling sideways.
 import { useLayoutEffect, useRef, useState } from "react";
-import { ChevronRightIcon } from "lucide-react";
+import { CaretRightIcon } from "@phosphor-icons/react";
 import type { AgentRun, Flow, FlowEdge, FlowNode } from "../../api/types";
 import { Badge } from "../../ui/Badge";
 import { cn } from "../../ui/cn";
@@ -38,7 +38,7 @@ export function NodeCard({ n, selected, onSelect, runs }: { n: FlowNode; selecte
           {gate && <Badge tone="accent">People decide</Badge>}
           {planned && <Badge>Planned</Badge>}
           <RunningMarker n={n} runs={runs} className="ml-auto" />
-          <ChevronRightIcon className={cn("shrink-0 text-ink/40", runs.length === 0 && "ml-auto")} />
+          <CaretRightIcon className={cn("shrink-0 text-ink/40", runs.length === 0 && "ml-auto")} />
         </span>
         <span className={cn("mt-0.5 block text-xs", gate && n.summary !== "Nothing waiting" ? "font-medium text-accent-ink" : "text-ink/60")}>{n.summary}</span>
       </button>

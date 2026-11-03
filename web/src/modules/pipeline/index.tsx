@@ -3,7 +3,7 @@
 // limits and cancel jobs. The runner process does the work.
 import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { ArrowLeftIcon, WorkflowIcon } from "lucide-react";
+import { ArrowLeftIcon, TreeStructureIcon } from "@phosphor-icons/react";
 import { useApi, useQuery } from "../../api/client";
 import type { Job, JobParams, JobState, PipelineOverview, PipelineStage, SyncRun } from "../../api/types";
 import type { FeatureModule, ViewProps } from "../../registry/types";
@@ -321,7 +321,7 @@ function PhonePipeline(props: ViewProps) {
 export const pipelineModule: FeatureModule = {
   id: "pipeline",
   permission: "viewer",
-  nav: { label: "Pipeline", icon: WorkflowIcon, to: "/pipeline", group: "operator", order: 5 },
+  nav: { label: "Pipeline", icon: TreeStructureIcon, to: "/pipeline", group: "operator", order: 5 },
   routes: [
     {
       path: "pipeline/:id?",

@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { ScaleIcon } from "lucide-react";
+import { ScalesIcon } from "@phosphor-icons/react";
 import { useQuery } from "../../api/client";
 import { Pending } from "../../ui/Pending";
 import type { Agreement, ClassifierReport } from "../../api/types";
@@ -276,6 +276,6 @@ function Classifiers(_: ViewProps) {
 export const classifiersModule: FeatureModule = {
   id: "classifiers",
   permission: "viewer",
-  nav: { label: "Classifiers", icon: ScaleIcon, to: "/classifiers", group: "insight", order: 11 },
+  nav: { label: "Classifiers", icon: ScalesIcon, to: "/classifiers", group: "insight", order: 11 },
   routes: [{ path: "classifiers", view: { id: "classifiers", title: "Classifiers", panels: [{ id: "main", title: "Classifiers", component: Classifiers, defaultSize: 100 }] } }],
 };

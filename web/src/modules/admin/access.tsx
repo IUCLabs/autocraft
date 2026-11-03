@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { ShieldIcon } from "lucide-react";
+import { ShieldIcon } from "@phosphor-icons/react";
 import { useApi, useQuery } from "../../api/client";
 import type { AccessEntry, AuditEntry, Role, SessionInfo } from "../../api/types";
 import type { FeatureModule, ViewProps } from "../../registry/types";

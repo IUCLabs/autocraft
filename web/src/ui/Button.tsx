@@ -1,12 +1,12 @@
 // Variant set adapted from ArtCraft libs/components/button (MIT OR Apache-2.0),
 // restyled as developer-tool controls: sentence-case labels, 28/32 px heights.
 import { forwardRef, type ButtonHTMLAttributes } from "react";
-import type { LucideIcon } from "lucide-react";
-import { LoaderCircleIcon } from "lucide-react";
+import type { Icon as PhosphorIcon } from "@phosphor-icons/react";
+import { CircleNotchIcon } from "@phosphor-icons/react";
 import { cn } from "./cn";
 
 export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
-  icon?: LucideIcon;
+  icon?: PhosphorIcon;
   iconAfter?: boolean;
   variant?: "primary" | "secondary" | "ghost" | "destructive";
   size?: "sm" | "md" | "lg";
@@ -29,7 +29,7 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
   { icon: Icon, iconAfter, variant = "secondary", size = "md", loading, className, children, disabled, ...rest },
   ref,
 ) {
-  const icon = loading ? <LoaderCircleIcon className="animate-spin" /> : Icon ? <Icon /> : null;
+  const icon = loading ? <CircleNotchIcon className="animate-spin" /> : Icon ? <Icon /> : null;
   return (
     <button
       ref={ref}
