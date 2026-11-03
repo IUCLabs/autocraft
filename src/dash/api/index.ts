@@ -30,6 +30,8 @@ import { work } from "./work.ts";
 import { flow } from "./flow.ts";
 import { queueSlots } from "../../rank/position.ts";
 import * as items from "./items.ts";
+import { postmergeOf } from "./postmerge.ts";
+import { canSeeInternals } from "./staff.ts";
 import * as operator from "./operator.ts";
 import { actionsOf as releasesOf } from "../../operator-actions.ts";
 import { verificationOf } from "../../verify/results.ts";
@@ -128,6 +130,7 @@ async function item(db: DatabaseSync, req: Req): Promise<Item> {
     ...(it.kind === "pr" ? prWork(db, repo, n) : { verification: null, fixups: [] }),
     patchChecks: checksOf(db, repo, n).map(({ kind, subject, patchHash, round, verdict, reasons, problems, model, createdAt }) => ({ kind, subject, patchHash, round, verdict, reasons, problems, model, createdAt })),
     reviews: it.kind === "pr" ? reviewsOf(db, repo, n) : null,
+    postmerge: it.kind === "pr" ? postmergeOf(db, repo, n, canSeeInternals(req)) : null,
     actions: actionsOf(db, repo, n), releases: releasesOf(db, repo, n),
     queue: queueSlots(db, await visibleRepos(db, req)).get(`${repo}#${n}`) ?? null,
   };

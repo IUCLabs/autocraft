@@ -43,6 +43,7 @@ import { defaultPerDay, lanesInOrder, limitSteps, zeroOnlySteps } from "../stage
 import { applyUsedAnswers } from "../decisions-used.ts";
 import { duePriorityCount } from "../priority/index.ts";
 import { selectIssues } from "../fixissue/candidates.ts";
+import { pendingDefects, selectPostmerge } from "../postmerge/select.ts";
 import { refereeCandidates } from "../classify/referee.ts";
 import { currentRun, dueItems, haikuDue } from "./classify.ts";
 import { enqueue, JobError, now, requestCancel, RUNNER_STOPPED } from "./jobs.ts";
@@ -392,6 +393,18 @@ const LANE_CODE: Omit<Lane, "steps">[] = [
     name: "cifix-rerun",
     perRepo: true,
     detect: (db, { tracked }) => tracked.filter((repo) => selectCifix(db, repo).rerun.length > 0).sort().map((repo) => ({ step: "cifix-rerun", params: { repo } })),
+  },
+  {
+    // Opus reviews what each pipeline merge landed; reads only, so it needs no repo approval.
+    name: "postmerge",
+    perRepo: true,
+    detect: (db, { tracked }) => tracked.filter((repo) => selectPostmerge(db, repo).length).sort().map((repo) => ({ step: "postmerge", params: { repo } })),
+  },
+  {
+    // The defects of those reviews become issues in repos approved for comments.
+    name: "postmerge-file",
+    perRepo: true,
+    detect: (db, { tracked }) => tracked.filter((repo) => commentApprovalOf(db, repo) && pendingDefects(db, repo).length).sort().map((repo) => ({ step: "postmerge-file", params: { repo } })),
   },
 ];
 

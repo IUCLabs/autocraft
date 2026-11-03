@@ -25,6 +25,7 @@ import { classifyCifix } from "../cifix/candidates.ts";
 import { approvalOf } from "../labels/approval.ts";
 import { mergeApprovalOf } from "../merge/approval.ts";
 import { buildQueue, eligible, type QueueState } from "../merge/queue.ts";
+import { pendingDefects, selectPostmerge } from "../postmerge/select.ts";
 import { trackedNames } from "../repos.ts";
 import { candidateRefs, scopeAnswers } from "../review/candidates.ts";
 import { selectCandidates as verifyCandidates } from "../verify/candidates.ts";
@@ -406,7 +407,35 @@ function act(c: Ctx): NodeCount {
   };
 }
 
-export const COUNTERS = { synced, dupes, classify, priority, decide, labels, review, fix, fixup, verify, merge, act } as const;
+/** Post-merge review (src/postmerge): merged PRs to review, defects to file, and what the reviews of the last 24 hours led to. */
+function postmerge(c: Ctx): NodeCount {
+  const members = new Map<string, Refs>(["todo", "to-file", "unapproved", "filed", "nothing"].map((k) => [`postmerge.${k}`, new Set()]));
+  const toFile = new Set<string>();
+  for (const repo of c.repos()) {
+    for (const m of selectPostmerge(c.db, repo)) members.get("postmerge.todo")!.add(`${repo}#${m.number}`);
+    const approved = commentApprovalOf(c.db, repo) !== null;
+    for (const d of pendingDefects(c.db, repo)) {
+      toFile.add(`${repo}#${d.number}`);
+      members.get(approved ? "postmerge.to-file" : "postmerge.unapproved")!.add(`${repo}#${d.number}`);
+    }
+  }
+  const recent = c.refs(`SELECT repo, number FROM main.postmerge_reviews WHERE error IS NULL AND at >= :since ${c.andRepo()}`, { since: c.since });
+  const filed = c.refs(`SELECT DISTINCT repo, number FROM main.postmerge_followups WHERE state = 'filed' AND at >= :since ${c.andRepo()}`, { since: c.since });
+  for (const r of filed) members.get("postmerge.filed")!.add(r);
+  for (const r of recent) if (!filed.has(r) && !toFile.has(r)) members.get("postmerge.nothing")!.add(r);
+  return {
+    counts: {
+      ...Object.fromEntries([...members].map(([k, v]) => [k, v.size])),
+      "postmerge.total": sizeOf(members, "postmerge.todo") + toFile.size,
+      "postmerge.recent.reviewed": recent.size,
+      "edge.merge.postmerge": sizeOf(members, "postmerge.todo"),
+      "edge.postmerge.fix": sizeOf(members, "postmerge.filed"),
+    },
+    members,
+  };
+}
+
+export const COUNTERS = { synced, dupes, classify, priority, decide, labels, review, fix, fixup, verify, merge, postmerge, act } as const;
 export type CountedNode = keyof typeof COUNTERS;
 
 /** Every count for one repo, or for every tracked repo when `repo` is null. */

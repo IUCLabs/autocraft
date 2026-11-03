@@ -131,3 +131,37 @@ export const ghDelta: DeltaFetcher = async (repo, base, head) => {
   if (diff.code !== 0) return { ok: false, tooLarge: /too_large|too large|406/i.test(diff.err), error: diff.err.trim().slice(0, 300) };
   return { ok: true, text: diff.out };
 };
+
+/** What a merged PR landed: the commit read (null when the diff is the PR's own) and its diff restricted to the files of the PR's own diff. */
+export type MergedDiff = { ok: true; sha: string | null; text: string } | { ok: false; tooLarge: boolean; error: string };
+/** `batch`: the PR landed through an integration batch, whose merge commit carries every member. */
+export type MergedFetcher = (repo: string, number: number, opts?: { batch?: boolean }) => Promise<MergedDiff>;
+
+/**
+ * The merge commit's diff against its first parent, kept to the files the PR changed. A PR merged through an integration
+ * batch, or one without a merge commit, is read as its own diff at the merged head (it includes the pipeline's pushes to
+ * the PR branch). When the PR's own diff cannot be read there is no diff: the merge commit alone would carry other PRs.
+ */
+export const ghMerged: MergedFetcher = async (repo, number, opts = {}) => {
+  const own = await ghDiff(repo, number);
+  if (!own.ok) return own;
+  if (opts.batch) return { ok: true, sha: null, text: own.text };
+  const view = await gh(["pr", "view", String(number), "--repo", `${ORG}/${repo}`, "--json", "mergeCommit", "--jq", ".mergeCommit.oid // empty"]);
+  const sha = view.code === 0 && /^[0-9a-f]{40}$/.test(view.out.trim()) ? view.out.trim() : null;
+  const fallback: MergedDiff = { ok: true, sha, text: own.text };
+  if (!sha) return fallback;
+  const c = await gh(["api", "-H", "Accept: application/vnd.github.diff", `repos/${ORG}/${repo}/commits/${sha}`]);
+  if (c.code !== 0) return fallback;
+  const keep = new Set(splitDiff(own.text).map((f) => f.path));
+  const text = splitDiff(c.out).filter((f) => keep.has(f.path)).map((f) => f.text).join("");
+  return text ? { ok: true, sha, text } : fallback;
+};
+
+/** Whether `path` exists on `ref` of the repo; null when GitHub could not say (anything but a plain not-found). */
+export type FileChecker = (repo: string, ref: string, path: string) => Promise<boolean | null>;
+
+export const ghFileExists: FileChecker = async (repo, ref, path) => {
+  const r = await gh(["api", `repos/${ORG}/${repo}/contents/${path.split("/").map(encodeURIComponent).join("/")}?ref=${encodeURIComponent(ref)}`, "--jq", ".type"]);
+  if (r.code === 0) return r.out.trim().length > 0;
+  return /\b404\b|Not Found/i.test(r.err) ? false : null;
+};

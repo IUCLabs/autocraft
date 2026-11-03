@@ -1,5 +1,5 @@
 // Verify, Fix-up and Act results for the Item page, varied by item number.
-import type { Item, ItemAction, ItemFixup, ItemPatchCheck, ItemReviews, ItemVerification, TaskResult } from "../types";
+import type { Item, ItemAction, ItemFixup, ItemPatchCheck, ItemPostmerge, ItemReviews, ItemVerification, TaskResult } from "../types";
 
 const H = 3600_000;
 const NOW = Date.parse("2026-11-02T10:40:00Z");
@@ -80,6 +80,29 @@ function patchChecksFor(n: number): ItemPatchCheck[] {
   }
   if (n % 6 === 3) return [{ kind: "fixissue", subject: sha(n), patchHash: "0a9b8c", round: 1, verdict: "approve", reasons: "Minimal change that matches the reported crash.", problems: [], model: "opus", createdAt: iso(2 * H) }];
   return [];
+}
+
+/** A merged PR with one defect that was filed as an issue and one minor finding; every sixth PR. Staff-only notes are left out for others. */
+export function postmergeFor(n: number, kind: Item["kind"], staff: boolean): ItemPostmerge | null {
+  if (kind !== "pr" || n % 6 !== 0) return null;
+  const notes = staff ? { missedBy: "conflict merge", missedWhy: "The take-fix change was dropped when the conflict merge replaced the head, and Verify only ran the tests that existed at the earlier head." } : {};
+  return {
+    at: iso(3 * H), model: "claude-opus-5-5", mergeSha: sha(n + 3),
+    error: null,
+    earlier: [],
+    findings: [
+      {
+        severity: "defect", title: "Stride is read before the image is checked for 16-bit data",
+        body: "`decode_row` in `crates/codecs/src/png.rs:91` multiplies `width` by 4 before it tests `bit_depth`, so a 16-bit image reads half of each row.\n\nA 16-bit PNG then decodes with a shifted second half. Compute the stride from `bytes_per_pixel()` instead.",
+        file: "crates/codecs/src/png.rs", line: 91, filing: { state: "filed", issue: { number: n + 40, url: `https://github.com/example-org/repo/issues/${n + 40}`, state: "open", title: "Stride is read before the image is checked for 16-bit data" } }, ...notes,
+      },
+      {
+        severity: "minor", title: "Comment above `resize` still describes the 8-bit stride",
+        body: "The doc comment at `crates/codecs/src/png.rs:84` says each row is `width * 4` bytes. It no longer is for 16-bit images.",
+        file: "crates/codecs/src/png.rs", line: 84, filing: { state: "minor" }, ...(staff ? { missedBy: "review", missedWhy: "The comment sits outside the changed lines." } : {}),
+      },
+    ],
+  };
 }
 
 export function prWorkFor(n: number, kind: Item["kind"]): Pick<Item, "verification" | "fixups" | "actions" | "reviews" | "patchChecks"> {

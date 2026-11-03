@@ -6,14 +6,14 @@ import type { LaneId } from "../../web/src/ui/organisms/swimlaneDef.ts";
 
 export type Wait = FlowWait;
 export type Tone = FlowBranch["tone"];
-export type StageId = "synced" | "dupes" | "classify" | "priority" | "decide" | "labels" | "review" | "fix" | "fixup" | "verify" | "merge" | "act";
+export type StageId = "synced" | "dupes" | "classify" | "priority" | "decide" | "labels" | "review" | "fix" | "fixup" | "verify" | "merge" | "postmerge" | "act";
 /** Where a state's count links to: the Items list filtered to the state (default), the merge queue, the Items list across all states, or the items of one kind. */
 export type StateLink = "items" | "queue" | "anyState" | "kind-issue" | "kind-pr" | null;
 
 export type StageDef = {
   id: StageId;
   title: string;
-  /** Position in the flowchart, 1 to 12. */
+  /** Position in the flowchart, 1 to 13. */
   order: number;
   /** Stage number stored in agent_runs.stage (docs/pipeline.md numbering of the runner). */
   runStage: number;
@@ -281,7 +281,7 @@ export const STAGES: StageDef[] = [
     id: "fixup", title: "Fix-up", order: 9, runStage: 6, docSection: "Fix-up", mode: "steps",
     description: "For a take-with-fixes review, applies the listed small fixes to the contributor's branch, or posts them as a comment when the branch cannot be pushed to. For a wanted PR whose gate check fails, runs the formatter, reruns an infrastructure failure once, or has a model patch the code.",
     steps: [{ name: "fixup", label: "Fix-up", limit: null, seeded: 20 }, { name: "cifix", label: "CI fix", limit: null }, { name: "cifix-rerun", label: "CI fix reruns", limit: 30 }],
-    lanes: [{ name: "fixup", steps: ["fixup"], order: 12 }, { name: "cifix", steps: ["cifix"], order: 21 }, { name: "cifix-rerun", steps: ["cifix-rerun"], order: 22 }],
+    lanes: [{ name: "fixup", steps: ["fixup"], order: 12 }, { name: "cifix", steps: ["cifix"], order: 23 }, { name: "cifix-rerun", steps: ["cifix-rerun"], order: 24 }],
     reads: ["Review fix lists", "Repo checkout at the PR head", "Failed CI check logs"],
     sets: ["Pushed commits", "Fix comments", "Formatter tasks", "CI reruns"],
     states: [
@@ -382,7 +382,7 @@ export const STAGES: StageDef[] = [
       { id: "batch", lane: "sandbox", row: 16, lines: ["Integration batch", "up to 50 PRs, upstream CI"] },
       { id: "merge", lane: "writes", row: 17, lines: ["Merge", "batch PR, safe-merge --merge"], approval: "merge approval" },
     ],
-    edges: [],
+    edges: [{ to: "postmerge", branch: "merged", label: "merged PRs" }],
   },
   {
     id: "act", title: "Act", order: 12, runStage: 6, docSection: "Act", mode: "steps",
@@ -410,6 +410,34 @@ export const STAGES: StageDef[] = [
       { id: "act3", lane: "writes", row: 15, lines: ["Act", "comment, then close"], approval: "comment approval" },
     ],
     edges: [],
+  },
+  {
+    id: "postmerge", title: "Post-merge review", order: 13, runStage: 8, docSection: "Post-merge review", mode: "steps",
+    description: "Opus reviews each PR the pipeline merged a second time, reading what landed with the pipeline's own commits and reviews of the PR, and lists defects and minor findings. Each defect that no open item covers becomes one follow-up issue in repos approved for commenting; minor findings are only shown.",
+    steps: [{ name: "postmerge", label: "Post-merge review", limit: null }, { name: "postmerge-file", label: "File follow-up issues", limit: 20 }],
+    lanes: [{ name: "postmerge", steps: ["postmerge"], order: 21 }, { name: "postmerge-file", steps: ["postmerge-file"], order: 22 }],
+    reads: ["Merged PRs and their merge commits", "Our commits and reviews of each PR", "Open issues and PRs, for duplicates", "Repo checkout"],
+    sets: ["Findings per merged PR", "Follow-up issues on GitHub"],
+    states: [
+      { id: "todo", label: "To review", waitsOn: "model", tone: "neutral", hint: "Merged by the pipeline since the stage started; no post-merge review yet", link: "anyState" },
+      { id: "to-file", label: "Defects to file", waitsOn: "runner", tone: "warn", hint: "A defect no open item covers; the daily limit may delay it", link: "anyState" },
+      { id: "unapproved", label: "Repo not approved for commenting", waitsOn: "person", tone: "warn", hint: "An operator approves commenting per repo on the Repos page", gate: true, link: "anyState" },
+      { id: "filed", label: "Follow-up filed in the last 24 h", waitsOn: "nothing", tone: "ok", hint: "The issue goes through Classify and Fix", link: "anyState" },
+      { id: "nothing", label: "Nothing to file in the last 24 h", waitsOn: "nothing", tone: "neutral", hint: "No findings, minor findings only, or defects another item already covers", link: "anyState" },
+    ],
+    models: [{ model: "opus", use: "Reviews each merged PR", remark: "Reads the merge commit and lists findings; the reply is linted like the Review stage's" }],
+    promptIds: ["postmerge.opus"], promptStage: "Post-merge review",
+    waits: [
+      { name: "Failed post-merge review", why: "The model gave no valid reply twice", howLong: "1 hour, three tries in all", showsAs: "Post-merge review on the item page: no review yet", kind: "backoff" },
+      { name: "Failed post-merge filing", why: "GitHub refused to create the issue", howLong: "1 hour, then 6 hours; stops after three attempts", showsAs: "Post-merge review on the item page: not filed, with the attempts", kind: "backoff" },
+    ],
+    writes: [{ what: "Follow-up issue", approval: "comment" }],
+    person: "Per-repo approval",
+    swimlane: [
+      { id: "pmreview", lane: "models", row: 18, lines: ["Post-merge review", "Opus reads the merge"] },
+      { id: "pmfile", lane: "writes", row: 19, lines: ["File issues", "one per defect"], approval: "comment approval" },
+    ],
+    edges: [{ to: "fix", branch: "filed", label: "follow-up issues" }],
   },
 ];
 

@@ -37,7 +37,7 @@ export function reviewText(db: DatabaseSync, repo: string, number: number, head:
   if (!summary && !reason) return null;
   let fixes = 0;
   try { fixes = (JSON.parse(o.fixes ?? "[]") as unknown[]).length; } catch { /* none */ }
-  return { summary: summary || reason, by: summary ? (o.model ?? "opus") : "", why: oneSentence(o.why) ?? oneSentence(o.reason), verdict: o.verdict, sure: o.sure !== 0, reason, fixes };
+  return { summary: summary || reason, by: o.model ?? "opus", why: oneSentence(o.why) ?? oneSentence(o.reason), verdict: o.verdict, sure: o.sure !== 0, reason, fixes };
 }
 
 /** The "review:" fact of a Merge? decision. */

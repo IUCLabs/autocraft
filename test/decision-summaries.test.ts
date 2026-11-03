@@ -42,15 +42,15 @@ describe("merge and close summaries", () => {
     assert.ok(!c.summary!.includes("Risks:"));
   });
 
-  test("a review stored without a summary gives its reason whole and no model name; a long reason gives no recommendation", () => {
+  test("a review stored without a summary gives its reason whole, named for the model that wrote it; a long reason gives no recommendation", () => {
     const db = fresh();
     const long = `${Array.from({ length: 50 }, (_, i) => `word${i}`).join(" ")}. And a second sentence.`;
     review(db).run(3, "sha3", "opus", "close", long, null, null, null);
     review(db).run(4, "sha4", "opus", "close", "Not wanted in core.", null, null, null);
     askCloseDecisions(db, "app", T0);
     const a = getDecision(db, closeDecisionId("app", 3, "sha3"))!, b = getDecision(db, closeDecisionId("app", 4, "sha4"))!;
-    assert.deepEqual([a.summary, a.summary_by, a.recommended, a.recommended_reason], [long, null, null, null]);
-    assert.deepEqual([b.summary, b.summary_by, b.recommended, b.recommended_reason], ["Not wanted in core.", null, "close", "Not wanted in core."]);
+    assert.deepEqual([a.summary, a.summary_by, a.recommended, a.recommended_reason], [long, "opus", null, null]);
+    assert.deepEqual([b.summary, b.summary_by, b.recommended, b.recommended_reason], ["Not wanted in core.", "opus", "close", "Not wanted in core."]);
   });
 
   test("an open Merge? is refreshed from the review at its head: stale text is replaced, a recommendation needs a reason, a second run changes nothing", () => {
@@ -79,7 +79,7 @@ describe("merge and close summaries", () => {
     review(db).run(4, "sha4", "opus", "take", `${Array.from({ length: 50 }, (_, i) => `w${i}`).join(" ")}.`, null, null, null);
     assert.equal(fillReviewSummaries(db, T0), 1);
     const n = getDecision(db, q.id)!;
-    assert.deepEqual([n.summary_by, n.recommended, n.recommended_reason], [null, null, null]);
+    assert.deepEqual([n.summary_by, n.recommended, n.recommended_reason], ["opus", null, null]);
     assert.equal(fillReviewSummaries(db, T0), 0);
   });
 });

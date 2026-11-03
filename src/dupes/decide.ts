@@ -153,7 +153,7 @@ function textOf(db: DatabaseSync, p: GroupPlan) {
   const texts = used.map((c) => c.summary
     || (c.source === "rule" ? `Kept ${kept(c)} by rule: ${(c.reason ?? "").replace(/^kept by rule: /, "")}.` : c.source === "closed" ? `Kept ${kept(c)}: ${c.reason ?? ""}.` : c.reason ?? "")).filter(Boolean);
   const summary = texts.join(" ") || `Keep ${list(keeps.map((k) => k.number))}.`;
-  const by = used.length && used.every((c) => c.source === "model" && c.summary) ? p.model ?? "" : "";
+  const by = used.length && used.every((c) => c.source === "model") ? p.model ?? "" : "";
   // One sentence for the recommendation; none from a rule or when the model gave nothing to say.
   const lead = p.sets.find((s) => s.cmp.kept === primary.number) ?? p.sets[0]!;
   const why = byRule || lead.cmp.source === "single" ? null : oneSentence(lead.cmp.why) ?? oneSentence(lead.cmp.reason);

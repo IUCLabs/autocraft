@@ -250,6 +250,8 @@ export interface Item extends ItemRef {
   verification: ItemVerification | null;
   /** PRs: the Fix-up step's tries, oldest first. */
   fixups: ItemFixup[];
+  /** PRs the pipeline merged: the post-merge review; null or absent when there is none. */
+  postmerge?: ItemPostmerge | null;
   /** Opus checks of the patches we wrote for this item (Fix-up, Fix), oldest first. */
   patchChecks?: ItemPatchCheck[];
   /** PRs: the Opus review of the newest reviewed head, and the verdict later stages use; null before the first review. */
@@ -305,6 +307,56 @@ export interface ItemReviews {
   current: boolean;
   opus: (ReviewSide & { sure: boolean; mode: "full" | "delta"; baseHead: string | null }) | null;
   final: { verdict: ReviewVerdictName; reason: string; decided: boolean };
+}
+
+export type PostmergeSeverity = "defect" | "minor";
+
+/** What became of one finding: filed as an issue, or why it was not. */
+export type PostmergeFiling =
+  | { state: "filed"; issue: { number: number; url: string | null; state: ItemState | null; title: string | null } }
+  | { state: "duplicate"; duplicateOf: number }
+  | { state: "limit" }
+  | { state: "minor" }
+  | { state: "pending" }
+  /** `gh issue create` was started and its answer is not recorded: the issue may exist. */
+  | { state: "unknown" }
+  | { state: "failed"; attempts: number }
+  /** The file the finding cites is no longer on the default branch. */
+  | { state: "stale" }
+  /** The text names the product or the pipeline's account. */
+  | { state: "refused" }
+  /** Never filed automatically: `earlier` follow-ups of the PR exist, or `fix`: the PR itself fixes a follow-up issue. */
+  | { state: "held"; reason: "earlier" | "fix" };
+
+/** A follow-up issue filed for the PR by an earlier review of it. */
+export type PostmergeEarlier =
+  | { state: "filed"; title: string; issue: { number: number; url: string | null; state: ItemState | null; title: string | null } }
+  | { state: "unknown"; title: string };
+
+export interface PostmergeFinding {
+  severity: PostmergeSeverity;
+  title: string;
+  /** Markdown, written for the public issue. */
+  body: string;
+  file: string | null;
+  line: number | null;
+  filing: PostmergeFiling;
+  /** Internal notes: the stage that should have caught it and why it did not. Present only for operators and maintainers. */
+  missedBy?: string | null;
+  missedWhy?: string | null;
+}
+
+/** The post-merge review of a PR the pipeline merged. */
+export interface ItemPostmerge {
+  at: string;
+  model: string | null;
+  /** The commit the review read. */
+  mergeSha: string;
+  /** Why there is no review yet (for example too large to review); null when there is one. */
+  error: string | null;
+  findings: PostmergeFinding[];
+  /** Follow-ups of earlier reviews of the PR. */
+  earlier: PostmergeEarlier[];
 }
 
 export type FixupState = "pushed" | "failed" | "refused" | "cannot-push" | "too-large" | "asked" | "rejected" | "push-denied" | "infra" | "rerun" | "formatting";

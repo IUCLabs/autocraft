@@ -25,6 +25,7 @@ Stages run in this order. Details, limits and rules for each are in [docs/pipeli
 | Verify | Records upstream CI as the verification of taken PRs in repos that have it. A repo without CI, and a bugfix that changes a test file, get a model-planned build in a build environment; a model summarises failures. | Sonnet, Haiku | yes: failures and errors |
 | Merge queue | Merges PRs that pass the rules in integration batches (up to 50 PRs, checked by upstream CI on the batch PR) through safe-merge, and asks for a Merge? decision on PRs outside the rules. Approves held CI runs of outside contributors where the repo allows it. | Haiku | yes: merge? decision for PRs outside the rules |
 | Act | Makes the comments and closes that follow an operator's answer, from fixed templates. | none | yes: per-repo approval |
+| Post-merge review | Opus reviews each PR the pipeline merged a second time, reading what landed with the pipeline's own commits and reviews of the PR, and lists defects and minor findings. Each defect that no open item covers becomes one follow-up issue in repos approved for commenting; minor findings are only shown. | Opus | yes: per-repo approval |
 <!-- stages:end stage-table -->
 
 ![Pipeline flowchart on the dashboard home page, with mock data](docs/images/flowchart.png)
