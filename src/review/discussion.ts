@@ -5,7 +5,7 @@
 import { createHash } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { audit } from "../dash/audit.ts";
-import { envVar } from "../env.ts";
+import { isBotLogin } from "./bots.ts";
 import type { Querier } from "../mirror.ts";
 import { FORMAL_REVIEWS, recordGate, recordGateFailure, type ReviewFact } from "../merge/changes-requested.ts";
 import { ENTRY_LIMIT, TOTAL_LIMIT, type DiscussionEntry } from "./parse.ts";
@@ -47,15 +47,6 @@ export function pipelineLogin(db: DatabaseSync): string {
 
 /** Authors whose words trigger a new review: the PR's author and people tied to the repository. Bot accounts never do. */
 const COUNTED_ASSOCIATIONS = ["OWNER", "MEMBER", "COLLABORATOR", "CONTRIBUTOR"];
-
-/** Review bots whose accounts do not carry GitHub's Bot type or a `[bot]` suffix; `AUTOCRAFT_REVIEW_BOTS` (comma-separated logins) replaces the list. */
-const DEFAULT_REVIEW_BOTS = ["coderabbitai"];
-
-function isBotLogin(login: string): boolean {
-  const list = (envVar("REVIEW_BOTS")?.split(",") ?? DEFAULT_REVIEW_BOTS).map((x) => x.trim().toLowerCase()).filter(Boolean);
-  const l = login.toLowerCase();
-  return l.endsWith("[bot]") || list.includes(l.replace(/\[bot\]$/, ""));
-}
 
 type Written = { author: string | null; association?: string | null; bot?: boolean; prAuthor?: string | null; state?: string | null; body: string | null; inline?: number };
 

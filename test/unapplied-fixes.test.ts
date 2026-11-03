@@ -112,4 +112,14 @@ describe("unapplied fixes of an earlier take-fix", () => {
     assert.deepEqual(carried(db), [{ from_head: "sha1", file: "src/lib.rs", outcome: "explained" }]);
     assert.equal((db.prepare("SELECT verdict FROM final_reviews WHERE number = 1 AND head_oid = 'sha2'").get() as { verdict: string }).verdict, "take");
   });
+
+  test("a take that still ignores them after the fix turn is stored unsure, with the reason in its risks", async () => {
+    const db = atMergedHead();
+    const calls = await review(db, [reply({ reason: "Looks fine." })]);
+    assert.equal(calls.length, 2);
+    const row = db.prepare("SELECT sure, risks FROM opus_reviews WHERE number = 1 AND head_oid = 'sha2'").get() as { sure: number; risks: string };
+    assert.equal(row.sure, 0);
+    assert.deepEqual(JSON.parse(row.risks), ["an earlier fix was neither made nor explained"]);
+    assert.deepEqual(carried(db), [{ from_head: "sha1", file: "src/lib.rs", outcome: "unaddressed" }]);
+  });
 });

@@ -232,6 +232,10 @@ export async function runOpusReview(db: DatabaseSync, params: OpusParams, log: (
       // Whatever the lint still found is left out (reference text) or cut to its first sentence (long summary or why); the call is never repeated for it.
       got = parseOpusReply(reply.text, input.ref, true, dropTexts(reply.problems));
     }
+    // A take that neither made nor explained an earlier fix goes to a person before it can merge.
+    if (got?.verdict === "take" && input.unapplied_fixes?.some((u) => carriedOutcome(got!, u) === "unaddressed")) {
+      got = { ...got, sure: false, risks: [...got.risks, "an earlier fix was neither made nor explained"] };
+    }
     if (got) {
       saveOpus(db, runId, c, { mode, base, model: deps.model, review: got, snap, unapplied: input.unapplied_fixes });
       tally(got);

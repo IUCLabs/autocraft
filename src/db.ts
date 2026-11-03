@@ -1,3 +1,4 @@
+import { isBotLogin } from "./review/bots.ts";
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -99,13 +100,16 @@ export const HISTORY_COPY_SQL = `INSERT INTO main.opus_review_history (repo, num
   WHERE NOT EXISTS (SELECT 1 FROM main.opus_review_history h WHERE h.repo = o.repo AND h.number = o.number AND h.head_oid = o.head_oid AND h.at = o.at)`;
 
 // Bump when migrateValues() or backfill() change what they do.
-const MIGRATION_VERSION = 8;
+const MIGRATION_VERSION = 9;
 
 // Rows written before their column existed.
 function backfill(db: DatabaseSync): void {
   // Reviews made before snapshots existed count as having read everything up to now: no wave of re-reviews.
   const now = new Date().toISOString();
   db.prepare("UPDATE main.opus_reviews SET seen_at = ? WHERE seen_at IS NULL").run(now);
+  // Bot comments never count as new discussion; rows stored while they did are recomputed (a bot known only by its account type is fixed by the next sync).
+  const bots = (db.prepare("SELECT DISTINCT author FROM main.comments WHERE counted = 1 AND author IS NOT NULL").all() as { author: string }[]).map((r) => r.author).filter(isBotLogin);
+  for (const a of bots) db.prepare("UPDATE main.comments SET counted = 0 WHERE counted = 1 AND author = ?").run(a);
   // The history starts with the stored rows, so an unsure review made before it existed is not lost by a re-review.
   db.exec(HISTORY_COPY_SQL);
   db.exec("UPDATE main.jobs SET repo = json_extract(params, '$.repo') WHERE repo IS NULL AND json_valid(params) AND json_type(params, '$.repo') = 'text'");

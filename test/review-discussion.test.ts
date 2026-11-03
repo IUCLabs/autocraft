@@ -127,6 +127,18 @@ describe("PR discussion in reviews", () => {
     assert.ok(staleReviews(db, "app").has("app#1@sha1"));
   });
 
+  test("opening an older database recomputes counted for stored bot comments", () => {
+    const path = join(mkdtempSync(join(dir, "db-")), "old.db");
+    const db = connect(path);
+    db.prepare("INSERT INTO comments (repo, number, id, kind, author, created_at, body, counted) VALUES ('app', 1, ?, 'comment', ?, ?, 'Major: x', 1)").run("b1", "coderabbitai", T2);
+    db.prepare("INSERT INTO comments (repo, number, id, kind, author, created_at, body, counted) VALUES ('app', 1, ?, 'comment', ?, ?, 'Major: x', 1)").run("b2", "renovate[bot]", T2);
+    db.prepare("INSERT INTO comments (repo, number, id, kind, author, created_at, body, counted) VALUES ('app', 1, ?, 'comment', ?, ?, 'Major: x', 1)").run("h1", "dev", T2);
+    db.exec("DELETE FROM main.settings WHERE key = 'schema_stamp'");
+    db.close();
+    const again = connect(path);
+    assert.deepEqual(again.prepare("SELECT id, counted FROM comments ORDER BY id").all().map((r) => ({ ...r })), [{ id: "b1", counted: 0 }, { id: "b2", counted: 0 }, { id: "h1", counted: 1 }]);
+  });
+
   test("a counted comment that is on GitHub but not in the mirror blocks the merge and marks the PR stale", async () => {
     const db = fresh();
     db.prepare("UPDATE opus_reviews SET seen_at = ?").run(T1);
