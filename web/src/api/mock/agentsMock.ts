@@ -57,7 +57,7 @@ function makeRun(id: number, startedMsAgo: number, running: boolean): AgentRun {
   const tokens = Math.round(n * (1500 + rnd() * 3000));
   return {
     id, jobId: 40 + Math.floor(id / 40) % 9, step: s.step, stage: s.stage, promptId: s.promptId, promptVersion: `v${1 + (id % 3)}-${(id * 2654435761 % 0xffffff).toString(16).padStart(6, "0")}`,
-    provider: s.provider, model: s.model, accountId: acct?.id ?? null, accountLabel: acct?.label ?? null,
+    provider: s.provider, model: s.model, costUsd: running ? null : Math.round(tokens * 0.6) / 100_000, accountId: acct?.id ?? null, accountLabel: acct?.label ?? null,
     items, itemCount: n, state: running ? "running" : failed ? "failed" : "done",
     startedAt: iso(startedMsAgo), endedAt: running ? null : iso(startedMsAgo - dur),
     inputTokens: tokens, outputTokens: running ? Math.round(tokens * 0.03) : Math.round(tokens * 0.08),
@@ -211,8 +211,8 @@ export function createAgentsMock(me: User, changed: () => void): Pick<Api, "acco
       get(id) {
         const r = [...RUNNING, ...RECENT].find((x) => x.id === id);
         if (!r) throw new Error(`no agent run ${id}`);
-        const old = NOW - Date.parse(r.startedAt) > 14 * 24 * HOUR || id < 4850;
-        const d: AgentRunDetail = { ...r, prompt: old ? null : PROMPT(r), output: old || r.state === "running" ? null : OUTPUT, error: r.state === "failed" ? "claude -p exited after 600 s without output" : null };
+        const old = NOW - Date.parse(r.startedAt) > 90 * 24 * HOUR || id < 4850;
+        const d: AgentRunDetail = { ...r, prompt: old ? null : PROMPT(r), output: old || r.state === "running" ? null : OUTPUT, error: r.state === "failed" ? "claude -p exited after 600 s without output" : null, tools: [] };
         return wait(d);
       },
     },
