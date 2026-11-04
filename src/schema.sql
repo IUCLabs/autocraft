@@ -506,7 +506,7 @@ CREATE TABLE IF NOT EXISTS account_usage_samples (
 
 -- One row per model call made through the prompt registry. Ids grow with time,
 -- so newest-first paging is a keyset on id. Prompt and output text live in
--- agent_run_texts, which is pruned after 14 days; runs are kept 90 days.
+-- agent_run_texts; both are kept 90 days.
 CREATE TABLE IF NOT EXISTS agent_runs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   job_id INTEGER,
@@ -525,7 +525,8 @@ CREATE TABLE IF NOT EXISTS agent_runs (
   input_tokens INTEGER, output_tokens INTEGER, cache_read_tokens INTEGER, cache_write_tokens INTEGER,
   summary TEXT,
   error TEXT,
-  progress TEXT                       -- running: the latest line of what the call is doing
+  progress TEXT,                      -- running: the latest line of what the call is doing
+  cost_usd REAL                       -- the call's cost; null for Jev (unpriced) and for rows from before this column
 );
 CREATE INDEX IF NOT EXISTS agent_runs_running ON agent_runs(account_id) WHERE state = 'running';
 CREATE INDEX IF NOT EXISTS agent_runs_state ON agent_runs(state, id);
@@ -542,11 +543,26 @@ CREATE TABLE IF NOT EXISTS agent_run_items (
 ) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS agent_run_items_repo ON agent_run_items(repo, run_id, number);
 
+-- prompt and output are gzip BLOBs; rows written before compression hold plain text.
 CREATE TABLE IF NOT EXISTS agent_run_texts (
   run_id INTEGER PRIMARY KEY,
   prompt TEXT,
   output TEXT
 );
+
+-- The tool uses of one model call (stream events), in order. Arguments are scrubbed and capped; only the size of a result is kept.
+CREATE TABLE IF NOT EXISTS agent_run_tools (
+  run_id INTEGER NOT NULL,
+  seq INTEGER NOT NULL,
+  tool TEXT NOT NULL,
+  args TEXT NOT NULL,                 -- JSON, at most 4000 characters
+  result_bytes INTEGER,
+  is_error INTEGER NOT NULL DEFAULT 0,
+  started_at TEXT,                    -- arrival of the stream line; null for the non-streamed output form
+  ended_at TEXT,
+  check_id INTEGER,                   -- model_checks row, for the check tool
+  PRIMARY KEY (run_id, seq)
+) WITHOUT ROWID;
 
 CREATE INDEX IF NOT EXISTS jobs_started ON jobs(started_at);
 
