@@ -14,7 +14,7 @@ import { Pager } from "../../ui/molecules/Pager";
 import { Select } from "../../ui/atoms/Select";
 import { Th } from "../../ui/atoms/Th";
 import { useUrlState } from "../../lib/hooks";
-import { when, zoneName } from "../../lib/format";
+import { when } from "../../lib/format";
 
 const AUDIT_PAGE = 50;
 
@@ -48,7 +48,7 @@ function AuditLog() {
   const phone = useIsPhone();
 
   return (
-    <Block className="mt-4" flush title={<span className="flex items-center gap-2">Audit log <Count n={data?.total} /></span>} aside={`Newest first; times in ${zoneName()}`}>
+    <Block className="mt-4" flush title={<span className="flex items-center gap-2">Audit log <Count n={data?.total} /></span>} aside="Newest first">
       <form
         className="flex flex-wrap items-center gap-2 border-b border-line px-4 py-3"
         onSubmit={(e) => {

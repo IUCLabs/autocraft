@@ -5,7 +5,7 @@ import { useLayoutEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import type { Done, Funnel } from "../../api/types";
 import { cn } from "../../ui/cn";
-import { clock, num, pct, zoneName } from "../../lib/format";
+import { clock, num, pct } from "../../lib/format";
 
 export const OUTCOMES: { key: keyof Funnel; label: string; cls: string }[] = [
   { key: "take", label: "Taken", cls: "bg-c1" },
@@ -186,7 +186,7 @@ export function Throughput({ perHour, nowIso }: { perHour: number[]; nowIso: str
       </svg>
       {hover !== null && (
         <div className="pointer-events-none absolute top-0 whitespace-nowrap rounded border border-line-strong bg-raised px-2 py-1 text-xs shadow-md" style={{ left: `calc(${((pad.l + hover * bw) / W) * 100}% - 20px)` }}>
-          {startLabel(hover)} {zoneName(lastStart)} · {perHour[hover]} done
+          {startLabel(hover)} · {perHour[hover]} done
         </div>
       )}
     </div>

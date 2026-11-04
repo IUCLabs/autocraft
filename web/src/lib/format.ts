@@ -52,12 +52,9 @@ export const clock = (iso: string | number) => {
 /** "2026-11-02 10:40" in the viewer's time zone. */
 export const when = (iso: string | null | undefined) => (iso ? `${day(iso)} ${clock(iso)}` : "–");
 
-/** "2026-11-02 10:40 CET" */
-export const whenZ = (iso: string) => `${when(iso)} ${zoneName(iso)}`;
-
-/** The server's daily limits reset at 00:00 UTC; this is that moment as "09:00 GMT+9" in the viewer's time zone. */
+/** The server's daily limits reset at 00:00 UTC; this is that moment as "09:00" in the viewer's time zone. */
 export const dayResetLocal = () => {
   const d = new Date(now());
   const reset = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
-  return `${clock(reset)} ${zoneName(reset)}`;
+  return clock(reset);
 };

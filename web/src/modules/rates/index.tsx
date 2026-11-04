@@ -5,7 +5,7 @@ import { GaugeIcon } from "@phosphor-icons/react";
 import { useQuery } from "../../api/client";
 import type { RateBucket, Rates, UsagePause } from "../../api/types";
 import type { FeatureModule } from "../../registry/types";
-import { clock, num, zoneName } from "../../lib/format";
+import { clock, num } from "../../lib/format";
 import { Segmented } from "../../ui/molecules/Segmented";
 import { cn } from "../../ui/cn";
 import { Block, ErrorLine, Page } from "../admin/parts";
@@ -72,7 +72,7 @@ function StageChart({ buckets, hourly, title }: { buckets: RateBucket[]; hourly:
       </svg>
       {hover !== null && (
         <div className="pointer-events-none absolute top-5 z-10 whitespace-nowrap rounded border border-line-strong bg-raised px-2 py-1 text-xs shadow-md" style={{ left: Math.min(Math.max(pad.l + hover * bw - 40, 0), W - 150) }}>
-          {tickLabel(buckets[hover]!.t, hourly)} {zoneName(buckets[hover]!.t)} · {num(buckets[hover]!.items)} items · {buckets[hover]!.runs} runs{buckets[hover]!.failed ? ` · ${buckets[hover]!.failed} failed` : ""}
+          {tickLabel(buckets[hover]!.t, hourly)} · {num(buckets[hover]!.items)} items · {buckets[hover]!.runs} runs{buckets[hover]!.failed ? ` · ${buckets[hover]!.failed} failed` : ""}
         </div>
       )}
     </div>
@@ -145,7 +145,7 @@ function UseChart({ r, field, title, pause }: { r: Rates; field: "fiveHourPct" |
         </svg>
         {hover !== null && (
           <div className="pointer-events-none absolute top-0 z-10 whitespace-nowrap rounded border border-line-strong bg-raised px-2 py-1 text-xs shadow-md" style={{ left: Math.min(Math.max(x(hover) - 70, 0), W - 190) }}>
-            <div className="text-ink/60">{label(ts[hover]!)} {zoneName(ts[hover]!)}</div>
+            <div className="text-ink/60">{label(ts[hover]!)}</div>
             {r.accounts.map((a, k) => (
               <div key={a.id} className="num flex items-center gap-1.5">
                 <span className="size-2 rounded-sm" style={{ background: SERIES[k] }} />
@@ -171,7 +171,6 @@ function RatesView() {
     <Page title="Rates" sub="Items moving through the pipeline and account use">
       <div className="mt-3 flex items-center gap-3">
         <Segmented<"24h" | "7d"> label="Window" value={win} onChange={setWin} options={[{ value: "24h", label: "Last 24 hours" }, { value: "7d", label: "Last 7 days" }]} />
-        <span className="text-xs text-ink/50">all times {zoneName()}</span>
       </div>
       <ErrorLine error={q.error?.message} className="mt-3" />
       {r && (

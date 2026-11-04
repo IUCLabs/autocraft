@@ -8,7 +8,7 @@ import { Badge } from "../../ui/atoms/Badge";
 import { Button } from "../../ui/atoms/Button";
 import { cn } from "../../ui/cn";
 import { Count } from "../../ui/atoms/Heading";
-import { ago, day, when, zoneName } from "../../lib/format";
+import { ago, day, when } from "../../lib/format";
 import { useIsPhone } from "../../shell/useMedia";
 import { Block } from "../../ui/molecules/Block";
 import { ConfirmButton } from "../../ui/molecules/ConfirmButton";
@@ -231,9 +231,9 @@ function Sessions({ sessions }: { sessions: SessionInfo[] }) {
                 <tr className="border-b border-line">
                   <Th>Login</Th>
                   <Th className="w-[170px]">Browser</Th>
-                  <Th className="w-[150px]">{`Signed in (${zoneName()})`}</Th>
+                  <Th className="w-[150px]">Signed in</Th>
                   <Th className="w-[150px]">Last seen</Th>
-                  <Th className="w-[150px]">{`Expires (${zoneName()})`}</Th>
+                  <Th className="w-[150px]">Expires</Th>
                   <th className="w-[160px]" aria-label="Revoke" />
                 </tr>
               </thead>

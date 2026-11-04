@@ -6,7 +6,7 @@ import { Pending } from "../../ui/atoms/Pending";
 import type { Progress, RepoProgress } from "../../api/types";
 import type { FeatureModule, ViewProps } from "../../registry/types";
 import { cn } from "../../ui/cn";
-import { day, num, pct, zoneName } from "../../lib/format";
+import { day, num, pct } from "../../lib/format";
 import { DoneSplit, FunnelChart, OUTCOMES, Sparkline, StackBar, Throughput, DONE_PARTS } from "./charts";
 import { useIsPhone } from "../../shell/useMedia";
 
@@ -100,7 +100,7 @@ function Overview(_: ViewProps) {
           </Block>
         </div>
 
-        <Block title="Items closed or merged per hour, by anyone" aside={`Last 24 h, ${zoneName()} · ${num(lastDay)} in all, ${num(lastDayOurs)} by the pipeline`} className="mt-4">
+        <Block title="Items closed or merged per hour, by anyone" aside={`Last 24 h · ${num(lastDay)} in all, ${num(lastDayOurs)} by the pipeline`} className="mt-4">
           <Throughput perHour={p.perHour} nowIso={p.now} />
         </Block>
 
