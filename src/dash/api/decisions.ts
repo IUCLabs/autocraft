@@ -269,7 +269,7 @@ export async function listDecisions(db: DatabaseSync, req: Req, writeRepos: () =
     params.itemRepo = repos[0]!;
     params.itemNo = String(n);
     where.push(`((repo = :itemRepo AND number = :itemNo) OR EXISTS (SELECT 1 FROM json_each(CASE WHEN json_valid(items) THEN items ELSE '[]' END) ij
-      WHERE json_extract(ij.value, '$.repo') = :itemRepo AND json_extract(ij.value, '$.number') = :itemNo)
+      WHERE json_extract(ij.value, '$.repo') = :itemRepo AND json_extract(ij.value, '$.number') = CAST(:itemNo AS INTEGER))
       OR EXISTS (SELECT 1 FROM dupe_group_items gm WHERE gm.decision_id = decisions.id AND gm.repo = :itemRepo AND gm.number = :itemNo))`);
   }
   if (q.get("mine") === "1" || q.get("mine") === "true") where.push(inRepos("mn", await writeRepos(), params));
