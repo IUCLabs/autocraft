@@ -299,14 +299,16 @@ function JobDetailView({ id, operator, back }: { id: number; operator: boolean; 
           {j.progress && j.state === "running" && <p className="text-sm">{j.progress}</p>}
           {j.summary && <p className="rounded border border-ok/30 bg-ok/5 px-3 py-2 text-sm">{j.summary}</p>}
           {j.error && <p className="rounded border border-bad/30 bg-bad/5 px-3 py-2 text-sm text-bad">{j.error}</p>}
-          <div className="flex min-h-[240px] flex-1 flex-col">
-            <div className="mb-1 flex items-baseline gap-2 text-xs text-ink/55">
-              Log{j.logTruncated && <span>(last part)</span>}
+          {j.log !== null && (
+            <div className="flex min-h-[240px] flex-1 flex-col">
+              <div className="mb-1 flex items-baseline gap-2 text-xs text-ink/55">
+                Log{j.logTruncated && <span>(last part)</span>}
+              </div>
+              <pre ref={logRef} className="code min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-words rounded border border-line bg-sunken p-3 text-xs leading-relaxed">
+                {j.log || (j.state === "queued" ? "Waiting for the runner." : "No log.")}
+              </pre>
             </div>
-            <pre ref={logRef} className="code min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-words rounded border border-line bg-sunken p-3 text-xs leading-relaxed">
-              {j.log || (j.state === "queued" ? "Waiting for the runner." : "No log.")}
-            </pre>
-          </div>
+          )}
         </div>
       )}
     </div>

@@ -509,7 +509,7 @@ function DetailBody({ id }: { id: number }) {
         </details>
       )}
 
-      <section>
+      {t.logTail !== null && <section>
         <h3 className="mb-1 flex flex-wrap items-baseline gap-x-2 text-xs font-semibold text-ink/65">
           Log
           <span className="font-normal text-ink/45">
@@ -521,9 +521,9 @@ function DetailBody({ id }: { id: number }) {
         ) : (
           <p className="text-sm text-ink/55">{t.state === "queued" ? "Waiting for a free slot." : "No output yet."}</p>
         )}
-      </section>
+      </section>}
 
-      <section>
+      {t.logTail !== null && <section>
         <h3 className="mb-1 text-xs font-semibold text-ink/65">Artifacts</h3>
         {t.artifacts.length === 0 ? (
           <p className="text-sm text-ink/55">None.</p>
@@ -544,7 +544,7 @@ function DetailBody({ id }: { id: number }) {
             ))}
           </ul>
         )}
-      </section>
+      </section>}
     </div>
   );
 }

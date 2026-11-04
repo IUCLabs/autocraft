@@ -194,15 +194,13 @@ export function logTail(path: string | null, bytes = LOG_TAIL_BYTES): { log: str
 
 /**
  * `hidden`: the repos the viewer may not see. A job of such a repo is not found.
- * `logs` false (non-operators) blanks the log of a job that ran across all repos
- * while some repo is hidden, since its lines can name hidden items.
+ * `logs` false (viewers) leaves the log out: its lines can name hidden items and carry command output.
  */
 export function jobDetail(db: DatabaseSync, id: number, view: { hidden?: string[]; logs?: boolean } = {}): JobDetail {
   const r = jobRow(db, id);
   const hidden = view.hidden ?? [];
   if (!r || (r.repo && hidden.includes(r.repo))) throw new JobError(404, `no job ${id}`);
-  const blank = view.logs === false && hidden.length > 0 && !r.repo;
-  return { ...toJobs(db, [r])[0]!, ...(blank ? { log: "", logTruncated: false } : logTail(r.log_path)) };
+  return { ...toJobs(db, [r])[0]!, ...(view.logs === false ? { log: null, logTruncated: false } : logTail(r.log_path)) };
 }
 
 /** Records the end of a job whose process closed: done on exit 0, cancelled when a cancel was asked, else failed with the reason. */

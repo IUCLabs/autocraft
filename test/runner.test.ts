@@ -50,8 +50,8 @@ describe("runner", () => {
     assert.equal(j.summary, "echo 7");
     assert.deepEqual(j.usage, { calls: 1, input: 100, output: 10, costUsd: 0.01 });
     assert.ok(j.startedAt && j.endedAt);
-    assert.ok(j.log.includes("token in the log: [hidden]"), j.log);
-    assert.ok(!j.log.includes(FAKE_TOKEN));
+    assert.ok(j.log!.includes("token in the log: [hidden]"), j.log!);
+    assert.ok(!j.log!.includes(FAKE_TOKEN));
     assert.equal(getJob(db, bad.id).error, "echo failed on purpose");
   });
 

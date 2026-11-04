@@ -395,6 +395,12 @@ async function context(db: DatabaseSync, req: Req): Promise<Ctx> {
   return { db, repo, n, ref: `${repo}#${n}`, own, staff: canSeeInternals(req), operator: req.user.role === "operator", hidden: await hiddenRepos(db, req) };
 }
 
+/** Job errors and patch-check reasons carry log and patch text: viewers get the other fields. */
+const viewerFields = (e: Ev): Record<string, unknown> => {
+  const drop = e.id.startsWith("patchcheck:") ? "reasons" : e.kind === "job" ? "error" : "";
+  return Object.fromEntries(Object.entries(e.detail ?? {}).filter(([k]) => k !== drop));
+};
+
 const strip = ({ detail: _d, ...e }: Ev): TraceEvent => e;
 
 export async function trace(db: DatabaseSync, req: Req): Promise<ItemTrace | { unchanged: true; stamp: string }> {
@@ -435,5 +441,5 @@ export async function traceDetail(db: DatabaseSync, req: Req): Promise<ItemTrace
   const c = await context(db, req);
   const e = gather(c, null).find((x) => x.id === (req.query.get("id") ?? ""));
   if (!e) throw new HttpError(404, "no such event");
-  return { id: e.id, kind: e.kind, at: e.at, summary: e.summary, fields: e.detail ?? {} };
+  return { id: e.id, kind: e.kind, at: e.at, summary: e.summary, fields: c.staff ? e.detail ?? {} : viewerFields(e) };
 }
