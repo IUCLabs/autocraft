@@ -184,6 +184,8 @@ export type PrFacts = {
   premerge: { at: string; tries: number; hasFindings: boolean; /** The review left a claim of the description unverified. */ unsure: boolean; defects: number; defectsAllFixable: boolean; /** Every defect's fix names a safe path, so a fix-up can apply them. */ fixesSafe: boolean; minor: number; error: string | null } | null;
   premergeFixUsed: boolean;
   /** Owner statements (owner_statements) that the Opus review or the pre-merge review at the reviewed head says the PR goes against; any makes the PR ask for a Merge? answer. */
+  /** Reasons from the PR's diff that keep it off the merge rule (README, brand files, third-party links); read from the diff cache at the reviewed head, empty when the diff is not cached. */
+  sensitive: string[];
   statementConflicts: { id: number; where: string; text: string; reason: string }[];
   /** The PR's head branch may be pushed to (source of the maintainer flag follows `checksHere`). */
   pushable: boolean;
