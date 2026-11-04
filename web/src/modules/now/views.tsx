@@ -1,5 +1,6 @@
 // Home page: one timeline of units of work, newest at the top like a social feed, with the health problems in the app header.
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { ArrowDownIcon, ArrowUpIcon, CircleNotchIcon } from "@phosphor-icons/react";
 import { useApi, useQuery } from "../../api/client";
 import type { ViewProps } from "../../registry/types";
@@ -13,8 +14,11 @@ const THRESHOLD = 64;
 const MAX_PULL = 110;
 /** The pulled distance is this share of the finger's. */
 const RESISTANCE = 0.45;
-/** Time the refetched head gets to arrive before waiting entries are let in. */
-const REFRESH_MS = 700;
+/** The spinner shows at least this long, so a fast refetch does not flash. */
+const MIN_SPIN_MS = 300;
+
+/** Safari lacks scroll anchoring, so rows changing above the viewport would move what the reader looks at. */
+const NATIVE_ANCHOR = typeof CSS !== "undefined" && CSS.supports("overflow-anchor", "auto");
 
 export function NowView(_: ViewProps) {
   const api = useApi();
@@ -26,7 +30,9 @@ export function NowView(_: ViewProps) {
   const bottom = useRef<HTMLLIElement>(null);
   const f = useFeed(d, (before) => api.nowFeed(before));
   const { flush } = f;
-  const { refetch } = q;
+  const client = useQueryClient();
+  const list = useRef<HTMLUListElement>(null);
+  const anchor = useRef<{ el: Element; offset: number } | null>(null);
 
   const [pull, setPull] = useState(0);
   const [dragging, setDragging] = useState(false);
@@ -37,16 +43,48 @@ export function NowView(_: ViewProps) {
     refreshingRef.current = true;
     setRefreshing(true);
     setPull(THRESHOLD * 0.75);
-    refetch();
-    setTimeout(() => {
-      flush();
+    const min = new Promise((r) => setTimeout(r, MIN_SPIN_MS));
+    void Promise.allSettled([client.refetchQueries({ queryKey: ["now"] }), min]).then(() => {
+      setTimeout(flush, 50);
       refreshingRef.current = false;
       setRefreshing(false);
       setPull(0);
-    }, REFRESH_MS);
+    });
   };
   const refreshRef = useRef(refresh);
   refreshRef.current = refresh;
+
+  // Without native scroll anchoring, keep the first row at or below the top edge where it was when rows above it change height.
+  const record = () => {
+    const sc = scroller.current;
+    const ul = list.current;
+    if (!sc || !ul) return;
+    const top = sc.getBoundingClientRect().top;
+    for (const li of ul.children) {
+      const r = li.getBoundingClientRect();
+      if (r.bottom > top) { anchor.current = { el: li, offset: r.top - top }; return; }
+    }
+    anchor.current = null;
+  };
+  const settle = () => {
+    const sc = scroller.current;
+    const a = anchor.current;
+    if (sc && a && a.el.isConnected && sc.scrollTop > 0) {
+      const delta = a.el.getBoundingClientRect().top - sc.getBoundingClientRect().top - a.offset;
+      if (Math.abs(delta) >= 1) sc.scrollTop += delta;
+    }
+    record();
+  };
+  useLayoutEffect(() => { if (!NATIVE_ANCHOR) settle(); });
+  useEffect(() => {
+    const sc = scroller.current;
+    const ul = list.current;
+    if (NATIVE_ANCHOR || !sc || !ul) return;
+    const ro = new ResizeObserver(settle);
+    ro.observe(ul);
+    sc.addEventListener("scroll", record, { passive: true });
+    return () => { ro.disconnect(); sc.removeEventListener("scroll", record); };
+  }, [d !== undefined && f.feed.length > 0]);
 
   // Pull to refresh on touch: only a gesture that starts at the very top and moves down.
   useEffect(() => {
@@ -121,7 +159,7 @@ export function NowView(_: ViewProps) {
           {!d ? null : f.feed.length === 0 ? (
             <p className="p-4 text-sm text-ink/55">Nothing yet.</p>
           ) : (
-            <ul>
+            <ul ref={list}>
               {d.alsoRunning.length > 0 && <li className="truncate px-3 py-2 text-xs text-ink/55">{`Also running: ${d.alsoRunning.join(", ").toLowerCase()}`}</li>}
               {f.feed.map((e) => <EntryRow key={e.key} entry={e} />)}
               <li ref={bottom} className="h-8 px-3 py-2 text-xs text-ink/50">{f.error ? `Could not load older entries: ${f.error}` : null}</li>
