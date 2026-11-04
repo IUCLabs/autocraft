@@ -2,7 +2,7 @@ import { useApi } from "../../api/client";
 import type { TrackedRepo } from "../../api/types";
 import { Badge } from "../../ui/atoms/Badge";
 import { Button } from "../../ui/atoms/Button";
-import { ago, num } from "../../lib/format";
+import { num, eventTime } from "../../lib/format";
 import { useUser } from "../../shell/UserContext";
 import { ConfirmButton } from "../../ui/molecules/ConfirmButton";
 import { Switch } from "../../ui/atoms/Switch";
@@ -134,7 +134,7 @@ export function PipelineSwitch({ r, write }: { r: TrackedRepo; write: Write }) {
 }
 
 export const synced = (r: TrackedRepo) =>
-  r.syncedAt ? `${ago(r.syncedAt, false)}` : "never";
+  r.syncedAt ? `${eventTime(r.syncedAt)}` : "never";
 export const maybe = (n: number | null) => (n === null ? "–" : num(n));
 
 /** The checks whose failure does not stop a merge: a list for everyone, with remove and add for operators. */

@@ -5,7 +5,8 @@ import { useEffect, useRef, useState } from "react";
 import { PauseIcon, PlayIcon } from "@phosphor-icons/react";
 import { useApi, useQuery } from "../../api/client";
 import type { PipelineState, StageLimit } from "../../api/types";
-import { ago, dayResetLocal, num, when } from "../../lib/format";
+import { dayResetLocal, num, when } from "../../lib/format";
+import { TimeAgo } from "../../ui/atoms/TimeAgo";
 import { useUser } from "../../shell/UserContext";
 import { Badge } from "../../ui/atoms/Badge";
 import { Button } from "../../ui/atoms/Button";
@@ -73,7 +74,7 @@ export function PipelineSwitch({ className }: { className?: string }) {
             {s.changedAt && (
               <span title={s.changedAt}>
                 {" "}
-                Switched {s.enabled ? "on" : "off"} by {s.changedBy ?? "unknown"} {ago(s.changedAt, false)} ({when(s.changedAt)}).
+                Switched {s.enabled ? "on" : "off"} by {s.changedBy ?? "unknown"} <TimeAgo iso={s.changedAt} /> ({when(s.changedAt)}).
               </span>
             )}
           </div>

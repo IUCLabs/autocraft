@@ -13,6 +13,26 @@ export function ago(isoTime: string, short = true): string {
   return `${v} ${word}${v === 1 ? "" : "s"} ago`;
 }
 
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/**
+ * An event time for reading: "now", "12m ago", then the local clock time ("14:32") for the rest of today,
+ * "yesterday 14:32", "Nov 3 14:32" earlier this year and "Nov 3 2025" before that. Times in the future read as "now".
+ */
+export function eventTime(isoTime: string): string {
+  const t = Date.parse(isoTime);
+  const s = Math.max(0, (now() - t) / 1000);
+  if (s < 60) return "now";
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  const d = new Date(t), n = new Date(now());
+  const midnight = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  const days = Math.round((midnight(n) - midnight(d)) / 86400_000);
+  if (days <= 0) return clock(t);
+  if (days === 1) return `yesterday ${clock(t)}`;
+  const md = `${MONTHS[d.getMonth()]} ${d.getDate()}`;
+  return d.getFullYear() === n.getFullYear() ? `${md} ${clock(t)}` : `${md} ${d.getFullYear()}`;
+}
+
 export const num = (n: number) => n.toLocaleString("en");
 export const pct = (a: number, b: number) => (b ? `${Math.round((a / b) * 100)}%` : "–");
 

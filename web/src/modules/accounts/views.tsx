@@ -5,7 +5,7 @@ import { KeyIcon, PencilSimpleIcon } from "@phosphor-icons/react";
 import { Dialog } from "radix-ui";
 import { useApi, useQuery } from "../../api/client";
 import type { ClaudeAccount } from "../../api/types";
-import { ago } from "../../lib/format";
+import { eventTime } from "../../lib/format";
 import { useUser } from "../../shell/UserContext";
 import { Badge } from "../../ui/atoms/Badge";
 import { Button } from "../../ui/atoms/Button";
@@ -120,9 +120,9 @@ function Row({ a, operator, onChanged }: { a: ClaudeAccount; operator: boolean; 
         <dt className="text-ink/55">Login expires</dt>
         <dd className={cn(exp !== null && exp < Date.now() + 7 * 86_400_000 && "text-warn")}>{when(a.auth.expiresAt)}</dd>
         <dt className="text-ink/55">Status read</dt>
-        <dd>{a.auth.checkedAt ? ago(a.auth.checkedAt, false) : "never"}</dd>
+        <dd>{a.auth.checkedAt ? eventTime(a.auth.checkedAt) : "never"}</dd>
         <dt className="text-ink/55">Usage read</dt>
-        <dd>{a.usage.readAt ? ago(a.usage.readAt, false) : "never"}</dd>
+        <dd>{a.usage.readAt ? eventTime(a.usage.readAt) : "never"}</dd>
       </dl>
       {operator && (
         <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-line pt-3">

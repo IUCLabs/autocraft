@@ -27,7 +27,8 @@ import { Badge, type Tone } from "../../ui/atoms/Badge";
 import { PriorityBadge } from "../../ui/atoms/PriorityBadge";
 import { Count } from "../../ui/atoms/Heading";
 import { cn } from "../../ui/cn";
-import { ago, num } from "../../lib/format";
+import { num } from "../../lib/format";
+import { TimeAgo } from "../../ui/atoms/TimeAgo";
 import { KindTag, tallyOf } from "../decisions/parts";
 import { RecommendationLine } from "../../ui/molecules/RecommendationLine";
 import { Markdown, Collapsible } from "../../ui/molecules/Markdown";
@@ -144,7 +145,7 @@ function Header({ it }: { it: Item }) {
         <span className="inline-flex items-center gap-1.5">
           <Avatar login={it.author} size={18} />
           <span>
-            <span className="font-medium text-ink">{it.author}</span> opened {ago(it.createdAt)} ago in <span className="code text-ink/80">{it.repo}</span>
+            <span className="font-medium text-ink">{it.author}</span> opened <TimeAgo iso={it.createdAt} /> in <span className="code text-ink/80">{it.repo}</span>
           </span>
         </span>
         <span className="ml-auto flex flex-wrap items-center gap-1.5">
@@ -241,7 +242,7 @@ function Properties({ it }: { it: Item }) {
         ))}
       </Prop>
       <Prop label="Updated">
-        <span className="text-ink/80">{ago(it.updatedAt, false)}</span>
+        <span className="text-ink/80"><TimeAgo iso={it.updatedAt} /></span>
       </Prop>
     </dl>
   );
@@ -300,7 +301,7 @@ function Verdicts({ cls }: { cls: Classification[] }) {
               <span className="font-semibold">{c.classifier}</span>
               <span className={cn(c.typeLabel !== typeMaj && off)}>{c.typeLabel}</span>
               <span className={cn(WANT[c.want], c.want !== wantMaj && off)}>want {c.want}</span>
-              <span className="ml-auto text-xs text-ink/45">{ago(c.at)}</span>
+              <span className="ml-auto text-xs text-ink/45"><TimeAgo iso={c.at} /></span>
             </div>
             {c.reference && <div className="mt-0.5 text-xs text-ink/55">Reference: {c.reference}</div>}
             <div className="mt-1 text-sm text-ink/70">
@@ -324,7 +325,7 @@ function Verdicts({ cls }: { cls: Classification[] }) {
             <th className="w-[96px] px-3 py-2" />
             {cls.map((c) => (
               <th key={c.classifier} className="px-3 py-2 font-semibold">
-                {c.classifier} <span className="ml-1 text-xs font-normal text-ink/45">{ago(c.at)} ago</span>
+                {c.classifier} <span className="ml-1 text-xs font-normal text-ink/45"><TimeAgo iso={c.at} /></span>
               </th>
             ))}
           </tr>
@@ -401,7 +402,7 @@ export function ItemSide(props: ViewProps) {
             <Link key={d.id} to={decisionPath(d, { siblings: ds })} className="block rounded-md border border-line p-2.5 transition-colors duration-fast hover:border-line-strong hover:bg-ink/[0.03]">
               <div className="flex items-center gap-2">
                 <KindTag kind={d.kind} />
-                <span className="ml-auto text-xs text-ink/50">{d.answer ? `answered ${ago(d.answeredAt!)} ago` : `waiting ${ago(d.askedAt)}`}</span>
+                <span className="ml-auto text-xs text-ink/50">{d.answer ? <>answered <TimeAgo iso={d.answeredAt!} /></> : <>waiting <TimeAgo iso={d.askedAt} /></>}</span>
               </div>
               <p className="mt-1.5 text-sm font-medium leading-5">{d.question}</p>
               {d.answer ? (

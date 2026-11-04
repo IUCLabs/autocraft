@@ -5,7 +5,8 @@ import type { ViewProps } from "../../registry/types";
 import { Avatar } from "../../ui/atoms/Avatar";
 import { cn } from "../../ui/cn";
 import { Count } from "../../ui/atoms/Heading";
-import { ago } from "../../lib/format";
+import {  } from "../../lib/format";
+import { TimeAgo } from "../../ui/atoms/TimeAgo";
 import { localActions, useDecisionList, usePinned, useSelection } from "./state";
 import { scrollToWorkflow } from "./Workflow";
 import { canAct, canComment } from "../../registry/permissions";
@@ -99,7 +100,7 @@ export function FeedbackList({ d, me, onUse, onRetract, compact }: { d: Decision
                   {e.write ? "write" : "no write"}
                 </span>
               )}
-              <span className="text-xs text-ink/45">{ago(e.at)}</span>
+              <span className="text-xs text-ink/45"><TimeAgo iso={e.at} /></span>
             </span>
           </div>
           {e.text && <p className="mt-1 whitespace-pre-wrap break-words pl-7 text-sm leading-5 text-ink/80">{e.text}</p>}

@@ -7,7 +7,8 @@ import { Badge } from "../../ui/atoms/Badge";
 import { Button } from "../../ui/atoms/Button";
 import { cn } from "../../ui/cn";
 import { Count } from "../../ui/atoms/Heading";
-import { ago, day, when } from "../../lib/format";
+import { day, when } from "../../lib/format";
+import { TimeAgo } from "../../ui/atoms/TimeAgo";
 import { useIsPhone } from "../../shell/useMedia";
 import { Block } from "../../ui/molecules/Block";
 import { ConfirmButton } from "../../ui/molecules/ConfirmButton";
@@ -215,7 +216,7 @@ function Sessions({ sessions }: { sessions: SessionInfo[] }) {
                   {s.current && <Badge tone="accent">this session</Badge>}
                 </div>
                 <div className="mt-0.5 text-xs text-ink/55">
-                  {browser(s.userAgent)} · seen {ago(s.lastSeen, false)}
+                  {browser(s.userAgent)} · seen <TimeAgo iso={s.lastSeen} />
                 </div>
               </div>
               {revoke(s)}
@@ -251,7 +252,7 @@ function Sessions({ sessions }: { sessions: SessionInfo[] }) {
                     </td>
                     <td className="num whitespace-nowrap px-3 text-ink/65">{when(s.createdAt)}</td>
                     <td className="px-3 text-ink/65" title={when(s.lastSeen)}>
-                      {ago(s.lastSeen, false)}
+                      <TimeAgo iso={s.lastSeen} />
                     </td>
                     <td className="num whitespace-nowrap px-3 text-ink/65">{when(s.expiresAt)}</td>
                     <td className="px-3 text-right">{revoke(s)}</td>

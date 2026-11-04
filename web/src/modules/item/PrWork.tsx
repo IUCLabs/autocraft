@@ -10,7 +10,8 @@ import { Markdown } from "../../ui/molecules/Markdown";
 import { useUser } from "../../shell/UserContext";
 import { ConfirmButton, ErrorLine, useWrite } from "../admin/parts";
 import { decisionPath } from "../../lib/links";
-import { ago, span } from "../../lib/format";
+import { span } from "../../lib/format";
+import { TimeAgo } from "../../ui/atoms/TimeAgo";
 import { useNow } from "../../lib/useNow";
 
 function Box({ title, aside, children }: { title: string; aside?: ReactNode; children: ReactNode }) {
@@ -45,7 +46,7 @@ function Verify({ v }: { v: ItemVerification }) {
         <span className="font-medium">{KIND[v.kind]}</span>
         <span className="code text-xs text-ink/50" title={v.headSha}>{v.headSha.slice(0, 7)}</span>
         {!v.current && <Badge tone="warn">Older head</Badge>}
-        <span className="ml-auto text-xs text-ink/50">{v.finishedAt ? `finished ${ago(v.finishedAt)} ago` : `planned ${ago(v.createdAt)} ago`}</span>
+        <span className="ml-auto text-xs text-ink/50">{v.finishedAt ? <>finished <TimeAgo iso={v.finishedAt} /></> : <>planned <TimeAgo iso={v.createdAt} /></>}</span>
       </div>
       <p className="mt-2 text-ink/80">{v.reason}</p>
       {p && (
@@ -188,7 +189,7 @@ function Postmerge({ p, repo }: { p: ItemPostmerge; repo: string }) {
         {p.error ? <Badge tone="warn">No review</Badge> : p.findings.length === 0 ? <Badge tone="ok">No findings</Badge> : null}
         {p.error && <span className="text-ink/75">{p.error}</span>}
         <span className="code text-xs text-ink/50" title={p.mergeSha}>{p.mergeSha.slice(0, 7)}</span>
-        <span className="ml-auto text-xs text-ink/50">{ago(p.at)} ago</span>
+        <span className="ml-auto text-xs text-ink/50"><TimeAgo iso={p.at} /></span>
       </div>
       {p.earlier.length > 0 && (
         <div className="mb-2 flex flex-wrap items-center gap-2 text-xs text-ink/70">
@@ -218,7 +219,7 @@ function Premerge({ rows }: { rows: ItemPremerge[] }) {
             {r.error ? <Badge tone="warn">No review</Badge> : r.findings.length === 0 ? <Badge tone="ok">No findings</Badge> : null}
             {r.error && <span className="min-w-0 break-words text-ink/75">{r.error} ({r.tries} {r.tries === 1 ? "try" : "tries"})</span>}
             {r.model && <span className="text-xs text-ink/50">{r.model}</span>}
-            <span className="ml-auto text-xs text-ink/50">{ago(r.at)} ago</span>
+            <span className="ml-auto text-xs text-ink/50"><TimeAgo iso={r.at} /></span>
           </div>
           {r.findings.length > 0 && (
             <ul className="divide-y divide-line rounded-md border border-line">
@@ -259,7 +260,7 @@ function PatchChecks({ rows }: { rows: ItemPatchCheck[] }) {
             <Badge tone={c.verdict === "approve" ? "ok" : "bad"}>{c.verdict === "approve" ? "Approved" : "Rejected"}</Badge>
             <span className="text-xs text-ink/55">Opus check · round {c.round}</span>
             <span className="code text-xs text-ink/55" title={c.subject}>{c.subject.slice(0, 7)}</span>
-            <span className="ml-auto text-xs text-ink/50">{ago(c.createdAt)} ago</span>
+            <span className="ml-auto text-xs text-ink/50"><TimeAgo iso={c.createdAt} /></span>
           </div>
           {c.reasons && <p className="mt-1 text-ink/75">{c.reasons}</p>}
           {c.problems.length > 0 && (
@@ -297,7 +298,7 @@ function Fixups({ rows }: { rows: ItemFixup[] }) {
                 {f.fromHead.slice(0, 7)}
                 {f.toHead && ` → ${f.toHead.slice(0, 7)}`}
               </span>
-              <span className="ml-auto text-xs text-ink/50">{ago(f.createdAt)} ago</span>
+              <span className="ml-auto text-xs text-ink/50"><TimeAgo iso={f.createdAt} /></span>
             </div>
             {f.reason && <p className="mt-1 text-ink/75">{f.reason}</p>}
             {f.files.length > 0 && <p className="code mt-1 break-all text-xs leading-5 text-ink/65">{f.files.join(", ")}</p>}
@@ -330,7 +331,7 @@ function Actions({ rows, repo, number }: { rows: ItemAction[]; repo: string; num
               <Link to={decisionPath({ id: a.decisionId, repo, number: a.decisionKind ? number : null, kind: a.decisionKind ?? undefined })} className="code text-xs text-ink/50 hover:underline">
                 {a.decisionId}
               </Link>
-              <span className="ml-auto text-xs text-ink/50">{ago(a.createdAt)} ago</span>
+              <span className="ml-auto text-xs text-ink/50"><TimeAgo iso={a.createdAt} /></span>
             </div>
             {a.reason && <p className="mt-1 text-ink/75">{a.reason}</p>}
           </li>

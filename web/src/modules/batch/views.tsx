@@ -77,7 +77,7 @@ function Ci({ b }: { b: BatchDetail }) {
   if (b.prNumber === null) return null;
   const ci = b.ci;
   return (
-    <Block className="mt-3" title="Integration CI" aside={ci ? <>read <TimeAgo iso={ci.fetchedAt} short={false} /></> : undefined}>
+    <Block className="mt-3" title="Integration CI" aside={ci ? <>read <TimeAgo iso={ci.fetchedAt} /></> : undefined}>
       {!ci ? (
         <p className="text-sm text-ink/55">No CI read yet.</p>
       ) : (

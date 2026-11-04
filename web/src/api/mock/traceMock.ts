@@ -8,25 +8,51 @@ export const at = (minAgo: number) => new Date(NOW - minAgo * 60_000).toISOStrin
 const H1 = "3f2a9c1d0e8b7a6f5e4d3c2b1a0f9e8d7c6b5a49";
 const H2 = "9b8c7d6e5f4a3b2c1d0e9f8a7b6c5d4e3f2a1b0c";
 
+/** The reference lint of one review: one call per text of the review (ten for Jev, one for Haiku), all in job 55. */
+const LINT: TraceEvent[] = [
+  ...Array.from({ length: 11 }, (_, i): TraceEvent => {
+    const haiku = i === 7;
+    return {
+      id: `run:${950 + i}`, kind: "model-call", at: at(12.9 - i * 0.07), head: H2, actor: { type: "model", name: haiku ? "haiku" : "jev" },
+      summary: `Reference lint: ${haiku ? "clean" : i % 4 === 3 ? "refers to documentation" : "clean"}`, ref: { runId: 950 + i, jobId: 55 },
+      call: {
+        promptId: haiku ? "lint.reference.haiku" : "lint.reference.jev", step: "Review pull requests", model: haiku ? "haiku" : "jev", provider: haiku ? "claude" : "jev",
+        account: haiku ? "Team account A" : "Jev", state: "done", inputTokens: haiku ? 1_100 : 900, outputTokens: haiku ? 40 : 12, costUsd: haiku ? 0.003 : 0, toolCalls: 0, endedAt: at(12.9 - i * 0.07 - 0.02),
+      },
+    };
+  }),
+];
+
+/** The calls behind the Opus review (the review row lists them, so the timeline does not): the call and its lint fix turn. */
+const REVIEW_CALLS: TraceEvent[] = [
+  {
+    id: "run:903", kind: "model-call", at: at(14), head: H2, actor: { type: "model", name: "opus" }, summary: "Review pull requests: take-fix with two fixes", ref: { runId: 903, jobId: 55 },
+    call: { promptId: "review.opus", step: "Review pull requests", model: "opus", provider: "claude", account: "Team account B", state: "done", inputTokens: 48_200, outputTokens: 2_900, costUsd: 0.91, toolCalls: 7, endedAt: at(13) },
+  },
+  {
+    id: "run:904", kind: "model-call", at: at(13.4), head: H2, actor: { type: "model", name: "opus" }, summary: "Review pull requests: take-fix with two fixes", ref: { runId: 904, jobId: 55 },
+    call: { promptId: "review.opus", step: "Review pull requests", model: "opus", provider: "claude", account: "Team account B", state: "done", inputTokens: 3_100, outputTokens: 2_800, costUsd: 0.12, toolCalls: 0, endedAt: at(13.2) },
+  },
+];
+
 export const EVENTS: TraceEvent[] = ([
   { id: "plan:41", kind: "plan", at: at(4), head: H2, actor: { type: "step", name: "Planner" }, summary: "Plan reviewing → verifying, waiting for CI at 9b8c7d6", ref: { head: H2 } },
   { id: "check:12", kind: "check", at: at(9), head: H2, actor: { type: "step", name: "Fix-up" }, summary: "Clippy on app-core: no findings", ref: { checkId: 12, runId: 902, head: H2 } },
   { id: "task:905", kind: "check", at: at(10), head: H2, actor: { type: "step", name: "Verify" }, summary: "Build task done: build and 412 tests passed", ref: { taskId: 905, head: H2 } },
   { id: "audit:77", kind: "write", at: at(12), head: H2, actor: { type: "step", name: "AutoCraft" }, summary: "Posted review", ref: { auditRowid: 77, head: H2 } },
-  {
-    id: "run:903", kind: "model-call", at: at(14), head: H2, actor: { type: "model", name: "opus" }, summary: "Review pull requests: take-fix with two fixes", ref: { runId: 903, jobId: 55 },
-    call: { model: "opus", provider: "claude", account: "Team account B", state: "done", inputTokens: 48_200, outputTokens: 2_900, costUsd: 0.91, toolCalls: 7, endedAt: at(13) },
-  },
-  { id: "review:opus:5", kind: "review", at: at(13), head: H2, actor: { type: "model", name: "opus" }, summary: "Opus review: take with two fixes, not sure", ref: { reviewId: "opus:5", head: H2 } },
+  { id: "review:opus:5", kind: "review", at: at(13), head: H2, actor: { type: "model", name: "opus" }, summary: "Opus review: take with two fixes, not sure", ref: { reviewId: "opus:5", head: H2, runId: 903, runIds: [903, 904] } },
   { id: "gh:push", kind: "github", at: at(30), head: H2, actor: { type: "person", name: "contributor" }, summary: "Pushed 9b8c7d6", ref: { head: H2 } },
   { id: "comment:c2", kind: "github", at: at(70), head: H1, actor: { type: "person", name: "maintainer" }, summary: "Posted a comment, 214 characters", ref: { commentId: "c2" } },
   { id: "decision:d9:asked", kind: "decision", at: at(95), head: H1, actor: { type: "step", name: "Ask decisions" }, summary: "Asked: Merge this fix?", ref: { decisionId: "designcraft#1484:merge" } },
   {
     id: "run:901", kind: "model-call", at: at(120), head: H1, actor: { type: "model", name: "opus" }, summary: "Review pull requests: hold", ref: { runId: 901, jobId: 52 },
-    call: { model: "opus", provider: "claude", account: "Team account C", state: "done", inputTokens: 51_000, outputTokens: 3_300, costUsd: 0.97, toolCalls: 11, endedAt: at(118) },
+    call: { promptId: "review.opus", step: "Review pull requests", model: "opus", provider: "claude", account: "Team account C", state: "done", inputTokens: 51_000, outputTokens: 3_300, costUsd: 0.97, toolCalls: 11, endedAt: at(118) },
   },
   { id: "plan:38", kind: "plan", at: at(125), head: H1, actor: { type: "step", name: "Planner" }, summary: "Plan started as reviewing", ref: { head: H1 } },
-  { id: "gh:opened", kind: "github", at: at(130), head: H1, actor: { type: "person", name: "contributor" }, summary: "Opened pull request on GitHub by contributor", ref: {} },
+  { id: "gh:opened", kind: "github", at: at(400 * 1440), head: H1, actor: { type: "person", name: "contributor" }, summary: "Opened pull request on GitHub by contributor", ref: {} },
+  { id: "gh:push0", kind: "github", at: at(6 * 1440 + 30), head: H1, actor: { type: "person", name: "contributor" }, summary: "Pushed 3f2a9c1", ref: { head: H1 } },
+  { id: "comment:c1", kind: "github", at: at(1000), head: H1, actor: { type: "person", name: "maintainer" }, summary: "Posted a comment, 96 characters", ref: { commentId: "c1" } },
+  ...LINT,
 ] as TraceEvent[]).sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : a.id < b.id ? 1 : -1));
 
 const OFF_EVENTS: TraceEvent[] = [
@@ -60,12 +86,12 @@ const TOOLS: AgentRunTool[] = [
 
 /** Run detail for the runs of the trace mock, with tool calls. */
 export function traceRunDetail(id: number): AgentRunDetail | null {
-  const e = EVENTS.find((x) => x.ref.runId === id && x.call);
+  const e = [...EVENTS, ...REVIEW_CALLS].find((x) => x.ref.runId === id && x.call);
   if (!e?.call) return null;
   const c = e.call;
   const text = (n: number) => Array.from({ length: n }, (_, i) => `Line ${i + 1} of the model text for ${e.summary}.`).join("\n");
   return {
-    id, jobId: e.ref.jobId ?? null, step: "opus-review", stage: 5, promptId: "opus-review", promptVersion: "a1b2c3d", provider: "claude", model: c.model, accountId: "b", accountLabel: c.account,
+    id, jobId: e.ref.jobId ?? null, step: "opus-review", stage: 5, promptId: c.promptId ?? "review.opus", promptVersion: "a1b2c3d", provider: "claude", model: c.model, accountId: "b", accountLabel: c.account,
     items: [], itemCount: 1, state: "done", startedAt: e.at, endedAt: c.endedAt, inputTokens: c.inputTokens, outputTokens: c.outputTokens, cacheReadTokens: null, cacheWriteTokens: null, costUsd: c.costUsd, summary: null,
     prompt: text(40), output: text(18), error: null, tools: TOOLS,
   };
