@@ -5,21 +5,20 @@ const overlaps = (a: NowEntry, b: NowEntry) => a.ids.some((id) => b.ids.includes
 const newestFirst = (a: NowEntry, b: NowEntry) => (a.at < b.at ? 1 : a.at > b.at ? -1 : a.key < b.key ? 1 : -1);
 
 /**
- * The feed of work, newest first. Entries shown never leave or reorder: a refreshed head only updates an entry in place when it
- * covers some of the same events (a job that ended, a group that grew), and entries that are new wait in `pending` until the
- * caller calls `flush`. Older pages append.
+ * The feed of work, newest first. Entries shown never leave or reorder: a refreshed head updates an entry in place when it covers
+ * some of the same events (a job that ended, a group that grew), and entries that are new go in above the rest at once. The
+ * caller keeps the reader's place when that happens. `fresh` holds the keys of inserted entries the reader has not seen yet
+ * (`markSeen` removes them). Older pages append.
  */
 export function useFeed(head: NowFeed | undefined, loadOlder: (before: string) => Promise<NowFeed>) {
   const [feed, setFeed] = useState<NowEntry[]>([]);
-  const [pending, setPending] = useState<NowEntry[]>([]);
+  const [fresh, setFresh] = useState<ReadonlySet<string>>(new Set());
   const [cursor, setCursor] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>();
   const started = useRef(false);
   const feedRef = useRef(feed);
-  const pendingRef = useRef(pending);
   feedRef.current = feed;
-  pendingRef.current = pending;
 
   useEffect(() => {
     if (!head) return;
@@ -36,17 +35,13 @@ export function useFeed(head: NowFeed | undefined, loadOlder: (before: string) =
       return true;
     };
     const f = [...feedRef.current];
-    const p = [...pendingRef.current];
-    const fresh = head.entries.filter((e) => !inPlace(f, e) && !inPlace(p, e));
-    setFeed(f);
-    if (fresh.length) setPending([...p, ...fresh].sort(newestFirst));
-    else setPending(p);
+    const added = head.entries.filter((e) => !inPlace(f, e)).sort(newestFirst);
+    setFeed(added.length ? [...added, ...f] : f);
+    if (added.length) setFresh((cur) => new Set([...cur, ...added.map((e) => e.key)]));
   }, [head]);
 
-  const flush = useCallback(() => {
-    if (!pendingRef.current.length) return;
-    setFeed([...pendingRef.current, ...feedRef.current]);
-    setPending([]);
+  const markSeen = useCallback((keys: string[]) => {
+    setFresh((cur) => (keys.some((k) => cur.has(k)) ? new Set([...cur].filter((k) => !keys.includes(k))) : cur));
   }, []);
 
   const more = useCallback(async () => {
@@ -64,5 +59,5 @@ export function useFeed(head: NowFeed | undefined, loadOlder: (before: string) =
     }
   }, [cursor, loading, loadOlder]);
 
-  return { feed, pending, flush, hasMore: cursor !== null, loading, error, more };
+  return { feed, fresh, markSeen, hasMore: cursor !== null, loading, error, more };
 }
