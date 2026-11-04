@@ -113,6 +113,8 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
   const mainRed = redMainRepos(db);
   const tripped = activeTrips(db);
   const brokeAt = brokeHeads(db, opts.repo);
+  // carriedReview only carries our own plain fix-up (no carry or pre-merge source) as the head: skip its compiles for other PRs.
+  const ourFixupHead = db.prepare("SELECT 1 FROM fixups WHERE repo = ? AND number = ? AND to_head = ? AND state = 'pushed' AND source IS NULL LIMIT 1");
   const pushedHere = db.prepare("SELECT 1 FROM push_outcomes WHERE repo = ? AND number = ? AND to_oid = ?");
   const answers = new Map(actionable(db).filter((a) => a.kind === "merge").map((a) => [a.id, a.answer]));
   const pipelineOn = (db.prepare("SELECT value FROM main.settings WHERE key = 'pipeline_enabled'").get() as { value: string } | undefined)?.value === "1";
@@ -253,7 +255,7 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
       stale: stale.has(`${ref}@${r.r_head}`), staleActionable: staleActionable.has(`${ref}@${r.r_head}`),
     };
     base.pushChain = chain;
-    if (r.state === "OPEN" && head && head !== r.r_head && carriedReview(db, { repo: r.repo, number: r.number, head_oid: head }, stale)) base.carriable = true;
+    if (r.state === "OPEN" && head && head !== r.r_head && ourFixupHead.get(r.repo, r.number, head) && carriedReview(db, { repo: r.repo, number: r.number, head_oid: head }, stale)) base.carriable = true;
     if (r.state === "OPEN" && (chain.length > 1 || (!!head && !!pushedHere.get(r.repo, r.number, head)))) base.inFlight = true;
     base.statementConflicts = statementConflicts(statement, [safeJson(r.r_conflicts), safeJson(premergeAt(db, r.repo, r.number, r.r_head)?.conflicts ?? null)]);
     const p = posts.get(ref);

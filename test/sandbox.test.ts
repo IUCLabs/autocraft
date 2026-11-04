@@ -16,6 +16,7 @@ import { SAMPLE_VERIFY_PLAN } from "../src/verify/types.ts";
 import { buildCheckout, safePath } from "../src/sandbox/checkout.ts";
 import { REPO_PATH, sandboxCommand } from "../src/sandbox/command.ts";
 import { tokenNearExpiry } from "../src/sandbox/index.ts";
+import type { SessionAsk } from "../src/prepush/resume.ts";
 import { useTestAccount } from "./accounts-fixture.ts";
 import { SCRATCH } from "./scratch.ts";
 
@@ -204,6 +205,47 @@ describe("askClaude in tool mode", () => {
       restore();
       delete process.env.AUTOCRAFT_CLAUDE_BIN;
     }
+  });
+
+
+  test("a resume continues the kept session; a failed resume falls back to a fresh call and removes the kept store", async () => {
+    mkdirSync(box.configDir + "t", { recursive: true });
+    writeFileSync(join(box.configDir + "t", ".credentials.json"), fakeCreds(Date.now() + 6 * 3600_000));
+    process.env.AUTOCRAFT_CLAUDE_BIN = "/usr/bin/true";
+    const checkout = join(dir, "co");
+    const kept = () => {
+      const d = mkdtempSync(join(dir, "kept-"));
+      return { id: "s1", dir: d, account: "t", checkout };
+    };
+    const ok = JSON.stringify({ type: "result", result: "reply", session_id: "s2", num_turns: 1, usage: {} });
+    const calls: string[][] = [];
+    const run = async (fail: boolean) => {
+      calls.length = 0;
+      const session: SessionAsk = { resume: { session: kept(), message: "fix it" } };
+      const first = session.resume!.session;
+      const restore = setRunner(async (_cmd, args) => {
+        calls.push(args);
+        return args.includes("--resume") && fail ? { code: 1, stdout: "", stderr: "boom" } : { code: 0, stdout: ok, stderr: "" };
+      });
+      try {
+        const r = await askClaude("fixup.patch", "sonnet", SAMPLE_FIXUP_PRS, db, { checkout, session });
+        return { r, session, first };
+      } finally { restore(); }
+    };
+    const good = await run(false);
+    assert.equal(calls.length, 1);
+    assert.ok(calls[0]!.includes("--resume"));
+    assert.equal(good.r!.text, "reply");
+    assert.ok(existsSync(good.first.dir), "the kept store survives a resume that worked");
+    assert.equal(good.session.kept?.dir, good.first.dir);
+
+    const bad = await run(true);
+    assert.equal(calls.length, 2);
+    assert.ok(calls[0]!.includes("--resume") && !calls[1]!.includes("--resume"));
+    assert.equal(bad.r!.text, "reply");
+    assert.ok(!existsSync(bad.first.dir), "the store of a failed resume is removed");
+    assert.equal(bad.session.resume, undefined);
+    delete process.env.AUTOCRAFT_CLAUDE_BIN;
   });
 
 });

@@ -9,7 +9,7 @@ import { createHash } from "node:crypto";
 import { jevParallel } from "../agents/accounts.ts";
 import { jevAvailable, jevFailure, markJevUnavailable, markJevWorking } from "../agents/jev.ts";
 import { accountConfigDir, claudeRoom, startClaudeRun, startJevRun, tryStartFollowUp, CancelledError, type Started } from "../agents/call.ts";
-import type { SessionAsk } from "../prepush/resume.ts";
+import { touchStore, type SessionAsk } from "../prepush/resume.ts";
 import { finishRun, setRunProgress } from "../agents/runs.ts";
 import { fixTurnMessage, type Lint, type LintProblem } from "../replylint.ts";
 import { coalesce, lineFeed } from "./progress.ts";
@@ -331,6 +331,7 @@ async function askOnce<K extends ClaudePromptId>(id: K, model: string, input: Cl
     const runId = tryStartFollowUp(db, resume.session.account, { promptId: id, promptVersion: promptVersion(id), provider: "claude", model, items, prompt: resume.message });
     if (runId === null) return undefined;
     run = { runId, configDir: dir, accountId: resume.session.account };
+    touchStore(resume.session.dir);
   }
   run ??= await startClaudeRun(db, { promptId: id, promptVersion: promptVersion(id), provider: "claude", model, items, prompt: joinParts(parts) }, undefined, opts.maxWaitMs);
   const end = (e: Parameters<typeof finishRun>[2]) => finishRun(db, run.runId, e);
@@ -341,6 +342,11 @@ async function askOnce<K extends ClaudePromptId>(id: K, model: string, input: Cl
     const checkTool = opts.check !== undefined && CLAUDE_PROMPTS[id].sandbox?.check === true ? opts.check : undefined;
     if (sandboxed && tokenNearExpiry(join(run.configDir, ".credentials.json"), Date.now(), TOKEN_MARGIN_MS + (checkTool ? CHECK_MAX_WALL_MS : 0))) {
       console.log("sandbox skipped: token near expiry");
+      // A resume only continues a sandboxed session; the caller asks anew.
+      if (resume) {
+        end({ state: "failed", summary: "skipped: token near expiry" });
+        return undefined;
+      }
       sandboxed = false;
       input = withoutRepoDir(input);
       parts = claudeParts(id, input, false);

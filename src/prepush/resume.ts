@@ -1,10 +1,20 @@
 // A patch the lint sends back to the model continues the model's own session while the prompt cache is warm.
 // The session store of a sandboxed patch call is kept with the stored patch row until the row's lint outcome is known or the window passes.
-import { rmSync } from "node:fs";
+import { rmSync, utimesSync } from "node:fs";
 import type { DatabaseSync } from "node:sqlite";
+import { CHECK_MAX_WALL_MS } from "../core/rules.ts";
+import { CLAUDE_PROMPTS } from "../prompts/index.ts";
 
 /** How long after its last use a kept session is resumed: the prompt cache window. */
 export const RESUME_WINDOW_MS = 60 * 60_000;
+
+/** The longest a resumed call runs: the longest prompt timeout plus the check tool's wall time. A session is swept only after the window plus this, so a resume started at the window's end keeps its store. */
+export const LONGEST_CALL_MS = Math.max(...Object.values(CLAUDE_PROMPTS).map((p) => p.limits.timeoutSeconds)) * 1000 + CHECK_MAX_WALL_MS;
+
+/** Marks a store as in use, so the age-based prune of session stores leaves it alone. */
+export function touchStore(dir: string): void {
+  try { const t = new Date(); utimesSync(dir, t, t); } catch { /* gone already */ }
+}
 
 /** What a sandboxed call leaves behind: its session, the account whose config directory holds the login, the session store and the checkout it ran on. */
 export type KeptSession = { id: string; dir: string; account: string; checkout: string };
@@ -24,6 +34,7 @@ export type Kept = Record<string, KeptSession>;
 
 export function storeSessions(kept: Kept, now: Date): string | null {
   const out: Record<string, StoredSession> = {};
+  for (const v of Object.values(kept)) touchStore(v.dir);
   for (const [k, v] of Object.entries(kept)) out[k] = { ...v, at: now.toISOString() };
   return Object.keys(out).length ? JSON.stringify(out) : null;
 }
@@ -68,12 +79,19 @@ export class SessionLedger {
 /** Removes the kept sessions whose row is no longer waiting for its lint result (pushed, failed, dropped) or is past the window. */
 export function sweepSessions(db: DatabaseSync, now: Date): number {
   let n = 0;
+  // A store that a row still waiting on its lint references stays, even when a sibling row (same head) left that state.
+  const live = new Set<string>();
+  for (const t of SESSION_TABLES) {
+    for (const r of db.prepare(`SELECT session FROM ${t} WHERE session IS NOT NULL AND state = 'linting'`).all() as { session: string }[]) {
+      for (const s of Object.values(parseSessions(r.session))) if (now.getTime() - Date.parse(s.at) <= RESUME_WINDOW_MS + LONGEST_CALL_MS) live.add(s.dir);
+    }
+  }
   for (const t of SESSION_TABLES) {
     const rows = db.prepare(`SELECT rowid AS id, state, session FROM ${t} WHERE session IS NOT NULL`).all() as { id: number; state: string; session: string }[];
     for (const r of rows) {
       const all = Object.values(parseSessions(r.session));
-      if (all.length && r.state === "linting" && all.every((s) => now.getTime() - Date.parse(s.at) <= RESUME_WINDOW_MS)) continue;
-      dropSessions(r.session);
+      if (all.length && r.state === "linting" && all.every((s) => live.has(s.dir))) continue;
+      for (const s of all) if (!live.has(s.dir)) remove(s.dir);
       db.prepare(`UPDATE ${t} SET session = NULL WHERE rowid = ?`).run(r.id);
       n++;
     }
