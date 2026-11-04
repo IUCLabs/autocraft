@@ -119,9 +119,10 @@ export type PreparedOpus =
 
 /**
  * Builds the Opus prompt input of a candidate: diff (full, or the delta since the last Opus review),
- * size cap and discussion.
+ * size cap and discussion. `independent`: the whole diff with no earlier review, discussion or unapplied fixes, for a
+ * review that must not be anchored on the first one (the pre-merge review); the snapshot then marks the time of the read.
  */
-export async function prepareOpusInput(db: DatabaseSync, repo: string, c: OpusCandidate, deps: OpusDeps, log: (line: string) => void): Promise<PreparedOpus> {
+export async function prepareOpusInput(db: DatabaseSync, repo: string, c: OpusCandidate, deps: OpusDeps, log: (line: string) => void, opts: { independent?: boolean } = {}): Promise<PreparedOpus> {
   const d = await cachedDiff(repo, c.number, c.head_oid, deps.fetchDiff);
   if (!d.ok) return d.tooLarge ? { kind: "large", mode: "full", base: null } : { kind: "no-diff", error: d.error };
   const ch = checksOf(db, repo, c.number);
@@ -129,6 +130,14 @@ export async function prepareOpusInput(db: DatabaseSync, repo: string, c: OpusCa
   if (!cd.files.length && cd.testsOmitted.length) cd = codeDiff(d.text, true);
   // The size cap applies to the whole PR, so a small push never lets a too-large PR through as a delta.
   if (cd.text.length > deps.maxChars) return { kind: "large", mode: "full", base: null };
+  if (opts.independent) {
+    const input: OpusPr = {
+      ref: refOf(c), title: c.title, body: c.body, author_association: c.author_association, size: c.size, lines_changed: c.lines_changed,
+      ci: ch?.overall ?? "unknown", mergeable: ch?.mergeable ?? null, files: cd.files, tests_omitted: cd.testsOmitted, lockfiles_omitted: cd.lockfilesOmitted,
+      mode: "full", earlier_opus: null, diff: cd.text,
+    };
+    return { kind: "ready", input, snap: { seen: now(), hash: null }, mode: "full", base: null };
+  }
   let mode: "full" | "delta" = "full", diff = cd.text, base: string | null = null;
   const earlier = earlierOpus(db, c);
   // A merge commit of ours carries the base branch's changes since the earlier head; the PR's own diff excludes them, so a delta would show unrelated changes.

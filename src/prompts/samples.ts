@@ -76,3 +76,6 @@ export const SAMPLE_COMPARE_ISSUES: CompareIssues[] = [{
     { ref: "#1310", title: "16-bit PNG crash", body: "Same on Windows 11, version 0.9.3.", state: "open", author_association: "NONE", comments: 1 },
   ],
 }];
+
+/** The review.opus sample as the independent pre-merge review gets it: full diff, no earlier review, no discussion. */
+export const SAMPLE_PREMERGE_PRS: OpusPr[] = SAMPLE_OPUS_PRS.map(({ discussion: _d, unapplied_fixes: _u, ...p }) => ({ ...p, mode: "full" as const, earlier_opus: null }));

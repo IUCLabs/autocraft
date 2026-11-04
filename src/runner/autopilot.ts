@@ -43,6 +43,7 @@ import { defaultPerDay, lanesInOrder, limitSteps, zeroOnlySteps } from "../stage
 import { applyUsedAnswers } from "../decisions-used.ts";
 import { duePriorityCount } from "../priority/index.ts";
 import { selectIssues } from "../fixissue/candidates.ts";
+import { premergeCandidates } from "../premerge/review.ts";
 import { pendingDefects, selectPostmerge } from "../postmerge/select.ts";
 import { mainFixDue } from "../mainfix/index.ts";
 import { refereeCandidates } from "../classify/referee.ts";
@@ -394,6 +395,12 @@ const LANE_CODE: Omit<Lane, "steps">[] = [
     name: "cifix-rerun",
     perRepo: true,
     detect: (db, { tracked }) => tracked.filter((repo) => selectCifix(db, repo).rerun.length > 0).sort().map((repo) => ({ step: "cifix-rerun", params: { repo } })),
+  },
+  {
+    // The adversarial review of each PR head the merge rule would merge; the queue holds the PR until it is stored.
+    name: "premerge",
+    perRepo: true,
+    detect: (db, { tracked, wake }) => tracked.filter((repo) => premergeCandidates(db, repo, Date.now(), wake).length > 0).sort().map((repo) => ({ step: "premerge", params: { repo } })),
   },
   {
     // Opus reviews what each pipeline merge landed; reads only, so it needs no repo approval.
