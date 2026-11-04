@@ -5,7 +5,7 @@ import { activeTrips } from "../push-outcomes.ts";
 import type { DatabaseSync } from "node:sqlite";
 import { notOwnIntegrationSql, groupHeldSql, backlogHeldSql } from "../dupes/held.ts";
 import { FAST_FLOOR, fastScoreSql } from "../fasttrack.ts";
-import { latestRun, needsDecisionOf, securityOf, settle, topOf, SURE, type Referee } from "../classify/settled.ts";
+import { latestRun, needsDecisionOf, refereeClosed, securityOf, settle, topOf, SURE, type Referee } from "../classify/settled.ts";
 import { JEV_FLAG_NO, JEV_NEEDS_DECISION_YES, JEV_SECURITY_YES } from "../classify/parse.ts";
 import { answersToApply, groupsToAsk } from "../dupes/decide.ts";
 import { uncheckedPairs } from "../dupes/check.ts";
@@ -169,8 +169,8 @@ export function loadItemFacts(db: DatabaseSync, opts: ItemLoadOptions = {}): Ite
     const s = cls.find((c) => c.classifier === "sonnet");
     let referee: Referee | null = null;
     if (s && j && h && s.at >= j.at && s.at >= h.at) {
-      const p = json<{ sure?: unknown; final?: unknown } | null>(s.probs, null);
-      if (typeof p?.sure === "boolean") referee = { label: s.type_label, sure: p.sure, reason: "", ...(p.final === true && { final: true }) };
+      const p = json<{ sure?: unknown; final?: unknown; opusFailures?: unknown; opusFailedAt?: unknown } | null>(s.probs, null);
+      if (typeof p?.sure === "boolean") referee = { label: s.type_label, sure: p.sure, reason: "", ...(p.final === true && { final: true }), ...(typeof p.opusFailures === "number" && { failures: p.opusFailures }), ...(typeof p.opusFailedAt === "string" && { failedAt: p.opusFailedAt }) };
     }
     const settled = settle(
       j ? { label: j.type_label, flags: flagsOf(j.flags), top: topOf(j.probs), nd: needsDecisionOf(j.probs), sec: securityOf(j.probs) } : null,
@@ -204,7 +204,7 @@ export function loadItemFacts(db: DatabaseSync, opts: ItemLoadOptions = {}): Ite
       run,
       classification: {
         status: settled.status, label: settled.label, flags: settled.flags, jevLabel: settled.jevLabel, haikuLabel: settled.haikuLabel,
-        referee: settled.referee ? { sure: settled.referee.sure, final: !!settled.referee.final } : null, jev, haiku,
+        referee: settled.referee ? { sure: settled.referee.sure, final: refereeClosed(settled.referee), failedAt: settled.referee.failedAt ?? null } : null, jev, haiku,
       },
       embedHash, embeddedHash: r.e_hash, priorityHash: r.pr_hash, scannedHash: r.scan_hash,
       pairsToCheck: pairs.get(ref) ?? 0, inGroupToAsk: inGroup.has(ref), inCompareSet: inCompare.has(ref), dupeAnswers: dupeAnswers.get(ref) ?? [],

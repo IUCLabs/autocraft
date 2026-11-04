@@ -32,6 +32,7 @@ export function queueEntry(f: PrFacts, merged: boolean, open: boolean): Entry {
   if (r.mode === "skipped") reasons.push("the review was skipped");
   if (!RULE_SIZES.includes(f.size)) reasons.push(`size ${f.size}`);
   if (!f.label || !RULE_LABELS.includes(f.label)) reasons.push(f.label ? `label ${f.label}` : "no settled label");
+  else if (f.labelUnsure) reasons.push("label settled by an unsure referee");
   if (!RULE_TIERS.includes(f.tier)) reasons.push(f.author ? "author not on the whitelist" : "author unknown");
   reasons.push(...(f.sensitive ?? []));
   for (const c of f.statementConflicts) reasons.push(`conflicts with ${c.where}: "${excerpt(c.text)}" (${c.reason})`);
@@ -143,7 +144,7 @@ const notHeld = (f: PrFacts): boolean => f.inScope && !f.integration && !f.heldB
 /** Where a take-fix review at the current head stands with the fix-up: the bucket and whether the step has recorded a final row for the head. */
 export function fixupOf(f: PrFacts): { bucket: FixupBucket; done: boolean } | null {
   const r = f.review, x = f.fixup;
-  if (declinedBy(f) || !r || !x || r.verdict !== "take-fix" || r.head !== f.head || r.stale || f.draft || !notHeld(f) || f.ghState !== "OPEN") return null;
+  if (declinedBy(f) || !r || !x || r.verdict !== "take-fix" || r.head !== f.head || r.stale || f.draft || !notHeld(f) || f.ghState !== "OPEN" || f.mergeHeld) return null;
   // A maintainer's changes-requested review is the person's to resolve first.
   if (f.mergeable === "CONFLICTING" || x.fixes === 0 || f.changesRequested) return null;
   const has = (s: string) => x.recorded.includes(s);

@@ -19,6 +19,7 @@
 // to a whole run for queries.
 import type { DatabaseSync } from "node:sqlite";
 import { audit } from "../dash/audit.ts";
+import { REFEREE_MAX_FAILURES } from "../core/item-rules.ts";
 import { flagBand, JEV_NEEDS_DECISION_YES, JEV_SECURITY_YES } from "./parse.ts";
 
 export const SURE = 0.9;
@@ -38,7 +39,13 @@ export type Referee = {
   label: string; sure: boolean; reason: string;
   /** The answer of the last referee (Opus, after Sonnet was unsure). An unsure final answer still settles the label, with a scope decision for the maintainer. */
   final?: boolean;
+  /** Opus calls that gave no answer for the item, and when the last one failed. */
+  failures?: number;
+  failedAt?: string;
 };
+
+/** The referee has had its last word: Opus answered, or failed too often. An unsure last word still settles the label. */
+export const refereeClosed = (r: Referee | null | undefined): boolean => !!r && (!!r.final || (r.failures ?? 0) >= REFEREE_MAX_FAILURES);
 
 export type Settled = {
   status: SettledStatus;
@@ -81,7 +88,7 @@ export function settle(jev: JevVerdict | null, haiku: Verdict | null, referee: R
   ];
   const firm = firmFlags({ ...s, flags }, jev.nd);
   // The last referee was unsure whether we have the feature or want the difference: the label stands and a maintainer makes the call.
-  return referee?.final && !referee.sure && !firm.flags.includes("needs decision") ? { ...firm, flags: [...firm.flags, "needs decision"] } : firm;
+  return refereeClosed(referee) && !referee!.sure && !firm.flags.includes("needs decision") ? { ...firm, flags: [...firm.flags, "needs decision"] } : firm;
 }
 
 function settleLabel(jev: (Verdict & { top: number | null }) | null, haiku: Verdict | null, referee: Referee | null): Settled {
@@ -92,7 +99,7 @@ function settleLabel(jev: (Verdict & { top: number | null }) | null, haiku: Verd
   if ((jev.top ?? 0) >= SURE) return { ...base, status: "settled", label: jev.label, source: "jev", flags };
   if (!haiku) return { ...base, status: "waiting", label: null, source: null, flags };
   if (haiku.label === jev.label) return { ...base, status: "settled", label: jev.label, source: "haiku", flags };
-  if (referee?.sure || referee?.final) return { ...base, referee, status: "settled", label: referee.label, source: "sonnet", flags };
+  if (referee?.sure || refereeClosed(referee)) return { ...base, referee, status: "settled", label: referee!.label, source: "sonnet", flags };
   return { ...base, referee, status: "disagree", label: null, source: null, flags };
 }
 
@@ -154,8 +161,8 @@ export function settledOf(db: DatabaseSync, repo: string, number: number, run = 
 /** A pipeline referee row: evaluation rows have no `sure` in probs and give null. */
 function refereeOf(label: string, probs: string | null, reason: string | null): Referee | null {
   try {
-    const p = JSON.parse(probs ?? "null") as { sure?: unknown; final?: unknown } | null;
-    return typeof p?.sure === "boolean" ? { label, sure: p.sure, reason: reason ?? "", ...(p.final === true && { final: true }) } : null;
+    const p = JSON.parse(probs ?? "null") as { sure?: unknown; final?: unknown; opusFailures?: unknown; opusFailedAt?: unknown } | null;
+    return typeof p?.sure === "boolean" ? { label, sure: p.sure, reason: reason ?? "", ...(p.final === true && { final: true }), ...(typeof p.opusFailures === "number" && { failures: p.opusFailures }), ...(typeof p.opusFailedAt === "string" && { failedAt: p.opusFailedAt }) } : null;
   } catch { return null; }
 }
 
@@ -190,10 +197,10 @@ export function topOf(probs: string | null): number | null {
 type Seen = { run: string | null; maxRowid: number; count: number };
 const seen = new WeakMap<DatabaseSync, Seen>();
 
-type VerdictRow = { repo: string; number: number; jl: string | null; jf: string | null; probs: string | null; hl: string | null; hf: string | null; sl: string | null; ss: number | null; sr: string | null; sf: number | null };
+type VerdictRow = { repo: string; number: number; jl: string | null; jf: string | null; probs: string | null; hl: string | null; hf: string | null; sl: string | null; ss: number | null; sr: string | null; sf: number | null; sx: number | null };
 // Items with a Jev or a Haiku verdict: Haiku alone settles an item when Jev was unavailable.
 const VERDICTS = `SELECT k.repo, k.number, j.type_label AS jl, j.flags AS jf, j.probs, h.type_label AS hl, h.flags AS hf,
-    s.type_label AS sl, json_extract(CASE WHEN json_valid(s.probs) THEN s.probs END, '$.sure') AS ss, s.reason AS sr, json_extract(CASE WHEN json_valid(s.probs) THEN s.probs END, '$.final') AS sf
+    s.type_label AS sl, json_extract(CASE WHEN json_valid(s.probs) THEN s.probs END, '$.sure') AS ss, s.reason AS sr, json_extract(CASE WHEN json_valid(s.probs) THEN s.probs END, '$.final') AS sf, json_extract(CASE WHEN json_valid(s.probs) THEN s.probs END, '$.opusFailures') AS sx
   FROM (SELECT repo, number FROM main.classifications WHERE run_id = :run AND classifier = 'jev' UNION SELECT repo, number FROM main.classifications WHERE run_id = :run AND classifier = 'haiku' AND input_hash IS NOT NULL) k
   LEFT JOIN main.classifications j ON j.repo = k.repo AND j.number = k.number AND j.classifier = 'jev' AND j.run_id = :run
   LEFT JOIN main.classifications h ON h.repo = k.repo AND h.number = k.number AND h.classifier = 'haiku' AND h.run_id = :run
@@ -210,10 +217,10 @@ export function settledTable(db: DatabaseSync, run: string | null): void {
     referee_label TEXT, referee_sure INTEGER, referee_reason TEXT, referee_final INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (repo, number))`);
   const ins = db.prepare("INSERT OR REPLACE INTO temp.item_settled VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
   const put = (r: VerdictRow) => {
-    const ref = r.sl !== null && r.ss !== null ? { label: r.sl, sure: !!r.ss, reason: r.sr ?? "", ...(r.sf ? { final: true } : {}) } : null;
+    const ref = r.sl !== null && r.ss !== null ? { label: r.sl, sure: !!r.ss, reason: r.sr ?? "", ...(r.sf ? { final: true } : {}), ...(r.sx ? { failures: r.sx } : {}) } : null;
     const s = settle(r.jl === null ? null : { label: r.jl, flags: parseFlags(r.jf), top: topOf(r.probs), nd: needsDecisionOf(r.probs), sec: securityOf(r.probs) }, r.hl === null ? null : { label: r.hl, flags: parseFlags(r.hf) }, ref);
     ins.run(r.repo, r.number, s.status, s.label, s.source, s.confidence, s.jevLabel, s.haikuLabel, JSON.stringify(s.flags),
-      s.flags.includes("security") ? 1 : 0, s.flags.includes("needs decision") ? 1 : 0, s.referee?.label ?? null, s.referee ? Number(s.referee.sure) : null, s.referee?.reason ?? null, s.referee?.final ? 1 : 0);
+      s.flags.includes("security") ? 1 : 0, s.flags.includes("needs decision") ? 1 : 0, s.referee?.label ?? null, s.referee ? Number(s.referee.sure) : null, s.referee?.reason ?? null, refereeClosed(s.referee) ? 1 : 0);
   };
   db.exec("BEGIN IMMEDIATE");
   try {

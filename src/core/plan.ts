@@ -114,6 +114,8 @@ export type PrFacts = {
   /** Settled label of the current classification run. */
   label: string | null;
   needsDecisionFlag: boolean;
+  /** The label was settled by a referee that was unsure (Opus, or Sonnet then Opus failing): the PR never takes the rule path. */
+  labelUnsure?: boolean;
   /** The answer of the latest answered scope decision about the PR (a batch decision applies to its items). */
   scopeAnswer: string | null;
 
@@ -274,7 +276,7 @@ export type ItemFacts = {
     label: string | null;
     flags: string[];
     jevLabel: string | null; haikuLabel: string | null;
-    referee: { sure: boolean; final: boolean } | null;
+    referee: { sure: boolean; final: boolean; failedAt?: string | null } | null;
     /** Jev's verdict in the run: its time, whether the item's classifier input changed since, and whether Jev is unsure of the type or a flag. */
     jev: { at: string; changed: boolean; unsure: boolean } | null;
     /** Haiku's verdict in the run; `aloneCurrent`: it classified the item alone at its current input (that settles it without Jev). */

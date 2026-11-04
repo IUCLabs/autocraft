@@ -18,3 +18,9 @@ test("an unsure final referee settles the label and flags a scope decision", () 
   const s = settle(jev, haiku, { label: "missing feature", sure: false, reason: "", final: true });
   assert.deepEqual([s.status, s.label, s.flags], ["settled", "missing feature", ["needs decision"]]);
 });
+
+test("three failed Opus calls end the referee's turn like an unsure Opus", () => {
+  const s = settle(jev, haiku, { label: "bugfix", sure: false, reason: "", failures: 3 });
+  assert.deepEqual([s.status, s.flags], ["settled", ["needs decision"]]);
+  assert.equal(settle(jev, haiku, { label: "bugfix", sure: false, reason: "", failures: 2 }).status, "disagree");
+});
