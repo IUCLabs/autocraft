@@ -1,6 +1,7 @@
 // Which merged PRs still need a post-merge review and which defects still need an issue, from the local tables only.
 import type { DatabaseSync } from "node:sqlite";
 import { pilotSqlFor } from "../pilot.ts";
+import { planned } from "../core/select.ts";
 import type { Finding } from "./parse.ts";
 import { RETRY_AFTER_MS } from "../core/rules.ts";
 
@@ -19,21 +20,10 @@ const BATCH = `EXISTS (SELECT 1 FROM merge_batch_prs bp JOIN merge_batches mb ON
 export const sinceOf = (db: DatabaseSync): string =>
   (db.prepare("SELECT value FROM settings WHERE key = ?").get(SINCE_KEY) as { value: string } | undefined)?.value ?? "9999";
 
-/**
- * PRs a pipeline merge landed (`merges` rows with outcome merged) since the `postmerge_since` setting, in the pilot, without a
- * stored review, oldest merge first. A review stored with a `retry:` error counts as missing an hour after it failed; the third such error is stored as held.
- */
-export function selectPostmerge(db: DatabaseSync, repo: string, now = Date.now()): MergedPr[] {
-  return db.prepare(`SELECT m.repo, m.number,
-      (SELECT x.head_oid FROM merges x WHERE x.repo = m.repo AND x.number = m.number AND x.outcome = 'merged' ORDER BY x.at DESC, x.rowid DESC LIMIT 1) AS head_oid,
-      MIN(m.at) AS merged_at,
-      (SELECT x.method FROM merges x WHERE x.repo = m.repo AND x.number = m.number AND x.outcome = 'merged' ORDER BY x.at DESC, x.rowid DESC LIMIT 1) AS method,
-      ${BATCH}
-    FROM merges m
-    WHERE m.repo = :repo AND m.outcome = 'merged' AND m.at >= :since AND ${pilotSqlFor("m.repo", "m.number")}
-      AND NOT EXISTS (SELECT 1 FROM postmerge_reviews r WHERE r.repo = m.repo AND r.number = m.number
-        AND (r.error IS NULL OR r.error NOT LIKE 'retry:%' OR r.at > :retry))
-    GROUP BY m.repo, m.number ORDER BY merged_at, m.number`).all({ repo, since: sinceOf(db), retry: new Date(now - RETRY_AFTER_MS).toISOString() }) as MergedPr[];
+/** PRs whose Plan holds a `postmerge` action: a pipeline merge landed since the `postmerge_since` setting and no usable review is stored (a `retry:` error counts as missing an hour after it failed; the third is stored as held). Oldest merge first. */
+export function selectPostmerge(db: DatabaseSync, repo: string, now = Date.now(), run?: string | null): MergedPr[] {
+  return planned(db, "postmerge", { repo, now, ...(run !== undefined ? { run } : {}) }).flatMap((p) => mergedPr(db, repo, p.facts.number) ?? [])
+    .sort((a, b) => (a.merged_at < b.merged_at ? -1 : a.merged_at > b.merged_at ? 1 : 0) || a.number - b.number);
 }
 
 /** The merged PR `repo#number`, whatever its review state, or null when the pipeline did not merge it. */

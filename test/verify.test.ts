@@ -8,7 +8,7 @@ import { claim, createTask, getTask, warmKeyOf } from "../src/build/tasks.ts";
 import { setRunner, type Runner } from "../src/classify/run.ts";
 import { connect } from "../src/db.ts";
 import { claudeArgs, claudeParts, renderClaude } from "../src/prompts/index.ts";
-import { selectCandidates } from "../src/verify/candidates.ts";
+import { selectCandidates } from "../src/verify/select.ts";
 import { cratesFromTree, packageName } from "../src/verify/crates.ts";
 import { runVerify, type VerifyDeps } from "../src/verify/index.ts";
 import { parsePlanReply, patchFor, patchProblem, regressionPath } from "../src/verify/plan.ts";
@@ -61,49 +61,12 @@ function fresh() {
   return db;
 }
 
-describe("verify candidates", () => {
-  test("take at the current head, public repo, CI not failing, not verified yet", () => {
-    const db = fresh();
-    // 2 take-fix, 3 review is for an older head, 4 verified, 5 CI fails, 6 draft, 7 not public, 9 hold
-    assert.deepEqual(selectCandidates(db, "app").map((c) => c.number), [1, 8]);
-    assert.deepEqual(selectCandidates(db, "priv"), []);
-    const c = selectCandidates(db, "app")[0]!;
-    assert.equal(c.label, "bugfix");
-    assert.deepEqual(c.review, { verdict: "take", reason: "fine", risks: ["r"], fixes: [] });
-  });
-
-  test("a head whose only verification is stale is planned again, the checks table's newer head included", () => {
-    const db = fresh();
-    const NEW = sha(1, "f");
-    db.prepare("UPDATE items SET updated_at = '2026-01-05T00:00:00Z' WHERE repo = 'app' AND number = 1").run();
-    db.prepare("UPDATE pr_checks SET head_oid = ?, fetched_at = '2026-02-01T00:00:00Z' WHERE number = 1").run(NEW);
-    db.prepare("INSERT INTO opus_reviews (repo, number, head_oid, run_id, at, model, verdict, reason, risks, sure, mode) VALUES ('app', 1, ?, 'rv', ?, 'sonnet', 'take', 'fine', '[]', 1, 'full')").run(NEW, T0);
-    db.prepare("INSERT INTO verifications (repo, number, head_sha, kind, reason, state, created_at) VALUES ('app', 1, ?, 'tests', 'x', 'stale', ?)").run(NEW, T0);
-    const heads = () => selectCandidates(db, "app").filter((c) => c.number === 1).map((c) => c.head_oid);
-    assert.deepEqual(heads(), [NEW]);
-    db.prepare("UPDATE verifications SET state = 'passed' WHERE number = 1").run();
-    assert.deepEqual(heads(), []);
-  });
-
+describe("verify warm keys", () => {
   test("warm keys are valid for any repo name", () => {
     for (const [name, key] of [["app", "app"], ["Craft_Libs.rs", "craft-libs-rs"], ["-x--", "x"], ["___", "repo"], ["a".repeat(80), "a".repeat(64)]] as const) {
       assert.equal(warmKeyOf(name), key);
       assert.match(warmKeyOf(name), /^[a-z0-9][a-z0-9-]{0,63}$/);
     }
-  });
-
-  test("a repo without a root Cargo.toml is left out when it has no CI, and kept when it has CI", () => {
-    const db = fresh();
-    assert.deepEqual(selectCandidates(db, "app", null, (_r, s) => (s === sha(8) ? false : null)).map((c) => c.number), [1, 8]);
-    withoutCi(db);
-    assert.deepEqual(selectCandidates(db, "app", null, (_r, s) => (s === sha(8) ? false : null)).map((c) => c.number), [1]);
-  });
-
-  test("a new head needs a new review", () => {
-    const db = fresh();
-    db.prepare("UPDATE items SET head_oid = ? WHERE number = 1").run(sha(1, "f"));
-    db.prepare("DELETE FROM pr_checks WHERE number = 1").run();
-    assert.deepEqual(selectCandidates(db, "app").map((c) => c.number), [8]);
   });
 });
 

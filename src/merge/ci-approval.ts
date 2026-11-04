@@ -10,7 +10,7 @@ import { ORG } from "../act/templates.ts";
 import { audit } from "../dash/audit.ts";
 import { effectiveCi } from "../optional-checks.ts";
 import { connect } from "../db.ts";
-import { notHeldSql } from "../dupes/held.ts";
+import { planned } from "../core/select.ts";
 import type { Exec } from "../fixup/git.ts";
 import { guard } from "../core/guard.ts";
 import { CLI_BY, type By } from "../core/gates.ts";
@@ -95,46 +95,23 @@ export function overallAt(db: DatabaseSync, repo: string, number: number, head: 
 export type Candidate = { number: number; head: string; runs: WaitingRun[]; reread: boolean; failed: Record<string, number>; crossRepo: boolean };
 
 /**
- * Open, non-draft PRs of the repo whose latest review is a final take or take-fix at the head the checks describe and that have
- * waiting runs recorded at that head (or a refusal that says so). Left out: our own integration PRs, held PRs, and PRs whose Merge?
- * question was answered with something other than merge.
+ * The candidates the step has work on (approvable runs of a fork PR, or a head to read): the PRs whose Plan holds an `approve-ci` action: reviewed PRs of the repo with runs waiting at the reviewed head, and open integration
+ * batch PRs with runs waiting at the batch tip (their code is the members' code, and every member is reviewed at the head it was batched at).
+ * The runs are read from the recorded row at the action's head.
  */
-export function reviewedHeads(db: DatabaseSync, repo: string): Candidate[] {
-  const rows = db.prepare(`SELECT i.number, l.head_oid AS head, a.runs, a.reread, a.failed, a.cross_repo FROM items i
-    JOIN final_reviews l ON l.repo = i.repo AND l.number = i.number AND l.head_oid = (
-      SELECT r.head_oid FROM opus_reviews r WHERE r.repo = i.repo AND r.number = i.number AND r.verdict IS NOT NULL ORDER BY r.at DESC, r.rowid DESC LIMIT 1)
-    JOIN pr_checks c ON c.repo = i.repo AND c.number = i.number AND c.head_oid = l.head_oid AND c.state = 'OPEN' AND c.is_draft = 0
-    JOIN ci_run_approvals a ON a.repo = i.repo AND a.number = i.number AND a.head_oid = l.head_oid
-    WHERE i.repo = ? AND i.kind = 'pr' AND i.state = 'OPEN' AND l.verdict IN ('take', 'take-fix') AND ${notHeldSql("i")}
-      AND NOT EXISTS (SELECT 1 FROM decisions d WHERE d.id = i.repo || '#' || i.number || ':merge@' || l.head_oid AND d.answer IS NOT NULL AND d.answer <> 'merge')
-    ORDER BY i.number`).all(repo) as { number: number; head: string; runs: string; reread: number; failed: string; cross_repo: number }[];
-  const own = rows.filter((r) => !mergeHeld(db, repo, r.number)).map((r) => ({
-    number: r.number, head: r.head, runs: JSON.parse(r.runs) as WaitingRun[], reread: !!r.reread, failed: JSON.parse(r.failed) as Record<string, number>, crossRepo: !!r.cross_repo,
-  }));
-  return [...own, ...batchHeads(db, repo)];
-}
-
-/**
- * Open integration batch PRs with waiting runs at the batch tip. Their code is the members' code, and every member is
- * reviewed (final take or take-fix) at the head it was batched at, so the runs are as safe to approve as a member's own.
- */
-function batchHeads(db: DatabaseSync, repo: string): Candidate[] {
-  const rows = db.prepare(`SELECT b.pr_number AS number, b.commit_sha AS head, a.runs, a.reread, a.failed, a.cross_repo FROM merge_batches b
-    JOIN ci_run_approvals a ON a.repo = b.repo AND a.number = b.pr_number AND a.head_oid = b.commit_sha
-    WHERE b.repo = ? AND b.state = 'open' AND b.pr_number IS NOT NULL
-      AND NOT EXISTS (SELECT 1 FROM merge_batch_prs p WHERE p.batch_id = b.id AND NOT EXISTS (
-        SELECT 1 FROM final_reviews l WHERE l.repo = b.repo AND l.number = p.number AND l.head_oid = p.head_oid AND l.verdict IN ('take', 'take-fix')
-          AND l.head_oid = (SELECT r.head_oid FROM opus_reviews r WHERE r.repo = l.repo AND r.number = l.number AND r.verdict IS NOT NULL ORDER BY r.at DESC, r.rowid DESC LIMIT 1)))
-    ORDER BY b.id`).all(repo) as { number: number; head: string; runs: string; reread: number; failed: string; cross_repo: number }[];
-  return rows.map((r) => ({
-    number: r.number, head: r.head, runs: JSON.parse(r.runs) as WaitingRun[], reread: !!r.reread, failed: JSON.parse(r.failed) as Record<string, number>, crossRepo: !!r.cross_repo,
-  }));
+export function needsWork(db: DatabaseSync, repo: string, run?: string | null): Candidate[] {
+  const row = db.prepare("SELECT runs, reread, failed, cross_repo FROM ci_run_approvals WHERE repo = ? AND number = ? AND head_oid = ?");
+  const out: Candidate[] = [];
+  for (const { facts, action } of planned(db, "approve-ci", { repo, ...(run !== undefined ? { run } : {}) })) {
+    const a = row.get(repo, facts.number, action.head) as { runs: string; reread: number; failed: string; cross_repo: number } | undefined;
+    if (!a) continue;
+    out.push({ number: facts.number, head: action.head!, runs: JSON.parse(a.runs) as WaitingRun[], reread: !!a.reread, failed: JSON.parse(a.failed) as Record<string, number>, crossRepo: !!a.cross_repo });
+  }
+  return out.sort((a, b) => a.number - b.number);
 }
 
 /** Runs of a candidate the step may still try: pull_request runs with fewer than MAX_FAILURES failed attempts. */
 export const approvable = (c: Candidate): WaitingRun[] => c.runs.filter((r) => r.event === "pull_request" && (c.failed[r.id] ?? 0) < MAX_FAILURES);
-/** Candidates the step has work on: approvable runs of a fork PR, or a head to read. */
-export const needsWork = (db: DatabaseSync, repo: string): Candidate[] => reviewedHeads(db, repo).filter((c) => c.reread || (c.crossRepo && approvable(c).length));
 
 type RunsReply = { workflow_runs?: { id: number; name?: string | null; event?: string; head_sha?: string; head_repository?: { full_name?: string } | null; repository?: { full_name?: string } | null }[] };
 

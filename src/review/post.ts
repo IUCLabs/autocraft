@@ -9,18 +9,13 @@ import type { DatabaseSync } from "node:sqlite";
 import { commentApprovalOf } from "../act/approval.ts";
 import { type Note, editReview, postReview, type Writer } from "../github/write.ts";
 import { guard } from "../core/guard.ts";
+import { planned } from "../core/select.ts";
+import { isQueueState } from "../core/plan.ts";
 import { CLI_BY, type By } from "../core/gates.ts";
-import { backlogHeldSql, groupHeldSql, notOwnIntegrationSql } from "../dupes/held.ts";
 import { Client, type Querier } from "../mirror.ts";
 import { prInfo } from "../merge/index.ts";
-import { pilotSql } from "../pilot.ts";
-import { headOf } from "./candidates.ts";
 import { parsePublic } from "./opus-parse.ts";
 import { reviewBody, recommendation } from "./post-template.ts";
-import { buildQueue } from "../merge/queue.ts";
-import { mergeApprovalOf } from "../merge/approval.ts";
-import { pushApprovalOf } from "../fixup/approval.ts";
-import { longLivedOf, pushable } from "../fixup/pushable.ts";
 
 const ACTOR = "review-post";
 const REVIEW_NOTE = (c: { model: string | null }): Note => ({ by: "model", kind: "review", model: c.model });
@@ -40,47 +35,32 @@ export type PostDeps = { querier: Querier; now: () => Date };
 
 export const defaultPostDeps = (): PostDeps => ({ querier: new Client(1000), now: () => new Date() });
 
-type Row = {
-  number: number; head_oid: string | null; updated_at: string | null; c_head: string | null; c_at: string | null;
-  o_head: string; o_at: string; p_opus_at: string | null; p_at: string | null; model: string | null; verdict: string; sure: number | null; public_review: string | null;
-  p_id: string | null; p_head: string | null; can_modify: number | null; head_repo: string | null; head_ref: string | null;
-};
 const safeJson = (s: string): unknown => {
   try { return JSON.parse(s); } catch { return null; }
 };
 
 /**
- * Open PRs of `repo` with an Opus review (with public text unless it edits an earlier post) at their current head that no review of ours
- * describes yet. Leaves out PRs by the pipeline's own account, integration batch PRs, held duplicates and items outside the pilot.
+ * Open PRs of `repo` whose Plan holds a `post-review` action: an Opus review (with public text unless it edits an earlier post) at
+ * their current head that no review of ours describes yet. The Plan leaves out PRs by the pipeline's own account, batch PRs,
+ * held duplicates and items outside the pilot.
  */
 export function postCandidates(db: DatabaseSync, repo: string): PostCandidate[] {
-  const longLived = longLivedOf(db, repo);
-  const rows = db.prepare(`SELECT i.number, i.head_oid, i.updated_at, c.head_oid AS c_head, c.fetched_at AS c_at,
-      o.head_oid AS o_head, o.at AS o_at, p.opus_at AS p_opus_at, p.posted_at AS p_at, o.model, o.verdict, o.sure, o.public_review, p.review_id AS p_id, p.head_oid AS p_head, i.maintainer_can_modify AS can_modify, i.head_repo, i.head_ref
-    FROM items i JOIN opus_reviews o ON o.repo = i.repo AND o.number = i.number AND o.verdict IS NOT NULL
-    LEFT JOIN pr_checks c ON c.repo = i.repo AND c.number = i.number
-    LEFT JOIN review_posts p ON p.repo = i.repo AND p.number = i.number
-    WHERE i.repo = ? AND i.kind = 'pr' AND i.state = 'OPEN' AND (o.public_review IS NOT NULL OR p.review_id IS NOT NULL) AND ${notOwnIntegrationSql("i")} AND ${pilotSql("i")}
-      AND NOT EXISTS (SELECT 1 FROM main.merge_batches mb WHERE mb.repo = i.repo AND mb.pr_number = i.number)
-      AND COALESCE(i.author, '') <> COALESCE((SELECT value FROM main.settings WHERE key = 'pipeline_login'), '')
-      AND NOT EXISTS (SELECT 1 FROM decisions dh WHERE dh.kind = 'duplicate' AND dh.id NOT LIKE '%:dupegroup:%' AND dh.repo = i.repo AND dh.number = i.number AND (dh.answer IS NULL OR dh.answer = 'close'))
-      AND NOT ${groupHeldSql("i")} AND NOT ${backlogHeldSql("i")}
-    ORDER BY i.number`).all(repo) as Row[];
+  const opus = db.prepare("SELECT at, model, verdict, sure, public_review FROM opus_reviews WHERE repo = ? AND number = ? AND head_oid = ? AND verdict IS NOT NULL ORDER BY at DESC, rowid DESC LIMIT 1");
+  const posted = db.prepare("SELECT review_id FROM review_posts WHERE repo = ? AND number = ?");
   const out: PostCandidate[] = [];
-  const mergeApproved = !!mergeApprovalOf(db, repo), pushApproved = !!pushApprovalOf(db, repo);
-  for (const r of rows) {
+  for (const { facts: f, plan, action } of planned(db, "post-review", { repo })) {
+    const head = action.head!;
+    const o = opus.get(repo, f.number, head) as { at: string; model: string | null; verdict: string; sure: number | null; public_review: string | null } | undefined;
+    if (!o) continue;
     // A newer review with no public text still edits an earlier post, so the verdict line stays current.
-    const pub = r.public_review === null ? { summary: "", points: [] as string[] } : parsePublic(safeJson(r.public_review));
+    const pub = o.public_review === null ? { summary: "", points: [] as string[] } : parsePublic(safeJson(o.public_review));
     if (!pub) continue;
-    const head = headOf(r);
-    // Posted for this head already, unless a newer Opus review of the same head exists: then the posted review is edited.
-    if (!head || head !== r.o_head || (r.p_head === head && r.o_at <= (r.p_opus_at ?? r.p_at ?? ""))) continue;
-    const q = r.verdict === "take" ? buildQueue(db, { repo, refs: [`${repo}#${r.number}`], merged: "exclude" })[0] : undefined;
+    const editId = (posted.get(repo, f.number) as { review_id: string | null } | undefined)?.review_id ?? null;
     out.push({
-      repo, number: r.number, head_oid: head, editId: r.p_id, opusAt: r.o_at, model: r.model,
+      repo, number: f.number, head_oid: head, editId, opusAt: o.at, model: o.model,
       body: reviewBody({
-        verdict: r.verdict, sure: r.sure !== 0, summary: pub.summary, points: pub.points, head,
-        recommendation: recommendation({ verdict: r.verdict, queue: q ? { path: q.path, state: q.state } : null, mergeApproved, canPush: pushApproved && pushable(r.head_repo, repo, r.can_modify === 1, r.head_ref, longLived) }),
+        verdict: o.verdict, sure: o.sure !== 0, summary: pub.summary, points: pub.points, head,
+        recommendation: recommendation({ verdict: o.verdict, queue: o.verdict === "take" && isQueueState(plan.state) ? { path: plan.path, state: plan.state } : null, mergeApproved: f.repoFacts.mergeApproved, canPush: f.repoFacts.pushApproved && f.pushable }),
       }),
     });
   }

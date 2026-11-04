@@ -6,7 +6,8 @@ import type { DatabaseSync } from "node:sqlite";
 import { connect } from "../src/db.ts";
 import type { Exec } from "../src/fixup/git.ts";
 import { approveRuns, markReread, overallAt, recordRuns, setCiApproval, type Suite } from "../src/merge/ci-approval.ts";
-import { buildQueue, eligible, refusedAsBefore } from "../src/merge/queue.ts";
+import { buildQueue, eligible } from "../src/merge/queue.ts";
+import { loadPrFact } from "../src/core/facts.ts";
 import { SCRATCH } from "./scratch.ts";
 
 mkdirSync(SCRATCH, { recursive: true });
@@ -31,6 +32,7 @@ function fresh(): DatabaseSync {
   }
   db.prepare("INSERT INTO merge_holds (repo, number, held_by, held_at) VALUES ('app', 7, 'op', ?)").run(T0);
   db.prepare(`INSERT INTO decisions (id, kind, repo, number, question, options, asked_at, answer) VALUES ('app#8:merge@sha8', 'merge', 'app', 8, 'q', '[]', ?, 'hold')`).run(T0);
+  db.prepare("UPDATE decisions SET answered_by = 'op', answered_at = ? WHERE id = 'app#8:merge@sha8'").run(T0);
   db.prepare("INSERT INTO access (login, role) VALUES ('op', 'operator')").run();
   setCiApproval(db, "op", "app", true);
   return db;
@@ -178,6 +180,6 @@ describe("runs waiting for approval", () => {
     const e = entry();
     assert.equal(e.ci, "success");
     // Same ci and mergeable as at the refusal, but the approval came later: not "refused as before".
-    assert.equal(refusedAsBefore(db, { ...e, state: "refused" }), false);
+    assert.equal(loadPrFact(db, "app", 1)!.runsApprovedAfterMerge, true);
   });
 });

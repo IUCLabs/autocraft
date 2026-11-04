@@ -7,7 +7,7 @@ import { mergeApprovalOf } from "./approval.ts";
 import { activeBatches } from "./batch-store.ts";
 import type { By } from "../core/gates.ts";
 import { runMerge, type MergeDeps, type MergeSummary } from "./index.ts";
-import { buildQueue, eligible, refusedAsBefore } from "./queue.ts";
+import { planned } from "../core/select.ts";
 
 export const SINGLE_MERGE_KEY = "single_merge_max";
 export const SINGLE_MERGE_DEFAULT = 3;
@@ -45,11 +45,11 @@ export function pathsOfDiff(text: string): string[] | null {
  */
 export async function planSingles(db: DatabaseSync, repo: string, fetchDiff: DiffFetcher = ghDiff): Promise<Set<number> | null> {
   const max = singleMergeMax(db);
-  const ready = buildQueue(db, { repo, merged: "exclude" }).filter(eligible);
+  const ready = planned(db, "merge", { repo });
   if (max === 0 || !ready.length || ready.length > max) return null;
   const seen = new Set<string>();
-  for (const e of ready) {
-    const d = await cachedDiff(repo, e.number, e.head, fetchDiff);
+  for (const { facts, action } of ready) {
+    const d = await cachedDiff(repo, facts.number, action.head!, fetchDiff);
     if (!d.ok) return null;
     const paths = pathsOfDiff(d.text);
     if (!paths) return null;
@@ -58,9 +58,7 @@ export async function planSingles(db: DatabaseSync, repo: string, fetchDiff: Dif
       seen.add(p);
     }
   }
-  // A PR refused at this state is left out until GitHub reports something new, so one that is always refused cannot block the rest.
-  const go = ready.filter((e) => !refusedAsBefore(db, e));
-  return go.length ? new Set(go.map((e) => e.number)) : null;
+  return new Set(ready.map((p) => p.facts.number));
 }
 
 /**

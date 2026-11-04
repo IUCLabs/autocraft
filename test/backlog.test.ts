@@ -17,7 +17,7 @@ import { textsHash } from "../src/dupes/texts.ts";
 import { buildQueue } from "../src/merge/queue.ts";
 import { setPilot } from "../src/pilot.ts";
 import type { Querier } from "../src/mirror.ts";
-import { selectCandidates as reviewCandidates } from "../src/review/candidates.ts";
+import { selectOpusCandidates as reviewCandidates } from "../src/review/opus-candidates.ts";
 import { validating } from "./gql.ts";
 import { SCRATCH } from "./scratch.ts";
 

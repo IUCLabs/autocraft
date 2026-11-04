@@ -20,6 +20,7 @@ import { connect } from "../db.ts";
 import { actionable, ask, factsOf, getDecision } from "../decisions.ts";
 import { CLI_BY, type By } from "../core/gates.ts";
 import { guard, guardRepo, liveOf } from "../core/guard.ts";
+import { planned } from "../core/select.ts";
 import { assignTo, mergeViaCommand, MERGE_RECORDED_ENV, type Writer } from "../github/write.ts";
 import { Client, markMerged, type Querier } from "../mirror.ts";
 import { refreshChecks } from "../review/checks.ts";
@@ -29,9 +30,9 @@ import { fillReviewSummaries, reviewText } from "../review/summary.ts";
 import { verificationOf } from "../verify/results.ts";
 import { TIER_LABEL } from "../whitelist.ts";
 import { closeMergedQuestions, withdrawBlockedQuestions, withdrawGroupedQuestions, withdrawOtherHeadQuestions } from "./withdraw.ts";
-import { buildQueue, UNSURE_REASON, PREMERGE_DEFECT_REASON, PREMERGE_FAILED_REASON, ciAllows, toAsk, countStates, eligible, HEAD_FACT, MERGE_OPTIONS, mergeDecisionId, QUEUE_STATES, VERIFY_UNAVAILABLE, verifyAllows, type QueueEntry } from "./queue.ts";
+import { buildQueue, UNSURE_REASON, PREMERGE_DEFECT_REASON, PREMERGE_FAILED_REASON, ciAllows, countStates, HEAD_FACT, MERGE_OPTIONS, mergeDecisionId, QUEUE_STATES, VERIFY_UNAVAILABLE, verifyAllows, type QueueEntry } from "./queue.ts";
 
-export { buildQueue, countStates, QUEUE_STATES, toAsk, type QueueEntry, type QueueState } from "./queue.ts";
+export { buildQueue, countStates, QUEUE_STATES, type QueueEntry, type QueueState } from "./queue.ts";
 import { envVar } from "../env.ts";
 import { effectiveCi, optionalChecks } from "../optional-checks.ts";
 
@@ -214,7 +215,8 @@ function askDue(db: DatabaseSync, due: QueueEntry[], at: string): string[] {
 export function askMergeDecisions(db: DatabaseSync, opts: { repos?: string[]; run?: string | null; at?: string } = {}): string[] {
   const repos = opts.repos && new Set(opts.repos);
   const queue = buildQueue(db, { merged: "exclude", ...(opts.run === undefined ? {} : { run: opts.run }) });
-  const due = toAsk(db, queue.filter((e) => !repos || repos.has(e.repo)));
+  const asks = new Set(planned(db, "ask-merge", { ...(opts.run === undefined ? {} : { run: opts.run }) }).filter((p) => !repos || repos.has(p.facts.repo)).map((p) => `${p.facts.repo}#${p.facts.number}`));
+  const due = queue.filter((e) => asks.has(`${e.repo}#${e.number}`));
   const at = opts.at ?? new Date().toISOString();
   withdrawBlockedQuestions(db, queue.filter((e) => !repos || repos.has(e.repo)), at);
   for (const r of repos ?? new Set(queue.map((e) => e.repo))) withdrawGroupedQuestions(db, at, r);
@@ -254,10 +256,12 @@ export async function runMerge(db: DatabaseSync, params: MergeParams, log: (line
   const fast = (e: QueueEntry) => (scores.get(e.number) ?? 0) >= FAST_FLOOR;
   const byRank = (a: QueueEntry, b: QueueEntry) => (scores.get(b.number) ?? -1) - (scores.get(a.number) ?? -1) || a.number - b.number;
   // Fast-tracked PRs first, in the order added (their score falls with the order); then rule merges before answered ones, each by work score, unranked last.
-  let picks = open.filter((e) => eligible(e) && (!params.only || params.only(e))).sort((a, b) =>
+  const mergeDue = new Set(planned(db, "merge", { repo }).map((p) => p.facts.number));
+  let picks = open.filter((e) => mergeDue.has(e.number) && (!params.only || params.only(e))).sort((a, b) =>
     fast(a) || fast(b) ? Number(fast(b)) - Number(fast(a)) || byRank(a, b) : a.path === b.path ? byRank(a, b) : a.path === "rule" ? -1 : 1);
   if (params.limit !== undefined) picks = picks.slice(0, params.limit);
-  const ask1 = toAsk(db, open);
+  const askDueNow = new Set(planned(db, "ask-merge", { repo }).map((p) => p.facts.number));
+  const ask1 = open.filter((e) => askDueNow.has(e.number));
   const summary: MergeSummary = { runId, repo, dryRun, states, attempted: [], merged: [], refused: [], asked: [] };
   log(`merge ${repo}: ${queue.length} in the queue (${QUEUE_STATES.filter((s) => states[s]).map((s) => `${states[s]} ${s}`).join(", ") || "none"})`);
 

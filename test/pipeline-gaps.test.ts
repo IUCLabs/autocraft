@@ -16,7 +16,7 @@ import { ActionError, actionsOf, fixAgain, reviewAgain, verifyAgain } from "../s
 import { classifyListOf, factsOf, nextStepOf } from "../src/rank/next.ts";
 import { settledOf } from "../src/classify/settled.ts";
 import { saveVerification } from "../src/verify/index.ts";
-import { unavailableCandidates } from "../src/verify/candidates.ts";
+import { unavailableCandidates } from "../src/verify/select.ts";
 import { LANES } from "../src/runner/autopilot.ts";
 import { SCRATCH } from "./scratch.ts";
 import { seedPremergeClean } from "./helpers/premerge.ts";

@@ -36,14 +36,16 @@ import { CLAUDE_PROMPTS } from "../prompts/index.ts";
 import { cachedDiff, ghDiff, type DiffFetcher } from "../review/diff.ts";
 import { REPO_PATH } from "../sandbox/command.ts";
 import { checkoutForPr } from "../sandbox/index.ts";
-import { MAX_PUSHES_PER_PR, MAX_TRIES_PER_PR, selectCifix, type CifixCandidate } from "./candidates.ts";
+import { MAX_PUSHES_PER_PR, MAX_TRIES_PER_PR, type CifixCandidate } from "./candidates.ts";
+import { selectCifix } from "./select.ts";
 import { formattingOnly, guardPatch, TEST_PATH } from "./guard.ts";
 import { readFailure } from "./logs.ts";
 import { askText, commentText, commitMessage } from "./template.ts";
 import { formatDiffPaths, matchPrFiles, triage } from "./triage.ts";
 import type { CiFailure, CifixPr } from "./types.ts";
 
-export { selectCifix, classifyCifix, MAX_TRIES, type CifixCandidate } from "./candidates.ts";
+export { MAX_TRIES, type CifixCandidate } from "./candidates.ts";
+export { selectCifix } from "./select.ts";
 
 const ORG = BASE_ORG;
 const ACTOR = "cifix";

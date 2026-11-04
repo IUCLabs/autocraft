@@ -11,7 +11,7 @@ import { setRunner, setWorkspace, type Runner } from "../src/classify/run.ts";
 import { connect } from "../src/db.ts";
 import { buildQueue, UNSURE_REASON } from "../src/merge/queue.ts";
 import { setPushApproval } from "../src/fixup/approval.ts";
-import { selectFixups } from "../src/fixup/candidates.ts";
+import { selectFixups } from "../src/fixup/select.ts";
 import { runOpusReview, type OpusDeps } from "../src/review/opus.ts";
 import type { OpusPr } from "../src/review/opus-parse.ts";
 

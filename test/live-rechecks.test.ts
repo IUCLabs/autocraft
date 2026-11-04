@@ -10,7 +10,7 @@ import { runBatches, type BatchDeps } from "../src/merge/batch.ts";
 import { activeBatches, admits, batchSizeOf, membersOf, setBatchSize } from "../src/merge/batch-store.ts";
 import { buildQueue, eligible, singleMergeOnly } from "../src/merge/queue.ts";
 import { askMergeDecisions } from "../src/merge/index.ts";
-import { selectCandidates } from "../src/review/candidates.ts";
+import { selectOpusCandidates as selectCandidates } from "../src/review/opus-candidates.ts";
 import { Git } from "../src/fixup/git.ts";
 import { validating } from "./gql.ts";
 

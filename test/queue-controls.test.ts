@@ -10,7 +10,7 @@ import { insertBatch, membersOf, updateBatch } from "../src/merge/batch-store.ts
 import { runMerge } from "../src/merge/index.ts";
 import { buildQueue } from "../src/merge/queue.ts";
 import { planSingles } from "../src/merge/single.ts";
-import { selectCandidates } from "../src/review/candidates.ts";
+import { selectOpusCandidates as selectCandidates } from "../src/review/opus-candidates.ts";
 import type { DiffFetcher } from "../src/review/diff.ts";
 import { queuePage } from "../src/dash/api/queue-page.ts";
 import type { Req } from "../src/dash/types.ts";

@@ -76,7 +76,7 @@ describe("premerge step", () => {
   test("a PR in waiting-premerge is reviewed once, its row saved, and the queue moves on", async () => {
     const db = world();
     assert.equal(state(db), "waiting-premerge");
-    assert.deepEqual(premergeCandidates(db, "app").map((e) => e.number), [1]);
+    assert.deepEqual(premergeCandidates(db, { repo: "app" }).map((e) => e.number), [1]);
     const calls: string[] = [];
     const restore = model(calls, reply([finding({ severity: "minor", title: "naming" })]));
     try {
@@ -95,7 +95,7 @@ describe("premerge step", () => {
 
   test("the review input carries no discussion, earlier review or unapplied fixes, though the PR has them", async () => {
     const db = world();
-    const e = buildQueue(db, { merged: "exclude" }).find((x) => x.number === 1)!;
+    const e = premergeCandidates(db, { repo: "app" })[0]!;
     db.prepare("INSERT INTO comments (id, repo, number, kind, author, author_association, body, created_at, counted) VALUES ('c1', 'app', 1, 'comment', 'rabbit', 'CONTRIBUTOR', 'please rename this', '2026-02-01T00:00:00Z', 1)").run();
     db.prepare(`INSERT INTO opus_reviews (repo, number, head_oid, run_id, at, model, verdict, reason, fixes, sure, mode) VALUES ('app', 1, 'old', 'rv0', '2026-01-01T00:00:00Z', 'm', 'take-fix', 'needs work', ?, 1, 'full')`)
       .run(JSON.stringify([{ file: "src/lib.rs", change: "rename a" }]));
@@ -114,10 +114,10 @@ describe("premerge step", () => {
 
   test("a repo without merge approval gets no pre-merge candidates", () => {
     const db = world();
-    assert.equal(premergeCandidates(db, "app").length, 1);
+    assert.equal(premergeCandidates(db, { repo: "app" }).length, 1);
     db.prepare("DELETE FROM main.settings WHERE key = 'merge_approved:app'").run();
     assert.equal(mergeApprovalOf(db, "app"), null);
-    assert.deepEqual(premergeCandidates(db, "app"), []);
+    assert.deepEqual(premergeCandidates(db, { repo: "app" }), []);
   });
 
   test("a diff too large to review fails the head at once, without retries", async () => {
@@ -153,10 +153,10 @@ describe("premerge step", () => {
     assert.equal(row.tries, 1);
     assert.match(row.error ?? "", /^retry: /);
     assert.equal(state(db), "waiting-premerge");
-    assert.deepEqual(premergeCandidates(db, "app", Date.now()), []);
-    assert.deepEqual(premergeCandidates(db, "app", Date.now() + 3_700_000).map((e) => e.number), [1]);
+    assert.deepEqual(premergeCandidates(db, { repo: "app", at: Date.now() }), []);
+    assert.deepEqual(premergeCandidates(db, { repo: "app", at: Date.now() + 3_700_000 }).map((e) => e.number), [1]);
     for (let i = row.tries; i < PREMERGE_MAX_TRIES; i++) savePremerge(db, { repo: "app", number: 1, head: "sha1", at: row.at, error: "retry: x" });
-    assert.deepEqual(premergeCandidates(db, "app", Date.now() + 7_200_000), [], "no tries left");
+    assert.deepEqual(premergeCandidates(db, { repo: "app", at: Date.now() + 7_200_000 }), [], "no tries left");
   });
 
   test("a dry run lists the candidates and asks nothing", async () => {

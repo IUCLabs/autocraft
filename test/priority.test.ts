@@ -9,14 +9,14 @@ import { connect } from "../src/db.ts";
 import { decideCandidates } from "./planned.ts";
 import { toDecision } from "../src/dash/api/decisions.ts";
 import type { DecisionRow } from "../src/decisions.ts";
-import { selectFixups } from "../src/fixup/candidates.ts";
+import { selectFixups } from "../src/fixup/select.ts";
 import { jevAvailable, jevOutage, JEV_RETRY_MS } from "../src/agents/jev.ts";
 import { rescore, runPrioritize } from "../src/priority/index.ts";
 import { priorityOf } from "../src/priority/read.ts";
 import { duplicateCounts } from "../src/priority/reach.ts";
 import { LEVELS, levelWith, parseHaikuImpacts, reachOf, reachScore, settleImpact, type Reach } from "../src/priority/score.ts";
-import { selectCandidates as reviewCandidates } from "../src/review/candidates.ts";
-import { selectCandidates as verifyCandidates } from "../src/verify/candidates.ts";
+import { selectOpusCandidates as reviewCandidates } from "../src/review/opus-candidates.ts";
+import { selectCandidates as verifyCandidates } from "../src/verify/select.ts";
 import { SCRATCH } from "./scratch.ts";
 
 mkdirSync(SCRATCH, { recursive: true });
@@ -196,7 +196,7 @@ describe("ordering and API", () => {
     const fix = selectFixups(db, "photocraft");
     assert.deepEqual(nums([...fix.fix, ...fix.cannotPush]), [3, 2, 1]);
     db.exec("UPDATE opus_reviews SET verdict = 'take'");
-    assert.deepEqual(nums(verifyCandidates(db, "photocraft", "r1", () => true)), [3, 2, 1]);
+    assert.deepEqual(nums(verifyCandidates(db, "photocraft", "r1")), [3, 2, 1]);
   });
 
   test("the item and decision responses carry the badge data", () => {

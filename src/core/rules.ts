@@ -69,3 +69,29 @@ export const CIFIX_TRY_STATES = ["formatting", "pushing", "pushed", "failed", "r
 export const CIFIX_PUSH_STATES = ["pushing", "pushed"];
 /** States that end the CI fix step's work at a head. */
 export const CIFIX_FINAL_STATES = ["pushed", "pushing", "asked", "push-denied", "cannot-push", "skipped", "comment-failed"];
+
+// ---- merge decisions and their SQL (no imports) ----
+
+/** The PR has an unanswered Merge? question at any head. */
+export const OPEN_QUESTION_SQL = "SELECT 1 FROM decisions WHERE repo = ? AND number = ? AND kind = 'merge' AND answer IS NULL AND id NOT LIKE '%~replaced-%' LIMIT 1";
+
+export const UNSURE_AT_SQL = `SELECT 1 FROM opus_review_history WHERE repo = ?1 AND number = ?2 AND head_oid = ?3 AND verdict IN ('take', 'take-fix') AND sure = 0
+  UNION ALL SELECT 1 FROM opus_reviews WHERE repo = ?1 AND number = ?2 AND head_oid = ?3 AND verdict IN ('take', 'take-fix') AND sure = 0 LIMIT 1`;
+
+/** SQL condition on `g` (a decisions row): a duplicate group decision that is unanswered or answered "keep #N instead" with the new roles not applied yet. */
+export const OPEN_GROUP_SQL = `(g.kind = 'duplicate' AND g.id LIKE '%:dupegroup:%' AND (g.answer IS NULL
+  OR (g.answer LIKE 'keep:%' AND COALESCE((SELECT dg.applied_answer FROM dupe_groups dg WHERE dg.decision_id = g.id), '') <> g.answer)))`;
+
+/** Option keys of a "Merge this PR?" decision. Only an operator's answer counts. */
+export const MERGE_OPTIONS = {
+  merge: { key: "merge", label: "Merge", hint: "Merge once CI is green at this head commit." },
+  hold: { key: "hold", label: "Hold", hint: "Keep it open and out of the merge queue." },
+  close: { key: "close", label: "Close", hint: "Not wanted as it is; post a short comment and close the PR." },
+} as const;
+
+/** One open decision per PR head: a push gets a new one. */
+export const mergeDecisionId = (repo: string, number: number, head: string): string => `${repo}#${number}:merge@${head}`;
+export const HEAD_FACT = "head commit ";
+
+/** Setting that holds the pipeline account's login, recorded wherever the pipeline pushes as that account. */
+export const PIPELINE_LOGIN_KEY = "pipeline_login";

@@ -4,7 +4,6 @@ import { join } from "node:path";
 import { describe, test } from "node:test";
 import { useTestAccount } from "./accounts-fixture.ts";
 import { connect } from "../src/db.ts";
-import { selectCandidates } from "../src/review/candidates.ts";
 import { checksQuery, parseChecks } from "../src/review/checks.ts";
 import { codeDiff } from "../src/review/diff.ts";
 import { SCRATCH } from "./scratch.ts";
@@ -46,23 +45,6 @@ const diffOf = (n: number) =>
   `diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1 +1 @@\n-old${n}\n+new${n}\n` +
   `diff --git a/tests/t.rs b/tests/t.rs\n--- a/tests/t.rs\n+++ b/tests/t.rs\n@@ -1 +1 @@\n-a\n+b\n` +
   `diff --git a/Cargo.lock b/Cargo.lock\n--- a/Cargo.lock\n+++ b/Cargo.lock\n@@ -1 +1 @@\n-a\n+b\n`;
-
-describe("review candidates", () => {
-  test("open, non-draft, wanted label, no open scope question", () => {
-    const db = fresh();
-    const got = selectCandidates(db, "app").map((c) => [c.number, c.size]);
-    // 2 plugin candidate, 3 draft, 4 closed, 5 needs decision, 8 Jev unsure and Haiku disagrees
-    assert.deepEqual(got, [[1, "S"], [6, "S"], [7, "S"], [9, "L"]]);
-  });
-
-  test("a scope answer of small-extra keeps a needs-decision PR; plugin does not", () => {
-    const db = fresh();
-    db.prepare("UPDATE decisions SET answer = 'small-extra' WHERE id = 'd1'").run();
-    assert.ok(selectCandidates(db, "app").some((c) => c.number === 6));
-    db.prepare("UPDATE decisions SET answer = 'plugin' WHERE id = 'd1'").run();
-    assert.ok(!selectCandidates(db, "app").some((c) => c.number === 6));
-  });
-});
 
 describe("checks", () => {
   test("one query per chunk; check states roll up to an overall state", () => {

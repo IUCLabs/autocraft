@@ -21,18 +21,15 @@ import { pending as embedPending } from "../embed/store.ts";
 import { approvalOf } from "../labels/approval.ts";
 import { commentApprovalOf } from "../act/approval.ts";
 import { pushApprovalOf } from "../fixup/approval.ts";
-import { selectFixups } from "../fixup/candidates.ts";
-import { selectCifix } from "../cifix/candidates.ts";
+import { selectFixups } from "../fixup/select.ts";
+import { selectCifix } from "../cifix/select.ts";
 import { mergeApprovalOf } from "../merge/approval.ts";
 import { ciApprovalOf, needsWork } from "../merge/ci-approval.ts";
 import { batchesDue } from "../merge/batch-store.ts";
-import { buildQueue, eligible, refusedAsBefore, toAsk } from "../merge/queue.ts";
-
-export { refusedAsBefore };
+import { buildQueue } from "../merge/queue.ts";
 import { trackedNames } from "../repos.ts";
-import { selectCandidates as reviewCandidates } from "../review/candidates.ts";
+import { planned, type Planned } from "../core/select.ts";
 import { postCandidates } from "../review/post.ts";
-import { selectCandidates as verifyCandidates, unavailableCandidates } from "../verify/candidates.ts";
 import { collectDue } from "../verify/results.ts";
 import { openedToday, perDay } from "../fixissue/index.ts";
 import { audit } from "../dash/audit.ts";
@@ -73,6 +70,13 @@ const setSetting = (db: DatabaseSync, key: string, value: string): void => {
 };
 
 // ---- lanes ---------------------------------------------------------------------
+
+/** The first (best-scored) planned PR of each repo. */
+const firstByRepo = (items: Planned[]): Map<string, Planned> => {
+  const out = new Map<string, Planned>();
+  for (const p of items) if (!out.has(p.facts.repo)) out.set(p.facts.repo, p);
+  return out;
+};
 
 /** One job the autopilot may queue; `params` leaves out `limit`, which the planner sets. */
 export type Candidate = {
@@ -247,8 +251,9 @@ const LANE_CODE: Omit<Lane, "steps">[] = [
     perRepo: true,
     detect: (db, { run, tracked }) => {
       const out: Candidate[] = [];
-      for (const repo of fastFirst(db, roundRobin(tracked, getSetting(db, KEY_CURSOR)), (r) => reviewCandidates(db, r, run)[0]?.number)) {
-        if (!reviewCandidates(db, repo, run).length) continue;
+      const top = firstByRepo(planned(db, "review", { run }));
+      for (const repo of fastFirst(db, roundRobin(tracked, getSetting(db, KEY_CURSOR)), (r) => top.get(r)?.facts.number)) {
+        if (!top.has(repo)) continue;
         const checks = lastJobEnd(db, "checks", repo);
         const fresh = checks?.state === "done" && Date.now() - Date.parse(checks.endedAt) < CHECKS_FRESH_MS;
         const review = { step: "opus-review", params: { repo } };
@@ -256,7 +261,10 @@ const LANE_CODE: Omit<Lane, "steps">[] = [
       }
       return out;
     },
-    topScore: (db, { run, tracked }) => bestScore(tracked.map((repo) => reviewCandidates(db, repo, run)[0]?.score)),
+    topScore: (db, { run, tracked }) => {
+      const top = firstByRepo(planned(db, "review", { run }));
+      return bestScore(tracked.map((repo) => top.get(repo)?.facts.score));
+    },
     chosen: (db, c) => {
       if (c.step === "opus-review") setSetting(db, KEY_CURSOR, String(c.params.repo));
     },
@@ -275,7 +283,7 @@ const LANE_CODE: Omit<Lane, "steps">[] = [
     name: "merge-ask",
     detect: (db, { run, tracked }) => {
       const repos = new Set(tracked);
-      return toAsk(db, buildQueue(db, { run, merged: "exclude" }).filter((e) => repos.has(e.repo))).length ? [{ step: "merge-ask", params: {} }] : [];
+      return planned(db, "ask-merge", { run }).some((p) => repos.has(p.facts.repo)) ? [{ step: "merge-ask", params: {} }] : [];
     },
   },
   {
@@ -285,7 +293,7 @@ const LANE_CODE: Omit<Lane, "steps">[] = [
     extra: tasksSig,
     detect: (db, ctx) => {
       const queue = buildQueue(db, { run: ctx.run }).filter((e) => mergeApprovalOf(db, e.repo));
-      const due = new Set(queue.filter((e) => eligible(e) && !refusedAsBefore(db, e)).map((e) => e.repo));
+      const due = new Set(planned(db, "merge", { run: ctx.run }).map((p) => p.facts.repo).filter((r) => mergeApprovalOf(db, r)));
       const batches = new Set(batchesDue(db));
       const out: Candidate[] = [];
       // A merge job that advanced a batch runs again at once; one that only watched waits.
@@ -300,7 +308,7 @@ const LANE_CODE: Omit<Lane, "steps">[] = [
         return false;
       };
       // The repo whose eligible PR is fast-tracked first goes first.
-      const topEligible = (r: string): number | undefined => queue.filter((e) => e.repo === r && eligible(e)).sort((a, b) => (fastScoreOf(db, r, b.number) ?? -1) - (fastScoreOf(db, r, a.number) ?? -1))[0]?.number;
+      const topEligible = (r: string): number | undefined => queue.filter((e) => e.repo === r && e.eligible).sort((a, b) => (fastScoreOf(db, r, b.number) ?? -1) - (fastScoreOf(db, r, a.number) ?? -1))[0]?.number;
       for (const repo of fastFirst(db, [...new Set([...due, ...batches])].sort(), topEligible)) {
         const poll = batches.has(repo);
         if (poll && later("merge", repo)) continue;
@@ -324,12 +332,12 @@ const LANE_CODE: Omit<Lane, "steps">[] = [
   {
     name: "fixup",
     perRepo: true,
-    detect: (db, { tracked }) => {
+    detect: (db, { run, tracked }) => {
       const repos = tracked.filter((repo) => {
-        const sel = selectFixups(db, repo);
+        const sel = selectFixups(db, repo, run);
         return (pushApprovalOf(db, repo) && (sel.fix.length > 0 || sel.conflictMerge.length > 0)) || sel.ask.length > 0 || sel.conflictAsk.length > 0;
       });
-      return fastFirst(db, repos.sort(), (r) => { const sel = selectFixups(db, r); return (sel.fix[0] ?? sel.ask[0] ?? sel.conflictMerge[0] ?? sel.conflictAsk[0])?.number; }).map((repo) => ({ step: "fixup", params: { repo } }));
+      return fastFirst(db, repos.sort(), (r) => { const sel = selectFixups(db, r, run); return (sel.fix[0] ?? sel.ask[0] ?? sel.conflictMerge[0] ?? sel.conflictAsk[0])?.number; }).map((repo) => ({ step: "fixup", params: { repo } }));
     },
   },
   {
@@ -339,8 +347,9 @@ const LANE_CODE: Omit<Lane, "steps">[] = [
     extra: tasksSig,
     detect: (db, { run, tracked }) => {
       const out: Candidate[] = [];
-      for (const repo of fastFirst(db, roundRobin(tracked, getSetting(db, KEY_VERIFY_CURSOR)), (r) => (verifyCandidates(db, r, run)[0] ?? unavailableCandidates(db, r, run)[0]?.c)?.number)) {
-        if (!verifyCandidates(db, repo, run).length && !unavailableCandidates(db, repo, run).length) continue;
+      const top = firstByRepo([...planned(db, "verify", { run, bucket: "plan" }), ...planned(db, "verify", { run, bucket: "unavailable" })]);
+      for (const repo of fastFirst(db, roundRobin(tracked, getSetting(db, KEY_VERIFY_CURSOR)), (r) => top.get(r)?.facts.number)) {
+        if (!top.has(repo)) continue;
         const checks = lastJobEnd(db, "checks", repo);
         const fresh = checks?.state === "done" && Date.now() - Date.parse(checks.endedAt) < CHECKS_FRESH_MS;
         const verify = { step: "verify", params: { repo } };
@@ -386,8 +395,10 @@ const LANE_CODE: Omit<Lane, "steps">[] = [
     // The final Opus reviews, posted as one PR review each in repos approved for comments.
     name: "review-post",
     perRepo: true,
-    detect: (db, { tracked }) =>
-      tracked.filter((repo) => commentApprovalOf(db, repo) && postCandidates(db, repo).length).sort().map((repo) => ({ step: "review-post", params: { repo } })),
+    detect: (db, { run, tracked }) => {
+      const due = new Set(planned(db, "post-review", { run }).map((p) => p.facts.repo));
+      return tracked.filter((repo) => commentApprovalOf(db, repo) && due.has(repo)).sort().map((repo) => ({ step: "review-post", params: { repo } }));
+    },
   },
   {
     // Operator messages in conversations; answered whether or not the item's repo is in scope, since an operator started them.
@@ -398,37 +409,36 @@ const LANE_CODE: Omit<Lane, "steps">[] = [
     // Runs GitHub holds for approval on reviewed outside PRs; the checks job records them, the step approves.
     name: "ci-approve",
     perRepo: true,
-    detect: (db, { tracked }) => tracked.filter((repo) => ciApprovalOf(db, repo) && needsWork(db, repo).length).sort().map((repo) => ({ step: "ci-approve", params: { repo } })),
+    detect: (db, { tracked, run }) => tracked.filter((repo) => ciApprovalOf(db, repo) && needsWork(db, repo, run).length).sort().map((repo) => ({ step: "ci-approve", params: { repo } })),
   },
   {
     // Failing gate checks of wanted PRs: the log is read, a formatter run is queued or collected, or a patch is written and pushed.
     name: "cifix",
     perRepo: true,
     extra: tasksSig,
-    detect: (db, { tracked }) => tracked.filter((repo) => { const sel = selectCifix(db, repo); return sel.work.length > 0 || sel.collect.length > 0; }).sort().map((repo) => ({ step: "cifix", params: { repo } })),
+    detect: (db, { run, tracked }) => tracked.filter((repo) => { const sel = selectCifix(db, repo, run); return sel.work.length > 0 || sel.collect.length > 0; }).sort().map((repo) => ({ step: "cifix", params: { repo } })),
   },
   {
     name: "cifix-rerun",
     perRepo: true,
-    detect: (db, { tracked }) => tracked.filter((repo) => selectCifix(db, repo).rerun.length > 0).sort().map((repo) => ({ step: "cifix-rerun", params: { repo } })),
+    detect: (db, { run, tracked }) => tracked.filter((repo) => selectCifix(db, repo, run).rerun.length > 0).sort().map((repo) => ({ step: "cifix-rerun", params: { repo } })),
   },
   {
     // The adversarial review of each PR head the merge rule would merge; the queue holds the PR until it is stored.
     name: "premerge",
     perRepo: true,
     detect: (db, { tracked, wake, run }) => {
-      const repos = tracked.filter((repo) => mergeApprovalOf(db, repo));
-      if (!repos.length) return [];
-      // One queue for every repo, with the planner's run: buildQueue per repo would look the run up each time.
-      const queue = buildQueue(db, { run, merged: "exclude" });
-      return repos.filter((repo) => premergeCandidates(db, repo, Date.now(), wake, queue).length > 0).sort().map((repo) => ({ step: "premerge", params: { repo } }));
+      // One pass over every repo's Plans, with the planner's run.
+      const repos = new Set(tracked);
+      const due = new Set(premergeCandidates(db, { run, wake }).map((e) => e.repo));
+      return [...due].filter((repo) => repos.has(repo)).sort().map((repo) => ({ step: "premerge", params: { repo } }));
     },
   },
   {
     // Opus reviews what each pipeline merge landed; reads only, so it needs no repo approval.
     name: "postmerge",
     perRepo: true,
-    detect: (db, { tracked }) => tracked.filter((repo) => selectPostmerge(db, repo).length).sort().map((repo) => ({ step: "postmerge", params: { repo } })),
+    detect: (db, { tracked, run }) => tracked.filter((repo) => selectPostmerge(db, repo, Date.now(), run).length).sort().map((repo) => ({ step: "postmerge", params: { repo } })),
   },
   {
     // The defects of those reviews become issues in repos approved for comments.

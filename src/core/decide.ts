@@ -8,7 +8,7 @@ import {
 import type { Action, Plan, PlanState, PrFacts, QueueState } from "./plan.ts";
 
 type PremergeState = "none" | "clean" | "fix" | "defect" | "failed" | "retry";
-type Entry = { state: QueueState; path: "rule" | "operator" | null; reasons: string[]; note: string | null; conflictNote: string | null; premerge: PremergeState | null; premergeDefects: number; answer: string | null; noCi: boolean };
+export type Entry = { state: QueueState; path: "rule" | "operator" | null; reasons: string[]; note: string | null; conflictNote: string | null; premerge: PremergeState | null; premergeDefects: number; answer: string | null; noCi: boolean; refusedReason: string | null };
 
 const verifyState = (f: PrFacts): QueueState | null => {
   const s = f.verification?.state;
@@ -17,7 +17,7 @@ const verifyState = (f: PrFacts): QueueState | null => {
 };
 
 /** The queue entry of a PR that has a take or take-fix review at its head (or merged at the reviewed head). */
-function queueEntry(f: PrFacts, merged: boolean, open: boolean): Entry {
+export function queueEntry(f: PrFacts, merged: boolean, open: boolean): Entry {
   const r = f.review!;
   const noCi = f.ci === "none" && f.repoFacts.noCi;
   const reasons: string[] = [];
@@ -51,7 +51,7 @@ function queueEntry(f: PrFacts, merged: boolean, open: boolean): Entry {
     if (premerge === "defect") reasons.push(PREMERGE_DEFECT_REASON);
     else if (premerge === "failed") reasons.push(PREMERGE_FAILED_REASON);
   }
-  const e: Entry = { state: "needs-decision", path: null, reasons, note: null, conflictNote: null, premerge, premergeDefects: defects, answer, noCi };
+  const e: Entry = { state: "needs-decision", path: null, reasons, note: null, conflictNote: null, premerge, premergeDefects: defects, answer, noCi, refusedReason: null };
 
   if (open && f.gateFailureNote) e.note = f.gateFailureNote;
   // A maintainer's formal block comes before everything else.
@@ -91,7 +91,10 @@ function stateOf(f: PrFacts, e: Entry, merged: boolean, held: "backlog" | "dupli
       return "needs-fix-up";
     }
   }
-  if (f.lastMerge?.outcome === "refused") return "refused";
+  if (f.lastMerge?.outcome === "refused") {
+    e.refusedReason = f.lastMerge.reason;
+    return "refused";
+  }
   return e.path === "rule" ? "ready" : "decision-answered-merge";
 }
 
@@ -121,11 +124,11 @@ const WAITS: Partial<Record<QueueState, string>> = {
   "batch-checking": "its batch", "batch-failed": "its batch", "changes-requested": "the maintainer's review", refused: "a change in CI or mergeable state",
 };
 
-type FixupBucket = "fix" | "unapproved" | "cannot-push" | "ask" | "asked" | "hold";
+export type FixupBucket = "fix" | "unapproved" | "cannot-push" | "ask" | "asked" | "hold";
 const notHeld = (f: PrFacts): boolean => f.inScope && !f.integration && !f.heldBacklog && !f.heldDuplicate;
 
 /** Where a take-fix review at the current head stands with the fix-up: the bucket and whether the step has recorded a final row for the head. */
-function fixupOf(f: PrFacts): { bucket: FixupBucket; done: boolean } | null {
+export function fixupOf(f: PrFacts): { bucket: FixupBucket; done: boolean } | null {
   const r = f.review, x = f.fixup;
   if (!r || !x || r.verdict !== "take-fix" || r.head !== f.head || r.stale || f.draft || !notHeld(f) || f.ghState !== "OPEN") return null;
   if (f.mergeable === "CONFLICTING" || x.fixes === 0) return null;
@@ -142,8 +145,10 @@ function fixupOf(f: PrFacts): { bucket: FixupBucket; done: boolean } | null {
   return { bucket: f.repoFacts.pushApproved ? "fix" : "unapproved", done: false };
 }
 
-/** The CI fix step's bucket for a PR whose CI fails at the reviewed head, or null when it is no candidate. */
-function cifixOf(f: PrFacts): "work" | "collect" | "rerun" | "capped" | "other" | null {
+export type CifixBucket = "work" | "unapproved" | "cannot-push" | "formatting" | "collect" | "rerun" | "rerun-wait" | "failed" | "capped" | "done";
+
+/** Where the CI fix step stands for a PR whose CI fails at the reviewed head, or null when it is no candidate. */
+export function cifixBucket(f: PrFacts): CifixBucket | null {
   const r = f.review, c = f.cifix;
   if (!r || !c || (r.verdict !== "take" && r.verdict !== "take-fix") || r.head !== f.head || f.ghState !== "OPEN" || f.ci !== "failure" || f.draft || !notHeld(f)) return null;
   if (f.mergeable === "CONFLICTING" || r.stale || f.changesRequested || f.mergeHeld) return null;
@@ -152,16 +157,24 @@ function cifixOf(f: PrFacts): "work" | "collect" | "rerun" | "capped" | "other" 
     if (fx && ["fix", "unapproved", "ask"].includes(fx.bucket)) return null;
   }
   const has = (s: string) => c.states.includes(s);
-  if (CIFIX_FINAL_STATES.some(has)) return "other";
-  if (c.formattingTask !== null || has("formatting")) return c.formattingTask !== null && c.formatterEnded ? "collect" : "other";
-  if (has("capped")) return "other";
+  if (CIFIX_FINAL_STATES.some(has)) return "done";
+  if (c.formattingTask !== null || has("formatting")) return c.formattingTask !== null && c.formatterEnded ? "collect" : "formatting";
+  if (has("capped")) return "failed";
   if (c.totalPushes >= CIFIX_MAX_PUSHES_PER_PR || c.totalTries >= CIFIX_MAX_TRIES_PER_PR) return "capped";
-  if (c.tries >= CIFIX_MAX_TRIES) return "other";
-  if (c.infraRuns && c.rerunAt === null) return f.repoFacts.ciApproved ? "rerun" : "other";
-  if (c.rerunAt !== null && !(c.checksAt && c.checksAt > c.rerunAt)) return "other";
-  if (!f.pushable && !f.repoFacts.commentApproved) return "other";
-  if (f.pushable && !f.repoFacts.pushApproved) return "other";
+  if (c.tries >= CIFIX_MAX_TRIES) return "failed";
+  if (c.infraRuns && c.rerunAt === null) return "rerun";
+  if (c.rerunAt !== null && !(c.checksAt && c.checksAt > c.rerunAt)) return "rerun-wait";
+  if (!f.pushable && !f.repoFacts.commentApproved) return "cannot-push";
+  if (f.pushable && !f.repoFacts.pushApproved) return "unapproved";
   return "work";
+}
+
+/** The CI fix step's action bucket: what it does next, or null when it does nothing. */
+function cifixOf(f: PrFacts): "work" | "collect" | "rerun" | "capped" | "other" | null {
+  const b = cifixBucket(f);
+  if (b === null) return null;
+  if (b === "rerun") return f.repoFacts.ciApproved ? "rerun" : "other";
+  return b === "work" || b === "collect" || b === "capped" ? b : "other";
 }
 
 export function decidePr(f: PrFacts): Plan {

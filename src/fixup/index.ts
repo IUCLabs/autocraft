@@ -29,7 +29,8 @@ import { cachedDiff, ghDiff, type DiffFetcher } from "../review/diff.ts";
 import { checkLine, parseCheck, recordCheck } from "../patchcheck/index.ts";
 import { CHECK_DIFF_CAP, CHECK_PATCH_CAP, type FixupCheckInput } from "../patchcheck/types.ts";
 import { pushApprovalOf } from "./approval.ts";
-import { MAX_ATTEMPTS, parseFixes, selectFixups, type FixCandidate } from "./candidates.ts";
+import { MAX_ATTEMPTS, parseFixes, type FixCandidate } from "./candidates.ts";
+import { selectFixups } from "./select.ts";
 import { Git, exec, fixupDir, type Exec } from "./git.ts";
 import { scrubGitError } from "../worker/patch.ts";
 import { activeBatches, membersOf } from "../merge/batch-store.ts";
@@ -41,7 +42,8 @@ import { outsideShown, shownSize, viewFile } from "./excerpt.ts";
 import { HOLD_CANNOT_PUSH, askText, carryCommentText, commentText, commitMessage } from "./template.ts";
 import { commentApprovalOf } from "../act/approval.ts";
 
-export { selectFixups, MAX_ATTEMPTS, type FixCandidate, type FixSelection } from "./candidates.ts";
+export { MAX_ATTEMPTS, type FixCandidate, type FixSelection } from "./candidates.ts";
+export { selectFixups } from "./select.ts";
 
 const ORG = BASE_ORG;
 const ACTOR = "fixup";

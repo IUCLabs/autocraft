@@ -9,7 +9,7 @@ import { spawnSync } from "node:child_process";
 import { setCommentApproval } from "../src/act/approval.ts";
 import { connect } from "../src/db.ts";
 import { setPushApproval } from "../src/fixup/approval.ts";
-import { selectFixups } from "../src/fixup/candidates.ts";
+import { selectFixups } from "../src/fixup/select.ts";
 import { exec, type Exec, type ExecResult } from "../src/fixup/git.ts";
 import { runFixup, type FixupDeps } from "../src/fixup/index.ts";
 import { carryAskText, carryCommentText } from "../src/fixup/template.ts";
@@ -73,7 +73,7 @@ function world(o: { check?: string; canModify?: boolean } = {}): World {
     spent: 0, remaining: 5000,
     async query(q: string) {
       if (q.startsWith("mutation")) { log.push("assign"); return {}; }
-      return { repository: { pullRequest: { id: "PR7", state: "OPEN", isDraft: false, headRefOid: head, headRefName: "fix", maintainerCanModify: o.canModify !== false, mergeable: "MERGEABLE",
+      return { repository: { pullRequest: { id: "PR7", number: 7, state: "OPEN", isDraft: false, headRefOid: head, headRefName: "fix", maintainerCanModify: o.canModify !== false, mergeable: "MERGEABLE",
         headRepository: { nameWithOwner: "contrib/app" }, assignees: { nodes: [] } } } };
     },
   });

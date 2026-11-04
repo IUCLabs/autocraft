@@ -22,7 +22,7 @@ import { MAX_NEIGHBOURS, neighbourPairs, type ScanItem } from "../src/dupes/scan
 import type { Embedder } from "../src/embed/model.ts";
 import { VectorIndex } from "../src/embed/vectors.ts";
 import type { Querier } from "../src/mirror.ts";
-import { selectCandidates as reviewCandidates } from "../src/review/candidates.ts";
+import { selectOpusCandidates as reviewCandidates } from "../src/review/opus-candidates.ts";
 import { SCRATCH } from "./scratch.ts";
 import { validating } from "./gql.ts";
 

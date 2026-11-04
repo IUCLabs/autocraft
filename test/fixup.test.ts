@@ -7,7 +7,7 @@ import { spawnSync } from "node:child_process";
 import { connect } from "../src/db.ts";
 import type { Querier } from "../src/mirror.ts";
 import { pushApprovalOf, setPushApproval } from "../src/fixup/approval.ts";
-import { selectFixups } from "../src/fixup/candidates.ts";
+import { selectFixups } from "../src/fixup/select.ts";
 import { exec, type Exec, type ExecResult } from "../src/fixup/git.ts";
 import { FILE_CAP, repostAsk, runFixup, scrubReason, type FixupDeps } from "../src/fixup/index.ts";
 import { shownSize, viewFile } from "../src/fixup/excerpt.ts";
@@ -15,7 +15,7 @@ import { validatePatch, type FixupPr } from "../src/fixup/patch.ts";
 import { setCommentApproval } from "../src/act/approval.ts";
 import { ASK_ITEM_MAX, COMMENT_TEMPLATE, askText, commentText } from "../src/fixup/template.ts";
 import { checksOf } from "../src/patchcheck/index.ts";
-import { selectCandidates } from "../src/review/candidates.ts";
+import { selectOpusCandidates as selectCandidates } from "../src/review/opus-candidates.ts";
 import { SCRATCH } from "./scratch.ts";
 import { validating } from "./gql.ts";
 

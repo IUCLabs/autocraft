@@ -1,7 +1,7 @@
 // Counts for the flowchart (docs/dashboard-spec.md, Flow), one node at a time,
 // for one repo or every tracked repo. Each count uses the rule of the stage it
 // describes: settled labels (src/classify/settled.ts), scope decisions
-// (src/core/decide-item.ts), review candidates (src/review/candidates.ts) and the
+// (src/core/decide-item.ts), review Plans (src/core/select.ts) and the
 // merge queue (src/merge/queue.ts).
 //
 // Counts are flat keys that add up across repos:
@@ -19,15 +19,15 @@ import { isScope, latestJevRun } from "../decide/select.ts";
 import { plannedItems } from "../core/select-items.ts";
 import { commentApprovalOf } from "../act/approval.ts";
 import { fixIssueApprovalOf } from "../fixissue/approval.ts";
-import { classifyFixups } from "../fixup/candidates.ts";
-import { classifyCifix } from "../cifix/candidates.ts";
+import { cifixBucket, decidePr, fixupOf } from "../core/decide.ts";
+import { loadPrFacts } from "../core/facts.ts";
 import { approvalOf } from "../labels/approval.ts";
 import { mergeApprovalOf } from "../merge/approval.ts";
 import { buildQueue, eligible, type QueueState } from "../merge/queue.ts";
 import { pendingDefects, selectPostmerge } from "../postmerge/select.ts";
 import { trackedNames } from "../repos.ts";
-import { candidateRefs, scopeAnswers } from "../review/candidates.ts";
-import { selectCandidates as verifyCandidates } from "../verify/candidates.ts";
+import { scopeAnswers } from "../review/candidates.ts";
+import { planned } from "../core/select.ts";
 
 export type Counts = Record<string, number>;
 export type Refs = Set<string>;
@@ -180,7 +180,7 @@ function decide(c: Ctx): NodeCount {
 }
 
 function review(c: Ctx): NodeCount {
-  const candidates = candidateRefs(c.db, c.repo ?? undefined, c.run);
+  const candidates: Refs = new Set(planned(c.db, "review", { ...(c.repo ? { repo: c.repo } : {}), run: c.run }).map((p) => ref(p.facts)));
   const last = c.db.prepare(`WITH last AS (SELECT repo, number, verdict, ROW_NUMBER() OVER (PARTITION BY repo, number ORDER BY at DESC, head_oid DESC) AS k
       FROM final_reviews WHERE 1 ${c.andRepo()})
     SELECT l.repo, l.number, l.verdict FROM last l JOIN items i ON i.repo = l.repo AND i.number = l.number
@@ -207,8 +207,9 @@ export const VERIFY_BRANCHES = ["planned", "running", "passed", "ci-enough", "fa
 
 function verify(c: Ctx): NodeCount {
   const by = new Map<string, Refs>([["verify.waiting", new Set()], ...VERIFY_BRANCHES.map((s) => [`verify.${s}`, new Set()] as [string, Refs])]);
-  for (const repo of c.repo ? [c.repo] : trackedNames(c.db))
-    for (const cand of verifyCandidates(c.db, repo, c.run)) by.get("verify.waiting")!.add(ref(cand));
+  const tracked = new Set(c.repos());
+  for (const p of planned(c.db, "verify", { ...(c.repo ? { repo: c.repo } : {}), run: c.run, bucket: "plan" }))
+    if (tracked.has(p.facts.repo)) by.get("verify.waiting")!.add(ref(p.facts));
   // Verifications at the open PR's current head (same head rule as the queue); primary-key joins, no scan of closed PRs' rows.
   const rows = c.db.prepare(`SELECT v.repo, v.number, v.state FROM main.verifications v
     JOIN main.items i ON i.repo = v.repo AND i.number = v.number AND i.state = 'OPEN'
@@ -363,18 +364,30 @@ function fix(c: Ctx): NodeCount {
 function fixup(c: Ctx): NodeCount {
   const members = new Map<string, Refs>(["fix", "pushed", "hold", "unapproved", "asked", "cifix-queued", "cifix-rerun", "cifix-pushed", "cifix-failed"].map((k) => [`fixup.${k}`, new Set()]));
   const hold = members.get("fixup.hold")!;
-  for (const repo of c.repos())
-    for (const x of classifyFixups(c.db, repo)) {
-      if (x.bucket === "fix" || x.bucket === "unapproved" || x.bucket === "asked") members.get(`fixup.${x.bucket}`)!.add(ref(x.c));
-      else hold.add(ref(x.c));
+  const tracked = new Set(c.repos());
+  const facts = loadPrFacts(c.db, { ...(c.repo ? { repo: c.repo } : {}), run: c.run }).filter((f) => tracked.has(f.repo));
+  for (const f of facts) {
+    const x = fixupOf(f);
+    if (x) {
+      if (x.bucket === "fix" || x.bucket === "unapproved" || x.bucket === "asked") members.get(`fixup.${x.bucket}`)!.add(ref(f));
+      else hold.add(ref(f));
+    } else if (f.premerge && decidePr(f).actions.some((a) => a.kind === "fixup" && a.params?.source === "premerge")) {
+      // A pre-merge round: pushed when the branch and the repo allow it, else left to a person.
+      if (f.pushable && f.repoFacts.pushApproved) members.get("fixup.fix")!.add(ref(f));
+      else if (f.pushable) members.get("fixup.unapproved")!.add(ref(f));
+      else hold.add(ref(f));
     }
+  }
   const waiting = hold.size + sizeOf(members, "fixup.fix") + sizeOf(members, "fixup.unapproved") + sizeOf(members, "fixup.asked");
   const pushed = members.get("fixup.pushed")!;
   for (const r of c.refs(`SELECT DISTINCT f.repo, f.number FROM main.fixups f JOIN main.items i ON i.repo = f.repo AND i.number = f.number AND i.state = 'OPEN'
       WHERE f.state = 'pushed' ${c.tracked("f.repo")}`)) if (![...members.values()].some((s) => s !== pushed && s.has(r))) pushed.add(r);
   // CI fix: PRs whose gate check fails, by what the step does next; a pushed CI fix counts like a pushed fix-up.
-  const bucket: Record<string, string> = { work: "cifix-queued", formatting: "cifix-queued", rerun: "cifix-rerun", "rerun-wait": "cifix-rerun", failed: "cifix-failed", capped: "cifix-failed" };
-  for (const repo of c.repos()) for (const x of classifyCifix(c.db, repo)) if (bucket[x.bucket]) members.get(`fixup.${bucket[x.bucket]}`)!.add(ref(x.c));
+  const bucket: Record<string, string> = { work: "cifix-queued", formatting: "cifix-queued", collect: "cifix-queued", rerun: "cifix-rerun", "rerun-wait": "cifix-rerun", failed: "cifix-failed", capped: "cifix-failed" };
+  for (const f of facts) {
+    const b = cifixBucket(f);
+    if (b && bucket[b]) members.get(`fixup.${bucket[b]}`)!.add(ref(f));
+  }
   for (const r of c.refs(`SELECT DISTINCT f.repo, f.number FROM main.ci_fixes f JOIN main.items i ON i.repo = f.repo AND i.number = f.number AND i.state = 'OPEN'
       WHERE f.state = 'pushed' ${c.tracked("f.repo")}`)) members.get("fixup.cifix-pushed")!.add(r);
   return {
