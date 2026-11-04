@@ -99,7 +99,7 @@ export async function askConflict(db: DatabaseSync, x: ConflictRun, c: ConflictC
     const g = await guard(db, { repo: x.repo, number: c.number }, { kind: "conflict", bucket: "ask", head: c.head }, x.by);
     if ("refused" in g) { x.log(`  ${ref}: skipped: ${g.refused}`); return; }
     const cm = await ghAskComment(x.gw, x.d.exec, "conflict-comment", g, { by: "fixed" }, conflictAskText(c.base), { run: x.runId, head: c.head });
-    if (cm.code !== 0) { x.log(`  ${ref}: comment failed: ${oneLine(cm.stderr)}`); return; }
+    if (cm.code !== 0) { record(db, x.at(), c, "comment-failed", oneLine(cm.stderr), [], null); x.log(`  ${ref}: comment failed: ${oneLine(cm.stderr)}`); return; }
     record(db, x.at(), c, "asked", null, [], null);
     x.summary.asked.push(ref);
     x.onHandled?.(++x.handled.n);
