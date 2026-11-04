@@ -1495,6 +1495,7 @@ export type AgentRunDetail = AgentRun & {
   output: string | null;     // raw model output, same retention
   error: string | null;
   tools: AgentRunTool[];     // tool uses in order
+  textsHidden?: boolean;     // prompt, output and tool arguments are withheld from this user (viewers)
 };
 export type AgentRunTool = {
   seq: number;

@@ -156,7 +156,7 @@ export function getRun(db: DatabaseSync, id: unknown, view: { hidden?: string[];
   }
   const tools = runTools(db, id);
   // Tool arguments carry file paths and patch text: like the prompt, for operators only.
-  if (!view.texts) return { ...toRun(r, shownLookup(db)), prompt: null, output: null, error: r.error ? "failed" : null, tools: tools.map((t) => ({ ...t, args: null })) };
+  if (!view.texts) return { ...toRun(r, shownLookup(db)), prompt: null, output: null, error: r.error ? "failed" : null, tools: tools.map((t) => ({ ...t, args: null })), textsHidden: true };
   const t = db.prepare("SELECT prompt, output FROM agent_run_texts WHERE run_id = ?").get(id) as { prompt: unknown; output: unknown } | undefined;
   return { ...toRun(r, shownLookup(db)), prompt: unpackText(t?.prompt), output: unpackText(t?.output), error: r.error, tools };
 }

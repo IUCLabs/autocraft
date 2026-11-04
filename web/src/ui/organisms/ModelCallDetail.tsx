@@ -28,7 +28,7 @@ export function ModelCallDetail({ call, runId, run, error }: { call: Call; runId
       {error && <ErrorLine error={error} />}
       {run?.error && <p className="rounded border border-bad/30 bg-bad/5 px-3 py-2 text-sm text-bad">{run.error}</p>}
       {/* The blocks below hold their height from the first paint so the rows under them do not jump. */}
-      {run ? (
+      {run?.textsHidden ? null : run ? (
         <>
           {run.prompt !== null ? <CodeBlock title="Prompt" text={run.prompt} lines={8} /> : <p className="text-sm text-ink/55">Prompt text removed after its retention period.</p>}
           {run.output !== null ? <CodeBlock title="Output" text={run.output} lines={12} /> : <p className="text-sm text-ink/55">{run.state === "running" ? "Still running." : "Output removed after its retention period."}</p>}
