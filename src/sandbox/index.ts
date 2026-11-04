@@ -31,7 +31,7 @@ export function sandboxAvailable(): boolean {
   return envVar("NO_SANDBOX") !== "1" && existsSync("/usr/bin/bwrap") && resolveClaudeBin() !== null;
 }
 
-/** A sandboxed call needs at least this much token lifetime left, because the sandbox never refreshes. */
+/** A sandboxed call needs at least this much token lifetime left, because the sandbox never refreshes; the call waits for an account that has it. */
 export const TOKEN_MARGIN_MS = 30 * 60_000;
 
 /**

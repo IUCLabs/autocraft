@@ -59,10 +59,10 @@ type RunInput = Omit<RunStart, "accountId" | "jobId" | "step" | "stage">;
  * in a single BEGIN IMMEDIATE transaction, so job processes that choose at the
  * same time cannot both take the last slot. Returns why it could not, if it could not.
  */
-export function tryStartClaudeRun(db: DatabaseSync, s: RunInput): Started | Exclude<Choice, { account: unknown }> {
+export function tryStartClaudeRun(db: DatabaseSync, s: RunInput, minTokenMs?: number): Started | Exclude<Choice, { account: unknown }> {
   db.exec("BEGIN IMMEDIATE");
   try {
-    const c = chooseAccount(db);
+    const c = chooseAccount(db, Date.now(), minTokenMs);
     if (!("account" in c)) {
       db.exec("COMMIT");
       return c;
@@ -78,16 +78,16 @@ export function tryStartClaudeRun(db: DatabaseSync, s: RunInput): Started | Excl
 
 export class WaitLimitError extends Error {}
 
-/** Waits for an enabled account with a free slot and headroom (at most `maxWaitMs` when given, else for ever), then records the running agent run on it. */
+/** Waits for an enabled account with a free slot and headroom (at most `maxWaitMs` when given, else for ever), then records the running agent run on it. With `minTokenMs`, accounts whose login token expires sooner are skipped and the call waits for a refresh. */
 
-export async function startClaudeRun(db: DatabaseSync, s: RunInput, log: (line: string) => void = console.log, maxWaitMs?: number): Promise<Started> {
+export async function startClaudeRun(db: DatabaseSync, s: RunInput, log: (line: string) => void = console.log, maxWaitMs?: number, minTokenMs?: number): Promise<Started> {
   let lastLog = 0;
   const began = Date.now();
   // Counted until the claim, and decremented in the same synchronous step as it, so claudeRoom() is exact right after a call starts.
   waiting++;
   try {
     for (;;) {
-      const c = tryStartClaudeRun(db, s);
+      const c = tryStartClaudeRun(db, s, minTokenMs);
       if ("runId" in c) return c;
       if ("none" in c) throw new NoAccountError("no Claude account is enabled; an operator enables one on the Accounts page or with `autocraft accounts set <id> --enabled yes`");
       if (maxWaitMs !== undefined && Date.now() - began >= maxWaitMs) throw new WaitLimitError("no Claude account slot became free in time");
