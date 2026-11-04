@@ -29,7 +29,10 @@ export type PlanState = (typeof PLAN_STATES)[number];
 
 export type ActionKind =
   | "review" | "post-review" | "verify" | "approve-ci" | "premerge" | "ask-merge" | "merge"
-  | "fixup" | "conflict" | "cifix" | "postmerge";
+  | "fixup" | "conflict" | "cifix" | "postmerge"
+  // item steps (issues and PRs)
+  | "classify" | "referee" | "prioritize" | "embed" | "dupes" | "dupes-compare" | "decide" | "label"
+  | "act" | "fixissue" | "fixissue-collect";
 
 export type Action = { kind: ActionKind; head: string | null; params?: Record<string, unknown> };
 
@@ -191,4 +194,132 @@ export type PrFacts = {
   changesRequested: { why: string; live: boolean } | null;
   /** The note when live review reads failed several times in a row. */
   gateFailureNote: string | null;
+};
+
+// ---- facts and plans of an item's triage steps (issues and PRs) -----------------------------------------------------
+
+/** Where an open item stands in the triage steps (classify, referee, scope decision), in the order Work's next-step text checks them. */
+export const ITEM_STATES = [
+  "held-duplicate", // an open or accepted Duplicate? decision holds it
+  "held-backlog", // a Backlog answer holds it
+  "models-disagree", // Jev and Haiku chose different labels and the referee was unsure: a person sets the label
+  "referee-due", // Jev and Haiku disagree, it is not a scope call, and Sonnet has not answered
+  "unclassified", // no Jev or Haiku verdict in the run
+  "waiting-haiku", // Jev is unsure and Haiku has not given its second opinion
+  "scope-open", // a scope decision about it waits for an answer
+  "scope-due", // a scope decision is due (needs-decision flag, or a scope-vs-scope disagreement) and nobody asked yet
+  "classified", // settled, nothing in the triage steps blocks it; later steps depend on its kind
+] as const;
+export type ItemState = (typeof ITEM_STATES)[number];
+
+export type ItemFacts = {
+  repo: string; number: number;
+  kind: "pr" | "issue";
+  /** Time of the decision, ms. */
+  now: number;
+  /** Open item as the mirror says (the freshest-checks rule of PrFacts is for the PR path only). */
+  draft: boolean;
+  /** In scope: fast-tracked, or its repo's Pipeline switch is on and, with a pilot set, it is a pilot item. */
+  inScope: boolean;
+  /** An integration batch PR the pipeline opened itself. */
+  integration: boolean;
+  /** A Backlog answer or a duplicate decision (pair, group) holds it. */
+  held: "backlog" | "duplicate" | null;
+  fast: boolean;
+  score: number | null;
+  /** The repo's approvals for the writes below. decideItem does not apply them: gates() does. */
+  repoFacts: { labelsApproved: boolean; commentApproved: boolean; fixIssueApproved: boolean };
+
+  /** The classification run every step reads (the current run, else the newest verdict run). */
+  run: string | null;
+  classification: {
+    /** The settled rule with the referee's answer applied. */
+    status: "settled" | "waiting" | "disagree" | "unclassified";
+    label: string | null;
+    flags: string[];
+    jevLabel: string | null; haikuLabel: string | null;
+    referee: { sure: boolean } | null;
+    /** Jev's verdict in the run: its time, whether the item's classifier input changed since, and whether Jev is unsure of the type or a flag. */
+    jev: { at: string; changed: boolean; unsure: boolean } | null;
+    /** Haiku's verdict in the run; `aloneCurrent`: it classified the item alone at its current input (that settles it without Jev). */
+    haiku: { at: string; aloneCurrent: boolean } | null;
+  };
+
+  /** Hash of the item's embedded text (stored by sync, else computed). */
+  embedHash: string;
+  /** Hash of the stored vector of the current embedding model, null when there is none. */
+  embeddedHash: string | null;
+  /** Hash the priority row was made at. */
+  priorityHash: string | null;
+  /** Hash of the text at the item's last duplicate scan. */
+  scannedHash: string | null;
+  /** Unchecked duplicate pairs the item is in (pair rule: open on one side, text current, one side in scope). */
+  pairsToCheck: number;
+  /** Member of a duplicate group whose decision is due to be asked. */
+  inGroupToAsk: boolean;
+  /** Member of a duplicate kind-set that needs a comparison. */
+  inCompareSet: boolean;
+
+  scope: {
+    /** An unanswered scope decision covers the item (its own or a batch's). */
+    open: boolean;
+    /** The answer of the latest answered scope decision covering the item. */
+    answer: string | null;
+    /** A decision exists that keeps Decide from asking again: any open decision, any scope decision, any Backlog answer. */
+    covered: boolean;
+    /** The item's stage row is past "classified". */
+    pastClassified: boolean;
+    /** Its own open scope decision lacks Opus's recommendation: failures so far and the time of the last failure. */
+    recommend: { failures: number; failedAt: string | null } | null;
+  };
+
+  labels: {
+    /** Labels on GitHub as mirrored. */
+    existing: string[];
+    /** An operator answered the scope decision with "plugin". */
+    pluginAnswer: boolean;
+    /** The note of the item's latest "labeled" stage row ("added: a, b"). */
+    labeledNote: string | null;
+  };
+
+  /** Operator answers "close" that the Act step applies to this item: one per decision, with the state of its action row (null: none yet; done and skipped are final). */
+  answeredClose: { decisionId: string; kind: "scope" | "close" | "duplicate" | "merge"; security: boolean; action: string | null }[];
+  /** The final Opus review at the PR's latest review head says close. `atHead`: that is the PR's current head. `asked`: the Close? decision at that head exists. */
+  closeReview: { head: string; atHead: boolean; asked: boolean } | null;
+
+  /** The Fix stage's view of an issue. */
+  fix: {
+    /** Its fix attempt. `textChanged`: the issue's title or body changed since the attempt (read only for a skipped attempt).
+     *  `headDone`: the head build task is in a terminal state; `baseDone`: there is no base task or it is terminal. */
+    attempt: { state: string; textChanged: boolean; headDone: boolean; baseDone: boolean } | null;
+    publicRepo: boolean;
+    /** The step found the repo has no Rust workspace at its root. */
+    notRust: boolean;
+    /** An open PR in the repo closes the issue or mentions it by number. */
+    openPr: boolean;
+    /** The priority row's impact level (P0 to P4). */
+    impact: string | null;
+    /** The latest scope decision about the issue itself, and whether an operator answered it. */
+    scopeDecision: { answer: string | null; byOperator: boolean } | null;
+  };
+};
+
+/** What is due for an open item in the triage steps. */
+export type ItemPlan = {
+  repo: string; number: number; kind: "pr" | "issue";
+  state: ItemState;
+  actions: Action[];
+  /** What it waits on when no action is due. */
+  wait: string | null;
+};
+
+/** The item's plans together: the triage plan, and for a PR the review-to-merge Plan; `actions` lists both, triage first. */
+export type ItemView = {
+  repo: string; number: number; kind: "pr" | "issue";
+  head: string | null;
+  item: ItemPlan;
+  pr: Plan | null;
+  actions: Action[];
+  /** The Work page's next-step text. */
+  next: string;
 };
