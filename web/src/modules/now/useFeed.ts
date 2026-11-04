@@ -5,11 +5,11 @@ const overlaps = (a: NowEntry, b: NowEntry) => a.ids.some((id) => b.ids.includes
 const newestFirst = (a: NowEntry, b: NowEntry) => (a.at < b.at ? 1 : a.at > b.at ? -1 : a.key < b.key ? 1 : -1);
 
 /**
- * The feed of work. Entries shown never leave or reorder: a refreshed head only updates an entry in place when it covers some of
- * the same events (a job that ended, a group that grew), and entries that are new wait in `pending` until the caller lets them in.
- * Older pages append.
+ * The feed of work, newest first. Entries shown never leave or reorder: a refreshed head only updates an entry in place when it
+ * covers some of the same events (a job that ended, a group that grew), and entries that are new wait in `pending` until the
+ * caller calls `flush`. Older pages append.
  */
-export function useFeed(head: NowFeed | undefined, loadOlder: (before: string) => Promise<NowFeed>, held: boolean) {
+export function useFeed(head: NowFeed | undefined, loadOlder: (before: string) => Promise<NowFeed>) {
   const [feed, setFeed] = useState<NowEntry[]>([]);
   const [pending, setPending] = useState<NowEntry[]>([]);
   const [cursor, setCursor] = useState<string | null>(null);
@@ -48,9 +48,6 @@ export function useFeed(head: NowFeed | undefined, loadOlder: (before: string) =
     setFeed([...pendingRef.current, ...feedRef.current]);
     setPending([]);
   }, []);
-  useEffect(() => {
-    if (!held && pending.length) flush();
-  }, [held, pending, flush]);
 
   const more = useCallback(async () => {
     if (!cursor || loading) return;
