@@ -181,6 +181,57 @@ describe("PR journeys", () => {
   });
 });
 
+describe("conflict resolution lint", () => {
+  const resolved = (line: string) => JSON.stringify({ sections: [{ id: 1, content: line }] });
+  const setup = () => {
+    const git = gitWorld(1, undefined, true);
+    const w = fresh().pr(1, { head: git.head, mergeable: "CONFLICTING" }).review(1, { verdict: "take" }).verified(1);
+    w.db.prepare("UPDATE items SET base_ref = 'main' WHERE repo = 'app' AND number = 1").run();
+    const deps = git.deps(w);
+    const asked: { previous?: { findings: string[] } }[] = [];
+    const answers = ["// both\nfn main() { a(); b(); }\n", "// both\nfn main() { a(); a(); }\n"];
+    deps.resolve = async (_db, input) => { asked.push(input[0] as (typeof asked)[number]); return resolved(answers[asked.length - 1]!); };
+    return { git, w, deps, asked };
+  };
+  const run = (w: World, deps: FixupDeps) => runFixup(w.db, { repo: "app", dryRun: false }, process.env.DBG ? console.log : quiet, deps);
+  const lastTask = (w: World) => (w.rows("SELECT id FROM build_tasks ORDER BY id DESC LIMIT 1")[0] as { id: number }).id;
+
+  test("clippy findings on a resolution go back to the model; the clean second resolution is merged in", async () => {
+    const { git, w, deps, asked } = setup();
+    assert.deepEqual(w.prPlan(1).actions.map((a) => [a.kind, a.params?.bucket]), [["conflict", "merge"]]);
+    assert.deepEqual((await run(w, deps)).pushed, []);
+    assert.deepEqual(w.rows("SELECT state, lint_round FROM conflict_merges"), [{ state: "linting", lint_round: 1 }]);
+    endLint(w, lastTask(w), { diagnostics: [{ line: 2 }] });
+    assert.deepEqual(w.prPlan(1).actions.map((a) => [a.kind, a.params?.bucket]), [["lint", "conflict"]]);
+
+    assert.deepEqual((await run(w, deps)).pushed, []);
+    assert.equal(asked.length, 2);
+    assert.match(asked[1]!.previous!.findings[0]!, /needless at line 2/);
+    assert.deepEqual(w.rows("SELECT state, lint_round FROM conflict_merges"), [{ state: "linting", lint_round: 2 }]);
+
+    endLint(w, lastTask(w));
+    assert.deepEqual((await run(w, deps)).pushed, ["app#1"]);
+    const pushed = git.branchHead();
+    assert.equal(sh(git.fork, "show", `${pushed}:src/lib.rs`), "fn a() {}\n// both\nfn main() { a(); a(); }");
+    assert.deepEqual(w.rows("SELECT state, to_head FROM conflict_merges"), [{ state: "merged", to_head: pushed }]);
+  });
+
+  test("findings after the second lint round fail the try with the reason", async () => {
+    const { git, w, deps, asked } = setup();
+    await run(w, deps);
+    endLint(w, lastTask(w), { diagnostics: [{ line: 2 }] });
+    await run(w, deps);
+    endLint(w, lastTask(w), { diagnostics: [{ line: 2 }] });
+    const s = await run(w, deps);
+    assert.deepEqual(s.pushed, []);
+    assert.equal(asked.length, 2);
+    assert.deepEqual(git.pushes, []);
+    const row = w.rows("SELECT state, reason FROM conflict_merges")[0] as { state: string; reason: string };
+    assert.equal(row.state, "rejected");
+    assert.match(row.reason, /clippy findings remain after 2 rounds: needless/);
+  });
+});
+
 describe("patch model build tool", () => {
   test("the model checks its patch with clippy, fixes the finding and re-checks; the harness's lint then passes on the first round", async () => {
     const git = gitWorld(1);
@@ -394,14 +445,24 @@ const sh = (cwd: string, ...args: string[]): string => {
 };
 
 /** A contributor's fork on disk (branch fix-<n>) that stands in for both GitHub URLs; git runs for real, gh is faked. */
-function gitWorld(n: number, lib = "fn a() {}\nfn main() { a(); }\n") {
+function gitWorld(n: number, lib = "fn a() {}\nfn main() { a(); }\n", conflict = false) {
   const root = tmpdir("git");
   const work = join(root, "work");
   mkdirSync(join(work, "src"), { recursive: true });
-  sh(work, "init", "-q", "-b", `fix-${n}`);
+  sh(work, "init", "-q", "-b", conflict ? "main" : `fix-${n}`);
   writeFileSync(join(work, "src/lib.rs"), lib);
   sh(work, "add", "-A");
   sh(work, "commit", "-q", "-m", "contributor");
+  if (conflict) {
+    // The PR and the default branch both change line 2 of the file.
+    sh(work, "checkout", "-q", "-b", `fix-${n}`);
+    writeFileSync(join(work, "src/lib.rs"), lib.replace("main() { a(); }", "main() { a(); a(); }"));
+    sh(work, "commit", "-q", "-am", "contributor change");
+    sh(work, "checkout", "-q", "main");
+    writeFileSync(join(work, "src/lib.rs"), lib.replace("main() { a(); }", "main() { a(); b(); }"));
+    sh(work, "commit", "-q", "-am", "base change");
+    sh(work, "checkout", "-q", `fix-${n}`);
+  }
   const head = sh(work, "rev-parse", "HEAD");
   const fork = join(root, "fork.git");
   sh(root, "clone", "-q", "--bare", work, fork);
@@ -418,7 +479,7 @@ function gitWorld(n: number, lib = "fn a() {}\nfn main() { a(); }\n") {
       const querier: Querier = {
         ...w.gh.querier,
         query: async (query: string, vars: object) => query.includes("headRefName")
-          ? { repository: { pullRequest: { id: `P${n}`, state: "OPEN", isDraft: false, headRefOid: head, headRefName: `fix-${n}`, maintainerCanModify: true, mergeable: "MERGEABLE", headRepository: { nameWithOwner: "contrib/app" }, assignees: { nodes: [] } } } }
+          ? { repository: { pullRequest: { id: `P${n}`, state: "OPEN", isDraft: false, headRefOid: head, headRefName: `fix-${n}`, maintainerCanModify: true, mergeable: conflict ? "CONFLICTING" : "MERGEABLE", headRepository: { nameWithOwner: "contrib/app" }, assignees: { nodes: [] } } } }
           : w.gh.querier.query(query, vars),
       } as Querier;
       const run: Exec = async (cmd, args, o = {}): Promise<ExecResult> => {

@@ -183,6 +183,8 @@ export type ConflictPr = {
   base: string;
   /** Each conflicted file as its conflict sections. */
   files: ConflictFile[];
+  /** Present when an earlier resolution failed the lint check: its diff against the merge's conflicted tree and the findings on the lines it changed. */
+  previous?: LintPrevious;
 };
 
 /** One conflict section with the lines around it. `ours` is the PR's side, `theirs` the base branch's. */

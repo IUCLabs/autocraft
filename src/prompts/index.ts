@@ -709,7 +709,7 @@ const FIXUP_CONFLICT: ClaudePrompt = {
   purpose: "Resolves the conflicts that merging the default branch into a take or take-fix pull request leaves, keeping what both sides intend.",
   models: ["sonnet"],
   effort: "high",
-  placeholders: { pr: "The pull request as a JSON object indented by one space: ref, title, body, review_reason (the review's summary of what the pull request does), base (the branch being merged in) and files (for each conflicted file its path, its line count and its conflict sections).", repo_access: REPO_ACCESS_DOC },
+  placeholders: { pr: "The pull request as a JSON object indented by one space: ref, title, body, review_reason (the review's summary of what the pull request does), base (the branch being merged in) and files (for each conflicted file its path, its line count and its conflict sections). After a failed lint check it also has previous: the earlier resolution as a diff against the conflicted file, and the findings on the lines it changed.", repo_access: REPO_ACCESS_DOC },
   sandbox: { tools: ["Read", "Grep", "Glob"], maxTurns: 20, workspace: true },
   template: `You resolve a merge conflict in a pull request on one of the storytold craft apps. The default branch (the base field) was merged into the pull request's branch and some files conflict. Each conflicted file is shown as numbered conflict sections, not whole. A section has an id, the line where it starts in the pull request's version of the file, the lines before and after it for context (before, after), the pull request's side (ours) and the default branch's side (theirs).
 
@@ -717,6 +717,7 @@ Rules:
 - Resolve only the sections shown. Keep what the pull request intends and what the default branch changed; when both edit the same lines, combine them so both still work.
 - For each section, return the lines that replace it (the context lines are not part of the answer). Sides and answers keep their newlines: each line ends with a newline, and an empty content means the section is deleted. Use lines from the two sides; add at most three other lines, and no new import, declaration, unsafe code or dependency. Answer every section once.
 - Read the repository for anything the sections do not show.
+- If previous is given, your earlier resolution failed the lint check: findings lists the clippy messages on lines it changed. Answer every section again so that the code compiles without those findings.
 - If a conflict cannot be resolved from what is shown, resolve it conservatively in favour of the default branch's side.
 
 {{repo_access}}

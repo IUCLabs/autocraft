@@ -16,7 +16,7 @@ export type ConflictCandidate = {
   repo: string; number: number; head: string; /** The PR's base branch name. */ base: string; title: string;
   /** The final review's reason. */ reason: string; attempt: number; pushable: boolean;
   /** A model resolution stored and linted: the collect step pushes it, or gives it up. */
-  lint?: { rowid: number; task: number | null; baseSha: string; resolved: string; files: string[] };
+  lint?: { rowid: number; round: number; task: number | null; baseSha: string; resolved: string; files: string[] };
 };
 /** merge: we will merge the base in; ask: comment once asking the contributor; asked: that comment is posted; held: nothing to do without a person (two tries used, a deterministic skip recorded at this head, or no comment approval for a branch we can't push to); unapproved: pushable but the repo has no push approval; done: merged at this head already. */
 export type ConflictBucket = "merge" | "ask" | "asked" | "held" | "unapproved" | "linting" | "done";
