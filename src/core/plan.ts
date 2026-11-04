@@ -90,6 +90,8 @@ export type PrFacts = {
   tripped?: Partial<Record<string, string>>;
   /** A push of ours made the required checks at this head go red: CI fix works on it ahead of other work, even before a review of this head. */
   brokeByUs?: boolean;
+  /** AutoCraft has its own work on this PR: one of its pushes (fix-up, CI fix, base merge) at or since the reviewed head, a stored lint patch, or the PR is our own fix PR. It ends when the PR is closed; selection also drops it while the plan waits on a person (see inFlightNow). */
+  inFlight?: boolean;
   /** GitHub state as mirrored. */
   ghState: "OPEN" | "MERGED" | "CLOSED";
   /** The PR's current head commit (checks fetched after the mirror's last update win over the mirror). */
@@ -249,6 +251,8 @@ export type ItemFacts = {
   pipelineOn: boolean;
   /** As on PrFacts. */
   tripped?: Partial<Record<string, string>>;
+  /** An open fix round for the issue (retry, testing or passed), or the item is our own fix PR. */
+  inFlight?: boolean;
   /** The repo's approvals for the writes below. decideItem does not apply them: gates() does. */
   repoFacts: { labelsApproved: boolean; commentApproved: boolean; fixIssueApproved: boolean };
 

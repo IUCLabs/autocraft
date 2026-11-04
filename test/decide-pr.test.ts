@@ -241,6 +241,10 @@ const rows: Row[] = [
   { name: "broke: a formatter result is collected the same way", facts: { head: "pushed1", ci: "unknown", brokeByUs: true, cifix: cifix({ states: ["formatting"], formattingTask: 7, formatterEnded: true, tries: 1 }) }, expect: { actions: ["cifix:collect", "review"] } },
   { name: "broke: without it, a pushed head waits for its review", facts: { head: "pushed1", ci: "unknown", cifix: cifix() }, expect: { actions: ["review"] } },
 
+  // ---- a verdict carried over our own checked fix-up
+  { name: "carried: a review recorded as carried at the head needs no review and the merge path continues", facts: { review: { mode: "carried", verdict: "take" } }, expect: { state: "ready", path: "rule", actions: ["merge"] } },
+  { name: "carried: a contributor commit after our fix-up leaves the reviewed head behind: review again", facts: { head: "contributor1", review: { mode: "carried", verdict: "take" } }, expect: { actions: ["review"] } },
+
   // ---- post-merge review
   { name: "postmerge: merged by the pipeline, no review stored", facts: { ghState: "MERGED", postmerge: merged() }, expect: { state: "merged", actions: ["postmerge"] } },
   { name: "postmerge: merged before the cut-off", facts: { ghState: "MERGED", postmerge: merged({ since: "2026-11-04T10:00:00.000Z" }) }, expect: { state: "merged", actions: [] } },

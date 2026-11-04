@@ -27,7 +27,7 @@ import { selectFixups } from "../fixup/select.ts";
 import { needsWork } from "../merge/ci-approval.ts";
 import { batchesDue } from "../merge/batch-store.ts";
 import { trackedNames } from "../repos.ts";
-import { planned, type Planned } from "../core/select.ts";
+import { inFlightNow, planned, type Planned } from "../core/select.ts";
 import { isQueueState } from "../core/plan.ts";
 import { postCandidates } from "../review/post.ts";
 import { collectDue } from "../verify/results.ts";
@@ -79,6 +79,17 @@ const firstByRepo = (items: Planned[]): Map<string, Planned> => {
   for (const p of items) if (!out.has(p.facts.repo)) out.set(p.facts.repo, p);
   return out;
 };
+
+/**
+ * Repos with a PR of ours we broke come first, then repos with work of ours in flight, then the rest, each group in the given order:
+ * a job takes one repo, so finishing what AutoCraft started beats starting new work.
+ */
+function flightFirst(plans: PlanSet, repos: string[]): string[] {
+  const broke = new Set(plans.prs.filter((p) => p.facts.brokeByUs && p.plan.actions.length).map((p) => p.facts.repo));
+  const flying = new Set([...plans.prs, ...plans.items].filter((p) => p.plan.actions.length && inFlightNow(p.facts, p.plan.state)).map((p) => p.facts.repo));
+  const rank = (r: string): number => (broke.has(r) ? 0 : flying.has(r) ? 1 : 2);
+  return [...repos].sort((a, b) => rank(a) - rank(b));
+}
 
 /** One job the autopilot may queue; `params` leaves out `limit`, which the planner sets. */
 export type Candidate = {
@@ -223,7 +234,7 @@ export function orderLanes<T extends { name: string }>(lanes: T[], tops: Map<str
 function cifixRepos(db: DatabaseSync, ctx: PlanCtx, buckets: string[]): string[] {
   const repos = new Set(ctx.tracked);
   const due = allowed(planned(db, "cifix", { plans: plansOf(db, ctx) })).filter((p) => buckets.includes(String(p.action.params?.bucket)));
-  return [...new Set(due.map((p) => p.facts.repo))].filter((r) => repos.has(r)).sort();
+  return flightFirst(plansOf(db, ctx), [...new Set(due.map((p) => p.facts.repo))].filter((r) => repos.has(r)).sort());
 }
 
 /** The code of each lane, keyed by name. Names, steps and order come from the stage registry. */
@@ -275,7 +286,7 @@ const LANE_CODE: Omit<Lane, "steps">[] = [
     detect: (db, ctx) => {
       const out: Candidate[] = [];
       const top = firstByRepo(planned(db, "review", { plans: plansOf(db, ctx) }));
-      for (const repo of fastFirst(db, roundRobin(ctx.tracked, getSetting(db, KEY_CURSOR)), (r) => top.get(r)?.facts.number)) {
+      for (const repo of flightFirst(plansOf(db, ctx), fastFirst(db, roundRobin(ctx.tracked, getSetting(db, KEY_CURSOR)), (r) => top.get(r)?.facts.number))) {
         if (!top.has(repo)) continue;
         const checks = lastJobEnd(db, "checks", repo);
         const fresh = checks?.state === "done" && Date.now() - Date.parse(checks.endedAt) < CHECKS_FRESH_MS;
@@ -335,7 +346,7 @@ const LANE_CODE: Omit<Lane, "steps">[] = [
       };
       // The repo whose eligible PR is fast-tracked first goes first.
       const topEligible = (r: string): number | undefined => queue.filter((e) => e.repo === r && e.eligible).sort((a, b) => (fastScoreOf(db, r, b.number) ?? -1) - (fastScoreOf(db, r, a.number) ?? -1))[0]?.number;
-      for (const repo of fastFirst(db, [...new Set([...due, ...batches])].sort(), topEligible)) {
+      for (const repo of flightFirst(plans, fastFirst(db, [...new Set([...due, ...batches])].sort(), topEligible))) {
         const poll = batches.has(repo);
         if (poll && later("merge", repo)) continue;
         out.push({ step: "merge", params: { repo }, ...(poll ? { poll } : {}) });
@@ -368,7 +379,7 @@ const LANE_CODE: Omit<Lane, "steps">[] = [
         const push = repoAllows(plans, repo, { kind: "fixup", bucket: "fix" }), ask = repoAllows(plans, repo, { kind: "fixup", bucket: "ask" });
         return (push && (sel.fix.length > 0 || sel.lint.length > 0 || sel.conflictMerge.length > 0)) || (ask && (sel.ask.length > 0 || sel.conflictAsk.length > 0));
       });
-      return fastFirst(db, repos.sort(), (r) => { const sel = sels.get(r)!; return (sel.lint[0] ?? sel.fix[0] ?? sel.ask[0] ?? sel.conflictMerge[0] ?? sel.conflictAsk[0])?.number; }).map((repo) => ({ step: "fixup", params: { repo } }));
+      return flightFirst(plans, fastFirst(db, repos.sort(), (r) => { const sel = sels.get(r)!; return (sel.lint[0] ?? sel.fix[0] ?? sel.ask[0] ?? sel.conflictMerge[0] ?? sel.conflictAsk[0])?.number; })).map((repo) => ({ step: "fixup", params: { repo } }));
     },
   },
   {
@@ -380,7 +391,7 @@ const LANE_CODE: Omit<Lane, "steps">[] = [
       const out: Candidate[] = [];
       const plans = plansOf(db, ctx);
       const top = firstByRepo([...planned(db, "verify", { plans, bucket: "plan" }), ...planned(db, "verify", { plans, bucket: "unavailable" })]);
-      for (const repo of fastFirst(db, roundRobin(ctx.tracked, getSetting(db, KEY_VERIFY_CURSOR)), (r) => top.get(r)?.facts.number)) {
+      for (const repo of flightFirst(plans, fastFirst(db, roundRobin(ctx.tracked, getSetting(db, KEY_VERIFY_CURSOR)), (r) => top.get(r)?.facts.number))) {
         if (!top.has(repo)) continue;
         const checks = lastJobEnd(db, "checks", repo);
         const fresh = checks?.state === "done" && Date.now() - Date.parse(checks.endedAt) < CHECKS_FRESH_MS;
@@ -404,7 +415,7 @@ const LANE_CODE: Omit<Lane, "steps">[] = [
     extra: tasksSig,
     detect: (db, ctx) => {
       const work = fixWork(db, ctx.tracked, plansOf(db, ctx));
-      return fastFirst(db, [...work.keys()].sort(), (r) => work.get(r)!.top?.number).map((repo) => ({ step: "fixissue", params: { repo } }));
+      return flightFirst(plansOf(db, ctx), fastFirst(db, [...work.keys()].sort(), (r) => work.get(r)!.top?.number)).map((repo) => ({ step: "fixissue", params: { repo } }));
     },
     topScore: (db, ctx) => bestScore([...fixWork(db, ctx.tracked, plansOf(db, ctx)).values()].map((w) => w.top?.score)),
   },
@@ -456,7 +467,7 @@ const LANE_CODE: Omit<Lane, "steps">[] = [
     detect: (db, ctx) => {
       // A stored patch whose lint task ended is collected by the same step.
       const lint = allowed(planned(db, "lint", { plans: plansOf(db, ctx), bucket: "cifix" })).map((p) => p.facts.repo).filter((r) => ctx.tracked.includes(r));
-      return [...new Set([...cifixRepos(db, ctx, ["work", "collect"]), ...lint])].sort().map((repo) => ({ step: "cifix", params: { repo } }));
+      return flightFirst(plansOf(db, ctx), [...new Set([...cifixRepos(db, ctx, ["work", "collect"]), ...lint])].sort()).map((repo) => ({ step: "cifix", params: { repo } }));
     },
   },
   {

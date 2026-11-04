@@ -23,9 +23,15 @@ export type PlannedOptions = {
   onPlan?: (facts: PrFacts, plan: Plan) => void;
 };
 
+/** Plan states that wait on a person: work of ours in them is no longer in flight. */
+const WAITS_ON_PERSON: ReadonlySet<string> = new Set(["needs-decision", "declined", "changes-requested", "held-duplicate", "held-backlog", "backlog", "duplicate", "opus-hold"]);
+
+/** AutoCraft's own work on the item that is still moving: not closed, not held, not waiting on a person's answer. */
+export const inFlightNow = (f: { inFlight?: boolean; mergeHeld?: boolean }, state: string): boolean => !!f.inFlight && !f.mergeHeld && !WAITS_ON_PERSON.has(state);
+
 /**
  * The PRs with an action of `kind` due, in selection order: fast-track or rank score descending (unranked last), then repo and number.
- * Facts are loaded once for all of them.
+ * Our own broken pushes come first, then work in flight, then fast-track or rank score. Facts are loaded once for all of them.
  */
 export function planned(db: DatabaseSync, kind: ActionKind, opts: PlannedOptions = {}): Planned[] {
   const { bucket, onPlan, plans, ...load } = opts;
@@ -41,6 +47,6 @@ export function planned(db: DatabaseSync, kind: ActionKind, opts: PlannedOptions
       if (action.kind === kind && (bucket === undefined || action.params?.bucket === bucket)) out.push({ facts, plan, action });
     }
   }
-  return out.sort((a, b) => (b.facts.brokeByUs ? 1 : 0) - (a.facts.brokeByUs ? 1 : 0) || (a.facts.score === null ? 1 : 0) - (b.facts.score === null ? 1 : 0) || (b.facts.score ?? 0) - (a.facts.score ?? 0)
+  return out.sort((a, b) => (b.facts.brokeByUs ? 1 : 0) - (a.facts.brokeByUs ? 1 : 0) || (inFlightNow(b.facts, b.plan.state) ? 1 : 0) - (inFlightNow(a.facts, a.plan.state) ? 1 : 0) || (a.facts.score === null ? 1 : 0) - (b.facts.score === null ? 1 : 0) || (b.facts.score ?? 0) - (a.facts.score ?? 0)
     || (a.facts.repo < b.facts.repo ? -1 : a.facts.repo > b.facts.repo ? 1 : 0) || a.facts.number - b.facts.number);
 }

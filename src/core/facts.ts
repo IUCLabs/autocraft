@@ -111,6 +111,7 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
   const mainRed = redMainRepos(db);
   const tripped = activeTrips(db);
   const brokeAt = brokeHeads(db, opts.repo);
+  const pushedHere = db.prepare("SELECT 1 FROM push_outcomes WHERE repo = ? AND number = ? AND to_oid = ?");
   const answers = new Map(actionable(db).filter((a) => a.kind === "merge").map((a) => [a.id, a.answer]));
   const pipelineOn = (db.prepare("SELECT value FROM main.settings WHERE key = 'pipeline_enabled'").get() as { value: string } | undefined)?.value === "1";
   const pipelineLogin = (db.prepare("SELECT value FROM main.settings WHERE key = 'pipeline_login'").get() as { value: string } | undefined)?.value ?? null;
@@ -206,6 +207,7 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
       decision: { asked: false, openQuestion: false, answer: null, mergeAnswerAfterReview: false, inOpenGroup: grouped.has(ref) },
       premerge: null, premergeFixUsed: false, directionsTouched: [], pushable: false, pushChain: [], conflict: null, inActiveBatch: activeBatched.has(ref), fixup: null, carry: [], lint: [], cifix: null, postmerge: null, batch: null, mainFix: false, changesRequested: null, gateFailureNote: null,
     };
+    base.inFlight = r.state === "OPEN" && !integration && !!r.author && r.author === own.login && own.prs.has(ref);
     if (integration) {
       base.runs = runsOf(batchTip.get(r.repo, r.number) as Wait | undefined, rf.f.ciApproved);
       out.push(base);
@@ -248,6 +250,7 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
       stale: stale.has(`${ref}@${r.r_head}`), staleActionable: staleActionable.has(`${ref}@${r.r_head}`),
     };
     base.pushChain = chain;
+    if (r.state === "OPEN" && (chain.length > 1 || (!!head && !!pushedHere.get(r.repo, r.number, head)))) base.inFlight = true;
     base.directionsTouched = touchedDirections(direction, [safeJson(r.r_directions), safeJson(premergeAt(db, r.repo, r.number, r.r_head)?.directions ?? null)]);
     const p = posts.get(ref);
     const hasPublic = r.r_public !== null;
@@ -307,6 +310,7 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
         base.lint.push({ step: "fixup", source: x.source === "premerge" || x.source === "carry" ? x.source : "review", ended: ended(x.lint_task) });
       }
       for (const x of lintCifix.all(r.repo, r.number, r.r_head) as { lint_task: number | null }[]) base.lint.push({ step: "cifix", source: "review", ended: ended(x.lint_task) });
+      if (base.lint.length && r.state === "OPEN") base.inFlight = true;
     }
     if (base.ci === "failure" || base.brokeByUs) {
       const cfHead = base.brokeByUs ? head : r.r_head;

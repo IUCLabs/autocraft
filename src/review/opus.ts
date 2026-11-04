@@ -17,6 +17,8 @@ import type { DiscussionEntry } from "./parse.ts";
 import { cachedDiff, codeDiff, ghDelta, ghDiff, type DeltaFetcher, type DiffFetcher } from "./diff.ts";
 import { selectOpusCandidates, type OpusCandidate } from "./opus-candidates.ts";
 import { carriedOutcome, rawReason, type EarlierOpus, type OpusPr, type OpusReview, type UnappliedFix } from "./opus-parse.ts";
+import { carriedReview, CARRIED } from "./carry.ts";
+import { ourCommitsSince } from "./ours.ts";
 import { activeDirections } from "../directions.ts";
 import { REPO_PATH } from "../sandbox/command.ts";
 import { checkoutForPr } from "../sandbox/index.ts";
@@ -54,7 +56,7 @@ export function defaultOpusDeps(): OpusDeps {
   return { querier: new Client(500), fetchDiff: ghDiff, fetchDelta: ghDelta, model: PROMPT.models[0]!, maxChars: MAX_DIFF_CHARS, checkout: (r, n, h) => checkoutForPr(r, n, h, console.log) };
 }
 
-type Saved = { snap?: Snapshot; mode: "full" | "delta"; base: string | null; model: string | null; review: OpusReview; /** The fixes this review was given as unapplied, with what the reply did with each. */ unapplied?: (UnappliedFix & { outcome: string })[] };
+type Saved = { snap?: Snapshot; mode: "full" | "delta" | "carried"; base: string | null; model: string | null; review: OpusReview; /** The fixes this review was given as unapplied, with what the reply did with each. */ unapplied?: (UnappliedFix & { outcome: string })[] };
 
 /**
  * Stores the Opus row of a head commit, then a `reviewed` stages row and a take/hold/close
@@ -90,7 +92,7 @@ export function saveOpus(db: DatabaseSync, runId: string | null, c: { repo: stri
 }
 
 /** The Opus review of the PR's latest earlier head that a model wrote (not a too-large hold), for the delta. */
-function earlierOpus(db: DatabaseSync, c: { repo: string; number: number; head_oid: string }, skip = 0): EarlierOpus | null {
+export function earlierOpus(db: DatabaseSync, c: { repo: string; number: number; head_oid: string }, skip = 0): EarlierOpus | null {
   const o = db.prepare(`SELECT head_oid, verdict, sure, reason, fixes FROM opus_reviews
     WHERE repo = ? AND number = ? AND head_oid <> ? AND verdict IS NOT NULL AND model IS NOT NULL ORDER BY at DESC, rowid DESC LIMIT 1 OFFSET ?`).get(c.repo, c.number, c.head_oid, skip) as
     { head_oid: string; verdict: string; sure: number; reason: string; fixes: string | null } | undefined;
@@ -160,10 +162,12 @@ export async function prepareOpusInput(db: DatabaseSync, repo: string, c: OpusCa
     return { kind: "no-threads", error: String((e as Error).message ?? e) };
   }
   const unapplied = unappliedFixes(db, c);
+  // Our own commits since the earlier reviewed head, for the reviewer to check against what was asked of them.
+  const ours = earlier ? ourCommitsSince(db, repo, c.number, earlier.head, c.head_oid).commits.map(({ from: _from, ...x }) => x) : [];
   const input: OpusPr = {
     ref: refOf(c), title: c.title, body: c.body, author_association: c.author_association, size: c.size, lines_changed: c.lines_changed,
     ci: ch?.overall ?? "unknown", mergeable: ch?.mergeable ?? null, files: cd.files, tests_omitted: cd.testsOmitted, lockfiles_omitted: cd.lockfilesOmitted,
-    mode, earlier_opus: mode === "delta" ? earlier : null, ...(unapplied.length ? { unapplied_fixes: unapplied } : {}), diff, discussion,
+    mode, earlier_opus: mode === "delta" ? earlier : null, ...(unapplied.length ? { unapplied_fixes: unapplied } : {}), ...(ours.length ? { pipeline_commits: ours } : {}), diff, discussion,
     directions: activeDirections(db, repo),
   };
   return { kind: "ready", input, snap, mode, base };
@@ -177,6 +181,18 @@ export async function runOpusReview(db: DatabaseSync, params: OpusParams, log: (
   const capped = [...staleReviews(db, repo)].filter((k) => !uncapped.has(k));
   if (capped.length) log(`opus-review ${repo}: ${capped.join(", ")} not reviewed again: already ${MAX_RERUNS_PER_DAY} re-reviews today after new discussion`);
   const summary: OpusSummary = { runId, repo, candidates: cands.length, reviewed: 0, dropped: 0, verdicts: {}, missing: [], skipped: [] };
+  // A sure take or take-fix carries over our own checked fix-up without a model call.
+  if (!params.dryRun) {
+    cands = cands.filter((c) => {
+      const k = carriedReview(db, c);
+      if (!k) return true;
+      saveOpus(db, runId, c, { mode: CARRIED, base: k.from, model: CARRIED, review: k.review, snap: k.seen ? { seen: k.seen, hash: k.hash } : undefined });
+      log(`  ${refOf(c)}: ${k.review.reason}`);
+      summary.verdicts.take = (summary.verdicts.take ?? 0) + 1;
+      summary.reviewed++;
+      return false;
+    });
+  }
   if (params.limit !== undefined) cands = cands.slice(0, params.limit);
   if (params.dryRun || !cands.length) {
     log(`opus-review ${repo}: ${summary.candidates} candidates${params.dryRun ? "; dry run, nothing fetched or asked" : ""}`);

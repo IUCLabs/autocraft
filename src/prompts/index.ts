@@ -171,7 +171,7 @@ const FIX_TURN = `The reply is linted after it parses. Any problems go back to t
 
 const SUMMARY_LINT = `summary and why are optional. A summary of more than ${SUMMARY_MAX_WORDS} words, or a why of more than ${WHY_MAX_WORDS} words or more than one sentence, is a lint problem. Fallback: the first sentence is stored; code never cuts a summary or why in the middle of a sentence.`;
 
-const OPUS_FIELDS = `ref, title, body (first ${REVIEW_BODY_LIMIT} characters), author_association, size (S, M or L), lines_changed, ci (success, failure, pending or none), mergeable, files (code files changed), tests_omitted and lockfiles_omitted (paths left out of the diff), mode ("full" or "delta"), earlier_opus (your review of an earlier head commit, or null), unapplied_fixes (only when present: file, change and head of fixes an earlier review asked for) and diff (the unified diff of the code files)`;
+const OPUS_FIELDS = `ref, title, body (first ${REVIEW_BODY_LIMIT} characters), author_association, size (S, M or L), lines_changed, ci (success, failure, pending or none), mergeable, files (code files changed), tests_omitted and lockfiles_omitted (paths left out of the diff), mode ("full" or "delta"), earlier_opus (your review of an earlier head commit, or null), unapplied_fixes (only when present: file, change and head of fixes an earlier review asked for), pipeline_commits (only when present: commits our own pipeline pushed to the pull request since the head of earlier_opus, oldest first: kind "fix-up", "CI fix", "base merge" or "carry", sha, note and fixes_meant, the changes the commit was meant to make) and diff (the unified diff of the code files)`;
 
 const DIRECTIONS_DOC = `The standing directions of the repository's owners, as a numbered list (the number is the direction's id), or "(none)". Operator-written; they are instructions to apply, not data to judge.`;
 
@@ -217,6 +217,8 @@ sure: true when you would stand by the verdict without a person looking; false w
 mode "delta": diff holds only the changes since the head commit of earlier_opus, which is your review of the PR before the push. Judge the new changes in that light, and check that earlier_opus.fixes were made or are still needed. Give a complete verdict and fix list for the PR as it now stands.
 
 unapplied_fixes lists changes an earlier review asked for that were never made. For each, either keep it in fixes (adjusted to the current code) or say in reason why it is no longer needed. Name the file in reason when you explain.
+
+pipeline_commits lists commits our own pipeline pushed since earlier_opus. Check each one against its fixes_meant (for a fix-up, the fixes the earlier review asked for) and against the diff. If a commit did not do what was asked, or did something else, say so in reason and name the file; a missing fix that is still needed stays in fixes.
 
 Never name the reference application or its vendor in what you write; say "reference app behaviour".
 
