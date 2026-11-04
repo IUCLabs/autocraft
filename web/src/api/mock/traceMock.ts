@@ -4,11 +4,11 @@ import type { AgentRunDetail, AgentRunTool, ItemTrace, ItemTraceDetail, TraceEve
 import { NOW } from "./fixtures";
 
 const wait = <T,>(v: T, ms = 60) => new Promise<T>((r) => setTimeout(() => r(structuredClone(v)), ms));
-const at = (minAgo: number) => new Date(NOW - minAgo * 60_000).toISOString();
+export const at = (minAgo: number) => new Date(NOW - minAgo * 60_000).toISOString();
 const H1 = "3f2a9c1d0e8b7a6f5e4d3c2b1a0f9e8d7c6b5a49";
 const H2 = "9b8c7d6e5f4a3b2c1d0e9f8a7b6c5d4e3f2a1b0c";
 
-const EVENTS: TraceEvent[] = ([
+export const EVENTS: TraceEvent[] = ([
   { id: "plan:41", kind: "plan", at: at(4), head: H2, actor: { type: "step", name: "Planner" }, summary: "Plan reviewing → verifying, waiting for CI at 9b8c7d6", ref: { head: H2 } },
   { id: "check:12", kind: "check", at: at(9), head: H2, actor: { type: "step", name: "Fix-up" }, summary: "Clippy on app-core: no findings", ref: { checkId: 12, runId: 902, head: H2 } },
   { id: "task:905", kind: "check", at: at(10), head: H2, actor: { type: "step", name: "Verify" }, summary: "Build task done: build and 412 tests passed", ref: { taskId: 905, head: H2 } },

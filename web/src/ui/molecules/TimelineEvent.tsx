@@ -7,8 +7,10 @@ import { TimeAgo } from "../atoms/TimeAgo";
  * One row of an event timeline: kind icon, summary, actor and time. The row is a disclosure button;
  * `children` are the expanded body and are only rendered while open.
  */
-export function TimelineEvent({ id, Icon, at, actor, actorTone, summary, open, onToggle, children }: {
+export function TimelineEvent({ id, lead, Icon, at, actor, actorTone, summary, open, onToggle, children }: {
   id: string;
+  /** A line above the row that is not part of the disclosure button (a link to the item, say). */
+  lead?: ReactNode;
   Icon: PhosphorIcon;
   at: string;
   actor: string;
@@ -22,6 +24,7 @@ export function TimelineEvent({ id, Icon, at, actor, actorTone, summary, open, o
   const Caret = open ? CaretDownIcon : CaretRightIcon;
   return (
     <li id={`event-${id}`} className="border-b border-line last:border-0">
+      {lead && <div className="min-w-0 px-3 pb-0 pl-[42px] pt-2 max-md:pl-3">{lead}</div>}
       <button
         onClick={onToggle}
         aria-expanded={open}
