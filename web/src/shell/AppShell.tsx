@@ -20,6 +20,7 @@ import { cn } from "../ui/cn";
 import { MAIN_CI_DOT, MAIN_CI_LABEL } from "../ui/atoms/MainCiBadge";
 import type { MainCiState, MainCiSummary } from "../api/types";
 import { useApi, useQuery } from "../api/client";
+import { HealthMenu } from "../ui/organisms/HealthMenu";
 import { useLiveStatus, type LiveStatus } from "../api/live";
 import { num, zoneName } from "../lib/format";
 
@@ -86,6 +87,7 @@ export function AppShell() {
           <Wordmark />
           <div className="flex-1" />
           <LiveDot />
+          <HealthMenu />
           <RoleChip />
           <button aria-label="Search" onClick={() => setSearchOpen(true)} className="flex size-11 items-center justify-center text-ink/70">
             <MagnifyingGlassIcon className="text-[18px]" />
@@ -145,6 +147,7 @@ export function AppShell() {
           </div>
           <LiveDot />
           <LiveCounters />
+          <HealthMenu />
           <RoleChip />
           <ThemeSwitch theme={theme} setTheme={setTheme} />
           <UserMenu theme={theme} setTheme={setTheme} onHelp={() => setHelp(true)} />

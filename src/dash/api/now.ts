@@ -261,7 +261,7 @@ function feed(db: DatabaseSync, hidden: string[], staff: boolean, before: string
     const w = grp.w;
     const e = base({
       key: w.key, ids: grp.list.map((x) => x.key), kind: grp.list.length > 1 || w.action !== "merge" ? "write" : "merge", state: "done", at: w.at, title: lines(grp.list)[0]!.summary,
-      actor: w.login === "AutoCraft" || w.action === "merge" ? "AutoCraft" : staff ? w.login : "AutoCraft", item: w.item, event: w.key,
+      actor: w.login === "AutoCraft" || w.action === "merge" ? "AutoCraft" : staff ? w.login : "AutoCraft", item: w.item, items: [w.item], itemCount: 1, event: w.key,
     });
     if (grp.list.length > 1) { const l = lines(grp.list)[0]!; e.items = l.items; e.more = l.more; e.itemCount = l.items.length + l.more; }
     oldestOf.set(e, grp.list[grp.list.length - 1]!.at);
@@ -284,7 +284,7 @@ function feed(db: DatabaseSync, hidden: string[], staff: boolean, before: string
     if (repos.some((r) => hide.has(r))) continue;
     out.push(base({
       key: `decision:${d.id}`, kind: "decision", state: "done", at: d.at, repo: d.repo ?? ref?.repo ?? null, title: `Answered "${clip(d.question, 80)}": ${d.answer ?? ""}`, actor: d.answered_by || "unknown",
-      item: ref && item(ref.repo, ref.number), event: d.number !== null && d.repo ? `decision:${d.id}:answered` : null, detail: `/decisions/${encodeURIComponent(d.id)}`,
+      item: ref && item(ref.repo, ref.number), items: ref ? [item(ref.repo, ref.number)] : [], itemCount: ref ? 1 : 0, event: d.number !== null && d.repo ? `decision:${d.id}:answered` : null, detail: `/decisions/${encodeURIComponent(d.id)}`,
     }));
   }
 
