@@ -19,9 +19,9 @@ export function requiredResult(checks: { name: string; state: string }[], option
   return req.some((c) => c.state === "success") ? "green" : "none";
 }
 
-/** The outcome once the checks after the push are final, or null while they are not. A side without a known result gives `unknown`. */
+/** The outcome once the checks after the push are final, or null while they are not (including before any required check exists; the 3-day expiry then gives `unknown`). A side without a known result gives `unknown`. */
 export function classifyPush(before: Required | "unknown", after: Required | "unknown"): Outcome | null {
-  if (after === "pending") return null;
+  if (after === "pending" || after === "none") return null;
   if (after === "red") return before === "green" ? "broke" : before === "red" ? "still-red" : "unknown";
   if (after === "green") return before === "red" ? "fixed" : before === "green" ? "kept-green" : "unknown";
   return "unknown";

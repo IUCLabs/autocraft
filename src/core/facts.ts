@@ -309,7 +309,7 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
       for (const x of lintFixup.all(r.repo, r.number, r.r_head) as { source: string | null; lint_task: number | null }[]) {
         base.lint.push({ step: "fixup", source: x.source === "premerge" || x.source === "carry" ? x.source : "review", ended: ended(x.lint_task) });
       }
-      for (const x of lintCifix.all(r.repo, r.number, r.r_head) as { lint_task: number | null }[]) base.lint.push({ step: "cifix", source: "review", ended: ended(x.lint_task) });
+      for (const x of lintCifix.all(r.repo, r.number, base.brokeByUs ? head : r.r_head) as { lint_task: number | null }[]) base.lint.push({ step: "cifix", source: "review", ended: ended(x.lint_task) });
       if (base.lint.length && r.state === "OPEN") base.inFlight = true;
     }
     if (base.ci === "failure" || base.brokeByUs) {

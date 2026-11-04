@@ -15,6 +15,7 @@ test("push outcome: green to red is broke, red to green is fixed, optional check
   assert.equal(classifyPush("green", "green"), "kept-green");
   assert.equal(classifyPush("unknown", "red"), "unknown");
   assert.equal(classifyPush("green", "pending"), null);
+  assert.equal(classifyPush("green", "none"), null, "no required check yet is not final");
   // A red optional check alone is no break.
   assert.equal(classifyPush("green", requiredResult([{ name: "gate", state: "success" }, { name: "sonar", state: "failure" }], optional)), "kept-green");
   assert.equal(breakerTripped(["broke", "fixed", null, "broke"]), true);

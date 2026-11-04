@@ -67,8 +67,13 @@ export function selectFixups(db: DatabaseSync, repo: string, run?: string | null
   // Stored patches (review, pre-merge and carry-over sources) whose lint task ended. Their row is found by source; a carry-over's also by its decision.
   const row = db.prepare("SELECT rowid AS id, attempt, patch, lint_task, lint_round, lint_state, carry_decision FROM fixups WHERE repo = ? AND number = ? AND from_head = ? AND COALESCE(source, 'review') = ? AND state = 'linting' ORDER BY rowid");
   type LintRow = { id: number; attempt: number; patch: string | null; lint_task: number | null; lint_round: number | null; lint_state: string | null; carry_decision: string | null };
+  const seenLint = new Set<string>();
   for (const { facts: f, action } of planned(db, "lint", { ...opts, bucket: "fixup" })) {
     const head = action.head!, source = String(action.params?.source ?? "review");
+    // Several lint actions of one PR (one per stored row) would otherwise list every row of the key again.
+    const key = `${f.number} ${head} ${source}`;
+    if (seenLint.has(key)) continue;
+    seenLint.add(key);
     for (const w of row.all(repo, f.number, head, source) as LintRow[]) {
       if (!w.patch) continue;
       const lint = { rowid: w.id, round: w.lint_round ?? 1, task: w.lint_task, state: w.lint_state ?? "pending", patch: w.patch };
