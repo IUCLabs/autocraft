@@ -70,6 +70,9 @@ const ADDED_COLUMNS: [table: string, column: string, type: string][] = [
   // The commenter's association with the repository (OWNER, MEMBER, ...).
   ["comments", "author_association", "TEXT"],
   ["dupe_carries", "from_head", "TEXT"],
+  // The fix PR of a red default branch (src/mainfix).
+  ["main_fixes", "pr_number", "INTEGER"],
+  ["main_fixes", "pr_url", "TEXT"],
 ];
 
 // Indexes on added columns: they can only be created once the column exists.
@@ -100,7 +103,7 @@ export const HISTORY_COPY_SQL = `INSERT INTO main.opus_review_history (repo, num
   WHERE NOT EXISTS (SELECT 1 FROM main.opus_review_history h WHERE h.repo = o.repo AND h.number = o.number AND h.head_oid = o.head_oid AND h.at = o.at)`;
 
 // Bump when migrateValues() or backfill() change what they do.
-const MIGRATION_VERSION = 12;
+const MIGRATION_VERSION = 13;
 
 // Rows written before their column existed.
 function backfill(db: DatabaseSync): void {

@@ -13,9 +13,10 @@ import type { DatabaseSync } from "node:sqlite";
 import { ORG } from "../act/templates.ts";
 import { actionable, ask, getDecision } from "../decisions.ts";
 import { connect } from "../db.ts";
-import { exec, type Exec } from "../fixup/git.ts";
+import { exec, fixupDir, type Exec } from "../fixup/git.ts";
 import { createIssue, ghRerunFailed, IssueError, type Writer } from "../github/write.ts";
 import { askClaude, saveUsage, type Usage } from "../classify/run.ts";
+import { checkoutForCommit } from "../sandbox/index.ts";
 import { readFailure } from "../cifix/logs.ts";
 import type { CiFailure } from "../cifix/types.ts";
 import { mainCiRepos } from "../mainci/index.ts";
@@ -24,6 +25,7 @@ import { CLAUDE_PROMPTS } from "../prompts/index.ts";
 import { cleanLine } from "../review/post-template.ts";
 import { scrub } from "../runner/scrub.ts";
 import { mainFixApprovalOf } from "./approval.ts";
+import { openFixPrs, type FixPrDeps } from "./pr.ts";
 import { REASON_WORDS, VERDICTS, type MainFixInput, type MainFixVerdict } from "./types.ts";
 
 export { mainFixApprovalOf, setMainFixApproval } from "./approval.ts";
@@ -31,6 +33,8 @@ export { autocraftText } from "./status.ts";
 
 export const ACTOR = "main-fix";
 const PROMPT = CLAUDE_PROMPTS["mainfix.classify"];
+const PATCH = CLAUDE_PROMPTS["cifix.patch"];
+const CHECK = CLAUDE_PROMPTS["fixup.check"];
 /** The model named in the note of an issue opened on an operator's answer: it wrote the reason in the decision. */
 const NOTE_MODEL = "haiku";
 /** After a rerun the head may stay red this long without a new reading before the rerun counts as failed. */
@@ -46,15 +50,17 @@ export type MainFixDeps = {
   /** Sorts the failed checks of one head; null when the model gave no usable answer. */
   classify: (db: DatabaseSync, input: MainFixInput) => Promise<Verdict[] | null>;
   now: () => Date;
+  /** What the fix PR step needs; without it no fix PR is made. */
+  fix?: FixPrDeps;
 };
 
 export type FixRow = {
   repo: string; head_sha: string; check: string; verdict: MainFixVerdict; state: string; reason: string | null;
-  run_id: number | null; run_url: string | null; excerpt: string | null; decision_id: string | null; issue_number: number | null;
+  run_id: number | null; run_url: string | null; excerpt: string | null; decision_id: string | null; issue_number: number | null; pr_number: number | null; pr_url: string | null;
   created_at: string; updated_at: string;
 };
 
-export type MainFixSummary = { repo: string; classified: number; reran: number; asked: number; needsFix: number; issues: number; note: string | null };
+export type MainFixSummary = { repo: string; classified: number; reran: number; asked: number; needsFix: number; issues: number; prs: number; note: string | null };
 
 const oneLine = (s: string, max = 200): string => s.replace(/\s+/g, " ").trim().slice(0, max);
 const words = (s: string): string => s.replace(/\s+/g, " ").trim().split(" ").slice(0, REASON_WORDS).join(" ");
@@ -64,6 +70,12 @@ const plain = (s: string): string => scrub(s).replace(/\b(?:[a-z][a-z0-9+.-]*:\/
 export function defaultDeps(): MainFixDeps {
   return {
     gh: ghExec, exec, now: () => new Date(),
+    fix: {
+      root: fixupDir(),
+      ask: async (db, input, checkout) => (await askClaude("cifix.patch", PATCH.models[0]!, input, db, { checkout }))?.text ?? null,
+      check: async (db, input, checkout) => (await askClaude("fixup.check", CHECK.models[0]!, input, db, { checkout }))?.text ?? null,
+      checkout: (repo, branch, sha) => checkoutForCommit(repo, branch, sha, console.log),
+    },
     classify: async (db, input) => {
       const model = PROMPT.models[0]!;
       const start = new Date().toISOString();
@@ -98,10 +110,10 @@ const rowsAt = (db: DatabaseSync, repo: string, head: string): FixRow[] =>
 
 function save(db: DatabaseSync, row: Omit<FixRow, "updated_at"> & { updated_at?: string }, at: string): void {
   const { updated_at: _, ...r } = row;
-  db.prepare(`INSERT INTO main_fixes (repo, head_sha, "check", verdict, state, reason, run_id, run_url, excerpt, decision_id, issue_number, created_at, updated_at)
-    VALUES (:repo, :head_sha, :check, :verdict, :state, :reason, :run_id, :run_url, :excerpt, :decision_id, :issue_number, :created_at, :at)
+  db.prepare(`INSERT INTO main_fixes (repo, head_sha, "check", verdict, state, reason, run_id, run_url, excerpt, decision_id, issue_number, pr_number, pr_url, created_at, updated_at)
+    VALUES (:repo, :head_sha, :check, :verdict, :state, :reason, :run_id, :run_url, :excerpt, :decision_id, :issue_number, :pr_number, :pr_url, :created_at, :at)
     ON CONFLICT (repo, head_sha, "check") DO UPDATE SET verdict = excluded.verdict, state = excluded.state, reason = excluded.reason, run_id = excluded.run_id,
-      run_url = excluded.run_url, excerpt = excluded.excerpt, decision_id = excluded.decision_id, issue_number = excluded.issue_number, updated_at = excluded.updated_at`)
+      run_url = excluded.run_url, excerpt = excluded.excerpt, decision_id = excluded.decision_id, issue_number = excluded.issue_number, pr_number = excluded.pr_number, pr_url = excluded.pr_url, updated_at = excluded.updated_at`)
     .run({ ...r, at });
 }
 
@@ -120,13 +132,14 @@ export function onCodeVerdict(db: DatabaseSync, row: FixRow, why: string, at: st
 
 // ---- the red head ---------------------------------------------------------------
 
-type Current = { headSha: string; state: string; culprit: string; stateChangedAt: string };
+type Current = { headSha: string; branch: string; state: string; culprit: string; culpritPr: number | null; redSince: string; stateChangedAt: string };
 
 function currentOf(db: DatabaseSync, repo: string): Current | null {
   const r = mainCiRepos(db).find((x) => x.repo === repo);
   if (!r) return null;
   const changed = db.prepare("SELECT state_changed_at AS at FROM main_ci WHERE repo = ? AND head_sha = ?").get(repo, r.headSha) as { at: string } | undefined;
-  return { headSha: r.headSha, state: r.state, culprit: r.culprit?.sha ?? r.headSha, stateChangedAt: changed?.at ?? "" };
+  const stateChangedAt = changed?.at ?? "";
+  return { headSha: r.headSha, branch: r.branch, state: r.state, culprit: r.culprit?.sha ?? r.headSha, culpritPr: r.culprit?.pr ?? null, redSince: r.redSince ?? stateChangedAt, stateChangedAt };
 }
 
 export const decisionId = (repo: string, check: string, culprit: string): string => `${repo}:main-fix:${check}@${culprit}`;
@@ -139,8 +152,9 @@ export function mainFixDue(db: DatabaseSync, repo: string): boolean {
   const cur = currentOf(db, repo);
   if (!cur) return false;
   const rows = rowsAt(db, repo, cur.headSha);
-  if (cur.state === "red") return rows.length === 0 || rows.some((r) => r.state === "rerun-requested");
-  return rows.some((r) => r.state === "rerun-requested");
+  if (cur.state === "red") return rows.length === 0 || rows.some((r) => r.state === "rerun-requested" || r.state === "needs-fix");
+  // A row left at needs-fix by an older head is closed by the next run.
+  return rows.some((r) => r.state === "rerun-requested") || !!db.prepare("SELECT 1 FROM main_fixes WHERE repo = ? AND state = 'needs-fix'").get(repo);
 }
 
 const issueTitle = (check: string): string => `Main CI fails: ${cleanLine(check, 100)}`;
@@ -174,7 +188,7 @@ function fromDecision(db: DatabaseSync, id: string): { state: string; issue: num
 async function classifyHead(db: DatabaseSync, repo: string, cur: Current, deps: MainFixDeps, log: (l: string) => void, s: MainFixSummary): Promise<boolean> {
   const at = deps.now().toISOString();
   const reading = await readFailure(deps.gh, repo, cur.headSha);
-  const base = { repo, head_sha: cur.headSha, run_id: null, run_url: null, excerpt: null, decision_id: null, issue_number: null, created_at: at } as const;
+  const base = { repo, head_sha: cur.headSha, run_id: null, run_url: null, excerpt: null, decision_id: null, issue_number: null, pr_number: null, pr_url: null, created_at: at } as const;
   if (reading.kind === "skip") {
     save(db, { ...base, check: "(none)", verdict: "code", state: "nothing-to-do", reason: oneLine(reading.why) }, at);
     log(`  ${repo}: nothing to do: ${reading.why}`);
@@ -272,21 +286,28 @@ async function applyAnswers(db: DatabaseSync, repo: string, deps: MainFixDeps, l
 /** One repo: nothing without the approval; then answers, rerun results and, for a red head with no rows, the reading and sorting. */
 export async function runMainFix(db: DatabaseSync, params: { repo: string; onHandled?: (n: number) => void }, log: (line: string) => void = console.log, deps: MainFixDeps = defaultDeps()): Promise<MainFixSummary> {
   const { repo } = params;
-  const s: MainFixSummary = { repo, classified: 0, reran: 0, asked: 0, needsFix: 0, issues: 0, note: null };
+  const s: MainFixSummary = { repo, classified: 0, reran: 0, asked: 0, needsFix: 0, issues: 0, prs: 0, note: null };
   if (!mainFixApprovalOf(db, repo)) {
     s.note = `fixing a red main in ${repo} is not approved`;
     log(`main-fix ${repo}: ${s.note}; nothing done`);
     return s;
   }
+  let handled = 0;
+  const bump = (): void => params.onHandled?.(++handled);
   await applyAnswers(db, repo, deps, log, s);
   const cur = currentOf(db, repo);
   if (!cur) return s;
   settleReruns(db, repo, cur, deps, s);
   if (cur.state === "red" && rowsAt(db, repo, cur.headSha).length === 0) {
-    params.onHandled?.(1);
+    bump();
     await classifyHead(db, repo, cur, deps, log, s);
   }
-  log(`main-fix ${repo}: classified ${s.classified}, reran ${s.reran}, asked ${s.asked}, needs fix ${s.needsFix}, issues ${s.issues}`);
+  if (deps.fix) {
+    const asHead = (c: Current | null) => (c ? { headSha: c.headSha, branch: c.branch, state: c.state, redSince: c.redSince, culprit: c.culprit, culpritPr: c.culpritPr } : null);
+    const r = await openFixPrs({ db, repo, gh: deps.gh, exec: deps.exec, fix: deps.fix, now: deps.now, log, setState: (r, state, reason, at, extra) => setState(db, r, state, reason, at, extra), current: () => asHead(currentOf(db, repo)) }, bump);
+    s.prs = r.opened;
+  }
+  log(`main-fix ${repo}: classified ${s.classified}, reran ${s.reran}, asked ${s.asked}, needs fix ${s.needsFix}, issues ${s.issues}, fix PRs ${s.prs}`);
   return s;
 }
 

@@ -301,7 +301,7 @@ export const STAGES: StageDef[] = [
     waits: [
 
     ],
-    writes: [{ what: "Push to the PR branch", approval: "push" }, { what: "Comment with the fixes", approval: "comment" }, { what: "Rerun failed CI jobs", approval: "ci" }, { what: "Rerun a red default branch's failed jobs; open an issue on an operator's answer", approval: "main-fix" }],
+    writes: [{ what: "Push to the PR branch", approval: "push" }, { what: "Comment with the fixes", approval: "comment" }, { what: "Rerun failed CI jobs", approval: "ci" }, { what: "Rerun a red default branch's failed jobs; open a fix PR from the pipeline account's fork; open an issue on an operator's answer", approval: "main-fix" }],
     person: "Per-repo approval",
     swimlane: [
       { id: "fixup", lane: "writes", row: 13, lines: ["Fix-up", "Sonnet patch, Opus check"], approval: "push approval" },

@@ -193,6 +193,88 @@ function logText(f: CiFailure): CifixPr["failure"] {
   return f.checks.map((c) => ({ check: c.name, steps: c.steps.map((s) => ({ job: s.job, step: s.step, log: s.tail })) }));
 }
 
+/** What `patchFromFailure` needs to know about the commit and the failure it patches. */
+export type PatchRequest = {
+  git: Git;
+  /** How the models and the audit log name the subject, for example `repo#12`. */
+  ref: string;
+  title: string;
+  repo: string;
+  /** Recorded with the Opus check (0 for a default-branch head). */
+  number: number;
+  /** The commit the patch applies to. */
+  head: string;
+  /** The fix round or try. */
+  round: number;
+  failure: CiFailure;
+  /** The unified diff of the change under repair; empty when there is none. */
+  diffText: string;
+  runId: string;
+  actor: string;
+  at: () => string;
+  /** The read-only checkout of `head` for the model calls, or nothing to ask without tools. */
+  checkout: () => Promise<string | null | undefined>;
+};
+
+export type PatchResult =
+  | { ok: false; state: "failed" | "refused"; reason: string }
+  | { ok: true; v: { patch: string; files: string[]; changed: number }; shown: CifixPr["files"]; names: string[]; model: string; check: (patch: string) => Promise<string | null> };
+
+/**
+ * The model patch for a failed check at `head`: the files the log names (and the diff's files) are shown whole or in
+ * part, Sonnet writes the patch, and the validators and the size limit run. `check` is the Opus check: null when it
+ * approves, else the refusal (`rejected: ...` when Opus said no).
+ */
+export async function patchFromFailure(db: DatabaseSync, d: Pick<CifixDeps, "ask" | "check">, r: PatchRequest): Promise<PatchResult> {
+  const no = (state: "failed" | "refused", reason: string): PatchResult => ({ ok: false, state, reason });
+  const { git, ref, title, repo, head, failure } = r;
+  const text = failure.checks.flatMap((x) => x.steps.map((s) => s.tail)).join("\n");
+  // Files a compiler error points at come first, then the files the diff changes; nothing else is editable. Test files are not editable by a CI fix.
+  const named = [...new Set(errorFiles(text).concat([...r.diffText.matchAll(DIFF_FILE)].map((m) => m[1]!)))]
+    .filter((p) => editable(p) && !TEST_PATH.test(p)).slice(0, MAX_FILES);
+  const shown: CifixPr["files"] = [];
+  // The guard reads whole files even when the model sees only parts.
+  const contents = new Map<string, string>();
+  let total = 0;
+  for (const path of named) {
+    const f = await git.file(head, path);
+    if (!f.ok) continue;
+    // The log lines that mention the file give the lines a large file is cut around.
+    const v = viewFile(path, f.content, text.split("\n").filter((l) => l.includes(path)), r.diffText, FILE_CAP);
+    if (!v.ok) return no("failed", v.reason);
+    total += shownSize(v.file);
+    if (total > TOTAL_CAP) return no("failed", "the parts of the files the failure names are over the size limit");
+    shown.push(v.file);
+    contents.set(path, f.content);
+  }
+  if (!shown.length) return no("failed", "the failure names no file a CI fix may edit");
+  const checkout = (await r.checkout()) ?? undefined;
+  const repoDir = checkout ? { repo_dir: REPO_PATH } : {};
+  const reply = await d.ask(db, [{ ref, title, failure: logText(failure), files: shown, diff: r.diffText, ...repoDir }], checkout);
+  if (reply === null) return no("failed", "the model gave no answer");
+  const v = validatePatch(reply, shown.map((s) => s.path));
+  if (!v.ok) return no("refused", v.reason);
+  const guard = guardPatch(v.patch, v.files, contents);
+  if (guard) return no("refused", guard);
+  if (v.patch.length > CHECK_PATCH_CAP) return no("refused", `the patch is over the ${CHECK_PATCH_CAP} character limit for the check`);
+  const names = failure.checks.map((x) => x.name);
+  const check = async (patch: string): Promise<string | null> => {
+    const input: FixupCheckInput = {
+      ref, title, fixes: [], diff: r.diffText.slice(0, CHECK_DIFF_CAP), patch, ...repoDir,
+      review_reason: `The check ${names.join(", ")} fails at this head. The patch must make it pass without changing what the pull request does.`,
+      ci_failure: { checks: names, log: JSON.stringify(logText(failure)).slice(0, CHECK_LOG_CAP) },
+    };
+    const reply2 = await d.check(db, [input], checkout);
+    if (reply2 === null) return "the patch check gave no answer";
+    const verdict = parseCheck(reply2);
+    if (!verdict.ok) return `the patch check gave no valid answer: ${verdict.error}`;
+    recordCheck(db, { kind: "fixup", repo, number: r.number, subject: head, patch, round: r.round, model: CHECK.models[0]!, check: verdict.check, at: r.at() });
+    audit(db, r.actor, "cifix-check", ref, { run: r.runId, head, verdict: verdict.check.verdict, reasons: verdict.check.reasons });
+    return verdict.check.verdict === "reject" ? `rejected: Opus rejected the patch: ${checkLine(verdict.check)}` : null;
+  };
+  return { ok: true, v, shown, names, model: PROMPT.models[0]!, check };
+}
+
 export async function runCifix(db: DatabaseSync, params: CifixParams, log: (line: string) => void = console.log, deps?: CifixDeps): Promise<CifixSummary> {
   const { repo } = params;
   const dryRun = params.dryRun ?? true;
@@ -380,51 +462,10 @@ export async function runCifix(db: DatabaseSync, params: CifixParams, log: (line
     const diff = await cachedDiff(repo, c.number, head, d.fetchDiff);
     if (!diff.ok) { fail("failed", `no diff: ${oneLine(diff.error)}`); return; }
     if (diff.text.length > DIFF_CAP) { fail("failed", `the PR diff is over the ${DIFF_CAP} character limit`); return; }
-    const text = failure.checks.flatMap((x) => x.steps.map((s) => s.tail)).join("\n");
-    // Files a compiler error points at come first, then the files the PR changes; nothing else is editable. Test files are not editable by a CI fix.
-    const named = [...new Set(errorFiles(text).concat([...diff.text.matchAll(DIFF_FILE)].map((m) => m[1]!)))]
-      .filter((p) => editable(p) && !TEST_PATH.test(p)).slice(0, MAX_FILES);
-    const shown: CifixPr["files"] = [];
-    // The guard reads whole files even when the model sees only parts.
-    const contents = new Map<string, string>();
-    let total = 0;
-    for (const path of named) {
-      const f = await git.file(head, path);
-      if (!f.ok) continue;
-      // The log lines that mention the file give the lines a large file is cut around.
-      const v = viewFile(path, f.content, text.split("\n").filter((l) => l.includes(path)), diff.text, FILE_CAP);
-      if (!v.ok) { fail("failed", v.reason); return; }
-      total += shownSize(v.file);
-      if (total > TOTAL_CAP) { fail("failed", "the parts of the files the failure names are over the size limit"); return; }
-      shown.push(v.file);
-      contents.set(path, f.content);
-    }
-    if (!shown.length) { fail("failed", "the failure names no file a CI fix may edit"); return; }
-    const title = ((db.prepare("SELECT title FROM items WHERE repo = ? AND number = ?").get(repo, c.number) as { title: string | null } | undefined)?.title ?? "").slice(0, 300);
-    const checkout = (await d.checkout?.(repo, c.number, head)) ?? undefined;
-    const repoDir = checkout ? { repo_dir: REPO_PATH } : {};
-    const reply = await d.ask(db, [{ ref, title, failure: logText(failure), files: shown, diff: diff.text, ...repoDir }], checkout);
-    if (reply === null) { fail("failed", "the model gave no answer"); return; }
-    const v = validatePatch(reply, shown.map((s) => s.path));
-    if (!v.ok) { fail("refused", v.reason); return; }
-    const guard = guardPatch(v.patch, v.files, contents);
-    if (guard) { fail("refused", guard); return; }
-    if (v.patch.length > CHECK_PATCH_CAP) { fail("refused", `the patch is over the ${CHECK_PATCH_CAP} character limit for the check`); return; }
-    const names = failure.checks.map((x) => x.name);
-    const check = async (patch: string): Promise<string | null> => {
-      const input: FixupCheckInput = {
-        ref, title, fixes: [], diff: diff.text.slice(0, CHECK_DIFF_CAP), patch, ...repoDir,
-        review_reason: `The check ${names.join(", ")} fails at this head. The patch must make it pass without changing what the pull request does.`,
-        ci_failure: { checks: names, log: JSON.stringify(logText(failure)).slice(0, CHECK_LOG_CAP) },
-      };
-      const reply2 = await d.check(db, [input], checkout);
-      if (reply2 === null) return "the patch check gave no answer";
-      const verdict = parseCheck(reply2);
-      if (!verdict.ok) return `the patch check gave no valid answer: ${verdict.error}`;
-      recordCheck(db, { kind: "fixup", repo, number: c.number, subject: head, patch, round: c.attempt, model: CHECK.models[0]!, check: verdict.check, at: at() });
-      audit(db, ACTOR, "cifix-check", ref, { run: runId, head, verdict: verdict.check.verdict, reasons: verdict.check.reasons });
-      return verdict.check.verdict === "reject" ? `rejected: Opus rejected the patch: ${checkLine(verdict.check)}` : null;
-    };
+    const made = await patchFromFailure(db, d, { git, ref, title: ((db.prepare("SELECT title FROM items WHERE repo = ? AND number = ?").get(repo, c.number) as { title: string | null } | undefined)?.title ?? "").slice(0, 300),
+      repo, number: c.number, head, round: c.attempt, failure, diffText: diff.text, runId, actor: ACTOR, at, checkout: async () => d.checkout?.(repo, c.number, head) });
+    if (!made.ok) { fail(made.state, made.reason); return; }
+    const { v, shown, names, check } = made;
     await deliver(c, "code", pr, v, names[0] ?? "CI", check, shown);
   };
 

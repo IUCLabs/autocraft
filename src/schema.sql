@@ -1132,7 +1132,9 @@ CREATE INDEX IF NOT EXISTS main_ci_repo_time ON main_ci(repo, committed_at);
 -- verdict: flaky | infra | code (Haiku, from the failed step's log).
 -- state: rerun-requested (flaky: the failed jobs were rerun, written before the call) | rerun-passed (the head turned green) |
 --   asked (infra: an operator decision asks whether to open an issue) | issue-opened | declined (infra: the answers to that decision) |
---   needs-fix (code, or red again after a rerun: waits for the fix PR step) | nothing-to-do (nothing readable to act on).
+--   needs-fix (code, or red again after a rerun: waits for the fix PR step) | nothing-to-do (nothing readable to act on, or main is
+--   green again, or an open PR already covers the failure: `#N` in the reason) | pr-opened (our fix PR: pr_number, pr_url) |
+--   fix-failed (no fix PR could be made: reason; a person takes over). One attempt per row.
 CREATE TABLE IF NOT EXISTS main_fixes (
   repo TEXT NOT NULL,
   head_sha TEXT NOT NULL,
@@ -1145,6 +1147,8 @@ CREATE TABLE IF NOT EXISTS main_fixes (
   excerpt TEXT,                       -- scrubbed tail of the failed step's log
   decision_id TEXT,
   issue_number INTEGER,
+  pr_number INTEGER,                  -- the fix PR
+  pr_url TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   PRIMARY KEY (repo, head_sha, "check")

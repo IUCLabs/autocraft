@@ -748,11 +748,11 @@ export const STEPS: StepDef[] = [
   {
     name: "main-fix",
     title: "Handle a red default branch",
-    description: "For a repo approved for it whose default branch is red, reads the failed gate checks' logs and has Haiku sort each: a flaky failure gets its failed jobs rerun once, an infrastructure failure becomes an operator decision about opening an upstream issue, and a code failure is recorded as needing a fix. Opens the issue only on an operator's answer.",
+    description: "For a repo approved for it whose default branch is red, reads the failed gate checks' logs and has Haiku sort each: a flaky failure gets its failed jobs rerun once, an infrastructure failure becomes an operator decision about opening an upstream issue, and a code failure is recorded as needing a fix and gets a fix PR (the CI fix patch path against the default branch head: Sonnet patch, Opus check, pushed to the pipeline account's fork) unless main is green again or an open PR already covers it. Opens the issue only on an operator's answer.",
     stage: runStage("main-fix"),
     requires: "operator",
     group: "github-write",
-    models: ["haiku"],
+    models: ["haiku", "sonnet", "opus"],
     params: [{ name: "repo", label: "Repo", kind: "repo", required: true }],
     check: checkMainFixApproved,
     run: async (ctx) => {
@@ -760,8 +760,8 @@ export const STEPS: StepDef[] = [
       const refused = await checkMainFixApproved(ctx.db, ctx.params);
       if (refused) throw new Error(refused);
       const r = await runMainFix(ctx.db, { repo: String(ctx.params.repo), onHandled: ctx.handled }, ctx.log);
-      ctx.acted(r.reran + r.asked + r.needsFix + r.issues);
-      return `${r.repo}: classified ${r.classified} heads, reran ${r.reran}, asked ${r.asked}, ${r.needsFix} need a fix, ${r.issues} issues opened`;
+      ctx.acted(r.reran + r.asked + r.needsFix + r.issues + r.prs);
+      return `${r.repo}: classified ${r.classified} heads, reran ${r.reran}, asked ${r.asked}, ${r.needsFix} need a fix, ${r.issues} issues opened, ${r.prs} fix PRs opened`;
     },
   },
 ];

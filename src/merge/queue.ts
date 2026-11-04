@@ -156,7 +156,7 @@ function tiersOf(db: DatabaseSync, logins: string[]): Map<string, Tier> {
 /** Setting that holds the pipeline account's login, recorded wherever the pipeline pushes as that account. */
 export const PIPELINE_LOGIN_KEY = "pipeline_login";
 
-/** PRs the pipeline opened itself from a Fix issues attempt, as `repo#number`, when authored by its own account. */
+/** PRs the pipeline opened itself from a Fix issues attempt or for a red default branch, as `repo#number`, when authored by its own account. */
 function ownFixPrs(db: DatabaseSync, repo?: string): { login: string | null; prs: Set<string> } {
   const login = (db.prepare("SELECT value FROM main.settings WHERE key = ?").get(PIPELINE_LOGIN_KEY) as { value: string } | undefined)?.value ?? null;
   const prs = new Set<string>();
@@ -165,6 +165,7 @@ function ownFixPrs(db: DatabaseSync, repo?: string): { login: string | null; prs
     const m = r.pr_url.match(/\/pull\/(\d+)$/);
     if (m) prs.add(`${r.repo}#${m[1]}`);
   }
+  for (const r of db.prepare("SELECT repo, pr_number AS n FROM main.main_fixes WHERE pr_number IS NOT NULL" + (repo ? " AND repo = ?" : "")).all(...(repo ? [repo] : [])) as { repo: string; n: number }[]) prs.add(`${r.repo}#${r.n}`);
   return { login, prs };
 }
 
