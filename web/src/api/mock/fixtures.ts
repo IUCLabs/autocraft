@@ -610,6 +610,32 @@ const SEEDS: Seed[] = [
     answer: ["merge", "ochre-fox", 9, true, "Tested on the 2 h sample project.", 0],
     opinions: [["mosswood", "merge", "Tested on the 2 h sample project.", 700]],
   },
+  {
+    kind: "scope",
+    repo: "photocraft",
+    number: 4141,
+    title: "Export presets as a shareable file",
+    question: "Is sharing export presets in scope?",
+    context: [],
+    facts: ["issue · 3 comments", "reference app: Export presets"],
+    ...spread(scopeOpts("take")),
+    ageH: 52,
+    author: "brushstroke42",
+    answer: ["handled", "ochre-fox", 4, true, "The reference app has no shared presets; we asked the author for a use case and labelled it needs decision."],
+  },
+  {
+    kind: "scope",
+    repo: "designcraft",
+    number: 1484,
+    title: "Gradient editor: stops snap to the ruler",
+    question: "Is ruler snapping for gradient stops in scope?",
+    context: [],
+    facts: ["+120 −8 · 3 files"],
+    ...spread(scopeOpts("take")),
+    ageH: 70,
+    author: "kiln-and-reed",
+    answer: ["withdrawn", "pipeline", 3, true, "the pull request was closed on GitHub"],
+  },
 ];
 
 function spread([options, recommended]: [DecisionOption[], string]) {
@@ -710,7 +736,8 @@ function toDecision(s: Seed): Decision {
     context: s.context,
     facts: s.facts.slice(0, 5),
     // The server offers Backlog last on every decision.
-    options: [...s.options.map((o) => ({ ...o, ...(WRITES[s.kind]?.[o.key] ? { writes: WRITES[s.kind]![o.key] } : {}) })), { key: "backlog", label: "Backlog" }],
+    options: [...s.options.map((o) => ({ ...o, ...(WRITES[s.kind]?.[o.key] ? { writes: WRITES[s.kind]![o.key] } : {}) })), { key: "backlog", label: "Backlog" },
+      ...(s.answer?.[0] === "handled" ? [{ key: "handled", label: "Handled in the conversation" }] : s.answer?.[0] === "withdrawn" ? [{ key: "withdrawn", label: "Withdrawn" }] : [])],
     recommended: s.recommended,
     recommendedReason: s.recommended ? (s.recommendedReason ?? "") : "",
     group: s.group ?? [], risks: s.risks ?? [], undoable: !!s.answer && !s.answer[3],

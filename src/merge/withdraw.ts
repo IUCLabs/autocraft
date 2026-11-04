@@ -1,10 +1,18 @@
 // A review made again at the same head commit replaces the one a "Merge this PR?" decision was asked from.
 import type { DatabaseSync } from "node:sqlite";
 import { audit } from "../dash/audit.ts";
+import { clearAskedStage } from "../decisions.ts";
 import { mergeDecisionId, OPEN_GROUP_SQL, type QueueEntry } from "./queue.ts";
 
 /** Answer value of a question the pipeline set aside; no operator wrote it, so no later step acts on it. */
 export const WITHDRAWN = "withdrawn";
+
+/** Renames a decision and what hangs on its id, freeing the id for a new question. */
+function renameDecision(db: DatabaseSync, id: string, to: string): void {
+  for (const t of ["decisions", "decision_opinions", "decision_comments", "decision_claims"]) {
+    db.prepare(`UPDATE ${t} SET ${t === "decisions" ? "id" : "decision_id"} = ? WHERE ${t === "decisions" ? "id" : "decision_id"} = ?`).run(to, id);
+  }
+}
 
 /**
  * Sets the head's merge decision aside, answered or not, by renaming it (and what hangs on its id) so it no longer
@@ -20,9 +28,7 @@ export function withdrawMergeQuestion(db: DatabaseSync, repo: string, number: nu
   const old = `${id}~replaced-${at}`;
   db.exec("BEGIN IMMEDIATE");
   try {
-    for (const t of ["decisions", "decision_opinions", "decision_comments", "decision_claims"]) {
-      db.prepare(`UPDATE ${t} SET ${t === "decisions" ? "id" : "decision_id"} = ? WHERE ${t === "decisions" ? "id" : "decision_id"} = ?`).run(old, id);
-    }
+    renameDecision(db, id, old);
     if (row.answer === null) {
       db.prepare("UPDATE decisions SET answer = ?, answered_by = 'pipeline', answered_at = ?, applied_at = ?, answer_note = ? WHERE id = ?").run(WITHDRAWN, at, at, why, old);
       audit(db, "pipeline", "merge-question-withdrawn", old, { repo, number, head });
@@ -89,4 +95,49 @@ export function withdrawOtherHeadQuestions(db: DatabaseSync, repo: string, numbe
     const head = r.id.slice(prefix.length);
     if (head !== keepHead) withdrawMergeQuestion(db, repo, number, head, at, "superseded by a question at a newer head");
   }
+}
+
+type OpenRow = { id: string; kind: string; repo: string | null; number: number | null; state: string | null; itemKind: string | null };
+
+const closedWhy = (r: OpenRow): string => r.state === "MERGED" ? "the pull request was merged" : `the ${r.itemKind === "pr" ? "pull request" : "issue"} was closed on GitHub`;
+
+/**
+ * Withdraws the open scope, merge, close and (single-item) duplicate questions of items that are closed or merged in the
+ * mirror, and an open duplicate-group question with fewer than two open members. The row is answered "withdrawn" by the
+ * pipeline with the reason as its note and audited; nothing is written to GitHub. A single-item question is renamed like
+ * a superseded Merge? question, so an item that reopens is asked again under the same id; a scope question also loses
+ * the stages row Decide wrote, so the item counts as never asked. Idempotent: it writes only when something is left to withdraw.
+ */
+export function withdrawClosedQuestions(db: DatabaseSync, at: string): number {
+  const single = db.prepare(`SELECT d.id, d.kind, d.repo, d.number, i.state, i.kind AS itemKind FROM decisions d
+    JOIN items i ON i.repo = d.repo AND i.number = d.number
+    WHERE d.answer IS NULL AND d.number IS NOT NULL AND d.kind IN ('scope', 'close', 'merge', 'duplicate') AND d.id NOT LIKE '%:dupegroup:%' AND d.id NOT LIKE '%~replaced-%'
+      AND i.state IN ('CLOSED', 'MERGED')`).all() as OpenRow[];
+  const groups = db.prepare(`SELECT d.id, d.kind, d.repo, d.number FROM decisions d
+    WHERE d.answer IS NULL AND d.kind = 'duplicate' AND d.id LIKE '%:dupegroup:%' AND d.id NOT LIKE '%~replaced-%'
+      AND (SELECT COUNT(*) FROM dupe_group_items gi JOIN items i ON i.repo = gi.repo AND i.number = gi.number WHERE gi.decision_id = d.id AND i.state = 'OPEN') < 2`).all() as OpenRow[];
+  if (!single.length && !groups.length) return 0;
+  const clear = clearAskedStage(db);
+  const close = db.prepare("UPDATE decisions SET answer = ?, answered_by = 'pipeline', answered_at = ?, applied_at = ?, answer_note = ?, adopted_opinion = NULL WHERE id = ? AND answer IS NULL");
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    for (const r of single) {
+      const old = `${r.id}~replaced-${at}`;
+      renameDecision(db, r.id, old);
+      const why = closedWhy(r);
+      close.run(WITHDRAWN, at, at, why, old);
+      if (r.kind === "scope") clear(r.repo!, r.number!, r.id);
+      audit(db, "pipeline", "decision-withdrawn", old, { repo: r.repo, number: r.number, kind: r.kind, why });
+    }
+    for (const r of groups) {
+      const why = "the duplicate group has one open item left";
+      close.run(WITHDRAWN, at, at, why, r.id);
+      audit(db, "pipeline", "decision-withdrawn", r.id, { kind: r.kind, why });
+    }
+    db.exec("COMMIT");
+  } catch (e) {
+    db.exec("ROLLBACK");
+    throw e;
+  }
+  return single.length + groups.length;
 }

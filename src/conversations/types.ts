@@ -14,11 +14,13 @@ export type ConversationInput = {
   reference?: boolean;
 };
 
-export const CARD_KINDS = ["comment", "answer", "label", "backlog", "duplicate"] as const;
+export const CARD_KINDS = ["comment", "answer", "label", "backlog", "duplicate", "resolve"] as const;
 export type CardKind = (typeof CARD_KINDS)[number];
 export type TurnKind = "operator" | "opus" | "system";
 
 export const COMMENT_MAX = 1500;
+/** Longest summary of a resolve card. */
+export const RESOLVE_MAX = 200;
 export const MESSAGE_MAX = 4000;
 export const OPENING_MAX = 1500;
 export const ITEM_BODY_LIMIT = 8000;

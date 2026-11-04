@@ -66,7 +66,7 @@ const decisionVisible = (c: Ctx, id: string): boolean => {
   const d = getDecision(c.db, id);
   return !d || !reposOf(d).some((r) => c.hidden.includes(r));
 };
-const DECISION_COLS = "d.id, d.repo, d.number, d.kind, d.question, d.asked_at, d.asked_by, d.answer, d.answered_at, d.answered_by";
+const DECISION_COLS = "d.id, d.repo, d.number, d.kind, d.question, d.asked_at, d.asked_by, d.answer, d.answered_at, d.answered_by, d.answer_note";
 type Dec = DecisionRow & At;
 
 export const SOURCES: Source[] = [

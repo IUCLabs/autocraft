@@ -7,14 +7,15 @@ import { optionsOf, getDecision, type DecisionRow, type Kind } from "../decision
 import { backlogHeldSql, notOwnIntegrationSql } from "../dupes/held.ts";
 import { ALL_LABELS, isTypeLabel, sameLabel } from "../labels/set.ts";
 import { pilotSql } from "../pilot.ts";
-import { COMMENT_MAX, type CardKind } from "./types.ts";
+import { COMMENT_MAX, RESOLVE_MAX, type CardKind } from "./types.ts";
 
 export type CardParams =
   | { kind: "comment"; text: string }
   | { kind: "answer"; option: string; decision: string; stamp?: string }
   | { kind: "label"; label: string }
   | { kind: "backlog"; decision: string; stamp?: string }
-  | { kind: "duplicate"; of: number };
+  | { kind: "duplicate"; of: number }
+  | { kind: "resolve"; decision: string; summary: string; stamp?: string };
 
 export type NewCard = { params: CardParams; text: string | null; description: string };
 
@@ -51,6 +52,7 @@ export function describe(db: DatabaseSync, repo: string, n: number, p: CardParam
     }
     case "label": return `Add the label "${p.label}" to ${it}`;
     case "backlog": return `Put ${it} in the Backlog: nothing is written to GitHub and no later step takes it up`;
+    case "resolve": return `Close the open decision on ${it} as handled in the conversation ("${p.summary}"): nothing is written to GitHub`;
     case "duplicate": return `Comment "Duplicate of #${p.of}." on ${it} and close it as a duplicate of ${ref(repo, p.of)}`;
   }
 }
@@ -145,6 +147,15 @@ export function validateCard(db: DatabaseSync, repo: string, n: number, raw: unk
       const d = openDecision(db, repo, n);
       if (!d) return { note: "dropped a Backlog card: the item has no open decision" };
       return done({ kind: "backlog", decision: d.id, stamp: decisionStamp(db, d) });
+    }
+    case "resolve": {
+      const d = openDecision(db, repo, n);
+      if (!d) return { note: "dropped a resolve card: the item has no open decision" };
+      const summary = typeof c.summary === "string" ? cleanComment(c.summary).replace(/\s+/g, " ") : "";
+      if (!summary) return { note: "dropped a resolve card without a summary" };
+      if (REFERENCE_LEAK.test(summary)) return { note: "dropped a resolve card that mentions the reference folder or its documentation" };
+      if (summary.length > RESOLVE_MAX) return { note: `dropped a resolve card with a summary longer than ${RESOLVE_MAX} characters` };
+      return done({ kind: "resolve", decision: d.id, summary, stamp: decisionStamp(db, d) });
     }
     case "duplicate": {
       const of = c.of;
