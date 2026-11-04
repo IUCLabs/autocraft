@@ -16,6 +16,9 @@ export const PLUGIN_LABEL = "plugin candidate";
 export const RECOMMEND_MAX_FAILURES = 3;
 export const RECOMMEND_RETRY_MS = 60 * 60_000;
 
+/** Opus answers the label referee may fail to give for an item before the item goes to an operator as a scope decision; a failed item is asked again after RECOMMEND_RETRY_MS. */
+export const REFEREE_MAX_FAILURES = 3;
+
 /** The labels a pass would add to the item: its settled type (or the plugin answer's), the security and needs-decision flags. Null when nothing is settled or a type label conflicts. */
 export function labelsToAdd(settled: { type: string; security: boolean; needsDecision: boolean } | null, plugin: boolean, existing: string[]): string[] | null {
   const s = plugin ? { type: PLUGIN_LABEL, security: settled?.security ?? false, needsDecision: false } : settled;

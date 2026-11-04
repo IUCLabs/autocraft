@@ -31,11 +31,14 @@ function fixCandidate(f: ItemFacts): boolean {
 /** Jev and Haiku chose different labels and it is not a scope call: a referee (Sonnet, then Opus when Sonnet was unsure) still has to settle it. An unsure Opus settles the label too and flags a scope decision. */
 const labelDisagreement = (f: ItemFacts): boolean => f.classification.status === "disagree" && scopeReason(f) !== "scope-disagreement";
 
+/** The last referee was unsure, so the needs-decision flag comes from it and not from Jev or Haiku. */
+const refereeUnsure = (f: ItemFacts): boolean => !!f.classification.referee && !f.classification.referee.sure && f.classification.referee.final;
+
 /** A scope decision should be asked: the reason holds and no decision or later stage covers the item. */
 const scopeNeeded = (f: ItemFacts): boolean => {
   const reason = scopeReason(f);
-  // A new classification that disagrees on a scope label leaves an item that was only labelled without a settled label: ask it.
-  return reason !== null && !f.scope.covered && (!f.scope.pastClassified || (reason === "scope-disagreement" && !!f.scope.labeledOnly));
+  // An item that was only labelled still gets its scope question when a later classification disagrees on a scope label or an unsure referee flags it.
+  return reason !== null && !f.scope.covered && (!f.scope.pastClassified || (!!f.scope.labeledOnly && (reason === "scope-disagreement" || refereeUnsure(f))));
 };
 
 const PLUGIN_WAIT = "stays open as a plugin candidate";
@@ -71,7 +74,9 @@ export function decideItem(f: ItemFacts): ItemPlan {
     if (jevDue || haikuDue) actions.push(act("classify", null, { source: jevDue ? "jev" : "haiku" }));
   }
   // referee: open, not a draft, not held, in scope.
-  if (f.run && live && !f.draft && state === "referee-due") actions.push(act("referee", null, { source: c.referee ? "opus" : "sonnet" }));
+  // A failed Opus call is asked again after a backoff; the third failure sends the item to Decide.
+  const backoff = !!c.referee?.failedAt && Date.parse(c.referee.failedAt) > f.now - RECOMMEND_RETRY_MS;
+  if (f.run && live && !f.draft && state === "referee-due" && !backoff) actions.push(act("referee", null, { source: c.referee ? "opus" : "sonnet" }));
   // prioritize: no priority row at the current text hash.
   if (live && f.priorityHash !== f.embedHash) actions.push(act("prioritize", null));
   // embed: every open item, with no scope test.

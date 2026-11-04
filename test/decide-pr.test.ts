@@ -178,6 +178,8 @@ const rows: Row[] = [
   { name: "fix-up: too-large becomes an ask once comments are approved", facts: { ...TAKE_FIX, fixup: fixup({ recorded: ["too-large"] }) }, expect: { actions: ["fixup:ask"] } },
   { name: "fix-up: too-large and asked is final", facts: { ...TAKE_FIX, fixup: fixup({ recorded: ["too-large", "asked"] }) }, expect: { actions: [] } },
   { name: "fix-up: too-large without comment approval is final", facts: { ...TAKE_FIX, fixup: fixup({ recorded: ["too-large"] }), repoFacts: { commentApproved: false } }, expect: { actions: [] } },
+  { name: "a label settled by an unsure referee keeps a clean PR off the rule and asks", facts: { labelUnsure: true }, expect: { state: "needs-decision", path: null, actions: ["ask-merge"], reasons: ["label settled by an unsure referee"] } },
+  { name: "fix-up: an operator merge hold stops the too-large ask", facts: { ...TAKE_FIX, fixup: fixup({ recorded: ["too-large"] }), mergeHeld: true }, expect: { actions: [] } },
   { name: "fix-up: two tries used are followed by an ask", facts: { ...TAKE_FIX, fixup: fixup({ attempts: 2 }) }, expect: { actions: ["fixup:ask"] } },
   { name: "fix-up: two tries used and asked is final", facts: { ...TAKE_FIX, fixup: fixup({ attempts: 2, recorded: ["asked"] }) }, expect: { actions: [] } },
   { name: "fix-up: one try used, one left", facts: { ...TAKE_FIX, fixup: fixup({ attempts: 1 }) }, expect: { actions: ["fixup:fix"] } },

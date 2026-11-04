@@ -50,7 +50,7 @@ export async function refereeItems(db: DatabaseSync, runId: string, items: Item[
     const first = chunk.filter((i) => !have.get(i.repo, i.number, runId, opts.pipeline ? start : ""));
     if (first.length) {
       const r = await runModelStep(db, REFEREE_SONNET, first, {
-        usage: { run: runId, agent: opts.pipeline ? `${opts.model ?? "sonnet"}-${Date.now().toString(36)}-${n}` : `sonnet-${n}`, stage: "referee" },
+        usage: { run: runId, agent: opts.pipeline ? `${opts.model ?? "sonnet"}-${Date.now().toString(36)}-${n}` : `sonnet-${n}`, stage: "referee", ...(opts.model && { model: opts.model }) },
         ...(opts.model && { model: opts.model }),
         onAttempt: (todo) => opts.onSent?.((sent += todo.length)),
       });
@@ -59,6 +59,21 @@ export async function refereeItems(db: DatabaseSync, runId: string, items: Item[
         ins.run(repo!, Number(num), runId, new Date().toISOString(), v.type_label, v.why, opts.pipeline ? JSON.stringify({ sure: v.sure === true, ...(opts.model && { final: true }) }) : null);
         got++;
         jobItem(db, repo!, Number(num), `refereed${opts.model ? ` by ${opts.model}` : ""} as ${v.type_label}${v.sure === true ? "" : " (unsure)"}`);
+      }
+      // Opus gave no answer for an item: count the failure on Sonnet's row (rewritten, so the settled table sees it); the planner backs off, and the third failure ends the referee's turn.
+      if (opts.model && opts.pipeline) {
+        const answered = new Set(r.ok ? r.values.flat().map((v) => v.ref) : []);
+        for (const i of first) {
+          if (answered.has(`${i.repo}#${i.number}`)) continue;
+          const row = db.prepare(`SELECT type_label, reason, probs, at FROM classifications WHERE repo = ? AND number = ? AND classifier = 'sonnet' AND run_id = ?`).get(i.repo, i.number, runId) as { type_label: string; reason: string | null; probs: string | null; at: string } | undefined;
+          if (!row) continue;
+          let p: Record<string, unknown> = {};
+          try { p = (JSON.parse(row.probs ?? "{}") as Record<string, unknown>) ?? {}; } catch { /* keep empty */ }
+          p.opusFailures = (typeof p.opusFailures === "number" ? p.opusFailures : 0) + 1;
+          p.opusFailedAt = new Date().toISOString();
+          db.prepare(`INSERT OR REPLACE INTO classifications (repo, number, classifier, run_id, at, type_label, flags, reason, probs) VALUES (?, ?, 'sonnet', ?, ?, ?, '[]', ?, ?)`)
+            .run(i.repo, i.number, runId, row.at, row.type_label, row.reason, JSON.stringify(p));
+        }
       }
     }
     total += got;

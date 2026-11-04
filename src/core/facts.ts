@@ -11,7 +11,7 @@ import { conflictBucket } from "../fixup/conflict-state.ts";
 import { pushApprovalOf } from "../fixup/approval.ts";
 import { longLivedOf, pushable, type LongLived } from "../fixup/pushable.ts";
 import { FAST_FLOOR, fastScoreSql } from "../fasttrack.ts";
-import { latestRun, settledLookup } from "../classify/settled.ts";
+import { latestRun, refereeClosed, settledLookup } from "../classify/settled.ts";
 import { redMainRepos, MAIN_FIX_BRANCH_PREFIX } from "../mainci/index.ts";
 import { batchStates, membersOf } from "../merge/batch-store.ts";
 import { changesRequestedWhy, gatesOf, GATE_FAILURES, failureNote, type ReviewFact } from "../merge/changes-requested.ts";
@@ -249,6 +249,7 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
     const s = settled(r.repo, r.number);
     base.label = s.label ?? null;
     base.needsDecisionFlag = s.flags.includes("needs decision");
+    base.labelUnsure = s.status === "settled" && !!s.referee && !s.referee.sure && refereeClosed(s.referee);
     const pm = mergedByPipeline.get(ref);
     if (pm) base.postmerge = { mergedAt: pm.merged_at, head: pm.head, since, review: pmReviews.get(ref) ?? null };
     // Checks describe the PR when they were fetched for the reviewed head (or, without a review, the current one).
