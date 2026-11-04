@@ -5,14 +5,8 @@ import { RETRY_AFTER_MS } from "../postmerge/select.ts";
 /** A failed head counts as failed after this many tries. */
 export const PREMERGE_MAX_TRIES = 3;
 
-export type PremergeFinding = {
-  severity: "defect" | "minor";
-  file: string;
-  line: number;
-  title: string;
-  scenario: string;
-  fix?: { file: string; change: string };
-};
+export type { PremergeFinding } from "./types.ts";
+import type { PremergeFinding } from "./types.ts";
 
 export type PremergeRow = {
   repo: string; number: number; head_oid: string;

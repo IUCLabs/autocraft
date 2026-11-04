@@ -400,7 +400,12 @@ const LANE_CODE: Omit<Lane, "steps">[] = [
     // The adversarial review of each PR head the merge rule would merge; the queue holds the PR until it is stored.
     name: "premerge",
     perRepo: true,
-    detect: (db, { tracked, wake }) => tracked.filter((repo) => premergeCandidates(db, repo, Date.now(), wake).length > 0).sort().map((repo) => ({ step: "premerge", params: { repo } })),
+    detect: (db, { tracked, wake, run }) => {
+      if (!tracked.length) return [];
+      // One queue for every repo, with the planner's run: buildQueue per repo would look the run up each time.
+      const queue = buildQueue(db, { run, merged: "exclude" });
+      return tracked.filter((repo) => premergeCandidates(db, repo, Date.now(), wake, queue).length > 0).sort().map((repo) => ({ step: "premerge", params: { repo } }));
+    },
   },
   {
     // Opus reviews what each pipeline merge landed; reads only, so it needs no repo approval.

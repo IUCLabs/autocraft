@@ -3,7 +3,7 @@
 import { safePath } from "../fixup/patch.ts";
 import type { LintProblem } from "../replylint.ts";
 import { OPUS_MAX_FIXES, REFERENCE_LEAK } from "../review/opus-parse.ts";
-import type { PremergeFinding } from "./store.ts";
+import type { PremergeFinding } from "./types.ts";
 
 export const PREMERGE_MAX_FINDINGS = 30;
 export const PREMERGE_TITLE_CHARS = 160;

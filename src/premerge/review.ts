@@ -41,9 +41,9 @@ export function defaultPremergeDeps(): PremergeDeps {
  * The PRs of `repo` the queue holds in waiting-premerge whose head is due a try, in queue order. `wake` collects when the
  * failed tries are due again (ms): nothing in the data changes then, so the planner must be told.
  */
-export function premergeCandidates(db: DatabaseSync, repo: string, at = Date.now(), wake?: number[]): QueueEntry[] {
-  return buildQueue(db, { repo, merged: "exclude" }).filter((e) => {
-    if (e.state !== "waiting-premerge") return false;
+export function premergeCandidates(db: DatabaseSync, repo: string, at = Date.now(), wake?: number[], queue?: QueueEntry[]): QueueEntry[] {
+  return (queue ?? buildQueue(db, { repo, merged: "exclude" })).filter((e) => {
+    if (e.repo !== repo || e.state !== "waiting-premerge") return false;
     const row = premergeAt(db, repo, e.number, e.head);
     if (row && row.findings === null && row.tries < PREMERGE_MAX_TRIES) wake?.push(Date.parse(row.at) + RETRY_AFTER_MS);
     return premergeRetryDue(row, at);
