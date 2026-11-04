@@ -17,8 +17,9 @@ import { agentsModule } from "../modules/agents";
 import { envsModule } from "../modules/envs";
 import { ratesModule } from "../modules/rates";
 import { queueModule } from "../modules/queue";
+import { nextModule } from "../modules/next";
 import { githubModule } from "../modules/github";
 import { similarModule } from "../modules/similar";
 import { mainCiModule } from "../modules/mainci";
 
-export const modules: FeatureModule[] = [flowModule, decisionsModule, queueModule, agentsModule, envsModule, ratesModule, itemModule, progressModule, itemsModule, contributorsModule, classifiersModule, costModule, reposModule, accessModule, auditModule, aboutModule, pipelineModule, promptsModule, similarModule, accountsModule, githubModule, mainCiModule];
+export const modules: FeatureModule[] = [flowModule, decisionsModule, nextModule, queueModule, agentsModule, envsModule, ratesModule, itemModule, progressModule, itemsModule, contributorsModule, classifiersModule, costModule, reposModule, accessModule, auditModule, aboutModule, pipelineModule, promptsModule, similarModule, accountsModule, githubModule, mainCiModule];

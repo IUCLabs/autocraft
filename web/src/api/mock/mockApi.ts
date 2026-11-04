@@ -15,6 +15,7 @@ import { classifierReport, costReport, disagreementList } from "./insightFixture
 import { pickDecision, shortRepo } from "../../lib/links";
 import { itemList, settledFor } from "./itemsFixtures";
 import { postmergeFor, premergeFor, prWorkFor } from "./verifyFixtures";
+import { nextPageFixture } from "./nextMock";
 import { queueBatchList, queueList } from "./queueFixtures";
 import { createQueueMock } from "./queueMock";
 import { githubActivityPage } from "./githubFixtures";
@@ -197,6 +198,7 @@ export function createMockApi(): Api {
     ...createBuildMock(me, changed),
     ...createQueueMock(me, changed),
     prompts: () => wait(promptsReport(null), 60),
+    next: () => wait(nextPageFixture(), 60),
     queue: (f) => wait(queueList(f), 60),
     queueBatches: (f) => wait(queueBatchList(f), 60),
     githubActivity: (f) => wait(githubActivityPage(f), 60),

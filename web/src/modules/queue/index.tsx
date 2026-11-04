@@ -3,7 +3,7 @@
 import { useEffect } from "react";
 import { Link, Navigate, useLocation, useParams } from "react-router-dom";
 import { ListNumbersIcon } from "@phosphor-icons/react";
-import { usePagedQuery, useQuery } from "../../api/client";
+import { useQuery } from "../../api/client";
 import type { QueuePage, QueueTab } from "../../api/types";
 import type { FeatureModule } from "../../registry/types";
 import { num } from "../../lib/format";
@@ -14,6 +14,7 @@ import { WorkCards, WorkTable } from "./AllTab";
 import { FastTrackAdd } from "./fastTrack";
 import { HighlightContext } from "./highlight";
 import { MergeTab } from "./MergeTab";
+import { usePage } from "./usePage";
 
 const TABS: [QueueTab, string][] = [
   ["all", "All"],
@@ -22,17 +23,6 @@ const TABS: [QueueTab, string][] = [
   ["verify", "Verify"],
   ["merge", "Merge"],
 ];
-
-function usePage(tab: QueueTab, repos: string, item: string | undefined) {
-  const q = usePagedQuery(
-    `queue-page:${tab}:${repos}:${item ?? ""}`,
-    (api, after) => api.queuePage({ tab, repos, item: after ? undefined : item, offset: after ? Number(after) : 0, limit: 100 }),
-    (p) => (p.next === null ? null : String(p.next)),
-  );
-  // After a tab or filter change the cache shows the previous page until the new one arrives.
-  const pages = q.pages?.filter((p) => p.tab === tab);
-  return { pages: pages?.length ? pages : undefined, counts: q.pages?.[0]?.counts, error: q.error, hasMore: q.hasMore, loadingMore: q.loadingMore, loadMore: q.loadMore };
-}
 
 function RepoFilter({ repos, update }: { repos: string; update: (patch: Record<string, string | null>) => void }) {
   const { data: names } = useQuery("repos", (api) => api.repos());

@@ -245,6 +245,7 @@ export function createHttpApi(): Api {
     pipelineRepos: () => get("/api/repos/pipeline"),
     fastTrack: () => get("/api/fast-track"),
     heldMerges: () => get("/api/merge/held"),
+    next: () => get("/api/next"),
     queuePage: (f) => get(`/api/queue/page${qs(f)}`),
     queueControl: {
       fastTrackAdd: (item) => post("/api/fast-track", { item }),
