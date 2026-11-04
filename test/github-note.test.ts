@@ -13,6 +13,7 @@ const NOTES: [Note, string][] = [
   [{ by: "model", kind: "review", model: "claude-opus-5-5" }, "_AI-generated review (Opus 5.5). Not a maintainer decision._"],
   [{ by: "model", kind: "pull request", model: "claude-sonnet-5-5" }, "_AI-generated pull request (Sonnet 5.5). Not a maintainer decision._"],
   [{ by: "operator", model: "claude-opus-5-5" }, "_AI-generated reply (Opus 5.5)_"],
+  [{ by: "operator", model: null }, "_AI-generated reply_"],
   [{ by: "fixed" }, "_Automated message. Not a maintainer decision._"],
   [{ by: "fixed-operator" }, "_Automated reply_"],
 ];

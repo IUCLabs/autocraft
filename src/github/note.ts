@@ -15,10 +15,13 @@ export type Note =
   | { by: "fixed" }
   | { by: "fixed-operator" };
 
+// A post never says "unknown model": without a recorded model the name is left out.
+const named = (model: string | null | undefined): string => (model?.trim() ? ` (${modelLabel(model)})` : "");
+
 export function noteLine(n: Note): string {
   switch (n.by) {
-    case "model": return `_AI-generated ${n.kind} (${modelLabel(n.model)}). Not a maintainer decision._`;
-    case "operator": return `_AI-generated reply (${modelLabel(n.model)})_`;
+    case "model": return `_AI-generated ${n.kind}${named(n.model)}. Not a maintainer decision._`;
+    case "operator": return `_AI-generated reply${named(n.model)}_`;
     case "fixed": return "_Automated message. Not a maintainer decision._";
     case "fixed-operator": return "_Automated reply_";
   }
