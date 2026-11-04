@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { untilCutoff } from "../src/mirror.ts";
+import { Client, untilCutoff } from "../src/mirror.ts";
 import { validating } from "./gql.ts";
 
 const page = (...times: string[]) => times.map((updatedAt) => ({ updatedAt }));
@@ -140,3 +140,12 @@ test("sync stores the text hashes the planner compares", async () => {
 
 
 
+
+test("a deleted item reads as null; a missing repository still fails", async () => {
+  const c = new Client(0);
+  const answer = (data: unknown) => () => ({ data, errors: [{ type: "NOT_FOUND", message: "Could not resolve to an issue or pull request with the number of 2401." }], text: "", failed: true, stderr: "gh: Could not resolve" });
+  (c as unknown as { run: unknown }).run = answer({ rateLimit: { cost: 1, remaining: 4000, resetAt: "2026-11-04T15:00:00Z" }, repository: { issueOrPullRequest: null } });
+  assert.equal((await c.query("q", {})).repository.issueOrPullRequest, null);
+  (c as unknown as { run: unknown }).run = answer({ repository: null });
+  await assert.rejects(c.query("q", {}));
+});

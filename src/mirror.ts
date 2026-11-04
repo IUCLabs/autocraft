@@ -129,7 +129,10 @@ export class Client {
       if (/node_limit|resource_limits|timeout|something went wrong/.test(r.text)) throw new Transient("query too heavy");
       throw new Error(`graphql error: ${JSON.stringify(r.errors).slice(0, 500)}`);
     }
-    if (r.failed) {
+    // A deleted or transferred item is a NOT_FOUND error beside a null field, and gh exits non-zero; with the repository
+    // present the answer is that null field, which callers handle.
+    const missingOnly = r.errors.length > 0 && r.errors.every((e: Node) => e.type === "NOT_FOUND") && !!r.data?.repository;
+    if (r.failed && !missingOnly) {
       if (/502|503|504|timeout|eof|connection|unexpected end of json/.test(r.text)) throw new Transient(r.stderr.trim().slice(0, 200));
       throw new Error(`gh failed: ${r.stderr.trim().slice(0, 500)}`);
     }
