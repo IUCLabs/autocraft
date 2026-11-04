@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, before, describe, test } from "node:test";
-import type { Decision, DecisionComment, Item, Progress, SearchHit, User } from "../web/src/api/types.ts";
+import type { Decision, DecisionComment, DecisionList, Item, Progress, SearchHit, User } from "../web/src/api/types.ts";
 import { addLogin } from "../src/access.ts";
 import { connect } from "../src/db.ts";
 import { ask } from "../src/decisions.ts";
@@ -174,6 +174,15 @@ describe("api", () => {
     assert.equal(p.perHour.length, 24);
   });
 
+
+  test("the decisions list narrows to one item: its own decisions and the duplicate groups that list it", async () => {
+    const boss = await signedIn("boss");
+    db.prepare("INSERT INTO dupe_group_items (decision_id, repo, number, kind, role, target, detail, base_role, base_target, head) VALUES ('photocraft:dupegroup:4', 'photocraft', 5, 'issue', 'close', 4, NULL, 'close', 4, NULL)").run();
+    const ids = async (n: number) => (await boss.get<DecisionList>(`/api/decisions?repo=photocraft&number=${n}`)).decisions.map((d) => d.id).sort();
+    assert.deepEqual(await ids(1), [P1]);
+    assert.deepEqual(await ids(5), ["photocraft:dupegroup:4"]);
+    assert.deepEqual(await ids(99), []);
+  });
 
   test("a viewer's opinion, retract, comment and claim are refused and write nothing; a maintainer's succeed", async () => {
     const viewer = await signedIn("viewer1");

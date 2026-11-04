@@ -82,6 +82,7 @@ export function createMockApi(): Api {
     if (status === "backlog" && d.answer !== "backlog") return false;
     if (status === "opinions" && !d.opinions.length && !d.commentCount) return false;
     if (f.repo?.length && !f.repo.includes(d.repo)) return false;
+    if (f.number !== undefined && !(d.number === f.number || d.items.some((i) => i.repo === d.repo && i.number === f.number))) return false;
     if (f.kind?.length && !f.kind.includes(d.kind)) return false;
     if (f.minAge && NOW - Date.parse(d.askedAt) < f.minAge * 86400_000) return false;
     if (f.mine && !me.writeRepos.includes(d.repo)) return false;

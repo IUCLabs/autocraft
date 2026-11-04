@@ -559,6 +559,23 @@ const SEEDS: Seed[] = [
     answer: ["take", "ochre-fox", 2, false],
   },
   {
+    kind: "other",
+    repo: "photocraft",
+    number: 4127,
+    title: "Add Wave distortion filter with live preview",
+    question: "Should the Wave filter's CPU fallback ship in the same release?",
+    context: [],
+    facts: ["+412 −18 · 6 files"],
+    options: [
+      { key: "same", label: "Ship together" },
+      { key: "later", label: "Preview first, fallback later" },
+    ],
+    recommended: "same",
+    ageH: 60,
+    author: "pixel-wrangler",
+    answer: ["same", "ochre-fox", 20, false],
+  },
+  {
     kind: "duplicate",
     repo: "designcraft",
     number: 2188,

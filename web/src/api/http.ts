@@ -87,6 +87,7 @@ export function createHttpApi(): Api {
     if (f.kind?.length) q.set("kind", f.kind.join(","));
     if (f.minAge) q.set("minAge", String(f.minAge));
     if (f.mine) q.set("mine", "1");
+    if (f.number !== undefined) q.set("number", String(f.number));
     if (f.limit !== undefined) q.set("limit", String(f.limit));
     if (f.after) q.set("after", f.after);
     if (f.offset !== undefined) q.set("offset", String(f.offset));

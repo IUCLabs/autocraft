@@ -640,6 +640,8 @@ export interface DecisionFilter {
   /** minimum age in days */
   minAge?: number;
   mine?: boolean;
+  /** with exactly one `repo`: only decisions about this item (its own, or a group that lists it) */
+  number?: number;
   /** "opinions": open decisions that have at least one opinion */
   status?: "open" | "opinions" | "answered" | "backlog";
   /** page size (server default 100, at most 500); `total` counts every match */
