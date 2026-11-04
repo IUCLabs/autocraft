@@ -777,6 +777,8 @@ export interface TrackedRepo {
   fixing: RepoApproval | null;
   /** Fix red main: reruns flaky failed jobs on a red default branch and opens an issue on an operator's answer. */
   mainFixing: RepoApproval | null;
+  /** CI runs: approves the runs GitHub holds for reviewed outside pull requests. */
+  ciApproving: RepoApproval | null;
   /** Checks whose failure does not stop a merge or turn main red; set by operators. Empty for repos that are not tracked. */
   optionalChecks: string[];
   /** Check names seen on the repo's recent PRs and default-branch heads. */
