@@ -222,15 +222,18 @@ function baseRow(repo: string, kind: Kind, n: Node, detail: Detail): Record<stri
   return r;
 }
 
-function commentRows(repo: string, kind: Kind, n: Node): SQLInputValue[][] {
+/** 1 when the body names the pipeline login; the needs page lists such comments through an index. */
+const mentions = (body: unknown, own: string): number => (own && typeof body === "string" && body.toLowerCase().includes(`@${own.toLowerCase()}`) ? 1 : 0);
+
+function commentRows(repo: string, kind: Kind, n: Node, own: string): SQLInputValue[][] {
   // `counted`: whether the entry counts as new discussion for the review stage (src/review/discussion.ts).
   const counted = (c: Node) => Number(isCounted({ author: login(c.author), association: c.authorAssociation, bot: c.author?.__typename === "Bot", prAuthor: login(n.author), state: c.state, body: c.body, inline: c.comments?.totalCount }));
   const rows = n.comments.nodes.map((c: Node) =>
-    [repo, n.number, c.id, "comment", login(c.author), c.createdAt, c.body, null, null, counted(c), c.authorAssociation ?? null]);
+    [repo, n.number, c.id, "comment", login(c.author), c.createdAt, c.body, null, null, counted(c), c.authorAssociation ?? null, mentions(c.body, own)]);
   if (kind === "pr") {
     for (const c of n.reviews.nodes) {
       // A review without a body still counts: its inline threads are the discussion, and it makes earlier reviews stale.
-      rows.push([repo, n.number, c.id, "review", login(c.author), c.createdAt, c.body, c.state, c.commit?.oid ?? null, counted(c), c.authorAssociation ?? null]);
+      rows.push([repo, n.number, c.id, "review", login(c.author), c.createdAt, c.body, c.state, c.commit?.oid ?? null, counted(c), c.authorAssociation ?? null, mentions(c.body, own)]);
     }
   }
   return rows;
@@ -242,9 +245,10 @@ function writePage(db: DatabaseSync, repo: string, kind: Kind, detail: Detail, n
     ON CONFLICT (repo, number) DO UPDATE SET ${COLUMNS.filter((c) => c !== "repo" && c !== "number").map((c) => `${c}=excluded.${c}`).join(",")}`);
   const stored = db.prepare(`SELECT ${COLUMNS.join(",")} FROM items WHERE repo=? AND number=?`);
   const del = db.prepare("DELETE FROM comments WHERE repo=? AND number=?");
-  const insComment = db.prepare(`INSERT INTO comments (repo, number, id, kind, author, created_at, body, review_state, commit_oid, counted, author_association) VALUES (?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT (id) DO UPDATE SET
+  const insComment = db.prepare(`INSERT INTO comments (repo, number, id, kind, author, created_at, body, review_state, commit_oid, counted, author_association, mentions_pipeline) VALUES (?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT (id) DO UPDATE SET
     repo=excluded.repo, number=excluded.number, kind=excluded.kind, author=excluded.author, created_at=excluded.created_at,
-    body=excluded.body, review_state=excluded.review_state, commit_oid=excluded.commit_oid, counted=excluded.counted, author_association=excluded.author_association`);
+    body=excluded.body, review_state=excluded.review_state, commit_oid=excluded.commit_oid, counted=excluded.counted, author_association=excluded.author_association, mentions_pipeline=excluded.mentions_pipeline`);
+  const own = (db.prepare("SELECT value FROM main.settings WHERE key = 'pipeline_login'").get() as { value: string } | undefined)?.value ?? "";
   db.exec("BEGIN IMMEDIATE");
   try {
     for (const n of nodes) {
@@ -255,7 +259,7 @@ function writePage(db: DatabaseSync, repo: string, kind: Kind, detail: Detail, n
       insert.run(row);
       if (detail === "full") {
         del.run(repo, n.number);
-        for (const row of commentRows(repo, kind, n)) insComment.run(...row);
+        for (const row of commentRows(repo, kind, n, own)) insComment.run(...row);
       }
     }
     db.exec("COMMIT");

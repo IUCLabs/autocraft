@@ -96,6 +96,8 @@ const ADDED_COLUMNS: [table: string, column: string, type: string][] = [
   ["agent_runs", "cost_usd", "REAL"],
   // The commenter's association with the repository (OWNER, MEMBER, ...).
   ["comments", "author_association", "TEXT"],
+  // 1 when the body names the pipeline login (@login); set when the comment is written, backfilled by migrateValues.
+  ["comments", "mentions_pipeline", "INTEGER NOT NULL DEFAULT 0"],
   ["dupe_carries", "from_head", "TEXT"],
   // The fix PR of a red default branch (src/mainfix).
   // A model-resolved conflict merge waiting for its lint task: the resolved files (JSON) and the task.
@@ -116,6 +118,8 @@ const ADDED_COLUMNS: [table: string, column: string, type: string][] = [
 // Covering indexes on the hash columns let the planner compare stored hashes without reading item rows.
 // The trigger clears the hashes of an item whose hashed fields were edited without bringing its own (sync does).
 const ADDED_INDEXES = [
+  "CREATE INDEX IF NOT EXISTS main.comments_mention ON comments(created_at) WHERE mentions_pipeline = 1",
+  "CREATE INDEX IF NOT EXISTS main.comments_author_item ON comments(author, repo, number)",
   "CREATE INDEX IF NOT EXISTS main.dupe_carries_item ON dupe_carries(repo, number)",
   "CREATE INDEX IF NOT EXISTS main.classifications_alone ON classifications(at) WHERE classifier = 'haiku' AND input_hash IS NOT NULL",
   "CREATE INDEX IF NOT EXISTS main.jobs_step_repo ON jobs(step, repo, id)",
@@ -195,6 +199,15 @@ function dropColumns(db: DatabaseSync): void {
 
 // Values renamed after their first release, rewritten on every connect.
 function migrateValues(db: DatabaseSync): void {
+  // The mention flag for the pipeline login the comments were last flagged for.
+  const own = (db.prepare("SELECT value FROM main.settings WHERE key = 'pipeline_login'").get() as { value: string } | undefined)?.value ?? "";
+  const built = (db.prepare("SELECT value FROM main.settings WHERE key = 'mentions_built'").get() as { value: string } | undefined)?.value ?? "";
+  if (own !== built) {
+    db.exec("BEGIN IMMEDIATE");
+    db.prepare("UPDATE main.comments SET mentions_pipeline = ? <> '' AND body IS NOT NULL AND instr(lower(body), lower('@' || ?)) > 0").run(own, own);
+    db.prepare("INSERT INTO main.settings (key, value) VALUES ('mentions_built', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value").run(own);
+    db.exec("COMMIT");
+  }
   // Looked up first: an UPDATE that changes nothing still takes the write lock.
   if (db.prepare("SELECT 1 FROM main.access WHERE role = 'admin'").get()) db.exec("UPDATE main.access SET role = 'operator' WHERE role = 'admin'");
   // Priority rows written with the impact names (critical, high, normal, low) become levels.
