@@ -34,11 +34,11 @@ const REVIEW_JOB = entry({
 
 const SAMPLES: (() => Partial<NowEntry> & Pick<NowEntry, "kind" | "state" | "title">)[] = [
   () => ({ kind: "job", state: "done", title: "Review pull requests", summary: "Reviewed 3 PRs: 2 take, 1 hold", item: A, items: [A, B, C], itemCount: 3, writes: [{ summary: "Posted 3 reviews", items: [A, B, C], more: 0 }], detail: "/pipeline/600" }),
-  () => ({ kind: "merge", state: "done", title: "Merged (squash) by rule", item: item("craft-libs", 412, "Bump the egui pin") }),
+  () => ({ kind: "merge", state: "done", title: "Merged (squash) by rule", item: item("craft-libs", 412, "Bump the egui pin"), items: [item("craft-libs", 412, "Bump the egui pin")], itemCount: 1 }),
   () => ({ kind: "batch", state: "done", title: "Merge batch #97: 3 PRs, stopped", batchId: 97, item: A, items: [A, B, C], itemCount: 3 }),
-  () => ({ kind: "decision", state: "done", title: "Answered \"Merge this fix?\": Merge", actor: "maintainer", item: D, detail: "/decisions/d4" }),
+  () => ({ kind: "decision", state: "done", title: "Answered \"Merge this fix?\": Merge", actor: "maintainer", item: D, items: [D], itemCount: 1, detail: "/decisions/d4" }),
   () => ({ kind: "job", state: "failed", title: "Review pull requests", summary: "claude exited with code 1", item: C, items: [C], itemCount: 1, detail: "/pipeline/639" }),
-  () => ({ kind: "write", state: "done", title: "Pushed: fix-up for overset detection", item: A }),
+  () => ({ kind: "write", state: "done", title: "Pushed: fix-up for overset detection", item: A, items: [A], itemCount: 1 }),
   () => ({ kind: "job", state: "done", title: "Fix up pull requests", summary: "Pushed fix-ups to 2 PRs", item: A, items: [A, D], itemCount: 2, writes: [{ summary: "Pushed to 2 PRs", items: [A, D], more: 0 }], detail: "/pipeline/601" }),
   () => ({ kind: "write", state: "done", title: "Closed 4 items", item: C, items: [C, D, A, B, item("pdfcraft", 880, "Fix gradient banding")], itemCount: 5 }),
 ];
