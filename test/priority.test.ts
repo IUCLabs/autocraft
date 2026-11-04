@@ -196,7 +196,7 @@ describe("ordering and API", () => {
     const fix = selectFixups(db, "photocraft");
     assert.deepEqual(nums([...fix.fix, ...fix.cannotPush]), [3, 2, 1]);
     db.exec("UPDATE opus_reviews SET verdict = 'take'");
-    assert.deepEqual(nums(verifyCandidates(db, "photocraft", "r1", () => true)), [3, 2, 1]);
+    assert.deepEqual(nums(verifyCandidates(db, "photocraft", "r1")), [3, 2, 1]);
   });
 
   test("the item and decision responses carry the badge data", () => {

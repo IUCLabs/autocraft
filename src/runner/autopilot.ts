@@ -381,8 +381,8 @@ const LANE_CODE: Omit<Lane, "steps">[] = [
     // The final Opus reviews, posted as one PR review each in repos approved for comments.
     name: "review-post",
     perRepo: true,
-    detect: (db, { tracked }) => {
-      const due = new Set(planned(db, "post-review").map((p) => p.facts.repo));
+    detect: (db, { run, tracked }) => {
+      const due = new Set(planned(db, "post-review", { run }).map((p) => p.facts.repo));
       return tracked.filter((repo) => commentApprovalOf(db, repo) && due.has(repo)).sort().map((repo) => ({ step: "review-post", params: { repo } }));
     },
   },

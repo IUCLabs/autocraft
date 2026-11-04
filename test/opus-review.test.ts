@@ -127,7 +127,7 @@ describe("Opus review pass", () => {
     assert.equal(final(db, 3).verdict, "hold");
     assert.deepEqual(JSON.parse(final(db, 2).fixes!), [{ file: "src/lib.rs", change: "opus fix" }]);
     assert.equal(selectOpusCandidates(db, "app").length, 0);
-    assert.deepEqual(verifyCandidates(db, "app", null, () => null).map((c) => c.number), [1, 4, 5]);
+    assert.deepEqual(verifyCandidates(db, "app").map((c) => c.number), [1, 4, 5]);
 
     // Fix-up reads Opus's list
     setPushApproval(db, "op", "app", true);
