@@ -91,14 +91,16 @@ describe("pipeline api", () => {
     const job = await boss.post<Job>("/api/pipeline/jobs", { step: "test-echo", params: { n: 1 } });
     const logFile = join(dir, "job.log");
     writeFileSync(logFile, `starting\nGITHUB_TOKEN=${FAKE_TOKEN}\n${homedir()}/somewhere\n`);
-    db.prepare("UPDATE jobs SET log_path = ? WHERE id = ?").run(logFile, job.id);
+    db.prepare("UPDATE jobs SET log_path = ?, error = 'exit 1: secret-detail' WHERE id = ?").run(logFile, job.id);
     for (const login of ["viewer1", "maint"]) {
       const c = await signedIn(login);
       const o = await c.get<PipelineOverview>("/api/pipeline");
       assert.ok(o.steps.some((s) => s.name === "test-echo"));
       assert.equal(o.stages.length, 7);
-      assert.ok((await c.get<JobList>("/api/pipeline/jobs")).jobs.some((j) => j.id === job.id));
+      const listed = (await c.get<JobList>("/api/pipeline/jobs")).jobs.find((j) => j.id === job.id);
+      assert.ok(listed);
       const d = await c.get<JobDetail>(`/api/pipeline/jobs/${job.id}`);
+      for (const e of [listed.error, d.error]) assert.equal(e, login === "viewer1" ? "failed" : "exit 1: secret-detail", "viewers get no error text");
       if (login === "viewer1") assert.equal(d.log, null);
       else assert.ok(!d.log!.includes(FAKE_TOKEN) && !d.log!.includes(homedir()) && d.log!.includes("starting"), d.log!);
       assert.ok(!JSON.stringify(d).includes(logFile), "the log path stays on the server");

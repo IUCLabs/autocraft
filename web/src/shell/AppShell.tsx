@@ -65,7 +65,7 @@ export function AppShell() {
   const content = (
     <Routes>
       {routes.map((r) => (
-        <Route key={r.path} path={r.path} element={<RouteView route={r} />} />
+        <Route key={r.path} path={r.path} element={r.path === "/" ? <OldFlowLink route={r} /> : <RouteView route={r} />} />
       ))}
       <Route path="decisions/*" element={<RedirectTo from="/decisions" to="/needs/decisions" />} />
       <Route path="decisions" element={<RedirectTo to="/needs" />} />
@@ -250,6 +250,13 @@ function PhoneTab({ entry }: { entry: NavEntry }) {
       {entry.label}
     </NavLink>
   );
+}
+
+/** Flowchart links from before the Now page (`/?node=review&repo=x`) open the flowchart; the query stays. */
+function OldFlowLink({ route }: { route: RouteDef }) {
+  const loc = useLocation();
+  if (new URLSearchParams(loc.search).has("node")) return <Navigate to={`/flow${loc.search}`} replace />;
+  return <RouteView route={route} />;
 }
 
 /** Sends an old path to its new place. `from` is the prefix to swap, so `/decisions/a/1` becomes `/needs/decisions/a/1`; `search` replaces the query. */

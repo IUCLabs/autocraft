@@ -50,4 +50,14 @@ test("Now lists running work with its items, reports a failing sync, and hides a
   const viewer = await now(db, req("viewer"));
   assert.ok(!JSON.stringify(viewer).includes("secretcraft"), "nothing of the private repo");
   assert.deepEqual(viewer.running.map((r) => [r.kind, r.children.length]), [["job", 1]], "the visible job with its call nested");
+
+  // A failed job and a failed model call: staff read the error text, viewers only that it failed.
+  const fj = db.prepare("INSERT INTO jobs (step, params, requested_by, requested_at, state, ended_at, error, repo) VALUES ('opus-review', '{}', 'pipeline', ?, 'failed', ?, 'exit 1: token ghp_xyz leaked', 'photocraft')").run(at(3), at(2));
+  db.prepare("UPDATE agent_runs SET state = 'failed', ended_at = ?, error = 'stack: boom in /srv/app' WHERE id = ?").run(at(1), run);
+  const texts = (n: Awaited<ReturnType<typeof now>>) => JSON.stringify(n.recent.filter((e) => e.kind === "failure").map((e) => e.summary));
+  const staff = texts(await now(db, req("operator")));
+  assert.ok(staff.includes("ghp_xyz") && staff.includes("boom"), staff);
+  const plain = texts(await now(db, req("viewer")));
+  assert.ok(!/ghp_xyz|boom/.test(plain) && /failed/.test(plain), plain);
+  void fj;
 });

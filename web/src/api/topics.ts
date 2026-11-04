@@ -7,7 +7,7 @@
  */
 export type Topic =
   | "repos" | "sync" | "items" | "ranks" | "stages" | "checks" | "classify" | "dupes" | "decisions" | "reviews" | "queue" | "jobs" | "usage" | "accounts" | "agents"
-  | "envs" | "tasks" | "actions" | "fixes" | "verify" | "postmerge" | "access" | "settings" | "trace" | "github" | "fasttrack" | "plans" | "conversations" | "steps" | "mainci";
+  | "envs" | "tasks" | "actions" | "fixes" | "verify" | "postmerge" | "access" | "settings" | "trace" | "github" | "fasttrack" | "plans" | "conversations" | "steps" | "mainci" | "limits";
 
 /** What moves an item's queue position (src/rank/position.ts), for every query that carries the badge. */
 const withSlot = (...topics: Topic[]): Topic[] => [...new Set<Topic>([...topics, "steps", "repos"])];
@@ -31,7 +31,8 @@ const RULES: [prefix: string, topics: Topic[]][] = [
   ["cost:", ["usage", "agents"]],
   ["rates-", ["usage", "agents", "accounts"]],
   ["count:", ["decisions"]],
-  ["needs:", ["decisions", "conversations", "items", "jobs", "accounts", "settings"]],
+  // Feedback reads comments (in `items`), decisions and conversations; stopped rows read breakers and limits, not job runs.
+  ["needs:", ["decisions", "conversations", "items", "limits", "accounts", "settings"]],
   ["decisions?", withSlot("decisions")],
   ["decision:", withSlot("decisions")],
   ["thread:", ["decisions"]],

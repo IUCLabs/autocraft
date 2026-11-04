@@ -47,3 +47,8 @@ export function excludeHidden(col: string, hidden: string[], params: Record<stri
   if (!hidden.length) return null;
   return `${col} NOT IN (${hidden.map((h, k) => ((params[`${prefix}${k}`] = h), `:${prefix}${k}`)).join(",")})`;
 }
+
+/** Free text from the pipeline (breaker, pause and status reasons) can quote an item of a repo the caller may not see: it is left out whole then. */
+export function blankIfHidden<T extends string | null | undefined>(text: T, hidden: string[]): T | "" {
+  return text && hidden.some((h) => text.includes(h)) ? "" : text;
+}
