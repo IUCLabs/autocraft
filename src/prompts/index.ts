@@ -109,7 +109,7 @@ const REFEREE: ClaudePrompt = {
   id: "referee.sonnet",
   stage: "Classify (referee)",
   runner: "claude",
-  purpose: "Settles items where Jev and Haiku chose different type labels (outside the scope labels) and says whether it is sure; an unsure answer goes to a person.",
+  purpose: "Settles items where Jev and Haiku chose different type labels (outside the scope labels) and says whether it is sure; an unsure Sonnet answer goes to Opus with the same prompt, and an unsure Opus answer keeps its label and goes to a person as a scope question.",
   models: ["sonnet"],
   effort: "medium",
   placeholders: { items: ITEMS_JSON },
@@ -121,7 +121,7 @@ ${UNTRUSTED_NOTE}
 
 For each item below, give the one label that is right under these rules. If we don't have it, it's missing. If we have it but it doesn't match the reference app and it's not a specific change we want to make to reference app behavior, then it's a bugfix.
 
-Also say whether you are sure. sure is true when the text settles the label under the rules; it is false when the label depends on something the text does not say (whether we already have the feature, whether a difference from the reference application is wanted). A person looks at every item with sure false.
+Also say whether you are sure. sure is true when the text settles the label under the rules; it is false when the label depends on something the text does not say (whether we already have the feature, whether a difference from the reference application is wanted). An item with sure false from you goes to a stronger model, and a person decides it only if that one is unsure too.
 Example: "Crash when opening a 16-bit PNG with an alpha channel" describes something broken: bugfix, sure true. "Support 16-bit PNG export" could be a feature we lack or one we have in part: sure false unless the text says which.
 
 Reply with ONLY a JSON array, one object per item:

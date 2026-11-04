@@ -230,8 +230,7 @@ export type PrFacts = {
 export const ITEM_STATES = [
   "held-duplicate", // an open or accepted Duplicate? decision holds it
   "held-backlog", // a Backlog answer holds it
-  "models-disagree", // Jev and Haiku chose different labels and the referee was unsure: a person sets the label
-  "referee-due", // Jev and Haiku disagree, it is not a scope call, and Sonnet has not answered
+  "referee-due", // Jev and Haiku disagree, it is not a scope call, and the referee (Sonnet, then Opus when Sonnet was unsure) has not settled it
   "unclassified", // no Jev or Haiku verdict in the run
   "waiting-haiku", // Jev is unsure and Haiku has not given its second opinion
   "scope-open", // a scope decision about it waits for an answer
@@ -275,7 +274,7 @@ export type ItemFacts = {
     label: string | null;
     flags: string[];
     jevLabel: string | null; haikuLabel: string | null;
-    referee: { sure: boolean } | null;
+    referee: { sure: boolean; final: boolean } | null;
     /** Jev's verdict in the run: its time, whether the item's classifier input changed since, and whether Jev is unsure of the type or a flag. */
     jev: { at: string; changed: boolean; unsure: boolean } | null;
     /** Haiku's verdict in the run; `aloneCurrent`: it classified the item alone at its current input (that settles it without Jev). */
@@ -308,6 +307,8 @@ export type ItemFacts = {
     covered: boolean;
     /** The item's stage row is past "classified". */
     pastClassified: boolean;
+    /** The item has only been labelled (stage "labeled"): a scope-vs-scope disagreement from a later classification is still asked. */
+    labeledOnly?: boolean;
     /** Its own open scope decision lacks Opus's recommendation: failures so far and the time of the last failure. */
     recommend: { failures: number; failedAt: string | null } | null;
   };

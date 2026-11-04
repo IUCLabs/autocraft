@@ -154,9 +154,11 @@ export function fixupOf(f: PrFacts): { bucket: FixupBucket; done: boolean } | nu
   // A stored patch waits for its lint task: no new try, no ask.
   if (has("pushed") || has("push-denied") || has("linting")) return { bucket: "hold", done: true };
   if (has("cannot-push") && !f.pushable) return ask(true);
-  if (has("too-large")) return { bucket: "cannot-push", done: true };
+  // A fix-up we cannot make (too large, or the tries are used) goes to the contributor as the review's fix list, once per head.
+  const askOnce = (held: boolean): { bucket: FixupBucket; done: boolean } => (has("asked") ? { bucket: "asked", done: true } : ask(held));
+  if (has("too-large")) return askOnce(true);
   if (!f.pushable) return ask(false);
-  if (x.attempts + 1 > FIXUP_MAX_ATTEMPTS) return { bucket: "hold", done: false };
+  if (x.attempts + 1 > FIXUP_MAX_ATTEMPTS) return commenting ? askOnce(false) : { bucket: "hold", done: false };
   return { bucket: f.repoFacts.pushApproved ? "fix" : "unapproved", done: false };
 }
 
@@ -232,6 +234,20 @@ function unassignOf(f: PrFacts, state: PlanState, actions: Action[]): Action[] {
     || f.mergeHeld || (state === "ci-approval" && !f.repoFacts.ciApproved);
   const keep = working || (!gaveUp && PROGRESS_STATES.has(state));
   return unassignActions(f.assignment, f.ghState === "OPEN", !keep);
+}
+
+/** Who a PR in needs-fix-up waits on. Null while a fix-up, conflict, CI-fix or lint action of the PR is due (the action is the next step). */
+function fixupWait(f: PrFacts, fx: { bucket: FixupBucket; done: boolean } | null, actions: Action[]): string | null {
+  if (actions.some((a) => ["fixup", "conflict", "cifix", "lint"].includes(a.kind))) return null;
+  if (f.mergeable === "CONFLICTING") return f.conflict?.bucket === "unapproved" ? "push approval for the repo" : "the contributor's merge of the base branch";
+  switch (fx?.bucket) {
+    case "asked": return "the contributor's fixes";
+    case "cannot-push": return f.repoFacts.commentApproved ? "the contributor's fixes" : "comment approval for the repo";
+    case "hold": return fx.done ? "the new review of our pushed fix-up" : "comment approval for the repo";
+    case "unapproved": return "push approval for the repo";
+    case "ask": case "fix": return null;
+    default: return "the review's fixes to be applied";
+  }
 }
 
 export function decidePr(f: PrFacts): Plan {
@@ -354,6 +370,6 @@ export function decidePr(f: PrFacts): Plan {
   actions.push(...unassignOf(f, state, actions));
 
   const main = actions.some((a) => ["review", "carry", "premerge", "ask-merge", "merge", "verify"].includes(a.kind));
-  const wait = main ? null : e ? (f.mergeHeld && e.state !== "merged" && e.path ? "merge held by an operator" : stuckWait(f) ?? WAITS[e.state] ?? null) : null;
+  const wait = main ? null : e ? (f.mergeHeld && e.state !== "merged" && e.path ? "merge held by an operator" : stuckWait(f) ?? (e.state === "needs-fix-up" ? fixupWait(f, fx, actions) : WAITS[e.state] ?? null)) : null;
   return plan(state, { ...(e ? { path: e.path, reasons: e.reasons, note: e.note, conflictNote: e.conflictNote, eligible: eligible(f, e) } : {}), actions, wait });
 }

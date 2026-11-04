@@ -175,8 +175,11 @@ const rows: Row[] = [
   { name: "fix-up: pushed head is held", facts: { ...TAKE_FIX, fixup: fixup({ recorded: ["pushed"] }) }, expect: { actions: [] } },
   { name: "fix-up: recorded cannot-push becomes an ask once comments are approved", facts: { ...TAKE_FIX, fixup: fixup({ recorded: ["cannot-push"] }), pushable: false }, expect: { actions: ["fixup:ask"] } },
   { name: "fix-up: recorded cannot-push without comment approval is final", facts: { ...TAKE_FIX, fixup: fixup({ recorded: ["cannot-push"] }), pushable: false, repoFacts: { commentApproved: false } }, expect: { actions: [] } },
-  { name: "fix-up: too-large is final", facts: { ...TAKE_FIX, fixup: fixup({ recorded: ["too-large"] }) }, expect: { actions: [] } },
-  { name: "fix-up: two tries used", facts: { ...TAKE_FIX, fixup: fixup({ attempts: 2 }) }, expect: { actions: [] } },
+  { name: "fix-up: too-large becomes an ask once comments are approved", facts: { ...TAKE_FIX, fixup: fixup({ recorded: ["too-large"] }) }, expect: { actions: ["fixup:ask"] } },
+  { name: "fix-up: too-large and asked is final", facts: { ...TAKE_FIX, fixup: fixup({ recorded: ["too-large", "asked"] }) }, expect: { actions: [] } },
+  { name: "fix-up: too-large without comment approval is final", facts: { ...TAKE_FIX, fixup: fixup({ recorded: ["too-large"] }), repoFacts: { commentApproved: false } }, expect: { actions: [] } },
+  { name: "fix-up: two tries used are followed by an ask", facts: { ...TAKE_FIX, fixup: fixup({ attempts: 2 }) }, expect: { actions: ["fixup:ask"] } },
+  { name: "fix-up: two tries used and asked is final", facts: { ...TAKE_FIX, fixup: fixup({ attempts: 2, recorded: ["asked"] }) }, expect: { actions: [] } },
   { name: "fix-up: one try used, one left", facts: { ...TAKE_FIX, fixup: fixup({ attempts: 1 }) }, expect: { actions: ["fixup:fix"] } },
   { name: "fix-up: a review with no usable fixes", facts: { ...TAKE_FIX, fixup: fixup({ fixes: 0 }) }, expect: { actions: [] } },
   { name: "fix-up: conflicting PRs are not fixed up", facts: { ...TAKE_FIX, fixup: fixup(), mergeable: "CONFLICTING" }, expect: { actions: [] } },
@@ -331,6 +334,24 @@ test("a PR in a batch keeps the batch state", () => {
     assert.equal(decidePr(prFacts({ batch, ci: "pending" })).state, batch);
     assert.equal(decidePr(prFacts({ batch, repoFacts: { mainRed: true } })).state, batch);
     assert.equal(merges(prFacts({ batch })), false);
+  }
+});
+
+test("a PR in needs-fix-up with no action due names who it waits on", () => {
+  const cases: Over[] = [
+    { ...TAKE_FIX, fixup: fixup({ recorded: ["too-large", "asked"] }) },
+    { ...TAKE_FIX, fixup: fixup({ recorded: ["too-large"] }), repoFacts: { commentApproved: false } },
+    { ...TAKE_FIX, fixup: fixup({ attempts: 2, recorded: ["asked"] }) },
+    { ...TAKE_FIX, fixup: fixup({ attempts: 2 }), repoFacts: { commentApproved: false } },
+    { ...TAKE_FIX, fixup: fixup({ recorded: ["pushed"] }) },
+    { ...TAKE_FIX, fixup: fixup(), repoFacts: { pushApproved: false } },
+    { ...TAKE_FIX, fixup: fixup(), mergeable: "CONFLICTING", conflict: { bucket: "held", base: "main", baseOk: true } },
+  ];
+  for (const over of cases) {
+    const p = decidePr(prFacts(over));
+    assert.equal(p.state, "needs-fix-up");
+    assert.deepEqual(p.actions.filter((a) => a.kind !== "unassign"), []);
+    assert.ok(p.wait, JSON.stringify(over));
   }
 });
 

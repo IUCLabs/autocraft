@@ -169,8 +169,8 @@ export function loadItemFacts(db: DatabaseSync, opts: ItemLoadOptions = {}): Ite
     const s = cls.find((c) => c.classifier === "sonnet");
     let referee: Referee | null = null;
     if (s && j && h && s.at >= j.at && s.at >= h.at) {
-      const sure = json<{ sure?: unknown } | null>(s.probs, null)?.sure;
-      if (typeof sure === "boolean") referee = { label: s.type_label, sure, reason: "" };
+      const p = json<{ sure?: unknown; final?: unknown } | null>(s.probs, null);
+      if (typeof p?.sure === "boolean") referee = { label: s.type_label, sure: p.sure, reason: "", ...(p.final === true && { final: true }) };
     }
     const settled = settle(
       j ? { label: j.type_label, flags: flagsOf(j.flags), top: topOf(j.probs), nd: needsDecisionOf(j.probs), sec: securityOf(j.probs) } : null,
@@ -204,11 +204,11 @@ export function loadItemFacts(db: DatabaseSync, opts: ItemLoadOptions = {}): Ite
       run,
       classification: {
         status: settled.status, label: settled.label, flags: settled.flags, jevLabel: settled.jevLabel, haikuLabel: settled.haikuLabel,
-        referee: settled.referee ? { sure: settled.referee.sure } : null, jev, haiku,
+        referee: settled.referee ? { sure: settled.referee.sure, final: !!settled.referee.final } : null, jev, haiku,
       },
       embedHash, embeddedHash: r.e_hash, priorityHash: r.pr_hash, scannedHash: r.scan_hash,
       pairsToCheck: pairs.get(ref) ?? 0, inGroupToAsk: inGroup.has(ref), inCompareSet: inCompare.has(ref), dupeAnswers: dupeAnswers.get(ref) ?? [],
-      scope: { open: openScope.has(ref), answer: answers.get(ref) ?? null, covered: covered.has(ref), pastClassified: r.stage !== null && r.stage !== "classified", recommend: recommend.get(ref) ?? null },
+      scope: { open: openScope.has(ref), answer: answers.get(ref) ?? null, covered: covered.has(ref), labeledOnly: r.stage === "labeled", pastClassified: r.stage !== null && r.stage !== "classified", recommend: recommend.get(ref) ?? null },
       labels: { existing: json<unknown[]>(r.labels, []).map(String), pluginAnswer: operatorAnswers.get(ref) === "plugin", labeledNote: note },
       answeredClose: answeredClose.get(ref) ?? [],
       closeReview: closeReview.get(ref) ?? null,

@@ -31,7 +31,7 @@ export async function work(db: DatabaseSync, req: Req): Promise<WorkList> {
     return {
       repo: r.repo, number: r.number, kind: r.kind === "pr" ? "pr" : "issue", title: r.title ?? "", score: r.score, level: bd.level, size: bd.size,
       breakdown: bd, label: r.label as TypeLabel | null,
-      next: r.next ?? NOT_PLANNED, nextHref: r.item_state === "models-disagree" ? classifyListOf(r.repo) : null,
+      next: r.next ?? NOT_PLANNED, nextHref: r.item_state === "referee-due" ? classifyListOf(r.repo) : null,
     };
   });
   return { rows: out, total, next: offset + rows.length < total ? offset + rows.length : null };
