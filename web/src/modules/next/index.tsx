@@ -12,6 +12,7 @@ import { Block } from "../../ui/molecules/Block";
 import { ItemRef } from "../../ui/molecules/ItemRef";
 import { NextStepBlock } from "../../ui/organisms/NextStepBlock";
 import { ErrorLine, Page } from "../admin/parts";
+import { FastTrackAdd } from "../queue/fastTrack";
 import { MergeQueue } from "../queue/MergeQueue";
 
 const TABS = [
@@ -79,12 +80,15 @@ function NextView() {
   if (!tab) return <Navigate to="/next" replace />;
   return (
     <Page title="Next">
-      <div role="tablist" aria-label="Next" className="mt-4 flex flex-wrap items-center gap-1">
-        {TABS.map(([t, label]) => (
-          <Link key={t} role="tab" aria-selected={tab === t} data-active={tab === t} to={t === "steps" ? "/next" : `/next/${t}`} replace className="chip max-md:h-11">
-            {label}
-          </Link>
-        ))}
+      <div className="mt-4 flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+        <div role="tablist" aria-label="Next" className="flex flex-wrap items-center gap-1">
+          {TABS.map(([t, label]) => (
+            <Link key={t} role="tab" aria-selected={tab === t} data-active={tab === t} to={t === "steps" ? "/next" : `/next/${t}`} replace className="chip max-md:h-11">
+              {label}
+            </Link>
+          ))}
+        </div>
+        {tab === "merge" && <FastTrackAdd />}
       </div>
       {tab === "steps" ? <Steps /> : <MergeQueue />}
     </Page>
@@ -94,7 +98,7 @@ function NextView() {
 export const nextModule: FeatureModule = {
   id: "next",
   permission: "viewer",
-  nav: { label: "Next", icon: ListChecksIcon, to: "/next", group: "work", order: 0.35 },
+  nav: { label: "Next", icon: ListChecksIcon, to: "/next" },
   commands: [{ id: "go-next", keys: "g n", label: "Go to next", group: "Go to" }],
   routes: [{ path: "next/:tab?", view: { id: "next", title: "Next", panels: [{ id: "main", title: "Next", component: NextView, defaultSize: 100 }] } }],
 };

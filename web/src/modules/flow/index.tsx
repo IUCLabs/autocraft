@@ -3,7 +3,6 @@
 // steps, limits, recent jobs and prompts. Stage and repo live in the URL.
 import { Link } from "react-router-dom";
 import { Dialog } from "radix-ui";
-import { ShareNetworkIcon } from "@phosphor-icons/react";
 import { useQuery } from "../../api/client";
 import type { Flow } from "../../api/types";
 import type { FeatureModule, ViewProps } from "../../registry/types";
@@ -108,7 +107,7 @@ function FlowView(_: ViewProps) {
               <Legend />
               <p className="mt-2 text-xs text-ink/50">
                 Full lists: <Link to="/pipeline" className="text-accent-ink hover:underline">Pipeline</Link> (switch, limits, jobs) ·{" "}
-                <Link to="/prompts" className="text-accent-ink hover:underline">Prompts</Link> · <Link to="/queue/merge" className="text-accent-ink hover:underline">Merge queue</Link>
+                <Link to="/prompts" className="text-accent-ink hover:underline">Prompts</Link> · <Link to="/next/merge" className="text-accent-ink hover:underline">Merge queue</Link>
               </p>
             </>
           )}
@@ -140,8 +139,6 @@ function FlowView(_: ViewProps) {
 export const flowModule: FeatureModule = {
   id: "flow",
   permission: "viewer",
-  nav: { label: "Pipeline flow", icon: ShareNetworkIcon, to: "/flow", group: "work", order: -1 },
-  commands: [{ id: "go-flow", keys: "g f", label: "Go to the pipeline flow", group: "Go to" }],
   routes: [{ path: "flow", view: { id: "flow", title: "Pipeline flow", panels: [{ id: "main", title: "Pipeline flow", component: FlowView, defaultSize: 100 }] } }],
   prefetch: (api) => void api.flow(),
 };

@@ -81,7 +81,7 @@ export function TracePanel({ it }: { it: Item }) {
   const groups = groupByHead(events);
   return (
     <>
-      <TraceHeader header={first.header} decisionHref={(id) => `/decisions/${encodeURIComponent(id)}`} />
+      <TraceHeader header={first.header} decisionHref={(id) => `/needs/decisions/${encodeURIComponent(id)}`} />
       <section className="mt-6">
         <h2 className="mb-2 text-sm font-semibold">Timeline</h2>
         <TraceFilters kinds={kinds} onKinds={setKinds} autocraftOnly={autocraftOnly} onAutocraftOnly={setAutocraftOnly} />

@@ -167,6 +167,6 @@ function Cost(_: ViewProps) {
 export const costModule: FeatureModule = {
   id: "cost",
   permission: "viewer",
-  nav: { label: "Cost", icon: CoinsIcon, to: "/cost", group: "insight", order: 12 },
+  nav: { label: "Cost", icon: CoinsIcon, to: "/cost" },
   routes: [{ path: "cost", view: { id: "cost", title: "Cost", panels: [{ id: "main", title: "Cost", component: Cost, defaultSize: 100 }] } }],
 };

@@ -10,7 +10,7 @@ import { knownStep } from "../../runner/steps.ts";
 import { HttpError } from "../server/util.ts";
 import type { Req } from "../types.ts";
 import { AUDIT_ACTIONS, operatorOnly } from "./admin.ts";
-import { detailOf } from "./github-activity.ts";
+import { detailOf } from "./github-detail.ts";
 import { canSeeInternals } from "./staff.ts";
 import { hiddenRepos, needVisible } from "./visible.ts";
 

@@ -390,6 +390,6 @@ function PreviewLine({ p }: { p: RulePreview | null }) {
 export const contributorsModule: FeatureModule = {
   id: "contributors",
   permission: "viewer",
-  nav: { label: "Contributors", icon: SealCheckIcon, to: "/contributors", group: "insight", order: 10 },
+  nav: { label: "Contributors", icon: SealCheckIcon, to: "/contributors" },
   routes: [{ path: "contributors", view: { id: "contributors", title: "Contributors", panels: [{ id: "main", title: "Contributors", component: ContributorsView, defaultSize: 100 }] } }],
 };

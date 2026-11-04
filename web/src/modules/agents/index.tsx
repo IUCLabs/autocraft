@@ -14,7 +14,6 @@ import { Button } from "../../ui/atoms/Button";
 import { ItemRef } from "../../ui/molecules/ItemRef";
 import { cn } from "../../ui/cn";
 import { Block, ErrorLine, Page, selectCls, useUrlState } from "../admin/parts";
-import { AccountsPanel } from "./accounts";
 
 const STATE_TONE: Record<AgentRunState, Tone> = { running: "accent", done: "ok", failed: "bad" };
 const STATE_LABEL: Record<AgentRunState, string> = { running: "Running", done: "Done", failed: "Failed" };
@@ -274,7 +273,6 @@ function AgentsView({ params }: ViewProps) {
   return (
     <Page title="Agents" sub="Model calls through the prompt registry">
       <div className="mt-4 space-y-4">
-        <AccountsPanel />
         <RunningNow selected={id} />
         <RecentRuns selected={id} />
       </div>
@@ -349,7 +347,7 @@ function FlowRunning({ params }: ViewProps) {
 export const agentsModule: FeatureModule = {
   id: "agents",
   permission: "viewer",
-  nav: { label: "Agents", icon: RobotIcon, to: "/agents", group: "work", order: 0.8 },
+  nav: { label: "Model calls", icon: RobotIcon, to: "/agents" },
   slots: [{ slot: "flow.panel", order: 10, component: FlowRunning }],
   routes: [
     {

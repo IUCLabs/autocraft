@@ -62,7 +62,7 @@ export function TraceEventBody({ event: e, item }: { event: TraceEvent; item: It
     return <ModelCallDetail call={e.call} runId={e.ref.runId} run={run.data} error={run.error?.message} />;
 
   if (e.kind === "decision" && e.ref.decisionId)
-    return decision.data ? <DecisionSummary d={decision.data} href={`/decisions/${encodeURIComponent(decision.data.id)}`} /> : <Pending error={decision.error?.message} />;
+    return decision.data ? <DecisionSummary d={decision.data} href={`/needs/decisions/${encodeURIComponent(decision.data.id)}`} /> : <Pending error={decision.error?.message} />;
 
   if (e.kind === "github") {
     const c = e.ref.commentId ? item.comments.find((x) => x.id === e.ref.commentId) : undefined;

@@ -22,8 +22,6 @@ import type {
   AnswerInput,
   AuditFilter,
   AuditPage,
-  GithubActivityFilter,
-  GithubActivityPage,
   NeedsPage,
   Contributor,
   ContributorFilter,
@@ -195,8 +193,6 @@ export interface Api {
   queue(filter: QueueFilter): Promise<QueueList>;
   /** Per pipeline step, the items its next job takes, in order, and what each step waits on. */
   next(): Promise<NextPage>;
-  /** Every write the app made on GitHub, newest first. */
-  githubActivity(filter: GithubActivityFilter): Promise<GithubActivityPage>;
   /** What waits on a person: counts for the tabs, feedback nobody answered yet (newest first, paged by cursor) and stopped stages. */
   needs(filter: { feedback?: boolean; cursor?: string }): Promise<NeedsPage>;
   /** Integration batches of the merge queue, newest first, with their member PRs. */

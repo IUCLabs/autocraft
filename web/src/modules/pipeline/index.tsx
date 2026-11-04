@@ -5,7 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { ArrowLeftIcon, TreeStructureIcon } from "@phosphor-icons/react";
 import { useApi, useQuery } from "../../api/client";
-import type { Job, JobParams, JobState, PipelineOverview, PipelineStage, SyncRun } from "../../api/types";
+import type { Job, JobParams, JobState, PipelineOverview, SyncRun } from "../../api/types";
 import type { FeatureModule, ViewProps } from "../../registry/types";
 import { can } from "../../registry/permissions";
 import { Badge, type Tone } from "../../ui/atoms/Badge";
@@ -13,7 +13,6 @@ import { Button } from "../../ui/atoms/Button";
 import { cn } from "../../ui/cn";
 import { ago, num } from "../../lib/format";
 import { Block, ConfirmButton, ErrorLine, Page, useWrite, when } from "../admin/parts";
-import { AccountsPanel } from "../agents/accounts";
 import { PilotPanel, PipelineSwitch, StageLimits } from "./controls";
 import { useNow } from "../../lib/useNow";
 
@@ -24,9 +23,6 @@ const STATE_LABEL: Record<JobState, string> = { queued: "Queued", running: "Runn
 export const JobBadge = ({ j }: { j: Job }) => (
   <Badge tone={STATE_TONE[j.state]}>{j.state === "running" && j.cancelRequested ? "Stopping" : STATE_LABEL[j.state]}</Badge>
 );
-
-const STAGE_TONE: Record<PipelineStage["state"], Tone> = { running: "accent", queued: "neutral", ok: "ok", failed: "bad", idle: "neutral", planned: "neutral" };
-const STAGE_LABEL: Record<PipelineStage["state"], string> = { running: "Running", queued: "Queued", ok: "OK", failed: "Last run failed", idle: "Not run yet", planned: "Planned" };
 
 function took(a: string | null, b: string | null): string {
   if (!a) return "–";
@@ -47,28 +43,6 @@ const paramText = (p: JobParams) =>
     .join(", ");
 
 // ---- stages, sync ----------------------------------------------------------------
-
-function Stages({ o }: { o: PipelineOverview }) {
-  const title = (s: PipelineStage) => (s.mode === "automatic" ? ["sync (timer)", ...s.steps] : s.steps).join(", ");
-  return (
-    <ol className="mt-4 grid grid-cols-[repeat(auto-fill,minmax(128px,1fr))] gap-2">
-      {o.stages.map((s) => (
-        <li key={s.n} className={cn("min-w-0 rounded-md border border-line px-3 py-2.5", s.mode === "planned" && "border-dashed text-ink/55")}>
-          <div className="flex items-baseline gap-1.5">
-            <span className="num text-xs text-ink/45">{s.n}</span>
-            <span className="truncate text-sm font-medium">{s.name}</span>
-          </div>
-          <div className="mt-1.5">
-            <Badge tone={STAGE_TONE[s.state]}>{STAGE_LABEL[s.state]}</Badge>
-          </div>
-          <div className="code mt-1.5 truncate text-2xs text-ink/50" title={title(s)}>
-            {s.mode === "planned" ? "no steps yet" : title(s)}
-          </div>
-        </li>
-      ))}
-    </ol>
-  );
-}
 
 function SyncRuns({ runs, last }: { runs: SyncRun[]; last: string | null }) {
   useNow();
@@ -216,17 +190,12 @@ function PipelineView({ params }: ViewProps) {
   const selected = params.id ? Number(params.id) : undefined;
   return (
     <Page title="Pipeline" sub={o && <RunnerLine o={o} />}>
-      <p className="mt-2 max-w-[80ch] text-sm text-ink/65">
-        The pipeline is either On, watching all issues and running every automation within its daily limits, or Off.
-      </p>
       <ErrorLine error={q.error?.message} className="mt-3" />
       <PipelineSwitch className="mt-4" />
       <PilotPanel className="mt-4" />
       <div className="mt-4">
         <StageLimits />
-        <AccountsPanel />
       </div>
-      {o && <Stages o={o} />}
       <div className="mt-5">
         <Jobs selected={selected} />
       </div>
@@ -323,7 +292,7 @@ function PhonePipeline(props: ViewProps) {
 export const pipelineModule: FeatureModule = {
   id: "pipeline",
   permission: "viewer",
-  nav: { label: "Pipeline", icon: TreeStructureIcon, to: "/pipeline", group: "operator", order: 5 },
+  nav: { label: "Pipeline controls", icon: TreeStructureIcon, to: "/pipeline" },
   routes: [
     {
       path: "pipeline/:id?",

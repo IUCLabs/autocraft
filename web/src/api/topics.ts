@@ -42,7 +42,6 @@ const RULES: [prefix: string, topics: Topic[]][] = [
   ["contributors:", ["items", "settings"]],
   ["access", ["access"]],
   ["audit:", ["access"]],
-  ["github-activity:", ["github"]],
   ["prompts", []],
   ["flow-running", ["agents"]],
   ["flow-jobs:", ["jobs", "usage"]],

@@ -338,7 +338,7 @@ function Table({ rows }: { rows: ItemListRow[] }) {
               </td>
               <td className="px-3 py-2 text-xs text-ink/60">
                 {it.stage && <span className="mr-1">{STAGE[it.stage] ?? it.stage}</span>}
-                {it.queue ? <QueueBadge slot={it.queue} repo={it.repo} number={it.number} className="relative z-10" /> : !it.stage && <span className="text-ink/30">–</span>}
+                {it.queue ? <QueueBadge slot={it.queue} className="relative z-10" /> : !it.stage && <span className="text-ink/30">–</span>}
               </td>
             </tr>
           ))}
@@ -366,7 +366,7 @@ function Cards({ rows }: { rows: ItemListRow[] }) {
           )}
           <div className="mt-1.5 flex flex-wrap items-center gap-1.5 pl-6">
             <SettledBadge s={it.settled} />
-            <QueueBadge slot={it.queue} repo={it.repo} number={it.number} className="relative z-10" />
+            <QueueBadge slot={it.queue} className="relative z-10" />
             {it.settled.flags.length > 0 && <Flags flags={it.settled.flags} />}
             {it.stage && <span className="text-2xs text-ink/55">{STAGE[it.stage] ?? it.stage}</span>}
           </div>
@@ -379,7 +379,7 @@ function Cards({ rows }: { rows: ItemListRow[] }) {
 export const itemsModule: FeatureModule = {
   id: "items",
   permission: "viewer",
-  nav: { label: "Items", icon: ListIcon, to: "/items", group: "work", order: 2 },
+  nav: { label: "Items", icon: ListIcon, to: "/items" },
   commands: [{ id: "go-items", keys: "g i", label: "Go to items", group: "Go to" }],
   routes: [{ path: "items", view: { id: "items", title: "Items", panels: [{ id: "main", title: "Items", component: ItemsView, defaultSize: 100 }] } }],
 };

@@ -26,11 +26,14 @@ import { num, zoneName } from "../lib/format";
 // Mockup builds only; a normal build drops this branch and the fixture data with it.
 const MockRoleMenu = import.meta.env.VITE_MOCK === "1" ? lazy(() => import("../api/mock/MockRoleMenu")) : null;
 
-const GROUPS: { id: NavEntry["group"]; label: string }[] = [
-  { id: "work", label: "" },
-  { id: "insight", label: "Insight" },
-  { id: "operator", label: "Operations" },
+// The rail is laid out here by path, so a module only declares its own entry. A path no module
+// registers (a page the reader's role cannot open) is left out.
+const RAIL: { label: string; paths: string[] }[] = [
+  { label: "", paths: ["/", "/next", "/needs", "/items", "/activity"] },
+  { label: "Settings", paths: ["/repos", "/pipeline", "/accounts", "/envs", "/access", "/audit", "/prompts"] },
+  { label: "Insight", paths: ["/progress", "/cost", "/rates", "/agents", "/classifiers", "/contributors", "/main-ci", "/about"] },
 ];
+const PHONE_TABS = ["/", "/next", "/needs", "/items"];
 
 export function AppShell() {
   const user = useUser();
@@ -42,7 +45,8 @@ export function AppShell() {
   const [searchOpen, setSearchOpen] = useState(false);
 
   const visible = useMemo(() => modules.filter((m) => can(user, m.permission)), [user]);
-  const nav = visible.flatMap((m) => (m.nav ? [m.nav] : [])).sort((a, b) => a.order - b.order);
+  const entries = visible.flatMap((m) => (m.nav ? [m.nav] : []));
+  const rail = RAIL.map((g) => ({ label: g.label, entries: g.paths.flatMap((p) => entries.filter((e) => e.to === p)) })).filter((g) => g.entries.length > 0);
   const routes = visible.flatMap((m) => m.routes);
   const hiddenPaths = useMemo(() => modules.filter((m) => !can(user, m.permission)).flatMap((m) => m.routes.map((r) => ({ path: r.path, permission: m.permission }))), [user]);
 
@@ -52,10 +56,10 @@ export function AppShell() {
     "?": () => setHelp(true),
     "[": () => setRailOpen(!railOpen),
     "g h": () => navigate("/"),
-    "g d": () => navigate("/decisions"),
-    "g p": () => navigate("/progress"),
+    "g n": () => navigate("/next"),
+    "g d": () => navigate("/needs"),
     "g i": () => navigate("/items"),
-    "g q": () => navigate("/queue"),
+    "g p": () => navigate("/progress"),
   });
 
   const content = (
@@ -63,8 +67,14 @@ export function AppShell() {
       {routes.map((r) => (
         <Route key={r.path} path={r.path} element={<RouteView route={r} />} />
       ))}
-      <Route path="work" element={<RedirectTo to="/queue" />} />
-      <Route path="merge-queue" element={<RedirectTo to="/queue/merge" />} />
+      <Route path="decisions/*" element={<RedirectTo from="/decisions" to="/needs/decisions" />} />
+      <Route path="decisions" element={<RedirectTo to="/needs" />} />
+      <Route path="queue/merge" element={<RedirectTo to="/next/merge" />} />
+      <Route path="queue/*" element={<RedirectTo to="/next" />} />
+      <Route path="queue" element={<RedirectTo to="/next" />} />
+      <Route path="work" element={<RedirectTo to="/next" />} />
+      <Route path="merge-queue" element={<RedirectTo to="/next/merge" />} />
+      <Route path="github-activity" element={<RedirectTo to="/activity" search="?kinds=write" />} />
       <Route path="*" element={<NoRoute hidden={hiddenPaths} />} />
     </Routes>
   );
@@ -83,7 +93,7 @@ export function AppShell() {
           <UserMenu theme={theme} setTheme={setTheme} onHelp={() => setHelp(true)} />
         </header>
         <main className="min-h-0 flex-1">{content}</main>
-        <PhoneTabs nav={nav} />
+        <PhoneTabs rail={rail} />
         <Dialog.Root open={searchOpen} onOpenChange={setSearchOpen}>
           <Dialog.Portal>
             <Dialog.Content className="fixed inset-0 z-50 flex flex-col bg-panel animate-fadeIn" aria-describedby={undefined}>
@@ -106,18 +116,14 @@ export function AppShell() {
       <aside className={cn("flex shrink-0 flex-col border-r border-line bg-bg transition-[width] duration-base ease-out", railOpen ? "w-[220px]" : "w-[52px]")}>
         <div className={cn("flex h-11 shrink-0 items-center px-4", !railOpen && "justify-center px-0")}>{railOpen ? <Wordmark /> : <Logo size={20} />}</div>
         <nav className="flex-1 overflow-y-auto px-2 pb-3 pt-1" aria-label="Main">
-          {GROUPS.map((g) => {
-            const entries = nav.filter((n) => n.group === g.id);
-            if (!entries.length) return null;
-            return (
-              <div key={g.id} className="mb-3">
-                {railOpen && g.label && <div className="px-2 pb-1 pt-2 text-2xs font-medium text-ink/45">{g.label}</div>}
-                {entries.map((n) => (
-                  <RailLink key={n.to} entry={n} open={railOpen} />
-                ))}
-              </div>
-            );
-          })}
+          {rail.map((g) => (
+            <div key={g.label} className="mb-3">
+              {railOpen && g.label && <div className="px-2 pb-1 pt-2 text-2xs font-medium text-ink/45">{g.label}</div>}
+              {g.entries.map((n) => (
+                <RailLink key={n.to} entry={n} open={railOpen} />
+              ))}
+            </div>
+          ))}
         </nav>
         <RunMeter open={railOpen} />
         <div className={cn("flex items-center border-t border-line p-2", !railOpen && "justify-center")}>
@@ -201,9 +207,10 @@ function RailLink({ entry, open }: { entry: NavEntry; open: boolean }) {
   );
 }
 
-function PhoneTabs({ nav }: { nav: NavEntry[] }) {
-  const tabs = nav.filter((n) => n.phoneTab).slice(0, 3);
-  const rest = nav.filter((n) => !n.phoneTab);
+function PhoneTabs({ rail }: { rail: { label: string; entries: NavEntry[] }[] }) {
+  const all = rail.flatMap((g) => g.entries);
+  const tabs = PHONE_TABS.flatMap((p) => all.filter((e) => e.to === p));
+  const rest = all.filter((e) => !PHONE_TABS.includes(e.to));
   const loc = useLocation();
   const moreActive = rest.some((n) => (n.to === "/" ? loc.pathname === "/" : loc.pathname.startsWith(n.to)));
   return (
@@ -245,8 +252,11 @@ function PhoneTab({ entry }: { entry: NavEntry }) {
   );
 }
 
-function RedirectTo({ to }: { to: string }) {
-  return <Navigate to={`${to}${useLocation().search}`} replace />;
+/** Sends an old path to its new place. `from` is the prefix to swap, so `/decisions/a/1` becomes `/needs/decisions/a/1`; `search` replaces the query. */
+function RedirectTo({ to, from, search }: { to: string; from?: string; search?: string }) {
+  const loc = useLocation();
+  const tail = from ? loc.pathname.slice(from.length) : "";
+  return <Navigate to={`${to}${tail}${search ?? loc.search}`} replace />;
 }
 
 function Breadcrumb({ routes }: { routes: RouteDef[] }) {
@@ -327,8 +337,6 @@ const labelCls = "px-2 pb-1 pt-2 text-2xs font-medium text-ink/45";
 function UserMenu({ theme, setTheme, onHelp }: { theme: ThemePref; setTheme: (t: ThemePref) => void; onHelp?: () => void }) {
   const user = useUser();
   const api = useApi();
-  const navigate = useNavigate();
-  const adminLinks = modules.filter((m) => m.nav?.group === "operator" && can(user, m.permission));
   return (
     <DropdownMenu.Root>
       <DropdownMenu.Trigger className="flex size-9 items-center justify-center rounded-full hover:bg-ink/[0.06]" aria-label={`Signed in as ${user.login}`}>
@@ -359,19 +367,6 @@ function UserMenu({ theme, setTheme, onHelp }: { theme: ThemePref; setTheme: (t:
               </DropdownMenu.RadioItem>
             ))}
           </DropdownMenu.RadioGroup>
-          {adminLinks.length > 0 && (
-            <>
-              <DropdownMenu.Separator className="-mx-1 my-1 h-px bg-line" />
-              {adminLinks.map((m) => {
-                const Icon = m.nav!.icon;
-                return (
-                  <DropdownMenu.Item key={m.id} onSelect={() => navigate(m.nav!.to)} className={itemCls}>
-                    <Icon className="text-ink/55" /> {m.nav!.label}
-                  </DropdownMenu.Item>
-                );
-              })}
-            </>
-          )}
           {MockRoleMenu && (
             <Suspense fallback={null}>
               <MockRoleMenu itemCls={itemCls} labelCls={labelCls} />

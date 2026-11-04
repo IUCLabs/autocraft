@@ -3,7 +3,7 @@ import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import type { FeatureModule, RouteDef, ViewDef, ViewProps } from "../../registry/types";
 import { Workspace } from "../../shell/Workspace";
 import { Segmented } from "../../ui/molecules/Segmented";
-import { decisionsModule } from "../decisions";
+import { decisionsView } from "../decisions";
 import { FeedbackTab } from "./FeedbackTab";
 import { StoppedTab } from "./StoppedTab";
 import { useSummary } from "./state";
@@ -26,8 +26,6 @@ function Tabs() {
   const options = TABS.map((t) => ({ value: t, label: LABEL[t], count: data?.counts[t] }));
   return <Segmented label="Needs you" value={tab} options={options} onChange={(t) => navigate(t === "decisions" ? "/needs" : `/needs?tab=${t}`)} />;
 }
-
-const decisionsView = decisionsModule.routes[0]!.view;
 
 function Body(props: ViewProps) {
   const tab = useTab();
@@ -53,6 +51,7 @@ function useBadge() {
 export const needsModule: FeatureModule = {
   id: "needs",
   permission: "viewer",
-  nav: { label: "Needs you", icon: HandWavingIcon, to: "/needs", group: "work", order: 1, useBadge },
+  nav: { label: "Needs you", icon: HandWavingIcon, to: "/needs", useBadge },
+  commands: [{ id: "go-needs", keys: "g d", label: "Go to needs you", group: "Go to" }],
   routes: [route("needs"), route("needs/decisions/:id?"), route("needs/decisions/:repo/:n"), route("needs/decisions/:repo/:n/:kind")],
 };

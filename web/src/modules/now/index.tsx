@@ -34,7 +34,7 @@ function NowView(_: ViewProps) {
 export const nowModule: FeatureModule = {
   id: "now",
   permission: "viewer",
-  nav: { label: "Now", icon: BroadcastIcon, to: "/", group: "work", order: -2, phoneTab: true },
+  nav: { label: "Now", icon: BroadcastIcon, to: "/" },
   commands: [{ id: "go-now", keys: "g h", label: "Go to Now (home)", group: "Go to" }],
   routes: [{ path: "/", view: { id: "now", title: "Now", panels: [{ id: "main", title: "Now", component: NowView, defaultSize: 100 }] } }],
   prefetch: (api) => void api.now(),

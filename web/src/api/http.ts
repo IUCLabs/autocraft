@@ -231,7 +231,6 @@ export function createHttpApi(): Api {
     queue: (f) => get(`/api/queue${qs(f)}`),
     needs: (f) => get(`/api/needs${qs(f)}`),
     queueBatches: (f) => get(`/api/queue/batches${qs(f)}`),
-    githubActivity: (f) => get(`/api/github-activity${qs(f)}`),
     flow: (repo) => get(`/api/flow${repo ? `?repo=${encodeURIComponent(repo)}` : ""}`),
     async signOut() {
       await call("POST", "/api/signout");

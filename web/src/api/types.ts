@@ -1506,50 +1506,6 @@ export type TaskPage = { tasks: BuildTask[]; next: string | null };
 /** Queued and running tasks and the slots left over the online, enabled environments (the flowchart's Verify node). */
 export type BuildSummary = { queued: number; running: number; slots: number; free: number; online: number };
 
-// ---- GitHub activity ---------------------------------------------------------
-
-export interface GithubActivityFilter {
-  repo?: RepoName;
-  action?: string;
-  /** a date or date-time; a bare date as `to` includes that whole day */
-  from?: string;
-  to?: string;
-  number?: number;
-  limit?: number;
-  /** the `next` cursor of the previous page */
-  after?: string;
-}
-
-export interface GithubActivityRow {
-  id: string;
-  at: string;
-  action: string;
-  label: string;
-  repo: RepoName;
-  /** null for a branch or repo level write */
-  number: number | null;
-  branch: string | null;
-  title: string | null;
-  /** null with `number` null, or when the item is not in the mirror */
-  kind: ItemKind | null;
-  state: ItemState | null;
-  detail: string;
-  url: string;
-  /** the stage and its run, a decision, or the operator who did it */
-  source: string;
-  /** why the write failed; null when it went through */
-  error: string | null;
-  /** "unknown": the write was started and the app never recorded how it ended */
-  outcome: "done" | "failed" | "unknown";
-}
-
-export interface GithubActivityPage {
-  rows: GithubActivityRow[];
-  total: number;
-  next: string | null;
-  actions: { action: string; label: string }[];
-}
-
 // ---- Queue page (/api/queue/page) -------------------------------------------
 
 export type QueueTab = "all" | "review" | "fix" | "verify" | "merge";
