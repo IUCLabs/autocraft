@@ -3,7 +3,8 @@
 // the last read; the item list sync and the checks poll do not carry it.
 import type { DatabaseSync } from "node:sqlite";
 import type { Querier } from "./mirror.ts";
-import { ORG } from "./review/checks.ts";
+// Local, as in mirror.ts: importing it from review/checks.ts closes an import cycle through mirror.ts.
+const ORG = "storytold";
 
 /** Items read per sync pass; a backlog drains over several passes. */
 export const ACTIVITY_PER_PASS = 40;
