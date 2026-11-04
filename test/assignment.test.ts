@@ -33,10 +33,13 @@ test("a PR on the path to merge keeps the assignment, one that left it loses it"
   assert.equal(unassigns(decidePr(prFacts({ ...held, conflict: { bucket: "merge", base: "main", baseOk: true }, assignment: ours }))), false, "conflict merge due");
 });
 
-test("a fix-up that gave up releases the PR, unless it is in a batch", () => {
+test("a fix-up that gave up asks the contributor, then releases the PR, unless it is in a batch", () => {
   const f = { review: { verdict: "take-fix" }, fixup: spent, assignment: ours };
-  assert.equal(unassigns(decidePr(prFacts(f))), true);
-  assert.equal(unassigns(decidePr(prFacts({ ...f, inActiveBatch: true }))), false);
+  assert.equal(unassigns(decidePr(prFacts(f))), false, "ask due");
+  const asked = { ...f, fixup: { ...spent, recorded: ["asked"] } };
+  assert.equal(unassigns(decidePr(prFacts(asked))), true, "asked");
+  assert.equal(unassigns(decidePr(prFacts({ ...f, repoFacts: { commentApproved: false } }))), true, "no comment approval");
+  assert.equal(unassigns(decidePr(prFacts({ ...asked, inActiveBatch: true }))), false);
 });
 
 test("a take-fix PR with a conflict give-up, an ended CI fix and a held merge are released; a refused merge is kept", () => {
