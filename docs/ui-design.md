@@ -150,6 +150,27 @@ Two panels: the item (68 %) and a collapsible side panel (32 %).
 - The description below the properties, rendered like the decision's.
 - Side: decisions about the item (status, recommendation or answer, pick tally), linked and duplicate items, CI checks, then the `item.side` slot.
 
+### Item timeline icons
+
+One icon per meaning (Phosphor, regular weight), chosen by `timelineIcon` in `web/src/ui/molecules/timelineIcon.ts`; each icon has an `aria-label` naming its kind. Events AutoCraft produced (pipeline steps, planner, model calls, its checks, its GitHub writes) draw the icon in the accent ink colour; people's events stay neutral. The events read oldest first.
+
+| Meaning | Icon |
+| --- | --- |
+| GitHub event by a person (opened, pushed, comment, merge) | `GithubLogo` |
+| Model call, grouped calls | `Sparkle` |
+| Review verdict (Opus, pre-merge, post-merge) | `MagnifyingGlass` |
+| Verification | `ShieldCheck` |
+| Build, test or lint check, sandbox task | `Wrench` |
+| Push by AutoCraft (fix-up, conflict merge, CI fix) | `GitCommit` |
+| Merge by AutoCraft | `GitMerge` |
+| Comment or review posted by AutoCraft | `ChatText` |
+| Label change | `Tag` |
+| Assigned, unassigned | `UserPlus`, `UserMinus` |
+| Planner state change | `Signpost` |
+| Job, other step action | `Gear` |
+| Decision asked, answered | `Question`, `CheckCircle` |
+| Conversation turn | `ChatsCircle` |
+
 ### Progress
 
 - Title with run start, day and repo count.

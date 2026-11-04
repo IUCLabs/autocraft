@@ -1,4 +1,5 @@
 // The item's trace: Now/Next/Who header, filters and the event timeline grouped by head commit.
+import { SparkleIcon } from "@phosphor-icons/react";
 import { useEffect, useRef, useState } from "react";
 import { usePagedQuery } from "../../api/client";
 import type { Item, ItemTrace, TraceEvent, TraceKind } from "../../api/types";
@@ -8,7 +9,8 @@ import { TimelineEvent } from "../../ui/molecules/TimelineEvent";
 import { TraceFilters } from "../../ui/molecules/TraceFilters";
 import { HeadGroup } from "../../ui/organisms/HeadGroup";
 import { TraceHeader } from "../../ui/organisms/TraceHeader";
-import { callGroupSummary, groupByHead, groupCalls, pushedBy, TRACE_KIND } from "../../lib/trace";
+import { callGroupSummary, groupByHead, groupCalls, pushedBy } from "../../lib/trace";
+import { timelineIcon } from "../../ui/molecules/timelineIcon";
 import { TraceEventBody } from "./TraceEventBody";
 
 const PAGE = 50;
@@ -79,11 +81,15 @@ export function TracePanel({ repo, number, it }: { repo: string; number: number;
           {groups.map((g) => (
             <HeadGroup key={`${g.head}:${g.events[0]!.id}`} head={g.head} pushedBy={g.head ? pushedBy(events, g.head) : null}>
               {groupCalls(g.events).map((r) => {
-                const row = (e: TraceEvent) => (
+                const row = (e: TraceEvent) => {
+                  const ic = timelineIcon(e);
+                  return (
                   <TimelineEvent
                     key={e.id}
                     id={e.id}
-                    Icon={TRACE_KIND[e.kind].Icon}
+                    Icon={ic.Icon}
+                    iconLabel={ic.label}
+                    iconTone={ic.ours ? "ours" : "person"}
                     at={e.at}
                     actor={e.actor.name}
                     actorTone={e.actor.type === "person" ? "person" : "ours"}
@@ -93,14 +99,17 @@ export function TracePanel({ repo, number, it }: { repo: string; number: number;
                   >
                     <TraceEventBody event={e} item={it} />
                   </TimelineEvent>
-                );
+                  );
+                };
                 if (!r.calls) return row(r.event);
                 const gid = `group:${r.event.id}`;
                 return (
                   <TimelineEvent
                     key={gid}
                     id={gid}
-                    Icon={TRACE_KIND[r.event.kind].Icon}
+                    Icon={SparkleIcon}
+                    iconLabel="Model call"
+                    iconTone="ours"
                     at={r.event.at}
                     actor={r.event.call?.step ?? r.event.actor.name}
                     actorTone="ours"

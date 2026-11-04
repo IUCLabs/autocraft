@@ -7,11 +7,15 @@ import { TimeAgo } from "../atoms/TimeAgo";
  * One row of an event timeline: kind icon, summary, actor and time. The row is a disclosure button;
  * `children` are the expanded body and are only rendered while open.
  */
-export function TimelineEvent({ id, lead, Icon, at, actor, actorTone, summary, open, onToggle, flush, children }: {
+export function TimelineEvent({ id, lead, Icon, iconLabel, iconTone, at, actor, actorTone, summary, open, onToggle, flush, children }: {
   id: string;
   /** A line above the row that is not part of the disclosure button (a link to the item, say). */
   lead?: ReactNode;
   Icon: PhosphorIcon;
+  /** Names the kind for screen readers. */
+  iconLabel?: string;
+  /** "ours" draws the icon in the accent colour: AutoCraft did it. */
+  iconTone?: "ours" | "person";
   at: string;
   actor: string;
   /** "ours" tints AutoCraft steps and models; people stay plain. */
@@ -32,7 +36,7 @@ export function TimelineEvent({ id, lead, Icon, at, actor, actorTone, summary, o
         aria-expanded={open}
         className={cn("flex w-full items-start gap-2.5 px-3 py-2 text-left transition-colors duration-fast hover:bg-ink/[0.03] max-md:min-h-11", open && "bg-ink/[0.03]")}
       >
-        <span className="mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full border border-line-strong bg-panel text-ink/60">
+        <span role={iconLabel ? "img" : undefined} aria-label={iconLabel} className={cn("mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full border border-line-strong bg-panel", iconTone === "ours" ? "text-accent-ink" : "text-ink/60")}>
           <Icon className="text-[11px]" />
         </span>
         <span className="min-w-0 flex-1">
