@@ -32,14 +32,18 @@ const SOURCES: string[] = [
   // An operator's message to Opus on an item; handled once Opus answered it.
   `SELECT 'turn:' || t.id, 'operator', t.login, t.at, t.body, t.repo, t.number, NULL, t.id, NULL, COALESCE(t.status = 'answered', 0)
    FROM conversation_turns t WHERE t.kind = 'operator' AND t.at >= :since AND t.at <= :cur`,
-  // A GitHub comment or review on a tracked item that names AutoCraft or directly follows one of its comments;
-  // handled once AutoCraft posted on the item afterwards. Nothing without a pipeline login.
+  // A GitHub comment or review that names the pipeline login (flagged when written, so an index finds them); handled once the
+  // pipeline login posted on the item afterwards. Nothing without a pipeline login.
   `SELECT 'comment:' || c.id, 'github', c.author, c.created_at, c.body, c.repo, c.number, NULL, NULL, c.id,
      EXISTS (SELECT 1 FROM comments a WHERE a.repo = c.repo AND a.number = c.number AND a.author = :own AND a.created_at > c.created_at)
    FROM comments c
-   WHERE :own <> '' AND c.created_at >= :since AND c.created_at <= :cur AND c.author IS NOT NULL AND c.author <> :own AND TRIM(COALESCE(c.body, '')) <> ''
-     AND (instr(lower(c.body), lower('@' || :own)) > 0
-       OR (SELECT p.author FROM comments p WHERE p.repo = c.repo AND p.number = c.number AND p.created_at < c.created_at ORDER BY p.created_at DESC LIMIT 1) = :own)`,
+   WHERE :own <> '' AND c.mentions_pipeline = 1 AND c.created_at >= :since AND c.created_at <= :cur AND c.author IS NOT NULL AND c.author <> :own`,
+  // The comment right after one of the pipeline login's own, on an item it commented on.
+  `SELECT 'comment:' || c.id, 'github', c.author, c.created_at, c.body, c.repo, c.number, NULL, NULL, c.id,
+     EXISTS (SELECT 1 FROM comments a WHERE a.repo = c.repo AND a.number = c.number AND a.author = :own AND a.created_at > c.created_at)
+   FROM (SELECT DISTINCT repo, number FROM comments WHERE author = :own) o JOIN comments c ON c.repo = o.repo AND c.number = o.number
+   WHERE :own <> '' AND c.mentions_pipeline = 0 AND c.created_at >= :since AND c.created_at <= :cur AND c.author IS NOT NULL AND c.author <> :own AND TRIM(COALESCE(c.body, '')) <> ''
+     AND (SELECT p.author FROM comments p WHERE p.repo = c.repo AND p.number = c.number AND p.created_at < c.created_at ORDER BY p.created_at DESC LIMIT 1) = :own`,
 ];
 
 const ownLogin = (db: DatabaseSync): string => (db.prepare("SELECT value FROM main.settings WHERE key = 'pipeline_login'").get() as { value: string } | undefined)?.value ?? "";

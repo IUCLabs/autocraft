@@ -29,6 +29,7 @@ test("needs lists feedback newest first with handled state, shows a tripped brea
   c.run("photocraft", 2, "c4", "dev", at(2), "I disagree");
   c.run("photocraft", 2, "c5", "other", at(1), "unrelated chatter after a person");
   c.run("secret", 3, "c6", "dev", at(3), "@bot hidden one");
+  db.prepare("UPDATE comments SET mentions_pipeline = 1 WHERE body LIKE '@bot%'").run(); // what the mirror sets when it writes the comment
   db.prepare("INSERT INTO decisions (id, kind, repo, number, question, options, asked_at, answer, answered_at) VALUES ('d1', 'scope', 'photocraft', 2, 'Q?', '[]', ?, 'yes', ?)").run(at(20), at(5));
   db.prepare("INSERT INTO decision_comments (id, decision_id, login, at, body) VALUES ('dc1', 'd1', 'maint', ?, 'before the answer')").run(at(6));
   db.prepare("INSERT INTO stage_trips (stage, active, reason, evidence, tripped_at) VALUES ('merge', 1, 'two merges broke main', '[]', ?)").run(at(1));
