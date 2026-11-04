@@ -113,6 +113,13 @@ export function rustTokens(src: string): string[] | null {
   const out: string[] = [];
   let i = 0, lastPunctEnd = -1, prev = "";
   const n = src.length;
+  // Rust ignores a first-line shebang (`#!` not followed by `[`); it is one comment token here.
+  if (src.startsWith("#!") && !/^#!\s*\[/.test(src)) {
+    let e = src.indexOf("\n");
+    if (e < 0) e = n;
+    out.push(`c:${src.slice(0, e).trimEnd()}`);
+    i = e;
+  }
   while (i < n) {
     const ch = src[i]!;
     if (/\s/.test(ch)) { i++; continue; }
@@ -134,7 +141,7 @@ export function rustTokens(src: string): string[] | null {
       i = j + 1;
       continue;
     }
-    const raw = /^(?:br|cr|r)(#*)"/.exec(src.slice(i, i + 40));
+    const raw = /^(?:br|cr|r)(#*)"/.exec(src.slice(i, i + 260));
     if (raw) {
       const close = `"${raw[1]}`;
       const e = src.indexOf(close, i + raw[0].length);

@@ -711,3 +711,12 @@ describe("pushes are recorded before they happen", () => {
     }
   });
 });
+
+test("the token check sees raw strings with many hashes and a shebang line", () => {
+  const h = "#".repeat(40);
+  const raw = (body: string) => `fn f() { let s = r${h}"${body}"${h}; } // "\n`;
+  assert.notEqual(formattingOnly("a.rs", raw(" a \" b + c "), raw(" a \" b+c ")), null);
+  const bang = (s: string) => `#!/x "\nfn f() { let s = "${s}"; }\n`;
+  assert.notEqual(formattingOnly("a.rs", bang("a + b"), bang("a+b")), null);
+  assert.equal(formattingOnly("a.rs", bang("a + b"), bang("a + b").replace("fn f() {", "fn f()  {")), null);
+});
