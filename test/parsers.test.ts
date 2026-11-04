@@ -78,6 +78,23 @@ describe("model replies", () => {
     assert.equal(parseRecommendReply(fence({ summary: "short", recommended: null, reason: "" }), ["small"])?.summary, null);
   });
 
+  test("Opus review: claims decide take, take-fix and sure", () => {
+    const take = { ref: "app#1", verdict: "take", sure: true, reason: "fine", fixes: [], summary: "Adds a filter.", why: "It is correct." };
+    const ok = { claim: "drop matches Place", status: "verified", evidence: "src/a.rs:10 same condition" };
+    const bad = { claim: "drop matches Place", status: "contradicted", evidence: "src/a.rs:10 lacks encloses_area" };
+    assert.equal(parseOpusReply(fence({ ...take, claims: [ok] }), "app#1", true, new Set(), false, [], "body")?.sure, true);
+    const held = parseOpusReply(fence({ ...take, claims: [bad] }), "app#1", true, new Set(), false, [], "body")!;
+    assert.equal(held.verdict, "hold");
+    assert.match(held.reason, /^Contradicted claim/);
+    const fixed = parseOpusReply(fence({ ...take, claims: [{ ...bad, fix: { file: "src/a.rs", change: "add the encloses_area test" } }] }), "app#1", true, new Set(), false, [], "body")!;
+    assert.equal(fixed.verdict, "take-fix");
+    assert.deepEqual(fixed.fixes, [{ file: "src/a.rs", change: "add the encloses_area test" }]);
+    assert.equal(parseOpusReply(fence({ ...take, claims: [{ ...ok, status: "unverified" }] }), "app#1", true, new Set(), false, [], "body")?.sure, false);
+    assert.equal(parseOpusReply(fence({ ...take, claims: [{ ...ok, evidence: "it just works" }] }), "app#1", true, new Set(), false, [], "body")?.sure, false, "verified without file:line is unverified");
+    assert.equal(parseOpusReply(fence(take), "app#1", true, new Set(), false, [], "A body.")?.sure, false);
+    assert.equal(parseOpusReply(fence(take), "app#1")?.sure, true, "no body, nothing to claim");
+  });
+
   test("Opus review: the ref must match, take-fix needs a fix, a one-element array is read", () => {
     const rv = { ref: "app#1", verdict: "take-fix", sure: true, reason: "one small fix", fixes: [{ file: "src/a.rs", change: "rename a to b" }], summary: "Adds a filter.", why: "It is correct." };
     assert.equal(parseOpusReply(fence(rv), "app#1")?.fixes.length, 1);

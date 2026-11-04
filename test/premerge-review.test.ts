@@ -8,6 +8,26 @@ const REF = "app#1";
 const finding = (extra: Record<string, unknown> = {}) => ({ severity: "defect", file: "src/a.rs", line: 7, title: "off by one", scenario: "an empty list panics", ...extra });
 const reply = (findings: unknown[], ref = REF) => JSON.stringify({ ref, findings, searched: "callers of the changed function" });
 
+describe("premerge claims", () => {
+  const withClaims = (claims?: unknown[]) => JSON.stringify({ ref: REF, findings: [], searched: "x", ...(claims ? { claims } : {}) });
+  const claim = (status: string, evidence = "src/a.rs:10 lacks the check") => ({ claim: "drop matches Place", status, evidence });
+
+  test("a contradicted or unverified claim is a defect; a verified one and an empty list are not", () => {
+    const bad = parsePremerge(withClaims([claim("contradicted")]), REF, new Set(), [], "body")!.findings;
+    assert.equal(bad.length, 1);
+    assert.deepEqual([bad[0]!.severity, bad[0]!.file, bad[0]!.line], ["defect", "src/a.rs", 10]);
+    assert.equal(parsePremerge(withClaims([claim("unverified", "")]), REF, new Set(), [], "body")!.findings[0]!.severity, "defect");
+    assert.deepEqual(parsePremerge(withClaims([claim("verified")]), REF, new Set(), [], "body")!.findings, []);
+    assert.deepEqual(parsePremerge(withClaims([]), REF, new Set(), [], "body")!.findings, []);
+  });
+
+  test("missing claims with a description is a defect and a lint problem", () => {
+    assert.equal(parsePremerge(withClaims(), REF, new Set(), [], "body")!.findings.length, 1);
+    assert.deepEqual(parsePremerge(withClaims(), REF)!.findings, []);
+    assert.equal(lintPremerge(withClaims(), REF, "body")!.some((p) => p.field === "claims"), true);
+  });
+});
+
 describe("premerge reply", () => {
   test("a valid reply and an empty list are kept", () => {
     const r = parsePremerge(reply([finding({ fix: { file: "src/a.rs", change: "check the bound" } }), finding({ severity: "minor", title: "naming" })]), REF)!;

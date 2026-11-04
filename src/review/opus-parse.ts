@@ -83,7 +83,41 @@ export type OpusReview = {
   public: PublicReview | null;
   /** The statements of `OpusPr.statements` that the PR goes against. */
   conflicts: StatementConflict[];
+  /** The behavioural claims of the title and body, each checked against the code. */
+  claims: Claim[];
 };
+
+export type ClaimStatus = "verified" | "contradicted" | "unverified";
+export type Claim = { claim: string; status: ClaimStatus; evidence: string; fix?: { file: string; change: string } };
+
+export const MAX_CLAIMS = 12;
+export const CLAIM_CHARS = 300;
+export const CLAIM_EVIDENCE_CHARS = 600;
+const FILE_LINE = /[\w./-]+\.\w+:\d+/;
+const squashText = (s: string) => s.replace(/\s+/g, " ").trim();
+
+/**
+ * The `claims` of a reply, or null when it is not an array. An entry needs a claim and a status; one that mentions the
+ * reference documentation or is in `drop` is left out. A "verified" without file:line evidence counts as unverified, so
+ * a claim is only verified when the model points at code.
+ */
+export function parseClaims(v: unknown, drop: ReadonlySet<string> = new Set()): Claim[] | null {
+  if (!Array.isArray(v)) return null;
+  const out: Claim[] = [];
+  for (const x of v.slice(0, MAX_CLAIMS)) {
+    const o = x as Record<string, unknown> | null;
+    if (!o || typeof o !== "object" || typeof o.claim !== "string") continue;
+    const claim = squashText(o.claim).slice(0, CLAIM_CHARS), evidence = typeof o.evidence === "string" ? squashText(o.evidence).slice(0, CLAIM_EVIDENCE_CHARS) : "";
+    if (!claim || (o.status !== "verified" && o.status !== "contradicted" && o.status !== "unverified")) continue;
+    if (REFERENCE_LEAK.test(claim) || REFERENCE_LEAK.test(evidence) || drop.has(claim) || drop.has(evidence)) continue;
+    const status: ClaimStatus = o.status === "verified" && !FILE_LINE.test(evidence) ? "unverified" : o.status;
+    const f = o.fix as { file?: unknown; change?: unknown } | null | undefined;
+    const fix = f && typeof f === "object" && typeof f.file === "string" && typeof f.change === "string" && f.file.trim() && f.change.trim() && !REFERENCE_LEAK.test(f.file + f.change)
+      ? { file: f.file.trim().slice(0, 200), change: f.change.trim().slice(0, 800) } : undefined;
+    out.push(fix && status === "contradicted" ? { claim, status, evidence, fix } : { claim, status, evidence });
+  }
+  return out;
+}
 
 export type PublicReview = { summary: string; points: string[] };
 
@@ -122,9 +156,11 @@ function replyObject(text: string): unknown {
  * The one review for `ref` in a reply, or null. The text from the first "{" to the
  * last "}" is parsed (a one-element array is read too); take-fix needs at least one fix.
  * A summary or why over its word cap fails the reply unless `last`, which keeps its first sentence.
+ * Claims rule: a contradicted claim means the PR is not a take: take-fix when every contradicted claim names a fix, hold otherwise.
+ * An unverified claim, or no `claims` list for a PR with a body (`body`), makes a take or take-fix unsure.
  * `drop`: see parsePublic. `keepLeaky`: keep fixes that mention the reference (the lint checks validity this way, so the fix turn can handle them; the stored review always drops them).
  */
-export function parseOpusReply(text: string, ref: string, last = true, drop: ReadonlySet<string> = new Set(), keepLeaky = false, known: readonly OwnerStatement[] = []): OpusReview | null {
+export function parseOpusReply(text: string, ref: string, last = true, drop: ReadonlySet<string> = new Set(), keepLeaky = false, known: readonly OwnerStatement[] = [], body = ""): OpusReview | null {
   const o = replyObject(text);
   if (!o || typeof o !== "object") return null;
   const r = o as Record<string, unknown>;
@@ -139,7 +175,22 @@ export function parseOpusReply(text: string, ref: string, last = true, drop: Rea
   const risks = Array.isArray(r.risks) ? r.risks.filter((x): x is string => typeof x === "string").slice(0, 8).map((x) => x.slice(0, 300)) : [];
   const summary = proseField(r.summary, SUMMARY_MAX_WORDS, last), why = proseField(r.why, WHY_MAX_WORDS, last);
   if (!summary.ok || !why.ok) return null;
-  return { ref, verdict: verdict as ReviewVerdict, sure: r.sure, reason: words(r.reason, OPUS_REASON_WORDS), fixes: verdict === "take-fix" ? fixes : [], risks, summary: summary.text, why: oneSentence(why.text), public: parsePublic(r.public, drop), conflicts: parseStatementConflicts(r.conflicts, known) };
+  const claims = parseClaims(r.claims, drop), listed = claims ?? [];
+  const bad = listed.filter((c) => c.status === "contradicted"), unproven = claims === null ? !!body.trim() : listed.some((c) => c.status === "unverified");
+  let outVerdict = verdict as ReviewVerdict, outFixes = verdict === "take-fix" ? fixes : [], outReason = r.reason, sure = r.sure;
+  const notes: string[] = [];
+  if (bad.length && (outVerdict === "take" || outVerdict === "take-fix")) {
+    const withFix = bad.filter((c) => c.fix);
+    if (withFix.length === bad.length) { outVerdict = "take-fix"; outFixes = [...outFixes, ...withFix.map((c) => c.fix!)].slice(0, OPUS_MAX_FIXES); }
+    else { outVerdict = "hold"; outFixes = []; }
+    outReason = `Contradicted claim: ${bad[0]!.claim} ${r.reason}`;
+    notes.push(...bad.map((c) => `claim contradicted: ${c.claim}: ${c.evidence}`.slice(0, 300)));
+  }
+  if (unproven && (outVerdict === "take" || outVerdict === "take-fix")) {
+    sure = false;
+    notes.push(claims === null ? "the PR description's claims were not checked" : `claim not verified: ${listed.find((c) => c.status === "unverified")!.claim}`.slice(0, 300));
+  }
+  return { ref, verdict: outVerdict, sure, reason: words(outReason, OPUS_REASON_WORDS), fixes: outFixes, risks: [...risks, ...notes], summary: summary.text, why: oneSentence(why.text), public: parsePublic(r.public, drop), conflicts: parseStatementConflicts(r.conflicts, known), claims: listed };
 }
 
 /** The reply's reason before the word cut that the stored review applies. */
@@ -163,11 +214,12 @@ const squash = (s: string) => s.replace(/\s+/g, " ").trim();
  * The problems of a reply that the model can fix itself: a reference mention in a fix, a summary or why over its cap,
  * a why of more than one sentence, an unapplied fix a take ignores. Null when the reply is not a valid review (the whole call is asked again then).
  */
-export function lintOpusReply(text: string, ref: string, unapplied: readonly UnappliedFix[] = []): LintProblem[] | null {
+export function lintOpusReply(text: string, ref: string, unapplied: readonly UnappliedFix[] = [], body = ""): LintProblem[] | null {
   const parsed = parseOpusReply(text, ref, true, new Set(), true);
   if (!parsed) return null;
   const r = replyObject(text) as Record<string, unknown>;
   const out: LintProblem[] = [];
+  if (body.trim() && !Array.isArray(r.claims)) out.push({ field: "claims", message: "is missing; list every behavioural claim of the title and body with its status and file:line evidence" });
   // A take-fix keeps the list the model chose; a hold or close makes the old fixes moot. Only a take that ignores them is a problem.
   if (parsed.verdict === "take" && !parsed.fixes.length) {
     unapplied.forEach((u, i) => {
@@ -189,12 +241,15 @@ export function lintOpusReply(text: string, ref: string, unapplied: readonly Una
 
 /** The public texts of a reply for the reference checks, with the field each is in (the index is the position in the reply's `points` array). */
 export function publicTexts(text: string): { field: string; text: string }[] {
-  const r = replyObject(text) as { public?: { summary?: unknown; points?: unknown } } | null;
+  const r = replyObject(text) as { public?: { summary?: unknown; points?: unknown }; claims?: unknown } | null;
+  // Claims are posted with the review, so they get the same reference checks.
+  const claimTexts = (parseClaims(r?.claims) ?? []).flatMap((c, i) => [{ field: `claims[${i}].claim`, text: c.claim }, ...(c.evidence ? [{ field: `claims[${i}].evidence`, text: c.evidence }] : [])]);
   const p = r?.public;
-  if (!p || typeof p !== "object") return [];
+  if (!p || typeof p !== "object") return claimTexts;
   return [
     ...(typeof p.summary === "string" && p.summary.trim() ? [{ field: "public.summary", text: p.summary }] : []),
     // Only the points parsePublic keeps (the first OPUS_PUBLIC_POINTS non-empty ones), so a long list makes no extra checks.
+    ...claimTexts,
     ...(Array.isArray(p.points) ? p.points.flatMap((x, i) => (typeof x === "string" && x.trim() ? [{ field: `public.points[${i}]`, text: x }] : [])).slice(0, OPUS_PUBLIC_POINTS) : []),
   ];
 }

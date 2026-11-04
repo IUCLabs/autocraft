@@ -2,7 +2,7 @@
 // imports this file.
 import { safePath } from "../fixup/patch.ts";
 import type { LintProblem } from "../replylint.ts";
-import { OPUS_MAX_FIXES, REFERENCE_LEAK, parseStatementConflicts, type StatementConflict, type OwnerStatement } from "../review/opus-parse.ts";
+import { OPUS_MAX_FIXES, REFERENCE_LEAK, parseClaims, parseStatementConflicts, type StatementConflict, type OwnerStatement } from "../review/opus-parse.ts";
 import type { PremergeFinding } from "./types.ts";
 
 export const PREMERGE_MAX_FINDINGS = 30;
@@ -51,6 +51,25 @@ function entries(text: string, ref: string): { entries: Entry[]; searched: strin
   return { entries: out, searched: typeof o.searched === "string" && o.searched.trim() ? clean(o.searched).slice(0, PREMERGE_SEARCHED_CHARS) : null, conflicts: o.conflicts };
 }
 
+const FILE_LINE = /([\w./-]+\.\w+):(\d+)/;
+
+/** The defects that claims make: contradicted and unverified ones, or one for a missing list when the PR has a body. */
+function claimFindings(claims: ReturnType<typeof parseClaims>, body: string): PremergeFinding[] {
+  if (claims === null) {
+    if (!body.trim()) return [];
+    return [{ severity: "defect", file: "(description)", line: 0, title: "The description's claims were not checked", scenario: "The review did not list the behavioural claims of the title and description with their status, so none was checked against the code." }];
+  }
+  return claims.filter((c) => c.status !== "verified").map((c) => {
+    const at = FILE_LINE.exec(c.evidence);
+    const bad = c.status === "contradicted";
+    return {
+      severity: "defect" as const, file: at?.[1] ?? "(description)", line: at ? Number(at[2]) : 0,
+      title: `${bad ? "Claim contradicted" : "Claim not verified"}: ${c.claim}`.slice(0, PREMERGE_TITLE_CHARS),
+      scenario: `${bad ? "The code contradicts" : "The code does not show"} the claim "${c.claim}". ${c.evidence}`.slice(0, PREMERGE_SCENARIO_CHARS),
+    };
+  });
+}
+
 const leaks = (...s: string[]) => s.some((x) => REFERENCE_LEAK.test(x));
 
 /**
@@ -58,8 +77,10 @@ const leaks = (...s: string[]) => s.some((x) => REFERENCE_LEAK.test(x));
  * valid. An entry without a valid severity, file, line, title or scenario is dropped, and so is one whose title or scenario
  * mentions the reference documentation or is in `drop`; a fix with a leak, an unsafe path or past the fix cap is dropped
  * from its finding. `drop`: texts the reply lint still flagged after the fix turn.
+ * Claims: a contradicted or unverified claim of the title or body is a defect finding of its own (a person decides, as for
+ * any defect without a fix); so is a missing `claims` list when `body` is not empty.
  */
-export function parsePremerge(text: string, ref: string, drop: ReadonlySet<string> = new Set(), known: readonly OwnerStatement[] = []): PremergeReview | null {
+export function parsePremerge(text: string, ref: string, drop: ReadonlySet<string> = new Set(), known: readonly OwnerStatement[] = [], body = ""): PremergeReview | null {
   const r = entries(text, ref);
   if (!r) return null;
   const findings: PremergeFinding[] = [];
@@ -70,14 +91,15 @@ export function parsePremerge(text: string, ref: string, drop: ReadonlySet<strin
     findings.push(fixOk ? { ...rest, fix } : rest);
   }
   // A dropped fix does not free its place under the cap: the cap counts the fixes the model offered.
-  return { findings, searched: r.searched, conflicts: parseStatementConflicts(r.conflicts, known) };
+  return { findings: [...claimFindings(parseClaims((replyObject(text) ?? {}).claims, drop), body), ...findings].slice(0, PREMERGE_MAX_FINDINGS), searched: r.searched, conflicts: parseStatementConflicts(r.conflicts, known) };
 }
 
 /** The reference mentions in a valid reply that the model can fix itself; null when the reply is not valid. */
-export function lintPremerge(text: string, ref: string): LintProblem[] | null {
+export function lintPremerge(text: string, ref: string, body = ""): LintProblem[] | null {
   const r = entries(text, ref);
   if (!r) return null;
   const out: LintProblem[] = [];
+  if (body.trim() && !Array.isArray(replyObject(text)?.claims)) out.push({ field: "claims", message: "is missing; list every behavioural claim of the title and body with its status and file:line evidence" });
   const msg = "mentions the reference folder or one of its pages; state the behaviour in your own words";
   for (const e of r.entries) {
     for (const [k, v] of [["title", e.title], ["scenario", e.scenario]] as const) if (REFERENCE_LEAK.test(v)) out.push({ field: `findings[${e.index}].${k}`, message: msg, text: v });
@@ -90,8 +112,9 @@ export function lintPremerge(text: string, ref: string): LintProblem[] | null {
 export function premergeTexts(text: string, ref: string): { field: string; text: string }[] {
   const r = entries(text, ref);
   if (!r) return [];
-  return r.entries.flatMap((e) => [
+  const claims = (parseClaims(replyObject(text)?.claims) ?? []).flatMap((c, i) => [{ field: `claims[${i}].claim`, text: c.claim }, ...(c.evidence ? [{ field: `claims[${i}].evidence`, text: c.evidence }] : [])]);
+  return [...claims, ...r.entries.flatMap((e) => [
     { field: `findings[${e.index}].title`, text: e.title }, { field: `findings[${e.index}].scenario`, text: e.scenario },
     ...(e.fix ? [{ field: `findings[${e.index}].fix.file`, text: e.fix.file }, { field: `findings[${e.index}].fix.change`, text: e.fix.change }] : []),
-  ]);
+  ])];
 }
