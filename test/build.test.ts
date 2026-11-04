@@ -146,6 +146,7 @@ describe("dashboard API", () => {
     db.exec("DELETE FROM build_envs");
     addLogin(db, "cli", "boss", "operator", null);
     addLogin(db, "cli", "viewer1", "viewer", null);
+    addLogin(db, "cli", "maint1", "maintainer", null);
     scopeToTracked(db);
     const perms = join(dir, "perms.json");
     writeFileSync(perms, "{}");
@@ -235,7 +236,7 @@ describe("dashboard API", () => {
     } finally {
       await w.close();
     }
-    const v = await signedIn("viewer1");
+    const v = await signedIn("maint1");
     const html = await v.send(`/api/tasks/${id}/artifacts/page.html`);
     assert.equal(html.status, 200);
     assert.match(html.headers.get("content-disposition") ?? "", /^attachment; filename="page.html"$/);
