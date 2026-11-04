@@ -226,7 +226,7 @@ export async function rates(db: DatabaseSync, window: unknown, nowMs: number = D
 
 // ---- retention -----------------------------------------------------------------
 
-/** Drops prompt and output text after 14 days and whole runs after 90. Cutoffs are by id, found through the started_at index. */
+/** Drops prompt and output text and tool uses with their runs after 90 days. Cutoffs are by id, found through the started_at index. */
 export function pruneRuns(db: DatabaseSync, nowMs: number = Date.now()): { texts: number; runs: number } {
   const maxBefore = (ms: number): number => (db.prepare("SELECT COALESCE(MAX(id), 0) AS id FROM agent_runs WHERE started_at < ?").get(new Date(nowMs - ms).toISOString()) as { id: number }).id;
   const texts = Number(db.prepare("DELETE FROM agent_run_texts WHERE run_id <= ?").run(maxBefore(TEXT_KEEP_MS)).changes);
