@@ -4,6 +4,7 @@ import { planned } from "../core/select.ts";
 import { staleReviews } from "./discussion.ts";
 import { carriedReview, CARRIED } from "./carry.ts";
 import { saveOpus } from "./opus.ts";
+import { jobItem } from "../runner/job-items.ts";
 
 export function runCarry(db: DatabaseSync, repo: string, log: (line: string) => void = console.log): number {
   const stale = staleReviews(db, repo);
@@ -14,7 +15,7 @@ export function runCarry(db: DatabaseSync, repo: string, log: (line: string) => 
     const k = carriedReview(db, c, stale);
     if (!k) continue;
     saveOpus(db, runId, c, { mode: CARRIED, base: k.from, model: CARRIED, review: k.review, snap: { seen: k.seen, hash: k.hash } });
-    log(`  ${repo}#${f.number}: ${k.review.reason}`);
+    jobItem(db, repo, f.number, `carried review: ${k.review.reason}`, log);
     n++;
   }
   return n;

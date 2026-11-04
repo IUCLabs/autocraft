@@ -1309,7 +1309,8 @@ CREATE TABLE IF NOT EXISTS job_items (
   job_id INTEGER NOT NULL,
   repo TEXT NOT NULL, number INTEGER NOT NULL,
   outcome TEXT,                       -- one line
-  at TEXT NOT NULL
+  at TEXT NOT NULL,
+  ref TEXT                            -- the decision the job asked about the item, when it asked one
 );
 CREATE INDEX IF NOT EXISTS job_items_item ON job_items(repo, number, id);
 CREATE INDEX IF NOT EXISTS job_items_job ON job_items(job_id, id);

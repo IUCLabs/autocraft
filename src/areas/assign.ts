@@ -2,6 +2,7 @@
 // "none of these". Jev's top choice at AREA_SURE or more settles it; below that Haiku decides, and Haiku
 // decides alone while Jev is unavailable. Repos without a list are skipped. An item asked against the current
 // list version is not asked again unless a re-scan asks for the unassigned ones.
+import { jobItem } from "../runner/job-items.ts";
 import type { DatabaseSync } from "node:sqlite";
 import { claudeRoom } from "../agents/call.ts";
 import { jevAvailable } from "../agents/jev.ts";
@@ -92,6 +93,7 @@ async function assignRepo(db: DatabaseSync, repo: string, due: Due[], p: AssignP
     setItemArea(db, x.repo, x.number, area, source, conf, version);
     if (source === "jev") r.jev++; else r.haiku++;
     if (area === null) r.none++;
+    jobItem(db, x.repo, x.number, area === null ? "fits none of the areas" : `assigned area ${area}`, p.log);
   };
   for (let i = 0; i < due.length && !p.cancelled?.(); i += CHUNK) {
     // With neither model available there is nothing to ask, so no diff is fetched.

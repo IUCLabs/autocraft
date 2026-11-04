@@ -52,6 +52,7 @@ export function createNowMock(changed: () => void): Pick<Api, "now" | "nowFeed">
   const PAGE = 15;
   const entries: NowEntry[] = [
     REVIEW_JOB,
+    entry({ key: "job:641", kind: "job", state: "done", at: at(2), endedAt: at(1), title: "Ask Merge? decisions", summary: "Asked Merge? on 1 PR", item: item("designcraft", 65, "Replace the fixed page grid with snap guides"), items: [item("designcraft", 65, "Replace the fixed page grid with snap guides")], itemCount: 1, event: "job:2211", detail: "/pipeline/641" }),
     entry({ key: "task:932", kind: "task", state: "queued", at: at(3), title: "Build task, Verify pull requests", item: C, items: [C], itemCount: 1, event: "task:932", detail: "/envs/932" }),
     entry({ key: "batch:14", kind: "batch", state: "queued", at: at(40), title: "Integration batch", what: "integration-pdfcraft-20261102-1", item: D, items: [D, item("pdfcraft", 871, "Update spot color table")], itemCount: 2, detail: "/queue/merge" }),
     ...Array.from({ length: 70 }, (_, i) => mk(69 - i, at(8 + i * 3))),

@@ -8,7 +8,9 @@ import { createTask } from "../src/build/tasks.ts";
 import { connect } from "../src/db.ts";
 import { itemJobs, jobItem } from "../src/runner/job-items.ts";
 import { pruneJobs } from "../src/runner/jobs.ts";
+import { askMergeDecisions } from "../src/merge/index.ts";
 import { SCRATCH } from "./scratch.ts";
+import { world } from "./world-db.ts";
 
 mkdirSync(SCRATCH, { recursive: true });
 const db = connect(join(mkdtempSync(join(SCRATCH, "job-items-")), "t.db"));
@@ -32,4 +34,19 @@ test("a job records the items it handled, tags their log lines, and stamps the b
 
   pruneJobs(db);
   assert.deepEqual(itemJobs(db, "o/app", 7), [], "a pruned job takes its item rows");
+});
+
+test("merge-ask records the PR it asked about together with the decision id", () => {
+  const w = world().repo().pr(1).review(1, { sure: false }).verified(1).premerge(1, "clean");
+  try {
+    const job = Number(w.db.prepare("INSERT INTO jobs (step, params, requested_by, requested_at, state) VALUES ('merge-ask', '{}', 'cli', 't', 'running')").run().lastInsertRowid);
+    setCallContext({ jobId: job, step: "merge-ask", stage: 10, cancelled: () => false });
+    const ids = askMergeDecisions(w.db, { log: () => {} });
+    assert.equal(ids.length, 1);
+    const rows = w.db.prepare("SELECT repo, number, outcome, ref FROM job_items WHERE job_id = ?").all(job);
+    assert.deepEqual(rows.map((r) => ({ ...r })), [{ repo: "app", number: 1, outcome: "asked Merge?", ref: ids[0] }]);
+  } finally {
+    setCallContext(null);
+    w.close();
+  }
 });

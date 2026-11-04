@@ -9,6 +9,7 @@ import { Transient, type Querier } from "../mirror.ts";
 import { approvalOf } from "./approval.ts";
 import { plannedItems } from "../core/select-items.ts";
 import { ALL_LABELS, type LabelDef } from "./set.ts";
+import { jobItem } from "../runner/job-items.ts";
 
 const ORG = "storytold";
 export const BATCH = 10;          // mutations per request
@@ -121,6 +122,7 @@ export async function applyLabels(db: DatabaseSync, client: Querier, repo: strin
           .run(repo, r.number, at, `added: ${r.add.join(", ")}`);
       }
       db.exec("COMMIT");
+      for (const r of ok) jobItem(db, repo, r.number, `labelled ${r.add.join(", ")}`, log);
       res.labeled += ok.length;
       o.onLabeled?.(res.labeled);
     }

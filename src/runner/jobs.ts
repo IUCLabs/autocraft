@@ -2,10 +2,11 @@
 // state written by the runner. Shared by the API, the runner and the CLI.
 import { closeSync, fstatSync, openSync, readSync, unlinkSync } from "node:fs";
 import type { DatabaseSync } from "node:sqlite";
-import type { Job, JobDetail, JobFilter, JobList, JobParams, JobState, JobUsage } from "../../web/src/api/types.ts";
+import type { Job, JobDetail,  JobFilter, JobList, JobParams, JobState, JobUsage } from "../../web/src/api/types.ts";
 import { trackedNames } from "../repos.ts";
 import { accountLabelsByJob, failRunning } from "../agents/runs.ts";
 import { knownStep, loadSteps, modelsOf, ParamError, validateParams, type StepDef } from "./steps.ts";
+import { shownLookup } from "../dash/api/shown.ts";
 
 export const JOB_STATES: JobState[] = ["queued", "running", "done", "failed", "cancelled"];
 /** Error text of jobs ended by a runner stop or restart; the autopilot does not count them as failures. */
@@ -200,7 +201,10 @@ export function jobDetail(db: DatabaseSync, id: number, view: { hidden?: string[
   const r = jobRow(db, id);
   const hidden = view.hidden ?? [];
   if (!r || (r.repo && hidden.includes(r.repo))) throw new JobError(404, `no job ${id}`);
-  return { ...toJobs(db, [r])[0]!, ...(view.logs === false ? { log: null, logTruncated: false } : logTail(r.log_path)) };
+  const shown = shownLookup(db);
+  const items = (db.prepare("SELECT repo, number, outcome, ref FROM job_items WHERE job_id = ? ORDER BY id").all(id) as { repo: string; number: number; outcome: string | null; ref: string | null }[])
+    .filter((i) => !hidden.includes(i.repo)).map((i) => ({ repo: i.repo, number: i.number, ...shown(i.repo, i.number), outcome: i.outcome, decision: i.ref }));
+  return { ...toJobs(db, [r])[0]!, items, ...(view.logs === false ? { log: null, logTruncated: false } : logTail(r.log_path)) };
 }
 
 /** Records the end of a job whose process closed: done on exit 0, cancelled when a cancel was asked, else failed with the reason. */

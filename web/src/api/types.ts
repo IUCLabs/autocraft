@@ -979,7 +979,15 @@ export interface Job {
   accounts: string[];
 }
 
+/** An item a job handled: what happened to it, and the decision the job asked about it (null when none). */
+export interface JobItem extends ItemRef, ItemShown {
+  outcome: string | null;
+  decision: string | null;
+}
+
 export interface JobDetail extends Job {
+  /** The items the job handled, in the order it handled them; hidden repos left out. */
+  items: JobItem[];
   /** The end of the job's log, with anything token-like replaced; null for viewers. */
   log: string | null;
   logTruncated: boolean;

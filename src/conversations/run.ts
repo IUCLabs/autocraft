@@ -1,5 +1,6 @@
 // The Conversation step: answers each operator message that waits for Opus with one sandboxed `claude -p` call
 // (the item's repository and the workspace, read-only) and stores the reply with its action cards.
+import { jobItem } from "../runner/job-items.ts";
 import { referenceDir } from "../reference.ts";
 import { REPO_PATH } from "../sandbox/command.ts";
 import type { DatabaseSync } from "node:sqlite";
@@ -71,10 +72,10 @@ export async function answerPending(db: DatabaseSync, p: ConversationParams): Pr
     shown.flush();
     const parsed = r.ok ? r.value : null;
     if (parsed) {
-      if (storeReply(db, repo, n, claim, parsed.text, parsed.cards, parsed.notes) !== null) answered++;
+      if (storeReply(db, repo, n, claim, parsed.text, parsed.cards, parsed.notes) !== null) { answered++; jobItem(db, repo, n, "answered a message", p.log); }
     } else {
       failTurn(db, repo, n, claim, "Opus gave no usable reply; send the message again");
-      p.log(`conversation: no usable reply for ${repo}#${n}`);
+      jobItem(db, repo, n, "no usable reply to a message", p.log);
     }
   }), () => claudeRoom(db), { first: true });
   return answered;

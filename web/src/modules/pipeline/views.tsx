@@ -5,7 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { ArrowLeftIcon } from "@phosphor-icons/react";
 import { useApi, useQuery } from "../../api/client";
-import type { Job, JobParams, JobState, PipelineOverview, SyncRun } from "../../api/types";
+import type { Job, JobItem, JobParams, JobState, PipelineOverview, SyncRun } from "../../api/types";
 import type { ViewProps } from "../../registry/types";
 import { can } from "../../registry/permissions";
 import { Badge, type Tone } from "../../ui/atoms/Badge";
@@ -15,6 +15,8 @@ import { ago, num } from "../../lib/format";
 import { Block, ConfirmButton, ErrorLine, Page, useWrite, when } from "../admin/parts";
 import { PilotPanel, PipelineSwitch, StageLimits } from "./controls";
 import { useNow } from "../../lib/useNow";
+import { decisionPath } from "../../lib/links";
+import { ItemRef } from "../../ui/molecules/ItemRef";
 
 // ---- helpers -------------------------------------------------------------------
 
@@ -208,6 +210,40 @@ export function PipelineView({ params }: ViewProps) {
   );
 }
 
+const INLINE_JOB_ITEMS = 5;
+
+/** The items a job handled, one per line with what happened to each and the decision it asked; more than five fold behind "+N more". */
+function JobItems({ items }: { items: JobItem[] }) {
+  const [open, setOpen] = useState(false);
+  const shown = open ? items : items.slice(0, INLINE_JOB_ITEMS);
+  const hidden = items.length - INLINE_JOB_ITEMS;
+  return (
+    <div>
+      <div className="mb-1 text-xs text-ink/55">Items ({num(items.length)})</div>
+      <ul className="flex flex-col gap-1.5">
+        {shown.map((i, n) => (
+          <li key={`${i.repo}#${i.number}:${n}`} className="flex flex-col gap-0.5 rounded border border-line px-3 py-2 sm:flex-row sm:items-start sm:gap-3">
+            <ItemRef repo={i.repo} number={i.number} kind={i.kind} state={i.state} title={i.title} size="sm" className="sm:flex-1" />
+            <span className="flex flex-wrap items-center gap-x-2 text-xs text-ink/65 sm:max-w-[45%] sm:justify-end">
+              {i.outcome}
+              {i.decision && (
+                <Link to={decisionPath({ id: i.decision, repo: i.repo, number: null })} className="font-medium text-accent-ink hover:underline max-md:py-2">
+                  Decision
+                </Link>
+              )}
+            </span>
+          </li>
+        ))}
+      </ul>
+      {hidden > 0 && (
+        <button type="button" onClick={() => setOpen((o) => !o)} className="mt-1 text-xs text-ink/60 hover:text-ink max-md:min-h-11">
+          {open ? "Show fewer" : `+${num(hidden)} more`}
+        </button>
+      )}
+    </div>
+  );
+}
+
 export function JobPanel({ params, user }: ViewProps) {
   const id = params.id ? Number(params.id) : null;
   if (!id) return <div className="grid h-full place-items-center p-6 text-sm text-ink/50">Pick a job to see its progress and log.</div>;
@@ -267,6 +303,7 @@ function JobDetailView({ id, operator, back }: { id: number; operator: boolean; 
           {j.cancelRequested && j.state === "running" && <p className="text-sm text-warn">Stop requested; the runner is ending the job.</p>}
           {j.progress && j.state === "running" && <p className="text-sm">{j.progress}</p>}
           {j.summary && <p className="rounded border border-ok/30 bg-ok/5 px-3 py-2 text-sm">{j.summary}</p>}
+          {j.items.length > 0 && <JobItems items={j.items} />}
           {j.error && <p className="rounded border border-bad/30 bg-bad/5 px-3 py-2 text-sm text-bad">{j.error}</p>}
           {j.log !== null && (
             <div className="flex min-h-[240px] flex-1 flex-col">

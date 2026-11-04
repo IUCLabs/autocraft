@@ -4,6 +4,7 @@
 // query (recordRuns); a merge refused for `action_required` marks the head for a read of its runs (markReread).
 // The ci-approve step approves them (approveRuns) for repos an operator approved. Set only from the dashboard
 // (src/dash/api/admin.ts).
+import { jobItem } from "../runner/job-items.ts";
 import type { DatabaseSync } from "node:sqlite";
 import { MAX_FAILURES } from "../core/rules.ts";
 import { ORG } from "../act/templates.ts";
@@ -158,13 +159,13 @@ export async function approveRuns(db: DatabaseSync, repo: string, d: ApproveDeps
       if (c.reread) runs = await readRuns(d.gh, repo, c.head);
       pr = JSON.parse(await d.gh(["api", `repos/${ORG}/${repo}/pulls/${c.number}`]));
     } catch (e) {
-      log(`${ref}: ${(e as Error).message}`);
+      jobItem(db, repo, c.number, `CI runs not read: ${(e as Error).message}`, log);
       out.failed.push(ref);
       continue;
     }
     const sameRepo = !pr.head?.repo || pr.head.repo.full_name === pr.base?.repo?.full_name;
     if (pr.state !== "open" || pr.draft !== false || pr.head?.sha !== c.head || sameRepo) {
-      log(`${ref}: closed, a draft, at another head or not from a fork; skipped`);
+      jobItem(db, repo, c.number, "CI runs skipped: closed, a draft, at another head or not from a fork", log);
       if (c.reread) save(c, c.runs, [], c.failed);
       out.skipped.push(ref);
       continue;
@@ -183,10 +184,10 @@ export async function approveRuns(db: DatabaseSync, repo: string, d: ApproveDeps
       else log(`${ref}: run ${run.id}: ${(r.stderr || r.stdout).trim().slice(0, 120)}; will retry`);
     }
     save(c, runs.filter((r) => !done.includes(r.id)), done, failed);
-    if (stopped !== null) { log(`${ref}: not approved: ${stopped}`); out.skipped.push(ref); continue; }
+    if (stopped !== null) { jobItem(db, repo, c.number, `CI runs not approved: ${stopped}`, log); out.skipped.push(ref); continue; }
     const bad = todo.length - done.length;
     (bad ? out.failed : out.approved).push(ref);
-    log(`${ref}: ${bad ? `${bad} of ${todo.length} runs not approved` : `approved ${todo.length} runs`}`);
+    jobItem(db, repo, c.number, bad ? `${bad} of ${todo.length} CI runs not approved` : `approved ${todo.length} CI run${todo.length === 1 ? "" : "s"}`, log);
   }
   return out;
 }

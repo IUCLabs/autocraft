@@ -504,7 +504,7 @@ export async function runFixIssueCollect(db: DatabaseSync, params: CollectParams
         if (r.retries < 1) {
           update(db, d, r, { head_task_id: cloneTask(db, head.id), base_task_id: cloneTask(db, base.id), retries: r.retries + 1 });
           s.retried++; s.changed++;
-          log(`  ${ref}: ${why}; queued the tasks again`);
+          jobItem(db, r.repo, r.number, `${why}; queued the tasks again`, log);
         } else { fail(db, d, r, `build environment error: ${why}`); s.failed++; s.changed++; }
         continue;
       }
@@ -527,7 +527,7 @@ export async function runFixIssueCollect(db: DatabaseSync, params: CollectParams
       } else {
         update(db, d, r, { state: "passed", format_diff: lint?.kind === "result" ? lint.formatDiff : null });
         s.passed++;
-        log(`  ${ref}: round ${r.round} passed`);
+        jobItem(db, r.repo, r.number, `round ${r.round} passed`, log);
         if (await openPr(x(r.repo), { ...r, state: "passed" })) s.opened++;
       }
       const after = attemptOf(db, r.repo, r.number);

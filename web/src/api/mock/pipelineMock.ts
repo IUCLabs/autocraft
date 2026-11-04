@@ -60,8 +60,17 @@ const job = (id: number, step: string, state: Job["state"], startMin: number | n
   models: step.startsWith("classify") ? ["jev", "haiku"] : step === "opus-review" ? ["opus"] : step === "decide" ? ["opus"] : [], accounts: state === "queued" ? [] : step === "opus-review" || step === "decide" || step.startsWith("classify") ? ["Account B"] : [], ...extra,
 });
 
+const pr = (repo: string, number: number, title: string) => ({ repo, number, kind: "pr" as const, state: "open" as const, title });
+const JOB_ITEMS: Record<number, JobDetail["items"]> = {
+  49: [{ ...pr("designcraft", 65, "Replace the fixed page grid with snap guides"), outcome: "asked Merge?", decision: "merge:designcraft:65:3f9a2c1" }],
+  50: ["Fix overset detection for locked frames", "Add snap guides to the ruler", "Crash when ungrouping nested frames", "Export drops the bleed box", "Guides ignore locked layers", "Undo skips the last move", "Text frame loses its style on paste"].map((t, i) => ({
+    ...pr("designcraft", 1484 + i * 3, t), outcome: i % 3 === 2 ? "labelled bugfix, needs-review" : "labelled bugfix", decision: null })),
+};
+
 function seed(): Job[] {
   return [
+    job(49, "merge-ask", "done", 3, 1, { summary: "Asked Merge? on 1 PR" }),
+    job(50, "labels-apply", "done", 6, 1, { params: { repo: "designcraft" }, summary: "designcraft: labelled 7 items" }),
     job(48, "classify-new", "queued", null, 0, { params: { limit: 200 }, requestedBy: "pipeline" }),
     job(47, "classify-new", "running", 9, 0, { params: { limit: 200 }, requestedBy: "pipeline", progress: "Jev: 120 of 164 items", usage: { calls: 120, input: 98_400, output: 6_100, costUsd: null } }),
     job(46, "embed", "done", 25, 2, { params: { scope: "changed" }, requestedBy: "pipeline", summary: "embedded new and changed items" }),
@@ -133,7 +142,7 @@ export function createPipelineMock(me: User, changed: () => void): Pick<Api, "pi
       },
       job: (id) => {
         const j = find(id);
-        const d: JobDetail = { ...j, log: j.id === 47 ? LOG : j.startedAt ? `${j.startedAt} job ${j.id}: ${j.step}\n${j.summary ?? j.error ?? ""}` : "", logTruncated: false };
+        const d: JobDetail = { ...j, items: JOB_ITEMS[j.id] ?? [], log: j.id === 47 ? LOG : j.startedAt ? `${j.startedAt} job ${j.id}: ${j.step}\n${j.summary ?? j.error ?? ""}` : "", logTruncated: false };
         return wait(d);
       },
       async run(step, params) {
