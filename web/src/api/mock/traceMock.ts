@@ -53,7 +53,7 @@ export const EVENTS: TraceEvent[] = ([
   { id: "gh:push0", kind: "github", at: at(6 * 1440 + 30), head: H1, actor: { type: "person", name: "contributor" }, summary: "Pushed 3f2a9c1", ref: { head: H1 } },
   { id: "comment:c1", kind: "github", at: at(1000), head: H1, actor: { type: "person", name: "maintainer" }, summary: "Posted a comment, 96 characters", ref: { commentId: "c1" } },
   ...LINT,
-] as TraceEvent[]).sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : a.id < b.id ? 1 : -1));
+] as TraceEvent[]).sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : a.id < b.id ? -1 : 1));
 
 const OFF_EVENTS: TraceEvent[] = [
   { id: "gh:merged", kind: "github", at: at(180), head: null, actor: { type: "person", name: "maintainer" }, summary: "Merged on GitHub by maintainer", ref: {} },
@@ -107,7 +107,7 @@ const FIELDS: Record<string, Record<string, unknown>> = {
 export function createTraceMock(): Pick<Api, "itemTrace" | "itemTraceDetail"> {
   return {
     itemTrace(repo, number, q = {}) {
-      if (repo === PIPELINE_OFF.repo && number === PIPELINE_OFF.number) return wait({ ...OFF_TRACE, events: OFF_EVENTS, nextCursor: null });
+      if (repo === PIPELINE_OFF.repo && number === PIPELINE_OFF.number) return wait({ ...OFF_TRACE, events: [...OFF_EVENTS].reverse(), nextCursor: null });
       const kinds = q.kinds ? new Set<TraceKind>(q.kinds) : null;
       let list = EVENTS.filter((e) => (!kinds || kinds.has(e.kind)) && (!q.autocraftOnly || e.actor.type !== "person"));
       if (q.since === TRACE.stamp) return wait({ unchanged: true as const, stamp: TRACE.stamp });

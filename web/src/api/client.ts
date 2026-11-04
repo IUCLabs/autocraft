@@ -133,7 +133,7 @@ export interface Api {
   nowFeed(before: string): Promise<NowFeed>;
   item(repo: RepoName, number: number): Promise<Item>;
   /**
-   * Every event of the item, newest first, with the header (now, next, who). `since` is the `stamp` of an earlier answer:
+   * Every event of the item, oldest first, with the header (now, next, who). `since` is the `stamp` of an earlier answer:
    * when nothing in the header or the first page changed, the answer is `{ unchanged: true, stamp }`.
    */
   itemTrace(repo: RepoName, number: number, q?: ItemTraceQuery): Promise<ItemTrace | ItemTraceUnchanged>;
