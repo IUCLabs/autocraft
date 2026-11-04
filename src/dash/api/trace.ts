@@ -317,11 +317,16 @@ export function writeEvent(a: { rowid: number; at: string; login: string; action
  */
 const writes: Source = {
   kinds: ["write"],
-  run({ db, ref, staff, operator }) {
+  run({ db, ref, repo, staff, operator }) {
     const allowed = writeActions(staff, operator);
     return rows<{ rowid: number; at: string; login: string; action: string; details: string | null }>(db,
       `SELECT rowid, at, login, action, details FROM audit WHERE target = ?${allowed ? ` AND action IN (${allowed.map(() => "?").join(",")})` : ""}`, ref, ...(allowed ?? []))
-      .map((a) => writeEvent(a, staff));
+      .map((a) => {
+        const e = writeEvent(a, staff);
+        const branch = typeof obj(a.details).batch === "string" ? (obj(a.details).batch as string) : null;
+        const id = branch ? (db.prepare("SELECT id FROM main.merge_batches WHERE repo = ? AND branch = ?").get(repo, branch) as { id: number } | undefined)?.id : undefined;
+        return id === undefined ? e : { ...e, ref: { ...e.ref, batchId: id } };
+      });
   },
 };
 

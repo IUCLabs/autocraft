@@ -9,7 +9,7 @@ import { ItemRef } from "../../ui/molecules/ItemRef";
 import { cn } from "../../ui/cn";
 import { ago, when } from "../../lib/format";
 import { useNow } from "../../lib/useNow";
-import { decisionPath } from "../../lib/links";
+import { batchPath, decisionPath } from "../../lib/links";
 import { FastMark } from "./fastTrack";
 import { RowMenu } from "./RowMenu";
 
@@ -60,7 +60,12 @@ export function BatchFacts({ b }: { b: QueueBatch }) {
   );
   return (
     <>
-      <Badge tone={BATCH_STATE[b.state][1]}>{BATCH_STATE[b.state][0]}</Badge>
+      <Link to={batchPath(b.id)} title="Open the batch" className="relative z-10 inline-flex">
+        <Badge tone={BATCH_STATE[b.state][1]}>{BATCH_STATE[b.state][0]}</Badge>
+      </Link>
+      <Link to={batchPath(b.id)} className="relative z-10 text-xs font-medium text-accent-ink hover:underline">
+        Batch #{b.id}
+      </Link>
       {branch}
       <span className="text-xs text-ink/60">{b.repo}</span>
       <span className="num text-xs text-ink/60">

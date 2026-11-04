@@ -1154,6 +1154,70 @@ export interface QueueBatch {
   updatedAt: string;
 }
 
+/** What a member PR did in its batch: `in` (still part of it, or carried to a later batch), `removed` (an operator took it out or stopped the batch), `merged`, `failed` (it failed alone and is on hold). */
+export type BatchMemberState = "in" | "removed" | "merged" | "failed";
+
+export interface BatchMemberDetail {
+  repo: RepoName;
+  number: number;
+  /** Null when the mirror has no row for the PR. */
+  title: string | null;
+  /** The PR's own state on GitHub. */
+  itemState: ItemState | null;
+  headOid: string;
+  state: BatchMemberState;
+  /** Why it left (removed, failed); null for the other states. */
+  reason: string | null;
+}
+
+export type BatchEventKind = "opened" | "task" | "push" | "pr" | "ci" | "removed" | "stopped" | "failed" | "split" | "superseded" | "merged";
+
+/** One step of the batch's own history, from its row, its sandbox task and the audit log. `by` is the operator behind a control, shown to staff only. */
+export interface BatchEvent {
+  id: string;
+  at: string;
+  kind: BatchEventKind;
+  summary: string;
+  by: string | null;
+  /** Another batch (parent or child) or the batch's sandbox task, when the event names one. */
+  batchId?: number;
+  taskId?: number;
+  /** A member PR the event is about. */
+  number?: number;
+}
+
+/** The batch PR's CI at its head: the checks sync's last read. */
+export interface BatchCi {
+  state: "success" | "failure" | "pending" | "none";
+  fetchedAt: string;
+  checks: { name: string; state: "success" | "failure" | "pending" | "skipped"; url: string }[];
+}
+
+export interface BatchDetail {
+  id: number;
+  repo: RepoName;
+  branch: string;
+  fork: string | null;
+  state: BatchState;
+  baseSha: string;
+  /** Head of the integration branch. */
+  commitSha: string;
+  parentId: number | null;
+  childIds: number[];
+  prNumber: number | null;
+  prUrl: string | null;
+  summary: string | null;
+  createdAt: string;
+  updatedAt: string;
+  /** When the batch PR landed; null unless merged. */
+  mergedAt: string | null;
+  taskId: number | null;
+  ci: BatchCi | null;
+  members: BatchMemberDetail[];
+  /** Oldest first. */
+  events: BatchEvent[];
+}
+
 export interface BatchFilter {
   repo?: RepoName;
   /** page size (server default 20, at most 100) and the `next` cursor of the previous page */
@@ -1697,6 +1761,8 @@ export type TraceActor = { type: "person" | "step" | "model"; name: string };
 export type TraceRef = {
   runId?: number; jobId?: number; taskId?: number; checkId?: number; decisionId?: string; auditRowid?: number;
   reviewId?: string; commentId?: string; head?: string; toHead?: string;
+  /** The integration batch the event belongs to (merge, hold and batch writes). */
+  batchId?: number;
 };
 export type TraceEvent = {
   /** Stable across fetches, for example "run:123". */
