@@ -118,7 +118,7 @@ test("snapshot: the run stage of every step", () => {
   assert.deepEqual(got, {
     embed: 1, dupes: 3, "dupes-compare": 3, "classify-new": 2, "classify-all": 2, referee: 2, "areas-propose": 2, "areas-suggest": 2, "areas-rescan": 2,
     prioritize: 2, rank: 2, decide: 3, conversation: 3, "labels-ensure": 4,
- "main-ci": 1, "labels-apply": 4, "opus-review": 5, checks: 5, "review-post": 5,
+    "main-ci": 1, "labels-apply": 4, "opus-review": 5, checks: 5, "review-post": 5,
     fixissue: 7, "fixissue-collect": 7, fixup: 6, verify: 6, "verify-collect": 6, merge: 6, "merge-ask": 6, "ci-approve": 6, act: 6, postmerge: 8, "postmerge-file": 8, cifix: 6, "cifix-rerun": 6,
   });
 });
