@@ -25,6 +25,8 @@ type RefereeOpts = {
   perCall?: number;
   /** Pipeline results carry probs {"sure": bool}, which settled.ts reads; evaluation rows carry none and never settle an item. */
   pipeline: boolean;
+  /** The model asked, when not the prompt's own (Sonnet). An Opus answer is the last word: its row is marked final, so an unsure one still settles the label and flags a scope decision. */
+  model?: string;
   /** Items sent to the model so far. */
   onSent?: (n: number) => void;
   cancelled?: () => boolean;
@@ -48,14 +50,15 @@ export async function refereeItems(db: DatabaseSync, runId: string, items: Item[
     const first = chunk.filter((i) => !have.get(i.repo, i.number, runId, opts.pipeline ? start : ""));
     if (first.length) {
       const r = await runModelStep(db, REFEREE_SONNET, first, {
-        usage: { run: runId, agent: opts.pipeline ? `sonnet-${Date.now().toString(36)}-${n}` : `sonnet-${n}`, stage: "referee" },
+        usage: { run: runId, agent: opts.pipeline ? `${opts.model ?? "sonnet"}-${Date.now().toString(36)}-${n}` : `sonnet-${n}`, stage: "referee" },
+        ...(opts.model && { model: opts.model }),
         onAttempt: (todo) => opts.onSent?.((sent += todo.length)),
       });
       if (r.ok) for (const verdicts of r.values) for (const v of verdicts) {
         const [repo, num] = v.ref.split("#");
-        ins.run(repo!, Number(num), runId, new Date().toISOString(), v.type_label, v.why, opts.pipeline ? JSON.stringify({ sure: v.sure === true }) : null);
+        ins.run(repo!, Number(num), runId, new Date().toISOString(), v.type_label, v.why, opts.pipeline ? JSON.stringify({ sure: v.sure === true, ...(opts.model && { final: true }) }) : null);
         got++;
-        jobItem(db, repo!, Number(num), `refereed as ${v.type_label}`);
+        jobItem(db, repo!, Number(num), `refereed${opts.model ? ` by ${opts.model}` : ""} as ${v.type_label}${v.sure === true ? "" : " (unsure)"}`);
       }
     }
     total += got;

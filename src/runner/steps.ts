@@ -489,23 +489,29 @@ export const STEPS: StepDef[] = [
   {
     name: "referee",
     title: "Referee label disagreements",
-    description: "Sonnet settles items where Jev and Haiku chose different type labels and at least one is not a scope label (scope disagreements go to Decide). A sure answer settles the type; an unsure one leaves the label to a person.",
+    description: "Sonnet settles items where Jev and Haiku chose different type labels and at least one is not a scope label (scope disagreements go to Decide). A sure answer settles the type. When Sonnet is unsure, Opus answers; its label settles the item either way, and an unsure Opus also flags a scope decision for an operator.",
     stage: runStage("referee"),
     requires: "operator",
     group: "referee",
-    models: ["sonnet"],
-    params: [{ name: "limit", label: "At most", kind: "int", min: 1, max: 500, default: 100, help: "items sent to Sonnet in this job" }],
+    models: ["sonnet", "opus"],
+    params: [{ name: "limit", label: "At most", kind: "int", min: 1, max: 500, default: 100, help: "items sent to the referee models in this job" }],
     run: async (ctx) => {
       const { latestRun } = await import("../classify/settled.ts");
       const { refereeItems } = await import("../classify/referee.ts");
       const { itemOf, plannedItems } = await import("../core/select-items.ts");
       const run = latestRun(ctx.db);
       if (!run) throw new Error("There is no classification run yet; start a classification pass first.");
-      const items = plannedItems(ctx.db, "referee", { run }).slice(0, Number(ctx.params.limit)).map((p) => itemOf(ctx.db, p.facts.repo, p.facts.number));
-      if (!items.length) return `Nothing to referee in run ${run}.`;
-      const got = await refereeItems(ctx.db, run, items, { pipeline: true, onSent: ctx.handled, cancelled: ctx.cancelled });
+      const due = plannedItems(ctx.db, "referee", { run }).slice(0, Number(ctx.params.limit));
+      if (!due.length) return `Nothing to referee in run ${run}.`;
+      const asked = (source: string) => due.filter((p) => p.action.params?.source === source).map((p) => itemOf(ctx.db, p.facts.repo, p.facts.number));
+      const sonnet = asked("sonnet"), opus = asked("opus");
+      let sent = 0;
+      const onSent = (n: number) => ctx.handled(sent + n);
+      const gotSonnet = sonnet.length ? await refereeItems(ctx.db, run, sonnet, { pipeline: true, onSent, cancelled: ctx.cancelled }) : 0;
+      sent += sonnet.length;
+      const gotOpus = opus.length ? await refereeItems(ctx.db, run, opus, { pipeline: true, model: "opus", onSent, cancelled: ctx.cancelled }) : 0;
       ctx.usageRun(run);
-      return `Run ${run}: Sonnet answered ${got} of ${items.length} disagreements.`;
+      return `Run ${run}: Sonnet answered ${gotSonnet} of ${sonnet.length}, Opus ${gotOpus} of ${opus.length} disagreements.`;
     },
   },
   {

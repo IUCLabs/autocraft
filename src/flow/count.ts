@@ -119,8 +119,8 @@ function classify(c: Ctx): NodeCount {
   const members = new Map<string, Refs>(["settled", "waiting", "referee", "disagree", "unclassified"].map((k) => [`classify.${k}`, new Set()]));
   const by: Counts = { settled: 0, waiting: 0, referee: 0, disagree: 0, unclassified: 0 };
   for (const r of c.open()) {
-    // A label disagreement waits on the Sonnet referee until it answers; scope-vs-scope goes to Decide, an unsure referee to a person.
-    const toReferee = r.status === "disagree" && r.referee_sure === null && !(isScope(r.jev_label) && isScope(r.haiku_label));
+    // A label disagreement waits on the referee (Sonnet, then Opus when Sonnet is unsure); scope-vs-scope goes to Decide.
+    const toReferee = r.status === "disagree" && !(isScope(r.jev_label) && isScope(r.haiku_label));
     const k = toReferee ? "referee" : (r.status ?? "unclassified");
     by[k]!++;
     members.get(`classify.${k}`)!.add(ref(r));
