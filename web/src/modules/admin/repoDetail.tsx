@@ -52,6 +52,23 @@ function WriteRow({ r, w, write }: { r: TrackedRepo; w: WriteKind; write: Write 
   );
 }
 
+/** One confirm approves every GitHub write of the repo that isn't approved yet, in pipeline order. */
+function ApproveAll({ r, write }: { r: TrackedRepo; write: Write }) {
+  const api = useApi();
+  const operator = useUser().role === "operator";
+  const todo = WRITES.filter((w) => !r[w.field]?.approved);
+  const key = `all:${r.name}`;
+  if (!operator || todo.length < 2) return null;
+  return (
+    <ConfirmButton
+      label="Approve all"
+      confirmLabel={`Approve all ${todo.length}: writes to GitHub`}
+      loading={write.busy === key}
+      onConfirm={() => void write.run(key, async () => { for (const w of todo) await w.run(api, r.name, true); })}
+    />
+  );
+}
+
 function RepoDetailView({ params }: ViewProps) {
   useNow();
   const name = params.name ?? "";
@@ -92,7 +109,7 @@ function RepoDetailView({ params }: ViewProps) {
           </div>
           {r.tracked && (
             <>
-              <Block className="mt-4" flush title="GitHub writes">
+              <Block className="mt-4" flush title="GitHub writes" aside={<ApproveAll r={r} write={write} />}>
                 <ul>
                   {WRITES.map((w) => (
                     <WriteRow key={w.field} r={r} w={w} write={write} />
