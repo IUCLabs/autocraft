@@ -15,7 +15,7 @@ export const isRole = (v: unknown): v is Role => (ROLES as readonly unknown[]).i
 export class AccessError extends Error {}
 
 export function listAccess(db: DatabaseSync): AccessRow[] {
-  return db.prepare("SELECT login, role, added_by, added_at, note FROM access ORDER BY role, login COLLATE NOCASE").all() as AccessRow[];
+  return db.prepare("SELECT login, role, added_by, added_at, note FROM access ORDER BY login COLLATE NOCASE").all() as AccessRow[];
 }
 
 // The access entry's GitHub id is stored at the first sign-in. Later sign-ins
