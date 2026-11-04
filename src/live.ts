@@ -48,7 +48,7 @@ export const TOPIC_TABLES: Record<string, Source[]> = {
   ranks: [{ table: "item_rank" }, { table: "item_priority" }],
   stages: [{ table: "stages" }, { table: "item_stage" }, { table: "flow_summary" }],
   checks: [{ table: "pr_checks" }, { table: "ci_run_approvals" }],
-  mainci: [{ table: "main_ci" }],
+  mainci: [{ table: "main_ci" }, { table: "main_fixes" }],
   classify: [{ table: "classifications" }, { table: "item_areas" }, { table: "area_lists" }, { table: "area_proposals" }],
   dupes: [{ table: "duplicate_pairs" }, { table: "duplicate_scans" }],
   decisions: [{ table: "decisions" }, { table: "decision_opinions" }, { table: "decision_comments" }, { table: "decision_claims" },

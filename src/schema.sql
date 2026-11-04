@@ -1127,3 +1127,25 @@ CREATE TABLE IF NOT EXISTS main_ci (
   PRIMARY KEY (repo, head_sha)
 );
 CREATE INDEX IF NOT EXISTS main_ci_repo_time ON main_ci(repo, committed_at);
+
+-- Red default branches (src/mainfix): one row per (repo, head, failing gate check), written once the check is sorted.
+-- verdict: flaky | infra | code (Haiku, from the failed step's log).
+-- state: rerun-requested (flaky: the failed jobs were rerun, written before the call) | rerun-passed (the head turned green) |
+--   asked (infra: an operator decision asks whether to open an issue) | issue-opened | declined (infra: the answers to that decision) |
+--   needs-fix (code, or red again after a rerun: waits for the fix PR step) | nothing-to-do (nothing readable to act on).
+CREATE TABLE IF NOT EXISTS main_fixes (
+  repo TEXT NOT NULL,
+  head_sha TEXT NOT NULL,
+  "check" TEXT NOT NULL,
+  verdict TEXT NOT NULL,
+  state TEXT NOT NULL,
+  reason TEXT,                        -- one line, public-safe
+  run_id INTEGER,                     -- the failed Actions run
+  run_url TEXT,
+  excerpt TEXT,                       -- scrubbed tail of the failed step's log
+  decision_id TEXT,
+  issue_number INTEGER,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (repo, head_sha, "check")
+);

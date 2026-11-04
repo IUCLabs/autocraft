@@ -9,7 +9,7 @@ import { Switch } from "../../ui/atoms/Switch";
 import { useWrite } from "../../lib/hooks";
 
 export type Write = ReturnType<typeof useWrite>;
-type WriteField = "labels" | "commenting" | "pushing" | "fixing" | "merging";
+type WriteField = "labels" | "commenting" | "pushing" | "fixing" | "mainFixing" | "merging";
 
 export interface WriteKind {
   field: WriteField;
@@ -55,6 +55,13 @@ export const WRITES: WriteKind[] = [
     short: "Fix",
     line: "Pushes issue fixes to the pipeline fork and opens pull requests and comments",
     run: (a, n, on) => a.repoAdmin.approveFixing(n, on),
+  },
+  {
+    field: "mainFixing",
+    name: "Fix red main",
+    short: "Main",
+    line: "Reruns flaky failed jobs on a red default branch and opens an issue on an operator's answer",
+    run: (a, n, on) => a.repoAdmin.approveMainFixing(n, on),
   },
   {
     field: "merging",

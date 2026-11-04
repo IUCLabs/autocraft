@@ -3,14 +3,14 @@ import type { MainCi, MainCiRepo, MainCiSummary } from "../types";
 import { NOW } from "./fixtures";
 
 const iso = (minAgo: number) => new Date(NOW - minAgo * 60_000).toISOString();
-const base = { branch: "main", failing: [] as MainCiRepo["failing"], redSince: null, lastGreenSha: null, culprit: null };
+const base = { branch: "main", failing: [] as MainCiRepo["failing"], redSince: null, lastGreenSha: null, culprit: null, autocraft: null as string | null };
 
 // A function, because fixtures.ts imports this file and NOW is not set yet while the modules load.
 const repos = (): MainCiRepo[] => [
   {
     ...base, repo: "designcraft", state: "red", headSha: "9f3c1a77d0b2", headline: "Merge pull request #412 from fork/export-fix", committedAt: iso(95), updatedAt: iso(1),
     failing: [{ name: "gate / test", url: "https://example.test/runs/1001" }], redSince: iso(88), lastGreenSha: "41be90c2aa17",
-    culprit: { sha: "9f3c1a77d0b2", headline: "Merge pull request #412 from fork/export-fix", pr: 412 },
+    culprit: { sha: "9f3c1a77d0b2", headline: "Merge pull request #412 from fork/export-fix", pr: 412 }, autocraft: "rerunning failed jobs",
   },
   {
     ...base, repo: "photocraft", state: "optional", headSha: "c0a81e5b3d44", headline: "Update icons (#233)", committedAt: iso(300), updatedAt: iso(1),

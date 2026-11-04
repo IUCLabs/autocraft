@@ -36,7 +36,7 @@ export type StageDef = {
   /** The `stage` label of the stage's prompts: equal, or followed by " (...)". */
   promptStage: string;
   waits: { name: string; why: string; howLong: string; showsAs: string; kind: "external" | "backoff" }[];
-  writes: { what: string; approval?: "label" | "comment" | "push" | "fix" | "merge" | "ci" }[];
+  writes: { what: string; approval?: "label" | "comment" | "push" | "fix" | "merge" | "ci" | "main-fix" }[];
   /** What stops for a person, or null. */
   person: string | null;
   swimlane: { id: string; lane: LaneId; row: number; lines: string[]; approval?: string }[];
@@ -280,9 +280,9 @@ export const STAGES: StageDef[] = [
   },
   {
     id: "fixup", title: "Fix-up", order: 9, runStage: 6, docSection: "Fix-up", mode: "steps",
-    description: "For a take-with-fixes review, applies the listed small fixes to the contributor's branch, or posts them as a comment when the branch cannot be pushed to. For a wanted PR whose gate check fails, runs the formatter, reruns an infrastructure failure once, or has a model patch the code.",
-    steps: [{ name: "fixup", label: "Fix-up", limit: null, seeded: 20 }, { name: "cifix", label: "CI fix", limit: null }, { name: "cifix-rerun", label: "CI fix reruns", limit: 30 }],
-    lanes: [{ name: "fixup", steps: ["fixup"], order: 12 }, { name: "cifix", steps: ["cifix"], order: 23 }, { name: "cifix-rerun", steps: ["cifix-rerun"], order: 24 }],
+    description: "For a take-with-fixes review, applies the listed small fixes to the contributor's branch, or posts them as a comment when the branch cannot be pushed to. For a wanted PR whose gate check fails, runs the formatter, reruns an infrastructure failure once, or has a model patch the code. For a red default branch in an approved repo, reruns a flaky failure once and asks an operator about reporting an infrastructure failure.",
+    steps: [{ name: "fixup", label: "Fix-up", limit: null, seeded: 20 }, { name: "cifix", label: "CI fix", limit: null }, { name: "cifix-rerun", label: "CI fix reruns", limit: 30 }, { name: "main-fix", label: "Fix red main", limit: 20 }],
+    lanes: [{ name: "fixup", steps: ["fixup"], order: 12 }, { name: "cifix", steps: ["cifix"], order: 23 }, { name: "cifix-rerun", steps: ["cifix-rerun"], order: 24 }, { name: "main-fix", steps: ["main-fix"], order: 25 }],
     reads: ["Review fix lists", "Repo checkout at the PR head", "Failed CI check logs"],
     sets: ["Pushed commits", "Fix comments", "Formatter tasks", "CI reruns"],
     states: [
@@ -296,12 +296,12 @@ export const STAGES: StageDef[] = [
       { id: "cifix-pushed", label: "CI fix: pushed", waitsOn: "ci", tone: "ok", hint: "The new head goes back to Review and CI", link: "items" },
       { id: "cifix-failed", label: "CI fix: gave up", waitsOn: "person", tone: "warn", hint: "Two tries at one head did not fix it; the PR stays blocked by CI", link: "items" },
     ],
-    models: [{ model: "sonnet", use: "Writes the patch and resolves conflicts" }, { model: "opus", use: "Checks the patch" }],
-    promptIds: ["fixup.patch", "fixup.check", "fixup.conflict", "cifix.patch"], promptStage: "Integrate (fix-ups)",
+    models: [{ model: "sonnet", use: "Writes the patch and resolves conflicts" }, { model: "opus", use: "Checks the patch" }, { model: "haiku", use: "Sorts a red default branch's failed checks (flaky, infra or code)" }],
+    promptIds: ["fixup.patch", "fixup.check", "fixup.conflict", "cifix.patch", "mainfix.classify"], promptStage: "Integrate (fix-ups)",
     waits: [
 
     ],
-    writes: [{ what: "Push to the PR branch", approval: "push" }, { what: "Comment with the fixes", approval: "comment" }, { what: "Rerun failed CI jobs", approval: "ci" }],
+    writes: [{ what: "Push to the PR branch", approval: "push" }, { what: "Comment with the fixes", approval: "comment" }, { what: "Rerun failed CI jobs", approval: "ci" }, { what: "Rerun a red default branch's failed jobs; open an issue on an operator's answer", approval: "main-fix" }],
     person: "Per-repo approval",
     swimlane: [
       { id: "fixup", lane: "writes", row: 13, lines: ["Fix-up", "Sonnet patch, Opus check"], approval: "push approval" },

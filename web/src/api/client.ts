@@ -153,6 +153,8 @@ export interface Api {
     approveCommenting(name: RepoName, approved: boolean): Promise<TrackedRepo[]>;
     /** Lets the Fix issues step push fixes, open pull requests and comment on issues here, or stops it. */
     approveFixing(name: RepoName, approved: boolean): Promise<TrackedRepo[]>;
+    /** Lets the Fix red main step rerun failed jobs on a red default branch here and open an issue on an operator's answer, or stops it. */
+    approveMainFixing(name: RepoName, approved: boolean): Promise<TrackedRepo[]>;
     /** Switches the pipeline stages on or off for this repo (off: sync only). */
     setPipeline(name: RepoName, on: boolean): Promise<TrackedRepo[]>;
   };

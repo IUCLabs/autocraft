@@ -38,7 +38,7 @@ const globalSig = (db: DatabaseSync): string => JSON.stringify([db.prepare(`SELE
     (SELECT value FROM main.settings WHERE key = 'classify_run') AS run,
     (SELECT group_concat(key || '=' || value) FROM main.settings WHERE key LIKE 'labels_approved:%') AS approvals,
     (SELECT group_concat(key || '=' || value) FROM main.settings WHERE key LIKE 'merge_approved:%') AS mergeApprovals,
-    (SELECT group_concat(key || '=' || value) FROM main.settings WHERE key LIKE 'fixissue_approved:%' OR key LIKE 'push_approved:%' OR key LIKE 'comment_approved:%') AS writeApprovals,
+    (SELECT group_concat(key || '=' || value) FROM main.settings WHERE key LIKE 'fixissue_approved:%' OR key LIKE 'push_approved:%' OR key LIKE 'comment_approved:%' OR key LIKE 'mainfix_approved:%') AS writeApprovals,
     (SELECT group_concat(name) FROM (SELECT name FROM main.tracked_repos ORDER BY name)) AS tracked,
     NULL AS jev`).get(), newestVerdictRun(db)]);
 

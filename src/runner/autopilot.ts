@@ -44,6 +44,7 @@ import { applyUsedAnswers } from "../decisions-used.ts";
 import { duePriorityCount } from "../priority/index.ts";
 import { selectIssues } from "../fixissue/candidates.ts";
 import { pendingDefects, selectPostmerge } from "../postmerge/select.ts";
+import { mainFixDue } from "../mainfix/index.ts";
 import { refereeCandidates } from "../classify/referee.ts";
 import { currentRun, dueItems, haikuDue } from "./classify.ts";
 import { enqueue, JobError, now, requestCancel, RUNNER_STOPPED } from "./jobs.ts";
@@ -405,6 +406,17 @@ const LANE_CODE: Omit<Lane, "steps">[] = [
     name: "postmerge-file",
     perRepo: true,
     detect: (db, { tracked }) => tracked.filter((repo) => commentApprovalOf(db, repo) && pendingDefects(db, repo).length).sort().map((repo) => ({ step: "postmerge-file", params: { repo } })),
+  },
+  {
+    // A red default branch in a repo approved for it: flaky failures are rerun once, infrastructure failures become a decision, code failures are recorded.
+    name: "main-fix",
+    perRepo: true,
+    // A rerun waits for the next reading of the head or a time limit; the clock moves with no change in the data.
+    extra: (db) => {
+      const n = (db.prepare("SELECT COUNT(*) AS n FROM main.main_fixes WHERE state = 'rerun-requested'").get() as { n: number }).n;
+      return n ? `${n}:${Math.floor(Date.now() / 300_000)}` : "";
+    },
+    detect: (db, { tracked }) => tracked.filter((repo) => mainFixDue(db, repo)).sort().map((repo) => ({ step: "main-fix", params: { repo } })),
   },
 ];
 
