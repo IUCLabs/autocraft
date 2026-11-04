@@ -18,7 +18,7 @@ import { BODY_CHARS, MAX_FINDINGS, MAX_MERGED_DIFF_CHARS, SAMPLE_POSTMERGE_PRS, 
 import { PREMERGE_MAX_FINDINGS, PREMERGE_SCENARIO_CHARS, PREMERGE_TITLE_CHARS } from "../premerge/parse.ts";
 import { COMMENT_TEMPLATES } from "../act/templates.ts";
 import { ISSUE_TEMPLATE } from "../postmerge/template.ts";
-import { ASK_TEMPLATE, CARRY_ASK_TEMPLATE, CARRY_COMMENT_TEMPLATE, COMMENT_TEMPLATE, CONFLICT_ASK_TEMPLATE, CONFLICT_COMMENT_TEMPLATE } from "../fixup/template.ts";
+import { ASK_TEMPLATE, CARRY_ASK_TEMPLATE, CARRY_COMMENT_TEMPLATE, COMMENT_TEMPLATE, CONFLICT_ASK_TEMPLATE, CONFLICT_COMMENT_TEMPLATE, LATER_COMMENT_TEMPLATE } from "../fixup/template.ts";
 import { MAX_CHANGED_LINES, type ConflictPr, type FixupPr } from "../fixup/patch.ts";
 import { ASK_TEMPLATE as CIFIX_ASK_TEMPLATE, COMMENT_TEMPLATE as CIFIX_COMMENT_TEMPLATE } from "../cifix/template.ts";
 import { SAMPLE_CIFIX_PRS, type CifixPr } from "../cifix/types.ts";
@@ -212,7 +212,7 @@ Claims check, before any verdict: list every behavioural claim the title and bod
 
 Verdicts:
 - take: wanted, correct, nothing to change.
-- take-fix: wanted and nearly right. fixes must be the complete list of changes to make, each with the file and the exact change; fixes are applied mechanically (about 20 lines in all, at most ${OPUS_MAX_FIXES} entries); a larger change is a hold.
+- take-fix: wanted and nearly right. fixes stay within what the PR sets out to do; the same problem in code the PR doesn't touch goes in risks, not fixes. fixes must be the complete list of changes to make, each with the file and the exact change; fixes are applied mechanically (about 20 lines in all, at most ${OPUS_MAX_FIXES} entries); a larger change is a hold.
 - hold: needs a person: reference behaviour you are unsure of, a design or scope choice, a problem you cannot judge from the diff.
 - close: wrong or broken beyond a small fix, clearly not wanted, already done on the main branch, or superseded. Only when you are sure.
 
@@ -222,7 +222,7 @@ mode "delta": diff holds only the changes since the head commit of earlier_opus,
 
 unapplied_fixes lists changes an earlier review asked for that were never made. For each, either keep it in fixes (adjusted to the current code) or say in reason why it is no longer needed. Name the file in reason when you explain.
 
-pipeline_commits lists commits our own pipeline pushed since earlier_opus. Check each one against its fixes_meant (for a fix-up, the fixes the earlier review asked for) and against the diff. If a commit did not do what was asked, or did something else, say so in reason and name the file; a missing fix that is still needed stays in fixes.
+pipeline_commits lists commits our own pipeline pushed since earlier_opus. Check each one against its fixes_meant (for a fix-up, the fixes the earlier review asked for) and against the diff. If a commit did not do what was asked, or did something else, say so in reason and name the file; a missing fix that is still needed stays in fixes. Never ask to undo a change a pipeline commit made for an earlier review unless it is wrong (it breaks behaviour, doesn't build, or contradicts the reference app behaviour); an overlapping PR or a narrower scope is a risk to note, not a fix.
 
 Never name the reference application or its vendor in what you write; say "reference app behaviour".
 
@@ -403,6 +403,7 @@ Reply with ONLY a unified diff in git format against the file contents shown: fo
   limits: { perCall: 1, attempts: 1, timeoutSeconds: 600 },
   extra: [
     { label: "Comment on the PR after a push", value: COMMENT_TEMPLATE },
+    { label: "Comment on the PR after a later push", value: LATER_COMMENT_TEMPLATE },
     { label: "Comment on a PR we can't push to, listing the fixes", value: ASK_TEMPLATE },
     { label: "Comment after pushing parts carried over from duplicates", value: CARRY_COMMENT_TEMPLATE },
     { label: "Comment on a PR we can't push to, listing parts to carry over from duplicates", value: CARRY_ASK_TEMPLATE },

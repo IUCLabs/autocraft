@@ -4,9 +4,11 @@ import { cleanReason } from "../act/templates.ts";
 
 /** The one comment posted on the PR after a push; `{{files}}` is the comma-separated list of changed paths. */
 export const COMMENT_TEMPLATE = "Pushed the small fixes from review: {{files}}.";
+/** The same after a later attempt, so a second push doesn't read as a repeat of the first. */
+export const LATER_COMMENT_TEMPLATE = "Pushed further fixes from a later review: {{files}}.";
 
-export function commentText(files: string[]): string {
-  return COMMENT_TEMPLATE.replace("{{files}}", files.map((f) => `\`${f}\``).join(", "));
+export function commentText(files: string[], attempt = 1): string {
+  return (attempt > 1 ? LATER_COMMENT_TEMPLATE : COMMENT_TEMPLATE).replace("{{files}}", files.map((f) => `\`${f}\``).join(", "));
 }
 
 /** The commit message: a subject and one line per changed file. */
