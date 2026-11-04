@@ -7,10 +7,11 @@ const ago = (h: number) => new Date(NOW - h * 3_600_000).toISOString();
 const SEED: DirectionView[] = [
   {
     id: 1, repo: "*", createdBy: "mosswood", createdAt: ago(72), sourceDecision: "designcraft#2188:duplicate", retiredAt: null,
+    sourceItem: { repo: "designcraft", number: 2188, kind: "issue", state: "open", title: "Snap to pixel grid breaks with rotated frames" },
     text: "Hyphenation, spelling, dictionaries and other language data belong in craft-libs (craft-text, craft-proof) and craft-i18n language packs, not in the app.",
   },
-  { id: 2, repo: "photocraft", createdBy: "ochre-fox", createdAt: ago(30), sourceDecision: null, retiredAt: null, text: "New file formats are added as codec crates, not inside the canvas code." },
-  { id: 3, repo: "photocraft", createdBy: "ochre-fox", createdAt: ago(240), sourceDecision: null, retiredAt: ago(48), text: "Keep the plugin API frozen until the 2.0 release." },
+  { id: 2, repo: "photocraft", createdBy: "ochre-fox", createdAt: ago(30), sourceDecision: null, sourceItem: null, retiredAt: null, text: "New file formats are added as codec crates, not inside the canvas code." },
+  { id: 3, repo: "photocraft", createdBy: "ochre-fox", createdAt: ago(240), sourceDecision: null, sourceItem: null, retiredAt: ago(48), text: "Keep the plugin API frozen until the 2.0 release." },
 ];
 
 const PROPOSAL: DirectionProposal = {
@@ -45,7 +46,7 @@ export function createDirectionsMock(me: User, changed: () => void): Pick<Api, "
         need();
         const text = body.text.trim();
         if (!text) throw new Error("a direction needs text");
-        dirs.push({ id: next++, repo: body.allRepos ? "*" : repo, text, createdBy: me.login, createdAt: new Date(NOW).toISOString(), sourceDecision: null, retiredAt: null });
+        dirs.push({ id: next++, repo: body.allRepos ? "*" : repo, text, createdBy: me.login, createdAt: new Date(NOW).toISOString(), sourceDecision: null, sourceItem: null, retiredAt: null });
         changed();
         return wait(view(repo));
       },
@@ -63,7 +64,7 @@ export function createDirectionsMock(me: User, changed: () => void): Pick<Api, "
         need();
         const p = proposals.find((x) => x.id === id);
         if (!p) throw new Error("no open proposal with that id");
-        dirs.push({ id: next++, repo: body?.allRepos ? "*" : p.repo, text: (body?.text ?? p.draft).trim(), createdBy: me.login, createdAt: new Date(NOW).toISOString(), sourceDecision: p.decisionId, retiredAt: null });
+        dirs.push({ id: next++, repo: body?.allRepos ? "*" : p.repo, text: (body?.text ?? p.draft).trim(), createdBy: me.login, createdAt: new Date(NOW).toISOString(), sourceDecision: p.decisionId, sourceItem: null, retiredAt: null });
         proposals = proposals.filter((x) => x.id !== id);
         changed();
       },

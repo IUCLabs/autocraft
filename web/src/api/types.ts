@@ -1721,6 +1721,8 @@ export interface DirectionView {
   createdAt: string;
   /** The decision the text came from, when it came from one. */
   sourceDecision: string | null;
+  /** The item that decision is about; null without a source or when the item is not mirrored. */
+  sourceItem: { repo: RepoName; number: number; kind: ItemKind; state: ItemState; title: string } | null;
   retiredAt: string | null;
 }
 /** A draft direction the model proposed from an operator's note; waits for an operator. */

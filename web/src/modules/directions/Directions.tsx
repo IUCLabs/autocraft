@@ -18,12 +18,12 @@ import { ConfirmButton } from "../../ui/molecules/ConfirmButton";
 
 const decisionLink = (id: string) => `/decisions/${encodeURIComponent(id)}`;
 
-/** The item a decision id ("repo#num:kind") is about, as an item reference that opens the decision. */
-function SourceRef({ id }: { id: string }) {
-  const m = /^(.+)#(\d+):(\w+)$/.exec(id);
-  if (!m) return <Link to={decisionLink(id)} className="code hover:text-accent-ink hover:underline">{id}</Link>;
-  const [, repo, n, kind] = m;
-  return <ItemRef repo={repo!} number={Number(n)} title={null} size="sm" className="inline-flex" href={decisionPath({ id, repo: repo!, number: Number(n), kind })} />;
+/** The item a decision is about, as a full item reference that opens the decision. */
+function SourceRef({ d }: { d: DirectionView }) {
+  const id = d.sourceDecision!, it = d.sourceItem;
+  if (!it) return <Link to={decisionLink(id)} className="code hover:text-accent-ink hover:underline">{id}</Link>;
+  const kind = id.split(":")[1];
+  return <ItemRef repo={it.repo} number={it.number} kind={it.kind} state={it.state} title={it.title} size="sm" className="w-full" href={decisionPath({ id, repo: it.repo, number: it.number, kind })} />;
 }
 
 function Row({ d, write }: { d: DirectionView; write: ReturnType<typeof useWrite> }) {
@@ -41,7 +41,7 @@ function Row({ d, write }: { d: DirectionView; write: ReturnType<typeof useWrite
               {d.repo === "*" && <Badge>All repos</Badge>}
               <span>{d.createdBy}</span>
               <TimeAgo iso={d.createdAt} />
-              {d.sourceDecision && <SourceRef id={d.sourceDecision} />}
+              {d.sourceDecision && <SourceRef d={d} />}
             </p>
           </div>
           {operator && !d.retiredAt && (

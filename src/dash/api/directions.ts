@@ -1,6 +1,7 @@
 // Owner directions over JSON. Everyone who may see the repo reads its directions; operators add, edit and retire them and decide the
 // drafts proposed from their notes (src/directions-propose.ts). Every write is audited.
 import type { DatabaseSync } from "node:sqlite";
+import type { ItemState } from "../../../web/src/api/types.ts";
 import type { DecisionDirectionProposals, DirectionAddBody, DirectionProposal, DirectionView, RepoDirections } from "../../../web/src/api/types.ts";
 import { ALL_REPOS, DirectionError, addDirection, directionsOfRepo, editDirection, retireDirection, type DirectionRow } from "../../directions.ts";
 import { ProposalError, acceptProposal, dismissProposal, openProposals, type ProposalRow } from "../../directions-propose.ts";
@@ -31,8 +32,15 @@ const operatorOf = (req: Req): string => {
   return req.user.login;
 };
 
-const viewOf = (d: DirectionRow): DirectionView => ({
-  id: d.id, repo: d.repo, text: d.text, createdBy: d.created_by, createdAt: d.created_at, sourceDecision: d.source_decision, retiredAt: d.retired_at,
+/** The item the source decision is about, when both are known. */
+function sourceItemOf(db: DatabaseSync, decisionId: string | null): DirectionView["sourceItem"] {
+  if (!decisionId) return null;
+  const r = db.prepare(`SELECT i.repo, i.number, i.kind, i.state, i.title FROM decisions d JOIN items i ON i.repo = d.repo AND i.number = d.number WHERE d.id = ?`).get(decisionId) as
+    { repo: string; number: number; kind: "pr" | "issue"; state: string; title: string } | undefined;
+  return r ? { repo: r.repo, number: r.number, kind: r.kind, state: r.state.toLowerCase() as ItemState, title: r.title } : null;
+}
+const viewOf = (db: DatabaseSync, d: DirectionRow): DirectionView => ({
+  id: d.id, repo: d.repo, text: d.text, createdBy: d.created_by, createdAt: d.created_at, sourceDecision: d.source_decision, sourceItem: sourceItemOf(db, d.source_decision), retiredAt: d.retired_at,
 });
 const proposalOf = (p: ProposalRow): DirectionProposal => ({
   id: p.id, repo: p.repo, number: p.number, decisionId: p.decision_id, note: p.note, draft: p.draft ?? "", createdAt: p.created_at,
@@ -40,7 +48,7 @@ const proposalOf = (p: ProposalRow): DirectionProposal => ({
 
 export function repoDirections(db: DatabaseSync, repo: string, operator: boolean): RepoDirections {
   const { active, retired } = directionsOfRepo(db, repo);
-  return { repo, directions: active.map(viewOf), retired: retired.map(viewOf), proposals: operator ? openProposals(db, { repo }).map(proposalOf) : [] };
+  return { repo, directions: active.map((d) => viewOf(db, d)), retired: retired.map((d) => viewOf(db, d)), proposals: operator ? openProposals(db, { repo }).map(proposalOf) : [] };
 }
 
 export async function get(db: DatabaseSync, req: Req): Promise<RepoDirections> {
