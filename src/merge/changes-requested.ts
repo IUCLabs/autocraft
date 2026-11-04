@@ -49,10 +49,25 @@ export function refuseLive(formal: ReviewFact[], decision?: string | null): stri
   return decision === "CHANGES_REQUESTED" ? REASON : null;
 }
 
+/**
+ * Why a maintainer's changes request blocks the PR, or null. A live read newer than the PR's last change decides;
+ * otherwise the mirrored reviews and GitHub's review decision do. The merge queue and the CI fix share this.
+ */
+export function changesRequestedWhy(live: Gate | undefined, updatedAt: string | null, reviews: ReviewFact[], decision: string | null | undefined): { why: string | null; live: boolean } {
+  const fresh = live && live.readAt > (updatedAt ?? "") ? live : null;
+  if (fresh) return { why: fresh.blocked ? reasonFor(fresh.by) : null, live: true };
+  return { why: refuseReviews(reviews, decision), live: false };
+}
+
 /** Failed live reads in a row after which the queue says so. */
 export const GATE_FAILURES = 3;
 
 export type Gate = { blocked: boolean; by: string[]; readAt: string; failures: number };
+
+/** The mirrored reviews of a PR (the latest 10), as facts. */
+export function mirroredReviews(db: DatabaseSync, repo: string, number: number): ReviewFact[] {
+  return db.prepare("SELECT author, author_association AS association, review_state AS state, created_at AS at FROM comments WHERE repo = ? AND number = ? AND kind = 'review'").all(repo, number) as ReviewFact[];
+}
 
 /** What the live reads stored for the PRs, as `repo#number`. */
 export function gatesOf(db: DatabaseSync, repo?: string): Map<string, Gate> {

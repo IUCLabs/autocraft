@@ -16,9 +16,9 @@ export const BASE_NAME = /^[A-Za-z0-9._/-]+$/;
 /** Merge tries per head (pushed, failed, refused or rejected) before the PR is left to a person. */
 export const MAX_CONFLICT_TRIES = 2;
 
-export const CONFLICT_STATES = ["merged", "failed", "refused", "rejected", "asked", "skipped", "cannot-push", "push-denied"] as const;
+export const CONFLICT_STATES = ["pushing", "merged", "failed", "refused", "rejected", "asked", "skipped", "cannot-push", "push-denied"] as const;
 export type ConflictState = (typeof CONFLICT_STATES)[number];
-const TRY_STATES: ConflictState[] = ["merged", "failed", "refused", "rejected"];
+const TRY_STATES: ConflictState[] = ["pushing", "merged", "failed", "refused", "rejected"];
 
 export type ConflictCandidate = {
   repo: string; number: number; head: string; /** The PR's base branch name. */ base: string; title: string;

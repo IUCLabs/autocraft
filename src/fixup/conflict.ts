@@ -54,9 +54,19 @@ export function selectConflicts(db: DatabaseSync, repo: string): { merge: Confli
   return { merge: all.filter((x) => x.bucket === "merge").map((x) => x.c), ask: all.filter((x) => x.bucket === "ask").map((x) => x.c) };
 }
 
+/** Written before the push, so a crash between the push and its record leaves the merge commit in the push chain. */
+function recordPushing(db: DatabaseSync, at: string, c: ConflictCandidate, files: string[], base: string | null, toHead: string): void {
+  db.prepare("INSERT INTO conflict_merges (repo, number, from_head, to_head, base_sha, state, reason, files, attempt, created_at) VALUES (?, ?, ?, ?, ?, 'pushing', NULL, ?, ?, ?)")
+    .run(c.repo, c.number, c.head, toHead, base, JSON.stringify(files), c.attempt, at);
+}
+
 function record(db: DatabaseSync, at: string, c: ConflictCandidate, state: string, reason: string | null, files: string[], base: string | null, toHead: string | null = null): void {
-  db.prepare("INSERT INTO conflict_merges (repo, number, from_head, to_head, base_sha, state, reason, files, attempt, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-    .run(c.repo, c.number, c.head, toHead, base, state, reason, JSON.stringify(files), c.attempt, at);
+  const open = db.prepare("SELECT rowid AS id FROM conflict_merges WHERE repo = ? AND number = ? AND from_head = ? AND state = 'pushing'").get(c.repo, c.number, c.head) as { id: number } | undefined;
+  if (open) db.prepare("UPDATE conflict_merges SET state = ?, reason = ?, files = ?, to_head = ?, base_sha = ? WHERE rowid = ?").run(state, reason, JSON.stringify(files), toHead, base, open.id);
+  else {
+    db.prepare("INSERT INTO conflict_merges (repo, number, from_head, to_head, base_sha, state, reason, files, attempt, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(c.repo, c.number, c.head, toHead, base, state, reason, JSON.stringify(files), c.attempt, at);
+  }
   db.prepare("INSERT INTO stages (repo, number, stage, at, actor, note) VALUES (?, ?, 'take', ?, 'fixup', ?)")
     .run(c.repo, c.number, at, state === "merged" ? `merged ${c.base} at ${short(c.head)}: ${files.length ? files.join(", ") : "no conflicts"}` : state === "asked" ? `asked the contributor to merge ${c.base} at ${short(c.head)}` : `conflict merge ${state} at ${short(c.head)}: ${reason}`);
 }
@@ -192,6 +202,7 @@ export async function mergeConflict(db: DatabaseSync, x: ConflictRun, c: Conflic
       if (!again) return;
     }
     const commit = await git.commitMerge(tree, [head, baseSha], mergeMessage(c.base, pr.headRefName), { name: who.login, email: who.email });
+    recordPushing(db, x.at(), c, files, baseSha, commit);
     const push = await pushBranch(x.gw, git, "conflict-push", { repo: x.repo, number: c.number, remote: pr.headRepository.nameWithOwner, branch: pr.headRefName, sha: commit, expected: head }, { run: x.runId, from: head, to: commit, base: c.base, files });
     if (push.code !== 0) {
       const err = oneLine(push.stderr);

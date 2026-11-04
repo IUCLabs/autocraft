@@ -282,6 +282,7 @@ function PatchChecks({ rows }: { rows: ItemPatchCheck[] }) {
 const F_STATE: Record<ItemFixup["state"], [string, Tone]> = {
   pushed: ["Pushed", "ok"], failed: ["Failed", "bad"], refused: ["Refused", "warn"], rejected: ["Rejected by Opus", "warn"], "cannot-push": ["Cannot push", "warn"], "too-large": ["Too large", "warn"], asked: ["Asked for changes", "neutral"],
   "push-denied": ["Push denied", "warn"], infra: ["Infrastructure failure", "neutral"], rerun: ["Jobs rerun", "neutral"], formatting: ["Formatter running", "neutral"],
+  rerunning: ["Rerunning jobs", "neutral"], pushing: ["Pushing", "neutral"], skipped: ["Skipped", "neutral"], capped: ["Limit reached", "warn"], "comment-failed": ["Comment failed", "warn"],
 };
 
 function Fixups({ rows }: { rows: ItemFixup[] }) {

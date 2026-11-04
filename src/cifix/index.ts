@@ -31,11 +31,11 @@ import { CLAUDE_PROMPTS } from "../prompts/index.ts";
 import { cachedDiff, ghDiff, type DiffFetcher } from "../review/diff.ts";
 import { REPO_PATH } from "../sandbox/command.ts";
 import { checkoutForPr } from "../sandbox/index.ts";
-import { selectCifix, type CifixCandidate } from "./candidates.ts";
-import { guardPatch, TEST_PATH } from "./guard.ts";
+import { MAX_PUSHES_PER_PR, MAX_TRIES_PER_PR, selectCifix, type CifixCandidate } from "./candidates.ts";
+import { formattingOnly, guardPatch, TEST_PATH } from "./guard.ts";
 import { readFailure } from "./logs.ts";
 import { askText, commentText, commitMessage } from "./template.ts";
-import { triage } from "./triage.ts";
+import { formatDiffPaths, matchPrFiles, triage } from "./triage.ts";
 import type { CiFailure, CifixPr } from "./types.ts";
 
 export { selectCifix, classifyCifix, MAX_TRIES, type CifixCandidate } from "./candidates.ts";
@@ -49,16 +49,26 @@ const CHECK = CLAUDE_PROMPTS["fixup.check"];
 const MAX_FILES = 8;
 /** Characters of the failure log the Opus check sees. */
 const CHECK_LOG_CAP = 8000;
+/** How long a rerun gets to produce new check results before the PR is given up on. */
+const RERUN_WAIT_MS = 2 * 3600_000;
 
 /**
  * The formatter step. /src is a writable overlay inside the step, so the formatted copy is made beside an untouched
  * copy and the unified diff of the two goes to /out. No artifact means nothing to format.
  */
 export const FORMAT_SCRIPT = [
-  "set -e", "mkdir -p /tmp/w", "cp -a /src /tmp/w/a", "cp -a /src /tmp/w/b", "cd /tmp/w/b", "cargo fmt --all", "cd /tmp/w",
-  "diff -ruN --exclude=target --exclude=.git a b > /tmp/w/format.txt || true",
+  "set -e", "mkdir -p /tmp/w/cargo-home", "cp -a /src /tmp/w/a", "cp -a /src /tmp/w/b", "cd /tmp/w",
+  // The PR controls `.cargo/config.toml` (aliases) and `rust-toolchain.toml`: rustfmt runs on the named files directly,
+  // from outside the checkout, with an empty cargo home and no toolchain override from the environment.
+  "unset RUSTUP_TOOLCHAIN", "export CARGO_HOME=/tmp/w/cargo-home",
+  'files="$*"', "set --", 'for f in $files; do set -- "$@" "b/$f"; done',
+  'rustfmt --edition 2021 "$@"',
+  ": > /tmp/w/format.txt",
+  'for f in $files; do if ! cmp -s "a/$f" "b/$f"; then echo "diff -uN a/$f b/$f" >> /tmp/w/format.txt; diff -uN "a/$f" "b/$f" >> /tmp/w/format.txt || true; fi; done',
   "if [ -s /tmp/w/format.txt ]; then cp /tmp/w/format.txt /out/format.txt; fi",
 ].join("; ");
+/** The most files one formatter run names. */
+const FORMAT_FILES_MAX = 20;
 export const FORMAT_ARTIFACT = "format.txt";
 
 export type CifixDeps = {
@@ -91,7 +101,7 @@ export function defaultDeps(): CifixDeps {
 export type CifixParams = { repo: string; limit?: number; /** Default true. */ dryRun?: boolean; onHandled?: (n: number) => void };
 export type CifixSummary = {
   runId: string; repo: string; dryRun: boolean;
-  pushed: string[]; asked: string[]; queued: string[]; infra: string[];
+  pushed: string[]; asked: string[]; queued: string[]; infra: string[]; skipped: string[];
   failed: { ref: string; reason: string }[]; held: { ref: string; reason: string }[];
 };
 
@@ -109,7 +119,20 @@ export function gitFormatDiff(text: string): string {
 }
 
 const DIFF_FILE = /^diff --git a\/(\S+) b\/\S+$/gm;
-const LOG_FILE = /(?:-->|panicked at|\bat)\s+([\w./-]+\.rs):\d+/g;
+const LOCATION = /^\s*--> ([\w./-]+\.rs):\d+/;
+const ERROR_LINE = /^\s*error(\[E\d+\])?: /;
+
+/** Files named on the compiler location line (`--> path:line`) directly after an `error` line. The log is untrusted, so no other mention counts. */
+export function errorFiles(log: string): string[] {
+  const lines = log.split("\n");
+  const out: string[] = [];
+  lines.forEach((l, i) => {
+    if (i === 0 || !ERROR_LINE.test(lines[i - 1]!)) return;
+    const m = LOCATION.exec(l);
+    if (m && !out.includes(m[1]!)) out.push(m[1]!);
+  });
+  return out;
+}
 
 type Fix = { patch: string; files: string[]; changed: number };
 
@@ -121,6 +144,20 @@ class Recorder {
     this.at = at;
   }
 
+  private open(c: CifixCandidate): { id: number } | undefined {
+    return this.db.prepare("SELECT rowid AS id FROM ci_fixes WHERE repo = ? AND number = ? AND head = ? AND state IN ('formatting', 'pushing') ORDER BY rowid DESC").get(c.repo, c.number, c.head) as { id: number } | undefined;
+  }
+
+  /** Written before the push: the commit about to be pushed, so a crash between the push and its record leaves the head in the push chain. */
+  pushing(c: CifixCandidate, kind: "format" | "code", commit: string, files: string[]): void {
+    const open = this.open(c);
+    if (open) this.db.prepare("UPDATE ci_fixes SET state = 'pushing', to_head = ?, files = ? WHERE rowid = ?").run(commit, JSON.stringify(files), open.id);
+    else {
+      this.db.prepare("INSERT INTO ci_fixes (repo, number, head, to_head, kind, state, reason, files, attempt, created_at) VALUES (?, ?, ?, ?, ?, 'pushing', NULL, ?, ?, ?)")
+        .run(c.repo, c.number, c.head, commit, kind, JSON.stringify(files), c.attempt, this.at());
+    }
+  }
+
   /**
    * One ci_fixes row. A formatter run keeps its `formatting` row and the result replaces its state. Every outcome
    * but the waiting states also notes the PR's stage, so the item page and the queue say what happened.
@@ -128,15 +165,16 @@ class Recorder {
   set(c: CifixCandidate, kind: "format" | "code" | "infra", state: string, reason: string | null, o: { files?: string[]; toHead?: string | null; task?: number | null; runs?: number[] } = {}): void {
     const at = this.at();
     const files = JSON.stringify(o.files ?? []);
-    const open = this.db.prepare("SELECT rowid AS id FROM ci_fixes WHERE repo = ? AND number = ? AND head = ? AND state = 'formatting'").get(c.repo, c.number, c.head) as { id: number } | undefined;
+    const open = this.open(c);
     if (open && state !== "formatting") {
       this.db.prepare("UPDATE ci_fixes SET state = ?, reason = ?, files = ?, to_head = ? WHERE rowid = ?").run(state, reason, files, o.toHead ?? null, open.id);
     } else {
       this.db.prepare("INSERT INTO ci_fixes (repo, number, head, to_head, kind, state, reason, files, attempt, task_id, runs, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
         .run(c.repo, c.number, c.head, o.toHead ?? null, kind, state, reason, files, c.attempt, o.task ?? null, o.runs ? JSON.stringify(o.runs) : null, at);
     }
-    if (state === "infra" || state === "formatting" || state === "rerun") return;
+    if (state === "infra" || state === "formatting" || state === "rerun" || state === "rerunning") return;
     const note = state === "pushed" ? `CI fix pushed at ${short(c.head)}: ${(o.files ?? []).join(", ")}`
+      : state === "skipped" ? `CI fix skipped at ${short(c.head)}: ${reason}`
       : state === "asked" ? `posted a CI fix at ${short(c.head)}: ${(o.files ?? []).join(", ")}` : `CI fix ${state} at ${short(c.head)}: ${reason}`;
     this.db.prepare("INSERT INTO stages (repo, number, stage, at, actor, note) VALUES (?, ?, ?, ?, ?, ?)").run(c.repo, c.number, "take", at, ACTOR, note);
   }
@@ -153,7 +191,7 @@ export async function runCifix(db: DatabaseSync, params: CifixParams, log: (line
   if (params.limit !== undefined && !(Number.isInteger(params.limit) && params.limit >= 0)) throw new Error("limit must be a whole number ≥ 0");
   const at = () => (deps?.now() ?? new Date()).toISOString();
   const runId = `cifix-${repo}-${at().replace(/[-:]/g, "").slice(0, 15)}`;
-  const summary: CifixSummary = { runId, repo, dryRun, pushed: [], asked: [], queued: [], infra: [], failed: [], held: [] };
+  const summary: CifixSummary = { runId, repo, dryRun, pushed: [], asked: [], queued: [], infra: [], skipped: [], failed: [], held: [] };
   const sel = selectCifix(db, repo);
   const collect = params.limit === undefined ? sel.collect : sel.collect.slice(0, params.limit);
   const work = params.limit === undefined ? sel.work : sel.work.slice(0, Math.max(0, params.limit - collect.length));
@@ -173,13 +211,26 @@ export async function runCifix(db: DatabaseSync, params: CifixParams, log: (line
   let whoP: ReturnType<typeof whoAmI> | undefined;
   let handled = 0;
 
+  /** Why the last `readPr` returned null. */
+  let gone = "";
   const readPr = async (c: CifixCandidate): Promise<PrNode | null> => {
     const r = await d.querier.query(PR_QUERY, { name: repo, n: c.number }) as { repository?: { pullRequest?: PrNode | null } };
     const pr = r.repository?.pullRequest;
     noteLive(db, repo, c.number, pr, at());
-    if (!pr || pr.state !== "OPEN" || pr.isDraft) { log(`  ${refOf(c)}: skipped: no longer an open, non-draft PR`); return null; }
-    if (pr.headRefOid !== c.head) { log(`  ${refOf(c)}: skipped: head moved to ${short(pr.headRefOid)} since the checks ran`); return null; }
+    if (!pr || pr.state !== "OPEN" || pr.isDraft) { gone = "no longer an open, non-draft PR"; log(`  ${refOf(c)}: skipped: ${gone}`); return null; }
+    if (pr.headRefOid !== c.head) { gone = `head moved to ${short(pr.headRefOid)} since the checks ran`; log(`  ${refOf(c)}: skipped: ${gone}`); return null; }
     return pr;
+  };
+
+  /** The content at `head` of each file, or the reason one cannot be read. */
+  const headFiles = async (head: string, files: string[]): Promise<Map<string, string> | string> => {
+    const out = new Map<string, string>();
+    for (const f of files) {
+      const r = await git.file(head, f);
+      if (!r.ok) return r.reason;
+      out.set(f, r.content);
+    }
+    return out;
   };
 
   /** Applies a validated patch to the PR head: pushed to the branch, or posted as a comment where the branch is closed to us. */
@@ -200,7 +251,19 @@ export async function runCifix(db: DatabaseSync, params: CifixParams, log: (line
       return;
     }
     const head = await git.fetchPr(ORG, repo, c.number);
-    if (head !== c.head) { log(`  ${ref}: skipped: fetched head ${short(head)} is not the checked ${short(c.head)}`); return; }
+    if (head !== c.head) {
+      noteLive(db, repo, c.number, { ...pr, headRefOid: head }, at());
+      fail("failed", `fetched head ${short(head)} is not the checked ${short(c.head)}`);
+      return;
+    }
+    if (kind === "format") {
+      // Formatting alone, whatever produced the diff: whitespace-only per hunk, and the same limits as any patch.
+      const notFormat = formattingOnly(v.patch);
+      if (notFormat) { fail("refused", notFormat); return; }
+      const heads = await headFiles(head, v.files);
+      const guard = typeof heads === "string" ? heads : guardPatch(v.patch, v.files, heads);
+      if (guard) { fail("refused", guard); return; }
+    }
     const scratch = mkdtempSync(join(d.root, ".index-"));
     let applied;
     try {
@@ -215,10 +278,16 @@ export async function runCifix(db: DatabaseSync, params: CifixParams, log: (line
     }
     // The model calls took minutes: read the PR again before writing.
     const now = await readPr(c);
-    if (!now) return;
+    if (!now) { fail("failed", gone); return; }
     if (!canPush) {
       const cm = await ghComment(gw, d.exec, "cifix-comment", { repo, number: c.number, pr: true }, askText(checkName, v.patch), { run: runId, head: c.head });
-      if (cm.code !== 0) { log(`  ${ref}: comment failed: ${oneLine(cm.stderr)}`); return; }
+      if (cm.code !== 0) {
+        const reason = `the comment failed: ${scrubReason(oneLine(cm.stderr), d.root)}`;
+        rec.set(c, kind, "comment-failed", reason, { files: v.files });
+        summary.failed.push({ ref, reason });
+        log(`  ${ref}: ${reason}`);
+        return;
+      }
       rec.set(c, kind, "asked", null, { files: v.files });
       summary.asked.push(ref);
       log(`  ${ref}: posted the patch as a comment at ${short(c.head)}`);
@@ -232,6 +301,7 @@ export async function runCifix(db: DatabaseSync, params: CifixParams, log: (line
       fail("refused", "the commit would change files or modes outside the validated diff");
       return;
     }
+    rec.pushing(c, kind, commit, v.files);
     const push = await pushBranch(gw, git, "cifix-push", { repo, number: c.number, remote: pr.headRepository!.nameWithOwner, branch: pr.headRefName, sha: commit, expected: head }, { run: runId, from: head, to: commit, files: v.files, changed: v.changed, kind });
     if (push.code !== 0) {
       const err = oneLine(push.stderr);
@@ -250,20 +320,23 @@ export async function runCifix(db: DatabaseSync, params: CifixParams, log: (line
     if (cm.code !== 0) log(`  ${ref}: comment failed: ${oneLine(cm.stderr)}`);
   };
 
-  /** The formatter task ended: its diff, if any, is validated and delivered. */
+  /** The formatter task ended: its diff, if any, is validated and delivered. Every exit records a state, which closes the `formatting` row. */
   const collectFormat = async (c: CifixCandidate, taskId: number): Promise<void> => {
     const ref = refOf(c);
     const t = getTask(db, taskId);
-    const fail = (reason: string) => { rec.set(c, "format", "failed", reason); summary.failed.push({ ref, reason }); log(`  ${ref}: failed: ${reason}`); };
-    if (!t || t.state !== "done") { fail(`the formatter task ${t?.state ?? "is gone"}`); return; }
+    const fail = (state: "failed" | "refused", reason: string) => { rec.set(c, "format", state, reason); summary.failed.push({ ref, reason }); log(`  ${ref}: ${state}: ${reason}`); };
+    if (!t || t.state !== "done") { fail("failed", `the formatter task ${t?.state ?? "is gone"}`); return; }
+    // The files the formatter was told to format: the PR's files that the log's `Diff in` lines name.
+    const row = db.prepare("SELECT files FROM ci_fixes WHERE repo = ? AND number = ? AND head = ? AND state = 'formatting'").get(c.repo, c.number, c.head) as { files: string | null } | undefined;
+    const allowed = JSON.parse(row?.files ?? "[]") as string[];
     const art = db.prepare("SELECT file FROM build_artifacts WHERE task_id = ? AND name = ?").get(taskId, FORMAT_ARTIFACT) as { file: string } | undefined;
     const path = art ? absolute(art.file) : null;
-    if (!path) { fail("the formatter changed nothing, so the failure is not formatting"); return; }
+    if (!path) { fail("failed", "the formatter changed nothing, so the failure is not formatting"); return; }
     const text = gitFormatDiff(readFileSync(path, "utf8"));
-    const v = validatePatch(text, [...text.matchAll(DIFF_FILE)].map((m) => m[1]!));
-    if (!v.ok) { fail(v.reason); return; }
+    const v = validatePatch(text, allowed);
+    if (!v.ok) { fail("refused", v.reason); return; }
     const pr = await readPr(c);
-    if (!pr) return;
+    if (!pr) { fail("failed", gone); return; }
     params.onHandled?.(++handled);
     await deliver(c, "format", pr, v, "format", undefined);
   };
@@ -278,13 +351,13 @@ export async function runCifix(db: DatabaseSync, params: CifixParams, log: (line
       log(`  ${ref}: ${state}: ${reason}`);
     };
     const head = await git.fetchPr(ORG, repo, c.number);
-    if (head !== c.head) { log(`  ${ref}: skipped: fetched head ${short(head)} is not the checked ${short(c.head)}`); return; }
+    if (head !== c.head) { noteLive(db, repo, c.number, { ...pr, headRefOid: head }, at()); fail("failed", `fetched head ${short(head)} is not the checked ${short(c.head)}`); return; }
     const diff = await cachedDiff(repo, c.number, head, d.fetchDiff);
     if (!diff.ok) { fail("failed", `no diff: ${oneLine(diff.error)}`); return; }
     if (diff.text.length > DIFF_CAP) { fail("failed", `the PR diff is over the ${DIFF_CAP} character limit`); return; }
     const text = failure.checks.flatMap((x) => x.steps.map((s) => s.tail)).join("\n");
-    // Files the log names come first, then the files the PR changes. Test files are not editable by a CI fix.
-    const named = [...new Set([...text.matchAll(LOG_FILE)].map((m) => m[1]!).concat([...diff.text.matchAll(DIFF_FILE)].map((m) => m[1]!)))]
+    // Files a compiler error points at come first, then the files the PR changes; nothing else is editable. Test files are not editable by a CI fix.
+    const named = [...new Set(errorFiles(text).concat([...diff.text.matchAll(DIFF_FILE)].map((m) => m[1]!)))]
       .filter((p) => editable(p) && !TEST_PATH.test(p)).slice(0, MAX_FILES);
     const shown: CifixPr["files"] = [];
     let total = 0;
@@ -303,7 +376,7 @@ export async function runCifix(db: DatabaseSync, params: CifixParams, log: (line
     if (reply === null) { fail("failed", "the model gave no answer"); return; }
     const v = validatePatch(reply, shown.map((s) => s.path));
     if (!v.ok) { fail("refused", v.reason); return; }
-    const guard = guardPatch(v.patch, v.files);
+    const guard = guardPatch(v.patch, v.files, new Map(shown.map((x) => [x.path, x.content])));
     if (guard) { fail("refused", guard); return; }
     if (v.patch.length > CHECK_PATCH_CAP) { fail("refused", `the patch is over the ${CHECK_PATCH_CAP} character limit for the check`); return; }
     const names = failure.checks.map((x) => x.name);
@@ -330,13 +403,26 @@ export async function runCifix(db: DatabaseSync, params: CifixParams, log: (line
       const pr = await readPr(c);
       if (!pr) return;
       params.onHandled?.(++handled);
-      const failure = await readFailure(d.gh, repo, c.head);
-      if (!failure) { rec.set(c, "code", "failed", "no failed check run at the head"); summary.failed.push({ ref, reason: "no failed check run at the head" }); return; }
+      const reading = await readFailure(d.gh, repo, c.head);
+      const skip = (why: string) => { rec.set(c, "code", "skipped", why); summary.skipped.push(ref); log(`  ${ref}: skipped: ${why}`); };
+      if (reading.kind === "skip") { skip(reading.why); return; }
+      const failure = reading.failure;
       const t = triage(failure);
       log(`  ${ref}: ${t.kind}: ${t.why}`);
+      if (t.kind === "skip") { skip(t.why); return; }
       if (t.kind === "unreadable") { rec.set(c, "code", "failed", t.why); summary.failed.push({ ref, reason: t.why }); return; }
       if (t.kind === "infra") {
         if (c.rerun) {
+          // Only results from after the rerun can say it failed again; older ones are what the rerun was meant to replace.
+          const fresh = failure.checks.every((x) => !!x.completedAt && !!c.rerunAt && Date.parse(x.completedAt) > Date.parse(c.rerunAt));
+          if (!fresh) {
+            const waited = !c.rerunAt || Date.parse(at()) > Date.parse(c.rerunAt) + RERUN_WAIT_MS;
+            if (!waited) { log(`  ${ref}: waiting: the checks were not rerun yet`); return; }
+            const reason = "the rerun produced no new check results";
+            rec.set(c, "infra", "failed", reason);
+            summary.failed.push({ ref, reason });
+            return;
+          }
           const reason = "the failure looks like an infrastructure error again after the rerun";
           rec.set(c, "infra", "failed", reason);
           summary.failed.push({ ref, reason });
@@ -347,13 +433,25 @@ export async function runCifix(db: DatabaseSync, params: CifixParams, log: (line
         return;
       }
       if (t.kind === "format") {
+        // Only files that are in both the PR's diff and the log's `Diff in` lines are formatted.
+        const diff = await cachedDiff(repo, c.number, c.head, d.fetchDiff);
+        if (!diff.ok) { rec.set(c, "format", "failed", `no diff: ${oneLine(diff.error)}`); summary.failed.push({ ref, reason: "no diff" }); return; }
+        const prFiles = [...diff.text.matchAll(DIFF_FILE)].map((m) => m[1]!);
+        const names = matchPrFiles(formatDiffPaths(failure), prFiles).filter((p) => editable(p) && !TEST_PATH.test(p));
+        if (!names.length || names.length > FORMAT_FILES_MAX) {
+          const reason = names.length ? `the formatter failure names ${names.length} of the PR's files` : "the formatter failure is in files the PR does not change";
+          rec.set(c, "format", "refused", reason);
+          summary.failed.push({ ref, reason });
+          log(`  ${ref}: refused: ${reason}`);
+          return;
+        }
         const id = createTask(db, {
           step: "cifix", repo, number: c.number, headSha: c.head, requires: { os: "linux", toolchains: ["rust-stable"] }, warm: { key: warmKeyOf(repo), role: "use" },
-          plan: [{ name: "format", cmd: ["sh", "-c", FORMAT_SCRIPT], network: "none", timeoutSec: 600, artifacts: [FORMAT_ARTIFACT] }],
+          plan: [{ name: "format", cmd: ["sh", "-c", FORMAT_SCRIPT, "format", ...names], network: "none", timeoutSec: 600, artifacts: [FORMAT_ARTIFACT] }],
         });
-        rec.set(c, "format", "formatting", null, { task: id });
+        rec.set(c, "format", "formatting", null, { task: id, files: names });
         summary.queued.push(ref);
-        log(`  ${ref}: formatter task ${id} queued`);
+        log(`  ${ref}: formatter task ${id} queued for ${names.join(", ")}`);
         return;
       }
       await fixCode(c, pr, failure);
@@ -366,6 +464,11 @@ export async function runCifix(db: DatabaseSync, params: CifixParams, log: (line
   };
 
   if (collect.length || work.length) mkdirSync(d.root, { recursive: true });
+  for (const c of sel.capped) {
+    const reason = `the PR's limit of ${MAX_PUSHES_PER_PR} pushed CI fixes or ${MAX_TRIES_PER_PR} tries is used`;
+    rec.set(c, "code", "capped", reason);
+    log(`  ${refOf(c)}: ${reason}`);
+  }
   for (const x of collect) {
     try { await collectFormat(x.c, x.task); }
     catch (e) {
@@ -375,7 +478,7 @@ export async function runCifix(db: DatabaseSync, params: CifixParams, log: (line
     }
   }
   for (const c of work) await workOne(c);
-  log(`cifix ${repo}: ${summary.pushed.length} pushed, ${summary.asked.length} commented, ${summary.queued.length} formatter runs queued, ${summary.infra.length} infra, ${summary.failed.length} failed, ${summary.held.length} held; run ${runId}`);
+  log(`cifix ${repo}: ${summary.pushed.length} pushed, ${summary.asked.length} commented, ${summary.queued.length} formatter runs queued, ${summary.infra.length} infra, ${summary.skipped.length} skipped, ${summary.failed.length} failed, ${summary.held.length} held; run ${runId}`);
   return summary;
 }
 
@@ -404,14 +507,17 @@ export async function runRerun(db: DatabaseSync, params: CifixParams, log: (line
       noteLive(db, repo, c.number, pr, d.now().toISOString());
       if (!pr || pr.state !== "OPEN" || pr.isDraft || pr.headRefOid !== c.head) { log(`  ${ref}: skipped: closed, a draft or at another head`); out.skipped.push(ref); continue; }
       params.onHandled?.(++n);
+      // Recorded before the calls: one rerun per head, even if this process dies in the middle of them.
+      db.prepare("INSERT INTO ci_fixes (repo, number, head, kind, state, reason, files, attempt, runs, created_at) VALUES (?, ?, ?, 'infra', 'rerunning', NULL, '[]', 0, ?, ?)")
+        .run(repo, c.number, c.head, JSON.stringify(runs), d.now().toISOString());
       const errors: string[] = [];
       for (const run of runs) {
         const res = await ghRerunFailed(w, d.exec, { repo, number: c.number, runId: run }, { head: c.head });
         if (res.code !== 0) errors.push(oneLine(res.stderr || res.stdout));
       }
       // One rerun per head, whether or not GitHub took every run.
-      db.prepare("INSERT INTO ci_fixes (repo, number, head, kind, state, reason, files, attempt, runs, created_at) VALUES (?, ?, ?, 'infra', 'rerun', ?, '[]', 0, ?, ?)")
-        .run(repo, c.number, c.head, errors.length ? errors[0]!.slice(0, 200) : null, JSON.stringify(runs), d.now().toISOString());
+      db.prepare("UPDATE ci_fixes SET state = 'rerun', reason = ? WHERE repo = ? AND number = ? AND head = ? AND state = 'rerunning'")
+        .run(errors.length ? errors[0]!.slice(0, 200) : null, repo, c.number, c.head);
       out.reran.push(ref);
       log(`  ${ref}: reran ${runs.length} runs${errors.length ? ` (${errors.length} refused)` : ""}`);
     } catch (e) {

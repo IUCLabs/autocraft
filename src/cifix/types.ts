@@ -2,7 +2,7 @@
 
 /** One failed step of a failed check: the tail of its log. The log is untrusted text from the PR's CI run. */
 export type FailedStep = { job: string; step: string; tail: string };
-export type FailedCheck = { name: string; conclusion: string; runId: number | null; steps: FailedStep[] };
+export type FailedCheck = { name: string; conclusion: string; runId: number | null; /** When the check run completed (ISO), if GitHub said. */ completedAt?: string | null; steps: FailedStep[] };
 /** What the failed required checks of a head said. */
 export type CiFailure = { head: string; checks: FailedCheck[] };
 

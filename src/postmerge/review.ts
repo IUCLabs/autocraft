@@ -52,6 +52,8 @@ function pipelineCommits(db: DatabaseSync, repo: string, number: number): Postme
       .map((r) => ({ ...r, kind: "conflict-merge" as const, note: r.note ?? "merged the base branch into the PR" })),
     ...(db.prepare("SELECT to_head AS sha, created_at AS at, reason AS note FROM fixups WHERE repo = ? AND number = ? AND state = 'pushed'").all(repo, number) as { sha: string | null; at: string; note: string | null }[])
       .map((r) => ({ ...r, kind: "fix-up" as const, note: r.note ?? "pushed the fixes of the review" })),
+    ...(db.prepare("SELECT to_head AS sha, created_at AS at, reason AS note FROM ci_fixes WHERE repo = ? AND number = ? AND state = 'pushed'").all(repo, number) as { sha: string | null; at: string; note: string | null }[])
+      .map((r) => ({ ...r, kind: "ci-fix" as const, note: r.note ?? "pushed a fix for the failing CI check" })),
     ...(db.prepare("SELECT to_head AS sha, updated_at AS at, outcome AS note FROM dupe_carries WHERE repo = ? AND number = ? AND outcome LIKE 'pushed%'").all(repo, number) as { sha: string | null; at: string; note: string | null }[])
       .map((r) => ({ ...r, kind: "duplicate-carry" as const, note: "carried parts of closed duplicates onto the PR" })),
   ];

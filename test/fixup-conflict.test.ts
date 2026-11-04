@@ -107,6 +107,21 @@ function fresh(head: string, o: { headRepo?: string; mergeable?: string; verdict
 const parents = (fork: string, c: string) => git(fork, "rev-list", "--parents", "-n", "1", c).split(" ").slice(1);
 
 describe("conflict merge", () => {
+  test("the merge is on record as pushing, with its commit, before the push runs", async () => {
+    const w = world({ conflicting: false });
+    const db = fresh(w.head);
+    const seen: unknown[] = [];
+    const inner = w.deps.exec;
+    w.deps.exec = async (cmd, args, o) => {
+      if (args.includes("push")) seen.push((db.prepare("SELECT state, from_head, to_head FROM conflict_merges").all() as object[]).map((r) => ({ ...r })));
+      return inner(cmd, args, o);
+    };
+    await runFixup(db, { repo: "app", dryRun: false }, () => {}, w.deps);
+    const pushed = git(w.fork, "rev-parse", "refs/heads/feat");
+    assert.deepEqual(seen, [[{ state: "pushing", from_head: w.head, to_head: pushed }]]);
+    assert.deepEqual((db.prepare("SELECT state, to_head FROM conflict_merges").all() as object[]).map((r) => ({ ...r })), [{ state: "merged", to_head: pushed }]);
+  });
+
   test("a clean merge pushes a two-parent commit on the head, with the lease and one comment", async () => {
     const w = world({ conflicting: false });
     const db = fresh(w.head);

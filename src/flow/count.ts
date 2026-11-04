@@ -373,7 +373,7 @@ function fixup(c: Ctx): NodeCount {
   for (const r of c.refs(`SELECT DISTINCT f.repo, f.number FROM main.fixups f JOIN main.items i ON i.repo = f.repo AND i.number = f.number AND i.state = 'OPEN'
       WHERE f.state = 'pushed' ${c.tracked("f.repo")}`)) if (![...members.values()].some((s) => s !== pushed && s.has(r))) pushed.add(r);
   // CI fix: PRs whose gate check fails, by what the step does next; a pushed CI fix counts like a pushed fix-up.
-  const bucket: Record<string, string> = { work: "cifix-queued", formatting: "cifix-queued", rerun: "cifix-rerun", "rerun-wait": "cifix-rerun", failed: "cifix-failed" };
+  const bucket: Record<string, string> = { work: "cifix-queued", formatting: "cifix-queued", rerun: "cifix-rerun", "rerun-wait": "cifix-rerun", failed: "cifix-failed", capped: "cifix-failed" };
   for (const repo of c.repos()) for (const x of classifyCifix(c.db, repo)) if (bucket[x.bucket]) members.get(`fixup.${bucket[x.bucket]}`)!.add(ref(x.c));
   for (const r of c.refs(`SELECT DISTINCT f.repo, f.number FROM main.ci_fixes f JOIN main.items i ON i.repo = f.repo AND i.number = f.number AND i.state = 'OPEN'
       WHERE f.state = 'pushed' ${c.tracked("f.repo")}`)) members.get("fixup.cifix-pushed")!.add(r);

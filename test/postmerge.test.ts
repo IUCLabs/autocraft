@@ -66,6 +66,7 @@ describe("post-merge review", () => {
   test("a merged PR gets one review, with the merge commit's diff and the PR's history in the prompt", async () => {
     const db = fresh();
     db.prepare("INSERT INTO conflict_merges (repo, number, from_head, to_head, state, attempt, created_at) VALUES ('app', 1, 'h0', 'head1', 'merged', 1, ?)").run(new Date().toISOString());
+    db.prepare("INSERT INTO ci_fixes (repo, number, head, to_head, kind, state, attempt, created_at) VALUES ('app', 1, 'head1', 'head2', 'code', 'pushed', 1, ?)").run(new Date().toISOString());
     assert.deepEqual(selectPostmerge(db, "app").map((c) => c.number), [1]);
     const calls: string[] = [];
     const restore = setRunner(fakeModel(calls, [{ severity: "minor", title: "Stale comment" }]));
@@ -77,6 +78,7 @@ describe("post-merge review", () => {
     assert.equal(calls.length, 1, "reviewed once");
     assert.match(calls[0]!, /"merge_sha": "merge1"/);
     assert.match(calls[0]!, /"kind": "conflict-merge"/);
+    assert.match(calls[0]!, /"kind": "ci-fix"/);
     assert.match(calls[0]!, /\+let a = 2;/);
     assert.deepEqual(selectPostmerge(db, "app"), []);
   });

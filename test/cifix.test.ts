@@ -10,7 +10,7 @@ import { storeArtifact, tempPath } from "../src/build/artifacts.ts";
 import { connect } from "../src/db.ts";
 import { classifyCifix, selectCifix } from "../src/cifix/candidates.ts";
 import { FORMAT_ARTIFACT, gitFormatDiff, runCifix, runRerun, type CifixDeps } from "../src/cifix/index.ts";
-import { guardPatch } from "../src/cifix/guard.ts";
+import { formattingOnly, guardPatch } from "../src/cifix/guard.ts";
 import { parseFailedLog } from "../src/cifix/logs.ts";
 import { triage } from "../src/cifix/triage.ts";
 import type { CiFailure } from "../src/cifix/types.ts";
@@ -93,6 +93,48 @@ describe("candidates", () => {
     assert.deepEqual(ask.map((c) => c.route), ["comment"]);
   });
 
+  test("at most 2 pushed CI fixes and 4 tries per PR, over all heads", () => {
+    const add = (db: DatabaseSync, state: string, head: string) => db.prepare("INSERT INTO ci_fixes (repo, number, head, kind, state, attempt, created_at) VALUES ('app', 7, ?, 'code', ?, 1, ?)").run(head, state, T1);
+    // Two of our own pushes made earlier heads; the PR is now at a fresh head with no tries of its own.
+    const pushes = fresh("h3");
+    add(pushes, "pushed", "h1");
+    assert.equal(classifyCifix(pushes, "app")[0]!.bucket, "work");
+    add(pushes, "pushed", "h2");
+    assert.equal(classifyCifix(pushes, "app")[0]!.bucket, "capped");
+    assert.equal(selectCifix(pushes, "app").work.length, 0);
+    const tries = fresh("h5");
+    for (const h of ["h1", "h2", "h3", "h4"]) add(tries, "rejected", h);
+    assert.equal(classifyCifix(tries, "app")[0]!.bucket, "capped");
+    const three = fresh("h5");
+    for (const h of ["h1", "h2", "h3"]) add(three, "rejected", h);
+    assert.equal(classifyCifix(three, "app")[0]!.bucket, "work");
+  });
+
+  test("the cap is noted on the PR once, with no model call", async () => {
+    const w = world();
+    const db = fresh(w.head);
+    for (const h of ["a1", "a2", "a3", "a4"]) db.prepare("INSERT INTO ci_fixes (repo, number, head, kind, state, attempt, created_at) VALUES ('app', 7, ?, 'code', 'failed', 1, ?)").run(h, T1);
+    await runCifix(db, { repo: "app", dryRun: false }, () => {}, w.deps);
+    await runCifix(db, { repo: "app", dryRun: false }, () => {}, w.deps);
+    assert.deepEqual(w.log, []);
+    assert.equal(rows(db, "SELECT 1 FROM stages WHERE note LIKE 'CI fix capped%'").length, 1);
+    assert.equal(classifyCifix(db, "app")[0]!.bucket, "failed");
+  });
+
+  test("a changes request mirrored after the last live read blocks, like in the merge queue", () => {
+    const db = fresh("h1");
+    // The live read found nothing blocking, then the PR changed and a maintainer's review was mirrored.
+    db.prepare("INSERT INTO review_gates (repo, number, blocked, by_login, read_at) VALUES ('app', 7, 0, '', ?)").run(T1);
+    db.prepare("UPDATE items SET updated_at = ?").run(T2);
+    db.prepare("UPDATE pr_checks SET fetched_at = ?").run("2026-01-04T00:00:00Z");
+    assert.equal(selectCifix(db, "app").work.length, 1);
+    db.prepare("INSERT INTO comments (repo, number, id, kind, author, created_at, body, review_state, counted, author_association) VALUES ('app', 7, 'r1', 'review', 'maint', ?, '', 'CHANGES_REQUESTED', 0, 'MEMBER')").run(T2);
+    assert.equal(selectCifix(db, "app").work.length, 0);
+    const decision = fresh("h1");
+    decision.prepare("UPDATE items SET review_decision = 'CHANGES_REQUESTED'").run();
+    assert.equal(selectCifix(decision, "app").work.length, 0);
+  });
+
   test("two tries per head; a push or a comment ends the work on the head", () => {
     const db = fresh("h1");
     const add = (state: string, head = "h1") => db.prepare("INSERT INTO ci_fixes (repo, number, head, kind, state, attempt, created_at) VALUES ('app', 7, ?, 'code', ?, 1, ?)").run(head, state, T1);
@@ -119,8 +161,12 @@ describe("triage", () => {
     assert.equal(triage(failure("failure", [step("lint", "cargo clippy", "error: this could be `x` (clippy::needless)\n")])).kind, "code");
   });
 
-  test("a cancelled or timed out run, or a network error without a code error, is infra", () => {
-    assert.equal(triage(failure("cancelled", [])).kind, "infra");
+  test("a cancelled run is skipped, not infra", () => {
+    assert.equal(triage(failure("cancelled", [])).kind, "skip");
+  });
+
+  test("a timed out run, or a network error without a code error, is infra; infra is tested before format", () => {
+    assert.equal(triage(failure("failure", [step("fmt", "Check formatting", "Diff in /w/src/lib.rs:1:\nCould not resolve host: x\n")])).kind, "infra");
     assert.equal(triage(failure("timed_out", [step("test", "cargo test", "")])).kind, "infra");
     assert.equal(triage(failure("failure", [step("build", "cargo fetch", "warning: spurious network error (2 tries remaining): Could not resolve host: index.crates.io\n")])).kind, "infra");
     // A network word next to a real error is the PR's failure.
@@ -147,6 +193,26 @@ describe("guard", () => {
     assert.match(guardPatch(edit("src/lib.rs", "-fn a() {}\n+#[allow(dead_code)] fn a() {}\n"), ["src/lib.rs"])!, /disables/);
     assert.match(guardPatch(edit("src/lib.rs", "-    assert_eq!(a(), 1);\n+    let _ = a();\n"), ["src/lib.rs"])!, /assertion/);
     assert.equal(guardPatch(edit("src/lib.rs", "-fn a() {}\n+fn b() {}\n"), ["src/lib.rs"]), null);
+    assert.match(guardPatch(edit("src/lib.rs", "-fn a() {}\n+#[cfg(feature = \"x\")] fn a() {}\n"), ["src/lib.rs"])!, /disables/);
+    assert.match(guardPatch(edit("src/lib.rs", "-fn a() {}\n+#[should_panic] fn a() {}\n"), ["src/lib.rs"])!, /disables/);
+  });
+
+  const SRC = "fn a() {}\n\n#[cfg(test)]\nmod tests {\n    fn helper() {\n        let x = \"}\";\n    }\n\n    #[test]\n    fn t() {\n        check();\n    }\n}\n\nfn last() {}\n";
+  const hunk = (at: number, body: string) => `diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -${at} +${at} @@\n${body}`;
+  const heads = new Map([["src/lib.rs", SRC]]);
+
+  test("a hunk inside a #[cfg(test)] module is refused; one outside is allowed", () => {
+    assert.match(guardPatch(hunk(6, "-        let x = \"}\";\n+        let x = \"{\";\n"), ["src/lib.rs"], heads)!, /test code/);
+    assert.equal(guardPatch(hunk(1, "-fn a() {}\n+fn b() {}\n"), ["src/lib.rs"], heads), null);
+    assert.equal(guardPatch(hunk(15, "-fn last() {}\n+fn end() {}\n"), ["src/lib.rs"], heads), null);
+    assert.match(guardPatch(hunk(1, "-fn a() {}\n+fn b() {}\n"), ["src/lib.rs"], new Map())!, /could not be read/);
+    assert.match(guardPatch(hunk(1, "-fn a() {}\n+fn b() {}\n"), ["src/lib.rs"], new Map([["src/lib.rs", "#[test]\nfn a() {\n"]]))!, /could not be checked/);
+  });
+
+  test("an early return added to a #[test] function is refused", () => {
+    const src = "#[test]\nfn t() {\n    check();\n}\n";
+    const patch = "diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -2,2 +2,3 @@\n fn t() {\n+    return;\n     check();\n";
+    assert.match(guardPatch(patch, ["src/lib.rs"], new Map([["src/lib.rs", src]]))!, /early return/);
   });
 });
 
@@ -161,7 +227,7 @@ const FMT_LOG = "fmt\tCheck formatting\t2026-01-01T00:00:00Z Diff in /home/runne
 const INFRA_LOG = "build\tcargo fetch\t2026-01-01T00:00:00Z warning: spurious network error: Could not resolve host: index.crates.io\n";
 const GOOD = "diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1,2 +1,2 @@\n-fn a() {}\n-fn main() { b(); }\n+fn b() {}\n+fn main() { b(); }\n";
 
-function world(opts: { log?: string; reply?: string | null; check?: string | null; canModify?: boolean; pushError?: string; conclusion?: string } = {}): World {
+function world(opts: { log?: string; reply?: string | null; check?: string | null; canModify?: boolean; pushError?: string; conclusion?: string; completedAt?: string; checkRuns?: unknown[]; commentFails?: boolean; closedAfter?: number } = {}): World {
   const root = mkdtempSync(join(dir, "w-"));
   const work = join(root, "work");
   mkdirSync(work);
@@ -175,11 +241,12 @@ function world(opts: { log?: string; reply?: string | null; check?: string | nul
   git(root, "clone", "-q", "--bare", work, fork);
   git(fork, "update-ref", "refs/pull/7/head", head);
   const log: string[] = [];
+  let reads = 0;
   const querier: Querier = validating({
     spent: 0, remaining: 5000,
     async query() {
       return { repository: { pullRequest: {
-        id: "PR7", state: "OPEN", isDraft: false, headRefOid: head, headRefName: "fix", maintainerCanModify: opts.canModify !== false, mergeable: "MERGEABLE",
+        id: "PR7", state: opts.closedAfter !== undefined && ++reads > opts.closedAfter ? "CLOSED" : "OPEN", isDraft: false, headRefOid: head, headRefName: "fix", maintainerCanModify: opts.canModify !== false, mergeable: "MERGEABLE",
         headRepository: { nameWithOwner: "contrib/app" }, assignees: { nodes: [] },
       } } };
     },
@@ -189,7 +256,7 @@ function world(opts: { log?: string; reply?: string | null; check?: string | nul
       if (args[0] === "api") return { code: 0, stdout: JSON.stringify({ login: "pipeline-bot", id: 42, node_id: "U42" }), stderr: "" };
       if (args[0] === "run") { log.push(`rerun ${args[2]}`); return { code: 0, stdout: "", stderr: "" }; }
       log.push(`comment: ${o.input}`);
-      return { code: 0, stdout: "", stderr: "" };
+      return opts.commentFails ? { code: 1, stdout: "", stderr: "HTTP 403" } : { code: 0, stdout: "", stderr: "" };
     }
     const net = args.findIndex((a) => a.startsWith("https://github.com/"));
     const sub = net >= 0 ? args.map((a) => (a.startsWith("https://github.com/") ? fork : a)) : args;
@@ -204,8 +271,8 @@ function world(opts: { log?: string; reply?: string | null; check?: string | nul
     querier, exec: run, now: () => new Date(T2), root: join(root, "cache"),
     fetchDiff: async () => ({ ok: true, text: "diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1 +1 @@\n-x\n+fn a() {}\n" }),
     gh: async (args) => {
-      if (args[0] === "api") return JSON.stringify({ check_runs: [
-        { name: "gate / test", status: "completed", conclusion: opts.conclusion ?? "failure", details_url: "https://github.com/storytold/app/actions/runs/11/job/5" },
+      if (args[0] === "api") return JSON.stringify({ check_runs: opts.checkRuns ?? [
+        { name: "gate / test", status: "completed", conclusion: opts.conclusion ?? "failure", completed_at: opts.completedAt ?? "2026-01-03T12:00:00Z", details_url: "https://github.com/storytold/app/actions/runs/11/job/5" },
         { name: "optional / lint", status: "completed", conclusion: "success", details_url: "https://github.com/storytold/app/actions/runs/12/job/6" },
       ] });
       log.push("read-log");
@@ -299,16 +366,100 @@ describe("code failure", () => {
 });
 
 describe("format failure", () => {
-  const diffText = "diff -ruN --exclude=target --exclude=.git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\t2026-01-01 00:00:00.000000000 +0000\n+++ b/src/lib.rs\t2026-01-01 00:00:01.000000000 +0000\n@@ -1,2 +1,2 @@\n-fn a() {}\n-fn main() { b(); }\n+fn b() {}\n+fn main() { b(); }\n";
+  const hdr = "diff -uN a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\t2026-01-01 00:00:00.000000000 +0000\n+++ b/src/lib.rs\t2026-01-01 00:00:01.000000000 +0000\n@@ -1,2 +1,2 @@\n";
+  // Spacing only.
+  const diffText = `${hdr}-fn a() {}\n+fn a() { }\n fn main() { b(); }\n`;
+  // What a PR that aliases the formatter, or prints fake `Diff in` lines, can make it produce: a code change.
+  const forced = `${hdr}-fn a() {}\n-fn main() { b(); }\n+fn b() {}\n+fn main() { b(); }\n`;
 
-  test("the formatter diff of a build task is validated and pushed without a model call", async () => {
+  /** Runs the step to the queued formatter task, gives the task `diff` as its result and applies it. */
+  async function formatRun(w: World, diff: string | null, db = fresh(w.head)) {
+    await runCifix(db, { repo: "app", dryRun: false }, () => {}, w.deps);
+    const task = rows(db, "SELECT id FROM build_tasks")[0]!;
+    db.prepare("UPDATE build_tasks SET state = 'done', ended_at = ? WHERE id = ?").run(T2, Number(task.id));
+    if (diff !== null) {
+      const tmp = tempPath(Number(task.id));
+      writeFileSync(tmp, diff);
+      storeArtifact(db, Number(task.id), FORMAT_ARTIFACT, tmp);
+    }
+    return { db, summary: await runCifix(db, { repo: "app", dryRun: false }, () => {}, w.deps) };
+  }
+
+  test("a diff that changes code is refused, whatever produced it; the formatting row is closed", async () => {
+    const w = world({ log: FMT_LOG });
+    const before = git(w.fork, "rev-parse", "refs/heads/fix");
+    const { db, summary } = await formatRun(w, forced);
+    assert.deepEqual(summary.pushed, []);
+    assert.ok(!w.log.includes("push"));
+    assert.equal(git(w.fork, "rev-parse", "refs/heads/fix"), before);
+    assert.deepEqual(rows(db, "SELECT state FROM ci_fixes"), [{ state: "refused" }]);
+    assert.match(String(rows(db, "SELECT reason FROM ci_fixes")[0]!.reason), /more than whitespace/);
+  });
+
+  test("formatting is checked per hunk: reordered or moved lines are refused", () => {
+    const h = (body: string) => `diff --git a/x.rs b/x.rs\n--- a/x.rs\n+++ b/x.rs\n@@ -1,2 +1,2 @@\n${body}`;
+    assert.equal(formattingOnly(h("-use b;\n-use a;\n+use a;\n+use b;\n")) === null, false);
+    assert.equal(formattingOnly(h("-fn a(x:i32){}\n+fn a(x: i32) {}\n")), null);
+    assert.equal(formattingOnly(h("-f(a, b)\n+f(a, b,)\n")) === null, false);
+    const moved = `${h("-let a = 1;\n let b = 2;\n")}@@ -9,2 +8,3 @@\n let c = 3;\n+let a = 1;\n`;
+    assert.equal(formattingOnly(moved) === null, false);
+  });
+
+  test("files outside the PR's diff and the log's Diff in lines are never formatted", async () => {
+    // The log names src/other.rs, which the PR does not change: no task, a refused try.
+    const w = world({ log: "fmt\tCheck formatting\t2026-01-01T00:00:00Z Diff in /w/app/src/other.rs:1:\n" });
+    const db = fresh(w.head);
+    const s = await runCifix(db, { repo: "app", dryRun: false }, () => {}, w.deps);
+    assert.deepEqual([s.queued, s.failed.length], [[], 1]);
+    assert.deepEqual(rows(db, "SELECT state FROM ci_fixes"), [{ state: "refused" }]);
+    assert.equal(rows(db, "SELECT 1 FROM build_tasks").length, 0);
+    // A formatter result for a file that was not named is refused too.
+    const w2 = world({ log: FMT_LOG });
+    const other = diffText.replaceAll("src/lib.rs", "src/other.rs");
+    const r = await formatRun(w2, other);
+    assert.deepEqual(r.summary.pushed, []);
+    assert.deepEqual(rows(r.db, "SELECT state FROM ci_fixes"), [{ state: "refused" }]);
+  });
+
+  test("a step named like the formatter without the formatter's Diff in lines is code, not format", () => {
+    assert.equal(triage(failure("failure", [step("fmt", "Check formatting", "error: something else broke\n")])).kind, "code");
+    assert.equal(triage(failure("failure", [step("fmt", "Check formatting", "no diff lines here\n")])).kind, "code");
+  });
+
+  test("the formatter task runs rustfmt on the named files, not cargo fmt", async () => {
+    const w = world({ log: FMT_LOG });
+    const db = fresh(w.head);
+    await runCifix(db, { repo: "app", dryRun: false }, () => {}, w.deps);
+    const plan = JSON.parse(String(rows(db, "SELECT plan FROM build_tasks")[0]!.plan)) as { cmd: string[] }[];
+    assert.deepEqual(plan[0]!.cmd.slice(0, 2), ["sh", "-c"]);
+    assert.deepEqual(plan[0]!.cmd.slice(4), ["src/lib.rs"]);
+    assert.match(plan[0]!.cmd[2]!, /rustfmt --edition/);
+    assert.doesNotMatch(plan[0]!.cmd[2]!, /cargo fmt/);
+  });
+
+  test("a head that moved before the formatter result was applied is a failed try that closes the formatting row", async () => {
+    const w = world({ log: FMT_LOG });
+    const db = fresh(w.head);
+    await runCifix(db, { repo: "app", dryRun: false }, () => {}, w.deps);
+    const moved = git(w.fork, "commit-tree", `${w.head}^{tree}`, "-m", "moved");
+    git(w.fork, "update-ref", "refs/pull/7/head", moved);
+    const task = rows(db, "SELECT id FROM build_tasks")[0]!;
+    db.prepare("UPDATE build_tasks SET state = 'done', ended_at = ? WHERE id = ?").run(T2, Number(task.id));
+    const tmp = tempPath(Number(task.id));
+    writeFileSync(tmp, diffText);
+    storeArtifact(db, Number(task.id), FORMAT_ARTIFACT, tmp);
+    await runCifix(db, { repo: "app", dryRun: false }, () => {}, w.deps);
+    assert.deepEqual(rows(db, "SELECT state FROM ci_fixes"), [{ state: "failed" }]);
+    assert.equal((rows(db, "SELECT head_oid FROM pr_checks")[0] as { head_oid: string }).head_oid, moved);
+  });
+
+  test("spacing-only formatter diff of a build task is validated and pushed without a model call", async () => {
     const w = world({ log: FMT_LOG });
     const db = fresh(w.head);
     const first = await runCifix(db, { repo: "app", dryRun: false }, () => {}, w.deps);
     assert.deepEqual(first.queued, ["app#7"]);
     const task = rows(db, "SELECT id, step, head_sha, plan FROM build_tasks")[0]!;
     assert.deepEqual([task.step, task.head_sha], ["cifix", w.head]);
-    assert.match(String(task.plan), /cargo fmt --all/);
     // Waiting for the task: nothing to do, not a candidate again.
     assert.deepEqual([selectCifix(db, "app").work.length, selectCifix(db, "app").collect.length], [0, 0]);
     db.prepare("UPDATE build_tasks SET state = 'done', ended_at = ? WHERE id = ?").run(T2, Number(task.id));
@@ -319,7 +470,7 @@ describe("format failure", () => {
     const s = await runCifix(db, { repo: "app", dryRun: false }, () => {}, w.deps);
     assert.deepEqual(s.pushed, ["app#7"]);
     const pushed = git(w.fork, "rev-parse", "refs/heads/fix");
-    assert.equal(git(w.fork, "show", `${pushed}:src/lib.rs`), "fn b() {}\nfn main() { b(); }");
+    assert.equal(git(w.fork, "show", `${pushed}:src/lib.rs`), "fn a() { }\nfn main() { b(); }");
     assert.match(git(w.fork, "log", "-1", "--format=%B", pushed), /^Fix formatting for CI/);
     assert.ok(!w.log.includes("model") && !w.log.includes("check"));
     assert.deepEqual(rows(db, "SELECT kind, state FROM ci_fixes"), [{ kind: "format", state: "pushed" }]);
@@ -348,7 +499,16 @@ describe("infrastructure failure", () => {
     assert.deepEqual(first.infra, ["app#7"]);
     assert.ok(!w.log.includes("model"));
     assert.equal(selectCifix(db, "app").rerun.length, 1);
+    // The rerun is on record before the gh call is made.
+    const seen: unknown[] = [];
+    const inner = w.deps.exec;
+    w.deps.exec = async (cmd, args, o) => {
+      if (cmd === "gh" && args[0] === "run") seen.push(rows(db, "SELECT state FROM ci_fixes WHERE state LIKE 'rerun%'"));
+      return inner(cmd, args, o);
+    };
     const r = await runRerun(db, { repo: "app", dryRun: false }, () => {}, w.deps);
+    assert.deepEqual(seen, [[{ state: "rerunning" }]]);
+    assert.deepEqual(rows(db, "SELECT state FROM ci_fixes WHERE state LIKE 'rerun%'"), [{ state: "rerun" }]);
     assert.deepEqual(r.reran, ["app#7"]);
     assert.deepEqual(w.log.filter((l) => l.startsWith("rerun")), ["rerun 11"]);
     assert.deepEqual(rows(db, "SELECT action, target FROM audit WHERE action = 'ci-rerun'"), [{ action: "ci-rerun", target: "app#7" }]);
@@ -360,6 +520,17 @@ describe("infrastructure failure", () => {
     assert.deepEqual([again.infra, again.failed.length], [[], 1]);
     assert.equal((await runRerun(db, { repo: "app", dryRun: false }, () => {}, w.deps)).reran.length, 0);
     assert.equal(w.log.filter((l) => l.startsWith("rerun")).length, 1);
+  });
+
+  test("results that predate the rerun are not judged as infra again", async () => {
+    const w = world({ log: INFRA_LOG, completedAt: "2026-01-02T00:00:00Z" });
+    const db = fresh(w.head, { ci: true });
+    await runCifix(db, { repo: "app", dryRun: false }, () => {}, w.deps);
+    await runRerun(db, { repo: "app", dryRun: false }, () => {}, w.deps);
+    db.prepare("UPDATE pr_checks SET fetched_at = ?").run("2026-01-04T00:00:00Z");
+    const again = await runCifix(db, { repo: "app", dryRun: false }, () => {}, w.deps);
+    assert.deepEqual([again.infra, again.failed], [[], []]);
+    assert.deepEqual(rows(db, "SELECT state FROM ci_fixes ORDER BY rowid"), [{ state: "infra" }, { state: "rerun" }]);
   });
 
   test("a rerun needs the repo's CI approval", async () => {
@@ -397,5 +568,103 @@ describe("unsure carries across the pushed head", () => {
     const e = buildQueue(db, { merged: "exclude" }).find((x) => x.number === 1)!;
     assert.ok(e.outsideRule.includes("Opus was unsure"));
     assert.equal(eligible(e), false);
+  });
+});
+
+describe("exits record their state", () => {
+  test("a gate that passed with only an optional check failing is skipped, not a try", async () => {
+    const w = world({ checkRuns: [
+      { name: "gate / test", status: "completed", conclusion: "success", details_url: "https://github.com/storytold/app/actions/runs/11/job/5" },
+      { name: "optional / lint", status: "completed", conclusion: "failure", details_url: "https://github.com/storytold/app/actions/runs/12/job/6" },
+    ] });
+    const db = fresh(w.head);
+    const s = await runCifix(db, { repo: "app", dryRun: false }, () => {}, w.deps);
+    assert.deepEqual([s.skipped, s.failed, s.pushed], [["app#7"], [], []]);
+    assert.deepEqual(ops(w), []);
+    assert.deepEqual(rows(db, "SELECT state FROM ci_fixes"), [{ state: "skipped" }]);
+    assert.equal(classifyCifix(db, "app")[0]!.bucket, "done");
+  });
+
+  test("a failure that is not a failed check run (a status, a run waiting for approval) is skipped without a try", async () => {
+    const w = world({ checkRuns: [{ name: "build", status: "completed", conclusion: "action_required", details_url: "https://github.com/storytold/app/actions/runs/11/job/5" }] });
+    const db = fresh(w.head);
+    const s = await runCifix(db, { repo: "app", dryRun: false }, () => {}, w.deps);
+    assert.deepEqual(s.skipped, ["app#7"]);
+    assert.deepEqual(rows(db, "SELECT state FROM ci_fixes"), [{ state: "skipped" }]);
+  });
+
+  test("a cancelled run is skipped without a try and without a rerun", async () => {
+    const w = world({ conclusion: "cancelled" });
+    const db = fresh(w.head, { ci: true });
+    const s = await runCifix(db, { repo: "app", dryRun: false }, () => {}, w.deps);
+    assert.deepEqual([s.skipped, s.infra], [["app#7"], []]);
+    assert.deepEqual(rows(db, "SELECT state FROM ci_fixes"), [{ state: "skipped" }]);
+    assert.equal(selectCifix(db, "app").rerun.length, 0);
+    assert.ok(!w.log.includes("model"));
+  });
+
+  test("a head that moved between the read and the fetch fails the try and is noted live", async () => {
+    const w = world();
+    const db = fresh(w.head);
+    const moved = git(w.fork, "commit-tree", `${w.head}^{tree}`, "-m", "moved");
+    git(w.fork, "update-ref", "refs/pull/7/head", moved);
+    const s = await runCifix(db, { repo: "app", dryRun: false }, () => {}, w.deps);
+    assert.equal(s.failed.length, 1);
+    assert.deepEqual(rows(db, "SELECT state FROM ci_fixes"), [{ state: "failed" }]);
+    assert.ok(!w.log.includes("model"));
+    assert.equal((rows(db, "SELECT head_oid FROM pr_checks")[0] as { head_oid: string }).head_oid, moved);
+  });
+
+  test("a PR that closed during the model calls fails the try", async () => {
+    const w = world({ closedAfter: 1 });
+    const db = fresh(w.head);
+    const s = await runCifix(db, { repo: "app", dryRun: false }, () => {}, w.deps);
+    assert.deepEqual([s.pushed, s.failed.length], [[], 1]);
+    assert.ok(!w.log.includes("push"));
+    assert.deepEqual(rows(db, "SELECT state FROM ci_fixes"), [{ state: "failed" }]);
+  });
+
+  test("a patch comment that fails is final: no retry, no second model call", async () => {
+    const w = world({ canModify: false, commentFails: true });
+    const db = fresh(w.head, { canModify: false, comment: true });
+    await runCifix(db, { repo: "app", dryRun: false }, () => {}, w.deps);
+    await runCifix(db, { repo: "app", dryRun: false }, () => {}, w.deps);
+    assert.equal(w.log.filter((l) => l === "model").length, 1);
+    assert.deepEqual(rows(db, "SELECT state FROM ci_fixes"), [{ state: "comment-failed" }]);
+    assert.equal(classifyCifix(db, "app")[0]!.bucket, "done");
+  });
+});
+
+describe("pushes are recorded before they happen", () => {
+  test("the ci_fixes row exists, with the commit about to be pushed, when the push runs", async () => {
+    const w = world();
+    const db = fresh(w.head);
+    const seen: unknown[] = [];
+    const inner = w.deps.exec;
+    w.deps.exec = async (cmd, args, o) => {
+      if (args.includes("push")) seen.push(rows(db, "SELECT state, head, to_head FROM ci_fixes"));
+      return inner(cmd, args, o);
+    };
+    await runCifix(db, { repo: "app", dryRun: false }, () => {}, w.deps);
+    const pushed = git(w.fork, "rev-parse", "refs/heads/fix");
+    assert.deepEqual(seen, [[{ state: "pushing", head: w.head, to_head: pushed }]]);
+    assert.deepEqual(rows(db, "SELECT state, to_head FROM ci_fixes"), [{ state: "pushed", to_head: pushed }]);
+  });
+
+  test("a push whose record never happened (crash) still carries an unsure review to the new head, for every pipeline push", () => {
+    for (const [table, from] of [["ci_fixes", "head"], ["fixups", "from_head"], ["conflict_merges", "from_head"]] as const) {
+      const db = freshQueueDb([{ n: 1 }]);
+      db.prepare("INSERT INTO access (login, role) VALUES ('op', 'operator')").run();
+      db.prepare("DELETE FROM opus_reviews").run();
+      saveOpus(db, null, { repo: "app", number: 1, head_oid: "sha1" }, { mode: "full", base: null, model: "m", review: { ref: "x", verdict: "take", sure: false, reason: "unsure", fixes: [], risks: ["r"], summary: null, why: null, public: null } });
+      askMergeDecisions(db, { at: QT1 });
+      db.prepare(`INSERT INTO ${table} (repo, number, ${from}, to_head, ${table === "ci_fixes" ? "kind, " : ""}state, attempt, created_at) VALUES ('app', 1, 'sha1', 'sha1c', ${table === "ci_fixes" ? "'code', " : ""}'pushing', 1, ?)`).run(QT1);
+      db.prepare("UPDATE items SET head_oid = 'sha1c' WHERE number = 1").run();
+      db.prepare("UPDATE pr_checks SET head_oid = 'sha1c' WHERE number = 1").run();
+      db.prepare("UPDATE verifications SET head_sha = 'sha1c' WHERE number = 1").run();
+      saveOpus(db, null, { repo: "app", number: 1, head_oid: "sha1c" }, { mode: "full", base: null, model: "m", review: { ref: "x", verdict: "take", sure: true, reason: "sure", fixes: [], risks: ["r"], summary: null, why: null, public: null } });
+      const e = buildQueue(db, { merged: "exclude" }).find((x) => x.number === 1)!;
+      assert.ok(e.outsideRule.includes("Opus was unsure"), table);
+    }
   });
 });

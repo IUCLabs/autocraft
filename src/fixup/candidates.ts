@@ -45,11 +45,11 @@ export function parseFixes(s: string | null): Fix[] {
   } catch { return []; }
 }
 
-export const FIXUP_STATES = ["pushed", "failed", "refused", "rejected", "cannot-push", "too-large", "asked", "push-denied"] as const;
+export const FIXUP_STATES = ["pushing", "pushed", "failed", "refused", "rejected", "cannot-push", "too-large", "asked", "push-denied"] as const;
 export type FixupState = (typeof FIXUP_STATES)[number];
 
 /** States that count as a try; the other three are recorded once per head and end the step's work on that head. */
-const ATTEMPT_STATES: FixupState[] = ["pushed", "failed", "refused", "rejected"];
+const ATTEMPT_STATES: FixupState[] = ["pushing", "pushed", "failed", "refused", "rejected"];
 
 /** Refusals for a wrong hunk header count (fixed by recounting since) are not tries. */
 export function attemptsOf(db: DatabaseSync, repo: string, number: number): number {

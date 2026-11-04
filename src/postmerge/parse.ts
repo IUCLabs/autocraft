@@ -26,7 +26,7 @@ export type Finding = {
   missed_why: string;
 };
 
-export type PostmergeCommit = { kind: "conflict-merge" | "fix-up" | "duplicate-carry"; sha: string | null; note: string | null };
+export type PostmergeCommit = { kind: "conflict-merge" | "fix-up" | "ci-fix" | "duplicate-carry"; sha: string | null; note: string | null };
 export type PostmergeReviewRow = { head: string; verdict: string; sure: boolean; reason: string; risks: string[]; fixes: { file: string; change: string }[]; at: string };
 export type RelatedItem = { number: number; kind: "issue" | "pr"; state: "open" | "closed"; title: string };
 /** A follow-up issue this stage already filed for the PR (any state), or is filing with an unknown outcome. */

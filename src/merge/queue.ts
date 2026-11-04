@@ -7,7 +7,7 @@ import { actionable } from "../decisions.ts";
 import { backlogHeld, duplicateHeld, notOwnIntegrationSql } from "../dupes/held.ts";
 import { headOf, sizeOf } from "../review/candidates.ts";
 import { changedSince, discussionState, staleReviews } from "../review/discussion.ts";
-import { failureNote, GATE_FAILURES, gatesOf, reasonFor, refuseReviews, type ReviewFact } from "./changes-requested.ts";
+import { failureNote, GATE_FAILURES, changesRequestedWhy, gatesOf, type ReviewFact } from "./changes-requested.ts";
 import { batchStates } from "./batch-store.ts";
 import { mergeHolds } from "./holds.ts";
 import { NO_CI_SAMPLE, repoHasNoCi } from "./no-ci.ts";
@@ -30,12 +30,12 @@ export type QueueState = (typeof QUEUE_STATES)[number];
 /** Why an unsure Opus take is asked about instead of merged by the rule. */
 export const UNSURE_REASON = "Opus was unsure";
 
-/** Returns a function that gives the head and the earlier heads AutoCraft itself pushed it from (conflict merges of the base, fix-up pushes, carry-over pushes), newest first. */
+/** Returns a function that gives the head and the earlier heads AutoCraft itself pushed it from (a `pushing` row is a push that started and may have landed) (conflict merges of the base, fix-up pushes, carry-over pushes), newest first. */
 function pushChainOf(db: DatabaseSync): (repo: string, number: number, head: string) => string[] {
-  const from = db.prepare(`SELECT from_head FROM conflict_merges WHERE repo = ?1 AND number = ?2 AND to_head = ?3 AND state = 'merged'
-    UNION SELECT from_head FROM fixups WHERE repo = ?1 AND number = ?2 AND to_head = ?3 AND state = 'pushed'
+  const from = db.prepare(`SELECT from_head FROM conflict_merges WHERE repo = ?1 AND number = ?2 AND to_head = ?3 AND state IN ('merged', 'pushing')
+    UNION SELECT from_head FROM fixups WHERE repo = ?1 AND number = ?2 AND to_head = ?3 AND state IN ('pushed', 'pushing')
     UNION SELECT from_head FROM dupe_carries WHERE repo = ?1 AND number = ?2 AND to_head = ?3 AND from_head IS NOT NULL
-    UNION SELECT head FROM ci_fixes WHERE repo = ?1 AND number = ?2 AND to_head = ?3 AND state = 'pushed'`);
+    UNION SELECT head FROM ci_fixes WHERE repo = ?1 AND number = ?2 AND to_head = ?3 AND state IN ('pushed', 'pushing')`);
   return (repo, number, head) => {
     const chain = [head];
     for (let k = 0; k < chain.length; k++) for (const f of from.all(repo, number, chain[k]!) as { from_head: string }[]) if (!chain.includes(f.from_head)) chain.push(f.from_head);
@@ -285,10 +285,9 @@ export function buildQueue(db: DatabaseSync, opts: QueueOptions = {}): QueueEntr
     // A maintainer's formal block comes before everything else: the PR is never asked about, batched or merged while it stands.
     // A live read newer than the PR's last change decides; otherwise the mirrored reviews do.
     const gate = gates.get(`${r.repo}#${r.number}`);
-    const live = gate && gate.readAt > (r.updated_at ?? "") ? gate : null;
-    const why = live ? (live.blocked ? reasonFor(live.by) : null) : refuseReviews(reviewRows.all(r.repo, r.number) as ReviewFact[], r.review_decision);
+    const { why, live } = changesRequestedWhy(gate, r.updated_at, reviewRows.all(r.repo, r.number) as ReviewFact[], r.review_decision);
     if (open && gate && gate.failures >= GATE_FAILURES) e.note = failureNote(gate.failures);
-    if (open && why) { e.state = "changes-requested"; e.note = why; e.blockedLive = !!live; out.push(e); continue; }
+    if (open && why) { e.state = "changes-requested"; e.note = why; e.blockedLive = live; out.push(e); continue; }
     e.state = stateOf(e, r.state === "MERGED" || mergedByUs, last, open && (backlogHeld(db, r.repo, r.number) ? "backlog" : duplicateHeld(db, r.repo, r.number) ? "duplicate" : null));
     if (open && mergeable === "CONFLICTING" && r.base_ref) {
       const ap = approvals.get(r.repo) ?? (approvals.set(r.repo, { push: pushApprovalOf(db, r.repo) !== null, comment: commentApprovalOf(db, r.repo) !== null }), approvals.get(r.repo)!);

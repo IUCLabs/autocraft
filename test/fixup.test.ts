@@ -205,6 +205,21 @@ function world(opts: { check?: string | null; reply?: string | null; moveBranch?
 const rows = (db: DatabaseSync, sql: string) => (db.prepare(sql).all() as Record<string, unknown>[]).map((r) => ({ ...r }));
 
 describe("fixup step", () => {
+  test("the fix-up is on record as pushing, with its commit, before the push runs", async () => {
+    const w = world();
+    const db = fresh(w.head);
+    const seen: unknown[] = [];
+    const inner = w.deps.exec;
+    w.deps.exec = async (cmd, args, o) => {
+      if (args.includes("push")) seen.push(rows(db, "SELECT state, from_head, to_head FROM fixups"));
+      return inner(cmd, args, o);
+    };
+    await runFixup(db, { repo: "app", dryRun: false }, () => {}, w.deps);
+    const pushed = git(w.fork, "rev-parse", "refs/heads/fix");
+    assert.deepEqual(seen, [[{ state: "pushing", from_head: w.head, to_head: pushed }]]);
+    assert.deepEqual(rows(db, "SELECT state, to_head FROM fixups"), [{ state: "pushed", to_head: pushed }]);
+  });
+
   test("claims, patches, pushes with the lease on the reviewed head, then comments once", async () => {
     const w = world();
     const db = fresh(w.head);

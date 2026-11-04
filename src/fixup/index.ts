@@ -149,6 +149,16 @@ class Recorder {
     this.at = at;
   }
 
+  /** Written before the push: the commit about to be pushed, so a crash between the push and its record leaves the head in the push chain. */
+  pushing(c: FixCandidate, commit: string, files: string[]): void {
+    if (c.carry) {
+      this.db.prepare("UPDATE dupe_carries SET to_head = ?, from_head = ?, updated_at = ? WHERE decision_id = ? AND number = ?").run(commit, c.head, this.at(), c.carry.decisionId, c.number);
+      return;
+    }
+    this.db.prepare("INSERT INTO fixups (repo, number, from_head, to_head, state, reason, files, attempt, created_at) VALUES (?, ?, ?, ?, 'pushing', NULL, ?, ?, ?)")
+      .run(c.repo, c.number, c.head, commit, JSON.stringify(files), c.attempt, this.at());
+  }
+
   /** A fixups row and a stages row: `hold` for the two states that need a person, else the PR's `take` stage with a note. */
   fixup(c: FixCandidate, state: "pushed" | "failed" | "refused" | "rejected" | "cannot-push" | "too-large" | "asked" | "push-denied", reason: string | null, files: string[], toHead: string | null = null): void {
     const at = this.at();
@@ -161,8 +171,13 @@ class Recorder {
         .run(next, tried || state === "pushed" ? 1 : 0, reason ? `${state}: ${reason}` : state, toHead, toHead ? c.head : null, at, c.carry.decisionId, c.number);
       return;
     }
-    this.db.prepare("INSERT INTO fixups (repo, number, from_head, to_head, state, reason, files, attempt, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
-      .run(c.repo, c.number, c.head, toHead, state, reason, JSON.stringify(files), c.attempt, at);
+    const open = this.db.prepare("SELECT rowid AS id FROM fixups WHERE repo = ? AND number = ? AND from_head = ? AND state = 'pushing'").get(c.repo, c.number, c.head) as { id: number } | undefined;
+    if (open) {
+      this.db.prepare("UPDATE fixups SET state = ?, reason = ?, files = ?, to_head = ? WHERE rowid = ?").run(state, reason, JSON.stringify(files), toHead, open.id);
+    } else {
+      this.db.prepare("INSERT INTO fixups (repo, number, from_head, to_head, state, reason, files, attempt, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .run(c.repo, c.number, c.head, toHead, state, reason, JSON.stringify(files), c.attempt, at);
+    }
     const hold = state === "cannot-push" || state === "too-large" || state === "push-denied";
     const note = state === "pushed" ? `fix-up pushed at ${short(c.head)}: ${files.join(", ")}`
       : state === "asked" ? `asked the contributor for changes at ${short(c.head)}: ${files.join(", ")}` : `fix-up ${state} at ${short(c.head)}: ${reason}`;
@@ -363,6 +378,7 @@ export async function runFixup(db: DatabaseSync, params: FixupParams, log: (line
       if (!now || now.state !== "OPEN" || now.isDraft) { log(`  ${ref}: skipped: no longer an open, non-draft PR after the model calls`); continue; }
       if (now.headRefOid !== c.head) { log(`  ${ref}: skipped: head moved to ${short(now.headRefOid)} during the model calls`); continue; }
 
+      rec.pushing(c, commit, v.files);
       const push = await pushBranch(gw, git, "fixup-push", { repo, number: c.number, remote: pr.headRepository.nameWithOwner, branch: pr.headRefName, sha: commit, expected: head }, { run: runId, from: head, to: commit, files: v.files, changed: v.changed });
       if (push.code !== 0) {
         const err = oneLine(push.stderr);
