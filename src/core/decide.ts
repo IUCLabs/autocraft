@@ -33,7 +33,7 @@ export function queueEntry(f: PrFacts, merged: boolean, open: boolean): Entry {
   if (!RULE_SIZES.includes(f.size)) reasons.push(`size ${f.size}`);
   if (!f.label || !RULE_LABELS.includes(f.label)) reasons.push(f.label ? `label ${f.label}` : "no settled label");
   if (!RULE_TIERS.includes(f.tier)) reasons.push(f.author ? "author not on the whitelist" : "author unknown");
-  reasons.push(...(f.sensitive ?? [UNCHECKED_REASON]));
+  reasons.push(...(f.sensitive ?? []));
   for (const c of f.statementConflicts) reasons.push(`conflicts with ${c.where}: "${excerpt(c.text)}" (${c.reason})`);
   if (f.verification?.state === VERIFY_UNAVAILABLE) reasons.push(`not verified: ${f.verification.summary ?? "Verify cannot build this repo"}`);
   if (f.ci === "none" && f.repoFacts.noCi) reasons.push("the repo has no CI checks");
@@ -58,6 +58,8 @@ export function queueEntry(f: PrFacts, merged: boolean, open: boolean): Entry {
     if (premerge === "defect") reasons.push(PREMERGE_DEFECT_REASON);
     else if (premerge === "unsure") reasons.push(PREMERGE_UNSURE_REASON);
     else if (premerge === "failed") reasons.push(PREMERGE_FAILED_REASON);
+    // The pre-merge review caches the diff, so a diff still unchecked after it is a reason; before it the PR waits for it.
+    else if (premerge === "clean" && f.sensitive === null) reasons.push(UNCHECKED_REASON);
   }
   const e: Entry = { state: "needs-decision", path: null, reasons, note: null, conflictNote: null, premerge, premergeDefects: defects, answer, noCi, refusedReason: null };
 
