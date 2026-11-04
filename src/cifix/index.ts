@@ -20,6 +20,7 @@ import { pushApprovalOf } from "../fixup/approval.ts";
 import { Git, exec, fixupDir, type Exec } from "../fixup/git.ts";
 import { DIFF_CAP, FILE_CAP, PR_QUERY, TOTAL_CAP, noteLive, scrubReason, whoAmI, type PrNode } from "../fixup/index.ts";
 import { editable, validatePatch } from "../fixup/patch.ts";
+import { readGate } from "../merge/changes-requested.ts";
 import { longLivedOf, pushable, BASE_ORG } from "../fixup/pushable.ts";
 import { HOLD_CANNOT_PUSH } from "../fixup/template.ts";
 import { ghComment, ghRerunFailed, pushBranch, type Writer } from "../github/write.ts";
@@ -56,13 +57,16 @@ const RERUN_WAIT_MS = 2 * 3600_000;
  * The formatter step. /src is a writable overlay inside the step, so the formatted copy is made beside an untouched
  * copy and the unified diff of the two goes to /out. No artifact means nothing to format.
  */
+/** Where the build image keeps its Rust toolchain. */
+export const IMAGE_CARGO = "/usr/local/cargo";
+export const IMAGE_RUSTUP = "/usr/local/rustup";
 export const FORMAT_SCRIPT = [
-  "set -e", "mkdir -p /tmp/w/cargo-home", "cp -a /src /tmp/w/a", "cp -a /src /tmp/w/b", "cd /tmp/w",
-  // The PR controls `.cargo/config.toml` (aliases) and `rust-toolchain.toml`: rustfmt runs on the named files directly,
-  // from outside the checkout, with an empty cargo home and no toolchain override from the environment.
-  "unset RUSTUP_TOOLCHAIN", "export CARGO_HOME=/tmp/w/cargo-home",
+  // `set -f`: the file list is never glob-expanded.
+  "set -e", "set -f", "mkdir -p /tmp/w", "cp -a /src /tmp/w/a", "cp -a /src /tmp/w/b", "cd /tmp/w",
+  // The PR controls `.cargo/config.toml` (aliases) and `rust-toolchain.toml`: the image's rustfmt runs on the named files
+  // directly, by absolute path, from outside the checkout, under an empty environment with the toolchain paths fixed.
   'files="$*"', "set --", 'for f in $files; do set -- "$@" "b/$f"; done',
-  'rustfmt --edition 2021 "$@"',
+  `env -i PATH=${IMAGE_CARGO}/bin:/usr/bin:/bin HOME=/tmp RUSTUP_HOME=${IMAGE_RUSTUP} CARGO_HOME=${IMAGE_CARGO} ${IMAGE_CARGO}/bin/rustfmt --edition 2021 "$@"`,
   ": > /tmp/w/format.txt",
   'for f in $files; do if ! cmp -s "a/$f" "b/$f"; then echo "diff -uN a/$f b/$f" >> /tmp/w/format.txt; diff -uN "a/$f" "b/$f" >> /tmp/w/format.txt || true; fi; done',
   "if [ -s /tmp/w/format.txt ]; then cp /tmp/w/format.txt /out/format.txt; fi",
@@ -258,8 +262,6 @@ export async function runCifix(db: DatabaseSync, params: CifixParams, log: (line
     }
     if (kind === "format") {
       // Formatting alone, whatever produced the diff: whitespace-only per hunk, and the same limits as any patch.
-      const notFormat = formattingOnly(v.patch);
-      if (notFormat) { fail("refused", notFormat); return; }
       const heads = await headFiles(head, v.files);
       const guard = typeof heads === "string" ? heads : guardPatch(v.patch, v.files, heads);
       if (guard) { fail("refused", guard); return; }
@@ -272,6 +274,14 @@ export async function runCifix(db: DatabaseSync, params: CifixParams, log: (line
       rmSync(scratch, { recursive: true, force: true });
     }
     if (!applied.ok) { fail("refused", applied.reason); return; }
+    if (kind === "format") {
+      // Formatting alone, by tokens, on the whole files before and after.
+      for (const f of v.files) {
+        const before = await git.file(head, f), after = await git.file(applied.tree, f);
+        const why = !before.ok ? before.reason : !after.ok ? after.reason : formattingOnly(f, before.content, after.content);
+        if (why) { fail("refused", why); return; }
+      }
+    }
     if (check) {
       const refusal = await check(v.patch);
       if (refusal !== null) { fail(refusal.startsWith("rejected:") ? "rejected" : "failed", refusal.replace(/^rejected: /, "")); return; }
@@ -279,6 +289,15 @@ export async function runCifix(db: DatabaseSync, params: CifixParams, log: (line
     // The model calls took minutes: read the PR again before writing.
     const now = await readPr(c);
     if (!now) { fail("failed", gone); return; }
+    // A maintainer's changes request may have come in during the model calls; an unreadable answer counts as blocked.
+    const blocked = await readGate(db, d.querier, ORG, repo, c.number, log);
+    if (blocked !== null) {
+      const reason = blocked ?? "the PR's reviews could not be read";
+      rec.set(c, kind, "skipped", reason, { files: v.files });
+      summary.skipped.push(ref);
+      log(`  ${ref}: skipped: ${reason}`);
+      return;
+    }
     if (!canPush) {
       const cm = await ghComment(gw, d.exec, "cifix-comment", { repo, number: c.number, pr: true }, askText(checkName, v.patch), { run: runId, head: c.head });
       if (cm.code !== 0) {
@@ -402,14 +421,16 @@ export async function runCifix(db: DatabaseSync, params: CifixParams, log: (line
     try {
       const pr = await readPr(c);
       if (!pr) return;
-      params.onHandled?.(++handled);
+      // A PR that only waits for rerun results is not counted as handled (it does not use the step's limit).
+      const handle = () => params.onHandled?.(++handled);
       const reading = await readFailure(d.gh, repo, c.head);
       const skip = (why: string) => { rec.set(c, "code", "skipped", why); summary.skipped.push(ref); log(`  ${ref}: skipped: ${why}`); };
-      if (reading.kind === "skip") { skip(reading.why); return; }
+      if (reading.kind === "skip") { handle(); skip(reading.why); return; }
       const failure = reading.failure;
       const t = triage(failure);
       log(`  ${ref}: ${t.kind}: ${t.why}`);
-      if (t.kind === "skip") { skip(t.why); return; }
+      if (t.kind === "skip") { handle(); skip(t.why); return; }
+      if (t.kind !== "infra" || !c.rerun) handle();
       if (t.kind === "unreadable") { rec.set(c, "code", "failed", t.why); summary.failed.push({ ref, reason: t.why }); return; }
       if (t.kind === "infra") {
         if (c.rerun) {
@@ -418,11 +439,13 @@ export async function runCifix(db: DatabaseSync, params: CifixParams, log: (line
           if (!fresh) {
             const waited = !c.rerunAt || Date.parse(at()) > Date.parse(c.rerunAt) + RERUN_WAIT_MS;
             if (!waited) { log(`  ${ref}: waiting: the checks were not rerun yet`); return; }
+            handle();
             const reason = "the rerun produced no new check results";
             rec.set(c, "infra", "failed", reason);
             summary.failed.push({ ref, reason });
             return;
           }
+          handle();
           const reason = "the failure looks like an infrastructure error again after the rerun";
           rec.set(c, "infra", "failed", reason);
           summary.failed.push({ ref, reason });
@@ -445,8 +468,11 @@ export async function runCifix(db: DatabaseSync, params: CifixParams, log: (line
           log(`  ${ref}: refused: ${reason}`);
           return;
         }
+        // The build environment (packages, env) is read from the PR's base commit, never from the PR's own workflow.
+        const base = (await d.gh(["api", `repos/${ORG}/${repo}/pulls/${c.number}`, "--jq", ".base.sha"])).trim();
+        if (!/^[0-9a-f]{40}$/.test(base)) { rec.set(c, "format", "failed", "no base commit for the build environment"); summary.failed.push({ ref, reason: "no base commit" }); return; }
         const id = createTask(db, {
-          step: "cifix", repo, number: c.number, headSha: c.head, requires: { os: "linux", toolchains: ["rust-stable"] }, warm: { key: warmKeyOf(repo), role: "use" },
+          step: "cifix", repo, number: c.number, headSha: c.head, baseSha: base, requires: { os: "linux", toolchains: ["rust-stable"] }, warm: { key: warmKeyOf(repo), role: "use" },
           plan: [{ name: "format", cmd: ["sh", "-c", FORMAT_SCRIPT, "format", ...names], network: "none", timeoutSec: 600, artifacts: [FORMAT_ARTIFACT] }],
         });
         rec.set(c, "format", "formatting", null, { task: id, files: names });

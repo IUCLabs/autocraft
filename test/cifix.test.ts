@@ -225,9 +225,10 @@ const REJECT = JSON.stringify({ verdict: "reject", reasons: "hides the error", p
 const CODE_LOG = "test\tcargo test\t2026-01-01T00:00:00Z error[E0425]: cannot find value `b` in this scope\ntest\tcargo test\t2026-01-01T00:00:01Z  --> src/lib.rs:2:20\n";
 const FMT_LOG = "fmt\tCheck formatting\t2026-01-01T00:00:00Z Diff in /home/runner/work/app/app/src/lib.rs:1:\n";
 const INFRA_LOG = "build\tcargo fetch\t2026-01-01T00:00:00Z warning: spurious network error: Could not resolve host: index.crates.io\n";
+const BASE = "b".repeat(40);
 const GOOD = "diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1,2 +1,2 @@\n-fn a() {}\n-fn main() { b(); }\n+fn b() {}\n+fn main() { b(); }\n";
 
-function world(opts: { log?: string; reply?: string | null; check?: string | null; canModify?: boolean; pushError?: string; conclusion?: string; completedAt?: string; checkRuns?: unknown[]; commentFails?: boolean; closedAfter?: number } = {}): World {
+function world(opts: { log?: string; reply?: string | null; check?: string | null; canModify?: boolean; pushError?: string; conclusion?: string; completedAt?: string; checkRuns?: unknown[]; commentFails?: boolean; closedAfter?: number; decision?: string } = {}): World {
   const root = mkdtempSync(join(dir, "w-"));
   const work = join(root, "work");
   mkdirSync(work);
@@ -247,7 +248,7 @@ function world(opts: { log?: string; reply?: string | null; check?: string | nul
     async query() {
       return { repository: { pullRequest: {
         id: "PR7", state: opts.closedAfter !== undefined && ++reads > opts.closedAfter ? "CLOSED" : "OPEN", isDraft: false, headRefOid: head, headRefName: "fix", maintainerCanModify: opts.canModify !== false, mergeable: "MERGEABLE",
-        headRepository: { nameWithOwner: "contrib/app" }, assignees: { nodes: [] },
+        headRepository: { nameWithOwner: "contrib/app" }, assignees: { nodes: [] }, reviewDecision: opts.decision ?? null,
       } } };
     },
   });
@@ -271,6 +272,7 @@ function world(opts: { log?: string; reply?: string | null; check?: string | nul
     querier, exec: run, now: () => new Date(T2), root: join(root, "cache"),
     fetchDiff: async () => ({ ok: true, text: "diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1 +1 @@\n-x\n+fn a() {}\n" }),
     gh: async (args) => {
+      if (args[0] === "api" && args[1]!.includes("/pulls/")) return `${BASE}\n`;
       if (args[0] === "api") return JSON.stringify({ check_runs: opts.checkRuns ?? [
         { name: "gate / test", status: "completed", conclusion: opts.conclusion ?? "failure", completed_at: opts.completedAt ?? "2026-01-03T12:00:00Z", details_url: "https://github.com/storytold/app/actions/runs/11/job/5" },
         { name: "optional / lint", status: "completed", conclusion: "success", details_url: "https://github.com/storytold/app/actions/runs/12/job/6" },
@@ -396,13 +398,24 @@ describe("format failure", () => {
     assert.match(String(rows(db, "SELECT reason FROM ci_fixes")[0]!.reason), /more than whitespace/);
   });
 
-  test("formatting is checked per hunk: reordered or moved lines are refused", () => {
-    const h = (body: string) => `diff --git a/x.rs b/x.rs\n--- a/x.rs\n+++ b/x.rs\n@@ -1,2 +1,2 @@\n${body}`;
-    assert.equal(formattingOnly(h("-use b;\n-use a;\n+use a;\n+use b;\n")) === null, false);
-    assert.equal(formattingOnly(h("-fn a(x:i32){}\n+fn a(x: i32) {}\n")), null);
-    assert.equal(formattingOnly(h("-f(a, b)\n+f(a, b,)\n")) === null, false);
-    const moved = `${h("-let a = 1;\n let b = 2;\n")}@@ -9,2 +8,3 @@\n let c = 3;\n+let a = 1;\n`;
-    assert.equal(formattingOnly(moved) === null, false);
+  test("formatting is checked by tokens: spacing passes, anything else is refused", () => {
+    const fmt = (a: string, b: string) => formattingOnly("x.rs", a, b);
+    assert.equal(fmt("fn a(x:i32){ }\nfn b(){}\n", "fn a(x: i32) {}\nfn b() {}\n"), null);
+    assert.equal(fmt("f(a, b)\n", "f(a,\n  b)\n"), null);
+    // Reordered, trailing comma, moved line.
+    assert.notEqual(fmt("use b;\nuse a;\n", "use a;\nuse b;\n"), null);
+    assert.notEqual(fmt("f(a, b)\n", "f(a, b,)\n"), null);
+    assert.notEqual(fmt("let a = 1;\nlet b = 2;\n", "let b = 2;\nlet a = 1;\n"), null);
+    // Whitespace inside a string literal or a comment is content.
+    assert.notEqual(fmt('let s = "a b";\n', 'let s = "ab";\n'), null);
+    assert.notEqual(fmt('let s = r#"a  b"#;\n', 'let s = r#"a b"#;\n'), null);
+    assert.notEqual(fmt("// a  b\nfn f() {}\n", "// a b\nfn f() {}\n"), null);
+    assert.equal(fmt("// a b  \nfn f() {}\n", "// a b\nfn f() {}\n"), null);
+    // `/ *` and `/*` differ: the second opens a comment that may run to a planted `*/`.
+    assert.notEqual(fmt("let y = x / *p; // done */\n", "let y = x /*p; // done */\n"), null);
+    assert.notEqual(fmt("a - > b\n", "a -> b\n"), null);
+    // Lifetimes and chars are not strings.
+    assert.equal(fmt("fn f<'a>(x:&'a u8)->char{'}'}\n", "fn f<'a>(x: &'a u8) -> char { '}' }\n"), null);
   });
 
   test("files outside the PR's diff and the log's Diff in lines are never formatted", async () => {
@@ -435,6 +448,34 @@ describe("format failure", () => {
     assert.deepEqual(plan[0]!.cmd.slice(4), ["src/lib.rs"]);
     assert.match(plan[0]!.cmd[2]!, /rustfmt --edition/);
     assert.doesNotMatch(plan[0]!.cmd[2]!, /cargo fmt/);
+    // Fixed environment and absolute path: nothing the PR sets (RUSTUP_HOME, PATH, a planted rustfmt) is used; no globbing.
+    assert.match(plan[0]!.cmd[2]!, /^set -e; set -f;/);
+    assert.match(plan[0]!.cmd[2]!, /env -i PATH=\/usr\/local\/cargo\/bin:\/usr\/bin:\/bin HOME=\/tmp RUSTUP_HOME=\/usr\/local\/rustup CARGO_HOME=\/usr\/local\/cargo \/usr\/local\/cargo\/bin\/rustfmt /);
+    // The build environment comes from the PR's base commit, not the PR's own workflow.
+    assert.equal(rows(db, "SELECT base_sha FROM build_tasks")[0]!.base_sha, BASE);
+  });
+
+  test("a string-literal whitespace change or a `/ *` turned into a comment opener in a formatter result is refused", async () => {
+    const mk = (from: string, to: string) => `diff -uN a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1,2 +1,2 @@\n-${from}\n+${to}\n fn main() { b(); }\n`;
+    for (const [from, to] of [["fn a() {}", 'fn a() { let s = "a b"; }'], ["fn a() {}", "fn a() { x / *p; }"]]) {
+      const w = world({ log: FMT_LOG });
+      const db = fresh(w.head);
+      // The head holds the spaced version; the "formatter" result drops the space.
+      git(w.fork, "update-ref", "refs/heads/unused", w.head);
+      const spaced = mk(from!, to!);
+      const { summary } = await formatRun(w, spaced, db);
+      assert.deepEqual(summary.pushed, []);
+      assert.ok(!w.log.includes("push"));
+    }
+  });
+
+  test("a changes request that arrived before the push skips it and records why", async () => {
+    const w = world({ decision: "CHANGES_REQUESTED" });
+    const db = fresh(w.head);
+    const s = await runCifix(db, { repo: "app", dryRun: false }, () => {}, w.deps);
+    assert.deepEqual([s.pushed, s.skipped], [[], ["app#7"]]);
+    assert.ok(!w.log.includes("push"));
+    assert.deepEqual(rows(db, "SELECT state FROM ci_fixes"), [{ state: "skipped" }]);
   });
 
   test("a head that moved before the formatter result was applied is a failed try that closes the formatting row", async () => {
@@ -528,8 +569,10 @@ describe("infrastructure failure", () => {
     await runCifix(db, { repo: "app", dryRun: false }, () => {}, w.deps);
     await runRerun(db, { repo: "app", dryRun: false }, () => {}, w.deps);
     db.prepare("UPDATE pr_checks SET fetched_at = ?").run("2026-01-04T00:00:00Z");
-    const again = await runCifix(db, { repo: "app", dryRun: false }, () => {}, w.deps);
+    let handled = 0;
+    const again = await runCifix(db, { repo: "app", dryRun: false, onHandled: () => handled++ }, () => {}, w.deps);
     assert.deepEqual([again.infra, again.failed], [[], []]);
+    assert.equal(handled, 0, "waiting for rerun results does not use the step's limit");
     assert.deepEqual(rows(db, "SELECT state FROM ci_fixes ORDER BY rowid"), [{ state: "infra" }, { state: "rerun" }]);
   });
 

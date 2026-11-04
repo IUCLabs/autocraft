@@ -99,29 +99,93 @@ export function guardPatch(patch: string, files: string[], heads?: Map<string, s
   return null;
 }
 
-const strip = (s: string) => s.replace(/\s+/g, "");
+/** Pairs of punctuation characters that form one operator; written apart (`- >`) they are other tokens. Other neighbours (`=&`, `{ }`) may be respaced freely. */
+const COMPOUND = new Set(["->", "=>", "==", "!=", "<=", ">=", "&&", "||", "<<", ">>", "+=", "-=", "*=", "/=", "%=", "^=", "&=", "|=", "..", "::"]);
+const IDENT = /[\p{L}\p{N}_]/u;
+const CHAR_LIT = /^'(?:\\(?:x[0-9a-fA-F]{2}|u\{[0-9a-fA-F_]+\}|[^\n])|[^\\'\n])'/;
+const trimLines = (t: string) => t.split("\n").map((l) => l.trimEnd()).join("\n");
 
 /**
- * Why a formatter diff is not formatting alone, or null. Within each hunk the removed and the added lines must be equal
- * once all whitespace is removed (the context is the same on both sides), so a changed token, a reordered line or a
- * moved line is refused. The diff is never trusted to be formatting because a formatter produced it: a PR controls
- * the files the formatter reads.
+ * Rust tokens of `src`: identifiers and numbers, string, char and raw-string literals with their exact text, comments
+ * as tokens (trailing spaces ignored), lifetimes, and single punctuation characters (marked when glued into a two-character operator: `->` is not `- >`). Whitespace is the only thing not kept. null when a string or comment is not closed.
  */
-export function formattingOnly(patch: string): string | null {
-  let file = "", rem = "", add = "", inHunk = false;
-  const bad = () => strip(rem) !== strip(add);
-  for (const l of patch.split("\n")) {
-    if (l.startsWith("diff --git ") || l.startsWith("@@")) {
-      if (inHunk && bad()) return `the formatter changed more than whitespace in ${file}`;
-      rem = add = "";
-      inHunk = l.startsWith("@@");
-      const d = /^diff --git a\/(\S+) /.exec(l);
-      if (d) file = d[1]!;
+export function rustTokens(src: string): string[] | null {
+  const out: string[] = [];
+  let i = 0, lastPunctEnd = -1, prev = "";
+  const n = src.length;
+  while (i < n) {
+    const ch = src[i]!;
+    if (/\s/.test(ch)) { i++; continue; }
+    if (src.startsWith("//", i)) {
+      let e = src.indexOf("\n", i);
+      if (e < 0) e = n;
+      out.push(`c:${src.slice(i, e).trimEnd()}`);
+      i = e;
       continue;
     }
-    if (!inHunk) continue;
-    if (l.startsWith("-")) rem += l.slice(1);
-    else if (l.startsWith("+")) add += l.slice(1);
+    if (src.startsWith("/*", i)) {
+      let depth = 0, j = i;
+      for (; j < n; j++) {
+        if (src.startsWith("/*", j)) { depth++; j++; }
+        else if (src.startsWith("*/", j)) { depth--; j++; if (depth === 0) break; }
+      }
+      if (depth !== 0) return null;
+      out.push(`C:${trimLines(src.slice(i, j + 1))}`);
+      i = j + 1;
+      continue;
+    }
+    const raw = /^(?:br|cr|r)(#*)"/.exec(src.slice(i, i + 40));
+    if (raw) {
+      const close = `"${raw[1]}`;
+      const e = src.indexOf(close, i + raw[0].length);
+      if (e < 0) return null;
+      out.push(`s:${src.slice(i, e + close.length)}`);
+      i = e + close.length;
+      continue;
+    }
+    const pre = /^(?:b|c)?"/.exec(src.slice(i, i + 2));
+    if (pre) {
+      let j = i + pre[0].length;
+      while (j < n && src[j] !== '"') j += src[j] === "\\" ? 2 : 1;
+      if (j >= n) return null;
+      out.push(`s:${src.slice(i, j + 1)}`);
+      i = j + 1;
+      continue;
+    }
+    if (ch === "'" || (ch === "b" && src[i + 1] === "'")) {
+      const at = ch === "b" ? i + 1 : i;
+      const m = CHAR_LIT.exec(src.slice(at, at + 14));
+      if (m) { out.push(`h:${src.slice(i, at + m[0].length)}`); i = at + m[0].length; continue; }
+      if (ch === "'") {
+        let j = i + 1;
+        while (j < n && IDENT.test(src[j]!)) j++;
+        if (j > i + 1) { out.push(`l:${src.slice(i + 1, j)}`); i = j; continue; }
+      }
+    }
+    if (IDENT.test(ch)) {
+      let j = i;
+      while (j < n && IDENT.test(src[j]!)) j++;
+      out.push(`i:${src.slice(i, j)}`);
+      i = j;
+      continue;
+    }
+    out.push(`${lastPunctEnd === i && COMPOUND.has(prev + ch) ? "~" : "p:"}${ch}`);
+    lastPunctEnd = i + 1;
+    prev = ch;
+    i++;
   }
-  return inHunk && bad() ? `the formatter changed more than whitespace in ${file}` : null;
+  return out;
+}
+
+/**
+ * Why `after` is not `before` reformatted, or null. The token streams (see rustTokens) must be identical: only
+ * whitespace between tokens may differ, so a changed token, a changed string or comment, a reordered or moved item
+ * and a `/ *` turned into a comment opener are all refused. The diff is never trusted to be formatting because a
+ * formatter produced it: a PR controls the files the formatter reads.
+ */
+export function formattingOnly(path: string, before: string, after: string): string | null {
+  const a = rustTokens(before), b = rustTokens(after);
+  if (!a || !b) return `${path} could not be tokenized to check the formatting`;
+  if (a.length !== b.length || a.some((t, i) => t !== b[i])) return `the formatter changed more than whitespace in ${path}`;
+  return null;
 }
