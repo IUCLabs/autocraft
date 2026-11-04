@@ -13,6 +13,9 @@ const KIND_ORDER = ["scope", "duplicate", "close", "merge", "split", "other"];
 /** `/items/<repo>/<n>`; the repo is the short name the dashboard shows. */
 export const itemPath = (repo: string, number: number): string => `/items/${encodeURIComponent(shortRepo(repo))}/${number}`;
 
+/** `/batches/<id>`: the detail page of an integration batch. */
+export const batchPath = (id: number): string => `/batches/${id}`;
+
 /** `storytold/designcraft` and `designcraft` name the same repo. */
 export const shortRepo = (repo: string): string => repo.slice(repo.lastIndexOf("/") + 1);
 

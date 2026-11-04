@@ -10,7 +10,7 @@ import { ModelCallDetail } from "../../ui/organisms/ModelCallDetail";
 import { TaskDetail } from "../../ui/organisms/TaskDetail";
 import { DecisionSummary } from "../../ui/organisms/DecisionSummary";
 import { ReviewDetail } from "../../ui/organisms/ReviewDetail";
-import { githubItemUrl } from "../../lib/links";
+import { batchPath, githubItemUrl } from "../../lib/links";
 import { Badge } from "../../ui/atoms/Badge";
 
 const text = (v: unknown): string | null => (typeof v === "string" && v ? v : v === null || v === undefined ? null : String(v));
@@ -83,6 +83,9 @@ export function TraceEventBody({ event: e, item }: { event: TraceEvent; item: Ev
     <div className="flex min-w-0 flex-col gap-3">
       {needsDetail && (detail.data ? <Fields e={e} fields={detail.data.fields} /> : detail.error ? <ErrorLine error={detail.error.message} /> : <div className="h-8" aria-hidden />)}
       {e.ref.taskId !== undefined && (task.data ? <TaskDetail task={task.data} /> : task.error ? <ErrorLine error={task.error.message} /> : <div className="h-16" aria-hidden />)}
+      {e.ref.batchId !== undefined && (
+        <p className="text-sm"><Link to={batchPath(e.ref.batchId)} className="text-accent-ink hover:underline">Batch #{e.ref.batchId}</Link></p>
+      )}
       {e.kind === "check" && e.ref.runId !== undefined && (
         <p className="text-sm"><Link to={`/agents/${e.ref.runId}`} className="text-accent-ink hover:underline">Model call that ran it</Link></p>
       )}

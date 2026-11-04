@@ -19,6 +19,7 @@ import { itemList, settledFor } from "./itemsFixtures";
 import { postmergeFor, premergeFor, prWorkFor } from "./verifyFixtures";
 import { nextPageFixture } from "./nextMock";
 import { queueBatchList, queueList } from "./queueFixtures";
+import { batchDetailMock } from "./batchMock";
 import { createQueueMock } from "./queueMock";
 import { needsPage } from "./needsFixtures";
 import { workList } from "./workFixtures";
@@ -206,6 +207,7 @@ export function createMockApi(): Api {
     queue: (f) => wait(queueList(f), 60),
     needs: (f) => wait(needsPage(f), 60),
     queueBatches: (f) => wait(queueBatchList(f), 60),
+    batch: (id) => wait(batchDetailMock(id), 60),
     flow: (repo) => wait(flowFixture(repo), 60),
     signOut: () => wait(undefined),
     subscribe(fn) {

@@ -21,5 +21,6 @@ import { nextModule } from "../modules/next";
 import { similarModule } from "../modules/similar";
 import { mainCiModule } from "../modules/mainci";
 import { activityModule } from "../modules/activity";
+import { batchModule } from "../modules/batch";
 
-export const modules: FeatureModule[] = [nowModule, flowModule, needsModule, nextModule, agentsModule, envsModule, ratesModule, itemModule, progressModule, itemsModule, activityModule, contributorsModule, classifiersModule, costModule, reposModule, accessModule, auditModule, aboutModule, pipelineModule, promptsModule, similarModule, accountsModule, mainCiModule];
+export const modules: FeatureModule[] = [nowModule, flowModule, needsModule, nextModule, agentsModule, envsModule, ratesModule, itemModule, progressModule, itemsModule, activityModule, contributorsModule, classifiersModule, costModule, reposModule, accessModule, auditModule, aboutModule, pipelineModule, promptsModule, similarModule, accountsModule, mainCiModule, batchModule];
