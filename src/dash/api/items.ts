@@ -175,7 +175,7 @@ const ORDER: Record<ItemSort, string> = {
 
 type Row = SettledRow & {
   rid: number; repo: string; number: number; kind: string; state: string; title: string | null; author: string | null;
-  created_at: string | null; updated_at: string | null; comments_count: number | null;
+  created_at: string | null; updated_at: string | null; comments_count: number | null; merged_by_us_at?: string | null;
 };
 
 const OPEN = "\u0002", CLOSE = "\u0003";
@@ -261,7 +261,7 @@ export async function listItems(db: DatabaseSync, req: Req): Promise<ItemList> {
     ` ORDER BY ${order}, i.repo, i.number DESC LIMIT :limit OFFSET :offset`).all({ ...b.params, limit, offset }) as { rid: number }[]).map((r) => r.rid);
   const byId = new Map((ids.length ? db.prepare(`SELECT i.rowid AS rid, i.repo, i.number, i.kind, i.state, i.title, i.author,
       i.created_at, i.updated_at, i.comments_count, s.status, s.label, s.source, s.top, s.jev_label, s.haiku_label, s.flags,
-      s.referee_label, s.referee_sure, s.referee_reason
+      s.referee_label, s.referee_sure, s.referee_reason, ${MERGED_AT} AS merged_by_us_at
     FROM items i LEFT JOIN temp.item_settled s ON s.repo = i.repo AND s.number = i.number WHERE i.rowid IN (${ids.map(() => "?").join(",")})`).all(...ids) as Row[] : [])
     .map((r) => [r.rid, r]));
   const rows = ids.map((id) => byId.get(id)).filter((r): r is Row => !!r);
@@ -278,7 +278,7 @@ export async function listItems(db: DatabaseSync, req: Req): Promise<ItemList> {
       comments: r.comments_count ?? 0, settled: fromRow(r) as ItemListRow["settled"],
       stage: (stages.get(`${r.repo}#${r.number}`) ?? null) as Stage | null, snippet: snips.get(r.rid) ?? null,
       queue: slots.get(`${r.repo}#${r.number}`) ?? null,
-      mergedHow: how.get(`${r.repo}#${r.number}`) ?? null,
+      mergedHow: how.get(`${r.repo}#${r.number}`) ?? null, mergedAt: how.has(`${r.repo}#${r.number}`) ? r.merged_by_us_at ?? null : null,
     })),
   };
 }

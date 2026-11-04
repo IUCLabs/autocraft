@@ -529,6 +529,8 @@ export interface ItemListRow extends ItemRef {
   queue?: QueueSlot | null;
   /** How AutoCraft merged a PR; null when it did not. */
   mergedHow?: "rule" | "operator" | "batch" | null;
+  /** When AutoCraft merged it; set with `mergedHow`. */
+  mergedAt?: string | null;
 }
 
 export interface ItemList {

@@ -45,6 +45,7 @@ const POOL: (ItemListRow & { comment: string })[] = (() => {
         stage: (r() < 0.1 ? (["reviewed", "take", "needs-decision", "hold"] as Stage[])[Math.floor(r() * 4)] : null),
         snippet: null,
         queue: st < 0.72 ? mockSlot(number) : null,
+        mergedAt: st >= 0.72 && st < 0.86 && kind === "pr" ? new Date(NOW - Math.max(1, updatedH - 1) * H).toISOString() : null,
         mergedHow: st >= 0.72 && st < 0.86 && kind === "pr" ? (["rule", "operator", "batch"] as const)[number % 3] : null,
         comment: COMMENTS[Math.floor(r() * COMMENTS.length)],
       });
@@ -75,7 +76,7 @@ export function itemList(f: ItemFilter): ItemList {
   const rows = base.filter((it) => !want.size || want.has(it.settled.status));
   const sort = f.sort ?? (words.length ? "relevance" : f.state === "merged-by-us" ? "merged" : "updated");
   const key = (it: ItemListRow): string | number =>
-    sort === "number" ? it.number : sort === "created" ? it.createdAt : sort === "merged" ? it.updatedAt : sort === "relevance" ? (it.title.toLowerCase().includes(words[0] ?? "") ? 1 : 0) : it.updatedAt;
+    sort === "number" ? it.number : sort === "created" ? it.createdAt : sort === "merged" ? it.mergedAt ?? "" : sort === "relevance" ? (it.title.toLowerCase().includes(words[0] ?? "") ? 1 : 0) : it.updatedAt;
   rows.sort((a, b) => {
     const x = key(a), y = key(b);
     const c = typeof x === "number" ? x - (y as number) : x.localeCompare(y as string);

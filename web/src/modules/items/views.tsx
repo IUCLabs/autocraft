@@ -164,7 +164,7 @@ export function ItemsView(_: ViewProps) {
       >
         <ErrorLine error={error?.message} className="p-4" />
         {data && data.rows.length === 0 && <p className="px-4 py-6 text-sm text-ink/50">No item matches these filters.</p>}
-        {data && data.rows.length > 0 && (phone ? <Cards rows={data.rows} /> : <Table rows={data.rows} />)}
+        {data && data.rows.length > 0 && (phone ? <Cards rows={data.rows} byUs={filter.state === "merged-by-us"} /> : <Table rows={data.rows} byUs={filter.state === "merged-by-us"} />)}
         {data && <Pager offset={filter.offset ?? 0} limit={PAGE} total={data.total} onOffset={(o) => update({ offset: o ? String(o) : null })} />}
       </Block>
     </Page>
@@ -303,7 +303,7 @@ function Flags({ flags }: { flags: string[] }) {
   );
 }
 
-function Table({ rows }: { rows: ItemListRow[] }) {
+function Table({ rows, byUs }: { rows: ItemListRow[]; byUs: boolean }) {
   useNow();
   return (
     <div className="overflow-x-auto">
@@ -312,7 +312,7 @@ function Table({ rows }: { rows: ItemListRow[] }) {
           <tr className="border-b border-line text-left">
             <th className="h-8 px-3 font-medium">Item</th>
             <th className="w-[120px] px-3 font-medium">Author</th>
-            <th className="w-[80px] px-3 font-medium">Updated</th>
+            <th className="w-[80px] px-3 font-medium">{byUs ? "Merged" : "Updated"}</th>
             <th className="w-[230px] px-3 font-medium">Type</th>
             <th className="w-[120px] px-3 font-medium">Flags</th>
             <th className="w-[120px] px-3 font-medium">Stage</th>
@@ -331,7 +331,7 @@ function Table({ rows }: { rows: ItemListRow[] }) {
               </td>
               <td className="truncate px-3 py-2 text-ink/70">{it.author}</td>
               <td className="num relative z-10 whitespace-nowrap px-3 py-2 text-ink/55" title={`created ${day(it.createdAt)}, updated ${when(it.updatedAt)}`}>
-                {it.updatedAt ? `${ago(it.updatedAt)} ago` : "–"}
+                {(byUs ? it.mergedAt : it.updatedAt) ? `${ago((byUs ? it.mergedAt : it.updatedAt)!)} ago` : "–"}
               </td>
               <td className="px-3 py-2">
                 <SettledBadge s={it.settled} />
@@ -342,7 +342,7 @@ function Table({ rows }: { rows: ItemListRow[] }) {
               <td className="px-3 py-2 text-xs text-ink/60">
                 <HowBadge how={it.mergedHow} />
                 {it.stage && <span className="mr-1">{STAGE[it.stage] ?? it.stage}</span>}
-                {it.queue ? <QueueBadge slot={it.queue} className="relative z-10" /> : !it.stage && <span className="text-ink/30">–</span>}
+                {it.queue ? <QueueBadge slot={it.queue} className="relative z-10" /> : !it.stage && !it.mergedHow && <span className="text-ink/30">–</span>}
               </td>
             </tr>
           ))}
@@ -352,7 +352,7 @@ function Table({ rows }: { rows: ItemListRow[] }) {
   );
 }
 
-function Cards({ rows }: { rows: ItemListRow[] }) {
+function Cards({ rows, byUs }: { rows: ItemListRow[]; byUs: boolean }) {
   useNow();
   return (
     <ul>
@@ -361,7 +361,7 @@ function Cards({ rows }: { rows: ItemListRow[] }) {
           <ItemRef repo={it.repo} number={it.number} kind={it.kind} state={it.state} title={it.title} stretch />
           <div className="mt-1 flex items-center gap-2 pl-6 text-xs text-ink/55">
             <span className="truncate">{it.author}</span>
-            <span className="num ml-auto shrink-0">{it.updatedAt ? `${ago(it.updatedAt)} ago` : ""}</span>
+            <span className="num ml-auto shrink-0">{(byUs ? it.mergedAt : it.updatedAt) ? `${byUs ? "merged " : ""}${ago((byUs ? it.mergedAt : it.updatedAt)!)} ago` : ""}</span>
           </div>
           {it.snippet && it.snippet.field !== "title" && (
             <div className="mt-1 line-clamp-2 pl-6">
