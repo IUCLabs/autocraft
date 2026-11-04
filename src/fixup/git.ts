@@ -105,15 +105,22 @@ export class Git {
 
   /**
    * Applies `patch` to the tree of `head` in a private index file (no working
-   * tree) and returns the new tree id, or why it doesn't apply.
+   * tree) and returns the new tree id, or why it doesn't apply. A hunk applied at an offset is refused in the paths of `exact`.
    */
-  async applyToTree(head: string, patch: string, indexFile: string): Promise<{ ok: true; tree: string } | { ok: false; reason: string }> {
+  async applyToTree(head: string, patch: string, indexFile: string, exact: string[] = []): Promise<{ ok: true; tree: string } | { ok: false; reason: string }> {
     const env = { GIT_INDEX_FILE: indexFile };
     await this.must(["read-tree", head], { env });
     const chk = await this.git(["apply", "--cached", "--check", "--verbose", "--whitespace=nowarn", "-"], { input: patch, env });
     if (chk.code !== 0) return { ok: false, reason: `git apply --check: ${chk.stderr.trim().split("\n")[0] ?? "failed"}`.slice(0, 200) };
-    // A hunk found elsewhere than its header says may sit on a block the model never saw.
-    if (/\(offset -?\d+ lines?\)/.test(chk.stderr)) return { ok: false, reason: "a hunk of the patch applies at a different line than its header states" };
+    // In the files in `exact` (shown in part), a hunk found elsewhere than its header says may sit on a block the model never saw.
+    let current = "";
+    let offset = false;
+    for (const l of chk.stderr.split("\n")) {
+      const f = /^Checking patch (.*?)\.\.\.$/.exec(l);
+      if (f) current = f[1]!;
+      else if (/\(offset -?\d+ lines?\)/.test(l) && exact.includes(current)) offset = true;
+    }
+    if (offset) return { ok: false, reason: "a hunk of the patch applies at a different line than its header states" };
     await this.must(["apply", "--cached", "--whitespace=nowarn", "-"], { input: patch, env });
     return { ok: true, tree: (await this.must(["write-tree"], { env })).trim() };
   }

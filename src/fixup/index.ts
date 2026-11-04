@@ -351,7 +351,7 @@ export async function runFixup(db: DatabaseSync, params: FixupParams, log: (line
       const scratch = mkdtempSync(join(d.root, ".index-"));
       let applied;
       try {
-        applied = await git.applyToTree(head, v.patch, join(scratch, "index"));
+        applied = await git.applyToTree(head, v.patch, join(scratch, "index"), shown.flatMap((f) => ("excerpt" in f ? [f.path] : [])));
       } finally {
         rmSync(scratch, { recursive: true, force: true });
       }

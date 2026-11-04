@@ -464,6 +464,15 @@ describe("fixup step", () => {
       assert.ok(!r.log.includes("check"));
     });
 
+    test("the same offset hunk on a file shown whole still applies", async () => {
+      const small = Array.from({ length: 2600 }, (_, i) => (i >= 2500 ? `dup ${i - 2500}` : `a${i}`)).join("\n") + "\n";
+      assert.ok(small.length < FILE_CAP);
+      const w2 = world({ lib: small, diff, reply: patch(2400) });
+      const db = fresh(w2.head);
+      const s = await runFixup(db, { repo: "app", dryRun: false }, () => {}, w2.deps);
+      assert.deepEqual(s.pushed, ["app#7"]);
+    });
+
     test("a hunk at its stated place outside the shown regions is refused", async () => {
       const r = await run(2501);
       assert.deepEqual(r.s.pushed, []);
