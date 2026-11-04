@@ -355,15 +355,17 @@ const LANE_CODE: Omit<Lane, "steps">[] = [
   {
     name: "fixup",
     perRepo: true,
+    // A stored patch is collected when its lint task ends.
+    extra: tasksSig,
     detect: (db, ctx) => {
       const plans = plansOf(db, ctx);
       const sels = new Map(ctx.tracked.map((repo) => [repo, selectFixups(db, repo, ctx.run, plans)]));
       const repos = ctx.tracked.filter((repo) => {
         const sel = sels.get(repo)!;
         const push = repoAllows(plans, repo, { kind: "fixup", bucket: "fix" }), ask = repoAllows(plans, repo, { kind: "fixup", bucket: "ask" });
-        return (push && (sel.fix.length > 0 || sel.conflictMerge.length > 0)) || (ask && (sel.ask.length > 0 || sel.conflictAsk.length > 0));
+        return (push && (sel.fix.length > 0 || sel.lint.length > 0 || sel.conflictMerge.length > 0)) || (ask && (sel.ask.length > 0 || sel.conflictAsk.length > 0));
       });
-      return fastFirst(db, repos.sort(), (r) => { const sel = sels.get(r)!; return (sel.fix[0] ?? sel.ask[0] ?? sel.conflictMerge[0] ?? sel.conflictAsk[0])?.number; }).map((repo) => ({ step: "fixup", params: { repo } }));
+      return fastFirst(db, repos.sort(), (r) => { const sel = sels.get(r)!; return (sel.lint[0] ?? sel.fix[0] ?? sel.ask[0] ?? sel.conflictMerge[0] ?? sel.conflictAsk[0])?.number; }).map((repo) => ({ step: "fixup", params: { repo } }));
     },
   },
   {
@@ -443,7 +445,11 @@ const LANE_CODE: Omit<Lane, "steps">[] = [
     name: "cifix",
     perRepo: true,
     extra: tasksSig,
-    detect: (db, ctx) => cifixRepos(db, ctx, ["work", "collect"]).map((repo) => ({ step: "cifix", params: { repo } })),
+    detect: (db, ctx) => {
+      // A stored patch whose lint task ended is collected by the same step.
+      const lint = allowed(planned(db, "lint", { plans: plansOf(db, ctx), bucket: "cifix" })).map((p) => p.facts.repo).filter((r) => ctx.tracked.includes(r));
+      return [...new Set([...cifixRepos(db, ctx, ["work", "collect"]), ...lint])].sort().map((repo) => ({ step: "cifix", params: { repo } }));
+    },
   },
   {
     name: "cifix-rerun",

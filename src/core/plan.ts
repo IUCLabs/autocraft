@@ -29,7 +29,7 @@ export type PlanState = (typeof PLAN_STATES)[number];
 
 export type ActionKind =
   | "review" | "post-review" | "verify" | "approve-ci" | "premerge" | "ask-merge" | "merge"
-  | "fixup" | "conflict" | "cifix" | "postmerge"
+  | "fixup" | "conflict" | "cifix" | "lint" | "postmerge"
   // item steps (issues and PRs)
   | "classify" | "referee" | "prioritize" | "embed" | "dupes" | "dupe-answer" | "dupes-compare" | "decide" | "label"
   | "act" | "fixissue" | "fixissue-collect";
@@ -179,6 +179,8 @@ export type PrFacts = {
   fixup: { fixes: number; attempts: number; recorded: string[] } | null;
   /** Queued carry-over jobs of the duplicate groups (one per group decision) whose closed PRs left points to carry: tries used. */
   carry: { attempts: number }[];
+  /** A stored model patch of a step (`fixup` or `cifix`) at the reviewed head whose lint task is queued: `ended` once the task has a final state. */
+  lint: { step: "fixup" | "cifix"; ended: boolean } | null;
   /** CI fix state at the reviewed head, loaded while CI fails. */
   cifix: {
     /** ci_fixes states at the head, oldest first. */

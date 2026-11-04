@@ -11,6 +11,7 @@ import { exec, type Exec, type ExecResult } from "../src/fixup/git.ts";
 import { runCifix, type CifixDeps } from "../src/cifix/index.ts";
 import { runFixup, type FixupDeps } from "../src/fixup/index.ts";
 import type { Querier } from "../src/mirror.ts";
+import { storeArtifact, tempPath } from "../src/build/artifacts.ts";
 import { getTask } from "../src/build/tasks.ts";
 import { runDecide } from "../src/decide/index.ts";
 import { attemptOf, runFixIssue, runFixIssueCollect, type CollectDeps } from "../src/fixissue/index.ts";
@@ -128,18 +129,45 @@ describe("PR journeys", () => {
     assert.deepEqual(plan().actions.map((a) => [a.kind, a.head]), [["approve-ci", tip]]);
   });
 
-  test("a take-fix PR is fixed up on the contributor's branch, reviewed again at the new head and merged there", async () => {
+  test("a take-fix patch is linted before the push: clippy findings go back to the model, the clean patch is pushed with the format changes folded in", async () => {
     const git = gitWorld(1);
     const w = fresh().pr(1, { head: git.head }).review(1, { verdict: "take-fix" });
-    assert.equal(w.prPlan(1).state, "needs-fix-up");
     assert.deepEqual(w.prPlan(1).actions.map((a) => [a.kind, a.params?.bucket, a.head]), [["fixup", "fix", git.head]]);
+    const edit = (to: string) => `diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1,2 +1,2 @@\n-fn a() {}\n-fn main() { a(); }\n${to}`;
+    const asked: { previous?: { findings: string[] } }[] = [];
+    const deps = git.deps(w);
+    deps.ask = async (_db, input) => {
+      asked.push(input[0] as (typeof asked)[number]);
+      return asked.length === 1 ? git.patch : edit("+fn b() {  }\n+fn main() { b(); }\n");
+    };
 
-    const s = await runFixup(w.db, { repo: "app", dryRun: false }, quiet, git.deps(w));
-    assert.deepEqual(s.pushed, ["app#1"]);
+    // Round 1: the patch is stored, not pushed.
+    const first = await runFixup(w.db, { repo: "app", dryRun: false }, quiet, deps);
+    assert.deepEqual(first.pushed, []);
+    assert.deepEqual(git.pushes, []);
+    assert.deepEqual(w.rows("SELECT state, lint_round, lint_state FROM fixups"), [{ state: "linting", lint_round: 1, lint_state: "pending" }]);
+    assert.deepEqual(w.prPlan(1).actions, []);
+    const t1 = w.rows("SELECT id, state FROM build_tasks")[0] as { id: number; state: string };
+    assert.equal(t1.state, "queued");
+
+    // Clippy finds something on a line the patch changed: the model is asked again with the finding.
+    endLint(w, t1.id, { diagnostics: [{ line: 1 }] });
+    assert.deepEqual(w.prPlan(1).actions.map((a) => [a.kind, a.params?.bucket]), [["lint", "fixup"]]);
+    const second = await runFixup(w.db, { repo: "app", dryRun: false }, quiet, deps);
+    assert.deepEqual(second.pushed, []);
+    assert.equal(asked.length, 2);
+    assert.match(asked[1]!.previous!.findings[0]!, /needless at line 1/);
+    assert.deepEqual(w.rows("SELECT state, lint_round FROM fixups"), [{ state: "linting", lint_round: 2 }]);
+
+    // Round 2 is clean; rustfmt wants `{}`: one push whose commit has the format change.
+    const t2 = (w.rows("SELECT id FROM build_tasks ORDER BY id DESC LIMIT 1")[0] as { id: number }).id;
+    assert.notEqual(t2, t1.id);
+    endLint(w, t2, { format: "diff -uN a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\t2026-01-01\n+++ b/src/lib.rs\t2026-01-01\n@@ -1,2 +1,2 @@\n-fn b() {  }\n+fn b() {}\n fn main() { b(); }\n" });
+    const third = await runFixup(w.db, { repo: "app", dryRun: false }, quiet, deps);
+    assert.deepEqual(third.pushed, ["app#1"]);
     const pushed = git.branchHead();
-    assert.notEqual(pushed, git.head);
-    // The push was for the reviewed head: the lease names it.
     assert.deepEqual(git.pushes, [{ lease: git.head, to: pushed }]);
+    assert.equal(sh(git.fork, "show", `${pushed}:src/lib.rs`), "fn b() {}\nfn main() { b(); }");
     assert.deepEqual(w.rows("SELECT state, from_head, to_head FROM fixups"), [{ state: "pushed", from_head: git.head, to_head: pushed }]);
     assert.equal(w.gh.writesOf("comment").length, 1);
 
@@ -218,6 +246,10 @@ describe("CI fix journey", () => {
     assert.equal(w.prPlan(1).state, "ci-failed");
     assert.deepEqual(w.prPlan(1).actions.map((a) => [a.kind, a.params?.bucket, a.head]), [["cifix", "work", git.head]]);
 
+    const s0 = await runCifix(w.db, { repo: "app", dryRun: false }, quiet, git.cifixDeps(w));
+    assert.deepEqual(s0.pushed, []);
+    assert.deepEqual(w.rows("SELECT state FROM ci_fixes"), [{ state: "linting" }]);
+    endLint(w, (w.rows("SELECT id FROM build_tasks")[0] as { id: number }).id);
     const s = await runCifix(w.db, { repo: "app", dryRun: false }, quiet, git.cifixDeps(w));
     assert.deepEqual(s.pushed, ["app#1"]);
     const pushed = git.branchHead();
@@ -272,6 +304,15 @@ function issueWorld(w: World, o: { lib: string; fix: string }) {
     summarise: async () => "failed",
   };
   return { deps, prs, comments };
+}
+
+/** The sandbox finished a lint task: the formatter's diff (if it changed anything) and clippy's JSON lines come back as artifacts. */
+function endLint(w: World, id: number, o: { format?: string; diagnostics?: { line: number }[] } = {}): void {
+  const put = (name: string, text: string) => { const tmp = tempPath(id); writeFileSync(tmp, text); storeArtifact(w.db, id, name, tmp); };
+  const diag = (line: number) => JSON.stringify({ reason: "compiler-message", message: { level: "warning", message: "needless", code: { code: "clippy::needless_return" }, spans: [{ file_name: "src/lib.rs", line_start: line, line_end: line, is_primary: true }], rendered: `warning: needless at line ${line}\n` } });
+  put("clippy.txt", [...(o.diagnostics ?? []).map((d) => diag(d.line)), JSON.stringify({ reason: "build-finished", success: !o.diagnostics?.length })].join("\n") + "\n");
+  if (o.format) put("format.txt", o.format);
+  w.db.prepare("UPDATE build_tasks SET state = 'done', results = '[]', ended_at = ? WHERE id = ?").run(T1, id);
 }
 
 /** The sandbox finished a build task: every step passed, or the test step failed. */

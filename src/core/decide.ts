@@ -140,7 +140,8 @@ export function fixupOf(f: PrFacts): { bucket: FixupBucket; done: boolean } | nu
   // Heads held before the repo got comment approval are asked once it has it.
   const ask = (held: boolean): { bucket: FixupBucket; done: boolean } => (commenting ? { bucket: "ask", done: false } : { bucket: "cannot-push", done: held });
   if (has("asked") && !f.pushable) return { bucket: "asked", done: true };
-  if (has("pushed") || has("push-denied")) return { bucket: "hold", done: true };
+  // A stored patch waits for its lint task: no new try, no ask.
+  if (has("pushed") || has("push-denied") || has("linting")) return { bucket: "hold", done: true };
   if (has("cannot-push") && !f.pushable) return ask(true);
   if (has("too-large")) return { bucket: "cannot-push", done: true };
   if (!f.pushable) return ask(false);
@@ -148,7 +149,7 @@ export function fixupOf(f: PrFacts): { bucket: FixupBucket; done: boolean } | nu
   return { bucket: f.repoFacts.pushApproved ? "fix" : "unapproved", done: false };
 }
 
-export type CifixBucket = "work" | "unapproved" | "cannot-push" | "formatting" | "collect" | "rerun" | "rerun-wait" | "failed" | "capped" | "done";
+export type CifixBucket = "work" | "unapproved" | "cannot-push" | "formatting" | "linting" | "collect" | "rerun" | "rerun-wait" | "failed" | "capped" | "done";
 
 /** Where the CI fix step stands for a PR whose CI fails at the reviewed head, or null when it is no candidate. */
 export function cifixBucket(f: PrFacts): CifixBucket | null {
@@ -161,6 +162,7 @@ export function cifixBucket(f: PrFacts): CifixBucket | null {
   }
   const has = (s: string) => c.states.includes(s);
   if (CIFIX_FINAL_STATES.some(has)) return "done";
+  if (has("linting")) return "linting";
   if (c.formattingTask !== null || has("formatting")) return c.formattingTask !== null && c.formatterEnded ? "collect" : "formatting";
   if (has("capped")) return "failed";
   if (c.totalPushes >= CIFIX_MAX_PUSHES_PER_PR || c.totalTries >= CIFIX_MAX_TRIES_PER_PR) return "capped";
@@ -269,6 +271,11 @@ export function decidePr(f: PrFacts): Plan {
 
   const cf = cifixOf(f);
   if (cf && cf !== "other") actions.push(act("cifix", f.head, { bucket: cf }));
+
+  // A stored model patch whose lint task ended: the collect step folds the format changes and pushes, or sends the findings back to the model.
+  const lint = f.lint;
+  if (lint && lint.ended && open && !f.draft && !declinedBy(f) && !!r && takeReview && r.head === f.head && !r.stale && notHeld(f) && f.mergeable !== "CONFLICTING" && !f.mergeHeld
+    && (f.pushable ? f.repoFacts.pushApproved : lint.step === "cifix" && f.repoFacts.commentApproved)) actions.push(act("lint", f.head, { bucket: lint.step }));
 
   if (e) {
     if (e.state === "waiting-premerge" && f.repoFacts.mergeApproved && premergeRetryDue(f)) actions.push(act("premerge", r!.head));

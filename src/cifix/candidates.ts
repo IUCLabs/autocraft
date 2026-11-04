@@ -18,6 +18,8 @@ export type CifixCandidate = {
   rerun: boolean;
   /** When the rerun was requested (ISO), else null. */
   rerunAt: string | null;
+  /** A stored model patch whose lint task ended: the collect step pushes it with the format changes folded in, or asks the model again with the findings. */
+  lint?: { rowid: number; round: number; task: number | null; state: string; patch: string; files: string[] };
 };
 
 export type CifixSelection = {
@@ -27,6 +29,8 @@ export type CifixSelection = {
   collect: { c: CifixCandidate; task: number }[];
   /** PRs at their push or try limit: a final `capped` row with a note on the item is written once. */
   capped: CifixCandidate[];
+  /** Stored patches whose lint task ended (the Plan's `lint` action, step cifix). */
+  lint: CifixCandidate[];
   /** Infra failures due their one rerun, with the run ids to rerun. */
   rerun: { c: CifixCandidate; runs: number[] }[];
 };

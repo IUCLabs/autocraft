@@ -299,7 +299,7 @@ export const STAGES: StageDef[] = [
     models: [{ model: "sonnet", use: "Writes the patch and resolves conflicts" }, { model: "opus", use: "Checks the patch" }, { model: "haiku", use: "Sorts a red default branch's failed checks (flaky, infra or code)" }],
     promptIds: ["fixup.patch", "fixup.check", "fixup.conflict", "cifix.patch", "mainfix.classify"], promptStage: "Integrate (fix-ups)",
     waits: [
-
+      { name: "Lint task", why: "A model patch is stored while a build worker formats it and runs clippy on the patched tree; the result is collected when the task ends", howLong: "Until the build task ends (minutes); a lost task is queued once more, then the patch is given up", showsAs: "Builds page; the PR's fix-up or CI fix row is linting", kind: "external" },
     ],
     writes: [{ what: "Push to the PR branch", approval: "push" }, { what: "Comment with the fixes", approval: "comment" }, { what: "Rerun failed CI jobs", approval: "ci" }, { what: "Rerun a red default branch's failed jobs; open a fix PR from the pipeline account's fork; open an issue on an operator's answer", approval: "main-fix" }],
     person: "Per-repo approval",

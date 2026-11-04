@@ -13,6 +13,7 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
+import { getTask, TERMINAL } from "../build/tasks.ts";
 import { askClaude } from "../classify/run.ts";
 import { REPO_PATH } from "../sandbox/command.ts";
 import { checkoutForPr } from "../sandbox/index.ts";
@@ -28,6 +29,8 @@ import { CLAUDE_PROMPTS } from "../prompts/index.ts";
 import { cachedDiff, ghDiff, type DiffFetcher } from "../review/diff.ts";
 import { checkLine, parseCheck, recordCheck } from "../patchcheck/index.ts";
 import { CHECK_DIFF_CAP, CHECK_PATCH_CAP, type FixupCheckInput } from "../patchcheck/types.ts";
+import { LINT_MAX_ROUNDS } from "../core/rules.ts";
+import { foldFormat, queueLint, readLint } from "../prepush/index.ts";
 import { pushApprovalOf } from "./approval.ts";
 import { MAX_ATTEMPTS, parseFixes, type FixCandidate } from "./candidates.ts";
 import { selectFixups } from "./select.ts";
@@ -108,7 +111,7 @@ const oneLine = (s: string) => s.replace(/\s+/g, " ").trim().slice(0, 200);
 export const PR_QUERY = `query($name: String!, $n: Int!) {
   repository(owner: "${ORG}", name: $name) {
     pullRequest(number: $n) {
-      id state isDraft headRefOid headRefName maintainerCanModify mergeable
+      id state isDraft headRefOid baseRefOid headRefName maintainerCanModify mergeable
       headRepository { nameWithOwner }
       headRef { branchProtectionRule { id } }
       assignees(first: 10) { nodes { login } }
@@ -117,7 +120,7 @@ export const PR_QUERY = `query($name: String!, $n: Int!) {
 }`;
 
 export type PrNode = {
-  id: string; state: string; isDraft: boolean; headRefOid: string; headRefName: string; maintainerCanModify: boolean; mergeable: string | null;
+  id: string; state: string; isDraft: boolean; headRefOid: string; baseRefOid?: string; headRefName: string; maintainerCanModify: boolean; mergeable: string | null;
   headRepository: { nameWithOwner: string } | null; headRef?: { branchProtectionRule?: { id: string } | null } | null; assignees?: { nodes?: { login: string }[] };
 };
 
@@ -166,8 +169,33 @@ class Recorder {
       this.db.prepare("UPDATE dupe_carries SET to_head = ?, from_head = ?, updated_at = ? WHERE decision_id = ? AND number = ?").run(commit, c.head, this.at(), c.carry.decisionId, c.number);
       return;
     }
+    if (c.lint) {
+      this.db.prepare("UPDATE fixups SET state = 'pushing', to_head = ?, files = ? WHERE rowid = ?").run(commit, JSON.stringify(files), c.lint.rowid);
+      return;
+    }
     this.db.prepare("INSERT INTO fixups (repo, number, from_head, to_head, state, reason, files, attempt, created_at, source) VALUES (?, ?, ?, ?, 'pushing', NULL, ?, ?, ?, ?)")
       .run(c.repo, c.number, c.head, commit, JSON.stringify(files), c.attempt, this.at(), c.source ?? null);
+  }
+
+  /** The model patch waits for its lint task: a first row, or the same row with the next round's patch and task. */
+  linting(c: FixCandidate, patch: string, files: string[], task: number, lintState: "pending" | "requeued", round: number): void {
+    if (c.lint) {
+      this.db.prepare("UPDATE fixups SET patch = ?, files = ?, lint_task = ?, lint_round = ?, lint_state = ? WHERE rowid = ?").run(patch, JSON.stringify(files), task, round, lintState, c.lint.rowid);
+      return;
+    }
+    this.db.prepare("INSERT INTO fixups (repo, number, from_head, to_head, state, reason, files, attempt, created_at, source, patch, lint_task, lint_round, lint_state) VALUES (?, ?, ?, NULL, 'linting', NULL, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(c.repo, c.number, c.head, JSON.stringify(files), c.attempt, this.at(), c.source ?? null, patch, task, round, lintState);
+  }
+
+  /** Stored patches whose Plan no longer lists the push (head moved, a Hold or Close answer, approval revoked) are dropped. */
+  dropUnlisted(repo: string, listed: FixCandidate[]): void {
+    const keep = new Set(listed.map((c) => c.lint!.rowid));
+    const rows = this.db.prepare("SELECT rowid AS id, lint_task FROM fixups WHERE repo = ? AND source IS NULL AND state = 'linting'").all(repo) as { id: number; lint_task: number | null }[];
+    for (const r of rows) {
+      const t = r.lint_task != null ? getTask(this.db, r.lint_task) : null;
+      if (t && !TERMINAL.includes(t.state)) continue;
+      if (!keep.has(r.id)) this.db.prepare("UPDATE fixups SET state = 'superseded', reason = 'the plan no longer lists the push of the stored patch', patch = NULL WHERE rowid = ?").run(r.id);
+    }
   }
 
   /** A fixups row and a stages row: `hold` for the two states that need a person, else the PR's `take` stage with a note. */
@@ -182,7 +210,7 @@ class Recorder {
         .run(next, tried || state === "pushed" ? 1 : 0, reason ? `${state}: ${reason}` : state, toHead, toHead ? c.head : null, at, c.carry.decisionId, c.number);
       return;
     }
-    const open = this.db.prepare("SELECT rowid AS id FROM fixups WHERE repo = ? AND number = ? AND from_head = ? AND state = 'pushing'").get(c.repo, c.number, c.head) as { id: number } | undefined;
+    const open = this.db.prepare("SELECT rowid AS id FROM fixups WHERE repo = ? AND number = ? AND from_head = ? AND state IN ('pushing', 'linting') ORDER BY rowid DESC").get(c.repo, c.number, c.head) as { id: number } | undefined;
     if (open) {
       this.db.prepare("UPDATE fixups SET state = ?, reason = ?, files = ?, to_head = ? WHERE rowid = ?").run(state, reason, JSON.stringify(files), toHead, open.id);
     } else {
@@ -207,7 +235,9 @@ export async function runFixup(db: DatabaseSync, params: FixupParams, log: (line
   const summary: FixupSummary = { runId, repo, dryRun, pushed: [], asked: [], failed: [], held: [] };
   const sel = selectFixups(db, repo);
   const asks = params.limit === undefined ? sel.ask : sel.ask.slice(0, params.limit);
-  const picks = params.limit === undefined ? sel.fix : sel.fix.slice(0, Math.max(0, params.limit - asks.length));
+  // Stored patches whose lint task ended come first: they hold a model patch that is already paid for.
+  const wanted = [...sel.lint, ...sel.fix];
+  const picks = params.limit === undefined ? wanted : wanted.slice(0, Math.max(0, params.limit - asks.length));
   const left = params.limit === undefined ? Infinity : Math.max(0, params.limit - asks.length - picks.length);
   const cAsks = sel.conflictAsk.slice(0, left);
   const cMerges = sel.conflictMerge.slice(0, Math.max(0, left - cAsks.length));
@@ -224,6 +254,7 @@ export async function runFixup(db: DatabaseSync, params: FixupParams, log: (line
   }
   const d = deps ?? defaultDeps();
   const rec = new Recorder(db, at);
+  rec.dropUnlisted(repo, sel.lint);
 
   // Not approved for comments: no GitHub write, recorded once per head.
   for (const c of sel.cannotPush) {
@@ -358,7 +389,32 @@ export async function runFixup(db: DatabaseSync, params: FixupParams, log: (line
 
       const checkout = (await d.checkout?.(repo, c.number, head)) ?? undefined;
       const repoDir = checkout ? { repo_dir: REPO_PATH } : {};
-      const reply = await d.ask(db, [{ ref, title: oneTitle(db, c), fixes: c.fixes, files: shown, diff: diff.text, ...(carried ? { carried_from: carried } : {}), ...repoDir }], checkout);
+      // A stored patch: the lint task's outcome decides whether it is pushed (clean), asked for again (findings) or queued again (lost task).
+      let findings: string[] = [];
+      let folded: string | null = null;
+      if (c.lint) {
+        const res = readLint(db, c.lint.task ?? -1);
+        if (res.kind === "pending") { log(`  ${ref}: the lint task is still running`); continue; }
+        if (res.kind === "infra-failed") {
+          if (c.lint.state === "requeued") { fail("failed", `lint: ${res.reason}`); continue; }
+          const again = queueLint(db, { step: "fixup", repo, number: c.number, head, base: pr.baseRefOid ?? null, patch: c.lint.patch });
+          if (again === null) { fail("failed", `lint: ${res.reason}`); continue; }
+          rec.linting(c, c.lint.patch, files, again, "requeued", c.lint.round);
+          log(`  ${ref}: lint task failed (${res.reason}); queued again as task ${again}`);
+          continue;
+        }
+        if (res.findings.length) {
+          if (c.lint.round >= LINT_MAX_ROUNDS) { fail("rejected", `clippy findings remain after ${c.lint.round} rounds: ${oneLine(res.findings[0]!.message)}`); continue; }
+          findings = res.findings.map((x) => x.rendered);
+        } else {
+          const fold = foldFormat(c.lint.patch, res.formatDiff ?? "");
+          if (!fold.ok) { fail("refused", fold.reason); continue; }
+          folded = fold.patch;
+        }
+      }
+      // The model's patch: the stored one when it is clean, else a new answer (with the findings on the earlier patch).
+      const reply = folded !== null ? c.lint!.patch : await d.ask(db, [{ ref, title: oneTitle(db, c), fixes: c.fixes, files: shown, diff: diff.text, ...(carried ? { carried_from: carried } : {}),
+        ...(c.lint && findings.length ? { previous: { patch: c.lint.patch, findings } } : {}), ...repoDir }], checkout);
       if (reply === null) { fail("failed", "the model gave no answer"); continue; }
       const v = validatePatch(reply, files, fixupEditable);
       if (!v.ok) { fail("refused", v.reason); continue; }
@@ -366,7 +422,7 @@ export async function runFixup(db: DatabaseSync, params: FixupParams, log: (line
       const scratch = mkdtempSync(join(d.root, ".index-"));
       let applied;
       try {
-        applied = await git.applyToTree(head, v.patch, join(scratch, "index"), shown.flatMap((f) => ("excerpt" in f ? [f.path] : [])));
+        applied = await git.applyToTree(head, folded ?? v.patch, join(scratch, "index"), shown.flatMap((f) => ("excerpt" in f ? [f.path] : [])));
       } finally {
         rmSync(scratch, { recursive: true, force: true });
       }
@@ -382,15 +438,17 @@ export async function runFixup(db: DatabaseSync, params: FixupParams, log: (line
       const outside = outsideShown(shown, await git.diffText(head, commit));
       if (outside) { fail("refused", outside); continue; }
 
-      // Opus checks the validated patch; only an approve goes on to the push.
-      if (v.patch.length > CHECK_PATCH_CAP) { fail("refused", `the patch is over the ${CHECK_PATCH_CAP} character limit for the check`); continue; }
-      const checkReply = await d.check(db, [{ ref, title: oneTitle(db, c), review_reason: c.reason, fixes: c.fixes, diff: diff.text.slice(0, CHECK_DIFF_CAP), patch: v.patch, ...(carried ? { carried_from: carried.map((x) => ({ ...x, diff: x.diff.slice(0, Math.floor(CHECK_DIFF_CAP / carried.length)) })) } : {}), ...repoDir }], checkout);
-      if (checkReply === null) { fail("failed", "the patch check gave no answer"); continue; }
-      const verdict = parseCheck(checkReply);
-      if (!verdict.ok) { fail("failed", `the patch check gave no valid answer: ${verdict.error}`); continue; }
-      recordCheck(db, { kind: "fixup", repo, number: c.number, subject: head, patch: v.patch, round: c.attempt, model: CHECK.models[0]!, check: verdict.check, at: at() });
-      audit(db, ACTOR, "fixup-check", ref, { run: runId, head, verdict: verdict.check.verdict, reasons: verdict.check.reasons });
-      if (verdict.check.verdict === "reject") { fail("rejected", `Opus rejected the patch: ${checkLine(verdict.check)}`); continue; }
+      // Opus checks the validated patch; only an approve goes on. A stored patch that came back clean was checked already (the format changes are whitespace only).
+      if (folded === null) {
+        if (v.patch.length > CHECK_PATCH_CAP) { fail("refused", `the patch is over the ${CHECK_PATCH_CAP} character limit for the check`); continue; }
+        const checkReply = await d.check(db, [{ ref, title: oneTitle(db, c), review_reason: c.reason, fixes: c.fixes, diff: diff.text.slice(0, CHECK_DIFF_CAP), patch: v.patch, ...(carried ? { carried_from: carried.map((x) => ({ ...x, diff: x.diff.slice(0, Math.floor(CHECK_DIFF_CAP / carried.length)) })) } : {}), ...repoDir }], checkout);
+        if (checkReply === null) { fail("failed", "the patch check gave no answer"); continue; }
+        const verdict = parseCheck(checkReply);
+        if (!verdict.ok) { fail("failed", `the patch check gave no valid answer: ${verdict.error}`); continue; }
+        recordCheck(db, { kind: "fixup", repo, number: c.number, subject: head, patch: v.patch, round: c.attempt, model: CHECK.models[0]!, check: verdict.check, at: at() });
+        audit(db, ACTOR, "fixup-check", ref, { run: runId, head, verdict: verdict.check.verdict, reasons: verdict.check.reasons });
+        if (verdict.check.verdict === "reject") { fail("rejected", `Opus rejected the patch: ${checkLine(verdict.check)}`); continue; }
+      }
 
       // The model calls took minutes: read the PR again before claiming and pushing.
       const again = await d.querier.query(PR_QUERY, { name: repo, n: c.number }) as { repository?: { pullRequest?: PrNode | null } };
@@ -399,8 +457,18 @@ export async function runFixup(db: DatabaseSync, params: FixupParams, log: (line
       if (!now || now.state !== "OPEN" || now.isDraft) { log(`  ${ref}: skipped: no longer an open, non-draft PR after the model calls`); continue; }
       if (now.headRefOid !== c.head) { log(`  ${ref}: skipped: head moved to ${short(now.headRefOid)} during the model calls`); continue; }
 
-      const g = await guard(db, { repo, number: c.number }, { kind: "fixup", bucket: "fix", head: c.head, source: sourceOf(c) }, params.by ?? CLI_BY, liveOf(db, d.querier));
+      const g = await guard(db, { repo, number: c.number }, c.lint ? { kind: "lint", bucket: "fixup", head: c.head } : { kind: "fixup", bucket: "fix", head: c.head, source: sourceOf(c) }, params.by ?? CLI_BY, liveOf(db, d.querier));
       if ("refused" in g) { log(`  ${ref}: skipped: ${g.refused}`); continue; }
+      // A model patch is stored and linted before it is pushed (the collect step above pushes it); a patch without a Rust file needs no lint.
+      if (folded === null && !c.carry && !c.source) {
+        const round = c.lint ? c.lint.round + 1 : 1;
+        const task = queueLint(db, { step: "fixup", repo, number: c.number, head, base: now.baseRefOid ?? null, patch: v.patch });
+        if (task !== null) {
+          rec.linting(c, v.patch, v.files, task, "pending", round);
+          log(`  ${ref}: patch stored; lint task ${task} queued (round ${round})`);
+          continue;
+        }
+      }
       rec.pushing(c, commit, v.files);
       const push = await pushBranch(gw, git, "fixup-push", g, { remote: pr.headRepository.nameWithOwner, branch: pr.headRefName, sha: commit }, { run: runId, from: head, to: commit, files: v.files, changed: v.changed });
       if (push.code !== 0) {

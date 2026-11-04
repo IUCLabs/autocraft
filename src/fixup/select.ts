@@ -30,7 +30,7 @@ function carriesOf(db: DatabaseSync, f: PrFacts, head: string): FixCandidate[] {
 
 export function selectFixups(db: DatabaseSync, repo: string, run?: string | null, plans?: PlanSet): FixSelection {
   const opts = { repo, ...(run !== undefined ? { run } : {}), ...(plans ? { plans } : {}) };
-  const out: FixSelection = { fix: [], cannotPush: [], ask: [], conflictMerge: [], conflictAsk: [] };
+  const out: FixSelection = { fix: [], cannotPush: [], ask: [], lint: [], conflictMerge: [], conflictAsk: [] };
   const review = db.prepare("SELECT fixes, model FROM final_reviews WHERE repo = ? AND number = ? AND head_oid = ? AND verdict = 'take-fix'");
   const text = db.prepare("SELECT title FROM items WHERE repo = ? AND number = ?");
   for (const { facts: f, action } of planned(db, "conflict", opts)) {
@@ -63,6 +63,15 @@ export function selectFixups(db: DatabaseSync, repo: string, run?: string | null
       else if (bucket === "cannot-push") out.cannotPush.push(c);
       else if (bucket === "fix") fix.push(c);
     }
+  }
+  const row = db.prepare("SELECT rowid AS id, attempt, patch, lint_task, lint_round, lint_state FROM fixups WHERE repo = ? AND number = ? AND from_head = ? AND source IS NULL AND state = 'linting' ORDER BY rowid DESC");
+  for (const { facts: f, action } of planned(db, "lint", { ...opts, bucket: "fixup" })) {
+    const head = action.head!;
+    const w = row.get(repo, f.number, head) as { id: number; attempt: number; patch: string | null; lint_task: number | null; lint_round: number | null; lint_state: string | null } | undefined;
+    const r = review.get(repo, f.number, head) as { fixes: string | null; model: string | null } | undefined;
+    if (!w || !w.patch || !f.review) continue;
+    out.lint.push({ repo, number: f.number, head, reason: f.review.reason, fixes: parseFixes(r?.fixes ?? null), attempt: w.attempt, model: r?.model ?? null,
+      lint: { rowid: w.id, round: w.lint_round ?? 1, task: w.lint_task, state: w.lint_state ?? "pending", patch: w.patch } });
   }
   out.fix.push(...carryFix, ...fix);
   out.ask.unshift(...carryAsk);

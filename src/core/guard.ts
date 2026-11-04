@@ -53,7 +53,7 @@ const BATCH_STATES: readonly string[] = ["batch-checking", "in-batch"];
 /** Merges and pushes read GitHub first: the head must not have moved. */
 const needsLive = (a: Want): boolean =>
   a.kind === "merge" || (a.kind === "fixup" && a.bucket === "fix") || (a.kind === "conflict" && a.bucket === "merge")
-  || (a.kind === "cifix" && (a.bucket === "work" || a.bucket === "collect"));
+  || (a.kind === "cifix" && (a.bucket === "work" || a.bucket === "collect")) || a.kind === "lint";
 
 const make = <K extends ActionKind>(ref: Ref, a: Want<K>, head: string): Guarded<K> => ({ scope: "pr", action: a, head, repo: ref.repo, number: ref.number }) as unknown as Guarded<K>;
 

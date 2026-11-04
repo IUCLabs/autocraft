@@ -9,8 +9,8 @@ import { ORG } from "../act/templates.ts";
 import { connect } from "../db.ts";
 import type { Grant, Guarded, GuardedItem, GuardedRepo } from "../core/guard.ts";
 
-/** The PR steps that push to a contributor's branch or ask on the PR where it is closed to us. */
-export type AskKind = "fixup" | "conflict" | "cifix";
+/** The PR steps that push to a contributor's branch or ask on the PR where it is closed to us (`lint`: the collect step of a stored patch). */
+export type AskKind = "fixup" | "conflict" | "cifix" | "lint";
 /** What a comment write takes: a PR step's grant for its own kinds, or an item or repo grant (never a merge or CI grant). */
 export type CommentGrant = Guarded<AskKind> | GuardedItem | GuardedRepo;
 import type { Exec, ExecResult, Git } from "../fixup/git.ts";

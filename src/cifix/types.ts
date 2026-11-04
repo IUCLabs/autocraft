@@ -1,4 +1,5 @@
 import type { ShownFile } from "../fixup/excerpt.ts";
+import type { LintPrevious } from "../fixup/patch.ts";
 
 // Shared by the cifix.patch prompt (src/prompts, which imports no Node modules) and the CI fix step.
 
@@ -20,6 +21,8 @@ export type CifixPr = {
   files: ShownFile[];
   /** The PR's diff. */
   diff: string;
+  /** Present when an earlier patch failed the lint check: that patch and the lint findings on the lines it changed. */
+  previous?: LintPrevious;
 };
 
 export const SAMPLE_CIFIX_PRS: CifixPr[] = [{

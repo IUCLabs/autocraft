@@ -162,7 +162,12 @@ export type FixupPr = {
   diff: string;
   /** For a carry-over: the PRs closed as duplicates, their diffs and the parts to port onto this one. */
   carried_from?: { ref: string; points: string[]; diff: string }[];
+  /** Present when an earlier patch for these fixes failed the lint check: that patch and the lint findings on the lines it changed. */
+  previous?: LintPrevious;
 };
+
+/** An earlier model patch and the formatter and clippy findings on its own lines, as the patch prompts show them. */
+export type LintPrevious = { patch: string; findings: string[] };
 
 /** What the fixup.conflict prompt shows for one PR. Every string field is untrusted. */
 export type ConflictPr = {

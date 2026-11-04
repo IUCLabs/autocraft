@@ -14,7 +14,11 @@ export type Carry = { decisionId: string; /** The suggestion comment stored with
 /** `model` wrote the text the ask comment carries: the Opus review's fix list, or the stored suggestion of a carry-over. */
 export type FixCandidate = { repo: string; number: number; head: string; reason: string; fixes: Fix[]; attempt: number; model: string | null; carry?: Carry;
   /** `premerge`: the fixes are the pre-merge review's defect fixes; the PR's one pre-merge round, apart from the take-fix tries. */
-  source?: "premerge" };
+  source?: "premerge";
+  /** A stored model patch whose lint task ended: the collect step pushes it with the format changes folded in, or asks the model again with the findings. */
+  lint?: LintWork };
+/** The fixups row of a stored patch: `lint_state` is `pending` (first task) or `requeued` (the lost task was queued once more). */
+export type LintWork = { rowid: number; round: number; task: number | null; state: string; patch: string };
 export type FixSelection = {
   /** Take-fix PRs we may push to, in a repo with push approval. */
   fix: FixCandidate[];
@@ -22,6 +26,8 @@ export type FixSelection = {
   cannotPush: FixCandidate[];
   /** Take-fix PRs we can't push to, in a repo with comment approval, with no comment at this head yet. */
   ask: FixCandidate[];
+  /** Stored patches whose lint task ended (the Plan's `lint` action, step fixup). */
+  lint: FixCandidate[];
   /** Conflicted take / take-fix PRs we may push to: the default branch is merged in. */
   conflictMerge: ConflictCandidate[];
   /** Conflicted PRs we can't push to, in a repo with comment approval, with no comment at this head yet. */

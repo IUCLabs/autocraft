@@ -41,7 +41,7 @@ export type PlanRow = {
   actions: string; wait: string | null; reasons: string; note: string | null; view: string;
 };
 
-const CIFIX_BUCKETS: Record<string, CifixBucket> = { work: "cifix-queued", formatting: "cifix-queued", collect: "cifix-queued", rerun: "cifix-rerun", "rerun-wait": "cifix-rerun", failed: "cifix-failed", capped: "cifix-failed" };
+const CIFIX_BUCKETS: Record<string, CifixBucket> = { work: "cifix-queued", formatting: "cifix-queued", collect: "cifix-queued", linting: "cifix-queued", rerun: "cifix-rerun", "rerun-wait": "cifix-rerun", failed: "cifix-failed", capped: "cifix-failed" };
 
 /** The fix-up bucket the flow counts show for a PR: a take-fix review's own, or a pre-merge round's. */
 function fixupBucketOf(f: PrFacts, plan: Plan): FixupBucket | undefined {
