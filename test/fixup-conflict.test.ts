@@ -34,7 +34,7 @@ function git(cwd: string, ...args: string[]): string {
 type World = { fork: string; head: string; base: string; log: string[]; deps: FixupDeps; checkInput: unknown[] };
 
 /** `conflicting`: the PR and main edit the same line of f.txt; otherwise they edit different files. */
-function world(o: { conflicting: boolean; big?: boolean; pad?: boolean; canModify?: boolean; resolve?: (files: ConflictFile[]) => string | null; check?: string }): World {
+function world(o: { conflicting: boolean; big?: boolean; pad?: boolean; eol?: "crlf" | "mixed"; files?: number; side?: number; canModify?: boolean; resolve?: (files: ConflictFile[]) => string | null; check?: string }): World {
   const root = mkdtempSync(join(dir, "w-"));
   const work = join(root, "work");
   mkdirSync(work);
@@ -42,16 +42,22 @@ function world(o: { conflicting: boolean; big?: boolean; pad?: boolean; canModif
   const sfx = o.big ? "x".repeat(50_000) : "";
   const b = `b${sfx}`;
   const pad = o.pad ? "padding line\n".repeat(20_000) : "";
-  writeFileSync(join(work, "f.txt"), `${pad}a\n${b}\nc\n${pad}`);
+  const eol = (t: string) => (o.eol === "crlf" ? t.replace(/\n/g, "\r\n") : o.eol === "mixed" ? t.replace("\n", "\r\n") : t);
+  writeFileSync(join(work, "f.txt"), eol(`${pad}a\n${b}\nc\n${pad}`));
   writeFileSync(join(work, "g.txt"), "x\n");
+  const names = ["f.txt", ...Array.from({ length: (o.files ?? 1) - 1 }, (_, i) => `h${i}.txt`)];
+  const body = (word: string) => `a\n${word}${"y".repeat(o.side ?? 0)}\nc\n`;
+  for (const n of names.slice(1)) writeFileSync(join(work, n), body("b"));
   git(work, "add", "-A");
   git(work, "commit", "-q", "-m", "base");
   git(work, "checkout", "-q", "-b", "feat");
-  if (o.conflicting) writeFileSync(join(work, "f.txt"), `${pad}a\nB-pr${sfx}\nc\n${pad}`); else writeFileSync(join(work, "g.txt"), "x\ny\n");
+  for (const n of names.slice(1)) writeFileSync(join(work, n), body("B-pr"));
+  if (o.conflicting) writeFileSync(join(work, "f.txt"), eol(`${pad}a\nB-pr${sfx}\nc\n${pad}`)); else writeFileSync(join(work, "g.txt"), "x\ny\n");
   git(work, "commit", "-qam", "pr");
   const head = git(work, "rev-parse", "HEAD");
   git(work, "checkout", "-q", "main");
-  writeFileSync(join(work, "f.txt"), o.conflicting ? `${pad}a\nB-main${sfx}\nc\n${pad}` : `${pad}a\nb\nc\nd\n${pad}`);
+  for (const n of names.slice(1)) writeFileSync(join(work, n), body("B-main"));
+  writeFileSync(join(work, "f.txt"), eol(o.conflicting ? `${pad}a\nB-main${sfx}\nc\n${pad}` : `${pad}a\nb\nc\nd\n${pad}`));
   git(work, "commit", "-qam", "main moves");
   const base = git(work, "rev-parse", "HEAD");
   const fork = join(root, "fork.git");
@@ -169,6 +175,52 @@ describe("conflict merge", () => {
     const again = await runFixup(db, { repo: "app", dryRun: false }, () => {}, w.deps);
     assert.equal(again.held.length + again.failed.length, 0);
     assert.deepEqual(w.log, []);
+  });
+
+  test("an all-CRLF file is resolved as LF and written back with CRLF; a mixed-ending file is refused", async () => {
+    const w = world({ conflicting: true, eol: "crlf", resolve: (files) => {
+      assert.ok(!files[0]!.sections[0]!.ours.includes("\r"));
+      return JSON.stringify({ sections: [{ id: 1, content: "B-pr and B-main\n" }] });
+    } });
+    const db = fresh(w.head);
+    const s = await runFixup(db, { repo: "app", dryRun: false }, () => {}, w.deps);
+    assert.deepEqual(s.pushed, ["app#7"]);
+    const pushed = git(w.fork, "rev-parse", "refs/heads/feat");
+    const f = spawnSync("git", ["show", `${pushed}:f.txt`], { cwd: w.fork, encoding: "utf8" }).stdout;
+    assert.equal(f, "a\r\nB-pr and B-main\r\nc\r\n");
+    const m = world({ conflicting: true, eol: "mixed", resolve: () => null });
+    const mdb = fresh(m.head);
+    const ms = await runFixup(mdb, { repo: "app", dryRun: false }, () => {}, m.deps);
+    assert.equal(ms.pushed.length, 0);
+    assert.deepEqual(m.log, []);
+    assert.match((mdb.prepare("SELECT reason FROM conflict_merges").get() as { reason: string }).reason, /f\.txt has mixed/);
+  });
+
+  test("files that together exceed the total cap but each fit are resolved with one call per file and one push", async () => {
+    const w = world({ conflicting: true, files: 5, side: 15_000, resolve: (files) => {
+      assert.equal(files.length, 1);
+      return JSON.stringify({ sections: files[0]!.sections.map((s) => ({ id: s.id, content: s.ours })) });
+    } });
+    const db = fresh(w.head);
+    const s = await runFixup(db, { repo: "app", dryRun: false }, () => {}, w.deps);
+    assert.deepEqual(s.pushed, ["app#7"]);
+    assert.equal(w.log.filter((l) => l === "resolve").length, 5);
+    assert.equal(w.log.filter((l) => l === "check").length, 5);
+    assert.equal(w.log.filter((l) => l.startsWith("push")).length, 1);
+  });
+
+  test("one file failing the check pushes nothing and the reason names it", async () => {
+    const w = world({ conflicting: true, files: 2, resolve: (files) => JSON.stringify({ sections: files[0]!.sections.map((s) => ({ id: s.id, content: s.ours })) }) });
+    let n = 0;
+    const inner = w.deps.check;
+    w.deps.check = async (...a) => { const r = await inner(...a); return ++n === 2 ? JSON.stringify({ verdict: "reject", reasons: "drops a line", problems: [] }) : r; };
+    const db = fresh(w.head);
+    await runFixup(db, { repo: "app", dryRun: false }, () => {}, w.deps);
+    assert.ok(!w.log.some((l) => l.startsWith("push")));
+    assert.equal(git(w.fork, "rev-parse", "refs/heads/feat"), w.head);
+    const r = db.prepare("SELECT state, reason FROM conflict_merges").get() as { state: string; reason: string };
+    assert.equal(r.state, "rejected");
+    assert.match(r.reason, /h0\.txt/);
   });
 
   test("an Opus reject pushes nothing and counts as a try", async () => {

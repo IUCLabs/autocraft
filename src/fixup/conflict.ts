@@ -21,7 +21,7 @@ import { conflictAskText, conflictCommentText, mergeMessage } from "./template.t
 
 const CHECK = CLAUDE_PROMPTS["fixup.check"];
 const CONFLICT = CLAUDE_PROMPTS["fixup.conflict"];
-/** Caps on what the resolver is shown (all sections with 30 lines of context, and one section's two sides). The check's own limit is applied separately, to what it receives. */
+/** Caps on what the resolver is shown for one file (all its sections with 30 lines of context, and one section's two sides). The check's own limit is applied separately, to what it receives. */
 const SECTIONS_CAP = 120_000;
 const SECTION_CAP = 40_000;
 /** Lines of context per section the check gets. */
@@ -143,43 +143,56 @@ export async function mergeConflict(db: DatabaseSync, x: ConflictRun, c: Conflic
     else {
       files = merge.conflicted;
       if (!files.length) { refuse("the merge is not clean but names no conflicted file"); return; }
-      const shown: ConflictFile[] = [];
-      const texts = new Map<string, { content: string; mode: string }>();
-      let size = 0, nextId = 1;
+      const shown: { view: ConflictFile; content: string; mode: string; crlf: boolean }[] = [];
+      let nextId = 1;
       for (const path of files) {
         if (!resolvablePath(path)) { refuse(`${path} is not a file a conflict resolution may touch`); return; }
         const f = await git.file(merge.tree, path);
         if (!f.ok) { fail("refused", f.reason); return; }
         if (!hasMarkers(f.content)) { refuse(`${path} conflicts without content markers`); return; }
-        if (f.content.includes("\r") || f.content.includes("\uFFFD")) { refuse(`${path} has CRLF line endings or is not UTF-8`); return; }
-        const view = conflictView(path, f.content, nextId);
+        if (f.content.includes("\uFFFD")) { refuse(`${path} is not UTF-8`); return; }
+        const crlf = f.content.includes("\r\n");
+        const content = crlf ? f.content.replace(/\r\n/g, "\n") : f.content;
+        if (content.includes("\r") || (crlf && /(?<!\r)\n/.test(f.content))) { refuse(`${path} has mixed or bare CR line endings`); return; }
+        const view = conflictView(path, content, nextId);
         if (!view) { refuse(`${path} has malformed conflict markers`); return; }
         const headFile = await git.file(head, path);
-        if (headFile.ok) locateInHead(view, headFile.content);
+        if (headFile.ok) locateInHead(view, headFile.content.replace(/\r\n/g, "\n"));
         nextId += view.sections.length;
-        size += view.sections.reduce((n, s) => n + s.before.length + s.ours.length + s.theirs.length + s.after.length, 0);
-        if (size > SECTIONS_CAP || view.sections.some((s) => s.ours.length + s.theirs.length > SECTION_CAP)) { refuse("the conflict sections are over the size limit"); return; }
-        texts.set(path, { content: f.content, mode: f.mode });
-        shown.push(view);
+        const size = view.sections.reduce((n, s) => n + s.before.length + s.ours.length + s.theirs.length + s.after.length, 0);
+        if (size > SECTIONS_CAP || view.sections.some((s) => s.ours.length + s.theirs.length > SECTION_CAP)) { refuse(`the conflict sections of ${path} are over the size limit`); return; }
+        // The check gets each section with its resolution, which is at most as long as the longer side plus three lines: refused here, before the claim, when even that bound is too big.
+        if (checkSize(checkSections([view], (s) => (s.ours.length > s.theirs.length ? s.ours : s.theirs))) > CHECK_PATCH_CAP) { refuse(`the conflict sections of ${path} are over the ${CHECK_PATCH_CAP} character limit for the check`); return; }
+        shown.push({ view, content, mode: f.mode, crlf });
       }
-      // The check gets each section with its resolution, which is at most as long as the longer side plus three lines: refused here, before the claim, when even that bound is too big.
-      if (checkSize(checkSections(shown, (s) => (s.ours.length > s.theirs.length ? s.ours : s.theirs))) > CHECK_PATCH_CAP) { refuse(`the conflict sections are over the ${CHECK_PATCH_CAP} character limit for the check`); return; }
       const prDiff = await cachedDiff(x.repo, c.number, head, x.d.fetchDiff);
       if (!prDiff.ok) { fail("failed", `no diff: ${oneLine(prDiff.error)}`); return; }
       await x.claim(c, pr);
       if (!x.d.resolve) { fail("failed", "no resolver"); return; }
       checkout = (await x.d.checkout?.(x.repo, c.number, head)) ?? undefined;
       const body = ((db.prepare("SELECT body FROM items WHERE repo = ? AND number = ?").get(x.repo, c.number) as { body: string | null } | undefined)?.body ?? "").slice(0, 4000);
-      const reply = await x.d.resolve(db, [{ ref, title: c.title, body, review_reason: c.reason, base: c.base, files: shown, ...(checkout ? { repo_dir: REPO_PATH } : {}) }], checkout);
-      if (reply === null) { fail("failed", "the model gave no answer"); return; }
-      const res = parseResolution(reply, shown.flatMap((f) => f.sections.map((s) => s.id)));
-      if (!res.ok) { fail("refused", res.reason); return; }
+      const repoDir = checkout ? { repo_dir: REPO_PATH } : {};
       const resFiles: { path: string; mode: string; content: string }[] = [];
-      for (const f of shown) {
-        const t = texts.get(f.path)!;
+      // One resolver call and one check per file, so the size caps apply to a file, not to the whole PR. Every file must pass before anything is pushed.
+      for (const t of shown) {
+        const f = t.view;
+        const reply = await x.d.resolve(db, [{ ref, title: c.title, body, review_reason: c.reason, base: c.base, files: [f], ...repoDir }], checkout);
+        if (reply === null) { fail("failed", `the model gave no answer for ${f.path}`); return; }
+        const res = parseResolution(reply, f.sections.map((s) => s.id));
+        if (!res.ok) { fail("refused", `${f.path}: ${res.reason}`); return; }
         const spliced = spliceSections(t.content, f.sections.map((s) => res.sections.get(s.id)!), f.path);
         if (spliced === null) { fail("refused", `the resolution of ${f.path} adds lines that are neither side, or declares code, imports or dependencies`); return; }
-        resFiles.push({ path: f.path, mode: t.mode, content: endNewline(t.content, spliced) });
+        const text = endNewline(t.content, spliced);
+        resFiles.push({ path: f.path, mode: t.mode, content: t.crlf ? text.replace(/\r?\n/g, "\r\n") : text });
+        const sections = checkSections([f], (s) => answerText(res.sections.get(s.id)!));
+        if (checkSize(sections) > CHECK_PATCH_CAP) { fail("refused", `the resolved sections of ${f.path} are over the ${CHECK_PATCH_CAP} character limit for the check`); return; }
+        const checkReply = await x.d.check(db, [{ ref, title: c.title, review_reason: c.reason, fixes: [], diff: prDiff.text.slice(0, CHECK_DIFF_CAP), patch: "", conflict: { base: c.base, files: sections }, ...repoDir }], checkout);
+        if (checkReply === null) { fail("failed", `the patch check of ${f.path} gave no answer`); return; }
+        const verdict = parseCheck(checkReply);
+        if (!verdict.ok) { fail("failed", `the patch check of ${f.path} gave no valid answer: ${verdict.error}`); return; }
+        recordCheck(db, { kind: "fixup", repo: x.repo, number: c.number, subject: head, patch: JSON.stringify(sections), round: c.attempt, model: CHECK.models[0]!, check: verdict.check, at: x.at() });
+        audit(db, "fixup", "fixup-check", ref, { run: x.runId, head, verdict: verdict.check.verdict, reasons: verdict.check.reasons, conflict: true, path: f.path });
+        if (verdict.check.verdict === "reject") { fail("rejected", `Opus rejected the resolution of ${f.path}: ${checkLine(verdict.check)}`); return; }
       }
       const scratch = mkdtempSync(join(x.d.root, ".index-"));
       try {
@@ -189,16 +202,6 @@ export async function mergeConflict(db: DatabaseSync, x: ConflictRun, c: Conflic
       }
       const changes = await git.rawChanges(merge.tree, tree);
       if (changes.some((ch) => !files.includes(ch[3]!) || ch[0] !== ch[1])) { fail("refused", "the resolution would change files or modes outside the conflicted files"); return; }
-      const sections = checkSections(shown, (s) => answerText(res.sections.get(s.id)!));
-      if (checkSize(sections) > CHECK_PATCH_CAP) { fail("refused", `the resolved sections are over the ${CHECK_PATCH_CAP} character limit for the check`); return; }
-      const repoDir = checkout ? { repo_dir: REPO_PATH } : {};
-      const checkReply = await x.d.check(db, [{ ref, title: c.title, review_reason: c.reason, fixes: [], diff: prDiff.text.slice(0, CHECK_DIFF_CAP), patch: "", conflict: { base: c.base, files: sections }, ...repoDir }], checkout);
-      if (checkReply === null) { fail("failed", "the patch check gave no answer"); return; }
-      const verdict = parseCheck(checkReply);
-      if (!verdict.ok) { fail("failed", `the patch check gave no valid answer: ${verdict.error}`); return; }
-      recordCheck(db, { kind: "fixup", repo: x.repo, number: c.number, subject: head, patch: JSON.stringify(sections), round: c.attempt, model: CHECK.models[0]!, check: verdict.check, at: x.at() });
-      audit(db, "fixup", "fixup-check", ref, { run: x.runId, head, verdict: verdict.check.verdict, reasons: verdict.check.reasons, conflict: true });
-      if (verdict.check.verdict === "reject") { fail("rejected", `Opus rejected the resolution: ${checkLine(verdict.check)}`); return; }
       const again = await live(db, x, c);
       if (!again) return;
     }
