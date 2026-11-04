@@ -5,6 +5,7 @@ import { Button } from "../../ui/atoms/Button";
 import { ago, num } from "../../lib/format";
 import { useUser } from "../../shell/UserContext";
 import { ConfirmButton } from "../../ui/molecules/ConfirmButton";
+import { Switch } from "../../ui/atoms/Switch";
 import { useWrite } from "../../lib/hooks";
 
 export type Write = ReturnType<typeof useWrite>;
@@ -18,8 +19,6 @@ export interface WriteKind {
   short: string;
   /** What the pipeline does on GitHub when approved */
   line: string;
-  stop: string;
-  go: string;
   run: (
     api: ReturnType<typeof useApi>,
     name: string,
@@ -34,8 +33,6 @@ export const WRITES: WriteKind[] = [
     name: "Labels",
     short: "Labels",
     line: "Writes labels to issues and pull requests",
-    stop: "Stop labelling here",
-    go: "Approve: writes to GitHub",
     run: (a, n, on) => a.repoAdmin.approveLabels(n, on),
   },
   {
@@ -43,8 +40,6 @@ export const WRITES: WriteKind[] = [
     name: "Comment and close",
     short: "Comment",
     line: "Comments on and closes issues and pull requests",
-    stop: "Stop commenting here",
-    go: "Approve: comments and closes on GitHub",
     run: (a, n, on) => a.repoAdmin.approveCommenting(n, on),
   },
   {
@@ -52,8 +47,6 @@ export const WRITES: WriteKind[] = [
     name: "Push fix-ups",
     short: "Push",
     line: "Pushes fix-up commits to contributor branches",
-    stop: "Stop pushing here",
-    go: "Approve: pushes to contributor branches",
     run: (a, n, on) => a.repoAdmin.approvePushing(n, on),
   },
   {
@@ -61,8 +54,6 @@ export const WRITES: WriteKind[] = [
     name: "Fix issues",
     short: "Fix",
     line: "Pushes issue fixes to the pipeline fork and opens pull requests and comments",
-    stop: "Stop fixing issues here",
-    go: "Approve: pushes to the pipeline fork, PRs and comments",
     run: (a, n, on) => a.repoAdmin.approveFixing(n, on),
   },
   {
@@ -70,8 +61,6 @@ export const WRITES: WriteKind[] = [
     name: "Merge",
     short: "Merge",
     line: "Merges pull requests that pass the merge rules, through safe-merge",
-    stop: "Stop merging here",
-    go: "Approve: merges on GitHub",
     run: (a, n, on) => a.repoAdmin.approveMerging(n, on),
   },
 ];
@@ -124,38 +113,14 @@ export function PipelineBadge({ r }: { r: TrackedRepo }) {
   return r.pipeline ? <Badge tone="ok">On</Badge> : <Badge>Off</Badge>;
 }
 
-export function PipelineToggle({
-  r,
-  write,
-  short = false,
-}: {
-  r: TrackedRepo;
-  write: Write;
-  short?: boolean;
-}) {
+/** The repo's pipeline switch for operators; others see the state. */
+export function PipelineSwitch({ r, write }: { r: TrackedRepo; write: Write }) {
   const api = useApi();
   const operator = useUser().role === "operator";
   const key = `pipeline:${r.name}`;
-  if (!r.tracked || !operator) return null;
-  return r.pipeline ? (
-    <ConfirmButton
-      label={short ? "Turn off" : "Pipeline off"}
-      confirmLabel="Stop the pipeline here: sync only"
-      loading={write.busy === key}
-      onConfirm={() =>
-        void write.run(key, () => api.repoAdmin.setPipeline(r.name, false))
-      }
-    />
-  ) : (
-    <ConfirmButton
-      label={short ? "Turn on" : "Pipeline on"}
-      confirmLabel="Run the pipeline stages here"
-      loading={write.busy === key}
-      onConfirm={() =>
-        void write.run(key, () => api.repoAdmin.setPipeline(r.name, true))
-      }
-    />
-  );
+  if (!r.tracked) return null;
+  if (!operator) return <PipelineBadge r={r} />;
+  return <Switch on={r.pipeline} label={`Pipeline in ${r.name}`} busy={write.busy === key} onChange={(on) => void write.run(key, () => api.repoAdmin.setPipeline(r.name, on))} />;
 }
 
 export const synced = (r: TrackedRepo) =>

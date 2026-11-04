@@ -17,7 +17,7 @@ import { Th } from "../../ui/atoms/Th";
 import { useWrite } from "../../lib/hooks";
 import {
   PipelineBadge,
-  PipelineToggle,
+  PipelineSwitch,
   WriteBadges,
   maybe,
   synced,
@@ -177,10 +177,7 @@ function Table({ rows }: { rows: TrackedRepo[] }) {
                 )}
               </td>
               <td className="px-3" onClick={(e) => e.stopPropagation()}>
-                <div className="flex items-center gap-2">
-                  <PipelineBadge r={r} />
-                  <PipelineToggle r={r} write={write} short />
-                </div>
+                <PipelineSwitch r={r} write={write} />
               </td>
               <td className="num px-3 text-right">{maybe(r.openPrs)}</td>
               <td className="num px-3 text-right">{maybe(r.openIssues)}</td>

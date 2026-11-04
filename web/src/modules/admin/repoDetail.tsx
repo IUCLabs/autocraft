@@ -6,11 +6,11 @@ import { Badge } from "../../ui/atoms/Badge";
 import { num } from "../../lib/format";
 import { useUser } from "../../shell/UserContext";
 import { Block } from "../../ui/molecules/Block";
-import { ConfirmButton } from "../../ui/molecules/ConfirmButton";
+import { Switch } from "../../ui/atoms/Switch";
 import { ErrorLine } from "../../ui/atoms/ErrorLine";
 import { Page } from "../../ui/organisms/Page";
 import { useWrite } from "../../lib/hooks";
-import { PipelineBadge, PipelineToggle, Toggle, WRITES, maybe, synced, type Write, type WriteKind } from "./repoParts";
+import { PipelineSwitch, Toggle, WRITES, maybe, synced, type Write, type WriteKind } from "./repoParts";
 import { useNow } from "../../lib/useNow";
 
 function Stat({ label, value, title }: { label: string; value: string; title?: string }) {
@@ -28,44 +28,41 @@ function WriteRow({ r, w, write }: { r: TrackedRepo; w: WriteKind; write: Write 
   const m = r[w.field];
   const key = `${w.field}:${r.name}`;
   return (
-    <li className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-line px-4 py-3 last:border-0">
-      <div className="min-w-0 flex-1 basis-64">
+    <li className="flex items-center gap-x-4 gap-y-2 border-b border-line px-4 py-3 last:border-0">
+      <div className="min-w-0 flex-1">
         <div className="text-sm font-medium">{w.name}</div>
         <div className="text-sm text-ink/60">{w.line}</div>
-      </div>
-      <div className="flex items-center gap-3">
-        <div className="text-right">
-          {m?.approved ? <Badge tone="ok">Approved</Badge> : <Badge>Not approved</Badge>}
-          {m?.approved && (
-            <div className="num text-xs text-ink/50">
-              {m.approvedBy} {m.approvedAt ?? ""}
-            </div>
-          )}
-        </div>
-        {!operator ? null : m?.approved ? (
-          <ConfirmButton label="Stop" confirmLabel={w.stop} loading={write.busy === key} onConfirm={() => void write.run(key, () => w.run(api, r.name, false))} />
-        ) : (
-          <ConfirmButton label="Approve" confirmLabel={w.go} loading={write.busy === key} onConfirm={() => void write.run(key, () => w.run(api, r.name, true))} />
+        {m?.approved && (
+          <div className="num text-xs text-ink/50">
+            {m.approvedBy} {m.approvedAt ?? ""}
+          </div>
         )}
       </div>
+      {operator ? (
+        <Switch on={!!m?.approved} label={w.name} busy={write.busy === key} onChange={(on) => void write.run(key, () => w.run(api, r.name, on))} />
+      ) : m?.approved ? (
+        <Badge tone="ok">Approved</Badge>
+      ) : (
+        <Badge>Not approved</Badge>
+      )}
     </li>
   );
 }
 
-/** One confirm approves every GitHub write of the repo that isn't approved yet, in pipeline order. */
-function ApproveAll({ r, write }: { r: TrackedRepo; write: Write }) {
+/** On when every GitHub write of the repo is approved. Switching it on approves the rest in pipeline order; off stops them all. */
+function AllWrites({ r, write }: { r: TrackedRepo; write: Write }) {
   const api = useApi();
   const operator = useUser().role === "operator";
-  const todo = WRITES.filter((w) => !r[w.field]?.approved);
   const key = `all:${r.name}`;
-  if (!operator || todo.length < 2) return null;
+  if (!operator) return null;
+  const all = WRITES.every((w) => r[w.field]?.approved);
   return (
-    <ConfirmButton
-      label="Approve all"
-      confirmLabel={`Approve all ${todo.length}: writes to GitHub`}
-      loading={write.busy === key}
-      onConfirm={() => void write.run(key, async () => { for (const w of todo) await w.run(api, r.name, true); })}
-    />
+    <span className="inline-flex items-center gap-3 text-sm text-ink/60">
+      All
+      <Switch on={all} label="All GitHub writes" busy={write.busy === key} onChange={(on) => void write.run(key, async () => {
+        for (const w of WRITES) if (!!r[w.field]?.approved !== on) await w.run(api, r.name, on);
+      })} />
+    </span>
   );
 }
 
@@ -89,11 +86,10 @@ function RepoDetailView({ params }: ViewProps) {
         {r && (r.tracked ? <Badge tone="ok">Tracked</Badge> : <Badge>Not tracked</Badge>)}
         {r && <Toggle r={r} write={write} />}
         {r?.tracked && (
-          <>
+          <span className="inline-flex items-center gap-3">
             <span className="text-ink/60">Pipeline</span>
-            <PipelineBadge r={r} />
-            <PipelineToggle r={r} write={write} />
-          </>
+            <PipelineSwitch r={r} write={write} />
+          </span>
         )}
       </div>
       <ErrorLine error={write.error ?? error?.message} className="mt-2" />
@@ -109,7 +105,7 @@ function RepoDetailView({ params }: ViewProps) {
           </div>
           {r.tracked && (
             <>
-              <Block className="mt-4" flush title="GitHub writes" aside={<ApproveAll r={r} write={write} />}>
+              <Block className="mt-4" flush title="GitHub writes" aside={<AllWrites r={r} write={write} />}>
                 <ul>
                   {WRITES.map((w) => (
                     <WriteRow key={w.field} r={r} w={w} write={write} />
