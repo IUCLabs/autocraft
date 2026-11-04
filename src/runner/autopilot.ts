@@ -10,6 +10,7 @@
 //
 // The planner reads the database, writes only its Plan cache (item_plans) and queues jobs; the runner starts them.
 // Each lane's `detect` reads the Plans of the pass (src/core/plan-set.ts).
+import { RECOMMEND_RETRY_MS } from "../core/item-rules.ts";
 import type { DatabaseSync } from "node:sqlite";
 import type { PipelineState, StageLimit } from "../../web/src/api/types.ts";
 import { readSeqs, TOPICS } from "../live.ts";
@@ -277,7 +278,11 @@ const LANE_CODE: Omit<Lane, "steps">[] = [
   {
     name: "decide",
     // Open scope decisions without a recommendation (asked before recommendations existed) also need a job; an answered-null one has recommended_by set.
-    detect: (db, ctx) => (plannedItems(db, "decide", { plans: plansOf(db, ctx) }).length ? [{ step: "decide", params: {} }] : []),
+    detect: (db, ctx) => {
+      // A recommendation that failed is tried again once its backoff ends.
+      for (const r of db.prepare("SELECT recommend_failed_at AS at FROM decisions WHERE answer IS NULL AND recommend_failed_at > ?").all(new Date(Date.now() - RECOMMEND_RETRY_MS).toISOString()) as { at: string }[]) ctx.wake?.push(Date.parse(r.at) + RECOMMEND_RETRY_MS);
+      return plannedItems(db, "decide", { plans: plansOf(db, ctx) }).length ? [{ step: "decide", params: {} }] : [];
+    },
   },
   {
     // One repo per job, round robin; the repo's checks come before its review.
@@ -432,7 +437,11 @@ const LANE_CODE: Omit<Lane, "steps">[] = [
   {
     // Label disagreements outside the scope labels, after Jev and Haiku have both answered.
     name: "referee",
-    detect: (db, ctx) => (ctx.run && plannedItems(db, "referee", { plans: plansOf(db, ctx) }).length ? [{ step: "referee", params: {} }] : []),
+    detect: (db, ctx) => {
+      // An item whose Opus call failed is asked again once its backoff ends.
+      if (ctx.run) for (const r of db.prepare("SELECT json_extract(probs, '$.opusFailedAt') AS at FROM classifications WHERE classifier = 'sonnet' AND run_id = ? AND json_extract(probs, '$.opusFailedAt') > ?").all(ctx.run, new Date(Date.now() - RECOMMEND_RETRY_MS).toISOString()) as { at: string }[]) ctx.wake?.push(Date.parse(r.at) + RECOMMEND_RETRY_MS);
+      return ctx.run && plannedItems(db, "referee", { plans: plansOf(db, ctx) }).length ? [{ step: "referee", params: {} }] : [];
+    },
   },
   {
     // A review carried to our checked fix-up needs no model, so this runs while Claude is paused.
