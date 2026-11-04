@@ -5,6 +5,7 @@
 // which the later stages read to hold the items to close. Per-pair decisions from
 // before groups exist stay until answered; an open one of a group is superseded
 // by the group decision.
+import { jobItem } from "../runner/job-items.ts";
 import type { DatabaseSync } from "node:sqlite";
 import { audit } from "../dash/audit.ts";
 import { actionable, ask, factsOf, getDecision, validateAsk } from "../decisions.ts";
@@ -221,6 +222,7 @@ export function askGroupDecisions(db: DatabaseSync, repo: string | undefined, at
       });
       db.exec("COMMIT");
       asked.push(id);
+      jobItem(db, p.repo, p.number, "asked a duplicate decision", console.log, id);
       withdrawGroupedQuestions(db, at, p.repo);
     } catch (e) {
       db.exec("ROLLBACK");

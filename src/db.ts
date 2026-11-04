@@ -22,6 +22,7 @@ export function dbPath(): string {
 // NOT EXISTS leaves an older table as it was, so these are added here.
 const ADDED_COLUMNS: [table: string, column: string, type: string][] = [
   ["jobs", "acted", "INTEGER"],
+  ["job_items", "ref", "TEXT"],
   ["pr_commits", "first_seen_at", "TEXT"],
   ["activity_sync", "error", "TEXT"],
   ["activity_sync", "retry_at", "TEXT"],

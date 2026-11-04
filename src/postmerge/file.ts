@@ -4,6 +4,7 @@
 // A row in state `filing` is written before the call. A create that succeeded on GitHub but whose answer was lost leaves
 // that row behind: the issue may exist, so the finding is never filed again by this stage, and the dashboard says the
 // outcome is unknown. Only a refusal from GitHub (no issue can exist) is recorded `failed` and tried again later.
+import { jobItem } from "../runner/job-items.ts";
 import { CLI_BY, type By } from "../core/gates.ts";
 import { guardRepo, type GuardedRepo } from "../core/guard.ts";
 import type { DatabaseSync } from "node:sqlite";
@@ -99,7 +100,7 @@ async function fileDefect(db: DatabaseSync, deps: FileDeps, w: Writer, g: Guarde
   } catch (e) {
     return { kind: "unknown", reason: `issue ${made.url} was created but not recorded: ${oneLine(e)}` };
   }
-  log(`  ${ref}: filed ${made.url}`);
+  jobItem(db, repo, d.number, `filed follow-up ${made.url}`, log);
   return { kind: "filed", issue: made.number };
 }
 

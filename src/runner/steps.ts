@@ -314,9 +314,9 @@ export const STEPS: StepDef[] = [
     run: async (ctx) => {
       const { askMergeDecisions } = await import("../merge/index.ts");
       const { trackedNames } = await import("../repos.ts");
-      const ids = askMergeDecisions(ctx.db, { repos: trackedNames(ctx.db) });
+      const ids = askMergeDecisions(ctx.db, { repos: trackedNames(ctx.db), log: ctx.log });
       ctx.handled(ids.length);
-      return `${ids.length} Merge? decisions asked`;
+      return `Asked Merge? on ${ids.length} PR${ids.length === 1 ? "" : "s"}`;
     },
   },
   {

@@ -5,6 +5,7 @@
 // runDecide() is the step the runner registers; `autocraft decide` runs it
 // from a shell. Idempotent: items with a decision or a later stage are
 // skipped, so a re-run or an interrupted run asks only what is still missing.
+import { jobItem } from "../runner/job-items.ts";
 import type { DatabaseSync } from "node:sqlite";
 import type { Item } from "../classify/parse.ts";
 import { loadItems } from "../classify/run.ts";
@@ -104,7 +105,11 @@ export async function runDecide(db: DatabaseSync, params: DecideParams = {}, log
     });
     result.recommended = r.stored;
     const repoOf = new Map(fresh.map((q) => [q.id, q.repo]));
-    for (const id of r.asked) count(result.byRepo, repoOf.get(id)!).asked++;
+    const numberOf = new Map(fresh.map((q) => [q.id, q.number]));
+    for (const id of r.asked) {
+      count(result.byRepo, repoOf.get(id)!).asked++;
+      jobItem(db, repoOf.get(id)!, numberOf.get(id)!, "asked a scope decision", log, id);
+    }
     for (const ref of r.noSummary) count(result.byRepo, ref.slice(0, ref.lastIndexOf("#"))).noSummary++;
   }
   for (const n of Object.values(result.byRepo)) { result.asked += n.asked; result.noSummary += n.noSummary; }

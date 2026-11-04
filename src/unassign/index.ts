@@ -12,6 +12,7 @@ import { issueInfo, pullRequestInfo, releaseItem } from "../github/claim.ts";
 import type { Writer } from "../github/write.ts";
 import { viewerOf } from "../merge/index.ts";
 import { Client, type Querier } from "../mirror.ts";
+import { jobItem } from "../runner/job-items.ts";
 
 export const ACTOR = "unassign";
 const oneLine = (s: string, max = 200) => s.replace(/\s+/g, " ").trim().slice(0, max);
@@ -41,10 +42,10 @@ export async function runUnassign(db: DatabaseSync, p: UnassignParams): Promise<
     const ref = `${p.repo}#${d.number}`;
     try {
       const info = await (d.pr ? pullRequestInfo(q, ORG, p.repo, d.number) : issueInfo(q, ORG, p.repo, d.number));
-      if (info && await releaseItem(w, g, q, p.repo, d.number, info, me, { run: p.runId })) { out.unassigned.push(ref); log(`  ${ref}: unassigned from ${me.login}`); }
+      if (info && await releaseItem(w, g, q, p.repo, d.number, info, me, { run: p.runId })) { out.unassigned.push(ref); jobItem(db, p.repo, d.number, `unassigned from ${me.login}`, log); }
     } catch (e) {
       out.failed.push(ref);
-      log(`  ${ref}: could not unassign: ${oneLine(String((e as Error).message ?? e))}`);
+      jobItem(db, p.repo, d.number, `could not unassign: ${oneLine(String((e as Error).message ?? e))}`, log);
     }
   }
   return out;

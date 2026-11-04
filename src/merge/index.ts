@@ -206,10 +206,11 @@ export function answeredHead(db: DatabaseSync, id: string): string | null {
 
 
 /** Asks the Merge? questions of the entries and sets aside the PR's unanswered questions at its other heads. */
-function askDue(db: DatabaseSync, due: QueueEntry[], at: string): string[] {
+function askDue(db: DatabaseSync, due: QueueEntry[], at: string, log: (line: string) => void = console.log): string[] {
   if (!due.length) return [];
   const qs = due.map(questionWithReason(db));
   ask(db, qs.map((q) => ({ ...q, asked_at: at })));
+  due.forEach((e, i) => jobItem(db, e.repo, e.number, "asked Merge?", log, qs[i]!.id));
   for (const e of due) withdrawOtherHeadQuestions(db, e.repo, e.number, e.head, at);
   return qs.map((q) => q.id);
 }
@@ -218,7 +219,7 @@ function askDue(db: DatabaseSync, due: QueueEntry[], at: string): string[] {
  * Asks the Merge? decisions that are due in the given repos (default: all), whether or not the repo has
  * a merge approval or a PR the rule could merge. Writes decisions only, nothing to GitHub.
  */
-export function askMergeDecisions(db: DatabaseSync, opts: { repos?: string[]; run?: string | null; at?: string } = {}): string[] {
+export function askMergeDecisions(db: DatabaseSync, opts: { repos?: string[]; run?: string | null; at?: string; log?: (line: string) => void } = {}): string[] {
   const repos = opts.repos && new Set(opts.repos);
   const queue = buildQueue(db, { merged: "exclude", ...(opts.run === undefined ? {} : { run: opts.run }) });
   const asks = new Set(planned(db, "ask-merge", { ...(opts.run === undefined ? {} : { run: opts.run }) }).filter((p) => !repos || repos.has(p.facts.repo)).map((p) => `${p.facts.repo}#${p.facts.number}`));
@@ -226,7 +227,7 @@ export function askMergeDecisions(db: DatabaseSync, opts: { repos?: string[]; ru
   const at = opts.at ?? new Date().toISOString();
   withdrawBlockedQuestions(db, queue.filter((e) => !repos || repos.has(e.repo)), at);
   for (const r of repos ?? new Set(queue.map((e) => e.repo))) withdrawGroupedQuestions(db, at, r);
-  const ids = askDue(db, due, at);
+  const ids = askDue(db, due, at, opts.log);
   fillReviewSummaries(db, at);
   return ids;
 }
@@ -288,7 +289,7 @@ export async function runMerge(db: DatabaseSync, params: MergeParams, log: (line
   }
 
   if (ask1.length) {
-    summary.asked = askDue(db, ask1, at());
+    summary.asked = askDue(db, ask1, at(), log);
     log(`  asked ${summary.asked.length} Merge? decision${summary.asked.length === 1 ? "" : "s"}`);
   }
   fillReviewSummaries(db, at());
@@ -401,7 +402,7 @@ export const commands = {
     summary: "merge-ask: ask the Merge? decisions that are due in every repo (writes decisions only)",
     run(): void {
       const ids = askMergeDecisions(connect());
-      console.log(`${ids.length} Merge? decisions asked`);
+      console.log(`Asked Merge? on ${ids.length} PR${ids.length === 1 ? "" : "s"}`);
     },
   },
   merge: {
