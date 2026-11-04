@@ -151,6 +151,7 @@ export function fixupOf(f: PrFacts): { bucket: FixupBucket; done: boolean } | nu
   // Heads held before the repo got comment approval are asked once it has it.
   const ask = (held: boolean): { bucket: FixupBucket; done: boolean } => (commenting ? { bucket: "ask", done: false } : { bucket: "cannot-push", done: held });
   if (has("asked") && !f.pushable) return { bucket: "asked", done: true };
+  if (has("comment-failed")) return { bucket: "cannot-push", done: true };
   // A stored patch waits for its lint task: no new try, no ask.
   if (has("pushed") || has("push-denied") || has("linting")) return { bucket: "hold", done: true };
   if (has("cannot-push") && !f.pushable) return ask(true);
@@ -194,16 +195,20 @@ function cifixOf(f: PrFacts): "work" | "collect" | "rerun" | "capped" | "ask" | 
   const b = cifixBucket(f);
   if (b === null) return null;
   // A fix given up or capped at this head: the contributor is asked once.
-  if ((b === "failed" || b === "capped") && f.repoFacts.commentApproved) return "ask";
+  // Not for our own breakage, and not when the fix-up already asked at this head: one comment per head.
+  if ((b === "failed" || b === "capped") && f.repoFacts.commentApproved && !f.brokeByUs && fixupOf(f)?.bucket !== "asked") return "ask";
   if (b === "rerun") return f.repoFacts.ciApproved ? "rerun" : "other";
   return b === "work" || b === "collect" || b === "capped" ? b : "other";
 }
 
 /** What a PR waits on when its conflict or CI fix is left to the contributor. */
 const stuckWait = (f: PrFacts): string | null => {
-  if (f.mergeable === "CONFLICTING" && f.conflict && ["ask", "asked", "held"].includes(f.conflict.bucket)) return "the contributor to resolve the conflict";
+  const approval = "comment approval for the repo";
+  if (f.mergeable === "CONFLICTING" && f.conflict && ["ask", "asked", "held"].includes(f.conflict.bucket)) return f.conflict.bucket === "held" ? (f.repoFacts.commentApproved ? "a person to resolve the conflict" : approval) : "the contributor to resolve the conflict";
   const cf = cifixBucket(f);
-  return cf === "failed" || cf === "capped" || cf === "cannot-push" || (cf === "done" && !!f.cifix?.states.includes("asked")) ? "the contributor to fix CI" : null;
+  if (cf === "done" && f.cifix?.states.includes("asked")) return "the contributor to fix CI";
+  if (cf === "failed" || cf === "capped") return f.repoFacts.commentApproved && !f.brokeByUs ? "the contributor to fix CI" : approval;
+  return cf === "cannot-push" ? approval : null;
 };
 
 /** Actions that work the PR towards merge (a push, a base merge, a pre-merge review, the merge), as against comment-only asks. */

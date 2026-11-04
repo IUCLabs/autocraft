@@ -201,11 +201,11 @@ class Recorder {
   }
 
   /** A fixups row and a stages row: `hold` for the two states that need a person, else the PR's `take` stage with a note. */
-  fixup(c: FixCandidate, state: "pushed" | "failed" | "refused" | "rejected" | "cannot-push" | "too-large" | "asked" | "push-denied", reason: string | null, files: string[], toHead: string | null = null): void {
+  fixup(c: FixCandidate, state: "pushed" | "failed" | "refused" | "rejected" | "cannot-push" | "too-large" | "asked" | "comment-failed" | "push-denied", reason: string | null, files: string[], toHead: string | null = null): void {
     const at = this.at();
     if (c.carry) {
       // A carry-over keeps its own record; the PR's take-fix tries and stage are not touched.
-      const ended = state === "pushed" || state === "asked" || state === "cannot-push" || state === "too-large" || state === "push-denied";
+      const ended = state === "pushed" || state === "asked" || state === "cannot-push" || state === "too-large" || state === "push-denied" || state === "comment-failed";
       const tried = !ended;
       const next = ended || c.attempt >= MAX_ATTEMPTS ? (state === "pushed" || state === "asked" ? "done" : "held") : "queued";
       this.db.prepare("UPDATE dupe_carries SET state = ?, attempts = attempts + ?, outcome = ?, to_head = ?, from_head = ?, updated_at = ? WHERE decision_id = ? AND number = ?")
@@ -299,7 +299,7 @@ async function runFixupWith(db: DatabaseSync, params: FixupParams, log: (line: s
       const g = await guard(db, { repo, number: c.number }, { kind: "fixup", bucket: "ask", head: c.head, source: sourceOf(c) }, params.by ?? CLI_BY);
       if ("refused" in g) { log(`  ${ref}: not asked: ${g.refused}`); return; }
       const cm = await ghAskComment(gw, d.exec, "fixup-comment", g, c.carry ? (c.model ? { by: "operator", model: c.model } : { by: "fixed-operator" }) : { by: "model", kind: "comment", model: c.model }, body, { run: runId, head: c.head });
-      if (cm.code !== 0) { log(`  ${ref}: comment failed: ${oneLine(cm.stderr)}`); return; }
+      if (cm.code !== 0) { rec.fixup(c, "comment-failed", oneLine(cm.stderr), []); log(`  ${ref}: comment failed: ${oneLine(cm.stderr)}`); return; }
       rec.fixup(c, "asked", null, [...new Set(c.fixes.map((f) => f.file))]);
       if (count) params.onHandled?.(++handled.n);
       summary.asked.push(ref);
