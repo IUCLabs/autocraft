@@ -10,7 +10,7 @@ type Override = { [K in keyof PrFacts]?: PrFacts[K] extends object | null ? Part
 const base = (): PrFacts => ({
   repo: "app", number: 1, assignment: { login: "bot", assignees: ["dev"], ours: false }, now: NOW, pipelineOn: true, ghState: "OPEN", head: HEAD, draft: false,
   author: "dev", authorIsPipeline: false, tier: "whitelisted", lines: 20, size: "S", label: "bugfix", needsDecisionFlag: false, scopeAnswer: null,
-  inScope: true, integration: false, batchPr: false, publishFailed: false, heldBacklog: false, heldDuplicate: false, mergeHeld: false, fast: false, score: 100,
+  inScope: true, integration: false, batchPr: false, heldBacklog: false, heldDuplicate: false, mergeHeld: false, fast: false, score: 100,
   repoFacts: { mergeApproved: true, pushApproved: true, commentApproved: true, ciApproved: true, noCi: false, mainRed: false },
   review: { head: HEAD, at: REVIEW_AT, verdict: "take", unsure: false, mode: "full", reason: "ok", fixes: 0, stale: false, staleActionable: false },
   post: { postable: true, posted: { head: HEAD, at: "2026-11-04T10:01:00.000Z", opusAt: REVIEW_AT } },

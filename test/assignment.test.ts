@@ -39,9 +39,15 @@ test("a fix-up that gave up releases the PR, unless it is in a batch", () => {
   assert.equal(unassigns(decidePr(prFacts({ ...f, inActiveBatch: true }))), false);
 });
 
-test("members of a batch whose PR could not be opened are released", () => {
-  assert.equal(unassigns(decidePr(prFacts({ publishFailed: true, assignment: ours }))), true);
-  assert.equal(unassigns(decidePr(prFacts({ publishFailed: true, inActiveBatch: true, assignment: ours }))), false);
+test("a take-fix PR with a conflict give-up, an ended CI fix and a held merge are released; a refused merge is kept", () => {
+  const held = { mergeable: "CONFLICTING", conflict: { bucket: "held", base: "main", baseOk: true } };
+  assert.equal(unassigns(decidePr(prFacts({ review: { verdict: "take-fix" }, fixup: { fixes: 0, attempts: 0, recorded: [] as string[] }, ...held, assignment: ours }))), true, "conflict held, take-fix");
+  const cifix = (states: string[]) => ({ ci: "failure", cifix: { states, tries: 0, rerunAt: null, infraRuns: null, formattingTask: null, formatterEnded: true, totalPushes: 0, totalTries: 0, checksAt: null }, assignment: ours });
+  assert.equal(unassigns(decidePr(prFacts(cifix(["asked"])))), true, "CI fix ended without a push");
+  assert.equal(unassigns(decidePr(prFacts(cifix([])))), false, "CI fix due");
+  assert.equal(unassigns(decidePr(prFacts({ mergeHeld: true, assignment: ours }))), true, "merge held by an operator");
+  assert.equal(unassigns(decidePr(prFacts({ runs: { waiting: 1, reread: false, crossRepo: true, approvable: 1 }, repoFacts: { ciApproved: false }, assignment: ours }))), true, "CI runs wait for a maintainer");
+  assert.equal(unassigns(decidePr(prFacts({ lastMerge: { outcome: "refused", reason: "x", ci: "pending", mergeable: "MERGEABLE" }, assignment: ours }))), false, "refused merge retried");
 });
 
 test("an issue is unassigned when its fix gave up, kept while it is fixed, and never assigned by the planner", () => {

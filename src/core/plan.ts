@@ -123,8 +123,6 @@ export type PrFacts = {
   /** Any merge batch's own PR (without the author check). */
   batchPr: boolean;
   heldBacklog: boolean;
-  /** The reviewed head was in a merge batch that failed to publish its PR and is in no active batch. */
-  publishFailed: boolean;
   /** Held by a duplicate decision (pair or group), not counting a Backlog answer. */
   heldDuplicate: boolean;
   /** An operator holds its merge. */

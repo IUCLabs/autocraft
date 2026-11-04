@@ -202,17 +202,20 @@ const worksOn = (a: Action): boolean => {
 };
 
 /** Queue states on the path to merge: the PR stays assigned in them unless a stage gave it up. */
-const PROGRESS_STATES: ReadonlySet<string> = new Set(["ready", "waiting-ci", "waiting-premerge", "waiting-verify", "ci-approval", "waiting-main-ci", "decision-answered-merge", "needs-fix-up", "ci-failed"]);
+const PROGRESS_STATES: ReadonlySet<string> = new Set(["ready", "waiting-ci", "waiting-premerge", "waiting-verify", "ci-approval", "waiting-main-ci", "decision-answered-merge", "needs-fix-up", "ci-failed", "refused"]);
 
 /** The unassign action of an open PR: kept while it is on the path to merge (in flight, in a batch, work due, a progress state), released in every other state and when a stage gave it up. */
 function unassignOf(f: PrFacts, state: PlanState, actions: Action[]): Action[] {
   const fx = fixupOf(f), cf = cifixBucket(f);
   const inBatch = state === "in-batch" || state === "batch-checking" || f.inActiveBatch;
-  const stuck = f.publishFailed && !f.inActiveBatch && !inBatch;
-  const working = actions.some(worksOn) || inBatch || inFlightNow(f, state);
-  const gaveUp = state === "opus-close" || state === "verify-failed" || state === "verify-error" || state === "batch-failed" || state === "conflict"
-    || (!!fx && (fx.bucket === "cannot-push" || fx.bucket === "asked" || (fx.bucket === "hold" && !fx.done))) || cf === "failed" || cf === "capped" || cf === "cannot-push";
-  const keep = !stuck && (working || (!gaveUp && PROGRESS_STATES.has(state)));
+  const flying = inFlightNow(f, state);
+  const working = actions.some(worksOn) || inBatch || flying;
+  // A conflicting PR whose conflict step has nothing to do (asked, held, not approved, done) waits on its author, whatever the queue state says.
+  const conflictStuck = f.mergeable === "CONFLICTING" && !!f.conflict && f.conflict.bucket !== "merge" && f.conflict.bucket !== "linting";
+  const gaveUp = state === "opus-close" || state === "verify-failed" || state === "verify-error" || state === "batch-failed" || conflictStuck
+    || (!!fx && (fx.bucket === "cannot-push" || fx.bucket === "asked" || (fx.bucket === "hold" && !fx.done))) || cf === "failed" || cf === "capped" || cf === "cannot-push" || cf === "done"
+    || f.mergeHeld || (state === "ci-approval" && !f.repoFacts.ciApproved);
+  const keep = working || (!gaveUp && PROGRESS_STATES.has(state));
   return unassignActions(f.assignment, f.ghState === "OPEN", !keep);
 }
 
