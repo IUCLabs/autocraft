@@ -2,6 +2,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import { pilotSqlFor } from "../pilot.ts";
 import { planned } from "../core/select.ts";
+import type { PlanSet } from "../core/plan-set.ts";
 import type { Finding } from "./parse.ts";
 import { RETRY_AFTER_MS } from "../core/rules.ts";
 
@@ -21,8 +22,8 @@ export const sinceOf = (db: DatabaseSync): string =>
   (db.prepare("SELECT value FROM settings WHERE key = ?").get(SINCE_KEY) as { value: string } | undefined)?.value ?? "9999";
 
 /** PRs whose Plan holds a `postmerge` action: a pipeline merge landed since the `postmerge_since` setting and no usable review is stored (a `retry:` error counts as missing an hour after it failed; the third is stored as held). Oldest merge first. */
-export function selectPostmerge(db: DatabaseSync, repo: string, now = Date.now(), run?: string | null): MergedPr[] {
-  return planned(db, "postmerge", { repo, now, ...(run !== undefined ? { run } : {}) }).flatMap((p) => mergedPr(db, repo, p.facts.number) ?? [])
+export function selectPostmerge(db: DatabaseSync, repo: string, now = Date.now(), run?: string | null, plans?: PlanSet): MergedPr[] {
+  return planned(db, "postmerge", { repo, now, ...(run !== undefined ? { run } : {}), ...(plans ? { plans } : {}) }).flatMap((p) => mergedPr(db, repo, p.facts.number) ?? [])
     .sort((a, b) => (a.merged_at < b.merged_at ? -1 : a.merged_at > b.merged_at ? 1 : 0) || a.number - b.number);
 }
 

@@ -1,6 +1,7 @@
 // The PRs the fix-up and conflict steps work on: those whose Plan holds a `fixup` or `conflict` action.
 import type { DatabaseSync } from "node:sqlite";
 import { planned } from "../core/select.ts";
+import type { PlanSet } from "../core/plan-set.ts";
 import type { PrFacts } from "../core/plan.ts";
 import { findingsOf, premergeAt } from "../premerge/store.ts";
 import { type Carry, type FixCandidate, type FixSelection, parseFixes } from "./candidates.ts";
@@ -27,8 +28,8 @@ function carriesOf(db: DatabaseSync, f: PrFacts, head: string): FixCandidate[] {
   return out;
 }
 
-export function selectFixups(db: DatabaseSync, repo: string, run?: string | null): FixSelection {
-  const opts = { repo, ...(run !== undefined ? { run } : {}) };
+export function selectFixups(db: DatabaseSync, repo: string, run?: string | null, plans?: PlanSet): FixSelection {
+  const opts = { repo, ...(run !== undefined ? { run } : {}), ...(plans ? { plans } : {}) };
   const out: FixSelection = { fix: [], cannotPush: [], ask: [], conflictMerge: [], conflictAsk: [] };
   const review = db.prepare("SELECT fixes, model FROM final_reviews WHERE repo = ? AND number = ? AND head_oid = ? AND verdict = 'take-fix'");
   const text = db.prepare("SELECT title FROM items WHERE repo = ? AND number = ?");

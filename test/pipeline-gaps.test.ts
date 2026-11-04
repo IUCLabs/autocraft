@@ -31,6 +31,7 @@ function fresh(): DatabaseSync {
   db.prepare("INSERT INTO access (login, role) VALUES ('op', 'operator')").run();
   db.prepare("INSERT INTO whitelist_overrides (login, status, by, at) VALUES ('regular', 'allow', 'op', ?)").run(T0);
   db.prepare("INSERT INTO tracked_repos (name, pipeline) VALUES ('app', 1)").run();
+  db.prepare("INSERT INTO settings (key, value) VALUES ('pipeline_enabled', '1')").run();
   return db;
 }
 
@@ -68,15 +69,15 @@ describe("Merge? asked without a merge approval", () => {
     assert.deepEqual(ids, ["app#1:merge@sha1"]);
     assert.deepEqual(askMergeDecisions(db, { run: "r1" }), []);
     const lane = LANES.find((l) => l.name === "merge-ask")!;
-    assert.deepEqual(lane.detect(db, { run: "r1", jevRun: "r1", tracked: ["app"] }), []);
+    assert.deepEqual(lane.detect(db, { run: "r1", tracked: ["app"] }), []);
   });
 
   test("the autopilot lane queues merge-ask when a question is due", () => {
     const db = fresh();
     add(db, { n: 1, label: "missing feature", verify: "passed" });
     const lane = LANES.find((l) => l.name === "merge-ask")!;
-    assert.deepEqual(lane.detect(db, { run: "r1", jevRun: "r1", tracked: ["app"] }), [{ step: "merge-ask", params: {} }]);
-    assert.deepEqual(lane.detect(db, { run: "r1", jevRun: "r1", tracked: ["other"] }), []);
+    assert.deepEqual(lane.detect(db, { run: "r1", tracked: ["app"] }), [{ step: "merge-ask", params: {} }]);
+    assert.deepEqual(lane.detect(db, { run: "r1", tracked: ["other"] }), []);
   });
 
   test("not verified: the question says why, the rule never merges it, an operator's merge answer can", () => {
@@ -124,15 +125,16 @@ describe("Merge? asked without a merge approval", () => {
     db.prepare("UPDATE pr_checks SET mergeable = 'UNKNOWN'").run();
     assert.equal(buildQueue(db, { run: "r1" })[0]!.state, "waiting-ci");
     const lane = LANES.find((l) => l.name === "merge")!;
-    const ctx = { run: "r1", jevRun: "r1", tracked: ["app"] };
-    assert.deepEqual(lane.detect(db, ctx), [], "no merge approval");
+    // A ctx carries the pass's Plans, so each reading takes a new one.
+    const ctx = () => ({ run: "r1", tracked: ["app"] });
+    assert.deepEqual(lane.detect(db, ctx()), [], "no merge approval");
     setMergeApproval(db, "op", "app", true);
-    assert.deepEqual(lane.detect(db, ctx), [{ step: "checks", params: { repo: "app" }, poll: true, gate: { step: "merge", params: { repo: "app" }, poll: true } }]);
+    assert.deepEqual(lane.detect(db, ctx()), [{ step: "checks", params: { repo: "app" }, poll: true, gate: { step: "merge", params: { repo: "app" }, poll: true } }]);
     const at = new Date().toISOString();
     db.prepare("INSERT INTO jobs (step, params, repo, requested_by, requested_at, state, started_at, ended_at, items) VALUES ('checks', '{}', 'app', 'pipeline', ?, 'done', ?, ?, 1)").run(at, at, at);
-    assert.deepEqual(lane.detect(db, ctx), [], "checks ran less than a minute ago");
+    assert.deepEqual(lane.detect(db, ctx()), [], "checks ran less than a minute ago");
     db.prepare("UPDATE pr_checks SET mergeable = 'MERGEABLE'").run();
-    assert.deepEqual(lane.detect(db, ctx), [{ step: "merge", params: { repo: "app" } }]);
+    assert.deepEqual(lane.detect(db, ctx()), [{ step: "merge", params: { repo: "app" } }]);
   });
 
   test("a PR held by an open Duplicate? decision is held-duplicate and not eligible", () => {

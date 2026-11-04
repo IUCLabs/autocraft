@@ -8,6 +8,7 @@ import { runModelStep } from "../agents/step.ts";
 import { PREMERGE_OPUS } from "../agents/steps.ts";
 import { buildQueue } from "../merge/queue.ts";
 import { planned } from "../core/select.ts";
+import type { PlanSet } from "../core/plan-set.ts";
 import type { PrFacts } from "../core/plan.ts";
 import { PREMERGE_MAX_TRIES, RETRY_AFTER_MS } from "../core/rules.ts";
 import { CLAUDE_PROMPTS } from "../prompts/index.ts";
@@ -46,7 +47,7 @@ export type PremergeItem = { repo: string; number: number; head: string; facts: 
  * The PRs whose Plan holds a `premerge` action (the queue holds them in waiting-premerge and the head is due a try), in selection order.
  * `wake` collects when the failed tries are due again (ms): nothing in the data changes then, so the planner must be told.
  */
-export function premergeCandidates(db: DatabaseSync, opts: { repo?: string; at?: number; wake?: number[]; run?: string | null } = {}): PremergeItem[] {
+export function premergeCandidates(db: DatabaseSync, opts: { repo?: string; at?: number; wake?: number[]; run?: string | null; plans?: PlanSet } = {}): PremergeItem[] {
   const { wake, at, ...rest } = opts;
   return planned(db, "premerge", {
     ...rest, ...(at !== undefined ? { now: at } : {}),

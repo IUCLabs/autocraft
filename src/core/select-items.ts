@@ -5,6 +5,7 @@ import type { DatabaseSync } from "node:sqlite";
 import type { Item } from "../classify/parse.ts";
 import { decideItem } from "./decide-item.ts";
 import { loadItemFacts, type ItemLoadOptions } from "./issue-facts.ts";
+import type { PlanSet } from "./plan-set.ts";
 import type { Action, ActionKind, ItemFacts, ItemPlan } from "./plan.ts";
 
 export type PlannedItem = { facts: ItemFacts; plan: ItemPlan; action: Action };
@@ -12,6 +13,8 @@ export type PlannedItem = { facts: ItemFacts; plan: ItemPlan; action: Action };
 export type PlannedOptions = ItemLoadOptions & {
   /** Only actions of this bucket (the action's `bucket` param, else its `source` param). */
   bucket?: string;
+  /** Plans decided already (the planner's pass): no facts are loaded. */
+  plans?: PlanSet;
 };
 
 const bucketOf = (a: Action): string | null => {
@@ -32,8 +35,12 @@ const prFirst: Cmp = (a, b) => (b.facts.kind === "pr" ? 1 : 0) - (a.facts.kind =
 /** Items the Plans say are due for `kind`, one entry per due action. */
 export function plannedItems(db: DatabaseSync, kind: ActionKind, opts: PlannedOptions = {}): PlannedItem[] {
   const out: PlannedItem[] = [];
-  for (const facts of loadItemFacts(db, opts)) {
-    const plan = decideItem(facts);
+  let source: Iterable<{ facts: ItemFacts; plan: ItemPlan }>;
+  if (opts.plans) {
+    const refs = opts.refs ? new Set(opts.refs) : null;
+    source = opts.plans.items.filter((p) => (!opts.repo || p.facts.repo === opts.repo) && (!refs || refs.has(`${p.facts.repo}#${p.facts.number}`)));
+  } else source = loadItemFacts(db, opts).map((facts) => ({ facts, plan: decideItem(facts) }));
+  for (const { facts, plan } of source) {
     for (const action of plan.actions) if (action.kind === kind && (opts.bucket === undefined || bucketOf(action) === opts.bucket)) out.push({ facts, plan, action });
   }
   if (out.length < 2) return out;

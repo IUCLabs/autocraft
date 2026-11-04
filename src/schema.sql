@@ -1170,3 +1170,21 @@ CREATE TABLE IF NOT EXISTS premerge_reviews (
   tries INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (repo, number, head_oid)
 );
+
+-- The planner's output (src/core/plan-cache.ts): what is due for each item at the end of the last planner pass. One row per
+-- PR or item; written by the planner only, in one transaction, only the rows that changed. For a PR, `state` is the state of
+-- its review-to-merge Plan and `item_state` that of its triage plan; for an issue `state` is the triage state. `actions` is JSON
+-- [{kind, head, params?}] in priority order, triage actions first; `reasons` is JSON string[] (why it is outside the merge rule).
+CREATE TABLE IF NOT EXISTS item_plans (
+  repo TEXT NOT NULL, number INTEGER NOT NULL,
+  kind TEXT NOT NULL,                 -- pr | issue
+  head TEXT,
+  state TEXT NOT NULL,
+  item_state TEXT,
+  actions TEXT NOT NULL,
+  wait TEXT,
+  reasons TEXT NOT NULL,
+  note TEXT,
+  planned_at TEXT NOT NULL,
+  PRIMARY KEY (repo, number)
+) WITHOUT ROWID;

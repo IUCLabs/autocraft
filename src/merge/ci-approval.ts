@@ -11,6 +11,7 @@ import { audit } from "../dash/audit.ts";
 import { effectiveCi } from "../optional-checks.ts";
 import { connect } from "../db.ts";
 import { planned } from "../core/select.ts";
+import type { PlanSet } from "../core/plan-set.ts";
 import type { Exec } from "../fixup/git.ts";
 import { guard } from "../core/guard.ts";
 import { CLI_BY, type By } from "../core/gates.ts";
@@ -99,10 +100,10 @@ export type Candidate = { number: number; head: string; runs: WaitingRun[]; rere
  * batch PRs with runs waiting at the batch tip (their code is the members' code, and every member is reviewed at the head it was batched at).
  * The runs are read from the recorded row at the action's head.
  */
-export function needsWork(db: DatabaseSync, repo: string, run?: string | null): Candidate[] {
+export function needsWork(db: DatabaseSync, repo: string, run?: string | null, plans?: PlanSet): Candidate[] {
   const row = db.prepare("SELECT runs, reread, failed, cross_repo FROM ci_run_approvals WHERE repo = ? AND number = ? AND head_oid = ?");
   const out: Candidate[] = [];
-  for (const { facts, action } of planned(db, "approve-ci", { repo, ...(run !== undefined ? { run } : {}) })) {
+  for (const { facts, action } of planned(db, "approve-ci", { repo, ...(run !== undefined ? { run } : {}), ...(plans ? { plans } : {}) })) {
     const a = row.get(repo, facts.number, action.head) as { runs: string; reread: number; failed: string; cross_repo: number } | undefined;
     if (!a) continue;
     out.push({ number: facts.number, head: action.head!, runs: JSON.parse(a.runs) as WaitingRun[], reread: !!a.reread, failed: JSON.parse(a.failed) as Record<string, number>, crossRepo: !!a.cross_repo });

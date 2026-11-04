@@ -219,6 +219,8 @@ export type ItemState = (typeof ITEM_STATES)[number];
 export type ItemFacts = {
   repo: string; number: number;
   kind: "pr" | "issue";
+  /** Open on GitHub as mirrored. A closed item is in the facts only while an answered close of it is not applied (the Act step records it as already closed); nothing else is planned for it. */
+  open: boolean;
   /** Time of the decision, ms. */
   now: number;
   /** Open item as the mirror says (the freshest-checks rule of PrFacts is for the PR path only). */

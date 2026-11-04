@@ -100,6 +100,8 @@ export function decideItem(f: ItemFacts): ItemPlan {
     if (f.inScope && !backlog && a && ((a.state === "testing" && a.headDone && a.baseDone) || a.state === "passed")) actions.push(act("fixissue-collect", null, { source: a.state }));
   }
 
+  // A closed item is here for its unapplied answered close only.
+  if (!f.open) actions.splice(0, actions.length, ...actions.filter((a) => a.kind === "act" && !a.params?.ask));
   return { repo: f.repo, number: f.number, kind: f.kind, state, actions, wait: actions.length ? null : !f.inScope ? "not in scope" : WAITS[state] ?? null };
 }
 

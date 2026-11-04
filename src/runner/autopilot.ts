@@ -8,27 +8,26 @@
 // one does not stop the others. Turned off, no new jobs are queued and running
 // jobs finish.
 //
-// The planner only reads the database and queues jobs; the runner starts them.
-// Each lane's `detect` reuses the candidate code of the stage it feeds.
+// The planner reads the database, writes only its Plan cache (item_plans) and queues jobs; the runner starts them.
+// Each lane's `detect` reads the Plans of the pass (src/core/plan-set.ts).
 import type { DatabaseSync } from "node:sqlite";
 import type { PipelineState, StageLimit } from "../../web/src/api/types.ts";
 import { readSeqs, TOPICS } from "../live.ts";
 import { pendingConversations } from "../conversations/store.ts";
-import { latestJevRun } from "../decide/select.ts";
-import { plannedItems } from "../core/select-items.ts";
+import { plannedItems, type PlannedItem } from "../core/select-items.ts";
+import { loadPlanSet, type PlanSet } from "../core/plan-set.ts";
+import { gates, type Want } from "../core/gates.ts";
+import type { Action } from "../core/plan.ts";
+import { writePlanCache } from "../core/plan-cache.ts";
 import { embedderId, modelName } from "../embed/model.ts";
-import { pending as embedPending } from "../embed/store.ts";
-import { approvalOf } from "../labels/approval.ts";
+import { embedDue } from "../embed/store.ts";
 import { commentApprovalOf } from "../act/approval.ts";
-import { pushApprovalOf } from "../fixup/approval.ts";
 import { selectFixups } from "../fixup/select.ts";
-import { selectCifix } from "../cifix/select.ts";
-import { mergeApprovalOf } from "../merge/approval.ts";
-import { ciApprovalOf, needsWork } from "../merge/ci-approval.ts";
+import { needsWork } from "../merge/ci-approval.ts";
 import { batchesDue } from "../merge/batch-store.ts";
-import { buildQueue } from "../merge/queue.ts";
 import { trackedNames } from "../repos.ts";
 import { planned, type Planned } from "../core/select.ts";
+import { isQueueState } from "../core/plan.ts";
 import { postCandidates } from "../review/post.ts";
 import { collectDue } from "../verify/results.ts";
 import { openedToday, perDay } from "../fixissue/index.ts";
@@ -108,7 +107,9 @@ export type Lane = {
 
 /** What every lane's detect shares, resolved once per planner pass. */
 export type PlanCtx = {
-  run: string | null; jevRun: string | null; tracked: string[];
+  run: string | null; tracked: string[];
+  /** The Plans of the pass: facts loaded and decided once. Lanes read them; a lane run without them (a test) loads them on first use. */
+  plans?: PlanSet;
   /** Times (ms) at which something the lanes wait for becomes due; the planner wakes at the earliest. */
   wake?: number[];
   /** Why a stage waits on an outside system (CI, the sandbox), keyed by step; shown on the Pipeline page. */
@@ -118,11 +119,25 @@ export type PlanCtx = {
 /** Only the repos in scope (pipeline on, narrowed by the pilot) are planned for; a job for another repo is never proposed. */
 export const planCtx = (db: DatabaseSync): PlanCtx => {
   const scope = scopeRepos(db);
-  return { run: currentRun(db), jevRun: latestJevRun(db), tracked: trackedNames(db).filter((r) => scope.has(r)), wake: [], notes: {} };
+  const run = currentRun(db);
+  return { run, tracked: trackedNames(db).filter((r) => scope.has(r)), plans: loadPlanSet(db, { run }), wake: [], notes: {} };
 };
 
+/** The pass's Plans (loaded on first use when the ctx came without). */
+const plansOf = (db: DatabaseSync, ctx: PlanCtx): PlanSet => (ctx.plans ??= loadPlanSet(db, { run: ctx.run }));
+
+/** Whether the guard would let the pipeline make the write an action stands for: the global switch and the repo's approval. */
+const wantOf = (a: Action): Want => ({ kind: a.kind, ...(typeof a.params?.bucket === "string" ? { bucket: a.params.bucket } : {}) });
+const allowed = <T extends { facts: Planned["facts"] | PlannedItem["facts"]; action: Action }>(ps: T[]): T[] =>
+  ps.filter((p) => gates(p.facts, wantOf(p.action), "pipeline") === null);
+/** The same test for a write that needs no per-item fact, judged on the repo's own facts. */
+function repoAllows(plans: PlanSet, repo: string, want: Want): boolean {
+  const f = plans.prs.find((p) => p.facts.repo === repo)?.facts ?? plans.items.find((p) => p.facts.repo === repo)?.facts;
+  return !f || gates(f, want, "pipeline") === null;
+}
+
 /** Topics whose changes call for a plan: content the stages read. Job logs, usage, agent runs, sandbox environments and tasks, and audit entries do not. */
-export const INPUT_TOPICS = TOPICS.filter((t) => !["jobs", "usage", "agents", "envs", "tasks", "access", "github"].includes(t));
+export const INPUT_TOPICS = TOPICS.filter((t) => !["jobs", "usage", "agents", "envs", "tasks", "access", "github", "plans"].includes(t));
 
 /** Sandbox tasks that ended, for lanes that read their results. */
 const tasksSig = (db: DatabaseSync): string =>
@@ -171,11 +186,11 @@ export function roundRobin(repos: string[], cursor: string | null): string[] {
 }
 
 /** Per repo approved for fixing issues: whether a patch round is due and its first new candidate (highest score). */
-function fixWork(db: DatabaseSync, tracked: string[], run: string | null): Map<string, { retry: boolean; top?: { number: number; score: number | null } }> {
+function fixWork(db: DatabaseSync, tracked: string[], plans: PlanSet): Map<string, { retry: boolean; top?: { number: number; score: number | null } }> {
   const repos = new Set(tracked), out = new Map<string, { retry: boolean; top?: { number: number; score: number | null } }>();
-  for (const p of plannedItems(db, "fixissue", { run })) {
+  for (const p of allowed(plannedItems(db, "fixissue", { plans }))) {
     const { repo, number, score } = p.facts;
-    if (!repos.has(repo) || !p.facts.repoFacts.fixIssueApproved) continue;
+    if (!repos.has(repo)) continue;
     const w = out.get(repo) ?? out.set(repo, { retry: false }).get(repo)!;
     if (p.action.params?.source === "retry") w.retry = true;
     else w.top ??= { number, score };
@@ -201,19 +216,23 @@ export function orderLanes<T extends { name: string }>(lanes: T[], tops: Map<str
   return lanes.map((l) => (tops.has(l.name) ? sorted[k++]! : l));
 }
 
+/** Repos with a CI-fix action of one of the buckets that the guard lets the pipeline carry out (rerun: CI approval; work and collect: a push, or a comment on a closed branch). */
+function cifixRepos(db: DatabaseSync, ctx: PlanCtx, buckets: string[]): string[] {
+  const repos = new Set(ctx.tracked);
+  const due = allowed(planned(db, "cifix", { plans: plansOf(db, ctx) })).filter((p) => buckets.includes(String(p.action.params?.bucket)));
+  return [...new Set(due.map((p) => p.facts.repo))].filter((r) => repos.has(r)).sort();
+}
+
 /** The code of each lane, keyed by name. Names, steps and order come from the stage registry. */
 const LANE_CODE: Omit<Lane, "steps">[] = [
   {
     name: "classify",
-    detect: (db, { run }) => {
-      if (!run) return [];
-      return plannedItems(db, "classify", { run }).length ? [{ step: "classify-new", params: {} }] : [];
-    },
+    detect: (db, ctx) => (ctx.run && plannedItems(db, "classify", { plans: plansOf(db, ctx) }).length ? [{ step: "classify-new", params: {} }] : []),
   },
   {
     // Items without a priority at their current text hash; the scores of the others are refreshed by the same job.
     name: "priority",
-    detect: (db, { run }) => (plannedItems(db, "prioritize", { run }).length ? [{ step: "prioritize", params: {} }] : []),
+    detect: (db, ctx) => (plannedItems(db, "prioritize", { plans: plansOf(db, ctx) }).length ? [{ step: "prioritize", params: {} }] : []),
   },
   {
     // Work score from the stored priority, size, type and security flag; no model. It is cheap and has no work test of its own:
@@ -226,33 +245,34 @@ const LANE_CODE: Omit<Lane, "steps">[] = [
   },
   {
     name: "embed",
-    detect: (db) => (embedPending(db, embedderId(modelName())).length ? [{ step: "embed", params: {} }] : []),
+    detect: (db, ctx) => (embedDue(db, embedderId(modelName()), plansOf(db, ctx)) ? [{ step: "embed", params: {} }] : []),
   },
   {
     // Before Decide: items held as duplicates wait out the later stages.
     name: "dupes",
-    detect: (db, { run }) => (plannedItems(db, "dupes", { run }).length || plannedItems(db, "dupe-answer", { run }).length ? [{ step: "dupes", params: {} }] : []),
+    detect: (db, ctx) => {
+      const plans = plansOf(db, ctx);
+      return plannedItems(db, "dupes", { plans }).length || plannedItems(db, "dupe-answer", { plans }).length ? [{ step: "dupes", params: {} }] : [];
+    },
   },
   {
     // Each duplicate group is compared once its pairs are checked; the comparison asks the group decision.
     name: "dupes-compare",
-    detect: (db, { run }) => (plannedItems(db, "dupes-compare", { run }).length ? [{ step: "dupes-compare", params: {} }] : []),
+    detect: (db, ctx) => (plannedItems(db, "dupes-compare", { plans: plansOf(db, ctx) }).length ? [{ step: "dupes-compare", params: {} }] : []),
   },
   {
     name: "decide",
-    detect: (db, { jevRun: run }) => {
-      // Open scope decisions without a recommendation (asked before recommendations existed) also need a job; an answered-null one has recommended_by set.
-      return plannedItems(db, "decide", { run }).length ? [{ step: "decide", params: {} }] : [];
-    },
+    // Open scope decisions without a recommendation (asked before recommendations existed) also need a job; an answered-null one has recommended_by set.
+    detect: (db, ctx) => (plannedItems(db, "decide", { plans: plansOf(db, ctx) }).length ? [{ step: "decide", params: {} }] : []),
   },
   {
     // One repo per job, round robin; the repo's checks come before its review.
     name: "review",
     perRepo: true,
-    detect: (db, { run, tracked }) => {
+    detect: (db, ctx) => {
       const out: Candidate[] = [];
-      const top = firstByRepo(planned(db, "review", { run }));
-      for (const repo of fastFirst(db, roundRobin(tracked, getSetting(db, KEY_CURSOR)), (r) => top.get(r)?.facts.number)) {
+      const top = firstByRepo(planned(db, "review", { plans: plansOf(db, ctx) }));
+      for (const repo of fastFirst(db, roundRobin(ctx.tracked, getSetting(db, KEY_CURSOR)), (r) => top.get(r)?.facts.number)) {
         if (!top.has(repo)) continue;
         const checks = lastJobEnd(db, "checks", repo);
         const fresh = checks?.state === "done" && Date.now() - Date.parse(checks.endedAt) < CHECKS_FRESH_MS;
@@ -261,9 +281,9 @@ const LANE_CODE: Omit<Lane, "steps">[] = [
       }
       return out;
     },
-    topScore: (db, { run, tracked }) => {
-      const top = firstByRepo(planned(db, "review", { run }));
-      return bestScore(tracked.map((repo) => top.get(repo)?.facts.score));
+    topScore: (db, ctx) => {
+      const top = firstByRepo(planned(db, "review", { plans: plansOf(db, ctx) }));
+      return bestScore(ctx.tracked.map((repo) => top.get(repo)?.facts.score));
     },
     chosen: (db, c) => {
       if (c.step === "opus-review") setSetting(db, KEY_CURSOR, String(c.params.repo));
@@ -272,18 +292,18 @@ const LANE_CODE: Omit<Lane, "steps">[] = [
   {
     name: "labels",
     perRepo: true,
-    detect: (db, { run, tracked }) => {
-      if (!run) return [];
-      const repos = new Set(plannedItems(db, "label", { run }).filter((p) => p.facts.repoFacts.labelsApproved).map((p) => p.facts.repo));
-      return tracked.filter((repo) => repos.has(repo)).map((repo) => ({ step: "labels-apply", params: { repo } }));
+    detect: (db, ctx) => {
+      if (!ctx.run) return [];
+      const repos = new Set(allowed(plannedItems(db, "label", { plans: plansOf(db, ctx) })).map((p) => p.facts.repo));
+      return ctx.tracked.filter((repo) => repos.has(repo)).map((repo) => ({ step: "labels-apply", params: { repo } }));
     },
   },
   {
     // Needs no merge approval: asking writes only decisions.
     name: "merge-ask",
-    detect: (db, { run, tracked }) => {
-      const repos = new Set(tracked);
-      return planned(db, "ask-merge", { run }).some((p) => repos.has(p.facts.repo)) ? [{ step: "merge-ask", params: {} }] : [];
+    detect: (db, ctx) => {
+      const repos = new Set(ctx.tracked);
+      return allowed(planned(db, "ask-merge", { plans: plansOf(db, ctx) })).some((p) => repos.has(p.facts.repo)) ? [{ step: "merge-ask", params: {} }] : [];
     },
   },
   {
@@ -292,8 +312,11 @@ const LANE_CODE: Omit<Lane, "steps">[] = [
     perRepo: true,
     extra: tasksSig,
     detect: (db, ctx) => {
-      const queue = buildQueue(db, { run: ctx.run }).filter((e) => mergeApprovalOf(db, e.repo));
-      const due = new Set(planned(db, "merge", { run: ctx.run }).map((p) => p.facts.repo).filter((r) => mergeApprovalOf(db, r)));
+      const plans = plansOf(db, ctx);
+      // The merge queue: PRs with a queue state (merged ones too), in repos approved for merging.
+      const queue = plans.prs.filter((p) => p.facts.ghState !== "CLOSED" && isQueueState(p.plan.state) && p.facts.repoFacts.mergeApproved)
+        .map((p) => ({ repo: p.facts.repo, number: p.facts.number, state: p.plan.state, eligible: p.plan.eligible }));
+      const due = new Set(allowed(planned(db, "merge", { plans })).map((p) => p.facts.repo));
       const batches = new Set(batchesDue(db));
       const out: Candidate[] = [];
       // A merge job that advanced a batch runs again at once; one that only watched waits.
@@ -324,20 +347,23 @@ const LANE_CODE: Omit<Lane, "steps">[] = [
     // Comments and closes after operator answers, and Close? decisions for reviewed PRs.
     name: "act",
     perRepo: true,
-    detect: (db, { tracked, run }) => {
-      const repos = new Set(plannedItems(db, "act", { run }).filter((p) => p.facts.repoFacts.commentApproved).map((p) => p.facts.repo));
-      return tracked.filter((repo) => repos.has(repo)).map((repo) => ({ step: "act", params: { repo } }));
+    detect: (db, ctx) => {
+      const repos = new Set(allowed(plannedItems(db, "act", { plans: plansOf(db, ctx) })).map((p) => p.facts.repo));
+      return ctx.tracked.filter((repo) => repos.has(repo)).map((repo) => ({ step: "act", params: { repo } }));
     },
   },
   {
     name: "fixup",
     perRepo: true,
-    detect: (db, { run, tracked }) => {
-      const repos = tracked.filter((repo) => {
-        const sel = selectFixups(db, repo, run);
-        return (pushApprovalOf(db, repo) && (sel.fix.length > 0 || sel.conflictMerge.length > 0)) || sel.ask.length > 0 || sel.conflictAsk.length > 0;
+    detect: (db, ctx) => {
+      const plans = plansOf(db, ctx);
+      const sels = new Map(ctx.tracked.map((repo) => [repo, selectFixups(db, repo, ctx.run, plans)]));
+      const repos = ctx.tracked.filter((repo) => {
+        const sel = sels.get(repo)!;
+        const push = repoAllows(plans, repo, { kind: "fixup", bucket: "fix" }), ask = repoAllows(plans, repo, { kind: "fixup", bucket: "ask" });
+        return (push && (sel.fix.length > 0 || sel.conflictMerge.length > 0)) || (ask && (sel.ask.length > 0 || sel.conflictAsk.length > 0));
       });
-      return fastFirst(db, repos.sort(), (r) => { const sel = selectFixups(db, r, run); return (sel.fix[0] ?? sel.ask[0] ?? sel.conflictMerge[0] ?? sel.conflictAsk[0])?.number; }).map((repo) => ({ step: "fixup", params: { repo } }));
+      return fastFirst(db, repos.sort(), (r) => { const sel = sels.get(r)!; return (sel.fix[0] ?? sel.ask[0] ?? sel.conflictMerge[0] ?? sel.conflictAsk[0])?.number; }).map((repo) => ({ step: "fixup", params: { repo } }));
     },
   },
   {
@@ -345,10 +371,11 @@ const LANE_CODE: Omit<Lane, "steps">[] = [
     name: "verify",
     perRepo: true,
     extra: tasksSig,
-    detect: (db, { run, tracked }) => {
+    detect: (db, ctx) => {
       const out: Candidate[] = [];
-      const top = firstByRepo([...planned(db, "verify", { run, bucket: "plan" }), ...planned(db, "verify", { run, bucket: "unavailable" })]);
-      for (const repo of fastFirst(db, roundRobin(tracked, getSetting(db, KEY_VERIFY_CURSOR)), (r) => top.get(r)?.facts.number)) {
+      const plans = plansOf(db, ctx);
+      const top = firstByRepo([...planned(db, "verify", { plans, bucket: "plan" }), ...planned(db, "verify", { plans, bucket: "unavailable" })]);
+      for (const repo of fastFirst(db, roundRobin(ctx.tracked, getSetting(db, KEY_VERIFY_CURSOR)), (r) => top.get(r)?.facts.number)) {
         if (!top.has(repo)) continue;
         const checks = lastJobEnd(db, "checks", repo);
         const fresh = checks?.state === "done" && Date.now() - Date.parse(checks.endedAt) < CHECKS_FRESH_MS;
@@ -370,34 +397,34 @@ const LANE_CODE: Omit<Lane, "steps">[] = [
     name: "fixissue",
     perRepo: true,
     extra: tasksSig,
-    detect: (db, { tracked, run }) => {
-      const work = fixWork(db, tracked, run);
+    detect: (db, ctx) => {
+      const work = fixWork(db, ctx.tracked, plansOf(db, ctx));
       return fastFirst(db, [...work.keys()].sort(), (r) => work.get(r)!.top?.number).map((repo) => ({ step: "fixissue", params: { repo } }));
     },
-    topScore: (db, { tracked, run }) => bestScore([...fixWork(db, tracked, run).values()].map((w) => w.top?.score)),
+    topScore: (db, ctx) => bestScore([...fixWork(db, ctx.tracked, plansOf(db, ctx)).values()].map((w) => w.top?.score)),
   },
   {
     name: "fixissue-collect",
     extra: tasksSig,
     // Finished build tasks, or a passed fix to open in a repo approved for fixing while the day's pull request limit has room.
-    detect: (db, { run }) => {
-      const due = plannedItems(db, "fixissue-collect", { run });
-      const opens = due.some((p) => p.action.params?.source === "passed" && p.facts.repoFacts.fixIssueApproved) && openedToday(db, new Date()) < perDay(db);
+    detect: (db, ctx) => {
+      const due = plannedItems(db, "fixissue-collect", { plans: plansOf(db, ctx) });
+      const opens = allowed(due).some((p) => p.action.params?.source === "passed") && openedToday(db, new Date()) < perDay(db);
       return due.some((p) => p.action.params?.source === "testing") || opens ? [{ step: "fixissue-collect", params: {} }] : [];
     },
   },
   {
     // Label disagreements outside the scope labels, after Jev and Haiku have both answered.
     name: "referee",
-    detect: (db, { run }) => (run && plannedItems(db, "referee", { run }).length ? [{ step: "referee", params: {} }] : []),
+    detect: (db, ctx) => (ctx.run && plannedItems(db, "referee", { plans: plansOf(db, ctx) }).length ? [{ step: "referee", params: {} }] : []),
   },
   {
     // The final Opus reviews, posted as one PR review each in repos approved for comments.
     name: "review-post",
     perRepo: true,
-    detect: (db, { run, tracked }) => {
-      const due = new Set(planned(db, "post-review", { run }).map((p) => p.facts.repo));
-      return tracked.filter((repo) => commentApprovalOf(db, repo) && due.has(repo)).sort().map((repo) => ({ step: "review-post", params: { repo } }));
+    detect: (db, ctx) => {
+      const due = new Set(allowed(planned(db, "post-review", { plans: plansOf(db, ctx) })).map((p) => p.facts.repo));
+      return ctx.tracked.filter((repo) => due.has(repo)).sort().map((repo) => ({ step: "review-post", params: { repo } }));
     },
   },
   {
@@ -409,28 +436,27 @@ const LANE_CODE: Omit<Lane, "steps">[] = [
     // Runs GitHub holds for approval on reviewed outside PRs; the checks job records them, the step approves.
     name: "ci-approve",
     perRepo: true,
-    detect: (db, { tracked, run }) => tracked.filter((repo) => ciApprovalOf(db, repo) && needsWork(db, repo, run).length).sort().map((repo) => ({ step: "ci-approve", params: { repo } })),
+    detect: (db, ctx) => ctx.tracked.filter((repo) => repoAllows(plansOf(db, ctx), repo, { kind: "approve-ci" }) && needsWork(db, repo, ctx.run, plansOf(db, ctx)).length).sort().map((repo) => ({ step: "ci-approve", params: { repo } })),
   },
   {
     // Failing gate checks of wanted PRs: the log is read, a formatter run is queued or collected, or a patch is written and pushed.
     name: "cifix",
     perRepo: true,
     extra: tasksSig,
-    detect: (db, { run, tracked }) => tracked.filter((repo) => { const sel = selectCifix(db, repo, run); return sel.work.length > 0 || sel.collect.length > 0; }).sort().map((repo) => ({ step: "cifix", params: { repo } })),
+    detect: (db, ctx) => cifixRepos(db, ctx, ["work", "collect"]).map((repo) => ({ step: "cifix", params: { repo } })),
   },
   {
     name: "cifix-rerun",
     perRepo: true,
-    detect: (db, { run, tracked }) => tracked.filter((repo) => selectCifix(db, repo, run).rerun.length > 0).sort().map((repo) => ({ step: "cifix-rerun", params: { repo } })),
+    detect: (db, ctx) => cifixRepos(db, ctx, ["rerun"]).map((repo) => ({ step: "cifix-rerun", params: { repo } })),
   },
   {
     // The adversarial review of each PR head the merge rule would merge; the queue holds the PR until it is stored.
     name: "premerge",
     perRepo: true,
-    detect: (db, { tracked, wake, run }) => {
-      // One pass over every repo's Plans, with the planner's run.
-      const repos = new Set(tracked);
-      const due = new Set(premergeCandidates(db, { run, wake }).map((e) => e.repo));
+    detect: (db, ctx) => {
+      const repos = new Set(ctx.tracked);
+      const due = new Set(premergeCandidates(db, { plans: plansOf(db, ctx), ...(ctx.wake ? { wake: ctx.wake } : {}) }).map((e) => e.repo));
       return [...due].filter((repo) => repos.has(repo)).sort().map((repo) => ({ step: "premerge", params: { repo } }));
     },
   },
@@ -438,7 +464,7 @@ const LANE_CODE: Omit<Lane, "steps">[] = [
     // Opus reviews what each pipeline merge landed; reads only, so it needs no repo approval.
     name: "postmerge",
     perRepo: true,
-    detect: (db, { tracked, run }) => tracked.filter((repo) => selectPostmerge(db, repo, Date.now(), run).length).sort().map((repo) => ({ step: "postmerge", params: { repo } })),
+    detect: (db, ctx) => ctx.tracked.filter((repo) => selectPostmerge(db, repo, Date.now(), ctx.run, plansOf(db, ctx)).length).sort().map((repo) => ({ step: "postmerge", params: { repo } })),
   },
   {
     // The defects of those reviews become issues in repos approved for comments.
@@ -628,7 +654,11 @@ export type PlanOptions = { lanes?: Lane[]; nowMs?: number; log?: (line: string)
 /** A job the detection pass wants queued; `params` include the `limit` the gate set. */
 export type Proposal = { lane: string; step: string; params: Params; fp?: string; gate?: { step: string; params: Params } };
 /** `wakeAt`: when a wait the pass found ends (ms), null when none. `status`: why each stage without a proposal is not starting. */
-export type Detected = { proposals: Proposal[]; logs: string[]; wakeAt?: number | null; status?: Record<string, string> };
+export type Detected = {
+  proposals: Proposal[]; logs: string[]; wakeAt?: number | null; status?: Record<string, string>;
+  /** Milliseconds the pass spent: loading and deciding the Plans, the lanes, writing the Plan cache; and the cache rows written and deleted. */
+  timing?: { loadMs: number; lanesMs: number; cacheMs: number; written: number; deleted: number };
+};
 
 /** The most proposals one lane hands to apply, in case the first ones are refused at enqueue. */
 const PROPOSALS_PER_LANE = 3;
@@ -636,9 +666,13 @@ const PROPOSALS_PER_LANE = 3;
 const nextUtcMidnight = (ms: number): number => Date.parse(dayStart(ms)) + 86_400_000;
 
 /**
- * Detection: reads the database and returns, per lane, the candidates whose step is idle, not backing off,
- * not unchanged since a job that handled nothing, and has limit left. Writes nothing, so the runner can do
- * it on another connection while it keeps polling; applyProposals() queues the result.
+ * Detection: loads and decides the Plans of every PR and item once, then returns, per lane, the candidates whose
+ * step is idle, not backing off, not unchanged since a job that handled nothing, and has limit left. A lane is the
+ * items whose Plan holds its action, minus what the guard would refuse (gates()). The only write is the Plan cache
+ * (item_plans), so the runner can do it on another connection while it keeps polling; applyProposals() queues the result.
+ * The order of the checks on a lane: a step of the lane can start (gate), the lane's items, the guard's gates() per
+ * item or repo, the pipeline scope, then gate() per candidate: same-step job, pause and daily limit, failure backoff,
+ * unchanged input, minimum gap.
  */
 export async function detectAutopilot(db: DatabaseSync, opts: PlanOptions = {}): Promise<Detected> {
   const lanes = opts.lanes ?? LANES, ms = opts.nowMs ?? Date.now();
@@ -646,7 +680,9 @@ export async function detectAutopilot(db: DatabaseSync, opts: PlanOptions = {}):
   const log = (l: string) => { logs.push(l); opts.log?.(l); };
   const steps = await loadSteps();
   const proposals: Proposal[] = [];
+  const t0 = performance.now();
   const ctx = planCtx(db);
+  const loadMs = performance.now() - t0;
   const scope = scopeRepos(db);
   const seqs = readSeqs(db);
   const status: Record<string, string> = {};
@@ -730,11 +766,18 @@ export async function detectAutopilot(db: DatabaseSync, opts: PlanOptions = {}):
       log(`autopilot: ${lane.name}: ${(e as Error).message}`);
     }
   }
+  const lanesMs = performance.now() - t0 - loadMs;
+  // The Plan cache: the planner's output for the dashboard.
+  let cache = { written: 0, deleted: 0 };
+  const t1 = performance.now();
+  try { cache = writePlanCache(db, ctx.plans!); } catch (e) { log(`autopilot: plan cache: ${(e as Error).message}`); }
+  const cacheMs = performance.now() - t1;
+  if (loadMs + lanesMs + cacheMs > 2000) log(`autopilot: pass took ${Math.round(loadMs + lanesMs + cacheMs)} ms: plans ${Math.round(loadMs)}, lanes ${Math.round(lanesMs)}, cache ${Math.round(cacheMs)} (${cache.written} rows written, ${cache.deleted} deleted)`);
   // A stage with a candidate the checks above held back says why; the others had no candidate or start now.
   Object.assign(status, ctx.notes ?? {});
   for (const p of proposals) delete status[p.step];
   const wakes = (ctx.wake ?? []).filter((t) => t > ms);
-  return { proposals, logs, wakeAt: wakes.length ? Math.min(...wakes) : null, status };
+  return { proposals, logs, wakeAt: wakes.length ? Math.min(...wakes) : null, status, timing: { loadMs, lanesMs, cacheMs, ...cache } };
 }
 
 /** True when the last autopilot job of the step (and repo) handled nothing and saw the input `fp` still describes. An operator release since then ends it. */

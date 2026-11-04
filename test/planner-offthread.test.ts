@@ -106,7 +106,7 @@ describe("classification run resolved once", () => {
     const ctx = planCtx(c.db);
     assert.equal(ctx.run, "r1");
     for (const lane of LANES) lane.detect(c.db, ctx);
-    assert.equal(c.runLookups(), 3, "planCtx: current run and newest Jev run, then the lanes reuse them");
+    assert.equal(c.runLookups(), 2, "planCtx adds one lookup; the Plans and the lanes reuse the run");
     db.close();
   });
 });

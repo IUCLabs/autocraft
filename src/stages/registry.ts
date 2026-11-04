@@ -367,7 +367,7 @@ export const STAGES: StageDef[] = [
       { id: "declined", label: "Declined", waitsOn: "nothing", tone: "neutral", hint: "The operator answered hold or close", link: "queue" },
       { id: "merged", label: "Merged in the last 24 h", waitsOn: "nothing", tone: "merged", link: "queue" },
     ],
-    models: [{ model: "haiku", use: "Short summaries in the merge run" }, { model: "opus", use: "Pre-merge review of the head commit" }],
+    models: [{ model: "opus", use: "Pre-merge review of the head commit" }],
     promptIds: ["premerge.opus"], promptStage: "Merge",
     waits: [
       { name: "Pre-merge review", why: "A PR the rule would merge waits for an adversarial Opus review of its head commit (one model call per head); while the step cannot run (pipeline off, usage pause) it waits", howLong: "Until the call ends; a failed call is tried again after 1 hour, at most 3 tries, then a person decides", showsAs: "Queue state `waiting-premerge`", kind: "external" },

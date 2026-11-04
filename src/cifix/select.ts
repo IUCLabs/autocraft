@@ -1,11 +1,12 @@
 // The PRs the CI fix step works on: those whose Plan holds a `cifix` action.
 import type { DatabaseSync } from "node:sqlite";
 import { planned } from "../core/select.ts";
+import type { PlanSet } from "../core/plan-set.ts";
 import type { CifixCandidate, CifixSelection } from "./candidates.ts";
 
-export function selectCifix(db: DatabaseSync, repo: string, run?: string | null): CifixSelection {
+export function selectCifix(db: DatabaseSync, repo: string, run?: string | null, plans?: PlanSet): CifixSelection {
   const out: CifixSelection = { work: [], collect: [], rerun: [], capped: [] };
-  for (const { facts: f, action } of planned(db, "cifix", { repo, ...(run !== undefined ? { run } : {}) })) {
+  for (const { facts: f, action } of planned(db, "cifix", { repo, ...(run !== undefined ? { run } : {}), ...(plans ? { plans } : {}) })) {
     const x = f.cifix!, r = f.review!;
     const c: CifixCandidate = {
       repo, number: f.number, head: action.head!, verdict: r.verdict as "take" | "take-fix", reason: r.reason, attempt: x.tries + 1,

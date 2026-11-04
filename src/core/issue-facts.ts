@@ -35,14 +35,14 @@ export type ItemLoadOptions = {
 };
 
 type Row = {
-  repo: string; number: number; kind: "pr" | "issue"; title: string | null; is_draft: number | null; updated_at: string | null; labels: string | null;
+  repo: string; number: number; kind: "pr" | "issue"; state: string; title: string | null; is_draft: number | null; updated_at: string | null; labels: string | null;
   embed_hash: string | null; class_hash: string | null; class_scheme: string | null; score: number | null;
   in_pilot: number; not_integration: number; held_backlog: number; held_dup: number;
   pr_hash: string | null; e_hash: string | null; scan_hash: string | null; stage: string | null; impact: string | null;
   a_state: string | null; a_hash: string | null; a_head: string | null; a_base: string | null; h_state: string | null; b_state: string | null;
 };
 
-const SELECT = `SELECT i.repo, i.number, i.kind, i.title, i.is_draft, i.updated_at, i.labels, i.embed_hash, i.class_hash, i.class_scheme,
+const SELECT = `SELECT i.repo, i.number, i.kind, i.state, i.title, i.is_draft, i.updated_at, i.labels, i.embed_hash, i.class_hash, i.class_scheme,
     ${fastScoreSql("i.repo", "i.number", "r.score")} AS score,
     ${pilotSql("i")} AS in_pilot, ${notOwnIntegrationSql("i")} AS not_integration, ${backlogHeldSql("i")} AS held_backlog,
     (EXISTS (SELECT 1 FROM decisions dh WHERE dh.kind = 'duplicate' AND dh.id NOT LIKE '%:dupegroup:%' AND dh.repo = i.repo AND dh.number = i.number AND (dh.answer IS NULL OR dh.answer = 'close'))
@@ -57,7 +57,7 @@ const SELECT = `SELECT i.repo, i.number, i.kind, i.title, i.is_draft, i.updated_
   LEFT JOIN item_stage st ON st.repo = i.repo AND st.number = i.number
   LEFT JOIN fix_attempts fa ON fa.repo = i.repo AND fa.number = i.number
   LEFT JOIN build_tasks ht ON ht.id = fa.head_task_id LEFT JOIN build_tasks bt ON bt.id = fa.base_task_id
-  WHERE i.state = 'OPEN'`;
+  WHERE (i.state = 'OPEN' OR i.repo || '#' || i.number IN (SELECT value FROM json_each(:closing)))`;
 
 /** `asked_by` of the decisions a security scan asks (act/index.ts SECURITY_ASKER). */
 const SECURITY_ASKER = "security-scan";
@@ -75,11 +75,6 @@ type Cls = { classifier: string; at: string; type_label: string; flags: string |
 export function loadItemFacts(db: DatabaseSync, opts: ItemLoadOptions = {}): ItemFacts[] {
   const now = opts.now ?? Date.now();
   const model = opts.model ?? embedderId(modelName());
-  const params: Record<string, string> = { model };
-  let where = "";
-  if (opts.repo) { where += " AND i.repo = :repo"; params.repo = opts.repo; }
-  if (opts.refs) { where += " AND i.repo || '#' || i.number IN (SELECT value FROM json_each(:refs))"; params.refs = JSON.stringify([...opts.refs]); }
-  const rows = db.prepare(`${SELECT}${where} ORDER BY i.repo, i.number`).all(params) as Row[];
   const pipelineOn = (db.prepare("SELECT value FROM main.settings WHERE key = 'pipeline_enabled'").get() as { value: string } | undefined)?.value === "1";
 
   // Values read once for all items.
@@ -133,6 +128,13 @@ export function loadItemFacts(db: DatabaseSync, opts: ItemLoadOptions = {}): Ite
       (answeredClose.get(k) ?? answeredClose.set(k, []).get(k)!).push({ decisionId: a.id, kind: a.kind, security: securityIds.has(a.id), action: actionState.get(`${a.id}|${k}`) ?? null });
     }
   }
+  // A closed item stays in the facts while an answered close of it is not applied: the Act step records it as already closed.
+  const closing = [...answeredClose].filter(([, t]) => t.some((x) => x.action === null || x.action === "failed")).map(([ref]) => ref);
+  const params: Record<string, string> = { model, closing: JSON.stringify(closing) };
+  let where = "";
+  if (opts.repo) { where += " AND i.repo = :repo"; params.repo = opts.repo; }
+  if (opts.refs) { where += " AND i.repo || '#' || i.number IN (SELECT value FROM json_each(:refs))"; params.refs = JSON.stringify([...opts.refs]); }
+  const rows = db.prepare(`${SELECT}${where} ORDER BY i.repo, i.number`).all(params) as Row[];
   const closeReview = new Map<string, NonNullable<ItemFacts["closeReview"]>>();
   for (const r of db.prepare(`SELECT r.repo, r.number, r.head_oid, i.head_oid AS i_head, i.updated_at, c.head_oid AS c_head, c.fetched_at AS c_at,
       EXISTS (SELECT 1 FROM decisions d WHERE d.id = r.repo || '#' || r.number || ':close@' || r.head_oid) AS asked
@@ -191,7 +193,7 @@ export function loadItemFacts(db: DatabaseSync, opts: ItemLoadOptions = {}): Ite
     const embedHash = r.embed_hash ?? (() => { const b = textOf.get(r.repo, r.number) as { title: string | null; body: string | null }; return hashOfText(b.title, b.body); })();
     const note = labeled.get(ref) ?? null;
     return {
-      repo: r.repo, number: r.number, kind: r.kind, now, pipelineOn, draft: !!r.is_draft,
+      repo: r.repo, number: r.number, kind: r.kind, open: r.state === "OPEN", now, pipelineOn, draft: !!r.is_draft,
       inScope: !!r.in_pilot, integration: !r.not_integration,
       held: r.held_backlog ? "backlog" : r.held_dup ? "duplicate" : null,
       fast: (r.score ?? 0) >= FAST_FLOOR, score: r.score, repoFacts: { labelsApproved: labelsApproved(r.repo), commentApproved: repoOf(r.repo).comment, fixIssueApproved: repoOf(r.repo).fix },

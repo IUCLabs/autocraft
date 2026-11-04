@@ -63,7 +63,7 @@ export async function runDupes(db: DatabaseSync, params: DupesParams = {}, log: 
     log(`dupes: ${todo.length} items to scan, ${pairsToCheck(db, model, limit).length} pairs to check; dry run, nothing written`);
     return s;
   }
-  s.answersApplied = applyPlannedAnswers(db, at().toISOString(), undefined, model);
+  s.answersApplied = applyPlannedAnswers(db, at().toISOString());
   if (todo.length) {
     await d.index.ready(db);
     for (const it of todo) {

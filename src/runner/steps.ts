@@ -277,7 +277,7 @@ export const STEPS: StepDef[] = [
     stage: runStage("merge"),
     requires: "operator",
     group: "github-write",
-    models: ["haiku"],
+    models: [],
     params: [
       { name: "repo", label: "Repo", kind: "repo", required: true },
       { name: "limit", label: "At most", kind: "int", min: 1, max: 50, default: 10, help: "pull requests to start or merge in this job" },

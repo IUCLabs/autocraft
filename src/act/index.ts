@@ -209,7 +209,7 @@ export async function runAct(db: DatabaseSync, params: ActParams, log: (line: st
   const w: Writer = { db, login: ACTOR };
   const summary: ActSummary = { repo, dryRun, asked: [], done: [], skipped: [], failed: [], note: null };
   // Answers that need no GitHub write are applied whether or not commenting is approved.
-  if (!dryRun) applyPlannedAnswers(db, at(), repo);
+  if (!dryRun) applyPlannedAnswers(db, at());
   if (!commentApprovalOf(db, repo)) {
     summary.note = `commenting in ${repo} is not approved`;
     log(`act ${repo}: ${summary.note}; nothing done`);
