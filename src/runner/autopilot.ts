@@ -41,6 +41,8 @@ import { mainFixDue } from "../mainfix/index.ts";
 import { latestRun } from "../classify/settled.ts";
 import { enqueue, JobError, now, requestCancel, RUNNER_STOPPED } from "./jobs.ts";
 import { claudePauseReason } from "../agents/accounts.ts";
+import { tripReasonOfStep } from "../push-outcomes.ts";
+import { STEP_STAGE } from "../core/push-outcome.ts";
 import { knownStep, loadSteps, modelsOf, usesClaude, type Params, type StepDef } from "./steps.ts";
 import { pilotItems, scopeRepos } from "../pilot.ts";
 import { fastFirst, fastScoreOf } from "../fasttrack.ts";
@@ -591,6 +593,8 @@ const hhmm = (ms: number): string => `${new Date(ms).toISOString().slice(11, 16)
 /** Why the stage cannot start jobs now, or null. The one place a stage's pause is decided. A step's models are taken at their defaults. */
 export function pauseReason(db: DatabaseSync, step: string, ms: number = Date.now(), o: { backoff?: boolean } = {}): string | null {
   const l = limitRow(db, step), used = usageToday(db, step, ms);
+  const tripped = tripReasonOfStep(db, step);
+  if (tripped) return tripped;
   if (l.per_day === 0) return "paused: the daily limit is 0";
   if (l.per_day !== null && used >= l.per_day) return `daily limit of ${l.per_day} items reached; resumes at 00:00 UTC`;
   const b = o.backoff === false ? null : failureBackoff(db, step, ms);
@@ -668,7 +672,7 @@ export async function stageLimits(db: DatabaseSync): Promise<StageLimit[]> {
   const why = stageStatus(db);
   return LIMIT_STEPS.map((step) => {
     const l = limitRow(db, step);
-    return { step, title: steps.get(step)?.title ?? step, perDay: l.per_day, usedToday: usageToday(db, step), pausedReason: pauseReason(db, step), status: stepStatus(db, step, why[step]) };
+    return { step, title: steps.get(step)?.title ?? step, perDay: l.per_day, usedToday: usageToday(db, step), pausedReason: pauseReason(db, step), tripped: tripReasonOfStep(db, step) !== null ? STEP_STAGE[step] : undefined, status: stepStatus(db, step, why[step]) };
   });
 }
 

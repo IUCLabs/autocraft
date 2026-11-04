@@ -2,6 +2,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import type { Querier } from "../mirror.ts";
 import { pilotSql } from "../pilot.ts";
+import { resolvePushes } from "../push-outcomes.ts";
 import { overallAt, recordRuns, type Suite } from "../merge/ci-approval.ts";
 
 export const ORG = "storytold";
@@ -99,6 +100,7 @@ export function saveChecks(db: DatabaseSync, rows: PrChecks[], at = new Date().t
   for (const r of rows)
     ins.run(r.repo, r.number, r.head_oid, r.state, r.is_draft ? 1 : 0, r.overall, JSON.stringify(r.checks), r.mergeable, r.maintainer_can_modify ? 1 : 0, at);
   for (const r of rows) recordRuns(db, r, at);
+  resolvePushes(db, rows, at);
 }
 
 /** Fetches and stores the checks of the given PRs (all open PRs of the repo when none are given). */

@@ -86,6 +86,10 @@ export type PrFacts = {
   now: number;
   /** The global pipeline switch. decide() ignores it; gates() applies it to the pipeline's own writes. */
   pipelineOn: boolean;
+  /** Stages that stopped themselves (circuit breaker), by stage name (fixup, cifix, fixissue, merge): the reason. gates() refuses their writes. */
+  tripped?: Partial<Record<string, string>>;
+  /** A push of ours made the required checks at this head go red: CI fix works on it ahead of other work, even before a review of this head. */
+  brokeByUs?: boolean;
   /** GitHub state as mirrored. */
   ghState: "OPEN" | "MERGED" | "CLOSED";
   /** The PR's current head commit (checks fetched after the mirror's last update win over the mirror). */
@@ -243,6 +247,8 @@ export type ItemFacts = {
   score: number | null;
   /** The global pipeline switch. decideItem ignores it; gates() applies it to the pipeline's own writes. */
   pipelineOn: boolean;
+  /** As on PrFacts. */
+  tripped?: Partial<Record<string, string>>;
   /** The repo's approvals for the writes below. decideItem does not apply them: gates() does. */
   repoFacts: { labelsApproved: boolean; commentApproved: boolean; fixIssueApproved: boolean };
 

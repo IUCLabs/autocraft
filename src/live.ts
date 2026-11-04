@@ -60,7 +60,7 @@ export const TOPIC_TABLES: Record<string, Source[]> = {
   fasttrack: [{ table: "fast_track" }],
   // The planner's Plan cache; its own output, so the planner does not plan again for it.
   plans: [{ table: "item_plans" }],
-  jobs: [{ table: "jobs" }, { table: "stage_limits" }],
+  jobs: [{ table: "jobs" }, { table: "stage_limits" }, { table: "stage_trips" }],
   usage: [{ table: "token_usage" }, { table: "account_usage_samples" }],
   accounts: [{ table: "claude_accounts" }, { table: "claude_account_status" }],
   agents: [{ table: "agent_runs" }, { table: "agent_run_items" }, { table: "agent_run_texts" }],
@@ -85,7 +85,7 @@ export const TOPIC_TABLES: Record<string, Source[]> = {
     { table: "dupe_group_items" }, { table: "item_rank" }, { table: "classifications", ops: ["INSERT", "DELETE"] },
     { table: "classifications", ops: ["UPDATE"], when: ["classifier", "run_id", "at", "type_label", "want", "reference", "flags", "dup_of", "reason", "probs", "input_hash"].map((c) => `old.${c} IS NOT new.${c}`).join(" OR ") },
     { table: "opus_reviews" }, { table: "verifications" },
-    { table: "fix_attempts" }, { table: "postmerge_followups" }, { table: "premerge_reviews" }, { table: "pr_checks" }, { table: "fast_track" }, { table: "merge_holds" }, { table: "merges" }, { table: "merge_batches" },
+    { table: "fix_attempts" }, { table: "postmerge_followups" }, { table: "premerge_reviews" }, { table: "pr_checks" }, { table: "push_outcomes" }, { table: "stage_trips" }, { table: "fast_track" }, { table: "merge_holds" }, { table: "merges" }, { table: "merge_batches" },
     { table: "merge_batch_prs" }, { table: "tracked_repos" },
     { table: "settings", when: "new_key IN ('pilot_items', 'classify_run', 'pipeline_login')" },
   ],

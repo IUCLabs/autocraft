@@ -7,6 +7,7 @@ import type { Querier } from "../mirror.ts";
 import { contextState, ORG, type CheckState } from "../review/checks.ts";
 import { trackedNames } from "../repos.ts";
 import { optionalChecks } from "../optional-checks.ts";
+import { mainRedAfterMerge } from "../push-outcomes.ts";
 import { autocraftText } from "../mainfix/status.ts";
 import { classify, derive, type Culprit, type HeadRow, type MainCheck, type MainCiState } from "./classify.ts";
 
@@ -95,6 +96,8 @@ export async function pollMainCi(db: DatabaseSync, client: Querier, only?: strin
       heads++;
     }
   }
+  // A red head whose culprit is a PR we merged stops the merge path.
+  for (const r of mainCiRepos(db)) if (r.state === "red" && r.culprit?.pr) mainRedAfterMerge(db, r.repo, r.culprit.pr, r.culprit.sha);
   if (!only) db.prepare("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value").run(KEY_POLLED_AT, new Date().toISOString());
   log(`main-ci: ${heads} heads of ${repos.length} repos`);
   return { repos: repos.length, heads };

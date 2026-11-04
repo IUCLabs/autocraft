@@ -236,6 +236,11 @@ const rows: Row[] = [
   { name: "cifix: a take-fix PR with its fix-up done is fixed", facts: { ...CI_FAIL, ...TAKE_FIX, fixup: fixup({ recorded: ["pushed"] }), cifix: cifix() }, expect: { actions: ["cifix:work"] } },
   { name: "cifix: not when CI passes", facts: { cifix: cifix() }, expect: { state: "ready", actions: ["merge"] } },
 
+  // ---- our push broke the checks: the head is the pushed one, reviewed only at the head before
+  { name: "broke: the CI fix works on the pushed head without a review of it", facts: { head: "pushed1", ci: "unknown", brokeByUs: true, cifix: cifix() }, expect: { actions: ["cifix:work", "review"] } },
+  { name: "broke: a formatter result is collected the same way", facts: { head: "pushed1", ci: "unknown", brokeByUs: true, cifix: cifix({ states: ["formatting"], formattingTask: 7, formatterEnded: true, tries: 1 }) }, expect: { actions: ["cifix:collect", "review"] } },
+  { name: "broke: without it, a pushed head waits for its review", facts: { head: "pushed1", ci: "unknown", cifix: cifix() }, expect: { actions: ["review"] } },
+
   // ---- post-merge review
   { name: "postmerge: merged by the pipeline, no review stored", facts: { ghState: "MERGED", postmerge: merged() }, expect: { state: "merged", actions: ["postmerge"] } },
   { name: "postmerge: merged before the cut-off", facts: { ghState: "MERGED", postmerge: merged({ since: "2026-11-04T10:00:00.000Z" }) }, expect: { state: "merged", actions: [] } },
@@ -246,6 +251,11 @@ const rows: Row[] = [
   { name: "postmerge: outside the queue", facts: { ghState: "CLOSED", review: null, postmerge: merged() }, expect: { state: "closed", actions: ["postmerge"] } },
   { name: "postmerge: nothing for a closed PR the pipeline did not merge", facts: { ghState: "CLOSED", review: null }, expect: { state: "closed", actions: [] } },
 ];
+
+test("broke: the CI fix comes first among the PR's actions", () => {
+  const p = decidePr(prFacts({ head: "pushed1", ci: "unknown", brokeByUs: true, cifix: cifix() }));
+  assert.equal(p.actions[0]?.kind, "cifix");
+});
 
 for (const row of rows) {
   test(row.name, () => {

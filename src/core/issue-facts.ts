@@ -1,5 +1,6 @@
 // Facts of open items (issues and PRs) for the triage steps: classification, priority, embedding, duplicates, scope decision, labels.
 // Loaded in one pass for a whole database or a slice. Reads only: the old selectors fill missing text hashes in the database on the way; here a missing hash is computed.
+import { activeTrips } from "../push-outcomes.ts";
 import type { DatabaseSync } from "node:sqlite";
 import { notOwnIntegrationSql, groupHeldSql, backlogHeldSql } from "../dupes/held.ts";
 import { FAST_FLOOR, fastScoreSql } from "../fasttrack.ts";
@@ -193,7 +194,7 @@ export function loadItemFacts(db: DatabaseSync, opts: ItemLoadOptions = {}): Ite
     const embedHash = r.embed_hash ?? (() => { const b = textOf.get(r.repo, r.number) as { title: string | null; body: string | null }; return hashOfText(b.title, b.body); })();
     const note = labeled.get(ref) ?? null;
     return {
-      repo: r.repo, number: r.number, kind: r.kind, open: r.state === "OPEN", now, pipelineOn, draft: !!r.is_draft,
+      repo: r.repo, number: r.number, kind: r.kind, open: r.state === "OPEN", now, pipelineOn, tripped: activeTrips(db), draft: !!r.is_draft,
       inScope: !!r.in_pilot, integration: !r.not_integration,
       held: r.held_backlog ? "backlog" : r.held_dup ? "duplicate" : null,
       fast: (r.score ?? 0) >= FAST_FLOOR, score: r.score, repoFacts: { labelsApproved: labelsApproved(r.repo), commentApproved: repoOf(r.repo).comment, fixIssueApproved: repoOf(r.repo).fix },

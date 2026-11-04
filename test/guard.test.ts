@@ -88,6 +88,15 @@ test("gates: each action kind needs its approval", () => {
   assert.equal(gates(off("pushApproved"), { kind: "merge" }, OP), null);
 });
 
+test("gates: a tripped stage writes nothing, asks and other stages stay open", () => {
+  const f = prFacts({ tripped: { fixup: "2 of the last 10 fixup pushes broke a required check" } });
+  for (const w of [{ kind: "fixup", bucket: "fix" }, { kind: "conflict", bucket: "merge" }, { kind: "lint", bucket: "fixup" }] as const) assert.match(gates(f, w, OP) ?? "", /fixup is paused: 2 of the last 10/);
+  assert.match(gates(f, { kind: "fixup", bucket: "fix" }, "pipeline") ?? "", /paused/);
+  assert.equal(gates(f, { kind: "fixup", bucket: "ask" }, OP), null);
+  assert.equal(gates(f, { kind: "cifix", bucket: "work" }, OP), null);
+  assert.match(gates(prFacts({ tripped: { merge: "main is red" } }), { kind: "merge" }, OP) ?? "", /merge is paused/);
+});
+
 test("the merge command gets the reviewed head, and the built-in command refuses another head", async () => {
   const g = await guard(fresh([{ n: 1 }]), ref, MERGE, OP, live());
   assert.ok(ok(g));

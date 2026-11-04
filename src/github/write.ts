@@ -7,6 +7,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import { ORG } from "../act/templates.ts";
 import { connect } from "../db.ts";
+import { recordPush } from "../push-outcomes.ts";
 import type { Grant, Guarded, GuardedItem, GuardedRepo } from "../core/guard.ts";
 
 /** The PR steps that push to a contributor's branch or ask on the PR where it is closed to us (`lint`: the collect step of a stored patch). */
@@ -273,20 +274,26 @@ export function ghRerunMainFailed(w: Writer, g: GuardedRepo, exec: Exec, o: { re
 export function pushBranch(w: Writer, git: Pick<Git, "git">, action: string, g: Guarded<AskKind>, o: { remote: string; branch: string; sha: string }, details: Details = {}): Promise<ExecResult> {
   const b = g.action.bucket;
   if ((g.action.kind === "fixup" && b === "ask") || (g.action.kind === "cifix" && b === "rerun")) throw new Error(`a ${g.action.kind}:${b} grant does not allow a push`);
-  return pushed(w, git, action, refOf(g.repo, g.number), o, `--force-with-lease=refs/heads/${o.branch}:${g.head}`, details);
+  return pushed(w, git, action, refOf(g.repo, g.number), o, `--force-with-lease=refs/heads/${o.branch}:${g.head}`, details, { repo: g.repo, number: g.number });
 }
 
 /** Pushes `sha` to `branch` of the pipeline's own fork, replacing the branch. */
 export function pushOwnBranch(w: Writer, g: Grant, git: Pick<Git, "git">, action: string, o: { repo: string; number?: number; remote: string; branch: string; sha: string }, details: Details = {}): Promise<ExecResult> {
   covers(g, o.repo);
-  return pushed(w, git, action, o.number === undefined ? `${o.repo}:${o.branch}` : refOf(o.repo, o.number), o, "--force", details);
+  // A new branch has no PR yet: its outcome is matched to the PR by commit once the PR's checks arrive.
+  return pushed(w, git, action, o.number === undefined ? `${o.repo}:${o.branch}` : refOf(o.repo, o.number), o, "--force", details, { repo: o.repo, number: null });
 }
 
-function pushed(w: Writer, git: Pick<Git, "git">, action: string, target: string, o: { remote: string; branch: string; sha: string }, lease: string, details: Details): Promise<ExecResult> {
-  return recorded(w, action, target, { ...details, branch: o.branch, remote: o.remote, commit: o.sha },
+async function pushed(w: Writer, git: Pick<Git, "git">, action: string, target: string, o: { remote: string; branch: string; sha: string }, lease: string, details: Details, pr: { repo: string; number: number | null }): Promise<ExecResult> {
+  const r = await recorded(w, action, target, { ...details, branch: o.branch, remote: o.remote, commit: o.sha },
     () => git.git(["push", "--quiet", lease, `https://github.com/${o.remote}.git`, `${o.sha}:refs/heads/${o.branch}`]),
     undefined,
     (r) => (r.code === 0 ? null : oneLine(r.stderr) || `exit code ${r.code}`));
+  if (r.code === 0) {
+    // The push stands even when its bookkeeping cannot be written; the outcome stays unknown then.
+    try { recordPush(w.db, action, { ...pr, from: typeof details.from === "string" ? details.from : null, to: o.sha }); } catch (e) { console.error(`push outcome not recorded: ${oneLine(String((e as Error).message ?? e))}`); }
+  }
+  return r;
 }
 
 // ---- merges ---------------------------------------------------------------------

@@ -415,6 +415,7 @@ export function apiRoutes(opts: ApiOptions = {}): Route[] {
     { method: "PUT", pattern: "/api/pipeline/state", operator: true, handler: ok(pipeline.putState) },
     { method: "PUT", pattern: "/api/pipeline/limits/:step", operator: true, handler: ok(pipeline.putLimit) },
     { method: "POST", pattern: "/api/pipeline/limits/:step/reset", operator: true, handler: ok(pipeline.resetLimit) },
+    { method: "POST", pattern: "/api/pipeline/trips/:stage/resume", operator: true, handler: ok(pipeline.resumeTrip) },
     { method: "PUT", pattern: "/api/pipeline/pilot", operator: true, handler: ok(adm.putPilot) },
     get("/api/prompts", prompts),
     get("/api/accounts", agents.accounts),

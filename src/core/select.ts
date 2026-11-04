@@ -41,6 +41,6 @@ export function planned(db: DatabaseSync, kind: ActionKind, opts: PlannedOptions
       if (action.kind === kind && (bucket === undefined || action.params?.bucket === bucket)) out.push({ facts, plan, action });
     }
   }
-  return out.sort((a, b) => (a.facts.score === null ? 1 : 0) - (b.facts.score === null ? 1 : 0) || (b.facts.score ?? 0) - (a.facts.score ?? 0)
+  return out.sort((a, b) => (b.facts.brokeByUs ? 1 : 0) - (a.facts.brokeByUs ? 1 : 0) || (a.facts.score === null ? 1 : 0) - (b.facts.score === null ? 1 : 0) || (b.facts.score ?? 0) - (a.facts.score ?? 0)
     || (a.facts.repo < b.facts.repo ? -1 : a.facts.repo > b.facts.repo ? 1 : 0) || a.facts.number - b.facts.number);
 }

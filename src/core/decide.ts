@@ -155,8 +155,10 @@ export type CifixBucket = "work" | "unapproved" | "cannot-push" | "formatting" |
 /** Where the CI fix step stands for a PR whose CI fails at the reviewed head, or null when it is no candidate. */
 export function cifixBucket(f: PrFacts): CifixBucket | null {
   const r = f.review, c = f.cifix;
-  if (declinedBy(f) || !r || !c || (r.verdict !== "take" && r.verdict !== "take-fix") || r.head !== f.head || f.ghState !== "OPEN" || f.ci !== "failure" || f.draft || !notHeld(f)) return null;
-  if (f.mergeable === "CONFLICTING" || r.stale || f.changesRequested || f.mergeHeld) return null;
+  // Our own push that turned the checks red is repaired against the pushed head, whose review is still the one of the head before.
+  const broke = !!f.brokeByUs;
+  if (declinedBy(f) || !r || !c || (r.verdict !== "take" && r.verdict !== "take-fix") || (r.head !== f.head && !broke) || f.ghState !== "OPEN" || (f.ci !== "failure" && !broke) || f.draft || !notHeld(f)) return null;
+  if (f.mergeable === "CONFLICTING" || (r.stale && !broke) || f.changesRequested || f.mergeHeld) return null;
   if (r.verdict === "take-fix") {
     const fx = fixupOf(f);
     if (fx && ["fix", "unapproved", "ask"].includes(fx.bucket)) return null;
@@ -271,7 +273,11 @@ export function decidePr(f: PrFacts): Plan {
   }
 
   const cf = cifixOf(f);
-  if (cf && cf !== "other") actions.push(act("cifix", f.head, { bucket: cf }));
+  if (cf && cf !== "other") {
+    // Repairing our own breakage comes before every other action of the PR.
+    if (f.brokeByUs && (cf === "work" || cf === "collect")) actions.unshift(act("cifix", f.head, { bucket: cf }));
+    else actions.push(act("cifix", f.head, { bucket: cf }));
+  }
 
   // Stored model patches whose lint task ended: the collect step folds the format changes and pushes, or sends the findings back to the model.
   for (const l of f.lint) {
