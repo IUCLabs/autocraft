@@ -20,6 +20,7 @@ import { BASE_ORG, longLivedOf, pushable } from "./pushable.ts";
 import { conflictAskText, conflictCommentText, mergeMessage } from "./template.ts";
 
 const CHECK = CLAUDE_PROMPTS["fixup.check"];
+const CONFLICT = CLAUDE_PROMPTS["fixup.conflict"];
 /** Caps on what the resolver is shown (all sections with 30 lines of context, and one section's two sides). The check's own limit is applied separately, to what it receives. */
 const SECTIONS_CAP = 120_000;
 const SECTION_CAP = 40_000;
@@ -88,7 +89,7 @@ export async function askConflict(db: DatabaseSync, x: ConflictRun, c: ConflictC
     if (!pr) return;
     if (pr.mergeable !== "CONFLICTING") { x.log(`  ${ref}: skipped: GitHub no longer reports a conflict`); return; }
     if (!BASE_NAME.test(c.base)) { x.log(`  ${ref}: skipped: unusable base branch name`); return; }
-    const cm = await ghComment(x.gw, x.d.exec, "conflict-comment", { repo: x.repo, number: c.number, pr: true }, conflictAskText(c.base), { run: x.runId, head: c.head });
+    const cm = await ghComment(x.gw, x.d.exec, "conflict-comment", { repo: x.repo, number: c.number, pr: true }, { by: "fixed" }, conflictAskText(c.base), { run: x.runId, head: c.head });
     if (cm.code !== 0) { x.log(`  ${ref}: comment failed: ${oneLine(cm.stderr)}`); return; }
     record(db, x.at(), c, "asked", null, [], null);
     x.summary.asked.push(ref);
@@ -214,7 +215,7 @@ export async function mergeConflict(db: DatabaseSync, x: ConflictRun, c: Conflic
     record(db, x.at(), c, "merged", null, files, baseSha, commit);
     x.summary.pushed.push(ref);
     x.log(`  ${ref}: merged ${c.base} into the branch: ${short(commit)} on ${short(head)}${files.length ? `, resolved ${files.join(", ")}` : ""}`);
-    const cm = await ghComment(x.gw, x.d.exec, "conflict-comment", { repo: x.repo, number: c.number, pr: true }, conflictCommentText(c.base), { run: x.runId });
+    const cm = await ghComment(x.gw, x.d.exec, "conflict-comment", { repo: x.repo, number: c.number, pr: true }, files.length ? { by: "model", kind: "comment", model: CONFLICT.models[0] } : { by: "fixed" }, conflictCommentText(c.base), { run: x.runId });
     if (cm.code !== 0) x.log(`  ${ref}: comment failed: ${oneLine(cm.stderr)}`);
   } catch (e) {
     fail("failed", oneLine(String((e as Error).message ?? e)));

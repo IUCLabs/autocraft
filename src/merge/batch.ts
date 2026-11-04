@@ -95,7 +95,7 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
   const branch = branchOf(db, repo);
   const closePr = async (b: BatchRow, why: string) => {
     if (b.pr_number === null) return;
-    const r = await ghClosePr(w, d.exec, { repo, number: b.pr_number }, why, { run: runId, batch: b.branch });
+    const r = await ghClosePr(w, d.exec, { repo, number: b.pr_number }, { by: "fixed" }, why, { run: runId, batch: b.branch });
     if (r.code !== 0) log(`  ${b.branch}: could not close the batch PR: ${oneLine(r.stderr)}`);
   };
 
@@ -254,13 +254,13 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
     const found = await d.exec("gh", ["pr", "list", "--repo", `${ORG}/${repo}`, "--state", "open", "--head", b.branch, "--json", "url,headRepositoryOwner", "--jq", `.[] | select(.headRepositoryOwner.login == "${owner}") | .url`]);
     const existing = found.code === 0 ? found.stdout.trim().split("\n")[0] ?? "" : "";
     const pr = PR_URL.test(existing) ? { code: 0, stdout: existing, stderr: "" }
-      : await ghOpenPr(w, d.exec, "batch-pr", { repo, target: `${repo}:${b.branch}`, base: branch, head: `${owner}:${b.branch}`, title: `Integration batch ${b.branch}`, body }, { run: runId });
+      : await ghOpenPr(w, d.exec, "batch-pr", { repo, target: `${repo}:${b.branch}`, base: branch, head: `${owner}:${b.branch}`, title: `Integration batch ${b.branch}`, body }, { by: "fixed" }, { run: runId });
     const url = pr.stdout.trim().split("\n").pop() ?? "";
     const m = url.match(PR_URL);
     if (pr.code !== 0 || !m) return publishFailed(b, `batch PR not opened: ${oneLine(pr.stderr || pr.stdout)}`);
     if (getBatch(db, b.id).state !== "checking") {
       // Ended while the PR was being opened: close it again and leave the row as it is.
-      const closed = await ghClosePr(w, d.exec, { repo, number: Number(m[1]) }, "Closing: the batch was ended by an operator.", { run: runId, batch: b.branch });
+      const closed = await ghClosePr(w, d.exec, { repo, number: Number(m[1]) }, { by: "fixed-operator" }, "Closing: the batch was ended by an operator.", { run: runId, batch: b.branch });
       if (closed.code !== 0) {
         // Keep the PR on the row so a later control or run can close it.
         updateBatch(db, b.id, at(), { pr_number: Number(m[1]), pr_url: url });

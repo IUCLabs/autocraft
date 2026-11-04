@@ -275,7 +275,7 @@ describe("act on close as duplicate", () => {
     assert.deepEqual(log, []);
     setCommentApproval(db, "op", "app", true);
     await go(db, deps(log));
-    assert.deepEqual(log, ["comment I3: Duplicate of #1.", "close I3"]);
+    assert.deepEqual(log, ["comment I3: _Automated reply_\n\nDuplicate of #1.", "close I3"]);
     await go(db, deps(log));
     assert.equal(log.length, 2);                  // done once
   });
@@ -287,7 +287,7 @@ describe("act on close as duplicate", () => {
     setCommentApproval(db, "op", "app", true);
     const log: string[] = [];
     await go(db, deps(log, true));
-    assert.equal(log[0], "comment I2: Duplicate of #1, which is closed.");
+    assert.equal(log[0], "comment I2: _Automated reply_\n\nDuplicate of #1, which is closed.");
     assert.equal(duplicateComment({ repo: "app", original: "app#1", closed: true }), "Duplicate of #1, which is closed.");
     assert.equal(duplicateComment({ repo: "app", original: "lib#7", closed: false }), "Duplicate of storytold/lib#7.");
   });

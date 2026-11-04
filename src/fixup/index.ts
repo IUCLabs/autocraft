@@ -17,7 +17,8 @@ import { askClaude } from "../classify/run.ts";
 import { REPO_PATH } from "../sandbox/command.ts";
 import { checkoutForPr } from "../sandbox/index.ts";
 import { audit } from "../dash/audit.ts";
-import { ghComment, ghEditComment, pushBranch, type Writer } from "../github/write.ts";
+import { withNote } from "../github/note.ts";
+import { ghComment, ghEditComment, pushBranch, type Note, type Writer } from "../github/write.ts";
 import { claimItem, releaseItem, type Assignable } from "../github/claim.ts";
 import { connect } from "../db.ts";
 import { Client, type Querier } from "../mirror.ts";
@@ -238,7 +239,7 @@ export async function runFixup(db: DatabaseSync, params: FixupParams, log: (line
         return;
       }
       const body = c.carry ? c.carry.suggestion! : askText(c.fixes);
-      const cm = await ghComment(gw, d.exec, "fixup-comment", { repo, number: c.number, pr: true }, body, { run: runId, head: c.head });
+      const cm = await ghComment(gw, d.exec, "fixup-comment", { repo, number: c.number, pr: true }, c.carry ? (c.model ? { by: "operator", model: c.model } : { by: "fixed-operator" }) : { by: "model", kind: "comment", model: c.model }, body, { run: runId, head: c.head });
       if (cm.code !== 0) { log(`  ${ref}: comment failed: ${oneLine(cm.stderr)}`); return; }
       rec.fixup(c, "asked", null, [...new Set(c.fixes.map((f) => f.file))]);
       if (count) params.onHandled?.(++handled.n);
@@ -392,7 +393,7 @@ export async function runFixup(db: DatabaseSync, params: FixupParams, log: (line
       log(`  ${ref}: pushed ${short(commit)} on ${short(head)}: ${v.files.join(", ")}`);
 
       const body = c.carry ? carryCommentText(c.carry.sources.map((x) => x.number), v.files) : commentText(v.files);
-      const cm = await ghComment(gw, d.exec, "fixup-comment", { repo, number: c.number, pr: true }, body, { run: runId });
+      const cm = await ghComment(gw, d.exec, "fixup-comment", { repo, number: c.number, pr: true }, c.carry ? { by: "operator", model: PROMPT.models[0] } : { by: "model", kind: "comment", model: PROMPT.models[0] }, body, { run: runId });
       if (cm.code !== 0) log(`  ${ref}: comment failed: ${oneLine(cm.stderr)}`);
     } catch (e) {
       fail("failed", oneLine(String((e as Error).message ?? e)));
@@ -450,14 +451,16 @@ export async function repostAsk(db: DatabaseSync, repo: string, number: number, 
   const url = ds.find((r) => r.action === "fixup-comment" && r.d.url)?.d.url;
   const id = /#issuecomment-(\d+)$/.exec(url ?? "")?.[1];
   if (!last || !id) throw new Error(`no recorded ask comment for ${repo}#${number}`);
-  const review = db.prepare("SELECT fixes FROM final_reviews WHERE repo = ? AND number = ? AND head_oid = ? AND verdict = 'take-fix'").get(repo, number, state.from_head) as { fixes: string | null } | undefined;
+  const review = db.prepare("SELECT fixes, model FROM final_reviews WHERE repo = ? AND number = ? AND head_oid = ? AND verdict = 'take-fix'").get(repo, number, state.from_head) as { fixes: string | null; model: string | null } | undefined;
   const fixes = parseFixes(review?.fixes ?? null);
   if (!fixes.length) throw new Error(`no fix list for ${repo}#${number} at ${state.from_head.slice(0, 7)}`);
   const old = last.d.text ?? "";
+  const note: Note = { by: "model", kind: "comment", model: review?.model };
   const text = askText(fixes);
-  if (text === old) return { status: "unchanged", old, text };
+  // The recorded text is the text as posted, note line included.
+  if (withNote(note, text) === old) return { status: "unchanged", old, text };
   if (!apply) return { status: "dry-run", old, text };
-  const r = await ghEditComment({ db, login: ACTOR }, run, "fixup-comment-edit", { repo, number, commentId: id }, text, { head: state.from_head });
+  const r = await ghEditComment({ db, login: ACTOR }, run, "fixup-comment-edit", { repo, number, commentId: id }, note, text, { head: state.from_head });
   return { status: r.code === 0 ? "edited" : "failed", old, text };
 }
 

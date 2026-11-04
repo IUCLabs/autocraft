@@ -7,7 +7,7 @@
 // Without --apply it is a dry run: it reads the local tables only and lists what would be posted.
 import type { DatabaseSync } from "node:sqlite";
 import { commentApprovalOf } from "../act/approval.ts";
-import { editReview, postReview, type Writer } from "../github/write.ts";
+import { type Note, editReview, postReview, type Writer } from "../github/write.ts";
 import { backlogHeldSql, groupHeldSql, notOwnIntegrationSql } from "../dupes/held.ts";
 import { Client, type Querier } from "../mirror.ts";
 import { prInfo } from "../merge/index.ts";
@@ -21,9 +21,12 @@ import { pushApprovalOf } from "../fixup/approval.ts";
 import { longLivedOf, pushable } from "../fixup/pushable.ts";
 
 const ACTOR = "review-post";
+const REVIEW_NOTE = (c: { model: string | null }): Note => ({ by: "model", kind: "review", model: c.model });
 
 export type PostCandidate = {
   repo: string; number: number; head_oid: string; body: string;
+  /** The model of the Opus review the body describes (named in the note line). */
+  model: string | null;
   /** The id of our earlier review of this PR (at another head), to edit; null for a first post. */
   editId: string | null;
   /** The `at` of the Opus review the body describes. */
@@ -72,9 +75,9 @@ export function postCandidates(db: DatabaseSync, repo: string): PostCandidate[] 
     if (!head || head !== r.o_head || (r.p_head === head && r.o_at <= (r.p_opus_at ?? r.p_at ?? ""))) continue;
     const q = r.verdict === "take" ? buildQueue(db, { repo, refs: [`${repo}#${r.number}`], merged: "exclude" })[0] : undefined;
     out.push({
-      repo, number: r.number, head_oid: head, editId: r.p_id, opusAt: r.o_at,
+      repo, number: r.number, head_oid: head, editId: r.p_id, opusAt: r.o_at, model: r.model,
       body: reviewBody({
-        model: r.model, verdict: r.verdict, sure: r.sure !== 0, summary: pub.summary, points: pub.points, head,
+        verdict: r.verdict, sure: r.sure !== 0, summary: pub.summary, points: pub.points, head,
         recommendation: recommendation({ verdict: r.verdict, queue: q ? { path: q.path, state: q.state } : null, mergeApproved, canPush: pushApproved && pushable(r.head_repo, repo, r.can_modify === 1, r.head_ref, longLived) }),
       }),
     });
@@ -114,11 +117,11 @@ export async function runReviewPost(db: DatabaseSync, params: PostParams, log: (
       if (live.head !== c.head_oid) { skip(`head moved to ${live.head.slice(0, 7)}`); continue; }
       const at = d.now().toISOString();
       if (c.editId) {
-        await editReview(w, d.querier, repo, c.number, c.editId, c.head_oid, c.body);
+        await editReview(w, d.querier, repo, c.number, c.editId, c.head_oid, REVIEW_NOTE(c), c.body);
         db.prepare("UPDATE review_posts SET head_oid = ?, edited_at = ?, opus_at = ? WHERE repo = ? AND number = ?").run(c.head_oid, at, c.opusAt, repo, c.number);
         s.edited.push(refOf(c));
       } else {
-        const id = await postReview(w, d.querier, { repo, number: c.number, id: live.id }, c.head_oid, c.body);
+        const id = await postReview(w, d.querier, { repo, number: c.number, id: live.id }, c.head_oid, REVIEW_NOTE(c), c.body);
         if (!id) throw new Error("GitHub returned no review");
         db.prepare("INSERT OR REPLACE INTO review_posts (repo, number, review_id, head_oid, posted_at, opus_at) VALUES (?, ?, ?, ?, ?, ?)").run(repo, c.number, id, c.head_oid, at, c.opusAt);
         s.posted.push(refOf(c));

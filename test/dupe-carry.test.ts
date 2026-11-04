@@ -118,7 +118,7 @@ describe("carry-over", () => {
     assert.equal(w.asked[0].carried_from[0].ref, "app#8");
     assert.deepEqual(w.asked[0].carried_from[0].points, [POINT]);
     assert.match(w.asked[0].carried_from[0].diff, /^diff --git a\/src\/lib\.rs/);
-    assert.deepEqual(w.log.filter((l) => l !== "assign" || true), ["model", "check", "push", `comment: ${carryCommentText([8], ["src/lib.rs"])}`]);
+    assert.deepEqual(w.log.filter((l) => l !== "assign" || true), ["model", "check", "push", `comment: _AI-generated reply (Sonnet)_\n\n${carryCommentText([8], ["src/lib.rs"])}`]);
     assert.equal(db.prepare("SELECT COUNT(*) AS n FROM patch_checks WHERE kind = 'fixup' AND number = 7").get()!.n, 1);
     // The patch check sees where the ported code comes from.
     assert.equal(w.checked[0].carried_from[0].ref, "app#8");
@@ -146,7 +146,7 @@ describe("carry-over", () => {
     storeSuggestion(db, carryAskText([{ number: 8, points: [POINT] }]));
     const s = await runFixup(db, { repo: "app", dryRun: false }, () => {}, w.deps);
     assert.deepEqual(s.asked, ["app#7"]);
-    assert.deepEqual(w.log, [`comment: ${carryAskText([{ number: 8, points: [POINT] }])}`]);
+    assert.deepEqual(w.log, [`comment: _Automated reply_\n\n${carryAskText([{ number: 8, points: [POINT] }])}`]);
     assert.equal(carry(db).state, "done");
     await runFixup(db, { repo: "app", dryRun: false }, () => {}, w.deps);
     assert.equal(w.log.length, 1);
@@ -157,7 +157,7 @@ describe("carry-over", () => {
     const db = fresh(w.head, { canModify: true, comment: true });
     storeSuggestion(db, carryAskText([{ number: 8, points: [POINT] }]));
     await runFixup(db, { repo: "app", dryRun: false }, () => {}, w.deps);
-    assert.deepEqual(w.log, [`comment: ${carryAskText([{ number: 8, points: [POINT] }])}`]);
+    assert.deepEqual(w.log, [`comment: _Automated reply_\n\n${carryAskText([{ number: 8, points: [POINT] }])}`]);
   });
 
   test("the stored suggestion text is posted as it is", async () => {
@@ -165,7 +165,7 @@ describe("carry-over", () => {
     const db = fresh(w.head, { canModify: false, comment: true });
     storeSuggestion(db, "stored suggestion text");
     await runFixup(db, { repo: "app", dryRun: false }, () => {}, w.deps);
-    assert.deepEqual(w.log, ["comment: stored suggestion text"]);
+    assert.deepEqual(w.log, ["comment: _Automated reply_\n\nstored suggestion text"]);
   });
 
   test("a kept PR outside the pilot is not worked on", () => {

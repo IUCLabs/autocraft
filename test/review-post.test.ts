@@ -74,17 +74,17 @@ describe("model label", () => {
 });
 
 describe("review body", () => {
-  const base = { model: "claude-opus-5-5", verdict: "take-fix", sure: true, summary: "Handles errors badly.", points: ["`src/a.rs:12`: return the error."], head: "0123456789abcdef", recommendation: "Recommendation: merge after the fixes above." };
+  const base = { verdict: "take-fix", sure: true, summary: "Handles errors badly.", points: ["`src/a.rs:12`: return the error."], head: "0123456789abcdef", recommendation: "Recommendation: merge after the fixes above." };
 
-  test("starts with the disclaimer naming the model, lists the findings and ends with the short head", () => {
+  test("starts with the verdict, lists the findings and ends with the short head", () => {
     const b = reviewBody(base);
-    assert.equal(b, "_AI-generated review (Opus 5.5). Not a maintainer decision._\n\nSmall fixes needed:\n\nHandles errors badly.\n\n- `src/a.rs:12`: return the error.\n\nRecommendation: merge after the fixes above.\n\nReviewed at 0123456.");
+    assert.equal(b, "Small fixes needed:\n\nHandles errors badly.\n\n- `src/a.rs:12`: return the error.\n\nRecommendation: merge after the fixes above.\n\nReviewed at 0123456.");
   });
 
   test("verdict wording", () => {
     for (const [v, line] of [["take", "No blocking problems found."], ["hold", "Changes needed:"], ["close", "Significant problems found:"]] as const)
-      assert.match(reviewBody({ ...base, verdict: v, points: [] }), new RegExp(`\\n\\n${line}\\n`));
-    assert.match(reviewBody({ ...base, verdict: "hold", sure: false }), /\n\nChanges needed \(not certain\):\n/);
+      assert.match(reviewBody({ ...base, verdict: v, points: [] }), new RegExp(`^${line}\\n`));
+    assert.match(reviewBody({ ...base, verdict: "hold", sure: false }), /^Changes needed \(not certain\):\n/);
   });
 
   test("mentions and HTML tags are removed, emails stay, and the body stays under the cap", () => {
@@ -228,7 +228,8 @@ describe("review-post", () => {
     assert.deepEqual(s.edited, ["app#1"]);
     assert.deepEqual(d.calls.map((c) => c.kind), ["add", "edit"]);
     assert.equal(d.calls[1]!.vars.id, "R_PR_1");
-    assert.match(String(d.calls[1]!.vars.body), /Changes needed:[\s\S]*Reviewed at 1111111\./);
+    assert.match(String(d.calls[1]!.vars.body), /^_AI-generated review \(Opus 5\.5\)\. Not a maintainer decision\._\n\nChanges needed:[\s\S]*Reviewed at 1111111\./);
+    assert.match(String(d.calls[0]!.vars.body).split("\n\n")[0]!, /^_AI-generated review/);
     assert.deepEqual((db.prepare("SELECT review_id, head_oid FROM review_posts").all() as object[]).map((r) => ({ ...r })), [{ review_id: "R_PR_1", head_oid: h2 }]);
     assert.equal((db.prepare("SELECT COUNT(*) AS n FROM audit WHERE action = 'review-edit'").get() as { n: number }).n, 1);
   });

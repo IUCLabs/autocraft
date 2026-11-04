@@ -262,7 +262,7 @@ async function claimIssue(x: Ctx, c: IssueCandidate): Promise<void> {
     // Only when the issue is ours: nobody assigned, or only us.
     const assigned = info.assignees.length === 0 || info.assignees.every((a) => a === me.login);
     if (assigned && commentApprovalOf(db, c.repo) && !db.prepare("SELECT 1 FROM audit WHERE action = 'fixissue-claim' AND target = ?").get(ref)) {
-      const cm = await ghComment(w, d.exec, "fixissue-claim", { repo: c.repo, number: c.number, pr: false }, claimCommentText(), { run: x.runId });
+      const cm = await ghComment(w, d.exec, "fixissue-claim", { repo: c.repo, number: c.number, pr: false }, { by: "fixed" }, claimCommentText(), { run: x.runId });
       if (cm.code !== 0) log(`  ${ref}: claim comment failed: ${oneLine(cm.stderr)}`);
     }
   } catch (e) {
@@ -552,7 +552,7 @@ export async function comment(x: Ctx, r: AttemptRow, url: string): Promise<void>
   if (db.prepare("SELECT 1 FROM audit WHERE action = 'fixissue-comment' AND target = ?").get(ref)) return;
   if (await closedLive(x, r)) { log(`  ${ref}: not commenting, the issue is closed`); return; }
   const text = commentText(url);
-  const cm = await ghComment({ db, login: ACTOR }, d.exec, "fixissue-comment", { repo: r.repo, number: r.number, pr: false }, text, { run: x.runId });
+  const cm = await ghComment({ db, login: ACTOR }, d.exec, "fixissue-comment", { repo: r.repo, number: r.number, pr: false }, { by: "model", kind: "comment", model: PATCH.models[0] }, text, { run: x.runId });
   if (cm.code !== 0) log(`  ${ref}: comment failed: ${oneLine(cm.stderr)}`);
 }
 
@@ -614,7 +614,7 @@ export async function openPr(x: Ctx, r: AttemptRow): Promise<boolean> {
     if (push.code !== 0) { log(`  ${ref}: push failed: ${oneLine(push.stderr)}`); tried(); return false; }
     if (await closedLive(x, r)) { fail(db, d, r, "the issue is closed"); return false; }
     const body = prBody(r.number, files, testPath);
-    const pr = await ghOpenPr({ db, login: ACTOR }, d.exec, "fixissue-pr", { repo: r.repo, target: ref, base: branchOf(db, r.repo), head: `${fork.split("/")[0]}:${branch}`, title: prTitle(title), body }, { run: x.runId, branch });
+    const pr = await ghOpenPr({ db, login: ACTOR }, d.exec, "fixissue-pr", { repo: r.repo, target: ref, base: branchOf(db, r.repo), head: `${fork.split("/")[0]}:${branch}`, title: prTitle(title), body }, { by: "model", kind: "pull request", model: PATCH.models[0] }, { run: x.runId, branch });
     const url = pr.stdout.trim().split("\n").pop() ?? "";
     if (pr.code !== 0 || !urlOk(url, r.repo)) { log(`  ${ref}: PR not opened: ${oneLine(pr.stderr || pr.stdout)}`); tried(); return false; }
     update(db, d, r, { state: "pr-opened", pr_url: url });

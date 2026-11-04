@@ -358,8 +358,8 @@ describe("fix step", () => {
 
     const pr = w.log.find((l) => l.startsWith("pr "))!;
     assert.ok(pr.includes("--repo storytold/app") && pr.includes(`--head ${LOGIN}:${branch}`) && pr.includes("--title Fix panic when the slice is empty"));
-    assert.ok(pr.endsWith(":: " + prBody(5, [LIB], TEST)));
-    assert.deepEqual(w.log.filter((l) => l.startsWith("comment")), ["comment A PR for this is in progress: https://github.com/storytold/app/pull/12."]);
+    assert.ok(pr.endsWith(`:: _AI-generated pull request (Sonnet). Not a maintainer decision._\n\n${prBody(5, [LIB], TEST)}`));
+    assert.deepEqual(w.log.filter((l) => l.startsWith("comment")), ["comment _AI-generated comment (Sonnet). Not a maintainer decision._\n\nA PR for this is in progress: https://github.com/storytold/app/pull/12."]);
     assert.equal(w.log.filter((l) => l.startsWith("push")).length, 1);
 
     await runFixIssueCollect(w.db, {}, quiet, w.deps);
@@ -581,7 +581,7 @@ describe("fix step assignment", () => {
     const g = withQuerier(w, []);
     await runFixIssue(w.db, { repo: "app", dryRun: false }, quiet, w.deps);
     assert.deepEqual(g.calls, ["assign"]);
-    assert.deepEqual(w.log.filter((l) => l.startsWith("comment")), [`comment ${CLAIM_COMMENT_TEMPLATE}`]);
+    assert.deepEqual(w.log.filter((l) => l.startsWith("comment")), [`comment _Automated message. Not a maintainer decision._\n\n${CLAIM_COMMENT_TEMPLATE}`]);
     assert.equal(CLAIM_COMMENT_TEMPLATE, "A PR for this is in progress.");
     await runFixIssue(w.db, { repo: "app", dryRun: false }, quiet, w.deps);
     assert.equal(w.log.filter((l) => l.startsWith("comment")).length, 1);

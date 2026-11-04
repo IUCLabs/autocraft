@@ -6,10 +6,11 @@ import { readLive } from "../act/index.ts";
 import { duplicateComment } from "../act/templates.ts";
 import { audit } from "../dash/audit.ts";
 import { optionsOf, BACKLOG, getDecision, reposOf } from "../decisions.ts";
-import { addLabels, closeItem, commentOn, type Writer } from "../github/write.ts";
+import { addLabels, closeItem, commentOn, type Note, type Writer } from "../github/write.ts";
 import { approvalOf as labelsApprovalOf } from "../labels/approval.ts";
 import { repoLabels } from "../labels/github.ts";
 import { Client, type Querier } from "../mirror.ts";
+import { CLAUDE_PROMPTS } from "../prompts/index.ts";
 import { closeRefusal, decisionStamp, otherTypeLabel, type CardParams } from "./cards.ts";
 import { ConversationError, insertTurn, systemBlock, type StoreDeps } from "./store.ts";
 import { COMMENT_MAX } from "./types.ts";
@@ -30,6 +31,9 @@ function need(db: DatabaseSync, id: number): CardRow {
   if (!c) throw new ConversationError(404, `no card ${id}`);
   return c;
 }
+
+/** Cards come from the conversation prompt, which always runs on its first listed model. */
+const CARD_NOTE: Note = { by: "operator", model: CLAUDE_PROMPTS["conversation.turn"].models[0] };
 
 const oneLine = (s: string): string => s.replace(/\s+/g, " ").trim().slice(0, 300);
 const ref = (repo: string, n: number) => `${repo}#${n}`;
@@ -101,7 +105,7 @@ async function run(db: DatabaseSync, c: CardRow, p: CardParams, by: string, q: Q
     case "comment": {
       if (!commentApprovalOf(db, c.repo)) throw new Error(`commenting in ${c.repo} is not approved`);
       const live = await liveOpen(q, c.repo, c.number);
-      const url = await commentOn(w, q, "act-comment", { repo: c.repo, number: c.number, id: live.id }, c.text ?? p.text, source);
+      const url = await commentOn(w, q, "act-comment", { repo: c.repo, number: c.number, id: live.id }, CARD_NOTE, c.text ?? p.text, source);
       return { result: "Comment posted", url: url || null };
     }
     case "label": {
@@ -124,7 +128,7 @@ async function run(db: DatabaseSync, c: CardRow, p: CardParams, by: string, q: Q
       const live = await liveOpen(q, c.repo, c.number);
       const orig = await readLive(q, c.repo, p.of);
       if (!orig) throw new Error(`GitHub returned no ${ref(c.repo, p.of)}`);
-      const url = await commentOn(w, q, "act-comment", { repo: c.repo, number: c.number, id: live.id }, duplicateComment({ repo: c.repo, original: ref(c.repo, p.of), closed: orig.state !== "OPEN" }), source);
+      const url = await commentOn(w, q, "act-comment", { repo: c.repo, number: c.number, id: live.id }, CARD_NOTE, duplicateComment({ repo: c.repo, original: ref(c.repo, p.of), closed: orig.state !== "OPEN" }), source);
       // Recorded like Act's close: saved after the comment so the failed close shows what was posted.
       const action = (state: string, reason: string | null) => db.prepare(`INSERT INTO main.actions (decision_id, repo, number, kind, state, comment_url, reason, created_at) VALUES (?, ?, ?, 'comment-close', ?, ?, ?, ?)
         ON CONFLICT (decision_id, repo, number, kind) DO UPDATE SET state = excluded.state, reason = excluded.reason, created_at = excluded.created_at`).run(`conversation-card:${c.id}`, c.repo, c.number, state, url || null, reason, at);

@@ -1,11 +1,11 @@
 // The issue the postmerge-file step opens for a defect. Fixed layout; the variable parts are the PR number, the finding's
-// own text (untrusted model output, cleaned) and the model name. No Node imports: the Prompts page lists the template.
-import { cleanLine, modelLabel } from "../review/post-template.ts";
+// own text (untrusted model output, cleaned) and the model name (shown in the note line). No Node imports: the Prompts page lists the template.
+import { cleanLine } from "../review/post-template.ts";
 
 export const ISSUE_TITLE_MAX = 120;
 export const ISSUE_BODY_MAX = 6000;
 
-export const ISSUE_TEMPLATE = "_AI-generated review ({model}). Not a maintainer decision._\n\nFollow-up to #{number}.\n\n{body}\n\nLocation: `{file}:{line}` (only when the finding names a file)";
+export const ISSUE_TEMPLATE = "_AI-generated issue ({model}). Not a maintainer decision._\n\nFollow-up to #{number}.\n\n{body}\n\nLocation: `{file}:{line}` (only when the finding names a file)";
 
 /**
  * Closed fenced blocks (fences at the start of a line) and inline code spans; the capturing group makes split() keep them at
@@ -47,8 +47,8 @@ export function refusal(texts: string[], login: string): string | null {
   return null;
 }
 
-export function issueBody(o: { number: number; model: string | null; body: string; file: string | null; line: number | null }): string {
+export function issueBody(o: { number: number; body: string; file: string | null; line: number | null }): string {
   const where = o.file ? `\n\nLocation: \`${o.file.replace(/`/g, "")}${o.line ? `:${o.line}` : ""}\`` : "";
   const text = `${cleanBody(o.body)}${where}`.slice(0, ISSUE_BODY_MAX);
-  return `_AI-generated review (${modelLabel(o.model)}). Not a maintainer decision._\n\nFollow-up to #${o.number}.\n\n${text}\n`;
+  return `Follow-up to #${o.number}.\n\n${text}\n`;
 }

@@ -87,7 +87,8 @@ function fakes(log: string[], f: Gh = {}): ActDeps {
   return { querier, now: () => new Date(T1) };
 }
 const run = (db: DatabaseSync, d: ActDeps, limit?: number) => runAct(db, { repo: "app", dryRun: false, limit }, quiet, d);
-const writes = (log: string[]) => log.filter((l) => !l.startsWith("read"));
+/** The posted writes with the note line left out (github-note.test.ts checks the note). */
+const writes = (log: string[]) => log.filter((l) => !l.startsWith("read")).map((l) => l.replace(/^(comment \w+: )_[^\n]*_\n\n/, "$1"));
 const CLOSE_12 = dupeGroupCloseComment({ kept: 11, carry: ["master-page handling in src/a.rs"] });
 const CLOSE_13 = dupeGroupCloseComment({ kept: 11, carry: [] });
 

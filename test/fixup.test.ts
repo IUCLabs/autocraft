@@ -232,7 +232,7 @@ describe("fixup step", () => {
     assert.equal(git(w.fork, "log", "-1", "--format=%an <%ae>%n%B", pushed).split("\n")[0], "pipeline-bot <42+pipeline-bot@users.noreply.github.com>");
     assert.match(git(w.fork, "log", "-1", "--format=%B", pushed), /^Apply review fixes\n\n- src\/lib\.rs/);
     assert.deepEqual(w.log.filter((l) => !l.startsWith("pr-info")), [
-      "assign", "model", "check", `push --force-with-lease=refs/heads/fix:${w.head} ${pushed}:refs/heads/fix`, `comment: ${commentText(["src/lib.rs"])}`,
+      "assign", "model", "check", `push --force-with-lease=refs/heads/fix:${w.head} ${pushed}:refs/heads/fix`, `comment: _AI-generated comment (Sonnet). Not a maintainer decision._\n\n${commentText(["src/lib.rs"])}`,
     ]);
     assert.equal(commentText(["src/lib.rs"]), "Pushed the small fixes from review: `src/lib.rs`.");
     assert.ok(COMMENT_TEMPLATE.includes("{{files}}"));
@@ -348,9 +348,9 @@ describe("fixup step", () => {
     const posted = w.log.filter((l) => l.startsWith("comment: "));
     assert.equal(posted.length, 1);
     const body = posted[0]!.slice("comment: ".length);
-    assert.ok(body.startsWith("Before this can be merged, it needs these changes:\n- `src/lib.rs`: rename a to b, see the guide and ping someone."));
+    assert.ok(body.startsWith("_AI-generated comment (m). Not a maintainer decision._\n\nBefore this can be merged, it needs these changes:\n- `src/lib.rs`: rename a to b, see the guide and ping someone."));
     assert.ok(!/@|https?:|\]\(/.test(body));
-    const lines = body.split("\n");
+    const lines = body.split("\n\n")[1]!.split("\n");
     assert.equal(lines.length, 7);
     assert.ok(lines.slice(1).every((l) => l.length <= ASK_ITEM_MAX));
     assert.ok(!w.log.includes("model") && !w.log.some((l) => l.startsWith("push")));
@@ -496,7 +496,7 @@ describe("fixup repost", () => {
     assert.equal((await repostAsk(db, "app", 7, true, run)).status, "edited");
     assert.equal(edits.length, 1);
     assert.ok(edits[0]!.includes("repos/storytold/app/issues/comments/555"));
-    assert.equal(edits[0]!.at(-1), askText([{ file: "src/lib.rs", change: long }]));
+    assert.equal(edits[0]!.at(-1), `_AI-generated comment (m). Not a maintainer decision._\n\n${askText([{ file: "src/lib.rs", change: long }])}`);
     assert.ok(edits[0]!.at(-1)!.includes(long));
     const a = rows(db, "SELECT login, target, json_extract(details, '$.state') AS state FROM audit WHERE action = 'fixup-comment-edit'");
     assert.deepEqual(a, [{ login: "fixup", target: "app#7", state: "done" }]);

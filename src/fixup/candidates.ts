@@ -18,7 +18,8 @@ export type Fix = { file: string; change: string };
 /** Parts of PRs closed as duplicates that a duplicate group's kept PR should take over (src/act/dupe-groups.ts queues them). */
 export type Carry = { decisionId: string; /** The suggestion comment stored with the answer, posted as it is when the branch can't be pushed to. */ suggestion: string | null; sources: { number: number; head: string | null; points: string[] }[] };
 /** `carry` set: the candidate is a carry-over job; its fixes are worked out from the source PRs' diffs when it runs. */
-export type FixCandidate = { repo: string; number: number; head: string; reason: string; fixes: Fix[]; attempt: number; carry?: Carry };
+/** `model` wrote the text the ask comment carries: the Opus review's fix list, or the stored suggestion of a carry-over. */
+export type FixCandidate = { repo: string; number: number; head: string; reason: string; fixes: Fix[]; attempt: number; model: string | null; carry?: Carry };
 export type FixSelection = {
   /** Take-fix PRs we may push to, in a repo with push approval. */
   fix: FixCandidate[];
@@ -87,15 +88,15 @@ export function classifyFixups(db: DatabaseSync, repo: string): Classified[] {
     if (!head) continue;
     // The review row must be the one at the current head; reviews of older heads don't count.
     // The Opus verdict and its fix list.
-    const review = db.prepare("SELECT reason, fixes FROM final_reviews WHERE repo = ? AND number = ? AND head_oid = ? AND verdict = 'take-fix'").get(r.repo, r.number, head) as
-      { reason: string; fixes: string | null } | undefined;
+    const review = db.prepare("SELECT reason, fixes, model FROM final_reviews WHERE repo = ? AND number = ? AND head_oid = ? AND verdict = 'take-fix'").get(r.repo, r.number, head) as
+      { reason: string; fixes: string | null; model: string | null } | undefined;
     if (!review) continue;
     // Opus is about to read newer discussion; its fix list may be out of date.
     if (stale.has(`${r.repo}#${r.number}@${head}`)) continue;
     if (r.mergeable === "CONFLICTING") continue;
     const fixes = parseFixes(review.fixes);
     if (!fixes.length) continue;
-    const c: FixCandidate = { repo: r.repo, number: r.number, head, reason: review.reason, fixes, attempt: attemptsOf(db, r.repo, r.number) + 1 };
+    const c: FixCandidate = { repo: r.repo, number: r.number, head, reason: review.reason, fixes, attempt: attemptsOf(db, r.repo, r.number) + 1, model: review.model };
     const recorded = done.all(r.repo, r.number, head) as { state: string }[];
     const has = (state: string) => recorded.some((x) => x.state === state);
     // Heads held before the repo got comment approval are asked once it has it.
@@ -138,7 +139,7 @@ export function carryCandidates(db: DatabaseSync, repo: string): { fix: FixCandi
       }).filter((x) => x.points.length);
     if (!sources.length) continue;
     const suggestion = (db.prepare("SELECT t.text FROM dupe_group_texts t JOIN dupe_groups g ON g.decision_id = t.decision_id AND g.applied_answer = t.option WHERE t.decision_id = ? AND t.number = ? AND t.step = 'suggestion'").get(r.decision_id, r.number) as { text: string } | undefined)?.text ?? null;
-    const c: FixCandidate = { repo, number: r.number, head, reason: `Parts of ${sources.map((x) => `#${x.number}`).join(", ")}, closed as duplicates, to carry over.`, fixes: [], attempt: r.attempts + 1, carry: { decisionId: r.decision_id, suggestion, sources } };
+    const c: FixCandidate = { repo, number: r.number, head, reason: `Parts of ${sources.map((x) => `#${x.number}`).join(", ")}, closed as duplicates, to carry over.`, fixes: [], attempt: r.attempts + 1, model: (db.prepare("SELECT summary_by FROM decisions WHERE id = ?").get(r.decision_id) as { summary_by: string | null } | undefined)?.summary_by ?? null, carry: { decisionId: r.decision_id, suggestion, sources } };
     if (pushable(r.head_repo, repo, r.can_modify, r.head_ref, longLived) && approved && c.attempt <= MAX_ATTEMPTS) out.fix.push(c);
     else if (commenting) out.ask.push(c);
   }

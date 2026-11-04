@@ -91,7 +91,7 @@ describe("act", () => {
     const log: string[] = [];
     const s = await run(db, fakes(log));
     assert.deepEqual(s.done, ["app#1"]);
-    assert.deepEqual(log, ["read 1", `comment I1: ${scopeCloseComment("Not part of the reference app.")}`, "close I1"]);
+    assert.deepEqual(log, ["read 1", `comment I1: _Automated reply_\n\n${scopeCloseComment("Not part of the reference app.")}`, "close I1"]);
     const a = rows(db, "actions");
     assert.equal(a.length, 1);
     assert.equal(a[0]!.state, "done");
@@ -151,7 +151,7 @@ describe("act", () => {
     const log2: string[] = [];
     const s = await run(db, fakes(log2));
     assert.deepEqual(s.done, ["app#2"]);
-    assert.match(log2.join("\n"), /comment .*Closing this pull request\./);
+    assert.match(log2.join("\n"), /comment .*\n\nClosing this pull request\./);
     assert.ok(log2.some((l) => l.startsWith("close")));
   });
 
@@ -193,7 +193,7 @@ describe("act", () => {
     const log: string[] = [];
     const s = await run(db, fakes(log));
     assert.deepEqual(s.done, ["app#2"]);
-    assert.deepEqual(log.filter((l) => !l.startsWith("read")), [`comment P2: ${prCloseComment({ repo: "app", reason: "Points downloads at a personal fork.", duplicateOf: null })}`, "close P2"]);
+    assert.deepEqual(log.filter((l) => !l.startsWith("read")), [`comment P2: _AI-generated reply (Opus 5.5)_\n\n${prCloseComment({ repo: "app", reason: "Points downloads at a personal fork.", duplicateOf: null })}`, "close P2"]);
   });
 });
 

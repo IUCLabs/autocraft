@@ -1,11 +1,13 @@
 // The Markdown review the review-post step posts on a pull request. Fixed layout:
-// the variable parts are the model name, the verdict wording, the review's own text
+// the variable parts are the verdict wording, the review's own text
 // (cleaned: it is untrusted model output) and the short head commit. No Node imports:
 // the Prompts page lists the template through src/act/templates.ts.
 
 export const REVIEW_BODY_MAX = 6000;
 const ITEM_MAX = 600;
 const MAX_POINTS = 8;
+/** Room kept for the note line the posting wrapper adds. */
+const NOTE_RESERVE = 100;
 
 /** "claude-opus-5-5" -> "Opus 5.5", "claude-opus-4-1-20250805" -> "Opus 4.1", "opus" -> "Opus". Other ids are returned as they are. */
 export function modelLabel(id: string | null | undefined): string {
@@ -70,7 +72,6 @@ export function recommendation(r: RecommendInput): string {
 }
 
 export type ReviewPostInput = {
-  model: string | null;
   verdict: string;
   sure: boolean;
   /** The Opus `public` field: the only review text that is posted. */
@@ -82,7 +83,7 @@ export type ReviewPostInput = {
 };
 
 export function reviewBody(r: ReviewPostInput): string {
-  const head = `_AI-generated review (${modelLabel(r.model)}). Not a maintainer decision._\n\n${verdictLine(r.verdict, r.sure)}`;
+  const head = verdictLine(r.verdict, r.sure);
   const foot = `Reviewed at ${/^[0-9a-f]+$/i.test(r.head) ? r.head.slice(0, 7) : r.head}.`;
   const summary = cleanLine(r.summary);
   const items: string[] = [];
@@ -91,7 +92,7 @@ export function reviewBody(r: ReviewPostInput): string {
     if (line) items.push(`- ${line}`);
   }
   const rec = r.recommendation;
-  const fixed = head.length + rec.length + foot.length + summary.length + 8;
+  const fixed = NOTE_RESERVE + head.length + rec.length + foot.length + summary.length + 8;
   const kept: string[] = [];
   let used = fixed;
   for (const line of items) {

@@ -304,7 +304,7 @@ describe("code failure", () => {
     assert.notEqual(pushed, w.head);
     assert.equal(git(w.fork, "show", `${pushed}:src/lib.rs`), "fn b() {}\nfn main() { b(); }");
     assert.match(git(w.fork, "log", "-1", "--format=%B", pushed), /^Fix failing CI check\n\n- src\/lib\.rs/);
-    assert.deepEqual(ops(w), ["model", "check", "push", "comment: Pushed a fix for the failing CI check: `src/lib.rs`."]);
+    assert.deepEqual(ops(w), ["model", "check", "push", "comment: _AI-generated comment (Sonnet). Not a maintainer decision._\n\nPushed a fix for the failing CI check: `src/lib.rs`."]);
     assert.deepEqual(rows(db, "SELECT kind, state, from_head, to_head FROM (SELECT kind, state, head AS from_head, to_head FROM ci_fixes)"), [{ kind: "code", state: "pushed", from_head: w.head, to_head: pushed }]);
     assert.deepEqual(rows(db, "SELECT action FROM audit WHERE action LIKE 'cifix%' ORDER BY rowid").map((r) => r.action), ["cifix-check", "cifix-push", "cifix-comment"]);
     assert.equal(rows(db, "SELECT 1 FROM stages WHERE note LIKE 'CI fix pushed%'").length, 1);
@@ -354,7 +354,7 @@ describe("code failure", () => {
     assert.deepEqual([s.pushed, s.asked], [[], ["app#7"]]);
     assert.ok(!w.log.includes("push"));
     const comment = w.log.find((l) => l.startsWith("comment: "))!;
-    assert.match(comment, /^comment: The CI check `gate \/ test` fails on this branch\. This patch fixes it:\n\n```diff\ndiff --git a\/src\/lib\.rs/);
+    assert.match(comment, /^comment: _AI-generated comment \(Sonnet\)\. Not a maintainer decision\._\n\nThe CI check `gate \/ test` fails on this branch\. This patch fixes it:\n\n```diff\ndiff --git a\/src\/lib\.rs/);
     assert.deepEqual(rows(db, "SELECT state FROM ci_fixes"), [{ state: "asked" }]);
     // Another run does not comment again.
     await runCifix(db, { repo: "app", dryRun: false }, () => {}, w.deps);

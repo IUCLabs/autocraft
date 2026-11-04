@@ -73,7 +73,7 @@ async function fileDefect(db: DatabaseSync, deps: FileDeps, w: Writer, d: Pendin
     }
   }
   const title = issueTitle(d.f.title);
-  const body = issueBody({ number: d.number, model: d.model, body: d.f.body, file: d.f.file, line: d.f.line });
+  const body = issueBody({ number: d.number, body: d.f.body, file: d.f.file, line: d.f.line });
   const bad = refusal([d.f.title, d.f.body, title, body], pipelineLogin(db));
   if (bad) {
     setFollowup(db, row, "skipped-text", at(), { note: bad });
@@ -85,7 +85,7 @@ async function fileDefect(db: DatabaseSync, deps: FileDeps, w: Writer, d: Pendin
   onAttempt();
   let made: { number: number; url: string };
   try {
-    made = await createIssue(w, deps.exec, { repo, target: ref, title, body }, { finding: d.finding, severity: d.f.severity });
+    made = await createIssue(w, deps.exec, { repo, target: ref, title, body }, { by: "model", kind: "issue", model: d.model }, { finding: d.finding, severity: d.f.severity });
   } catch (e) {
     const reason = oneLine(e);
     if (!(e instanceof IssueError) || !e.clear) return { kind: "unknown", reason };

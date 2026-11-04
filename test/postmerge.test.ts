@@ -125,7 +125,7 @@ describe("filing", () => {
     assert.equal(created.length, 1);
     assert.deepEqual(created[0]!.args.slice(0, 6), ["issue", "create", "--repo", "storytold/app", "--title", "Stride is wrong"]);
     const body = created[0]!.input!;
-    assert.match(body, /^_AI-generated review \(Opus\)\. Not a maintainer decision\._\n\nFollow-up to #1\.\n\n`decode` at src\/lib\.rs:1 reads half of each row\./);
+    assert.match(body, /^_AI-generated issue \(Opus\)\. Not a maintainer decision\._\n\nFollow-up to #1\.\n\n`decode` at src\/lib\.rs:1 reads half of each row\./);
     assert.doesNotMatch(body, /autocraft/i);
     assert.deepEqual(states(db), ["0:filed#50"]);
     const audit = db.prepare("SELECT login, target, details FROM audit WHERE action = 'postmerge-file'").all() as { login: string; target: string; details: string }[];
@@ -413,9 +413,9 @@ esac
 
 describe("public text", () => {
   test("URLs, links, issue references and mentions go outside code and stay inside it", () => {
-    const body = issueBody({ number: 4, model: "opus", file: "src/a.rs", line: 3, body:
+    const body = issueBody({ number: 4, file: "src/a.rs", line: 3, body:
       "See [the docs](https://example.com/x) or https://example.com/y and storytold/app#12, also #7 and issue #8. Ping @someone.\n\n`@keep https://example.com/z #9`\n\n```\nlet a = \"#10 @x\";\n```" });
-    assert.match(body, /^_AI-generated review \(Opus\)\. Not a maintainer decision\._\n\nFollow-up to #4\.\n\n/);
+    assert.match(body, /^Follow-up to #4\.\n\n/);
     assert.match(body, /See the docs or\s+and issue 12, also issue 7 and issue 8\. Ping someone\./);
     assert.match(body, /`keep https:\/\/example\.com\/z #9`/);
     assert.match(body, /let a = "#10 x";/);
@@ -424,7 +424,7 @@ describe("public text", () => {
   });
 
   test("an unclosed fence does not shelter what follows it; GH-n references are cleaned", () => {
-    const body = issueBody({ number: 4, model: "opus", file: null, line: null, body: "The parser uses ``` delimiters. cc @octocat see #45 and https://evil.example/x and GH-12." });
+    const body = issueBody({ number: 4, file: null, line: null, body: "The parser uses ``` delimiters. cc @octocat see #45 and https://evil.example/x and GH-12." });
     assert.doesNotMatch(body, /@|https?:|#45|GH-12/);
     assert.match(body, /Follow-up to #4\./);
     assert.match(body, /issue 45/);

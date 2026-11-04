@@ -19,7 +19,7 @@
 //   autocraft comment-approval [--repo R]
 import type { DatabaseSync } from "node:sqlite";
 import { audit } from "../dash/audit.ts";
-import { closeItem, commentOn, type Writer } from "../github/write.ts";
+import { closeItem, commentOn, type Note, type Writer } from "../github/write.ts";
 import { connect } from "../db.ts";
 import { actionable, ask, factsOf, getDecision, type Actionable, type DecisionRow, type Kind } from "../decisions.ts";
 import { HEAD_FACT } from "../merge/queue.ts";
@@ -199,6 +199,16 @@ const factValue = (d: DecisionRow, prefix: string): string | null => {
   return f ? f.slice(prefix.length).trim() : null;
 };
 
+/** Opus 5.5 is the operator session that writes the security scan's questions and their text. */
+const SECURITY_MODEL = "claude-opus-5-5";
+
+/** The note for a comment posted on an operator's answer: the model that recommended the action or wrote the decision's text, when one did. */
+export function decisionNote(d: DecisionRow): Note {
+  if (d.asked_by === SECURITY_ASKER) return { by: "operator", model: SECURITY_MODEL };
+  const model = d.recommended_by ?? d.summary_by;
+  return model ? { by: "operator", model } : { by: "fixed-operator" };
+}
+
 function commentFor(d: DecisionRow, t: Target): string {
   if (t.kind === "scope") return scopeCloseComment(d.public_text);
   return prCloseComment({ repo: t.repo, reason: d.public_text ?? factValue(d, REASON_FACT), duplicateOf: factValue(d, DUP_FACT) });
@@ -289,7 +299,7 @@ export async function runAct(db: DatabaseSync, params: ActParams, log: (line: st
           if (!o) { skip(t, "GitHub returned no such original"); continue; }
           body = duplicateComment({ repo: t.repo, original: `${orig[1]}#${orig[2]}`, closed: o.state !== "OPEN" });
         } else body = commentFor(dec, t);
-        url = await commentOn(w, d.querier, "act-comment", { repo: t.repo, number: t.number, id: live.id }, body, { decision: t.decisionId });
+        url = await commentOn(w, d.querier, "act-comment", { repo: t.repo, number: t.number, id: live.id }, decisionNote(dec), body, { decision: t.decisionId });
         // Saved before the close so a retry after a failed close does not comment twice.
         save(t, "failed", "comment posted; close not done yet", url);
       }
@@ -312,7 +322,7 @@ export async function runAct(db: DatabaseSync, params: ActParams, log: (line: st
   if (!summary.failed.length) {
     const io: GroupIo = {
       live: (n) => readLive(d.querier, repo, n),
-      comment: (live, body, at) => commentOn(w, d.querier, "act-comment", { repo, number: at.number, id: live.id }, body, { decision: at.decision }),
+      comment: (live, body, at) => commentOn(w, d.querier, "act-comment", { repo, number: at.number, id: live.id }, decisionNote(getDecision(db, at.decision)!), body, { decision: at.decision }),
       close: (live, at) => closeItem(w, d.querier, { repo, number: at.number, id: live.id, pr: live.type === "PullRequest" }, { decision: at.decision, head: live.head }),
     };
     const g = await actOnGroups(db, {

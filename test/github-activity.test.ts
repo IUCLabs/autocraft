@@ -6,11 +6,14 @@ import { test } from "node:test";
 import { connect } from "../src/db.ts";
 import { comment, openedToday } from "../src/fixissue/index.ts";
 import { githubActivity } from "../src/dash/api/github-activity.ts";
+import type { Note } from "../src/github/note.ts";
 import { addLabels, closeItem, commentOn, ghComment, mergeViaCommand, pushBranch, type Writer } from "../src/github/write.ts";
 import { readSeqs } from "../src/live.ts";
 import type { Querier } from "../src/mirror.ts";
 import type { Req } from "../src/dash/types.ts";
 import { SCRATCH } from "./scratch.ts";
+
+const FIXED: Note = { by: "fixed" };
 
 mkdirSync(SCRATCH, { recursive: true });
 const req = (query = "", role: "operator" | "viewer" = "operator"): Req =>
@@ -44,7 +47,7 @@ test("each wrapper function records its write; a failed write records the error 
   const db = setup();
   const w: Writer = { db, login: "act" };
   const q = fakeQuerier();
-  const url = await commentOn(w, q, "act-comment", { repo: "app", number: 7, id: "N7" }, "Closing as a duplicate.", { decision: "d1" });
+  const url = await commentOn(w, q, "act-comment", { repo: "app", number: 7, id: "N7" }, FIXED, "Closing as a duplicate.", { decision: "d1" });
   assert.equal(url, "https://github.com/storytold/app/pull/7#issuecomment-1");
   await closeItem(w, q, { repo: "app", number: 7, id: "N7", pr: true }, { decision: "d1" });
   const bad = fakeQuerier(true);
@@ -53,7 +56,7 @@ test("each wrapper function records its write; a failed write records the error 
   const pushed = await pushBranch(w, { git: async () => ({ code: 0, stdout: "", stderr: "" }) }, "fixup-push", { repo: "app", number: 7, remote: "bot/app", branch: "fix", sha: "a".repeat(40), expected: "b".repeat(40) }, { run: "r1" });
   assert.equal(pushed.code, 0);
   await pushBranch(w, { git: async () => ({ code: 1, stdout: "", stderr: "denied\n403" }) }, "batch-push", { repo: "app", remote: "bot/app", branch: "integration-1", sha: "c".repeat(40) });
-  await ghComment(w, async () => ({ code: 0, stdout: "https://github.com/storytold/app/pull/7#issuecomment-2\n", stderr: "" }), "fixup-comment", { repo: "app", number: 7, pr: true }, "Pushed fixes.", { run: "r1" });
+  await ghComment(w, async () => ({ code: 0, stdout: "https://github.com/storytold/app/pull/7#issuecomment-2\n", stderr: "" }), "fixup-comment", { repo: "app", number: 7, pr: true }, FIXED, "Pushed fixes.", { run: "r1" });
   await mergeViaCommand(w, async () => ({ code: 0, stdout: `storytold/app#7 MERGED ${"d".repeat(40)} (head abc)`, stderr: "" }), "safe-merge", ["storytold/app", "7", "--squash"], { run: "r1" });
   await mergeViaCommand(w, async () => ({ code: 1, stdout: "", stderr: "REFUSED: checks not green" }), "safe-merge", ["storytold/app", "9", "--merge"]);
 
@@ -92,9 +95,9 @@ test("filters, paging and visibility", async () => {
   const db = setup();
   const w: Writer = { db, login: "act" };
   const q = fakeQuerier();
-  for (let n = 1; n <= 5; n++) await commentOn(w, q, "act-comment", { repo: "app", number: n, id: `N${n}` }, `c${n}`);
+  for (let n = 1; n <= 5; n++) await commentOn(w, q, "act-comment", { repo: "app", number: n, id: `N${n}` }, FIXED, `c${n}`);
   await closeItem(w, q, { repo: "app", number: 3, id: "N3", pr: false });
-  await commentOn(w, q, "act-comment", { repo: "secret", number: 1, id: "S1" }, "hidden");
+  await commentOn(w, q, "act-comment", { repo: "secret", number: 1, id: "S1" }, FIXED, "hidden");
   db.prepare("INSERT INTO audit (at, login, action, target) VALUES (?, 'op', 'sign-in', 'op')").run(new Date().toISOString());
 
   const all = await githubActivity(db, req());
@@ -124,7 +127,7 @@ test("the row exists before the call; a crash leaves an unknown outcome and the 
   const w: Writer = { db, login: "act" };
   const state = () => (db.prepare("SELECT details FROM audit WHERE action = 'act-comment'").all() as { details: string }[]).map((r) => (JSON.parse(r.details) as { state: string }).state);
   let during: string[] = [];
-  await commentOn(w, { ...fakeQuerier(), async query() { during = state(); return {}; } }, "act-comment", { repo: "app", number: 7, id: "N7" }, "x");
+  await commentOn(w, { ...fakeQuerier(), async query() { during = state(); return {}; } }, "act-comment", { repo: "app", number: 7, id: "N7" }, FIXED, "x");
   assert.deepEqual(during, ["started"], "recorded before the GitHub call");
   assert.deepEqual(state(), ["done"]);
 
@@ -143,8 +146,8 @@ test("a viewer sees only rows of repos visible to them; an operator also sees un
   const db = setup();
   const w: Writer = { db, login: "act" };
   const q = fakeQuerier();
-  await commentOn(w, q, "act-comment", { repo: "app", number: 1, id: "N1" }, "a");
-  await commentOn(w, q, "act-comment", { repo: "gone", number: 1, id: "G1" }, "b");
+  await commentOn(w, q, "act-comment", { repo: "app", number: 1, id: "N1" }, FIXED, "a");
+  await commentOn(w, q, "act-comment", { repo: "gone", number: 1, id: "G1" }, FIXED, "b");
   await pushBranch(w, { git: async () => ({ code: 0, stdout: "", stderr: "" }) }, "batch-push", { repo: "gone", remote: "bot/gone", branch: "b1", sha: "a".repeat(40) });
   assert.deepEqual((await githubActivity(db, req("", "viewer"))).rows.map((r) => r.repo), ["app"]);
   assert.equal((await githubActivity(db, req("", "operator"))).total, 3);
@@ -162,7 +165,7 @@ test("finishing a GitHub write row moves the github topic again", async () => {
   const before = readSeqs(db).github!;
   const w: Writer = { db, login: "act" };
   let mid = 0;
-  await commentOn(w, { ...fakeQuerier(), async query() { mid = readSeqs(db).github!; return {}; } }, "act-comment", { repo: "app", number: 1, id: "N1" }, "x");
+  await commentOn(w, { ...fakeQuerier(), async query() { mid = readSeqs(db).github!; return {}; } }, "act-comment", { repo: "app", number: 1, id: "N1" }, FIXED, "x");
   assert.equal(mid, before + 1, "the started row moves it");
   assert.equal(readSeqs(db).github, before + 2, "the finished row moves it again");
 });

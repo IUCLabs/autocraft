@@ -294,7 +294,7 @@ describe("Do it", () => {
     const deps = { querier: fakeGithub(log) };
     const [a, b] = await Promise.all([doCard(db, id!, "op", deps), doCard(db, id!, "op", deps)]);
     assert.deepEqual([a.ran, b.ran].sort(), [false, true]);
-    assert.deepEqual(log, ["comment I1: Edited text."]);
+    assert.deepEqual(log, ["comment I1: _AI-generated reply (Opus)_\n\nEdited text."]);
     const card = (await doCard(db, id!, "op", deps)).card;
     assert.equal(card.state, "done");
     assert.equal(card.result_url, "https://x/I1#c");
@@ -318,7 +318,7 @@ describe("Do it", () => {
     assert.equal((await doCard(db, dismissed!, "op", deps)).ran, false);
     assert.equal(db.prepare("SELECT answer FROM decisions WHERE id = 'app#1:scope'").get()!.answer, "close");
     assert.equal((await doCard(db, dup!, "op", deps)).card.state, "done");
-    assert.deepEqual(log, ["comment I1: Duplicate of #3.", "close I1"]);
+    assert.deepEqual(log, ["comment I1: _AI-generated reply (Opus)_\n\nDuplicate of #3.", "close I1"]);
 
     const db2 = fresh();
     db2.prepare("DELETE FROM settings WHERE key LIKE 'comment_approved:%'").run();

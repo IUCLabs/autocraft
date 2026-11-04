@@ -52,7 +52,7 @@ async function endBatch(db: DatabaseSync, by: string, id: number, why: string, c
   const b = getBatch(db, id);
   updateBatch(db, id, new Date().toISOString(), { state: "superseded", summary: why });
   if (b.pr_number === null) return { closed: null };
-  const r = await ghClosePr({ db, login: by }, run, { repo: b.repo, number: b.pr_number }, `Closing: ${comment}.`, { batch: b.branch });
+  const r = await ghClosePr({ db, login: by }, run, { repo: b.repo, number: b.pr_number }, { by: "fixed-operator" }, `Closing: ${comment}.`, { batch: b.branch });
   if (r.code !== 0) {
     const state = await run("gh", ["pr", "view", String(b.pr_number), "--repo", `${ORG}/${b.repo}`, "--json", "state", "--jq", ".state"]);
     if (state.code === 0 && state.stdout.trim() === "MERGED") {

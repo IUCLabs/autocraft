@@ -23,7 +23,7 @@ import { editable, validatePatch } from "../fixup/patch.ts";
 import { readGate } from "../merge/changes-requested.ts";
 import { longLivedOf, pushable, BASE_ORG } from "../fixup/pushable.ts";
 import { HOLD_CANNOT_PUSH } from "../fixup/template.ts";
-import { ghComment, ghRerunFailed, pushBranch, type Writer } from "../github/write.ts";
+import { ghComment, ghRerunFailed, pushBranch, type Note, type Writer } from "../github/write.ts";
 import { Client, type Querier } from "../mirror.ts";
 import { ghExec, type Gh } from "../merge/safe-merge.ts";
 import { checkLine, parseCheck, recordCheck } from "../patchcheck/index.ts";
@@ -92,6 +92,9 @@ export type CifixDeps = {
   /** Directory holding one bare cache repository per repo. */
   root: string;
 };
+
+/** The note for a comment about a model-written patch. */
+const codeNote: Note = { by: "model", kind: "comment", model: PROMPT.models[0] };
 
 export function defaultDeps(): CifixDeps {
   return {
@@ -299,7 +302,7 @@ export async function runCifix(db: DatabaseSync, params: CifixParams, log: (line
       return;
     }
     if (!canPush) {
-      const cm = await ghComment(gw, d.exec, "cifix-comment", { repo, number: c.number, pr: true }, askText(checkName, v.patch), { run: runId, head: c.head });
+      const cm = await ghComment(gw, d.exec, "cifix-comment", { repo, number: c.number, pr: true }, codeNote, askText(checkName, v.patch), { run: runId, head: c.head });
       if (cm.code !== 0) {
         const reason = `the comment failed: ${scrubReason(oneLine(cm.stderr), d.root)}`;
         rec.set(c, kind, "comment-failed", reason, { files: v.files });
@@ -335,7 +338,7 @@ export async function runCifix(db: DatabaseSync, params: CifixParams, log: (line
     rec.set(c, kind, "pushed", null, { files: v.files, toHead: commit });
     summary.pushed.push(ref);
     log(`  ${ref}: pushed ${short(commit)} on ${short(head)}: ${v.files.join(", ")}`);
-    const cm = await ghComment(gw, d.exec, "cifix-comment", { repo, number: c.number, pr: true }, commentText(v.files), { run: runId });
+    const cm = await ghComment(gw, d.exec, "cifix-comment", { repo, number: c.number, pr: true }, kind === "format" ? { by: "fixed" } : codeNote, commentText(v.files), { run: runId });
     if (cm.code !== 0) log(`  ${ref}: comment failed: ${oneLine(cm.stderr)}`);
   };
 

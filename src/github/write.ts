@@ -9,8 +9,10 @@ import { ORG } from "../act/templates.ts";
 import { connect } from "../db.ts";
 import type { Exec, ExecResult, Git } from "../fixup/git.ts";
 import type { Querier } from "../mirror.ts";
+import { type Note, withNote } from "./note.ts";
 
 export { GITHUB_ACTIONS } from "./actions.ts";
+export type { Note } from "./note.ts";
 
 /** Who writes (the audit login: the stage name, or the operator for manual actions) and where the row goes. */
 export type Writer = { db: DatabaseSync; login: string };
@@ -83,7 +85,8 @@ export function addLabelsMutation(count: number): string {
 export type ItemRef = { repo: string; number: number; id: string };
 
 /** Posts a comment on an issue or PR; returns the comment's URL. `details` is the source (run or decision) and any context. */
-export async function commentOn(w: Writer, q: Querier, action: string, item: ItemRef, body: string, details: Details = {}): Promise<string> {
+export async function commentOn(w: Writer, q: Querier, action: string, item: ItemRef, note: Note, text: string, details: Details = {}): Promise<string> {
+  const body = withNote(note, text);
   const r = await recorded(w, action, refOf(item.repo, item.number), { ...details, text: body },
     () => q.query(ADD_COMMENT, { id: item.id, body }) as Promise<{ addComment?: { commentEdge?: { node?: { url?: string } } } }>,
     (x) => ({ url: x.addComment?.commentEdge?.node?.url ?? undefined }));
@@ -103,7 +106,8 @@ export async function unassignFrom(w: Writer, q: Querier, item: ItemRef, user: {
 }
 
 /** Posts a review as a plain comment review on the commit; returns the review id (null when GitHub returned none). */
-export async function postReview(w: Writer, q: Querier, item: ItemRef, head: string, body: string, details: Details = {}): Promise<string | null> {
+export async function postReview(w: Writer, q: Querier, item: ItemRef, head: string, note: Note, text: string, details: Details = {}): Promise<string | null> {
+  const body = withNote(note, text);
   const r = await recorded(w, "review-post", refOf(item.repo, item.number), { ...details, head },
     () => q.query(ADD_REVIEW, { pr: item.id, oid: head, body }) as Promise<{ addPullRequestReview?: { pullRequestReview?: { id?: string } | null } | null }>,
     (x) => ({ review: x.addPullRequestReview?.pullRequestReview?.id ?? undefined }),
@@ -111,7 +115,8 @@ export async function postReview(w: Writer, q: Querier, item: ItemRef, head: str
   return r.addPullRequestReview?.pullRequestReview?.id ?? null;
 }
 
-export async function editReview(w: Writer, q: Querier, repo: string, number: number, reviewId: string, head: string, body: string, details: Details = {}): Promise<void> {
+export async function editReview(w: Writer, q: Querier, repo: string, number: number, reviewId: string, head: string, note: Note, text: string, details: Details = {}): Promise<void> {
+  const body = withNote(note, text);
   await recorded(w, "review-edit", refOf(repo, number), { ...details, head, review: reviewId }, () => q.query(EDIT_REVIEW, { id: reviewId, body }));
 }
 
@@ -156,23 +161,27 @@ async function viaGh(w: Writer, exec: Exec, action: string, target: string, deta
 }
 
 /** `action` is the audit action of the caller's stage (act, fixup or fixissue comment). */
-export function ghComment(w: Writer, exec: Exec, action: string, o: { repo: string; number: number; pr: boolean }, body: string, details: Details = {}): Promise<ExecResult> {
+export function ghComment(w: Writer, exec: Exec, action: string, o: { repo: string; number: number; pr: boolean }, note: Note, text: string, details: Details = {}): Promise<ExecResult> {
+  const body = withNote(note, text);
   return viaGh(w, exec, action, refOf(o.repo, o.number), { ...details, text: body },
     [o.pr ? "pr" : "issue", "comment", String(o.number), "--repo", `${ORG}/${o.repo}`, "--body-file", "-"], body);
 }
 
 /** Replaces the body of a comment we posted (`commentId` is the number in its `#issuecomment-` URL). */
-export function ghEditComment(w: Writer, exec: Exec, action: string, o: { repo: string; number: number; commentId: string }, body: string, details: Details = {}): Promise<ExecResult> {
+export function ghEditComment(w: Writer, exec: Exec, action: string, o: { repo: string; number: number; commentId: string }, note: Note, text: string, details: Details = {}): Promise<ExecResult> {
+  const body = withNote(note, text);
   return viaGh(w, exec, action, refOf(o.repo, o.number), { ...details, text: body, comment: o.commentId },
     ["api", "-X", "PATCH", `repos/${ORG}/${o.repo}/issues/comments/${o.commentId}`, "-F", "body=@-"], body);
 }
 
-export function ghOpenPr(w: Writer, exec: Exec, action: string, o: { repo: string; target: string; base: string; head: string; title: string; body: string }, details: Details = {}): Promise<ExecResult> {
-  return viaGh(w, exec, action, o.target, details,
-    ["pr", "create", "--repo", `${ORG}/${o.repo}`, "--base", o.base, "--head", o.head, "--title", o.title, "--body-file", "-"], o.body);
+export function ghOpenPr(w: Writer, exec: Exec, action: string, o: { repo: string; target: string; base: string; head: string; title: string; body: string }, note: Note, details: Details = {}): Promise<ExecResult> {
+  const body = withNote(note, o.body);
+  return viaGh(w, exec, action, o.target, { ...details, text: body },
+    ["pr", "create", "--repo", `${ORG}/${o.repo}`, "--base", o.base, "--head", o.head, "--title", o.title, "--body-file", "-"], body);
 }
 
-export function ghClosePr(w: Writer, exec: Exec, o: { repo: string; number: number }, comment: string, details: Details = {}): Promise<ExecResult> {
+export function ghClosePr(w: Writer, exec: Exec, o: { repo: string; number: number }, note: Note, text: string, details: Details = {}): Promise<ExecResult> {
+  const comment = withNote(note, text);
   return viaGh(w, exec, "batch-pr-close", refOf(o.repo, o.number), { ...details, text: comment },
     ["pr", "close", String(o.number), "--repo", `${ORG}/${o.repo}`, "--comment", comment]);
 }
@@ -195,11 +204,12 @@ const REFUSED = /issues are disabled|has disabled issues|could not resolve to a 
  * Opens an issue; returns its number and URL. Throws an IssueError when `gh` fails or prints no issue URL; `clear` tells
  * whether the failure certainly left no issue behind. `target` is the item the issue follows up.
  */
-export async function createIssue(w: Writer, exec: Exec, o: { repo: string; target: string; title: string; body: string }, details: Details = {}): Promise<{ number: number; url: string }> {
+export async function createIssue(w: Writer, exec: Exec, o: { repo: string; target: string; title: string; body: string }, note: Note, details: Details = {}): Promise<{ number: number; url: string }> {
+  const body = withNote(note, o.body);
   let r: ExecResult;
   try {
-    r = await viaGh(w, exec, "postmerge-file", o.target, { ...details, title: o.title, text: o.body },
-      ["issue", "create", "--repo", `${ORG}/${o.repo}`, "--title", o.title, "--body-file", "-"], o.body);
+    r = await viaGh(w, exec, "postmerge-file", o.target, { ...details, title: o.title, text: body },
+      ["issue", "create", "--repo", `${ORG}/${o.repo}`, "--title", o.title, "--body-file", "-"], body);
   } catch (e) {
     // exec rejects only when the command could not be started.
     throw new IssueError(oneLine(String((e as Error).message ?? e)), true);
