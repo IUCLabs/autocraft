@@ -334,7 +334,7 @@ export async function askClaude<K extends ClaudePromptId>(id: K, model: string, 
     if (sandboxed) {
       const claudeBin = resolveClaudeBin(), credentials = join(run.configDir, ".credentials.json");
       if (!claudeBin || !existsSync(credentials)) throw new Error("sandboxed call: claude binary or the account's credentials file not found");
-      spec = { claudeBin, checkout: opts.checkout!, credentials, claudeArgs: args, shared, ...(workspace && { agentsFile: agentsFile(tools?.servers) }), ...(sessions && { sessionDir: sessions }), extraMounts: tools || reference ? [...(tools ? [...tools.mounts, { host: tools.file, path: MCP_PATH }] : []), ...(reference ? [{ host: reference, path: REFERENCE_PATH }] : [])] : undefined };
+      spec = { claudeBin, checkout: opts.checkout!, credentials, claudeArgs: args, shared, ...(workspace && { agentsFile: agentsFile(Object.keys(it?.mcpServers ?? {}).sort()) }), ...(sessions && { sessionDir: sessions }), extraMounts: tools || reference ? [...(tools ? [...tools.mounts, { host: tools.file, path: MCP_PATH }] : []), ...(reference ? [{ host: reference, path: REFERENCE_PATH }] : [])] : undefined };
     }
 
     /** One `claude -p` process on the run `runId`: the first message, or with `resume` a follow-up on the same session. Never throws for a failed call. */
@@ -443,6 +443,8 @@ export async function askClaude<K extends ClaudePromptId>(id: K, model: string, 
   } finally {
     if (sessions) rmSync(sessions, { recursive: true, force: true });
     bridge?.close();
+    // Check tasks still open when the call ends (killed, timed out, parallel leftovers) are cancelled.
+    opts.check?.close();
     // The config of a bridged call holds that call's token.
     if (bridgeConfig) rmSync(bridgeConfig, { force: true });
   }

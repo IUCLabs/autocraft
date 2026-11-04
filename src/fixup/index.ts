@@ -30,7 +30,7 @@ import { cachedDiff, ghDiff, type DiffFetcher } from "../review/diff.ts";
 import { checkLine, parseCheck, recordCheck } from "../patchcheck/index.ts";
 import { CHECK_DIFF_CAP, CHECK_PATCH_CAP, type FixupCheckInput } from "../patchcheck/types.ts";
 import { LINT_MAX_ROUNDS } from "../core/rules.ts";
-import { CheckTool, applyCheck } from "../checktool/index.ts";
+import { CheckTool, applyCheck, refusal } from "../checktool/index.ts";
 import { foldFormat, queueLint, readLint } from "../prepush/index.ts";
 import { pushApprovalOf } from "./approval.ts";
 import { MAX_ATTEMPTS, parseFixes, type FixCandidate } from "./candidates.ts";
@@ -419,7 +419,7 @@ export async function runFixup(db: DatabaseSync, params: FixupParams, log: (line
       // The model's patch: the stored one when it is clean, else a new answer (with the findings on the earlier patch).
       const reply = folded !== null ? c.lint!.patch : await d.ask(db, [{ ref, title: oneTitle(db, c), fixes: c.fixes, files: shown, diff: diff.text, ...(carried ? { carried_from: carried } : {}),
         ...(c.lint && findings.length ? { previous: { patch: c.lint.patch, findings } } : {}), ...repoDir }], checkout,
-        new CheckTool({ db, step: "fixup", repo, number: c.number, head, base: pr.baseRefOid ?? null, applies: applyCheck(git, d.root, head) }));
+        new CheckTool({ db, step: "fixup", repo, number: c.number, head, base: pr.baseRefOid ?? null, applies: applyCheck(git, d.root, head, (p) => refusal(validatePatch(p, files, fixupEditable))) }));
       if (reply === null) { fail("failed", "the model gave no answer"); continue; }
       const v = validatePatch(reply, files, fixupEditable);
       if (!v.ok) { fail("refused", v.reason); continue; }

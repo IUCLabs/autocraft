@@ -5,7 +5,7 @@
 import { mkdirSync } from "node:fs";
 import type { DatabaseSync } from "node:sqlite";
 import { getTask, TERMINAL } from "../build/tasks.ts";
-import { CheckTool, applyCheck } from "../checktool/index.ts";
+import { CheckTool, applyCheck, refusal } from "../checktool/index.ts";
 import { CHECK_DIFF_CAP, CHECK_PATCH_CAP } from "../patchcheck/types.ts";
 import { CLAUDE_PROMPTS } from "../prompts/index.ts";
 import { parseCheck, checkLine } from "../patchcheck/index.ts";
@@ -65,7 +65,7 @@ export async function runFixupTry(db: DatabaseSync, repo: string, number: number
   const before0 = (db.prepare("SELECT COALESCE(MAX(id), 0) AS n FROM agent_runs").get() as { n: number }).n;
   const before = (db.prepare("SELECT COALESCE(MAX(id), 0) AS n FROM model_checks").get() as { n: number }).n;
   const base = (await d.querier.query(BASE_QUERY, { owner: BASE_ORG, name: repo, n: number }) as { repository?: { pullRequest?: { baseRefOid?: string } | null } }).repository?.pullRequest?.baseRefOid ?? null;
-  const tool = new CheckTool({ db, step: "fixup", repo, number, head, base, applies: applyCheck(git, d.root, head) });
+  const tool = new CheckTool({ db, step: "fixup", repo, number, head, base, applies: applyCheck(git, d.root, head, (p) => refusal(validatePatch(p, files, fixupEditable))) });
   const t0 = Date.now();
   const reply = await d.ask(db, [{ ref, title: (item.title ?? "").slice(0, 300), fixes, files: shown, diff: diff.text, ...repoDir }], checkout, tool);
   log(`model call took ${Math.round((Date.now() - t0) / 1000)} s`);
