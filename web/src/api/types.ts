@@ -225,11 +225,11 @@ export interface Item extends ItemRef {
   deletions: number;
   /** PRs: how many files the PR changes, from the mirror; null when unknown. */
   changedFiles: number | null;
-  /** Per-file changes; empty when the mirror has none. */
+  /** Per-file changes; the mirror does not store them yet, so this is empty. */
   files: ChangedFile[];
   /** "none" also when the mirror has no check data for the item. */
   ci: CiState;
-  ciChecks: { name: string; state: CiState; minutes: number }[];
+  ciChecks: { name: string; state: CiState; minutes: number | null }[];
   mergeable: Mergeable;
   labels: string[];
   createdAt: string;
@@ -1732,3 +1732,44 @@ export type AreaEditBody =
   | { op: "describe"; name: string; description: string };
 /** Which model step to queue: propose a list, suggest new areas, or re-scan the unassigned items. */
 export type AreaStep = "propose" | "suggest" | "rescan";
+
+// ---- Item trace ----------------------------------------------------------------
+
+export type TraceKind = "github" | "plan" | "job" | "model-call" | "check" | "review" | "decision" | "write" | "step" | "conversation";
+export type TraceActor = { type: "person" | "step" | "model"; name: string };
+/** Ids needed to fetch an event's details: runs, tasks and decisions have their own endpoints; the rest use the trace detail endpoint. */
+export type TraceRef = {
+  runId?: number; jobId?: number; taskId?: number; checkId?: number; decisionId?: string; auditRowid?: number;
+  reviewId?: string; commentId?: string; head?: string; toHead?: string;
+};
+export type TraceEvent = {
+  /** Stable across fetches, for example "run:123". */
+  id: string;
+  kind: TraceKind;
+  at: string;
+  /** Commit the event belongs to, when known; the page groups by it. */
+  head: string | null;
+  actor: TraceActor;
+  summary: string;
+  ref: TraceRef;
+  /** Model calls only. */
+  call?: {
+    model: string; provider: string; account: string | null; state: string;
+    inputTokens: number | null; outputTokens: number | null; costUsd: number | null; toolCalls: number; endedAt: string | null;
+  };
+};
+export type ItemTraceHeader = {
+  now: { state: string | null; head: string | null; plannedAt: string | null; text: string; waitsOn: string | null; reasons: string[]; note: string | null };
+  /** The plan's due actions in order. */
+  next: { kind: string; head: string | null }[];
+  who: {
+    assignees: string[]; autocraftAssigned: boolean;
+    openDecisions: { id: string; kind: string; question: string }[];
+    holds: { by: string; at: string }[];
+  };
+};
+export type ItemTrace = { header: ItemTraceHeader; events: TraceEvent[]; nextCursor: string | null; stamp: string };
+/** The answer to `since=<stamp>` when nothing the first page or the header shows has changed. */
+export type ItemTraceUnchanged = { unchanged: true; stamp: string };
+export type ItemTraceQuery = { kinds?: TraceKind[]; autocraftOnly?: boolean; cursor?: string; limit?: number; since?: string };
+export type ItemTraceDetail = { id: string; kind: TraceKind; at: string; summary: string; fields: Record<string, unknown> };

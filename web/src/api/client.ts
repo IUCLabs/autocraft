@@ -7,6 +7,10 @@ import type {
   AccessOverview,
   AccountInput,
   AgentRunDetail,
+  ItemTrace,
+  ItemTraceDetail,
+  ItemTraceQuery,
+  ItemTraceUnchanged,
   AgentRunFilter,
   AgentRunPage,
   ClaudeAccount,
@@ -119,6 +123,13 @@ export interface Api {
     dismiss(id: number): Promise<void>;
   };
   item(repo: RepoName, number: number): Promise<Item>;
+  /**
+   * Every event of the item, newest first, with the header (now, next, who). `since` is the `stamp` of an earlier answer:
+   * when nothing in the header or the first page changed, the answer is `{ unchanged: true, stamp }`.
+   */
+  itemTrace(repo: RepoName, number: number, q?: ItemTraceQuery): Promise<ItemTrace | ItemTraceUnchanged>;
+  /** What the list leaves out of an event whose kind has no detail endpoint of its own (plan, job, review, check, step, write). */
+  itemTraceDetail(repo: RepoName, number: number, id: string): Promise<ItemTraceDetail>;
   /** Operator only: review the current head again, plan Verify again, or try the issue fix again. Writes nothing to GitHub. */
   release(repo: RepoName, number: number, action: ReleaseAction): Promise<void>;
   /** Top bar: jumps by number, logins, words in titles and bodies. */

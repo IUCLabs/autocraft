@@ -1300,3 +1300,9 @@ CREATE TABLE IF NOT EXISTS job_items (
 );
 CREATE INDEX IF NOT EXISTS job_items_item ON job_items(repo, number, id);
 CREATE INDEX IF NOT EXISTS job_items_job ON job_items(job_id, id);
+
+-- The item trace (src/dash/api/trace.ts) reads every table by (repo, number); these had no index for it.
+CREATE INDEX IF NOT EXISTS agent_run_items_item ON agent_run_items(repo, number, run_id);
+CREATE INDEX IF NOT EXISTS build_tasks_item ON build_tasks(repo, number, id);
+CREATE INDEX IF NOT EXISTS decisions_item ON decisions(repo, number);
+CREATE INDEX IF NOT EXISTS push_outcomes_item ON push_outcomes(repo, number);

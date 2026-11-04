@@ -141,6 +141,9 @@ export function createHttpApi(): Api {
       },
     },
     item: (repo, number) => get(`/api/items/${encodeURIComponent(repo)}/${encodeURIComponent(String(number))}`),
+    itemTrace: (repo, number, q = {}) =>
+      get(`/api/items/${encodeURIComponent(repo)}/${encodeURIComponent(String(number))}/trace${qs({ ...q, kinds: q.kinds?.join(",") })}`),
+    itemTraceDetail: (repo, number, id) => get(`/api/items/${encodeURIComponent(repo)}/${encodeURIComponent(String(number))}/trace/event${qs({ id })}`),
     search: (q) => (q.trim() ? get(`/api/search?${new URLSearchParams({ q })}`) : Promise.resolve([])),
     items: (f) => get(`/api/items${itemQuery(f)}`),
     progress: () => get("/api/progress"),

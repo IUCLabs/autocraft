@@ -18,6 +18,8 @@ const ITEM: Topic[] = withSlot("items", "stages", "classify", "ranks", "decision
 const RULES: [prefix: string, topics: Topic[]][] = [
   ["progress", ["items", "stages", "repos", "decisions", "mainci"]],
   ["main-ci", ["mainci", "repos"]],
+  // The trace reads most tables behind an item page plus model calls and jobs; the page asks the server `since` its last stamp, so a change to an unrelated item costs one small answer.
+  ["item-trace:", withSlot("items", "stages", "decisions", "reviews", "verify", "fixes", "postmerge", "actions", "plans", "jobs", "agents", "tasks", "conversations", "queue", "access")],
   ["item:", ITEM],
   ["item-decisions:", withSlot("decisions", "items")],
   ["items:", withSlot("items", "stages", "classify", "decisions")],
