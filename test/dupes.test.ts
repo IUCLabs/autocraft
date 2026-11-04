@@ -12,7 +12,9 @@ import { connect } from "../src/db.ts";
 import { decideCandidates, dupesWork, scanPending } from "./planned.ts";
 import { checkPairs, type CheckDeps } from "../src/dupes/check.ts";
 import { runDupeCompare } from "../src/dupes/compare.ts";
+import { applyPlannedAnswers } from "../src/dupes/apply.ts";
 import { applyDuplicateAnswers, askDuplicateDecisions } from "../src/dupes/decide.ts";
+import { setPilot } from "../src/pilot.ts";
 import { ask as askDecision } from "../src/decisions.ts";
 import { duplicateCount, duplicateHeld } from "../src/dupes/held.ts";
 import { runDupes, type DupesDeps } from "../src/dupes/index.ts";
@@ -209,6 +211,19 @@ describe("decisions", () => {
     assert.ok(!askDuplicateDecisions(db, undefined, T0).includes("app:dupegroup:4"));
     assert.equal(applyDuplicateAnswers(db, T0), 0);
     assert.equal(duplicateHeld(db, "app", 5), false);
+  });
+});
+
+describe("answers applied by the steps", () => {
+  test("a pilot answer calls for the job; the job applies every actionable answer, pilot or not", () => {
+    const { db } = withDuplicates();
+    legacyPairDecisions(db);
+    answer(db, "app#5:duplicate@4", "op", "distinct");
+    answer(db, "app#2:duplicate@1", "op", "keep");
+    setPilot(db, "op", ["app#5"]);
+    assert.equal(dupesWork(db), true, "the pilot item's answer is due");
+    assert.equal(applyPlannedAnswers(db, T0), 2, "the answer for #2 is outside the pilot and is applied too");
+    assert.equal(applyPlannedAnswers(db, T0), 0);
   });
 });
 

@@ -116,6 +116,19 @@ describe("act", () => {
     assert.ok((db.prepare("SELECT applied_at FROM decisions WHERE id = 'app#1:scope'").get() as { applied_at: string | null }).applied_at);
   });
 
+  test("an item the mirror already shows closed still gets its answered close recorded and applied", async () => {
+    const db = fresh();
+    db.prepare("UPDATE items SET state = 'CLOSED' WHERE repo = 'app' AND number = 1").run();
+    scope(db, 1);
+    answer(db, "app#1:scope", "op", "close");
+    const log: string[] = [];
+    const s = await run(db, fakes(log, { closed: new Set([1]) }));
+    assert.deepEqual(s.skipped.map((x) => x.ref), ["app#1"]);
+    assert.deepEqual(log, ["read 1"]);
+    assert.equal(rows(db, "actions")[0]!.state, "skipped");
+    assert.ok((db.prepare("SELECT applied_at FROM decisions WHERE id = 'app#1:scope'").get() as { applied_at: string | null }).applied_at);
+  });
+
   test("Close? is asked once per head, not for holds, and a moved head is skipped", async () => {
     const db = fresh();
     const log: string[] = [];

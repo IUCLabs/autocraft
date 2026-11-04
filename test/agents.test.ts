@@ -139,6 +139,7 @@ describe("allocation", () => {
     assert.match(pauseReason(db, "decide") ?? "", /no Claude account is enabled/);
     assert.match(pauseReason(db, "classify-new") ?? "", /no Claude account is enabled/);
     assert.equal(pauseReason(db, "embed"), null);
+    assert.equal(pauseReason(db, "merge"), null, "merge calls no model");
     enable(db, "a");
     writeReading(box, "a", { five: 91 });
     assert.match(pauseReason(db, "opus-review") ?? "", /5-hour use 91 % \(pauses at 80 %\)/);
