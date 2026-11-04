@@ -43,7 +43,7 @@ function Row({ steps }: { steps: Step[] }) {
         <span key={s.node} className="flex items-center gap-1">
           {i > 0 && <CaretRightIcon className="text-ink/30" aria-hidden />}
           <Link
-            to={`/?node=${s.node}`}
+            to={`/flow?node=${s.node}`}
             aria-current={i === current ? "step" : undefined}
             className={cn(
               "inline-flex h-6 items-center gap-1 rounded-full border px-2 hover:bg-ink/[0.06] max-md:h-9",

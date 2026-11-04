@@ -16,6 +16,8 @@ const withSlot = (...topics: Topic[]): Topic[] => [...new Set<Topic>([...topics,
 const ITEM: Topic[] = withSlot("items", "stages", "classify", "ranks", "decisions", "reviews", "verify", "fixes", "postmerge", "actions", "checks");
 
 const RULES: [prefix: string, topics: Topic[]][] = [
+  // Agent progress lines arrive through `agents`; the shared 3 s window in live.tsx limits the refetch.
+  ["now", ["jobs", "agents", "tasks", "queue", "sync", "accounts", "settings", "repos", "mainci", "decisions", "access", "actions"]],
   ["progress", ["items", "stages", "repos", "decisions", "mainci"]],
   ["main-ci", ["mainci", "repos"]],
   // The trace reads most tables behind an item page plus model calls, jobs and GitHub detail. The `trace` topic leaves out a running call's progress lines; the page also asks the server `since` its last stamp.

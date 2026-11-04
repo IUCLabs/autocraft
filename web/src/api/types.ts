@@ -1773,3 +1773,43 @@ export type ItemTrace = { header: ItemTraceHeader; events: TraceEvent[]; nextCur
 export type ItemTraceUnchanged = { unchanged: true; stamp: string };
 export type ItemTraceQuery = { kinds?: TraceKind[]; autocraftOnly?: boolean; cursor?: string; limit?: number; since?: string };
 export type ItemTraceDetail = { id: string; kind: TraceKind; at: string; summary: string; fields: Record<string, unknown> };
+
+// ---- Now page (GET /api/now) ---------------------------------------------------
+
+/** A thing that needs attention; `to` is the page where it is fixed. `info` problems do not break "all healthy". */
+export type NowProblem = { id: string; area: "pipeline" | "runner" | "repos" | "breaker" | "limit" | "account" | "jev" | "main-ci" | "jobs" | "sync"; tone: "bad" | "warn" | "info"; text: string; to: string; since: string | null };
+export type NowHealth = {
+  pipeline: { enabled: boolean; by: string | null; at: string | null };
+  problems: NowProblem[];
+};
+export type NowRunningKind = "job" | "model-call" | "task" | "batch";
+export type NowRunning = {
+  key: string;
+  kind: NowRunningKind;
+  /** The step's title as the dashboard shows it. */
+  step: string;
+  /** Model and account for calls, environment for tasks, the branch for batches. */
+  what: string | null;
+  state: string;
+  startedAt: string;
+  progress: string | null;
+  repo: string | null;
+  items: (ItemRef & ItemShown)[];
+  itemCount: number;
+  /** Trace event id on the first item's page (`run:<id>`, `job:<id>`, `task:<id>`); null when the row has no item. */
+  event: string | null;
+  /** The run, job, task or batch page. */
+  detail: string;
+};
+export type NowEventKind = "write" | "merge" | "decision" | "failure";
+export type NowEvent = {
+  key: string;
+  kind: NowEventKind;
+  at: string;
+  summary: string;
+  actor: string;
+  item: (ItemRef & ItemShown) | null;
+  event: string | null;
+  detail: string | null;
+};
+export type Now = { health: NowHealth; running: NowRunning[]; recent: NowEvent[] };

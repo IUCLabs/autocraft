@@ -8,6 +8,7 @@ import type {
   AccountInput,
   AgentRunDetail,
   ItemTrace,
+  Now,
   ItemTraceDetail,
   ItemTraceQuery,
   ItemTraceUnchanged,
@@ -122,6 +123,8 @@ export interface Api {
     accept(id: number, body?: { areas?: AreaDef[]; accept?: string[]; ignore?: string[] }): Promise<RepoAreas>;
     dismiss(id: number): Promise<void>;
   };
+  /** Health problems, everything in progress and the last things that happened, for the home page. */
+  now(): Promise<Now>;
   item(repo: RepoName, number: number): Promise<Item>;
   /**
    * Every event of the item, newest first, with the header (now, next, who). `since` is the `stamp` of an earlier answer:

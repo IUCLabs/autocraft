@@ -26,7 +26,7 @@ const browser = await chromium.launch({ executablePath: process.env.CHROMIUM_PAT
 try {
   const ctx = await browser.newContext({ viewport: { width: 1400, height: 1650 }, colorScheme: "light" });
   const page = await ctx.newPage();
-  await page.goto(new URL("/?as=operator", url).href);
+  await page.goto(new URL("/flow?as=operator", url).href);
   await page.waitForSelector("[data-node]", { timeout: 30000 });
   await page.waitForTimeout(2500);
   // The chart grid plus the "Waiting for people" line above it.

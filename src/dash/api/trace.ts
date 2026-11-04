@@ -14,7 +14,7 @@ import { detailOf } from "./github-activity.ts";
 import { canSeeInternals } from "./staff.ts";
 import { hiddenRepos, needVisible } from "./visible.ts";
 
-type Ev = TraceEvent & { detail?: Record<string, unknown> };
+export type Ev = TraceEvent & { detail?: Record<string, unknown> };
 /** `staff`: operators and maintainers; `hidden`: repos the viewer may not see, whose runs are left out like getRun does. */
 type Ctx = { db: DatabaseSync; repo: string; n: number; ref: string; own: string; staff: boolean; operator: boolean; hidden: string[] };
 type Source = { kinds: TraceKind[]; run: (c: Ctx) => Ev[] };
@@ -24,11 +24,11 @@ const KINDS: TraceKind[] = ["github", "plan", "job", "model-call", "check", "rev
 
 const humanize = (id: string): string => { const t = id.replace(/[-_]+/g, " ").trim(); return t.charAt(0).toUpperCase() + t.slice(1); };
 /** A step's name as the dashboard shows it. */
-const stepTitle = (id: string): string => knownStep(id)?.title ?? humanize(id);
+export const stepTitle = (id: string): string => knownStep(id)?.title ?? humanize(id);
 const step = (name: string): TraceActor => ({ type: "step", name: name === "AutoCraft" ? name : stepTitle(name) });
 const person = (name: string | null | undefined): TraceActor => ({ type: "person", name: name || "unknown" });
 const model = (name: string | null | undefined, fallback: string): TraceActor => ({ type: "model", name: name || fallback });
-const clip = (s: string | null | undefined, n = 140): string => {
+export const clip = (s: string | null | undefined, n = 140): string => {
   const t = (s ?? "").replace(/\s+/g, " ").trim();
   return t.length > n ? `${t.slice(0, n - 1)}…` : t;
 };
@@ -270,6 +270,25 @@ const conversation: Source = {
     })),
 };
 
+/** The audit actions a viewer may see as writes: everyone the GitHub writes, maintainers the dashboard actions that are not operator-only, operators all (null). */
+export const writeActions = (staff: boolean, operator: boolean): string[] | null =>
+  operator ? null : [...new Set([...(staff ? AUDIT_ACTIONS.filter((a) => !operatorOnly(a)) : []), ...Object.keys(GITHUB_ACTIONS)])];
+
+/** One audit row as a trace event; the same wording and actor rules wherever writes are listed. */
+export function writeEvent(a: { rowid: number; at: string; login: string; action: string; details: string | null }, staff: boolean): Ev {
+  const { text, ...d } = obj(a.details);
+  const gh = a.action in GITHUB_ACTIONS;
+  const head = typeof d.head === "string" ? d.head : null;
+  const bad = typeof d.error === "string" ? ` (failed: ${clip(d.error, 80)})` : "";
+  const more = gh ? detailOf(a.action, { ...d, text }) : "";
+  return {
+    id: `audit:${a.rowid}`, kind: "write" as const, at: a.at, head, actor: !staff || (gh && typeof d.state === "string") ? step("AutoCraft") : person(a.login),
+    summary: gh ? `${GITHUB_ACTIONS[a.action]}${more ? `: ${more}` : ""}${bad}` : humanize(a.action),
+    ref: { auditRowid: a.rowid, ...(head ? { head } : {}) },
+    detail: staff ? { action: a.action, by: a.login, ...d, ...(typeof text === "string" ? { textLength: text.length } : {}) } : { action: GITHUB_ACTIONS[a.action] ?? a.action, detail: more },
+  };
+}
+
 /**
  * The audit rows of the item. Everyone sees the GitHub writes with the activity page's allow-listed detail; maintainers also see the
  * dashboard actions that are not operator-only (as the audit log does); operators see every row. The posted text stays out: only its length shows.
@@ -277,22 +296,10 @@ const conversation: Source = {
 const writes: Source = {
   kinds: ["write"],
   run({ db, ref, staff, operator }) {
-    const allowed = operator ? null : [...new Set([...(staff ? AUDIT_ACTIONS.filter((a) => !operatorOnly(a)) : []), ...Object.keys(GITHUB_ACTIONS)])];
+    const allowed = writeActions(staff, operator);
     return rows<{ rowid: number; at: string; login: string; action: string; details: string | null }>(db,
       `SELECT rowid, at, login, action, details FROM audit WHERE target = ?${allowed ? ` AND action IN (${allowed.map(() => "?").join(",")})` : ""}`, ref, ...(allowed ?? []))
-      .map((a) => {
-        const { text, ...d } = obj(a.details);
-        const gh = a.action in GITHUB_ACTIONS;
-        const head = typeof d.head === "string" ? d.head : null;
-        const bad = typeof d.error === "string" ? ` (failed: ${clip(d.error, 80)})` : "";
-        const more = gh ? detailOf(a.action, { ...d, text }) : "";
-        return {
-          id: `audit:${a.rowid}`, kind: "write" as const, at: a.at, head, actor: !staff || (gh && typeof d.state === "string") ? step("AutoCraft") : person(a.login),
-          summary: gh ? `${GITHUB_ACTIONS[a.action]}${more ? `: ${more}` : ""}${bad}` : humanize(a.action),
-          ref: { auditRowid: a.rowid, ...(head ? { head } : {}) },
-          detail: staff ? { action: a.action, by: a.login, ...d, ...(typeof text === "string" ? { textLength: text.length } : {}) } : { action: GITHUB_ACTIONS[a.action] ?? a.action, detail: more },
-        };
-      });
+      .map((a) => writeEvent(a, staff));
   },
 };
 

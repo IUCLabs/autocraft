@@ -140,6 +140,7 @@ export function createHttpApi(): Api {
         await post(`/api/area-proposals/${id}/dismiss`);
       },
     },
+    now: () => get("/api/now"),
     item: (repo, number) => get(`/api/items/${encodeURIComponent(repo)}/${encodeURIComponent(String(number))}`),
     itemTrace: (repo, number, q = {}) =>
       get(`/api/items/${encodeURIComponent(repo)}/${encodeURIComponent(String(number))}/trace${qs({ ...q, kinds: q.kinds?.join(",") })}`),

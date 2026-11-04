@@ -1,4 +1,4 @@
-// Home page: the pipeline as a flowchart. Every stage with its branches and
+// The pipeline as a flowchart. Every stage with its branches and
 // counts, the gates where people decide, and a panel per stage with its items,
 // steps, limits, recent jobs and prompts. Stage and repo live in the URL.
 import { Link } from "react-router-dom";
@@ -140,8 +140,8 @@ function FlowView(_: ViewProps) {
 export const flowModule: FeatureModule = {
   id: "flow",
   permission: "viewer",
-  nav: { label: "Pipeline flow", icon: ShareNetworkIcon, to: "/", group: "work", order: -1, phoneTab: true },
-  commands: [{ id: "go-flow", keys: "g h", label: "Go to the pipeline flow (home)", group: "Go to" }],
-  routes: [{ path: "/", view: { id: "flow", title: "Pipeline flow", panels: [{ id: "main", title: "Pipeline flow", component: FlowView, defaultSize: 100 }] } }],
+  nav: { label: "Pipeline flow", icon: ShareNetworkIcon, to: "/flow", group: "work", order: -1 },
+  commands: [{ id: "go-flow", keys: "g f", label: "Go to the pipeline flow", group: "Go to" }],
+  routes: [{ path: "flow", view: { id: "flow", title: "Pipeline flow", panels: [{ id: "main", title: "Pipeline flow", component: FlowView, defaultSize: 100 }] } }],
   prefetch: (api) => void api.flow(),
 };
