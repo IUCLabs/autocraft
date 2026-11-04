@@ -4,6 +4,7 @@ import { canAct } from "../../registry/permissions";
 import { setClock } from "../../lib/format";
 import { createAdminMock } from "./adminMock";
 import { createAgentsMock } from "./agentsMock";
+import { createTraceMock } from "./traceMock";
 import { createAreasMock } from "./areasMock";
 import { createConversationMock } from "./conversationMock";
 import { createBuildMock } from "./buildMock";
@@ -192,6 +193,7 @@ export function createMockApi(): Api {
     cost: (run) => wait(costReport(run), 80),
     ...createPipelineMock(me, changed),
     ...createAgentsMock(me, changed),
+    ...createTraceMock(),
     ...createBuildMock(me, changed),
     ...createQueueMock(me, changed),
     prompts: () => wait(promptsReport(null), 60),

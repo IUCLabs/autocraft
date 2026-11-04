@@ -1300,3 +1300,63 @@ CREATE TABLE IF NOT EXISTS job_items (
 );
 CREATE INDEX IF NOT EXISTS job_items_item ON job_items(repo, number, id);
 CREATE INDEX IF NOT EXISTS job_items_job ON job_items(job_id, id);
+
+-- The item trace (src/dash/api/trace.ts) reads every table by (repo, number); these had no index for it.
+CREATE INDEX IF NOT EXISTS agent_run_items_item ON agent_run_items(repo, number, run_id);
+CREATE INDEX IF NOT EXISTS build_tasks_item ON build_tasks(repo, number, id);
+CREATE INDEX IF NOT EXISTS decisions_item ON decisions(repo, number);
+CREATE INDEX IF NOT EXISTS push_outcomes_item ON push_outcomes(repo, number);
+
+-- Per-item GitHub detail the item list sync does not carry (src/activity.ts): the changed files of a PR's head, its commits, and its label
+-- and force-push timeline events. activity_sync records the head and update time each item was last read at.
+CREATE TABLE IF NOT EXISTS pr_files (
+  repo TEXT NOT NULL, number INTEGER NOT NULL,
+  head TEXT NOT NULL,
+  path TEXT NOT NULL,
+  additions INTEGER NOT NULL, deletions INTEGER NOT NULL,
+  change_type TEXT NOT NULL,          -- ADDED | MODIFIED | DELETED | RENAMED | COPIED | CHANGED
+  PRIMARY KEY (repo, number, head, path)
+) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS pr_commits (
+  repo TEXT NOT NULL, number INTEGER NOT NULL,
+  oid TEXT NOT NULL,
+  committed_at TEXT NOT NULL,
+  author TEXT,                        -- GitHub login; null when the commit email maps to no account
+  PRIMARY KEY (repo, number, oid)
+) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS item_activity (
+  repo TEXT NOT NULL, number INTEGER NOT NULL,
+  id TEXT NOT NULL,                   -- GraphQL node id of the timeline event
+  kind TEXT NOT NULL,                 -- labeled | unlabeled | force-push
+  at TEXT NOT NULL,
+  actor TEXT,
+  label TEXT,                         -- labeled and unlabeled
+  before_oid TEXT, after_oid TEXT,    -- force-push
+  PRIMARY KEY (repo, number, id)
+) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS activity_sync (
+  repo TEXT NOT NULL, number INTEGER NOT NULL,
+  head TEXT,
+  updated_at TEXT,
+  read_at TEXT NOT NULL,
+  PRIMARY KEY (repo, number)
+) WITHOUT ROWID;
+
+-- The items a batch decision (number IS NULL) names in its `items` JSON, so the trace finds them by (repo, number).
+-- Filled by the triggers below and once for older rows (src/db.ts: buildDecisionItems).
+CREATE TABLE IF NOT EXISTS decision_items (
+  repo TEXT NOT NULL, number INTEGER NOT NULL,
+  decision_id TEXT NOT NULL,
+  PRIMARY KEY (repo, number, decision_id)
+) WITHOUT ROWID;
+CREATE TRIGGER IF NOT EXISTS decision_items_ins AFTER INSERT ON decisions WHEN new.number IS NULL AND json_valid(new.items) AND json_type(new.items) = 'array' BEGIN
+  INSERT OR IGNORE INTO decision_items (repo, number, decision_id)
+    SELECT json_extract(j.value, '$.repo'), json_extract(j.value, '$.number'), new.id FROM json_each(new.items) j
+    WHERE typeof(json_extract(j.value, '$.repo')) = 'text' AND typeof(json_extract(j.value, '$.number')) = 'integer';
+END;
+CREATE TRIGGER IF NOT EXISTS decision_items_upd AFTER UPDATE OF items ON decisions WHEN new.number IS NULL AND json_valid(new.items) AND json_type(new.items) = 'array' BEGIN
+  DELETE FROM decision_items WHERE decision_id = new.id;
+  INSERT OR IGNORE INTO decision_items (repo, number, decision_id)
+    SELECT json_extract(j.value, '$.repo'), json_extract(j.value, '$.number'), new.id FROM json_each(new.items) j
+    WHERE typeof(json_extract(j.value, '$.repo')) = 'text' AND typeof(json_extract(j.value, '$.number')) = 'integer';
+END;

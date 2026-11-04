@@ -1,0 +1,434 @@
+// The item trace: every event of one GitHub item, newest first, from the tables that hold per-item history.
+// Each source is a small function that returns events for the item through an index on (repo, number) or a
+// key derived from it; the list carries no bodies. A source also keeps the fields its detail view shows.
+import { createHash } from "node:crypto";
+import type { DatabaseSync } from "node:sqlite";
+import type { ItemTrace, ItemTraceDetail, ItemTraceHeader, TraceActor, TraceEvent, TraceKind } from "../../../web/src/api/types.ts";
+import { GITHUB_ACTIONS } from "../../github/actions.ts";
+import { knownStep } from "../../runner/steps.ts";
+import { HttpError } from "../server/util.ts";
+import type { Req } from "../types.ts";
+import { AUDIT_ACTIONS, operatorOnly } from "./admin.ts";
+import { detailOf } from "./github-activity.ts";
+import { canSeeInternals } from "./staff.ts";
+import { hiddenRepos, needVisible } from "./visible.ts";
+
+type Ev = TraceEvent & { detail?: Record<string, unknown> };
+/** `staff`: operators and maintainers; `hidden`: repos the viewer may not see, whose runs are left out like getRun does. */
+type Ctx = { db: DatabaseSync; repo: string; n: number; ref: string; own: string; staff: boolean; operator: boolean; hidden: string[] };
+type Source = { kinds: TraceKind[]; run: (c: Ctx) => Ev[] };
+
+export const TRACE_PAGE_DEFAULT = 100, TRACE_PAGE_MAX = 500;
+const KINDS: TraceKind[] = ["github", "plan", "job", "model-call", "check", "review", "decision", "write", "step", "conversation"];
+
+const humanize = (id: string): string => { const t = id.replace(/[-_]+/g, " ").trim(); return t.charAt(0).toUpperCase() + t.slice(1); };
+/** A step's name as the dashboard shows it. */
+const stepTitle = (id: string): string => knownStep(id)?.title ?? humanize(id);
+const step = (name: string): TraceActor => ({ type: "step", name: name === "AutoCraft" ? name : stepTitle(name) });
+const person = (name: string | null | undefined): TraceActor => ({ type: "person", name: name || "unknown" });
+const model = (name: string | null | undefined, fallback: string): TraceActor => ({ type: "model", name: name || fallback });
+const clip = (s: string | null | undefined, n = 140): string => {
+  const t = (s ?? "").replace(/\s+/g, " ").trim();
+  return t.length > n ? `${t.slice(0, n - 1)}…` : t;
+};
+const json = <T>(s: string | null | undefined, fallback: T): T => { try { return s ? (JSON.parse(s) as T) : fallback; } catch { return fallback; } };
+const arr = <T = unknown>(s: string | null | undefined): T[] => { const v = json<unknown>(s, []); return Array.isArray(v) ? (v as T[]) : []; };
+const obj = (s: string | null | undefined): Record<string, unknown> => { const v = json<unknown>(s, {}); return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {}; };
+/** One format for every time, so mixed formats sort right; null when it is not a time. */
+const iso = (at: unknown): string | null => { const t = typeof at === "string" ? Date.parse(at) : NaN; return Number.isNaN(t) ? null : new Date(t).toISOString(); };
+const plural = (n: number, w: string): string => `${n} ${w}${n === 1 ? "" : "s"}`;
+const rows = <T>(db: DatabaseSync, sql: string, ...args: (string | number)[]): T[] => db.prepare(sql).all(...args) as T[];
+const count = (xs: unknown[]): string => plural(xs.length, "finding");
+
+const github: Source = {
+  kinds: ["github"],
+  run({ db, repo, n, own }) {
+    const out: Ev[] = [];
+    const it = db.prepare("SELECT kind, author, created_at, closed_at, merged_at, merged_by, head_oid FROM items WHERE repo = ? AND number = ?").get(repo, n) as
+      { kind: string; author: string | null; created_at: string | null; closed_at: string | null; merged_at: string | null; merged_by: string | null; head_oid: string | null } | undefined;
+    if (it?.created_at) out.push({ id: "gh:opened", kind: "github", at: it.created_at, head: null, actor: person(it.author), summary: `Opened ${it.kind === "pr" ? "pull request" : "issue"}`, ref: {} });
+    if (it?.merged_at) out.push({ id: "gh:merged", kind: "github", at: it.merged_at, head: it.head_oid, actor: person(it.merged_by), summary: "Merged", ref: {} });
+    else if (it?.closed_at) out.push({ id: "gh:closed", kind: "github", at: it.closed_at, head: null, actor: person(null), summary: "Closed", ref: {} });
+    for (const c of rows<{ id: string; kind: string | null; author: string | null; created_at: string; review_state: string | null; commit_oid: string | null; len: number }>(db,
+      "SELECT id, kind, author, created_at, review_state, commit_oid, LENGTH(COALESCE(body, '')) AS len FROM comments WHERE repo = ? AND number = ? AND created_at IS NOT NULL", repo, n)) {
+      const ours = own !== "" && c.author === own;
+      const what = c.kind === "review" ? `review (${(c.review_state ?? "commented").toLowerCase().replace("_", " ")})` : "comment";
+      out.push({
+        id: `comment:${c.id}`, kind: "github", at: c.created_at, head: c.commit_oid, actor: ours ? step("AutoCraft") : person(c.author),
+        summary: `${ours ? "AutoCraft posted a" : "Posted a"} ${what}, ${c.len} characters`, ref: { commentId: c.id },
+      });
+    }
+    for (const c of rows<{ oid: string; committed_at: string; author: string | null }>(db, "SELECT oid, committed_at, author FROM pr_commits WHERE repo = ? AND number = ?", repo, n)) {
+      // Our own commits are shown by their audit rows.
+      if (own !== "" && c.author === own) continue;
+      out.push({ id: `commit:${c.oid}`, kind: "github", at: c.committed_at, head: c.oid, actor: person(c.author), summary: `Pushed commit ${c.oid.slice(0, 7)}`, ref: { head: c.oid } });
+    }
+    for (const a of rows<{ id: string; kind: string; at: string; actor: string | null; label: string | null; after_oid: string | null; before_oid: string | null }>(db,
+      "SELECT id, kind, at, actor, label, after_oid, before_oid FROM item_activity WHERE repo = ? AND number = ?", repo, n)) {
+      const ours = own !== "" && a.actor === own;
+      const summary = a.kind === "force-push" ? `Force-pushed ${(a.before_oid ?? "").slice(0, 7)} → ${(a.after_oid ?? "").slice(0, 7)}` : `${a.kind === "labeled" ? "Added" : "Removed"} label ${a.label ?? ""}`;
+      out.push({ id: `activity:${a.id}`, kind: "github", at: a.at, head: a.kind === "force-push" ? a.after_oid : null, actor: ours ? step("AutoCraft") : person(a.actor), summary, ref: a.after_oid ? { head: a.after_oid } : {} });
+    }
+    return out;
+  },
+};
+
+const stages: Source = {
+  kinds: ["plan"],
+  run: ({ db, repo, n }) => rows<{ rowid: number; stage: string; at: string; actor: string | null; note: string | null }>(db,
+    "SELECT rowid, stage, at, actor, note FROM stages WHERE repo = ? AND number = ?", repo, n)
+    .map((s) => ({ id: `stage:${s.rowid}`, kind: "plan" as const, at: s.at, head: null, actor: step(s.actor || "pipeline"), summary: `Stage ${s.stage}${s.note ? `: ${clip(s.note)}` : ""}`, ref: {} })),
+};
+
+const plans: Source = {
+  kinds: ["plan"],
+  run: ({ db, repo, n }) => rows<{ id: number; head: string | null; old_state: string | null; new_state: string; wait: string | null; reasons: string; at: string }>(db,
+    "SELECT id, head, old_state, new_state, wait, reasons, at FROM plan_history WHERE repo = ? AND number = ?", repo, n)
+    .map((p) => ({
+      id: `plan:${p.id}`, kind: "plan" as const, at: p.at, head: p.head, actor: step("planner"),
+      summary: `Plan ${p.old_state ? `${p.old_state} → ` : "started as "}${p.new_state}${p.wait ? `, waiting for ${clip(p.wait, 80)}` : ""}`,
+      ref: p.head ? { head: p.head } : {}, detail: { from: p.old_state, to: p.new_state, wait: p.wait, reasons: arr<string>(p.reasons) },
+    })),
+};
+
+const jobs: Source = {
+  kinds: ["job"],
+  run: ({ db, repo, n }) => rows<{ id: number; job_id: number; outcome: string | null; at: string; step: string | null; state: string | null; error: string | null }>(db,
+    "SELECT ji.id, ji.job_id, ji.outcome, ji.at, j.step, j.state, j.error FROM job_items ji LEFT JOIN jobs j ON j.id = ji.job_id WHERE ji.repo = ? AND ji.number = ?", repo, n)
+    .map((j) => ({
+      id: `job:${j.id}`, kind: "job" as const, at: j.at, head: null, actor: step(j.step ?? "job"),
+      summary: `${j.step ? stepTitle(j.step) : "Job"}: ${clip(j.outcome) || j.state || "ran"}`, ref: { jobId: j.job_id }, detail: { step: j.step, state: j.state, outcome: j.outcome, error: j.error },
+    })),
+};
+
+/** SQL that leaves out runs that also touched a hidden repo (one `?` per name). */
+const hiddenSql = (hidden: string[]): string => (hidden.length ? ` AND NOT EXISTS (SELECT 1 FROM agent_run_items x WHERE x.run_id = r.id AND x.repo IN (${hidden.map(() => "?").join(",")}))` : "");
+
+const modelCalls: Source = {
+  kinds: ["model-call"],
+  run: ({ db, repo, n, hidden }) => rows<{ id: number; step: string; model: string; provider: string; state: string; started_at: string; ended_at: string | null; input_tokens: number | null; output_tokens: number | null;
+    cost_usd: number | null; summary: string | null; label: string | null; tools: number; job_id: number | null }>(db,
+    `SELECT r.id, r.step, r.model, r.provider, r.state, r.started_at, r.ended_at, r.input_tokens, r.output_tokens, r.cost_usd, r.summary, r.job_id,
+       COALESCE(a.label, r.account_id) AS label, (SELECT COUNT(*) FROM agent_run_tools t WHERE t.run_id = r.id) AS tools
+     FROM agent_run_items i JOIN agent_runs r ON r.id = i.run_id LEFT JOIN claude_accounts a ON a.id = r.account_id WHERE i.repo = ? AND i.number = ?${hiddenSql(hidden)}`, repo, n, ...hidden)
+    .map((r) => ({
+      id: `run:${r.id}`, kind: "model-call" as const, at: r.started_at, head: null, actor: model(r.model, "model"),
+      summary: `${stepTitle(r.step)}: ${r.state === "running" ? "running" : r.state === "failed" ? "failed" : clip(r.summary, 100) || "done"}`,
+      ref: { runId: r.id, ...(r.job_id !== null ? { jobId: r.job_id } : {}) },
+      call: { model: r.model, provider: r.provider, account: r.label, state: r.state, inputTokens: r.input_tokens, outputTokens: r.output_tokens, costUsd: r.cost_usd, toolCalls: r.tools, endedAt: r.ended_at },
+    })),
+};
+
+const CHECK_NAMES: Record<string, string> = { fmt: "Format check", clippy: "Clippy", check: "Build check", test: "Tests" };
+const outcomeWords = (o: string | null): string => (o === null ? "running" : /^0 findings?$/.test(o) ? "no findings" : /^exit \d+/.test(o) ? `failed (${o})` : o);
+
+const checks: Source = {
+  kinds: ["check"],
+  run({ db, repo, n }) {
+    const out: Ev[] = [];
+    for (const c of rows<{ id: number; run_id: number | null; step: string; head: string; command: string; crate: string | null; test_name: string | null; task_id: number | null; outcome: string | null; started_at: string }>(db,
+      "SELECT id, run_id, step, head, command, crate, test_name, task_id, outcome, started_at FROM model_checks WHERE repo = ? AND number = ?", repo, n))
+      out.push({
+        id: `check:${c.id}`, kind: "check", at: c.started_at, head: c.head, actor: step(c.step),
+        summary: `${CHECK_NAMES[c.command] ?? humanize(c.command)}${c.crate ? ` on ${c.crate}` : ""}${c.test_name ? ` (${c.test_name})` : ""}: ${outcomeWords(c.outcome)}`,
+        ref: { checkId: c.id, head: c.head, ...(c.run_id !== null ? { runId: c.run_id } : {}), ...(c.task_id !== null ? { taskId: c.task_id } : {}) },
+      });
+    for (const t of rows<{ id: number; job_id: number | null; step: string; head_sha: string; state: string; summary: string | null; queued_at: string }>(db,
+      "SELECT id, job_id, step, head_sha, state, summary, queued_at FROM build_tasks WHERE repo = ? AND number = ?", repo, n))
+      out.push({
+        id: `task:${t.id}`, kind: "check", at: t.queued_at, head: t.head_sha, actor: step(t.step),
+        summary: `Build task ${t.state}${t.summary ? `: ${clip(t.summary, 100)}` : ""}`, ref: { taskId: t.id, head: t.head_sha, ...(t.job_id !== null ? { jobId: t.job_id } : {}) },
+      });
+    for (const p of rows<{ id: number; at: string; stage: string; action: string; to_oid: string; before_res: string; after_res: string | null; outcome: string | null }>(db,
+      "SELECT id, at, stage, action, to_oid, before_res, after_res, outcome FROM push_outcomes WHERE repo = ? AND number = ?", repo, n))
+      out.push({
+        id: `push:${p.id}`, kind: "check", at: p.at, head: p.to_oid, actor: step(p.stage),
+        summary: `${GITHUB_ACTIONS[p.action] ?? humanize(p.action)} by AutoCraft: required checks ${p.before_res} → ${p.after_res ?? "pending"}${p.outcome ? `, ${p.outcome}` : ""}`, ref: { head: p.to_oid },
+      });
+    for (const p of rows<{ id: number; kind: string; subject: string; round: number; verdict: string; model: string; reasons: string; created_at: string }>(db,
+      "SELECT id, kind, subject, round, verdict, model, reasons, created_at FROM patch_checks WHERE repo = ? AND number = ?", repo, n))
+      out.push({
+        id: `patchcheck:${p.id}`, kind: "check", at: p.created_at, head: null, actor: model(p.model, "model"), summary: `Patch check (${p.kind}, round ${p.round}): ${p.verdict}`,
+        ref: {}, detail: { subject: p.subject, reasons: p.reasons },
+      });
+    return out;
+  },
+};
+
+type OpusRow = { head_oid: string; at: string; model: string | null; mode: string | null; verdict: string | null; sure: number | null; reason: string | null; risks: string | null; fixes: string | null };
+const opusEvent = (r: OpusRow, key: string): Ev => ({
+  id: `review:${key}`, kind: "review", at: r.at, head: r.head_oid, actor: model(r.model, "opus"),
+  summary: `Opus review: ${r.verdict ?? "no verdict"}${arr(r.fixes).length ? ` with ${plural(arr(r.fixes).length, "fix")}` : ""}${r.sure === 0 ? ", not sure" : ""}`, ref: { reviewId: key, head: r.head_oid },
+  detail: { mode: r.mode, verdict: r.verdict, sure: r.sure === 1, reason: r.reason, fixes: arr(r.fixes), risks: arr<string>(r.risks) },
+});
+
+const reviews: Source = {
+  kinds: ["review"],
+  run({ db, repo, n, staff }) {
+    const out: Ev[] = [];
+    const seen = new Set<string>();
+    for (const r of rows<OpusRow & { rowid: number }>(db, "SELECT rowid, head_oid, at, model, mode, verdict, sure, reason, risks, fixes FROM opus_review_history WHERE repo = ? AND number = ?", repo, n)) {
+      seen.add(`${r.head_oid}|${r.at}`);
+      out.push(opusEvent(r, `opus:${r.rowid}`));
+    }
+    // Reviews stored before the history table existed.
+    for (const r of rows<OpusRow>(db, "SELECT head_oid, at, model, mode, verdict, sure, reason, risks, fixes FROM opus_reviews WHERE repo = ? AND number = ?", repo, n))
+      if (!seen.has(`${r.head_oid}|${r.at}`)) out.push(opusEvent(r, `opus-latest:${r.head_oid}`));
+    for (const r of rows<{ head_oid: string; at: string; model: string | null; findings: string | null; error: string | null; searched: string | null }>(db,
+      "SELECT head_oid, at, model, findings, error, searched FROM premerge_reviews WHERE repo = ? AND number = ?", repo, n)) {
+      const f = arr(r.findings);
+      out.push({
+        id: `review:premerge:${r.head_oid}`, kind: "review", at: r.at, head: r.head_oid, actor: model(r.model, "premerge"),
+        summary: r.error ? `Pre-merge review failed: ${clip(r.error, 100)}` : `Pre-merge review: ${count(f)}`,
+        ref: { reviewId: `premerge:${r.head_oid}`, head: r.head_oid }, detail: { findings: f, searched: r.searched, error: r.error },
+      });
+    }
+    for (const r of rows<{ merge_sha: string; at: string; model: string | null; findings: string | null; error: string | null }>(db,
+      "SELECT merge_sha, at, model, findings, error FROM postmerge_reviews WHERE repo = ? AND number = ?", repo, n)) {
+      const f = arr<Record<string, unknown>>(r.findings);
+      out.push({
+        id: `review:postmerge:${r.merge_sha}`, kind: "review", at: r.at, head: r.merge_sha, actor: model(r.model, "postmerge"),
+        summary: r.error ? `Post-merge review failed: ${clip(r.error, 100)}` : `Post-merge review: ${count(f)}`,
+        ref: { reviewId: `postmerge:${r.merge_sha}`, head: r.merge_sha },
+        // Which stage missed a finding and why is for staff, as on the item page (postmergeOf).
+        detail: { findings: staff ? f : f.map(({ missed_by: _by, missed_why: _why, ...rest }) => rest), error: r.error },
+      });
+    }
+    for (const v of rows<{ head_sha: string; kind: string; state: string; reason: string; summary: string | null; note: string | null; created_at: string; head_task_id: number | null }>(db,
+      "SELECT head_sha, kind, state, reason, summary, note, created_at, head_task_id FROM verifications WHERE repo = ? AND number = ?", repo, n))
+      out.push({
+        id: `verify:${v.head_sha}`, kind: "review", at: v.created_at, head: v.head_sha, actor: step("verify"), summary: `Verification (${v.kind}): ${v.state}`,
+        ref: { head: v.head_sha, ...(v.head_task_id !== null ? { taskId: v.head_task_id } : {}) }, detail: { reason: v.reason, summary: v.summary, note: v.note },
+      });
+    return out;
+  },
+};
+
+/** Decisions that name the item: its own, a duplicate group's, and a batch's (decision_items, filled from the `items` JSON). */
+function decisionIds({ db, repo, n }: Ctx): string[] {
+  const ids = new Set<string>();
+  for (const sql of ["SELECT id FROM decisions WHERE repo = ? AND number = ?", "SELECT decision_id AS id FROM dupe_group_items WHERE repo = ? AND number = ?", "SELECT decision_id AS id FROM decision_items WHERE repo = ? AND number = ?"])
+    for (const r of rows<{ id: string }>(db, sql, repo, n)) ids.add(r.id);
+  return [...ids].sort();
+}
+
+const decisions: Source = {
+  kinds: ["decision"],
+  run(c) {
+    const { db } = c;
+    const out: Ev[] = [];
+    for (const id of decisionIds(c)) {
+      const d = db.prepare("SELECT id, kind, question, asked_at, asked_by, answer, answered_at, answered_by FROM decisions WHERE id = ?").get(id) as
+        { id: string; kind: string; question: string; asked_at: string; asked_by: string | null; answer: string | null; answered_at: string | null; answered_by: string | null } | undefined;
+      if (!d) continue;
+      out.push({ id: `decision:${d.id}:asked`, kind: "decision", at: d.asked_at, head: null, actor: step(d.asked_by || "decide"), summary: `Asked: ${clip(d.question, 100)}`, ref: { decisionId: d.id } });
+      if (d.answered_at) out.push({ id: `decision:${d.id}:answered`, kind: "decision", at: d.answered_at, head: null, actor: person(d.answered_by), summary: `Answered: ${d.answer ?? ""}`, ref: { decisionId: d.id } });
+      for (const c of rows<{ id: string; login: string; at: string; len: number }>(db, "SELECT id, login, at, LENGTH(body) AS len FROM decision_comments WHERE decision_id = ?", d.id))
+        out.push({ id: `decision:${d.id}:feedback:${c.id}`, kind: "decision", at: c.at, head: null, actor: person(c.login), summary: `Feedback on the question, ${c.len} characters`, ref: { decisionId: d.id } });
+    }
+    return out;
+  },
+};
+
+type FixRow = { rowid: number; head: string; to_head: string | null; state: string; reason: string | null; files: string | null; attempt: number; created_at: string; task_id?: number | null; kind?: string };
+const fixEvent = (f: FixRow, id: string, name: string, label: string): Ev => ({
+  id: `${id}:${f.rowid}`, kind: "step", at: f.created_at, head: f.head, actor: step(name), summary: `${label}, try ${f.attempt}: ${f.state}${f.reason ? `, ${clip(f.reason, 100)}` : ""}`,
+  ref: { head: f.head, ...(f.to_head ? { toHead: f.to_head } : {}), ...(f.task_id ? { taskId: f.task_id } : {}) }, detail: { to: f.to_head, reason: f.reason, files: arr<string>(f.files) },
+});
+
+const ACTION_NAMES: Record<string, string> = { "comment-close": "Comment and close" };
+
+const steps: Source = {
+  kinds: ["step"],
+  run({ db, repo, n }) {
+    const out: Ev[] = [];
+    for (const f of rows<FixRow>(db, "SELECT rowid, from_head AS head, to_head, state, reason, files, attempt, created_at FROM fixups WHERE repo = ? AND number = ?", repo, n)) out.push(fixEvent(f, "fixup", "fixup", "Fix-up"));
+    for (const f of rows<FixRow>(db, "SELECT rowid, head, to_head, kind, state, reason, files, attempt, task_id, created_at FROM ci_fixes WHERE repo = ? AND number = ?", repo, n)) out.push(fixEvent(f, "cifix", "cifix", `CI fix (${f.kind})`));
+    for (const f of rows<FixRow>(db, "SELECT rowid, from_head AS head, to_head, state, reason, files, attempt, created_at FROM conflict_merges WHERE repo = ? AND number = ?", repo, n)) out.push(fixEvent(f, "conflict", "conflict", "Conflict merge"));
+    for (const m of rows<{ rowid: number; head_oid: string; at: string; path: string; method: string | null; outcome: string; reason: string | null }>(db,
+      "SELECT rowid, head_oid, at, path, method, outcome, reason FROM merges WHERE repo = ? AND number = ?", repo, n))
+      out.push({ id: `merge:${m.rowid}`, kind: "step", at: m.at, head: m.head_oid, actor: step("merge"), summary: `Merge attempt (${m.path}${m.method ? `, ${m.method}` : ""}): ${m.outcome}${m.reason ? `, ${clip(m.reason, 100)}` : ""}`, ref: { head: m.head_oid } });
+    for (const a of rows<{ id: number; decision_id: string; kind: string; state: string; reason: string | null; created_at: string }>(db,
+      "SELECT id, decision_id, kind, state, reason, created_at FROM actions WHERE repo = ? AND number = ?", repo, n))
+      out.push({ id: `action:${a.id}`, kind: "step", at: a.created_at, head: null, actor: step("act"), summary: `${ACTION_NAMES[a.kind] ?? humanize(a.kind)}: ${a.state}${a.reason ? `, ${clip(a.reason, 100)}` : ""}`, ref: { decisionId: a.decision_id } });
+    return out;
+  },
+};
+
+const conversation: Source = {
+  kinds: ["conversation"],
+  run: ({ db, repo, n }) => rows<{ id: number; kind: string; login: string; at: string; len: number; status: string | null }>(db,
+    "SELECT id, kind, login, at, LENGTH(body) AS len, status FROM conversation_turns WHERE repo = ? AND number = ?", repo, n)
+    .map((t) => ({
+      id: `turn:${t.id}`, kind: "conversation" as const, at: t.at, head: null, actor: t.kind === "opus" ? model("opus", "opus") : t.kind === "system" ? step("system") : person(t.login),
+      summary: `Conversation ${t.kind} message, ${t.len} characters${t.status && t.status !== "answered" ? ` (${t.status})` : ""}`, ref: {},
+    })),
+};
+
+/**
+ * The audit rows of the item. Everyone sees the GitHub writes with the activity page's allow-listed detail; maintainers also see the
+ * dashboard actions that are not operator-only (as the audit log does); operators see every row. The posted text stays out: only its length shows.
+ */
+const writes: Source = {
+  kinds: ["write"],
+  run({ db, ref, staff, operator }) {
+    const allowed = operator ? null : [...new Set([...(staff ? AUDIT_ACTIONS.filter((a) => !operatorOnly(a)) : []), ...Object.keys(GITHUB_ACTIONS)])];
+    return rows<{ rowid: number; at: string; login: string; action: string; details: string | null }>(db,
+      `SELECT rowid, at, login, action, details FROM audit WHERE target = ?${allowed ? ` AND action IN (${allowed.map(() => "?").join(",")})` : ""}`, ref, ...(allowed ?? []))
+      .map((a) => {
+        const { text, ...d } = obj(a.details);
+        const gh = a.action in GITHUB_ACTIONS;
+        const head = typeof d.head === "string" ? d.head : null;
+        const bad = typeof d.error === "string" ? ` (failed: ${clip(d.error, 80)})` : "";
+        const more = gh ? detailOf(a.action, { ...d, text }) : "";
+        return {
+          id: `audit:${a.rowid}`, kind: "write" as const, at: a.at, head, actor: !staff || (gh && typeof d.state === "string") ? step("AutoCraft") : person(a.login),
+          summary: gh ? `${GITHUB_ACTIONS[a.action]}${more ? `: ${more}` : ""}${bad}` : humanize(a.action),
+          ref: { auditRowid: a.rowid, ...(head ? { head } : {}) },
+          detail: staff ? { action: a.action, by: a.login, ...d, ...(typeof text === "string" ? { textLength: text.length } : {}) } : { action: GITHUB_ACTIONS[a.action] ?? a.action, detail: more },
+        };
+      });
+  },
+};
+
+const SOURCES: Source[] = [github, stages, plans, jobs, modelCalls, checks, reviews, decisions, steps, conversation, writes];
+
+/** Heads are known for pushes, reviews and checks only; a model call, job or decision between two of them belongs to the head current at its time. */
+function carryHeads(events: Ev[]): void {
+  const asc = [...events].sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : a.id < b.id ? -1 : 1));
+  let current: string | null = null;
+  for (const e of asc) {
+    if (e.head) current = e.head;
+    else if (current && (e.kind === "model-call" || e.kind === "job" || e.kind === "decision" || e.kind === "conversation")) e.head = current;
+  }
+}
+
+/** Every source runs whatever the filter, so a filtered event still gets the head its neighbours carry. */
+function gather(c: Ctx, kinds: Set<TraceKind> | null): Ev[] {
+  const all: Ev[] = [];
+  for (const e of SOURCES.flatMap((s) => s.run(c))) {
+    const at = iso(e.at);
+    if (at) all.push({ ...e, at });
+  }
+  carryHeads(all);
+  return (kinds ? all.filter((e) => kinds.has(e.kind)) : all).sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : a.id < b.id ? 1 : -1));
+}
+
+function headerOf({ db, repo, n, own }: Ctx): ItemTraceHeader {
+  const plan = db.prepare("SELECT head, state, actions, wait, reasons, note, view, planned_at FROM item_plans WHERE repo = ? AND number = ?").get(repo, n) as
+    { head: string | null; state: string; actions: string; wait: string | null; reasons: string; note: string | null; view: string; planned_at: string } | undefined;
+  const view = obj(plan?.view);
+  const acts = arr<{ kind?: unknown; head?: unknown }>(plan?.actions).filter((a) => a && typeof a.kind === "string");
+  const it = db.prepare("SELECT assignees FROM items WHERE repo = ? AND number = ?").get(repo, n) as { assignees: string | null } | undefined;
+  const assignees = arr(it?.assignees).filter((x): x is string => typeof x === "string");
+  const hold = db.prepare("SELECT held_by, held_at FROM merge_holds WHERE repo = ? AND number = ?").get(repo, n) as { held_by: string; held_at: string } | undefined;
+  return {
+    now: {
+      state: plan?.state ?? null, head: plan?.head ?? null, plannedAt: plan?.planned_at ?? null,
+      text: plan ? (typeof view.next === "string" ? view.next : plan.wait ?? plan.note ?? plan.state) : "Not planned yet", waitsOn: plan?.wait ?? null, reasons: arr<string>(plan?.reasons), note: plan?.note ?? null,
+    },
+    next: acts.map((a) => ({ kind: a.kind as string, head: typeof a.head === "string" ? a.head : null })),
+    who: {
+      assignees, autocraftAssigned: own !== "" && assignees.includes(own),
+      openDecisions: decisionIds({ db, repo, n } as Ctx).flatMap((id) => {
+        const d = db.prepare("SELECT id, kind, question FROM decisions WHERE id = ? AND answer IS NULL").get(id) as { id: string; kind: string; question: string } | undefined;
+        return d ? [{ id: d.id, kind: d.kind, question: clip(d.question, 140) }] : [];
+      }),
+      holds: hold ? [{ by: hold.held_by, at: hold.held_at }] : [],
+    },
+  };
+}
+
+/**
+ * A cheap fingerprint of what the item's sources hold: counts, newest keys and the states that change in place, each read through an
+ * index on (repo, number). Equal fingerprints mean the answer would not change, so `since` is answered without gathering anything.
+ */
+const FINGERPRINT = [
+  "SELECT updated_at, head_oid, state, assignees, closed_at, merged_at FROM items WHERE repo = ? AND number = ?",
+  "SELECT planned_at, state, head FROM item_plans WHERE repo = ? AND number = ?",
+  "SELECT COUNT(*), MAX(created_at) FROM comments WHERE repo = ? AND number = ?",
+  "SELECT COUNT(*), MAX(rowid) FROM stages WHERE repo = ? AND number = ?",
+  "SELECT COUNT(*), MAX(id) FROM plan_history WHERE repo = ? AND number = ?",
+  "SELECT COUNT(*), MAX(id) FROM job_items WHERE repo = ? AND number = ?",
+  "SELECT COUNT(*), MAX(i.run_id), SUM(r.ended_at IS NOT NULL), SUM(r.cost_usd IS NOT NULL) FROM agent_run_items i JOIN agent_runs r ON r.id = i.run_id WHERE i.repo = ? AND i.number = ?",
+  "SELECT COUNT(*), MAX(id), SUM(outcome IS NOT NULL) FROM model_checks WHERE repo = ? AND number = ?",
+  "SELECT COUNT(*), MAX(id), SUM(ended_at IS NOT NULL), group_concat(state) FROM build_tasks WHERE repo = ? AND number = ?",
+  "SELECT COUNT(*), MAX(id), SUM(outcome IS NOT NULL) FROM push_outcomes WHERE repo = ? AND number = ?",
+  "SELECT COUNT(*), MAX(id) FROM patch_checks WHERE repo = ? AND number = ?",
+  "SELECT COUNT(*), MAX(rowid) FROM opus_review_history WHERE repo = ? AND number = ?",
+  "SELECT MAX(at), COUNT(*) FROM opus_reviews WHERE repo = ? AND number = ?",
+  "SELECT MAX(at), COUNT(*), SUM(tries) FROM premerge_reviews WHERE repo = ? AND number = ?",
+  "SELECT MAX(at), COUNT(*), SUM(tries) FROM postmerge_reviews WHERE repo = ? AND number = ?",
+  "SELECT COUNT(*), MAX(COALESCE(finished_at, created_at)), group_concat(state) FROM verifications WHERE repo = ? AND number = ?",
+  "SELECT COUNT(*), group_concat(state || COALESCE(to_head, '')) FROM fixups WHERE repo = ? AND number = ?",
+  "SELECT COUNT(*), group_concat(state || COALESCE(to_head, '')) FROM ci_fixes WHERE repo = ? AND number = ?",
+  "SELECT COUNT(*), group_concat(state || COALESCE(to_head, '')) FROM conflict_merges WHERE repo = ? AND number = ?",
+  "SELECT COUNT(*), MAX(at) FROM merges WHERE repo = ? AND number = ?",
+  "SELECT COUNT(*), group_concat(state) FROM actions WHERE repo = ? AND number = ?",
+  "SELECT COUNT(*), MAX(id), group_concat(COALESCE(status, '')) FROM conversation_turns WHERE repo = ? AND number = ?",
+  "SELECT read_at FROM activity_sync WHERE repo = ? AND number = ?",
+  "SELECT held_at FROM merge_holds WHERE repo = ? AND number = ?",
+];
+
+function fingerprint(c: Ctx, qkey: string): string {
+  const { db, repo, n, ref } = c;
+  const parts: unknown[] = [qkey, c.staff, c.operator, c.hidden];
+  for (const sql of FINGERPRINT) parts.push(Object.values((db.prepare(sql).get(repo, n) ?? {}) as object));
+  parts.push(Object.values(db.prepare("SELECT COUNT(*), MAX(rowid), SUM(LENGTH(COALESCE(details, ''))) FROM audit WHERE target = ?").get(ref) as object));
+  for (const id of decisionIds(c))
+    parts.push(Object.values(db.prepare(`SELECT d.id, d.answer, d.answered_at, d.applied_at, d.asked_at, (SELECT COUNT(*) FROM decision_comments x WHERE x.decision_id = d.id) FROM decisions d WHERE d.id = ?`).get(id) as object));
+  return createHash("sha1").update(JSON.stringify(parts)).digest("hex").slice(0, 16);
+}
+
+async function context(db: DatabaseSync, req: Req): Promise<Ctx> {
+  const repo = req.params.repo!;
+  const n = Number(req.params.n);
+  if (!Number.isInteger(n)) throw new HttpError(400, "not an item number");
+  await needVisible(db, req, repo);
+  if (!db.prepare("SELECT 1 FROM items WHERE repo = ? AND number = ?").get(repo, n)) throw new HttpError(404, `no item ${repo}#${n} in the mirror`);
+  const own = (db.prepare("SELECT value FROM main.settings WHERE key = 'pipeline_login'").get() as { value: string } | undefined)?.value ?? "";
+  return { db, repo, n, ref: `${repo}#${n}`, own, staff: canSeeInternals(req), operator: req.user.role === "operator", hidden: await hiddenRepos(db, req) };
+}
+
+const strip = ({ detail: _d, ...e }: Ev): TraceEvent => e;
+
+export async function trace(db: DatabaseSync, req: Req): Promise<ItemTrace | { unchanged: true; stamp: string }> {
+  const c = await context(db, req);
+  const q = (k: string) => req.query.get(k) || undefined;
+  const limitRaw = q("limit");
+  if (limitRaw !== undefined && !/^\d{1,4}$/.test(limitRaw)) throw new HttpError(400, "limit must be a whole number");
+  const limit = Math.min(Math.max(Number(limitRaw ?? TRACE_PAGE_DEFAULT), 1), TRACE_PAGE_MAX);
+  let kinds: Set<TraceKind> | null = null;
+  const kq = q("kinds");
+  if (kq) {
+    const list = kq.split(",");
+    if (list.some((k) => !KINDS.includes(k as TraceKind))) throw new HttpError(400, `kinds are ${KINDS.join(", ")}`);
+    kinds = new Set(list as TraceKind[]);
+  }
+  const only = q("autocraftOnly") === "1" || q("autocraftOnly") === "true";
+  const cursor = q("cursor");
+  let after: { at: string; id: string } | null = null;
+  if (cursor) {
+    const i = cursor.indexOf("|");
+    const at = i < 1 ? null : iso(cursor.slice(0, i));
+    if (!at) throw new HttpError(400, "bad cursor");
+    after = { at, id: cursor.slice(i + 1) };
+  }
+  const stamp = fingerprint(c, JSON.stringify([kq ?? "", only, limit]));
+  // `since` applies to the first page; a later page is always read.
+  if (!cursor && q("since") === stamp) return { unchanged: true, stamp };
+  let events = gather(c, kinds);
+  if (only) events = events.filter((e) => e.actor.type !== "person");
+  const rest = after ? events.filter((e) => e.at < after.at || (e.at === after.at && e.id < after.id)) : events;
+  const page = rest.slice(0, limit).map(strip);
+  const last = page[page.length - 1];
+  return { header: headerOf(c), events: page, nextCursor: rest.length > limit && last ? `${last.at}|${last.id}` : null, stamp };
+}
+
+/** The fields an event keeps back from the list, for the kinds whose detail has no endpoint of its own (runs, build tasks and decisions have theirs). */
+export async function traceDetail(db: DatabaseSync, req: Req): Promise<ItemTraceDetail> {
+  const c = await context(db, req);
+  const e = gather(c, null).find((x) => x.id === (req.query.get("id") ?? ""));
+  if (!e) throw new HttpError(404, "no such event");
+  return { id: e.id, kind: e.kind, at: e.at, summary: e.summary, fields: e.detail ?? {} };
+}

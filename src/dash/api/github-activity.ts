@@ -28,7 +28,7 @@ function parseTarget(t: string | null): { repo: string; number: number | null; b
 const short = (s: unknown): string => String(s ?? "").slice(0, 7);
 const clip = (s: string, n: number): string => (s.length > n ? `${s.slice(0, n - 1)}…` : s).replace(/\s+/g, " ");
 
-function detailOf(action: string, d: Record<string, unknown>): string {
+export function detailOf(action: string, d: Record<string, unknown>): string {
   const list = Array.isArray(d.labels) ? (d.labels as unknown[]).join(", ") : "";
   switch (action) {
     case "labels-apply": return list;

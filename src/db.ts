@@ -360,6 +360,23 @@ function buildItemStage(db: DatabaseSync): void {
   }
 }
 
+// Fills decision_items once for batch decisions asked before the triggers existed.
+function buildDecisionItems(db: DatabaseSync): void {
+  if (db.prepare("SELECT 1 FROM main.settings WHERE key = 'decision_items_built'").get()) return;
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    db.exec(`INSERT OR IGNORE INTO main.decision_items (repo, number, decision_id)
+      SELECT json_extract(j.value, '$.repo'), json_extract(j.value, '$.number'), d.id FROM main.decisions d, json_each(d.items) j
+      WHERE d.number IS NULL AND json_valid(d.items) AND json_type(d.items) = 'array'
+        AND typeof(json_extract(j.value, '$.repo')) = 'text' AND typeof(json_extract(j.value, '$.number')) = 'integer'`);
+    db.exec("INSERT OR IGNORE INTO main.settings (key, value) VALUES ('decision_items_built', '1')");
+    db.exec("COMMIT");
+  } catch (e) {
+    db.exec("ROLLBACK");
+    throw e;
+  }
+}
+
 /** Identifies the schema this code expects; the database stores the stamp it was last migrated with. */
 function schemaStamp(sql: string): string {
   return createHash("sha256").update(sql).update(JSON.stringify([ADDED_COLUMNS, DROPPED_COLUMNS, ADDED_INDEXES, MIGRATION_VERSION, liveSql(), BOOKKEEPING_COLUMNS])).digest("hex").slice(0, 16);
@@ -399,6 +416,7 @@ export function connect(path: string = dbPath()): DatabaseSync {
   buildSearchIndex(db);
   buildHashes(db);
   buildItemStage(db);
+  buildDecisionItems(db);
   // Progress counts from here: the first sync, or now for a new database.
   db.exec(`INSERT OR IGNORE INTO main.settings (key, value) SELECT 'tracking_started_at',
     COALESCE((SELECT MIN(synced_at) FROM main.repos), strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))`);
