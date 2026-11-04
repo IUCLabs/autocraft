@@ -16,6 +16,8 @@ const MAX_PULL = 110;
 const RESISTANCE = 0.45;
 /** The spinner shows at least this long, so a fast refetch does not flash. */
 const MIN_SPIN_MS = 300;
+/** Entries arriving during a touch or scroll wait until the list has been still this long. */
+const IDLE_MS = 150;
 
 export function NowView(_: ViewProps) {
   const api = useApi();
@@ -25,8 +27,9 @@ export function NowView(_: ViewProps) {
 
   const scroller = useRef<HTMLDivElement>(null);
   const bottom = useRef<HTMLLIElement>(null);
-  const f = useFeed(d, (before) => api.nowFeed(before));
-  const { fresh, markSeen } = f;
+  const hold = useRef(false);
+  const f = useFeed(d, (before) => api.nowFeed(before), hold);
+  const { fresh, markSeen, release } = f;
   const client = useQueryClient();
   const list = useRef<HTMLUListElement>(null);
   const wrap = useRef<HTMLDivElement>(null);
@@ -99,10 +102,34 @@ export function NowView(_: ViewProps) {
     if (!sc || !ul) return;
     const ro = new ResizeObserver(settle);
     ro.observe(ul);
-    const onScroll = () => { record(); sawRows(); };
+    const onScroll = () => { record(); sawRows(); wake(); };
     sc.addEventListener("scroll", onScroll, { passive: true });
     return () => { ro.disconnect(); sc.removeEventListener("scroll", onScroll); };
   });
+  // Arriving entries wait while a finger is down or the list is still scrolling, then go in together once it has been still.
+  const touching = useRef(false);
+  const idleTimer = useRef(0);
+  const wake = () => {
+    hold.current = true;
+    window.clearTimeout(idleTimer.current);
+    idleTimer.current = window.setTimeout(() => {
+      if (touching.current) return;
+      hold.current = false;
+      release();
+    }, IDLE_MS);
+  };
+  const wakeRef = useRef(wake);
+  wakeRef.current = wake;
+  useEffect(() => {
+    const sc = scroller.current;
+    if (!sc) return;
+    const down = () => { touching.current = true; hold.current = true; };
+    const up = () => { touching.current = false; wakeRef.current(); };
+    sc.addEventListener("touchstart", down, { passive: true });
+    sc.addEventListener("touchend", up, { passive: true });
+    sc.addEventListener("touchcancel", up, { passive: true });
+    return () => { sc.removeEventListener("touchstart", down); sc.removeEventListener("touchend", up); sc.removeEventListener("touchcancel", up); window.clearTimeout(idleTimer.current); };
+  }, [d !== undefined]);
 
   // Pull to refresh on touch: only a gesture that starts at the very top and moves down.
   useEffect(() => {
