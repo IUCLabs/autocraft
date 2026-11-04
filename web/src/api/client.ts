@@ -177,6 +177,8 @@ export interface Api {
     approveFixing(name: RepoName, approved: boolean): Promise<TrackedRepo[]>;
     /** Lets the Fix red main step rerun failed jobs on a red default branch here and open an issue on an operator's answer, or stops it. */
     approveMainFixing(name: RepoName, approved: boolean): Promise<TrackedRepo[]>;
+    /** Lets the CI-approve step approve the CI runs GitHub holds for reviewed outside pull requests here, or stops it. */
+    approveCiRuns(name: RepoName, approved: boolean): Promise<TrackedRepo[]>;
     setOptionalCheck(name: RepoName, check: string, on: boolean): Promise<TrackedRepo[]>;
     /** Switches the pipeline stages on or off for this repo (off: sync only). */
     setPipeline(name: RepoName, on: boolean): Promise<TrackedRepo[]>;

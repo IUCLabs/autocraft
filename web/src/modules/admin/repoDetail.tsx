@@ -9,8 +9,7 @@ import { Block } from "../../ui/molecules/Block";
 import { Switch } from "../../ui/atoms/Switch";
 import { ErrorLine } from "../../ui/atoms/ErrorLine";
 import { Page } from "../../ui/organisms/Page";
-import { useWrite } from "../../lib/hooks";
-import { OptionalChecks, PipelineSwitch, Toggle, WRITES, maybe, synced, type Write, type WriteKind } from "./repoParts";
+import { OptionalChecks, PipelineSwitch, Toggle, WRITES, useRepoWrite, maybe, synced, type Write, type WriteKind } from "./repoParts";
 import { MainCiBadge } from "../../ui/atoms/MainCiBadge";
 import { FailingChecks } from "../mainci/parts";
 import { useNow } from "../../lib/useNow";
@@ -62,7 +61,9 @@ function AllWrites({ r, write }: { r: TrackedRepo; write: Write }) {
     <span className="inline-flex items-center gap-3 text-sm text-ink/60">
       All
       <Switch on={all} label="All GitHub writes" busy={write.busy === key} onChange={(on) => void write.run(key, async () => {
-        for (const w of WRITES) if (!!r[w.field]?.approved !== on) await w.run(api, r.name, on);
+        let list: unknown;
+        for (const w of WRITES) if (!!r[w.field]?.approved !== on) list = await w.run(api, r.name, on);
+        return list;
       })} />
     </span>
   );
@@ -87,7 +88,7 @@ export function RepoDetailView({ params }: ViewProps) {
   useNow();
   const name = params.name ?? "";
   const { data, error } = useQuery("repo-admin", (a) => a.repoAdmin.list());
-  const write = useWrite();
+  const write = useRepoWrite();
   const r = data?.find((x) => x.name === name);
   const l = r?.labels;
 

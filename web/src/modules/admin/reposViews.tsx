@@ -13,13 +13,13 @@ import { ErrorLine } from "../../ui/atoms/ErrorLine";
 import { Input } from "../../ui/atoms/Input";
 import { Page } from "../../ui/organisms/Page";
 import { Th } from "../../ui/atoms/Th";
-import { useWrite } from "../../lib/hooks";
 import {
   PipelineBadge,
   PipelineSwitch,
   WriteBadges,
   maybe,
   synced,
+  useRepoWrite,
 } from "./repoParts";
 import { useNow } from "../../lib/useNow";
 
@@ -30,7 +30,7 @@ export function ReposView(_: ViewProps) {
   const { data, error } = useQuery("repo-admin", (a) => a.repoAdmin.list());
   const [show, setShow] = useState<Show>("tracked");
   const [name, setName] = useState("");
-  const write = useWrite();
+  const write = useRepoWrite();
   const operator = useUser().role === "operator";
   const phone = useIsPhone();
   const tracked = data?.filter((r) => r.tracked).length ?? 0;
@@ -129,7 +129,7 @@ export function ReposView(_: ViewProps) {
 function Table({ rows }: { rows: TrackedRepo[] }) {
   useNow();
   const nav = useNavigate();
-  const write = useWrite();
+  const write = useRepoWrite();
   return (
     <>
       <ErrorLine error={write.error} className="px-4 pt-2" />

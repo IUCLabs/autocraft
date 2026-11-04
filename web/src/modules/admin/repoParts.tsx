@@ -7,12 +7,33 @@ import { useUser } from "../../shell/UserContext";
 import { ConfirmButton } from "../../ui/molecules/ConfirmButton";
 import { Switch } from "../../ui/atoms/Switch";
 import { useWrite } from "../../lib/hooks";
-import { useState } from "react";
+import { useCallback, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { Select } from "../../ui/atoms/Select";
 import { Block } from "../../ui/molecules/Block";
 
 export type Write = ReturnType<typeof useWrite>;
-type WriteField = "labels" | "commenting" | "pushing" | "fixing" | "mainFixing" | "merging";
+
+/**
+ * useWrite for the repo-admin writes: each returns the full repo list, which replaces the cached list at once,
+ * so a switch shows its new state without waiting for the live refetch (which is coalesced for up to 3 s).
+ */
+export function useRepoWrite(): Write {
+  const qc = useQueryClient();
+  const w = useWrite();
+  const { run: base } = w;
+  const run = useCallback(
+    (key: string, f: () => Promise<unknown>) =>
+      base(key, async () => {
+        const out = await f();
+        if (Array.isArray(out)) qc.setQueryData(["repo-admin"], out);
+        return out;
+      }),
+    [base, qc],
+  );
+  return { ...w, run };
+}
+type WriteField = "labels" | "commenting" | "pushing" | "fixing" | "mainFixing" | "ciApproving" | "merging";
 
 export interface WriteKind {
   field: WriteField;
@@ -65,6 +86,13 @@ export const WRITES: WriteKind[] = [
     short: "Main",
     line: "Reruns flaky failed jobs on a red default branch and opens an issue on an operator's answer",
     run: (a, n, on) => a.repoAdmin.approveMainFixing(n, on),
+  },
+  {
+    field: "ciApproving",
+    name: "CI runs",
+    short: "CI",
+    line: "Approves waiting CI runs of reviewed outside pull requests",
+    run: (a, n, on) => a.repoAdmin.approveCiRuns(n, on),
   },
   {
     field: "merging",

@@ -99,9 +99,9 @@ function buildRepos(): TrackedRepo[] {
     const prs = Math.round(open * (0.3 + r() * 0.2));
     const toAdd = Math.round(prs * (0.4 + r() * 0.3));
     const labels = { approved: false, approvedBy: null, approvedAt: null, toAdd, skipped: Math.round(prs * 0.2), conflicts: r() < 0.3 ? Math.floor(r() * 4) : 0 };
-    return { name, tracked: true, openPrs: prs, openIssues: open - prs, mirrored: Math.round(open * (3.5 + r())), syncedAt: iso((2 + r() * 40) * 60_000), labels, merging: { approved: false, approvedBy: null, approvedAt: null }, pushing: { approved: false, approvedBy: null, approvedAt: null }, commenting: { approved: false, approvedBy: null, approvedAt: null }, fixing: { approved: false, approvedBy: null, approvedAt: null }, mainFixing: { approved: false, approvedBy: null, approvedAt: null }, optionalChecks: name === "designcraft" ? ["sonarcloud / SonarCloud Scan"] : [], seenChecks: ["gate / test", "gate / lint", "sonarcloud / SonarCloud Scan", "docs / link-check"], pipeline: name === "designcraft" };
+    return { name, tracked: true, openPrs: prs, openIssues: open - prs, mirrored: Math.round(open * (3.5 + r())), syncedAt: iso((2 + r() * 40) * 60_000), labels, merging: { approved: false, approvedBy: null, approvedAt: null }, pushing: { approved: false, approvedBy: null, approvedAt: null }, commenting: { approved: false, approvedBy: null, approvedAt: null }, fixing: { approved: false, approvedBy: null, approvedAt: null }, mainFixing: { approved: false, approvedBy: null, approvedAt: null }, ciApproving: { approved: false, approvedBy: null, approvedAt: null }, optionalChecks: name === "designcraft" ? ["sonarcloud / SonarCloud Scan"] : [], seenChecks: ["gate / test", "gate / lint", "sonarcloud / SonarCloud Scan", "docs / link-check"], pipeline: name === "designcraft" };
   });
-  const rest = UNTRACKED.map((name) => ({ name, tracked: false, openPrs: Math.floor(r() * 30), openIssues: Math.floor(r() * 80), mirrored: name === "craft-docs-archive" ? 412 : 0, syncedAt: name === "craft-docs-archive" ? iso(12 * D) : null, labels: null, merging: null, pushing: null, commenting: null, fixing: null, mainFixing: null, optionalChecks: [], seenChecks: [], pipeline: false }));
+  const rest = UNTRACKED.map((name) => ({ name, tracked: false, openPrs: Math.floor(r() * 30), openIssues: Math.floor(r() * 80), mirrored: name === "craft-docs-archive" ? 412 : 0, syncedAt: name === "craft-docs-archive" ? iso(12 * D) : null, labels: null, merging: null, pushing: null, commenting: null, fixing: null, mainFixing: null, ciApproving: null, optionalChecks: [], seenChecks: [], pipeline: false }));
   return [...tracked, ...rest];
 }
 
@@ -178,7 +178,7 @@ export function createAdminMock(me: User, changed: () => void): AdminApi {
   const log = (action: string, target: string | null, details: Record<string, unknown> | null = null) => {
     auditLog.unshift({ at: nowIso(), login: me.login, action, target, details });
   };
-  const setKind = (field: "pushing" | "commenting" | "fixing" | "mainFixing", audit: string, name: string, approved: boolean) => {
+  const setKind = (field: "pushing" | "commenting" | "fixing" | "mainFixing" | "ciApproving", audit: string, name: string, approved: boolean) => {
     requireOperator(`approve ${field}`);
     const a = repos.find((x) => x.name === name)?.[field];
     if (!a) throw new Error(`${name} is not tracked`);
@@ -269,7 +269,7 @@ export function createAdminMock(me: User, changed: () => void): AdminApi {
         if (!/^[A-Za-z0-9._-]{1,100}$/.test(name)) throw new Error("Not a repo name.");
         let r = repos.find((x) => x.name === name);
         if (r?.tracked) throw new Error(`${name} is already tracked`);
-        if (!r) repos.push((r = { name, tracked: true, openPrs: null, openIssues: null, mirrored: 0, syncedAt: null, labels: null, merging: null, pushing: null, commenting: null, fixing: null, mainFixing: null, optionalChecks: [], seenChecks: [], pipeline: false }));
+        if (!r) repos.push((r = { name, tracked: true, openPrs: null, openIssues: null, mirrored: 0, syncedAt: null, labels: null, merging: null, pushing: null, commenting: null, fixing: null, mainFixing: null, ciApproving: null, optionalChecks: [], seenChecks: [], pipeline: false }));
         r.tracked = true;
         r.labels ??= { approved: false, approvedBy: null, approvedAt: null, toAdd: 0, skipped: 0, conflicts: 0 };
         r.merging ??= { approved: false, approvedBy: null, approvedAt: null };
@@ -277,6 +277,7 @@ export function createAdminMock(me: User, changed: () => void): AdminApi {
         r.commenting ??= { approved: false, approvedBy: null, approvedAt: null };
         r.fixing ??= { approved: false, approvedBy: null, approvedAt: null };
         r.mainFixing ??= { approved: false, approvedBy: null, approvedAt: null };
+        r.ciApproving ??= { approved: false, approvedBy: null, approvedAt: null };
         log("repo-track", name);
         changed();
         return this.list();
@@ -292,6 +293,7 @@ export function createAdminMock(me: User, changed: () => void): AdminApi {
         r.commenting = null;
         r.fixing = null;
         r.mainFixing = null;
+        r.ciApproving = null;
         r.pipeline = false;
         log("repo-untrack", name);
         changed();
@@ -327,6 +329,10 @@ export function createAdminMock(me: User, changed: () => void): AdminApi {
       },
       async approveFixing(name, approved) {
         setKind("fixing", "fixissue", name, approved);
+        return this.list();
+      },
+      async approveCiRuns(name, approved) {
+        setKind("ciApproving", "ci", name, approved);
         return this.list();
       },
       async approveMainFixing(name, approved) {
