@@ -23,6 +23,8 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 const indent = (s: string) => s.trimEnd().split("\n").map((l) => `  ${l}`).join("\n");
 
 /** Returns the exit code: 0 clean, 2 when the lint task found something or the Opus check rejected, 1 on an error. */
+const BASE_QUERY = `query($owner: String!, $name: String!, $n: Int!) { repository(owner: $owner, name: $name) { pullRequest(number: $n) { baseRefOid } } }`;
+
 export async function runFixupTry(db: DatabaseSync, repo: string, number: number, d: FixupDeps = defaultDeps(), log: (line: string) => void = console.log): Promise<number> {
   const ref = `${repo}#${number}`;
   const item = db.prepare("SELECT head_oid, title FROM items WHERE repo = ? AND number = ? AND kind = 'pr'").get(repo, number) as { head_oid: string | null; title: string | null } | undefined;
@@ -59,7 +61,7 @@ export async function runFixupTry(db: DatabaseSync, repo: string, number: number
   log(`${ref} at ${head.slice(0, 7)}: ${fixes.length} fixes in ${files.join(", ")}; ${checkout ? "sandbox checkout ready" : "NO checkout: the model runs without tools"}`);
 
   const before = (db.prepare("SELECT COALESCE(MAX(id), 0) AS n FROM model_checks").get() as { n: number }).n;
-  const base = (await d.querier.query(`query($name: String!, $n: Int!) { repository(owner: "${BASE_ORG}", name: $name) { pullRequest(number: $n) { baseRefOid } } }`, { name: repo, n: number }) as { repository?: { pullRequest?: { baseRefOid?: string } | null } }).repository?.pullRequest?.baseRefOid ?? null;
+  const base = (await d.querier.query(BASE_QUERY, { owner: BASE_ORG, name: repo, n: number }) as { repository?: { pullRequest?: { baseRefOid?: string } | null } }).repository?.pullRequest?.baseRefOid ?? null;
   const tool = new CheckTool({ db, step: "fixup", repo, number, head, base, applies: applyCheck(git, d.root, head) });
   const t0 = Date.now();
   const reply = await d.ask(db, [{ ref, title: (item.title ?? "").slice(0, 300), fixes, files: shown, diff: diff.text, ...repoDir }], checkout, tool);
