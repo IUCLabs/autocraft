@@ -15,7 +15,7 @@ import { guardItem, guardRepo, type GuardedItem } from "../core/guard.ts";
 import type { GuardedRepo } from "../core/guard.ts";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { CheckTool, applyCheck } from "../checktool/index.ts";
+import { CheckTool, applyCheck, refusal } from "../checktool/index.ts";
 import type { DatabaseSync } from "node:sqlite";
 import { TERMINAL, cancelTask, getTask } from "../build/tasks.ts";
 import { BuildError } from "../build/envs.ts";
@@ -213,9 +213,9 @@ type Ctx = { db: DatabaseSync; d: FixIssueDeps; git: Git; log: (l: string) => vo
 
 /** Asks with a checkout of the base commit when there is one; the input then carries the repository path. */
 const checkoutOf = async (x: Ctx, base: { repo: string; sha: string }): Promise<string | undefined> => (await x.d.checkout?.(base.repo, branchOf(x.db, base.repo), base.sha)) ?? undefined;
-async function ask(x: Ctx, id: Id, input: TriageInput | PatchInput | FixIssueCheckInput, base: { repo: string; sha: string }, number?: number, have?: string): Promise<string | null> {
+async function ask(x: Ctx, id: Id, input: TriageInput | PatchInput | FixIssueCheckInput, base: { repo: string; sha: string }, number?: number, have?: string, validate?: (patch: string) => string | null): Promise<string | null> {
   const checkout = have ?? await checkoutOf(x, base);
-  const tool = id === "fixissue.patch" ? new CheckTool({ db: x.db, step: "fixissue", repo: base.repo, number: number ?? null, head: base.sha, base: base.sha, applies: applyCheck(x.git, x.d.root, base.sha) }) : undefined;
+  const tool = id === "fixissue.patch" ? new CheckTool({ db: x.db, step: "fixissue", repo: base.repo, number: number ?? null, head: base.sha, base: base.sha, applies: applyCheck(x.git, x.d.root, base.sha, validate) }) : undefined;
   return x.d.ask(x.db, id, checkout ? { ...input, repo_dir: REPO_PATH } : input, x.runId, checkout, tool);
 }
 
@@ -342,7 +342,7 @@ async function patchRound(x: Ctx, r: AttemptRow): Promise<boolean> {
     crate: { name: r.crate!, dir: r.crate_dir! }, test_path: testPath, files: shown,
     ...(round > 1 && r.patch ? { previous: { patch: r.patch.slice(0, 60_000), failure: r.summary ?? "it did not pass" } } : {}),
   };
-  const reply = await ask(x, "fixissue.patch", input, { repo: r.repo, sha: r.main_sha }, r.number, checkout);
+  const reply = await ask(x, "fixissue.patch", input, { repo: r.repo, sha: r.main_sha }, r.number, checkout, (p) => refusal(validateFixPatch(p, files, testPath, r.crate_dir!)));
   if (reply === null) { roundFailed(db, d, row, round, "the model gave no answer", r.patch, log); return false; }
   const v = validateFixPatch(reply, files, testPath, r.crate_dir!);
   if (!v.ok) { roundFailed(db, d, row, round, v.reason, reply.slice(0, 60_000), log); return false; }

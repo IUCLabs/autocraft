@@ -87,9 +87,15 @@ export type CheckTarget = {
   applies: (patch: string) => Promise<string | null>;
 };
 
-/** `git apply --check` of a patch on a commit, through a temporary index. */
-export function applyCheck(git: Pick<Git, "applyToTree">, root: string, head: string): CheckTarget["applies"] {
+/** The stage's validator as an `applies` check: null when the patch is acceptable, else why not. */
+export const refusal = (check: { ok: true } | { ok: false; reason: string }): string | null => (check.ok ? null : check.reason);
+
+/** `git apply --check` of a patch on a commit, through a temporary index, after the stage's own validation. */
+export function applyCheck(git: Pick<Git, "applyToTree">, root: string, head: string, validate?: (patch: string) => string | null): CheckTarget["applies"] {
   return async (patch) => {
+    // The stage's own path rules first: the patch reaches a worker only if the stage could accept it.
+    const why = validate?.(patch);
+    if (why) return why;
     mkdirSync(root, { recursive: true });
     const scratch = mkdtempSync(join(root, ".check-"));
     try {
@@ -118,7 +124,28 @@ export class CheckTool {
     this.limits = limits;
   }
 
-  async run(raw: unknown, runId: number | null = null): Promise<CheckResult> {
+  private queue: Promise<unknown> = Promise.resolve();
+  private closed = false;
+  private open = new Set<number>();
+
+  /** Runs one call at a time, so parallel calls from the model cannot get past the call and time limits. */
+  run(raw: unknown, runId: number | null = null): Promise<CheckResult> {
+    const r = this.queue.then(() => this.runOne(raw, runId));
+    this.queue = r.catch(() => undefined);
+    return r;
+  }
+
+  /** The model call is over: no further runs, and tasks still open are cancelled. */
+  close(): void {
+    this.closed = true;
+    for (const id of this.open) {
+      try { cancelTask(this.target.db, id, "check-tool"); } catch { /* it ended meanwhile */ }
+    }
+    this.open.clear();
+  }
+
+  private async runOne(raw: unknown, runId: number | null): Promise<CheckResult> {
+    if (this.closed) return { text: "refused: the model call is over", isError: true };
     let i: CheckInput;
     try { i = parseCheckInput(raw); } catch (e) {
       if (e instanceof CheckRefused) return { text: `refused: ${e.message}`, isError: true };
@@ -144,8 +171,10 @@ export class CheckTool {
         step: t.step, repo: t.repo, number: t.number, headSha: t.head, baseSha: t.base ?? t.head, requires: { os: "linux", toolchains: ["rust-stable"] },
         warm: { key: warmKeyOf(t.repo), role: "use" }, plan, patch: i.patch,
       });
+      this.open.add(taskId);
       let state = getTask(t.db, taskId)?.state;
       while (state && !TERMINAL.includes(state)) {
+        if (this.closed) { end("cancelled: the model call ended", taskId); return { text: "the model call is over", isError: true }; }
         if (Date.now() - started >= left) {
           try { cancelTask(t.db, taskId, "check-tool"); } catch { /* it ended meanwhile */ }
           end("out of time", taskId);
@@ -163,6 +192,9 @@ export class CheckTool {
       end(`failed: ${why}`, taskId);
       return { text: `the check could not run: ${why}`, isError: true };
     } finally {
+      if (taskId !== null) {
+        if (this.open.delete(taskId)) { try { cancelTask(t.db, taskId, "check-tool"); } catch { /* already ended */ } }
+      }
       this.usedMs += Date.now() - started;
     }
   }

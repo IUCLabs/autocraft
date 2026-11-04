@@ -43,7 +43,7 @@ import { readFailure } from "./logs.ts";
 import { askText, commentText, commitMessage } from "./template.ts";
 import { formatDiffPaths, matchPrFiles, triage } from "./triage.ts";
 import { LINT_MAX_ROUNDS } from "../core/rules.ts";
-import { CheckTool, applyCheck } from "../checktool/index.ts";
+import { CheckTool, applyCheck, refusal } from "../checktool/index.ts";
 import { foldFormat, queueLint, readLint } from "../prepush/index.ts";
 import type { LintPrevious } from "../fixup/patch.ts";
 import type { CiFailure, CifixPr } from "./types.ts";
@@ -293,7 +293,7 @@ export async function patchFromFailure(db: DatabaseSync, d: Pick<CifixDeps, "ask
     shown.push(v.file);
   }
   if (!shown.length) return no("failed", "the failure names no file a CI fix may edit");
-  const tool = new CheckTool({ db, step: "cifix", repo, number: r.number || null, head, base: null, applies: applyCheck(git, d.root, head) });
+  const tool = new CheckTool({ db, step: "cifix", repo, number: r.number || null, head, base: null, applies: applyCheck(git, d.root, head, (p) => refusal(validatePatch(p, shown.map((s) => s.path)))) });
   const reply = await d.ask(db, [{ ref, title, failure: logText(failure), files: shown, diff: r.diffText, ...(r.previous ? { previous: r.previous } : {}), ...repoDir }], checkout, tool);
   if (reply === null) return no("failed", "the model gave no answer");
   const v = validatePatch(reply, shown.map((s) => s.path));

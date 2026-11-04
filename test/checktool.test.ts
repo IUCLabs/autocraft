@@ -26,3 +26,17 @@ describe("clippy reminder", () => {
     assert.equal(needsClippy({ ran: new Set() }, diff.replaceAll("lib.rs", "README.md")), false);
   });
 });
+
+describe("check limits", () => {
+  test("parallel calls cannot get past the call limit, and close() stops later ones", async () => {
+    let applied = 0;
+    const tool = new CheckTool({ db: {} as never, step: "fixup", repo: "app", number: 1, head: "a".repeat(40), base: null, applies: async () => { applied++; return "no"; } }, { calls: 2, wallMs: 1000 });
+    // A patch the stage refuses is not a call; with the call count taken, the limit message comes first.
+    (tool as unknown as { calls: number }).calls = 2;
+    const rs = await Promise.all([1, 2, 3].map(() => tool.run({ patch: "p", command: "check" })));
+    assert.ok(rs.every((r) => r.isError && /calls are used up/.test(r.text)));
+    assert.equal(applied, 0);
+    tool.close();
+    assert.match((await tool.run({ patch: "p", command: "check" })).text, /model call is over/);
+  });
+});
