@@ -111,7 +111,7 @@ function Table({ rows }: { rows: MainCiRepo[] }) {
                 <TimeAgo iso={r.updatedAt} />
               </td>
               <td className="px-3 py-2 text-xs">
-                <AutoCraftCell />
+                <AutoCraftCell text={r.autocraft ?? undefined} />
               </td>
             </tr>
           ))}
