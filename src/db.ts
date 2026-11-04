@@ -55,6 +55,9 @@ const ADDED_COLUMNS: [table: string, column: string, type: string][] = [
   // The model's 2 or 3 sentence summary and one-sentence reason, shown as the text of decisions about the PR.
   ["opus_reviews", "summary", "TEXT"],
   ["opus_reviews", "why", "TEXT"],
+  // JSON [{id, reason}]: the repo directions (repo_directions) the PR goes against or touches, as the review named them.
+  ["opus_reviews", "directions", "TEXT"],
+  ["premerge_reviews", "directions", "TEXT"],
   ["dupe_comparisons", "summary", "TEXT"],
   ["dupe_comparisons", "why", "TEXT"],
   ["merge_batches", "fork", "TEXT"],

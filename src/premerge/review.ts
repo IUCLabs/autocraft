@@ -106,7 +106,7 @@ export async function runPremerge(db: DatabaseSync, params: PremergeParams, log:
         log(`  ${ref}: the head moved during the review; not stored`);
         s.moved.push(ref);
       } else if (got) {
-        savePremerge(db, { repo, number: e.number, head, at: now(), runId, model: deps.model, findings: got.findings, searched: got.searched });
+        savePremerge(db, { repo, number: e.number, head, at: now(), runId, model: deps.model, findings: got.findings, searched: got.searched, directions: got.directions });
         s.reviewed++; s.findings += got.findings.length; s.defects += got.findings.filter((f) => f.severity === "defect").length;
       } else fail("retry: no valid reply from the model");
     }

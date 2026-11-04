@@ -1171,6 +1171,18 @@ CREATE TABLE IF NOT EXISTS premerge_reviews (
   PRIMARY KEY (repo, number, head_oid)
 );
 
+-- Standing directions of the operators for a repo ('*': every repo). The reviews name the directions a PR goes against or touches,
+-- and such a PR is never merged by the rule (src/core/decide.ts). A retired direction is kept for the record and no longer read.
+CREATE TABLE IF NOT EXISTS repo_directions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  repo TEXT NOT NULL,                 -- a repo name, or '*'
+  text TEXT NOT NULL,
+  created_by TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  source_decision TEXT,               -- the decision the text came from, when it did
+  retired_at TEXT
+);
+
 -- The planner's output (src/core/plan-cache.ts): what is due for each item at the end of the last planner pass. One row per
 -- PR or item; written by the planner only, in one transaction, only the rows that changed. For a PR, `state` is the state of
 -- its review-to-merge Plan and `item_state` that of its triage plan; for an issue `state` is the triage state. `actions` is JSON
