@@ -30,6 +30,45 @@ const NEW_SOURCES = `
   FROM conversation_turns t JOIN access a ON a.login = t.login AND a.role = 'operator'
   WHERE t.kind = 'operator' AND COALESCE(t.status, '') <> 'failed' AND length(trim(t.body)) >= :min`;
 
+/**
+ * The database id of a GitHub comment from its GraphQL node id ("IC_kwDO…": base64url of a MessagePack array [0, repo id, comment id]);
+ * null when the id has another shape.
+ */
+export function commentDatabaseId(node: string): string | null {
+  const m = /^IC_(.+)$/.exec(node);
+  if (!m) return null;
+  const b = Buffer.from(m[1]!, "base64url");
+  let at = 0;
+  const num = (): bigint | null => {
+    const t = b[at++];
+    if (t === undefined) return null;
+    if (t < 0x80) return BigInt(t);
+    const size = t === 0xcc ? 1 : t === 0xcd ? 2 : t === 0xce ? 4 : t === 0xcf ? 8 : 0;
+    if (!size || at + size > b.length) return null;
+    let v = 0n;
+    for (let i = 0; i < size; i++) v = (v << 8n) | BigInt(b[at++]!);
+    return v;
+  };
+  if (b[at++] !== 0x93 || num() !== 0n || num() === null) return null;
+  const id = num();
+  return id === null ? null : String(id);
+}
+
+/**
+ * The comments and reviews AutoCraft wrote, from the audit rows of its GitHub writes: comment ids are the number after
+ * `#issuecomment-` in a stored URL, review ids are the node id in `details.review`. Posts from before the note line existed
+ * carry no prefix, and they come from the owner's account, so only the audit tells them apart.
+ */
+function postedIds(db: DatabaseSync): { numbers: Set<string>; nodes: Set<string> } {
+  const numbers = new Set<string>(), nodes = new Set<string>();
+  const rows = db.prepare("SELECT details FROM audit WHERE details LIKE '%issuecomment-%' OR details LIKE '%\"review\"%'").all() as { details: string | null }[];
+  for (const r of rows) {
+    for (const m of (r.details ?? "").matchAll(/#issuecomment-(\d+)/g)) numbers.add(m[1]!);
+    try { const v = (JSON.parse(r.details ?? "{}") as { review?: unknown }).review; if (typeof v === "string") nodes.add(v); } catch { /* not JSON: none */ }
+  }
+  return { numbers, nodes };
+}
+
 /** Adds the sources that have no statement yet; returns how many. Needs no model. */
 export function collectStatements(db: DatabaseSync): number {
   const rows = db.prepare(`SELECT s.* FROM (${NEW_SOURCES}) s
@@ -37,8 +76,13 @@ export function collectStatements(db: DatabaseSync): number {
     { kind: string; sid: string; repo: string; number: number | null; text: string; author: string; at: string }[];
   const title = db.prepare("SELECT title FROM items WHERE repo = ? AND number = ?");
   const put = db.prepare(`INSERT OR IGNORE INTO owner_statements (source_kind, source_id, repo, number, item_title, author, text, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`);
+  const own = postedIds(db);
   let n = 0;
   for (const r of rows) {
+    if (r.kind === "comment") {
+      const num = commentDatabaseId(r.sid);
+      if (own.nodes.has(r.sid) || (num !== null && own.numbers.has(num))) continue;
+    }
     const t = r.number === null ? undefined : (title.get(r.repo, r.number) as { title: string | null } | undefined)?.title;
     n += Number(put.run(r.kind, r.sid, r.repo, r.number, t ?? "", r.author, r.text.slice(0, STATEMENT_MAX_CHARS), r.at).changes);
   }

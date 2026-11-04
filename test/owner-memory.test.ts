@@ -1,7 +1,7 @@
 // Owner memory: which sources become statements, which statements a review of a PR gets, and how a reply names conflicts.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { collectStatements, embedStatements } from "../src/memory/statements.ts";
+import { collectStatements, commentDatabaseId, embedStatements } from "../src/memory/statements.ts";
 import { relatedStatements } from "../src/memory/retrieve.ts";
 import { toBlob } from "../src/embed/store.ts";
 import { withNote } from "../src/github/note.ts";
@@ -37,6 +37,13 @@ test("statements come from operators' own words only, and a related one reaches 
   comment(w, "c2", "craft-libs", 6, "boss", withNote({ by: "operator", model: null }, "Hyphenation dictionary posted by the pipeline for the operator."));
   comment(w, "c3", "craft-libs", 7, "guest", "Hyphenation dictionary vendoring is fine with me, as far as I can tell.");
   comment(w, "c4", "craft-libs", 8, "boss", "ok");
+  // A post from before the note line existed: no prefix, written by the pipeline, known only from its audit row.
+  const node = (id: number) => `IC_${Buffer.concat([Buffer.from([0x93, 0x00, 0xce, 0, 0, 0, 7, 0xce]), Buffer.from(new Uint8Array(new Uint32Array([id]).buffer).reverse())]).toString("base64url")}`;
+  assert.equal(commentDatabaseId(node(4321987)), "4321987");
+  comment(w, node(4321987), "craft-libs", 11, "boss", "Hyphenation dictionary vendoring is a library matter, see the other thread.");
+  w.db.prepare("INSERT INTO audit (at, login, action, target, details) VALUES ('t', 'comment-stage', 'act-comment', 'craft-libs#11', ?)").run(JSON.stringify({ url: "https://github.com/o/craft-libs/issues/11#issuecomment-4321987", state: "done" }));
+  comment(w, "PRR_x", "craft-libs", 12, "boss", "Hyphenation review text posted by the pipeline without a note line.");
+  w.db.prepare("INSERT INTO audit (at, login, action, target, details) VALUES ('t', 'review', 'review-post', 'craft-libs#12', ?)").run(JSON.stringify({ review: "PRR_x", state: "done" }));
   w.db.prepare("INSERT INTO decisions (id, kind, repo, number, question, options, asked_at, answer, answer_note, answered_by, answered_at) VALUES ('d1', 'close', 'app', 9, 'q', '[]', '2026-03-02T00:00:00Z', 'close', 'No new dependency for canvas export.', 'boss', '2026-03-02T00:00:00Z')").run();
   w.db.prepare("INSERT INTO conversation_turns (repo, number, kind, login, at, body, block, status, seq) VALUES ('app', 10, 'operator', 'boss', '2026-03-03T00:00:00Z', 'Keep language data out of the app crates.', 'b', 'answered', 1)").run();
 
