@@ -819,6 +819,10 @@ export async function detectAutopilot(db: DatabaseSync, opts: PlanOptions = {}):
       log(`autopilot: ${lane.name}: ${(e as Error).message}`);
     }
   }
+  // The lists the Next page shows come from the same pass, so the page needs no Plans of its own.
+  if (!opts.lanes) {
+    try { storeLaneItems(db, lanes, ctx); } catch (e) { log(`autopilot: next items: ${(e as Error).message}`); }
+  }
   const lanesMs = performance.now() - t0 - loadMs;
   // The Plan cache: the planner's output for the dashboard.
   let cache = { written: 0, deleted: 0 };
@@ -972,6 +976,33 @@ export function laneItems(db: DatabaseSync, ctx: PlanCtx, lane: Pick<Lane, "name
 }
 
 const plain = (why: string): string => { const t = why.replace(/^(paused|tripped): /, ""); return t.charAt(0).toUpperCase() + t.slice(1); };
+
+/** The most items of one lane the planner stores. */
+const NEXT_PER_LANE = 500;
+export type StoredLaneItems = Record<string, { total: number; items: LaneItem[] }>;
+
+/** Writes each lane's items as this pass sees them: only the lanes that changed. The table belongs to the `plans` topic, which the planner does not take as input. */
+function storeLaneItems(db: DatabaseSync, lanes: Lane[], ctx: PlanCtx): void {
+  const old = new Map((db.prepare("SELECT lane, total, items FROM lane_next").all() as { lane: string; total: number; items: string }[]).map((r) => [r.lane, r]));
+  const put = db.prepare("INSERT OR REPLACE INTO lane_next (lane, total, items, at) VALUES (?, ?, ?, ?)");
+  const at = new Date().toISOString();
+  for (const lane of lanes) {
+    const all = laneItems(db, ctx, lane);
+    const prev = old.get(lane.name);
+    old.delete(lane.name);
+    if (!all.length) { if (prev) db.prepare("DELETE FROM lane_next WHERE lane = ?").run(lane.name); continue; }
+    const items = JSON.stringify(all.slice(0, NEXT_PER_LANE));
+    if (!prev || prev.total !== all.length || prev.items !== items) put.run(lane.name, all.length, items, at);
+  }
+  for (const lane of old.keys()) db.prepare("DELETE FROM lane_next WHERE lane = ?").run(lane);
+}
+
+/** The lane lists of the planner's last pass, keyed by lane name. */
+export function storedLaneItems(db: DatabaseSync): StoredLaneItems {
+  const out: StoredLaneItems = {};
+  for (const r of db.prepare("SELECT lane, total, items FROM lane_next").all() as { lane: string; total: number; items: string }[]) out[r.lane] = { total: r.total, items: JSON.parse(r.items) as LaneItem[] };
+  return out;
+}
 
 export type LaneGate = { canRun: boolean; kind: "ok" | "running" | "off" | "breaker" | "limit" | "account" | "backoff"; why: string | null };
 
