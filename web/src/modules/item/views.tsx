@@ -34,6 +34,7 @@ import { RecommendationLine } from "../../ui/molecules/RecommendationLine";
 import { Markdown, Collapsible } from "../../ui/molecules/Markdown";
 import { useIsPhone } from "../../shell/useMedia";
 import { SettledBadge } from "../items/views";
+import { ItemQuestions, useItemDecisions } from "./ItemDecisions";
 import { PrWork } from "./PrWork";
 import { TracePanel } from "./TracePanel";
 import { useUser } from "../../shell/UserContext";
@@ -86,6 +87,7 @@ export function ItemMain({ params }: ViewProps) {
     <div className="h-full overflow-y-auto">
       <div className="mx-auto max-w-[920px] px-4 pb-12 pt-5 md:px-6">
         {it ? <Header it={it} /> : <Pending error={error} />}
+        {it && <ItemQuestions repo={repo} number={number} />}
         <TracePanel repo={repo} number={number} it={it} />
         {it && (
           <>
@@ -388,10 +390,7 @@ function SideSection({ title, count, children }: { title: string; count?: number
 export function ItemSide(props: ViewProps) {
   useNow();
   const { data: it } = useItem(props.params);
-  const { data: ds } = useQuery(`item-decisions:${props.params.repo}#${props.params.number}`, async (api) => {
-    const all = await Promise.all([api.decisions.list({ status: "open" }), api.decisions.list({ status: "answered" })]);
-    return all.flatMap((l) => l.decisions).filter((d) => d.repo === props.params.repo && (d.number === Number(props.params.number) || d.items.some((i) => i.number === Number(props.params.number))));
-  });
+  const { data: ds } = useItemDecisions(props.params.repo!, Number(props.params.number));
   if (!it) return null;
   return (
     <div className="h-full overflow-y-auto pt-1">

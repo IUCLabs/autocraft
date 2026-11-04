@@ -261,6 +261,17 @@ export async function listDecisions(db: DatabaseSync, req: Req, writeRepos: () =
   if (hide) where.push(hide);
   const repos = [...new Set(list(req, "repo"))];
   if (repos.length) where.push(inRepos("rp", repos, params));
+  // One item: the decision's own, or a batch or duplicate group that lists it as a member.
+  const itemNo = q.get("number");
+  if (itemNo !== null && repos.length === 1) {
+    const n = Number(itemNo);
+    if (!Number.isInteger(n)) throw new HttpError(400, "number must be an item number");
+    params.itemRepo = repos[0]!;
+    params.itemNo = String(n);
+    where.push(`((repo = :itemRepo AND number = :itemNo) OR EXISTS (SELECT 1 FROM json_each(CASE WHEN json_valid(items) THEN items ELSE '[]' END) ij
+      WHERE json_extract(ij.value, '$.repo') = :itemRepo AND json_extract(ij.value, '$.number') = CAST(:itemNo AS INTEGER))
+      OR EXISTS (SELECT 1 FROM dupe_group_items gm WHERE gm.decision_id = decisions.id AND gm.repo = :itemRepo AND gm.number = :itemNo))`);
+  }
   if (q.get("mine") === "1" || q.get("mine") === "true") where.push(inRepos("mn", await writeRepos(), params));
 
   // Counts and the oldest ask cover every match, not just the page.
