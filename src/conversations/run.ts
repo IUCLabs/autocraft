@@ -4,12 +4,12 @@ import { referenceDir } from "../reference.ts";
 import { REPO_PATH } from "../sandbox/command.ts";
 import type { DatabaseSync } from "node:sqlite";
 import { claudeRoom } from "../agents/call.ts";
-import { askClaude, pool, saveUsage, type Usage } from "../classify/run.ts";
+import { pool } from "../classify/run.ts";
+import { runModelStep } from "../agents/step.ts";
+import { CONVERSATION } from "../agents/steps.ts";
 import { PROGRESS_KEEP, coalesce } from "../classify/progress.ts";
 import { CLAUDE_PROMPTS } from "../prompts/index.ts";
-import { defaultSemanticDeps, referenceProblems, type SemanticDeps } from "../reference-lint.ts";
-import { dropTexts, type Lint } from "../replylint.ts";
-import { commentTexts, parseReply } from "./cards.ts";
+import { defaultSemanticDeps, type SemanticDeps } from "../reference-lint.ts";
 import { sweepRunningCards } from "./act.ts";
 import { claimPending, failTurn, pendingConversations, promptParts, refreshItem, setTurnProgress, storeReply, type DiffSource } from "./store.ts";
 
@@ -31,7 +31,6 @@ export type ConversationParams = {
 };
 
 const now = () => new Date().toISOString();
-const sum = (a: Usage, b: Usage): Usage => ({ input: a.input + b.input, output: a.output + b.output, cacheRead: a.cacheRead + b.cacheRead, cacheWrite: a.cacheWrite + b.cacheWrite, cost: a.cost === null && b.cost === null ? null : (a.cost ?? 0) + (b.cost ?? 0) });
 
 /** Answers the waiting messages, oldest first. Returns how many got a reply. */
 export async function answerPending(db: DatabaseSync, p: ConversationParams): Promise<number> {
@@ -55,9 +54,6 @@ export async function answerPending(db: DatabaseSync, p: ConversationParams): Pr
     if (!parts) { failTurn(db, repo, n, claim, "the conversation has no item block; send the message again"); return; }
     if (!checkouts.has(repo)) checkouts.set(repo, p.checkout(repo).catch(() => null));
     const checkout = await checkouts.get(repo)!;
-    let usage: Usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: null };
-    let parsed: ReturnType<typeof parseReply> = null;
-    // The latest few lines go on the message's row, at most one write a second.
     let recent: string[] = [];
     const shown = coalesce((lines: string[]) => setTurnProgress(db, repo, n, claim, lines));
     const onProgress = (line: string) => {
@@ -67,23 +63,19 @@ export async function answerPending(db: DatabaseSync, p: ConversationParams): Pr
     };
     const dir = referenceDir(repo);
     const semantic = dir ? p.semantic ?? defaultSemanticDeps(db, `${repo}#${n}`) : undefined;
-    // Comment cards are public text: a reference mention or quote goes back to the model as one fix turn. A reply without text is not linted and keeps the whole-call retry.
-    const lint: Lint = async (text, stage) => (parseReply(db, repo, n, text) ? referenceProblems(commentTexts(text), dir, semantic, { stage }) : null);
-    for (let attempt = 0; attempt < CONVERSATION_PROMPT.limits.attempts && !parsed; attempt++) {
-      const reply = await askClaude("conversation.turn", model, [{ ref: `${repo}#${n}`, item: parts.item, turns: parts.turns, ...(checkout && { repo_dir: REPO_PATH }) }], db, { checkout: checkout ?? undefined, reference: checkout ? dir : undefined, onProgress, lint });
-      shown.flush();
-      if (!reply) continue;
-      usage = sum(usage, reply.usage);
-      if (reply.fixTurn) p.log(`conversation: ${repo}#${n}: reply lint: ${reply.problems?.length ? `${reply.problems.length} problems left after the fix turn` : "fixed by one fix turn"}`);
-      parsed = parseReply(db, repo, n, reply.text, dropTexts(reply.problems));
-    }
+    const r = await runModelStep(db, CONVERSATION, { ref: `${repo}#${n}`, item: parts.item, turns: parts.turns, ...(checkout && { repo_dir: REPO_PATH }) }, {
+      model, checkout: checkout ?? undefined, reference: checkout ? dir : undefined, onProgress, ctx: { db, repo, n, dir, semantic },
+      usage: { run: p.usageRun, agent: `conversation-${String(k).padStart(3, "0")}`, stage: "conversation", items: () => 1 },
+      onReply: (reply) => { if (reply.fixTurn) p.log(`conversation: ${repo}#${n}: reply lint: ${reply.problems?.length ? `${reply.problems.length} problems left after the fix turn` : "fixed by one fix turn"}`); },
+    });
+    shown.flush();
+    const parsed = r.ok ? r.value : null;
     if (parsed) {
       if (storeReply(db, repo, n, claim, parsed.text, parsed.cards, parsed.notes) !== null) answered++;
     } else {
       failTurn(db, repo, n, claim, "Opus gave no usable reply; send the message again");
       p.log(`conversation: no usable reply for ${repo}#${n}`);
     }
-    saveUsage(db, p.usageRun, `conversation-${String(k).padStart(3, "0")}`, "conversation", model, 1, usage, start, now());
   }), () => claudeRoom(db), { first: true });
   return answered;
 }

@@ -12,14 +12,15 @@
 import type { DatabaseSync } from "node:sqlite";
 import { BuildError } from "../build/envs.ts";
 import { connect } from "../db.ts";
-import { add, askClaude, saveUsage, type Usage } from "../classify/run.ts";
+import { runModelStep } from "../agents/step.ts";
+import { VERIFY_PLAN } from "../agents/steps.ts";
 import { CLAUDE_PROMPTS } from "../prompts/index.ts";
 import { REPO_PATH } from "../sandbox/command.ts";
 import { checkoutForPr } from "../sandbox/index.ts";
 import { cachedDiff, codeDiff, ghDiff, type DiffFetcher } from "../review/diff.ts";
 import { cachedCrates, ghApi, ghCrates, type CratesFetcher } from "./crates.ts";
 import { NOT_RUST_REASON, selectCandidates, unavailableCandidates, type VerifyCandidate } from "./candidates.ts";
-import { parsePlanReply, type VerifyPlan } from "./plan.ts";
+import { type VerifyPlan } from "./plan.ts";
 import { repoChecksKnown, repoHasNoCi } from "../merge/no-ci.ts";
 import { queueTasks, queueWarmBuild } from "./tasks.ts";
 import type { Crate, VerifyPlanInput } from "./types.ts";
@@ -156,15 +157,11 @@ export async function runVerify(db: DatabaseSync, params: VerifyParams, log: (li
     const checkout = (await deps.checkout?.(repo, c.number, c.head_oid)) ?? undefined;
     if (checkout) input.repo_dir = REPO_PATH;
     const start = now();
-    let usage: Usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: null };
-    let result: ReturnType<typeof parsePlanReply> | null = null;
-    for (let attempt = 0; attempt < PROMPT.limits.attempts && !(result && result.ok); attempt++) {
-      const reply = await askClaude("verify.plan", deps.model, [input], db, { checkout });
-      if (!reply) continue;
-      usage = add(usage, reply.usage);
-      result = parsePlanReply(reply.text, ref, cr.crates, c.label, ci);
-    }
-    saveUsage(db, runId, `verify-${c.number}`, "verify", deps.model, result ? 1 : 0, usage, start, now());
+    const planned = await runModelStep(db, VERIFY_PLAN, input, {
+      model: deps.model, checkout, ctx: { ref, crates: cr.crates, label: c.label, ci },
+      usage: { run: runId, agent: `verify-${c.number}`, stage: "verify", items: (ok) => (ok ? 1 : 0) },
+    });
+    const result = planned.ok ? planned.value : null;
     if (!result) { log(`  ${ref}: no answer from the planner`); summary.skipped.push(ref); handle(); continue; }
     handle();
     if (!result.ok) {

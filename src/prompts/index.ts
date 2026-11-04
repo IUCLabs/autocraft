@@ -1127,6 +1127,9 @@ Reply with ONLY a JSON array with one object: {"ref": "<ref as given>", "refers"
 
 export const CLAUDE_PROMPTS = { "classify.haiku": HAIKU, "referee.sonnet": REFEREE, "decide.summary": SUMMARY, "fixup.patch": FIXUP, "verify.plan": VERIFY_PLAN, "verify.summary": VERIFY_SUMMARY, "priority.haiku": PRIORITY_HAIKU, "dupes.haiku": DUPES_HAIKU, "fixissue.triage": FIXISSUE_TRIAGE, "fixissue.patch": FIXISSUE_PATCH, "fixup.check": FIXUP_CHECK, "fixissue.check": FIXISSUE_CHECK, "review.opus": OPUS_REVIEW, "premerge.opus": PREMERGE, "postmerge.opus": POSTMERGE, "dupes.compare-prs.opus": DUPES_COMPARE_PRS, "dupes.compare-issues.sonnet": DUPES_COMPARE_ISSUES, "decide.recommend": RECOMMEND, "conversation.turn": CONVERSATION, "areas.haiku": AREAS_HAIKU, "areas.propose": AREAS_PROPOSE, "areas.suggest": AREAS_SUGGEST, "fixup.conflict": FIXUP_CONFLICT, "lint.reference.haiku": REFERENCE_HAIKU, "cifix.patch": CIFIX, "mainfix.classify": MAINFIX_CLASSIFY } as const;
 /** TypeSafe's published price per input token for jev-1.13.0, jev-1.14.0 and jev-latest ($0.042 per million); output tokens are free. */
+/** Models of the operator sessions that write text AutoCraft posts on their behalf (not a registered prompt's model): the security scan's questions. */
+export const OPERATOR_MODELS = { security: "claude-opus-5-5" } as const;
+
 export const JEV_USD_PER_INPUT_TOKEN = 0.042 / 1e6;
 
 export const JEV_PROMPTS = { "classify.jev": JEV, "priority.jev": PRIORITY_JEV, "dupes.jev": DUPES_JEV, "areas.jev": AREAS_JEV, "lint.reference.jev": REFERENCE_JEV } as const;

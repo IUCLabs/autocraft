@@ -36,7 +36,7 @@ type StepBase<I, V> = {
   backoffMs?: number;
 };
 
-export type ClaudeStep<I, V> = StepBase<I, V> & {
+export type ClaudeStep<I, V, C = void> = StepBase<I, V> & {
   provider: "claude";
   id: ClaudePromptId;
   /** Default: the prompt's first registered model. */
@@ -44,11 +44,11 @@ export type ClaudeStep<I, V> = StepBase<I, V> & {
   /** The input as `askClaude` takes it (a list of the prompt's inputs); default: the input itself. */
   toPrompt?: (input: I) => unknown[];
   /** Text of the reply; null is a parse error (the call is repeated). */
-  parse: (text: string, input: I, ctx: ParseCtx) => Parsed<I, V> | null;
+  parse: (text: string, input: I, ctx: ParseCtx, c: C) => Parsed<I, V> | null;
   /** Lint of the parsed reply, with the fields it covers. Problems after the fix turn go to `parse` in `ctx.problems`; `onFail: "retry"` treats them as a parse error instead. The fix turn itself is the prompt's `lint` registration (src/prompts). */
-  lint?: { fields: string[]; make: (input: I) => Lint; onFail?: "accept" | "retry" };
+  lint?: { fields: string[]; make: (input: I, c: C) => Lint; onFail?: "accept" | "retry" };
   /** The value to use when every attempt failed to parse and this returns one for the first reply that did not (a lenient reading of the reply). */
-  fallback?: (text: string, input: I, ctx: ParseCtx) => V | null;
+  fallback?: (text: string, input: I, ctx: ParseCtx, c: C) => V | null;
 };
 
 export type JevStep<I, V, C = void> = StepBase<I, V> & {
@@ -86,6 +86,10 @@ export type StepOpts<I, C = void> = Omit<AskOptions, "lint"> & {
   cancelled?: () => boolean;
   /** The call itself, in place of the real model call (tests, injected dependencies). Gets the lint the step declares. */
   ask?: (input: I, lint: Lint | undefined) => Promise<LintedReply | null>;
+  /** Called before each call with the input still to answer (the first call included). */
+  onAttempt?: (input: I, attempt: number) => void;
+  /** Called with each Claude reply before it is parsed (log the lint outcome, read `turns`). */
+  onReply?: (reply: LintedReply) => void;
 };
 
 export type StepResult<I, V> =
@@ -103,7 +107,7 @@ type Reply = { text: string; usage: Usage; problems?: LintProblem[]; fixTurn?: b
  * the call; a parser that returns `rest` repeats it for the rest only), the usage row, and the error result.
  * Values of every answered attempt are in `values`, in order; `rest` is what no attempt answered.
  */
-export async function runModelStep<I, V, C = void>(db: DatabaseSync, step: ClaudeStep<I, V> | JevStep<I, V, C>, input: I, opts: StepOpts<I, C> = {}): Promise<StepResult<I, V>> {
+export async function runModelStep<I, V, C = void>(db: DatabaseSync, step: ClaudeStep<I, V, C> | JevStep<I, V, C>, input: I, opts: StepOpts<I, C> = {}): Promise<StepResult<I, V>> {
   const reg = step.provider === "jev" ? JEV_PROMPTS[step.id] : CLAUDE_PROMPTS[step.id];
   const attempts = step.attempts ?? reg.limits.attempts;
   const start = new Date().toISOString();
@@ -115,9 +119,11 @@ export async function runModelStep<I, V, C = void>(db: DatabaseSync, step: Claud
     if (opts.cancelled?.()) break;
     if (step.provider === "jev" && !jevAvailable(db)) { error = "jev unavailable"; break; }
     if (attempt > 0 && step.backoffMs) await sleep(step.backoffMs);
+    opts.onAttempt?.(todo, attempt);
     const r = await call(db, step, todo, opts);
     if (!r) { error = "no answer"; continue; }
     usage = add(usage, r.usage);
+    if ("text" in r) opts.onReply?.(r as LintedReply);
     if ("answers" in r ? r.json : true) sawUsage = true;
     const ctx: ParseCtx = { attempt, last: attempt === attempts - 1, ...("text" in r ? { problems: r.problems, fixTurn: r.fixTurn } : { code: r.code }) };
     if ("answers" in r && !r.json) { error = "unreadable answer"; continue; }
@@ -126,7 +132,7 @@ export async function runModelStep<I, V, C = void>(db: DatabaseSync, step: Claud
     if (parsed && "text" in r && r.problems?.length && (step as ClaudeStep<I, V>).lint?.onFail === "retry") parsed = null;
     if (!parsed) {
       error = "no valid answer";
-      fallback ??= (step as { fallback?: (a: never, i: I, c: ParseCtx) => V | null }).fallback?.(reply, todo, ctx) ?? null;
+      fallback ??= (step as { fallback?: (a: never, i: I, c: ParseCtx, x: C) => V | null }).fallback?.(reply, todo, ctx, opts.ctx as C) ?? null;
       continue;
     }
     values.push(parsed.value);
@@ -148,10 +154,10 @@ export async function runModelStep<I, V, C = void>(db: DatabaseSync, step: Claud
   return { ok: true, value: values[values.length - 1]!, values, ...(rest !== undefined && { rest }), usage, runId };
 }
 
-async function call<I, V, C>(db: DatabaseSync, step: ClaudeStep<I, V> | JevStep<I, V, C>, input: I, opts: StepOpts<I, C>): Promise<Reply | null> {
+async function call<I, V, C>(db: DatabaseSync, step: ClaudeStep<I, V, C> | JevStep<I, V, C>, input: I, opts: StepOpts<I, C>): Promise<Reply | null> {
   if (step.provider === "claude") {
-    const lint = step.lint?.make(input);
-    const { ctx: _c, usage: _u, cancelled: _x, ask, model: m, ...ask_ } = opts;
+    const lint = step.lint?.make(input, opts.ctx as C);
+    const { ctx: _c, usage: _u, cancelled: _x, ask, model: m, onAttempt: _a, onReply: _r, ...ask_ } = opts;
     const model = m ?? step.model ?? CLAUDE_PROMPTS[step.id].models[0]!;
     return ask ? ask(input, lint) : askClaude(step.id, model, (step.toPrompt ? step.toPrompt(input) : input) as never, db, { ...ask_, ...(lint && { lint }) });
   }
@@ -169,7 +175,7 @@ async function call<I, V, C>(db: DatabaseSync, step: ClaudeStep<I, V> | JevStep<
 export type TieredStep<It, JV, HV, C = void, B = It[]> = {
   jev: JevStep<It, JV, C>;
   /** Haiku answers a batch; its value is `[ref, answer]` pairs, and `rest` the batch items without one. */
-  haiku: ClaudeStep<B, [string, HV][]>;
+  haiku: ClaudeStep<B, [string, HV][], C>;
   /** The Haiku input for a batch of items (default: the list). */
   batch?: (items: It[], ctx: C) => B;
   ref: (item: It) => string;
@@ -226,7 +232,8 @@ export async function runTiered<It, JV, HV, C = void, B = It[]>(db: DatabaseSync
   for (let i = 0; i < ask.length; i += per) batches.push(ask.slice(i, i + per));
   await pool(batches.map((batch, n) => async () => {
     for (const x of batch) out.asked.add(tier.ref(x));
-    const r = await runModelStep(db, tier.haiku, tier.batch ? tier.batch(batch, opts.ctx as C) : (batch as unknown as B), { usage: opts.haikuUsage?.(batch, n), cancelled: opts.cancelled });
+    const r = await runModelStep(db, tier.haiku, tier.batch ? tier.batch(batch, opts.ctx as C) : (batch as unknown as B), {
+      ctx: opts.ctx, usage: opts.haikuUsage?.(batch, n), cancelled: opts.cancelled });
     if (r.ok) for (const v of r.values) for (const [ref, a] of v) out.haiku.set(ref, a);
   }), () => claudeRoom(db), { first: opts.first });
   return out;

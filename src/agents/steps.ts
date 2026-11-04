@@ -9,6 +9,18 @@ import { jevImpact, parseHaikuImpacts, SURE, type Impact, type JevImpactAnswers 
 import { renderAreaJev, renderReferenceJev } from "../prompts/index.ts";
 import type { ReferenceLintInput } from "../replylint.ts";
 import type { ClaudeStep, JevStep, TieredStep } from "./step.ts";
+import type { DatabaseSync } from "node:sqlite";
+import { parseRefereeReply, parseSummaryReply, type Referee, type Summary } from "../classify/parse.ts";
+import { lintOpusReply, parseOpusReply, publicTexts as opusTexts, rawReason, type OpusPr, type OpusReview } from "../review/opus-parse.ts";
+import { lintPremerge, parsePremerge, premergeTexts, type PremergeReview } from "../premerge/parse.ts";
+import { lintReply, parseFindings, publicTexts as postmergeTexts, type Finding, type PostmergePr } from "../postmerge/parse.ts";
+import { commentTexts, parseReply, type Parsed as ConversationReply } from "../conversations/cards.ts";
+import type { ConversationInput } from "../conversations/types.ts";
+import { parsePlanReply, type Parsed as PlanReply } from "../verify/plan.ts";
+import type { Crate } from "../verify/types.ts";
+import type { VerifyPlanInput } from "../verify/types.ts";
+import { referenceProblems, type SemanticDeps } from "../reference-lint.ts";
+import { dropTexts } from "../replylint.ts";
 
 /** The part of `xs` whose key is in `missing`, or undefined when none is: the `rest` of a batch parse. */
 export function leftOf<T>(xs: T[], key: (x: T) => string, missing: string[]): T[] | undefined {
@@ -133,3 +145,89 @@ export const REFERENCE_HAIKU: ClaudeStep<ReferenceLintInput[], boolean> = {
   },
 };
 
+
+// ---- Opus and workspace steps ------------------------------------------------------------------
+// A sandboxed call's checkout, reference folder, progress callback and shared workspace come in through StepOpts
+// (they are AskOptions); the lint and parse of public texts get the reference folder and semantic check in `ctx`.
+
+/** What the reference lint of a public-text reply needs: the repo's reference folder (absent: no check) and the semantic check. */
+export type ReferenceCtx = { dir: string | undefined; semantic: SemanticDeps | undefined };
+
+// A reply that is not valid is lint-free: it keeps the whole-call retry. Problems of a valid one go back to the model as one fix turn.
+// Whatever the lint still finds after it is left out (reference text) or cut to its first sentence (long summary or why); the call is never repeated for it.
+export type OpusValue = { review: OpusReview; text: string };
+export const REVIEW_OPUS: ClaudeStep<OpusPr, OpusValue, ReferenceCtx> = {
+  provider: "claude", id: "review.opus",
+  toPrompt: (x) => [x], size: () => 1,
+  lint: { fields: ["summary", "why", "public texts"], make: (x, c) => async (text, stage) => {
+    const own = lintOpusReply(text, x.ref, x.unapplied_fixes);
+    return own === null ? null : [...own, ...await referenceProblems(opusTexts(text), c.dir, c.semantic, { stage, otherProblems: own.length })];
+  } },
+  parse: (text, x, ctx) => {
+    const review = parseOpusReply(text, x.ref, true, dropTexts(ctx.problems));
+    return review === null ? null : { value: { review, text } };
+  },
+};
+export { rawReason };
+
+export const PREMERGE_OPUS: ClaudeStep<OpusPr & { ref: string }, PremergeReview, ReferenceCtx> = {
+  provider: "claude", id: "premerge.opus",
+  toPrompt: (x) => [x], size: () => 1,
+  lint: { fields: ["findings"], make: (x, c) => async (text, stage) => {
+    const own = lintPremerge(text, x.ref);
+    return own === null ? null : [...own, ...await referenceProblems(premergeTexts(text, x.ref), c.dir, c.semantic, { stage, otherProblems: own.length })];
+  } },
+  parse: (text, x, ctx) => { const r = parsePremerge(text, x.ref, dropTexts(ctx.problems)); return r === null ? null : { value: r }; },
+};
+
+export const POSTMERGE_OPUS: ClaudeStep<PostmergePr, Finding[], ReferenceCtx> = {
+  provider: "claude", id: "postmerge.opus",
+  toPrompt: (x) => [x], size: () => 1,
+  lint: { fields: ["findings"], make: (_x, c) => async (text, stage) => {
+    const own = lintReply(text);
+    return own === null ? null : [...own, ...await referenceProblems(postmergeTexts(text), c.dir, c.semantic, { stage, otherProblems: own.length })];
+  } },
+  parse: (text, _x, ctx) => { const r = parseFindings(text, dropTexts(ctx.problems)); return r === null ? null : { value: r }; },
+};
+
+/** Comment cards are public text: a reference mention or quote goes back to the model as one fix turn. A reply without text is not linted and keeps the whole-call retry. */
+export type ConversationCtx = ReferenceCtx & { db: DatabaseSync; repo: string; n: number };
+export const CONVERSATION: ClaudeStep<ConversationInput, ConversationReply, ConversationCtx> = {
+  provider: "claude", id: "conversation.turn",
+  toPrompt: (x) => [x], size: () => 1,
+  lint: { fields: ["cards[].text"], make: (_x, c) => async (text, stage) => (parseReply(c.db, c.repo, c.n, text) ? referenceProblems(commentTexts(text), c.dir, c.semantic, { stage }) : null) },
+  parse: (text, _x, ctx, c) => { const r = parseReply(c.db, c.repo, c.n, text, dropTexts(ctx.problems)); return r === null ? null : { value: r }; },
+};
+
+/** The plan reply as parsed, valid or not: an invalid plan is asked for again (the last reading stands after the last attempt). */
+export type PlanCtx = { ref: string; crates: Crate[]; label: string | null; ci: boolean };
+export const VERIFY_PLAN: ClaudeStep<VerifyPlanInput, PlanReply, PlanCtx> = {
+  provider: "claude", id: "verify.plan",
+  toPrompt: (x) => [x], size: () => 1,
+  parse: (text, x, _ctx, c) => {
+    const value = parsePlanReply(text, c.ref, c.crates, c.label, c.ci);
+    return { value, ...(!value.ok && { rest: x }) };
+  },
+};
+
+/** The Decide summary: one batch per call; summaries for the refs without one are asked again. */
+export const DECIDE_SUMMARY: ClaudeStep<Item[], Summary[]> = {
+  provider: "claude", id: "decide.summary",
+  parse: (text, todo) => {
+    const { summaries, missing } = parseSummaryReply(text, todo.map(refOf));
+    return { value: summaries, rest: leftOf(todo, refOf, missing) };
+  },
+};
+
+/** The Sonnet referee between Jev and Haiku: a batch per call; items without a verdict are asked again. */
+export const REFEREE_SONNET: ClaudeStep<Item[], Referee[]> = {
+  provider: "claude", id: "referee.sonnet",
+  parse: (text, todo) => {
+    const verdicts = parseRefereeReply(text, todo.map(refOf));
+    const got = verdicts.map((v) => v.ref);
+    return { value: verdicts, rest: leftOf(todo, refOf, todo.map(refOf).filter((r) => !got.includes(r))) };
+  },
+};
+
+/** A call whose reply the caller reads itself: one attempt, the text as the value (the fix-issue prompts). */
+export const textStep = <I,>(id: ClaudeStep<I, string>["id"]): ClaudeStep<I, string> => ({ provider: "claude", id, attempts: 1, toPrompt: (x) => [x], size: () => 1, parse: (text) => ({ value: text }) });

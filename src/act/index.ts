@@ -17,6 +17,7 @@
 //
 //   autocraft act --repo R [--limit N] [--apply]
 //   autocraft comment-approval [--repo R]
+import { OPERATOR_MODELS } from "../prompts/index.ts";
 import type { DatabaseSync } from "node:sqlite";
 import { audit } from "../dash/audit.ts";
 import { closeItem, commentOn, type Note, type Writer } from "../github/write.ts";
@@ -199,12 +200,9 @@ const factValue = (d: DecisionRow, prefix: string): string | null => {
   return f ? f.slice(prefix.length).trim() : null;
 };
 
-/** Opus 5.5 is the operator session that writes the security scan's questions and their text. */
-const SECURITY_MODEL = "claude-opus-5-5";
-
 /** The note for a comment posted on an operator's answer: the model that recommended the action or wrote the decision's text, when one did. */
 export function decisionNote(d: DecisionRow): Note {
-  if (d.asked_by === SECURITY_ASKER) return { by: "operator", model: SECURITY_MODEL };
+  if (d.asked_by === SECURITY_ASKER) return { by: "operator", model: OPERATOR_MODELS.security };
   const model = d.recommended_by ?? d.summary_by;
   return model ? { by: "operator", model } : { by: "fixed-operator" };
 }

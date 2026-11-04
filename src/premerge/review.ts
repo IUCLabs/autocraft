@@ -3,18 +3,19 @@
 // the local database. What the findings do to the PR is the merge queue (src/merge/queue.ts) and the fix-up route.
 import type { DatabaseSync } from "node:sqlite";
 import { claudeRoom } from "../agents/call.ts";
-import { add, askClaude, pool, saveUsage, type Usage } from "../classify/run.ts";
+import { pool } from "../classify/run.ts";
+import { runModelStep } from "../agents/step.ts";
+import { PREMERGE_OPUS } from "../agents/steps.ts";
 import { buildQueue, type QueueEntry } from "../merge/queue.ts";
 import { CLAUDE_PROMPTS } from "../prompts/index.ts";
 import { referenceDir } from "../reference.ts";
-import { defaultSemanticDeps, referenceProblems, type SemanticDeps } from "../reference-lint.ts";
-import { dropTexts, type Lint } from "../replylint.ts";
+import { defaultSemanticDeps, type SemanticDeps } from "../reference-lint.ts";
 import { sizeOf } from "../review/candidates.ts";
 import { defaultOpusDeps, prepareOpusInput, type OpusDeps } from "../review/opus.ts";
 import type { OpusCandidate } from "../review/opus-candidates.ts";
 import { REPO_PATH } from "../sandbox/command.ts";
 import { checkoutForPr } from "../sandbox/index.ts";
-import { lintPremerge, parsePremerge, premergeTexts, type PremergeReview } from "./parse.ts";
+import { type PremergeReview } from "./parse.ts";
 import { RETRY_AFTER_MS } from "../postmerge/select.ts";
 import { mergeApprovalOf } from "../merge/approval.ts";
 import { PREMERGE_MAX_TRIES, premergeAt, premergeRetryDue, savePremerge } from "./store.ts";
@@ -92,23 +93,14 @@ export async function runPremerge(db: DatabaseSync, params: PremergeParams, log:
       const { input } = p;
       const checkout = (await deps.checkout?.(repo, e.number, head)) ?? undefined;
       if (checkout) input.repo_dir = REPO_PATH;
-      let usage: Usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: null };
-      let got: PremergeReview | null = null;
       const dir = referenceDir(repo);
       const semantic: SemanticDeps | undefined = dir ? deps.semantic ?? defaultSemanticDeps(db, ref) : undefined;
-      // A reply that is not valid is lint-free here: it keeps the whole-call retry. Problems of a valid one go back to the model as one fix turn.
-      const lint: Lint = async (text, stage) => {
-        const own = lintPremerge(text, ref);
-        return own === null ? null : [...own, ...await referenceProblems(premergeTexts(text, ref), dir, semantic, { stage, otherProblems: own.length })];
-      };
-      for (let attempt = 0; attempt < PROMPT.limits.attempts && !got; attempt++) {
-        const reply = await askClaude("premerge.opus", deps.model, [input], db, { checkout, reference: checkout ? dir : undefined, lint });
-        if (!reply) continue;
-        usage = add(usage, reply.usage);
-        if (reply.fixTurn) log(`  ${ref}: reply lint: ${reply.problems?.length ? `${reply.problems.length} problems left after the fix turn` : "fixed by one fix turn"}`);
-        got = parsePremerge(reply.text, ref, dropTexts(reply.problems));
-      }
-      saveUsage(db, runId, `premerge-${ref.replace("#", "-")}`, "premerge", deps.model, got ? 1 : 0, usage, start, now());
+      const r = await runModelStep(db, PREMERGE_OPUS, input, {
+        model: deps.model, checkout, reference: checkout ? dir : undefined, ctx: { dir, semantic },
+        usage: { run: runId, agent: `premerge-${ref.replace("#", "-")}`, stage: "premerge", items: (ok) => (ok ? 1 : 0) },
+        onReply: (reply) => { if (reply.fixTurn) log(`  ${ref}: reply lint: ${reply.problems?.length ? `${reply.problems.length} problems left after the fix turn` : "fixed by one fix turn"}`); },
+      });
+      const got: PremergeReview | null = r.ok ? r.value : null;
       // The call takes minutes: a push or a merge meanwhile makes the review one of a head nobody will merge.
       if (!stillHead(db, repo, e.number, head)) {
         log(`  ${ref}: the head moved during the review; not stored`);

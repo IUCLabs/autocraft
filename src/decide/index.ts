@@ -5,9 +5,11 @@
 // from a shell. Idempotent: items with a decision or a later stage are
 // skipped, so a re-run or an interrupted run asks only what is still missing.
 import type { DatabaseSync } from "node:sqlite";
-import { refOf, parseSummaryReply, type Item } from "../classify/parse.ts";
+import { refOf, type Item } from "../classify/parse.ts";
 import { claudeRoom } from "../agents/call.ts";
-import { askClaude, loadItems, pool, saveUsage, type Usage } from "../classify/run.ts";
+import { loadItems, pool } from "../classify/run.ts";
+import { runModelStep } from "../agents/step.ts";
+import { DECIDE_SUMMARY } from "../agents/steps.ts";
 import { connect } from "../db.ts";
 import { ask } from "../decisions.ts";
 import { trackedNames } from "../repos.ts";
@@ -47,8 +49,6 @@ export type DecideResult = { run: string | null; dryRun: boolean; byRepo: Record
 export type Log = (line: string) => void;
 
 const now = () => new Date().toISOString();
-const zero = (): Usage => ({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: null });
-const add = (a: Usage, b: Usage): Usage => ({ input: a.input + b.input, output: a.output + b.output, cacheRead: a.cacheRead + b.cacheRead, cacheWrite: a.cacheWrite + b.cacheWrite, cost: a.cost === null && b.cost === null ? null : (a.cost ?? 0) + (b.cost ?? 0) });
 
 /** Items with their GitHub labels and first non-bot comments, for the summary prompt. */
 export function loadSummaryItems(db: DatabaseSync, refs: { repo: string; number: number }[]): Item[] {
@@ -131,13 +131,9 @@ async function summarise(db: DatabaseSync, picked: Candidate[], model: string, u
     onSent(sent);
     const items = loadSummaryItems(db, batch);
     const cand = new Map(batch.map((c) => [refOf(c), c]));
-    let usage = zero(), done = 0;
-    let todo = items;
-    for (let attempt = 0; attempt < PROMPT.limits.attempts && todo.length; attempt++) {
-      const reply = await askClaude("decide.summary", model, todo, db);
-      if (!reply) continue;
-      usage = add(usage, reply.usage);
-      const { summaries, missing } = parseSummaryReply(reply.text, todo.map(refOf));
+    const r = await runModelStep(db, DECIDE_SUMMARY, items, { model, usage: { run: usageRun, agent: `decide-${String(b).padStart(3, "0")}`, stage: "decide" } });
+    let done = 0;
+    if (r.ok) for (const summaries of r.values) {
       const at = now();
       const qs = summaries.map((s) => ({ ...buildDecision(db, cand.get(s.ref)!), asked_at: at, summary: s.summary, summary_by: model, summary_at: at }));
       if (qs.length) {
@@ -145,13 +141,12 @@ async function summarise(db: DatabaseSync, picked: Candidate[], model: string, u
         for (const q of qs) { stage.run(q.repo, q.number, at, `scope decision ${q.id}`); askedIds.push(q.id); }
         done += qs.length;
       }
-      todo = todo.filter((i) => missing.includes(refOf(i)));
     }
+    const todo = r.ok ? r.rest ?? [] : items;
     const n = count(result.byRepo, repo);
     n.asked += done;
     n.noSummary += todo.length;
     if (todo.length) log(`decide: no valid summary for ${todo.map(refOf).join(", ")}; the next run retries them`);
-    saveUsage(db, usageRun, `decide-${String(b).padStart(3, "0")}`, "decide", model, done, usage, start, now());
   }), () => claudeRoom(db), { first: true });
 }
 
