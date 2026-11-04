@@ -144,6 +144,7 @@ function Cards({ rows }: { rows: MainCiRepo[] }) {
           <div className="text-xs">
             <Commit sha={r.headSha} headline={r.headline} repo={r.repo} />
           </div>
+          {r.autocraft && <div className="text-xs text-ink/70">AutoCraft: {r.autocraft}</div>}
         </li>
       ))}
     </ul>
