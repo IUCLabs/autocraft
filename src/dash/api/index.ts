@@ -41,6 +41,7 @@ import { areaNameOf } from "../../areas/store.ts";
 import { settledOf } from "../../classify/settled.ts";
 import { classificationsOf, itemState, relatedOf } from "./decisions.ts";
 import * as sim from "./similar.ts";
+import { needs } from "./needs.ts";
 import { localEmbedder, type Embedder } from "../../embed/model.ts";
 import type { Exec } from "../../fixup/git.ts";
 import { batchRemovePr, batchStop, fastTrackAdd, fastTrackRefs, fastTrackRemove, heldMergeRefs, mergeHoldPr, pipelineRepoNames, queuePage } from "./queue-page.ts";
@@ -473,6 +474,7 @@ export function apiRoutes(opts: ApiOptions = {}): Route[] {
     { method: "POST", pattern: "/api/merge/release", operator: true, handler: ok((db, req) => mergeHoldPr(db, req, false)) },
     { method: "POST", pattern: "/api/merge/batch-remove", operator: true, handler: ok((db, req) => batchRemovePr(db, req, opts.exec)) },
     { method: "POST", pattern: "/api/queue/batches/:id/stop", operator: true, handler: ok((db, req) => batchStop(db, req, opts.exec)) },
+    get("/api/needs", needs),
     get("/api/flow", flow),
     get("/api/similar/:repo/:n", (db, req) => sim.similar(db, req, vectors)),
   ];

@@ -2,6 +2,7 @@
 // the shell builds nav, routes, panels and shortcut help from these declarations.
 import type { FeatureModule } from "./types";
 import { decisionsModule } from "../modules/decisions";
+import { needsModule } from "../modules/needs";
 import { flowModule } from "../modules/flow";
 import { itemModule } from "../modules/item";
 import { progressModule } from "../modules/progress";
@@ -21,4 +22,4 @@ import { githubModule } from "../modules/github";
 import { similarModule } from "../modules/similar";
 import { mainCiModule } from "../modules/mainci";
 
-export const modules: FeatureModule[] = [flowModule, decisionsModule, queueModule, agentsModule, envsModule, ratesModule, itemModule, progressModule, itemsModule, contributorsModule, classifiersModule, costModule, reposModule, accessModule, auditModule, aboutModule, pipelineModule, promptsModule, similarModule, accountsModule, githubModule, mainCiModule];
+export const modules: FeatureModule[] = [flowModule, decisionsModule, needsModule, queueModule, agentsModule, envsModule, ratesModule, itemModule, progressModule, itemsModule, contributorsModule, classifiersModule, costModule, reposModule, accessModule, auditModule, aboutModule, pipelineModule, promptsModule, similarModule, accountsModule, githubModule, mainCiModule];

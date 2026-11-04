@@ -28,6 +28,7 @@ const RULES: [prefix: string, topics: Topic[]][] = [
   ["cost:", ["usage", "agents"]],
   ["rates-", ["usage", "agents", "accounts"]],
   ["count:", ["decisions"]],
+  ["needs:", ["decisions", "conversations", "items", "jobs", "accounts", "settings"]],
   ["decisions?", withSlot("decisions")],
   ["decision:", withSlot("decisions")],
   ["thread:", ["decisions"]],
