@@ -61,8 +61,9 @@ export function fillReviewSummaries(db: DatabaseSync, at: string, repo?: string)
     if (!r) continue;
     const line = (f: string) => (d.kind === "merge" && f.startsWith("review: ") ? reviewFact(r) : d.kind === "close" && f.startsWith("review reason: ") ? `review reason: ${r.reason.slice(0, 300)}` : f);
     const facts = JSON.stringify(factsOf(d).map(line));
-    // The same rule as the ask: Merge? recommends unless Opus was unsure, Close? always; both only with a reason.
-    const recommended = r.why && (d.kind === "close" || r.sure) ? (d.kind === "close" ? "close" : "merge") : null;
+    // The same rule as the ask: Merge? recommends unless Opus was unsure or the pre-merge review blocked the rule (its facts say so), Close? always; both only with a reason.
+    const preMerge = factsOf(d).some((f) => f.startsWith("pre-merge defect: ") || f.startsWith("pre-merge review failed: "));
+    const recommended = r.why && (d.kind === "close" || (r.sure && !preMerge)) ? (d.kind === "close" ? "close" : "merge") : null;
     const same = d.summary === r.summary && (d.summary_by ?? "") === r.by && d.facts === facts && d.recommended === recommended && d.recommended_reason === (recommended ? r.why : null);
     if (same) continue;
     upd.run(r.summary, r.by || null, d.summary === r.summary ? (d.summary_at ?? at) : at, facts, recommended, recommended ? r.why : null, d.id);

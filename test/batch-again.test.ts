@@ -9,6 +9,7 @@ import { batchStates, insertBatch, updateBatch } from "../src/merge/batch-store.
 import { buildQueue } from "../src/merge/queue.ts";
 import { ActionError, actionsOf, batchAgain } from "../src/operator-actions.ts";
 import { SCRATCH } from "./scratch.ts";
+import { seedPremergeClean } from "./helpers/premerge.ts";
 
 mkdirSync(SCRATCH, { recursive: true });
 const dir = mkdtempSync(join(SCRATCH, "batch-again-"));
@@ -27,6 +28,7 @@ function fresh(): DatabaseSync {
       VALUES ('app', ?, ?, 'OPEN', 0, 'success', '[]', 'MERGEABLE', 1, '${T}')`).run(n, `sha${n}`);
     db.prepare(`INSERT INTO classifications (repo, number, classifier, run_id, at, type_label, flags, probs) VALUES ('app', ?, 'jev', 'r1', '${T}', 'bugfix', '[]', '{"top":0.95}')`).run(n);
     db.prepare(`INSERT INTO verifications (repo, number, head_sha, kind, reason, state, created_at) VALUES ('app', ?, ?, 'tests', 'r', 'passed', '${T}')`).run(n, `sha${n}`);
+    seedPremergeClean(db, 'app', n, `sha${n}`);
   }
   return db;
 }

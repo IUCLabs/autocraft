@@ -19,10 +19,11 @@ import { pushApprovalOf } from "../fixup/approval.ts";
 import { commentApprovalOf } from "../act/approval.ts";
 import { conflictBucket, conflictNote } from "../fixup/conflict-state.ts";
 import { effectiveCi } from "../optional-checks.ts";
+import { findingsOf, premergeAt, premergeFixUsed, PREMERGE_MAX_TRIES, type PremergeFinding } from "../premerge/store.ts";
 import { longLivedOf, pushable, type LongLived } from "../fixup/pushable.ts";
 
 export const QUEUE_STATES = [
-  "ready", "decision-answered-merge", "refused", "waiting-ci", "ci-failed", "conflict",
+  "ready", "decision-answered-merge", "refused", "waiting-ci", "waiting-premerge", "ci-failed", "conflict",
   "needs-fix-up", "waiting-verify", "verify-failed", "verify-error", "needs-decision", "declined", "merged", "held-duplicate", "held-backlog",
   "batch-checking", "in-batch", "batch-failed", "ci-approval", "changes-requested", "waiting-main-ci",
 ] as const;
@@ -117,7 +118,12 @@ export type QueueEntry = {
   conflictNote?: string | null;
   /** The PR is one AutoCraft opened to fix main CI (branch prefix MAIN_FIX_BRANCH_PREFIX); it merges alone, also while main is red. */
   mainFix?: boolean;
+  /** The pre-merge review of the head, read for open PRs the rule would otherwise merge; null when not read (outside the rule, or an operator's Merge answer). fix: every defect has a fix and a fix-up may apply them; defect: a defect to decide on; failed: three tries failed; retry: a try failed, more are left. */
+  premerge: { state: "none" | "clean" | "fix" | "defect" | "failed" | "retry"; defects: PremergeFinding[]; minor: number; error: string | null } | null;
 };
+
+export const PREMERGE_DEFECT_REASON = "the pre-merge review found a defect";
+export const PREMERGE_FAILED_REASON = "the pre-merge review failed";
 
 /** States a PR leaves for its batch's state while it is in a batch. */
 const BATCHABLE: QueueState[] = ["ready", "decision-answered-merge", "refused", "waiting-ci"];
@@ -235,6 +241,8 @@ export function buildQueue(db: DatabaseSync, opts: QueueOptions = {}): QueueEntr
   const mainRed = redMainRepos(db);
   const approvals = new Map<string, { push: boolean; comment: boolean }>();
   const longLivedBy = new Map<string, LongLived>();
+  const pushableAt = (r: Row, checksHere: boolean) => pushable(r.head_repo, r.repo, checksHere ? r.c_can : r.i_can, r.head_ref, (longLivedBy.get(r.repo) ?? (longLivedBy.set(r.repo, longLivedOf(db, r.repo)), longLivedBy.get(r.repo)!)));
+  const approvalOf = (repo: string) => approvals.get(repo) ?? (approvals.set(repo, { push: pushApprovalOf(db, repo) !== null, comment: commentApprovalOf(db, repo) !== null }), approvals.get(repo)!);
   const out: QueueEntry[] = [];
   for (const r of rows) {
     const last = merges.get(r.repo, r.number, r.r_head) as { outcome: string; reason: string | null } | undefined;
@@ -285,10 +293,28 @@ export function buildQueue(db: DatabaseSync, opts: QueueOptions = {}): QueueEntr
     // Only a merge answer is set aside at an unsure head; a hold or close still counts.
     const given = (answers.get(id) as string | undefined) ?? null;
     const answer = given === "merge" && unsure && !answeredAfter.get(id, r.r_at) ? null : given;
+    // The pre-merge review gates only what the rule would merge; an operator's Merge answer skips it. Its blocking reasons go to outsideRule before stateOf decides the path.
+    let premerge: QueueEntry["premerge"] = null;
+    if (r.state === "OPEN" && !mergedByUs && !outsideRule.length && answer !== "merge") {
+      const row = premergeAt(db, r.repo, r.number, r.r_head);
+      const all = findingsOf(row);
+      const defects = all.filter((f) => f.severity === "defect");
+      const minor = all.length - defects.length;
+      const error = row?.error ?? null;
+      if (!row) premerge = { state: "none", defects, minor, error };
+      else if (row.findings === null) premerge = { state: row.tries >= PREMERGE_MAX_TRIES ? "failed" : "retry", defects, minor, error };
+      else if (!defects.length) premerge = { state: "clean", defects, minor, error };
+      else {
+        const fixable = defects.every((f) => f.fix) && !premergeFixUsed(db, r.repo, r.number) && pushApprovalOf(db, r.repo) !== null && pushableAt(r, checksHere);
+        premerge = { state: fixable ? "fix" : "defect", defects, minor, error };
+      }
+      if (premerge.state === "defect") outsideRule.push(PREMERGE_DEFECT_REASON);
+      else if (premerge.state === "failed") outsideRule.push(PREMERGE_FAILED_REASON);
+    }
     const e: QueueEntry = {
       repo: r.repo, number: r.number, title: r.title ?? "", author: r.author, tier, head: r.r_head, size, label,
       verdict: r.verdict, reason: r.reason, fixes, ci, mergeable, state: "needs-decision", path: null, outsideRule, runsWaiting, runsBlocked,
-      decisionId: asked ? id : null, noCi: ci === "none" && noCi(r.repo), answer, refusedReason: null, reviewedAt: r.r_at, verify, held: holds.has(`${r.repo}#${r.number}`), note: null, blockedLive: false,
+      decisionId: asked ? id : null, noCi: ci === "none" && noCi(r.repo), answer, refusedReason: null, reviewedAt: r.r_at, verify, held: holds.has(`${r.repo}#${r.number}`), note: null, blockedLive: false, premerge,
     };
     const open = r.state === "OPEN" && !mergedByUs;
     // Only our own main-fix PRs skip the red-main hold: a branch name alone is no proof.
@@ -301,8 +327,7 @@ export function buildQueue(db: DatabaseSync, opts: QueueOptions = {}): QueueEntr
     if (open && why) { e.state = "changes-requested"; e.note = why; e.blockedLive = live; out.push(e); continue; }
     e.state = stateOf(e, r.state === "MERGED" || mergedByUs, last, open && (backlogHeld(db, r.repo, r.number) ? "backlog" : duplicateHeld(db, r.repo, r.number) ? "duplicate" : null));
     if (open && mergeable === "CONFLICTING" && r.base_ref) {
-      const ap = approvals.get(r.repo) ?? (approvals.set(r.repo, { push: pushApprovalOf(db, r.repo) !== null, comment: commentApprovalOf(db, r.repo) !== null }), approvals.get(r.repo)!);
-      e.conflictNote = conflictNote(conflictBucket(db, { repo: r.repo, number: r.number, head: r.r_head, pushable: pushable(r.head_repo, r.repo, checksHere ? r.c_can : r.i_can, r.head_ref, (longLivedBy.get(r.repo) ?? (longLivedBy.set(r.repo, longLivedOf(db, r.repo)), longLivedBy.get(r.repo)!))) }, ap), r.base_ref);
+      e.conflictNote = conflictNote(conflictBucket(db, { repo: r.repo, number: r.number, head: r.r_head, pushable: pushableAt(r, checksHere) }, approvalOf(r.repo)), r.base_ref);
     }
     const batch = inBatch.get(`${r.repo}#${r.number}@${r.r_head}`);
     if (batch && BATCHABLE.includes(e.state)) e.state = batch;
@@ -337,6 +362,14 @@ function stateOf(e: QueueEntry, merged: boolean, last: { outcome: string; reason
   if (!ciAllows(e.path, e.ci, e.noCi) || e.mergeable !== "MERGEABLE") return "waiting-ci";
   const v = verifyState(e);
   if (v) return v;
+  if (e.path === "rule" && e.premerge) {
+    if (e.premerge.state === "none" || e.premerge.state === "retry") return "waiting-premerge";
+    if (e.premerge.state === "fix") {
+      const n = e.premerge.defects.length;
+      e.note = `pre-merge review: ${n} defect${n === 1 ? "" : "s"} to fix`;
+      return "needs-fix-up";
+    }
+  }
   if (last?.outcome === "refused") {
     e.refusedReason = last.reason;
     return "refused";

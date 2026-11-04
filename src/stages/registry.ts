@@ -358,6 +358,7 @@ export const STAGES: StageDef[] = [
       { id: "ci-approval-person", label: "CI runs need a person to approve", waitsOn: "person", tone: "warn", hint: "The repo's CI approval is off, or approving a run failed twice; approve the runs on GitHub or the repo on the Repos page", link: "queue" },
       { id: "ci-failed", label: "Blocked: CI fails", waitsOn: "ci", tone: "bad", link: "queue" },
       { id: "conflict", label: "Blocked: conflicts", waitsOn: "person", tone: "bad", link: "queue" },
+      { id: "waiting-premerge", label: "Waiting for the pre-merge review", waitsOn: "model", tone: "neutral", hint: "The rule would merge it; an adversarial review of the head commit comes first", link: "queue" },
       { id: "waiting-verify", label: "Waiting for Verify", waitsOn: "model", tone: "neutral", hint: "No passed verification at the head commit yet", link: "queue" },
       { id: "verify-failed", label: "Blocked: Verify failed", waitsOn: "person", tone: "bad", link: "queue" },
       { id: "verify-error", label: "Blocked: Verify error", waitsOn: "person", tone: "bad", link: "queue" },

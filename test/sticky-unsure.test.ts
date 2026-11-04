@@ -7,6 +7,7 @@ import { buildQueue, eligible, mergeDecisionId } from "../src/merge/queue.ts";
 import { closeMergedQuestions } from "../src/merge/withdraw.ts";
 import { saveOpus } from "../src/review/opus.ts";
 import { fresh as freshDb, T1 } from "./batch-fixture.ts";
+import { seedPremergeClean } from "./helpers/premerge.ts";
 
 function fresh(prs: { n: number }[]): DatabaseSync {
   const db = freshDb(prs);
@@ -27,6 +28,7 @@ function moveTo(db: DatabaseSync, head: string): void {
   db.prepare("UPDATE items SET head_oid = ? WHERE number = 1").run(head);
   db.prepare("UPDATE pr_checks SET head_oid = ? WHERE number = 1").run(head);
   db.prepare("UPDATE verifications SET head_sha = ? WHERE number = 1").run(head);
+  seedPremergeClean(db, "app", 1, head);
 }
 
 function unsureAsked(): DatabaseSync {

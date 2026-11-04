@@ -15,6 +15,7 @@ import { insertBatch } from "../src/merge/batch-store.ts";
 import type { DiffFetcher } from "../src/review/diff.ts";
 import { SCRATCH } from "./scratch.ts";
 import { validating } from "./gql.ts";
+import { seedPremergeClean } from "./helpers/premerge.ts";
 
 mkdirSync(SCRATCH, { recursive: true });
 const dir = mkdtempSync(join(SCRATCH, "merge-test-"));
@@ -60,6 +61,7 @@ function fresh(): DatabaseSync {
     jev.run(p.n, p.label ?? "bugfix");
     const verdict = p.verdict ?? "take";
     review.run(p.n, p.reviewHead ?? `sha${p.n}`, verdict, verdict === "take-fix" ? '[{"file":"a.rs","change":"x"}]' : null);
+    seedPremergeClean(db, "app", p.n, p.reviewHead ?? `sha${p.n}`);
     if (p.verify !== null) {
       db.prepare(`INSERT INTO verifications (repo, number, head_sha, kind, reason, state, summary, note, created_at) VALUES ('app', ?, ?, 'tests', 'r', ?, ?, ?, '${T0}')`)
         .run(p.n, p.verifyHead ?? `sha${p.n}`, p.verify ?? "passed", (p.verify ?? "passed") === "failed" ? "cargo test failed" : null, (p.verify ?? "passed") === "passed" ? "also passes on base" : null);

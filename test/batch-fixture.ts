@@ -6,6 +6,7 @@ import type { Querier } from "../src/mirror.ts";
 import type { BatchDeps } from "../src/merge/batch.ts";
 import { SCRATCH } from "./scratch.ts";
 import { validating } from "./gql.ts";
+import { seedPremergeClean } from "./helpers/premerge.ts";
 
 mkdirSync(SCRATCH, { recursive: true });
 export const dir = mkdtempSync(join(SCRATCH, "batch-test-"));
@@ -22,6 +23,7 @@ export function fresh(prs: { n: number; author?: string }[]): DatabaseSync {
     db.prepare(`INSERT INTO classifications (repo, number, classifier, run_id, at, type_label, flags, probs) VALUES ('app', ?, 'jev', 'r1', '${T0}', 'bugfix', '[]', '{"top":0.95}')`).run(p.n);
     db.prepare(`INSERT INTO opus_reviews (repo, number, head_oid, run_id, at, model, verdict, reason, fixes, sure, mode) VALUES ('app', ?, ?, 'rv', '${T0}', 'm', 'take', 'ok', NULL, 1, 'full')`).run(p.n, `sha${p.n}`);
     db.prepare(`INSERT INTO verifications (repo, number, head_sha, kind, reason, state, created_at) VALUES ('app', ?, ?, 'tests', 'r', 'passed', '${T0}')`).run(p.n, `sha${p.n}`);
+    seedPremergeClean(db, 'app', p.n, `sha${p.n}`);
     db.prepare(`INSERT INTO pr_checks (repo, number, head_oid, state, is_draft, overall, checks, mergeable, maintainer_can_modify, fetched_at) VALUES ('app', ?, ?, 'OPEN', 0, 'success', '[]', 'MERGEABLE', 1, '${T1}')`).run(p.n, `sha${p.n}`);
   }
   db.prepare("INSERT INTO whitelist_overrides (login, status, by, at) VALUES ('regular', 'allow', 'op', ?)").run(T0);

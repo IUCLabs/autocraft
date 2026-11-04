@@ -16,6 +16,7 @@ import { queuePage } from "../src/dash/api/queue-page.ts";
 import type { Req } from "../src/dash/types.ts";
 import type { Exec } from "../src/fixup/git.ts";
 import { SCRATCH } from "./scratch.ts";
+import { seedPremergeClean } from "./helpers/premerge.ts";
 
 mkdirSync(SCRATCH, { recursive: true });
 const dir = mkdtempSync(join(SCRATCH, "queue-controls-"));
@@ -36,6 +37,7 @@ function fresh(reviewed = true): DatabaseSync {
       if (reviewed) {
         db.prepare(`INSERT INTO opus_reviews (repo, number, head_oid, run_id, at, model, verdict, reason, sure, mode) VALUES (?, ?, ?, 'rv', ?, 'm', 'take', 'looks right', 1, 'full')`).run(repo, n, `sha${n}`, T0);
         db.prepare(`INSERT INTO verifications (repo, number, head_sha, kind, reason, state, summary, note, created_at) VALUES (?, ?, ?, 'tests', 'r', 'passed', NULL, 'ok', ?)`).run(repo, n, `sha${n}`, T0);
+        seedPremergeClean(db, repo, n, `sha${n}`);
         db.prepare(`INSERT INTO pr_checks (repo, number, head_oid, state, is_draft, overall, checks, mergeable, maintainer_can_modify, fetched_at) VALUES (?, ?, ?, 'OPEN', 0, 'success', '[]', 'MERGEABLE', 1, ?)`).run(repo, n, `sha${n}`, T1);
       }
     }

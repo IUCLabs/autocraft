@@ -6,6 +6,7 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { after, test } from "node:test";
 import { SCRATCH } from "./scratch.ts";
+import { seedPremergeClean } from "./helpers/premerge.ts";
 
 const { connect } = await import("../src/db.ts");
 const { inPilot, pilotItems, PilotError, setPilot, setRepoPipeline } = await import("../src/pilot.ts");
@@ -130,6 +131,7 @@ W.prepare("INSERT INTO whitelist_overrides (login, status, by, at) VALUES ('regu
     review.run(n, `sha${n}`, T1, verdict, verdict === "take-fix" ? '[{"file":"a.rs","change":"x"}]' : null);
     checks.run(n, `sha${n}`, canModify, T1);
     if (verdict === "take") W.prepare(`INSERT INTO verifications (repo, number, head_sha, kind, reason, state, note, created_at) VALUES ('app', ?, ?, 'tests', 'r', 'passed', 'also passes on base', ?)`).run(n, `sha${n}`, T1);
+    if (verdict === "take") seedPremergeClean(W, 'app', n, `sha${n}`);
   };
   pr(21, "take"); pr(22, "take");
   pr(23, "take"); // the Fix PR of issue 30
