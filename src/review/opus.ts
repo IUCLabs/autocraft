@@ -12,6 +12,7 @@ import { checksOf, refreshChecks } from "./checks.ts";
 import { MAX_RERUNS_PER_DAY, countRerun, discussionOf, ensurePipelineLogin, liveDiscussion, markedStaleSince, staleReviews, withRetry, type Snapshot } from "./discussion.ts";
 import { withdrawMergeQuestion } from "../merge/withdraw.ts";
 import { headWasUnsure, mergeDecisionId } from "../merge/queue.ts";
+import { relatedOpen, latestReview } from "../postmerge/related.ts";
 import { HISTORY_COPY_SQL } from "../db.ts";
 import type { DiscussionEntry } from "./parse.ts";
 import { cachedDiff, codeDiff, ghDelta, ghDiff, type DeltaFetcher, type DiffFetcher } from "./diff.ts";
@@ -75,12 +76,12 @@ export function saveOpus(db: DatabaseSync, runId: string | null, c: { repo: stri
   if (again && !keepsQuestion) withdrawMergeQuestion(db, c.repo, c.number, c.head_oid, at);
   // The row about to be replaced may predate the history: copy it first.
   db.prepare(`${HISTORY_COPY_SQL} AND o.repo = ? AND o.number = ? AND o.head_oid = ?`).run(c.repo, c.number, c.head_oid);
-  const risks = JSON.stringify(r.risks), fixes = r.fixes.length ? JSON.stringify(r.fixes) : null, pub = r.public ? JSON.stringify(r.public) : null;
-  db.prepare(`INSERT INTO opus_review_history (repo, number, head_oid, at, model, mode, verdict, sure, reason, risks, fixes, summary, why, public_review)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(c.repo, c.number, c.head_oid, at, s.model, s.mode, r.verdict, r.sure ? 1 : 0, r.reason, risks, fixes, r.summary, r.why, pub);
-  db.prepare(`INSERT OR REPLACE INTO opus_reviews (repo, number, head_oid, run_id, at, model, mode, base_head, verdict, sure, reason, fixes, risks, public_review, seen_at, disc_hash, summary, why, conflicts)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(c.repo, c.number, c.head_oid, runId, at, s.model, s.mode, s.base, r.verdict,
-    r.sure ? 1 : 0, r.reason, fixes, risks, pub, s.snap?.seen ?? at, s.snap?.hash ?? null, r.summary, r.why, r.conflicts.length ? JSON.stringify(r.conflicts) : null);
+  const risks = JSON.stringify(r.risks), fixes = r.fixes.length ? JSON.stringify(r.fixes) : null, pub = r.public ? JSON.stringify(r.public) : null, claims = r.claims.length ? JSON.stringify(r.claims) : null;
+  db.prepare(`INSERT INTO opus_review_history (repo, number, head_oid, at, model, mode, verdict, sure, reason, risks, fixes, summary, why, public_review, claims)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(c.repo, c.number, c.head_oid, at, s.model, s.mode, r.verdict, r.sure ? 1 : 0, r.reason, risks, fixes, r.summary, r.why, pub, claims);
+  db.prepare(`INSERT OR REPLACE INTO opus_reviews (repo, number, head_oid, run_id, at, model, mode, base_head, verdict, sure, reason, fixes, risks, public_review, seen_at, disc_hash, summary, why, conflicts, claims)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(c.repo, c.number, c.head_oid, runId, at, s.model, s.mode, s.base, r.verdict,
+    r.sure ? 1 : 0, r.reason, fixes, risks, pub, s.snap?.seen ?? at, s.snap?.hash ?? null, r.summary, r.why, r.conflicts.length ? JSON.stringify(r.conflicts) : null, claims);
   db.prepare("DELETE FROM opus_carried_fixes WHERE repo = ? AND number = ? AND head_oid = ?").run(c.repo, c.number, c.head_oid);
   for (const u of s.unapplied ?? []) {
     db.prepare("INSERT INTO opus_carried_fixes (repo, number, head_oid, from_head, file, change, outcome, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
@@ -139,6 +140,7 @@ export async function prepareOpusInput(db: DatabaseSync, repo: string, c: OpusCa
       ref: refOf(c), title: c.title, body: c.body, author_association: c.author_association, size: c.size, lines_changed: c.lines_changed,
       ci: ch?.overall ?? "unknown", mergeable: ch?.mergeable ?? null, files: cd.files, tests_omitted: cd.testsOmitted, lockfiles_omitted: cd.lockfilesOmitted,
       mode: "full", earlier_opus: null, diff: cd.text,
+      related_open: relatedOpen(db, repo, c.number, cd.files), review_history: latestReview(db, repo, c.number, c.head_oid),
     };
     return { kind: "ready", input: { ...input, statements: relatedStatements(db, repo, c.number) }, snap: { seen: now(), hash: null }, mode: "full", base: null };
   }
@@ -168,6 +170,7 @@ export async function prepareOpusInput(db: DatabaseSync, repo: string, c: OpusCa
     ref: refOf(c), title: c.title, body: c.body, author_association: c.author_association, size: c.size, lines_changed: c.lines_changed,
     ci: ch?.overall ?? "unknown", mergeable: ch?.mergeable ?? null, files: cd.files, tests_omitted: cd.testsOmitted, lockfiles_omitted: cd.lockfilesOmitted,
     mode, earlier_opus: mode === "delta" ? earlier : null, ...(unapplied.length ? { unapplied_fixes: unapplied } : {}), ...(ours.length ? { pipeline_commits: ours } : {}), diff, discussion,
+    related_open: relatedOpen(db, repo, c.number, cd.files),
     statements: relatedStatements(db, repo, c.number),
   };
   return { kind: "ready", input, snap, mode, base };
@@ -219,7 +222,7 @@ export async function runOpusReview(db: DatabaseSync, params: OpusParams, log: (
       return;
     }
     if (p.kind === "large") {
-      const r: OpusReview = { ref: refOf(c), verdict: "hold", sure: true, reason: TOO_LARGE, fixes: [], risks: [], summary: null, why: null, public: null, conflicts: [] };
+      const r: OpusReview = { ref: refOf(c), verdict: "hold", sure: true, reason: TOO_LARGE, fixes: [], risks: [], summary: null, why: null, public: null, conflicts: [], claims: [] };
       saveOpus(db, runId, c, { mode: p.mode, base: p.base, model: null, review: r });
       tally(c, r);
       params.onHandled?.(++handled);

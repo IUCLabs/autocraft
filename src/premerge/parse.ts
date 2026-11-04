@@ -2,7 +2,7 @@
 // imports this file.
 import { safePath } from "../fixup/patch.ts";
 import type { LintProblem } from "../replylint.ts";
-import { OPUS_MAX_FIXES, REFERENCE_LEAK, parseStatementConflicts, type StatementConflict, type OwnerStatement } from "../review/opus-parse.ts";
+import { evidenceAt, OPUS_MAX_FIXES, REFERENCE_LEAK, parseClaims, type Claim, parseStatementConflicts, type StatementConflict, type OwnerStatement } from "../review/opus-parse.ts";
 import type { PremergeFinding } from "./types.ts";
 
 export const PREMERGE_MAX_FINDINGS = 30;
@@ -12,7 +12,7 @@ export const PREMERGE_FILE_CHARS = 300;
 export const PREMERGE_FIX_CHARS = 800;
 export const PREMERGE_SEARCHED_CHARS = 400;
 
-export type PremergeReview = { findings: PremergeFinding[]; searched: string | null; conflicts: StatementConflict[] };
+export type PremergeReview = { findings: PremergeFinding[]; searched: string | null; conflicts: StatementConflict[]; /** A claim is unverified or the claims list is missing: a person decides, no fix-up. */ unsure: boolean; /** The claims of the title and body as stored and posted. */ claims: Claim[] };
 
 const clean = (s: string) => s.replace(/\s+/g, " ").trim();
 
@@ -51,6 +51,18 @@ function entries(text: string, ref: string): { entries: Entry[]; searched: strin
   return { entries: out, searched: typeof o.searched === "string" && o.searched.trim() ? clean(o.searched).slice(0, PREMERGE_SEARCHED_CHARS) : null, conflicts: o.conflicts };
 }
 
+/** The defects that claims make: the ones whose code is wrong. */
+function claimFindings(claims: Claim[], files: readonly string[]): PremergeFinding[] {
+  return claims.filter((c) => c.impact === "code-wrong").map((c) => {
+    const at = evidenceAt(c.evidence, files), file = at && safePath(at.path) ? at.path : "(description)";
+    return {
+      severity: "defect" as const, file, line: at && file !== "(description)" ? at.line : 0,
+      title: `Claim shows wrong code: ${c.claim}`.slice(0, PREMERGE_TITLE_CHARS),
+      scenario: `The claim "${c.claim}" is ${c.status} and the code is wrong. ${c.evidence}`.slice(0, PREMERGE_SCENARIO_CHARS),
+    };
+  });
+}
+
 const leaks = (...s: string[]) => s.some((x) => REFERENCE_LEAK.test(x));
 
 /**
@@ -58,8 +70,10 @@ const leaks = (...s: string[]) => s.some((x) => REFERENCE_LEAK.test(x));
  * valid. An entry without a valid severity, file, line, title or scenario is dropped, and so is one whose title or scenario
  * mentions the reference documentation or is in `drop`; a fix with a leak, an unsafe path or past the fix cap is dropped
  * from its finding. `drop`: texts the reply lint still flagged after the fix turn.
+ * Claims: a claim of the title or body with impact "code-wrong" is a defect finding of its own. An "unknown" impact, or a missing
+ * `claims` list when `body` is not empty, is no finding: it sets `unsure`, which sends the PR to a person. "description-only" is shown only.
  */
-export function parsePremerge(text: string, ref: string, drop: ReadonlySet<string> = new Set(), known: readonly OwnerStatement[] = []): PremergeReview | null {
+export function parsePremerge(text: string, ref: string, drop: ReadonlySet<string> = new Set(), known: readonly OwnerStatement[] = [], body = "", files: readonly string[] = []): PremergeReview | null {
   const r = entries(text, ref);
   if (!r) return null;
   const findings: PremergeFinding[] = [];
@@ -70,14 +84,18 @@ export function parsePremerge(text: string, ref: string, drop: ReadonlySet<strin
     findings.push(fixOk ? { ...rest, fix } : rest);
   }
   // A dropped fix does not free its place under the cap: the cap counts the fixes the model offered.
-  return { findings, searched: r.searched, conflicts: parseStatementConflicts(r.conflicts, known) };
+  // Every valid claim reaches the findings and `unsure`; only the stored and posted texts are cleaned. A list that was not fully read is unsure.
+  const parsed = parseClaims((replyObject(text) ?? {}).claims, drop, false, files), claims = parsed?.claims ?? [];
+  const unsure = parsed === null ? !!body.trim() : parsed.rejected > 0 || claims.some((c) => c.impact === "unknown");
+  return { unsure, claims, findings: [...claimFindings(claims, files), ...findings].slice(0, PREMERGE_MAX_FINDINGS), searched: r.searched, conflicts: parseStatementConflicts(r.conflicts, known) };
 }
 
 /** The reference mentions in a valid reply that the model can fix itself; null when the reply is not valid. */
-export function lintPremerge(text: string, ref: string): LintProblem[] | null {
+export function lintPremerge(text: string, ref: string, body = ""): LintProblem[] | null {
   const r = entries(text, ref);
   if (!r) return null;
   const out: LintProblem[] = [];
+  if (body.trim() && !Array.isArray(replyObject(text)?.claims)) out.push({ field: "claims", message: "is missing; list every behavioural claim of the title and body with its status and file:line evidence" });
   const msg = "mentions the reference folder or one of its pages; state the behaviour in your own words";
   for (const e of r.entries) {
     for (const [k, v] of [["title", e.title], ["scenario", e.scenario]] as const) if (REFERENCE_LEAK.test(v)) out.push({ field: `findings[${e.index}].${k}`, message: msg, text: v });
@@ -90,8 +108,10 @@ export function lintPremerge(text: string, ref: string): LintProblem[] | null {
 export function premergeTexts(text: string, ref: string): { field: string; text: string }[] {
   const r = entries(text, ref);
   if (!r) return [];
-  return r.entries.flatMap((e) => [
+  const pc = parseClaims(replyObject(text)?.claims, new Set(), true);
+  const claims = (pc?.claims ?? []).flatMap((c, k) => { const i = pc!.indexes[k]!; return [{ field: `claims[${i}].claim`, text: c.claim }, ...(c.evidence ? [{ field: `claims[${i}].evidence`, text: c.evidence }] : [])]; });
+  return [...claims, ...r.entries.flatMap((e) => [
     { field: `findings[${e.index}].title`, text: e.title }, { field: `findings[${e.index}].scenario`, text: e.scenario },
     ...(e.fix ? [{ field: `findings[${e.index}].fix.file`, text: e.fix.file }, { field: `findings[${e.index}].fix.change`, text: e.fix.change }] : []),
-  ]);
+  ])];
 }

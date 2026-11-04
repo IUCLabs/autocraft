@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { decidePr } from "../src/core/decide.ts";
-import { PREMERGE_DEFECT_REASON, PREMERGE_FAILED_REASON, UNSURE_REASON } from "../src/core/rules.ts";
+import { PREMERGE_DEFECT_REASON, PREMERGE_FAILED_REASON, PREMERGE_UNSURE_REASON, UNSURE_REASON } from "../src/core/rules.ts";
 import { QUEUE_STATES, type Plan, type PrFacts } from "../src/core/plan.ts";
 import { NOW, REVIEW_AT, prFacts } from "./world.ts";
 
@@ -16,7 +16,7 @@ const tokens = (p: Plan): string[] => p.actions.map((a) => {
 }).sort();
 const SIZE_L = { size: "L", lines: 900 } as const;
 const answered = (answer: string, after = true) => ({ asked: true, answer, mergeAnswerAfterReview: after });
-const premerge = (o: Partial<NonNullable<PrFacts["premerge"]>>) => ({ at: "2026-11-04T10:30:00.000Z", tries: 0, hasFindings: true, defects: 0, defectsAllFixable: true, minor: 0, error: null, ...o });
+const premerge = (o: Partial<NonNullable<PrFacts["premerge"]>>) => ({ at: "2026-11-04T10:30:00.000Z", tries: 0, hasFindings: true, unsure: false, defects: 0, defectsAllFixable: true, minor: 0, error: null, ...o });
 const TAKE_FIX = { review: { verdict: "take-fix" } } as const;
 const fixup = (o: Partial<NonNullable<PrFacts["fixup"]>> = {}) => ({ fixes: 2, attempts: 0, recorded: [] as string[], ...o });
 const conflicting = (o: Partial<NonNullable<PrFacts["conflict"]>> = {}) => ({ mergeable: "CONFLICTING", conflict: { bucket: "merge", base: "main", baseOk: true, ...o } });
@@ -77,6 +77,7 @@ const rows: Row[] = [
   // ---- pre-merge review
   { name: "no pre-merge review yet", facts: { premerge: null }, expect: { state: "waiting-premerge", path: "rule", actions: ["premerge"] } },
   { name: "no pre-merge review, merging not approved in the repo", facts: { premerge: null, repoFacts: { mergeApproved: false } }, expect: { state: "waiting-premerge", actions: [] } },
+  { name: "pre-merge review with an unverified claim goes to a person, not the rule", facts: { premerge: premerge({ unsure: true }) }, expect: { state: "needs-decision", reasons: [PREMERGE_UNSURE_REASON], actions: ["ask-merge"] } },
   { name: "failed try waits for its backoff", facts: { premerge: premerge({ hasFindings: false, tries: 1, at: new Date(NOW - 600_000).toISOString() }) }, expect: { state: "waiting-premerge", actions: [] } },
   { name: "failed try is due after the backoff", facts: { premerge: premerge({ hasFindings: false, tries: 1, at: new Date(NOW - 3_700_000).toISOString() }) }, expect: { state: "waiting-premerge", actions: ["premerge"] } },
   { name: "three failed tries: outside the rule", facts: { premerge: premerge({ hasFindings: false, tries: 3 }) }, expect: { state: "needs-decision", reasons: [PREMERGE_FAILED_REASON], actions: ["ask-merge"] } },

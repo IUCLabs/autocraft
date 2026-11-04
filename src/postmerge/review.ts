@@ -15,7 +15,8 @@ import { codeDiff, ghMerged, type MergedFetcher } from "../review/diff.ts";
 import { MAX_DIFF_CHARS } from "../review/opus.ts";
 import { REPO_PATH } from "../sandbox/command.ts";
 import { checkoutForCommit, checkoutForPr } from "../sandbox/index.ts";
-import { MAX_MERGED_DIFF_CHARS, type FiledBefore, type Finding, type PostmergeCommit, type PostmergePr, type PostmergeReviewRow, type RelatedItem } from "./parse.ts";
+import { MAX_MERGED_DIFF_CHARS, type FiledBefore, type Finding, type PostmergeCommit, type PostmergePr } from "./parse.ts";
+import { relatedOpen, reviewHistory } from "./related.ts";
 import { followupsOf, MAX_RETRIES, mergedPr, selectPostmerge, type MergedPr } from "./select.ts";
 import { jobItem } from "../runner/job-items.ts";
 
@@ -61,31 +62,6 @@ function pipelineCommits(db: DatabaseSync, repo: string, number: number): Postme
       .map((r) => ({ ...r, kind: "duplicate-carry" as const, note: "carried parts of closed duplicates onto the PR" })),
   ];
   return rows.sort((a, b) => a.at.localeCompare(b.at)).map(({ kind, sha, note }) => ({ kind, sha, note }));
-}
-
-function reviewHistory(db: DatabaseSync, repo: string, number: number): PostmergeReviewRow[] {
-  const list = <T>(s: string | null): T[] => { try { const v = JSON.parse(s ?? "[]") as unknown; return Array.isArray(v) ? (v as T[]) : []; } catch { return []; } };
-  return (db.prepare("SELECT head_oid, at, verdict, sure, reason, risks, fixes FROM opus_review_history WHERE repo = ? AND number = ? AND verdict IS NOT NULL ORDER BY at, rowid").all(repo, number) as
-    { head_oid: string; at: string; verdict: string; sure: number; reason: string; risks: string | null; fixes: string | null }[])
-    .map((r) => ({ head: r.head_oid, verdict: r.verdict, sure: r.sure === 1, reason: r.reason, risks: list<string>(r.risks), fixes: list(r.fixes), at: r.at }));
-}
-
-/** Items closed within this long still count as related: a defect reported and closed recently is not reported again. */
-export const RELATED_CLOSED_DAYS = 30;
-
-/** Items of the repo, open or closed in the last 30 days, that mention the PR by number or one of its files by path: number, kind, state and title, for deduplication. */
-export function relatedOpen(db: DatabaseSync, repo: string, number: number, files: string[], at = Date.now()): RelatedItem[] {
-  const needles = [`#${number}`, ...files.slice(0, 30)];
-  const where = needles.map(() => "(i.title LIKE ? ESCAPE '\\' OR i.body LIKE ? ESCAPE '\\')").join(" OR ");
-  const args = needles.flatMap((n) => { const like = `%${n.replace(/[\\%_]/g, "\\$&")}%`; return [like, like]; });
-  const since = new Date(at - RELATED_CLOSED_DAYS * 86400_000).toISOString();
-  const rows = db.prepare(`SELECT i.number, i.kind, i.state, i.title, i.body FROM items i WHERE i.repo = ?
-    AND (i.state = 'OPEN' OR COALESCE(i.closed_at, i.merged_at, i.updated_at) >= ?) AND i.number <> ? AND (${where}) ORDER BY i.number LIMIT 60`).all(repo, since, number, ...args) as
-    { number: number; kind: "issue" | "pr"; state: string; title: string | null; body: string | null }[];
-  const byNumber = new RegExp(String.raw`(?<![\w/])#${number}(?!\d)`);
-  return rows
-    .filter((r) => { const text = `${r.title ?? ""}\n${r.body ?? ""}`; return byNumber.test(text) || files.some((f) => text.includes(f)); })
-    .slice(0, 40).map((r) => ({ number: r.number, kind: r.kind, state: r.state === "OPEN" ? "open" as const : "closed" as const, title: (r.title ?? "").slice(0, 160) }));
 }
 
 /** Follow-up issues earlier reviews of the PR filed, with their current state; one still in `filing` has an unknown outcome. */
@@ -195,3 +171,5 @@ export function queueBackfill(db: DatabaseSync, by: string, since: string, o: { 
   return (db.prepare(`SELECT COUNT(*) AS n FROM (SELECT DISTINCT m.repo, m.number FROM merges m WHERE m.outcome = 'merged' AND m.at >= ?
     AND NOT EXISTS (SELECT 1 FROM postmerge_reviews r WHERE r.repo = m.repo AND r.number = m.number))`).get(iso) as { n: number }).n;
 }
+
+export { RELATED_CLOSED_DAYS, relatedOpen } from "./related.ts";

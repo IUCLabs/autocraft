@@ -78,6 +78,27 @@ describe("model replies", () => {
     assert.equal(parseRecommendReply(fence({ summary: "short", recommended: null, reason: "" }), ["small"])?.summary, null);
   });
 
+  test("Opus review: only a code-wrong claim blocks a take; unknown impact or no claims list is unsure", () => {
+    const take = { ref: "app#1", verdict: "take", sure: true, reason: "fine", fixes: [], summary: "Adds a filter.", why: "It is correct." };
+    const bad = { claim: "drop matches Place", status: "contradicted", evidence: "src/a.rs:10 lacks encloses_area", impact: "code-wrong" };
+    const run = (o: object, body = "body") => parseOpusReply(fence({ ...take, ...o }), "app#1", true, new Set(), false, [], body)!;
+    assert.equal(run({ claims: [{ claim: "x", status: "verified", evidence: "src/a.rs:10 same" }] }).sure, true);
+    const held = run({ claims: [bad] });
+    assert.equal(held.verdict, "hold");
+    assert.match(held.reason, /^Claim shows wrong code/);
+    const fixed = run({ claims: [{ ...bad, fix: { file: "src/a.rs", change: "add the encloses_area test" } }] });
+    assert.equal(fixed.verdict, "take-fix");
+    assert.deepEqual(fixed.fixes, [{ file: "src/a.rs", change: "add the encloses_area test" }]);
+    const stale = run({ claims: [{ ...bad, impact: "description-only" }] });
+    assert.deepEqual([stale.verdict, stale.sure], ["take", true], "a stale description does not block");
+    assert.equal(run({ claims: [{ ...bad, impact: "unknown" }] }).sure, false);
+    assert.equal(run({ claims: [{ ...bad, impact: undefined }] }).sure, false, "no impact counts as unknown");
+    assert.equal(run({ claims: [{ claim: "x", status: "verified", evidence: "it just works" }] }).sure, false, "verified without file:line is unverified, impact unknown");
+    assert.equal(run({ claims: [{ ...bad, impact: "description-only", evidence: "nowhere in particular" }] }).sure, false, "no path:line, so impact unknown");
+    assert.equal(run({}).sure, false, "no claims list with a body");
+    assert.equal(parseOpusReply(fence(take), "app#1")?.sure, true, "no body, nothing to claim");
+  });
+
   test("Opus review: the ref must match, take-fix needs a fix, a one-element array is read", () => {
     const rv = { ref: "app#1", verdict: "take-fix", sure: true, reason: "one small fix", fixes: [{ file: "src/a.rs", change: "rename a to b" }], summary: "Adds a filter.", why: "It is correct." };
     assert.equal(parseOpusReply(fence(rv), "app#1")?.fixes.length, 1);

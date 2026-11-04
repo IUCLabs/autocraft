@@ -15,6 +15,7 @@ export function ReviewDetail({ fields }: { fields: Record<string, unknown> }) {
   const fixes = list(fields.fixes);
   const risks = list(fields.risks).map(str).filter((x): x is string => !!x);
   const findings = list(fields.findings).map(rec);
+  const claims = list(fields.claims).map(rec);
   const text = str(fields.reason) ?? str(fields.summary);
   return (
     <div className="flex min-w-0 flex-col gap-3">
@@ -40,6 +41,20 @@ export function ReviewDetail({ fields }: { fields: Record<string, unknown> }) {
                 </li>
               );
             })}
+          </ul>
+        </div>
+      )}
+      {claims.length > 0 && (
+        <div>
+          <div className="mb-1 text-xs font-semibold text-ink/60">Claims checked</div>
+          <ul className="flex flex-col gap-1 text-sm">
+            {claims.map((c, i) => (
+              <li key={i}>
+                <Badge tone={c.status === "verified" ? "ok" : c.status === "contradicted" ? "bad" : "warn"}>{str(c.status) ?? "unverified"}</Badge>
+                <span className="ml-1.5 text-ink/80">{str(c.claim)}</span>
+                {str(c.evidence) && <span className="code ml-1.5 text-xs text-ink/55">{str(c.evidence)}</span>}
+              </li>
+            ))}
           </ul>
         </div>
       )}

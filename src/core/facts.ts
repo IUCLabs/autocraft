@@ -301,7 +301,7 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
     if (row) {
       const all = findingsOf(row);
       const defects = all.filter((f) => f.severity === "defect");
-      base.premerge = { at: row.at, tries: row.tries, hasFindings: row.findings !== null, defects: defects.length, defectsAllFixable: defects.every((f) => f.fix), fixesSafe: parseFixes(JSON.stringify(defects.map((f) => f.fix))).length === defects.length, minor: all.length - defects.length, error: row.error ?? null };
+      base.premerge = { at: row.at, tries: row.tries, hasFindings: row.findings !== null, unsure: row.unsure === 1, defects: defects.length, defectsAllFixable: defects.every((f) => f.fix), fixesSafe: parseFixes(JSON.stringify(defects.map((f) => f.fix))).length === defects.length, minor: all.length - defects.length, error: row.error ?? null };
       if (defects.length) base.premergeFixUsed = premergeFixUsed(db, r.repo, r.number);
     }
     if (base.mergeable === "CONFLICTING" && r.base_ref) {

@@ -18,6 +18,7 @@ import { attemptOf, runFixIssue, runFixIssueCollect, type CollectDeps } from "..
 import { runAct } from "../src/act/index.ts";
 import { runBatches } from "../src/merge/batch.ts";
 import { runMerge } from "../src/merge/index.ts";
+import { prepareOpusInput, type OpusDeps } from "../src/review/opus.ts";
 import { runPremerge, type PremergeDeps } from "../src/premerge/review.ts";
 import { CHECK, T1, tmpdir, world, type World } from "./world-db.ts";
 
@@ -46,6 +47,19 @@ describe("PR journeys", () => {
     assert.deepEqual(w.gh.writesOf("merge").map((x) => [x.number, x.head]), [[1, "sha1"]]);
     assert.deepEqual(merged(w), [{ number: 1, head_oid: "sha1", outcome: "merged" }]);
     assert.equal(w.prPlan(1).state, "merged");
+  });
+
+  test("both Opus inputs carry the open items that mention the PR's files; the pre-merge input also carries the first review", async () => {
+    const w = fresh().pr(1).review(1).issue(9, { title: "Dropping a file still replaces the frame", body: "Seen in src/lib.rs" });
+    const deps: OpusDeps = { fetchDiff: async () => ({ ok: true, text: DIFF }), fetchDelta: async () => ({ ok: false, tooLarge: false, error: "unused" }), model: "opus", maxChars: 120_000 };
+    const c = { repo: "app", number: 1, title: "PR 1", body: "b", author_association: null, head_oid: "sha1", lines_changed: 20, size: "S" as const, score: null };
+    for (const independent of [false, true]) {
+      const p = await prepareOpusInput(w.db, "app", c, deps, quiet, { independent });
+      assert.equal(p.kind, "ready");
+      if (p.kind !== "ready") continue;
+      assert.deepEqual(p.input.related_open?.map((r) => [r.number, r.state]), [[9, "open"]]);
+      assert.equal(p.input.review_history !== undefined, independent);
+    }
   });
 
   test("a Hold answer stops a PR the rule would merge", async () => {

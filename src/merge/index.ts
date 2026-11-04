@@ -31,7 +31,7 @@ import { fillReviewSummaries, reviewText } from "../review/summary.ts";
 import { verificationOf } from "../verify/results.ts";
 import { TIER_LABEL } from "../whitelist.ts";
 import { closeMergedQuestions, withdrawBlockedQuestions, withdrawGroupedQuestions, withdrawOtherHeadQuestions } from "./withdraw.ts";
-import { buildQueue, UNSURE_REASON, PREMERGE_DEFECT_REASON, PREMERGE_FAILED_REASON, ciAllows, countStates, HEAD_FACT, MERGE_OPTIONS, mergeDecisionId, QUEUE_STATES, VERIFY_UNAVAILABLE, verifyAllows, type QueueEntry } from "./queue.ts";
+import { buildQueue, UNSURE_REASON, PREMERGE_DEFECT_REASON, PREMERGE_UNSURE_REASON, PREMERGE_FAILED_REASON, ciAllows, countStates, HEAD_FACT, MERGE_OPTIONS, mergeDecisionId, QUEUE_STATES, VERIFY_UNAVAILABLE, verifyAllows, type QueueEntry } from "./queue.ts";
 
 export { buildQueue, countStates, QUEUE_STATES, type QueueEntry, type QueueState } from "./queue.ts";
 import { envVar } from "../env.ts";
@@ -169,6 +169,8 @@ export function mergeQuestion(e: QueueEntry, why: string | null = null): Record<
   const fixes = e.fixes ? `; ${e.fixes} fix${e.fixes === 1 ? "" : "es"} listed` : "";
   const pre = [
     ...(e.premerge?.defects ?? []).filter(() => e.outsideRule.includes(PREMERGE_DEFECT_REASON)).map((f) => `pre-merge defect: ${f.file}:${f.line} ${f.title}: ${f.scenario}`),
+    ...(e.premerge?.unknownClaims ?? []).filter(() => e.outsideRule.includes(PREMERGE_UNSURE_REASON)).map((c) => `pre-merge could not settle a claim of the description: ${c.claim} (${c.evidence})`),
+    ...(e.outsideRule.includes(PREMERGE_UNSURE_REASON) && !e.premerge?.unknownClaims.length ? ["pre-merge could not check the description's claims list"] : []),
     ...(e.outsideRule.includes(PREMERGE_FAILED_REASON) ? [`pre-merge review failed: ${(e.premerge?.error ?? "no review stored").replace(/^retry: /, "")}`] : []),
   ];
   const where = `size ${e.size}, label ${e.label ?? "not settled"}; author: ${e.author ?? "unknown"}, ${TIER_LABEL[e.tier]}`;
@@ -187,7 +189,7 @@ export function mergeQuestion(e: QueueEntry, why: string | null = null): Record<
     facts,
     options: Object.values(MERGE_OPTIONS).map((o) => ({ ...o })),
     // A recommendation always comes with the review's reason for it.
-    ...(e.outsideRule.includes(UNSURE_REASON) || e.outsideRule.includes(PREMERGE_DEFECT_REASON) || e.outsideRule.includes(PREMERGE_FAILED_REASON) || !why ? {} : { recommended: "merge", recommended_reason: why }),
+    ...(e.outsideRule.includes(UNSURE_REASON) || e.outsideRule.includes(PREMERGE_UNSURE_REASON) || e.outsideRule.includes(PREMERGE_DEFECT_REASON) || e.outsideRule.includes(PREMERGE_FAILED_REASON) || !why ? {} : { recommended: "merge", recommended_reason: why }),
     asked_by: ACTOR,
   };
 }
