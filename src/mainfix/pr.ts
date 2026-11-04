@@ -13,7 +13,7 @@ import { forkOf } from "../fixissue/index.ts";
 import { outsideShown } from "../fixup/excerpt.ts";
 import { Git, type Exec } from "../fixup/git.ts";
 import { scrubReason, whoAmI } from "../fixup/index.ts";
-import { ghOpenPr, pushBranch } from "../github/write.ts";
+import { ghOpenPr, pushOwnBranch } from "../github/write.ts";
 import { MAIN_FIX_BRANCH_PREFIX } from "../mainci/index.ts";
 import type { Gh } from "../merge/safe-merge.ts";
 import { cleanLine } from "../review/post-template.ts";
@@ -164,7 +164,7 @@ async function attempt(c: Ctx, rows: FixRow[], count: () => void): Promise<Outco
     const found = await c.exec("gh", ["pr", "list", "--repo", `${ORG}/${c.repo}`, "--state", "open", "--head", branch, "--json", "url,headRepositoryOwner", "--jq", `.[] | select(.headRepositoryOwner.login == "${owner}") | .url`]);
     let url = found.code === 0 ? found.stdout.trim().split("\n")[0] ?? "" : "";
     if (!(url && urlOk(url, c.repo))) {
-      const push = await pushBranch({ db: c.db, login: PR_ACTOR }, git, "main-fix-push", { repo: c.repo, remote: fork, branch, sha: commit }, { fork, head });
+      const push = await pushOwnBranch({ db: c.db, login: PR_ACTOR }, git, "main-fix-push", { repo: c.repo, remote: fork, branch, sha: commit }, { fork, head });
       if (push.code !== 0) return set(live, "fix-failed", `push failed: ${oneLine(push.stderr)}`);
       const body = prBody({ head, checks: live.map((r) => ({ name: r.check, runUrl: r.run_url })), culprit: now.culprit, culpritPr: now.culpritPr, files: v.files, changed: v.changed });
       const pr = await ghOpenPr({ db: c.db, login: PR_ACTOR }, c.exec, "main-fix-pr", { repo: c.repo, target: ref, base: now.branch, head: `${owner}:${branch}`, title, body },

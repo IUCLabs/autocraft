@@ -198,9 +198,9 @@ describe("merge queue", () => {
     const log: Log = [];
     const s = await runMerge(db, { repo: "app", dryRun: false }, quiet, fakes(log, { assignees: new Map([[11, ["someone"]]]) }));
     assert.deepEqual(s.merged, ["app#1", "app#11", "app#16"]);
-    assert.deepEqual(log.slice(0, 8), [
-      "checks 1", "info 1", "viewer", "assign PR1", "safe-merge-test storytold/app 1 --squash",
-      "checks 11", "info 11", "safe-merge-test storytold/app 11 --squash",
+    assert.deepEqual(log.slice(0, 10), [
+      "checks 1", "info 1", "viewer", "assign PR1", "checks 1", "safe-merge-test storytold/app 1 --squash",
+      "checks 11", "info 11", "checks 11", "safe-merge-test storytold/app 11 --squash",
     ]);
     assert.deepEqual(s.asked.sort(), [3, 4, 5].map((n) => mergeDecisionId("app", n, `sha${n}`)));
     const facts = JSON.parse((db.prepare("SELECT facts FROM decisions WHERE id = ?").get(mergeDecisionId("app", 3, "sha3")) as { facts: string }).facts) as string[];
@@ -403,7 +403,7 @@ describe("merging a few ready PRs one at a time", () => {
     assert.equal(singleMergeMax(db), 3);
     const { r, log } = await attempt(db, diffs());
     assert.deepEqual(r?.merged, ["app#1", "app#11", "app#16"]);
-    assert.deepEqual(log.filter((l) => l.startsWith("checks")), ["checks 1", "checks 11", "checks 16"]);
+    assert.deepEqual(log.filter((l) => l.startsWith("checks")), ["checks 1", "checks 1", "checks 11", "checks 11", "checks 16", "checks 16"]);
     assert.equal(noBatch(db), 0);
 
     const moved = await attempt(fresh(), diffs(), { heads: new Map([[11, "newer"]]) });

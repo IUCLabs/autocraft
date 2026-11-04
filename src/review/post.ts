@@ -8,6 +8,8 @@
 import type { DatabaseSync } from "node:sqlite";
 import { commentApprovalOf } from "../act/approval.ts";
 import { type Note, editReview, postReview, type Writer } from "../github/write.ts";
+import { guard } from "../core/guard.ts";
+import { CLI_BY, type By } from "../core/gates.ts";
 import { backlogHeldSql, groupHeldSql, notOwnIntegrationSql } from "../dupes/held.ts";
 import { Client, type Querier } from "../mirror.ts";
 import { prInfo } from "../merge/index.ts";
@@ -33,7 +35,7 @@ export type PostCandidate = {
   opusAt: string;
 };
 export type PostSummary = { repo: string; dryRun: boolean; candidates: number; posted: string[]; edited: string[]; skipped: { ref: string; reason: string }[]; failed: { ref: string; reason: string }[]; note: string | null };
-export type PostParams = { repo: string; limit?: number; dryRun?: boolean; onHandled?: (n: number) => void };
+export type PostParams = { repo: string; limit?: number; dryRun?: boolean; onHandled?: (n: number) => void; by?: By };
 export type PostDeps = { querier: Querier; now: () => Date };
 
 export const defaultPostDeps = (): PostDeps => ({ querier: new Client(1000), now: () => new Date() });
@@ -115,13 +117,15 @@ export async function runReviewPost(db: DatabaseSync, params: PostParams, log: (
       if (!live) { skip("not found on GitHub"); continue; }
       if (live.state !== "OPEN") { skip(`now ${live.state}`); continue; }
       if (live.head !== c.head_oid) { skip(`head moved to ${live.head.slice(0, 7)}`); continue; }
+      const g = await guard(db, { repo, number: c.number }, { kind: "post-review", head: c.head_oid }, params.by ?? CLI_BY);
+      if ("refused" in g) { skip(g.refused); continue; }
       const at = d.now().toISOString();
       if (c.editId) {
-        await editReview(w, d.querier, repo, c.number, c.editId, c.head_oid, REVIEW_NOTE(c), c.body);
+        await editReview(w, d.querier, g, c.editId, REVIEW_NOTE(c), c.body);
         db.prepare("UPDATE review_posts SET head_oid = ?, edited_at = ?, opus_at = ? WHERE repo = ? AND number = ?").run(c.head_oid, at, c.opusAt, repo, c.number);
         s.edited.push(refOf(c));
       } else {
-        const id = await postReview(w, d.querier, { repo, number: c.number, id: live.id }, c.head_oid, REVIEW_NOTE(c), c.body);
+        const id = await postReview(w, d.querier, g, live.id, REVIEW_NOTE(c), c.body);
         if (!id) throw new Error("GitHub returned no review");
         db.prepare("INSERT OR REPLACE INTO review_posts (repo, number, review_id, head_oid, posted_at, opus_at) VALUES (?, ?, ?, ?, ?, ?)").run(repo, c.number, id, c.head_oid, at, c.opusAt);
         s.posted.push(refOf(c));

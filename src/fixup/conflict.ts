@@ -7,7 +7,9 @@ import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { REPO_PATH } from "../sandbox/command.ts";
 import { audit } from "../dash/audit.ts";
-import { ghComment, pushBranch, type Writer } from "../github/write.ts";
+import type { By } from "../core/gates.ts";
+import { guard, liveOf } from "../core/guard.ts";
+import { ghAskComment, ghComment, pushBranch, type Writer } from "../github/write.ts";
 import { cachedDiff } from "../review/diff.ts";
 import { checkLine, parseCheck, recordCheck } from "../patchcheck/index.ts";
 import { CHECK_DIFF_CAP, CHECK_PATCH_CAP, type FixupCheckInput } from "../patchcheck/types.ts";
@@ -43,6 +45,8 @@ export type ConflictRun = {
   prQuery: string; scrub: (raw: string) => string; who: () => Promise<Who>; git: () => Git;
   /** Called once per PR handled. */
   onHandled?: (n: number) => void; handled: { n: number };
+  /** Who asked: gates the writes. */
+  by: By;
   /** Assigns the PR to the pipeline's account when nobody is assigned; takes our assignment back when the stage gives up. */
   claim: (c: ConflictCandidate, pr: PrNode) => Promise<void>;
   release: (c: ConflictCandidate) => Promise<void>;
@@ -92,7 +96,9 @@ export async function askConflict(db: DatabaseSync, x: ConflictRun, c: ConflictC
     if (!pr) return;
     if (pr.mergeable !== "CONFLICTING") { x.log(`  ${ref}: skipped: GitHub no longer reports a conflict`); return; }
     if (!BASE_NAME.test(c.base)) { x.log(`  ${ref}: skipped: unusable base branch name`); return; }
-    const cm = await ghComment(x.gw, x.d.exec, "conflict-comment", { repo: x.repo, number: c.number, pr: true }, { by: "fixed" }, conflictAskText(c.base), { run: x.runId, head: c.head });
+    const g = await guard(db, { repo: x.repo, number: c.number }, { kind: "conflict", bucket: "ask", head: c.head }, x.by);
+    if ("refused" in g) { x.log(`  ${ref}: skipped: ${g.refused}`); return; }
+    const cm = await ghAskComment(x.gw, x.d.exec, "conflict-comment", g, { by: "fixed" }, conflictAskText(c.base), { run: x.runId, head: c.head });
     if (cm.code !== 0) { x.log(`  ${ref}: comment failed: ${oneLine(cm.stderr)}`); return; }
     record(db, x.at(), c, "asked", null, [], null);
     x.summary.asked.push(ref);
@@ -213,8 +219,10 @@ export async function mergeConflict(db: DatabaseSync, x: ConflictRun, c: Conflic
       if (!again) return;
     }
     const commit = await git.commitMerge(tree, [head, baseSha], mergeMessage(c.base, pr.headRefName), { name: who.login, email: who.email });
+    const g = await guard(db, { repo: x.repo, number: c.number }, { kind: "conflict", bucket: "merge", head: c.head }, x.by, liveOf(db, x.d.querier));
+    if ("refused" in g) { x.log(`  ${ref}: skipped: ${g.refused}`); return; }
     recordPushing(db, x.at(), c, files, baseSha, commit);
-    const push = await pushBranch(x.gw, git, "conflict-push", { repo: x.repo, number: c.number, remote: pr.headRepository.nameWithOwner, branch: pr.headRefName, sha: commit, expected: head }, { run: x.runId, from: head, to: commit, base: c.base, files });
+    const push = await pushBranch(x.gw, git, "conflict-push", g, { remote: pr.headRepository.nameWithOwner, branch: pr.headRefName, sha: commit }, { run: x.runId, from: head, to: commit, base: c.base, files });
     if (push.code !== 0) {
       const err = oneLine(push.stderr);
       if (/denied|403|permission|not allowed|protected branch|declined|GH013/i.test(err)) { held("push-denied", "the branch cannot be pushed to"); return; }

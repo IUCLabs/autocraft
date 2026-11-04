@@ -247,7 +247,7 @@ function world(opts: { log?: string; reply?: string | null; check?: string | nul
     spent: 0, remaining: 5000,
     async query() {
       return { repository: { pullRequest: {
-        id: "PR7", state: opts.closedAfter !== undefined && ++reads > opts.closedAfter ? "CLOSED" : "OPEN", isDraft: false, headRefOid: head, headRefName: "fix", maintainerCanModify: opts.canModify !== false, mergeable: "MERGEABLE",
+        id: "PR7", number: 7, commits: { nodes: [{ commit: { statusCheckRollup: { contexts: { nodes: [{ __typename: "CheckRun", name: "gate / test", status: "COMPLETED", conclusion: "FAILURE" }] } } } }] }, state: opts.closedAfter !== undefined && ++reads > opts.closedAfter ? "CLOSED" : "OPEN", isDraft: false, headRefOid: head, headRefName: "fix", maintainerCanModify: opts.canModify !== false, mergeable: "MERGEABLE",
         headRepository: { nameWithOwner: "contrib/app" }, assignees: { nodes: [] }, reviewDecision: opts.decision ?? null,
       } } };
     },

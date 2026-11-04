@@ -71,7 +71,7 @@ function world(o: { conflicting: boolean; big?: boolean; pad?: boolean; eol?: "c
     async query(q: string) {
       if (q.startsWith("mutation")) { log.push("assign"); return {}; }
       return { repository: { pullRequest: {
-        id: "PR7", state: "OPEN", isDraft: false, headRefOid: head, headRefName: "feat", maintainerCanModify: o.canModify !== false, mergeable: "CONFLICTING",
+        id: "PR7", number: 7, state: "OPEN", isDraft: false, headRefOid: head, headRefName: "feat", maintainerCanModify: o.canModify !== false, mergeable: "CONFLICTING",
         headRepository: { nameWithOwner: "org-x/app" }, assignees: { nodes: [] },
       } } };
     },

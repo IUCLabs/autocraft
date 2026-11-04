@@ -1,4 +1,5 @@
 // The write module records every GitHub write (failures too) and GET /api/github-activity lists them.
+import { guarded } from "./guarded.ts";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
@@ -7,7 +8,7 @@ import { connect } from "../src/db.ts";
 import { comment, openedToday } from "../src/fixissue/index.ts";
 import { githubActivity } from "../src/dash/api/github-activity.ts";
 import type { Note } from "../src/github/note.ts";
-import { addLabels, closeItem, commentOn, ghComment, mergeViaCommand, pushBranch, type Writer } from "../src/github/write.ts";
+import { addLabels, closeItem, commentOn, ghComment, mergeViaCommand, pushBranch, pushOwnBranch, type Writer } from "../src/github/write.ts";
 import { readSeqs } from "../src/live.ts";
 import type { Querier } from "../src/mirror.ts";
 import type { Req } from "../src/dash/types.ts";
@@ -53,12 +54,12 @@ test("each wrapper function records its write; a failed write records the error 
   const bad = fakeQuerier(true);
   await assert.rejects(closeItem(w, bad, { repo: "app", number: 8, id: "N8", pr: false }, { decision: "d2" }), /boom/);
 
-  const pushed = await pushBranch(w, { git: async () => ({ code: 0, stdout: "", stderr: "" }) }, "fixup-push", { repo: "app", number: 7, remote: "bot/app", branch: "fix", sha: "a".repeat(40), expected: "b".repeat(40) }, { run: "r1" });
+  const pushed = await pushBranch(w, { git: async () => ({ code: 0, stdout: "", stderr: "" }) }, "fixup-push", guarded("app", 7, "b".repeat(40)), { remote: "bot/app", branch: "fix", sha: "a".repeat(40) }, { run: "r1" });
   assert.equal(pushed.code, 0);
-  await pushBranch(w, { git: async () => ({ code: 1, stdout: "", stderr: "denied\n403" }) }, "batch-push", { repo: "app", remote: "bot/app", branch: "integration-1", sha: "c".repeat(40) });
+  await pushOwnBranch(w, { git: async () => ({ code: 1, stdout: "", stderr: "denied\n403" }) }, "batch-push", { repo: "app", remote: "bot/app", branch: "integration-1", sha: "c".repeat(40) });
   await ghComment(w, async () => ({ code: 0, stdout: "https://github.com/storytold/app/pull/7#issuecomment-2\n", stderr: "" }), "fixup-comment", { repo: "app", number: 7, pr: true }, FIXED, "Pushed fixes.", { run: "r1" });
-  await mergeViaCommand(w, async () => ({ code: 0, stdout: `storytold/app#7 MERGED ${"d".repeat(40)} (head abc)`, stderr: "" }), "safe-merge", ["storytold/app", "7", "--squash"], { run: "r1" });
-  await mergeViaCommand(w, async () => ({ code: 1, stdout: "", stderr: "REFUSED: checks not green" }), "safe-merge", ["storytold/app", "9", "--merge"]);
+  await mergeViaCommand(w, async () => ({ code: 0, stdout: `storytold/app#7 MERGED ${"d".repeat(40)} (head abc)`, stderr: "" }), "safe-merge", guarded("app", 7, "e".repeat(40)), { method: "squash", pin: true }, { run: "r1" });
+  await mergeViaCommand(w, async () => ({ code: 1, stdout: "", stderr: "REFUSED: checks not green" }), "safe-merge", guarded("app", 9, "e".repeat(40)), { method: "merge", pin: true });
 
   const p = await githubActivity(db, req());
   assert.equal(p.total, 8);
@@ -148,7 +149,7 @@ test("a viewer sees only rows of repos visible to them; an operator also sees un
   const q = fakeQuerier();
   await commentOn(w, q, "act-comment", { repo: "app", number: 1, id: "N1" }, FIXED, "a");
   await commentOn(w, q, "act-comment", { repo: "gone", number: 1, id: "G1" }, FIXED, "b");
-  await pushBranch(w, { git: async () => ({ code: 0, stdout: "", stderr: "" }) }, "batch-push", { repo: "gone", remote: "bot/gone", branch: "b1", sha: "a".repeat(40) });
+  await pushOwnBranch(w, { git: async () => ({ code: 0, stdout: "", stderr: "" }) }, "batch-push", { repo: "gone", remote: "bot/gone", branch: "b1", sha: "a".repeat(40) });
   assert.deepEqual((await githubActivity(db, req("", "viewer"))).rows.map((r) => r.repo), ["app"]);
   assert.equal((await githubActivity(db, req("", "operator"))).total, 3);
 });

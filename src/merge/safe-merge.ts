@@ -3,7 +3,9 @@
 // green (or skipped/neutral), and no maintainer's "changes requested" review
 // stands; the merge is pinned to the head that was checked.
 //
-//   autocraft safe-merge OWNER/REPO PR --squash|--merge [--allow-pending NAME]... [--allow-failed NAME]...
+//   autocraft safe-merge OWNER/REPO PR --squash|--merge [--allow-pending NAME]... [--allow-failed NAME]... [--head SHA]
+//
+// --head SHA is the head the caller reviewed: the merge refuses when GitHub's head is another one.
 //
 // --allow-failed NAME accepts a failed check of that exact name (an optional check), only while GitHub's merge
 // state of the PR is not BLOCKED (a failing required check blocks it); every other check must still be green.
@@ -135,10 +137,13 @@ export async function safeMerge(
   gh: Gh = ghExec, sleep: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms)),
   /** Record the merge in the database (the command line; a calling pipeline stage records its own). */
   recordMerge = false,
+  /** The head the caller reviewed; a different head on GitHub is refused. */
+  expectHead?: string,
 ): Promise<SafeMergeResult> {
   const refuse = (why: string): SafeMergeResult => ({ merged: false, reason: `REFUSED ${repo}#${pr}: ${why}` });
   const v = JSON.parse(await gh(["pr", "view", pr, "-R", repo, "--json", "state,isDraft,mergeable,mergeStateStatus,headRefOid,statusCheckRollup"])) as PrView;
   const head = v.headRefOid;
+  if (expectHead !== undefined && head !== expectHead) return refuse(`head is ${head.slice(0, 7)}, not the reviewed ${expectHead.slice(0, 7)}`);
   let why = refuseView(v, allow, allowFailed);
   if (why) return refuse(why);
   const runs = JSON.parse(await gh(["api", `repos/${repo}/actions/runs?head_sha=${head}&per_page=100`])) as { workflow_runs?: Run[] };
@@ -156,31 +161,33 @@ export async function safeMerge(
   return { merged: true, message: `${repo}#${pr} ${line} (head ${head.slice(0, 9)}, ${v.statusCheckRollup.length} checks green${accepted.length ? `; accepted failed optional checks: ${accepted.join(", ")}` : ""})` };
 }
 
-const USAGE = "usage: autocraft safe-merge OWNER/REPO PR --squash|--merge [--allow-pending NAME]... [--allow-failed NAME]...";
+const USAGE = "usage: autocraft safe-merge OWNER/REPO PR --squash|--merge [--allow-pending NAME]... [--allow-failed NAME]... [--head SHA]";
 
-export function parseSafeMergeArgs(args: string[]): { repo: string; pr: string; method: Method; allow: string[]; allowFailed: string[] } | null {
+export function parseSafeMergeArgs(args: string[]): { repo: string; pr: string; method: Method; allow: string[]; allowFailed: string[]; head?: string } | null {
   if (args.length < 3) return null;
   const [repo, pr, method, ...rest] = args as [string, string, string, ...string[]];
   if (method !== "--squash" && method !== "--merge") return null;
   const allow: string[] = [], allowFailed: string[] = [];
+  let head: string | undefined;
   for (let i = 0; i < rest.length; i += 2) {
     const name = rest[i + 1];
     if (name === undefined) return null;
     if (rest[i] === "--allow-pending") allow.push(name);
     else if (rest[i] === "--allow-failed") allowFailed.push(name);
+    else if (rest[i] === "--head") head = name;
     else return null;
   }
-  return { repo, pr, method, allow, allowFailed };
+  return { repo, pr, method, allow, allowFailed, ...(head ? { head } : {}) };
 }
 
 export const commands = {
   "safe-merge": {
-    summary: "safe-merge OWNER/REPO PR --squash|--merge [--allow-pending NAME]... [--allow-failed NAME]...: merge one PR only when it is green and unchanged",
+    summary: "safe-merge OWNER/REPO PR --squash|--merge [--allow-pending NAME]... [--allow-failed NAME]... [--head SHA]: merge one PR only when it is green and unchanged",
     async run(args: string[]): Promise<void> {
       const a = parseSafeMergeArgs(args);
       if (!a) { console.error(USAGE); process.exit(2); }
       try {
-        const r = await safeMerge(a.repo, a.pr, a.method, a.allow, a.allowFailed, ghExec, undefined, true);
+        const r = await safeMerge(a.repo, a.pr, a.method, a.allow, a.allowFailed, ghExec, undefined, true, a.head);
         if (r.merged) console.log(`safe-merge: ${r.message}`);
         else { console.error(`safe-merge: ${r.reason}`); process.exit(1); }
       } catch (e) {

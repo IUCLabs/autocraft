@@ -172,7 +172,7 @@ function world(opts: { check?: string | null; reply?: string | null; moveBranch?
       }
       log.push("pr-info");
       return { repository: { pullRequest: {
-        id: "PR7", state: "OPEN", isDraft: false, headRefOid: head, headRefName: "fix", maintainerCanModify: opts.canModify !== false, mergeable: "MERGEABLE",
+        id: "PR7", number: 7, state: "OPEN", isDraft: false, headRefOid: head, headRefName: "fix", maintainerCanModify: opts.canModify !== false, mergeable: "MERGEABLE",
         headRepository: { nameWithOwner: "contrib/app" }, assignees: { nodes: w.assigned.map((login) => ({ login })) },
       } } };
     },
@@ -640,7 +640,7 @@ describe("review of a moved head", () => {
 
 describe("fixup repost", () => {
   test("edits the recorded ask comment to the full text once, records it, and does nothing when the text matches", async () => {
-    const w = world();
+    const w = world({ canModify: false });
     const db = fresh(w.head, { canModify: false });
     setCommentApproval(db, "op", "app", true);
     const long = "y".repeat(400);

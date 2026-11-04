@@ -16,7 +16,9 @@ import { closeMergedQuestions } from "./withdraw.ts";
 import { mkdirSync } from "node:fs";
 import type { DatabaseSync } from "node:sqlite";
 import { audit } from "../dash/audit.ts";
-import { assignTo, ghClosePr, ghOpenPr, mergeViaCommand, pushBranch, unassignFrom, type Writer } from "../github/write.ts";
+import { CLI_BY, type By } from "../core/gates.ts";
+import { guard, guardBatchMerge, liveOf } from "../core/guard.ts";
+import { assignTo, ghClosePr, ghOpenPr, mergeViaCommand, pushOwnBranch, unassignFrom, type Writer } from "../github/write.ts";
 import { type Exec, exec, fixupDir } from "../fixup/git.ts";
 import { whoAmI } from "../fixup/index.ts";
 import { branchOf, forkOf } from "../fixissue/index.ts";
@@ -55,6 +57,8 @@ export type BatchParams = {
   limit?: number;
   /** Called with the running count of PRs merged. */
   onMerged?: (merged: number) => void;
+  /** Who asked; default: an operator at the command line. */
+  by?: By;
 };
 
 export type BatchSummary = { runId: string; repo: string; started: string[]; published: string[]; merged: number[]; failed: number[]; split: string[]; superseded: string[]; waiting: string[] };
@@ -93,6 +97,8 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
   const left = () => (params.limit === undefined ? Infinity : params.limit - landed);
 
   const w: Writer = { db, login: ACTOR };
+  const by = params.by ?? CLI_BY;
+  const liveRead = liveOf(db, d.querier);
   const refOf = (n: number) => `${repo}#${n}`;
   const branch = branchOf(db, repo);
   const closePr = async (b: BatchRow, why: string) => {
@@ -150,6 +156,8 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
       if (chain.length && !admits(chain.map((x) => x.cand), c, max)) continue;
       const sha = await git.fetchPr(ORG, repo, c.number);
       if (sha !== c.head) { log(`  ${refOf(c.number)}: head moved to ${short(sha)}; left out`); continue; }
+      const g = await guard(db, { repo, number: c.number }, { kind: "merge", head: c.head, batch: true }, by, liveRead);
+      if ("refused" in g) { log(`  ${refOf(c.number)}: left out: ${g.refused}`); continue; }
       const tree = await git.mergeTree(cur, sha);
       if (!tree) { log(`  ${refOf(c.number)}: conflicts with the batch so far; waits for the next one`); continue; }
       cur = await git.mergeCommit(tree, [cur, sha], `Merge pull request #${c.number}`, { name: who.login, email: who.email });
@@ -246,7 +254,7 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
     if (getBatch(db, b.id).state !== "checking") return;
     const who = await whoAmI(d.exec);
     const fork = await forkOf(w, d.exec, who.login, repo, { run: runId });
-    const push = await pushBranch(w, git, "batch-push", { repo, remote: fork, branch: b.branch, sha: b.commit_sha }, { run: runId, fork });
+    const push = await pushOwnBranch(w, git, "batch-push", { repo, remote: fork, branch: b.branch, sha: b.commit_sha }, { run: runId, fork });
     if (push.code !== 0) return publishFailed(b, `push failed: ${oneLine(push.stderr)}`);
     updateBatch(db, b.id, at(), { fork });
     const links = members.map((m) => `- [${repo}#${m.number}](https://github.com/${ORG}/${repo}/pull/${m.number})`).join("\n");
@@ -373,7 +381,10 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
     if (getBatch(db, b.id).state !== "open") { log(`  ${b.branch}: ended meanwhile; not merged`); return; }
     if (members.some((m) => mergeHeld(db, repo, m.number))) { log(`  ${b.branch}: a PR in the batch was held meanwhile; not merged`); s.waiting.push(b.branch); return; }
     let after: Awaited<ReturnType<typeof refreshChecks>>[number] | undefined;
-    const r = await mergeViaCommand(w, d.run, d.mergeCommand, [`${ORG}/${repo}`, String(b.pr_number), "--merge", ...allowFailedArgs(db, repo, d.mergeCommand)], { run: runId, head: b.commit_sha, batch: b.branch }, async () => {
+    // Every member must still hold at its batched head, and the batch PR at the batch tip.
+    const g = await guardBatchMerge(db, { repo, number: b.pr_number!, head: b.commit_sha }, members.map((m) => ({ number: m.number, head: m.head_oid })), by, liveRead);
+    if ("refused" in g) { log(`  ${b.branch}: not merged: ${g.refused}`); s.waiting.push(b.branch); return; }
+    const r = await mergeViaCommand(w, d.run, d.mergeCommand, g, { method: "merge", extra: allowFailedArgs(db, repo, d.mergeCommand), pin: d.mergeCommand === DEFAULT_MERGE_COMMAND }, { run: runId, head: b.commit_sha, batch: b.branch }, async () => {
       after = (await refreshChecks(db, d.querier, repo, [b.pr_number!]))[0];
       return after?.state === "MERGED";
     });

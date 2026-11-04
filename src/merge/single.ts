@@ -5,6 +5,7 @@ import { audit } from "../dash/audit.ts";
 import { cachedDiff, ghDiff, type DiffFetcher } from "../review/diff.ts";
 import { mergeApprovalOf } from "./approval.ts";
 import { activeBatches } from "./batch-store.ts";
+import type { By } from "../core/gates.ts";
 import { runMerge, type MergeDeps, type MergeSummary } from "./index.ts";
 import { buildQueue, eligible, refusedAsBefore } from "./queue.ts";
 
@@ -68,7 +69,7 @@ export async function planSingles(db: DatabaseSync, repo: string, fetchDiff: Dif
  * with green checks ends the round.
  */
 export async function runSingles(
-  db: DatabaseSync, params: { repo: string; limit?: number; onMerged?: (n: number) => void },
+  db: DatabaseSync, params: { repo: string; limit?: number; onMerged?: (n: number) => void; by?: By },
   log: (line: string) => void = console.log, deps?: MergeDeps, fetchDiff?: DiffFetcher,
 ): Promise<MergeSummary | null> {
   if (!mergeApprovalOf(db, params.repo)) throw new Error(`merging in ${params.repo} is not approved`);
@@ -76,7 +77,7 @@ export async function runSingles(
   const plan = await planSingles(db, params.repo, fetchDiff);
   if (!plan) return null;
   log(`merge ${params.repo}: ${plan.size} PRs ready, none sharing a file; merging them one at a time`);
-  return runMerge(db, { repo: params.repo, limit: params.limit, dryRun: false, only: (e) => plan.has(e.number), stopOnRefusal: true, onMerged: params.onMerged }, log, deps);
+  return runMerge(db, { repo: params.repo, limit: params.limit, dryRun: false, only: (e) => plan.has(e.number), stopOnRefusal: true, onMerged: params.onMerged, by: params.by }, log, deps);
 }
 
 export const commands = {

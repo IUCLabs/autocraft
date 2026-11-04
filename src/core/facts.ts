@@ -96,6 +96,7 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
   const own = ownFixPrs(db, opts.repo);
   const mainRed = redMainRepos(db);
   const answers = new Map(actionable(db).filter((a) => a.kind === "merge").map((a) => [a.id, a.answer]));
+  const pipelineOn = (db.prepare("SELECT value FROM main.settings WHERE key = 'pipeline_enabled'").get() as { value: string } | undefined)?.value === "1";
   const pipelineLogin = (db.prepare("SELECT value FROM main.settings WHERE key = 'pipeline_login'").get() as { value: string } | undefined)?.value ?? null;
   const posts = new Map((db.prepare("SELECT repo, number, review_id, head_oid, posted_at, opus_at FROM review_posts").all() as { repo: string; number: number; review_id: string; head_oid: string | null; posted_at: string | null; opus_at: string | null }[])
     .map((p) => [`${p.repo}#${p.number}`, p]));
@@ -167,7 +168,7 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
     const integration = !r.not_integration;
     const lines = (r.additions ?? 0) + (r.deletions ?? 0);
     const base: PrFacts = {
-      repo: r.repo, number: r.number, now, ghState: r.state, head, draft: fresh ? r.c_state !== "OPEN" || !!r.c_draft : !!r.is_draft,
+      repo: r.repo, number: r.number, now, pipelineOn, ghState: r.state, head, draft: fresh ? r.c_state !== "OPEN" || !!r.c_draft : !!r.is_draft,
       author: r.author, authorIsPipeline: r.author !== null && r.author === pipelineLogin, tier: "not", lines, size: sizeOf(lines), label: null, needsDecisionFlag: false,
       scopeAnswer: scope.get(ref) ?? null,
       inScope, integration, batchPr: !!r.batch_pr, heldBacklog: !!r.held_backlog, heldDuplicate: !r.held_backlog && !!r.held_dup, mergeHeld: holds.has(ref),

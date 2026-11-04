@@ -12,6 +12,8 @@ import { effectiveCi } from "../optional-checks.ts";
 import { connect } from "../db.ts";
 import { notHeldSql } from "../dupes/held.ts";
 import type { Exec } from "../fixup/git.ts";
+import { guard } from "../core/guard.ts";
+import { CLI_BY, type By } from "../core/gates.ts";
 import { ghApproveRun, type Writer } from "../github/write.ts";
 import { mergeHeld } from "./holds.ts";
 import { trackedNames } from "../repos.ts";
@@ -151,6 +153,8 @@ export type ApproveDeps = {
   /** Most PRs to approve runs for. */
   limit: number;
   log?: (line: string) => void;
+  /** Who asked; a command-line run is an operator's. */
+  by?: By;
 };
 export type ApproveResult = { approved: string[]; skipped: string[]; failed: string[] };
 
@@ -190,14 +194,18 @@ export async function approveRuns(db: DatabaseSync, repo: string, d: ApproveDeps
     const todo = runs.filter((r) => r.event === "pull_request" && (c.failed[r.id] ?? 0) < MAX_FAILURES);
     const failed = { ...c.failed };
     const done: number[] = [];
+    let stopped: string | null = null;
     for (const run of todo) {
       if (!ciApprovalOf(db, repo)) throw new Error(`approving CI runs in ${repo} is not approved`);
-      const r = await ghApproveRun(w, d.exec, { repo, number: c.number, runId: run.id }, { head: c.head, workflow: run.name });
+      const g = await guard(db, { repo, number: c.number }, { kind: "approve-ci", head: c.head }, d.by ?? CLI_BY);
+      if ("refused" in g) { stopped = g.refused; break; }
+      const r = await ghApproveRun(w, d.exec, g, run.id, { head: c.head, workflow: run.name });
       if (r.code === 0) done.push(run.id);
       else if (REPEATABLE.test(`${r.stderr} ${r.stdout}`)) failed[run.id] = (failed[run.id] ?? 0) + 1;
       else log(`${ref}: run ${run.id}: ${(r.stderr || r.stdout).trim().slice(0, 120)}; will retry`);
     }
     save(c, runs.filter((r) => !done.includes(r.id)), done, failed);
+    if (stopped !== null) { log(`${ref}: not approved: ${stopped}`); out.skipped.push(ref); continue; }
     const bad = todo.length - done.length;
     (bad ? out.failed : out.approved).push(ref);
     log(`${ref}: ${bad ? `${bad} of ${todo.length} runs not approved` : `approved ${todo.length} runs`}`);

@@ -18,7 +18,9 @@ import { REPO_PATH } from "../sandbox/command.ts";
 import { checkoutForPr } from "../sandbox/index.ts";
 import { audit } from "../dash/audit.ts";
 import { withNote } from "../github/note.ts";
-import { ghComment, ghEditComment, pushBranch, type Note, type Writer } from "../github/write.ts";
+import { CLI_BY, type By } from "../core/gates.ts";
+import { guard, liveOf } from "../core/guard.ts";
+import { ghAskComment, ghComment, ghEditComment, pushBranch, type Note, type Writer } from "../github/write.ts";
 import { claimItem, releaseItem, type Assignable } from "../github/claim.ts";
 import { connect } from "../db.ts";
 import { Client, type Querier } from "../mirror.ts";
@@ -85,6 +87,8 @@ export type FixupParams = {
   /** Default true. */
   dryRun?: boolean;
   onHandled?: (n: number) => void;
+  /** Who asked; default: an operator at the command line. */
+  by?: By;
 };
 export type FixupSummary = {
   runId: string; repo: string; dryRun: boolean;
@@ -240,7 +244,9 @@ export async function runFixup(db: DatabaseSync, params: FixupParams, log: (line
         return;
       }
       const body = c.carry ? c.carry.suggestion! : askText(c.fixes);
-      const cm = await ghComment(gw, d.exec, "fixup-comment", { repo, number: c.number, pr: true }, c.carry ? (c.model ? { by: "operator", model: c.model } : { by: "fixed-operator" }) : { by: "model", kind: "comment", model: c.model }, body, { run: runId, head: c.head });
+      const g = await guard(db, { repo, number: c.number }, { kind: "fixup", bucket: "ask", head: c.head }, params.by ?? CLI_BY);
+      if ("refused" in g) { log(`  ${ref}: not asked: ${g.refused}`); return; }
+      const cm = await ghAskComment(gw, d.exec, "fixup-comment", g, c.carry ? (c.model ? { by: "operator", model: c.model } : { by: "fixed-operator" }) : { by: "model", kind: "comment", model: c.model }, body, { run: runId, head: c.head });
       if (cm.code !== 0) { log(`  ${ref}: comment failed: ${oneLine(cm.stderr)}`); return; }
       rec.fixup(c, "asked", null, [...new Set(c.fixes.map((f) => f.file))]);
       if (count) params.onHandled?.(++handled.n);
@@ -271,7 +277,7 @@ export async function runFixup(db: DatabaseSync, params: FixupParams, log: (line
   };
   const conflictRun: ConflictRun = {
     repo, runId, log, d, gw, at, summary, prQuery: PR_QUERY, scrub: (raw) => scrubReason(raw, d.root), git: () => git,
-    who: () => (whoP ??= whoAmI(d.exec)), onHandled: params.onHandled, handled, claim, release,
+    who: () => (whoP ??= whoAmI(d.exec)), onHandled: params.onHandled, handled, claim, release, by: params.by ?? CLI_BY,
   };
   for (const c of cAsks) await askConflict(db, conflictRun, c);
   if (!picks.length && !cMerges.length) return summary;
@@ -384,8 +390,10 @@ export async function runFixup(db: DatabaseSync, params: FixupParams, log: (line
       if (!now || now.state !== "OPEN" || now.isDraft) { log(`  ${ref}: skipped: no longer an open, non-draft PR after the model calls`); continue; }
       if (now.headRefOid !== c.head) { log(`  ${ref}: skipped: head moved to ${short(now.headRefOid)} during the model calls`); continue; }
 
+      const g = await guard(db, { repo, number: c.number }, { kind: "fixup", bucket: "fix", head: c.head }, params.by ?? CLI_BY, liveOf(db, d.querier));
+      if ("refused" in g) { log(`  ${ref}: skipped: ${g.refused}`); continue; }
       rec.pushing(c, commit, v.files);
-      const push = await pushBranch(gw, git, "fixup-push", { repo, number: c.number, remote: pr.headRepository.nameWithOwner, branch: pr.headRefName, sha: commit, expected: head }, { run: runId, from: head, to: commit, files: v.files, changed: v.changed });
+      const push = await pushBranch(gw, git, "fixup-push", g, { remote: pr.headRepository.nameWithOwner, branch: pr.headRefName, sha: commit }, { run: runId, from: head, to: commit, files: v.files, changed: v.changed });
       if (push.code !== 0) {
         const err = oneLine(push.stderr);
         if (/stale info|rejected|fetch first/i.test(err)) fail("refused", "the branch moved since the review");

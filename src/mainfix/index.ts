@@ -14,7 +14,7 @@ import { ORG } from "../act/templates.ts";
 import { actionable, ask, getDecision } from "../decisions.ts";
 import { connect } from "../db.ts";
 import { exec, fixupDir, type Exec } from "../fixup/git.ts";
-import { createIssue, ghRerunFailed, IssueError, type Writer } from "../github/write.ts";
+import { createIssue, ghRerunMainFailed, IssueError, type Writer } from "../github/write.ts";
 import { askClaude, saveUsage, type Usage } from "../classify/run.ts";
 import { checkoutForCommit } from "../sandbox/index.ts";
 import { readFailure } from "../cifix/logs.ts";
@@ -216,7 +216,7 @@ async function classifyHead(db: DatabaseSync, repo: string, cur: Current, deps: 
   }
   const w: Writer = { db, login: ACTOR };
   for (const [runId, rows] of rerunRuns) {
-    const res = await ghRerunFailed(w, deps.exec, { repo, head: cur.headSha, runId }, { checks: rows.map((r) => r.check) });
+    const res = await ghRerunMainFailed(w, deps.exec, { repo, head: cur.headSha, runId }, { checks: rows.map((r) => r.check) });
     if (res.code !== 0) for (const r of rows) setState(db, r, "nothing-to-do", `GitHub refused the rerun: ${oneLine(res.stderr || res.stdout, 120)}`, deps.now().toISOString());
     else { s.reran++; log(`  ${repo}: reran the failed jobs of run ${runId}`); }
   }

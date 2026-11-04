@@ -44,7 +44,7 @@ import { fixIssueApprovalOf } from "./approval.ts";
 import { hasOpenPr, notRustKey, selectIssues, type IssueCandidate } from "./candidates.ts";
 import { parseTriage, sourcePaths, validateFixPatch } from "./parse.ts";
 import { branchName, claimCommentText, commentText, commitMessage, prBody, prTitle } from "./template.ts";
-import { ghComment, ghFork, ghOpenPr, pushBranch, type Writer } from "../github/write.ts";
+import { ghComment, ghFork, ghOpenPr, pushOwnBranch, type Writer } from "../github/write.ts";
 import { COMMENTS_SHOWN, COMMENT_CHARS, FILE_CAP, ISSUE_BODY_LIMIT, MAX_PATHS, MAX_ROUNDS, TOTAL_CAP, type IssueText, type PatchInput, type TriageInput } from "./types.ts";
 import { inPilot, pilotSqlFor } from "../pilot.ts";
 import { backlogHeld, backlogHeldSql } from "../dupes/held.ts";
@@ -610,7 +610,7 @@ export async function openPr(x: Ctx, r: AttemptRow): Promise<boolean> {
     }
     if (!permitted()) return false;
     const fork = await forkOf({ db, login: ACTOR }, d.exec, who.login, r.repo, { run: x.runId });
-    const push = await pushBranch({ db, login: ACTOR }, git, "fixissue-push", { repo: r.repo, number: r.number, remote: fork, branch, sha: commit }, { run: x.runId, fork });
+    const push = await pushOwnBranch({ db, login: ACTOR }, git, "fixissue-push", { repo: r.repo, number: r.number, remote: fork, branch, sha: commit }, { run: x.runId, fork });
     if (push.code !== 0) { log(`  ${ref}: push failed: ${oneLine(push.stderr)}`); tried(); return false; }
     if (await closedLive(x, r)) { fail(db, d, r, "the issue is closed"); return false; }
     const body = prBody(r.number, files, testPath);

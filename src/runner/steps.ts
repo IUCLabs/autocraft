@@ -9,6 +9,7 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { DatabaseSync } from "node:sqlite";
 import { DECIDE_MODELS } from "../decide/index.ts";
+import { byOfJob } from "../core/gates.ts";
 import { envVar } from "../env.ts";
 import { stageOfStep } from "../stages/registry.ts";
 
@@ -290,16 +291,16 @@ export const STEPS: StepDef[] = [
       const refused = await checkMergeApproved(ctx.db, ctx.params);
       if (refused) throw new Error(refused);
       const repo = String(ctx.params.repo), limit = Number(ctx.params.limit);
-      const singly = await runSingles(ctx.db, { repo, limit, onMerged: ctx.handled }, ctx.log);
+      const singly = await runSingles(ctx.db, { repo, limit, onMerged: ctx.handled, by: byOfJob(ctx.job.requestedBy) }, ctx.log);
       if (singly) {
         ctx.acted(singly.merged.length + singly.asked.length);
         return `${repo}: ${singly.merged.length} merged singly, ${singly.refused.length} refused, ${singly.asked.length} decisions asked`;
       }
-      const b = await runBatches(ctx.db, { repo, limit, onMerged: ctx.handled }, ctx.log);
+      const b = await runBatches(ctx.db, { repo, limit, onMerged: ctx.handled, by: byOfJob(ctx.job.requestedBy) }, ctx.log);
       ctx.usageRun(b.runId);
       let single = { merged: [] as string[], attempted: [] as string[], refused: [] as unknown[], asked: [] as string[] };
       if (limit > b.merged.length) {
-        single = await runMerge(ctx.db, { repo, limit: limit - b.merged.length, dryRun: false, only: singleMergeOnly, onMerged: (n) => ctx.handled(b.merged.length + n) }, ctx.log);
+        single = await runMerge(ctx.db, { repo, limit: limit - b.merged.length, dryRun: false, only: singleMergeOnly, onMerged: (n) => ctx.handled(b.merged.length + n), by: byOfJob(ctx.job.requestedBy) }, ctx.log);
       }
       ctx.acted(b.started.length + b.published.length + b.split.length + b.superseded.length + b.failed.length + single.merged.length + single.asked.length + b.merged.length);
       return `${repo}: ${b.merged.length} merged in batches (${b.started.length} started, ${b.published.length} opened, ${b.split.length} split), ${single.merged.length} merged singly, ${single.asked.length} decisions asked`;
@@ -360,7 +361,7 @@ export const STEPS: StepDef[] = [
       const { runFixup } = await import("../fixup/index.ts");
       const refused = await checkPushApproved(ctx.db, ctx.params);
       if (refused) throw new Error(refused);
-      const r = await runFixup(ctx.db, { repo: String(ctx.params.repo), limit: Number(ctx.params.limit), dryRun: false, onHandled: ctx.handled }, ctx.log);
+      const r = await runFixup(ctx.db, { repo: String(ctx.params.repo), limit: Number(ctx.params.limit), dryRun: false, onHandled: ctx.handled, by: byOfJob(ctx.job.requestedBy) }, ctx.log);
       ctx.acted(r.pushed.length + r.asked.length + r.failed.length + r.held.length);
       return `${r.repo}: pushed ${r.pushed.length}, ${r.asked.length} asked, ${r.failed.length} failed or refused, ${r.held.length} held`;
     },
@@ -546,7 +547,7 @@ export const STEPS: StepDef[] = [
       const { runReviewPost } = await import("../review/post.ts");
       const refused = await checkCommentApproved(ctx.db, ctx.params);
       if (refused) throw new Error(refused);
-      const r = await runReviewPost(ctx.db, { repo: String(ctx.params.repo), limit: Number(ctx.params.limit), dryRun: false, onHandled: ctx.handled }, ctx.log);
+      const r = await runReviewPost(ctx.db, { repo: String(ctx.params.repo), limit: Number(ctx.params.limit), dryRun: false, onHandled: ctx.handled, by: byOfJob(ctx.job.requestedBy) }, ctx.log);
       return `${r.repo}: ${r.posted.length} posted, ${r.edited.length} edited, ${r.skipped.length} skipped, ${r.failed.length} failed`;
     },
   },
@@ -716,7 +717,7 @@ export const STEPS: StepDef[] = [
       const refused = await checkCiApproved(ctx.db, ctx.params);
       if (refused) throw new Error(refused);
       const repo = String(ctx.params.repo);
-      const r = await approveRuns(ctx.db, repo, { gh: ghExec, exec, limit: Number(ctx.params.limit), log: ctx.log });
+      const r = await approveRuns(ctx.db, repo, { gh: ghExec, exec, limit: Number(ctx.params.limit), log: ctx.log, by: byOfJob(ctx.job.requestedBy) });
       ctx.handled(r.approved.length + r.failed.length);
       if (r.failed.length) throw new Error(`${repo}: runs not approved on ${r.failed.join(", ")}`);
       return `${repo}: runs approved on ${r.approved.length} PRs, ${r.skipped.length} skipped`;
@@ -739,7 +740,7 @@ export const STEPS: StepDef[] = [
       const { runCifix } = await import("../cifix/index.ts");
       const refused = await checkPushApproved(ctx.db, ctx.params);
       if (refused) throw new Error(refused);
-      const r = await runCifix(ctx.db, { repo: String(ctx.params.repo), limit: Number(ctx.params.limit), dryRun: false, onHandled: ctx.handled }, ctx.log);
+      const r = await runCifix(ctx.db, { repo: String(ctx.params.repo), limit: Number(ctx.params.limit), dryRun: false, onHandled: ctx.handled, by: byOfJob(ctx.job.requestedBy) }, ctx.log);
       ctx.acted(r.pushed.length + r.asked.length + r.queued.length + r.failed.length + r.held.length + r.infra.length);
       return `${r.repo}: pushed ${r.pushed.length}, ${r.asked.length} commented, ${r.queued.length} formatter runs queued, ${r.infra.length} infrastructure failures, ${r.failed.length} failed or refused, ${r.held.length} held`;
     },
@@ -760,7 +761,7 @@ export const STEPS: StepDef[] = [
       const { runRerun } = await import("../cifix/index.ts");
       const refused = await checkCiApproved(ctx.db, ctx.params);
       if (refused) throw new Error(refused);
-      const r = await runRerun(ctx.db, { repo: String(ctx.params.repo), limit: Number(ctx.params.limit), dryRun: false, onHandled: ctx.handled }, ctx.log);
+      const r = await runRerun(ctx.db, { repo: String(ctx.params.repo), limit: Number(ctx.params.limit), dryRun: false, onHandled: ctx.handled, by: byOfJob(ctx.job.requestedBy) }, ctx.log);
       return `${r.repo}: reran ${r.reran.length} PRs, ${r.skipped.length} skipped`;
     },
   },

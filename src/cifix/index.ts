@@ -25,7 +25,9 @@ import { editable, validatePatch } from "../fixup/patch.ts";
 import { readGate } from "../merge/changes-requested.ts";
 import { longLivedOf, pushable, BASE_ORG } from "../fixup/pushable.ts";
 import { HOLD_CANNOT_PUSH } from "../fixup/template.ts";
-import { ghComment, ghRerunFailed, pushBranch, type Note, type Writer } from "../github/write.ts";
+import { CLI_BY, type By } from "../core/gates.ts";
+import { guard, liveOf } from "../core/guard.ts";
+import { ghAskComment, ghComment, ghRerunFailed, pushBranch, type Note, type Writer } from "../github/write.ts";
 import { Client, type Querier } from "../mirror.ts";
 import { ghExec, type Gh } from "../merge/safe-merge.ts";
 import { checkLine, parseCheck, recordCheck } from "../patchcheck/index.ts";
@@ -107,7 +109,7 @@ export function defaultDeps(): CifixDeps {
   };
 }
 
-export type CifixParams = { repo: string; limit?: number; /** Default true. */ dryRun?: boolean; onHandled?: (n: number) => void };
+export type CifixParams = { repo: string; limit?: number; /** Default true. */ dryRun?: boolean; onHandled?: (n: number) => void; /** Who asked; default: an operator at the command line. */ by?: By };
 export type CifixSummary = {
   runId: string; repo: string; dryRun: boolean;
   pushed: string[]; asked: string[]; queued: string[]; infra: string[]; skipped: string[];
@@ -387,8 +389,15 @@ export async function runCifix(db: DatabaseSync, params: CifixParams, log: (line
       log(`  ${ref}: skipped: ${reason}`);
       return;
     }
+    const g = await guard(db, { repo, number: c.number }, { kind: "cifix", bucket: kind === "format" ? "collect" : "work", head: c.head }, params.by ?? CLI_BY, liveOf(db, d.querier));
+    if ("refused" in g) {
+      // Nothing is recorded: the head is tried again once the refusal's reason is gone.
+      summary.skipped.push(ref);
+      log(`  ${ref}: skipped: ${g.refused}`);
+      return;
+    }
     if (!canPush) {
-      const cm = await ghComment(gw, d.exec, "cifix-comment", { repo, number: c.number, pr: true }, codeNote, askText(checkName, v.patch), { run: runId, head: c.head });
+      const cm = await ghAskComment(gw, d.exec, "cifix-comment", g, codeNote, askText(checkName, v.patch), { run: runId, head: c.head });
       if (cm.code !== 0) {
         const reason = `the comment failed: ${scrubReason(oneLine(cm.stderr), d.root)}`;
         rec.set(c, kind, "comment-failed", reason, { files: v.files });
@@ -412,7 +421,7 @@ export async function runCifix(db: DatabaseSync, params: CifixParams, log: (line
     const outside = outsideShown(shown, await git.diffText(head, commit));
     if (outside) { fail("refused", outside); return; }
     rec.pushing(c, kind, commit, v.files);
-    const push = await pushBranch(gw, git, "cifix-push", { repo, number: c.number, remote: pr.headRepository!.nameWithOwner, branch: pr.headRefName, sha: commit, expected: head }, { run: runId, from: head, to: commit, files: v.files, changed: v.changed, kind });
+    const push = await pushBranch(gw, git, "cifix-push", g, { remote: pr.headRepository!.nameWithOwner, branch: pr.headRefName, sha: commit }, { run: runId, from: head, to: commit, files: v.files, changed: v.changed, kind });
     if (push.code !== 0) {
       const err = oneLine(push.stderr);
       if (/stale info|rejected|fetch first/i.test(err)) fail("refused", "the branch moved since the checks ran");
@@ -588,13 +597,15 @@ export async function runRerun(db: DatabaseSync, params: CifixParams, log: (line
       const pr = r.repository?.pullRequest;
       noteLive(db, repo, c.number, pr, d.now().toISOString());
       if (!pr || pr.state !== "OPEN" || pr.isDraft || pr.headRefOid !== c.head) { log(`  ${ref}: skipped: closed, a draft or at another head`); out.skipped.push(ref); continue; }
+      const g = await guard(db, { repo, number: c.number }, { kind: "cifix", bucket: "rerun", head: c.head }, params.by ?? CLI_BY);
+      if ("refused" in g) { log(`  ${ref}: skipped: ${g.refused}`); out.skipped.push(ref); continue; }
       params.onHandled?.(++n);
       // Recorded before the calls: one rerun per head, even if this process dies in the middle of them.
       db.prepare("INSERT INTO ci_fixes (repo, number, head, kind, state, reason, files, attempt, runs, created_at) VALUES (?, ?, ?, 'infra', 'rerunning', NULL, '[]', 0, ?, ?)")
         .run(repo, c.number, c.head, JSON.stringify(runs), d.now().toISOString());
       const errors: string[] = [];
       for (const run of runs) {
-        const res = await ghRerunFailed(w, d.exec, { repo, number: c.number, runId: run }, { head: c.head });
+        const res = await ghRerunFailed(w, d.exec, g, run, { head: c.head });
         if (res.code !== 0) errors.push(oneLine(res.stderr || res.stdout));
       }
       // One rerun per head, whether or not GitHub took every run.

@@ -8,7 +8,7 @@ export const REVIEW_AT = "2026-11-04T10:00:00.000Z";
 type Override = { [K in keyof PrFacts]?: PrFacts[K] extends object | null ? Partial<NonNullable<PrFacts[K]>> | null : PrFacts[K] };
 
 const base = (): PrFacts => ({
-  repo: "app", number: 1, now: NOW, ghState: "OPEN", head: HEAD, draft: false,
+  repo: "app", number: 1, now: NOW, pipelineOn: true, ghState: "OPEN", head: HEAD, draft: false,
   author: "dev", authorIsPipeline: false, tier: "whitelisted", lines: 20, size: "S", label: "bugfix", needsDecisionFlag: false, scopeAnswer: null,
   inScope: true, integration: false, batchPr: false, heldBacklog: false, heldDuplicate: false, mergeHeld: false, fast: false, score: 100,
   repoFacts: { mergeApproved: true, pushApproved: true, commentApproved: true, ciApproved: true, noCi: false, mainRed: false },

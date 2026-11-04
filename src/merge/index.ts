@@ -18,6 +18,8 @@ import type { DatabaseSync } from "node:sqlite";
 import { audit } from "../dash/audit.ts";
 import { connect } from "../db.ts";
 import { actionable, ask, factsOf, getDecision } from "../decisions.ts";
+import { CLI_BY, type By } from "../core/gates.ts";
+import { guard, liveOf } from "../core/guard.ts";
 import { assignTo, mergeViaCommand, MERGE_RECORDED_ENV, type Writer } from "../github/write.ts";
 import { Client, markMerged, type Querier } from "../mirror.ts";
 import { refreshChecks } from "../review/checks.ts";
@@ -66,6 +68,8 @@ export type MergeParams = {
   stopOnRefusal?: boolean;
   /** Called with the running count of PRs merged, after each merge. */
   onMerged?: (merged: number) => void;
+  /** Who asked; default: an operator at the command line. */
+  by?: By;
 };
 
 export type MergeSummary = {
@@ -341,7 +345,14 @@ export async function runMerge(db: DatabaseSync, params: MergeParams, log: (line
     const method = methodOf(info);
     // A hold may have been set during the calls above.
     if (mergeHeld(db, repo, e.number)) { log(`  ${refOf(e)}: merge held meanwhile; skipped`); summary.attempted.pop(); continue; }
-    const r = await mergeViaCommand(w, d.run, d.mergeCommand, [`${ORG}/${repo}`, String(e.number), `--${method}`, ...allowFailedArgs(db, repo, d.mergeCommand)], { run: runId, head: e.head, path: e.path });
+    const g = await guard(db, { repo, number: e.number }, { kind: "merge", head: e.head }, params.by ?? CLI_BY, liveOf(db, d.querier));
+    if ("refused" in g) {
+      // Not recorded as a merge attempt: the PR is tried again once the reason is gone.
+      summary.refused.push({ ref: refOf(e), reason: g.refused });
+      log(`  ${refOf(e)}: not merged: ${g.refused}`);
+      continue;
+    }
+    const r = await mergeViaCommand(w, d.run, d.mergeCommand, g, { method, extra: allowFailedArgs(db, repo, d.mergeCommand), pin: d.mergeCommand === DEFAULT_MERGE_COMMAND }, { run: runId, head: e.head, path: e.path });
     if (r.code !== 0) {
       const why = oneLine(r.stderr) || oneLine(r.stdout) || `exit code ${r.code}`;
       refuse(e, method, `${d.mergeCommand}: ${why}`);

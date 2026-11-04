@@ -79,6 +79,8 @@ export type PrFacts = {
   repo: string; number: number;
   /** Time of the decision, ms. */
   now: number;
+  /** The global pipeline switch. decide() ignores it; gates() applies it to the pipeline's own writes. */
+  pipelineOn: boolean;
   /** GitHub state as mirrored. */
   ghState: "OPEN" | "MERGED" | "CLOSED";
   /** The PR's current head commit (checks fetched after the mirror's last update win over the mirror). */
