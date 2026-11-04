@@ -1,7 +1,7 @@
 // Review, Verify, Fix-ups and Actions sections of the Item page.
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
-import { BugIcon, InfoIcon } from "@phosphor-icons/react";
+import { BugIcon, CompassIcon, InfoIcon } from "@phosphor-icons/react";
 import type { Item, ItemAction, ItemFixup, ItemPatchCheck, ItemPostmerge, ItemPremerge, ItemReviews, ItemVerification, PostmergeFinding, ReleaseAction, ReviewSide, ReviewVerdictName, TaskResult } from "../../api/types";
 import { useApi } from "../../api/client";
 import { Badge, type Tone } from "../../ui/atoms/Badge";
@@ -174,6 +174,20 @@ function Reviews({ r }: { r: ItemReviews }) {
       >
         <p className="mt-2 text-ink/80">No review</p>
       </ReviewCard>
+      {r.directions.length > 0 && (
+        <ul className="mt-2 space-y-1 text-sm">
+          {r.directions.map((d) => (
+            <li key={d.id} className="flex items-start gap-2">
+              <CompassIcon className="mt-0.5 shrink-0 text-warn" />
+              <span>
+                <span className="text-ink/55">Directions: </span>
+                {d.text}
+                {d.reason && <span className="text-ink/60"> — {d.reason}</span>}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }

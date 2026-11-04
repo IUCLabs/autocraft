@@ -317,6 +317,9 @@ The queue lists every PR whose final review (Review) is take or take-fix at its 
 - CI is green
 - Verify passed, or recorded "CI is enough" (CI must still be green at the head)
 - GitHub reports it mergeable
+- neither the review nor the pre-merge review at the head names a direction (below)
+
+**Directions.** An operator records standing directions for a repo, or for every repo, with `autocraft directions add --repo <repo>|--all <text>` (`list [--repo R]` shows the active ones, `retire <id>` ends one). Both Opus reviews get the repo's active directions as a numbered list after the pull request and name each one the change goes against or touches, with a one-line reason; unknown ids in the reply are dropped. A PR with a named direction never merges by the rule: it gets the "Merge this PR?" decision, and its reasons name the direction. An operator's Merge answer lets it merge as for any other PR. A retired direction stops counting at once, also for reviews already stored.
 
 A take PR that fails any of the first four, is not verified (Verify `unavailable`) or has no CI checks gets a "Merge this PR?" decision (Merge, Hold, Close) once Verify has an outcome, and its question says "not verified: <reason>" or "no CI". Such a PR is never merged by the rule. The `merge-ask` step asks these decisions for every tracked repo, whether or not merging is approved there; it writes only decisions. One decision per head, so a push asks again. An answer of merge needs a mergeable PR and the head must not have moved; it also needs green CI and a passed Verify (or CI is enough), except for a PR whose question said "no CI" or "not verified".
 

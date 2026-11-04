@@ -4,6 +4,7 @@ import { Button } from "../../ui/atoms/Button";
 import { Kbd } from "../../ui/atoms/Kbd";
 import { cn } from "../../ui/cn";
 import { AnsweredState, canActOn } from "./DecisionDetail";
+import { DecisionProposals } from "../directions/Directions";
 import { RecommendationLine } from "../../ui/molecules/RecommendationLine";
 import { localActions, useAnswer, useArmed, useLocal, userSelection } from "./state";
 
@@ -81,7 +82,7 @@ export function WorkflowBox({
   });
 
   if (!operator) return null;
-  if (d.answer && !many) return <section id={WORKFLOW_ID} className="mt-8 scroll-mt-3"><h2 className="mb-2 text-sm font-semibold">Workflow</h2><AnsweredState d={d} canUndo /></section>;
+  if (d.answer && !many) return <section id={WORKFLOW_ID} className="mt-8 scroll-mt-3"><h2 className="mb-2 text-sm font-semibold">Workflow</h2><AnsweredState d={d} canUndo /><DecisionProposals decisionId={d.id} /></section>;
 
   const isArmed = !!option && armed === option.key;
   const writes = option ? effect(option.key) : null;

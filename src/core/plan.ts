@@ -169,6 +169,8 @@ export type PrFacts = {
   /** The pre-merge review row at the reviewed head. */
   premerge: { at: string; tries: number; hasFindings: boolean; defects: number; defectsAllFixable: boolean; /** Every defect's fix names a safe path, so a fix-up can apply them. */ fixesSafe: boolean; minor: number; error: string | null } | null;
   premergeFixUsed: boolean;
+  /** Active repo directions that the Opus review or the pre-merge review at the reviewed head says the PR goes against or touches; any makes the PR ask for a Merge? answer. */
+  directionsTouched: { id: number; text: string; reason: string }[];
   /** The PR's head branch may be pushed to (source of the maintainer flag follows `checksHere`). */
   pushable: boolean;
   /** Heads the PR was pushed from by AutoCraft, newest first, starting with the reviewed head. */

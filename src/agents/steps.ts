@@ -21,6 +21,7 @@ import type { Crate } from "../verify/types.ts";
 import type { VerifyPlanInput } from "../verify/types.ts";
 import { referenceProblems, type SemanticDeps } from "../reference-lint.ts";
 import { dropTexts } from "../replylint.ts";
+import { parseProposalReply, type ProposalInput } from "../directions-types.ts";
 
 /** The part of `xs` whose key is in `missing`, or undefined when none is: the `rest` of a batch parse. */
 export function leftOf<T>(xs: T[], key: (x: T) => string, missing: string[]): T[] | undefined {
@@ -164,7 +165,7 @@ export const REVIEW_OPUS: ClaudeStep<OpusPr, OpusValue, ReferenceCtx> = {
     return own === null ? null : [...own, ...await referenceProblems(opusTexts(text), c.dir, c.semantic, { stage, otherProblems: own.length })];
   } },
   parse: (text, x, ctx) => {
-    const review = parseOpusReply(text, x.ref, true, dropTexts(ctx.problems));
+    const review = parseOpusReply(text, x.ref, true, dropTexts(ctx.problems), false, x.directions);
     return review === null ? null : { value: { review, text } };
   },
 };
@@ -177,7 +178,7 @@ export const PREMERGE_OPUS: ClaudeStep<OpusPr & { ref: string }, PremergeReview,
     const own = lintPremerge(text, x.ref);
     return own === null ? null : [...own, ...await referenceProblems(premergeTexts(text, x.ref), c.dir, c.semantic, { stage, otherProblems: own.length })];
   } },
-  parse: (text, x, ctx) => { const r = parsePremerge(text, x.ref, dropTexts(ctx.problems)); return r === null ? null : { value: r }; },
+  parse: (text, x, ctx) => { const r = parsePremerge(text, x.ref, dropTexts(ctx.problems), x.directions); return r === null ? null : { value: r }; },
 };
 
 export const POSTMERGE_OPUS: ClaudeStep<PostmergePr, Finding[], ReferenceCtx> = {
@@ -231,3 +232,10 @@ export const REFEREE_SONNET: ClaudeStep<Item[], Referee[]> = {
 
 /** A call whose reply the caller reads itself: one attempt, the text as the value (the fix-issue prompts). */
 export const textStep = <I,>(id: ClaudeStep<I, string>["id"]): ClaudeStep<I, string> => ({ provider: "claude", id, attempts: 1, toPrompt: (x) => [x], size: () => 1, parse: (text) => ({ value: text }) });
+
+// Directions: a draft direction from an operator's note, or none.
+export const DIRECTIONS_PROPOSE: ClaudeStep<ProposalInput, { draft: string | null }> = {
+  provider: "claude", id: "directions.propose",
+  toPrompt: (x) => [x], size: () => 1,
+  parse: (text, x) => single(parseProposalReply(text, x.ref) ?? null),
+};

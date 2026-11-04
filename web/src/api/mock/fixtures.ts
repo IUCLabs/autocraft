@@ -573,7 +573,7 @@ const SEEDS: Seed[] = [
     recommended: "close-dup",
     ageH: 30,
     author: "kiln-and-reed",
-    answer: ["close-dup", "ochre-fox", 6, true],
+    answer: ["close-dup", "ochre-fox", 6, true, "Close. Hyphenation and dictionaries belong in craft-libs, not in the app."],
   },
   {
     kind: "merge",

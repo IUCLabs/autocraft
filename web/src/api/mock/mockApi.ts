@@ -5,6 +5,7 @@ import { setClock } from "../../lib/format";
 import { createAdminMock } from "./adminMock";
 import { createAgentsMock } from "./agentsMock";
 import { createAreasMock } from "./areasMock";
+import { createDirectionsMock } from "./directionsMock";
 import { createConversationMock } from "./conversationMock";
 import { createBuildMock } from "./buildMock";
 import { createPipelineMock } from "./pipelineMock";
@@ -184,6 +185,7 @@ export function createMockApi(): Api {
     mainCi: () => wait(mainCi()),
     ...createConversationMock(me, changed),
     ...createAreasMock(me, changed),
+    ...createDirectionsMock(me, changed),
     ...createAdminMock(me, changed),
     classifiers: {
       report: (sel) => wait(classifierReport(sel), 80),

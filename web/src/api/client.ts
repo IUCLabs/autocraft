@@ -25,6 +25,9 @@ import type {
   CostReport,
   Decision,
   RepoAreas,
+  RepoDirections,
+  DirectionAddBody,
+  DecisionDirectionProposals,
   Flow,
   DecisionComment,
   DecisionFilter,
@@ -106,6 +109,18 @@ export interface Api {
     editCard(id: number, text: string): Promise<ConversationCard>;
     doCard(id: number): Promise<ConversationCard>;
     dismissCard(id: number): Promise<ConversationCard>;
+  };
+  /** A repo's standing directions. Everyone who sees the repo reads them (open proposals only come to operators); every write is operator only. */
+  directions: {
+    get(repo: RepoName): Promise<RepoDirections>;
+    add(repo: RepoName, body: DirectionAddBody): Promise<RepoDirections>;
+    edit(id: number, text: string): Promise<void>;
+    retire(id: number): Promise<void>;
+    /** Turns the proposal into a direction: its draft, or the edited `text`. */
+    acceptProposal(id: number, body?: { text?: string; allRepos?: boolean }): Promise<void>;
+    dismissProposal(id: number): Promise<void>;
+    /** Operator: the open proposals drafted from the decision's answer note. */
+    forDecision(decisionId: string): Promise<DecisionDirectionProposals>;
   };
   /** A repo's area list. Reading is for everyone who sees the repo; every write is operator only. */
   areas: {

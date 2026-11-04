@@ -162,8 +162,8 @@ export const STAGES: StageDef[] = [
   {
     id: "decide", title: "Decide", order: 5, runStage: 3, docSection: "Decide", mode: "gate",
     description: "Asks an operator for scope calls, with a summary and a recommendation, and answers questions about an item in its conversation.",
-    steps: [{ name: "decide", label: "Decide", limit: null, seeded: 100 }, { name: "conversation", label: "Conversations", limit: 30 }],
-    lanes: [{ name: "decide", steps: ["decide"], order: 6 }, { name: "conversation", steps: ["conversation"], order: 20 }],
+    steps: [{ name: "decide", label: "Decide", limit: null, seeded: 100 }, { name: "conversation", label: "Conversations", limit: 30 }, { name: "directions-propose", label: "Direction drafts", limit: 30 }],
+    lanes: [{ name: "decide", steps: ["decide"], order: 6 }, { name: "conversation", steps: ["conversation"], order: 20 }, { name: "directions-propose", steps: ["directions-propose"], order: 21 }],
     reads: ["Classified items", "Reviews", "Operator answers"],
     sets: ["Decisions with summary and recommendation", "Conversation replies"],
     states: [
@@ -178,10 +178,10 @@ export const STAGES: StageDef[] = [
     ],
     models: [
       { model: "sonnet", use: "Writes decision summaries" },
-      { model: "haiku", use: "Summaries of duplicate decisions" },
+      { model: "haiku", use: "Summaries of duplicate decisions; drafts directions from operators' notes" },
       { model: "opus", use: "Writes the scope recommendation and conversation replies" },
     ],
-    promptIds: ["decide.summary", "decide.recommend", "conversation.turn"], promptStage: "Decide",
+    promptIds: ["decide.summary", "decide.recommend", "conversation.turn", "directions.propose"], promptStage: "Decide",
     waits: [
       { name: "Failed recommendation", why: "A scope recommendation call that keeps failing must not re-run Decide", howLong: "1 hour between tries, at most 3; then the decision keeps no recommendation", showsAs: "none (the decision shows no recommendation)", kind: "backoff" },
     ],

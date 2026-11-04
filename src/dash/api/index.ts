@@ -22,6 +22,7 @@ import * as build from "./build.ts";
 import * as dec from "./decisions.ts";
 import * as conv from "./conversations.ts";
 import * as areas from "./areas.ts";
+import * as directions from "./directions.ts";
 import * as insight from "./insight.ts";
 import * as pipeline from "./pipeline.ts";
 import { prompts } from "./prompts.ts";
@@ -146,6 +147,25 @@ function premergeOf(db: DatabaseSync, repo: string, n: number): ItemPremerge[] {
 }
 
 /** The Opus review of the newest reviewed head, which is also the final verdict. */
+/** The active directions the Opus or the pre-merge review at the head named, with the reviews' reasons. */
+function directionsNamed(db: DatabaseSync, repo: string, n: number, head: string): ItemReviews["directions"] {
+  const stored = [
+    (db.prepare("SELECT directions FROM opus_reviews WHERE repo = ? AND number = ? AND head_oid = ?").get(repo, n, head) as { directions: string | null } | undefined)?.directions,
+    (db.prepare("SELECT directions FROM premerge_reviews WHERE repo = ? AND number = ? AND head_oid = ?").get(repo, n, head) as { directions: string | null } | undefined)?.directions,
+  ];
+  const out: ItemReviews["directions"] = [];
+  for (const raw of stored) {
+    let v: unknown = [];
+    try { v = JSON.parse(raw ?? "[]"); } catch { /* unreadable: none */ }
+    for (const h of Array.isArray(v) ? (v as { id?: unknown; reason?: unknown }[]) : []) {
+      if (typeof h?.id !== "number" || out.some((d) => d.id === h.id)) continue;
+      const d = db.prepare("SELECT text FROM repo_directions WHERE id = ? AND retired_at IS NULL").get(h.id) as { text: string } | undefined;
+      if (d) out.push({ id: h.id, text: d.text, reason: typeof h.reason === "string" ? h.reason : "" });
+    }
+  }
+  return out.sort((a, b) => a.id - b.id);
+}
+
 function reviewsOf(db: DatabaseSync, repo: string, n: number): ItemReviews | null {
   const o = db.prepare(`SELECT head_oid, at, mode, base_head, verdict, sure, reason, fixes, risks FROM final_reviews
     WHERE repo = ? AND number = ? ORDER BY at DESC, head_oid DESC LIMIT 1`).get(repo, n) as
@@ -154,7 +174,7 @@ function reviewsOf(db: DatabaseSync, repo: string, n: number): ItemReviews | nul
   const list = <T>(s: string | null): T[] => { try { const v = JSON.parse(s ?? "[]") as unknown; return Array.isArray(v) ? (v as T[]) : []; } catch { return []; } };
   const head = (db.prepare("SELECT head_oid FROM items WHERE repo = ? AND number = ?").get(repo, n) as { head_oid: string | null } | undefined)?.head_oid ?? null;
   return {
-    head: o.head_oid, current: o.head_oid === head,
+    head: o.head_oid, current: o.head_oid === head, directions: directionsNamed(db, repo, n, o.head_oid),
     opus: { verdict: o.verdict, reason: o.reason, fixes: list(o.fixes), risks: list(o.risks), at: o.at, sure: o.sure === 1, mode: o.mode, baseHead: o.base_head },
     final: { verdict: o.verdict, reason: o.reason, decided: true },
   };
@@ -332,6 +352,13 @@ export function apiRoutes(opts: ApiOptions = {}): Route[] {
     { method: "POST", pattern: "/api/areas/:repo/run", operator: true, handler: ok(areas.run) },
     { method: "POST", pattern: "/api/area-proposals/:id/accept", operator: true, handler: ok(areas.acceptProposalApi) },
     { method: "POST", pattern: "/api/area-proposals/:id/dismiss", operator: true, handler: ok(areas.dismiss) },
+    get("/api/directions/:repo", directions.get),
+    { method: "POST", pattern: "/api/directions/:repo", operator: true, handler: ok(directions.add) },
+    { method: "POST", pattern: "/api/direction/:id/edit", operator: true, handler: ok(directions.edit) },
+    { method: "POST", pattern: "/api/direction/:id/retire", operator: true, handler: ok(directions.retire) },
+    { method: "POST", pattern: "/api/direction-proposals/:id/accept", operator: true, handler: ok(directions.acceptProposalApi) },
+    { method: "POST", pattern: "/api/direction-proposals/:id/dismiss", operator: true, handler: ok(directions.dismissProposalApi) },
+    get("/api/decisions/:id/direction-proposals", directions.forDecision),
     { method: "POST", pattern: "/api/items/:repo/:n/batch-again", operator: true, handler: ok(operator.batchItemAgain) },
     get("/api/items", items.listItems),
     get("/api/search", (db, req) => req.query.get("mode") === "semantic" ? sim.semanticSearch(db, req, vectors) : items.quickSearch(db, req)),
