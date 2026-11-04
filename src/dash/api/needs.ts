@@ -3,13 +3,14 @@
 import type { DatabaseSync, SQLInputValue } from "node:sqlite";
 import type { NeedsFeedbackPage, NeedsFeedbackRow, NeedsPage, NeedsStoppedRow } from "../../../web/src/api/types.ts";
 import { listAccounts } from "../../agents/accounts.ts";
-import { getDecision, reposOf } from "../../decisions.ts";
+import { getDecision, reposOf, type DecisionRow } from "../../decisions.ts";
 import { stageLimits } from "../../runner/autopilot.ts";
 import { decisionPath, itemPath } from "../../../web/src/lib/links.ts";
+import { reviewBots } from "../../review/bots.ts";
 import { HttpError } from "../server/util.ts";
 import type { Req } from "../types.ts";
 import { itemState } from "./shown.ts";
-import { hiddenRepos } from "./visible.ts";
+import { blankIfHidden, hiddenRepos } from "./visible.ts";
 
 export const NEEDS_PAGE = 30;
 /** Older feedback is not asked for any more; the window also bounds the scans. */
@@ -17,7 +18,7 @@ const WINDOW_MS = 60 * 86_400_000;
 
 type Raw = { id: string; source: NeedsFeedbackRow["source"]; author: string; at: string; text: string; repo: string | null; number: number | null; decision: string | null; turn: number | null; comment: string | null; handled: number };
 
-// One SELECT per source, each with a `handled` flag. They share the parameters :since, :cur (newest time wanted) and :own.
+// One SELECT per source, each with a `handled` flag. They share the parameters :since, :cur (newest time wanted), :own and :bots.
 const SOURCES: string[] = [
   // Feedback on a decision from anyone but an operator; handled once the decision was answered afterwards.
   `SELECT 'decision-comment:' || c.id AS id, 'decision' AS source, c.login AS author, c.at, c.body AS text, d.repo, d.number, d.id AS decision, NULL AS turn, c.id AS comment,
@@ -38,11 +39,11 @@ const SOURCES: string[] = [
      EXISTS (SELECT 1 FROM comments a WHERE a.repo = c.repo AND a.number = c.number AND a.author = :own AND a.created_at > c.created_at)
    FROM comments c
    WHERE :own <> '' AND c.mentions_pipeline = 1 AND c.created_at >= :since AND c.created_at <= :cur AND c.author IS NOT NULL AND c.author <> :own`,
-  // The comment right after one of the pipeline login's own, on an item it commented on.
+  // The comment right after one of the pipeline login's own, on an item it commented on; bots do not count as replies.
   `SELECT 'comment:' || c.id, 'github', c.author, c.created_at, c.body, c.repo, c.number, NULL, NULL, c.id,
      EXISTS (SELECT 1 FROM comments a WHERE a.repo = c.repo AND a.number = c.number AND a.author = :own AND a.created_at > c.created_at)
    FROM (SELECT DISTINCT repo, number FROM comments WHERE author = :own) o JOIN comments c ON c.repo = o.repo AND c.number = o.number
-   WHERE :own <> '' AND c.mentions_pipeline = 0 AND c.created_at >= :since AND c.created_at <= :cur AND c.author IS NOT NULL AND c.author <> :own AND TRIM(COALESCE(c.body, '')) <> ''
+   WHERE :own <> '' AND c.mentions_pipeline = 0 AND c.created_at >= :since AND c.created_at <= :cur AND c.author IS NOT NULL AND c.author <> :own AND c.author NOT LIKE '%[bot]' AND lower(c.author) NOT IN (SELECT value FROM json_each(:bots)) AND TRIM(COALESCE(c.body, '')) <> ''
      AND (SELECT p.author FROM comments p WHERE p.repo = c.repo AND p.number = c.number AND p.created_at < c.created_at ORDER BY p.created_at DESC LIMIT 1) = :own`,
 ];
 
@@ -54,13 +55,13 @@ function hiddenSql(hidden: string[], params: Record<string, SQLInputValue>): str
 }
 
 function feedback(db: DatabaseSync, hidden: string[], cursor: { at: string; id: string } | null, limit: number): { rows: Raw[]; more: boolean; unhandled: number } {
-  const params: Record<string, SQLInputValue> = { since: new Date(Date.now() - WINDOW_MS).toISOString(), cur: cursor?.at ?? "9999", own: ownLogin(db) };
+  const params: Record<string, SQLInputValue> = { since: new Date(Date.now() - WINDOW_MS).toISOString(), own: ownLogin(db), bots: JSON.stringify(reviewBots()) };
   const union = SOURCES.map((s) => `SELECT * FROM (${s})`).join(" UNION ALL ");
   const where = hiddenSql(hidden, params);
-  // Time-ordered, so each source reads its index range until the page is full.
-  const all = db.prepare(`SELECT * FROM (${union}) WHERE ${where} ORDER BY at DESC, id DESC LIMIT :limit`).all({ ...params, limit: limit * 3 + 1 }) as Raw[];
+  const size = limit * 3 + 1;
+  // Feedback on a batch decision is hidden when the batch holds an item of a hidden repo.
   const batches = new Map<string, boolean>();
-  const visible = (r: Raw): boolean => {
+  const visible = (r: Pick<Raw, "source" | "number" | "decision">): boolean => {
     if (r.source !== "decision" || r.number !== null || !r.decision) return true;
     let ok = batches.get(r.decision);
     if (ok === undefined) {
@@ -70,9 +71,20 @@ function feedback(db: DatabaseSync, hidden: string[], cursor: { at: string; id: 
     }
     return ok;
   };
-  const after = all.filter((r) => visible(r) && (!cursor || r.at < cursor.at || (r.at === cursor.at && r.id < cursor.id)));
-  const unhandled = (db.prepare(`SELECT COUNT(*) AS n FROM (${union}) WHERE ${where} AND NOT handled`).get({ ...params, cur: "9999" }) as { n: number }).n;
-  return { rows: after.slice(0, limit), more: after.length > limit, unhandled };
+  // Time-ordered, so each source reads its index range; rows that are filtered out make it read on until the page is full.
+  const page = db.prepare(`SELECT * FROM (${union}) WHERE ${where} AND (at < :cur OR (at = :cur AND id < :curId)) ORDER BY at DESC, id DESC LIMIT :limit`);
+  const rows: Raw[] = [];
+  let pos = cursor ?? { at: "9999", id: "\uffff" };
+  while (rows.length <= limit) {
+    const batch = page.all({ ...params, cur: pos.at, curId: pos.id, limit: size }) as Raw[];
+    rows.push(...batch.filter(visible));
+    const tail = batch[batch.length - 1];
+    if (batch.length < size || !tail) break;
+    pos = { at: tail.at, id: tail.id };
+  }
+  const open = db.prepare(`SELECT source, number, decision, COUNT(*) AS n FROM (${union}) WHERE ${where} AND NOT handled GROUP BY source, number IS NULL, decision`).all({ ...params, cur: "9999" }) as { source: Raw["source"]; number: number | null; decision: string | null; n: number }[];
+  const unhandled = open.reduce((sum, r) => sum + (visible(r) ? r.n : 0), 0);
+  return { rows: rows.slice(0, limit), more: rows.length > limit, unhandled };
 }
 
 function view(db: DatabaseSync, r: Raw): NeedsFeedbackRow {
@@ -80,7 +92,7 @@ function view(db: DatabaseSync, r: Raw): NeedsFeedbackRow {
   const item = r.repo && r.number !== null ? { repo: r.repo, number: r.number, kind: it ? (it.kind === "pr" ? "pr" as const : "issue" as const) : null, state: it ? itemState(it.state) : null, title: it?.title ?? null } : null;
   const trace = (event: string) => (item ? `${itemPath(item.repo, item.number)}#event=${encodeURIComponent(event)}` : "/needs");
   const [href, hrefLabel] = r.source === "decision"
-    ? [decisionPath({ id: r.decision!, repo: r.repo ?? "", number: r.number }), "Decision"]
+    ? [decisionPath({ id: r.decision!, repo: r.repo ?? "", number: null }), "Decision"]
     : r.source === "operator" ? [trace(`turn:${r.turn}`), "Conversation"] : [trace(`comment:${r.comment}`), "Comment"];
   return { id: r.id, source: r.source, item, author: r.author, at: r.at, text: r.text, href, hrefLabel, handled: !!r.handled };
 }
@@ -90,13 +102,12 @@ const humanize = (id: string): string => { const t = id.replace(/[-_]+/g, " ").t
 async function stopped(db: DatabaseSync, hidden: string[]): Promise<NeedsStoppedRow[]> {
   const out: NeedsStoppedRow[] = [];
   for (const t of db.prepare("SELECT stage, reason, tripped_at FROM stage_trips WHERE active = 1 ORDER BY tripped_at").all() as { stage: string; reason: string; tripped_at: string }[])
-    // A reason may name an item of a repo the viewer cannot see.
-    out.push({ id: `breaker:${t.stage}`, kind: "breaker", title: humanize(t.stage), reason: hidden.some((h) => t.reason.includes(h)) ? "" : t.reason, since: t.tripped_at, resume: { type: "trip", stage: t.stage } });
+    out.push({ id: `breaker:${t.stage}`, kind: "breaker", title: humanize(t.stage), reason: blankIfHidden(t.reason, hidden), since: t.tripped_at, resume: { type: "trip", stage: t.stage } });
   const updated = new Map((db.prepare("SELECT step, updated_at FROM stage_limits").all() as { step: string; updated_at: string | null }[]).map((r) => [r.step, r.updated_at]));
   for (const l of await stageLimits(db))
     if (l.perDay === 0 && !l.tripped) out.push({ id: `limit:${l.step}`, kind: "limit", title: l.title, reason: "The daily limit is 0", since: updated.get(l.step) ?? null, resume: { type: "link", to: "/pipeline" } });
   for (const a of listAccounts(db))
-    if (a.enabled && a.pausedReason) out.push({ id: `account:${a.id}`, kind: "account", title: a.label, reason: a.pausedReason, since: null, resume: { type: "link", to: "/accounts" } });
+    if (a.enabled && a.pausedReason) out.push({ id: `account:${a.id}`, kind: "account", title: a.label, reason: blankIfHidden(a.pausedReason, hidden), since: null, resume: { type: "link", to: "/accounts" } });
   return out;
 }
 
@@ -114,9 +125,10 @@ export async function needs(db: DatabaseSync, req: Req): Promise<NeedsPage> {
     cursor = { at: c.slice(0, i), id: c.slice(i + 1) };
   }
   const fb = feedback(db, hidden, cursor, q.get("feedback") === "1" ? limit : 1);
-  const params: Record<string, SQLInputValue> = {};
-  const hide = hidden.length ? ` AND (repo IS NULL OR repo NOT IN (${hidden.map((h, k) => ((params[`h${k}`] = h), `:h${k}`)).join(",")}))` : "";
-  const decisions = (db.prepare(`SELECT COUNT(*) AS n FROM decisions WHERE answer IS NULL${hide}`).get(params) as { n: number }).n;
+  // A batch decision counts only when none of its items is in a hidden repo, as in the Decisions list.
+  const decisions = hidden.length
+    ? (db.prepare("SELECT * FROM decisions WHERE answer IS NULL").all() as DecisionRow[]).filter((d) => !reposOf(d).some((x) => hidden.includes(x))).length
+    : (db.prepare("SELECT COUNT(*) AS n FROM decisions WHERE answer IS NULL").get() as { n: number }).n;
   const rows = await stopped(db, hidden);
   const last = fb.rows[fb.rows.length - 1];
   return {

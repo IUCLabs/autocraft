@@ -38,6 +38,7 @@ test("needs lists feedback newest first with handled state, shows a tripped brea
   assert.deepEqual(op.feedback!.rows.map((r) => [r.id, r.handled]), [["comment:c4", false], ["comment:c6", false], ["decision-comment:dc1", true], ["comment:c1", true]]);
   assert.equal(op.feedback!.rows[0]!.href, "/items/photocraft/2#event=comment%3Ac4");
   assert.equal(op.counts.feedback, 2);
+  assert.equal(op.feedback!.rows.find((r) => r.id === "decision-comment:dc1")!.href, "/needs/decisions/d1", "the decision is opened by its id");
   assert.equal(op.counts.decisions, 0);
   assert.deepEqual(op.stopped.map((s) => [s.id, s.resume]), [["breaker:merge", { type: "trip", stage: "merge" }]]);
 

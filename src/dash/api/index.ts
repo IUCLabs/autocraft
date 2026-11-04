@@ -434,7 +434,7 @@ export function apiRoutes(opts: ApiOptions = {}): Route[] {
     get("/api/pipeline/jobs/:id", pipeline.job),
     { method: "POST", pattern: "/api/pipeline/jobs", operator: true, handler: ok(pipeline.request) },
     { method: "POST", pattern: "/api/pipeline/jobs/:id/cancel", operator: true, handler: ok(pipeline.cancel) },
-    get("/api/pipeline/state", (db) => pipeline.state(db)),
+    get("/api/pipeline/state", pipeline.state),
     { method: "PUT", pattern: "/api/pipeline/state", operator: true, handler: ok(pipeline.putState) },
     { method: "PUT", pattern: "/api/pipeline/limits/:step", operator: true, handler: ok(pipeline.putLimit) },
     { method: "POST", pattern: "/api/pipeline/limits/:step/reset", operator: true, handler: ok(pipeline.resetLimit) },

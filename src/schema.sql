@@ -1383,7 +1383,6 @@ END;
 
 -- The activity stream reads each source's newest rows by time (src/dash/api/activity.ts).
 CREATE INDEX IF NOT EXISTS items_merged ON items(merged_at) WHERE merged_at IS NOT NULL;
-CREATE INDEX IF NOT EXISTS comments_created ON comments(created_at);
 CREATE INDEX IF NOT EXISTS item_activity_at ON item_activity(at);
 CREATE INDEX IF NOT EXISTS stages_at ON stages(at);
 CREATE INDEX IF NOT EXISTS job_items_at ON job_items(at);

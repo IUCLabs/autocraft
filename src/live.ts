@@ -61,6 +61,8 @@ export const TOPIC_TABLES: Record<string, Source[]> = {
   // The planner's Plan cache; its own output, so the planner does not plan again for it.
   plans: [{ table: "item_plans" }, { table: "lane_next" }],
   jobs: [{ table: "jobs" }, { table: "stage_limits" }, { table: "stage_trips" }],
+  // The breaker and limit rows alone, for pages that do not follow every job.
+  limits: [{ table: "stage_limits" }, { table: "stage_trips" }],
   usage: [{ table: "token_usage" }, { table: "account_usage_samples" }],
   accounts: [{ table: "claude_accounts" }, { table: "claude_account_status" }],
   agents: [{ table: "agent_runs" }, { table: "agent_run_items" }, { table: "agent_run_texts" }],
@@ -134,8 +136,8 @@ export function liveSql(db?: DatabaseSync): string {
   for (const [topic, sources] of Object.entries(TOPIC_TABLES)) {
     for (const { table, ops = ALL_OPS, when } of sources) {
       for (const op of ops) {
-        // `steps` and `trace` read tables other topics already watch; their triggers need names of their own.
-        const name = `live_${topic === "steps" || topic === "trace" ? `${topic}_` : ""}${table}_${op[0]!.toLowerCase()}`;
+        // `steps`, `trace` and `limits` read tables other topics already watch; their triggers need names of their own.
+        const name = `live_${topic === "steps" || topic === "trace" || topic === "limits" ? `${topic}_` : ""}${table}_${op[0]!.toLowerCase()}`;
         const key = op === "DELETE" ? "old.key" : "new.key";
         let cond = when ? when.replaceAll("new_key", key) : "";
         if (op === "UPDATE" && !when) {

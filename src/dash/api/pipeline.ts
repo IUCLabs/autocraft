@@ -3,16 +3,16 @@
 // flip the switch and change limits. The
 // dashboard never runs a step: it writes job rows that the runner picks up.
 import type { DatabaseSync } from "node:sqlite";
-import type { Job, JobState, PipelineOverview, PipelineStage, PipelineStep, StepParam, SyncRun } from "../../../web/src/api/types.ts";
+import type { Job, JobState, PipelineOverview, PipelineStage, PipelineState, PipelineStep, StepParam, SyncRun } from "../../../web/src/api/types.ts";
 import { enqueue, getJob, jobDetail, JobError, JOB_STATES, listJobs, requestCancel, toJob, toJobs } from "../../runner/jobs.ts";
-import { LimitError, pipelineState, resetLimitCount, setEnabled, setLimit } from "../../runner/autopilot.ts";
+import { LimitError, pipelineState as rawPipelineState, resetLimitCount, setEnabled, setLimit } from "../../runner/autopilot.ts";
 import { HEARTBEAT_KEY } from "../../runner/runner.ts";
 import { loadSteps, type StepDef } from "../../runner/steps.ts";
 import { audit } from "../audit.ts";
 import { resumeStage, TripError } from "../../push-outcomes.ts";
 import { HttpError } from "../server/util.ts";
 import type { Req } from "../types.ts";
-import { hiddenRepos, visibleRepos } from "./visible.ts";
+import { blankIfHidden, hiddenRepos, visibleRepos } from "./visible.ts";
 import { canSeeInternals } from "./staff.ts";
 
 // Stages of docs/pipeline.md. A stage with registered steps shows them; the
@@ -32,6 +32,15 @@ const RUNNER_ALIVE_MS = 30_000;
 function requireOperator(req: Req, step?: StepDef): void {
   if (req.user.role !== "operator" || (step && step.requires !== "operator")) throw new HttpError(403, "only operators run or cancel pipeline steps and change the pipeline switch and limits");
 }
+
+/** The pipeline state for the requester: reasons that name a hidden repo are left out. */
+async function pipelineState(db: DatabaseSync, req: Req): Promise<PipelineState> {
+  const [s, hidden] = await Promise.all([rawPipelineState(db), hiddenRepos(db, req)]);
+  return { ...s, limits: s.limits.map((l) => ({ ...l, pausedReason: blankIfHidden(l.pausedReason, hidden) || null, status: blankIfHidden(l.status, hidden) || null })) };
+}
+
+/** Viewers read that a job failed, not why: the error carries log and command text. */
+const forViewer = (req: Req) => (j: Job): Job => (canSeeInternals(req) || !j.error ? j : { ...j, error: "failed" });
 
 const wrap = async <T>(f: () => T | Promise<T>): Promise<T> => {
   try {
@@ -54,9 +63,9 @@ function wireParams(s: StepDef, repos: string[]): StepParam[] {
   });
 }
 
-const lastJob = (db: DatabaseSync, step: string): Job | null => {
+const lastJob = (db: DatabaseSync, step: string, view: (j: Job) => Job): Job | null => {
   const r = db.prepare("SELECT * FROM jobs WHERE step = ? ORDER BY id DESC LIMIT 1").get(step);
-  return r ? toJobs(db, [r as Parameters<typeof toJob>[0]])[0]! : null;
+  return r ? view(toJobs(db, [r as Parameters<typeof toJob>[0]])[0]!) : null;
 };
 
 function stageState(db: DatabaseSync, steps: string[], syncFailed: boolean | null): PipelineStage["state"] {
@@ -78,7 +87,7 @@ export async function overview(db: DatabaseSync, req: Req): Promise<PipelineOver
   const steps: PipelineStep[] = all.map((s) => ({
     name: s.name, title: s.title, description: s.description, stage: s.stage, requires: s.requires, group: s.group,
     params: wireParams(s, repos), unavailable: s.available?.() ?? null,
-    lastJob: lastJob(db, s.name),
+    lastJob: lastJob(db, s.name, forViewer(req)),
   }));
   const runs = db.prepare("SELECT started_at AS startedAt, ended_at AS endedAt, mode, items, error FROM sync_runs ORDER BY started_at DESC LIMIT 10").all() as unknown as SyncRun[];
   const lastSync = runs.find((r) => r.endedAt);
@@ -112,7 +121,8 @@ const intQuery = (req: Req, name: string): number | undefined => {
 export async function jobs(db: DatabaseSync, req: Req) {
   const state = req.query.get("state") || undefined;
   if (state && !JOB_STATES.includes(state as JobState)) throw new HttpError(400, "unknown state");
-  return listJobs(db, { step: req.query.get("step") || undefined, state: state as JobState | undefined, limit: intQuery(req, "limit"), offset: intQuery(req, "offset") }, await hiddenRepos(db, req));
+  const list = listJobs(db, { step: req.query.get("step") || undefined, state: state as JobState | undefined, limit: intQuery(req, "limit"), offset: intQuery(req, "offset") }, await hiddenRepos(db, req));
+  return { ...list, jobs: list.jobs.map(forViewer(req)) };
 }
 
 const jobId = (req: Req): number => {
@@ -121,7 +131,10 @@ const jobId = (req: Req): number => {
   return id;
 };
 
-export const job = (db: DatabaseSync, req: Req) => wrap(async () => jobDetail(db, jobId(req), { hidden: await hiddenRepos(db, req), logs: canSeeInternals(req) }));
+export const job = (db: DatabaseSync, req: Req) => wrap(async () => {
+  const d = jobDetail(db, jobId(req), { hidden: await hiddenRepos(db, req), logs: canSeeInternals(req) });
+  return { ...d, error: forViewer(req)(d).error };
+});
 
 function body(req: Req): Record<string, unknown> {
   const b = req.json;
@@ -151,16 +164,16 @@ export async function cancel(db: DatabaseSync, req: Req): Promise<Job> {
   return j;
 }
 
-export const state = (db: DatabaseSync) => pipelineState(db);
+export const state = (db: DatabaseSync, req: Req) => pipelineState(db, req);
 
 export async function putState(db: DatabaseSync, req: Req) {
   requireOperator(req);
   const b = body(req);
   if (typeof b.enabled !== "boolean") throw new HttpError(400, "enabled must be true or false");
-  const was = (await pipelineState(db)).enabled;
+  const was = (await rawPipelineState(db)).enabled;
   setEnabled(db, b.enabled, req.user.login);
   audit(db, req.user.login, "pipeline-switch", "pipeline", { enabled: b.enabled, was });
-  return pipelineState(db);
+  return pipelineState(db, req);
 }
 
 export async function putLimit(db: DatabaseSync, req: Req) {
@@ -171,7 +184,7 @@ export async function putLimit(db: DatabaseSync, req: Req) {
     if (e instanceof LimitError) throw new HttpError(e.status, e.message);
     throw e;
   }
-  return (await pipelineState(db)).limits.find((l) => l.step === req.params.step)!;
+  return (await pipelineState(db, req)).limits.find((l) => l.step === req.params.step)!;
 }
 
 /** An operator clears a stage the circuit breaker paused. */
@@ -183,7 +196,7 @@ export async function resumeTrip(db: DatabaseSync, req: Req) {
     if (e instanceof TripError) throw new HttpError(e.status, e.message);
     throw e;
   }
-  return pipelineState(db);
+  return pipelineState(db, req);
 }
 
 /** Starts today's count of a step again from zero; the step `all` resets every stage. */
@@ -195,5 +208,5 @@ export async function resetLimit(db: DatabaseSync, req: Req) {
     if (e instanceof LimitError) throw new HttpError(e.status, e.message);
     throw e;
   }
-  return pipelineState(db);
+  return pipelineState(db, req);
 }

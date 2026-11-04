@@ -13,7 +13,7 @@ import type { Req } from "../types.ts";
 import { clip, stepTitle, writeEvent } from "./trace.ts";
 import { shownLookup } from "./shown.ts";
 import { canSeeInternals } from "./staff.ts";
-import { hiddenRepos, visibleRepos } from "./visible.ts";
+import { blankIfHidden, hiddenRepos, visibleRepos } from "./visible.ts";
 
 const RECENT = 30;
 const PER_KIND = 5;
@@ -63,7 +63,8 @@ async function healthOf(db: DatabaseSync, visible: string[], hidden: string[], n
   if (sync) add(sync);
 
   for (const t of all<{ stage: string; reason: string; tripped_at: string }>(db, "SELECT stage, reason, tripped_at FROM stage_trips WHERE active = 1 ORDER BY tripped_at")) {
-    add({ id: `breaker:${t.stage}`, area: "breaker", tone: "bad", text: `${stepTitle(t.stage)} is stopped by its breaker: ${clip(t.reason, 120)}`, to: "/pipeline", since: t.tripped_at });
+    const why = blankIfHidden(t.reason, hidden);
+    add({ id: `breaker:${t.stage}`, area: "breaker", tone: "bad", text: `${stepTitle(t.stage)} is stopped by its breaker${why ? `: ${clip(why, 120)}` : ""}`, to: "/pipeline", since: t.tripped_at });
   }
   for (const l of state.limits) {
     if (l.perDay === 0 && !l.tripped) add({ id: `limit:${l.step}`, area: "limit", tone: "warn", text: `${l.title} is paused (limit 0 a day)`, to: "/pipeline", since: null });
@@ -71,7 +72,7 @@ async function healthOf(db: DatabaseSync, visible: string[], hidden: string[], n
 
   for (const a of listAccounts(db).filter((x) => x.enabled)) {
     if (a.auth.loggedIn === false) add({ id: `account:${a.id}`, area: "account", tone: "bad", text: `Account ${a.label} is signed out`, to: "/accounts", since: null });
-    else if (a.pausedReason) add({ id: `account:${a.id}`, area: "account", tone: "warn", text: `Account ${a.label} is paused: ${clip(a.pausedReason, 100)}`, to: "/accounts", since: null });
+    else if (a.pausedReason) add({ id: `account:${a.id}`, area: "account", tone: "warn", text: `Account ${a.label} is paused${blankIfHidden(a.pausedReason, hidden) ? `: ${clip(a.pausedReason, 100)}` : ""}`, to: "/accounts", since: null });
   }
   const outage = jevEnabled(db) ? jevOutage(db) : null;
   if (outage) add({ id: "jev", area: "jev", tone: "warn", text: `Jev is unavailable: ${clip(outage.reason, 100)}`, to: "/accounts", since: outage.since });
@@ -206,7 +207,7 @@ function recent(db: DatabaseSync, hidden: string[], staff: boolean): NowEvent[] 
     `SELECT id, step, ended_at, error, repo FROM jobs WHERE state = 'failed' AND ended_at IS NOT NULL${notHidden("repo", hidden, true)} ORDER BY ended_at DESC LIMIT ?`, ...hidden, PER_KIND * 2)) {
     const i = db.prepare(`SELECT id, repo, number FROM job_items WHERE job_id = ?${notHidden("repo", hidden)} ORDER BY id LIMIT 1`).get(j.id, ...hidden) as { id: number; repo: string; number: number } | undefined;
     out.push({ key: `failed-job:${j.id}`, kind: "failure", at: j.ended_at, actor: "AutoCraft", item: i ? item(i.repo, i.number) : null, event: i ? `job:${i.id}` : null, detail: `/pipeline/${j.id}`,
-      summary: `${stepTitle(j.step)} failed${j.error ? `: ${clip(j.error, 100)}` : ""}` });
+      summary: `${stepTitle(j.step)} failed${j.error && staff ? `: ${clip(j.error, 100)}` : ""}` });
   }
 
   const hiddenRuns = hidden.length ? ` AND NOT EXISTS (SELECT 1 FROM agent_run_items x WHERE x.run_id = r.id AND x.repo IN (${marks(hidden)}))` : "";
@@ -214,7 +215,7 @@ function recent(db: DatabaseSync, hidden: string[], staff: boolean): NowEvent[] 
     `SELECT r.id, r.step, r.model, r.ended_at, r.started_at, r.error FROM agent_runs r WHERE r.state = 'failed'${hiddenRuns} ORDER BY r.id DESC LIMIT ?`, ...hidden, PER_KIND * 2)) {
     const i = db.prepare("SELECT repo, number FROM agent_run_items WHERE run_id = ? ORDER BY repo, number LIMIT 1").get(r.id) as { repo: string; number: number } | undefined;
     out.push({ key: `failed-run:${r.id}`, kind: "failure", at: r.ended_at ?? r.started_at, actor: r.model, item: i ? item(i.repo, i.number) : null, event: i ? `run:${r.id}` : null, detail: `/agents/${r.id}`,
-      summary: `${stepTitle(r.step)}: model call failed${r.error ? `, ${clip(r.error, 100)}` : ""}` });
+      summary: `${stepTitle(r.step)}: model call failed${r.error && staff ? `, ${clip(r.error, 100)}` : ""}` });
   }
 
   for (const t of all<{ id: number; step: string; repo: string; number: number | null; state: string; ended_at: string | null; queued_at: string; summary: string | null }>(db,
