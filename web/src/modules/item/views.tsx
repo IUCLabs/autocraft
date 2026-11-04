@@ -20,6 +20,8 @@ import type { ViewProps } from "../../registry/types";
 import { Slot } from "../../registry/Slot";
 import { Avatar } from "../../ui/atoms/Avatar";
 import { ItemRef } from "../../ui/molecules/ItemRef";
+import { ItemIcon } from "../../ui/atoms/ItemIcon";
+import { GithubLogoIcon } from "@phosphor-icons/react";
 import { FastMarkFor, FastToggle, HoldToggle } from "../queue/fastTrack";
 import { Badge, type Tone } from "../../ui/atoms/Badge";
 import { PriorityBadge } from "../../ui/atoms/PriorityBadge";
@@ -37,7 +39,7 @@ import { useUser } from "../../shell/UserContext";
 import { canAct } from "../../registry/permissions";
 import { Conversation } from "../decisions/Conversation";
 import { useNow } from "../../lib/useNow";
-import { decisionPath } from "../../lib/links";
+import { decisionPath, githubItemUrl } from "../../lib/links";
 
 function useItem(params: ViewProps["params"]) {
   const repo = params.repo!;
@@ -132,7 +134,8 @@ function Header({ it }: { it: Item }) {
     <div className="border-b border-line pb-4">
       <div className="mb-1 flex flex-wrap items-center gap-x-2 text-sm text-ink/60">
         <FastMarkFor repo={it.repo} number={it.number} />
-        <ItemRef repo={it.repo} number={it.number} kind={it.kind} state={it.state} title={null} />
+        <ItemIcon kind={it.kind} state={it.state} />
+        <span className="code">{it.repo}#{it.number}</span>
       </div>
       <h1 className="text-xl font-semibold text-ink">{it.title}</h1>
       <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1.5 text-sm text-ink/60">
@@ -143,12 +146,18 @@ function Header({ it }: { it: Item }) {
             <span className="font-medium text-ink">{it.author}</span> opened {ago(it.createdAt)} ago in <span className="code text-ink/80">{it.repo}</span>
           </span>
         </span>
-        {it.state === "open" && (
-          <span className="ml-auto flex flex-wrap items-center gap-1.5">
-            <FastToggle repo={it.repo} number={it.number} />
-            {it.kind === "pr" && <HoldToggle repo={it.repo} number={it.number} />}
-          </span>
-        )}
+        <span className="ml-auto flex flex-wrap items-center gap-1.5">
+          {it.state === "open" && <FastToggle repo={it.repo} number={it.number} />}
+          {it.state === "open" && it.kind === "pr" && <HoldToggle repo={it.repo} number={it.number} />}
+          <a
+            href={githubItemUrl(it.repo, it.number, it.kind)}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex h-7 shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded border border-line-strong bg-raised px-2.5 text-xs font-medium text-ink transition-colors duration-fast hover:bg-ink/[0.06] max-md:h-11"
+          >
+            <GithubLogoIcon aria-hidden /> See in GitHub
+          </a>
+        </span>
       </div>
     </div>
   );
