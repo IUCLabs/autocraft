@@ -302,7 +302,7 @@ const FIXUP: ClaudePrompt = {
   purpose: "Turns the small mechanical fixes of a take-fix review into a unified diff for the contributor's branch.",
   models: ["sonnet"],
   effort: "medium",
-  placeholders: { pr: "The pull request as a JSON object indented by one space: ref, title, fixes (the review's list of file and change), files (path and full current content of each file the fixes name) and diff (the pull request's unified diff).", repo_access: REPO_ACCESS_DOC },
+  placeholders: { pr: "The pull request as a JSON object indented by one space: ref, title, fixes (the review's list of file and change), files (path and full current content of each file the fixes name, or for a long file its excerpt: total_lines, outline and numbered regions) and diff (the pull request's unified diff).", repo_access: REPO_ACCESS_DOC },
   sandbox: { tools: ["Read", "Grep", "Glob"], maxTurns: 20, workspace: true },
   template: `You apply review fixes to a pull request on one of the storytold craft apps. The review listed small mechanical fixes. Make exactly those changes and nothing else.
 
@@ -311,6 +311,7 @@ Rules:
 - Make only the changes the fixes describe; do not reformat, rename or improve anything else.
 - If a fix cannot be made from the file content shown, leave that fix out.
 - Keep the whole change under ${MAX_CHANGED_LINES} changed lines.
+- A file shown with "excerpt" instead of "content" is only part of a long file: total_lines is its real length, outline lists its top-level items as "line| text", and each region holds the lines from "from" to "to" as "line| text". Use the real line numbers in hunk headers, write hunk lines without the "line| " prefix, edit only lines inside a region, and keep every context line inside a region. If a change needs lines outside the regions, leave it out.
 - When carried_from is present, each fix is a part of another pull request (closed as a duplicate of this one) to port onto this pull request's code: adapt that part to the files shown, and port only the listed parts.
 
 {{repo_access}}
@@ -339,7 +340,7 @@ const CIFIX: ClaudePrompt = {
   purpose: "Turns the log of a failing CI check on a wanted pull request into a unified diff that makes the check pass.",
   models: ["sonnet"],
   effort: "high",
-  placeholders: { pr: "The pull request as a JSON object indented by one space: ref, title, failure (the failed checks, each with the failed steps: job, step and the end of that step's log), files (path and full current content of each file the patch may edit) and diff (the pull request's unified diff).", repo_access: REPO_ACCESS_DOC },
+  placeholders: { pr: "The pull request as a JSON object indented by one space: ref, title, failure (the failed checks, each with the failed steps: job, step and the end of that step's log), files (path and full current content of each file the patch may edit, or for a long file its excerpt: total_lines, outline and numbered regions) and diff (the pull request's unified diff).", repo_access: REPO_ACCESS_DOC },
   sandbox: { tools: ["Read", "Grep", "Glob"], maxTurns: 20, workspace: true },
   template: `You fix a failing CI check on a pull request to one of the storytold craft apps. The pull request is wanted; its CI run failed. Change the code so the check passes, with the smallest edit that keeps what the pull request does.
 
@@ -347,6 +348,7 @@ Rules:
 - Edit only the files in files. Never add, delete, rename or change the mode of a file.
 - Fix the cause the log shows: a compile error, a lint, a failing test caused by the pull request's code. Do not touch tests: never edit, skip, ignore or weaken a test or an assertion.
 - Never silence a check: no \`#[allow]\`, \`#[ignore]\`, \`#[cfg_attr]\` or \`#[expect]\`, no change to CI, lint or toolchain configuration, no deleted or stubbed-out code to dodge the error.
+- A file shown with "excerpt" instead of "content" is only part of a long file: total_lines is its real length, outline lists its top-level items as "line| text", and each region holds the lines from "from" to "to" as "line| text". Use the real line numbers in hunk headers, write hunk lines without the "line| " prefix, edit only lines inside a region, and keep every context line inside a region. If a change needs lines outside the regions, leave it out.
 - If the log does not show a cause you can fix from the files shown, reply with the single word NONE.
 - Keep the whole change under ${MAX_CHANGED_LINES} changed lines.
 

@@ -19,6 +19,7 @@ import { connect } from "../db.ts";
 import { pushApprovalOf } from "../fixup/approval.ts";
 import { Git, exec, fixupDir, type Exec } from "../fixup/git.ts";
 import { DIFF_CAP, FILE_CAP, PR_QUERY, TOTAL_CAP, noteLive, scrubReason, whoAmI, type PrNode } from "../fixup/index.ts";
+import { shownSize, viewFile } from "../fixup/excerpt.ts";
 import { editable, validatePatch } from "../fixup/patch.ts";
 import { readGate } from "../merge/changes-requested.ts";
 import { longLivedOf, pushable, BASE_ORG } from "../fixup/pushable.ts";
@@ -382,13 +383,19 @@ export async function runCifix(db: DatabaseSync, params: CifixParams, log: (line
     const named = [...new Set(errorFiles(text).concat([...diff.text.matchAll(DIFF_FILE)].map((m) => m[1]!)))]
       .filter((p) => editable(p) && !TEST_PATH.test(p)).slice(0, MAX_FILES);
     const shown: CifixPr["files"] = [];
+    // The guard reads whole files even when the model sees only parts.
+    const contents = new Map<string, string>();
     let total = 0;
     for (const path of named) {
       const f = await git.file(head, path);
       if (!f.ok) continue;
-      total += f.content.length;
-      if (f.content.length > FILE_CAP || total > TOTAL_CAP) { fail("failed", "the files the failure names are over the size limit"); return; }
-      shown.push({ path, content: f.content });
+      // The log lines that mention the file give the lines a large file is cut around.
+      const v = viewFile(path, f.content, text.split("\n").filter((l) => l.includes(path)), diff.text, FILE_CAP);
+      if (!v.ok) { fail("failed", "the parts of the files the failure names are over the size limit"); return; }
+      total += shownSize(v.file);
+      if (total > TOTAL_CAP) { fail("failed", "the parts of the files the failure names are over the size limit"); return; }
+      shown.push(v.file);
+      contents.set(path, f.content);
     }
     if (!shown.length) { fail("failed", "the failure names no file a CI fix may edit"); return; }
     const title = ((db.prepare("SELECT title FROM items WHERE repo = ? AND number = ?").get(repo, c.number) as { title: string | null } | undefined)?.title ?? "").slice(0, 300);
@@ -398,7 +405,7 @@ export async function runCifix(db: DatabaseSync, params: CifixParams, log: (line
     if (reply === null) { fail("failed", "the model gave no answer"); return; }
     const v = validatePatch(reply, shown.map((s) => s.path));
     if (!v.ok) { fail("refused", v.reason); return; }
-    const guard = guardPatch(v.patch, v.files, new Map(shown.map((x) => [x.path, x.content])));
+    const guard = guardPatch(v.patch, v.files, contents);
     if (guard) { fail("refused", guard); return; }
     if (v.patch.length > CHECK_PATCH_CAP) { fail("refused", `the patch is over the ${CHECK_PATCH_CAP} character limit for the check`); return; }
     const names = failure.checks.map((x) => x.name);

@@ -100,7 +100,7 @@ export const HISTORY_COPY_SQL = `INSERT INTO main.opus_review_history (repo, num
   WHERE NOT EXISTS (SELECT 1 FROM main.opus_review_history h WHERE h.repo = o.repo AND h.number = o.number AND h.head_oid = o.head_oid AND h.at = o.at)`;
 
 // Bump when migrateValues() or backfill() change what they do.
-const MIGRATION_VERSION = 10;
+const MIGRATION_VERSION = 11;
 
 // Rows written before their column existed.
 function backfill(db: DatabaseSync): void {
@@ -177,6 +177,11 @@ function migrateValues(db: DatabaseSync): void {
   // Conflict merges refused or skipped for size under the whole-file rule are tried again under the section rule.
   const OLD_SIZE = "state IN ('skipped', 'refused') AND (reason = 'the conflicted files are over the size limit' OR reason LIKE 'the merge is over the % character limit for the check')";
   if (db.prepare(`SELECT 1 FROM main.conflict_merges WHERE ${OLD_SIZE} LIMIT 1`).get()) db.exec(`DELETE FROM main.conflict_merges WHERE ${OLD_SIZE}`);
+  // Fix-ups and CI fixes held or failed because a file was over the size limit are tried again, now that large files are shown in part.
+  const OLD_FIXUP_SIZE = "state = 'too-large' AND reason LIKE '% is over the 40000 character limit'";
+  if (db.prepare(`SELECT 1 FROM main.fixups WHERE ${OLD_FIXUP_SIZE} LIMIT 1`).get()) db.exec(`UPDATE main.fixups SET state = 'superseded' WHERE ${OLD_FIXUP_SIZE}`);
+  const OLD_CIFIX_SIZE = "state = 'failed' AND reason = 'the files the failure names are over the size limit'";
+  if (db.prepare(`SELECT 1 FROM main.ci_fixes WHERE ${OLD_CIFIX_SIZE} LIMIT 1`).get()) db.exec(`UPDATE main.ci_fixes SET state = 'superseded' WHERE ${OLD_CIFIX_SIZE}`);
   // Whole-repo pilot entries became the repo's pipeline flag.
   const pilot = db.prepare("SELECT value FROM main.settings WHERE key = 'pilot_items'").get() as { value: string } | undefined;
   if (pilot) wholeRepoPilot(db, pilot.value);

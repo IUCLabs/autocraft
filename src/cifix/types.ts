@@ -1,3 +1,5 @@
+import type { ShownFile } from "../fixup/excerpt.ts";
+
 // Shared by the cifix.patch prompt (src/prompts, which imports no Node modules) and the CI fix step.
 
 /** One failed step of a failed check: the tail of its log. The log is untrusted text from the PR's CI run. */
@@ -14,8 +16,8 @@ export type CifixPr = {
   title: string;
   /** The failed checks with the tail of each failed step's log. */
   failure: { check: string; steps: { job: string; step: string; log: string }[] }[];
-  /** Current content of each file the patch may edit, at the PR's head commit. */
-  files: { path: string; content: string }[];
+  /** Each file the patch may edit, at the PR's head commit: whole, or in part when it is large. */
+  files: ShownFile[];
   /** The PR's diff. */
   diff: string;
 };

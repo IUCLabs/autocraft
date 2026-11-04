@@ -9,8 +9,8 @@ import type { Querier } from "../src/mirror.ts";
 import { pushApprovalOf, setPushApproval } from "../src/fixup/approval.ts";
 import { selectFixups } from "../src/fixup/candidates.ts";
 import { exec, type Exec, type ExecResult } from "../src/fixup/git.ts";
-import { repostAsk, runFixup, scrubReason, type FixupDeps } from "../src/fixup/index.ts";
-import { validatePatch } from "../src/fixup/patch.ts";
+import { FILE_CAP, repostAsk, runFixup, scrubReason, type FixupDeps } from "../src/fixup/index.ts";
+import { validatePatch, type FixupPr } from "../src/fixup/patch.ts";
 import { setCommentApproval } from "../src/act/approval.ts";
 import { ASK_ITEM_MAX, COMMENT_TEMPLATE, askText, commentText } from "../src/fixup/template.ts";
 import { checksOf } from "../src/patchcheck/index.ts";
@@ -136,19 +136,19 @@ describe("patch validation", () => {
 
 // ---- the whole step against real git, with the network replaced ------------
 
-type World = { assigned: string[]; fork: string; base: string; head: string; log: string[]; deps: FixupDeps; movedBeforePush?: boolean };
+type World = { asked: FixupPr[]; assigned: string[]; fork: string; base: string; head: string; log: string[]; deps: FixupDeps; movedBeforePush?: boolean };
 
 /** A fork repository with branch `fix` at `head`, standing in for both the base repo's pull ref and the contributor's fork. */
 const APPROVE = JSON.stringify({ verdict: "approve", reasons: "matches the listed fix", problems: [] });
 const REJECT = JSON.stringify({ verdict: "reject", reasons: "renames more than the review asked", problems: ["touches main"] });
 
-function world(opts: { check?: string | null; reply?: string | null; moveBranch?: boolean; assignees?: string[]; canModify?: boolean; pushError?: string } = {}): World {
+function world(opts: { check?: string | null; reply?: string | null; moveBranch?: boolean; assignees?: string[]; canModify?: boolean; pushError?: string; lib?: string; diff?: string } = {}): World {
   const root = mkdtempSync(join(dir, "w-"));
   const work = join(root, "work");
   mkdirSync(work);
   git(work, "init", "-q", "-b", "fix");
   mkdirSync(join(work, "src"));
-  writeFileSync(join(work, "src/lib.rs"), "fn a() {}\nfn main() { a(); }\n");
+  writeFileSync(join(work, "src/lib.rs"), opts.lib ?? "fn a() {}\nfn main() { a(); }\n");
   writeFileSync(join(work, "src/other.rs"), "fn z() {}\n");
   git(work, "add", "-A");
   git(work, "commit", "-q", "-m", "contributor");
@@ -157,7 +157,7 @@ function world(opts: { check?: string | null; reply?: string | null; moveBranch?
   git(root, "clone", "-q", "--bare", work, fork);
   git(fork, "update-ref", "refs/pull/7/head", head);
   const log: string[] = [];
-  const w: World = { assigned: [...(opts.assignees ?? [])], fork, base: root, head, log, deps: undefined as never };
+  const w: World = { asked: [], assigned: [...(opts.assignees ?? [])], fork, base: root, head, log, deps: undefined as never };
   const good = "diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1,2 +1,2 @@\n-fn a() {}\n-fn main() { a(); }\n+fn b() {}\n+fn main() { b(); }\n";
   const querier: Querier = validating({
     spent: 0, remaining: 5000,
@@ -195,8 +195,8 @@ function world(opts: { check?: string | null; reply?: string | null; moveBranch?
   };
   w.deps = {
     querier, exec: run, now: () => new Date(T1), root: join(root, "cache"),
-    fetchDiff: async () => ({ ok: true, text: "diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1 +1 @@\n-x\n+fn a() {}\n" }),
-    ask: async () => { log.push("model"); return opts.reply === undefined ? good : opts.reply; },
+    fetchDiff: async () => ({ ok: true, text: opts.diff ?? "diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1 +1 @@\n-x\n+fn a() {}\n" }),
+    ask: async (_db, input) => { log.push("model"); w.asked.push(...input); return opts.reply === undefined ? good : opts.reply; },
     check: async (_db, input) => { log.push("check"); assert.match(input[0]!.patch, /^diff --git/); return opts.check === undefined ? APPROVE : opts.check; },
   };
   return w;
@@ -393,6 +393,68 @@ describe("fixup step", () => {
   test("a fix of a few sentences is posted whole", () => {
     const change = "Move the two doc lines and the `MAX_PREVIEW_PIXELS` constant, followed by a blank line, so they sit above the doc lines of `recent_preview`. ".repeat(3).trim();
     assert.ok(askText([{ file: "a.rs", change }]).endsWith(change));
+  });
+
+  test("a file over the cap is shown as numbered excerpts around the cited lines and the changed hunks, and a patch with real line numbers applies", async () => {
+    const lines = Array.from({ length: 3000 }, (_, i) => `fn f${i}() {}`);
+    const lib = lines.join("\n") + "\n";
+    assert.ok(lib.length > FILE_CAP);
+    const diff = "diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -2000,2 +2000,3 @@\n fn f1999() {}\n+fn extra() {}\n fn f2000() {}\n";
+    const patch = "diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -500,3 +500,3 @@\n fn f499() {}\n-fn f500() {}\n+fn g500() {}\n fn f501() {}\n";
+    const w = world({ lib, diff, reply: patch });
+    const db = fresh(w.head);
+    db.prepare("UPDATE opus_reviews SET fixes = ?").run(JSON.stringify([{ file: "src/lib.rs", change: "rename f500 at line 500 to g500" }]));
+    const s = await runFixup(db, { repo: "app", dryRun: false }, () => {}, w.deps);
+    assert.deepEqual(s.pushed, ["app#7"]);
+    const f = w.asked[0]!.files[0]!;
+    assert.ok("excerpt" in f);
+    const e = (f as Extract<typeof f, { excerpt: unknown }>).excerpt;
+    assert.equal(e.total_lines, 3000);
+    assert.deepEqual(e.regions.map((r) => [r.from, r.to]), [[350, 650], [1850, 2152]]);
+    assert.ok(e.regions[0]!.text.split("\n").includes("501| fn f500() {}"));
+    assert.ok(e.regions[1]!.text.startsWith("1850| fn f1849() {}"));
+    assert.ok(e.outline.includes("1| fn f0() {}"));
+    assert.equal(git(w.fork, "show", "refs/heads/fix:src/lib.rs").split("\n")[500], "fn g500() {}");
+  });
+
+  test("a hold for a file over the old whole-file limit stops blocking after the migration; other holds stay", () => {
+    const path = join(mkdtempSync(join(dir, "db-")), "t.db");
+    const db = connect(path);
+    db.close();
+    const again = (head: string): DatabaseSync => {
+      const d = connect(path);
+      d.prepare(`INSERT INTO items (repo, number, kind, state, title, author, additions, deletions, head_oid, created_at, updated_at) VALUES ('app', 7, 'pr', 'OPEN', 't', 'x', 5, 0, ?, '${T0}', '${T0}')`).run(head);
+      d.prepare(`INSERT INTO opus_reviews (repo, number, head_oid, run_id, at, model, verdict, reason, fixes, sure, mode) VALUES ('app', 7, ?, 'rv', '${T0}', 'm', 'take-fix', 'r', ?, 1, 'full')`).run(head, FIXES);
+      d.prepare(`INSERT INTO pr_checks (repo, number, head_oid, state, is_draft, overall, checks, mergeable, maintainer_can_modify, fetched_at) VALUES ('app', 7, ?, 'OPEN', 0, 'success', '[]', 'MERGEABLE', 1, '${T1}')`).run(head);
+      d.prepare("INSERT INTO tracked_repos (name, added_by, added_at, pipeline) VALUES ('app', 'op', ?, 1)").run(T0);
+      setPushApproval(d, "op", "app", true);
+      return d;
+    };
+    const d = again("h1");
+    const hold = (reason: string) => d.prepare("INSERT INTO fixups (repo, number, from_head, state, reason, attempt, created_at) VALUES ('app', 7, 'h1', 'too-large', ?, 1, ?)").run(reason, T1);
+    hold("src/lib.rs is over the 40000 character limit");
+    assert.equal(selectFixups(d, "app").fix.length, 0);
+    d.close();
+    const migrated = connect(path);
+    assert.deepEqual(selectFixups(migrated, "app").fix.map((c) => c.number), [7]);
+    assert.deepEqual(rows(migrated, "SELECT state, reason FROM fixups"), [{ state: "superseded", reason: "src/lib.rs is over the 40000 character limit" }]);
+    migrated.prepare("DELETE FROM fixups").run();
+    migrated.prepare("INSERT INTO fixups (repo, number, from_head, state, reason, attempt, created_at) VALUES ('app', 7, 'h1', 'too-large', 'the fixes name files a fix-up may not edit', 1, ?)").run(T1);
+    migrated.close();
+    assert.equal(selectFixups(connect(path), "app").fix.length, 0);
+  });
+
+  test("a large file whose excerpts are still over the limit is held with a reason", async () => {
+    const lib = Array.from({ length: 3000 }, (_, i) => `fn f${i}() { /* ${"x".repeat(40)} */ }`).join("\n") + "\n";
+    const hunks = [100, 600, 1100, 1600, 2100, 2600].map((n) => `@@ -${n},1 +${n},1 @@\n-a\n+b\n`).join("");
+    const diff = `diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n${hunks}`;
+    const w = world({ lib, diff });
+    const db = fresh(w.head);
+    await runFixup(db, { repo: "app", dryRun: false }, () => {}, w.deps);
+    assert.deepEqual(w.asked, []);
+    const r = rows(db, "SELECT state, reason FROM fixups")[0]!;
+    assert.equal(r.state, "too-large");
+    assert.match(String(r.reason), /parts of src\/lib\.rs to show are over the 40000 character limit/);
   });
 
   test("a fix list naming a workflow or manifest is held before any call", async () => {
