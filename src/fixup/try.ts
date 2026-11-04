@@ -7,6 +7,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { getTask, TERMINAL } from "../build/tasks.ts";
 import { CheckTool, applyCheck } from "../checktool/index.ts";
 import { CHECK_DIFF_CAP, CHECK_PATCH_CAP } from "../patchcheck/types.ts";
+import { CLAUDE_PROMPTS } from "../prompts/index.ts";
 import { parseCheck, checkLine } from "../patchcheck/index.ts";
 import { queueLint, readLint } from "../prepush/index.ts";
 import { cachedDiff } from "../review/diff.ts";
@@ -61,6 +62,7 @@ export async function runFixupTry(db: DatabaseSync, repo: string, number: number
   }
   log(`${ref} at ${head.slice(0, 7)}: ${fixes.length} fixes in ${files.join(", ")}; ${checkout ? "sandbox checkout ready" : "NO checkout: the model runs without tools"}`);
 
+  const before0 = (db.prepare("SELECT COALESCE(MAX(id), 0) AS n FROM agent_runs").get() as { n: number }).n;
   const before = (db.prepare("SELECT COALESCE(MAX(id), 0) AS n FROM model_checks").get() as { n: number }).n;
   const base = (await d.querier.query(BASE_QUERY, { owner: BASE_ORG, name: repo, n: number }) as { repository?: { pullRequest?: { baseRefOid?: string } | null } }).repository?.pullRequest?.baseRefOid ?? null;
   const tool = new CheckTool({ db, step: "fixup", repo, number, head, base, applies: applyCheck(git, d.root, head) });
@@ -68,7 +70,11 @@ export async function runFixupTry(db: DatabaseSync, repo: string, number: number
   const reply = await d.ask(db, [{ ref, title: (item.title ?? "").slice(0, 300), fixes, files: shown, diff: diff.text, ...repoDir }], checkout, tool);
   log(`model call took ${Math.round((Date.now() - t0) / 1000)} s`);
 
-  log("\ntool calls:");
+  const offered = checkout !== undefined && CLAUDE_PROMPTS["fixup.patch"].sandbox?.check === true;
+  log(`\ntools given to the model: ${offered ? `${[...CLAUDE_PROMPTS["fixup.patch"].sandbox!.tools, "Agent", "mcp__build__check"].join(", ")} (check offered; commands that returned a result: ${[...tool.ran].join(", ") || "none"})` : "none (no checkout, so no sandbox and no check tool)"}`);
+  const runs = db.prepare("SELECT id, summary FROM agent_runs WHERE prompt_id IN ('fixup.patch') AND id > ? ORDER BY id").all(before0) as { id: number; summary: string | null }[];
+  for (const r of runs) log(`model call: agent run ${r.id}: ${r.summary ?? "no summary"}`);
+  log("tool calls:");
   const calls = db.prepare("SELECT command, crate, test_name, task_id, outcome, started_at, ended_at FROM model_checks WHERE id > ? AND step = 'fixup' AND repo = ? AND number = ? AND head = ? ORDER BY id").all(before, repo, number, head) as
     { command: string; crate: string | null; test_name: string | null; task_id: number | null; outcome: string | null; started_at: string; ended_at: string | null }[];
   if (!calls.length) log("  none");

@@ -16,3 +16,13 @@ describe("check tool", () => {
     assert.equal(tool.calls, 0);
   });
 });
+
+describe("clippy reminder", () => {
+  test("a Rust diff from a call that never got a clippy result needs the reminder", async () => {
+    const { needsClippy } = await import("../src/classify/run.ts");
+    const diff = "diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1 +1 @@\n-a\n+b\n";
+    assert.equal(needsClippy({ ran: new Set() }, diff), true);
+    assert.equal(needsClippy({ ran: new Set(["clippy"]) }, diff), false);
+    assert.equal(needsClippy({ ran: new Set() }, diff.replaceAll("lib.rs", "README.md")), false);
+  });
+});
