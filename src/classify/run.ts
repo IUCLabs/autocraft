@@ -289,6 +289,14 @@ export type Reply = { text: string; usage: Usage; turns?: number };
 /** `problems` are what the lint still found in `text` (absent when there was no lint or the reply could not be linted); `fixTurn` is true when a follow-up message was sent. */
 export type LintedReply = Reply & { problems?: LintProblem[]; fixTurn?: boolean };
 
+/** The follow-up message for a patch call whose model answered without running clippy. */
+export const CHECK_REMINDER = "You have not run the check tool with command clippy on your final diff. Before you answer you must: call check with command fmt and then command clippy, passing your complete final diff as patch; fix what they report; and reply with the final diff that passed, as the diff only.";
+
+/** Whether a reply with a diff of Rust files came from a call that never got a clippy result from the check tool. */
+export function needsClippy(tool: Pick<CheckTool, "ran">, reply: string): boolean {
+  return /^\+\+\+ (?:b\/)?\S+\.rs\s*$/m.test(reply) && !tool.ran.has("clippy");
+}
+
 export async function askClaude<K extends ClaudePromptId>(id: K, model: string, input: ClaudeInput[K], db: DatabaseSync, opts: AskOptions = {}): Promise<LintedReply | null> {
   let sandboxed = opts.checkout !== undefined && CLAUDE_PROMPTS[id].sandbox !== undefined;
   const reference = sandboxed && CLAUDE_PROMPTS[id].sandbox?.reference ? opts.reference : undefined;
@@ -317,7 +325,7 @@ export async function askClaude<K extends ClaudePromptId>(id: K, model: string, 
     const tools = it || bridge ? { mounts: [...(it?.mounts ?? []), ...(bridge ? [bridge.mount] : [])], servers: Object.keys(servers).sort(), file: mcpFile(servers) } : undefined;
     if (bridge && tools) bridgeConfig = tools.file;
     // Only a sandboxed call can be continued: its session store is a directory of ours. A call on the host keeps no session (it would land in the account's own config directory).
-    const persist = sandboxed && opts.lint !== undefined && CLAUDE_PROMPTS[id].lint === true;
+    const persist = sandboxed && ((opts.lint !== undefined && CLAUDE_PROMPTS[id].lint === true) || bridge !== undefined);
     if (persist) sessions = sessionStore();
     const args = claudeArgs(id, model, sandboxed, tools && { config: MCP_PATH, servers: tools.servers }, parts.system, reference !== undefined, persist);
     const cwd = claudeCwd();
@@ -375,7 +383,21 @@ export async function askClaude<K extends ClaudePromptId>(id: K, model: string, 
 
     const first = await turn(run.runId, parts.stdin);
     if (!first) return null;
-    const { sessionId, ...reply } = first;
+    let { sessionId, ...reply } = first;
+    // The prompt tells the model to run clippy on its final diff, and a model may skip it: one follow-up message on the same session asks for it.
+    if (bridge && sessions && sessionId && checkTool && needsClippy(checkTool, reply.text) && !(spec && tokenNearExpiry(spec.credentials, Date.now(), timeoutMs + TOKEN_MARGIN_MS))) {
+      const message = CHECK_REMINDER;
+      let started: number | null = null;
+      try { started = tryStartFollowUp(db, run.accountId, { promptId: id, promptVersion: promptVersion(id), provider: "claude", model, items, prompt: message }); } catch (e) { console.log(`check reminder not started: ${(e as Error).message}`); }
+      if (started !== null) {
+        let again: (Reply & { sessionId?: string }) | null = null;
+        try { again = await turn(started, message, sessionId); } catch (e) { finishRun(db, started, { state: "failed", error: scrubError(String((e as Error).message ?? e)), summary: "failed before the call" }); }
+        if (again) {
+          reply = { text: again.text, usage: add(reply.usage, again.usage), ...(reply.turns !== undefined && { turns: reply.turns }) };
+          sessionId = again.sessionId ?? sessionId;
+        }
+      }
+    }
     if (!opts.lint) return reply;
     let problems: LintProblem[] | null = null;
     try { problems = await opts.lint(reply.text, "first"); } catch (e) { if (e instanceof CancelledError) throw e; console.log(`lint failed: ${(e as Error).message}`); }

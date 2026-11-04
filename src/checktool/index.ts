@@ -109,6 +109,8 @@ export class CheckTool {
   pollMs = 1000;
   calls = 0;
   usedMs = 0;
+  /** Commands that came back with a result (not refused, not failed to run). */
+  readonly ran = new Set<CheckCommand>();
   readonly target: CheckTarget;
   readonly limits: { calls: number; wallMs: number };
   constructor(target: CheckTarget, limits = { calls: CHECK_MAX_CALLS, wallMs: CHECK_MAX_WALL_MS }) {
@@ -153,6 +155,7 @@ export class CheckTool {
         state = getTask(t.db, taskId)?.state;
       }
       const r = this.read(i, taskId);
+      if (!r.isError) this.ran.add(i.command);
       end(r.outcome, taskId);
       return { text: r.text, ...(r.isError && { isError: true }) };
     } catch (e) {
