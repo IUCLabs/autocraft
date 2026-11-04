@@ -39,6 +39,9 @@ test("the stream merges the sources of every item newest first, pages by cursor 
   assert.deepEqual(second.events.map((e) => e.id), ids.slice(3, 6));
   assert.deepEqual((await activity(db, as("operator", { since: op.stamp }))), { unchanged: true, stamp: op.stamp });
 
+  const own = await get(db, "operator", { autocraftOnly: "1", limit: "2" });
+  assert.deepEqual(own.events.map((e) => e.id), ["review:opus:1", `run:${run}`], "Only AutoCraft fills the page from AutoCraft's own rows, past newer people's events");
+
   const viewer = await get(db, "viewer");
   assert.deepEqual(viewer.events.filter((e) => e.item.repo === "secret").map((e) => e.id), [], "a hidden repo's events are left out");
   assert.ok(!viewer.events.some((e) => e.id === "audit:2"), "a dashboard action is not a GitHub write");
