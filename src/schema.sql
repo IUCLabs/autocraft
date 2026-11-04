@@ -1059,7 +1059,7 @@ CREATE TABLE IF NOT EXISTS ci_run_approvals (
 
 -- Merges of the default branch into conflicted take / take-fix PRs by the Fix-up step (src/fixup/conflict.ts), one row per try (or
 -- per head for asked). state: merged (pushed) | failed | refused (validation said no) | rejected (the Opus check said no) | asked
--- (a comment asked the contributor to merge or rebase), pushing (written before the push, to_head is the merge commit about to be pushed). merged, pushing, failed, refused and rejected are tries; two per head.
+-- (a comment asked the contributor to merge or rebase), superseded (a skip or refusal under limits since replaced; neither held nor a try), pushing (written before the push, to_head is the merge commit about to be pushed). merged, pushing, failed, refused and rejected are tries; two per head.
 CREATE TABLE IF NOT EXISTS conflict_merges (
   repo TEXT NOT NULL, number INTEGER NOT NULL,
   from_head TEXT NOT NULL,            -- the PR head the base was merged into

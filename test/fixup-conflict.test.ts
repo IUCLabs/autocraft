@@ -9,7 +9,7 @@ import type { Querier } from "../src/mirror.ts";
 import { setPushApproval } from "../src/fixup/approval.ts";
 import { selectFixups } from "../src/fixup/candidates.ts";
 import { classifyFixups } from "../src/fixup/candidates.ts";
-import { classifyConflicts, conflictTries } from "../src/fixup/conflict-state.ts";
+import { classifyConflicts, conflictBucket, conflictTries } from "../src/fixup/conflict-state.ts";
 import { pushable } from "../src/fixup/pushable.ts";
 import { exec, type Exec, type ExecResult } from "../src/fixup/git.ts";
 import { runFixup, type FixupDeps } from "../src/fixup/index.ts";
@@ -348,6 +348,21 @@ describe("conflict merge guards", () => {
     db.close();
     const again = connect(path);
     assert.deepEqual(again.prepare("SELECT number FROM conflict_merges ORDER BY number").all().map((r) => (r as { number: number }).number), [3, 4, 6]);
+  });
+
+  test("skips and refusals under the old CRLF and whole-PR size limits stop holding the PR after connecting", () => {
+    const path = join(mkdtempSync(join(dir, "mig-")), "t.db");
+    const db2 = connect(path);
+    db2.prepare("INSERT INTO conflict_merges (repo, number, from_head, state, reason, files, attempt, created_at) VALUES ('app', 7, 'h', 'skipped', 'crates/ui/i18n/de.rs has CRLF line endings or is not UTF-8', '[]', 1, ?)").run(T0);
+    db2.prepare("INSERT INTO conflict_merges (repo, number, from_head, state, reason, files, attempt, created_at) VALUES ('app', 8, 'h', 'refused', 'the resolved sections are over the 80000 character limit for the check', '[]', 1, ?)").run(T0);
+    const pr = { repo: "app", number: 7, head: "h", pushable: true };
+    assert.equal(conflictBucket(db2, pr, { push: true, comment: false }), "held");
+    assert.equal(conflictTries(db2, "app", 8, "h"), 1);
+    db2.close();
+    const again = connect(path);
+    assert.equal(conflictBucket(again, pr, { push: true, comment: false }), "merge");
+    assert.equal(conflictTries(again, "app", 8, "h"), 0);
+    assert.deepEqual(again.prepare("SELECT state FROM conflict_merges ORDER BY number").all().map((r) => (r as { state: string }).state), ["superseded", "superseded"]);
   });
 
   test("outsideConflicts and keepsOutside", () => {

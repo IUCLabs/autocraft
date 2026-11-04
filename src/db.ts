@@ -100,7 +100,7 @@ export const HISTORY_COPY_SQL = `INSERT INTO main.opus_review_history (repo, num
   WHERE NOT EXISTS (SELECT 1 FROM main.opus_review_history h WHERE h.repo = o.repo AND h.number = o.number AND h.head_oid = o.head_oid AND h.at = o.at)`;
 
 // Bump when migrateValues() or backfill() change what they do.
-const MIGRATION_VERSION = 10;
+const MIGRATION_VERSION = 11;
 
 // Rows written before their column existed.
 function backfill(db: DatabaseSync): void {
@@ -177,6 +177,9 @@ function migrateValues(db: DatabaseSync): void {
   // Conflict merges refused or skipped for size under the whole-file rule are tried again under the section rule.
   const OLD_SIZE = "state IN ('skipped', 'refused') AND (reason = 'the conflicted files are over the size limit' OR reason LIKE 'the merge is over the % character limit for the check')";
   if (db.prepare(`SELECT 1 FROM main.conflict_merges WHERE ${OLD_SIZE} LIMIT 1`).get()) db.exec(`DELETE FROM main.conflict_merges WHERE ${OLD_SIZE}`);
+  // Conflict merges skipped or refused for CRLF files or whole-PR size limits are tried again under the per-file rules; the rows stay as history.
+  const OLD_LIMITS = "state IN ('skipped', 'refused') AND (reason LIKE '% has CRLF line endings or is not UTF-8' OR reason IN ('the conflict sections are over the size limit', 'the conflict sections are over the 80000 character limit for the check', 'the resolved sections are over the 80000 character limit for the check'))";
+  if (db.prepare(`SELECT 1 FROM main.conflict_merges WHERE ${OLD_LIMITS} LIMIT 1`).get()) db.exec(`UPDATE main.conflict_merges SET state = 'superseded' WHERE ${OLD_LIMITS}`);
   // Whole-repo pilot entries became the repo's pipeline flag.
   const pilot = db.prepare("SELECT value FROM main.settings WHERE key = 'pilot_items'").get() as { value: string } | undefined;
   if (pilot) wholeRepoPilot(db, pilot.value);
