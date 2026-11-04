@@ -638,7 +638,7 @@ export async function openPr(x: Ctx, r: AttemptRow): Promise<boolean> {
     const rg = guardRepo(db, r.repo, "fix-issue", x.by ?? CLI_BY);
     if ("refused" in rg) { log(`  ${ref}: waiting: ${rg.refused}`); return false; }
     const fork = await forkOf({ db, login: ACTOR }, rg, d.exec, who.login, r.repo, { run: x.runId });
-    const push = await pushOwnBranch({ db, login: ACTOR }, g, git, "fixissue-push", { repo: r.repo, number: r.number, remote: fork, branch, sha: commit }, { run: x.runId, fork });
+    const push = await pushOwnBranch({ db, login: ACTOR }, g, git, "fixissue-push", { repo: r.repo, number: r.number, remote: fork, branch, sha: commit }, { run: x.runId, fork, base: r.main_sha });
     if (push.code !== 0) { log(`  ${ref}: push failed: ${oneLine(push.stderr)}`); tried(); return false; }
     if (await closedLive(x, r)) { fail(db, d, r, "the issue is closed"); return false; }
     const body = prBody(r.number, files, testPath);

@@ -291,7 +291,7 @@ async function pushed(w: Writer, git: Pick<Git, "git">, action: string, target: 
     (r) => (r.code === 0 ? null : oneLine(r.stderr) || `exit code ${r.code}`));
   if (r.code === 0) {
     // The push stands even when its bookkeeping cannot be written; the outcome stays unknown then.
-    try { recordPush(w.db, action, { ...pr, from: typeof details.from === "string" ? details.from : null, to: o.sha }); } catch (e) { console.error(`push outcome not recorded: ${oneLine(String((e as Error).message ?? e))}`); }
+    try { recordPush(w.db, action, { ...pr, from: typeof details.from === "string" ? details.from : null, to: o.sha, base: typeof details.base === "string" ? details.base : null }); } catch (e) { console.error(`push outcome not recorded: ${oneLine(String((e as Error).message ?? e))}`); }
   }
   return r;
 }
