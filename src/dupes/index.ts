@@ -7,12 +7,13 @@
 //   autocraft dupes [--limit N] [--dry-run]
 import type { DatabaseSync } from "node:sqlite";
 import { connect } from "../db.ts";
-import { embedderId, localEmbedder, modelName } from "../embed/model.ts";
+import { localEmbedder, modelName } from "../embed/model.ts";
 import { VectorIndex } from "../embed/vectors.ts";
-import { checkPairs, defaultCheckDeps, uncheckedPairs, type CheckDeps } from "./check.ts";
-import { answersToApply, applyDuplicateAnswers, askGroupDecisions, groupsToAsk } from "./decide.ts";
-import { scanItem, scanPending } from "./scan.ts";
-import { dueSets } from "./plan.ts";
+import { plannedItems } from "../core/select-items.ts";
+import { checkPairs, defaultCheckDeps, uncheckedPairs, type CheckDeps, type PairKey } from "./check.ts";
+import { applyPlannedAnswers } from "./apply.ts";
+import { askGroupDecisions } from "./decide.ts";
+import { scanItem, type ScanItem } from "./scan.ts";
 
 export { duplicateCount, duplicateHeld, notHeldSql } from "./held.ts";
 
@@ -37,16 +38,17 @@ export function defaultDeps(db: DatabaseSync): DupesDeps {
   return { index: new VectorIndex(localEmbedder({ name: modelName(), threads: 1 })), check: defaultCheckDeps(db) };
 }
 
-/** Work left: items to scan, pairs to check, decisions to ask or apply. Reads only, for the autopilot. */
-export function dupesWork(db: DatabaseSync, modelId: string = embedderId(modelName())): boolean {
-  if (scanPending(db, modelId, 1).length || uncheckedPairs(db, 1).length) return true;
-  if (answersToApply(db)) return true;
-  // Asked-but-unanswered ones need no job: asking again only refreshes them.
-  return groupsToAsk(db).length > 0;
+/** Items to scan, from the Plans: those with a stored vector at their current text and no scan at it. */
+function scanItems(db: DatabaseSync, model: string, max: number): ScanItem[] {
+  const get = db.prepare("SELECT repo, number, kind, state, embed_hash, closed_at, merged_at, closing_issues FROM items WHERE repo = ? AND number = ?");
+  return plannedItems(db, "dupes", { model }).filter((p) => p.action.params?.scan).slice(0, max).map((p) => get.get(p.facts.repo, p.facts.number) as ScanItem);
 }
 
-/** Group comparisons due (the dupes-compare step's work). Reads only, for the autopilot. */
-export const compareWork = (db: DatabaseSync): boolean => dueSets(db).length > 0;
+/** Unchecked pairs of the items the Plans send to the pair check, most similar first. */
+function pairsToCheck(db: DatabaseSync, model: string, limit: number): PairKey[] {
+  const refs = new Set(plannedItems(db, "dupes", { model }).filter((p) => (p.action.params?.pairs as number) > 0).map((p) => `${p.facts.repo}#${p.facts.number}`));
+  return uncheckedPairs(db, -1).filter((k) => refs.has(`${k.repo}#${k.a}`) || refs.has(`${k.repo}#${k.b}`)).slice(0, limit);
+}
 
 export async function runDupes(db: DatabaseSync, params: DupesParams = {}, log: (line: string) => void = console.log, deps?: DupesDeps): Promise<DupesSummary> {
   if (params.limit !== undefined && !(Number.isInteger(params.limit) && params.limit >= 0)) throw new Error("limit must be a whole number ≥ 0");
@@ -54,13 +56,14 @@ export async function runDupes(db: DatabaseSync, params: DupesParams = {}, log: 
   const d = deps ?? defaultDeps(db);
   const s: DupesSummary = { scanned: 0, pairsAdded: 0, checked: 0, jev: 0, haiku: 0, verdicts: {}, unanswered: 0, asked: [], answersApplied: 0, dryRun: !!params.dryRun };
   const at = () => d.check.now();
-  const todo = scanPending(db, d.index.embedder.id, SCAN_MAX);
+  const model = d.index.embedder.id;
+  const todo = scanItems(db, model, SCAN_MAX);
   if (params.dryRun) {
     s.scanned = todo.length;
-    log(`dupes: ${todo.length} items to scan, ${uncheckedPairs(db, limit).length} pairs to check; dry run, nothing written`);
+    log(`dupes: ${todo.length} items to scan, ${pairsToCheck(db, model, limit).length} pairs to check; dry run, nothing written`);
     return s;
   }
-  s.answersApplied = applyDuplicateAnswers(db, at().toISOString());
+  s.answersApplied = applyPlannedAnswers(db, at().toISOString(), undefined, model);
   if (todo.length) {
     await d.index.ready(db);
     for (const it of todo) {
@@ -69,7 +72,7 @@ export async function runDupes(db: DatabaseSync, params: DupesParams = {}, log: 
     }
     log(`dupes: scanned ${s.scanned} items, ${s.pairsAdded} new pairs`);
   }
-  const keys = uncheckedPairs(db, limit);
+  const keys = pairsToCheck(db, model, limit);
   if (keys.length) {
     const c = await checkPairs(db, keys, d.check, params.onHandled);
     Object.assign(s, { checked: c.checked, jev: c.jev, haiku: c.haiku, verdicts: c.verdicts, unanswered: c.unanswered });

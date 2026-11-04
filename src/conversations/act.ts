@@ -2,13 +2,11 @@
 // the per-repo approvals) with the operator's login on every audit row. Cards never run on their own.
 import { guardRepo } from "../core/guard.ts";
 import type { DatabaseSync } from "node:sqlite";
-import { commentApprovalOf } from "../act/approval.ts";
 import { readLive } from "../act/index.ts";
 import { duplicateComment } from "../act/templates.ts";
 import { audit } from "../dash/audit.ts";
 import { optionsOf, BACKLOG, getDecision, reposOf } from "../decisions.ts";
 import { addLabels, closeItem, commentOn, type Note, type Writer } from "../github/write.ts";
-import { approvalOf as labelsApprovalOf } from "../labels/approval.ts";
 import { repoLabels } from "../labels/github.ts";
 import { Client, type Querier } from "../mirror.ts";
 import { CLAUDE_PROMPTS } from "../prompts/index.ts";

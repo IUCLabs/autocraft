@@ -15,7 +15,8 @@ const { enqueue, getJob, jobDetail, requestCancel } = await import("../src/runne
 const { DEFAULT_MAX_JOBS, Runner } = await import("../src/runner/runner.ts");
 const { STEPS } = await import("../src/runner/steps.ts");
 const { FAKE_TOKEN } = await import("./runner-steps.ts");
-const { dueItems, inputHash } = await import("../src/runner/classify.ts");
+const { inputHash } = await import("../src/runner/classify.ts");
+const { dueFacts } = await import("./planned.ts");
 
 mkdirSync(SCRATCH, { recursive: true });
 const dir = mkdtempSync(join(SCRATCH, "runner-test-"));
@@ -115,7 +116,7 @@ describe("runner", () => {
     ins.run(5, "OPEN", "legacy, not updated", "2026-10-01T00:00:00Z");
     verdict.run(5, null);
     ins.run(6, "CLOSED", "closed", "2026-10-01T00:00:00Z");
-    const nums = (mode: "new" | "all") => dueItems(db, "r1", mode).due.map((r) => r.number);
+    const nums = (mode: "new" | "all") => dueFacts(db, "classify", { run: "r1", bucket: "jev" }).filter((f) => mode === "new" || !f.classification.jev).map((f) => f.number).sort((a, b) => a - b);
     assert.deepEqual(nums("new"), [1, 3, 4]);
     assert.deepEqual(nums("all"), [1]);
   });

@@ -31,7 +31,7 @@ export type ActionKind =
   | "review" | "post-review" | "verify" | "approve-ci" | "premerge" | "ask-merge" | "merge"
   | "fixup" | "conflict" | "cifix" | "postmerge"
   // item steps (issues and PRs)
-  | "classify" | "referee" | "prioritize" | "embed" | "dupes" | "dupes-compare" | "decide" | "label"
+  | "classify" | "referee" | "prioritize" | "embed" | "dupes" | "dupe-answer" | "dupes-compare" | "decide" | "label"
   | "act" | "fixissue" | "fixissue-collect";
 
 export type Action = { kind: ActionKind; head: string | null; params?: Record<string, unknown> };
@@ -261,6 +261,8 @@ export type ItemFacts = {
   inGroupToAsk: boolean;
   /** Member of a duplicate kind-set that needs a comparison. */
   inCompareSet: boolean;
+  /** Ids of the operator's duplicate answers (pair or group decisions) that concern the item and are not applied yet. */
+  dupeAnswers: string[];
 
   scope: {
     /** An unanswered scope decision covers the item (its own or a batch's). */

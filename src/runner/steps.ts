@@ -501,10 +501,11 @@ export const STEPS: StepDef[] = [
     params: [{ name: "limit", label: "At most", kind: "int", min: 1, max: 500, default: 100, help: "items sent to Sonnet in this job" }],
     run: async (ctx) => {
       const { currentRun } = await import("./classify.ts");
-      const { refereeCandidates, refereeItems } = await import("../classify/referee.ts");
+      const { refereeItems } = await import("../classify/referee.ts");
+      const { itemOf, plannedItems } = await import("../core/select-items.ts");
       const run = currentRun(ctx.db);
       if (!run) throw new Error("There is no classification run yet; start a classification pass first.");
-      const items = refereeCandidates(ctx.db, run, Number(ctx.params.limit));
+      const items = plannedItems(ctx.db, "referee", { run }).slice(0, Number(ctx.params.limit)).map((p) => itemOf(ctx.db, p.facts.repo, p.facts.number));
       if (!items.length) return `Nothing to referee in run ${run}.`;
       const got = await refereeItems(ctx.db, run, items, { pipeline: true, onSent: ctx.handled, cancelled: ctx.cancelled });
       ctx.usageRun(run);

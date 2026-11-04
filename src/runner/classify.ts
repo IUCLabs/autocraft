@@ -9,15 +9,14 @@
 // due again; a new comment or label does not. Verdicts from before input_hash
 // existed count as changed when the item was updated after the verdict.
 import type { DatabaseSync } from "node:sqlite";
-import { notOwnIntegrationSql } from "../dupes/held.ts";
-import { JEV_FLAG_NO, JEV_NEEDS_DECISION_YES, JEV_SECURITY_YES, refOf, type Item } from "../classify/parse.ts";
+import { refOf, type Item } from "../classify/parse.ts";
 import { freeSlots } from "../agents/accounts.ts";
 import { jevAvailable } from "../agents/jev.ts";
 import { runHaiku, runJev } from "../classify/run.ts";
-import { fillClassHashes, SCHEME_ID } from "../itemhash.ts";
+import { fillClassHashes } from "../itemhash.ts";
+import { itemOf, plannedItems } from "../core/select-items.ts";
 import type { StepContext } from "./steps.ts";
 import { newestVerdictRun } from "../classify/settled.ts";
-import { pilotSql } from "../pilot.ts";
 import { assignAreas, type AssignResult } from "../areas/assign.ts";
 
 export { inputHash } from "../itemhash.ts";
@@ -35,13 +34,6 @@ export function currentRun(db: DatabaseSync): string | null {
   if (set?.value) return set.value;
   return newestVerdictRun(db);
 }
-
-type Row = Item & { updated_at: string | null; c_at: string | null; c_hash: string | null };
-
-const ITEM_COLUMNS = `i.repo, i.number, i.kind, COALESCE(i.title, '') AS title, COALESCE(i.body, '') AS body,
-  i.additions + i.deletions AS lines_changed, i.changed_files AS files_changed, i.author_association`;
-
-const strip = (r: Row): Item => ({ repo: r.repo, number: r.number, kind: r.kind, title: r.title, body: r.body, lines_changed: r.lines_changed, files_changed: r.files_changed, author_association: r.author_association });
 
 /**
  * runJev and runHaiku write one token_usage row per agent name (`jev-<ref>`,
@@ -75,20 +67,9 @@ async function jevPass(ctx: StepContext, run: string, todo: Item[], hashes: Map<
   return done;
 }
 
-/**
- * Open items in `run` without a Haiku verdict as new as Jev's where Jev is unsure of the type or of a flag.
- * Items of repos with the pipeline on come first, then the newest Jev verdicts.
- */
-export function haikuDue(db: DatabaseSync, run: string, limit: number): Item[] {
-  const p = "CASE WHEN json_valid(j.probs) THEN j.probs END";
-  const unsureFlag = (key: string, yes: number) => `COALESCE(json_extract(${p}, '$.${key}') >= :flagNo AND json_extract(${p}, '$.${key}') < ${yes}, 0)`;
-  return db.prepare(`SELECT ${ITEM_COLUMNS} FROM items i JOIN tracked_repos t ON t.name = i.repo
-    JOIN classifications j ON j.repo = i.repo AND j.number = i.number AND j.classifier = 'jev' AND j.run_id = :run
-    LEFT JOIN classifications h ON h.repo = i.repo AND h.number = i.number AND h.classifier = 'haiku' AND h.run_id = :run
-    WHERE i.state = 'OPEN' AND ${notOwnIntegrationSql("i")} AND ${pilotSql("i")}
-      AND (COALESCE(json_extract(${p}, '$.top'), 0) < :sure OR ${unsureFlag("security", JEV_SECURITY_YES)} OR ${unsureFlag("needs_decision", JEV_NEEDS_DECISION_YES)})
-      AND (h.at IS NULL OR h.at < j.at)
-    ORDER BY t.pipeline DESC, j.at DESC LIMIT :limit`).all({ run, sure: SURE, flagNo: JEV_FLAG_NO, limit }) as unknown as Item[];
+/** The items the Plans send to Haiku for a second opinion in `run`: Jev is unsure of the type or of a flag and Haiku has no verdict as new as Jev's. */
+function haikuItems(db: DatabaseSync, run: string, limit: number): Item[] {
+  return plannedItems(db, "classify", { run, bucket: "haiku" }).slice(0, limit).map((p) => itemOf(db, p.facts.repo, p.facts.number));
 }
 
 async function haikuPass(ctx: StepContext, run: string, todo: Item[], sent: (n: number) => void): Promise<number> {
@@ -129,23 +110,20 @@ async function haikuOnlyPass(ctx: StepContext, run: string, items: Item[], hashe
 }
 
 /**
- * Open items that need a Jev verdict in `run`, with each due item's input hash. "all" takes only items without a verdict.
+ * Open items the Plans send to Jev in `run`, with each due item's input hash. "all" takes only items without a verdict.
  * The hashes are stored on the item row (src/itemhash.ts), so no body is read for items that are up to date.
  */
-export function dueItems(db: DatabaseSync, run: string, mode: "new" | "all"): { open: number; due: Row[]; hashes: Map<string, string> } {
+function jevItems(db: DatabaseSync, run: string, mode: "new" | "all"): { open: number; due: Item[]; hashes: Map<string, string> } {
   fillClassHashes(db);
   const open = (db.prepare("SELECT COUNT(*) AS n FROM items i JOIN tracked_repos t ON t.name = i.repo WHERE i.state = 'OPEN'").get() as { n: number }).n;
-  // Items without a verdict first, then changed ones; newest first within each.
-  const due = db.prepare(`SELECT ${ITEM_COLUMNS}, i.updated_at, c.at AS c_at, c.input_hash AS c_hash, i.class_hash AS h
-    FROM items i JOIN tracked_repos t ON t.name = i.repo
-    LEFT JOIN classifications c ON c.repo = i.repo AND c.number = i.number AND c.classifier = 'jev' AND c.run_id = :run
-    LEFT JOIN classifications hc ON hc.repo = i.repo AND hc.number = i.number AND hc.classifier = 'haiku' AND hc.run_id = :run
-    WHERE i.state = 'OPEN' AND ${notOwnIntegrationSql("i")} AND ${pilotSql("i")} AND i.class_scheme = :scheme
-      AND NOT COALESCE(hc.input_hash = i.class_hash AND (c.at IS NULL OR hc.at > c.at), 0)
-      AND (c.at IS NULL OR (:new AND CASE WHEN c.input_hash IS NOT NULL THEN c.input_hash != i.class_hash ELSE COALESCE(i.updated_at, '') > c.at END))
-    ORDER BY c.at IS NOT NULL, i.updated_at DESC, i.repo, i.number`).all({ run, scheme: SCHEME_ID, new: mode === "new" ? 1 : 0 }) as unknown as (Row & { h: string })[];
-  const hashes = new Map<string, string>();
-  for (const r of due) hashes.set(refOf(r), r.h);
+  const hash = db.prepare("SELECT class_hash AS h FROM items WHERE repo = ? AND number = ?");
+  const due: Item[] = [], hashes = new Map<string, string>();
+  for (const p of plannedItems(db, "classify", { run, bucket: "jev" })) {
+    if (mode === "all" && p.facts.classification.jev) continue;
+    const x = itemOf(db, p.facts.repo, p.facts.number);
+    due.push(x);
+    hashes.set(refOf(x), (hash.get(x.repo, x.number) as { h: string }).h);
+  }
   return { open, due, hashes };
 }
 
@@ -153,8 +131,8 @@ async function pass(ctx: StepContext, run: string, mode: "new" | "all"): Promise
   const limit = Number(ctx.params.limit);
   ctx.usageRun(run);
   ctx.progress("Finding items to classify");
-  const { open, due, hashes } = dueItems(ctx.db, run, mode);
-  const todo = due.slice(0, limit).map(strip);
+  const { open, due, hashes } = jevItems(ctx.db, run, mode);
+  const todo = due.slice(0, limit);
   ctx.log(`run ${run}: ${open} open items, ${due.length} due for Jev, taking ${todo.length}`);
   const sent = sentCounter(ctx);
   const jevDone = await jevPass(ctx, run, todo, hashes, sent);
@@ -163,7 +141,7 @@ async function pass(ctx: StepContext, run: string, mode: "new" | "all"): Promise
   const haikuAlone = alone.length ? await haikuOnlyPass(ctx, run, alone, hashes, sent) : 0;
   if (alone.length) ctx.log(`Jev unavailable: Haiku classified ${haikuAlone} of ${alone.length} items`);
   const aloneRefs = new Set(alone.map(refOf));
-  const unsure = ctx.cancelled() ? [] : haikuDue(ctx.db, run, limit).filter((x) => !aloneRefs.has(refOf(x)));
+  const unsure = ctx.cancelled() ? [] : haikuItems(ctx.db, run, limit).filter((x) => !aloneRefs.has(refOf(x)));
   ctx.log(`Haiku: ${unsure.length} items where Jev is unsure of the type (under ${SURE * 100} %) or of a flag`);
   const haiku = await haikuPass(ctx, run, unsure, sent);
   const jev = jevDone.size;

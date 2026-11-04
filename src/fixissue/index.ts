@@ -44,7 +44,8 @@ import { regressionPath } from "../verify/plan.ts";
 import { checkLine, parseCheck, recordCheck } from "../patchcheck/index.ts";
 import { CHECK_PATCH_CAP, type FixIssueCheckInput } from "../patchcheck/types.ts";
 import { fixIssueApprovalOf } from "./approval.ts";
-import { hasOpenPr, notRustKey, selectIssues, type IssueCandidate } from "./candidates.ts";
+import { hasOpenPr, notRustKey, textHash, type IssueCandidate } from "./candidates.ts";
+import { plannedItems } from "../core/select-items.ts";
 import { parseTriage, sourcePaths, validateFixPatch } from "./parse.ts";
 import { branchName, claimCommentText, commentText, commitMessage, prBody, prTitle } from "./template.ts";
 import { ghComment, ghFork, ghOpenPr, pushOwnBranch, type Writer } from "../github/write.ts";
@@ -52,7 +53,7 @@ import { COMMENTS_SHOWN, COMMENT_CHARS, FILE_CAP, ISSUE_BODY_LIMIT, MAX_PATHS, M
 import { inPilot, pilotSqlFor } from "../pilot.ts";
 import { backlogHeld, backlogHeldSql } from "../dupes/held.ts";
 
-export { selectIssues, type IssueCandidate } from "./candidates.ts";
+export { type IssueCandidate } from "./candidates.ts";
 
 const ORG = "storytold";
 const ACTOR = "fixissue";
@@ -137,6 +138,14 @@ export type AttemptRow = {
   head_task_id: number | null; base_task_id: number | null; retries: number; push_tries: number;
   summary: string | null; pr_url: string | null; reason: string | null; size: string | null; created_at: string; updated_at: string;
 };
+
+const byUpdated = (a: AttemptRow, b: AttemptRow): number => (a.updated_at < b.updated_at ? -1 : a.updated_at > b.updated_at ? 1 : 0);
+
+/** An issue the Plans send to a first triage. */
+function candidateOf(db: DatabaseSync, repo: string, number: number, score: number | null): IssueCandidate {
+  const r = db.prepare("SELECT title, body FROM items WHERE repo = ? AND number = ?").get(repo, number) as { title: string | null; body: string | null };
+  return { repo, number, title: r.title ?? "", body: r.body ?? "", hash: textHash(r.title ?? "", r.body ?? ""), score };
+}
 
 export const attemptOf = (db: DatabaseSync, repo: string, number: number): AttemptRow | null =>
   (db.prepare("SELECT * FROM fix_attempts WHERE repo = ? AND number = ?").get(repo, number) as AttemptRow | undefined) ?? null;
@@ -356,8 +365,8 @@ export async function runFixIssue(db: DatabaseSync, params: FixIssueParams, log:
   const d = deps ?? defaultDeps();
   const runId = `fixissue-${repo}-${iso(d).replace(/[-:]/g, "").slice(0, 15)}`;
   const s: FixIssueSummary = { runId, repo, dryRun, started: [], queued: [], skipped: [], failed: [] };
-  const retries = db.prepare(`SELECT * FROM fix_attempts a WHERE repo = ? AND state = 'retry' AND ${pilotSqlFor("a.repo", "a.number")} AND NOT ${backlogHeldSql("a")} ORDER BY updated_at`).all(repo) as AttemptRow[];
-  const cands = selectIssues(db, repo);
+  const retries = plannedItems(db, "fixissue", { repo, bucket: "retry" }).map((p) => attemptOf(db, repo, p.facts.number)!).sort(byUpdated);
+  const cands = fixIssueApprovalOf(db, repo) ? plannedItems(db, "fixissue", { repo, bucket: "new" }).map((p) => candidateOf(db, p.facts.repo, p.facts.number, p.facts.score)) : [];
   const picks = params.limit === undefined ? cands : cands.slice(0, params.limit);
   log(`fixissue ${repo}: ${cands.length} candidate issues, ${retries.length} rounds due${fixIssueApprovalOf(db, repo) ? "" : " (fixing issues is not approved for this repo)"}`);
   if (dryRun) {
@@ -410,18 +419,8 @@ export function collectDefaults(): CollectDeps {
   };
 }
 
-/** Whether work is waiting for fixissue-collect: tasks finished or a passed fix to open. Read-only, for the autopilot. */
-export function collectDue(db: DatabaseSync): boolean {
-  const terminal = TERMINAL.map((s) => `'${s}'`).join(", ");
-  if (db.prepare(`SELECT 1 FROM fix_attempts a
-    LEFT JOIN build_tasks h ON h.id = a.head_task_id LEFT JOIN build_tasks b ON b.id = a.base_task_id
-    WHERE a.state = 'testing' AND h.state IN (${terminal}) AND (b.id IS NULL OR b.state IN (${terminal})) AND ${pilotSqlFor("a.repo", "a.number")} LIMIT 1`).get()) return true;
-  const passed = db.prepare(`SELECT DISTINCT repo FROM fix_attempts a WHERE state = 'passed' AND ${pilotSqlFor("a.repo", "a.number")}`).all() as { repo: string }[];
-  return passed.some((p) => !!fixIssueApprovalOf(db, p.repo)) && openedToday(db, new Date()) < perDay(db);
-}
-
 /** The daily limit of the fixissue stage (null: none). Opened PRs count against it. */
-function perDay(db: DatabaseSync): number {
+export function perDay(db: DatabaseSync): number {
   const row = db.prepare("SELECT per_day FROM stage_limits WHERE step = 'fixissue'").get() as { per_day: number | null } | undefined;
   return row?.per_day ?? Infinity;
 }
@@ -429,16 +428,15 @@ function perDay(db: DatabaseSync): number {
 export const openedToday = (db: DatabaseSync, now: Date): number =>
   (db.prepare("SELECT COUNT(*) AS n FROM audit WHERE action = 'fixissue-pr' AND COALESCE(details, '') NOT LIKE '%\"state\":\"failed\"%' AND at >= ?").get(`${now.toISOString().slice(0, 10)}T00:00:00.000Z`) as { n: number }).n;
 
-/** Whether a patch round is due or a candidate waits, for the autopilot's fixissue lane. */
-export function fixDue(db: DatabaseSync, repo: string): boolean {
-  if (!fixIssueApprovalOf(db, repo)) return false;
-  return !!db.prepare(`SELECT 1 FROM fix_attempts a WHERE repo = ? AND state = 'retry' AND ${pilotSqlFor("a.repo", "a.number")} LIMIT 1`).get(repo) || selectIssues(db, repo).length > 0;
-}
-
 export async function runFixIssueCollect(db: DatabaseSync, params: CollectParams = {}, log: (line: string) => void = console.log, deps?: CollectDeps): Promise<CollectSummary> {
   const d = deps ?? collectDefaults();
   const s: CollectSummary = { runId: `fixissue-collect-${iso(d).replace(/[-:]/g, "").slice(0, 15)}`, looked: 0, passed: 0, opened: 0, failedRounds: 0, failed: 0, retried: 0, changed: 0 };
-  const rows = db.prepare(`SELECT * FROM fix_attempts a WHERE state IN ('testing', 'passed') AND ${pilotSqlFor("a.repo", "a.number")} AND NOT ${backlogHeldSql("a")} ORDER BY updated_at`).all() as AttemptRow[];
+  // Attempts whose build tasks finished or whose fix passed, from the Plans; and those of issues that closed since (their tasks are cancelled below), which have no Plan.
+  const rows = [
+    ...plannedItems(db, "fixissue-collect").map((p) => attemptOf(db, p.facts.repo, p.facts.number)!),
+    ...(db.prepare(`SELECT a.* FROM fix_attempts a JOIN items i ON i.repo = a.repo AND i.number = a.number
+      WHERE a.state = 'testing' AND i.state <> 'OPEN' AND ${pilotSqlFor("a.repo", "a.number")} AND NOT ${backlogHeldSql("a")}`).all() as AttemptRow[]),
+  ].sort(byUpdated);
   s.looked = rows.length;
   if (params.dryRun) { log(`fixissue-collect: ${rows.length} pending; dry run`); return s; }
   const x = (repo: string): Ctx => ({ db, d, git: new Git(d.exec, d.root, repo), log, by: params.by, runId: s.runId, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: null } });

@@ -1,7 +1,7 @@
 // Counts for the flowchart (docs/dashboard-spec.md, Flow), one node at a time,
 // for one repo or every tracked repo. Each count uses the rule of the stage it
 // describes: settled labels (src/classify/settled.ts), scope decisions
-// (src/decide/select.ts), review candidates (src/review/candidates.ts) and the
+// (src/core/decide-item.ts), review candidates (src/review/candidates.ts) and the
 // merge queue (src/merge/queue.ts).
 //
 // Counts are flat keys that add up across repos:
@@ -15,11 +15,10 @@
 // browser's flow filter.
 import type { DatabaseSync } from "node:sqlite";
 import { latestRun, settledTable } from "../classify/settled.ts";
-import { isScope, latestJevRun, selectCandidates as decideCandidates } from "../decide/select.ts";
+import { isScope, latestJevRun } from "../decide/select.ts";
+import { plannedItems } from "../core/select-items.ts";
 import { commentApprovalOf } from "../act/approval.ts";
-import { pending as actPending } from "../act/index.ts";
 import { fixIssueApprovalOf } from "../fixissue/approval.ts";
-import { candidateIssues } from "../fixissue/candidates.ts";
 import { classifyFixups } from "../fixup/candidates.ts";
 import { classifyCifix } from "../cifix/candidates.ts";
 import { approvalOf } from "../labels/approval.ts";
@@ -167,7 +166,7 @@ function decide(c: Ctx): NodeCount {
   const byAnswer = new Map<string, Refs>(SCOPE_ANSWERS.map((a) => [a, new Set()]));
   for (const [r, a] of c.scopeAnswers()) if (openRefs.has(r) && !waiting.has(r) && c.inRepo(r)) byAnswer.get(a)?.add(r);
   const jevRun = c.jevRun();
-  const notAsked: Refs = new Set(jevRun ? decideCandidates(c.db, jevRun, c.repo ? [c.repo] : undefined).map(ref) : []);
+  const notAsked: Refs = new Set(jevRun ? plannedItems(c.db, "decide", { run: jevRun, bucket: "new", repo: c.repo ?? undefined }).map((p) => ref(p.facts)) : []);
   const members = new Map<string, Refs>([["decide.not-asked", notAsked], ["decide.open", waiting], ...[...byAnswer].map(([k, v]) => [`decide.${k}`, v] as [string, Refs])]);
   const total = [...members.values()].reduce((a, s) => a + s.size, 0);
   return {
@@ -346,7 +345,7 @@ function fix(c: Ctx): NodeCount {
   const members = new Map<string, Refs>(["candidates", "unapproved", ...FIX_STATES].map((k) => [`fix.${k}`, new Set()]));
   for (const repo of c.repos()) {
     const bucket = members.get(fixIssueApprovalOf(c.db, repo) ? "fix.candidates" : "fix.unapproved")!;
-    for (const x of candidateIssues(c.db, repo, c.run)) bucket.add(ref(x));
+    for (const p of plannedItems(c.db, "fixissue", { repo, run: c.run, bucket: "new" })) bucket.add(ref(p.facts));
   }
   const rows = c.db.prepare(`SELECT a.repo, a.number, a.state FROM main.fix_attempts a
     JOIN main.items i ON i.repo = a.repo AND i.number = a.number AND i.state = 'OPEN' WHERE 1 ${c.tracked("a.repo")}`).all(c.rp) as { repo: string; number: number; state: string }[];
@@ -394,8 +393,8 @@ function act(c: Ctx): NodeCount {
   for (const repo of c.repos()) {
     const failed = new Set((c.db.prepare("SELECT decision_id, number FROM main.actions WHERE repo = ? AND state = 'failed'").all(repo) as { decision_id: string; number: number }[]).map((r) => `${r.decision_id}\0${r.number}`));
     const approved = commentApprovalOf(c.db, repo) !== null;
-    for (const t of actPending(c.db, repo))
-      members.get(!approved ? "act.unapproved" : failed.has(`${t.decisionId}\0${t.number}`) ? "act.failed" : "act.todo")!.add(`${repo}#${t.number}`);
+    for (const p of plannedItems(c.db, "act", { repo }).filter((x) => !x.action.params?.ask))
+      members.get(!approved ? "act.unapproved" : failed.has(`${p.action.params!.decisionId}\0${p.facts.number}`) ? "act.failed" : "act.todo")!.add(`${repo}#${p.facts.number}`);
   }
   const done = c.n(`SELECT COUNT(*) AS n FROM main.actions WHERE state = 'done' AND created_at >= :since ${c.tracked()}`, { since: c.since });
   const waiting = sizeOf(members, "act.todo") + sizeOf(members, "act.failed") + sizeOf(members, "act.unapproved");

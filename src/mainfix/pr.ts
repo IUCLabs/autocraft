@@ -20,7 +20,6 @@ import { MAIN_FIX_BRANCH_PREFIX } from "../mainci/index.ts";
 import type { Gh } from "../merge/safe-merge.ts";
 import { cleanLine } from "../review/post-template.ts";
 import type { FixRow } from "./index.ts";
-import { mainFixApprovalOf } from "./approval.ts";
 import { optionalChecks } from "../optional-checks.ts";
 
 export const PR_ACTOR = "main-fix";
@@ -156,9 +155,8 @@ async function attempt(c: Ctx, rows: FixRow[], count: () => void): Promise<Outco
     const outside = outsideShown(shown, await git.diffText(head, commit));
     if (outside) return set(live, "fix-failed", outside);
 
-    // The model calls took minutes: the approval and the head are read again before anything is written.
+    // The model calls took minutes: the head is read again before anything is written.
     const again = c.current();
-    if (!mainFixApprovalOf(c.db, c.repo)) return set(live, "fix-failed", "fixing a red main is no longer approved");
     if (!again || again.state !== "red" || again.headSha !== head) return set(live, "nothing-to-do", "main changed while the patch was written");
 
     const branch = branchFor(names[0]!, head);
@@ -192,7 +190,6 @@ export async function openFixPrs(c: Ctx, onHandled?: () => void): Promise<{ open
   const byHead = new Map<string, FixRow[]>();
   for (const r of rows) (byHead.get(r.head_sha) ?? byHead.set(r.head_sha, []).get(r.head_sha)!).push(r);
   for (const group of byHead.values()) {
-    if (!mainFixApprovalOf(c.db, c.repo)) break;
     const o = await attempt(c, group, () => onHandled?.());
     if (o !== "waiting") out[o]++;
   }

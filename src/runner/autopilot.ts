@@ -13,16 +13,13 @@
 import type { DatabaseSync } from "node:sqlite";
 import type { PipelineState, StageLimit } from "../../web/src/api/types.ts";
 import { readSeqs, TOPICS } from "../live.ts";
-import { backfillIds } from "../decide/recommend.ts";
 import { pendingConversations } from "../conversations/store.ts";
-import { latestJevRun, selectCandidates as decideCandidates } from "../decide/select.ts";
+import { latestJevRun } from "../decide/select.ts";
+import { plannedItems } from "../core/select-items.ts";
 import { embedderId, modelName } from "../embed/model.ts";
 import { pending as embedPending } from "../embed/store.ts";
 import { approvalOf } from "../labels/approval.ts";
-import { labelsToApply } from "../labels/github.ts";
 import { commentApprovalOf } from "../act/approval.ts";
-import { closeCandidates, pending as actPending } from "../act/index.ts";
-import { compareWork, dupesWork } from "../dupes/index.ts";
 import { pushApprovalOf } from "../fixup/approval.ts";
 import { selectFixups } from "../fixup/candidates.ts";
 import { selectCifix } from "../cifix/candidates.ts";
@@ -37,17 +34,14 @@ import { selectCandidates as reviewCandidates } from "../review/candidates.ts";
 import { postCandidates } from "../review/post.ts";
 import { selectCandidates as verifyCandidates, unavailableCandidates } from "../verify/candidates.ts";
 import { collectDue } from "../verify/results.ts";
-import { collectDue as fixCollectDue, fixDue } from "../fixissue/index.ts";
+import { openedToday, perDay } from "../fixissue/index.ts";
 import { audit } from "../dash/audit.ts";
 import { defaultPerDay, lanesInOrder, limitSteps, zeroOnlySteps } from "../stages/registry.ts";
 import { applyUsedAnswers } from "../decisions-used.ts";
-import { duePriorityCount } from "../priority/index.ts";
-import { selectIssues } from "../fixissue/candidates.ts";
 import { premergeCandidates } from "../premerge/review.ts";
 import { pendingDefects, selectPostmerge } from "../postmerge/select.ts";
 import { mainFixDue } from "../mainfix/index.ts";
-import { refereeCandidates } from "../classify/referee.ts";
-import { currentRun, dueItems, haikuDue } from "./classify.ts";
+import { currentRun } from "./classify.ts";
 import { enqueue, JobError, now, requestCancel, RUNNER_STOPPED } from "./jobs.ts";
 import { claudePauseReason } from "../agents/accounts.ts";
 import { knownStep, loadSteps, modelsOf, usesClaude, type Params } from "./steps.ts";
@@ -172,6 +166,19 @@ export function roundRobin(repos: string[], cursor: string | null): string[] {
   return [...after, ...sorted.filter((r) => !after.includes(r))];
 }
 
+/** Per repo approved for fixing issues: whether a patch round is due and its first new candidate (highest score). */
+function fixWork(db: DatabaseSync, tracked: string[], run: string | null): Map<string, { retry: boolean; top?: { number: number; score: number | null } }> {
+  const repos = new Set(tracked), out = new Map<string, { retry: boolean; top?: { number: number; score: number | null } }>();
+  for (const p of plannedItems(db, "fixissue", { run })) {
+    const { repo, number, score } = p.facts;
+    if (!repos.has(repo) || !p.facts.repoFacts.fixIssueApproved) continue;
+    const w = out.get(repo) ?? out.set(repo, { retry: false }).get(repo)!;
+    if (p.action.params?.source === "retry") w.retry = true;
+    else w.top ??= { number, score };
+  }
+  return out;
+}
+
 /** The highest of the scores, null when there is none. */
 export const bestScore = (scores: (number | null | undefined)[]): number | null => {
   const some = scores.filter((s): s is number => typeof s === "number");
@@ -196,13 +203,13 @@ const LANE_CODE: Omit<Lane, "steps">[] = [
     name: "classify",
     detect: (db, { run }) => {
       if (!run) return [];
-      return dueItems(db, run, "new").due.length || haikuDue(db, run, 1).length ? [{ step: "classify-new", params: {} }] : [];
+      return plannedItems(db, "classify", { run }).length ? [{ step: "classify-new", params: {} }] : [];
     },
   },
   {
     // Items without a priority at their current text hash; the scores of the others are refreshed by the same job.
     name: "priority",
-    detect: (db) => (duePriorityCount(db) ? [{ step: "prioritize", params: {} }] : []),
+    detect: (db, { run }) => (plannedItems(db, "prioritize", { run }).length ? [{ step: "prioritize", params: {} }] : []),
   },
   {
     // Work score from the stored priority, size, type and security flag; no model. It is cheap and has no work test of its own:
@@ -220,18 +227,18 @@ const LANE_CODE: Omit<Lane, "steps">[] = [
   {
     // Before Decide: items held as duplicates wait out the later stages.
     name: "dupes",
-    detect: (db) => (dupesWork(db) ? [{ step: "dupes", params: {} }] : []),
+    detect: (db, { run }) => (plannedItems(db, "dupes", { run }).length || plannedItems(db, "dupe-answer", { run }).length ? [{ step: "dupes", params: {} }] : []),
   },
   {
     // Each duplicate group is compared once its pairs are checked; the comparison asks the group decision.
     name: "dupes-compare",
-    detect: (db) => (compareWork(db) ? [{ step: "dupes-compare", params: {} }] : []),
+    detect: (db, { run }) => (plannedItems(db, "dupes-compare", { run }).length ? [{ step: "dupes-compare", params: {} }] : []),
   },
   {
     name: "decide",
     detect: (db, { jevRun: run }) => {
       // Open scope decisions without a recommendation (asked before recommendations existed) also need a job; an answered-null one has recommended_by set.
-      return (run && decideCandidates(db, run).length) || backfillIds(db, 1).length ? [{ step: "decide", params: {} }] : [];
+      return plannedItems(db, "decide", { run }).length ? [{ step: "decide", params: {} }] : [];
     },
   },
   {
@@ -259,9 +266,8 @@ const LANE_CODE: Omit<Lane, "steps">[] = [
     perRepo: true,
     detect: (db, { run, tracked }) => {
       if (!run) return [];
-      return tracked
-        .filter((repo) => approvalOf(db, repo) && labelsToApply(db, repo, run).length > 0)
-        .map((repo) => ({ step: "labels-apply", params: { repo } }));
+      const repos = new Set(plannedItems(db, "label", { run }).filter((p) => p.facts.repoFacts.labelsApproved).map((p) => p.facts.repo));
+      return tracked.filter((repo) => repos.has(repo)).map((repo) => ({ step: "labels-apply", params: { repo } }));
     },
   },
   {
@@ -310,8 +316,10 @@ const LANE_CODE: Omit<Lane, "steps">[] = [
     // Comments and closes after operator answers, and Close? decisions for reviewed PRs.
     name: "act",
     perRepo: true,
-    detect: (db, { tracked }) =>
-      tracked.filter((repo) => commentApprovalOf(db, repo) && (actPending(db, repo).length || closeCandidates(db, repo).length)).map((repo) => ({ step: "act", params: { repo } })),
+    detect: (db, { tracked, run }) => {
+      const repos = new Set(plannedItems(db, "act", { run }).filter((p) => p.facts.repoFacts.commentApproved).map((p) => p.facts.repo));
+      return tracked.filter((repo) => repos.has(repo)).map((repo) => ({ step: "act", params: { repo } }));
+    },
   },
   {
     name: "fixup",
@@ -353,18 +361,26 @@ const LANE_CODE: Omit<Lane, "steps">[] = [
     name: "fixissue",
     perRepo: true,
     extra: tasksSig,
-    detect: (db, { tracked }) => fastFirst(db, tracked.filter((repo) => fixDue(db, repo)).sort(), (r) => selectIssues(db, r)[0]?.number).map((repo) => ({ step: "fixissue", params: { repo } })),
-    topScore: (db, { tracked }) => bestScore(tracked.map((repo) => selectIssues(db, repo)[0]?.score)),
+    detect: (db, { tracked, run }) => {
+      const work = fixWork(db, tracked, run);
+      return fastFirst(db, [...work.keys()].sort(), (r) => work.get(r)!.top?.number).map((repo) => ({ step: "fixissue", params: { repo } }));
+    },
+    topScore: (db, { tracked, run }) => bestScore([...fixWork(db, tracked, run).values()].map((w) => w.top?.score)),
   },
   {
     name: "fixissue-collect",
     extra: tasksSig,
-    detect: (db) => (fixCollectDue(db) ? [{ step: "fixissue-collect", params: {} }] : []),
+    // Finished build tasks, or a passed fix to open in a repo approved for fixing while the day's pull request limit has room.
+    detect: (db, { run }) => {
+      const due = plannedItems(db, "fixissue-collect", { run });
+      const opens = due.some((p) => p.action.params?.source === "passed" && p.facts.repoFacts.fixIssueApproved) && openedToday(db, new Date()) < perDay(db);
+      return due.some((p) => p.action.params?.source === "testing") || opens ? [{ step: "fixissue-collect", params: {} }] : [];
+    },
   },
   {
     // Label disagreements outside the scope labels, after Jev and Haiku have both answered.
     name: "referee",
-    detect: (db, { run }) => (run && refereeCandidates(db, run, 1).length ? [{ step: "referee", params: {} }] : []),
+    detect: (db, { run }) => (run && plannedItems(db, "referee", { run }).length ? [{ step: "referee", params: {} }] : []),
   },
   {
     // The final Opus reviews, posted as one PR review each in repos approved for comments.

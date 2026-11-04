@@ -41,7 +41,7 @@ const itemBase = (): ItemFacts => ({
     status: "settled", label: "bugfix", flags: [], jevLabel: "bugfix", haikuLabel: null, referee: null,
     jev: { at: "2026-11-04T08:00:00.000Z", changed: false, unsure: false }, haiku: null,
   },
-  embedHash: "e1", embeddedHash: "e1", priorityHash: "e1", scannedHash: "e1", pairsToCheck: 0, inGroupToAsk: false, inCompareSet: false,
+  embedHash: "e1", embeddedHash: "e1", priorityHash: "e1", scannedHash: "e1", pairsToCheck: 0, inGroupToAsk: false, inCompareSet: false, dupeAnswers: [],
   scope: { open: false, answer: null, covered: false, pastClassified: false, recommend: null },
   labels: { existing: ["bugfix"], pluginAnswer: false, labeledNote: null },
   answeredClose: [], closeReview: null,

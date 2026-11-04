@@ -12,29 +12,16 @@ import { connect } from "../db.ts";
 import { fillEmbedHashes } from "../itemhash.ts";
 import { reachOfOpenItems } from "./reach.ts";
 import { reachScore, settleImpact, type Impact } from "./score.ts";
-import { pilotSql } from "../pilot.ts";
+import { itemOf, plannedItems } from "../core/select-items.ts";
 
 const JEV_CHUNK = 40;
 const now = () => new Date().toISOString();
 
 type Due = Item & { hash: string };
 
-const ITEM_COLUMNS = `i.repo, i.number, i.kind, COALESCE(i.title, '') AS title, COALESCE(i.body, '') AS body,
-  i.additions + i.deletions AS lines_changed, i.changed_files AS files_changed, i.author_association, i.embed_hash AS hash`;
-
-const DUE_WHERE = `i.state = 'OPEN' AND i.embed_hash IS NOT NULL AND (p.repo IS NULL OR p.text_hash <> i.embed_hash) AND ${pilotSql("i")}`;
-
-/** Number of open tracked items without a priority row at their current text hash. Read-only, for the autopilot. */
-export function duePriorityCount(db: DatabaseSync): number {
-  return (db.prepare(`SELECT COUNT(*) AS n FROM items i JOIN tracked_repos t ON t.name = i.repo
-    LEFT JOIN item_priority p ON p.repo = i.repo AND p.number = i.number WHERE ${DUE_WHERE}`).get() as { n: number }).n;
-}
-
-/** Items with no row first, then changed ones; pull requests first, newest first. */
-export function dueItems(db: DatabaseSync, limit: number): Due[] {
-  return db.prepare(`SELECT ${ITEM_COLUMNS} FROM items i JOIN tracked_repos t ON t.name = i.repo
-    LEFT JOIN item_priority p ON p.repo = i.repo AND p.number = i.number WHERE ${DUE_WHERE}
-    ORDER BY p.repo IS NOT NULL, i.kind = 'pr' DESC, i.updated_at DESC, i.repo, i.number LIMIT ?`).all(limit) as unknown as Due[];
+/** The items the Plans send to rating: no priority row, or one made at other text. */
+function dueItems(db: DatabaseSync): Due[] {
+  return plannedItems(db, "prioritize").map((p) => ({ ...itemOf(db, p.facts.repo, p.facts.number), hash: p.facts.embedHash }));
 }
 
 type Verdict = { jev: { impact: Impact; p: number } | null; haiku: { impact: Impact; reason: string } | null };
@@ -83,8 +70,9 @@ export type PrioritizeResult = { due: number; sent: number; jev: number; haiku: 
 export async function runPrioritize(db: DatabaseSync, opts: PrioritizeOptions): Promise<PrioritizeResult> {
   const log = opts.log ?? (() => {});
   fillEmbedHashes(db);
-  const due = duePriorityCount(db);
-  const todo = dueItems(db, opts.limit);
+  const all = dueItems(db);
+  const due = all.length;
+  const todo = all.slice(0, opts.limit);
   log(`prioritize: ${due} items due, taking ${todo.length}`);
   const res: PrioritizeResult = { due, sent: 0, jev: 0, haiku: 0, saved: 0, rescored: 0, haikuAlone: 0 };
   for (let i = 0; i < todo.length && !opts.cancelled?.(); i += JEV_CHUNK) {

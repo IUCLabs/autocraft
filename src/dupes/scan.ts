@@ -4,7 +4,6 @@
 import type { DatabaseSync } from "node:sqlite";
 import { notOwnIntegrationSql } from "./held.ts";
 import type { VectorIndex } from "../embed/vectors.ts";
-import { pilotSql } from "../pilot.ts";
 
 /** Cosine similarity of the embedding model (bge-small): about the top quartile of nearest-neighbour scores in the real data; true duplicates sit above it. */
 export const SIM_THRESHOLD = 0.86;
@@ -20,15 +19,6 @@ export type ScanItem = {
   closed_at: string | null; merged_at: string | null; closing_issues: string | null;
 };
 const COLS = "i.repo, i.number, i.kind, i.state, i.embed_hash, i.closed_at, i.merged_at, i.closing_issues";
-
-/** Open tracked items with a current embedding and no scan at their current text. */
-export function scanPending(db: DatabaseSync, modelId: string, max = 5000): ScanItem[] {
-  return db.prepare(`SELECT ${COLS} FROM items i
-    JOIN item_embeddings e ON e.repo = i.repo AND e.number = i.number AND e.model = ? AND e.hash = i.embed_hash
-    LEFT JOIN duplicate_scans s ON s.repo = i.repo AND s.number = i.number AND s.hash = i.embed_hash
-    WHERE i.state = 'OPEN' AND i.repo IN (SELECT name FROM tracked_repos) AND s.hash IS NULL AND ${notOwnIntegrationSql("i")} AND ${pilotSql("i")}
-    ORDER BY i.repo, i.number LIMIT ?`).all(modelId, max) as ScanItem[];
-}
 
 const issuesOf = (i: ScanItem): number[] => {
   try { const v = JSON.parse(i.closing_issues ?? "[]") as unknown; return Array.isArray(v) ? v.filter((n): n is number => typeof n === "number") : []; } catch { return []; }

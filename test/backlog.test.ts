@@ -7,7 +7,7 @@ import { describe, test } from "node:test";
 import type { DatabaseSync } from "node:sqlite";
 import { setCommentApproval } from "../src/act/approval.ts";
 import { runAct, type ActDeps } from "../src/act/index.ts";
-import { selectCandidates as decideCandidates } from "../src/decide/select.ts";
+import { decideCandidates } from "./planned.ts";
 import { answer, getOne, listDecisions, reopen, backlogBulk } from "../src/dash/api/decisions.ts";
 import type { Req } from "../src/dash/types.ts";
 import { connect } from "../src/db.ts";

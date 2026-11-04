@@ -7,7 +7,6 @@ import type { ItemPlan } from "../src/core/plan.ts";
 import { SCOPE_LABELS as OLD_SCOPE } from "../src/decide/select.ts";
 import { TYPE_LABELS } from "../src/labels/set.ts";
 import { PLUGIN_LABEL as OLD_PLUGIN } from "../src/labels/plan.ts";
-import { RECOMMEND_MAX_FAILURES as OLD_MAX, RECOMMEND_RETRY_MS as OLD_RETRY } from "../src/decide/recommend.ts";
 import { NOW, itemFacts, prFacts } from "./world.ts";
 
 type Over = Parameters<typeof itemFacts>[0];
@@ -61,6 +60,7 @@ const rows: Row[] = [
   { name: "in an unchecked pair", facts: { pairsToCheck: 2 }, expect: { state: "classified", actions: ["dupes"] } },
   { name: "an out-of-scope item whose partner is in scope is still in the pair check", facts: { inScope: false, pairsToCheck: 1 }, expect: { state: "classified", actions: ["dupes"] } },
   { name: "member of a group to ask about", facts: { inGroupToAsk: true }, expect: { state: "classified", actions: ["dupes"] } },
+  { name: "an operator's duplicate answer waits to be applied", facts: { dupeAnswers: ["app#1:duplicate@2"] }, expect: { state: "classified", actions: ["dupe-answer"] } },
   { name: "member of a set to compare", facts: { inCompareSet: true }, expect: { state: "classified", actions: ["dupes-compare"] } },
   { name: "pair check and compare together", facts: { pairsToCheck: 1, inCompareSet: true }, expect: { state: "classified", actions: ["dupes", "dupes-compare"] } },
 
@@ -170,6 +170,4 @@ test("the constants copied into core equal the old modules'", () => {
   assert.deepEqual(SCOPE_LABELS, [...OLD_SCOPE]);
   assert.deepEqual(TYPE_LABEL_NAMES, TYPE_LABELS.map((l) => l.name));
   assert.equal(PLUGIN_LABEL, OLD_PLUGIN);
-  assert.equal(RECOMMEND_MAX_FAILURES, OLD_MAX);
-  assert.equal(RECOMMEND_RETRY_MS, OLD_RETRY);
 });

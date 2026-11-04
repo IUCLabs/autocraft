@@ -5,7 +5,8 @@ import { notOwnIntegrationSql, groupHeldSql, backlogHeldSql } from "../dupes/hel
 import { FAST_FLOOR, fastScoreSql } from "../fasttrack.ts";
 import { latestRun, needsDecisionOf, securityOf, settle, topOf, SURE, type Referee } from "../classify/settled.ts";
 import { JEV_FLAG_NO, JEV_NEEDS_DECISION_YES, JEV_SECURITY_YES } from "../classify/parse.ts";
-import { groupsToAsk } from "../dupes/decide.ts";
+import { answersToApply, groupsToAsk } from "../dupes/decide.ts";
+import { uncheckedPairs } from "../dupes/check.ts";
 import { dueSets } from "../dupes/plan.ts";
 import { embedderId, modelName } from "../embed/model.ts";
 import { classifyHash, embedHash as hashOfText, SCHEME_ID } from "../itemhash.ts";
@@ -16,7 +17,7 @@ import { fixIssueApprovalOf } from "../fixissue/approval.ts";
 import { issuesWithOpenPr, notRustKey, textHash } from "../fixissue/candidates.ts";
 import { headOf, scopeAnswers } from "../review/candidates.ts";
 import { approvalOf as labelsApprovalOf } from "../labels/approval.ts";
-import { pilotSql, pilotSqlFor } from "../pilot.ts";
+import { pilotSql } from "../pilot.ts";
 import type { ItemFacts } from "./plan.ts";
 
 export type { ItemFacts } from "./plan.ts";
@@ -27,6 +28,8 @@ export type ItemLoadOptions = {
   refs?: Iterable<string>;
   /** Decision time in ms (default: the clock). */
   now?: number;
+  /** The embedding model whose vectors count (default: the configured one). */
+  model?: string;
   /** The classification run (default: latestRun, the current run else the newest verdict run). */
   run?: string | null;
 };
@@ -71,7 +74,7 @@ type Cls = { classifier: string; at: string; type_label: string; flags: string |
 /** Facts of every open item (issue or PR) of the tracked repos, for the database, repo or refs given. */
 export function loadItemFacts(db: DatabaseSync, opts: ItemLoadOptions = {}): ItemFacts[] {
   const now = opts.now ?? Date.now();
-  const model = embedderId(modelName());
+  const model = opts.model ?? embedderId(modelName());
   const params: Record<string, string> = { model };
   let where = "";
   if (opts.repo) { where += " AND i.repo = :repo"; params.repo = opts.repo; }
@@ -107,12 +110,10 @@ export function loadItemFacts(db: DatabaseSync, opts: ItemLoadOptions = {}): Ite
   const labeled = new Map((db.prepare("SELECT repo, number, note FROM stages WHERE stage = 'labeled' ORDER BY at, rowid").all() as { repo: string; number: number; note: string | null }[])
     .map((s) => [`${s.repo}#${s.number}`, s.note]));
   const pairs = new Map<string, number>();
-  for (const p of db.prepare(`SELECT p.repo, p.a, p.b FROM duplicate_pairs p
-    JOIN items ia ON ia.repo = p.repo AND ia.number = p.a AND ia.embed_hash = p.a_hash
-    JOIN items ib ON ib.repo = p.repo AND ib.number = p.b AND ib.embed_hash = p.b_hash
-    WHERE p.verdict IS NULL AND (ia.state = 'OPEN' OR ib.state = 'OPEN') AND p.repo IN (SELECT name FROM tracked_repos)
-      AND (${pilotSqlFor("p.repo", "p.a")} OR ${pilotSqlFor("p.repo", "p.b")})`).all() as { repo: string; a: number; b: number }[])
+  for (const p of uncheckedPairs(db, -1))
     for (const n of [p.a, p.b]) pairs.set(`${p.repo}#${n}`, (pairs.get(`${p.repo}#${n}`) ?? 0) + 1);
+  const dupeAnswers = new Map<string, string[]>();
+  for (const a of answersToApply(db)) for (const r of a.refs) (dupeAnswers.get(r) ?? dupeAnswers.set(r, []).get(r)!).push(a.id);
   // Group-level work (which groups to ask about, which sets to compare) is planned per group by dupes/decide.ts and dupes/plan.ts; the items carry its result.
   const inGroup = new Set(groupsToAsk(db, opts.repo).flatMap((g) => g.group.members.map((n) => `${g.repo}#${n}`)));
   const inCompare = new Set(dueSets(db, opts.repo, now).flatMap((s) => s.members.map((m) => `${s.repo}#${m.number}`)));
@@ -200,7 +201,7 @@ export function loadItemFacts(db: DatabaseSync, opts: ItemLoadOptions = {}): Ite
         referee: settled.referee ? { sure: settled.referee.sure } : null, jev, haiku,
       },
       embedHash, embeddedHash: r.e_hash, priorityHash: r.pr_hash, scannedHash: r.scan_hash,
-      pairsToCheck: pairs.get(ref) ?? 0, inGroupToAsk: inGroup.has(ref), inCompareSet: inCompare.has(ref),
+      pairsToCheck: pairs.get(ref) ?? 0, inGroupToAsk: inGroup.has(ref), inCompareSet: inCompare.has(ref), dupeAnswers: dupeAnswers.get(ref) ?? [],
       scope: { open: openScope.has(ref), answer: answers.get(ref) ?? null, covered: covered.has(ref), pastClassified: r.stage !== null && r.stage !== "classified", recommend: recommend.get(ref) ?? null },
       labels: { existing: json<unknown[]>(r.labels, []).map(String), pluginAnswer: operatorAnswers.get(ref) === "plugin", labeledNote: note },
       answeredClose: answeredClose.get(ref) ?? [],

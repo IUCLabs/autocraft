@@ -6,7 +6,8 @@ import { after, test } from "node:test";
 import { SCRATCH } from "./scratch.ts";
 
 const { connect } = await import("../src/db.ts");
-const { haikuDue } = await import("../src/runner/classify.ts");
+const { plannedItems } = await import("../src/core/select-items.ts");
+const haikuDue = (d: typeof db, run: string) => plannedItems(d, "classify", { run, bucket: "haiku" }).map((p) => p.facts);
 
 mkdirSync(SCRATCH, { recursive: true });
 const dir = mkdtempSync(join(SCRATCH, "haiku-due-"));
@@ -28,12 +29,12 @@ const cases: [number, string][] = [
 for (const [n, p] of cases) { item.run(n, `https://github.com/storytold/app/issues/${n}`, T, T); jev.run(n, T, p); }
 
 test("a sure type with an unsure flag is due; a sure item is not", () => {
-  const due = (haikuDue(db, "r", 100) as { number: number }[]).map((i) => i.number).sort((a, b) => a - b);
+  const due = (haikuDue(db, "r")).map((i) => i.number).sort((a, b) => a - b);
   assert.deepEqual(due, [2, 4, 5]);
 });
 
 test("an item with a Haiku verdict as new as Jev's is not due again", () => {
   db.prepare("INSERT INTO classifications (repo, number, classifier, run_id, at, type_label, flags) VALUES ('app', 2, 'haiku', 'r', ?, 'bugfix', '[]')").run("2026-11-02T00:00:00Z");
-  const due = (haikuDue(db, "r", 100) as { number: number }[]).map((i) => i.number).sort((a, b) => a - b);
+  const due = (haikuDue(db, "r")).map((i) => i.number).sort((a, b) => a - b);
   assert.deepEqual(due, [4, 5]);
 });

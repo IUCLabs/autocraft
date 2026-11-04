@@ -1,7 +1,7 @@
 // Constants and pure helpers of the triage rules for issues and PRs, shared by decide-item.ts and the loader. No imports.
 // Each constant mirrors the old module named in its comment; test/decide-item.test.ts checks they stay equal.
 
-/** Labels that make a disagreement a scope call (decide/select.ts SCOPE_LABELS). */
+/** Labels that make a disagreement a scope call . */
 export const SCOPE_LABELS = ["missing feature", "small extra", "plugin candidate"];
 export const isScope = (l: string | null): boolean => l !== null && SCOPE_LABELS.includes(l);
 

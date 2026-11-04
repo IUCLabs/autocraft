@@ -7,7 +7,8 @@ import type { DatabaseSync } from "node:sqlite";
 import { claudeRoom } from "../agents/call.ts";
 import { summaryInput } from "../classify/parse.ts";
 import { add, askClaude, pool, saveUsage, type Usage } from "../classify/run.ts";
-import { notHeldSql } from "../dupes/held.ts";
+import { RECOMMEND_MAX_FAILURES } from "../core/item-rules.ts";
+import { plannedItems } from "../core/select-items.ts";
 import { CLAUDE_PROMPTS } from "../prompts/index.ts";
 import { REPO_PATH } from "../sandbox/command.ts";
 import { loadSummaryItems } from "./index.ts";
@@ -49,18 +50,12 @@ export function parseRecommendReply(text: string, keys: string[]): Recommendatio
 
 type Row = { id: string; repo: string; number: number; question: string; facts: string | null; options: string; summary: string | null };
 
-/** Ids of open scope decisions without a recommendation from this prompt, on open pilot items, oldest first. */
-/** Tries after which a decision keeps no recommendation, and the wait after a failed try. */
-export const RECOMMEND_MAX_FAILURES = 3;
-export const RECOMMEND_RETRY_MS = 60 * 60_000;
-
-export function backfillIds(db: DatabaseSync, limit: number, nowMs: number = Date.now()): string[] {
-  if (limit <= 0) return [];
-  // A call that keeps failing must not re-run Decide back to back: wait an hour after a failure, stop after three.
-  return (db.prepare(`SELECT d.id FROM decisions d JOIN items i ON i.repo = d.repo AND i.number = d.number
-    WHERE d.kind = 'scope' AND d.answer IS NULL AND d.recommended_by IS NULL AND i.state = 'OPEN' AND ${notHeldSql("i")}
-      AND COALESCE(d.recommend_failures, 0) < ? AND (d.recommend_failed_at IS NULL OR d.recommend_failed_at < ?)
-    ORDER BY d.asked_at, d.id LIMIT ?`).all(RECOMMEND_MAX_FAILURES, new Date(nowMs - RECOMMEND_RETRY_MS).toISOString(), limit) as { id: string }[]).map((r) => r.id);
+/** Ids of the open scope decisions of the items whose Plans ask for a recommendation, oldest decision first. */
+export function recommendIds(db: DatabaseSync, nowMs: number = Date.now()): string[] {
+  const own = db.prepare("SELECT id, asked_at FROM decisions WHERE kind = 'scope' AND repo = ? AND number = ? AND answer IS NULL AND recommended_by IS NULL");
+  return plannedItems(db, "decide", { bucket: "recommend", now: nowMs })
+    .flatMap((p) => own.all(p.facts.repo, p.facts.number) as { id: string; asked_at: string }[])
+    .sort((a, b) => (a.asked_at < b.asked_at ? -1 : a.asked_at > b.asked_at ? 1 : a.id < b.id ? -1 : 1)).map((d) => d.id);
 }
 
 export type RecommendParams = {

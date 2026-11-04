@@ -9,7 +9,8 @@ import { getTask } from "../src/build/tasks.ts";
 import { connect } from "../src/db.ts";
 import { exec, type Exec, type ExecResult } from "../src/fixup/git.ts";
 import { fixIssueApprovalOf, setFixIssueApproval } from "../src/fixissue/approval.ts";
-import { attemptOf, collectDue, fixDue, warmKeyOf, runFixIssue, runFixIssueCollect, selectIssues, type CollectDeps } from "../src/fixissue/index.ts";
+import { attemptOf, warmKeyOf, runFixIssue, runFixIssueCollect, type CollectDeps } from "../src/fixissue/index.ts";
+import { selectIssues } from "./planned.ts";
 import { parseTriage, validateFixPatch } from "../src/fixissue/parse.ts";
 import { branchName, commentText, prBody, prTitle } from "../src/fixissue/template.ts";
 import { setCommentApproval } from "../src/act/approval.ts";
@@ -483,7 +484,7 @@ describe("opening the PR is gated and repeatable", () => {
   };
   const writes = (w: World) => w.log.length + w.calls.filter((c) => c === "gh repo").length;
 
-  test("revoked approval: a passed row waits, nothing is written, collectDue is false", async () => {
+  test("revoked approval: a passed row waits, nothing is written", async () => {
     const w = await passedWorld();
     setFixIssueApproval(w.db, "op", "app", false);
     const c = await runFixIssueCollect(w.db, {}, quiet, w.deps);
@@ -491,9 +492,7 @@ describe("opening the PR is gated and repeatable", () => {
     assert.equal(writes(w), 0);
     assert.equal(w.calls.filter((c) => c.startsWith("gh pr") || c.startsWith("gh issue")).length, 0);
     assert.equal(attemptOf(w.db, "app", 5)!.state, "passed");
-    assert.equal(collectDue(w.db), false);
     setFixIssueApproval(w.db, "op", "app", true);
-    assert.equal(collectDue(w.db), true);
     assert.equal((await runFixIssueCollect(w.db, {}, quiet, w.deps)).opened, 1);
   });
 
@@ -504,7 +503,6 @@ describe("opening the PR is gated and repeatable", () => {
     assert.equal((await runFixIssueCollect(w.db, {}, quiet, w.deps)).opened, 0);
     assert.equal(writes(w), 0);
     assert.equal(attemptOf(w.db, "app", 5)!.state, "passed");
-    assert.equal(collectDue(w.db), false);
   });
 
   test("an existing PR from our branch is adopted: no push, no create, comment once", async () => {
@@ -539,14 +537,6 @@ describe("opening the PR is gated and repeatable", () => {
 });
 
 describe("lane helpers", () => {
-  test("fixDue ignores retry rows of a repo whose approval was revoked", () => {
-    const db = fresh();
-    db.prepare("INSERT INTO fix_attempts (repo, number, main_sha, text_hash, state, round, created_at, updated_at) VALUES ('app', 5, 'a', 'h', 'retry', 1, ?, ?)").run(T0, T0);
-    assert.equal(fixDue(db, "app"), true);
-    setFixIssueApproval(db, "op", "app", false);
-    assert.equal(fixDue(db, "app"), false);
-  });
-
   test("warmKeyOf yields a key the task store accepts", () => {
     const ok = /^[a-z0-9][a-z0-9-]{0,63}$/;
     for (const n of ["App.Core", "_x", "Foo_Bar", "a".repeat(80), "-lead", "ok-name"]) assert.match(warmKeyOf(n), ok);

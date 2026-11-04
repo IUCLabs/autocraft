@@ -8,7 +8,7 @@ import type { Action, ItemFacts, ItemPlan, ItemState, ItemView, PrFacts } from "
 
 const act = (kind: Action["kind"], head: string | null, params?: Record<string, unknown>): Action => ({ kind, head, ...(params ? { params } : {}) });
 
-/** Why the item would become a scope decision, or null (decide/select.ts reasonOf). */
+/** Why the item would become a scope decision, or null. */
 export function scopeReason(f: ItemFacts): "needs-decision" | "scope-disagreement" | null {
   const c = f.classification;
   if (c.status === "settled" && c.flags.includes("needs decision")) return "needs-decision";
@@ -30,7 +30,7 @@ function fixCandidate(f: ItemFacts): boolean {
 /** Jev and Haiku chose different labels and it is not a scope call: Sonnet refereed it, or still has to. */
 const labelDisagreement = (f: ItemFacts): boolean => f.classification.status === "disagree" && scopeReason(f) !== "scope-disagreement";
 
-/** A scope decision should be asked: the reason holds and no decision or later stage covers the item (decide/select.ts selectCandidates, without its scope filters). */
+/** A scope decision should be asked: the reason holds and no decision or later stage covers the item. */
 const scopeNeeded = (f: ItemFacts): boolean => scopeReason(f) !== null && !f.scope.covered && !f.scope.pastClassified;
 
 export function itemState(f: ItemFacts): ItemState {
@@ -55,27 +55,29 @@ export function decideItem(f: ItemFacts): ItemPlan {
   const actions: Action[] = [];
 
   // classify-new: Jev for items without a verdict or whose classifier input changed (unless Haiku classified the item alone at this input);
-  // Haiku for items Jev is unsure of that have no Haiku verdict as new as Jev's. runner/classify.ts dueItems, haikuDue.
+  // Haiku for items Jev is unsure of that have no Haiku verdict as new as Jev's.
   if (f.run && live) {
     const jevDue = !c.haiku?.aloneCurrent && (!c.jev || c.jev.changed);
     const haikuDue = !!c.jev && c.jev.unsure && (!c.haiku || c.haiku.at < c.jev.at);
     if (jevDue || haikuDue) actions.push(act("classify", null, { source: jevDue ? "jev" : "haiku" }));
   }
-  // referee: classify/referee.ts refereeCandidates (open, not a draft, not held, in scope).
+  // referee: open, not a draft, not held, in scope.
   if (f.run && live && !f.draft && state === "referee-due") actions.push(act("referee", null));
-  // prioritize: priority/index.ts DUE_WHERE.
+  // prioritize: no priority row at the current text hash.
   if (live && f.priorityHash !== f.embedHash) actions.push(act("prioritize", null));
-  // embed: embed/store.ts pending (every tracked item; no scope test).
+  // embed: every open item, with no scope test.
   if (f.embeddedHash !== f.embedHash) actions.push(act("embed", null));
-  // dupes: items to scan (dupes/scan.ts scanPending), pairs to check (check.ts uncheckedPairs), groups to ask (decide.ts groupsToAsk).
+  // dupes: items to scan, pairs to check, groups to ask.
   const scan = live && f.embeddedHash === f.embedHash && f.scannedHash !== f.embedHash;
   if (scan || f.pairsToCheck > 0 || f.inGroupToAsk) actions.push(act("dupes", null, { scan, pairs: f.pairsToCheck, group: f.inGroupToAsk }));
+  // dupe-answer: operator answers to duplicate decisions that change no GitHub state. The pilot test is in the loader.
+  if (f.dupeAnswers.length) actions.push(act("dupe-answer", null, { decisions: f.dupeAnswers }));
   if (f.inCompareSet) actions.push(act("dupes-compare", null));
-  // decide: a new scope decision (decide/select.ts selectCandidates), or Opus's recommendation for an open one (recommend.ts backfillIds).
+  // decide: a new scope decision, or Opus's recommendation for an open one.
   if (f.run && live && !f.draft && state === "scope-due") actions.push(act("decide", null, { source: "new" }));
   else if (live && !f.held && f.scope.recommend && f.scope.recommend.failures < RECOMMEND_MAX_FAILURES
     && (f.scope.recommend.failedAt === null || Date.parse(f.scope.recommend.failedAt) < f.now - RECOMMEND_RETRY_MS)) actions.push(act("decide", null, { source: "recommend" }));
-  // label: labels/plan.ts planLabels and github.ts labelsToApply. The repo's labelling approval is applied by gates().
+  // label: the repo's labelling approval is applied by gates().
   if (f.run && live && f.held !== "backlog") {
     const settled = c.status === "settled" && c.label ? { type: c.label, security: c.flags.includes("security"), needsDecision: c.flags.includes("needs decision") } : null;
     const add = labelsToAdd(settled, f.labels.pluginAnswer, f.labels.existing);
@@ -83,14 +85,14 @@ export function decideItem(f: ItemFacts): ItemPlan {
   }
 
   const backlog = f.held === "backlog";
-  // act: answers that close the item (act/index.ts pending: in scope, or asked by a security scan; not held by Backlog; no final action row yet)
-  // and Close? questions for PRs the final review says close (closeCandidates). Selecting applies nothing; the repo's comment approval is applied by gates().
+  // act: answers that close the item (in scope, or asked by a security scan; not held by Backlog; no final action row yet)
+  // and Close? questions for PRs the final review says close (asked once per head). Selecting applies nothing; the repo's comment approval is applied by gates().
   for (const t of f.answeredClose) {
     if ((f.inScope || t.security) && !backlog && (t.action === null || t.action === "failed")) actions.push(act("act", null, { bucket: t.kind, decisionId: t.decisionId, security: t.security }));
   }
   if (live && !backlog && f.kind === "pr" && f.closeReview && f.closeReview.atHead && !f.closeReview.asked) actions.push(act("act", f.closeReview.head, { bucket: "close", ask: true }));
-  // fixissue: a retry round (fixissue/index.ts fixDue, now with the Backlog hold) or a new candidate (fixissue/candidates.ts candidateIssues).
-  // fixissue-collect: finished build tasks, or a passed fix to open (fixissue/index.ts collectDue and the step's own Backlog hold).
+  // fixissue: a retry round, or a new candidate; a Backlog hold stops both.
+  // fixissue-collect: finished build tasks, or a passed fix to open.
   const fix = f.fix, a = fix.attempt;
   if (f.kind === "issue") {
     if (f.inScope && !backlog && a?.state === "retry") actions.push(act("fixissue", null, { source: "retry" }));

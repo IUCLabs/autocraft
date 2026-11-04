@@ -11,18 +11,14 @@ import { seedPremergeClean } from "./helpers/premerge.ts";
 const { connect } = await import("../src/db.ts");
 const { inPilot, pilotItems, PilotError, setPilot, setRepoPipeline } = await import("../src/pilot.ts");
 const { notHeldSql } = await import("../src/dupes/held.ts");
-const { dueItems } = await import("../src/runner/classify.ts");
-const { dueItems: priorityDue, duePriorityCount } = await import("../src/priority/index.ts");
+const { dueFacts } = await import("./planned.ts");
+const { plannedItems } = await import("../src/core/select-items.ts");
 const { planLabels } = await import("../src/labels/plan.ts");
-const { scanPending } = await import("../src/dupes/scan.ts");
 const { uncheckedPairs } = await import("../src/dupes/check.ts");
 const { buildQueue, eligible } = await import("../src/merge/queue.ts");
-const { closeCandidates, pending: actPending } = await import("../src/act/index.ts");
-const { selectIssues } = await import("../src/fixissue/index.ts");
 const { selectFixups } = await import("../src/fixup/candidates.ts");
 const { setCommentApproval } = await import("../src/act/approval.ts");
 const { setPushApproval } = await import("../src/fixup/approval.ts");
-const { fixDue } = await import("../src/fixissue/index.ts");
 const { setFixIssueApproval } = await import("../src/fixissue/approval.ts");
 
 mkdirSync(SCRATCH, { recursive: true });
@@ -62,11 +58,10 @@ test("with a pilot, candidates are the listed items and the Fix PRs of listed is
   assert.deepEqual(pilotItems(db), ["app#1", "app#10"]);
   const want = [1, 10, 11];
   assert.deepEqual(held(), want, "decide, referee, review, opus, verify, fix-up, fix (notHeldSql)");
-  assert.deepEqual(numbers(dueItems(db, "run", "new").due), want, "classify");
-  assert.deepEqual(numbers(priorityDue(db, 100)), want, "prioritize");
-  assert.equal(duePriorityCount(db), want.length, "prioritize count");
+  assert.deepEqual(numbers(dueFacts(db, "classify", { run: "run", bucket: "jev" })), want, "classify");
+  assert.deepEqual(numbers(dueFacts(db, "prioritize")), want, "prioritize");
   assert.deepEqual(numbers(planLabels(db, "app")), want, "labels");
-  assert.deepEqual(numbers(scanPending(db, "m")), [1], "dupes subjects");
+  assert.deepEqual(numbers(plannedItems(db, "dupes", { model: "m" }).filter((p) => p.action.params?.scan).map((p) => p.facts)), [1], "dupes subjects");
   assert.deepEqual(uncheckedPairs(db, 10).map((p) => p.a), [1], "dupes pairs with a pilot subject");
   assert.equal(inPilot(db, "app", 11), true);
   assert.equal(inPilot(db, "app", 111), false);
@@ -77,7 +72,7 @@ test("a repo with the pipeline off has no item in scope, with or without a pilot
   assert.ok(setRepoPipeline(db, "tester", "app", false));
   assert.deepEqual(held(), []);
   assert.equal(inPilot(db, "app", 12), false);
-  assert.equal(duePriorityCount(db), 0);
+  assert.deepEqual(dueFacts(db, "prioritize"), []);
   setPilot(db, "tester", ["app#1"]);
   assert.deepEqual(held(), []);
   setPilot(db, "tester", []);
@@ -92,9 +87,9 @@ test("a fix retry is due only for a pilot issue", () => {
   setFixIssueApproval(db, "tester", "app", true);
   db.prepare("UPDATE fix_attempts SET state = 'retry' WHERE number = 2").run();
   setPilot(db, "tester", ["app#1"]);
-  assert.equal(fixDue(db, "app"), false);
+  assert.equal(dueFacts(db, "fixissue", { repo: "app", bucket: "retry" }).length, 0);
   setPilot(db, "tester", ["app#2"]);
-  assert.equal(fixDue(db, "app"), true);
+  assert.equal(dueFacts(db, "fixissue", { repo: "app", bucket: "retry" }).length, 1);
   setPilot(db, "tester", []);
 });
 
@@ -153,8 +148,8 @@ const nums = (xs: { number: number }[]) => xs.map((x) => x.number).sort((a, b) =
 test("the GitHub-writing stages see every item without a pilot", () => {
   assert.deepEqual(nums(queued()), [21, 22, 23, 26, 27, 28, 29]);
   assert.deepEqual(nums(queued().filter(eligible)), [21, 22, 23]);
-  assert.deepEqual(nums(closeCandidates(W, "app")), [24, 25]);
-  assert.deepEqual(nums(selectIssues(W, "app")), [31, 32]);
+  assert.deepEqual(nums(plannedItems(W, "act", { repo: "app" }).filter((p) => p.action.params?.ask).map((p) => p.facts)), [24, 25]);
+  assert.deepEqual(nums(dueFacts(W, "fixissue", { repo: "app", bucket: "new" })), [31, 32]);
   const fx = selectFixups(W, "app");
   assert.deepEqual(nums(fx.fix), [26, 27]);
   assert.deepEqual(nums(fx.ask), [28, 29]);
@@ -165,8 +160,8 @@ test("with a pilot they see only pilot items and the Fix PR of a pilot issue", (
   setPilot(W, "tester", ["app#21", "app#24", "app#26", "app#29", "app#30", "app#31"]);
   assert.deepEqual(nums(queued()), [21, 23, 26, 29], "merge queue (single and batch candidates)");
   assert.deepEqual(nums(queued().filter(eligible)), [21, 23]);
-  assert.deepEqual(nums(closeCandidates(W, "app")), [24]);
-  assert.deepEqual(nums(selectIssues(W, "app")), [31]);
+  assert.deepEqual(nums(plannedItems(W, "act", { repo: "app" }).filter((p) => p.action.params?.ask).map((p) => p.facts)), [24]);
+  assert.deepEqual(nums(dueFacts(W, "fixissue", { repo: "app", bucket: "new" })), [31]);
   const fx = selectFixups(W, "app");
   assert.deepEqual(nums(fx.fix), [26]);
   assert.deepEqual(nums(fx.ask), [29]);
@@ -180,8 +175,8 @@ test("act applies answered closes only to pilot items", () => {
     .run("app#24:close@sha24", 24, at, at);
   W.prepare("INSERT INTO decisions (id, kind, repo, number, question, options, asked_at, answer, answered_by, answered_at) VALUES (?, 'close', 'app', ?, 'q', '[]', ?, 'close', 'op', ?)")
     .run("app#25:close@sha25", 25, at, at);
-  assert.deepEqual(nums(actPending(W, "app")), [24, 25]);
+  assert.deepEqual(nums(plannedItems(W, "act", { repo: "app" }).filter((p) => !p.action.params?.ask).map((p) => p.facts)), [24, 25]);
   setPilot(W, "tester", ["app#24"]);
-  assert.deepEqual(nums(actPending(W, "app")), [24]);
+  assert.deepEqual(nums(plannedItems(W, "act", { repo: "app" }).filter((p) => !p.action.params?.ask).map((p) => p.facts)), [24]);
   setPilot(W, "tester", []);
 });

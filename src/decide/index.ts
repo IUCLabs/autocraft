@@ -15,8 +15,11 @@ import { ask } from "../decisions.ts";
 import { trackedNames } from "../repos.ts";
 import { CLAUDE_PROMPTS } from "../prompts/index.ts";
 import { buildDecision } from "./decision.ts";
-import { backfillIds, recommend } from "./recommend.ts";
-import { latestJevRun, selectCandidates, type Candidate, type Reason } from "./select.ts";
+import { recommend, recommendIds } from "./recommend.ts";
+import { latestJevRun, type Candidate, type Reason } from "./select.ts";
+import { settledLookup } from "../classify/settled.ts";
+import { scopeReason } from "../core/decide-item.ts";
+import { plannedItems } from "../core/select-items.ts";
 
 const PROMPT = CLAUDE_PROMPTS["decide.summary"];
 
@@ -83,7 +86,10 @@ export async function runDecide(db: DatabaseSync, params: DecideParams = {}, log
   const picked: Candidate[] = [];
   if (!run) log("decide: no classification run with Jev verdicts");
   else {
-    const all = selectCandidates(db, run, params.repos);
+    const lookup = settledLookup(db, run);
+    const all: Candidate[] = plannedItems(db, "decide", { run, bucket: "new" })
+      .filter((p) => !params.repos?.length || params.repos.includes(p.facts.repo))
+      .map((p) => ({ repo: p.facts.repo, number: p.facts.number, reason: scopeReason(p.facts)!, settled: lookup(p.facts.repo, p.facts.number) }));
     picked.push(...all.slice(0, total));
     const reasonKey: Record<Reason, "needsDecision" | "scopeDisagreement"> = { "needs-decision": "needsDecision", "scope-disagreement": "scopeDisagreement" };
     for (const c of picked) {
@@ -103,7 +109,7 @@ export async function runDecide(db: DatabaseSync, params: DecideParams = {}, log
   // New decisions first, then open ones that never had a model recommendation, within the step's limit.
   const room = Math.max(0, total - picked.length);
   const first = askedIds.slice(0, room);
-  const ids = [...first, ...backfillIds(db, room - first.length).filter((id) => !first.includes(id))];
+  const ids = [...first, ...recommendIds(db).slice(0, Math.max(0, room - first.length)).filter((id) => !first.includes(id))];
   if (picked.length || ids.length) result.usageRun = usageRun;
   if (ids.length) {
     result.recommended = await recommend(db, ids, {

@@ -238,12 +238,22 @@ export function groupsToAsk(db: DatabaseSync, repo?: string): GroupPlan[] {
   return groupPlans(db, repo).filter((p) => p.closing && !getDecision(db, idFor(db, p)));
 }
 
-/** Answers to apply: pair decisions answered other than close, and group decisions whose answer is not yet in the roles. */
-export function answersToApply(db: DatabaseSync): boolean {
-  return !!db.prepare(`SELECT 1 FROM decisions d WHERE d.kind = 'duplicate' AND d.answer IS NOT NULL AND d.answer <> 'backlog' AND d.applied_at IS NULL
+/**
+ * Answers to apply: pair decisions answered other than close, and group decisions whose answer is not yet in the roles.
+ * Each is listed with the items it concerns (a pair's two, a group's members), so the item plans can carry it.
+ */
+export function answersToApply(db: DatabaseSync): { id: string; refs: string[] }[] {
+  const rows = db.prepare(`SELECT d.id, d.repo, d.number FROM decisions d WHERE d.kind = 'duplicate' AND d.answer IS NOT NULL AND d.answer <> 'backlog' AND d.applied_at IS NULL
     AND d.answered_by IN (SELECT login FROM access WHERE role = 'operator')
     AND ((d.id NOT LIKE '%:dupegroup:%' AND d.answer <> 'close' AND ${pilotSqlFor("d.repo", "d.number")})
-      OR (d.id LIKE '%:dupegroup:%' AND EXISTS (SELECT 1 FROM dupe_group_items gi WHERE gi.decision_id = d.id AND ${pilotSqlFor("gi.repo", "gi.number")}) AND COALESCE((SELECT g.applied_answer FROM dupe_groups g WHERE g.decision_id = d.id), '') <> d.answer)) LIMIT 1`).get();
+      OR (d.id LIKE '%:dupegroup:%' AND EXISTS (SELECT 1 FROM dupe_group_items gi WHERE gi.decision_id = d.id AND ${pilotSqlFor("gi.repo", "gi.number")}) AND COALESCE((SELECT g.applied_answer FROM dupe_groups g WHERE g.decision_id = d.id), '') <> d.answer))`).all() as
+    { id: string; repo: string | null; number: number | null }[];
+  const members = db.prepare("SELECT repo, number FROM dupe_group_items WHERE decision_id = ?");
+  return rows.map((d) => {
+    if (d.id.includes(":dupegroup:")) return { id: d.id, refs: (members.all(d.id) as { repo: string; number: number }[]).map((m) => `${m.repo}#${m.number}`) };
+    const other = /@(\d+)$/.exec(d.id)?.[1];
+    return { id: d.id, refs: [`${d.repo}#${d.number}`, ...(other ? [`${d.repo}#${other}`] : [])] };
+  });
 }
 
 function markDistinct(db: DatabaseSync, repo: string, numbers: number[], at: string): void {
@@ -289,11 +299,13 @@ function rekeep(db: DatabaseSync, id: string, n: number, repo: string): void {
  * Operator answers. A pair decision answered "not a duplicate" or "keep both" stores the pair as distinct for
  * good. A group decision answered "not duplicates" does so for every pair of the group; "keep #N instead"
  * rewrites the group's roles; "use this answer" needs no change. Closing is the act step's.
+ * With `only`, just the decisions whose ids it holds.
  */
-export function applyDuplicateAnswers(db: DatabaseSync, at: string): number {
+export function applyDuplicateAnswers(db: DatabaseSync, at: string, only?: ReadonlySet<string>): number {
   let n = 0;
   for (const a of actionable(db)) {
     if (a.kind !== "duplicate" || a.number === null || a.repo === null) continue;
+    if (only && !only.has(a.id)) continue;
     if (a.id.includes(":dupegroup:")) {
       const g = db.prepare("SELECT applied_answer FROM dupe_groups WHERE decision_id = ?").get(a.id) as { applied_answer: string | null } | undefined;
       if (!g || g.applied_answer === a.answer) continue;

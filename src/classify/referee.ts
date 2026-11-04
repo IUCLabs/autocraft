@@ -8,9 +8,6 @@ import { loadItems, pool } from "./run.ts";
 import { runModelStep } from "../agents/step.ts";
 import { REFEREE_SONNET } from "../agents/steps.ts";
 import { rng, spread } from "./sample.ts";
-import { isScope } from "../decide/select.ts";
-import { notHeldSql } from "../dupes/held.ts";
-import { settle, topOf } from "./settled.ts";
 
 export function pickDisagreements(pairs: Pair[], count: number, seed: number): Pair[] {
   const dis = pairs.filter((p) => p.jev.type_label !== p.haiku.type_label);
@@ -62,34 +59,6 @@ export async function refereeItems(db: DatabaseSync, runId: string, items: Item[
     total += got;
   }), () => claudeRoom(db), { first: true });
   return total;
-}
-
-/**
- * Open items in `run` where Jev and Haiku disagree, at least one label is outside the scope set (scope-vs-scope goes
- * to Decide), and no referee answer is as new as both verdicts. Highest work rank first.
- */
-export function refereeCandidates(db: DatabaseSync, run: string, limit = Infinity): Item[] {
-  const rows = db.prepare(`SELECT i.repo, i.number, i.kind, COALESCE(i.title, '') AS title, COALESCE(i.body, '') AS body,
-      i.additions + i.deletions AS lines_changed, i.changed_files AS files_changed, i.author_association,
-      j.type_label AS jl, j.flags AS jf, j.probs AS jp, j.at AS jat, h.type_label AS hl, h.flags AS hf, h.at AS hat,
-      (SELECT MAX(s.at) FROM classifications s WHERE s.repo = j.repo AND s.number = j.number AND s.classifier = 'sonnet' AND s.run_id = j.run_id
-         AND json_extract(CASE WHEN json_valid(s.probs) THEN s.probs END, '$.sure') IS NOT NULL) AS sat
-    FROM items i JOIN tracked_repos t ON t.name = i.repo
-    JOIN classifications j ON j.repo = i.repo AND j.number = i.number AND j.classifier = 'jev' AND j.run_id = :run
-    JOIN classifications h ON h.repo = i.repo AND h.number = i.number AND h.classifier = 'haiku' AND h.run_id = :run
-    LEFT JOIN item_rank p ON p.repo = i.repo AND p.number = i.number
-    WHERE i.state = 'OPEN' AND COALESCE(i.is_draft, 0) = 0 AND j.type_label <> h.type_label AND ${notHeldSql("i")}
-    ORDER BY p.score IS NULL, p.score DESC, i.kind = 'pr' DESC, i.created_at, i.repo, i.number`).all({ run }) as unknown as
-    (Item & { jl: string; jf: string | null; jp: string | null; jat: string; hl: string; hf: string | null; hat: string; sat: string | null })[];
-  const out: Item[] = [];
-  for (const r of rows) {
-    if (out.length >= limit) break;
-    if (r.sat !== null && r.sat >= r.jat && r.sat >= r.hat) continue;
-    const s = settle({ label: r.jl, flags: [], top: topOf(r.jp) }, { label: r.hl, flags: [] });
-    if (s.status !== "disagree" || (isScope(r.jl) && isScope(r.hl))) continue;
-    out.push({ repo: r.repo, number: r.number, kind: r.kind, title: r.title, body: r.body, lines_changed: r.lines_changed, files_changed: r.files_changed, author_association: r.author_association });
-  }
-  return out;
 }
 
 /** Marks a varied subset (by kind and by whom Sonnet sided with) for the owner to check by hand. */

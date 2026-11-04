@@ -6,7 +6,7 @@ import { describe, test } from "node:test";
 import { useTestAccount } from "./accounts-fixture.ts";
 import { setRunner, type Runner } from "../src/classify/run.ts";
 import { connect } from "../src/db.ts";
-import { selectCandidates as decideCandidates } from "../src/decide/select.ts";
+import { decideCandidates } from "./planned.ts";
 import { toDecision } from "../src/dash/api/decisions.ts";
 import type { DecisionRow } from "../src/decisions.ts";
 import { selectFixups } from "../src/fixup/candidates.ts";

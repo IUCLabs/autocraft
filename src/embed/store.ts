@@ -5,6 +5,7 @@ import type { DatabaseSync } from "node:sqlite";
 import type { Embedder } from "./model.ts";
 import { fillEmbedHashes } from "../itemhash.ts";
 import { itemText } from "./text.ts";
+import { plannedItems } from "../core/select-items.ts";
 
 export type Todo = { repo: string; number: number; text: string; hash: string };
 
@@ -12,21 +13,25 @@ export const toBlob = (v: Float32Array): Uint8Array => new Uint8Array(v.buffer, 
 export const fromBlob = (b: Uint8Array): Float32Array =>
   new Float32Array(b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength));
 
-// Tracked items whose text or model differs from the stored vector (every
-// tracked item with `all`), shortest text first so batches pad little.
+const todoOf = (db: DatabaseSync, repo: string, number: number, hash: string): Todo => {
+  const t = db.prepare("SELECT title, body FROM main.items WHERE repo = ? AND number = ?").get(repo, number) as { title: string | null; body: string | null };
+  return { repo, number, text: itemText(t.title, t.body), hash };
+};
+
+/**
+ * What to embed, shortest text first so batches pad little: the open items the Plans send here (every tracked item with `all`).
+ * Closed items have no Plan; the ones with a missing or stale vector are added so that duplicate scans still find them.
+ */
 export function pending(db: DatabaseSync, modelId: string, all = false): Todo[] {
   fillEmbedHashes(db);
   // The first query runs on covering indexes; only the rows that differ are read in full.
   const diff = db.prepare(`SELECT i.repo, i.number, i.embed_hash AS hash FROM main.items i
     LEFT JOIN main.item_embeddings e ON e.repo = i.repo AND e.number = i.number
     WHERE i.repo IN (SELECT name FROM main.tracked_repos)
-      AND (:all OR e.model IS NOT :model OR e.hash IS NOT i.embed_hash)`).all({ all: all ? 1 : 0, model: modelId }) as unknown as
+      AND (:all OR (i.state <> 'OPEN' AND (e.model IS NOT :model OR e.hash IS NOT i.embed_hash)))`).all({ all: all ? 1 : 0, model: modelId }) as unknown as
     { repo: string; number: number; hash: string }[];
-  const get = db.prepare("SELECT title, body FROM main.items WHERE repo = ? AND number = ?");
-  return diff.map((r) => {
-    const t = get.get(r.repo, r.number) as { title: string | null; body: string | null };
-    return { repo: r.repo, number: r.number, text: itemText(t.title, t.body), hash: r.hash };
-  }).sort((a, b) => a.text.length - b.text.length);
+  const planned = all ? [] : plannedItems(db, "embed", { model: modelId, run: null }).map((p) => ({ repo: p.facts.repo, number: p.facts.number, hash: p.facts.embedHash }));
+  return [...planned, ...diff].map((r) => todoOf(db, r.repo, r.number, r.hash)).sort((a, b) => a.text.length - b.text.length);
 }
 
 // Vectors of items that left the mirror or the tracked repos.

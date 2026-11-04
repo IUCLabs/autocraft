@@ -10,10 +10,9 @@ import { ask, getDecision, optionsOf, factsOf } from "../src/decisions.ts";
 import { compareAgain, runDupeCompare, type CompareDeps, type Reply } from "../src/dupes/compare.ts";
 import { applyDuplicateAnswers } from "../src/dupes/decide.ts";
 import { duplicateHeld, notHeldSql } from "../src/dupes/held.ts";
-import { compareWork, dupesWork } from "../src/dupes/index.ts";
+import { compareWork, dupesWork, decideCandidates } from "./planned.ts";
 import { dueSets, DROP_PAUSE_MS, RULE_RETRY_MS } from "../src/dupes/plan.ts";
 import { askGroupDecisions, resetGroupAnswer } from "../src/dupes/decide.ts";
-import { selectCandidates } from "../src/decide/select.ts";
 import { SCRATCH } from "./scratch.ts";
 
 mkdirSync(SCRATCH, { recursive: true });
@@ -427,7 +426,7 @@ describe("review fixes: queue, retries, atomic writes", () => {
     const db = fresh([{ n: 1 }, { n: 2 }], [[1, 2]]);
     await runDupeCompare(db, {}, () => {}, deps(() => issueReply(1, [2])));
     db.prepare("INSERT INTO classifications (repo, number, classifier, run_id, at, type_label, flags, probs) VALUES ('app', 1, 'jev', 'r1', ?, 'missing feature', '[\"needs decision\"]', '{\"top\":0.95}')").run(T0);
-    assert.deepEqual(selectCandidates(db, "r1", ["app"]).map((c) => c.number), [1]);
+    assert.deepEqual(decideCandidates(db, "r1", ["app"]).map((c) => c.number), [1]);
   });
 });
 

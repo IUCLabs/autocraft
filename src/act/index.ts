@@ -26,15 +26,14 @@ import { actionable, ask, factsOf, getDecision, type Actionable, type DecisionRo
 import { HEAD_FACT } from "../merge/queue.ts";
 import { fillReviewSummaries, reviewText } from "../review/summary.ts";
 import { Client, type Querier } from "../mirror.ts";
-import { headOf, sizeOf } from "../review/candidates.ts";
-import { backlogHeld, backlogHeldSql, notOwnIntegrationSql } from "../dupes/held.ts";
-import { applyDuplicateAnswers } from "../dupes/decide.ts";
+import { sizeOf } from "../review/candidates.ts";
+import { applyPlannedAnswers } from "../dupes/apply.ts";
 import { commentApprovalOf } from "./approval.ts";
 import { CLI_BY, type By } from "../core/gates.ts";
 import { guardItem, guardRepo } from "../core/guard.ts";
 import { actOnGroups, type GroupIo } from "./dupe-groups.ts";
 import { cleanReason, duplicateComment, ORG, prCloseComment, scopeCloseComment } from "./templates.ts";
-import { inPilot, pilotSql } from "../pilot.ts";
+import { plannedItems } from "../core/select-items.ts";
 
 const ACTOR = "act";
 const NO_IO: GroupIo = { live: async () => null, comment: async () => "", close: async () => {} };
@@ -93,22 +92,13 @@ const short = (sha: string) => sha.slice(0, 7);
 
 // ---- Close this PR? ------------------------------------------------------------
 
-type ReviewRow = { repo: string; number: number; head_oid: string; reason: string; sure: number | null; lines: number; title: string | null; author: string | null;
-  i_head: string | null; updated_at: string | null; c_head: string | null; c_at: string | null };
+type ReviewRow = { repo: string; number: number; head_oid: string; reason: string; sure: number | null; lines: number; title: string | null; author: string | null };
 
-/** Open PRs whose latest Opus review says close at the PR's current head and that have no Close? decision at that head. */
-export function closeCandidates(db: DatabaseSync, repo: string): ReviewRow[] {
-  const rows = db.prepare(`
-    SELECT r.repo, r.number, r.head_oid, r.reason, r.sure, COALESCE(i.additions, 0) + COALESCE(i.deletions, 0) AS lines, i.title, i.author,
-           i.head_oid AS i_head, i.updated_at, c.head_oid AS c_head, c.fetched_at AS c_at
-    FROM final_reviews r
-    JOIN items i ON i.repo = r.repo AND i.number = r.number AND i.kind = 'pr' AND i.state = 'OPEN' AND ${notOwnIntegrationSql("i")} AND ${pilotSql("i")} AND NOT ${backlogHeldSql("i")}
-    LEFT JOIN pr_checks c ON c.repo = r.repo AND c.number = r.number
-    WHERE r.repo = ? AND r.verdict = 'close'
-      AND r.head_oid = (SELECT r2.head_oid FROM opus_reviews r2 WHERE r2.repo = r.repo AND r2.number = r.number AND r2.verdict IS NOT NULL ORDER BY r2.at DESC, r2.rowid DESC LIMIT 1)
-    ORDER BY r.number`).all(repo) as ReviewRow[];
-  const has = db.prepare("SELECT 1 FROM decisions WHERE id = ?");
-  return rows.filter((r) => headOf({ head_oid: r.i_head, updated_at: r.updated_at, c_head: r.c_head, c_at: r.c_at }) === r.head_oid && !has.get(closeDecisionId(r.repo, r.number, r.head_oid)));
+/** The final close reviews behind the Close? questions the Plans ask for in this repo. */
+function closeRows(db: DatabaseSync, repo: string): ReviewRow[] {
+  const get = db.prepare(`SELECT r.repo, r.number, r.head_oid, r.reason, r.sure, COALESCE(i.additions, 0) + COALESCE(i.deletions, 0) AS lines, i.title, i.author
+    FROM final_reviews r JOIN items i ON i.repo = r.repo AND i.number = r.number WHERE r.repo = ? AND r.number = ? AND r.head_oid = ? AND r.verdict = 'close'`);
+  return plannedItems(db, "act", { repo }).filter((p) => p.action.params?.ask).map((p) => get.get(repo, p.facts.number, p.action.head) as ReviewRow | undefined).filter((r): r is ReviewRow => !!r);
 }
 
 export function closeQuestion(r: ReviewRow, why: string | null = null): Record<string, unknown> & { id: string } {
@@ -132,7 +122,7 @@ export function closeQuestion(r: ReviewRow, why: string | null = null): Record<s
 }
 
 export function askCloseDecisions(db: DatabaseSync, repo: string, at: string): string[] {
-  const qs = closeCandidates(db, repo).map((r) => closeQuestion(r, reviewText(db, r.repo, r.number, r.head_oid)?.why ?? null));
+  const qs = closeRows(db, repo).map((r) => closeQuestion(r, reviewText(db, r.repo, r.number, r.head_oid)?.why ?? null));
   if (qs.length) ask(db, qs.map((q) => ({ ...q, asked_at: at })));
   fillReviewSummaries(db, at, repo);
   return qs.map((q) => q.id);
@@ -142,34 +132,17 @@ export function askCloseDecisions(db: DatabaseSync, repo: string, at: string): s
 
 type Target = { decisionId: string; kind: "scope" | "close" | "duplicate" | "merge"; repo: string; number: number };
 
-/** Items an operator's `close` answer applies to in this repo, minus those an exception changes. */
-function targetsOf(a: Actionable, repo: string): Target[] {
-  if (a.kind !== "scope" && a.kind !== "close" && a.kind !== "duplicate" && a.kind !== "merge") return [];
-  if (a.kind !== "scope" && a.number === null) return [];
-  const out: Target[] = [];
-  for (const it of a.items) {
-    if (it.repo !== repo) continue;
-    const ex = a.exceptions.find((e) => e.repo === it.repo && e.number === it.number);
-    if ((ex ? ex.answer : a.answer) === "close") out.push({ decisionId: a.id, kind: a.kind, repo, number: it.number });
-  }
-  return out;
-}
-
 type ActionRow = { id: number; decision_id: string; repo: string; number: number; kind: string; state: string; comment_url: string | null; reason: string | null; created_at: string };
 const rowOf = (db: DatabaseSync, t: Target): ActionRow | undefined =>
   db.prepare("SELECT * FROM actions WHERE decision_id = ? AND repo = ? AND number = ? AND kind = ?").get(t.decisionId, t.repo, t.number, KIND) as ActionRow | undefined;
 
 /** `asked_by` of the decisions a security scan asks. An operator's close answer to one applies in any repo approved for commenting, in the pipeline or not. */
 export const SECURITY_ASKER = "security-scan";
-const securityAsked = (db: DatabaseSync, id: string): boolean =>
-  (db.prepare("SELECT asked_by FROM decisions WHERE id = ?").get(id) as { asked_by: string | null } | undefined)?.asked_by === SECURITY_ASKER;
 
-/** Answered-close targets in the repo without a final (done or skipped) action row. */
-export function pending(db: DatabaseSync, repo: string): Target[] {
-  return actionable(db).flatMap((a) => targetsOf(a, repo)).filter((t) => (inPilot(db, t.repo, t.number) || securityAsked(db, t.decisionId)) && !backlogHeld(db, t.repo, t.number)).filter((t) => {
-    const r = rowOf(db, t);
-    return !r || r.state === "failed";
-  });
+/** Answered-close targets in the repo that the Plans send here: no final (done or skipped) action row yet. */
+function pending(db: DatabaseSync, repo: string, refs?: string[]): Target[] {
+  return plannedItems(db, "act", { repo, refs }).filter((p) => !p.action.params?.ask)
+    .map((p): Target => ({ decisionId: p.action.params!.decisionId as string, kind: p.action.params!.bucket as Target["kind"], repo, number: p.facts.number }));
 }
 
 // ---- GitHub ----------------------------------------------------------------------
@@ -236,7 +209,7 @@ export async function runAct(db: DatabaseSync, params: ActParams, log: (line: st
   const w: Writer = { db, login: ACTOR };
   const summary: ActSummary = { repo, dryRun, asked: [], done: [], skipped: [], failed: [], note: null };
   // Answers that need no GitHub write are applied whether or not commenting is approved.
-  if (!dryRun) applyDuplicateAnswers(db, at());
+  if (!dryRun) applyPlannedAnswers(db, at(), repo);
   if (!commentApprovalOf(db, repo)) {
     summary.note = `commenting in ${repo} is not approved`;
     log(`act ${repo}: ${summary.note}; nothing done`);
@@ -245,7 +218,7 @@ export async function runAct(db: DatabaseSync, params: ActParams, log: (line: st
   let todo = pending(db, repo);
   if (params.limit !== undefined) todo = todo.slice(0, params.limit);
   if (dryRun) {
-    summary.asked = closeCandidates(db, repo).map((r) => closeDecisionId(r.repo, r.number, r.head_oid));
+    summary.asked = closeRows(db, repo).map((r) => closeDecisionId(r.repo, r.number, r.head_oid));
     for (const id of summary.asked) log(`  would ask Close? ${id}`);
     for (const t of todo) log(`  would comment and close ${refOf(t)} (${t.decisionId})`);
     await actOnGroups(db, { repo, io: NO_IO, at, log, left: () => Infinity, handled: () => {}, dryRun: true });
@@ -266,7 +239,7 @@ export async function runAct(db: DatabaseSync, params: ActParams, log: (line: st
   // A decision is applied once none of its targets is left to do.
   const settle = (t: Target) => {
     const a = actionable(db).find((x) => x.id === t.decisionId);
-    if (a && !pending(db, repo).some((p) => p.decisionId === t.decisionId) && !targetsOfElsewhere(a, repo))
+    if (a && !pending(db, repo, a.items.filter((i) => i.repo === repo).map(refOf)).some((p) => p.decisionId === t.decisionId) && !targetsOfElsewhere(a, repo))
       db.prepare("UPDATE decisions SET applied_at = ? WHERE id = ? AND applied_at IS NULL").run(at(), t.decisionId);
   };
   const skip = (t: Target, reason: string) => {

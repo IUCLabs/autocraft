@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { describe, test } from "node:test";
 import type { DatabaseSync } from "node:sqlite";
-import { closeCandidates } from "../src/act/index.ts";
+import { closeCandidates } from "./planned.ts";
 import { setRunner, type Runner } from "../src/classify/run.ts";
 import { connect } from "../src/db.ts";
 import { setPushApproval } from "../src/fixup/approval.ts";

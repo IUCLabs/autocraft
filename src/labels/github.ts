@@ -7,7 +7,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { addLabels, createLabel, type Writer } from "../github/write.ts";
 import { Transient, type Querier } from "../mirror.ts";
 import { approvalOf } from "./approval.ts";
-import { planLabels, type PlanRow } from "./plan.ts";
+import { plannedItems } from "../core/select-items.ts";
 import { ALL_LABELS, type LabelDef } from "./set.ts";
 
 const ORG = "storytold";
@@ -66,19 +66,8 @@ export type ApplyOpts = { runId: string; limit?: number; apply: boolean; login?:
   /** Called with the running count of items labelled, after each batch. */
   onLabeled?: (labeled: number) => void };
 
-// Items a previous apply already labelled (resumability): the latest `labeled` stage row names every label we would add.
-function alreadyApplied(db: DatabaseSync, repo: string, r: PlanRow): boolean {
-  const s = db.prepare("SELECT note FROM main.stages WHERE repo = ? AND number = ? AND stage = 'labeled' ORDER BY at DESC, rowid DESC LIMIT 1")
-    .get(repo, r.number) as { note: string | null } | undefined;
-  if (!s?.note) return false;
-  const done = s.note.replace(/^added: /, "").split(", ");
-  return r.add.every((a) => done.some((d) => d.toLowerCase() === a.toLowerCase()));
-}
-
-/** The label additions an apply pass would make now: planned adds the previous apply has not already done. */
-export function labelsToApply(db: DatabaseSync, repo: string, runId?: string): PlanRow[] {
-  return planLabels(db, repo, runId).filter((r) => r.status === "add" && !alreadyApplied(db, repo, r));
-}
+/** An item the Plans give labels to, and the labels to add. */
+type Todo = { number: number; add: string[] };
 
 export async function applyLabels(db: DatabaseSync, client: Querier, repo: string, o: ApplyOpts): Promise<ApplyResult> {
   const wait = o.wait ?? (sleepMs as Wait);
@@ -88,7 +77,7 @@ export async function applyLabels(db: DatabaseSync, client: Querier, repo: strin
   if (o.apply && !approval) {
     throw new LabelsError(`${repo} is not approved for labelling. An operator approves it on the dashboard Repos page.`);
   }
-  let todo = labelsToApply(db, repo, o.runId);
+  let todo: Todo[] = plannedItems(db, "label", { repo, run: o.runId }).map((p) => ({ number: p.facts.number, add: p.action.params!.add as string[] }));
   if (o.limit !== undefined) todo = todo.slice(0, o.limit);
   const res: ApplyResult = { planned: todo.length, labeled: 0, failed: [], skipped: 0, batches: 0, dryRun: !o.apply };
   if (!o.apply) {
@@ -104,7 +93,7 @@ export async function applyLabels(db: DatabaseSync, client: Querier, repo: strin
     const chunk = todo.slice(i, i + BATCH);
     const started = Date.now();
     const ids = await nodeIds(client, repo, chunk.map((r) => r.number), wait);
-    const live = (r: PlanRow) => ids.get(r.number);
+    const live = (r: Todo) => ids.get(r.number);
     const gone = chunk.filter((r) => live(r)?.id && live(r)!.state && live(r)!.state !== "OPEN");
     for (const r of gone) {
       db.prepare("UPDATE main.items SET state = ? WHERE repo = ? AND number = ? AND state = 'OPEN'").run(live(r)!.state, repo, r.number);
@@ -164,8 +153,8 @@ async function nodeIds(client: Querier, repo: string, numbers: number[], wait: W
 }
 
 // Returns the numbers whose mutation succeeded. A failed batch is retried item by item.
-async function mutate(w: Writer, client: Querier, repo: string, rows: PlanRow[], ids: Map<number, string | null>, have: Repo, wait: Wait, runId: string, grants: Map<number, GuardedItem>): Promise<number[]> {
-  const run = (part: PlanRow[]): Promise<number[]> => addLabels(w, client, repo,
+async function mutate(w: Writer, client: Querier, repo: string, rows: Todo[], ids: Map<number, string | null>, have: Repo, wait: Wait, runId: string, grants: Map<number, GuardedItem>): Promise<number[]> {
+  const run = (part: Todo[]): Promise<number[]> => addLabels(w, client, repo,
     part.map((r) => ({ number: r.number, id: ids.get(r.number)!, labelIds: r.add.map((a) => have.labels.get(a.toLowerCase())!), names: r.add, g: grants.get(r.number)! })),
     (f) => retrying(f, wait), { run: runId });
   try {
