@@ -1,5 +1,5 @@
 // Verify, Fix-up and Act results for the Item page, varied by item number.
-import type { Item, ItemAction, ItemFixup, ItemPatchCheck, ItemPostmerge, ItemReviews, ItemVerification, TaskResult } from "../types";
+import type { Item, ItemAction, ItemFixup, ItemPatchCheck, ItemPostmerge, ItemPremerge, ItemReviews, ItemVerification, TaskResult } from "../types";
 
 const H = 3600_000;
 const NOW = Date.parse("2026-11-02T10:40:00Z");
@@ -103,6 +103,17 @@ export function postmergeFor(n: number, kind: Item["kind"], staff: boolean): Ite
       },
     ],
   };
+}
+
+export function premergeFor(n: number, kind: Item["kind"]): ItemPremerge[] {
+  if (kind !== "pr" || n % 4 !== 0) return [];
+  const newest: ItemPremerge = n % 8 === 0
+    ? { head: sha(n), at: iso(2 * H), model: "claude-opus-5-5", searched: "Callers of decode_row and the 16-bit path", error: null, tries: 0, findings: [
+      { severity: "defect", file: "crates/codecs/src/png.rs", line: 91, title: "Stride is read before the bit depth is checked", scenario: "A 16-bit PNG with width 100 reaches decode_row, which computes the stride as 400 bytes. Each row is 800 bytes, so the second half of every row is read from the next row.", fix: { file: "crates/codecs/src/png.rs", change: "Compute the stride from bytes_per_pixel() after the bit depth is known." } },
+      { severity: "minor", file: "crates/codecs/src/png.rs", line: 84, title: "Doc comment still describes the 8-bit stride", scenario: "The comment above resize says each row is width * 4 bytes, which is wrong for 16-bit images." },
+    ] }
+    : { head: sha(n), at: iso(2 * H), model: null, searched: null, error: "The reply was not valid JSON", tries: 2, findings: [] };
+  return [newest, { head: sha(n + 5), at: iso(30 * H), model: "claude-opus-5-5", searched: null, error: null, tries: 0, findings: [] }];
 }
 
 export function prWorkFor(n: number, kind: Item["kind"]): Pick<Item, "verification" | "fixups" | "actions" | "reviews" | "patchChecks"> {

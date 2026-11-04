@@ -2,7 +2,7 @@
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { BugIcon, InfoIcon } from "@phosphor-icons/react";
-import type { Item, ItemAction, ItemFixup, ItemPatchCheck, ItemPostmerge, ItemReviews, ItemVerification, PostmergeFinding, ReleaseAction, ReviewSide, ReviewVerdictName, TaskResult } from "../../api/types";
+import type { Item, ItemAction, ItemFixup, ItemPatchCheck, ItemPostmerge, ItemPremerge, ItemReviews, ItemVerification, PostmergeFinding, ReleaseAction, ReviewSide, ReviewVerdictName, TaskResult } from "../../api/types";
 import { useApi } from "../../api/client";
 import { Badge, type Tone } from "../../ui/atoms/Badge";
 import { ItemRef } from "../../ui/molecules/ItemRef";
@@ -253,6 +253,48 @@ function Postmerge({ p, repo }: { p: ItemPostmerge; repo: string }) {
   );
 }
 
+function Premerge({ rows }: { rows: ItemPremerge[] }) {
+  useNow();
+  return (
+    <div className="space-y-4 text-sm">
+      {rows.map((r) => (
+        <div key={r.head}>
+          <div className="mb-2 flex flex-wrap items-center gap-2">
+            <span className="code text-xs text-ink/50" title={r.head}>{r.head.slice(0, 7)}</span>
+            {r.error ? <Badge tone="warn">No review</Badge> : r.findings.length === 0 ? <Badge tone="ok">No findings</Badge> : null}
+            {r.error && <span className="min-w-0 break-words text-ink/75">{r.error} ({r.tries} {r.tries === 1 ? "try" : "tries"})</span>}
+            {r.model && <span className="text-xs text-ink/50">{r.model}</span>}
+            <span className="ml-auto text-xs text-ink/50">{ago(r.at)} ago</span>
+          </div>
+          {r.findings.length > 0 && (
+            <ul className="divide-y divide-line rounded-md border border-line">
+              {r.findings.map((f, i) => {
+                const defect = f.severity === "defect";
+                return (
+                  <li key={i} className="px-4 py-3">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Badge tone={defect ? "bad" : "neutral"} icon={defect ? <BugIcon /> : <InfoIcon />}>{defect ? "Defect" : "Minor"}</Badge>
+                      <span className="font-medium">{f.title}</span>
+                      <span className="code break-all text-xs text-ink/55">{f.file}:{f.line}</span>
+                    </div>
+                    <p className="mt-1.5 whitespace-pre-wrap break-words text-ink/80">{f.scenario}</p>
+                    {f.fix && (
+                      <p className="mt-1.5 break-words text-ink/80">
+                        <span className="text-xs text-ink/55">Fix </span>
+                        <span className="code break-all text-xs text-ink/55">{f.fix.file}</span> {f.fix.change}
+                      </p>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function PatchChecks({ rows }: { rows: ItemPatchCheck[] }) {
   useNow();
   return (
@@ -407,6 +449,11 @@ export function PrWork({ it }: { it: Item }) {
       {fixChecks.length > 0 && (
         <Box title="Fix">
           <PatchChecks rows={fixChecks} />
+        </Box>
+      )}
+      {it.premerge && it.premerge.length > 0 && (
+        <Box title="Pre-merge review">
+          <Premerge rows={it.premerge} />
         </Box>
       )}
       {it.postmerge && (

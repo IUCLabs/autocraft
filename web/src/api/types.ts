@@ -252,6 +252,8 @@ export interface Item extends ItemRef {
   fixups: ItemFixup[];
   /** PRs the pipeline merged: the post-merge review; null or absent when there is none. */
   postmerge?: ItemPostmerge | null;
+  /** PRs: the pre-merge review of every reviewed head, newest first; absent in mocks without one. */
+  premerge?: ItemPremerge[];
   /** Opus checks of the patches we wrote for this item (Fix-up, Fix), oldest first. */
   patchChecks?: ItemPatchCheck[];
   /** PRs: the Opus review of the newest reviewed head, and the verdict later stages use; null before the first review. */
@@ -357,6 +359,29 @@ export interface ItemPostmerge {
   findings: PostmergeFinding[];
   /** Follow-ups of earlier reviews of the PR. */
   earlier: PostmergeEarlier[];
+}
+
+/** One finding of the pre-merge review. */
+export interface PremergeFinding {
+  severity: "defect" | "minor";
+  file: string;
+  line: number;
+  title: string;
+  /** The input and the wrong result it leads to. */
+  scenario: string;
+  fix?: { file: string; change: string };
+}
+
+/** The pre-merge review of one PR head. */
+export interface ItemPremerge {
+  head: string;
+  at: string;
+  model: string | null;
+  findings: PremergeFinding[];
+  searched: string | null;
+  /** Why the last try stored no review; null once a review is stored. */
+  error: string | null;
+  tries: number;
 }
 
 export type FixupState = "pushed" | "failed" | "refused" | "cannot-push" | "too-large" | "asked" | "rejected" | "push-denied" | "superseded" | "infra" | "rerun" | "rerunning" | "formatting" | "pushing" | "skipped" | "capped" | "comment-failed";
@@ -1061,7 +1086,7 @@ export interface CommentTemplate {
  * ready (may merge by the rule now), decision-answered-merge (the operator answered merge),
  * refused (the merge command or a pre-merge check said no; tried again next run),
  * waiting-ci (CI pending or none, or GitHub still computing mergeability), ci-failed, conflict,
- * needs-fix-up (take-fix), waiting-verify (no passed verification at the head yet), verify-failed, verify-error,
+ * needs-fix-up (take-fix), waiting-premerge (rule-path PRs waiting for the pre-merge review), waiting-verify (no passed verification at the head yet), verify-failed, verify-error,
  * needs-decision (outside the rule; Merge? asked or about to be),
  * declined (the operator answered hold or close), merged,
  * held-duplicate (an open Duplicate? decision keeps it out of every later stage), held-backlog (answered Backlog),
@@ -1077,6 +1102,7 @@ export type QueueState =
   | "ci-failed"
   | "conflict"
   | "needs-fix-up"
+  | "waiting-premerge"
   | "waiting-verify"
   | "verify-failed"
   | "verify-error"
@@ -1536,7 +1562,7 @@ export interface QueueMergeRow extends QueueRow {
 }
 
 /** What a PR waits for before it merges. */
-export type MergeWait = "ready" | "refused" | "ci" | "verify" | "re-review" | "batch-check" | "batch-ci" | "held";
+export type MergeWait = "ready" | "refused" | "ci" | "premerge" | "verify" | "re-review" | "batch-check" | "batch-ci" | "held";
 
 /** A PR in "Next merges", in the order it merges. */
 export interface NextMerge {
