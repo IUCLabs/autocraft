@@ -24,15 +24,22 @@ export type PreparedEnv = { image: string; env: Record<string, string>; mounts: 
 
 /** Tag of the image with `packages` on top of `baseImage`: stable for the same base reference and package set. */
 export function derivedTag(toolchain: string, baseImage: string, packages: string[]): string {
-  const h = createHash("sha256").update(`${baseImage}\n${[...packages].sort().join(" ")}`).digest("hex").slice(0, 16);
+  const components = componentsFor(toolchain);
+  const h = createHash("sha256").update(`${baseImage}\n${[...packages].sort().join(" ")}${components.length ? `\n${components.join(" ")}` : ""}`).digest("hex").slice(0, 16);
   return `craft-sandbox/${toolchain.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "base"}-${h}`;
 }
 
-export function containerfile(baseImage: string, packages: string[]): string {
+/** Toolchain components the steps need beyond the image: the stock Rust images install the minimal profile, without rustfmt and clippy. */
+export function componentsFor(toolchain: string): string[] {
+  return toolchain.startsWith("rust") ? ["clippy", "rustfmt"] : [];
+}
+
+export function containerfile(baseImage: string, packages: string[], components: string[] = []): string {
   return [
     `FROM ${baseImage}`,
     "ENV DEBIAN_FRONTEND=noninteractive",
-    `RUN apt-get update && apt-get install -y --no-install-recommends ${[...packages].sort().join(" ")} && rm -rf /var/lib/apt/lists/*`,
+    ...(packages.length ? [`RUN apt-get update && apt-get install -y --no-install-recommends ${[...packages].sort().join(" ")} && rm -rf /var/lib/apt/lists/*`] : []),
+    ...(components.length ? [`RUN rustup component add ${components.join(" ")}`] : []),
     "",
   ].join("\n");
 }
@@ -62,7 +69,7 @@ export async function ensureImage(cfg: WorkerConfig, toolchain: string, baseImag
       const ctx = join(cfg.workDir, `image-ctx-${randomBytes(4).toString("hex")}`);
       mkdirSync(ctx, { recursive: true });
       try {
-        writeFileSync(join(ctx, "Containerfile"), containerfile(baseImage, packages));
+        writeFileSync(join(ctx, "Containerfile"), containerfile(baseImage, packages, componentsFor(toolchain)));
         const r = await run(cfg.runtime, ["build", "--network", cfg.fetchNetwork, "--pull=missing", "--tag", tag, "--label", "craft-worker-image=1", "--file", join(ctx, "Containerfile"), ctx], 20 * 60_000);
         if (r.code !== 0) throw new Error(`image build failed (exit ${r.code}): ${r.out.slice(-1500)}`);
       } finally {
@@ -115,7 +122,8 @@ export type PrepareOptions = { fetchImpl?: typeof fetch; log: (s: string) => voi
  * a task never runs in a weaker environment than CI without saying so.
  */
 export async function prepareEnvironment(cfg: WorkerConfig, task: { repo: string; baseSha: string | null; headSha: string }, toolchain: string, baseImage: string, srcDir: string, o: PrepareOptions): Promise<PreparedEnv> {
-  const stock: PreparedEnv = { image: baseImage, env: {}, mounts: [], info: { image: baseImage, baseImage, packages: [], craftFontsRef: null, craftI18nRev: null } };
+  const toolImage = componentsFor(toolchain).length ? await ensureImage(cfg, toolchain, baseImage, [], (s) => o.log(`${s}\n`)) : baseImage;
+  const stock: PreparedEnv = { image: toolImage, env: {}, mounts: [], info: { image: toolImage, baseImage, packages: [], craftFontsRef: null, craftI18nRev: null } };
   const gate = await resolveGate(task.repo, task.baseSha ?? task.headSha, o.fetchImpl);
   if (!gate) {
     o.log("no CI gate for this repo at the base commit; using the stock image\n");
@@ -123,7 +131,7 @@ export async function prepareEnvironment(cfg: WorkerConfig, task: { repo: string
   }
   const env: Record<string, string> = { ...gate.env };
   const mounts: ExtraMount[] = [];
-  let image = baseImage;
+  let image = toolImage;
   if (gate.packages.length) image = await ensureImage(cfg, toolchain, baseImage, gate.packages, (s) => o.log(`${s}\n`));
   if (gate.craftFontsRef) {
     const dir = await ensureCheckout(cfg, "craft-fonts", gate.craftFontsRef, o.fetchImpl);
