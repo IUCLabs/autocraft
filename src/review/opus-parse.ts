@@ -2,6 +2,7 @@
 // prompt registry (also loaded by the web mockup) imports this file.
 import { VERDICTS, type DiscussionEntry, type ReviewVerdict } from "./parse.ts";
 import { firstSentence, oneSentence, proseField, SUMMARY_MAX_WORDS, WHY_MAX_WORDS, wordCount } from "../prose.ts";
+import type { PostmergeReviewRow, RelatedItem } from "../postmerge/parse.ts";
 import type { LintProblem } from "../replylint.ts";
 
 export type EarlierOpus = { head: string; verdict: string; sure: boolean; reason: string; fixes: { file: string; change: string }[] };
@@ -62,6 +63,10 @@ export type OpusPr = {
   /** Present only when our pipeline pushed commits to the PR since `earlier_opus`'s head: kind, sha, note and the fixes each was meant to make. */
   pipeline_commits?: { kind: string; sha: string; note: string; fixes_meant: string[] }[];
   diff: string;
+  /** Issues and PRs that mention this PR or its files, open or closed in the last 30 days (number, kind, state, title); the reviewer checks which of them the PR fixes. */
+  related_open?: RelatedItem[];
+  /** Pre-merge review only: what the first review concluded, for the second reviewer to check. */
+  review_history?: PostmergeReviewRow[];
   /** What others wrote on the PR; shown in its own block after the diff, not inside the PR's JSON. */
   discussion?: DiscussionEntry[];
   /** Earlier owner statements about related work; shown in their own block after the PR, not inside the PR's JSON. */
