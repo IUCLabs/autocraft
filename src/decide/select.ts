@@ -14,10 +14,3 @@ export type Candidate = { repo: string; number: number; reason: Reason; settled:
 export function latestJevRun(db: DatabaseSync): string | null {
   return newestVerdictRun(db);
 }
-
-/** Why an item would become a decision, or null. */
-export function reasonOf(s: Settled): Reason | null {
-  if (s.status === "settled" && s.flags.includes("needs decision")) return "needs-decision";
-  if (s.status === "disagree" && isScope(s.jevLabel) && isScope(s.haikuLabel)) return "scope-disagreement";
-  return null;
-}

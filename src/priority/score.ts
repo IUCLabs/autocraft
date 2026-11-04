@@ -17,7 +17,6 @@
 
 export const LEVELS = ["P0", "P1", "P2", "P3", "P4"] as const;
 export type Level = (typeof LEVELS)[number];
-export const IMPACTS = LEVELS;
 export type Impact = Level;
 
 export const LEVEL_MEANING: Record<Level, string> = {
@@ -27,10 +26,6 @@ export const LEVEL_MEANING: Record<Level, string> = {
   P3: "Low: cosmetic, wording, documentation, or a nice-to-have.",
   P4: "Backlog: kept open but not worked on now: a vague or wishlist request, an idea without a clear ask, or a very large ask with little reach.",
 };
-export const IMPACT_MEANING = LEVEL_MEANING;
-
-/** Levels of the earlier impact classes, for rows written before the levels existed. */
-export const OLD_IMPACT_LEVEL: Record<string, Level> = { critical: "P0", high: "P1", normal: "P2", low: "P3" };
 
 /** The level after the security flag: one higher, never above P0. */
 export const levelWith = (level: Level, security: boolean): Level => (security ? LEVELS[Math.max(0, LEVELS.indexOf(level) - 1)]! : level);

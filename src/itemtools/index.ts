@@ -21,9 +21,6 @@ export const DATA_PATH = "/data";
 export type Mount = { host: string; path: string };
 export type McpServer = { command: string; args: string[]; env: Record<string, string> };
 
-/** Names claude knows the tools by, for --allowedTools. */
-export const itemToolNames = (): string[] => TOOLS.map((t) => `mcp__${ITEM_SERVER}__${t.name}`);
-
 const REPO_DIR = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
 
 function snapshotRepos(file: string): string[] {

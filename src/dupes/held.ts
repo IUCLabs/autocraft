@@ -7,12 +7,6 @@ import { pilotSql } from "../pilot.ts";
 
 /** The fact line that names the original; the act step reads it. */
 export const DUP_FACT = "duplicate of ";
-/** Option keys of a duplicate decision. */
-export const DUP_OPTIONS = {
-  close: { key: "close", label: "Close as duplicate", hint: "Post a short comment naming the original and close the item." },
-  distinct: { key: "distinct", label: "Not a duplicate", hint: "The two are different; do not ask about this pair again." },
-  keep: { key: "keep", label: "Keep both", hint: "They overlap but both stay open; do not ask about this pair again." },
-} as const;
 
 /** Option keys of a group decision: use the compared answer, keep another member instead (`keep:<number>`), or not duplicates. */
 export const GROUP_OPTIONS = {

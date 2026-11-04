@@ -15,7 +15,6 @@ import { checkLine, parseCheck, recordCheck } from "../patchcheck/index.ts";
 import { CHECK_DIFF_CAP, CHECK_PATCH_CAP, type FixupCheckInput } from "../patchcheck/types.ts";
 import { CLAUDE_PROMPTS, untrustedJson } from "../prompts/index.ts";
 import { BASE_NAME, MAX_CONFLICT_TRIES, type ConflictCandidate } from "./conflict-state.ts";
-import { selectFixups } from "./select.ts";
 import type { Git } from "./git.ts";
 import { noteLive, type FixupDeps, type FixupSummary, type PrNode, type Who } from "./index.ts";
 import { answerText, conflictView, endNewline, hasMarkers, locateInHead, parseResolution, resolvablePath, spliceSections, type ConflictFile, type ConflictSection } from "./patch.ts";
@@ -56,12 +55,6 @@ export type ConflictRun = {
 const refOf = (c: { repo: string; number: number }) => `${c.repo}#${c.number}`;
 const short = (sha: string) => sha.slice(0, 7);
 const oneLine = (s: string) => s.replace(/\s+/g, " ").trim().slice(0, 200);
-
-/** Conflict work for a repo: what to merge and whom to ask, in work order. */
-export function selectConflicts(db: DatabaseSync, repo: string): { merge: ConflictCandidate[]; ask: ConflictCandidate[] } {
-  const sel = selectFixups(db, repo);
-  return { merge: sel.conflictMerge, ask: sel.conflictAsk };
-}
 
 /** Written before the push, so a crash between the push and its record leaves the merge commit in the push chain. */
 function recordPushing(db: DatabaseSync, at: string, c: ConflictCandidate, files: string[], base: string | null, toHead: string): void {

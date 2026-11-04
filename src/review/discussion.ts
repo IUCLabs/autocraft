@@ -327,11 +327,6 @@ export function markReviewsStale(db: DatabaseSync, by: string, repo: string, num
   audit(db, by, "review-again", `${repo}#${number}`, { stale: true });
 }
 
-/** Whether a counted entry newer than the final review's snapshot exists (see liveGate). */
-export async function discussionMovedSince(db: DatabaseSync, q: Querier, repo: string, number: number, head: string): Promise<boolean> {
-  return (await liveGate(db, q, repo, number, head)).moved;
-}
-
 /** liveGate with retries; null when the read still fails, so the caller skips the PR this run instead of merging blind. */
 export async function liveGateChecked(db: DatabaseSync, q: Querier, repo: string, number: number, head: string, log: (line: string) => void): Promise<{ moved: boolean; blocked: string | null } | null> {
   try {

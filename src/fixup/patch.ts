@@ -252,9 +252,6 @@ function parseSections(text: string): Sections | null {
   return { pieces, sections };
 }
 
-/** The text of a merge-tree file outside its conflict sections, as the pieces between sections, or null when the markers are malformed. */
-export const outsideConflicts = (text: string): string[] | null => parseSections(text)?.pieces ?? null;
-
 /** Lines a resolution may not introduce unless a side of the conflict already has them. */
 const RISKY_LINE = /^\s*(pub\s+)?(use|extern|mod|fn|impl|macro_rules!|import)\b|\bunsafe\b|include(_str|_bytes)?!|build\.rs|\brequire\(/;
 const DEPENDENCY_LINE = /^\s*"?[\w@/.-]+"?\s*(=\s*("|\{)|:\s*("|\{))/;
@@ -274,34 +271,6 @@ function sectionOk(section: { ours: string[]; theirs: string[] }, text: string, 
 /** A resolution's text ends with a newline when the conflicted file's does. */
 export function endNewline(conflicted: string, resolved: string): string {
   return resolved !== "" && conflicted.endsWith("\n") && !resolved.endsWith("\n") ? `${resolved}\n` : resolved;
-}
-
-/**
- * True when `resolved` keeps every piece outside the conflict sections of `conflicted` unchanged and in order, and each
- * conflict section's resolution is made of lines from its two sides (any order or subset) plus at most three other
- * lines, none of which declares code, imports, dependencies or build hooks.
- */
-export function keepsOutside(conflicted: string, resolved: string, path = ""): boolean {
-  const parsed = parseSections(conflicted);
-  if (!parsed || parsed.pieces.length < 2) return false;
-  const { pieces, sections } = parsed;
-  const last = pieces.length - 1;
-  if (!resolved.startsWith(pieces[0]!)) return false;
-  const end = resolved.length - pieces[last]!.length;
-  if (end < pieces[0]!.length || !resolved.endsWith(pieces[last]!)) return false;
-  const dep = /(^|\/)(Cargo\.toml|package\.json)$/.test(path);
-  let cursor = pieces[0]!.length;
-  for (let i = 0; i < sections.length; i++) {
-    let stop = end;
-    if (i < last - 1) {
-      const at = resolved.indexOf(pieces[i + 1]!, cursor);
-      if (at < 0 || at + pieces[i + 1]!.length > end) return false;
-      stop = at;
-    }
-    if (!sectionOk(sections[i]!, resolved.slice(cursor, stop), dep)) return false;
-    cursor = i < last - 1 ? stop + pieces[i + 1]!.length : stop;
-  }
-  return true;
 }
 
 const lineList = (text: string): string[] => text.split(/(?<=\n)/).filter((l) => l !== "");

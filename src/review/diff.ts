@@ -95,17 +95,6 @@ export function codeDiff(text: string, keepTests = false): CodeDiff {
   return out;
 }
 
-/** Area of a PR for batching: the most common two-level directory of its code files. */
-export function areaOf(files: string[]): string {
-  const count = new Map<string, number>();
-  for (const f of files) {
-    const parts = f.split("/");
-    const key = parts.length > 2 ? parts.slice(0, 2).join("/") : parts.length === 2 ? parts[0]! : "(root)";
-    count.set(key, (count.get(key) ?? 0) + 1);
-  }
-  return [...count.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0]?.[0] ?? "(none)";
-}
-
 /** The diff between two heads of one PR, or a failure. Not cached: it is read once per new head. */
 export type DeltaFetcher = (repo: string, base: string, head: string) => Promise<DiffResult>;
 

@@ -3,7 +3,6 @@ import { createHash } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 
 export const ATTEMPT_STATES = ["retry", "testing", "passed", "pr-opened", "skipped", "failed"] as const;
-export type AttemptState = (typeof ATTEMPT_STATES)[number];
 
 export type IssueCandidate = { repo: string; number: number; title: string; body: string; hash: string; score: number | null };
 

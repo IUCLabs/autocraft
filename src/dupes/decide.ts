@@ -230,9 +230,6 @@ export function askGroupDecisions(db: DatabaseSync, repo: string | undefined, at
   return asked;
 }
 
-/** The asker used by the Duplicates job: the group decisions that are ready. */
-export const askDuplicateDecisions = (db: DatabaseSync, repo: string | undefined, at: string): string[] => askGroupDecisions(db, repo, at);
-
 /** Groups whose plan has no decision yet. Reads only, for the autopilot. */
 export function groupsToAsk(db: DatabaseSync, repo?: string): GroupPlan[] {
   return groupPlans(db, repo).filter((p) => p.closing && !getDecision(db, idFor(db, p)));

@@ -18,9 +18,6 @@ export const MAX_RETRIES = 3;
 
 const BATCH = `EXISTS (SELECT 1 FROM merge_batch_prs bp JOIN merge_batches mb ON mb.id = bp.batch_id WHERE mb.repo = m.repo AND bp.number = m.number AND mb.state = 'merged') AS batch`;
 
-export const sinceOf = (db: DatabaseSync): string =>
-  (db.prepare("SELECT value FROM settings WHERE key = ?").get(SINCE_KEY) as { value: string } | undefined)?.value ?? "9999";
-
 /** PRs whose Plan holds a `postmerge` action: a pipeline merge landed since the `postmerge_since` setting and no usable review is stored (a `retry:` error counts as missing an hour after it failed; the third is stored as held). Oldest merge first. */
 export function selectPostmerge(db: DatabaseSync, repo: string, now = Date.now(), run?: string | null, plans?: PlanSet): MergedPr[] {
   return planned(db, "postmerge", { repo, now, ...(run !== undefined ? { run } : {}), ...(plans ? { plans } : {}) }).flatMap((p) => mergedPr(db, repo, p.facts.number) ?? [])

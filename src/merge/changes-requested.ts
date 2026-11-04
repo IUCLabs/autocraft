@@ -64,11 +64,6 @@ export const GATE_FAILURES = 3;
 
 export type Gate = { blocked: boolean; by: string[]; readAt: string; failures: number };
 
-/** The mirrored reviews of a PR (the latest 10), as facts. */
-export function mirroredReviews(db: DatabaseSync, repo: string, number: number): ReviewFact[] {
-  return db.prepare("SELECT author, author_association AS association, review_state AS state, created_at AS at FROM comments WHERE repo = ? AND number = ? AND kind = 'review'").all(repo, number) as ReviewFact[];
-}
-
 /** What the live reads stored for the PRs, as `repo#number`. */
 export function gatesOf(db: DatabaseSync, repo?: string): Map<string, Gate> {
   const rows = db.prepare(`SELECT repo, number, blocked, by_login, read_at, failures FROM review_gates ${repo ? "WHERE repo = ?" : ""}`).all(...(repo ? [repo] : [])) as

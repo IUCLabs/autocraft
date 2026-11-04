@@ -1,6 +1,5 @@
 // The settled type label and flags of one item, as the Label stage and the Items
 // browser need them. The rule itself lives in ../classify/settled.ts.
-import type { DatabaseSync } from "node:sqlite";
 import { needsDecisionOf, securityOf, settle } from "../classify/settled.ts";
 
 export type Settled = { type: string; security: boolean; needsDecision: boolean };
@@ -35,13 +34,6 @@ export function settleRows(rows: ClsRow[]): Settled | null {
   );
   if (s.status !== "settled" || s.label === null) return null;
   return { type: s.label, security: s.flags.includes("security"), needsDecision: s.flags.includes("needs decision") };
-}
-
-// Without a run, each classifier's latest row for the item counts, from the latest Jev run.
-export function settledLabel(db: DatabaseSync, repo: string, number: number, runId?: string): Settled | null {
-  const all = db.prepare("SELECT classifier, run_id, at, type_label, flags, probs, input_hash FROM main.classifications WHERE repo = ? AND number = ? ORDER BY at DESC")
-    .all(repo, number) as ClsRow[];
-  return settleRows(forRun(all, runId));
 }
 
 export function forRun(rows: ClsRow[], runId?: string): ClsRow[] {

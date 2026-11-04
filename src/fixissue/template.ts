@@ -32,5 +32,3 @@ export function branchName(number: number, title: string, login: string): string
   if (login && slug.includes(login.toLowerCase())) slug = "";
   return `autocraft/fix-${number}${slug ? `-${slug}` : ""}`;
 }
-
-export const HOLD_NOT_FIXABLE = "not a clear fix: ";

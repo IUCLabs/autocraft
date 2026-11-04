@@ -11,8 +11,6 @@ import type { PlanSet } from "../core/plan-set.ts";
 export type Todo = { repo: string; number: number; text: string; hash: string };
 
 export const toBlob = (v: Float32Array): Uint8Array => new Uint8Array(v.buffer, v.byteOffset, v.byteLength);
-export const fromBlob = (b: Uint8Array): Float32Array =>
-  new Float32Array(b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength));
 
 const todoOf = (db: DatabaseSync, repo: string, number: number, hash: string): Todo => {
   const t = db.prepare("SELECT title, body FROM main.items WHERE repo = ? AND number = ?").get(repo, number) as { title: string | null; body: string | null };

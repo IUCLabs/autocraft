@@ -574,8 +574,6 @@ export function failureBackoff(db: DatabaseSync, step: string, ms: number = Date
   return until > ms ? { until, failures } : null;
 }
 
-export const backoffUntil = (db: DatabaseSync, step: string, ms: number = Date.now()): number | null => failureBackoff(db, step, ms)?.until ?? null;
-
 const hhmm = (ms: number): string => `${new Date(ms).toISOString().slice(11, 16)} UTC`;
 
 /** Why the stage cannot start jobs now, or null. The one place a stage's pause is decided. A step's models are taken at their defaults. */
@@ -869,14 +867,6 @@ export function planDue(db: DatabaseSync, nowMs: number = Date.now()): boolean {
   setSetting(db, KEY_SEQS_SEEN, sig);
   setSetting(db, KEY_PLANNED_AT, new Date(t).toISOString());
   return true;
-}
-
-/** One planner pass on this connection when due (tests and the CLI; the runner detects on a worker thread). */
-export async function autopilotTick(db: DatabaseSync, opts: PlanOptions = {}): Promise<number[]> {
-  if (!planDue(db, opts.nowMs)) return [];
-  // Switched off, the pass only refreshes the Plan cache.
-  if (!isEnabled(db)) { await detectAutopilot(db, opts); return []; }
-  return planAutopilot(db, opts);
 }
 
 /** Why each stage is not starting, as the last planner pass saw it; keyed by step. */

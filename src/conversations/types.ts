@@ -16,7 +16,6 @@ export type ConversationInput = {
 
 export const CARD_KINDS = ["comment", "answer", "label", "backlog", "duplicate"] as const;
 export type CardKind = (typeof CARD_KINDS)[number];
-export type CardState = "proposed" | "running" | "done" | "failed" | "dismissed";
 export type TurnKind = "operator" | "opus" | "system";
 
 export const COMMENT_MAX = 1500;

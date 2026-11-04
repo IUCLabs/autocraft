@@ -1,15 +1,11 @@
 // Shared queries for the Progress, Repo and Run and cost pages.
 import type { DatabaseSync } from "node:sqlite";
 import { latestRun, settledTable } from "../../classify/settled.ts";
-import { getRule, STATS_SQL, TIER_LABEL, TIER_SQL, type Tier } from "../../whitelist.ts";
 
 // Latest stage per item, from the item_stage table the stages trigger maintains.
 export const LATEST_SQL = `latest AS (SELECT repo, number, stage, reviewed FROM main.item_stage %W)`;
 
 export const latestCte = (repo?: string): string => LATEST_SQL.replace("%W", repo ? "WHERE repo = :repo" : "");
-
-// One classification per item: the owner's, else Sonnet's, else Haiku's, else the newest other.
-export const PREF_ORDER = "CASE classifier WHEN 'owner' THEN 0 WHEN 'sonnet' THEN 1 WHEN 'haiku' THEN 2 ELSE 3 END, at DESC";
 
 // When tracking began: set by connect() (src/db.ts) on first use.
 export function trackingStart(db: DatabaseSync): string {
@@ -65,13 +61,6 @@ export function doneByRepo(db: DatabaseSync, start: string, repo?: string): Done
       return { ...x, closed_others: x.total - x.merged_pipeline - x.closed_pipeline };
     });
 }
-
-export const SIZE_SQL = `CASE WHEN kind = 'issue' THEN 'issue'
-  WHEN COALESCE(additions,0) + COALESCE(deletions,0) <= 50 THEN 'S'
-  WHEN COALESCE(additions,0) + COALESCE(deletions,0) <= 300 THEN 'M'
-  WHEN COALESCE(additions,0) + COALESCE(deletions,0) <= 1000 THEN 'L' ELSE 'XL' END`;
-
-export const SIZE_ORDER = ["S", "M", "L", "XL", "issue"];
 
 // Open items per repo per day since tracking began, rebuilt backwards from the
 // current open count and the created/closed dates.

@@ -113,19 +113,6 @@ export function batchesDue(db: DatabaseSync, now = new Date()): string[] {
   return [...due].filter((r) => mergeApprovalOfSafe(db, r));
 }
 
-/** Batches in flight plus the newest finished ones, newest first, with their PRs. */
-export function listBatches(db: DatabaseSync, o: { repo?: string; exclude?: string[]; finished?: number } = {}): (BatchRow & { prs: BatchMember[] })[] {
-  const rows = db.prepare(`SELECT * FROM main.merge_batches ${o.repo ? "WHERE repo = ?" : ""} ORDER BY id DESC`).all(...(o.repo ? [o.repo] : [])) as BatchRow[];
-  let finished = 0;
-  const out: (BatchRow & { prs: BatchMember[] })[] = [];
-  for (const b of rows) {
-    if (o.exclude?.includes(b.repo)) continue;
-    if (!ACTIVE_BATCH.includes(b.state) && finished++ >= (o.finished ?? 20)) continue;
-    out.push({ ...b, prs: membersOf(db, b.id) });
-  }
-  return out;
-}
-
 /** One page of batches, newest first (ids below `before`), with their members in order: two queries, whatever the page size. */
 export function pageBatches(db: DatabaseSync, o: { repo?: string; exclude?: string[]; before?: number; limit: number }): { batches: (BatchRow & { prs: BatchMember[] })[]; total: number; more: boolean } {
   const where: string[] = [];
