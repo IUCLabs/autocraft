@@ -154,9 +154,14 @@ type ActionRow = { id: number; decision_id: string; repo: string; number: number
 const rowOf = (db: DatabaseSync, t: Target): ActionRow | undefined =>
   db.prepare("SELECT * FROM actions WHERE decision_id = ? AND repo = ? AND number = ? AND kind = ?").get(t.decisionId, t.repo, t.number, KIND) as ActionRow | undefined;
 
+/** `asked_by` of the decisions a security scan asks. An operator's close answer to one applies in any repo approved for commenting, in the pipeline or not. */
+export const SECURITY_ASKER = "security-scan";
+const securityAsked = (db: DatabaseSync, id: string): boolean =>
+  (db.prepare("SELECT asked_by FROM decisions WHERE id = ?").get(id) as { asked_by: string | null } | undefined)?.asked_by === SECURITY_ASKER;
+
 /** Answered-close targets in the repo without a final (done or skipped) action row. */
 export function pending(db: DatabaseSync, repo: string): Target[] {
-  return actionable(db).flatMap((a) => targetsOf(a, repo)).filter((t) => inPilot(db, t.repo, t.number) && !backlogHeld(db, t.repo, t.number)).filter((t) => {
+  return actionable(db).flatMap((a) => targetsOf(a, repo)).filter((t) => (inPilot(db, t.repo, t.number) || securityAsked(db, t.decisionId)) && !backlogHeld(db, t.repo, t.number)).filter((t) => {
     const r = rowOf(db, t);
     return !r || r.state === "failed";
   });

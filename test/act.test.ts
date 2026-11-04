@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { describe, test } from "node:test";
 import type { DatabaseSync } from "node:sqlite";
 import { commentApprovalOf, setCommentApproval } from "../src/act/approval.ts";
-import { askCloseDecisions, closeDecisionId, commentPreview, runAct, writeEffect, type ActDeps } from "../src/act/index.ts";
+import { askCloseDecisions, closeDecisionId, commentPreview, runAct, SECURITY_ASKER, writeEffect, type ActDeps } from "../src/act/index.ts";
 import { getDecision } from "../src/decisions.ts";
 import { MERGE_OPTIONS, HEAD_FACT } from "../src/merge/queue.ts";
 import { prCloseComment, scopeCloseComment } from "../src/act/templates.ts";
@@ -179,6 +179,21 @@ describe("act", () => {
     await run(db, fakes(log));
     assert.equal(log.filter((l) => l.startsWith("comment")).length, 1);
     assert.equal(rows(db, "actions")[0]!.state, "done");
+  });
+
+  test("a security-scan close acts outside the pipeline; other closes there wait", async () => {
+    const db = fresh();
+    db.prepare("UPDATE tracked_repos SET pipeline = 0 WHERE name = 'app'").run();
+    const close = (n: number, by: string) => ask(db, [{ id: closeDecisionId("app", n, `sha${n}`), kind: "close", repo: "app", number: n, question: "Close this PR?",
+      facts: [`${HEAD_FACT}sha${n}`], options: [{ key: "close", label: "Close" }, { key: "keep", label: "Keep" }], public_text: "Points downloads at a personal fork.", asked_by: by }]);
+    close(2, SECURITY_ASKER);
+    close(3, "act");
+    answer(db, closeDecisionId("app", 2, "sha2"), "op", "close");
+    answer(db, closeDecisionId("app", 3, "sha3"), "op", "close");
+    const log: string[] = [];
+    const s = await run(db, fakes(log));
+    assert.deepEqual(s.done, ["app#2"]);
+    assert.deepEqual(log.filter((l) => !l.startsWith("read")), [`comment P2: ${prCloseComment({ repo: "app", reason: "Points downloads at a personal fork.", duplicateOf: null })}`, "close P2"]);
   });
 });
 
