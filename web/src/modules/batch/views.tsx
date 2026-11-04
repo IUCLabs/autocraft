@@ -60,7 +60,7 @@ function Header({ b }: { b: BatchDetail }) {
           ["Repo", b.repo],
           ["Opened", when(b.createdAt)],
           ["Merged", b.mergedAt ? when(b.mergedAt) : null],
-          ["Batch PR", b.prNumber !== null ? <ItemRef key="p" repo={b.repo} number={b.prNumber} kind="pr" state={prState} title={null} href={b.prUrl ?? gh(`${GITHUB_ORG}/${b.repo}/pull/${b.prNumber}`)} /> : null],
+          ["Batch PR", b.prNumber !== null ? <ItemRef key="p" repo={b.repo} number={b.prNumber} kind="pr" state={prState} title={null} /> : null],
           ["Merge commit", b.mergeSha ? commit(b.mergeSha, `${GITHUB_ORG}/${b.repo}`) : null],
           ["Base", commit(b.baseSha, `${GITHUB_ORG}/${b.repo}`)],
           ["Branch head", b.fork ? commit(b.commitSha, b.fork) : <span className="code text-xs">{sha7(b.commitSha)}</span>],

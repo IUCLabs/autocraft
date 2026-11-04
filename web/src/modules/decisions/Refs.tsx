@@ -1,12 +1,12 @@
 import { Fragment } from "react";
 import { Link } from "react-router-dom";
-import { ItemIcon } from "../../ui/atoms/ItemIcon";
-import { itemPath } from "../../lib/links";
+import { GithubButton } from "../../ui/atoms/GithubButton";
+import { githubItemUrl, itemPath } from "../../lib/links";
 
 // A "#123" not preceded by a word character or slash; "repo#123" and URLs are left alone.
 const REF = /(?<![\w/])#(\d+)\b/g;
 
-/** Text in which every `#number` links to the item page, with the item icon (GitHub) beside it. Plain text when the repo is unknown. */
+/** Text in which every `#number` links to the item page, with a GitHub button beside it. Plain text when the repo is unknown. */
 export function Refs({ text, repo }: { text: string; repo: string | null }) {
   if (!repo) return <>{text}</>;
   const out: React.ReactNode[] = [];
@@ -19,7 +19,7 @@ export function Refs({ text, repo }: { text: string; repo: string | null }) {
         <Link to={itemPath(repo, n)} className="code text-accent-ink hover:underline">
           #{n}
         </Link>
-        <ItemIcon repo={repo} number={n} className="ml-0.5 align-middle text-[0.85em]" />
+        <GithubButton href={githubItemUrl(repo, n)} label={`Open ${repo}#${n} on GitHub`} className="ml-0.5 size-4 align-middle text-[0.85em]" />
       </Fragment>,
     );
     last = m.index! + m[0].length;

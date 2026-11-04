@@ -12,7 +12,7 @@ export function NextItemRow({ item, place }: { item: NextItem; place?: number })
         <span className="num w-4">{place ?? ""}</span>
         {item.fast && <FastForwardIcon size={14} className="text-accent-ink" aria-label="Fast track" />}
       </span>
-      <ItemRef repo={item.repo} number={item.number} kind={item.kind} state={item.state} title={item.title} stretch className="min-w-[12rem] flex-1" />
+      <ItemRef repo={item.repo} number={item.number} kind={item.kind} state={item.state} title={item.title} stretch className="min-w-[12rem] flex-1 max-md:min-w-[calc(100%-4.5rem)]" />
       <span className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs text-ink/60 md:max-w-[45%] md:justify-end">
         {item.inFlight && <Badge tone="accent">In flight</Badge>}
         {item.blocked && <Badge tone="warn">{item.blocked}</Badge>}
