@@ -19,15 +19,17 @@ export type Gh = (args: string[]) => Promise<string>;
 
 export type Check = { name?: string | null; context?: string | null; status?: string | null; state?: string | null; conclusion?: string | null };
 export type PrView = { state: string; isDraft: boolean; mergeable: string; headRefOid: string; statusCheckRollup: Check[]; mergeStateStatus?: string | null };
-export type Run = { name?: string | null; status?: string | null; conclusion?: string | null };
+export type Run = { id?: number; name?: string | null; status?: string | null; conclusion?: string | null };
 export type Commits = { author: { login: string }; commits: { authors: { login?: string | null; email?: string | null; name?: string | null }[] }[] };
 
 const GREEN = ["SUCCESS", "SKIPPED", "NEUTRAL"];
 const GREEN_RUN = ["success", "skipped", "neutral"];
 
-/** The failed-check names that may be accepted: none while GitHub's merge state is BLOCKED or unknown. */
+const FAILURE_OK_STATES = ["CLEAN", "UNSTABLE", "HAS_HOOKS"];
+
+/** The failed-check names that may be accepted: none unless GitHub's merge state is CLEAN, UNSTABLE or HAS_HOOKS (BLOCKED, UNKNOWN and the rest refuse). */
 export function failureAllowance(v: PrView, allowFailed: string[]): string[] {
-  return v.mergeStateStatus && v.mergeStateStatus !== "BLOCKED" ? allowFailed.filter((a) => a !== "") : [];
+  return v.mergeStateStatus && FAILURE_OK_STATES.includes(v.mergeStateStatus) ? allowFailed.filter((a) => a !== "") : [];
 }
 
 /** The listed checks that failed and are accepted. */
@@ -61,15 +63,35 @@ export function refuseView(v: PrView, allow: string[] = [], allowFailed: string[
   return null;
 }
 
+/** A failed run is accepted when it has failed jobs and every one of them is a listed check (a job's check name is `caller job / called job` for reusable workflows). */
+function runOnlyOptional(r: Run, failOk: string[], failedJobs: Map<number, string[]>): boolean {
+  const jobs = r.id === undefined ? undefined : failedJobs.get(r.id);
+  return !!jobs && jobs.length > 0 && jobs.every((j) => failOk.includes(j));
+}
+
+const JOB_FAILED = ["failure", "cancelled", "timed_out", "startup_failure", "action_required", "stale"];
+
+/** The jobs that did not pass, per failed run, read only when a failure may be accepted. */
+async function failedJobsOf(repo: string, runs: Run[], failOk: string[], gh: Gh): Promise<Map<number, string[]>> {
+  const out = new Map<number, string[]>();
+  if (!failOk.length) return out;
+  for (const r of runs) {
+    if (r.id === undefined || r.status !== "completed" || GREEN_RUN.includes(r.conclusion ?? "")) continue;
+    const reply = JSON.parse(await gh(["api", `repos/${repo}/actions/runs/${r.id}/jobs?per_page=100`])) as { jobs?: { name?: string; conclusion?: string | null }[] };
+    out.set(r.id, (reply.jobs ?? []).filter((j) => JOB_FAILED.includes(j.conclusion ?? "")).map((j) => j.name ?? "?"));
+  }
+  return out;
+}
+
 /** The reason the head's Actions runs block the merge, or null. These cover workflows that never reach the rollup (startup failure, waiting for approval). */
-export function refuseRuns(runs: Run[], allow: string[] = [], failOk: string[] = []): string | null {
+export function refuseRuns(runs: Run[], allow: string[] = [], failOk: string[] = [], failedJobs: Map<number, string[]> = new Map()): string | null {
   const bad: string[] = [];
   for (const r of runs) {
     const name = r.name ?? "";
     if (!name) continue;
     if (r.status !== "completed") {
       if (!allow.includes(name)) bad.push(`${name}: ${r.status}`);
-    } else if (!GREEN_RUN.includes(r.conclusion ?? "") && !failOk.some((n) => n === name || n.startsWith(`${name} / `))) bad.push(`${name}: ${r.conclusion ?? ""}`);
+    } else if (!GREEN_RUN.includes(r.conclusion ?? "") && !runOnlyOptional(r, failOk, failedJobs)) bad.push(`${name}: ${r.conclusion ?? ""}`);
   }
   return bad.length ? `workflow runs not green:\n${bad.join("\n")}` : null;
 }
@@ -120,7 +142,8 @@ export async function safeMerge(
   let why = refuseView(v, allow, allowFailed);
   if (why) return refuse(why);
   const runs = JSON.parse(await gh(["api", `repos/${repo}/actions/runs?head_sha=${head}&per_page=100`])) as { workflow_runs?: Run[] };
-  why = refuseRuns(runs.workflow_runs ?? [], allow, failureAllowance(v, allowFailed));
+  const failOk = failureAllowance(v, allowFailed);
+  why = refuseRuns(runs.workflow_runs ?? [], allow, failOk, await failedJobsOf(repo, runs.workflow_runs ?? [], failOk, gh));
   if (why) return refuse(why);
   why = await refuseChangesRequested(repo, pr, gh) ?? refuseAuthors(JSON.parse(await gh(["pr", "view", pr, "-R", repo, "--json", "author,commits"])) as Commits, method);
   if (why) return refuse(why);

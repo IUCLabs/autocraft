@@ -558,11 +558,13 @@ describe("fixup step", () => {
     ins.run(1, reason, '["ROADMAP.md","docs/guide.MD"]', T1);
     ins.run(2, reason, '["ROADMAP.md","build.rs"]', T1);
     ins.run(3, reason, '["Cargo.toml"]', T1);
+    ins.run(5, reason, '["docs/CLAUDE.md"]', T1);
+    ins.run(6, reason, '[".claude/notes.md"]', T1);
     ins.run(4, "src/lib.rs is over the 50000 character limit", '["ROADMAP.md"]', T1);
     db.close();
     const again = connect(path);
     const states = () => rows(again, "SELECT number, state FROM fixups ORDER BY number");
-    const want = [{ number: 1, state: "superseded" }, { number: 2, state: "too-large" }, { number: 3, state: "too-large" }, { number: 4, state: "too-large" }];
+    const want = [{ number: 1, state: "superseded" }, { number: 2, state: "too-large" }, { number: 3, state: "too-large" }, { number: 4, state: "too-large" }, { number: 5, state: "too-large" }, { number: 6, state: "too-large" }];
     assert.deepEqual(states(), want);
     again.close();
     assert.deepEqual(rows(connect(path), "SELECT number, state FROM fixups ORDER BY number"), want);

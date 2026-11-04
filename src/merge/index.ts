@@ -36,6 +36,11 @@ import { effectiveCi, optionalChecks } from "../optional-checks.ts";
 export const ORG = "storytold";
 /** Name of the built-in guarded merge (`autocraft safe-merge`); any other `$AUTOCRAFT_MERGE_CMD` is run as an external command. */
 export const DEFAULT_MERGE_COMMAND = "safe-merge";
+
+/** `--allow-failed` for each optional check of the repo, only for the built-in command (another command may not know the flag). */
+export function allowFailedArgs(db: DatabaseSync, repo: string, cmd: string): string[] {
+  return cmd === DEFAULT_MERGE_COMMAND ? optionalChecks(db, repo).flatMap((n) => ["--allow-failed", n]) : [];
+}
 const CLI = fileURLToPath(new URL("../cli.ts", import.meta.url));
 const ACTOR = "merge";
 
@@ -331,7 +336,7 @@ export async function runMerge(db: DatabaseSync, params: MergeParams, log: (line
     const method = methodOf(info);
     // A hold may have been set during the calls above.
     if (mergeHeld(db, repo, e.number)) { log(`  ${refOf(e)}: merge held meanwhile; skipped`); summary.attempted.pop(); continue; }
-    const r = await mergeViaCommand(w, d.run, d.mergeCommand, [`${ORG}/${repo}`, String(e.number), `--${method}`, ...optionalChecks(db, repo).flatMap((n) => ["--allow-failed", n])], { run: runId, head: e.head, path: e.path });
+    const r = await mergeViaCommand(w, d.run, d.mergeCommand, [`${ORG}/${repo}`, String(e.number), `--${method}`, ...allowFailedArgs(db, repo, d.mergeCommand)], { run: runId, head: e.head, path: e.path });
     if (r.code !== 0) {
       const why = oneLine(r.stderr) || oneLine(r.stdout) || `exit code ${r.code}`;
       refuse(e, method, `${d.mergeCommand}: ${why}`);

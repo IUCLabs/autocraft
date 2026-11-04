@@ -25,10 +25,10 @@ import { refreshChecks } from "../review/checks.ts";
 import { BatchGit } from "./batch-git.ts";
 import { ACTIVE_BATCH, BLOCKED_BY_REVIEW, CLOSED_BY_PERSON, MAX_PUBLISH_FAILURES, PUBLISH_FAILED, RUNS_WAIT_NOTE, activeBatches, admits, batchSizeOf, getBatch, growBatchSize, insertBatch, membersOf, nextBranch, publishDelayMs, shrinkBatchSize, updateBatch, type BatchMember, type BatchRow } from "./batch-store.ts";
 import { mergeApprovalOf } from "./approval.ts";
-import { ORG, prInfo, viewerOf, mergeRun, DEFAULT_MERGE_COMMAND, type CommandResult } from "./index.ts";
+import { ORG, allowFailedArgs, prInfo, viewerOf, mergeRun, DEFAULT_MERGE_COMMAND, type CommandResult } from "./index.ts";
 import { liveGateChecked } from "../review/discussion.ts";
 import { redMainRepos } from "../mainci/index.ts";
-import { effectiveCi, optionalChecks } from "../optional-checks.ts";
+import { effectiveCi } from "../optional-checks.ts";
 import { PIPELINE_LOGIN_KEY, buildQueue, eligible, singleMergeOnly, type QueueEntry } from "./queue.ts";
 import { envVar } from "../env.ts";
 
@@ -373,7 +373,7 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
     if (getBatch(db, b.id).state !== "open") { log(`  ${b.branch}: ended meanwhile; not merged`); return; }
     if (members.some((m) => mergeHeld(db, repo, m.number))) { log(`  ${b.branch}: a PR in the batch was held meanwhile; not merged`); s.waiting.push(b.branch); return; }
     let after: Awaited<ReturnType<typeof refreshChecks>>[number] | undefined;
-    const r = await mergeViaCommand(w, d.run, d.mergeCommand, [`${ORG}/${repo}`, String(b.pr_number), "--merge", ...optionalChecks(db, repo).flatMap((n) => ["--allow-failed", n])], { run: runId, head: b.commit_sha, batch: b.branch }, async () => {
+    const r = await mergeViaCommand(w, d.run, d.mergeCommand, [`${ORG}/${repo}`, String(b.pr_number), "--merge", ...allowFailedArgs(db, repo, d.mergeCommand)], { run: runId, head: b.commit_sha, batch: b.branch }, async () => {
       after = (await refreshChecks(db, d.querier, repo, [b.pr_number!]))[0];
       return after?.state === "MERGED";
     });

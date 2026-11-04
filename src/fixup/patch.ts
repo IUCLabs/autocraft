@@ -15,8 +15,13 @@ export function safePath(p: string): boolean {
 
 /** Files a fix-up may edit: Rust files and Markdown files, with the same exclusions as `editable`. */
 export function fixupEditable(path: string): boolean {
-  return editable(path) || (safePath(path) && path.toLowerCase().endsWith(".md") && !path.split("/").some((s) => s === ".cargo" || s === ".github"));
+  if (editable(path)) return true;
+  const parts = path.split("/");
+  return safePath(path) && path.toLowerCase().endsWith(".md") && !parts.some((s) => s.startsWith(".")) && !AGENT_DOCS.test(parts[parts.length - 1]!);
 }
+
+/** Markdown files that instruct coding agents; a fix-up never edits them. */
+const AGENT_DOCS = /^(claude(\.local)?|agents|gemini|copilot-instructions)\.md$/i;
 
 /** Source files an automated fix (a CI fix or an issue fix) may edit: Rust files other than build scripts, nothing under .cargo or .github. */
 export function editable(path: string): boolean {
