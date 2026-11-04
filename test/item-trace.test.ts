@@ -77,3 +77,26 @@ test("the trace lists every source of an item newest first, with heads, a cursor
   const w = await traceDetail(db, req(7, { id: t.events[0]!.id }));
   assert.equal(w.fields.textLength, 16);
 });
+
+test("a viewer gets no staff-only post-merge fields and only the GitHub writes of the audit", async () => {
+  const db = connect(":memory:");
+  db.prepare("INSERT INTO items (repo, number, kind, state, created_at) VALUES ('photocraft', 7, 'pr', 'MERGED', '2026-01-01T00:00:00Z')").run();
+  db.prepare("INSERT INTO postmerge_reviews (repo, number, merge_sha, at, model, findings) VALUES ('photocraft', 7, ?, '2026-01-02T00:00:00Z', 'opus', ?)")
+    .run("c".repeat(40), JSON.stringify([{ severity: "major", title: "t", body: "b", missed_by: "review", missed_why: "secret reason" }]));
+  db.prepare("INSERT INTO audit (at, login, action, target, details) VALUES ('2026-01-02T01:00:00Z', 'bot', 'review-post', 'photocraft#7', '{\"state\":\"done\",\"text\":\"posted\"}')").run();
+  db.prepare("INSERT INTO audit (at, login, action, target, details) VALUES ('2026-01-02T02:00:00Z', 'someone', 'answer', 'photocraft#7', '{}')").run();
+  db.prepare("INSERT INTO audit (at, login, action, target, details) VALUES ('2026-01-02T03:00:00Z', 'admin', 'access-add', 'photocraft#7', '{}')").run();
+  const as = (role: "viewer" | "maintainer" | "operator"): Req => ({ ...req(7, { id: `review:postmerge:${"c".repeat(40)}` }), user: { login: "u", role, canWrite: async () => true, canRead: async () => true } });
+  const writesOf = async (role: "viewer" | "maintainer" | "operator") => ((await trace(db, { ...as(role), query: new URLSearchParams({ kinds: "write" }) })) as ItemTrace).events;
+  assert.equal(((await traceDetail(db, as("viewer"))).fields.findings as Record<string, unknown>[])[0]!.missed_why, undefined);
+  assert.equal(((await traceDetail(db, as("maintainer"))).fields.findings as Record<string, unknown>[])[0]!.missed_why, "secret reason");
+  const v = await writesOf("viewer");
+  assert.deepEqual(v.map((e) => [e.summary, e.actor.name]), [["Posted review", "AutoCraft"]]);
+  assert.equal((await writesOf("maintainer")).length, 2, "a maintainer also sees the dashboard answer, not the operator-only access change");
+  assert.equal((await writesOf("operator")).length, 3);
+  db.prepare("INSERT INTO decisions (id, kind, repo, number, items, question, options, asked_at) VALUES ('b1', 'merge', NULL, NULL, ?, 'Merge the batch?', '[]', '2026-01-03T00:00:00Z')")
+    .run(JSON.stringify([{ repo: "photocraft", number: 7 }]));
+  assert.deepEqual(((await trace(db, req(7, { kinds: "decision" }))) as ItemTrace).events.map((e) => e.summary), ["Asked: Merge the batch?"], "a batch decision is found through decision_items");
+  const f = (await trace(db, { ...as("viewer"), query: new URLSearchParams({ kinds: "review" }) })) as ItemTrace;
+  assert.equal(f.events[0]!.head, "c".repeat(40));
+});

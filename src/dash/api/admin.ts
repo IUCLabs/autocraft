@@ -34,7 +34,7 @@ const NOTE_MAX = 300;
 const ACCESS_NOTE_MAX = 500;
 const AUDIT_PAGE = 50;
 // Accounts and access (who can sign in, sessions, the Claude accounts) are audited for operators only.
-const operatorOnly = (a: string) => a.startsWith("access-") || a.startsWith("account-") || ["session-revoke", "sign-in", "sign-in-refused"].includes(a);
+export const operatorOnly = (a: string) => a.startsWith("access-") || a.startsWith("account-") || ["session-revoke", "sign-in", "sign-in-refused"].includes(a);
 export const AUDIT_ACTIONS = [
   "answer", "undo", "adopt", "opinion", "opinion-retract", "comment", "override", "rule", "access-add", "access-remove", "access-role",
   "session-revoke", "sign-in", "sign-in-refused", "account-add", "account-change", "account-login-start", "account-login-code", "account-login-cancel", "account-sign-out", "account-refresh", "repo-track", "repo-untrack", "reference-import", "labels-approve", "labels-revoke", "labels-apply", "merge-approve", "merge-revoke", "comment-approve", "comment-revoke", "act-comment", "act-close", "act-skip", "push-approve", "push-revoke", "fixup-push", "fixup-comment", "fixup-comment-edit", "fixissue-approve", "fixissue-revoke", "mainfix-approve", "mainfix-revoke", "optional-check-add", "optional-check-remove", "fixissue-push", "fixissue-pr", "fixissue-comment",

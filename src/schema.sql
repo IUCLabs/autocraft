@@ -1341,3 +1341,22 @@ CREATE TABLE IF NOT EXISTS activity_sync (
   read_at TEXT NOT NULL,
   PRIMARY KEY (repo, number)
 ) WITHOUT ROWID;
+
+-- The items a batch decision (number IS NULL) names in its `items` JSON, so the trace finds them by (repo, number).
+-- Filled by the triggers below and once for older rows (src/db.ts: buildDecisionItems).
+CREATE TABLE IF NOT EXISTS decision_items (
+  repo TEXT NOT NULL, number INTEGER NOT NULL,
+  decision_id TEXT NOT NULL,
+  PRIMARY KEY (repo, number, decision_id)
+) WITHOUT ROWID;
+CREATE TRIGGER IF NOT EXISTS decision_items_ins AFTER INSERT ON decisions WHEN new.number IS NULL AND json_valid(new.items) AND json_type(new.items) = 'array' BEGIN
+  INSERT OR IGNORE INTO decision_items (repo, number, decision_id)
+    SELECT json_extract(j.value, '$.repo'), json_extract(j.value, '$.number'), new.id FROM json_each(new.items) j
+    WHERE typeof(json_extract(j.value, '$.repo')) = 'text' AND typeof(json_extract(j.value, '$.number')) = 'integer';
+END;
+CREATE TRIGGER IF NOT EXISTS decision_items_upd AFTER UPDATE OF items ON decisions WHEN new.number IS NULL AND json_valid(new.items) AND json_type(new.items) = 'array' BEGIN
+  DELETE FROM decision_items WHERE decision_id = new.id;
+  INSERT OR IGNORE INTO decision_items (repo, number, decision_id)
+    SELECT json_extract(j.value, '$.repo'), json_extract(j.value, '$.number'), new.id FROM json_each(new.items) j
+    WHERE typeof(json_extract(j.value, '$.repo')) = 'text' AND typeof(json_extract(j.value, '$.number')) = 'integer';
+END;

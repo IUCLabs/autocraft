@@ -152,8 +152,8 @@ function ciChecksOf(db: DatabaseSync, repo: string, n: number): Item["ciChecks"]
   if (!r) return [];
   let list: unknown = [];
   try { list = JSON.parse(r.checks); } catch { /* malformed: none */ }
-  return (Array.isArray(list) ? (list as { name?: unknown; state?: unknown }[]) : []).flatMap((c) =>
-    typeof c.name === "string" ? [{ name: c.name, state: CI[typeof c.state === "string" ? c.state.toUpperCase() : ""] ?? "none", minutes: null }] : []);
+  return (Array.isArray(list) ? (list as ({ name?: unknown; state?: unknown } | null)[]) : []).flatMap((c) =>
+    c && typeof c.name === "string" ? [{ name: c.name, state: CI[typeof c.state === "string" ? c.state.toUpperCase() : ""] ?? "none", minutes: null }] : []);
 }
 
 /** Pre-merge review rows of the PR, newest first. */
