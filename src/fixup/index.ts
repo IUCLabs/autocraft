@@ -131,6 +131,8 @@ export type PrNode = {
  */
 export function noteLive(db: DatabaseSync, repo: string, number: number, pr: PrNode | null | undefined, at: string): void {
   if (!pr) return;
+  // The planner reads the mirrored value when the checks row is missing or at another head: a conflict seen live must reach it, or the PR keeps planning as a fix-up.
+  if (pr.mergeable === "CONFLICTING" || pr.mergeable === "MERGEABLE") db.prepare("UPDATE items SET mergeable = ? WHERE repo = ? AND number = ? AND kind = 'pr' AND head_oid = ?").run(pr.mergeable, repo, number, pr.headRefOid);
   const row = db.prepare("SELECT head_oid FROM pr_checks WHERE repo = ? AND number = ?").get(repo, number) as { head_oid: string } | undefined;
   if (!row) return;
   if (row.head_oid === pr.headRefOid) {
@@ -249,14 +251,16 @@ async function runFixupWith(db: DatabaseSync, params: FixupParams, log: (line: s
   const asks = params.limit === undefined ? sel.ask : sel.ask.slice(0, params.limit);
   // Stored patches whose lint task ended come first: they hold a model patch that is already paid for.
   const wanted = [...sel.lint, ...sel.fix];
-  const picks = params.limit === undefined ? wanted : wanted.slice(0, Math.max(0, params.limit - asks.length));
-  const left = params.limit === undefined ? Infinity : Math.max(0, params.limit - asks.length - picks.length);
+  const budget = params.limit === undefined ? Infinity : Math.max(0, params.limit - asks.length);
+  // A PR found conflicting live is skipped without using the limit, so the candidates behind it still get their turn.
+  const picks = budget === 0 ? [] : wanted;
+  const left = params.limit === undefined ? Infinity : Math.max(0, params.limit - asks.length - Math.min(budget, wanted.length));
   const cAsks = sel.conflictAsk.slice(0, left);
   const cMerges = sel.conflictMerge.slice(0, Math.max(0, left - cAsks.length));
   log(`fixup ${repo}: ${sel.conflictMerge.length} conflicted PRs to merge into, ${sel.conflictAsk.length} to ask`);
   log(`fixup ${repo}: ${sel.fix.length} PRs to fix up, ${sel.cannotPush.length + sel.ask.length} we can't push to${pushApprovalOf(db, repo) ? "" : " (pushing is not approved for this repo)"}`);
   if (dryRun) {
-    for (const c of picks) log(`  would fix up ${refOf(c)} at ${short(c.head)} (try ${c.attempt}): ${[...new Set(c.fixes.map((f) => f.file))].join(", ")}`);
+    for (const c of picks.slice(0, budget)) log(`  would fix up ${refOf(c)} at ${short(c.head)} (try ${c.attempt}): ${[...new Set(c.fixes.map((f) => f.file))].join(", ")}`);
     for (const c of asks) log(`  would comment the fixes on ${refOf(c)} at ${short(c.head)}`);
     for (const c of cMerges) log(`  would merge ${c.base} into ${refOf(c)} at ${short(c.head)} (try ${c.attempt})`);
     for (const c of cAsks) log(`  would ask the contributor of ${refOf(c)} to merge ${c.base}`);
@@ -323,7 +327,9 @@ async function runFixupWith(db: DatabaseSync, params: FixupParams, log: (line: s
 
   const who = await (whoP ??= whoAmI(d.exec));
   mkdirSync(d.root, { recursive: true });
+  let worked = 0;
   for (const c of picks) {
+    if (worked >= budget) break;
     const ref = refOf(c);
     let files = [...new Set(c.fixes.map((f) => f.file))];
     const fail = (state: "failed" | "refused" | "rejected", raw: string) => {
@@ -345,6 +351,8 @@ async function runFixupWith(db: DatabaseSync, params: FixupParams, log: (line: s
       noteLive(db, repo, c.number, pr, at());
       if (!pr || pr.state !== "OPEN" || pr.isDraft) { log(`  ${ref}: skipped: no longer an open, non-draft PR`); continue; }
       if (pr.headRefOid !== c.head) { log(`  ${ref}: skipped: head moved to ${short(pr.headRefOid)} since the review`); continue; }
+      if (pr.mergeable === "CONFLICTING") { log(`  ${ref}: skipped: conflicts with the base branch; the conflict merge handles it`); continue; }
+      worked++;
       params.onHandled?.(++handled.n);
       if (!pr.headRepository || !pushable(pr.headRepository.nameWithOwner, repo, pr.maintainerCanModify, pr.headRefName, longLivedOf(db, repo), !!pr.headRef?.branchProtectionRule)) {
         // A carry-over we can't push is suggested on the PR instead, when the repo allows comments.
@@ -360,7 +368,6 @@ async function runFixupWith(db: DatabaseSync, params: FixupParams, log: (line: s
         carried = w.carried;
         files = [...new Set(c.fixes.map((f) => f.file))];
       }
-      if (pr.mergeable === "CONFLICTING") { log(`  ${ref}: skipped: conflicts with the base branch; the conflict merge handles it`); continue; }
       const head = await git.fetchPr(ORG, repo, c.number);
       if (head !== c.head) { log(`  ${ref}: skipped: fetched head ${short(head)} is not the reviewed ${short(c.head)}`); continue; }
 
