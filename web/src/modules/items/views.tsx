@@ -25,8 +25,8 @@ const STATUS: Record<SettledStatus, [string, Tone]> = {
 };
 const STATUS_KEYS = Object.keys(STATUS) as SettledStatus[];
 const FLAGS: [string, string][] = [["security", "Security"], ["needs decision", "Needs a decision"]];
-const SORTS: [ItemSort, string][] = [["relevance", "Relevance"], ["updated", "Updated"], ["created", "Created"], ["number", "Number"]];
-const STATES = [["open", "Open"], ["closed", "Closed"], ["merged", "Merged"], ["all", "Any state"]] as const;
+const SORTS: [ItemSort, string][] = [["relevance", "Relevance"], ["updated", "Updated"], ["created", "Created"], ["number", "Number"], ["merged", "Merged"]];
+const STATES = [["open", "Open"], ["closed", "Closed"], ["merged", "Merged"], ["merged-by-us", "Merged by AutoCraft"], ["all", "Any state"]] as const;
 const STAGE: Record<Stage, string> = {
   classified: "Classified", labeled: "Labelled", reviewed: "Reviewed", take: "Taken", hold: "Held", close: "To close", "needs-decision": "Waiting for a decision",
   batched: "In a batch", merged: "Merged by the pipeline", closed: "Closed by the pipeline", "fixed-by-us": "Fixed by us",
@@ -39,6 +39,9 @@ const flowLabel = (k: string) => {
   const [node, branch] = k.split(".");
   return `${node![0]!.toUpperCase()}${node!.slice(1)} › ${branch!.replace(/-/g, " ")}`;
 };
+
+const HOW: Record<NonNullable<ItemListRow["mergedHow"]>, string> = { rule: "By rule", operator: "On approval", batch: "In a batch" };
+const HowBadge = ({ how }: { how: ItemListRow["mergedHow"] }) => (how ? <Badge>{HOW[how]}</Badge> : null);
 
 const csv = (v: string | undefined) => (v ? v.split(",").filter(Boolean) : []);
 
@@ -100,11 +103,11 @@ export function ItemsView(_: ViewProps) {
         </select>
         <select
           aria-label="Sort"
-          value={filter.sort ?? (filter.q ? "relevance" : "updated")}
+          value={filter.sort ?? (filter.q ? "relevance" : filter.state === "merged-by-us" ? "merged" : "updated")}
           onChange={(e) => set({ sort: e.target.value })}
           className={cn(selectCls, "text-ink/70 sm:ml-auto")}
         >
-          {SORTS.filter(([k]) => k !== "relevance" || filter.q).map(([k, l]) => (
+          {SORTS.filter(([k]) => (k !== "relevance" || filter.q) && (k !== "merged" || filter.state === "merged-by-us")).map(([k, l]) => (
             <option key={k} value={k}>
               Sort: {l}
             </option>
@@ -337,6 +340,7 @@ function Table({ rows }: { rows: ItemListRow[] }) {
                 <Flags flags={it.settled.flags} />
               </td>
               <td className="px-3 py-2 text-xs text-ink/60">
+                <HowBadge how={it.mergedHow} />
                 {it.stage && <span className="mr-1">{STAGE[it.stage] ?? it.stage}</span>}
                 {it.queue ? <QueueBadge slot={it.queue} className="relative z-10" /> : !it.stage && <span className="text-ink/30">–</span>}
               </td>
@@ -367,6 +371,7 @@ function Cards({ rows }: { rows: ItemListRow[] }) {
           <div className="mt-1.5 flex flex-wrap items-center gap-1.5 pl-6">
             <SettledBadge s={it.settled} />
             <QueueBadge slot={it.queue} className="relative z-10" />
+            <HowBadge how={it.mergedHow} />
             {it.settled.flags.length > 0 && <Flags flags={it.settled.flags} />}
             {it.stage && <span className="text-2xs text-ink/55">{STAGE[it.stage] ?? it.stage}</span>}
           </div>

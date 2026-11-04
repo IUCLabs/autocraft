@@ -477,7 +477,7 @@ export interface Snippet {
   text: string;
 }
 
-export type ItemSort = "relevance" | "updated" | "created" | "number";
+export type ItemSort = "relevance" | "updated" | "created" | "number" | "merged";
 
 /** `status: "unsettled"` stands for waiting and disagree together. */
 export type StatusFilter = SettledStatus | "unsettled";
@@ -490,7 +490,8 @@ export interface ItemFilter {
   repo?: RepoName[];
   kind?: ItemKind;
   /** Default `open`. */
-  state?: ItemState | "all";
+  /** `merged-by-us`: PRs AutoCraft merged (its merge step or a merged batch), newest merge first. */
+  state?: ItemState | "all" | "merged-by-us";
   /** Settled label. */
   label?: TypeLabel;
   status?: StatusFilter[];
@@ -526,6 +527,8 @@ export interface ItemListRow extends ItemRef {
   snippet: Snippet | null;
   /** Place in line for the next queued stage; null when the next step is not queued. */
   queue?: QueueSlot | null;
+  /** How AutoCraft merged a PR; null when it did not. */
+  mergedHow?: "rule" | "operator" | "batch" | null;
 }
 
 export interface ItemList {
