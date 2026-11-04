@@ -4,20 +4,18 @@
 // list version is not asked again unless a re-scan asks for the unassigned ones.
 import type { DatabaseSync } from "node:sqlite";
 import { claudeRoom } from "../agents/call.ts";
-import { jevParallel } from "../agents/accounts.ts";
 import { jevAvailable } from "../agents/jev.ts";
 import { notOwnIntegrationSql } from "../dupes/held.ts";
 import { refOf } from "../classify/parse.ts";
-import { add, askClaude, askJev, pool, saveUsage, type Usage } from "../classify/run.ts";
-import { JEV_USD_PER_INPUT_TOKEN } from "../prompts/index.ts";
+import { pool } from "../classify/run.ts";
+import { runTiered } from "../agents/step.ts";
+import { AREAS } from "../agents/steps.ts";
 import { pilotSql } from "../pilot.ts";
-import { CLAUDE_PROMPTS, renderAreaJev } from "../prompts/index.ts";
 import { cachedDiff, ghDiff, splitDiff } from "../review/diff.ts";
-import { jevAreaAnswer, parseAreaReply, settles } from "./parse.ts";
+import { settles } from "./parse.ts";
 import { currentList, setItemArea } from "./store.ts";
 import { AREA_PATHS_MAX, type Area, type AreaItem } from "./types.ts";
 
-const HAIKU = CLAUDE_PROMPTS["areas.haiku"];
 const CHUNK = 40;
 
 /** Changed file paths of a pull request, or null when unavailable. */
@@ -74,15 +72,6 @@ export type AssignParams = {
 };
 export type AssignResult = { due: number; jev: number; haiku: number; none: number; left: number };
 
-/** Usage rows of an earlier pass under the same agent name are renamed, so INSERT OR REPLACE does not overwrite their cost. */
-function keepUsage(db: DatabaseSync, run: string, agent: string, attempt = 0): void {
-  if (attempt > 0) return;
-  db.prepare("UPDATE token_usage SET agent = agent || '@' || COALESCE(started_at, '') WHERE run_id = ? AND agent = ?").run(run, agent);
-}
-
-const now = () => new Date().toISOString();
-const usageZero = (): Usage => ({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: null });
-
 async function withPaths(items: Due[], source: PathSource): Promise<AreaItem[]> {
   const prs = items.filter((x) => x.kind === "pr");
   const found = new Map<string, string[]>();
@@ -91,28 +80,6 @@ async function withPaths(items: Due[], source: PathSource): Promise<AreaItem[]> 
     if (p) found.set(refOf(x), p);
   }), 4);
   return items.map(({ head: _h, version: _v, ...x }) => ({ ...x, ...(found.has(refOf(x)) && { paths: found.get(refOf(x))! }) }));
-}
-
-async function haikuAreas(db: DatabaseSync, repo: string, areas: Area[], items: AreaItem[], p: AssignParams): Promise<Map<string, string | null>> {
-  const out = new Map<string, string | null>();
-  const batches: AreaItem[][] = [];
-  for (let i = 0; i < items.length; i += HAIKU.limits.perCall) batches.push(items.slice(i, i + HAIKU.limits.perCall));
-  await pool(batches.map((batch, n) => async () => {
-    const start = now();
-    let usage = usageZero(), todo = batch;
-    for (let attempt = 0; attempt < HAIKU.limits.attempts && todo.length && !p.cancelled?.(); attempt++) {
-      const reply = await askClaude("areas.haiku", HAIKU.models[0]!, [{ repo, areas, items: todo }], db);
-      if (!reply) continue;
-      usage = add(usage, reply.usage);
-      const { answers, missing } = parseAreaReply(reply.text, todo.map(refOf), areas);
-      for (const [ref, area] of answers) out.set(ref, area);
-      todo = todo.filter((x) => missing.includes(refOf(x)));
-    }
-    const agent = `areas-haiku-${repo}-${String(n).padStart(3, "0")}`;
-    keepUsage(db, p.usageRun, agent);
-    saveUsage(db, p.usageRun, agent, "areas", HAIKU.models[0]!, batch.length - todo.length, usage, start, now());
-  }), () => claudeRoom(db));
-  return out;
 }
 
 /** Asks the due items of one repo and stores the answers. */
@@ -131,36 +98,16 @@ async function assignRepo(db: DatabaseSync, repo: string, due: Due[], p: AssignP
     if (!jevAvailable(db) && claudeRoom(db) <= 0 && !p.paths) { p.log?.(`areas: no model available for ${repo}`); break; }
     const chunk = await withPaths(due.slice(i, i + CHUNK), p.paths ?? diffPaths(db));
     p.onSent?.(chunk.length);
-    const answered = new Set<string>();
-    const unsure: AreaItem[] = [];
-    const jevUsage = new Map<string, number>();
-    if (jevAvailable(db)) {
-      await pool(chunk.map((x) => async () => {
-        if (!jevAvailable(db)) return;
-        for (let attempt = 0; attempt < 2 && !answered.has(refOf(x)) && jevAvailable(db); attempt++) {
-          const t0 = now();
-          const res = await askJev("areas.jev", x, db, renderAreaJev(x, list.areas));
-          try {
-            const j = JSON.parse(res.stdout) as { usage?: { input_tokens?: number; output_tokens?: number } };
-            const input = (jevUsage.get(refOf(x)) ?? 0) + (j.usage?.input_tokens ?? 0);
-            jevUsage.set(refOf(x), input);
-            keepUsage(db, p.usageRun, `areas-jev-${refOf(x)}`, attempt);
-            saveUsage(db, p.usageRun, `areas-jev-${refOf(x)}`, "areas", "jev-latest", 1, { input, output: j.usage?.output_tokens ?? 0, cacheRead: 0, cacheWrite: 0, cost: input * JEV_USD_PER_INPUT_TOKEN }, t0, now());
-          } catch { /* an unreadable answer is retried below */ }
-          const a = res.code === 0 ? jevAreaAnswer(res.stdout, list.areas) : null;
-          if (!a) continue;
-          answered.add(refOf(x));
-          if (settles(a.top)) store(x, a.area, "jev", a.top);
-          else unsure.push(x);
-        }
-      }), jevParallel(db));
-    }
-    // Items Jev could not answer because it is unavailable go to Haiku alone; a Jev failure with Jev up leaves the item for the next pass.
-    const alone = jevAvailable(db) ? [] : chunk.filter((x) => !answered.has(refOf(x)));
-    const ask = [...unsure, ...alone];
-    if (ask.length && !p.cancelled?.()) {
-      const got = await haikuAreas(db, repo, list.areas, ask, p);
-      for (const x of ask) if (got.has(refOf(x))) store(x, got.get(refOf(x))!, "haiku", null);
+    const t = await runTiered(db, AREAS, chunk, {
+      ctx: { repo, areas: list.areas },
+      cancelled: p.cancelled,
+      jevUsage: (x) => ({ run: p.usageRun, agent: `areas-jev-${refOf(x)}`, stage: "areas", model: "jev-latest", items: () => 1, keepEarlier: true }),
+      haikuUsage: (_batch, n) => ({ run: p.usageRun, agent: `areas-haiku-${repo}-${String(n).padStart(3, "0")}`, stage: "areas", keepEarlier: true }),
+    });
+    for (const x of chunk) {
+      const a = t.jev.get(refOf(x));
+      if (a && settles(a.top)) store(x, a.area, "jev", a.top);
+      else if (t.haiku.has(refOf(x))) store(x, t.haiku.get(refOf(x))!, "haiku", null);
     }
     p.progress?.(`Areas ${repo}: ${Math.min(i + CHUNK, due.length)} of ${due.length} items`);
   }

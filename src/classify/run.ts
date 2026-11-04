@@ -22,6 +22,8 @@ import { REFERENCE_PATH, type SandboxSpec } from "../sandbox/command.ts";
 import { holdCheckouts } from "../sandbox/checkout.ts";
 import { sessionStore } from "../sandbox/session-store.ts";
 import { defaultWorkspace } from "../sandbox/workspace.ts";
+import { runModelStep } from "../agents/step.ts";
+import { CLASSIFY_HAIKU, CLASSIFY_JEV } from "../agents/steps.ts";
 import { CLAUDE_PROMPTS, JEV_ARGS, JEV_USD_PER_INPUT_TOKEN, JEV_PROMPTS, claudeArgs, claudeParts, claudePromptOf, jevPromptOf, joinParts, renderClaude, withoutRepoDir, renderJev, type ClaudeInput, type ClaudePromptId, type JevPromptId } from "../prompts/index.ts";
 import type { DupePair } from "../dupes/pair.ts";
 import { flagsOf, jevVerdict, parseHaikuReply, parseRef, refOf, type Item, type JevAnswers, type Verdict } from "./parse.ts";
@@ -413,7 +415,7 @@ export async function askClaude<K extends ClaudePromptId>(id: K, model: string, 
 }
 
 /** Sends a registered Jev request (src/prompts) for one item to `jev ask`; the same rule as `askClaude`. Recorded as an agent run without an account. */
-export async function askJev(id: JevPromptId, item: Item | DupePair | { ref: string }, db: DatabaseSync, body: string = renderJev(id, item as Item | DupePair)): Promise<Proc> {
+export async function askJev(id: JevPromptId, item: Item | DupePair | { ref: string }, db: DatabaseSync, body: string = renderJev(id, item as Item | DupePair), perCallUsage = true): Promise<Proc> {
   const runId = startJevRun(db, { promptId: id, promptVersion: promptVersion(id), provider: "jev", model: "jev", items: refsOf([item]), prompt: body });
   const start = now();
   try {
@@ -423,8 +425,8 @@ export async function askJev(id: JevPromptId, item: Item | DupePair | { ref: str
       const j = JSON.parse(r.stdout) as { usage?: { input_tokens?: number; output_tokens?: number } };
       if (j.usage) tokens = { input: j.usage.input_tokens ?? 0, output: j.usage.output_tokens ?? 0, cacheRead: 0, cacheWrite: 0 };
     } catch { /* the caller reports an unreadable answer */ }
-    // classify.jev is saved per item by runJev, which sums its retries
-    if (tokens && id !== "classify.jev" && id !== "areas.jev") saveUsage(db, String(runId), "jev", id.split(".")[0]!, JEV_PROMPTS[id].models[0]!, 1, { ...tokens, cost: tokens.input * JEV_USD_PER_INPUT_TOKEN }, start, now());
+    // A step that sums its retries into one row (usage option of runModelStep) saves nothing here.
+    if (tokens && perCallUsage) saveUsage(db, String(runId), "jev", id.split(".")[0]!, JEV_PROMPTS[id].models[0]!, 1, { ...tokens, cost: tokens.input * JEV_USD_PER_INPUT_TOKEN }, start, now());
     const outage = jevFailure(r);
     if (outage) markJevUnavailable(db, outage.kind, outage.reason);
     else if (r.code === 0) markJevWorking(db, Date.parse(start));
@@ -449,42 +451,20 @@ export async function runHaiku(db: DatabaseSync, runId: string, items: Item[], b
   const batches: Item[][] = [];
   for (let i = 0; i < items.length; i += batchSize) batches.push(items.slice(i, i + batchSize));
   await pool(batches.map((batch, n) => async () => {
-    const start = now();
-    let usage: Usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: null };
-    let todo = batch;
-    for (let attempt = 0; attempt < HAIKU.limits.attempts && todo.length; attempt++) {
-      const reply = await askClaude("classify.haiku", model, todo, db);
-      if (!reply) continue;
-      usage = add(usage, reply.usage);
-      const { verdicts, missing } = parseHaikuReply(reply.text, todo.map(refOf));
-      for (const v of verdicts) saveVerdict(db, "haiku", runId, v);
-      todo = todo.filter((i) => missing.includes(refOf(i)));
-    }
-    if (todo.length) console.error(`haiku batch ${n}: no valid answer for ${todo.map(refOf).join(", ")}`);
-    saveUsage(db, runId, `haiku-${String(n).padStart(2, "0")}`, "classify", model, batch.length - todo.length, usage, start, now());
+    const r = await runModelStep(db, CLASSIFY_HAIKU, batch, { model, usage: { run: runId, agent: `haiku-${String(n).padStart(2, "0")}`, stage: "classify" } });
+    if (r.ok) for (const verdicts of r.values) for (const v of verdicts) saveVerdict(db, "haiku", runId, v);
+    const left = r.ok ? r.rest ?? [] : batch;
+    if (left.length) console.error(`haiku batch ${n}: no valid answer for ${left.map(refOf).join(", ")}`);
   }), () => claudeRoom(db), { first: opts.cold });
 }
-
-const JEV = JEV_PROMPTS["classify.jev"];
 
 export async function runJev(db: DatabaseSync, runId: string, items: Item[], width = jevParallel(db)): Promise<void> {
   await pool(items.map((item) => async () => {
     // Once a call shows Jev is unavailable, the items still waiting are left for Haiku.
     if (!jevAvailable(db)) return;
-    const ref = refOf(item), start = now();
-    let v: Verdict | null = null;
-    let usage: Usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: null };
-    for (let attempt = 0; attempt < JEV.limits.attempts && !v && jevAvailable(db); attempt++) {
-      const r = await askJev("classify.jev", item, db);
-      try {
-        const j = JSON.parse(r.stdout) as { answers?: JevAnswers; usage?: { input_tokens?: number; output_tokens?: number } };
-        usage = add(usage, { input: j.usage?.input_tokens ?? 0, output: j.usage?.output_tokens ?? 0, cacheRead: 0, cacheWrite: 0, cost: null });
-        v = j.answers ? jevVerdict(ref, j.answers) : null;
-      } catch { /* retry once */ }
-    }
-    if (v) saveVerdict(db, "jev", runId, v);
-    else if (!jevAvailable(db)) return;
-    else console.error(`jev: no valid answer for ${ref}`);
-    saveUsage(db, runId, `jev-${ref}`, "classify", JEV.models[0]!, v ? 1 : 0, { ...usage, cost: usage.input * JEV_USD_PER_INPUT_TOKEN }, start, now());
+    const ref = refOf(item);
+    const r = await runModelStep(db, CLASSIFY_JEV, item, { usage: { run: runId, agent: `jev-${ref}`, stage: "classify", items: (ok) => (ok ? 1 : 0), withoutUsage: true, skipWhen: (x) => !x.ok && !jevAvailable(db) } });
+    if (r.ok) saveVerdict(db, "jev", runId, r.value);
+    else if (jevAvailable(db)) console.error(`jev: no valid answer for ${ref}`);
   }), width);
 }

@@ -1,0 +1,135 @@
+// The registry of model steps: per prompt id, the parser, retries, lint and (for Jev) the Haiku fallback.
+// A caller names a step and passes the input; src/agents/step.ts runs it. The prompts' text stays in src/prompts.
+import { refOf, parseHaikuReply, jevVerdict, type Item, type JevAnswers, type Verdict } from "../classify/parse.ts";
+import { jevAreaChoice, parseAreaReply, settles, type AreaAnswer } from "../areas/parse.ts";
+import type { Area, AreaItem } from "../areas/types.ts";
+import { parsePairReply, type DupePair, type PairAnswer } from "../dupes/pair.ts";
+import { lintComparison, parseIssueComparison, parsePrComparison, type CompareIssues, type ComparePrs, type IssueComparison, type PrComparison } from "../dupes/group.ts";
+import { jevImpact, parseHaikuImpacts, SURE, type Impact, type JevImpactAnswers } from "../priority/score.ts";
+import { renderAreaJev, renderReferenceJev } from "../prompts/index.ts";
+import type { ReferenceLintInput } from "../replylint.ts";
+import type { ClaudeStep, JevStep, TieredStep } from "./step.ts";
+
+/** The part of `xs` whose key is in `missing`, or undefined when none is: the `rest` of a batch parse. */
+export function leftOf<T>(xs: T[], key: (x: T) => string, missing: string[]): T[] | undefined {
+  const r = xs.filter((x) => missing.includes(key(x)));
+  return r.length ? r : undefined;
+}
+
+const probability = (p: unknown): number | null => (typeof p === "number" && p >= 0 && p <= 1 ? p : null);
+const single = <V,>(v: V | null) => (v === null ? null : { value: v });
+
+// Classify: Jev per item, Haiku per batch (the two run as separate passes of the classify pipeline).
+export const CLASSIFY_HAIKU: ClaudeStep<Item[], Verdict[]> = {
+  provider: "claude", id: "classify.haiku",
+  parse: (text, todo) => {
+    const { verdicts, missing } = parseHaikuReply(text, todo.map(refOf));
+    return { value: verdicts, rest: leftOf(todo, refOf, missing) };
+  },
+};
+export const CLASSIFY_JEV: JevStep<Item, Verdict> = {
+  provider: "jev", id: "classify.jev",
+  request: (item) => ({ item }),
+  parse: (answers, item) => single(answers ? jevVerdict(refOf(item), answers as JevAnswers) : null),
+};
+
+// Priority: Jev's level, Haiku where Jev is under SURE or gave none.
+export type JevImpact = { impact: Impact; p: number };
+export type HaikuImpactValue = { impact: Impact; reason: string };
+export const PRIORITY: TieredStep<Item, JevImpact, HaikuImpactValue> = {
+  jev: {
+    provider: "jev", id: "priority.jev",
+    request: (item) => ({ item }),
+    parse: (answers) => single(jevImpact(answers as JevImpactAnswers | undefined)),
+  },
+  haiku: {
+    provider: "claude", id: "priority.haiku",
+    parse: (text, ask) => {
+      const { answers, missing } = parseHaikuImpacts(text, ask.map(refOf));
+      return { value: answers.map((a): [string, HaikuImpactValue] => [a.ref, { impact: a.impact, reason: a.reason }]), rest: leftOf(ask, refOf, missing) };
+    },
+  },
+  ref: refOf,
+  sure: (v) => v.p >= SURE,
+  onJevFailure: "haiku",
+};
+
+// Areas: Jev's choice settles from AREA_SURE; Haiku decides below it, and alone while Jev is unavailable.
+export type AreasCtx = { repo: string; areas: Area[] };
+type AreasBatch = { repo: string; areas: Area[]; items: AreaItem[] };
+export const AREAS: TieredStep<AreaItem, AreaAnswer, string | null, AreasCtx, AreasBatch> = {
+  jev: {
+    provider: "jev", id: "areas.jev",
+    request: (x, c) => ({ item: x, body: renderAreaJev(x, c.areas) }),
+    // An answer from a failed `jev ask` is not used.
+    parse: (answers, _x, ctx, c) => single(ctx.code === 0 ? jevAreaChoice(answers, c.areas) : null),
+  },
+  haiku: {
+    provider: "claude", id: "areas.haiku",
+    toPrompt: (b) => [b],
+    size: (b) => b.items.length,
+    parse: (text, b) => {
+      const { answers, missing } = parseAreaReply(text, b.items.map(refOf), b.areas);
+      const left = leftOf(b.items, refOf, missing);
+      return { value: [...answers], rest: left && { ...b, items: left } };
+    },
+  },
+  batch: (items, c) => ({ repo: c.repo, areas: c.areas, items }),
+  ref: refOf,
+  sure: (a) => settles(a.top),
+  onJevFailure: "haiku-when-unavailable",
+};
+
+// Duplicate pairs: Jev's probability, Haiku for the unsure pairs (the bands are in src/dupes/pair.ts).
+export const DUPES_JEV: JevStep<DupePair, number> = {
+  provider: "jev", id: "dupes.jev",
+  request: (pair) => ({ item: pair }),
+  parse: (answers) => single(probability((answers as { same?: { noul?: unknown } } | undefined)?.same?.noul)),
+};
+export const DUPES_HAIKU: ClaudeStep<DupePair[], PairAnswer[]> = {
+  provider: "claude", id: "dupes.haiku",
+  parse: (text, pairs) => {
+    const { answers, missing } = parsePairReply(text, pairs.map((p) => p.ref));
+    return { value: answers, rest: leftOf(pairs, (p) => p.ref, missing) };
+  },
+};
+
+// Dupe comparison: one call for a group of PRs (with a lint and fix turn) or of issues.
+export type PrCompareInput = { numbers: number[]; input: ComparePrs };
+export type IssueCompareInput = { numbers: number[]; input: CompareIssues };
+export const COMPARE_PRS: ClaudeStep<PrCompareInput, PrComparison> = {
+  provider: "claude", id: "dupes.compare-prs.opus",
+  toPrompt: (x) => [x.input],
+  size: () => 1,
+  // A long summary or why goes back to the model as a fix turn (src/replylint.ts); a reply that is not a valid comparison is asked for again.
+  lint: { fields: ["summary", "why"], make: (x) => (text) => lintComparison(text, x.numbers) },
+  // Anything the fix turn did not clear is cut to its first sentence; the call is never repeated for it.
+  parse: (text, x) => single(parsePrComparison(text, x.numbers, true)),
+};
+export const COMPARE_ISSUES: ClaudeStep<IssueCompareInput, IssueComparison> = {
+  provider: "claude", id: "dupes.compare-issues.sonnet",
+  toPrompt: (x) => [x.input],
+  size: () => 1,
+  // An over-long summary fails the reply until the last attempt, which cuts it; when no attempt is valid, the first lenient reading is used.
+  parse: (text, x, ctx) => single(parseIssueComparison(text, x.numbers, ctx.last)),
+  fallback: (text, x) => parseIssueComparison(text, x.numbers, true),
+};
+
+// Reference lint: does a public text refer to outside documentation? Jev's probability, Haiku for the rest.
+export const REFERENCE_JEV: JevStep<ReferenceLintInput, number> = {
+  provider: "jev", id: "lint.reference.jev",
+  request: (x) => ({ item: { ref: x.ref }, body: renderReferenceJev(x.text) }),
+  parse: (answers) => single(probability((answers as { refers?: { noul?: unknown } } | undefined)?.refers?.noul)),
+};
+export const REFERENCE_HAIKU: ClaudeStep<ReferenceLintInput[], boolean> = {
+  provider: "claude", id: "lint.reference.haiku",
+  parse: (text, input) => {
+    const a = text.indexOf("["), b = text.lastIndexOf("]");
+    try {
+      const o = (JSON.parse(text.slice(a, b + 1)) as { ref?: unknown; refers?: unknown }[])[0];
+      if (o && o.ref === input[0]!.ref && typeof o.refers === "boolean") return { value: o.refers };
+    } catch { /* an unreadable reply is asked for again */ }
+    return null;
+  },
+};
+

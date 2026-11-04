@@ -5,19 +5,15 @@
 // while Jev is unavailable (src/agents/jev.ts). The reach is
 // recomputed from the mirror's reach signals on every pass, without a model.
 import type { DatabaseSync } from "node:sqlite";
-import { jevParallel } from "../agents/accounts.ts";
-import { claudeRoom } from "../agents/call.ts";
-import { jevAvailable } from "../agents/jev.ts";
+import { runTiered } from "../agents/step.ts";
+import { PRIORITY } from "../agents/steps.ts";
 import { type Item, refOf } from "../classify/parse.ts";
-import { askClaude, askJev, pool } from "../classify/run.ts";
 import { connect } from "../db.ts";
 import { fillEmbedHashes } from "../itemhash.ts";
-import { CLAUDE_PROMPTS, JEV_PROMPTS } from "../prompts/index.ts";
 import { reachOfOpenItems } from "./reach.ts";
-import { jevImpact, parseHaikuImpacts, reachScore, settleImpact, SURE, type Impact, type JevImpactAnswers } from "./score.ts";
+import { reachScore, settleImpact, type Impact } from "./score.ts";
 import { pilotSql } from "../pilot.ts";
 
-const JEV = JEV_PROMPTS["priority.jev"], HAIKU = CLAUDE_PROMPTS["priority.haiku"];
 const JEV_CHUNK = 40;
 const now = () => new Date().toISOString();
 
@@ -42,17 +38,6 @@ export function dueItems(db: DatabaseSync, limit: number): Due[] {
 }
 
 type Verdict = { jev: { impact: Impact; p: number } | null; haiku: { impact: Impact; reason: string } | null };
-
-async function askJevImpact(db: DatabaseSync, item: Item): Promise<{ impact: Impact; p: number } | null> {
-  for (let attempt = 0; attempt < JEV.limits.attempts && jevAvailable(db); attempt++) {
-    const r = await askJev("priority.jev", item, db);
-    try {
-      const v = jevImpact((JSON.parse(r.stdout) as { answers?: JevImpactAnswers }).answers);
-      if (v) return v;
-    } catch { /* retry once */ }
-  }
-  return null;
-}
 
 function save(db: DatabaseSync, item: Due, v: Verdict): boolean {
   const s = settleImpact(v.jev, v.haiku?.impact ?? null);
@@ -106,29 +91,15 @@ export async function runPrioritize(db: DatabaseSync, opts: PrioritizeOptions): 
     const chunk = todo.slice(i, i + JEV_CHUNK);
     res.sent += chunk.length;
     opts.onSent?.(res.sent);
-    const jev = await pool(chunk.map((item) => () => askJevImpact(db, item)), () => jevParallel(db));
-    const jevDown = !jevAvailable(db);
+    const t = await runTiered(db, PRIORITY, chunk);
     const verdicts = new Map<string, Verdict>();
-    const unsure: Due[] = [];
-    chunk.forEach((item, n) => {
-      const v = jev[n] ?? null;
-      verdicts.set(refOf(item), { jev: v, haiku: null });
+    for (const item of chunk) {
+      const ref = refOf(item), v = t.jev.get(ref) ?? null;
+      verdicts.set(ref, { jev: v, haiku: t.haiku.get(ref) ?? null });
       if (v) res.jev++;
-      if (!v || v.p < SURE) unsure.push(item);
-      if (!v && jevDown) res.haikuAlone++;
-    });
-    const batches: Due[][] = [];
-    for (let j = 0; j < unsure.length; j += HAIKU.limits.perCall) batches.push(unsure.slice(j, j + HAIKU.limits.perCall));
-    await pool(batches.map((batch) => async () => {
-      let ask = batch;
-      for (let attempt = 0; attempt < HAIKU.limits.attempts && ask.length; attempt++) {
-        const reply = await askClaude("priority.haiku", HAIKU.models[0]!, ask, db);
-        if (!reply) continue;
-        const { answers, missing } = parseHaikuImpacts(reply.text, ask.map(refOf));
-        for (const a of answers) { verdicts.get(a.ref)!.haiku = { impact: a.impact, reason: a.reason }; res.haiku++; }
-        ask = ask.filter((x) => missing.includes(refOf(x)));
-      }
-    }), () => claudeRoom(db));
+      if (t.haiku.has(ref)) res.haiku++;
+    }
+    res.haikuAlone += t.alone.size;
     for (const item of chunk) if (save(db, item, verdicts.get(refOf(item))!)) res.saved++;
     else log(`prioritize: no valid answer for ${refOf(item)}`);
   }

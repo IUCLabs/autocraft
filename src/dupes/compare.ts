@@ -9,6 +9,8 @@
 import { referenceDir } from "../reference.ts";
 import type { DatabaseSync } from "node:sqlite";
 import { claudeRoom } from "../agents/call.ts";
+import { runModelStep } from "../agents/step.ts";
+import { COMPARE_ISSUES, COMPARE_PRS } from "../agents/steps.ts";
 import { add, askClaude, pool, saveUsage, type Usage } from "../classify/run.ts";
 import { audit } from "../dash/audit.ts";
 import { connect } from "../db.ts";
@@ -21,7 +23,7 @@ import type { Lint } from "../replylint.ts";
 import { compareCanonical, canonInfo, pickCanonical } from "./canonical.ts";
 import { askGroupDecisions } from "./decide.ts";
 import {
-  GROUP_DIFF_CHARS, GROUP_MAX, lintComparison, parseIssueComparison, parsePrComparison, prsRef, type IssueComparison, type PrComparison,
+  GROUP_DIFF_CHARS, GROUP_MAX, prsRef, 
   type CompareIssue, type CompareIssues, type ComparePr, type ComparePrs,
 } from "./group.ts";
 import { dueSets, rememberDrop, saveComparison, storedComparison, type ComparisonResult, type KindSet, type StoredComparison } from "./plan.ts";
@@ -151,31 +153,16 @@ async function compareChunk(x: Ctx, s: KindSet, numbers: number[], usage: { u: U
     if (checkout) input.repo_dir = REPO_PATH;
     const model = PR_PROMPT.models[0]!;
     usage.model = model;
-    // A long summary or why goes back to the model as a fix turn (src/replylint.ts); a reply that is not a valid comparison is asked for again.
-    const lint: Lint = (text) => lintComparison(text, numbers);
-    for (let attempt = 0; attempt < PR_PROMPT.limits.attempts; attempt++) {
-      const reply = await deps.ask("dupes.compare-prs.opus", model, input, checkout ?? undefined, lint);
-      if (!reply) continue;
-      usage.u = add(usage.u, reply.usage);
-      // Anything the fix turn did not clear is cut to its first sentence; the call is never repeated for it.
-      const r = parsePrComparison(reply.text, numbers, true);
-      if (r) return r;
-    }
-    return null;
+    const r = await runModelStep(x.db, COMPARE_PRS, { numbers, input }, { ask: (i, lint) => deps.ask("dupes.compare-prs.opus", model, i.input, checkout ?? undefined, lint) });
+    usage.u = add(usage.u, r.usage);
+    return r.ok ? r.value : null;
   }
   const input = issueInput(x.db, s.repo, numbers);
   const model = ISSUE_PROMPT.models[0]!;
   usage.model = model;
-  let fallback: IssueComparison | null = null;
-  for (let attempt = 0; attempt < ISSUE_PROMPT.limits.attempts; attempt++) {
-    const reply = await deps.ask("dupes.compare-issues.sonnet", model, input);
-    if (!reply) continue;
-    usage.u = add(usage.u, reply.usage);
-    const r = parseIssueComparison(reply.text, numbers, attempt === ISSUE_PROMPT.limits.attempts - 1);
-    if (r) return r;
-    fallback ??= parseIssueComparison(reply.text, numbers, true);
-  }
-  return fallback;
+  const r = await runModelStep(x.db, COMPARE_ISSUES, { numbers, input }, { ask: (i) => deps.ask("dupes.compare-issues.sonnet", model, i.input) });
+  usage.u = add(usage.u, r.usage);
+  return r.ok ? r.value : null;
 }
 
 /** Compares the whole set, in rounds when it is larger than GROUP_MAX. */
