@@ -699,6 +699,23 @@ export const STEPS: StepDef[] = [
     },
   },
   {
+    name: "assign",
+    title: "Assign and unassign",
+    description: "Assigns the pipeline's account to the open pull requests and issues it is working through to merge when nobody is assigned, and takes the assignment back when an item waits on a person, was given up, or left the pipeline's scope. Only its own assignment is ever removed. Reads the assignees from GitHub before each write. Calls no model.",
+    stage: runStage("assign"),
+    requires: "operator",
+    group: "github-write",
+    params: [{ name: "repo", label: "Repo", kind: "repo", required: true }],
+    run: async (ctx) => {
+      const { runAssign } = await import("../assign/index.ts");
+      const repo = String(ctx.params.repo);
+      const r = await runAssign(ctx.db, { repo, by: byOfJob(ctx.job.requestedBy), runId: `assign-${ctx.job.id}`, log: ctx.log });
+      ctx.acted(r.assigned.length + r.unassigned.length);
+      if (r.failed.length) throw new Error(`${repo}: not assigned or unassigned on ${r.failed.join(", ")}`);
+      return `${repo}: ${r.assigned.length} assigned, ${r.unassigned.length} unassigned`;
+    },
+  },
+  {
     name: "ci-approve",
     title: "Approve waiting CI runs",
     description: "Approves the Actions runs that GitHub holds for a maintainer's approval on outside contributors' pull requests, once the PR's current head has a final take or take-fix review. Skips a PR that is closed, a draft or at another head. Calls no model.",

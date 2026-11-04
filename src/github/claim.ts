@@ -16,6 +16,14 @@ export async function issueInfo(q: Querier, org: string, repo: string, number: n
   return i ? { id: i.id, state: i.state, assignees: (i.assignees?.nodes ?? []).map((a) => a.login) } : null;
 }
 
+/** A pull request's id, state and assignees, or null when it does not exist. */
+export async function pullRequestInfo(q: Querier, org: string, repo: string, number: number): Promise<Assignable | null> {
+  const r = await q.query(`query($owner: String!, $name: String!, $n: Int!) { repository(owner: $owner, name: $name) { pullRequest(number: $n) { id state assignees(first: 10) { nodes { login } } } } }`, { owner: org, name: repo, n: number }) as
+    { repository?: { pullRequest?: { id: string; state: string; assignees?: { nodes?: { login: string }[] } } | null } };
+  const i = r.repository?.pullRequest;
+  return i ? { id: i.id, state: i.state, assignees: (i.assignees?.nodes ?? []).map((a) => a.login) } : null;
+}
+
 /** True when the last assign or unassign in the audit for the item is an assignment of `login` that succeeded, made by a run whose id starts with `runPrefix` (any run when omitted). */
 export function weAssigned(db: DatabaseSync, repo: string, number: number, login: string, runPrefix = ""): boolean {
   const last = db.prepare("SELECT action, details FROM audit WHERE target = ? AND action IN ('assign', 'unassign') AND COALESCE(details, '') NOT LIKE '%\"error\":%' ORDER BY rowid DESC LIMIT 1").get(`${repo}#${number}`) as { action: string; details: string | null } | undefined;

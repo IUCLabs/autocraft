@@ -5,6 +5,8 @@ import {
   RULE_LABELS, RULE_SIZES, RULE_TIERS, UNSURE_REASON, VERIFY_UNAVAILABLE, ciAllows, conflictNote, verifyAllows, verifyOk,
   FIXUP_MAX_ATTEMPTS, CIFIX_FINAL_STATES, CIFIX_MAX_PUSHES_PER_PR, CIFIX_MAX_TRIES, CIFIX_MAX_TRIES_PER_PR,
 } from "./rules.ts";
+import { assignmentActions, inFlightNow, WAITS_ON_PERSON } from "./assignment.ts";
+import { gates } from "./gates.ts";
 import type { Action, Plan, PlanState, PrFacts, QueueState } from "./plan.ts";
 
 /** The start of a statement for a reason line: one line, at most 80 characters. */
@@ -188,13 +190,36 @@ function cifixOf(f: PrFacts): "work" | "collect" | "rerun" | "capped" | "other" 
   return b === "work" || b === "collect" || b === "capped" ? b : "other";
 }
 
+/** Actions that work the PR towards merge (a push, a base merge, a pre-merge review, the merge), as against comment-only asks. */
+const worksOn = (a: Action): boolean => {
+  const b = a.params?.bucket;
+  switch (a.kind) {
+    case "fixup": return b === "fix" && a.params?.source !== "carry";
+    case "conflict": return b === "merge";
+    case "cifix": return b === "work" || b === "collect" || b === "rerun";
+    case "merge": case "premerge": case "lint": return true;
+    default: return false;
+  }
+};
+
+/** The assign or unassign action of an open PR: assigned while AutoCraft works it (a working action the repo's approvals allow, a batch, or in flight), released when it waits on a person or a stage gave it up. */
+function assignmentOf(f: PrFacts, state: PlanState, actions: Action[]): Action[] {
+  const fx = fixupOf(f), cf = cifixBucket(f);
+  const gaveUp = state === "opus-close" || state === "verify-failed" || state === "verify-error" || state === "batch-failed" || (!!fx && (fx.bucket === "cannot-push" || fx.bucket === "asked" || (fx.bucket === "hold" && !fx.done)))
+    || cf === "failed" || cf === "capped" || cf === "cannot-push";
+  if (WAITS_ON_PERSON.has(state) || gaveUp) return assignmentActions(f.assignment, f.ghState === "OPEN", "release");
+  const working = actions.some((a) => worksOn(a) && gates(f, { kind: a.kind, ...(typeof a.params?.bucket === "string" ? { bucket: a.params.bucket } : {}) }, { operator: "plan" }) === null)
+    || state === "in-batch" || state === "batch-checking" || inFlightNow(f, state);
+  return assignmentActions(f.assignment, f.ghState === "OPEN", working ? "work" : null);
+}
+
 export function decidePr(f: PrFacts): Plan {
   const plan = (state: PlanState, p: Partial<Plan> = {}): Plan => ({ repo: f.repo, number: f.number, head: f.head, state, path: null, reasons: [], note: null, actions: [], wait: null, eligible: false, conflictNote: null, ...p });
   const act = (kind: Action["kind"], head: string | null, params?: Record<string, unknown>): Action => ({ kind, head, ...(params ? { params } : {}) });
   const r = f.review;
   const open = f.ghState === "OPEN";
 
-  if (!f.inScope) return plan("out-of-scope");
+  if (!f.inScope) return plan("out-of-scope", { actions: assignmentActions(f.assignment, open, "release") });
   // Our own integration PRs only carry reviewed PRs: their runs wait for approval like a member's.
   if (f.integration) {
     const approve = f.runs && !f.mergeHeld && (f.runs.reread || (f.runs.crossRepo && f.runs.approvable > 0));
@@ -302,6 +327,8 @@ export function decidePr(f: PrFacts): Plan {
       actions.push(act("merge", r!.head, { singleOnly, batchable: !singleOnly }));
     }
   }
+
+  actions.push(...assignmentOf(f, state, actions));
 
   const main = actions.some((a) => ["review", "premerge", "ask-merge", "merge", "verify"].includes(a.kind));
   const wait = main ? null : e ? (f.mergeHeld && e.state !== "merged" && e.path ? "merge held by an operator" : WAITS[e.state] ?? null) : null;

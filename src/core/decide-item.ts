@@ -2,7 +2,9 @@
 // scope decision, label. Pure: no database, no clock (facts carry `now`). The rules are ported from the step selectors named at each rule.
 // decideAll adds a PR's review-to-merge Plan (decide.ts) and derives the Work page's next-step text.
 import { levelWith, type Level } from "../priority/score.ts";
+import { assignmentActions, isWork } from "./assignment.ts";
 import { decidePr } from "./decide.ts";
+import { gates } from "./gates.ts";
 import { RECOMMEND_MAX_FAILURES, RECOMMEND_RETRY_MS, alreadyLabeled, isScope, labelsToAdd } from "./item-rules.ts";
 import type { Action, ItemFacts, ItemPlan, ItemState, ItemView, PrFacts } from "./plan.ts";
 
@@ -100,9 +102,17 @@ export function decideItem(f: ItemFacts): ItemPlan {
     if (f.inScope && !backlog && a && ((a.state === "testing" && a.headDone && a.baseDone) || a.state === "passed")) actions.push(act("fixissue-collect", null, { source: a.state }));
   }
 
+  // assign / unassign (issues; a PR's are decided with its review-to-merge plan): assigned while its fix attempt runs or is due, released
+  // when the issue waits on a person (held, scope question, out of scope) or the fix gave up.
+  const stuck = state === "scope-open" || state === "models-disagree";
+  const gaveUp = !!a && (a.state === "failed" || (a.state === "skipped" && !a.textChanged) || (a.state === "pr-opened" && !fix.openPr));
+  const fixDue = actions.some((x) => (x.kind === "fixissue" || x.kind === "fixissue-collect") && gates(f, { kind: x.kind }, { operator: "plan" }) === null);
+  const working = fixDue || ["retry", "testing", "passed"].includes(a?.state ?? "") || (a?.state === "pr-opened" && fix.openPr);
+  if (f.kind === "issue") actions.push(...assignmentActions(f.assignment, f.open, !f.inScope || !!f.held || stuck ? "release" : working ? "work" : gaveUp ? "release" : null));
+
   // A closed item is here for its unapplied answered close only.
   if (!f.open) actions.splice(0, actions.length, ...actions.filter((a) => a.kind === "act" && !a.params?.ask));
-  return { repo: f.repo, number: f.number, kind: f.kind, state, actions, wait: actions.length ? null : !f.inScope ? "not in scope" : WAITS[state] ?? null };
+  return { repo: f.repo, number: f.number, kind: f.kind, state, actions, wait: actions.some(isWork) ? null : !f.inScope ? "not in scope" : WAITS[state] ?? null };
 }
 
 /** The Work page's next-step text (rank/next.ts nextStepOf), from the item's state and, for a PR, the facts of its review-to-merge path. */

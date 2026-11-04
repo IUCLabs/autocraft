@@ -8,7 +8,7 @@ export const REVIEW_AT = "2026-11-04T10:00:00.000Z";
 type Override = { [K in keyof PrFacts]?: PrFacts[K] extends object | null ? Partial<NonNullable<PrFacts[K]>> | null : PrFacts[K] };
 
 const base = (): PrFacts => ({
-  repo: "app", number: 1, now: NOW, pipelineOn: true, ghState: "OPEN", head: HEAD, draft: false,
+  repo: "app", number: 1, assignment: { login: "bot", assignees: ["dev"], ours: false }, now: NOW, pipelineOn: true, ghState: "OPEN", head: HEAD, draft: false,
   author: "dev", authorIsPipeline: false, tier: "whitelisted", lines: 20, size: "S", label: "bugfix", needsDecisionFlag: false, scopeAnswer: null,
   inScope: true, integration: false, batchPr: false, heldBacklog: false, heldDuplicate: false, mergeHeld: false, fast: false, score: 100,
   repoFacts: { mergeApproved: true, pushApproved: true, commentApproved: true, ciApproved: true, noCi: false, mainRed: false },
@@ -35,7 +35,7 @@ export function prFacts(over: Override = {}): PrFacts {
 // ---- items (issues and PRs) in the triage steps
 
 const itemBase = (): ItemFacts => ({
-  repo: "app", number: 1, kind: "issue", open: true, now: NOW, pipelineOn: true, draft: false, inScope: true, integration: false, held: null, fast: false, score: 100,
+  repo: "app", number: 1, kind: "issue", open: true, assignment: { login: "bot", assignees: ["dev"], ours: false }, now: NOW, pipelineOn: true, draft: false, inScope: true, integration: false, held: null, fast: false, score: 100,
   repoFacts: { labelsApproved: true, commentApproved: true, fixIssueApproved: true }, run: "run1",
   classification: {
     status: "settled", label: "bugfix", flags: [], jevLabel: "bugfix", haikuLabel: null, referee: null,
