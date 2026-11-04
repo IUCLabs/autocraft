@@ -13,14 +13,28 @@ import type { Req } from "../types.ts";
 import { clip, stepTitle, writeEvent } from "./trace.ts";
 import { shownLookup } from "./shown.ts";
 import { canSeeInternals } from "./staff.ts";
-import { blankIfHidden, hiddenRepos, visibleRepos } from "./visible.ts";
+import { blankIfHidden, hiddenRepos } from "./visible.ts";
 
-const RECENT = 30;
+const RECENT = 15;
+const RECENT_SCAN = 200;
 const PER_KIND = 5;
 const SYNC_FAILS = 3;
 const SYNC_STALE_MS = 15 * 60_000;
 const RUNNER_STALE_MS = 2 * 60_000;
 const HOUR_MS = 3_600_000;
+/** Jobs that never work on items; they get a row only once they run long. */
+const QUIET_STEPS = new Set(["rank", "embed", "checks", "main-ci", "labels-ensure", "review-carry", "verify-collect", "fixissue-collect"]);
+const QUIET_LONG_MS = 3 * 60_000;
+/** Writes that are bookkeeping, not something an operator follows. */
+const HOUSEKEEPING = new Set(["assign", "unassign", "labels-apply", "label-create", "ci-run-approve", "ci-rerun", "fork-create", "fixissue-claim"]);
+/** One group of same-action writes by the same actor; a gap longer than this starts a new run of them. */
+const GROUP_GAP_MS = 15 * 60_000;
+const GROUP_ITEMS = 3;
+const GROUPED: Record<string, (n: number) => string> = {
+  "Posted review": (n) => `Posted ${n} reviews`, "Edited review": (n) => `Edited ${n} reviews`, "Commented": (n) => `Commented on ${n} items`,
+  "Edited comment": (n) => `Edited ${n} comments`, "Closed": (n) => `Closed ${n} items`, "Closed PR": (n) => `Closed ${n} PRs`, "Pushed": (n) => `Pushed to ${n} PRs`,
+  "Opened PR": (n) => `Opened ${n} PRs`, "Opened issue": (n) => `Opened ${n} issues`,
+};
 
 type Item = ItemRef & ItemShown;
 type Args = (string | number)[];
@@ -49,9 +63,11 @@ function syncProblem(db: DatabaseSync, nowMs: number): NowProblem | null {
   return null;
 }
 
-async function healthOf(db: DatabaseSync, visible: string[], hidden: string[], nowMs: number): Promise<NowHealth> {
+async function healthOf(db: DatabaseSync, hidden: string[], nowMs: number): Promise<NowHealth> {
   const state = await pipelineState(db);
   const out: NowProblem[] = [];
+  // Repos with the pipeline off are off by design; their red mains stay on the Main CI page.
+  const on = pipelineRepos(db);
   const add = (p: NowProblem) => void out.push(p);
 
   if (!state.enabled) add({ id: "pipeline", area: "pipeline", tone: "warn", text: `Pipeline is off${state.changedBy ? `, switched off by ${state.changedBy}` : ""}`, to: "/pipeline", since: state.changedAt });
@@ -77,34 +93,31 @@ async function healthOf(db: DatabaseSync, visible: string[], hidden: string[], n
   const outage = jevEnabled(db) ? jevOutage(db) : null;
   if (outage) add({ id: "jev", area: "jev", tone: "warn", text: `Jev is unavailable: ${clip(outage.reason, 100)}`, to: "/accounts", since: outage.since });
 
-  for (const r of mainCiRepos(db, hidden).filter((x) => x.state === "red")) {
+  for (const r of mainCiRepos(db, hidden).filter((x) => x.state === "red" && on.has(x.repo))) {
     const names = r.failing.map((f) => f.name).slice(0, 2).join(", ");
     add({ id: `main-ci:${r.repo}`, area: "main-ci", tone: "bad", text: `Main is red in ${r.repo}${names ? `: ${names}` : ""}`, to: "/main-ci", since: r.redSince });
   }
 
   const since = new Date(nowMs - HOUR_MS).toISOString();
-  const failed = all<{ step: string; n: number }>(db, `SELECT step, COUNT(*) AS n FROM jobs WHERE state = 'failed' AND ended_at > ?${notHidden("repo", hidden, true)} GROUP BY step ORDER BY n DESC`, since, ...hidden);
+  const onList = [...on];
+  const failed = all<{ step: string; n: number }>(db, `SELECT step, COUNT(*) AS n FROM jobs WHERE state = 'failed' AND ended_at > ?${notHidden("repo", hidden, true)}${onList.length ? ` AND (repo IS NULL OR repo IN (${marks(onList)}))` : " AND repo IS NULL"} GROUP BY step ORDER BY n DESC`, since, ...hidden, ...onList);
   const nFailed = failed.reduce((a, f) => a + f.n, 0);
   if (nFailed) {
     const steps = failed.slice(0, 3).map((f) => stepTitle(f.step)).join(", ");
     add({ id: "jobs", area: "jobs", tone: "warn", text: `${nFailed} job${nFailed === 1 ? "" : "s"} failed in the last hour: ${steps}${failed.length > 3 ? " and more" : ""}`, to: "/pipeline", since: null });
   }
 
-  if (state.enabled) {
-    const on = pipelineRepos(db);
-    const off = visible.filter((r) => !on.has(r));
-    if (off.length) add({ id: "repos", area: "repos", tone: "info", text: `Pipeline is off for ${off.slice(0, 3).join(", ")}${off.length > 3 ? ` and ${off.length - 3} more` : ""}`, to: "/repos", since: null });
-  }
   return { pipeline: { enabled: state.enabled, by: state.changedBy, at: state.changedAt }, problems: out };
 }
 
 // ---- running -----------------------------------------------------------------
 
-function running(db: DatabaseSync, hidden: string[]): NowRunning[] {
+function running(db: DatabaseSync, hidden: string[], nowMs: number): { rows: NowRunning[]; also: string[] } {
   const shown = shownLookup(db);
   const show = (repo: string, number: number): Item => ({ repo, number, ...shown(repo, number) });
   const out: NowRunning[] = [];
   const jobRows = new Map<number, NowRunning>();
+  const jobSteps = new Map<number, string>();
   // A call or task of a running job nests under the job's row; the rest stay top-level.
   const place = (jobId: number | null, row: NowRunning) => {
     const parent = jobId === null ? undefined : jobRows.get(jobId);
@@ -120,6 +133,7 @@ function running(db: DatabaseSync, hidden: string[]): NowRunning[] {
       items: its.slice(0, PER_KIND).map((i) => show(i.repo, i.number)), itemCount: its.length, event: its[0] ? `job:${its[0].id}` : null, detail: `/pipeline/${j.id}`, children: [],
     };
     jobRows.set(j.id, row);
+    jobSteps.set(j.id, j.step);
     out.push(row);
   }
 
@@ -151,7 +165,19 @@ function running(db: DatabaseSync, hidden: string[]): NowRunning[] {
       repo: b.repo, items: prs.slice(0, PER_KIND).map((p) => show(b.repo, p.number)), itemCount: prs.length, event: null, detail: "/queue/merge", children: [],
     });
   }
-  return out.sort((a, b) => Date.parse(b.startedAt) - Date.parse(a.startedAt));
+  // A just-started job has nothing to show yet; a quiet one is only a name until it runs long.
+  const also: string[] = [];
+  const rows = out.filter((r) => {
+    const step = r.kind === "job" ? jobSteps.get(Number(r.key.slice(4))) : undefined;
+    if (step === undefined) return true;
+    if (QUIET_STEPS.has(step)) {
+      if (nowMs - Date.parse(r.startedAt) >= QUIET_LONG_MS) return true;
+      if (!also.includes(r.step)) also.push(r.step);
+      return false;
+    }
+    return r.itemCount > 0 || r.children.length > 0 || r.progress !== null && r.progress !== "";
+  });
+  return { rows: rows.sort((a, b) => Date.parse(b.startedAt) - Date.parse(a.startedAt)), also };
 }
 
 // ---- just happened -----------------------------------------------------------
@@ -168,13 +194,29 @@ function recent(db: DatabaseSync, hidden: string[], staff: boolean): NowEvent[] 
   const hide = new Set(hidden);
 
   // Merges have their own rows below; the audit row of the same merge would list it twice.
-  const actions = Object.keys(GITHUB_ACTIONS).filter((a) => a !== "merge");
+  const actions = Object.keys(GITHUB_ACTIONS).filter((a) => a !== "merge" && !HOUSEKEEPING.has(a));
+  type Group = { action: string; login: string; last: number; events: NowEvent[] };
+  const groups: Group[] = [];
   for (const a of all<{ rowid: number; at: string; login: string; action: string; target: string | null; details: string | null }>(db,
-    `SELECT rowid, at, login, action, target, details FROM audit WHERE action IN (${marks(actions)}) ORDER BY at DESC LIMIT ?`, ...actions, RECENT * 3)) {
+    `SELECT rowid, at, login, action, target, details FROM audit WHERE action IN (${marks(actions)}) ORDER BY at DESC LIMIT ?`, ...actions, RECENT_SCAN)) {
     const ref = refOf(a.target);
     if (!ref || hide.has(ref.repo)) continue;
     const e = writeEvent(a, staff);
-    out.push({ key: e.id, kind: "write", at: a.at, summary: e.summary, actor: e.actor.name, item: item(ref.repo, ref.number), event: e.id, detail: null });
+    const ev: NowEvent = { key: e.id, kind: "write", at: a.at, summary: e.summary, actor: e.actor.name, item: item(ref.repo, ref.number), event: e.id, detail: null };
+    const t = Date.parse(a.at);
+    const g = groups[groups.length - 1];
+    if (g && g.action === a.action && g.login === a.login && g.last - t <= GROUP_GAP_MS) { g.events.push(ev); g.last = t; }
+    else groups.push({ action: a.action, login: a.login, last: t, events: [ev] });
+  }
+  for (const g of groups) {
+    const first = g.events[0]!;
+    const distinct = [...new Map(g.events.map((e) => [`${e.item!.repo}#${e.item!.number}`, e.item!])).values()];
+    if (g.events.length === 1) { out.push(first); continue; }
+    const verb = GROUPED[GITHUB_ACTIONS[g.action]!];
+    out.push({
+      ...first, summary: verb ? verb(g.events.length) : `${GITHUB_ACTIONS[g.action]} ${g.events.length} times`,
+      items: distinct.slice(0, GROUP_ITEMS), more: Math.max(0, distinct.length - GROUP_ITEMS),
+    });
   }
 
   for (const m of all<{ rowid: number; repo: string; number: number; at: string; path: string; method: string | null }>(db,
@@ -229,6 +271,7 @@ function recent(db: DatabaseSync, hidden: string[], staff: boolean): NowEvent[] 
 
 export async function now(db: DatabaseSync, req: Req): Promise<Now> {
   const hidden = await hiddenRepos(db, req);
-  const visible = await visibleRepos(db, req);
-  return { health: await healthOf(db, visible, hidden, Date.now()), running: running(db, hidden), recent: recent(db, hidden, canSeeInternals(req)) };
+  const nowMs = Date.now();
+  const { rows, also } = running(db, hidden, nowMs);
+  return { health: await healthOf(db, hidden, nowMs), running: rows, alsoRunning: also, recent: recent(db, hidden, canSeeInternals(req)) };
 }

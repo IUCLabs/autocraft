@@ -20,7 +20,8 @@ function NowView(_: ViewProps) {
         <div className="mt-4 space-y-4">
           <HealthStrip health={d.health} />
           <Block flush title={<>Running <span className="num ml-1 font-normal text-ink/50">{d.running.length}</span></>}>
-            {d.running.length === 0 ? <p className="p-4 text-sm text-ink/55">Nothing is running.</p> : <ul>{d.running.map((r) => <RunningRow key={r.key} row={r} />)}</ul>}
+            {d.running.length === 0 && d.alsoRunning.length === 0 ? <p className="p-4 text-sm text-ink/55">Nothing is running.</p> : <ul>{d.running.map((r) => <RunningRow key={r.key} row={r} />)}</ul>}
+            {d.alsoRunning.length > 0 && <p className="border-t border-line px-3 py-2 text-xs text-ink/55">Also running: {d.alsoRunning.join(", ").toLowerCase()}</p>}
           </Block>
           <Block flush title="Just happened">
             {d.recent.length === 0 ? <p className="p-4 text-sm text-ink/55">Nothing yet.</p> : <ul>{d.recent.map((e) => <EventRow key={e.key} ev={e} />)}</ul>}

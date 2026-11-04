@@ -1,5 +1,5 @@
 import { Link } from "react-router-dom";
-import { CheckCircleIcon, InfoIcon, WarningCircleIcon, WarningIcon } from "@phosphor-icons/react";
+import { CheckCircleIcon, WarningCircleIcon, WarningIcon } from "@phosphor-icons/react";
 import type { NowHealth, NowProblem } from "../../api/types";
 import { cn } from "../cn";
 import { TimeAgo } from "../atoms/TimeAgo";
@@ -7,12 +7,11 @@ import { TimeAgo } from "../atoms/TimeAgo";
 const TONE: Record<NowProblem["tone"], { Icon: typeof WarningIcon; cls: string }> = {
   bad: { Icon: WarningCircleIcon, cls: "border-bad/40 bg-bad/10 text-bad" },
   warn: { Icon: WarningIcon, cls: "border-warn/40 bg-warn/10 text-warn" },
-  info: { Icon: InfoIcon, cls: "border-line-strong text-ink/70" },
 };
 
 /** What is wrong, one chip per problem linking to where it is fixed; one line when nothing is. */
 export function HealthStrip({ health }: { health: NowHealth }) {
-  const healthy = health.problems.every((p) => p.tone === "info");
+  const healthy = health.problems.length === 0;
   return (
     <div className="flex flex-wrap items-center gap-2" role="status">
       {healthy && (

@@ -26,7 +26,10 @@ export function EventRow({ ev }: { ev: NowEvent }) {
         ) : (
           text
         )}
-        {ev.item && <ItemRef repo={ev.item.repo} number={ev.item.number} kind={ev.item.kind} state={ev.item.state} title={ev.item.title} size="sm" className="relative z-10 mt-1 w-fit max-w-full" />}
+        {(ev.items ?? (ev.item ? [ev.item] : [])).map((i) => (
+          <ItemRef key={`${i.repo}#${i.number}`} repo={i.repo} number={i.number} kind={i.kind} state={i.state} title={i.title} size="sm" className="relative z-10 mt-1 w-fit max-w-full" />
+        ))}
+        {!!ev.more && <span className="mt-1 block text-xs text-ink/50">+{ev.more} more</span>}
         <span className="mt-0.5 flex flex-wrap items-center gap-x-2 text-xs text-ink/55">
           <span>{ev.actor}</span>
           <TimeAgo iso={ev.at} className="num" />

@@ -61,3 +61,41 @@ test("Now lists running work with its items, reports a failing sync, and hides a
   assert.ok(!/ghp_xyz|boom/.test(plain) && /failed/.test(plain), plain);
   void fj;
 });
+
+test("Now groups same-action writes into one row, leaves out housekeeping, and shows red mains only for pipeline repos", async () => {
+  const db = connect(":memory:");
+  const at = (minAgo: number) => new Date(Date.now() - minAgo * 60_000).toISOString();
+  db.exec("INSERT OR REPLACE INTO repos (name, visibility) VALUES ('photocraft', 'public'), ('wordcraft', 'public')");
+  db.exec("INSERT OR IGNORE INTO tracked_repos (name) VALUES ('photocraft'), ('wordcraft')");
+  db.exec("UPDATE tracked_repos SET pipeline = 1 WHERE name = 'photocraft'");
+  const audit = db.prepare("INSERT INTO audit (at, login, action, target, details) VALUES (?, 'autocraft', ?, ?, '{}')");
+  for (let n = 1; n <= 5; n++) audit.run(at(10 - n), "review-post", `photocraft#${n}`);
+  for (let n = 1; n <= 20; n++) audit.run(at(3), "unassign", `photocraft#${n}`);
+  audit.run(at(2), "ci-run-approve", "photocraft#1");
+  audit.run(at(30), "act-close", "photocraft#9");
+
+  const op = await now(db, req("operator"));
+  assert.deepEqual(op.recent.map((e) => e.summary), ["Posted 5 reviews", "Closed"], "one grouped row, no assign, unassign or CI approval rows");
+  const g = op.recent[0]!;
+  assert.equal(g.items!.length, 3);
+  assert.equal(g.more, 2);
+
+  const red = db.prepare("INSERT INTO main_ci (repo, head_sha, branch, state, failing, checks, first_seen_at, state_changed_at, updated_at, committed_at) VALUES (?, 'abc', 'main', 'red', '[]', '[]', ?, ?, ?, ?)");
+  for (const repo of ["photocraft", "wordcraft"]) red.run(repo, at(5), at(5), at(1), at(6));
+  const mains = (await now(db, req("operator"))).health.problems.filter((p) => p.area === "main-ci").map((p) => p.id);
+  assert.deepEqual(mains, ["main-ci:photocraft"], "a repo with the pipeline off is not reported");
+  assert.ok(!(await now(db, req("operator"))).health.problems.some((p) => p.area === ("repos" as string)), "no pipeline-off-for-repos chip");
+});
+
+test("Now hides a just-started job with nothing to show and lists quiet jobs on one line", async () => {
+  const db = connect(":memory:");
+  const at = (minAgo: number) => new Date(Date.now() - minAgo * 60_000).toISOString();
+  const job = db.prepare("INSERT INTO jobs (step, params, requested_by, requested_at, state, started_at, progress) VALUES (?, '{}', 'pipeline', ?, 'running', ?, ?)");
+  job.run("unassign", at(1), at(1), null);
+  job.run("rank", at(1), at(1), null);
+  job.run("embed", at(1), at(1), "embedding");
+  job.run("embed", at(9), at(9), null);
+  const r = await now(db, req("operator"));
+  assert.deepEqual(r.running.map((x) => x.step), ["Embed items"], "only the quiet job that runs long keeps a row");
+  assert.deepEqual(r.alsoRunning, ["Embed items", "Rank open items"]);
+});

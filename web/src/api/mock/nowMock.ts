@@ -1,4 +1,4 @@
-// The Now page on fake data: a failing sync, a red main, a paused account, running work of every kind and recent events.
+// The Now page on fake data: a failing sync, a red main, a paused account, running work of every kind and recent events, grouped.
 import type { Api } from "../client";
 import type { Now, NowEvent, NowRunning } from "../types";
 import { NOW } from "./fixtures";
@@ -17,7 +17,6 @@ const HEALTH: Now["health"] = {
     { id: "main-ci:designcraft", area: "main-ci", tone: "bad", text: "Main is red in designcraft: Tests, Clippy", to: "/main-ci", since: at(95) },
     { id: "account:c", area: "account", tone: "warn", text: "Account Team account C is paused: 5-hour use 92 % (pauses at 90 %)", to: "/accounts", since: null },
     { id: "jobs", area: "jobs", tone: "warn", text: "2 jobs failed in the last hour: Review pull requests", to: "/pipeline", since: null },
-    { id: "repos", area: "repos", tone: "info", text: "Pipeline is off for wordcraft, gridcraft", to: "/repos", since: null },
   ],
 };
 
@@ -55,10 +54,10 @@ const RECENT: NowEvent[] = [
   { key: "failed-job:639", kind: "failure", at: at(9), summary: "Review pull requests failed: claude exited with code 1", actor: "AutoCraft", item: C, event: "job:2205", detail: "/pipeline/639" },
   { key: "merge:51", kind: "merge", at: at(21), summary: "Merged (squash) by rule", actor: "AutoCraft", item: item("craft-libs", 412, "Bump the egui pin"), event: "merge:51", detail: null },
   { key: "decision:d4", kind: "decision", at: at(34), summary: "Answered \"Merge this fix?\": Merge", actor: "maintainer", item: D, event: "decision:d4:answered", detail: "/decisions/d4" },
-  { key: "audit:88", kind: "write", at: at(41), summary: "Labelled: bug, needs-review", actor: "AutoCraft", item: A, event: "audit:88", detail: null },
+  { key: "audit:88", kind: "write", at: at(41), summary: "Posted 5 reviews", actor: "AutoCraft", item: A, items: [A, C, D], more: 2, event: "audit:88", detail: null },
   { key: "failed-task:930", kind: "failure", at: at(58), summary: "Build task (Verify pull requests) failed: 3 tests failed", actor: "AutoCraft", item: D, event: "task:930", detail: "/envs/930" },
 ];
 
 export function createNowMock(): Pick<Api, "now"> {
-  return { now: () => new Promise((r) => setTimeout(() => r(structuredClone({ health: HEALTH, running: RUNNING, recent: RECENT })), 60)) };
+  return { now: () => new Promise((r) => setTimeout(() => r(structuredClone({ health: HEALTH, running: RUNNING, alsoRunning: ["Rank open items", "Embed items"], recent: RECENT })), 60)) };
 }
