@@ -138,6 +138,26 @@ describe("merge queue", () => {
     assert.deepEqual(q.find((e) => e.number === 5)!.outsideRule, ["author not on the whitelist"]);
   });
 
+  test("main CI red holds ready PRs as waiting-main-ci, except a main-fix PR", async () => {
+    const db = fresh();
+    const mainCi = (state: string) => db.prepare(`INSERT INTO main_ci (repo, head_sha, branch, state, failing, checks, committed_at, headline, first_seen_at, state_changed_at, updated_at)
+      VALUES ('app', 'm1', 'main', ?, '[]', '[]', '${T1}', 'x', '${T1}', '${T1}', '${T1}') ON CONFLICT (repo, head_sha) DO UPDATE SET state = excluded.state`).run(state);
+    db.prepare("UPDATE items SET head_ref = 'autocraft/main-ci-1' WHERE repo = 'app' AND number = 11").run();
+    mainCi("red");
+    const q = buildQueue(db, { repo: "app" });
+    assert.equal(q.find((e) => e.number === 1)!.state, "waiting-main-ci");
+    assert.equal(q.find((e) => e.number === 16)!.state, "waiting-main-ci");
+    assert.equal(q.find((e) => e.number === 11)!.state, "ready");
+    assert.equal(q.find((e) => e.number === 7)!.state, "waiting-ci");
+    const log: Log = [];
+    const s = await runMerge(db, { repo: "app", dryRun: false }, quiet, fakes(log));
+    assert.deepEqual(s.merged, ["app#11"]);
+    mainCi("green");
+    assert.equal(stateOf(db, 1), "ready");
+    const after = await runMerge(db, { repo: "app", dryRun: false }, quiet, fakes([]));
+    assert.deepEqual(after.merged, ["app#1", "app#16"]);
+  });
+
   test("dry run calls nothing and writes nothing", async () => {
     const db = fresh();
     const before = ["stages", "decisions", "merges", "audit"].map((t) => count(db, t));

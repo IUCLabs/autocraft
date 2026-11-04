@@ -27,6 +27,7 @@ import { ACTIVE_BATCH, BLOCKED_BY_REVIEW, CLOSED_BY_PERSON, MAX_PUBLISH_FAILURES
 import { mergeApprovalOf } from "./approval.ts";
 import { ORG, prInfo, viewerOf, mergeRun, DEFAULT_MERGE_COMMAND, type CommandResult } from "./index.ts";
 import { liveGateChecked } from "../review/discussion.ts";
+import { redMainRepos } from "../mainci/index.ts";
 import { PIPELINE_LOGIN_KEY, buildQueue, eligible, singleMergeOnly, type QueueEntry } from "./queue.ts";
 import { envVar } from "../env.ts";
 
@@ -304,6 +305,12 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
     const ch = checks.find((c) => c.number === b.pr_number);
     if (!ch) { s.waiting.push(b.branch); return; }
     if (ch.state === "MERGED") return recordLanded(b, members, q);
+    // Main is red: the batch keeps its checks but does not merge until main is green. Main-fix PRs never join a batch (singleMergeOnly).
+    if (redMainRepos(db).has(repo)) {
+      log(`  ${b.branch}: main CI is red in ${repo}; not merged`);
+      s.waiting.push(b.branch);
+      return;
+    }
     // A control (stop, remove) may have ended the batch while the checks were read; it closes the PR itself.
     if (getBatch(db, b.id).state !== "open") { log(`  ${b.branch}: ended meanwhile; left alone`); return; }
     if (ch.state === "CLOSED") {

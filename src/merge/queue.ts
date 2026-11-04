@@ -12,6 +12,7 @@ import { batchStates } from "./batch-store.ts";
 import { mergeHolds } from "./holds.ts";
 import { NO_CI_SAMPLE, repoHasNoCi } from "./no-ci.ts";
 import { ciApprovalOf, MAX_FAILURES } from "./ci-approval.ts";
+import { MAIN_FIX_BRANCH_PREFIX, redMainRepos } from "../mainci/index.ts";
 import { getRule, STATS_SQL, tierOf, type Tier } from "../whitelist.ts";
 import { pilotSql } from "../pilot.ts";
 import { pushApprovalOf } from "../fixup/approval.ts";
@@ -22,7 +23,7 @@ import { longLivedOf, pushable, type LongLived } from "../fixup/pushable.ts";
 export const QUEUE_STATES = [
   "ready", "decision-answered-merge", "refused", "waiting-ci", "ci-failed", "conflict",
   "needs-fix-up", "waiting-verify", "verify-failed", "verify-error", "needs-decision", "declined", "merged", "held-duplicate", "held-backlog",
-  "batch-checking", "in-batch", "batch-failed", "ci-approval", "changes-requested",
+  "batch-checking", "in-batch", "batch-failed", "ci-approval", "changes-requested", "waiting-main-ci",
 ] as const;
 export type QueueState = (typeof QUEUE_STATES)[number];
 
@@ -113,13 +114,18 @@ export type QueueEntry = {
   verify: { state: string; kind: string | null; summary: string | null; note: string | null } | null;
   /** For a conflicting PR: what Fix-up does about it ("conflict: merging main", "conflict: asked the contributor", "conflict: held"), or null. */
   conflictNote?: string | null;
+  /** The PR is one AutoCraft opened to fix main CI (branch prefix MAIN_FIX_BRANCH_PREFIX); it merges alone, also while main is red. */
+  mainFix?: boolean;
 };
 
 /** States a PR leaves for its batch's state while it is in a batch. */
 const BATCHABLE: QueueState[] = ["ready", "decision-answered-merge", "refused", "waiting-ci"];
 
-/** PRs the integration batches leave to the single-PR merge: the sandbox cannot build the repo, or the repo has no CI for the batch PR to wait on. */
-export const singleMergeOnly = (e: QueueEntry): boolean => e.verify?.state === VERIFY_UNAVAILABLE || e.noCi;
+/** States that wait while the repo's main CI is red. */
+const MAIN_RED_HELD: QueueState[] = ["ready", "decision-answered-merge", "refused"];
+
+/** PRs the integration batches leave to the single-PR merge: main-fix PRs, the sandbox cannot build the repo, or the repo has no CI for the batch PR to wait on. */
+export const singleMergeOnly = (e: QueueEntry): boolean => e.verify?.state === VERIFY_UNAVAILABLE || e.noCi || !!e.mainFix;
 
 /** True when the PR may be merged now (ready, approved, or retried after a refusal). */
 export const eligible = (e: QueueEntry): boolean =>
@@ -224,6 +230,7 @@ export function buildQueue(db: DatabaseSync, opts: QueueOptions = {}): QueueEntr
   const holds = mergeHolds(db, opts.repo);
   const noCiMemo = new Map<string, boolean>();
   const noCi = (repo: string) => noCiMemo.get(repo) ?? (noCiMemo.set(repo, repoHasNoCi(db, repo)), noCiMemo.get(repo)!);
+  const mainRed = redMainRepos(db);
   const approvals = new Map<string, { push: boolean; comment: boolean }>();
   const longLivedBy = new Map<string, LongLived>();
   const out: QueueEntry[] = [];
@@ -282,6 +289,7 @@ export function buildQueue(db: DatabaseSync, opts: QueueOptions = {}): QueueEntr
       decisionId: asked ? id : null, noCi: ci === "none" && noCi(r.repo), answer, refusedReason: null, reviewedAt: r.r_at, verify, held: holds.has(`${r.repo}#${r.number}`), note: null, blockedLive: false,
     };
     const open = r.state === "OPEN" && !mergedByUs;
+    if (r.head_ref?.startsWith(MAIN_FIX_BRANCH_PREFIX)) e.mainFix = true;
     // A maintainer's formal block comes before everything else: the PR is never asked about, batched or merged while it stands.
     // A live read newer than the PR's last change decides; otherwise the mirrored reviews do.
     const gate = gates.get(`${r.repo}#${r.number}`);
@@ -295,6 +303,8 @@ export function buildQueue(db: DatabaseSync, opts: QueueOptions = {}): QueueEntr
     }
     const batch = inBatch.get(`${r.repo}#${r.number}@${r.r_head}`);
     if (batch && BATCHABLE.includes(e.state)) e.state = batch;
+    // A red main fails every PR's CI: ready PRs wait for it, except the PRs AutoCraft opened to fix it. Batch members keep their batch state; the batch just is not merged (see batch.ts).
+    else if (open && mainRed.has(r.repo) && MAIN_RED_HELD.includes(e.state) && !e.mainFix) e.state = "waiting-main-ci";
     out.push(e);
   }
   return out;

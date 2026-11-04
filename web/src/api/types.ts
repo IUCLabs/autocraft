@@ -1059,7 +1059,7 @@ export interface CommentTemplate {
  * held-duplicate (an open Duplicate? decision keeps it out of every later stage), held-backlog (answered Backlog),
  * batch-checking (in an integration batch whose combined tree is being checked), in-batch (the batch PR is open),
  * batch-failed (failed alone in a batch: on hold until a new head), changes-requested (a maintainer's
- * changes-requested review stands).
+ * changes-requested review stands), waiting-main-ci (ready, but the repo's main CI is red; AutoCraft's main-fix PRs are not held).
  */
 export type QueueState =
   | "ready"
@@ -1081,7 +1081,8 @@ export type QueueState =
   | "in-batch"
   | "batch-failed"
   | "ci-approval"
-  | "changes-requested";
+  | "changes-requested"
+  | "waiting-main-ci";
 
 /** An integration batch: PRs landed together through one integration branch and one PR. */
 export type BatchState = "checking" | "open" | "merged" | "failed" | "split" | "superseded";
