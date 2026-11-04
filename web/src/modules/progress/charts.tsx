@@ -5,7 +5,7 @@ import { useLayoutEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import type { Done, Funnel } from "../../api/types";
 import { cn } from "../../ui/cn";
-import { num, pct } from "../../lib/format";
+import { clock, num, pct, zoneName } from "../../lib/format";
 
 export const OUTCOMES: { key: keyof Funnel; label: string; cls: string }[] = [
   { key: "take", label: "Taken", cls: "bg-c1" },
@@ -151,8 +151,9 @@ export function Throughput({ perHour, nowIso }: { perHour: number[]; nowIso: str
   const avg = perHour.reduce((a, b) => a + b, 0) / perHour.length;
   const bw = (W - pad.l - pad.r) / perHour.length;
   const y = (v: number) => pad.t + (Hh - pad.t - pad.b) * (1 - v / max);
-  const endHour = new Date(nowIso).getUTCHours();
-  const hourOf = (i: number) => (endHour - (perHour.length - 1 - i) + 24) % 24;
+  // Buckets are UTC hours; label each by its start in the viewer's time zone (not always :00).
+  const lastStart = Math.floor(Date.parse(nowIso) / 3600_000) * 3600_000;
+  const startLabel = (i: number) => clock(lastStart - (perHour.length - 1 - i) * 3600_000);
   return (
     <div className="relative w-full overflow-hidden" ref={box}>
       <svg width={W} height={Hh} viewBox={`0 0 ${W} ${Hh}`} className="block" role="img" aria-label={`Items done per hour, last 24 hours, average ${Math.round(avg)}`} onMouseLeave={() => setHover(null)}>
@@ -172,7 +173,7 @@ export function Throughput({ perHour, nowIso }: { perHour: number[]; nowIso: str
               <rect x={x + bw * 0.18} y={y(v)} width={bw * 0.64} rx={2} height={y(0) - y(v)} fill="var(--st-c1)" opacity={hover === null || hover === i ? 1 : 0.45} />
               {i % (W < 500 ? 8 : 4) === 0 && (
                 <text x={x + bw / 2} y={Hh - 6} textAnchor="middle" className="fill-current text-[11px] text-ink/45">
-                  {String(hourOf(i)).padStart(2, "0")}:00
+                  {startLabel(i)}
                 </text>
               )}
             </g>
@@ -185,7 +186,7 @@ export function Throughput({ perHour, nowIso }: { perHour: number[]; nowIso: str
       </svg>
       {hover !== null && (
         <div className="pointer-events-none absolute top-0 whitespace-nowrap rounded border border-line-strong bg-raised px-2 py-1 text-xs shadow-md" style={{ left: `calc(${((pad.l + hover * bw) / W) * 100}% - 20px)` }}>
-          {String(hourOf(hover)).padStart(2, "0")}:00 UTC · {perHour[hover]} done
+          {startLabel(hover)} {zoneName(lastStart)} · {perHour[hover]} done
         </div>
       )}
     </div>

@@ -7,7 +7,7 @@ import type { Agreement, ClassifierReport } from "../../api/types";
 import type { FeatureModule, ViewProps } from "../../registry/types";
 import { cn } from "../../ui/cn";
 import { ItemRef } from "../../ui/molecules/ItemRef";
-import { num } from "../../lib/format";
+import { day, num } from "../../lib/format";
 import { Block, RateBar, Select, Stat, Th, rate } from "../insight/parts";
 
 const PAGE = 50;
@@ -170,7 +170,7 @@ function Classifiers(_: ViewProps) {
       <div className="mx-auto max-w-[1180px] px-4 pb-12 pt-5 md:px-6">
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
           <h1 className="text-xl font-semibold">Classifiers</h1>
-          <Select label="Run" value={r.run} onChange={(v) => set({ run: v, a: "", b: "", label: "", band: "" })} options={r.runs.map((x) => ({ value: x.id, label: `${x.id} · ${x.at.slice(0, 10)}` }))} />
+          <Select label="Run" value={r.run} onChange={(v) => set({ run: v, a: "", b: "", label: "", band: "" })} options={r.runs.map((x) => ({ value: x.id, label: `${x.id} · ${day(x.at)}` }))} />
           <Select
             label="Pair"
             value={`${r.a}|${r.b}`}

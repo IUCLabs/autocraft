@@ -4,7 +4,7 @@ import { useQuery } from "../../api/client";
 import { Pending } from "../../ui/atoms/Pending";
 import type { CostReport, UsageTotals } from "../../api/types";
 import type { FeatureModule, ViewProps } from "../../registry/types";
-import { num } from "../../lib/format";
+import { day, num } from "../../lib/format";
 import { cn } from "../../ui/cn";
 import { Block, Select, Stat, Th } from "../insight/parts";
 
@@ -136,7 +136,7 @@ function Cost(_: ViewProps) {
             label="Run"
             value={r.run}
             onChange={(v) => setSp(v ? { run: v } : {}, { replace: true })}
-            options={[{ value: "", label: "All runs" }, ...r.runs.map((x) => ({ value: x.id, label: `${x.id} · ${x.from.slice(0, 10)}` }))]}
+            options={[{ value: "", label: "All runs" }, ...r.runs.map((x) => ({ value: x.id, label: `${x.id} · ${day(x.from)}` }))]}
           />
         </div>
         <p className="mt-1 text-sm text-ink/55">Token use per agent call. USD appears where the agent reported a cost.</p>

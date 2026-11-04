@@ -10,7 +10,7 @@ import type { FeatureModule, ViewProps } from "../../registry/types";
 import { Badge, type Tone } from "../../ui/atoms/Badge";
 import { ItemRef } from "../../ui/molecules/ItemRef";
 import { cn } from "../../ui/cn";
-import { ago, num } from "../../lib/format";
+import { ago, day, num, when } from "../../lib/format";
 import { useIsPhone } from "../../shell/useMedia";
 import { Block, ErrorLine, Page, Pager, selectCls, TextInput, useUrlState } from "../admin/parts";
 import { useNow } from "../../lib/useNow";
@@ -327,7 +327,7 @@ function Table({ rows }: { rows: ItemListRow[] }) {
                 )}
               </td>
               <td className="truncate px-3 py-2 text-ink/70">{it.author}</td>
-              <td className="num relative z-10 whitespace-nowrap px-3 py-2 text-ink/55" title={`created ${it.createdAt.slice(0, 10)}, updated ${it.updatedAt.slice(0, 16).replace("T", " ")}`}>
+              <td className="num relative z-10 whitespace-nowrap px-3 py-2 text-ink/55" title={`created ${day(it.createdAt)}, updated ${when(it.updatedAt)}`}>
                 {it.updatedAt ? `${ago(it.updatedAt)} ago` : "–"}
               </td>
               <td className="px-3 py-2">

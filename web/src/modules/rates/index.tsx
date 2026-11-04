@@ -5,7 +5,7 @@ import { GaugeIcon } from "@phosphor-icons/react";
 import { useQuery } from "../../api/client";
 import type { RateBucket, Rates, UsagePause } from "../../api/types";
 import type { FeatureModule } from "../../registry/types";
-import { num } from "../../lib/format";
+import { clock, num, zoneName } from "../../lib/format";
 import { Segmented } from "../../ui/molecules/Segmented";
 import { cn } from "../../ui/cn";
 import { Block, ErrorLine, Page } from "../admin/parts";
@@ -30,8 +30,7 @@ const niceMax = (v: number) => {
 };
 
 function tickLabel(t: string, hourly: boolean) {
-  const d = new Date(t);
-  return hourly ? `${String(d.getUTCHours()).padStart(2, "0")}:00` : d.toLocaleDateString("en", { weekday: "short", timeZone: "UTC" });
+  return hourly ? clock(t) : new Date(t).toLocaleDateString("en", { weekday: "short" });
 }
 
 /** Columns of items moved per bucket; a marker above a column counts runs that failed in it. */
@@ -73,7 +72,7 @@ function StageChart({ buckets, hourly, title }: { buckets: RateBucket[]; hourly:
       </svg>
       {hover !== null && (
         <div className="pointer-events-none absolute top-5 z-10 whitespace-nowrap rounded border border-line-strong bg-raised px-2 py-1 text-xs shadow-md" style={{ left: Math.min(Math.max(pad.l + hover * bw - 40, 0), W - 150) }}>
-          {tickLabel(buckets[hover]!.t, hourly)} UTC · {num(buckets[hover]!.items)} items · {buckets[hover]!.runs} runs{buckets[hover]!.failed ? ` · ${buckets[hover]!.failed} failed` : ""}
+          {tickLabel(buckets[hover]!.t, hourly)} {zoneName(buckets[hover]!.t)} · {num(buckets[hover]!.items)} items · {buckets[hover]!.runs} runs{buckets[hover]!.failed ? ` · ${buckets[hover]!.failed} failed` : ""}
         </div>
       )}
     </div>
@@ -95,7 +94,7 @@ function UseChart({ r, field, title, pause }: { r: Rates; field: "fiveHourPct" |
   const ts = r.accounts[0]!.samples.map((s) => s.t);
   const every = Math.ceil((W < 400 ? 70 : 56) / ((W - pad.l - pad.r) / Math.max(1, n - 1)));
   const hourly = r.bucket === "hour";
-  const label = (t: string) => (hourly ? tickLabel(t, true) : `${new Date(t).toLocaleDateString("en", { weekday: "short", timeZone: "UTC" })} ${String(new Date(t).getUTCHours()).padStart(2, "0")}:00`);
+  const label = (t: string) => (hourly ? tickLabel(t, true) : `${new Date(t).toLocaleDateString("en", { weekday: "short" })} ${clock(t)}`);
   return (
     <div>
       <ul className="mb-2 flex flex-wrap gap-x-4 gap-y-1">
@@ -146,7 +145,7 @@ function UseChart({ r, field, title, pause }: { r: Rates; field: "fiveHourPct" |
         </svg>
         {hover !== null && (
           <div className="pointer-events-none absolute top-0 z-10 whitespace-nowrap rounded border border-line-strong bg-raised px-2 py-1 text-xs shadow-md" style={{ left: Math.min(Math.max(x(hover) - 70, 0), W - 190) }}>
-            <div className="text-ink/60">{label(ts[hover]!)} UTC</div>
+            <div className="text-ink/60">{label(ts[hover]!)} {zoneName(ts[hover]!)}</div>
             {r.accounts.map((a, k) => (
               <div key={a.id} className="num flex items-center gap-1.5">
                 <span className="size-2 rounded-sm" style={{ background: SERIES[k] }} />
@@ -172,7 +171,7 @@ function RatesView() {
     <Page title="Rates" sub="Items moving through the pipeline and account use">
       <div className="mt-3 flex items-center gap-3">
         <Segmented<"24h" | "7d"> label="Window" value={win} onChange={setWin} options={[{ value: "24h", label: "Last 24 hours" }, { value: "7d", label: "Last 7 days" }]} />
-        <span className="text-xs text-ink/50">all times UTC</span>
+        <span className="text-xs text-ink/50">all times {zoneName()}</span>
       </div>
       <ErrorLine error={q.error?.message} className="mt-3" />
       {r && (

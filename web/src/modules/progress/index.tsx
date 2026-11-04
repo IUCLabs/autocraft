@@ -6,7 +6,7 @@ import { Pending } from "../../ui/atoms/Pending";
 import type { Progress, RepoProgress } from "../../api/types";
 import type { FeatureModule, ViewProps } from "../../registry/types";
 import { cn } from "../../ui/cn";
-import { num, pct } from "../../lib/format";
+import { day, num, pct, zoneName } from "../../lib/format";
 import { DoneSplit, FunnelChart, OUTCOMES, Sparkline, StackBar, Throughput, DONE_PARTS } from "./charts";
 import { useIsPhone } from "../../shell/useMedia";
 
@@ -45,7 +45,7 @@ function Overview(_: ViewProps) {
   const lastDay = p.perHour.reduce((a, b) => a + b, 0);
   const lastDayOurs = p.perHourPipeline.reduce((a, b) => a + b, 0);
   const startOpen = p.repos.reduce((a, r) => a + (r.openTrend[0] ?? 0), 0);
-  const since = p.trackingSince.slice(0, 10);
+  const since = day(p.trackingSince);
   return (
     <div className="h-full overflow-y-auto">
       <div className="mx-auto max-w-[1180px] px-4 pb-12 pt-5 md:px-6">
@@ -100,7 +100,7 @@ function Overview(_: ViewProps) {
           </Block>
         </div>
 
-        <Block title="Items closed or merged per hour, by anyone" aside={`Last 24 h, UTC · ${num(lastDay)} in all, ${num(lastDayOurs)} by the pipeline`} className="mt-4">
+        <Block title="Items closed or merged per hour, by anyone" aside={`Last 24 h, ${zoneName()} · ${num(lastDay)} in all, ${num(lastDayOurs)} by the pipeline`} className="mt-4">
           <Throughput perHour={p.perHour} nowIso={p.now} />
         </Block>
 

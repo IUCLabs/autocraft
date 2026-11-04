@@ -8,7 +8,7 @@ import { Badge } from "../../ui/atoms/Badge";
 import { Button } from "../../ui/atoms/Button";
 import { cn } from "../../ui/cn";
 import { Count } from "../../ui/atoms/Heading";
-import { ago, when } from "../../lib/format";
+import { ago, day, when, zoneName } from "../../lib/format";
 import { useIsPhone } from "../../shell/useMedia";
 import { Block } from "../../ui/molecules/Block";
 import { ConfirmButton } from "../../ui/molecules/ConfirmButton";
@@ -87,7 +87,7 @@ function AccessList({ entries, me }: { entries: AccessEntry[]; me: string }) {
                 <RolePicker e={e} write={write} />
               </div>
               <div className="mt-1 text-xs text-ink/55">
-                Added {when(e.addedAt).slice(0, 10)} by {e.addedBy ?? "–"} · {plural(e.sessions, "session")}
+                Added {day(e.addedAt)} by {e.addedBy ?? "–"} · {plural(e.sessions, "session")}
               </div>
               {e.note && <div className="mt-0.5 text-xs text-ink/65">{e.note}</div>}
               <div className="mt-1 flex justify-end">
@@ -119,7 +119,7 @@ function AccessList({ entries, me }: { entries: AccessEntry[]; me: string }) {
                     <RolePicker e={e} write={write} />
                   </td>
                   <td className="num whitespace-nowrap px-3 text-ink/65">
-                    {when(e.addedAt).slice(0, 10)} by {e.addedBy ?? "–"}
+                    {day(e.addedAt)} by {e.addedBy ?? "–"}
                   </td>
                   <td className="max-w-[320px] truncate px-3 text-ink/70" title={e.note ?? undefined}>
                     {e.note ?? ""}
@@ -231,9 +231,9 @@ function Sessions({ sessions }: { sessions: SessionInfo[] }) {
                 <tr className="border-b border-line">
                   <Th>Login</Th>
                   <Th className="w-[170px]">Browser</Th>
-                  <Th className="w-[150px]">Signed in (UTC)</Th>
+                  <Th className="w-[150px]">{`Signed in (${zoneName()})`}</Th>
                   <Th className="w-[150px]">Last seen</Th>
-                  <Th className="w-[150px]">Expires (UTC)</Th>
+                  <Th className="w-[150px]">{`Expires (${zoneName()})`}</Th>
                   <th className="w-[160px]" aria-label="Revoke" />
                 </tr>
               </thead>
