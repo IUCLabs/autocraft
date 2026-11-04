@@ -30,5 +30,31 @@ export function span(ms: number): string {
   return `${Math.floor(m / 1440)} d ${Math.floor((m % 1440) / 60)} h`;
 }
 
-/** "2026-11-02 10:40" in UTC. */
-export const when = (iso: string | null | undefined) => (iso ? iso.slice(0, 16).replace("T", " ") : "–");
+const pad2 = (n: number) => String(n).padStart(2, "0");
+
+/** Short name of the viewer's time zone at a moment (default: now), e.g. "CET" or "GMT+8". */
+export const zoneName = (at: Date | string | number = now()) =>
+  new Intl.DateTimeFormat(undefined, { timeZoneName: "short" }).formatToParts(new Date(at)).find((p) => p.type === "timeZoneName")?.value ?? "";
+
+/** "2026-11-02" in the viewer's time zone. */
+export const day = (iso: string | null | undefined) => {
+  if (!iso) return "–";
+  const d = new Date(iso);
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+};
+
+/** "10:40" (24 h) in the viewer's time zone. */
+export const clock = (iso: string | number) => {
+  const d = new Date(iso);
+  return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+};
+
+/** "2026-11-02 10:40" in the viewer's time zone. */
+export const when = (iso: string | null | undefined) => (iso ? `${day(iso)} ${clock(iso)}` : "–");
+
+/** The server's daily limits reset at 00:00 UTC; this is that moment as "09:00" in the viewer's time zone. */
+export const dayResetLocal = () => {
+  const d = new Date(now());
+  const reset = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
+  return clock(reset);
+};

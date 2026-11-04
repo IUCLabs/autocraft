@@ -80,7 +80,7 @@ function SyncRuns({ runs, last }: { runs: SyncRun[]; last: string | null }) {
         <table className="num w-full min-w-[520px] text-sm">
           <thead className="bg-ink/[0.03] text-xs text-ink/55">
             <tr>
-              <th className="h-8 px-3 text-left font-medium">Started (UTC)</th>
+              <th className="h-8 px-3 text-left font-medium">Started</th>
               <th className="h-8 px-3 text-right font-medium">Took</th>
               <th className="h-8 px-3 text-left font-medium">Mode</th>
               <th className="h-8 px-3 text-right font-medium">Items</th>
@@ -282,10 +282,10 @@ function JobDetailView({ id, operator, back }: { id: number; operator: boolean; 
             <dd className="code">{paramText(j.params) || "defaults"}</dd>
             <dt className="text-ink/55">Requested</dt>
             <dd>
-              {j.requestedBy} · {when(j.requestedAt)} UTC
+              {j.requestedBy} · {when(j.requestedAt)}
             </dd>
             <dt className="text-ink/55">Ran</dt>
-            <dd>{j.startedAt ? `${when(j.startedAt)} UTC, ${j.endedAt ? `took ${took(j.startedAt, j.endedAt)}` : `running for ${took(j.startedAt, null)}`}` : "not started"}</dd>
+            <dd>{j.startedAt ? `${when(j.startedAt)}, ${j.endedAt ? `took ${took(j.startedAt, j.endedAt)}` : `running for ${took(j.startedAt, null)}`}` : "not started"}</dd>
             {j.usage && j.usage.calls > 0 && (
               <>
                 <dt className="text-ink/55">Model use</dt>

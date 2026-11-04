@@ -19,7 +19,7 @@ import { Badge, type Tone } from "../ui/atoms/Badge";
 import { cn } from "../ui/cn";
 import { useApi, useQuery } from "../api/client";
 import { useLiveStatus, type LiveStatus } from "../api/live";
-import { num } from "../lib/format";
+import { num, zoneName } from "../lib/format";
 
 // Mockup builds only; a normal build drops this branch and the fixture data with it.
 const MockRoleMenu = import.meta.env.VITE_MOCK === "1" ? lazy(() => import("../api/mock/MockRoleMenu")) : null;
@@ -323,6 +323,7 @@ function UserMenu({ theme, setTheme, onHelp }: { theme: ThemePref; setTheme: (t:
               <div className="text-xs text-ink/55">
                 {roleLabel(user)} · write on {user.writeRepos.length} repos
               </div>
+              <div className="text-xs text-ink/55">Times in {zoneName()}</div>
             </div>
           </div>
           <DropdownMenu.Separator className="-mx-1 my-1 h-px bg-line" />

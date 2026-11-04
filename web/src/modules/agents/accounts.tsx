@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import { PencilSimpleIcon } from "@phosphor-icons/react";
 import { useApi, useQuery } from "../../api/client";
 import type { ClaudeAccount, JevStatus, UsagePause } from "../../api/types";
-import { ago, nowMs, span } from "../../lib/format";
+import { ago, clock, nowMs, span } from "../../lib/format";
 import { useUser } from "../../shell/UserContext";
 import { Badge } from "../../ui/atoms/Badge";
 import { Button } from "../../ui/atoms/Button";
@@ -96,8 +96,6 @@ function PauseLevels({ operator }: { operator: boolean }) {
     </div>
   );
 }
-
-const clock = (iso: string) => new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
 
 function JevLine({ operator }: { operator: boolean }) {
   const api = useApi();

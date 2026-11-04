@@ -9,7 +9,7 @@ import { Badge, type Tone } from "../../ui/atoms/Badge";
 import { Button } from "../../ui/atoms/Button";
 import { cn } from "../../ui/cn";
 import { Count } from "../../ui/atoms/Heading";
-import { num, when } from "../../lib/format";
+import { day, num } from "../../lib/format";
 import { useIsPhone } from "../../shell/useMedia";
 import { Block } from "../../ui/molecules/Block";
 import { ErrorLine } from "../../ui/atoms/ErrorLine";
@@ -144,7 +144,7 @@ function StatusCell({ c }: { c: Contributor }) {
       </span>
       {c.overrideNote !== undefined && c.override && (
         <span className="truncate text-2xs text-ink/50" title={c.overrideNote ?? undefined}>
-          {c.overrideNote ? `“${c.overrideNote}”` : "No note"} · {c.overrideBy ?? "?"}, {when(c.overrideAt).slice(0, 10)}
+          {c.overrideNote ? `“${c.overrideNote}”` : "No note"} · {c.overrideBy ?? "?"}, {day(c.overrideAt)}
         </span>
       )}
     </div>
@@ -185,7 +185,7 @@ function Table({ list, operator, filter, onSort }: { list: ContributorList; oper
               <td className="num px-3 text-right">{num(c.closedUnmerged)}</td>
               <td className="num px-3 text-right">{num(c.open)}</td>
               <td className={cn("num px-3 text-right", c.mergeRate !== null && c.mergeRate < list.rule.minRate && "text-ink/50")}>{rateText(c.mergeRate)}</td>
-              <td className="num whitespace-nowrap px-3 text-ink/70">{c.lastMerge?.slice(0, 10) ?? "–"}</td>
+              <td className="num whitespace-nowrap px-3 text-ink/70">{day(c.lastMerge)}</td>
               <td className="max-w-[150px] truncate px-3 text-xs text-ink/60" title={c.repos.join(", ")}>
                 {c.repos.join(", ") || "–"}
               </td>

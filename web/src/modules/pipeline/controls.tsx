@@ -5,13 +5,13 @@ import { useEffect, useRef, useState } from "react";
 import { PauseIcon, PlayIcon } from "@phosphor-icons/react";
 import { useApi, useQuery } from "../../api/client";
 import type { PipelineState, StageLimit } from "../../api/types";
-import { ago, num } from "../../lib/format";
+import { ago, dayResetLocal, num, when } from "../../lib/format";
 import { useUser } from "../../shell/UserContext";
 import { Badge } from "../../ui/atoms/Badge";
 import { Button } from "../../ui/atoms/Button";
 import { ItemRef } from "../../ui/molecules/ItemRef";
 import { GITHUB_ORG } from "../../lib/links";
-import { Block, ConfirmButton, ErrorLine, TextInput, useWrite, when } from "../admin/parts";
+import { Block, ConfirmButton, ErrorLine, TextInput, useWrite } from "../admin/parts";
 import { useNow } from "../../lib/useNow";
 
 const usePipelineState = () => useQuery<PipelineState>("pipeline-state", (a) => a.pipeline.state());
@@ -38,7 +38,7 @@ function ConfirmOn({ limits, open, busy, onCancel, onConfirm }: { limits: StageL
       <p className="mt-2 text-sm text-ink/70">
         The pipeline then watches all issues and pull requests and runs every stage on its own: classifying, asking decisions, reviewing, labelling approved repos and merging by the merge rule. Model stages use quota.
       </p>
-      <p className="mt-2 text-sm text-ink/70">Each stage stops for the day at its limit (UTC). {limitSummary(limits)}</p>
+      <p className="mt-2 text-sm text-ink/70">Each stage stops at its daily limit until {dayResetLocal()}. {limitSummary(limits)}</p>
       <div className="mt-4 flex justify-end gap-2">
         <Button variant="ghost" onClick={onCancel} className="max-md:h-11">
           Keep it off
@@ -73,7 +73,7 @@ export function PipelineSwitch({ className }: { className?: string }) {
             {s.changedAt && (
               <span title={s.changedAt}>
                 {" "}
-                Switched {s.enabled ? "on" : "off"} by {s.changedBy ?? "unknown"} {ago(s.changedAt, false)} ({when(s.changedAt)} UTC).
+                Switched {s.enabled ? "on" : "off"} by {s.changedBy ?? "unknown"} {ago(s.changedAt, false)} ({when(s.changedAt)}).
               </span>
             )}
           </div>
@@ -171,7 +171,7 @@ export function StageLimits() {
   const q = usePipelineState();
   const operator = useUser().role === "operator";
   return (
-    <Block flush title="Daily limits" aside="items per day, counted from 00:00 UTC; empty is no limit, 0 pauses the stage">
+    <Block flush title="Daily limits" aside={`items per day, resets at ${dayResetLocal()}; empty is no limit, 0 pauses the stage`}>
       <ErrorLine error={q.error?.message} className="p-4" />
       {q.data && (
         <div className="overflow-x-auto">

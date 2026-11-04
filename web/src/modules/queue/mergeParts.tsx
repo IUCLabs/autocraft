@@ -7,7 +7,7 @@ import type { BatchState, QueueBatch, QueueMergeRow, QueueRow, QueueState, Tier 
 import { Badge, type Tone } from "../../ui/atoms/Badge";
 import { ItemRef } from "../../ui/molecules/ItemRef";
 import { cn } from "../../ui/cn";
-import { ago } from "../../lib/format";
+import { ago, when } from "../../lib/format";
 import { useNow } from "../../lib/useNow";
 import { decisionPath } from "../../lib/links";
 import { FastMark } from "./fastTrack";
@@ -68,7 +68,7 @@ export function BatchFacts({ b }: { b: QueueBatch }) {
       <a href={gh(`storytold/${b.repo}/commit/${b.baseSha}`)} target="_blank" rel="noopener noreferrer" title="Base commit on GitHub" className={cn("code text-xs", extLink)}>
         {b.baseSha.slice(0, 7)}
       </a>
-      <span className="num text-2xs text-ink/50" title={`created ${b.createdAt.slice(0, 16).replace("T", " ")}, updated ${b.updatedAt.slice(0, 16).replace("T", " ")}`}>
+      <span className="num text-2xs text-ink/50" title={`created ${when(b.createdAt)}, updated ${when(b.updatedAt)}`}>
         {ago(b.updatedAt)} ago
       </span>
     </>
@@ -159,7 +159,7 @@ function ReviewText({ r }: { r: QueueRow }) {
         <div className="mt-0.5 flex flex-wrap items-center gap-x-3 text-2xs">
           <Why row={r} />
           <DecisionLink row={r} />
-          <span className="num text-ink/40" title={`reviewed ${r.reviewedAt.slice(0, 16).replace("T", " ")} at ${r.head.slice(0, 7)}`}>
+          <span className="num text-ink/40" title={`reviewed ${when(r.reviewedAt)} at ${r.head.slice(0, 7)}`}>
             reviewed {ago(r.reviewedAt)} ago
           </span>
         </div>

@@ -48,7 +48,7 @@ function AuditLog() {
   const phone = useIsPhone();
 
   return (
-    <Block className="mt-4" flush title={<span className="flex items-center gap-2">Audit log <Count n={data?.total} /></span>} aside="Newest first; times in UTC">
+    <Block className="mt-4" flush title={<span className="flex items-center gap-2">Audit log <Count n={data?.total} /></span>} aside="Newest first">
       <form
         className="flex flex-wrap items-center gap-2 border-b border-line px-4 py-3"
         onSubmit={(e) => {
