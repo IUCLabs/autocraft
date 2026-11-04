@@ -5,6 +5,7 @@
 // is skipped, and so is a whole decision whose answer or roles changed (undo, refresh) while the run went on.
 import type { DatabaseSync } from "node:sqlite";
 import { audit } from "../dash/audit.ts";
+import { embedHash } from "../itemhash.ts";
 import { backlogHeld } from "../dupes/held.ts";
 import { inPilot } from "../pilot.ts";
 import { textsFor } from "../dupes/texts.ts";
@@ -128,8 +129,10 @@ export async function actOnGroups(db: DatabaseSync, run: GroupRun): Promise<Grou
         if (live.state !== "OPEN") { skip(c.number, "close", `already ${live.state.toLowerCase()} on GitHub`); continue; }
         if (c.kind === "pr" && c.head && live.head !== c.head) { skip(c.number, "close", "the head moved since the comparison", true); continue; }
         if (c.kind === "issue" && c.head) {
-          const now = (db.prepare("SELECT embed_hash FROM items WHERE repo = ? AND number = ?").get(run.repo, c.number) as { embed_hash: string | null } | undefined)?.embed_hash;
-          if (now && now !== c.head) { skip(c.number, "close", "the text changed since the comparison", true); continue; }
+          const row = db.prepare("SELECT embed_hash, title, body FROM items WHERE repo = ? AND number = ?").get(run.repo, c.number) as { embed_hash: string | null; title: string | null; body: string | null } | undefined;
+          // A missing stored hash is computed from the text; an item without a row counts as changed.
+          const now = row ? (row.embed_hash ?? embedHash(row.title, row.body)) : null;
+          if (now !== c.head) { skip(c.number, "close", "the text changed since the comparison", true); continue; }
         }
         const text = texts.get(`${c.number}:close`);
         if (!text) { skip(c.number, "close", "the decision stores no comment for this answer"); continue; }

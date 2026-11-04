@@ -174,10 +174,10 @@ export function parseSafeMergeArgs(args: string[]): { repo: string; pr: string; 
     if (name === undefined) return null;
     if (rest[i] === "--allow-pending") allow.push(name);
     else if (rest[i] === "--allow-failed") allowFailed.push(name);
-    else if (rest[i] === "--head") head = name;
+    else if (rest[i] === "--head") { if (!name) return null; head = name; }
     else return null;
   }
-  return { repo, pr, method, allow, allowFailed, ...(head ? { head } : {}) };
+  return { repo, pr, method, allow, allowFailed, ...(head !== undefined && { head }) };
 }
 
 export const commands = {

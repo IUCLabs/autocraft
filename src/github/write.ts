@@ -32,7 +32,7 @@ const repoName = (slug: string): string => (slug.startsWith(`${ORG}/`) ? slug.sl
 const refOf = (repo: string, number: number): string => `${repo}#${number}`;
 
 /** A grant covers writes to its own repo (and, for a PR or item grant, its own number); a write elsewhere is a bug. */
-function covers(g: Grant, repo: string, number?: number): void {
+function covers(g: Guarded | Grant, repo: string, number?: number): void {
   if (g.repo !== repo || (number !== undefined && "number" in g && g.number !== number)) throw new Error(`the guard covers ${g.repo}${"number" in g ? `#${g.number}` : ""}, not ${repo}${number === undefined ? "" : `#${number}`}`);
 }
 
@@ -271,6 +271,8 @@ export function ghRerunMainFailed(w: Writer, g: GuardedRepo, exec: Exec, o: { re
 
 /** Pushes `sha` to a PR's branch `branch` of `remote` (owner/name); refused by git when the branch is no longer at the guarded head. */
 export function pushBranch(w: Writer, git: Pick<Git, "git">, action: string, g: Guarded<AskKind>, o: { remote: string; branch: string; sha: string }, details: Details = {}): Promise<ExecResult> {
+  const b = g.action.bucket;
+  if ((g.action.kind === "fixup" && b === "ask") || (g.action.kind === "cifix" && b === "rerun")) throw new Error(`a ${g.action.kind}:${b} grant does not allow a push`);
   return pushed(w, git, action, refOf(g.repo, g.number), o, `--force-with-lease=refs/heads/${o.branch}:${g.head}`, details);
 }
 

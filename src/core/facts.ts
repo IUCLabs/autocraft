@@ -171,7 +171,7 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
     const integration = !r.not_integration;
     // An integration PR takes part when its repo's pipeline is on or every member is in scope (fast track); its head is the batch tip, where the run approvals are recorded.
     const batchRow = integration ? (batchOf.get(r.repo, r.number) as { id: number; commit_sha: string } | undefined) : undefined;
-    const inScope = integration ? pipelineOn_.has(r.repo) || (!!batchRow && membersOf(db, batchRow.id).every((m) => inPilot(db, r.repo, m.number))) : !!r.in_pilot;
+    const inScope = integration ? pipelineOn_.has(r.repo) || (!!batchRow && (members => members.length > 0 && members.every((m) => inPilot(db, r.repo, m.number)))(membersOf(db, batchRow.id))) : !!r.in_pilot;
     const head = batchRow?.commit_sha ?? headOf(r);
     const lines = (r.additions ?? 0) + (r.deletions ?? 0);
     const base: PrFacts = {

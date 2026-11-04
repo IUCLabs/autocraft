@@ -47,6 +47,7 @@ test("--allow-failed accepts a listed failed check only while the merge state is
   for (const state of ["CLEAN", "UNSTABLE", "HAS_HOOKS"]) assert.equal(refuseView(v({ mergeStateStatus: state }), [], [sonar]), null, state);
   for (const state of ["UNKNOWN", "BEHIND", "DIRTY", "DRAFT"]) assert.notEqual(refuseView(v({ mergeStateStatus: state }), [], [sonar]), null, state);
   assert.deepEqual(parseSafeMergeArgs(["o/r", "5", "--merge", "--allow-failed", sonar]), { repo: "o/r", pr: "5", method: "--merge", allow: [], allowFailed: [sonar] });
+  assert.equal(parseSafeMergeArgs(["o/r", "5", "--merge", "--head", ""]), null);
 });
 
 test("a failed workflow run is accepted only when every failed job in it is a listed check", async () => {

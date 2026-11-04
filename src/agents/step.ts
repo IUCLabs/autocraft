@@ -140,7 +140,7 @@ export async function runModelStep<I, V, C = void>(db: DatabaseSync, step: Claud
   }
   if (!values.length && fallback !== null) { values.push(fallback); rest = undefined; }
   const ok = values.length > 0;
-  if (opts.usage && !(opts.usage.skipWhen?.({ ok }) ?? false) && (step.provider === "claude" || sawUsage || opts.usage.withoutUsage)) {
+  if (opts.usage && !(opts.usage.skipWhen?.({ ok }) ?? false) && (sawUsage || opts.usage.withoutUsage)) {
     const u = opts.usage;
     const total = sizeOf(step, input);
     const items = u.items ? u.items(ok, total, rest === undefined ? 0 : sizeOf(step, rest)) : total - (rest === undefined ? 0 : sizeOf(step, rest));

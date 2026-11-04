@@ -27,8 +27,8 @@ export type Guarded<K extends ActionKind = ActionKind> = { readonly [guarded]: t
 export type GuardedItem = { readonly [guarded]: true; readonly scope: "item"; readonly action: ItemWant; readonly repo: string; readonly number: number };
 /** What the guard let through for a repo-level write (a label set, a fork, an issue, a batch branch): the approval and the global switch held. Only `guardRepo` makes one. */
 export type GuardedRepo = { readonly [guarded]: true; readonly scope: "repo"; readonly need: Approval | null; readonly repo: string };
-/** Any of the three: what a write function that is not tied to one kind of target accepts. */
-export type Grant = Guarded | GuardedItem | GuardedRepo;
+/** What an item or repo write accepts. A PR grant is left out: no caller writes with one, and a merge or CI grant must not type-check there. */
+export type Grant = GuardedItem | GuardedRepo;
 export type Refused = { refused: string };
 /** An item action to guard: the Plan must hold the kind with the bucket, decision and source given. */
 export type ItemWant = Want & { decisionId?: string; source?: string };

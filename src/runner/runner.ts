@@ -249,8 +249,8 @@ export class Runner {
         this.db.prepare("UPDATE jobs SET state = 'failed', ended_at = ?, error = ? WHERE id = ? AND state = 'queued'").run(now(), "This step does not exist in this build.", q.id);
         continue;
       }
-      if ([...this.running.values()].some((r) => r.group === step.group) || this.outsideRunning(steps).has(step.group)) continue;
-      this.start(q.id, step.group);
+      if ([...this.running.values()].some((r) => r.group === step.group)) continue;
+      this.start(q.id, step.group, steps);
     }
   }
 
@@ -260,9 +260,19 @@ export class Runner {
     return new Set(rows.filter((r) => !this.running.has(r.id)).map((r) => steps.get(r.step)?.group ?? r.step));
   }
 
-  private start(id: number, group: string): void {
+  private start(id: number, group: string, steps: Awaited<ReturnType<typeof loadSteps>>): void {
     const logPath = join(this.o.logs, `job-${id}.log`);
-    const claimed = this.db.prepare("UPDATE jobs SET state = 'running', started_at = ?, log_path = ? WHERE id = ? AND state = 'queued'").run(now(), logPath, id).changes;
+    // The group check and the claim are one write transaction, so a command-line run cannot take the group in between.
+    this.db.exec("BEGIN IMMEDIATE");
+    let claimed: number | bigint;
+    try {
+      claimed = this.outsideRunning(steps).has(group) ? 0
+        : this.db.prepare("UPDATE jobs SET state = 'running', started_at = ?, log_path = ? WHERE id = ? AND state = 'queued'").run(now(), logPath, id).changes;
+      this.db.exec("COMMIT");
+    } catch (e) {
+      this.db.exec("ROLLBACK");
+      throw e;
+    }
     if (!claimed) return;
     const fd = openSync(logPath, "a");
     let child: ChildProcess;
