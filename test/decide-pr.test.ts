@@ -7,7 +7,7 @@ import { QUEUE_STATES, type Plan, type PrFacts } from "../src/core/plan.ts";
 import { NOW, REVIEW_AT, prFacts } from "./world.ts";
 
 type Over = Parameters<typeof prFacts>[0];
-type Row = { name: string; facts: Over; expect: { state?: string; path?: "rule" | "operator" | null; actions?: string[]; reasons?: string[]; eligible?: boolean; note?: string | null; conflictNote?: string | null } };
+type Row = { name: string; facts: Over; expect: { state?: string; path?: "rule" | "operator" | null; actions?: string[]; reasons?: string[]; eligible?: boolean; note?: string | null; conflictNote?: string | null; wait?: string | null } };
 
 const tokens = (p: Plan): string[] => p.actions.map((a) => {
   const bucket = typeof a.params?.bucket === "string" ? a.params.bucket : null;
@@ -211,7 +211,8 @@ const rows: Row[] = [
   { name: "conflict: a stored resolution is collected while the PR still conflicts, and waits for its lint task", facts: { ...conflicting({ bucket: "linting" }), lint: [{ step: "conflict", source: "review", ended: true }] }, expect: { state: "conflict", actions: ["lint:conflict"] } },
   { name: "conflict: a resolution whose lint task still runs is waited for", facts: { ...conflicting({ bucket: "linting" }), lint: [{ step: "conflict", source: "review", ended: false }] }, expect: { actions: [] } },
   { name: "conflict: already asked, held or unapproved", facts: conflicting({ bucket: "asked" }), expect: { actions: [] } },
-  { name: "conflict: held bucket", facts: conflicting({ bucket: "held" }), expect: { actions: [] } },
+  { name: "conflict: held bucket", facts: conflicting({ bucket: "held" }), expect: { actions: [], wait: "the contributor to resolve the conflict" } },
+  { name: "conflict: asked waits on the contributor", facts: conflicting({ bucket: "asked" }), expect: { wait: "the contributor to resolve the conflict" } },
   { name: "conflict: unapproved bucket", facts: conflicting({ bucket: "unapproved" }), expect: { actions: [] } },
   { name: "conflict: base branch name not allowed", facts: conflicting({ baseOk: false }), expect: { actions: [] } },
   { name: "conflict: merge held", facts: { ...conflicting(), mergeHeld: true }, expect: { state: "conflict", actions: [] } },
@@ -228,9 +229,12 @@ const rows: Row[] = [
   { name: "cifix: not pushable, no comment approval", facts: { ...CI_FAIL, cifix: cifix(), pushable: false, repoFacts: { commentApproved: false } }, expect: { actions: [] } },
   { name: "cifix: formatter task running", facts: { ...CI_FAIL, cifix: cifix({ states: ["formatting"], formattingTask: 7, formatterEnded: false, tries: 1 }) }, expect: { actions: [] } },
   { name: "cifix: formatter task ended is collected", facts: { ...CI_FAIL, cifix: cifix({ states: ["formatting"], formattingTask: 7, formatterEnded: true, tries: 1 }) }, expect: { actions: ["cifix:collect"] } },
-  { name: "cifix: PR at its push limit gets a capped note", facts: { ...CI_FAIL, cifix: cifix({ totalPushes: 2 }) }, expect: { actions: ["cifix:capped"] } },
-  { name: "cifix: PR at its try limit", facts: { ...CI_FAIL, cifix: cifix({ totalTries: 4 }) }, expect: { actions: ["cifix:capped"] } },
-  { name: "cifix: two tries at this head", facts: { ...CI_FAIL, cifix: cifix({ tries: 2, states: ["failed", "failed"] }) }, expect: { actions: [] } },
+  { name: "cifix: PR at its push limit gets a capped note", facts: { ...CI_FAIL, cifix: cifix({ totalPushes: 2 }) }, expect: { actions: ["cifix:ask"], wait: "the contributor to fix CI" } },
+  { name: "cifix: PR at its push limit, no comment approval: a capped note", facts: { ...CI_FAIL, cifix: cifix({ totalPushes: 2 }), repoFacts: { commentApproved: false } }, expect: { actions: ["cifix:capped"] } },
+  { name: "cifix: PR at its try limit", facts: { ...CI_FAIL, cifix: cifix({ totalTries: 4 }) }, expect: { actions: ["cifix:ask"] } },
+  { name: "cifix: two tries at this head", facts: { ...CI_FAIL, cifix: cifix({ tries: 2, states: ["failed", "failed"] }) }, expect: { actions: ["cifix:ask"] } },
+  { name: "cifix: two tries at this head, no comment approval: waits on the contributor", facts: { ...CI_FAIL, cifix: cifix({ tries: 2, states: ["failed", "failed"] }), repoFacts: { commentApproved: false } }, expect: { actions: [], wait: "the contributor to fix CI" } },
+  { name: "cifix: asked at this head: waits on the contributor", facts: { ...CI_FAIL, cifix: cifix({ tries: 2, states: ["failed", "failed", "asked"] }) }, expect: { actions: [], wait: "the contributor to fix CI" } },
   { name: "cifix: infra failure is rerun once", facts: { ...CI_FAIL, cifix: cifix({ states: ["infra"], infraRuns: [11] }) }, expect: { actions: ["cifix:rerun"] } },
   { name: "cifix: rerun needs CI run approval in the repo", facts: { ...CI_FAIL, cifix: cifix({ states: ["infra"], infraRuns: [11] }), repoFacts: { ciApproved: false } }, expect: { actions: [] } },
   { name: "cifix: rerun done, checks not read since", facts: { ...CI_FAIL, cifix: cifix({ states: ["infra", "rerun"], infraRuns: [11], rerunAt: "2026-11-04T11:30:00.000Z" }) }, expect: { actions: [] } },
@@ -276,6 +280,7 @@ for (const row of rows) {
     if (row.expect.reasons) assert.deepEqual(p.reasons, row.expect.reasons);
     if (row.expect.eligible !== undefined) assert.equal(p.eligible, row.expect.eligible);
     if (row.expect.note !== undefined) assert.equal(p.note, row.expect.note);
+    if (row.expect.wait !== undefined) assert.equal(p.wait, row.expect.wait);
     if (row.expect.conflictNote !== undefined) assert.equal(p.conflictNote, row.expect.conflictNote);
   });
 }

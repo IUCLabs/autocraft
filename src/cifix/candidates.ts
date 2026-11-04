@@ -29,6 +29,8 @@ export type CifixSelection = {
   collect: { c: CifixCandidate; task: number }[];
   /** PRs at their push or try limit: a final `capped` row with a note on the item is written once. */
   capped: CifixCandidate[];
+  /** PRs whose CI fix is capped or gave up at this head: the contributor is asked once, naming the failing checks. */
+  ask: CifixCandidate[];
   /** Stored patches whose lint task ended (the Plan's `lint` action, step cifix). */
   lint: CifixCandidate[];
   /** Infra failures due their one rerun, with the run ids to rerun. */

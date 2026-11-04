@@ -56,8 +56,8 @@ export function conflictCommentText(base: string): string {
   return CONFLICT_COMMENT_TEMPLATE.replace("{{base}}", base);
 }
 
-/** The one comment on a conflicted PR we can't push to. */
-export const CONFLICT_ASK_TEMPLATE = "This branch conflicts with {{base}}. Please merge or rebase {{base}} into it.";
+/** The one comment per head on a conflicted PR we can't resolve ourselves. */
+export const CONFLICT_ASK_TEMPLATE = "This branch conflicts with {{base}}. Could you merge or rebase {{base}} into it? The conflict needs a person to resolve.";
 export function conflictAskText(base: string): string {
   return CONFLICT_ASK_TEMPLATE.replaceAll("{{base}}", base);
 }

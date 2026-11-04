@@ -5,7 +5,7 @@ import type { PlanSet } from "../core/plan-set.ts";
 import type { CifixCandidate, CifixSelection } from "./candidates.ts";
 
 export function selectCifix(db: DatabaseSync, repo: string, run?: string | null, plans?: PlanSet): CifixSelection {
-  const out: CifixSelection = { work: [], collect: [], rerun: [], capped: [], lint: [] };
+  const out: CifixSelection = { work: [], collect: [], rerun: [], capped: [], ask: [], lint: [] };
   for (const { facts: f, action } of planned(db, "cifix", { repo, ...(run !== undefined ? { run } : {}), ...(plans ? { plans } : {}) })) {
     const x = f.cifix!, r = f.review!;
     const c: CifixCandidate = {
@@ -15,6 +15,7 @@ export function selectCifix(db: DatabaseSync, repo: string, run?: string | null,
     const bucket = action.params?.bucket;
     if (bucket === "work") out.work.push(c);
     else if (bucket === "capped") out.capped.push(c);
+    else if (bucket === "ask") out.ask.push(c);
     else if (bucket === "rerun") out.rerun.push({ c, runs: x.infraRuns ?? [] });
     else if (bucket === "collect") out.collect.push({ c, task: x.formattingTask! });
   }

@@ -42,7 +42,7 @@ import { MAX_PUSHES_PER_PR, MAX_TRIES_PER_PR, type CifixCandidate } from "./cand
 import { selectCifix } from "./select.ts";
 import { formattingOnly, guardPatch, TEST_PATH } from "./guard.ts";
 import { readFailure } from "./logs.ts";
-import { askText, commentText, commitMessage } from "./template.ts";
+import { askCiText, askText, commentText, commitMessage } from "./template.ts";
 import { formatDiffPaths, matchPrFiles, triage } from "./triage.ts";
 import { LINT_MAX_ROUNDS } from "../core/rules.ts";
 import { CheckTool, applyCheck, refusal } from "../checktool/index.ts";
@@ -682,6 +682,29 @@ async function runCifixWith(db: DatabaseSync, params: CifixParams, log: (line: s
     const reason = `the PR's limit of ${MAX_PUSHES_PER_PR} pushed CI fixes or ${MAX_TRIES_PER_PR} tries is used`;
     rec.set(c, "code", "capped", reason);
     log(`  ${refOf(c)}: ${reason}`);
+  }
+  // A fix capped or given up at this head: one comment naming the failing checks, then the PR waits on the contributor.
+  for (const c of sel.ask) {
+    const ref = refOf(c);
+    try {
+      const reading = await readFailure(d.gh, repo, c.head, optionalChecks(db, repo));
+      if (reading.kind === "skip") { rec.set(c, "code", "skipped", reading.why); summary.skipped.push(ref); log(`  ${ref}: skipped: ${reading.why}`); continue; }
+      const g = await guard(db, { repo, number: c.number }, { kind: "cifix", bucket: "ask", head: c.head }, params.by ?? CLI_BY, liveOf(db, d.querier));
+      if ("refused" in g) { summary.skipped.push(ref); log(`  ${ref}: skipped: ${g.refused}`); continue; }
+      const cm = await ghAskComment(gw, d.exec, "cifix-comment", g, { by: "fixed" }, askCiText(reading.failure.checks.map((x) => x.name)), { run: runId, head: c.head });
+      if (cm.code !== 0) {
+        const reason = `the comment failed: ${scrubReason(oneLine(cm.stderr), d.root)}`;
+        rec.set(c, "code", "comment-failed", reason);
+        summary.failed.push({ ref, reason });
+        log(`  ${ref}: ${reason}`);
+        continue;
+      }
+      rec.set(c, "code", "asked", "the CI fix is left to the contributor");
+      summary.asked.push(ref);
+      log(`  ${ref}: asked the contributor about the failing CI at ${short(c.head)}`);
+    } catch (e) {
+      log(`  ${ref}: not asked: ${scrubReason(oneLine(String((e as Error).message ?? e)), d.root)}`);
+    }
   }
   for (const x of collect) {
     try { await collectFormat(x.c, x.task); }
