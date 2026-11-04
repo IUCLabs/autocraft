@@ -150,8 +150,8 @@ function repoAllows(plans: PlanSet, repo: string, want: Want): boolean {
   return !f || gates(f, want, "pipeline") === null;
 }
 
-/** Topics whose changes call for a plan: content the stages read. Job logs, usage, agent runs, sandbox environments and tasks, audit entries and the item-trace bookkeeping do not. */
-export const INPUT_TOPICS = TOPICS.filter((t) => !["jobs", "usage", "agents", "envs", "tasks", "access", "github", "plans", "trace"].includes(t));
+/** Topics whose changes call for a plan: content the stages read. Job logs, usage, agent runs, sandbox environments and tasks, audit entries the item-trace bookkeeping and the limits topic (its tables are already read through the jobs topic) do not. */
+export const INPUT_TOPICS = TOPICS.filter((t) => !["jobs", "usage", "agents", "envs", "tasks", "access", "github", "plans", "trace", "limits"].includes(t));
 
 /** Sandbox tasks that ended, for lanes that read their results. */
 const tasksSig = (db: DatabaseSync): string =>
