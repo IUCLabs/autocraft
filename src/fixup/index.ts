@@ -299,7 +299,7 @@ async function runFixupWith(db: DatabaseSync, params: FixupParams, log: (line: s
       const g = await guard(db, { repo, number: c.number }, { kind: "fixup", bucket: "ask", head: c.head, source: sourceOf(c) }, params.by ?? CLI_BY);
       if ("refused" in g) { log(`  ${ref}: not asked: ${g.refused}`); return; }
       const cm = await ghAskComment(gw, d.exec, "fixup-comment", g, c.carry ? (c.model ? { by: "operator", model: c.model } : { by: "fixed-operator" }) : { by: "model", kind: "comment", model: c.model }, body, { run: runId, head: c.head });
-      if (cm.code !== 0) { rec.fixup(c, "comment-failed", oneLine(cm.stderr), []); log(`  ${ref}: comment failed: ${oneLine(cm.stderr)}`); return; }
+      if (cm.code !== 0) { const why = scrubReason(oneLine(cm.stderr), d.root); rec.fixup(c, "comment-failed", why, []); log(`  ${ref}: comment failed: ${why}`); return; }
       rec.fixup(c, "asked", null, [...new Set(c.fixes.map((f) => f.file))]);
       if (count) params.onHandled?.(++handled.n);
       summary.asked.push(ref);
