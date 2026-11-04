@@ -6,6 +6,7 @@
 export const REVIEW_BODY_MAX = 6000;
 const ITEM_MAX = 600;
 const MAX_POINTS = 8;
+const MAX_CLAIM_LINES = 12;
 /** Room kept for the note line the posting wrapper adds. */
 const NOTE_RESERVE = 100;
 
@@ -78,6 +79,8 @@ export type ReviewPostInput = {
   summary: string;
   points: string[];
   head: string;
+  /** The claims of the title and body that the review checked, listed after the points. */
+  claims?: { claim: string; status: string; evidence: string }[];
   /** The closing `Recommendation: …` line (see `recommendation`). */
   recommendation: string;
 };
@@ -91,8 +94,13 @@ export function reviewBody(r: ReviewPostInput): string {
     const line = cleanLine(p);
     if (line) items.push(`- ${line}`);
   }
+  const claims = (r.claims ?? []).slice(0, MAX_CLAIM_LINES).flatMap((c) => {
+    const line = cleanLine(`${c.claim} (${c.evidence})`, 300);
+    return line ? [`- ${c.status}: ${line}`] : [];
+  });
   const rec = r.recommendation;
-  const fixed = NOTE_RESERVE + head.length + rec.length + foot.length + summary.length + 8;
+  const claimBlock = claims.length ? `Claims checked:\n${claims.join("\n")}\n\n` : "";
+  const fixed = NOTE_RESERVE + head.length + rec.length + foot.length + summary.length + claimBlock.length + 8;
   const kept: string[] = [];
   let used = fixed;
   for (const line of items) {
@@ -103,5 +111,5 @@ export function reviewBody(r: ReviewPostInput): string {
     kept.push(line);
     used += line.length + 1;
   }
-  return `${head}\n\n${summary ? `${summary}\n\n` : ""}${kept.length ? `${kept.join("\n")}\n\n` : ""}${rec}\n\n${foot}`;
+  return `${head}\n\n${summary ? `${summary}\n\n` : ""}${kept.length ? `${kept.join("\n")}\n\n` : ""}${claimBlock}${rec}\n\n${foot}`;
 }

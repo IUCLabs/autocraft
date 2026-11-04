@@ -63,9 +63,17 @@ const ADDED_COLUMNS: [table: string, column: string, type: string][] = [
   // JSON [{id, reason}]: the owner statements (owner_statements) the PR goes against, as the review named them.
   ["opus_reviews", "conflicts", "TEXT"],
   ["premerge_reviews", "conflicts", "TEXT"],
+  // 1 when a claim of the title or body was unverified (or not listed): a person decides before the rule merges.
+  ["premerge_reviews", "unsure", "INTEGER"],
+  // JSON Claim[]: the claims of the title and body as the pre-merge review checked them; the Merge? question names the unknown ones.
+  ["premerge_reviews", "claims", "TEXT"],
+  // JSON [{claim, status, evidence}]: the behavioural claims of the title and body, each checked against the code.
+  ["opus_reviews", "claims", "TEXT"],
+  ["opus_review_history", "claims", "TEXT"],
   ["dupe_comparisons", "summary", "TEXT"],
   ["dupe_comparisons", "why", "TEXT"],
   ["merge_batches", "fork", "TEXT"],
+  ["merge_batches", "merge_sha", "TEXT"],
   ["fixups", "source", "TEXT"],
   // A model patch waiting for its lint task: the patch, the task, the lint round and the lint state (pending, requeued).
   ["fixups", "patch", "TEXT"],
@@ -139,8 +147,8 @@ const ADDED_INDEXES = [
 const DROPPED_COLUMNS: [table: string, column: string][] = [["classifications", "topics"], ["classifications", "area"]];
 
 /** Appends the stored review rows that the history does not hold yet. */
-export const HISTORY_COPY_SQL = `INSERT INTO main.opus_review_history (repo, number, head_oid, at, model, mode, verdict, sure, reason, risks, fixes, summary, why, public_review)
-  SELECT repo, number, head_oid, at, model, mode, verdict, sure, reason, risks, fixes, summary, why, public_review FROM main.opus_reviews o
+export const HISTORY_COPY_SQL = `INSERT INTO main.opus_review_history (repo, number, head_oid, at, model, mode, verdict, sure, reason, risks, fixes, summary, why, public_review, claims)
+  SELECT repo, number, head_oid, at, model, mode, verdict, sure, reason, risks, fixes, summary, why, public_review, claims FROM main.opus_reviews o
   WHERE NOT EXISTS (SELECT 1 FROM main.opus_review_history h WHERE h.repo = o.repo AND h.number = o.number AND h.head_oid = o.head_oid AND h.at = o.at)`;
 
 // Bump when migrateValues() or backfill() change what they do.

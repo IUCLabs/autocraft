@@ -168,11 +168,11 @@ const checks: Source = {
   },
 };
 
-export type OpusRow = { head_oid: string; at: string; model: string | null; mode: string | null; verdict: string | null; sure: number | null; reason: string | null; risks: string | null; fixes: string | null };
+export type OpusRow = { head_oid: string; at: string; model: string | null; mode: string | null; verdict: string | null; sure: number | null; reason: string | null; risks: string | null; fixes: string | null; claims?: string | null };
 export const opusEvent = (r: OpusRow, key: string): Ev => ({
   id: `review:${key}`, kind: "review", at: r.at, head: r.head_oid, actor: model(r.model, "opus"),
   summary: `Opus review: ${r.verdict ?? "no verdict"}${arr(r.fixes).length ? ` with ${plural(arr(r.fixes).length, "fix")}` : ""}${r.sure === 0 ? ", not sure" : ""}`, ref: { reviewId: key, head: r.head_oid },
-  detail: { mode: r.mode, verdict: r.verdict, sure: r.sure === 1, reason: r.reason, fixes: arr(r.fixes), risks: arr<string>(r.risks) },
+  detail: { mode: r.mode, verdict: r.verdict, sure: r.sure === 1, reason: r.reason, fixes: arr(r.fixes), risks: arr<string>(r.risks), claims: arr(r.claims ?? null) },
 });
 
 export const premergeEvent = (r: { head_oid: string; at: string; model: string | null; findings: string | null; error: string | null; searched: string | null }): Ev => {
@@ -203,12 +203,12 @@ const reviews: Source = {
   run({ db, repo, n, staff }) {
     const out: Ev[] = [];
     const seen = new Set<string>();
-    for (const r of rows<OpusRow & { rowid: number }>(db, "SELECT rowid, head_oid, at, model, mode, verdict, sure, reason, risks, fixes FROM opus_review_history WHERE repo = ? AND number = ?", repo, n)) {
+    for (const r of rows<OpusRow & { rowid: number }>(db, "SELECT rowid, head_oid, at, model, mode, verdict, sure, reason, risks, fixes, claims FROM opus_review_history WHERE repo = ? AND number = ?", repo, n)) {
       seen.add(`${r.head_oid}|${r.at}`);
       out.push(opusEvent(r, `opus:${r.rowid}`));
     }
     // Reviews stored before the history table existed.
-    for (const r of rows<OpusRow>(db, "SELECT head_oid, at, model, mode, verdict, sure, reason, risks, fixes FROM opus_reviews WHERE repo = ? AND number = ?", repo, n))
+    for (const r of rows<OpusRow>(db, "SELECT head_oid, at, model, mode, verdict, sure, reason, risks, fixes, claims FROM opus_reviews WHERE repo = ? AND number = ?", repo, n))
       if (!seen.has(`${r.head_oid}|${r.at}`)) out.push(opusEvent(r, `opus-latest:${r.head_oid}`));
     for (const r of rows<Parameters<typeof premergeEvent>[0]>(db, "SELECT head_oid, at, model, findings, error, searched FROM premerge_reviews WHERE repo = ? AND number = ?", repo, n)) out.push(premergeEvent(r));
     for (const r of rows<Parameters<typeof postmergeEvent>[0]>(db, "SELECT merge_sha, at, model, findings, error FROM postmerge_reviews WHERE repo = ? AND number = ?", repo, n)) out.push(postmergeEvent(r, staff));
@@ -311,17 +311,26 @@ export function writeEvent(a: { rowid: number; at: string; login: string; action
   };
 }
 
+/** The merge batch of a repo's integration branch, if there is one. */
+export const batchIdOf = (db: DatabaseSync, repo: string, branch: string): number | undefined =>
+  (db.prepare("SELECT id FROM main.merge_batches WHERE repo = ? AND branch = ?").get(repo, branch) as { id: number } | undefined)?.id;
+
 /**
  * The audit rows of the item. Everyone sees the GitHub writes with the activity page's allow-listed detail; maintainers also see the
  * dashboard actions that are not operator-only (as the audit log does); operators see every row. The posted text stays out: only its length shows.
  */
 const writes: Source = {
   kinds: ["write"],
-  run({ db, ref, staff, operator }) {
+  run({ db, ref, repo, staff, operator }) {
     const allowed = writeActions(staff, operator);
     return rows<{ rowid: number; at: string; login: string; action: string; details: string | null }>(db,
       `SELECT rowid, at, login, action, details FROM audit WHERE target = ?${allowed ? ` AND action IN (${allowed.map(() => "?").join(",")})` : ""}`, ref, ...(allowed ?? []))
-      .map((a) => writeEvent(a, staff));
+      .map((a) => {
+        const e = writeEvent(a, staff);
+        const branch = typeof obj(a.details).batch === "string" ? (obj(a.details).batch as string) : null;
+        const id = branch ? batchIdOf(db, repo, branch) : undefined;
+        return id === undefined ? e : { ...e, ref: { ...e.ref, batchId: id } };
+      });
   },
 };
 

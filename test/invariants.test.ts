@@ -57,7 +57,7 @@ function randomPr(x: Rnd): PrFacts {
       mergeAnswerAfterReview: x.bool(0.6), inOpenGroup: x.bool(0.05),
     },
     premerge: x.bool(0.15) ? null : {
-      tries: x.int(4), hasFindings: x.bool(0.85), defects: x.pick([0, 0, 0, 1, 2]), defectsAllFixable: x.bool(0.7), fixesSafe: x.bool(0.7), minor: x.int(2), error: null,
+      tries: x.int(4), hasFindings: x.bool(0.85), unsure: false, defects: x.pick([0, 0, 0, 1, 2]), defectsAllFixable: x.bool(0.7), fixesSafe: x.bool(0.7), minor: x.int(2), error: null,
     },
     lastMerge: x.pick([null, null, null, { outcome: "refused", reason: "ci pending", ci: "pending", mergeable: "MERGEABLE" }, { outcome: "merged", reason: null, ci: null, mergeable: null }]),
     conflict: x.bool(0.3) ? { bucket: x.pick(["merge", "ask", "held"]), base: "main", baseOk: x.bool(0.9) } : null,

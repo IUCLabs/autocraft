@@ -92,7 +92,7 @@ export const SOURCES: Source[] = [
   plain<Parameters<typeof taskEvent>[0] & At>("check", "build_tasks", "queued_at", "repo, number, id, job_id, step, head_sha, state, summary, queued_at", taskEvent),
   plain<Parameters<typeof pushEvent>[0] & At>("check", "push_outcomes", "at", "repo, number, id, at, stage, action, to_oid, before_res, after_res, outcome", pushEvent),
   plain<Parameters<typeof patchCheckEvent>[0] & At>("check", "patch_checks", "created_at", "repo, number, id, kind, subject, round, verdict, model, reasons, created_at", patchCheckEvent),
-  plain<OpusRow & At & { rowid: number }>("review", "opus_review_history", "at", "repo, number, rowid, head_oid, at, model, mode, verdict, sure, reason, risks, fixes", (r) => opusEvent(r, `opus:${r.rowid}`)),
+  plain<OpusRow & At & { rowid: number }>("review", "opus_review_history", "at", "repo, number, rowid, head_oid, at, model, mode, verdict, sure, reason, risks, fixes, claims", (r) => opusEvent(r, `opus:${r.rowid}`)),
   plain<Parameters<typeof premergeEvent>[0] & At>("review", "premerge_reviews", "at", "repo, number, head_oid, at, model, findings, error, searched", premergeEvent),
   plain<Parameters<typeof postmergeEvent>[0] & At>("review", "postmerge_reviews", "at", "repo, number, merge_sha, at, model, findings, error", (r, c) => postmergeEvent(r, c.staff)),
   plain<Parameters<typeof verifyEvent>[0] & At>("review", "verifications", "created_at", "repo, number, head_sha, kind, state, reason, summary, note, created_at, head_task_id", verifyEvent),

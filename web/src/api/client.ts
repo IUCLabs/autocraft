@@ -47,6 +47,7 @@ import type {
   Progress,
   PromptsReport,
   BatchFilter,
+  BatchDetail,
   BatchList,
   QueueFilter,
   QueuePage,
@@ -204,6 +205,8 @@ export interface Api {
   needs(filter: { feedback?: boolean; cursor?: string }): Promise<NeedsPage>;
   /** Integration batches of the merge queue, newest first, with their member PRs. */
   queueBatches(filter: BatchFilter): Promise<BatchList>;
+  /** One integration batch with its members, CI and history. */
+  batch(id: number): Promise<BatchDetail>;
   /** Steps, jobs, the on/off switch and the stage limits: everyone reads; run, cancel, switch and limits are for operators. */
   pipeline: {
     overview(): Promise<PipelineOverview>;

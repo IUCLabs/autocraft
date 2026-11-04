@@ -830,7 +830,8 @@ CREATE TABLE IF NOT EXISTS merge_batches (
   pr_number INTEGER, pr_url TEXT,
   summary TEXT,                       -- why it failed (public-safe, one line)
   created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
-  fork TEXT                           -- <owner>/<repo> the branch was pushed to; null before the push
+  fork TEXT,                          -- <owner>/<repo> the branch was pushed to; null before the push
+  merge_sha TEXT                      -- merge commit of the batch PR, when the merge command reported it
 );
 CREATE INDEX IF NOT EXISTS merge_batches_repo ON merge_batches(repo, state);
 CREATE TABLE IF NOT EXISTS merge_batch_prs (

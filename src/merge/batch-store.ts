@@ -30,6 +30,8 @@ export type BatchRow = {
   task_id: number | null; retries: number; pr_number: number | null; pr_url: string | null; summary: string | null; created_at: string; updated_at: string;
   /** `<owner>/<repo>` the branch was pushed to; null before the push and on rows from before it was stored. */
   fork: string | null;
+  /** Merge commit of the batch PR; null until merged and on rows from before it was stored. */
+  merge_sha?: string | null;
 };
 export type BatchMember = { number: number; head_oid: string };
 
@@ -61,7 +63,7 @@ export function getBatch(db: DatabaseSync, id: number): BatchRow {
   return db.prepare("SELECT * FROM main.merge_batches WHERE id = ?").get(id) as BatchRow;
 }
 
-export function updateBatch(db: DatabaseSync, id: number, at: string, set: Partial<Pick<BatchRow, "state" | "task_id" | "retries" | "pr_number" | "pr_url" | "summary" | "fork">>): void {
+export function updateBatch(db: DatabaseSync, id: number, at: string, set: Partial<Pick<BatchRow, "state" | "task_id" | "retries" | "pr_number" | "pr_url" | "summary" | "fork" | "merge_sha">>): void {
   const cols = Object.keys(set);
   db.prepare(`UPDATE main.merge_batches SET ${cols.map((c) => `${c} = ?`).join(", ")}${cols.length ? ", " : ""}updated_at = ? WHERE id = ?`)
     .run(...(Object.values(set) as (string | number | null)[]), at, id);

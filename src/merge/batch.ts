@@ -259,11 +259,11 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
   }
 
   /** Bookkeeping once the batch PR is merged, whoever merged it. */
-  function recordLanded(b: BatchRow, members: BatchMember[], q: QueueEntry[]): void {
+  function recordLanded(b: BatchRow, members: BatchMember[], q: QueueEntry[], mergeSha: string | null = null): void {
     // A control may have ended the batch while the merge ran: the merge still happened, so the row says so and the audit shows the order of events.
     const was = getBatch(db, b.id).state;
     if (was !== "open" && was !== "checking") audit(db, ACTOR, "batch-merged-after-end", `${repo}:${b.branch}`, { run: runId, was, prs: members.map((m) => m.number) });
-    updateBatch(db, b.id, at(), { state: "merged", summary: null });
+    updateBatch(db, b.id, at(), { state: "merged", summary: null, ...(mergeSha ? { merge_sha: mergeSha } : {}) });
     for (const m of members) {
       const e = q.find((x) => x.number === m.number);
       db.prepare("INSERT INTO merges (repo, number, head_oid, run_id, at, path, method, outcome, reason, ci, mergeable) VALUES (?, ?, ?, ?, ?, ?, 'merge', 'merged', NULL, ?, ?)")
@@ -365,7 +365,8 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
       s.waiting.push(b.branch);
       return;
     }
-    recordLanded(b, members, q);
+    // The merge command prints `<repo>#<pr> MERGED <merge commit>`.
+    recordLanded(b, members, q, /\bMERGED ([0-9a-f]{7,40})\b/.exec(r.stdout)?.[1] ?? null);
   }
 
   async function advance(id: number): Promise<void> {

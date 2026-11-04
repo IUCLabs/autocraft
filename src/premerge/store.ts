@@ -7,7 +7,7 @@ export { PREMERGE_MAX_TRIES };
 
 export type { PremergeFinding } from "./types.ts";
 import type { PremergeFinding } from "./types.ts";
-import type { StatementConflict } from "../review/opus-parse.ts";
+import type { Claim, StatementConflict } from "../review/opus-parse.ts";
 
 export type PremergeRow = {
   repo: string; number: number; head_oid: string;
@@ -20,6 +20,10 @@ export type PremergeRow = {
   searched: string | null;
   /** JSON StatementConflict[]; null when none. */
   conflicts: string | null;
+  /** 1 when the review left a claim unverified. */
+  unsure: number | null;
+  /** JSON Claim[]; null when the review listed none. */
+  claims: string | null;
   /** Why the last try stored no review; null once a review is stored. */
   error: string | null;
   tries: number;
@@ -33,6 +37,8 @@ export type PremergeSave = {
   searched?: string | null;
   /** The statements the review named as conflicts (a stored review only). */
   conflicts?: StatementConflict[];
+  unsure?: boolean;
+  claims?: Claim[];
   error?: string | null;
   /** The failure is final: no more tries (the head cannot be reviewed at all). */
   final?: boolean;
@@ -42,9 +48,9 @@ export type PremergeSave = {
 export function savePremerge(db: DatabaseSync, s: PremergeSave): void {
   const args = [s.repo, s.number, s.head, s.at, s.runId ?? null, s.model ?? null] as const;
   if (s.findings) {
-    db.prepare(`INSERT INTO premerge_reviews (repo, number, head_oid, at, run_id, model, findings, searched, conflicts, error, tries) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 0)
+    db.prepare(`INSERT INTO premerge_reviews (repo, number, head_oid, at, run_id, model, findings, searched, conflicts, unsure, claims, error, tries) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 0)
       ON CONFLICT (repo, number, head_oid) DO UPDATE SET at = excluded.at, run_id = excluded.run_id, model = excluded.model,
-        findings = excluded.findings, searched = excluded.searched, conflicts = excluded.conflicts, error = NULL`).run(...args, JSON.stringify(s.findings), s.searched ?? null, s.conflicts?.length ? JSON.stringify(s.conflicts) : null);
+        findings = excluded.findings, searched = excluded.searched, conflicts = excluded.conflicts, unsure = excluded.unsure, claims = excluded.claims, error = NULL`).run(...args, JSON.stringify(s.findings), s.searched ?? null, s.conflicts?.length ? JSON.stringify(s.conflicts) : null, s.unsure ? 1 : 0, s.claims?.length ? JSON.stringify(s.claims) : null);
     return;
   }
   db.prepare(`INSERT INTO premerge_reviews (repo, number, head_oid, at, run_id, model, error, tries) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -59,6 +65,11 @@ export function premergeAt(db: DatabaseSync, repo: string, number: number, head:
 /** The PR already had a pre-merge fix round (any fixups row with source premerge, pushed or not). */
 export function premergeFixUsed(db: DatabaseSync, repo: string, number: number): boolean {
   return !!db.prepare("SELECT 1 FROM fixups WHERE repo = ? AND number = ? AND source = 'premerge' AND state NOT IN ('linting', 'superseded') LIMIT 1").get(repo, number);
+}
+
+/** Claims of a stored row; empty when none or unreadable. */
+export function claimsOf(row: PremergeRow | null): Claim[] {
+  try { const v = row?.claims ? (JSON.parse(row.claims) as unknown) : []; return Array.isArray(v) ? (v as Claim[]) : []; } catch { return []; }
 }
 
 /** Findings of a stored row; empty when none or unreadable. */

@@ -1,11 +1,10 @@
-// Home page: one feed of units of work, oldest at the top and newest at the bottom like a chat log, with what is wrong in a strip above it.
+// Home page: one feed of units of work, oldest at the top and newest at the bottom like a chat log, with the health problems in the app header.
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ArrowDownIcon } from "@phosphor-icons/react";
 import { useApi, useQuery } from "../../api/client";
 import type { ViewProps } from "../../registry/types";
 import { useNow } from "../../lib/useNow";
 import { EntryRow } from "../../ui/molecules/EntryRow";
-import { HealthStrip } from "../../ui/organisms/HealthStrip";
 import { ErrorLine } from "../admin/parts";
 import { useFeed } from "./useFeed";
 
@@ -108,28 +107,28 @@ export function NowView(_: ViewProps) {
   };
 
   return (
-    <div className="mx-auto flex h-full max-w-3xl flex-col px-4 pt-5 md:px-6">
-      <h1 className="text-xl font-semibold">Now</h1>
-      <ErrorLine error={q.error && !d ? q.error.message : null} className="mt-3" />
-      <div className="mt-3 min-h-8">{d && <HealthStrip health={d.health} />}</div>
-      <p className="mt-2 h-4 truncate text-xs text-ink/55">{d && d.alsoRunning.length > 0 ? `Also running: ${d.alsoRunning.join(", ").toLowerCase()}` : null}</p>
-      <div className="relative mb-3 mt-2 min-h-0 flex-1 overflow-hidden rounded-md border border-line bg-panel">
-        <div ref={scroller} className="h-full overflow-y-auto [overflow-anchor:none]">
+    <div className="relative h-full">
+      <div ref={scroller} className="h-full overflow-y-auto [overflow-anchor:none]">
+        <div className="mx-auto max-w-3xl">
+          <ErrorLine error={q.error && !d ? q.error.message : null} className="m-3" />
           {!d ? null : rows.length === 0 ? (
             <p className="p-4 text-sm text-ink/55">Nothing yet.</p>
           ) : (
-            <ul ref={list}>
-              <li ref={top} className="h-8 px-3 py-2 text-xs text-ink/50">{f.error ? `Could not load older entries: ${f.error}` : null}</li>
-              {rows.map((e) => <EntryRow key={e.key} entry={e} />)}
-            </ul>
+            <>
+              <ul ref={list}>
+                <li ref={top} className="h-8 px-3 py-2 text-xs text-ink/50">{f.error ? `Could not load older entries: ${f.error}` : null}</li>
+                {rows.map((e) => <EntryRow key={e.key} entry={e} />)}
+              </ul>
+              {d.alsoRunning.length > 0 && <p className="truncate px-3 py-2 text-xs text-ink/55">{`Also running: ${d.alsoRunning.join(", ").toLowerCase()}`}</p>}
+            </>
           )}
         </div>
-        {waiting && (
-          <button type="button" onClick={toBottom} className="absolute bottom-3 left-1/2 inline-flex h-8 -translate-x-1/2 items-center gap-1 rounded-full border border-accent-ink/40 bg-panel px-3 text-xs font-medium text-accent-ink shadow-md max-md:h-11">
-            {f.pending.length} new <ArrowDownIcon aria-hidden />
-          </button>
-        )}
       </div>
+      {waiting && (
+        <button type="button" onClick={toBottom} className="absolute bottom-3 left-1/2 inline-flex h-8 -translate-x-1/2 items-center gap-1 rounded-full border border-accent-ink/40 bg-panel px-3 text-xs font-medium text-accent-ink shadow-md max-md:h-11">
+          {f.pending.length} new <ArrowDownIcon aria-hidden />
+        </button>
+      )}
     </div>
   );
 }

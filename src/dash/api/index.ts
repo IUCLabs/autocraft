@@ -46,6 +46,7 @@ import * as sim from "./similar.ts";
 import { needs } from "./needs.ts";
 import { localEmbedder, type Embedder } from "../../embed/model.ts";
 import type { Exec } from "../../fixup/git.ts";
+import { batchOne } from "./batch-page.ts";
 import { batchRemovePr, batchStop, fastTrackAdd, fastTrackRefs, fastTrackRemove, heldMergeRefs, mergeHoldPr, pipelineRepoNames, queuePage } from "./queue-page.ts";
 import { VectorIndex } from "../../embed/vectors.ts";
 import { mainCiRepos, summarize } from "../../mainci/index.ts";
@@ -468,6 +469,7 @@ export function apiRoutes(opts: ApiOptions = {}): Route[] {
     get("/api/next", next),
     get("/api/queue", queue),
     get("/api/queue/batches", queueBatches),
+    get("/api/batches/:id", batchOne),
     get("/api/work", work),
     get("/api/queue/page", queuePage),
     get("/api/repos/pipeline", pipelineRepoNames),
