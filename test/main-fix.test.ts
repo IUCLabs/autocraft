@@ -129,7 +129,7 @@ function git(cwd: string, ...args: string[]): string {
 }
 
 /** A bare repository that serves as both the upstream and the pipeline's fork, with the red head on `main`. */
-function fixWorld(o: { check?: string | null; prFiles?: string } = {}) {
+function fixWorld(o: { check?: string | null; prFiles?: string; two?: boolean } = {}) {
   const t = setup(true);
   t.setVerdict("code");
   const root = mkdtempSync(join(SCRATCH, "mainfix-git-"));
@@ -158,7 +158,9 @@ function fixWorld(o: { check?: string | null; prFiles?: string } = {}) {
     const mapped = args.map((a) => (a.startsWith("https://github.com/") ? fork : a)).filter((a, i, all) => !(a === "-c" && all[i + 1] === "protocol.file.allow=never") && a !== "protocol.file.allow=never");
     return exec("git", net ? mapped : args, { ...opts });
   };
-  const checks = JSON.stringify({ check_runs: [{ name: "gate / test", status: "completed", conclusion: "failure", details_url: "https://github.com/o/alpha/actions/runs/55", completed_at: "2026-11-01T10:05:00Z" }] });
+  const runs = [{ name: "gate / test", status: "completed", conclusion: "failure", details_url: "https://github.com/o/alpha/actions/runs/55", completed_at: "2026-11-01T10:05:00Z" }];
+  if (o.two) runs.push({ name: "gate / clippy", status: "completed", conclusion: "failure", details_url: "https://github.com/o/alpha/actions/runs/56", completed_at: "2026-11-01T10:05:00Z" });
+  const checks = JSON.stringify({ check_runs: runs });
   t.deps.exec = run;
   t.deps.gh = async (args) => {
     if (args[0] === "api" && args[1]!.includes("/pulls/")) return o.prFiles ?? "README.md\n";
@@ -169,7 +171,8 @@ function fixWorld(o: { check?: string | null; prFiles?: string } = {}) {
     ask: async () => { log.push("model"); return GOOD; },
     check: async () => { log.push("check"); return o.check === undefined ? APPROVE : o.check; },
   };
-  t.head(sha, "failure", RED_AT);
+  if (o.two) saveHead(t.db, { repo: REPO, branch: "main", sha, committedAt: RED_AT, headline: "Merge pull request #7 from x/y", checks: [{ name: "gate / test", state: "failure", url: null }, { name: "gate / clippy", state: "failure", url: null }] }, RED_AT);
+  else t.head(sha, "failure", RED_AT);
   const branches = () => git(fork, "branch", "--list", "autocraft/*").split("\n").map((l) => l.trim()).filter(Boolean);
   return { ...t, sha, log, created, branches };
 }
@@ -245,4 +248,33 @@ test("Opus rejects the patch: fix-failed, needs a person, nothing pushed", async
   assert.deepEqual(w.branches(), []);
   assert.equal(w.created.length, 0);
   assert.equal(mainCiRepos(w.db)[0]!.autocraft, "needs a person");
+});
+
+test("two failing checks at one head: one patch, one PR, both rows share it", async () => {
+  const w = fixWorld({ two: true });
+  await runMainFix(w.db, { repo: REPO }, log, w.deps);
+  assert.equal(w.created.length, 1);
+  assert.equal(w.log.filter((l) => l === "model").length, 1);
+  assert.match(w.created[0]!, /--title Fix main CI: gate \/ clippy \(\+1 more\)/);
+  assert.match(w.created[0]!, /gate \/ test/);
+  assert.deepEqual(w.db.prepare("SELECT state, pr_number FROM main_fixes ORDER BY \"check\"").all().map((r) => ({ ...r })), [{ state: "pr-opened", pr_number: 31 }, { state: "pr-opened", pr_number: 31 }]);
+});
+
+test("a head still running after the rerun wait leaves the row at needs-fix, uncounted", async () => {
+  const w = fixWorld();
+  await runMainFix(w.db, { repo: REPO }, log, { ...w.deps, fix: undefined });
+  w.head(w.sha, "pending", "2026-11-01T10:20:00Z");
+  let handled = 0;
+  await runMainFix(w.db, { repo: REPO, onHandled: () => handled++ }, log, w.deps);
+  assert.equal(rows(w.db)[0]!.state, "needs-fix");
+  assert.equal(handled, 0);
+  assert.equal(w.created.length, 0);
+});
+
+test("a branch named autocraft/main-ci-* by someone else does not skip the red-main hold", () => {
+  const w = fixWorld();
+  w.db.prepare("INSERT INTO items (repo, number, kind, state, title, author, head_ref, head_oid, created_at, updated_at) VALUES (?, 40, 'pr', 'OPEN', 'x', 'contrib', 'autocraft/main-ci-evil', 'h', ?, ?)").run(REPO, RED_AT, RED_AT);
+  w.db.prepare("INSERT INTO opus_reviews (repo, number, head_oid, run_id, at, model, verdict, reason, fixes, sure, mode) VALUES (?, 40, 'h', 'rv', ?, 'm', 'take', 'ok', '[]', 1, 'full')").run(REPO, RED_AT);
+  w.db.prepare("UPDATE tracked_repos SET pipeline = 1").run();
+  assert.notEqual(buildQueue(w.db, { repo: REPO }).find((x) => x.number === 40)?.mainFix, true);
 });

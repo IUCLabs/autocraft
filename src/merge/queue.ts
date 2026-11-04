@@ -291,7 +291,8 @@ export function buildQueue(db: DatabaseSync, opts: QueueOptions = {}): QueueEntr
       decisionId: asked ? id : null, noCi: ci === "none" && noCi(r.repo), answer, refusedReason: null, reviewedAt: r.r_at, verify, held: holds.has(`${r.repo}#${r.number}`), note: null, blockedLive: false,
     };
     const open = r.state === "OPEN" && !mergedByUs;
-    if (r.head_ref?.startsWith(MAIN_FIX_BRANCH_PREFIX)) e.mainFix = true;
+    // Only our own main-fix PRs skip the red-main hold: a branch name alone is no proof.
+    if (r.head_ref?.startsWith(MAIN_FIX_BRANCH_PREFIX) && r.author && r.author === own.login && own.prs.has(`${r.repo}#${r.number}`)) e.mainFix = true;
     // A maintainer's formal block comes before everything else: the PR is never asked about, batched or merged while it stands.
     // A live read newer than the PR's last change decides; otherwise the mirrored reviews do.
     const gate = gates.get(`${r.repo}#${r.number}`);

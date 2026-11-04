@@ -213,6 +213,8 @@ export type PatchRequest = {
   runId: string;
   actor: string;
   at: () => string;
+  /** What the Opus check is told the patch is for; default: a pull request's failing check. */
+  reviewReason?: string;
   /** The read-only checkout of `head` for the model calls, or nothing to ask without tools. */
   checkout: () => Promise<string | null | undefined>;
 };
@@ -262,7 +264,7 @@ export async function patchFromFailure(db: DatabaseSync, d: Pick<CifixDeps, "ask
   const check = async (patch: string): Promise<string | null> => {
     const input: FixupCheckInput = {
       ref, title, fixes: [], diff: r.diffText.slice(0, CHECK_DIFF_CAP), patch, ...repoDir,
-      review_reason: `The check ${names.join(", ")} fails at this head. The patch must make it pass without changing what the pull request does.`,
+      review_reason: r.reviewReason ?? `The check ${names.join(", ")} fails at this head. The patch must make it pass without changing what the pull request does.`,
       ci_failure: { checks: names, log: JSON.stringify(logText(failure)).slice(0, CHECK_LOG_CAP) },
     };
     const reply2 = await d.check(db, [input], checkout);
