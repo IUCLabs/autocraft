@@ -21,6 +21,7 @@ import type { Crate } from "../verify/types.ts";
 import type { VerifyPlanInput } from "../verify/types.ts";
 import { referenceProblems, type SemanticDeps } from "../reference-lint.ts";
 import { dropTexts } from "../replylint.ts";
+import { parseProposalReply, type ProposalInput } from "../directions-types.ts";
 
 /** The part of `xs` whose key is in `missing`, or undefined when none is: the `rest` of a batch parse. */
 export function leftOf<T>(xs: T[], key: (x: T) => string, missing: string[]): T[] | undefined {
@@ -231,3 +232,10 @@ export const REFEREE_SONNET: ClaudeStep<Item[], Referee[]> = {
 
 /** A call whose reply the caller reads itself: one attempt, the text as the value (the fix-issue prompts). */
 export const textStep = <I,>(id: ClaudeStep<I, string>["id"]): ClaudeStep<I, string> => ({ provider: "claude", id, attempts: 1, toPrompt: (x) => [x], size: () => 1, parse: (text) => ({ value: text }) });
+
+// Directions: a draft direction from an operator's note, or none.
+export const DIRECTIONS_PROPOSE: ClaudeStep<ProposalInput, { draft: string | null }> = {
+  provider: "claude", id: "directions.propose",
+  toPrompt: (x) => [x], size: () => 1,
+  parse: (text, x) => single(parseProposalReply(text, x.ref) ?? null),
+};

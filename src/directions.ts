@@ -24,6 +24,21 @@ export function addDirection(db: DatabaseSync, repo: string, text: string, by: s
   return Number(r.lastInsertRowid);
 }
 
+export class DirectionError extends Error {}
+
+/** Replaces the text of an active direction. */
+export function editDirection(db: DatabaseSync, id: number, text: string): void {
+  const t = text.replace(/\s+/g, " ").trim();
+  if (!t) throw new DirectionError("a direction needs text");
+  if (!db.prepare("UPDATE repo_directions SET text = ? WHERE id = ? AND retired_at IS NULL").run(t, id).changes) throw new DirectionError("no active direction with that id");
+}
+
+/** The directions of a repo page: the repo's own and those for every repo, active ones first (oldest first), then retired ones (newest first). */
+export function directionsOfRepo(db: DatabaseSync, repo: string): { active: DirectionRow[]; retired: DirectionRow[] } {
+  const rows = db.prepare("SELECT * FROM repo_directions WHERE repo IN (?, ?) ORDER BY id").all(repo, ALL_REPOS) as DirectionRow[];
+  return { active: rows.filter((d) => !d.retired_at), retired: rows.filter((d) => d.retired_at).reverse() };
+}
+
 /** False when the direction does not exist or is retired already. */
 export function retireDirection(db: DatabaseSync, id: number): boolean {
   return db.prepare("UPDATE repo_directions SET retired_at = ? WHERE id = ? AND retired_at IS NULL").run(new Date().toISOString(), id).changes > 0;

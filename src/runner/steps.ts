@@ -642,6 +642,23 @@ export const STEPS: StepDef[] = [
     },
   },
   {
+    name: "directions-propose",
+    title: "Draft directions",
+    description: "Reads each note an operator wrote on the answer to a decision, or in a comment on a closed item, and asks Haiku (no tools) whether it states a standing direction for the repo that applies beyond that item. A draft waits on the repo's page and the decision's page for an operator to accept (with editable text) or dismiss; nothing becomes a direction without one. Each note judged counts as one item. Writes nothing to GitHub.",
+    stage: runStage("directions-propose"),
+    requires: "operator",
+    group: "directions",
+    models: ["haiku"],
+    params: [{ name: "limit", label: "At most", kind: "int", min: 1, max: 200, default: 30, help: "notes to judge in this job" }],
+    run: async (ctx) => {
+      const { runProposals } = await import("../directions-propose.ts");
+      const usageRun = `directions-${ctx.job.id}`;
+      const r = await runProposals(ctx.db, { limit: Number(ctx.params.limit), usageRun, onHandled: ctx.handled, cancelled: ctx.cancelled }, ctx.log);
+      ctx.usageRun(usageRun);
+      return `${r.judged} of ${r.waiting} notes judged, ${r.drafts} drafts`;
+    },
+  },
+  {
     name: "areas-propose",
     title: "Propose areas",
     description: "One Opus call proposes the area list of a repo (10 to 25 areas with one-line descriptions), reading the repo's default branch, its docs and a sample of its open item titles. The proposal waits on the repo's page; nothing changes until an operator accepts it.",

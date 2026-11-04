@@ -13,6 +13,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import type { PipelineState, StageLimit } from "../../web/src/api/types.ts";
 import { readSeqs, TOPICS } from "../live.ts";
+import { dueNotes } from "../directions-propose.ts";
 import { pendingConversations } from "../conversations/store.ts";
 import { plannedItems, type PlannedItem } from "../core/select-items.ts";
 import { loadPlanSet, type PlanSet } from "../core/plan-set.ts";
@@ -431,6 +432,11 @@ const LANE_CODE: Omit<Lane, "steps">[] = [
     // Operator messages in conversations; answered whether or not the item's repo is in scope, since an operator started them.
     name: "conversation",
     detect: (db) => (pendingConversations(db).length ? [{ step: "conversation", params: {} }] : []),
+  },
+  {
+    // Operators' notes (decision answers, comments on closed items) not yet judged for a standing direction.
+    name: "directions-propose",
+    detect: (db) => (dueNotes(db).length ? [{ step: "directions-propose", params: {} }] : []),
   },
   {
     // Runs GitHub holds for approval on reviewed outside PRs; the checks job records them, the step approves.
