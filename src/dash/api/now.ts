@@ -28,7 +28,8 @@ const QUIET_STEPS = new Set(["rank", "embed", "checks", "main-ci", "labels-ensur
 const HOUSEKEEPING = new Set(["assign", "unassign", "labels-apply", "label-create", "ci-run-approve", "ci-rerun", "fork-create", "fixissue-claim"]);
 /** One group of same-action writes by the same actor; a gap longer than this starts a new run of them. */
 const GROUP_GAP_MS = 15 * 60_000;
-const GROUP_ITEMS = 3;
+/** Items listed per entry; the entry's `itemCount` is the true total. */
+const ITEM_CAP = 200;
 const GROUPED: Record<string, (n: number) => string> = {
   "Posted review": (n) => `Posted ${n} reviews`, "Edited review": (n) => `Edited ${n} reviews`, "Commented": (n) => `Commented on ${n} items`,
   "Edited comment": (n) => `Edited ${n} comments`, "Closed": (n) => `Closed ${n} items`, "Closed PR": (n) => `Closed ${n} PRs`, "Pushed": (n) => `Pushed to ${n} PRs`,
@@ -129,7 +130,7 @@ const lines = (ws: Write[]): { summary: string; items: Item[]; more: number }[] 
   return [...by].map(([label, list]) => {
     const distinct = [...new Map(list.map((w) => [`${w.item.repo}#${w.item.number}`, w.item])).values()];
     const verb = GROUPED[label];
-    return { summary: list.length > 1 ? (verb ? verb(list.length) : `${label} ${list.length} times`) : list[0]!.summary, items: distinct.slice(0, GROUP_ITEMS), more: Math.max(0, distinct.length - GROUP_ITEMS) };
+    return { summary: list.length > 1 ? (verb ? verb(list.length) : `${label} ${list.length} times`) : list[0]!.summary, items: distinct.slice(0, ITEM_CAP), more: Math.max(0, distinct.length - ITEM_CAP) };
   });
 };
 
@@ -148,7 +149,7 @@ function feed(db: DatabaseSync, hidden: string[], staff: boolean, before: string
   };
   const oldestOf = new Map<NowEntry, string>();
   const base = (e: Pick<NowEntry, "key" | "kind" | "state" | "at" | "title"> & Partial<NowEntry>): NowEntry => ({
-    ids: [e.key], endedAt: null, items: [], more: 0, what: null, summary: null, progress: null, actor: "AutoCraft", item: null, itemCount: 0, event: null, detail: null, writes: [], children: [], ...e,
+    ids: [e.key], endedAt: null, repo: null, items: [], more: 0, what: null, summary: null, progress: null, actor: "AutoCraft", item: null, itemCount: 0, event: null, detail: null, writes: [], children: [], ...e,
   });
   const out: NowEntry[] = [];
   const also: string[] = [];
@@ -192,7 +193,7 @@ function feed(db: DatabaseSync, hidden: string[], staff: boolean, before: string
     const e = base({
       key: `job:${j.id}`, kind: "job", state: live ? "running" : j.state === "failed" ? "failed" : "done", at: j.at, endedAt: j.ended_at, title: stepTitle(j.step),
       summary: live ? null : j.state === "failed" ? (staff && j.error ? clip(j.error, 100) : null) : j.summary, progress: live ? j.progress : null,
-      item: its[0] ? item(its[0].repo, its[0].number) : null, items: its.slice(0, PER_KIND).map((i) => item(i.repo, i.number)), itemCount: its.length,
+      item: its[0] ? item(its[0].repo, its[0].number) : null, items: its.slice(0, ITEM_CAP).map((i) => item(i.repo, i.number)), itemCount: its.length, repo: j.repo,
       event: its[0] ? `job:${its[0].id}` : null, detail: `/pipeline/${j.id}`,
     });
     if (!live && idle && j.state !== "failed") continue;
@@ -231,7 +232,7 @@ function feed(db: DatabaseSync, hidden: string[], staff: boolean, before: string
       const prs = all<{ number: number }>(db, "SELECT number FROM merge_batch_prs WHERE batch_id = ? ORDER BY position", b.id);
       out.push(base({
         key: `batch:${b.id}`, kind: "batch", state: b.state === "checking" ? "running" : "queued", at: b.created_at, title: "Integration batch", what: b.branch, progress: b.summary,
-        item: prs[0] ? item(b.repo, prs[0].number) : null, items: prs.slice(0, PER_KIND).map((p) => item(b.repo, p.number)), itemCount: prs.length, detail: "/queue/merge",
+        item: prs[0] ? item(b.repo, prs[0].number) : null, items: prs.slice(0, ITEM_CAP).map((p) => item(b.repo, p.number)), itemCount: prs.length, repo: b.repo, detail: "/queue/merge",
       }));
     }
   }
@@ -262,7 +263,7 @@ function feed(db: DatabaseSync, hidden: string[], staff: boolean, before: string
       key: w.key, ids: grp.list.map((x) => x.key), kind: grp.list.length > 1 || w.action !== "merge" ? "write" : "merge", state: "done", at: w.at, title: lines(grp.list)[0]!.summary,
       actor: w.login === "AutoCraft" || w.action === "merge" ? "AutoCraft" : staff ? w.login : "AutoCraft", item: w.item, event: w.key,
     });
-    if (grp.list.length > 1) { const l = lines(grp.list)[0]!; e.items = l.items; e.more = l.more; }
+    if (grp.list.length > 1) { const l = lines(grp.list)[0]!; e.items = l.items; e.more = l.more; e.itemCount = l.items.length + l.more; }
     oldestOf.set(e, grp.list[grp.list.length - 1]!.at);
     out.push(e);
   }
@@ -282,7 +283,7 @@ function feed(db: DatabaseSync, hidden: string[], staff: boolean, before: string
     }
     if (repos.some((r) => hide.has(r))) continue;
     out.push(base({
-      key: `decision:${d.id}`, kind: "decision", state: "done", at: d.at, title: `Answered "${clip(d.question, 80)}": ${d.answer ?? ""}`, actor: d.answered_by || "unknown",
+      key: `decision:${d.id}`, kind: "decision", state: "done", at: d.at, repo: d.repo ?? ref?.repo ?? null, title: `Answered "${clip(d.question, 80)}": ${d.answer ?? ""}`, actor: d.answered_by || "unknown",
       item: ref && item(ref.repo, ref.number), event: d.number !== null && d.repo ? `decision:${d.id}:answered` : null, detail: `/decisions/${encodeURIComponent(d.id)}`,
     }));
   }
@@ -300,7 +301,7 @@ function feed(db: DatabaseSync, hidden: string[], staff: boolean, before: string
     `SELECT id, step, repo, number, state, COALESCE(ended_at, queued_at) AS at, summary FROM build_tasks WHERE state IN ('failed', 'lost') AND job_id IS NULL${notHidden("repo", hidden)}${cut("COALESCE(ended_at, queued_at)")} ORDER BY at DESC LIMIT ?`, ...hidden, ...when, SCAN);
   bound(tasks);
   for (const t of tasks) {
-    out.push(base({ key: `failed-task:${t.id}`, kind: "failure", state: "failed", at: t.at, item: t.number === null ? null : item(t.repo, t.number), event: t.number === null ? null : `task:${t.id}`, detail: `/envs/${t.id}`,
+    out.push(base({ key: `failed-task:${t.id}`, kind: "failure", state: "failed", at: t.at, repo: t.repo, item: t.number === null ? null : item(t.repo, t.number), event: t.number === null ? null : `task:${t.id}`, detail: `/envs/${t.id}`,
       title: `Build task (${stepTitle(t.step)}) ${t.state}${t.summary ? `: ${clip(t.summary, 100)}` : ""}` }));
   }
 

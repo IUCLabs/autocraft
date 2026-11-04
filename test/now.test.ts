@@ -82,8 +82,8 @@ test("Now attaches a job's writes to it, groups the other writes, leaves out hou
   const op = await now(db, req("operator"));
   assert.deepEqual(op.entries.map((e) => e.title), ["Posted 5 reviews", "Closed", "Review pull requests"], "no assign, unassign or CI approval rows; the job's review is on the job");
   const g = op.entries[0]!;
-  assert.equal(g.items.length, 3);
-  assert.equal(g.more, 2);
+  assert.equal(g.items.length, 5);
+  assert.equal(g.itemCount, 5);
   const job = op.entries[2]!;
   assert.equal(job.summary, "Reviewed 1 PR: 1 take");
   assert.deepEqual(job.writes.map((w) => w.summary), ["Posted review"]);

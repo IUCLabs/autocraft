@@ -1841,7 +1841,9 @@ export type NowEntry = {
   progress: string | null;
   actor: string;
   item: (ItemRef & ItemShown) | null;
-  /** The first items it covers (at most 5 for a job, 3 for a group) and how many more. */
+  /** The repo of an entry that is not about items (shown as "System" when null). */
+  repo: string | null;
+  /** The items it covers, at most 200; `itemCount` is the true total. */
   items: (ItemRef & ItemShown)[];
   itemCount: number;
   more: number;
