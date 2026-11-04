@@ -7,7 +7,7 @@
  */
 export type Topic =
   | "repos" | "sync" | "items" | "ranks" | "stages" | "checks" | "classify" | "dupes" | "decisions" | "reviews" | "queue" | "jobs" | "usage" | "accounts" | "agents"
-  | "envs" | "tasks" | "actions" | "fixes" | "verify" | "postmerge" | "access" | "settings" | "github" | "fasttrack" | "conversations" | "steps";
+  | "envs" | "tasks" | "actions" | "fixes" | "verify" | "postmerge" | "access" | "settings" | "github" | "fasttrack" | "conversations" | "steps" | "mainci";
 
 /** What moves an item's queue position (src/rank/position.ts), for every query that carries the badge. */
 const withSlot = (...topics: Topic[]): Topic[] => [...new Set<Topic>([...topics, "steps", "repos"])];
@@ -16,7 +16,8 @@ const withSlot = (...topics: Topic[]): Topic[] => [...new Set<Topic>([...topics,
 const ITEM: Topic[] = withSlot("items", "stages", "classify", "ranks", "decisions", "reviews", "verify", "fixes", "postmerge", "actions");
 
 const RULES: [prefix: string, topics: Topic[]][] = [
-  ["progress", ["items", "stages", "repos", "decisions"]],
+  ["progress", ["items", "stages", "repos", "decisions", "mainci"]],
+  ["main-ci", ["mainci", "repos"]],
   ["item:", ITEM],
   ["item-decisions:", withSlot("decisions", "items")],
   ["items:", withSlot("items", "stages", "classify", "decisions")],

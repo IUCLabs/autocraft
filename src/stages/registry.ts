@@ -46,8 +46,8 @@ export type StageDef = {
 export const STAGES: StageDef[] = [
   {
     id: "synced", title: "Synced", order: 1, runStage: 1, docSection: "Sync", mode: "auto",
-    description: "Mirrors every issue, PR and comment of the tracked repos into the local database each minute, and makes a vector of each item's title and body for similar-item search.",
-    steps: [{ name: "embed", label: "Embed", limit: null }],
+    description: "Mirrors every issue, PR and comment of the tracked repos into the local database each minute, reads the CI state of each default branch every 2 minutes, and makes a vector of each item's title and body for similar-item search.",
+    steps: [{ name: "embed", label: "Embed", limit: null }, { name: "main-ci" }],
     lanes: [{ name: "embed", steps: ["embed"], order: 3 }],
     reads: ["GitHub issues, PRs and comments"],
     sets: ["Mirror rows", "Item vectors"],
@@ -59,6 +59,7 @@ export const STAGES: StageDef[] = [
     promptIds: [], promptStage: "Synced",
     waits: [
       { name: "Sync", why: "Poll of GitHub", howLong: "1 minute; the search catch-up runs hourly, the reconcile daily", showsAs: "Syncs list", kind: "external" },
+      { name: "Main CI poll", why: "GitHub's check state of each default branch head; read by the sync run, with the pipeline on or off", howLong: "2 minutes", showsAs: "Main CI page and the top bar", kind: "external" },
     ],
     writes: [],
     person: null,

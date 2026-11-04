@@ -1109,3 +1109,21 @@ CREATE TABLE IF NOT EXISTS postmerge_followups (
 CREATE INDEX IF NOT EXISTS postmerge_followups_issue ON postmerge_followups(repo, issue_number);
 -- Only merges from this moment on are reviewed unless `postmerge backfill` moves it back.
 INSERT OR IGNORE INTO settings (key, value) VALUES ('postmerge_since', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
+
+-- CI on the default branch of every synced repo, one row per head commit seen. Written by the main-ci step.
+-- state: green | red | optional | running | none (src/mainci/classify.ts).
+CREATE TABLE IF NOT EXISTS main_ci (
+  repo TEXT NOT NULL,
+  head_sha TEXT NOT NULL,
+  branch TEXT NOT NULL,
+  state TEXT NOT NULL,
+  failing TEXT NOT NULL,              -- JSON [{name, url}]: the checks that failed
+  checks TEXT NOT NULL,               -- JSON [{name, state, url}]; state: success | failure | pending | skipped
+  committed_at TEXT,
+  headline TEXT,                      -- first line of the commit message
+  first_seen_at TEXT NOT NULL,
+  state_changed_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (repo, head_sha)
+);
+CREATE INDEX IF NOT EXISTS main_ci_repo_time ON main_ci(repo, committed_at);

@@ -551,6 +551,33 @@ export interface Progress {
   decisionsOpen: number;
   decisionsAnsweredToday: number;
   repos: RepoProgress[];
+  /** Repos per CI state of the default branch; the top bar shows it. */
+  mainCi: MainCiSummary;
+}
+
+/** CI on a repo's default branch: red = a gate check failed; optional = only optional checks failed; none = no checks. */
+export type MainCiState = "green" | "red" | "optional" | "running" | "none";
+export type MainCiSummary = Record<MainCiState, number>;
+export interface MainCiRepo {
+  repo: RepoName;
+  state: MainCiState;
+  branch: string;
+  headSha: string;
+  headline: string | null;
+  committedAt: string | null;
+  /** The checks that failed at the head; url is the run's page. */
+  failing: { name: string; url: string | null }[];
+  /** When the culprit head turned red; null unless the head is red. */
+  redSince: string | null;
+  lastGreenSha: string | null;
+  /** The first red head after the last green one, with the PR its message names. */
+  culprit: { sha: string; headline: string | null; pr: number | null } | null;
+  updatedAt: string;
+}
+/** GET /api/main-ci: red first, then optional, running, none, green; each group by name. */
+export interface MainCi {
+  summary: MainCiSummary;
+  repos: MainCiRepo[];
 }
 
 export type Role = "operator" | "maintainer" | "viewer";

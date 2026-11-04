@@ -8,6 +8,7 @@ import test from "node:test";
 import { assertValidGql } from "./gql.ts";
 import { COMMENTS, COMMON, itemsQuery, PR_EXTRA, PR_FULL } from "../src/mirror.ts";
 import { checksQuery } from "../src/review/checks.ts";
+import { mainCiQuery } from "../src/mainci/index.ts";
 import { nodeIdsQuery, repoLabelsQuery } from "../src/labels/github.ts";
 import { addLabelsMutation } from "../src/github/write.ts";
 import { liveQuery } from "../src/dupes/compare.ts";
@@ -85,6 +86,7 @@ const KNOWN: Record<string, string> = { ORG: "storytold", COMMON, COMMENTS, PR_E
 const BUILT: Record<string, string[]> = {
   "mirror.ts": (["issue", "pr"] as const).flatMap((k) => (["full", "light"] as const).map((d) => itemsQuery(k, d))),
   "review/checks.ts": [checksQuery([1, 2, 3])],
+  "mainci/index.ts": [mainCiQuery(["a", "b"])],
   "labels/github.ts": [repoLabelsQuery(), nodeIdsQuery([1, 2])],
   "github/write.ts": [addLabelsMutation(3)],
   "dupes/compare.ts": [liveQuery([1, 2])],

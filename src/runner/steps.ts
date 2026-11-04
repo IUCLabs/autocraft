@@ -233,6 +233,22 @@ export const STEPS: StepDef[] = [
     },
   },
   {
+    name: "main-ci",
+    title: "Read CI on the default branches",
+    description: "Reads the head commit and the checks of the default branch of every synced repo from GitHub in one query, and stores the state of each: green, red, optional failing, running or no CI. Writes nothing to GitHub.",
+    stage: runStage("main-ci"),
+    requires: "operator",
+    group: "github-read",
+    params: [{ name: "repo", label: "Repo", kind: "repo", help: "every synced repo when empty" }],
+    run: async (ctx) => {
+      const { pollMainCi } = await import("../mainci/index.ts");
+      const { Client } = await import("../mirror.ts");
+      const r = await pollMainCi(ctx.db, new Client(1000), typeof ctx.params.repo === "string" ? ctx.params.repo : undefined, ctx.log);
+      ctx.handled(r.heads);
+      return `read the default branch of ${r.repos} repos`;
+    },
+  },
+  {
     name: "checks",
     title: "Refresh CI and merge state",
     description: "Reads the CI and merge state of every open pull request of one repo from GitHub. Writes nothing to GitHub.",
