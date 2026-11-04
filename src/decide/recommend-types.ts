@@ -8,11 +8,10 @@ export type RecommendInput = {
   repo_dir?: string;
   /** Set when the repo's reference folder is mounted at /reference; not part of the quoted JSON. */
   reference?: boolean;
-  /** The item as the summary prompt sees it: title, body, author association, labels, first comments. */
+  /** The item as the prompt sees it: title, body, author association, labels, first comments. */
   item: Record<string, unknown>;
   question: string;
   facts: string[];
-  summary: string;
   options: { key: string; label: string; hint: string }[];
 };
 
@@ -28,7 +27,6 @@ export const SAMPLE_RECOMMEND: RecommendInput[] = [{
   },
   question: "Is this wanted in core?",
   facts: ["photocraft issue, opened 3 days ago, 0 comments", "author: someone, new contributor"],
-  summary: "It asks for an assistant panel that sends the document to a hosted service. The author says the reference application has this. It is unclear whether it does and who runs the default service.",
   options: [
     { key: "take", label: "Wanted in core", hint: "In scope: brings us closer to the reference app. Keep open; PRs go to review." },
     { key: "plugin", label: "Plug-in candidate", hint: "Not for core. Keep open and label it plugin candidate." },

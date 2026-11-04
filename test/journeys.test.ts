@@ -340,14 +340,23 @@ describe("close journey", () => {
 });
 
 describe("issue journey", () => {
+  test("a reply without a valid summary asks nothing, and the next run retries", async () => {
+    const w = fresh().issue(5, { flags: ["needs decision"] });
+    w.models(() => JSON.stringify({ summary: "too short", recommended: null, reason: "" }));
+    const r = await runDecide(w.db, {}, quiet);
+    assert.equal(r.asked, 0);
+    assert.equal(r.noSummary, 1);
+    assert.equal(w.rows("SELECT id FROM decisions WHERE kind = 'scope'").length, 0);
+    w.models(() => JSON.stringify({ summary: "It reports a panic on an empty slice. The reference app has no such case.", recommended: null, reason: "" }));
+    assert.equal((await runDecide(w.db, {}, quiet)).asked, 1);
+  });
+
   test("a classified issue gets a scope decision; once an operator says take, a fix is built, checked and opened as a PR", async () => {
     const lib = "crates/app/src/lib.rs", test = "crates/app/tests/autocraft_regression.rs";
     const fix = `diff --git a/${lib} b/${lib}\n--- a/${lib}\n+++ b/${lib}\n@@ -1,3 +1,3 @@\n pub fn first(v: &[u8]) -> u8 {\n-    v[0]\n+    v.first().copied().unwrap_or(0)\n }\n`;
     const newTest = `diff --git a/${test} b/${test}\nnew file mode 100644\nindex 0000000..e69de29\n--- /dev/null\n+++ b/${test}\n@@ -0,0 +1,4 @@\n+#[test]\n+fn empty_slice_does_not_panic() {\n+    assert_eq!(app::first(&[]), 0);\n+}\n`;
     const w = fresh().issue(5, { flags: ["needs decision"] }).models((input) => {
-      if (input.includes("<decision>")) return JSON.stringify({ recommended: null, reason: "" });
-      const refs = [...input.matchAll(/"ref": "([^"]+)"/g)].map((m) => m[1]!);
-      return JSON.stringify(refs.map((ref) => ({ ref, summary: `It reports a panic in ${ref}. The reference app has no such case.` })));
+      if (input.includes("<decision>")) return JSON.stringify({ summary: "It reports a panic on an empty slice. The reference app has no such case.", recommended: null, reason: "" });
     });
     // Classified and flagged: the planner wants a scope decision and holds the fix back until it is answered.
     const item = () => w.plan().items.find((i) => i.facts.number === 5)!.plan;

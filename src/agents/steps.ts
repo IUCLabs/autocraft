@@ -10,7 +10,7 @@ import { renderAreaJev, renderReferenceJev } from "../prompts/index.ts";
 import type { ReferenceLintInput } from "../replylint.ts";
 import type { ClaudeStep, JevStep, TieredStep } from "./step.ts";
 import type { DatabaseSync } from "node:sqlite";
-import { parseRefereeReply, parseSummaryReply, type Referee, type Summary } from "../classify/parse.ts";
+import { parseRefereeReply, type Referee } from "../classify/parse.ts";
 import { lintOpusReply, parseOpusReply, publicTexts as opusTexts, rawReason, type OpusPr, type OpusReview } from "../review/opus-parse.ts";
 import { lintPremerge, parsePremerge, premergeTexts, type PremergeReview } from "../premerge/parse.ts";
 import { lintReply, parseFindings, publicTexts as postmergeTexts, type Finding, type PostmergePr } from "../postmerge/parse.ts";
@@ -207,15 +207,6 @@ export const VERIFY_PLAN: ClaudeStep<VerifyPlanInput, PlanReply, PlanCtx> = {
   parse: (text, x, _ctx, c) => {
     const value = parsePlanReply(text, c.ref, c.crates, c.label, c.ci);
     return { value, ...(!value.ok && { rest: x }) };
-  },
-};
-
-/** The Decide summary: one batch per call; summaries for the refs without one are asked again. */
-export const DECIDE_SUMMARY: ClaudeStep<Item[], Summary[]> = {
-  provider: "claude", id: "decide.summary",
-  parse: (text, todo) => {
-    const { summaries, missing } = parseSummaryReply(text, todo.map(refOf));
-    return { value: summaries, rest: leftOf(todo, refOf, missing) };
   },
 };
 
