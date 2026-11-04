@@ -1405,13 +1405,25 @@ export type AgentRun = {
   endedAt: string | null;
   inputTokens: number | null; outputTokens: number | null;
   cacheReadTokens: number | null; cacheWriteTokens: number | null;
+  costUsd: number | null;    // null for Jev and for runs from before costs were stored
   summary: string | null;    // one line: verdict counts, error class
   progress?: string;         // running calls with tools: the latest thing the model is doing
 };
 export type AgentRunDetail = AgentRun & {
-  prompt: string | null;     // rendered prompt; null once past retention (14 days)
+  prompt: string | null;     // rendered prompt; null once past retention (90 days)
   output: string | null;     // raw model output, same retention
   error: string | null;
+  tools: AgentRunTool[];     // tool uses in order
+};
+export type AgentRunTool = {
+  seq: number;
+  tool: string;              // e.g. "Read", "mcp__build__check"
+  args: string;              // scrubbed JSON, capped; results are never stored
+  resultBytes: number | null;
+  isError: boolean;
+  startedAt: string | null;  // null when the call's output was not streamed
+  endedAt: string | null;
+  check: { id: number; command: string; crate: string | null; testName: string | null; outcome: string | null } | null;
 };
 export type AgentRunPage = { runs: AgentRun[]; nextCursor: string | null };
 export type AgentRunFilter = { state?: AgentRunState | "recent"; step?: string; account?: string; repo?: string; cursor?: string; limit?: number };

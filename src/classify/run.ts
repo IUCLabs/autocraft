@@ -10,7 +10,8 @@ import { jevParallel } from "../agents/accounts.ts";
 import { jevAvailable, jevFailure, markJevUnavailable, markJevWorking } from "../agents/jev.ts";
 import { accountConfigDir, claudeRoom, startClaudeRun, startJevRun, tryStartFollowUp, CancelledError, type Started } from "../agents/call.ts";
 import { touchStore, type SessionAsk } from "../prepush/resume.ts";
-import { finishRun, setRunProgress } from "../agents/runs.ts";
+import { finishRun, packText, setRunProgress } from "../agents/runs.ts";
+import { clockLine, saveTools, type ToolClock } from "../agents/tools.ts";
 import { fixTurnMessage, type Lint, type LintProblem } from "../replylint.ts";
 import { coalesce, lineFeed } from "./progress.ts";
 import { scrubError } from "../agents/text.ts";
@@ -350,7 +351,7 @@ async function askOnce<K extends ClaudePromptId>(id: K, model: string, input: Cl
       sandboxed = false;
       input = withoutRepoDir(input);
       parts = claudeParts(id, input, false);
-      db.prepare("UPDATE agent_run_texts SET prompt = ? WHERE run_id = ?").run(scrub(joinParts(parts).slice(0, 1_000_000)), run.runId);
+      db.prepare("UPDATE agent_run_texts SET prompt = ? WHERE run_id = ?").run(packText(scrub(joinParts(parts).slice(0, 1_000_000))), run.runId);
     }
     const workspace = sandboxed && CLAUDE_PROMPTS[id].sandbox?.workspace === true;
     const shared = workspace ? opts.shared ?? await workspaceOf(db) : undefined;
@@ -377,10 +378,12 @@ async function askOnce<K extends ClaudePromptId>(id: K, model: string, input: Cl
       const finish = (e: Parameters<typeof finishRun>[2]) => finishRun(db, runId, e);
       const extra = resume ? ["--resume", resume] : [];
       let r: Proc;
+      const clock: ToolClock = { start: new Map(), end: new Map() };
       if (spec) {
         const c = sandboxCommand({ ...spec, claudeArgs: [...args, ...extra] });
         const runProgress = coalesce((line: string) => setRunProgress(db, runId, line));
-        const feed = lineFeed((line) => { opts.onProgress?.(line); runProgress.push(line); });
+        const progress = lineFeed((line) => { opts.onProgress?.(line); runProgress.push(line); });
+        const feed = (raw: string) => { clockLine(clock, raw); progress(raw); };
         const release = holdCheckouts([opts.checkout!, ...(shared ?? []).map((x) => x.dir)]);
         try {
           r = await runner(c.cmd, c.args, stdin, cwd, timeoutMs, undefined, feed);
@@ -400,15 +403,17 @@ async function askOnce<K extends ClaudePromptId>(id: K, model: string, input: Cl
           return null;
         }
         const { usage, all: tokens } = resultUsage(j, model);
+        const costUsd = typeof j.total_cost_usd === "number" ? j.total_cost_usd : usage.cost;
+        try { saveTools(db, runId, parsed, clock); } catch (e) { console.log(`tool uses not stored: ${(e as Error).message}`); }
         if (j.is_error || typeof j.result !== "string") {
-          finish({ state: "failed", tokens, error: scrubError(`model error ${typeof j.result === "string" ? j.result : ""}`), summary: "model error", output: sandboxed ? scrub(r.stdout) : r.stdout });
+          finish({ state: "failed", tokens, costUsd, error: scrubError(`model error ${typeof j.result === "string" ? j.result : ""}`), summary: "model error", output: sandboxed ? scrub(r.stdout) : r.stdout });
           return null;
         }
         const turns = sandboxed ? j.num_turns : undefined;
         // Backstop: nothing that looks like a token or key leaves the sandbox call.
         const text = sandboxed ? scrub(j.result) : j.result;
         const sessionId = typeof j.session_id === "string" ? j.session_id : (Array.isArray(parsed) ? parsed.find((e) => typeof (e as { session_id?: unknown }).session_id === "string") as { session_id?: string } | undefined : undefined)?.session_id;
-        finish({ state: "done", tokens, summary: (resume ? "fix turn answered" : turns === undefined ? replySummary(text, items.length) : `answered in ${turns} turns`) + (!resume && checkTool && checkTool.calls ? `, ${checkTool.calls} checks (${Math.round(checkTool.usedMs / 1000)} s)` : ""), output: text });
+        finish({ state: "done", tokens, costUsd, summary: (resume ? "fix turn answered" : turns === undefined ? replySummary(text, items.length) : `answered in ${turns} turns`) + (!resume && checkTool && checkTool.calls ? `, ${checkTool.calls} checks (${Math.round(checkTool.usedMs / 1000)} s)` : ""), output: text });
         return { text, usage, ...(turns !== undefined && { turns }), ...(sessionId && { sessionId }) };
       } catch {
         finish({ state: "failed", error: scrubError(`unreadable output (${exitClass(r.code)}) ${r.stderr}`), summary: r.code === 0 ? "unreadable output" : exitClass(r.code), output: sandboxed ? scrub(r.stdout) : r.stdout });
@@ -505,7 +510,7 @@ export async function askJev(id: JevPromptId, item: Item | DupePair | { ref: str
     const outage = jevFailure(r);
     if (outage) markJevUnavailable(db, outage.kind, outage.reason);
     else if (r.code === 0) markJevWorking(db, Date.parse(start));
-    if (r.code === 0 && tokens) finishRun(db, runId, { state: "done", tokens, summary: "answered", output: r.stdout });
+    if (r.code === 0 && tokens) finishRun(db, runId, { state: "done", tokens, costUsd: tokens.input * JEV_USD_PER_INPUT_TOKEN, summary: "answered", output: r.stdout });
     else finishRun(db, runId, { state: "failed", error: scrubError(`${exitClass(r.code)} ${r.stderr}`), summary: r.code === 0 ? "unreadable answer" : exitClass(r.code), output: r.stdout });
     return r;
   } catch (e) {

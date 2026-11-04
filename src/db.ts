@@ -90,6 +90,7 @@ const ADDED_COLUMNS: [table: string, column: string, type: string][] = [
   ["conversation_turns", "claimed_at", "TEXT"],
   ["conversation_turns", "progress", "TEXT"],
   ["agent_runs", "progress", "TEXT"],
+  ["agent_runs", "cost_usd", "REAL"],
   // The commenter's association with the repository (OWNER, MEMBER, ...).
   ["comments", "author_association", "TEXT"],
   ["dupe_carries", "from_head", "TEXT"],

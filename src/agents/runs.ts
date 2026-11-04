@@ -1,11 +1,13 @@
 // Agent runs: one row per model call made through the prompt registry. Written
 // by the callers in src/classify/run.ts, read by the API.
+import { gunzipSync, gzipSync } from "node:zlib";
 import type { DatabaseSync } from "node:sqlite";
-import type { AgentRun, AgentRunDetail, AgentRunFilter, AgentRunPage, AgentRunState, ItemRef, ItemShown, RateBucket, Rates } from "../../web/src/api/types.ts";
+import type { AgentRun, AgentRunDetail, AgentRunFilter, AgentRunPage, AgentRunState, AgentRunTool, ItemRef, ItemShown, RateBucket, Rates } from "../../web/src/api/types.ts";
 
 export const MAX_ITEM_REFS = 50;
-export const TEXT_KEEP_MS = 14 * 86_400_000;
 export const RUN_KEEP_MS = 90 * 86_400_000;
+/** Texts are kept as long as the runs; they are stored compressed. */
+export const TEXT_KEEP_MS = RUN_KEEP_MS;
 const TEXT_MAX = 1_000_000;
 const ERROR_MAX = 400;
 
@@ -19,7 +21,13 @@ export type RunEnd = {
   state: Exclude<AgentRunState, "running">;
   tokens?: { input: number; output: number; cacheRead: number; cacheWrite: number };
   summary?: string | null; error?: string | null; output?: string | null;
+  costUsd?: number | null;
 };
+
+/** A stored text: gzip, which SQLite keeps as a BLOB. */
+export const packText = (s: string): Uint8Array => gzipSync(s);
+/** Reads a stored text; rows from before compression hold plain strings. */
+export const unpackText = (v: unknown): string | null => (typeof v === "string" ? v : v instanceof Uint8Array ? gunzipSync(v).toString("utf8") : null);
 
 import { shownLookup } from "../dash/api/shown.ts";
 import { scrub } from "../runner/scrub.ts";
@@ -34,16 +42,16 @@ export function insertRun(db: DatabaseSync, s: RunStart): number {
     .run(s.jobId, s.step, s.stage, s.promptId, s.promptVersion, s.provider, s.model, s.accountId, JSON.stringify(refs), s.items.length, now()).lastInsertRowid);
   const ins = db.prepare("INSERT OR IGNORE INTO agent_run_items (run_id, repo, number) VALUES (?, ?, ?)");
   for (const r of refs) ins.run(id, r.repo, r.number);
-  db.prepare("INSERT INTO agent_run_texts (run_id, prompt) VALUES (?, ?)").run(id, scrub(s.prompt.slice(0, TEXT_MAX)));
+  db.prepare("INSERT INTO agent_run_texts (run_id, prompt) VALUES (?, ?)").run(id, packText(scrub(s.prompt.slice(0, TEXT_MAX))));
   return id;
 }
 
 export function finishRun(db: DatabaseSync, id: number, e: RunEnd): void {
   const t = e.tokens;
-  db.prepare(`UPDATE agent_runs SET state = ?, ended_at = ?, input_tokens = ?, output_tokens = ?, cache_read_tokens = ?, cache_write_tokens = ?, summary = ?, error = ?, progress = NULL
+  db.prepare(`UPDATE agent_runs SET state = ?, ended_at = ?, input_tokens = ?, output_tokens = ?, cache_read_tokens = ?, cache_write_tokens = ?, cost_usd = ?, summary = ?, error = ?, progress = NULL
     WHERE id = ? AND state = 'running'`)
-    .run(e.state, now(), t?.input ?? null, t?.output ?? null, t?.cacheRead ?? null, t?.cacheWrite ?? null, e.summary ?? null, e.error ? e.error.slice(0, ERROR_MAX) : null, id);
-  if (e.output) db.prepare("UPDATE agent_run_texts SET output = ? WHERE run_id = ?").run(scrub(e.output.slice(0, TEXT_MAX)), id);
+    .run(e.state, now(), t?.input ?? null, t?.output ?? null, t?.cacheRead ?? null, t?.cacheWrite ?? null, e.costUsd ?? null, e.summary ?? null, e.error ? e.error.slice(0, ERROR_MAX) : null, id);
+  if (e.output) db.prepare("UPDATE agent_run_texts SET output = ? WHERE run_id = ?").run(packText(scrub(e.output.slice(0, TEXT_MAX))), id);
 }
 
 /** The latest progress line of a running call (src/classify/progress.ts). */
@@ -64,7 +72,7 @@ export function failRunning(db: DatabaseSync, reason: string, jobId?: number): n
 type RunRow = {
   id: number; job_id: number | null; step: string; stage: number; prompt_id: string; prompt_version: string; provider: string; model: string;
   account_id: string | null; account_label: string | null; items: string; item_count: number; state: AgentRunState; started_at: string; ended_at: string | null;
-  input_tokens: number | null; output_tokens: number | null; cache_read_tokens: number | null; cache_write_tokens: number | null; summary: string | null; error: string | null; progress: string | null;
+  input_tokens: number | null; output_tokens: number | null; cache_read_tokens: number | null; cache_write_tokens: number | null; summary: string | null; error: string | null; progress: string | null; cost_usd: number | null;
 };
 
 const SELECT = "SELECT r.*, a.label AS account_label FROM agent_runs r LEFT JOIN claude_accounts a ON a.id = r.account_id";
@@ -83,7 +91,7 @@ function toRun(r: RunRow, shown: (repo: string, number: number) => ItemShown): A
     id: r.id, jobId: r.job_id, step: r.step, stage: r.stage, promptId: r.prompt_id, promptVersion: r.prompt_version,
     provider: r.provider === "jev" ? "jev" : "claude", model: r.model, accountId: r.account_id, accountLabel: r.account_id ? (r.account_label ?? r.account_id) : null,
     items: refs(r.items).map((x) => ({ ...x, ...shown(x.repo, x.number) })), itemCount: r.item_count, state: r.state, startedAt: r.started_at, endedAt: r.ended_at,
-    inputTokens: r.input_tokens, outputTokens: r.output_tokens, cacheReadTokens: r.cache_read_tokens, cacheWriteTokens: r.cache_write_tokens, summary: r.summary,
+    inputTokens: r.input_tokens, outputTokens: r.output_tokens, cacheReadTokens: r.cache_read_tokens, cacheWriteTokens: r.cache_write_tokens, costUsd: r.cost_usd, summary: r.summary,
     ...(r.state === "running" && r.progress && { progress: r.progress }),
   };
 }
@@ -146,9 +154,21 @@ export function getRun(db: DatabaseSync, id: unknown, view: { hidden?: string[];
   if (view.hidden?.length && !db.prepare(`SELECT 1 FROM agent_runs r WHERE r.id = ? AND ${touchesHidden(view.hidden)}`).get(id, ...view.hidden)) {
     throw new RunQueryError(404, `no agent run ${id}`);
   }
-  if (!view.texts) return { ...toRun(r, shownLookup(db)), prompt: null, output: null, error: r.error };
-  const t = db.prepare("SELECT prompt, output FROM agent_run_texts WHERE run_id = ?").get(id) as { prompt: string | null; output: string | null } | undefined;
-  return { ...toRun(r, shownLookup(db)), prompt: t?.prompt ?? null, output: t?.output ?? null, error: r.error };
+  const tools = runTools(db, id);
+  if (!view.texts) return { ...toRun(r, shownLookup(db)), prompt: null, output: null, error: r.error, tools };
+  const t = db.prepare("SELECT prompt, output FROM agent_run_texts WHERE run_id = ?").get(id) as { prompt: unknown; output: unknown } | undefined;
+  return { ...toRun(r, shownLookup(db)), prompt: unpackText(t?.prompt), output: unpackText(t?.output), error: r.error, tools };
+}
+
+/** The tool uses of a run in order; a check-tool use carries its model_checks row. */
+export function runTools(db: DatabaseSync, runId: number): AgentRunTool[] {
+  const rows = db.prepare(`SELECT t.seq, t.tool, t.args, t.result_bytes, t.is_error, t.started_at, t.ended_at, t.check_id, c.command, c.crate, c.test_name, c.outcome
+    FROM agent_run_tools t LEFT JOIN model_checks c ON c.id = t.check_id WHERE t.run_id = ? ORDER BY t.seq`).all(runId) as
+    { seq: number; tool: string; args: string; result_bytes: number | null; is_error: number; started_at: string | null; ended_at: string | null; check_id: number | null; command: string | null; crate: string | null; test_name: string | null; outcome: string | null }[];
+  return rows.map((r) => ({
+    seq: r.seq, tool: r.tool, args: r.args, resultBytes: r.result_bytes, isError: r.is_error === 1, startedAt: r.started_at, endedAt: r.ended_at,
+    check: r.check_id === null ? null : { id: r.check_id, command: r.command ?? "", crate: r.crate, testName: r.test_name, outcome: r.outcome },
+  }));
 }
 
 /** Labels of the accounts each job's runs used, for a page of jobs. */
@@ -206,11 +226,12 @@ export async function rates(db: DatabaseSync, window: unknown, nowMs: number = D
 
 // ---- retention -----------------------------------------------------------------
 
-/** Drops prompt and output text after 14 days and whole runs after 90. Cutoffs are by id, found through the started_at index. */
+/** Drops prompt and output text and tool uses with their runs after 90 days. Cutoffs are by id, found through the started_at index. */
 export function pruneRuns(db: DatabaseSync, nowMs: number = Date.now()): { texts: number; runs: number } {
   const maxBefore = (ms: number): number => (db.prepare("SELECT COALESCE(MAX(id), 0) AS id FROM agent_runs WHERE started_at < ?").get(new Date(nowMs - ms).toISOString()) as { id: number }).id;
   const texts = Number(db.prepare("DELETE FROM agent_run_texts WHERE run_id <= ?").run(maxBefore(TEXT_KEEP_MS)).changes);
   const old = maxBefore(RUN_KEEP_MS);
+  db.prepare("DELETE FROM agent_run_tools WHERE run_id <= ?").run(old);
   db.prepare("DELETE FROM agent_run_items WHERE run_id <= ?").run(old);
   const runs = Number(db.prepare("DELETE FROM agent_runs WHERE id <= ?").run(old).changes);
   return { texts, runs };
