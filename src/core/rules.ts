@@ -99,3 +99,9 @@ export const HEAD_FACT = "head commit ";
 
 /** Setting that holds the pipeline account's login, recorded wherever the pipeline pushes as that account. */
 export const PIPELINE_LOGIN_KEY = "pipeline_login";
+
+/** Build-tool (check) calls one patch-writing model call may make, and the wall time they may take in all. */
+export const CHECK_MAX_CALLS = 6;
+export const CHECK_MAX_WALL_MS = 45 * 60_000;
+/** Lines of command output the tool returns to the model. */
+export const CHECK_OUTPUT_LINES = 150;

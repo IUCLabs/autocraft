@@ -181,6 +181,49 @@ describe("PR journeys", () => {
   });
 });
 
+describe("patch model build tool", () => {
+  test("the model checks its patch with clippy, fixes the finding and re-checks; the harness's lint then passes on the first round", async () => {
+    const git = gitWorld(1);
+    const w = fresh().pr(1, { head: git.head }).review(1, { verdict: "take-fix" });
+    const dirty = git.patch.replace("+fn b() {}\n", "+fn b() { return; }\n");
+    assert.notEqual(dirty, git.patch);
+    const deps = git.deps(w);
+    const outcomes: string[] = [];
+    let asked = 0;
+    // The fake worker: a queued task of a patch with `return;` has a clippy finding on line 1, any other is clean.
+    const worker = setInterval(() => {
+      for (const t of w.rows("SELECT id, patch FROM build_tasks WHERE state = 'queued'") as { id: number; patch: string }[]) endLint(w, t.id, { diagnostics: t.patch.includes("return;") ? [{ line: 1 }] : [] });
+    }, 5);
+    deps.ask = async (_db, _input, _checkout, tool) => {
+      asked++;
+      tool!.pollMs = 5;
+      const first = await tool!.run({ patch: dirty, command: "clippy" }, null);
+      outcomes.push(first.text);
+      const second = await tool!.run({ patch: git.patch, command: "clippy" }, null);
+      outcomes.push(second.text);
+      clearInterval(worker);
+      return git.patch;
+    };
+    const first = await runFixup(w.db, { repo: "app", dryRun: false }, quiet, deps).finally(() => clearInterval(worker));
+    assert.equal(asked, 1);
+    assert.match(outcomes[0]!, /clippy: 1 finding/);
+    assert.match(outcomes[1]!, /clippy: 0 findings/);
+    assert.deepEqual(w.rows("SELECT step, command, outcome FROM model_checks ORDER BY id"), [
+      { step: "fixup", command: "clippy", outcome: "1 finding" }, { step: "fixup", command: "clippy", outcome: "0 findings" },
+    ]);
+
+    // The harness's own lint task is the third task; it is clean, so the first round pushes.
+    assert.deepEqual(first.pushed, []);
+    const lint = (w.rows("SELECT id FROM build_tasks ORDER BY id DESC LIMIT 1")[0] as { id: number }).id;
+    assert.equal((w.rows("SELECT COUNT(*) AS n FROM build_tasks")[0] as { n: number }).n, 3);
+    endLint(w, lint);
+    const second = await runFixup(w.db, { repo: "app", dryRun: false }, quiet, deps);
+    assert.deepEqual(second.pushed, ["app#1"]);
+    assert.equal(asked, 1);
+    assert.deepEqual(w.rows("SELECT state, lint_round FROM fixups"), [{ state: "pushed", lint_round: 1 }]);
+  });
+});
+
 describe("close journey", () => {
   test("a PR the final review says to close is asked about, and an answered Close closes it at the reviewed head", async () => {
     const w = fresh().pr(1).review(1, { verdict: "close", reason: "Does not match the reference app" });

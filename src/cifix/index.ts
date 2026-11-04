@@ -43,6 +43,7 @@ import { readFailure } from "./logs.ts";
 import { askText, commentText, commitMessage } from "./template.ts";
 import { formatDiffPaths, matchPrFiles, triage } from "./triage.ts";
 import { LINT_MAX_ROUNDS } from "../core/rules.ts";
+import { CheckTool, applyCheck } from "../checktool/index.ts";
 import { foldFormat, queueLint, readLint } from "../prepush/index.ts";
 import type { LintPrevious } from "../fixup/patch.ts";
 import type { CiFailure, CifixPr } from "./types.ts";
@@ -92,7 +93,7 @@ export type CifixDeps = {
   /** Reads from GitHub (`gh` arguments): the failed check runs and their logs. */
   gh: Gh;
   /** The model's reply to the cifix.patch prompt, or null when it gave none. */
-  ask: (db: DatabaseSync, input: CifixPr[], checkout?: string) => Promise<string | null>;
+  ask: (db: DatabaseSync, input: CifixPr[], checkout?: string, tool?: CheckTool) => Promise<string | null>;
   /** The model's reply to the fixup.check prompt (Opus), or null when it gave none. */
   check: (db: DatabaseSync, input: FixupCheckInput[], checkout?: string) => Promise<string | null>;
   /** Host directory with a read-only checkout of the PR head for the sandboxed model calls, or null to ask without tools. */
@@ -108,7 +109,7 @@ const codeNote: Note = { by: "model", kind: "comment", model: PROMPT.models[0] }
 export function defaultDeps(): CifixDeps {
   return {
     querier: new Client(1000), exec, fetchDiff: ghDiff, gh: ghExec, now: () => new Date(), root: fixupDir(),
-    ask: async (db, input, checkout) => (await askClaude("cifix.patch", PROMPT.models[0]!, input, db, { checkout }))?.text ?? null,
+    ask: async (db, input, checkout, tool) => (await askClaude("cifix.patch", PROMPT.models[0]!, input, db, { checkout, check: tool }))?.text ?? null,
     check: async (db, input, checkout) => (await askClaude("fixup.check", CHECK.models[0]!, input, db, { checkout }))?.text ?? null,
     checkout: (r, n, h) => checkoutForPr(r, n, h, console.log),
   };
@@ -258,7 +259,7 @@ export type PatchResult =
  * part, Sonnet writes the patch, and the validators and the size limit run. `check` is the Opus check: null when it
  * approves, else the refusal (`rejected: ...` when Opus said no).
  */
-export async function patchFromFailure(db: DatabaseSync, d: Pick<CifixDeps, "ask" | "check">, r: PatchRequest): Promise<PatchResult> {
+export async function patchFromFailure(db: DatabaseSync, d: Pick<CifixDeps, "ask" | "check" | "root">, r: PatchRequest): Promise<PatchResult> {
   const no = (state: "failed" | "refused", reason: string): PatchResult => ({ ok: false, state, reason });
   const { git, ref, title, repo, head, failure } = r;
   const text = failure.checks.flatMap((x) => x.steps.map((s) => s.tail)).join("\n");
@@ -283,7 +284,8 @@ export async function patchFromFailure(db: DatabaseSync, d: Pick<CifixDeps, "ask
   if (!shown.length) return no("failed", "the failure names no file a CI fix may edit");
   const checkout = (await r.checkout()) ?? undefined;
   const repoDir = checkout ? { repo_dir: REPO_PATH } : {};
-  const reply = await d.ask(db, [{ ref, title, failure: logText(failure), files: shown, diff: r.diffText, ...(r.previous ? { previous: r.previous } : {}), ...repoDir }], checkout);
+  const tool = new CheckTool({ db, step: "cifix", repo, number: r.number || null, head, base: null, applies: applyCheck(git, d.root, head) });
+  const reply = await d.ask(db, [{ ref, title, failure: logText(failure), files: shown, diff: r.diffText, ...(r.previous ? { previous: r.previous } : {}), ...repoDir }], checkout, tool);
   if (reply === null) return no("failed", "the model gave no answer");
   const v = validatePatch(reply, shown.map((s) => s.path));
   if (!v.ok) return no("refused", v.reason);

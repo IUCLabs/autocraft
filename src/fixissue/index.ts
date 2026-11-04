@@ -15,6 +15,7 @@ import { guardItem, guardRepo, type GuardedItem } from "../core/guard.ts";
 import type { GuardedRepo } from "../core/guard.ts";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { CheckTool, applyCheck } from "../checktool/index.ts";
 import type { DatabaseSync } from "node:sqlite";
 import { TERMINAL, cancelTask, getTask } from "../build/tasks.ts";
 import { BuildError } from "../build/envs.ts";
@@ -71,7 +72,7 @@ export type FixIssueDeps = {
   /** Every git and gh command. */
   exec: Exec;
   /** The model's reply to a fixissue prompt, or null when it gave none. */
-  ask: (db: DatabaseSync, id: Id, input: TriageInput | PatchInput | FixIssueCheckInput, runId: string, checkout?: string) => Promise<string | null>;
+  ask: (db: DatabaseSync, id: Id, input: TriageInput | PatchInput | FixIssueCheckInput, runId: string, checkout?: string, tool?: CheckTool) => Promise<string | null>;
   /** Host directory with a read-only checkout of `sha` (reachable from `branch`) for the sandboxed model calls, or null to ask without tools. Absent: no tools. */
   checkout?: (repo: string, branch: string, sha: string) => Promise<string | null>;
   /** The head commit of the repo's default branch, or null. */
@@ -104,9 +105,9 @@ export function defaultDeps(): FixIssueDeps {
     exec, now: () => new Date(), root: fixupDir(), querier: new Client(500), fetchCrates: ghCrates, fetchPaths: ghPaths,
     mainHead: (repo, branch) => shaOf(`repos/${ORG}/${repo}/commits/${encodeURIComponent(branch)}`),
     checkout: (repo, branch, sha) => checkoutForCommit(repo, branch, sha, console.log),
-    ask: async (db, id, input, runId, checkout) => {
+    ask: async (db, id, input, runId, checkout, tool) => {
       // One call: the caller reads the reply itself.
-      const r = await runModelStep(db, textStep<typeof input>(id), input, { checkout, usage: { run: runId, agent: `fixissue-${input.ref.replace(/[^A-Za-z0-9]/g, "-")}`, stage: "fixissue", items: (ok) => (ok ? 1 : 0) } });
+      const r = await runModelStep(db, textStep<typeof input>(id), input, { checkout, check: tool, usage: { run: runId, agent: `fixissue-${input.ref.replace(/[^A-Za-z0-9]/g, "-")}`, stage: "fixissue", items: (ok) => (ok ? 1 : 0) } });
       return r.ok ? r.value : null;
     },
   };
@@ -211,9 +212,10 @@ export const branchOf = (db: DatabaseSync, repo: string): string =>
 type Ctx = { db: DatabaseSync; d: FixIssueDeps; git: Git; log: (l: string) => void; runId: string; usage: Usage; /** Who asked; default: an operator at the command line. */ by?: By };
 
 /** Asks with a checkout of the base commit when there is one; the input then carries the repository path. */
-async function ask(x: Ctx, id: Id, input: TriageInput | PatchInput | FixIssueCheckInput, base: { repo: string; sha: string }): Promise<string | null> {
+async function ask(x: Ctx, id: Id, input: TriageInput | PatchInput | FixIssueCheckInput, base: { repo: string; sha: string }, number?: number): Promise<string | null> {
   const checkout = (await x.d.checkout?.(base.repo, branchOf(x.db, base.repo), base.sha)) ?? undefined;
-  return x.d.ask(x.db, id, checkout ? { ...input, repo_dir: REPO_PATH } : input, x.runId, checkout);
+  const tool = id === "fixissue.patch" ? new CheckTool({ db: x.db, step: "fixissue", repo: base.repo, number: number ?? null, head: base.sha, base: base.sha, applies: applyCheck(x.git, x.d.root, base.sha) }) : undefined;
+  return x.d.ask(x.db, id, checkout ? { ...input, repo_dir: REPO_PATH } : input, x.runId, checkout, tool);
 }
 
 /** Triage of a new candidate, then its first patch round. */
@@ -336,7 +338,7 @@ async function patchRound(x: Ctx, r: AttemptRow): Promise<boolean> {
     crate: { name: r.crate!, dir: r.crate_dir! }, test_path: testPath, files: shown,
     ...(round > 1 && r.patch ? { previous: { patch: r.patch.slice(0, 60_000), failure: r.summary ?? "it did not pass" } } : {}),
   };
-  const reply = await ask(x, "fixissue.patch", input, { repo: r.repo, sha: r.main_sha });
+  const reply = await ask(x, "fixissue.patch", input, { repo: r.repo, sha: r.main_sha }, r.number);
   if (reply === null) { roundFailed(db, d, row, round, "the model gave no answer", r.patch, log); return false; }
   const v = validateFixPatch(reply, files, testPath, r.crate_dir!);
   if (!v.ok) { roundFailed(db, d, row, round, v.reason, reply.slice(0, 60_000), log); return false; }

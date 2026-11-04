@@ -1219,3 +1219,21 @@ CREATE TABLE IF NOT EXISTS item_plans (
   planned_at TEXT NOT NULL,
   PRIMARY KEY (repo, number)
 ) WITHOUT ROWID;
+
+-- One row per run of the build tool by a patch-writing model (src/checktool): the command, its outcome in one line, and the worker task that ran it.
+CREATE TABLE IF NOT EXISTS model_checks (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id INTEGER,                     -- the agent run (model call) that made it
+  step TEXT NOT NULL,                 -- fixup | cifix | fixissue
+  repo TEXT NOT NULL,
+  number INTEGER,
+  head TEXT NOT NULL,
+  command TEXT NOT NULL,              -- fmt | clippy | check | test
+  crate TEXT,
+  test_name TEXT,
+  task_id INTEGER,
+  outcome TEXT,                       -- null while running; e.g. "0 findings", "exit 101", "refused: ..."
+  started_at TEXT NOT NULL,
+  ended_at TEXT
+);
+CREATE INDEX IF NOT EXISTS model_checks_item ON model_checks(repo, number, id);

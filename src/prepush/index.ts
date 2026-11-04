@@ -123,7 +123,7 @@ export function findingsOf(jsonLines: string, stderr: string, patch: string): Fi
   return out;
 }
 
-const artifactText = (db: DatabaseSync, taskId: number, name: string): string | null => {
+export const artifactText = (db: DatabaseSync, taskId: number, name: string): string | null => {
   const row = db.prepare("SELECT file FROM build_artifacts WHERE task_id = ? AND name = ?").get(taskId, name) as { file: string } | undefined;
   const path = row ? absolute(row.file) : null;
   return path ? readFileSync(path, "utf8") : null;
