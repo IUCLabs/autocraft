@@ -23,6 +23,7 @@ import { LINT_MAX_ROUNDS } from "../core/rules.ts";
 import { validatePatch } from "../fixup/patch.ts";
 import { CLAUDE_PROMPTS } from "../prompts/index.ts";
 import { foldFormat, queueLint, readLint } from "../prepush/index.ts";
+import { dropSessions, SessionLedger, sessionAsk, storeSessions, sweepSessions, type SessionAsk } from "../prepush/resume.ts";
 import { MAIN_FIX_BRANCH_PREFIX } from "../mainci/index.ts";
 import type { Gh } from "../merge/safe-merge.ts";
 import { cleanLine } from "../review/post-template.ts";
@@ -114,7 +115,7 @@ type Outcome = "opened" | "skipped" | "failed" | "waiting" | "linting";
  * `linting` (a stored patch whose lint task is collected). Each row ends in nothing-to-do, pr-opened or fix-failed, goes to
  * linting with a stored patch, or stays as it is while the head is still running or the lint task is.
  */
-async function attempt(c: Ctx, rows: FixRow[], count: () => void): Promise<Outcome> {
+async function attempt(c: Ctx, rows: FixRow[], count: () => void, ledger: SessionLedger): Promise<Outcome> {
   const at = (): string => c.now().toISOString();
   const head = rows[0]!.head_sha;
   const set = (list: FixRow[], state: "nothing-to-do" | "fix-failed", reason: string): "skipped" | "failed" => {
@@ -142,7 +143,7 @@ async function attempt(c: Ctx, rows: FixRow[], count: () => void): Promise<Outco
     if (covered !== null) return set(live, "nothing-to-do", `an open PR already covers it: #${covered}`);
 
     const stored = live[0]!.state === "linting";
-    const w = stored ? { patch: live[0]!.patch ?? "", files: JSON.parse(live[0]!.files ?? "[]") as string[], task: live[0]!.lint_task, round: live[0]!.lint_round ?? 1, state: live[0]!.lint_state } : null;
+    const w = stored ? { patch: live[0]!.patch ?? "", files: JSON.parse(live[0]!.files ?? "[]") as string[], task: live[0]!.lint_task, round: live[0]!.lint_round ?? 1, state: live[0]!.lint_state, session: live[0]!.session } : null;
     const res = w ? readLint(c.db, w.task ?? -1) : null;
     if (res?.kind === "pending") return "waiting";
     if (!stored) count();
@@ -157,19 +158,20 @@ async function attempt(c: Ctx, rows: FixRow[], count: () => void): Promise<Outco
       try { return await git.applyToTree(head, patch, join(scratch, "index"), exact); }
       finally { rmSync(scratch, { recursive: true, force: true }); }
     };
-    const store = (patch: string, files: string[], task: number, state: "pending" | "requeued", round: number): void => {
-      for (const r of live) c.setState(r, "linting", null, at(), { patch, files: JSON.stringify(files), lint_task: task, lint_round: round, lint_state: state });
+    const store = (patch: string, files: string[], task: number, state: "pending" | "requeued", round: number, session: string | null): void => {
+      for (const r of live) c.setState(r, "linting", null, at(), { patch, files: JSON.stringify(files), lint_task: task, lint_round: round, lint_state: state, session });
     };
 
     type Made = { ok: true; patch: string; files: string[]; changed: number; shown: CifixPr["files"]; model: string; applied: Awaited<ReturnType<typeof treeOf>> } | { ok: false; reason: string };
     /** A model patch (with the earlier patch and its findings after a lint round), applied and checked. */
-    const generate = async (previous: { patch: string; findings: string[] } | null, round: number): Promise<Made> => {
+    const generate = async (previous: { patch: string; findings: string[] } | null, round: number, ses: SessionAsk = {}): Promise<Made> => {
       const made = await patchFromFailure(c.db, c.fix, {
-        git, ref, title, repo: c.repo, number: 0, head, round, failure: { head, checks }, diffText: "", ...(previous ? { previous } : {}),
+        git, ref, title, repo: c.repo, number: 0, head, round, failure: { head, checks }, diffText: "", ...(previous ? { previous } : {}), session: ses,
         runId: `main-fix-${c.repo}-${at().replace(/[-:]/g, "").slice(0, 15)}`, actor: PR_ACTOR, at,
         reviewReason: `The default branch fails the check${names.length > 1 ? "s" : ""} ${names.join(", ")} at this head. The patch must make ${names.length > 1 ? "them" : "it"} pass without changing what the code is meant to do.`,
         checkout: async () => c.fix.checkout?.(c.repo, now.branch, head),
       });
+      ledger.hold(ses.kept);
       if (!made.ok) return made;
       const { v, shown } = made;
       const tree = await treeOf(v.patch, shown.flatMap((f) => ("excerpt" in f ? [f.path] : [])));
@@ -188,11 +190,12 @@ async function attempt(c: Ctx, rows: FixRow[], count: () => void): Promise<Outco
       if (res.kind === "infra-failed") {
         const again = w.state === "requeued" ? null : queueLint(c.db, { step: "mainfix", repo: c.repo, number: null, head, base: head, patch: w.patch });
         if (again === null) return set(live, "fix-failed", `lint: ${res.reason}`);
-        store(w.patch, w.files, again, "requeued", w.round);
+        store(w.patch, w.files, again, "requeued", w.round, w.session);
         c.log(`  ${c.repo}: lint task failed (${res.reason}); queued again as task ${again}`);
         return "linting";
       }
       if (res.kind === "result" && res.findings.length === 0) {
+        dropSessions(w.session);
         const fold = await foldFormat(git, head, w.patch, res.formatDiff ?? "", c.fix.root);
         if (!fold.ok) return set(live, "fix-failed", fold.reason);
         const v = validatePatch(w.patch, w.files);
@@ -203,24 +206,30 @@ async function attempt(c: Ctx, rows: FixRow[], count: () => void): Promise<Outco
         const findings = res.kind === "result" ? res.findings : [];
         if (w.round >= LINT_MAX_ROUNDS) return set(live, "fix-failed", `clippy findings remain after ${w.round} rounds: ${oneLine(findings[0]!.message)}`);
         count();
-        const made = await generate({ patch: w.patch, findings: findings.map((x) => x.rendered) }, w.round + 1);
+        const texts = findings.map((x) => x.rendered);
+        const ses = sessionAsk(w.session, "", texts, new Date(at()));
+        const made = await generate({ patch: w.patch, findings: texts }, w.round + 1, ses);
+        dropSessions(w.session, ses.kept ? { "": ses.kept } : {});
         if (!made.ok) return set(live, "fix-failed", made.reason);
         ({ patch, files: patchFiles, changed, shown, model, applied } = made);
         const task = queueLint(c.db, { step: "mainfix", repo: c.repo, number: null, head, base: head, patch });
         if (task === null) { /* the new patch changes no Rust file: nothing to lint */ } else {
-          store(patch, patchFiles, task, "pending", w.round + 1);
+          store(patch, patchFiles, task, "pending", w.round + 1, ses.kept ? storeSessions({ "": ses.kept }, new Date(at())) : null);
+          if (ses.kept) ledger.stored({ "": ses.kept });
           c.log(`  ${c.repo}: patch stored; lint task ${task} queued (round ${w.round + 1})`);
           return "linting";
         }
       }
     } else {
-      const made = await generate(null, 1);
+      const ses: SessionAsk = {};
+      const made = await generate(null, 1, ses);
       if (!made.ok) return set(live, "fix-failed", made.reason);
       ({ patch, files: patchFiles, changed, shown, model, applied } = made);
       // Like every model patch, this one is linted before it is pushed; the collect step on a later run folds in the formatting or sends findings back.
       const task = queueLint(c.db, { step: "mainfix", repo: c.repo, number: null, head, base: head, patch });
       if (task !== null) {
-        store(patch, patchFiles, task, "pending", 1);
+        store(patch, patchFiles, task, "pending", 1, ses.kept ? storeSessions({ "": ses.kept }, new Date(at())) : null);
+        if (ses.kept) ledger.stored({ "": ses.kept });
         c.log(`  ${c.repo}: patch stored; lint task ${task} queued (round 1)`);
         return "linting";
       }
@@ -270,12 +279,18 @@ export async function openFixPrs(c: Ctx, onHandled?: () => void): Promise<{ open
   const out = { opened: 0, skipped: 0, failed: 0, linting: 0 };
   const rows = c.db.prepare("SELECT * FROM main_fixes WHERE repo = ? AND state IN ('needs-fix', 'linting') AND verdict = 'code' ORDER BY created_at, head_sha, \"check\"").all(c.repo) as FixRow[];
   const byHead = new Map<string, FixRow[]>();
+  const ledger = new SessionLedger();
   for (const r of rows) (byHead.get(r.head_sha) ?? byHead.set(r.head_sha, []).get(r.head_sha)!).push(r);
-  for (const group of byHead.values()) {
-    // Rows that turned red after the patch was stored wait until it is collected.
-    const stored = group.filter((r) => r.state === "linting");
-    const o = await attempt(c, stored.length ? stored : group, () => onHandled?.());
-    if (o !== "waiting") out[o]++;
+  try {
+    sweepSessions(c.db, c.now());
+    for (const group of byHead.values()) {
+      // Rows that turned red after the patch was stored wait until it is collected.
+      const stored = group.filter((r) => r.state === "linting");
+      const o = await attempt(c, stored.length ? stored : group, () => onHandled?.(), ledger);
+      if (o !== "waiting") out[o]++;
+    }
+  } finally {
+    ledger.release();
   }
   return out;
 }

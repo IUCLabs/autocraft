@@ -44,7 +44,7 @@ function world() {
   db.prepare("INSERT INTO tracked_repos (name, added_by, added_at, pipeline) VALUES ('app', 'op', ?, 1)").run(T0);
   setMainFixApproval(db, "op", "app", true);
   db.prepare("INSERT INTO main_ci (repo, head_sha, branch, state, failing, checks, first_seen_at, state_changed_at, updated_at) VALUES ('app', ?, 'main', 'red', '[]', '[]', ?, ?, ?)").run(head, T0, T0, T0);
-  const row: FixRow = { repo: "app", head_sha: head, check: "gate / test", verdict: "code", state: "needs-fix", reason: null, run_id: 11, run_url: null, excerpt: null, decision_id: null, issue_number: null, pr_number: null, pr_url: null, patch: null, files: null, lint_task: null, lint_round: null, lint_state: null, created_at: T0, updated_at: T0 };
+  const row: FixRow = { repo: "app", head_sha: head, check: "gate / test", verdict: "code", state: "needs-fix", reason: null, run_id: 11, run_url: null, excerpt: null, decision_id: null, issue_number: null, pr_number: null, pr_url: null, patch: null, files: null, lint_task: null, lint_round: null, lint_state: null, session: null, created_at: T0, updated_at: T0 };
   onCodeVerdict(db, row, "a compile error", T0);
 
   const asked: { previous?: { patch: string; findings: string[] }; files: unknown }[] = [];

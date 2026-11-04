@@ -2,7 +2,7 @@
 // models faked (test/world-db.ts). Each test asserts outcomes: rows in the database and the writes that reached GitHub.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, test } from "node:test";
 import { CLI_BY } from "../src/core/gates.ts";
@@ -178,6 +178,49 @@ describe("PR journeys", () => {
     const m = await runMerge(w.db, { repo: "app", dryRun: false }, quiet, w.gh.mergeDeps());
     assert.deepEqual(m.merged, ["app#1"]);
     assert.deepEqual(w.gh.writesOf("merge").map((x) => x.head), [pushed]);
+  });
+});
+
+describe("lint findings resume the patch session", () => {
+  const edit = "diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1,2 +1,2 @@\n-fn a() {}\n-fn main() { a(); }\n+fn b() {}\n+fn main() { b(); }\n";
+  /** Round 1 stores the patch and its session; clippy finds something; round 2 runs `minutes` later. */
+  const second = async (minutes: number) => {
+    const git = gitWorld(1);
+    const w = fresh().pr(1, { head: git.head }).review(1, { verdict: "take-fix" });
+    const deps = git.deps(w);
+    let clock = Date.parse(T1);
+    deps.now = () => new Date(clock);
+    const stores = [tmpdir("session-a"), tmpdir("session-b")];
+    const asked: { previous?: unknown; resume?: { session: { id: string }; message: string } }[] = [];
+    deps.ask = async (_db, input, _checkout, _tool, session) => {
+      const n = asked.push({ previous: (input[0] as { previous?: unknown }).previous, resume: session?.resume });
+      session!.kept = { id: `s${n}`, dir: stores[session?.resume ? 0 : n - 1]!, account: "a", checkout: "/c" };
+      return n === 1 ? git.patch : edit;
+    };
+    await runFixup(w.db, { repo: "app", dryRun: false }, quiet, deps);
+    const stored = () => JSON.parse((w.rows("SELECT session FROM fixups")[0] as { session: string }).session) as Record<string, { id: string; dir: string }>;
+    assert.equal(stored()[""]!.id, "s1");
+    endLint(w, (w.rows("SELECT id FROM build_tasks")[0] as { id: number }).id, { diagnostics: [{ line: 1 }] });
+    clock += minutes * 60_000;
+    await runFixup(w.db, { repo: "app", dryRun: false }, quiet, deps);
+    return { asked, stored, stores };
+  };
+
+  test("findings within 60 minutes continue the stored session with the findings", async () => {
+    const { asked, stored, stores } = await second(59);
+    assert.equal(asked[1]!.resume!.session.id, "s1");
+    assert.match(asked[1]!.resume!.message, /needless at line 1/);
+    assert.equal(stored()[""]!.dir, stores[0]);
+    assert.equal(existsSync(stores[0]!), true);
+  });
+
+  test("findings after 60 minutes start a new call with the earlier patch, and the old session is removed", async () => {
+    const { asked, stored, stores } = await second(61);
+    assert.equal(asked[1]!.resume, undefined);
+    assert.match(JSON.stringify(asked[1]!.previous), /needless at line 1/);
+    assert.equal(stored()[""]!.id, "s2");
+    assert.equal(existsSync(stores[0]!), false);
+    assert.equal(existsSync(stores[1]!), true);
   });
 });
 

@@ -8,7 +8,8 @@ import type { ItemRef } from "../../web/src/api/types.ts";
 import { createHash } from "node:crypto";
 import { jevParallel } from "../agents/accounts.ts";
 import { jevAvailable, jevFailure, markJevUnavailable, markJevWorking } from "../agents/jev.ts";
-import { claudeRoom, startClaudeRun, startJevRun, tryStartFollowUp, CancelledError } from "../agents/call.ts";
+import { accountConfigDir, claudeRoom, startClaudeRun, startJevRun, tryStartFollowUp, CancelledError, type Started } from "../agents/call.ts";
+import type { SessionAsk } from "../prepush/resume.ts";
 import { finishRun, setRunProgress } from "../agents/runs.ts";
 import { fixTurnMessage, type Lint, type LintProblem } from "../replylint.ts";
 import { coalesce, lineFeed } from "./progress.ts";
@@ -264,9 +265,10 @@ export function claudeCwd(): string {
  * `itemTools`: the item tools' read-only mounts and MCP servers (`mcpServers` as in an MCP config), for the call and its explorer; null means none, absent means `itemTools()` (src/itemtools).
  * `check`: the build tool of a patch call (src/checktool); a sandboxed call of a prompt whose sandbox allows it gets the `check` tool, and the call may run that much longer.
  * `maxWaitMs`: the longest wait for a free account slot; past it the call throws a WaitLimitError (src/agents/call.ts). Absent: wait as long as it takes.
+ * `session`: a sandboxed call keeps its session store and reports it in `session.kept` (the caller removes it). With `session.resume` the call continues that session with the message on its account, or returns undefined from `askOnce` when it cannot.
  * `lint`: checks the parsed reply (src/replylint.ts). With problems, and for a sandboxed call of a prompt that registers `lint`, one follow-up message goes to the same session and its reply is linted too.
  */
-export type AskOptions = { check?: CheckTool; lint?: Lint; onProgress?: (line: string) => void; checkout?: string; reference?: string; maxWaitMs?: number; shared?: { name: string; dir: string }[]; itemTools?: { mounts: { host: string; path: string }[]; mcpServers: Record<string, unknown> } | null };
+export type AskOptions = { check?: CheckTool; lint?: Lint; onProgress?: (line: string) => void; checkout?: string; reference?: string; maxWaitMs?: number; shared?: { name: string; dir: string }[]; session?: SessionAsk; itemTools?: { mounts: { host: string; path: string }[]; mcpServers: Record<string, unknown> } | null };
 
 type WorkspaceFn = (db: DatabaseSync) => Promise<{ name: string; dir: string }[]>;
 let workspaceOf: WorkspaceFn = defaultWorkspace;
@@ -298,14 +300,41 @@ export function needsClippy(tool: Pick<CheckTool, "ran">, reply: string): boolea
 }
 
 export async function askClaude<K extends ClaudePromptId>(id: K, model: string, input: ClaudeInput[K], db: DatabaseSync, opts: AskOptions = {}): Promise<LintedReply | null> {
+  const ses = opts.session;
+  if (ses?.resume) {
+    const r = await askOnce(id, model, input, db, opts);
+    if (r) return r;
+    // No resume was possible or the resumed turn failed: a new call, whose input carries the earlier patch and the findings.
+    const fresh: SessionAsk = {};
+    const again = await askOnce(id, model, input, db, { ...opts, session: fresh });
+    ses.kept = fresh.kept;
+    delete ses.resume;
+    return again ?? null;
+  }
+  return (await askOnce(id, model, input, db, opts)) ?? null;
+}
+
+async function askOnce<K extends ClaudePromptId>(id: K, model: string, input: ClaudeInput[K], db: DatabaseSync, opts: AskOptions): Promise<LintedReply | null | undefined> {
+  const ses = opts.session;
   let sandboxed = opts.checkout !== undefined && CLAUDE_PROMPTS[id].sandbox !== undefined;
   const reference = sandboxed && CLAUDE_PROMPTS[id].sandbox?.reference ? opts.reference : undefined;
   if (reference) input = input.map((x) => ({ ...x, reference: true })) as ClaudeInput[K];
   let parts = claudeParts(id, input, sandboxed);
   const items = refsOf(input);
-  const run = await startClaudeRun(db, { promptId: id, promptVersion: promptVersion(id), provider: "claude", model, items, prompt: joinParts(parts) }, undefined, opts.maxWaitMs);
+  const resume = ses?.resume;
+  let run: Started | undefined;
+  if (resume) {
+    // The session lives in one account's config directory and in a store bound to the same checkout path; without either, or with no room on that account, the caller asks anew.
+    const dir = accountConfigDir(db, resume.session.account);
+    const margin = TOKEN_MARGIN_MS + (opts.check !== undefined && CLAUDE_PROMPTS[id].sandbox?.check === true ? CHECK_MAX_WALL_MS : 0);
+    if (!sandboxed || !dir || resume.session.checkout !== opts.checkout || !existsSync(resume.session.dir) || tokenNearExpiry(join(dir, ".credentials.json"), Date.now(), margin)) return undefined;
+    const runId = tryStartFollowUp(db, resume.session.account, { promptId: id, promptVersion: promptVersion(id), provider: "claude", model, items, prompt: resume.message });
+    if (runId === null) return undefined;
+    run = { runId, configDir: dir, accountId: resume.session.account };
+  }
+  run ??= await startClaudeRun(db, { promptId: id, promptVersion: promptVersion(id), provider: "claude", model, items, prompt: joinParts(parts) }, undefined, opts.maxWaitMs);
   const end = (e: Parameters<typeof finishRun>[2]) => finishRun(db, run.runId, e);
-  let sessions: string | undefined;
+  let sessions: string | undefined, kept = false;
   let bridge: Bridge | undefined, bridgeConfig: string | undefined;
   try {
     // The sandbox never refreshes the token: with little lifetime left the call runs on the host without tools, where a refresh is safe.
@@ -325,8 +354,8 @@ export async function askClaude<K extends ClaudePromptId>(id: K, model: string, 
     const tools = it || bridge ? { mounts: [...(it?.mounts ?? []), ...(bridge ? [bridge.mount] : [])], servers: Object.keys(servers).sort(), file: mcpFile(servers) } : undefined;
     if (bridge && tools) bridgeConfig = tools.file;
     // Only a sandboxed call can be continued: its session store is a directory of ours. A call on the host keeps no session (it would land in the account's own config directory).
-    const persist = sandboxed && ((opts.lint !== undefined && CLAUDE_PROMPTS[id].lint === true) || bridge !== undefined);
-    if (persist) sessions = sessionStore();
+    const persist = sandboxed && ((opts.lint !== undefined && CLAUDE_PROMPTS[id].lint === true) || bridge !== undefined || ses !== undefined);
+    if (persist) sessions = resume?.session.dir ?? sessionStore();
     const args = claudeArgs(id, model, sandboxed, tools && { config: MCP_PATH, servers: tools.servers }, parts.system, reference !== undefined, persist);
     const cwd = claudeCwd();
     const timeoutMs = CLAUDE_PROMPTS[id].limits.timeoutSeconds * 1000 + (bridge ? CHECK_MAX_WALL_MS : 0);
@@ -381,7 +410,7 @@ export async function askClaude<K extends ClaudePromptId>(id: K, model: string, 
       }
     };
 
-    const first = await turn(run.runId, parts.stdin);
+    const first = await turn(run.runId, resume ? resume.message : parts.stdin, resume?.session.id);
     if (!first) return null;
     let { sessionId, ...reply } = first;
     // The prompt tells the model to run clippy on its final diff, and a model may skip it: one follow-up message on the same session asks for it.
@@ -397,6 +426,10 @@ export async function askClaude<K extends ClaudePromptId>(id: K, model: string, 
           sessionId = again.sessionId ?? sessionId;
         }
       }
+    }
+    if (ses && sessions && sessionId && sandboxed) {
+      ses.kept = { id: sessionId, dir: sessions, account: run.accountId, checkout: opts.checkout! };
+      kept = true;
     }
     if (!opts.lint) return reply;
     let problems: LintProblem[] | null = null;
@@ -441,7 +474,7 @@ export async function askClaude<K extends ClaudePromptId>(id: K, model: string, 
     end({ state: "failed", error: scrubError(String((e as Error).message ?? e)), summary: "failed before the call" });
     throw e;
   } finally {
-    if (sessions) rmSync(sessions, { recursive: true, force: true });
+    if (sessions && !kept) rmSync(sessions, { recursive: true, force: true });
     bridge?.close();
     // Check tasks still open when the call ends (killed, timed out, parallel leftovers) are cancelled.
     opts.check?.close();

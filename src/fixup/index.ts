@@ -31,6 +31,7 @@ import { CHECK_DIFF_CAP, CHECK_PATCH_CAP, type FixupCheckInput } from "../patchc
 import { LINT_MAX_ROUNDS } from "../core/rules.ts";
 import { CheckTool, applyCheck, refusal } from "../checktool/index.ts";
 import { foldFormat, queueLint, readLint } from "../prepush/index.ts";
+import { dropSessions, SessionLedger, sessionAsk, storeSessions, sweepSessions, type SessionAsk } from "../prepush/resume.ts";
 import { pushApprovalOf } from "./approval.ts";
 import { MAX_ATTEMPTS, parseFixes, type FixCandidate } from "./candidates.ts";
 import { selectFixups } from "./select.ts";
@@ -63,11 +64,11 @@ export type FixupDeps = {
   exec: Exec;
   fetchDiff: DiffFetcher;
   /** The model's reply to the fixup.patch prompt, or null when it gave none. */
-  ask: (db: DatabaseSync, input: FixupPr[], checkout?: string, tool?: CheckTool) => Promise<string | null>;
+  ask: (db: DatabaseSync, input: FixupPr[], checkout?: string, tool?: CheckTool, session?: SessionAsk) => Promise<string | null>;
   /** The model's reply to the fixup.check prompt (Opus), or null when it gave none. */
   check: (db: DatabaseSync, input: FixupCheckInput[], checkout?: string) => Promise<string | null>;
   /** The model's reply to the fixup.conflict prompt (Sonnet), or null when it gave none. Absent: conflicts are not resolved by a model. */
-  resolve?: (db: DatabaseSync, input: ConflictPr[], checkout?: string) => Promise<string | null>;
+  resolve?: (db: DatabaseSync, input: ConflictPr[], checkout?: string, session?: SessionAsk) => Promise<string | null>;
   /** Host directory with a read-only checkout of the PR head for the sandboxed model calls, or null to ask without tools. Absent: no tools. */
   checkout?: (repo: string, number: number, head: string) => Promise<string | null>;
   now: () => Date;
@@ -78,9 +79,9 @@ export type FixupDeps = {
 export function defaultDeps(): FixupDeps {
   return {
     querier: new Client(1000), exec, fetchDiff: ghDiff, now: () => new Date(), root: fixupDir(),
-    ask: async (db, input, checkout, tool) => (await askClaude("fixup.patch", PROMPT.models[0]!, input, db, { checkout, check: tool }))?.text ?? null,
+    ask: async (db, input, checkout, tool, session) => (await askClaude("fixup.patch", PROMPT.models[0]!, input, db, { checkout, check: tool, session }))?.text ?? null,
     check: async (db, input, checkout) => (await askClaude("fixup.check", CHECK.models[0]!, input, db, { checkout }))?.text ?? null,
-    resolve: async (db, input, checkout) => (await askClaude("fixup.conflict", CONFLICT.models[0]!, input, db, { checkout }))?.text ?? null,
+    resolve: async (db, input, checkout, session) => (await askClaude("fixup.conflict", CONFLICT.models[0]!, input, db, { checkout, session }))?.text ?? null,
     checkout: (r, n, h) => checkoutForPr(r, n, h, console.log),
   };
 }
@@ -176,13 +177,13 @@ class Recorder {
   }
 
   /** The model patch waits for its lint task: a first row, or the same row with the next round's patch and task. */
-  linting(c: FixCandidate, patch: string, files: string[], task: number, lintState: "pending" | "requeued", round: number): void {
+  linting(c: FixCandidate, patch: string, files: string[], task: number, lintState: "pending" | "requeued", round: number, session: string | null): void {
     if (c.lint) {
-      this.db.prepare("UPDATE fixups SET patch = ?, files = ?, lint_task = ?, lint_round = ?, lint_state = ? WHERE rowid = ?").run(patch, JSON.stringify(files), task, round, lintState, c.lint.rowid);
+      this.db.prepare("UPDATE fixups SET patch = ?, files = ?, lint_task = ?, lint_round = ?, lint_state = ?, session = ? WHERE rowid = ?").run(patch, JSON.stringify(files), task, round, lintState, session, c.lint.rowid);
       return;
     }
-    this.db.prepare("INSERT INTO fixups (repo, number, from_head, to_head, state, reason, files, attempt, created_at, source, patch, lint_task, lint_round, lint_state, carry_decision) VALUES (?, ?, ?, NULL, 'linting', NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-      .run(c.repo, c.number, c.head, JSON.stringify(files), c.attempt, this.at(), c.carry ? "carry" : c.source ?? null, patch, task, round, lintState, c.carry?.decisionId ?? null);
+    this.db.prepare("INSERT INTO fixups (repo, number, from_head, to_head, state, reason, files, attempt, created_at, source, patch, lint_task, lint_round, lint_state, carry_decision, session) VALUES (?, ?, ?, NULL, 'linting', NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(c.repo, c.number, c.head, JSON.stringify(files), c.attempt, this.at(), c.carry ? "carry" : c.source ?? null, patch, task, round, lintState, c.carry?.decisionId ?? null, session);
   }
 
   /** Stored patches whose Plan no longer lists the push (head moved, a Hold or Close answer, approval revoked) are dropped. */
@@ -226,6 +227,16 @@ class Recorder {
 }
 
 export async function runFixup(db: DatabaseSync, params: FixupParams, log: (line: string) => void = console.log, deps?: FixupDeps): Promise<FixupSummary> {
+  const ledger = new SessionLedger();
+  try {
+    if (!(params.dryRun ?? true)) sweepSessions(db, deps?.now() ?? new Date());
+    return await runFixupWith(db, params, log, deps, ledger);
+  } finally {
+    ledger.release();
+  }
+}
+
+async function runFixupWith(db: DatabaseSync, params: FixupParams, log: (line: string) => void, deps: FixupDeps | undefined, ledger: SessionLedger): Promise<FixupSummary> {
   const { repo } = params;
   const dryRun = params.dryRun ?? true;
   if (params.limit !== undefined && !(Number.isInteger(params.limit) && params.limit >= 0)) throw new Error("limit must be a whole number ≥ 0");
@@ -302,6 +313,7 @@ export async function runFixup(db: DatabaseSync, params: FixupParams, log: (line
     await claimForWork(gw, g, d.querier, repo, c.number, "pr", async () => { const who = await (whoP ??= whoAmI(d.exec)); return { id: who.nodeId, login: who.login }; }, { run: runId }, log);
   };
   const conflictRun: ConflictRun = {
+    ledger,
     repo, runId, log, d, gw, at, summary, prQuery: PR_QUERY, scrub: (raw) => scrubReason(raw, d.root), git: () => git,
     who: () => (whoP ??= whoAmI(d.exec)), onHandled: params.onHandled, handled, claim, by: params.by ?? CLI_BY,
   };
@@ -382,7 +394,7 @@ export async function runFixup(db: DatabaseSync, params: FixupParams, log: (line
           if (c.lint.state === "requeued") { fail("failed", `lint: ${res.reason}`); continue; }
           const again = queueLint(db, { step: "fixup", repo, number: c.number, head, base: pr.baseRefOid ?? null, patch: c.lint.patch });
           if (again === null) { fail("failed", `lint: ${res.reason}`); continue; }
-          rec.linting(c, c.lint.patch, files, again, "requeued", c.lint.round);
+          rec.linting(c, c.lint.patch, files, again, "requeued", c.lint.round, c.lint.session);
           log(`  ${ref}: lint task failed (${res.reason}); queued again as task ${again}`);
           continue;
         }
@@ -396,9 +408,13 @@ export async function runFixup(db: DatabaseSync, params: FixupParams, log: (line
         }
       }
       // The model's patch: the stored one when it is clean, else a new answer (with the findings on the earlier patch).
+      const ses: SessionAsk = c.lint && findings.length ? sessionAsk(c.lint.session, "", findings, new Date(at())) : {};
+      if (folded !== null) dropSessions(c.lint!.session);
       const reply = folded !== null ? c.lint!.patch : await d.ask(db, [{ ref, title: oneTitle(db, c), fixes: c.fixes, files: shown, diff: diff.text, ...(carried ? { carried_from: carried } : {}),
         ...(c.lint && findings.length ? { previous: { patch: c.lint.patch, findings } } : {}), ...repoDir }], checkout,
-        new CheckTool({ db, step: "fixup", repo, number: c.number, head, base: pr.baseRefOid ?? null, applies: applyCheck(git, d.root, head, (p) => refusal(validatePatch(p, files, fixupEditable))) }));
+        new CheckTool({ db, step: "fixup", repo, number: c.number, head, base: pr.baseRefOid ?? null, applies: applyCheck(git, d.root, head, (p) => refusal(validatePatch(p, files, fixupEditable))) }), ses);
+      ledger.hold(ses.kept);
+      if (c.lint && folded === null) dropSessions(c.lint.session, ses.kept ? { "": ses.kept } : {});
       if (reply === null) { fail("failed", "the model gave no answer"); continue; }
       const v = validatePatch(reply, files, fixupEditable);
       if (!v.ok) { fail("refused", v.reason); continue; }
@@ -448,7 +464,8 @@ export async function runFixup(db: DatabaseSync, params: FixupParams, log: (line
         const round = c.lint ? c.lint.round + 1 : 1;
         const task = queueLint(db, { step: "fixup", repo, number: c.number, head, base: now.baseRefOid ?? null, patch: v.patch });
         if (task !== null) {
-          rec.linting(c, v.patch, v.files, task, "pending", round);
+          rec.linting(c, v.patch, v.files, task, "pending", round, ses.kept ? storeSessions({ "": ses.kept }, new Date(at())) : null);
+          if (ses.kept) ledger.stored({ "": ses.kept });
           log(`  ${ref}: patch stored; lint task ${task} queued (round ${round})`);
           continue;
         }
