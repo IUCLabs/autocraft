@@ -1,5 +1,7 @@
 // GitHub side of the Label stage: ensure the label set exists, add labels to items.
 // Every call goes through the mirror's Querier (gh api graphql, rate-limit aware).
+import { CLI_BY, type By } from "../core/gates.ts";
+import { guardItem, guardRepo, type GuardedItem } from "../core/guard.ts";
 import { setTimeout as sleepMs } from "node:timers/promises";
 import type { DatabaseSync } from "node:sqlite";
 import { addLabels, createLabel, type Writer } from "../github/write.ts";
@@ -45,12 +47,14 @@ export async function repoLabels(client: Querier, repo: string, wait: Wait = sle
 }
 
 // Creates the missing labels of the set. Returns the names missing (created when apply).
-export async function ensureLabels(client: Querier, repo: string, apply: boolean, w: Writer, wait: Wait = sleepMs as Wait): Promise<LabelDef[]> {
+export async function ensureLabels(client: Querier, repo: string, apply: boolean, w: Writer, wait: Wait = sleepMs as Wait, by: By = CLI_BY): Promise<LabelDef[]> {
   const have = await repoLabels(client, repo, wait);
   const missing = ALL_LABELS.filter((l) => !have.labels.has(l.name.toLowerCase()));
-  if (apply) {
+  if (apply && missing.length) {
+    const g = guardRepo(w.db, repo, "labels", by);
+    if ("refused" in g) throw new LabelsError(g.refused);
     for (const l of missing) {
-      await createLabel(w, client, repo, have.id, { name: l.name, color: l.color, description: l.description }, (f) => retrying(f, wait));
+      await createLabel(w, g, client, repo, have.id, { name: l.name, color: l.color, description: l.description }, (f) => retrying(f, wait));
       await wait(1_000);
     }
   }
@@ -58,7 +62,7 @@ export async function ensureLabels(client: Querier, repo: string, apply: boolean
 }
 
 export type ApplyResult = { planned: number; labeled: number; failed: number[]; skipped: number; batches: number; dryRun: boolean };
-export type ApplyOpts = { runId: string; limit?: number; apply: boolean; login?: string; wait?: Wait; log?: (s: string) => void;
+export type ApplyOpts = { runId: string; limit?: number; apply: boolean; login?: string; /** Who asked; default: an operator at the command line. */ by?: By; wait?: Wait; log?: (s: string) => void;
   /** Called with the running count of items labelled, after each batch. */
   onLabeled?: (labeled: number) => void };
 
@@ -110,9 +114,16 @@ export async function applyLabels(db: DatabaseSync, client: Querier, repo: strin
     const writable = chunk.filter((r) => live(r)?.id && !gone.includes(r));
     for (const r of chunk) if (!live(r)?.id) res.failed.push(r.number);
     const idMap = new Map([...ids].map(([n, v]) => [n, v.id] as [number, string | null]));
-    const done = writable.length ? await mutate(w, client, repo, writable, idMap, have, wait, o.runId) : [];
-    for (const r of writable) if (!done.includes(r.number)) res.failed.push(r.number);
-    const ok = writable.filter((r) => done.includes(r.number));
+    // Each item is guarded right before its labels are written: the Plan must still add them.
+    const grants = new Map<number, GuardedItem>();
+    for (const r of writable) {
+      const g = await guardItem(db, { repo, number: r.number }, { kind: "label" }, o.by ?? CLI_BY);
+      if ("refused" in g) { log(`${repo}#${r.number}: not labelled: ${g.refused}`); res.skipped++; } else grants.set(r.number, g);
+    }
+    const guarded = writable.filter((r) => grants.has(r.number));
+    const done = guarded.length ? await mutate(w, client, repo, guarded, idMap, have, wait, o.runId, grants) : [];
+    for (const r of guarded) if (!done.includes(r.number)) res.failed.push(r.number);
+    const ok = guarded.filter((r) => done.includes(r.number));
     if (ok.length) {
       const at = new Date().toISOString();
       db.exec("BEGIN IMMEDIATE");
@@ -153,9 +164,9 @@ async function nodeIds(client: Querier, repo: string, numbers: number[], wait: W
 }
 
 // Returns the numbers whose mutation succeeded. A failed batch is retried item by item.
-async function mutate(w: Writer, client: Querier, repo: string, rows: PlanRow[], ids: Map<number, string | null>, have: Repo, wait: Wait, runId: string): Promise<number[]> {
+async function mutate(w: Writer, client: Querier, repo: string, rows: PlanRow[], ids: Map<number, string | null>, have: Repo, wait: Wait, runId: string, grants: Map<number, GuardedItem>): Promise<number[]> {
   const run = (part: PlanRow[]): Promise<number[]> => addLabels(w, client, repo,
-    part.map((r) => ({ number: r.number, id: ids.get(r.number)!, labelIds: r.add.map((a) => have.labels.get(a.toLowerCase())!), names: r.add })),
+    part.map((r) => ({ number: r.number, id: ids.get(r.number)!, labelIds: r.add.map((a) => have.labels.get(a.toLowerCase())!), names: r.add, g: grants.get(r.number)! })),
     (f) => retrying(f, wait), { run: runId });
   try {
     return await run(rows);

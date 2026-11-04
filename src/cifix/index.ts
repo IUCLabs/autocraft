@@ -437,7 +437,7 @@ export async function runCifix(db: DatabaseSync, params: CifixParams, log: (line
     rec.set(c, kind, "pushed", null, { files: v.files, toHead: commit });
     summary.pushed.push(ref);
     log(`  ${ref}: pushed ${short(commit)} on ${short(head)}: ${v.files.join(", ")}`);
-    const cm = await ghComment(gw, d.exec, "cifix-comment", { repo, number: c.number, pr: true }, kind === "format" ? { by: "fixed" } : codeNote, commentText(v.files), { run: runId });
+    const cm = await ghComment(gw, g, d.exec, "cifix-comment", { repo, number: c.number, pr: true }, kind === "format" ? { by: "fixed" } : codeNote, commentText(v.files), { run: runId });
     if (cm.code !== 0) log(`  ${ref}: comment failed: ${oneLine(cm.stderr)}`);
   };
 

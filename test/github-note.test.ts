@@ -1,5 +1,5 @@
 // Every text-posting wrapper in src/github/write.ts puts the note line first, then a blank line, then the text.
-import { guarded } from "./guarded.ts";
+import { G, guarded } from "./guarded.ts";
 import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
 import { join } from "node:path";
@@ -27,20 +27,20 @@ test("each posting wrapper sends the note as the first line and records the text
     const want = `${line}\n\nThe text.`;
     const vars: Record<string, unknown>[] = [];
     const q = { spent: 0, remaining: null, async query(_q: string, v: Record<string, unknown>) { vars.push(v); return { addComment: {}, addPullRequestReview: { pullRequestReview: { id: "R1" } } }; } } as Querier;
-    await commentOn(w, q, "act-comment", item, note, "The text.");
+    await commentOn(w, G("app"), q, "act-comment", item, note, "The text.");
     await postReview(w, q, guarded("app", 7, "abc"), "N7", note, "The text.");
     await editReview(w, q, guarded("app", 7, "abc"), "R1", note, "The text.");
     assert.deepEqual(vars.map((v) => v.body), [want, want, want]);
 
     const calls: { args: string[]; input?: string }[] = [];
     const exec = async (_c: string, args: string[], o?: { input?: string }) => { calls.push({ args, input: o?.input }); return { code: 0, stdout: "https://github.com/storytold/app/issues/9\n", stderr: "" }; };
-    await ghComment(w, exec, "fixup-comment", { repo: "app", number: 7, pr: true }, note, "The text.");
-    await ghEditComment(w, exec, "fixup-comment-edit", { repo: "app", number: 7, commentId: "5" }, note, "The text.");
-    await ghOpenPr(w, exec, "batch-pr", { repo: "app", target: "app:b", base: "main", head: "me:b", title: "T", body: "The text." }, note);
-    await createIssue(w, exec, { repo: "app", target: "app#7", title: "T", body: "The text." }, note);
+    await ghComment(w, G("app"), exec, "fixup-comment", { repo: "app", number: 7, pr: true }, note, "The text.");
+    await ghEditComment(w, G("app"), exec, "fixup-comment-edit", { repo: "app", number: 7, commentId: "5" }, note, "The text.");
+    await ghOpenPr(w, G("app"), exec, "batch-pr", { repo: "app", target: "app:b", base: "main", head: "me:b", title: "T", body: "The text." }, note);
+    await createIssue(w, G("app"), exec, { repo: "app", target: "app#7", title: "T", body: "The text." }, note);
     assert.deepEqual(calls.map((c) => c.input), [want, want, want, want]);
     calls.length = 0;
-    await ghClosePr(w, exec, { repo: "app", number: 7 }, note, "The text.");
+    await ghClosePr(w, G("app"), exec, { repo: "app", number: 7 }, note, "The text.");
     assert.equal(calls[0]!.args[calls[0]!.args.indexOf("--comment") + 1], want);
 
     const texts = (db.prepare("SELECT details FROM audit").all() as { details: string }[]).map((r) => (JSON.parse(r.details) as { text?: string }).text).filter((t) => t !== undefined);

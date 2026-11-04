@@ -1,5 +1,6 @@
 // "Do it": runs one action card once through the existing write paths (src/github/write.ts, the decision answer,
 // the per-repo approvals) with the operator's login on every audit row. Cards never run on their own.
+import { guardRepo } from "../core/guard.ts";
 import type { DatabaseSync } from "node:sqlite";
 import { commentApprovalOf } from "../act/approval.ts";
 import { readLive } from "../act/index.ts";
@@ -103,37 +104,40 @@ async function run(db: DatabaseSync, c: CardRow, p: CardParams, by: string, q: Q
     case "answer": return answerDecision(db, c, p.decision, p.stamp, p.option, by, at, canWrite);
     case "backlog": return answerDecision(db, c, p.decision, p.stamp, BACKLOG.key, by, at, canWrite);
     case "comment": {
-      if (!commentApprovalOf(db, c.repo)) throw new Error(`commenting in ${c.repo} is not approved`);
+      const g = guardRepo(db, c.repo, "comment", { operator: by });
+      if ("refused" in g) throw new Error(g.refused);
       const live = await liveOpen(q, c.repo, c.number);
-      const url = await commentOn(w, q, "act-comment", { repo: c.repo, number: c.number, id: live.id }, CARD_NOTE, c.text ?? p.text, source);
+      const url = await commentOn(w, g, q, "act-comment", { repo: c.repo, number: c.number, id: live.id }, CARD_NOTE, c.text ?? p.text, source);
       return { result: "Comment posted", url: url || null };
     }
     case "label": {
-      if (!labelsApprovalOf(db, c.repo)) throw new Error(`labelling ${c.repo} is not approved`);
+      const g = guardRepo(db, c.repo, "labels", { operator: by });
+      if ("refused" in g) throw new Error(g.refused);
       const other = otherTypeLabel(db, c.repo, c.number, p.label);
       if (other) throw new Error(`the item already has the type label "${other}" and an item has one type label`);
       const live = await liveOpen(q, c.repo, c.number);
       const have = await repoLabels(q, c.repo);
       const id = have.labels.get(p.label.toLowerCase());
       if (!id) throw new Error(`the label "${p.label}" does not exist on ${c.repo}`);
-      const done = await addLabels(w, q, c.repo, [{ number: c.number, id: live.id, labelIds: [id], names: [p.label] }], undefined, source);
+      const done = await addLabels(w, q, c.repo, [{ number: c.number, id: live.id, labelIds: [id], names: [p.label], g }], undefined, source);
       if (!done.includes(c.number)) throw new Error("GitHub did not add the label");
       db.prepare("INSERT INTO main.stages (repo, number, stage, at, actor, note) VALUES (?, ?, 'labeled', ?, ?, ?)").run(c.repo, c.number, at, by, `added: ${p.label}`);
       return { result: `Label "${p.label}" added`, url: null };
     }
     case "duplicate": {
-      if (!commentApprovalOf(db, c.repo)) throw new Error(`commenting in ${c.repo} is not approved`);
+      const g = guardRepo(db, c.repo, "comment", { operator: by });
+      if ("refused" in g) throw new Error(g.refused);
       const refusal = closeRefusal(db, c.repo, c.number);
       if (refusal) throw new Error(refusal);
       const live = await liveOpen(q, c.repo, c.number);
       const orig = await readLive(q, c.repo, p.of);
       if (!orig) throw new Error(`GitHub returned no ${ref(c.repo, p.of)}`);
-      const url = await commentOn(w, q, "act-comment", { repo: c.repo, number: c.number, id: live.id }, CARD_NOTE, duplicateComment({ repo: c.repo, original: ref(c.repo, p.of), closed: orig.state !== "OPEN" }), source);
+      const url = await commentOn(w, g, q, "act-comment", { repo: c.repo, number: c.number, id: live.id }, CARD_NOTE, duplicateComment({ repo: c.repo, original: ref(c.repo, p.of), closed: orig.state !== "OPEN" }), source);
       // Recorded like Act's close: saved after the comment so the failed close shows what was posted.
       const action = (state: string, reason: string | null) => db.prepare(`INSERT INTO main.actions (decision_id, repo, number, kind, state, comment_url, reason, created_at) VALUES (?, ?, ?, 'comment-close', ?, ?, ?, ?)
         ON CONFLICT (decision_id, repo, number, kind) DO UPDATE SET state = excluded.state, reason = excluded.reason, created_at = excluded.created_at`).run(`conversation-card:${c.id}`, c.repo, c.number, state, url || null, reason, at);
       action("failed", "comment posted; close not done yet");
-      await closeItem(w, q, { repo: c.repo, number: c.number, id: live.id, pr: live.type === "PullRequest" }, { ...source, head: live.head });
+      await closeItem(w, g, q, { repo: c.repo, number: c.number, id: live.id, pr: live.type === "PullRequest" }, { ...source, head: live.head });
       action("done", null);
       db.prepare("INSERT INTO main.stages (repo, number, stage, at, actor, note) VALUES (?, ?, 'closed', ?, ?, ?)").run(c.repo, c.number, at, by, `closed as a duplicate of ${ref(c.repo, p.of)} from a conversation`);
       return { result: `Closed as a duplicate of ${ref(c.repo, p.of)}`, url: url || null };

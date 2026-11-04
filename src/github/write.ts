@@ -7,7 +7,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import { ORG } from "../act/templates.ts";
 import { connect } from "../db.ts";
-import type { Guarded } from "../core/guard.ts";
+import type { Grant, Guarded, GuardedItem, GuardedRepo } from "../core/guard.ts";
 import type { Exec, ExecResult, Git } from "../fixup/git.ts";
 import type { Querier } from "../mirror.ts";
 import { type Note, withNote } from "./note.ts";
@@ -25,6 +25,11 @@ const direct: Retry = (f) => f();
 /** The repo as audit targets name it: bare for the organisation's repos, OWNER/REPO for any other owner. */
 const repoName = (slug: string): string => (slug.startsWith(`${ORG}/`) ? slug.slice(ORG.length + 1) : slug);
 const refOf = (repo: string, number: number): string => `${repo}#${number}`;
+
+/** A grant covers writes to its own repo (and, for a PR or item grant, its own number); a write elsewhere is a bug. */
+function covers(g: Grant, repo: string, number?: number): void {
+  if (g.repo !== repo || (number !== undefined && "number" in g && g.number !== number)) throw new Error(`the guard covers ${g.repo}${"number" in g ? `#${g.number}` : ""}, not ${repo}${number === undefined ? "" : `#${number}`}`);
+}
 
 /** Adds the row before the write, so a crash during the call leaves a "started" row: an unknown outcome. */
 function begin(w: Writer, action: string, target: string, details: Details): number {
@@ -86,7 +91,8 @@ export function addLabelsMutation(count: number): string {
 export type ItemRef = { repo: string; number: number; id: string };
 
 /** Posts a comment on an issue or PR; returns the comment's URL. `details` is the source (run or decision) and any context. */
-export async function commentOn(w: Writer, q: Querier, action: string, item: ItemRef, note: Note, text: string, details: Details = {}): Promise<string> {
+export async function commentOn(w: Writer, g: Grant, q: Querier, action: string, item: ItemRef, note: Note, text: string, details: Details = {}): Promise<string> {
+  covers(g, item.repo, item.number);
   const body = withNote(note, text);
   const r = await recorded(w, action, refOf(item.repo, item.number), { ...details, text: body },
     () => q.query(ADD_COMMENT, { id: item.id, body }) as Promise<{ addComment?: { commentEdge?: { node?: { url?: string } } } }>,
@@ -94,15 +100,18 @@ export async function commentOn(w: Writer, q: Querier, action: string, item: Ite
   return r.addComment?.commentEdge?.node?.url ?? "";
 }
 
-export async function closeItem(w: Writer, q: Querier, item: ItemRef & { pr: boolean }, details: Details = {}): Promise<void> {
+export async function closeItem(w: Writer, g: Grant, q: Querier, item: ItemRef & { pr: boolean }, details: Details = {}): Promise<void> {
+  covers(g, item.repo, item.number);
   await recorded(w, "act-close", refOf(item.repo, item.number), details, () => q.query(item.pr ? CLOSE_PR : CLOSE_ISSUE, { id: item.id }));
 }
 
-export async function assignTo(w: Writer, q: Querier, item: ItemRef, user: { id: string; login: string }, details: Details = {}): Promise<void> {
+export async function assignTo(w: Writer, g: Grant, q: Querier, item: ItemRef, user: { id: string; login: string }, details: Details = {}): Promise<void> {
+  covers(g, item.repo, item.number);
   await recorded(w, "assign", refOf(item.repo, item.number), { ...details, assignee: user.login }, () => q.query(ASSIGN, { id: item.id, user: user.id }));
 }
 
-export async function unassignFrom(w: Writer, q: Querier, item: ItemRef, user: { id: string; login: string }, details: Details = {}): Promise<void> {
+export async function unassignFrom(w: Writer, g: Grant, q: Querier, item: ItemRef, user: { id: string; login: string }, details: Details = {}): Promise<void> {
+  covers(g, item.repo, item.number);
   await recorded(w, "unassign", refOf(item.repo, item.number), { ...details, assignee: user.login }, () => q.query(UNASSIGN, { id: item.id, user: user.id }));
 }
 
@@ -121,15 +130,17 @@ export async function editReview(w: Writer, q: Querier, g: Guarded, reviewId: st
   await recorded(w, "review-edit", refOf(g.repo, g.number), { ...details, head: g.head, review: reviewId }, () => q.query(EDIT_REVIEW, { id: reviewId, body }));
 }
 
-export async function createLabel(w: Writer, q: Querier, repo: string, repoId: string, label: { name: string; color: string; description: string }, retry: Retry = direct, details: Details = {}): Promise<void> {
+export async function createLabel(w: Writer, g: GuardedRepo, q: Querier, repo: string, repoId: string, label: { name: string; color: string; description: string }, retry: Retry = direct, details: Details = {}): Promise<void> {
+  covers(g, repo);
   await recorded(w, "label-create", repo, { ...details, name: label.name }, () => retry(() => q.query(CREATE_LABEL, { input: { repositoryId: repoId, ...label } })));
 }
 
-export type LabelWrite = { number: number; id: string; labelIds: string[]; names: string[] };
+export type LabelWrite = { number: number; id: string; labelIds: string[]; names: string[]; /** The guard that let this item's labels through (an item grant, or the repo grant of a conversation card). */ g: GuardedItem | GuardedRepo };
 
 /** Adds labels to several items in one request. One row per item: labelled with the names, or the failure. Returns the numbers that succeeded. */
 export async function addLabels(w: Writer, q: Querier, repo: string, items: LabelWrite[], retry: Retry = direct, details: Details = {}): Promise<number[]> {
   const vars: Record<string, unknown> = {};
+  for (const it of items) covers(it.g, repo, it.number);
   items.forEach((it, k) => { vars[`i${k}`] = it.id; vars[`l${k}`] = it.labelIds; });
   const det = (it: LabelWrite): Details => ({ ...details, labels: it.names });
   const ids = items.map((it) => begin(w, "labels-apply", refOf(repo, it.number), det(it)));
@@ -163,37 +174,42 @@ async function viaGh(w: Writer, exec: Exec, action: string, target: string, deta
 
 /** Asks a contributor on their PR (fix-up, conflict or CI fix where the branch is closed to us); `action` is the audit action of the caller's stage. */
 export function ghAskComment(w: Writer, exec: Exec, action: string, g: Guarded, note: Note, text: string, details: Details = {}): Promise<ExecResult> {
-  return ghComment(w, exec, action, { repo: g.repo, number: g.number, pr: true }, note, text, details);
+  return ghComment(w, g, exec, action, { repo: g.repo, number: g.number, pr: true }, note, text, details);
 }
 
 /** `action` is the audit action of the caller's stage (act, fixup or fixissue comment). Not for asks: those use ghAskComment. */
-export function ghComment(w: Writer, exec: Exec, action: string, o: { repo: string; number: number; pr: boolean }, note: Note, text: string, details: Details = {}): Promise<ExecResult> {
+export function ghComment(w: Writer, g: Grant, exec: Exec, action: string, o: { repo: string; number: number; pr: boolean }, note: Note, text: string, details: Details = {}): Promise<ExecResult> {
+  covers(g, o.repo, o.number);
   const body = withNote(note, text);
   return viaGh(w, exec, action, refOf(o.repo, o.number), { ...details, text: body },
     [o.pr ? "pr" : "issue", "comment", String(o.number), "--repo", `${ORG}/${o.repo}`, "--body-file", "-"], body);
 }
 
 /** Replaces the body of a comment we posted (`commentId` is the number in its `#issuecomment-` URL). */
-export function ghEditComment(w: Writer, exec: Exec, action: string, o: { repo: string; number: number; commentId: string }, note: Note, text: string, details: Details = {}): Promise<ExecResult> {
+export function ghEditComment(w: Writer, g: Grant, exec: Exec, action: string, o: { repo: string; number: number; commentId: string }, note: Note, text: string, details: Details = {}): Promise<ExecResult> {
+  covers(g, o.repo, o.number);
   const body = withNote(note, text);
   return viaGh(w, exec, action, refOf(o.repo, o.number), { ...details, text: body, comment: o.commentId },
     ["api", "-X", "PATCH", `repos/${ORG}/${o.repo}/issues/comments/${o.commentId}`, "-F", "body=@-"], body);
 }
 
-export function ghOpenPr(w: Writer, exec: Exec, action: string, o: { repo: string; target: string; base: string; head: string; title: string; body: string }, note: Note, details: Details = {}): Promise<ExecResult> {
+export function ghOpenPr(w: Writer, g: Grant, exec: Exec, action: string, o: { repo: string; target: string; base: string; head: string; title: string; body: string }, note: Note, details: Details = {}): Promise<ExecResult> {
+  covers(g, o.repo);
   const body = withNote(note, o.body);
   return viaGh(w, exec, action, o.target, { ...details, text: body },
     ["pr", "create", "--repo", `${ORG}/${o.repo}`, "--base", o.base, "--head", o.head, "--title", o.title, "--body-file", "-"], body);
 }
 
-export function ghClosePr(w: Writer, exec: Exec, o: { repo: string; number: number }, note: Note, text: string, details: Details = {}): Promise<ExecResult> {
+export function ghClosePr(w: Writer, g: Grant, exec: Exec, o: { repo: string; number: number }, note: Note, text: string, details: Details = {}): Promise<ExecResult> {
+  covers(g, o.repo, o.number);
   const comment = withNote(note, text);
   return viaGh(w, exec, "batch-pr-close", refOf(o.repo, o.number), { ...details, text: comment },
     ["pr", "close", String(o.number), "--repo", `${ORG}/${o.repo}`, "--comment", comment]);
 }
 
 /** Creates the pipeline account's fork of `repo` when it has none. */
-export function ghFork(w: Writer, exec: Exec, repo: string, details: Details = {}): Promise<ExecResult> {
+export function ghFork(w: Writer, g: GuardedRepo, exec: Exec, repo: string, details: Details = {}): Promise<ExecResult> {
+  covers(g, repo);
   return viaGh(w, exec, "fork-create", repo, details, ["repo", "fork", `${ORG}/${repo}`, "--clone=false"]);
 }
 
@@ -210,7 +226,8 @@ const REFUSED = /issues are disabled|has disabled issues|could not resolve to a 
  * Opens an issue; returns its number and URL. Throws an IssueError when `gh` fails or prints no issue URL; `clear` tells
  * whether the failure certainly left no issue behind. `target` is the item the issue follows up.
  */
-export async function createIssue(w: Writer, exec: Exec, o: { repo: string; target: string; title: string; body: string }, note: Note, details: Details = {}): Promise<{ number: number; url: string }> {
+export async function createIssue(w: Writer, g: Grant, exec: Exec, o: { repo: string; target: string; title: string; body: string }, note: Note, details: Details = {}): Promise<{ number: number; url: string }> {
+  covers(g, o.repo);
   const body = withNote(note, o.body);
   let r: ExecResult;
   try {
@@ -239,7 +256,8 @@ export function ghRerunFailed(w: Writer, exec: Exec, g: Guarded, runId: number, 
 }
 
 /** Reruns the failed jobs of one Actions run on a default-branch head. It belongs to no item: the audit target names the repo and the commit. */
-export function ghRerunMainFailed(w: Writer, exec: Exec, o: { repo: string; head: string; runId: number }, details: Details = {}): Promise<ExecResult> {
+export function ghRerunMainFailed(w: Writer, g: GuardedRepo, exec: Exec, o: { repo: string; head: string; runId: number }, details: Details = {}): Promise<ExecResult> {
+  covers(g, o.repo);
   return viaGh(w, exec, "ci-rerun", `${o.repo}:${o.head.slice(0, 8)}`, { ...details, run: o.runId },
     ["run", "rerun", String(o.runId), "--failed", "--repo", `${ORG}/${o.repo}`]);
 }
@@ -252,7 +270,8 @@ export function pushBranch(w: Writer, git: Pick<Git, "git">, action: string, g: 
 }
 
 /** Pushes `sha` to `branch` of the pipeline's own fork, replacing the branch. */
-export function pushOwnBranch(w: Writer, git: Pick<Git, "git">, action: string, o: { repo: string; number?: number; remote: string; branch: string; sha: string }, details: Details = {}): Promise<ExecResult> {
+export function pushOwnBranch(w: Writer, g: Grant, git: Pick<Git, "git">, action: string, o: { repo: string; number?: number; remote: string; branch: string; sha: string }, details: Details = {}): Promise<ExecResult> {
+  covers(g, o.repo);
   return pushed(w, git, action, o.number === undefined ? `${o.repo}:${o.branch}` : refOf(o.repo, o.number), o, "--force", details);
 }
 

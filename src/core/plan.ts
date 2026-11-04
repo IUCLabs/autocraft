@@ -227,6 +227,8 @@ export type ItemFacts = {
   held: "backlog" | "duplicate" | null;
   fast: boolean;
   score: number | null;
+  /** The global pipeline switch. decideItem ignores it; gates() applies it to the pipeline's own writes. */
+  pipelineOn: boolean;
   /** The repo's approvals for the writes below. decideItem does not apply them: gates() does. */
   repoFacts: { labelsApproved: boolean; commentApproved: boolean; fixIssueApproved: boolean };
 

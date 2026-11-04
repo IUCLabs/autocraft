@@ -19,7 +19,7 @@ import { checkoutForPr } from "../sandbox/index.ts";
 import { audit } from "../dash/audit.ts";
 import { withNote } from "../github/note.ts";
 import { CLI_BY, type By } from "../core/gates.ts";
-import { guard, liveOf } from "../core/guard.ts";
+import { guard, guardRepo, liveOf } from "../core/guard.ts";
 import { ghAskComment, ghComment, ghEditComment, pushBranch, type Note, type Writer } from "../github/write.ts";
 import { claimItem, releaseItem, type Assignable } from "../github/claim.ts";
 import { connect } from "../db.ts";
@@ -266,15 +266,19 @@ export async function runFixup(db: DatabaseSync, params: FixupParams, log: (line
   /** Takes a PR the stage is about to work on when nobody is assigned. */
   const claim = async (c: FixCandidate | ConflictCandidate, pr: PrNode): Promise<void> => {
     try {
-      if (await claimItem(gw, d.querier, repo, c.number, infoOf(pr)!, await me(), { run: runId })) log(`  ${refOf(c)}: assigned to ${(await me()).login}`);
+      const g = guardRepo(db, repo, "push", params.by ?? CLI_BY);
+      if ("refused" in g) { log(`  ${refOf(c)}: not assigned: ${g.refused}`); return; }
+      if (await claimItem(gw, g, d.querier, repo, c.number, infoOf(pr)!, await me(), { run: runId })) log(`  ${refOf(c)}: assigned to ${(await me()).login}`);
     } catch (e) { log(`  ${refOf(c)}: could not assign: ${oneLine(String((e as Error).message ?? e))}`); }
   };
   /** Takes our assignment back when the stage gives the PR up. */
   const release = async (c: FixCandidate | ConflictCandidate): Promise<void> => {
     try {
       if (activeBatches(db, repo).some((b) => membersOf(db, b.id).some((m) => m.number === c.number))) return;
+      const g = guardRepo(db, repo, null, params.by ?? CLI_BY);
+      if ("refused" in g) { log(`  ${refOf(c)}: not unassigned: ${g.refused}`); return; }
       const r = await d.querier.query(PR_QUERY, { name: repo, n: c.number }) as { repository?: { pullRequest?: PrNode | null } };
-      if (await releaseItem(gw, d.querier, repo, c.number, infoOf(r.repository?.pullRequest), await me(), { run: runId }, "fixup-")) log(`  ${refOf(c)}: unassigned`);
+      if (await releaseItem(gw, g, d.querier, repo, c.number, infoOf(r.repository?.pullRequest), await me(), { run: runId }, "fixup-")) log(`  ${refOf(c)}: unassigned`);
     } catch (e) { log(`  ${refOf(c)}: could not unassign: ${oneLine(String((e as Error).message ?? e))}`); }
   };
   const conflictRun: ConflictRun = {
@@ -408,7 +412,7 @@ export async function runFixup(db: DatabaseSync, params: FixupParams, log: (line
       log(`  ${ref}: pushed ${short(commit)} on ${short(head)}: ${v.files.join(", ")}`);
 
       const body = c.carry ? carryCommentText(c.carry.sources.map((x) => x.number), v.files) : commentText(v.files);
-      const cm = await ghComment(gw, d.exec, "fixup-comment", { repo, number: c.number, pr: true }, c.carry ? { by: "operator", model: PROMPT.models[0] } : { by: "model", kind: "comment", model: PROMPT.models[0] }, body, { run: runId });
+      const cm = await ghComment(gw, g, d.exec, "fixup-comment", { repo, number: c.number, pr: true }, c.carry ? { by: "operator", model: PROMPT.models[0] } : { by: "model", kind: "comment", model: PROMPT.models[0] }, body, { run: runId });
       if (cm.code !== 0) log(`  ${ref}: comment failed: ${oneLine(cm.stderr)}`);
     } catch (e) {
       fail("failed", oneLine(String((e as Error).message ?? e)));
@@ -475,7 +479,9 @@ export async function repostAsk(db: DatabaseSync, repo: string, number: number, 
   // The recorded text is the text as posted, note line included.
   if (withNote(note, text) === old) return { status: "unchanged", old, text };
   if (!apply) return { status: "dry-run", old, text };
-  const r = await ghEditComment({ db, login: ACTOR }, run, "fixup-comment-edit", { repo, number, commentId: id }, note, text, { head: state.from_head });
+  const g = guardRepo(db, repo, "comment", CLI_BY);
+  if ("refused" in g) throw new Error(g.refused);
+  const r = await ghEditComment({ db, login: ACTOR }, g, run, "fixup-comment-edit", { repo, number, commentId: id }, note, text, { head: state.from_head });
   return { status: r.code === 0 ? "edited" : "failed", old, text };
 }
 

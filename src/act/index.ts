@@ -30,6 +30,8 @@ import { headOf, sizeOf } from "../review/candidates.ts";
 import { backlogHeld, backlogHeldSql, notOwnIntegrationSql } from "../dupes/held.ts";
 import { applyDuplicateAnswers } from "../dupes/decide.ts";
 import { commentApprovalOf } from "./approval.ts";
+import { CLI_BY, type By } from "../core/gates.ts";
+import { guardItem, guardRepo } from "../core/guard.ts";
 import { actOnGroups, type GroupIo } from "./dupe-groups.ts";
 import { cleanReason, duplicateComment, ORG, prCloseComment, scopeCloseComment } from "./templates.ts";
 import { inPilot, pilotSql } from "../pilot.ts";
@@ -50,6 +52,8 @@ export type ActParams = {
   /** Default true: only `dryRun: false` asks, comments or closes. */
   dryRun?: boolean;
   onHandled?: (n: number) => void;
+  /** Who asked; default: an operator at the command line. */
+  by?: By;
 };
 
 export type ActSummary = {
@@ -287,6 +291,8 @@ export async function runAct(db: DatabaseSync, params: ActParams, log: (line: st
         const h = headFact(dec);
         if (live.type !== "PullRequest" || !h || live.head !== h) { skip(t, `head moved since the decision (${h ? short(h) : "no head recorded"} → ${live.head ? short(live.head) : "none"})`); continue; }
       }
+      const g = await guardItem(db, { repo: t.repo, number: t.number }, { kind: "act", bucket: t.kind, decisionId: t.decisionId }, params.by ?? CLI_BY);
+      if ("refused" in g) { log(`  ${refOf(t)}: not closed: ${g.refused}`); continue; }
       let url = prev?.comment_url ?? null;
       if (url === null) {
         let body: string;
@@ -297,11 +303,11 @@ export async function runAct(db: DatabaseSync, params: ActParams, log: (line: st
           if (!o) { skip(t, "GitHub returned no such original"); continue; }
           body = duplicateComment({ repo: t.repo, original: `${orig[1]}#${orig[2]}`, closed: o.state !== "OPEN" });
         } else body = commentFor(dec, t);
-        url = await commentOn(w, d.querier, "act-comment", { repo: t.repo, number: t.number, id: live.id }, decisionNote(dec), body, { decision: t.decisionId });
+        url = await commentOn(w, g, d.querier, "act-comment", { repo: t.repo, number: t.number, id: live.id }, decisionNote(dec), body, { decision: t.decisionId });
         // Saved before the close so a retry after a failed close does not comment twice.
         save(t, "failed", "comment posted; close not done yet", url);
       }
-      await closeItem(w, d.querier, { repo: t.repo, number: t.number, id: live.id, pr: live.type === "PullRequest" }, { decision: t.decisionId, head: live.head });
+      await closeItem(w, g, d.querier, { repo: t.repo, number: t.number, id: live.id, pr: live.type === "PullRequest" }, { decision: t.decisionId, head: live.head });
       save(t, "done", null, url);
       db.prepare("INSERT INTO stages (repo, number, stage, at, actor, note) VALUES (?, ?, 'closed', ?, ?, ?)").run(t.repo, t.number, at(), ACTOR, `closed after ${t.kind} decision ${t.decisionId}`);
       summary.done.push(refOf(t));
@@ -317,11 +323,13 @@ export async function runAct(db: DatabaseSync, params: ActParams, log: (line: st
     }
   }
   // Duplicate groups: the stored comments and closes, within what is left of the limit.
-  if (!summary.failed.length) {
+  const groupGrant = summary.failed.length ? null : guardRepo(db, repo, "comment", params.by ?? CLI_BY);
+  if (groupGrant && "refused" in groupGrant) log(`  duplicate groups: not applied: ${groupGrant.refused}`);
+  else if (groupGrant) {
     const io: GroupIo = {
       live: (n) => readLive(d.querier, repo, n),
-      comment: (live, body, at) => commentOn(w, d.querier, "act-comment", { repo, number: at.number, id: live.id }, decisionNote(getDecision(db, at.decision)!), body, { decision: at.decision }),
-      close: (live, at) => closeItem(w, d.querier, { repo, number: at.number, id: live.id, pr: live.type === "PullRequest" }, { decision: at.decision, head: live.head }),
+      comment: (live, body, at) => commentOn(w, groupGrant, d.querier, "act-comment", { repo, number: at.number, id: live.id }, decisionNote(getDecision(db, at.decision)!), body, { decision: at.decision }),
+      close: (live, at) => closeItem(w, groupGrant, d.querier, { repo, number: at.number, id: live.id, pr: live.type === "PullRequest" }, { decision: at.decision, head: live.head }),
     };
     const g = await actOnGroups(db, {
       repo, io, at, log, dryRun: false,

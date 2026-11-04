@@ -5,6 +5,7 @@
 //
 // Hold and release change local tables only. Remove and stop close the batch's integration PR through
 // src/github/write.ts (audited, on the GitHub activity page); the exec that runs `gh` is injectable.
+import { guardRepo } from "../core/guard.ts";
 import type { DatabaseSync } from "node:sqlite";
 import { audit } from "../dash/audit.ts";
 import { FastTrackError, parseItemRef } from "../fasttrack.ts";
@@ -52,7 +53,9 @@ async function endBatch(db: DatabaseSync, by: string, id: number, why: string, c
   const b = getBatch(db, id);
   updateBatch(db, id, new Date().toISOString(), { state: "superseded", summary: why });
   if (b.pr_number === null) return { closed: null };
-  const r = await ghClosePr({ db, login: by }, run, { repo: b.repo, number: b.pr_number }, { by: "fixed-operator" }, `Closing: ${comment}.`, { batch: b.branch });
+  const g = guardRepo(db, b.repo, null, { operator: by });
+  const r = "refused" in g ? { code: 1, stdout: "", stderr: g.refused }
+    : await ghClosePr({ db, login: by }, g, run, { repo: b.repo, number: b.pr_number }, { by: "fixed-operator" }, `Closing: ${comment}.`, { batch: b.branch });
   if (r.code !== 0) {
     const state = await run("gh", ["pr", "view", String(b.pr_number), "--repo", `${ORG}/${b.repo}`, "--json", "state", "--jq", ".state"]);
     if (state.code === 0 && state.stdout.trim() === "MERGED") {

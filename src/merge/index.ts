@@ -19,7 +19,7 @@ import { audit } from "../dash/audit.ts";
 import { connect } from "../db.ts";
 import { actionable, ask, factsOf, getDecision } from "../decisions.ts";
 import { CLI_BY, type By } from "../core/gates.ts";
-import { guard, liveOf } from "../core/guard.ts";
+import { guard, guardRepo, liveOf } from "../core/guard.ts";
 import { assignTo, mergeViaCommand, MERGE_RECORDED_ENV, type Writer } from "../github/write.ts";
 import { Client, markMerged, type Querier } from "../mirror.ts";
 import { refreshChecks } from "../review/checks.ts";
@@ -339,7 +339,9 @@ export async function runMerge(db: DatabaseSync, params: MergeParams, log: (line
     }
     if (!info.assignees.length) {
       const me = await viewerOf(d.querier);
-      await assignTo(w, d.querier, { repo, number: e.number, id: info.id }, me, { run: runId });
+      const ag = guardRepo(db, repo, "merge", params.by ?? CLI_BY);
+      if ("refused" in ag) { log(`  ${refOf(e)}: not assigned: ${ag.refused}`); continue; }
+      await assignTo(w, ag, d.querier, { repo, number: e.number, id: info.id }, me, { run: runId });
       log(`  ${refOf(e)}: assigned to ${me.login}`);
     }
     const method = methodOf(info);
