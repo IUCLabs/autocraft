@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { describe, test } from "node:test";
 import type { DatabaseSync } from "node:sqlite";
 import type { DecisionList, QueueList } from "../web/src/api/types.ts";
+import { refreshPlanCache } from "../src/core/plan-cache.ts";
 import { connect } from "../src/db.ts";
 import { ask } from "../src/decisions.ts";
 import { listDecisions } from "../src/dash/api/decisions.ts";
@@ -57,6 +58,7 @@ describe("keyset paging", () => {
     const review = db.prepare("INSERT INTO opus_reviews (repo, number, head_oid, run_id, at, verdict, reason, sure, mode) VALUES ('app', ?, ?, 'r', '2026-01-01T00:00:00Z', 'take', 'ok', 1, 'full')");
     for (let n = 1; n <= 5; n++) { item.run(n, "OPEN", `PR ${n}`, `h${n}`); review.run(n, `h${n}`); }
     for (let n = 6; n <= 8; n++) { item.run(n, "MERGED", `PR ${n}`, `h${n}`); review.run(n, `h${n}`); }
+    refreshPlanCache(db);
     const get = (q: string) => queue(db, req(q));
     const seen: number[] = [];
     let page: QueueList = await get("limit=2");

@@ -126,7 +126,8 @@ export function nextStep(item: ItemPlan, f: ItemFacts, pr: PrFacts | null): stri
       default: return c.label === "bugfix" && !needsDecision ? "Fix" : needsDecision ? "Decide" : "Triage by a person";
     }
   }
-  const r = pr?.review && pr.review.head === pr.head && !pr.review.stale ? pr.review.verdict : null;
+  const o = pr && !pr.inScope ? pr.outside ?? null : null;
+  const r = o ? o.review : pr?.review && pr.review.head === pr.head && !pr.review.stale ? pr.review.verdict : null;
   if (needsDecision && !r) return "Decide";
   switch (r) {
     case null: return "Review";
@@ -134,9 +135,9 @@ export function nextStep(item: ItemPlan, f: ItemFacts, pr: PrFacts | null): stri
     case "hold": return "Needs a person";
     case "close": return "Close";
     default: {
-      const v = pr?.verification?.state ?? null;
+      const v = o ? o.verify : pr?.verification?.state ?? null;
       if (v === "unavailable") return "Merge? decision: not verified (Verify cannot build this repo)";
-      if (pr?.ci === "none" && pr.repoFacts.noCi) return "Merge? decision: the repo has no CI";
+      if ((o ? o.ci : pr?.ci) === "none" && pr?.repoFacts.noCi) return "Merge? decision: the repo has no CI";
       if (v === "passed" || v === "ci-enough") return "Merge queue";
       if (v === "failed" || v === "error") return "Needs a person: verification failed";
       return v ? "Verify: running" : "Verify";

@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import { test } from "node:test";
 import { connect } from "../src/db.ts";
+import { refreshPlanCache } from "../src/core/plan-cache.ts";
 import { computeStages, queueSlots, slotsOf } from "../src/rank/position.ts";
 import { SCRATCH } from "./scratch.ts";
 
@@ -26,7 +27,13 @@ test("places are numbered per stage by rank, fast track first, and only queued s
   db.prepare("INSERT INTO fast_track (repo, number, added_by, added_at) VALUES ('off', 2, 'op', 'x')").run();
   db.prepare("INSERT INTO merge_holds (repo, number, held_by, held_at) VALUES ('app', 7, 'op', 'x')").run();
 
-  const stages = computeStages(db, { nextOf: (r) => next[`${r.repo}#${r.number}`]!, entries: [] });
+  // The Plan cache holds each item's next step and whether it is in the pipeline's scope (the first four repos' items are; "off#1" is not).
+  const plan = db.prepare("INSERT INTO item_plans (repo, number, kind, state, actions, reasons, view, planned_at) VALUES (?, ?, 'pr', 'not-reviewed', '[]', '[]', ?, 'x')");
+  for (const [k, step] of Object.entries(next)) {
+    const [repo, n] = k.split("#");
+    plan.run(repo!, Number(n), JSON.stringify({ next: step, ...(k === "off#1" ? {} : { scope: true }) }));
+  }
+  const stages = computeStages(db);
   const slots = slotsOf(stages, ["app", "other", "off"]);
   const at = (k: string) => slots.get(k);
   assert.deepEqual(at("off#2"), { stage: "Review", tab: "review", place: 1 });
@@ -50,6 +57,7 @@ test("a PR with no review is in the Review queue when the next step is read from
   cls.run(1);
   cls.run(2);
   db.exec("INSERT INTO settings (key, value) VALUES ('classify_run', 'r1')");
+  refreshPlanCache(db);
   const slots = queueSlots(db, ["app"]);
   assert.deepEqual(slots.get("app#2"), { stage: "Review", tab: "review", place: 1 });
   assert.deepEqual(slots.get("app#1"), { stage: "Review", tab: "review", place: 2 });

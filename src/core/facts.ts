@@ -186,7 +186,15 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
       out.push(base);
       continue;
     }
-    if (!inScope) { out.push(base); continue; }
+    if (!inScope) {
+      const v = head ? (verifs.get(r.repo, r.number, head) as { state: string } | undefined) : undefined;
+      base.outside = {
+        review: r.r_head && r.r_head === head && r.r_verdict && !stale.has(`${ref}@${r.r_head}`) ? r.r_verdict : null,
+        verify: v?.state ?? null, ci: head && r.c_head === head ? r.overall ?? null : null,
+      };
+      out.push(base);
+      continue;
+    }
 
     const s = settled(r.repo, r.number);
     base.label = s.label ?? null;

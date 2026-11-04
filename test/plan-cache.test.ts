@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { describe, test } from "node:test";
 import { connect } from "../src/db.ts";
+import { refreshPlanCache } from "../src/core/plan-cache.ts";
 import { detectAutopilot, planDue, setEnabled } from "../src/runner/autopilot.ts";
 import { SCRATCH } from "./scratch.ts";
 
@@ -52,5 +53,22 @@ describe("Plan cache", () => {
     assert.ok(r.proposals.every((p) => p.lane), "proposals are only data; applyProposals is not called while off");
     assert.equal(r.timing!.written, 1);
     assert.deepEqual(cache().map((x) => x.number), [1, 2]);
+  });
+});
+
+describe("the cached next step of a PR outside the pipeline's scope", () => {
+  test("names the step its stored rows wait on, not Review", () => {
+    const db = connect(join(dir, "scope.db"));
+    db.prepare("INSERT INTO tracked_repos (name, pipeline) VALUES ('off', 0)").run();
+    const pr = db.prepare(`INSERT INTO items (repo, number, kind, state, title, body, is_draft, head_oid, created_at, updated_at) VALUES ('off', ?, 'pr', 'OPEN', 't', 'b', 0, ?, '${T0}', '${T0}')`);
+    const jev = db.prepare(`INSERT INTO classifications (repo, number, classifier, run_id, at, type_label, flags, probs) VALUES ('off', ?, 'jev', 'r1', '${T0}', 'bugfix', '[]', '{"top":0.95}')`);
+    const review = db.prepare(`INSERT INTO opus_reviews (repo, number, head_oid, run_id, at, model, verdict, reason, sure, mode) VALUES ('off', ?, ?, 'rv', '${T0}', 'sonnet', ?, 'why', 1, 'full')`);
+    for (const [n, verdict] of [[1, "hold"], [2, "take-fix"], [3, "take"]] as const) { pr.run(n, `h${n}`); jev.run(n); review.run(n, `h${n}`, verdict); }
+    pr.run(4, "h4"); jev.run(4);
+    db.prepare(`INSERT INTO verifications (repo, number, head_sha, kind, reason, state, created_at) VALUES ('off', 3, 'h3', 'tests', 'r', 'passed', '${T0}')`).run();
+    refreshPlanCache(db);
+    const next = (n: number) => JSON.parse((db.prepare("SELECT view FROM item_plans WHERE repo = 'off' AND number = ?").get(n) as { view: string }).view).next;
+    assert.deepEqual([1, 2, 3, 4].map(next), ["Needs a person", "Fix-up", "Merge queue", "Review"]);
+    assert.equal((db.prepare("SELECT state FROM item_plans WHERE number = 3").get() as { state: string }).state, "out-of-scope");
   });
 });

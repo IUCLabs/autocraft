@@ -1,3 +1,4 @@
+import { refreshPlanCache } from "../src/core/plan-cache.ts";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
@@ -97,7 +98,7 @@ describe("fast track", () => {
     const db = fresh();
     addFastTrack(db, "op", "off#3");
     addFastTrack(db, "op", "app#2");
-    const get = (query: string) => queuePage(db, req(query));
+    const get = (query: string) => (refreshPlanCache(db), queuePage(db, req(query)));
     const def = await get("tab=all");
     assert.deepEqual(def.rows.map((r) => `${r.repo}#${r.number}`), ["off#3", "app#2", "app#1", "app#3"]);
     assert.deepEqual(def.rows.slice(0, 2).map((r) => r.fast), [{ position: 1, of: 2 }, { position: 2, of: 2 }]);
@@ -130,6 +131,7 @@ describe("merge holds", () => {
     assert.deepEqual(await mergeOrder(db, "app"), ["app#1", "app#3"]);
     const e = buildQueue(db, { repo: "app", merged: "exclude" }).find((x) => x.number === 2)!;
     assert.deepEqual([e.state, e.held], ["ready", true]);
+    refreshPlanCache(db);
     assert.equal((await queuePage(db, req("tab=merge"))).nextMerges.at(-1)!.waitsFor, "held");
     assert.ok(releaseMerge(db, "op", "app", 2));
     assert.deepEqual([...(await planSingles(db, "app", diffs))!].sort(), [1, 2, 3]);

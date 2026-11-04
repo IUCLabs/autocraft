@@ -5,12 +5,7 @@
 // The place is current, not an estimate.
 import type { DatabaseSync } from "node:sqlite";
 import type { QueueSlot } from "../../web/src/api/types.ts";
-import { latestRun, settledLookup } from "../classify/settled.ts";
-import { notOwnIntegrationSql } from "../dupes/held.ts";
 import { workScores } from "../fasttrack.ts";
-import { buildQueue, type QueueEntry } from "../merge/queue.ts";
-import { pilotSql } from "../pilot.ts";
-import { factsOf, memoNoCi, nextStepOf } from "./next.ts";
 
 /** Next step text → queued stage and the Queue tab that lists it. Steps not listed here are not queued. */
 const QUEUED: Record<string, Pick<QueueSlot, "stage" | "tab">> = {
@@ -24,15 +19,7 @@ const QUEUED: Record<string, Pick<QueueSlot, "stage" | "tab">> = {
 const BATCHED = new Set(["batch-checking", "in-batch"]);
 
 type Entry = { repo: string; number: number; score: number } & Pick<QueueSlot, "stage" | "tab">;
-export type Candidate = { repo: string; number: number; kind: string; head_oid: string | null };
-export type NextOf = (c: Candidate) => string;
 export type Stages = Map<string, Entry[]>;
-
-/** Open items in the pipeline's scope as `repo#number`: the SQL the candidate queries use. */
-export function scopedKeys(db: DatabaseSync): Set<string> {
-  const rows = db.prepare(`SELECT i.repo, i.number FROM items i WHERE i.state = 'OPEN' AND ${notOwnIntegrationSql("i")} AND ${pilotSql("i")}`).all() as { repo: string; number: number }[];
-  return new Set(rows.map((r) => `${r.repo}#${r.number}`));
-}
 
 /** Work score of an item with fast-tracked ones raised, one lookup per repo. */
 export function scoreLookup(db: DatabaseSync): (repo: string, number: number) => number | undefined {
@@ -65,47 +52,32 @@ export function orderStages(items: { repo: string; number: number; score: number
   return by;
 }
 
-export type StageInputs = {
-  /** The next step of an item; default reads the stored tables. */
-  nextOf?: NextOf;
-  /** The merge queue's entries (src/merge/queue.ts), all repos; default builds them. */
-  entries?: QueueEntry[];
-};
-
-/** Orders the pipeline's open ranked items by stage. */
-export function computeStages(db: DatabaseSync, inputs: StageInputs = {}): Stages {
+/** Orders the pipeline's open ranked items by stage, from the Plan cache: the next-step text of each item in scope, and the batch states of the PRs. */
+export function computeStages(db: DatabaseSync): Stages {
   const held = new Set((db.prepare("SELECT repo, number FROM main.merge_holds").all() as { repo: string; number: number }[]).map((r) => `${r.repo}#${r.number}`));
-  const rows = db.prepare(`SELECT i.repo, i.number, i.kind, i.head_oid FROM items i JOIN item_rank r ON r.repo = i.repo AND r.number = i.number
-    WHERE i.state = 'OPEN' AND ${notOwnIntegrationSql("i")} AND ${pilotSql("i")}`).all() as Candidate[];
-  const settled = settledLookup(db, latestRun(db));
-  const noCi = memoNoCi(db);
-  const next: NextOf = inputs.nextOf ?? ((r) => nextStepOf(factsOf(db, r.repo, r.number, r.kind, r.head_oid, settled(r.repo, r.number), noCi)));
+  const rows = db.prepare(`SELECT p.repo, p.number, p.state, json_extract(p.view, '$.next') AS next FROM main.item_plans p
+    JOIN main.items i ON i.repo = p.repo AND i.number = p.number AND i.state = 'OPEN' JOIN main.item_rank r ON r.repo = p.repo AND r.number = p.number
+    WHERE json_extract(p.view, '$.scope') = 1`).all() as { repo: string; number: number; state: string; next: string | null }[];
   const score = scoreLookup(db);
   const out: { repo: string; number: number; score: number; next: string }[] = [];
-  const merge: typeof out = [];
   for (const r of rows) {
-    const step = next(r);
-    if (!QUEUED[step] || (step === "Merge queue" && held.has(`${r.repo}#${r.number}`))) continue;
-    (step === "Merge queue" ? merge : out).push({ repo: r.repo, number: r.number, score: score(r.repo, r.number) ?? 0, next: step });
-  }
-  if (merge.length) {
-    // Batched PRs are listed under their batch on the Merge tab, not in its place order.
-    const batched = new Set((inputs.entries ?? buildQueue(db, { merged: "exclude" })).filter((e) => BATCHED.has(e.state)).map((e) => `${e.repo}#${e.number}`));
-    for (const m of merge) if (!batched.has(`${m.repo}#${m.number}`)) out.push(m);
+    const step = r.next ?? "";
+    const k = `${r.repo}#${r.number}`;
+    // A held PR has no place in the merge order, and batched PRs are listed under their batch on the Merge tab.
+    if (!QUEUED[step] || (step === "Merge queue" && (held.has(k) || BATCHED.has(r.state)))) continue;
+    out.push({ repo: r.repo, number: r.number, score: score(r.repo, r.number) ?? 0, next: step });
   }
   return orderStages(out);
 }
 
 const cache = new WeakMap<DatabaseSync, { sig: string; stages: Stages }>();
 
-// No time floor: the `steps` topic moves only for writes that change a next step, and a floor without a trailing
-// recompute would leave a badge stale until some later event. A caller that passes its own next steps (the Queue
-// page) always recomputes, so its rows and badges agree.
-function stages(db: DatabaseSync, inputs?: StageInputs): Stages {
-  const sig = JSON.stringify(db.prepare("SELECT seq FROM change_seq WHERE topic = 'steps'").get() ?? null);
+// Recomputed when the Plan cache, the work rank, fast track or merge holds change (the `plans` and `steps` topics).
+function stages(db: DatabaseSync): Stages {
+  const sig = JSON.stringify(db.prepare("SELECT (SELECT seq FROM change_seq WHERE topic = 'steps') AS s, (SELECT seq FROM change_seq WHERE topic = 'plans') AS p").get() ?? null);
   const hit = cache.get(db);
-  if (hit && hit.sig === sig && !inputs?.nextOf) return hit.stages;
-  const fresh = computeStages(db, inputs);
+  if (hit && hit.sig === sig) return hit.stages;
+  const fresh = computeStages(db);
   cache.set(db, { sig, stages: fresh });
   return fresh;
 }
@@ -124,5 +96,5 @@ export function slotsOf(byStage: Stages, visible: Iterable<string>): Map<string,
   return out;
 }
 
-/** One pass for all items: call it once per request, not per item. `inputs` lets a caller that already visited the items share its work. */
-export const queueSlots = (db: DatabaseSync, visible: Iterable<string>, inputs?: StageInputs): Map<string, QueueSlot> => slotsOf(stages(db, inputs), visible);
+/** One pass for all items: call it once per request, not per item. */
+export const queueSlots = (db: DatabaseSync, visible: Iterable<string>): Map<string, QueueSlot> => slotsOf(stages(db), visible);
