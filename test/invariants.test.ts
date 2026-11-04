@@ -111,7 +111,7 @@ function checkPr(f: PrFacts): void {
   // 2. After a Hold or Close answer nothing merges and no pre-merge fix-up runs.
   if (declined) {
     assert.equal(merges.length, 0, "merge after a Hold/Close answer");
-    assert.equal(has(p, "fixup").length, 0, "fix-up after a Hold/Close answer");
+    assert.deepEqual(p.actions.filter((a) => ["fixup", "conflict", "cifix"].includes(a.kind)).map(label), [], "push action after a Hold/Close answer");
   }
   if (merges.length) {
     assert.ok(f.review && (f.review.verdict === "take" || f.review.verdict === "take-fix"), "merge without a take review");

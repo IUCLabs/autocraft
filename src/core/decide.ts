@@ -153,7 +153,7 @@ export type CifixBucket = "work" | "unapproved" | "cannot-push" | "formatting" |
 /** Where the CI fix step stands for a PR whose CI fails at the reviewed head, or null when it is no candidate. */
 export function cifixBucket(f: PrFacts): CifixBucket | null {
   const r = f.review, c = f.cifix;
-  if (!r || !c || (r.verdict !== "take" && r.verdict !== "take-fix") || r.head !== f.head || f.ghState !== "OPEN" || f.ci !== "failure" || f.draft || !notHeld(f)) return null;
+  if (declinedBy(f) || !r || !c || (r.verdict !== "take" && r.verdict !== "take-fix") || r.head !== f.head || f.ghState !== "OPEN" || f.ci !== "failure" || f.draft || !notHeld(f)) return null;
   if (f.mergeable === "CONFLICTING" || r.stale || f.changesRequested || f.mergeHeld) return null;
   if (r.verdict === "take-fix") {
     const fx = fixupOf(f);
@@ -263,7 +263,7 @@ export function decidePr(f: PrFacts): Plan {
   }
 
   // Merge the base branch into a conflicting PR, or ask the contributor.
-  if (f.conflict && f.conflict.baseOk && f.mergeable === "CONFLICTING" && r && takeReview && r.head === f.head && !r.stale && !f.draft && !held && !f.mergeHeld && !f.inActiveBatch) {
+  if (f.conflict && f.conflict.baseOk && f.mergeable === "CONFLICTING" && r && takeReview && r.head === f.head && !r.stale && !f.draft && !held && !f.mergeHeld && !f.inActiveBatch && !declinedBy(f)) {
     if (f.conflict.bucket === "merge" || f.conflict.bucket === "ask") actions.push(act("conflict", f.head, { bucket: f.conflict.bucket }));
   }
 
