@@ -2,7 +2,7 @@
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { BugIcon, InfoIcon } from "@phosphor-icons/react";
-import type { Item, ItemAction, ItemFixup, ItemPatchCheck, ItemPostmerge, ItemPremerge, ItemReviews, ItemVerification, PostmergeFinding, ReleaseAction, ReviewSide, ReviewVerdictName, TaskResult } from "../../api/types";
+import type { Item, ItemAction, ItemFixup, ItemPatchCheck, ItemPostmerge, ItemPremerge, ItemReviews, ItemVerification, PostmergeFinding, ReleaseAction, ReviewVerdictName, TaskResult } from "../../api/types";
 import { useApi } from "../../api/client";
 import { Badge, type Tone } from "../../ui/atoms/Badge";
 import { ItemRef } from "../../ui/molecules/ItemRef";
@@ -106,52 +106,7 @@ function Verify({ v }: { v: ItemVerification }) {
 
 const R_VERDICT: Record<ReviewVerdictName, [string, Tone]> = { take: ["Take", "ok"], "take-fix": ["Take with fixes", "ok"], hold: ["Hold", "warn"], close: ["Close", "bad"] };
 
-function ReviewCard({ title, side, extra, children }: { title: string; side: ReviewSide | null; extra?: ReactNode; children?: ReactNode }) {
-  useNow();
-  const v = side && R_VERDICT[side.verdict];
-  return (
-    <div className="min-w-0 rounded-md border border-line px-4 py-3 text-sm">
-      <div className="flex flex-wrap items-center gap-2">
-        <span className="font-medium">{title}</span>
-        {v && <Badge tone={v[1]}>{v[0]}</Badge>}
-        {side && <span className="ml-auto text-xs text-ink/50">{ago(side.at)} ago</span>}
-      </div>
-      {extra}
-      {side ? (
-        <>
-          <p className="mt-2 text-ink/80">{side.reason}</p>
-          {side.fixes.length > 0 && (
-            <div className="mt-2">
-              <h3 className="text-xs font-medium text-ink/55">Fixes</h3>
-              <ul className="mt-0.5 list-disc space-y-0.5 pl-5">
-                {side.fixes.map((f, i) => (
-                  <li key={i}>
-                    <span className="code break-all text-xs">{f.file}</span> {f.change}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-          {side.risks.length > 0 && (
-            <div className="mt-2">
-              <h3 className="text-xs font-medium text-ink/55">Risks</h3>
-              <ul className="mt-0.5 list-disc space-y-0.5 pl-5">
-                {side.risks.map((r, i) => (
-                  <li key={i}>{r}</li>
-                ))}
-              </ul>
-            </div>
-          )}
-        </>
-      ) : (
-        children
-      )}
-    </div>
-  );
-}
-
 function Reviews({ r }: { r: ItemReviews }) {
-  const o = r.opus;
   const [fv, ftone] = R_VERDICT[r.final.verdict];
   return (
     <div>
@@ -161,19 +116,6 @@ function Reviews({ r }: { r: ItemReviews }) {
         <span className="code text-xs text-ink/50" title={r.head}>{r.head.slice(0, 7)}</span>
         {!r.current && <Badge tone="warn">Older head</Badge>}
       </div>
-      <ReviewCard
-        title="Opus review"
-        side={o}
-        extra={
-          o && (
-            <p className="mt-1 text-xs text-ink/60">
-              {o.sure ? "Sure" : "Unsure"} · {o.mode === "delta" ? `changes since ${(o.baseHead ?? "").slice(0, 7)}` : "full diff"}
-            </p>
-          )
-        }
-      >
-        <p className="mt-2 text-ink/80">No review</p>
-      </ReviewCard>
       {r.conflicts.length > 0 && (
         <ul className="mt-2 space-y-1.5 text-sm">
           {r.conflicts.map((c) => (
