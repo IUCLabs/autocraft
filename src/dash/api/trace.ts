@@ -4,6 +4,7 @@
 import { createHash } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import type { ItemTrace, ItemTraceDetail, ItemTraceHeader, TraceActor, TraceEvent, TraceKind } from "../../../web/src/api/types.ts";
+import { getDecision, reposOf } from "../../decisions.ts";
 import { GITHUB_ACTIONS } from "../../github/actions.ts";
 import { knownStep } from "../../runner/steps.ts";
 import { HttpError } from "../server/util.ts";
@@ -58,7 +59,7 @@ const github: Source = {
         summary: `${ours ? "AutoCraft posted a" : "Posted a"} ${what}, ${c.len} characters`, ref: { commentId: c.id },
       });
     }
-    for (const c of rows<{ oid: string; committed_at: string; author: string | null }>(db, "SELECT oid, committed_at, author FROM pr_commits WHERE repo = ? AND number = ?", repo, n)) {
+    for (const c of rows<{ oid: string; committed_at: string; author: string | null }>(db, "SELECT oid, MIN(committed_at, COALESCE(first_seen_at, committed_at)) AS committed_at, author FROM pr_commits WHERE repo = ? AND number = ?", repo, n)) {
       // Our own commits are shown by their audit rows.
       if (own !== "" && c.author === own) continue;
       out.push({ id: `commit:${c.oid}`, kind: "github", at: c.committed_at, head: c.oid, actor: person(c.author), summary: `Pushed commit ${c.oid.slice(0, 7)}`, ref: { head: c.oid } });
@@ -205,11 +206,15 @@ const reviews: Source = {
 };
 
 /** Decisions that name the item: its own, a duplicate group's, and a batch's (decision_items, filled from the `items` JSON). */
-function decisionIds({ db, repo, n }: Ctx): string[] {
+function decisionIds({ db, repo, n, hidden }: Ctx): string[] {
   const ids = new Set<string>();
   for (const sql of ["SELECT id FROM decisions WHERE repo = ? AND number = ?", "SELECT decision_id AS id FROM dupe_group_items WHERE repo = ? AND number = ?", "SELECT decision_id AS id FROM decision_items WHERE repo = ? AND number = ?"])
     for (const r of rows<{ id: string }>(db, sql, repo, n)) ids.add(r.id);
-  return [...ids].sort();
+  // A decision that touches a repo hidden from the viewer does not exist for them (the decisions API answers 404).
+  return [...ids].filter((id) => {
+    const d = getDecision(db, id);
+    return !d || !reposOf(d).some((r) => hidden.includes(r));
+  }).sort();
 }
 
 const decisions: Source = {
@@ -314,7 +319,7 @@ function gather(c: Ctx, kinds: Set<TraceKind> | null): Ev[] {
   return (kinds ? all.filter((e) => kinds.has(e.kind)) : all).sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : a.id < b.id ? 1 : -1));
 }
 
-function headerOf({ db, repo, n, own }: Ctx): ItemTraceHeader {
+function headerOf({ db, repo, n, own, hidden }: Ctx): ItemTraceHeader {
   const plan = db.prepare("SELECT head, state, actions, wait, reasons, note, view, planned_at FROM item_plans WHERE repo = ? AND number = ?").get(repo, n) as
     { head: string | null; state: string; actions: string; wait: string | null; reasons: string; note: string | null; view: string; planned_at: string } | undefined;
   const view = obj(plan?.view);
@@ -330,7 +335,7 @@ function headerOf({ db, repo, n, own }: Ctx): ItemTraceHeader {
     next: acts.map((a) => ({ kind: a.kind as string, head: typeof a.head === "string" ? a.head : null })),
     who: {
       assignees, autocraftAssigned: own !== "" && assignees.includes(own),
-      openDecisions: decisionIds({ db, repo, n } as Ctx).flatMap((id) => {
+      openDecisions: decisionIds({ db, repo, n, hidden } as Ctx).flatMap((id) => {
         const d = db.prepare("SELECT id, kind, question FROM decisions WHERE id = ? AND answer IS NULL").get(id) as { id: string; kind: string; question: string } | undefined;
         return d ? [{ id: d.id, kind: d.kind, question: clip(d.question, 140) }] : [];
       }),
@@ -349,7 +354,7 @@ const FINGERPRINT = [
   "SELECT COUNT(*), MAX(created_at) FROM comments WHERE repo = ? AND number = ?",
   "SELECT COUNT(*), MAX(rowid) FROM stages WHERE repo = ? AND number = ?",
   "SELECT COUNT(*), MAX(id) FROM plan_history WHERE repo = ? AND number = ?",
-  "SELECT COUNT(*), MAX(id) FROM job_items WHERE repo = ? AND number = ?",
+  "SELECT COUNT(*), MAX(i.id), group_concat(j.state) FROM job_items i JOIN jobs j ON j.id = i.job_id WHERE i.repo = ? AND i.number = ?",
   "SELECT COUNT(*), MAX(i.run_id), SUM(r.ended_at IS NOT NULL), SUM(r.cost_usd IS NOT NULL) FROM agent_run_items i JOIN agent_runs r ON r.id = i.run_id WHERE i.repo = ? AND i.number = ?",
   "SELECT COUNT(*), MAX(id), SUM(outcome IS NOT NULL) FROM model_checks WHERE repo = ? AND number = ?",
   "SELECT COUNT(*), MAX(id), SUM(ended_at IS NOT NULL), group_concat(state) FROM build_tasks WHERE repo = ? AND number = ?",

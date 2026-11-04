@@ -97,6 +97,48 @@ test("a viewer gets no staff-only post-merge fields and only the GitHub writes o
   db.prepare("INSERT INTO decisions (id, kind, repo, number, items, question, options, asked_at) VALUES ('b1', 'merge', NULL, NULL, ?, 'Merge the batch?', '[]', '2026-01-03T00:00:00Z')")
     .run(JSON.stringify([{ repo: "photocraft", number: 7 }]));
   assert.deepEqual(((await trace(db, req(7, { kinds: "decision" }))) as ItemTrace).events.map((e) => e.summary), ["Asked: Merge the batch?"], "a batch decision is found through decision_items");
+  db.prepare("INSERT INTO decisions (id, kind, repo, number, items, question, options, asked_at) VALUES ('b2', 'merge', NULL, NULL, ?, 'Hidden batch?', '[]', '2026-01-04T00:00:00Z')")
+    .run(JSON.stringify([{ repo: "photocraft", number: 7 }, { repo: "pdfcraft", number: 1 }]));
+  const viewer = { ...req(7, { kinds: "decision" }), user: { login: "u", role: "viewer" as const, canWrite: async () => true, canRead: async (r: string) => r !== "pdfcraft" } };
+  db.prepare("INSERT INTO repos (name, visibility) VALUES ('pdfcraft', 'private') ON CONFLICT (name) DO UPDATE SET visibility = 'private'").run();
+  assert.deepEqual(((await trace(db, viewer)) as ItemTrace).events.map((e) => e.summary), ["Asked: Merge the batch?"], "a batch touching a repo hidden from the viewer is left out");
+  assert.equal(((await trace(db, req(7, { kinds: "decision" }))) as ItemTrace).events.length, 2, "an operator sees both");
   const f = (await trace(db, { ...as("viewer"), query: new URLSearchParams({ kinds: "review" }) })) as ItemTrace;
   assert.equal(f.events[0]!.head, "c".repeat(40));
+});
+
+test("the activity pass skips a missing item, retries a failed one later and goes on to the others", async () => {
+  const db = connect(":memory:");
+  for (const n of [1, 2, 3])
+    db.prepare("INSERT INTO items (repo, number, kind, state, author, created_at, updated_at, head_oid) VALUES ('photocraft', ?, 'issue', 'OPEN', 'dev', '2026-01-01T00:00:00Z', ?, NULL)").run(n, `2026-01-0${n}T00:00:00Z`);
+  const asked: number[] = [];
+  const client = { spent: 0, remaining: 5000, async query(_q: string, v: { number: number }) {
+    asked.push(v.number);
+    if (v.number === 3) return { repository: { issueOrPullRequest: null } };
+    if (v.number === 2) throw new Error("boom");
+    return { repository: { issueOrPullRequest: { __typename: "Issue", issueTimeline: { nodes: [] } } } };
+  } };
+  const now = new Date("2026-01-10T00:00:00Z");
+  assert.equal(await syncActivity(db, client, now), 3, "the failure does not stop the older item");
+  assert.deepEqual(asked, [3, 2, 1]);
+  asked.length = 0;
+  assert.equal(await syncActivity(db, client, now), 0, "a missing item and a failed one wait");
+  assert.equal(await syncActivity(db, client, new Date(now.getTime() + 2 * 3_600_000)), 1);
+  assert.deepEqual(asked, [2]);
+});
+
+test("decision_items follows a decision that changes or goes away", () => {
+  const db = connect(":memory:");
+  db.prepare("INSERT INTO decisions (id, kind, repo, number, items, question, options, asked_at) VALUES ('d', 'merge', 'photocraft', NULL, NULL, 'q', '[]', '2026-01-01T00:00:00Z')").run();
+  const n = () => (db.prepare("SELECT COUNT(*) AS c FROM decision_items").get() as { c: number }).c;
+  db.prepare("UPDATE decisions SET number = NULL, items = ? WHERE id = 'd'").run(JSON.stringify([{ repo: "photocraft", number: 1 }]));
+  assert.equal(n(), 1);
+  db.prepare("UPDATE decisions SET number = 5 WHERE id = 'd'").run();
+  assert.equal(n(), 0, "a decision with its own number names no batch items");
+  db.prepare("UPDATE decisions SET number = NULL WHERE id = 'd'").run();
+  db.prepare("UPDATE decisions SET items = 'not json' WHERE id = 'd'").run();
+  assert.equal(n(), 0);
+  db.prepare("UPDATE decisions SET items = ? WHERE id = 'd'").run(JSON.stringify([{ repo: "photocraft", number: 2 }]));
+  db.prepare("DELETE FROM decisions WHERE id = 'd'").run();
+  assert.equal(n(), 0);
 });

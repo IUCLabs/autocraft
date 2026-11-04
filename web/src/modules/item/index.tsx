@@ -101,7 +101,7 @@ function ItemMain({ params }: ViewProps) {
           <Conversation repo={it.repo} number={it.number} operator={canAct(user, [it.repo])} />
         </Section>
         {it.files.length > 0 && (
-          <Section title="Files changed" aside={`${it.files.length} files`}>
+          <Section title="Files changed" aside={it.changedFiles !== null && it.changedFiles > it.files.length ? `first ${it.files.length} of ${it.changedFiles} files` : `${it.files.length} files`}>
             <Files it={it} />
           </Section>
         )}
