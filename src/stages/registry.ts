@@ -293,7 +293,7 @@ export const STAGES: StageDef[] = [
       { id: "cifix-queued", label: "CI fix: to read", waitsOn: "model", tone: "neutral", hint: "A wanted PR whose gate check fails: the log is read, then a formatter run or a patch follows", link: "items" },
       { id: "cifix-rerun", label: "CI fix: to rerun", waitsOn: "ci", tone: "neutral", hint: "An infrastructure failure: the failed jobs are rerun once per head", link: "items" },
       { id: "cifix-pushed", label: "CI fix: pushed", waitsOn: "ci", tone: "ok", hint: "The new head goes back to Review and CI", link: "items" },
-      { id: "cifix-failed", label: "CI fix: gave up", waitsOn: "person", tone: "warn", hint: "Two tries at one head did not fix it; the PR stays blocked by CI", link: "items" },
+      { id: "cifix-failed", label: "CI fix: gave up", waitsOn: "person", tone: "warn", hint: "Two tries at one head did not fix it; the contributor is asked once per head (with comment approval) and the PR waits on them", link: "items" },
     ],
     models: [{ model: "sonnet", use: "Writes the patch and resolves conflicts" }, { model: "opus", use: "Checks the patch" }, { model: "haiku", use: "Sorts a red default branch's failed checks (flaky, infra or code)" }],
     promptIds: ["fixup.patch", "fixup.check", "fixup.conflict", "cifix.patch", "mainfix.classify"], promptStage: "Integrate (fix-ups)",

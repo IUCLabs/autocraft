@@ -41,6 +41,7 @@ export function approvalOf(f: { pushable?: boolean }, a: Want): Approval | null 
     case "cifix":
       if (a.bucket === "rerun") return "ci";
       // A closed branch gets the patch as a comment instead of a push.
+      if (a.bucket === "ask") return "comment";
       return a.bucket === "work" || a.bucket === "collect" ? (f.pushable ? "push" : "comment") : null;
     // The collect step of a stored model patch: its push (bucket fixup or cifix), or the patch as a comment where the branch is closed to us.
     case "lint": return a.bucket === "cifix" && !f.pushable ? "comment" : "push";

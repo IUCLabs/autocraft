@@ -20,3 +20,10 @@ export function askText(check: string, patch: string): string {
   // Function replacers: the text may contain `$&` and similar.
   return ASK_TEMPLATE.replace("{{check}}", () => name).replace("{{patch}}", () => body);
 }
+
+/** The comment on a PR whose CI failure we could not fix: one line naming the failing checks. */
+export function askCiText(checks: string[]): string {
+  const names = [...new Set(checks.map((c) => c.replace(/[`@\r\n]/g, " ").trim().slice(0, 100)).filter(Boolean))].slice(0, 5);
+  const list = names.map((n) => `\`${n}\``).join(", ");
+  return names.length ? `The CI check${names.length > 1 ? "s" : ""} ${list} fail${names.length > 1 ? "" : "s"} on this branch. Could you take a look?` : "CI fails on this branch. Could you take a look?";
+}

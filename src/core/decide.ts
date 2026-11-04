@@ -188,12 +188,21 @@ export function cifixBucket(f: PrFacts): CifixBucket | null {
 }
 
 /** The CI fix step's action bucket: what it does next, or null when it does nothing. */
-function cifixOf(f: PrFacts): "work" | "collect" | "rerun" | "capped" | "other" | null {
+function cifixOf(f: PrFacts): "work" | "collect" | "rerun" | "capped" | "ask" | "other" | null {
   const b = cifixBucket(f);
   if (b === null) return null;
+  // A fix given up or capped at this head: the contributor is asked once.
+  if ((b === "failed" || b === "capped") && f.repoFacts.commentApproved) return "ask";
   if (b === "rerun") return f.repoFacts.ciApproved ? "rerun" : "other";
   return b === "work" || b === "collect" || b === "capped" ? b : "other";
 }
+
+/** What a PR waits on when its conflict or CI fix is left to the contributor. */
+const stuckWait = (f: PrFacts): string | null => {
+  if (f.mergeable === "CONFLICTING" && f.conflict && ["ask", "asked", "held"].includes(f.conflict.bucket)) return "the contributor to resolve the conflict";
+  const cf = cifixBucket(f);
+  return cf === "failed" || cf === "capped" || cf === "cannot-push" || (cf === "done" && !!f.cifix?.states.includes("asked")) ? "the contributor to fix CI" : null;
+};
 
 /** Actions that work the PR towards merge (a push, a base merge, a pre-merge review, the merge), as against comment-only asks. */
 const worksOn = (a: Action): boolean => {
@@ -345,6 +354,6 @@ export function decidePr(f: PrFacts): Plan {
   actions.push(...unassignOf(f, state, actions));
 
   const main = actions.some((a) => ["review", "carry", "premerge", "ask-merge", "merge", "verify"].includes(a.kind));
-  const wait = main ? null : e ? (f.mergeHeld && e.state !== "merged" && e.path ? "merge held by an operator" : WAITS[e.state] ?? null) : null;
+  const wait = main ? null : e ? (f.mergeHeld && e.state !== "merged" && e.path ? "merge held by an operator" : stuckWait(f) ?? WAITS[e.state] ?? null) : null;
   return plan(state, { ...(e ? { path: e.path, reasons: e.reasons, note: e.note, conflictNote: e.conflictNote, eligible: eligible(f, e) } : {}), actions, wait });
 }
