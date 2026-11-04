@@ -208,7 +208,7 @@ const stuckWait = (f: PrFacts): string | null => {
   if (f.mergeable === "CONFLICTING" && f.conflict && ["ask", "asked", "held"].includes(f.conflict.bucket)) return f.conflict.bucket === "held" ? (f.repoFacts.commentApproved ? "a person to resolve the conflict" : approval) : "the contributor to resolve the conflict";
   const cf = cifixBucket(f);
   if (cf === "done" && f.cifix?.states.includes("asked")) return "the contributor to fix CI";
-  if (cf === "failed" || cf === "capped") return f.repoFacts.commentApproved && !f.brokeByUs ? "the contributor to fix CI" : approval;
+  if (cf === "failed" || cf === "capped") return f.brokeByUs ? "a person to fix CI our push broke" : f.repoFacts.commentApproved ? "the contributor to fix CI" : approval;
   return cf === "cannot-push" ? approval : null;
 };
 
@@ -248,7 +248,7 @@ function fixupWait(f: PrFacts, fx: { bucket: FixupBucket; done: boolean } | null
   if (f.mergeable === "CONFLICTING") return f.conflict?.bucket === "unapproved" ? "push approval for the repo" : "the contributor's merge of the base branch";
   switch (fx?.bucket) {
     case "asked": return "the contributor's fixes";
-    case "cannot-push": return f.repoFacts.commentApproved ? "the contributor's fixes" : "comment approval for the repo";
+    case "cannot-push": return f.fixup?.recorded.includes("comment-failed") ? "a person: the ask comment failed" : f.repoFacts.commentApproved ? "the contributor's fixes" : "comment approval for the repo";
     case "hold": return fx.done ? "the new review of our pushed fix-up" : "comment approval for the repo";
     case "unapproved": return "push approval for the repo";
     case "ask": case "fix": return null;
@@ -376,6 +376,6 @@ export function decidePr(f: PrFacts): Plan {
   actions.push(...unassignOf(f, state, actions));
 
   const main = actions.some((a) => ["review", "carry", "premerge", "ask-merge", "merge", "verify"].includes(a.kind));
-  const wait = main ? null : e ? (f.mergeHeld && e.state !== "merged" && e.path ? "merge held by an operator" : stuckWait(f) ?? (e.state === "needs-fix-up" ? fixupWait(f, fx, actions) : WAITS[e.state] ?? null)) : null;
+  const wait = main ? null : e ? (f.mergeHeld && e.state !== "merged" ? "merge held by an operator" : stuckWait(f) ?? (e.state === "needs-fix-up" ? fixupWait(f, fx, actions) : WAITS[e.state] ?? null)) : null;
   return plan(state, { ...(e ? { path: e.path, reasons: e.reasons, note: e.note, conflictNote: e.conflictNote, eligible: eligible(f, e) } : {}), actions, wait });
 }

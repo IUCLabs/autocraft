@@ -689,6 +689,9 @@ async function runCifixWith(db: DatabaseSync, params: CifixParams, log: (line: s
     try {
       const reading = await readFailure(d.gh, repo, c.head, optionalChecks(db, repo));
       if (reading.kind === "skip") { rec.set(c, "code", "skipped", reading.why); summary.skipped.push(ref); log(`  ${ref}: skipped: ${reading.why}`); continue; }
+      // A maintainer's changes request is the person's to resolve first; an unreadable answer counts as blocked.
+      const blocked = await readGate(db, d.querier, ORG, repo, c.number, log);
+      if (blocked !== null) { const why = blocked ?? "the PR's reviews could not be read"; rec.set(c, "code", "skipped", why); summary.skipped.push(ref); log(`  ${ref}: skipped: ${why}`); continue; }
       const g = await guard(db, { repo, number: c.number }, { kind: "cifix", bucket: "ask", head: c.head }, params.by ?? CLI_BY, liveOf(db, d.querier));
       if ("refused" in g) { summary.skipped.push(ref); log(`  ${ref}: skipped: ${g.refused}`); continue; }
       const cm = await ghAskComment(gw, d.exec, "cifix-comment", g, { by: "fixed" }, askCiText(reading.failure.checks.map((x) => x.name)), { run: runId, head: c.head });
