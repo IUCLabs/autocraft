@@ -199,6 +199,28 @@ export function ghEditComment(w: Writer, g: CommentGrant, exec: Exec, action: st
     ["api", "-X", "PATCH", `repos/${ORG}/${o.repo}/issues/comments/${o.commentId}`, "-F", "body=@-"], body);
 }
 
+/**
+ * Deletes a comment of ours (`commentId` is the number in its `#issuecomment-` URL). The comment's author must be `login`;
+ * a comment that is already gone counts as done (the audit row carries `gone: true`).
+ */
+export function ghDeleteComment(w: Writer, g: CommentGrant, exec: Exec, action: string, o: { repo: string; number: number; commentId: string; login: string }, details: Details = {}): Promise<ExecResult> {
+  covers(g, o.repo, o.number);
+  const path = `repos/${ORG}/${o.repo}/issues/comments/${o.commentId}`;
+  const gone = (r: ExecResult): boolean => r.code !== 0 && /404|not found/i.test(`${r.stderr} ${r.stdout}`);
+  const goneResult: ExecResult = { code: 0, stdout: "gone", stderr: "" };
+  return recorded(w, action, refOf(o.repo, o.number), { ...details, comment: o.commentId },
+    async () => {
+      const author = await exec("gh", ["api", path, "--jq", ".user.login"]);
+      if (gone(author)) return goneResult;
+      if (author.code !== 0) return author;
+      if (author.stdout.trim() !== o.login) return { code: 1, stdout: "", stderr: "the comment is not ours" };
+      const del = await exec("gh", ["api", "-X", "DELETE", path]);
+      return gone(del) ? goneResult : del;
+    },
+    (r) => (r.stdout === "gone" ? { gone: true } : {}),
+    (r) => (r.code === 0 ? null : oneLine(r.stderr || r.stdout) || `exit code ${r.code}`));
+}
+
 export function ghOpenPr(w: Writer, g: Grant, exec: Exec, action: string, o: { repo: string; target: string; base: string; head: string; title: string; body: string }, note: Note, details: Details = {}): Promise<ExecResult> {
   covers(g, o.repo);
   const body = withNote(note, o.body);
