@@ -157,8 +157,8 @@ class Recorder {
       this.db.prepare("UPDATE dupe_carries SET to_head = ?, from_head = ?, updated_at = ? WHERE decision_id = ? AND number = ?").run(commit, c.head, this.at(), c.carry.decisionId, c.number);
       return;
     }
-    this.db.prepare("INSERT INTO fixups (repo, number, from_head, to_head, state, reason, files, attempt, created_at) VALUES (?, ?, ?, ?, 'pushing', NULL, ?, ?, ?)")
-      .run(c.repo, c.number, c.head, commit, JSON.stringify(files), c.attempt, this.at());
+    this.db.prepare("INSERT INTO fixups (repo, number, from_head, to_head, state, reason, files, attempt, created_at, source) VALUES (?, ?, ?, ?, 'pushing', NULL, ?, ?, ?, ?)")
+      .run(c.repo, c.number, c.head, commit, JSON.stringify(files), c.attempt, this.at(), c.source ?? null);
   }
 
   /** A fixups row and a stages row: `hold` for the two states that need a person, else the PR's `take` stage with a note. */
@@ -177,8 +177,8 @@ class Recorder {
     if (open) {
       this.db.prepare("UPDATE fixups SET state = ?, reason = ?, files = ?, to_head = ? WHERE rowid = ?").run(state, reason, JSON.stringify(files), toHead, open.id);
     } else {
-      this.db.prepare("INSERT INTO fixups (repo, number, from_head, to_head, state, reason, files, attempt, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
-        .run(c.repo, c.number, c.head, toHead, state, reason, JSON.stringify(files), c.attempt, at);
+      this.db.prepare("INSERT INTO fixups (repo, number, from_head, to_head, state, reason, files, attempt, created_at, source) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .run(c.repo, c.number, c.head, toHead, state, reason, JSON.stringify(files), c.attempt, at, c.source ?? null);
     }
     const hold = state === "cannot-push" || state === "too-large" || state === "push-denied";
     const note = state === "pushed" ? `fix-up pushed at ${short(c.head)}: ${files.join(", ")}`
@@ -283,7 +283,7 @@ export async function runFixup(db: DatabaseSync, params: FixupParams, log: (line
     let files = [...new Set(c.fixes.map((f) => f.file))];
     let gaveUp = false;
     const fail = (state: "failed" | "refused" | "rejected", raw: string) => {
-      if (c.attempt >= MAX_ATTEMPTS) gaveUp = true;
+      if (c.attempt >= MAX_ATTEMPTS || c.source) gaveUp = true;
       const reason = scrubReason(raw, d.root);
       rec.fixup(c, state, reason, files);
       summary.failed.push({ ref, reason });
