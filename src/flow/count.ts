@@ -20,8 +20,8 @@ import { commentApprovalOf } from "../act/approval.ts";
 import { pending as actPending } from "../act/index.ts";
 import { fixIssueApprovalOf } from "../fixissue/approval.ts";
 import { candidateIssues } from "../fixissue/candidates.ts";
-import { classifyFixups } from "../fixup/candidates.ts";
-import { classifyCifix } from "../cifix/candidates.ts";
+import { cifixBucket, decidePr, fixupOf } from "../core/decide.ts";
+import { loadPrFacts } from "../core/facts.ts";
 import { approvalOf } from "../labels/approval.ts";
 import { mergeApprovalOf } from "../merge/approval.ts";
 import { buildQueue, eligible, type QueueState } from "../merge/queue.ts";
@@ -365,18 +365,30 @@ function fix(c: Ctx): NodeCount {
 function fixup(c: Ctx): NodeCount {
   const members = new Map<string, Refs>(["fix", "pushed", "hold", "unapproved", "asked", "cifix-queued", "cifix-rerun", "cifix-pushed", "cifix-failed"].map((k) => [`fixup.${k}`, new Set()]));
   const hold = members.get("fixup.hold")!;
-  for (const repo of c.repos())
-    for (const x of classifyFixups(c.db, repo)) {
-      if (x.bucket === "fix" || x.bucket === "unapproved" || x.bucket === "asked") members.get(`fixup.${x.bucket}`)!.add(ref(x.c));
-      else hold.add(ref(x.c));
+  const tracked = new Set(c.repos());
+  const facts = loadPrFacts(c.db, { ...(c.repo ? { repo: c.repo } : {}), run: c.run }).filter((f) => tracked.has(f.repo));
+  for (const f of facts) {
+    const x = fixupOf(f);
+    if (x) {
+      if (x.bucket === "fix" || x.bucket === "unapproved" || x.bucket === "asked") members.get(`fixup.${x.bucket}`)!.add(ref(f));
+      else hold.add(ref(f));
+    } else if (f.premerge && decidePr(f).actions.some((a) => a.kind === "fixup" && a.params?.source === "premerge")) {
+      // A pre-merge round: pushed when the branch and the repo allow it, else left to a person.
+      if (f.pushable && f.repoFacts.pushApproved) members.get("fixup.fix")!.add(ref(f));
+      else if (f.pushable) members.get("fixup.unapproved")!.add(ref(f));
+      else hold.add(ref(f));
     }
+  }
   const waiting = hold.size + sizeOf(members, "fixup.fix") + sizeOf(members, "fixup.unapproved") + sizeOf(members, "fixup.asked");
   const pushed = members.get("fixup.pushed")!;
   for (const r of c.refs(`SELECT DISTINCT f.repo, f.number FROM main.fixups f JOIN main.items i ON i.repo = f.repo AND i.number = f.number AND i.state = 'OPEN'
       WHERE f.state = 'pushed' ${c.tracked("f.repo")}`)) if (![...members.values()].some((s) => s !== pushed && s.has(r))) pushed.add(r);
   // CI fix: PRs whose gate check fails, by what the step does next; a pushed CI fix counts like a pushed fix-up.
-  const bucket: Record<string, string> = { work: "cifix-queued", formatting: "cifix-queued", rerun: "cifix-rerun", "rerun-wait": "cifix-rerun", failed: "cifix-failed", capped: "cifix-failed" };
-  for (const repo of c.repos()) for (const x of classifyCifix(c.db, repo)) if (bucket[x.bucket]) members.get(`fixup.${bucket[x.bucket]}`)!.add(ref(x.c));
+  const bucket: Record<string, string> = { work: "cifix-queued", formatting: "cifix-queued", collect: "cifix-queued", rerun: "cifix-rerun", "rerun-wait": "cifix-rerun", failed: "cifix-failed", capped: "cifix-failed" };
+  for (const f of facts) {
+    const b = cifixBucket(f);
+    if (b && bucket[b]) members.get(`fixup.${bucket[b]}`)!.add(ref(f));
+  }
   for (const r of c.refs(`SELECT DISTINCT f.repo, f.number FROM main.ci_fixes f JOIN main.items i ON i.repo = f.repo AND i.number = f.number AND i.state = 'OPEN'
       WHERE f.state = 'pushed' ${c.tracked("f.repo")}`)) members.get("fixup.cifix-pushed")!.add(r);
   return {

@@ -7,7 +7,7 @@ import { closeCandidates } from "../src/act/index.ts";
 import { setRunner, type Runner } from "../src/classify/run.ts";
 import { connect } from "../src/db.ts";
 import { setPushApproval } from "../src/fixup/approval.ts";
-import { selectFixups } from "../src/fixup/candidates.ts";
+import { selectFixups } from "../src/fixup/select.ts";
 import { buildQueue } from "../src/merge/queue.ts";
 import { selectCandidates as verifyCandidates } from "../src/verify/select.ts";
 import { claudeArgs, claudeParts, renderClaude } from "../src/prompts/index.ts";

@@ -9,7 +9,7 @@ import { spawnSync } from "node:child_process";
 import { setCommentApproval } from "../src/act/approval.ts";
 import { connect } from "../src/db.ts";
 import { setPushApproval } from "../src/fixup/approval.ts";
-import { selectFixups } from "../src/fixup/candidates.ts";
+import { selectFixups } from "../src/fixup/select.ts";
 import { exec, type Exec, type ExecResult } from "../src/fixup/git.ts";
 import { runFixup, type FixupDeps } from "../src/fixup/index.ts";
 import { carryAskText, carryCommentText } from "../src/fixup/template.ts";

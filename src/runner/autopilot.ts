@@ -24,8 +24,8 @@ import { commentApprovalOf } from "../act/approval.ts";
 import { closeCandidates, pending as actPending } from "../act/index.ts";
 import { compareWork, dupesWork } from "../dupes/index.ts";
 import { pushApprovalOf } from "../fixup/approval.ts";
-import { selectFixups } from "../fixup/candidates.ts";
-import { selectCifix } from "../cifix/candidates.ts";
+import { selectFixups } from "../fixup/select.ts";
+import { selectCifix } from "../cifix/select.ts";
 import { mergeApprovalOf } from "../merge/approval.ts";
 import { ciApprovalOf, needsWork } from "../merge/ci-approval.ts";
 import { batchesDue } from "../merge/batch-store.ts";
@@ -326,12 +326,12 @@ const LANE_CODE: Omit<Lane, "steps">[] = [
   {
     name: "fixup",
     perRepo: true,
-    detect: (db, { tracked }) => {
+    detect: (db, { run, tracked }) => {
       const repos = tracked.filter((repo) => {
-        const sel = selectFixups(db, repo);
+        const sel = selectFixups(db, repo, run);
         return (pushApprovalOf(db, repo) && (sel.fix.length > 0 || sel.conflictMerge.length > 0)) || sel.ask.length > 0 || sel.conflictAsk.length > 0;
       });
-      return fastFirst(db, repos.sort(), (r) => { const sel = selectFixups(db, r); return (sel.fix[0] ?? sel.ask[0] ?? sel.conflictMerge[0] ?? sel.conflictAsk[0])?.number; }).map((repo) => ({ step: "fixup", params: { repo } }));
+      return fastFirst(db, repos.sort(), (r) => { const sel = selectFixups(db, r, run); return (sel.fix[0] ?? sel.ask[0] ?? sel.conflictMerge[0] ?? sel.conflictAsk[0])?.number; }).map((repo) => ({ step: "fixup", params: { repo } }));
     },
   },
   {
@@ -402,12 +402,12 @@ const LANE_CODE: Omit<Lane, "steps">[] = [
     name: "cifix",
     perRepo: true,
     extra: tasksSig,
-    detect: (db, { tracked }) => tracked.filter((repo) => { const sel = selectCifix(db, repo); return sel.work.length > 0 || sel.collect.length > 0; }).sort().map((repo) => ({ step: "cifix", params: { repo } })),
+    detect: (db, { run, tracked }) => tracked.filter((repo) => { const sel = selectCifix(db, repo, run); return sel.work.length > 0 || sel.collect.length > 0; }).sort().map((repo) => ({ step: "cifix", params: { repo } })),
   },
   {
     name: "cifix-rerun",
     perRepo: true,
-    detect: (db, { tracked }) => tracked.filter((repo) => selectCifix(db, repo).rerun.length > 0).sort().map((repo) => ({ step: "cifix-rerun", params: { repo } })),
+    detect: (db, { run, tracked }) => tracked.filter((repo) => selectCifix(db, repo, run).rerun.length > 0).sort().map((repo) => ({ step: "cifix-rerun", params: { repo } })),
   },
   {
     // The adversarial review of each PR head the merge rule would merge; the queue holds the PR until it is stored.

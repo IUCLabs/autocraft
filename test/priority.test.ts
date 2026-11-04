@@ -9,7 +9,7 @@ import { connect } from "../src/db.ts";
 import { selectCandidates as decideCandidates } from "../src/decide/select.ts";
 import { toDecision } from "../src/dash/api/decisions.ts";
 import type { DecisionRow } from "../src/decisions.ts";
-import { selectFixups } from "../src/fixup/candidates.ts";
+import { selectFixups } from "../src/fixup/select.ts";
 import { jevAvailable, jevOutage, JEV_RETRY_MS } from "../src/agents/jev.ts";
 import { rescore, runPrioritize } from "../src/priority/index.ts";
 import { priorityOf } from "../src/priority/read.ts";

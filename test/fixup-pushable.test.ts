@@ -5,7 +5,8 @@ import { describe, test } from "node:test";
 import type { DatabaseSync } from "node:sqlite";
 import { connect } from "../src/db.ts";
 import { setPushApproval } from "../src/fixup/approval.ts";
-import { classifyFixups, selectFixups } from "../src/fixup/candidates.ts";
+import { selectFixups } from "../src/fixup/select.ts";
+import { classifyFixups } from "./plan-shims.ts";
 import { pushable } from "../src/fixup/pushable.ts";
 import { SCRATCH } from "./scratch.ts";
 

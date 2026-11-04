@@ -7,7 +7,7 @@ import { spawnSync } from "node:child_process";
 import { connect } from "../src/db.ts";
 import type { Querier } from "../src/mirror.ts";
 import { pushApprovalOf, setPushApproval } from "../src/fixup/approval.ts";
-import { selectFixups } from "../src/fixup/candidates.ts";
+import { selectFixups } from "../src/fixup/select.ts";
 import { exec, type Exec, type ExecResult } from "../src/fixup/git.ts";
 import { FILE_CAP, repostAsk, runFixup, scrubReason, type FixupDeps } from "../src/fixup/index.ts";
 import { shownSize, viewFile } from "../src/fixup/excerpt.ts";
