@@ -113,22 +113,22 @@ export const STAGES: StageDef[] = [
     states: [
       { id: "settled", label: "Settled", waitsOn: "nothing", tone: "ok", hint: "Jev at 90 % or more, or Haiku agreeing with Jev" },
       { id: "waiting", label: "Waiting for a second opinion", waitsOn: "model", tone: "warn", hint: "Jev is unsure; Haiku hasn't answered yet" },
-      { id: "referee", label: "Waiting for the referee", waitsOn: "model", tone: "warn", hint: "Jev and Haiku chose different labels; Sonnet settles it unless it is a scope call" },
-      { id: "disagree", label: "Models disagree", waitsOn: "person", tone: "bad", hint: "Scope calls go to Decide; other disagreements are here when Sonnet was unsure" },
+      { id: "referee", label: "Waiting for the referee", waitsOn: "model", tone: "warn", hint: "Jev and Haiku chose different labels; Sonnet settles it, Opus when Sonnet is unsure, unless it is a scope call" },
+      { id: "disagree", label: "Scope disagreement", waitsOn: "person", tone: "bad", hint: "Jev and Haiku chose two different scope labels; Decide asks a person" },
       { id: "unclassified", label: "Not classified yet", waitsOn: "model", tone: "neutral", hint: "No Jev or Haiku verdict in the current run" },
     ],
     models: [
       { model: "jev", use: "Classifies every item first", remark: "Reports how sure it is; at 90 % or more it matched maintainers' labels 98 % of the time" },
       { model: "haiku", use: "Second opinion where Jev is unsure", remark: "Does every item while Jev is unavailable" },
-      { model: "sonnet", use: "Referee for label disagreements; area suggestions", remark: "The referee asks a person only when it is unsure" },
-      { model: "opus", use: "Proposes area lists" },
+      { model: "sonnet", use: "Referee for label disagreements; area suggestions", remark: "Opus takes over when Sonnet is unsure" },
+      { model: "opus", use: "Referee when Sonnet is unsure; proposes area lists", remark: "When Opus is unsure too, its label stands and Decide asks a scope question" },
     ],
     promptIds: ["classify.jev", "classify.haiku", "referee.sonnet", "areas.jev", "areas.haiku", "areas.propose", "areas.suggest"], promptStage: "Classify",
     waits: [
-
+      { name: "Failed Opus referee", why: "An Opus referee call that keeps failing must not re-run every pass", howLong: "1 hour between tries, at most 3; then Decide asks a scope question", showsAs: "Plan wait \"the label referee\"", kind: "backoff" },
     ],
     writes: [],
-    person: "Labels the models disagree on",
+    person: "Scope disagreements and labels the referees were unsure of (through Decide)",
     swimlane: [
       { id: "classify", lane: "models", row: 6, lines: ["Classify", "Jev, Haiku backup"] },
       { id: "referee", lane: "models", row: 7, lines: ["Sonnet referee", "settles type disagreements"] },
