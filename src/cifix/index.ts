@@ -418,7 +418,7 @@ export async function runCifix(db: DatabaseSync, params: CifixParams, log: (line
       log(`  ${ref}: skipped: ${reason}`);
       return;
     }
-    const g = await guard(db, { repo, number: c.number }, c.lint ? { kind: "lint", bucket: "cifix", head: c.head } : { kind: "cifix", bucket: kind === "format" ? "collect" : "work", head: c.head }, params.by ?? CLI_BY, liveOf(db, d.querier));
+    const g = await guard(db, { repo, number: c.number }, c.lint ? { kind: "lint", bucket: "cifix", head: c.head, source: "review" } : { kind: "cifix", bucket: kind === "format" ? "collect" : "work", head: c.head }, params.by ?? CLI_BY, liveOf(db, d.querier));
     if ("refused" in g) {
       // Nothing is recorded: the head is tried again once the refusal's reason is gone.
       summary.skipped.push(ref);
@@ -436,8 +436,7 @@ export async function runCifix(db: DatabaseSync, params: CifixParams, log: (line
       }
     }
     if (!canPush) {
-      // The comment carries one diff: the patch with the format changes folded in.
-      const shownPatch = folded === null ? v.patch : await git.diffText(head, applied.tree);
+      const shownPatch = folded ?? v.patch;
       const cm = await ghAskComment(gw, d.exec, "cifix-comment", g, codeNote, askText(checkName, shownPatch), { run: runId, head: c.head });
       if (cm.code !== 0) {
         const reason = `the comment failed: ${scrubReason(oneLine(cm.stderr), d.root)}`;
@@ -548,7 +547,7 @@ export async function runCifix(db: DatabaseSync, params: CifixParams, log: (line
       return;
     }
     if (res.findings.length === 0) {
-      const fold = foldFormat(w.patch, res.formatDiff ?? "");
+      const fold = await foldFormat(git, c.head, w.patch, res.formatDiff ?? "", d.root);
       if (!fold.ok) { fail("refused", fold.reason); return; }
       const v = validatePatch(w.patch, w.files);
       if (!v.ok) { fail("refused", v.reason); return; }

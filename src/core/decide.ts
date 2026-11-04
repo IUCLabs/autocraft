@@ -205,7 +205,7 @@ export function decidePr(f: PrFacts): Plan {
     if (!reviewed) extra.push(act("postmerge", pm.head));
   }
   if (f.ghState === "OPEN" && !f.heldBacklog && f.head && !f.draft && f.mergeable !== "CONFLICTING") {
-    for (const c of declinedBy(f) ? [] : f.carry) {
+    for (const c of declinedBy(f) || f.lint.some((l) => l.source === "carry") ? [] : f.carry) {
       if (f.pushable && f.repoFacts.pushApproved && c.attempts + 1 <= FIXUP_MAX_ATTEMPTS) extra.push(act("fixup", f.head, { bucket: "fix", source: "carry" }));
       else if (f.repoFacts.commentApproved) extra.push(act("fixup", f.head, { bucket: "ask", source: "carry" }));
     }
@@ -260,7 +260,7 @@ export function decidePr(f: PrFacts): Plan {
   const fx = fixupOf(f);
   if (fx) {
     if (fx.bucket === "ask" || (!fx.done && (fx.bucket === "cannot-push" || fx.bucket === "fix"))) actions.push(act("fixup", f.head, { bucket: fx.bucket, source: "review" }));
-  } else if (e && e.state === "needs-fix-up" && e.premerge === "fix" && f.premerge?.fixesSafe && f.mergeable !== "CONFLICTING" && !f.mergeHeld && !f.draft) {
+  } else if (e && e.state === "needs-fix-up" && e.premerge === "fix" && f.premerge?.fixesSafe && f.mergeable !== "CONFLICTING" && !f.mergeHeld && !f.draft && !f.lint.some((l) => l.source === "premerge")) {
     actions.push(act("fixup", f.head, { bucket: "fix", source: "premerge" }));
   }
 
@@ -272,10 +272,14 @@ export function decidePr(f: PrFacts): Plan {
   const cf = cifixOf(f);
   if (cf && cf !== "other") actions.push(act("cifix", f.head, { bucket: cf }));
 
-  // A stored model patch whose lint task ended: the collect step folds the format changes and pushes, or sends the findings back to the model.
-  const lint = f.lint;
-  if (lint && lint.ended && open && !f.draft && !declinedBy(f) && !!r && takeReview && r.head === f.head && !r.stale && notHeld(f) && f.mergeable !== "CONFLICTING" && !f.mergeHeld
-    && (f.pushable ? f.repoFacts.pushApproved : lint.step === "cifix" && f.repoFacts.commentApproved)) actions.push(act("lint", f.head, { bucket: lint.step }));
+  // Stored model patches whose lint task ended: the collect step folds the format changes and pushes, or sends the findings back to the model.
+  for (const l of f.lint) {
+    const basic = l.ended && open && !f.draft && !declinedBy(f) && f.mergeable !== "CONFLICTING" && !f.mergeHeld && !f.heldBacklog && !!f.head;
+    // A carry-over needs no review at the head; every other patch needs a take review there that is not stale.
+    const reviewed = l.source === "carry" || (!!r && takeReview && r.head === f.head && !r.stale && notHeld(f));
+    const approved = f.pushable ? f.repoFacts.pushApproved : l.step === "cifix" && f.repoFacts.commentApproved;
+    if (basic && reviewed && approved) actions.push(act("lint", f.head, { bucket: l.step, source: l.source }));
+  }
 
   if (e) {
     if (e.state === "waiting-premerge" && f.repoFacts.mergeApproved && premergeRetryDue(f)) actions.push(act("premerge", r!.head));

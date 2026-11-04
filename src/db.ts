@@ -64,6 +64,7 @@ const ADDED_COLUMNS: [table: string, column: string, type: string][] = [
   ["fixups", "lint_task", "INTEGER"],
   ["fixups", "lint_round", "INTEGER"],
   ["fixups", "lint_state", "TEXT"],
+  ["fixups", "carry_decision", "TEXT"],
   ["ci_fixes", "patch", "TEXT"],
   ["ci_fixes", "lint_task", "INTEGER"],
   ["ci_fixes", "lint_round", "INTEGER"],

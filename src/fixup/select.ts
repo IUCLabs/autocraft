@@ -64,14 +64,26 @@ export function selectFixups(db: DatabaseSync, repo: string, run?: string | null
       else if (bucket === "fix") fix.push(c);
     }
   }
-  const row = db.prepare("SELECT rowid AS id, attempt, patch, lint_task, lint_round, lint_state FROM fixups WHERE repo = ? AND number = ? AND from_head = ? AND source IS NULL AND state = 'linting' ORDER BY rowid DESC");
+  // Stored patches (review, pre-merge and carry-over sources) whose lint task ended. Their row is found by source; a carry-over's also by its decision.
+  const row = db.prepare("SELECT rowid AS id, attempt, patch, lint_task, lint_round, lint_state, carry_decision FROM fixups WHERE repo = ? AND number = ? AND from_head = ? AND COALESCE(source, 'review') = ? AND state = 'linting' ORDER BY rowid");
+  type LintRow = { id: number; attempt: number; patch: string | null; lint_task: number | null; lint_round: number | null; lint_state: string | null; carry_decision: string | null };
   for (const { facts: f, action } of planned(db, "lint", { ...opts, bucket: "fixup" })) {
-    const head = action.head!;
-    const w = row.get(repo, f.number, head) as { id: number; attempt: number; patch: string | null; lint_task: number | null; lint_round: number | null; lint_state: string | null } | undefined;
-    const r = review.get(repo, f.number, head) as { fixes: string | null; model: string | null } | undefined;
-    if (!w || !w.patch || !f.review) continue;
-    out.lint.push({ repo, number: f.number, head, reason: f.review.reason, fixes: parseFixes(r?.fixes ?? null), attempt: w.attempt, model: r?.model ?? null,
-      lint: { rowid: w.id, round: w.lint_round ?? 1, task: w.lint_task, state: w.lint_state ?? "pending", patch: w.patch } });
+    const head = action.head!, source = String(action.params?.source ?? "review");
+    for (const w of row.all(repo, f.number, head, source) as LintRow[]) {
+      if (!w.patch) continue;
+      const lint = { rowid: w.id, round: w.lint_round ?? 1, task: w.lint_task, state: w.lint_state ?? "pending", patch: w.patch };
+      if (source === "carry") {
+        const c = carriesOf(db, f, head).find((x) => x.carry!.decisionId === w.carry_decision);
+        if (c) out.lint.push({ ...c, attempt: w.attempt, lint });
+      } else if (source === "premerge") {
+        const pm = premergeAt(db, repo, f.number, head);
+        const defects = findingsOf(pm).filter((x) => x.severity === "defect");
+        out.lint.push({ repo, number: f.number, head, reason: "pre-merge review", fixes: parseFixes(JSON.stringify(defects.map((x) => x.fix))), attempt: w.attempt, model: pm?.model ?? null, source: "premerge", lint });
+      } else {
+        const r = review.get(repo, f.number, head) as { fixes: string | null; model: string | null } | undefined;
+        if (f.review) out.lint.push({ repo, number: f.number, head, reason: f.review.reason, fixes: parseFixes(r?.fixes ?? null), attempt: w.attempt, model: r?.model ?? null, lint });
+      }
+    }
   }
   out.fix.push(...carryFix, ...fix);
   out.ask.unshift(...carryAsk);

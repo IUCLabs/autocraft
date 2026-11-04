@@ -1,12 +1,14 @@
 // Lint before push: one build task runs rustfmt on the files a model-written Rust patch changes and clippy on the patched
 // tree. The formatter's changes are folded into the patch; clippy diagnostics on lines the patch added or changed go back to the model.
-import { readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import type { TaskStep } from "../../web/src/api/types.ts";
 import { absolute } from "../build/artifacts.ts";
 import { createTask, getTask, warmKeyOf, type Warm } from "../build/tasks.ts";
 import { FORMAT_ARTIFACT, FORMAT_SCRIPT, gitFormatDiff } from "../cifix/index.ts";
 import { formattingOnly } from "../cifix/guard.ts";
+import type { Git } from "../fixup/git.ts";
 import { rustPlan } from "../worker/rust.ts";
 
 export const CLIPPY_ARTIFACT = "clippy.txt";
@@ -157,7 +159,7 @@ function sides(diff: string): Map<string, { before: string[]; after: string[] }>
  * The patch followed by the formatter's diff, which `git apply` applies in order to the same files. Refused unless every
  * file's formatter changes are whitespace-only (by tokens), whatever produced the diff.
  */
-export function foldFormat(patch: string, formatDiff: string): Fold {
+export function checkFormat(patch: string, formatDiff: string): Fold {
   if (!formatDiff.trim()) return { ok: true, patch };
   const allowed = new Set(changedRsFiles(patch));
   for (const [path, s] of sides(formatDiff)) {
@@ -166,4 +168,19 @@ export function foldFormat(patch: string, formatDiff: string): Fold {
     if (why) return { ok: false, reason: why };
   }
   return { ok: true, patch: `${patch.replace(/\n*$/, "\n")}${formatDiff.replace(/\n*$/, "\n")}` };
+}
+
+/** The patch with the formatter's changes folded in as ONE diff against `head`: both are applied to a temporary index and the result is diffed. */
+export async function foldFormat(git: Pick<Git, "applyToTree" | "diffText">, head: string, patch: string, formatDiff: string, scratchRoot: string): Promise<Fold> {
+  const both = checkFormat(patch, formatDiff);
+  if (!both.ok || !formatDiff.trim()) return both;
+  mkdirSync(scratchRoot, { recursive: true });
+  const scratch = mkdtempSync(join(scratchRoot, ".fold-"));
+  try {
+    const applied = await git.applyToTree(head, both.patch, join(scratch, "index"));
+    if (!applied.ok) return { ok: false, reason: applied.reason };
+    return { ok: true, patch: await git.diffText(head, applied.tree) };
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
 }

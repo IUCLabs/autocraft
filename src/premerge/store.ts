@@ -53,7 +53,7 @@ export function premergeAt(db: DatabaseSync, repo: string, number: number, head:
 
 /** The PR already had a pre-merge fix round (any fixups row with source premerge, pushed or not). */
 export function premergeFixUsed(db: DatabaseSync, repo: string, number: number): boolean {
-  return !!db.prepare("SELECT 1 FROM fixups WHERE repo = ? AND number = ? AND source = 'premerge' LIMIT 1").get(repo, number);
+  return !!db.prepare("SELECT 1 FROM fixups WHERE repo = ? AND number = ? AND source = 'premerge' AND state NOT IN ('linting', 'superseded') LIMIT 1").get(repo, number);
 }
 
 /** Findings of a stored row; empty when none or unreadable. */

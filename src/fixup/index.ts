@@ -165,14 +165,13 @@ class Recorder {
 
   /** Written before the push: the commit about to be pushed, so a crash between the push and its record leaves the head in the push chain. */
   pushing(c: FixCandidate, commit: string, files: string[]): void {
+    // A stored patch's row (any source) is the record of the push; a carry-over also keeps its own.
+    if (c.lint) this.db.prepare("UPDATE fixups SET state = 'pushing', to_head = ?, files = ? WHERE rowid = ?").run(commit, JSON.stringify(files), c.lint.rowid);
     if (c.carry) {
       this.db.prepare("UPDATE dupe_carries SET to_head = ?, from_head = ?, updated_at = ? WHERE decision_id = ? AND number = ?").run(commit, c.head, this.at(), c.carry.decisionId, c.number);
       return;
     }
-    if (c.lint) {
-      this.db.prepare("UPDATE fixups SET state = 'pushing', to_head = ?, files = ? WHERE rowid = ?").run(commit, JSON.stringify(files), c.lint.rowid);
-      return;
-    }
+    if (c.lint) return;
     this.db.prepare("INSERT INTO fixups (repo, number, from_head, to_head, state, reason, files, attempt, created_at, source) VALUES (?, ?, ?, ?, 'pushing', NULL, ?, ?, ?, ?)")
       .run(c.repo, c.number, c.head, commit, JSON.stringify(files), c.attempt, this.at(), c.source ?? null);
   }
@@ -183,14 +182,14 @@ class Recorder {
       this.db.prepare("UPDATE fixups SET patch = ?, files = ?, lint_task = ?, lint_round = ?, lint_state = ? WHERE rowid = ?").run(patch, JSON.stringify(files), task, round, lintState, c.lint.rowid);
       return;
     }
-    this.db.prepare("INSERT INTO fixups (repo, number, from_head, to_head, state, reason, files, attempt, created_at, source, patch, lint_task, lint_round, lint_state) VALUES (?, ?, ?, NULL, 'linting', NULL, ?, ?, ?, ?, ?, ?, ?, ?)")
-      .run(c.repo, c.number, c.head, JSON.stringify(files), c.attempt, this.at(), c.source ?? null, patch, task, round, lintState);
+    this.db.prepare("INSERT INTO fixups (repo, number, from_head, to_head, state, reason, files, attempt, created_at, source, patch, lint_task, lint_round, lint_state, carry_decision) VALUES (?, ?, ?, NULL, 'linting', NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(c.repo, c.number, c.head, JSON.stringify(files), c.attempt, this.at(), c.carry ? "carry" : c.source ?? null, patch, task, round, lintState, c.carry?.decisionId ?? null);
   }
 
   /** Stored patches whose Plan no longer lists the push (head moved, a Hold or Close answer, approval revoked) are dropped. */
   dropUnlisted(repo: string, listed: FixCandidate[]): void {
     const keep = new Set(listed.map((c) => c.lint!.rowid));
-    const rows = this.db.prepare("SELECT rowid AS id, lint_task FROM fixups WHERE repo = ? AND source IS NULL AND state = 'linting'").all(repo) as { id: number; lint_task: number | null }[];
+    const rows = this.db.prepare("SELECT rowid AS id, lint_task FROM fixups WHERE repo = ? AND state = 'linting'").all(repo) as { id: number; lint_task: number | null }[];
     for (const r of rows) {
       const t = r.lint_task != null ? getTask(this.db, r.lint_task) : null;
       if (t && !TERMINAL.includes(t.state)) continue;
@@ -208,6 +207,8 @@ class Recorder {
       const next = ended || c.attempt >= MAX_ATTEMPTS ? (state === "pushed" || state === "asked" ? "done" : "held") : "queued";
       this.db.prepare("UPDATE dupe_carries SET state = ?, attempts = attempts + ?, outcome = ?, to_head = ?, from_head = ?, updated_at = ? WHERE decision_id = ? AND number = ?")
         .run(next, tried || state === "pushed" ? 1 : 0, reason ? `${state}: ${reason}` : state, toHead, toHead ? c.head : null, at, c.carry.decisionId, c.number);
+      // The stored patch's row, if the carry-over went through the lint check, ends with it.
+      if (c.lint) this.db.prepare("UPDATE fixups SET state = ?, reason = ?, files = ?, to_head = ?, patch = NULL WHERE rowid = ?").run(state, reason, JSON.stringify(files), toHead, c.lint.rowid);
       return;
     }
     const open = this.db.prepare("SELECT rowid AS id FROM fixups WHERE repo = ? AND number = ? AND from_head = ? AND state IN ('pushing', 'linting') ORDER BY rowid DESC").get(c.repo, c.number, c.head) as { id: number } | undefined;
@@ -407,7 +408,7 @@ export async function runFixup(db: DatabaseSync, params: FixupParams, log: (line
           if (c.lint.round >= LINT_MAX_ROUNDS) { fail("rejected", `clippy findings remain after ${c.lint.round} rounds: ${oneLine(res.findings[0]!.message)}`); continue; }
           findings = res.findings.map((x) => x.rendered);
         } else {
-          const fold = foldFormat(c.lint.patch, res.formatDiff ?? "");
+          const fold = await foldFormat(git, head, c.lint.patch, res.formatDiff ?? "", d.root);
           if (!fold.ok) { fail("refused", fold.reason); continue; }
           folded = fold.patch;
         }
@@ -457,10 +458,10 @@ export async function runFixup(db: DatabaseSync, params: FixupParams, log: (line
       if (!now || now.state !== "OPEN" || now.isDraft) { log(`  ${ref}: skipped: no longer an open, non-draft PR after the model calls`); continue; }
       if (now.headRefOid !== c.head) { log(`  ${ref}: skipped: head moved to ${short(now.headRefOid)} during the model calls`); continue; }
 
-      const g = await guard(db, { repo, number: c.number }, c.lint ? { kind: "lint", bucket: "fixup", head: c.head } : { kind: "fixup", bucket: "fix", head: c.head, source: sourceOf(c) }, params.by ?? CLI_BY, liveOf(db, d.querier));
+      const g = await guard(db, { repo, number: c.number }, c.lint ? { kind: "lint", bucket: "fixup", head: c.head, source: sourceOf(c) } : { kind: "fixup", bucket: "fix", head: c.head, source: sourceOf(c) }, params.by ?? CLI_BY, liveOf(db, d.querier));
       if ("refused" in g) { log(`  ${ref}: skipped: ${g.refused}`); continue; }
       // A model patch is stored and linted before it is pushed (the collect step above pushes it); a patch without a Rust file needs no lint.
-      if (folded === null && !c.carry && !c.source) {
+      if (folded === null) {
         const round = c.lint ? c.lint.round + 1 : 1;
         const task = queueLint(db, { step: "fixup", repo, number: c.number, head, base: now.baseRefOid ?? null, patch: v.patch });
         if (task !== null) {
