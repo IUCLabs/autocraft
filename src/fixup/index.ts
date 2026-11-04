@@ -491,7 +491,7 @@ async function runFixupWith(db: DatabaseSync, params: FixupParams, log: (line: s
       summary.pushed.push(ref);
       jobItem(db, repo, c.number, `pushed ${short(commit)} on ${short(head)}: ${v.files.join(", ")}`, log);
 
-      const body = c.carry ? carryCommentText(c.carry.sources.map((x) => x.number), v.files) : commentText(v.files);
+      const body = c.carry ? carryCommentText(c.carry.sources.map((x) => x.number), v.files) : commentText(v.files, c.attempt);
       const cm = await ghComment(gw, g, d.exec, "fixup-comment", { repo, number: c.number, pr: true }, c.carry ? { by: "operator", model: PROMPT.models[0] } : { by: "model", kind: "comment", model: PROMPT.models[0] }, body, { run: runId });
       if (cm.code !== 0) log(`  ${ref}: comment failed: ${oneLine(cm.stderr)}`);
     } catch (e) {
