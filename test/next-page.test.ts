@@ -1,0 +1,42 @@
+// The Next page lists a step's items in the order the autopilot's selection takes them, and says why a step cannot run.
+import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync } from "node:fs";
+import { join } from "node:path";
+import { describe, test } from "node:test";
+import { connect } from "../src/db.ts";
+import { plannedItems } from "../src/core/select-items.ts";
+import { nextPage } from "../src/dash/api/next.ts";
+import { detectAutopilot, planCtx, setEnabled, setLimit } from "../src/runner/autopilot.ts";
+import { SCRATCH } from "./scratch.ts";
+
+mkdirSync(SCRATCH, { recursive: true });
+const dir = mkdtempSync(join(SCRATCH, "next-page-"));
+const T0 = "2026-01-01T00:00:00Z";
+
+describe("Next page", () => {
+  const db = connect(join(dir, "t.db"));
+  db.prepare("INSERT INTO tracked_repos (name, pipeline) VALUES ('app', 1)").run();
+  db.prepare("INSERT INTO tracked_repos (name, pipeline) VALUES ('secret', 1)").run();
+  const add = db.prepare(`INSERT INTO items (repo, number, kind, state, title, body, is_draft, created_at, updated_at) VALUES (?, ?, 'issue', 'OPEN', ?, 'b', 0, '${T0}', '${T0}')`);
+  for (const n of [3, 1, 2]) add.run("app", n, `issue ${n}`);
+  add.run("secret", 9, "hidden");
+  setEnabled(db, true, "op");
+
+  test("a lane lists its items in the planner's order, without hidden repos", async () => {
+    await detectAutopilot(db);
+    const want = plannedItems(db, "embed").filter((p) => p.facts.repo === "app").map((p) => p.facts.number);
+    assert.equal(want.length, 3);
+    const page = await nextPage(db, ["app"], { ctx: planCtx(db) });
+    const embed = page.steps.find((s) => s.lane === "embed")!;
+    assert.deepEqual(embed.items.map((i) => i.number), want);
+    assert.deepEqual([embed.canRun, embed.kind], [true, "ok"]);
+    assert.equal(embed.items[0]!.title, `issue ${want[0]}`);
+  });
+
+  test("a step with a zero daily limit says so", async () => {
+    setLimit(db, "embed", { perDay: 0 }, "op");
+    const embed = (await nextPage(db, ["app"], { ctx: planCtx(db) })).steps.find((s) => s.lane === "embed")!;
+    assert.deepEqual([embed.canRun, embed.kind], [false, "limit"]);
+    assert.match(embed.why!, /daily limit is 0/);
+  });
+});

@@ -26,6 +26,7 @@ import * as insight from "./insight.ts";
 import * as pipeline from "./pipeline.ts";
 import { prompts } from "./prompts.ts";
 import { queue, queueBatches } from "./queue.ts";
+import { next } from "./next.ts";
 import { githubActivity } from "./github-activity.ts";
 import { work } from "./work.ts";
 import { flow } from "./flow.ts";
@@ -459,6 +460,7 @@ export function apiRoutes(opts: ApiOptions = {}): Route[] {
     { method: "POST", pattern: "/api/tasks/:id/cancel", operator: true, handler: ok(build.cancel) },
     { method: "GET", pattern: "/api/tasks/:id/artifacts/:name", handler: build.artifact },
     get("/api/build/summary", build.buildSummary),
+    get("/api/next", next),
     get("/api/queue", queue),
     get("/api/queue/batches", queueBatches),
     get("/api/github-activity", githubActivity),

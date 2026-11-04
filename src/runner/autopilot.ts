@@ -17,7 +17,7 @@ import { pendingConversations } from "../conversations/store.ts";
 import { plannedItems, type PlannedItem } from "../core/select-items.ts";
 import { loadPlanSet, type PlanSet } from "../core/plan-set.ts";
 import { gates, type Want } from "../core/gates.ts";
-import type { Action } from "../core/plan.ts";
+import type { Action, ActionKind } from "../core/plan.ts";
 import { writePlanCache } from "../core/plan-cache.ts";
 import { embedderId, modelName } from "../embed/model.ts";
 import { embedDue } from "../embed/store.ts";
@@ -45,7 +45,7 @@ import { tripReasonOfStep } from "../push-outcomes.ts";
 import { STEP_STAGE } from "../core/push-outcome.ts";
 import { knownStep, loadSteps, modelsOf, usesClaude, type Params, type StepDef } from "./steps.ts";
 import { pilotItems, scopeRepos } from "../pilot.ts";
-import { fastFirst, fastScoreOf } from "../fasttrack.ts";
+import { FAST_FLOOR, fastFirst, fastScoreOf } from "../fasttrack.ts";
 
 /** Fallback only: the planner normally runs on a content change, a finished job or a release. */
 export const PLAN_EVERY_MS = 5 * 60_000;
@@ -913,4 +913,75 @@ export function planDue(db: DatabaseSync, nowMs: number = Date.now()): boolean {
 /** Why each stage is not starting, as the last planner pass saw it; keyed by step. */
 export function stageStatus(db: DatabaseSync): Record<string, string> {
   try { return JSON.parse(getSetting(db, KEY_STATUS) ?? "{}") as Record<string, string>; } catch { return {}; }
+}
+
+// ---- what each lane will take next ----------------------------------------------
+
+/** The plan actions whose items a lane's job works on, in the order the lane's own selection lists them. Lanes without items are absent. */
+const LANE_KINDS: Record<string, ActionKind[]> = {
+  classify: ["classify"], priority: ["prioritize"], embed: ["embed"], dupes: ["dupes", "dupe-answer"], "dupes-compare": ["dupes-compare"], decide: ["decide"],
+  review: ["review"], labels: ["label"], "merge-ask": ["ask-merge"], merge: ["merge"], act: ["act"], fixup: ["fixup", "conflict"], verify: ["verify"],
+  fixissue: ["fixissue"], "fixissue-collect": ["fixissue-collect"], referee: ["referee"], "review-carry": ["carry"], "review-post": ["post-review"],
+  "ci-approve": ["approve-ci"], cifix: ["cifix", "lint"], unassign: ["unassign"], premerge: ["premerge"],
+};
+
+export type LaneItem = {
+  repo: string; number: number; kind: "pr" | "issue"; action: string; bucket: string | null;
+  fast: boolean; rank: number | null; inFlight: boolean;
+  /** The next job of the lane covers this item's repo. */
+  next: boolean;
+  /** Why the guard would refuse the item's write, or null. */
+  blocked: string | null;
+};
+
+/**
+ * The items a lane's jobs work on, in the order its next jobs take them: the repos in the order `detect` lists
+ * its candidates, and within a repo the order the planner's own selection (planned, plannedItems) gives. Items of
+ * other repos follow. The dashboard's Next page reads this, so it cannot drift from what the autopilot picks.
+ */
+export function laneItems(db: DatabaseSync, ctx: PlanCtx, lane: Pick<Lane, "name" | "perRepo" | "detect">): LaneItem[] {
+  const kinds = LANE_KINDS[lane.name];
+  if (!kinds) return [];
+  const plans = plansOf(db, ctx);
+  const seen = new Set<string>(), all: LaneItem[] = [];
+  const add = (f: Planned["facts"] | PlannedItem["facts"], state: string, a: Action) => {
+    const ref = `${f.repo}#${f.number}`;
+    if (seen.has(ref)) return;
+    seen.add(ref);
+    const refused = gates(f, wantOf(a), "pipeline");
+    const blocked = !ctx.tracked.includes(f.repo) ? "outside the pipeline scope" : refused === "the pipeline is off" ? null : refused;
+    const fast = (fastScoreOf(db, f.repo, f.number) ?? 0) >= FAST_FLOOR;
+    all.push({
+      repo: f.repo, number: f.number, kind: "kind" in f ? f.kind : "pr", action: a.kind, bucket: typeof a.params?.bucket === "string" ? a.params.bucket : null,
+      fast, rank: f.score, inFlight: inFlightNow(f, state), next: false, blocked,
+    });
+  };
+  for (const k of kinds) {
+    for (const p of planned(db, k, { plans })) add(p.facts, p.plan.state, p.action);
+    for (const p of plannedItems(db, k, { plans })) add(p.facts, p.plan.state, p.action);
+  }
+  const repos: string[] = [];
+  for (const c of lane.detect(db, ctx)) { const r = repoOf(c); if (r && !repos.includes(r)) repos.push(r); }
+  const picked = (i: LaneItem) => !lane.perRepo || repos.includes(i.repo);
+  const first = lane.perRepo ? repos.flatMap((r) => all.filter((i) => i.repo === r)) : all;
+  const rest = all.filter((i) => !first.includes(i));
+  return [...first, ...rest].map((i) => ({ ...i, next: picked(i) && !i.blocked }));
+}
+
+export type LaneGate = { canRun: boolean; kind: "ok" | "running" | "off" | "breaker" | "limit" | "account" | "backoff"; why: string | null };
+
+/** Whether a job of the lane can start now, from the same checks the planner's gate() makes. */
+export function laneGate(db: DatabaseSync, lane: Pick<Lane, "steps">, ms: number = Date.now()): LaneGate {
+  if (!isEnabled(db)) return { canRun: false, kind: "off", why: "the pipeline is off" };
+  const steps = lane.steps ?? [];
+  let blocked: LaneGate | null = null;
+  for (const s of steps) {
+    const j = db.prepare("SELECT id, state FROM jobs WHERE step = ? AND state IN ('queued', 'running') ORDER BY state = 'running' DESC LIMIT 1").get(s) as { id: number; state: string } | undefined;
+    if (j) { blocked ??= { canRun: false, kind: "running", why: `job ${j.id} of ${s} is ${j.state}` }; continue; }
+    const why = pauseReason(db, s, ms);
+    if (!why) return { canRun: true, kind: "ok", why: null };
+    const kind = /^tripped/.test(why) ? "breaker" : /daily limit/.test(why) ? "limit" : /^failed/.test(why) ? "backoff" : "account";
+    blocked ??= { canRun: false, kind, why: `${s}: ${why}` };
+  }
+  return blocked ?? { canRun: true, kind: "ok", why: null };
 }
