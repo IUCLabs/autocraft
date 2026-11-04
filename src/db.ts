@@ -94,6 +94,12 @@ const ADDED_COLUMNS: [table: string, column: string, type: string][] = [
   ["conflict_merges", "lint_task", "INTEGER"],
   ["main_fixes", "pr_number", "INTEGER"],
   ["main_fixes", "pr_url", "TEXT"],
+  // A model patch waiting for its lint task (state linting): the patch, the files (JSON), the task, the round and `pending` | `requeued`.
+  ["main_fixes", "patch", "TEXT"],
+  ["main_fixes", "files", "TEXT"],
+  ["main_fixes", "lint_task", "INTEGER"],
+  ["main_fixes", "lint_round", "INTEGER"],
+  ["main_fixes", "lint_state", "TEXT"],
 ];
 
 // Indexes on added columns: they can only be created once the column exists.

@@ -3,12 +3,13 @@ import type { DatabaseSync } from "node:sqlite";
 import { mainFixApprovalOf } from "./approval.ts";
 
 /** Shown first when a head has rows in several states: what needs a person comes before what is running. */
-const ORDER = ["fix-failed", "needs-fix", "asked", "pr-opened", "rerun-requested", "issue-opened", "declined", "nothing-to-do", "rerun-passed"] as const;
+const ORDER = ["fix-failed", "needs-fix", "linting", "asked", "pr-opened", "rerun-requested", "issue-opened", "declined", "nothing-to-do", "rerun-passed"] as const;
 
 const TEXT: Record<(typeof ORDER)[number], string> = {
   "fix-failed": "needs a person",
   "pr-opened": "opened fix PR",
   "needs-fix": "needs a fix",
+  linting: "checking a fix",
   asked: "asked an operator",
   "rerun-requested": "rerunning failed jobs",
   "issue-opened": "opened an issue",
