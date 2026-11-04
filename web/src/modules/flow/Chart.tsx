@@ -1,6 +1,6 @@
 // The desktop flowchart: nodes on a grid, the main line left to right along the
 // top row (Synced to Merge queue), the side stages below it (Duplicates, Priority,
-// Act, Fix, Fix-up), edges drawn over the grid from the measured positions of the
+// Act, Fix, Fix-up, Post-merge review), edges drawn over the grid from the measured positions of the
 // nodes and their branch rows. The columns shrink with the window down to a floor,
 // so the whole flow fits on a laptop screen without scrolling sideways.
 import { useLayoutEffect, useRef, useState } from "react";
@@ -14,7 +14,7 @@ import { BranchRow, recentText, RunningMarker, WaitIcon } from "./parts";
 /** Grid cell of each node: [column, row, row span]. */
 const CELL: Record<FlowNode["id"], [number, number, number]> = {
   synced: [1, 1, 1], dupes: [1, 2, 1], classify: [2, 1, 1], priority: [2, 2, 1], decide: [3, 1, 1], act: [3, 2, 1],
-  labels: [4, 1, 1], fix: [4, 2, 1], review: [5, 1, 1], fixup: [5, 2, 1], verify: [6, 1, 1], merge: [6, 2, 1], postmerge: [7, 1, 1],
+  labels: [4, 1, 1], fix: [4, 2, 1], review: [5, 1, 1], fixup: [5, 2, 1], verify: [6, 1, 1], merge: [6, 2, 2], postmerge: [5, 3, 1],
 };
 
 export function NodeCard({ n, selected, onSelect, runs }: { n: FlowNode; selected: boolean; onSelect: () => void; runs: AgentRun[] }) {
@@ -84,6 +84,17 @@ function geometry(el: HTMLElement, edges: FlowEdge[]): Geo[] {
       const ex = t.l, ey = t.t + HEAD;
       const dx = Math.max(20, (ex - sx) / 2);
       out.push({ e, d: `M${sx},${sy} C${sx + dx},${sy} ${ex - dx},${ey} ${ex - 1},${ey}`, x: (sx + ex) / 2, y: (sy + ey) / 2 });
+    } else if (t.r <= s.l + 2) {
+      // to the left: out of the branch row into the target's right edge, or up into its lower edge when it ends higher
+      const sx = s.l, sy = a ? (a.t + a.b) / 2 : s.t + HEAD;
+      if (t.b < sy - 20) {
+        const ex = (t.l + t.r) / 2, ey = t.b;
+        out.push({ e, d: `M${sx},${sy} C${ex},${sy} ${ex},${sy} ${ex},${ey + 1}`, x: (sx + ex) / 2, y: sy });
+      } else {
+        const ex = t.r, ey = Math.min(Math.max(sy, t.t + HEAD), t.b - 12);
+        const dx = Math.max(20, (sx - ex) / 2);
+        out.push({ e, d: `M${sx},${sy} C${sx - dx},${sy} ${ex + dx},${ey} ${ex + 1},${ey}`, x: (sx + ex) / 2, y: (sy + ey) / 2 });
+      }
     } else {
       // above or below: from the facing edge's middle to the other's
       const down = t.t >= s.b;
@@ -116,8 +127,8 @@ export function Chart({ flow, selected, onSelect, runs }: { flow: Flow; selected
     <div className="overflow-x-auto pb-2">
       <div
         ref={ref}
-        className="relative grid min-w-[1240px] items-start gap-x-12 gap-y-12"
-        style={{ gridTemplateColumns: "minmax(0,140fr) minmax(0,205fr) minmax(0,195fr) minmax(0,180fr) minmax(0,200fr) minmax(0,210fr) minmax(0,200fr)" }}
+        className="relative grid min-w-[1040px] items-start gap-x-12 gap-y-12"
+        style={{ gridTemplateColumns: "minmax(0,140fr) minmax(0,205fr) minmax(0,195fr) minmax(0,180fr) minmax(0,200fr) minmax(0,210fr)" }}
       >
         {flow.nodes.map((n) => {
           const [c, r, span] = CELL[n.id];
