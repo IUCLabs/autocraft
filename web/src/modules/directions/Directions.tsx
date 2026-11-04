@@ -1,20 +1,30 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
-import { CheckIcon, PencilSimpleIcon, PlusIcon, XIcon } from "@phosphor-icons/react";
+import { CheckIcon, PlusIcon, XIcon } from "@phosphor-icons/react";
 import { useApi, useQuery } from "../../api/client";
 import type { DirectionProposal, DirectionView, RepoName } from "../../api/types";
 import { useWrite } from "../../lib/hooks";
 import { useUser } from "../../shell/UserContext";
 import { Badge } from "../../ui/atoms/Badge";
-import { Button, IconButton } from "../../ui/atoms/Button";
+import { Button } from "../../ui/atoms/Button";
 import { ErrorLine } from "../../ui/atoms/ErrorLine";
 import { Count } from "../../ui/atoms/Heading";
 import { Textarea } from "../../ui/atoms/Textarea";
 import { TimeAgo } from "../../ui/atoms/TimeAgo";
+import { ItemRef } from "../../ui/molecules/ItemRef";
+import { decisionPath } from "../../lib/links";
 import { Block } from "../../ui/molecules/Block";
 import { ConfirmButton } from "../../ui/molecules/ConfirmButton";
 
 const decisionLink = (id: string) => `/decisions/${encodeURIComponent(id)}`;
+
+/** The item a decision id ("repo#num:kind") is about, as an item reference that opens the decision. */
+function SourceRef({ id }: { id: string }) {
+  const m = /^(.+)#(\d+):(\w+)$/.exec(id);
+  if (!m) return <Link to={decisionLink(id)} className="code hover:text-accent-ink hover:underline">{id}</Link>;
+  const [, repo, n, kind] = m;
+  return <ItemRef repo={repo!} number={Number(n)} title={null} size="sm" className="inline-flex" href={decisionPath({ id, repo: repo!, number: Number(n), kind })} />;
+}
 
 function Row({ d, write }: { d: DirectionView; write: ReturnType<typeof useWrite> }) {
   const api = useApi();
@@ -31,16 +41,14 @@ function Row({ d, write }: { d: DirectionView; write: ReturnType<typeof useWrite
               {d.repo === "*" && <Badge>All repos</Badge>}
               <span>{d.createdBy}</span>
               <TimeAgo iso={d.createdAt} />
-              {d.sourceDecision && (
-                <Link to={decisionLink(d.sourceDecision)} className="code hover:text-accent-ink hover:underline">
-                  {d.sourceDecision}
-                </Link>
-              )}
+              {d.sourceDecision && <SourceRef id={d.sourceDecision} />}
             </p>
           </div>
           {operator && !d.retiredAt && (
             <span className="flex shrink-0 items-center gap-1">
-              <IconButton size="sm" icon={PencilSimpleIcon} label="Edit direction" onClick={() => setText(d.text)} />
+              <Button size="sm" variant="ghost" className="max-md:h-11" onClick={() => setText(d.text)}>
+                Edit
+              </Button>
               <ConfirmButton label="Retire" confirmLabel="Retire the direction" loading={write.busy === key} onConfirm={() => void write.run(key, () => api.directions.retire(d.id))} />
             </span>
           )}
