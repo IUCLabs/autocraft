@@ -23,28 +23,30 @@ const HEALTH: Now["health"] = {
 
 const RUNNING: NowRunning[] = [
   {
-    key: "run:912", kind: "model-call", step: "Review pull requests", what: "opus on Team account B", state: "running", startedAt: at(6), progress: "Reading crates/app-core/src/frame.rs", repo: "designcraft",
-    items: [A], itemCount: 1, event: "run:912", detail: "/agents/912",
-  },
-  {
     key: "run:911", kind: "model-call", step: "Classify items", what: "Jev", state: "running", startedAt: at(1), progress: null, repo: "photocraft",
-    items: [B, C, D], itemCount: 40, event: "run:911", detail: "/agents/911",
+    items: [B, C, D], itemCount: 40, event: "run:911", detail: "/agents/911", children: [],
   },
   {
     key: "job:640", kind: "job", step: "Review pull requests", state: "running", what: null, startedAt: at(7), progress: "Reviewing 1 of 2: designcraft#1484", repo: "designcraft",
     items: [A], itemCount: 2, event: "job:2210", detail: "/pipeline/640",
-  },
-  {
-    key: "task:931", kind: "task", step: "Build task, Verify pull requests", what: "Build box", state: "running", startedAt: at(12), progress: null, repo: "photocraft",
-    items: [B], itemCount: 1, event: "task:931", detail: "/envs/931",
+    children: [
+    {
+      key: "run:912", kind: "model-call", step: "Review pull requests", what: "opus on Team account B", state: "running", startedAt: at(6), progress: "Reading crates/app-core/src/frame.rs", repo: "designcraft",
+      items: [A], itemCount: 1, event: "run:912", detail: "/agents/912", children: [],
+    },
+    {
+      key: "task:931", kind: "task", step: "Build task, Verify pull requests", what: "Build box", state: "running", startedAt: at(5), progress: null, repo: "photocraft",
+      items: [A], itemCount: 1, event: "task:931", detail: "/envs/931", children: [],
+    },
+    ],
   },
   {
     key: "task:932", kind: "task", step: "Build task, Verify pull requests", what: null, state: "queued", startedAt: at(3), progress: null, repo: "filmcraft",
-    items: [C], itemCount: 1, event: "task:932", detail: "/envs/932",
+    items: [C], itemCount: 1, event: "task:932", detail: "/envs/932", children: [],
   },
   {
     key: "batch:14", kind: "batch", step: "Integration batch", what: "integration-pdfcraft-20261102-1", state: "open", startedAt: at(40), progress: null, repo: "pdfcraft",
-    items: [D, item("pdfcraft", 871, "Update spot color table")], itemCount: 2, event: null, detail: "/queue/merge",
+    items: [D, item("pdfcraft", 871, "Update spot color table")], itemCount: 2, event: null, detail: "/queue/merge", children: [],
   },
 ];
 

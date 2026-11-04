@@ -103,33 +103,42 @@ function running(db: DatabaseSync, hidden: string[]): NowRunning[] {
   const shown = shownLookup(db);
   const show = (repo: string, number: number): Item => ({ repo, number, ...shown(repo, number) });
   const out: NowRunning[] = [];
+  const jobRows = new Map<number, NowRunning>();
+  // A call or task of a running job nests under the job's row; the rest stay top-level.
+  const place = (jobId: number | null, row: NowRunning) => {
+    const parent = jobId === null ? undefined : jobRows.get(jobId);
+    if (parent) parent.children.push(row);
+    else out.push(row);
+  };
 
   for (const j of all<{ id: number; step: string; started_at: string | null; requested_at: string; progress: string | null; repo: string | null }>(db,
     `SELECT id, step, started_at, requested_at, progress, repo FROM jobs WHERE state = 'running'${notHidden("repo", hidden, true)} ORDER BY id DESC`, ...hidden)) {
     const its = all<{ id: number; repo: string; number: number }>(db, `SELECT id, repo, number FROM job_items WHERE job_id = ?${notHidden("repo", hidden)} ORDER BY id`, j.id, ...hidden);
-    out.push({
+    const row: NowRunning = {
       key: `job:${j.id}`, kind: "job", step: stepTitle(j.step), what: null, state: "running", startedAt: j.started_at ?? j.requested_at, progress: j.progress, repo: j.repo,
-      items: its.slice(0, PER_KIND).map((i) => show(i.repo, i.number)), itemCount: its.length, event: its[0] ? `job:${its[0].id}` : null, detail: `/pipeline/${j.id}`,
-    });
+      items: its.slice(0, PER_KIND).map((i) => show(i.repo, i.number)), itemCount: its.length, event: its[0] ? `job:${its[0].id}` : null, detail: `/pipeline/${j.id}`, children: [],
+    };
+    jobRows.set(j.id, row);
+    out.push(row);
   }
 
   const hiddenRuns = hidden.length ? ` AND NOT EXISTS (SELECT 1 FROM agent_run_items x WHERE x.run_id = r.id AND x.repo IN (${marks(hidden)}))` : "";
-  for (const r of all<{ id: number; step: string; model: string; provider: string; label: string | null; started_at: string; progress: string | null; item_count: number }>(db,
-    `SELECT r.id, r.step, r.model, r.provider, COALESCE(a.label, r.account_id) AS label, r.started_at, r.progress, r.item_count
+  for (const r of all<{ id: number; job_id: number | null; step: string; model: string; provider: string; label: string | null; started_at: string; progress: string | null; item_count: number }>(db,
+    `SELECT r.id, r.job_id, r.step, r.model, r.provider, COALESCE(a.label, r.account_id) AS label, r.started_at, r.progress, r.item_count
      FROM agent_runs r LEFT JOIN claude_accounts a ON a.id = r.account_id WHERE r.state = 'running'${hiddenRuns} ORDER BY r.id DESC`, ...hidden)) {
     const its = all<{ repo: string; number: number }>(db, "SELECT repo, number FROM agent_run_items WHERE run_id = ? ORDER BY repo, number LIMIT ?", r.id, PER_KIND);
-    out.push({
+    place(r.job_id, {
       key: `run:${r.id}`, kind: "model-call", step: stepTitle(r.step), what: r.provider === "jev" ? "Jev" : `${r.model} on ${r.label ?? "an unknown account"}`, state: "running", startedAt: r.started_at,
-      progress: r.progress, repo: its[0]?.repo ?? null, items: its.map((i) => show(i.repo, i.number)), itemCount: Math.max(r.item_count, its.length), event: its[0] ? `run:${r.id}` : null, detail: `/agents/${r.id}`,
+      progress: r.progress, repo: its[0]?.repo ?? null, items: its.map((i) => show(i.repo, i.number)), itemCount: Math.max(r.item_count, its.length), event: its[0] ? `run:${r.id}` : null, detail: `/agents/${r.id}`, children: [],
     });
   }
 
-  for (const t of all<{ id: number; step: string; repo: string; number: number | null; state: string; queued_at: string; started_at: string | null; summary: string | null; label: string | null }>(db,
-    `SELECT t.id, t.step, t.repo, t.number, t.state, t.queued_at, t.started_at, t.summary, e.label FROM build_tasks t LEFT JOIN build_envs e ON e.id = t.env_id
+  for (const t of all<{ id: number; job_id: number | null; step: string; repo: string; number: number | null; state: string; queued_at: string; started_at: string | null; summary: string | null; label: string | null }>(db,
+    `SELECT t.id, t.job_id, t.step, t.repo, t.number, t.state, t.queued_at, t.started_at, t.summary, e.label FROM build_tasks t LEFT JOIN build_envs e ON e.id = t.env_id
      WHERE t.state IN ('queued', 'claimed', 'running')${notHidden("t.repo", hidden)} ORDER BY t.id DESC`, ...hidden)) {
-    out.push({
+    place(t.job_id, {
       key: `task:${t.id}`, kind: "task", step: `Build task, ${stepTitle(t.step)}`, what: t.label, state: t.state === "queued" ? "queued" : "running", startedAt: t.started_at ?? t.queued_at, progress: t.summary, repo: t.repo,
-      items: t.number === null ? [] : [show(t.repo, t.number)], itemCount: t.number === null ? 0 : 1, event: t.number === null ? null : `task:${t.id}`, detail: `/envs/${t.id}`,
+      items: t.number === null ? [] : [show(t.repo, t.number)], itemCount: t.number === null ? 0 : 1, event: t.number === null ? null : `task:${t.id}`, detail: `/envs/${t.id}`, children: [],
     });
   }
 
@@ -138,7 +147,7 @@ function running(db: DatabaseSync, hidden: string[]): NowRunning[] {
     const prs = all<{ number: number }>(db, "SELECT number FROM merge_batch_prs WHERE batch_id = ? ORDER BY position", b.id);
     out.push({
       key: `batch:${b.id}`, kind: "batch", step: "Integration batch", what: b.branch, state: b.state === "checking" ? "running" : "open", startedAt: b.created_at, progress: b.summary,
-      repo: b.repo, items: prs.slice(0, PER_KIND).map((p) => show(b.repo, p.number)), itemCount: prs.length, event: null, detail: "/queue/merge",
+      repo: b.repo, items: prs.slice(0, PER_KIND).map((p) => show(b.repo, p.number)), itemCount: prs.length, event: null, detail: "/queue/merge", children: [],
     });
   }
   return out.sort((a, b) => Date.parse(b.startedAt) - Date.parse(a.startedAt));

@@ -24,9 +24,10 @@ test("Now lists running work with its items, reports a failing sync, and hides a
     db.prepare("INSERT INTO job_items (job_id, repo, number, at) VALUES (?, ?, ?, ?)").run(id, repo, n, at(4));
     return id;
   };
-  job("photocraft", 1);
+  const pj = job("photocraft", 1);
   job("secretcraft", 2);
   const run = insertRun(db, { jobId: null, step: "opus-review", stage: 5, promptId: "p", promptVersion: "1", provider: "claude", model: "opus", accountId: null, items: [{ repo: "photocraft", number: 1 }], prompt: "x" });
+  db.prepare("UPDATE agent_runs SET job_id = ? WHERE id = ?").run(pj, run);
   insertRun(db, { jobId: null, step: "opus-review", stage: 5, promptId: "p", promptVersion: "1", provider: "claude", model: "opus", accountId: null, items: [{ repo: "secretcraft", number: 2 }], prompt: "x" });
   const sync = db.prepare("INSERT INTO sync_runs (started_at, ended_at, mode, items, error) VALUES (?, ?, 'full', 0, ?)");
   sync.run(at(40), at(39), null);
@@ -38,7 +39,8 @@ test("Now lists running work with its items, reports a failing sync, and hides a
   assert.deepEqual(j.items.map((i) => `${i.repo}#${i.number}`), ["photocraft#1"]);
   assert.match(j.event!, /^job:\d+$/);
   assert.equal(j.progress, "reviewing 1 of 1");
-  const call = op.running.find((r) => r.key === `run:${run}`)!;
+  const call = j.children.find((r) => r.key === `run:${run}`)!;
+  assert.ok(!op.running.some((r) => r.key === `run:${run}`), "the call is nested under its job, not listed twice");
   assert.equal(call.event, `run:${run}`);
   assert.equal(call.detail, `/agents/${run}`);
   const sy = op.health.problems.find((p) => p.area === "sync")!;
@@ -47,5 +49,5 @@ test("Now lists running work with its items, reports a failing sync, and hides a
 
   const viewer = await now(db, req("viewer"));
   assert.ok(!JSON.stringify(viewer).includes("secretcraft"), "nothing of the private repo");
-  assert.equal(viewer.running.length, 2, "the visible job and the visible call");
+  assert.deepEqual(viewer.running.map((r) => [r.kind, r.children.length]), [["job", 1]], "the visible job with its call nested");
 });

@@ -1800,6 +1800,8 @@ export type NowRunning = {
   event: string | null;
   /** The run, job, task or batch page. */
   detail: string;
+  /** Model calls and build tasks of this job, shown under it. */
+  children: NowRunning[];
 };
 export type NowEventKind = "write" | "merge" | "decision" | "failure";
 export type NowEvent = {

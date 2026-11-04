@@ -42,7 +42,31 @@ export function RunningRow({ row }: { row: NowRunning }) {
         )}
         {row.items.length === 0 && row.repo && <p className="mt-1 text-xs text-ink/55">{row.repo}</p>}
         {row.progress && <p className="mt-1 text-xs text-ink/50 [overflow-wrap:anywhere]">{row.progress}</p>}
+        {row.children.length > 0 && (
+          <ul className="mt-1.5 ml-1 border-l border-line pl-3">
+            {row.children.map((c) => (
+              <ChildRow key={c.key} row={c} />
+            ))}
+          </ul>
+        )}
       </div>
+    </li>
+  );
+}
+
+/** A model call or build task of a job, under the job's row, with its own elapsed time and link. */
+function ChildRow({ row }: { row: NowRunning }) {
+  const Icon = ICON[row.kind];
+  return (
+    <li className="relative flex flex-wrap items-center gap-x-2 gap-y-0.5 rounded py-1 hover:bg-ink/[0.04] max-md:min-h-11">
+      <Icon className="shrink-0 text-ink/55" aria-hidden />
+      <Link to={rowHref(row)} className="text-xs font-medium after:absolute after:inset-0">
+        {row.kind === "task" ? "Build task" : row.step}
+      </Link>
+      {row.what && <Badge tone={row.kind === "model-call" ? "accent" : "neutral"}>{row.what}</Badge>}
+      {row.state === "queued" && <Badge>Queued</Badge>}
+      <span className="num ml-auto text-xs text-ink/60">{span(nowMs() - Date.parse(row.startedAt))}</span>
+      {row.progress && <p className="w-full text-xs text-ink/50 [overflow-wrap:anywhere]">{row.progress}</p>}
     </li>
   );
 }
