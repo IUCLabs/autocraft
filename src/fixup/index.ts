@@ -575,8 +575,14 @@ function parseArgs(args: string[]): { repo: string; limit?: number; apply: boole
 
 export const commands = {
   fixup: {
-    summary: "fixup --repo R [--limit N] [--apply] | fixup repost <repo>#<n> [--apply]: push the review's small fixes to take-fix PRs we may push to; repost edits our ask comment to the full fix list (dry run unless --apply)",
+    summary: "fixup --repo R [--limit N] [--apply] | fixup repost <repo>#<n> [--apply] | fixup try <repo>#<n>: push the review's small fixes to take-fix PRs we may push to; repost edits our ask comment to the full fix list (dry run unless --apply); try runs the patch step for one PR with the check tool and prints the tool calls, the patch, the Opus check and the lint result, storing and pushing nothing",
     async run(args: string[]): Promise<void> {
+      if (args[0] === "try") {
+        const m = /^([^#\s]+)#(\d+)$/.exec(args[1] ?? "");
+        if (!m || args.length !== 2) throw new Error("usage: autocraft fixup try <repo>#<n>");
+        process.exitCode = await (await import("./try.ts")).runFixupTry(connect(), m[1]!, Number(m[2]));
+        return;
+      }
       if (args[0] === "repost") {
         const m = /^([^#\s]+)#(\d+)$/.exec(args[1] ?? "");
         if (!m || args.slice(2).some((a) => a !== "--apply")) throw new Error("usage: autocraft fixup repost <repo>#<n> [--apply]");
