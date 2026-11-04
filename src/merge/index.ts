@@ -63,8 +63,10 @@ export type MergeParams = {
   limit?: number;
   /** Default true: only `dryRun: false` merges, assigns or asks. */
   dryRun?: boolean;
-  /** Only PRs this accepts are merged (the rest are left to the integration batches). */
+  /** Only PRs this accepts are merged. */
   only?: (e: QueueEntry) => boolean;
+  /** Only the PRs whose merge action is single-only are merged (the rest are left to the integration batches). */
+  singleOnly?: boolean;
   /** Stop at the first PR that is refused; the rest wait for the next round. */
   stopOnRefusal?: boolean;
   /** Called with the running count of PRs merged, after each merge. */
@@ -256,8 +258,8 @@ export async function runMerge(db: DatabaseSync, params: MergeParams, log: (line
   const fast = (e: QueueEntry) => (scores.get(e.number) ?? 0) >= FAST_FLOOR;
   const byRank = (a: QueueEntry, b: QueueEntry) => (scores.get(b.number) ?? -1) - (scores.get(a.number) ?? -1) || a.number - b.number;
   // Fast-tracked PRs first, in the order added (their score falls with the order); then rule merges before answered ones, each by work score, unranked last.
-  const mergeDue = new Set(planned(db, "merge", { repo }).map((p) => p.facts.number));
-  let picks = open.filter((e) => mergeDue.has(e.number) && (!params.only || params.only(e))).sort((a, b) =>
+  const mergeDue = new Map(planned(db, "merge", { repo }).map((p) => [p.facts.number, p.action.params?.singleOnly === true]));
+  let picks = open.filter((e) => mergeDue.has(e.number) && (!params.only || params.only(e)) && (!params.singleOnly || mergeDue.get(e.number))).sort((a, b) =>
     fast(a) || fast(b) ? Number(fast(b)) - Number(fast(a)) || byRank(a, b) : a.path === b.path ? byRank(a, b) : a.path === "rule" ? -1 : 1);
   if (params.limit !== undefined) picks = picks.slice(0, params.limit);
   const askDueNow = new Set(planned(db, "ask-merge", { repo }).map((p) => p.facts.number));

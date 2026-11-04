@@ -16,7 +16,7 @@ import { runHaiku, runJev } from "../classify/run.ts";
 import { fillClassHashes } from "../itemhash.ts";
 import { itemOf, plannedItems } from "../core/select-items.ts";
 import type { StepContext } from "./steps.ts";
-import { newestVerdictRun } from "../classify/settled.ts";
+import { latestRun } from "../classify/settled.ts";
 import { assignAreas, type AssignResult } from "../areas/assign.ts";
 
 export { inputHash } from "../itemhash.ts";
@@ -27,13 +27,6 @@ export const SURE = 0.9;
 const AREAS_PER_CLASSIFY_JOB = 100;
 const JEV_CHUNK = 40, HAIKU_PER_CALL = 25;
 
-
-/** The run new verdicts go into: the last completed pass, else the run with the newest Jev verdict. */
-export function currentRun(db: DatabaseSync): string | null {
-  const set = db.prepare("SELECT value FROM settings WHERE key = 'classify_run'").get() as { value: string } | undefined;
-  if (set?.value) return set.value;
-  return newestVerdictRun(db);
-}
 
 /**
  * runJev and runHaiku write one token_usage row per agent name (`jev-<ref>`,
@@ -155,7 +148,7 @@ const areaNote = (r: { areas: AssignResult }): string => (r.areas.due ? ` Areas:
 const aloneNote = (r: { haikuAlone: number; aloneDue: number }): string => (r.aloneDue ? `Jev unavailable: Haiku classified ${r.haikuAlone} items. ` : "");
 
 export async function classifyNew(ctx: StepContext): Promise<string> {
-  const run = currentRun(ctx.db);
+  const run = latestRun(ctx.db);
   if (!run) throw new Error("There is no classification run yet; start a classification pass first.");
   const r = await pass(ctx, run, "new");
   if (!r.due && !r.haikuDue && !r.areas.due) return `Nothing to classify in run ${run}.`;

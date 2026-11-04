@@ -1,6 +1,6 @@
 // Pre-merge review results (table premerge_reviews): one row per PR head, read by the merge queue.
 import type { DatabaseSync } from "node:sqlite";
-import { PREMERGE_MAX_TRIES, RETRY_AFTER_MS } from "../core/rules.ts";
+import { PREMERGE_MAX_TRIES } from "../core/rules.ts";
 
 /** A failed head counts as failed after this many tries. */
 export { PREMERGE_MAX_TRIES };
@@ -49,13 +49,6 @@ export function savePremerge(db: DatabaseSync, s: PremergeSave): void {
 
 export function premergeAt(db: DatabaseSync, repo: string, number: number, head: string): PremergeRow | null {
   return (db.prepare("SELECT * FROM premerge_reviews WHERE repo = ? AND number = ? AND head_oid = ?").get(repo, number, head) as PremergeRow | undefined) ?? null;
-}
-
-/** The head has no stored review and is due a try: no row, or a failed one older than RETRY_AFTER_MS with tries left. */
-export function premergeRetryDue(row: PremergeRow | null, now: number): boolean {
-  if (!row) return true;
-  if (row.findings !== null) return false;
-  return row.tries < PREMERGE_MAX_TRIES && now - Date.parse(row.at) >= RETRY_AFTER_MS;
 }
 
 /** The PR already had a pre-merge fix round (any fixups row with source premerge, pushed or not). */

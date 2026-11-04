@@ -27,7 +27,8 @@ import { HEAD_FACT } from "../merge/queue.ts";
 import { fillReviewSummaries, reviewText } from "../review/summary.ts";
 import { Client, type Querier } from "../mirror.ts";
 import { sizeOf } from "../review/candidates.ts";
-import { applyPlannedAnswers } from "../dupes/apply.ts";
+import { fillEmbedHashes } from "../itemhash.ts";
+import { applyDuplicateAnswers } from "../dupes/decide.ts";
 import { commentApprovalOf } from "./approval.ts";
 import { CLI_BY, type By } from "../core/gates.ts";
 import { guardItem, guardRepo } from "../core/guard.ts";
@@ -209,7 +210,8 @@ export async function runAct(db: DatabaseSync, params: ActParams, log: (line: st
   const w: Writer = { db, login: ACTOR };
   const summary: ActSummary = { repo, dryRun, asked: [], done: [], skipped: [], failed: [], note: null };
   // Answers that need no GitHub write are applied whether or not commenting is approved.
-  if (!dryRun) applyPlannedAnswers(db, at());
+  // The group steps compare text hashes with the ones stored at the comparison: a hash cleared by an edit outside sync is filled first, so the edit is seen.
+  if (!dryRun) { fillEmbedHashes(db); applyDuplicateAnswers(db, at()); }
   if (!commentApprovalOf(db, repo)) {
     summary.note = `commenting in ${repo} is not approved`;
     log(`act ${repo}: ${summary.note}; nothing done`);

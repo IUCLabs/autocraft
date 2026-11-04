@@ -236,7 +236,7 @@ CREATE INDEX IF NOT EXISTS items_created ON items(created_at);
 CREATE INDEX IF NOT EXISTS items_pr_author ON items(kind, author, state, repo, merged_at);
 CREATE INDEX IF NOT EXISTS items_open ON items(state, repo, number);
 CREATE INDEX IF NOT EXISTS classifications_run ON classifications(run_id, classifier, repo, number);
--- The newest verdict of a classifier (latestRun, latestJevRun) without reading every row.
+-- The newest verdict of a classifier (latestRun) without reading every row.
 CREATE INDEX IF NOT EXISTS classifications_latest ON classifications(classifier, at);
 CREATE INDEX IF NOT EXISTS classifications_dup ON classifications(repo, dup_of) WHERE dup_of IS NOT NULL;
 CREATE INDEX IF NOT EXISTS token_usage_run ON token_usage(run_id, stage, model);

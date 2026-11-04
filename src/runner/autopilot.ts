@@ -37,7 +37,7 @@ import { applyUsedAnswers } from "../decisions-used.ts";
 import { premergeCandidates } from "../premerge/review.ts";
 import { pendingDefects, selectPostmerge } from "../postmerge/select.ts";
 import { mainFixDue } from "../mainfix/index.ts";
-import { currentRun } from "./classify.ts";
+import { latestRun } from "../classify/settled.ts";
 import { enqueue, JobError, now, requestCancel, RUNNER_STOPPED } from "./jobs.ts";
 import { claudePauseReason } from "../agents/accounts.ts";
 import { knownStep, loadSteps, modelsOf, usesClaude, type Params, type StepDef } from "./steps.ts";
@@ -119,7 +119,7 @@ export type PlanCtx = {
 /** Only the repos in scope (pipeline on, narrowed by the pilot) are planned for; a job for another repo is never proposed. */
 export const planCtx = (db: DatabaseSync): PlanCtx => {
   const scope = scopeRepos(db);
-  const run = currentRun(db);
+  const run = latestRun(db);
   return { run, tracked: trackedNames(db).filter((r) => scope.has(r)), plans: loadPlanSet(db, { run }), wake: [], notes: {} };
 };
 

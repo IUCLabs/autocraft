@@ -56,9 +56,6 @@ export type QueueEntry = {
   premerge: { state: "none" | "clean" | "fix" | "defect" | "failed" | "retry"; defects: PremergeFinding[]; minor: number; error: string | null } | null;
 };
 
-/** PRs the integration batches leave to the single-PR merge: main-fix PRs, the sandbox cannot build the repo, or the repo has no CI for the batch PR to wait on. */
-export const singleMergeOnly = (e: QueueEntry): boolean => e.verify?.state === VERIFY_UNAVAILABLE || e.noCi || !!e.mainFix;
-
 /** True when the PR may be merged now (ready, approved, or retried after a refusal). */
 export const eligible = (e: Pick<QueueEntry, "eligible">): boolean => e.eligible;
 

@@ -16,8 +16,8 @@ import { trackedNames } from "../repos.ts";
 import { CLAUDE_PROMPTS } from "../prompts/index.ts";
 import { buildDecision } from "./decision.ts";
 import { recommend, recommendIds } from "./recommend.ts";
-import { latestJevRun, type Candidate, type Reason } from "./select.ts";
-import { settledLookup } from "../classify/settled.ts";
+import { type Candidate, type Reason } from "./select.ts";
+import { latestRun, settledLookup } from "../classify/settled.ts";
 import { scopeReason } from "../core/decide-item.ts";
 import { plannedItems } from "../core/select-items.ts";
 
@@ -81,7 +81,7 @@ export async function runDecide(db: DatabaseSync, params: DecideParams = {}, log
   const tracked = new Set(trackedNames(db));
   const untracked = (params.repos ?? []).filter((r) => !tracked.has(r));
   if (untracked.length) throw new Error(`not tracked: ${untracked.join(", ")}`);
-  const run = params.run ?? latestJevRun(db);
+  const run = params.run ?? latestRun(db);
   const result: DecideResult = { run, dryRun: !!params.dryRun, byRepo: {}, asked: 0, noSummary: 0, recommended: 0, usageRun: null };
   const picked: Candidate[] = [];
   if (!run) log("decide: no classification run with Jev verdicts");

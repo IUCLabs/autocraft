@@ -11,8 +11,7 @@ import { localEmbedder, modelName } from "../embed/model.ts";
 import { VectorIndex } from "../embed/vectors.ts";
 import { plannedItems } from "../core/select-items.ts";
 import { checkPairs, defaultCheckDeps, uncheckedPairs, type CheckDeps, type PairKey } from "./check.ts";
-import { applyPlannedAnswers } from "./apply.ts";
-import { askGroupDecisions } from "./decide.ts";
+import { applyDuplicateAnswers, askGroupDecisions } from "./decide.ts";
 import { fillEmbedHashes } from "../itemhash.ts";
 import { scanItem, type ScanItem } from "./scan.ts";
 
@@ -65,7 +64,7 @@ export async function runDupes(db: DatabaseSync, params: DupesParams = {}, log: 
     log(`dupes: ${todo.length} items to scan, ${pairsToCheck(db, model, limit).length} pairs to check; dry run, nothing written`);
     return s;
   }
-  s.answersApplied = applyPlannedAnswers(db, at().toISOString());
+  s.answersApplied = applyDuplicateAnswers(db, at().toISOString());
   if (todo.length) {
     await d.index.ready(db);
     for (const it of todo) {

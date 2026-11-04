@@ -53,16 +53,24 @@ export async function runCliJob(db: DatabaseSync, req: CliRequest): Promise<numb
   let job: number;
   try {
     const { step, params } = await checkRequest(db, req.step, req.params);
-    const why = cliGate(db, step, (n) => steps.get(n)?.group ?? n);
-    if (why) throw new JobError(409, why);
-    const lim = jobLimit(db, step, Date.now(), typeof params.limit === "number" ? params.limit : undefined);
-    if (!lim) throw new JobError(409, `the daily limit of ${step.name} leaves too little for a run`);
-    const full: Record<string, unknown> = { ...params, ...lim };
-    mkdirSync(logsDir(), { recursive: true });
-    const t = now();
-    const repo = typeof full.repo === "string" ? full.repo : null;
-    job = Number(db.prepare("INSERT INTO jobs (step, params, repo, requested_by, requested_at, state, started_at) VALUES (?, ?, ?, 'cli', ?, 'running', ?)")
-      .run(step.name, JSON.stringify(full), repo, t, t).lastInsertRowid);
+    // The gate and the insert are one write transaction, so two CLI runs cannot both pass the gate.
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      const why = cliGate(db, step, (n) => steps.get(n)?.group ?? n);
+      if (why) throw new JobError(409, why);
+      const lim = jobLimit(db, step, Date.now(), typeof params.limit === "number" ? params.limit : undefined);
+      if (!lim) throw new JobError(409, `the daily limit of ${step.name} leaves too little for a run`);
+      const full: Record<string, unknown> = { ...params, ...lim };
+      mkdirSync(logsDir(), { recursive: true });
+      const t = now();
+      const repo = typeof full.repo === "string" ? full.repo : null;
+      job = Number(db.prepare("INSERT INTO jobs (step, params, repo, requested_by, requested_at, state, started_at) VALUES (?, ?, ?, 'cli', ?, 'running', ?)")
+        .run(step.name, JSON.stringify(full), repo, t, t).lastInsertRowid);
+      db.exec("COMMIT");
+    } catch (e) {
+      db.exec("ROLLBACK");
+      throw e;
+    }
   } catch (e) {
     if (e instanceof JobError) { console.error(`${req.step}: ${e.message}`); return 1; }
     throw e;
