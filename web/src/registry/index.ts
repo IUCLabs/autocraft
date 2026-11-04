@@ -4,6 +4,7 @@ import type { FeatureModule } from "./types";
 import { decisionsModule } from "../modules/decisions";
 import { needsModule } from "../modules/needs";
 import { flowModule } from "../modules/flow";
+import { nowModule } from "../modules/now";
 import { itemModule } from "../modules/item";
 import { progressModule } from "../modules/progress";
 import { itemsModule } from "../modules/items";
@@ -23,4 +24,4 @@ import { githubModule } from "../modules/github";
 import { similarModule } from "../modules/similar";
 import { mainCiModule } from "../modules/mainci";
 
-export const modules: FeatureModule[] = [flowModule, decisionsModule, needsModule, nextModule, queueModule, agentsModule, envsModule, ratesModule, itemModule, progressModule, itemsModule, contributorsModule, classifiersModule, costModule, reposModule, accessModule, auditModule, aboutModule, pipelineModule, promptsModule, similarModule, accountsModule, githubModule, mainCiModule];
+export const modules: FeatureModule[] = [nowModule, flowModule, decisionsModule, needsModule, nextModule, queueModule, agentsModule, envsModule, ratesModule, itemModule, progressModule, itemsModule, contributorsModule, classifiersModule, costModule, reposModule, accessModule, auditModule, aboutModule, pipelineModule, promptsModule, similarModule, accountsModule, githubModule, mainCiModule];

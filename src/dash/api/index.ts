@@ -30,6 +30,7 @@ import { next } from "./next.ts";
 import { githubActivity } from "./github-activity.ts";
 import { work } from "./work.ts";
 import { flow } from "./flow.ts";
+import { now } from "./now.ts";
 import { queueSlots } from "../../rank/position.ts";
 import * as items from "./items.ts";
 import { trace as itemTrace, traceDetail as itemTraceDetail } from "./trace.ts";
@@ -480,6 +481,7 @@ export function apiRoutes(opts: ApiOptions = {}): Route[] {
     { method: "POST", pattern: "/api/queue/batches/:id/stop", operator: true, handler: ok((db, req) => batchStop(db, req, opts.exec)) },
     get("/api/needs", needs),
     get("/api/flow", flow),
+    get("/api/now", now),
     get("/api/similar/:repo/:n", (db, req) => sim.similar(db, req, vectors)),
   ];
 }
