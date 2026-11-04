@@ -73,7 +73,7 @@ function world(o: { check?: string; canModify?: boolean } = {}): World {
     spent: 0, remaining: 5000,
     async query(q: string) {
       if (q.startsWith("mutation")) { log.push("assign"); return {}; }
-      return { repository: { pullRequest: { id: "PR7", state: "OPEN", isDraft: false, headRefOid: head, headRefName: "fix", maintainerCanModify: o.canModify !== false, mergeable: "MERGEABLE",
+      return { repository: { pullRequest: { id: "PR7", number: 7, state: "OPEN", isDraft: false, headRefOid: head, headRefName: "fix", maintainerCanModify: o.canModify !== false, mergeable: "MERGEABLE",
         headRepository: { nameWithOwner: "contrib/app" }, assignees: { nodes: [] } } } };
     },
   });
