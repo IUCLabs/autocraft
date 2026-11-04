@@ -205,6 +205,8 @@ const rows: Row[] = [
   // ---- conflicts
   { name: "conflict: merge the base branch", facts: conflicting(), expect: { state: "conflict", actions: ["conflict:merge"] } },
   { name: "conflict: ask the contributor", facts: conflicting({ bucket: "ask" }), expect: { state: "conflict", actions: ["conflict:ask"] } },
+  { name: "conflict: a stored resolution is collected while the PR still conflicts, and waits for its lint task", facts: { ...conflicting({ bucket: "linting" }), lint: [{ step: "conflict", source: "review", ended: true }] }, expect: { state: "conflict", actions: ["lint:conflict"] } },
+  { name: "conflict: a resolution whose lint task still runs is waited for", facts: { ...conflicting({ bucket: "linting" }), lint: [{ step: "conflict", source: "review", ended: false }] }, expect: { actions: [] } },
   { name: "conflict: already asked, held or unapproved", facts: conflicting({ bucket: "asked" }), expect: { actions: [] } },
   { name: "conflict: held bucket", facts: conflicting({ bucket: "held" }), expect: { actions: [] } },
   { name: "conflict: unapproved bucket", facts: conflicting({ bucket: "unapproved" }), expect: { actions: [] } },

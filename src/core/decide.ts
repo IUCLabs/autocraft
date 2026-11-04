@@ -284,7 +284,9 @@ export function decidePr(f: PrFacts): Plan {
 
   // Stored model patches whose lint task ended: the collect step folds the format changes and pushes, or sends the findings back to the model.
   for (const l of f.lint) {
-    const basic = l.ended && open && !f.draft && !declinedBy(f) && f.mergeable !== "CONFLICTING" && !f.mergeHeld && !f.heldBacklog && !!f.head;
+    // A conflict resolution is collected while the PR still conflicts; every other patch needs it not to.
+    const conflicted = l.step === "conflict";
+    const basic = l.ended && open && !f.draft && !declinedBy(f) && (conflicted ? f.mergeable === "CONFLICTING" && !!f.conflict?.baseOk && !f.inActiveBatch : f.mergeable !== "CONFLICTING") && !f.mergeHeld && !f.heldBacklog && !!f.head;
     // A carry-over needs no review at the head; every other patch needs a take review there that is not stale.
     // A CI fix of our own breakage is reviewed against the head before the push.
     const reviewed = l.source === "carry" || (l.step === "cifix" && !!f.brokeByUs && !!r && takeReview && notHeld(f)) || (!!r && takeReview && r.head === f.head && !r.stale && notHeld(f));

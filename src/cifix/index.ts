@@ -79,8 +79,11 @@ export const FORMAT_SCRIPT = [
   // `edition`, the workspace's for `edition.workspace = true`, 2015 (Cargo's default) when none is set.
   'files="$*"',
   `ed() { sed -n 's/^[[:space:]]*edition[[:space:]]*=[[:space:]]*"\\([0-9]*\\)".*/\\1/p' "$1" | head -n 1; }`,
-  'edition_of() { d=$(dirname "b/$1"); while :; do if [ -f "$d/Cargo.toml" ]; then e=$(ed "$d/Cargo.toml"); if [ -n "$e" ]; then echo "$e"; return; fi; if grep -q "^[[:space:]]*edition[.[:space:]]*\\(workspace\\|=[[:space:]]*{\\)" "$d/Cargo.toml"; then e=$(ed b/Cargo.toml); echo "${e:-2015}"; return; fi; fi; [ "$d" = b ] && break; d=$(dirname "$d"); done; echo 2015; }',
-  `for f in $files; do env -i PATH=${IMAGE_CARGO}/bin:/usr/bin:/bin HOME=/tmp RUSTUP_HOME=${IMAGE_RUSTUP} CARGO_HOME=${IMAGE_CARGO} ${IMAGE_CARGO}/bin/rustfmt --edition "$(edition_of "$f")" "b/$f"; done`,
+  'edition_of() { d=$(dirname "b/$1"); while :; do if [ -f "$d/Cargo.toml" ]; then e=$(ed "$d/Cargo.toml"); if [ -n "$e" ]; then echo "$e"; return; fi; if grep -q "^[[:space:]]*edition[.[:space:]]*\\(workspace\\|=[[:space:]]*{\\)" "$d/Cargo.toml"; then e=$(ed b/Cargo.toml); echo "${e:-2015}"; return; fi; if grep -q "^[[:space:]]*\\[package\\]" "$d/Cargo.toml"; then echo 2015; return; fi; fi; [ "$d" = b ] && break; d=$(dirname "$d"); done; echo 2015; }',
+  // A file rustfmt cannot parse is listed in fmt-err.txt (an `@@ path` line, then rustfmt's output) and the run goes on.
+  ": > /tmp/w/fmt-err.txt",
+  `for f in $files; do if ! o=$(env -i PATH=${IMAGE_CARGO}/bin:/usr/bin:/bin HOME=/tmp RUSTUP_HOME=${IMAGE_RUSTUP} CARGO_HOME=${IMAGE_CARGO} ${IMAGE_CARGO}/bin/rustfmt --edition "$(edition_of "$f")" "b/$f" 2>&1); then printf '%s\\n' "@@ $f" "$o" >> /tmp/w/fmt-err.txt; fi; done`,
+  "if [ -s /tmp/w/fmt-err.txt ]; then cp /tmp/w/fmt-err.txt /out/fmt-err.txt; fi",
   ": > /tmp/w/format.txt",
   'for f in $files; do if ! cmp -s "a/$f" "b/$f"; then echo "diff -uN a/$f b/$f" >> /tmp/w/format.txt; diff -uN "a/$f" "b/$f" >> /tmp/w/format.txt || true; fi; done',
   "if [ -s /tmp/w/format.txt ]; then cp /tmp/w/format.txt /out/format.txt; fi",
@@ -435,6 +438,9 @@ export async function runCifix(db: DatabaseSync, params: CifixParams, log: (line
     }
     // A model patch is stored and linted before it is pushed or posted (the collect step does that); a patch without a Rust file needs no lint.
     if (kind === "code" && folded === null) {
+      // Checked here: the collect step has no excerpts to check against.
+      const early = outsideShown(shown, await git.diffText(head, applied.tree));
+      if (early) { fail("refused", early); return; }
       const round = c.lint ? c.lint.round + 1 : 1;
       const task = queueLint(db, { step: "cifix", repo, number: c.number, head: c.head, base: now.baseRefOid ?? null, patch: v.patch });
       if (task !== null) {

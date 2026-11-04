@@ -90,6 +90,19 @@ export function selectFixups(db: DatabaseSync, repo: string, run?: string | null
       }
     }
   }
+  // Stored conflict resolutions whose lint task ended: collected by the conflict step.
+  const lintedMerge = db.prepare("SELECT rowid AS id, attempt, patch, lint_task, base_sha, files FROM conflict_merges WHERE repo = ? AND number = ? AND from_head = ? AND state = 'linting' ORDER BY rowid");
+  for (const { facts: f, action } of planned(db, "lint", { ...opts, bucket: "conflict" })) {
+    const head = action.head!;
+    for (const w of lintedMerge.all(repo, f.number, head) as { id: number; attempt: number; patch: string | null; lint_task: number | null; base_sha: string | null; files: string | null }[]) {
+      if (!w.patch || !w.base_sha) continue;
+      out.conflictMerge.unshift({
+        repo, number: f.number, head, base: f.conflict!.base, title: ((text.get(repo, f.number) as { title: string | null } | undefined)?.title ?? "").slice(0, 300),
+        reason: f.review!.reason, attempt: w.attempt, pushable: f.pushable,
+        lint: { rowid: w.id, task: w.lint_task, baseSha: w.base_sha, resolved: w.patch, files: JSON.parse(w.files ?? "[]") as string[] },
+      });
+    }
+  }
   out.fix.push(...carryFix, ...fix);
   out.ask.unshift(...carryAsk);
   return out;

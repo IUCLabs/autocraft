@@ -10,6 +10,7 @@ import { audit } from "../dash/audit.ts";
 import type { By } from "../core/gates.ts";
 import { guard, liveOf } from "../core/guard.ts";
 import { ghAskComment, ghComment, pushBranch, type Writer } from "../github/write.ts";
+import { foldFormat, queueLint, readLint } from "../prepush/index.ts";
 import { cachedDiff } from "../review/diff.ts";
 import { checkLine, parseCheck, recordCheck } from "../patchcheck/index.ts";
 import { CHECK_DIFF_CAP, CHECK_PATCH_CAP, type FixupCheckInput } from "../patchcheck/types.ts";
@@ -58,13 +59,14 @@ const oneLine = (s: string) => s.replace(/\s+/g, " ").trim().slice(0, 200);
 
 /** Written before the push, so a crash between the push and its record leaves the merge commit in the push chain. */
 function recordPushing(db: DatabaseSync, at: string, c: ConflictCandidate, files: string[], base: string | null, toHead: string): void {
+  if (c.lint) { db.prepare("UPDATE conflict_merges SET state = 'pushing', to_head = ?, patch = NULL WHERE rowid = ?").run(toHead, c.lint.rowid); return; }
   db.prepare("INSERT INTO conflict_merges (repo, number, from_head, to_head, base_sha, state, reason, files, attempt, created_at) VALUES (?, ?, ?, ?, ?, 'pushing', NULL, ?, ?, ?)")
     .run(c.repo, c.number, c.head, toHead, base, JSON.stringify(files), c.attempt, at);
 }
 
 function record(db: DatabaseSync, at: string, c: ConflictCandidate, state: string, reason: string | null, files: string[], base: string | null, toHead: string | null = null): void {
-  const open = db.prepare("SELECT rowid AS id FROM conflict_merges WHERE repo = ? AND number = ? AND from_head = ? AND state = 'pushing'").get(c.repo, c.number, c.head) as { id: number } | undefined;
-  if (open) db.prepare("UPDATE conflict_merges SET state = ?, reason = ?, files = ?, to_head = ?, base_sha = ? WHERE rowid = ?").run(state, reason, JSON.stringify(files), toHead, base, open.id);
+  const open = db.prepare("SELECT rowid AS id FROM conflict_merges WHERE repo = ? AND number = ? AND from_head = ? AND state IN ('pushing', 'linting') ORDER BY rowid DESC").get(c.repo, c.number, c.head) as { id: number } | undefined;
+  if (open) db.prepare("UPDATE conflict_merges SET state = ?, reason = ?, files = ?, to_head = ?, base_sha = ?, patch = NULL WHERE rowid = ?").run(state, reason, JSON.stringify(files), toHead, base, open.id);
   else {
     db.prepare("INSERT INTO conflict_merges (repo, number, from_head, to_head, base_sha, state, reason, files, attempt, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
       .run(c.repo, c.number, c.head, toHead, base, state, reason, JSON.stringify(files), c.attempt, at);
@@ -134,7 +136,8 @@ export async function mergeConflict(db: DatabaseSync, x: ConflictRun, c: Conflic
     const git = x.git();
     const head = await git.fetchPr(BASE_ORG, x.repo, c.number);
     if (head !== c.head) { x.log(`  ${ref}: skipped: fetched head ${short(head)} is not the reviewed ${short(c.head)}`); return; }
-    baseSha = await git.fetchBase(BASE_ORG, x.repo, c.base);
+    baseSha = c.lint ? c.lint.baseSha : await git.fetchBase(BASE_ORG, x.repo, c.base);
+    if (c.lint && (await git.git(["cat-file", "-e", `${baseSha}^{commit}`])).code !== 0) { fail("failed", "the base commit of the stored resolution is no longer in the cache"); return; }
     if ((await git.git(["merge-base", "--is-ancestor", baseSha, head])).code === 0) { skip(`${c.base} is already in the branch`); return; }
     const who = await x.who();
     const merge = await git.mergeInto(head, baseSha);
@@ -142,7 +145,37 @@ export async function mergeConflict(db: DatabaseSync, x: ConflictRun, c: Conflic
     let checkout: string | undefined;
     // Refused for the same reason at every run for this head: recorded as a skip so the head is not tried again, and never claimed.
     const refuse = (reason: string) => { held("skipped", reason); };
-    if (merge.clean) await x.claim(c, pr);
+    if (c.lint) {
+      // The stored resolution is rebuilt on the same two parents, then gated on its lint task.
+      files = c.lint.files;
+      if (merge.clean || [...merge.conflicted].sort().join("\n") !== [...files].sort().join("\n")) { fail("failed", "the merge no longer conflicts in the files that were resolved"); return; }
+      const scratch = mkdtempSync(join(x.d.root, ".index-"));
+      try {
+        tree = await git.withFiles(merge.tree, JSON.parse(c.lint.resolved) as { path: string; mode: string; content: string }[], join(scratch, "index"));
+      } finally {
+        rmSync(scratch, { recursive: true, force: true });
+      }
+      const res = readLint(db, c.lint.task ?? -1, { against: await git.diffText(merge.tree, tree) });
+      if (res.kind === "pending") { x.log(`  ${ref}: the lint task is still running`); return; }
+      if (res.kind === "infra-failed") { fail("failed", `lint: ${res.reason}`); return; }
+      if (res.findings.length) { fail("rejected", `clippy findings on the resolution: ${oneLine(res.findings[0]!.message)}`); return; }
+      if (res.formatDiff) {
+        const fold = await foldFormat(git, head, await git.diffText(head, tree), res.formatDiff, x.d.root);
+        if (!fold.ok) { fail("refused", fold.reason); return; }
+        const dir = mkdtempSync(join(x.d.root, ".index-"));
+        try {
+          const applied = await git.applyToTree(head, fold.patch, join(dir, "index"));
+          if (!applied.ok) { fail("refused", applied.reason); return; }
+          tree = applied.tree;
+        } finally {
+          rmSync(dir, { recursive: true, force: true });
+        }
+      }
+      const changes = await git.rawChanges(merge.tree, tree);
+      if (changes.some((ch) => !files.includes(ch[3]!) || ch[0] !== ch[1])) { fail("refused", "the resolution would change files or modes outside the conflicted files"); return; }
+      const again = await live(db, x, c);
+      if (!again) return;
+    } else if (merge.clean) await x.claim(c, pr);
     else {
       files = merge.conflicted;
       if (!files.length) { refuse("the merge is not clean but names no conflicted file"); return; }
@@ -211,9 +244,18 @@ export async function mergeConflict(db: DatabaseSync, x: ConflictRun, c: Conflic
       if (changes.some((ch) => !files.includes(ch[3]!) || ch[0] !== ch[1])) { fail("refused", "the resolution would change files or modes outside the conflicted files"); return; }
       const again = await live(db, x, c);
       if (!again) return;
+      // A resolution with Rust files is stored and linted before it is pushed (the collect step above pushes it).
+      const rs = resFiles.map((f) => f.path).filter((p) => p.endsWith(".rs"));
+      const task = rs.length ? queueLint(db, { step: "conflict", repo: x.repo, number: c.number, head, base: baseSha, patch: await git.diffText(head, tree), files: rs }) : null;
+      if (task !== null) {
+        db.prepare("INSERT INTO conflict_merges (repo, number, from_head, to_head, base_sha, state, reason, files, attempt, created_at, patch, lint_task) VALUES (?, ?, ?, NULL, ?, 'linting', NULL, ?, ?, ?, ?, ?)")
+          .run(x.repo, c.number, c.head, baseSha, JSON.stringify(files), c.attempt, x.at(), JSON.stringify(resFiles), task);
+        x.log(`  ${ref}: resolution stored; lint task ${task} queued`);
+        return;
+      }
     }
     const commit = await git.commitMerge(tree, [head, baseSha], mergeMessage(c.base, pr.headRefName), { name: who.login, email: who.email });
-    const g = await guard(db, { repo: x.repo, number: c.number }, { kind: "conflict", bucket: "merge", head: c.head }, x.by, liveOf(db, x.d.querier));
+    const g = await guard(db, { repo: x.repo, number: c.number }, c.lint ? { kind: "lint", bucket: "conflict", head: c.head, source: "review" } : { kind: "conflict", bucket: "merge", head: c.head }, x.by, liveOf(db, x.d.querier));
     if ("refused" in g) { x.log(`  ${ref}: skipped: ${g.refused}`); return; }
     recordPushing(db, x.at(), c, files, baseSha, commit);
     const push = await pushBranch(x.gw, git, "conflict-push", g, { remote: pr.headRepository.nameWithOwner, branch: pr.headRefName, sha: commit }, { run: x.runId, from: head, to: commit, base: c.base, files });

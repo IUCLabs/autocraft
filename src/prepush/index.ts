@@ -38,7 +38,7 @@ export function lintPlan(changedRs: string[]): TaskStep[] | null {
 export function lintSteps(files: string[]): TaskStep[] {
   const named = [...new Set(files.filter((f) => f.endsWith(".rs")))].slice(0, LINT_FILES_MAX);
   return [
-    { name: "format", cmd: ["sh", "-c", FORMAT_SCRIPT, "format", ...named], network: "none", timeoutSec: 600, artifacts: [FORMAT_ARTIFACT] },
+    { name: "format", cmd: ["sh", "-c", FORMAT_SCRIPT, "format", ...named], network: "none", timeoutSec: 600, artifacts: [FORMAT_ARTIFACT, FORMAT_ERR_ARTIFACT] },
     { name: "clippy", cmd: ["sh", "-c", CLIPPY_SCRIPT], network: "none", timeoutSec: 3600, artifacts: [CLIPPY_ARTIFACT, CLIPPY_ERR_ARTIFACT] },
   ];
 }
@@ -89,7 +89,7 @@ const trimRendered = (s: string): string => s.trim().slice(0, RENDERED_CAP);
 
 /**
  * The diagnostics of clippy's JSON lines that belong to the patch: a primary span touching an added line, or a compile
- * error (no lint code) anywhere, since the patch broke the build. A failed build with no diagnostic at all is one finding
+ * error (no code, or an E-code) anywhere, since the patch broke the build. A failed build with no diagnostic at all is one finding
  * made of cargo's own output.
  */
 export function findingsOf(jsonLines: string, stderr: string, patch: string): Finding[] {
@@ -112,7 +112,8 @@ export function findingsOf(jsonLines: string, stderr: string, patch: string): Fi
     if (!span) continue;
     diagnostics++;
     const code = m.code?.code ?? null;
-    const compileError = m.level === "error" && !(code ?? "").startsWith("clippy::");
+    // Under -D warnings a rustc lint (unused_imports, dead_code) is an error too, but it counts only on touched lines; a compile error has no code or an E0000 code.
+    const compileError = m.level === "error" && (code === null || /^E\d{4}$/.test(code));
     if (!compileError && !touched(span.file_name, span.line_start, span.line_end)) continue;
     out.push({ level: m.level, code, message: m.message ?? "", file: span.file_name, line: span.line_start, rendered: trimRendered(m.rendered ?? m.message ?? "") });
   }
@@ -120,6 +121,21 @@ export function findingsOf(jsonLines: string, stderr: string, patch: string): Fi
     const text = trimRendered(stderr) || "cargo clippy failed without output";
     out.push({ level: "error", code: null, message: "cargo clippy failed", file: "", line: 0, rendered: text });
   }
+  return out;
+}
+
+/** Where the formatter's per-file failures (rustfmt could not parse a file) are listed, one `@@ <path>` line before each file's output. */
+export const FORMAT_ERR_ARTIFACT = "fmt-err.txt";
+
+/** One finding per file rustfmt failed on: the patch broke the file's syntax. */
+export function formatErrorFindings(text: string): Finding[] {
+  const out: Finding[] = [];
+  let cur: { file: string; body: string[] } | null = null;
+  const flush = () => { if (cur) out.push({ level: "error", code: null, message: "rustfmt failed", file: cur.file, line: 0, rendered: trimRendered(cur.body.join("\n")) || "rustfmt failed" }); };
+  for (const l of text.split("\n")) {
+    if (l.startsWith("@@ ")) { flush(); cur = { file: l.slice(3).trim(), body: [] }; } else cur?.body.push(l);
+  }
+  flush();
   return out;
 }
 
@@ -139,7 +155,7 @@ export function readLint(db: DatabaseSync, taskId: number, o: { /** A diff whose
   const fmt = artifactText(db, taskId, FORMAT_ARTIFACT);
   const clippy = artifactText(db, taskId, CLIPPY_ARTIFACT);
   if (clippy === null) return { kind: "infra-failed", reason: "the lint task returned no clippy output" };
-  return { kind: "result", formatDiff: fmt && fmt.trim() ? gitFormatDiff(fmt) : null, findings: findingsOf(clippy, artifactText(db, taskId, CLIPPY_ERR_ARTIFACT) ?? "", o.against ?? patch) };
+  return { kind: "result", formatDiff: fmt && fmt.trim() ? gitFormatDiff(fmt) : null, findings: [...formatErrorFindings(artifactText(db, taskId, FORMAT_ERR_ARTIFACT) ?? ""), ...findingsOf(clippy, artifactText(db, taskId, CLIPPY_ERR_ARTIFACT) ?? "", o.against ?? patch)] };
 }
 
 export type Fold = { ok: true; patch: string } | { ok: false; reason: string };
