@@ -19,7 +19,7 @@ import { connect } from "../db.ts";
 import { pushApprovalOf } from "../fixup/approval.ts";
 import { Git, exec, fixupDir, type Exec } from "../fixup/git.ts";
 import { DIFF_CAP, FILE_CAP, PR_QUERY, TOTAL_CAP, noteLive, scrubReason, whoAmI, type PrNode } from "../fixup/index.ts";
-import { shownSize, viewFile } from "../fixup/excerpt.ts";
+import { outsideShown, shownSize, viewFile } from "../fixup/excerpt.ts";
 import { editable, validatePatch } from "../fixup/patch.ts";
 import { readGate } from "../merge/changes-requested.ts";
 import { longLivedOf, pushable, BASE_ORG } from "../fixup/pushable.ts";
@@ -242,7 +242,7 @@ export async function runCifix(db: DatabaseSync, params: CifixParams, log: (line
   };
 
   /** Applies a validated patch to the PR head: pushed to the branch, or posted as a comment where the branch is closed to us. */
-  const deliver = async (c: CifixCandidate, kind: "format" | "code", pr: PrNode, v: Fix, checkName: string, check?: (patch: string) => Promise<string | null>): Promise<void> => {
+  const deliver = async (c: CifixCandidate, kind: "format" | "code", pr: PrNode, v: Fix, checkName: string, check?: (patch: string) => Promise<string | null>, shown: CifixPr["files"] = []): Promise<void> => {
     const ref = refOf(c);
     const fail = (state: "failed" | "refused" | "rejected", raw: string) => {
       const reason = scrubReason(raw, d.root);
@@ -324,6 +324,8 @@ export async function runCifix(db: DatabaseSync, params: CifixParams, log: (line
       fail("refused", "the commit would change files or modes outside the validated diff");
       return;
     }
+    const outside = outsideShown(shown, await git.diffText(head, commit));
+    if (outside) { fail("refused", outside); return; }
     rec.pushing(c, kind, commit, v.files);
     const push = await pushBranch(gw, git, "cifix-push", { repo, number: c.number, remote: pr.headRepository!.nameWithOwner, branch: pr.headRefName, sha: commit, expected: head }, { run: runId, from: head, to: commit, files: v.files, changed: v.changed, kind });
     if (push.code !== 0) {
@@ -391,7 +393,7 @@ export async function runCifix(db: DatabaseSync, params: CifixParams, log: (line
       if (!f.ok) continue;
       // The log lines that mention the file give the lines a large file is cut around.
       const v = viewFile(path, f.content, text.split("\n").filter((l) => l.includes(path)), diff.text, FILE_CAP);
-      if (!v.ok) { fail("failed", "the parts of the files the failure names are over the size limit"); return; }
+      if (!v.ok) { fail("failed", v.reason); return; }
       total += shownSize(v.file);
       if (total > TOTAL_CAP) { fail("failed", "the parts of the files the failure names are over the size limit"); return; }
       shown.push(v.file);
@@ -423,7 +425,7 @@ export async function runCifix(db: DatabaseSync, params: CifixParams, log: (line
       audit(db, ACTOR, "cifix-check", ref, { run: runId, head, verdict: verdict.check.verdict, reasons: verdict.check.reasons });
       return verdict.check.verdict === "reject" ? `rejected: Opus rejected the patch: ${checkLine(verdict.check)}` : null;
     };
-    await deliver(c, "code", pr, v, names[0] ?? "CI", check);
+    await deliver(c, "code", pr, v, names[0] ?? "CI", check, shown);
   };
 
   const workOne = async (c: CifixCandidate): Promise<void> => {

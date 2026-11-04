@@ -110,8 +110,10 @@ export class Git {
   async applyToTree(head: string, patch: string, indexFile: string): Promise<{ ok: true; tree: string } | { ok: false; reason: string }> {
     const env = { GIT_INDEX_FILE: indexFile };
     await this.must(["read-tree", head], { env });
-    const chk = await this.git(["apply", "--cached", "--check", "--whitespace=nowarn", "-"], { input: patch, env });
+    const chk = await this.git(["apply", "--cached", "--check", "--verbose", "--whitespace=nowarn", "-"], { input: patch, env });
     if (chk.code !== 0) return { ok: false, reason: `git apply --check: ${chk.stderr.trim().split("\n")[0] ?? "failed"}`.slice(0, 200) };
+    // A hunk found elsewhere than its header says may sit on a block the model never saw.
+    if (/\(offset -?\d+ lines?\)/.test(chk.stderr)) return { ok: false, reason: "a hunk of the patch applies at a different line than its header states" };
     await this.must(["apply", "--cached", "--whitespace=nowarn", "-"], { input: patch, env });
     return { ok: true, tree: (await this.must(["write-tree"], { env })).trim() };
   }

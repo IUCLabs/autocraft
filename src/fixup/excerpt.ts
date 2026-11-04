@@ -14,7 +14,9 @@ export const OUTLINE_CAP = 6_000;
 const OUTLINE_LINE = 100;
 
 const TOP_LEVEL = /^(?:pub(?:\([^)]*\))?\s+|export\s+|default\s+)?(?:async\s+|unsafe\s+|extern\s+"[^"]*"\s+)*(?:fn|impl|struct|enum|trait|mod|type|const|static|macro_rules!|function|class|def)\b/;
-const CITED = /(?:\blines?\s+|\bL|:)(\d+)(?:\s*(?:-|–|to)\s*L?(\d+))?/gi;
+const RANGE = String.raw`(\d+)(?:\s*(?:-|–|to)\s*L?(\d+))?`;
+/** The ways a fix cites lines: `line 5`, `lines 5-9`, `L5-9`, and `path:5`. A number after another colon (a column) is not a line. */
+const citedRe = (path: string) => new RegExp(String.raw`(?:\blines?\s+|\bL)${RANGE}|${path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}:${RANGE}`, "gi");
 const BACKTICKED = /`([A-Za-z_][A-Za-z0-9_]*)`/g;
 const HUNK = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/;
 
@@ -48,12 +50,13 @@ export function viewFile(path: string, content: string, cues: string[], diff: st
   const lines = content.split("\n");
   if (lines[lines.length - 1] === "") lines.pop();
   const n = lines.length;
+  const cited = citedRe(path);
   const want: [number, number][] = [];
   const add = (from: number, to: number, margin: number) => want.push([Math.max(1, from - margin), Math.min(n, to + margin)]);
   for (const [a, b] of changedRanges(diff, path)) add(a, b, REGION_MARGIN);
   for (const cue of cues) {
-    for (const m of cue.matchAll(CITED)) {
-      const a = Number(m[1]), b = m[2] ? Number(m[2]) : a;
+    for (const m of cue.matchAll(cited)) {
+      const a = Number(m[1] ?? m[3]), b = m[2] ?? m[4] ? Number(m[2] ?? m[4]) : a;
       if (a >= 1 && a <= n && b >= a) add(a, Math.min(b, n), REGION_MARGIN);
     }
     for (const m of cue.matchAll(BACKTICKED)) {
@@ -71,16 +74,42 @@ export function viewFile(path: string, content: string, cues: string[], diff: st
   }
   if (!merged.length) return { ok: false, reason: `${path} is over the ${fileCap} character limit and no line in it is cited or changed` };
   const regions = merged.map(([from, to]) => ({ from, to, text: lines.slice(from - 1, to).map((l, i) => `${from + i}| ${l}`).join("\n") }));
+  const regionsSize = regions.reduce((k, r) => k + r.text.length + 1, 0);
+  if (regionsSize > fileCap) return { ok: false, reason: `the parts of ${path} to show are over the ${fileCap} character limit` };
+  // The outline takes what the regions leave; it is shortened, or dropped, before the file is refused.
+  const room = Math.min(OUTLINE_CAP, fileCap - regionsSize);
   const outline: string[] = [];
   let size = 0;
-  for (let i = 0; i < n; i++) {
+  for (let i = 0; i < n && room >= 4; i++) {
     if (!TOP_LEVEL.test(lines[i]!)) continue;
     const entry = `${i + 1}| ${lines[i]!.trimEnd().slice(0, OUTLINE_LINE)}`;
-    if (size + entry.length + 1 > OUTLINE_CAP) { outline.push("..."); break; }
+    if (size + entry.length + 1 + 4 > room) { outline.push("..."); break; }
     outline.push(entry);
     size += entry.length + 1;
   }
   const file: ShownFile = { path, excerpt: { total_lines: n, outline, regions } };
   if (shownSize(file) > fileCap) return { ok: false, reason: `the parts of ${path} to show are over the ${fileCap} character limit` };
   return { ok: true, file };
+}
+
+/**
+ * Why a change breaks the rule that edits land inside what the model was shown, or null. `diff` is the diff the patch
+ * made (head to commit); every removed line and every insertion point of an excerpted file must lie inside one region.
+ */
+export function outsideShown(files: ShownFile[], diff: string): string | null {
+  for (const f of files) {
+    if (!("excerpt" in f)) continue;
+    const inside = (from: number, to: number) => f.excerpt.regions.some((r) => r.from <= from && to <= r.to);
+    let inFile = false, at = 0;
+    for (const l of diff.split("\n")) {
+      if (l.startsWith("diff --git ")) { inFile = l === `diff --git a/${f.path} b/${f.path}`; continue; }
+      if (!inFile) continue;
+      const h = /^@@ -(\d+)(?:,(\d+))? \+\d+(?:,\d+)? @@/.exec(l);
+      if (h) { at = Number(h[1]) + (h[2] === "0" ? 1 : 0); continue; }
+      if (l.startsWith("-") && !l.startsWith("---")) { if (!inside(at, at)) return `the patch changes line ${at} of ${f.path}, outside the parts shown`; at++; }
+      else if (l.startsWith("+") && !l.startsWith("+++")) { if (!inside(at - 1, at - 1) && !inside(at, at)) return `the patch inserts at line ${at} of ${f.path}, outside the parts shown`; }
+      else if (l.startsWith(" ")) at++;
+    }
+  }
+  return null;
 }

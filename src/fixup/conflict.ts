@@ -24,6 +24,9 @@ const CONFLICT = CLAUDE_PROMPTS["fixup.conflict"];
 /** Caps on what the resolver is shown for one file (all its sections with 30 lines of context, and one section's two sides). The check's own limit is applied separately, to what it receives. */
 const SECTIONS_CAP = 120_000;
 const SECTION_CAP = 40_000;
+/** Caps on one try across all its conflicted files: each file costs a resolver call and a check call. */
+const MAX_CONFLICT_FILES = 12;
+const ALL_SECTIONS_CAP = 360_000;
 /** Lines of context per section the check gets. */
 const CHECK_CONTEXT = 10;
 const lastLines = (text: string, n: number): string => text.split(/(?<=\n)/).slice(-n).join("");
@@ -143,6 +146,8 @@ export async function mergeConflict(db: DatabaseSync, x: ConflictRun, c: Conflic
     else {
       files = merge.conflicted;
       if (!files.length) { refuse("the merge is not clean but names no conflicted file"); return; }
+      if (files.length > MAX_CONFLICT_FILES) { refuse(`${files.length} files conflict, over the limit of ${MAX_CONFLICT_FILES}`); return; }
+      let allSections = 0;
       const shown: { view: ConflictFile; content: string; mode: string; crlf: boolean }[] = [];
       let nextId = 1;
       for (const path of files) {
@@ -161,6 +166,8 @@ export async function mergeConflict(db: DatabaseSync, x: ConflictRun, c: Conflic
         nextId += view.sections.length;
         const size = view.sections.reduce((n, s) => n + s.before.length + s.ours.length + s.theirs.length + s.after.length, 0);
         if (size > SECTIONS_CAP || view.sections.some((s) => s.ours.length + s.theirs.length > SECTION_CAP)) { refuse(`the conflict sections of ${path} are over the size limit`); return; }
+        allSections += size;
+        if (allSections > ALL_SECTIONS_CAP) { refuse(`the conflict sections of the ${files.length} conflicted files are over the ${ALL_SECTIONS_CAP} character limit`); return; }
         // The check gets each section with its resolution, which is at most as long as the longer side plus three lines: refused here, before the claim, when even that bound is too big.
         if (checkSize(checkSections([view], (s) => (s.ours.length > s.theirs.length ? s.ours : s.theirs))) > CHECK_PATCH_CAP) { refuse(`the conflict sections of ${path} are over the ${CHECK_PATCH_CAP} character limit for the check`); return; }
         shown.push({ view, content, mode: f.mode, crlf });

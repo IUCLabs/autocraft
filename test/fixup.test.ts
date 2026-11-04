@@ -10,6 +10,7 @@ import { pushApprovalOf, setPushApproval } from "../src/fixup/approval.ts";
 import { selectFixups } from "../src/fixup/candidates.ts";
 import { exec, type Exec, type ExecResult } from "../src/fixup/git.ts";
 import { FILE_CAP, repostAsk, runFixup, scrubReason, type FixupDeps } from "../src/fixup/index.ts";
+import { shownSize, viewFile } from "../src/fixup/excerpt.ts";
 import { validatePatch, type FixupPr } from "../src/fixup/patch.ts";
 import { setCommentApproval } from "../src/act/approval.ts";
 import { ASK_ITEM_MAX, COMMENT_TEMPLATE, askText, commentText } from "../src/fixup/template.ts";
@@ -442,6 +443,65 @@ describe("fixup step", () => {
     migrated.prepare("INSERT INTO fixups (repo, number, from_head, state, reason, attempt, created_at) VALUES ('app', 7, 'h1', 'too-large', 'the fixes name files a fix-up may not edit', 1, ?)").run(T1);
     migrated.close();
     assert.equal(selectFixups(connect(path), "app").fix.length, 0);
+  });
+
+  describe("a patch on a large file with a duplicated block", () => {
+    const dup = (i: number) => (i >= 100 && i < 103) || (i >= 2500 && i < 2503) ? `dup ${i < 200 ? i - 100 : i - 2500}` : `fn f${i}() {}`;
+    const lib = Array.from({ length: 3000 }, (_, i) => dup(i)).join("\n") + "\n";
+    const diff = "diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1000,1 +1000,1 @@\n-x\n+fn f999() {}\n";
+    const patch = (start: number) => `diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -${start},3 +${start},3 @@\n dup 0\n-dup 1\n+dup one\n dup 2\n`;
+    const run = async (start: number) => {
+      const w = world({ lib, diff, reply: patch(start) });
+      const db = fresh(w.head);
+      const s = await runFixup(db, { repo: "app", dryRun: false }, () => {}, w.deps);
+      return { s, reason: String((rows(db, "SELECT reason FROM fixups")[0] ?? {}).reason), log: w.log };
+    };
+
+    test("a hunk applied at an offset from its header is refused", async () => {
+      const r = await run(2400);
+      assert.deepEqual(r.s.pushed, []);
+      assert.match(r.reason, /different line than its header/);
+      assert.ok(!r.log.includes("check"));
+    });
+
+    test("a hunk at its stated place outside the shown regions is refused", async () => {
+      const r = await run(2501);
+      assert.deepEqual(r.s.pushed, []);
+      assert.match(r.reason, /outside the parts shown/);
+      assert.ok(!r.log.includes("check"));
+    });
+  });
+
+  test("lines are cited as line N, lines N-M, LN and path:N, and a column after a path is not a line", () => {
+    const body = Array.from({ length: 1000 }, (_, i) => `fn f${i}() {}`).join("\n") + "\n";
+    const regions = (cue: string) => {
+      const v = viewFile("src/x.rs", body, [cue], "", 10_000);
+      const f = v.ok ? v.file : null;
+      return f && "excerpt" in f ? f.excerpt.regions.map((r) => [r.from, r.to]) : null;
+    };
+    assert.deepEqual(regions("src/x.rs:500:3"), [[350, 650]]);
+    assert.deepEqual(regions("line 20, lines 800-810 and L900"), [[1, 170], [650, 1000]]);
+  });
+
+  test("the outline is shortened before the file is refused", () => {
+    const body = Array.from({ length: 1000 }, (_, i) => `fn f${i}() {}`).join("\n") + "\n";
+    const diff = "diff --git a/s.rs b/s.rs\n@@ -500,1 +500,1 @@\n-a\n+b\n";
+    const whole = viewFile("s.rs", body, [], diff, 1e9);
+    assert.ok(whole.ok && "content" in whole.file);
+    const cap = 8_000;
+    const v = viewFile("s.rs", body, [], diff, cap);
+    assert.ok(v.ok && "excerpt" in v.file && shownSize(v.file) <= cap);
+  });
+
+  test("carry-overs held for the old file limit are queued again after connecting; other holds stay", () => {
+    const path = join(mkdtempSync(join(dir, "db-")), "t.db");
+    const db = connect(path);
+    const ins = db.prepare("INSERT INTO dupe_carries (decision_id, repo, number, state, outcome, updated_at) VALUES (?, 'app', ?, 'held', ?, ?)");
+    ins.run("d1", 1, "too-large: src/lib.rs is over the 40000 character limit", T0);
+    ins.run("d2", 2, "too-large: the fixes name files a fix-up may not edit", T0);
+    db.close();
+    const again = connect(path);
+    assert.deepEqual(rows(again, "SELECT number, state FROM dupe_carries ORDER BY number"), [{ number: 1, state: "queued" }, { number: 2, state: "held" }]);
   });
 
   test("a large file whose excerpts are still over the limit is held with a reason", async () => {

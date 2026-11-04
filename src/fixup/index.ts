@@ -35,7 +35,7 @@ import { longLivedOf, pushable, BASE_ORG } from "./pushable.ts";
 import { askConflict, mergeConflict, type ConflictRun } from "./conflict.ts";
 import type { ConflictCandidate } from "./conflict-state.ts";
 import { editable, validatePatch, type ConflictPr, type FixupPr } from "./patch.ts";
-import { shownSize, viewFile } from "./excerpt.ts";
+import { outsideShown, shownSize, viewFile } from "./excerpt.ts";
 import { HOLD_CANNOT_PUSH, askText, carryCommentText, commentText, commitMessage } from "./template.ts";
 import { commentApprovalOf } from "../act/approval.ts";
 
@@ -363,6 +363,9 @@ export async function runFixup(db: DatabaseSync, params: FixupParams, log: (line
         fail("refused", "the commit would change files or modes outside the validated diff");
         continue;
       }
+
+      const outside = outsideShown(shown, await git.diffText(head, commit));
+      if (outside) { fail("refused", outside); continue; }
 
       // Opus checks the validated patch; only an approve goes on to the push.
       if (v.patch.length > CHECK_PATCH_CAP) { fail("refused", `the patch is over the ${CHECK_PATCH_CAP} character limit for the check`); continue; }

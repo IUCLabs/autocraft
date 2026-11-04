@@ -209,6 +209,19 @@ describe("conflict merge", () => {
     assert.equal(w.log.filter((l) => l.startsWith("push")).length, 1);
   });
 
+  test("more than 12 conflicted files, or sections over the summed cap, are skipped once before any call", async () => {
+    for (const [o, reason] of [[{ files: 13 }, /13 files conflict, over the limit of 12/], [{ files: 12, side: 17_000 }, /over the 360000 character limit/]] as const) {
+      const w = world({ conflicting: true, ...o, resolve: () => null });
+      const db = fresh(w.head);
+      const s = await runFixup(db, { repo: "app", dryRun: false }, () => {}, w.deps);
+      assert.equal(s.pushed.length, 0);
+      assert.deepEqual(w.log, []);
+      const r = db.prepare("SELECT state, reason FROM conflict_merges").get() as { state: string; reason: string };
+      assert.equal(r.state, "skipped");
+      assert.match(r.reason, reason);
+    }
+  });
+
   test("one file failing the check pushes nothing and the reason names it", async () => {
     const w = world({ conflicting: true, files: 2, resolve: (files) => JSON.stringify({ sections: files[0]!.sections.map((s) => ({ id: s.id, content: s.ours })) }) });
     let n = 0;
