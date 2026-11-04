@@ -16,13 +16,16 @@ const parse = (s: string | null | undefined): CheckRow => { try { const v = JSON
 
 /**
  * Records a push that succeeded: the required-check result at the head before it (from the stored checks, when they are for that head).
- * A branch the push created has no earlier head and counts as green. Pushes of other kinds (batches, main fixes) are not recorded.
+ * A branch the push created has no earlier head: it takes the result of the default branch's latest CI (a red or unknown main is no baseline for "broke"). Pushes of other kinds (batches, main fixes) are not recorded.
  */
 export function recordPush(db: DatabaseSync, action: string, o: { repo: string; number: number | null; from: string | null; to: string }, at = new Date().toISOString()): void {
   const stage = PUSH_STAGE[action];
   if (!stage) return;
   let before: Required | "unknown" = "unknown";
-  if (!o.from) before = "green";
+  if (!o.from) {
+    const m = db.prepare("SELECT state FROM main_ci WHERE repo = ? ORDER BY committed_at DESC, first_seen_at DESC LIMIT 1").get(o.repo) as { state: string } | undefined;
+    before = m?.state === "green" || m?.state === "optional" ? "green" : m?.state === "red" ? "red" : "unknown";
+  }
   else if (o.number !== null) {
     const row = db.prepare("SELECT head_oid, checks FROM pr_checks WHERE repo = ? AND number = ?").get(o.repo, o.number) as { head_oid: string; checks: string } | undefined;
     if (row && row.head_oid === o.from) before = requiredResult(parse(row.checks), optionalChecks(db, o.repo));

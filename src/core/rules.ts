@@ -67,7 +67,7 @@ export const BASE_NAME = /^[A-Za-z0-9._/-]+$/;
 export const CIFIX_MAX_TRIES = 2;
 export const CIFIX_MAX_PUSHES_PER_PR = 2;
 export const CIFIX_MAX_TRIES_PER_PR = 4;
-export const CIFIX_TRY_STATES = ["formatting", "pushing", "pushed", "failed", "refused", "rejected"];
+export const CIFIX_TRY_STATES = ["formatting", "linting", "superseded", "pushing", "pushed", "failed", "refused", "rejected"];
 export const CIFIX_PUSH_STATES = ["pushing", "pushed"];
 /** States that end the CI fix step's work at a head. */
 /** A stored model patch waits for its lint task or for the collect step. */

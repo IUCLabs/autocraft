@@ -178,15 +178,16 @@ export async function runOpusReview(db: DatabaseSync, params: OpusParams, log: (
   const runId = `opus-review-${repo}-${now().replace(/[-:]/g, "").slice(0, 15)}`;
   let cands = selectOpusCandidates(db, repo);
   const uncapped = staleReviews(db, repo, true);
-  const capped = [...staleReviews(db, repo)].filter((k) => !uncapped.has(k));
+  const allStale = staleReviews(db, repo);
+  const capped = [...allStale].filter((k) => !uncapped.has(k));
   if (capped.length) log(`opus-review ${repo}: ${capped.join(", ")} not reviewed again: already ${MAX_RERUNS_PER_DAY} re-reviews today after new discussion`);
   const summary: OpusSummary = { runId, repo, candidates: cands.length, reviewed: 0, dropped: 0, verdicts: {}, missing: [], skipped: [] };
   // A sure take or take-fix carries over our own checked fix-up without a model call.
   if (!params.dryRun) {
     cands = cands.filter((c) => {
-      const k = carriedReview(db, c);
+      const k = carriedReview(db, c, allStale);
       if (!k) return true;
-      saveOpus(db, runId, c, { mode: CARRIED, base: k.from, model: CARRIED, review: k.review, snap: k.seen ? { seen: k.seen, hash: k.hash } : undefined });
+      saveOpus(db, runId, c, { mode: CARRIED, base: k.from, model: CARRIED, review: k.review, snap: { seen: k.seen, hash: k.hash } });
       log(`  ${refOf(c)}: ${k.review.reason}`);
       summary.verdicts.take = (summary.verdicts.take ?? 0) + 1;
       summary.reviewed++;

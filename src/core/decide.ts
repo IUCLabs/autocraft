@@ -286,7 +286,8 @@ export function decidePr(f: PrFacts): Plan {
   for (const l of f.lint) {
     const basic = l.ended && open && !f.draft && !declinedBy(f) && f.mergeable !== "CONFLICTING" && !f.mergeHeld && !f.heldBacklog && !!f.head;
     // A carry-over needs no review at the head; every other patch needs a take review there that is not stale.
-    const reviewed = l.source === "carry" || (!!r && takeReview && r.head === f.head && !r.stale && notHeld(f));
+    // A CI fix of our own breakage is reviewed against the head before the push.
+    const reviewed = l.source === "carry" || (l.step === "cifix" && !!f.brokeByUs && !!r && takeReview && notHeld(f)) || (!!r && takeReview && r.head === f.head && !r.stale && notHeld(f));
     const approved = f.pushable ? f.repoFacts.pushApproved : l.step === "cifix" && f.repoFacts.commentApproved;
     if (basic && reviewed && approved) actions.push(act("lint", f.head, { bucket: l.step, source: l.source }));
   }
