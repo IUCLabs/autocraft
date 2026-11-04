@@ -13,8 +13,8 @@ import { askMergeDecisions } from "../src/merge/index.ts";
 import { setMergeApproval } from "../src/merge/approval.ts";
 import { buildQueue, eligible } from "../src/merge/queue.ts";
 import { ActionError, actionsOf, fixAgain, reviewAgain, verifyAgain } from "../src/operator-actions.ts";
-import { classifyListOf, factsOf, nextStepOf } from "../src/rank/next.ts";
-import { settledOf } from "../src/classify/settled.ts";
+import { refreshPlanCache } from "../src/core/plan-cache.ts";
+import { classifyListOf } from "../src/rank/next.ts";
 import { saveVerification } from "../src/verify/index.ts";
 import { unavailableCandidates } from "../src/verify/select.ts";
 import { LANES } from "../src/runner/autopilot.ts";
@@ -235,9 +235,10 @@ describe("plugin answer labels", () => {
 });
 
 describe("what the Work queue says", () => {
-  const facts = (db: DatabaseSync, n: number) => {
-    const kind = (db.prepare("SELECT kind, head_oid FROM items WHERE number = ?").get(n) as { kind: string; head_oid: string | null });
-    return factsOf(db, "app", n, kind.kind, kind.head_oid, settledOf(db, "app", n, "r1"));
+  // The text the planner caches for the Work page.
+  const nextOf = (db: DatabaseSync, n: number): string => {
+    refreshPlanCache(db, { run: "r1" });
+    return JSON.parse((db.prepare("SELECT view FROM item_plans WHERE repo = 'app' AND number = ?").get(n) as { view: string }).view).next;
   };
 
   test("held by a Duplicate? decision, not verified, no CI", () => {
@@ -245,11 +246,11 @@ describe("what the Work queue says", () => {
     add(db, { n: 1, verify: "passed" });
     add(db, { n: 2, verify: "unavailable" });
     decision(db, "app#1:dup", "duplicate", 1);
-    assert.match(nextStepOf(facts(db, 1)), /Duplicate\?/);
-    assert.match(nextStepOf(facts(db, 2)), /not verified/);
+    assert.match(nextOf(db, 1), /Duplicate\?/);
+    assert.match(nextOf(db, 2), /not verified/);
     const noCi = fresh();
     add(noCi, { n: 3, verify: "passed", ci: "none" });
-    assert.match(nextStepOf(facts(noCi, 3)), /no CI/);
+    assert.match(nextOf(noCi, 3), /no CI/);
   });
 
   test("a label disagreement outside the scope labels names the problem and links the list", () => {
@@ -257,11 +258,10 @@ describe("what the Work queue says", () => {
     add(db, { n: 1, kind: "issue", label: "bugfix" });
     db.prepare("UPDATE classifications SET probs = '{\"top\":0.5}' WHERE number = 1").run();
     db.prepare(`INSERT INTO classifications (repo, number, classifier, run_id, at, type_label, flags) VALUES ('app', 1, 'haiku', 'r1', '${T0}', 'infra', '[]')`).run();
-    assert.equal(nextStepOf(facts(db, 1)), "Referee: waiting for Sonnet");
+    assert.equal(nextOf(db, 1), "Referee: waiting for Sonnet");
     db.prepare(`INSERT INTO classifications (repo, number, classifier, run_id, at, type_label, flags, probs, reason) VALUES ('app', 1, 'sonnet', 'r1', '${T0}', 'bugfix', '[]', '{"sure":false}', 'unclear')`).run();
-    const f = facts(db, 1);
-    assert.equal(f.disagree, true);
-    assert.equal(nextStepOf(f), "Models disagree: needs a label");
+    assert.equal(nextOf(db, 1), "Models disagree: needs a label");
+    assert.equal((db.prepare("SELECT item_state FROM item_plans WHERE number = 1").get() as { item_state: string }).item_state, "models-disagree");
     assert.equal(classifyListOf("app"), "/items?status=disagree&repo=app");
   });
 });

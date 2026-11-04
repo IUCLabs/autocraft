@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { connect } from "../src/db.ts";
+import { refreshPlanCache } from "../src/core/plan-cache.ts";
 import { insertBatch, updateBatch } from "../src/merge/batch-store.ts";
 import { queue, queueBatches } from "../src/dash/api/queue.ts";
 import type { Req } from "../src/dash/types.ts";
@@ -31,6 +32,7 @@ test("batches page newest first with their member rows, fork link and base commi
   updateBatch(db, old, T, { state: "merged" });
   db.prepare("INSERT INTO audit (at, login, action, target, details) VALUES (?, 'bot', 'batch-push', 'app:integration-app-20260101-1', ?)").run(T, JSON.stringify({ fork: "bot/app" }));
 
+  refreshPlanCache(db);
   const first = await queueBatches(db, req("repo=app&limit=2"));
   assert.equal(first.total, 3);
   assert.deepEqual(first.batches.map((b) => b.id), [checking, pushed]);
@@ -53,6 +55,7 @@ test("batches page newest first with their member rows, fork link and base commi
   assert.deepEqual(list.rows.map((r) => r.number), []);
   assert.equal(list.total, 0);
   updateBatch(db, checking, T, { state: "merged" });
+  refreshPlanCache(db);
   assert.deepEqual((await queue(db, req("repo=app"))).rows.map((r) => r.number), [1]);
 
   assert.equal((await queueBatches(db, req(""))).total, 4);

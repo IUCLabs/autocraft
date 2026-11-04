@@ -16,6 +16,7 @@ export {
 } from "../core/rules.ts";
 export { NO_CI_SAMPLE, repoHasNoCi } from "./no-ci.ts";
 export { headWasUnsure, ownFixPrs } from "../core/facts.ts";
+export { countStates } from "../core/plan-read.ts";
 
 export type QueueEntry = {
   repo: string; number: number; title: string; author: string | null; tier: Tier;
@@ -113,21 +114,4 @@ export function buildQueue(db: DatabaseSync, opts: QueueOptions = {}): QueueEntr
     if (opts.limit && out.length >= Math.floor(opts.limit)) break;
   }
   return out;
-}
-
-export function countStates(entries: QueueEntry[]): Record<QueueState, number> {
-  const c = Object.fromEntries(QUEUE_STATES.map((s) => [s, 0])) as Record<QueueState, number>;
-  for (const e of entries) c[e.state]++;
-  return c;
-}
-
-/** How many merged PRs have a take or take-fix final review as their latest. */
-export function countMerged(db: DatabaseSync, repo?: string, exclude: string[] = []): number {
-  const params: Record<string, string> = repo ? { repo } : {};
-  exclude.forEach((r, k) => { params[`ex${k}`] = r; });
-  return (db.prepare(`SELECT COUNT(*) AS n FROM items i
-    JOIN final_reviews l ON l.repo = i.repo AND l.number = i.number AND l.head_oid = (
-      SELECT r.head_oid FROM opus_reviews r WHERE r.repo = i.repo AND r.number = i.number AND r.verdict IS NOT NULL ORDER BY r.at DESC, r.rowid DESC LIMIT 1)
-    WHERE l.verdict IN ('take', 'take-fix') AND i.kind = 'pr' AND i.state = 'MERGED' ${repo ? "AND i.repo = :repo" : ""}${exclude.map((_, k) => ` AND i.repo <> :ex${k}`).join("")}`)
-    .get(params) as { n: number }).n;
 }

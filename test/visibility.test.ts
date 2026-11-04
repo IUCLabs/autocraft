@@ -1,5 +1,6 @@
 // A tracked repo that is not public is visible to operators and to users whose
 // own GitHub permission on it is not "none"; to nobody else.
+import { refreshPlanCache } from "../src/core/plan-cache.ts";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -57,6 +58,7 @@ before(async () => {
     const id = insertRun(db, { jobId: null, step: "classify", stage: 1, promptId: "p", promptVersion: "1", provider: "claude", model: "m", accountId: null, items: [{ repo, number: 1 }], prompt: `prompt for ${repo}` });
     finishRun(db, id, { state: "done", output: `output for ${repo}` });
   }
+  refreshPlanCache(db);
   addLogin(db, "cli", "boss", "operator", null);
   addLogin(db, "cli", "reader", "viewer", null);
   addLogin(db, "cli", "maint", "maintainer", null);

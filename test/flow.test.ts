@@ -1,5 +1,6 @@
 // The flowchart counts (GET /api/flow) and the Items browser's flow filter, on a
 // small database with one item for each branch.
+import type { DatabaseSync } from "node:sqlite";
 import { seedPremergeClean } from "./helpers/premerge.ts";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync } from "node:fs";
@@ -8,7 +9,11 @@ import { test } from "node:test";
 import type { FlowNode } from "../web/src/api/types.ts";
 import { connect } from "../src/db.ts";
 import { buildFlow } from "../src/flow/shape.ts";
-import { readSummary, refreshSummary } from "../src/flow/summary.ts";
+import { refreshPlanCache } from "../src/core/plan-cache.ts";
+import { readSummary, refreshSummary as refreshCounts } from "../src/flow/summary.ts";
+
+/** The planner's pass first (it fills the Plan cache the counts read), then the counting. */
+const refreshSummary = (db: DatabaseSync): string[] => (refreshPlanCache(db), refreshCounts(db));
 import { listItems } from "../src/dash/api/items.ts";
 import { queue } from "../src/dash/api/queue.ts";
 import type { Req } from "../src/dash/types.ts";
@@ -60,6 +65,7 @@ function build() {
   db.prepare(`INSERT INTO whitelist_overrides (login, status, by, at) VALUES ('regular', 'allow', 'op', '${T0}')`).run();
   db.prepare("INSERT INTO access (login, role) VALUES ('op', 'operator')").run();
   scopeToTracked(db);
+  refreshPlanCache(db);
   return db;
 }
 
@@ -150,7 +156,7 @@ test("the duplicate, priority, fix, fix-up and act nodes count one item in each 
   const dec = db.prepare(`INSERT INTO main.decisions (id, kind, repo, number, question, options, asked_at, answer, answered_by, answered_at, applied_at) VALUES (?, ?, '${R}', ?, 'q', '[]', '${T0}', ?, ?, ?, ?)`);
   const setting = (k: string) => db.prepare("INSERT OR REPLACE INTO main.settings (key, value) VALUES (?, '{\"by\":\"op\",\"at\":\"x\"}')").run(k);
   // Counted afresh on every call: the stored summary would otherwise show the first count.
-  const node = (id: string) => { db.prepare("DELETE FROM main.flow_summary").run(); return flowOf(db, null).nodes.find((n) => n.id === id)!; };
+  const node = (id: string) => { refreshPlanCache(db); db.prepare("DELETE FROM main.flow_summary").run(); return flowOf(db, null).nodes.find((n) => n.id === id)!; };
 
   // Duplicates: 20 and 21 sit in an unjudged pair, 22 has an open decision, 24 was answered close, 25 is closed after that.
   for (const n of [20, 21, 22, 24]) item.run(n, "issue", "OPEN", null, `e${n}`);

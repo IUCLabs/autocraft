@@ -198,6 +198,8 @@ export type PrFacts = {
   changesRequested: { why: string; live: boolean } | null;
   /** The note when live review reads failed several times in a row. */
   gateFailureNote: string | null;
+  /** For a PR outside the pipeline's scope (no other review facts are loaded): what its stored rows say, enough for the Work page to name the step it waits on. */
+  outside?: { review: string | null; verify: string | null; ci: string | null };
 };
 
 // ---- facts and plans of an item's triage steps (issues and PRs) -----------------------------------------------------

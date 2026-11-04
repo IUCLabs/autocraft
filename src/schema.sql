@@ -1185,6 +1185,7 @@ CREATE TABLE IF NOT EXISTS item_plans (
   wait TEXT,
   reasons TEXT NOT NULL,
   note TEXT,
+  view TEXT NOT NULL DEFAULT '{}',    -- JSON for the dashboard (PlanView in src/core/plan-cache.ts): next-step text, scope, label, queue fields
   planned_at TEXT NOT NULL,
   PRIMARY KEY (repo, number)
 ) WITHOUT ROWID;

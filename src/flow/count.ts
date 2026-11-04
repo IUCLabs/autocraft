@@ -1,8 +1,7 @@
 // Counts for the flowchart (docs/dashboard-spec.md, Flow), one node at a time,
 // for one repo or every tracked repo. Each count uses the rule of the stage it
-// describes: settled labels (src/classify/settled.ts), scope decisions
-// (src/core/decide-item.ts), review Plans (src/core/select.ts) and the
-// merge queue (src/merge/queue.ts).
+// describes: settled labels (src/classify/settled.ts) and the cached Plans
+// (item_plans, src/core/plan-read.ts) for every count of what is due or queued.
 //
 // Counts are flat keys that add up across repos:
 //   "<node>.<branch>"         items in a branch
@@ -15,19 +14,16 @@
 // browser's flow filter.
 import type { DatabaseSync } from "node:sqlite";
 import { latestRun, settledTable } from "../classify/settled.ts";
-import { isScope, latestJevRun } from "../decide/select.ts";
-import { plannedItems } from "../core/select-items.ts";
+import { isScope } from "../decide/select.ts";
+import { cachedQueue, dueActions, dueRefs } from "../core/plan-read.ts";
+import type { QueueState } from "../core/plan.ts";
 import { commentApprovalOf } from "../act/approval.ts";
 import { fixIssueApprovalOf } from "../fixissue/approval.ts";
-import { cifixBucket, decidePr, fixupOf } from "../core/decide.ts";
-import { loadPrFacts } from "../core/facts.ts";
 import { approvalOf } from "../labels/approval.ts";
 import { mergeApprovalOf } from "../merge/approval.ts";
-import { buildQueue, eligible, type QueueState } from "../merge/queue.ts";
-import { pendingDefects, selectPostmerge } from "../postmerge/select.ts";
+import { pendingDefects } from "../postmerge/select.ts";
 import { trackedNames } from "../repos.ts";
 import { scopeAnswers } from "../review/candidates.ts";
-import { planned } from "../core/select.ts";
 
 export type Counts = Record<string, number>;
 export type Refs = Set<string>;
@@ -53,16 +49,12 @@ export class Ctx {
   readonly repo: string | null;
   /** The classification run every counter uses, resolved once. */
   readonly run: string | null;
-  private jev?: string | null;
   constructor(db: DatabaseSync, repo: string | null, now = Date.now(), run: string | null = latestRun(db)) {
     this.run = run;
     this.db = db;
     this.repo = repo;
     this.since = new Date(now - DAY).toISOString();
     this.rp = repo ? { repo } : {};
-  }
-  jevRun(): string | null {
-    return this.jev !== undefined ? this.jev : (this.jev = latestJevRun(this.db));
   }
   andRepo(col = "repo"): string {
     return this.repo ? `AND ${col} = :repo` : "";
@@ -165,8 +157,7 @@ function decide(c: Ctx): NodeCount {
   }
   const byAnswer = new Map<string, Refs>(SCOPE_ANSWERS.map((a) => [a, new Set()]));
   for (const [r, a] of c.scopeAnswers()) if (openRefs.has(r) && !waiting.has(r) && c.inRepo(r)) byAnswer.get(a)?.add(r);
-  const jevRun = c.jevRun();
-  const notAsked: Refs = new Set(jevRun ? plannedItems(c.db, "decide", { run: jevRun, bucket: "new", repo: c.repo ?? undefined }).map((p) => ref(p.facts)) : []);
+  const notAsked = dueRefs(c.db, "decide", { bucket: "new", ...(c.repo ? { repo: c.repo } : {}) });
   const members = new Map<string, Refs>([["decide.not-asked", notAsked], ["decide.open", waiting], ...[...byAnswer].map(([k, v]) => [`decide.${k}`, v] as [string, Refs])]);
   const total = [...members.values()].reduce((a, s) => a + s.size, 0);
   return {
@@ -180,7 +171,7 @@ function decide(c: Ctx): NodeCount {
 }
 
 function review(c: Ctx): NodeCount {
-  const candidates: Refs = new Set(planned(c.db, "review", { ...(c.repo ? { repo: c.repo } : {}), run: c.run }).map((p) => ref(p.facts)));
+  const candidates = dueRefs(c.db, "review", c.repo ? { repo: c.repo } : {});
   const last = c.db.prepare(`WITH last AS (SELECT repo, number, verdict, ROW_NUMBER() OVER (PARTITION BY repo, number ORDER BY at DESC, head_oid DESC) AS k
       FROM final_reviews WHERE 1 ${c.andRepo()})
     SELECT l.repo, l.number, l.verdict FROM last l JOIN items i ON i.repo = l.repo AND i.number = l.number
@@ -208,8 +199,8 @@ export const VERIFY_BRANCHES = ["planned", "running", "passed", "ci-enough", "fa
 function verify(c: Ctx): NodeCount {
   const by = new Map<string, Refs>([["verify.waiting", new Set()], ...VERIFY_BRANCHES.map((s) => [`verify.${s}`, new Set()] as [string, Refs])]);
   const tracked = new Set(c.repos());
-  for (const p of planned(c.db, "verify", { ...(c.repo ? { repo: c.repo } : {}), run: c.run, bucket: "plan" }))
-    if (tracked.has(p.facts.repo)) by.get("verify.waiting")!.add(ref(p.facts));
+  for (const p of dueActions(c.db, "verify", { ...(c.repo ? { repo: c.repo } : {}), bucket: "plan" }))
+    if (tracked.has(p.repo)) by.get("verify.waiting")!.add(ref(p));
   // Verifications at the open PR's current head (same head rule as the queue); primary-key joins, no scan of closed PRs' rows.
   const rows = c.db.prepare(`SELECT v.repo, v.number, v.state FROM main.verifications v
     JOIN main.items i ON i.repo = v.repo AND i.number = v.number AND i.state = 'OPEN'
@@ -234,9 +225,9 @@ function verify(c: Ctx): NodeCount {
 
 function merge(c: Ctx): NodeCount {
   const tracked = new Set(trackedNames(c.db));
-  const queue = buildQueue(c.db, { ...(c.repo ? { repo: c.repo } : {}), run: c.run }).filter((e) => tracked.has(e.repo));
+  const queue = cachedQueue(c.db, c.repo ? { repo: c.repo } : {}).filter((e) => tracked.has(e.repo));
   const approvedRepos = new Set([...new Set(queue.map((e) => e.repo))].filter((r) => mergeApprovalOf(c.db, r)));
-  const ready = queue.filter(eligible);
+  const ready = queue.filter((e) => e.eligible);
   const since = { since: c.since };
   const of = (...states: QueueState[]): Refs => new Set(queue.filter((e) => states.includes(e.state)).map(ref));
   const members = new Map<string, Refs>([
@@ -346,7 +337,7 @@ function fix(c: Ctx): NodeCount {
   const members = new Map<string, Refs>(["candidates", "unapproved", ...FIX_STATES].map((k) => [`fix.${k}`, new Set()]));
   for (const repo of c.repos()) {
     const bucket = members.get(fixIssueApprovalOf(c.db, repo) ? "fix.candidates" : "fix.unapproved")!;
-    for (const p of plannedItems(c.db, "fixissue", { repo, run: c.run, bucket: "new" })) bucket.add(ref(p.facts));
+    for (const r of dueRefs(c.db, "fixissue", { repo, bucket: "new" })) bucket.add(r);
   }
   const rows = c.db.prepare(`SELECT a.repo, a.number, a.state FROM main.fix_attempts a
     JOIN main.items i ON i.repo = a.repo AND i.number = a.number AND i.state = 'OPEN' WHERE 1 ${c.tracked("a.repo")}`).all(c.rp) as { repo: string; number: number; state: string }[];
@@ -365,29 +356,21 @@ function fixup(c: Ctx): NodeCount {
   const members = new Map<string, Refs>(["fix", "pushed", "hold", "unapproved", "asked", "cifix-queued", "cifix-rerun", "cifix-pushed", "cifix-failed"].map((k) => [`fixup.${k}`, new Set()]));
   const hold = members.get("fixup.hold")!;
   const tracked = new Set(c.repos());
-  const facts = loadPrFacts(c.db, { ...(c.repo ? { repo: c.repo } : {}), run: c.run }).filter((f) => tracked.has(f.repo));
+  // The buckets are part of each PR's cached view.
+  const cached = c.db.prepare(`SELECT repo, number, json_extract(view, '$.fixup') AS fixup, json_extract(view, '$.cifix') AS cifix FROM main.item_plans
+    WHERE kind = 'pr' AND (json_extract(view, '$.fixup') IS NOT NULL OR json_extract(view, '$.cifix') IS NOT NULL) ${c.andRepo()}`).all(c.rp) as { repo: string; number: number; fixup: string | null; cifix: string | null }[];
+  const facts = cached.filter((f) => tracked.has(f.repo));
   for (const f of facts) {
-    const x = fixupOf(f);
-    if (x) {
-      if (x.bucket === "fix" || x.bucket === "unapproved" || x.bucket === "asked") members.get(`fixup.${x.bucket}`)!.add(ref(f));
-      else hold.add(ref(f));
-    } else if (f.premerge && decidePr(f).actions.some((a) => a.kind === "fixup" && a.params?.source === "premerge")) {
-      // A pre-merge round: pushed when the branch and the repo allow it, else left to a person.
-      if (f.pushable && f.repoFacts.pushApproved) members.get("fixup.fix")!.add(ref(f));
-      else if (f.pushable) members.get("fixup.unapproved")!.add(ref(f));
-      else hold.add(ref(f));
-    }
+    if (!f.fixup) continue;
+    if (f.fixup === "fix" || f.fixup === "unapproved" || f.fixup === "asked") members.get(`fixup.${f.fixup}`)!.add(ref(f));
+    else hold.add(ref(f));
   }
   const waiting = hold.size + sizeOf(members, "fixup.fix") + sizeOf(members, "fixup.unapproved") + sizeOf(members, "fixup.asked");
   const pushed = members.get("fixup.pushed")!;
   for (const r of c.refs(`SELECT DISTINCT f.repo, f.number FROM main.fixups f JOIN main.items i ON i.repo = f.repo AND i.number = f.number AND i.state = 'OPEN'
       WHERE f.state = 'pushed' ${c.tracked("f.repo")}`)) if (![...members.values()].some((s) => s !== pushed && s.has(r))) pushed.add(r);
   // CI fix: PRs whose gate check fails, by what the step does next; a pushed CI fix counts like a pushed fix-up.
-  const bucket: Record<string, string> = { work: "cifix-queued", formatting: "cifix-queued", collect: "cifix-queued", rerun: "cifix-rerun", "rerun-wait": "cifix-rerun", failed: "cifix-failed", capped: "cifix-failed" };
-  for (const f of facts) {
-    const b = cifixBucket(f);
-    if (b && bucket[b]) members.get(`fixup.${bucket[b]}`)!.add(ref(f));
-  }
+  for (const f of facts) if (f.cifix) members.get(`fixup.${f.cifix}`)!.add(ref(f));
   for (const r of c.refs(`SELECT DISTINCT f.repo, f.number FROM main.ci_fixes f JOIN main.items i ON i.repo = f.repo AND i.number = f.number AND i.state = 'OPEN'
       WHERE f.state = 'pushed' ${c.tracked("f.repo")}`)) members.get("fixup.cifix-pushed")!.add(r);
   return {
@@ -406,8 +389,8 @@ function act(c: Ctx): NodeCount {
   for (const repo of c.repos()) {
     const failed = new Set((c.db.prepare("SELECT decision_id, number FROM main.actions WHERE repo = ? AND state = 'failed'").all(repo) as { decision_id: string; number: number }[]).map((r) => `${r.decision_id}\0${r.number}`));
     const approved = commentApprovalOf(c.db, repo) !== null;
-    for (const p of plannedItems(c.db, "act", { repo }).filter((x) => !x.action.params?.ask))
-      members.get(!approved ? "act.unapproved" : failed.has(`${p.action.params!.decisionId}\0${p.facts.number}`) ? "act.failed" : "act.todo")!.add(`${repo}#${p.facts.number}`);
+    for (const p of dueActions(c.db, "act", { repo }).filter((x) => !x.action.params?.ask))
+      members.get(!approved ? "act.unapproved" : failed.has(`${p.action.params!.decisionId}\0${p.number}`) ? "act.failed" : "act.todo")!.add(`${repo}#${p.number}`);
   }
   const done = c.n(`SELECT COUNT(*) AS n FROM main.actions WHERE state = 'done' AND created_at >= :since ${c.tracked()}`, { since: c.since });
   const waiting = sizeOf(members, "act.todo") + sizeOf(members, "act.failed") + sizeOf(members, "act.unapproved");
@@ -425,7 +408,7 @@ function postmerge(c: Ctx): NodeCount {
   const members = new Map<string, Refs>(["todo", "to-file", "unapproved", "filed", "nothing"].map((k) => [`postmerge.${k}`, new Set()]));
   const toFile = new Set<string>();
   for (const repo of c.repos()) {
-    for (const m of selectPostmerge(c.db, repo)) members.get("postmerge.todo")!.add(`${repo}#${m.number}`);
+    for (const r of dueRefs(c.db, "postmerge", { repo })) members.get("postmerge.todo")!.add(r);
     const approved = commentApprovalOf(c.db, repo) !== null;
     for (const d of pendingDefects(c.db, repo)) {
       toFile.add(`${repo}#${d.number}`);
