@@ -15,8 +15,8 @@ import { rescore, runPrioritize } from "../src/priority/index.ts";
 import { priorityOf } from "../src/priority/read.ts";
 import { duplicateCounts } from "../src/priority/reach.ts";
 import { LEVELS, levelWith, parseHaikuImpacts, reachOf, reachScore, settleImpact, type Reach } from "../src/priority/score.ts";
-import { selectCandidates as reviewCandidates } from "../src/review/candidates.ts";
-import { selectCandidates as verifyCandidates } from "../src/verify/candidates.ts";
+import { selectOpusCandidates as reviewCandidates } from "../src/review/opus-candidates.ts";
+import { selectCandidates as verifyCandidates } from "../src/verify/select.ts";
 import { SCRATCH } from "./scratch.ts";
 
 mkdirSync(SCRATCH, { recursive: true });

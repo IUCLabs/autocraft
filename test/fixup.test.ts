@@ -15,7 +15,7 @@ import { validatePatch, type FixupPr } from "../src/fixup/patch.ts";
 import { setCommentApproval } from "../src/act/approval.ts";
 import { ASK_ITEM_MAX, COMMENT_TEMPLATE, askText, commentText } from "../src/fixup/template.ts";
 import { checksOf } from "../src/patchcheck/index.ts";
-import { selectCandidates } from "../src/review/candidates.ts";
+import { selectOpusCandidates as selectCandidates } from "../src/review/opus-candidates.ts";
 import { SCRATCH } from "./scratch.ts";
 import { validating } from "./gql.ts";
 

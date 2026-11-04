@@ -1,7 +1,7 @@
 // Counts for the flowchart (docs/dashboard-spec.md, Flow), one node at a time,
 // for one repo or every tracked repo. Each count uses the rule of the stage it
 // describes: settled labels (src/classify/settled.ts), scope decisions
-// (src/decide/select.ts), review candidates (src/review/candidates.ts) and the
+// (src/decide/select.ts), review Plans (src/core/select.ts) and the
 // merge queue (src/merge/queue.ts).
 //
 // Counts are flat keys that add up across repos:
@@ -27,8 +27,8 @@ import { mergeApprovalOf } from "../merge/approval.ts";
 import { buildQueue, eligible, type QueueState } from "../merge/queue.ts";
 import { pendingDefects, selectPostmerge } from "../postmerge/select.ts";
 import { trackedNames } from "../repos.ts";
-import { candidateRefs, scopeAnswers } from "../review/candidates.ts";
-import { selectCandidates as verifyCandidates } from "../verify/candidates.ts";
+import { scopeAnswers } from "../review/candidates.ts";
+import { planned } from "../core/select.ts";
 
 export type Counts = Record<string, number>;
 export type Refs = Set<string>;
@@ -181,7 +181,7 @@ function decide(c: Ctx): NodeCount {
 }
 
 function review(c: Ctx): NodeCount {
-  const candidates = candidateRefs(c.db, c.repo ?? undefined, c.run);
+  const candidates: Refs = new Set(planned(c.db, "review", { ...(c.repo ? { repo: c.repo } : {}), run: c.run }).map((p) => ref(p.facts)));
   const last = c.db.prepare(`WITH last AS (SELECT repo, number, verdict, ROW_NUMBER() OVER (PARTITION BY repo, number ORDER BY at DESC, head_oid DESC) AS k
       FROM final_reviews WHERE 1 ${c.andRepo()})
     SELECT l.repo, l.number, l.verdict FROM last l JOIN items i ON i.repo = l.repo AND i.number = l.number
@@ -208,8 +208,9 @@ export const VERIFY_BRANCHES = ["planned", "running", "passed", "ci-enough", "fa
 
 function verify(c: Ctx): NodeCount {
   const by = new Map<string, Refs>([["verify.waiting", new Set()], ...VERIFY_BRANCHES.map((s) => [`verify.${s}`, new Set()] as [string, Refs])]);
-  for (const repo of c.repo ? [c.repo] : trackedNames(c.db))
-    for (const cand of verifyCandidates(c.db, repo, c.run)) by.get("verify.waiting")!.add(ref(cand));
+  const tracked = new Set(c.repos());
+  for (const p of planned(c.db, "verify", { ...(c.repo ? { repo: c.repo } : {}), run: c.run, bucket: "plan" }))
+    if (tracked.has(p.facts.repo)) by.get("verify.waiting")!.add(ref(p.facts));
   // Verifications at the open PR's current head (same head rule as the queue); primary-key joins, no scan of closed PRs' rows.
   const rows = c.db.prepare(`SELECT v.repo, v.number, v.state FROM main.verifications v
     JOIN main.items i ON i.repo = v.repo AND i.number = v.number AND i.state = 'OPEN'

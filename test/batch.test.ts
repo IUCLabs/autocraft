@@ -7,7 +7,7 @@ import { activeBatches, admits, batchesDue, batchSizeOf, membersOf, setBatchSize
 import { reviewedHeads } from "../src/merge/ci-approval.ts";
 import { buildQueue, eligible, singleMergeOnly } from "../src/merge/queue.ts";
 import { askMergeDecisions } from "../src/merge/index.ts";
-import { selectCandidates } from "../src/review/candidates.ts";
+import { selectOpusCandidates as selectCandidates } from "../src/review/opus-candidates.ts";
 import { Git } from "../src/fixup/git.ts";
 
 import { dir, T0, T1, MAIN2, fresh, world, deps, type World } from "./batch-fixture.ts";

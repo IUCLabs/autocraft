@@ -9,7 +9,7 @@ import { connect } from "../src/db.ts";
 import { setPushApproval } from "../src/fixup/approval.ts";
 import { selectFixups } from "../src/fixup/candidates.ts";
 import { buildQueue } from "../src/merge/queue.ts";
-import { selectCandidates as verifyCandidates } from "../src/verify/candidates.ts";
+import { selectCandidates as verifyCandidates } from "../src/verify/select.ts";
 import { claudeArgs, claudeParts, renderClaude } from "../src/prompts/index.ts";
 import { selectOpusCandidates } from "../src/review/opus-candidates.ts";
 import { runOpusReview, type OpusDeps } from "../src/review/opus.ts";

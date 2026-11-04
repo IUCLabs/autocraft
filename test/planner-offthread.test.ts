@@ -12,7 +12,7 @@ process.env.AUTOCRAFT_EXTRA_STEPS = fileURLToPath(new URL("./autopilot-steps.ts"
 const { connect } = await import("../src/db.ts");
 const { LANES, planCtx, setEnabled } = await import("../src/runner/autopilot.ts");
 const { HEARTBEAT_KEY, Runner } = await import("../src/runner/runner.ts");
-const { selectCandidates } = await import("../src/review/candidates.ts");
+const { selectOpusCandidates: selectCandidates } = await import("../src/review/opus-candidates.ts");
 const { buildQueue } = await import("../src/merge/queue.ts");
 
 mkdirSync(SCRATCH, { recursive: true });

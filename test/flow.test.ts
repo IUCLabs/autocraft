@@ -14,7 +14,6 @@ import { queue } from "../src/dash/api/queue.ts";
 import type { Req } from "../src/dash/types.ts";
 import { scopeToTracked } from "../src/repos.ts";
 import { STAGES } from "../src/stages/registry.ts";
-import { candidateRefs, selectCandidates } from "../src/review/candidates.ts";
 import { SCRATCH } from "./scratch.ts";
 
 mkdirSync(SCRATCH, { recursive: true });
@@ -106,9 +105,6 @@ test("flowchart counts every branch by the stages' own rules", async () => {
   assert.equal(edge("review", "fixup"), 1);
   assert.equal(edge("verify", "merge"), 1);
   assert.deepEqual(node("review").recent, [{ label: "reviewed", count: 1 }]);
-
-  // The batched candidate rule matches the Review stage's own.
-  assert.deepEqual([...candidateRefs(db)], selectCandidates(db, R).map((c) => `${c.repo}#${c.number}`));
 
   // A repo filter that matches nothing empties every count.
   const other = flowOf(db, "pdfcraft");

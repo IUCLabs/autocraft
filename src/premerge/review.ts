@@ -6,19 +6,19 @@ import { claudeRoom } from "../agents/call.ts";
 import { pool } from "../classify/run.ts";
 import { runModelStep } from "../agents/step.ts";
 import { PREMERGE_OPUS } from "../agents/steps.ts";
-import { buildQueue, type QueueEntry } from "../merge/queue.ts";
+import { buildQueue } from "../merge/queue.ts";
+import { planned } from "../core/select.ts";
+import type { PrFacts } from "../core/plan.ts";
+import { PREMERGE_MAX_TRIES, RETRY_AFTER_MS } from "../core/rules.ts";
 import { CLAUDE_PROMPTS } from "../prompts/index.ts";
 import { referenceDir } from "../reference.ts";
 import { defaultSemanticDeps, type SemanticDeps } from "../reference-lint.ts";
-import { sizeOf } from "../review/candidates.ts";
 import { defaultOpusDeps, prepareOpusInput, type OpusDeps } from "../review/opus.ts";
-import type { OpusCandidate } from "../review/opus-candidates.ts";
+import { opusCandidateOf, type OpusCandidate } from "../review/opus-candidates.ts";
 import { REPO_PATH } from "../sandbox/command.ts";
 import { checkoutForPr } from "../sandbox/index.ts";
 import { type PremergeReview } from "./parse.ts";
-import { RETRY_AFTER_MS } from "../postmerge/select.ts";
-import { mergeApprovalOf } from "../merge/approval.ts";
-import { PREMERGE_MAX_TRIES, premergeAt, premergeRetryDue, savePremerge } from "./store.ts";
+import { savePremerge } from "./store.ts";
 
 const PROMPT = CLAUDE_PROMPTS["premerge.opus"];
 const now = () => new Date().toISOString();
@@ -39,27 +39,26 @@ export function defaultPremergeDeps(): PremergeDeps {
   return { fetchDiff: d.fetchDiff, model: PROMPT.models[0]!, maxChars: d.maxChars, checkout: (r, n, h) => checkoutForPr(r, n, h, console.log) };
 }
 
+/** A PR due its pre-merge review: the head to review and the facts it was planned from. */
+export type PremergeItem = { repo: string; number: number; head: string; facts: PrFacts };
+
 /**
- * The PRs of `repo` the queue holds in waiting-premerge whose head is due a try, in queue order. `wake` collects when the
- * failed tries are due again (ms): nothing in the data changes then, so the planner must be told.
+ * The PRs whose Plan holds a `premerge` action (the queue holds them in waiting-premerge and the head is due a try), in selection order.
+ * `wake` collects when the failed tries are due again (ms): nothing in the data changes then, so the planner must be told.
  */
-export function premergeCandidates(db: DatabaseSync, repo: string, at = Date.now(), wake?: number[], queue?: QueueEntry[]): QueueEntry[] {
-  if (!mergeApprovalOf(db, repo)) return [];
-  return (queue ?? buildQueue(db, { repo, merged: "exclude" })).filter((e) => {
-    if (e.repo !== repo || e.state !== "waiting-premerge") return false;
-    const row = premergeAt(db, repo, e.number, e.head);
-    if (row && row.findings === null && row.tries < PREMERGE_MAX_TRIES) wake?.push(Date.parse(row.at) + RETRY_AFTER_MS);
-    return premergeRetryDue(row, at);
-  });
+export function premergeCandidates(db: DatabaseSync, opts: { repo?: string; at?: number; wake?: number[]; run?: string | null } = {}): PremergeItem[] {
+  const { wake, at, ...rest } = opts;
+  return planned(db, "premerge", {
+    ...rest, ...(at !== undefined ? { now: at } : {}),
+    onPlan: wake ? (f, plan) => {
+      const pm = f.premerge;
+      if (plan.state === "waiting-premerge" && f.repoFacts.mergeApproved && pm && !pm.hasFindings && pm.tries < PREMERGE_MAX_TRIES) wake.push(Date.parse(pm.at) + RETRY_AFTER_MS);
+    } : undefined,
+  }).map((p) => ({ repo: p.facts.repo, number: p.facts.number, head: p.action.head!, facts: p.facts }));
 }
 
-/** The Opus candidate of a queue entry: the PR's title, body, size and author association from its items row. */
-export function candidateOf(db: DatabaseSync, e: QueueEntry): OpusCandidate {
-  const it = db.prepare("SELECT title, body, author_association, additions, deletions FROM items WHERE repo = ? AND number = ?").get(e.repo, e.number) as
-    { title: string | null; body: string | null; author_association: string | null; additions: number | null; deletions: number | null } | undefined;
-  const lines = (it?.additions ?? 0) + (it?.deletions ?? 0);
-  return { repo: e.repo, number: e.number, title: it?.title ?? e.title, body: it?.body ?? "", author_association: it?.author_association ?? null, head_oid: e.head, lines_changed: lines, size: sizeOf(lines), score: null };
-}
+/** The Opus candidate of a due PR: its title, body, size and author association. */
+export const candidateOf = (db: DatabaseSync, e: PremergeItem): OpusCandidate => opusCandidateOf(db, e.facts, e.head);
 
 /** True while the queue still lists the PR at this head, open and not yet reviewed. */
 const stillHead = (db: DatabaseSync, repo: string, number: number, head: string): boolean =>
@@ -68,7 +67,7 @@ const stillHead = (db: DatabaseSync, repo: string, number: number, head: string)
 export async function runPremerge(db: DatabaseSync, params: PremergeParams, log: (line: string) => void = console.log, deps: PremergeDeps = defaultPremergeDeps()): Promise<PremergeSummary> {
   const { repo } = params;
   const runId = `premerge-${repo}-${now().replace(/[-:]/g, "").slice(0, 15)}`;
-  let cands = premergeCandidates(db, repo, deps.now?.() ?? Date.now());
+  let cands = premergeCandidates(db, { repo, at: deps.now?.() ?? Date.now() });
   if (params.number !== undefined) cands = cands.filter((e) => e.number === params.number);
   const s: PremergeSummary = { runId, repo, candidates: cands.map(refOf), reviewed: 0, findings: 0, defects: 0, failed: [], moved: [] };
   if (params.limit !== undefined) cands = cands.slice(0, params.limit);
