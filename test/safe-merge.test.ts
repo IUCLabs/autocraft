@@ -40,7 +40,23 @@ test("refuseAuthors", () => {
 });
 
 test("parseSafeMergeArgs", () => {
-  assert.deepEqual(parseSafeMergeArgs(["o/r", "5", "--merge", "--allow-pending", "A", "--allow-pending", "B"]), { repo: "o/r", pr: "5", method: "--merge", allow: ["A", "B"] });
+  assert.deepEqual(parseSafeMergeArgs(["o/r", "5", "--merge", "--allow-pending", "A", "--allow-pending", "B"]), { repo: "o/r", pr: "5", method: "--merge", allow: ["A", "B"], allowFailed: [] });
   assert.equal(parseSafeMergeArgs(["o/r", "5", "--rebase"]), null);
   assert.equal(parseSafeMergeArgs(["o/r", "5", "--merge", "--allow-pending"]), null);
+});
+
+test("--allow-failed accepts a listed failed check only while the merge state is not BLOCKED", () => {
+  const sonar = "sonarcloud / SonarCloud Scan";
+  const failed: Check = { name: sonar, status: "COMPLETED", conclusion: "FAILURE" };
+  const v = (o: Partial<PrView>) => view({ statusCheckRollup: [ok, failed], ...o });
+  assert.equal(refuseView(v({ mergeStateStatus: "UNSTABLE" }), [], [sonar]), null);
+  assert.equal(refuseView(v({ mergeStateStatus: "BLOCKED" }), [], [sonar]), `checks not green:\n${sonar}: FAILURE`);
+  assert.equal(refuseView(v({}), [], [sonar]), `checks not green:\n${sonar}: FAILURE`);
+  assert.equal(refuseView(v({ mergeStateStatus: "UNSTABLE" }), [], []), `checks not green:\n${sonar}: FAILURE`);
+  const other: Check = { name: "lint", status: "COMPLETED", conclusion: "FAILURE" };
+  assert.equal(refuseView(v({ mergeStateStatus: "UNSTABLE", statusCheckRollup: [ok, failed, other] }), [], [sonar]), "checks not green:\nlint: FAILURE");
+  assert.equal(refuseView(v({ mergeStateStatus: "UNSTABLE", statusCheckRollup: [failed] }), [], [sonar]), "no check succeeded (only skipped or neutral)");
+  assert.equal(refuseRuns([{ name: "sonarcloud", status: "completed", conclusion: "failure" }], [], [sonar]), null);
+  assert.equal(refuseRuns([{ name: "sonarcloud", status: "completed", conclusion: "failure" }], [], []), "workflow runs not green:\nsonarcloud: failure");
+  assert.deepEqual(parseSafeMergeArgs(["o/r", "5", "--merge", "--allow-failed", sonar]), { repo: "o/r", pr: "5", method: "--merge", allow: [], allowFailed: [sonar] });
 });

@@ -14,6 +14,7 @@ import { pushApprovalOf, setPushApproval } from "../../fixup/approval.ts";
 import { fixIssueApprovalOf, setFixIssueApproval } from "../../fixissue/approval.ts";
 import { mergeApprovalOf, setMergeApproval } from "../../merge/approval.ts";
 import { ciApprovalOf, setCiApproval } from "../../merge/ci-approval.ts";
+import { optionalChecks, seenChecks, setOptionalCheck } from "../../optional-checks.ts";
 import { mainFixApprovalOf, setMainFixApproval } from "../../mainfix/approval.ts";
 import { setWorkspaceExcluded, workspaceExcluded } from "../../sandbox/workspace.ts";
 import { setSingleMergeMax, singleMergeMax } from "../../merge/single.ts";
@@ -36,7 +37,7 @@ const AUDIT_PAGE = 50;
 const operatorOnly = (a: string) => a.startsWith("access-") || a.startsWith("account-") || ["session-revoke", "sign-in", "sign-in-refused"].includes(a);
 export const AUDIT_ACTIONS = [
   "answer", "undo", "adopt", "opinion", "opinion-retract", "comment", "override", "rule", "access-add", "access-remove", "access-role",
-  "session-revoke", "sign-in", "sign-in-refused", "account-add", "account-change", "account-login-start", "account-login-code", "account-login-cancel", "account-sign-out", "account-refresh", "repo-track", "repo-untrack", "reference-import", "labels-approve", "labels-revoke", "labels-apply", "merge-approve", "merge-revoke", "comment-approve", "comment-revoke", "act-comment", "act-close", "act-skip", "push-approve", "push-revoke", "fixup-push", "fixup-comment", "fixup-comment-edit", "fixissue-approve", "fixissue-revoke", "mainfix-approve", "mainfix-revoke", "fixissue-push", "fixissue-pr", "fixissue-comment",
+  "session-revoke", "sign-in", "sign-in-refused", "account-add", "account-change", "account-login-start", "account-login-code", "account-login-cancel", "account-sign-out", "account-refresh", "repo-track", "repo-untrack", "reference-import", "labels-approve", "labels-revoke", "labels-apply", "merge-approve", "merge-revoke", "comment-approve", "comment-revoke", "act-comment", "act-close", "act-skip", "push-approve", "push-revoke", "fixup-push", "fixup-comment", "fixup-comment-edit", "fixissue-approve", "fixissue-revoke", "mainfix-approve", "mainfix-revoke", "optional-check-add", "optional-check-remove", "fixissue-push", "fixissue-pr", "fixissue-comment",
   "job-request", "job-cancel", "pipeline-switch", "stage-limit", "limit-reset", "pilot-set", "pilot-clear", "repo-pipeline", "review-post", "review-edit", "batch-again", "reopen", "backlog-bulk", "withdraw",
   "single-merge-max", "label-create", "batch-pr-close", "fork-create", "assign", "unassign", "merge", "batch-push", "batch-pr", "shared-repos",
   "fasttrack-add", "fasttrack-remove", "merge-hold", "merge-release", "batch-remove", "batch-stop", "areas-edit", "areas-accept", "ci-approve", "ci-revoke", "ci-run-approve", "ci-rerun", "cifix-push", "cifix-comment", "cifix-check", "postmerge-file", "postmerge-file-one", "postmerge-review", "postmerge-backfill",
@@ -250,6 +251,8 @@ export function allRepos(db: DatabaseSync, req: Req): TrackedRepo[] {
     fixing: r.tracked ? approvalInfo(fixIssueApprovalOf(db, r.name)) : null,
     mainFixing: r.tracked ? approvalInfo(mainFixApprovalOf(db, r.name)) : null,
     ciApproving: r.tracked ? approvalInfo(ciApprovalOf(db, r.name)) : null,
+    optionalChecks: r.tracked ? optionalChecks(db, r.name) : [],
+    seenChecks: r.tracked ? seenChecks(db, r.name) : [],
     pipeline: !!r.tracked && !!r.pipeline,
   }));
 }
@@ -517,6 +520,22 @@ export async function putPilot(db: DatabaseSync, req: Req) {
     throw e;
   }
   return pipelineState(db);
+}
+
+// Only an operator sets the checks whose failure does not stop a merge.
+export function optionalCheck(db: DatabaseSync, req: Req, on: boolean): TrackedRepo[] {
+  requireOperator(req, "set optional checks");
+  const name = required(body(req).name, "name");
+  const check = required(body(req).check, "check");
+  const changed = refused(() => {
+    try {
+      return setOptionalCheck(db, req.user.login, name, check, on);
+    } catch (e) {
+      throw new RepoError((e as Error).message);
+    }
+  });
+  if (!changed) throw new HttpError(409, `${check} is ${on ? "already" : "not"} an optional check of ${name}`);
+  return allRepos(db, req);
 }
 
 // Only an operator lets the pipeline act on a red default branch in a repo: rerun failed jobs, and open an issue on an operator's answer.

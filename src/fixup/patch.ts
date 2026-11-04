@@ -13,7 +13,12 @@ export function safePath(p: string): boolean {
   return p.split("/").every((s) => s !== "" && s !== "." && s !== ".." && s.toLowerCase() !== ".git");
 }
 
-/** Source files an automated fix may edit: Rust files other than build scripts, nothing under .cargo or .github. */
+/** Files a fix-up may edit: Rust files and Markdown files, with the same exclusions as `editable`. */
+export function fixupEditable(path: string): boolean {
+  return editable(path) || (safePath(path) && path.toLowerCase().endsWith(".md") && !path.split("/").some((s) => s === ".cargo" || s === ".github"));
+}
+
+/** Source files an automated fix (a CI fix or an issue fix) may edit: Rust files other than build scripts, nothing under .cargo or .github. */
 export function editable(path: string): boolean {
   return safePath(path) && path.endsWith(".rs") && !path.endsWith("/build.rs") && path !== "build.rs" && !path.split("/").some((s) => s === ".cargo" || s === ".github");
 }
@@ -68,7 +73,7 @@ const HUNK = /^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@/;
  * no new, deleted, renamed, mode-changed, symlink or binary files, at most
  * MAX_CHANGED_LINES added plus removed lines.
  */
-export function validatePatch(text: string, allowed: string[]): PatchCheck {
+export function validatePatch(text: string, allowed: string[], canEdit: (path: string) => boolean = editable): PatchCheck {
   const patch = recountHunks(extractDiff(text));
   if (!patch.startsWith("diff --git ")) return { ok: false, reason: "the reply is not a unified diff" };
   const lines = patch.split("\n");
@@ -87,7 +92,7 @@ export function validatePatch(text: string, allowed: string[]): PatchCheck {
       if (!m || m[1] !== m[2]) return { ok: false, reason: `unsupported file header: ${l.slice(0, 100)}` };
       cur = m[1]!;
       if (!safePath(cur)) return { ok: false, reason: `unsafe path ${cur}` };
-      if (!editable(cur)) return { ok: false, reason: `${cur} is not a file a fix-up may edit` };
+      if (!canEdit(cur)) return { ok: false, reason: `${cur} is not a file a fix-up may edit` };
       if (!allowed.includes(cur)) return { ok: false, reason: `${cur} is not a file named in the review's fixes` };
       if (files.includes(cur)) return { ok: false, reason: `${cur} appears twice` };
       files.push(cur);

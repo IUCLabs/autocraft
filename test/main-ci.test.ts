@@ -23,6 +23,8 @@ test("classify: gate failures are red, optional failures are not, pending is run
   assert.equal(classify([c("build", "failure")]), "red", "no gate check: any failure counts");
   assert.equal(classify([c("build", "success"), c("sonar", "failure")], ["sonar"]), "optional");
   assert.equal(classify([c("build", "failure"), c("sonar", "failure")], ["sonar"]), "red");
+  assert.equal(classify([c("build", "success"), c("sonarcloud / SonarCloud Scan", "failure")], ["sonarcloud / SonarCloud Scan"]), "optional", "no gate check: only listed checks failed");
+  assert.equal(classify([c("build", "success"), c("sonarcloud / SonarCloud Scan", "failure")]), "red", "unlisted");
 });
 
 test("prNumberOf reads merge commits and squash titles", () => {

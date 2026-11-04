@@ -7,6 +7,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import { ORG } from "../act/templates.ts";
 import { audit } from "../dash/audit.ts";
+import { effectiveCi } from "../optional-checks.ts";
 import { connect } from "../db.ts";
 import { notHeldSql } from "../dupes/held.ts";
 import type { Exec } from "../fixup/git.ts";
@@ -80,11 +81,12 @@ export function markReread(db: DatabaseSync, repo: string, number: number, head:
     ON CONFLICT (repo, number) DO UPDATE SET reread = 1, checked_at = excluded.checked_at`).run(repo, number, head, at);
 }
 
-/** `overall` as CI reads for the PR's head: "pending" while runs wait for approval or the ones we approved have not finished, since the check rollup does not list them. */
+/** `overall` as CI reads for the PR's head, with failures of the repo's optional checks left out (effectiveOverall): "pending" while runs wait for approval or the ones we approved have not finished, since the check rollup does not list them. */
 export function overallAt(db: DatabaseSync, repo: string, number: number, head: string, overall: string): string {
+  const eff = overall === "failure" ? effectiveCi(db, repo, overall, (db.prepare("SELECT checks FROM pr_checks WHERE repo = ? AND number = ? AND head_oid = ?").get(repo, number, head) as { checks: string } | undefined)?.checks) : overall;
   const r = db.prepare("SELECT runs, approved, reread FROM ci_run_approvals WHERE repo = ? AND number = ? AND head_oid = ?").get(repo, number, head) as { runs: string; approved: string; reread: number } | undefined;
-  if (!r) return overall;
-  return r.reread || JSON.parse(r.runs).length || JSON.parse(r.approved).length ? "pending" : overall;
+  if (!r) return eff;
+  return r.reread || JSON.parse(r.runs).length || JSON.parse(r.approved).length ? "pending" : eff;
 }
 
 export type Candidate = { number: number; head: string; runs: WaitingRun[]; reread: boolean; failed: Record<string, number>; crossRepo: boolean };

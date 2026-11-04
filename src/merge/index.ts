@@ -31,6 +31,7 @@ import { buildQueue, UNSURE_REASON, ciAllows, toAsk, countStates, eligible, HEAD
 
 export { buildQueue, countStates, QUEUE_STATES, toAsk, type QueueEntry, type QueueState } from "./queue.ts";
 import { envVar } from "../env.ts";
+import { effectiveCi, optionalChecks } from "../optional-checks.ts";
 
 export const ORG = "storytold";
 /** Name of the built-in guarded merge (`autocraft safe-merge`); any other `$AUTOCRAFT_MERGE_CMD` is run as an external command. */
@@ -292,7 +293,7 @@ export async function runMerge(db: DatabaseSync, params: MergeParams, log: (line
     const [ch] = await refreshChecks(db, d.querier, repo, [e.number]);
     // GitHub often has no mergeable state yet right after a merge: end the round without a refusal on record.
     if (params.stopOnRefusal && summary.merged.length && ch?.state === "OPEN" && ch.mergeable === "UNKNOWN") { log(`  ${refOf(e)}: GitHub has not computed its mergeable state yet; left for the next round`); summary.attempted.pop(); break; }
-    if (ch) seen = { ci: ch.overall ?? "none", mergeable: ch.mergeable ?? "UNKNOWN" };
+    if (ch) seen = { ci: effectiveCi(db, repo, ch.overall ?? "none", ch.checks), mergeable: ch.mergeable ?? "UNKNOWN" };
     if (!ch) { refuse(e, null, "GitHub returned no such PR"); continue; }
     if (ch.state !== "OPEN") { refuse(e, null, `no longer open on GitHub (${ch.state.toLowerCase()})`); continue; }
     if (ch.head_oid !== e.head) { refuse(e, null, `head moved from ${short(e.head)} to ${short(ch.head_oid)} since the review`); continue; }
@@ -304,8 +305,9 @@ export async function runMerge(db: DatabaseSync, params: MergeParams, log: (line
       const h = answeredHead(db, e.decisionId!);
       if (h !== ch.head_oid) { refuse(e, null, `head moved since the operator's answer (${h ? short(h) : "no head recorded"} → ${short(ch.head_oid)})`); continue; }
     }
-    if (!ciAllows(e.path, ch.overall, e.noCi) || ch.mergeable !== "MERGEABLE") {
-      refuse(e, null, `not ready at merge time: CI ${ch.overall}, mergeable ${(ch.mergeable ?? "unknown").toLowerCase()}`);
+    const ci = effectiveCi(db, repo, ch.overall, ch.checks);
+    if (!ciAllows(e.path, ci, e.noCi) || ch.mergeable !== "MERGEABLE") {
+      refuse(e, null, `not ready at merge time: CI ${ci}, mergeable ${(ch.mergeable ?? "unknown").toLowerCase()}`);
       continue;
     }
     const info = await prInfo(d.querier, repo, e.number);
@@ -329,7 +331,7 @@ export async function runMerge(db: DatabaseSync, params: MergeParams, log: (line
     const method = methodOf(info);
     // A hold may have been set during the calls above.
     if (mergeHeld(db, repo, e.number)) { log(`  ${refOf(e)}: merge held meanwhile; skipped`); summary.attempted.pop(); continue; }
-    const r = await mergeViaCommand(w, d.run, d.mergeCommand, [`${ORG}/${repo}`, String(e.number), `--${method}`], { run: runId, head: e.head, path: e.path });
+    const r = await mergeViaCommand(w, d.run, d.mergeCommand, [`${ORG}/${repo}`, String(e.number), `--${method}`, ...optionalChecks(db, repo).flatMap((n) => ["--allow-failed", n])], { run: runId, head: e.head, path: e.path });
     if (r.code !== 0) {
       const why = oneLine(r.stderr) || oneLine(r.stdout) || `exit code ${r.code}`;
       refuse(e, method, `${d.mergeCommand}: ${why}`);

@@ -10,7 +10,7 @@ import { Switch } from "../../ui/atoms/Switch";
 import { ErrorLine } from "../../ui/atoms/ErrorLine";
 import { Page } from "../../ui/organisms/Page";
 import { useWrite } from "../../lib/hooks";
-import { PipelineSwitch, Toggle, WRITES, maybe, synced, type Write, type WriteKind } from "./repoParts";
+import { OptionalChecks, PipelineSwitch, Toggle, WRITES, maybe, synced, type Write, type WriteKind } from "./repoParts";
 import { MainCiBadge } from "../../ui/atoms/MainCiBadge";
 import { FailingChecks } from "../mainci/parts";
 import { useNow } from "../../lib/useNow";
@@ -130,6 +130,7 @@ function RepoDetailView({ params }: ViewProps) {
                   ))}
                 </ul>
               </Block>
+              <OptionalChecks r={r} write={write} />
               {l && (
                 <Block className="mt-4" title="Labels plan">
                   <div className="num flex flex-wrap gap-x-6 gap-y-1 text-sm">

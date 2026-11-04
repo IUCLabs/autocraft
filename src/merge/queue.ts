@@ -18,6 +18,7 @@ import { pilotSql } from "../pilot.ts";
 import { pushApprovalOf } from "../fixup/approval.ts";
 import { commentApprovalOf } from "../act/approval.ts";
 import { conflictBucket, conflictNote } from "../fixup/conflict-state.ts";
+import { effectiveCi } from "../optional-checks.ts";
 import { longLivedOf, pushable, type LongLived } from "../fixup/pushable.ts";
 
 export const QUEUE_STATES = [
@@ -133,7 +134,7 @@ export const eligible = (e: QueueEntry): boolean =>
 
 type Row = {
   repo: string; number: number; title: string | null; author: string | null; state: string; review_decision: string | null; head_oid: string | null; updated_at: string | null;
-  c_head: string | null; c_at: string | null; overall: string | null; c_mergeable: string | null; i_mergeable: string | null;
+  c_head: string | null; c_at: string | null; overall: string | null; c_checks: string | null; c_mergeable: string | null; i_mergeable: string | null;
   r_head: string; r_seen: string | null; r_hash: string | null; sure: number | null; mode: string | null; verdict: "take" | "take-fix"; reason: string; fixes: string | null; lines: number; r_at: string;
   head_repo: string | null; head_ref: string | null; base_ref: string | null; i_can: number | null; c_can: number | null;
 };
@@ -199,7 +200,7 @@ export function buildQueue(db: DatabaseSync, opts: QueueOptions = {}): QueueEntr
   // Latest review per PR (newest `at`, then rowid); only take and take-fix verdicts enter the queue.
   const rows = db.prepare(`
     SELECT i.repo, i.number, i.title, i.author, i.state, i.review_decision, i.head_oid, i.updated_at, i.mergeable AS i_mergeable,
-      c.head_oid AS c_head, c.fetched_at AS c_at, c.overall, c.mergeable AS c_mergeable,
+      c.head_oid AS c_head, c.fetched_at AS c_at, c.overall, c.checks AS c_checks, c.mergeable AS c_mergeable,
       l.head_oid AS r_head, l.seen_at AS r_seen, l.disc_hash AS r_hash, l.sure, l.mode, l.verdict, l.reason, l.fixes, COALESCE(i.additions, 0) + COALESCE(i.deletions, 0) AS lines, l.at AS r_at,
       i.head_repo, i.head_ref, i.base_ref, i.maintainer_can_modify AS i_can, c.maintainer_can_modify AS c_can
     FROM items i
@@ -249,7 +250,7 @@ export function buildQueue(db: DatabaseSync, opts: QueueOptions = {}): QueueEntr
     const runsWaiting = waitRuns.length + (wait?.reread ? 1 : 0);
     // The rollup does not list runs that waited for approval: CI is not known to be green until the runs we approved have finished.
     const approvedPending = (JSON.parse(wait?.approved ?? "[]") as unknown[]).length > 0;
-    const ci = checksHere ? (approvedPending ? "pending" : (r.overall ?? "none")) : "unknown";
+    const ci = checksHere ? (approvedPending ? "pending" : effectiveCi(db, r.repo, r.overall ?? "none", r.c_checks)) : "unknown";
     const failedRuns = JSON.parse(wait?.failed ?? "{}") as Record<string, number>;
     const runsBlocked: QueueEntry["runsBlocked"] = !runsWaiting ? null : !ciApprovalOf(db, r.repo) ? "off" : waitRuns.some((x) => (failedRuns[x.id] ?? 0) >= MAX_FAILURES) ? "failed"
       : !wait?.reread && (!wait?.cross_repo || !waitRuns.some((x) => x.event === "pull_request")) ? "unsupported" : null;

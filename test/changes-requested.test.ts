@@ -156,24 +156,24 @@ describe("changes requested: safe-merge", () => {
 
   test("refuses while a maintainer's changes-requested review stands", async () => {
     const calls: string[] = [];
-    const r = await safeMerge("o/app", "5", "--merge", [], gh({ reviews: [rev("ana", "CHANGES_REQUESTED", "MEMBER", "2026-01-01T00:00:00Z"), rev("ana", "COMMENTED", "MEMBER", "2026-01-02T00:00:00Z")] }, calls), nap);
+    const r = await safeMerge("o/app", "5", "--merge", [], [], gh({ reviews: [rev("ana", "CHANGES_REQUESTED", "MEMBER", "2026-01-01T00:00:00Z"), rev("ana", "COMMENTED", "MEMBER", "2026-01-02T00:00:00Z")] }, calls), nap);
     assert.deepEqual(r, { merged: false, reason: "REFUSED o/app#5: changes requested by a maintainer (ana)" });
     assert.ok(!calls.some((c) => c.startsWith("pr merge")));
   });
 
   test("refuses on GitHub's review decision alone", async () => {
-    const r = await safeMerge("o/app", "5", "--merge", [], gh({ reviews: [], reviewDecision: "CHANGES_REQUESTED" }), nap);
+    const r = await safeMerge("o/app", "5", "--merge", [], [], gh({ reviews: [], reviewDecision: "CHANGES_REQUESTED" }), nap);
     assert.equal(r.merged, false);
   });
 
   test("a private member shown as NONE still blocks; approval and dismissal clear; the pipeline account's request counts", async () => {
-    assert.equal((await safeMerge("o/app", "5", "--merge", [], gh({ reviews: [rev("ana", "CHANGES_REQUESTED", "NONE", "2026-01-01T00:00:00Z")] }), nap)).merged, false);
-    assert.equal((await safeMerge("o/app", "5", "--merge", [], gh({ reviews: [rev("pipeline-bot", "CHANGES_REQUESTED", "CONTRIBUTOR", "2026-01-01T00:00:00Z")] }), nap)).merged, false);
+    assert.equal((await safeMerge("o/app", "5", "--merge", [], [], gh({ reviews: [rev("ana", "CHANGES_REQUESTED", "NONE", "2026-01-01T00:00:00Z")] }), nap)).merged, false);
+    assert.equal((await safeMerge("o/app", "5", "--merge", [], [], gh({ reviews: [rev("pipeline-bot", "CHANGES_REQUESTED", "CONTRIBUTOR", "2026-01-01T00:00:00Z")] }), nap)).merged, false);
     for (const reviews of [
       [rev("ana", "APPROVED", "MEMBER", "2026-01-02T00:00:00Z")],
       [rev("ana", "DISMISSED", "MEMBER", "2026-01-02T00:00:00Z")],
     ]) {
-      const r = await safeMerge("o/app", "5", "--merge", [], gh({ reviews }), nap);
+      const r = await safeMerge("o/app", "5", "--merge", [], [], gh({ reviews }), nap);
       assert.equal(r.merged, true);
     }
   });

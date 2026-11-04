@@ -23,11 +23,11 @@ type Run = { name: string; conclusion: string; runId: number | null; completedAt
  * The failed check runs of a head. The repos' CI calls the suite's gate workflow, so its checks carry "gate" in their
  * name; when some failed check does, only those count (a failing optional check next to a passing gate is not the
  * gate's failure). With no such name every failed check counts. `gatePassed`: gate checks exist and none failed, so
- * whatever fails is not the gate and is left alone.
+ * whatever fails is not the gate and is left alone. Checks on the repo's optional list are never failures to fix.
  */
-export function failedRuns(reply: CheckRuns): { runs: Run[]; gatePassed: boolean } {
+export function failedRuns(reply: CheckRuns, optional: string[] = []): { runs: Run[]; gatePassed: boolean } {
   const all = reply.check_runs ?? [];
-  const failed = all.filter((c) => c.status === "completed" && FAILED.has(c.conclusion ?? ""))
+  const failed = all.filter((c) => c.status === "completed" && FAILED.has(c.conclusion ?? "") && !optional.includes(c.name ?? "?"))
     .map((c) => ({ name: c.name ?? "?", conclusion: c.conclusion ?? "failure", runId: Number(/\/actions\/runs\/(\d+)/.exec(c.details_url ?? "")?.[1]) || null, completedAt: c.completed_at ?? null }));
   const gate = failed.filter((c) => GATE.test(c.name));
   const gatePassed = !gate.length && all.some((c) => GATE.test(c.name ?? ""));
@@ -54,8 +54,8 @@ export type Reading = { kind: "failure"; failure: CiFailure } | { kind: "skip"; 
  * Reads the failed checks of `head` and the failed steps' log tails. A head with no failed check run (a commit status
  * or an action_required run failed it), or whose gate checks all passed, is skipped: there is nothing here to fix.
  */
-export async function readFailure(gh: Gh, repo: string, head: string): Promise<Reading> {
-  const { runs, gatePassed } = failedRuns(JSON.parse(await gh(["api", `repos/${ORG}/${repo}/commits/${head}/check-runs?per_page=100`])) as CheckRuns);
+export async function readFailure(gh: Gh, repo: string, head: string, optional: string[] = []): Promise<Reading> {
+  const { runs, gatePassed } = failedRuns(JSON.parse(await gh(["api", `repos/${ORG}/${repo}/commits/${head}/check-runs?per_page=100`])) as CheckRuns, optional);
   if (gatePassed) return { kind: "skip", why: "the gate checks passed; only an optional check failed" };
   if (!runs.length) return { kind: "skip", why: "no failed check run at the head (a commit status or a run waiting for approval failed)" };
   const logs = new Map<number, FailedStep[]>();
