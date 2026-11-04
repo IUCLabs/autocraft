@@ -1,6 +1,8 @@
 // The fix PR of a red default branch: for each `needs-fix` row of an approved repo whose head is still red, one attempt
 // (per repo, head and check): skip when main is green again or an open PR already covers the failure, otherwise the CI fix
-// patch path writes a patch against the head commit (Sonnet, Opus check, validators), the commit is pushed to the
+// patch path writes a patch against the head commit (Sonnet, Opus check, validators). A patch that changes Rust files is
+// stored on the rows (state `linting`) with its lint task and the step ends; a later run collects the result: formatting is
+// folded in, findings go back to the model (at most LINT_MAX_ROUNDS lint rounds). The clean commit is pushed to the
 // pipeline account's fork on `autocraft/main-ci-<check>-<sha7>` and a PR is opened against the default branch.
 // The log, the files and other PRs are untrusted data; nothing from them is run here.
 import { CLI_BY, type By } from "../core/gates.ts";
@@ -11,12 +13,16 @@ import type { DatabaseSync } from "node:sqlite";
 import { ORG } from "../act/templates.ts";
 import { errorFiles, patchFromFailure, type CifixDeps } from "../cifix/index.ts";
 import { readFailure } from "../cifix/logs.ts";
+import type { CifixPr } from "../cifix/types.ts";
 import { forkOf } from "../fixissue/index.ts";
 import { outsideShown } from "../fixup/excerpt.ts";
 import { Git, type Exec } from "../fixup/git.ts";
 import { scrubReason, whoAmI } from "../fixup/index.ts";
 import { ghOpenPr, pushOwnBranch } from "../github/write.ts";
-import { foldFormat, queueLint, readLint, type LintRead } from "../prepush/index.ts";
+import { LINT_MAX_ROUNDS } from "../core/rules.ts";
+import { validatePatch } from "../fixup/patch.ts";
+import { CLAUDE_PROMPTS } from "../prompts/index.ts";
+import { foldFormat, queueLint, readLint } from "../prepush/index.ts";
 import { MAIN_FIX_BRANCH_PREFIX } from "../mainci/index.ts";
 import type { Gh } from "../merge/safe-merge.ts";
 import { cleanLine } from "../review/post-template.ts";
@@ -31,20 +37,14 @@ const MAX_PRS = 30;
 export type FixPrDeps = Pick<CifixDeps, "ask" | "check" | "root"> & {
   /** Host directory with a read-only checkout of the head commit for the sandboxed model calls, or null to ask without tools. */
   checkout?: (repo: string, branch: string, sha: string) => Promise<string | null>;
-  /** The lint task's result once it ended, or `pending` when it did not end in time. Default: polls the task. */
-  lintWait?: (db: DatabaseSync, task: number) => Promise<LintRead>;
 };
 
-/** How long the fix PR step waits for the lint task of its patch. */
-const LINT_WAIT_MS = 60 * 60_000;
-const LINT_POLL_MS = 15_000;
-async function waitLint(db: DatabaseSync, task: number): Promise<LintRead> {
-  const end = Date.now() + LINT_WAIT_MS;
-  for (;;) {
-    const r = readLint(db, task);
-    if (r.kind !== "pending" || Date.now() >= end) return r;
-    await new Promise((resolve) => setTimeout(resolve, LINT_POLL_MS));
-  }
+const PATCH_MODEL = CLAUDE_PROMPTS["cifix.patch"].models[0]!;
+
+/** Whether a repo has stored patches to collect: the lint task of one ended, or its head is not the current one. */
+export function lintReady(db: DatabaseSync, repo: string, current: string): boolean {
+  const rows = db.prepare("SELECT head_sha, lint_task FROM main_fixes WHERE repo = ? AND state = 'linting'").all(repo) as { head_sha: string; lint_task: number | null }[];
+  return rows.some((r) => r.head_sha !== current || r.lint_task === null || readLint(db, r.lint_task).kind !== "pending");
 }
 
 /** The default branch's head as the polls show it. */
@@ -107,9 +107,13 @@ async function coveringPr(c: Ctx, checks: string[], files: string[], since: stri
   return null;
 }
 
-type Outcome = "opened" | "skipped" | "failed" | "waiting";
+type Outcome = "opened" | "skipped" | "failed" | "waiting" | "linting";
 
-/** One attempt for the `needs-fix` rows of one head: one patch and one PR for all of them. Each row ends in nothing-to-do, pr-opened or fix-failed, or stays needs-fix while the head is still running. */
+/**
+ * One attempt for the rows of one head: one patch and one PR for all of them. The rows are `needs-fix` (a new patch) or
+ * `linting` (a stored patch whose lint task is collected). Each row ends in nothing-to-do, pr-opened or fix-failed, goes to
+ * linting with a stored patch, or stays as it is while the head is still running or the lint task is.
+ */
 async function attempt(c: Ctx, rows: FixRow[], count: () => void): Promise<Outcome> {
   const at = (): string => c.now().toISOString();
   const head = rows[0]!.head_sha;
@@ -137,52 +141,98 @@ async function attempt(c: Ctx, rows: FixRow[], count: () => void): Promise<Outco
     const covered = await coveringPr(c, live.map((r) => r.check), files, now.redSince);
     if (covered !== null) return set(live, "nothing-to-do", `an open PR already covers it: #${covered}`);
 
-    count();
+    const stored = live[0]!.state === "linting";
+    const w = stored ? { patch: live[0]!.patch ?? "", files: JSON.parse(live[0]!.files ?? "[]") as string[], task: live[0]!.lint_task, round: live[0]!.lint_round ?? 1, state: live[0]!.lint_state } : null;
+    const res = w ? readLint(c.db, w.task ?? -1) : null;
+    if (res?.kind === "pending") return "waiting";
+    if (!stored) count();
     const git = new Git(c.exec, c.fix.root, c.repo);
     mkdirSync(c.fix.root, { recursive: true });
     if (!(await git.fetchBranch(ORG, c.repo, now.branch, head))) return set(live, "fix-failed", "the head commit is no longer in the repository");
     const ref = `${c.repo}@${head.slice(0, 8)}`;
     const names = live.map((r) => r.check);
     const title = prTitle(names);
-    const made = await patchFromFailure(c.db, c.fix, {
-      git, ref, title, repo: c.repo, number: 0, head, round: 1, failure: { head, checks }, diffText: "",
-      runId: `main-fix-${c.repo}-${at().replace(/[-:]/g, "").slice(0, 15)}`, actor: PR_ACTOR, at,
-      reviewReason: `The default branch fails the check${names.length > 1 ? "s" : ""} ${names.join(", ")} at this head. The patch must make ${names.length > 1 ? "them" : "it"} pass without changing what the code is meant to do.`,
-      checkout: async () => c.fix.checkout?.(c.repo, now.branch, head),
-    });
-    if (!made.ok) return set(live, "fix-failed", made.reason);
-    const { v, shown } = made;
-    const scratch = mkdtempSync(join(c.fix.root, ".index-"));
-    let applied;
-    try { applied = await git.applyToTree(head, v.patch, join(scratch, "index"), shown.flatMap((f) => ("excerpt" in f ? [f.path] : []))); }
-    finally { rmSync(scratch, { recursive: true, force: true }); }
-    if (!applied.ok) return set(live, "fix-failed", applied.reason);
-    const refusal = await made.check(v.patch);
-    if (refusal !== null) return set(live, "fix-failed", refusal.replace(/^rejected: /, ""));
+    const treeOf = async (patch: string, exact: string[] = []) => {
+      const scratch = mkdtempSync(join(c.fix.root, ".index-"));
+      try { return await git.applyToTree(head, patch, join(scratch, "index"), exact); }
+      finally { rmSync(scratch, { recursive: true, force: true }); }
+    };
+    const store = (patch: string, files: string[], task: number, state: "pending" | "requeued", round: number): void => {
+      for (const r of live) c.setState(r, "linting", null, at(), { patch, files: JSON.stringify(files), lint_task: task, lint_round: round, lint_state: state });
+    };
 
-    // Like every model patch, this one is linted before it is pushed: findings end the attempt, the formatter's changes are folded in.
-    const lintTask = queueLint(c.db, { step: "mainfix", repo: c.repo, number: null, head, base: head, patch: v.patch });
-    if (lintTask !== null) {
-      const res = await (c.fix.lintWait ?? waitLint)(c.db, lintTask);
-      if (res.kind === "pending") return set(live, "fix-failed", "the lint task did not finish in time");
-      if (res.kind === "infra-failed") return set(live, "fix-failed", `lint: ${res.reason}`);
-      if (res.findings.length) return set(live, "fix-failed", `clippy findings on the patch: ${oneLine(res.findings[0]!.message)}`);
-      if (res.formatDiff) {
-        const fold = await foldFormat(git, head, v.patch, res.formatDiff, c.fix.root);
+    type Made = { ok: true; patch: string; files: string[]; changed: number; shown: CifixPr["files"]; model: string; applied: Awaited<ReturnType<typeof treeOf>> } | { ok: false; reason: string };
+    /** A model patch (with the earlier patch and its findings after a lint round), applied and checked. */
+    const generate = async (previous: { patch: string; findings: string[] } | null, round: number): Promise<Made> => {
+      const made = await patchFromFailure(c.db, c.fix, {
+        git, ref, title, repo: c.repo, number: 0, head, round, failure: { head, checks }, diffText: "", ...(previous ? { previous } : {}),
+        runId: `main-fix-${c.repo}-${at().replace(/[-:]/g, "").slice(0, 15)}`, actor: PR_ACTOR, at,
+        reviewReason: `The default branch fails the check${names.length > 1 ? "s" : ""} ${names.join(", ")} at this head. The patch must make ${names.length > 1 ? "them" : "it"} pass without changing what the code is meant to do.`,
+        checkout: async () => c.fix.checkout?.(c.repo, now.branch, head),
+      });
+      if (!made.ok) return made;
+      const { v, shown } = made;
+      const tree = await treeOf(v.patch, shown.flatMap((f) => ("excerpt" in f ? [f.path] : [])));
+      if (!tree.ok) return { ok: false, reason: tree.reason };
+      const refusal = await made.check(v.patch);
+      if (refusal !== null) return { ok: false, reason: refusal.replace(/^rejected: /, "") };
+      // Checked here: the collect step has no excerpts to check against.
+      const early = outsideShown(shown, await git.diffText(head, tree.tree));
+      if (early) return { ok: false, reason: early };
+      return { ok: true, patch: v.patch, files: v.files, changed: v.changed, shown, model: made.model, applied: tree };
+    };
+
+    let patch: string, patchFiles: string[], changed: number, shown: CifixPr["files"] = [], model = PATCH_MODEL;
+    let applied: Awaited<ReturnType<typeof treeOf>>;
+    if (w && res) {
+      if (res.kind === "infra-failed") {
+        const again = w.state === "requeued" ? null : queueLint(c.db, { step: "mainfix", repo: c.repo, number: null, head, base: head, patch: w.patch });
+        if (again === null) return set(live, "fix-failed", `lint: ${res.reason}`);
+        store(w.patch, w.files, again, "requeued", w.round);
+        c.log(`  ${c.repo}: lint task failed (${res.reason}); queued again as task ${again}`);
+        return "linting";
+      }
+      if (res.kind === "result" && res.findings.length === 0) {
+        const fold = await foldFormat(git, head, w.patch, res.formatDiff ?? "", c.fix.root);
         if (!fold.ok) return set(live, "fix-failed", fold.reason);
-        const dir = mkdtempSync(join(c.fix.root, ".index-"));
-        try { applied = await git.applyToTree(head, fold.patch, join(dir, "index")); }
-        finally { rmSync(dir, { recursive: true, force: true }); }
-        if (!applied.ok) return set(live, "fix-failed", applied.reason);
+        const v = validatePatch(w.patch, w.files);
+        if (!v.ok) return set(live, "fix-failed", v.reason);
+        applied = await treeOf(fold.patch);
+        ({ patch, patchFiles, changed } = { patch: fold.patch, patchFiles: v.files, changed: v.changed });
+      } else {
+        const findings = res.kind === "result" ? res.findings : [];
+        if (w.round >= LINT_MAX_ROUNDS) return set(live, "fix-failed", `clippy findings remain after ${w.round} rounds: ${oneLine(findings[0]!.message)}`);
+        count();
+        const made = await generate({ patch: w.patch, findings: findings.map((x) => x.rendered) }, w.round + 1);
+        if (!made.ok) return set(live, "fix-failed", made.reason);
+        ({ patch, files: patchFiles, changed, shown, model, applied } = made);
+        const task = queueLint(c.db, { step: "mainfix", repo: c.repo, number: null, head, base: head, patch });
+        if (task === null) { /* the new patch changes no Rust file: nothing to lint */ } else {
+          store(patch, patchFiles, task, "pending", w.round + 1);
+          c.log(`  ${c.repo}: patch stored; lint task ${task} queued (round ${w.round + 1})`);
+          return "linting";
+        }
+      }
+    } else {
+      const made = await generate(null, 1);
+      if (!made.ok) return set(live, "fix-failed", made.reason);
+      ({ patch, files: patchFiles, changed, shown, model, applied } = made);
+      // Like every model patch, this one is linted before it is pushed; the collect step on a later run folds in the formatting or sends findings back.
+      const task = queueLint(c.db, { step: "mainfix", repo: c.repo, number: null, head, base: head, patch });
+      if (task !== null) {
+        store(patch, patchFiles, task, "pending", 1);
+        c.log(`  ${c.repo}: patch stored; lint task ${task} queued (round 1)`);
+        return "linting";
       }
     }
+    if (!applied.ok) return set(live, "fix-failed", applied.reason);
 
     const who = await whoAmI(c.exec);
     c.db.prepare("INSERT INTO main.settings (key, value) VALUES ('pipeline_login', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value").run(who.login);
-    const commit = await git.commit(applied.tree, head, commitMessage(title, v.files), { name: who.login, email: who.email });
+    const commit = await git.commit(applied.tree, head, commitMessage(title, patchFiles), { name: who.login, email: who.email });
     const changes = await git.rawChanges(head, commit);
     const touched = changes.map((x) => x[3]!).sort().join("\n");
-    if (changes.some((x) => x[2] !== "M" || x[0] !== x[1] || (x[0] !== "100644" && x[0] !== "100755")) || touched !== [...v.files].sort().join("\n"))
+    if (changes.some((x) => x[2] !== "M" || x[0] !== x[1] || (x[0] !== "100644" && x[0] !== "100755")) || touched !== [...files].sort().join("\n"))
       return set(live, "fix-failed", "the commit would change files or modes outside the validated diff");
     const outside = outsideShown(shown, await git.diffText(head, commit));
     if (outside) return set(live, "fix-failed", outside);
@@ -201,9 +251,9 @@ async function attempt(c: Ctx, rows: FixRow[], count: () => void): Promise<Outco
     if (!(url && urlOk(url, c.repo))) {
       const push = await pushOwnBranch({ db: c.db, login: PR_ACTOR }, g, git, "main-fix-push", { repo: c.repo, remote: fork, branch, sha: commit }, { fork, head });
       if (push.code !== 0) return set(live, "fix-failed", `push failed: ${oneLine(push.stderr)}`);
-      const body = prBody({ head, checks: live.map((r) => ({ name: r.check, runUrl: r.run_url })), culprit: now.culprit, culpritPr: now.culpritPr, files: v.files, changed: v.changed });
+      const body = prBody({ head, checks: live.map((r) => ({ name: r.check, runUrl: r.run_url })), culprit: now.culprit, culpritPr: now.culpritPr, files: patchFiles, changed });
       const pr = await ghOpenPr({ db: c.db, login: PR_ACTOR }, g, c.exec, "main-fix-pr", { repo: c.repo, target: ref, base: now.branch, head: `${owner}:${branch}`, title, body },
-        { by: "model", kind: "pull request", model: made.model }, { branch, files: v.files });
+        { by: "model", kind: "pull request", model }, { branch, files: patchFiles });
       url = pr.stdout.trim().split("\n").pop() ?? "";
       if (pr.code !== 0 || !urlOk(url, c.repo)) return set(live, "fix-failed", `the pull request was not opened: ${oneLine(pr.stderr || pr.stdout)}`);
     }
@@ -215,14 +265,16 @@ async function attempt(c: Ctx, rows: FixRow[], count: () => void): Promise<Outco
   }
 }
 
-/** Takes the repo's `needs-fix` rows head by head; `onHandled` is called once per head that reaches the model work. */
-export async function openFixPrs(c: Ctx, onHandled?: () => void): Promise<{ opened: number; skipped: number; failed: number }> {
-  const out = { opened: 0, skipped: 0, failed: 0 };
-  const rows = c.db.prepare("SELECT * FROM main_fixes WHERE repo = ? AND state = 'needs-fix' AND verdict = 'code' ORDER BY created_at, head_sha, \"check\"").all(c.repo) as FixRow[];
+/** Takes the repo's `needs-fix` and `linting` rows head by head; `onHandled` is called once per head that reaches the model work. */
+export async function openFixPrs(c: Ctx, onHandled?: () => void): Promise<{ opened: number; skipped: number; failed: number; linting: number }> {
+  const out = { opened: 0, skipped: 0, failed: 0, linting: 0 };
+  const rows = c.db.prepare("SELECT * FROM main_fixes WHERE repo = ? AND state IN ('needs-fix', 'linting') AND verdict = 'code' ORDER BY created_at, head_sha, \"check\"").all(c.repo) as FixRow[];
   const byHead = new Map<string, FixRow[]>();
   for (const r of rows) (byHead.get(r.head_sha) ?? byHead.set(r.head_sha, []).get(r.head_sha)!).push(r);
   for (const group of byHead.values()) {
-    const o = await attempt(c, group, () => onHandled?.());
+    // Rows that turned red after the patch was stored wait until it is collected.
+    const stored = group.filter((r) => r.state === "linting");
+    const o = await attempt(c, stored.length ? stored : group, () => onHandled?.());
     if (o !== "waiting") out[o]++;
   }
   return out;

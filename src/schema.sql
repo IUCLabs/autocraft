@@ -1152,6 +1152,7 @@ CREATE TABLE IF NOT EXISTS main_fixes (
   issue_number INTEGER,
   pr_number INTEGER,                  -- the fix PR
   pr_url TEXT,
+  -- state linting: the one model patch of the head's rows (patch, files JSON, lint_task, lint_round, lint_state pending | requeued) waits for its lint task
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   PRIMARY KEY (repo, head_sha, "check")

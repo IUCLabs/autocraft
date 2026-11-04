@@ -28,7 +28,7 @@ import { CLAUDE_PROMPTS } from "../prompts/index.ts";
 import { cleanLine } from "../review/post-template.ts";
 import { scrub } from "../runner/scrub.ts";
 import { mainFixApprovalOf } from "./approval.ts";
-import { openFixPrs, type FixPrDeps } from "./pr.ts";
+import { lintReady, openFixPrs, type FixPrDeps } from "./pr.ts";
 import { REASON_WORDS, VERDICTS, type MainFixInput, type MainFixVerdict } from "./types.ts";
 
 export { mainFixApprovalOf, setMainFixApproval } from "./approval.ts";
@@ -60,6 +60,7 @@ export type MainFixDeps = {
 export type FixRow = {
   repo: string; head_sha: string; check: string; verdict: MainFixVerdict; state: string; reason: string | null;
   run_id: number | null; run_url: string | null; excerpt: string | null; decision_id: string | null; issue_number: number | null; pr_number: number | null; pr_url: string | null;
+  patch: string | null; files: string | null; lint_task: number | null; lint_round: number | null; lint_state: string | null;
   created_at: string; updated_at: string;
 };
 
@@ -113,10 +114,11 @@ const rowsAt = (db: DatabaseSync, repo: string, head: string): FixRow[] =>
 
 function save(db: DatabaseSync, row: Omit<FixRow, "updated_at"> & { updated_at?: string }, at: string): void {
   const { updated_at: _, ...r } = row;
-  db.prepare(`INSERT INTO main_fixes (repo, head_sha, "check", verdict, state, reason, run_id, run_url, excerpt, decision_id, issue_number, pr_number, pr_url, created_at, updated_at)
-    VALUES (:repo, :head_sha, :check, :verdict, :state, :reason, :run_id, :run_url, :excerpt, :decision_id, :issue_number, :pr_number, :pr_url, :created_at, :at)
+  db.prepare(`INSERT INTO main_fixes (repo, head_sha, "check", verdict, state, reason, run_id, run_url, excerpt, decision_id, issue_number, pr_number, pr_url, patch, files, lint_task, lint_round, lint_state, created_at, updated_at)
+    VALUES (:repo, :head_sha, :check, :verdict, :state, :reason, :run_id, :run_url, :excerpt, :decision_id, :issue_number, :pr_number, :pr_url, :patch, :files, :lint_task, :lint_round, :lint_state, :created_at, :at)
     ON CONFLICT (repo, head_sha, "check") DO UPDATE SET verdict = excluded.verdict, state = excluded.state, reason = excluded.reason, run_id = excluded.run_id,
-      run_url = excluded.run_url, excerpt = excluded.excerpt, decision_id = excluded.decision_id, issue_number = excluded.issue_number, pr_number = excluded.pr_number, pr_url = excluded.pr_url, updated_at = excluded.updated_at`)
+      run_url = excluded.run_url, excerpt = excluded.excerpt, decision_id = excluded.decision_id, issue_number = excluded.issue_number, pr_number = excluded.pr_number, pr_url = excluded.pr_url,
+      patch = excluded.patch, files = excluded.files, lint_task = excluded.lint_task, lint_round = excluded.lint_round, lint_state = excluded.lint_state, updated_at = excluded.updated_at`)
     .run({ ...r, at });
 }
 
@@ -154,6 +156,8 @@ export function mainFixDue(db: DatabaseSync, repo: string): boolean {
   if (actionable(db).some((a) => a.kind === "other" && isMainFixDecision(repo, a.id))) return true;
   const cur = currentOf(db, repo);
   if (!cur) return false;
+  // A stored patch is collected once its lint task ended, or closed when its head is no longer the current one.
+  if (cur.state !== "running" && lintReady(db, repo, cur.headSha)) return true;
   const rows = rowsAt(db, repo, cur.headSha);
   if (cur.state === "red") return rows.length === 0 || rows.some((r) => r.state === "rerun-requested" || r.state === "needs-fix");
   // A row left at needs-fix by an older head is closed by the next run.
@@ -191,7 +195,7 @@ function fromDecision(db: DatabaseSync, id: string): { state: string; issue: num
 async function classifyHead(db: DatabaseSync, repo: string, cur: Current, deps: MainFixDeps, log: (l: string) => void, s: MainFixSummary, by: By = CLI_BY): Promise<boolean> {
   const at = deps.now().toISOString();
   const reading = await readFailure(deps.gh, repo, cur.headSha, optionalChecks(db, repo));
-  const base = { repo, head_sha: cur.headSha, run_id: null, run_url: null, excerpt: null, decision_id: null, issue_number: null, pr_number: null, pr_url: null, created_at: at } as const;
+  const base = { repo, head_sha: cur.headSha, run_id: null, run_url: null, excerpt: null, decision_id: null, issue_number: null, pr_number: null, pr_url: null, patch: null, files: null, lint_task: null, lint_round: null, lint_state: null, created_at: at } as const;
   if (reading.kind === "skip") {
     save(db, { ...base, check: "(none)", verdict: "code", state: "nothing-to-do", reason: oneLine(reading.why) }, at);
     log(`  ${repo}: nothing to do: ${reading.why}`);
