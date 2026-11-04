@@ -2,9 +2,11 @@
 import type { DatabaseSync } from "node:sqlite";
 import { claudeRoom } from "../agents/call.ts";
 import { CLAUDE_PROMPTS } from "../prompts/index.ts";
-import { parseRefereeReply, type Item } from "./parse.ts";
+import { type Item } from "./parse.ts";
 import { type Pair, ref } from "./report.ts";
-import { askClaude, loadItems, pool, saveUsage } from "./run.ts";
+import { loadItems, pool } from "./run.ts";
+import { runModelStep } from "../agents/step.ts";
+import { REFEREE_SONNET } from "../agents/steps.ts";
 import { rng, spread } from "./sample.ts";
 import { isScope } from "../decide/select.ts";
 import { notHeldSql } from "../dupes/held.ts";
@@ -43,23 +45,21 @@ export async function refereeItems(db: DatabaseSync, runId: string, items: Item[
   await pool(chunks.map((chunk, n) => async () => {
     if (opts.cancelled?.()) return;
     const start = new Date().toISOString();
-    const refs = chunk.map(ref);
     let got = 0;
-    let usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: null as number | null };
-    for (let attempt = 0; attempt < REFEREE.limits.attempts && got < refs.length; attempt++) {
-      const todo = chunk.filter((i) => !have.get(i.repo, i.number, runId, opts.pipeline ? start : ""));
-      opts.onSent?.((sent += todo.length));
-      const reply = await askClaude("referee.sonnet", REFEREE.models[0]!, todo, db);
-      if (!reply) continue;
-      usage = { input: usage.input + reply.usage.input, output: usage.output + reply.usage.output, cacheRead: usage.cacheRead + reply.usage.cacheRead, cacheWrite: usage.cacheWrite + reply.usage.cacheWrite, cost: (usage.cost ?? 0) + (reply.usage.cost ?? 0) };
-      for (const v of parseRefereeReply(reply.text, todo.map(ref))) {
+    // The first call asks only the items without an answer yet; a retry asks the ones still missing from the reply.
+    const first = chunk.filter((i) => !have.get(i.repo, i.number, runId, opts.pipeline ? start : ""));
+    if (first.length) {
+      const r = await runModelStep(db, REFEREE_SONNET, first, {
+        usage: { run: runId, agent: opts.pipeline ? `sonnet-${Date.now().toString(36)}-${n}` : `sonnet-${n}`, stage: "referee" },
+        onAttempt: (todo) => opts.onSent?.((sent += todo.length)),
+      });
+      if (r.ok) for (const verdicts of r.values) for (const v of verdicts) {
         const [repo, num] = v.ref.split("#");
         ins.run(repo!, Number(num), runId, new Date().toISOString(), v.type_label, v.why, opts.pipeline ? JSON.stringify({ sure: v.sure === true }) : null);
         got++;
       }
     }
     total += got;
-    saveUsage(db, runId, opts.pipeline ? `sonnet-${Date.now().toString(36)}-${n}` : `sonnet-${n}`, "referee", REFEREE.models[0]!, got, usage, start, new Date().toISOString());
   }), () => claudeRoom(db), { first: true });
   return total;
 }

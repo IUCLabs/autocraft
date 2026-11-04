@@ -4,10 +4,12 @@ import type { DatabaseSync } from "node:sqlite";
 import { jevParallel } from "../agents/accounts.ts";
 import { claudeRoom } from "../agents/call.ts";
 import { jevAvailable } from "../agents/jev.ts";
-import { askClaude, askJev, pool } from "../classify/run.ts";
+import { askClaude, pool } from "../classify/run.ts";
+import { runModelStep } from "../agents/step.ts";
+import { DUPES_HAIKU, DUPES_JEV } from "../agents/steps.ts";
 import { CLAUDE_PROMPTS } from "../prompts/index.ts";
 import { pickCanonical } from "./canonical.ts";
-import { pairRef, parsePairReply, settlePair, type DupePair, type PairVerdict } from "./pair.ts";
+import { pairRef, settlePair, type DupePair, type PairVerdict } from "./pair.ts";
 import { pilotSqlFor } from "../pilot.ts";
 
 const HAIKU = CLAUDE_PROMPTS["dupes.haiku"];
@@ -46,14 +48,8 @@ export type CheckDeps = {
 export function defaultCheckDeps(db: DatabaseSync): CheckDeps {
   return {
     async jev(pair) {
-      for (let attempt = 0; attempt < 2 && jevAvailable(db); attempt++) {
-        const r = await askJev("dupes.jev", pair, db);
-        try {
-          const p = (JSON.parse(r.stdout) as { answers?: { same?: { noul?: unknown } } }).answers?.same?.noul;
-          if (typeof p === "number" && p >= 0 && p <= 1) return p;
-        } catch { /* retry once */ }
-      }
-      return null;
+      const r = await runModelStep(db, DUPES_JEV, pair);
+      return r.ok ? r.value : null;
     },
     async haiku(pairs) {
       return (await askClaude("dupes.haiku", HAIKU.models[0]!, pairs, db))?.text ?? null;
@@ -102,18 +98,20 @@ export async function checkPairs(db: DatabaseSync, keys: PairKey[], deps: CheckD
   const batches: string[][] = [];
   for (let i = 0; i < second.length; i += HAIKU.limits.perCall) batches.push(second.slice(i, i + HAIKU.limits.perCall));
   await pool(batches.map((batch) => async () => {
-    let todo = batch;
-    for (let attempt = 0; attempt < HAIKU.limits.attempts && todo.length; attempt++) {
-      const text = await deps.haiku(todo.map((r) => pairs.get(r)!.pair));
-      if (text === null) continue;
-      const { answers, missing } = parsePairReply(text, todo);
+    // One entry per batch pair; a pair without a valid answer stays in `rest` and is asked again.
+    const input = batch.map((r) => pairs.get(r)!.pair);
+    const r = await runModelStep(db, DUPES_HAIKU, input, { ask: async (ps) => {
+      const text = await deps.haiku(ps);
+      return text === null ? null : { text, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: null } };
+    } });
+    if (r.ok) for (const answers of r.values) {
       c.haiku += answers.length;
       for (const a of answers) {
         if (alone.has(a.ref)) c.haikuAlone++;
         done(a.ref, a.verdict, settlePair(jevP.get(a.ref) ?? null, a.verdict, alone.has(a.ref)) ?? "unsure");
       }
-      todo = todo.filter((r) => missing.includes(r));
     }
+    const todo = r.ok ? (r.rest ?? []) : input;
     c.unanswered += todo.length;
   }), () => claudeRoom(db), { first: true });
   return c;

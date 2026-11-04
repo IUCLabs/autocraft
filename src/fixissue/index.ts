@@ -15,7 +15,9 @@ import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { TERMINAL, cancelTask, getTask } from "../build/tasks.ts";
 import { BuildError } from "../build/envs.ts";
-import { askClaude, saveUsage, type Usage } from "../classify/run.ts";
+import { type Usage } from "../classify/run.ts";
+import { runModelStep } from "../agents/step.ts";
+import { textStep } from "../agents/steps.ts";
 import { REPO_PATH } from "../sandbox/command.ts";
 import { checkoutForCommit } from "../sandbox/index.ts";
 import { audit } from "../dash/audit.ts";
@@ -98,11 +100,9 @@ export function defaultDeps(): FixIssueDeps {
     mainHead: (repo, branch) => shaOf(`repos/${ORG}/${repo}/commits/${encodeURIComponent(branch)}`),
     checkout: (repo, branch, sha) => checkoutForCommit(repo, branch, sha, console.log),
     ask: async (db, id, input, runId, checkout) => {
-      const model = CLAUDE_PROMPTS[id].models[0]!;
-      const start = new Date().toISOString();
-      const reply = await askClaude(id, model, [input] as never, db, { checkout });
-      saveUsage(db, runId, `fixissue-${input.ref.replace(/[^A-Za-z0-9]/g, "-")}`, "fixissue", model, reply ? 1 : 0, reply?.usage ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: null }, start, new Date().toISOString());
-      return reply?.text ?? null;
+      // One call: the caller reads the reply itself.
+      const r = await runModelStep(db, textStep<typeof input>(id), input, { checkout, usage: { run: runId, agent: `fixissue-${input.ref.replace(/[^A-Za-z0-9]/g, "-")}`, stage: "fixissue", items: (ok) => (ok ? 1 : 0) } });
+      return r.ok ? r.value : null;
     },
   };
 }

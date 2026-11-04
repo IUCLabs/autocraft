@@ -12,11 +12,9 @@ export function canonicalArea(choice: unknown, areas: Area[]): string | null | u
 
 export type AreaAnswer = { area: string | null; top: number };
 
-/** Jev's answer to the area question, or null when it is missing or names something that is not in the list. */
-export function jevAreaAnswer(stdout: string, areas: Area[]): AreaAnswer | null {
-  let j: { answers?: { area?: { choice?: string; confidence?: number; probabilities?: Record<string, number> } } };
-  try { j = JSON.parse(stdout); } catch { return null; }
-  const a = j.answers?.area;
+/** Jev's `answers` for the area question, or null when it is missing or names something that is not in the list. */
+export function jevAreaChoice(answers: unknown, areas: Area[]): AreaAnswer | null {
+  const a = (answers as { area?: { choice?: string; confidence?: number; probabilities?: Record<string, number> } } | undefined)?.area;
   const area = canonicalArea(a?.choice, areas);
   if (area === undefined) return null;
   const top = a?.probabilities?.[a.choice!] ?? a?.confidence;

@@ -3,17 +3,18 @@
 // database. Filing the defects is src/postmerge/file.ts.
 import type { DatabaseSync } from "node:sqlite";
 import { claudeRoom } from "../agents/call.ts";
-import { add, askClaude, pool, saveUsage, type Usage } from "../classify/run.ts";
+import { pool } from "../classify/run.ts";
+import { runModelStep } from "../agents/step.ts";
+import { POSTMERGE_OPUS } from "../agents/steps.ts";
 import { audit } from "../dash/audit.ts";
 import { CLAUDE_PROMPTS } from "../prompts/index.ts";
 import { referenceDir } from "../reference.ts";
-import { defaultSemanticDeps, referenceProblems, type SemanticDeps } from "../reference-lint.ts";
-import { dropTexts, type Lint } from "../replylint.ts";
+import { defaultSemanticDeps, type SemanticDeps } from "../reference-lint.ts";
 import { codeDiff, ghMerged, type MergedFetcher } from "../review/diff.ts";
 import { MAX_DIFF_CHARS } from "../review/opus.ts";
 import { REPO_PATH } from "../sandbox/command.ts";
 import { checkoutForCommit, checkoutForPr } from "../sandbox/index.ts";
-import { lintReply, MAX_MERGED_DIFF_CHARS, parseFindings, publicTexts, type FiledBefore, type Finding, type PostmergeCommit, type PostmergePr, type PostmergeReviewRow, type RelatedItem } from "./parse.ts";
+import { MAX_MERGED_DIFF_CHARS, type FiledBefore, type Finding, type PostmergeCommit, type PostmergePr, type PostmergeReviewRow, type RelatedItem } from "./parse.ts";
 import { followupsOf, MAX_RETRIES, mergedPr, selectPostmerge, type MergedPr } from "./select.ts";
 
 const PROMPT = CLAUDE_PROMPTS["postmerge.opus"];
@@ -156,22 +157,14 @@ export async function runPostmerge(db: DatabaseSync, params: PostmergeParams, lo
     const { input } = p;
     const checkout = (await deps.checkout?.(repo, c.number, p.sha, c.head_oid)) ?? undefined;
     if (checkout) input.repo_dir = REPO_PATH;
-    let usage: Usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: null };
-    let got: Finding[] | null = null;
     const dir = referenceDir(repo);
     const semantic = dir ? deps.semantic ?? defaultSemanticDeps(db, input.ref) : undefined;
-    // A reply that is not valid is lint-free here: it keeps the whole-call retry. Problems of a valid one go back to the model as one fix turn.
-    const lint: Lint = async (text, stage) => {
-      const own = lintReply(text);
-      return own === null ? null : [...own, ...await referenceProblems(publicTexts(text), dir, semantic, { stage, otherProblems: own.length })];
-    };
-    for (let attempt = 0; attempt < PROMPT.limits.attempts && !got; attempt++) {
-      const reply = await askClaude("postmerge.opus", deps.model, [input], db, { checkout, reference: checkout ? dir : undefined, lint });
-      if (!reply) continue;
-      usage = add(usage, reply.usage);
-      if (reply.fixTurn) log(`  ${refOf(c)}: reply lint: ${reply.problems?.length ? `${reply.problems.length} problems left after the fix turn` : "fixed by one fix turn"}`);
-      got = parseFindings(reply.text, dropTexts(reply.problems));
-    }
+    const r = await runModelStep(db, POSTMERGE_OPUS, input, {
+      model: deps.model, checkout, reference: checkout ? dir : undefined, ctx: { dir, semantic },
+      usage: { run: runId, agent: `postmerge-${refOf(c).replace("#", "-")}`, stage: "postmerge", items: (ok) => (ok ? 1 : 0) },
+      onReply: (reply) => { if (reply.fixTurn) log(`  ${refOf(c)}: reply lint: ${reply.problems?.length ? `${reply.problems.length} problems left after the fix turn` : "fixed by one fix turn"}`); },
+    });
+    const got: Finding[] | null = r.ok ? r.value : null;
     if (got) {
       saveReview(db, c, { sha: input.merge_sha, runId, model: deps.model, findings: got, error: null });
       s.reviewed++; s.findings += got.length; s.defects += got.filter((f) => f.severity === "defect").length;
@@ -181,7 +174,6 @@ export async function runPostmerge(db: DatabaseSync, params: PostmergeParams, lo
       s.failed.push(refOf(c));
     }
     params.onHandled?.(++handled);
-    saveUsage(db, runId, `postmerge-${refOf(c).replace("#", "-")}`, "postmerge", deps.model, got ? 1 : 0, usage, start, now());
   }), () => claudeRoom(db));
   log(`postmerge ${repo}: ${s.reviewed} reviewed, ${s.findings} findings (${s.defects} defects), ${s.failed.length} without an answer`);
   return s;

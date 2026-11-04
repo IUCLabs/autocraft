@@ -7,8 +7,8 @@ import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { CancelledError } from "./agents/call.ts";
 import { jevAvailable } from "./agents/jev.ts";
-import { askClaude, askJev } from "./classify/run.ts";
-import { CLAUDE_PROMPTS, renderReferenceJev } from "./prompts/index.ts";
+import { runModelStep } from "./agents/step.ts";
+import { REFERENCE_HAIKU, REFERENCE_JEV } from "./agents/steps.ts";
 import { QUOTE_WORDS, REFERENCE_JEV_ACCEPT, REFERENCE_JEV_REJECT, type LintProblem } from "./replylint.ts";
 import { REFERENCE_LEAK } from "./review/opus-parse.ts";
 
@@ -105,29 +105,14 @@ export type SemanticDeps = {
 export const HAIKU_WAIT_MS = 30_000;
 
 export function defaultSemanticDeps(db: DatabaseSync, ref: string): SemanticDeps {
-  const HAIKU = CLAUDE_PROMPTS["lint.reference.haiku"];
   return {
     async jev(text) {
-      for (let attempt = 0; attempt < 2 && jevAvailable(db); attempt++) {
-        const r = await askJev("lint.reference.jev", { ref }, db, renderReferenceJev(text));
-        try {
-          const p = (JSON.parse(r.stdout) as { answers?: { refers?: { noul?: unknown } } }).answers?.refers?.noul;
-          if (typeof p === "number" && p >= 0 && p <= 1) return p;
-        } catch { /* retry once */ }
-      }
-      return null;
+      const r = await runModelStep(db, REFERENCE_JEV, { ref, text });
+      return r.ok ? r.value : null;
     },
     async haiku(text) {
-      for (let attempt = 0; attempt < HAIKU.limits.attempts; attempt++) {
-        const reply = await askClaude("lint.reference.haiku", HAIKU.models[0]!, [{ ref, text }], db, { maxWaitMs: HAIKU_WAIT_MS });
-        if (!reply) continue;
-        const a = reply.text.indexOf("["), b = reply.text.lastIndexOf("]");
-        try {
-          const o = (JSON.parse(reply.text.slice(a, b + 1)) as { ref?: unknown; refers?: unknown }[])[0];
-          if (o && o.ref === ref && typeof o.refers === "boolean") return o.refers;
-        } catch { /* retry once */ }
-      }
-      return null;
+      const r = await runModelStep(db, REFERENCE_HAIKU, [{ ref, text }], { maxWaitMs: HAIKU_WAIT_MS });
+      return r.ok ? r.value : null;
     },
     jevUsable: () => jevAvailable(db),
   };

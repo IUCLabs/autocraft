@@ -4,7 +4,9 @@
 import type { DatabaseSync } from "node:sqlite";
 import { CLAUDE_PROMPTS } from "../prompts/index.ts";
 import { claudeRoom } from "../agents/call.ts";
-import { add, askClaude, pool, saveUsage, type Usage } from "../classify/run.ts";
+import { pool } from "../classify/run.ts";
+import { runModelStep } from "../agents/step.ts";
+import { REVIEW_OPUS } from "../agents/steps.ts";
 import { Client, type Querier } from "../mirror.ts";
 import { checksOf, refreshChecks } from "./checks.ts";
 import { MAX_RERUNS_PER_DAY, countRerun, discussionOf, ensurePipelineLogin, liveDiscussion, markedStaleSince, staleReviews, withRetry, type Snapshot } from "./discussion.ts";
@@ -14,12 +16,11 @@ import { HISTORY_COPY_SQL } from "../db.ts";
 import type { DiscussionEntry } from "./parse.ts";
 import { cachedDiff, codeDiff, ghDelta, ghDiff, type DeltaFetcher, type DiffFetcher } from "./diff.ts";
 import { selectOpusCandidates, type OpusCandidate } from "./opus-candidates.ts";
-import { carriedOutcome, lintOpusReply, parseOpusReply, publicTexts, rawReason, type EarlierOpus, type OpusPr, type OpusReview, type UnappliedFix } from "./opus-parse.ts";
+import { carriedOutcome, rawReason, type EarlierOpus, type OpusPr, type OpusReview, type UnappliedFix } from "./opus-parse.ts";
 import { REPO_PATH } from "../sandbox/command.ts";
 import { checkoutForPr } from "../sandbox/index.ts";
 import { referenceDir } from "../reference.ts";
-import { defaultSemanticDeps, referenceProblems, type SemanticDeps } from "../reference-lint.ts";
-import { dropTexts, type Lint } from "../replylint.ts";
+import { defaultSemanticDeps, type SemanticDeps } from "../reference-lint.ts";
 
 const PROMPT = CLAUDE_PROMPTS["review.opus"];
 /** Diff characters above which a PR is held as too large to review. */
@@ -225,25 +226,18 @@ export async function runOpusReview(db: DatabaseSync, params: OpusParams, log: (
     const { input, snap, mode, base } = p;
     const checkout = (await deps.checkout?.(repo, c.number, c.head_oid)) ?? undefined;
     if (checkout) input.repo_dir = REPO_PATH;
-    let usage: Usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: null };
-    let got: OpusReview | null = null, gotText = "";
     const dir = referenceDir(repo);
     const semantic = dir ? deps.semantic ?? defaultSemanticDeps(db, input.ref) : undefined;
-    // A reply that is not a valid review is lint-free here: it keeps the whole-call retry. Problems of a valid one go back to the model as one fix turn.
-    const lint: Lint = async (text, stage) => {
-      const own = lintOpusReply(text, input.ref, input.unapplied_fixes);
-      return own === null ? null : [...own, ...await referenceProblems(publicTexts(text), dir, semantic, { stage, otherProblems: own.length })];
-    };
-    for (let attempt = 0; attempt < PROMPT.limits.attempts && !got; attempt++) {
-      const reply = await askClaude("review.opus", deps.model, [input], db, { checkout, reference: checkout ? dir : undefined, lint });
-      if (!reply) continue;
-      usage = add(usage, reply.usage);
-      if (reply.fixTurn) log(`  ${refOf(c)}: reply lint: ${reply.problems?.length ? `${reply.problems.length} problems left after the fix turn` : "fixed by one fix turn"}`);
-      else if (reply.problems?.length) log(`  ${refOf(c)}: reply lint: ${reply.problems.length} problems, no fix turn possible`);
-      // Whatever the lint still found is left out (reference text) or cut to its first sentence (long summary or why); the call is never repeated for it.
-      got = parseOpusReply(reply.text, input.ref, true, dropTexts(reply.problems));
-      gotText = reply.text;
-    }
+    const r = await runModelStep(db, REVIEW_OPUS, input, {
+      model: deps.model, checkout, reference: checkout ? dir : undefined, ctx: { dir, semantic },
+      usage: { run: runId, agent: `opus-${refOf(c).replace("#", "-")}`, stage: "review", items: (ok) => (ok ? 1 : 0) },
+      onReply: (reply) => {
+        if (reply.fixTurn) log(`  ${refOf(c)}: reply lint: ${reply.problems?.length ? `${reply.problems.length} problems left after the fix turn` : "fixed by one fix turn"}`);
+        else if (reply.problems?.length) log(`  ${refOf(c)}: reply lint: ${reply.problems.length} problems, no fix turn possible`);
+      },
+    });
+    let got: OpusReview | null = r.ok ? r.value.review : null;
+    const gotText = r.ok ? r.value.text : "";
     if (got) {
       // The outcome is read from the uncut reason, as the lint does.
       const outcomes = (input.unapplied_fixes ?? []).map((u) => ({ ...u, outcome: carriedOutcome({ ...got!, reason: rawReason(gotText) ?? got!.reason }, u) }));
@@ -259,7 +253,6 @@ export async function runOpusReview(db: DatabaseSync, params: OpusParams, log: (
       summary.missing.push(refOf(c));
     }
     params.onHandled?.(++handled);
-    saveUsage(db, runId, `opus-${refOf(c).replace("#", "-")}`, "review", deps.model, got ? 1 : 0, usage, start, now());
   }), () => claudeRoom(db));
   log(`opus-review ${repo}: ${summary.reviewed} reviewed (${Object.entries(summary.verdicts).map(([v, k]) => `${k} ${v}`).join(", ")}); ${summary.skipped.length} without a diff, ${summary.missing.length} without an answer`);
   return summary;
