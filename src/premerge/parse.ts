@@ -2,7 +2,7 @@
 // imports this file.
 import { safePath } from "../fixup/patch.ts";
 import type { LintProblem } from "../replylint.ts";
-import { OPUS_MAX_FIXES, REFERENCE_LEAK, parseClaims, parseStatementConflicts, type StatementConflict, type OwnerStatement } from "../review/opus-parse.ts";
+import { EVIDENCE_AT, OPUS_MAX_FIXES, REFERENCE_LEAK, parseClaims, type Claim, parseStatementConflicts, type StatementConflict, type OwnerStatement } from "../review/opus-parse.ts";
 import type { PremergeFinding } from "./types.ts";
 
 export const PREMERGE_MAX_FINDINGS = 30;
@@ -12,7 +12,7 @@ export const PREMERGE_FILE_CHARS = 300;
 export const PREMERGE_FIX_CHARS = 800;
 export const PREMERGE_SEARCHED_CHARS = 400;
 
-export type PremergeReview = { findings: PremergeFinding[]; searched: string | null; conflicts: StatementConflict[]; /** A claim is unverified or the claims list is missing: a person decides, no fix-up. */ unsure: boolean };
+export type PremergeReview = { findings: PremergeFinding[]; searched: string | null; conflicts: StatementConflict[]; /** A claim is unverified or the claims list is missing: a person decides, no fix-up. */ unsure: boolean; /** The claims of the title and body as stored and posted. */ claims: Claim[] };
 
 const clean = (s: string) => s.replace(/\s+/g, " ").trim();
 
@@ -51,14 +51,12 @@ function entries(text: string, ref: string): { entries: Entry[]; searched: strin
   return { entries: out, searched: typeof o.searched === "string" && o.searched.trim() ? clean(o.searched).slice(0, PREMERGE_SEARCHED_CHARS) : null, conflicts: o.conflicts };
 }
 
-const FILE_LINE = /([\w./-]+\.\w+):(\d+)/;
-
 /** The defects that claims make: the ones whose code is wrong. */
-function claimFindings(claims: ReturnType<typeof parseClaims>): PremergeFinding[] {
-  return (claims ?? []).filter((c) => c.impact === "code-wrong").map((c) => {
-    const at = FILE_LINE.exec(c.evidence);
+function claimFindings(claims: Claim[]): PremergeFinding[] {
+  return claims.filter((c) => c.impact === "code-wrong").map((c) => {
+    const at = EVIDENCE_AT.exec(c.evidence), file = at && safePath(at[1]!) ? at[1]! : "(description)";
     return {
-      severity: "defect" as const, file: at?.[1] ?? "(description)", line: at ? Number(at[2]) : 0,
+      severity: "defect" as const, file, line: at && file !== "(description)" ? Number(at[2]) : 0,
       title: `Claim shows wrong code: ${c.claim}`.slice(0, PREMERGE_TITLE_CHARS),
       scenario: `The claim "${c.claim}" is ${c.status} and the code is wrong. ${c.evidence}`.slice(0, PREMERGE_SCENARIO_CHARS),
     };
@@ -86,9 +84,10 @@ export function parsePremerge(text: string, ref: string, drop: ReadonlySet<strin
     findings.push(fixOk ? { ...rest, fix } : rest);
   }
   // A dropped fix does not free its place under the cap: the cap counts the fixes the model offered.
-  const claims = parseClaims((replyObject(text) ?? {}).claims, drop);
-  const unsure = claims === null ? !!body.trim() : claims.some((c) => c.impact === "unknown");
-  return { unsure, findings: [...claimFindings(claims), ...findings].slice(0, PREMERGE_MAX_FINDINGS), searched: r.searched, conflicts: parseStatementConflicts(r.conflicts, known) };
+  // Every valid claim reaches the findings and `unsure`; only the stored and posted texts are cleaned. A list that was not fully read is unsure.
+  const parsed = parseClaims((replyObject(text) ?? {}).claims, drop), claims = parsed?.claims ?? [];
+  const unsure = parsed === null ? !!body.trim() : parsed.rejected > 0 || claims.some((c) => c.impact === "unknown");
+  return { unsure, claims, findings: [...claimFindings(claims), ...findings].slice(0, PREMERGE_MAX_FINDINGS), searched: r.searched, conflicts: parseStatementConflicts(r.conflicts, known) };
 }
 
 /** The reference mentions in a valid reply that the model can fix itself; null when the reply is not valid. */
@@ -109,7 +108,8 @@ export function lintPremerge(text: string, ref: string, body = ""): LintProblem[
 export function premergeTexts(text: string, ref: string): { field: string; text: string }[] {
   const r = entries(text, ref);
   if (!r) return [];
-  const claims = (parseClaims(replyObject(text)?.claims) ?? []).flatMap((c, i) => [{ field: `claims[${i}].claim`, text: c.claim }, ...(c.evidence ? [{ field: `claims[${i}].evidence`, text: c.evidence }] : [])]);
+  const pc = parseClaims(replyObject(text)?.claims, new Set(), true);
+  const claims = (pc?.claims ?? []).flatMap((c, k) => { const i = pc!.indexes[k]!; return [{ field: `claims[${i}].claim`, text: c.claim }, ...(c.evidence ? [{ field: `claims[${i}].evidence`, text: c.evidence }] : [])]; });
   return [...claims, ...r.entries.flatMap((e) => [
     { field: `findings[${e.index}].title`, text: e.title }, { field: `findings[${e.index}].scenario`, text: e.scenario },
     ...(e.fix ? [{ field: `findings[${e.index}].fix.file`, text: e.fix.file }, { field: `findings[${e.index}].fix.change`, text: e.fix.change }] : []),

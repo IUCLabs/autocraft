@@ -10,6 +10,21 @@ export function reviewHistory(db: DatabaseSync, repo: string, number: number): P
     .map((r) => ({ head: r.head_oid, verdict: r.verdict, sure: r.sure === 1, reason: r.reason, risks: list<string>(r.risks), fixes: list(r.fixes), at: r.at }));
 }
 
+const REVIEW_REASON_CHARS = 600, REVIEW_NOTE_CHARS = 300, REVIEW_NOTES = 8, REVIEW_FIXES = 10;
+
+/**
+ * The one earlier review the pre-merge review gets: the latest at `head`, else the latest of the PR, as a list of at most one row.
+ * Its text is cut (reason, at most 8 risks and 10 fixes, each cut), so the prompt does not grow with the PR's review count.
+ */
+export function latestReview(db: DatabaseSync, repo: string, number: number, head: string): PostmergeReviewRow[] {
+  const all = reviewHistory(db, repo, number);
+  const r = [...all].reverse().find((x) => x.head === head) ?? all[all.length - 1];
+  if (!r) return [];
+  const cut = (s: unknown, n: number) => (typeof s === "string" ? s.slice(0, n) : "");
+  return [{ ...r, reason: cut(r.reason, REVIEW_REASON_CHARS), risks: r.risks.slice(0, REVIEW_NOTES).map((x) => cut(x, REVIEW_NOTE_CHARS)),
+    fixes: r.fixes.slice(0, REVIEW_FIXES).map((f) => ({ file: cut(f?.file, 200), change: cut(f?.change, REVIEW_NOTE_CHARS) })) }];
+}
+
 /** Items closed within this long still count as related: a defect reported and closed recently is not reported again. */
 export const RELATED_CLOSED_DAYS = 30;
 

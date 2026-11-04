@@ -6,12 +6,13 @@ import { decidePr, queueEntry } from "../core/decide.ts";
 import { loadPrFacts } from "../core/facts.ts";
 import { isQueueState, QUEUE_STATES, type PrFacts, type QueueState } from "../core/plan.ts";
 import { mergeDecisionId, VERIFY_UNAVAILABLE } from "../core/rules.ts";
-import { findingsOf, premergeAt, type PremergeFinding } from "../premerge/store.ts";
+import { claimsOf, findingsOf, premergeAt, type PremergeFinding } from "../premerge/store.ts";
+import type { Claim } from "../review/opus-parse.ts";
 import type { Tier } from "../whitelist.ts";
 
 export { QUEUE_STATES, type QueueState };
 export {
-  RULE_LABELS, RULE_SIZES, RULE_TIERS, UNSURE_REASON, PREMERGE_DEFECT_REASON, PREMERGE_FAILED_REASON, VERIFY_OK, verifyOk, VERIFY_UNAVAILABLE, verifyAllows, ciAllows,
+  RULE_LABELS, RULE_SIZES, RULE_TIERS, UNSURE_REASON, PREMERGE_DEFECT_REASON, PREMERGE_UNSURE_REASON, PREMERGE_FAILED_REASON, VERIFY_OK, verifyOk, VERIFY_UNAVAILABLE, verifyAllows, ciAllows,
   MERGE_OPTIONS, mergeDecisionId, HEAD_FACT, OPEN_GROUP_SQL, PIPELINE_LOGIN_KEY,
 } from "../core/rules.ts";
 export { NO_CI_SAMPLE, repoHasNoCi } from "./no-ci.ts";
@@ -53,7 +54,7 @@ export type QueueEntry = {
   /** The PR is one AutoCraft opened to fix main CI (branch prefix MAIN_FIX_BRANCH_PREFIX); it merges alone, also while main is red. */
   mainFix?: boolean;
   /** The pre-merge review of the head, read for open PRs the rule would otherwise merge; null when not read (outside the rule, or an operator's Merge answer). fix: every defect has a fix and a fix-up may apply them; defect: a defect to decide on; failed: three tries failed; retry: a try failed, more are left. */
-  premerge: { state: "none" | "clean" | "fix" | "defect" | "unsure" | "failed" | "retry"; defects: PremergeFinding[]; minor: number; error: string | null } | null;
+  premerge: { state: "none" | "clean" | "fix" | "defect" | "unsure" | "failed" | "retry"; defects: PremergeFinding[]; /** Claims of the description the review could not settle (unknown impact, or unverified). */ unknownClaims: Claim[]; minor: number; error: string | null } | null;
 };
 
 /** True when the PR may be merged now (ready, approved, or retried after a refusal). */
@@ -84,7 +85,7 @@ function entryOf(db: DatabaseSync, f: PrFacts, plan: ReturnType<typeof decidePr>
     const row = premergeAt(db, f.repo, f.number, r.head);
     const all = findingsOf(row);
     const defects = all.filter((d) => d.severity === "defect");
-    premerge = { state: x.premerge, defects, minor: all.length - defects.length, error: row?.error ?? null };
+    premerge = { state: x.premerge, defects, unknownClaims: claimsOf(row).filter((c) => c.impact === "unknown"), minor: all.length - defects.length, error: row?.error ?? null };
   }
   return {
     repo: f.repo, number: f.number, title, author: f.author, tier: f.tier, head: r.head, size: f.size, label: f.label,

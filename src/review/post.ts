@@ -14,7 +14,7 @@ import { isQueueState } from "../core/plan.ts";
 import { CLI_BY, type By } from "../core/gates.ts";
 import { Client, type Querier } from "../mirror.ts";
 import { prInfo } from "../merge/index.ts";
-import { parseClaims, parsePublic } from "./opus-parse.ts";
+import { parsePublic, storedClaims } from "./opus-parse.ts";
 import { reviewBody, recommendation } from "./post-template.ts";
 import { jobItem } from "../runner/job-items.ts";
 
@@ -60,7 +60,7 @@ export function postCandidates(db: DatabaseSync, repo: string): PostCandidate[] 
     out.push({
       repo, number: f.number, head_oid: head, editId, opusAt: o.at, model: o.model,
       body: reviewBody({
-        verdict: o.verdict, sure: o.sure !== 0, summary: pub.summary, points: pub.points, claims: parseClaims(safeJson(o.claims ?? "[]")) ?? [], head,
+        verdict: o.verdict, sure: o.sure !== 0, summary: pub.summary, points: pub.points, claims: storedClaims(safeJson(o.claims ?? "[]")), head,
         recommendation: recommendation({ verdict: o.verdict, queue: o.verdict === "take" && isQueueState(plan.state) ? { path: plan.path, state: plan.state } : null, mergeApproved: f.repoFacts.mergeApproved, canPush: f.repoFacts.pushApproved && f.pushable }),
       }),
     });

@@ -65,6 +65,8 @@ const ADDED_COLUMNS: [table: string, column: string, type: string][] = [
   ["premerge_reviews", "conflicts", "TEXT"],
   // 1 when a claim of the title or body was unverified (or not listed): a person decides before the rule merges.
   ["premerge_reviews", "unsure", "INTEGER"],
+  // JSON Claim[]: the claims of the title and body as the pre-merge review checked them; the Merge? question names the unknown ones.
+  ["premerge_reviews", "claims", "TEXT"],
   // JSON [{claim, status, evidence}]: the behavioural claims of the title and body, each checked against the code.
   ["opus_reviews", "claims", "TEXT"],
   ["opus_review_history", "claims", "TEXT"],

@@ -4,6 +4,8 @@ import { VERDICTS, type DiscussionEntry, type ReviewVerdict } from "./parse.ts";
 import { firstSentence, oneSentence, proseField, SUMMARY_MAX_WORDS, WHY_MAX_WORDS, wordCount } from "../prose.ts";
 import type { PostmergeReviewRow, RelatedItem } from "../postmerge/parse.ts";
 import type { LintProblem } from "../replylint.ts";
+import { safePath } from "../fixup/patch.ts";
+import { REPO_PATH } from "../sandbox/command.ts";
 
 export type EarlierOpus = { head: string; verdict: string; sure: boolean; reason: string; fixes: { file: string; change: string }[] };
 
@@ -100,33 +102,63 @@ export type Claim = { claim: string; status: ClaimStatus; evidence: string; impa
 export const MAX_CLAIMS = 12;
 export const CLAIM_CHARS = 300;
 export const CLAIM_EVIDENCE_CHARS = 600;
-const FILE_LINE = /[\w./-]+\.\w+:\d+/;
-const squashText = (s: string) => s.replace(/\s+/g, " ").trim();
+/**
+ * A claim's evidence names code as `path:line`. The path is repo-relative with a directory or has a known source extension, and
+ * does not follow a scheme or a `/` ("v2.0:1" and URLs do not count). Groups: path, line.
+ */
+export const EVIDENCE_AT = /(?<![\w./:-])((?:[\w.-]+\/)+[\w.-]+\.\w+|[\w-]+\.(?:ts|tsx|js|jsx|mjs|cjs|rs|py|go|java|kt|swift|c|h|cpp|cs|rb|php|sql|json|toml|ya?ml|md|css|html|sh)):(\d+)/;
+const SANDBOX_PREFIX = new RegExp(`(^|[^\\w./-])${REPO_PATH}/`, "g");
+/** The model reads the repository at the sandbox path; the posted text names repo-relative paths. */
+export const stripSandboxPath = (s: string): string => s.replace(SANDBOX_PREFIX, "$1");
+/** One line of plain text for a posted claim: no mentions, no raw HTML tags. */
+const squashText = (s: string) => s.replace(/(^|[^A-Za-z0-9_])@(?=[A-Za-z0-9_])/g, "$1").replace(/<\/?[A-Za-z][^>]*>/g, "").replace(/\s+/g, " ").trim();
+/** What a posted claim says in place of a text that mentions the reference documentation. */
+export const NEUTRAL_CLAIM = "a claim of the description";
+export const NEUTRAL_EVIDENCE = "withheld";
+
+export type ParsedClaims = {
+  claims: Claim[];
+  /** The position of each claim in the reply's array. */
+  indexes: number[];
+  /** Entries that are not a claim (no text, unknown status, not an object) and entries past MAX_CLAIMS: the claims list was not fully read. */
+  rejected: number;
+};
 
 /**
- * The `claims` of a reply, or null when it is not an array. An entry needs a claim and a status; one that mentions the
- * reference documentation or is in `drop` is left out. Every claim needs file:line evidence: without it a "verified" counts as
- * unverified and any impact is "unknown", so a claim is only settled when the model points at code. A contradicted or unverified claim carries the model's `impact`
- * judgment; a missing or invalid one is "unknown".
+ * The `claims` of a reply, or null when it is not an array. Every valid entry is returned, so each one reaches the verdict:
+ * it needs a claim and a status. Entries that are not valid, and those past MAX_CLAIMS, are counted in `rejected`.
+ * Every claim needs file:line evidence: without it a "verified" counts as unverified and any impact is "unknown", so a claim is
+ * only settled when the model points at code. A contradicted or unverified claim carries the model's `impact` judgment; a missing
+ * or invalid one is "unknown". Status and impact are judged on the evidence as written; the returned texts are the ones that
+ * are stored and posted: a text that mentions the reference documentation or is in `drop` is replaced by a neutral line
+ * (`keep`: leave them, for the lint). Evidence and fix files are repo-relative; a fix with an unsafe path is dropped.
  */
-export function parseClaims(v: unknown, drop: ReadonlySet<string> = new Set()): Claim[] | null {
+export function parseClaims(v: unknown, drop: ReadonlySet<string> = new Set(), keep = false): ParsedClaims | null {
   if (!Array.isArray(v)) return null;
-  const out: Claim[] = [];
-  for (const x of v.slice(0, MAX_CLAIMS)) {
+  const out: ParsedClaims = { claims: [], indexes: [], rejected: Math.max(0, v.length - MAX_CLAIMS) };
+  v.slice(0, MAX_CLAIMS).forEach((x, index) => {
     const o = x as Record<string, unknown> | null;
-    if (!o || typeof o !== "object" || typeof o.claim !== "string") continue;
-    const claim = squashText(o.claim).slice(0, CLAIM_CHARS), evidence = typeof o.evidence === "string" ? squashText(o.evidence).slice(0, CLAIM_EVIDENCE_CHARS) : "";
-    if (!claim || (o.status !== "verified" && o.status !== "contradicted" && o.status !== "unverified")) continue;
-    if (REFERENCE_LEAK.test(claim) || REFERENCE_LEAK.test(evidence) || drop.has(claim) || drop.has(evidence)) continue;
-    const status: ClaimStatus = o.status === "verified" && !FILE_LINE.test(evidence) ? "unverified" : o.status;
+    const text = o && typeof o === "object" && typeof o.claim === "string" ? squashText(o.claim).slice(0, CLAIM_CHARS) : "";
+    if (!o || !text || (o.status !== "verified" && o.status !== "contradicted" && o.status !== "unverified")) { out.rejected++; return; }
+    const proof = typeof o.evidence === "string" ? squashText(stripSandboxPath(o.evidence)).slice(0, CLAIM_EVIDENCE_CHARS) : "";
+    const claim = !keep && (REFERENCE_LEAK.test(text) || drop.has(text)) ? NEUTRAL_CLAIM : text;
+    const evidence = !keep && (REFERENCE_LEAK.test(proof) || drop.has(proof)) ? NEUTRAL_EVIDENCE : proof;
+    const status: ClaimStatus = o.status === "verified" && !EVIDENCE_AT.test(proof) ? "unverified" : o.status;
     const f = o.fix as { file?: unknown; change?: unknown } | null | undefined;
-    const fix = f && typeof f === "object" && typeof f.file === "string" && typeof f.change === "string" && f.file.trim() && f.change.trim() && !REFERENCE_LEAK.test(f.file + f.change)
-      ? { file: f.file.trim().slice(0, 200), change: f.change.trim().slice(0, 800) } : undefined;
-    if (status === "verified") { out.push({ claim, status, evidence }); continue; }
-    const impact: ClaimImpact = FILE_LINE.test(evidence) && (o.impact === "code-wrong" || o.impact === "description-only") ? o.impact : "unknown";
-    out.push(fix && impact === "code-wrong" ? { claim, status, evidence, impact, fix } : { claim, status, evidence, impact });
-  }
+    const file = f && typeof f === "object" && typeof f.file === "string" ? stripSandboxPath(f.file.trim()) : "";
+    const fix = f && typeof f === "object" && typeof f.change === "string" && f.change.trim() && safePath(file) && !REFERENCE_LEAK.test(file + f.change)
+      ? { file: file.slice(0, 200), change: f.change.trim().slice(0, 800) } : undefined;
+    out.indexes.push(index);
+    if (status === "verified") { out.claims.push({ claim, status, evidence }); return; }
+    const impact: ClaimImpact = EVIDENCE_AT.test(proof) && (o.impact === "code-wrong" || o.impact === "description-only") ? o.impact : "unknown";
+    out.claims.push(fix && impact === "code-wrong" ? { claim, status, evidence, impact, fix } : { claim, status, evidence, impact });
+  });
   return out;
+}
+
+/** The claims of a stored review: already checked and cleaned when stored, so only their shape is read again. */
+export function storedClaims(v: unknown): Claim[] {
+  return (Array.isArray(v) ? v : []).filter((c): c is Claim => !!c && typeof c === "object" && typeof c.claim === "string" && typeof c.evidence === "string" && typeof c.status === "string" && !REFERENCE_LEAK.test(c.claim + c.evidence));
 }
 
 export type PublicReview = { summary: string; points: string[] };
@@ -186,20 +218,22 @@ export function parseOpusReply(text: string, ref: string, last = true, drop: Rea
   const risks = Array.isArray(r.risks) ? r.risks.filter((x): x is string => typeof x === "string").slice(0, 8).map((x) => x.slice(0, 300)) : [];
   const summary = proseField(r.summary, SUMMARY_MAX_WORDS, last), why = proseField(r.why, WHY_MAX_WORDS, last);
   if (!summary.ok || !why.ok) return null;
-  const claims = parseClaims(r.claims, drop), listed = claims ?? [];
-  const bad = listed.filter((c) => c.impact === "code-wrong"), unproven = claims === null ? !!body.trim() : listed.some((c) => c.impact === "unknown");
+  const parsed = parseClaims(r.claims, drop, keepLeaky), listed = parsed?.claims ?? [];
+  // Every valid claim reaches the verdict; only the texts stored and posted are cleaned. A list that was not fully read leaves the review unsure.
+  const bad = listed.filter((c) => c.impact === "code-wrong"), unknownClaim = listed.find((c) => c.impact === "unknown");
+  const unproven = parsed === null ? !!body.trim() : parsed.rejected > 0 || !!unknownClaim;
   let outVerdict = verdict as ReviewVerdict, outFixes = verdict === "take-fix" ? fixes : [], outReason = r.reason, sure = r.sure;
   const notes: string[] = [];
   if (bad.length && (outVerdict === "take" || outVerdict === "take-fix")) {
     const withFix = bad.filter((c) => c.fix);
-    if (withFix.length === bad.length) { outVerdict = "take-fix"; outFixes = [...outFixes, ...withFix.map((c) => c.fix!)].slice(0, OPUS_MAX_FIXES); }
+    if (withFix.length === bad.length) { outVerdict = "take-fix"; outFixes = [...withFix.map((c) => c.fix!), ...outFixes].slice(0, OPUS_MAX_FIXES); }
     else { outVerdict = "hold"; outFixes = []; }
     outReason = `Claim shows wrong code: ${bad[0]!.claim} ${r.reason}`;
     notes.push(...bad.map((c) => `claim ${c.status}, code wrong: ${c.claim}: ${c.evidence}`.slice(0, 300)));
   }
   if (unproven && (outVerdict === "take" || outVerdict === "take-fix")) {
     sure = false;
-    notes.push(claims === null ? "the PR description's claims were not checked" : `claim ${listed.find((c) => c.impact === "unknown")!.status}, impact unknown: ${listed.find((c) => c.impact === "unknown")!.claim}`.slice(0, 300));
+    notes.push(parsed === null ? "the PR description's claims were not checked" : unknownClaim ? `claim ${unknownClaim.status}, impact unknown: ${unknownClaim.claim}`.slice(0, 300) : `${parsed.rejected} entries of the claims list were not read`);
   }
   return { ref, verdict: outVerdict, sure, reason: words(outReason, OPUS_REASON_WORDS), fixes: outFixes, risks: [...risks, ...notes], summary: summary.text, why: oneSentence(why.text), public: parsePublic(r.public, drop), conflicts: parseStatementConflicts(r.conflicts, known), claims: listed };
 }
@@ -254,13 +288,14 @@ export function lintOpusReply(text: string, ref: string, unapplied: readonly Una
 export function publicTexts(text: string): { field: string; text: string }[] {
   const r = replyObject(text) as { public?: { summary?: unknown; points?: unknown }; claims?: unknown } | null;
   // Claims are posted with the review, so they get the same reference checks.
-  const claimTexts = (parseClaims(r?.claims) ?? []).flatMap((c, i) => [{ field: `claims[${i}].claim`, text: c.claim }, ...(c.evidence ? [{ field: `claims[${i}].evidence`, text: c.evidence }] : [])]);
+  const pc = parseClaims(r?.claims, new Set(), true);
+  const claimTexts = (pc?.claims ?? []).flatMap((c, k) => { const i = pc!.indexes[k]!; return [{ field: `claims[${i}].claim`, text: c.claim }, ...(c.evidence ? [{ field: `claims[${i}].evidence`, text: c.evidence }] : [])]; });
   const p = r?.public;
   if (!p || typeof p !== "object") return claimTexts;
   return [
     ...(typeof p.summary === "string" && p.summary.trim() ? [{ field: "public.summary", text: p.summary }] : []),
-    // Only the points parsePublic keeps (the first OPUS_PUBLIC_POINTS non-empty ones), so a long list makes no extra checks.
     ...claimTexts,
+    // Only the points parsePublic keeps (the first OPUS_PUBLIC_POINTS non-empty ones), so a long list makes no extra checks.
     ...(Array.isArray(p.points) ? p.points.flatMap((x, i) => (typeof x === "string" && x.trim() ? [{ field: `public.points[${i}]`, text: x }] : [])).slice(0, OPUS_PUBLIC_POINTS) : []),
   ];
 }

@@ -12,7 +12,7 @@ import { checksOf, refreshChecks } from "./checks.ts";
 import { MAX_RERUNS_PER_DAY, countRerun, discussionOf, ensurePipelineLogin, liveDiscussion, markedStaleSince, staleReviews, withRetry, type Snapshot } from "./discussion.ts";
 import { withdrawMergeQuestion } from "../merge/withdraw.ts";
 import { headWasUnsure, mergeDecisionId } from "../merge/queue.ts";
-import { relatedOpen, reviewHistory } from "../postmerge/related.ts";
+import { relatedOpen, latestReview } from "../postmerge/related.ts";
 import { HISTORY_COPY_SQL } from "../db.ts";
 import type { DiscussionEntry } from "./parse.ts";
 import { cachedDiff, codeDiff, ghDelta, ghDiff, type DeltaFetcher, type DiffFetcher } from "./diff.ts";
@@ -140,7 +140,7 @@ export async function prepareOpusInput(db: DatabaseSync, repo: string, c: OpusCa
       ref: refOf(c), title: c.title, body: c.body, author_association: c.author_association, size: c.size, lines_changed: c.lines_changed,
       ci: ch?.overall ?? "unknown", mergeable: ch?.mergeable ?? null, files: cd.files, tests_omitted: cd.testsOmitted, lockfiles_omitted: cd.lockfilesOmitted,
       mode: "full", earlier_opus: null, diff: cd.text,
-      related_open: relatedOpen(db, repo, c.number, cd.files), review_history: reviewHistory(db, repo, c.number),
+      related_open: relatedOpen(db, repo, c.number, cd.files), review_history: latestReview(db, repo, c.number, c.head_oid),
     };
     return { kind: "ready", input: { ...input, statements: relatedStatements(db, repo, c.number) }, snap: { seen: now(), hash: null }, mode: "full", base: null };
   }
