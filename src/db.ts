@@ -63,6 +63,8 @@ const ADDED_COLUMNS: [table: string, column: string, type: string][] = [
   // JSON [{id, reason}]: the owner statements (owner_statements) the PR goes against, as the review named them.
   ["opus_reviews", "conflicts", "TEXT"],
   ["premerge_reviews", "conflicts", "TEXT"],
+  // 1 when a claim of the title or body was unverified (or not listed): a person decides before the rule merges.
+  ["premerge_reviews", "unsure", "INTEGER"],
   // JSON [{claim, status, evidence}]: the behavioural claims of the title and body, each checked against the code.
   ["opus_reviews", "claims", "TEXT"],
   ["opus_review_history", "claims", "TEXT"],

@@ -10,20 +10,23 @@ const reply = (findings: unknown[], ref = REF) => JSON.stringify({ ref, findings
 
 describe("premerge claims", () => {
   const withClaims = (claims?: unknown[]) => JSON.stringify({ ref: REF, findings: [], searched: "x", ...(claims ? { claims } : {}) });
-  const claim = (status: string, evidence = "src/a.rs:10 lacks the check") => ({ claim: "drop matches Place", status, evidence });
+  const claim = (impact: string | undefined, status = "contradicted") => ({ claim: "drop matches Place", status, evidence: "src/a.rs:10 lacks the check", impact });
+  const parse = (claims?: unknown[]) => parsePremerge(withClaims(claims), REF, new Set(), [], "body")!;
 
-  test("a contradicted or unverified claim is a defect; a verified one and an empty list are not", () => {
-    const bad = parsePremerge(withClaims([claim("contradicted")]), REF, new Set(), [], "body")!.findings;
-    assert.equal(bad.length, 1);
-    assert.deepEqual([bad[0]!.severity, bad[0]!.file, bad[0]!.line], ["defect", "src/a.rs", 10]);
-    assert.equal(parsePremerge(withClaims([claim("unverified", "")]), REF, new Set(), [], "body")!.findings[0]!.severity, "defect");
-    assert.deepEqual(parsePremerge(withClaims([claim("verified")]), REF, new Set(), [], "body")!.findings, []);
-    assert.deepEqual(parsePremerge(withClaims([]), REF, new Set(), [], "body")!.findings, []);
+  test("a code-wrong claim is a defect; description-only is nothing; unknown is unsure, not a defect", () => {
+    const bad = parse([claim("code-wrong")]);
+    assert.deepEqual([bad.findings.length, bad.findings[0]!.severity, bad.findings[0]!.file, bad.findings[0]!.line, bad.unsure], [1, "defect", "src/a.rs", 10, false]);
+    const stale = parse([claim("description-only")]);
+    assert.deepEqual([stale.findings, stale.unsure], [[], false]);
+    const unknown = parse([claim("unknown", "unverified")]);
+    assert.deepEqual([unknown.findings, unknown.unsure], [[], true]);
+    assert.equal(parse([{ claim: "x", status: "verified", evidence: "src/a.rs:1 ok" }]).unsure, false);
+    assert.equal(parse([]).unsure, false);
   });
 
-  test("missing claims with a description is a defect and a lint problem", () => {
-    assert.equal(parsePremerge(withClaims(), REF, new Set(), [], "body")!.findings.length, 1);
-    assert.deepEqual(parsePremerge(withClaims(), REF)!.findings, []);
+  test("missing claims with a description is unsure and a lint problem", () => {
+    assert.deepEqual([parse().findings, parse().unsure], [[], true]);
+    assert.equal(parsePremerge(withClaims(), REF)!.unsure, false);
     assert.equal(lintPremerge(withClaims(), REF, "body")!.some((p) => p.field === "claims"), true);
   });
 });

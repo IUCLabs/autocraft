@@ -88,7 +88,9 @@ export type OpusReview = {
 };
 
 export type ClaimStatus = "verified" | "contradicted" | "unverified";
-export type Claim = { claim: string; status: ClaimStatus; evidence: string; fix?: { file: string; change: string } };
+/** What a contradicted or unverified claim means for the merge: the code is wrong, only the description is stale, or the model cannot tell. */
+export type ClaimImpact = "code-wrong" | "description-only" | "unknown";
+export type Claim = { claim: string; status: ClaimStatus; evidence: string; impact?: ClaimImpact; fix?: { file: string; change: string } };
 
 export const MAX_CLAIMS = 12;
 export const CLAIM_CHARS = 300;
@@ -98,8 +100,9 @@ const squashText = (s: string) => s.replace(/\s+/g, " ").trim();
 
 /**
  * The `claims` of a reply, or null when it is not an array. An entry needs a claim and a status; one that mentions the
- * reference documentation or is in `drop` is left out. A "verified" without file:line evidence counts as unverified, so
- * a claim is only verified when the model points at code.
+ * reference documentation or is in `drop` is left out. Every claim needs file:line evidence: without it a "verified" counts as
+ * unverified and any impact is "unknown", so a claim is only settled when the model points at code. A contradicted or unverified claim carries the model's `impact`
+ * judgment; a missing or invalid one is "unknown".
  */
 export function parseClaims(v: unknown, drop: ReadonlySet<string> = new Set()): Claim[] | null {
   if (!Array.isArray(v)) return null;
@@ -114,7 +117,9 @@ export function parseClaims(v: unknown, drop: ReadonlySet<string> = new Set()): 
     const f = o.fix as { file?: unknown; change?: unknown } | null | undefined;
     const fix = f && typeof f === "object" && typeof f.file === "string" && typeof f.change === "string" && f.file.trim() && f.change.trim() && !REFERENCE_LEAK.test(f.file + f.change)
       ? { file: f.file.trim().slice(0, 200), change: f.change.trim().slice(0, 800) } : undefined;
-    out.push(fix && status === "contradicted" ? { claim, status, evidence, fix } : { claim, status, evidence });
+    if (status === "verified") { out.push({ claim, status, evidence }); continue; }
+    const impact: ClaimImpact = FILE_LINE.test(evidence) && (o.impact === "code-wrong" || o.impact === "description-only") ? o.impact : "unknown";
+    out.push(fix && impact === "code-wrong" ? { claim, status, evidence, impact, fix } : { claim, status, evidence, impact });
   }
   return out;
 }
@@ -156,8 +161,9 @@ function replyObject(text: string): unknown {
  * The one review for `ref` in a reply, or null. The text from the first "{" to the
  * last "}" is parsed (a one-element array is read too); take-fix needs at least one fix.
  * A summary or why over its word cap fails the reply unless `last`, which keeps its first sentence.
- * Claims rule: a contradicted claim means the PR is not a take: take-fix when every contradicted claim names a fix, hold otherwise.
- * An unverified claim, or no `claims` list for a PR with a body (`body`), makes a take or take-fix unsure.
+ * Claims rule: the code is what merges, not the description. A claim with impact "code-wrong" means the PR is not a take:
+ * take-fix when every such claim names a fix, hold otherwise. "description-only" changes nothing. An "unknown" impact, or no
+ * `claims` list for a PR with a body (`body`), makes a take or take-fix unsure.
  * `drop`: see parsePublic. `keepLeaky`: keep fixes that mention the reference (the lint checks validity this way, so the fix turn can handle them; the stored review always drops them).
  */
 export function parseOpusReply(text: string, ref: string, last = true, drop: ReadonlySet<string> = new Set(), keepLeaky = false, known: readonly OwnerStatement[] = [], body = ""): OpusReview | null {
@@ -176,19 +182,19 @@ export function parseOpusReply(text: string, ref: string, last = true, drop: Rea
   const summary = proseField(r.summary, SUMMARY_MAX_WORDS, last), why = proseField(r.why, WHY_MAX_WORDS, last);
   if (!summary.ok || !why.ok) return null;
   const claims = parseClaims(r.claims, drop), listed = claims ?? [];
-  const bad = listed.filter((c) => c.status === "contradicted"), unproven = claims === null ? !!body.trim() : listed.some((c) => c.status === "unverified");
+  const bad = listed.filter((c) => c.impact === "code-wrong"), unproven = claims === null ? !!body.trim() : listed.some((c) => c.impact === "unknown");
   let outVerdict = verdict as ReviewVerdict, outFixes = verdict === "take-fix" ? fixes : [], outReason = r.reason, sure = r.sure;
   const notes: string[] = [];
   if (bad.length && (outVerdict === "take" || outVerdict === "take-fix")) {
     const withFix = bad.filter((c) => c.fix);
     if (withFix.length === bad.length) { outVerdict = "take-fix"; outFixes = [...outFixes, ...withFix.map((c) => c.fix!)].slice(0, OPUS_MAX_FIXES); }
     else { outVerdict = "hold"; outFixes = []; }
-    outReason = `Contradicted claim: ${bad[0]!.claim} ${r.reason}`;
-    notes.push(...bad.map((c) => `claim contradicted: ${c.claim}: ${c.evidence}`.slice(0, 300)));
+    outReason = `Claim shows wrong code: ${bad[0]!.claim} ${r.reason}`;
+    notes.push(...bad.map((c) => `claim ${c.status}, code wrong: ${c.claim}: ${c.evidence}`.slice(0, 300)));
   }
   if (unproven && (outVerdict === "take" || outVerdict === "take-fix")) {
     sure = false;
-    notes.push(claims === null ? "the PR description's claims were not checked" : `claim not verified: ${listed.find((c) => c.status === "unverified")!.claim}`.slice(0, 300));
+    notes.push(claims === null ? "the PR description's claims were not checked" : `claim ${listed.find((c) => c.impact === "unknown")!.status}, impact unknown: ${listed.find((c) => c.impact === "unknown")!.claim}`.slice(0, 300));
   }
   return { ref, verdict: outVerdict, sure, reason: words(outReason, OPUS_REASON_WORDS), fixes: outFixes, risks: [...risks, ...notes], summary: summary.text, why: oneSentence(why.text), public: parsePublic(r.public, drop), conflicts: parseStatementConflicts(r.conflicts, known), claims: listed };
 }

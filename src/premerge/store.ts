@@ -20,6 +20,8 @@ export type PremergeRow = {
   searched: string | null;
   /** JSON StatementConflict[]; null when none. */
   conflicts: string | null;
+  /** 1 when the review left a claim unverified. */
+  unsure: number | null;
   /** Why the last try stored no review; null once a review is stored. */
   error: string | null;
   tries: number;
@@ -33,6 +35,7 @@ export type PremergeSave = {
   searched?: string | null;
   /** The statements the review named as conflicts (a stored review only). */
   conflicts?: StatementConflict[];
+  unsure?: boolean;
   error?: string | null;
   /** The failure is final: no more tries (the head cannot be reviewed at all). */
   final?: boolean;
@@ -42,9 +45,9 @@ export type PremergeSave = {
 export function savePremerge(db: DatabaseSync, s: PremergeSave): void {
   const args = [s.repo, s.number, s.head, s.at, s.runId ?? null, s.model ?? null] as const;
   if (s.findings) {
-    db.prepare(`INSERT INTO premerge_reviews (repo, number, head_oid, at, run_id, model, findings, searched, conflicts, error, tries) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 0)
+    db.prepare(`INSERT INTO premerge_reviews (repo, number, head_oid, at, run_id, model, findings, searched, conflicts, unsure, error, tries) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 0)
       ON CONFLICT (repo, number, head_oid) DO UPDATE SET at = excluded.at, run_id = excluded.run_id, model = excluded.model,
-        findings = excluded.findings, searched = excluded.searched, conflicts = excluded.conflicts, error = NULL`).run(...args, JSON.stringify(s.findings), s.searched ?? null, s.conflicts?.length ? JSON.stringify(s.conflicts) : null);
+        findings = excluded.findings, searched = excluded.searched, conflicts = excluded.conflicts, unsure = excluded.unsure, error = NULL`).run(...args, JSON.stringify(s.findings), s.searched ?? null, s.conflicts?.length ? JSON.stringify(s.conflicts) : null, s.unsure ? 1 : 0);
     return;
   }
   db.prepare(`INSERT INTO premerge_reviews (repo, number, head_oid, at, run_id, model, error, tries) VALUES (?, ?, ?, ?, ?, ?, ?, ?)

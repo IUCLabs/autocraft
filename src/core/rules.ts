@@ -10,6 +10,7 @@ export const RULE_TIERS: Tier[] = ["whitelisted", "allow"];
 
 /** Why an unsure Opus take is asked about instead of merged by the rule. */
 export const UNSURE_REASON = "Opus was unsure";
+export const PREMERGE_UNSURE_REASON = "the pre-merge review could not verify a claim of the description";
 export const PREMERGE_DEFECT_REASON = "the pre-merge review found a defect";
 export const PREMERGE_FAILED_REASON = "the pre-merge review failed";
 

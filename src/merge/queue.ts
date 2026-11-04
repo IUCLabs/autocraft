@@ -53,7 +53,7 @@ export type QueueEntry = {
   /** The PR is one AutoCraft opened to fix main CI (branch prefix MAIN_FIX_BRANCH_PREFIX); it merges alone, also while main is red. */
   mainFix?: boolean;
   /** The pre-merge review of the head, read for open PRs the rule would otherwise merge; null when not read (outside the rule, or an operator's Merge answer). fix: every defect has a fix and a fix-up may apply them; defect: a defect to decide on; failed: three tries failed; retry: a try failed, more are left. */
-  premerge: { state: "none" | "clean" | "fix" | "defect" | "failed" | "retry"; defects: PremergeFinding[]; minor: number; error: string | null } | null;
+  premerge: { state: "none" | "clean" | "fix" | "defect" | "unsure" | "failed" | "retry"; defects: PremergeFinding[]; minor: number; error: string | null } | null;
 };
 
 /** True when the PR may be merged now (ready, approved, or retried after a refusal). */

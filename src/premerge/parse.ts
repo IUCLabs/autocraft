@@ -12,7 +12,7 @@ export const PREMERGE_FILE_CHARS = 300;
 export const PREMERGE_FIX_CHARS = 800;
 export const PREMERGE_SEARCHED_CHARS = 400;
 
-export type PremergeReview = { findings: PremergeFinding[]; searched: string | null; conflicts: StatementConflict[] };
+export type PremergeReview = { findings: PremergeFinding[]; searched: string | null; conflicts: StatementConflict[]; /** A claim is unverified or the claims list is missing: a person decides, no fix-up. */ unsure: boolean };
 
 const clean = (s: string) => s.replace(/\s+/g, " ").trim();
 
@@ -53,19 +53,14 @@ function entries(text: string, ref: string): { entries: Entry[]; searched: strin
 
 const FILE_LINE = /([\w./-]+\.\w+):(\d+)/;
 
-/** The defects that claims make: contradicted and unverified ones, or one for a missing list when the PR has a body. */
-function claimFindings(claims: ReturnType<typeof parseClaims>, body: string): PremergeFinding[] {
-  if (claims === null) {
-    if (!body.trim()) return [];
-    return [{ severity: "defect", file: "(description)", line: 0, title: "The description's claims were not checked", scenario: "The review did not list the behavioural claims of the title and description with their status, so none was checked against the code." }];
-  }
-  return claims.filter((c) => c.status !== "verified").map((c) => {
+/** The defects that claims make: the ones whose code is wrong. */
+function claimFindings(claims: ReturnType<typeof parseClaims>): PremergeFinding[] {
+  return (claims ?? []).filter((c) => c.impact === "code-wrong").map((c) => {
     const at = FILE_LINE.exec(c.evidence);
-    const bad = c.status === "contradicted";
     return {
       severity: "defect" as const, file: at?.[1] ?? "(description)", line: at ? Number(at[2]) : 0,
-      title: `${bad ? "Claim contradicted" : "Claim not verified"}: ${c.claim}`.slice(0, PREMERGE_TITLE_CHARS),
-      scenario: `${bad ? "The code contradicts" : "The code does not show"} the claim "${c.claim}". ${c.evidence}`.slice(0, PREMERGE_SCENARIO_CHARS),
+      title: `Claim shows wrong code: ${c.claim}`.slice(0, PREMERGE_TITLE_CHARS),
+      scenario: `The claim "${c.claim}" is ${c.status} and the code is wrong. ${c.evidence}`.slice(0, PREMERGE_SCENARIO_CHARS),
     };
   });
 }
@@ -77,8 +72,8 @@ const leaks = (...s: string[]) => s.some((x) => REFERENCE_LEAK.test(x));
  * valid. An entry without a valid severity, file, line, title or scenario is dropped, and so is one whose title or scenario
  * mentions the reference documentation or is in `drop`; a fix with a leak, an unsafe path or past the fix cap is dropped
  * from its finding. `drop`: texts the reply lint still flagged after the fix turn.
- * Claims: a contradicted or unverified claim of the title or body is a defect finding of its own (a person decides, as for
- * any defect without a fix); so is a missing `claims` list when `body` is not empty.
+ * Claims: a claim of the title or body with impact "code-wrong" is a defect finding of its own. An "unknown" impact, or a missing
+ * `claims` list when `body` is not empty, is no finding: it sets `unsure`, which sends the PR to a person. "description-only" is shown only.
  */
 export function parsePremerge(text: string, ref: string, drop: ReadonlySet<string> = new Set(), known: readonly OwnerStatement[] = [], body = ""): PremergeReview | null {
   const r = entries(text, ref);
@@ -91,7 +86,9 @@ export function parsePremerge(text: string, ref: string, drop: ReadonlySet<strin
     findings.push(fixOk ? { ...rest, fix } : rest);
   }
   // A dropped fix does not free its place under the cap: the cap counts the fixes the model offered.
-  return { findings: [...claimFindings(parseClaims((replyObject(text) ?? {}).claims, drop), body), ...findings].slice(0, PREMERGE_MAX_FINDINGS), searched: r.searched, conflicts: parseStatementConflicts(r.conflicts, known) };
+  const claims = parseClaims((replyObject(text) ?? {}).claims, drop);
+  const unsure = claims === null ? !!body.trim() : claims.some((c) => c.impact === "unknown");
+  return { unsure, findings: [...claimFindings(claims), ...findings].slice(0, PREMERGE_MAX_FINDINGS), searched: r.searched, conflicts: parseStatementConflicts(r.conflicts, known) };
 }
 
 /** The reference mentions in a valid reply that the model can fix itself; null when the reply is not valid. */

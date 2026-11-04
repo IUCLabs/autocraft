@@ -107,7 +107,7 @@ export async function runPremerge(db: DatabaseSync, params: PremergeParams, log:
         jobItem(db, repo, e.number, "the head moved during the review; not stored", log);
         s.moved.push(ref);
       } else if (got) {
-        savePremerge(db, { repo, number: e.number, head, at: now(), runId, model: deps.model, findings: got.findings, searched: got.searched, conflicts: got.conflicts });
+        savePremerge(db, { repo, number: e.number, head, at: now(), runId, model: deps.model, findings: got.findings, searched: got.searched, conflicts: got.conflicts, unsure: got.unsure });
         jobItem(db, repo, e.number, `pre-merge review: ${got.findings.length} findings`, log);
         s.reviewed++; s.findings += got.findings.length; s.defects += got.findings.filter((f) => f.severity === "defect").length;
       } else fail("retry: no valid reply from the model");

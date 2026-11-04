@@ -1,7 +1,7 @@
 // decidePr: the review-to-merge rules for one open PR, in one place. Pure: no database, no clock (facts carry `now`).
 // The merge queue's rules (src/merge/queue.ts buildQueue, stateOf, eligible, toAsk) are ported rule by rule, in the same order and with the same reason wording.
 import {
-  BATCHABLE, MAIN_RED_HELD, PREMERGE_DEFECT_REASON, PREMERGE_FAILED_REASON, PREMERGE_MAX_TRIES, RETRY_AFTER_MS, REVIEW_LABELS, KEEP_IN_CORE,
+  BATCHABLE, MAIN_RED_HELD, PREMERGE_DEFECT_REASON, PREMERGE_UNSURE_REASON, PREMERGE_FAILED_REASON, PREMERGE_MAX_TRIES, RETRY_AFTER_MS, REVIEW_LABELS, KEEP_IN_CORE,
   RULE_LABELS, RULE_SIZES, RULE_TIERS, UNSURE_REASON, VERIFY_UNAVAILABLE, ciAllows, conflictNote, verifyAllows, verifyOk,
   FIXUP_MAX_ATTEMPTS, CIFIX_FINAL_STATES, CIFIX_MAX_PUSHES_PER_PR, CIFIX_MAX_TRIES, CIFIX_MAX_TRIES_PER_PR,
 } from "./rules.ts";
@@ -11,7 +11,7 @@ import type { Action, Plan, PlanState, PrFacts, QueueState } from "./plan.ts";
 /** The start of a statement for a reason line: one line, at most 80 characters. */
 const excerpt = (t: string): string => { const s = t.replace(/\s+/g, " ").trim(); return s.length > 80 ? `${s.slice(0, 79).trimEnd()}…` : s; };
 
-type PremergeState = "none" | "clean" | "fix" | "defect" | "failed" | "retry";
+type PremergeState = "none" | "clean" | "fix" | "defect" | "unsure" | "failed" | "retry";
 export type Entry = { state: QueueState; path: "rule" | "operator" | null; reasons: string[]; note: string | null; conflictNote: string | null; premerge: PremergeState | null; premergeDefects: number; answer: string | null; noCi: boolean; refusedReason: string | null };
 
 const verifyState = (f: PrFacts): QueueState | null => {
@@ -47,13 +47,14 @@ export function queueEntry(f: PrFacts, merged: boolean, open: boolean): Entry {
     defects = row?.defects ?? 0;
     if (!row) premerge = "none";
     else if (!row.hasFindings) premerge = row.tries >= PREMERGE_MAX_TRIES ? "failed" : "retry";
-    else if (!row.defects) premerge = "clean";
+    else if (!row.defects) premerge = row.unsure ? "unsure" : "clean";
     else {
       // A Merge? decision at this head (a Hold, say) is never replaced by a fix-up.
       const fixable = !f.decision.asked && row.defectsAllFixable && !f.premergeFixUsed && f.repoFacts.pushApproved && f.pushable;
       premerge = fixable ? "fix" : "defect";
     }
     if (premerge === "defect") reasons.push(PREMERGE_DEFECT_REASON);
+    else if (premerge === "unsure") reasons.push(PREMERGE_UNSURE_REASON);
     else if (premerge === "failed") reasons.push(PREMERGE_FAILED_REASON);
   }
   const e: Entry = { state: "needs-decision", path: null, reasons, note: null, conflictNote: null, premerge, premergeDefects: defects, answer, noCi, refusedReason: null };
