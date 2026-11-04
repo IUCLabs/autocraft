@@ -2,6 +2,7 @@ import { keepPreviousData, useInfiniteQuery, useQuery as useTanstackQuery } from
 import { createContext, useCallback, useContext } from "react";
 import { topicsFor } from "./topics";
 import type {
+  NextPage,
   ReleaseAction,
   DecisionKind,
   AccessOverview,
@@ -189,6 +190,8 @@ export interface Api {
   cost(run?: string): Promise<CostReport>;
   /** The merge queue: every PR with a take or take-fix review at its head, and what it waits on. */
   queue(filter: QueueFilter): Promise<QueueList>;
+  /** Per pipeline step, the items its next job takes, in order, and what each step waits on. */
+  next(): Promise<NextPage>;
   /** Every write the app made on GitHub, newest first. */
   githubActivity(filter: GithubActivityFilter): Promise<GithubActivityPage>;
   /** What waits on a person: counts for the tabs, feedback nobody answered yet (newest first, paged by cursor) and stopped stages. */

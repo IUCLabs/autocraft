@@ -1804,3 +1804,45 @@ export type NeedsStoppedRow = {
   resume: NeedsResume;
 };
 export type NeedsPage = { counts: NeedsCounts; feedback: NeedsFeedbackPage | null; stopped: NeedsStoppedRow[] };
+// ---- Next page -------------------------------------------------------------------
+
+export interface NextItem extends ItemRef, ItemShown {
+  /** The plan action that makes the item due, and its bucket. */
+  action: string;
+  bucket: string | null;
+  /** The item's next-step text from the planner. */
+  why: string;
+  fast: boolean;
+  rank: number | null;
+  inFlight: boolean;
+  /** The step's next job covers this item. */
+  next: boolean;
+  /** Why the guard would refuse the item's write, or null. */
+  blocked: string | null;
+}
+
+export interface NextStep {
+  lane: string;
+  title: string;
+  stage: string;
+  steps: string[];
+  canRun: boolean;
+  kind: "ok" | "running" | "off" | "breaker" | "limit" | "account" | "backoff" | "approval";
+  /** Why the step cannot run now, or null. */
+  why: string | null;
+  /** The planner's last reading of the step, when it holds back. */
+  note: string | null;
+  /** In the order the step takes them. */
+  items: NextItem[];
+}
+
+export interface NextWaiting extends ItemRef, ItemShown {
+  wait: string;
+  why: string | null;
+}
+
+export interface NextPage {
+  steps: NextStep[];
+  waiting: NextWaiting[];
+  waitingTotal: number;
+}
