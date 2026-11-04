@@ -76,7 +76,11 @@ const HITS_SCORED = `hits AS (
 
 const STATUSES: SettledStatus[] = ["settled", "waiting", "disagree", "unclassified"];
 const STATES: Record<string, string> = { open: "OPEN", closed: "CLOSED", merged: "MERGED" };
-const SORTS: ItemSort[] = ["relevance", "updated", "created", "number"];
+const SORTS: ItemSort[] = ["relevance", "updated", "created", "number", "merged"];
+const BY_US = "merged-by-us";
+// The newest merge AutoCraft made of the item (merges_item), else the time GitHub recorded for a batch member.
+const MERGED_AT = "COALESCE((SELECT MAX(m.at) FROM main.merges m WHERE m.repo = i.repo AND m.number = i.number AND m.outcome = 'merged'), i.merged_at)";
+const IN_MERGED_BATCH = "EXISTS (SELECT 1 FROM main.merge_batch_prs bp JOIN main.merge_batches bb ON bb.id = bp.batch_id WHERE bp.number = i.number AND bb.repo = i.repo AND bb.state = 'merged')";
 const FLAGS = ["security", "needs decision"];
 
 const list = (req: Req, key: string): string[] =>
@@ -108,8 +112,10 @@ function build(db: DatabaseSync, req: Req, hidden: string[]): Built & { sort: It
     params.kind = kind;
   }
   const state = q.get("state") ?? "open";
-  if (state !== "all") {
-    if (!STATES[state]) throw new HttpError(400, "state must be open, closed, merged or all");
+  if (state === BY_US) {
+    where.push(`i.kind = 'pr'`, `(EXISTS (SELECT 1 FROM main.merges m WHERE m.repo = i.repo AND m.number = i.number AND m.outcome = 'merged') OR ${IN_MERGED_BATCH})`);
+  } else if (state !== "all") {
+    if (!STATES[state]) throw new HttpError(400, "state must be open, closed, merged, merged-by-us or all");
     where.push("i.state = :state");
     params.state = STATES[state]!;
   }
@@ -156,20 +162,20 @@ function build(db: DatabaseSync, req: Req, hidden: string[]): Built & { sort: It
     statusWhere = `(${parts.join(" OR ")})`;
   }
   const sortQ = q.get("sort") as ItemSort | null;
-  if (sortQ && !SORTS.includes(sortQ)) throw new HttpError(400, "sort must be relevance, updated, created or number");
-  let sort: ItemSort = sortQ ?? (fts ? "relevance" : "updated");
+  if (sortQ && !SORTS.includes(sortQ)) throw new HttpError(400, "sort must be relevance, updated, created, number or merged");
+  let sort: ItemSort = sortQ ?? (fts ? "relevance" : state === BY_US ? "merged" : "updated");
   if (sort === "relevance" && !fts) sort = "updated";
   const desc = q.get("desc") !== "0";
   return { where, statusWhere, statuses: [...st] as SettledStatus[], params, text: !!fts, sort, desc, run };
 }
 
 const ORDER: Record<ItemSort, string> = {
-  relevance: "h.score", updated: "i.updated_at", created: "i.created_at", number: "i.number",
+  relevance: "h.score", updated: "i.updated_at", created: "i.created_at", number: "i.number", merged: MERGED_AT,
 };
 
 type Row = SettledRow & {
   rid: number; repo: string; number: number; kind: string; state: string; title: string | null; author: string | null;
-  created_at: string | null; updated_at: string | null; comments_count: number | null;
+  created_at: string | null; updated_at: string | null; comments_count: number | null; merged_by_us_at?: string | null;
 };
 
 const OPEN = "\u0002", CLOSE = "\u0003";
@@ -255,13 +261,14 @@ export async function listItems(db: DatabaseSync, req: Req): Promise<ItemList> {
     ` ORDER BY ${order}, i.repo, i.number DESC LIMIT :limit OFFSET :offset`).all({ ...b.params, limit, offset }) as { rid: number }[]).map((r) => r.rid);
   const byId = new Map((ids.length ? db.prepare(`SELECT i.rowid AS rid, i.repo, i.number, i.kind, i.state, i.title, i.author,
       i.created_at, i.updated_at, i.comments_count, s.status, s.label, s.source, s.top, s.jev_label, s.haiku_label, s.flags,
-      s.referee_label, s.referee_sure, s.referee_reason
+      s.referee_label, s.referee_sure, s.referee_reason, ${MERGED_AT} AS merged_by_us_at
     FROM items i LEFT JOIN temp.item_settled s ON s.repo = i.repo AND s.number = i.number WHERE i.rowid IN (${ids.map(() => "?").join(",")})`).all(...ids) as Row[] : [])
     .map((r) => [r.rid, r]));
   const rows = ids.map((id) => byId.get(id)).filter((r): r is Row => !!r);
 
   const stages = stagesOf(db, rows);
   const snips = b.text ? snippets(db, b.params.q as string, rows) : new Map<number, Snippet>();
+  const how = mergedHow(db, rows);
   const slots = queueSlots(db, await visibleRepos(db, req));
   return {
     total, byStatus, run: b.run,
@@ -271,8 +278,24 @@ export async function listItems(db: DatabaseSync, req: Req): Promise<ItemList> {
       comments: r.comments_count ?? 0, settled: fromRow(r) as ItemListRow["settled"],
       stage: (stages.get(`${r.repo}#${r.number}`) ?? null) as Stage | null, snippet: snips.get(r.rid) ?? null,
       queue: slots.get(`${r.repo}#${r.number}`) ?? null,
+      mergedHow: how.get(`${r.repo}#${r.number}`) ?? null, mergedAt: how.has(`${r.repo}#${r.number}`) ? r.merged_by_us_at ?? null : null,
     })),
   };
+}
+
+// How AutoCraft merged each listed PR: its merge step's path (rule or operator), or batch when only a merged batch carried it.
+function mergedHow(db: DatabaseSync, rows: { repo: string; number: number; kind: string }[]): Map<string, "rule" | "operator" | "batch"> {
+  const out = new Map<string, "rule" | "operator" | "batch">();
+  const prs = rows.filter((r) => r.kind === "pr");
+  if (!prs.length) return out;
+  const pairs = prs.map(() => "(?, ?)").join(",");
+  const args = prs.flatMap((r) => [r.repo, r.number]);
+  for (const m of db.prepare(`SELECT repo, number, path FROM main.merges WHERE outcome = 'merged' AND (repo, number) IN (VALUES ${pairs}) ORDER BY at`).all(...args) as { repo: string; number: number; path: string }[])
+    out.set(`${m.repo}#${m.number}`, m.path === "operator" ? "operator" : "rule");
+  for (const b of db.prepare(`SELECT DISTINCT bb.repo, bp.number FROM main.merge_batch_prs bp JOIN main.merge_batches bb ON bb.id = bp.batch_id
+    WHERE bb.state = 'merged' AND (bb.repo, bp.number) IN (VALUES ${pairs})`).all(...args) as { repo: string; number: number }[])
+    if (!out.has(`${b.repo}#${b.number}`)) out.set(`${b.repo}#${b.number}`, "batch");
+  return out;
 }
 
 // Latest stage of each listed item.

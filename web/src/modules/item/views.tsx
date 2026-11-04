@@ -140,6 +140,7 @@ function Header({ it }: { it: Item }) {
       <h1 className="text-xl font-semibold text-ink">{it.title}</h1>
       <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1.5 text-sm text-ink/60">
         <StatePill it={it} />
+        {it.pipelineOn === false && <Badge>Pipeline off</Badge>}
         <span className="inline-flex items-center gap-1.5">
           <Avatar login={it.author} size={18} />
           <span>

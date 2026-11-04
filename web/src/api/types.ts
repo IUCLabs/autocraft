@@ -237,6 +237,8 @@ export interface Item extends ItemRef {
   closedAt: string | null;
   mergedAt: string | null;
   mergedBy: string | null;
+  /** Whether the repo's pipeline is switched on; absent in mocks that do not say. */
+  pipelineOn?: boolean;
   related: RelatedItem[];
   classifications: Classification[];
   /** The item's area; null when it has none, absent in mocks. */
@@ -475,7 +477,7 @@ export interface Snippet {
   text: string;
 }
 
-export type ItemSort = "relevance" | "updated" | "created" | "number";
+export type ItemSort = "relevance" | "updated" | "created" | "number" | "merged";
 
 /** `status: "unsettled"` stands for waiting and disagree together. */
 export type StatusFilter = SettledStatus | "unsettled";
@@ -488,7 +490,8 @@ export interface ItemFilter {
   repo?: RepoName[];
   kind?: ItemKind;
   /** Default `open`. */
-  state?: ItemState | "all";
+  /** `merged-by-us`: PRs AutoCraft merged (its merge step or a merged batch), newest merge first. */
+  state?: ItemState | "all" | "merged-by-us";
   /** Settled label. */
   label?: TypeLabel;
   status?: StatusFilter[];
@@ -524,6 +527,10 @@ export interface ItemListRow extends ItemRef {
   snippet: Snippet | null;
   /** Place in line for the next queued stage; null when the next step is not queued. */
   queue?: QueueSlot | null;
+  /** How AutoCraft merged a PR; null when it did not. */
+  mergedHow?: "rule" | "operator" | "batch" | null;
+  /** When AutoCraft merged it; set with `mergedHow`. */
+  mergedAt?: string | null;
 }
 
 export interface ItemList {

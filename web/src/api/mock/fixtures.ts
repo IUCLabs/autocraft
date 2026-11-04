@@ -841,8 +841,14 @@ export function itemFor(repo: string, number: number): Item {
     actions: [],
     releases: { reviewAgain: false, verifyAgain: false, fixAgain: false, batchAgain: false },
     queue: mockSlot(number),
+    ...(repo === PIPELINE_OFF.repo && number === PIPELINE_OFF.number
+      ? { state: "merged" as const, pipelineOn: false, mergedAt: iso(3 * H), mergedBy: "maintainer", closedAt: iso(3 * H) }
+      : {}),
   };
 }
+
+/** A merged PR in a repo whose pipeline is off: only the classification ran, a person merged it on GitHub. */
+export const PIPELINE_OFF = { repo: "gridcraft", number: 4107 };
 
 const TITLE_PARTS: Record<string, string[]> = {
   photocraft: ["Layer masks", "Curves adjustment", "Brush engine", "Smart Objects", "Color picker", "Histogram panel", "Crop tool", "Text layers", "Export As", "Clone stamp"],

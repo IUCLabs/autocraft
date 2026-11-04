@@ -87,7 +87,14 @@ export function NextView() {
             </Link>
           ))}
         </div>
-        {tab === "merge" && <FastTrackAdd />}
+        {tab === "merge" && (
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+            <Link to="/items?state=merged-by-us" className="text-sm text-accent-ink hover:underline max-md:flex max-md:h-11 max-md:items-center">
+              Merged by AutoCraft
+            </Link>
+            <FastTrackAdd />
+          </div>
+        )}
       </div>
       {tab === "steps" ? <Steps /> : <MergeQueue />}
     </Page>

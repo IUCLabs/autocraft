@@ -135,6 +135,15 @@ describe("api", () => {
     assert.deepEqual([it.changedFiles, it.additions, it.deletions], [7, 40, 3]);
     assert.equal((await boss.get<Item>("/api/items/photocraft/4")).changedFiles, null);
     assert.deepEqual([it.verification, it.fixups, it.actions], [null, [], []]);
+    assert.equal(it.pipelineOn, false);
+    // Merged by AutoCraft: PRs with a merged merges row, newest merge first, with how they merged.
+    const mins = (m: number) => new Date(Date.now() - m * 60_000).toISOString();
+    const mrg = db.prepare("INSERT INTO merges (repo, number, head_oid, run_id, at, path, method, outcome) VALUES (?, ?, 'h', 'r', ?, ?, 'squash', ?)");
+    mrg.run("photocraft", 1, mins(10), "rule", "merged");
+    mrg.run("photocraft", 2, mins(5), "operator", "merged");
+    mrg.run("filmcraft", 3, mins(1), "rule", "refused");
+    const by = await boss.get<{ rows: { number: number; mergedHow: string | null }[] }>("/api/items?state=merged-by-us");
+    assert.deepEqual(by.rows.map((r) => [r.number, r.mergedHow]), [[2, "operator"], [1, "rule"]]);
     db.prepare("UPDATE main.items SET head_oid = 'h1' WHERE repo = 'photocraft' AND number = 1").run();
     db.prepare(`INSERT INTO verifications (repo, number, head_sha, kind, reason, plan, state, summary, created_at)
       VALUES ('photocraft', 1, 'h1', 'tests', 'why', '{"kind":"tests","crates":["codecs"],"tests":["png::"]}', 'failed', 'test failed', '2026-01-01T00:00:00Z')`).run();
