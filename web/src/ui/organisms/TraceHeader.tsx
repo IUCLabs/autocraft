@@ -25,7 +25,7 @@ export function TraceHeader({ header, decisionHref }: { header: ItemTraceHeader;
           <p className="mt-0.5 flex flex-wrap items-center gap-x-2 text-xs text-ink/55">
             {now.state && <Badge>{now.state}</Badge>}
             {now.head && <span className="code">{shortSha(now.head)}</span>}
-            {now.plannedAt && <TimeAgo iso={now.plannedAt} short={false} className="num" />}
+            {now.plannedAt && <TimeAgo iso={now.plannedAt} className="num" />}
           </p>
         )}
         {now.reasons.length > 0 && <p className="mt-0.5 text-xs text-ink/60">{now.reasons.join("; ")}</p>}
@@ -55,7 +55,7 @@ export function TraceHeader({ header, decisionHref }: { header: ItemTraceHeader;
         ))}
         {who.holds.map((h) => (
           <p key={h.at} className="mt-0.5 text-ink/70">
-            On hold by {h.by} <TimeAgo iso={h.at} short={false} className="num text-xs text-ink/50" />
+            On hold by {h.by} <TimeAgo iso={h.at} className="num text-xs text-ink/50" />
           </p>
         ))}
       </Cell>

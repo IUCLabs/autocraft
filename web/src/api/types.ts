@@ -1793,6 +1793,8 @@ export type TraceEvent = {
   ref: TraceRef;
   /** Model calls only. */
   call?: {
+    /** The prompt the call ran; calls of one step and prompt family are grouped on the item page. */
+    promptId?: string; /** The step's display name. */ step?: string;
     model: string; provider: string; account: string | null; state: string;
     inputTokens: number | null; outputTokens: number | null; costUsd: number | null; toolCalls: number; endedAt: string | null;
   };

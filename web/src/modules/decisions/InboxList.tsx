@@ -8,7 +8,8 @@ import { useHotkeys, useShortcutHelp } from "../../shell/keyboard";
 import { Count } from "../../ui/atoms/Heading";
 import { Button } from "../../ui/atoms/Button";
 import { cn } from "../../ui/cn";
-import { ago, ageDays } from "../../lib/format";
+import { ago, ageDays, when } from "../../lib/format";
+import { TimeAgo } from "../../ui/atoms/TimeAgo";
 import { ItemRef } from "../../ui/molecules/ItemRef";
 import { ClaimPill, KIND_ICON } from "./parts";
 import { canActOn } from "./DecisionDetail";
@@ -135,8 +136,8 @@ function Row({ d, canUndo, active, checked, mine, onOpen, activeRef }: { d: Deci
       <div ref={activeRef} role="option" tabIndex={0} aria-selected={active} onClick={onOpen} onKeyDown={(e) => { if (e.target === e.currentTarget && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); onOpen(); } }} className="min-w-0 flex-1 cursor-pointer rounded-none py-2 pr-3 text-left">
         <div className="flex items-baseline gap-2">
           <span className={cn("min-w-0 flex-1 break-words text-sm", active ? "font-medium text-ink" : "text-ink/90")}>{d.title}</span>
-          <span className={cn("num shrink-0 text-xs", old ? "text-warn" : "text-ink/45")} title={`asked ${ago(d.askedAt, false)}`}>
-            {ago(d.askedAt)}
+          <span className={cn("num shrink-0 text-xs", old ? "text-warn" : "text-ink/45")} title={`asked ${when(d.askedAt)}`}>
+            <TimeAgo iso={d.askedAt} />
           </span>
         </div>
         <div className="mt-0.5 flex items-start gap-1.5 text-xs text-ink/50">

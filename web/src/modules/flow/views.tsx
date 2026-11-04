@@ -8,7 +8,8 @@ import type { Flow } from "../../api/types";
 import type { ViewProps } from "../../registry/types";
 import { useMedia } from "../../shell/useMedia";
 import { RepoSelect } from "../../ui/molecules/RepoSelect";
-import { ago, num } from "../../lib/format";
+import { num } from "../../lib/format";
+import { TimeAgo } from "../../ui/atoms/TimeAgo";
 import { ErrorLine, useUrlState } from "../admin/parts";
 import { PipelineSwitch } from "../pipeline/controls";
 import { Chart } from "./Chart";
@@ -87,8 +88,8 @@ export function FlowView(_: ViewProps) {
               <h1 className="text-xl font-semibold">Pipeline flow</h1>
               {flow && (
                 <p className="mt-0.5 text-sm text-ink/55">
-                  {num(open)} open items{repo ? ` in ${repo}` : ""} · last sync {flow.lastSync ? `${ago(flow.lastSync)} ago` : "never"}
-                  {flow.countedAt && ` · counted ${ago(flow.countedAt)} ago`}
+                  {num(open)} open items{repo ? ` in ${repo}` : ""} · last sync {flow.lastSync ? <><TimeAgo iso={flow.lastSync} /></> : "never"}
+                  {flow.countedAt && <> · counted <TimeAgo iso={flow.countedAt} /></>}
                   {flow.uncounted > 0 && ` · ${num(flow.uncounted)} repos not counted yet`}
                 </p>
               )}

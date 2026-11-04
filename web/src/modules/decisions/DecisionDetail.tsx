@@ -14,7 +14,8 @@ import { ConfirmButton, useWrite } from "../admin/parts";
 import { Count } from "../../ui/atoms/Heading";
 import { Markdown, Collapsible } from "../../ui/molecules/Markdown";
 import { cn } from "../../ui/cn";
-import { ago } from "../../lib/format";
+import {  } from "../../lib/format";
+import { TimeAgo } from "../../ui/atoms/TimeAgo";
 import { ClaimPill, ClassifierLines, Disclosure, Facts, KindTag, RelatedList } from "./parts";
 import { Refs } from "./Refs";
 import { FeedbackBox } from "./FeedbackBox";
@@ -172,7 +173,7 @@ export function DecisionBody({
         )}
         <PriorityBadge p={d.priority} />
         {!isBatch && <QueueBadge slot={d.queue} />}
-        <span>asked {ago(d.askedAt)} ago</span>
+        <span>asked <TimeAgo iso={d.askedAt} /></span>
         <ClaimPill claim={d.claim} />
         {!isBatch && (
           <span className="ml-auto flex flex-wrap items-center gap-1.5">
@@ -200,7 +201,7 @@ export function DecisionBody({
         <SparkleIcon className="text-[12px] text-accent-ink" />
         <span className="font-semibold text-ink/75">AI summary</span>
         <span>
-          · {d.summaryBy} · {ago(d.summaryAt)} ago
+          · {d.summaryBy} · <TimeAgo iso={d.summaryAt} />
         </span>
       </div>
       <p className="text-sm leading-[21px] text-ink/90">
@@ -384,7 +385,7 @@ export function AnsweredState({ d, canUndo }: { d: Decision; canUndo: boolean })
       <span className="text-sm font-medium">{label}</span>
       <span className="text-xs text-ink/55">
         by {d.answeredBy}
-        {d.adoptedOpinion ? `, using ${d.adoptedOpinion.login}'s answer` : ""} · {ago(d.answeredAt!)} ago{backlog ? "" : ` · ${d.appliedAt ? "applied" : "not applied yet"}`}
+        {d.adoptedOpinion ? `, using ${d.adoptedOpinion.login}'s answer` : ""} · <TimeAgo iso={d.answeredAt!} />{backlog ? "" : ` · ${d.appliedAt ? "applied" : "not applied yet"}`}
       </span>
       {d.answerNote && <span className="w-full text-sm text-ink/70">“{d.answerNote}”</span>}
       {backlog && canUndo && (

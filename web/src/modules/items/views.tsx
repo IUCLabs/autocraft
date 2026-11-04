@@ -10,7 +10,8 @@ import type { ViewProps } from "../../registry/types";
 import { Badge, type Tone } from "../../ui/atoms/Badge";
 import { ItemRef } from "../../ui/molecules/ItemRef";
 import { cn } from "../../ui/cn";
-import { ago, day, num, when } from "../../lib/format";
+import { day, num, when } from "../../lib/format";
+import { TimeAgo } from "../../ui/atoms/TimeAgo";
 import { useIsPhone } from "../../shell/useMedia";
 import { Block, ErrorLine, Page, Pager, selectCls, TextInput, useUrlState } from "../admin/parts";
 import { useNow } from "../../lib/useNow";
@@ -331,7 +332,7 @@ function Table({ rows, byUs }: { rows: ItemListRow[]; byUs: boolean }) {
               </td>
               <td className="truncate px-3 py-2 text-ink/70">{it.author}</td>
               <td className="num relative z-10 whitespace-nowrap px-3 py-2 text-ink/55" title={`created ${day(it.createdAt)}, updated ${when(it.updatedAt)}`}>
-                {(byUs ? it.mergedAt : it.updatedAt) ? `${ago((byUs ? it.mergedAt : it.updatedAt)!)} ago` : "–"}
+                {(byUs ? it.mergedAt : it.updatedAt) ? <><TimeAgo iso={(byUs ? it.mergedAt : it.updatedAt)!} /></> : "–"}
               </td>
               <td className="px-3 py-2">
                 <SettledBadge s={it.settled} />
@@ -361,7 +362,7 @@ function Cards({ rows, byUs }: { rows: ItemListRow[]; byUs: boolean }) {
           <ItemRef repo={it.repo} number={it.number} kind={it.kind} state={it.state} title={it.title} stretch />
           <div className="mt-1 flex items-center gap-2 pl-6 text-xs text-ink/55">
             <span className="truncate">{it.author}</span>
-            <span className="num ml-auto shrink-0">{(byUs ? it.mergedAt : it.updatedAt) ? `${byUs ? "merged " : ""}${ago((byUs ? it.mergedAt : it.updatedAt)!)} ago` : ""}</span>
+            <span className="num ml-auto shrink-0">{(byUs ? it.mergedAt : it.updatedAt) ? <>{byUs ? "merged " : ""}<TimeAgo iso={(byUs ? it.mergedAt : it.updatedAt)!} /></> : ""}</span>
           </div>
           {it.snippet && it.snippet.field !== "title" && (
             <div className="mt-1 line-clamp-2 pl-6">

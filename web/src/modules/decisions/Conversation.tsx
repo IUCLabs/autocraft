@@ -5,7 +5,8 @@ import type { ConversationCard, ConversationTurn, RepoName } from "../../api/typ
 import { Avatar } from "../../ui/atoms/Avatar";
 import { Button } from "../../ui/atoms/Button";
 import { Markdown } from "../../ui/molecules/Markdown";
-import { ago } from "../../lib/format";
+import {  } from "../../lib/format";
+import { TimeAgo } from "../../ui/atoms/TimeAgo";
 import { useNow } from "../../lib/useNow";
 
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
@@ -84,7 +85,7 @@ function Turn({ t, operator }: { t: ConversationTurn; operator: boolean }) {
       <li className="flex items-start gap-2 text-xs text-ink/50">
         <span className="mt-1.5 size-1.5 shrink-0 rounded-full bg-ink/30" />
         <span className="min-w-0 flex-1">{t.body}</span>
-        <span className="shrink-0">{ago(t.at)}</span>
+        <span className="shrink-0"><TimeAgo iso={t.at} /></span>
       </li>
     );
   }
@@ -93,7 +94,7 @@ function Turn({ t, operator }: { t: ConversationTurn; operator: boolean }) {
       <div className="flex items-center gap-2">
         <Avatar login={t.login} size={20} />
         <span className="text-sm font-semibold">{t.kind === "opus" ? "Opus" : t.login}</span>
-        <span className="ml-auto text-xs text-ink/45">{ago(t.at)}</span>
+        <span className="ml-auto text-xs text-ink/45"><TimeAgo iso={t.at} /></span>
       </div>
       <div className="mt-1 pl-7 text-sm leading-5 text-ink/80">
         {t.kind === "opus" ? <Markdown source={t.body} /> : <p className="whitespace-pre-wrap">{t.body}</p>}
@@ -181,7 +182,7 @@ function ActionCard({ a, operator }: { a: ConversationCard; operator: boolean })
           ) : (
             a.done.label
           )}{" "}
-          · {ago(a.done.at, false)}
+          · <TimeAgo iso={a.done.at} />
           {a.by ? ` · ${a.by}` : ""}
         </p>
       )}

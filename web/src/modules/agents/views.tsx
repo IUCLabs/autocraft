@@ -7,7 +7,8 @@ import { CaretDownIcon, CaretRightIcon, XIcon } from "@phosphor-icons/react";
 import { usePagedQuery, useQuery } from "../../api/client";
 import type { AgentRun, AgentRunDetail, AgentRunFilter, AgentRunPage, AgentRunState } from "../../api/types";
 import type { ViewProps } from "../../registry/types";
-import { ago, nowMs, num, span } from "../../lib/format";
+import { nowMs, num, span } from "../../lib/format";
+import { TimeAgo } from "../../ui/atoms/TimeAgo";
 import { useNow } from "../../lib/useNow";
 import { Badge, type Tone } from "../../ui/atoms/Badge";
 import { Button } from "../../ui/atoms/Button";
@@ -141,7 +142,7 @@ function RecentRuns({ selected }: { selected?: number }) {
               <tr key={r.id} className={cn("relative border-t border-line hover:bg-ink/[0.03]", selected === r.id && "bg-accent/10")}>
                 <td className="relative z-10 whitespace-nowrap px-3 py-1.5 text-ink/70" title={r.startedAt}>
                   <span className={cn("mr-1.5 inline-block size-2 rounded-full md:hidden", r.state === "failed" ? "bg-bad" : r.state === "running" ? "bg-accent" : "bg-ok")} role="img" aria-label={STATE_LABEL[r.state]} />
-                  {ago(r.startedAt, true)}<span className="max-md:hidden"> ago</span>
+                  <TimeAgo iso={r.startedAt} /><span className="max-md:hidden"> ago</span>
                 </td>
                 <td className="whitespace-nowrap px-3 code text-xs">
                   <Link to={`/agents/${r.id}${location.search}`} className="after:absolute after:inset-0">
@@ -219,7 +220,7 @@ function DetailBody({ id }: { id: number }) {
         </dd>
         <dt className="text-ink/55">Started</dt>
         <dd className="num">
-          {ago(r.startedAt, false)} · {r.endedAt ? `took ${elapsed(r)}` : `running for ${elapsed(r)}`}
+          <TimeAgo iso={r.startedAt} /> · {r.endedAt ? `took ${elapsed(r)}` : `running for ${elapsed(r)}`}
         </dd>
         <dt className="text-ink/55">Tokens</dt>
         <dd className="num">

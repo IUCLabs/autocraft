@@ -9,7 +9,8 @@ import { Slot } from "../../registry/Slot";
 import { useUser } from "../../shell/UserContext";
 import { Badge } from "../../ui/atoms/Badge";
 import { cn } from "../../ui/cn";
-import { ago, num } from "../../lib/format";
+import { num } from "../../lib/format";
+import { TimeAgo } from "../../ui/atoms/TimeAgo";
 import { JobBadge } from "../pipeline/views";
 import { StageLimitRow } from "../pipeline/controls";
 import { PromptCard } from "../prompts/views";
@@ -59,7 +60,7 @@ function StepBlock({ name, title }: { name: string; title: string }) {
                 {j.summary ?? j.error ?? j.progress ?? "–"}
               </span>
               <span className="text-xs text-ink/50">
-                {ago(j.endedAt ?? j.startedAt ?? j.requestedAt)} ago · by {j.requestedBy}
+                <TimeAgo iso={j.endedAt ?? j.startedAt ?? j.requestedAt} /> · by {j.requestedBy}
                 {j.usage?.costUsd ? ` · $${j.usage.costUsd.toFixed(2)}` : j.usage?.calls ? ` · ${num(j.usage.input + j.usage.output)} tokens` : ""}
               </span>
             </span>
@@ -166,7 +167,7 @@ export function FlowPanel({ flow, node: n, onClose, onSelect }: { flow: Flow; no
             {n.facts.map((f) => (
               <div key={f.label} className="contents">
                 <dt className="text-ink/55">{f.label}</dt>
-                <dd className="min-w-0 break-words">{/^\d{4}-\d\d-\d\dT/.test(f.value) ? `${ago(f.value)} ago` : f.value}</dd>
+                <dd className="min-w-0 break-words">{/^\d{4}-\d\d-\d\dT/.test(f.value) ? <><TimeAgo iso={f.value} /></> : f.value}</dd>
               </div>
             ))}
           </dl>

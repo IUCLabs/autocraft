@@ -15,7 +15,8 @@ import { Avatar } from "../../ui/atoms/Avatar";
 import { Kbd } from "../../ui/atoms/Kbd";
 import { Count } from "../../ui/atoms/Heading";
 import { cn } from "../../ui/cn";
-import { ago } from "../../lib/format";
+import { eventTime } from "../../lib/format";
+import { TimeAgo } from "../../ui/atoms/TimeAgo";
 import { Refs } from "./Refs";
 import { KIND_LABEL } from "./state";
 import { useNow } from "../../lib/useNow";
@@ -44,11 +45,11 @@ export function ClaimPill({ claim, compact }: { claim: Decision["claim"]; compac
   useNow();
   if (!claim) return null;
   return (
-    <span className="inline-flex items-center gap-1.5 text-xs text-warn" title={`${claim.login} opened this ${ago(claim.since, false)}`}>
+    <span className="inline-flex items-center gap-1.5 text-xs text-warn" title={`${claim.login} opened this ${eventTime(claim.since)}`}>
       <Avatar login={claim.login} size={16} />
       {!compact && (
         <span>
-          {claim.login} is viewing · {ago(claim.since)}
+          {claim.login} is viewing · <TimeAgo iso={claim.since} />
         </span>
       )}
     </span>

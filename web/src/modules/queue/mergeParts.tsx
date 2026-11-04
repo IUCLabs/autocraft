@@ -7,7 +7,8 @@ import type { BatchState, QueueBatch, QueueMergeRow, QueueRow, QueueState, Tier 
 import { Badge, type Tone } from "../../ui/atoms/Badge";
 import { ItemRef } from "../../ui/molecules/ItemRef";
 import { cn } from "../../ui/cn";
-import { ago, when } from "../../lib/format";
+import { when } from "../../lib/format";
+import { TimeAgo } from "../../ui/atoms/TimeAgo";
 import { useNow } from "../../lib/useNow";
 import { batchPath, decisionPath } from "../../lib/links";
 import { FastMark } from "./fastTrack";
@@ -76,7 +77,7 @@ export function BatchFacts({ b }: { b: QueueBatch }) {
         {b.baseSha.slice(0, 7)}
       </a>
       <span className="num text-2xs text-ink/50" title={`created ${when(b.createdAt)}, updated ${when(b.updatedAt)}`}>
-        {ago(b.updatedAt)} ago
+        <TimeAgo iso={b.updatedAt} />
       </span>
     </>
   );
@@ -167,7 +168,7 @@ function ReviewText({ r }: { r: QueueRow }) {
           <Why row={r} />
           <DecisionLink row={r} />
           <span className="num text-ink/40" title={`reviewed ${when(r.reviewedAt)} at ${r.head.slice(0, 7)}`}>
-            reviewed {ago(r.reviewedAt)} ago
+            reviewed <TimeAgo iso={r.reviewedAt} />
           </span>
         </div>
       </div>

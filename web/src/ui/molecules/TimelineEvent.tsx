@@ -7,7 +7,7 @@ import { TimeAgo } from "../atoms/TimeAgo";
  * One row of an event timeline: kind icon, summary, actor and time. The row is a disclosure button;
  * `children` are the expanded body and are only rendered while open.
  */
-export function TimelineEvent({ id, lead, Icon, at, actor, actorTone, summary, open, onToggle, children }: {
+export function TimelineEvent({ id, lead, Icon, at, actor, actorTone, summary, open, onToggle, flush, children }: {
   id: string;
   /** A line above the row that is not part of the disclosure button (a link to the item, say). */
   lead?: ReactNode;
@@ -19,6 +19,8 @@ export function TimelineEvent({ id, lead, Icon, at, actor, actorTone, summary, o
   summary: string;
   open: boolean;
   onToggle: () => void;
+  /** The body holds rows of its own and needs no inset on the left. */
+  flush?: boolean;
   children?: ReactNode;
 }) {
   const Caret = open ? CaretDownIcon : CaretRightIcon;
@@ -42,7 +44,7 @@ export function TimelineEvent({ id, lead, Icon, at, actor, actorTone, summary, o
         </span>
         <Caret className="mt-1 shrink-0 text-ink/40" />
       </button>
-      {open && <div className="border-t border-line bg-ink/[0.02] px-3 py-3 pl-[42px] max-md:pl-3">{children}</div>}
+      {open && <div className={cn("border-t border-line bg-ink/[0.02] px-3 py-3 pl-[42px] max-md:pl-3", flush && "pl-3")}>{children}</div>}
     </li>
   );
 }

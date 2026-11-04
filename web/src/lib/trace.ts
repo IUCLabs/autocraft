@@ -64,3 +64,44 @@ export const NEXT_LABEL: Record<string, string> = {
   merge: "Merge",
 };
 export const nextLabel = (kind: string) => NEXT_LABEL[kind] ?? kind.replace(/[-_]/g, " ").replace(/^./, (c) => c.toUpperCase());
+
+export type TraceRow = { event: TraceEvent; calls?: undefined } | { event: TraceEvent; calls: TraceEvent[] };
+
+/** Calls of one prompt close in time: no job id on both sides means "within five minutes". */
+const GROUP_GAP_MS = 5 * 60_000;
+const family = (promptId: string) => (promptId.startsWith("lint.reference.") ? "lint.reference" : promptId);
+const sameRun = (a: TraceEvent, b: TraceEvent) => {
+  if (!a.call?.promptId || !b.call?.promptId || a.call.step !== b.call.step || family(a.call.promptId) !== family(b.call.promptId)) return false;
+  if (a.ref.jobId !== undefined || b.ref.jobId !== undefined) return a.ref.jobId === b.ref.jobId;
+  return Math.abs(Date.parse(a.at) - Date.parse(b.at)) <= GROUP_GAP_MS;
+};
+
+/** Consecutive model calls of the same step and prompt (the reference lint runs once per review text) become one row; its `event` is the newest call and `calls` all of them, newest first. */
+export function groupCalls(events: TraceEvent[]): TraceRow[] {
+  const out: TraceRow[] = [];
+  for (const e of events) {
+    const last = out[out.length - 1];
+    const prev = last && (last.calls ? last.calls[last.calls.length - 1]! : last.event);
+    if (last && prev && e.kind === "model-call" && prev.kind === "model-call" && sameRun(prev, e)) {
+      if (last.calls) last.calls.push(e);
+      else out[out.length - 1] = { event: last.event, calls: [last.event, e] };
+    } else out.push({ event: e });
+  }
+  return out;
+}
+
+const modelName = (m: string) => m.charAt(0).toUpperCase() + m.slice(1);
+
+/** "Reference lint: 10 Jev calls, 1 Haiku call, $0.04". */
+export function callGroupSummary(calls: TraceEvent[]): string {
+  const counts = new Map<string, number>();
+  let cost = 0;
+  for (const c of calls) {
+    const m = modelName(c.call?.model ?? "model");
+    counts.set(m, (counts.get(m) ?? 0) + 1);
+    cost += c.call?.costUsd ?? 0;
+  }
+  const title = calls[0]!.summary.split(": ")[0]!;
+  const parts = [...counts].sort((a, b) => b[1] - a[1]).map(([m, n]) => `${n} ${m} call${n === 1 ? "" : "s"}`);
+  return `${title}: ${parts.join(", ")}${cost > 0 ? `, $${cost.toFixed(cost < 0.1 ? 3 : 2)}` : ""}`;
+}

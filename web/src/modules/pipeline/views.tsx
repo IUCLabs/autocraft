@@ -11,7 +11,8 @@ import { can } from "../../registry/permissions";
 import { Badge, type Tone } from "../../ui/atoms/Badge";
 import { Button } from "../../ui/atoms/Button";
 import { cn } from "../../ui/cn";
-import { ago, num } from "../../lib/format";
+import { num, eventTime } from "../../lib/format";
+import { TimeAgo } from "../../ui/atoms/TimeAgo";
 import { Block, ConfirmButton, ErrorLine, Page, useWrite, when } from "../admin/parts";
 import { PilotPanel, PipelineSwitch, StageLimits } from "./controls";
 import { useNow } from "../../lib/useNow";
@@ -49,7 +50,7 @@ const paramText = (p: JobParams) =>
 function SyncRuns({ runs, last }: { runs: SyncRun[]; last: string | null }) {
   useNow();
   return (
-    <Block flush title="Sync" aside={last ? `last finished ${ago(last, false)}; runs on its own timer` : "runs on its own timer"}>
+    <Block flush title="Sync" aside={last ? `last finished ${eventTime(last)}; runs on its own timer` : "runs on its own timer"}>
       {runs.length === 0 ? (
         <p className="p-4 text-sm text-ink/50">No sync runs recorded yet.</p>
       ) : (
@@ -147,7 +148,7 @@ function Jobs({ selected }: { selected?: number }) {
                     <JobBadge j={j} />
                   </td>
                   <td className="whitespace-nowrap px-3 text-ink/65" title={j.requestedAt}>
-                    {j.requestedBy} · {ago(j.requestedAt)}
+                    {j.requestedBy} · <TimeAgo iso={j.requestedAt} />
                   </td>
                   <td className="num whitespace-nowrap px-3 text-right">{took(j.startedAt, j.endedAt)}</td>
                   <td className="max-w-[340px] truncate px-3 text-ink/70" title={j.error ?? j.summary ?? j.progress ?? ""}>
@@ -178,7 +179,7 @@ function RunnerLine({ o }: { o: PipelineOverview }) {
   return (
     <span className="inline-flex items-center gap-1.5">
       <span className={cn("size-2 rounded-full", o.runner.alive ? "bg-ok" : "bg-bad")} aria-hidden />
-      {o.runner.alive ? "Runner running" : o.runner.lastSeen ? `Runner not running since ${ago(o.runner.lastSeen, false)}: jobs wait until it starts` : "Runner not started: jobs wait until it starts"}
+      {o.runner.alive ? "Runner running" : o.runner.lastSeen ? `Runner not running since ${eventTime(o.runner.lastSeen)}: jobs wait until it starts` : "Runner not started: jobs wait until it starts"}
       {" · "}
       {o.counts.running} running, {o.counts.queued} queued
     </span>

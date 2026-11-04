@@ -8,7 +8,7 @@ import { TimelineEvent } from "../../ui/molecules/TimelineEvent";
 import { TraceFilters } from "../../ui/molecules/TraceFilters";
 import { HeadGroup } from "../../ui/organisms/HeadGroup";
 import { TraceHeader } from "../../ui/organisms/TraceHeader";
-import { groupByHead, pushedBy, TRACE_KIND } from "../../lib/trace";
+import { callGroupSummary, groupByHead, groupCalls, pushedBy, TRACE_KIND } from "../../lib/trace";
 import { TraceEventBody } from "./TraceEventBody";
 
 const PAGE = 50;
@@ -93,21 +93,41 @@ export function TracePanel({ repo, number, it }: { repo: string; number: number;
           {groups.length === 0 && <p className="px-3 py-3 text-sm text-ink/55">No events match.</p>}
           {groups.map((g) => (
             <HeadGroup key={`${g.head}:${g.events[0]!.id}`} head={g.head} pushedBy={g.head ? pushedBy(events, g.head) : null}>
-              {g.events.map((e) => (
-                <TimelineEvent
-                  key={e.id}
-                  id={e.id}
-                  Icon={TRACE_KIND[e.kind].Icon}
-                  at={e.at}
-                  actor={e.actor.name}
-                  actorTone={e.actor.type === "person" ? "person" : "ours"}
-                  summary={e.summary}
-                  open={open.has(e.id)}
-                  onToggle={() => toggle(e.id)}
-                >
-                  <TraceEventBody event={e} item={it} />
-                </TimelineEvent>
-              ))}
+              {groupCalls(g.events).map((r) => {
+                const row = (e: TraceEvent) => (
+                  <TimelineEvent
+                    key={e.id}
+                    id={e.id}
+                    Icon={TRACE_KIND[e.kind].Icon}
+                    at={e.at}
+                    actor={e.actor.name}
+                    actorTone={e.actor.type === "person" ? "person" : "ours"}
+                    summary={e.summary}
+                    open={open.has(e.id)}
+                    onToggle={() => toggle(e.id)}
+                  >
+                    <TraceEventBody event={e} item={it} />
+                  </TimelineEvent>
+                );
+                if (!r.calls) return row(r.event);
+                const gid = `group:${r.event.id}`;
+                return (
+                  <TimelineEvent
+                    key={gid}
+                    id={gid}
+                    Icon={TRACE_KIND[r.event.kind].Icon}
+                    at={r.event.at}
+                    actor={r.event.call?.step ?? r.event.actor.name}
+                    actorTone="ours"
+                    summary={callGroupSummary(r.calls)}
+                    open={r.calls.some((c) => c.id === hashEvent()) !== open.has(gid)}
+                    onToggle={() => toggle(gid)}
+                    flush
+                  >
+                    <ul className="overflow-hidden rounded-md border border-line bg-panel">{r.calls.map(row)}</ul>
+                  </TimelineEvent>
+                );
+              })}
             </HeadGroup>
           ))}
         </div>

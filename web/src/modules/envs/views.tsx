@@ -7,7 +7,8 @@ import { CheckIcon, CopyIcon, DownloadSimpleIcon, PencilSimpleIcon, PlusIcon, XI
 import { useApi, usePagedQuery, useQuery } from "../../api/client";
 import type { BuildEnv, BuildSummary, BuildTask, BuildTaskDetail, Capabilities, EnvKind, Requires, TaskBatch, TaskFilter, TaskState } from "../../api/types";
 import type { ViewProps } from "../../registry/types";
-import { ago, nowMs, num, span } from "../../lib/format";
+import { nowMs, num, span, eventTime } from "../../lib/format";
+import { TimeAgo } from "../../ui/atoms/TimeAgo";
 import { useUser } from "../../shell/UserContext";
 import { Badge, type Tone } from "../../ui/atoms/Badge";
 import { Button } from "../../ui/atoms/Button";
@@ -155,7 +156,7 @@ function EnvCard({ e, operator }: { e: BuildEnv; operator: boolean }) {
         <dt className="text-ink/55">Worker</dt>
         <dd className="num">{e.version ? `version ${e.version}` : "never connected"}</dd>
         <dt className="text-ink/55">Last seen</dt>
-        <dd className="num">{e.lastSeenAt ? `${ago(e.lastSeenAt, false)}` : "never"}</dd>
+        <dd className="num">{e.lastSeenAt ? `${eventTime(e.lastSeenAt)}` : "never"}</dd>
         {e.pausedReason && (
           <>
             <dt className="text-ink/55">Paused</dt>
@@ -373,8 +374,7 @@ function Tasks({ selected }: { selected?: number }) {
               <tr key={r.id} className={cn("relative border-t border-line hover:bg-ink/[0.03]", selected === r.id && "bg-accent/10")}>
                 <td className="whitespace-nowrap px-3 py-1.5 text-ink/70">
                   <Link to={`/envs/${r.id}${location.search}`} title={r.queuedAt} className="after:absolute after:inset-0">
-                    {ago(r.queuedAt, true)}
-                    <span className="max-md:hidden"> ago</span>
+                    <TimeAgo iso={r.queuedAt} />
                   </Link>
                 </td>
                 <td className="px-3 py-1.5">
@@ -454,7 +454,7 @@ function DetailBody({ id }: { id: number }) {
         <dt className="text-ink/55">Environment</dt>
         <dd>{t.envLabel ?? "not claimed yet"}</dd>
         <dt className="text-ink/55">Queued</dt>
-        <dd className="num">{ago(t.queuedAt, false)}</dd>
+        <dd className="num"><TimeAgo iso={t.queuedAt} /></dd>
         <dt className="text-ink/55">Run time</dt>
         <dd className="num">{duration(t)}</dd>
         <dt className="text-ink/55">Warm build</dt>
@@ -474,7 +474,7 @@ function DetailBody({ id }: { id: number }) {
         {t.heartbeatAt && active && (
           <>
             <dt className="text-ink/55">Heartbeat</dt>
-            <dd className="num">{ago(t.heartbeatAt, false)}</dd>
+            <dd className="num"><TimeAgo iso={t.heartbeatAt} /></dd>
           </>
         )}
       </dl>
