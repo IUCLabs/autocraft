@@ -2,6 +2,7 @@
 // gives up. The audit rows written by src/github/write.ts are the record of what we did: we unassign only what we assigned.
 import type { DatabaseSync } from "node:sqlite";
 import type { Querier } from "../mirror.ts";
+import type { Grant } from "../core/guard.ts";
 import { assignTo, unassignFrom, type Writer } from "./write.ts";
 
 export type Me = { id: string; login: string };
@@ -24,15 +25,15 @@ export function weAssigned(db: DatabaseSync, repo: string, number: number, login
 }
 
 /** Assigns the open item to `me` when nobody is assigned. Returns true when it did. */
-export async function claimItem(w: Writer, q: Querier, repo: string, number: number, info: Assignable, me: Me, details: Record<string, unknown> = {}): Promise<boolean> {
+export async function claimItem(w: Writer, g: Grant, q: Querier, repo: string, number: number, info: Assignable, me: Me, details: Record<string, unknown> = {}): Promise<boolean> {
   if (info.state !== "OPEN" || info.assignees.length) return false;
-  await assignTo(w, q, { repo, number, id: info.id }, me, details);
+  await assignTo(w, g, q, { repo, number, id: info.id }, me, details);
   return true;
 }
 
 /** Removes our assignment when the audit shows we made it and we are still the only assignee. Returns true when it did. */
-export async function releaseItem(w: Writer, q: Querier, repo: string, number: number, info: Assignable | null, me: Me, details: Record<string, unknown> = {}, runPrefix = ""): Promise<boolean> {
+export async function releaseItem(w: Writer, g: Grant, q: Querier, repo: string, number: number, info: Assignable | null, me: Me, details: Record<string, unknown> = {}, runPrefix = ""): Promise<boolean> {
   if (!info || info.assignees.length !== 1 || info.assignees[0] !== me.login || !weAssigned(w.db, repo, number, me.login, runPrefix)) return false;
-  await unassignFrom(w, q, { repo, number, id: info.id }, me, details);
+  await unassignFrom(w, g, q, { repo, number, id: info.id }, me, details);
   return true;
 }

@@ -1,6 +1,6 @@
 // The gates on writes: the repo approvals each action needs and the global pipeline switch. Pure. The planner and the
 // guard (guard.ts) both use it; decide() does not (it shows what would run, approved or not).
-import type { ActionKind, PrFacts } from "./plan.ts";
+import type { ActionKind, ItemFacts, PrFacts } from "./plan.ts";
 
 /** Who asks for a write: the pipeline itself (the autopilot), or an operator (a job they requested, or a command they ran). */
 export type By = "pipeline" | { operator: string };
@@ -8,13 +8,29 @@ export type By = "pipeline" | { operator: string };
 /** An action as the gates and the guard see it: its kind, and the bucket where the kind has several (fix-up: fix | ask, ...). */
 export type Want = { kind: ActionKind; bucket?: string };
 
-type Approval = "merge" | "push" | "comment" | "ci";
+/** The repo approvals a write can need. */
+export type Approval = "merge" | "push" | "comment" | "ci" | "labels" | "fix-issue" | "main-fix";
 
-const WHAT: Record<Approval, string> = { merge: "merging", push: "pushing", comment: "commenting", ci: "approving CI runs" };
+const WHAT: Record<Approval, string> = { merge: "merging", push: "pushing", comment: "commenting", ci: "approving CI runs", labels: "labelling", "fix-issue": "fixing issues", "main-fix": "fixing main CI" };
+
+/** A repo's approvals and the global switch, as the repo-level guard loads them. */
+export type RepoApprovals = Record<Approval, boolean> & { pipelineOn: boolean };
+
+/** Why a write needing `need` is refused, or null. A write with no approval need (`need` null) is gated by the switch only. */
+export function gateRepo(a: RepoApprovals, need: Approval | null, by: By, repo: string): string | null {
+  if (by === "pipeline" && !a.pipelineOn) return "the pipeline is off";
+  return need === null || a[need] ? null : `${WHAT[need]} in ${repo} is not approved`;
+}
 
 /** The approval an action's GitHub write needs, or null for an action that writes nothing there. */
-export function approvalOf(f: Pick<PrFacts, "pushable">, a: Want): Approval | null {
+export function approvalOf(f: { pushable?: boolean }, a: Want): Approval | null {
   switch (a.kind) {
+    // Item actions. Closing and commenting need the comment approval: an answered close always comments first (a
+    // security-scan question is in scope for it whatever the pilot says; decideItem already covers that).
+    case "label": return "labels";
+    case "act": return "comment";
+    case "fixissue":
+    case "fixissue-collect": return "fix-issue";
     case "merge": return "merge";
     case "post-review": return "comment";
     case "approve-ci": return "ci";
@@ -30,11 +46,12 @@ export function approvalOf(f: Pick<PrFacts, "pushable">, a: Want): Approval | nu
 }
 
 /** Why the write is refused, or null. */
-export function gates(f: PrFacts, a: Want, by: By): string | null {
+export function gates(f: PrFacts | ItemFacts, a: Want, by: By): string | null {
   if (by === "pipeline" && !f.pipelineOn) return "the pipeline is off";
-  const need = approvalOf(f, a);
+  const need = approvalOf(f as { pushable?: boolean }, a);
   if (!need) return null;
-  const ok = { merge: f.repoFacts.mergeApproved, push: f.repoFacts.pushApproved, comment: f.repoFacts.commentApproved, ci: f.repoFacts.ciApproved }[need];
+  const r = f.repoFacts as Record<string, boolean | undefined>;
+  const ok = { merge: r.mergeApproved, push: r.pushApproved, comment: r.commentApproved, ci: r.ciApproved, labels: r.labelsApproved, "fix-issue": r.fixIssueApproved, "main-fix": undefined }[need];
   return ok ? null : `${WHAT[need]} in ${f.repo} is not approved`;
 }
 

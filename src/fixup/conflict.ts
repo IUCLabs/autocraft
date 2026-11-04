@@ -233,7 +233,7 @@ export async function mergeConflict(db: DatabaseSync, x: ConflictRun, c: Conflic
     record(db, x.at(), c, "merged", null, files, baseSha, commit);
     x.summary.pushed.push(ref);
     x.log(`  ${ref}: merged ${c.base} into the branch: ${short(commit)} on ${short(head)}${files.length ? `, resolved ${files.join(", ")}` : ""}`);
-    const cm = await ghComment(x.gw, x.d.exec, "conflict-comment", { repo: x.repo, number: c.number, pr: true }, files.length ? { by: "model", kind: "comment", model: CONFLICT.models[0] } : { by: "fixed" }, conflictCommentText(c.base), { run: x.runId });
+    const cm = await ghComment(x.gw, g, x.d.exec, "conflict-comment", { repo: x.repo, number: c.number, pr: true }, files.length ? { by: "model", kind: "comment", model: CONFLICT.models[0] } : { by: "fixed" }, conflictCommentText(c.base), { run: x.runId });
     if (cm.code !== 0) x.log(`  ${ref}: comment failed: ${oneLine(cm.stderr)}`);
   } catch (e) {
     fail("failed", oneLine(String((e as Error).message ?? e)));

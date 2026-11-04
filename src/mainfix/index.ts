@@ -9,6 +9,8 @@
 //
 //   autocraft main-fix --repo R [--apply]
 //   autocraft main-fix-approval [--repo R]
+import { CLI_BY, type By } from "../core/gates.ts";
+import { guardRepo } from "../core/guard.ts";
 import type { DatabaseSync } from "node:sqlite";
 import { ORG } from "../act/templates.ts";
 import { actionable, ask, getDecision } from "../decisions.ts";
@@ -186,7 +188,7 @@ function fromDecision(db: DatabaseSync, id: string): { state: string; issue: num
   return { state: "asked", issue: null };
 }
 
-async function classifyHead(db: DatabaseSync, repo: string, cur: Current, deps: MainFixDeps, log: (l: string) => void, s: MainFixSummary): Promise<boolean> {
+async function classifyHead(db: DatabaseSync, repo: string, cur: Current, deps: MainFixDeps, log: (l: string) => void, s: MainFixSummary, by: By = CLI_BY): Promise<boolean> {
   const at = deps.now().toISOString();
   const reading = await readFailure(deps.gh, repo, cur.headSha, optionalChecks(db, repo));
   const base = { repo, head_sha: cur.headSha, run_id: null, run_url: null, excerpt: null, decision_id: null, issue_number: null, pr_number: null, pr_url: null, created_at: at } as const;
@@ -216,7 +218,8 @@ async function classifyHead(db: DatabaseSync, repo: string, cur: Current, deps: 
   }
   const w: Writer = { db, login: ACTOR };
   for (const [runId, rows] of rerunRuns) {
-    const res = await ghRerunMainFailed(w, deps.exec, { repo, head: cur.headSha, runId }, { checks: rows.map((r) => r.check) });
+    const g = guardRepo(db, repo, "main-fix", by);
+    const res = "refused" in g ? { code: 1, stdout: "", stderr: g.refused } : await ghRerunMainFailed(w, g, deps.exec, { repo, head: cur.headSha, runId }, { checks: rows.map((r) => r.check) });
     if (res.code !== 0) for (const r of rows) setState(db, r, "nothing-to-do", `GitHub refused the rerun: ${oneLine(res.stderr || res.stdout, 120)}`, deps.now().toISOString());
     else { s.reran++; log(`  ${repo}: reran the failed jobs of run ${runId}`); }
   }
@@ -259,7 +262,7 @@ function settleReruns(db: DatabaseSync, repo: string, cur: Current, deps: MainFi
 }
 
 /** Opens the issues the operator asked for and records the "not now" answers. */
-async function applyAnswers(db: DatabaseSync, repo: string, deps: MainFixDeps, log: (l: string) => void, s: MainFixSummary): Promise<void> {
+async function applyAnswers(db: DatabaseSync, repo: string, deps: MainFixDeps, log: (l: string) => void, s: MainFixSummary, by: By): Promise<void> {
   for (const a of actionable(db).filter((x) => x.kind === "other" && isMainFixDecision(repo, x.id))) {
     const at = deps.now().toISOString();
     const rows = db.prepare("SELECT * FROM main_fixes WHERE decision_id = ? ORDER BY created_at DESC, head_sha").all(a.id) as FixRow[];
@@ -270,7 +273,9 @@ async function applyAnswers(db: DatabaseSync, repo: string, deps: MainFixDeps, l
     if (!row) { done(); continue; }
     if (rows.some((r) => r.issue_number !== null)) { done(); continue; }
     try {
-      const made = await createIssue({ db, login: ACTOR }, deps.exec, { repo, target: `${repo}:${row.head_sha.slice(0, 8)}`, title: issueTitle(row.check), body: issueBody(row) }, { by: "operator", model: NOTE_MODEL }, { decision: a.id });
+      const g = guardRepo(db, repo, "main-fix", by);
+      if ("refused" in g) { log(`  ${repo}: issue for ${row.check} not opened: ${g.refused}`); continue; }
+      const made = await createIssue({ db, login: ACTOR }, g, deps.exec, { repo, target: `${repo}:${row.head_sha.slice(0, 8)}`, title: issueTitle(row.check), body: issueBody(row) }, { by: "operator", model: NOTE_MODEL }, { decision: a.id });
       for (const r of rows) setState(db, r, "issue-opened", r.reason, at, { issue_number: made.number });
       done();
       s.issues++;
@@ -285,7 +290,7 @@ async function applyAnswers(db: DatabaseSync, repo: string, deps: MainFixDeps, l
 }
 
 /** One repo: nothing without the approval; then answers, rerun results and, for a red head with no rows, the reading and sorting. */
-export async function runMainFix(db: DatabaseSync, params: { repo: string; onHandled?: (n: number) => void }, log: (line: string) => void = console.log, deps: MainFixDeps = defaultDeps()): Promise<MainFixSummary> {
+export async function runMainFix(db: DatabaseSync, params: { repo: string; onHandled?: (n: number) => void; by?: By }, log: (line: string) => void = console.log, deps: MainFixDeps = defaultDeps()): Promise<MainFixSummary> {
   const { repo } = params;
   const s: MainFixSummary = { repo, classified: 0, reran: 0, asked: 0, needsFix: 0, issues: 0, prs: 0, note: null };
   if (!mainFixApprovalOf(db, repo)) {
@@ -295,17 +300,17 @@ export async function runMainFix(db: DatabaseSync, params: { repo: string; onHan
   }
   let handled = 0;
   const bump = (): void => params.onHandled?.(++handled);
-  await applyAnswers(db, repo, deps, log, s);
+  await applyAnswers(db, repo, deps, log, s, params.by ?? CLI_BY);
   const cur = currentOf(db, repo);
   if (!cur) return s;
   settleReruns(db, repo, cur, deps, s);
   if (cur.state === "red" && rowsAt(db, repo, cur.headSha).length === 0) {
     bump();
-    await classifyHead(db, repo, cur, deps, log, s);
+    await classifyHead(db, repo, cur, deps, log, s, params.by ?? CLI_BY);
   }
   if (deps.fix) {
     const asHead = (c: Current | null) => (c ? { headSha: c.headSha, branch: c.branch, state: c.state, redSince: c.redSince, culprit: c.culprit, culpritPr: c.culpritPr } : null);
-    const r = await openFixPrs({ db, repo, gh: deps.gh, exec: deps.exec, fix: deps.fix, now: deps.now, log, setState: (r, state, reason, at, extra) => setState(db, r, state, reason, at, extra), current: () => asHead(currentOf(db, repo)) }, bump);
+    const r = await openFixPrs({ db, repo, gh: deps.gh, exec: deps.exec, fix: deps.fix, now: deps.now, log, by: params.by, setState: (r, state, reason, at, extra) => setState(db, r, state, reason, at, extra), current: () => asHead(currentOf(db, repo)) }, bump);
     s.prs = r.opened;
   }
   log(`main-fix ${repo}: classified ${s.classified}, reran ${s.reran}, asked ${s.asked}, needs fix ${s.needsFix}, issues ${s.issues}, fix PRs ${s.prs}`);

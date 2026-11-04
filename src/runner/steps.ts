@@ -182,7 +182,7 @@ export const STEPS: StepDef[] = [
       if (refused) throw new Error(refused);
       const { ensureLabels } = await import("../labels/github.ts");
       const { Client } = await import("../mirror.ts");
-      const missing = await ensureLabels(new Client(500), repo, true, { db: ctx.db, login: ctx.job.requestedBy });
+      const missing = await ensureLabels(new Client(500), repo, true, { db: ctx.db, login: ctx.job.requestedBy }, undefined, byOfJob(ctx.job.requestedBy));
       for (const l of missing) ctx.log(`${repo}: created "${l.name}"`);
       return missing.length ? `created ${missing.length} labels on ${repo}` : `${repo}: all labels exist`;
     },
@@ -209,8 +209,8 @@ export const STEPS: StepDef[] = [
       const { applyLabels, ensureLabels } = await import("../labels/github.ts");
       const { Client } = await import("../mirror.ts");
       // Approval for labelling covers creating the set's labels the repo lacks.
-      for (const l of await ensureLabels(new Client(500), repo, true, { db: ctx.db, login: ctx.job.requestedBy })) ctx.log(`${repo}: created "${l.name}"`);
-      const r = await applyLabels(ctx.db, new Client(500), repo, { runId, limit: Number(ctx.params.limit), apply: true, login: ctx.job.requestedBy, log: ctx.log, onLabeled: ctx.handled });
+      for (const l of await ensureLabels(new Client(500), repo, true, { db: ctx.db, login: ctx.job.requestedBy }, undefined, byOfJob(ctx.job.requestedBy))) ctx.log(`${repo}: created "${l.name}"`);
+      const r = await applyLabels(ctx.db, new Client(500), repo, { runId, limit: Number(ctx.params.limit), apply: true, login: ctx.job.requestedBy, by: byOfJob(ctx.job.requestedBy), log: ctx.log, onLabeled: ctx.handled });
       return `${repo}: labelled ${r.labeled} of ${r.planned} items in ${r.batches} batches, ${r.failed.length} failed`;
     },
   },
@@ -339,7 +339,7 @@ export const STEPS: StepDef[] = [
       const { runAct } = await import("../act/index.ts");
       const refused = await checkCommentApproved(ctx.db, ctx.params);
       if (refused) throw new Error(refused);
-      const r = await runAct(ctx.db, { repo: String(ctx.params.repo), limit: Number(ctx.params.limit), dryRun: false, onHandled: ctx.handled }, ctx.log);
+      const r = await runAct(ctx.db, { repo: String(ctx.params.repo), limit: Number(ctx.params.limit), dryRun: false, onHandled: ctx.handled, by: byOfJob(ctx.job.requestedBy) }, ctx.log);
       ctx.acted(r.done.length + r.skipped.length + r.failed.length + r.asked.length);
       return `${r.repo}: ${r.done.length} closed, ${r.skipped.length} skipped, ${r.failed.length} failed, ${r.asked.length} decisions asked`;
     },
@@ -452,7 +452,7 @@ export const STEPS: StepDef[] = [
       const { runFixIssue } = await import("../fixissue/index.ts");
       const refused = await checkFixIssueApproved(ctx.db, ctx.params);
       if (refused) throw new Error(refused);
-      const r = await runFixIssue(ctx.db, { repo: String(ctx.params.repo), limit: Number(ctx.params.limit), dryRun: false, onHandled: ctx.handled }, ctx.log);
+      const r = await runFixIssue(ctx.db, { repo: String(ctx.params.repo), limit: Number(ctx.params.limit), dryRun: false, onHandled: ctx.handled, by: byOfJob(ctx.job.requestedBy) }, ctx.log);
       ctx.usageRun(r.runId);
       return `${r.repo}: ${r.started.length} started, ${r.skipped.length} not a clear fix, ${r.queued.length} further rounds queued`;
     },
@@ -468,7 +468,7 @@ export const STEPS: StepDef[] = [
     params: [],
     run: async (ctx) => {
       const { runFixIssueCollect } = await import("../fixissue/index.ts");
-      const r = await runFixIssueCollect(ctx.db, {}, ctx.log);
+      const r = await runFixIssueCollect(ctx.db, { by: byOfJob(ctx.job.requestedBy) }, ctx.log);
       ctx.usageRun(r.runId);
       ctx.handled(r.changed);
       return `${r.looked} pending: ${r.passed} passed, ${r.opened} PRs opened, ${r.failedRounds} failed rounds, ${r.failed} failed, ${r.retried} retried`;
@@ -605,7 +605,7 @@ export const STEPS: StepDef[] = [
       const { runPostmergeFile } = await import("../postmerge/file.ts");
       const refused = await checkCommentApproved(ctx.db, ctx.params);
       if (refused) throw new Error(refused);
-      const r = await runPostmergeFile(ctx.db, { repo: String(ctx.params.repo), limit: Number(ctx.params.limit), onHandled: ctx.handled }, ctx.log);
+      const r = await runPostmergeFile(ctx.db, { repo: String(ctx.params.repo), limit: Number(ctx.params.limit), onHandled: ctx.handled, by: byOfJob(ctx.job.requestedBy) }, ctx.log);
       ctx.acted(r.filed.length + r.failed.length + r.unknown.length);
       return `${r.repo}: ${r.filed.length} issues filed, ${r.limited} over the limit, ${r.failed.length} failed${r.unknown.length ? `, ${r.unknown.length} with an unknown outcome (check GitHub)` : ""}`;
     },
@@ -779,7 +779,7 @@ export const STEPS: StepDef[] = [
       const { runMainFix } = await import("../mainfix/index.ts");
       const refused = await checkMainFixApproved(ctx.db, ctx.params);
       if (refused) throw new Error(refused);
-      const r = await runMainFix(ctx.db, { repo: String(ctx.params.repo), onHandled: ctx.handled }, ctx.log);
+      const r = await runMainFix(ctx.db, { repo: String(ctx.params.repo), onHandled: ctx.handled, by: byOfJob(ctx.job.requestedBy) }, ctx.log);
       ctx.acted(r.reran + r.asked + r.needsFix + r.issues + r.prs);
       return `${r.repo}: classified ${r.classified} heads, reran ${r.reran}, asked ${r.asked}, ${r.needsFix} need a fix, ${r.issues} issues opened, ${r.prs} fix PRs opened`;
     },

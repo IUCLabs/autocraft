@@ -10,6 +10,9 @@
 //
 // Without --apply it is a dry run: local tables only. No model is a tool user: replies are text our code
 // validates, and nothing from an issue or a patch runs on this user (the build tasks run in the sandbox).
+import { CLI_BY, type By } from "../core/gates.ts";
+import { guardItem, guardRepo, type Grant } from "../core/guard.ts";
+import type { GuardedRepo } from "../core/guard.ts";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
@@ -187,13 +190,13 @@ export function tasksFor(r: { repo: string; number: number; main_sha: string; cr
 
 // ---- running: triage and patch rounds -------------------------------------------
 
-export type FixIssueParams = { repo: string; limit?: number; dryRun?: boolean; onHandled?: (n: number) => void };
+export type FixIssueParams = { repo: string; limit?: number; dryRun?: boolean; onHandled?: (n: number) => void; by?: By };
 export type FixIssueSummary = { runId: string; repo: string; dryRun: boolean; started: string[]; queued: string[]; skipped: string[]; failed: string[] };
 
 export const branchOf = (db: DatabaseSync, repo: string): string =>
   (db.prepare("SELECT default_branch FROM repos WHERE name = ?").get(repo) as { default_branch: string | null } | undefined)?.default_branch ?? "main";
 
-type Ctx = { db: DatabaseSync; d: FixIssueDeps; git: Git; log: (l: string) => void; runId: string; usage: Usage };
+type Ctx = { db: DatabaseSync; d: FixIssueDeps; git: Git; log: (l: string) => void; runId: string; usage: Usage; /** Who asked; default: an operator at the command line. */ by?: By };
 
 /** Asks with a checkout of the base commit when there is one; the input then carries the repository path. */
 async function ask(x: Ctx, id: Id, input: TriageInput | PatchInput | FixIssueCheckInput, base: { repo: string; sha: string }): Promise<string | null> {
@@ -258,11 +261,14 @@ async function claimIssue(x: Ctx, c: IssueCandidate): Promise<void> {
     const me = await viewerOf(q);
     const w: Writer = { db, login: ACTOR };
     if (attemptOf(db, c.repo, c.number)?.state === "failed") return;
-    if (await claimItem(w, q, c.repo, c.number, info, me, { run: x.runId })) log(`  ${ref}: assigned to ${me.login}`);
+    // The attempt row exists by now, so decideItem no longer lists a new fix for the issue: the claim needs the repo's approval and the switch.
+    const g = guardRepo(db, c.repo, "fix-issue", x.by ?? CLI_BY);
+    if ("refused" in g) { log(`  ${ref}: not claimed: ${g.refused}`); return; }
+    if (await claimItem(w, g, q, c.repo, c.number, info, me, { run: x.runId })) log(`  ${ref}: assigned to ${me.login}`);
     // Only when the issue is ours: nobody assigned, or only us.
     const assigned = info.assignees.length === 0 || info.assignees.every((a) => a === me.login);
     if (assigned && commentApprovalOf(db, c.repo) && !db.prepare("SELECT 1 FROM audit WHERE action = 'fixissue-claim' AND target = ?").get(ref)) {
-      const cm = await ghComment(w, d.exec, "fixissue-claim", { repo: c.repo, number: c.number, pr: false }, { by: "fixed" }, claimCommentText(), { run: x.runId });
+      const cm = await ghComment(w, g, d.exec, "fixissue-claim", { repo: c.repo, number: c.number, pr: false }, { by: "fixed" }, claimCommentText(), { run: x.runId });
       if (cm.code !== 0) log(`  ${ref}: claim comment failed: ${oneLine(cm.stderr)}`);
     }
   } catch (e) {
@@ -280,7 +286,9 @@ async function releaseGivenUp(x: Ctx, repo: string): Promise<void> {
     try {
       const me = await viewerOf(q);
       if (!weAssigned(db, repo, r.number, me.login, "fixissue-")) continue;
-      if (await releaseItem({ db, login: ACTOR }, q, repo, r.number, await issueInfo(q, ORG, repo, r.number), me, { run: x.runId }, "fixissue-")) log(`  ${repo}#${r.number}: unassigned from ${me.login}`);
+      const rg = guardRepo(db, repo, null, x.by ?? CLI_BY);
+      if ("refused" in rg) { log(`  ${repo}#${r.number}: not unassigned: ${rg.refused}`); continue; }
+      if (await releaseItem({ db, login: ACTOR }, rg, q, repo, r.number, await issueInfo(q, ORG, repo, r.number), me, { run: x.runId }, "fixissue-")) log(`  ${repo}#${r.number}: unassigned from ${me.login}`);
     } catch (e) {
       log(`  ${repo}#${r.number}: could not unassign: ${oneLine(String((e as Error).message ?? e))}`);
     }
@@ -360,7 +368,7 @@ export async function runFixIssue(db: DatabaseSync, params: FixIssueParams, log:
   }
   if (!fixIssueApprovalOf(db, repo)) throw new Error(`fixing issues in ${repo} is not approved`);
   mkdirSync(d.root, { recursive: true });
-  const x: Ctx = { db, d, git: new Git(d.exec, d.root, repo), log, runId, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: null } };
+  const x: Ctx = { db, d, git: new Git(d.exec, d.root, repo), log, by: params.by, runId, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: null } };
   for (const r of retries) {
     try {
       if (await patchRound(x, r)) s.queued.push(refOf(r));
@@ -387,7 +395,7 @@ export async function runFixIssue(db: DatabaseSync, params: FixIssueParams, log:
 
 // ---- collecting ------------------------------------------------------------------
 
-export type CollectParams = { dryRun?: boolean; onHandled?: (n: number) => void };
+export type CollectParams = { dryRun?: boolean; onHandled?: (n: number) => void; by?: By };
 export type CollectDeps = FixIssueDeps & {
   /** Haiku's account of a failed step. */
   summarise: (db: DatabaseSync, repo: string, number: number, taskId: number, step: string) => Promise<string>;
@@ -433,7 +441,7 @@ export async function runFixIssueCollect(db: DatabaseSync, params: CollectParams
   const rows = db.prepare(`SELECT * FROM fix_attempts a WHERE state IN ('testing', 'passed') AND ${pilotSqlFor("a.repo", "a.number")} AND NOT ${backlogHeldSql("a")} ORDER BY updated_at`).all() as AttemptRow[];
   s.looked = rows.length;
   if (params.dryRun) { log(`fixissue-collect: ${rows.length} pending; dry run`); return s; }
-  const x = (repo: string): Ctx => ({ db, d, git: new Git(d.exec, d.root, repo), log, runId: s.runId, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: null } });
+  const x = (repo: string): Ctx => ({ db, d, git: new Git(d.exec, d.root, repo), log, by: params.by, runId: s.runId, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: null } });
 
   for (const r of rows) {
     const ref = refOf(r);
@@ -512,7 +520,7 @@ async function checkPatch(x: Ctx, r: AttemptRow): Promise<boolean> {
 }
 
 /** The pipeline account's fork of the repo as owner/name, created when missing. */
-export async function forkOf(w: Writer, run: Exec, login: string, repo: string, details: Record<string, unknown> = {}): Promise<string> {
+export async function forkOf(w: Writer, g: GuardedRepo, run: Exec, login: string, repo: string, details: Record<string, unknown> = {}): Promise<string> {
   const find = async (): Promise<string | null> => {
     const r = await run("gh", ["api", `repos/${ORG}/${repo}/forks?per_page=100`, "--jq", `.[] | select(.owner.login == "${login}") | .full_name`]);
     return r.code === 0 ? r.stdout.trim().split("\n")[0] || null : null;
@@ -521,7 +529,7 @@ export async function forkOf(w: Writer, run: Exec, login: string, repo: string, 
   if (same.code === 0 && same.stdout.trim() === `${ORG}/${repo}`) return `${login}/${repo}`;
   const known = await find();
   if (known) return known;
-  const f = await ghFork(w, run, repo, details);
+  const f = await ghFork(w, g, run, repo, details);
   if (f.code !== 0) throw new Error(`could not fork ${repo}: ${oneLine(f.stderr)}`);
   const made = await find();
   if (!made) throw new Error(`the fork of ${repo} is not visible yet`);
@@ -546,13 +554,13 @@ async function closedLive(x: Ctx, r: AttemptRow): Promise<boolean> {
 }
 
 /** Comments on the issue at most once: the activity row is written before the post, so a failed post or a crash is not retried. */
-export async function comment(x: Ctx, r: AttemptRow, url: string): Promise<void> {
+export async function comment(x: Ctx, g: Grant, r: AttemptRow, url: string): Promise<void> {
   const { db, d, log } = x;
   const ref = refOf(r);
   if (db.prepare("SELECT 1 FROM audit WHERE action = 'fixissue-comment' AND target = ?").get(ref)) return;
   if (await closedLive(x, r)) { log(`  ${ref}: not commenting, the issue is closed`); return; }
   const text = commentText(url);
-  const cm = await ghComment({ db, login: ACTOR }, d.exec, "fixissue-comment", { repo: r.repo, number: r.number, pr: false }, { by: "model", kind: "comment", model: PATCH.models[0] }, text, { run: x.runId });
+  const cm = await ghComment({ db, login: ACTOR }, g, d.exec, "fixissue-comment", { repo: r.repo, number: r.number, pr: false }, { by: "model", kind: "comment", model: PATCH.models[0] }, text, { run: x.runId });
   if (cm.code !== 0) log(`  ${ref}: comment failed: ${oneLine(cm.stderr)}`);
 }
 
@@ -584,10 +592,12 @@ export async function openPr(x: Ctx, r: AttemptRow): Promise<boolean> {
     const found = await d.exec("gh", ["pr", "list", "--repo", `${ORG}/${r.repo}`, "--state", "open", "--head", branch, "--json", "url,headRepositoryOwner", "--jq", `.[] | select(.headRepositoryOwner.login == "${who.login}") | .url`]);
     const existing = found.code === 0 ? found.stdout.trim().split("\n")[0] ?? "" : "";
     if (existing && urlOk(existing, r.repo)) {
+      const ag = await guardItem(db, { repo: r.repo, number: r.number }, { kind: "fixissue-collect" }, x.by ?? CLI_BY);
+      if ("refused" in ag) { log(`  ${ref}: waiting: ${ag.refused}`); return false; }
       update(db, d, r, { state: "pr-opened", pr_url: existing });
       stage(db, d, r, "take", `fix PR opened: ${existing}`);
       log(`  ${ref}: adopted ${existing}`);
-      await comment(x, r, existing);
+      await comment(x, ag, r, existing);
       return true;
     }
     if (hasOpenPr(db, r.repo, r.number)) { fail(db, d, r, "another pull request already covers the issue"); return false; }
@@ -609,18 +619,22 @@ export async function openPr(x: Ctx, r: AttemptRow): Promise<boolean> {
       return false;
     }
     if (!permitted()) return false;
-    const fork = await forkOf({ db, login: ACTOR }, d.exec, who.login, r.repo, { run: x.runId });
-    const push = await pushOwnBranch({ db, login: ACTOR }, git, "fixissue-push", { repo: r.repo, number: r.number, remote: fork, branch, sha: commit }, { run: x.runId, fork });
+    const g = await guardItem(db, { repo: r.repo, number: r.number }, { kind: "fixissue-collect" }, x.by ?? CLI_BY);
+    if ("refused" in g) { log(`  ${ref}: waiting: ${g.refused}`); return false; }
+    const rg = guardRepo(db, r.repo, "fix-issue", x.by ?? CLI_BY);
+    if ("refused" in rg) { log(`  ${ref}: waiting: ${rg.refused}`); return false; }
+    const fork = await forkOf({ db, login: ACTOR }, rg, d.exec, who.login, r.repo, { run: x.runId });
+    const push = await pushOwnBranch({ db, login: ACTOR }, g, git, "fixissue-push", { repo: r.repo, number: r.number, remote: fork, branch, sha: commit }, { run: x.runId, fork });
     if (push.code !== 0) { log(`  ${ref}: push failed: ${oneLine(push.stderr)}`); tried(); return false; }
     if (await closedLive(x, r)) { fail(db, d, r, "the issue is closed"); return false; }
     const body = prBody(r.number, files, testPath);
-    const pr = await ghOpenPr({ db, login: ACTOR }, d.exec, "fixissue-pr", { repo: r.repo, target: ref, base: branchOf(db, r.repo), head: `${fork.split("/")[0]}:${branch}`, title: prTitle(title), body }, { by: "model", kind: "pull request", model: PATCH.models[0] }, { run: x.runId, branch });
+    const pr = await ghOpenPr({ db, login: ACTOR }, g, d.exec, "fixissue-pr", { repo: r.repo, target: ref, base: branchOf(db, r.repo), head: `${fork.split("/")[0]}:${branch}`, title: prTitle(title), body }, { by: "model", kind: "pull request", model: PATCH.models[0] }, { run: x.runId, branch });
     const url = pr.stdout.trim().split("\n").pop() ?? "";
     if (pr.code !== 0 || !urlOk(url, r.repo)) { log(`  ${ref}: PR not opened: ${oneLine(pr.stderr || pr.stdout)}`); tried(); return false; }
     update(db, d, r, { state: "pr-opened", pr_url: url });
     stage(db, d, r, "take", `fix PR opened: ${url}`);
     log(`  ${ref}: opened ${url}`);
-    await comment(x, r, url);
+    await comment(x, g, r, url);
     return true;
   } catch (e) {
     log(`  ${ref}: ${oneLine(String((e as Error).message ?? e))}`);

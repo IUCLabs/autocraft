@@ -77,6 +77,7 @@ export function loadItemFacts(db: DatabaseSync, opts: ItemLoadOptions = {}): Ite
   if (opts.repo) { where += " AND i.repo = :repo"; params.repo = opts.repo; }
   if (opts.refs) { where += " AND i.repo || '#' || i.number IN (SELECT value FROM json_each(:refs))"; params.refs = JSON.stringify([...opts.refs]); }
   const rows = db.prepare(`${SELECT}${where} ORDER BY i.repo, i.number`).all(params) as Row[];
+  const pipelineOn = (db.prepare("SELECT value FROM main.settings WHERE key = 'pipeline_enabled'").get() as { value: string } | undefined)?.value === "1";
 
   // Values read once for all items.
   const run = opts.run !== undefined ? opts.run : latestRun(db);
@@ -189,7 +190,7 @@ export function loadItemFacts(db: DatabaseSync, opts: ItemLoadOptions = {}): Ite
     const embedHash = r.embed_hash ?? (() => { const b = textOf.get(r.repo, r.number) as { title: string | null; body: string | null }; return hashOfText(b.title, b.body); })();
     const note = labeled.get(ref) ?? null;
     return {
-      repo: r.repo, number: r.number, kind: r.kind, now, draft: !!r.is_draft,
+      repo: r.repo, number: r.number, kind: r.kind, now, pipelineOn, draft: !!r.is_draft,
       inScope: !!r.in_pilot, integration: !r.not_integration,
       held: r.held_backlog ? "backlog" : r.held_dup ? "duplicate" : null,
       fast: (r.score ?? 0) >= FAST_FLOOR, score: r.score, repoFacts: { labelsApproved: labelsApproved(r.repo), commentApproved: repoOf(r.repo).comment, fixIssueApproved: repoOf(r.repo).fix },

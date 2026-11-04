@@ -3,6 +3,8 @@
 // patch path writes a patch against the head commit (Sonnet, Opus check, validators), the commit is pushed to the
 // pipeline account's fork on `autocraft/main-ci-<check>-<sha7>` and a PR is opened against the default branch.
 // The log, the files and other PRs are untrusted data; nothing from them is run here.
+import { CLI_BY, type By } from "../core/gates.ts";
+import { guardRepo } from "../core/guard.ts";
 import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
@@ -35,6 +37,7 @@ export type FixPrDeps = Pick<CifixDeps, "ask" | "check" | "root"> & {
 export type Head = { headSha: string; branch: string; state: string; redSince: string; culprit: string; culpritPr: number | null };
 
 type Ctx = {
+  by?: By;
   db: DatabaseSync; repo: string; gh: Gh; exec: Exec; fix: FixPrDeps; now: () => Date; log: (line: string) => void;
   /** The rows' state writer of the caller. */
   setState: (r: FixRow, state: string, reason: string | null, at: string, extra?: Partial<FixRow>) => FixRow;
@@ -159,15 +162,17 @@ async function attempt(c: Ctx, rows: FixRow[], count: () => void): Promise<Outco
     if (!again || again.state !== "red" || again.headSha !== head) return set(live, "nothing-to-do", "main changed while the patch was written");
 
     const branch = branchFor(names[0]!, head);
-    const fork = await forkOf({ db: c.db, login: PR_ACTOR }, c.exec, who.login, c.repo);
+    const g = guardRepo(c.db, c.repo, "main-fix", c.by ?? CLI_BY);
+    if ("refused" in g) return set(live, "fix-failed", g.refused);
+    const fork = await forkOf({ db: c.db, login: PR_ACTOR }, g, c.exec, who.login, c.repo);
     const owner = fork.split("/")[0]!;
     const found = await c.exec("gh", ["pr", "list", "--repo", `${ORG}/${c.repo}`, "--state", "open", "--head", branch, "--json", "url,headRepositoryOwner", "--jq", `.[] | select(.headRepositoryOwner.login == "${owner}") | .url`]);
     let url = found.code === 0 ? found.stdout.trim().split("\n")[0] ?? "" : "";
     if (!(url && urlOk(url, c.repo))) {
-      const push = await pushOwnBranch({ db: c.db, login: PR_ACTOR }, git, "main-fix-push", { repo: c.repo, remote: fork, branch, sha: commit }, { fork, head });
+      const push = await pushOwnBranch({ db: c.db, login: PR_ACTOR }, g, git, "main-fix-push", { repo: c.repo, remote: fork, branch, sha: commit }, { fork, head });
       if (push.code !== 0) return set(live, "fix-failed", `push failed: ${oneLine(push.stderr)}`);
       const body = prBody({ head, checks: live.map((r) => ({ name: r.check, runUrl: r.run_url })), culprit: now.culprit, culpritPr: now.culpritPr, files: v.files, changed: v.changed });
-      const pr = await ghOpenPr({ db: c.db, login: PR_ACTOR }, c.exec, "main-fix-pr", { repo: c.repo, target: ref, base: now.branch, head: `${owner}:${branch}`, title, body },
+      const pr = await ghOpenPr({ db: c.db, login: PR_ACTOR }, g, c.exec, "main-fix-pr", { repo: c.repo, target: ref, base: now.branch, head: `${owner}:${branch}`, title, body },
         { by: "model", kind: "pull request", model: made.model }, { branch, files: v.files });
       url = pr.stdout.trim().split("\n").pop() ?? "";
       if (pr.code !== 0 || !urlOk(url, c.repo)) return set(live, "fix-failed", `the pull request was not opened: ${oneLine(pr.stderr || pr.stdout)}`);

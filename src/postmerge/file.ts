@@ -4,6 +4,8 @@
 // A row in state `filing` is written before the call. A create that succeeded on GitHub but whose answer was lost leaves
 // that row behind: the issue may exist, so the finding is never filed again by this stage, and the dashboard says the
 // outcome is unknown. Only a refusal from GitHub (no issue can exist) is recorded `failed` and tried again later.
+import { CLI_BY, type By } from "../core/gates.ts";
+import { guardRepo, type GuardedRepo } from "../core/guard.ts";
 import type { DatabaseSync } from "node:sqlite";
 import { commentApprovalOf } from "../act/approval.ts";
 import { audit } from "../dash/audit.ts";
@@ -18,7 +20,7 @@ import { dedupeDefects, pendingDefects, recentFiled, reviewOf, followupsOf, type
 export const ACTOR = "postmerge-file";
 const OPERATOR = "cli";
 
-export type FileParams = { repo: string; limit?: number; onHandled?: (n: number) => void };
+export type FileParams = { repo: string; limit?: number; onHandled?: (n: number) => void; by?: By };
 export type FileDeps = { exec: Exec; now: () => Date; fileExists: FileChecker };
 export type FileSummary = {
   repo: string; candidates: number; filed: { ref: string; issue: number }[]; limited: number; failed: { ref: string; reason: string }[];
@@ -61,7 +63,7 @@ type Outcome = { kind: "filed"; issue: number } | { kind: "skipped" } | { kind: 
  * One filing attempt: the stale-file and text checks (a skip, no write to GitHub), the `filing` row, the create, and the
  * `filed` row as its own step. `onAttempt` runs once the create is about to be, or was, tried.
  */
-async function fileDefect(db: DatabaseSync, deps: FileDeps, w: Writer, d: PendingDefect, log: (line: string) => void, onAttempt: () => void): Promise<Outcome> {
+async function fileDefect(db: DatabaseSync, deps: FileDeps, w: Writer, g: GuardedRepo, d: PendingDefect, log: (line: string) => void, onAttempt: () => void): Promise<Outcome> {
   const { repo } = d, ref = `${repo}#${d.number}`, row = rowOf(d);
   const at = () => deps.now().toISOString();
   if (d.f.file) {
@@ -85,7 +87,7 @@ async function fileDefect(db: DatabaseSync, deps: FileDeps, w: Writer, d: Pendin
   onAttempt();
   let made: { number: number; url: string };
   try {
-    made = await createIssue(w, deps.exec, { repo, target: ref, title, body }, { by: "model", kind: "issue", model: d.model }, { finding: d.finding, severity: d.f.severity });
+    made = await createIssue(w, g, deps.exec, { repo, target: ref, title, body }, { by: "model", kind: "issue", model: d.model }, { finding: d.finding, severity: d.f.severity });
   } catch (e) {
     const reason = oneLine(e);
     if (!(e instanceof IssueError) || !e.clear) return { kind: "unknown", reason };
@@ -115,6 +117,12 @@ export async function runPostmergeFile(db: DatabaseSync, params: FileParams, log
     log(`postmerge-file ${repo}: ${s.note}; nothing filed`);
     return s;
   }
+  const g = guardRepo(db, repo, "comment", params.by ?? CLI_BY);
+  if ("refused" in g) {
+    s.note = g.refused;
+    log(`postmerge-file ${repo}: ${s.note}; nothing filed`);
+    return s;
+  }
   const { keep, dupes } = dedupeDefects(pendingDefects(db, repo, deps.now().getTime()), recentFiled(db, repo, deps.now().getTime()));
   for (const { d, of } of dupes) {
     setFollowup(db, rowOf(d), "skipped-duplicate", deps.now().toISOString(), { duplicateOf: of });
@@ -132,7 +140,7 @@ export async function runPostmergeFile(db: DatabaseSync, params: FileParams, log
       s.limited++;
       continue;
     }
-    const o = await fileDefect(db, deps, w, d, log, () => { handled++; params.onHandled?.(handled); });
+    const o = await fileDefect(db, deps, w, g, d, log, () => { handled++; params.onHandled?.(handled); });
     if (o.kind === "filed") s.filed.push({ ref, issue: o.issue });
     else if (o.kind === "skipped") s.skipped++;
     else if (o.kind === "failed") { s.failed.push({ ref, reason: o.reason }); log(`  ${ref}: not filed: ${o.reason}`); }
@@ -165,7 +173,9 @@ export async function fileFinding(db: DatabaseSync, ref: string, index: number, 
   if (have?.state === "filed" || have?.state === "filing") throw new Error(`finding ${index} of ${ref} is already ${have.state === "filed" ? `filed as issue ${have.issue_number}` : "being filed with an unknown outcome; check GitHub"}`);
   audit(db, OPERATOR, "postmerge-file-one", ref, { finding: index });
   const d: PendingDefect = { repo, number, review_at: r.at, finding: index, f, model: r.model, attempts: have?.attempts ?? 0 };
-  const o = await fileDefect(db, deps, { db, login: ACTOR }, d, log, () => {});
+  const g = guardRepo(db, repo, "comment", CLI_BY);
+  if ("refused" in g) throw new Error(g.refused);
+  const o = await fileDefect(db, deps, { db, login: ACTOR }, g, d, log, () => {});
   log(o.kind === "filed" ? `${ref}: filed issue ${o.issue}` : `${ref}: finding ${index} not filed (${o.kind === "skipped" ? "see the log above" : o.reason})`);
   return o;
 }

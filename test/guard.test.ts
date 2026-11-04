@@ -4,9 +4,11 @@ import { test } from "node:test";
 import type { DatabaseSync } from "node:sqlite";
 import { setPushApproval } from "../src/fixup/approval.ts";
 import { gates } from "../src/core/gates.ts";
-import { guard, type Live, type LiveRead } from "../src/core/guard.ts";
+import { setCommentApproval } from "../src/act/approval.ts";
+import { guard, guardItem, guardRepo, type Live, type LiveRead } from "../src/core/guard.ts";
 import { ORG } from "../src/act/templates.ts";
-import { mergeViaCommand } from "../src/github/write.ts";
+import { closeItem, mergeViaCommand } from "../src/github/write.ts";
+import { G } from "./guarded.ts";
 import { mergeDecisionId } from "../src/merge/queue.ts";
 import { parseSafeMergeArgs, safeMerge } from "../src/merge/safe-merge.ts";
 import { fresh } from "./batch-fixture.ts";
@@ -96,4 +98,36 @@ test("the merge command gets the reviewed head, and the built-in command refuses
   const gh = async () => JSON.stringify({ state: "OPEN", isDraft: false, mergeable: "MERGEABLE", headRefOid: "other0000", statusCheckRollup: [] });
   const r = await safeMerge("o/r", "1", "--squash", [], [], gh, async () => {}, false, "sha1");
   assert.deepEqual(r, { merged: false, reason: "REFUSED o/r#1: head is other00, not the reviewed sha1" });
+});
+
+/** Item 1 with an operator's close answer to a scope decision. */
+function closeAnswered(): DatabaseSync {
+  const db = fresh([{ n: 1 }]);
+  db.prepare("INSERT INTO access (login, role) VALUES ('op', 'operator')").run();
+  db.prepare("INSERT INTO decisions (id, kind, repo, number, items, question, options, facts, asked_at, answer, answered_by, answered_at) VALUES ('d1', 'scope', 'app', 1, ?, 'q', '[]', '[]', ?, 'close', 'op', ?)")
+    .run(JSON.stringify([{ repo: "app", number: 1 }]), T, T);
+  return db;
+}
+const CLOSE = { kind: "act", bucket: "scope", decisionId: "d1" } as const;
+
+test("an item write needs the comment approval and an answer that still closes the item", async () => {
+  const db = closeAnswered();
+  assert.match(why(await guardItem(db, ref, CLOSE, OP)), /commenting in app is not approved/);
+  setCommentApproval(db, "op", "app", true);
+  assert.ok(ok(await guardItem(db, ref, CLOSE, OP)));
+  db.prepare("UPDATE decisions SET answer = 'hold' WHERE id = 'd1'").run();
+  assert.match(why(await guardItem(db, ref, CLOSE, OP)), /plan no longer has act:scope/);
+});
+
+test("a repo write needs the repo's approval and, for the pipeline, the global switch", () => {
+  const db = fresh([{ n: 1 }]);
+  assert.match(why(guardRepo(db, "app", "comment", OP)), /commenting in app is not approved/);
+  setCommentApproval(db, "op", "app", true);
+  assert.ok(ok(guardRepo(db, "app", "comment", OP)));
+  assert.match(why(guardRepo(db, "app", "comment", "pipeline")), /pipeline is off/);
+});
+
+test("a write function refuses a guard that was made for another repo", async () => {
+  const q = { spent: 0, remaining: null, query: async () => ({}) };
+  await assert.rejects(closeItem({ db: fresh([{ n: 1 }]), login: "t" }, G("other"), q, { repo: "app", number: 1, id: "N1", pr: false }), /guard covers other/);
 });
