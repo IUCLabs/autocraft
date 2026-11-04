@@ -19,6 +19,7 @@ import { saveVerification } from "../src/verify/index.ts";
 import { unavailableCandidates } from "../src/verify/candidates.ts";
 import { LANES } from "../src/runner/autopilot.ts";
 import { SCRATCH } from "./scratch.ts";
+import { seedPremergeClean } from "./helpers/premerge.ts";
 
 mkdirSync(SCRATCH, { recursive: true });
 const dir = mkdtempSync(join(SCRATCH, "gaps-test-"));
@@ -45,6 +46,7 @@ function add(db: DatabaseSync, o: Opts): void {
   db.prepare(`INSERT INTO opus_reviews (repo, number, head_oid, run_id, at, model, verdict, reason, sure, mode) VALUES ('app', ?, ?, 'rv', '${T0}', 'm', ?, 'looks right', 1, 'full')`).run(o.n, `sha${o.n}`, o.verdict ?? "take");
   db.prepare(`INSERT INTO pr_checks (repo, number, head_oid, state, is_draft, overall, checks, mergeable, maintainer_can_modify, fetched_at)
     VALUES ('app', ?, ?, 'OPEN', 0, ?, '[]', 'MERGEABLE', 1, '${T1}')`).run(o.n, `sha${o.n}`, o.ci ?? "success");
+  seedPremergeClean(db, "app", o.n, `sha${o.n}`);
   if (o.verify) {
     db.prepare(`INSERT INTO verifications (repo, number, head_sha, kind, reason, state, summary, created_at) VALUES ('app', ?, ?, ?, 'r', ?, ?, '${T0}')`)
       .run(o.n, `sha${o.n}`, o.verify === "unavailable" ? "unavailable" : "tests", o.verify, o.verify === "unavailable" ? "the repo is private" : null);

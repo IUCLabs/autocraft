@@ -57,6 +57,7 @@ const ADDED_COLUMNS: [table: string, column: string, type: string][] = [
   ["dupe_comparisons", "summary", "TEXT"],
   ["dupe_comparisons", "why", "TEXT"],
   ["merge_batches", "fork", "TEXT"],
+  ["fixups", "source", "TEXT"],
   ["build_tasks", "sandbox_env", "TEXT"],
   ["decisions", "recommended_reason", "TEXT"],
   ["decisions", "recommend_failures", "INTEGER"],

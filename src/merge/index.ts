@@ -27,7 +27,7 @@ import { fillReviewSummaries, reviewText } from "../review/summary.ts";
 import { verificationOf } from "../verify/results.ts";
 import { TIER_LABEL } from "../whitelist.ts";
 import { closeMergedQuestions, withdrawBlockedQuestions, withdrawGroupedQuestions, withdrawOtherHeadQuestions } from "./withdraw.ts";
-import { buildQueue, UNSURE_REASON, ciAllows, toAsk, countStates, eligible, HEAD_FACT, MERGE_OPTIONS, mergeDecisionId, QUEUE_STATES, VERIFY_UNAVAILABLE, verifyAllows, type QueueEntry } from "./queue.ts";
+import { buildQueue, UNSURE_REASON, PREMERGE_DEFECT_REASON, PREMERGE_FAILED_REASON, ciAllows, toAsk, countStates, eligible, HEAD_FACT, MERGE_OPTIONS, mergeDecisionId, QUEUE_STATES, VERIFY_UNAVAILABLE, verifyAllows, type QueueEntry } from "./queue.ts";
 
 export { buildQueue, countStates, QUEUE_STATES, toAsk, type QueueEntry, type QueueState } from "./queue.ts";
 import { envVar } from "../env.ts";
@@ -158,22 +158,27 @@ export const methodOf = (info: PrInfo): "squash" | "merge" => (info.authors > 1 
 /** The Merge? question for a take PR outside the rule; its facts carry the head commit. */
 export function mergeQuestion(e: QueueEntry, why: string | null = null): Record<string, unknown> & { id: string } {
   const fixes = e.fixes ? `; ${e.fixes} fix${e.fixes === 1 ? "" : "es"} listed` : "";
+  const pre = [
+    ...(e.premerge?.defects ?? []).filter(() => e.outsideRule.includes(PREMERGE_DEFECT_REASON)).map((f) => `pre-merge defect: ${f.file}:${f.line} ${f.title}: ${f.scenario}`),
+    ...(e.outsideRule.includes(PREMERGE_FAILED_REASON) ? [`pre-merge review failed: ${(e.premerge?.error ?? "no review stored").replace(/^retry: /, "")}`] : []),
+  ];
+  const where = `size ${e.size}, label ${e.label ?? "not settled"}; author: ${e.author ?? "unknown"}, ${TIER_LABEL[e.tier]}`;
+  const ci = `CI ${e.noCi ? "none: the repo has no CI checks" : e.ci}, mergeable ${e.mergeable.toLowerCase()}`;
+  const verify = e.verify?.state === VERIFY_UNAVAILABLE
+    ? `not verified: ${e.verify.summary ?? "Verify cannot build this repo"}`
+    : `verify: ${e.verify ? `${e.verify.kind ?? "unknown"}, ${e.verify.state}${e.verify.note ? `: ${e.verify.note}` : ""}` : "none"}`;
+  // A question has at most five facts: pre-merge lines take the place of the separate size, CI and verify lines, and defects beyond the first share one fact.
+  const facts = pre.length
+    ? [`${where}; ${ci}; ${verify}`, `review: ${e.verdict}: ${e.reason}${fixes}`, pre[0]!, ...(pre.length > 1 ? [pre.slice(1).join(" | ")] : []), `${HEAD_FACT}${e.head}`]
+    : [where, ci, verify, `review: ${e.verdict}: ${e.reason}${fixes}`, `${HEAD_FACT}${e.head}`];
   return {
     id: mergeDecisionId(e.repo, e.number, e.head), kind: "merge", repo: e.repo, number: e.number,
     question: "Merge this PR?",
     context: `The review says take, but the merge-without-asking rule doesn't cover it: ${e.outsideRule.join(", ")}.`,
-    facts: [
-      `size ${e.size}, label ${e.label ?? "not settled"}; author: ${e.author ?? "unknown"}, ${TIER_LABEL[e.tier]}`,
-      `CI ${e.noCi ? "none: the repo has no CI checks" : e.ci}, mergeable ${e.mergeable.toLowerCase()}`,
-      e.verify?.state === VERIFY_UNAVAILABLE
-        ? `not verified: ${e.verify.summary ?? "Verify cannot build this repo"}`
-        : `verify: ${e.verify ? `${e.verify.kind ?? "unknown"}, ${e.verify.state}${e.verify.note ? `: ${e.verify.note}` : ""}` : "none"}`,
-      `review: ${e.verdict}: ${e.reason}${fixes}`,
-      `${HEAD_FACT}${e.head}`,
-    ],
+    facts,
     options: Object.values(MERGE_OPTIONS).map((o) => ({ ...o })),
     // A recommendation always comes with the review's reason for it.
-    ...(e.outsideRule.includes(UNSURE_REASON) || !why ? {} : { recommended: "merge", recommended_reason: why }),
+    ...(e.outsideRule.includes(UNSURE_REASON) || e.outsideRule.includes(PREMERGE_DEFECT_REASON) || e.outsideRule.includes(PREMERGE_FAILED_REASON) || !why ? {} : { recommended: "merge", recommended_reason: why }),
     asked_by: ACTOR,
   };
 }

@@ -10,6 +10,8 @@ import { FORMAT_REASONS, safePath } from "./patch.ts";
 import { longLivedOf, pushable } from "./pushable.ts";
 import { classifyConflicts, type ConflictCandidate } from "./conflict-state.ts";
 import { pilotSql } from "../pilot.ts";
+import { buildQueue, type QueueEntry } from "../merge/queue.ts";
+import { findingsOf, premergeAt, premergeFixUsed } from "../premerge/store.ts";
 
 /** Fix-up tries per PR (pushed, failed, refused or rejected) before the step leaves it to a person. */
 export const MAX_ATTEMPTS = 2;
@@ -19,7 +21,9 @@ export type Fix = { file: string; change: string };
 export type Carry = { decisionId: string; /** The suggestion comment stored with the answer, posted as it is when the branch can't be pushed to. */ suggestion: string | null; sources: { number: number; head: string | null; points: string[] }[] };
 /** `carry` set: the candidate is a carry-over job; its fixes are worked out from the source PRs' diffs when it runs. */
 /** `model` wrote the text the ask comment carries: the Opus review's fix list, or the stored suggestion of a carry-over. */
-export type FixCandidate = { repo: string; number: number; head: string; reason: string; fixes: Fix[]; attempt: number; model: string | null; carry?: Carry };
+export type FixCandidate = { repo: string; number: number; head: string; reason: string; fixes: Fix[]; attempt: number; model: string | null; carry?: Carry;
+  /** `premerge`: the fixes are the pre-merge review's defect fixes; the PR's one pre-merge round, apart from the take-fix tries. */
+  source?: "premerge" };
 export type FixSelection = {
   /** Take-fix PRs we may push to, in a repo with push approval. */
   fix: FixCandidate[];
@@ -52,15 +56,32 @@ export type FixupState = (typeof FIXUP_STATES)[number];
 /** States that count as a try; the other three are recorded once per head and end the step's work on that head. */
 const ATTEMPT_STATES: FixupState[] = ["pushing", "pushed", "failed", "refused", "rejected"];
 
-/** Refusals for a wrong hunk header count (fixed by recounting since) are not tries. */
+/** Refusals for a wrong hunk header count (fixed by recounting since) are not tries. Pre-merge rounds have their own budget. */
 export function attemptsOf(db: DatabaseSync, repo: string, number: number): number {
-  return (db.prepare(`SELECT COUNT(*) AS n FROM fixups WHERE repo = ? AND number = ? AND state IN (${ATTEMPT_STATES.map(() => "?").join(",")})
+  return (db.prepare(`SELECT COUNT(*) AS n FROM fixups WHERE repo = ? AND number = ? AND source IS NULL AND state IN (${ATTEMPT_STATES.map(() => "?").join(",")})
       AND NOT (state = 'refused' AND (${FORMAT_REASONS.map(() => "COALESCE(reason, '') LIKE ?").join(" OR ")}))`)
     .get(repo, number, ...ATTEMPT_STATES, ...FORMAT_REASONS.map((r) => `${r}%`)) as { n: number }).n;
 }
 
 export type FixupBucket = "fix" | "unapproved" | "cannot-push" | "ask" | "asked" | "hold";
 export type Classified = { c: FixCandidate; bucket: FixupBucket; done: boolean };
+
+/**
+ * The PR's pre-merge round, for a queue entry in needs-fix-up from its pre-merge review: the queue decides eligibility
+ * (stale reviews, open questions, holds, answers, the rule), this only adds the head, push and fix-list guards.
+ */
+function premergeCandidate(db: DatabaseSync, r: Row, head: string, approved: boolean, longLived: ReturnType<typeof longLivedOf>, entry: QueueEntry | undefined): Classified | null {
+  if (r.mergeable === "CONFLICTING") return null;
+  if (!entry || entry.held || entry.head !== head || entry.state !== "needs-fix-up" || entry.premerge?.state !== "fix") return null;
+  const row = premergeAt(db, r.repo, r.number, head);
+  const defects = findingsOf(row).filter((f) => f.severity === "defect");
+  if (!row || !defects.length || !defects.every((f) => f.fix) || premergeFixUsed(db, r.repo, r.number)) return null;
+  const fixes = parseFixes(JSON.stringify(defects.map((f) => f.fix)));
+  if (fixes.length !== defects.length) return null;
+  const c: FixCandidate = { repo: r.repo, number: r.number, head, reason: "pre-merge review", fixes, attempt: 1, model: row.model, source: "premerge" };
+  if (!pushable(r.head_repo, r.repo, r.can_modify, r.head_ref, longLived)) return { c, done: true, bucket: "cannot-push" };
+  return approved ? { c, done: false, bucket: "fix" } : { c, done: true, bucket: "unapproved" };
+}
 
 /**
  * Every take-fix PR at its current head with where it stands: `fix` (the step will push), `unapproved` (it could,
@@ -75,11 +96,14 @@ export function classifyFixups(db: DatabaseSync, repo: string): Classified[] {
     FROM items i JOIN pr_checks c ON c.repo = i.repo AND c.number = i.number
     LEFT JOIN item_rank p ON p.repo = i.repo AND p.number = i.number
     WHERE i.repo = ? AND i.kind = 'pr' AND i.state = 'OPEN' AND ${notHeldSql("i")} ORDER BY ${fastScoreSql("i.repo", "i.number", "p.score")} IS NULL, ${fastScoreSql("i.repo", "i.number", "p.score")} DESC, i.number`).all(repo) as Row[];
-  const done = db.prepare("SELECT state FROM fixups WHERE repo = ? AND number = ? AND from_head = ? AND state IN ('pushed', 'cannot-push', 'too-large', 'asked', 'push-denied')");
+  const done = db.prepare("SELECT state FROM fixups WHERE repo = ? AND number = ? AND from_head = ? AND source IS NULL AND state IN ('pushed', 'cannot-push', 'too-large', 'asked', 'push-denied')");
   const commenting = commentApprovalOf(db, repo) !== null;
   const approved = pushApprovalOf(db, repo) !== null;
   const stale = staleReviews(db, repo);
   const longLived = longLivedOf(db, repo);
+  // Built once: the queue is the single source of which PRs get a pre-merge round.
+  let queue: Map<number, QueueEntry> | null = null;
+  const entryOf = (n: number) => (queue ??= new Map(buildQueue(db, { repo, merged: "exclude" }).map((e) => [e.number, e] as const))).get(n);
   const out: Classified[] = [];
   for (const r of rows) {
     const fresh = r.c_at && (!r.updated_at || r.c_at > r.updated_at);
@@ -90,7 +114,11 @@ export function classifyFixups(db: DatabaseSync, repo: string): Classified[] {
     // The Opus verdict and its fix list.
     const review = db.prepare("SELECT reason, fixes, model FROM final_reviews WHERE repo = ? AND number = ? AND head_oid = ? AND verdict = 'take-fix'").get(r.repo, r.number, head) as
       { reason: string; fixes: string | null; model: string | null } | undefined;
-    if (!review) continue;
+    if (!review) {
+      const pm = premergeCandidate(db, r, head, approved, longLived, entryOf(r.number));
+      if (pm) out.push(pm);
+      continue;
+    }
     // Opus is about to read newer discussion; its fix list may be out of date.
     if (stale.has(`${r.repo}#${r.number}@${head}`)) continue;
     if (r.mergeable === "CONFLICTING") continue;

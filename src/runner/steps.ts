@@ -551,6 +551,25 @@ export const STEPS: StepDef[] = [
     },
   },
   {
+    name: "premerge",
+    title: "Pre-merge review",
+    description: "Opus reads, one pull request head per call, the diff of each PR the merge rule would merge without a person, independently of the first review, and lists defects and minor findings. The merge queue holds those PRs until the review is stored. Reads GitHub; writes only to the local database.",
+    stage: runStage("premerge"),
+    requires: "operator",
+    group: "premerge",
+    models: ["opus"],
+    params: [
+      { name: "repo", label: "Repo", kind: "repo", required: true },
+      { name: "limit", label: "At most", kind: "int", min: 1, max: 50, default: 10, help: "pull requests to review in this job" },
+    ],
+    run: async (ctx) => {
+      const { runPremerge } = await import("../premerge/review.ts");
+      const r = await runPremerge(ctx.db, { repo: String(ctx.params.repo), limit: Number(ctx.params.limit), onHandled: ctx.handled }, ctx.log);
+      ctx.usageRun(r.runId);
+      return `${r.repo}: reviewed ${r.reviewed} of ${r.candidates.length} candidates; ${r.findings} findings (${r.defects} defects), ${r.failed.length} without an answer, ${r.moved.length} moved`;
+    },
+  },
+  {
     name: "postmerge",
     title: "Review merged pull requests",
     description: "Opus reads, one pull request per call, what each pipeline merge landed in one repo, with our own commits and reviews of the PR, and lists defects and minor findings. Reads GitHub; writes only to the local database.",

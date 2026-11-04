@@ -8,7 +8,7 @@ import { Block, ConfirmButton, ErrorLine, useWrite } from "../admin/parts";
 import { FastMark } from "./fastTrack";
 import { BatchFacts, Cards, PrCard, PrRows, PrTableHead, Table } from "./mergeParts";
 
-const WAIT_TONE: Record<MergeWait, Tone> = { ready: "ok", refused: "bad", ci: "neutral", verify: "neutral", "re-review": "neutral", "batch-check": "neutral", "batch-ci": "neutral", held: "warn" };
+const WAIT_TONE: Record<MergeWait, Tone> = { ready: "ok", refused: "bad", ci: "neutral", premerge: "neutral", verify: "neutral", "re-review": "neutral", "batch-check": "neutral", "batch-ci": "neutral", held: "warn" };
 
 function NextRow({ n, i }: { n: NextMerge; i: number }) {
   return (

@@ -41,6 +41,7 @@ const WAITS: Record<string, [MergeWait, string, number]> = {
   "waiting-main-ci": ["ci", "Waiting: main CI red", 2],
   "ci-approval": ["ci", "Waiting for CI run approval", 2],
   "waiting-verify": ["verify", "Waiting for Verify", 2],
+  "waiting-premerge": ["premerge", "Waiting for the pre-merge review", 2],
 };
 const HELD: [MergeWait, string, number] = ["held", "Merge held by an operator", 9];
 

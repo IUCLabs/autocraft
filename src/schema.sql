@@ -644,6 +644,7 @@ CREATE INDEX IF NOT EXISTS actions_item ON actions(repo, number);
 -- were posted as a comment on a PR we can't push to), pushing (written before the push, to_head is the commit about to be
 -- pushed; replaced by the push's outcome; one left behind by a crash counts as a try). Only the first
 -- three count against the two tries per PR. superseded: a row whose reason no longer applies (kept for the record, ignored).
+-- source: NULL = the review's fix list, 'premerge' = the pre-merge review's fix list (one round per PR).
 CREATE TABLE IF NOT EXISTS fixups (
   repo TEXT NOT NULL, number INTEGER NOT NULL,
   from_head TEXT NOT NULL,            -- the reviewed head commit the fix was made on
@@ -1152,4 +1153,20 @@ CREATE TABLE IF NOT EXISTS main_fixes (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   PRIMARY KEY (repo, head_sha, "check")
+);
+
+-- Pre-merge review (src/premerge): one adversarial review per PR head the rule would merge.
+-- findings: JSON PremergeFinding[] once a review is stored (NULL until then); error: why the last try stored none
+-- (retried after 1 h, the third failed try makes the head failed); searched: what the reviewer looked at.
+CREATE TABLE IF NOT EXISTS premerge_reviews (
+  repo TEXT NOT NULL, number INTEGER NOT NULL,
+  head_oid TEXT NOT NULL,
+  at TEXT NOT NULL,
+  run_id TEXT,
+  model TEXT,
+  findings TEXT,
+  searched TEXT,
+  error TEXT,
+  tries INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (repo, number, head_oid)
 );

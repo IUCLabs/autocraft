@@ -6,7 +6,7 @@ import { checksOf } from "../../patchcheck/index.ts";
 import { priorityOf } from "../../priority/read.ts";
 import type { DatabaseSync, SQLInputValue } from "node:sqlite";
 import type {
-  CiState, DecisionKind, Done, Funnel, Item, ItemAction, ItemComment, ItemFixup, ItemReviews, ItemVerification, ReviewSide, Mergeable, Progress, RepoProgress, Tier, User,
+  CiState, DecisionKind, Done, Funnel, Item, ItemAction, ItemComment, ItemFixup, ItemPremerge, ItemReviews, ItemVerification, ReviewSide, Mergeable, Progress, RepoProgress, Tier, User,
 } from "../../../web/src/api/types.ts";
 import { trackedNames } from "../../repos.ts";
 import { excludeHidden, hiddenRepos, needVisible, visibleRepos } from "./visible.ts";
@@ -14,6 +14,7 @@ import { withoutHidden } from "./decisions.ts";
 import { contributors } from "../../whitelist.ts";
 import { CLOSED_ITEMS, TRACKED, doneByRepo, funnelByRepo, latestCte, trackingStart, trend, type DoneRow, type FunnelRow } from "./stats.ts";
 import { HttpError, RateLimiter } from "../server/util.ts";
+import { findingsOf, type PremergeRow } from "../../premerge/store.ts";
 import type { Req, Res, Route } from "../types.ts";
 import * as adm from "./admin.ts";
 import * as agents from "./agents.ts";
@@ -131,10 +132,17 @@ async function item(db: DatabaseSync, req: Req): Promise<Item> {
     ...(it.kind === "pr" ? prWork(db, repo, n) : { verification: null, fixups: [] }),
     patchChecks: checksOf(db, repo, n).map(({ kind, subject, patchHash, round, verdict, reasons, problems, model, createdAt }) => ({ kind, subject, patchHash, round, verdict, reasons, problems, model, createdAt })),
     reviews: it.kind === "pr" ? reviewsOf(db, repo, n) : null,
+    premerge: it.kind === "pr" ? premergeOf(db, repo, n) : [],
     postmerge: it.kind === "pr" ? postmergeOf(db, repo, n, canSeeInternals(req)) : null,
     actions: actionsOf(db, repo, n), releases: releasesOf(db, repo, n),
     queue: queueSlots(db, await visibleRepos(db, req)).get(`${repo}#${n}`) ?? null,
   };
+}
+
+/** Pre-merge review rows of the PR, newest first. */
+function premergeOf(db: DatabaseSync, repo: string, n: number): ItemPremerge[] {
+  const rows = db.prepare("SELECT * FROM premerge_reviews WHERE repo = ? AND number = ? ORDER BY at DESC, head_oid DESC").all(repo, n) as unknown as PremergeRow[];
+  return rows.map((r) => ({ head: r.head_oid, at: r.at, model: r.model, findings: findingsOf(r), searched: r.searched, error: r.error, tries: r.tries }));
 }
 
 /** The Opus review of the newest reviewed head, which is also the final verdict. */

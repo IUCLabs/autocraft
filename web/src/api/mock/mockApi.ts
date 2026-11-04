@@ -13,7 +13,7 @@ import { semanticHits, similarFor } from "./similarFixtures";
 import { classifierReport, costReport, disagreementList } from "./insightFixtures";
 import { pickDecision, shortRepo } from "../../lib/links";
 import { itemList, settledFor } from "./itemsFixtures";
-import { postmergeFor, prWorkFor } from "./verifyFixtures";
+import { postmergeFor, premergeFor, prWorkFor } from "./verifyFixtures";
 import { queueBatchList, queueList } from "./queueFixtures";
 import { createQueueMock } from "./queueMock";
 import { githubActivityPage } from "./githubFixtures";
@@ -166,7 +166,7 @@ export function createMockApi(): Api {
       const it = itemFor(repo, number);
       const postmerge = postmergeFor(number, it.kind, mockRole() !== "viewer");
       const merged = postmerge ? { state: "merged" as const, mergedAt: postmerge.at, mergedBy: "pipeline" } : {};
-      return wait({ ...it, ...merged, settled: settledFor(number), ...prWorkFor(number, it.kind), postmerge });
+      return wait({ ...it, ...merged, settled: settledFor(number), ...prWorkFor(number, it.kind), premerge: premergeFor(number, it.kind), postmerge });
     },
     items: (f) => wait(itemList(f), 70),
     search(q) {

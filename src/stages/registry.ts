@@ -107,7 +107,7 @@ export const STAGES: StageDef[] = [
     id: "classify", title: "Classify", order: 3, runStage: 2, docSection: "Classify", mode: "steps",
     description: "Gives each open item one type label and two flags (security, needs decision). Jev goes first, Haiku gives a second opinion, and a referee settles disagreements outside the scope labels.",
     steps: [{ name: "classify-new", label: "Classify", limit: null, seeded: 2000 }, { name: "classify-all" }, { name: "referee", label: "Referee", limit: 500 }, { name: "areas-propose" }, { name: "areas-suggest" }, { name: "areas-rescan" }],
-    lanes: [{ name: "classify", steps: ["classify-new"], order: 0 }, { name: "referee", steps: ["referee"], order: 17 }],
+    lanes: [{ name: "classify", steps: ["classify-new"], order: 0 }, { name: "referee", steps: ["referee"], order: 18 }],
     reads: ["Item text", "Area list"],
     sets: ["Type label and flags per item", "Area list"],
     states: [
@@ -163,7 +163,7 @@ export const STAGES: StageDef[] = [
     id: "decide", title: "Decide", order: 5, runStage: 3, docSection: "Decide", mode: "gate",
     description: "Asks an operator for scope calls, with a summary and a recommendation, and answers questions about an item in its conversation.",
     steps: [{ name: "decide", label: "Decide", limit: null, seeded: 100 }, { name: "conversation", label: "Conversations", limit: 30 }],
-    lanes: [{ name: "decide", steps: ["decide"], order: 6 }, { name: "conversation", steps: ["conversation"], order: 19 }],
+    lanes: [{ name: "decide", steps: ["decide"], order: 6 }, { name: "conversation", steps: ["conversation"], order: 20 }],
     reads: ["Classified items", "Reviews", "Operator answers"],
     sets: ["Decisions with summary and recommendation", "Conversation replies"],
     states: [
@@ -220,7 +220,7 @@ export const STAGES: StageDef[] = [
     id: "review", title: "Review", order: 7, runStage: 5, docSection: "Review", mode: "steps",
     description: "Opus reviews every wanted PR at its current head, reading the repo, and gives a verdict with the complete fix list. It writes nothing to GitHub until the final review is posted.",
     steps: [{ name: "opus-review", label: "Review (Opus)", limit: null, seeded: 40 }, { name: "checks", label: "Checks", limit: null, zeroOnly: true }, { name: "review-post", label: "Post reviews", limit: null, seeded: 40 }],
-    lanes: [{ name: "review", steps: ["checks", "opus-review"], order: 7 }, { name: "review-post", steps: ["review-post"], order: 18 }],
+    lanes: [{ name: "review", steps: ["checks", "opus-review"], order: 7 }, { name: "review-post", steps: ["review-post"], order: 19 }],
     reads: ["PR head and diff", "CI results", "Repo checkout"],
     sets: ["Review verdict and fix list"],
     states: [
@@ -247,7 +247,7 @@ export const STAGES: StageDef[] = [
     id: "fix", title: "Fix", order: 8, runStage: 7, docSection: "Fix", mode: "steps",
     description: "Writes a patch for a bugfix issue where the fix is clear, tests it in the sandbox and opens a PR.",
     steps: [{ name: "fixissue", label: "Fix", limit: null, seeded: 10 }, { name: "fixissue-collect" }],
-    lanes: [{ name: "fixissue", steps: ["fixissue"], order: 15 }, { name: "fixissue-collect", steps: ["fixissue-collect"], order: 16 }],
+    lanes: [{ name: "fixissue", steps: ["fixissue"], order: 16 }, { name: "fixissue-collect", steps: ["fixissue-collect"], order: 17 }],
     reads: ["Open bugfix issues", "Repo checkout at the base commit"],
     sets: ["Fix attempts", "Pull requests"],
     states: [
@@ -282,7 +282,7 @@ export const STAGES: StageDef[] = [
     id: "fixup", title: "Fix-up", order: 9, runStage: 6, docSection: "Fix-up", mode: "steps",
     description: "For a take-with-fixes review, applies the listed small fixes to the contributor's branch, or posts them as a comment when the branch cannot be pushed to. For a wanted PR whose gate check fails, runs the formatter, reruns an infrastructure failure once, or has a model patch the code. For a red default branch in an approved repo, reruns a flaky failure once and asks an operator about reporting an infrastructure failure.",
     steps: [{ name: "fixup", label: "Fix-up", limit: null, seeded: 20 }, { name: "cifix", label: "CI fix", limit: null }, { name: "cifix-rerun", label: "CI fix reruns", limit: 30 }, { name: "main-fix", label: "Fix red main", limit: 20 }],
-    lanes: [{ name: "fixup", steps: ["fixup"], order: 12 }, { name: "cifix", steps: ["cifix"], order: 23 }, { name: "cifix-rerun", steps: ["cifix-rerun"], order: 24 }, { name: "main-fix", steps: ["main-fix"], order: 25 }],
+    lanes: [{ name: "fixup", steps: ["fixup"], order: 13 }, { name: "cifix", steps: ["cifix"], order: 24 }, { name: "cifix-rerun", steps: ["cifix-rerun"], order: 25 }, { name: "main-fix", steps: ["main-fix"], order: 26 }],
     reads: ["Review fix lists", "Repo checkout at the PR head", "Failed CI check logs"],
     sets: ["Pushed commits", "Fix comments", "Formatter tasks", "CI reruns"],
     states: [
@@ -314,7 +314,7 @@ export const STAGES: StageDef[] = [
     id: "verify", title: "Verify", order: 10, runStage: 6, docSection: "Verify", mode: "steps",
     description: "Records upstream CI as the verification of taken PRs in repos that have it. A repo without CI, and a bugfix that changes a test file, get a model-planned build in a build environment; a model summarises failures.",
     steps: [{ name: "verify", label: "Verify", limit: null, seeded: 30 }, { name: "verify-collect" }],
-    lanes: [{ name: "verify", steps: ["checks", "verify"], order: 13 }, { name: "verify-collect", steps: ["verify-collect"], order: 14 }],
+    lanes: [{ name: "verify", steps: ["checks", "verify"], order: 14 }, { name: "verify-collect", steps: ["verify-collect"], order: 15 }],
     reads: ["Taken PRs", "CI results"],
     sets: ["Verification tasks and results"],
     states: [
@@ -342,9 +342,9 @@ export const STAGES: StageDef[] = [
   },
   {
     id: "merge", title: "Merge queue", order: 11, runStage: 6, docSection: "Merge queue", mode: "steps",
-    description: "Merges PRs that pass the rules in integration batches (up to 50 PRs, checked by upstream CI on the batch PR) through safe-merge, and asks for a Merge? decision on PRs outside the rules. Approves held CI runs of outside contributors where the repo allows it.",
-    steps: [{ name: "merge", label: "Merge", limit: null, seeded: 10 }, { name: "merge-ask" }, { name: "ci-approve", label: "Approve CI runs", limit: 30 }],
-    lanes: [{ name: "merge-ask", steps: ["merge-ask"], order: 9 }, { name: "merge", steps: ["checks", "merge"], order: 10 }, { name: "ci-approve", steps: ["ci-approve"], order: 20 }],
+    description: "Merges PRs that pass the rules in integration batches (up to 50 PRs, checked by upstream CI on the batch PR) through safe-merge, and asks for a Merge? decision on PRs outside the rules. Before a PR the rule would merge goes into a batch, Opus reviews its head commit once more, adversarially and independently of the first review; a defect it verifies becomes a fix-up or a Merge? question. Approves held CI runs of outside contributors where the repo allows it.",
+    steps: [{ name: "merge", label: "Merge", limit: null, seeded: 10 }, { name: "premerge", label: "Pre-merge review", limit: null }, { name: "merge-ask" }, { name: "ci-approve", label: "Approve CI runs", limit: 30 }],
+    lanes: [{ name: "premerge", steps: ["premerge"], order: 9 }, { name: "merge-ask", steps: ["merge-ask"], order: 10 }, { name: "merge", steps: ["checks", "merge"], order: 11 }, { name: "ci-approve", steps: ["ci-approve"], order: 21 }],
     reads: ["Reviews", "Verification results", "CI state", "Merge decisions"],
     sets: ["Integration batches", "Merged PRs", "Merge? decisions"],
     states: [
@@ -358,6 +358,7 @@ export const STAGES: StageDef[] = [
       { id: "ci-approval-person", label: "CI runs need a person to approve", waitsOn: "person", tone: "warn", hint: "The repo's CI approval is off, or approving a run failed twice; approve the runs on GitHub or the repo on the Repos page", link: "queue" },
       { id: "ci-failed", label: "Blocked: CI fails", waitsOn: "ci", tone: "bad", link: "queue" },
       { id: "conflict", label: "Blocked: conflicts", waitsOn: "person", tone: "bad", link: "queue" },
+      { id: "waiting-premerge", label: "Waiting for the pre-merge review", waitsOn: "model", tone: "neutral", hint: "The rule would merge it; an adversarial review of the head commit comes first", link: "queue" },
       { id: "waiting-verify", label: "Waiting for Verify", waitsOn: "model", tone: "neutral", hint: "No passed verification at the head commit yet", link: "queue" },
       { id: "verify-failed", label: "Blocked: Verify failed", waitsOn: "person", tone: "bad", link: "queue" },
       { id: "verify-error", label: "Blocked: Verify error", waitsOn: "person", tone: "bad", link: "queue" },
@@ -366,9 +367,11 @@ export const STAGES: StageDef[] = [
       { id: "declined", label: "Declined", waitsOn: "nothing", tone: "neutral", hint: "The operator answered hold or close", link: "queue" },
       { id: "merged", label: "Merged in the last 24 h", waitsOn: "nothing", tone: "merged", link: "queue" },
     ],
-    models: [{ model: "haiku", use: "Short summaries in the merge run" }],
-    promptIds: [], promptStage: "Merge",
+    models: [{ model: "haiku", use: "Short summaries in the merge run" }, { model: "opus", use: "Pre-merge review of the head commit" }],
+    promptIds: ["premerge.opus"], promptStage: "Merge",
     waits: [
+      { name: "Pre-merge review", why: "A PR the rule would merge waits for an adversarial Opus review of its head commit (one model call per head); while the step cannot run (pipeline off, usage pause) it waits", howLong: "Until the call ends; a failed call is tried again after 1 hour, at most 3 tries, then a person decides", showsAs: "Queue state `waiting-premerge`", kind: "external" },
+      { name: "Pre-merge review retry", why: "The model call for the head failed or returned no valid review", howLong: "1 hour between tries; after 3 failed tries the merge queue asks a person", showsAs: "Queue state `waiting-premerge` (tries left) or a Merge? question (\"pre-merge review failed\")", kind: "backoff" },
       { name: "Upstream CI of PRs and open batch PRs", why: "External", howLong: "Read again every minute per repo while any waits", showsAs: "\"waiting for CI on N PRs in repo\"", kind: "external" },
       { name: "Runs waiting for approval", why: "GitHub holds the runs of an outside contributor's PR until a maintainer approves them; the pipeline approves them once the head has a final take or take-fix review and the repo's CI approval is on", howLong: "Until the step runs (read again with each checks job)", showsAs: "Queue state `ci-approval`", kind: "external" },
       { name: "Batch PR runs awaiting approval", why: "The batch PR comes from the pipeline account's fork, so GitHub may hold its workflow runs (`action_required`) until a maintainer approves them; the ci-approve step approves them when the repo's CI approval is on and every member was reviewed at its batched head", howLong: "Until the runs are approved and finish (read again with each checks job)", showsAs: "Batch note \"batch PR runs wait for a maintainer's approval\"", kind: "external" },
@@ -380,6 +383,7 @@ export const STAGES: StageDef[] = [
     person: "Merge? decision for PRs outside the rules",
     swimlane: [
       { id: "queue", lane: "auto", row: 14, lines: ["Merge queue", "rule met at this head?"] },
+      { id: "premerge", lane: "models", row: 15, lines: ["Pre-merge review", "Opus, adversarial, at the head"] },
       { id: "hold2", lane: "operator", row: 14, lines: ["Hold", "waits for a person"] },
       { id: "mergeq", lane: "operator", row: 15, lines: ["Merge?", "merge / hold / close"] },
       { id: "batch", lane: "sandbox", row: 16, lines: ["Integration batch", "up to 50 PRs, upstream CI"] },
@@ -391,7 +395,7 @@ export const STAGES: StageDef[] = [
     id: "act", title: "Act", order: 12, runStage: 6, docSection: "Act", mode: "steps",
     description: "Makes the comments and closes that follow an operator's answer, from fixed templates.",
     steps: [{ name: "act", label: "Act", limit: null, seeded: 20 }],
-    lanes: [{ name: "act", steps: ["act"], order: 11 }],
+    lanes: [{ name: "act", steps: ["act"], order: 12 }],
     reads: ["Operator answers", "Close? decisions"],
     sets: ["Comments and closes on GitHub"],
     states: [
@@ -418,7 +422,7 @@ export const STAGES: StageDef[] = [
     id: "postmerge", title: "Post-merge review", order: 13, runStage: 8, docSection: "Post-merge review", mode: "steps",
     description: "Opus reviews each PR the pipeline merged a second time, reading what landed with the pipeline's own commits and reviews of the PR, and lists defects and minor findings. Each defect that no open item covers becomes one follow-up issue in repos approved for commenting; minor findings are only shown.",
     steps: [{ name: "postmerge", label: "Post-merge review", limit: null }, { name: "postmerge-file", label: "File follow-up issues", limit: 20 }],
-    lanes: [{ name: "postmerge", steps: ["postmerge"], order: 21 }, { name: "postmerge-file", steps: ["postmerge-file"], order: 22 }],
+    lanes: [{ name: "postmerge", steps: ["postmerge"], order: 22 }, { name: "postmerge-file", steps: ["postmerge-file"], order: 23 }],
     reads: ["Merged PRs and their merge commits", "Our commits and reviews of each PR", "Open issues and PRs, for duplicates", "Repo checkout"],
     sets: ["Findings per merged PR", "Follow-up issues on GitHub"],
     states: [

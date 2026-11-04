@@ -23,7 +23,7 @@ The stages, in order:
 8. Fix: Writes a patch for a bugfix issue where the fix is clear, tests it in the sandbox and opens a PR.
 9. Fix-up: For a take-with-fixes review, applies the listed small fixes to the contributor's branch, or posts them as a comment when the branch cannot be pushed to. For a wanted PR whose gate check fails, runs the formatter, reruns an infrastructure failure once, or has a model patch the code. For a red default branch in an approved repo, reruns a flaky failure once and asks an operator about reporting an infrastructure failure.
 10. Verify: Records upstream CI as the verification of taken PRs in repos that have it. A repo without CI, and a bugfix that changes a test file, get a model-planned build in a build environment; a model summarises failures.
-11. Merge queue: Merges PRs that pass the rules in integration batches (up to 50 PRs, checked by upstream CI on the batch PR) through safe-merge, and asks for a Merge? decision on PRs outside the rules. Approves held CI runs of outside contributors where the repo allows it.
+11. Merge queue: Merges PRs that pass the rules in integration batches (up to 50 PRs, checked by upstream CI on the batch PR) through safe-merge, and asks for a Merge? decision on PRs outside the rules. Before a PR the rule would merge goes into a batch, Opus reviews its head commit once more, adversarially and independently of the first review; a defect it verifies becomes a fix-up or a Merge? question. Approves held CI runs of outside contributors where the repo allows it.
 12. Act: Makes the comments and closes that follow an operator's answer, from fixed templates.
 13. Post-merge review: Opus reviews each PR the pipeline merged a second time, reading what landed with the pipeline's own commits and reviews of the PR, and lists defects and minor findings. Each defect that no open item covers becomes one follow-up issue in repos approved for commenting; minor findings are only shown.
 <!-- stages:end stage-list -->
@@ -407,7 +407,7 @@ Each item can have one conversation with Opus, shown beside its decision. Everyo
 | Jev | Duplicates: judges each candidate pair first<br>Classify: classifies every item first<br>Priority: picks the level<br>Reports how sure it is; at 90 % or more it matched maintainers' labels 98 % of the time |
 | Haiku | Duplicates: settles pairs Jev is unsure of<br>Classify: second opinion where Jev is unsure<br>Priority: decides where Jev is unsure<br>Decide: summaries of duplicate decisions<br>Fix: failure summaries<br>Fix-up: sorts a red default branch's failed checks (flaky, infra or code)<br>Verify: failure summaries<br>Merge queue: short summaries in the merge run<br>Does every item while Jev is unavailable |
 | Sonnet | Duplicates: compares each group of issues<br>Classify: referee for label disagreements; area suggestions<br>Decide: writes decision summaries<br>Fix: triages the issue and writes the patch<br>Fix-up: writes the patch and resolves conflicts<br>Verify: plans a regression test (bugfixes that change a test file) or, in a repo without CI, the build and tests<br>The referee asks a person only when it is unsure |
-| Opus | Duplicates: compares each group of pull requests<br>Classify: proposes area lists<br>Decide: writes the scope recommendation and conversation replies<br>Review: reviews every wanted PR<br>Fix: checks the patch<br>Fix-up: checks the patch<br>Post-merge review: reviews each merged PR<br>The review gives a verdict, a complete fix list and how sure Opus is<br>Reads the merge commit and lists findings; the reply is linted like the Review stage's |
+| Opus | Duplicates: compares each group of pull requests<br>Classify: proposes area lists<br>Decide: writes the scope recommendation and conversation replies<br>Review: reviews every wanted PR<br>Fix: checks the patch<br>Fix-up: checks the patch<br>Merge queue: pre-merge review of the head commit<br>Post-merge review: reviews each merged PR<br>The review gives a verdict, a complete fix list and how sure Opus is<br>Reads the merge commit and lists findings; the reply is linted like the Review stage's |
 <!-- stages:end model-table -->
 
 These calls run with tools: Read, Grep and Glob on a read-only checkout inside a sandbox (see Trust boundary): the Opus review, the Fix-up patch and its Opus check, the CI fix patch, the Verify planner (checkouts of the PR head), Fix triage, patch and Opus check (checkouts of the base commit), the scope recommendation and conversation replies (the default branch). Every one of them also gets the workspace and, when a snapshot exists, the item tools (see Trust boundary). Every other call runs without tools. The Prompts page shows each prompt's tools, turn limit and sandbox mode.
@@ -531,11 +531,11 @@ Limits count items handled per stage per day (from 00:00 UTC), including by fail
 | Referee | 500 | Fix red main | 20 |
 | Priority | 3000 | Verify | 30 |
 | Decide | 100 | Merge | 10 |
-| Conversations | 30 | Approve CI runs | 30 |
-| Label | none | Act | 20 |
-| Review (Opus) | 40 | Post-merge review | none |
-| Checks | none (0 pauses it) | File follow-up issues | 20 |
-| Post reviews | 40 |  |  |
+| Conversations | 30 | Pre-merge review | none |
+| Label | none | Approve CI runs | 30 |
+| Review (Opus) | 40 | Act | 20 |
+| Checks | none (0 pauses it) | Post-merge review | none |
+| Post reviews | 40 | File follow-up issues | 20 |
 <!-- stages:end limits-table -->
 
 Steps not in the table have no limit setting.
@@ -556,6 +556,8 @@ Automated work waits only for the reasons below. A stage that is not running sho
 | Checks before Review and Verify | CI data younger than 5 minutes is reused | 5 minutes | Job list |
 | Sandbox build | External | Until the task ends; a build-environment error queues it again once per head | Verification state `planned` or `running` |
 | Warm build of the default branch | Limits sandbox load; never blocks a PR | Once a day per repo | Sandbox tasks |
+| Pre-merge review | A PR the rule would merge waits for an adversarial Opus review of its head commit (one model call per head); while the step cannot run (pipeline off, usage pause) it waits | Until the call ends; a failed call is tried again after 1 hour, at most 3 tries, then a person decides | Queue state `waiting-premerge` |
+| Pre-merge review retry | The model call for the head failed or returned no valid review | 1 hour between tries; after 3 failed tries the merge queue asks a person | Queue state `waiting-premerge` (tries left) or a Merge? question ("pre-merge review failed") |
 | Upstream CI of PRs and open batch PRs | External | Read again every minute per repo while any waits | "waiting for CI on N PRs in repo" |
 | Runs waiting for approval | GitHub holds the runs of an outside contributor's PR until a maintainer approves them; the pipeline approves them once the head has a final take or take-fix review and the repo's CI approval is on | Until the step runs (read again with each checks job) | Queue state `ci-approval` |
 | Batch PR runs awaiting approval | The batch PR comes from the pipeline account's fork, so GitHub may hold its workflow runs (`action_required`) until a maintainer approves them; the ci-approve step approves them when the repo's CI approval is on and every member was reviewed at its batched head | Until the runs are approved and finish (read again with each checks job) | Batch note "batch PR runs wait for a maintainer's approval" |
