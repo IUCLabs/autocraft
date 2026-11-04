@@ -532,6 +532,20 @@ export const STEPS: StepDef[] = [
     },
   },
   {
+    name: "review-carry",
+    title: "Carry reviews",
+    description: "Stores the earlier take or take-fix review on the new head of a pull request whose only new commit is our own checked fix-up. Calls no model, so it runs while models are paused. The Review step leaves such heads to it.",
+    stage: runStage("review-carry"),
+    requires: "operator",
+    group: "local",
+    params: [{ name: "repo", label: "Repo", kind: "repo", required: true }],
+    run: async (ctx) => {
+      const { runCarry } = await import("../review/carry-step.ts");
+      const repo = String(ctx.params.repo);
+      return `${repo}: carried ${runCarry(ctx.db, repo, ctx.log)} reviews`;
+    },
+  },
+  {
     name: "review-post",
     title: "Post final reviews",
     description: "Posts the final Opus review of each pull request of one repo as one pull request review (a comment, never an approval or a change request) that says it is AI-generated and names the model. A review at a new head edits the earlier one. Skips a pull request that closed or moved on. Calls no model.",

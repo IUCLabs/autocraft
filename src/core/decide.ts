@@ -276,7 +276,9 @@ export function decidePr(f: PrFacts): Plan {
   if (merged) return plan(state, { ...(e ? { path: e.path, reasons: e.reasons, note: e.note, eligible: eligible(f, e) } : {}), actions: extra });
 
   // Review: no review at the head, or one made stale (a PR at its re-review cap waits).
-  if (!held && reviewable && !(r && r.head === f.head && !r.staleActionable)) actions.push(act("review", f.head));
+  // A head whose earlier review carries over our checked fix-up is carried, not reviewed.
+  if (!held && reviewable && f.carriable) actions.push(act("carry", f.head));
+  else if (!held && reviewable && !(r && r.head === f.head && !r.staleActionable)) actions.push(act("review", f.head));
 
   // Post the review.
   if (!held && !f.authorIsPipeline && !f.batchPr && r && f.post.postable && r.head === f.head) {
@@ -336,7 +338,7 @@ export function decidePr(f: PrFacts): Plan {
 
   actions.push(...unassignOf(f, state, actions));
 
-  const main = actions.some((a) => ["review", "premerge", "ask-merge", "merge", "verify"].includes(a.kind));
+  const main = actions.some((a) => ["review", "carry", "premerge", "ask-merge", "merge", "verify"].includes(a.kind));
   const wait = main ? null : e ? (f.mergeHeld && e.state !== "merged" && e.path ? "merge held by an operator" : WAITS[e.state] ?? null) : null;
   return plan(state, { ...(e ? { path: e.path, reasons: e.reasons, note: e.note, conflictNote: e.conflictNote, eligible: eligible(f, e) } : {}), actions, wait });
 }

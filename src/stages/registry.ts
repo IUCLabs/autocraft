@@ -219,8 +219,8 @@ export const STAGES: StageDef[] = [
   {
     id: "review", title: "Review", order: 7, runStage: 5, docSection: "Review", mode: "steps",
     description: "Opus reviews every wanted PR at its current head, reading the repo, and gives a verdict with the complete fix list. It writes nothing to GitHub until the final review is posted.",
-    steps: [{ name: "opus-review", label: "Review (Opus)", limit: null, seeded: 40 }, { name: "checks", label: "Checks", limit: null, zeroOnly: true }, { name: "review-post", label: "Post reviews", limit: null, seeded: 40 }],
-    lanes: [{ name: "review", steps: ["checks", "opus-review"], order: 7 }, { name: "review-post", steps: ["review-post"], order: 19 }],
+    steps: [{ name: "opus-review", label: "Review (Opus)", limit: null, seeded: 40 }, { name: "review-carry" }, { name: "checks", label: "Checks", limit: null, zeroOnly: true }, { name: "review-post", label: "Post reviews", limit: null, seeded: 40 }],
+    lanes: [{ name: "review", steps: ["checks", "opus-review"], order: 7 }, { name: "review-carry", steps: ["review-carry"], order: 28 }, { name: "review-post", steps: ["review-post"], order: 19 }],
     reads: ["PR head and diff", "CI results", "Repo checkout"],
     sets: ["Review verdict and fix list"],
     states: [

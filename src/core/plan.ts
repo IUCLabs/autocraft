@@ -28,7 +28,7 @@ export const PLAN_STATES = [...QUEUE_STATES, ...OTHER_PR_STATES] as const;
 export type PlanState = (typeof PLAN_STATES)[number];
 
 export type ActionKind =
-  | "review" | "post-review" | "verify" | "approve-ci" | "premerge" | "ask-merge" | "merge"
+  | "review" | "carry" | "post-review" | "verify" | "approve-ci" | "premerge" | "ask-merge" | "merge"
   | "fixup" | "conflict" | "cifix" | "lint" | "postmerge"
   // item steps (issues and PRs)
   | "classify" | "referee" | "prioritize" | "embed" | "dupes" | "dupe-answer" | "dupes-compare" | "decide" | "label"
@@ -95,6 +95,8 @@ export type PrFacts = {
   tripped?: Partial<Record<string, string>>;
   /** A push of ours made the required checks at this head go red: CI fix works on it ahead of other work, even before a review of this head. */
   brokeByUs?: boolean;
+  /** The head has no review, but the review of the earlier head carries to it (src/review/carry.ts): the Carry step stores it and no model reviews the head. */
+  carriable?: boolean;
   /** AutoCraft has its own work on this PR: one of its pushes (fix-up, CI fix, base merge) at or since the reviewed head, a stored lint patch, or the PR is our own fix PR. It ends when the PR is closed; selection also drops it while the plan waits on a person (see inFlightNow). */
   inFlight?: boolean;
   assignment: AssignFacts;

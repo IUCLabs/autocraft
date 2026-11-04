@@ -435,6 +435,15 @@ const LANE_CODE: Omit<Lane, "steps">[] = [
     detect: (db, ctx) => (ctx.run && plannedItems(db, "referee", { plans: plansOf(db, ctx) }).length ? [{ step: "referee", params: {} }] : []),
   },
   {
+    // A review carried to our checked fix-up needs no model, so this runs while Claude is paused.
+    name: "review-carry",
+    perRepo: true,
+    detect: (db, ctx) => {
+      const due = new Set(planned(db, "carry", { plans: plansOf(db, ctx) }).map((p) => p.facts.repo));
+      return ctx.tracked.filter((repo) => due.has(repo)).sort().map((repo) => ({ step: "review-carry", params: { repo } }));
+    },
+  },
+  {
     // The final Opus reviews, posted as one PR review each in repos approved for comments.
     name: "review-post",
     perRepo: true,
