@@ -12,7 +12,6 @@ import { parseFindings } from "../src/postmerge/parse.ts";
 import { parseHaikuImpacts } from "../src/priority/score.ts";
 import { parseChecks } from "../src/review/checks.ts";
 import { parseOpusReply } from "../src/review/opus-parse.ts";
-import { parseSummaryReply } from "../src/classify/parse.ts";
 import { parseGateCall } from "../src/worker/gate.ts";
 
 const fence = (o: unknown) => "Here is my answer.\n```json\n" + JSON.stringify(o) + "\n```\n";
@@ -73,11 +72,10 @@ describe("model replies", () => {
     assert.deepEqual(r.missing, ["a#2"]);
   });
 
-  test("summaries: too short or too long are not kept", () => {
+  test("recommendation reply: a summary outside the length bounds is null", () => {
     const good = "This change adds a ripple filter to the image editor and a test for it.";
-    const r = parseSummaryReply(fence([{ ref: "a#1", summary: good }, { ref: "a#2", summary: "short" }]), ["a#1", "a#2"]);
-    assert.deepEqual(r.summaries.map((s) => s.ref), ["a#1"]);
-    assert.deepEqual(r.missing, ["a#2"]);
+    assert.equal(parseRecommendReply(fence({ summary: good, recommended: null, reason: "" }), ["small"])?.summary, good);
+    assert.equal(parseRecommendReply(fence({ summary: "short", recommended: null, reason: "" }), ["small"])?.summary, null);
   });
 
   test("Opus review: the ref must match, take-fix needs a fix, a one-element array is read", () => {

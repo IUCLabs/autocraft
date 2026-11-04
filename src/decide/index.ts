@@ -1,19 +1,15 @@
 // Decide stage: open items that need a maintainer's scope call become
-// dashboard decisions, each with a short AI summary.
+// dashboard decisions, each with a short AI summary and a recommendation
+// from one Opus call.
 //
 // runDecide() is the step the runner registers; `autocraft decide` runs it
 // from a shell. Idempotent: items with a decision or a later stage are
 // skipped, so a re-run or an interrupted run asks only what is still missing.
 import type { DatabaseSync } from "node:sqlite";
-import { refOf, type Item } from "../classify/parse.ts";
-import { claudeRoom } from "../agents/call.ts";
-import { loadItems, pool } from "../classify/run.ts";
-import { runModelStep } from "../agents/step.ts";
-import { DECIDE_SUMMARY } from "../agents/steps.ts";
+import type { Item } from "../classify/parse.ts";
+import { loadItems } from "../classify/run.ts";
 import { connect } from "../db.ts";
-import { ask } from "../decisions.ts";
 import { trackedNames } from "../repos.ts";
-import { CLAUDE_PROMPTS } from "../prompts/index.ts";
 import { buildDecision } from "./decision.ts";
 import { recommend, recommendIds } from "./recommend.ts";
 import { type Candidate, type Reason } from "./select.ts";
@@ -21,18 +17,12 @@ import { latestRun, settledLookup } from "../classify/settled.ts";
 import { scopeReason } from "../core/decide-item.ts";
 import { plannedItems } from "../core/select-items.ts";
 
-const PROMPT = CLAUDE_PROMPTS["decide.summary"];
-
-export const DECIDE_MODELS = PROMPT.models as readonly string[];
-
 export type DecideParams = {
   /** Repo names; empty or missing means every tracked repo. */
   repos?: string[];
   /** Most decisions to create in this run. */
   limit?: number;
   dryRun?: boolean;
-  /** Model for the summaries, one of DECIDE_MODELS; default the prompt's first. */
-  model?: string;
   /** Classification run; default the one with the newest Jev verdict. */
   run?: string;
   /** Called with the running count of items sent to the model. */
@@ -43,7 +33,7 @@ export type DecideParams = {
   diff?: (repo: string, number: number, head: string) => Promise<string | null>;
 };
 
-/** Most summary items plus recommendation calls per run when no limit is given. */
+/** Most Opus calls (new decisions plus recommendations for open ones) per run when no limit is given. */
 const DEFAULT_LIMIT = 50;
 
 export type RepoCount = { candidates: number; needsDecision: number; scopeDisagreement: number; asked: number; noSummary: number };
@@ -73,10 +63,8 @@ function count(byRepo: Record<string, RepoCount>, repo: string): RepoCount {
 }
 
 export async function runDecide(db: DatabaseSync, params: DecideParams = {}, log: Log = console.log): Promise<DecideResult> {
-  const model = params.model ?? PROMPT.models[0]!;
-  if (!DECIDE_MODELS.includes(model)) throw new Error(`model must be one of ${DECIDE_MODELS.join(", ")}`);
   if (params.limit !== undefined && !(Number.isInteger(params.limit) && params.limit >= 0)) throw new Error("limit must be a whole number ≥ 0");
-  // Summary items and recommendation calls share one budget.
+  // New decisions and recommendations for open ones share one budget.
   const total = params.limit ?? DEFAULT_LIMIT;
   const tracked = new Set(trackedNames(db));
   const untracked = (params.repos ?? []).filter((r) => !tracked.has(r));
@@ -103,57 +91,25 @@ export async function runDecide(db: DatabaseSync, params: DecideParams = {}, log
 
   const usageRun = `decide-${now().replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z")}`;
   let sent = 0;
-  const askedIds: string[] = [];
-  if (picked.length) await summarise(db, picked, model, usageRun, result, askedIds, (n) => { sent = n; params.onSent?.(n); }, log);
-
+  const fresh = picked.map((c) => ({ ...buildDecision(db, c) }));
   // New decisions first, then open ones that never had a model recommendation, within the step's limit.
   const room = Math.max(0, total - picked.length);
-  const first = askedIds.slice(0, room);
-  const ids = [...first, ...recommendIds(db).slice(0, Math.max(0, room - first.length)).filter((id) => !first.includes(id))];
-  if (picked.length || ids.length) result.usageRun = usageRun;
-  if (ids.length) {
-    result.recommended = await recommend(db, ids, {
+  const ids = recommendIds(db).slice(0, room);
+  if (fresh.length || ids.length) {
+    result.usageRun = usageRun;
+    const r = await recommend(db, [...fresh, ...ids], {
       checkout: params.checkout ?? ((repo) => import("../dupes/compare.ts").then((m) => m.baseCheckout(db, repo))),
       diff: params.diff ?? ((r, n, h) => import("../conversations/run.ts").then((m) => m.githubDiff(r, n, h))),
       usageRun, log, onSent: () => params.onSent?.(++sent),
     });
+    result.recommended = r.stored;
+    const repoOf = new Map(fresh.map((q) => [q.id, q.repo]));
+    for (const id of r.asked) count(result.byRepo, repoOf.get(id)!).asked++;
+    for (const ref of r.noSummary) count(result.byRepo, ref.slice(0, ref.lastIndexOf("#"))).noSummary++;
   }
   for (const n of Object.values(result.byRepo)) { result.asked += n.asked; result.noSummary += n.noSummary; }
   log(`decide: asked ${result.asked} decisions; ${result.noSummary} items without a summary; ${result.recommended} recommendations`);
   return result;
-}
-
-async function summarise(db: DatabaseSync, picked: Candidate[], model: string, usageRun: string, result: DecideResult, askedIds: string[], onSent: (n: number) => void, log: Log): Promise<void> {
-  // Batches stay within one repo so token use can be counted per repo.
-  const byRepo = new Map<string, Candidate[]>();
-  for (const c of picked) byRepo.set(c.repo, [...(byRepo.get(c.repo) ?? []), c]);
-  const batches: Candidate[][] = [];
-  for (const cs of byRepo.values()) for (let i = 0; i < cs.length; i += PROMPT.limits.perCall) batches.push(cs.slice(i, i + PROMPT.limits.perCall));
-  const stage = db.prepare("INSERT INTO stages (repo, number, stage, at, actor, note) VALUES (?, ?, 'needs-decision', ?, 'decide', ?)");
-  let sent = 0;
-  await pool(batches.map((batch, b) => async () => {
-    const repo = batch[0]!.repo, start = now();
-    sent += batch.length;
-    onSent(sent);
-    const items = loadSummaryItems(db, batch);
-    const cand = new Map(batch.map((c) => [refOf(c), c]));
-    const r = await runModelStep(db, DECIDE_SUMMARY, items, { model, usage: { run: usageRun, agent: `decide-${String(b).padStart(3, "0")}`, stage: "decide" } });
-    let done = 0;
-    if (r.ok) for (const summaries of r.values) {
-      const at = now();
-      const qs = summaries.map((s) => ({ ...buildDecision(db, cand.get(s.ref)!), asked_at: at, summary: s.summary, summary_by: model, summary_at: at }));
-      if (qs.length) {
-        ask(db, qs);
-        for (const q of qs) { stage.run(q.repo, q.number, at, `scope decision ${q.id}`); askedIds.push(q.id); }
-        done += qs.length;
-      }
-    }
-    const todo = r.ok ? r.rest ?? [] : items;
-    const n = count(result.byRepo, repo);
-    n.asked += done;
-    n.noSummary += todo.length;
-    if (todo.length) log(`decide: no valid summary for ${todo.map(refOf).join(", ")}; the next run retries them`);
-  }), () => claudeRoom(db), { first: true });
 }
 
 function parseArgs(args: string[]): DecideParams {
@@ -161,11 +117,10 @@ function parseArgs(args: string[]): DecideParams {
   for (let i = 0; i < args.length; i++) {
     const a = args[i]!, v = args[i + 1];
     if (a === "--dry-run") { p.dryRun = true; continue; }
-    if (v === undefined || !["--repo", "--limit", "--model", "--run"].includes(a)) throw new Error(`unknown or incomplete option ${a}; usage: decide [--repo R ...] [--limit N] [--model ${DECIDE_MODELS.join("|")}] [--run ID] [--dry-run]`);
+    if (v === undefined || !["--repo", "--limit", "--run"].includes(a)) throw new Error(`unknown or incomplete option ${a}; usage: decide [--repo R ...] [--limit N] [--run ID] [--dry-run]`);
     i++;
     if (a === "--repo") (p.repos ??= []).push(v);
     else if (a === "--limit") p.limit = Number(v);
-    else if (a === "--model") p.model = v;
     else p.run = v;
   }
   return p;
@@ -179,7 +134,7 @@ function table(r: DecideResult): string {
 
 export const commands = {
   decide: {
-    summary: `decide [--repo R ...] [--limit N] [--model ${DECIDE_MODELS.join("|")}] [--run ID] [--dry-run]: ask scope decisions with AI summaries`,
+    summary: `decide [--repo R ...] [--limit N] [--run ID] [--dry-run]: ask scope decisions with AI summaries and recommendations`,
     async run(args: string[]): Promise<void> {
       const r = await runDecide(connect(), parseArgs(args), (l) => console.error(l));
       console.log(table(r));

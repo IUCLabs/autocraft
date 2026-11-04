@@ -177,11 +177,10 @@ export const STAGES: StageDef[] = [
       { id: "backlog", label: "Backlog", waitsOn: "nothing", tone: "neutral", hint: "Answered backlog: held undecided, no later step takes it up" },
     ],
     models: [
-      { model: "sonnet", use: "Writes decision summaries" },
       { model: "haiku", use: "Summaries of duplicate decisions" },
-      { model: "opus", use: "Writes the scope recommendation and conversation replies" },
+      { model: "opus", use: "Writes the scope decision summary and recommendation, and conversation replies" },
     ],
-    promptIds: ["decide.summary", "decide.recommend", "conversation.turn"], promptStage: "Decide",
+    promptIds: ["decide.recommend", "conversation.turn"], promptStage: "Decide",
     waits: [
       { name: "Failed recommendation", why: "A scope recommendation call that keeps failing must not re-run Decide", howLong: "1 hour between tries, at most 3; then the decision keeps no recommendation", showsAs: "none (the decision shows no recommendation)", kind: "backoff" },
     ],

@@ -48,30 +48,8 @@ export function summaryInput(i: Item): Record<string, unknown> {
   };
 }
 
-export type Summary = { ref: string; summary: string };
-
 export const SUMMARY_MIN = 40;
 export const SUMMARY_MAX = 1000;
-
-/** Keeps one summary per asked ref: a string of SUMMARY_MIN to SUMMARY_MAX characters after trimming. */
-export function parseSummaryReply(text: string, refs: string[]): { summaries: Summary[]; missing: string[] } {
-  const a = text.indexOf("["), b = text.lastIndexOf("]");
-  let arr: unknown;
-  try { arr = a >= 0 && b > a ? JSON.parse(text.slice(a, b + 1)) : null; } catch { arr = null; }
-  const summaries: Summary[] = [];
-  const seen = new Set<string>();
-  if (Array.isArray(arr)) {
-    for (const o of arr as Record<string, unknown>[]) {
-      if (!o || typeof o !== "object") continue;
-      const ref = String(o.ref ?? "");
-      const s = typeof o.summary === "string" ? o.summary.replace(/\s+/g, " ").trim() : "";
-      if (!refs.includes(ref) || seen.has(ref) || s.length < SUMMARY_MIN || s.length > SUMMARY_MAX) continue;
-      seen.add(ref);
-      summaries.push({ ref, summary: s });
-    }
-  }
-  return { summaries, missing: refs.filter((r) => !seen.has(r)) };
-}
 
 const isLabel = (v: unknown): v is Label => typeof v === "string" && (LABELS as readonly string[]).includes(v);
 

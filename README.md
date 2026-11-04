@@ -17,7 +17,7 @@ Stages run in this order. Details, limits and rules for each are in [docs/pipeli
 | Duplicates | Finds items that describe the same bug or request as another open item, or one closed in the last year, and compares each group. | Jev, Haiku, Opus, Sonnet | yes: duplicate? decision |
 | Classify | Gives each open item one type label and two flags (security, needs decision). Jev goes first, Haiku gives a second opinion, and a referee settles disagreements outside the scope labels. | Jev, Haiku, Sonnet, Opus | yes: labels the models disagree on |
 | Priority | Gives each open item a level from P0 to P4, then orders the candidates of later stages by a work rank. | Jev, Haiku | no |
-| Decide | Asks an operator for scope calls, with a summary and a recommendation, and answers questions about an item in its conversation. | Sonnet, Haiku, Opus | yes: an operator answers |
+| Decide | Asks an operator for scope calls, with a summary and a recommendation, and answers questions about an item in its conversation. | Haiku, Opus | yes: an operator answers |
 | Label | Writes each settled type label and flag to GitHub. A label a person set is never changed. | none | yes: per-repo approval |
 | Review | Opus reviews every wanted PR at its current head, reading the repo, and gives a verdict with the complete fix list. It writes nothing to GitHub until the final review is posted. | Opus | yes: hold, close and merge-outside-rule verdicts |
 | Fix | Writes a patch for a bugfix issue where the fix is clear, tests it in the sandbox and opens a PR. | Sonnet, Opus, Haiku | yes: per-repo approval |
