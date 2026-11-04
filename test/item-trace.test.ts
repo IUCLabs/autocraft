@@ -3,6 +3,7 @@ import { test } from "node:test";
 import { insertRun, finishRun } from "../src/agents/runs.ts";
 import { saveTools } from "../src/agents/tools.ts";
 import { connect } from "../src/db.ts";
+import { syncActivity } from "../src/activity.ts";
 import { trace, traceDetail } from "../src/dash/api/trace.ts";
 import type { Req } from "../src/dash/types.ts";
 import type { ItemTrace } from "../web/src/api/types.ts";
@@ -28,8 +29,27 @@ test("the trace lists every source of an item newest first, with heads, a cursor
   db.prepare("INSERT INTO opus_review_history (repo, number, head_oid, at, model, mode, verdict, sure, reason) VALUES ('photocraft', 7, ?, '2026-01-01T05:00:00Z', 'opus', 'delta', 'take', 1, 'fine')").run(H2);
   db.prepare("INSERT INTO audit (at, login, action, target, details) VALUES ('2026-01-01T06:00:00Z', 'bot', 'review-post', 'photocraft#7', ?)").run(JSON.stringify({ head: H2, state: "done", text: "long posted text" }));
 
+  const asked: unknown[] = [];
+  const client = {
+    spent: 0, remaining: 4000,
+    async query(_q: string, v: object) {
+      asked.push(v);
+      return { repository: { issueOrPullRequest: {
+        __typename: "PullRequest", headRefOid: H2,
+        files: { nodes: [{ path: "src/a.rs", additions: 3, deletions: 1, changeType: "MODIFIED" }] },
+        commits: { nodes: [{ commit: { oid: H1, committedDate: "2026-01-01T00:30:00Z", author: { user: { login: "dev" } } } }] },
+        prTimeline: { nodes: [{ __typename: "LabeledEvent", id: "L1", createdAt: "2026-01-01T00:45:00Z", actor: { login: "maint" }, label: { name: "bug" } }] },
+      } } };
+    },
+  };
+  assert.equal(await syncActivity(db, client), 1);
+  assert.equal(await syncActivity(db, client), 0, "an item whose head and update time are unchanged is not read again");
+  assert.deepEqual(asked, [{ name: "photocraft", number: 7 }]);
+
   const t = await full(db);
-  assert.deepEqual(t.events.map((e) => e.id.replace(/:\d+$/, "")), ["audit", "review:opus", "review:opus", "run", "plan", "comment:c1", "gh:opened"]);
+  assert.deepEqual(t.events.map((e) => e.id.replace(/:\d+$/, "")), ["audit", "review:opus", "review:opus", "run", "plan", "comment:c1", "activity:L1", `commit:${H1}`, "gh:opened"]);
+  assert.deepEqual(t.events.filter((e) => e.id.startsWith("activity") || e.id.startsWith("commit")).map((e) => e.summary), ["Added label bug", "Pushed commit aaaaaaa"]);
+  assert.deepEqual(db.prepare("SELECT path FROM pr_files WHERE repo = 'photocraft' AND number = 7 AND head = ?").all(H2).map((r) => r.path), ["src/a.rs"]);
   assert.deepEqual(t.events.slice(0, 5).map((e) => e.head), [H2, H2, H1, H1, H1], "a model call takes the head current at its time");
   const call = t.events.find((e) => e.kind === "model-call")!;
   assert.equal(call.call?.toolCalls, 1);

@@ -11,6 +11,7 @@ import { connect, dbPath } from "./db.ts";
 import { trackedNames } from "./repos.ts";
 import { audit } from "./dash/audit.ts";
 import { hashColumns } from "./itemhash.ts";
+import { syncActivity } from "./activity.ts";
 import { envVar } from "./env.ts";
 
 const ORG = "storytold";
@@ -697,6 +698,15 @@ async function sync(args: string[]): Promise<void> {
       console.log(`sync: mode=${mode} items=${items} points=${client.spent} left=${client.remaining}`);
       // Sandboxed calls read the item snapshot instead of GitHub. The refresh is incremental and writes nothing when nothing differs; a visibility change alone removes a repository's rows.
       refreshSnapshot();
+      // Files, commits and label events of the items that changed; a failed read leaves them for the next run.
+      if (!opts.full && !opts.only.length) {
+        try {
+          const n = await syncActivity(db, querier);
+          if (n) console.log(`activity: ${n} items read, ${client.remaining} points left`);
+        } catch (e) {
+          console.log(`activity: ${String((e as Error)?.message ?? e).slice(0, 200)}`);
+        }
+      }
       // A failed read of the default branches must not fail the mirror run; the next run asks again.
       if (!opts.full && !opts.only.length) {
         try {

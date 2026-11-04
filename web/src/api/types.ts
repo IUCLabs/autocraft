@@ -225,7 +225,7 @@ export interface Item extends ItemRef {
   deletions: number;
   /** PRs: how many files the PR changes, from the mirror; null when unknown. */
   changedFiles: number | null;
-  /** Per-file changes; the mirror does not store them yet, so this is empty. */
+  /** Per-file changes; read per head by the activity sync; empty until it has read the PR (at most 100 files). */
   files: ChangedFile[];
   /** "none" also when the mirror has no check data for the item. */
   ci: CiState;

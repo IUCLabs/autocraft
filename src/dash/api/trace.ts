@@ -44,6 +44,17 @@ const github: Source = {
         summary: `${ours ? "AutoCraft posted a" : "Posted a"} ${what}, ${c.len} characters`, ref: { commentId: c.id },
       });
     }
+    for (const c of rows<{ oid: string; committed_at: string; author: string | null }>(db, "SELECT oid, committed_at, author FROM pr_commits WHERE repo = ? AND number = ?", repo, n)) {
+      // Our own commits are shown by their audit rows.
+      if (own !== "" && c.author === own) continue;
+      out.push({ id: `commit:${c.oid}`, kind: "github", at: c.committed_at, head: c.oid, actor: person(c.author), summary: `Pushed commit ${c.oid.slice(0, 7)}`, ref: { head: c.oid } });
+    }
+    for (const a of rows<{ id: string; kind: string; at: string; actor: string | null; label: string | null; after_oid: string | null; before_oid: string | null }>(db,
+      "SELECT id, kind, at, actor, label, after_oid, before_oid FROM item_activity WHERE repo = ? AND number = ?", repo, n)) {
+      const ours = own !== "" && a.actor === own;
+      const summary = a.kind === "force-push" ? `Force-pushed ${(a.before_oid ?? "").slice(0, 7)} → ${(a.after_oid ?? "").slice(0, 7)}` : `${a.kind === "labeled" ? "Added" : "Removed"} label ${a.label ?? ""}`;
+      out.push({ id: `activity:${a.id}`, kind: "github", at: a.at, head: a.kind === "force-push" ? a.after_oid : null, actor: ours ? step("AutoCraft") : person(a.actor), summary, ref: a.after_oid ? { head: a.after_oid } : {} });
+    }
     return out;
   },
 };

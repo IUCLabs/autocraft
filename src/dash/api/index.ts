@@ -120,8 +120,8 @@ async function item(db: DatabaseSync, req: Req): Promise<Item> {
     tier: TIER[c?.tier ?? "not"] ?? "not", authorMerged: c?.merged ?? 0, authorClosedUnmerged: c?.closed ?? 0,
     additions: it.additions ?? 0, deletions: it.deletions ?? 0,
     changedFiles: it.kind === "pr" ? it.changed_files : null,
-    // The mirror stores per-check states of the head (pr_checks) but no per-file rows.
-    files: [], ciChecks: it.kind === "pr" ? ciChecksOf(db, repo, n) : [],
+    // Per-check states of the head come from pr_checks and per-file rows from pr_files (src/activity.ts).
+    files: it.kind === "pr" ? filesOf(db, repo, n) : [], ciChecks: it.kind === "pr" ? ciChecksOf(db, repo, n) : [],
     ci: it.kind === "pr" ? (CI[it.ci_state ?? ""] ?? "none") : "none",
     mergeable: MERGEABLE[it.mergeable ?? ""] ?? "unknown",
     labels, createdAt: it.created_at ?? "", updatedAt: it.updated_at ?? "",
@@ -138,6 +138,12 @@ async function item(db: DatabaseSync, req: Req): Promise<Item> {
     actions: actionsOf(db, repo, n), releases: releasesOf(db, repo, n),
     queue: queueSlots(db, await visibleRepos(db, req)).get(`${repo}#${n}`) ?? null,
   };
+}
+
+/** The changed files the activity sync stored for the current head; empty until the sync has read the PR. */
+function filesOf(db: DatabaseSync, repo: string, n: number): Item["files"] {
+  return (db.prepare(`SELECT f.path, f.additions, f.deletions FROM pr_files f JOIN items i ON i.repo = f.repo AND i.number = f.number AND i.head_oid = f.head
+    WHERE f.repo = ? AND f.number = ? ORDER BY f.path`).all(repo, n) as { path: string; additions: number; deletions: number }[]);
 }
 
 /** The head's check contexts as the checks sync stored them; empty when they belong to an older head. */
