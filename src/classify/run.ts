@@ -29,7 +29,7 @@ import { sessionStore } from "../sandbox/session-store.ts";
 import { defaultWorkspace } from "../sandbox/workspace.ts";
 import { runModelStep } from "../agents/step.ts";
 import { CLASSIFY_HAIKU, CLASSIFY_JEV } from "../agents/steps.ts";
-import { CLAUDE_PROMPTS, JEV_ARGS, JEV_USD_PER_INPUT_TOKEN, JEV_PROMPTS, claudeArgs, claudeParts, claudePromptOf, jevPromptOf, joinParts, renderClaude, withoutRepoDir, renderJev, type ClaudeInput, type ClaudePromptId, type JevPromptId } from "../prompts/index.ts";
+import { CLAUDE_PROMPTS, JEV_ARGS, JEV_USD_PER_INPUT_TOKEN, JEV_PROMPTS, claudeArgs, claudeParts, claudePromptOf, jevPromptOf, joinParts, renderClaude, renderJev, type ClaudeInput, type ClaudePromptId, type JevPromptId } from "../prompts/index.ts";
 import type { DupePair } from "../dupes/pair.ts";
 import { flagsOf, jevVerdict, parseHaikuReply, parseRef, refOf, type Item, type JevAnswers, type Verdict } from "./parse.ts";
 import { envVar } from "../env.ts";
@@ -317,10 +317,10 @@ export async function askClaude<K extends ClaudePromptId>(id: K, model: string, 
 
 async function askOnce<K extends ClaudePromptId>(id: K, model: string, input: ClaudeInput[K], db: DatabaseSync, opts: AskOptions): Promise<LintedReply | null | undefined> {
   const ses = opts.session;
-  let sandboxed = opts.checkout !== undefined && CLAUDE_PROMPTS[id].sandbox !== undefined;
+  const sandboxed = opts.checkout !== undefined && CLAUDE_PROMPTS[id].sandbox !== undefined;
   const reference = sandboxed && CLAUDE_PROMPTS[id].sandbox?.reference ? opts.reference : undefined;
   if (reference) input = input.map((x) => ({ ...x, reference: true })) as ClaudeInput[K];
-  let parts = claudeParts(id, input, sandboxed);
+  const parts = claudeParts(id, input, sandboxed);
   const items = refsOf(input);
   const resume = ses?.resume;
   let run: Started | undefined;
@@ -334,25 +334,21 @@ async function askOnce<K extends ClaudePromptId>(id: K, model: string, input: Cl
     run = { runId, configDir: dir, accountId: resume.session.account };
     touchStore(resume.session.dir);
   }
-  run ??= await startClaudeRun(db, { promptId: id, promptVersion: promptVersion(id), provider: "claude", model, items, prompt: joinParts(parts) }, undefined, opts.maxWaitMs);
+  // A sandboxed call never runs without its sandbox, and the sandbox cannot refresh the token: the call waits for an account with enough token lifetime left (the host-side usage reading refreshes it).
+  const checkTool = opts.check !== undefined && CLAUDE_PROMPTS[id].sandbox?.check === true ? opts.check : undefined;
+  const needMs = sandboxed ? TOKEN_MARGIN_MS + (checkTool ? CHECK_MAX_WALL_MS : 0) : undefined;
+  while (!run) {
+    const started = await startClaudeRun(db, { promptId: id, promptVersion: promptVersion(id), provider: "claude", model, items, prompt: joinParts(parts) }, undefined, opts.maxWaitMs, needMs);
+    // The token can expire between the choice and the claim.
+    if (needMs !== undefined && tokenNearExpiry(join(started.configDir, ".credentials.json"), Date.now(), needMs)) {
+      console.log("sandbox call not started: token near expiry; waiting");
+      finishRun(db, started.runId, { state: "failed", summary: "skipped: token near expiry" });
+    } else run = started;
+  }
   const end = (e: Parameters<typeof finishRun>[2]) => finishRun(db, run.runId, e);
   let sessions: string | undefined, kept = false;
   let bridge: Bridge | undefined, bridgeConfig: string | undefined;
   try {
-    // The sandbox never refreshes the token: with little lifetime left the call runs on the host without tools, where a refresh is safe.
-    const checkTool = opts.check !== undefined && CLAUDE_PROMPTS[id].sandbox?.check === true ? opts.check : undefined;
-    if (sandboxed && tokenNearExpiry(join(run.configDir, ".credentials.json"), Date.now(), TOKEN_MARGIN_MS + (checkTool ? CHECK_MAX_WALL_MS : 0))) {
-      console.log("sandbox skipped: token near expiry");
-      // A resume only continues a sandboxed session; the caller asks anew.
-      if (resume) {
-        end({ state: "failed", summary: "skipped: token near expiry" });
-        return undefined;
-      }
-      sandboxed = false;
-      input = withoutRepoDir(input);
-      parts = claudeParts(id, input, false);
-      db.prepare("UPDATE agent_run_texts SET prompt = ? WHERE run_id = ?").run(packText(scrub(joinParts(parts).slice(0, 1_000_000))), run.runId);
-    }
     const workspace = sandboxed && CLAUDE_PROMPTS[id].sandbox?.workspace === true;
     const shared = workspace ? opts.shared ?? await workspaceOf(db) : undefined;
     const it = workspace ? opts.itemTools === undefined ? itemTools() : opts.itemTools : null;

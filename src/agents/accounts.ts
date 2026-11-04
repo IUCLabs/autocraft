@@ -3,11 +3,13 @@
 //
 // Only accounts present in the box config (box.ts) are listed. Their config
 // directories stay in this process: nothing here returns one.
+import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import type { AccountAuth, AccountInput, ClaudeAccount } from "../../web/src/api/types.ts";
 import { audit } from "../dash/audit.ts";
 import { JEV_PARALLEL_DEFAULT } from "../prompts/index.ts";
 import { loginInfo } from "./login.ts";
+import { tokenNearExpiry } from "../sandbox/index.ts";
 import { boxAccounts, iso, readUsage, type BoxAccount, type Reading } from "./box.ts";
 
 export const USAGE_PAUSE_KEY = "usage_pause";
@@ -160,8 +162,12 @@ export type Choice =
   | { wait: string }          // enabled accounts exist, none can take a call now
   | { none: true };           // no account is enabled
 
-/** The enabled account with a free slot and headroom that has the lowest weekly use. */
-export function chooseAccount(db: DatabaseSync, nowMs: number = Date.now()): Choice {
+/**
+ * The enabled account with a free slot and headroom that has the lowest weekly use.
+ * With `minTokenMs`, an account whose login token expires within that many ms is not eligible
+ * (a sandboxed call cannot refresh the token); it is named in the wait reason instead.
+ */
+export function chooseAccount(db: DatabaseSync, nowMs: number = Date.now(), minTokenMs?: number): Choice {
   const box = boxAccounts(db);
   syncAccounts(db, box);
   const enabled = rows(db, box).filter((r) => r.enabled === 1);
@@ -174,6 +180,7 @@ export function chooseAccount(db: DatabaseSync, nowMs: number = Date.now()): Cho
     const why = headroomReason(reading, limits, nowMs);
     if (why) reasons.push(`${r.label}: ${why}`);
     else if (running >= r.max_concurrent) reasons.push(`${r.label}: ${running} of ${r.max_concurrent} slots in use`);
+    else if (minTokenMs !== undefined && tokenNearExpiry(join(box.find((b) => b.id === r.id)!.configDir, ".credentials.json"), nowMs, minTokenMs)) reasons.push(`${r.label}: login token expires within ${Math.ceil(minTokenMs / 60_000)} min; waiting for its refresh`);
     else ok.push({ r, weekly: fresh(reading, nowMs)?.weekly?.pct ?? 0, running });
   }
   if (!ok.length) return { wait: reasons.join("; ") };
