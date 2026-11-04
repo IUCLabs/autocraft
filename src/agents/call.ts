@@ -10,6 +10,8 @@ import { scrubError } from "./text.ts";
 export type CallContext = { jobId: number; step: string; stage: number; cancelled(): boolean };
 let context: CallContext | null = null;
 export const setCallContext = (c: CallContext | null): void => void (context = c);
+/** The job this process runs, or null outside a job. */
+export const currentJobId = (): number | null => context?.jobId ?? null;
 
 /** Step names for calls made outside a job (the classify and decide commands). */
 const PROMPT_STEP: Record<string, { step: string; stage: number }> = {

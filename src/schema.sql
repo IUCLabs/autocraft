@@ -1276,3 +1276,27 @@ CREATE TABLE IF NOT EXISTS stage_trips (
   tripped_at TEXT NOT NULL,
   cleared_at TEXT, cleared_by TEXT
 );
+
+-- Item links: records that attach to a GitHub item. plan_history gets a row each time the planner (src/core/plan-cache.ts)
+-- stores a different state or wait for an item (old_state is NULL for the first plan seen); job_items lists the items a job
+-- handled (src/runner/job-items.ts), with a one-line outcome. Both are pruned with the jobs (90 days).
+CREATE TABLE IF NOT EXISTS plan_history (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  repo TEXT NOT NULL, number INTEGER NOT NULL,
+  head TEXT,
+  old_state TEXT, new_state TEXT NOT NULL,
+  wait TEXT,
+  reasons TEXT NOT NULL,              -- JSON string[], as in item_plans
+  at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS plan_history_item ON plan_history(repo, number, id);
+CREATE INDEX IF NOT EXISTS plan_history_at ON plan_history(at);
+CREATE TABLE IF NOT EXISTS job_items (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  job_id INTEGER NOT NULL,
+  repo TEXT NOT NULL, number INTEGER NOT NULL,
+  outcome TEXT,                       -- one line
+  at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS job_items_item ON job_items(repo, number, id);
+CREATE INDEX IF NOT EXISTS job_items_job ON job_items(job_id, id);

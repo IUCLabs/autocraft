@@ -50,6 +50,7 @@ import { foldFormat, queueLint, readLint } from "../prepush/index.ts";
 import { dropSessions, SessionLedger, sessionAsk, storeSessions, sweepSessions, type SessionAsk } from "../prepush/resume.ts";
 import type { LintPrevious } from "../fixup/patch.ts";
 import type { CiFailure, CifixPr } from "./types.ts";
+import { jobItem } from "../runner/job-items.ts";
 
 export { MAX_TRIES, type CifixCandidate } from "./candidates.ts";
 export { selectCifix } from "./select.ts";
@@ -225,6 +226,7 @@ class Recorder {
       : state === "skipped" ? `CI fix skipped at ${short(c.head)}: ${reason}`
       : state === "asked" ? `posted a CI fix at ${short(c.head)}: ${(o.files ?? []).join(", ")}` : `CI fix ${state} at ${short(c.head)}: ${reason}`;
     this.db.prepare("INSERT INTO stages (repo, number, stage, at, actor, note) VALUES (?, ?, ?, ?, ?, ?)").run(c.repo, c.number, "take", at, ACTOR, note);
+    jobItem(this.db, c.repo, c.number, note);
   }
 }
 

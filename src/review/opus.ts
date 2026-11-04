@@ -23,6 +23,7 @@ import { REPO_PATH } from "../sandbox/command.ts";
 import { checkoutForPr } from "../sandbox/index.ts";
 import { referenceDir } from "../reference.ts";
 import { defaultSemanticDeps, type SemanticDeps } from "../reference-lint.ts";
+import { jobItem } from "../runner/job-items.ts";
 
 const PROMPT = CLAUDE_PROMPTS["review.opus"];
 /** Diff characters above which a PR is held as too large to review. */
@@ -208,19 +209,19 @@ export async function runOpusReview(db: DatabaseSync, params: OpusParams, log: (
     if (!cands.length) return summary;
   }
   let handled = 0;
-  const tally = (r: OpusReview) => { summary.verdicts[r.verdict] = (summary.verdicts[r.verdict] ?? 0) + 1; summary.reviewed++; };
+  const tally = (c: { repo: string; number: number }, r: OpusReview) => { summary.verdicts[r.verdict] = (summary.verdicts[r.verdict] ?? 0) + 1; summary.reviewed++; jobItem(db, c.repo, c.number, `Opus review: ${r.verdict}${r.sure ? "" : " (unsure)"}`, log); };
   await pool(cands.map((c) => async () => {
     const start = now();
     const p = await prepareOpusInput(db, repo, c, deps, log);
     if (p.kind === "no-diff") {
-      log(`  ${refOf(c)}: no diff: ${p.error}`);
+      jobItem(db, c.repo, c.number, `no diff: ${p.error}`, log);
       summary.skipped.push(refOf(c));
       return;
     }
     if (p.kind === "large") {
       const r: OpusReview = { ref: refOf(c), verdict: "hold", sure: true, reason: TOO_LARGE, fixes: [], risks: [], summary: null, why: null, public: null, conflicts: [] };
       saveOpus(db, runId, c, { mode: p.mode, base: p.base, model: null, review: r });
-      tally(r);
+      tally(c, r);
       params.onHandled?.(++handled);
       return;
     }
@@ -253,9 +254,9 @@ export async function runOpusReview(db: DatabaseSync, params: OpusParams, log: (
         if (risks.length) got = { ...got, sure: false, risks: [...got.risks, ...risks] };
       }
       saveOpus(db, runId, c, { mode, base, model: deps.model, review: got, snap, unapplied: outcomes });
-      tally(got);
+      tally(c, got);
     } else {
-      log(`  ${refOf(c)}: no valid Opus review`);
+      jobItem(db, c.repo, c.number, "no valid Opus review", log);
       summary.missing.push(refOf(c));
     }
     params.onHandled?.(++handled);

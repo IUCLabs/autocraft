@@ -15,8 +15,9 @@ import { recordUsageSamples } from "../agents/accounts.ts";
 import { AccountWatcher } from "../agents/manage.ts";
 import { failRunning, pruneRuns } from "../agents/runs.ts";
 import { pruneTasks, reapLost } from "../build/tasks.ts";
+import { prunePlanHistory } from "../core/plan-cache.ts";
 import { checkPendingUpdate } from "../build/worker-update.ts";
-import { endJob, now, pruneJobs, RUNNER_STOPPED } from "./jobs.ts";
+import { endJob, JOB_KEEP_MS, now, pruneJobs, RUNNER_STOPPED } from "./jobs.ts";
 import { OffThread } from "./offthread.ts";
 import { loadSteps } from "./steps.ts";
 import { envVar } from "../env.ts";
@@ -206,6 +207,11 @@ export class Runner {
         pruneJobs(this.db, t);
       } catch (e) {
         this.o.log(`prune jobs: ${(e as Error).message}`);
+      }
+      try {
+        prunePlanHistory(this.db, JOB_KEEP_MS, t);
+      } catch (e) {
+        this.o.log(`prune plan history: ${(e as Error).message}`);
       }
       try {
         pruneTasks(this.db, t);

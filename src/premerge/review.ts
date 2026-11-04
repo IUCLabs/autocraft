@@ -20,6 +20,7 @@ import { REPO_PATH } from "../sandbox/command.ts";
 import { checkoutForPr } from "../sandbox/index.ts";
 import { type PremergeReview } from "./parse.ts";
 import { savePremerge } from "./store.ts";
+import { jobItem } from "../runner/job-items.ts";
 
 const PROMPT = CLAUDE_PROMPTS["premerge.opus"];
 const now = () => new Date().toISOString();
@@ -81,7 +82,7 @@ export async function runPremerge(db: DatabaseSync, params: PremergeParams, log:
   await pool(cands.map((e) => async () => {
     const start = now(), ref = refOf(e), head = e.head;
     const fail = (error: string, final = false) => {
-      log(`  ${ref}: ${error}`);
+      jobItem(db, repo, e.number, error, log);
       savePremerge(db, { repo, number: e.number, head, at: now(), runId, model: deps.model, error, final });
       s.failed.push(ref);
     };
@@ -103,10 +104,11 @@ export async function runPremerge(db: DatabaseSync, params: PremergeParams, log:
       const got: PremergeReview | null = r.ok ? r.value : null;
       // The call takes minutes: a push or a merge meanwhile makes the review one of a head nobody will merge.
       if (!stillHead(db, repo, e.number, head)) {
-        log(`  ${ref}: the head moved during the review; not stored`);
+        jobItem(db, repo, e.number, "the head moved during the review; not stored", log);
         s.moved.push(ref);
       } else if (got) {
         savePremerge(db, { repo, number: e.number, head, at: now(), runId, model: deps.model, findings: got.findings, searched: got.searched, conflicts: got.conflicts });
+        jobItem(db, repo, e.number, `pre-merge review: ${got.findings.length} findings`, log);
         s.reviewed++; s.findings += got.findings.length; s.defects += got.findings.filter((f) => f.severity === "defect").length;
       } else fail("retry: no valid reply from the model");
     }

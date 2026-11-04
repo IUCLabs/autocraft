@@ -17,6 +17,7 @@ import { REPO_PATH } from "../sandbox/command.ts";
 import { checkoutForCommit, checkoutForPr } from "../sandbox/index.ts";
 import { MAX_MERGED_DIFF_CHARS, type FiledBefore, type Finding, type PostmergeCommit, type PostmergePr, type PostmergeReviewRow, type RelatedItem } from "./parse.ts";
 import { followupsOf, MAX_RETRIES, mergedPr, selectPostmerge, type MergedPr } from "./select.ts";
+import { jobItem } from "../runner/job-items.ts";
 
 const PROMPT = CLAUDE_PROMPTS["postmerge.opus"];
 const now = () => new Date().toISOString();
@@ -151,7 +152,7 @@ export async function runPostmerge(db: DatabaseSync, params: PostmergeParams, lo
     const start = now();
     const p = await prepare(db, c, deps);
     if (p.kind === "error") {
-      log(`  ${refOf(c)}: ${p.error}`);
+      jobItem(db, repo, c.number, p.error, log);
       saveReview(db, c, { sha: c.head_oid, runId, model: null, findings: null, error: p.error });
       params.onHandled?.(++handled);
       return;
@@ -169,9 +170,10 @@ export async function runPostmerge(db: DatabaseSync, params: PostmergeParams, lo
     const got: Finding[] | null = r.ok ? r.value : null;
     if (got) {
       saveReview(db, c, { sha: input.merge_sha, runId, model: deps.model, findings: got, error: null });
+      jobItem(db, repo, c.number, `post-merge review: ${got.length} findings`, log);
       s.reviewed++; s.findings += got.length; s.defects += got.filter((f) => f.severity === "defect").length;
     } else {
-      log(`  ${refOf(c)}: no valid post-merge review`);
+      jobItem(db, repo, c.number, "no valid post-merge review", log);
       saveReview(db, c, { sha: input.merge_sha, runId, model: deps.model, findings: null, error: "retry: no valid reply from the model" });
       s.failed.push(refOf(c));
     }

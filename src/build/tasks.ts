@@ -1,6 +1,7 @@
 // Build tasks: created by pipeline steps, claimed by workers that pull, run
 // on the worker, and reported back. Everything a worker sends is stored as
 // data; nothing here executes it, renders it or puts it in a prompt.
+import { currentJobId } from "../agents/call.ts";
 import type { DatabaseSync, SQLInputValue } from "node:sqlite";
 import type { ItemShown, BuildSummary, BuildTask, BuildTaskDetail, Capabilities, Requires, SandboxEnv, TaskArtifact, TaskBatch, TaskFilter, TaskPage, TaskResult, TaskState, TaskStep } from "../../web/src/api/types.ts";
 import { audit } from "../dash/audit.ts";
@@ -131,7 +132,7 @@ export function createTask(db: DatabaseSync, t: NewTask): number {
   if (queued >= MAX_QUEUED) throw new BuildError(429, `${MAX_QUEUED} tasks are already queued`);
   const r = db.prepare(`INSERT INTO build_tasks (job_id, step, repo, number, head_sha, base_sha, requires, priority, plan, state, queued_at, patch, warm_key, warm_role)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?)`)
-    .run(t.jobId ?? null, t.step, t.repo, t.number ?? null, t.headSha, t.baseSha ?? null, JSON.stringify(requires), priority, JSON.stringify(plan), nowIso(),
+    .run(t.jobId ?? currentJobId(), t.step, t.repo, t.number ?? null, t.headSha, t.baseSha ?? null, JSON.stringify(requires), priority, JSON.stringify(plan), nowIso(),
       patch, warm?.key ?? null, warm?.role ?? null);
   return Number(r.lastInsertRowid);
 }

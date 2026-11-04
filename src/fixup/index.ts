@@ -44,6 +44,7 @@ import { fixupEditable, validatePatch, type ConflictPr, type FixupPr } from "./p
 import { outsideShown, shownSize, viewFile } from "./excerpt.ts";
 import { HOLD_CANNOT_PUSH, askText, carryCommentText, commentText, commitMessage } from "./template.ts";
 import { commentApprovalOf } from "../act/approval.ts";
+import { jobItem } from "../runner/job-items.ts";
 
 export { MAX_ATTEMPTS, type FixCandidate, type FixSelection } from "./candidates.ts";
 export { selectFixups } from "./select.ts";
@@ -298,7 +299,7 @@ async function runFixupWith(db: DatabaseSync, params: FixupParams, log: (line: s
       rec.fixup(c, "asked", null, [...new Set(c.fixes.map((f) => f.file))]);
       if (count) params.onHandled?.(++handled.n);
       summary.asked.push(ref);
-      log(`  ${ref}: asked the contributor for changes at ${short(c.head)}`);
+      jobItem(db, repo, c.number, `asked the contributor for changes at ${short(c.head)}`, log);
     } catch (e) {
       log(`  ${ref}: not asked: ${oneLine(String((e as Error).message ?? e))}`);
     }
@@ -329,13 +330,13 @@ async function runFixupWith(db: DatabaseSync, params: FixupParams, log: (line: s
       const reason = scrubReason(raw, d.root);
       rec.fixup(c, state, reason, files);
       summary.failed.push({ ref, reason });
-      log(`  ${ref}: ${state}: ${reason}`);
+      jobItem(db, repo, c.number, `${state}: ${reason}`, log);
     };
     const hold = (state: "cannot-push" | "too-large" | "push-denied", raw: string) => {
       const reason = scrubReason(raw, d.root);
       rec.fixup(c, state, reason, files);
       summary.held.push({ ref, reason });
-      log(`  ${ref}: held: ${reason}`);
+      jobItem(db, repo, c.number, `held: ${reason}`, log);
     };
     try {
       if (!c.carry && files.some((f) => !fixupEditable(f))) { hold("too-large", "the fixes name files a fix-up may not edit"); continue; }
@@ -466,7 +467,7 @@ async function runFixupWith(db: DatabaseSync, params: FixupParams, log: (line: s
         if (task !== null) {
           rec.linting(c, v.patch, v.files, task, "pending", round, ses.kept ? storeSessions({ "": ses.kept }, new Date(at())) : null);
           if (ses.kept) ledger.stored({ "": ses.kept });
-          log(`  ${ref}: patch stored; lint task ${task} queued (round ${round})`);
+          jobItem(db, repo, c.number, `patch stored; lint task ${task} queued (round ${round})`, log);
           continue;
         }
       }
@@ -481,7 +482,7 @@ async function runFixupWith(db: DatabaseSync, params: FixupParams, log: (line: s
       }
       rec.fixup(c, "pushed", null, v.files, commit);
       summary.pushed.push(ref);
-      log(`  ${ref}: pushed ${short(commit)} on ${short(head)}: ${v.files.join(", ")}`);
+      jobItem(db, repo, c.number, `pushed ${short(commit)} on ${short(head)}: ${v.files.join(", ")}`, log);
 
       const body = c.carry ? carryCommentText(c.carry.sources.map((x) => x.number), v.files) : commentText(v.files);
       const cm = await ghComment(gw, g, d.exec, "fixup-comment", { repo, number: c.number, pr: true }, c.carry ? { by: "operator", model: PROMPT.models[0] } : { by: "model", kind: "comment", model: PROMPT.models[0] }, body, { run: runId });
