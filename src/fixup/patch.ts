@@ -1,6 +1,8 @@
 // Validation of the unified diff a model returns for the fix-up step. Pure text
 // checks; whether it applies is decided by `git apply --check` in index.ts.
 
+import type { ShownFile } from "./excerpt.ts";
+
 export const MAX_CHANGED_LINES = 300;
 
 export type PatchCheck = { ok: true; patch: string; files: string[]; changed: number } | { ok: false; reason: string };
@@ -144,8 +146,8 @@ export type FixupPr = {
   title: string;
   /** The review's fix list for this PR. */
   fixes: { file: string; change: string }[];
-  /** Current content of each file the fixes name, at the PR's head commit. */
-  files: { path: string; content: string }[];
+  /** Each file the fixes name, at the PR's head commit: whole, or in part when it is large. */
+  files: ShownFile[];
   /** The PR's diff. */
   diff: string;
   /** For a carry-over: the PRs closed as duplicates, their diffs and the parts to port onto this one. */

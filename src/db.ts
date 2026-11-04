@@ -180,6 +180,11 @@ function migrateValues(db: DatabaseSync): void {
   // Conflict merges skipped or refused for CRLF files or whole-PR size limits are tried again under the per-file rules; the rows stay as history.
   const OLD_LIMITS = "state IN ('skipped', 'refused') AND (reason LIKE '% has CRLF line endings or is not UTF-8' OR reason IN ('the conflict sections are over the size limit', 'the conflict sections are over the 80000 character limit for the check', 'the resolved sections are over the 80000 character limit for the check'))";
   if (db.prepare(`SELECT 1 FROM main.conflict_merges WHERE ${OLD_LIMITS} LIMIT 1`).get()) db.exec(`UPDATE main.conflict_merges SET state = 'superseded' WHERE ${OLD_LIMITS}`);
+  // Fix-ups and CI fixes held or failed because a file was over the size limit are tried again: large files are shown in part.
+  const OLD_FIXUP_SIZE = "state = 'too-large' AND reason LIKE '% is over the 40000 character limit'";
+  if (db.prepare(`SELECT 1 FROM main.fixups WHERE ${OLD_FIXUP_SIZE} LIMIT 1`).get()) db.exec(`UPDATE main.fixups SET state = 'superseded' WHERE ${OLD_FIXUP_SIZE}`);
+  const OLD_CIFIX_SIZE = "state = 'failed' AND reason = 'the files the failure names are over the size limit'";
+  if (db.prepare(`SELECT 1 FROM main.ci_fixes WHERE ${OLD_CIFIX_SIZE} LIMIT 1`).get()) db.exec(`UPDATE main.ci_fixes SET state = 'superseded' WHERE ${OLD_CIFIX_SIZE}`);
   // Whole-repo pilot entries became the repo's pipeline flag.
   const pilot = db.prepare("SELECT value FROM main.settings WHERE key = 'pilot_items'").get() as { value: string } | undefined;
   if (pilot) wholeRepoPilot(db, pilot.value);

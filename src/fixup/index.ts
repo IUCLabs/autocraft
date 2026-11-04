@@ -35,6 +35,7 @@ import { longLivedOf, pushable, BASE_ORG } from "./pushable.ts";
 import { askConflict, mergeConflict, type ConflictRun } from "./conflict.ts";
 import type { ConflictCandidate } from "./conflict-state.ts";
 import { editable, validatePatch, type ConflictPr, type FixupPr } from "./patch.ts";
+import { shownSize, viewFile } from "./excerpt.ts";
 import { HOLD_CANNOT_PUSH, askText, carryCommentText, commentText, commitMessage } from "./template.ts";
 import { commentApprovalOf } from "../act/approval.ts";
 
@@ -45,7 +46,7 @@ const ACTOR = "fixup";
 const PROMPT = CLAUDE_PROMPTS["fixup.patch"];
 const CHECK = CLAUDE_PROMPTS["fixup.check"];
 const CONFLICT = CLAUDE_PROMPTS["fixup.conflict"];
-/** Characters of one file, of all files, and of the PR diff shown to the model; over any of them the PR is held. */
+/** Characters of one file shown whole (a larger file is shown in part, and the part is held to the same limit), of all files shown, and of the PR diff; over any of them the PR is held. */
 export const FILE_CAP = 40_000;
 export const TOTAL_CAP = 120_000;
 export const DIFF_CAP = 60_000;
@@ -321,21 +322,22 @@ export async function runFixup(db: DatabaseSync, params: FixupParams, log: (line
       const head = await git.fetchPr(ORG, repo, c.number);
       if (head !== c.head) { log(`  ${ref}: skipped: fetched head ${short(head)} is not the reviewed ${short(c.head)}`); continue; }
 
+      const diff = await cachedDiff(repo, c.number, head, d.fetchDiff);
+      if (!diff.ok) { fail("failed", `no diff: ${oneLine(diff.error)}`); continue; }
+      if (diff.text.length > DIFF_CAP) { hold("too-large", `the PR diff is over the ${DIFF_CAP} character limit`); continue; }
       const shown: FixupPr["files"] = [];
       let total = 0, tooBig: string | null = null, bad: string | null = null;
       for (const path of files) {
         const f = await git.file(head, path);
         if (!f.ok) { bad = f.reason; break; }
-        total += f.content.length;
-        if (f.content.length > FILE_CAP) { tooBig = `${path} is over the ${FILE_CAP} character limit`; break; }
+        const v = viewFile(path, f.content, c.fixes.filter((x) => x.file === path).map((x) => x.change), diff.text, FILE_CAP);
+        if (!v.ok) { tooBig = v.reason; break; }
+        total += shownSize(v.file);
         if (total > TOTAL_CAP) { tooBig = `the files named in the fixes are over the ${TOTAL_CAP} character limit`; break; }
-        shown.push({ path, content: f.content });
+        shown.push(v.file);
       }
       if (bad) { fail("refused", bad); continue; }
       if (tooBig) { hold("too-large", tooBig); continue; }
-      const diff = await cachedDiff(repo, c.number, head, d.fetchDiff);
-      if (!diff.ok) { fail("failed", `no diff: ${oneLine(diff.error)}`); continue; }
-      if (diff.text.length > DIFF_CAP) { hold("too-large", `the PR diff is over the ${DIFF_CAP} character limit`); continue; }
       // Claimed once the cheap checks pass, before the model calls, so nobody else starts on it.
       if (!c.carry) await claim(c, pr);
 
