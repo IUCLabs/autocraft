@@ -14,6 +14,10 @@
 #   AUTOCRAFT_UNITS            systemd units restarted after the build
 #                              (default "autocraft-dashboard autocraft-runner"; empty for none).
 #                              Not restarted while the database file does not exist yet.
+#   AUTOCRAFT_RUNNER_UNIT      the unit that runs the pipeline (default autocraft-runner). It is
+#                              restarted only when the code it runs changed since its release
+#                              (deploy/runner-changed.sh); otherwise it keeps that release, whose
+#                              commit is in $AUTOCRAFT_ROOT/.runner-release, and the release stays.
 #   AUTOCRAFT_SUDO             command prefix for the restart (default "sudo -n")
 #   AUTOCRAFT_WORKER_SSH       user@host of the sandbox worker's admin SSH command; when set
 #                              and $AUTOCRAFT_ROOT/.ssh/id_craftsandbox exists, the worker code
@@ -129,7 +133,12 @@ for c in dash runner sync; do
 	printf '%s\n' "$usage" | grep -Eq "^ +$c " || { echo "!! the CLI does not list '$c'; a module failed to load" >&2; exit 1; }
 done
 
-if [ -n "${AUTOCRAFT_WORKER_SSH:-}" ] && [ -f "$ROOT/.ssh/id_craftsandbox" ]; then
+runner_unit="${AUTOCRAFT_RUNNER_UNIT:-autocraft-runner}"
+# Before this file existed every deploy restarted the runner, so it runs the live release.
+runner_sha="$(cat "$ROOT/.runner-release" 2>/dev/null || cat "$ROOT/app/.source-commit" 2>/dev/null || true)"
+runner_changed="$(bash "$REL/deploy/runner-changed.sh" "${runner_sha:-none}" "$sha" "$REL")"
+
+if [ "$runner_changed" = yes ] && [ -n "${AUTOCRAFT_WORKER_SSH:-}" ] && [ -f "$ROOT/.ssh/id_craftsandbox" ]; then
 	# Records the update instead of running it while the worker has tasks; the runner applies it later.
 	node --no-warnings src/cli.ts worker update-code --sha "$sha" --ssh "$AUTOCRAFT_WORKER_SSH" --key "$ROOT/.ssh/id_craftsandbox" --git-dir "$GIT_DIR"
 fi
@@ -142,6 +151,10 @@ units="${AUTOCRAFT_UNITS-autocraft-dashboard autocraft-runner}"
 if [ -n "$units" ] && [ -n "${AUTOCRAFT_DB:-}" ] && [ ! -f "$AUTOCRAFT_DB" ]; then
 	echo "-> No database at $AUTOCRAFT_DB yet; built, not restarting."
 	units=""
+fi
+if [ -n "$units" ] && [ "$runner_changed" = no ]; then
+	echo "-> The runner's code is unchanged since ${runner_sha:0:12}; it keeps running that release."
+	units="$(printf '%s\n' $units | { grep -vx "$runner_unit" || true; } | tr '\n' ' ' | sed 's/ *$//')"
 fi
 if [ -n "$units" ]; then
 	echo "-> Restarting: $units"
@@ -159,8 +172,11 @@ if [ -n "$units" ]; then
 		systemctl is-active --quiet "$u.service" || { echo "!! $u is not active after the restart; see journalctl -u $u" >&2; exit 1; }
 	done
 	echo "-> Up: $url"
+	case " $units " in *" $runner_unit "*) printf '%s\n' "$sha" >"$ROOT/.runner-release" ;; esac
 fi
 
 # Keep the current release and the newest few others.
 keep="${AUTOCRAFT_KEEP_RELEASES:-2}"
-ls -1t "$ROOT/releases" | { grep -vx "$sha" || true; } | tail -n +$((keep + 1)) | while read -r old; do rm -rf "$ROOT/releases/$old"; done
+# The runner's release stays while the runner runs it.
+runner_keep="$(cat "$ROOT/.runner-release" 2>/dev/null || true)"
+ls -1t "$ROOT/releases" | { grep -vx -e "$sha" -e "${runner_keep:-$sha}" || true; } | tail -n +$((keep + 1)) | while read -r old; do rm -rf "$ROOT/releases/$old"; done
