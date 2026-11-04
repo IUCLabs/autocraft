@@ -5,6 +5,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { cifixBucket, fixupOf, queueEntry } from "./decide.ts";
 import { nextStep } from "./decide-item.ts";
 import { mergeDecisionId } from "./rules.ts";
+import { isWork } from "./assignment.ts";
 import type { ItemFacts, Plan, PrFacts } from "./plan.ts";
 import { isQueueState } from "./plan.ts";
 import { loadPlanSet, type PlanSet, type PlanSetOptions } from "./plan-set.ts";
@@ -93,7 +94,7 @@ export function planRows(plans: PlanSet): PlanRow[] {
     const actions = [...item.actions, ...(pr?.plan.actions ?? [])];
     rows.push({
       repo: f.repo, number: f.number, kind: f.kind, head: pr?.facts.head ?? null, state: pr ? pr.plan.state : item.state, item_state: item.state,
-      actions: JSON.stringify(actions), wait: actions.length ? null : pr?.plan.wait ?? item.wait, reasons: JSON.stringify(pr?.plan.reasons ?? []), note: pr?.plan.note ?? null,
+      actions: JSON.stringify(actions), wait: actions.some(isWork) ? null : pr?.plan.wait ?? item.wait, reasons: JSON.stringify(pr?.plan.reasons ?? []), note: pr?.plan.note ?? null,
       view: JSON.stringify(viewOf(pr, { facts: f, plan: item })),
     });
   }

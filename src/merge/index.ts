@@ -21,7 +21,8 @@ import { actionable, ask, factsOf, getDecision } from "../decisions.ts";
 import { CLI_BY, type By } from "../core/gates.ts";
 import { guard, guardRepo, liveOf } from "../core/guard.ts";
 import { planned } from "../core/select.ts";
-import { assignTo, mergeViaCommand, MERGE_RECORDED_ENV, type Writer } from "../github/write.ts";
+import { claimForWork } from "../github/claim.ts";
+import { mergeViaCommand, MERGE_RECORDED_ENV, type Writer } from "../github/write.ts";
 import { Client, markMerged, type Querier } from "../mirror.ts";
 import { refreshChecks } from "../review/checks.ts";
 import { readGate } from "./changes-requested.ts";
@@ -108,7 +109,7 @@ const refOf = (e: { repo: string; number: number }) => `${e.repo}#${e.number}`;
 const short = (sha: string) => sha.slice(0, 7);
 const oneLine = (s: string) => s.replace(/\s+/g, " ").trim().slice(0, 300);
 
-// ---- GitHub reads and the one write this step makes itself (assignment) ----
+// ---- GitHub reads ----
 
 type Viewer = { login: string; id: string };
 const viewers = new WeakMap<Querier, Viewer>();
@@ -343,13 +344,9 @@ export async function runMerge(db: DatabaseSync, params: MergeParams, log: (line
       log(`  ${refOf(e)}: new comments or reviews since the final review; not merged, it is reviewed again first`);
       continue;
     }
-    if (!info.assignees.length) {
-      const me = await viewerOf(d.querier);
-      const ag = guardRepo(db, repo, "merge", params.by ?? CLI_BY);
-      if ("refused" in ag) { log(`  ${refOf(e)}: not assigned: ${ag.refused}`); continue; }
-      await assignTo(w, ag, d.querier, { repo, number: e.number, id: info.id }, me, { run: runId });
-      log(`  ${refOf(e)}: assigned to ${me.login}`);
-    }
+    const ag = guardRepo(db, repo, "merge", params.by ?? CLI_BY);
+    if ("refused" in ag) log(`  ${refOf(e)}: not assigned: ${ag.refused}`);
+    else await claimForWork(w, ag, d.querier, repo, e.number, "pr", () => viewerOf(d.querier), { run: runId }, log);
     const method = methodOf(info);
     // A hold may have been set during the calls above.
     if (mergeHeld(db, repo, e.number)) { log(`  ${refOf(e)}: merge held meanwhile; skipped`); summary.attempted.pop(); continue; }

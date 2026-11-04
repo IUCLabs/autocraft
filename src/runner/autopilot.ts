@@ -28,6 +28,7 @@ import { batchesDue } from "../merge/batch-store.ts";
 import { trackedNames } from "../repos.ts";
 import { inFlightNow, planned, type Planned } from "../core/select.ts";
 import { isQueueState } from "../core/plan.ts";
+import { isWork } from "../core/assignment.ts";
 import { postCandidates } from "../review/post.ts";
 import { collectDue } from "../verify/results.ts";
 import { openedToday, perDay } from "../fixissue/index.ts";
@@ -84,8 +85,8 @@ const firstByRepo = (items: Planned[]): Map<string, Planned> => {
  * a job takes one repo, so finishing what AutoCraft started beats starting new work.
  */
 function flightFirst(plans: PlanSet, repos: string[]): string[] {
-  const broke = new Set(plans.prs.filter((p) => p.facts.brokeByUs && p.plan.actions.length).map((p) => p.facts.repo));
-  const flying = new Set([...plans.prs, ...plans.items].filter((p) => p.plan.actions.length && inFlightNow(p.facts, p.plan.state)).map((p) => p.facts.repo));
+  const broke = new Set(plans.prs.filter((p) => p.facts.brokeByUs && p.plan.actions.some(isWork)).map((p) => p.facts.repo));
+  const flying = new Set([...plans.prs, ...plans.items].filter((p) => p.plan.actions.some(isWork) && inFlightNow(p.facts, p.plan.state)).map((p) => p.facts.repo));
   const rank = (r: string): number => (broke.has(r) ? 0 : flying.has(r) ? 1 : 2);
   return [...repos].sort((a, b) => rank(a) - rank(b));
 }
@@ -462,6 +463,16 @@ const LANE_CODE: Omit<Lane, "steps">[] = [
       // A stored patch whose lint task ended is collected by the same step.
       const lint = allowed(planned(db, "lint", { plans: plansOf(db, ctx), bucket: "cifix" })).map((p) => p.facts.repo).filter((r) => ctx.tracked.includes(r));
       return flightFirst(plansOf(db, ctx), [...new Set([...cifixRepos(db, ctx, ["work", "collect"]), ...lint])].sort()).map((repo) => ({ step: "cifix", params: { repo } }));
+    },
+  },
+  {
+    // The planner decides which items left the path to merge; this lane only carries out the unassign actions.
+    name: "unassign",
+    perRepo: true,
+    detect: (db, ctx) => {
+      const plans = plansOf(db, ctx), repos = new Set(ctx.tracked);
+      const due = [...allowed(planned(db, "unassign", { plans })), ...allowed(plannedItems(db, "unassign", { plans }))];
+      return [...new Set(due.map((p) => p.facts.repo))].filter((r) => repos.has(r)).sort().map((repo) => ({ step: "unassign", params: { repo } }));
     },
   },
   {

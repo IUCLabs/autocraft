@@ -31,7 +31,7 @@ import { whoAmI } from "../fixup/index.ts";
 import { Client, type Querier } from "../mirror.ts";
 import { viewerOf } from "../merge/index.ts";
 import { commentApprovalOf } from "../act/approval.ts";
-import { claimItem, issueInfo, releaseItem, weAssigned } from "../github/claim.ts";
+import { claimForWork, issueInfo } from "../github/claim.ts";
 import { CLAUDE_PROMPTS } from "../prompts/index.ts";
 import { diffCacheDir } from "../review/diff.ts";
 import { rustPlan } from "../worker/rust.ts";
@@ -257,13 +257,23 @@ async function startAttempt(x: Ctx, c: IssueCandidate): Promise<"started" | "ski
   }
   const t = parsed.triage;
   const r = row("retry", t.reason, { files: JSON.stringify(t.files), crate: t.crate.name, crate_dir: t.crate.dir, size: t.size });
+  await assignIssue(x, c);
   await patchRound(x, r);
   return "started";
 }
 
+/** The fix is going ahead (triage said fixable): the pipeline's account is assigned to the issue when nobody is. */
+async function assignIssue(x: Ctx, c: IssueCandidate): Promise<void> {
+  const { db, d, log } = x;
+  if (!d.querier) return;
+  const g = guardRepo(db, c.repo, "fix-issue", x.by ?? CLI_BY);
+  if ("refused" in g) { log(`  ${refOf(c)}: not assigned: ${g.refused}`); return; }
+  await claimForWork({ db, login: ACTOR }, g, d.querier, c.repo, c.number, "issue", () => viewerOf(d.querier!), { run: x.runId }, log);
+}
+
 /**
- * Assigns the issue to the pipeline's account when nobody is assigned and posts the one claim comment (when commenting is
- * approved), once per issue, as the fix starts. A failure here never stops the fix.
+ * Posts the one claim comment (when commenting is approved), once per issue, as the fix starts, while the issue is nobody's or
+ * ours. A failure here never stops the fix.
  */
 async function claimIssue(x: Ctx, c: IssueCandidate): Promise<void> {
   const { db, d, log } = x;
@@ -279,7 +289,6 @@ async function claimIssue(x: Ctx, c: IssueCandidate): Promise<void> {
     // The attempt row exists by now, so decideItem no longer lists a new fix for the issue: the claim needs the repo's approval and the switch.
     const g = guardRepo(db, c.repo, "fix-issue", x.by ?? CLI_BY);
     if ("refused" in g) { log(`  ${ref}: not claimed: ${g.refused}`); return; }
-    if (await claimItem(w, g, q, c.repo, c.number, info, me, { run: x.runId })) log(`  ${ref}: assigned to ${me.login}`);
     // Only when the issue is ours: nobody assigned, or only us.
     const assigned = info.assignees.length === 0 || info.assignees.every((a) => a === me.login);
     if (assigned && commentApprovalOf(db, c.repo) && !db.prepare("SELECT 1 FROM audit WHERE action = 'fixissue-claim' AND target = ?").get(ref)) {
@@ -288,25 +297,6 @@ async function claimIssue(x: Ctx, c: IssueCandidate): Promise<void> {
     }
   } catch (e) {
     log(`  ${ref}: could not claim: ${oneLine(String((e as Error).message ?? e))}`);
-  }
-}
-
-/** Takes our assignment back from open issues whose fix failed, when the audit shows we made it and we are still the only assignee. */
-async function releaseGivenUp(x: Ctx, repo: string): Promise<void> {
-  const { db, d, log } = x;
-  const q = d.querier;
-  if (!q) return;
-  const rows = (db.prepare("SELECT a.number FROM fix_attempts a JOIN items i ON i.repo = a.repo AND i.number = a.number AND i.state = 'OPEN' WHERE a.repo = ? AND a.state = 'failed'").all(repo) as { number: number }[]);
-  for (const r of rows) {
-    try {
-      const me = await viewerOf(q);
-      if (!weAssigned(db, repo, r.number, me.login, "fixissue-")) continue;
-      const rg = guardRepo(db, repo, null, x.by ?? CLI_BY);
-      if ("refused" in rg) { log(`  ${repo}#${r.number}: not unassigned: ${rg.refused}`); continue; }
-      if (await releaseItem({ db, login: ACTOR }, rg, q, repo, r.number, await issueInfo(q, ORG, repo, r.number), me, { run: x.runId }, "fixissue-")) log(`  ${repo}#${r.number}: unassigned from ${me.login}`);
-    } catch (e) {
-      log(`  ${repo}#${r.number}: could not unassign: ${oneLine(String((e as Error).message ?? e))}`);
-    }
   }
 }
 
@@ -406,7 +396,6 @@ export async function runFixIssue(db: DatabaseSync, params: FixIssueParams, log:
       log(`  ${refOf(c)}: ${oneLine(String((e as Error).message ?? e))}`);
     }
   }
-  await releaseGivenUp(x, repo);
   log(`fixissue ${repo}: ${s.started.length} started, ${s.skipped.length} skipped, ${s.queued.length} rounds queued; run ${runId}`);
   return s;
 }
@@ -505,7 +494,6 @@ export async function runFixIssueCollect(db: DatabaseSync, params: CollectParams
       log(`  ${ref}: ${oneLine(String((e as Error).message ?? e))}`);
     }
   }
-  for (const repo of new Set((db.prepare("SELECT DISTINCT repo FROM fix_attempts WHERE state = 'failed'").all() as { repo: string }[]).map((r) => r.repo))) await releaseGivenUp(x(repo), repo);
   log(`fixissue-collect: ${s.looked} pending: ${s.passed} passed, ${s.opened} PRs opened, ${s.failedRounds} failed rounds, ${s.failed} failed, ${s.retried} retried`);
   return s;
 }

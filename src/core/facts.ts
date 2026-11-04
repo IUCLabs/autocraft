@@ -31,7 +31,7 @@ import { staleReviews } from "../review/discussion.ts";
 import { scopeAnswers } from "../review/candidates.ts";
 import { NOT_RUST_REASON, PRIVATE_REASON, cachedRust } from "../verify/candidates.ts";
 import { CIFIX_PUSH_STATES, CIFIX_TRY_STATES, MAX_FAILURES, sizeOf } from "./rules.ts";
-import type { PrFacts, PrTier } from "./plan.ts";
+import type { AssignFacts, PrFacts, PrTier } from "./plan.ts";
 import { activeTrips, brokeHeads } from "../push-outcomes.ts";
 
 export type { PrFacts } from "./plan.ts";
@@ -51,13 +51,13 @@ type Row = {
   additions: number | null; deletions: number | null; i_mergeable: string | null; head_repo: string | null; head_ref: string | null; base_ref: string | null; i_can: number | null;
   c_head: string | null; c_at: string | null; c_state: string | null; c_draft: number | null; overall: string | null; c_checks: string | null; c_mergeable: string | null; c_can: number | null;
   r_head: string | null; r_at: string | null; r_verdict: string | null; r_sure: number | null; r_mode: string | null; r_reason: string | null; r_fixes: string | null; r_public: string | null; r_conflicts: string | null;
-  score: number | null; in_pilot: number; not_integration: number; batch_pr: number; held_backlog: number; held_dup: number;
+  assignees: string | null; score: number | null; in_pilot: number; not_integration: number; batch_pr: number; held_backlog: number; held_dup: number;
 };
 
 const parseList = (s: string | null): unknown[] => { try { const v = JSON.parse(s ?? "[]") as unknown; return Array.isArray(v) ? v : []; } catch { return []; } };
 const safeJson = (s: string | null): unknown => { try { return JSON.parse(s!); } catch { return null; } };
 
-const SELECT = `SELECT i.repo, i.number, i.author, i.state, i.review_decision, i.head_oid, i.updated_at, i.is_draft, i.additions, i.deletions, i.mergeable AS i_mergeable,
+const SELECT = `SELECT i.repo, i.number, i.author, i.assignees, i.state, i.review_decision, i.head_oid, i.updated_at, i.is_draft, i.additions, i.deletions, i.mergeable AS i_mergeable,
     i.head_repo, i.head_ref, i.base_ref, i.maintainer_can_modify AS i_can,
     c.head_oid AS c_head, c.fetched_at AS c_at, c.state AS c_state, c.is_draft AS c_draft, c.overall, c.checks AS c_checks, c.mergeable AS c_mergeable, c.maintainer_can_modify AS c_can,
     l.head_oid AS r_head, l.at AS r_at, l.verdict AS r_verdict, l.sure AS r_sure, l.mode AS r_mode, l.reason AS r_reason, l.fixes AS r_fixes, l.public_review AS r_public, l.conflicts AS r_conflicts,
@@ -108,6 +108,7 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
   const holds = mergeHolds(db, opts.repo);
   const inBatch = batchStates(db, opts.repo);
   const own = ownFixPrs(db, opts.repo);
+  const assigned = assignmentsOf(db, opts.repo);
   const mainRed = redMainRepos(db);
   const tripped = activeTrips(db);
   const brokeAt = brokeHeads(db, opts.repo);
@@ -197,7 +198,7 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
     const head = batchRow?.commit_sha ?? headOf(r);
     const lines = (r.additions ?? 0) + (r.deletions ?? 0);
     const base: PrFacts = {
-      repo: r.repo, number: r.number, now, pipelineOn, tripped, ghState: r.state, head, draft: fresh ? r.c_state !== "OPEN" || !!r.c_draft : !!r.is_draft,
+      repo: r.repo, number: r.number, assignment: assigned(ref, r.assignees), now, pipelineOn, tripped, ghState: r.state, head, draft: fresh ? r.c_state !== "OPEN" || !!r.c_draft : !!r.is_draft,
       author: r.author, authorIsPipeline: r.author !== null && r.author === pipelineLogin, tier: "not", lines, size: sizeOf(lines), label: null, needsDecisionFlag: false,
       scopeAnswer: scope.get(ref) ?? null,
       inScope, integration, batchPr: !!r.batch_pr, heldBacklog: !!r.held_backlog, heldDuplicate: !r.held_backlog && !!r.held_dup, mergeHeld: holds.has(ref),
@@ -392,4 +393,21 @@ export function ownFixPrs(db: DatabaseSync, repo?: string): { login: string | nu
   }
   for (const r of db.prepare("SELECT repo, pr_number AS n FROM main.main_fixes WHERE pr_number IS NOT NULL" + (repo ? " AND repo = ?" : "")).all(...(repo ? [repo] : [])) as { repo: string; n: number }[]) prs.add(`${r.repo}#${r.n}`);
   return { login, prs };
+}
+
+/** Reads the pipeline account and the last successful assign or unassign of every item from the audit once; the returned function gives an item's assignment facts from its mirrored `assignees` (JSON). */
+export function assignmentsOf(db: DatabaseSync, repo?: string): (ref: string, assignees: string | null) => AssignFacts {
+  const login = (db.prepare("SELECT value FROM main.settings WHERE key = ?").get(PIPELINE_LOGIN_KEY) as { value: string } | undefined)?.value ?? null;
+  const last = new Map<string, string | null>();
+  for (const r of db.prepare(`SELECT target, details FROM audit WHERE action = 'assign' AND rowid IN (SELECT MAX(rowid) FROM audit
+    WHERE action IN ('assign', 'unassign') AND COALESCE(details, '') NOT LIKE '%"error":%' ${repo ? "AND target >= ? AND target < ?" : ""} GROUP BY target)`)
+    .all(...(repo ? [`${repo}#`, `${repo}$`] : [])) as { target: string; details: string | null }[]) {
+    last.set(r.target, (safeJson(r.details) as { assignee?: string } | null)?.assignee ?? null);
+  }
+  return (ref, assignees) => {
+    const list = parseList(assignees).filter((x): x is string => typeof x === "string");
+    const by = last.get(ref);
+    // Without a recorded account, the audit's own assignee stands for it.
+    return { login: login ?? by ?? null, assignees: list, ours: by !== undefined && (login === null || by === login) };
+  };
 }

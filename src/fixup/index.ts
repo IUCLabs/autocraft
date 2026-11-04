@@ -22,7 +22,6 @@ import { withNote } from "../github/note.ts";
 import { CLI_BY, type By } from "../core/gates.ts";
 import { guard, guardRepo, liveOf } from "../core/guard.ts";
 import { ghAskComment, ghComment, ghEditComment, pushBranch, type Note, type Writer } from "../github/write.ts";
-import { claimItem, releaseItem, type Assignable } from "../github/claim.ts";
 import { connect } from "../db.ts";
 import { Client, type Querier } from "../mirror.ts";
 import { CLAUDE_PROMPTS } from "../prompts/index.ts";
@@ -37,10 +36,9 @@ import { MAX_ATTEMPTS, parseFixes, type FixCandidate } from "./candidates.ts";
 import { selectFixups } from "./select.ts";
 import { Git, exec, fixupDir, type Exec } from "./git.ts";
 import { scrubGitError } from "../worker/patch.ts";
-import { activeBatches, membersOf } from "../merge/batch-store.ts";
 import { longLivedOf, pushable, BASE_ORG } from "./pushable.ts";
+import { claimForWork } from "../github/claim.ts";
 import { askConflict, mergeConflict, type ConflictRun } from "./conflict.ts";
-import type { ConflictCandidate } from "./conflict-state.ts";
 import { fixupEditable, validatePatch, type ConflictPr, type FixupPr } from "./patch.ts";
 import { outsideShown, shownSize, viewFile } from "./excerpt.ts";
 import { HOLD_CANNOT_PUSH, askText, carryCommentText, commentText, commitMessage } from "./template.ts";
@@ -297,29 +295,15 @@ export async function runFixup(db: DatabaseSync, params: FixupParams, log: (line
   for (const c of asks) await askOne(c);
   const git = new Git(d.exec, d.root, repo);
   let whoP: Promise<Who> | undefined;
-  const me = async () => { const w = await (whoP ??= whoAmI(d.exec)); return { id: w.nodeId, login: w.login }; };
-  const infoOf = (pr: PrNode | null | undefined): Assignable | null => (pr ? { id: pr.id, state: pr.state, assignees: (pr.assignees?.nodes ?? []).map((a) => a.login) } : null);
-  /** Takes a PR the stage is about to work on when nobody is assigned. */
-  const claim = async (c: FixCandidate | ConflictCandidate, pr: PrNode): Promise<void> => {
-    try {
-      const g = guardRepo(db, repo, "push", params.by ?? CLI_BY);
-      if ("refused" in g) { log(`  ${refOf(c)}: not assigned: ${g.refused}`); return; }
-      if (await claimItem(gw, g, d.querier, repo, c.number, infoOf(pr)!, await me(), { run: runId })) log(`  ${refOf(c)}: assigned to ${(await me()).login}`);
-    } catch (e) { log(`  ${refOf(c)}: could not assign: ${oneLine(String((e as Error).message ?? e))}`); }
-  };
-  /** Takes our assignment back when the stage gives the PR up. */
-  const release = async (c: FixCandidate | ConflictCandidate): Promise<void> => {
-    try {
-      if (activeBatches(db, repo).some((b) => membersOf(db, b.id).some((m) => m.number === c.number))) return;
-      const g = guardRepo(db, repo, null, params.by ?? CLI_BY);
-      if ("refused" in g) { log(`  ${refOf(c)}: not unassigned: ${g.refused}`); return; }
-      const r = await d.querier.query(PR_QUERY, { name: repo, n: c.number }) as { repository?: { pullRequest?: PrNode | null } };
-      if (await releaseItem(gw, g, d.querier, repo, c.number, infoOf(r.repository?.pullRequest), await me(), { run: runId }, "fixup-")) log(`  ${refOf(c)}: unassigned`);
-    } catch (e) { log(`  ${refOf(c)}: could not unassign: ${oneLine(String((e as Error).message ?? e))}`); }
+  /** The stage starts work on a PR: the pipeline's account is assigned when nobody is. */
+  const claim = async (c: { number: number }): Promise<void> => {
+    const g = guardRepo(db, repo, "push", params.by ?? CLI_BY);
+    if ("refused" in g) { log(`  ${repo}#${c.number}: not assigned: ${g.refused}`); return; }
+    await claimForWork(gw, g, d.querier, repo, c.number, "pr", async () => { const who = await (whoP ??= whoAmI(d.exec)); return { id: who.nodeId, login: who.login }; }, { run: runId }, log);
   };
   const conflictRun: ConflictRun = {
     repo, runId, log, d, gw, at, summary, prQuery: PR_QUERY, scrub: (raw) => scrubReason(raw, d.root), git: () => git,
-    who: () => (whoP ??= whoAmI(d.exec)), onHandled: params.onHandled, handled, claim, release, by: params.by ?? CLI_BY,
+    who: () => (whoP ??= whoAmI(d.exec)), onHandled: params.onHandled, handled, claim, by: params.by ?? CLI_BY,
   };
   for (const c of cAsks) await askConflict(db, conflictRun, c);
   if (!picks.length && !cMerges.length) return summary;
@@ -329,16 +313,13 @@ export async function runFixup(db: DatabaseSync, params: FixupParams, log: (line
   for (const c of picks) {
     const ref = refOf(c);
     let files = [...new Set(c.fixes.map((f) => f.file))];
-    let gaveUp = false;
     const fail = (state: "failed" | "refused" | "rejected", raw: string) => {
-      if (c.attempt >= MAX_ATTEMPTS || c.source) gaveUp = true;
       const reason = scrubReason(raw, d.root);
       rec.fixup(c, state, reason, files);
       summary.failed.push({ ref, reason });
       log(`  ${ref}: ${state}: ${reason}`);
     };
     const hold = (state: "cannot-push" | "too-large" | "push-denied", raw: string) => {
-      gaveUp = true;
       const reason = scrubReason(raw, d.root);
       rec.fixup(c, state, reason, files);
       summary.held.push({ ref, reason });
@@ -390,9 +371,7 @@ export async function runFixup(db: DatabaseSync, params: FixupParams, log: (line
       }
       if (bad) { fail("refused", bad); continue; }
       if (tooBig) { hold("too-large", tooBig); continue; }
-      // Claimed once the cheap checks pass, before the model calls, so nobody else starts on it.
-      if (!c.carry) await claim(c, pr);
-
+      if (!c.carry) await claim(c);
       // A stored patch: the lint task's outcome decides whether it is pushed (clean), asked for again (findings) or queued again (lost task).
       let findings: string[] = [];
       let folded: string | null = null;
@@ -455,7 +434,7 @@ export async function runFixup(db: DatabaseSync, params: FixupParams, log: (line
         if (verdict.check.verdict === "reject") { fail("rejected", `Opus rejected the patch: ${checkLine(verdict.check)}`); continue; }
       }
 
-      // The model calls took minutes: read the PR again before claiming and pushing.
+      // The model calls took minutes: read the PR again before pushing.
       const again = await d.querier.query(PR_QUERY, { name: repo, n: c.number }) as { repository?: { pullRequest?: PrNode | null } };
       const now = again.repository?.pullRequest;
       noteLive(db, repo, c.number, now, at());
@@ -492,8 +471,6 @@ export async function runFixup(db: DatabaseSync, params: FixupParams, log: (line
       if (cm.code !== 0) log(`  ${ref}: comment failed: ${oneLine(cm.stderr)}`);
     } catch (e) {
       fail("failed", oneLine(String((e as Error).message ?? e)));
-    } finally {
-      if (gaveUp && !c.carry) await release(c);
     }
   }
   for (const c of cMerges) await mergeConflict(db, conflictRun, c);

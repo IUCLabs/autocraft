@@ -15,7 +15,7 @@ import { cachedDiff } from "../review/diff.ts";
 import { checkLine, parseCheck, recordCheck } from "../patchcheck/index.ts";
 import { CHECK_DIFF_CAP, CHECK_PATCH_CAP, type FixupCheckInput } from "../patchcheck/types.ts";
 import { CLAUDE_PROMPTS, untrustedJson } from "../prompts/index.ts";
-import { BASE_NAME, MAX_CONFLICT_TRIES, type ConflictCandidate } from "./conflict-state.ts";
+import { BASE_NAME, type ConflictCandidate } from "./conflict-state.ts";
 import type { Git } from "./git.ts";
 import { noteLive, type FixupDeps, type FixupSummary, type PrNode, type Who } from "./index.ts";
 import { answerText, conflictView, endNewline, hasMarkers, locateInHead, parseResolution, resolvablePath, spliceSections, type ConflictFile, type ConflictSection } from "./patch.ts";
@@ -48,9 +48,8 @@ export type ConflictRun = {
   onHandled?: (n: number) => void; handled: { n: number };
   /** Who asked: gates the writes. */
   by: By;
-  /** Assigns the PR to the pipeline's account when nobody is assigned; takes our assignment back when the stage gives up. */
-  claim: (c: ConflictCandidate, pr: PrNode) => Promise<void>;
-  release: (c: ConflictCandidate) => Promise<void>;
+  /** Called when the stage starts work on a PR: assigns the pipeline's account when nobody is. */
+  claim: (c: ConflictCandidate) => Promise<void>;
 };
 
 const refOf = (c: { repo: string; number: number }) => `${c.repo}#${c.number}`;
@@ -110,9 +109,7 @@ export async function mergeConflict(db: DatabaseSync, x: ConflictRun, c: Conflic
   const ref = refOf(c);
   let files: string[] = [];
   let baseSha: string | null = null;
-  let gaveUp = false;
   const fail = (state: "failed" | "refused" | "rejected", raw: string) => {
-    if (c.attempt >= MAX_CONFLICT_TRIES) gaveUp = true;
     const reason = x.scrub(raw);
     record(db, x.at(), c, state, reason, files, baseSha);
     x.summary.failed.push({ ref, reason });
@@ -121,7 +118,6 @@ export async function mergeConflict(db: DatabaseSync, x: ConflictRun, c: Conflic
   /** A skip that holds at every run for this head: recorded once so the PR is not selected again. */
   const skip = (why: string) => { x.log(`  ${ref}: skipped: ${why}`); record(db, x.at(), c, "skipped", why, [], baseSha); };
   const held = (state: "push-denied" | "skipped", reason: string) => {
-    gaveUp = true;
     record(db, x.at(), c, state, reason, files, baseSha);
     x.summary.held.push({ ref, reason });
     x.log(`  ${ref}: held: ${reason}`);
@@ -175,7 +171,7 @@ export async function mergeConflict(db: DatabaseSync, x: ConflictRun, c: Conflic
       if (changes.some((ch) => !files.includes(ch[3]!) || ch[0] !== ch[1])) { fail("refused", "the resolution would change files or modes outside the conflicted files"); return; }
       const again = await live(db, x, c);
       if (!again) return;
-    } else if (merge.clean) await x.claim(c, pr);
+    } else if (merge.clean) await x.claim(c);
     else {
       files = merge.conflicted;
       if (!files.length) { refuse("the merge is not clean but names no conflicted file"); return; }
@@ -207,7 +203,7 @@ export async function mergeConflict(db: DatabaseSync, x: ConflictRun, c: Conflic
       }
       const prDiff = await cachedDiff(x.repo, c.number, head, x.d.fetchDiff);
       if (!prDiff.ok) { fail("failed", `no diff: ${oneLine(prDiff.error)}`); return; }
-      await x.claim(c, pr);
+      await x.claim(c);
       if (!x.d.resolve) { fail("failed", "no resolver"); return; }
       checkout = (await x.d.checkout?.(x.repo, c.number, head)) ?? undefined;
       const body = ((db.prepare("SELECT body FROM items WHERE repo = ? AND number = ?").get(x.repo, c.number) as { body: string | null } | undefined)?.body ?? "").slice(0, 4000);
@@ -273,7 +269,5 @@ export async function mergeConflict(db: DatabaseSync, x: ConflictRun, c: Conflic
     if (cm.code !== 0) x.log(`  ${ref}: comment failed: ${oneLine(cm.stderr)}`);
   } catch (e) {
     fail("failed", oneLine(String((e as Error).message ?? e)));
-  } finally {
-    if (gaveUp) await x.release(c);
   }
 }

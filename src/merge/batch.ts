@@ -18,7 +18,8 @@ import type { DatabaseSync } from "node:sqlite";
 import { audit } from "../dash/audit.ts";
 import { CLI_BY, type By } from "../core/gates.ts";
 import { guard, guardBatchMerge, guardRepo, liveOf, type GuardedRepo } from "../core/guard.ts";
-import { assignTo, ghClosePr, ghOpenPr, mergeViaCommand, pushOwnBranch, unassignFrom, type Writer } from "../github/write.ts";
+import { claimForWork } from "../github/claim.ts";
+import { ghClosePr, ghOpenPr, mergeViaCommand, pushOwnBranch, type Writer } from "../github/write.ts";
 import { type Exec, exec, fixupDir } from "../fixup/git.ts";
 import { whoAmI } from "../fixup/index.ts";
 import { branchOf, forkOf } from "../fixissue/index.ts";
@@ -27,7 +28,7 @@ import { refreshChecks } from "../review/checks.ts";
 import { BatchGit } from "./batch-git.ts";
 import { ACTIVE_BATCH, BLOCKED_BY_REVIEW, CLOSED_BY_PERSON, MAX_PUBLISH_FAILURES, PUBLISH_FAILED, RUNS_WAIT_NOTE, activeBatches, admits, batchSizeOf, getBatch, growBatchSize, insertBatch, membersOf, nextBranch, publishDelayMs, shrinkBatchSize, updateBatch, type BatchMember, type BatchRow } from "./batch-store.ts";
 import { mergeApprovalOf } from "./approval.ts";
-import { ORG, allowFailedArgs, prInfo, viewerOf, mergeRun, DEFAULT_MERGE_COMMAND, type CommandResult } from "./index.ts";
+import { ORG, allowFailedArgs, prInfo, mergeRun, DEFAULT_MERGE_COMMAND, type CommandResult } from "./index.ts";
 import { liveGateChecked } from "../review/discussion.ts";
 import { redMainRepos } from "../mainci/index.ts";
 import { effectiveCi } from "../optional-checks.ts";
@@ -102,7 +103,7 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
   const liveRead = liveOf(db, d.querier);
   const refOf = (n: number) => `${repo}#${n}`;
   const branch = branchOf(db, repo);
-  /** The batch stage's repo-level writes (its branch, PR and assignments) need the repo's merge approval. */
+  /** The batch stage's repo-level writes (its branch and PR) need the repo's merge approval. */
   const grant = (need: "merge" | null = "merge"): GuardedRepo | null => {
     const g = guardRepo(db, repo, need, by);
     if ("refused" in g) { log(`  ${g.refused}`); return null; }
@@ -115,48 +116,6 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
     const r = await ghClosePr(w, g, d.exec, { repo, number: b.pr_number }, { by: "fixed" }, why, { run: runId, batch: b.branch });
     if (r.code !== 0) log(`  ${b.branch}: could not close the batch PR: ${oneLine(r.stderr)}`);
   };
-
-  /** Takes a member PR that nobody is assigned to, so others do not spend time on it. A failure here never stops the batch. */
-  async function claim(n: number): Promise<void> {
-    try {
-      const info = await prInfo(d.querier, repo, n);
-      if (!info || info.state !== "OPEN" || info.assignees.length) return;
-      const g = grant();
-      if (!g) return;
-      const me = await viewerOf(d.querier);
-      await assignTo(w, g, d.querier, { repo, number: n, id: info.id }, me, { run: runId });
-      log(`  ${refOf(n)}: assigned to ${me.login}`);
-    } catch (e) {
-      log(`  ${refOf(n)}: could not assign: ${oneLine(String((e as Error).message ?? e))}`);
-    }
-  }
-
-  /** Removes our assignment from a PR that left the pipeline, when the audit shows we made it and we are still the only assignee. */
-  async function release(n: number): Promise<void> {
-    try {
-      const g = grant(null);
-      if (!g) return;
-      const me = await viewerOf(d.querier);
-      const last = db.prepare("SELECT action, details FROM audit WHERE target = ? AND action IN ('assign', 'unassign') AND COALESCE(details, '') NOT LIKE '%\"error\":%' ORDER BY rowid DESC LIMIT 1").get(refOf(n)) as { action: string; details: string | null } | undefined;
-      if (last?.action !== "assign" || (JSON.parse(last.details ?? "{}") as { assignee?: string }).assignee !== me.login) return;
-      const inBatch = activeBatches(db, repo).some((b) => membersOf(db, b.id).some((m) => m.number === n));
-      if (inBatch) return;
-      const info = await prInfo(d.querier, repo, n);
-      if (!info || info.assignees.length !== 1 || info.assignees[0] !== me.login) return;
-      await unassignFrom(w, g, d.querier, { repo, number: n, id: info.id }, me, { run: runId });
-      log(`  ${refOf(n)}: unassigned from ${me.login}`);
-    } catch (e) {
-      log(`  ${refOf(n)}: could not unassign: ${oneLine(String((e as Error).message ?? e))}`);
-    }
-  }
-
-  /** PRs dropped from a rebuilt batch are released unless they are still eligible for a later batch. */
-  async function releaseDropped(all: BatchMember[], keep: BatchMember[]): Promise<void> {
-    const dropped = all.filter((m) => !keep.some((k) => k.number === m.number));
-    if (!dropped.length) return;
-    const later = new Set(planned(db, "merge", { repo }).filter((p) => p.action.params?.batchable).map((p) => p.facts.number));
-    for (const m of dropped) if (!later.has(m.number)) await release(m.number);
-  }
 
   /** Builds a batch of the candidates, in order, from the current head of the default branch; null when no PR could be merged. */
   async function startBatch(cands: Cand[], max: number, parentId: number | null): Promise<number | null> {
@@ -183,7 +142,8 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
     const id = insertBatch(db, { repo, branch: name, baseSha: base, commitSha: tip, parentId, members, at: at() });
     audit(db, ACTOR, "batch-start", `${repo}:${name}`, { run: runId, base, prs: members.map((m) => m.number) });
     s.started.push(name);
-    for (const m of members) await claim(m.number);
+    const ag = grant();
+    if (ag) for (const m of members) await claimForWork(w, ag, d.querier, repo, m.number, "pr", { id: who.nodeId, login: who.login }, { run: runId, batch: name }, log);
     log(`  ${name}: ${members.length} PR${members.length === 1 ? "" : "s"} (${members.map((m) => `#${m.number}`).join(", ")}) on ${short(base)}; opening the batch PR`);
     await publish(getBatch(db, id), members);
     return id;
@@ -199,7 +159,6 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
     await closePr(b, `Closing: ${why}. The PRs are rebuilt in a new batch.`);
     s.superseded.push(b.branch);
     log(`  ${b.branch}: ${why}`);
-    await releaseDropped(membersOf(db, b.id), keep);
     const rebuild = keep.filter((m) => !mergeHeld(db, repo, m.number));
     if (rebuild.length && left() > 0) await startBatch(asCands(rebuild), left(), b.id);
   }
@@ -227,7 +186,6 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
       stage.run(repo, m.number, "hold", at(), ACTOR, `batch failed at ${short(m.head_oid)}: ${oneLine(summary, 200)}`);
       audit(db, ACTOR, "batch-hold", refOf(m.number), { run: runId, batch: b.branch, summary: oneLine(summary, 200) });
       s.failed.push(m.number);
-      await release(m.number);
       log(`  ${b.branch}: ${refOf(m.number)} failed alone; on hold: ${oneLine(summary, 120)}`);
       return;
     }
@@ -249,7 +207,6 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
     if (failures >= MAX_PUBLISH_FAILURES) {
       updateBatch(db, b.id, at(), { state: "failed", retries: failures, summary: oneLine(`${PUBLISH_FAILED} after ${failures} tries: ${error}`, 400) });
       s.failed.push(...membersOf(db, b.id).map((m) => m.number));
-      for (const m of membersOf(db, b.id)) await release(m.number);
       return;
     }
     updateBatch(db, b.id, at(), { retries: failures, summary: oneLine(error, 400) });
@@ -342,7 +299,6 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
       updateBatch(db, b.id, at(), { state: "failed", summary: CLOSED_BY_PERSON });
       for (const m of members) stage.run(repo, m.number, "hold", at(), ACTOR, `the batch PR ${b.branch} was closed; held at ${short(m.head_oid)}`);
       s.failed.push(...members.map((m) => m.number));
-      for (const m of members) await release(m.number);
       log(`  ${b.branch}: the batch PR was closed; its PRs are held until they change`);
       return;
     }
@@ -378,7 +334,6 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
       await closePr(b, `Closing: ${own.blocked}. The PRs in it are held until they change.`);
       for (const m of members) stage.run(repo, m.number, "hold", at(), ACTOR, `the batch PR ${b.branch} has changes requested; held at ${short(m.head_oid)}`);
       s.failed.push(...members.map((m) => m.number));
-      for (const m of members) await release(m.number);
       log(`  ${b.branch}: ${own.blocked}; its PRs are held until they change`);
       return;
     }
@@ -387,12 +342,6 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
       if (gate === null) { s.waiting.push(b.branch); return; }
       if (gate.blocked) return supersede(b, members.filter((x) => x !== m), `a PR in the batch has a review: ${gate.blocked}`);
       if (gate.moved) return supersede(b, members.filter((x) => x !== m), "a PR in the batch has new comments or reviews to be reviewed first");
-    }
-    if (!info.assignees.length) {
-      const me = await viewerOf(d.querier);
-      const ag = grant();
-      if (!ag) { s.waiting.push(b.branch); return; }
-      await assignTo(w, ag, d.querier, { repo, number: b.pr_number!, id: info.id }, me, { run: runId, batch: b.branch });
     }
     // Holds and controls may have changed during the calls above: look again right before merging.
     if (getBatch(db, b.id).state !== "open") { log(`  ${b.branch}: ended meanwhile; not merged`); return; }

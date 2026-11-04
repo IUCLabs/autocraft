@@ -5,6 +5,7 @@ import {
   RULE_LABELS, RULE_SIZES, RULE_TIERS, UNSURE_REASON, VERIFY_UNAVAILABLE, ciAllows, conflictNote, verifyAllows, verifyOk,
   FIXUP_MAX_ATTEMPTS, CIFIX_FINAL_STATES, CIFIX_MAX_PUSHES_PER_PR, CIFIX_MAX_TRIES, CIFIX_MAX_TRIES_PER_PR,
 } from "./rules.ts";
+import { inFlightNow, unassignActions } from "./assignment.ts";
 import type { Action, Plan, PlanState, PrFacts, QueueState } from "./plan.ts";
 
 /** The start of a statement for a reason line: one line, at most 80 characters. */
@@ -188,13 +189,43 @@ function cifixOf(f: PrFacts): "work" | "collect" | "rerun" | "capped" | "other" 
   return b === "work" || b === "collect" || b === "capped" ? b : "other";
 }
 
+/** Actions that work the PR towards merge (a push, a base merge, a pre-merge review, the merge), as against comment-only asks. */
+const worksOn = (a: Action): boolean => {
+  const b = a.params?.bucket;
+  switch (a.kind) {
+    case "fixup": return b === "fix" && a.params?.source !== "carry";
+    case "conflict": return b === "merge";
+    case "cifix": return b === "work" || b === "collect" || b === "rerun";
+    case "merge": case "premerge": case "lint": return true;
+    default: return false;
+  }
+};
+
+/** Queue states on the path to merge: the PR stays assigned in them unless a stage gave it up. */
+const PROGRESS_STATES: ReadonlySet<string> = new Set(["ready", "waiting-ci", "waiting-premerge", "waiting-verify", "ci-approval", "waiting-main-ci", "decision-answered-merge", "needs-fix-up", "ci-failed", "refused"]);
+
+/** The unassign action of an open PR: kept while it is on the path to merge (in flight, in a batch, work due, a progress state), released in every other state and when a stage gave it up. */
+function unassignOf(f: PrFacts, state: PlanState, actions: Action[]): Action[] {
+  const fx = fixupOf(f), cf = cifixBucket(f);
+  const inBatch = state === "in-batch" || state === "batch-checking" || f.inActiveBatch;
+  const flying = inFlightNow(f, state);
+  const working = actions.some(worksOn) || inBatch || flying;
+  // A conflicting PR whose conflict step has nothing to do (asked, held, not approved, done) waits on its author, whatever the queue state says.
+  const conflictStuck = f.mergeable === "CONFLICTING" && !!f.conflict && f.conflict.bucket !== "merge" && f.conflict.bucket !== "linting";
+  const gaveUp = state === "opus-close" || state === "verify-failed" || state === "verify-error" || state === "batch-failed" || conflictStuck
+    || (!!fx && (fx.bucket === "cannot-push" || fx.bucket === "asked" || (fx.bucket === "hold" && !fx.done))) || cf === "failed" || cf === "capped" || cf === "cannot-push" || cf === "done"
+    || f.mergeHeld || (state === "ci-approval" && !f.repoFacts.ciApproved);
+  const keep = working || (!gaveUp && PROGRESS_STATES.has(state));
+  return unassignActions(f.assignment, f.ghState === "OPEN", !keep);
+}
+
 export function decidePr(f: PrFacts): Plan {
   const plan = (state: PlanState, p: Partial<Plan> = {}): Plan => ({ repo: f.repo, number: f.number, head: f.head, state, path: null, reasons: [], note: null, actions: [], wait: null, eligible: false, conflictNote: null, ...p });
   const act = (kind: Action["kind"], head: string | null, params?: Record<string, unknown>): Action => ({ kind, head, ...(params ? { params } : {}) });
   const r = f.review;
   const open = f.ghState === "OPEN";
 
-  if (!f.inScope) return plan("out-of-scope");
+  if (!f.inScope) return plan("out-of-scope", { actions: unassignActions(f.assignment, open, true) });
   // Our own integration PRs only carry reviewed PRs: their runs wait for approval like a member's.
   if (f.integration) {
     const approve = f.runs && !f.mergeHeld && (f.runs.reread || (f.runs.crossRepo && f.runs.approvable > 0));
@@ -302,6 +333,8 @@ export function decidePr(f: PrFacts): Plan {
       actions.push(act("merge", r!.head, { singleOnly, batchable: !singleOnly }));
     }
   }
+
+  actions.push(...unassignOf(f, state, actions));
 
   const main = actions.some((a) => ["review", "premerge", "ask-merge", "merge", "verify"].includes(a.kind));
   const wait = main ? null : e ? (f.mergeHeld && e.state !== "merged" && e.path ? "merge held by an operator" : WAITS[e.state] ?? null) : null;

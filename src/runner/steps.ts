@@ -699,6 +699,23 @@ export const STEPS: StepDef[] = [
     },
   },
   {
+    name: "unassign",
+    title: "Unassign",
+    description: "Takes the pipeline's account off the open pull requests and issues that left the path to merge (waiting on a person, given up by a stage, out of scope), so someone else may pick them up. Only its own assignment is removed, and only while it is the sole assignee; the assignees are read from GitHub before each write. Calls no model.",
+    stage: runStage("unassign"),
+    requires: "operator",
+    group: "github-write",
+    params: [{ name: "repo", label: "Repo", kind: "repo", required: true }],
+    run: async (ctx) => {
+      const { runUnassign } = await import("../unassign/index.ts");
+      const repo = String(ctx.params.repo);
+      const r = await runUnassign(ctx.db, { repo, by: byOfJob(ctx.job.requestedBy), runId: `unassign-${ctx.job.id}`, log: ctx.log });
+      ctx.acted(r.unassigned.length);
+      if (r.due && r.failed.length === r.due) throw new Error(`${repo}: could not unassign on ${r.failed.join(", ")}`);
+      return `${repo}: ${r.unassigned.length} unassigned${r.failed.length ? `, ${r.failed.length} failed` : ""}`;
+    },
+  },
+  {
     name: "ci-approve",
     title: "Approve waiting CI runs",
     description: "Approves the Actions runs that GitHub holds for a maintainer's approval on outside contributors' pull requests, once the PR's current head has a final take or take-fix review. Skips a PR that is closed, a draft or at another head. Calls no model.",

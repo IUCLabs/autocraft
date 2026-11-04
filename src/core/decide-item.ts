@@ -2,6 +2,7 @@
 // scope decision, label. Pure: no database, no clock (facts carry `now`). The rules are ported from the step selectors named at each rule.
 // decideAll adds a PR's review-to-merge Plan (decide.ts) and derives the Work page's next-step text.
 import { levelWith, type Level } from "../priority/score.ts";
+import { isWork, unassignActions } from "./assignment.ts";
 import { decidePr } from "./decide.ts";
 import { RECOMMEND_MAX_FAILURES, RECOMMEND_RETRY_MS, alreadyLabeled, isScope, labelsToAdd } from "./item-rules.ts";
 import type { Action, ItemFacts, ItemPlan, ItemState, ItemView, PrFacts } from "./plan.ts";
@@ -100,9 +101,16 @@ export function decideItem(f: ItemFacts): ItemPlan {
     if (f.inScope && !backlog && a && ((a.state === "testing" && a.headDone && a.baseDone) || a.state === "passed")) actions.push(act("fixissue-collect", null, { source: a.state }));
   }
 
+  // unassign (issues; a PR's is decided with its review-to-merge plan): kept while a fix attempt runs or its PR is open, released
+  // when the issue waits on a person, was given up or left the scope.
+  if (f.kind === "issue") {
+    const running = ["retry", "testing", "passed"].includes(a?.state ?? "") || (a?.state === "pr-opened" && fix.openPr);
+    actions.push(...unassignActions(f.assignment, f.open, !f.inScope || !!f.held || !running));
+  }
+
   // A closed item is here for its unapplied answered close only.
   if (!f.open) actions.splice(0, actions.length, ...actions.filter((a) => a.kind === "act" && !a.params?.ask));
-  return { repo: f.repo, number: f.number, kind: f.kind, state, actions, wait: actions.length ? null : !f.inScope ? "not in scope" : WAITS[state] ?? null };
+  return { repo: f.repo, number: f.number, kind: f.kind, state, actions, wait: actions.some(isWork) ? null : !f.inScope ? "not in scope" : WAITS[state] ?? null };
 }
 
 /** The Work page's next-step text (rank/next.ts nextStepOf), from the item's state and, for a PR, the facts of its review-to-merge path. */
