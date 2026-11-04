@@ -130,6 +130,7 @@ async function item(db: DatabaseSync, req: Req): Promise<Item> {
     mergeable: MERGEABLE[it.mergeable ?? ""] ?? "unknown",
     labels, createdAt: it.created_at ?? "", updatedAt: it.updated_at ?? "",
     closedAt: it.closed_at, mergedAt: it.merged_at, mergedBy: it.merged_by,
+    pipelineOn: (db.prepare("SELECT pipeline FROM tracked_repos WHERE name = ?").get(repo) as { pipeline: number } | undefined)?.pipeline === 1,
     related: relatedOf(db, repo, n), classifications: classificationsOf(db, repo, n), area: areaNameOf(db, repo, n),
     stages: stages.map((s) => ({ ...s, by: s.by ?? "" })),
     comments: comments.map((x) => ({ ...x, author: x.author ?? "", body: x.body ?? "" })),

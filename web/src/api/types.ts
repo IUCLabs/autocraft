@@ -237,6 +237,8 @@ export interface Item extends ItemRef {
   closedAt: string | null;
   mergedAt: string | null;
   mergedBy: string | null;
+  /** Whether the repo's pipeline is switched on; absent in mocks that do not say. */
+  pipelineOn?: boolean;
   related: RelatedItem[];
   classifications: Classification[];
   /** The item's area; null when it has none, absent in mocks. */

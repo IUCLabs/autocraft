@@ -1,7 +1,7 @@
 // Item traces on fake data: a PR with two pushes, model calls, a check run, a review, a decision and a GitHub write.
 import type { Api } from "../client";
 import type { AgentRunDetail, AgentRunTool, ItemTrace, ItemTraceDetail, TraceEvent, TraceKind } from "../types";
-import { NOW } from "./fixtures";
+import { NOW, PIPELINE_OFF } from "./fixtures";
 
 const wait = <T,>(v: T, ms = 60) => new Promise<T>((r) => setTimeout(() => r(structuredClone(v)), ms));
 export const at = (minAgo: number) => new Date(NOW - minAgo * 60_000).toISOString();
@@ -26,8 +26,21 @@ export const EVENTS: TraceEvent[] = ([
     call: { model: "opus", provider: "claude", account: "Team account C", state: "done", inputTokens: 51_000, outputTokens: 3_300, costUsd: 0.97, toolCalls: 11, endedAt: at(118) },
   },
   { id: "plan:38", kind: "plan", at: at(125), head: H1, actor: { type: "step", name: "Planner" }, summary: "Plan started as reviewing", ref: { head: H1 } },
-  { id: "gh:opened", kind: "github", at: at(130), head: H1, actor: { type: "person", name: "contributor" }, summary: "Opened pull request", ref: {} },
+  { id: "gh:opened", kind: "github", at: at(130), head: H1, actor: { type: "person", name: "contributor" }, summary: "Opened pull request on GitHub by contributor", ref: {} },
 ] as TraceEvent[]).sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : a.id < b.id ? 1 : -1));
+
+const OFF_EVENTS: TraceEvent[] = [
+  { id: "gh:merged", kind: "github", at: at(180), head: null, actor: { type: "person", name: "maintainer" }, summary: "Merged on GitHub by maintainer", ref: {} },
+  { id: "run:801", kind: "model-call", at: at(1380), head: null, actor: { type: "model", name: "haiku" }, summary: "Classify items: bugfix", ref: { runId: 801, jobId: 40 },
+    call: { model: "haiku", provider: "claude", account: "Team account A", state: "done", inputTokens: 1_900, outputTokens: 60, costUsd: 0.002, toolCalls: 0, endedAt: at(1379) } },
+  { id: "run:800", kind: "model-call", at: at(1385), head: null, actor: { type: "model", name: "jev" }, summary: "Classify items: bugfix", ref: { runId: 800, jobId: 40 },
+    call: { model: "jev", provider: "jev", account: "Jev", state: "done", inputTokens: 1_800, outputTokens: 40, costUsd: 0, toolCalls: 0, endedAt: at(1384) } },
+  { id: "gh:opened", kind: "github", at: at(1440), head: null, actor: { type: "person", name: "contributor" }, summary: "Opened pull request on GitHub by contributor", ref: {} },
+] as TraceEvent[];
+const OFF_TRACE: Omit<ItemTrace, "events" | "nextCursor"> = {
+  header: { now: { state: null, head: null, plannedAt: null, text: "Not planned yet", waitsOn: null, reasons: [], note: null }, next: [], who: { assignees: [], autocraftAssigned: false, openDecisions: [], holds: [] } },
+  stamp: "mock-off",
+};
 
 const TRACE: Omit<ItemTrace, "events" | "nextCursor"> = {
   header: {
@@ -67,7 +80,8 @@ const FIELDS: Record<string, Record<string, unknown>> = {
 
 export function createTraceMock(): Pick<Api, "itemTrace" | "itemTraceDetail"> {
   return {
-    itemTrace(_repo, _number, q = {}) {
+    itemTrace(repo, number, q = {}) {
+      if (repo === PIPELINE_OFF.repo && number === PIPELINE_OFF.number) return wait({ ...OFF_TRACE, events: OFF_EVENTS, nextCursor: null });
       const kinds = q.kinds ? new Set<TraceKind>(q.kinds) : null;
       let list = EVENTS.filter((e) => (!kinds || kinds.has(e.kind)) && (!q.autocraftOnly || e.actor.type !== "person"));
       if (q.since === TRACE.stamp) return wait({ unchanged: true as const, stamp: TRACE.stamp });

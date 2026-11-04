@@ -42,9 +42,9 @@ export const rows = <T>(db: DatabaseSync, sql: string, ...args: (string | number
 const count = (xs: unknown[]): string => plural(xs.length, "finding");
 
 export type ItemRow = { kind: string; author: string | null; created_at: string | null; closed_at: string | null; merged_at: string | null; merged_by: string | null; head_oid: string | null };
-export const openedEvent = (it: ItemRow): Ev => ({ id: "gh:opened", kind: "github", at: it.created_at ?? "", head: null, actor: person(it.author), summary: `Opened ${it.kind === "pr" ? "pull request" : "issue"}`, ref: {} });
-export const mergedEvent = (it: ItemRow): Ev => ({ id: "gh:merged", kind: "github", at: it.merged_at ?? "", head: it.head_oid, actor: person(it.merged_by), summary: "Merged", ref: {} });
-export const closedEvent = (it: ItemRow): Ev => ({ id: "gh:closed", kind: "github", at: it.closed_at ?? "", head: null, actor: person(null), summary: "Closed", ref: {} });
+export const openedEvent = (it: ItemRow): Ev => ({ id: "gh:opened", kind: "github", at: it.created_at ?? "", head: null, actor: person(it.author), summary: `Opened ${it.kind === "pr" ? "pull request" : "issue"} on GitHub${it.author ? ` by ${it.author}` : ""}`, ref: {} });
+export const mergedEvent = (it: ItemRow): Ev => ({ id: "gh:merged", kind: "github", at: it.merged_at ?? "", head: it.head_oid, actor: person(it.merged_by), summary: `Merged on GitHub${it.merged_by ? ` by ${it.merged_by}` : ""}`, ref: {} });
+export const closedEvent = (it: ItemRow): Ev => ({ id: "gh:closed", kind: "github", at: it.closed_at ?? "", head: null, actor: person(null), summary: "Closed on GitHub", ref: {} });
 export const commentEvent = (c: { id: string; kind: string | null; author: string | null; created_at: string; review_state: string | null; commit_oid: string | null; len: number }, own: string): Ev => {
   const ours = own !== "" && c.author === own;
   const what = c.kind === "review" ? `review (${(c.review_state ?? "commented").toLowerCase().replace("_", " ")})` : "comment";
@@ -65,7 +65,9 @@ const github: Source = {
     const out: Ev[] = [];
     const it = db.prepare("SELECT kind, author, created_at, closed_at, merged_at, merged_by, head_oid FROM items WHERE repo = ? AND number = ?").get(repo, n) as ItemRow | undefined;
     if (it?.created_at) out.push(openedEvent(it));
-    if (it?.merged_at) out.push(mergedEvent(it));
+    // AutoCraft's own merge step records its entry (mergeEvent); a second GitHub entry would count the same merge twice.
+    const ours = db.prepare("SELECT 1 FROM merges WHERE repo = ? AND number = ? AND outcome = 'merged'").get(repo, n) !== undefined;
+    if (it?.merged_at && !ours) out.push(mergedEvent(it));
     else if (it?.closed_at) out.push(closedEvent(it));
     for (const c of rows<{ id: string; kind: string | null; author: string | null; created_at: string; review_state: string | null; commit_oid: string | null; len: number }>(db,
       "SELECT id, kind, author, created_at, review_state, commit_oid, LENGTH(COALESCE(body, '')) AS len FROM comments WHERE repo = ? AND number = ? AND created_at IS NOT NULL", repo, n)) {
