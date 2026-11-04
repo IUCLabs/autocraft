@@ -2,6 +2,8 @@
 // Each concept has one definition here. Where a step selector and the merge queue used different
 // definitions, the queue's wins; the differences are listed in the report of this change, not here.
 import type { DatabaseSync } from "node:sqlite";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { commentApprovalOf } from "../act/approval.ts";
 import { actionable } from "../decisions.ts";
 import { notOwnIntegrationSql, groupHeldSql, backlogHeldSql } from "../dupes/held.ts";
@@ -27,6 +29,9 @@ import { getRule, STATS_SQL, tierOf, type Tier } from "../whitelist.ts";
 import { findingsOf, premergeAt, premergeFixUsed } from "../premerge/store.ts";
 import { headOf } from "../review/candidates.ts";
 import { parsePublic } from "../review/opus-parse.ts";
+import { diffCacheDir } from "../review/diff.ts";
+import { ORG } from "../review/checks.ts";
+import { sensitiveReasons } from "./sensitive.ts";
 import { carriedReview } from "../review/carry.ts";
 import { staleReviews } from "../review/discussion.ts";
 import { scopeAnswers } from "../review/candidates.ts";
@@ -75,6 +80,19 @@ const SELECT = `SELECT i.repo, i.number, i.author, i.assignees, i.state, i.revie
     SELECT r.head_oid FROM opus_reviews r WHERE r.repo = i.repo AND r.number = i.number AND r.verdict IS NOT NULL ORDER BY r.at DESC, r.rowid DESC LIMIT 1)
   WHERE i.kind = 'pr' AND (i.state = 'OPEN' OR (i.state = 'MERGED' AND l.verdict IN ('take', 'take-fix'))
     OR EXISTS (SELECT 1 FROM merges mm WHERE mm.repo = i.repo AND mm.number = i.number AND mm.outcome = 'merged'))`;
+
+const sensitiveMemo = new Map<string, string[]>();
+/** The sensitive-content reasons of the diff cached for this head; null when it is not cached (a review or pre-merge review caches it). */
+function sensitiveAt(repo: string, number: number, head: string): string[] | null {
+  const key = `${repo}#${number}@${head}`;
+  const hit = sensitiveMemo.get(key);
+  if (hit) return hit;
+  const file = join(diffCacheDir(), repo, `${number}-${head}.diff`);
+  if (!existsSync(file)) return null;
+  const out = sensitiveReasons(readFileSync(file, "utf8"), ORG);
+  sensitiveMemo.set(key, out);
+  return out;
+}
 
 /** The statements named by the given stored `conflicts` values (JSON [{id, reason}]), one entry per id with the first reason; unknown ids and unreadable values count for nothing. */
 function statementConflicts(find: { get(id: number): unknown }, stored: unknown[]): PrFacts["statementConflicts"] {
@@ -210,7 +228,7 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
       checksHere: false, checksOpen: false, ci: "unknown", mergeable: r.i_mergeable ?? "UNKNOWN", runs: null,
       lastMerge: null, runsApprovedAfterMerge: false, verification: null, verifyUnavailable: null,
       decision: { asked: false, openQuestion: false, answer: null, mergeAnswerAfterReview: false, inOpenGroup: grouped.has(ref) },
-      premerge: null, premergeFixUsed: false, statementConflicts: [], pushable: false, pushChain: [], conflict: null, inActiveBatch: activeBatched.has(ref), fixup: null, carry: [], lint: [], cifix: null, postmerge: null, batch: null, mainFix: false, changesRequested: null, gateFailureNote: null,
+      premerge: null, premergeFixUsed: false, sensitive: null, statementConflicts: [], pushable: false, pushChain: [], conflict: null, inActiveBatch: activeBatched.has(ref), fixup: null, carry: [], lint: [], cifix: null, postmerge: null, batch: null, mainFix: false, changesRequested: null, gateFailureNote: null,
     };
     base.inFlight = r.state === "OPEN" && !integration && !!r.author && r.author === own.login && own.prs.has(ref);
     if (integration) {
@@ -257,6 +275,7 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
     base.pushChain = chain;
     if (r.state === "OPEN" && head && head !== r.r_head && ourFixupHead.get(r.repo, r.number, head) && carriedReview(db, { repo: r.repo, number: r.number, head_oid: head }, stale)) base.carriable = true;
     if (r.state === "OPEN" && (chain.length > 1 || (!!head && !!pushedHere.get(r.repo, r.number, head)))) base.inFlight = true;
+    base.sensitive = sensitiveAt(r.repo, r.number, r.r_head);
     base.statementConflicts = statementConflicts(statement, [safeJson(r.r_conflicts), safeJson(premergeAt(db, r.repo, r.number, r.r_head)?.conflicts ?? null)]);
     const p = posts.get(ref);
     const hasPublic = r.r_public !== null;
