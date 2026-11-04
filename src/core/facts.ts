@@ -82,13 +82,13 @@ const SELECT = `SELECT i.repo, i.number, i.author, i.assignees, i.state, i.revie
     OR EXISTS (SELECT 1 FROM merges mm WHERE mm.repo = i.repo AND mm.number = i.number AND mm.outcome = 'merged'))`;
 
 const sensitiveMemo = new Map<string, string[]>();
-/** The sensitive-content reasons of the diff cached for this head; nothing when it is not cached (a review or pre-merge review caches it). */
-function sensitiveAt(repo: string, number: number, head: string): string[] {
+/** The sensitive-content reasons of the diff cached for this head; null when it is not cached (a review or pre-merge review caches it). */
+function sensitiveAt(repo: string, number: number, head: string): string[] | null {
   const key = `${repo}#${number}@${head}`;
   const hit = sensitiveMemo.get(key);
   if (hit) return hit;
   const file = join(diffCacheDir(), repo, `${number}-${head}.diff`);
-  if (!existsSync(file)) return [];
+  if (!existsSync(file)) return null;
   const out = sensitiveReasons(readFileSync(file, "utf8"), ORG);
   sensitiveMemo.set(key, out);
   return out;
@@ -228,7 +228,7 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
       checksHere: false, checksOpen: false, ci: "unknown", mergeable: r.i_mergeable ?? "UNKNOWN", runs: null,
       lastMerge: null, runsApprovedAfterMerge: false, verification: null, verifyUnavailable: null,
       decision: { asked: false, openQuestion: false, answer: null, mergeAnswerAfterReview: false, inOpenGroup: grouped.has(ref) },
-      premerge: null, premergeFixUsed: false, sensitive: [], statementConflicts: [], pushable: false, pushChain: [], conflict: null, inActiveBatch: activeBatched.has(ref), fixup: null, carry: [], lint: [], cifix: null, postmerge: null, batch: null, mainFix: false, changesRequested: null, gateFailureNote: null,
+      premerge: null, premergeFixUsed: false, sensitive: null, statementConflicts: [], pushable: false, pushChain: [], conflict: null, inActiveBatch: activeBatched.has(ref), fixup: null, carry: [], lint: [], cifix: null, postmerge: null, batch: null, mainFix: false, changesRequested: null, gateFailureNote: null,
     };
     base.inFlight = r.state === "OPEN" && !integration && !!r.author && r.author === own.login && own.prs.has(ref);
     if (integration) {

@@ -3,6 +3,7 @@
 import { splitDiff } from "../review/diff.ts";
 
 export const README_REASON = "changes the README";
+export const UNCHECKED_REASON = "diff not checked for README or third-party links";
 export const BRAND_REASON = "changes brand files";
 export const EXTERNAL_LINK_REASON = "adds a third-party image or link";
 
