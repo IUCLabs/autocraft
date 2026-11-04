@@ -1776,7 +1776,7 @@ export type TraceKind = "github" | "plan" | "job" | "model-call" | "check" | "re
 export type TraceActor = { type: "person" | "step" | "model"; name: string };
 /** Ids needed to fetch an event's details: runs, tasks and decisions have their own endpoints; the rest use the trace detail endpoint. */
 export type TraceRef = {
-  runId?: number; jobId?: number; taskId?: number; checkId?: number; decisionId?: string; auditRowid?: number;
+  runId?: number; /** A review's model calls, oldest first (a fix turn or repeat adds one). */ runIds?: number[]; jobId?: number; taskId?: number; checkId?: number; decisionId?: string; auditRowid?: number;
   reviewId?: string; commentId?: string; head?: string; toHead?: string;
   /** The integration batch the event belongs to (merge, hold and batch writes). */
   batchId?: number;

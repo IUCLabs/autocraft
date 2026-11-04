@@ -351,6 +351,30 @@ export function carryHeads(events: Ev[]): void {
   }
 }
 
+const REVIEW_PROMPTS: [prefix: string, prompt: string][] = [["review:opus", "review.opus"], ["review:premerge:", "premerge.opus"], ["review:postmerge:", "postmerge.opus"]];
+
+/**
+ * A review is made by model calls (more than one when its reply took a fix turn or a repeat). Each review gets the calls of its
+ * prompt that started after the previous review of the same kind and before it, in `ref.runIds` (and the first in `ref.runId`).
+ * Returns the ids of the calls taken, so the timeline lists them once, inside the review.
+ */
+export function linkReviewCalls(events: Ev[]): Set<number> {
+  const taken = new Set<number>();
+  const calls = events.filter((e) => e.kind === "model-call" && e.ref.runId !== undefined && e.call?.promptId);
+  for (const [prefix, prompt] of REVIEW_PROMPTS) {
+    const reviews = events.filter((e) => e.kind === "review" && e.id.startsWith(prefix)).sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0));
+    reviews.forEach((r, i) => {
+      const from = i > 0 ? reviews[i - 1]!.at : "";
+      const mine = calls.filter((c) => c.call!.promptId!.startsWith(prompt) && c.at > from && c.at <= r.at).sort((a, b) => (a.at < b.at ? -1 : 1));
+      if (mine.length === 0) return;
+      const ids = mine.map((c) => c.ref.runId!);
+      r.ref = { ...r.ref, runId: ids[0], runIds: ids };
+      for (const id of ids) taken.add(id);
+    });
+  }
+  return taken;
+}
+
 /** Every source runs whatever the filter, so a filtered event still gets the head its neighbours carry. */
 function gather(c: Ctx, kinds: Set<TraceKind> | null): Ev[] {
   const all: Ev[] = [];
@@ -359,7 +383,8 @@ function gather(c: Ctx, kinds: Set<TraceKind> | null): Ev[] {
     if (at) all.push({ ...e, at });
   }
   carryHeads(all);
-  return (kinds ? all.filter((e) => kinds.has(e.kind)) : all).sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : a.id < b.id ? 1 : -1));
+  const taken = !kinds || kinds.has("review") ? linkReviewCalls(all) : new Set<number>();
+  return (kinds ? all.filter((e) => kinds.has(e.kind)) : all).filter((e) => !(e.kind === "model-call" && taken.has(e.ref.runId ?? -1))).sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : a.id < b.id ? 1 : -1));
 }
 
 function headerOf({ db, repo, n, own, hidden }: Ctx): ItemTraceHeader {

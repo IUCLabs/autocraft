@@ -82,6 +82,7 @@ export function TraceEventBody({ event: e, item }: { event: TraceEvent; item: Ev
   return (
     <div className="flex min-w-0 flex-col gap-3">
       {needsDetail && (detail.data ? <Fields e={e} fields={detail.data.fields} /> : detail.error ? <ErrorLine error={detail.error.message} /> : <div className="h-8" aria-hidden />)}
+      {e.kind === "review" && e.ref.runIds?.map((id, i, all) => <ReviewCall key={id} runId={id} n={all.length > 1 ? i + 1 : 0} of={all.length} />)}
       {e.ref.taskId !== undefined && (task.data ? <TaskDetail task={task.data} /> : task.error ? <ErrorLine error={task.error.message} /> : <div className="h-16" aria-hidden />)}
       {e.ref.batchId !== undefined && (
         <p className="text-sm"><Link to={batchPath(e.ref.batchId)} className="text-accent-ink hover:underline">Batch #{e.ref.batchId}</Link></p>
@@ -89,6 +90,22 @@ export function TraceEventBody({ event: e, item }: { event: TraceEvent; item: Ev
       {e.kind === "check" && e.ref.runId !== undefined && (
         <p className="text-sm"><Link to={`/agents/${e.ref.runId}`} className="text-accent-ink hover:underline">Model call that ran it</Link></p>
       )}
+    </div>
+  );
+}
+
+/** One model call behind a review: its facts, prompt and output, loaded when the review row opens. `n` is 0 for a review made by a single call. */
+function ReviewCall({ runId, n, of }: { runId: number; n: number; of: number }) {
+  const run = useQuery(`item-trace-run:${runId}`, (a) => a.agents.get(runId), { pollMs: (d) => (d && !d.endedAt ? 3000 : false) });
+  const r = run.data;
+  const call = r && {
+    model: r.model, provider: r.provider, account: r.accountLabel, state: r.state, inputTokens: r.inputTokens, outputTokens: r.outputTokens,
+    costUsd: r.costUsd, toolCalls: r.tools.length, endedAt: r.endedAt,
+  };
+  return (
+    <div className="flex min-w-0 flex-col gap-2 border-t border-line pt-3">
+      {n > 0 && <div className="text-xs font-semibold text-ink/60">Model call {n} of {of}{n > 1 ? " (fix turn or repeat)" : ""}</div>}
+      {call ? <ModelCallDetail call={call} runId={runId} run={r} /> : run.error ? <ErrorLine error={run.error.message} /> : <div className="h-24" aria-hidden />}
     </div>
   );
 }

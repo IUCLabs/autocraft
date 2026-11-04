@@ -23,16 +23,24 @@ const LINT: TraceEvent[] = [
   }),
 ];
 
+/** The calls behind the Opus review (the review row lists them, so the timeline does not): the call and its lint fix turn. */
+const REVIEW_CALLS: TraceEvent[] = [
+  {
+    id: "run:903", kind: "model-call", at: at(14), head: H2, actor: { type: "model", name: "opus" }, summary: "Review pull requests: take-fix with two fixes", ref: { runId: 903, jobId: 55 },
+    call: { promptId: "review.opus", step: "Review pull requests", model: "opus", provider: "claude", account: "Team account B", state: "done", inputTokens: 48_200, outputTokens: 2_900, costUsd: 0.91, toolCalls: 7, endedAt: at(13) },
+  },
+  {
+    id: "run:904", kind: "model-call", at: at(13.4), head: H2, actor: { type: "model", name: "opus" }, summary: "Review pull requests: take-fix with two fixes", ref: { runId: 904, jobId: 55 },
+    call: { promptId: "review.opus", step: "Review pull requests", model: "opus", provider: "claude", account: "Team account B", state: "done", inputTokens: 3_100, outputTokens: 2_800, costUsd: 0.12, toolCalls: 0, endedAt: at(13.2) },
+  },
+];
+
 export const EVENTS: TraceEvent[] = ([
   { id: "plan:41", kind: "plan", at: at(4), head: H2, actor: { type: "step", name: "Planner" }, summary: "Plan reviewing → verifying, waiting for CI at 9b8c7d6", ref: { head: H2 } },
   { id: "check:12", kind: "check", at: at(9), head: H2, actor: { type: "step", name: "Fix-up" }, summary: "Clippy on app-core: no findings", ref: { checkId: 12, runId: 902, head: H2 } },
   { id: "task:905", kind: "check", at: at(10), head: H2, actor: { type: "step", name: "Verify" }, summary: "Build task done: build and 412 tests passed", ref: { taskId: 905, head: H2 } },
   { id: "audit:77", kind: "write", at: at(12), head: H2, actor: { type: "step", name: "AutoCraft" }, summary: "Posted review", ref: { auditRowid: 77, head: H2 } },
-  {
-    id: "run:903", kind: "model-call", at: at(14), head: H2, actor: { type: "model", name: "opus" }, summary: "Review pull requests: take-fix with two fixes", ref: { runId: 903, jobId: 55 },
-    call: { promptId: "review.opus", step: "Review pull requests", model: "opus", provider: "claude", account: "Team account B", state: "done", inputTokens: 48_200, outputTokens: 2_900, costUsd: 0.91, toolCalls: 7, endedAt: at(13) },
-  },
-  { id: "review:opus:5", kind: "review", at: at(13), head: H2, actor: { type: "model", name: "opus" }, summary: "Opus review: take with two fixes, not sure", ref: { reviewId: "opus:5", head: H2 } },
+  { id: "review:opus:5", kind: "review", at: at(13), head: H2, actor: { type: "model", name: "opus" }, summary: "Opus review: take with two fixes, not sure", ref: { reviewId: "opus:5", head: H2, runId: 903, runIds: [903, 904] } },
   { id: "gh:push", kind: "github", at: at(30), head: H2, actor: { type: "person", name: "contributor" }, summary: "Pushed 9b8c7d6", ref: { head: H2 } },
   { id: "comment:c2", kind: "github", at: at(70), head: H1, actor: { type: "person", name: "maintainer" }, summary: "Posted a comment, 214 characters", ref: { commentId: "c2" } },
   { id: "decision:d9:asked", kind: "decision", at: at(95), head: H1, actor: { type: "step", name: "Ask decisions" }, summary: "Asked: Merge this fix?", ref: { decisionId: "designcraft#1484:merge" } },
@@ -78,7 +86,7 @@ const TOOLS: AgentRunTool[] = [
 
 /** Run detail for the runs of the trace mock, with tool calls. */
 export function traceRunDetail(id: number): AgentRunDetail | null {
-  const e = EVENTS.find((x) => x.ref.runId === id && x.call);
+  const e = [...EVENTS, ...REVIEW_CALLS].find((x) => x.ref.runId === id && x.call);
   if (!e?.call) return null;
   const c = e.call;
   const text = (n: number) => Array.from({ length: n }, (_, i) => `Line ${i + 1} of the model text for ${e.summary}.`).join("\n");
