@@ -44,10 +44,13 @@ beforeEach(() => {
   work = true;
 });
 
+// Two hours ago, but never before today's UTC midnight: usage is counted per UTC day.
+const earlierToday = () => new Date(Math.max(Date.now() - 2 * 60 * 60_000, Date.parse(new Date().toISOString().slice(0, 10)) + 1000)).toISOString();
+
 describe("autopilot", () => {
   test("a stage with work gets a job sized to the day's remaining limit", async () => {
     setLimit("test-limited", 80);
-    finish("test-limited", "done", 50, new Date(Date.now() - 2 * 60 * 60_000).toISOString());
+    finish("test-limited", "done", 50, earlierToday());
     const ids = await planAutopilot(db, { lanes });
     assert.equal(ids.length, 2, "one job per lane");
     const j = jobs("test-limited").at(-1)!;
@@ -69,7 +72,7 @@ describe("autopilot", () => {
   test("a used-up or zero limit queues nothing for that stage while others go on", async () => {
     setLimit("test-limited", 50);
     setLimit("test-plain", 0);
-    finish("test-limited", "done", 50, new Date(Date.now() - 2 * 60 * 60_000).toISOString());
+    finish("test-limited", "done", 50, earlierToday());
     await planAutopilot(db, { lanes });
     assert.equal(jobs("test-limited").length, 1, "only the finished job");
     assert.equal(jobs("test-plain").length, 0, "0 pauses the stage");
