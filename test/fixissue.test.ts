@@ -287,3 +287,36 @@ describe("fix step assignment", () => {
 
 
 });
+
+describe("claim comment of an attempt that ends without a PR", () => {
+  const URL = "https://github.com/storytold/app/issues/5#issuecomment-777";
+  function claimed(state: string, prUrl: string | null) {
+    const w = world();
+    w.db.prepare("INSERT INTO fix_attempts (repo, number, main_sha, text_hash, state, round, pr_url, created_at, updated_at) VALUES ('app', 5, ?, 'h', ?, 1, ?, ?, ?)").run(w.sha, state, prUrl, T0, T0);
+    w.db.prepare("INSERT INTO audit (at, login, action, target, details) VALUES (?, 'fixissue', 'fixissue-claim', 'app#5', ?)").run(T0, JSON.stringify({ url: URL, state: "done" }));
+    w.deps.querier = validating({ spent: 0, remaining: 5000, async query() { return { viewer: { login: LOGIN, id: "U42" } }; } } as Querier);
+    const api: string[] = [];
+    const inner = w.deps.exec;
+    w.deps.exec = async (cmd, args, opt) => {
+      if (cmd === "gh" && args.join(" ").includes("/issues/comments/777")) {
+        api.push(args.includes("DELETE") ? "delete" : "get");
+        return { code: 0, stdout: args.includes("DELETE") ? "" : `${LOGIN}\n`, stderr: "" };
+      }
+      return inner(cmd, args, opt);
+    };
+    return { w, api };
+  }
+  const run = (w: World) => runFixIssue(w.db, { repo: "app", dryRun: false }, quiet, w.deps);
+
+  test("a held attempt's claim is deleted once; a taken attempt keeps it", async () => {
+    const held = claimed("failed", null);
+    await run(held.w);
+    await run(held.w);
+    assert.deepEqual(held.api, ["get", "delete"]);
+    assert.equal(held.w.db.prepare("SELECT COUNT(*) AS n FROM audit WHERE action = 'fixissue-unclaim' AND details LIKE '%\"state\":\"done\"%'").get()!.n, 1);
+
+    const taken = claimed("opened", "https://github.com/storytold/app/pull/12");
+    await run(taken.w);
+    assert.deepEqual(taken.api, []);
+  });
+});

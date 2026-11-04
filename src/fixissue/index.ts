@@ -50,7 +50,7 @@ import { plannedItems } from "../core/select-items.ts";
 import { parseTriage, sourcePaths, validateFixPatch } from "./parse.ts";
 import { branchName, claimCommentText, commentText, commitMessage, prBody, prTitle } from "./template.ts";
 import { changedRsFiles, foldFormat, lintSteps, readLint } from "../prepush/index.ts";
-import { ghComment, ghFork, ghOpenPr, pushOwnBranch, type Writer } from "../github/write.ts";
+import { ghComment, ghDeleteComment, ghFork, ghOpenPr, pushOwnBranch, type Writer } from "../github/write.ts";
 import { COMMENTS_SHOWN, COMMENT_CHARS, FILE_CAP, ISSUE_BODY_LIMIT, MAX_PATHS, MAX_ROUNDS, TOTAL_CAP, type IssueText, type PatchInput, type TriageInput } from "./types.ts";
 import { inPilot, pilotSqlFor } from "../pilot.ts";
 import { backlogHeld, backlogHeldSql } from "../dupes/held.ts";
@@ -60,6 +60,7 @@ export { type IssueCandidate } from "./candidates.ts";
 
 const ORG = "storytold";
 const ACTOR = "fixissue";
+const MAX_UNCLAIM_TRIES = 3;
 const TRIAGE = CLAUDE_PROMPTS["fixissue.triage"];
 const PATCH = CLAUDE_PROMPTS["fixissue.patch"];
 const CHECK = CLAUDE_PROMPTS["fixissue.check"];
@@ -293,13 +294,51 @@ async function claimIssue(x: Ctx, c: IssueCandidate): Promise<void> {
     if ("refused" in g) { log(`  ${ref}: not claimed: ${g.refused}`); return; }
     // Only when the issue is ours: nobody assigned, or only us.
     const assigned = info.assignees.length === 0 || info.assignees.every((a) => a === me.login);
-    if (assigned && commentApprovalOf(db, c.repo) && !db.prepare("SELECT 1 FROM audit WHERE action = 'fixissue-claim' AND target = ?").get(ref)) {
+    if (assigned && commentApprovalOf(db, c.repo) && !liveClaim(db, ref)) {
       const cm = await ghComment(w, g, d.exec, "fixissue-claim", { repo: c.repo, number: c.number, pr: false }, { by: "fixed" }, claimCommentText(), { run: x.runId });
       if (cm.code !== 0) log(`  ${ref}: claim comment failed: ${oneLine(cm.stderr)}`);
     }
   } catch (e) {
     log(`  ${ref}: could not claim: ${oneLine(String((e as Error).message ?? e))}`);
   }
+}
+
+/** The claim comment of `ref` that is still on the issue: the latest successful claim with a URL, unless a delete came after it. */
+function liveClaim(db: DatabaseSync, ref: string): { url: string } | null {
+  const claim = db.prepare("SELECT rowid AS id, details FROM audit WHERE action = 'fixissue-claim' AND target = ? AND COALESCE(details, '') NOT LIKE '%\"error\":%' ORDER BY rowid DESC LIMIT 1").get(ref) as { id: number; details: string | null } | undefined;
+  if (!claim) return null;
+  const url = (JSON.parse(claim.details ?? "{}") as { url?: string }).url;
+  const later = db.prepare("SELECT details FROM audit WHERE action = 'fixissue-unclaim' AND target = ? AND rowid > ?").all(ref, claim.id) as { details: string | null }[];
+  const done = later.some((r) => (r.details ?? "").includes('"state":"done"'));
+  return url && !done && later.length < MAX_UNCLAIM_TRIES ? { url } : null;
+}
+
+/**
+ * Deletes the claim comment of every attempt of `repo` that ended without a PR (failed or skipped): the issue no longer has a fix
+ * coming. Once per claim; a failed delete is tried again on later runs, up to MAX_UNCLAIM_TRIES in all. A "take" (PR opened) keeps its claim.
+ */
+export async function unclaimHeld(x: Ctx, repo: string): Promise<number> {
+  const { db, d, log } = x;
+  const q = d.querier;
+  if (!q) return 0;
+  const held = db.prepare("SELECT number FROM fix_attempts WHERE repo = ? AND state IN ('failed', 'skipped') AND pr_url IS NULL").all(repo) as { number: number }[];
+  let deleted = 0;
+  for (const { number } of held) {
+    const ref = `${repo}#${number}`;
+    try {
+      const claim = liveClaim(db, ref);
+      const id = /#issuecomment-(\d+)$/.exec(claim?.url ?? "")?.[1];
+      if (!claim || !id) continue;
+      const g = guardRepo(db, repo, "fix-issue", x.by ?? CLI_BY);
+      if ("refused" in g) { log(`  ${ref}: claim not removed: ${g.refused}`); continue; }
+      const me = await viewerOf(q);
+      const r = await ghDeleteComment({ db, login: ACTOR }, g, d.exec, "fixissue-unclaim", { repo, number, commentId: id, login: me.login }, { run: x.runId, url: claim.url });
+      if (r.code === 0) { deleted++; log(`  ${ref}: claim comment removed`); } else log(`  ${ref}: claim comment not removed: ${oneLine(r.stderr)}`);
+    } catch (e) {
+      log(`  ${ref}: claim comment not removed: ${oneLine(String((e as Error).message ?? e))}`);
+    }
+  }
+  return deleted;
 }
 
 /** The next round of an attempt: patch, validate, check it applies, queue the tasks. */
@@ -398,6 +437,7 @@ export async function runFixIssue(db: DatabaseSync, params: FixIssueParams, log:
       log(`  ${refOf(c)}: ${oneLine(String((e as Error).message ?? e))}`);
     }
   }
+  await unclaimHeld(x, repo);
   log(`fixissue ${repo}: ${s.started.length} started, ${s.skipped.length} skipped, ${s.queued.length} rounds queued; run ${runId}`);
   return s;
 }
@@ -496,6 +536,7 @@ export async function runFixIssueCollect(db: DatabaseSync, params: CollectParams
       log(`  ${ref}: ${oneLine(String((e as Error).message ?? e))}`);
     }
   }
+  for (const repo of new Set(rows.map((r) => r.repo))) await unclaimHeld(x(repo), repo);
   log(`fixissue-collect: ${s.looked} pending: ${s.passed} passed, ${s.opened} PRs opened, ${s.failedRounds} failed rounds, ${s.failed} failed, ${s.retried} retried`);
   return s;
 }
