@@ -57,7 +57,7 @@ export function ClaimPill({ claim, compact }: { claim: Decision["claim"]; compac
 
 /** Facts arrive as short strings; "key: value" ones become key-value rows, the rest get a key from their shape. */
 function factKey(f: string): [string, string] {
-  const m = f.match(/^([a-z][a-z ]{1,20}): (.+)$/i);
+  const m = f.match(/^([a-z][a-z -]{1,24}): (.+)$/i);
   if (m) return [m[1][0].toUpperCase() + m[1].slice(1), m[2]];
   if (/^[+−-]?\d/.test(f) || /^\d+ PRs/.test(f)) return ["Size", f];
   if (/^CI\b|checks|CI /.test(f)) return ["Checks", f];
@@ -76,7 +76,7 @@ export function Facts({ facts, repo = null }: { facts: string[]; repo?: string |
         return (
           <div key={i} className="contents">
             <dt className="text-ink/50">{k}</dt>
-            <dd className="min-w-0 text-ink/90">
+            <dd className="min-w-0 break-words text-ink/90">
               {parts.map((p, j) =>
                 DIFF.test(p) ? (
                   <span key={j} className="code">

@@ -12,6 +12,7 @@ const WAITS: Record<string, [MergeWait, string, number]> = {
   "in-batch": ["batch-ci", "In a batch; waiting for the batch PR's CI", 1],
   "batch-checking": ["batch-check", "In a batch; checked in the sandbox", 1],
   "waiting-ci": ["ci", "Waiting for CI", 2],
+  "waiting-premerge": ["premerge", "Waiting for the pre-merge review", 2],
   "waiting-verify": ["verify", "Waiting for Verify", 2],
 };
 

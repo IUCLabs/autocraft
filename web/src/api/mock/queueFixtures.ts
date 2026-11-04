@@ -2,7 +2,7 @@
 import type { BatchFilter, BatchList, QueueBatch, QueueFilter, QueueList, QueueRow, QueueState, TypeLabel } from "../types";
 import { AUTHORS, DECISIONS, NOW, REPOS, rng, titleFor } from "./fixtures";
 
-const STATES: QueueState[] = ["ready", "decision-answered-merge", "refused", "waiting-ci", "ci-failed", "conflict", "needs-fix-up", "waiting-verify", "verify-failed", "verify-error", "needs-decision", "declined", "merged", "held-duplicate", "held-backlog", "batch-checking", "in-batch", "batch-failed", "changes-requested"];
+const STATES: QueueState[] = ["ready", "decision-answered-merge", "refused", "waiting-ci", "waiting-premerge", "ci-failed", "conflict", "needs-fix-up", "waiting-verify", "verify-failed", "verify-error", "needs-decision", "declined", "merged", "held-duplicate", "held-backlog", "batch-checking", "in-batch", "batch-failed", "changes-requested"];
 const REASONS = [
   "Fixes the off-by-one in the page range and adds a test.",
   "Small, correct guard against an empty selection.",
@@ -14,7 +14,7 @@ const LABELS: TypeLabel[] = ["bugfix", "infra", "missing feature", "performance"
 
 function verifyFor(state: QueueState, i: number): QueueRow["verify"] {
   switch (state) {
-    case "ready": case "decision-answered-merge": case "refused": case "needs-decision":
+    case "ready": case "waiting-premerge": case "decision-answered-merge": case "refused": case "needs-decision":
       return i % 2 ? { state: "ci-enough", kind: "ci-enough", summary: "Docs and comments only; CI covers the checks.", note: null } : { state: "passed", kind: i % 3 ? "tests" : "regression", summary: null, note: i === 2 ? "regression test did not fail on the base commit" : null };
     case "waiting-verify": return i % 2 ? { state: "running", kind: "tests", summary: null, note: null } : { state: "planned", kind: "regression", summary: null, note: null };
     case "verify-failed": return { state: "failed", kind: "regression", summary: "The regression test panics at png.rs:91: the decoded stride is 4096 where 8192 is expected.", note: null };
@@ -35,7 +35,7 @@ const ROWS: QueueRow[] = (() => {
       const number = 200 + Math.floor(r() * 3000);
       const [author, tier] = AUTHORS[k % AUTHORS.length]!;
       const ruleTier = tier === "whitelisted" || tier === "override-allow";
-      const rulePath = state === "ready" || ((state === "waiting-ci" || state === "refused") && i % 2 === 0);
+      const rulePath = state === "ready" || state === "waiting-premerge" || ((state === "waiting-ci" || state === "refused") && i % 2 === 0);
       const label = rulePath ? (i % 2 ? "infra" : "bugfix") : LABELS[k % LABELS.length]!;
       const size = rulePath ? (i % 2 ? "M" : "S") : (["S", "M", "L"] as const)[k % 3];
       const outsideRule = rulePath ? [] : [

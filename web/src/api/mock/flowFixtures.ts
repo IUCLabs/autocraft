@@ -20,7 +20,7 @@ const ALL: Record<string, number> = {
   "act.todo": 3, "act.failed": 1, "act.unapproved": 8, "act.done": 6, "act.total": 12, "edge.decide.act": 12,
   "verify.waiting": 21, "verify.planned": 6, "verify.running": 4, "verify.passed": 33, "verify.ci-enough": 18, "verify.failed": 5, "verify.error": 2,
   "verify.total": 89, "verify.recent.finished": 24, "edge.verify.merge": 51,
-  "merge.waiting-verify": 27, "merge.verify-failed": 5, "merge.verify-error": 2,
+  "merge.waiting-premerge": 6, "merge.waiting-verify": 27, "merge.verify-failed": 5, "merge.verify-error": 2,
   "merge.eligible": 12, "merge.in-batch": 5, "merge.batch-failed": 1, "merge.needs-decision": 14, "merge.waiting-ci": 19, "merge.ci-failed": 9, "merge.conflict": 4, "merge.needs-fix-up": 31, "merge.declined": 3,
   "postmerge.todo": 3, "postmerge.to-file": 1, "postmerge.unapproved": 0, "postmerge.filed": 2, "postmerge.nothing": 4, "postmerge.total": 4, "postmerge.recent.reviewed": 6, "edge.merge.postmerge": 3, "edge.postmerge.fix": 2,
   "merge.merged": 7, "merge.total": 92, "merge.recent.merged": 7, "merge.recent.tries": 9, "x.mergedAll": 41,

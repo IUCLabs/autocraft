@@ -144,6 +144,13 @@ describe("api", () => {
     const worked = await boss.get<Item>("/api/items/photocraft/1");
     assert.deepEqual([worked.verification?.state, worked.verification?.current, worked.verification?.plan], ["failed", true, { crates: ["codecs"], tests: ["png::"], testLines: null }]);
     assert.deepEqual([worked.fixups[0]?.files, worked.fixups[0]?.state, worked.actions[0]?.commentUrl], [["a.rs"], "refused", "https://x/c"]);
+    assert.deepEqual(worked.premerge, []);
+    const finding = { severity: "defect", file: "a.rs", line: 3, title: "t", scenario: "s", fix: { file: "a.rs", change: "c" } };
+    db.prepare("INSERT INTO premerge_reviews (repo, number, head_oid, at, model, findings, searched, tries) VALUES ('photocraft', 1, 'h0', '2026-01-01T00:00:00Z', 'm', ?, 'looked', 0)").run(JSON.stringify([finding]));
+    db.prepare("INSERT INTO premerge_reviews (repo, number, head_oid, at, error, tries) VALUES ('photocraft', 1, 'h1', '2026-01-02T00:00:00Z', 'no JSON', 2)").run();
+    const pre = (await boss.get<Item>("/api/items/photocraft/1")).premerge!;
+    assert.deepEqual(pre.map((r) => [r.head, r.error, r.tries, r.findings.length]), [["h1", "no JSON", 2, 0], ["h0", null, 0, 1]]);
+    assert.deepEqual(pre[1]!.findings[0], finding);
     assert.deepEqual(it.comments.map((c) => c.body), ["looks good"]);
     assert.deepEqual(it.decisionIds, [P1]);
     assert.deepEqual(it.related.map((r) => [r.number, r.relation]), [[5, "fixes"]]);

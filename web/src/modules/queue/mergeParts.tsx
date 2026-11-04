@@ -22,6 +22,7 @@ export const STATE: Record<QueueState, [string, Tone, string]> = {
   "ci-failed": ["CI failed", "bad", "CI fails at this head"],
   conflict: ["Conflict", "bad", "Conflicts with the base branch"],
   "needs-fix-up": ["Needs fix-up", "warn", "The review lists small fixes; a later step makes them"],
+  "waiting-premerge": ["Waiting for the pre-merge review", "neutral", "The merge rule covers it; an adversarial review of the head commit runs before it merges"],
   "waiting-verify": ["Waiting for Verify", "neutral", "No passed verification at this head yet: the build tasks are planned or running"],
   "verify-failed": ["Verify failed", "bad", "The build or tests failed at this head"],
   "verify-error": ["Verify error", "warn", "Verification could not run; it is retried once, then held"],
