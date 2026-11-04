@@ -74,6 +74,12 @@ describe("triage", () => {
     assert.equal(triage(failure("failure", [step("lint", "cargo clippy", "error: this could be `x` (clippy::needless)\n")])).kind, "code");
   });
 
+  test("the gate runner's `error: ci failed at` line is not a compiler error", () => {
+    const log = "Diff in /w/src/lib.rs:1:\n-fn a() {}\n+fn a() { }\nerror: ci failed at `fmt`\n";
+    assert.equal(triage(failure("failure", [step("gate", "Run cargo xtask ci", log)])).kind, "format");
+    assert.equal(triage(failure("failure", [step("gate", "Run cargo xtask ci", "error: ci failed at `clippy`\n")])).kind, "code");
+  });
+
 
   test("a timed out run, or a network error without a code error, is infra; infra is tested before format", () => {
     assert.equal(triage(failure("failure", [step("fmt", "Check formatting", "Diff in /w/src/lib.rs:1:\nCould not resolve host: x\n")])).kind, "infra");
