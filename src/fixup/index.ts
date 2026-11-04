@@ -141,6 +141,9 @@ export function noteLive(db: DatabaseSync, repo: string, number: number, pr: PrN
 
 export type Who = { login: string; nodeId: string; email: string };
 
+/** The Plan action's source of a candidate. */
+const sourceOf = (c: FixCandidate): string => (c.carry ? "carry" : c.source ?? "review");
+
 export async function whoAmI(run: Exec): Promise<Who> {
   const r = await run("gh", ["api", "user"]);
   if (r.code !== 0) throw new Error("could not read the pipeline's GitHub account");
@@ -246,7 +249,7 @@ export async function runFixup(db: DatabaseSync, params: FixupParams, log: (line
         return;
       }
       const body = c.carry ? c.carry.suggestion! : askText(c.fixes);
-      const g = await guard(db, { repo, number: c.number }, { kind: "fixup", bucket: "ask", head: c.head }, params.by ?? CLI_BY);
+      const g = await guard(db, { repo, number: c.number }, { kind: "fixup", bucket: "ask", head: c.head, source: sourceOf(c) }, params.by ?? CLI_BY);
       if ("refused" in g) { log(`  ${ref}: not asked: ${g.refused}`); return; }
       const cm = await ghAskComment(gw, d.exec, "fixup-comment", g, c.carry ? (c.model ? { by: "operator", model: c.model } : { by: "fixed-operator" }) : { by: "model", kind: "comment", model: c.model }, body, { run: runId, head: c.head });
       if (cm.code !== 0) { log(`  ${ref}: comment failed: ${oneLine(cm.stderr)}`); return; }
@@ -396,7 +399,7 @@ export async function runFixup(db: DatabaseSync, params: FixupParams, log: (line
       if (!now || now.state !== "OPEN" || now.isDraft) { log(`  ${ref}: skipped: no longer an open, non-draft PR after the model calls`); continue; }
       if (now.headRefOid !== c.head) { log(`  ${ref}: skipped: head moved to ${short(now.headRefOid)} during the model calls`); continue; }
 
-      const g = await guard(db, { repo, number: c.number }, { kind: "fixup", bucket: "fix", head: c.head }, params.by ?? CLI_BY, liveOf(db, d.querier));
+      const g = await guard(db, { repo, number: c.number }, { kind: "fixup", bucket: "fix", head: c.head, source: sourceOf(c) }, params.by ?? CLI_BY, liveOf(db, d.querier));
       if ("refused" in g) { log(`  ${ref}: skipped: ${g.refused}`); continue; }
       rec.pushing(c, commit, v.files);
       const push = await pushBranch(gw, git, "fixup-push", g, { remote: pr.headRepository.nameWithOwner, branch: pr.headRefName, sha: commit }, { run: runId, from: head, to: commit, files: v.files, changed: v.changed });

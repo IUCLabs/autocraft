@@ -37,7 +37,7 @@ import { envVar } from "../env.ts";
 import { effectiveCi, optionalChecks } from "../optional-checks.ts";
 
 export const ORG = "storytold";
-/** Name of the built-in guarded merge (`autocraft safe-merge`); any other `$AUTOCRAFT_MERGE_CMD` is run as an external command. */
+/** Name of the built-in guarded merge (`autocraft safe-merge`); any other `$AUTOCRAFT_MERGE_CMD` is run as an external command that must accept `--head <sha>` and refuse when the PR head differs. */
 export const DEFAULT_MERGE_COMMAND = "safe-merge";
 
 /** `--allow-failed` for each optional check of the repo, only for the built-in command (another command may not know the flag). */
@@ -358,7 +358,7 @@ export async function runMerge(db: DatabaseSync, params: MergeParams, log: (line
       log(`  ${refOf(e)}: not merged: ${g.refused}`);
       continue;
     }
-    const r = await mergeViaCommand(w, d.run, d.mergeCommand, g, { method, extra: allowFailedArgs(db, repo, d.mergeCommand), pin: d.mergeCommand === DEFAULT_MERGE_COMMAND }, { run: runId, head: e.head, path: e.path });
+    const r = await mergeViaCommand(w, d.run, d.mergeCommand, g, { method, extra: allowFailedArgs(db, repo, d.mergeCommand) }, { run: runId, head: e.head, path: e.path });
     if (r.code !== 0) {
       const why = oneLine(r.stderr) || oneLine(r.stdout) || `exit code ${r.code}`;
       refuse(e, method, `${d.mergeCommand}: ${why}`);

@@ -6,7 +6,7 @@ import type { ActionKind, ItemFacts, PrFacts } from "./plan.ts";
 export type By = "pipeline" | { operator: string };
 
 /** An action as the gates and the guard see it: its kind, and the bucket where the kind has several (fix-up: fix | ask, ...). */
-export type Want = { kind: ActionKind; bucket?: string };
+export type Want<K extends ActionKind = ActionKind> = { kind: K; bucket?: string };
 
 /** The repo approvals a write can need. */
 export type Approval = "merge" | "push" | "comment" | "ci" | "labels" | "fix-issue" | "main-fix";

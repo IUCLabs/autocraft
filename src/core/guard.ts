@@ -5,6 +5,7 @@ import type { DatabaseSync } from "node:sqlite";
 import type { Querier } from "../mirror.ts";
 import { refreshChecks } from "../review/checks.ts";
 import { decidePr } from "./decide.ts";
+import { verifyAllows } from "./rules.ts";
 import { loadPrFact } from "./facts.ts";
 import { commentApprovalOf } from "../act/approval.ts";
 import { fixIssueApprovalOf } from "../fixissue/approval.ts";
@@ -16,12 +17,12 @@ import { ciApprovalOf } from "../merge/ci-approval.ts";
 import { decideItem } from "./decide-item.ts";
 import { gateRepo, gates, type Approval, type By, type Want } from "./gates.ts";
 import { loadItemFact } from "./issue-facts.ts";
-import type { PrFacts } from "./plan.ts";
+import type { ActionKind, PrFacts } from "./plan.ts";
 
 declare const guarded: unique symbol;
 
-/** What the guard let through: the action, the reviewed head it holds at, and the PR. Only `guard` makes one. */
-export type Guarded = { readonly [guarded]: true; readonly scope: "pr"; readonly action: Want; readonly head: string; readonly repo: string; readonly number: number };
+/** What the guard let through: the action (its kind is part of the type, so a write takes only the grants made for it), the reviewed head it holds at, and the PR. Only `guard` makes one. */
+export type Guarded<K extends ActionKind = ActionKind> = { readonly [guarded]: true; readonly scope: "pr"; readonly action: Want<K>; readonly head: string; readonly repo: string; readonly number: number };
 /** What the guard let through for an issue or PR in its item steps (labels, act, fix issue). Only `guardItem` makes one. */
 export type GuardedItem = { readonly [guarded]: true; readonly scope: "item"; readonly action: ItemWant; readonly repo: string; readonly number: number };
 /** What the guard let through for a repo-level write (a label set, a fork, an issue, a batch branch): the approval and the global switch held. Only `guardRepo` makes one. */
@@ -32,7 +33,7 @@ export type Refused = { refused: string };
 /** An item action to guard: the Plan must hold the kind with the bucket, decision and source given. */
 export type ItemWant = Want & { decisionId?: string; source?: string };
 /** The action to guard: `head` is the head the caller reviewed or worked on. `batch`: a member of a merge batch, which is in its batch state, not ready. */
-export type Ask = Want & { head: string; batch?: boolean };
+export type Ask<K extends ActionKind = ActionKind> = Want<K> & { head: string; batch?: boolean; /** Fix-up: the Plan action's source (review, premerge or carry). */ source?: string };
 export type Ref = { repo: string; number: number };
 
 export type LiveRead = { state: "OPEN" | "MERGED" | "CLOSED"; head: string; draft: boolean; mergeable: string };
@@ -54,7 +55,7 @@ const needsLive = (a: Want): boolean =>
   a.kind === "merge" || (a.kind === "fixup" && a.bucket === "fix") || (a.kind === "conflict" && a.bucket === "merge")
   || (a.kind === "cifix" && (a.bucket === "work" || a.bucket === "collect"));
 
-const make = (ref: Ref, a: Want, head: string): Guarded => ({ scope: "pr", action: a, head, repo: ref.repo, number: ref.number }) as Guarded;
+const make = <K extends ActionKind>(ref: Ref, a: Want<K>, head: string): Guarded<K> => ({ scope: "pr", action: a, head, repo: ref.repo, number: ref.number }) as unknown as Guarded<K>;
 
 async function check(db: DatabaseSync, ref: Ref, a: Ask, by: By, live?: Live): Promise<{ f: PrFacts } | Refused> {
   const name = `${ref.repo}#${ref.number}`;
@@ -77,8 +78,9 @@ async function check(db: DatabaseSync, ref: Ref, a: Ask, by: By, live?: Live): P
   if (why) return { refused: `${name}: ${why}` };
   if (a.batch && f.mergeHeld) return { refused: `${name}: merge held by an operator` };
   const plan = decidePr(f);
-  const holds = plan.head === a.head && (plan.actions.some((x) => x.kind === a.kind && x.head === a.head && (a.bucket === undefined || x.params?.bucket === a.bucket))
-    || (a.batch === true && a.kind === "merge" && BATCH_STATES.includes(plan.state) && plan.path !== null));
+  const holds = plan.head === a.head && (plan.actions.some((x) => x.kind === a.kind && x.head === a.head && (a.bucket === undefined || x.params?.bucket === a.bucket) && (a.source === undefined || x.params?.source === a.source))
+    // A batch member is in its batch state, not ready; it must still pass what a single merge needs apart from CI and mergeable.
+    || (a.batch === true && a.kind === "merge" && BATCH_STATES.includes(plan.state) && plan.path !== null && verifyAllows(plan.path, f.verification?.state)));
   if (!holds) {
     const now = plan.actions.map((x) => x.kind + (typeof x.params?.bucket === "string" ? `:${x.params.bucket}` : "")).join(", ") || "none";
     return { refused: `${name}: the plan no longer has ${a.kind}${a.bucket ? `:${a.bucket}` : ""} at ${short(a.head)} (state ${plan.state}, head ${short(plan.head)}, actions: ${now}${plan.wait ? `, waiting for ${plan.wait}` : ""})` };
@@ -87,7 +89,7 @@ async function check(db: DatabaseSync, ref: Ref, a: Ask, by: By, live?: Live): P
 }
 
 /** Lets one PR write through, or says why not. Call it right before the write. */
-export async function guard(db: DatabaseSync, ref: Ref, action: Ask, by: By, live?: Live): Promise<Guarded | Refused> {
+export async function guard<K extends ActionKind>(db: DatabaseSync, ref: Ref, action: Ask<K>, by: By, live?: Live): Promise<Guarded<K> | Refused> {
   const r = await check(db, ref, action, by, live);
   if ("refused" in r) return r;
   return make(ref, action, action.head);
@@ -97,7 +99,7 @@ export async function guard(db: DatabaseSync, ref: Ref, action: Ask, by: By, liv
  * Lets the merge of a batch PR through: every member must pass the guard at its batched head, and the batch PR must
  * still be open at the batch tip. The returned value is for the batch PR.
  */
-export async function guardBatchMerge(db: DatabaseSync, batch: Ref & { head: string }, members: { number: number; head: string }[], by: By, live: Live): Promise<Guarded | Refused> {
+export async function guardBatchMerge(db: DatabaseSync, batch: Ref & { head: string }, members: { number: number; head: string }[], by: By, live: Live): Promise<Guarded<"merge"> | Refused> {
   for (const m of members) {
     const r = await guard(db, { repo: batch.repo, number: m.number }, { kind: "merge", head: m.head, batch: true }, by, live);
     if ("refused" in r) return r;

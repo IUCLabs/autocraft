@@ -11,7 +11,7 @@
 // Without --apply it is a dry run: local tables only. No model is a tool user: replies are text our code
 // validates, and nothing from an issue or a patch runs on this user (the build tasks run in the sandbox).
 import { CLI_BY, type By } from "../core/gates.ts";
-import { guardItem, guardRepo, type Grant } from "../core/guard.ts";
+import { guardItem, guardRepo, type GuardedItem } from "../core/guard.ts";
 import type { GuardedRepo } from "../core/guard.ts";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -552,7 +552,7 @@ async function closedLive(x: Ctx, r: AttemptRow): Promise<boolean> {
 }
 
 /** Comments on the issue at most once: the activity row is written before the post, so a failed post or a crash is not retried. */
-export async function comment(x: Ctx, g: Grant, r: AttemptRow, url: string): Promise<void> {
+export async function comment(x: Ctx, g: GuardedItem | GuardedRepo, r: AttemptRow, url: string): Promise<void> {
   const { db, d, log } = x;
   const ref = refOf(r);
   if (db.prepare("SELECT 1 FROM audit WHERE action = 'fixissue-comment' AND target = ?").get(ref)) return;

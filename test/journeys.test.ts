@@ -112,6 +112,22 @@ describe("PR journeys", () => {
     assert.deepEqual(merged(w).map((r) => [r.number, r.head_oid, r.outcome]), [[1, "sha1", "merged"], [2, "sha2", "merged"]]);
   });
 
+  test("the batch PR's runs are approved at the batch tip when its members are fast-tracked in a repo whose pipeline is off", async () => {
+    const w = fresh().pr(1).review(1).verified(1).premerge(1, "clean").pr(2).review(2).verified(2).premerge(2, "clean");
+    await runBatches(w.db, { repo: "app" }, quiet, w.gh.batchDeps());
+    const tip = (w.db.prepare("SELECT commit_sha AS c FROM merge_batches WHERE pr_number = 900").get() as { c: string }).c;
+    w.db.prepare("INSERT INTO ci_run_approvals (repo, number, head_oid, runs, approved, reread, failed, checked_at) VALUES ('app', 900, ?, '[]', '[]', 1, '{}', ?)").run(tip, "2026-01-02T00:00:00Z");
+    w.db.prepare("INSERT INTO settings (key, value) VALUES ('pipeline_login', 'bot') ON CONFLICT (key) DO UPDATE SET value = excluded.value").run();
+    w.db.prepare(`INSERT INTO items (repo, number, kind, state, title, author, additions, deletions, head_oid, head_ref, created_at, updated_at)
+      VALUES ('app', 900, 'pr', 'OPEN', 'batch', 'bot', 1, 0, 'mirror-lag', 'batch', ?, ?)`).run("2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z");
+    const plan = () => w.prPlan(900);
+    assert.deepEqual(plan().actions.map((a) => [a.kind, a.head]), [["approve-ci", tip]]);
+    w.db.prepare("UPDATE tracked_repos SET pipeline = 0 WHERE name = 'app'").run();
+    assert.equal(plan().state, "out-of-scope");
+    for (const n of [1, 2]) w.db.prepare("INSERT INTO fast_track (repo, number, added_by, added_at) VALUES ('app', ?, 'op', ?)").run(n, "2026-01-02T00:00:00Z");
+    assert.deepEqual(plan().actions.map((a) => [a.kind, a.head]), [["approve-ci", tip]]);
+  });
+
   test("a take-fix PR is fixed up on the contributor's branch, reviewed again at the new head and merged there", async () => {
     const git = gitWorld(1);
     const w = fresh().pr(1, { head: git.head }).review(1, { verdict: "take-fix" });

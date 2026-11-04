@@ -5,7 +5,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { setPushApproval } from "../src/fixup/approval.ts";
 import { gates } from "../src/core/gates.ts";
 import { setCommentApproval } from "../src/act/approval.ts";
-import { guard, guardItem, guardRepo, type Live, type LiveRead } from "../src/core/guard.ts";
+import { guard, guardBatchMerge, guardItem, guardRepo, type Live, type LiveRead } from "../src/core/guard.ts";
 import { ORG } from "../src/act/templates.ts";
 import { closeItem, mergeViaCommand } from "../src/github/write.ts";
 import { G } from "./guarded.ts";
@@ -93,7 +93,7 @@ test("the merge command gets the reviewed head, and the built-in command refuses
   assert.ok(ok(g));
   const seen: string[][] = [];
   await mergeViaCommand({ db: fresh([{ n: 1 }]), login: "t" }, async (_c, args) => { seen.push(args); return { code: 0, stdout: "", stderr: "" }; }, "safe-merge",
-    g as Exclude<typeof g, { refused: string }>, { method: "squash", pin: true });
+    g as Exclude<typeof g, { refused: string }>, { method: "squash" });
   assert.deepEqual(seen[0], [`${ORG}/app`, "1", "--squash", "--head", "sha1"]);
   assert.equal(parseSafeMergeArgs(seen[0]!)?.head, "sha1");
   const gh = async () => JSON.stringify({ state: "OPEN", isDraft: false, mergeable: "MERGEABLE", headRefOid: "other0000", statusCheckRollup: [] });
@@ -130,4 +130,24 @@ test("a repo write needs the repo's approval and, for the pipeline, the global s
 test("a write function refuses a guard that was made for another repo", async () => {
   const q = { spent: 0, remaining: null, query: async () => ({}) };
   await assert.rejects(closeItem({ db: fresh([{ n: 1 }]), login: "t" }, G("other"), q, { repo: "app", number: 1, id: "N1", pr: false }), /guard covers other/);
+});
+
+test("a batch member passes the batch guard only with a passed verification, also while GitHub's mergeable state is still unknown", async () => {
+  const batch = (verification: string): DatabaseSync => {
+    const db = world().repo(["comment"]).pr(1).review(1).verified(1, verification).premerge(1, "clean").pipeline(false).db;
+    db.prepare("INSERT INTO merge_batches (id, repo, branch, state, base_sha, commit_sha, pr_number, created_at, updated_at) VALUES (1, 'app', 'integration-app-1', 'open', 'base', 'tip', 900, ?, ?)").run(T, T);
+    db.prepare("INSERT INTO merge_batch_prs (batch_id, number, head_oid, position) VALUES (1, 1, 'sha1', 0)").run();
+    return db;
+  };
+  const batchLive: Live = async (_r, n) => (n === 900 ? { ...open, head: "tip" } : { ...open, mergeable: "UNKNOWN" });
+  const run = (db: DatabaseSync) => guardBatchMerge(db, { repo: "app", number: 900, head: "tip" }, [{ number: 1, head: "sha1" }], OP, batchLive);
+  assert.ok(ok(await run(batch("passed"))), why(await run(batch("passed"))));
+  assert.ok(!ok(await run(batch("failed"))));
+});
+
+test("a fix-up grant is for the Plan action's source", async () => {
+  const db = takeFix();
+  const ask = (source: string) => guard(db, ref, { kind: "fixup", bucket: "fix", head: "sha1", source }, OP, live());
+  assert.ok(ok(await ask("review")), why(await ask("review")));
+  assert.ok(!ok(await ask("carry")));
 });

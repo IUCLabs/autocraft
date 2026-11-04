@@ -1,5 +1,5 @@
 // Facts: everything the review-to-merge rules read about open PRs, loaded in one pass for a whole database or a slice of it.
-// Each concept has one definition here (see .thoughts/arch/state.md). Where a step selector and the merge queue used different
+// Each concept has one definition here. Where a step selector and the merge queue used different
 // definitions, the queue's wins; the differences are listed in the report of this change, not here.
 import type { DatabaseSync } from "node:sqlite";
 import { commentApprovalOf } from "../act/approval.ts";
@@ -11,14 +11,14 @@ import { longLivedOf, pushable, type LongLived } from "../fixup/pushable.ts";
 import { FAST_FLOOR, fastScoreSql } from "../fasttrack.ts";
 import { latestRun, settledLookup } from "../classify/settled.ts";
 import { redMainRepos, MAIN_FIX_BRANCH_PREFIX } from "../mainci/index.ts";
-import { batchStates } from "../merge/batch-store.ts";
+import { batchStates, membersOf } from "../merge/batch-store.ts";
 import { changesRequestedWhy, gatesOf, GATE_FAILURES, failureNote, type ReviewFact } from "../merge/changes-requested.ts";
 import { ciApprovalOf } from "../merge/ci-approval.ts";
 import { mergeApprovalOf } from "../merge/approval.ts";
 import { mergeHolds } from "../merge/holds.ts";
 import { repoHasNoCi } from "../merge/no-ci.ts";
 import { effectiveCi } from "../optional-checks.ts";
-import { pilotSql } from "../pilot.ts";
+import { inPilot, pilotSql, pipelineRepos } from "../pilot.ts";
 import { attemptsOf, parseFixes } from "../fixup/candidates.ts";
 import { getTask, TERMINAL } from "../build/tasks.ts";
 import { SINCE_KEY } from "../postmerge/select.ts";
@@ -147,6 +147,9 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
           AND l.head_oid = (SELECT r.head_oid FROM opus_reviews r WHERE r.repo = l.repo AND r.number = l.number AND r.verdict IS NOT NULL ORDER BY r.at DESC, r.rowid DESC LIMIT 1)))
     ORDER BY b.id LIMIT 1`);
 
+  const batchOf = db.prepare("SELECT id, commit_sha FROM merge_batches WHERE repo = ? AND pr_number = ? AND state IN ('checking', 'open') ORDER BY id LIMIT 1");
+  const pipelineOn_ = pipelineRepos(db);
+
   type Wait = { runs: string; approved: string; reread: number; failed: string; cross_repo: number; approved_at: string | null };
   const runsOf = (w: Wait | undefined, ciApproved: boolean): PrFacts["runs"] => {
     if (!w) return null;
@@ -165,9 +168,11 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
     const ref = `${r.repo}#${r.number}`;
     const rf = repoOf(r.repo);
     const fresh = !!r.c_at && (!r.updated_at || r.c_at > r.updated_at);
-    const head = headOf(r);
-    const inScope = !!r.in_pilot;
     const integration = !r.not_integration;
+    // An integration PR takes part when its repo's pipeline is on or every member is in scope (fast track); its head is the batch tip, where the run approvals are recorded.
+    const batchRow = integration ? (batchOf.get(r.repo, r.number) as { id: number; commit_sha: string } | undefined) : undefined;
+    const inScope = integration ? pipelineOn_.has(r.repo) || (!!batchRow && membersOf(db, batchRow.id).every((m) => inPilot(db, r.repo, m.number))) : !!r.in_pilot;
+    const head = batchRow?.commit_sha ?? headOf(r);
     const lines = (r.additions ?? 0) + (r.deletions ?? 0);
     const base: PrFacts = {
       repo: r.repo, number: r.number, now, pipelineOn, ghState: r.state, head, draft: fresh ? r.c_state !== "OPEN" || !!r.c_draft : !!r.is_draft,

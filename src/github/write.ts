@@ -8,6 +8,11 @@ import type { DatabaseSync } from "node:sqlite";
 import { ORG } from "../act/templates.ts";
 import { connect } from "../db.ts";
 import type { Grant, Guarded, GuardedItem, GuardedRepo } from "../core/guard.ts";
+
+/** The PR steps that push to a contributor's branch or ask on the PR where it is closed to us. */
+export type AskKind = "fixup" | "conflict" | "cifix";
+/** What a comment write takes: a PR step's grant for its own kinds, or an item or repo grant (never a merge or CI grant). */
+export type CommentGrant = Guarded<AskKind> | GuardedItem | GuardedRepo;
 import type { Exec, ExecResult, Git } from "../fixup/git.ts";
 import type { Querier } from "../mirror.ts";
 import { type Note, withNote } from "./note.ts";
@@ -116,7 +121,7 @@ export async function unassignFrom(w: Writer, g: Grant, q: Querier, item: ItemRe
 }
 
 /** Posts a review as a plain comment review on the commit; returns the review id (null when GitHub returned none). */
-export async function postReview(w: Writer, q: Querier, g: Guarded, nodeId: string, note: Note, text: string, details: Details = {}): Promise<string | null> {
+export async function postReview(w: Writer, q: Querier, g: Guarded<"post-review">, nodeId: string, note: Note, text: string, details: Details = {}): Promise<string | null> {
   const body = withNote(note, text);
   const r = await recorded(w, "review-post", refOf(g.repo, g.number), { ...details, head: g.head },
     () => q.query(ADD_REVIEW, { pr: nodeId, oid: g.head, body }) as Promise<{ addPullRequestReview?: { pullRequestReview?: { id?: string } | null } | null }>,
@@ -125,7 +130,7 @@ export async function postReview(w: Writer, q: Querier, g: Guarded, nodeId: stri
   return r.addPullRequestReview?.pullRequestReview?.id ?? null;
 }
 
-export async function editReview(w: Writer, q: Querier, g: Guarded, reviewId: string, note: Note, text: string, details: Details = {}): Promise<void> {
+export async function editReview(w: Writer, q: Querier, g: Guarded<"post-review">, reviewId: string, note: Note, text: string, details: Details = {}): Promise<void> {
   const body = withNote(note, text);
   await recorded(w, "review-edit", refOf(g.repo, g.number), { ...details, head: g.head, review: reviewId }, () => q.query(EDIT_REVIEW, { id: reviewId, body }));
 }
@@ -173,12 +178,12 @@ async function viaGh(w: Writer, exec: Exec, action: string, target: string, deta
 }
 
 /** Asks a contributor on their PR (fix-up, conflict or CI fix where the branch is closed to us); `action` is the audit action of the caller's stage. */
-export function ghAskComment(w: Writer, exec: Exec, action: string, g: Guarded, note: Note, text: string, details: Details = {}): Promise<ExecResult> {
+export function ghAskComment(w: Writer, exec: Exec, action: string, g: Guarded<AskKind>, note: Note, text: string, details: Details = {}): Promise<ExecResult> {
   return ghComment(w, g, exec, action, { repo: g.repo, number: g.number, pr: true }, note, text, details);
 }
 
 /** `action` is the audit action of the caller's stage (act, fixup or fixissue comment). Not for asks: those use ghAskComment. */
-export function ghComment(w: Writer, g: Grant, exec: Exec, action: string, o: { repo: string; number: number; pr: boolean }, note: Note, text: string, details: Details = {}): Promise<ExecResult> {
+export function ghComment(w: Writer, g: CommentGrant, exec: Exec, action: string, o: { repo: string; number: number; pr: boolean }, note: Note, text: string, details: Details = {}): Promise<ExecResult> {
   covers(g, o.repo, o.number);
   const body = withNote(note, text);
   return viaGh(w, exec, action, refOf(o.repo, o.number), { ...details, text: body },
@@ -186,7 +191,7 @@ export function ghComment(w: Writer, g: Grant, exec: Exec, action: string, o: { 
 }
 
 /** Replaces the body of a comment we posted (`commentId` is the number in its `#issuecomment-` URL). */
-export function ghEditComment(w: Writer, g: Grant, exec: Exec, action: string, o: { repo: string; number: number; commentId: string }, note: Note, text: string, details: Details = {}): Promise<ExecResult> {
+export function ghEditComment(w: Writer, g: CommentGrant, exec: Exec, action: string, o: { repo: string; number: number; commentId: string }, note: Note, text: string, details: Details = {}): Promise<ExecResult> {
   covers(g, o.repo, o.number);
   const body = withNote(note, text);
   return viaGh(w, exec, action, refOf(o.repo, o.number), { ...details, text: body, comment: o.commentId },
@@ -244,13 +249,13 @@ export async function createIssue(w: Writer, g: Grant, exec: Exec, o: { repo: st
 }
 
 /** Approves one Actions run that waits for a maintainer's approval (a run from an outside contributor's PR). */
-export function ghApproveRun(w: Writer, exec: Exec, g: Guarded, runId: number, details: Details = {}): Promise<ExecResult> {
+export function ghApproveRun(w: Writer, exec: Exec, g: Guarded<"approve-ci">, runId: number, details: Details = {}): Promise<ExecResult> {
   return viaGh(w, exec, "ci-run-approve", refOf(g.repo, g.number), { ...details, run: runId },
     ["api", "-X", "POST", `repos/${ORG}/${g.repo}/actions/runs/${runId}/approve`]);
 }
 
 /** Reruns the failed jobs of one Actions run of a PR's head commit. */
-export function ghRerunFailed(w: Writer, exec: Exec, g: Guarded, runId: number, details: Details = {}): Promise<ExecResult> {
+export function ghRerunFailed(w: Writer, exec: Exec, g: Guarded<"cifix">, runId: number, details: Details = {}): Promise<ExecResult> {
   return viaGh(w, exec, "ci-rerun", refOf(g.repo, g.number), { ...details, run: runId },
     ["run", "rerun", String(runId), "--failed", "--repo", `${ORG}/${g.repo}`]);
 }
@@ -265,7 +270,7 @@ export function ghRerunMainFailed(w: Writer, g: GuardedRepo, exec: Exec, o: { re
 // ---- git pushes ---------------------------------------------------------------
 
 /** Pushes `sha` to a PR's branch `branch` of `remote` (owner/name); refused by git when the branch is no longer at the guarded head. */
-export function pushBranch(w: Writer, git: Pick<Git, "git">, action: string, g: Guarded, o: { remote: string; branch: string; sha: string }, details: Details = {}): Promise<ExecResult> {
+export function pushBranch(w: Writer, git: Pick<Git, "git">, action: string, g: Guarded<AskKind>, o: { remote: string; branch: string; sha: string }, details: Details = {}): Promise<ExecResult> {
   return pushed(w, git, action, refOf(g.repo, g.number), o, `--force-with-lease=refs/heads/${o.branch}:${g.head}`, details);
 }
 
@@ -291,11 +296,11 @@ export const MERGE_RECORDED_ENV = "AUTOCRAFT_MERGE_RECORDED";
 
 /**
  * Runs the merge command for the guarded PR and records the merge or the refusal. The command gets
- * `OWNER/REPO PR --squash|--merge <extra> [--head <guarded head>]`; with `pin` (the built-in safe-merge) it refuses when GitHub's head
- * differs from the head the guard checked. An external command does not understand `--head` and pins its own read.
+ * `OWNER/REPO PR --squash|--merge <extra> --head <guarded head>`, and must refuse when GitHub's head
+ * differs from that head. Every merge command, the built-in safe-merge and any `$AUTOCRAFT_MERGE_CMD`, takes `--head` as part of this contract.
  */
-export async function mergeViaCommand(w: Writer, run: (cmd: string, args: string[]) => Promise<CommandResult>, cmd: string, g: Guarded, o: { method: "squash" | "merge"; extra?: string[]; pin: boolean }, details: Details = {}, landed?: () => Promise<boolean>): Promise<CommandResult> {
-  const args = [`${ORG}/${g.repo}`, String(g.number), `--${o.method}`, ...(o.extra ?? []), ...(o.pin ? ["--head", g.head] : [])];
+export async function mergeViaCommand(w: Writer, run: (cmd: string, args: string[]) => Promise<CommandResult>, cmd: string, g: Guarded<"merge">, o: { method: "squash" | "merge"; extra?: string[] }, details: Details = {}, landed?: () => Promise<boolean>): Promise<CommandResult> {
+  const args = [`${ORG}/${g.repo}`, String(g.number), `--${o.method}`, ...(o.extra ?? []), "--head", g.head];
   const repo = g.repo;
   const method: string = o.method;
   const base = { ...details, method };

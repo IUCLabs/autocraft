@@ -401,7 +401,7 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
     // Every member must still hold at its batched head, and the batch PR at the batch tip.
     const g = await guardBatchMerge(db, { repo, number: b.pr_number!, head: b.commit_sha }, members.map((m) => ({ number: m.number, head: m.head_oid })), by, liveRead);
     if ("refused" in g) { log(`  ${b.branch}: not merged: ${g.refused}`); s.waiting.push(b.branch); return; }
-    const r = await mergeViaCommand(w, d.run, d.mergeCommand, g, { method: "merge", extra: allowFailedArgs(db, repo, d.mergeCommand), pin: d.mergeCommand === DEFAULT_MERGE_COMMAND }, { run: runId, head: b.commit_sha, batch: b.branch }, async () => {
+    const r = await mergeViaCommand(w, d.run, d.mergeCommand, g, { method: "merge", extra: allowFailedArgs(db, repo, d.mergeCommand) }, { run: runId, head: b.commit_sha, batch: b.branch }, async () => {
       after = (await refreshChecks(db, d.querier, repo, [b.pr_number!]))[0];
       return after?.state === "MERGED";
     });
