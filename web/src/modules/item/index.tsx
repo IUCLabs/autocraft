@@ -9,17 +9,12 @@ import {
   XIcon,
   SpinnerIcon,
   MinusIcon,
-  TagIcon,
-  SparkleIcon,
-  FlagIcon,
-  CheckCircleIcon,
   ProhibitIcon,
-  ChatCircleIcon,
   type Icon as PhosphorIcon,
 } from "@phosphor-icons/react";
 import { useQuery } from "../../api/client";
 import { Pending } from "../../ui/atoms/Pending";
-import type { CiState, Classification, Item, ItemComment, Stage, Tier } from "../../api/types";
+import type { CiState, Classification, Item, Tier } from "../../api/types";
 import { ItemPath } from "../flow/ItemPath";
 import type { FeatureModule, ViewProps } from "../../registry/types";
 import { Slot } from "../../registry/Slot";
@@ -37,6 +32,7 @@ import { Markdown, Collapsible } from "../../ui/molecules/Markdown";
 import { useIsPhone } from "../../shell/useMedia";
 import { SettledBadge } from "../items";
 import { PrWork } from "./PrWork";
+import { TracePanel } from "./TracePanel";
 import { useUser } from "../../shell/UserContext";
 import { canAct } from "../../registry/permissions";
 import { Conversation } from "../decisions/Conversation";
@@ -85,6 +81,7 @@ function ItemMain({ params }: ViewProps) {
     <div className="h-full overflow-y-auto">
       <div className="mx-auto max-w-[920px] px-4 pb-12 pt-5 md:px-6">
         <Header it={it} />
+        <TracePanel it={it} />
         <ItemPath it={it} />
         <Properties it={it} />
         {it.body && (
@@ -103,17 +100,9 @@ function ItemMain({ params }: ViewProps) {
         <Section title="Opus">
           <Conversation repo={it.repo} number={it.number} operator={canAct(user, [it.repo])} />
         </Section>
-        <Section title="Timeline">
-          <Timeline it={it} />
-        </Section>
         {it.files.length > 0 && (
           <Section title="Files changed" aside={`${it.files.length} files`}>
             <Files it={it} />
-          </Section>
-        )}
-        {it.comments.length > 0 && (
-          <Section title="Discussion" aside={`${it.comments.length} ${it.comments.length === 1 ? "comment" : "comments"}`}>
-            <Discussion comments={it.comments} />
           </Section>
         )}
       </div>
@@ -343,109 +332,6 @@ function Verdicts({ cls }: { cls: Classification[] }) {
   );
 }
 
-const STAGE: Record<Stage, [string, PhosphorIcon]> = {
-  classified: ["Classified", TagIcon],
-  labeled: ["Labelled", TagIcon],
-  reviewed: ["Reviewed", SparkleIcon],
-  take: ["Taken", CheckCircleIcon],
-  hold: ["Held", MinusIcon],
-  close: ["Marked to close", ProhibitIcon],
-  "needs-decision": ["Waiting for a decision", FlagIcon],
-  batched: ["Put in a batch", FlagIcon],
-  merged: ["Merged by the pipeline", GitMergeIcon],
-  closed: ["Closed by the pipeline", ProhibitIcon],
-  "fixed-by-us": ["Fixed by us", CheckCircleIcon],
-  "verify-planned": ["Verification planned", SparkleIcon],
-  "verify-ci-enough": ["CI is enough", CheckCircleIcon],
-  "verify-error": ["Verification not planned", MinusIcon],
-  "verify-unavailable": ["Not verified: cannot build here", MinusIcon],
-  verified: ["Verified", CheckCircleIcon],
-  "verify-failed": ["Verification failed", XIcon],
-};
-
-type Event = { label: string; Icon: PhosphorIcon; at: string; by: string; note: string | null };
-
-// GitHub's own events from the mirror, merged with the pipeline's stages.
-// A pipeline merge or close already says who did it, so GitHub's copy is left out.
-function events(it: Item): Event[] {
-  const out: Event[] = [{ label: "Opened", Icon: it.kind === "pr" ? GitPullRequestIcon : RadioButtonIcon, at: it.createdAt, by: it.author, note: null }];
-  for (const s of it.stages) {
-    // A stage this build doesn't know yet shows by its name rather than breaking the page.
-    const [label, Icon] = STAGE[s.stage] ?? [s.stage, FlagIcon];
-    out.push({ label, Icon, at: s.at, by: s.by, note: s.note });
-  }
-  const has = (st: Stage) => it.stages.some((s) => s.stage === st);
-  if (it.state === "merged" && it.mergedAt && !has("merged")) out.push({ label: "Merged", Icon: GitMergeIcon, at: it.mergedAt, by: it.mergedBy ?? "", note: null });
-  else if (it.state === "closed" && it.closedAt && !has("closed")) out.push({ label: "Closed", Icon: ProhibitIcon, at: it.closedAt, by: "", note: null });
-  return out.filter((e) => e.at).sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
-}
-
-function Timeline({ it }: { it: Item }) {
-  useNow();
-  const evs = events(it);
-  return (
-    <ol className="relative">
-      {evs.length > 1 && <span className="absolute bottom-3 left-[11px] top-3 w-px bg-line-strong" aria-hidden />}
-      {evs.map((e, i) => {
-        const last = i === evs.length - 1 && evs.length > 1;
-        return (
-          <li key={i} className="relative flex items-center gap-3 py-1.5">
-            <span className={cn("z-[1] flex size-6 shrink-0 items-center justify-center rounded-full border", last ? "border-warn/50 bg-warn/15 text-warn" : "border-line-strong bg-panel text-ink/55")}>
-              <e.Icon className="text-[12px]" />
-            </span>
-            <span className="min-w-0 flex-1 text-sm">
-              <span className={cn(last ? "font-medium text-ink" : "text-ink/85")}>{e.label}</span>
-              {e.by && <span className="text-ink/55"> by {e.by}</span>}
-              {e.note && <span className="text-ink/45"> · {e.note}</span>}
-            </span>
-            <span className="shrink-0 text-xs text-ink/45">{ago(e.at)} ago</span>
-          </li>
-        );
-      })}
-    </ol>
-  );
-}
-
-const REVIEW: Record<string, [string, Tone]> = {
-  APPROVED: ["approved", "ok"],
-  CHANGES_REQUESTED: ["requested changes", "bad"],
-  COMMENTED: ["reviewed", "neutral"],
-  DISMISSED: ["review dismissed", "neutral"],
-};
-
-// GitHub comments and reviews, oldest first. Bodies are untrusted: the same Markdown renderer as the description.
-function Discussion({ comments }: { comments: ItemComment[] }) {
-  useNow();
-  return (
-    <ol className="space-y-3">
-      {comments.map((c) => {
-        const review = c.kind === "review" ? (REVIEW[c.reviewState ?? ""] ?? REVIEW.COMMENTED!) : null;
-        return (
-          <li key={c.id} className="overflow-hidden rounded-md border border-line">
-            <div className="flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-line bg-ink/[0.03] px-3 py-1.5 text-sm">
-              {c.author ? <Avatar login={c.author} size={18} /> : <ChatCircleIcon className="text-ink/40" />}
-              <span className="font-medium">{c.author || "ghost"}</span>
-              {review && <Badge tone={review[1]}>{review[0]}</Badge>}
-              <span className="ml-auto text-xs text-ink/45" title={c.at}>
-                {c.at ? ago(c.at, false) : ""}
-              </span>
-            </div>
-            <div className="px-3 py-2">
-              {c.body.trim() ? (
-                <Collapsible lines={12}>
-                  <Markdown source={c.body} />
-                </Collapsible>
-              ) : (
-                <p className="text-sm text-ink/45">No text.</p>
-              )}
-            </div>
-          </li>
-        );
-      })}
-    </ol>
-  );
-}
-
 function Files({ it }: { it: Item }) {
   const max = Math.max(...it.files.map((f) => f.additions + f.deletions), 1);
   return (
@@ -541,7 +427,7 @@ function ItemSide(props: ViewProps) {
                 <li key={c.name} className="flex h-7 items-center gap-2 text-sm">
                   <I className={cls} />
                   <span className="flex-1 text-ink/80">{c.name}</span>
-                  <span className="num text-xs text-ink/45">{c.minutes}m</span>
+                  {c.minutes !== null && <span className="num text-xs text-ink/45">{c.minutes}m</span>}
                 </li>
               );
             })}

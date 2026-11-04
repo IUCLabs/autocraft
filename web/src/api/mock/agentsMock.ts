@@ -1,4 +1,5 @@
 // Agents, accounts and rates on fake data: three accounts (one disabled), twelve runs in flight and a few hundred finished ones.
+import { traceRunDetail } from "./traceMock";
 import type { Api } from "../client";
 import type { AgentRun, AgentRunDetail, ClaudeAccount, JevStatus, Rates, UsagePause, User } from "../types";
 import { NOW, REPOS } from "./fixtures";
@@ -210,6 +211,8 @@ export function createAgentsMock(me: User, changed: () => void): Pick<Api, "acco
       },
       get(id) {
         const r = [...RUNNING, ...RECENT].find((x) => x.id === id);
+        const traced = r ? null : traceRunDetail(id);
+        if (traced) return wait(traced);
         if (!r) throw new Error(`no agent run ${id}`);
         const old = NOW - Date.parse(r.startedAt) > 90 * 24 * HOUR || id < 4850;
         const d: AgentRunDetail = { ...r, prompt: old ? null : PROMPT(r), output: old || r.state === "running" ? null : OUTPUT, error: r.state === "failed" ? "claude -p exited after 600 s without output" : null, tools: [] };
