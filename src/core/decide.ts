@@ -139,7 +139,8 @@ const notHeld = (f: PrFacts): boolean => f.inScope && !f.integration && !f.heldB
 export function fixupOf(f: PrFacts): { bucket: FixupBucket; done: boolean } | null {
   const r = f.review, x = f.fixup;
   if (declinedBy(f) || !r || !x || r.verdict !== "take-fix" || r.head !== f.head || r.stale || f.draft || !notHeld(f) || f.ghState !== "OPEN") return null;
-  if (f.mergeable === "CONFLICTING" || x.fixes === 0) return null;
+  // A maintainer's changes-requested review is the person's to resolve first.
+  if (f.mergeable === "CONFLICTING" || x.fixes === 0 || f.changesRequested) return null;
   const has = (s: string) => x.recorded.includes(s);
   const commenting = f.repoFacts.commentApproved;
   // Heads held before the repo got comment approval are asked once it has it.
