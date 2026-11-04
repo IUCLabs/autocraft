@@ -46,19 +46,20 @@ export function lintSteps(files: string[]): TaskStep[] {
 export type LintJob = {
   /** The pipeline step that queues it (fixup, cifix, fixissue). */
   step: string; repo: string; number: number | null; head: string; base: string | null;
-  /** The model's patch, applied to the checkout before the plan runs. */
-  patch: string;
+  /** The model's patch, applied to the checkout before the plan runs. Without one the head is linted as it is, and `files` names what to format. */
+  patch?: string;
+  files?: string[];
   /** Default: the repo's key, role `use`, as the fix-issue rounds do. */
   warm?: Warm;
 };
 
 /** Queues the lint task for the patch; null when it changes no `.rs` file. */
 export function queueLint(db: DatabaseSync, j: LintJob): number | null {
-  const plan = lintPlan(changedRsFiles(j.patch));
+  const plan = lintPlan(j.files ?? changedRsFiles(j.patch ?? ""));
   if (!plan) return null;
   return createTask(db, {
     step: j.step, repo: j.repo, number: j.number, headSha: j.head, baseSha: j.base ?? j.head, requires: { os: "linux", toolchains: ["rust-stable"] },
-    warm: j.warm ?? { key: warmKeyOf(j.repo), role: "use" }, plan, patch: j.patch,
+    warm: j.warm ?? { key: warmKeyOf(j.repo), role: "use" }, plan, ...(j.patch ? { patch: j.patch } : {}),
   });
 }
 
@@ -129,7 +130,7 @@ const artifactText = (db: DatabaseSync, taskId: number, name: string): string | 
 };
 
 /** The lint task's state, and once it is done the formatter diff (git format) and the findings on the patch's own lines. */
-export function readLint(db: DatabaseSync, taskId: number): LintRead {
+export function readLint(db: DatabaseSync, taskId: number, o: { /** A diff whose added lines count; default: the task's own patch. */ against?: string } = {}): LintRead {
   const t = getTask(db, taskId);
   if (!t) return { kind: "infra-failed", reason: "the lint task is gone" };
   if (t.state === "queued" || t.state === "claimed" || t.state === "running") return { kind: "pending" };
@@ -138,7 +139,7 @@ export function readLint(db: DatabaseSync, taskId: number): LintRead {
   const fmt = artifactText(db, taskId, FORMAT_ARTIFACT);
   const clippy = artifactText(db, taskId, CLIPPY_ARTIFACT);
   if (clippy === null) return { kind: "infra-failed", reason: "the lint task returned no clippy output" };
-  return { kind: "result", formatDiff: fmt && fmt.trim() ? gitFormatDiff(fmt) : null, findings: findingsOf(clippy, artifactText(db, taskId, CLIPPY_ERR_ARTIFACT) ?? "", patch) };
+  return { kind: "result", formatDiff: fmt && fmt.trim() ? gitFormatDiff(fmt) : null, findings: findingsOf(clippy, artifactText(db, taskId, CLIPPY_ERR_ARTIFACT) ?? "", o.against ?? patch) };
 }
 
 export type Fold = { ok: true; patch: string } | { ok: false; reason: string };
