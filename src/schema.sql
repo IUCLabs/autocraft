@@ -1368,3 +1368,26 @@ END;
 CREATE TRIGGER IF NOT EXISTS decision_items_del AFTER DELETE ON decisions BEGIN
   DELETE FROM decision_items WHERE decision_id = old.id;
 END;
+
+-- The activity stream reads each source's newest rows by time (src/dash/api/activity.ts).
+CREATE INDEX IF NOT EXISTS items_merged ON items(merged_at) WHERE merged_at IS NOT NULL;
+CREATE INDEX IF NOT EXISTS comments_created ON comments(created_at);
+CREATE INDEX IF NOT EXISTS item_activity_at ON item_activity(at);
+CREATE INDEX IF NOT EXISTS stages_at ON stages(at);
+CREATE INDEX IF NOT EXISTS job_items_at ON job_items(at);
+CREATE INDEX IF NOT EXISTS model_checks_started ON model_checks(started_at);
+CREATE INDEX IF NOT EXISTS build_tasks_queued ON build_tasks(queued_at);
+CREATE INDEX IF NOT EXISTS push_outcomes_at ON push_outcomes(at);
+CREATE INDEX IF NOT EXISTS patch_checks_created ON patch_checks(created_at);
+CREATE INDEX IF NOT EXISTS opus_review_history_at ON opus_review_history(at);
+CREATE INDEX IF NOT EXISTS premerge_reviews_at ON premerge_reviews(at);
+CREATE INDEX IF NOT EXISTS postmerge_reviews_at ON postmerge_reviews(at);
+CREATE INDEX IF NOT EXISTS verifications_created ON verifications(created_at);
+CREATE INDEX IF NOT EXISTS fixups_created ON fixups(created_at);
+CREATE INDEX IF NOT EXISTS ci_fixes_created ON ci_fixes(created_at);
+CREATE INDEX IF NOT EXISTS conflict_merges_created ON conflict_merges(created_at);
+CREATE INDEX IF NOT EXISTS merges_at ON merges(at);
+CREATE INDEX IF NOT EXISTS actions_created ON actions(created_at);
+CREATE INDEX IF NOT EXISTS conversation_turns_at ON conversation_turns(at);
+CREATE INDEX IF NOT EXISTS decisions_asked_at ON decisions(asked_at);
+CREATE INDEX IF NOT EXISTS decision_comments_at ON decision_comments(at);

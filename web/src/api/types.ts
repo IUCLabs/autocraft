@@ -1772,4 +1772,9 @@ export type ItemTrace = { header: ItemTraceHeader; events: TraceEvent[]; nextCur
 /** The answer to `since=<stamp>` when nothing the first page or the header shows has changed. */
 export type ItemTraceUnchanged = { unchanged: true; stamp: string };
 export type ItemTraceQuery = { kinds?: TraceKind[]; autocraftOnly?: boolean; cursor?: string; limit?: number; since?: string };
+/** The item an activity event belongs to, for an ItemRef; null fields when the mirror lacks the item. */
+export type ActivityItem = { repo: string; number: number; kind: ItemKind | null; state: ItemState | null; title: string | null };
+export type ActivityEvent = TraceEvent & { item: ActivityItem };
+export type ActivityPage = { events: ActivityEvent[]; nextCursor: string | null; stamp: string };
+export type ActivityQuery = { kinds?: TraceKind[]; repo?: string; autocraftOnly?: boolean; cursor?: string; limit?: number; since?: string };
 export type ItemTraceDetail = { id: string; kind: TraceKind; at: string; summary: string; fields: Record<string, unknown> };
