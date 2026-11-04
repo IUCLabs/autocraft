@@ -17,7 +17,9 @@ export const LOST_AFTER_MS = 2 * 60_000;
 /** A task is claimed at most this often: the first time and one requeue after a lost worker. */
 export const MAX_ATTEMPTS = 2;
 export const MAX_QUEUED = 500;
-export const KEEP_MS = 30 * 24 * 3600_000;
+/** Task rows and logs are kept ten years, like jobs; artifacts (built binaries) 30 days. */
+export const KEEP_MS = 3650 * 24 * 3600_000;
+export const ARTIFACT_KEEP_MS = 30 * 24 * 3600_000;
 export const MAX_LOG_BYTES = 20 * 1024 * 1024;
 export const MAX_CHUNK_BYTES = 64 * 1024;
 export const LOG_TAIL_BYTES = 64 * 1024;
@@ -459,8 +461,14 @@ export function summary(db: DatabaseSync, hidden: string[] = []): BuildSummary {
   return { queued: c.queued, running: c.running, slots, free: slots - inUse, online: all.length };
 }
 
-/** Deletes tasks that ended more than 30 days ago, with their logs and artifacts. Returns the count. */
+/** Drops the artifacts of tasks that ended more than ARTIFACT_KEEP_MS ago, and deletes tasks that ended more than KEEP_MS ago with their logs. Returns the count of deleted tasks. */
 export function pruneTasks(db: DatabaseSync, nowMs: number = Date.now()): number {
+  const artifactsBefore = new Date(nowMs - ARTIFACT_KEEP_MS).toISOString();
+  for (;;) {
+    const ids = (db.prepare("SELECT id FROM build_tasks WHERE ended_at IS NOT NULL AND ended_at < ? AND artifact_bytes > 0 AND state IN ('done', 'failed', 'cancelled', 'lost') ORDER BY ended_at LIMIT 200").all(artifactsBefore) as { id: number }[]).map((r) => r.id);
+    if (!ids.length) break;
+    removeArtifacts(db, ids);
+  }
   const before = new Date(nowMs - KEEP_MS).toISOString();
   let n = 0;
   for (;;) {

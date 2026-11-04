@@ -7,7 +7,7 @@ import { setCallContext } from "../src/agents/call.ts";
 import { createTask } from "../src/build/tasks.ts";
 import { connect } from "../src/db.ts";
 import { itemJobs, jobItem } from "../src/runner/job-items.ts";
-import { pruneJobs } from "../src/runner/jobs.ts";
+import { JOB_KEEP_MS, pruneJobs } from "../src/runner/jobs.ts";
 import { askMergeDecisions } from "../src/merge/index.ts";
 import { SCRATCH } from "./scratch.ts";
 import { world } from "./world-db.ts";
@@ -32,7 +32,7 @@ test("a job records the items it handled, tags their log lines, and stamps the b
   const id = createTask(db, { step: "verify", repo: "app", number: 7, headSha: sha, plan: [{ name: "t", cmd: ["true"], network: "none", timeoutSec: 10 }] });
   assert.equal((db.prepare("SELECT job_id FROM build_tasks WHERE id = ?").get(id) as { job_id: number }).job_id, job);
 
-  pruneJobs(db);
+  pruneJobs(db, Date.parse("2020-01-02T00:00:00Z") + JOB_KEEP_MS);
   assert.deepEqual(itemJobs(db, "o/app", 7), [], "a pruned job takes its item rows");
 });
 

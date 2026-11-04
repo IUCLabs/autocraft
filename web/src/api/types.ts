@@ -1491,7 +1491,7 @@ export type AgentRun = {
   progress?: string;         // running calls with tools: the latest thing the model is doing
 };
 export type AgentRunDetail = AgentRun & {
-  prompt: string | null;     // rendered prompt; null once past retention (90 days)
+  prompt: string | null;     // rendered prompt; null once past retention (ten years)
   output: string | null;     // raw model output, same retention
   error: string | null;
   tools: AgentRunTool[];     // tool uses in order

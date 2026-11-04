@@ -509,7 +509,7 @@ CREATE TABLE IF NOT EXISTS account_usage_samples (
 
 -- One row per model call made through the prompt registry. Ids grow with time,
 -- so newest-first paging is a keyset on id. Prompt and output text live in
--- agent_run_texts; both are kept 90 days.
+-- agent_run_texts; both are kept ten years.
 CREATE TABLE IF NOT EXISTS agent_runs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   job_id INTEGER,
@@ -1292,7 +1292,7 @@ CREATE TABLE IF NOT EXISTS stage_trips (
 
 -- Item links: records that attach to a GitHub item. plan_history gets a row each time the planner (src/core/plan-cache.ts)
 -- stores a different state or wait for an item (old_state is NULL for the first plan seen); job_items lists the items a job
--- handled (src/runner/job-items.ts), with a one-line outcome. Both are pruned with the jobs (90 days).
+-- handled (src/runner/job-items.ts), with a one-line outcome. Both are pruned with the jobs (ten years).
 CREATE TABLE IF NOT EXISTS plan_history (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   repo TEXT NOT NULL, number INTEGER NOT NULL,

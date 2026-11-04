@@ -246,8 +246,8 @@ function DetailBody({ id }: { id: number }) {
       {r.error && <p className="rounded border border-bad/30 bg-bad/5 px-3 py-2 text-sm text-bad">{r.error}</p>}
       {!r.textsHidden && (
         <>
-          <Collapsible title="Prompt" text={r.prompt} empty="Prompt text removed after 90 days." />
-          <Collapsible title="Output" text={r.output} empty={r.state === "running" ? "Still running." : "Output removed after 90 days."} open />
+          <Collapsible title="Prompt" text={r.prompt} empty="Prompt text removed after ten years." />
+          <Collapsible title="Output" text={r.output} empty={r.state === "running" ? "Still running." : "Output removed after ten years."} open />
         </>
       )}
     </div>

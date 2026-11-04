@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { finishRun, getRun, insertRun, pruneRuns, runTools } from "../src/agents/runs.ts";
+import { finishRun, getRun, insertRun, pruneRuns, RUN_KEEP_MS, runTools } from "../src/agents/runs.ts";
 import { saveTools } from "../src/agents/tools.ts";
 import { connect } from "../src/db.ts";
 
@@ -37,7 +37,7 @@ test("texts past 14 days are kept compressed and read back; old plain rows still
   assert.equal(d.output, "the output");
   assert.equal(d.costUsd, 0.25);
   assert.equal(getRun(db, old).prompt, "plain prompt");
-  db.prepare("UPDATE agent_runs SET started_at = ?").run(ago(91));
+  db.prepare("UPDATE agent_runs SET started_at = ?").run(ago(RUN_KEEP_MS / 86_400_000 + 1));
   pruneRuns(db);
   assert.equal(db.prepare("SELECT COUNT(*) AS n FROM agent_run_texts").get()!.n, 0);
 });

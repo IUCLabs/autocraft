@@ -138,7 +138,7 @@ export function requestCancel(db: DatabaseSync, id: number, by: string): Job {
 }
 
 /** Finished jobs and their log files are kept this long; audit and token_usage are kept for good. */
-export const JOB_KEEP_MS = 90 * 24 * 3600_000;
+export const JOB_KEEP_MS = 3650 * 24 * 3600_000;
 
 /** Deletes finished jobs that ended more than JOB_KEEP_MS ago, with their log files. Returns the number of jobs. */
 export function pruneJobs(db: DatabaseSync, nowMs: number = Date.now()): number {

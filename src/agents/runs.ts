@@ -5,7 +5,8 @@ import type { DatabaseSync } from "node:sqlite";
 import type { AgentRun, AgentRunDetail, AgentRunFilter, AgentRunPage, AgentRunState, AgentRunTool, ItemRef, ItemShown, RateBucket, Rates } from "../../web/src/api/types.ts";
 
 export const MAX_ITEM_REFS = 50;
-export const RUN_KEEP_MS = 90 * 86_400_000;
+/** Ten years: the item history keeps every model call with its prompt and output. */
+export const RUN_KEEP_MS = 3650 * 86_400_000;
 /** Texts are kept as long as the runs; they are stored compressed. */
 export const TEXT_KEEP_MS = RUN_KEEP_MS;
 const TEXT_MAX = 1_000_000;
@@ -227,7 +228,7 @@ export async function rates(db: DatabaseSync, window: unknown, nowMs: number = D
 
 // ---- retention -----------------------------------------------------------------
 
-/** Drops prompt and output text and tool uses with their runs after 90 days. Cutoffs are by id, found through the started_at index. */
+/** Drops prompt and output text and tool uses with their runs after RUN_KEEP_MS (ten years). Cutoffs are by id, found through the started_at index. */
 export function pruneRuns(db: DatabaseSync, nowMs: number = Date.now()): { texts: number; runs: number } {
   const maxBefore = (ms: number): number => (db.prepare("SELECT COALESCE(MAX(id), 0) AS id FROM agent_runs WHERE started_at < ?").get(new Date(nowMs - ms).toISOString()) as { id: number }).id;
   const texts = Number(db.prepare("DELETE FROM agent_run_texts WHERE run_id <= ?").run(maxBefore(TEXT_KEEP_MS)).changes);
