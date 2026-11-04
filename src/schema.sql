@@ -50,6 +50,7 @@ CREATE TABLE IF NOT EXISTS comments (
   commit_oid TEXT
 );
 CREATE INDEX IF NOT EXISTS comments_item ON comments(repo, number);
+CREATE INDEX IF NOT EXISTS comments_created ON comments(created_at);
 
 -- Work tables: ours, never touched by sync.
 
@@ -176,6 +177,8 @@ CREATE TABLE IF NOT EXISTS decision_comments (
   body TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS decision_comments_decision ON decision_comments(decision_id, at);
+CREATE INDEX IF NOT EXISTS decision_comments_at ON decision_comments(at);
+CREATE INDEX IF NOT EXISTS decision_opinions_at ON decision_opinions(at);
 
 -- Who is looking at a decision; a claim lapses after 10 minutes without activity.
 CREATE TABLE IF NOT EXISTS decision_claims (
@@ -997,6 +1000,7 @@ CREATE TABLE IF NOT EXISTS conversation_turns (
   progress TEXT                       -- answering: JSON array of the last few progress lines, newest last
 );
 CREATE INDEX IF NOT EXISTS conversation_turns_item ON conversation_turns(repo, number, id);
+CREATE INDEX IF NOT EXISTS conversation_turns_at ON conversation_turns(at);
 CREATE UNIQUE INDEX IF NOT EXISTS conversation_turns_waiting ON conversation_turns(repo, number) WHERE status IN ('pending', 'answering');
 -- Action cards Opus proposed on a turn. params are the exact parameters; text is the editable comment of a comment card.
 CREATE TABLE IF NOT EXISTS conversation_cards (

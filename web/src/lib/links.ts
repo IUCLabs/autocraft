@@ -27,10 +27,12 @@ type Sibling = Pick<Decision, "id" | "repo" | "number" | "kind">;
  */
 export function decisionPath(d: (DecisionRef & { kind?: string; answer?: string | null }) | undefined, opts: { search?: string; siblings?: Sibling[] } = {}): string {
   const tail = opts.search ? `?${opts.search}` : "";
-  if (!d) return `/decisions${tail}`;
-  const idForm = `/decisions/${encodeURIComponent(d.id)}${tail}`;
+  // The Decisions page also lives inside the Needs you page, which keeps its own prefix.
+  const root = typeof location !== "undefined" && location.pathname.startsWith("/needs") ? "/needs/decisions" : "/decisions";
+  if (!d) return `${root}${tail}`;
+  const idForm = `${root}/${encodeURIComponent(d.id)}${tail}`;
   if (d.number == null) return idForm;
-  const base = `/decisions/${encodeURIComponent(shortRepo(d.repo))}/${d.number}`;
+  const base = `${root}/${encodeURIComponent(shortRepo(d.repo))}/${d.number}`;
   const others = (opts.siblings ?? []).filter((x) => x.id !== d.id && x.repo === d.repo && x.number === d.number);
   if (d.kind && others.some((x) => x.kind === d.kind)) return idForm;
   if (!d.kind) return `${base}${tail}`;

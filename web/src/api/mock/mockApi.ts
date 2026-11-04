@@ -18,6 +18,7 @@ import { postmergeFor, premergeFor, prWorkFor } from "./verifyFixtures";
 import { queueBatchList, queueList } from "./queueFixtures";
 import { createQueueMock } from "./queueMock";
 import { githubActivityPage } from "./githubFixtures";
+import { needsPage } from "./needsFixtures";
 import { workList } from "./workFixtures";
 import { flowFixture } from "./flowFixtures";
 import { mainCi } from "./mainCiMock";
@@ -198,6 +199,7 @@ export function createMockApi(): Api {
     ...createQueueMock(me, changed),
     prompts: () => wait(promptsReport(null), 60),
     queue: (f) => wait(queueList(f), 60),
+    needs: (f) => wait(needsPage(f), 60),
     queueBatches: (f) => wait(queueBatchList(f), 60),
     githubActivity: (f) => wait(githubActivityPage(f), 60),
     flow: (repo) => wait(flowFixture(repo), 60),

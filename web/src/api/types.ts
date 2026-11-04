@@ -1773,3 +1773,34 @@ export type ItemTrace = { header: ItemTraceHeader; events: TraceEvent[]; nextCur
 export type ItemTraceUnchanged = { unchanged: true; stamp: string };
 export type ItemTraceQuery = { kinds?: TraceKind[]; autocraftOnly?: boolean; cursor?: string; limit?: number; since?: string };
 export type ItemTraceDetail = { id: string; kind: TraceKind; at: string; summary: string; fields: Record<string, unknown> };
+
+// ---- Needs you (src/dash/api/needs.ts) ----
+
+export type NeedsCounts = { decisions: number; feedback: number; stopped: number };
+export type NeedsFeedbackRow = {
+  /** Stable across fetches: "decision-comment:<id>", "decision-opinion:<id>", "turn:<id>" or "comment:<id>". */
+  id: string;
+  source: "decision" | "operator" | "github";
+  /** The item the text is on; null for a batch decision. */
+  item: ({ repo: RepoName; number: number } & ItemShown) | null;
+  author: string;
+  at: string;
+  /** Markdown. */
+  text: string;
+  /** What the text is attached to, as an app path. */
+  href: string;
+  hrefLabel: string;
+  /** Answered or replied to after the text was written. */
+  handled: boolean;
+};
+export type NeedsFeedbackPage = { rows: NeedsFeedbackRow[]; nextCursor: string | null };
+export type NeedsResume = { type: "trip"; stage: string } | { type: "link"; to: string };
+export type NeedsStoppedRow = {
+  id: string;
+  kind: "breaker" | "limit" | "account";
+  title: string;
+  reason: string;
+  since: string | null;
+  resume: NeedsResume;
+};
+export type NeedsPage = { counts: NeedsCounts; feedback: NeedsFeedbackPage | null; stopped: NeedsStoppedRow[] };

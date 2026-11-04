@@ -22,6 +22,7 @@ import type {
   AuditPage,
   GithubActivityFilter,
   GithubActivityPage,
+  NeedsPage,
   Contributor,
   ContributorFilter,
   ContributorList,
@@ -190,6 +191,8 @@ export interface Api {
   queue(filter: QueueFilter): Promise<QueueList>;
   /** Every write the app made on GitHub, newest first. */
   githubActivity(filter: GithubActivityFilter): Promise<GithubActivityPage>;
+  /** What waits on a person: counts for the tabs, feedback nobody answered yet (newest first, paged by cursor) and stopped stages. */
+  needs(filter: { feedback?: boolean; cursor?: string }): Promise<NeedsPage>;
   /** Integration batches of the merge queue, newest first, with their member PRs. */
   queueBatches(filter: BatchFilter): Promise<BatchList>;
   /** Steps, jobs, the on/off switch and the stage limits: everyone reads; run, cancel, switch and limits are for operators. */
