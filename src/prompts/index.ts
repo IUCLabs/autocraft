@@ -110,7 +110,7 @@ const REFEREE: ClaudePrompt = {
   stage: "Classify (referee)",
   runner: "claude",
   purpose: "Settles items where Jev and Haiku chose different type labels (outside the scope labels) and says whether it is sure; an unsure Sonnet answer goes to Opus with the same prompt, and an unsure Opus answer keeps its label and goes to a person as a scope question.",
-  models: ["sonnet"],
+  models: ["sonnet", "opus"],
   effort: "medium",
   placeholders: { items: ITEMS_JSON },
   template: `You referee type labels for GitHub issues and pull requests.
