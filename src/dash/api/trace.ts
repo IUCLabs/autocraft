@@ -369,6 +369,8 @@ export function linkReviewCalls(events: Ev[]): Set<number> {
       if (mine.length === 0) return;
       const ids = mine.map((c) => c.ref.runId!);
       r.ref = { ...r.ref, runId: ids[0], runIds: ids };
+      const costs = mine.map((c) => c.call!.costUsd).filter((v): v is number => v !== null);
+      r.costUsd = costs.length ? costs.reduce((a, b) => a + b, 0) : null;
       for (const id of ids) taken.add(id);
     });
   }

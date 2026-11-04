@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import type { ActivityEvent } from "../../api/types";
-import { TRACE_KIND } from "../../lib/trace";
+import { TRACE_KIND, eventCost } from "../../lib/trace";
 import { itemPath } from "../../lib/links";
 import { TextLink } from "../atoms/TextLink";
 import { ItemRef } from "./ItemRef";
@@ -19,6 +19,7 @@ export function ActivityRow({ event: e, open, onToggle, children }: { event: Act
       at={e.at}
       actor={e.actor.name}
       actorTone={e.actor.type === "person" ? "person" : "ours"}
+      cost={eventCost(e)}
       summary={e.summary}
       open={open}
       onToggle={onToggle}
