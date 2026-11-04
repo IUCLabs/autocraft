@@ -28,6 +28,7 @@ import { mergeApprovalOf } from "./approval.ts";
 import { ORG, prInfo, viewerOf, mergeRun, DEFAULT_MERGE_COMMAND, type CommandResult } from "./index.ts";
 import { liveGateChecked } from "../review/discussion.ts";
 import { redMainRepos } from "../mainci/index.ts";
+import { effectiveCi, optionalChecks } from "../optional-checks.ts";
 import { PIPELINE_LOGIN_KEY, buildQueue, eligible, singleMergeOnly, type QueueEntry } from "./queue.ts";
 import { envVar } from "../env.ts";
 
@@ -324,7 +325,8 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
     }
     const live = members.filter((m) => checks.some((c) => c.number === m.number && c.state === "OPEN" && c.head_oid === m.head_oid));
     if (live.length < members.length) return supersede(b, live, "a PR in the batch was closed, merged or pushed to");
-    if (ch.overall === "failure") {
+    const ci = effectiveCi(db, repo, ch.overall, ch.checks);
+    if (ci === "failure") {
       const names = ch.checks.filter((c) => c.state === "failure").map((c) => c.name);
       return fail(b, `upstream CI failed on the batch PR${names.length ? `: ${names.join(", ")}` : ""}`);
     }
@@ -332,7 +334,7 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
     const moved = await movedAway(b);
     if (moved) return supersede(b, members, moved);
     if (members.length > left()) { log(`  ${b.branch}: ${members.length} PRs exceed the ${Math.max(left(), 0)} left of the daily limit; waits`); s.waiting.push(b.branch); return; }
-    if (ch.overall !== "success" || ch.mergeable !== "MERGEABLE") {
+    if (ci !== "success" || ch.mergeable !== "MERGEABLE") {
       // A fork's runs wait for a maintainer's approval; the ci-approve step does it where the repo allows, and the note says so until the runs started.
       const waiting = db.prepare("SELECT runs, reread FROM ci_run_approvals WHERE repo = ? AND number = ? AND head_oid = ?").get(repo, b.pr_number!, b.commit_sha) as { runs: string; reread: number } | undefined;
       const note = waiting && (JSON.parse(waiting.runs).length || waiting.reread) ? RUNS_WAIT_NOTE : null;
@@ -371,7 +373,7 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
     if (getBatch(db, b.id).state !== "open") { log(`  ${b.branch}: ended meanwhile; not merged`); return; }
     if (members.some((m) => mergeHeld(db, repo, m.number))) { log(`  ${b.branch}: a PR in the batch was held meanwhile; not merged`); s.waiting.push(b.branch); return; }
     let after: Awaited<ReturnType<typeof refreshChecks>>[number] | undefined;
-    const r = await mergeViaCommand(w, d.run, d.mergeCommand, [`${ORG}/${repo}`, String(b.pr_number), "--merge"], { run: runId, head: b.commit_sha, batch: b.branch }, async () => {
+    const r = await mergeViaCommand(w, d.run, d.mergeCommand, [`${ORG}/${repo}`, String(b.pr_number), "--merge", ...optionalChecks(db, repo).flatMap((n) => ["--allow-failed", n])], { run: runId, head: b.commit_sha, batch: b.branch }, async () => {
       after = (await refreshChecks(db, d.querier, repo, [b.pr_number!]))[0];
       return after?.state === "MERGED";
     });

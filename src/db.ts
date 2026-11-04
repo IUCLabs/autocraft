@@ -101,7 +101,7 @@ export const HISTORY_COPY_SQL = `INSERT INTO main.opus_review_history (repo, num
   WHERE NOT EXISTS (SELECT 1 FROM main.opus_review_history h WHERE h.repo = o.repo AND h.number = o.number AND h.head_oid = o.head_oid AND h.at = o.at)`;
 
 // Bump when migrateValues() or backfill() change what they do.
-const MIGRATION_VERSION = 12;
+const MIGRATION_VERSION = 13;
 
 // Rows written before their column existed.
 function backfill(db: DatabaseSync): void {
@@ -197,6 +197,12 @@ function migrateValues(db: DatabaseSync): void {
     let files: unknown;
     try { files = JSON.parse(h.files ?? "[]"); } catch { continue; }
     if (Array.isArray(files) && files.length && files.every((f) => typeof f === "string" && fixupEditable(f))) db.prepare("UPDATE main.fixups SET state = 'superseded' WHERE rowid = ?").run(h.id);
+  }
+  // Every tracked repo starts with SonarCloud's scan as an optional check, once: an operator's later removal stays.
+  if (!db.prepare("SELECT 1 FROM main.settings WHERE key = 'optional_checks_seeded'").get()) {
+    const put = db.prepare("INSERT OR IGNORE INTO main.settings (key, value) VALUES (?, ?)");
+    for (const r of db.prepare("SELECT name FROM main.tracked_repos").all() as { name: string }[]) put.run(`optional_checks:${r.name}`, JSON.stringify(["sonarcloud / SonarCloud Scan"]));
+    put.run("optional_checks_seeded", new Date().toISOString());
   }
   // Whole-repo pilot entries became the repo's pipeline flag.
   const pilot = db.prepare("SELECT value FROM main.settings WHERE key = 'pilot_items'").get() as { value: string } | undefined;

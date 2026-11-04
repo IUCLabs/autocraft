@@ -7,6 +7,9 @@ import { useUser } from "../../shell/UserContext";
 import { ConfirmButton } from "../../ui/molecules/ConfirmButton";
 import { Switch } from "../../ui/atoms/Switch";
 import { useWrite } from "../../lib/hooks";
+import { useState } from "react";
+import { Select } from "../../ui/atoms/Select";
+import { Block } from "../../ui/molecules/Block";
 
 export type Write = ReturnType<typeof useWrite>;
 type WriteField = "labels" | "commenting" | "pushing" | "fixing" | "mainFixing" | "merging";
@@ -133,3 +136,44 @@ export function PipelineSwitch({ r, write }: { r: TrackedRepo; write: Write }) {
 export const synced = (r: TrackedRepo) =>
   r.syncedAt ? `${ago(r.syncedAt, false)}` : "never";
 export const maybe = (n: number | null) => (n === null ? "–" : num(n));
+
+/** The checks whose failure does not stop a merge: a list for everyone, with remove and add for operators. */
+export function OptionalChecks({ r, write }: { r: TrackedRepo; write: Write }) {
+  const api = useApi();
+  const operator = useUser().role === "operator";
+  const [pick, setPick] = useState("");
+  const offered = r.seenChecks.filter((c) => !r.optionalChecks.includes(c));
+  const choice = offered.includes(pick) ? pick : offered[0] ?? "";
+  const key = `optional:${r.name}`;
+  return (
+    <Block className="mt-4" title="Optional checks">
+      {!r.optionalChecks.length && <p className="text-sm text-ink/50">None</p>}
+      <ul className="divide-y divide-line">
+        {r.optionalChecks.map((c) => (
+          <li key={c} className="flex items-center justify-between gap-3 py-1.5 text-sm">
+            <span className="num min-w-0 break-words">{c}</span>
+            {operator && (
+              <Button size="sm" variant="ghost" loading={write.busy === `${key}:${c}`} onClick={() => void write.run(`${key}:${c}`, () => api.repoAdmin.setOptionalCheck(r.name, c, false))}>
+                Remove
+              </Button>
+            )}
+          </li>
+        ))}
+      </ul>
+      {operator && offered.length > 0 && (
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <Select aria-label="Check to add" value={choice} onChange={(e) => setPick(e.target.value)} className="min-w-0 max-w-full">
+            {offered.map((c) => (
+              <option key={c} value={c}>
+                {c}
+              </option>
+            ))}
+          </Select>
+          <Button size="sm" loading={write.busy === key} onClick={() => void write.run(key, () => api.repoAdmin.setOptionalCheck(r.name, choice, true))}>
+            Add
+          </Button>
+        </div>
+      )}
+    </Block>
+  );
+}

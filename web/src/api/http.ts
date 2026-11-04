@@ -162,6 +162,7 @@ export function createHttpApi(): Api {
       approveCommenting: (name, approved) => post(approved ? "/api/repos/comment-approve" : "/api/repos/comment-revoke", { name }),
       approveFixing: (name, approved) => post(approved ? "/api/repos/fixissue-approve" : "/api/repos/fixissue-revoke", { name }),
       approveMainFixing: (name, approved) => post(approved ? "/api/repos/mainfix-approve" : "/api/repos/mainfix-revoke", { name }),
+      setOptionalCheck: (name, check, on) => post(on ? "/api/repos/optional-check-add" : "/api/repos/optional-check-remove", { name, check }),
       setPipeline: (name, on) => post(on ? "/api/repos/pipeline-on" : "/api/repos/pipeline-off", { name }),
       approveLabels: (name, approved) => post(approved ? "/api/repos/labels-approve" : "/api/repos/labels-revoke", { name }),
     },

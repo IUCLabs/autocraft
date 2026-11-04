@@ -7,6 +7,7 @@ import { connect } from "../src/db.ts";
 import type { Querier } from "../src/mirror.ts";
 import { discussionHash } from "../src/review/discussion.ts";
 import { runMerge, type CommandResult, type MergeDeps } from "../src/merge/index.ts";
+import { setOptionalCheck } from "../src/optional-checks.ts";
 import { buildQueue, eligible, mergeDecisionId } from "../src/merge/queue.ts";
 import { runSingles, setSingleMergeMax, singleMergeMax } from "../src/merge/single.ts";
 import { setMergeApproval } from "../src/merge/approval.ts";
@@ -136,6 +137,21 @@ describe("merge queue", () => {
     assert.equal(q.find((e) => e.number === 17)!.verify, null);
     assert.deepEqual(q.find((e) => e.number === 3)!.outsideRule, ["size L"]);
     assert.deepEqual(q.find((e) => e.number === 5)!.outsideRule, ["author not on the whitelist"]);
+  });
+
+  test("a failure of only listed optional checks leaves the PR ready; an unlisted failure keeps it ci-failed", () => {
+    const db = fresh();
+    const set = (checks: object[]) => db.prepare("UPDATE pr_checks SET checks = ? WHERE repo = 'app' AND number = 6").run(JSON.stringify(checks));
+    const sonar = "sonarcloud / SonarCloud Scan";
+    set([{ name: "gate", state: "success" }, { name: sonar, state: "failure" }]);
+    assert.equal(stateOf(db, 6), "ci-failed", "not listed");
+    setOptionalCheck(db, "op", "app", sonar, true);
+    assert.equal(stateOf(db, 6), "ready");
+    set([{ name: "gate", state: "failure" }, { name: sonar, state: "failure" }]);
+    assert.equal(stateOf(db, 6), "ci-failed", "an unlisted check fails too");
+    set([{ name: "gate", state: "pending" }, { name: sonar, state: "failure" }]);
+    assert.equal(stateOf(db, 6), "waiting-ci");
+    assert.equal(db.prepare("SELECT overall FROM pr_checks WHERE number = 6").get()!.overall, "failure", "the stored state stays raw");
   });
 
   test("main CI red holds ready PRs as waiting-main-ci, except a main-fix PR", async () => {

@@ -16,6 +16,7 @@ import { createTask, getTask, warmKeyOf } from "../build/tasks.ts";
 import { askClaude } from "../classify/run.ts";
 import { audit } from "../dash/audit.ts";
 import { connect } from "../db.ts";
+import { optionalChecks } from "../optional-checks.ts";
 import { pushApprovalOf } from "../fixup/approval.ts";
 import { Git, exec, fixupDir, type Exec } from "../fixup/git.ts";
 import { DIFF_CAP, FILE_CAP, PR_QUERY, TOTAL_CAP, noteLive, scrubReason, whoAmI, type PrNode } from "../fixup/index.ts";
@@ -435,7 +436,7 @@ export async function runCifix(db: DatabaseSync, params: CifixParams, log: (line
       if (!pr) return;
       // A PR that only waits for rerun results is not counted as handled (it does not use the step's limit).
       const handle = () => params.onHandled?.(++handled);
-      const reading = await readFailure(d.gh, repo, c.head);
+      const reading = await readFailure(d.gh, repo, c.head, optionalChecks(db, repo));
       const skip = (why: string) => { rec.set(c, "code", "skipped", why); summary.skipped.push(ref); log(`  ${ref}: skipped: ${why}`); };
       if (reading.kind === "skip") { handle(); skip(reading.why); return; }
       const failure = reading.failure;

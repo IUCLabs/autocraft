@@ -358,6 +358,8 @@ export function apiRoutes(opts: ApiOptions = {}): Route[] {
     post("/api/repos/fixissue-revoke", (db, req) => adm.fixIssueApproval(db, req, false)),
     post("/api/repos/mainfix-approve", (db, req) => adm.mainFixApproval(db, req, true)),
     post("/api/repos/mainfix-revoke", (db, req) => adm.mainFixApproval(db, req, false)),
+    post("/api/repos/optional-check-add", (db, req) => adm.optionalCheck(db, req, true)),
+    post("/api/repos/optional-check-remove", (db, req) => adm.optionalCheck(db, req, false)),
     post("/api/repos/pipeline-on", (db, req) => adm.pipelineSwitch(db, req, true)),
     post("/api/repos/pipeline-off", (db, req) => adm.pipelineSwitch(db, req, false)),
     get("/api/access", adm.accessOverview),

@@ -6,6 +6,7 @@ import { connect } from "../db.ts";
 import type { Querier } from "../mirror.ts";
 import { contextState, ORG, type CheckState } from "../review/checks.ts";
 import { trackedNames } from "../repos.ts";
+import { optionalChecks } from "../optional-checks.ts";
 import { autocraftText } from "../mainfix/status.ts";
 import { classify, derive, type Culprit, type HeadRow, type MainCheck, type MainCiState } from "./classify.ts";
 
@@ -25,10 +26,7 @@ const KEEP_HEADS = 50;
 const REPOS_PER_QUERY = 30;
 const KEY_POLLED_AT = "main_ci_polled_at";
 
-/** Checks that may fail without making the repo's main red. Operators set it per repo; no storage yet. */
-export function optionalChecks(_db: DatabaseSync, _repo: string): string[] {
-  return [];
-}
+export { optionalChecks };
 
 export function mainCiQuery(repos: string[]): string {
   const parts = repos.map((r, i) => `
