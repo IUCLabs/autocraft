@@ -34,7 +34,7 @@ import { activeBatches, membersOf } from "../merge/batch-store.ts";
 import { longLivedOf, pushable, BASE_ORG } from "./pushable.ts";
 import { askConflict, mergeConflict, type ConflictRun } from "./conflict.ts";
 import type { ConflictCandidate } from "./conflict-state.ts";
-import { editable, validatePatch, type ConflictPr, type FixupPr } from "./patch.ts";
+import { fixupEditable, validatePatch, type ConflictPr, type FixupPr } from "./patch.ts";
 import { outsideShown, shownSize, viewFile } from "./excerpt.ts";
 import { HOLD_CANNOT_PUSH, askText, carryCommentText, commentText, commitMessage } from "./template.ts";
 import { commentApprovalOf } from "../act/approval.ts";
@@ -297,7 +297,7 @@ export async function runFixup(db: DatabaseSync, params: FixupParams, log: (line
       log(`  ${ref}: held: ${reason}`);
     };
     try {
-      if (!c.carry && files.some((f) => !editable(f))) { hold("too-large", "the fixes name files a fix-up may not edit"); continue; }
+      if (!c.carry && files.some((f) => !fixupEditable(f))) { hold("too-large", "the fixes name files a fix-up may not edit"); continue; }
       const r = await d.querier.query(PR_QUERY, { name: repo, n: c.number }) as { repository?: { pullRequest?: PrNode | null } };
       const pr = r.repository?.pullRequest;
       noteLive(db, repo, c.number, pr, at());
@@ -345,7 +345,7 @@ export async function runFixup(db: DatabaseSync, params: FixupParams, log: (line
       const repoDir = checkout ? { repo_dir: REPO_PATH } : {};
       const reply = await d.ask(db, [{ ref, title: oneTitle(db, c), fixes: c.fixes, files: shown, diff: diff.text, ...(carried ? { carried_from: carried } : {}), ...repoDir }], checkout);
       if (reply === null) { fail("failed", "the model gave no answer"); continue; }
-      const v = validatePatch(reply, files);
+      const v = validatePatch(reply, files, fixupEditable);
       if (!v.ok) { fail("refused", v.reason); continue; }
 
       const scratch = mkdtempSync(join(d.root, ".index-"));
@@ -426,7 +426,7 @@ async function carryWork(c: FixCandidate, fetchDiff: DiffFetcher): Promise<{ ok:
     const diff = await cachedDiff(c.repo, src.number, src.head, fetchDiff);
     if (!diff.ok) return { ok: false, reason: `no diff of #${src.number}: ${oneLine(diff.error)}` };
     if (diff.text.length > DIFF_CAP) return { ok: false, reason: `the diff of #${src.number} is over the ${DIFF_CAP} character limit` };
-    const paths = [...new Set([...diff.text.matchAll(DIFF_FILE)].map((m) => m[1]!))].filter(editable);
+    const paths = [...new Set([...diff.text.matchAll(DIFF_FILE)].map((m) => m[1]!))].filter(fixupEditable);
     for (const point of src.points) {
       const named = paths.filter((p) => point.includes(p));
       for (const file of named.length ? named : paths) fixes.push({ file, change: `from #${src.number}: ${point}` });

@@ -10,6 +10,7 @@ import { JEV_USD_PER_INPUT_TOKEN } from "./prompts/index.ts";
 import { JEV_NEEDS_DECISION_YES, JEV_SECURITY_YES } from "./classify/parse.ts";
 import { envVar } from "./env.ts";
 import { repoHasNoCi } from "./merge/no-ci.ts";
+import { fixupEditable } from "./fixup/patch.ts";
 
 export const DEFAULT_DB = join(homedir(), ".local/share/autocraft/mirror.db");
 
@@ -188,6 +189,15 @@ function migrateValues(db: DatabaseSync): void {
   if (db.prepare(`SELECT 1 FROM main.dupe_carries WHERE ${OLD_CARRY_SIZE} LIMIT 1`).get()) db.exec(`UPDATE main.dupe_carries SET state = 'queued', outcome = 'retried: ' || outcome WHERE ${OLD_CARRY_SIZE}`);
   const OLD_CIFIX_SIZE = "state = 'failed' AND reason = 'the files the failure names are over the size limit'";
   if (db.prepare(`SELECT 1 FROM main.ci_fixes WHERE ${OLD_CIFIX_SIZE} LIMIT 1`).get()) db.exec(`UPDATE main.ci_fixes SET state = 'superseded' WHERE ${OLD_CIFIX_SIZE}`);
+  // Fix-ups held because they name files a fix-up may not edit are tried again when every named file is editable under the current rule
+  // (Markdown is). Carry-overs skip that check, so they have no such hold. Rows naming build scripts or TOML files stay held.
+  const NOT_EDITABLE = "state = 'too-large' AND reason = 'the fixes name files a fix-up may not edit'";
+  const held = db.prepare(`SELECT rowid AS id, files FROM main.fixups WHERE ${NOT_EDITABLE}`).all() as { id: number; files: string | null }[];
+  for (const h of held) {
+    let files: unknown;
+    try { files = JSON.parse(h.files ?? "[]"); } catch { continue; }
+    if (Array.isArray(files) && files.length && files.every((f) => typeof f === "string" && fixupEditable(f))) db.prepare("UPDATE main.fixups SET state = 'superseded' WHERE rowid = ?").run(h.id);
+  }
   // Whole-repo pilot entries became the repo's pipeline flag.
   const pilot = db.prepare("SELECT value FROM main.settings WHERE key = 'pilot_items'").get() as { value: string } | undefined;
   if (pilot) wholeRepoPilot(db, pilot.value);

@@ -151,6 +151,7 @@ function world(opts: { check?: string | null; reply?: string | null; moveBranch?
   mkdirSync(join(work, "src"));
   writeFileSync(join(work, "src/lib.rs"), opts.lib ?? "fn a() {}\nfn main() { a(); }\n");
   writeFileSync(join(work, "src/other.rs"), "fn z() {}\n");
+  writeFileSync(join(work, "ROADMAP.md"), "# Plan\n- one\n");
   git(work, "add", "-A");
   git(work, "commit", "-q", "-m", "contributor");
   const head = git(work, "rev-parse", "HEAD");
@@ -533,6 +534,38 @@ describe("fixup step", () => {
     await runFixup(db, { repo: "app", dryRun: false }, () => {}, w.deps);
     assert.deepEqual(w.log.filter((l) => !l.startsWith("pr-info")), []);
     assert.equal(rows(db, "SELECT state FROM fixups")[0]!.state, "too-large");
+  });
+
+  test("a fix naming a Markdown file is applied; one naming build.rs is held", async () => {
+    const md = "diff --git a/ROADMAP.md b/ROADMAP.md\n--- a/ROADMAP.md\n+++ b/ROADMAP.md\n@@ -1,2 +1,2 @@\n # Plan\n-- one\n+- two\n";
+    const w = world({ reply: md });
+    const db = fresh(w.head);
+    db.prepare("UPDATE opus_reviews SET fixes = ?").run(JSON.stringify([{ file: "ROADMAP.md", change: "one to two" }]));
+    await runFixup(db, { repo: "app", dryRun: false }, () => {}, w.deps);
+    assert.deepEqual(rows(db, "SELECT state, files FROM fixups"), [{ state: "pushed", files: '["ROADMAP.md"]' }]);
+    const b = world();
+    const db2 = fresh(b.head);
+    db2.prepare("UPDATE opus_reviews SET fixes = ?").run(JSON.stringify([{ file: "build.rs", change: "x" }]));
+    await runFixup(db2, { repo: "app", dryRun: false }, () => {}, b.deps);
+    assert.equal(rows(db2, "SELECT state FROM fixups")[0]!.state, "too-large");
+  });
+
+  test("holds that name only editable files are re-opened after connecting; a hold naming build.rs stays", () => {
+    const path = join(mkdtempSync(join(dir, "db-")), "t.db");
+    const db = connect(path);
+    const reason = "the fixes name files a fix-up may not edit";
+    const ins = db.prepare("INSERT INTO fixups (repo, number, from_head, state, reason, files, attempt, created_at) VALUES ('app', ?, 'h', 'too-large', ?, ?, 1, ?)");
+    ins.run(1, reason, '["ROADMAP.md","docs/guide.MD"]', T1);
+    ins.run(2, reason, '["ROADMAP.md","build.rs"]', T1);
+    ins.run(3, reason, '["Cargo.toml"]', T1);
+    ins.run(4, "src/lib.rs is over the 50000 character limit", '["ROADMAP.md"]', T1);
+    db.close();
+    const again = connect(path);
+    const states = () => rows(again, "SELECT number, state FROM fixups ORDER BY number");
+    const want = [{ number: 1, state: "superseded" }, { number: 2, state: "too-large" }, { number: 3, state: "too-large" }, { number: 4, state: "too-large" }];
+    assert.deepEqual(states(), want);
+    again.close();
+    assert.deepEqual(rows(connect(path), "SELECT number, state FROM fixups ORDER BY number"), want);
   });
 
   test("a patch touching an uneditable path is refused even when the fixes name it", () => {
