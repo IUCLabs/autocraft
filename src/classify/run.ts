@@ -23,7 +23,8 @@ import { CHECK_MAX_WALL_MS } from "../core/rules.ts";
 import { agentsFile, mcpFile } from "../sandbox/agent-files.ts";
 import { MCP_PATH } from "../sandbox/agents.ts";
 import { resolveClaudeBin, sandboxCommand, TOKEN_MARGIN_MS, tokenNearExpiry } from "../sandbox/index.ts";
-import { REFERENCE_PATH, type SandboxSpec } from "../sandbox/command.ts";
+import { REFERENCE_PATH, REPO_DOCS_PATH, type SandboxSpec } from "../sandbox/command.ts";
+import { repoDocsFor, repoOfCheckout } from "../sandbox/repo-docs.ts";
 import { holdCheckouts } from "../sandbox/checkout.ts";
 import { sessionStore } from "../sandbox/session-store.ts";
 import { defaultWorkspace } from "../sandbox/workspace.ts";
@@ -262,6 +263,7 @@ export function claudeCwd(): string {
  * `onProgress`: called with a short plain line for each tool call of a sandboxed call, as it happens; the latest line is also kept on the agent run.
  * `checkout`: host directory of a read-only checkout; with it, a prompt that registers a sandbox runs with its tools inside bubblewrap (src/sandbox).
  * `reference`: host directory of the repo's reference documentation; a sandboxed call mounts it read-only at /reference and its prompt says so (src/reference.ts).
+ * Prompts with `sandbox.docs` also get the default branch's AGENTS.md (as AGENTS.txt) and ROADMAP.md of the checkout's repository read-only at /repo-docs when the repo has them.
  * `shared`: for a prompt with the workspace, replaces the default workspace (every tracked repository's default branch, src/sandbox/workspace.ts).
  * `itemTools`: the item tools' read-only mounts and MCP servers (`mcpServers` as in an MCP config), for the call and its explorer; null means none, absent means `itemTools()` (src/itemtools).
  * `check`: the build tool of a patch call (src/checktool); a sandboxed call of a prompt whose sandbox allows it gets the `check` tool, and the call may run that much longer.
@@ -270,6 +272,14 @@ export function claudeCwd(): string {
  * `lint`: checks the parsed reply (src/replylint.ts). With problems, and for a sandboxed call of a prompt that registers `lint`, one follow-up message goes to the same session and its reply is linted too.
  */
 export type AskOptions = { check?: CheckTool; lint?: Lint; onProgress?: (line: string) => void; checkout?: string; reference?: string; maxWaitMs?: number; shared?: { name: string; dir: string }[]; session?: SessionAsk; itemTools?: { mounts: { host: string; path: string }[]; mcpServers: Record<string, unknown> } | null };
+
+/** The repo-docs directory for the item's repository, or undefined (no docs, or a checkout that is not one of ours). */
+async function docsOf(db: DatabaseSync, checkout: string): Promise<string | undefined> {
+  const repo = repoOfCheckout(checkout);
+  if (!repo) return undefined;
+  const branch = (db.prepare("SELECT default_branch FROM main.repos WHERE name = ?").get(repo) as { default_branch: string | null } | undefined)?.default_branch ?? "main";
+  return (await repoDocsFor(repo, branch)) ?? undefined;
+}
 
 type WorkspaceFn = (db: DatabaseSync) => Promise<{ name: string; dir: string }[]>;
 let workspaceOf: WorkspaceFn = defaultWorkspace;
@@ -320,6 +330,9 @@ async function askOnce<K extends ClaudePromptId>(id: K, model: string, input: Cl
   const sandboxed = opts.checkout !== undefined && CLAUDE_PROMPTS[id].sandbox !== undefined;
   const reference = sandboxed && CLAUDE_PROMPTS[id].sandbox?.reference ? opts.reference : undefined;
   if (reference) input = input.map((x) => ({ ...x, reference: true })) as ClaudeInput[K];
+  // The maintainers' AGENTS.md and ROADMAP.md of the default branch, never the checkout's own (src/sandbox/repo-docs.ts).
+  const docs = sandboxed && CLAUDE_PROMPTS[id].sandbox?.docs ? await docsOf(db, opts.checkout!) : undefined;
+  if (docs) input = input.map((x) => ({ ...x, repo_docs: true })) as ClaudeInput[K];
   const parts = claudeParts(id, input, sandboxed);
   const items = refsOf(input);
   const resume = ses?.resume;
@@ -359,14 +372,14 @@ async function askOnce<K extends ClaudePromptId>(id: K, model: string, input: Cl
     // Only a sandboxed call can be continued: its session store is a directory of ours. A call on the host keeps no session (it would land in the account's own config directory).
     const persist = sandboxed && ((opts.lint !== undefined && CLAUDE_PROMPTS[id].lint === true) || bridge !== undefined || ses !== undefined);
     if (persist) sessions = resume?.session.dir ?? sessionStore();
-    const args = claudeArgs(id, model, sandboxed, tools && { config: MCP_PATH, servers: tools.servers }, parts.system, reference !== undefined, persist);
+    const args = claudeArgs(id, model, sandboxed, tools && { config: MCP_PATH, servers: tools.servers }, parts.system, reference !== undefined, persist, docs !== undefined);
     const cwd = claudeCwd();
     const timeoutMs = CLAUDE_PROMPTS[id].limits.timeoutSeconds * 1000 + (bridge ? CHECK_MAX_WALL_MS : 0);
     let spec: SandboxSpec | undefined;
     if (sandboxed) {
       const claudeBin = resolveClaudeBin(), credentials = join(run.configDir, ".credentials.json");
       if (!claudeBin || !existsSync(credentials)) throw new Error("sandboxed call: claude binary or the account's credentials file not found");
-      spec = { claudeBin, checkout: opts.checkout!, credentials, claudeArgs: args, shared, ...(workspace && { agentsFile: agentsFile(Object.keys(it?.mcpServers ?? {}).sort()) }), ...(sessions && { sessionDir: sessions }), extraMounts: tools || reference ? [...(tools ? [...tools.mounts, { host: tools.file, path: MCP_PATH }] : []), ...(reference ? [{ host: reference, path: REFERENCE_PATH }] : [])] : undefined };
+      spec = { claudeBin, checkout: opts.checkout!, credentials, claudeArgs: args, shared, ...(workspace && { agentsFile: agentsFile(Object.keys(it?.mcpServers ?? {}).sort()) }), ...(sessions && { sessionDir: sessions }), extraMounts: tools || reference || docs ? [...(tools ? [...tools.mounts, { host: tools.file, path: MCP_PATH }] : []), ...(reference ? [{ host: reference, path: REFERENCE_PATH }] : []), ...(docs ? [{ host: docs, path: REPO_DOCS_PATH }] : [])] : undefined };
     }
 
     /** One `claude -p` process on the run `runId`: the first message, or with `resume` a follow-up on the same session. Never throws for a failed call. */

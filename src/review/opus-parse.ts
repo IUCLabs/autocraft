@@ -176,7 +176,7 @@ export type PublicReview = { summary: string; points: string[] };
 export const OPUS_PUBLIC_POINTS = 8;
 
 /** Text that points at the private reference folder; such public text is dropped. */
-export const REFERENCE_LEAK = /\/reference\b|\bp\d{4}\.txt\b/i;
+export const REFERENCE_LEAK = /\/reference\b|\/repo-docs\b|\bAGENTS\.txt\b|\bp\d{4}\.txt\b/i;
 
 /** `drop`: texts the reply lint still flagged after the fix turn (a reference mention, a quote, a reference to outside documentation); they are left out like a reference mention. */
 export function parsePublic(v: unknown, drop: ReadonlySet<string> = new Set()): PublicReview | null {
