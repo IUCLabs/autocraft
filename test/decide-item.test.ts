@@ -47,7 +47,6 @@ const rows: Row[] = [
   // ---- prioritize, embed
   { name: "no priority row", facts: { priorityHash: null }, expect: { state: "classified", actions: ["prioritize"] } },
   { name: "priority made at older text", facts: { priorityHash: "old" }, expect: { state: "classified", actions: ["prioritize"] } },
-  { name: "text hash not written yet: embed, no priority", facts: { embedHash: null, embeddedHash: null, priorityHash: null, scannedHash: null }, expect: { state: "classified", actions: ["embed"] } },
   { name: "no vector for the current model", facts: { embeddedHash: null }, expect: { state: "classified", actions: ["embed"] } },
   { name: "vector of older text: embed again, no scan until it is current", facts: { embeddedHash: "old", scannedHash: null }, expect: { state: "classified", actions: ["embed"] } },
   { name: "embed does not depend on scope", facts: { inScope: false, embeddedHash: null }, expect: { state: "classified", actions: ["embed"] } },

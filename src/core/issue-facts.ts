@@ -1,5 +1,5 @@
 // Facts of open items (issues and PRs) for the triage steps: classification, priority, embedding, duplicates, scope decision, labels.
-// Loaded in one pass for a whole database or a slice. Reads only: the old selectors fill missing hashes on the way; here a missing hash is computed.
+// Loaded in one pass for a whole database or a slice. Reads only: the old selectors fill missing text hashes in the database on the way; here a missing hash is computed.
 import type { DatabaseSync } from "node:sqlite";
 import { notOwnIntegrationSql, groupHeldSql, backlogHeldSql } from "../dupes/held.ts";
 import { FAST_FLOOR, fastScoreSql } from "../fasttrack.ts";
@@ -8,7 +8,7 @@ import { JEV_FLAG_NO, JEV_NEEDS_DECISION_YES, JEV_SECURITY_YES } from "../classi
 import { groupsToAsk } from "../dupes/decide.ts";
 import { dueSets } from "../dupes/plan.ts";
 import { embedderId, modelName } from "../embed/model.ts";
-import { classifyHash, SCHEME_ID } from "../itemhash.ts";
+import { classifyHash, embedHash as hashOfText, SCHEME_ID } from "../itemhash.ts";
 import { approvalOf as labelsApprovalOf } from "../labels/approval.ts";
 import { pilotSql, pilotSqlFor } from "../pilot.ts";
 import { scopeAnswers } from "../review/candidates.ts";
@@ -100,6 +100,7 @@ export function loadItemFacts(db: DatabaseSync, opts: ItemLoadOptions = {}): Ite
   const inCompare = new Set(dueSets(db, opts.repo, now).flatMap((s) => s.members.map((m) => `${s.repo}#${m.number}`)));
   const approved = new Map<string, boolean>();
   const labelsApproved = (repo: string) => approved.get(repo) ?? (approved.set(repo, labelsApprovalOf(db, repo) !== null), approved.get(repo)!);
+  const textOf = db.prepare("SELECT title, body FROM items WHERE repo = ? AND number = ?");
   const body = db.prepare("SELECT repo, number, kind, title, body, additions, deletions, changed_files, author_association FROM items WHERE repo = ? AND number = ?");
 
   return rows.map((r): ItemFacts => {
@@ -135,7 +136,8 @@ export function loadItemFacts(db: DatabaseSync, opts: ItemLoadOptions = {}): Ite
       unsure: (topOf(j.probs) ?? 0) < SURE || unsureFlag("security", JEV_SECURITY_YES) || unsureFlag("needs_decision", JEV_NEEDS_DECISION_YES),
     } : null;
     const haiku = h ? { at: h.at, aloneCurrent: h.input_hash !== null && h.input_hash === classHash && (!j || h.at > j.at) } : null;
-    const embedHash = r.embed_hash;
+    // Sync and Embed write the text hash; one not written yet is computed here.
+    const embedHash = r.embed_hash ?? (() => { const b = textOf.get(r.repo, r.number) as { title: string | null; body: string | null }; return hashOfText(b.title, b.body); })();
     const note = labeled.get(ref) ?? null;
     return {
       repo: r.repo, number: r.number, kind: r.kind, now, draft: !!r.is_draft,

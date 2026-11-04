@@ -52,11 +52,11 @@ export function decideItem(f: ItemFacts): ItemPlan {
   // referee: classify/referee.ts refereeCandidates (open, not a draft, not held, in scope).
   if (f.run && live && !f.draft && state === "referee-due") actions.push(act("referee", null));
   // prioritize: priority/index.ts DUE_WHERE.
-  if (live && f.embedHash !== null && f.priorityHash !== f.embedHash) actions.push(act("prioritize", null));
+  if (live && f.priorityHash !== f.embedHash) actions.push(act("prioritize", null));
   // embed: embed/store.ts pending (every tracked item; no scope test).
-  if (f.embedHash === null || f.embeddedHash !== f.embedHash) actions.push(act("embed", null));
+  if (f.embeddedHash !== f.embedHash) actions.push(act("embed", null));
   // dupes: items to scan (dupes/scan.ts scanPending), pairs to check (check.ts uncheckedPairs), groups to ask (decide.ts groupsToAsk).
-  const scan = live && f.embedHash !== null && f.embeddedHash === f.embedHash && f.scannedHash !== f.embedHash;
+  const scan = live && f.embeddedHash === f.embedHash && f.scannedHash !== f.embedHash;
   if (scan || f.pairsToCheck > 0 || f.inGroupToAsk) actions.push(act("dupes", null, { scan, pairs: f.pairsToCheck, group: f.inGroupToAsk }));
   if (f.inCompareSet) actions.push(act("dupes-compare", null));
   // decide: a new scope decision (decide/select.ts selectCandidates), or Opus's recommendation for an open one (recommend.ts backfillIds).

@@ -221,8 +221,8 @@ export type ItemFacts = {
     haiku: { at: string; aloneCurrent: boolean } | null;
   };
 
-  /** Hash of the item's embedded text, null until sync or Embed wrote it. */
-  embedHash: string | null;
+  /** Hash of the item's embedded text (stored by sync, else computed). */
+  embedHash: string;
   /** Hash of the stored vector of the current embedding model, null when there is none. */
   embeddedHash: string | null;
   /** Hash the priority row was made at. */
