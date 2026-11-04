@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { Link } from "react-router-dom";
 import { CubeIcon, GearIcon, GitMergeIcon, PencilSimpleIcon, QuestionIcon, SparkleIcon, WarningIcon, type Icon as PhosphorIcon } from "@phosphor-icons/react";
 import type { NowEntry, NowEntryKind } from "../../api/types";
@@ -14,13 +15,23 @@ const ICON: Record<NowEntryKind, PhosphorIcon> = { job: GearIcon, call: SparkleI
 const hrefOf = (e: Pick<NowEntry, "item" | "event" | "detail">): string | null =>
   e.item && e.event ? `${itemPath(e.item.repo, e.item.number)}#event=${encodeURIComponent(e.event)}` : (e.detail ?? (e.item ? itemPath(e.item.repo, e.item.number) : null));
 
-function Items({ items, more }: { items: NowEntry["items"]; more: number }) {
+const INLINE_ITEMS = 3;
+
+/** Up to three items, one per line; more than that folds behind "+N more", which opens the whole list in place. */
+function Items({ items, total }: { items: NowEntry["items"]; total: number }) {
+  const [open, setOpen] = useState(false);
+  const shown = open ? items : items.slice(0, INLINE_ITEMS);
+  const hidden = Math.max(total, items.length) - INLINE_ITEMS;
   return (
     <div className="mt-1 flex flex-col items-start gap-0.5">
-      {items.map((i) => (
+      {shown.map((i) => (
         <ItemRef key={`${i.repo}#${i.number}`} repo={i.repo} number={i.number} kind={i.kind} state={i.state} title={i.title} size="sm" className="relative z-10 w-fit max-w-full" />
       ))}
-      {more > 0 && <span className="text-xs text-ink/50">+{num(more)} more</span>}
+      {hidden > 0 && (
+        <button type="button" onClick={() => setOpen((o) => !o)} className="relative z-10 text-xs text-ink/60 hover:text-ink max-md:min-h-11">
+          {open ? "Show fewer" : `+${num(hidden)} more`}
+        </button>
+      )}
     </div>
   );
 }
@@ -49,12 +60,12 @@ export function EntryRow({ entry: e }: { entry: NowEntry }) {
           <span className="num ml-auto text-xs text-ink/60">{live ? span(nowMs() - Date.parse(e.at)) : <TimeAgo iso={e.endedAt ?? e.at} />}</span>
         </div>
         {e.summary && <p className={cn("mt-0.5 text-sm [overflow-wrap:anywhere]", e.state === "failed" ? "text-bad" : "text-ink/80")}>{e.summary}</p>}
-        {e.items.length > 0 && <Items items={e.items} more={e.kind === "job" ? e.itemCount - e.items.length : e.more} />}
+        {e.items.length > 0 ? <Items items={e.items} total={e.itemCount} /> : e.kind !== "write" && e.kind !== "merge" && <p className="mt-1 text-xs text-ink/55">{e.repo ?? "System"}</p>}
         {e.progress && <p className="mt-1 text-xs text-ink/50 [overflow-wrap:anywhere]">{e.progress}</p>}
         {e.writes.map((w) => (
           <div key={w.summary} className="mt-1.5 border-l border-line pl-3">
             <p className="text-xs text-ink/70">{w.summary}</p>
-            {e.kind !== "job" && <Items items={w.items} more={w.more} />}
+            {e.kind !== "job" && <Items items={w.items} total={w.items.length + w.more} />}
           </div>
         ))}
         {e.children.length > 0 && (

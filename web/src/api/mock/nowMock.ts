@@ -21,7 +21,7 @@ const HEALTH: Now["health"] = {
 };
 
 const entry = (e: Partial<NowEntry> & Pick<NowEntry, "key" | "kind" | "state" | "at" | "title">): NowEntry => ({
-  ids: [e.key], endedAt: null, what: null, summary: null, progress: null, actor: "AutoCraft", item: null, items: [], itemCount: 0, more: 0, event: null, detail: null, writes: [], children: [], ...e,
+  ids: [e.key], endedAt: null, repo: null, what: null, summary: null, progress: null, actor: "AutoCraft", item: null, items: [], itemCount: 0, more: 0, event: null, detail: null, writes: [], children: [], ...e,
 });
 
 const REVIEW_JOB = entry({
@@ -39,7 +39,7 @@ const SAMPLES: (() => Partial<NowEntry> & Pick<NowEntry, "kind" | "state" | "tit
   () => ({ kind: "job", state: "failed", title: "Review pull requests", summary: "claude exited with code 1", item: C, items: [C], itemCount: 1, detail: "/pipeline/639" }),
   () => ({ kind: "write", state: "done", title: "Pushed: fix-up for overset detection", item: A }),
   () => ({ kind: "job", state: "done", title: "Fix up pull requests", summary: "Pushed fix-ups to 2 PRs", item: A, items: [A, D], itemCount: 2, writes: [{ summary: "Pushed to 2 PRs", items: [A, D], more: 0 }], detail: "/pipeline/601" }),
-  () => ({ kind: "write", state: "done", title: "Closed 4 items", item: C, items: [C, D, A], more: 1 }),
+  () => ({ kind: "write", state: "done", title: "Closed 4 items", item: C, items: [C, D, A, B, item("pdfcraft", 880, "Fix gradient banding")], itemCount: 5 }),
 ];
 const mk = (i: number, iso: string): NowEntry => {
   const e = SAMPLES[i % SAMPLES.length]!();
