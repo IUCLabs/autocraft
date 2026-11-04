@@ -13,7 +13,7 @@ const STEPS: NextStep[] = [
     items: [item(a!, 412, "classify", "Needs a first classification", { kind: "issue" }), item(a!, 418, "classify", "Changed since its last classification", { kind: "issue" }), item(b!, 77, "classify", "Needs a first classification", { kind: "issue" })],
   },
   {
-    lane: "decide", title: "Ask scope decisions", stage: "Decide", steps: ["decide"], canRun: false, kind: "account", why: "decide: paused: no Claude account has headroom (Main: five-hour limit reached; resets 14:20 UTC)", note: null,
+    lane: "decide", title: "Ask scope decisions", stage: "Decide", steps: ["decide"], canRun: false, kind: "account", why: "No Claude account has headroom (Main: five-hour limit reached; resets 14:20 UTC)", note: null,
     items: [item(a!, 390, "decide", "Scope decision without a recommendation", { kind: "issue", rank: 71 }), item(b!, 64, "decide", "Scope decision without a recommendation", { kind: "issue", rank: 52 })],
   },
   {
@@ -26,11 +26,11 @@ const STEPS: NextStep[] = [
     ],
   },
   {
-    lane: "fixup", title: "Push fix-ups", stage: "Fix", steps: ["fixup"], canRun: false, kind: "limit", why: "fixup: paused: the daily limit is 0", note: null,
+    lane: "fixup", title: "Push fix-ups", stage: "Fix", steps: ["fixup"], canRun: false, kind: "limit", why: "The daily limit is 0", note: null,
     items: [item(a!, 431, "fixup", "Review asked for 2 fixes", { bucket: "fix", rank: 96, fast: true })],
   },
   {
-    lane: "cifix", title: "Fix failing CI", stage: "Fix", steps: ["cifix"], canRun: false, kind: "breaker", why: "cifix: tripped: 3 pushes refused in a row; an operator resumes it", note: null,
+    lane: "cifix", title: "Fix failing CI", stage: "Fix", steps: ["cifix"], canRun: false, kind: "breaker", why: "3 pushes refused in a row; an operator resumes it", note: null,
     items: [item(b!, 98, "cifix", "CI failed on the formatting check", { bucket: "work" })],
   },
   {

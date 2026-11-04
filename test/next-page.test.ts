@@ -6,7 +6,7 @@ import { describe, test } from "node:test";
 import { connect } from "../src/db.ts";
 import { plannedItems } from "../src/core/select-items.ts";
 import { nextPage } from "../src/dash/api/next.ts";
-import { detectAutopilot, planCtx, setEnabled, setLimit } from "../src/runner/autopilot.ts";
+import { detectAutopilot, LANE_KINDS, LANES, NO_ITEM_LANES, planCtx, setEnabled, setLimit } from "../src/runner/autopilot.ts";
 import { SCRATCH } from "./scratch.ts";
 
 mkdirSync(SCRATCH, { recursive: true });
@@ -37,6 +37,12 @@ describe("Next page", () => {
     setLimit(db, "embed", { perDay: 0 }, "op");
     const embed = (await nextPage(db, ["app"], { ctx: planCtx(db) })).steps.find((s) => s.lane === "embed")!;
     assert.deepEqual([embed.canRun, embed.kind], [false, "limit"]);
-    assert.match(embed.why!, /daily limit is 0/);
+    assert.equal(embed.why, "The daily limit is 0");
+  });
+
+  test("every lane lists its items or is declared without any", () => {
+    const missing = LANES.map((l) => l.name).filter((n) => !LANE_KINDS[n] && !NO_ITEM_LANES.includes(n));
+    assert.deepEqual(missing, [], "add the lane to LANE_KINDS or NO_ITEM_LANES");
+    assert.deepEqual(NO_ITEM_LANES.filter((n) => LANE_KINDS[n] || !LANES.some((l) => l.name === n)), []);
   });
 });

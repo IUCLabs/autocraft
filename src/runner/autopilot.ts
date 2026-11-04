@@ -918,12 +918,15 @@ export function stageStatus(db: DatabaseSync): Record<string, string> {
 // ---- what each lane will take next ----------------------------------------------
 
 /** The plan actions whose items a lane's job works on, in the order the lane's own selection lists them. Lanes without items are absent. */
-const LANE_KINDS: Record<string, ActionKind[]> = {
+export const LANE_KINDS: Record<string, ActionKind[]> = {
   classify: ["classify"], priority: ["prioritize"], embed: ["embed"], dupes: ["dupes", "dupe-answer"], "dupes-compare": ["dupes-compare"], decide: ["decide"],
   review: ["review"], labels: ["label"], "merge-ask": ["ask-merge"], merge: ["merge"], act: ["act"], fixup: ["fixup", "conflict"], verify: ["verify"],
   fixissue: ["fixissue"], "fixissue-collect": ["fixissue-collect"], referee: ["referee"], "review-carry": ["carry"], "review-post": ["post-review"],
   "ci-approve": ["approve-ci"], cifix: ["cifix", "lint"], unassign: ["unassign"], premerge: ["premerge"],
 };
+
+/** Lanes whose jobs are not about listed items (counters, collection, operator messages, per-repo scans); every other lane needs a LANE_KINDS entry. */
+export const NO_ITEM_LANES = ["rank", "verify-collect", "conversation", "postmerge", "postmerge-file", "main-fix", "cifix-rerun"];
 
 export type LaneItem = {
   repo: string; number: number; kind: "pr" | "issue"; action: string; bucket: string | null;
@@ -968,20 +971,22 @@ export function laneItems(db: DatabaseSync, ctx: PlanCtx, lane: Pick<Lane, "name
   return [...first, ...rest].map((i) => ({ ...i, next: picked(i) && !i.blocked }));
 }
 
+const plain = (why: string): string => { const t = why.replace(/^(paused|tripped): /, ""); return t.charAt(0).toUpperCase() + t.slice(1); };
+
 export type LaneGate = { canRun: boolean; kind: "ok" | "running" | "off" | "breaker" | "limit" | "account" | "backoff"; why: string | null };
 
 /** Whether a job of the lane can start now, from the same checks the planner's gate() makes. */
 export function laneGate(db: DatabaseSync, lane: Pick<Lane, "steps">, ms: number = Date.now()): LaneGate {
-  if (!isEnabled(db)) return { canRun: false, kind: "off", why: "the pipeline is off" };
+  if (!isEnabled(db)) return { canRun: false, kind: "off", why: "The pipeline is off" };
   const steps = lane.steps ?? [];
   let blocked: LaneGate | null = null;
   for (const s of steps) {
     const j = db.prepare("SELECT id, state FROM jobs WHERE step = ? AND state IN ('queued', 'running') ORDER BY state = 'running' DESC LIMIT 1").get(s) as { id: number; state: string } | undefined;
-    if (j) { blocked ??= { canRun: false, kind: "running", why: `job ${j.id} of ${s} is ${j.state}` }; continue; }
+    if (j) { blocked ??= { canRun: false, kind: "running", why: `Job ${j.id} of ${s} is ${j.state}` }; continue; }
     const why = pauseReason(db, s, ms);
     if (!why) return { canRun: true, kind: "ok", why: null };
     const kind = /^tripped/.test(why) ? "breaker" : /daily limit/.test(why) ? "limit" : /^failed/.test(why) ? "backoff" : "account";
-    blocked ??= { canRun: false, kind, why: `${s}: ${why}` };
+    blocked ??= { canRun: false, kind, why: plain(why) };
   }
   return blocked ?? { canRun: true, kind: "ok", why: null };
 }
