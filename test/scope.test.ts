@@ -28,6 +28,7 @@ const T = "2026-01-02T00:00:00Z";
 db.exec("DELETE FROM tracked_repos");
 db.prepare("INSERT INTO access (login, role) VALUES ('op', 'operator')").run();
 db.prepare("INSERT INTO settings (key, value) VALUES ('classify_run', 'r1')").run();
+db.prepare("INSERT INTO settings (key, value) VALUES ('pipeline_enabled', '1')").run(); // lanes propose only what the global switch allows
 for (const repo of ["app", "other"]) {
   db.prepare("INSERT INTO repos (name, visibility, default_branch) VALUES (?, 'public', 'main')").run(repo);
   db.prepare("INSERT INTO tracked_repos (name, added_by, added_at, pipeline) VALUES (?, 'op', ?, 1)").run(repo, T);

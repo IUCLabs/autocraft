@@ -167,8 +167,11 @@ test("sync stores the text hashes the planner compares", async () => {
   db.exec(`INSERT INTO item_embeddings (repo, number, model, hash, vec, at) VALUES ('a', 1, 'm', '${row.embed_hash}', x'00', 'x')`);
   assert.equal(pending(db, "m").length, 0);
   assert.equal(pending(db, "other").length, 1);
-  db.prepare("UPDATE items SET embed_hash = NULL WHERE number = 1").run(); // legacy row: hash is filled from the text
+  db.prepare("UPDATE items SET embed_hash = NULL WHERE number = 1").run(); // legacy row: planning reads the hash from the text and writes nothing
   assert.equal(pending(db, "m").length, 0);
+  assert.equal(db.prepare("SELECT embed_hash FROM items WHERE number = 1").get()!.embed_hash, null);
+  const { fillEmbedHashes } = await import("../src/itemhash.ts");
+  assert.equal(fillEmbedHashes(db), 1); // the embed and dupes jobs fill it
   assert.equal(db.prepare("SELECT embed_hash FROM items WHERE number = 1").get()!.embed_hash, row.embed_hash);
   db.prepare("UPDATE items SET body = 'new text' WHERE number = 1").run(); // an edit outside sync clears the hashes
   assert.equal(pending(db, "m").length, 1);

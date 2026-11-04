@@ -13,6 +13,7 @@ import { plannedItems } from "../core/select-items.ts";
 import { checkPairs, defaultCheckDeps, uncheckedPairs, type CheckDeps, type PairKey } from "./check.ts";
 import { applyPlannedAnswers } from "./apply.ts";
 import { askGroupDecisions } from "./decide.ts";
+import { fillEmbedHashes } from "../itemhash.ts";
 import { scanItem, type ScanItem } from "./scan.ts";
 
 export { duplicateCount, duplicateHeld, notHeldSql } from "./held.ts";
@@ -57,6 +58,7 @@ export async function runDupes(db: DatabaseSync, params: DupesParams = {}, log: 
   const s: DupesSummary = { scanned: 0, pairsAdded: 0, checked: 0, jev: 0, haiku: 0, verdicts: {}, unanswered: 0, asked: [], answersApplied: 0, dryRun: !!params.dryRun };
   const at = () => d.check.now();
   const model = d.index.embedder.id;
+  if (!params.dryRun) fillEmbedHashes(db); // planning writes nothing; a row whose hash was cleared by an edit outside sync would drop out of the scan and its pairs
   const todo = scanItems(db, model, SCAN_MAX);
   if (params.dryRun) {
     s.scanned = todo.length;
