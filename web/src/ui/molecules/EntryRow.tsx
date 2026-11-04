@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import { CubeIcon, GearIcon, GitMergeIcon, PencilSimpleIcon, QuestionIcon, SparkleIcon, WarningIcon, type Icon as PhosphorIcon } from "@phosphor-icons/react";
 import type { NowEntry, NowEntryKind } from "../../api/types";
 import { nowMs, num, span } from "../../lib/format";
-import { itemPath } from "../../lib/links";
+import { batchPath, itemPath } from "../../lib/links";
 import { Badge } from "../atoms/Badge";
 import { TimeAgo } from "../atoms/TimeAgo";
 import { cn } from "../cn";
@@ -11,9 +11,9 @@ import { ItemRef } from "./ItemRef";
 
 const ICON: Record<NowEntryKind, PhosphorIcon> = { job: GearIcon, call: SparkleIcon, task: CubeIcon, batch: GitMergeIcon, write: PencilSimpleIcon, merge: GitMergeIcon, decision: QuestionIcon, failure: WarningIcon };
 
-/** Where an entry leads: the item's timeline at the entry's event, else its run, job, task, batch or decision page. */
-const hrefOf = (e: Pick<NowEntry, "item" | "event" | "detail">): string | null =>
-  e.item && e.event ? `${itemPath(e.item.repo, e.item.number)}#event=${encodeURIComponent(e.event)}` : (e.detail ?? (e.item ? itemPath(e.item.repo, e.item.number) : null));
+/** Where an entry leads: its merge batch's page, else the item's timeline at the entry's event, else its run, job, task, batch or decision page. */
+const hrefOf = (e: Pick<NowEntry, "item" | "event" | "detail" | "batchId">): string | null =>
+  e.batchId !== null ? batchPath(e.batchId) : e.item && e.event ? `${itemPath(e.item.repo, e.item.number)}#event=${encodeURIComponent(e.event)}` : (e.detail ?? (e.item ? itemPath(e.item.repo, e.item.number) : null));
 
 const INLINE_ITEMS = 3;
 

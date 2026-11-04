@@ -311,6 +311,10 @@ export function writeEvent(a: { rowid: number; at: string; login: string; action
   };
 }
 
+/** The merge batch of a repo's integration branch, if there is one. */
+export const batchIdOf = (db: DatabaseSync, repo: string, branch: string): number | undefined =>
+  (db.prepare("SELECT id FROM main.merge_batches WHERE repo = ? AND branch = ?").get(repo, branch) as { id: number } | undefined)?.id;
+
 /**
  * The audit rows of the item. Everyone sees the GitHub writes with the activity page's allow-listed detail; maintainers also see the
  * dashboard actions that are not operator-only (as the audit log does); operators see every row. The posted text stays out: only its length shows.
@@ -324,7 +328,7 @@ const writes: Source = {
       .map((a) => {
         const e = writeEvent(a, staff);
         const branch = typeof obj(a.details).batch === "string" ? (obj(a.details).batch as string) : null;
-        const id = branch ? (db.prepare("SELECT id FROM main.merge_batches WHERE repo = ? AND branch = ?").get(repo, branch) as { id: number } | undefined)?.id : undefined;
+        const id = branch ? batchIdOf(db, repo, branch) : undefined;
         return id === undefined ? e : { ...e, ref: { ...e.ref, batchId: id } };
       });
   },

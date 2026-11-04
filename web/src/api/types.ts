@@ -1894,6 +1894,8 @@ export type NowEntry = {
   key: string;
   /** Every event this entry stands for (a job's writes, a group's members); an entry that gains ids is the same entry, grown. */
   ids: string[];
+  /** The merge batch this entry is about; the row links to its page. */
+  batchId: number | null;
   kind: NowEntryKind;
   state: "running" | "queued" | "done" | "failed";
   /** When it started or happened. */

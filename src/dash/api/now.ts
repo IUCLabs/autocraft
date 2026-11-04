@@ -10,7 +10,7 @@ import { pipelineRepos } from "../../pilot.ts";
 import { pipelineState } from "../../runner/autopilot.ts";
 import { trackedNames } from "../../repos.ts";
 import type { Req } from "../types.ts";
-import { clip, stepTitle, writeEvent } from "./trace.ts";
+import { batchIdOf, clip, stepTitle, writeEvent } from "./trace.ts";
 import { shownLookup } from "./shown.ts";
 import { canSeeInternals } from "./staff.ts";
 import { blankIfHidden, hiddenRepos } from "./visible.ts";
@@ -118,6 +118,10 @@ async function healthOf(db: DatabaseSync, hidden: string[], nowMs: number): Prom
 const SCAN = 100;
 const WRITE_SLACK_MS = 2 * 60_000;
 
+/** Audit actions of a merge batch that are not GitHub writes on an item, with their labels. */
+const BATCH_ACTIONS: Record<string, string> = { "batch-stop": "stopped", "batch-hold": "PR held", "batch-remove": "PR removed", "batch-merged-after-end": "merged after it ended" };
+const BATCH_LABELS: Record<string, string> = { ...BATCH_ACTIONS, "batch-push": "pushed", "batch-pr": "pull request opened", "batch-pr-close": "PR closed" };
+
 const refOf = (target: string | null): { repo: string; number: number } | null => {
   const m = /^(.+)#(\d+)$/.exec(target ?? "");
   return m ? { repo: m[1]!, number: Number(m[2]) } : null;
@@ -149,20 +153,36 @@ function feed(db: DatabaseSync, hidden: string[], staff: boolean, before: string
   };
   const oldestOf = new Map<NowEntry, string>();
   const base = (e: Pick<NowEntry, "key" | "kind" | "state" | "at" | "title"> & Partial<NowEntry>): NowEntry => ({
-    ids: [e.key], endedAt: null, repo: null, items: [], more: 0, what: null, summary: null, progress: null, actor: "AutoCraft", item: null, itemCount: 0, event: null, detail: null, writes: [], children: [], ...e,
+    ids: [e.key], batchId: null, endedAt: null, repo: null, items: [], more: 0, what: null, summary: null, progress: null, actor: "AutoCraft", item: null, itemCount: 0, event: null, detail: null, writes: [], children: [], ...e,
   });
   const out: NowEntry[] = [];
   const also: string[] = [];
 
   // Writes: audit rows and merges that are not bookkeeping. Each goes to the job that worked on its item at that time, else it stands alone.
   const writes: Write[] = [];
-  const actions = Object.keys(GITHUB_ACTIONS).filter((a) => a !== "merge" && !HOUSEKEEPING.has(a));
+  const actions = [...Object.keys(GITHUB_ACTIONS).filter((a) => a !== "merge" && !HOUSEKEEPING.has(a)), ...(staff ? Object.keys(BATCH_ACTIONS) : [])];
+  // Events of a merge batch (details.batch, or a `repo:branch` target) show as one row per batch and action, linking to the batch page.
+  const batchEvents = new Map<string, { id: number; repo: string; action: string; at: string; oldest: string; key: string }>();
   const audit = all<{ rowid: number; at: string; login: string; action: string; target: string | null; details: string | null }>(db,
     `SELECT rowid, at, login, action, target, details FROM audit WHERE action IN (${marks(actions)})${cut("at")} ORDER BY at DESC LIMIT ?`, ...actions, ...when, SCAN);
   bound(audit);
   for (const a of audit) {
+    let branch: string | null = null;
+    try { const b = (JSON.parse(a.details ?? "{}") as { batch?: unknown }).batch; if (typeof b === "string") branch = b; } catch { /* no batch */ }
+    const t = /^(.+):([^#:]+)$/.exec(a.target ?? "");
     const ref = refOf(a.target);
-    if (!ref || hide.has(ref.repo)) continue;
+    const repo = ref?.repo ?? t?.[1] ?? null;
+    if (t && !ref) branch = t[2]!;
+    const bid = repo && branch ? batchIdOf(db, repo, branch) : undefined;
+    if (repo && hide.has(repo)) continue;
+    if (bid !== undefined && repo) {
+      const k = `${bid}:${a.action}`;
+      const cur = batchEvents.get(k);
+      if (cur) cur.oldest = a.at < cur.oldest ? a.at : cur.oldest;
+      else batchEvents.set(k, { id: bid, repo, action: a.action, at: a.at, oldest: a.at, key: `batch-event:${bid}:${a.action}:${a.rowid}` });
+      continue;
+    }
+    if (!ref || a.action in BATCH_ACTIONS) continue;
     const e = writeEvent(a, staff);
     writes.push({ at: a.at, action: a.action, label: GITHUB_ACTIONS[a.action]!, item: item(ref.repo, ref.number), key: e.id, summary: e.summary, login: a.login });
   }
@@ -232,7 +252,7 @@ function feed(db: DatabaseSync, hidden: string[], staff: boolean, before: string
       const prs = all<{ number: number }>(db, "SELECT number FROM merge_batch_prs WHERE batch_id = ? ORDER BY position", b.id);
       out.push(base({
         key: `batch:${b.id}`, kind: "batch", state: b.state === "checking" ? "running" : "queued", at: b.created_at, title: "Integration batch", what: b.branch, progress: b.summary,
-        item: prs[0] ? item(b.repo, prs[0].number) : null, items: prs.slice(0, ITEM_CAP).map((p) => item(b.repo, p.number)), itemCount: prs.length, repo: b.repo, detail: "/queue/merge",
+        item: prs[0] ? item(b.repo, prs[0].number) : null, items: prs.slice(0, ITEM_CAP).map((p) => item(b.repo, p.number)), itemCount: prs.length, repo: b.repo, batchId: b.id, detail: "/queue/merge",
       }));
     }
   }
@@ -265,6 +285,17 @@ function feed(db: DatabaseSync, hidden: string[], staff: boolean, before: string
     });
     if (grp.list.length > 1) { const l = lines(grp.list)[0]!; e.items = l.items; e.more = l.more; e.itemCount = l.items.length + l.more; }
     oldestOf.set(e, grp.list[grp.list.length - 1]!.at);
+    out.push(e);
+  }
+
+  for (const ev of batchEvents.values()) {
+    const prs = all<{ number: number }>(db, "SELECT number FROM merge_batch_prs WHERE batch_id = ? ORDER BY position", ev.id);
+    const e = base({
+      key: ev.key, kind: "batch", state: "done", at: ev.at, repo: ev.repo, batchId: ev.id, actor: "AutoCraft",
+      title: `Merge batch #${ev.id}: ${prs.length} PR${prs.length === 1 ? "" : "s"}, ${BATCH_LABELS[ev.action] ?? ev.action}`,
+      item: prs[0] ? item(ev.repo, prs[0].number) : null, items: prs.slice(0, ITEM_CAP).map((p) => item(ev.repo, p.number)), itemCount: prs.length,
+    });
+    oldestOf.set(e, ev.oldest);
     out.push(e);
   }
 
