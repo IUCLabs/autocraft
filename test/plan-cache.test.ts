@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { describe, test } from "node:test";
 import { connect } from "../src/db.ts";
-import { detectAutopilot, setEnabled } from "../src/runner/autopilot.ts";
+import { detectAutopilot, planDue, setEnabled } from "../src/runner/autopilot.ts";
 import { SCRATCH } from "./scratch.ts";
 
 mkdirSync(SCRATCH, { recursive: true });
@@ -42,5 +42,15 @@ describe("Plan cache", () => {
     const r = await detectAutopilot(db);
     assert.deepEqual([r.timing!.written, r.timing!.deleted], [0, 1]);
     assert.deepEqual(cache().map((x) => x.number), [1]);
+  });
+
+  test("with the pipeline off the planner is still due and caches the Plans (the runner queues no proposal then)", async () => {
+    setEnabled(db, false, "op");
+    db.prepare("UPDATE items SET state = 'OPEN' WHERE number = 2").run();
+    assert.equal(planDue(db), true);
+    const r = await detectAutopilot(db);
+    assert.ok(r.proposals.every((p) => p.lane), "proposals are only data; applyProposals is not called while off");
+    assert.equal(r.timing!.written, 1);
+    assert.deepEqual(cache().map((x) => x.number), [1, 2]);
   });
 });

@@ -21,6 +21,17 @@ async function main(): Promise<void> {
     for (const [n, c] of Object.entries(commands)) console.log(`  ${n.padEnd(14)} ${c.summary}`);
     process.exit(name ? 1 : 0);
   }
+  // Commands that run a pipeline step go through the job path (gates, limits, a jobs row); see src/runner/cli-job.ts.
+  const { loadSteps } = await import("./runner/steps.ts");
+  const { cliRequest, runCliJob } = await import("./runner/cli-job.ts");
+  const req = cliRequest(name!, args, await loadSteps());
+  if (req) {
+    const { connect } = await import("./db.ts");
+    const { scopeToTracked } = await import("./repos.ts");
+    const db = connect();
+    scopeToTracked(db);
+    process.exit(await runCliJob(db, req));
+  }
   await cmd.run(args);
 }
 

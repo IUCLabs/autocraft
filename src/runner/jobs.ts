@@ -4,7 +4,7 @@ import { closeSync, fstatSync, openSync, readSync, unlinkSync } from "node:fs";
 import type { DatabaseSync } from "node:sqlite";
 import type { Job, JobDetail, JobFilter, JobList, JobParams, JobState, JobUsage } from "../../web/src/api/types.ts";
 import { trackedNames } from "../repos.ts";
-import { accountLabelsByJob } from "../agents/runs.ts";
+import { accountLabelsByJob, failRunning } from "../agents/runs.ts";
 import { knownStep, loadSteps, modelsOf, ParamError, validateParams, type StepDef } from "./steps.ts";
 
 export const JOB_STATES: JobState[] = ["queued", "running", "done", "failed", "cancelled"];
@@ -201,4 +201,23 @@ export function jobDetail(db: DatabaseSync, id: number, view: { hidden?: string[
   if (!r || (r.repo && hidden.includes(r.repo))) throw new JobError(404, `no job ${id}`);
   const blank = view.logs === false && hidden.length > 0 && !r.repo;
   return { ...toJobs(db, [r])[0]!, ...(blank ? { log: "", logTruncated: false } : logTail(r.log_path)) };
+}
+
+/** Records the end of a job whose process closed: done on exit 0, cancelled when a cancel was asked, else failed with the reason. */
+export function endJob(db: DatabaseSync, id: number, code: number | null, signal: NodeJS.Signals | null, spawnError: string | null, stopping = false): { state: "done" | "failed" | "cancelled"; error: string | null } | null {
+  const row = jobRow(db, id);
+  if (!row || row.state !== "running") return null;
+  let state: "done" | "failed" | "cancelled";
+  let error: string | null = row.error;
+  if (row.cancel_requested_at) state = "cancelled";
+  else if (code === 0) state = "done";
+  else {
+    state = "failed";
+    if (stopping) error = RUNNER_STOPPED;
+    error ??= spawnError ?? (signal ? `The job's process ended on ${signal}.` : `The job's process exited with code ${code}.`);
+  }
+  failRunning(db, "The job ended during this call.", id);
+  db.prepare("UPDATE jobs SET state = ?, ended_at = ?, pid = NULL, error = ?, progress = CASE WHEN ? = 'done' THEN NULL ELSE progress END WHERE id = ?")
+    .run(state, now(), state === "failed" ? error : null, state, id);
+  return { state, error: state === "failed" ? error : null };
 }

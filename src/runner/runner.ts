@@ -16,7 +16,7 @@ import { AccountWatcher } from "../agents/manage.ts";
 import { failRunning, pruneRuns } from "../agents/runs.ts";
 import { pruneTasks, reapLost } from "../build/tasks.ts";
 import { checkPendingUpdate } from "../build/worker-update.ts";
-import { jobRow, now, pruneJobs, RUNNER_STOPPED } from "./jobs.ts";
+import { endJob, now, pruneJobs, RUNNER_STOPPED } from "./jobs.ts";
 import { OffThread } from "./offthread.ts";
 import { loadSteps } from "./steps.ts";
 import { envVar } from "../env.ts";
@@ -249,9 +249,15 @@ export class Runner {
         this.db.prepare("UPDATE jobs SET state = 'failed', ended_at = ?, error = ? WHERE id = ? AND state = 'queued'").run(now(), "This step does not exist in this build.", q.id);
         continue;
       }
-      if ([...this.running.values()].some((r) => r.group === step.group)) continue;
+      if ([...this.running.values()].some((r) => r.group === step.group) || this.outsideRunning(steps).has(step.group)) continue;
       this.start(q.id, step.group);
     }
+  }
+
+  /** Groups of jobs running that this runner did not start (a command-line run), which also hold their group. */
+  private outsideRunning(steps: Awaited<ReturnType<typeof loadSteps>>): Set<string> {
+    const rows = this.db.prepare("SELECT id, step FROM jobs WHERE state = 'running'").all() as { id: number; step: string }[];
+    return new Set(rows.filter((r) => !this.running.has(r.id)).map((r) => steps.get(r.step)?.group ?? r.step));
   }
 
   private start(id: number, group: string): void {
@@ -284,21 +290,8 @@ export class Runner {
   }
 
   private finish(id: number, code: number | null, signal: NodeJS.Signals | null, spawnError: string | null): void {
-    const row = jobRow(this.db, id);
-    if (!row || row.state !== "running") return;
-    let state: "done" | "failed" | "cancelled";
-    let error: string | null = row.error;
-    if (row.cancel_requested_at) state = "cancelled";
-    else if (code === 0) state = "done";
-    else {
-      state = "failed";
-      if (this.stopping) error = RUNNER_STOPPED;
-      error ??= spawnError ?? (signal ? `The job's process ended on ${signal}.` : `The job's process exited with code ${code}.`);
-    }
-    failRunning(this.db, "The job ended during this call.", id);
-    this.db.prepare("UPDATE jobs SET state = ?, ended_at = ?, pid = NULL, error = ?, progress = CASE WHEN ? = 'done' THEN NULL ELSE progress END WHERE id = ?")
-      .run(state, now(), state === "failed" ? error : null, state, id);
-    this.o.log(`job ${id}: ${state}${state === "failed" && error ? `: ${error}` : ""}`);
+    const r = endJob(this.db, id, code, signal, spawnError, this.stopping);
+    if (r) this.o.log(`job ${id}: ${r.state}${r.state === "failed" && r.error ? `: ${r.error}` : ""}`);
   }
 
   /** Resolves when every running job has ended. */

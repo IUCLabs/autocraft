@@ -40,7 +40,7 @@ import { mainFixDue } from "../mainfix/index.ts";
 import { currentRun } from "./classify.ts";
 import { enqueue, JobError, now, requestCancel, RUNNER_STOPPED } from "./jobs.ts";
 import { claudePauseReason } from "../agents/accounts.ts";
-import { knownStep, loadSteps, modelsOf, usesClaude, type Params } from "./steps.ts";
+import { knownStep, loadSteps, modelsOf, usesClaude, type Params, type StepDef } from "./steps.ts";
 import { pilotItems, scopeRepos } from "../pilot.ts";
 import { fastFirst, fastScoreOf } from "../fasttrack.ts";
 
@@ -515,6 +515,28 @@ export function usageToday(db: DatabaseSync, step: string, ms: number = Date.now
   return (db.prepare("SELECT COALESCE(SUM(items), 0) AS n FROM jobs WHERE step = ? AND started_at >= ?").get(step, reset && reset > day ? reset : day) as { n: number }).n;
 }
 
+/** The `limit` a job of the step may get (undefined when the step has none), or null when the day's limit leaves less than the step's minimum. `wanted` is a limit asked for (default: the step's). */
+export function jobLimit(db: DatabaseSync, step: StepDef, ms: number = Date.now(), wanted?: number): { limit?: number } | null {
+  const lp = step.params.find((p) => p.name === "limit" && p.kind === "int");
+  if (!lp || lp.kind !== "int") return {};
+  const perDay = limitRow(db, step.name).per_day;
+  const limit = Math.min(wanted ?? lp.default ?? lp.max, lp.max, perDay === null ? Infinity : perDay - usageToday(db, step.name, ms));
+  return limit < lp.min ? null : { limit };
+}
+
+/**
+ * Why a command-line run of the step cannot start now, or null: the gate() rules of the planner that are not pacing
+ * (a job of the step is queued or running, a job of its concurrency group is running, the daily limit, a pause).
+ */
+export function cliGate(db: DatabaseSync, step: { name: string; group: string }, groupOf: (name: string) => string, ms: number = Date.now()): string | null {
+  const busy = db.prepare("SELECT id, step, state FROM jobs WHERE state IN ('queued', 'running')").all() as { id: number; step: string; state: string }[];
+  const same = busy.find((j) => j.step === step.name);
+  if (same) return `job ${same.id} of ${step.name} is ${same.state}`;
+  const group = busy.find((j) => j.state === "running" && groupOf(j.step) === step.group);
+  if (group) return `job ${group.id} (${group.step}) is running in the same group (${step.group})`;
+  return pauseReason(db, step.name, ms, { backoff: false });
+}
+
 /** The steps an operator release (operator-actions.ts) hands new work to. */
 const RELEASE_STEPS: Record<string, string[]> = {
   "batch-again": ["merge"], "review-again": ["opus-review"], "verify-again": ["verify"], "fix-again": ["fixissue"],
@@ -728,15 +750,7 @@ export async function detectAutopilot(db: DatabaseSync, opts: PlanOptions = {}):
         if (next > ms) { ctx.wake?.push(next); return null; }
       }
     }
-    if (!limitLeft.has(stepName)) {
-      const lp = step.params.find((p) => p.name === "limit" && p.kind === "int");
-      if (!lp || lp.kind !== "int") limitLeft.set(stepName, {});
-      else {
-        const perDay = limitRow(db, stepName).per_day;
-        const limit = Math.min(lp.default ?? lp.max, lp.max, perDay === null ? Infinity : perDay - usageToday(db, stepName, ms));
-        limitLeft.set(stepName, limit < lp.min ? null : { limit });
-      }
-    }
+    if (!limitLeft.has(stepName)) limitLeft.set(stepName, jobLimit(db, step, ms));
     return limitLeft.get(stepName)!;
   };
 
@@ -836,12 +850,11 @@ function inputSignature(db: DatabaseSync): string {
 }
 
 /**
- * Whether the planner is due now: a content topic changed, an autopilot job finished, an operator released
+ * Whether the planner is due now (also with the switch off: the Plan cache must follow the data; the runner queues nothing then): a content topic changed, an autopilot job finished, an operator released
  * work, a wait the last pass found has ended, or the fallback timer ran out. Moves the planner's marks when
  * it is, so the caller must then plan.
  */
 export function planDue(db: DatabaseSync, nowMs: number = Date.now()): boolean {
-  if (!isEnabled(db)) return false;
   const t = nowMs;
   const sig = inputSignature(db);
   const changed = sig !== (getSetting(db, KEY_SEQS_SEEN) ?? "");
@@ -860,7 +873,10 @@ export function planDue(db: DatabaseSync, nowMs: number = Date.now()): boolean {
 
 /** One planner pass on this connection when due (tests and the CLI; the runner detects on a worker thread). */
 export async function autopilotTick(db: DatabaseSync, opts: PlanOptions = {}): Promise<number[]> {
-  return planDue(db, opts.nowMs) ? planAutopilot(db, opts) : [];
+  if (!planDue(db, opts.nowMs)) return [];
+  // Switched off, the pass only refreshes the Plan cache.
+  if (!isEnabled(db)) { await detectAutopilot(db, opts); return []; }
+  return planAutopilot(db, opts);
 }
 
 /** Why each stage is not starting, as the last planner pass saw it; keyed by step. */
