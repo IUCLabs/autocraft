@@ -160,7 +160,7 @@ export function mergeQuestion(e: QueueEntry, why: string | null = null): Record<
   const fixes = e.fixes ? `; ${e.fixes} fix${e.fixes === 1 ? "" : "es"} listed` : "";
   const pre = [
     ...(e.premerge?.defects ?? []).filter(() => e.outsideRule.includes(PREMERGE_DEFECT_REASON)).map((f) => `pre-merge defect: ${f.file}:${f.line} ${f.title}: ${f.scenario}`),
-    ...(e.outsideRule.includes(PREMERGE_FAILED_REASON) ? [`pre-merge review failed: ${e.premerge?.error ?? "no review stored"}`] : []),
+    ...(e.outsideRule.includes(PREMERGE_FAILED_REASON) ? [`pre-merge review failed: ${(e.premerge?.error ?? "no review stored").replace(/^retry: /, "")}`] : []),
   ];
   const where = `size ${e.size}, label ${e.label ?? "not settled"}; author: ${e.author ?? "unknown"}, ${TIER_LABEL[e.tier]}`;
   const ci = `CI ${e.noCi ? "none: the repo has no CI checks" : e.ci}, mergeable ${e.mergeable.toLowerCase()}`;

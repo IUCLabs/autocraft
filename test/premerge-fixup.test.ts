@@ -6,6 +6,8 @@ import type { DatabaseSync } from "node:sqlite";
 import { connect } from "../src/db.ts";
 import { setPushApproval } from "../src/fixup/approval.ts";
 import { attemptsOf, classifyFixups, selectFixups } from "../src/fixup/candidates.ts";
+import { holdMerge } from "../src/merge/controls.ts";
+import { mergeDecisionId } from "../src/merge/queue.ts";
 import { savePremerge, type PremergeFinding } from "../src/premerge/store.ts";
 import { SCRATCH } from "./scratch.ts";
 
@@ -23,6 +25,11 @@ function take(headRepo = "storytold/app", findings: PremergeFinding[] = [defect(
   db.prepare(`INSERT INTO pr_checks (repo, number, head_oid, state, is_draft, overall, checks, mergeable, maintainer_can_modify, fetched_at)
     VALUES ('app', 7, 'h1', 'OPEN', 0, 'success', '[]', 'MERGEABLE', 0, '${T1}')`).run();
   db.prepare("INSERT INTO tracked_repos (name, added_by, added_at, pipeline) VALUES ('app', 'op', ?, 1)").run(T0);
+  // What the merge queue needs to treat the PR as one the rule would merge.
+  db.prepare(`INSERT INTO classifications (repo, number, classifier, run_id, at, type_label, flags, probs) VALUES ('app', 7, 'jev', 'r1', '${T0}', 'bugfix', '[]', '{"top":0.95}')`).run();
+  db.prepare(`INSERT INTO verifications (repo, number, head_sha, kind, reason, state, created_at) VALUES ('app', 7, 'h1', 'tests', 'r', 'passed', '${T0}')`).run();
+  db.prepare("INSERT INTO whitelist_overrides (login, status, by, at) VALUES ('someone', 'allow', 'op', ?)").run(T0);
+  db.prepare("INSERT INTO main.settings (key, value) VALUES ('merge_approved:app', ?)").run(JSON.stringify({ by: "op", at: T0 }));
   setPushApproval(db, "op", "app", true);
   savePremerge(db, { repo: "app", number: 7, head: "h1", at: T1, model: "opus", findings });
   return db;
@@ -38,6 +45,27 @@ describe("pre-merge fix-up round", () => {
     assert.equal(sel[0]!.reason, "pre-merge review");
     assert.equal(sel[0]!.model, "opus");
     assert.deepEqual(sel[0]!.fixes.map((f) => f.file), ["src/a.rs", "src/b.rs"]);
+  });
+
+  test("the queue decides: a merge hold, an open Merge? question or a Hold answer leaves no pre-merge round", () => {
+    assert.equal(selectFixups(take(), "app").fix.length, 1);
+    const held = take();
+    holdMerge(held, "op", "app", 7);
+    assert.equal(selectFixups(held, "app").fix.length, 0);
+    const asked = take();
+    const id = mergeDecisionId("app", 7, "h1");
+    const ins = `INSERT INTO decisions (id, kind, repo, number, question, options, asked_at, answer, answered_by, answered_at) VALUES (?, 'merge', 'app', 7, 'Merge?', '[]', '${T1}', ?, ?, ?)`;
+    asked.prepare(ins).run(id, null, null, null);
+    assert.equal(selectFixups(asked, "app").fix.length, 0);
+    const declined = take();
+    declined.prepare(ins).run(id, "hold", "op", "2099-01-01T00:00:00Z");
+    assert.equal(selectFixups(declined, "app").fix.length, 0);
+  });
+
+  test("a stale review sends no pre-merge round", () => {
+    const db = take();
+    db.prepare("INSERT INTO comments (id, repo, number, kind, author, author_association, body, created_at, counted) VALUES ('c1', 'app', 7, 'comment', 'rabbit', 'CONTRIBUTOR', 'new finding', '2026-03-01T00:00:00Z', 1)").run();
+    assert.equal(selectFixups(db, "app").fix.length, 0);
   });
 
   test("a defect without a fix, or only minor findings, is not selected", () => {
@@ -75,10 +103,10 @@ describe("pre-merge fix-up round", () => {
     assert.equal(x!.c.attempt, 1);
   });
 
-  test("an unpushable branch is never asked and never recorded as held", () => {
+  test("an unpushable branch is never asked, held or selected: the queue asks a person", () => {
     const db = take("someone/app");
     const sel = selectFixups(db, "app");
     assert.equal(sel.fix.length + sel.ask.length + sel.cannotPush.length, 0);
-    assert.equal(classifyFixups(db, "app")[0]!.bucket, "cannot-push");
+    assert.equal(classifyFixups(db, "app").length, 0);
   });
 });

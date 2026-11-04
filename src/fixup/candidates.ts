@@ -10,6 +10,7 @@ import { FORMAT_REASONS, safePath } from "./patch.ts";
 import { longLivedOf, pushable } from "./pushable.ts";
 import { classifyConflicts, type ConflictCandidate } from "./conflict-state.ts";
 import { pilotSql } from "../pilot.ts";
+import { buildQueue, type QueueEntry } from "../merge/queue.ts";
 import { findingsOf, premergeAt, premergeFixUsed } from "../premerge/store.ts";
 
 /** Fix-up tries per PR (pushed, failed, refused or rejected) before the step leaves it to a person. */
@@ -66,12 +67,12 @@ export type FixupBucket = "fix" | "unapproved" | "cannot-push" | "ask" | "asked"
 export type Classified = { c: FixCandidate; bucket: FixupBucket; done: boolean };
 
 /**
- * The PR's pre-merge round, when its review at this head has defects that all carry a fix and the round is unused.
- * Only `fix` is acted on; every other case is `done` so the step leaves it to the queue's Merge? question.
+ * The PR's pre-merge round, for a queue entry in needs-fix-up from its pre-merge review: the queue decides eligibility
+ * (stale reviews, open questions, holds, answers, the rule), this only adds the head, push and fix-list guards.
  */
-function premergeCandidate(db: DatabaseSync, r: Row, head: string, approved: boolean, longLived: ReturnType<typeof longLivedOf>): Classified | null {
+function premergeCandidate(db: DatabaseSync, r: Row, head: string, approved: boolean, longLived: ReturnType<typeof longLivedOf>, entry: QueueEntry | undefined): Classified | null {
   if (r.mergeable === "CONFLICTING") return null;
-  if (!db.prepare("SELECT 1 FROM final_reviews WHERE repo = ? AND number = ? AND head_oid = ? AND verdict = 'take'").get(r.repo, r.number, head)) return null;
+  if (!entry || entry.held || entry.head !== head || entry.state !== "needs-fix-up" || entry.premerge?.state !== "fix") return null;
   const row = premergeAt(db, r.repo, r.number, head);
   const defects = findingsOf(row).filter((f) => f.severity === "defect");
   if (!row || !defects.length || !defects.every((f) => f.fix) || premergeFixUsed(db, r.repo, r.number)) return null;
@@ -100,6 +101,9 @@ export function classifyFixups(db: DatabaseSync, repo: string): Classified[] {
   const approved = pushApprovalOf(db, repo) !== null;
   const stale = staleReviews(db, repo);
   const longLived = longLivedOf(db, repo);
+  // Built once: the queue is the single source of which PRs get a pre-merge round.
+  let queue: Map<number, QueueEntry> | null = null;
+  const entryOf = (n: number) => (queue ??= new Map(buildQueue(db, { repo, merged: "exclude" }).map((e) => [e.number, e] as const))).get(n);
   const out: Classified[] = [];
   for (const r of rows) {
     const fresh = r.c_at && (!r.updated_at || r.c_at > r.updated_at);
@@ -111,7 +115,7 @@ export function classifyFixups(db: DatabaseSync, repo: string): Classified[] {
     const review = db.prepare("SELECT reason, fixes, model FROM final_reviews WHERE repo = ? AND number = ? AND head_oid = ? AND verdict = 'take-fix'").get(r.repo, r.number, head) as
       { reason: string; fixes: string | null; model: string | null } | undefined;
     if (!review) {
-      const pm = premergeCandidate(db, r, head, approved, longLived);
+      const pm = premergeCandidate(db, r, head, approved, longLived, entryOf(r.number));
       if (pm) out.push(pm);
       continue;
     }

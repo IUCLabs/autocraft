@@ -293,9 +293,10 @@ export function buildQueue(db: DatabaseSync, opts: QueueOptions = {}): QueueEntr
     // Only a merge answer is set aside at an unsure head; a hold or close still counts.
     const given = (answers.get(id) as string | undefined) ?? null;
     const answer = given === "merge" && unsure && !answeredAfter.get(id, r.r_at) ? null : given;
-    // The pre-merge review gates only what the rule would merge; an operator's Merge answer skips it. Its blocking reasons go to outsideRule before stateOf decides the path.
+    // The pre-merge review gates what the rule would merge. Its blocking reasons go to outsideRule before stateOf decides the path, also
+    // after a Merge answer, so that the merge runs as an operator merge with its checks.
     let premerge: QueueEntry["premerge"] = null;
-    if (r.state === "OPEN" && !mergedByUs && !outsideRule.length && answer !== "merge") {
+    if (r.state === "OPEN" && !mergedByUs && !outsideRule.length) {
       const row = premergeAt(db, r.repo, r.number, r.r_head);
       const all = findingsOf(row);
       const defects = all.filter((f) => f.severity === "defect");
@@ -305,7 +306,8 @@ export function buildQueue(db: DatabaseSync, opts: QueueOptions = {}): QueueEntr
       else if (row.findings === null) premerge = { state: row.tries >= PREMERGE_MAX_TRIES ? "failed" : "retry", defects, minor, error };
       else if (!defects.length) premerge = { state: "clean", defects, minor, error };
       else {
-        const fixable = defects.every((f) => f.fix) && !premergeFixUsed(db, r.repo, r.number) && pushApprovalOf(db, r.repo) !== null && pushableAt(r, checksHere);
+        // A Merge? decision at this head (a Hold, say) is never replaced by a fix-up.
+        const fixable = !asked && defects.every((f) => f.fix) && !premergeFixUsed(db, r.repo, r.number) && pushApprovalOf(db, r.repo) !== null && pushableAt(r, checksHere);
         premerge = { state: fixable ? "fix" : "defect", defects, minor, error };
       }
       if (premerge.state === "defect") outsideRule.push(PREMERGE_DEFECT_REASON);
@@ -330,7 +332,8 @@ export function buildQueue(db: DatabaseSync, opts: QueueOptions = {}): QueueEntr
       e.conflictNote = conflictNote(conflictBucket(db, { repo: r.repo, number: r.number, head: r.r_head, pushable: pushableAt(r, checksHere) }, approvalOf(r.repo)), r.base_ref);
     }
     const batch = inBatch.get(`${r.repo}#${r.number}@${r.r_head}`);
-    if (batch && BATCHABLE.includes(e.state)) e.state = batch;
+    // A rule-path PR without a clean pre-merge review keeps its own state: a batch must not land it.
+    if (batch && BATCHABLE.includes(e.state) && (e.path !== "rule" || e.premerge?.state === "clean")) e.state = batch;
     // A red main fails every PR's CI: ready PRs wait for it, except the PRs AutoCraft opened to fix it. Batch members keep their batch state; the batch just is not merged (see batch.ts).
     else if (open && mainRed.has(r.repo) && MAIN_RED_HELD.includes(e.state) && !e.mainFix) e.state = "waiting-main-ci";
     out.push(e);

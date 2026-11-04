@@ -16,6 +16,7 @@ import { REPO_PATH } from "../sandbox/command.ts";
 import { checkoutForPr } from "../sandbox/index.ts";
 import { lintPremerge, parsePremerge, premergeTexts, type PremergeReview } from "./parse.ts";
 import { RETRY_AFTER_MS } from "../postmerge/select.ts";
+import { mergeApprovalOf } from "../merge/approval.ts";
 import { PREMERGE_MAX_TRIES, premergeAt, premergeRetryDue, savePremerge } from "./store.ts";
 
 const PROMPT = CLAUDE_PROMPTS["premerge.opus"];
@@ -42,6 +43,7 @@ export function defaultPremergeDeps(): PremergeDeps {
  * failed tries are due again (ms): nothing in the data changes then, so the planner must be told.
  */
 export function premergeCandidates(db: DatabaseSync, repo: string, at = Date.now(), wake?: number[], queue?: QueueEntry[]): QueueEntry[] {
+  if (!mergeApprovalOf(db, repo)) return [];
   return (queue ?? buildQueue(db, { repo, merged: "exclude" })).filter((e) => {
     if (e.repo !== repo || e.state !== "waiting-premerge") return false;
     const row = premergeAt(db, repo, e.number, e.head);
@@ -77,14 +79,14 @@ export async function runPremerge(db: DatabaseSync, params: PremergeParams, log:
   let handled = 0;
   await pool(cands.map((e) => async () => {
     const start = now(), ref = refOf(e), head = e.head;
-    const fail = (error: string) => {
+    const fail = (error: string, final = false) => {
       log(`  ${ref}: ${error}`);
-      savePremerge(db, { repo, number: e.number, head, at: now(), runId, model: deps.model, error });
+      savePremerge(db, { repo, number: e.number, head, at: now(), runId, model: deps.model, error, final });
       s.failed.push(ref);
     };
     const p = await prepareOpusInput(db, repo, candidateOf(db, e), opusDeps, log, { independent: true });
     if (p.kind === "no-diff") fail(`retry: no diff: ${p.error}`);
-    else if (p.kind === "large") fail("retry: too large to review automatically");
+    else if (p.kind === "large") fail("too large to review automatically", true);
     else if (p.kind === "no-threads") fail(`retry: ${p.error}`);
     else {
       const { input } = p;

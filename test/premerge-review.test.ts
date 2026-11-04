@@ -6,8 +6,10 @@ import { setRunner } from "../src/classify/run.ts";
 import { buildQueue } from "../src/merge/queue.ts";
 import { parseArgs } from "../src/premerge/index.ts";
 import { lintPremerge, parsePremerge } from "../src/premerge/parse.ts";
-import { premergeCandidates, runPremerge, type PremergeDeps } from "../src/premerge/review.ts";
+import { candidateOf, premergeCandidates, runPremerge, type PremergeDeps } from "../src/premerge/review.ts";
 import { findingsOf, PREMERGE_MAX_TRIES, premergeAt, savePremerge } from "../src/premerge/store.ts";
+import { prepareOpusInput } from "../src/review/opus.ts";
+import { mergeApprovalOf } from "../src/merge/approval.ts";
 import { OPUS_MAX_FIXES } from "../src/review/opus-parse.ts";
 import { useTestAccount } from "./accounts-fixture.ts";
 import { fresh as freshDb } from "./batch-fixture.ts";
@@ -89,6 +91,43 @@ describe("premerge step", () => {
     assert.equal(row.error, null);
     assert.equal(findingsOf(row)[0]!.title, "naming");
     assert.equal(state(db), "ready");
+  });
+
+  test("the review input carries no discussion, earlier review or unapplied fixes, though the PR has them", async () => {
+    const db = world();
+    const e = buildQueue(db, { merged: "exclude" }).find((x) => x.number === 1)!;
+    db.prepare("INSERT INTO comments (id, repo, number, kind, author, author_association, body, created_at, counted) VALUES ('c1', 'app', 1, 'comment', 'rabbit', 'CONTRIBUTOR', 'please rename this', '2026-02-01T00:00:00Z', 1)").run();
+    db.prepare(`INSERT INTO opus_reviews (repo, number, head_oid, run_id, at, model, verdict, reason, fixes, sure, mode) VALUES ('app', 1, 'old', 'rv0', '2026-01-01T00:00:00Z', 'm', 'take-fix', 'needs work', ?, 1, 'full')`)
+      .run(JSON.stringify([{ file: "src/lib.rs", change: "rename a" }]));
+    const quiet = () => {};
+    const normal = await prepareOpusInput(db, "app", candidateOf(db, e), { ...deps, fetchDelta: async () => ({ ok: false, tooLarge: false, error: "unused" }) }, quiet);
+    assert.equal(normal.kind, "ready");
+    if (normal.kind === "ready") assert.ok(normal.input.discussion?.length && normal.input.unapplied_fixes?.length, "the fixture has discussion and unapplied fixes");
+    const p = await prepareOpusInput(db, "app", candidateOf(db, e), { ...deps, fetchDelta: async () => ({ ok: false, tooLarge: false, error: "unused" }) }, quiet, { independent: true });
+    assert.equal(p.kind, "ready");
+    if (p.kind !== "ready") return;
+    assert.equal(p.input.discussion, undefined);
+    assert.equal(p.input.earlier_opus, null);
+    assert.equal(p.input.unapplied_fixes, undefined);
+    assert.equal(p.input.mode, "full");
+  });
+
+  test("a repo without merge approval gets no pre-merge candidates", () => {
+    const db = world();
+    assert.equal(premergeCandidates(db, "app").length, 1);
+    db.prepare("DELETE FROM main.settings WHERE key = 'merge_approved:app'").run();
+    assert.equal(mergeApprovalOf(db, "app"), null);
+    assert.deepEqual(premergeCandidates(db, "app"), []);
+  });
+
+  test("a diff too large to review fails the head at once, without retries", async () => {
+    const db = world();
+    const restore = model([], reply([]));
+    try { await runPremerge(db, { repo: "app" }, () => {}, { ...deps, maxChars: 10 }); } finally { restore(); }
+    const row = premergeAt(db, "app", 1, "sha1")!;
+    assert.equal(row.tries, PREMERGE_MAX_TRIES);
+    assert.match(row.error ?? "", /too large/);
+    assert.equal(state(db), "needs-decision");
   });
 
   test("a head that moved during the call is not saved", async () => {

@@ -66,8 +66,32 @@ test("a defect without a fix is asked about with its facts and no merge recommen
   const q = db.prepare("SELECT * FROM decisions WHERE id = ?").get(mergeDecisionId("app", 1, HEAD)) as Record<string, unknown>;
   assert.equal(q.recommended, null, "no merge recommendation");
   db.prepare("UPDATE decisions SET answer = 'merge', answered_by = 'op', answered_at = '2099-01-01T00:00:00Z' WHERE id = ?").run(mergeDecisionId("app", 1, HEAD));
-  assert.equal(entry(db).state, "ready");
-  assert.equal(entry(db).path, "rule");
+  assert.equal(entry(db).state, "decision-answered-merge");
+  assert.equal(entry(db).path, "operator", "the operator's checks apply to a merge past a defect");
+  assert.equal(eligible(entry(db)), true);
+});
+
+test("a Hold answer on a pre-merge question stays when push approval arrives later", () => {
+  const db = world();
+  store(db, [defect({ fix })]);
+  assert.equal(entry(db).state, "needs-decision");
+  askedQuestion(db);
+  db.prepare("UPDATE decisions SET answer = 'hold', answered_by = 'op', answered_at = '2099-01-01T00:00:00Z' WHERE id = ?").run(mergeDecisionId("app", 1, HEAD));
+  assert.equal(entry(db).state, "declined");
+  setPushApproval(db, "op", "app", true);
+  const e = entry(db);
+  assert.equal(e.state, "declined");
+  assert.equal(e.premerge?.state, "defect");
+});
+
+test("a batch member in waiting-ci without a clean pre-merge review keeps its own state", () => {
+  const db = world();
+  db.prepare("UPDATE pr_checks SET overall = 'pending' WHERE repo = 'app' AND number = 1").run();
+  db.prepare("INSERT INTO merge_batches (id, repo, branch, state, base_sha, commit_sha, pr_number, created_at, updated_at) VALUES (1, 'app', 'integration-app-1', 'open', 'a', 'b', 5, ?, ?)").run(T1, T1);
+  db.prepare("INSERT INTO merge_batch_prs (batch_id, number, head_oid, position) VALUES (1, 1, ?, 0)").run(HEAD);
+  assert.equal(entry(db).state, "waiting-ci");
+  seedPremergeClean(db, "app", 1, HEAD);
+  assert.equal(entry(db).state, "in-batch");
 });
 
 test("three failed tries make the head failed and ask a person", () => {
@@ -77,5 +101,5 @@ test("three failed tries make the head failed and ask a person", () => {
   fail(db, 1);
   assert.equal(entry(db).state, "needs-decision");
   assert.deepEqual(entry(db).outsideRule, ["the pre-merge review failed"]);
-  assert.ok(askedQuestion(db).includes("pre-merge review failed: retry: the model timed out"));
+  assert.ok(askedQuestion(db).includes("pre-merge review failed: the model timed out"));
 });

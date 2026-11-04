@@ -401,10 +401,11 @@ const LANE_CODE: Omit<Lane, "steps">[] = [
     name: "premerge",
     perRepo: true,
     detect: (db, { tracked, wake, run }) => {
-      if (!tracked.length) return [];
+      const repos = tracked.filter((repo) => mergeApprovalOf(db, repo));
+      if (!repos.length) return [];
       // One queue for every repo, with the planner's run: buildQueue per repo would look the run up each time.
       const queue = buildQueue(db, { run, merged: "exclude" });
-      return tracked.filter((repo) => premergeCandidates(db, repo, Date.now(), wake, queue).length > 0).sort().map((repo) => ({ step: "premerge", params: { repo } }));
+      return repos.filter((repo) => premergeCandidates(db, repo, Date.now(), wake, queue).length > 0).sort().map((repo) => ({ step: "premerge", params: { repo } }));
     },
   },
   {

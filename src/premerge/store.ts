@@ -29,6 +29,8 @@ export type PremergeSave = {
   findings?: PremergeFinding[];
   searched?: string | null;
   error?: string | null;
+  /** The failure is final: no more tries (the head cannot be reviewed at all). */
+  final?: boolean;
 };
 
 /** Stores a review (clears the error) or counts a failed try. */
@@ -40,9 +42,9 @@ export function savePremerge(db: DatabaseSync, s: PremergeSave): void {
         findings = excluded.findings, searched = excluded.searched, error = NULL`).run(...args, JSON.stringify(s.findings), s.searched ?? null);
     return;
   }
-  db.prepare(`INSERT INTO premerge_reviews (repo, number, head_oid, at, run_id, model, error, tries) VALUES (?, ?, ?, ?, ?, ?, ?, 1)
+  db.prepare(`INSERT INTO premerge_reviews (repo, number, head_oid, at, run_id, model, error, tries) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT (repo, number, head_oid) DO UPDATE SET at = excluded.at, run_id = excluded.run_id, model = excluded.model,
-      error = excluded.error, tries = tries + 1`).run(...args, s.error ?? "failed");
+      error = excluded.error, tries = CASE WHEN ? THEN excluded.tries ELSE tries + 1 END`).run(...args, s.error ?? "failed", s.final ? PREMERGE_MAX_TRIES : 1, s.final ? 1 : 0);
 }
 
 export function premergeAt(db: DatabaseSync, repo: string, number: number, head: string): PremergeRow | null {
