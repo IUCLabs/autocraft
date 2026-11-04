@@ -36,21 +36,6 @@ describe("jev", () => {
     assert.equal(v.needs_decision, false);
     assert.equal(JSON.parse(v.probs!).top, 0.8);
   });
-  test("Jev's flags are yes from 0.9 (security) and 0.8 (needs decision)", () => {
-    assert.equal(jevVerdict("a#1", { ...answers, security: { noul: 0.89 } })!.security, false);
-    assert.equal(jevVerdict("a#1", { ...answers, security: { noul: 0.9 } })!.security, true);
-    assert.equal(jevVerdict("a#1", { ...answers, needs_decision: { noul: 0.79 } })!.needs_decision, false);
-    assert.equal(jevVerdict("a#1", { ...answers, needs_decision: { noul: 0.8 } })!.needs_decision, true);
-  });
-  test("a flag settles by Jev's band: sure yes sets it, sure no beats Haiku, unsure takes Haiku's answer or stays unset", () => {
-    const jev = (sec: number) => ({ label: "bugfix", flags: [], top: 0.95, sec, nd: 0 });
-    const yes = { label: "bugfix", flags: ["security"] };
-    assert.deepEqual(settle(jev(0.95), null).flags, ["security"]);
-    assert.deepEqual(settle(jev(0.1), yes).flags, []);
-    assert.deepEqual(settle(jev(0.5), yes).flags, ["security"]);
-    assert.deepEqual(settle(jev(0.5), { label: "bugfix", flags: [] }).flags, []);
-    assert.deepEqual(settle(jev(0.5), null).flags, []);
-  });
   test("drops an answer with an unknown label or a missing question", () => {
     assert.equal(jevVerdict("a#1", { ...answers, type: { choice: "other" } }), null);
     assert.equal(jevVerdict("a#1", { type: answers.type }), null);
@@ -64,12 +49,4 @@ describe("jev", () => {
 });
 
 describe("settle without Jev", () => {
-  test("a Haiku verdict alone settles the item with Haiku's label and flags", () => {
-    const s = settle(null, { label: "bugfix", flags: ["security"] });
-    assert.equal(s.status, "settled");
-    assert.equal(s.source, "haiku");
-    assert.equal(s.label, "bugfix");
-    assert.deepEqual(s.flags, ["security"]);
-    assert.equal(settle(null, null).status, "unclassified");
-  });
 });

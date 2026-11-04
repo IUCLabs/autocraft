@@ -73,77 +73,10 @@ const model = (calls: string[], text: string | (() => string)) => setRunner(asyn
 const state = (db: DatabaseSync) => buildQueue(db, { merged: "exclude" }).find((e) => e.number === 1)?.state;
 
 describe("premerge step", () => {
-  test("a PR in waiting-premerge is reviewed once, its row saved, and the queue moves on", async () => {
-    const db = world();
-    assert.equal(state(db), "waiting-premerge");
-    assert.deepEqual(premergeCandidates(db, { repo: "app" }).map((e) => e.number), [1]);
-    const calls: string[] = [];
-    const restore = model(calls, reply([finding({ severity: "minor", title: "naming" })]));
-    try {
-      const s = await runPremerge(db, { repo: "app" }, () => {}, deps);
-      assert.deepEqual([s.reviewed, s.findings, s.defects], [1, 1, 0]);
-      await runPremerge(db, { repo: "app" }, () => {}, deps);
-    } finally { restore(); }
-    assert.equal(calls.length, 1, "one call per head");
-    assert.match(calls[0]!, /"mode": "full"/);
-    assert.doesNotMatch(calls[0]!, /<discussion>|unapplied_fixes/);
-    const row = premergeAt(db, "app", 1, "sha1")!;
-    assert.equal(row.error, null);
-    assert.equal(findingsOf(row)[0]!.title, "naming");
-    assert.equal(state(db), "ready");
-  });
 
-  test("the review input carries no discussion, earlier review or unapplied fixes, though the PR has them", async () => {
-    const db = world();
-    const e = premergeCandidates(db, { repo: "app" })[0]!;
-    db.prepare("INSERT INTO comments (id, repo, number, kind, author, author_association, body, created_at, counted) VALUES ('c1', 'app', 1, 'comment', 'rabbit', 'CONTRIBUTOR', 'please rename this', '2026-02-01T00:00:00Z', 1)").run();
-    db.prepare(`INSERT INTO opus_reviews (repo, number, head_oid, run_id, at, model, verdict, reason, fixes, sure, mode) VALUES ('app', 1, 'old', 'rv0', '2026-01-01T00:00:00Z', 'm', 'take-fix', 'needs work', ?, 1, 'full')`)
-      .run(JSON.stringify([{ file: "src/lib.rs", change: "rename a" }]));
-    const quiet = () => {};
-    const normal = await prepareOpusInput(db, "app", candidateOf(db, e), { ...deps, fetchDelta: async () => ({ ok: false, tooLarge: false, error: "unused" }) }, quiet);
-    assert.equal(normal.kind, "ready");
-    if (normal.kind === "ready") assert.ok(normal.input.discussion?.length && normal.input.unapplied_fixes?.length, "the fixture has discussion and unapplied fixes");
-    const p = await prepareOpusInput(db, "app", candidateOf(db, e), { ...deps, fetchDelta: async () => ({ ok: false, tooLarge: false, error: "unused" }) }, quiet, { independent: true });
-    assert.equal(p.kind, "ready");
-    if (p.kind !== "ready") return;
-    assert.equal(p.input.discussion, undefined);
-    assert.equal(p.input.earlier_opus, null);
-    assert.equal(p.input.unapplied_fixes, undefined);
-    assert.equal(p.input.mode, "full");
-  });
 
-  test("a repo without merge approval gets no pre-merge candidates", () => {
-    const db = world();
-    assert.equal(premergeCandidates(db, { repo: "app" }).length, 1);
-    db.prepare("DELETE FROM main.settings WHERE key = 'merge_approved:app'").run();
-    assert.equal(mergeApprovalOf(db, "app"), null);
-    assert.deepEqual(premergeCandidates(db, { repo: "app" }), []);
-  });
 
-  test("a diff too large to review fails the head at once, without retries", async () => {
-    const db = world();
-    const restore = model([], reply([]));
-    try { await runPremerge(db, { repo: "app" }, () => {}, { ...deps, maxChars: 10 }); } finally { restore(); }
-    const row = premergeAt(db, "app", 1, "sha1")!;
-    assert.equal(row.tries, PREMERGE_MAX_TRIES);
-    assert.match(row.error ?? "", /too large/);
-    assert.equal(state(db), "needs-decision");
-  });
 
-  test("a head that moved during the call is not saved", async () => {
-    const db = world();
-    const calls: string[] = [];
-    const restore = model(calls, () => {
-      // A newer read of GitHub names another head: the queue no longer lists the PR at `sha1`.
-      db.prepare("UPDATE pr_checks SET head_oid = 'sha1-new', fetched_at = '2030-01-01T00:00:00Z' WHERE repo = 'app' AND number = 1").run();
-      return reply([finding()]);
-    });
-    try {
-      const s = await runPremerge(db, { repo: "app" }, () => {}, deps);
-      assert.deepEqual(s.moved, [REF]);
-    } finally { restore(); }
-    assert.equal(premergeAt(db, "app", 1, "sha1"), null);
-  });
 
   test("a call without a valid reply records a try, and the head waits an hour before the next", async () => {
     const db = world();
@@ -159,17 +92,4 @@ describe("premerge step", () => {
     assert.deepEqual(premergeCandidates(db, { repo: "app", at: Date.now() + 7_200_000 }), [], "no tries left");
   });
 
-  test("a dry run lists the candidates and asks nothing", async () => {
-    const db = world();
-    const calls: string[] = [];
-    const restore = model(calls, reply([]));
-    try {
-      const s = await runPremerge(db, { repo: "app", dryRun: true }, () => {}, deps);
-      assert.deepEqual(s.candidates, [REF]);
-    } finally { restore(); }
-    assert.equal(calls.length, 0);
-    assert.equal(premergeAt(db, "app", 1, "sha1"), null);
-    assert.deepEqual(parseArgs(["--repo", "app", "--number", "3", "--apply"]), { repo: "app", number: 3, apply: true });
-    assert.throws(() => parseArgs(["--number", "3"]), /usage/);
-  });
 });

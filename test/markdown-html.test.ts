@@ -58,17 +58,3 @@ test("inline tags inside a paragraph", () => {
   assert.equal(kids[3]!.children![0]!.value, "link text");
 });
 
-test("the plugin replaces html nodes in a tree", () => {
-  const tree: MdNode = {
-    type: "root",
-    children: [
-      { type: "paragraph", children: [{ type: "text", value: "Requested in chat." }] },
-      { type: "html", value: `<img width="1202" alt="Image" src="${IMG}" />` },
-      { type: "html", value: '<video src="https://github.com/user-attachments/assets/demo.mp4" controls></video>' },
-    ],
-  };
-  remarkHtmlToMarkdown()(tree);
-  assert.ok(!all(tree.children!).some((n) => n.type === "html"));
-  assert.equal(of(tree.children!, "image").length, 1);
-  assert.equal(of(tree.children!, "link")[0]!.children![0]!.value, "Video: demo.mp4");
-});

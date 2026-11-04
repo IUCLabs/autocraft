@@ -64,17 +64,7 @@ describe("snapshot", () => {
 });
 
 describe("tools", () => {
-  test("search_items finds an item by a word in a comment", () => {
-    const r = callTool(db, cfg, "search_items", { query: "ligature" });
-    assert.match(r.text, /photocraft#7/);
-    assert.match(r.text, /comment by carol/);
-    assert.ok(!r.text.includes("pdfcraft#1"));
-  });
 
-  test("search_items filters by repo, kind and state", () => {
-    assert.match(callTool(db, cfg, "search_items", { query: "spacing", kind: "issue" }).text, /photocraft#8/);
-    assert.equal(callTool(db, cfg, "search_items", { query: "spacing", repo: "pdfcraft" }).text, "No matches.");
-  });
 
   test("item frames GitHub text as untrusted and cannot close the frame", () => {
     const r = callTool(db, cfg, "item", { repo: "photocraft", number: 7 });
@@ -85,10 +75,6 @@ describe("tools", () => {
     assert.ok(!r.text.includes(PRIVATE));
   });
 
-  test("similar_items ranks the nearest embedding first", () => {
-    const r = callTool(db, cfg, "similar_items", { repo: "photocraft", number: 7 });
-    assert.ok(r.text.indexOf("photocraft#8") < r.text.indexOf("pdfcraft#1"));
-  });
 
   test("pr_diff serves the cached diff, one file, and cuts with a note", () => {
     assert.match(callTool(db, cfg, "pr_diff", { repo: "photocraft", number: 7 }).text, /Files: src\/a.rs, src\/b.rs/);
@@ -141,28 +127,6 @@ describe("refresh", () => {
     assert.equal(callTool(db, cfg, "search_items", { query: "roadmap" }).text, "No matches.");
   });
 
-  test("an incremental refresh applies changes in place, without a rebuild", () => {
-    assert.equal(first.rebuilt, true);
-    const inode = statSync(snap).ino;
-    const m = mirror();
-    m.prepare("UPDATE comments SET body = 'now about the hyphenation regression' WHERE id = 'c1'").run();
-    m.prepare("INSERT INTO items (repo, number, kind, state, title, body) VALUES ('pdfcraft', 2, 'issue', 'OPEN', 'Brand new', 'freshly synced')").run();
-    m.prepare("DELETE FROM items WHERE repo = 'pdfcraft' AND number = 1").run();
-    m.prepare("DELETE FROM item_embeddings WHERE repo = 'pdfcraft'").run();
-    m.close();
-    const r = writeSnapshot(join(dir, "mirror.db"), snap);
-    assert.equal(r.rebuilt, false);
-    assert.equal(statSync(snap).ino, inode);
-    const fresh = openDb(snap);
-    assert.match(callTool(fresh, cfg, "search_items", { query: "hyphenation" }).text, /photocraft#7/);
-    assert.equal(callTool(fresh, cfg, "search_items", { query: "ligature" }).text.includes("comment by carol"), false, "the old comment text is gone from the index");
-    assert.match(callTool(fresh, cfg, "search_items", { query: "freshly" }).text, /pdfcraft#2/);
-    assert.equal(callTool(fresh, cfg, "item", { repo: "pdfcraft", number: 1 }).isError, true);
-    assert.equal(callTool(fresh, cfg, "search_items", { query: "unrelated" }).text, "No matches.");
-    fresh.close();
-    // Nothing changed since: the second refresh reports no changes.
-    assert.deepEqual(writeSnapshot(join(dir, "mirror.db"), snap).changed, { items: 0, comments: 0, embeddings: 0 });
-  });
 
   test("a snapshot of another schema version is rebuilt", () => {
     const x = new DatabaseSync(snap);

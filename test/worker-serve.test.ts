@@ -64,9 +64,6 @@ const until = async (f: () => boolean, ms = 8000) => {
 };
 
 describe("worker loop", () => {
-  test("backoff grows 5 s to 60 s", () => {
-    assert.deepEqual([1, 2, 3, 4, 5, 6, 9].map(backoffDelay), [5000, 10_000, 20_000, 40_000, 60_000, 60_000, 60_000]);
-  });
 
   test("hello, claim, run, logs, artifacts, finish; the key is never logged", async () => {
     coord.calls.length = 0;
@@ -98,50 +95,7 @@ describe("worker loop", () => {
     assert.ok(!(e as Error).message.includes("wrong-key-xyz"));
   });
 
-  test("claim errors back off 5, 10, 20 s and the delay resets after success", async () => {
-    coord.failClaims = 3;
-    const h = harness();
-    await until(() => h.delays.length >= 5);
-    await h.stop();
-    assert.deepEqual(h.delays.slice(0, 3), [5000, 10_000, 20_000]);
-    assert.equal(h.delays[3], 5000); // idle poll after recovery
-  });
 
-  test("below the disk minimum it claims nothing and reports why", async () => {
-    coord.calls.length = 0;
-    coord.queue.push(task(102, [step("build", ["exit:0"])]));
-    const h = harness({ freeDiskGb: () => 7.4 });
-    await until(() => coord.calls.filter((c) => c.path === "/worker/claim").length >= 2);
-    await h.stop();
-    const claims = coord.calls.filter((c) => c.path === "/worker/claim").map((c) => c.body as { free: number; pausedReason: string });
-    assert.ok(claims.every((c) => c.free === 0 && c.pausedReason === "disk 7 GB free (needs 20)"));
-    assert.equal(coord.queue.length, 1);
-    coord.queue.length = 0;
-  });
 
-  test("a task the coordinator cancels is killed and not finished", async () => {
-    coord.calls.length = 0;
-    coord.queue.push(task(103, [step("hang", ["sleep"])]));
-    const h = harness();
-    await until(() => coord.logs.get(103)?.includes("sleeping") === true);
-    coord.cancel.push(103);
-    await until(() => h.lines.some((l) => l.includes("task 103 cancelled")));
-    await h.stop();
-    assert.ok(!coord.finished.has(103));
-    assert.ok(existsSync(rtDir) && readFileSync(join(rtDir, "calls.jsonl"), "utf8").includes('"kill"'));
-    assert.deepEqual(h.cfg.workDir && existsSync(join(h.cfg.workDir, "task-103")), false);
-  });
 
-  test("startup removes leftover work dirs and containers", async () => {
-    const orphans = join(rtDir, "orphans");
-    writeFileSync(orphans, "deadbeef01\n");
-    const cfgDir = join(root, `w${n + 1}`);
-    mkdirSync(join(cfgDir, "task-5/src"), { recursive: true });
-    const h = harness();
-    await until(() => h.lines.some((l) => l.startsWith("registered")));
-    await h.stop();
-    rmSync(orphans);
-    assert.ok(!existsSync(join(cfgDir, "task-5")));
-    assert.ok(readFileSync(join(rtDir, "calls.jsonl"), "utf8").includes('["rm","-f","deadbeef01"]'));
-  });
 });

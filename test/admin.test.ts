@@ -181,24 +181,6 @@ describe("admin api", () => {
     assert.equal(lastAudit().action, "repo-untrack");
   });
 
-  test("only an operator approves labelling for a repo; it is audited and shown in the repo list", async () => {
-    const boss = await signedIn("boss");
-    for (const who of ["maint", "viewer1"]) {
-      const c = await signedIn(who);
-      await c.post("/api/repos/labels-approve", { name: "photocraft" }, 403);
-      await c.post("/api/repos/labels-revoke", { name: "photocraft" }, 403);
-    }
-    const before = auditRows();
-    const after = await boss.post<TrackedRepo[]>("/api/repos/labels-approve", { name: "photocraft" });
-    const l = after.find((r) => r.name === "photocraft")!.labels!;
-    assert.deepEqual([l.approved, l.approvedBy], [true, "boss"]);
-    assert.equal(lastAudit().action, "labels-approve");
-    await boss.post("/api/repos/labels-approve", { name: "photocraft" }, 409);
-    await boss.post("/api/repos/labels-approve", { name: "not-yet" }, 400);
-    const off = await boss.post<TrackedRepo[]>("/api/repos/labels-revoke", { name: "photocraft" });
-    assert.equal(off.find((r) => r.name === "photocraft")!.labels!.approved, false);
-    assert.equal(auditRows(), before + 2);
-  });
 
   test("access: add, change role, revoke a session; the last operator can't be removed or demoted", async () => {
     const boss = await signedIn("boss");

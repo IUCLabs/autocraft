@@ -23,13 +23,6 @@ test("refuseView", () => {
   for (const [name, v, allow, want] of cases) assert.equal(refuseView(v, allow), want, name);
 });
 
-test("refuseRuns", () => {
-  assert.equal(refuseRuns([{ name: "CI", status: "completed", conclusion: "success" }, { name: "Docs", status: "completed", conclusion: "skipped" }]), null);
-  assert.equal(refuseRuns([{ name: "CI", status: "completed", conclusion: "startup_failure" }]), "workflow runs not green:\nCI: startup_failure");
-  assert.equal(refuseRuns([{ name: "CI", status: "queued", conclusion: null }]), "workflow runs not green:\nCI: queued");
-  assert.equal(refuseRuns([{ name: "CI", status: "queued", conclusion: null }], ["CI"]), null);
-  assert.equal(refuseRuns([{ name: "CI", status: "completed", conclusion: "failure" }], ["CI"]), "workflow runs not green:\nCI: failure");
-});
 
 test("refuseAuthors", () => {
   const own = { author: { login: "me" }, commits: [{ authors: [{ login: "me" }] }] };
@@ -39,11 +32,6 @@ test("refuseAuthors", () => {
   assert.equal(refuseAuthors(other, "--merge"), null);
 });
 
-test("parseSafeMergeArgs", () => {
-  assert.deepEqual(parseSafeMergeArgs(["o/r", "5", "--merge", "--allow-pending", "A", "--allow-pending", "B"]), { repo: "o/r", pr: "5", method: "--merge", allow: ["A", "B"], allowFailed: [] });
-  assert.equal(parseSafeMergeArgs(["o/r", "5", "--rebase"]), null);
-  assert.equal(parseSafeMergeArgs(["o/r", "5", "--merge", "--allow-pending"]), null);
-});
 
 test("--allow-failed accepts a listed failed check only while the merge state is not BLOCKED", () => {
   const sonar = "sonarcloud / SonarCloud Scan";

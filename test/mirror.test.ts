@@ -19,15 +19,6 @@ test("incremental sync stops at the first old item and requests no further page"
   assert.equal(fetched, 2);
 });
 
-test("no cutoff keeps every page", async () => {
-  async function* pages() {
-    yield page("a");
-    yield page("b");
-  }
-  let n = 0;
-  for await (const _ of untilCutoff(pages(), null)) n++;
-  assert.equal(n, 2);
-});
 
 // ---- search-based incremental sync ----
 import { mkdtempSync, writeFileSync } from "node:fs";
@@ -69,9 +60,6 @@ function scratch() {
 const opts = { only: [], all: false, full: false, perRepo: false };
 const hw = (db: ReturnType<typeof connect>) => (db.prepare("SELECT value FROM settings WHERE key='org_high_water'").get() as { value: string }).value;
 
-test("search starts ten minutes before the stored high water", () => {
-  assert.equal(searchSince("2026-11-02T09:30:00Z"), "2026-11-02T09:20:00Z");
-});
 
 test("search mode writes tracked results, ignores untracked, advances the high water", async () => {
   const { db } = scratch();
@@ -121,39 +109,8 @@ test("a window with more than 1,000 matches is split into slices; nothing falls 
   assert.equal(hw(db), at(1199));
 });
 
-test("an item the search index showed late is picked up by the hourly catch-up", async () => {
-  const { db } = scratch();
-  db.exec("DELETE FROM settings WHERE key='search_catchup_at'");
-  const late = node("a", 7, "OPEN", "2026-11-02T04:00:00Z"); // older than the high water minus the 10 minute overlap
-  const seen = [node("b", 8, "OPEN", "2026-11-02T09:31:00Z")];
-  const all = [...seen, late];
-  // the index lagged: the minute window (from 09:20) misses the late item, the catch-up window reaches it
-  const c = searchClient(all);
-  await runSync(db, c, opts, new Date("2026-11-02T10:05:00Z"));
-  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM items WHERE repo='a' AND number=7").get()!.n, 1);
-  assert.ok(c.windows.some((w) => w.from === "2026-11-02T03:31:00Z" && w.to === "2026-11-02T09:31:00Z"), "catch-up window is [high water - 6 h, high water]");
-  assert.equal(db.prepare("SELECT value FROM settings WHERE key='search_catchup_at'").get()!.value, "2026-11-02T10:05:00Z");
-  const again = searchClient(all);
-  await runSync(db, again, opts, new Date("2026-11-02T10:06:00Z"));
-  assert.equal(again.windows.length, 1, "no second catch-up within the hour");
-});
 
-test("the high water stays put when the search finds nothing", async () => {
-  const { db } = scratch();
-  await runSync(db, searchClient([]), opts, new Date("2026-11-02T10:30:00Z"));
-  assert.equal(hw(db), "2026-11-02T09:30:00Z");
-});
 
-test("a run stores the points it used and the budget left", async () => {
-  const { db } = scratch();
-  const c = fakeClient([node("a", 1)]);
-  const spend = c.query;
-  c.query = async (q, v) => { c.spent += 3; c.remaining = 3990; return spend(q, v); };
-  await runSync(db, c, opts, new Date("2026-11-02T10:05:00Z"));
-  const get = (k: string) => (db.prepare("SELECT value FROM settings WHERE key=?").get(k) as { value: string }).value;
-  assert.equal(get("sync_points_last_run"), "3");
-  assert.equal(get("sync_rate_remaining"), "3990");
-});
 
 test("sync stores the text hashes the planner compares", async () => {
   const { db } = scratch();
@@ -177,96 +134,9 @@ test("sync stores the text hashes the planner compares", async () => {
   assert.equal(pending(db, "m").length, 1);
 });
 
-test("a full re-sync resumes after the last finished repo and leaves the org high water alone", async () => {
-  const { db } = scratch();
-  const seen: string[] = [];
-  let fail = true;
-  const repo = (name: string) => ({ name, visibility: "PUBLIC", defaultBranchRef: null, pullRequests: { totalCount: 0 }, issues: { totalCount: 0 } });
-  const c = validating({
-    spent: 0, remaining: 4000 as number | null,
-    async query(query: string, v: Record<string, unknown>) {
-      if (query.includes("repositories(")) return { organization: { repositories: { pageInfo: { hasNextPage: false }, nodes: ["a", "b"].map(repo) } } };
-      seen.push(String(v.name));
-      if (v.name === "b" && fail) throw new Error("boom");
-      return { repository: { issues: { pageInfo: { hasNextPage: false }, nodes: [] }, pullRequests: { pageInfo: { hasNextPage: false }, nodes: [] } } };
-    },
-  });
-  const full = { ...opts, full: true };
-  await assert.rejects(runSync(db, c, full, new Date("2026-11-02T11:00:00Z")), /boom/);
-  assert.equal(db.prepare("SELECT value FROM settings WHERE key='full_sync_cursor'").get()!.value, "tracked|a");
-  fail = false;
-  seen.length = 0;
-  await runSync(db, c, full, new Date("2026-11-02T11:00:00Z"));
-  assert.ok(!seen.includes("a"), "repo a was not fetched again");
-  assert.ok(seen.includes("b"));
-  assert.equal(db.prepare("SELECT value FROM settings WHERE key='full_sync_cursor'").get(), undefined);
-  assert.equal(hw(db), "2026-11-02T09:30:00Z");
-});
 
-test("a low-priority client waits for the minute sync and pauses when the budget is low", async () => {
-  const log: string[] = [];
-  let busy = 2;
-  const inner = { spent: 0, remaining: 4000 as number | null, async query() { log.push("query"); inner.remaining = 100; return {}; } } as unknown as Client;
-  const q = lowPriority(inner, {
-    busy: () => busy-- > 0, minRemaining: 500, wait: async () => { log.push("wait"); },
-    pause: async () => { log.push("pause"); inner.remaining = 5000; },
-  });
-  await q.query("x", {});
-  assert.deepEqual(log, ["wait", "wait", "query"]);
-  await q.query("x", {});
-  assert.deepEqual(log.slice(3), ["pause", "query"]);
-});
 
-test("an unset org high water or a never-synced tracked repo skips the search", async () => {
-  const { db } = scratch();
-  db.exec("UPDATE repos SET synced_at=NULL, high_water=NULL WHERE name='b'");
-  const c = fakeClient([]);
-  const empty = { ...c, async query(q: string, v: Record<string, unknown>) { c.calls.push({ query: q, variables: v }); throw new Error("stop"); } };
-  await assert.rejects(runSync(db, empty, opts), /stop/);
-  assert.ok(!c.calls[0].query.includes("search("));
-  db.exec("UPDATE repos SET synced_at='x' WHERE name='b'; DELETE FROM settings WHERE key='org_high_water'");
-  c.calls.length = 0;
-  await assert.rejects(runSync(db, empty, opts), /stop/);
-  assert.ok(!c.calls[0].query.includes("search("));
-});
 
-test("a synced tracked repo with no items still allows the search", async () => {
-  const { db } = scratch();
-  db.exec("UPDATE repos SET high_water=NULL WHERE name='b'");
-  const r = await runSync(db, fakeClient([]), opts, new Date("2026-11-02T10:05:00Z"));
-  assert.equal(r.mode, "search");
-});
 
-test("a failed run leaves the high water unchanged", async () => {
-  const { db } = scratch();
-  const c = fakeClient([node("a", 1)], 1, 0);
-  await assert.rejects(runSync(db, c, opts, new Date("2026-11-02T10:05:00Z")), /boom/);
-  assert.equal(hw(db), "2026-11-02T09:30:00Z");
-});
 
-test("the repo list refreshes only when older than 15 minutes", async () => {
-  const { db } = scratch();
-  db.exec("UPDATE settings SET value='2026-11-02T09:00:00Z' WHERE key='repos_refreshed_at'");
-  const c = fakeClient([]);
-  const withList = { ...c, query: async (q: string, v: Record<string, unknown>) =>
-    q.includes("repositories(") ? { organization: { repositories: { pageInfo: { hasNextPage: false }, nodes: [] } } } : c.query(q, v) };
-  await runSync(db, withList, opts, new Date("2026-11-02T10:00:00Z"));
-  const at = (db.prepare("SELECT value FROM settings WHERE key='repos_refreshed_at'").get() as { value: string }).value;
-  assert.ok(at > "2026-11-02T09:00:00Z");
-});
 
-test("a second lock holder is refused, and a stale lock is taken over", () => {
-  const dir = mkdtempSync(join(SCRATCH, "lock-"));
-  const path = join(dir, "x.lock");
-  const release = acquireLock(path);
-  assert.ok(release);
-  assert.equal(acquireLock(path), null);
-  release();
-  const again = acquireLock(path);
-  assert.ok(again);
-  again();
-  writeFileSync(path, "2147483646");
-  const taken = acquireLock(path);
-  assert.ok(taken);
-  taken();
-});

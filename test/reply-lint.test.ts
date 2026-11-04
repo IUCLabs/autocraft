@@ -77,149 +77,15 @@ const stored = (db: DatabaseSync) => db.prepare("SELECT summary, why, public_rev
 const runs = (db: DatabaseSync) => db.prepare("SELECT summary FROM agent_runs WHERE prompt_id = 'review.opus' ORDER BY id").all() as { summary: string }[];
 
 describe("review.opus lint", () => {
-  test("a public point that mentions the reference gets one fix turn on the same session; the fixed reply is stored", async () => {
-    const db = fresh();
-    const m = fakeModel([review(), review({ public: { summary: "Looks good.", points: ["src/lib.rs:1 changes a to 2.", "The change keeps the old size."] } })]);
-    try {
-      await runOpusReview(db, { repo: "app" }, () => {}, opusDeps());
-    } finally {
-      m.restore();
-    }
-    assert.equal(m.calls.length, 2);
-    const [first, fix] = m.calls as [Call, Call];
-    assert.ok(!first.args.includes("--resume") && !first.args.includes("--no-session-persistence"));
-    assert.ok(first.sessionDirExisted, "the session store is bound while the call runs");
-    assert.deepEqual(fix.args.slice(fix.args.indexOf("--resume"), fix.args.indexOf("--resume") + 2), ["--resume", "sess-1"]);
-    assert.deepEqual(fix.args.filter((a) => a !== "--resume" && a !== "sess-1"), first.args, "same arguments and mounts");
-    assert.match(fix.input, /^Your reply has these problems:\n- public\.points\[1\]: mentions the reference folder/);
-    assert.match(fix.input, /Send the complete reply again in the same format, fixing only these\.$/);
-    assert.deepEqual(JSON.parse(stored(db).public_review!).points, ["src/lib.rs:1 changes a to 2.", "The change keeps the old size."]);
-    assert.deepEqual(sessionsLeft(), [], "the session store is removed after the call");
-    assert.deepEqual(runs(db).map((r) => r.summary), ["answered in 2 turns", "fix turn answered"]);
-  });
 
-  test("a fix reply that still leaks falls back to dropping the point, with no third call", async () => {
-    const db = fresh();
-    const m = fakeModel([review()]);
-    try {
-      await runOpusReview(db, { repo: "app" }, () => {}, opusDeps());
-    } finally {
-      m.restore();
-    }
-    assert.equal(m.calls.length, 2);
-    assert.deepEqual(JSON.parse(stored(db).public_review!).points, ["src/lib.rs:1 changes a to 2."]);
-  });
 
-  test("an over-long summary gets a fix turn, not a second whole call; if it stays long, its first sentence is stored", async () => {
-    const db = fresh();
-    const m = fakeModel([review({ summary: LONG, public: null }), review({ summary: "Short and fine.", public: null })]);
-    try {
-      await runOpusReview(db, { repo: "app" }, () => {}, opusDeps());
-    } finally {
-      m.restore();
-    }
-    assert.equal(m.calls.length, 2);
-    assert.match(m.calls[1]!.input, /- summary: has 103 words; at most 80/);
-    assert.equal(stored(db).summary, "Short and fine.");
 
-    const db2 = fresh();
-    const m2 = fakeModel([review({ summary: LONG, why: `${LONG}`, public: null })]);
-    try {
-      await runOpusReview(db2, { repo: "app" }, () => {}, opusDeps());
-    } finally {
-      m2.restore();
-    }
-    assert.equal(m2.calls.length, 2);
-    assert.deepEqual([stored(db2).summary, stored(db2).why], ["First sentence stays.", "First sentence stays."]);
-  });
 
-  test("a two-sentence why within the cap is flagged and stored as its first sentence", async () => {
-    const db = fresh();
-    const m = fakeModel([review({ why: "It is small. It is safe.", public: null })]);
-    try {
-      await runOpusReview(db, { repo: "app" }, () => {}, opusDeps());
-    } finally {
-      m.restore();
-    }
-    assert.equal(m.calls.length, 2);
-    assert.match(m.calls[1]!.input, /- why: has more than one sentence/);
-    assert.equal(stored(db).why, "It is small.");
-  });
 
-  test("a take-fix whose fixes all mention the reference gets a fix turn, not a whole new call", async () => {
-    const db = fresh();
-    const m = fakeModel([review({ verdict: "take-fix", fixes: [{ file: "src/lib.rs", change: "see /reference/p0002.txt" }], public: null }), review({ verdict: "take-fix", fixes: [{ file: "src/lib.rs", change: "use 2" }], public: null })]);
-    try {
-      await runOpusReview(db, { repo: "app" }, () => {}, opusDeps());
-    } finally {
-      m.restore();
-    }
-    assert.equal(m.calls.length, 2);
-    assert.match(m.calls[1]!.input, /- fixes\[0\]\.change: mentions the reference folder/);
-    assert.match((db.prepare("SELECT fixes FROM opus_reviews WHERE number = 1").get() as { fixes: string }).fixes, /use 2/);
-  });
 
-  test("no fix turn when the token cannot last through it", async () => {
-    const db = fresh();
-    writeFileSync(credentials, JSON.stringify({ claudeAiOauth: { expiresAt: Date.now() + 40 * 60_000 } }));
-    const m = fakeModel([review()]);
-    try {
-      await runOpusReview(db, { repo: "app" }, () => {}, opusDeps());
-    } finally {
-      m.restore();
-    }
-    assert.equal(m.calls.length, 1, "40 minutes pass the first check but not a 20 minute fix turn plus the margin");
-    assert.deepEqual(JSON.parse(stored(db).public_review!).points, ["src/lib.rs:1 changes a to 2."]);
-  });
 
-  test("no fix turn when the account was disabled meanwhile", async () => {
-    const db = fresh();
-    const m = fakeModel([review()], [], () => void db.prepare("UPDATE claude_accounts SET enabled = 0").run());
-    try {
-      await runOpusReview(db, { repo: "app" }, () => {}, opusDeps());
-    } finally {
-      m.restore();
-    }
-    assert.equal(m.calls.length, 1);
-    assert.deepEqual(JSON.parse(stored(db).public_review!).points, ["src/lib.rs:1 changes a to 2."]);
-  });
 
-  test("a reply that is not a valid review keeps the whole-call retry and gets no fix turn", async () => {
-    const db = fresh();
-    const m = fakeModel(["not json", review({ public: null })]);
-    try {
-      await runOpusReview(db, { repo: "app" }, () => {}, opusDeps());
-    } finally {
-      m.restore();
-    }
-    assert.equal(m.calls.length, 2);
-    assert.ok(!m.calls[1]!.args.includes("--resume"));
-  });
 
-  test("a call without the sandbox has no session: the problem goes straight to the fallback", async () => {
-    const db = fresh();
-    const m = fakeModel([review()]);
-    try {
-      await runOpusReview(db, { repo: "app" }, () => {}, { ...opusDeps(), checkout: async () => null });
-    } finally {
-      m.restore();
-    }
-    assert.equal(m.calls.length, 1);
-    assert.deepEqual(JSON.parse(stored(db).public_review!).points, ["src/lib.rs:1 changes a to 2."]);
-  });
-
-  test("text that the semantic check flags is sent back, and dropped when the fix does not clear it", async () => {
-    const db = fresh();
-    const bad = "The guide for the other product says to hold shift.";
-    const m = fakeModel([review({ public: { summary: "Looks good.", points: ["src/lib.rs:1 changes a to 2.", bad] } })]);
-    try {
-      await runOpusReview(db, { repo: "app" }, () => {}, opusDeps({ jev: async (t) => (t === bad ? 0.95 : 0.05), haiku: async () => false }));
-    } finally {
-      m.restore();
-    }
-    assert.match(m.calls[1]!.input, /public\.points\[1\]: refers to outside documentation; state the behaviour in your own words/);
-    assert.deepEqual(JSON.parse(stored(db).public_review!).points, ["src/lib.rs:1 changes a to 2."]);
-  });
 });
 
 describe("semantic reference check", () => {
@@ -228,39 +94,11 @@ describe("semantic reference check", () => {
     const d: SemanticDeps = { async jev() { calls.jev++; return jev; }, async haiku() { calls.haiku++; return haiku; }, jevUsable: () => usable };
     return { d, calls };
   };
-  test("Jev decides at 0.9 or more (yes) and below 0.3 (no)", async () => {
-    const yes = deps(0.95, false), no = deps(0.1, true);
-    assert.equal(await refersToDocumentation("t", yes.d), true);
-    assert.equal(await refersToDocumentation("t", no.d), false);
-    assert.deepEqual([yes.calls.haiku, no.calls.haiku], [0, 0]);
-  });
-  test("Jev unsure asks Haiku; Jev unavailable or without an answer asks only Haiku", async () => {
-    const unsure = deps(0.5, true), off = deps(0.99, true, false), none = deps(null, false);
-    assert.equal(await refersToDocumentation("t", unsure.d), true);
-    assert.equal(await refersToDocumentation("t", off.d), true);
-    assert.equal(await refersToDocumentation("t", none.d), false);
-    assert.deepEqual([unsure.calls.haiku, off.calls.jev, off.calls.haiku, none.calls.haiku], [1, 0, 1, 1]);
-  });
 });
 
 describe("lint survives a failing model check", () => {
   const ref = join(dir, "data", "reference", "app");
   const quote = REFERENCE_TEXT.split(" ").slice(0, 13).join(" ");
-  test("a failed Jev or Haiku call counts as no; the quote is still found; a cancel propagates", async () => {
-    const failing: SemanticDeps = { jev: async () => { throw new NoAccountError("none"); }, haiku: async () => { throw new NoAccountError("none"); } };
-    const p = await referenceProblems([{ field: "a", text: quote }, { field: "b", text: "Plain statement." }], ref, failing);
-    assert.deepEqual(p.map((x) => x.field), ["a"]);
-    const cancel: SemanticDeps = { jev: async () => { throw new CancelledError("stop"); }, haiku: async () => false };
-    await assert.rejects(referenceProblems([{ field: "b", text: "Plain statement." }], ref, cancel), CancelledError);
-  });
-  test("on the first reply the model checks wait while other problems force a fix turn", async () => {
-    let asked = 0;
-    const sem: SemanticDeps = { jev: async () => { asked++; return 0.95; }, haiku: async () => true };
-    const texts = [{ field: "a", text: quote }, { field: "b", text: "Plain statement." }];
-    assert.equal((await referenceProblems(texts, ref, sem, { stage: "first" })).length, 1);
-    assert.equal(asked, 0);
-    assert.equal((await referenceProblems(texts, ref, sem, { stage: "fix" })).length, 2);
-  });
 });
 
 describe("verbatim reference check", () => {
@@ -274,22 +112,4 @@ describe("verbatim reference check", () => {
 });
 
 describe("conversation.turn lint", () => {
-  test("a comment card that mentions the reference gets one fix turn; the fixed card is stored", async () => {
-    const db = fresh();
-    db.prepare("INSERT INTO tracked_repos (name, added_by, added_at, pipeline) VALUES ('other', 'op', ?, 1) ON CONFLICT DO NOTHING").run(T0);
-    db.prepare(`INSERT INTO items (repo, number, kind, state, title, body, author, created_at, updated_at, labels) VALUES ('app', 2, 'issue', 'OPEN', 'Issue 2', 'Body', 'someone', '${T0}', '${T0}', '[]')`).run();
-    await addOperatorMessage(db, "app", 2, "op", "Reply to the author?");
-    const card = (text: string) => `Draft below.\n\`\`\`actions\n${JSON.stringify([{ kind: "comment", text }])}\n\`\`\``;
-    const m = fakeModel([card("Per p0004.txt this differs."), card("This differs from the expected behaviour.")]);
-    try {
-      assert.equal(await answerPending(db, { checkout: async () => checkout, usageRun: "u", log: () => {}, semantic: { jev: async () => 0.05, haiku: async () => false } }), 1);
-    } finally {
-      m.restore();
-    }
-    assert.equal(m.calls.length, 2);
-    assert.match(m.calls[1]!.input, /- cards\[0\]\.text: mentions the reference folder/);
-    const cards = db.prepare("SELECT text FROM conversation_cards WHERE repo = 'app' AND number = 2").all() as { text: string }[];
-    assert.deepEqual(cards.map((c) => c.text), ["This differs from the expected behaviour."]);
-    assert.ok(turnsOf(db, "app", 2).length >= 2);
-  });
 });

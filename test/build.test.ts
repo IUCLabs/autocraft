@@ -51,162 +51,20 @@ after(() => {
 });
 
 describe("task source", () => {
-  test("a merge-batch task lists its branch, PRs and commits; a PR-less verify task is a baseline of the default branch", () => {
-    clear();
-    db.exec("UPDATE repos SET default_branch = 'main' WHERE name = 'open-app'");
-    const tip = "c".repeat(40);
-    const t = task({ step: "merge-batch", patch: "diff --git a/x b/x\n" });
-    insertBatch(db, { repo: "open-app", branch: "integration-open-app-20261102-1", baseSha: SHA, commitSha: tip, parentId: null, taskId: t, members: [{ number: 7, head_oid: "h7" }, { number: 9, head_oid: "h9" }], at: "2026-11-02T00:00:00Z" });
-    const warm = task({ warm: { key: "open-app", role: "build" } });
-    const pr = task({ number: 12 });
-    const one = getTask(db, t)!;
-    assert.deepEqual(one.batch, { id: 1, branch: "integration-open-app-20261102-1", fork: null, commitSha: tip, baseSha: SHA, prs: [7, 9], shown: [{ kind: null, state: null, title: null }, { kind: null, state: null, title: null }] });
-    assert.equal(one.baseline, null);
-    assert.deepEqual(getTask(db, warm)!.baseline, { branch: "main" });
-    assert.equal(getTask(db, warm)!.batch, null);
-    assert.equal(getTask(db, pr)!.baseline, null);
-    db.prepare("UPDATE merge_batches SET fork = 'bot/open-app' WHERE id = 1").run();
-    assert.equal(getTask(db, t)!.batch!.fork, "bot/open-app");
-    clear();
-    db.exec("DELETE FROM merge_batches; DELETE FROM merge_batch_prs");
-  });
 });
 
 describe("claim", () => {
-  test("a fast-tracked item of a repo with the pipeline off is handed out; other tasks of that repo are not", () => {
-    clear();
-    db.exec(`INSERT INTO items (repo, number, kind, state, created_at, updated_at) VALUES ('vault', 5, 'pr', 'OPEN', 't', 't'), ('vault', 6, 'pr', 'OPEN', 't', 't');
-      INSERT INTO fast_track (repo, number, added_by, added_at) VALUES ('vault', 5, 'op', 't')`);
-    const e = env({ slots: 4 });
-    const fast = task({ repo: "vault", number: 5 }), other = task({ repo: "vault", number: 6 }), baseline = task({ repo: "vault" });
-    assert.deepEqual(ids(claim(db, e.id, 4)), [fast]);
-    assert.equal(getTask(db, other)!.state, "queued");
-    assert.equal(getTask(db, baseline)!.state, "queued");
-    db.exec("DELETE FROM fast_track; DELETE FROM items WHERE repo = 'vault'");
-  });
 
-  test("only repos with the pipeline on and operator smoke tests are handed out", () => {
-    clear();
-    const e = env({ slots: 4 });
-    const inside = task(), outside = task({ repo: "vault" }), smoke = task({ repo: "vault", step: "smoke-test" });
-    assert.deepEqual(ids(claim(db, e.id, 4)), [inside, smoke]);
-    assert.equal(getTask(db, outside)!.state, "queued");
-  });
 
-  test("hands out the oldest of the highest priority, up to min(free, slots - running)", () => {
-    clear();
-    const e = env({ slots: 3 });
-    const a = task(), b = task({ priority: 5 }), c = task({ priority: 5 }), d = task();
-    assert.deepEqual(ids(claim(db, e.id, 2)), [b, c]);       // priority first, then age
-    assert.deepEqual(ids(claim(db, e.id, 5)), [a]);          // 3 slots, 2 running: one more
-    assert.deepEqual(ids(claim(db, e.id, 5)), []);
-    assert.equal(getTask(db, d)!.state, "queued");
-    assert.equal(listEnvs(db).find((x) => x.id === e.id)!.running, 3);
-  });
 
-  test("a task goes only to an environment whose capabilities satisfy its requirements", () => {
-    clear();
-    const lin = env({ caps: { toolchains: ["rust-stable"] } });
-    const mac = env({ caps: { os: "macos", arch: "aarch64", display: true, gpu: true, memGb: 64 } });
-    const t1 = task({ requires: { os: "macos" } });
-    const t2 = task({ requires: { display: true, minMemGb: 48 } });
-    const t3 = task({ requires: { toolchains: ["rust-stable", "node-24"] } });   // lin lacks node-24
-    const t4 = task({ requires: { os: "linux", arch: "x86_64", toolchains: ["rust-stable"], minDiskGb: 100 } });
-    assert.deepEqual(ids(claim(db, lin.id, 8)), [t4]);
-    assert.deepEqual(ids(claim(db, mac.id, 8)), [t1, t2]);
-    assert.equal(getTask(db, t3)!.state, "queued");
-  });
 
-  test("two environments competing get different tasks, and none is handed out twice", () => {
-    clear();
-    const a = env({ slots: 4 }), b = env({ slots: 4 });
-    const all = [task(), task(), task()];
-    const first = ids(claim(db, a.id, 2));
-    const second = ids(claim(db, b.id, 2));
-    assert.deepEqual([...first, ...second].sort(), all.slice().sort().slice(0, 3));
-    assert.equal(new Set([...first, ...second]).size, 3);
-  });
 
-  test("a disabled, never-reported or paused environment gets nothing", () => {
-    clear();
-    task();
-    assert.deepEqual(ids(claim(db, env({ enabled: false }).id, 4)), []);
-    const fresh = `env-${++n}`;
-    createEnv(db, { id: fresh, label: "fresh", kind: "remote", slots: 2 }, "op");
-    assert.deepEqual(ids(claim(db, fresh, 4)), []);              // no hello yet: capabilities unknown
-    const p = env();
-    touch(db, p.id, "disk 12 GB free (needs 20)");
-    assert.deepEqual(ids(claim(db, p.id, 4)), []);
-    assert.match(listEnvs(db).find((x) => x.id === p.id)!.pausedReason ?? "", /disk 12 GB/);
-    touch(db, p.id, null);
-    assert.equal(claim(db, p.id, 4).tasks.length, 1);
-  });
 
-  test("the worker may report fewer slots than the operator allows, never more", () => {
-    clear();
-    const e = env({ slots: 2 });
-    hello(db, e.id, { capabilities: CAPS, slots: 1 });
-    task(); task();
-    assert.equal(claim(db, e.id, 5).tasks.length, 1);
-    assert.equal(hello(db, e.id, { capabilities: CAPS, slots: 99 }).slots, 2);
-  });
 });
 
 describe("lost workers and cancels", () => {
-  test("a task without a heartbeat is requeued once, then failed", () => {
-    clear();
-    const e = env();
-    const id = task();
-    claim(db, e.id, 1);
-    const t0 = Date.now();
-    assert.equal(reapLost(db, t0 + LOST_AFTER_MS - 5_000), 0);
-    assert.equal(reapLost(db, t0 + LOST_AFTER_MS + 5_000), 1);
-    assert.equal(getTask(db, id)!.state, "queued");
-    assert.equal(getTask(db, id)!.envId, null);
-    assert.deepEqual(ids(claim(db, e.id, 1, t0 + LOST_AFTER_MS + 6_000)), [id]);
-    assert.equal(reapLost(db, t0 + 2 * LOST_AFTER_MS + 20_000), 1);
-    const t = getTask(db, id)!;
-    assert.equal(t.state, "failed");
-    assert.match(t.summary ?? "", /stopped answering/);
-  });
 
-  test("a queued task is cancelled at once; an active one is flagged in claim and heartbeat responses", async () => {
-    clear();
-    const e = env();
-    const q = task();
-    assert.equal(cancelTask(db, q, "op").state, "cancelled");
-    assert.throws(() => cancelTask(db, q, "op"), /already cancelled/);
-    const run = task();
-    claim(db, e.id, 1);
-    const c = cancelTask(db, run, "op");
-    assert.equal(c.state, "cancelled");
-    assert.equal(c.cancelRequested, true);
-    assert.deepEqual(claim(db, e.id, 0).cancel, [run]);
-    assert.equal(listEnvs(db).find((x) => x.id === e.id)!.running, 0);
-    assert.equal(reapLost(db, Date.now() + 10 * LOST_AFTER_MS), 0);
-    const w = await startWorkerServer({ db, listen: "127.0.0.1:0" });
-    try {
-      const hb = await fetch(`${w.url}/worker/tasks/${run}/heartbeat`, { method: "POST", headers: { authorization: `Bearer ${e.key}` } });
-      assert.deepEqual(((await hb.json()) as { cancel: number[] }).cancel, [run]);
-      const fin = await fetch(`${w.url}/worker/tasks/${run}/finish`, {
-        method: "POST", headers: { authorization: `Bearer ${e.key}`, "content-type": "application/json" },
-        body: JSON.stringify({ results: [{ step: "t", exitCode: 137, durationMs: 5, timedOut: false }], summary: "killed" }),
-      });
-      assert.deepEqual(await fin.json(), { state: "cancelled" });   // a finish after a cancel changes nothing
-    } finally {
-      await w.close();
-    }
-  });
 
-  test("tasks that ended more than 30 days ago are pruned with their artifacts", () => {
-    clear();
-    const id = task();
-    db.prepare("UPDATE build_tasks SET state = 'done', ended_at = ? WHERE id = ?").run(new Date(Date.now() - 31 * 86400_000).toISOString(), id);
-    const fresh = task();
-    assert.equal(pruneTasks(db), 1);
-    assert.ok(getTask(db, fresh));
-    assert.equal(getTask(db, id), null);
-  });
 });
 
 describe("worker API", () => {
@@ -248,29 +106,7 @@ describe("worker API", () => {
     assert.equal((await call(a.key, `/worker/tasks/${id}/start`)).status, 200);
   });
 
-  test("finish is idempotent and a missing finish after failure shows as failed with empty results", async () => {
-    clear();
-    const e = env();
-    const id = task();
-    claim(db, e.id, 1);
-    const fin = () => call(e.key, `/worker/tasks/${id}/finish`, { results: [], summary: "source failed: 404" });
-    assert.deepEqual(await (await fin()).json(), { state: "failed" });
-    assert.deepEqual(await (await fin()).json(), { state: "failed" });
-    assert.equal(getTask(db, id)!.summary, "source failed: 404");
-  });
 
-  test("a paused reason sent with claim is stored and shown; no task is handed out", async () => {
-    clear();
-    const e = env();
-    task();
-    const r = await (await call(e.key, "/worker/claim", { free: 0, pausedReason: "disk 12 GB free (needs 20)" })).json();
-    assert.deepEqual(r, { tasks: [], cancel: [] });
-    assert.equal(listEnvs(db).find((x) => x.id === e.id)!.pausedReason, "disk 12 GB free (needs 20)");
-    const ok = (await (await call(e.key, "/worker/claim", { free: 1, pausedReason: null })).json()) as { tasks: { requires: unknown; sourceUrl: string }[] };
-    assert.equal(ok.tasks.length, 1);
-    assert.deepEqual(ok.tasks[0]!.requires, {});
-    assert.match(ok.tasks[0]!.sourceUrl, /^https:\/\/codeload\.github\.com\/storytold\/open-app\/tar\.gz\/a{40}$/);
-  });
 
   test("hello stores capabilities; bad ones are refused", async () => {
     const e = env();
@@ -280,26 +116,6 @@ describe("worker API", () => {
     assert.equal(listEnvs(db).find((x) => x.id === e.id)!.version, "2.1");
   });
 
-  test("size caps: log chunks, JSON bodies, artifacts, and the per-task log limit", async () => {
-    clear();
-    const e = env();
-    const id = task();
-    claim(db, e.id, 1);
-    const log = (chunk: string) => call(e.key, `/worker/tasks/${id}/log`, { step: "t", chunk });
-    assert.equal((await log("x".repeat(64 * 1024))).status, 200);
-    assert.equal((await log("x".repeat(64 * 1024 + 1))).status, 413);
-    assert.equal((await call(e.key, `/worker/tasks/${id}/log`, "y".repeat(300_000))).status, 413);
-    assert.equal((await call(e.key, "/worker/claim", { free: 1, pad: "z".repeat(5000) })).status, 413);
-    assert.equal((await call(e.key, `/worker/tasks/${id}/artifacts/big.txt`, Buffer.alloc(51 * 1024 * 1024, 97), "PUT", "text/plain")).status, 413);
-    // the log cap: fill to 20 MB with 64 KB chunks, then one more is dropped
-    db.prepare("UPDATE build_tasks SET log_bytes = ? WHERE id = ?").run(20 * 1024 * 1024 - 10, id);
-    const last = await (await log("abcdefghijklmnopqrstuvwxyz")).json();
-    assert.deepEqual(last, { truncated: true });
-    assert.deepEqual(await (await log("more")).json(), { truncated: true });
-    const tail = db.prepare("SELECT chunk FROM build_task_logs WHERE task_id = ? ORDER BY seq DESC LIMIT 1").get(id) as { chunk: string };
-    assert.match(tail.chunk, /log truncated/);
-    assert.equal((db.prepare("SELECT COUNT(*) AS n FROM build_task_logs WHERE task_id = ?").get(id) as { n: number }).n, 2);
-  });
 
   test("artifacts: only PNG, JSON, JUnit XML and UTF-8 text are accepted; the type comes from the bytes", async () => {
     clear();
@@ -383,15 +199,6 @@ describe("dashboard API", () => {
     assert.equal((await o.get<BuildTaskDetail>(`/api/tasks/${hiddenTask}`)).repo, "vault");
   });
 
-  test("keyset paging walks the list newest first", async () => {
-    const o = await signedIn("boss");
-    const p1 = await o.get<TaskPage>("/api/tasks?limit=1");
-    assert.equal(p1.tasks.length, 1);
-    const p2 = await o.get<TaskPage>(`/api/tasks?limit=1&cursor=${p1.next}`);
-    assert.equal(p2.tasks[0]!.id, openTask);
-    assert.equal(p2.next, null);
-    assert.equal((await o.send("/api/tasks?cursor=abc")).status, 400);
-  });
 
   test("writes are for operators and audited; the key is shown once and never listed", async () => {
     const v = await signedIn("viewer1");

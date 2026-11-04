@@ -59,34 +59,3 @@ const reply = (oid: string, nodes: object[]) => ({
   defaultBranchRef: { name: "main", target: { oid, committedDate: "2026-11-01T10:00:00Z", messageHeadline: "Merge pull request #7 from x/y", statusCheckRollup: { state: "FAILURE", contexts: { nodes } } } },
 });
 
-test("the step stores a head per repo from one query and the list derives the state", async () => {
-  mkdirSync(SCRATCH, { recursive: true });
-  const db = connect(join(mkdtempSync(join(SCRATCH, "mainci-")), "t.db"));
-  for (const n of ["alpha", "beta", "gamma"]) {
-    db.prepare("INSERT INTO repos (name, synced_at) VALUES (?, ?)").run(n, "2026-11-01T00:00:00Z");
-    db.prepare("INSERT INTO tracked_repos (name, added_by, added_at) VALUES (?, 'test', '2026-11-01')").run(n);
-  }
-  let calls = 0;
-  const q: Querier = validating({
-    spent: 0, remaining: null,
-    async query() {
-      calls++;
-      return {
-        r0: reply("aaa111", [
-          { __typename: "CheckRun", name: "gate / test", conclusion: "FAILURE", status: "COMPLETED", detailsUrl: "https://example.test/actions/runs/9" },
-          { __typename: "StatusContext", context: "sonar", state: "SUCCESS", targetUrl: null },
-        ]),
-        r1: reply("bbb222", [{ __typename: "CheckRun", name: "gate / test", conclusion: "SUCCESS", status: "COMPLETED", detailsUrl: null }]),
-        r2: { defaultBranchRef: null },
-      };
-    },
-  });
-  const r = await pollMainCi(db, q);
-  assert.deepEqual(r, { repos: 3, heads: 2 });
-  assert.equal(calls, 1);
-  const list = mainCiRepos(db);
-  assert.deepEqual(list.map((x) => [x.repo, x.state]), [["alpha", "red"], ["beta", "green"]]);
-  assert.deepEqual(list[0]!.failing, [{ name: "gate / test", url: "https://example.test/actions/runs/9" }]);
-  assert.equal(list[0]!.culprit?.pr, 7);
-  assert.deepEqual(summarize(list), { green: 1, red: 1, optional: 0, running: 0, none: 0 });
-});

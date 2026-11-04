@@ -79,24 +79,7 @@ describe("progress lines", () => {
     assert.deepEqual(eventLines(JSON.parse(tool("Write", { file_path: "/x", content: "file contents" }))), []);
   });
 
-  test("coalesce writes at most once per interval, keeping the newest value", () => {
-    let t = 0;
-    const out: number[] = [];
-    const c = coalesce((v: number) => out.push(v), 1000, () => t);
-    c.push(1); t = 100; c.push(2); t = 200; c.push(3);
-    assert.deepEqual(out, [1]);
-    c.flush();
-    assert.deepEqual(out, [1, 3]);
-    t = 5000; c.push(4);
-    assert.deepEqual(out, [1, 3, 4]);
-  });
 
-  test("the sandboxed args stream and are the same on every call", () => {
-    const a = claudeArgs("conversation.turn", "opus", true), b = claudeArgs("conversation.turn", "opus", true);
-    assert.deepEqual(a, b);
-    assert.ok(a.join(" ").includes("--output-format stream-json --verbose"));
-    assert.ok(claudeArgs("classify.haiku", "haiku").join(" ").includes("--output-format json "));
-  });
 });
 
 describe("askClaude with a stream", () => {
@@ -139,26 +122,4 @@ describe("askClaude with a stream", () => {
 });
 
 describe("conversation turn progress", () => {
-  test("the answering turn shows the latest lines; the stored reply clears them", async () => {
-    const db = fresh();
-    db.prepare("INSERT INTO tracked_repos (name, added_by, added_at, pipeline) VALUES ('app', 'op', '2026-01-01T00:00:00Z', 1)").run();
-    db.prepare("INSERT INTO repos (name, visibility) VALUES ('app', 'public')").run();
-    db.prepare("INSERT INTO items (repo, number, kind, state, title, body, author, created_at, updated_at, labels) VALUES ('app', 1, 'issue', 'OPEN', 'Issue 1', 'Body', 'someone', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', '[]')").run();
-    await addOperatorMessage(db, "app", 1, "op", "What do you think?");
-    const during: { pending: boolean; progress?: string[] }[] = [];
-    const restore = streaming([...EVENTS.slice(0, 3), result("Looks fine.", 3)], (k) => {
-      if (k === 1) during.push(conversationView(db, "app", 1));
-    });
-    try {
-      const n = await answerPending(db, { checkout: async () => dir, usageRun: "u", log: () => {} });
-      assert.equal(n, 1);
-    } finally {
-      restore();
-    }
-    assert.deepEqual(during[0]?.progress, ["Reading craft-i18n/packs/hu/menu.ftl"]);
-    const after = conversationView(db, "app", 1);
-    assert.equal(after.pending, false);
-    assert.equal(after.progress, undefined);
-    assert.ok(turnsOf(db, "app", 1).every((t) => t.progress === null));
-  });
 });

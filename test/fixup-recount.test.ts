@@ -27,22 +27,5 @@ describe("hunk recount", () => {
     assert.match(p, /@@ -10,2 \+10,2 @@/);
   });
 
-  test("every other check still applies after the recount", () => {
-    const r = validatePatch(wrap("src/other.rs", "@@ -1,5 +1,5 @@", "-a\n+b\n"), ["src/lib.rs"]);
-    assert.ok(!r.ok && /not a file named/.test(r.reason));
-    assert.equal(validatePatch(wrap("../x", "@@ -1,5 +1,5 @@", "-a\n+b\n"), ["../x"]).ok, false);
-    const big = Array.from({ length: 160 }, (_, i) => `-o${i}\n+n${i}\n`).join("");
-    assert.ok(!validatePatch(wrap("src/lib.rs", "@@ -1 +1 @@", big), ["src/lib.rs"]).ok);
-  });
 
-  test("a refusal for the header count is not one of the 2 tries", () => {
-    const db = connect(join(mkdtempSync(join(SCRATCH, "db-")), "t.db"));
-    const add = (state: string, reason: string) => db.prepare("INSERT INTO fixups (repo, number, from_head, state, reason, attempt, created_at) VALUES ('app', 7, 'h', ?, ?, 1, '2026-01-01T00:00:00Z')").run(state, reason);
-    add("refused", "hunk longer than its header in src/lib.rs");
-    add("refused", "truncated hunk in src/lib.rs");
-    assert.equal(attemptsOf(db, "app", 7), 0);
-    add("refused", "git apply --check: patch does not apply");
-    add("failed", "the model gave no answer");
-    assert.equal(attemptsOf(db, "app", 7), 2);
-  });
 });

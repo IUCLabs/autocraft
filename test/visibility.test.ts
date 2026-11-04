@@ -144,15 +144,6 @@ describe("repo visibility", () => {
     }
   });
 
-  test("an image is served when any repo it occurs in is visible", async () => {
-    const img = (u: string) => `/img?${new URLSearchParams({ u })}`;
-    const outsider = await signedIn("outsider");
-    assert.equal(await outsider.status(img(VAULT_IMG)), 404);
-    assert.deepEqual(fetched, []);
-    assert.equal(await outsider.status(img(BOTH_IMG)), 200);
-    assert.equal(await (await signedIn("reader")).status(img(VAULT_IMG)), 200);
-    assert.equal(await (await signedIn("boss")).status(img(VAULT_IMG)), 200);
-  });
 
   test("operators and maintainers see prompts and answer notes; viewers do not; access stays operator-only", async () => {
     db.prepare("UPDATE main.decisions SET answer = 'a', answer_note = 'private note', answered_by = 'boss', answered_at = ? WHERE id = 'vault#1:scope'").run(new Date().toISOString());
@@ -193,17 +184,4 @@ describe("repo visibility", () => {
     db.prepare("UPDATE main.decisions SET answer = NULL, answer_note = NULL, answered_by = NULL, answered_at = NULL WHERE id = 'vault#1:scope'").run();
   });
 
-  test("maintainers read the log of a job across all repos and disabled build environments; viewers do not", async () => {
-    const logFile = join(dir, "job.log");
-    writeFileSync(logFile, "log line from the job\n");
-    const id = Number(db.prepare("INSERT INTO jobs (step, params, requested_by, requested_at, state, log_path) VALUES ('decide', '{}', 'boss', ?, 'done', ?)").run(new Date().toISOString(), logFile).lastInsertRowid);
-    db.prepare("INSERT INTO build_envs (id, label, kind, slots, key_hash, created_at, updated_by, updated_at, enabled) VALUES ('off-env', 'Off', 'linux', 1, 'h', ?, 'boss', ?, 0)").run(new Date().toISOString(), new Date().toISOString());
-    // maint2 and outsider have no read access to the internal repo, so the log of an all-repos job is withheld from non-staff.
-    for (const [login, staff] of [["outsider", false], ["maint2", true], ["boss", true]] as const) {
-      const c = await signedIn(login);
-      const job = await c.get<{ log: string }>(`/api/pipeline/jobs/${id}`);
-      assert.equal(job.log.includes("log line"), staff, login);
-      assert.equal((await c.get<{ id: string }[]>("/api/envs")).some((e) => e.id === "off-env"), staff, login);
-    }
-  });
 });

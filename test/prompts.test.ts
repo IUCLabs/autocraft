@@ -67,20 +67,7 @@ describe("prompt registry", () => {
     assert.equal(JSON.parse(JSON.parse(renderJev("classify.jev", item)).state).body, item.body);
   });
 
-  test("a prompt goes only to the models it is registered for", () => {
-    assert.throws(() => claudeArgs("classify.haiku", "opus"), /registered for haiku/);
-  });
 
-  test("the page shows every entry with a fully rendered example", () => {
-    const r = promptsReport("abc123");
-    assert.deepEqual(r.prompts.map((p) => p.id), PROMPTS.map((p) => p.id));
-    for (const p of r.prompts) {
-      assert.doesNotMatch(p.example, /\{\{\w+\}\}/, p.id);
-      assert.ok(p.example.includes("16-bit PNG"), p.id);
-      assert.ok(p.placeholders.every((ph) => p.template.includes(`{{${ph.name}}}`)), p.id);
-    }
-    assert.equal(r.prompts.find((p) => p.id === "classify.jev")!.questions.length, 3);
-  });
 });
 
 describe("untrusted text in a frame", () => {

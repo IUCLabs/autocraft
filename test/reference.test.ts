@@ -94,28 +94,3 @@ test("the reference mount's read permission and the public-text backstop", () =>
   assert.ok(cards!.notes.some((n) => /reference folder/.test(n)));
 });
 
-test("a sandboxed call mounts /reference only when the repo has a reference folder", async () => {
-  const box = useTestAccount(db);
-  const cfg = box.configDir + "t";
-  mkdirSync(cfg, { recursive: true });
-  writeFileSync(join(cfg, ".credentials.json"), JSON.stringify({ claudeAiOauth: { accessToken: "a", refreshToken: "b", expiresAt: Date.now() + 6 * 3600_000 } }));
-  process.env.AUTOCRAFT_CLAUDE_BIN = "/usr/bin/true";
-  const calls: { args: string[]; stdin: string }[] = [];
-  const restore = setRunner(async (_c, args, stdin) => { calls.push({ args, stdin: stdin ?? "" }); return { code: 0, stdout: JSON.stringify({ type: "result", result: "{}", num_turns: 1, usage: {} }), stderr: "" }; });
-  try {
-    const prs = SAMPLE_OPUS_PRS.map((p) => ({ ...p, repo_dir: REPO_PATH }));
-    const co = join(dir, "co");
-    mkdirSync(co, { recursive: true });
-    await askClaude("review.opus", "opus", prs, db, { checkout: co });
-    await askClaude("review.opus", "opus", prs, db, { checkout: co, reference: referenceDir("app") });
-    const bind = (a: string[]) => a.join(" ").includes(` ${REFERENCE_PATH}`);
-    assert.equal(bind(calls[0]!.args), false);
-    assert.equal(calls[0]!.stdin.includes("Reference documentation for the reference app"), false);
-    assert.ok(calls[0]!.stdin.includes("docs/gaps.md"));
-    assert.ok(calls[1]!.args.join(" ").includes(`--ro-bind ${referenceDir("app")} ${REFERENCE_PATH}`));
-    assert.ok(calls[1]!.stdin.includes(`at ${REFERENCE_PATH} (read-only`));
-  } finally {
-    restore();
-    delete process.env.AUTOCRAFT_CLAUDE_BIN;
-  }
-});

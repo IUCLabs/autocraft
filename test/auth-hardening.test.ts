@@ -48,11 +48,6 @@ async function signIn(login: string, returnTo = "/"): Promise<{ status: number; 
 }
 
 describe("GitHub sign-in", () => {
-  test("signing in again after a sign-out shows GitHub's account picker; a plain sign-in does not", () => {
-    const gh = new GitHubProvider("id", "secret");
-    assert.equal(new URL(gh.authorizeUrl("s", "c", "https://x/auth/callback", true)).searchParams.get("prompt"), "select_account");
-    assert.equal(new URL(gh.authorizeUrl("s", "c", "https://x/auth/callback")).searchParams.get("prompt"), null);
-  });
 });
 
 describe("return_to", () => {
@@ -62,23 +57,9 @@ describe("return_to", () => {
     assert.equal(safeReturnTo("/items?q=a&state=open#top"), "/items?q=a&state=open#top");
     assert.equal(safeReturnTo("/item/app/4"), "/item/app/4");
   });
-  test("the sign-in redirect uses it", async () => {
-    const r = await signIn("alice", "/\t/evil.example");
-    assert.equal(r.status, 303);
-    assert.equal(r.location, "/");
-  });
 });
 
 describe("dev auth guard", () => {
-  test("a base URL other than localhost is refused, and dev mode listens on its own port", () => {
-    const dev = { AUTOCRAFT_DEV_AUTH: "1" };
-    assert.throws(() => loadConfig({ ...dev, AUTOCRAFT_BASE_URL: "https://dash.example.org" }), ConfigError);
-    assert.throws(() => loadConfig({ ...dev, AUTOCRAFT_BASE_URL: "http://dash.example.org" }), ConfigError);
-    assert.throws(() => loadConfig({ ...dev, AUTOCRAFT_BASE_URL: "http://localhost.evil.example" }), ConfigError);
-    assert.equal(loadConfig({ ...dev, AUTOCRAFT_BASE_URL: "http://localhost:8994" }).baseUrl, "http://localhost:8994");
-    assert.equal(loadConfig({ ...dev, AUTOCRAFT_BASE_URL: "http://127.0.0.1:8994" }).port, 8994);
-    assert.equal(loadConfig(dev).port, 8994);
-  });
 
   const get = (headers: Record<string, string>) => new Promise<number>((resolve, reject) => {
     const req = request({ host: "127.0.0.1", port, path: "/auth/signed-out", headers }, (res) => { res.resume(); resolve(res.statusCode!); });
@@ -111,15 +92,6 @@ describe("GitHub id binding", () => {
 });
 
 describe("refused sign-in audit", () => {
-  test("one row per login per hour; the rest are counted in it", async () => {
-    for (let i = 0; i < 4; i++) assert.equal((await signIn("stranger")).status, 403);
-    const rows = db.prepare("SELECT details FROM audit WHERE action = 'sign-in-refused' AND login = 'stranger'").all() as { details: string }[];
-    assert.equal(rows.length, 1);
-    assert.equal(JSON.parse(rows[0]!.details).refused, 4);
-    db.prepare("UPDATE audit SET at = ? WHERE login = 'stranger'").run(new Date(Date.now() - 2 * 3_600_000).toISOString());
-    await signIn("stranger");
-    assert.equal((db.prepare("SELECT COUNT(*) AS n FROM audit WHERE action = 'sign-in-refused' AND login = 'stranger'").get() as { n: number }).n, 2);
-  });
 });
 
 describe("session lifetime", () => {

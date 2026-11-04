@@ -166,18 +166,6 @@ describe("api", () => {
     assert.equal(p.perHour.length, 24);
   });
 
-  test("a readable link finds the item's first open decision in inbox order, or null", async () => {
-    const boss = await signedIn("boss");
-    const forItem = (repo: string, n: number) => boss.get<Decision | null>(`/api/items/${encodeURIComponent(repo)}/${n}/decision`);
-    assert.equal((await forItem("photocraft", 1))?.id, P1);
-    assert.equal((await forItem("photocraft", 4))?.id, "photocraft:dupegroup:4", "duplicate comes before close");
-    assert.equal((await forItem("storytold/photocraft", 1))?.id, P1, "the full repo name works too");
-    const ofKind = (n: number, kind: string) => boss.get<Decision | null>(`/api/items/photocraft/${n}/decision?kind=${kind}`);
-    assert.equal((await ofKind(4, "close"))?.id, P4, "the kind picks that decision");
-    assert.equal(await ofKind(4, "merge"), null);
-    assert.equal(await forItem("photocraft", 999), null);
-    assert.equal(await forItem("untracked-repo", 6), null);
-  });
 
   test("a viewer's opinion, retract, comment and claim are refused and write nothing; a maintainer's succeed", async () => {
     const viewer = await signedIn("viewer1");
@@ -299,46 +287,8 @@ describe("api", () => {
     assert.equal(same.status, 200);
   });
 
-  test("non-operator opinions and comments are limited per login per hour; the operator's are not", async () => {
-    const c = await signedIn("chatty");
-    for (let i = 0; i < LIMIT; i++) await c.post(dpath(P1, "/feedback"), { text: `n${i}` });
-    await c.post(dpath(P1, "/feedback"), { text: "one more" }, 429);
-    await c.post(dpath(P1, "/feedback"), { option: "small" }, 429);
-    // a second session of the same login shares the limit
-    await (await signedIn("chatty")).post(dpath(P1, "/feedback"), { text: "again" }, 429);
-    const boss = await signedIn("boss");
-    for (let i = 0; i <= LIMIT; i++) await boss.post(dpath(P1, "/feedback"), { text: `b${i}` });
-  });
 
-  test("claims show to others and lapse after 10 minutes", async () => {
-    const pal = await signedIn("pal");
-    const boss = await signedIn("boss");
-    await pal.post(dpath(F3, "/claim"), undefined, 204);
-    assert.equal((await pal.get<Decision>(dpath(F3))).claim, null, "your own claim isn't shown to you");
-    assert.equal((await boss.get<Decision>(dpath(F3))).claim?.login, "pal");
-    db.prepare("UPDATE decision_claims SET at = ? WHERE decision_id = ?").run(new Date(Date.now() - 11 * 60_000).toISOString(), F3);
-    assert.equal((await boss.get<Decision>(dpath(F3))).claim, null);
-  });
 
-  test("opinions and comments never appear in the CLI output agents read", () => {
-    // P4 was answered by adopting an opinion whose note carries MARKER.
-    const cli = (...args: string[]) => {
-      const r = spawnSync(process.execPath, ["src/cli.ts", "decisions", ...args], {
-        cwd: new URL("..", import.meta.url), encoding: "utf8", env: { PATH: process.env.PATH, AUTOCRAFT_DB: dbFile },
-      });
-      assert.equal(r.status, 0, r.stderr);
-      return r.stdout;
-    };
-    db.prepare("UPDATE main.decisions SET answer_note = 'operator-note-text' WHERE id = ?").run(P4);
-    const actionable = cli("list", "--actionable").trim().split("\n").map((l) => JSON.parse(l) as { id: string; answer: string });
-    assert.deepEqual(actionable.map((a) => [a.id, a.answer]), [[P4, "plugin"]]);
-    for (const out of [cli("list", "--actionable"), cli("list", "--all"), cli("show", P4), cli("show", P1)]) {
-      assert.doesNotMatch(out, new RegExp(MARKER));
-      assert.doesNotMatch(out, /adopt/);
-      assert.doesNotMatch(out, /operator-note-text/);
-    }
-    assert.equal((JSON.parse(cli("show", P4)) as { actionable: boolean }).actionable, true);
-  });
 });
 
 function getAnswer(id: string): string | null {

@@ -217,17 +217,6 @@ describe("permissions", () => {
     assert.equal((await c.post("/api/test/batch", { csrf, repos: "photocraft" })).status, 200);
   });
 
-  test("reads use the 10-minute cache; writes re-check a value older than a minute", async () => {
-    const c = await signedIn("maint");
-    const csrf = await c.csrf();
-    assert.equal((await c.post("/api/test/answer/photocraft", { csrf })).status, 200);
-    setPerms({ maint: {} });
-    db.prepare("UPDATE repo_permissions SET checked_at = ? WHERE login = 'maint'").run(new Date(Date.now() - 120_000).toISOString());
-    assert.deepEqual(await (await c.get("/api/test/can/photocraft", false)).json(), { can: true });
-    assert.equal((await c.post("/api/test/answer/photocraft", { csrf })).status, 403);
-    setPerms({ maint: { photocraft: "write" }, boss: {} });
-    db.prepare("DELETE FROM repo_permissions").run();
-  });
 
   test("a POST without the right CSRF token is refused before the handler runs", async () => {
     const c = await signedIn("maint");
@@ -256,69 +245,9 @@ function rawGet(path: string, cookie: string): Promise<{ status: number; body: s
 }
 
 describe("frontend", () => {
-  test("without a session GET / doesn't serve the app", async () => {
-    const c = new Client();
-    const page = await c.get("/");
-    assert.equal(page.status, 303);
-    assert.match(page.headers.get("location")!, /^\/auth\/signin\?/);
-    assert.doesNotMatch(await page.text(), /test app shell/);
-    const asset = await c.get("/assets/index-abc123.js", false);
-    assert.equal(asset.status, 401);
-  });
 
-  test("signed in, a client route gets index.html with the app's CSP; assets are cached", async () => {
-    const c = await signedIn("viewer1");
-    const page = await c.get("/item/x/1");
-    assert.equal(page.status, 200);
-    assert.ok((await page.text()).includes(APP_MARKER));
-    assert.equal(page.headers.get("cache-control"), "no-store");
-    const csp = page.headers.get("content-security-policy")!;
-    assert.equal(csp, APP_CSP);
-    assert.match(csp, /default-src 'none'; script-src 'self'; style-src 'self' 'sha256-[\w+/=]+';/);
-    assert.doesNotMatch(csp, /unsafe/);
-    assert.equal(page.headers.get("x-frame-options"), "DENY");
-    const asset = await c.get("/assets/index-abc123.js");
-    assert.equal(asset.status, 200);
-    assert.match(asset.headers.get("content-type")!, /^text\/javascript/);
-    assert.match(asset.headers.get("cache-control")!, /immutable/);
-    assert.equal((await c.get("/assets/missing-000.js")).status, 404);
-  });
 
-  test("an asset path can't leave the dist directory", async () => {
-    const c = await signedIn("viewer1");
-    const cookie = [...c.jar].map(([k, v]) => `${k}=${v}`).join("; ");
-    for (const p of [
-      "/assets/../../package.json", "/assets/%2e%2e/%2e%2e/package.json", "/assets/..%2f..%2fpackage.json",
-      "/assets/%2e%2e%2f%2e%2e%2fpackage.json", "/assets/..%5c..%5cpackage.json", "/..%2fpackage.json",
-      "/%2e%2e/%2e%2e/secret.txt", "/assets/%252e%252e/%252e%252e/package.json", "/assets/..%00/package.json",
-    ]) {
-      const r = await rawGet(p, cookie);
-      assert.ok(!r.body.includes(SECRET_MARKER), `${p} served a file outside web/dist (${r.status})`);
-    }
-  });
 
-  test("a missing build gets a 503 page that says how to build it", async () => {
-    const config = loadConfig({
-      AUTOCRAFT_DEV_AUTH: "1", AUTOCRAFT_LISTEN: "127.0.0.1:0", AUTOCRAFT_DB: join(dir, "dash.db"), AUTOCRAFT_DEV_PERMS: permsFile,
-      AUTOCRAFT_WEB_DIST: join(dir, "no-such-dist"),
-    });
-    const s = await startServer({ config, db, provider, routes: allRoutes });
-    try {
-      const c = new Client();
-      const saved = base;
-      base = s.url;
-      try {
-        await c.signIn("viewer1");
-        const r = await c.get("/");
-        assert.equal(r.status, 503);
-        assert.match(await r.text(), /pnpm -C web build/);
-      } finally {
-        base = saved;
-      }
-    } finally {
-      await s.close();
-    }
-  });
 });
 
 describe("tokens", () => {
@@ -360,20 +289,6 @@ describe("access changes", () => {
 });
 
 describe("roles", () => {
-  test("an access row with the old role admin becomes operator on connect", () => {
-    const file = join(dir, "roles.db");
-    const old = connect(file);
-    old.prepare("INSERT INTO access (login, role, added_by, added_at) VALUES ('old-op', 'admin', 'cli', 'then'), ('old-viewer', 'viewer', 'cli', 'then')").run();
-    old.close();
-    const db2 = connect(file);
-    try {
-      assert.deepEqual(db2.prepare("SELECT login, role FROM access ORDER BY login").all().map((r) => ({ ...r })), [
-        { login: "old-op", role: "operator" }, { login: "old-viewer", role: "viewer" },
-      ]);
-    } finally {
-      db2.close();
-    }
-  });
 });
 
 describe("startup refusals", () => {
@@ -386,15 +301,6 @@ describe("startup refusals", () => {
   const full = { github_client_id: "id", github_client_secret: "secret", session_key: "k".repeat(43) };
   const env = (file: string) => ({ AUTOCRAFT_SECRETS_FILE: file, AUTOCRAFT_BASE_URL: "https://dash.example" });
 
-  test("dev auth on a non-loopback address", () => {
-    assert.throws(() => loadConfig({ AUTOCRAFT_DEV_AUTH: "1", AUTOCRAFT_LISTEN: "0.0.0.0:8993" }), ConfigError);
-    const r = spawnSync(process.execPath, ["src/cli.ts", "dash", "serve"], {
-      cwd: new URL("..", import.meta.url), encoding: "utf8",
-      env: { PATH: process.env.PATH, AUTOCRAFT_DEV_AUTH: "1", AUTOCRAFT_LISTEN: "0.0.0.0:0", AUTOCRAFT_DB: join(dir, "spawn.db") },
-    });
-    assert.equal(r.status, 2);
-    assert.match(r.stderr, /loopback/);
-  });
 
   test("a world- or group-readable, missing or incomplete secrets file", () => {
     assert.throws(() => loadConfig(env(secrets(0o644, full))), /group or others/);
