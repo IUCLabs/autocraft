@@ -37,7 +37,7 @@ export const arr = <T = unknown>(s: string | null | undefined): T[] => { const v
 export const obj = (s: string | null | undefined): Record<string, unknown> => { const v = json<unknown>(s, {}); return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {}; };
 /** One format for every time, so mixed formats sort right; null when it is not a time. */
 export const iso = (at: unknown): string | null => { const t = typeof at === "string" ? Date.parse(at) : NaN; return Number.isNaN(t) ? null : new Date(t).toISOString(); };
-const plural = (n: number, w: string): string => `${n} ${w}${n === 1 ? "" : "s"}`;
+const plural = (n: number, w: string): string => `${n} ${w}${n === 1 ? "" : /(s|x|z|ch|sh)$/.test(w) ? "es" : "s"}`;
 export const rows = <T>(db: DatabaseSync, sql: string, ...args: (string | number)[]): T[] => db.prepare(sql).all(...args) as T[];
 const count = (xs: unknown[]): string => plural(xs.length, "finding");
 
