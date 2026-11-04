@@ -92,6 +92,7 @@ const ADDED_COLUMNS: [table: string, column: string, type: string][] = [
   // A model-resolved conflict merge waiting for its lint task: the resolved files (JSON) and the task.
   ["conflict_merges", "patch", "TEXT"],
   ["conflict_merges", "lint_task", "INTEGER"],
+  ["conflict_merges", "lint_round", "INTEGER"],
   ["main_fixes", "pr_number", "INTEGER"],
   ["main_fixes", "pr_url", "TEXT"],
 ];

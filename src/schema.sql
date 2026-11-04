@@ -1070,7 +1070,7 @@ CREATE TABLE IF NOT EXISTS conflict_merges (
   state TEXT NOT NULL,
   reason TEXT,                        -- one line, public-safe
   files TEXT,                         -- JSON [path] the resolver resolved ([] for a clean merge)
-  -- state linting: patch (JSON [{path, mode, content}], the resolved files) and lint_task wait for the lint task of the resolution
+  -- state linting: patch (JSON [{path, mode, content}], the resolved files), lint_task and lint_round (1 = first resolution) wait for the lint task of the resolution
   attempt INTEGER NOT NULL,
   created_at TEXT NOT NULL
 );

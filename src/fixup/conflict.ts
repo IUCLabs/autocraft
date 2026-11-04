@@ -10,6 +10,7 @@ import { audit } from "../dash/audit.ts";
 import type { By } from "../core/gates.ts";
 import { guard, liveOf } from "../core/guard.ts";
 import { ghAskComment, ghComment, pushBranch, type Writer } from "../github/write.ts";
+import { LINT_MAX_ROUNDS } from "../core/rules.ts";
 import { foldFormat, queueLint, readLint } from "../prepush/index.ts";
 import { cachedDiff } from "../review/diff.ts";
 import { checkLine, parseCheck, recordCheck } from "../patchcheck/index.ts";
@@ -32,6 +33,8 @@ const MAX_CONFLICT_FILES = 12;
 const ALL_SECTIONS_CAP = 360_000;
 /** Lines of context per section the check gets. */
 const CHECK_CONTEXT = 10;
+/** Characters of the earlier resolution's diff the resolver is shown with the findings. */
+const PREVIOUS_CAP = 40_000;
 const lastLines = (text: string, n: number): string => text.split(/(?<=\n)/).slice(-n).join("");
 
 type CheckSections = NonNullable<FixupCheckInput["conflict"]>["files"];
@@ -141,6 +144,9 @@ export async function mergeConflict(db: DatabaseSync, x: ConflictRun, c: Conflic
     let checkout: string | undefined;
     // Refused for the same reason at every run for this head: recorded as a skip so the head is not tried again, and never claimed.
     const refuse = (reason: string) => { held("skipped", reason); };
+    /** Clippy findings on a stored resolution: it is resolved again with them, as a patch is in Fix-up. */
+    let again: { diff: string; findings: string[] } | null = null;
+    let formatDiff: string | null = null;
     if (c.lint) {
       // The stored resolution is rebuilt on the same two parents, then gated on its lint task.
       files = c.lint.files;
@@ -151,12 +157,19 @@ export async function mergeConflict(db: DatabaseSync, x: ConflictRun, c: Conflic
       } finally {
         rmSync(scratch, { recursive: true, force: true });
       }
-      const res = readLint(db, c.lint.task ?? -1, { against: await git.diffText(merge.tree, tree) });
+      const resolutionDiff = await git.diffText(merge.tree, tree);
+      const res = readLint(db, c.lint.task ?? -1, { against: resolutionDiff });
       if (res.kind === "pending") { x.log(`  ${ref}: the lint task is still running`); return; }
       if (res.kind === "infra-failed") { fail("failed", `lint: ${res.reason}`); return; }
-      if (res.findings.length) { fail("rejected", `clippy findings on the resolution: ${oneLine(res.findings[0]!.message)}`); return; }
-      if (res.formatDiff) {
-        const fold = await foldFormat(git, head, await git.diffText(head, tree), res.formatDiff, x.d.root);
+      if (res.findings.length) {
+        if (c.lint.round >= LINT_MAX_ROUNDS) { fail("rejected", `clippy findings remain after ${c.lint.round} rounds: ${oneLine(res.findings[0]!.message)}`); return; }
+        again = { diff: resolutionDiff.slice(0, PREVIOUS_CAP), findings: res.findings.map((f) => f.rendered) };
+      }
+      formatDiff = res.formatDiff;
+    }
+    if (c.lint && !again) {
+      if (formatDiff) {
+        const fold = await foldFormat(git, head, await git.diffText(head, tree), formatDiff, x.d.root);
         if (!fold.ok) { fail("refused", fold.reason); return; }
         const dir = mkdtempSync(join(x.d.root, ".index-"));
         try {
@@ -169,8 +182,7 @@ export async function mergeConflict(db: DatabaseSync, x: ConflictRun, c: Conflic
       }
       const changes = await git.rawChanges(merge.tree, tree);
       if (changes.some((ch) => !files.includes(ch[3]!) || ch[0] !== ch[1])) { fail("refused", "the resolution would change files or modes outside the conflicted files"); return; }
-      const again = await live(db, x, c);
-      if (!again) return;
+      if (!await live(db, x, c)) return;
     } else if (merge.clean) await x.claim(c);
     else {
       files = merge.conflicted;
@@ -212,7 +224,7 @@ export async function mergeConflict(db: DatabaseSync, x: ConflictRun, c: Conflic
       // One resolver call and one check per file, so the size caps apply to a file, not to the whole PR. Every file must pass before anything is pushed.
       for (const t of shown) {
         const f = t.view;
-        const reply = await x.d.resolve(db, [{ ref, title: c.title, body, review_reason: c.reason, base: c.base, files: [f], ...repoDir }], checkout);
+        const reply = await x.d.resolve(db, [{ ref, title: c.title, body, review_reason: c.reason, base: c.base, files: [f], ...(again ? { previous: { patch: again.diff, findings: again.findings } } : {}), ...repoDir }], checkout);
         if (reply === null) { fail("failed", `the model gave no answer for ${f.path}`); return; }
         const res = parseResolution(reply, f.sections.map((s) => s.id));
         if (!res.ok) { fail("refused", `${f.path}: ${res.reason}`); return; }
@@ -238,15 +250,18 @@ export async function mergeConflict(db: DatabaseSync, x: ConflictRun, c: Conflic
       }
       const changes = await git.rawChanges(merge.tree, tree);
       if (changes.some((ch) => !files.includes(ch[3]!) || ch[0] !== ch[1])) { fail("refused", "the resolution would change files or modes outside the conflicted files"); return; }
-      const again = await live(db, x, c);
-      if (!again) return;
-      // A resolution with Rust files is stored and linted before it is pushed (the collect step above pushes it).
+      if (!await live(db, x, c)) return;
+      // A resolution with Rust files is stored and linted before it is pushed (the collect step above pushes it, or asks again with the findings).
       const rs = resFiles.map((f) => f.path).filter((p) => p.endsWith(".rs"));
       const task = rs.length ? queueLint(db, { step: "conflict", repo: x.repo, number: c.number, head, base: baseSha, patch: await git.diffText(head, tree), files: rs }) : null;
       if (task !== null) {
-        db.prepare("INSERT INTO conflict_merges (repo, number, from_head, to_head, base_sha, state, reason, files, attempt, created_at, patch, lint_task) VALUES (?, ?, ?, NULL, ?, 'linting', NULL, ?, ?, ?, ?, ?)")
-          .run(x.repo, c.number, c.head, baseSha, JSON.stringify(files), c.attempt, x.at(), JSON.stringify(resFiles), task);
-        x.log(`  ${ref}: resolution stored; lint task ${task} queued`);
+        const round = c.lint ? c.lint.round + 1 : 1;
+        if (c.lint) db.prepare("UPDATE conflict_merges SET patch = ?, files = ?, lint_task = ?, lint_round = ? WHERE rowid = ?").run(JSON.stringify(resFiles), JSON.stringify(files), task, round, c.lint.rowid);
+        else {
+          db.prepare("INSERT INTO conflict_merges (repo, number, from_head, to_head, base_sha, state, reason, files, attempt, created_at, patch, lint_task, lint_round) VALUES (?, ?, ?, NULL, ?, 'linting', NULL, ?, ?, ?, ?, ?, ?)")
+            .run(x.repo, c.number, c.head, baseSha, JSON.stringify(files), c.attempt, x.at(), JSON.stringify(resFiles), task, round);
+        }
+        x.log(`  ${ref}: resolution stored; lint task ${task} queued (round ${round})`);
         return;
       }
     }
