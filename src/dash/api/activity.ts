@@ -5,6 +5,7 @@ import { createHash } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import type { ActivityEvent, ActivityItem, ActivityPage, TraceKind } from "../../../web/src/api/types.ts";
 import { getDecision, reposOf } from "../../decisions.ts";
+import { GITHUB_ACTIONS } from "../../github/actions.ts";
 import { HttpError } from "../server/util.ts";
 import type { Req } from "../types.ts";
 import {
@@ -21,17 +22,19 @@ export const ACTIVITY_DEFAULT_KINDS: TraceKind[] = KINDS.filter((k) => k !== "pl
 /** Sorts after every event id of the same time. */
 const LAST = "~";
 
-type Ctx = { db: DatabaseSync; own: string; staff: boolean; operator: boolean; hidden: string[]; visible: string[]; repo: string | null; limit: number; before: { at: string; id: string } | null };
+export type Ctx = { db: DatabaseSync; own: string; staff: boolean; operator: boolean; hidden: string[]; visible: string[]; only: boolean; repo: string | null; limit: number; before: { at: string; id: string } | null };
 type At = { repo: string; number: number };
 type Pulled = { events: (Ev & At)[]; /** Oldest time read when the source had more rows than it returned; null when it returned everything. */ floor: string | null };
-type Source = { kinds: TraceKind[]; table: string; time: string; pull: (c: Ctx) => Pulled };
+export type Source = { kinds: TraceKind[]; table: string; time: string; pull: (c: Ctx) => Pulled };
 
 /** Newest `limit` rows of one table at or before the cursor's second (the stored times mix second and millisecond precision), each mapped to events. */
-function newest<R>(c: Ctx, o: { cols: string; from: string; time: string; where?: string; repoCol?: string | null; args?: (string | number)[]; of?: (r: R) => At | null; map: (r: R) => (Ev | null)[]; keep?: (r: R) => boolean; one?: (r: R) => string }): Pulled {
-  // Only visible (tracked, readable) repos are read. No `repoCol`: the repo is not a column (audit targets), so `of` filters it.
+function newest<R>(c: Ctx, o: { cols: string; from: string; time: string; where?: string; repoCol?: string | null; args?: (string | number)[]; /** With Only AutoCraft: null skips the source (its events are people's), a clause narrows it to AutoCraft's rows, nothing means every row is AutoCraft's. */ only?: (c: Ctx) => { where: string; args: (string | number)[] } | null; of?: (r: R) => At | null; map: (r: R) => (Ev | null)[]; keep?: (r: R) => boolean; one?: (r: R) => string }): Pulled {
+  // Only visible (tracked, readable) repos are read. The unary plus keeps the planner on the time index instead of a repo index plus a sort. No `repoCol`: the repo is not a column (audit targets), so `of` filters it.
   const repoCol = o.repoCol === undefined ? "repo" : o.repoCol;
-  const where = [`${o.time} IS NOT NULL`, ...(o.where ? [o.where] : []), ...(c.before ? [`${o.time} <= ?`] : []), ...(repoCol && c.repo ? [`${repoCol} = ?`] : []), ...(repoCol ? [`${repoCol} IN (${c.visible.map(() => "?").join(",") || "NULL"})`] : [])];
-  const args = [...(o.args ?? []), ...(c.before ? [`${c.before.at.slice(0, 19)}Z`] : []), ...(repoCol && c.repo ? [c.repo] : []), ...(repoCol ? c.visible : [])];
+  const own = c.only ? o.only?.(c) : undefined;
+  if (own === null) return { events: [], floor: null };
+  const where = [`${o.time} IS NOT NULL`, ...(o.where ? [o.where] : []), ...(own ? [own.where] : []), ...(c.before ? [`${o.time} <= ?`] : []), ...(repoCol && c.repo ? [`${repoCol} = ?`] : []), ...(repoCol ? [`+${repoCol} IN (${c.visible.map(() => "?").join(",") || "NULL"})`] : [])];
+  const args = [...(o.args ?? []), ...(own?.args ?? []), ...(c.before ? [`${c.before.at.slice(0, 19)}Z`] : []), ...(repoCol && c.repo ? [c.repo] : []), ...(repoCol ? c.visible : [])];
   const raw = rows<R & Record<string, string>>(c.db, `SELECT ${o.cols} FROM ${o.from} WHERE ${where.join(" AND ")} ORDER BY ${o.time} DESC LIMIT ${c.limit}`, ...args);
   const seen = new Set<string>();
   const events: (Ev & At)[] = [];
@@ -50,12 +53,12 @@ const T = "t";
 const itemCols = "repo, number, kind, author, created_at, closed_at, merged_at, merged_by, head_oid";
 const item = (time: string, where: string, map: (r: ItemRow & At) => Ev): Source => ({
   kinds: ["github"], table: "items", time,
-  pull: (c) => newest<ItemRow & At>(c, { cols: `${itemCols}, ${time} AS ${T}`, from: "items", time, where, map: (r) => [map(r)] }),
+  pull: (c) => newest<ItemRow & At>(c, { cols: `${itemCols}, ${time} AS ${T}`, from: "items", time, where, only: () => null, map: (r) => [map(r)] }),
 });
 /** A source whose rows carry `repo` and `number` and map to one event each. */
-const plain = <R extends At>(kind: TraceKind, table: string, time: string, cols: string, map: (r: R, c: Ctx) => Ev, o: { from?: string; repoCol?: string; where?: string; one?: (r: R) => string } = {}): Source => ({
+const plain = <R extends At>(kind: TraceKind, table: string, time: string, cols: string, map: (r: R, c: Ctx) => Ev, o: { from?: string; repoCol?: string; where?: string; one?: (r: R) => string; only?: (c: Ctx) => { where: string; args: (string | number)[] } | null } = {}): Source => ({
   kinds: [kind], table, time,
-  pull: (c) => newest<R>(c, { cols: `${cols}, ${time} AS ${T}`, from: o.from ?? table, time, repoCol: o.repoCol, where: o.where, one: o.one, map: (r) => [map(r, c)] }),
+  pull: (c) => newest<R>(c, { cols: `${cols}, ${time} AS ${T}`, from: o.from ?? table, time, repoCol: o.repoCol, where: o.where, one: o.one, only: o.only, map: (r) => [map(r, c)] }),
 });
 
 /** Decisions that name an item and do not touch a repo hidden from the viewer. */
@@ -66,12 +69,12 @@ const decisionVisible = (c: Ctx, id: string): boolean => {
 const DECISION_COLS = "d.id, d.repo, d.number, d.kind, d.question, d.asked_at, d.asked_by, d.answer, d.answered_at, d.answered_by";
 type Dec = DecisionRow & At;
 
-const SOURCES: Source[] = [
+export const SOURCES: Source[] = [
   item("created_at", "kind IS NOT NULL", openedEvent),
   item("merged_at", "merged_at IS NOT NULL", mergedEvent),
   item("closed_at", "closed_at IS NOT NULL AND merged_at IS NULL", closedEvent),
-  plain<Parameters<typeof commentEvent>[0] & At>("github", "comments", "created_at", "repo, number, id, kind, author, created_at, review_state, commit_oid, LENGTH(COALESCE(body, '')) AS len", (r, c) => commentEvent(r, c.own)),
-  plain<Parameters<typeof activityEvent>[0] & At>("github", "item_activity", "at", "repo, number, id, kind, at, actor, label, after_oid, before_oid", (r, c) => activityEvent(r, c.own)),
+  plain<Parameters<typeof commentEvent>[0] & At>("github", "comments", "created_at", "repo, number, id, kind, author, created_at, review_state, commit_oid, LENGTH(COALESCE(body, '')) AS len", (r, c) => commentEvent(r, c.own), { only: (c) => (c.own ? { where: "author = ?", args: [c.own] } : null) }),
+  plain<Parameters<typeof activityEvent>[0] & At>("github", "item_activity", "at", "repo, number, id, kind, at, actor, label, after_oid, before_oid", (r, c) => activityEvent(r, c.own), { only: (c) => (c.own ? { where: "actor = ?", args: [c.own] } : null) }),
   plain<Parameters<typeof stageEvent>[0] & At>("plan", "stages", "at", "repo, number, rowid, stage, at, actor, note", stageEvent),
   plain<Parameters<typeof planEvent>[0] & At>("plan", "plan_history", "at", "repo, number, id, head, old_state, new_state, wait, reasons, at", planEvent),
   // A job over many items is one row of the stream, at its newest item.
@@ -99,13 +102,13 @@ const SOURCES: Source[] = [
   },
   {
     kinds: ["decision"], table: "decisions", time: "answered_at",
-    pull: (c) => newest<Dec>(c, { cols: `${DECISION_COLS}, d.answered_at AS ${T}`, from: "decisions d", time: "d.answered_at", repoCol: "d.repo", where: "d.number IS NOT NULL", keep: (r) => decisionVisible(c, r.id), map: (r) => [decisionEvents(r)[1] ?? null] }),
+    pull: (c) => newest<Dec>(c, { cols: `${DECISION_COLS}, d.answered_at AS ${T}`, from: "decisions d", time: "d.answered_at", repoCol: "d.repo", where: "d.number IS NOT NULL", only: () => null, keep: (r) => decisionVisible(c, r.id), map: (r) => [decisionEvents(r)[1] ?? null] }),
   },
   {
     kinds: ["decision"], table: "decision_comments", time: "at",
     pull: (c) => newest<{ decision_id: string; cid: string; login: string; at: string; len: number } & At>(c, {
       cols: `d.repo AS repo, d.number AS number, x.decision_id, x.id AS cid, x.login, x.at, LENGTH(x.body) AS len, x.at AS ${T}`, from: "decision_comments x JOIN decisions d ON d.id = x.decision_id", time: "x.at", repoCol: "d.repo", where: "d.number IS NOT NULL",
-      keep: (r) => decisionVisible(c, r.decision_id), map: (r) => [feedbackEvent(r.decision_id, { id: r.cid, login: r.login, at: r.at, len: r.len })],
+      only: () => null, keep: (r) => decisionVisible(c, r.decision_id), map: (r) => [feedbackEvent(r.decision_id, { id: r.cid, login: r.login, at: r.at, len: r.len })],
     }),
   },
   plain<Parameters<typeof fixupEvent>[0] & At>("step", "fixups", "created_at", "repo, number, rowid, from_head AS head, to_head, state, reason, files, attempt, created_at", fixupEvent),
@@ -113,7 +116,7 @@ const SOURCES: Source[] = [
   plain<Parameters<typeof conflictEvent>[0] & At>("step", "conflict_merges", "created_at", "repo, number, rowid, from_head AS head, to_head, state, reason, files, attempt, created_at", conflictEvent),
   plain<Parameters<typeof mergeEvent>[0] & At>("step", "merges", "at", "repo, number, rowid, head_oid, at, path, method, outcome, reason", mergeEvent),
   plain<Parameters<typeof actionEvent>[0] & At>("step", "actions", "created_at", "repo, number, id, decision_id, kind, state, reason, created_at", actionEvent),
-  plain<Parameters<typeof turnEvent>[0] & At>("conversation", "conversation_turns", "at", "repo, number, id, kind, login, at, LENGTH(body) AS len, status", turnEvent),
+  plain<Parameters<typeof turnEvent>[0] & At>("conversation", "conversation_turns", "at", "repo, number, id, kind, login, at, LENGTH(body) AS len, status", turnEvent, { only: () => ({ where: "kind IN ('opus', 'system')", args: [] }) }),
   // Audit rows name their item in `target` (`repo#number`); other targets are not items.
   {
     kinds: ["write"], table: "audit", time: "at",
@@ -123,6 +126,8 @@ const SOURCES: Source[] = [
         cols: `rowid, at, login, action, details, target, at AS ${T}`, from: "audit", time: "at", repoCol: null,
         where: `instr(target, '#') > 0${allowed ? ` AND action IN (${allowed.map(() => "?").join(",")})` : ""}${c.repo ? " AND substr(target, 1, ?) = ?" : ""}`,
         args: [...(allowed ?? []), ...(c.repo ? [c.repo.length + 1, `${c.repo}#`] : [])],
+        // A write is AutoCraft's when the viewer is not staff (the actor is hidden) or the pipeline recorded a state with it (writeEvent).
+        only: () => (c.staff ? { where: `CASE WHEN json_valid(details) THEN typeof(json_extract(details, '$.state')) ELSE NULL END = 'text' AND action IN (${Object.keys(GITHUB_ACTIONS).map(() => "?").join(",")})`, args: Object.keys(GITHUB_ACTIONS) } : { where: "1", args: [] }),
         of: (r) => {
           const i = r.target.lastIndexOf("#"), n = Number(r.target.slice(i + 1)), repo = r.target.slice(0, i);
           return Number.isInteger(n) && repo && c.visible.includes(repo) ? { repo, number: n } : null;
@@ -153,14 +158,14 @@ function round(c: Ctx, sources: Source[]): { events: (Ev & At)[]; bound: string 
 
 type Query = { kinds: Set<TraceKind>; only: boolean; repo: string | null; limit: number; cursor: { at: string; id: string } | null };
 
-function page(base: Omit<Ctx, "before" | "limit">, sources: Source[], q: Query): { events: (Ev & At)[]; next: { at: string; id: string } | null } {
+function page(base: Omit<Ctx, "before" | "limit" | "only">, sources: Source[], q: Query): { events: (Ev & At)[]; next: { at: string; id: string } | null } {
   const out: (Ev & At)[] = [];
   const ids = new Set<string>();
   let before = q.cursor;
   let exhausted = false;
   // The autocraft filter drops rows after the read, so a round can come back short: read on, a few rounds at most.
   for (let i = 0; i < 6 && !exhausted && out.length <= q.limit; i++) {
-    const { events, bound } = round({ ...base, limit: q.limit, before }, sources);
+    const { events, bound } = round({ ...base, limit: q.limit, only: q.only, before }, sources);
     for (const e of events) {
       const key = `${e.repo}#${e.number}|${e.id}`;
       if (ids.has(key) || (q.only && e.actor.type === "person")) continue;
