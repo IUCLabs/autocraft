@@ -8,6 +8,14 @@ import { contextState, ORG, type CheckState } from "../review/checks.ts";
 import { trackedNames } from "../repos.ts";
 import { classify, derive, type Culprit, type HeadRow, type MainCheck, type MainCiState } from "./classify.ts";
 
+/** Branch prefix of the PRs AutoCraft opens to fix a red main; the merge queue does not hold them while main is red. */
+export const MAIN_FIX_BRANCH_PREFIX = "autocraft/main-ci-";
+
+/** Repos whose current default-branch head is red. */
+export function redMainRepos(db: DatabaseSync): Set<string> {
+  return new Set(mainCiRepos(db).filter((r) => r.state === "red").map((r) => r.repo));
+}
+
 /** Least time between two polls. */
 export const POLL_EVERY_MS = 2 * 60_000;
 /** Heads kept per repo. */
