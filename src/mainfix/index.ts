@@ -60,7 +60,7 @@ export type MainFixDeps = {
 export type FixRow = {
   repo: string; head_sha: string; check: string; verdict: MainFixVerdict; state: string; reason: string | null;
   run_id: number | null; run_url: string | null; excerpt: string | null; decision_id: string | null; issue_number: number | null; pr_number: number | null; pr_url: string | null;
-  patch: string | null; files: string | null; lint_task: number | null; lint_round: number | null; lint_state: string | null;
+  patch: string | null; files: string | null; lint_task: number | null; lint_round: number | null; lint_state: string | null; /** The kept model session that wrote the patch (src/prepush/resume.ts). */ session: string | null;
   created_at: string; updated_at: string;
 };
 
@@ -114,11 +114,11 @@ const rowsAt = (db: DatabaseSync, repo: string, head: string): FixRow[] =>
 
 function save(db: DatabaseSync, row: Omit<FixRow, "updated_at"> & { updated_at?: string }, at: string): void {
   const { updated_at: _, ...r } = row;
-  db.prepare(`INSERT INTO main_fixes (repo, head_sha, "check", verdict, state, reason, run_id, run_url, excerpt, decision_id, issue_number, pr_number, pr_url, patch, files, lint_task, lint_round, lint_state, created_at, updated_at)
-    VALUES (:repo, :head_sha, :check, :verdict, :state, :reason, :run_id, :run_url, :excerpt, :decision_id, :issue_number, :pr_number, :pr_url, :patch, :files, :lint_task, :lint_round, :lint_state, :created_at, :at)
+  db.prepare(`INSERT INTO main_fixes (repo, head_sha, "check", verdict, state, reason, run_id, run_url, excerpt, decision_id, issue_number, pr_number, pr_url, patch, files, lint_task, lint_round, lint_state, session, created_at, updated_at)
+    VALUES (:repo, :head_sha, :check, :verdict, :state, :reason, :run_id, :run_url, :excerpt, :decision_id, :issue_number, :pr_number, :pr_url, :patch, :files, :lint_task, :lint_round, :lint_state, :session, :created_at, :at)
     ON CONFLICT (repo, head_sha, "check") DO UPDATE SET verdict = excluded.verdict, state = excluded.state, reason = excluded.reason, run_id = excluded.run_id,
       run_url = excluded.run_url, excerpt = excluded.excerpt, decision_id = excluded.decision_id, issue_number = excluded.issue_number, pr_number = excluded.pr_number, pr_url = excluded.pr_url,
-      patch = excluded.patch, files = excluded.files, lint_task = excluded.lint_task, lint_round = excluded.lint_round, lint_state = excluded.lint_state, updated_at = excluded.updated_at`)
+      patch = excluded.patch, files = excluded.files, lint_task = excluded.lint_task, lint_round = excluded.lint_round, lint_state = excluded.lint_state, session = excluded.session, updated_at = excluded.updated_at`)
     .run({ ...r, at });
 }
 
@@ -195,7 +195,7 @@ function fromDecision(db: DatabaseSync, id: string): { state: string; issue: num
 async function classifyHead(db: DatabaseSync, repo: string, cur: Current, deps: MainFixDeps, log: (l: string) => void, s: MainFixSummary, by: By = CLI_BY): Promise<boolean> {
   const at = deps.now().toISOString();
   const reading = await readFailure(deps.gh, repo, cur.headSha, optionalChecks(db, repo));
-  const base = { repo, head_sha: cur.headSha, run_id: null, run_url: null, excerpt: null, decision_id: null, issue_number: null, pr_number: null, pr_url: null, patch: null, files: null, lint_task: null, lint_round: null, lint_state: null, created_at: at } as const;
+  const base = { repo, head_sha: cur.headSha, run_id: null, run_url: null, excerpt: null, decision_id: null, issue_number: null, pr_number: null, pr_url: null, patch: null, files: null, lint_task: null, lint_round: null, lint_state: null, session: null, created_at: at } as const;
   if (reading.kind === "skip") {
     save(db, { ...base, check: "(none)", verdict: "code", state: "nothing-to-do", reason: oneLine(reading.why) }, at);
     log(`  ${repo}: nothing to do: ${reading.why}`);

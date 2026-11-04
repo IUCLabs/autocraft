@@ -18,6 +18,7 @@ import { CHECK_DIFF_CAP, CHECK_PATCH_CAP, type FixupCheckInput } from "../patchc
 import { CLAUDE_PROMPTS, untrustedJson } from "../prompts/index.ts";
 import { BASE_NAME, type ConflictCandidate } from "./conflict-state.ts";
 import type { Git } from "./git.ts";
+import { dropSessions, sessionAsk, storeSessions, type Kept, type SessionLedger } from "../prepush/resume.ts";
 import { noteLive, type FixupDeps, type FixupSummary, type PrNode, type Who } from "./index.ts";
 import { answerText, conflictView, endNewline, hasMarkers, locateInHead, parseResolution, resolvablePath, spliceSections, type ConflictFile, type ConflictSection } from "./patch.ts";
 import { BASE_ORG, longLivedOf, pushable } from "./pushable.ts";
@@ -45,6 +46,7 @@ const checkSize = (files: CheckSections): number => untrustedJson({ files }).len
 
 
 export type ConflictRun = {
+  ledger: SessionLedger;
   repo: string; runId: string; log: (line: string) => void; d: FixupDeps; gw: Writer; at: () => string; summary: FixupSummary;
   prQuery: string; scrub: (raw: string) => string; who: () => Promise<Who>; git: () => Git;
   /** Called once per PR handled. */
@@ -168,6 +170,7 @@ export async function mergeConflict(db: DatabaseSync, x: ConflictRun, c: Conflic
       formatDiff = res.formatDiff;
     }
     if (c.lint && !again) {
+      dropSessions(c.lint.session);
       if (formatDiff) {
         const fold = await foldFormat(git, head, await git.diffText(head, tree), formatDiff, x.d.root);
         if (!fold.ok) { fail("refused", fold.reason); return; }
@@ -221,10 +224,13 @@ export async function mergeConflict(db: DatabaseSync, x: ConflictRun, c: Conflic
       const body = ((db.prepare("SELECT body FROM items WHERE repo = ? AND number = ?").get(x.repo, c.number) as { body: string | null } | undefined)?.body ?? "").slice(0, 4000);
       const repoDir = checkout ? { repo_dir: REPO_PATH } : {};
       const resFiles: { path: string; mode: string; content: string }[] = [];
+      const keptNow: Kept = {};
       // One resolver call and one check per file, so the size caps apply to a file, not to the whole PR. Every file must pass before anything is pushed.
       for (const t of shown) {
         const f = t.view;
-        const reply = await x.d.resolve(db, [{ ref, title: c.title, body, review_reason: c.reason, base: c.base, files: [f], ...(again ? { previous: { patch: again.diff, findings: again.findings } } : {}), ...repoDir }], checkout);
+        const ses = again ? sessionAsk(c.lint?.session, f.path, again.findings, new Date(x.at())) : {};
+        const reply = await x.d.resolve(db, [{ ref, title: c.title, body, review_reason: c.reason, base: c.base, files: [f], ...(again ? { previous: { patch: again.diff, findings: again.findings } } : {}), ...repoDir }], checkout, ses);
+        if (ses.kept) { keptNow[f.path] = ses.kept; x.ledger.hold(ses.kept); }
         if (reply === null) { fail("failed", `the model gave no answer for ${f.path}`); return; }
         const res = parseResolution(reply, f.sections.map((s) => s.id));
         if (!res.ok) { fail("refused", `${f.path}: ${res.reason}`); return; }
@@ -253,14 +259,16 @@ export async function mergeConflict(db: DatabaseSync, x: ConflictRun, c: Conflic
       if (!await live(db, x, c)) return;
       // A resolution with Rust files is stored and linted before it is pushed (the collect step above pushes it, or asks again with the findings).
       const rs = resFiles.map((f) => f.path).filter((p) => p.endsWith(".rs"));
+      dropSessions(c.lint?.session, keptNow);
       const task = rs.length ? queueLint(db, { step: "conflict", repo: x.repo, number: c.number, head, base: baseSha, patch: await git.diffText(head, tree), files: rs }) : null;
       if (task !== null) {
         const round = c.lint ? c.lint.round + 1 : 1;
-        if (c.lint) db.prepare("UPDATE conflict_merges SET patch = ?, files = ?, lint_task = ?, lint_round = ? WHERE rowid = ?").run(JSON.stringify(resFiles), JSON.stringify(files), task, round, c.lint.rowid);
+        if (c.lint) db.prepare("UPDATE conflict_merges SET patch = ?, files = ?, lint_task = ?, lint_round = ?, session = ? WHERE rowid = ?").run(JSON.stringify(resFiles), JSON.stringify(files), task, round, storeSessions(keptNow, new Date(x.at())), c.lint.rowid);
         else {
-          db.prepare("INSERT INTO conflict_merges (repo, number, from_head, to_head, base_sha, state, reason, files, attempt, created_at, patch, lint_task, lint_round) VALUES (?, ?, ?, NULL, ?, 'linting', NULL, ?, ?, ?, ?, ?, ?)")
-            .run(x.repo, c.number, c.head, baseSha, JSON.stringify(files), c.attempt, x.at(), JSON.stringify(resFiles), task, round);
+          db.prepare("INSERT INTO conflict_merges (repo, number, from_head, to_head, base_sha, state, reason, files, attempt, created_at, patch, lint_task, lint_round, session) VALUES (?, ?, ?, NULL, ?, 'linting', NULL, ?, ?, ?, ?, ?, ?, ?)")
+            .run(x.repo, c.number, c.head, baseSha, JSON.stringify(files), c.attempt, x.at(), JSON.stringify(resFiles), task, round, storeSessions(keptNow, new Date(x.at())));
         }
+        x.ledger.stored(keptNow);
         x.log(`  ${ref}: resolution stored; lint task ${task} queued (round ${round})`);
         return;
       }

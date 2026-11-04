@@ -47,6 +47,7 @@ import { formatDiffPaths, matchPrFiles, triage } from "./triage.ts";
 import { LINT_MAX_ROUNDS } from "../core/rules.ts";
 import { CheckTool, applyCheck, refusal } from "../checktool/index.ts";
 import { foldFormat, queueLint, readLint } from "../prepush/index.ts";
+import { dropSessions, SessionLedger, sessionAsk, storeSessions, sweepSessions, type SessionAsk } from "../prepush/resume.ts";
 import type { LintPrevious } from "../fixup/patch.ts";
 import type { CiFailure, CifixPr } from "./types.ts";
 
@@ -102,7 +103,7 @@ export type CifixDeps = {
   /** Reads from GitHub (`gh` arguments): the failed check runs and their logs. */
   gh: Gh;
   /** The model's reply to the cifix.patch prompt, or null when it gave none. */
-  ask: (db: DatabaseSync, input: CifixPr[], checkout?: string, tool?: CheckTool) => Promise<string | null>;
+  ask: (db: DatabaseSync, input: CifixPr[], checkout?: string, tool?: CheckTool, session?: SessionAsk) => Promise<string | null>;
   /** The model's reply to the fixup.check prompt (Opus), or null when it gave none. */
   check: (db: DatabaseSync, input: FixupCheckInput[], checkout?: string) => Promise<string | null>;
   /** Host directory with a read-only checkout of the PR head for the sandboxed model calls, or null to ask without tools. */
@@ -118,7 +119,7 @@ const codeNote: Note = { by: "model", kind: "comment", model: PROMPT.models[0] }
 export function defaultDeps(): CifixDeps {
   return {
     querier: new Client(1000), exec, fetchDiff: ghDiff, gh: ghExec, now: () => new Date(), root: fixupDir(),
-    ask: async (db, input, checkout, tool) => (await askClaude("cifix.patch", PROMPT.models[0]!, input, db, { checkout, check: tool }))?.text ?? null,
+    ask: async (db, input, checkout, tool, session) => (await askClaude("cifix.patch", PROMPT.models[0]!, input, db, { checkout, check: tool, session }))?.text ?? null,
     check: async (db, input, checkout) => (await askClaude("fixup.check", CHECK.models[0]!, input, db, { checkout }))?.text ?? null,
     checkout: (r, n, h) => checkoutForPr(r, n, h, console.log),
   };
@@ -185,13 +186,13 @@ class Recorder {
   }
 
   /** The model patch waits for its lint task: a first row, or the same row with the next round's patch and task. */
-  linting(c: CifixCandidate, patch: string, files: string[], task: number, lintState: "pending" | "requeued", round: number): void {
+  linting(c: CifixCandidate, patch: string, files: string[], task: number, lintState: "pending" | "requeued", round: number, session: string | null): void {
     if (c.lint) {
-      this.db.prepare("UPDATE ci_fixes SET patch = ?, files = ?, lint_task = ?, lint_round = ?, lint_state = ? WHERE rowid = ?").run(patch, JSON.stringify(files), task, round, lintState, c.lint.rowid);
+      this.db.prepare("UPDATE ci_fixes SET patch = ?, files = ?, lint_task = ?, lint_round = ?, lint_state = ?, session = ? WHERE rowid = ?").run(patch, JSON.stringify(files), task, round, lintState, session, c.lint.rowid);
       return;
     }
-    this.db.prepare("INSERT INTO ci_fixes (repo, number, head, to_head, kind, state, reason, files, attempt, created_at, patch, lint_task, lint_round, lint_state) VALUES (?, ?, ?, NULL, 'code', 'linting', NULL, ?, ?, ?, ?, ?, ?, ?)")
-      .run(c.repo, c.number, c.head, JSON.stringify(files), c.attempt, this.at(), patch, task, round, lintState);
+    this.db.prepare("INSERT INTO ci_fixes (repo, number, head, to_head, kind, state, reason, files, attempt, created_at, patch, lint_task, lint_round, lint_state, session) VALUES (?, ?, ?, NULL, 'code', 'linting', NULL, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(c.repo, c.number, c.head, JSON.stringify(files), c.attempt, this.at(), patch, task, round, lintState, session);
   }
 
   /** Stored patches whose Plan no longer lists the push (head moved, a Hold or Close answer, approval revoked) are dropped. */
@@ -255,6 +256,8 @@ export type PatchRequest = {
   reviewReason?: string;
   /** An earlier patch that failed the lint check, with the findings on its lines. */
   previous?: LintPrevious;
+  /** Continues the kept session that wrote `previous`; the call reports the session it ends with. */
+  session?: SessionAsk;
   /** The read-only checkout of `head` for the model calls, or nothing to ask without tools. */
   checkout: () => Promise<string | null | undefined>;
 };
@@ -296,7 +299,7 @@ export async function patchFromFailure(db: DatabaseSync, d: Pick<CifixDeps, "ask
   }
   if (!shown.length) return no("failed", "the failure names no file a CI fix may edit");
   const tool = new CheckTool({ db, step: "cifix", repo, number: r.number || null, head, base: null, applies: applyCheck(git, d.root, head, (p) => refusal(validatePatch(p, shown.map((s) => s.path)))) });
-  const reply = await d.ask(db, [{ ref, title, failure: logText(failure), files: shown, diff: r.diffText, ...(r.previous ? { previous: r.previous } : {}), ...repoDir }], checkout, tool);
+  const reply = await d.ask(db, [{ ref, title, failure: logText(failure), files: shown, diff: r.diffText, ...(r.previous ? { previous: r.previous } : {}), ...repoDir }], checkout, tool, r.session);
   if (reply === null) return no("failed", "the model gave no answer");
   const v = validatePatch(reply, shown.map((s) => s.path));
   if (!v.ok) return no("refused", v.reason);
@@ -322,6 +325,16 @@ export async function patchFromFailure(db: DatabaseSync, d: Pick<CifixDeps, "ask
 }
 
 export async function runCifix(db: DatabaseSync, params: CifixParams, log: (line: string) => void = console.log, deps?: CifixDeps): Promise<CifixSummary> {
+  const ledger = new SessionLedger();
+  try {
+    if (!(params.dryRun ?? true)) sweepSessions(db, deps?.now() ?? new Date());
+    return await runCifixWith(db, params, log, deps, ledger);
+  } finally {
+    ledger.release();
+  }
+}
+
+async function runCifixWith(db: DatabaseSync, params: CifixParams, log: (line: string) => void, deps: CifixDeps | undefined, ledger: SessionLedger): Promise<CifixSummary> {
   const { repo } = params;
   const dryRun = params.dryRun ?? true;
   if (params.limit !== undefined && !(Number.isInteger(params.limit) && params.limit >= 0)) throw new Error("limit must be a whole number ≥ 0");
@@ -371,7 +384,7 @@ export async function runCifix(db: DatabaseSync, params: CifixParams, log: (line
   };
 
   /** Applies a validated patch to the PR head: pushed to the branch, or posted as a comment where the branch is closed to us. */
-  const deliver = async (c: CifixCandidate, kind: "format" | "code", pr: PrNode, v: Fix, checkName: string, check?: (patch: string) => Promise<string | null>, shown: CifixPr["files"] = [], folded: string | null = null): Promise<void> => {
+  const deliver = async (c: CifixCandidate, kind: "format" | "code", pr: PrNode, v: Fix, checkName: string, check?: (patch: string) => Promise<string | null>, shown: CifixPr["files"] = [], folded: string | null = null, ses: SessionAsk = {}): Promise<void> => {
     const ref = refOf(c);
     const fail = (state: "failed" | "refused" | "rejected", raw: string) => {
       const reason = scrubReason(raw, d.root);
@@ -446,7 +459,8 @@ export async function runCifix(db: DatabaseSync, params: CifixParams, log: (line
       const round = c.lint ? c.lint.round + 1 : 1;
       const task = queueLint(db, { step: "cifix", repo, number: c.number, head: c.head, base: now.baseRefOid ?? null, patch: v.patch });
       if (task !== null) {
-        rec.linting(c, v.patch, v.files, task, "pending", round);
+        rec.linting(c, v.patch, v.files, task, "pending", round, ses.kept ? storeSessions({ "": ses.kept }, new Date(at())) : null);
+        if (ses.kept) ledger.stored({ "": ses.kept });
         log(`  ${ref}: patch stored; lint task ${task} queued (round ${round})`);
         return;
       }
@@ -523,7 +537,7 @@ export async function runCifix(db: DatabaseSync, params: CifixParams, log: (line
     const g = [guardRepo(db, repo, "push", by), guardRepo(db, repo, "comment", by)].find((x) => !("refused" in x));
     if (g && !("refused" in g)) await claimForWork({ db, login: ACTOR }, g, d.querier, repo, c.number, "pr", () => viewerOf(d.querier), { run: runId }, log);
   };
-  const fixCode = async (c: CifixCandidate, pr: PrNode, failure: CiFailure, previous?: LintPrevious): Promise<void> => {
+  const fixCode = async (c: CifixCandidate, pr: PrNode, failure: CiFailure, previous?: LintPrevious, ses: SessionAsk = {}): Promise<void> => {
     const ref = refOf(c);
     await claim(c);
     const fail = (state: "failed" | "refused", raw: string) => {
@@ -538,10 +552,12 @@ export async function runCifix(db: DatabaseSync, params: CifixParams, log: (line
     if (!diff.ok) { fail("failed", `no diff: ${oneLine(diff.error)}`); return; }
     if (diff.text.length > DIFF_CAP) { fail("failed", `the PR diff is over the ${DIFF_CAP} character limit`); return; }
     const made = await patchFromFailure(db, d, { git, ref, title: ((db.prepare("SELECT title FROM items WHERE repo = ? AND number = ?").get(repo, c.number) as { title: string | null } | undefined)?.title ?? "").slice(0, 300),
-      repo, number: c.number, head, round: c.attempt, failure, diffText: diff.text, ...(previous ? { previous } : {}), runId, actor: ACTOR, at, checkout: async () => d.checkout?.(repo, c.number, head) });
+      repo, number: c.number, head, round: c.attempt, failure, diffText: diff.text, ...(previous ? { previous } : {}), session: ses, runId, actor: ACTOR, at, checkout: async () => d.checkout?.(repo, c.number, head) });
+    ledger.hold(ses.kept);
+    if (c.lint) dropSessions(c.lint.session, ses.kept ? { "": ses.kept } : {});
     if (!made.ok) { fail(made.state, made.reason); return; }
     const { v, shown, names, check } = made;
-    await deliver(c, "code", pr, v, names[0] ?? "CI", check, shown);
+    await deliver(c, "code", pr, v, names[0] ?? "CI", check, shown, null, ses);
   };
 
   /**
@@ -565,11 +581,12 @@ export async function runCifix(db: DatabaseSync, params: CifixParams, log: (line
     if (res.kind === "infra-failed") {
       const again = w.state === "requeued" ? null : queueLint(db, { step: "cifix", repo, number: c.number, head: c.head, base: pr.baseRefOid ?? null, patch: w.patch });
       if (again === null) { fail("failed", `lint: ${res.reason}`); return; }
-      rec.linting(c, w.patch, w.files, again, "requeued", w.round);
+      rec.linting(c, w.patch, w.files, again, "requeued", w.round, w.session);
       log(`  ${ref}: lint task failed (${res.reason}); queued again as task ${again}`);
       return;
     }
     if (res.findings.length === 0) {
+      dropSessions(w.session);
       const fold = await foldFormat(git, c.head, w.patch, res.formatDiff ?? "", d.root);
       if (!fold.ok) { fail("refused", fold.reason); return; }
       const v = validatePatch(w.patch, w.files);
@@ -580,7 +597,8 @@ export async function runCifix(db: DatabaseSync, params: CifixParams, log: (line
     if (w.round >= LINT_MAX_ROUNDS) { fail("rejected", `clippy findings remain after ${w.round} rounds: ${oneLine(res.findings[0]!.message)}`); return; }
     const reading = await readFailure(d.gh, repo, c.head, optionalChecks(db, repo));
     if (reading.kind === "skip") { fail("failed", reading.why); return; }
-    await fixCode(c, pr, reading.failure, { patch: w.patch, findings: res.findings.map((x) => x.rendered) });
+    const findings = res.findings.map((x) => x.rendered);
+    await fixCode(c, pr, reading.failure, { patch: w.patch, findings }, sessionAsk(w.session, "", findings, new Date(at())));
   };
 
   const workOne = async (c: CifixCandidate): Promise<void> => {

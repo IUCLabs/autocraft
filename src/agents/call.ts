@@ -1,6 +1,7 @@
 // Starting a model call: picks the account (Claude) and records the agent run,
 // in one transaction so two job processes cannot both take the last slot.
 import type { DatabaseSync } from "node:sqlite";
+import { boxAccounts } from "./box.ts";
 import { accountHasRoom, chooseAccount, freeSlots, type Choice } from "./accounts.ts";
 import { insertRun, type RunStart } from "./runs.ts";
 import { scrubError } from "./text.ts";
@@ -122,3 +123,6 @@ export function tryStartFollowUp(db: DatabaseSync, accountId: string, s: RunInpu
     throw e;
   }
 }
+
+/** The config directory of a box account, or null when the box no longer lists it. */
+export const accountConfigDir = (db: DatabaseSync, accountId: string): string | null => boxAccounts(db).find((b) => b.id === accountId)?.configDir ?? null;
