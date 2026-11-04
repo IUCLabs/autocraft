@@ -27,7 +27,6 @@ import * as pipeline from "./pipeline.ts";
 import { prompts } from "./prompts.ts";
 import { queue, queueBatches } from "./queue.ts";
 import { next } from "./next.ts";
-import { githubActivity } from "./github-activity.ts";
 import { work } from "./work.ts";
 import { flow } from "./flow.ts";
 import { now } from "./now.ts";
@@ -469,7 +468,6 @@ export function apiRoutes(opts: ApiOptions = {}): Route[] {
     get("/api/next", next),
     get("/api/queue", queue),
     get("/api/queue/batches", queueBatches),
-    get("/api/github-activity", githubActivity),
     get("/api/work", work),
     get("/api/queue/page", queuePage),
     get("/api/repos/pipeline", pipelineRepoNames),

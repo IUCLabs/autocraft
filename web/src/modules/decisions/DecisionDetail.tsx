@@ -171,7 +171,7 @@ export function DecisionBody({
           </>
         )}
         <PriorityBadge p={d.priority} />
-        {!isBatch && <QueueBadge slot={d.queue} repo={d.repo} number={d.number!} />}
+        {!isBatch && <QueueBadge slot={d.queue} />}
         <span>asked {ago(d.askedAt)} ago</span>
         <ClaimPill claim={d.claim} />
         {!isBatch && (

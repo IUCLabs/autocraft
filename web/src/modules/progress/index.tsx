@@ -69,7 +69,7 @@ function Overview(_: ViewProps) {
             value={String(p.decisionsOpen)}
             tone="warn"
             sub={
-              <Link to="/decisions" className="text-accent-ink hover:underline">
+              <Link to="/needs" className="text-accent-ink hover:underline">
                 {p.decisionsAnsweredToday} answered today
               </Link>
             }
@@ -167,7 +167,7 @@ function RepoTable({ p }: { p: Progress }) {
             return (
               <tr key={r.repo} className="h-9 border-b border-line last:border-0 hover:bg-ink/[0.03]">
                 <td className="px-3">
-                  <Link to={`/decisions?repo=${r.repo}`} className="font-medium hover:text-accent-ink hover:underline">
+                  <Link to={`/needs?repo=${r.repo}`} className="font-medium hover:text-accent-ink hover:underline">
                     {r.repo}
                   </Link>
                 </td>
@@ -238,7 +238,7 @@ function RepoCards({ p }: { p: Progress }) {
 export const progressModule: FeatureModule = {
   id: "progress",
   permission: "viewer",
-  nav: { label: "Progress", icon: PulseIcon, to: "/progress", group: "work", order: 1, phoneTab: true },
+  nav: { label: "Progress", icon: PulseIcon, to: "/progress" },
   commands: [{ id: "go-progress", keys: "g p", label: "Go to progress", group: "Go to" }],
   routes: [{ path: "progress", view: { id: "progress", title: "Progress", panels: [{ id: "overview", title: "Overview", component: Overview, defaultSize: 100 }] } }],
 };

@@ -1,17 +1,13 @@
-// Claude accounts: operator-set label, enabled state, 5-hour and weekly use, concurrency. Never an email or path.
+// Claude account controls: usage bars, pause levels, the Jev switch and the label and concurrency form.
 import { useEffect, useState } from "react";
 import { PencilSimpleIcon } from "@phosphor-icons/react";
 import { useApi, useQuery } from "../../api/client";
 import type { ClaudeAccount, JevStatus, UsagePause } from "../../api/types";
-import { ago, clock, nowMs, span } from "../../lib/format";
-import { useUser } from "../../shell/UserContext";
-import { Badge } from "../../ui/atoms/Badge";
+import { clock, nowMs, span } from "../../lib/format";
 import { Button } from "../../ui/atoms/Button";
 import { cn } from "../../ui/cn";
-import { Block, ErrorLine, TextInput, useWrite } from "../admin/parts";
+import { ErrorLine, TextInput, useWrite } from "../admin/parts";
 import { useNow } from "../../lib/useNow";
-
-export const useAccounts = () => useQuery<ClaudeAccount[]>("accounts", (a) => a.accounts.list());
 
 /** One usage bar: width is the share used; the colour warns from 75 % and goes critical from 90 %. */
 export function UsageBar({ label, pct, resetsAt }: { label: string; pct: number | null; resetsAt: string | null }) {
@@ -37,7 +33,7 @@ const usePause = () => useQuery<UsagePause>("accounts-pause", (a) => a.accounts.
 
 const validLevel = (v: string) => /^\d{1,3}$/.test(v) && Number(v) >= 1 && Number(v) <= 100;
 
-function PauseLevels({ operator }: { operator: boolean }) {
+export function PauseLevels({ operator }: { operator: boolean }) {
   const api = useApi();
   const write = useWrite();
   const q = usePause();
@@ -97,7 +93,7 @@ function PauseLevels({ operator }: { operator: boolean }) {
   );
 }
 
-function JevLine({ operator }: { operator: boolean }) {
+export function JevLine({ operator }: { operator: boolean }) {
   const api = useApi();
   const write = useWrite();
   const q = useQuery<JevStatus>("accounts-jev", (a) => a.accounts.jev());
@@ -118,7 +114,7 @@ function JevLine({ operator }: { operator: boolean }) {
   );
 }
 
-function EditForm({ a, onDone }: { a: ClaudeAccount; onDone: () => void }) {
+export function EditForm({ a, onDone }: { a: ClaudeAccount; onDone: () => void }) {
   const api = useApi();
   const write = useWrite();
   const [label, setLabel] = useState(a.label);
@@ -160,64 +156,5 @@ function EditForm({ a, onDone }: { a: ClaudeAccount; onDone: () => void }) {
       </div>
       <ErrorLine error={write.error} className="basis-full" />
     </form>
-  );
-}
-
-function AccountCard({ a, operator }: { a: ClaudeAccount; operator: boolean }) {
-  useNow();
-  const [editing, setEditing] = useState(false);
-  return (
-    <li className={cn("min-w-0 rounded-md border border-line p-4", !a.enabled && "bg-ink/[0.02]")}>
-      <div className="flex flex-wrap items-center gap-2">
-        <h3 className="text-sm font-semibold">{a.label}</h3>
-        <Badge tone={a.enabled ? "ok" : "neutral"}>{a.enabled ? "Enabled" : "Disabled"}</Badge>
-        {a.pausedReason && a.enabled && <Badge tone="warn">Paused</Badge>}
-        {operator && (
-          <button onClick={() => setEditing(!editing)} aria-label={`Edit ${a.label}`} className="ml-auto flex size-7 items-center justify-center text-ink/50 hover:bg-ink/[0.06] hover:text-ink max-md:size-11">
-            <PencilSimpleIcon className="text-[14px]" />
-          </button>
-        )}
-      </div>
-      <div className="mt-3 space-y-3">
-        <UsageBar label="5-hour use" pct={a.usage.fiveHourPct} resetsAt={a.usage.fiveHourResetsAt} />
-        <UsageBar label="Weekly use" pct={a.usage.weeklyPct} resetsAt={a.usage.weeklyResetsAt} />
-      </div>
-      <dl className="num mt-3 grid grid-cols-[auto_1fr] gap-x-4 gap-y-0.5 text-xs">
-        <dt className="text-ink/55">Running</dt>
-        <dd>
-          {a.running} of {a.maxConcurrent} at once
-        </dd>
-        <dt className="text-ink/55">Reading</dt>
-        <dd>{a.usage.readAt ? `${ago(a.usage.readAt, false)}` : "never"}</dd>
-        {a.pausedReason && (
-          <>
-            <dt className="text-ink/55">Paused</dt>
-            <dd className="text-warn">{a.pausedReason}</dd>
-          </>
-        )}
-      </dl>
-      {editing && <EditForm a={a} onDone={() => setEditing(false)} />}
-    </li>
-  );
-}
-
-/** Every account the signed-in user may see. Operators also edit. */
-export function AccountsPanel({ className }: { className?: string }) {
-  const q = useAccounts();
-  const operator = useUser().role === "operator";
-  return (
-    <Block title="Claude accounts" aside={operator ? "label, enabled and concurrency are yours to set" : "set by operators"} className={className}>
-      <ErrorLine error={q.error?.message} />
-      <PauseLevels operator={operator} />
-      <JevLine operator={operator} />
-      {q.data && q.data.length === 0 && <p className="text-sm text-ink/55">No account is enabled.</p>}
-      {q.data && (
-        <ul className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-          {q.data.map((a) => (
-            <AccountCard key={a.id} a={a} operator={operator} />
-          ))}
-        </ul>
-      )}
-    </Block>
   );
 }

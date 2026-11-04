@@ -1,7 +1,7 @@
 // Claude accounts: sign-in state, login end date and plan use for everyone;
 // operators add accounts, sign them in with a code, sign out, enable and refresh.
 import { useState } from "react";
-import { KeyIcon } from "@phosphor-icons/react";
+import { KeyIcon, PencilSimpleIcon } from "@phosphor-icons/react";
 import { Dialog } from "radix-ui";
 import { useApi, useQuery } from "../../api/client";
 import type { ClaudeAccount } from "../../api/types";
@@ -11,7 +11,7 @@ import { useUser } from "../../shell/UserContext";
 import { Badge } from "../../ui/atoms/Badge";
 import { Button } from "../../ui/atoms/Button";
 import { cn } from "../../ui/cn";
-import { UsageBar } from "../agents/accounts";
+import { EditForm, JevLine, PauseLevels, UsageBar } from "./controls";
 import { Block, ConfirmButton, ErrorLine, Page, TextInput, useWrite, when } from "../admin/parts";
 import { useNow } from "../../lib/useNow";
 
@@ -84,6 +84,7 @@ function Row({ a, operator, onChanged }: { a: ClaudeAccount; operator: boolean; 
   const api = useApi();
   const write = useWrite();
   const [signing, setSigning] = useState(false);
+  const [editing, setEditing] = useState(false);
   const act = (key: string, f: () => Promise<unknown>) => void write.run(key, f).then((ok) => ok && onChanged());
   const exp = a.auth.expiresAt ? Date.parse(a.auth.expiresAt) : null;
   return (
@@ -93,12 +94,28 @@ function Row({ a, operator, onChanged }: { a: ClaudeAccount; operator: boolean; 
         <Badge tone={a.enabled ? "ok" : "neutral"}>{a.enabled ? "Enabled" : "Disabled"}</Badge>
         <Badge tone={a.auth.loggedIn ? "ok" : a.auth.loggedIn === false ? "warn" : "neutral"}>{a.auth.loggedIn ? "Signed in" : a.auth.loggedIn === false ? "Signed out" : "Not checked"}</Badge>
         {a.auth.plan && <Badge>{a.auth.plan}</Badge>}
+        {a.pausedReason && a.enabled && <Badge tone="warn">Paused</Badge>}
+        {operator && (
+          <button onClick={() => setEditing(!editing)} aria-label={`Edit ${a.label}`} className="ml-auto flex size-7 items-center justify-center text-ink/50 hover:bg-ink/[0.06] hover:text-ink max-md:size-11">
+            <PencilSimpleIcon className="text-[14px]" />
+          </button>
+        )}
       </div>
       <div className="mt-3 space-y-3">
         <UsageBar label="5-hour use" pct={a.usage.fiveHourPct} resetsAt={a.usage.fiveHourResetsAt} />
         <UsageBar label="Weekly use" pct={a.usage.weeklyPct} resetsAt={a.usage.weeklyResetsAt} />
       </div>
       <dl className="num mt-3 grid grid-cols-[auto_1fr] gap-x-4 gap-y-0.5 text-xs">
+        <dt className="text-ink/55">Running</dt>
+        <dd>
+          {a.running} of {a.maxConcurrent} at once
+        </dd>
+        {a.pausedReason && (
+          <>
+            <dt className="text-ink/55">Paused</dt>
+            <dd className="text-warn">{a.pausedReason}</dd>
+          </>
+        )}
         <dt className="text-ink/55">Method</dt>
         <dd>{a.auth.method ?? "–"}</dd>
         <dt className="text-ink/55">Login expires</dt>
@@ -124,6 +141,7 @@ function Row({ a, operator, onChanged }: { a: ClaudeAccount; operator: boolean; 
           <ErrorLine error={write.error} className="basis-full" />
         </div>
       )}
+      {editing && <EditForm a={a} onDone={() => { setEditing(false); onChanged(); }} />}
       {signing && <LoginDialog a={a} onClose={() => { setSigning(false); onChanged(); }} />}
     </li>
   );
@@ -158,7 +176,11 @@ function AccountsView() {
   const operator = useUser().role === "operator";
   return (
     <Page title="Accounts" sub="Claude accounts for agent runs">
-      <div className="mt-4">
+      <div className="mt-4 space-y-4">
+        <Block title="Pauses and Jev">
+          <PauseLevels operator={operator} />
+          <JevLine operator={operator} />
+        </Block>
         <Block title="Claude accounts">
           <ErrorLine error={q.error?.message} />
           {operator && <AddForm onAdded={q.refetch} />}
@@ -179,6 +201,6 @@ function AccountsView() {
 export const accountsModule: FeatureModule = {
   id: "accounts",
   permission: "viewer",
-  nav: { label: "Accounts", icon: KeyIcon, to: "/accounts", group: "operator", order: 7 },
+  nav: { label: "Accounts", icon: KeyIcon, to: "/accounts" },
   routes: [{ path: "accounts", view: { id: "accounts", title: "Accounts", panels: [{ id: "main", title: "Accounts", component: AccountsView, defaultSize: 100 }] } }],
 };

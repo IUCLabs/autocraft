@@ -238,11 +238,9 @@ export const reposModule: FeatureModule = {
   id: "repos",
   permission: "staff",
   nav: {
-    label: "Repos",
+    label: "Repos and approvals",
     icon: FolderSimpleIcon,
     to: "/repos",
-    group: "operator",
-    order: 20,
   },
   routes: [
     {

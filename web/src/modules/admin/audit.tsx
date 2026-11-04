@@ -137,6 +137,6 @@ function AuditLog() {
 export const auditModule: FeatureModule = {
   id: "audit",
   permission: "staff",
-  nav: { label: "Audit", icon: ScrollIcon, to: "/audit", group: "operator", order: 22 },
+  nav: { label: "Audit log", icon: ScrollIcon, to: "/audit" },
   routes: [{ path: "audit", permission: "staff", view: { id: "audit", title: "Audit", panels: [{ id: "main", title: "Audit", component: AuditView, defaultSize: 100 }] } }],
 };

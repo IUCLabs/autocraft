@@ -248,6 +248,6 @@ function StageTable({ r }: { r: Rates }) {
 export const ratesModule: FeatureModule = {
   id: "rates",
   permission: "viewer",
-  nav: { label: "Rates", icon: GaugeIcon, to: "/rates", group: "insight", order: 10 },
+  nav: { label: "Rates", icon: GaugeIcon, to: "/rates" },
   routes: [{ path: "rates", view: { id: "rates", title: "Rates", panels: [{ id: "main", title: "Rates", component: RatesView, defaultSize: 100 }] } }],
 };

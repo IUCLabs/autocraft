@@ -49,11 +49,7 @@ export interface NavEntry {
   label: string;
   icon: PhosphorIcon;
   to: string;
-  group: "work" | "insight" | "operator";
-  order: number;
-  /** Shown on the phone tab bar (at most four entries). */
-  phoneTab?: boolean;
-  /** Live count shown beside the entry. */
+    /** Live count shown beside the entry. */
   useBadge?: () => number | undefined;
 }
 

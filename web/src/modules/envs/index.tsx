@@ -636,7 +636,7 @@ function FlowVerify({ params }: ViewProps) {
 export const envsModule: FeatureModule = {
   id: "envs",
   permission: "viewer",
-  nav: { label: "Build environments", icon: HammerIcon, to: "/envs", group: "operator", order: 6 },
+  nav: { label: "Build environments", icon: HammerIcon, to: "/envs" },
   slots: [{ slot: "flow.panel", order: 20, component: FlowVerify }],
   routes: [
     {

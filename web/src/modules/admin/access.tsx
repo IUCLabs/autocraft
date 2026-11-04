@@ -270,6 +270,6 @@ function Sessions({ sessions }: { sessions: SessionInfo[] }) {
 export const accessModule: FeatureModule = {
   id: "access",
   permission: "operator",
-  nav: { label: "Access", icon: ShieldIcon, to: "/access", group: "operator", order: 21 },
+  nav: { label: "Access", icon: ShieldIcon, to: "/access" },
   routes: [{ path: "access", permission: "operator", view: { id: "access", title: "Access", panels: [{ id: "main", title: "Access", component: AccessView, defaultSize: 100 }] } }],
 };

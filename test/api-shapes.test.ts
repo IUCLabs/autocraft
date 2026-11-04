@@ -50,7 +50,6 @@ const OBJECTS: [string, string[]][] = [
   ["/api/audit", ["entries", "total", "actions"]],
   ["/api/contributors", ["rule", "total", "byTier", "contributors"]],
   ["/api/classifiers", ["runs", "run", "overall", "confusion"]],
-  ["/api/github-activity", ["rows", "total", "next", "actions"]],
   ["/api/build/summary", ["queued", "running", "slots", "free", "online"]],
   ["/api/repos/all", ["name", "tracked", "openPrs", "openIssues", "pipeline", "merging", "pushing", "commenting"]],
   ["/api/search?q=PR", ["repo", "number", "kind", "title", "state"]],

@@ -20,15 +20,14 @@ type DecisionRef = Pick<Decision, "id" | "repo" | "number">;
 type Sibling = Pick<Decision, "id" | "repo" | "number" | "kind">;
 
 /**
- * The link to a decision about one item. `/decisions/<repo>/<n>` opens the item's first open decision,
- * `/decisions/<repo>/<n>/<kind>` its open decision of that kind. The id form stays for batches
+ * The link to a decision about one item. `/needs/decisions/<repo>/<n>` opens the item's first open decision,
+ * `/needs/decisions/<repo>/<n>/<kind>` its open decision of that kind. The id form stays for batches
  * (number null) and when a kind does not identify the decision: `siblings` (the decisions known
  * for the item) hold another one of its kind. Without `kind` the plain form is used; with it, the kind form.
  */
 export function decisionPath(d: (DecisionRef & { kind?: string; answer?: string | null }) | undefined, opts: { search?: string; siblings?: Sibling[] } = {}): string {
   const tail = opts.search ? `?${opts.search}` : "";
-  // The Decisions page also lives inside the Needs you page, which keeps its own prefix.
-  const root = typeof location !== "undefined" && location.pathname.startsWith("/needs") ? "/needs/decisions" : "/decisions";
+  const root = "/needs/decisions";
   if (!d) return `${root}${tail}`;
   const idForm = `${root}/${encodeURIComponent(d.id)}${tail}`;
   if (d.number == null) return idForm;

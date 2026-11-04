@@ -1,7 +1,6 @@
 // The one list of feature modules. Adding a feature means adding its module here;
 // the shell builds nav, routes, panels and shortcut help from these declarations.
 import type { FeatureModule } from "./types";
-import { decisionsModule } from "../modules/decisions";
 import { needsModule } from "../modules/needs";
 import { flowModule } from "../modules/flow";
 import { nowModule } from "../modules/now";
@@ -18,11 +17,9 @@ import { accountsModule } from "../modules/accounts";
 import { agentsModule } from "../modules/agents";
 import { envsModule } from "../modules/envs";
 import { ratesModule } from "../modules/rates";
-import { queueModule } from "../modules/queue";
 import { nextModule } from "../modules/next";
-import { githubModule } from "../modules/github";
 import { similarModule } from "../modules/similar";
 import { mainCiModule } from "../modules/mainci";
 import { activityModule } from "../modules/activity";
 
-export const modules: FeatureModule[] = [nowModule, flowModule, decisionsModule, needsModule, nextModule, queueModule, agentsModule, envsModule, ratesModule, itemModule, progressModule, itemsModule, activityModule, contributorsModule, classifiersModule, costModule, reposModule, accessModule, auditModule, aboutModule, pipelineModule, promptsModule, similarModule, accountsModule, githubModule, mainCiModule];
+export const modules: FeatureModule[] = [nowModule, flowModule, needsModule, nextModule, agentsModule, envsModule, ratesModule, itemModule, progressModule, itemsModule, activityModule, contributorsModule, classifiersModule, costModule, reposModule, accessModule, auditModule, aboutModule, pipelineModule, promptsModule, similarModule, accountsModule, mainCiModule];

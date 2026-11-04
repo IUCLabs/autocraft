@@ -117,7 +117,7 @@ function ActivityView() {
 export const activityModule: FeatureModule = {
   id: "activity",
   permission: "viewer",
-  nav: { label: "Activity", icon: ListBulletsIcon, to: "/activity", group: "work", order: 2.5 },
+  nav: { label: "Activity", icon: ListBulletsIcon, to: "/activity" },
   commands: [{ id: "go-activity", keys: "g e", label: "Go to activity", group: "Go to" }],
   routes: [{ path: "activity", view: { id: "activity", title: "Activity", panels: [{ id: "main", title: "Activity", component: ActivityView, defaultSize: 100 }] } }],
 };

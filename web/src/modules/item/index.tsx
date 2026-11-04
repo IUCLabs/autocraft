@@ -178,7 +178,7 @@ function Properties({ it }: { it: Item }) {
       <Prop label="Type">
         <SettledBadge s={it.settled} detail />
         <PriorityBadge p={it.priority} />
-        <QueueBadge slot={it.queue} repo={it.repo} number={it.number} />
+        <QueueBadge slot={it.queue} />
         {it.settled.flags.map((f) => (
           <Badge key={f} tone={f === "security" ? "bad" : "warn"}>
             {f}

@@ -158,7 +158,7 @@ function Row({ d, canUndo, active, checked, mine, onOpen, activeRef }: { d: Deci
                 <span className="num">{opinions}</span>
               </span>
             )}
-            {d.number !== null && <QueueBadge slot={d.queue} repo={d.repo} number={d.number} />}
+            {d.number !== null && <QueueBadge slot={d.queue} />}
             <ClaimPill claim={d.claim} compact />
             {d.answer && d.undoable && canUndo && <RowUndo id={d.id} />}
           </span>
