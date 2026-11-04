@@ -12,6 +12,7 @@ import { cloneTask } from "./tasks.ts";
 import { MAX_SUMMARY_WORDS, SUMMARY_LOG_BYTES, type VerifySummaryInput } from "./types.ts";
 import { pilotSqlFor } from "../pilot.ts";
 import { backlogHeldSql } from "../dupes/held.ts";
+import { jobItem } from "../runner/job-items.ts";
 
 const PROMPT = CLAUDE_PROMPTS["verify.summary"];
 const ACTOR = "verify";
@@ -157,6 +158,7 @@ const cut = (s: string): string => s.trim().split(/\s+/).slice(0, MAX_SUMMARY_WO
 
 function stageRow(db: DatabaseSync, v: Row, stage: string, at: string, note: string): void {
   db.prepare("INSERT INTO stages (repo, number, stage, at, actor, note) VALUES (?, ?, ?, ?, ?, ?)").run(v.repo, v.number, stage, at, ACTOR, note.slice(0, 300));
+  if (stage !== "hold") jobItem(db, v.repo, v.number, note, () => {});   // the caller logs the outcome itself
 }
 
 /** The last bytes of the log chunks one step wrote. */
@@ -222,7 +224,7 @@ export async function runCollect(db: DatabaseSync, params: { dryRun?: boolean } 
 
     if (v.item_state !== "OPEN" || v.item_head !== v.head_sha) {
       cancelOpen(db, [v.head_task_id, v.base_task_id]);
-      if (finish("stale", v.summary, v.note)) { s.stale++; s.changed++; log(`  ${ref}: stale (${v.item_state === "OPEN" ? "head moved" : "no longer open"})`); }
+      if (finish("stale", v.summary, v.note)) { s.stale++; s.changed++; jobItem(db, v.repo, v.number, `stale (${v.item_state === "OPEN" ? "head moved" : "no longer open"})`, log); }
       continue;
     }
 
@@ -250,7 +252,7 @@ export async function runCollect(db: DatabaseSync, params: { dryRun?: boolean } 
         const ids = [v.head_task_id, v.base_task_id].map((id) => (id === null ? null : cloneTask(db, id)));
         db.prepare("UPDATE verifications SET head_task_id = ?, base_task_id = ?, state = 'planned' WHERE repo = ? AND number = ? AND head_sha = ?").run(ids[0], ids[1], v.repo, v.number, v.head_sha);
         s.retried++; s.changed++;
-        log(`  ${ref}: ${verdict.reason}; queued the tasks again`);
+        jobItem(db, v.repo, v.number, `${verdict.reason}; queued the tasks again`, log);
         continue;
       } catch (e) {
         if (!(e instanceof BuildError)) throw e;

@@ -1,4 +1,5 @@
 // Referee: Sonnet decides disagreements between Jev and Haiku under the written rules.
+import { jobItem } from "../runner/job-items.ts";
 import type { DatabaseSync } from "node:sqlite";
 import { claudeRoom } from "../agents/call.ts";
 import { CLAUDE_PROMPTS } from "../prompts/index.ts";
@@ -54,6 +55,7 @@ export async function refereeItems(db: DatabaseSync, runId: string, items: Item[
         const [repo, num] = v.ref.split("#");
         ins.run(repo!, Number(num), runId, new Date().toISOString(), v.type_label, v.why, opts.pipeline ? JSON.stringify({ sure: v.sure === true }) : null);
         got++;
+        jobItem(db, repo!, Number(num), `refereed as ${v.type_label}`);
       }
     }
     total += got;

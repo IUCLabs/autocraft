@@ -6,6 +6,7 @@
 // state, diffs); never writes to it.
 //
 //   autocraft dupe-compare [--limit N] [--dry-run]
+import { jobItem } from "../runner/job-items.ts";
 import { referenceDir } from "../reference.ts";
 import type { DatabaseSync } from "node:sqlite";
 import { claudeRoom } from "../agents/call.ts";
@@ -245,7 +246,7 @@ export async function runDupeCompare(db: DatabaseSync, params: CompareParams = {
       const l = live.get(c.repo)!;
       const bad = c.members.find((m) => { const v = l.get(m.number); return !v || v.state !== m.state || (m.kind === "pr" && v.head !== m.head_oid); });
       if (bad) {
-        log(`  ${c.repo}#${bad.number}: dropped from ${c.key}, it changed on GitHub since the last sync`);
+        jobItem(db, c.repo, bad.number, `dropped from duplicate set ${c.key}, it changed on GitHub since the last sync`, log);
         rememberDrop(db, c, NOW_ISO(d));
       }
       return !bad;
@@ -265,6 +266,7 @@ export async function runDupeCompare(db: DatabaseSync, params: CompareParams = {
       s.byRule++;
       log(`  ${set.repo} ${set.key}: no valid answer; kept #${r.kept} by rule`);
     } else s.compared++;
+    for (const m of set.members) jobItem(db, set.repo, m.number, `compared in duplicate set ${set.key}, keep #${r.kept}${r.source === "rule" ? " (by rule)" : ""}`, () => {});
     params.onHandled?.(++handled);
   }), () => claudeRoom(db));
   s.asked = askGroupDecisions(db, params.repo, NOW_ISO(d));
