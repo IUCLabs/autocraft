@@ -48,6 +48,7 @@ import { hasOpenPr, notRustKey, textHash, type IssueCandidate } from "./candidat
 import { plannedItems } from "../core/select-items.ts";
 import { parseTriage, sourcePaths, validateFixPatch } from "./parse.ts";
 import { branchName, claimCommentText, commentText, commitMessage, prBody, prTitle } from "./template.ts";
+import { changedRsFiles, foldFormat, lintSteps, readLint } from "../prepush/index.ts";
 import { ghComment, ghFork, ghOpenPr, pushOwnBranch, type Writer } from "../github/write.ts";
 import { COMMENTS_SHOWN, COMMENT_CHARS, FILE_CAP, ISSUE_BODY_LIMIT, MAX_PATHS, MAX_ROUNDS, TOTAL_CAP, type IssueText, type PatchInput, type TriageInput } from "./types.ts";
 import { inPilot, pilotSqlFor } from "../pilot.ts";
@@ -136,7 +137,7 @@ export type AttemptRow = {
   repo: string; number: number; main_sha: string; text_hash: string; state: string; round: number;
   files: string | null; crate: string | null; crate_dir: string | null; patch: string | null; test_patch: string | null;
   head_task_id: number | null; base_task_id: number | null; retries: number; push_tries: number;
-  summary: string | null; pr_url: string | null; reason: string | null; size: string | null; created_at: string; updated_at: string;
+  summary: string | null; pr_url: string | null; reason: string | null; size: string | null; format_diff?: string | null; created_at: string; updated_at: string;
 };
 
 const byUpdated = (a: AttemptRow, b: AttemptRow): number => (a.updated_at < b.updated_at ? -1 : a.updated_at > b.updated_at ? 1 : 0);
@@ -193,8 +194,10 @@ const regressionStep = (crate: string): TaskStep =>
 export function tasksFor(r: { repo: string; number: number; main_sha: string; crate: string }, patch: string, testPatch: string): NewTask[] {
   const common = { step: "fixissue", repo: r.repo, number: r.number, headSha: r.main_sha, baseSha: r.main_sha, requires: { ...REQUIRES, toolchains: [...REQUIRES.toolchains] }, warm: { key: warmKeyOf(r.repo), role: "use" as const } };
   const steps = rustPlan({ cargoArgs: ["-p", r.crate] });
+  // The head task also formats and lints the files the patch changes; the base task only has to fail the regression test.
+  const lint = lintSteps(changedRsFiles(patch));
   const baseSteps = steps.map((s): TaskStep => (s.name === "test" ? { ...s, cmd: [...s.cmd, "--test", "autocraft_regression"] } : s));
-  return [{ ...common, plan: [...steps, regressionStep(r.crate)], patch }, { ...common, plan: baseSteps, patch: testPatch }];
+  return [{ ...common, plan: [...steps, regressionStep(r.crate), ...lint], patch }, { ...common, plan: baseSteps, patch: testPatch }];
 }
 
 // ---- running: triage and patch rounds -------------------------------------------
@@ -457,8 +460,10 @@ export async function runFixIssueCollect(db: DatabaseSync, params: CollectParams
       if (!head || !base) { fail(db, d, r, "the build task is gone"); s.failed++; s.changed++; continue; }
       if (!TERMINAL.includes(head.state) || !TERMINAL.includes(base.state)) continue;
       const ho = outcomeOf(head), bo = outcomeOf(base);
-      if (ho.kind === "error" || bo.kind === "error") {
-        const why = ho.kind === "error" ? ho.reason : (bo as { reason: string }).reason;
+      // The format and clippy steps ran in the head task; their result counts once everything else passed.
+      const lint = ho.kind === "pass" && bo.kind !== "error" && head.plan.some((st) => st.name === "clippy") ? readLint(db, head.id) : null;
+      if (ho.kind === "error" || bo.kind === "error" || lint?.kind === "infra-failed") {
+        const why = ho.kind === "error" ? ho.reason : bo.kind === "error" ? bo.reason : (lint as { reason: string }).reason;
         if (r.retries < 1) {
           update(db, d, r, { head_task_id: cloneTask(db, head.id), base_task_id: cloneTask(db, base.id), retries: r.retries + 1 });
           s.retried++; s.changed++;
@@ -477,10 +482,13 @@ export async function runFixIssueCollect(db: DatabaseSync, params: CollectParams
       } else if (bo.kind === "fail" && (bo.step !== "test" || bo.timedOut)) {
         roundFailed(db, d, r, r.round, bo.timedOut ? "the regression test timed out without the fix" : `the regression test did not build without the fix (${bo.step} failed)`, r.patch, log);
         s.failedRounds++;
+      } else if (lint?.kind === "result" && lint.findings.length) {
+        roundFailed(db, d, r, r.round, `clippy findings on the lines the patch changed:\n${lint.findings.slice(0, 5).map((f) => f.rendered).join("\n")}`, r.patch, log, 1500);
+        s.failedRounds++;
       } else if (!(await checkPatch(x(r.repo), r))) {
         s.failedRounds++;
       } else {
-        update(db, d, r, { state: "passed" });
+        update(db, d, r, { state: "passed", format_diff: lint?.kind === "result" ? lint.formatDiff : null });
         s.passed++;
         log(`  ${ref}: round ${r.round} passed`);
         if (await openPr(x(r.repo), { ...r, state: "passed" })) s.opened++;
@@ -609,7 +617,21 @@ export async function openPr(x: Ctx, r: AttemptRow): Promise<boolean> {
       rmSync(scratch, { recursive: true, force: true });
     }
     if (!applied.ok) { fail(db, d, r, applied.reason); return false; }
-    const commit = await git.commit(applied.tree, r.main_sha, commitMessage(r.number, title, [...files, testPath]), { name: who.login, email: who.email });
+    // The formatter's changes ride in the same commit (whitespace-only is checked; the branch is our own, so Opus does not look again).
+    let tree = applied.tree;
+    if (r.format_diff) {
+      const fold = await foldFormat(git, r.main_sha, r.patch!, r.format_diff, d.root);
+      if (!fold.ok) { fail(db, d, r, `the formatter result was refused: ${fold.reason}`); return false; }
+      const scratch2 = mkdtempSync(join(d.root, ".index-"));
+      try {
+        const again = await git.applyToTree(r.main_sha, fold.patch, join(scratch2, "index"));
+        if (!again.ok) { fail(db, d, r, again.reason); return false; }
+        tree = again.tree;
+      } finally {
+        rmSync(scratch2, { recursive: true, force: true });
+      }
+    }
+    const commit = await git.commit(tree, r.main_sha, commitMessage(r.number, title, [...files, testPath]), { name: who.login, email: who.email });
     const changes = await git.rawChanges(r.main_sha, commit);
     const allowed = new Set([...files, testPath]);
     if (changes.some((c) => !allowed.has(c[3]!) || (c[2] === "A" ? c[1] !== "100644" : c[2] !== "M" || c[0] !== c[1]))) {

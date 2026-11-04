@@ -30,11 +30,15 @@ export function changedRsFiles(patch: string): string[] {
 export function lintPlan(changedRs: string[]): TaskStep[] | null {
   const files = [...new Set(changedRs.filter((f) => f.endsWith(".rs")))];
   if (!files.length) return null;
-  if (files.length > LINT_FILES_MAX) files.length = LINT_FILES_MAX;
   const [fetch] = rustPlan({ test: false });
+  return [fetch!, ...lintSteps(files)];
+}
+
+/** The formatter and clippy steps alone, for a task that fetched and built already (fix issue's round task). */
+export function lintSteps(files: string[]): TaskStep[] {
+  const named = [...new Set(files.filter((f) => f.endsWith(".rs")))].slice(0, LINT_FILES_MAX);
   return [
-    fetch!,
-    { name: "format", cmd: ["sh", "-c", FORMAT_SCRIPT, "format", ...files], network: "none", timeoutSec: 600, artifacts: [FORMAT_ARTIFACT] },
+    { name: "format", cmd: ["sh", "-c", FORMAT_SCRIPT, "format", ...named], network: "none", timeoutSec: 600, artifacts: [FORMAT_ARTIFACT] },
     { name: "clippy", cmd: ["sh", "-c", CLIPPY_SCRIPT], network: "none", timeoutSec: 3600, artifacts: [CLIPPY_ARTIFACT, CLIPPY_ERR_ARTIFACT] },
   ];
 }

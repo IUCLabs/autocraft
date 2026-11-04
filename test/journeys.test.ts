@@ -229,8 +229,21 @@ describe("issue journey", () => {
     assert.deepEqual(started.started, ["app#5"]);
     const a = attemptOf(w.db, "app", 5)!;
     // The fix must fail on the base and pass on the head; the sandbox's results are recorded on its tasks.
+    // Round 1 passes the tests but clippy finds something on a line the patch changed: the round fails and round 2 sees the finding.
     endTask(w, a.head_task_id!, "pass");
+    putLint(w, a.head_task_id!, { diagnostics: [{ line: 2 }], file: lib });
     endTask(w, a.base_task_id!, "fail-test");
+    assert.equal((await runFixIssueCollect(w.db, {}, quiet, g.deps)).failedRounds, 1);
+    assert.match(attemptOf(w.db, "app", 5)!.summary!, /needless at line 2/);
+    const seen: string[] = [];
+    const ask0 = g.deps.ask;
+    g.deps.ask = async (db, id, input, ...rest) => { if (id === "fixissue.patch") seen.push(JSON.stringify(input)); return ask0(db, id, input, ...rest); };
+    await runFixIssue(w.db, { repo: "app", dryRun: false }, quiet, g.deps);
+    assert.match(seen[0]!, /"previous"[^]*needless at line 2/);
+    const b = attemptOf(w.db, "app", 5)!;
+    endTask(w, b.head_task_id!, "pass");
+    putLint(w, b.head_task_id!, { file: lib });
+    endTask(w, b.base_task_id!, "fail-test");
     const collected = await runFixIssueCollect(w.db, {}, quiet, g.deps);
     assert.equal(collected.opened, 1);
     assert.equal(attemptOf(w.db, "app", 5)!.state, "pr-opened");
@@ -307,11 +320,15 @@ function issueWorld(w: World, o: { lib: string; fix: string }) {
 }
 
 /** The sandbox finished a lint task: the formatter's diff (if it changed anything) and clippy's JSON lines come back as artifacts. */
-function endLint(w: World, id: number, o: { format?: string; diagnostics?: { line: number }[] } = {}): void {
+function putLint(w: World, id: number, o: { format?: string; diagnostics?: { line: number }[]; file?: string } = {}): void {
   const put = (name: string, text: string) => { const tmp = tempPath(id); writeFileSync(tmp, text); storeArtifact(w.db, id, name, tmp); };
-  const diag = (line: number) => JSON.stringify({ reason: "compiler-message", message: { level: "warning", message: "needless", code: { code: "clippy::needless_return" }, spans: [{ file_name: "src/lib.rs", line_start: line, line_end: line, is_primary: true }], rendered: `warning: needless at line ${line}\n` } });
+  const diag = (line: number) => JSON.stringify({ reason: "compiler-message", message: { level: "warning", message: "needless", code: { code: "clippy::needless_return" }, spans: [{ file_name: o.file ?? "src/lib.rs", line_start: line, line_end: line, is_primary: true }], rendered: `warning: needless at line ${line}\n` } });
   put("clippy.txt", [...(o.diagnostics ?? []).map((d) => diag(d.line)), JSON.stringify({ reason: "build-finished", success: !o.diagnostics?.length })].join("\n") + "\n");
   if (o.format) put("format.txt", o.format);
+}
+
+function endLint(w: World, id: number, o: Parameters<typeof putLint>[2] = {}): void {
+  putLint(w, id, o);
   w.db.prepare("UPDATE build_tasks SET state = 'done', results = '[]', ended_at = ? WHERE id = ?").run(T1, id);
 }
 

@@ -50,6 +50,8 @@ const ADDED_COLUMNS: [table: string, column: string, type: string][] = [
   ["build_tasks", "warm_role", "TEXT"],
   ["verifications", "note", "TEXT"],
   ["fix_attempts", "size", "TEXT"],
+  // The formatter diff of the passing round, folded into the PR commit.
+  ["fix_attempts", "format_diff", "TEXT"],
   ["repos", "reconciled_at", "TEXT"],
   ["opus_reviews", "public_review", "TEXT"],
   // The model's 2 or 3 sentence summary and one-sentence reason, shown as the text of decisions about the PR.
