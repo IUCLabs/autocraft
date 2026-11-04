@@ -12,6 +12,7 @@ import type {
   ActivityQuery,
   ItemTrace,
   Now,
+  NowFeed,
   ItemTraceDetail,
   ItemTraceQuery,
   ItemTraceUnchanged,
@@ -127,6 +128,8 @@ export interface Api {
   };
   /** Health problems, everything in progress and the last things that happened, for the home page. */
   now(): Promise<Now>;
+  /** The next page of "Just happened", older than `before` (a `nextCursor`). */
+  nowFeed(before: string): Promise<NowFeed>;
   item(repo: RepoName, number: number): Promise<Item>;
   /**
    * Every event of the item, newest first, with the header (now, next, who). `since` is the `stamp` of an earlier answer:
