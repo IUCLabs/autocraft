@@ -10,7 +10,9 @@ import { exec, type Exec, type ExecResult } from "../src/fixup/git.ts";
 import { setFixIssueApproval } from "../src/fixissue/approval.ts";
 import { attemptOf, runFixIssue, type CollectDeps } from "../src/fixissue/index.ts";
 import { parseTriage, validateFixPatch } from "../src/fixissue/parse.ts";
+import type { PatchInput } from "../src/fixissue/types.ts";
 import type { Querier } from "../src/mirror.ts";
+import { REPO_PATH } from "../src/sandbox/command.ts";
 import { SCRATCH } from "./scratch.ts";
 import { validating } from "./gql.ts";
 
@@ -137,12 +139,12 @@ type World = { db: DatabaseSync; deps: CollectDeps; log: string[]; calls: string
 
 const APPROVE = JSON.stringify({ verdict: "approve", reasons: "fixes the cause", problems: [] });
 
-function world(o: Opts & { check?: string | null; triage?: string; patches?: (string | null)[]; title?: string } = {}): World {
+function world(o: Opts & { check?: string | null; triage?: string; patches?: (string | null)[]; title?: string; lib?: string } = {}): World {
   const root = mkdtempSync(join(dir, "w-"));
   const work = join(root, "work");
   mkdirSync(join(work, "crates/app/src"), { recursive: true });
   git(work, "init", "-q", "-b", "main");
-  writeFileSync(join(work, LIB), "pub fn first(v: &[u8]) -> u8 {\n    v[0]\n}\n");
+  writeFileSync(join(work, LIB), o.lib ?? "pub fn first(v: &[u8]) -> u8 {\n    v[0]\n}\n");
   git(work, "add", "-A");
   git(work, "commit", "-q", "-m", "init");
   const sha = git(work, "rev-parse", "HEAD");
@@ -213,6 +215,23 @@ const finishBoth = (db: DatabaseSync, head: End, base: End) => {
 const quiet = () => {};
 
 describe("fix step", () => {
+  test("a file over the size limit stops the patch round without a checkout and is listed by path alone with one", async () => {
+    const lib = "pub fn first(v: &[u8]) -> u8 {\n    v[0]\n}\n" + Array.from({ length: 6000 }, (_, i) => `fn f${i}() {}`).join("\n") + "\n";
+    const patchCalls = (w: World) => w.asked.filter((a) => a.startsWith("fixissue.patch:")).map((a) => JSON.parse(a.slice("fixissue.patch:".length)) as PatchInput);
+
+    const held = world({ lib });
+    await runFixIssue(held.db, { repo: "app", dryRun: false }, quiet, held.deps);
+    assert.equal(patchCalls(held).length, 0);
+
+    const w = world({ lib });
+    w.deps.checkout = async () => "/checkout";
+    await runFixIssue(w.db, { repo: "app", dryRun: false }, quiet, w.deps);
+    const calls = patchCalls(w);
+    assert.equal(calls.length, 1);
+    assert.deepEqual(calls[0]!.files, [{ path: LIB }]);
+    assert.equal(calls[0]!.repo_dir, REPO_PATH);
+  });
+
 
 
 

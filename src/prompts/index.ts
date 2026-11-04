@@ -370,7 +370,7 @@ const FIXUP: ClaudePrompt = {
   purpose: "Turns the small mechanical fixes of a take-fix review into a unified diff for the contributor's branch.",
   models: ["sonnet"],
   effort: "medium",
-  placeholders: { pr: "The pull request as a JSON object indented by one space: ref, title, fixes (the review's list of file and change), files (path and full current content of each file the fixes name, or for a long file its excerpt: total_lines, outline and numbered regions) and diff (the pull request's unified diff). After a failed lint check it also has previous: the earlier patch and the findings on its lines.", repo_access: REPO_ACCESS_DOC },
+  placeholders: { pr: "The pull request as a JSON object indented by one space: ref, title, fixes (the review's list of file and change), files (path and full current content of each file the fixes name, or for a long file its excerpt, or the path alone when you can read the file in the repository: total_lines, outline and numbered regions) and diff (the pull request's unified diff). After a failed lint check it also has previous: the earlier patch and the findings on its lines.", repo_access: REPO_ACCESS_DOC },
   sandbox: { tools: ["Read", "Grep", "Glob"], maxTurns: 20, workspace: true, check: true },
   template: `You apply review fixes to a pull request on one of the storytold craft apps. The review listed small mechanical fixes. Make exactly those changes and nothing else.
 
@@ -378,6 +378,7 @@ Rules:
 - Edit only the files named in fixes. Never add, delete, rename or change the mode of a file.
 - Make only the changes the fixes describe; do not reformat, rename or improve anything else.
 - If a fix cannot be made from the file content shown, leave that fix out.
+- A file listed with only a path is not pasted: it is in the repository at the path given below. Read it with Read before you write the diff.
 - Keep the whole change under ${MAX_CHANGED_LINES} changed lines.
 - A file shown with "excerpt" instead of "content" is only part of a long file: total_lines is its real length, outline lists its top-level items as "line| text", and each region holds the lines from "from" to "to" as "line| text". Use the real line numbers in hunk headers, write hunk lines without the "line| " prefix, edit only lines inside a region, and keep every context line inside a region. If a change needs lines outside the regions, leave it out.
 - When carried_from is present, each fix is a part of another pull request (closed as a duplicate of this one) to port onto this pull request's code: adapt that part to the files shown, and port only the listed parts.
@@ -410,7 +411,7 @@ const CIFIX: ClaudePrompt = {
   purpose: "Turns the log of a failing CI check on a wanted pull request into a unified diff that makes the check pass.",
   models: ["sonnet"],
   effort: "high",
-  placeholders: { pr: "The pull request as a JSON object indented by one space: ref, title, failure (the failed checks, each with the failed steps: job, step and the end of that step's log), files (path and full current content of each file the patch may edit, or for a long file its excerpt: total_lines, outline and numbered regions) and diff (the pull request's unified diff). After a failed lint check it also has previous: the earlier patch and the findings on its lines.", repo_access: REPO_ACCESS_DOC },
+  placeholders: { pr: "The pull request as a JSON object indented by one space: ref, title, failure (the failed checks, each with the failed steps: job, step and the end of that step's log), files (path and full current content of each file the patch may edit, or for a long file its excerpt, or the path alone when you can read the file in the repository: total_lines, outline and numbered regions) and diff (the pull request's unified diff). After a failed lint check it also has previous: the earlier patch and the findings on its lines.", repo_access: REPO_ACCESS_DOC },
   sandbox: { tools: ["Read", "Grep", "Glob"], maxTurns: 20, workspace: true, check: true },
   template: `You fix a failing CI check on a pull request to one of the storytold craft apps. The pull request is wanted; its CI run failed. Change the code so the check passes, with the smallest edit that keeps what the pull request does.
 
@@ -418,6 +419,7 @@ Rules:
 - Edit only the files in files. Never add, delete, rename or change the mode of a file.
 - Fix the cause the log shows: a compile error, a lint, a failing test caused by the pull request's code. Do not touch tests: never edit, skip, ignore or weaken a test or an assertion.
 - Never silence a check: no \`#[allow]\`, \`#[ignore]\`, \`#[cfg_attr]\` or \`#[expect]\`, no change to CI, lint or toolchain configuration, no deleted or stubbed-out code to dodge the error.
+- A file listed with only a path is not pasted: it is in the repository at the path given below. Read it with Read before you write the diff.
 - A file shown with "excerpt" instead of "content" is only part of a long file: total_lines is its real length, outline lists its top-level items as "line| text", and each region holds the lines from "from" to "to" as "line| text". Use the real line numbers in hunk headers, write hunk lines without the "line| " prefix, edit only lines inside a region, and keep every context line inside a region. If a change needs lines outside the regions, leave it out.
 - If the log does not show a cause you can fix from the files shown, reply with the single word NONE.
 - Keep the whole change under ${MAX_CHANGED_LINES} changed lines.
@@ -658,13 +660,14 @@ const FIXISSUE_PATCH: ClaudePrompt = {
   purpose: "Writes the fix for an issue and a regression test for it as one unified diff.",
   models: ["sonnet"],
   effort: "high",
-  placeholders: { issue: `The issue as a JSON object indented by one space: ref, title, body, comments, crate (name and dir), test_path (the one file to add), files (path and full current content of each file you may edit) and, from the second round on, previous (the last diff and why its build or tests failed, or why Opus rejected it).`, repo_access: REPO_ACCESS_DOC },
+  placeholders: { issue: `The issue as a JSON object indented by one space: ref, title, body, comments, crate (name and dir), test_path (the one file to add), files (path and full current content of each file you may edit, or the path alone when you can read the file in the repository) and, from the second round on, previous (the last diff and why its build or tests failed, or why Opus rejected it).`, repo_access: REPO_ACCESS_DOC },
   sandbox: { tools: ["Read", "Grep", "Glob"], maxTurns: 30, workspace: true, check: true },
   template: `You fix one bug on a Rust project and add a regression test for it. A build machine will apply your diff to the default branch, build it, and run the crate's tests. The test must fail on the code without your fix and pass with it.
 
 Rules:
 - Edit only the files listed in files. Add exactly one new file, test_path, a Rust integration test of the crate (it can use only the crate's public API and its dev-dependencies already in the manifest).
 - Never add, delete, rename or change the mode of any other file. Do not touch manifests, lock files or build scripts.
+- A file listed with only a path is not pasted: it is in the repository at the path given below. Read it with Read before you write the diff.
 - Make the smallest change that fixes the bug. Keep the whole diff under 300 changed lines, the test under 200 lines.
 - The test must exercise the reported behaviour and fail because of the bug, not because of a compile error or a missing API.
 - If previous is given, your earlier diff failed as described; write a corrected complete diff.

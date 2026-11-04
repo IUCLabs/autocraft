@@ -1,10 +1,14 @@
 // How a file over the size limit is shown to a patch model: the regions around the lines that matter, with real line
 // numbers, instead of the whole file. Pure functions; src/prompts imports only the type.
 
-/** A file shown whole, or in part. In part, `regions` hold numbered lines ("N| text") of a file `total_lines` long. */
+/**
+ * A file shown whole, in part, or by path only (a call with a sandbox checkout: the model reads the file there, so its
+ * size does not matter). In part, `regions` hold numbered lines ("N| text") of a file `total_lines` long.
+ */
 export type ShownFile =
-  | { path: string; content: string }
-  | { path: string; excerpt: { total_lines: number; outline: string[]; regions: { from: number; to: number; text: string }[] } };
+  | { path: string; content?: never; excerpt?: never }
+  | { path: string; content: string; excerpt?: never }
+  | { path: string; content?: never; excerpt: { total_lines: number; outline: string[]; regions: { from: number; to: number; text: string }[] } };
 
 /** Lines kept on each side of a cited line or a changed hunk, and of a definition a fix names. */
 export const REGION_MARGIN = 150;
@@ -35,7 +39,8 @@ export function changedRanges(diff: string, path: string): [number, number][] {
 
 /** The size of a file as shown, in characters; what the caps count. */
 export function shownSize(f: ShownFile): number {
-  if ("content" in f) return f.content.length;
+  if (f.content !== undefined) return f.content.length;
+  if (!f.excerpt) return 0;
   return f.excerpt.outline.reduce((n, o) => n + o.length + 1, 0) + f.excerpt.regions.reduce((n, r) => n + r.text.length + 1, 0);
 }
 
@@ -98,7 +103,7 @@ export function viewFile(path: string, content: string, cues: string[], diff: st
  */
 export function outsideShown(files: ShownFile[], diff: string): string | null {
   for (const f of files) {
-    if (!("excerpt" in f)) continue;
+    if (!f.excerpt) continue;
     const inside = (from: number, to: number) => f.excerpt.regions.some((r) => r.from <= from && to <= r.to);
     let inFile = false, at = 0;
     for (const l of diff.split("\n")) {

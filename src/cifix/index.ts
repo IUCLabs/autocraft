@@ -270,6 +270,9 @@ export async function patchFromFailure(db: DatabaseSync, d: Pick<CifixDeps, "ask
   // Files a compiler error points at come first, then the files the diff changes; nothing else is editable. Test files are not editable by a CI fix.
   const named = [...new Set(errorFiles(text).concat([...r.diffText.matchAll(DIFF_FILE)].map((m) => m[1]!)))]
     .filter((p) => editable(p) && !TEST_PATH.test(p)).slice(0, MAX_FILES);
+  // With a sandbox checkout the model reads the files itself, so they are listed by path and no size limit applies.
+  const checkout = (await r.checkout()) ?? undefined;
+  const repoDir = checkout ? { repo_dir: REPO_PATH } : {};
   const shown: CifixPr["files"] = [];
   // The guard reads whole files even when the model sees only parts.
   const contents = new Map<string, string>();
@@ -277,17 +280,16 @@ export async function patchFromFailure(db: DatabaseSync, d: Pick<CifixDeps, "ask
   for (const path of named) {
     const f = await git.file(head, path);
     if (!f.ok) continue;
+    contents.set(path, f.content);
+    if (checkout) { shown.push({ path }); continue; }
     // The log lines that mention the file give the lines a large file is cut around.
     const v = viewFile(path, f.content, text.split("\n").filter((l) => l.includes(path)), r.diffText, FILE_CAP);
     if (!v.ok) return no("failed", v.reason);
     total += shownSize(v.file);
     if (total > TOTAL_CAP) return no("failed", "the parts of the files the failure names are over the size limit");
     shown.push(v.file);
-    contents.set(path, f.content);
   }
   if (!shown.length) return no("failed", "the failure names no file a CI fix may edit");
-  const checkout = (await r.checkout()) ?? undefined;
-  const repoDir = checkout ? { repo_dir: REPO_PATH } : {};
   const tool = new CheckTool({ db, step: "cifix", repo, number: r.number || null, head, base: null, applies: applyCheck(git, d.root, head) });
   const reply = await d.ask(db, [{ ref, title, failure: logText(failure), files: shown, diff: r.diffText, ...(r.previous ? { previous: r.previous } : {}), ...repoDir }], checkout, tool);
   if (reply === null) return no("failed", "the model gave no answer");

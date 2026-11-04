@@ -45,19 +45,20 @@ export async function runFixupTry(db: DatabaseSync, repo: string, number: number
   const diff = await cachedDiff(repo, number, head, d.fetchDiff);
   if (!diff.ok) throw new Error(`no diff: ${diff.error}`);
   if (diff.text.length > DIFF_CAP) throw new Error(`the PR diff is over the ${DIFF_CAP} character limit`);
+  const checkout = (await d.checkout?.(repo, number, head)) ?? undefined;
+  const repoDir = checkout ? { repo_dir: REPO_PATH } : {};
   const shown: FixupPr["files"] = [];
   let total = 0;
   for (const path of files) {
     const f = await git.file(head, path);
     if (!f.ok) throw new Error(f.reason);
+    if (checkout) { shown.push({ path }); continue; }
     const v = viewFile(path, f.content, fixes.filter((x) => x.file === path).map((x) => x.change), diff.text, FILE_CAP);
     if (!v.ok) throw new Error(v.reason);
     total += shownSize(v.file);
     if (total > TOTAL_CAP) throw new Error(`the files named in the fixes are over the ${TOTAL_CAP} character limit`);
     shown.push(v.file);
   }
-  const checkout = (await d.checkout?.(repo, number, head)) ?? undefined;
-  const repoDir = checkout ? { repo_dir: REPO_PATH } : {};
   log(`${ref} at ${head.slice(0, 7)}: ${fixes.length} fixes in ${files.join(", ")}; ${checkout ? "sandbox checkout ready" : "NO checkout: the model runs without tools"}`);
 
   const before = (db.prepare("SELECT COALESCE(MAX(id), 0) AS n FROM model_checks").get() as { n: number }).n;

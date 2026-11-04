@@ -11,6 +11,7 @@ import { exec, type Exec, type ExecResult } from "../src/fixup/git.ts";
 import { runFixup, type FixupDeps } from "../src/fixup/index.ts";
 import { viewFile } from "../src/fixup/excerpt.ts";
 import { validatePatch, type FixupPr } from "../src/fixup/patch.ts";
+import { REPO_PATH } from "../src/sandbox/command.ts";
 import { SCRATCH } from "./scratch.ts";
 import { validating } from "./gql.ts";
 
@@ -158,6 +159,7 @@ function world(opts: { check?: string | null; reply?: string | null; moveBranch?
   return w;
 }
 
+const spreadDiff = (path: string) => `diff --git a/${path} b/${path}\n--- a/${path}\n+++ b/${path}\n` + Array.from({ length: 24 }, (_, i) => 1 + i * 250).map((n) => `@@ -${n} +${n} @@\n-x\n+fn f${n}() {}\n`).join("");
 const rows = (db: DatabaseSync, sql: string) => (db.prepare(sql).all() as Record<string, unknown>[]).map((r) => ({ ...r }));
 
 describe("fixup step", () => {
@@ -178,6 +180,22 @@ describe("fixup step", () => {
 
 
 
+
+  test("a file over the size limit is held without a checkout and listed by path alone with one", async () => {
+    const lib = Array.from({ length: 6000 }, (_, i) => `fn f${i}() {}`).join("\n") + "\n";
+    const held = world({ lib, diff: spreadDiff("src/lib.rs") });
+    const db1 = fresh(held.head);
+    await runFixup(db1, { repo: "app", dryRun: false }, () => {}, held.deps);
+    assert.equal(held.asked.length, 0);
+    assert.equal(rows(db1, "SELECT state FROM fixups")[0]!.state, "too-large");
+
+    const w = world({ lib, diff: spreadDiff("src/lib.rs") });
+    w.deps.checkout = async () => "/checkout";
+    await runFixup(fresh(w.head), { repo: "app", dryRun: false }, () => {}, w.deps);
+    assert.equal(w.asked.length, 1);
+    assert.deepEqual(w.asked[0]!.files, [{ path: "src/lib.rs" }]);
+    assert.equal(w.asked[0]!.repo_dir, REPO_PATH);
+  });
 
   describe("a patch on a large file with a duplicated block", () => {
     const dup = (i: number) => (i >= 100 && i < 103) || (i >= 2500 && i < 2503) ? `dup ${i < 200 ? i - 100 : i - 2500}` : `fn f${i}() {}`;
@@ -200,7 +218,7 @@ describe("fixup step", () => {
     const regions = (cue: string) => {
       const v = viewFile("src/x.rs", body, [cue], "", 10_000);
       const f = v.ok ? v.file : null;
-      return f && "excerpt" in f ? f.excerpt.regions.map((r) => [r.from, r.to]) : null;
+      return f?.excerpt ? f.excerpt.regions.map((r) => [r.from, r.to]) : null;
     };
     assert.deepEqual(regions("src/x.rs:500:3"), [[350, 650]]);
     assert.deepEqual(regions("line 20, lines 800-810 and L900"), [[1, 170], [650, 1000]]);

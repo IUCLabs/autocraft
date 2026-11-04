@@ -212,8 +212,9 @@ export const branchOf = (db: DatabaseSync, repo: string): string =>
 type Ctx = { db: DatabaseSync; d: FixIssueDeps; git: Git; log: (l: string) => void; runId: string; usage: Usage; /** Who asked; default: an operator at the command line. */ by?: By };
 
 /** Asks with a checkout of the base commit when there is one; the input then carries the repository path. */
-async function ask(x: Ctx, id: Id, input: TriageInput | PatchInput | FixIssueCheckInput, base: { repo: string; sha: string }, number?: number): Promise<string | null> {
-  const checkout = (await x.d.checkout?.(base.repo, branchOf(x.db, base.repo), base.sha)) ?? undefined;
+const checkoutOf = async (x: Ctx, base: { repo: string; sha: string }): Promise<string | undefined> => (await x.d.checkout?.(base.repo, branchOf(x.db, base.repo), base.sha)) ?? undefined;
+async function ask(x: Ctx, id: Id, input: TriageInput | PatchInput | FixIssueCheckInput, base: { repo: string; sha: string }, number?: number, have?: string): Promise<string | null> {
+  const checkout = have ?? await checkoutOf(x, base);
   const tool = id === "fixissue.patch" ? new CheckTool({ db: x.db, step: "fixissue", repo: base.repo, number: number ?? null, head: base.sha, base: base.sha, applies: applyCheck(x.git, x.d.root, base.sha) }) : undefined;
   return x.d.ask(x.db, id, checkout ? { ...input, repo_dir: REPO_PATH } : input, x.runId, checkout, tool);
 }
@@ -323,11 +324,14 @@ async function patchRound(x: Ctx, r: AttemptRow): Promise<boolean> {
     log(`  ${ref}: fetch failed: ${oneLine(String((e as Error).message ?? e))}`);
     return false;
   }
+  // With a sandbox checkout the model reads the files itself, so they are listed by path and no size limit applies.
+  const checkout = await checkoutOf(x, { repo: r.repo, sha: r.main_sha });
   const shown: PatchInput["files"] = [];
   let total = 0;
   for (const path of files) {
     const f = await git.file(r.main_sha, path);
     if (!f.ok) { fail(db, d, row, f.reason); return false; }
+    if (checkout) { shown.push({ path }); continue; }
     total += f.content.length;
     if (f.content.length > FILE_CAP || total > TOTAL_CAP) { fail(db, d, row, "the files to read are over the size limit"); return false; }
     shown.push({ path, content: f.content });
@@ -338,7 +342,7 @@ async function patchRound(x: Ctx, r: AttemptRow): Promise<boolean> {
     crate: { name: r.crate!, dir: r.crate_dir! }, test_path: testPath, files: shown,
     ...(round > 1 && r.patch ? { previous: { patch: r.patch.slice(0, 60_000), failure: r.summary ?? "it did not pass" } } : {}),
   };
-  const reply = await ask(x, "fixissue.patch", input, { repo: r.repo, sha: r.main_sha }, r.number);
+  const reply = await ask(x, "fixissue.patch", input, { repo: r.repo, sha: r.main_sha }, r.number, checkout);
   if (reply === null) { roundFailed(db, d, row, round, "the model gave no answer", r.patch, log); return false; }
   const v = validateFixPatch(reply, files, testPath, r.crate_dir!);
   if (!v.ok) { roundFailed(db, d, row, round, v.reason, reply.slice(0, 60_000), log); return false; }

@@ -12,7 +12,8 @@ import { FORMAT_ARTIFACT, gitFormatDiff, runCifix, type CifixDeps } from "../src
 import { formattingOnly, guardPatch } from "../src/cifix/guard.ts";
 import { parseFailedLog } from "../src/cifix/logs.ts";
 import { triage } from "../src/cifix/triage.ts";
-import type { CiFailure } from "../src/cifix/types.ts";
+import type { CifixPr, CiFailure } from "../src/cifix/types.ts";
+import { REPO_PATH } from "../src/sandbox/command.ts";
 import { setPushApproval } from "../src/fixup/approval.ts";
 import { exec, type Exec, type ExecResult } from "../src/fixup/git.ts";
 import { setCiApproval } from "../src/merge/ci-approval.ts";
@@ -139,13 +140,13 @@ const FMT_LOG = "fmt\tCheck formatting\t2026-01-01T00:00:00Z Diff in /home/runne
 const BASE = "b".repeat(40);
 const GOOD = "diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1,2 +1,2 @@\n-fn a() {}\n-fn main() { b(); }\n+fn b() {}\n+fn main() { b(); }\n";
 
-function world(opts: { log?: string; reply?: string | null; check?: string | null; canModify?: boolean; pushError?: string; conclusion?: string; completedAt?: string; checkRuns?: unknown[]; commentFails?: boolean; closedAfter?: number; decision?: string } = {}): World {
+function world(opts: { log?: string; reply?: string | null; check?: string | null; canModify?: boolean; pushError?: string; conclusion?: string; completedAt?: string; checkRuns?: unknown[]; commentFails?: boolean; closedAfter?: number; decision?: string; lib?: string } = {}): World {
   const root = mkdtempSync(join(dir, "w-"));
   const work = join(root, "work");
   mkdirSync(work);
   git(work, "init", "-q", "-b", "fix");
   mkdirSync(join(work, "src"));
-  writeFileSync(join(work, "src/lib.rs"), "fn a() {}\nfn main() { b(); }\n");
+  writeFileSync(join(work, "src/lib.rs"), opts.lib ?? "fn a() {}\nfn main() { b(); }\n");
   git(work, "add", "-A");
   git(work, "commit", "-q", "-m", "contributor");
   const head = git(work, "rev-parse", "HEAD");
@@ -202,9 +203,29 @@ function world(opts: { log?: string; reply?: string | null; check?: string | nul
   return { fork, head, log, deps };
 }
 
+const spreadDiff = (path: string) => `diff --git a/${path} b/${path}\n--- a/${path}\n+++ b/${path}\n` + Array.from({ length: 24 }, (_, i) => 1 + i * 250).map((n) => `@@ -${n} +${n} @@\n-x\n+fn f${n}() {}\n`).join("");
 const rows = (db: DatabaseSync, sql: string) => (db.prepare(sql).all() as Record<string, unknown>[]).map((r) => ({ ...r }));
 
 describe("code failure", () => {
+  test("a file over the size limit fails without a checkout and is listed by path alone with one", async () => {
+    const lib = "fn a() {}\nfn main() { b(); }\n" + Array.from({ length: 6000 }, (_, i) => `fn f${i}() {}`).join("\n") + "\n";
+    const held = world({ lib });
+    const asked: CifixPr[] = [];
+    held.deps.fetchDiff = async () => ({ ok: true, text: spreadDiff("src/lib.rs") });
+    held.deps.ask = async (_db, input) => { asked.push(...input); return GOOD; };
+    await runCifix(fresh(held.head), { repo: "app", dryRun: false }, () => {}, held.deps);
+    assert.equal(asked.length, 0);
+
+    const w = world({ lib });
+    w.deps.fetchDiff = async () => ({ ok: true, text: spreadDiff("src/lib.rs") });
+    w.deps.ask = async (_db, input) => { asked.push(...input); return GOOD; };
+    w.deps.checkout = async () => "/checkout";
+    await runCifix(fresh(w.head), { repo: "app", dryRun: false }, () => {}, w.deps);
+    assert.equal(asked.length, 1);
+    assert.deepEqual(asked[0]!.files, [{ path: "src/lib.rs" }]);
+    assert.equal(asked[0]!.repo_dir, REPO_PATH);
+  });
+
 
 
 

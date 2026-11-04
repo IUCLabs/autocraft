@@ -23,7 +23,8 @@ export type TriageInput = IssueText & { crates: Crate[]; paths: string[]; /** Wh
 /** What the patch prompt is rendered from. `previous` is set on later rounds. */
 export type PatchInput = IssueText & {
   crate: Crate; test_path: string;
-  files: { path: string; content: string }[];
+  /** Each file the patch may edit: its content, or only the path when the call has a checkout to read it from. */
+  files: { path: string; content?: string }[];
   previous?: { patch: string; failure: string };
   /** Where the call may read the repository in the sandbox. */
   repo_dir?: string;

@@ -373,11 +373,15 @@ export async function runFixup(db: DatabaseSync, params: FixupParams, log: (line
       const diff = await cachedDiff(repo, c.number, head, d.fetchDiff);
       if (!diff.ok) { fail("failed", `no diff: ${oneLine(diff.error)}`); continue; }
       if (diff.text.length > DIFF_CAP) { hold("too-large", `the PR diff is over the ${DIFF_CAP} character limit`); continue; }
+      // With a sandbox checkout the model reads the files itself, so they are listed by path and no size limit applies.
+      const checkout = (await d.checkout?.(repo, c.number, head)) ?? undefined;
+      const repoDir = checkout ? { repo_dir: REPO_PATH } : {};
       const shown: FixupPr["files"] = [];
       let total = 0, tooBig: string | null = null, bad: string | null = null;
       for (const path of files) {
         const f = await git.file(head, path);
         if (!f.ok) { bad = f.reason; break; }
+        if (checkout) { shown.push({ path }); continue; }
         const v = viewFile(path, f.content, c.fixes.filter((x) => x.file === path).map((x) => x.change), diff.text, FILE_CAP);
         if (!v.ok) { tooBig = v.reason; break; }
         total += shownSize(v.file);
@@ -389,8 +393,6 @@ export async function runFixup(db: DatabaseSync, params: FixupParams, log: (line
       // Claimed once the cheap checks pass, before the model calls, so nobody else starts on it.
       if (!c.carry) await claim(c, pr);
 
-      const checkout = (await d.checkout?.(repo, c.number, head)) ?? undefined;
-      const repoDir = checkout ? { repo_dir: REPO_PATH } : {};
       // A stored patch: the lint task's outcome decides whether it is pushed (clean), asked for again (findings) or queued again (lost task).
       let findings: string[] = [];
       let folded: string | null = null;
