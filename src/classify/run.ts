@@ -15,6 +15,9 @@ import { coalesce, lineFeed } from "./progress.ts";
 import { scrubError } from "../agents/text.ts";
 import { scrub } from "../runner/scrub.ts";
 import { itemTools } from "../itemtools/index.ts";
+import { startBridge, CHECK_SERVER, type Bridge } from "../checktool/bridge.ts";
+import type { CheckTool } from "../checktool/index.ts";
+import { CHECK_MAX_WALL_MS } from "../core/rules.ts";
 import { agentsFile, mcpFile } from "../sandbox/agent-files.ts";
 import { MCP_PATH } from "../sandbox/agents.ts";
 import { resolveClaudeBin, sandboxCommand, TOKEN_MARGIN_MS, tokenNearExpiry } from "../sandbox/index.ts";
@@ -259,10 +262,11 @@ export function claudeCwd(): string {
  * `reference`: host directory of the repo's reference documentation; a sandboxed call mounts it read-only at /reference and its prompt says so (src/reference.ts).
  * `shared`: for a prompt with the workspace, replaces the default workspace (every tracked repository's default branch, src/sandbox/workspace.ts).
  * `itemTools`: the item tools' read-only mounts and MCP servers (`mcpServers` as in an MCP config), for the call and its explorer; null means none, absent means `itemTools()` (src/itemtools).
+ * `check`: the build tool of a patch call (src/checktool); a sandboxed call of a prompt whose sandbox allows it gets the `check` tool, and the call may run that much longer.
  * `maxWaitMs`: the longest wait for a free account slot; past it the call throws a WaitLimitError (src/agents/call.ts). Absent: wait as long as it takes.
  * `lint`: checks the parsed reply (src/replylint.ts). With problems, and for a sandboxed call of a prompt that registers `lint`, one follow-up message goes to the same session and its reply is linted too.
  */
-export type AskOptions = { lint?: Lint; onProgress?: (line: string) => void; checkout?: string; reference?: string; maxWaitMs?: number; shared?: { name: string; dir: string }[]; itemTools?: { mounts: { host: string; path: string }[]; mcpServers: Record<string, unknown> } | null };
+export type AskOptions = { check?: CheckTool; lint?: Lint; onProgress?: (line: string) => void; checkout?: string; reference?: string; maxWaitMs?: number; shared?: { name: string; dir: string }[]; itemTools?: { mounts: { host: string; path: string }[]; mcpServers: Record<string, unknown> } | null };
 
 type WorkspaceFn = (db: DatabaseSync) => Promise<{ name: string; dir: string }[]>;
 let workspaceOf: WorkspaceFn = defaultWorkspace;
@@ -294,9 +298,11 @@ export async function askClaude<K extends ClaudePromptId>(id: K, model: string, 
   const run = await startClaudeRun(db, { promptId: id, promptVersion: promptVersion(id), provider: "claude", model, items, prompt: joinParts(parts) }, undefined, opts.maxWaitMs);
   const end = (e: Parameters<typeof finishRun>[2]) => finishRun(db, run.runId, e);
   let sessions: string | undefined;
+  let bridge: Bridge | undefined, bridgeConfig: string | undefined;
   try {
     // The sandbox never refreshes the token: with little lifetime left the call runs on the host without tools, where a refresh is safe.
-    if (sandboxed && tokenNearExpiry(join(run.configDir, ".credentials.json"))) {
+    const checkTool = opts.check !== undefined && CLAUDE_PROMPTS[id].sandbox?.check === true ? opts.check : undefined;
+    if (sandboxed && tokenNearExpiry(join(run.configDir, ".credentials.json"), Date.now(), TOKEN_MARGIN_MS + (checkTool ? CHECK_MAX_WALL_MS : 0))) {
       console.log("sandbox skipped: token near expiry");
       sandboxed = false;
       input = withoutRepoDir(input);
@@ -306,13 +312,16 @@ export async function askClaude<K extends ClaudePromptId>(id: K, model: string, 
     const workspace = sandboxed && CLAUDE_PROMPTS[id].sandbox?.workspace === true;
     const shared = workspace ? opts.shared ?? await workspaceOf(db) : undefined;
     const it = workspace ? opts.itemTools === undefined ? itemTools() : opts.itemTools : null;
-    const tools = it ? { mounts: it.mounts, servers: Object.keys(it.mcpServers).sort(), file: mcpFile(it.mcpServers) } : undefined;
+    if (sandboxed && checkTool) bridge = await startBridge(checkTool, run.runId);
+    const servers = { ...(it?.mcpServers ?? {}), ...(bridge ? { [CHECK_SERVER]: bridge.mcpServer } : {}) };
+    const tools = it || bridge ? { mounts: [...(it?.mounts ?? []), ...(bridge ? [bridge.mount] : [])], servers: Object.keys(servers).sort(), file: mcpFile(servers) } : undefined;
+    if (bridge && tools) bridgeConfig = tools.file;
     // Only a sandboxed call can be continued: its session store is a directory of ours. A call on the host keeps no session (it would land in the account's own config directory).
     const persist = sandboxed && opts.lint !== undefined && CLAUDE_PROMPTS[id].lint === true;
     if (persist) sessions = sessionStore();
     const args = claudeArgs(id, model, sandboxed, tools && { config: MCP_PATH, servers: tools.servers }, parts.system, reference !== undefined, persist);
     const cwd = claudeCwd();
-    const timeoutMs = CLAUDE_PROMPTS[id].limits.timeoutSeconds * 1000;
+    const timeoutMs = CLAUDE_PROMPTS[id].limits.timeoutSeconds * 1000 + (bridge ? CHECK_MAX_WALL_MS : 0);
     let spec: SandboxSpec | undefined;
     if (sandboxed) {
       const claudeBin = resolveClaudeBin(), credentials = join(run.configDir, ".credentials.json");
@@ -356,7 +365,7 @@ export async function askClaude<K extends ClaudePromptId>(id: K, model: string, 
         // Backstop: nothing that looks like a token or key leaves the sandbox call.
         const text = sandboxed ? scrub(j.result) : j.result;
         const sessionId = typeof j.session_id === "string" ? j.session_id : (Array.isArray(parsed) ? parsed.find((e) => typeof (e as { session_id?: unknown }).session_id === "string") as { session_id?: string } | undefined : undefined)?.session_id;
-        finish({ state: "done", tokens, summary: resume ? "fix turn answered" : turns === undefined ? replySummary(text, items.length) : `answered in ${turns} turns`, output: text });
+        finish({ state: "done", tokens, summary: (resume ? "fix turn answered" : turns === undefined ? replySummary(text, items.length) : `answered in ${turns} turns`) + (!resume && checkTool && checkTool.calls ? `, ${checkTool.calls} checks (${Math.round(checkTool.usedMs / 1000)} s)` : ""), output: text });
         return { text, usage, ...(turns !== undefined && { turns }), ...(sessionId && { sessionId }) };
       } catch {
         finish({ state: "failed", error: scrubError(`unreadable output (${exitClass(r.code)}) ${r.stderr}`), summary: r.code === 0 ? "unreadable output" : exitClass(r.code), output: sandboxed ? scrub(r.stdout) : r.stdout });
@@ -411,6 +420,9 @@ export async function askClaude<K extends ClaudePromptId>(id: K, model: string, 
     throw e;
   } finally {
     if (sessions) rmSync(sessions, { recursive: true, force: true });
+    bridge?.close();
+    // The config of a bridged call holds that call's token.
+    if (bridgeConfig) rmSync(bridgeConfig, { force: true });
   }
 }
 

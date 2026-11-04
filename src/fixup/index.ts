@@ -30,6 +30,7 @@ import { cachedDiff, ghDiff, type DiffFetcher } from "../review/diff.ts";
 import { checkLine, parseCheck, recordCheck } from "../patchcheck/index.ts";
 import { CHECK_DIFF_CAP, CHECK_PATCH_CAP, type FixupCheckInput } from "../patchcheck/types.ts";
 import { LINT_MAX_ROUNDS } from "../core/rules.ts";
+import { CheckTool, applyCheck } from "../checktool/index.ts";
 import { foldFormat, queueLint, readLint } from "../prepush/index.ts";
 import { pushApprovalOf } from "./approval.ts";
 import { MAX_ATTEMPTS, parseFixes, type FixCandidate } from "./candidates.ts";
@@ -64,7 +65,7 @@ export type FixupDeps = {
   exec: Exec;
   fetchDiff: DiffFetcher;
   /** The model's reply to the fixup.patch prompt, or null when it gave none. */
-  ask: (db: DatabaseSync, input: FixupPr[], checkout?: string) => Promise<string | null>;
+  ask: (db: DatabaseSync, input: FixupPr[], checkout?: string, tool?: CheckTool) => Promise<string | null>;
   /** The model's reply to the fixup.check prompt (Opus), or null when it gave none. */
   check: (db: DatabaseSync, input: FixupCheckInput[], checkout?: string) => Promise<string | null>;
   /** The model's reply to the fixup.conflict prompt (Sonnet), or null when it gave none. Absent: conflicts are not resolved by a model. */
@@ -79,7 +80,7 @@ export type FixupDeps = {
 export function defaultDeps(): FixupDeps {
   return {
     querier: new Client(1000), exec, fetchDiff: ghDiff, now: () => new Date(), root: fixupDir(),
-    ask: async (db, input, checkout) => (await askClaude("fixup.patch", PROMPT.models[0]!, input, db, { checkout }))?.text ?? null,
+    ask: async (db, input, checkout, tool) => (await askClaude("fixup.patch", PROMPT.models[0]!, input, db, { checkout, check: tool }))?.text ?? null,
     check: async (db, input, checkout) => (await askClaude("fixup.check", CHECK.models[0]!, input, db, { checkout }))?.text ?? null,
     resolve: async (db, input, checkout) => (await askClaude("fixup.conflict", CONFLICT.models[0]!, input, db, { checkout }))?.text ?? null,
     checkout: (r, n, h) => checkoutForPr(r, n, h, console.log),
@@ -415,7 +416,8 @@ export async function runFixup(db: DatabaseSync, params: FixupParams, log: (line
       }
       // The model's patch: the stored one when it is clean, else a new answer (with the findings on the earlier patch).
       const reply = folded !== null ? c.lint!.patch : await d.ask(db, [{ ref, title: oneTitle(db, c), fixes: c.fixes, files: shown, diff: diff.text, ...(carried ? { carried_from: carried } : {}),
-        ...(c.lint && findings.length ? { previous: { patch: c.lint.patch, findings } } : {}), ...repoDir }], checkout);
+        ...(c.lint && findings.length ? { previous: { patch: c.lint.patch, findings } } : {}), ...repoDir }], checkout,
+        new CheckTool({ db, step: "fixup", repo, number: c.number, head, base: pr.baseRefOid ?? null, applies: applyCheck(git, d.root, head) }));
       if (reply === null) { fail("failed", "the model gave no answer"); continue; }
       const v = validatePatch(reply, files, fixupEditable);
       if (!v.ok) { fail("refused", v.reason); continue; }
