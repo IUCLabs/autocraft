@@ -83,7 +83,7 @@ function MainCiLine({ name }: { name: string }) {
   );
 }
 
-function RepoDetailView({ params }: ViewProps) {
+export function RepoDetailView({ params }: ViewProps) {
   useNow();
   const name = params.name ?? "";
   const { data, error } = useQuery("repo-admin", (a) => a.repoAdmin.list());
@@ -148,4 +148,3 @@ function RepoDetailView({ params }: ViewProps) {
   );
 }
 
-export const repoDetailView = { id: "repo-detail", title: "Repo", panels: [{ id: "main", title: "Repo", component: RepoDetailView, defaultSize: 100 }] };

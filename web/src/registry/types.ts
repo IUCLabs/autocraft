@@ -36,6 +36,8 @@ export interface ViewDef {
   phone?: ComponentType<ViewProps>;
   /** Extra controls rendered in the view header (filters, tabs). */
   toolbar?: ComponentType<ViewProps>;
+  /** Slot names the view renders. Their contributions load with the view, so the page does not wait on them after its data arrives. */
+  slots?: string[];
 }
 
 export interface RouteDef {

@@ -10,9 +10,9 @@ import { useUser } from "../../shell/UserContext";
 import { Badge } from "../../ui/atoms/Badge";
 import { cn } from "../../ui/cn";
 import { ago, num } from "../../lib/format";
-import { JobBadge } from "../pipeline";
+import { JobBadge } from "../pipeline/views";
 import { StageLimitRow } from "../pipeline/controls";
-import { PromptCard } from "../prompts";
+import { PromptCard } from "../prompts/views";
 import { BranchRow, nodeOf, recentText, waitsText } from "./parts";
 import { useNow } from "../../lib/useNow";
 

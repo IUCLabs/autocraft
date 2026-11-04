@@ -12,8 +12,13 @@ import type { User } from "./api/types";
 import { UserContext } from "./shell/UserContext";
 import { AppShell } from "./shell/AppShell";
 import { initTheme } from "./shell/theme";
+import { modules } from "./registry";
+import { preloadAll, preloadRoute } from "./registry/lazyView";
 
 initTheme();
+// The page's own chunks load beside the sign-in request, not after it.
+preloadRoute(modules, window.location.pathname);
+preloadAll(modules);
 // The panels library would set the drag cursor with an injected <style>, which
 // the server's CSP refuses; the resize handles set their own cursor.
 disableGlobalCursorStyles();
