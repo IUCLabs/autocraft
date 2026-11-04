@@ -980,8 +980,8 @@ export interface Job {
 }
 
 export interface JobDetail extends Job {
-  /** The end of the job's log, with anything token-like replaced. */
-  log: string;
+  /** The end of the job's log, with anything token-like replaced; null for viewers. */
+  log: string | null;
   logTruncated: boolean;
 }
 
@@ -1500,7 +1500,7 @@ export type TaskBatch = { id: number; branch: string; fork: string | null; commi
 /** Image and CI-gate inputs a task ran with. Worker-sent: shown as plain text only. */
 export type SandboxEnv = { image: string; baseImage: string; packages: string[]; craftFontsRef: string | null; craftI18nRev: string | null };
 /** Worker-sent text: shown as plain text only, never as markup. */
-export type BuildTaskDetail = BuildTask & { logTail: string; logBytes: number; logTruncated: boolean; patch: string | null };
+export type BuildTaskDetail = BuildTask & { /** null (with the patch) for viewers: staff only. */ logTail: string | null; logBytes: number; logTruncated: boolean; patch: string | null };
 export type TaskFilter = { state?: TaskState | "active"; env?: string; repo?: string; cursor?: string; limit?: number };
 export type TaskPage = { tasks: BuildTask[]; next: string | null };
 /** Queued and running tasks and the slots left over the online, enabled environments (the flowchart's Verify node). */

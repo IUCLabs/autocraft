@@ -2,7 +2,7 @@
 // the viewer cannot see are left out); only operators register or change an
 // environment, rotate its key or cancel a task, all audited. A worker key is
 // returned once, on creation and rotation. Whatever a worker reported is data:
-// the page shows it as text and artifacts download with `attachment` (PNG inline),
+// viewers get neither logs, patches nor artifact downloads; the page shows it as text and artifacts download with `attachment` (PNG inline),
 // `nosniff` and `Content-Security-Policy: sandbox`.
 import { readFileSync } from "node:fs";
 import type { DatabaseSync } from "node:sqlite";
@@ -55,7 +55,11 @@ async function visibleTask(db: DatabaseSync, req: Req): Promise<BuildTaskDetail>
   return t;
 }
 
-export const task = (db: DatabaseSync, req: Req) => wrap(() => visibleTask(db, req));
+/** Viewers get the task without its log and patch. */
+export const task = (db: DatabaseSync, req: Req) => wrap(async (): Promise<BuildTaskDetail> => {
+  const t = await visibleTask(db, req);
+  return canSeeInternals(req) ? t : { ...t, logTail: null, logBytes: 0, logTruncated: false, patch: null };
+});
 
 export const cancel = (db: DatabaseSync, req: Req): Promise<BuildTask> => wrap(async () => {
   await visibleTask(db, req);
@@ -66,6 +70,7 @@ export const buildSummary = async (db: DatabaseSync, req: Req): Promise<BuildSum
 
 export async function artifact(db: DatabaseSync, req: Req): Promise<Res> {
   try {
+    if (!canSeeInternals(req)) throw new HttpError(403, "only operators and maintainers download artifacts");
     const t = await visibleTask(db, req);
     const a = t.artifacts.find((x) => x.name === req.params.name);
     const row = a && (db.prepare("SELECT file FROM build_artifacts WHERE task_id = ? AND name = ?").get(t.id, a.name) as { file: string } | undefined);

@@ -34,7 +34,7 @@ export function TaskDetail({ task }: { task: BuildTaskDetail }) {
           ["Task", <Link key="t" to={`/envs/${task.id}`} className="num text-accent-ink hover:underline">Task {task.id}: full log and artifacts</Link>],
         ]}
       />
-      {task.logTail ? <CodeBlock title={task.logTruncated ? "Log (end)" : "Log"} text={task.logTail} lines={14} /> : <p className="text-sm text-ink/55">No log yet.</p>}
+      {task.logTail === null ? null : task.logTail ? <CodeBlock title={task.logTruncated ? "Log (end)" : "Log"} text={task.logTail} lines={14} /> : <p className="text-sm text-ink/55">No log yet.</p>}
     </div>
   );
 }

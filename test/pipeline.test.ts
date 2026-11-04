@@ -86,7 +86,7 @@ async function signedIn(login: string): Promise<Client> {
 const audits = (action: string) => (db.prepare("SELECT COUNT(*) AS n FROM audit WHERE action = ?").get(action) as { n: number }).n;
 
 describe("pipeline api", () => {
-  test("viewers and maintainers read jobs and logs but get 403 on run and cancel", async () => {
+  test("viewers read jobs without logs, maintainers with them, and both get 403 on run and cancel", async () => {
     const boss = await signedIn("boss");
     const job = await boss.post<Job>("/api/pipeline/jobs", { step: "test-echo", params: { n: 1 } });
     const logFile = join(dir, "job.log");
@@ -99,7 +99,8 @@ describe("pipeline api", () => {
       assert.equal(o.stages.length, 7);
       assert.ok((await c.get<JobList>("/api/pipeline/jobs")).jobs.some((j) => j.id === job.id));
       const d = await c.get<JobDetail>(`/api/pipeline/jobs/${job.id}`);
-      assert.ok(!d.log.includes(FAKE_TOKEN) && !d.log.includes(homedir()), d.log);
+      if (login === "viewer1") assert.equal(d.log, null);
+      else assert.ok(!d.log!.includes(FAKE_TOKEN) && !d.log!.includes(homedir()) && d.log!.includes("starting"), d.log!);
       assert.ok(!JSON.stringify(d).includes(logFile), "the log path stays on the server");
       const before = db.prepare("SELECT COUNT(*) AS n FROM audit WHERE action <> 'sign-in'").get();
       await c.post("/api/pipeline/jobs", { step: "test-echo", params: { n: 2 } }, 403);

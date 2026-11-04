@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, before, describe, test } from "node:test";
-import type { AgentRunDetail, Decision as DecisionOne, AgentRunPage, DecisionList, Flow, ItemList, Progress, QueueList, SearchHit } from "../web/src/api/types.ts";
+import type { AgentRunDetail, BuildTaskDetail, Item, JobDetail, Decision as DecisionOne, AgentRunPage, DecisionList, Flow, ItemList, Progress, QueueList, SearchHit } from "../web/src/api/types.ts";
 import { addLogin } from "../src/access.ts";
 import { insertRun, finishRun } from "../src/agents/runs.ts";
 import { connect } from "../src/db.ts";
@@ -182,6 +182,29 @@ describe("repo visibility", () => {
     for (const path of ["/api/repos/all", "/api/audit"]) assert.equal(await reader.status(path), 403, path);
     db.prepare("DELETE FROM audit WHERE target IN ('someone', 'vault', 'account:a') AND login = 'boss' AND action IN ('access-add', 'repo-track', 'account-change')").run();
     db.prepare("UPDATE main.decisions SET answer = NULL, answer_note = NULL, answered_by = NULL, answered_at = NULL WHERE id = 'vault#1:scope'").run();
+  });
+
+  test("viewers get build tasks, jobs and patch reviews without log and patch bodies", async () => {
+    const now = new Date().toISOString();
+    const logFile = join(dir, "job.log");
+    writeFileSync(logFile, "job log line\n");
+    const job = db.prepare("INSERT INTO jobs (step, params, requested_by, requested_at, state, log_path, repo) VALUES ('classify', '{}', 'cli', ?, 'done', ?, 'open-app')").run(now, logFile);
+    const task = db.prepare("INSERT INTO build_tasks (step, repo, number, head_sha, requires, plan, state, queued_at, patch, log_bytes) VALUES ('verify', 'open-app', 1, 'h', '{}', '[]', 'done', ?, 'diff --git a/x b/x', 9)").run(now);
+    db.prepare("INSERT INTO build_task_logs (task_id, seq, step, chunk) VALUES (?, 0, 'test', 'task log line')").run(task.lastInsertRowid);
+    db.prepare("INSERT INTO patch_checks (kind, repo, number, subject, patch_hash, verdict, reasons, problems, model, created_at) VALUES ('fixup', 'open-app', 1, 's', 'p', 'reject', 'the patch drops the guard', '[\"drops the guard\"]', 'opus', ?)").run(now);
+    for (const login of ["reader", "maint"]) {
+      const c = await signedIn(login);
+      const staff = login === "maint";
+      const t = await c.get<BuildTaskDetail>(`/api/tasks/${task.lastInsertRowid}`);
+      assert.equal(t.logTail, staff ? "task log line" : null, login);
+      assert.equal(t.patch, staff ? "diff --git a/x b/x" : null, login);
+      assert.equal((await c.get<JobDetail>(`/api/pipeline/jobs/${job.lastInsertRowid}`)).log, staff ? "job log line\n" : null, login);
+      const [check] = (await c.get<Item>("/api/items/open-app/1")).patchChecks ?? [];
+      assert.equal(check?.reasons, staff ? "the patch drops the guard" : "", login);
+      assert.deepEqual(check?.problems, staff ? ["drops the guard"] : [], login);
+      assert.equal(await c.status(`/api/tasks/${task.lastInsertRowid}/artifacts/none`), staff ? 404 : 403, login);
+    }
+    db.prepare("DELETE FROM patch_checks").run();
   });
 
 });

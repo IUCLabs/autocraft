@@ -131,7 +131,9 @@ async function item(db: DatabaseSync, req: Req): Promise<Item> {
     comments: comments.map((x) => ({ ...x, author: x.author ?? "", body: x.body ?? "" })),
     decisionIds, settled: settledOf(db, repo, n) as Item["settled"], priority: priorityOf(db, repo, n),
     ...(it.kind === "pr" ? prWork(db, repo, n) : { verification: null, fixups: [] }),
-    patchChecks: checksOf(db, repo, n).map(({ kind, subject, patchHash, round, verdict, reasons, problems, model, createdAt }) => ({ kind, subject, patchHash, round, verdict, reasons, problems, model, createdAt })),
+    // The reviewer's reasons quote the patch, so viewers get the verdict only.
+    patchChecks: checksOf(db, repo, n).map(({ kind, subject, patchHash, round, verdict, reasons, problems, model, createdAt }) =>
+      ({ kind, subject, patchHash, round, verdict, reasons: canSeeInternals(req) ? reasons : "", problems: canSeeInternals(req) ? problems : [], model, createdAt })),
     reviews: it.kind === "pr" ? reviewsOf(db, repo, n) : null,
     premerge: it.kind === "pr" ? premergeOf(db, repo, n) : [],
     postmerge: it.kind === "pr" ? postmergeOf(db, repo, n, canSeeInternals(req)) : null,
