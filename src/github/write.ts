@@ -227,8 +227,10 @@ export function ghApproveRun(w: Writer, exec: Exec, o: { repo: string; number: n
 }
 
 /** Reruns the failed jobs of one Actions run (same head commit). */
-export function ghRerunFailed(w: Writer, exec: Exec, o: { repo: string; number: number; runId: number }, details: Details = {}): Promise<ExecResult> {
-  return viaGh(w, exec, "ci-rerun", refOf(o.repo, o.number), { ...details, run: o.runId },
+export function ghRerunFailed(w: Writer, exec: Exec, o: { repo: string; number: number; runId: number } | { repo: string; head: string; runId: number }, details: Details = {}): Promise<ExecResult> {
+  // A run on a default-branch head belongs to no item: the audit target names the repo and the commit.
+  const target = "number" in o ? refOf(o.repo, o.number) : `${o.repo}:${o.head.slice(0, 8)}`;
+  return viaGh(w, exec, "ci-rerun", target, { ...details, run: o.runId },
     ["run", "rerun", String(o.runId), "--failed", "--repo", `${ORG}/${o.repo}`]);
 }
 

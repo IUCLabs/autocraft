@@ -6,6 +6,7 @@ import { connect } from "../db.ts";
 import type { Querier } from "../mirror.ts";
 import { contextState, ORG, type CheckState } from "../review/checks.ts";
 import { trackedNames } from "../repos.ts";
+import { autocraftText } from "../mainfix/status.ts";
 import { classify, derive, type Culprit, type HeadRow, type MainCheck, type MainCiState } from "./classify.ts";
 
 /** Least time between two polls. */
@@ -104,6 +105,8 @@ export async function pollMainCiIfDue(db: DatabaseSync, client: Querier, now = D
 export type MainCiRepoRow = {
   repo: string; state: MainCiState; branch: string; headSha: string; headline: string | null; committedAt: string | null;
   failing: { name: string; url: string | null }[]; redSince: string | null; lastGreenSha: string | null; culprit: Culprit | null; updatedAt: string;
+  /** What AutoCraft is doing about the red head (src/mainfix); null when nothing. */
+  autocraft: string | null;
 };
 
 type Stored = { repo: string; head_sha: string; branch: string; state: MainCiState; failing: string; committed_at: string | null; headline: string | null; first_seen_at: string; state_changed_at: string; updated_at: string };
@@ -125,7 +128,7 @@ export function mainCiRepos(db: DatabaseSync, hidden: string[] = []): MainCiRepo
     const cur = rows.find((r) => r.head_sha === d.current.sha)!;
     let failing: { name: string; url: string | null }[] = [];
     try { failing = JSON.parse(cur.failing) as typeof failing; } catch { /* malformed: none shown */ }
-    out.push({ repo, state: cur.state, branch: cur.branch, headSha: cur.head_sha, headline: cur.headline, committedAt: cur.committed_at, failing, redSince: d.redSince, lastGreenSha: d.lastGreenSha, culprit: d.culprit, updatedAt: cur.updated_at });
+    out.push({ repo, state: cur.state, branch: cur.branch, headSha: cur.head_sha, headline: cur.headline, committedAt: cur.committed_at, failing, redSince: d.redSince, lastGreenSha: d.lastGreenSha, culprit: d.culprit, updatedAt: cur.updated_at, autocraft: autocraftText(db, repo, cur.head_sha, cur.state) });
   }
   const weight: Record<MainCiState, number> = { red: 0, optional: 1, running: 2, none: 3, green: 4 };
   return out.sort((a, b) => weight[a.state] - weight[b.state] || a.repo.localeCompare(b.repo));

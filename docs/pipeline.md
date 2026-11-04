@@ -21,7 +21,7 @@ The stages, in order:
 6. Label: Writes each settled type label and flag to GitHub. A label a person set is never changed.
 7. Review: Opus reviews every wanted PR at its current head, reading the repo, and gives a verdict with the complete fix list. It writes nothing to GitHub until the final review is posted.
 8. Fix: Writes a patch for a bugfix issue where the fix is clear, tests it in the sandbox and opens a PR.
-9. Fix-up: For a take-with-fixes review, applies the listed small fixes to the contributor's branch, or posts them as a comment when the branch cannot be pushed to. For a wanted PR whose gate check fails, runs the formatter, reruns an infrastructure failure once, or has a model patch the code.
+9. Fix-up: For a take-with-fixes review, applies the listed small fixes to the contributor's branch, or posts them as a comment when the branch cannot be pushed to. For a wanted PR whose gate check fails, runs the formatter, reruns an infrastructure failure once, or has a model patch the code. For a red default branch in an approved repo, reruns a flaky failure once and asks an operator about reporting an infrastructure failure.
 10. Verify: Records upstream CI as the verification of taken PRs in repos that have it. A repo without CI, and a bugfix that changes a test file, get a model-planned build in a build environment; a model summarises failures.
 11. Merge queue: Merges PRs that pass the rules in integration batches (up to 50 PRs, checked by upstream CI on the batch PR) through safe-merge, and asks for a Merge? decision on PRs outside the rules. Approves held CI runs of outside contributors where the repo allows it.
 12. Act: Makes the comments and closes that follow an operator's answer, from fixed templates.
@@ -252,6 +252,14 @@ A PR we want (final review take, or take-fix once its listed fixes are pushed or
 - **Exits.** Every exit records a state. A head that moved or a PR that closed after the work began is a failed try (a moved head is also noted in the checks data); a patch comment that fails is `comment-failed`, final; a formatter task's `formatting` row is closed by whichever state follows.
 - **After.** Upstream CI on the new head decides. The Flow page counts the Fix-up node's CI fix states: to read, to rerun, pushed, gave up.
 
+**Red default branch (`main-fix`).** Needs the repo's "Fix red main" approval (off by default; `autocraft main-fix-approval` lists it, the Repos page switches it, with the other write switches). The step runs per repo when the pipeline is on and the repo's current default-branch head is `red` (see Main CI), with a daily limit of 20 heads (`main-fix`). For a red head with no rows yet it reads the failed gate checks and log tails with the CI fix reader, and Haiku (prompt `mainfix.classify`, medium effort, no tools) sorts each failed check. One row per (repo, head, check) goes into `main_fixes` with the verdict and a state:
+
+- `flaky` (a timeout, a network error, a cancelled job, a lost runner): the failed jobs are rerun once with `gh run rerun --failed`; the row is `rerun-requested` before the call. When the head turns green the row is `rerun-passed`. When the head is red again after a new reading (or 10 minutes after the rerun), the check counts as `code`.
+- `infra` (an HTTP 401 or 403 from a service, a missing secret, a quota, an external service down): nothing in the code is wrong. One decision of kind `other` per (repo, check, red run) asks "Open an upstream issue for the failing check?" with the options Open issue and Not now (and Backlog), the run link and a scrubbed log excerpt as facts. Rows are `asked`. Only on the answer Open issue does the step open one issue (`issue-opened`, with the operator note line); Not now makes them `declined`. Nothing is posted before the answer.
+- `code` (a compile error, a failing test, a lint or format failure): the row is `needs-fix`. `onCodeVerdict` in `src/mainfix/index.ts` is the one place the fix PR step takes over.
+
+A head the reader finds nothing to act on (no failed check run, or only optional checks failed) gets one `nothing-to-do` row. `GET /api/main-ci` carries each repo's row as `autocraft` ("rerunning failed jobs", "asked an operator", "needs a fix", "nothing to do: infra", or null). `autocraft main-fix --repo R --apply` runs the step by hand.
+
 ## Verify
 
 Upstream CI is the verification for `take` PRs in a repo that has CI (the repos' CI runs the full format, lint and test gate). Verify records `ci-enough` for them without a model call or a sandbox task. The merge queue still waits for CI to be green at the head: a PR with `ci-enough` and CI pending is `waiting-ci`, and one with failing CI is `ci-failed`. Only public PRs whose CI does not fail are verified. A private repo is recorded `unavailable` ("not verified"), and the PR goes on to the Merge? decision.
@@ -383,7 +391,7 @@ Each item can have one conversation with Opus, shown beside its decision. Everyo
 | Model | Used for |
 |---|---|
 | Jev | Duplicates: judges each candidate pair first<br>Classify: classifies every item first<br>Priority: picks the level<br>Reports how sure it is; at 90 % or more it matched maintainers' labels 98 % of the time |
-| Haiku | Duplicates: settles pairs Jev is unsure of<br>Classify: second opinion where Jev is unsure<br>Priority: decides where Jev is unsure<br>Decide: summaries of duplicate decisions<br>Fix: failure summaries<br>Verify: failure summaries<br>Merge queue: short summaries in the merge run<br>Does every item while Jev is unavailable |
+| Haiku | Duplicates: settles pairs Jev is unsure of<br>Classify: second opinion where Jev is unsure<br>Priority: decides where Jev is unsure<br>Decide: summaries of duplicate decisions<br>Fix: failure summaries<br>Fix-up: sorts a red default branch's failed checks (flaky, infra or code)<br>Verify: failure summaries<br>Merge queue: short summaries in the merge run<br>Does every item while Jev is unavailable |
 | Sonnet | Duplicates: compares each group of issues<br>Classify: referee for label disagreements; area suggestions<br>Decide: writes decision summaries<br>Fix: triages the issue and writes the patch<br>Fix-up: writes the patch and resolves conflicts<br>Verify: plans a regression test (bugfixes that change a test file) or, in a repo without CI, the build and tests<br>The referee asks a person only when it is unsure |
 | Opus | Duplicates: compares each group of pull requests<br>Classify: proposes area lists<br>Decide: writes the scope recommendation and conversation replies<br>Review: reviews every wanted PR<br>Fix: checks the patch<br>Fix-up: checks the patch<br>Post-merge review: reviews each merged PR<br>The review gives a verdict, a complete fix list and how sure Opus is<br>Reads the merge commit and lists findings; the reply is linted like the Review stage's |
 <!-- stages:end model-table -->
@@ -502,17 +510,18 @@ Limits count items handled per stage per day (from 00:00 UTC), including by fail
 <!-- stages:begin limits-table (generated by npm run docs; do not edit) -->
 | Step | Default limit (new database) | Step | Default limit (new database) |
 |---|---|---|---|
-| Embed | none | Post reviews | 40 |
-| Duplicates | 2000 | Fix | 10 |
-| Compare duplicate groups | 200 | Fix-up | 20 |
-| Classify | 2000 | CI fix | none |
-| Referee | 500 | CI fix reruns | 30 |
+| Embed | none | Fix | 10 |
+| Duplicates | 2000 | Fix-up | 20 |
+| Compare duplicate groups | 200 | CI fix | none |
+| Classify | 2000 | CI fix reruns | 30 |
+| Referee | 500 | Fix red main | 20 |
 | Priority | 3000 | Verify | 30 |
 | Decide | 100 | Merge | 10 |
 | Conversations | 30 | Approve CI runs | 30 |
 | Label | none | Act | 20 |
 | Review (Opus) | 40 | Post-merge review | none |
 | Checks | none (0 pauses it) | File follow-up issues | 20 |
+| Post reviews | 40 |  |  |
 <!-- stages:end limits-table -->
 
 Steps not in the table have no limit setting.
@@ -572,6 +581,7 @@ Dry run is the default for every writing command; `--apply` writes (and still re
 | `autocraft fixissue --repo R`, `fixissue-collect` | Fix |
 | `autocraft fixup --repo R` | Fix-up |
 | `autocraft cifix --repo R`, `cifix-rerun --repo R` | Fix-up (CI fix) |
+| `autocraft main-fix --repo R [--apply]`, `main-fix-approval [--repo R]` | Fix-up (red default branch) |
 | `autocraft verify --repo R`, `verify-collect` | Verify |
 | `autocraft queue`, `merge --repo R`, `merge-hold\|merge-release <repo#n>`, `batch-remove <repo#n>`, `batch-stop <id>` | Merge queue |
 | `autocraft fasttrack add\|remove <item>`, `fasttrack list` | Fast track |

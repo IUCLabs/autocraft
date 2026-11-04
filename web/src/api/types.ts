@@ -573,6 +573,8 @@ export interface MainCiRepo {
   /** The first red head after the last green one, with the PR its message names. */
   culprit: { sha: string; headline: string | null; pr: number | null } | null;
   updatedAt: string;
+  /** What AutoCraft is doing about the red head ("rerunning failed jobs", "asked an operator", "needs a fix", ...); null when nothing. */
+  autocraft: string | null;
 }
 /** GET /api/main-ci: red first, then optional, running, none, green; each group by name. */
 export interface MainCi {
@@ -732,6 +734,8 @@ export interface TrackedRepo {
   commenting: RepoApproval | null;
   /** Fix issues: pushes to the pipeline's fork and opens PRs and comments for issue fixes. */
   fixing: RepoApproval | null;
+  /** Fix red main: reruns flaky failed jobs on a red default branch and opens an issue on an operator's answer. */
+  mainFixing: RepoApproval | null;
   /** Whether the pipeline stages run on this repo; off means sync only. False for repos that are not tracked. */
   pipeline: boolean;
 }

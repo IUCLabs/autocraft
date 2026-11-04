@@ -91,6 +91,12 @@ async function checkCiApproved(db: DatabaseSync, p: Params): Promise<string | nu
   return ciApprovalOf(db, String(p.repo)) ? null : `approving CI runs in ${p.repo} is not approved`;
 }
 
+/** Acting on a red default branch is opt-in per repo. */
+async function checkMainFixApproved(db: DatabaseSync, p: Params): Promise<string | null> {
+  const { mainFixApprovalOf } = await import("../mainfix/approval.ts");
+  return mainFixApprovalOf(db, String(p.repo)) ? null : `fixing a red main in ${p.repo} is not approved`;
+}
+
 /** Comments and closes are opt-in per repo: tracked repos include ones we do not maintain. */
 async function checkCommentApproved(db: DatabaseSync, p: Params): Promise<string | null> {
   const { commentApprovalOf } = await import("../act/approval.ts");
@@ -737,6 +743,25 @@ export const STEPS: StepDef[] = [
       if (refused) throw new Error(refused);
       const r = await runRerun(ctx.db, { repo: String(ctx.params.repo), limit: Number(ctx.params.limit), dryRun: false, onHandled: ctx.handled }, ctx.log);
       return `${r.repo}: reran ${r.reran.length} PRs, ${r.skipped.length} skipped`;
+    },
+  },
+  {
+    name: "main-fix",
+    title: "Handle a red default branch",
+    description: "For a repo approved for it whose default branch is red, reads the failed gate checks' logs and has Haiku sort each: a flaky failure gets its failed jobs rerun once, an infrastructure failure becomes an operator decision about opening an upstream issue, and a code failure is recorded as needing a fix. Opens the issue only on an operator's answer.",
+    stage: runStage("main-fix"),
+    requires: "operator",
+    group: "github-write",
+    models: ["haiku"],
+    params: [{ name: "repo", label: "Repo", kind: "repo", required: true }],
+    check: checkMainFixApproved,
+    run: async (ctx) => {
+      const { runMainFix } = await import("../mainfix/index.ts");
+      const refused = await checkMainFixApproved(ctx.db, ctx.params);
+      if (refused) throw new Error(refused);
+      const r = await runMainFix(ctx.db, { repo: String(ctx.params.repo), onHandled: ctx.handled }, ctx.log);
+      ctx.acted(r.reran + r.asked + r.needsFix + r.issues);
+      return `${r.repo}: classified ${r.classified} heads, reran ${r.reran}, asked ${r.asked}, ${r.needsFix} need a fix, ${r.issues} issues opened`;
     },
   },
 ];
