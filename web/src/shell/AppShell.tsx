@@ -1,7 +1,7 @@
 import { lazy, Suspense, useMemo, useState } from "react";
 import { Link, Navigate, NavLink, Route, Routes, matchPath, useLocation, useNavigate, useParams } from "react-router-dom";
 import { Dialog, DropdownMenu } from "radix-ui";
-import { SignOutIcon, MonitorIcon, MoonIcon, DotsThreeIcon, SidebarSimpleIcon, MagnifyingGlassIcon, SunIcon, KeyboardIcon, XIcon, CheckIcon } from "@phosphor-icons/react";
+import { SignOutIcon, MonitorIcon, MoonIcon, DotsThreeIcon, SidebarSimpleIcon, MagnifyingGlassIcon, SunIcon, KeyboardIcon, XIcon, CheckIcon, HeartbeatIcon } from "@phosphor-icons/react";
 import { modules } from "../registry";
 import { can, roleLabel } from "../registry/permissions";
 import type { NavEntry, Permission, RouteDef } from "../registry/types";
@@ -132,7 +132,7 @@ export function AppShell() {
         </div>
       </aside>
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className="flex h-11 shrink-0 items-center gap-3 border-b border-line bg-bg pl-4 pr-2">
+        <header className="flex h-11 shrink-0 items-center gap-2 border-b border-line bg-bg pl-4 pr-2">
           <Breadcrumb routes={routes} />
           <div className="mx-auto w-full max-w-[440px]">
             <SearchBox />
@@ -256,7 +256,7 @@ function Breadcrumb({ routes }: { routes: RouteDef[] }) {
   const rest = decodeURIComponent(loc.pathname.split("/").slice(2).join("/"));
   const isItem = (first === "item" || first === "items") && rest.includes("/");
   return (
-    <div className="flex w-[200px] shrink-0 items-center gap-1.5 truncate text-sm">
+    <div className="flex w-[120px] shrink-0 items-center gap-1.5 truncate text-sm">
       <span className="font-medium">{isItem ? "Item" : (r?.view.title ?? "")}</span>
       {isItem && (
         <>
@@ -273,10 +273,10 @@ const CI_ORDER: MainCiState[] = ["green", "red", "running", "optional"];
 function MainCiIndicator({ summary }: { summary: MainCiSummary }) {
   const shown = CI_ORDER.filter((s) => s === "green" || summary[s] > 0);
   return (
-    <Link to="/main-ci" className="flex items-center gap-1.5 hover:text-ink" aria-label="Main CI">
-      main CI
+    <Link to="/main-ci" className="flex items-center gap-1 hover:text-ink" aria-label="Main CI" title="Main CI">
+      <HeartbeatIcon className="text-sm" />
       {shown.map((s) => (
-        <span key={s} className="flex items-center gap-1" title={`${MAIN_CI_LABEL[s]}: ${summary[s]}`}>
+        <span key={s} className="flex items-center gap-0.5" title={`${MAIN_CI_LABEL[s]}: ${summary[s]}`}>
           <span className={cn("size-1.5 rounded-full", MAIN_CI_DOT[s])} />
           <span className="num font-medium text-ink">{summary[s]}</span>
         </span>
@@ -290,7 +290,7 @@ function LiveCounters() {
   if (!data) return null;
   const lastHour = data.perHourPipeline[data.perHourPipeline.length - 1] ?? 0;
   return (
-    <div className="hidden shrink-0 items-center gap-3 whitespace-nowrap text-xs text-ink/60 xl:flex">
+    <div className="hidden shrink-0 items-center gap-2.5 whitespace-nowrap text-xs text-ink/60 xl:flex">
       {data.mainCi && <MainCiIndicator summary={data.mainCi} />}
       <span className="flex items-center gap-1.5">
         <span className="size-1.5 rounded-full bg-warn" />
