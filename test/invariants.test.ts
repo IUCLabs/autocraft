@@ -111,7 +111,7 @@ function checkPr(f: PrFacts): void {
   // 2. After a Hold or Close answer nothing merges and no pre-merge fix-up runs.
   if (declined) {
     assert.equal(merges.length, 0, "merge after a Hold/Close answer");
-    assert.equal(has(p, "fixup", (a) => a.params?.source === "premerge").length, 0, "pre-merge fix-up after a Hold/Close answer");
+    assert.equal(has(p, "fixup").length, 0, "fix-up after a Hold/Close answer");
   }
   if (merges.length) {
     assert.ok(f.review && (f.review.verdict === "take" || f.review.verdict === "take-fix"), "merge without a take review");
@@ -133,14 +133,13 @@ function checkPr(f: PrFacts): void {
     assert.equal(f.batch, null, "single merge of a batch member");
     assert.ok(f.ci === "success" || (p.path === "operator" && f.ci === "none" && f.repoFacts.noCi), "merge with CI not green");
   }
-  // 6. Out of scope: nothing at all. Known exception: an integration PR's approve-ci is planned before the scope test.
-  if (!f.inScope && !f.integration) assert.deepEqual(p.actions, [], "action for an out-of-scope PR");
+  // 6. Out of scope: nothing at all.
+  if (!f.inScope) assert.deepEqual(p.actions, [], "action for an out-of-scope PR");
   for (const a of p.actions) {
     // 7. A fix-up that pushes needs a pushable branch.
     if (a.kind === "fixup" && a.params?.bucket === "fix") assert.ok(f.pushable && f.repoFacts.pushApproved, "fixup:fix without a pushable, approved branch");
-    // 8. Every action is for the plan's head. Known exceptions: a post-merge review names the merged head, and approve-ci
-    // names the reviewed head, which differs from the plan's head when the mirror saw a push after the checks were fetched.
-    if (a.kind !== "postmerge" && a.kind !== "approve-ci") assert.equal(a.head, p.head, `${label(a)} at a head other than the plan's`);
+    // 8. Every action is for the plan's head (a post-merge review names the merged head).
+    if (a.kind !== "postmerge") assert.equal(a.head, p.head, `${label(a)} at a head other than the plan's`);
     // 10. The pipeline switch off refuses every write; a missing approval refuses its write.
     if (!f.pipelineOn) assert.ok(gates(f, asWant(a), "pipeline"), `${label(a)} passes the gates with the pipeline off`);
   }

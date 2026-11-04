@@ -134,6 +134,10 @@ const rows: Row[] = [
   { name: "duplicate hold without a review", facts: { review: null, heldDuplicate: true }, expect: { state: "duplicate", actions: [] } },
   { name: "outside the pilot", facts: { inScope: false }, expect: { state: "out-of-scope", actions: [] } },
   { name: "integration PR with runs to read", facts: { integration: true, runs: runs({ reread: true }) }, expect: { state: "integration", actions: ["approve-ci"] } },
+  { name: "integration PR of a repo out of scope", facts: { integration: true, inScope: false, runs: runs({ reread: true }) }, expect: { state: "out-of-scope", actions: [] } },
+  { name: "runs wait at the reviewed head but the PR moved on: not approved", facts: { head: "h2", runs: runs() }, expect: { actions: ["review"] } },
+  { name: "a Hold answer stops the fix-up of a take-fix review", facts: { ...TAKE_FIX, fixup: fixup(), decision: answered("hold") }, expect: { actions: [] } },
+  { name: "a Close answer stops a carry-over fix-up", facts: { carry: [{ attempts: 0 }], decision: answered("close") }, expect: { actions: [] } },
   { name: "integration PR without runs", facts: { integration: true }, expect: { state: "integration", actions: [] } },
 
   // ---- other actions

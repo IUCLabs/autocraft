@@ -124,13 +124,16 @@ const WAITS: Partial<Record<QueueState, string>> = {
   "batch-checking": "its batch", "batch-failed": "its batch", "changes-requested": "the maintainer's review", refused: "a change in CI or mergeable state",
 };
 
+/** An operator's Hold or Close answer at the head: nothing is pushed or asked of the contributor, whatever the source. */
+const declinedBy = (f: PrFacts): boolean => f.decision.answer !== null && f.decision.answer !== "merge";
+
 export type FixupBucket = "fix" | "unapproved" | "cannot-push" | "ask" | "asked" | "hold";
 const notHeld = (f: PrFacts): boolean => f.inScope && !f.integration && !f.heldBacklog && !f.heldDuplicate;
 
 /** Where a take-fix review at the current head stands with the fix-up: the bucket and whether the step has recorded a final row for the head. */
 export function fixupOf(f: PrFacts): { bucket: FixupBucket; done: boolean } | null {
   const r = f.review, x = f.fixup;
-  if (!r || !x || r.verdict !== "take-fix" || r.head !== f.head || r.stale || f.draft || !notHeld(f) || f.ghState !== "OPEN") return null;
+  if (declinedBy(f) || !r || !x || r.verdict !== "take-fix" || r.head !== f.head || r.stale || f.draft || !notHeld(f) || f.ghState !== "OPEN") return null;
   if (f.mergeable === "CONFLICTING" || x.fixes === 0) return null;
   const has = (s: string) => x.recorded.includes(s);
   const commenting = f.repoFacts.commentApproved;
@@ -183,12 +186,12 @@ export function decidePr(f: PrFacts): Plan {
   const r = f.review;
   const open = f.ghState === "OPEN";
 
+  if (!f.inScope) return plan("out-of-scope");
   // Our own integration PRs only carry reviewed PRs: their runs wait for approval like a member's.
   if (f.integration) {
     const approve = f.runs && !f.mergeHeld && (f.runs.reread || (f.runs.crossRepo && f.runs.approvable > 0));
     return plan("integration", { actions: approve ? [act("approve-ci", f.head)] : [] });
   }
-  if (!f.inScope) return plan("out-of-scope");
   const held = f.heldBacklog || f.heldDuplicate;
 
   // Actions that do not depend on the PR's place in the queue.
@@ -200,7 +203,7 @@ export function decidePr(f: PrFacts): Plan {
     if (!reviewed) extra.push(act("postmerge", pm.head));
   }
   if (f.ghState === "OPEN" && !f.heldBacklog && f.head && !f.draft && f.mergeable !== "CONFLICTING") {
-    for (const c of f.carry) {
+    for (const c of declinedBy(f) ? [] : f.carry) {
       if (f.pushable && f.repoFacts.pushApproved && c.attempts + 1 <= FIXUP_MAX_ATTEMPTS) extra.push(act("fixup", f.head, { bucket: "fix", source: "carry" }));
       else if (f.repoFacts.commentApproved) extra.push(act("fixup", f.head, { bucket: "ask", source: "carry" }));
     }
@@ -248,7 +251,7 @@ export function decidePr(f: PrFacts): Plan {
   }
 
   // Approve the CI runs GitHub holds for a fork PR's reviewed head.
-  if (!held && r && takeReview && f.checksHere && f.checksOpen && f.runs && !f.mergeHeld && !(f.decision.answer && f.decision.answer !== "merge")
+  if (!held && r && takeReview && r.head === f.head && f.checksHere && f.checksOpen && f.runs && !f.mergeHeld && !declinedBy(f)
     && (f.runs.reread || (f.runs.crossRepo && f.runs.approvable > 0))) actions.push(act("approve-ci", r.head));
 
   // Fix-up of a take-fix review's fixes, or of the pre-merge review's defect fixes.
