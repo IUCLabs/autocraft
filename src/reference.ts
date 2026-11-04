@@ -12,7 +12,7 @@ import { isTracked } from "./repos.ts";
 export class ReferenceError extends Error {}
 
 export const MAX_BYTES = 100 * 1024 * 1024;
-const MAX_MEMBERS = 5000;
+const MAX_MEMBERS = 20_000;
 const REPO_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
 const SEGMENT = /^[A-Za-z0-9_-][A-Za-z0-9._-]*$/;
 const EXTENSION = /\.(txt|md|pdf)$/;
