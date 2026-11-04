@@ -235,10 +235,11 @@ function decisionIds({ db, repo, n, hidden }: Ctx): string[] {
   }).sort();
 }
 
-export type DecisionRow = { id: string; kind: string; question: string; asked_at: string; asked_by: string | null; answer: string | null; answered_at: string | null; answered_by: string | null };
+export type DecisionRow = { id: string; kind: string; question: string; asked_at: string; asked_by: string | null; answer: string | null; answered_at: string | null; answered_by: string | null; answer_note?: string | null };
 export const decisionEvents = (d: DecisionRow): Ev[] => [
   { id: `decision:${d.id}:asked`, kind: "decision", at: d.asked_at, head: null, actor: step(d.asked_by || "decide"), summary: `Asked: ${clip(d.question, 100)}`, ref: { decisionId: d.id } },
-  ...(d.answered_at ? [{ id: `decision:${d.id}:answered`, kind: "decision" as const, at: d.answered_at, head: null, actor: person(d.answered_by), summary: `Answered: ${d.answer ?? ""}`, ref: { decisionId: d.id } }] : []),
+  ...(d.answered_at ? [{ id: `decision:${d.id}:answered`, kind: "decision" as const, at: d.answered_at, head: null,
+    ...(d.answer === "withdrawn" ? { actor: step(d.answered_by || "decide"), summary: `Question withdrawn${d.answer_note ? `: ${clip(d.answer_note, 100)}` : ""}` } : { actor: person(d.answered_by), summary: `Answered: ${d.answer ?? ""}` }), ref: { decisionId: d.id } }] : []),
 ];
 export const feedbackEvent = (decisionId: string, c: { id: string; login: string; at: string; len: number }): Ev =>
   ({ id: `decision:${decisionId}:feedback:${c.id}`, kind: "decision", at: c.at, head: null, actor: person(c.login), summary: `Feedback on the question, ${c.len} characters`, ref: { decisionId } });
@@ -249,7 +250,7 @@ const decisions: Source = {
     const { db } = c;
     const out: Ev[] = [];
     for (const id of decisionIds(c)) {
-      const d = db.prepare("SELECT id, kind, question, asked_at, asked_by, answer, answered_at, answered_by FROM decisions WHERE id = ?").get(id) as DecisionRow | undefined;
+      const d = db.prepare("SELECT id, kind, question, asked_at, asked_by, answer, answered_at, answered_by, answer_note FROM decisions WHERE id = ?").get(id) as DecisionRow | undefined;
       if (!d) continue;
       out.push(...decisionEvents(d));
       for (const f of rows<{ id: string; login: string; at: string; len: number }>(db, "SELECT id, login, at, LENGTH(body) AS len FROM decision_comments WHERE decision_id = ?", d.id)) out.push(feedbackEvent(d.id, f));

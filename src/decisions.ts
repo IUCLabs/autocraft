@@ -30,6 +30,10 @@ const j = <T>(s: string | null, d: T): T => {
 };
 /** The answer every decision offers last: nothing is written to GitHub and the items stay held (see src/dupes/held.ts). */
 export const BACKLOG: Option = { key: "backlog", label: "Backlog", hint: "Hold this undecided: nothing is written and no later step takes the item up." };
+/** The answer of a decision the conversation settled without choosing an option: no step acts on it and nothing is written to GitHub. The note holds Opus's one-line summary. */
+export const HANDLED: Option = { key: "handled", label: "Handled in the conversation" };
+/** The answer the pipeline gives a question that can no longer be answered (see src/merge/withdraw.ts). */
+export const WITHDRAWN_OPTION: Option = { key: "withdrawn", label: "Withdrawn" };
 export const isBacklog = (answer: string | null): boolean => answer === BACKLOG.key;
 
 /** The options the pipeline asked, then Backlog. */
@@ -170,6 +174,25 @@ export function backlogOpen(db: DatabaseSync, scope: BacklogScope, by: string, a
 }
 
 /**
+ * Returns a function that removes the stages row Decide wrote when it asked a scope decision, so the item counts as never
+ * asked (a scope question is asked only for an item whose stage is not past classified). item_stage is kept by an insert
+ * trigger only, so it is rebuilt from the remaining stages rows.
+ */
+export function clearAskedStage(db: DatabaseSync): (repo: string, number: number, decisionId: string) => void {
+  const stage = db.prepare("DELETE FROM stages WHERE repo = ? AND number = ? AND stage = 'needs-decision' AND note = ?");
+  const latest = db.prepare("SELECT stage, at FROM stages WHERE repo = ? AND number = ? ORDER BY at DESC, rowid DESC LIMIT 1");
+  const reviewed = db.prepare("SELECT 1 FROM stages WHERE repo = ? AND number = ? AND stage = 'reviewed' LIMIT 1");
+  const put = db.prepare("UPDATE item_stage SET stage = ?, at = ?, reviewed = ? WHERE repo = ? AND number = ?");
+  const drop = db.prepare("DELETE FROM item_stage WHERE repo = ? AND number = ?");
+  return (repo, number, decisionId) => {
+    stage.run(repo, number, `scope decision ${decisionId}`);
+    const l = latest.get(repo, number) as { stage: string; at: string } | undefined;
+    if (l) put.run(l.stage, l.at, reviewed.get(repo, number) ? 1 : 0, repo, number);
+    else drop.run(repo, number);
+  };
+}
+
+/**
  * Withdraws open scope decisions in scope: deletes each with its opinions, comments, claims and the stages row Decide
  * wrote when it asked, so the item counts as never asked and Decide asks it again later. Other kinds are left alone
  * (their answers drive side tables). A dry run only lists them. Writes nothing to GitHub.
@@ -182,19 +205,11 @@ export function withdrawOpen(db: DatabaseSync, scope: BacklogScope, by: string, 
   try {
     const del = db.prepare("DELETE FROM decisions WHERE id = ? AND answer IS NULL");
     const side = ["decision_opinions", "decision_comments", "decision_claims"].map((t) => db.prepare(`DELETE FROM ${t} WHERE decision_id = ?`));
-    const stage = db.prepare("DELETE FROM stages WHERE repo = ? AND number = ? AND stage = 'needs-decision' AND note = ?");
-    // item_stage is kept by an insert trigger only, so it is rebuilt from the remaining stages rows.
-    const latest = db.prepare("SELECT stage, at FROM stages WHERE repo = ? AND number = ? ORDER BY at DESC, rowid DESC LIMIT 1");
-    const reviewed = db.prepare("SELECT 1 FROM stages WHERE repo = ? AND number = ? AND stage = 'reviewed' LIMIT 1");
-    const put = db.prepare("UPDATE item_stage SET stage = ?, at = ?, reviewed = ? WHERE repo = ? AND number = ?");
-    const drop = db.prepare("DELETE FROM item_stage WHERE repo = ? AND number = ?");
+    const clear = clearAskedStage(db);
     for (const d of rows) {
       if (del.run(d.id).changes !== 1) continue;
       for (const s of side) s.run(d.id);
-      stage.run(d.repo, d.number, `scope decision ${d.id}`);
-      const l = latest.get(d.repo, d.number) as { stage: string; at: string } | undefined;
-      if (l) put.run(l.stage, l.at, reviewed.get(d.repo, d.number) ? 1 : 0, d.repo, d.number);
-      else drop.run(d.repo, d.number);
+      clear(d.repo!, d.number!, d.id);
       audit(db, by, "withdraw", d.id, { repo: d.repo, number: d.number, question: d.question });
     }
     db.exec("COMMIT");

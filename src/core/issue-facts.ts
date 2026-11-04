@@ -96,13 +96,15 @@ export function loadItemFacts(db: DatabaseSync, opts: ItemLoadOptions = {}): Ite
   for (const d of db.prepare(`SELECT id, kind, repo, number, items, answer, answered_by, asked_by, recommended_by, recommend_failures, recommend_failed_at FROM decisions ORDER BY asked_at, id`).all() as
     { id: string; kind: string; answered_by: string | null; asked_by: string | null; repo: string | null; number: number | null; items: string | null; answer: string | null; recommended_by: string | null; recommend_failures: number | null; recommend_failed_at: string | null }[]) {
     const dupegroup = d.id.includes(":dupegroup:");
-    if (d.kind === "scope" && d.number !== null) latestScope.set(`${d.repo}#${d.number}`, { answer: d.answer, byOperator: !!d.answered_by && operators.has(d.answered_by) });
+    if (d.kind === "scope" && d.number !== null && !(d.answer === "withdrawn" && d.answered_by === "pipeline")) latestScope.set(`${d.repo}#${d.number}`, { answer: d.answer, byOperator: !!d.answered_by && operators.has(d.answered_by) });
     if (d.asked_by === SECURITY_ASKER) securityIds.add(d.id);
     if (d.kind === "scope" && d.answer === null) {
       for (const r of refsOf(d)) openScope.add(r);
       if (d.number !== null && d.recommended_by === null) { const k = `${d.repo}#${d.number}`; if (!recommend.has(k)) recommend.set(k, { failures: d.recommend_failures ?? 0, failedAt: d.recommend_failed_at }); }
     }
-    if ((d.answer === null || d.kind === "scope" || d.answer === "backlog") && !dupegroup) for (const r of refsOf(d)) covered.add(r);
+    // A question the pipeline withdrew (its item closed) does not cover the item: if it reopens, it is asked again.
+    const withdrawn = d.answer === "withdrawn" && d.answered_by === "pipeline";
+    if ((d.answer === null || d.kind === "scope" || d.answer === "backlog") && !dupegroup && !withdrawn) for (const r of refsOf(d)) covered.add(r);
   }
   const labeled = new Map((db.prepare("SELECT repo, number, note FROM stages WHERE stage = 'labeled' ORDER BY at, rowid").all() as { repo: string; number: number; note: string | null }[])
     .map((s) => [`${s.repo}#${s.number}`, s.note]));

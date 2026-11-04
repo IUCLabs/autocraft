@@ -7,7 +7,7 @@ import type {
   Claim, Classification, Decision, DecisionComment, DecisionKind, DecisionList, DuplicateMember, ItemState, Opinion, QueueSlot, RelatedItem, Relation,
 } from "../../../web/src/api/types.ts";
 import { resetGroupAnswer } from "../../dupes/decide.ts";
-import { BACKLOG, backlogOpen, exceptionsOf, factsOf, getDecision, isBatch, itemsOf, KINDS, optionsOf, reposOf, type DecisionRow, type Exception } from "../../decisions.ts";
+import { BACKLOG, HANDLED, WITHDRAWN_OPTION, backlogOpen, exceptionsOf, factsOf, getDecision, isBatch, itemsOf, KINDS, optionsOf, reposOf, type DecisionRow, type Exception } from "../../decisions.ts";
 import { commentPreview, writeEffect } from "../../act/index.ts";
 import { optionTextsOf, textsFor, textsHash } from "../../dupes/texts.ts";
 import { audit } from "../audit.ts";
@@ -195,7 +195,8 @@ export function toDecision(db: DatabaseSync, d: DecisionRow, viewer: Viewer): De
     body: batch ? null : (item?.body ?? null),
     context: contextOf(d.context),
     facts: factsOf(d),
-    options: optionsOf(d).map((o) => ({ ...o, writes: writeEffect(d.kind, o.key) ?? undefined })),
+    // An answer the pipeline or a conversation gave is not one of the asked options; it is listed so every view can name it.
+    options: [...optionsOf(d), ...[HANDLED, WITHDRAWN_OPTION].filter((o) => o.key === d.answer)].map((o) => ({ ...o, writes: writeEffect(d.kind, o.key) ?? undefined })),
     recommended: d.recommended ?? "",
     recommendedReason: d.recommended ? (d.recommended_reason ?? "") : "",
     group: groupOf(db, d), risks: risksOf(db, d), undoable: canUndo(db, d),

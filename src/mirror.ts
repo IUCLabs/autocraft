@@ -671,6 +671,10 @@ export async function runSync(db: DatabaseSync, client: Querier, opts: SyncOpts,
     setSetting(db, `${prefix}_points_last_run`, String(client.spent - spent0));
     if (client.remaining !== null) setSetting(db, "sync_rate_remaining", String(client.remaining));
   }
+  // Questions about items this sync found closed or merged no longer apply. Writes decisions only.
+  const { withdrawClosedQuestions } = await import("./merge/withdraw.ts");
+  const withdrawn = withdrawClosedQuestions(db, iso(new Date()));
+  if (withdrawn) console.log(`withdrew ${withdrawn} decision${withdrawn === 1 ? "" : "s"} about closed items`);
   return { mode, items };
 }
 

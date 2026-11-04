@@ -378,6 +378,8 @@ export function AnsweredState({ d, canUndo }: { d: Decision; canUndo: boolean })
   const write = useWrite();
   const label = d.options.find((o) => o.key === d.answer)?.label ?? d.answer;
   const backlog = d.answer === "backlog";
+  // Handled and withdrawn answers are closed when given: no step applies them and none can be undone.
+  const closed = backlog || d.answer === "handled" || d.answer === "withdrawn";
   const error = useLocal().undoError;
   return (
     <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md border border-ok/35 bg-ok/[0.06] px-3 py-2.5">
@@ -385,7 +387,7 @@ export function AnsweredState({ d, canUndo }: { d: Decision; canUndo: boolean })
       <span className="text-sm font-medium">{label}</span>
       <span className="text-xs text-ink/55">
         by {d.answeredBy}
-        {d.adoptedOpinion ? `, using ${d.adoptedOpinion.login}'s answer` : ""} · <TimeAgo iso={d.answeredAt!} />{backlog ? "" : ` · ${d.appliedAt ? "applied" : "not applied yet"}`}
+        {d.adoptedOpinion ? `, using ${d.adoptedOpinion.login}'s answer` : ""} · <TimeAgo iso={d.answeredAt!} />{closed ? "" : ` · ${d.appliedAt ? "applied" : "not applied yet"}`}
       </span>
       {d.answerNote && <span className="w-full text-sm text-ink/70">“{d.answerNote}”</span>}
       {backlog && canUndo && (

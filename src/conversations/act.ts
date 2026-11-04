@@ -5,7 +5,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { readLive } from "../act/index.ts";
 import { duplicateComment } from "../act/templates.ts";
 import { audit } from "../dash/audit.ts";
-import { optionsOf, BACKLOG, getDecision, reposOf } from "../decisions.ts";
+import { optionsOf, BACKLOG, HANDLED, getDecision, reposOf } from "../decisions.ts";
 import { addLabels, closeItem, commentOn, type Note, type Writer } from "../github/write.ts";
 import { repoLabels } from "../labels/github.ts";
 import { Client, type Querier } from "../mirror.ts";
@@ -88,6 +88,26 @@ async function answerDecision(db: DatabaseSync, c: CardRow, decisionId: string |
   }
 }
 
+/** Closes the card's decision as handled in the conversation: the answer is HANDLED with the summary as its note, already applied, so no step acts on it. Writes nothing to GitHub. */
+function resolveDecision(db: DatabaseSync, c: CardRow, decisionId: string | undefined, stamp: string | undefined, summary: string, by: string, at: string): Outcome {
+  if (!decisionId) throw new Error("the card names no decision: the decision changed");
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const d = getDecision(db, decisionId);
+    if (!d || d.answer !== null || d.repo !== c.repo || d.number !== c.number || (stamp !== undefined && decisionStamp(db, d) !== stamp)) throw new Error("the decision changed");
+    const r = db.prepare(`UPDATE main.decisions SET answer = ?, answer_note = ?, exceptions = NULL, answered_by = ?, answered_at = ?, applied_at = ?, adopted_opinion = NULL
+      WHERE id = ? AND answer IS NULL`).run(HANDLED.key, summary, by, at, at, d.id);
+    if (r.changes !== 1) throw new Error("the decision changed");
+    db.prepare("DELETE FROM main.decision_claims WHERE decision_id = ?").run(d.id);
+    audit(db, by, "answer", d.id, { answer: HANDLED.key, source: "conversation" });
+    db.exec("COMMIT");
+    return { result: "Decision closed as handled in the conversation", url: null };
+  } catch (e) {
+    db.exec("ROLLBACK");
+    throw e;
+  }
+}
+
 async function liveOpen(q: Querier, repo: string, n: number) {
   const live = await readLive(q, repo, n);
   if (!live) throw new Error("GitHub returned no such item");
@@ -100,6 +120,7 @@ async function run(db: DatabaseSync, c: CardRow, p: CardParams, by: string, q: Q
   const source = { source: "conversation", card: c.id };
   switch (p.kind) {
     case "answer": return answerDecision(db, c, p.decision, p.stamp, p.option, by, at, canWrite);
+    case "resolve": return resolveDecision(db, c, p.decision, p.stamp, p.summary, by, at);
     case "backlog": return answerDecision(db, c, p.decision, p.stamp, BACKLOG.key, by, at, canWrite);
     case "comment": {
       const g = guardRepo(db, c.repo, "comment", { operator: by });
