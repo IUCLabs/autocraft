@@ -8,7 +8,7 @@ import {
 import type { Action, Plan, PlanState, PrFacts, QueueState } from "./plan.ts";
 
 type PremergeState = "none" | "clean" | "fix" | "defect" | "failed" | "retry";
-type Entry = { state: QueueState; path: "rule" | "operator" | null; reasons: string[]; note: string | null; conflictNote: string | null; premerge: PremergeState | null; premergeDefects: number; answer: string | null; noCi: boolean };
+export type Entry = { state: QueueState; path: "rule" | "operator" | null; reasons: string[]; note: string | null; conflictNote: string | null; premerge: PremergeState | null; premergeDefects: number; answer: string | null; noCi: boolean; refusedReason: string | null };
 
 const verifyState = (f: PrFacts): QueueState | null => {
   const s = f.verification?.state;
@@ -17,7 +17,7 @@ const verifyState = (f: PrFacts): QueueState | null => {
 };
 
 /** The queue entry of a PR that has a take or take-fix review at its head (or merged at the reviewed head). */
-function queueEntry(f: PrFacts, merged: boolean, open: boolean): Entry {
+export function queueEntry(f: PrFacts, merged: boolean, open: boolean): Entry {
   const r = f.review!;
   const noCi = f.ci === "none" && f.repoFacts.noCi;
   const reasons: string[] = [];
@@ -51,7 +51,7 @@ function queueEntry(f: PrFacts, merged: boolean, open: boolean): Entry {
     if (premerge === "defect") reasons.push(PREMERGE_DEFECT_REASON);
     else if (premerge === "failed") reasons.push(PREMERGE_FAILED_REASON);
   }
-  const e: Entry = { state: "needs-decision", path: null, reasons, note: null, conflictNote: null, premerge, premergeDefects: defects, answer, noCi };
+  const e: Entry = { state: "needs-decision", path: null, reasons, note: null, conflictNote: null, premerge, premergeDefects: defects, answer, noCi, refusedReason: null };
 
   if (open && f.gateFailureNote) e.note = f.gateFailureNote;
   // A maintainer's formal block comes before everything else.
@@ -91,7 +91,10 @@ function stateOf(f: PrFacts, e: Entry, merged: boolean, held: "backlog" | "dupli
       return "needs-fix-up";
     }
   }
-  if (f.lastMerge?.outcome === "refused") return "refused";
+  if (f.lastMerge?.outcome === "refused") {
+    e.refusedReason = f.lastMerge.reason;
+    return "refused";
+  }
   return e.path === "rule" ? "ready" : "decision-answered-merge";
 }
 

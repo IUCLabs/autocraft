@@ -1,75 +1,29 @@
-// The merge queue: every PR with a take or take-fix review at its current
-// head commit, and what it waits on. The verdict is Opus's (see the `final_reviews` view); a PR whose
-// review is out of date after new discussion is left out until it is reviewed again. Reads only local tables; no GitHub calls.
+// The merge queue as a view of Plans: every PR with a take or take-fix review at its current head commit, with the fields the
+// dashboard, the flow counts and the merge executors show. Nothing here decides: state, path, reasons and notes come from
+// decidePr (src/core/decide.ts); the rest is read from the facts. Reads only local tables; no GitHub calls.
 import type { DatabaseSync } from "node:sqlite";
-import { latestRun, settledLookup } from "../classify/settled.ts";
-import { actionable } from "../decisions.ts";
-import { backlogHeld, duplicateHeld, notOwnIntegrationSql } from "../dupes/held.ts";
-import { headOf, sizeOf } from "../review/candidates.ts";
-import { changedSince, discussionState, staleReviews } from "../review/discussion.ts";
-import { failureNote, GATE_FAILURES, changesRequestedWhy, gatesOf, type ReviewFact } from "./changes-requested.ts";
-import { batchStates } from "./batch-store.ts";
-import { mergeHolds } from "./holds.ts";
-import { NO_CI_SAMPLE, repoHasNoCi } from "./no-ci.ts";
-import { ciApprovalOf, MAX_FAILURES } from "./ci-approval.ts";
-import { MAIN_FIX_BRANCH_PREFIX, redMainRepos } from "../mainci/index.ts";
-import { getRule, STATS_SQL, tierOf, type Tier } from "../whitelist.ts";
-import { BATCHABLE, MAIN_RED_HELD, RULE_LABELS, RULE_SIZES, RULE_TIERS, UNSURE_REASON, PREMERGE_DEFECT_REASON, PREMERGE_FAILED_REASON, VERIFY_OK, verifyOk, VERIFY_UNAVAILABLE, verifyAllows, ciAllows } from "../core/rules.ts";
-import { pilotSql } from "../pilot.ts";
-import { pushApprovalOf } from "../fixup/approval.ts";
-import { commentApprovalOf } from "../act/approval.ts";
-import { conflictBucket, conflictNote } from "../fixup/conflict-state.ts";
-import { effectiveCi } from "../optional-checks.ts";
-import { findingsOf, premergeAt, premergeFixUsed, PREMERGE_MAX_TRIES, type PremergeFinding } from "../premerge/store.ts";
-import { longLivedOf, pushable, type LongLived } from "../fixup/pushable.ts";
+import { decidePr, queueEntry } from "../core/decide.ts";
+import { loadPrFacts } from "../core/facts.ts";
+import { isQueueState, QUEUE_STATES, type PrFacts, type QueueState } from "../core/plan.ts";
+import { mergeDecisionId, VERIFY_UNAVAILABLE } from "../core/rules.ts";
+import { findingsOf, premergeAt, type PremergeFinding } from "../premerge/store.ts";
+import type { Tier } from "../whitelist.ts";
 
-export { QUEUE_STATES, type QueueState } from "../core/plan.ts";
-import { QUEUE_STATES, type QueueState } from "../core/plan.ts";
-
-
-/** Returns a function that gives the head and the earlier heads AutoCraft itself pushed it from (a `pushing` row is a push that started and may have landed) (conflict merges of the base, fix-up pushes, carry-over pushes), newest first. */
-export function pushChainOf(db: DatabaseSync): (repo: string, number: number, head: string) => string[] {
-  const from = db.prepare(`SELECT from_head FROM conflict_merges WHERE repo = ?1 AND number = ?2 AND to_head = ?3 AND state IN ('merged', 'pushing')
-    UNION SELECT from_head FROM fixups WHERE repo = ?1 AND number = ?2 AND to_head = ?3 AND state IN ('pushed', 'pushing')
-    UNION SELECT from_head FROM dupe_carries WHERE repo = ?1 AND number = ?2 AND to_head = ?3 AND from_head IS NOT NULL
-    UNION SELECT head FROM ci_fixes WHERE repo = ?1 AND number = ?2 AND to_head = ?3 AND state IN ('pushed', 'pushing')`);
-  return (repo, number, head) => {
-    const chain = [head];
-    for (let k = 0; k < chain.length; k++) for (const f of from.all(repo, number, chain[k]!) as { from_head: string }[]) if (!chain.includes(f.from_head)) chain.push(f.from_head);
-    return chain;
-  };
-}
-
-/** The PR has an unanswered Merge? question at any head. */
-export const OPEN_QUESTION_SQL = "SELECT 1 FROM decisions WHERE repo = ? AND number = ? AND kind = 'merge' AND answer IS NULL AND id NOT LIKE '%~replaced-%' LIMIT 1";
-
-export const UNSURE_AT_SQL = `SELECT 1 FROM opus_review_history WHERE repo = ?1 AND number = ?2 AND head_oid = ?3 AND verdict IN ('take', 'take-fix') AND sure = 0
-  UNION ALL SELECT 1 FROM opus_reviews WHERE repo = ?1 AND number = ?2 AND head_oid = ?3 AND verdict IN ('take', 'take-fix') AND sure = 0 LIMIT 1`;
-
-/** True when any stored Opus review at the head (the current row or an overwritten one in the history) was a take or take-fix with sure = 0. */
-export function headWasUnsure(db: DatabaseSync, repo: string, number: number, head: string): boolean {
-  return !!db.prepare(UNSURE_AT_SQL).get(repo, number, head);
-}
-export { RULE_LABELS, RULE_SIZES, RULE_TIERS, UNSURE_REASON, PREMERGE_DEFECT_REASON, PREMERGE_FAILED_REASON, VERIFY_OK, verifyOk, VERIFY_UNAVAILABLE, verifyAllows, ciAllows };
-
-/** Option keys of a "Merge this PR?" decision. Only an operator's answer counts. */
-export const MERGE_OPTIONS = {
-  merge: { key: "merge", label: "Merge", hint: "Merge once CI is green at this head commit." },
-  hold: { key: "hold", label: "Hold", hint: "Keep it open and out of the merge queue." },
-  close: { key: "close", label: "Close", hint: "Not wanted as it is; post a short comment and close the PR." },
-} as const;
-
-/** One open decision per PR head: a push gets a new one. */
-export const mergeDecisionId = (repo: string, number: number, head: string): string => `${repo}#${number}:merge@${head}`;
-export const HEAD_FACT = "head commit ";
-
-export { NO_CI_SAMPLE, repoHasNoCi };
+export { QUEUE_STATES, type QueueState };
+export {
+  RULE_LABELS, RULE_SIZES, RULE_TIERS, UNSURE_REASON, PREMERGE_DEFECT_REASON, PREMERGE_FAILED_REASON, VERIFY_OK, verifyOk, VERIFY_UNAVAILABLE, verifyAllows, ciAllows,
+  MERGE_OPTIONS, mergeDecisionId, HEAD_FACT, OPEN_GROUP_SQL, PIPELINE_LOGIN_KEY,
+} from "../core/rules.ts";
+export { NO_CI_SAMPLE, repoHasNoCi } from "./no-ci.ts";
+export { headWasUnsure, ownFixPrs } from "../core/facts.ts";
 
 export type QueueEntry = {
   repo: string; number: number; title: string; author: string | null; tier: Tier;
   head: string; size: string; label: string | null; verdict: "take" | "take-fix";
   reason: string; fixes: number; ci: string; mergeable: string;
   state: QueueState;
+  /** The merge rule or an operator's answer lets it merge now (a refused PR still counts while its retry waits for a change). */
+  eligible: boolean;
   /** How the PR may merge: by the rule, by an operator's answer, or not yet. */
   path: "rule" | "operator" | null;
   /** Why the rule doesn't cover it; empty when it does. */
@@ -101,53 +55,11 @@ export type QueueEntry = {
   premerge: { state: "none" | "clean" | "fix" | "defect" | "failed" | "retry"; defects: PremergeFinding[]; minor: number; error: string | null } | null;
 };
 
-
-
-
 /** PRs the integration batches leave to the single-PR merge: main-fix PRs, the sandbox cannot build the repo, or the repo has no CI for the batch PR to wait on. */
 export const singleMergeOnly = (e: QueueEntry): boolean => e.verify?.state === VERIFY_UNAVAILABLE || e.noCi || !!e.mainFix;
 
 /** True when the PR may be merged now (ready, approved, or retried after a refusal). */
-export const eligible = (e: QueueEntry): boolean =>
-  !e.held && e.path !== null && verifyAllows(e.path, e.verify?.state) && ciAllows(e.path, e.ci, e.noCi) && e.mergeable === "MERGEABLE" && (e.state === "ready" || e.state === "decision-answered-merge" || e.state === "refused");
-
-type Row = {
-  repo: string; number: number; title: string | null; author: string | null; state: string; review_decision: string | null; head_oid: string | null; updated_at: string | null;
-  c_head: string | null; c_at: string | null; overall: string | null; c_checks: string | null; c_mergeable: string | null; i_mergeable: string | null;
-  r_head: string; r_seen: string | null; r_hash: string | null; sure: number | null; mode: string | null; verdict: "take" | "take-fix"; reason: string; fixes: string | null; lines: number; r_at: string;
-  head_repo: string | null; head_ref: string | null; base_ref: string | null; i_can: number | null; c_can: number | null;
-};
-
-/** Tiers of the given logins, from one stats query. */
-export function tiersOf(db: DatabaseSync, logins: string[]): Map<string, Tier> {
-  const out = new Map<string, Tier>();
-  if (!logins.length) return out;
-  const rule = getRule(db);
-  const marks = logins.map(() => "?").join(",");
-  const stats = new Map((db.prepare(`${STATS_SQL} AND author IN (${marks}) GROUP BY author`).all(...logins) as { login: string; merged: number; closed: number }[]).map((r) => [r.login, r]));
-  const over = new Map((db.prepare(`SELECT login, status FROM whitelist_overrides WHERE login IN (${marks})`).all(...logins) as { login: string; status: string }[]).map((r) => [r.login, r.status]));
-  for (const l of logins) {
-    const s = stats.get(l);
-    out.set(l, tierOf(s?.merged ?? 0, s?.closed ?? 0, over.get(l) ?? null, rule));
-  }
-  return out;
-}
-
-/** Setting that holds the pipeline account's login, recorded wherever the pipeline pushes as that account. */
-export const PIPELINE_LOGIN_KEY = "pipeline_login";
-
-/** PRs the pipeline opened itself from a Fix issues attempt or for a red default branch, as `repo#number`, when authored by its own account. */
-export function ownFixPrs(db: DatabaseSync, repo?: string): { login: string | null; prs: Set<string> } {
-  const login = (db.prepare("SELECT value FROM main.settings WHERE key = ?").get(PIPELINE_LOGIN_KEY) as { value: string } | undefined)?.value ?? null;
-  const prs = new Set<string>();
-  if (!login) return { login, prs };
-  for (const r of db.prepare("SELECT repo, pr_url FROM main.fix_attempts WHERE pr_url IS NOT NULL" + (repo ? " AND repo = ?" : "")).all(...(repo ? [repo] : [])) as { repo: string; pr_url: string }[]) {
-    const m = r.pr_url.match(/\/pull\/(\d+)$/);
-    if (m) prs.add(`${r.repo}#${m[1]}`);
-  }
-  for (const r of db.prepare("SELECT repo, pr_number AS n FROM main.main_fixes WHERE pr_number IS NOT NULL" + (repo ? " AND repo = ?" : "")).all(...(repo ? [repo] : [])) as { repo: string; n: number }[]) prs.add(`${r.repo}#${r.n}`);
-  return { login, prs };
-}
+export const eligible = (e: Pick<QueueEntry, "eligible">): boolean => e.eligible;
 
 export type QueueOptions = {
   repo?: string;
@@ -164,205 +76,44 @@ export type QueueOptions = {
   run?: string | null;
 };
 
-export function buildQueue(db: DatabaseSync, opts: QueueOptions = {}): QueueEntry[] {
-  const states = { exclude: "'OPEN'", only: "'MERGED'", all: "'OPEN', 'MERGED'" }[opts.merged ?? "all"];
-  const params: Record<string, string | number> = {};
-  const where: string[] = [];
-  if (opts.repo) { where.push("i.repo = :repo"); params.repo = opts.repo; }
-  opts.exclude?.forEach((r, k) => { where.push(`i.repo <> :ex${k}`); params[`ex${k}`] = r; });
-  if (opts.refs) { where.push("i.repo || '#' || i.number IN (SELECT value FROM json_each(:refs))"); params.refs = JSON.stringify([...opts.refs]); }
-  if (opts.after) {
-    where.push("(i.repo > :ar OR (i.repo = :ar AND i.number > :an))");
-    params.ar = opts.after.repo;
-    params.an = opts.after.number;
+/** The queue row of a PR whose Plan is in a queue state. */
+function entryOf(db: DatabaseSync, f: PrFacts, plan: ReturnType<typeof decidePr>, title: string): QueueEntry {
+  const r = f.review!;
+  const merged = plan.state === "merged";
+  const x = queueEntry(f, merged, !merged);
+  let premerge: QueueEntry["premerge"] = null;
+  if (x.premerge) {
+    const row = premergeAt(db, f.repo, f.number, r.head);
+    const all = findingsOf(row);
+    const defects = all.filter((d) => d.severity === "defect");
+    premerge = { state: x.premerge, defects, minor: all.length - defects.length, error: row?.error ?? null };
   }
-  // Latest review per PR (newest `at`, then rowid); only take and take-fix verdicts enter the queue.
-  const rows = db.prepare(`
-    SELECT i.repo, i.number, i.title, i.author, i.state, i.review_decision, i.head_oid, i.updated_at, i.mergeable AS i_mergeable,
-      c.head_oid AS c_head, c.fetched_at AS c_at, c.overall, c.checks AS c_checks, c.mergeable AS c_mergeable,
-      l.head_oid AS r_head, l.seen_at AS r_seen, l.disc_hash AS r_hash, l.sure, l.mode, l.verdict, l.reason, l.fixes, COALESCE(i.additions, 0) + COALESCE(i.deletions, 0) AS lines, l.at AS r_at,
-      i.head_repo, i.head_ref, i.base_ref, i.maintainer_can_modify AS i_can, c.maintainer_can_modify AS c_can
-    FROM items i
-    JOIN final_reviews l ON l.repo = i.repo AND l.number = i.number AND l.head_oid = (
-      SELECT r.head_oid FROM opus_reviews r WHERE r.repo = i.repo AND r.number = i.number AND r.verdict IS NOT NULL ORDER BY r.at DESC, r.rowid DESC LIMIT 1)
-    LEFT JOIN pr_checks c ON c.repo = l.repo AND c.number = l.number
-    WHERE l.verdict IN ('take', 'take-fix') AND i.kind = 'pr' AND i.state IN (${states}) AND ${notOwnIntegrationSql("i")} AND ${pilotSql("i")} ${where.map((w) => `AND ${w}`).join(" ")}
-    ORDER BY i.repo, i.number ${opts.limit ? `LIMIT ${Math.floor(opts.limit)}` : ""}`).all(params) as Row[];
+  return {
+    repo: f.repo, number: f.number, title, author: f.author, tier: f.tier, head: r.head, size: f.size, label: f.label,
+    verdict: r.verdict as "take" | "take-fix", reason: r.reason, fixes: r.fixes, ci: f.ci, mergeable: f.mergeable,
+    state: plan.state as QueueState, eligible: plan.eligible, path: plan.path, outsideRule: plan.reasons,
+    decisionId: f.decision.asked ? mergeDecisionId(f.repo, f.number, r.head) : null,
+    runsWaiting: f.runs?.waiting ?? 0, runsBlocked: f.runs?.blocked ?? null, noCi: x.noCi, answer: x.answer, refusedReason: x.refusedReason,
+    reviewedAt: r.at, held: f.mergeHeld, note: plan.note, blockedLive: plan.state === "changes-requested" && !!f.changesRequested?.live,
+    verify: f.verification, ...(plan.conflictNote !== null ? { conflictNote: plan.conflictNote } : {}), ...(f.mainFix ? { mainFix: true } : {}), premerge,
+  };
+}
 
-  const merges = db.prepare("SELECT outcome, reason FROM merges WHERE repo = ? AND number = ? AND head_oid = ? ORDER BY at DESC, rowid DESC LIMIT 1");
-  const waiting = db.prepare("SELECT runs, approved, reread, failed, cross_repo FROM ci_run_approvals WHERE repo = ? AND number = ? AND head_oid = ?");
-  const verifs = db.prepare("SELECT state, kind, summary, note FROM verifications WHERE repo = ? AND number = ? AND head_sha = ?");
-  const decision = db.prepare("SELECT id, answer FROM decisions WHERE id = ?");
-  const pushChain = pushChainOf(db);
-  const unsureAt = db.prepare(UNSURE_AT_SQL);
-  const openQuestion = db.prepare(OPEN_QUESTION_SQL);
-  const answeredAfter = db.prepare("SELECT 1 FROM decisions WHERE id = ? AND kind = 'merge' AND answer = 'merge' AND answered_at > ? AND answered_by IN (SELECT login FROM access WHERE role = 'operator')");
-  const answers = new Map(actionable(db).filter((a) => a.kind === "merge").map((a) => [a.id, a.answer]));
-  const tiers = tiersOf(db, [...new Set(rows.map((r) => r.author).filter((a): a is string => !!a))]);
-  const inBatch = batchStates(db, opts.repo);
-  const own = ownFixPrs(db, opts.repo);
-  const stale = staleReviews(db, opts.repo);
-  const state = discussionState(db, opts.repo);
-  const settled = settledLookup(db, opts.run !== undefined ? opts.run : latestRun(db));
-
-  // The mirror keeps the latest 10 reviews of a PR; GitHub's review decision covers an older block that fell out of them.
-  const reviewRows = db.prepare("SELECT author, author_association AS association, review_state AS state, created_at AS at FROM comments WHERE repo = ? AND number = ? AND kind = 'review'");
-  const gates = gatesOf(db, opts.repo);
-  const holds = mergeHolds(db, opts.repo);
-  const noCiMemo = new Map<string, boolean>();
-  const noCi = (repo: string) => noCiMemo.get(repo) ?? (noCiMemo.set(repo, repoHasNoCi(db, repo)), noCiMemo.get(repo)!);
-  const mainRed = redMainRepos(db);
-  const approvals = new Map<string, { push: boolean; comment: boolean }>();
-  const longLivedBy = new Map<string, LongLived>();
-  const pushableAt = (r: Row, checksHere: boolean) => pushable(r.head_repo, r.repo, checksHere ? r.c_can : r.i_can, r.head_ref, (longLivedBy.get(r.repo) ?? (longLivedBy.set(r.repo, longLivedOf(db, r.repo)), longLivedBy.get(r.repo)!)));
-  const approvalOf = (repo: string) => approvals.get(repo) ?? (approvals.set(repo, { push: pushApprovalOf(db, repo) !== null, comment: commentApprovalOf(db, repo) !== null }), approvals.get(repo)!);
+export function buildQueue(db: DatabaseSync, opts: QueueOptions = {}): QueueEntry[] {
+  const which = opts.merged ?? "all";
+  const title = db.prepare("SELECT title FROM items WHERE repo = ? AND number = ?");
   const out: QueueEntry[] = [];
-  for (const r of rows) {
-    const last = merges.get(r.repo, r.number, r.r_head) as { outcome: string; reason: string | null } | undefined;
-    const mergedByUs = last?.outcome === "merged";
-    // A review older than a comment or review by someone else waits for the review again: the PR has no review until then.
-    if (r.state === "OPEN" && !mergedByUs && (stale.has(`${r.repo}#${r.number}@${r.r_head}`) || changedSince(state.get(`${r.repo}#${r.number}`), r.r_seen ?? r.r_at, r.r_hash))) continue;
-    // A merged PR keeps the review of the head it merged at; an open one must be reviewed at its current head.
-    if (r.state === "OPEN" && !mergedByUs && headOf(r) !== r.r_head) continue;
-    // Checks describe the reviewed head only when they were fetched for it.
-    const checksHere = r.c_head === r.r_head;
-    const wait = waiting.get(r.repo, r.number, r.r_head) as { runs: string; approved: string; reread: number; failed: string; cross_repo: number } | undefined;
-    const waitRuns = JSON.parse(wait?.runs ?? "[]") as { id: number; event?: string }[];
-    const runsWaiting = waitRuns.length + (wait?.reread ? 1 : 0);
-    // The rollup does not list runs that waited for approval: CI is not known to be green until the runs we approved have finished.
-    const approvedPending = (JSON.parse(wait?.approved ?? "[]") as unknown[]).length > 0;
-    const ci = checksHere ? (approvedPending ? "pending" : effectiveCi(db, r.repo, r.overall ?? "none", r.c_checks)) : "unknown";
-    const failedRuns = JSON.parse(wait?.failed ?? "{}") as Record<string, number>;
-    const runsBlocked: QueueEntry["runsBlocked"] = !runsWaiting ? null : !ciApprovalOf(db, r.repo) ? "off" : waitRuns.some((x) => (failedRuns[x.id] ?? 0) >= MAX_FAILURES) ? "failed"
-      : !wait?.reread && (!wait?.cross_repo || !waitRuns.some((x) => x.event === "pull_request")) ? "unsupported" : null;
-    const mergeable = (checksHere ? r.c_mergeable : r.i_mergeable) ?? "UNKNOWN";
-    let tier = r.author ? tiers.get(r.author)! : "not";
-    // The pipeline's own Fix PRs count as whitelisted; an operator's deny still wins.
-    if (tier === "not" && r.author && r.author === own.login && own.prs.has(`${r.repo}#${r.number}`)) tier = "whitelisted";
-    const label = settled(r.repo, r.number).label;
-    const size = sizeOf(r.lines);
-    let fixes = 0;
-    try { fixes = (JSON.parse(r.fixes ?? "[]") as unknown[]).length; } catch { /* none */ }
-
-    const outsideRule: string[] = [];
-    if (r.verdict !== "take") outsideRule.push("review asks for fixes");
-    // An unsure review at this head sticks until a person answers its Merge? question, whatever a later review of the head says.
-    // An unsure review anywhere in the chain of heads (the head and the heads AutoCraft pushed it from) needs a person's merge answer
-    // at this head, given after its latest review.
-    const unsure = r.sure === 0 || pushChain(r.repo, r.number, r.r_head).some((h) => unsureAt.get(r.repo, r.number, h));
-    if (unsure) outsideRule.push(UNSURE_REASON);
-    if (r.state === "OPEN" && openQuestion.get(r.repo, r.number)) outsideRule.push("a Merge? question is still open");
-    // No stage writes mode 'skipped' today; a review row with it never merges by rule.
-    if (r.mode === "skipped") outsideRule.push("the review was skipped");
-    if (!RULE_SIZES.includes(size)) outsideRule.push(`size ${size}`);
-    if (!label || !RULE_LABELS.includes(label)) outsideRule.push(label ? `label ${label}` : "no settled label");
-    if (!RULE_TIERS.includes(tier)) outsideRule.push(r.author ? "author not on the whitelist" : "author unknown");
-
-    const verify = (verifs.get(r.repo, r.number, r.r_head) as QueueEntry["verify"] | undefined) ?? null;
-    if (verify?.state === VERIFY_UNAVAILABLE) outsideRule.push(`not verified: ${verify.summary ?? "Verify cannot build this repo"}`);
-    if (ci === "none" && noCi(r.repo)) outsideRule.push("the repo has no CI checks");
-    const id = mergeDecisionId(r.repo, r.number, r.r_head);
-    const asked = decision.get(id) as { id: string; answer: string | null } | undefined;
-    // Only a merge answer is set aside at an unsure head; a hold or close still counts.
-    const given = (answers.get(id) as string | undefined) ?? null;
-    const answer = given === "merge" && unsure && !answeredAfter.get(id, r.r_at) ? null : given;
-    // The pre-merge review gates what the rule would merge. Its blocking reasons go to outsideRule before stateOf decides the path, also
-    // after a Merge answer, so that the merge runs as an operator merge with its checks.
-    let premerge: QueueEntry["premerge"] = null;
-    if (r.state === "OPEN" && !mergedByUs && !outsideRule.length) {
-      const row = premergeAt(db, r.repo, r.number, r.r_head);
-      const all = findingsOf(row);
-      const defects = all.filter((f) => f.severity === "defect");
-      const minor = all.length - defects.length;
-      const error = row?.error ?? null;
-      if (!row) premerge = { state: "none", defects, minor, error };
-      else if (row.findings === null) premerge = { state: row.tries >= PREMERGE_MAX_TRIES ? "failed" : "retry", defects, minor, error };
-      else if (!defects.length) premerge = { state: "clean", defects, minor, error };
-      else {
-        // A Merge? decision at this head (a Hold, say) is never replaced by a fix-up.
-        const fixable = !asked && defects.every((f) => f.fix) && !premergeFixUsed(db, r.repo, r.number) && pushApprovalOf(db, r.repo) !== null && pushableAt(r, checksHere);
-        premerge = { state: fixable ? "fix" : "defect", defects, minor, error };
-      }
-      if (premerge.state === "defect") outsideRule.push(PREMERGE_DEFECT_REASON);
-      else if (premerge.state === "failed") outsideRule.push(PREMERGE_FAILED_REASON);
-    }
-    const e: QueueEntry = {
-      repo: r.repo, number: r.number, title: r.title ?? "", author: r.author, tier, head: r.r_head, size, label,
-      verdict: r.verdict, reason: r.reason, fixes, ci, mergeable, state: "needs-decision", path: null, outsideRule, runsWaiting, runsBlocked,
-      decisionId: asked ? id : null, noCi: ci === "none" && noCi(r.repo), answer, refusedReason: null, reviewedAt: r.r_at, verify, held: holds.has(`${r.repo}#${r.number}`), note: null, blockedLive: false, premerge,
-    };
-    const open = r.state === "OPEN" && !mergedByUs;
-    // Only our own main-fix PRs skip the red-main hold: a branch name alone is no proof.
-    if (r.head_ref?.startsWith(MAIN_FIX_BRANCH_PREFIX) && r.author && r.author === own.login && own.prs.has(`${r.repo}#${r.number}`)) e.mainFix = true;
-    // A maintainer's formal block comes before everything else: the PR is never asked about, batched or merged while it stands.
-    // A live read newer than the PR's last change decides; otherwise the mirrored reviews do.
-    const gate = gates.get(`${r.repo}#${r.number}`);
-    const { why, live } = changesRequestedWhy(gate, r.updated_at, reviewRows.all(r.repo, r.number) as ReviewFact[], r.review_decision);
-    if (open && gate && gate.failures >= GATE_FAILURES) e.note = failureNote(gate.failures);
-    if (open && why) { e.state = "changes-requested"; e.note = why; e.blockedLive = live; out.push(e); continue; }
-    e.state = stateOf(e, r.state === "MERGED" || mergedByUs, last, open && (backlogHeld(db, r.repo, r.number) ? "backlog" : duplicateHeld(db, r.repo, r.number) ? "duplicate" : null));
-    if (open && mergeable === "CONFLICTING" && r.base_ref) {
-      e.conflictNote = conflictNote(conflictBucket(db, { repo: r.repo, number: r.number, head: r.r_head, pushable: pushableAt(r, checksHere) }, approvalOf(r.repo)), r.base_ref);
-    }
-    const batch = inBatch.get(`${r.repo}#${r.number}@${r.r_head}`);
-    // A rule-path PR without a clean pre-merge review keeps its own state: a batch must not land it.
-    if (batch && BATCHABLE.includes(e.state) && (e.path !== "rule" || e.premerge?.state === "clean")) e.state = batch;
-    // A red main fails every PR's CI: ready PRs wait for it, except the PRs AutoCraft opened to fix it. Batch members keep their batch state; the batch just is not merged (see batch.ts).
-    else if (open && mainRed.has(r.repo) && MAIN_RED_HELD.includes(e.state) && !e.mainFix) e.state = "waiting-main-ci";
-    out.push(e);
+  for (const f of loadPrFacts(db, { ...(opts.repo ? { repo: opts.repo } : {}), ...(opts.refs ? { refs: opts.refs } : {}), ...(opts.run !== undefined ? { run: opts.run } : {}) })) {
+    if (opts.exclude?.includes(f.repo)) continue;
+    if (which === "exclude" ? f.ghState !== "OPEN" : which === "only" ? f.ghState !== "MERGED" : f.ghState === "CLOSED") continue;
+    if (opts.after && (f.repo < opts.after.repo || (f.repo === opts.after.repo && f.number <= opts.after.number))) continue;
+    const plan = decidePr(f);
+    if (!isQueueState(plan.state)) continue;
+    out.push(entryOf(db, f, plan, ((title.get(f.repo, f.number) as { title: string | null } | undefined)?.title ?? "")));
+    if (opts.limit && out.length >= Math.floor(opts.limit)) break;
   }
   return out;
 }
-
-/** The queue state a PR is in until its verification passed (or said CI is enough); null once it did. */
-function verifyState(e: QueueEntry): QueueState | null {
-  const s = e.verify?.state;
-  if (verifyOk(s) || s === VERIFY_UNAVAILABLE) return null;
-  return s === "failed" ? "verify-failed" : s === "error" ? "verify-error" : "waiting-verify";
-}
-
-function stateOf(e: QueueEntry, merged: boolean, last: { outcome: string; reason: string | null } | undefined, held: "backlog" | "duplicate" | null | false = null): QueueState {
-  if (merged) return "merged";
-  // A Backlog answer, an open Duplicate? decision or a duplicate close keeps the item out of every later stage.
-  if (held === "backlog") return "held-backlog";
-  if (held) return "held-duplicate";
-  if (e.verdict === "take-fix") return "needs-fix-up";
-  if (!e.outsideRule.length) e.path = "rule";
-  else if (e.answer === "merge") e.path = "operator";
-  else if (e.answer) return "declined";
-  if (e.mergeable === "CONFLICTING") return "conflict";
-  if (e.ci === "failure") return "ci-failed";
-  if (e.runsWaiting > 0) return "ci-approval";
-  // A Merge? question is asked only once the operator can see the verification result.
-  if (!e.path) return verifyState(e) ?? "needs-decision";
-  if (!ciAllows(e.path, e.ci, e.noCi) || e.mergeable !== "MERGEABLE") return "waiting-ci";
-  const v = verifyState(e);
-  if (v) return v;
-  if (e.path === "rule" && e.premerge) {
-    if (e.premerge.state === "none" || e.premerge.state === "retry") return "waiting-premerge";
-    if (e.premerge.state === "fix") {
-      const n = e.premerge.defects.length;
-      e.note = `pre-merge review: ${n} defect${n === 1 ? "" : "s"} to fix`;
-      return "needs-fix-up";
-    }
-  }
-  if (last?.outcome === "refused") {
-    e.refusedReason = last.reason;
-    return "refused";
-  }
-  return e.path === "rule" ? "ready" : "decision-answered-merge";
-}
-
-/** Merge? questions still to ask: take PRs outside the rule with no decision at their head. A member of an open duplicate group is asked after the group is answered: an item has one open decision. */
-export const toAsk = (db: DatabaseSync, queue: QueueEntry[]): QueueEntry[] => {
-  const grouped = new Set((db.prepare(`SELECT gi.repo || '#' || gi.number AS ref FROM dupe_group_items gi JOIN decisions g ON g.id = gi.decision_id
-    WHERE ${OPEN_GROUP_SQL} AND gi.role <> 'stay'`).all() as { ref: string }[]).map((r) => r.ref));
-  return queue.filter((e) => e.state === "needs-decision" && !e.decisionId && !grouped.has(`${e.repo}#${e.number}`));
-};
-
-/** SQL condition on `g` (a decisions row): a duplicate group decision that is unanswered or answered "keep #N instead" with the new roles not applied yet. */
-export const OPEN_GROUP_SQL = `(g.kind = 'duplicate' AND g.id LIKE '%:dupegroup:%' AND (g.answer IS NULL
-  OR (g.answer LIKE 'keep:%' AND COALESCE((SELECT dg.applied_answer FROM dupe_groups dg WHERE dg.decision_id = g.id), '') <> g.answer)))`;
 
 export function countStates(entries: QueueEntry[]): Record<QueueState, number> {
   const c = Object.fromEntries(QUEUE_STATES.map((s) => [s, 0])) as Record<QueueState, number>;
@@ -379,16 +130,4 @@ export function countMerged(db: DatabaseSync, repo?: string, exclude: string[] =
       SELECT r.head_oid FROM opus_reviews r WHERE r.repo = i.repo AND r.number = i.number AND r.verdict IS NOT NULL ORDER BY r.at DESC, r.rowid DESC LIMIT 1)
     WHERE l.verdict IN ('take', 'take-fix') AND i.kind = 'pr' AND i.state = 'MERGED' ${repo ? "AND i.repo = :repo" : ""}${exclude.map((_, k) => ` AND i.repo <> :ex${k}`).join("")}`)
     .get(params) as { n: number }).n;
-}
-
-/** A PR refused at its current head waits for its CI or mergeable state to differ from what GitHub reported at the refusal. */
-export function refusedAsBefore(db: DatabaseSync, e: { repo: string; number: number; head: string; state: string; ci: string; mergeable: string }): boolean {
-  if (e.state !== "refused") return false;
-  const r = db.prepare("SELECT outcome, ci, mergeable, at FROM merges WHERE repo = ? AND number = ? AND head_oid = ? ORDER BY at DESC, rowid DESC LIMIT 1")
-    .get(e.repo, e.number, e.head) as { outcome: string; ci: string | null; mergeable: string | null; at: string } | undefined;
-  if (r?.outcome !== "refused") return false;
-  // Runs approved after the refusal may have changed what it was about, though ci and mergeable read the same.
-  const approved = db.prepare("SELECT approved_at FROM ci_run_approvals WHERE repo = ? AND number = ? AND head_oid = ?").get(e.repo, e.number, e.head) as { approved_at: string | null } | undefined;
-  if (approved?.approved_at && approved.approved_at > r.at) return false;
-  return r.ci === null || r.mergeable === null || (r.ci === e.ci && r.mergeable === e.mergeable);
 }

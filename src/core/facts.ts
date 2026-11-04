@@ -17,14 +17,13 @@ import { ciApprovalOf } from "../merge/ci-approval.ts";
 import { mergeApprovalOf } from "../merge/approval.ts";
 import { mergeHolds } from "../merge/holds.ts";
 import { repoHasNoCi } from "../merge/no-ci.ts";
-import { OPEN_GROUP_SQL, OPEN_QUESTION_SQL, UNSURE_AT_SQL, ownFixPrs, pushChainOf, tiersOf } from "../merge/queue.ts";
-import { mergeDecisionId } from "../merge/queue.ts";
 import { effectiveCi } from "../optional-checks.ts";
 import { pilotSql } from "../pilot.ts";
 import { attemptsOf, parseFixes } from "../fixup/candidates.ts";
 import { getTask, TERMINAL } from "../build/tasks.ts";
 import { SINCE_KEY } from "../postmerge/select.ts";
-import { BASE_NAME } from "./rules.ts";
+import { BASE_NAME, OPEN_GROUP_SQL, PIPELINE_LOGIN_KEY, OPEN_QUESTION_SQL, UNSURE_AT_SQL, mergeDecisionId } from "./rules.ts";
+import { getRule, STATS_SQL, tierOf, type Tier } from "../whitelist.ts";
 import { findingsOf, premergeAt, premergeFixUsed } from "../premerge/store.ts";
 import { headOf } from "../review/candidates.ts";
 import { parsePublic } from "../review/opus-parse.ts";
@@ -149,11 +148,14 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
     ORDER BY b.id LIMIT 1`);
 
   type Wait = { runs: string; approved: string; reread: number; failed: string; cross_repo: number; approved_at: string | null };
-  const runsOf = (w: Wait | undefined): PrFacts["runs"] => {
+  const runsOf = (w: Wait | undefined, ciApproved: boolean): PrFacts["runs"] => {
     if (!w) return null;
     const runs = parseList(w.runs) as { id: number; event?: string }[];
     const failed = JSON.parse(w.failed || "{}") as Record<string, number>;
-    return { waiting: runs.length + (w.reread ? 1 : 0), reread: !!w.reread, crossRepo: !!w.cross_repo, approvable: runs.filter((x) => x.event === "pull_request" && (failed[x.id] ?? 0) < MAX_FAILURES).length };
+    const waiting = runs.length + (w.reread ? 1 : 0);
+    const blocked: NonNullable<PrFacts["runs"]>["blocked"] = !waiting ? null : !ciApproved ? "off" : runs.some((x) => (failed[x.id] ?? 0) >= MAX_FAILURES) ? "failed"
+      : !w.reread && (!w.cross_repo || !runs.some((x) => x.event === "pull_request")) ? "unsupported" : null;
+    return { waiting, reread: !!w.reread, crossRepo: !!w.cross_repo, approvable: runs.filter((x) => x.event === "pull_request" && (failed[x.id] ?? 0) < MAX_FAILURES).length, blocked };
   };
 
   const out: PrFacts[] = [];
@@ -180,7 +182,7 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
       premerge: null, premergeFixUsed: false, pushable: false, pushChain: [], conflict: null, inActiveBatch: activeBatched.has(ref), fixup: null, carry: [], cifix: null, postmerge: null, batch: null, mainFix: false, changesRequested: null, gateFailureNote: null,
     };
     if (integration) {
-      base.runs = runsOf(batchTip.get(r.repo, r.number) as Wait | undefined);
+      base.runs = runsOf(batchTip.get(r.repo, r.number) as Wait | undefined, rf.f.ciApproved);
       out.push(base);
       continue;
     }
@@ -228,7 +230,7 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
     base.checksOpen = checksHere && r.c_state === "OPEN" && !r.c_draft;
     const approvedPending = parseList(wait?.approved ?? "[]").length > 0;
     base.ci = checksHere ? (approvedPending ? "pending" : effectiveCi(db, r.repo, r.overall ?? "none", r.c_checks)) : "unknown";
-    base.runs = runsOf(wait);
+    base.runs = runsOf(wait, rf.f.ciApproved);
     base.tier = (r.author ? tiers.get(r.author) : undefined) ?? "not";
     // The pipeline's own Fix PRs count as whitelisted; an operator's deny still wins.
     if (base.tier === "not" && r.author && r.author === own.login && own.prs.has(ref)) base.tier = "whitelisted";
@@ -293,3 +295,51 @@ export function loadPrFact(db: DatabaseSync, repo: string, number: number, opts:
   return loadPrFacts(db, { ...opts, repo, refs: [`${repo}#${number}`] })[0] ?? null;
 }
 export type { PrTier };
+
+// ---- small readers shared with the merge modules ----
+
+/** Returns a function that gives the head and the earlier heads AutoCraft itself pushed it from (a `pushing` row is a push that started and may have landed) (conflict merges of the base, fix-up pushes, carry-over pushes), newest first. */
+export function pushChainOf(db: DatabaseSync): (repo: string, number: number, head: string) => string[] {
+  const from = db.prepare(`SELECT from_head FROM conflict_merges WHERE repo = ?1 AND number = ?2 AND to_head = ?3 AND state IN ('merged', 'pushing')
+    UNION SELECT from_head FROM fixups WHERE repo = ?1 AND number = ?2 AND to_head = ?3 AND state IN ('pushed', 'pushing')
+    UNION SELECT from_head FROM dupe_carries WHERE repo = ?1 AND number = ?2 AND to_head = ?3 AND from_head IS NOT NULL
+    UNION SELECT head FROM ci_fixes WHERE repo = ?1 AND number = ?2 AND to_head = ?3 AND state IN ('pushed', 'pushing')`);
+  return (repo, number, head) => {
+    const chain = [head];
+    for (let k = 0; k < chain.length; k++) for (const f of from.all(repo, number, chain[k]!) as { from_head: string }[]) if (!chain.includes(f.from_head)) chain.push(f.from_head);
+    return chain;
+  };
+}
+
+/** True when any stored Opus review at the head (the current row or an overwritten one in the history) was a take or take-fix with sure = 0. */
+export function headWasUnsure(db: DatabaseSync, repo: string, number: number, head: string): boolean {
+  return !!db.prepare(UNSURE_AT_SQL).get(repo, number, head);
+}
+
+/** Tiers of the given logins, from one stats query. */
+export function tiersOf(db: DatabaseSync, logins: string[]): Map<string, Tier> {
+  const out = new Map<string, Tier>();
+  if (!logins.length) return out;
+  const rule = getRule(db);
+  const marks = logins.map(() => "?").join(",");
+  const stats = new Map((db.prepare(`${STATS_SQL} AND author IN (${marks}) GROUP BY author`).all(...logins) as { login: string; merged: number; closed: number }[]).map((r) => [r.login, r]));
+  const over = new Map((db.prepare(`SELECT login, status FROM whitelist_overrides WHERE login IN (${marks})`).all(...logins) as { login: string; status: string }[]).map((r) => [r.login, r.status]));
+  for (const l of logins) {
+    const s = stats.get(l);
+    out.set(l, tierOf(s?.merged ?? 0, s?.closed ?? 0, over.get(l) ?? null, rule));
+  }
+  return out;
+}
+
+/** PRs the pipeline opened itself from a Fix issues attempt or for a red default branch, as `repo#number`, when authored by its own account. */
+export function ownFixPrs(db: DatabaseSync, repo?: string): { login: string | null; prs: Set<string> } {
+  const login = (db.prepare("SELECT value FROM main.settings WHERE key = ?").get(PIPELINE_LOGIN_KEY) as { value: string } | undefined)?.value ?? null;
+  const prs = new Set<string>();
+  if (!login) return { login, prs };
+  for (const r of db.prepare("SELECT repo, pr_url FROM main.fix_attempts WHERE pr_url IS NOT NULL" + (repo ? " AND repo = ?" : "")).all(...(repo ? [repo] : [])) as { repo: string; pr_url: string }[]) {
+    const m = r.pr_url.match(/\/pull\/(\d+)$/);
+    if (m) prs.add(`${r.repo}#${m[1]}`);
+  }
+  for (const r of db.prepare("SELECT repo, pr_number AS n FROM main.main_fixes WHERE pr_number IS NOT NULL" + (repo ? " AND repo = ?" : "")).all(...(repo ? [repo] : [])) as { repo: string; n: number }[]) prs.add(`${r.repo}#${r.n}`);
+  return { login, prs };
+}

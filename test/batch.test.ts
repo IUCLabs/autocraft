@@ -4,7 +4,7 @@ import { describe, test } from "node:test";
 import type { DatabaseSync } from "node:sqlite";
 import { runBatches } from "../src/merge/batch.ts";
 import { activeBatches, admits, batchesDue, batchSizeOf, membersOf, setBatchSize } from "../src/merge/batch-store.ts";
-import { reviewedHeads } from "../src/merge/ci-approval.ts";
+import { needsWork } from "../src/merge/ci-approval.ts";
 import { buildQueue, eligible, singleMergeOnly } from "../src/merge/queue.ts";
 import { askMergeDecisions } from "../src/merge/index.ts";
 import { selectOpusCandidates as selectCandidates } from "../src/review/opus-candidates.ts";
@@ -181,10 +181,11 @@ describe("integration batches", () => {
   test("runs waiting for approval on the batch PR are approved only for a fully reviewed batch, and noted otherwise", async () => {
     const w = world();
     const { db, b } = await open(2, w, "ap");
+    db.prepare("INSERT INTO items (repo, number, kind, state, title, body, author, is_draft, head_oid, created_at, updated_at) VALUES ('app', 900, 'pr', 'OPEN', 'batch', '', (SELECT value FROM main.settings WHERE key = 'pipeline_login'), 0, ?, ?, ?)").run(b.commit_sha, T0, T0);
     db.prepare("INSERT INTO ci_run_approvals (repo, number, head_oid, cross_repo, runs, approved, reread, failed, checked_at) VALUES ('app', 900, ?, 1, '[{\"id\":5,\"name\":\"ci\",\"event\":\"pull_request\"}]', '[]', 0, '{}', ?)").run(b.commit_sha, T1);
-    assert.deepEqual(reviewedHeads(db, "app").map((c) => [c.number, c.head]), [[900, b.commit_sha]]);
+    assert.deepEqual(needsWork(db, "app").map((c) => [c.number, c.head]), [[900, b.commit_sha]]);
     db.prepare("DELETE FROM opus_reviews WHERE number = 2").run();
-    assert.deepEqual(reviewedHeads(db, "app"), []);
+    assert.deepEqual(needsWork(db, "app"), []);
   });
 
   test("a batch larger than the daily limit left waits", async () => {

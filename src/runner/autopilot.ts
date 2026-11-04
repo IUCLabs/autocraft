@@ -29,9 +29,7 @@ import { selectCifix } from "../cifix/select.ts";
 import { mergeApprovalOf } from "../merge/approval.ts";
 import { ciApprovalOf, needsWork } from "../merge/ci-approval.ts";
 import { batchesDue } from "../merge/batch-store.ts";
-import { buildQueue, eligible, refusedAsBefore, toAsk } from "../merge/queue.ts";
-
-export { refusedAsBefore };
+import { buildQueue } from "../merge/queue.ts";
 import { trackedNames } from "../repos.ts";
 import { planned, type Planned } from "../core/select.ts";
 import { postCandidates } from "../review/post.ts";
@@ -279,7 +277,7 @@ const LANE_CODE: Omit<Lane, "steps">[] = [
     name: "merge-ask",
     detect: (db, { run, tracked }) => {
       const repos = new Set(tracked);
-      return toAsk(db, buildQueue(db, { run, merged: "exclude" }).filter((e) => repos.has(e.repo))).length ? [{ step: "merge-ask", params: {} }] : [];
+      return planned(db, "ask-merge", { run }).some((p) => repos.has(p.facts.repo)) ? [{ step: "merge-ask", params: {} }] : [];
     },
   },
   {
@@ -289,7 +287,7 @@ const LANE_CODE: Omit<Lane, "steps">[] = [
     extra: tasksSig,
     detect: (db, ctx) => {
       const queue = buildQueue(db, { run: ctx.run }).filter((e) => mergeApprovalOf(db, e.repo));
-      const due = new Set(queue.filter((e) => eligible(e) && !refusedAsBefore(db, e)).map((e) => e.repo));
+      const due = new Set(planned(db, "merge", { run: ctx.run }).map((p) => p.facts.repo).filter((r) => mergeApprovalOf(db, r)));
       const batches = new Set(batchesDue(db));
       const out: Candidate[] = [];
       // A merge job that advanced a batch runs again at once; one that only watched waits.
@@ -304,7 +302,7 @@ const LANE_CODE: Omit<Lane, "steps">[] = [
         return false;
       };
       // The repo whose eligible PR is fast-tracked first goes first.
-      const topEligible = (r: string): number | undefined => queue.filter((e) => e.repo === r && eligible(e)).sort((a, b) => (fastScoreOf(db, r, b.number) ?? -1) - (fastScoreOf(db, r, a.number) ?? -1))[0]?.number;
+      const topEligible = (r: string): number | undefined => queue.filter((e) => e.repo === r && e.eligible).sort((a, b) => (fastScoreOf(db, r, b.number) ?? -1) - (fastScoreOf(db, r, a.number) ?? -1))[0]?.number;
       for (const repo of fastFirst(db, [...new Set([...due, ...batches])].sort(), topEligible)) {
         const poll = batches.has(repo);
         if (poll && later("merge", repo)) continue;
@@ -395,7 +393,7 @@ const LANE_CODE: Omit<Lane, "steps">[] = [
     // Runs GitHub holds for approval on reviewed outside PRs; the checks job records them, the step approves.
     name: "ci-approve",
     perRepo: true,
-    detect: (db, { tracked }) => tracked.filter((repo) => ciApprovalOf(db, repo) && needsWork(db, repo).length).sort().map((repo) => ({ step: "ci-approve", params: { repo } })),
+    detect: (db, { tracked, run }) => tracked.filter((repo) => ciApprovalOf(db, repo) && needsWork(db, repo, run).length).sort().map((repo) => ({ step: "ci-approve", params: { repo } })),
   },
   {
     // Failing gate checks of wanted PRs: the log is read, a formatter run is queued or collected, or a patch is written and pushed.
@@ -424,7 +422,7 @@ const LANE_CODE: Omit<Lane, "steps">[] = [
     // Opus reviews what each pipeline merge landed; reads only, so it needs no repo approval.
     name: "postmerge",
     perRepo: true,
-    detect: (db, { tracked }) => tracked.filter((repo) => selectPostmerge(db, repo).length).sort().map((repo) => ({ step: "postmerge", params: { repo } })),
+    detect: (db, { tracked, run }) => tracked.filter((repo) => selectPostmerge(db, repo, Date.now(), run).length).sort().map((repo) => ({ step: "postmerge", params: { repo } })),
   },
   {
     // The defects of those reviews become issues in repos approved for comments.

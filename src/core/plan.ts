@@ -137,7 +137,11 @@ export type PrFacts = {
   ci: string;
   mergeable: string;
   /** Workflow runs waiting for approval at the head the checks describe (for an integration PR: at the batch tip). */
-  runs: { waiting: number; reread: boolean; crossRepo: boolean; approvable: number } | null;
+  runs: {
+    waiting: number; reread: boolean; crossRepo: boolean; approvable: number;
+    /** Why the pipeline does not approve them: the repo's CI approval is off, approving failed twice, or they are not runs it approves (not a fork's pull_request); null when it will. */
+    blocked: "off" | "failed" | "unsupported" | null;
+  } | null;
 
   /** The latest merge attempt at the reviewed head. */
   lastMerge: { outcome: string; reason: string | null; ci: string | null; mergeable: string | null } | null;

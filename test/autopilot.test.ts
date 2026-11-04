@@ -11,7 +11,7 @@ import { SCRATCH } from "./scratch.ts";
 process.env.AUTOCRAFT_EXTRA_STEPS = fileURLToPath(new URL("./autopilot-steps.ts", import.meta.url));
 
 const { connect } = await import("../src/db.ts");
-const { autopilotTick, backoffUntil, detectAutopilot, failureBackoff, failureDelayMs, LANES, planAutopilot, planDue, refusedAsBefore, roundRobin, setEnabled, FAIL_BACKOFF_MAX_MS, PLAN_EVERY_MS } = await import("../src/runner/autopilot.ts");
+const { autopilotTick, backoffUntil, detectAutopilot, failureBackoff, failureDelayMs, LANES, planAutopilot, planDue, roundRobin, setEnabled, FAIL_BACKOFF_MAX_MS, PLAN_EVERY_MS } = await import("../src/runner/autopilot.ts");
 const { enqueue, JobError, RUNNER_STOPPED } = await import("../src/runner/jobs.ts");
 const { Runner } = await import("../src/runner/runner.ts");
 const { setMergeApproval } = await import("../src/merge/approval.ts");
@@ -245,16 +245,6 @@ describe("autopilot", () => {
     assert.equal(backoffUntil(db, "merge"), null);
     assert.equal(planDue(db, Date.now() + 2000), true, "the release wakes the planner");
     db.exec("DELETE FROM audit WHERE action = 'batch-again'");
-  });
-
-  test("a PR refused at its head waits until its CI or mergeable state differs from the refusal", () => {
-    const entry = { repo: "photocraft", number: 7, head: "abc", state: "refused", ci: "success", mergeable: "MERGEABLE" };
-    db.prepare("INSERT INTO merges (repo, number, head_oid, run_id, at, path, outcome, reason, ci, mergeable) VALUES ('photocraft', 7, 'abc', 'r', '2026-11-01T00:00:00Z', 'rule', 'refused', 'x', 'success', 'MERGEABLE')").run();
-    assert.equal(refusedAsBefore(db, entry), true);
-    assert.equal(refusedAsBefore(db, { ...entry, ci: "pending" }), false);
-    assert.equal(refusedAsBefore(db, { ...entry, mergeable: "CONFLICTING" }), false);
-    assert.equal(refusedAsBefore(db, { ...entry, head: "def" }), false, "a new head is a new PR state");
-    assert.equal(refusedAsBefore(db, { ...entry, state: "ready" }), false);
   });
 
   test("the merge step refuses a repo an operator has not approved for merging", async () => {

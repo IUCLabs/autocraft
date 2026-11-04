@@ -31,7 +31,8 @@ import { ORG, allowFailedArgs, prInfo, viewerOf, mergeRun, DEFAULT_MERGE_COMMAND
 import { liveGateChecked } from "../review/discussion.ts";
 import { redMainRepos } from "../mainci/index.ts";
 import { effectiveCi } from "../optional-checks.ts";
-import { PIPELINE_LOGIN_KEY, buildQueue, eligible, singleMergeOnly, type QueueEntry } from "./queue.ts";
+import { PIPELINE_LOGIN_KEY, buildQueue, type QueueEntry } from "./queue.ts";
+import { planned } from "../core/select.ts";
 import { envVar } from "../env.ts";
 
 const ACTOR = "batch";
@@ -153,8 +154,8 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
   async function releaseDropped(all: BatchMember[], keep: BatchMember[]): Promise<void> {
     const dropped = all.filter((m) => !keep.some((k) => k.number === m.number));
     if (!dropped.length) return;
-    const q = buildQueue(db, { repo, merged: "exclude" });
-    for (const m of dropped) if (!q.some((e) => e.number === m.number && eligible(e) && !singleMergeOnly(e))) await release(m.number);
+    const later = new Set(planned(db, "merge", { repo }).filter((p) => p.action.params?.batchable).map((p) => p.facts.number));
+    for (const m of dropped) if (!later.has(m.number)) await release(m.number);
   }
 
   /** Builds a batch of the candidates, in order, from the current head of the default branch; null when no PR could be merged. */
@@ -435,13 +436,11 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
   for (const b of activeBatches(db, repo).filter((x) => !mine(x))) await supersede(b, [], "a PR in the batch is no longer fast-tracked and the repo's pipeline is off");
 
   if (!myBatches().length && (params.limit === undefined || params.limit > 0)) {
-    const q = buildQueue(db, { repo, merged: "exclude" });
     const scores = workScores(db, repo);
-    const lines = db.prepare("SELECT COALESCE(additions, 0) + COALESCE(deletions, 0) AS n FROM items WHERE repo = ? AND number = ?");
-    // PRs in a repo Verify cannot build, or with no CI for a batch PR to wait on, are left to the single-PR merge.
-    const ranked = q.filter((e) => eligible(e) && !singleMergeOnly(e))
-      .sort((a, b) => (scores.get(b.number) ?? -1) - (scores.get(a.number) ?? -1) || a.number - b.number)
-      .map((e): Cand => ({ number: e.number, head: e.head, size: e.size, lines: (lines.get(repo, e.number) as { n: number } | undefined)?.n ?? 0 }));
+    // PRs in a repo Verify cannot build, or with no CI for a batch PR to wait on, are left to the single-PR merge (the plan's merge action is not batchable).
+    const ranked = planned(db, "merge", { repo }).filter((p) => p.action.params?.batchable)
+      .sort((a, b) => (scores.get(b.facts.number) ?? -1) - (scores.get(a.facts.number) ?? -1) || a.facts.number - b.facts.number)
+      .map((p): Cand => ({ number: p.facts.number, head: p.action.head!, size: p.facts.size, lines: p.facts.lines }));
     if (ranked.length) {
       const max = Math.min(batchSizeOf(db, repo), params.limit ?? Infinity);
       log(`merge ${repo}: ${ranked.length} PRs may merge; batch of up to ${max}`);
