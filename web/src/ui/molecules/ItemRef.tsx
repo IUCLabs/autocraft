@@ -27,7 +27,7 @@ export function ItemRef({ repo, number, kind, state, draft, title, href, stretch
 }) {
   return (
     <span className={cn("flex min-w-0 items-start gap-2", size === "sm" ? "text-xs" : "text-sm", className)}>
-      <Link to={href ?? itemPath(repo, number)} className={cn("flex min-w-0 items-start gap-2 hover:underline", stretch && "after:absolute after:inset-0")}>
+      <Link to={href ?? itemPath(repo, number)} className={cn("flex min-w-0 flex-1 items-start gap-2 hover:underline", stretch && "after:absolute after:inset-0")}>
         <ItemIcon kind={kind} state={state} draft={draft} />
         <span className="min-w-0 break-words [overflow-wrap:anywhere]">
           <span className="code text-ink/60">
