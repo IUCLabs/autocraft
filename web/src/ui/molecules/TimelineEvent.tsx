@@ -7,7 +7,7 @@ import { TimeAgo } from "../atoms/TimeAgo";
  * One row of an event timeline: kind icon, summary, actor and time. The row is a disclosure button;
  * `children` are the expanded body and are only rendered while open.
  */
-export function TimelineEvent({ id, lead, Icon, iconLabel, iconTone, at, actor, actorTone, summary, open, onToggle, flush, children }: {
+export function TimelineEvent({ id, lead, Icon, iconLabel, iconTone, at, actor, actorTone, cost, summary, open, onToggle, flush, children }: {
   id: string;
   /** A line above the row that is not part of the disclosure button (a link to the item, say). */
   lead?: ReactNode;
@@ -20,6 +20,8 @@ export function TimelineEvent({ id, lead, Icon, iconLabel, iconTone, at, actor, 
   actor: string;
   /** "ours" tints AutoCraft steps and models; people stay plain. */
   actorTone?: "ours" | "person";
+  /** Formatted model cost, shown in the meta line; omitted when unknown. */
+  cost?: string | null;
   summary: string;
   open: boolean;
   onToggle: () => void;
@@ -44,6 +46,7 @@ export function TimelineEvent({ id, lead, Icon, iconLabel, iconTone, at, actor, 
           <span className="mt-0.5 flex flex-wrap items-center gap-x-2 text-xs text-ink/55">
             <span className={cn(actorTone === "ours" && "text-accent-ink")}>{actor}</span>
             <TimeAgo iso={at} className="num" />
+            {cost && <span className="num" title="Model cost">{cost}</span>}
           </span>
         </span>
         <Caret className="mt-1 shrink-0 text-ink/40" />

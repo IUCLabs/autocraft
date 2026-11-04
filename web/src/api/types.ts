@@ -1792,6 +1792,8 @@ export type TraceEvent = {
   actor: TraceActor;
   summary: string;
   ref: TraceRef;
+  /** A review's summed model-call cost; null when none of its calls has a recorded cost. */
+  costUsd?: number | null;
   /** Model calls only. */
   call?: {
     /** The prompt the call ran; calls of one step and prompt family are grouped on the item page. */

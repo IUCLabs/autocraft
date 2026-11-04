@@ -9,7 +9,7 @@ import { TimelineEvent } from "../../ui/molecules/TimelineEvent";
 import { TraceFilters } from "../../ui/molecules/TraceFilters";
 import { HeadGroup } from "../../ui/organisms/HeadGroup";
 import { TraceHeader } from "../../ui/organisms/TraceHeader";
-import { callGroupSummary, groupByHead, groupCalls, pushedBy } from "../../lib/trace";
+import { callGroupSummary, eventCost, groupByHead, groupCalls, groupCost, pushedBy } from "../../lib/trace";
 import { timelineIcon } from "../../ui/molecules/timelineIcon";
 import { TraceEventBody } from "./TraceEventBody";
 
@@ -93,6 +93,7 @@ export function TracePanel({ repo, number, it }: { repo: string; number: number;
                     at={e.at}
                     actor={e.actor.name}
                     actorTone={e.actor.type === "person" ? "person" : "ours"}
+                    cost={eventCost(e)}
                     summary={e.summary}
                     open={open.has(e.id)}
                     onToggle={() => toggle(e.id)}
@@ -113,6 +114,7 @@ export function TracePanel({ repo, number, it }: { repo: string; number: number;
                     at={r.event.at}
                     actor={r.event.call?.step ?? r.event.actor.name}
                     actorTone="ours"
+                    cost={groupCost(r.calls)}
                     summary={callGroupSummary(r.calls)}
                     open={r.calls.some((c) => c.id === hashEvent()) !== open.has(gid)}
                     onToggle={() => toggle(gid)}

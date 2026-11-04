@@ -92,16 +92,26 @@ export function groupCalls(events: TraceEvent[]): TraceRow[] {
 
 const modelName = (m: string) => m.charAt(0).toUpperCase() + m.slice(1);
 
-/** "Reference lint: 10 Jev calls, 1 Haiku call, $0.04". */
+/** "Reference lint: 10 Jev calls, 1 Haiku call". */
 export function callGroupSummary(calls: TraceEvent[]): string {
   const counts = new Map<string, number>();
-  let cost = 0;
   for (const c of calls) {
     const m = modelName(c.call?.model ?? "model");
     counts.set(m, (counts.get(m) ?? 0) + 1);
-    cost += c.call?.costUsd ?? 0;
   }
   const title = calls[0]!.summary.split(": ")[0]!;
   const parts = [...counts].sort((a, b) => b[1] - a[1]).map(([m, n]) => `${n} ${m} call${n === 1 ? "" : "s"}`);
-  return `${title}: ${parts.join(", ")}${cost > 0 ? `, $${cost.toFixed(cost < 0.1 ? 3 : 2)}` : ""}`;
+  return `${title}: ${parts.join(", ")}`;
+}
+
+/** "$0.91", or "<$0.01" below a cent; null (not recorded or still running) shows nothing. */
+export const formatCost = (usd: number | null | undefined): string | null => (usd === null || usd === undefined ? null : usd >= 0.01 ? `$${usd.toFixed(2)}` : "<$0.01");
+
+/** The cost a timeline row shows: a review's summed cost, a call's own, or the sum over a group of calls. */
+export function eventCost(e: TraceEvent): string | null {
+  return formatCost(e.costUsd !== undefined ? e.costUsd : e.call?.costUsd);
+}
+export function groupCost(calls: TraceEvent[]): string | null {
+  const costs = calls.map((c) => c.call?.costUsd).filter((v): v is number => typeof v === "number");
+  return costs.length ? formatCost(costs.reduce((a, b) => a + b, 0)) : null;
 }
