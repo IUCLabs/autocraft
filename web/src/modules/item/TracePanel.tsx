@@ -1,6 +1,6 @@
 // The item's trace: Now/Next/Who header, filters and the event timeline grouped by head commit.
 import { useEffect, useRef, useState } from "react";
-import { useApi, useQuery } from "../../api/client";
+import { usePagedQuery } from "../../api/client";
 import type { Item, ItemTrace, TraceEvent, TraceKind } from "../../api/types";
 import { Button } from "../../ui/atoms/Button";
 import { ErrorLine } from "../../ui/atoms/ErrorLine";
@@ -12,6 +12,10 @@ import { callGroupSummary, groupByHead, groupCalls, pushedBy, TRACE_KIND } from 
 import { TraceEventBody } from "./TraceEventBody";
 
 const PAGE = 50;
+const dedupe = (events: TraceEvent[]) => {
+  const seen = new Set<string>();
+  return events.filter((e) => !seen.has(e.id) && seen.add(e.id));
+};
 const hashEvent = () => new URLSearchParams(window.location.hash.slice(1)).get("event");
 
 /**
@@ -19,46 +23,23 @@ const hashEvent = () => new URLSearchParams(window.location.hash.slice(1)).get("
  * the item is there too, so the header never pushes it down.
  */
 export function TracePanel({ repo, number, it }: { repo: string; number: number; it?: Item }) {
-  const api = useApi();
   const [kinds, setKinds] = useState<TraceKind[]>([]);
   const [autocraftOnly, setAutocraftOnly] = useState(false);
   const filterKey = `${[...kinds].sort().join(",")}|${autocraftOnly ? 1 : 0}`;
   const key = `item-trace:${repo}#${number}:${filterKey}`;
 
-  // The last full answer per key: a `since` that still matches returns it unchanged, so a pushed refresh of an idle item costs one small reply.
-  const last = useRef<{ key: string; trace: ItemTrace } | null>(null);
-  const q = useQuery<ItemTrace>(key, async (a) => {
-    const prev = last.current?.key === key ? last.current.trace : null;
-    const r = await a.itemTrace(repo, number, { kinds: kinds.length ? kinds : undefined, autocraftOnly, limit: PAGE, since: prev?.stamp });
-    if ("unchanged" in r && prev) return prev;
-    if ("unchanged" in r) throw new Error("unexpected empty answer");
-    last.current = { key, trace: r };
-    return r;
-  });
-  const first = q.data;
-
-  const [older, setOlder] = useState<{ key: string; events: TraceEvent[]; cursor: string | null } | null>(null);
-  const [loadingOlder, setLoadingOlder] = useState(false);
-  const [olderError, setOlderError] = useState<string>();
-  const olderNow = older?.key === filterKey ? older : null;
-  const cursor = olderNow ? olderNow.cursor : (first?.nextCursor ?? null);
-  const loadOlder = async () => {
-    if (!cursor) return;
-    setLoadingOlder(true);
-    setOlderError(undefined);
-    try {
-      const r = await api.itemTrace(repo, number, { kinds: kinds.length ? kinds : undefined, autocraftOnly, limit: PAGE, cursor });
-      if ("unchanged" in r) return;
-      setOlder({ key: filterKey, events: [...(olderNow?.events ?? []), ...r.events], cursor: r.nextCursor });
-    } catch (e) {
-      setOlderError((e as Error).message);
-    } finally {
-      setLoadingOlder(false);
-    }
-  };
-
-  const ids = new Set(first?.events.map((e) => e.id));
-  const events = first ? [...first.events, ...(olderNow?.events ?? []).filter((e) => !ids.has(e.id))] : [];
+  // Oldest first: a change event refetches every loaded page in order, so new events append at the bottom and "Load more" keeps its place.
+  const q = usePagedQuery<ItemTrace>(
+    key,
+    async (a, cursor) => {
+      const r = await a.itemTrace(repo, number, { kinds: kinds.length ? kinds : undefined, autocraftOnly, limit: PAGE, cursor });
+      if ("unchanged" in r) throw new Error("unexpected empty answer");
+      return r;
+    },
+    (p) => p.nextCursor,
+  );
+  const first = q.pages?.[0];
+  const events = q.pages ? dedupe(q.pages.flatMap((p) => p.events)) : [];
 
   const [open, setOpen] = useState<Set<string>>(() => {
     const id = hashEvent();
@@ -75,10 +56,14 @@ export function TracePanel({ repo, number, it }: { repo: string; number: number;
   const scrolled = useRef(false);
   useEffect(() => {
     const id = hashEvent();
-    if (!id || scrolled.current || !events.some((e) => e.id === id)) return;
+    if (!id || scrolled.current) return;
+    if (!events.some((e) => e.id === id)) {
+      if (q.hasMore && !q.loadingMore) q.loadMore();
+      return;
+    }
     scrolled.current = true;
     document.getElementById(`event-${id}`)?.scrollIntoView({ block: "start" });
-  }, [events]);
+  }, [events, q.hasMore, q.loadingMore]);
 
   if (!it) return null;
   if (!first) return q.error ? <ErrorLine error={q.error.message} className="mt-4" /> : <div className="mt-4 h-24" aria-hidden />;
@@ -131,11 +116,11 @@ export function TracePanel({ repo, number, it }: { repo: string; number: number;
             </HeadGroup>
           ))}
         </div>
-        <ErrorLine error={olderError} className="mt-2" />
-        {cursor && (
+        <ErrorLine error={q.error?.message} className="mt-2" />
+        {q.hasMore && (
           <div className="mt-2">
-            <Button size="sm" disabled={loadingOlder} onClick={() => void loadOlder()} className="max-md:h-11">
-              Load older
+            <Button size="sm" disabled={q.loadingMore} onClick={q.loadMore} className="max-md:h-11">
+              Load more
             </Button>
           </div>
         )}

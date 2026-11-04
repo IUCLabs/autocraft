@@ -1,4 +1,4 @@
-// The item trace: every event of one GitHub item, newest first, from the tables that hold per-item history.
+// The item trace: every event of one GitHub item, oldest first, from the tables that hold per-item history.
 // Each source is a small function that returns events for the item through an index on (repo, number) or a
 // key derived from it; the list carries no bodies. A source also keeps the fields its detail view shows.
 import { createHash } from "node:crypto";
@@ -384,7 +384,7 @@ function gather(c: Ctx, kinds: Set<TraceKind> | null): Ev[] {
   }
   carryHeads(all);
   const taken = !kinds || kinds.has("review") ? linkReviewCalls(all) : new Set<number>();
-  return (kinds ? all.filter((e) => kinds.has(e.kind)) : all).filter((e) => !(e.kind === "model-call" && taken.has(e.ref.runId ?? -1))).sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : a.id < b.id ? 1 : -1));
+  return (kinds ? all.filter((e) => kinds.has(e.kind)) : all).filter((e) => !(e.kind === "model-call" && taken.has(e.ref.runId ?? -1))).sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : a.id < b.id ? -1 : 1));
 }
 
 function headerOf({ db, repo, n, own, hidden }: Ctx): ItemTraceHeader {
@@ -498,7 +498,7 @@ export async function trace(db: DatabaseSync, req: Req): Promise<ItemTrace | { u
   if (!cursor && q("since") === stamp) return { unchanged: true, stamp };
   let events = gather(c, kinds);
   if (only) events = events.filter((e) => e.actor.type !== "person");
-  const rest = after ? events.filter((e) => e.at < after.at || (e.at === after.at && e.id < after.id)) : events;
+  const rest = after ? events.filter((e) => e.at > after.at || (e.at === after.at && e.id > after.id)) : events;
   const page = rest.slice(0, limit).map(strip);
   const last = page[page.length - 1];
   return { header: headerOf(c), events: page, nextCursor: rest.length > limit && last ? `${last.at}|${last.id}` : null, stamp };

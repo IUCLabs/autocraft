@@ -31,11 +31,11 @@ export const TRACE_KINDS = Object.keys(TRACE_KIND) as TraceKind[];
 
 export type TraceGroup = { head: string | null; events: TraceEvent[] };
 
-/** An event without a head belongs to the head current at its time, so heads carry forward from the oldest event. The list is newest first: a group starts at its newest event. */
+/** An event without a head belongs to the head current at its time, so heads carry forward from the oldest event. The list is oldest first: a group starts at its oldest event. */
 export function groupByHead(events: TraceEvent[]): TraceGroup[] {
   const heads: (string | null)[] = [];
   let current: string | null = null;
-  for (let i = events.length - 1; i >= 0; i--) {
+  for (let i = 0; i < events.length; i++) {
     current = events[i]!.head ?? current;
     heads[i] = current;
   }
@@ -76,7 +76,7 @@ const sameRun = (a: TraceEvent, b: TraceEvent) => {
   return Math.abs(Date.parse(a.at) - Date.parse(b.at)) <= GROUP_GAP_MS;
 };
 
-/** Consecutive model calls of the same step and prompt (the reference lint runs once per review text) become one row; its `event` is the newest call and `calls` all of them, newest first. */
+/** Consecutive model calls of the same step and prompt (the reference lint runs once per review text) become one row; its `event` is the oldest call and `calls` all of them, oldest first. */
 export function groupCalls(events: TraceEvent[]): TraceRow[] {
   const out: TraceRow[] = [];
   for (const e of events) {

@@ -14,7 +14,7 @@ const req = (n: number, query: Record<string, string> = {}, extra: Record<string
 });
 const full = async (db: ReturnType<typeof connect>, q: Record<string, string> = {}) => (await trace(db, req(7, q))) as ItemTrace;
 
-test("the trace lists every source of an item newest first, with heads, a cursor and a since check", async () => {
+test("the trace lists every source of an item oldest first, with heads, a cursor and a since check", async () => {
   const db = connect(":memory:");
   const H1 = "a".repeat(40), H2 = "b".repeat(40);
   db.prepare("INSERT INTO items (repo, number, kind, state, author, created_at, head_oid, assignees) VALUES ('photocraft', 7, 'pr', 'OPEN', 'dev', '2026-01-01T00:00:00Z', ?, '[\"bot\"]')").run(H2);
@@ -47,10 +47,10 @@ test("the trace lists every source of an item newest first, with heads, a cursor
   assert.deepEqual(asked, [{ name: "photocraft", number: 7 }]);
 
   const t = await full(db);
-  assert.deepEqual(t.events.map((e) => e.id.replace(/:\d+$/, "")), ["audit", "review:opus", "review:opus", "run", "plan", "comment:c1", "activity:L1", `commit:${H1}`, "gh:opened"]);
-  assert.deepEqual(t.events.filter((e) => e.id.startsWith("activity") || e.id.startsWith("commit")).map((e) => e.summary), ["Added label bug", "Pushed commit aaaaaaa"]);
+  assert.deepEqual(t.events.map((e) => e.id.replace(/:\d+$/, "")), ["gh:opened", `commit:${H1}`, "activity:L1", "comment:c1", "plan", "run", "review:opus", "review:opus", "audit"]);
+  assert.deepEqual(t.events.filter((e) => e.id.startsWith("activity") || e.id.startsWith("commit")).map((e) => e.summary), ["Pushed commit aaaaaaa", "Added label bug"]);
   assert.deepEqual(db.prepare("SELECT path FROM pr_files WHERE repo = 'photocraft' AND number = 7 AND head = ?").all(H2).map((r) => r.path), ["src/a.rs"]);
-  assert.deepEqual(t.events.slice(0, 5).map((e) => e.head), [H2, H2, H1, H1, H1], "a model call takes the head current at its time");
+  assert.deepEqual(t.events.slice(-5).map((e) => e.head), [H1, H1, H1, H2, H2], "a model call takes the head current at its time");
   const call = t.events.find((e) => e.kind === "model-call")!;
   assert.equal(call.call?.toolCalls, 1);
   assert.equal(call.call?.costUsd, 0.5);
@@ -74,7 +74,7 @@ test("the trace lists every source of an item newest first, with heads, a cursor
 
   const d = await traceDetail(db, req(7, { id: `review:opus:${(db.prepare("SELECT rowid FROM opus_review_history WHERE verdict = 'hold'").get() as { rowid: number }).rowid}` }));
   assert.equal(d.fields.reason, "why");
-  const w = await traceDetail(db, req(7, { id: t.events[0]!.id }));
+  const w = await traceDetail(db, req(7, { id: t.events[t.events.length - 1]!.id }));
   assert.equal(w.fields.textLength, 16);
 });
 
