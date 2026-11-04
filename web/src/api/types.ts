@@ -1212,6 +1212,8 @@ export interface BatchDetail {
   /** When the batch PR landed; null unless merged. */
   mergedAt: string | null;
   taskId: number | null;
+  /** Merge commit of the batch PR; null until merged and for batches merged before it was recorded. */
+  mergeSha: string | null;
   ci: BatchCi | null;
   members: BatchMemberDetail[];
   /** Oldest first. */

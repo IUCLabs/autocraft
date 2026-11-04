@@ -133,7 +133,7 @@ export function batchDetail(db: DatabaseSync, id: number, staff: boolean): Batch
   return {
     id: b.id, repo: b.repo, branch: b.branch, fork: b.fork, state, baseSha: b.base_sha, commitSha: b.commit_sha, parentId: b.parent_id,
     childIds: children.map((c) => c.id), prNumber: b.pr_number, prUrl: b.pr_url, summary: b.summary, createdAt: b.created_at, updatedAt: b.updated_at,
-    mergedAt: state === "merged" ? b.updated_at : null, taskId: b.task_id, ci: ciOf(db, b.repo, b.pr_number), members, events,
+    mergedAt: state === "merged" ? b.updated_at : null, taskId: b.task_id, mergeSha: b.merge_sha ?? null, ci: ciOf(db, b.repo, b.pr_number), members, events,
   };
 }
 
