@@ -1,0 +1,36 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { DatabaseSync } from "node:sqlite";
+import { join } from "node:path";
+import { connect } from "../src/db.ts";
+import { tmpdir } from "./world-db.ts";
+import { decidePr } from "../src/core/decide.ts";
+import type { PlanSet } from "../src/core/plan-set.ts";
+import { planned } from "../src/core/select.ts";
+import { carriedReview } from "../src/review/carry.ts";
+import { prFacts } from "./world.ts";
+
+test("selection order: our broken push, then work in flight, then score", () => {
+  const mk = (n: number, over: Parameters<typeof prFacts>[0]) => { const facts = prFacts({ number: n, review: { head: "old" }, head: "h", ...over }); return { facts, plan: decidePr(facts) }; };
+  const plans: PlanSet = {
+    run: null, now: 0, items: [],
+    prs: [mk(1, { score: 900 }), mk(2, { score: 10, inFlight: true }), mk(3, { score: 5, brokeByUs: true, inFlight: true }), mk(4, { score: 500, inFlight: true, mergeHeld: true })],
+  };
+  const order = planned(new DatabaseSync(":memory:"), "review", { plans }).map((p) => p.facts.number);
+  assert.deepEqual(order, [3, 2, 1, 4]);
+});
+
+test("a verdict carries over only a single checked fix-up of ours", () => {
+  const db = connect(join(tmpdir("carry"), "t.db"));
+  const at = "2026-11-04T10:00:00.000Z";
+  db.prepare(`INSERT INTO opus_reviews (repo, number, head_oid, at, model, mode, verdict, sure, reason, seen_at) VALUES ('app', 1, 'E', ?, 'opus', 'full', 'take-fix', 1, 'r', ?)`).run(at, at);
+  db.prepare("INSERT INTO fixups (repo, number, from_head, to_head, state, attempt, created_at) VALUES ('app', 1, 'E', 'H', 'pushed', 1, ?)").run(at);
+  const c = { repo: "app", number: 1, head_oid: "H" };
+  assert.equal(carriedReview(db, c), null, "no approved patch check yet");
+  db.prepare("INSERT INTO patch_checks (kind, repo, number, subject, patch_hash, round, verdict, reasons, problems, model, created_at) VALUES ('fixup', 'app', 1, 'E', 'x', 1, 'approve', '', '[]', 'm', ?)").run(at);
+  const k = carriedReview(db, c);
+  assert.equal(k?.review.verdict, "take");
+  assert.deepEqual(k?.review.fixes, []);
+  assert.equal(k?.review.reason, "carried from E: the only change is our checked fix-up");
+  assert.equal(carriedReview(db, { ...c, head_oid: "H2" }), null, "a contributor commit after ours");
+});

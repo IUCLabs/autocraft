@@ -9,6 +9,7 @@ import { LimitError, pipelineState, resetLimitCount, setEnabled, setLimit } from
 import { HEARTBEAT_KEY } from "../../runner/runner.ts";
 import { loadSteps, type StepDef } from "../../runner/steps.ts";
 import { audit } from "../audit.ts";
+import { resumeStage, TripError } from "../../push-outcomes.ts";
 import { HttpError } from "../server/util.ts";
 import type { Req } from "../types.ts";
 import { hiddenRepos, visibleRepos } from "./visible.ts";
@@ -171,6 +172,18 @@ export async function putLimit(db: DatabaseSync, req: Req) {
     throw e;
   }
   return (await pipelineState(db)).limits.find((l) => l.step === req.params.step)!;
+}
+
+/** An operator clears a stage the circuit breaker paused. */
+export async function resumeTrip(db: DatabaseSync, req: Req) {
+  requireOperator(req);
+  try {
+    resumeStage(db, req.params.stage, req.user.login);
+  } catch (e) {
+    if (e instanceof TripError) throw new HttpError(e.status, e.message);
+    throw e;
+  }
+  return pipelineState(db);
 }
 
 /** Starts today's count of a step again from zero; the step `all` resets every stage. */

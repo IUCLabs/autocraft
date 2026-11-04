@@ -1,6 +1,7 @@
 // The gates on writes: the repo approvals each action needs and the global pipeline switch. Pure. The planner and the
 // guard (guard.ts) both use it; decide() does not (it shows what would run, approved or not).
 import type { ActionKind, ItemFacts, PrFacts } from "./plan.ts";
+import { tripStageOf } from "./push-outcome.ts";
 
 /** Who asks for a write: the pipeline itself (the autopilot), or an operator (a job they requested, or a command they ran). */
 export type By = "pipeline" | { operator: string };
@@ -50,6 +51,10 @@ export function approvalOf(f: { pushable?: boolean }, a: Want): Approval | null 
 /** Why the write is refused, or null. */
 export function gates(f: PrFacts | ItemFacts, a: Want, by: By): string | null {
   if (by === "pipeline" && !f.pipelineOn) return "the pipeline is off";
+  // A stage that stopped itself (circuit breaker) writes nothing until an operator resumes it, whoever asks.
+  const stage = tripStageOf(a);
+  const tripped = stage && (f as { tripped?: Partial<Record<string, string>> }).tripped?.[stage];
+  if (tripped) return `${stage} is paused: ${tripped}`;
   const need = approvalOf(f as { pushable?: boolean }, a);
   if (!need) return null;
   const r = f.repoFacts as Record<string, boolean | undefined>;

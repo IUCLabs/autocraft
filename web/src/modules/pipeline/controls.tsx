@@ -113,6 +113,20 @@ function ResetCount({ l }: { l: StageLimit }) {
   );
 }
 
+/** Operators clear a pause the circuit breaker set. */
+function ResumeTrip({ l }: { l: StageLimit }) {
+  const api = useApi();
+  const write = useWrite();
+  if (!l.tripped) return null;
+  const stage = l.tripped;
+  return (
+    <>
+      <ConfirmButton label="Resume" confirmLabel="Confirm resume" loading={write.busy === "resume"} onConfirm={() => void write.run("resume", () => api.pipeline.resumeTrip(stage))} />
+      <ErrorLine error={write.error} />
+    </>
+  );
+}
+
 function PauseBadge({ l }: { l: StageLimit }) {
   if (l.pausedReason) return <Badge tone="warn">{l.pausedReason}</Badge>;
   return l.status ? <span className="text-xs text-ink/50">{l.status}</span> : null;
@@ -161,6 +175,7 @@ export function StageLimitRow({ step }: { step: string }) {
       </span>
       {operator && <ResetCount l={l} />}
       <PauseBadge l={l} />
+      {operator && <ResumeTrip l={l} />}
       {operator && <LimitEditor l={l} />}
     </div>
   );
@@ -195,6 +210,7 @@ export function StageLimits() {
                   <td className="px-3">
                     <div className="flex flex-wrap items-center gap-2">
                       {l.pausedReason ? <Badge tone="warn">{l.pausedReason}</Badge> : <span className="text-ink/45">{l.status ?? "ready"}</span>}
+                      {operator && <ResumeTrip l={l} />}
                       {operator && <ResetCount l={l} />}
                     </div>
                   </td>

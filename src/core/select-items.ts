@@ -4,6 +4,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import type { Item } from "../classify/parse.ts";
 import { decideItem } from "./decide-item.ts";
+import { inFlightNow } from "./select.ts";
 import { loadItemFacts, type ItemLoadOptions } from "./issue-facts.ts";
 import type { PlanSet } from "./plan-set.ts";
 import type { Action, ActionKind, ItemFacts, ItemPlan } from "./plan.ts";
@@ -61,7 +62,9 @@ export function plannedItems(db: DatabaseSync, kind: ActionKind, opts: PlannedOp
     case "fixissue": cmp = then(score, byRef); break;
     default: cmp = byRef;
   }
-  return out.sort(cmp);
+  // Work of ours that is still moving goes ahead of everything else.
+  const flight: Cmp = (a, b) => (inFlightNow(b.facts, b.plan.state) ? 1 : 0) - (inFlightNow(a.facts, a.plan.state) ? 1 : 0);
+  return out.sort(then(flight, cmp));
 }
 
 /** The item as the model steps read it. */

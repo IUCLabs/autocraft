@@ -32,6 +32,7 @@ import { scopeAnswers } from "../review/candidates.ts";
 import { NOT_RUST_REASON, PRIVATE_REASON, cachedRust } from "../verify/candidates.ts";
 import { CIFIX_PUSH_STATES, CIFIX_TRY_STATES, MAX_FAILURES, sizeOf } from "./rules.ts";
 import type { PrFacts, PrTier } from "./plan.ts";
+import { activeTrips, brokeHeads } from "../push-outcomes.ts";
 
 export type { PrFacts } from "./plan.ts";
 
@@ -108,6 +109,9 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
   const inBatch = batchStates(db, opts.repo);
   const own = ownFixPrs(db, opts.repo);
   const mainRed = redMainRepos(db);
+  const tripped = activeTrips(db);
+  const brokeAt = brokeHeads(db, opts.repo);
+  const pushedHere = db.prepare("SELECT 1 FROM push_outcomes WHERE repo = ? AND number = ? AND to_oid = ?");
   const answers = new Map(actionable(db).filter((a) => a.kind === "merge").map((a) => [a.id, a.answer]));
   const pipelineOn = (db.prepare("SELECT value FROM main.settings WHERE key = 'pipeline_enabled'").get() as { value: string } | undefined)?.value === "1";
   const pipelineLogin = (db.prepare("SELECT value FROM main.settings WHERE key = 'pipeline_login'").get() as { value: string } | undefined)?.value ?? null;
@@ -192,7 +196,7 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
     const head = batchRow?.commit_sha ?? headOf(r);
     const lines = (r.additions ?? 0) + (r.deletions ?? 0);
     const base: PrFacts = {
-      repo: r.repo, number: r.number, now, pipelineOn, ghState: r.state, head, draft: fresh ? r.c_state !== "OPEN" || !!r.c_draft : !!r.is_draft,
+      repo: r.repo, number: r.number, now, pipelineOn, tripped, ghState: r.state, head, draft: fresh ? r.c_state !== "OPEN" || !!r.c_draft : !!r.is_draft,
       author: r.author, authorIsPipeline: r.author !== null && r.author === pipelineLogin, tier: "not", lines, size: sizeOf(lines), label: null, needsDecisionFlag: false,
       scopeAnswer: scope.get(ref) ?? null,
       inScope, integration, batchPr: !!r.batch_pr, heldBacklog: !!r.held_backlog, heldDuplicate: !r.held_backlog && !!r.held_dup, mergeHeld: holds.has(ref),
@@ -203,6 +207,7 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
       decision: { asked: false, openQuestion: false, answer: null, mergeAnswerAfterReview: false, inOpenGroup: grouped.has(ref) },
       premerge: null, premergeFixUsed: false, directionsTouched: [], pushable: false, pushChain: [], conflict: null, inActiveBatch: activeBatched.has(ref), fixup: null, carry: [], lint: [], cifix: null, postmerge: null, batch: null, mainFix: false, changesRequested: null, gateFailureNote: null,
     };
+    base.inFlight = r.state === "OPEN" && !integration && !!r.author && r.author === own.login && own.prs.has(ref);
     if (integration) {
       base.runs = runsOf(batchTip.get(r.repo, r.number) as Wait | undefined, rf.f.ciApproved);
       out.push(base);
@@ -245,6 +250,7 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
       stale: stale.has(`${ref}@${r.r_head}`), staleActionable: staleActionable.has(`${ref}@${r.r_head}`),
     };
     base.pushChain = chain;
+    if (r.state === "OPEN" && (chain.length > 1 || (!!head && !!pushedHere.get(r.repo, r.number, head)))) base.inFlight = true;
     base.directionsTouched = touchedDirections(direction, [safeJson(r.r_directions), safeJson(premergeAt(db, r.repo, r.number, r.r_head)?.directions ?? null)]);
     const p = posts.get(ref);
     const hasPublic = r.r_public !== null;
@@ -262,6 +268,8 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
     const approvedPending = parseList(wait?.approved ?? "[]").length > 0;
     base.ci = checksHere ? (approvedPending ? "pending" : effectiveCi(db, r.repo, r.overall ?? "none", r.c_checks)) : "unknown";
     base.runs = runsOf(wait, rf.f.ciApproved);
+    // Our push to this head turned its required checks red: the CI fix works on it now, without waiting for a review of the new head.
+    base.brokeByUs = brokeAt.get(ref) === head && r.c_head === head && effectiveCi(db, r.repo, r.overall ?? "none", r.c_checks) === "failure";
     base.tier = (r.author ? tiers.get(r.author) : undefined) ?? "not";
     // The pipeline's own Fix PRs count as whitelisted; an operator's deny still wins.
     if (base.tier === "not" && r.author && r.author === own.login && own.prs.has(ref)) base.tier = "whitelisted";
@@ -302,9 +310,11 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
         base.lint.push({ step: "fixup", source: x.source === "premerge" || x.source === "carry" ? x.source : "review", ended: ended(x.lint_task) });
       }
       for (const x of lintCifix.all(r.repo, r.number, r.r_head) as { lint_task: number | null }[]) base.lint.push({ step: "cifix", source: "review", ended: ended(x.lint_task) });
+      if (base.lint.length && r.state === "OPEN") base.inFlight = true;
     }
-    if (base.ci === "failure") {
-      const prior = cifixRows.all(r.repo, r.number, r.r_head) as { state: string; created_at: string; task_id: number | null; runs: string | null }[];
+    if (base.ci === "failure" || base.brokeByUs) {
+      const cfHead = base.brokeByUs ? head : r.r_head;
+      const prior = cifixRows.all(r.repo, r.number, cfHead) as { state: string; created_at: string; task_id: number | null; runs: string | null }[];
       const totals = cifixTotals.get(...CIFIX_PUSH_STATES, ...CIFIX_TRY_STATES, r.repo, r.number) as { pushes: number; tries: number };
       const formatting = prior.find((x) => x.state === "formatting");
       const task = formatting?.task_id != null ? getTask(db, formatting.task_id) : null;

@@ -91,6 +91,7 @@ export function createPipelineMock(me: User, changed: () => void): Pick<Api, "pi
     step: step as string, title: title as string, perDay: perDay as number | null, usedToday: usedToday as number,
     pausedReason: perDay !== null && (usedToday as number) >= (perDay as number) ? `daily limit of ${perDay} items reached` : null,
   }));
+  Object.assign(limits.find((l) => l.step === "fixup")!, { tripped: "fixup", pausedReason: "tripped: 2 of the last 10 fixup pushes broke a required check; an operator resumes it" });
   const pilot: string[] = [];
   const state = (): PipelineState => ({ ...flag, heartbeat: iso(0), limits, pilot: [...pilot] });
   const requireOperator = () => {
@@ -177,6 +178,12 @@ export function createPipelineMock(me: User, changed: () => void): Pick<Api, "pi
           l.usedToday = 0;
           l.pausedReason = l.perDay === 0 ? "paused: the daily limit is 0" : null;
         }
+        changed();
+        return wait(state(), 30);
+      },
+      async resumeTrip(stage) {
+        requireOperator();
+        for (const l of limits) if (l.tripped === stage) { delete l.tripped; l.pausedReason = null; }
         changed();
         return wait(state(), 30);
       },

@@ -7,6 +7,7 @@ import { pool } from "../classify/run.ts";
 import { runModelStep } from "../agents/step.ts";
 import { POSTMERGE_OPUS } from "../agents/steps.ts";
 import { audit } from "../dash/audit.ts";
+import { mergeDefect } from "../push-outcomes.ts";
 import { CLAUDE_PROMPTS } from "../prompts/index.ts";
 import { referenceDir } from "../reference.ts";
 import { defaultSemanticDeps, type SemanticDeps } from "../reference-lint.ts";
@@ -131,6 +132,7 @@ export function saveReview(db: DatabaseSync, c: { repo: string; number: number }
   db.prepare("INSERT OR REPLACE INTO postmerge_reviews (repo, number, merge_sha, at, model, run_id, findings, error, tries) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
     .run(c.repo, c.number, r.sha, at, r.model, r.runId, r.findings ? JSON.stringify(r.findings) : null, error, tries);
   const skip = db.prepare("INSERT OR IGNORE INTO postmerge_followups (repo, number, review_at, finding, title, issue_number, url, state, at, duplicate_of) VALUES (?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?)");
+  mergeDefect(db, c.repo, c.number, (r.findings ?? []).filter((f) => f.severity === "defect").length);
   (r.findings ?? []).forEach((f, i) => {
     if (f.severity === "minor") skip.run(c.repo, c.number, at, i, f.title, "skipped-minor", at, null);
     else if (f.duplicate_of !== null) skip.run(c.repo, c.number, at, i, f.title, "skipped-duplicate", at, f.duplicate_of);

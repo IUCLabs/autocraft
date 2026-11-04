@@ -208,6 +208,8 @@ export interface Api {
     setLimit(step: string, limit: { perDay: number | null }): Promise<StageLimit>;
     /** Counts the stage's items today from zero again; `all` resets every stage. */
     resetLimit(step: string): Promise<PipelineState>;
+    /** Clears a stage the circuit breaker paused. */
+    resumeTrip(stage: string): Promise<PipelineState>;
     /** Limits the whole pipeline to these items ("repo#number"); an empty list clears the pilot. */
     setPilot(items: string[]): Promise<PipelineState>;
   };

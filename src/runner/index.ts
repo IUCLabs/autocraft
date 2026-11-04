@@ -1,4 +1,5 @@
 // autocraft runner serve | exec | enqueue | jobs | cancel | steps; autocraft pipeline on | off | status | limit
+import { resumeStage, TripError } from "../push-outcomes.ts";
 import { startWorkerServer } from "../build/worker-api.ts";
 import { acquireLock } from "../mirror.ts";
 import { connect } from "../db.ts";
@@ -110,7 +111,7 @@ function cancel(args: string[]): void {
 const SUB: Record<string, (args: string[]) => Promise<void> | void> = { serve, exec, steps, enqueue: enqueueCmd, jobs, cancel };
 
 export const commands = {
-  pipeline: { summary: "pipeline switch and limits: on | off | status | limit <step> --per-day N", run: (args: string[]) => pipeline(args) },
+  pipeline: { summary: "pipeline switch and limits: on | off | status | limit <step> --per-day N | resume <stage>", run: (args: string[]) => pipeline(args) },
   runner: {
     summary: "pipeline runner: serve | steps | enqueue | jobs | cancel",
     run: async (args: string[]) => {
@@ -124,6 +125,7 @@ export const commands = {
 const PIPELINE_USAGE = `usage: autocraft pipeline on | off | status
        autocraft pipeline limit <step> --per-day <N|none>
        autocraft pipeline limit reset <step>|--all
+       autocraft pipeline resume <fixup|cifix|fixissue|merge>
        autocraft pipeline pilot set <repo#number>... | show | clear`;
 
 // Recorded as `cli`: only someone with a shell on the host can run this.
@@ -134,6 +136,15 @@ async function pipeline(args: string[]): Promise<void> {
     setEnabled(db, sub === "on", "cli");
     audit(db, "cli", "pipeline-switch", "pipeline", { enabled: sub === "on" });
     console.log(`pipeline ${sub}`);
+  } else if (sub === "resume") {
+    if (rest.length !== 1) die(PIPELINE_USAGE);
+    try {
+      resumeStage(db, rest[0]!, "cli");
+      console.log(`${rest[0]} resumed`);
+    } catch (e) {
+      if (e instanceof TripError) die(e.message);
+      throw e;
+    }
   } else if (sub === "limit" && rest[0] === "reset") {
     const target = rest[1] === "--all" ? "all" : rest[1];
     if (!target || rest.length > 2) die(PIPELINE_USAGE);
