@@ -19,8 +19,9 @@ import { audit } from "../dash/audit.ts";
 import { connect } from "../db.ts";
 import { actionable, ask, factsOf, getDecision } from "../decisions.ts";
 import { CLI_BY, type By } from "../core/gates.ts";
-import { guard, liveOf } from "../core/guard.ts";
+import { guard, guardRepo, liveOf } from "../core/guard.ts";
 import { planned } from "../core/select.ts";
+import { claimForWork } from "../github/claim.ts";
 import { mergeViaCommand, MERGE_RECORDED_ENV, type Writer } from "../github/write.ts";
 import { Client, markMerged, type Querier } from "../mirror.ts";
 import { refreshChecks } from "../review/checks.ts";
@@ -343,6 +344,9 @@ export async function runMerge(db: DatabaseSync, params: MergeParams, log: (line
       log(`  ${refOf(e)}: new comments or reviews since the final review; not merged, it is reviewed again first`);
       continue;
     }
+    const ag = guardRepo(db, repo, "merge", params.by ?? CLI_BY);
+    if ("refused" in ag) log(`  ${refOf(e)}: not assigned: ${ag.refused}`);
+    else await claimForWork(w, ag, d.querier, repo, e.number, "pr", () => viewerOf(d.querier), { run: runId }, log);
     const method = methodOf(info);
     // A hold may have been set during the calls above.
     if (mergeHeld(db, repo, e.number)) { log(`  ${refOf(e)}: merge held meanwhile; skipped`); summary.attempted.pop(); continue; }

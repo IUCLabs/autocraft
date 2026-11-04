@@ -699,20 +699,20 @@ export const STEPS: StepDef[] = [
     },
   },
   {
-    name: "assign",
-    title: "Assign and unassign",
-    description: "Assigns the pipeline's account to the open pull requests and issues it is working through to merge when nobody is assigned, and takes the assignment back when an item waits on a person, was given up, or left the pipeline's scope. Only its own assignment is ever removed. Reads the assignees from GitHub before each write. Calls no model.",
-    stage: runStage("assign"),
+    name: "unassign",
+    title: "Unassign",
+    description: "Takes the pipeline's account off the open pull requests and issues that left the path to merge (waiting on a person, given up by a stage, out of scope), so someone else may pick them up. Only its own assignment is removed, and only while it is the sole assignee; the assignees are read from GitHub before each write. Calls no model.",
+    stage: runStage("unassign"),
     requires: "operator",
     group: "github-write",
     params: [{ name: "repo", label: "Repo", kind: "repo", required: true }],
     run: async (ctx) => {
-      const { runAssign } = await import("../assign/index.ts");
+      const { runUnassign } = await import("../unassign/index.ts");
       const repo = String(ctx.params.repo);
-      const r = await runAssign(ctx.db, { repo, by: byOfJob(ctx.job.requestedBy), runId: `assign-${ctx.job.id}`, log: ctx.log });
-      ctx.acted(r.assigned.length + r.unassigned.length);
-      if (r.failed.length) throw new Error(`${repo}: not assigned or unassigned on ${r.failed.join(", ")}`);
-      return `${repo}: ${r.assigned.length} assigned, ${r.unassigned.length} unassigned`;
+      const r = await runUnassign(ctx.db, { repo, by: byOfJob(ctx.job.requestedBy), runId: `unassign-${ctx.job.id}`, log: ctx.log });
+      ctx.acted(r.unassigned.length);
+      if (r.due && r.failed.length === r.due) throw new Error(`${repo}: could not unassign on ${r.failed.join(", ")}`);
+      return `${repo}: ${r.unassigned.length} unassigned${r.failed.length ? `, ${r.failed.length} failed` : ""}`;
     },
   },
   {

@@ -11,7 +11,7 @@ import { longLivedOf, pushable, type LongLived } from "../fixup/pushable.ts";
 import { FAST_FLOOR, fastScoreSql } from "../fasttrack.ts";
 import { latestRun, settledLookup } from "../classify/settled.ts";
 import { redMainRepos, MAIN_FIX_BRANCH_PREFIX } from "../mainci/index.ts";
-import { batchStates, membersOf } from "../merge/batch-store.ts";
+import { batchStates, membersOf, publishFailedHeads } from "../merge/batch-store.ts";
 import { changesRequestedWhy, gatesOf, GATE_FAILURES, failureNote, type ReviewFact } from "../merge/changes-requested.ts";
 import { ciApprovalOf } from "../merge/ci-approval.ts";
 import { mergeApprovalOf } from "../merge/approval.ts";
@@ -107,8 +107,9 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
   const gates = gatesOf(db, opts.repo);
   const holds = mergeHolds(db, opts.repo);
   const inBatch = batchStates(db, opts.repo);
+  const publishFailed = publishFailedHeads(db, opts.repo);
   const own = ownFixPrs(db, opts.repo);
-  const assigned = assignmentsOf(db);
+  const assigned = assignmentsOf(db, opts.repo);
   const mainRed = redMainRepos(db);
   const tripped = activeTrips(db);
   const brokeAt = brokeHeads(db, opts.repo);
@@ -201,7 +202,7 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
       repo: r.repo, number: r.number, assignment: assigned(ref, r.assignees), now, pipelineOn, tripped, ghState: r.state, head, draft: fresh ? r.c_state !== "OPEN" || !!r.c_draft : !!r.is_draft,
       author: r.author, authorIsPipeline: r.author !== null && r.author === pipelineLogin, tier: "not", lines, size: sizeOf(lines), label: null, needsDecisionFlag: false,
       scopeAnswer: scope.get(ref) ?? null,
-      inScope, integration, batchPr: !!r.batch_pr, heldBacklog: !!r.held_backlog, heldDuplicate: !r.held_backlog && !!r.held_dup, mergeHeld: holds.has(ref),
+      inScope, integration, batchPr: !!r.batch_pr, publishFailed: publishFailed.has(`${ref}@${head}`) && !activeBatched.has(ref), heldBacklog: !!r.held_backlog, heldDuplicate: !r.held_backlog && !!r.held_dup, mergeHeld: holds.has(ref),
       fast: (r.score ?? 0) >= FAST_FLOOR, score: r.score, repoFacts: rf.f,
       review: null, post: { postable: false, posted: null },
       checksHere: false, checksOpen: false, ci: "unknown", mergeable: r.i_mergeable ?? "UNKNOWN", runs: null,
@@ -396,11 +397,12 @@ export function ownFixPrs(db: DatabaseSync, repo?: string): { login: string | nu
 }
 
 /** Reads the pipeline account and the last successful assign or unassign of every item from the audit once; the returned function gives an item's assignment facts from its mirrored `assignees` (JSON). */
-export function assignmentsOf(db: DatabaseSync): (ref: string, assignees: string | null) => AssignFacts {
+export function assignmentsOf(db: DatabaseSync, repo?: string): (ref: string, assignees: string | null) => AssignFacts {
   const login = (db.prepare("SELECT value FROM main.settings WHERE key = ?").get(PIPELINE_LOGIN_KEY) as { value: string } | undefined)?.value ?? null;
   const last = new Map<string, string | null>();
   for (const r of db.prepare(`SELECT target, details FROM audit WHERE action = 'assign' AND rowid IN (SELECT MAX(rowid) FROM audit
-    WHERE action IN ('assign', 'unassign') AND COALESCE(details, '') NOT LIKE '%"error":%' GROUP BY target)`).all() as { target: string; details: string | null }[]) {
+    WHERE action IN ('assign', 'unassign') AND COALESCE(details, '') NOT LIKE '%"error":%' ${repo ? "AND target >= ? AND target < ?" : ""} GROUP BY target)`)
+    .all(...(repo ? [`${repo}#`, `${repo}$`] : [])) as { target: string; details: string | null }[]) {
     last.set(r.target, (safeJson(r.details) as { assignee?: string } | null)?.assignee ?? null);
   }
   return (ref, assignees) => {

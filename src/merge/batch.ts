@@ -18,6 +18,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { audit } from "../dash/audit.ts";
 import { CLI_BY, type By } from "../core/gates.ts";
 import { guard, guardBatchMerge, guardRepo, liveOf, type GuardedRepo } from "../core/guard.ts";
+import { claimForWork } from "../github/claim.ts";
 import { ghClosePr, ghOpenPr, mergeViaCommand, pushOwnBranch, type Writer } from "../github/write.ts";
 import { type Exec, exec, fixupDir } from "../fixup/git.ts";
 import { whoAmI } from "../fixup/index.ts";
@@ -141,6 +142,8 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
     const id = insertBatch(db, { repo, branch: name, baseSha: base, commitSha: tip, parentId, members, at: at() });
     audit(db, ACTOR, "batch-start", `${repo}:${name}`, { run: runId, base, prs: members.map((m) => m.number) });
     s.started.push(name);
+    const ag = grant();
+    if (ag) for (const m of members) await claimForWork(w, ag, d.querier, repo, m.number, "pr", { id: who.nodeId, login: who.login }, { run: runId, batch: name }, log);
     log(`  ${name}: ${members.length} PR${members.length === 1 ? "" : "s"} (${members.map((m) => `#${m.number}`).join(", ")}) on ${short(base)}; opening the batch PR`);
     await publish(getBatch(db, id), members);
     return id;

@@ -107,7 +107,7 @@ export function loadItemFacts(db: DatabaseSync, opts: ItemLoadOptions = {}): Ite
   const labeled = new Map((db.prepare("SELECT repo, number, note FROM stages WHERE stage = 'labeled' ORDER BY at, rowid").all() as { repo: string; number: number; note: string | null }[])
     .map((s) => [`${s.repo}#${s.number}`, s.note]));
   const own = ownFixPrs(db, opts.repo);
-  const assigned = assignmentsOf(db);
+  const assigned = assignmentsOf(db, opts.repo);
   const pairs = new Map<string, number>();
   for (const p of uncheckedPairs(db, -1))
     for (const n of [p.a, p.b]) pairs.set(`${p.repo}#${n}`, (pairs.get(`${p.repo}#${n}`) ?? 0) + 1);

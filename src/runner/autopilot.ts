@@ -466,13 +466,13 @@ const LANE_CODE: Omit<Lane, "steps">[] = [
     },
   },
   {
-    // The one assignment rule: the planner decides, this lane only carries out the assign and unassign actions.
-    name: "assign",
+    // The planner decides which items left the path to merge; this lane only carries out the unassign actions.
+    name: "unassign",
     perRepo: true,
     detect: (db, ctx) => {
       const plans = plansOf(db, ctx), repos = new Set(ctx.tracked);
-      const due = (["assign", "unassign"] as const).flatMap((k) => [...allowed(planned(db, k, { plans })), ...allowed(plannedItems(db, k, { plans }))]);
-      return [...new Set(due.map((p) => p.facts.repo))].filter((r) => repos.has(r)).sort().map((repo) => ({ step: "assign", params: { repo } }));
+      const due = [...allowed(planned(db, "unassign", { plans })), ...allowed(plannedItems(db, "unassign", { plans }))];
+      return [...new Set(due.map((p) => p.facts.repo))].filter((r) => repos.has(r)).sort().map((repo) => ({ step: "unassign", params: { repo } }));
     },
   },
   {

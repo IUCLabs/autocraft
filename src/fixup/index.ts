@@ -37,6 +37,7 @@ import { selectFixups } from "./select.ts";
 import { Git, exec, fixupDir, type Exec } from "./git.ts";
 import { scrubGitError } from "../worker/patch.ts";
 import { longLivedOf, pushable, BASE_ORG } from "./pushable.ts";
+import { claimForWork } from "../github/claim.ts";
 import { askConflict, mergeConflict, type ConflictRun } from "./conflict.ts";
 import { fixupEditable, validatePatch, type ConflictPr, type FixupPr } from "./patch.ts";
 import { outsideShown, shownSize, viewFile } from "./excerpt.ts";
@@ -294,9 +295,15 @@ export async function runFixup(db: DatabaseSync, params: FixupParams, log: (line
   for (const c of asks) await askOne(c);
   const git = new Git(d.exec, d.root, repo);
   let whoP: Promise<Who> | undefined;
+  /** The stage starts work on a PR: the pipeline's account is assigned when nobody is. */
+  const claim = async (c: { number: number }): Promise<void> => {
+    const g = guardRepo(db, repo, "push", params.by ?? CLI_BY);
+    if ("refused" in g) { log(`  ${repo}#${c.number}: not assigned: ${g.refused}`); return; }
+    await claimForWork(gw, g, d.querier, repo, c.number, "pr", async () => { const who = await (whoP ??= whoAmI(d.exec)); return { id: who.nodeId, login: who.login }; }, { run: runId }, log);
+  };
   const conflictRun: ConflictRun = {
     repo, runId, log, d, gw, at, summary, prQuery: PR_QUERY, scrub: (raw) => scrubReason(raw, d.root), git: () => git,
-    who: () => (whoP ??= whoAmI(d.exec)), onHandled: params.onHandled, handled, by: params.by ?? CLI_BY,
+    who: () => (whoP ??= whoAmI(d.exec)), onHandled: params.onHandled, handled, claim, by: params.by ?? CLI_BY,
   };
   for (const c of cAsks) await askConflict(db, conflictRun, c);
   if (!picks.length && !cMerges.length) return summary;
@@ -364,6 +371,7 @@ export async function runFixup(db: DatabaseSync, params: FixupParams, log: (line
       }
       if (bad) { fail("refused", bad); continue; }
       if (tooBig) { hold("too-large", tooBig); continue; }
+      if (!c.carry) await claim(c);
       // A stored patch: the lint task's outcome decides whether it is pushed (clean), asked for again (findings) or queued again (lost task).
       let findings: string[] = [];
       let folded: string | null = null;

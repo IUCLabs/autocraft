@@ -26,7 +26,9 @@ import { readGate } from "../merge/changes-requested.ts";
 import { longLivedOf, pushable, BASE_ORG } from "../fixup/pushable.ts";
 import { HOLD_CANNOT_PUSH } from "../fixup/template.ts";
 import { CLI_BY, type By } from "../core/gates.ts";
-import { guard, liveOf } from "../core/guard.ts";
+import { guard, guardRepo, liveOf } from "../core/guard.ts";
+import { claimForWork } from "../github/claim.ts";
+import { viewerOf } from "../merge/index.ts";
 import { ghAskComment, ghComment, ghRerunFailed, pushBranch, type Note, type Writer } from "../github/write.ts";
 import { Client, type Querier } from "../mirror.ts";
 import { ghExec, type Gh } from "../merge/safe-merge.ts";
@@ -515,8 +517,15 @@ export async function runCifix(db: DatabaseSync, params: CifixParams, log: (line
   };
 
   /** Sonnet patches the code from the log, Opus checks the patch. */
+  /** The CI fix starts work on the PR (a model patch or a formatter run): the pipeline's account is assigned when nobody is. */
+  const claim = async (c: CifixCandidate): Promise<void> => {
+    const by = params.by ?? CLI_BY;
+    const g = [guardRepo(db, repo, "push", by), guardRepo(db, repo, "comment", by)].find((x) => !("refused" in x));
+    if (g && !("refused" in g)) await claimForWork({ db, login: ACTOR }, g, d.querier, repo, c.number, "pr", () => viewerOf(d.querier), { run: runId }, log);
+  };
   const fixCode = async (c: CifixCandidate, pr: PrNode, failure: CiFailure, previous?: LintPrevious): Promise<void> => {
     const ref = refOf(c);
+    await claim(c);
     const fail = (state: "failed" | "refused", raw: string) => {
       const reason = scrubReason(raw, d.root);
       rec.set(c, "code", state, reason);
@@ -629,6 +638,7 @@ export async function runCifix(db: DatabaseSync, params: CifixParams, log: (line
         // The build environment (packages, env) is read from the PR's base commit, never from the PR's own workflow.
         const base = (await d.gh(["api", `repos/${ORG}/${repo}/pulls/${c.number}`, "--jq", ".base.sha"])).trim();
         if (!/^[0-9a-f]{40}$/.test(base)) { rec.set(c, "format", "failed", "no base commit for the build environment"); summary.failed.push({ ref, reason: "no base commit" }); return; }
+        await claim(c);
         const id = createTask(db, {
           step: "cifix", repo, number: c.number, headSha: c.head, baseSha: base, requires: { os: "linux", toolchains: ["rust-stable"] }, warm: { key: warmKeyOf(repo), role: "use" },
           plan: [{ name: "format", cmd: ["sh", "-c", FORMAT_SCRIPT, "format", ...names], network: "none", timeoutSec: 600, artifacts: [FORMAT_ARTIFACT] }],

@@ -3,6 +3,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import type { Querier } from "../mirror.ts";
 import type { Grant } from "../core/guard.ts";
+import { ORG } from "../act/templates.ts";
 import { assignTo, unassignFrom, type Writer } from "./write.ts";
 
 export type Me = { id: string; login: string };
@@ -30,6 +31,20 @@ export function weAssigned(db: DatabaseSync, repo: string, number: number, login
   if (last?.action !== "assign") return false;
   const d = JSON.parse(last.details ?? "{}") as { assignee?: string; run?: string };
   return d.assignee === login && (d.run ?? "").startsWith(runPrefix) && (!runPrefix || !!d.run);
+}
+
+/** Called by a stage when its work on an item starts: reads the item live and assigns `me` when it is open, nobody is assigned and the audit does not show that we assigned it (a person who removed us is final; our own unassign is not). A failure is logged and never stops the stage. Returns true when it assigned. */
+export async function claimForWork(w: Writer, g: Grant, q: Querier, repo: string, number: number, kind: "pr" | "issue", who: Me | (() => Promise<Me>), details: Record<string, unknown> = {}, log: (line: string) => void = () => {}): Promise<boolean> {
+  try {
+    const me = typeof who === "function" ? await who() : who;
+    const info = await (kind === "pr" ? pullRequestInfo(q, ORG, repo, number) : issueInfo(q, ORG, repo, number));
+    if (!info || weAssigned(w.db, repo, number, me.login) || !(await claimItem(w, g, q, repo, number, info, me, details))) return false;
+    log(`  ${repo}#${number}: assigned to ${me.login}`);
+    return true;
+  } catch (e) {
+    log(`  ${repo}#${number}: could not assign: ${String((e as Error).message ?? e).replace(/\s+/g, " ").trim().slice(0, 200)}`);
+    return false;
+  }
 }
 
 /** Assigns the open item to `me` when nobody is assigned. Returns true when it did. */

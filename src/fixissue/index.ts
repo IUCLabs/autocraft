@@ -31,7 +31,7 @@ import { whoAmI } from "../fixup/index.ts";
 import { Client, type Querier } from "../mirror.ts";
 import { viewerOf } from "../merge/index.ts";
 import { commentApprovalOf } from "../act/approval.ts";
-import { issueInfo } from "../github/claim.ts";
+import { claimForWork, issueInfo } from "../github/claim.ts";
 import { CLAUDE_PROMPTS } from "../prompts/index.ts";
 import { diffCacheDir } from "../review/diff.ts";
 import { rustPlan } from "../worker/rust.ts";
@@ -257,8 +257,18 @@ async function startAttempt(x: Ctx, c: IssueCandidate): Promise<"started" | "ski
   }
   const t = parsed.triage;
   const r = row("retry", t.reason, { files: JSON.stringify(t.files), crate: t.crate.name, crate_dir: t.crate.dir, size: t.size });
+  await assignIssue(x, c);
   await patchRound(x, r);
   return "started";
+}
+
+/** The fix is going ahead (triage said fixable): the pipeline's account is assigned to the issue when nobody is. */
+async function assignIssue(x: Ctx, c: IssueCandidate): Promise<void> {
+  const { db, d, log } = x;
+  if (!d.querier) return;
+  const g = guardRepo(db, c.repo, "fix-issue", x.by ?? CLI_BY);
+  if ("refused" in g) { log(`  ${refOf(c)}: not assigned: ${g.refused}`); return; }
+  await claimForWork({ db, login: ACTOR }, g, d.querier, c.repo, c.number, "issue", () => viewerOf(d.querier!), { run: x.runId }, log);
 }
 
 /**

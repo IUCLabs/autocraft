@@ -48,6 +48,8 @@ export type ConflictRun = {
   onHandled?: (n: number) => void; handled: { n: number };
   /** Who asked: gates the writes. */
   by: By;
+  /** Called when the stage starts work on a PR: assigns the pipeline's account when nobody is. */
+  claim: (c: ConflictCandidate) => Promise<void>;
 };
 
 const refOf = (c: { repo: string; number: number }) => `${c.repo}#${c.number}`;
@@ -169,7 +171,8 @@ export async function mergeConflict(db: DatabaseSync, x: ConflictRun, c: Conflic
       if (changes.some((ch) => !files.includes(ch[3]!) || ch[0] !== ch[1])) { fail("refused", "the resolution would change files or modes outside the conflicted files"); return; }
       const again = await live(db, x, c);
       if (!again) return;
-    } else if (!merge.clean) {
+    } else if (merge.clean) await x.claim(c);
+    else {
       files = merge.conflicted;
       if (!files.length) { refuse("the merge is not clean but names no conflicted file"); return; }
       if (files.length > MAX_CONFLICT_FILES) { refuse(`${files.length} files conflict, over the limit of ${MAX_CONFLICT_FILES}`); return; }
@@ -200,6 +203,7 @@ export async function mergeConflict(db: DatabaseSync, x: ConflictRun, c: Conflic
       }
       const prDiff = await cachedDiff(x.repo, c.number, head, x.d.fetchDiff);
       if (!prDiff.ok) { fail("failed", `no diff: ${oneLine(prDiff.error)}`); return; }
+      await x.claim(c);
       if (!x.d.resolve) { fail("failed", "no resolver"); return; }
       checkout = (await x.d.checkout?.(x.repo, c.number, head)) ?? undefined;
       const body = ((db.prepare("SELECT body FROM items WHERE repo = ? AND number = ?").get(x.repo, c.number) as { body: string | null } | undefined)?.body ?? "").slice(0, 4000);

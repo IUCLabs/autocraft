@@ -343,8 +343,8 @@ export const STAGES: StageDef[] = [
   {
     id: "merge", title: "Merge queue", order: 11, runStage: 6, docSection: "Merge queue", mode: "steps",
     description: "Merges PRs that pass the rules in integration batches (up to 50 PRs, checked by upstream CI on the batch PR) through safe-merge, and asks for a Merge? decision on PRs outside the rules. Before a PR the rule would merge goes into a batch, Opus reviews its head commit once more, adversarially and independently of the first review; a defect it verifies becomes a fix-up or a Merge? question. Approves held CI runs of outside contributors where the repo allows it.",
-    steps: [{ name: "merge", label: "Merge", limit: null, seeded: 10 }, { name: "premerge", label: "Pre-merge review", limit: null }, { name: "merge-ask" }, { name: "ci-approve", label: "Approve CI runs", limit: 30 }, { name: "assign" }],
-    lanes: [{ name: "premerge", steps: ["premerge"], order: 9 }, { name: "merge-ask", steps: ["merge-ask"], order: 10 }, { name: "merge", steps: ["checks", "merge"], order: 11 }, { name: "ci-approve", steps: ["ci-approve"], order: 21 }, { name: "assign", steps: ["assign"], order: 27 }],
+    steps: [{ name: "merge", label: "Merge", limit: null, seeded: 10 }, { name: "premerge", label: "Pre-merge review", limit: null }, { name: "merge-ask" }, { name: "ci-approve", label: "Approve CI runs", limit: 30 }, { name: "unassign" }],
+    lanes: [{ name: "premerge", steps: ["premerge"], order: 9 }, { name: "merge-ask", steps: ["merge-ask"], order: 10 }, { name: "merge", steps: ["checks", "merge"], order: 11 }, { name: "ci-approve", steps: ["ci-approve"], order: 21 }, { name: "unassign", steps: ["unassign"], order: 27 }],
     reads: ["Reviews", "Verification results", "CI state", "Merge decisions"],
     sets: ["Integration batches", "Merged PRs", "Merge? decisions"],
     states: [

@@ -1,61 +1,83 @@
-// The one assignment rule: AutoCraft is assigned while it works an item through to merge and takes the assignment back when the
-// item waits on a person or a stage gave up. Decision rows for PRs and issues, then the step against a fake GitHub.
+// The assignment rule: a stage assigns AutoCraft's account when its work starts; the planner unassigns it once the item is off
+// the path to merge. Decision rows for PRs and issues, then the helper and the step against a fake GitHub.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { decideItem } from "../src/core/decide-item.ts";
 import { decidePr } from "../src/core/decide.ts";
+import { guardRepo } from "../src/core/guard.ts";
 import type { AssignFacts } from "../src/core/plan.ts";
-import { runAssign } from "../src/assign/index.ts";
+import { claimForWork } from "../src/github/claim.ts";
+import { runUnassign } from "../src/unassign/index.ts";
 import { world } from "./world-db.ts";
 import { itemFacts, prFacts } from "./world.ts";
 
-const nobody: AssignFacts = { login: "bot", assignees: [], ours: false };
 const ours: AssignFacts = { login: "bot", assignees: ["bot"], ours: true };
-const kinds = (a: { actions: { kind: string }[] }) => a.actions.map((x) => x.kind).filter((k) => k === "assign" || k === "unassign");
-const FIXUP = { review: { verdict: "take-fix" }, fixup: { fixes: 2, attempts: 0, recorded: [] as string[] } };
-const NEEDS_DECISION = { size: "L", lines: 900 } as const;
+const unassigns = (a: { actions: { kind: string }[] }) => a.actions.some((x) => x.kind === "unassign");
+const spent = { fixes: 2, attempts: 99, recorded: [] as string[] };
 
-test("a PR with a fix-up due is assigned once, not again on the next pass", () => {
-  assert.deepEqual(kinds(decidePr(prFacts({ ...FIXUP, assignment: nobody }))), ["assign"]);
-  assert.deepEqual(kinds(decidePr(prFacts({ ...FIXUP, assignment: ours }))), []);
-  // We assigned it and someone removed us: no second assignment.
-  assert.deepEqual(kinds(decidePr(prFacts({ ...FIXUP, assignment: { login: "bot", assignees: [], ours: true } }))), []);
-  // A person is assigned: never added next to them.
-  assert.deepEqual(kinds(decidePr(prFacts({ ...FIXUP, assignment: { login: "bot", assignees: ["alice"], ours: false } }))), []);
-});
-
-test("a PR that needs a decision is unassigned only when we are the sole assignee and made the assignment", () => {
-  const plan = (assignment: AssignFacts) => decidePr(prFacts({ ...NEEDS_DECISION, assignment }));
+test("a PR is unassigned only when we are the sole assignee and made the assignment", () => {
+  const plan = (assignment: AssignFacts) => decidePr(prFacts({ size: "L", lines: 900, assignment }));
   assert.equal(plan(ours).state, "needs-decision");
-  assert.deepEqual(kinds(plan(ours)), ["unassign"]);
-  assert.deepEqual(kinds(plan({ login: "bot", assignees: ["bot", "alice"], ours: true })), []);
-  assert.deepEqual(kinds(plan({ login: "bot", assignees: ["bot"], ours: false })), []);
-  assert.deepEqual(kinds(plan({ login: "bot", assignees: ["alice"], ours: false })), []);
+  assert.equal(unassigns(plan(ours)), true);
+  assert.equal(unassigns(plan({ login: "bot", assignees: ["bot", "alice"], ours: true })), false);
+  assert.equal(unassigns(plan({ login: "bot", assignees: ["bot"], ours: false })), false);
+  assert.equal(unassigns(decidePr(prFacts({ ghState: "MERGED", assignment: ours }))), false);
 });
 
-test("a PR outside the pipeline's scope is unassigned, a merged one is left alone", () => {
-  assert.deepEqual(kinds(decidePr(prFacts({ inScope: false, assignment: ours }))), ["unassign"]);
-  assert.deepEqual(kinds(decidePr(prFacts({ ghState: "MERGED", assignment: ours }))), []);
+test("a PR on the path to merge keeps the assignment, one that left it loses it", () => {
+  assert.equal(unassigns(decidePr(prFacts({ assignment: ours }))), false, "ready, merge due");
+  assert.equal(unassigns(decidePr(prFacts({ review: null, draft: true, assignment: ours }))), true, "draft");
+  assert.equal(unassigns(decidePr(prFacts({ inScope: false, assignment: ours }))), true, "out of scope");
+  const held = { mergeable: "CONFLICTING", conflict: { bucket: "held", base: "main", baseOk: true } };
+  assert.equal(unassigns(decidePr(prFacts({ ...held, assignment: ours }))), true, "conflict held");
+  assert.equal(unassigns(decidePr(prFacts({ ...held, conflict: { bucket: "merge", base: "main", baseOk: true }, assignment: ours }))), false, "conflict merge due");
 });
 
-test("an issue whose fix attempt gave up is unassigned; one being fixed is not", () => {
+test("a fix-up that gave up releases the PR, unless it is in a batch", () => {
+  const f = { review: { verdict: "take-fix" }, fixup: spent, assignment: ours };
+  assert.equal(unassigns(decidePr(prFacts(f))), true);
+  assert.equal(unassigns(decidePr(prFacts({ ...f, inActiveBatch: true }))), false);
+});
+
+test("members of a batch whose PR could not be opened are released", () => {
+  assert.equal(unassigns(decidePr(prFacts({ publishFailed: true, assignment: ours }))), true);
+  assert.equal(unassigns(decidePr(prFacts({ publishFailed: true, inActiveBatch: true, assignment: ours }))), false);
+});
+
+test("an issue is unassigned when its fix gave up, kept while it is fixed, and never assigned by the planner", () => {
   const attempt = (state: string) => ({ attempt: { state, textChanged: false, headDone: false, baseDone: true } });
-  assert.deepEqual(kinds(decideItem(itemFacts({ assignment: ours, fix: attempt("failed") }))), ["unassign"]);
-  assert.deepEqual(kinds(decideItem(itemFacts({ assignment: ours, fix: attempt("testing") }))), []);
-  assert.deepEqual(kinds(decideItem(itemFacts({ assignment: nobody, fix: attempt("testing") }))), ["assign"]);
-  assert.deepEqual(kinds(decideItem(itemFacts({ assignment: { login: "bot", assignees: ["bot", "alice"], ours: true }, fix: attempt("failed") }))), []);
+  assert.equal(unassigns(decideItem(itemFacts({ assignment: ours, fix: attempt("failed") }))), true);
+  assert.equal(unassigns(decideItem(itemFacts({ assignment: ours, fix: attempt("testing") }))), false);
+  assert.equal(unassigns(decideItem(itemFacts({ assignment: { login: "bot", assignees: ["bot", "alice"], ours: true }, fix: attempt("failed") }))), false);
+  // A fix candidate nobody has worked on yet is not assigned: only a stage starting work does that.
+  const w = world().repo().issue(5, { impact: "P2" });
+  assert.equal(w.plan().items[0]!.plan.actions.some((a) => a.kind === "fixissue"), true);
+  assert.equal(w.plan().items[0]!.plan.actions.some((a) => a.kind === "unassign"), false);
 });
 
-test("the assign step writes once per assignment and leaves other people's items alone", async () => {
+test("a stage assigns once; a person who removed us is final", async () => {
+  const w = world().repo().pr(1);
+  const g = guardRepo(w.db, "app", "push", "pipeline");
+  assert.ok(!("refused" in g));
+  const me = { id: "U1", login: "pipeline-bot" };
+  const claim = () => claimForWork({ db: w.db, login: "t" }, g as never, w.gh.querier, "app", 1, "pr", me, { run: "t" });
+  assert.equal(await claim(), true);
+  assert.equal(await claim(), false, "now assigned");
+  w.gh.live(1, { assignees: [] });
+  assert.equal(await claim(), false, "removed by a person");
+  assert.equal(w.gh.writesOf("assign").length, 1);
+});
+
+test("the unassign step releases what the planner says and only our own assignment", async () => {
   const w = world().repo().pr(1).review(1).verified(1).premerge(1, "clean").pr(2).review(2).verified(2).premerge(2, "clean");
-  w.db.prepare("UPDATE items SET assignees = '[\"alice\"]' WHERE repo = 'app' AND number = 2").run();
-  const run = () => runAssign(w.db, { repo: "app", by: "pipeline", runId: "t", querier: w.gh.querier });
-  assert.deepEqual((await run()).assigned, ["app#1"]);
-  assert.deepEqual((await run()).assigned, []);
-  assert.deepEqual(w.gh.writesOf("assign").map((x) => x.number), [1]);
-  // A hold by an operator's answer puts it on a person: our assignment goes.
-  w.db.prepare("UPDATE items SET assignees = '[\"pipeline-bot\"]' WHERE repo = 'app' AND number = 1").run();
-  w.answer(1, "hold");
-  assert.deepEqual((await run()).unassigned, ["app#1"]);
-  assert.deepEqual((await run()).unassigned, []);
+  const mark = (n: number, who: string[]) => w.db.prepare("UPDATE items SET assignees = ? WHERE repo = 'app' AND number = ?").run(JSON.stringify(who), n);
+  for (const n of [1, 2]) w.db.prepare("INSERT INTO audit (at, login, action, target, details) VALUES ('2026-11-04T00:00:00Z', 'assign', 'assign', ?, '{\"assignee\":\"pipeline-bot\"}')").run(`app#${n}`);
+  mark(1, ["pipeline-bot"]);
+  mark(2, ["pipeline-bot", "alice"]);
+  w.gh.live(1, { assignees: ["pipeline-bot"] });
+  w.gh.live(2, { assignees: ["pipeline-bot", "alice"] });
+  w.answer(1, "hold").answer(2, "hold");
+  const r = await runUnassign(w.db, { repo: "app", by: "pipeline", runId: "t", querier: w.gh.querier });
+  assert.deepEqual(r.due, 1);
+  assert.deepEqual(r.unassigned, ["app#1"]);
 });

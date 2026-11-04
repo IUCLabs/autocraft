@@ -33,10 +33,10 @@ export type ActionKind =
   // item steps (issues and PRs)
   | "classify" | "referee" | "prioritize" | "embed" | "dupes" | "dupe-answer" | "dupes-compare" | "decide" | "label"
   | "act" | "fixissue" | "fixissue-collect"
-  // the one assignment rule (decideAssignment): the pipeline's account on the items it works through to merge
-  | "assign" | "unassign";
+  // the pipeline's account leaves an item that is off the path to merge (src/core/assignment.ts)
+  | "unassign";
 
-/** Who an item is assigned to as mirrored, and whether the last successful assign or unassign in the audit is our assignment of the pipeline account. `login`: the pipeline account (null when unknown: nothing is assigned or released). */
+/** Who an item is assigned to as mirrored, and whether the last successful assign or unassign in the audit is our assignment of the pipeline account. `login`: the pipeline account (null when unknown: nothing is released). */
 export type AssignFacts = { login: string | null; assignees: string[]; ours: boolean };
 
 export type Action = { kind: ActionKind; head: string | null; params?: Record<string, unknown> };
@@ -123,6 +123,8 @@ export type PrFacts = {
   /** Any merge batch's own PR (without the author check). */
   batchPr: boolean;
   heldBacklog: boolean;
+  /** The reviewed head was in a merge batch that failed to publish its PR and is in no active batch. */
+  publishFailed: boolean;
   /** Held by a duplicate decision (pair or group), not counting a Backlog answer. */
   heldDuplicate: boolean;
   /** An operator holds its merge. */

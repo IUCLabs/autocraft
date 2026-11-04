@@ -5,8 +5,7 @@ import {
   RULE_LABELS, RULE_SIZES, RULE_TIERS, UNSURE_REASON, VERIFY_UNAVAILABLE, ciAllows, conflictNote, verifyAllows, verifyOk,
   FIXUP_MAX_ATTEMPTS, CIFIX_FINAL_STATES, CIFIX_MAX_PUSHES_PER_PR, CIFIX_MAX_TRIES, CIFIX_MAX_TRIES_PER_PR,
 } from "./rules.ts";
-import { assignmentActions, inFlightNow, WAITS_ON_PERSON } from "./assignment.ts";
-import { gates } from "./gates.ts";
+import { inFlightNow, unassignActions } from "./assignment.ts";
 import type { Action, Plan, PlanState, PrFacts, QueueState } from "./plan.ts";
 
 /** The start of a statement for a reason line: one line, at most 80 characters. */
@@ -202,15 +201,19 @@ const worksOn = (a: Action): boolean => {
   }
 };
 
-/** The assign or unassign action of an open PR: assigned while AutoCraft works it (a working action the repo's approvals allow, a batch, or in flight), released when it waits on a person or a stage gave it up. */
-function assignmentOf(f: PrFacts, state: PlanState, actions: Action[]): Action[] {
+/** Queue states on the path to merge: the PR stays assigned in them unless a stage gave it up. */
+const PROGRESS_STATES: ReadonlySet<string> = new Set(["ready", "waiting-ci", "waiting-premerge", "waiting-verify", "ci-approval", "waiting-main-ci", "decision-answered-merge", "needs-fix-up", "ci-failed"]);
+
+/** The unassign action of an open PR: kept while it is on the path to merge (in flight, in a batch, work due, a progress state), released in every other state and when a stage gave it up. */
+function unassignOf(f: PrFacts, state: PlanState, actions: Action[]): Action[] {
   const fx = fixupOf(f), cf = cifixBucket(f);
-  const gaveUp = state === "opus-close" || state === "verify-failed" || state === "verify-error" || state === "batch-failed" || (!!fx && (fx.bucket === "cannot-push" || fx.bucket === "asked" || (fx.bucket === "hold" && !fx.done)))
-    || cf === "failed" || cf === "capped" || cf === "cannot-push";
-  if (WAITS_ON_PERSON.has(state) || gaveUp) return assignmentActions(f.assignment, f.ghState === "OPEN", "release");
-  const working = actions.some((a) => worksOn(a) && gates(f, { kind: a.kind, ...(typeof a.params?.bucket === "string" ? { bucket: a.params.bucket } : {}) }, { operator: "plan" }) === null)
-    || state === "in-batch" || state === "batch-checking" || inFlightNow(f, state);
-  return assignmentActions(f.assignment, f.ghState === "OPEN", working ? "work" : null);
+  const inBatch = state === "in-batch" || state === "batch-checking" || f.inActiveBatch;
+  const stuck = f.publishFailed && !f.inActiveBatch && !inBatch;
+  const working = actions.some(worksOn) || inBatch || inFlightNow(f, state);
+  const gaveUp = state === "opus-close" || state === "verify-failed" || state === "verify-error" || state === "batch-failed" || state === "conflict"
+    || (!!fx && (fx.bucket === "cannot-push" || fx.bucket === "asked" || (fx.bucket === "hold" && !fx.done))) || cf === "failed" || cf === "capped" || cf === "cannot-push";
+  const keep = !stuck && (working || (!gaveUp && PROGRESS_STATES.has(state)));
+  return unassignActions(f.assignment, f.ghState === "OPEN", !keep);
 }
 
 export function decidePr(f: PrFacts): Plan {
@@ -219,7 +222,7 @@ export function decidePr(f: PrFacts): Plan {
   const r = f.review;
   const open = f.ghState === "OPEN";
 
-  if (!f.inScope) return plan("out-of-scope", { actions: assignmentActions(f.assignment, open, "release") });
+  if (!f.inScope) return plan("out-of-scope", { actions: unassignActions(f.assignment, open, true) });
   // Our own integration PRs only carry reviewed PRs: their runs wait for approval like a member's.
   if (f.integration) {
     const approve = f.runs && !f.mergeHeld && (f.runs.reread || (f.runs.crossRepo && f.runs.approvable > 0));
@@ -328,7 +331,7 @@ export function decidePr(f: PrFacts): Plan {
     }
   }
 
-  actions.push(...assignmentOf(f, state, actions));
+  actions.push(...unassignOf(f, state, actions));
 
   const main = actions.some((a) => ["review", "premerge", "ask-merge", "merge", "verify"].includes(a.kind));
   const wait = main ? null : e ? (f.mergeHeld && e.state !== "merged" && e.path ? "merge held by an operator" : WAITS[e.state] ?? null) : null;

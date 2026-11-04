@@ -132,7 +132,7 @@ describe("PR journeys", () => {
   test("a take-fix patch is linted before the push: clippy findings go back to the model, the clean patch is pushed with the format changes folded in", async () => {
     const git = gitWorld(1);
     const w = fresh().pr(1, { head: git.head }).review(1, { verdict: "take-fix" });
-    assert.deepEqual(w.prPlan(1).actions.map((a) => [a.kind, a.params?.bucket, a.head]), [["fixup", "fix", git.head], ["assign", undefined, null]]);
+    assert.deepEqual(w.prPlan(1).actions.map((a) => [a.kind, a.params?.bucket, a.head]), [["fixup", "fix", git.head]]);
     const edit = (to: string) => `diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1,2 +1,2 @@\n-fn a() {}\n-fn main() { a(); }\n${to}`;
     const asked: { previous?: { findings: string[] } }[] = [];
     const deps = git.deps(w);
@@ -146,13 +146,13 @@ describe("PR journeys", () => {
     assert.deepEqual(first.pushed, []);
     assert.deepEqual(git.pushes, []);
     assert.deepEqual(w.rows("SELECT state, lint_round, lint_state FROM fixups"), [{ state: "linting", lint_round: 1, lint_state: "pending" }]);
-    assert.deepEqual(w.prPlan(1).actions, [{ kind: "assign", head: null }]);
+    assert.deepEqual(w.prPlan(1).actions, []);
     const t1 = w.rows("SELECT id, state FROM build_tasks")[0] as { id: number; state: string };
     assert.equal(t1.state, "queued");
 
     // Clippy finds something on a line the patch changed: the model is asked again with the finding.
     endLint(w, t1.id, { diagnostics: [{ line: 1 }] });
-    assert.deepEqual(w.prPlan(1).actions.map((a) => [a.kind, a.params?.bucket]), [["lint", "fixup"], ["assign", undefined]]);
+    assert.deepEqual(w.prPlan(1).actions.map((a) => [a.kind, a.params?.bucket]), [["lint", "fixup"]]);
     const second = await runFixup(w.db, { repo: "app", dryRun: false }, quiet, deps);
     assert.deepEqual(second.pushed, []);
     assert.equal(asked.length, 2);
@@ -300,7 +300,7 @@ describe("CI fix journey", () => {
     const git = gitWorld(1, "fn a() {}\nfn main() { b(); }\n");
     const w = fresh().pr(1, { head: git.head, ci: "failure" }).review(1);
     assert.equal(w.prPlan(1).state, "ci-failed");
-    assert.deepEqual(w.prPlan(1).actions.map((a) => [a.kind, a.params?.bucket, a.head]), [["cifix", "work", git.head], ["assign", undefined, null]]);
+    assert.deepEqual(w.prPlan(1).actions.map((a) => [a.kind, a.params?.bucket, a.head]), [["cifix", "work", git.head]]);
 
     const s0 = await runCifix(w.db, { repo: "app", dryRun: false }, quiet, git.cifixDeps(w));
     assert.deepEqual(s0.pushed, []);

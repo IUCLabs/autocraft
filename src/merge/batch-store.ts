@@ -105,6 +105,13 @@ export function batchStates(db: DatabaseSync, repo?: string): Map<string, "batch
   return out;
 }
 
+/** `repo#number@head` of the members of batches that failed to open their PR: they go back to the queue, off the path to merge until a batch takes them again. */
+export function publishFailedHeads(db: DatabaseSync, repo?: string): Set<string> {
+  const rows = db.prepare(`SELECT b.repo, p.number, p.head_oid FROM main.merge_batch_prs p JOIN main.merge_batches b ON b.id = p.batch_id
+    WHERE b.state = 'failed' AND b.summary LIKE ? || '%' ${repo ? "AND b.repo = ?" : ""}`).all(PUBLISH_FAILED, ...(repo ? [repo] : [])) as { repo: string; number: number; head_oid: string }[];
+  return new Set(rows.map((r) => `${r.repo}#${r.number}@${r.head_oid}`));
+}
+
 /** Repos with a batch that has something to do: a batch PR to watch, or a batch still to be pushed whose retry wait is over. */
 export function batchesDue(db: DatabaseSync, now = new Date()): string[] {
   const rows = db.prepare(`SELECT repo, state, pr_number, retries, updated_at FROM main.merge_batches WHERE state IN ('open', 'checking')`).all() as

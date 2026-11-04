@@ -229,6 +229,7 @@ CREATE TABLE IF NOT EXISTS audit (
 );
 CREATE INDEX IF NOT EXISTS audit_at ON audit(at);
 CREATE INDEX IF NOT EXISTS audit_target ON audit(target);
+CREATE INDEX IF NOT EXISTS audit_assign ON audit(target) WHERE action IN ('assign', 'unassign');
 
 -- Dashboard query indexes.
 CREATE INDEX IF NOT EXISTS items_closed ON items(closed_at, state);
