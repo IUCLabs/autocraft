@@ -25,6 +25,7 @@ import { type VerifyPlan } from "./plan.ts";
 import { repoChecksKnown, repoHasNoCi } from "../merge/no-ci.ts";
 import { queueTasks, queueWarmBuild } from "./tasks.ts";
 import type { Crate, VerifyPlanInput } from "./types.ts";
+import { jobItem } from "../runner/job-items.ts";
 
 export { collectDue, listVerifications, runCollect, verificationOf, type VerificationView } from "./results.ts";
 
@@ -83,6 +84,7 @@ export function saveVerification(db: DatabaseSync, c: { repo: string; number: nu
   const stage = v.state === "planned" ? "verify-planned" : v.state === "ci-enough" ? "verify-ci-enough" : v.state === "unavailable" ? "verify-unavailable" : "verify-error";
   db.prepare("INSERT INTO stages (repo, number, stage, at, actor, note) VALUES (?, ?, ?, ?, ?, ?)")
     .run(c.repo, c.number, stage, at, "verify", `${v.kind} at ${c.head_oid.slice(0, 7)}: ${v.summary ?? v.reason}`.slice(0, 300));
+  jobItem(db, c.repo, c.number, `${stage}: ${v.kind} at ${c.head_oid.slice(0, 7)}`);
 }
 
 /** The plan as stored: the patch is in the task row, so the plan column keeps its size. */

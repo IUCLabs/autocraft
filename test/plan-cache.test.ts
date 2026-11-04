@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { describe, test } from "node:test";
 import { connect } from "../src/db.ts";
-import { refreshPlanCache } from "../src/core/plan-cache.ts";
+import { planHistory, prunePlanHistory, refreshPlanCache } from "../src/core/plan-cache.ts";
 import { detectAutopilot, planDue, setEnabled } from "../src/runner/autopilot.ts";
 import { SCRATCH } from "./scratch.ts";
 
@@ -53,6 +53,22 @@ describe("Plan cache", () => {
     assert.ok(r.proposals.every((p) => p.lane), "proposals are only data; applyProposals is not called while off");
     assert.equal(r.timing!.written, 1);
     assert.deepEqual(cache().map((x) => x.number), [1, 2]);
+  });
+
+  test("the history gets a row for each change of an item's state, none for a pass that changes nothing else", () => {
+    const before = planHistory(db, "app", 1).length;
+    refreshPlanCache(db);
+    assert.equal(planHistory(db, "app", 1).length, before, "an unchanged pass adds no row");
+    db.prepare("UPDATE item_plans SET state = 'earlier' WHERE number = 1").run();
+    refreshPlanCache(db);
+    db.prepare("UPDATE item_plans SET state = 'before-that', wait = 'x' WHERE number = 1").run();
+    refreshPlanCache(db);
+    const h = planHistory(db, "app", 1);
+    assert.deepEqual(h.slice(before).map((r) => [r.oldState, r.wait === null]), [["earlier", true], ["before-that", true]]);
+    assert.equal(h[h.length - 1]!.newState, cache()[0]!.state);
+    assert.equal(h[0]!.oldState, null, "the first plan has no old state");
+    assert.ok(prunePlanHistory(db, 0, Date.now() + 1000) >= h.length);
+    assert.equal(planHistory(db, "app", 1).length, 0);
   });
 });
 

@@ -54,6 +54,7 @@ import { ghComment, ghFork, ghOpenPr, pushOwnBranch, type Writer } from "../gith
 import { COMMENTS_SHOWN, COMMENT_CHARS, FILE_CAP, ISSUE_BODY_LIMIT, MAX_PATHS, MAX_ROUNDS, TOTAL_CAP, type IssueText, type PatchInput, type TriageInput } from "./types.ts";
 import { inPilot, pilotSqlFor } from "../pilot.ts";
 import { backlogHeld, backlogHeldSql } from "../dupes/held.ts";
+import { jobItem } from "../runner/job-items.ts";
 
 export { type IssueCandidate } from "./candidates.ts";
 
@@ -160,6 +161,7 @@ function update(db: DatabaseSync, d: FixIssueDeps, r: { repo: string; number: nu
 
 function stage(db: DatabaseSync, d: FixIssueDeps, r: { repo: string; number: number }, kind: "hold" | "take", note: string): void {
   db.prepare("INSERT INTO stages (repo, number, stage, at, actor, note) VALUES (?, ?, ?, ?, ?, ?)").run(r.repo, r.number, kind, iso(d), ACTOR, note.slice(0, 300));
+  jobItem(db, r.repo, r.number, note);
 }
 
 function fail(db: DatabaseSync, d: FixIssueDeps, r: AttemptRow, reason: string): void {

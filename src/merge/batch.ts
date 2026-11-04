@@ -35,6 +35,7 @@ import { effectiveCi } from "../optional-checks.ts";
 import { PIPELINE_LOGIN_KEY, buildQueue, type QueueEntry } from "./queue.ts";
 import { planned } from "../core/select.ts";
 import { envVar } from "../env.ts";
+import { jobItem } from "../runner/job-items.ts";
 
 const ACTOR = "batch";
 const PR_URL = new RegExp(`^https://github\\.com/${ORG}/[A-Za-z0-9._-]+/pull/(\\d+)$`);
@@ -268,6 +269,7 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
       db.prepare("INSERT INTO merges (repo, number, head_oid, run_id, at, path, method, outcome, reason, ci, mergeable) VALUES (?, ?, ?, ?, ?, ?, 'merge', 'merged', NULL, ?, ?)")
         .run(repo, m.number, m.head_oid, runId, at(), e?.path ?? "rule", e?.ci ?? "success", e?.mergeable ?? "MERGEABLE");
       stage.run(repo, m.number, "merged", at(), ACTOR, `merge in ${b.branch} at ${short(m.head_oid)}`);
+      jobItem(db, repo, m.number, `merged in batch ${b.branch}`, log);
       markMerged(db, repo, m.number, at());
       closeMergedQuestions(db, repo, m.number, at());
       audit(db, ACTOR, "merge", refOf(m.number), { run: runId, head: m.head_oid, method: "merge", batch: b.branch });

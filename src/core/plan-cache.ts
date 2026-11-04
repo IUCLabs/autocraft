@@ -111,7 +111,11 @@ const sig = (r: PlanRow): string => JSON.stringify([r.kind, r.head, r.state, r.i
 export function writePlanCache(db: DatabaseSync, plans: PlanSet, plannedAt: string = new Date().toISOString()): { written: number; deleted: number } {
   const rows = planRows(plans);
   const stored = new Map<string, string>();
-  for (const r of db.prepare("SELECT repo, number, kind, head, state, item_state, actions, wait, reasons, note, view FROM main.item_plans").all() as PlanRow[]) stored.set(`${r.repo}#${r.number}`, sig(r));
+  const storedState = new Map<string, { state: string; wait: string | null }>();
+  for (const r of db.prepare("SELECT repo, number, kind, head, state, item_state, actions, wait, reasons, note, view FROM main.item_plans").all() as PlanRow[]) {
+    stored.set(`${r.repo}#${r.number}`, sig(r));
+    storedState.set(`${r.repo}#${r.number}`, { state: r.state, wait: r.wait });
+  }
   const changed = rows.filter((r) => stored.get(`${r.repo}#${r.number}`) !== sig(r));
   const keep = new Set(rows.map((r) => `${r.repo}#${r.number}`));
   const gone = [...stored.keys()].filter((k) => !keep.has(k));
@@ -121,8 +125,13 @@ export function writePlanCache(db: DatabaseSync, plans: PlanSet, plannedAt: stri
     ON CONFLICT (repo, number) DO UPDATE SET kind = excluded.kind, head = excluded.head, state = excluded.state, item_state = excluded.item_state,
       actions = excluded.actions, wait = excluded.wait, reasons = excluded.reasons, note = excluded.note, view = excluded.view, planned_at = excluded.planned_at`);
   const del = db.prepare("DELETE FROM main.item_plans WHERE repo = ? AND number = ?");
+  const hist = db.prepare("INSERT INTO main.plan_history (repo, number, head, old_state, new_state, wait, reasons, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
   db.exec("BEGIN IMMEDIATE");
   try {
+    for (const r of changed) {
+      const old = storedState.get(`${r.repo}#${r.number}`);
+      if (!old || old.state !== r.state || old.wait !== r.wait) hist.run(r.repo, r.number, r.head, old?.state ?? null, r.state, r.wait, r.reasons, plannedAt);
+    }
     for (const r of changed) put.run(r.repo, r.number, r.kind, r.head, r.state, r.item_state, r.actions, r.wait, r.reasons, r.note, r.view, plannedAt);
     for (const k of gone) { const i = k.lastIndexOf("#"); del.run(k.slice(0, i), Number(k.slice(i + 1))); }
     db.exec("COMMIT");
@@ -136,4 +145,18 @@ export function writePlanCache(db: DatabaseSync, plans: PlanSet, plannedAt: stri
 /** Plans decided and cached at once: the planner's own pass does this after every detection. */
 export function refreshPlanCache(db: DatabaseSync, opts: PlanSetOptions = {}): { written: number; deleted: number } {
   return writePlanCache(db, loadPlanSet(db, opts));
+}
+
+export type PlanHistoryRow = { head: string | null; oldState: string | null; newState: string; wait: string | null; reasons: string[]; at: string };
+
+/** The state changes of an item's plan, oldest first. */
+export function planHistory(db: DatabaseSync, repo: string, number: number): PlanHistoryRow[] {
+  return (db.prepare("SELECT head, old_state, new_state, wait, reasons, at FROM main.plan_history WHERE repo = ? AND number = ? ORDER BY id").all(repo, number) as
+    { head: string | null; old_state: string | null; new_state: string; wait: string | null; reasons: string; at: string }[])
+    .map((r) => ({ head: r.head, oldState: r.old_state, newState: r.new_state, wait: r.wait, reasons: JSON.parse(r.reasons) as string[], at: r.at }));
+}
+
+/** Deletes plan history older than `keepMs` (the jobs' horizon). Returns the number of rows. */
+export function prunePlanHistory(db: DatabaseSync, keepMs: number, nowMs: number = Date.now()): number {
+  return Number(db.prepare("DELETE FROM main.plan_history WHERE at < ?").run(new Date(nowMs - keepMs).toISOString()).changes);
 }

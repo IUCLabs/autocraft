@@ -144,6 +144,7 @@ export function pruneJobs(db: DatabaseSync, nowMs: number = Date.now()): number 
   const before = new Date(nowMs - JOB_KEEP_MS).toISOString();
   const old = db.prepare("SELECT id, log_path FROM jobs WHERE ended_at IS NOT NULL AND ended_at < ? AND state IN ('done', 'failed', 'cancelled') ORDER BY ended_at LIMIT 1000");
   const del = db.prepare("DELETE FROM jobs WHERE id = ?");
+  const delItems = db.prepare("DELETE FROM job_items WHERE job_id = ?");
   let n = 0;
   for (;;) {
     const rows = old.all(before) as { id: number; log_path: string | null }[];
@@ -156,6 +157,7 @@ export function pruneJobs(db: DatabaseSync, nowMs: number = Date.now()): number 
           // already gone
         }
       }
+      delItems.run(r.id);
       del.run(r.id);
       n++;
     }

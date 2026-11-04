@@ -36,6 +36,7 @@ import { buildQueue, UNSURE_REASON, PREMERGE_DEFECT_REASON, PREMERGE_FAILED_REAS
 export { buildQueue, countStates, QUEUE_STATES, type QueueEntry, type QueueState } from "./queue.ts";
 import { envVar } from "../env.ts";
 import { effectiveCi, optionalChecks } from "../optional-checks.ts";
+import { jobItem } from "../runner/job-items.ts";
 
 export const ORG = "storytold";
 /** Name of the built-in guarded merge (`autocraft safe-merge`); any other `$AUTOCRAFT_MERGE_CMD` is run as an external command that must accept `--head <sha>` and refuse when the PR head differs. */
@@ -367,6 +368,7 @@ export async function runMerge(db: DatabaseSync, params: MergeParams, log: (line
     markMerged(db, e.repo, e.number, at());
     closeMergedQuestions(db, e.repo, e.number, at());
     stage.run(e.repo, e.number, "merged", at(), ACTOR, `${method} at ${short(e.head)}${e.path === "operator" ? ", operator answered merge" : ""}`);
+    jobItem(db, e.repo, e.number, `merged by ${method} at ${short(e.head)}`, log);
     if (e.path === "operator") db.prepare("UPDATE decisions SET applied_at = ? WHERE id = ? AND applied_at IS NULL").run(at(), e.decisionId);
     summary.merged.push(refOf(e));
     params.onMerged?.(summary.merged.length);

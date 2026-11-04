@@ -35,6 +35,7 @@ import { guardItem, guardRepo } from "../core/guard.ts";
 import { actOnGroups, type GroupIo } from "./dupe-groups.ts";
 import { cleanReason, duplicateComment, ORG, prCloseComment, scopeCloseComment } from "./templates.ts";
 import { plannedItems } from "../core/select-items.ts";
+import { jobItem } from "../runner/job-items.ts";
 
 const ACTOR = "act";
 const NO_IO: GroupIo = { live: async () => null, comment: async () => "", close: async () => {} };
@@ -248,7 +249,7 @@ export async function runAct(db: DatabaseSync, params: ActParams, log: (line: st
     save(t, "skipped", reason, null);
     audit(db, ACTOR, "act-skip", refOf(t), { decision: t.decisionId, reason });
     summary.skipped.push({ ref: refOf(t), reason });
-    log(`  ${refOf(t)}: skipped: ${reason}`);
+    jobItem(db, t.repo, t.number, `skipped: ${reason}`, log);
     settle(t);
   };
 
@@ -267,7 +268,7 @@ export async function runAct(db: DatabaseSync, params: ActParams, log: (line: st
         if (live.type !== "PullRequest" || !h || live.head !== h) { skip(t, `head moved since the decision (${h ? short(h) : "no head recorded"} → ${live.head ? short(live.head) : "none"})`); continue; }
       }
       const g = await guardItem(db, { repo: t.repo, number: t.number }, { kind: "act", bucket: t.kind, decisionId: t.decisionId }, params.by ?? CLI_BY);
-      if ("refused" in g) { log(`  ${refOf(t)}: not closed: ${g.refused}`); continue; }
+      if ("refused" in g) { jobItem(db, t.repo, t.number, `not closed: ${g.refused}`, log); continue; }
       let url = prev?.comment_url ?? null;
       if (url === null) {
         let body: string;
@@ -286,14 +287,14 @@ export async function runAct(db: DatabaseSync, params: ActParams, log: (line: st
       save(t, "done", null, url);
       db.prepare("INSERT INTO stages (repo, number, stage, at, actor, note) VALUES (?, ?, 'closed', ?, ?, ?)").run(t.repo, t.number, at(), ACTOR, `closed after ${t.kind} decision ${t.decisionId}`);
       summary.done.push(refOf(t));
-      log(`  ${refOf(t)}: commented and closed`);
+      jobItem(db, t.repo, t.number, "commented and closed", log);
       settle(t);
     } catch (e) {
       const why = (e as Error).message.replace(/\s+/g, " ").slice(0, 300);
       const row = rowOf(db, t);
       save(t, "failed", why, row?.comment_url ?? null);
       summary.failed.push({ ref: refOf(t), reason: why });
-      log(`  ${refOf(t)}: failed: ${why}`);
+      jobItem(db, t.repo, t.number, `failed: ${why}`, log);
       break;
     }
   }

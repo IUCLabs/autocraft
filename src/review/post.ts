@@ -16,6 +16,7 @@ import { Client, type Querier } from "../mirror.ts";
 import { prInfo } from "../merge/index.ts";
 import { parsePublic } from "./opus-parse.ts";
 import { reviewBody, recommendation } from "./post-template.ts";
+import { jobItem } from "../runner/job-items.ts";
 
 const ACTOR = "review-post";
 const REVIEW_NOTE = (c: { model: string | null }): Note => ({ by: "model", kind: "review", model: c.model });
@@ -91,7 +92,7 @@ export async function runReviewPost(db: DatabaseSync, params: PostParams, log: (
   const w: Writer = { db, login: ACTOR };
   let handled = 0;
   for (const c of todo) {
-    const skip = (reason: string) => { s.skipped.push({ ref: refOf(c), reason }); log(`  ${refOf(c)}: skipped: ${reason}`); };
+    const skip = (reason: string) => { s.skipped.push({ ref: refOf(c), reason }); jobItem(db, c.repo, c.number, `skipped: ${reason}`, log); };
     try {
       const live = await prInfo(d.querier, repo, c.number);
       if (!live) { skip("not found on GitHub"); continue; }
@@ -110,12 +111,12 @@ export async function runReviewPost(db: DatabaseSync, params: PostParams, log: (
         db.prepare("INSERT OR REPLACE INTO review_posts (repo, number, review_id, head_oid, posted_at, opus_at) VALUES (?, ?, ?, ?, ?, ?)").run(repo, c.number, id, c.head_oid, at, c.opusAt);
         s.posted.push(refOf(c));
       }
-      log(`  ${refOf(c)}: ${c.editId ? "edited" : "posted"} at ${c.head_oid.slice(0, 7)}`);
+      jobItem(db, c.repo, c.number, `${c.editId ? "edited" : "posted"} review at ${c.head_oid.slice(0, 7)}`, log);
       params.onHandled?.(++handled);
     } catch (e) {
       const reason = String((e as Error).message ?? e).replace(/\s+/g, " ").slice(0, 300);
       s.failed.push({ ref: refOf(c), reason });
-      log(`  ${refOf(c)}: failed: ${reason}`);
+      jobItem(db, c.repo, c.number, `failed: ${reason}`, log);
     }
   }
   log(`review-post ${repo}: ${s.posted.length} posted, ${s.edited.length} edited, ${s.skipped.length} skipped, ${s.failed.length} failed`);
