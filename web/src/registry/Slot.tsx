@@ -1,3 +1,4 @@
+import { Suspense } from "react";
 import { modules } from "./index";
 import type { ViewProps } from "./types";
 
@@ -10,7 +11,7 @@ export function Slot({ name, ...props }: ViewProps & { name: string }) {
   return (
     <>
       {parts.map((s, i) => (
-        <s.component key={i} {...props} />
+        <Suspense key={i} fallback={null}><s.component {...props} /></Suspense>
       ))}
     </>
   );

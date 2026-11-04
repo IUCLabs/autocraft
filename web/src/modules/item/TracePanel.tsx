@@ -14,9 +14,12 @@ import { TraceEventBody } from "./TraceEventBody";
 const PAGE = 50;
 const hashEvent = () => new URLSearchParams(window.location.hash.slice(1)).get("event");
 
-export function TracePanel({ it }: { it: Item }) {
+/**
+ * The trace request starts from the route's repo and number, beside the item request. The timeline shows once
+ * the item is there too, so the header never pushes it down.
+ */
+export function TracePanel({ repo, number, it }: { repo: string; number: number; it?: Item }) {
   const api = useApi();
-  const { repo, number } = it;
   const [kinds, setKinds] = useState<TraceKind[]>([]);
   const [autocraftOnly, setAutocraftOnly] = useState(false);
   const filterKey = `${[...kinds].sort().join(",")}|${autocraftOnly ? 1 : 0}`;
@@ -77,6 +80,7 @@ export function TracePanel({ it }: { it: Item }) {
     document.getElementById(`event-${id}`)?.scrollIntoView({ block: "start" });
   }, [events]);
 
+  if (!it) return null;
   if (!first) return q.error ? <ErrorLine error={q.error.message} className="mt-4" /> : <div className="mt-4 h-24" aria-hidden />;
   const groups = groupByHead(events);
   return (

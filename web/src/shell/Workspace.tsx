@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { Suspense, useMemo, useRef, useState } from "react";
 import { Panel, PanelGroup, PanelResizeHandle, type ImperativePanelHandle } from "react-resizable-panels";
 import { ArrowLineLeftIcon, ArrowLineRightIcon } from "@phosphor-icons/react";
 import type { PanelDef, ViewDef, ViewProps } from "../registry/types";
@@ -15,19 +15,19 @@ export function Workspace({ view, props }: { view: ViewDef; props: ViewProps }) 
   const storage = useMemo(() => layoutStorage(props.user.login), [props.user.login]);
 
   if (phone) {
-    if (view.phone) return <view.phone {...props} />;
+    if (view.phone) return <Suspense fallback={null}><view.phone {...props} /></Suspense>;
     return (
       <div className="h-full overflow-y-auto">
         {view.toolbar && (
           <div className="border-b border-line px-4 py-2">
-            <view.toolbar {...props} />
+            <Suspense fallback={null}><view.toolbar {...props} /></Suspense>
           </div>
         )}
         {view.panels
           .filter((p) => !p.hideOnPhone)
           .map((p) => (
             <section key={p.id} aria-label={p.title} className="border-b border-line">
-              <p.component {...props} />
+              <Suspense fallback={null}><p.component {...props} /></Suspense>
             </section>
           ))}
       </div>
@@ -38,7 +38,7 @@ export function Workspace({ view, props }: { view: ViewDef; props: ViewProps }) 
     <div className="flex h-full min-h-0 flex-col">
       {view.toolbar && (
         <div className="shrink-0 border-b border-line bg-panel px-4 py-2">
-          <view.toolbar {...props} />
+          <Suspense fallback={null}><view.toolbar {...props} /></Suspense>
         </div>
       )}
       <PanelGroup direction="horizontal" autoSaveId={`layout:${view.id}`} storage={storage} className="min-h-0 flex-1">
@@ -81,7 +81,7 @@ function PanelSlot({ def, index, last, props }: { def: PanelDef; index: number; 
           </button>
         ) : (
           <div className={cn("flex h-full min-h-0 flex-col")}>
-            <def.component {...props} />
+            <Suspense fallback={null}><def.component {...props} /></Suspense>
             {def.collapsible && (
               <button
                 onClick={() => ref.current?.collapse()}

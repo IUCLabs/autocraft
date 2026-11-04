@@ -15,13 +15,20 @@ const withSlot = (...topics: Topic[]): Topic[] => [...new Set<Topic>([...topics,
 /** Everything an item page shows about a pull request. */
 const ITEM: Topic[] = withSlot("items", "stages", "classify", "ranks", "decisions", "reviews", "verify", "fixes", "postmerge", "actions", "checks");
 
+const TRACE: Topic[] = withSlot("items", "stages", "decisions", "reviews", "verify", "fixes", "postmerge", "actions", "plans", "tasks", "conversations", "queue", "access", "checks", "trace");
+
 const RULES: [prefix: string, topics: Topic[]][] = [
   // Agent progress lines arrive through `agents`; the shared 3 s window in live.tsx limits the refetch.
   ["now", ["jobs", "agents", "tasks", "queue", "sync", "accounts", "settings", "repos", "mainci", "decisions", "access", "actions"]],
   ["progress", ["items", "stages", "repos", "decisions", "mainci"]],
   ["main-ci", ["mainci", "repos"]],
   // The trace reads most tables behind an item page plus model calls, jobs and GitHub detail. The `trace` topic leaves out a running call's progress lines; the page also asks the server `since` its last stamp.
-  ["item-trace:", withSlot("items", "stages", "decisions", "reviews", "verify", "fixes", "postmerge", "actions", "plans", "tasks", "conversations", "queue", "access", "checks", "trace")],
+  ["item-trace:", TRACE],
+  // One opened event row: its detail reads what the timeline does; the run, task and decision behind it read one table each.
+  ["item-trace-detail:", TRACE],
+  ["item-trace-run:", ["agents"]],
+  ["item-trace-task:", ["tasks"]],
+  ["item-trace-decision:", withSlot("decisions")],
   ["activity:", withSlot("items", "stages", "decisions", "reviews", "verify", "fixes", "postmerge", "actions", "plans", "tasks", "conversations", "queue", "access", "checks", "trace", "agents", "jobs", "github")],
   ["item:", ITEM],
   ["item-decisions:", withSlot("decisions", "items")],
