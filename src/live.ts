@@ -55,7 +55,6 @@ export const TOPIC_TABLES: Record<string, Source[]> = {
   decisions: [{ table: "decisions" }, { table: "decision_opinions" }, { table: "decision_comments" }, { table: "decision_claims" },
     { table: "dupe_comparisons" }, { table: "dupe_groups" }, { table: "dupe_group_items" }, { table: "dupe_group_posts" }, { table: "dupe_group_texts" }],
   reviews: [{ table: "opus_reviews" }, { table: "review_posts" }],
-  directions: [{ table: "repo_directions" }, { table: "direction_proposals" }],
   queue: [{ table: "merges" }, { table: "merge_batches" }, { table: "merge_batch_prs" }, { table: "merge_holds" }, { table: "premerge_reviews" }],
   fasttrack: [{ table: "fast_track" }],
   // The planner's Plan cache; its own output, so the planner does not plan again for it.

@@ -131,23 +131,6 @@ export function createHttpApi(): Api {
       doCard: (id) => post(`/api/conversation-cards/${id}/do`),
       dismissCard: (id) => post(`/api/conversation-cards/${id}/dismiss`),
     },
-    directions: {
-      get: (repo) => get(`/api/directions/${encodeURIComponent(repo)}`),
-      add: (repo, body) => post(`/api/directions/${encodeURIComponent(repo)}`, body),
-      edit: async (id, text) => {
-        await post(`/api/direction/${id}/edit`, { text });
-      },
-      retire: async (id) => {
-        await post(`/api/direction/${id}/retire`);
-      },
-      acceptProposal: async (id, body) => {
-        await post(`/api/direction-proposals/${id}/accept`, body ?? {});
-      },
-      dismissProposal: async (id) => {
-        await post(`/api/direction-proposals/${id}/dismiss`);
-      },
-      forDecision: (id) => get(`/api/decisions/${encodeURIComponent(id)}/direction-proposals`),
-    },
     areas: {
       get: (repo) => get(`/api/areas/${encodeURIComponent(repo)}`),
       edit: (repo, edit) => post(`/api/areas/${encodeURIComponent(repo)}/edit`, edit),

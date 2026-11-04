@@ -309,8 +309,15 @@ export interface ItemReviews {
   current: boolean;
   opus: (ReviewSide & { sure: boolean; mode: "full" | "delta"; baseHead: string | null }) | null;
   final: { verdict: ReviewVerdictName; reason: string; decided: boolean };
-  /** The repo's active directions that the Opus or the pre-merge review at this head says the PR goes against or touches. Such a PR is never merged without an operator's answer. */
-  directions: { id: number; text: string; reason: string }[];
+  /** Earlier owner statements that the Opus or the pre-merge review at this head says the PR goes against. Such a PR is never merged without an operator's answer. */
+  conflicts: {
+    id: number; repo: RepoName; number: number | null; kind: ItemKind | null; state: ItemState | null;
+    /** Title of the item the statement was said about; null when unknown. */
+    title: string | null;
+    /** The start of what was said. */
+    excerpt: string;
+    reason: string;
+  }[];
 }
 
 export type PostmergeSeverity = "defect" | "minor";
@@ -1713,44 +1720,3 @@ export type AreaEditBody =
   | { op: "describe"; name: string; description: string };
 /** Which model step to queue: propose a list, suggest new areas, or re-scan the unassigned items. */
 export type AreaStep = "propose" | "suggest" | "rescan";
-
-/** A standing direction of the owners for a repo; `repo` is "*" for a direction that applies to every repo. */
-export interface DirectionView {
-  id: number;
-  repo: string;
-  text: string;
-  createdBy: string;
-  createdAt: string;
-  /** The decision the text came from, when it came from one. */
-  sourceDecision: string | null;
-  /** The item that decision is about; null without a source or when the item is not mirrored. */
-  sourceItem: { repo: RepoName; number: number; kind: ItemKind; state: ItemState; title: string } | null;
-  retiredAt: string | null;
-}
-/** A draft direction the model proposed from an operator's note; waits for an operator. */
-export interface DirectionProposal {
-  id: number;
-  repo: RepoName;
-  number: number | null;
-  decisionId: string | null;
-  /** The operator's note the draft comes from. */
-  note: string;
-  draft: string;
-  createdAt: string;
-}
-export interface RepoDirections {
-  repo: RepoName;
-  directions: DirectionView[];
-  /** Newest first. */
-  retired: DirectionView[];
-  /** Open proposals; only operators receive them. */
-  proposals: DirectionProposal[];
-}
-export interface DirectionAddBody {
-  text: string;
-  /** Applies to every repo, not only this one. */
-  allRepos?: boolean;
-}
-export interface DecisionDirectionProposals {
-  proposals: DirectionProposal[];
-}

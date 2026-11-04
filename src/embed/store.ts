@@ -7,6 +7,7 @@ import { fillEmbedHashes } from "../itemhash.ts";
 import { itemText } from "./text.ts";
 import { plannedItems } from "../core/select-items.ts";
 import type { PlanSet } from "../core/plan-set.ts";
+import { embedStatements, statementsDue } from "../memory/statements.ts";
 
 export type Todo = { repo: string; number: number; text: string; hash: string };
 
@@ -37,6 +38,8 @@ export function pending(db: DatabaseSync, modelId: string, all = false, plans?: 
 /** Whether the embed step has work: open items the Plans send here, or closed ones with a missing or stale vector. */
 export function embedDue(db: DatabaseSync, modelId: string, plans?: PlanSet): boolean {
   if (plans ? plans.items.some((p) => p.plan.actions.some((a) => a.kind === "embed")) : plannedItems(db, "embed", { model: modelId, run: null }).length) return true;
+  // Owner statements (src/memory/) are embedded by the same step.
+  if (statementsDue(db, modelId)) return true;
   return !!db.prepare(`${DIFF_SQL} LIMIT 1`).get({ all: 0, model: modelId });
 }
 
@@ -72,5 +75,6 @@ export async function embedItems(db: DatabaseSync, embedder: Embedder,
     done += batch.length;
     opts.onProgress?.({ done, total: todo.length, ms: performance.now() - start });
   }
+  await embedStatements(db, embedder, size);
   return { embedded: done, pruned, ms: performance.now() - start };
 }

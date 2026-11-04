@@ -9,21 +9,22 @@ export type EarlierOpus = { head: string; verdict: string; sure: boolean; reason
 /** A change an earlier review asked for (a take-fix at `head`) that was never made or posted. */
 export type UnappliedFix = { head: string; file: string; change: string };
 
-/** An owner direction for the PR's repo (table repo_directions). */
-export type Direction = { id: number; text: string };
-/** A direction a review says the PR goes against or touches, with a one-line reason. */
-export type DirectionHit = { id: number; reason: string };
+/** Something an owner said earlier about related work (table owner_statements), as the review prompt shows it. */
+export type OwnerStatement = { id: number; where: string; kind: string; title: string; at: string; text: string };
+/** A statement a review says the PR goes against, with a one-line reason. */
+export type StatementConflict = { id: number; reason: string };
 
-export const DIRECTION_REASON_CHARS = 300;
+export const CONFLICT_REASON_CHARS = 300;
+export const STATEMENT_PROMPT_CHARS = 800;
 
-/** The `directions` of a reply: entries naming one of `known` (others are dropped), one per id, with a reason of text. Anything else gives an empty list. */
-export function parseDirectionHits(v: unknown, known: readonly Direction[] = []): DirectionHit[] {
+/** The `conflicts` of a reply: entries naming one of `known` (others are dropped), one per id, with a reason of text. Anything else gives an empty list. */
+export function parseStatementConflicts(v: unknown, known: readonly { id: number }[] = []): StatementConflict[] {
   if (!Array.isArray(v)) return [];
-  const ids = new Set(known.map((d) => d.id)), seen = new Set<number>(), out: DirectionHit[] = [];
+  const ids = new Set(known.map((d) => d.id)), seen = new Set<number>(), out: StatementConflict[] = [];
   for (const x of v) {
     const o = x as { id?: unknown; reason?: unknown } | null;
     if (!o || typeof o !== "object" || typeof o.id !== "number" || !ids.has(o.id) || seen.has(o.id)) continue;
-    const reason = typeof o.reason === "string" ? o.reason.replace(/\s+/g, " ").trim().slice(0, DIRECTION_REASON_CHARS) : "";
+    const reason = typeof o.reason === "string" ? o.reason.replace(/\s+/g, " ").trim().slice(0, CONFLICT_REASON_CHARS) : "";
     if (!reason || REFERENCE_LEAK.test(reason)) continue;
     seen.add(o.id);
     out.push({ id: o.id, reason });
@@ -31,8 +32,10 @@ export function parseDirectionHits(v: unknown, known: readonly Direction[] = [])
   return out;
 }
 
-/** The numbered list the prompt shows; the number is the direction's id. */
-export const directionsList = (d: readonly Direction[] | undefined): string => (d?.length ? d.map((x) => `${x.id}. ${x.text}`).join("\n") : "(none)");
+/** The numbered list the prompt shows; the number is the statement's id. */
+export const statementsList = (d: readonly OwnerStatement[] | undefined): string => (d?.length
+  ? d.map((x) => `${x.id}. ${x.where} (${x.kind}: ${x.title}), ${x.at.slice(0, 10)}\n${x.text.replace(/\s+/g, " ").trim().slice(0, STATEMENT_PROMPT_CHARS)}`).join("\n\n")
+  : "(none)");
 
 /** One PR as the Opus prompt shows it. Every string field is untrusted or derived from untrusted text. */
 export type OpusPr = {
@@ -61,8 +64,8 @@ export type OpusPr = {
   diff: string;
   /** What others wrote on the PR; shown in its own block after the diff, not inside the PR's JSON. */
   discussion?: DiscussionEntry[];
-  /** The repo's active directions; shown in their own block after the PR, not inside the PR's JSON. */
-  directions?: Direction[];
+  /** Earlier owner statements about related work; shown in their own block after the PR, not inside the PR's JSON. */
+  statements?: OwnerStatement[];
 };
 
 export type OpusReview = {
@@ -78,8 +81,8 @@ export type OpusReview = {
   why: string | null;
   /** The text written for the PR author; null when the reply had none or it was malformed. */
   public: PublicReview | null;
-  /** The directions of `OpusPr.directions` that the PR goes against or touches. */
-  directions: DirectionHit[];
+  /** The statements of `OpusPr.statements` that the PR goes against. */
+  conflicts: StatementConflict[];
 };
 
 export type PublicReview = { summary: string; points: string[] };
@@ -121,7 +124,7 @@ function replyObject(text: string): unknown {
  * A summary or why over its word cap fails the reply unless `last`, which keeps its first sentence.
  * `drop`: see parsePublic. `keepLeaky`: keep fixes that mention the reference (the lint checks validity this way, so the fix turn can handle them; the stored review always drops them).
  */
-export function parseOpusReply(text: string, ref: string, last = true, drop: ReadonlySet<string> = new Set(), keepLeaky = false, known: readonly Direction[] = []): OpusReview | null {
+export function parseOpusReply(text: string, ref: string, last = true, drop: ReadonlySet<string> = new Set(), keepLeaky = false, known: readonly OwnerStatement[] = []): OpusReview | null {
   const o = replyObject(text);
   if (!o || typeof o !== "object") return null;
   const r = o as Record<string, unknown>;
@@ -136,7 +139,7 @@ export function parseOpusReply(text: string, ref: string, last = true, drop: Rea
   const risks = Array.isArray(r.risks) ? r.risks.filter((x): x is string => typeof x === "string").slice(0, 8).map((x) => x.slice(0, 300)) : [];
   const summary = proseField(r.summary, SUMMARY_MAX_WORDS, last), why = proseField(r.why, WHY_MAX_WORDS, last);
   if (!summary.ok || !why.ok) return null;
-  return { ref, verdict: verdict as ReviewVerdict, sure: r.sure, reason: words(r.reason, OPUS_REASON_WORDS), fixes: verdict === "take-fix" ? fixes : [], risks, summary: summary.text, why: oneSentence(why.text), public: parsePublic(r.public, drop), directions: parseDirectionHits(r.directions, known) };
+  return { ref, verdict: verdict as ReviewVerdict, sure: r.sure, reason: words(r.reason, OPUS_REASON_WORDS), fixes: verdict === "take-fix" ? fixes : [], risks, summary: summary.text, why: oneSentence(why.text), public: parsePublic(r.public, drop), conflicts: parseStatementConflicts(r.conflicts, known) };
 }
 
 /** The reply's reason before the word cut that the stored review applies. */

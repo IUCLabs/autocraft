@@ -6,11 +6,11 @@ import type { OpusReview } from "./opus-parse.ts";
 
 export const CARRIED = "carried";
 
-type Stored = { head_oid: string; verdict: string; sure: number; risks: string | null; summary: string | null; why: string | null; directions: string | null; seen_at: string | null; disc_hash: string | null; model: string | null };
+type Stored = { head_oid: string; verdict: string; sure: number; risks: string | null; summary: string | null; why: string | null; conflicts: string | null; seen_at: string | null; disc_hash: string | null; model: string | null };
 
 /** The review to record at `c.head_oid` as carried from the latest earlier review, with that review's discussion mark; null when it does not carry. */
 export function carriedReview(db: DatabaseSync, c: { repo: string; number: number; head_oid: string }): { review: OpusReview; from: string; seen: string | null; hash: string | null } | null {
-  const e = db.prepare(`SELECT head_oid, verdict, sure, risks, summary, why, directions, seen_at, disc_hash, model FROM opus_reviews
+  const e = db.prepare(`SELECT head_oid, verdict, sure, risks, summary, why, conflicts, seen_at, disc_hash, model FROM opus_reviews
     WHERE repo = ? AND number = ? AND head_oid <> ? AND verdict IS NOT NULL AND model IS NOT NULL ORDER BY at DESC, rowid DESC LIMIT 1`).get(c.repo, c.number, c.head_oid) as Stored | undefined;
   if (!e || (e.verdict !== "take" && e.verdict !== "take-fix") || e.sure !== 1) return null;
   const path = ourCommitsSince(db, c.repo, c.number, e.head_oid, c.head_oid);
@@ -21,7 +21,7 @@ export function carriedReview(db: DatabaseSync, c: { repo: string; number: numbe
   const list = <T>(s: string | null): T[] => { try { const v = JSON.parse(s ?? "[]") as unknown; return Array.isArray(v) ? (v as T[]) : []; } catch { return []; } };
   const review: OpusReview = {
     ref: `${c.repo}#${c.number}`, verdict: "take", sure: true, fixes: [], risks: list<string>(e.risks), summary: e.summary, why: e.why, public: null,
-    reason: `carried from ${e.head_oid.slice(0, 7)}: the only change is our checked fix-up`, directions: list(e.directions),
+    reason: `carried from ${e.head_oid.slice(0, 7)}: the only change is our checked fix-up`, conflicts: list(e.conflicts),
   };
   return { review, from: e.head_oid, seen: e.seen_at, hash: e.disc_hash };
 }

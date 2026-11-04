@@ -57,9 +57,9 @@ const ADDED_COLUMNS: [table: string, column: string, type: string][] = [
   // The model's 2 or 3 sentence summary and one-sentence reason, shown as the text of decisions about the PR.
   ["opus_reviews", "summary", "TEXT"],
   ["opus_reviews", "why", "TEXT"],
-  // JSON [{id, reason}]: the repo directions (repo_directions) the PR goes against or touches, as the review named them.
-  ["opus_reviews", "directions", "TEXT"],
-  ["premerge_reviews", "directions", "TEXT"],
+  // JSON [{id, reason}]: the owner statements (owner_statements) the PR goes against, as the review named them.
+  ["opus_reviews", "conflicts", "TEXT"],
+  ["premerge_reviews", "conflicts", "TEXT"],
   ["dupe_comparisons", "summary", "TEXT"],
   ["dupe_comparisons", "why", "TEXT"],
   ["merge_batches", "fork", "TEXT"],
@@ -231,6 +231,9 @@ function migrateValues(db: DatabaseSync): void {
   if (db.prepare("SELECT 1 FROM main.sqlite_master WHERE type = 'table' AND name = 'review_crosschecks'").get()) db.exec("DROP TABLE main.review_crosschecks");
   if (db.prepare("SELECT 1 FROM main.settings WHERE key LIKE 'review\\_batch\\_size:%' ESCAPE '\\' LIMIT 1").get()) db.exec("DELETE FROM main.settings WHERE key LIKE 'review\\_batch\\_size:%' ESCAPE '\\'");
   if (db.prepare("SELECT 1 FROM main.stage_limits WHERE step = 'review-batch'").get()) db.exec("DELETE FROM main.stage_limits WHERE step = 'review-batch'");
+  // The owner directions and their proposals, replaced by owner statements.
+  db.exec("DROP TABLE IF EXISTS main.repo_directions; DROP TABLE IF EXISTS main.direction_proposals");
+  db.prepare("DELETE FROM main.settings WHERE key = 'direction_proposals_since'").run();
   if (!db.prepare("SELECT 1 FROM main.settings WHERE key = 'ci_first_done'").get()) ciFirst(db);
   // Jev usage saved without a cost is priced from its input tokens.
   const JEV_UNPRICED = "model LIKE 'jev%' AND cost_usd IS NULL AND input_tokens IS NOT NULL";

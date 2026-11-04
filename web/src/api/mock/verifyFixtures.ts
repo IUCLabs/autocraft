@@ -61,18 +61,19 @@ function actionsFor(n: number, kind: Item["kind"]): ItemAction[] {
   return [];
 }
 
-/** The text of the first mock direction (src/api/mock/directionsMock.ts). */
-const MOCK_DIRECTION_TEXT = "Hyphenation, spelling, dictionaries and other language data belong in craft-libs (craft-text, craft-proof) and craft-i18n language packs, not in the app.";
-
 function reviewsFor(n: number): ItemReviews {
   const head = `${String(n).padStart(7, "0")}abcdef`;
   if (n % 8 === 2) {
     const o = { verdict: "hold" as const, reason: "The change drops a bounds check that the decoder relies on.", fixes: [], risks: ["Reads past the buffer on short input."], at: iso(4 * H), sure: false, mode: "delta" as const, baseHead: `${String(n).padStart(7, "1")}abcdef` };
-    return { head, current: true, directions: [], opus: o, final: { verdict: "hold", reason: "Needs a person.", decided: true } };
+    return { head, current: true, conflicts: [], opus: o, final: { verdict: "hold", reason: "Needs a person.", decided: true } };
   }
-  const directions = n % 8 === 5 ? [{ id: 1, text: MOCK_DIRECTION_TEXT, reason: "Adds a Danish hyphenation table to the app instead of craft-libs." }] : [];
+  const conflicts = n % 8 === 5 ? [{
+    id: 1, repo: "designcraft", number: 1484, kind: "issue" as const, state: "closed" as const, title: "Hyphenation for Danish",
+    excerpt: "Close. Hyphenation and dictionaries belong in craft-libs, not in the app; same for every language feature like this.",
+    reason: "Adds a Danish hyphenation table and dictionary to the app instead of craft-libs.",
+  }] : [];
   const opus = { verdict: "take-fix" as const, reason: "Also drop the unused import.", fixes: [{ file: "src/lib.rs", change: "Rename `tmp` to `stride`." }, { file: "src/lib.rs", change: "Remove the unused `use std::fmt;`." }], risks: ["Depends on code outside the diff."], at: iso(4 * H), sure: n % 4 !== 1, mode: "full" as const, baseHead: null };
-  return { head, current: n % 8 !== 6, directions, opus, final: { verdict: opus.verdict, reason: opus.reason, decided: true } };
+  return { head, current: n % 8 !== 6, conflicts, opus, final: { verdict: opus.verdict, reason: opus.reason, decided: true } };
 }
 
 function patchChecksFor(n: number): ItemPatchCheck[] {

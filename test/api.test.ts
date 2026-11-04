@@ -288,34 +288,6 @@ describe("api", () => {
 
 
 
-  test("directions: an operator adds, edits and retires them and decides drafts; a maintainer reads and cannot write", async () => {
-    const boss = await signedIn("boss"), maint = await signedIn("maint");
-    type Dirs = { directions: { id: number; text: string; repo: string }[]; retired: { id: number }[]; proposals: { id: number }[] };
-    await maint.post("/api/directions/photocraft", { text: "Formats are codec crates" }, 403);
-    const added = await boss.post<Dirs>("/api/directions/photocraft", { text: "Formats are codec crates" });
-    const all = await boss.post<Dirs>("/api/directions/photocraft", { text: "Language data lives in the library", allRepos: true });
-    assert.deepEqual(all.directions.map((d) => d.repo), ["photocraft", "*"]);
-    const id = added.directions[0]!.id;
-    await maint.post(`/api/direction/${id}/retire`, undefined, 403);
-    await maint.post(`/api/direction/${id}/edit`, { text: "x" }, 403);
-    await boss.post(`/api/direction/${id}/edit`, { text: "Formats are codec crates, not canvas code" });
-    // A maintainer reads the list; drafts are for operators only.
-    db.prepare("INSERT INTO direction_proposals (source, repo, number, note, draft, state, created_at) VALUES ('comment:c9', 'photocraft', 4, 'n', 'Draft text', 'open', ?)").run(new Date().toISOString());
-    const seen = await maint.get<Dirs>("/api/directions/photocraft");
-    assert.equal(seen.directions.length, 2);
-    assert.deepEqual(seen.proposals, []);
-    const pid = (await boss.get<Dirs>("/api/directions/photocraft")).proposals[0]!.id;
-    await maint.post(`/api/direction-proposals/${pid}/accept`, {}, 403);
-    await boss.post(`/api/direction-proposals/${pid}/accept`, { text: "Draft text, edited" });
-    await boss.post(`/api/direction-proposals/${pid}/accept`, {}, 400);
-    await boss.post(`/api/direction/${id}/retire`);
-    const after = await boss.get<Dirs>("/api/directions/photocraft");
-    assert.deepEqual(after.directions.map((d) => d.text), ["Language data lives in the library", "Draft text, edited"]);
-    assert.deepEqual(after.retired.map((d) => d.id), [id]);
-    assert.equal(auditCount("direction-add", "boss"), 2);
-    assert.equal(auditCount("direction-retire", "boss"), 1);
-    assert.equal(auditCount("direction-add", "maint"), 0);
-  });
 });
 
 function getAnswer(id: string): string | null {

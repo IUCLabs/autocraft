@@ -2,7 +2,7 @@
 // imports this file.
 import { safePath } from "../fixup/patch.ts";
 import type { LintProblem } from "../replylint.ts";
-import { OPUS_MAX_FIXES, REFERENCE_LEAK, parseDirectionHits, type DirectionHit, type Direction } from "../review/opus-parse.ts";
+import { OPUS_MAX_FIXES, REFERENCE_LEAK, parseStatementConflicts, type StatementConflict, type OwnerStatement } from "../review/opus-parse.ts";
 import type { PremergeFinding } from "./types.ts";
 
 export const PREMERGE_MAX_FINDINGS = 30;
@@ -12,7 +12,7 @@ export const PREMERGE_FILE_CHARS = 300;
 export const PREMERGE_FIX_CHARS = 800;
 export const PREMERGE_SEARCHED_CHARS = 400;
 
-export type PremergeReview = { findings: PremergeFinding[]; searched: string | null; directions: DirectionHit[] };
+export type PremergeReview = { findings: PremergeFinding[]; searched: string | null; conflicts: StatementConflict[] };
 
 const clean = (s: string) => s.replace(/\s+/g, " ").trim();
 
@@ -28,7 +28,7 @@ function replyObject(text: string): Record<string, unknown> | null {
 type Entry = { index: number; severity: "defect" | "minor"; file: string; line: number; title: string; scenario: string; fix?: { file: string; change: string } };
 
 /** The well-formed entries of a valid reply (null when the reply is not valid), with the fixes over the cap already removed. */
-function entries(text: string, ref: string): { entries: Entry[]; searched: string | null; directions: unknown } | null {
+function entries(text: string, ref: string): { entries: Entry[]; searched: string | null; conflicts: unknown } | null {
   const o = replyObject(text);
   if (!o || o.ref !== ref || !Array.isArray(o.findings)) return null;
   const out: Entry[] = [];
@@ -48,7 +48,7 @@ function entries(text: string, ref: string): { entries: Entry[]; searched: strin
     }
     out.push(e);
   });
-  return { entries: out, searched: typeof o.searched === "string" && o.searched.trim() ? clean(o.searched).slice(0, PREMERGE_SEARCHED_CHARS) : null, directions: o.directions };
+  return { entries: out, searched: typeof o.searched === "string" && o.searched.trim() ? clean(o.searched).slice(0, PREMERGE_SEARCHED_CHARS) : null, conflicts: o.conflicts };
 }
 
 const leaks = (...s: string[]) => s.some((x) => REFERENCE_LEAK.test(x));
@@ -59,7 +59,7 @@ const leaks = (...s: string[]) => s.some((x) => REFERENCE_LEAK.test(x));
  * mentions the reference documentation or is in `drop`; a fix with a leak, an unsafe path or past the fix cap is dropped
  * from its finding. `drop`: texts the reply lint still flagged after the fix turn.
  */
-export function parsePremerge(text: string, ref: string, drop: ReadonlySet<string> = new Set(), known: readonly Direction[] = []): PremergeReview | null {
+export function parsePremerge(text: string, ref: string, drop: ReadonlySet<string> = new Set(), known: readonly OwnerStatement[] = []): PremergeReview | null {
   const r = entries(text, ref);
   if (!r) return null;
   const findings: PremergeFinding[] = [];
@@ -70,7 +70,7 @@ export function parsePremerge(text: string, ref: string, drop: ReadonlySet<strin
     findings.push(fixOk ? { ...rest, fix } : rest);
   }
   // A dropped fix does not free its place under the cap: the cap counts the fixes the model offered.
-  return { findings, searched: r.searched, directions: parseDirectionHits(r.directions, known) };
+  return { findings, searched: r.searched, conflicts: parseStatementConflicts(r.conflicts, known) };
 }
 
 /** The reference mentions in a valid reply that the model can fix itself; null when the reply is not valid. */

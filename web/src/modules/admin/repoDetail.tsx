@@ -14,7 +14,6 @@ import { OptionalChecks, PipelineSwitch, Toggle, WRITES, maybe, synced, type Wri
 import { MainCiBadge } from "../../ui/atoms/MainCiBadge";
 import { FailingChecks } from "../mainci/parts";
 import { useNow } from "../../lib/useNow";
-import { DirectionsSection } from "../directions/Directions";
 
 function Stat({ label, value, title }: { label: string; value: string; title?: string }) {
   return (
@@ -132,7 +131,6 @@ function RepoDetailView({ params }: ViewProps) {
                 </ul>
               </Block>
               <OptionalChecks r={r} write={write} />
-              <DirectionsSection repo={r.name} />
               {l && (
                 <Block className="mt-4" title="Labels plan">
                   <div className="num flex flex-wrap gap-x-6 gap-y-1 text-sm">
