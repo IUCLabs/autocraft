@@ -8,12 +8,8 @@ import { describe, test } from "node:test";
 import { useTestAccount } from "./accounts-fixture.ts";
 import { SCRATCH } from "./scratch.ts";
 import { askClaude, setRunner, setWorkspace } from "../src/classify/run.ts";
-import { coalesce, eventLines } from "../src/classify/progress.ts";
-import { answerPending } from "../src/conversations/run.ts";
-import { addOperatorMessage, turnsOf } from "../src/conversations/store.ts";
-import { conversationView } from "../src/dash/api/conversations.ts";
+import { eventLines } from "../src/classify/progress.ts";
 import { connect } from "../src/db.ts";
-import { claudeArgs } from "../src/prompts/index.ts";
 
 mkdirSync(SCRATCH, { recursive: true });
 const dir = mkdtempSync(join(SCRATCH, "stream-"));

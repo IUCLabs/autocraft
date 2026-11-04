@@ -2,7 +2,6 @@
 // adopt, give feedback (a pick, text or both); CSRF; the hourly limit; claims; and that feedback
 // never reaches the CLI output the pipeline reads.
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, before, describe, test } from "node:test";

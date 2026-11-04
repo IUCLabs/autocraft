@@ -9,7 +9,7 @@ import type { Pair, Row } from "../src/classify/report.ts";
 import { useTestAccount } from "./accounts-fixture.ts";
 import { runHaiku, runJev, setRunner, type Runner } from "../src/classify/run.ts";
 import { connect } from "../src/db.ts";
-import { JEV_ARGS, PROMPTS, claudeArgs, claudeParts, promptsReport, renderClaude, renderJev, untrustedJson } from "../src/prompts/index.ts";
+import { JEV_ARGS, claudeArgs, claudeParts, renderClaude, renderJev, untrustedJson } from "../src/prompts/index.ts";
 import { SAMPLE_ITEMS } from "../src/prompts/samples.ts";
 import { SAMPLE_VERIFY_PLAN } from "../src/verify/types.ts";
 import { SCRATCH } from "./scratch.ts";

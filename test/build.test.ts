@@ -4,14 +4,13 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, before, describe, test } from "node:test";
-import type { BuildTask, BuildTaskDetail, TaskPage } from "../web/src/api/types.ts";
+import type { BuildTaskDetail, TaskPage } from "../web/src/api/types.ts";
 import { addLogin } from "../src/access.ts";
 import { sniff } from "../src/build/artifacts.ts";
-import { authenticate, createEnv, hello, listEnvs, rotateKey, touch, updateEnv } from "../src/build/envs.ts";
-import { cancelTask, claim, createTask, getTask, LOST_AFTER_MS, pruneTasks, reapLost } from "../src/build/tasks.ts";
+import { authenticate, createEnv, hello, listEnvs, rotateKey, updateEnv } from "../src/build/envs.ts";
+import { claim, createTask, getTask } from "../src/build/tasks.ts";
 import { startWorkerServer } from "../src/build/worker-api.ts";
 import { connect } from "../src/db.ts";
-import { insertBatch } from "../src/merge/batch-store.ts";
 import { apiRoutes } from "../src/dash/api/index.ts";
 import { loadConfig } from "../src/dash/server/config.ts";
 import { startServer } from "../src/dash/server/index.ts";
@@ -38,7 +37,6 @@ function env(opts: { slots?: number; caps?: Partial<typeof CAPS>; enabled?: bool
   return { id, key };
 }
 const task = (over: Partial<Parameters<typeof createTask>[1]> = {}) => createTask(db, { step: "verify", repo: "open-app", headSha: SHA, plan: PLAN, ...over });
-const ids = (r: { tasks: { id: number }[] }) => r.tasks.map((t) => t.id);
 const clear = () => db.exec("DELETE FROM build_tasks; DELETE FROM build_task_logs; DELETE FROM build_artifacts");
 
 before(() => {

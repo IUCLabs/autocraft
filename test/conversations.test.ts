@@ -6,23 +6,17 @@ import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { describe, test } from "node:test";
 import { useTestAccount } from "./accounts-fixture.ts";
-import { validating } from "./gql.ts";
 import { SCRATCH } from "./scratch.ts";
 import { setCommentApproval } from "../src/act/approval.ts";
 import { setRunner } from "../src/classify/run.ts";
 import { cleanComment, parseReply } from "../src/conversations/cards.ts";
-import { doCard, dismissCard, editCard, sweepRunningCards } from "../src/conversations/act.ts";
 import { answerPending } from "../src/conversations/run.ts";
-import { audit } from "../src/dash/audit.ts";
-import { addOperatorMessage, claimPending, conversationOf, insertTurn, promptParts, refreshItem, startFromOpus, turnsOf } from "../src/conversations/store.ts";
 import { connect } from "../src/db.ts";
-import { recommend } from "../src/decide/recommend.ts";
 import { ask } from "../src/decisions.ts";
 import { apiRoutes } from "../src/dash/api/index.ts";
 import * as conv from "../src/dash/api/conversations.ts";
 import { HttpError } from "../src/dash/server/util.ts";
 import type { Req } from "../src/dash/types.ts";
-import type { Querier } from "../src/mirror.ts";
 
 mkdirSync(SCRATCH, { recursive: true });
 const quiet = () => {};
@@ -54,7 +48,6 @@ function fakeModel(replies: string[], prompts: string[] = [], during?: () => Pro
 }
 
 const answerAll = (db: DatabaseSync) => answerPending(db, { checkout: async () => null, usageRun: "conv-test", log: quiet });
-const say = (db: DatabaseSync, text: string, n = 1) => addOperatorMessage(db, "app", n, "op", text);
 
 describe("conversation prompt", () => {
 
@@ -104,28 +97,7 @@ describe("cards", () => {
   });
 });
 
-function fakeGithub(log: string[]): Querier {
-  return validating({
-    spent: 0, remaining: 5000,
-    async query(query: string, vars: object) {
-      const v = vars as { n?: number; id?: string; body?: string };
-      if (query.startsWith("mutation") && query.includes("addComment")) { log.push(`comment ${v.id}: ${v.body}`); return { addComment: { commentEdge: { node: { url: `https://x/${v.id}#c` } } } }; }
-      if (query.startsWith("mutation")) { log.push(`close ${v.id}`); return {}; }
-      return { repository: { issueOrPullRequest: { __typename: "Issue", id: `I${v.n}`, state: "OPEN" } } };
-    },
-  });
-}
 
-async function withCards(db: DatabaseSync, cards: object[]): Promise<number[]> {
-  const { restore } = fakeModel([`Reply.\n\`\`\`actions\n${JSON.stringify(cards)}\n\`\`\``]);
-  try {
-    await say(db, "Please propose");
-    await answerAll(db);
-  } finally {
-    restore();
-  }
-  return (db.prepare("SELECT id FROM conversation_cards ORDER BY id").all() as { id: number }[]).map((r) => r.id);
-}
 
 describe("Do it", () => {
 

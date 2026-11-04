@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { safeMerge, parseSafeMergeArgs, refuseAuthors, refuseRuns, refuseView, type Check, type PrView } from "../src/merge/safe-merge.ts";
+import { safeMerge, parseSafeMergeArgs, refuseAuthors, refuseView, type Check, type PrView } from "../src/merge/safe-merge.ts";
 
 const ok: Check = { name: "build", status: "COMPLETED", conclusion: "SUCCESS" };
 const view = (o: Partial<PrView> = {}): PrView => ({ state: "OPEN", isDraft: false, mergeable: "MERGEABLE", headRefOid: "abc", statusCheckRollup: [ok], ...o });

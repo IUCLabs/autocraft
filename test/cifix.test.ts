@@ -8,9 +8,7 @@ import { spawnSync } from "node:child_process";
 import { setCommentApproval } from "../src/act/approval.ts";
 import { storeArtifact, tempPath } from "../src/build/artifacts.ts";
 import { connect } from "../src/db.ts";
-import { selectCifix } from "../src/cifix/select.ts";
-import { classifyCifix } from "./plan-shims.ts";
-import { FORMAT_ARTIFACT, gitFormatDiff, runCifix, runRerun, type CifixDeps } from "../src/cifix/index.ts";
+import { FORMAT_ARTIFACT, gitFormatDiff, runCifix, type CifixDeps } from "../src/cifix/index.ts";
 import { formattingOnly, guardPatch } from "../src/cifix/guard.ts";
 import { parseFailedLog } from "../src/cifix/logs.ts";
 import { triage } from "../src/cifix/triage.ts";
@@ -18,11 +16,8 @@ import type { CiFailure } from "../src/cifix/types.ts";
 import { setPushApproval } from "../src/fixup/approval.ts";
 import { exec, type Exec, type ExecResult } from "../src/fixup/git.ts";
 import { setCiApproval } from "../src/merge/ci-approval.ts";
-import { askMergeDecisions } from "../src/merge/index.ts";
-import { buildQueue, eligible } from "../src/merge/queue.ts";
 import type { Querier } from "../src/mirror.ts";
 import { saveOpus } from "../src/review/opus.ts";
-import { fresh as freshQueueDb, T1 as QT1 } from "./batch-fixture.ts";
 import { validating } from "./gql.ts";
 import { SCRATCH } from "./scratch.ts";
 
@@ -133,10 +128,8 @@ describe("guard", () => {
 type World = { fork: string; head: string; log: string[]; deps: CifixDeps };
 
 const APPROVE = JSON.stringify({ verdict: "approve", reasons: "fixes the compile error only", problems: [] });
-const REJECT = JSON.stringify({ verdict: "reject", reasons: "hides the error", problems: ["silences it"] });
 const CODE_LOG = "test\tcargo test\t2026-01-01T00:00:00Z error[E0425]: cannot find value `b` in this scope\ntest\tcargo test\t2026-01-01T00:00:01Z  --> src/lib.rs:2:20\n";
 const FMT_LOG = "fmt\tCheck formatting\t2026-01-01T00:00:00Z Diff in /home/runner/work/app/app/src/lib.rs:1:\n";
-const INFRA_LOG = "build\tcargo fetch\t2026-01-01T00:00:00Z warning: spurious network error: Could not resolve host: index.crates.io\n";
 const BASE = "b".repeat(40);
 const GOOD = "diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1,2 +1,2 @@\n-fn a() {}\n-fn main() { b(); }\n+fn b() {}\n+fn main() { b(); }\n";
 
@@ -204,7 +197,6 @@ function world(opts: { log?: string; reply?: string | null; check?: string | nul
 }
 
 const rows = (db: DatabaseSync, sql: string) => (db.prepare(sql).all() as Record<string, unknown>[]).map((r) => ({ ...r }));
-const ops = (w: World) => w.log.filter((l) => !l.startsWith("read-log"));
 
 describe("code failure", () => {
 

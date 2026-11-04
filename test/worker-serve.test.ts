@@ -1,12 +1,12 @@
 // The worker loop against a fake coordinator and a fake container runtime.
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { after, before, describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { WorkerApi } from "../src/worker/client.ts";
 import { parseWorkerConfig } from "../src/worker/config.ts";
-import { backoffDelay, serve, type ServeDeps } from "../src/worker/serve.ts";
+import { serve, type ServeDeps } from "../src/worker/serve.ts";
 import type { ClaimedTask, TaskStep } from "../src/worker/types.ts";
 import { startFakeCoordinator, type FakeCoordinator } from "./fake-coordinator.ts";
 import { makeTarGz } from "./tar-util.ts";

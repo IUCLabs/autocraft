@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { decideAll, decideItem } from "../src/core/decide-item.ts";
-import { SCOPE_LABELS, TYPE_LABEL_NAMES, PLUGIN_LABEL, RECOMMEND_MAX_FAILURES, RECOMMEND_RETRY_MS } from "../src/core/item-rules.ts";
+import { SCOPE_LABELS, TYPE_LABEL_NAMES, PLUGIN_LABEL } from "../src/core/item-rules.ts";
 import type { ItemPlan } from "../src/core/plan.ts";
 import { SCOPE_LABELS as OLD_SCOPE } from "../src/decide/select.ts";
 import { TYPE_LABELS } from "../src/labels/set.ts";

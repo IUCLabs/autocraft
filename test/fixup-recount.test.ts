@@ -1,9 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync } from "node:fs";
-import { join } from "node:path";
+import { mkdirSync } from "node:fs";
 import { describe, test } from "node:test";
-import { connect } from "../src/db.ts";
-import { attemptsOf } from "../src/fixup/candidates.ts";
 import { recountHunks, validatePatch } from "../src/fixup/patch.ts";
 import { SCRATCH } from "./scratch.ts";
 

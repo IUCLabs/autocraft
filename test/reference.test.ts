@@ -7,13 +7,9 @@ import { parseOpusReply } from "../src/review/opus-parse.ts";
 import { parseReply } from "../src/conversations/cards.ts";
 import { toolLine } from "../src/classify/progress.ts";
 import { claudeArgs } from "../src/prompts/index.ts";
-import { askClaude, setRunner } from "../src/classify/run.ts";
 import { connect } from "../src/db.ts";
-import { SAMPLE_OPUS_PRS } from "../src/prompts/samples.ts";
 import { importReference, referenceDir } from "../src/reference.ts";
 import { trackRepo } from "../src/repos.ts";
-import { REFERENCE_PATH, REPO_PATH } from "../src/sandbox/command.ts";
-import { useTestAccount } from "./accounts-fixture.ts";
 import { SCRATCH } from "./scratch.ts";
 
 mkdirSync(SCRATCH, { recursive: true });

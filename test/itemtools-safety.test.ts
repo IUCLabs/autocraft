@@ -2,13 +2,11 @@
 // visibility changes and pending reviews reaching the snapshot, the diff
 // mounts, and the untrusted frame.
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { describe, test } from "node:test";
 import { connect } from "../src/db.ts";
-import { itemTools } from "../src/itemtools/index.ts";
 import { writeSnapshot } from "../src/itemtools/snapshot.ts";
 import { callTool, frame, openDb } from "../src/itemtools/server/tools.ts";
 import { SCRATCH } from "./scratch.ts";

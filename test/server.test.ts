@@ -1,16 +1,14 @@
 // Acceptance item 5: access checks, with the fake OAuth provider.
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { request } from "node:http";
 import { join } from "node:path";
 import { after, before, describe, test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
 import { addLogin, removeLogin, setRole } from "../src/access.ts";
 import { connect } from "../src/db.ts";
 import type { Route } from "../src/dash/types.ts";
-import { ConfigError, loadConfig } from "../src/dash/server/config.ts";
-import { APP_CSP, defaultRoutes, SESSION_COOKIE, startServer } from "../src/dash/server/index.ts";
+import { loadConfig } from "../src/dash/server/config.ts";
+import { defaultRoutes, SESSION_COOKIE, startServer } from "../src/dash/server/index.ts";
 import { FakeProvider } from "../src/dash/server/provider.ts";
 import { SCRATCH } from "./scratch.ts";
 
@@ -230,19 +228,6 @@ describe("permissions", () => {
 });
 
 // Sends the path exactly as written; fetch would resolve dot segments first.
-function rawGet(path: string, cookie: string): Promise<{ status: number; body: string }> {
-  const u = new URL(base);
-  return new Promise((resolve, reject) => {
-    const r = request({ host: u.hostname, port: u.port, path, headers: { cookie, accept: "text/html" } }, (res) => {
-      let body = "";
-      res.setEncoding("utf8");
-      res.on("data", (c: string) => (body += c));
-      res.on("end", () => resolve({ status: res.statusCode!, body }));
-    });
-    r.on("error", reject);
-    r.end();
-  });
-}
 
 describe("frontend", () => {
 

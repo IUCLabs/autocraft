@@ -1,15 +1,8 @@
 // CI on the default branch: the state of a head from its checks, the culprit and red_since from the heads seen,
 // and the step storing rows from a GitHub reply.
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync } from "node:fs";
-import { join } from "node:path";
 import { test } from "node:test";
-import { connect } from "../src/db.ts";
 import { classify, derive, prNumberOf, type HeadRow, type MainCheck } from "../src/mainci/classify.ts";
-import { mainCiRepos, pollMainCi, summarize } from "../src/mainci/index.ts";
-import type { Querier } from "../src/mirror.ts";
-import { validating } from "./gql.ts";
-import { SCRATCH } from "./scratch.ts";
 
 const c = (name: string, state: MainCheck["state"]): MainCheck => ({ name, state, url: null });
 
@@ -55,7 +48,4 @@ test("derive: a green head ends the red run; with no green head the oldest red h
   assert.equal(derive([]), null);
 });
 
-const reply = (oid: string, nodes: object[]) => ({
-  defaultBranchRef: { name: "main", target: { oid, committedDate: "2026-11-01T10:00:00Z", messageHeadline: "Merge pull request #7 from x/y", statusCheckRollup: { state: "FAILURE", contexts: { nodes } } } },
-});
 

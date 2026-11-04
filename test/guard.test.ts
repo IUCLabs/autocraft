@@ -11,12 +11,14 @@ import { closeItem, mergeViaCommand } from "../src/github/write.ts";
 import { G } from "./guarded.ts";
 import { mergeDecisionId } from "../src/merge/queue.ts";
 import { parseSafeMergeArgs, safeMerge } from "../src/merge/safe-merge.ts";
-import { fresh } from "./batch-fixture.ts";
+import { world } from "./world-db.ts";
 import { prFacts } from "./world.ts";
 
 const ref = { repo: "app", number: 1 };
 const open: LiveRead = { state: "OPEN", head: "sha1", draft: false, mergeable: "MERGEABLE" };
 const live = (r: Partial<LiveRead> = {}): Live => async () => ({ ...open, ...r });
+/** PR 1 in the state a clean take is merged from. */
+const fresh = (_prs: { n: number }[]) => world().repo(["comment"]).pr(1).review(1).verified(1).premerge(1, "clean").pipeline(false).db;
 const MERGE = { kind: "merge", head: "sha1" } as const;
 const T = "2026-01-02T00:00:00Z";
 const OP = { operator: "op" };
@@ -50,7 +52,6 @@ test("refuses when an operator's Hold answer arrived", async () => {
   const id = mergeDecisionId("app", 1, "sha1");
   db.prepare("INSERT INTO decisions (id, kind, repo, number, items, question, options, facts, asked_at, answer, answered_by, answered_at) VALUES (?, 'merge', 'app', 1, '[]', 'q', '[]', ?, ?, 'hold', 'op', ?)")
     .run(id, JSON.stringify(["head commit sha1"]), T, T);
-  db.prepare("INSERT INTO access (login, role) VALUES ('op', 'operator')").run();
   assert.match(why(await guard(db, ref, MERGE, OP, live())), /plan no longer has merge/);
 });
 
@@ -72,7 +73,7 @@ test("the global pipeline switch gates the pipeline's writes, not an operator's"
   const db = fresh([{ n: 1 }]);
   assert.match(why(await guard(db, ref, MERGE, "pipeline", live())), /pipeline is off/);
   assert.ok(ok(await guard(db, ref, MERGE, OP, live())));
-  db.prepare("INSERT INTO main.settings (key, value) VALUES ('pipeline_enabled', '1')").run();
+  db.prepare("UPDATE main.settings SET value = '1' WHERE key = 'pipeline_enabled'").run();
   assert.ok(ok(await guard(db, ref, MERGE, "pipeline", live())));
 });
 
@@ -103,7 +104,6 @@ test("the merge command gets the reviewed head, and the built-in command refuses
 /** Item 1 with an operator's close answer to a scope decision. */
 function closeAnswered(): DatabaseSync {
   const db = fresh([{ n: 1 }]);
-  db.prepare("INSERT INTO access (login, role) VALUES ('op', 'operator')").run();
   db.prepare("INSERT INTO decisions (id, kind, repo, number, items, question, options, facts, asked_at, answer, answered_by, answered_at) VALUES ('d1', 'scope', 'app', 1, ?, 'q', '[]', '[]', ?, 'close', 'op', ?)")
     .run(JSON.stringify([{ repo: "app", number: 1 }]), T, T);
   return db;

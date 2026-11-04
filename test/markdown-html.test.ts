@@ -2,7 +2,7 @@
 // nothing else gets through.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { htmlBlock, inlineChildren, proxiedImage, remarkHtmlToMarkdown, safeUrl, type MdNode } from "../web/src/ui/markdownHtml.ts";
+import { htmlBlock, inlineChildren, proxiedImage, safeUrl, type MdNode } from "../web/src/ui/markdownHtml.ts";
 
 const ALLOWED = new Set(["paragraph", "text", "image", "link", "break", "strong", "emphasis", "inlineCode"]);
 const IMG = "https://github.com/user-attachments/assets/52cc3f06-06ec-404f-94b5-74a9af1e1c7e";

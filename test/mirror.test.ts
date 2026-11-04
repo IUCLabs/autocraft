@@ -21,9 +21,9 @@ test("incremental sync stops at the first old item and requests no further page"
 
 
 // ---- search-based incremental sync ----
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { join } from "node:path";
-import { acquireLock, lowPriority, runSync, searchSince, type Client } from "../src/mirror.ts";
+import { runSync } from "../src/mirror.ts";
 import { connect } from "../src/db.ts";
 import { itemText, textHash } from "../src/embed/text.ts";
 import { inputHash } from "../src/runner/classify.ts";

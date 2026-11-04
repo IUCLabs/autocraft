@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import { renderJev } from "../src/prompts/index.ts";
-import { settle } from "../src/classify/settled.ts";
 import { itemInput, jevVerdict, parseHaikuReply, parseRefereeReply, type Item } from "../src/classify/parse.ts";
 
 const refs = ["a#1", "a#2", "a#3"];
