@@ -6,7 +6,7 @@ import { describe, test } from "node:test";
 import { connect } from "../src/db.ts";
 import { plannedItems } from "../src/core/select-items.ts";
 import { nextPage } from "../src/dash/api/next.ts";
-import { detectAutopilot, LANE_KINDS, LANES, NO_ITEM_LANES, setEnabled, setLimit } from "../src/runner/autopilot.ts";
+import { detectAutopilot, INPUT_TOPICS, LANE_KINDS, LANES, NO_ITEM_LANES, setEnabled, setLimit } from "../src/runner/autopilot.ts";
 import { SCRATCH } from "./scratch.ts";
 
 mkdirSync(SCRATCH, { recursive: true });
@@ -38,6 +38,16 @@ describe("Next page", () => {
     const embed = (await nextPage(db, ["app"])).steps.find((s) => s.lane === "embed")!;
     assert.deepEqual([embed.canRun, embed.kind], [false, "limit"]);
     assert.equal(embed.why, "The daily limit is 0");
+  });
+
+  test("storing the lists is not planner input", async () => {
+    const seqs = () => db.prepare("SELECT topic, seq FROM change_seq").all() as { topic: string; seq: number }[];
+    const before = seqs();
+    db.prepare("INSERT OR REPLACE INTO lane_next (lane, total, items, at) VALUES ('x', 0, '[]', 'now')").run();
+    db.prepare("DELETE FROM lane_next WHERE lane = 'x'").run();
+    const moved = seqs().filter((s) => s.seq !== (before.find((b) => b.topic === s.topic)?.seq ?? 0)).map((s) => s.topic);
+    assert.deepEqual(moved.filter((t) => INPUT_TOPICS.includes(t as never)), [], "lane_next must sit under an excluded topic");
+    assert.ok(moved.includes("plans"));
   });
 
   test("every lane lists its items or is declared without any", () => {

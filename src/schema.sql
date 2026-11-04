@@ -1231,6 +1231,14 @@ CREATE TABLE IF NOT EXISTS item_plans (
   PRIMARY KEY (repo, number)
 ) WITHOUT ROWID;
 
+-- What each autopilot lane's next jobs take, as the last planner pass listed it (LaneItem[] as JSON, capped); the Next page reads it.
+CREATE TABLE IF NOT EXISTS lane_next (
+  lane TEXT PRIMARY KEY,
+  total INTEGER NOT NULL,
+  items TEXT NOT NULL,
+  at TEXT NOT NULL
+) WITHOUT ROWID;
+
 -- One row per run of the build tool by a patch-writing model (src/checktool): the command, its outcome in one line, and the worker task that ran it.
 CREATE TABLE IF NOT EXISTS model_checks (
   id INTEGER PRIMARY KEY AUTOINCREMENT,

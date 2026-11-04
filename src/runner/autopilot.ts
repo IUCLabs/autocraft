@@ -977,25 +977,31 @@ export function laneItems(db: DatabaseSync, ctx: PlanCtx, lane: Pick<Lane, "name
 
 const plain = (why: string): string => { const t = why.replace(/^(paused|tripped): /, ""); return t.charAt(0).toUpperCase() + t.slice(1); };
 
-const KEY_NEXT = "pipeline_next_items";
 /** The most items of one lane the planner stores. */
 const NEXT_PER_LANE = 500;
 export type StoredLaneItems = Record<string, { total: number; items: LaneItem[] }>;
 
-/** Writes each lane's items as this pass sees them, only when they changed. */
+/** Writes each lane's items as this pass sees them: only the lanes that changed. The table belongs to the `plans` topic, which the planner does not take as input. */
 function storeLaneItems(db: DatabaseSync, lanes: Lane[], ctx: PlanCtx): void {
-  const out: StoredLaneItems = {};
+  const old = new Map((db.prepare("SELECT lane, total, items FROM lane_next").all() as { lane: string; total: number; items: string }[]).map((r) => [r.lane, r]));
+  const put = db.prepare("INSERT OR REPLACE INTO lane_next (lane, total, items, at) VALUES (?, ?, ?, ?)");
+  const at = new Date().toISOString();
   for (const lane of lanes) {
     const all = laneItems(db, ctx, lane);
-    if (all.length) out[lane.name] = { total: all.length, items: all.slice(0, NEXT_PER_LANE) };
+    const prev = old.get(lane.name);
+    old.delete(lane.name);
+    if (!all.length) { if (prev) db.prepare("DELETE FROM lane_next WHERE lane = ?").run(lane.name); continue; }
+    const items = JSON.stringify(all.slice(0, NEXT_PER_LANE));
+    if (!prev || prev.total !== all.length || prev.items !== items) put.run(lane.name, all.length, items, at);
   }
-  const json = JSON.stringify(out);
-  if (json !== getSetting(db, KEY_NEXT)) setSetting(db, KEY_NEXT, json);
+  for (const lane of old.keys()) db.prepare("DELETE FROM lane_next WHERE lane = ?").run(lane);
 }
 
 /** The lane lists of the planner's last pass, keyed by lane name. */
 export function storedLaneItems(db: DatabaseSync): StoredLaneItems {
-  try { return JSON.parse(getSetting(db, KEY_NEXT) ?? "{}") as StoredLaneItems; } catch { return {}; }
+  const out: StoredLaneItems = {};
+  for (const r of db.prepare("SELECT lane, total, items FROM lane_next").all() as { lane: string; total: number; items: string }[]) out[r.lane] = { total: r.total, items: JSON.parse(r.items) as LaneItem[] };
+  return out;
 }
 
 export type LaneGate = { canRun: boolean; kind: "ok" | "running" | "off" | "breaker" | "limit" | "account" | "backoff"; why: string | null };

@@ -23,6 +23,7 @@ export const BOOKKEEPING_COLUMNS: Record<string, string[]> = {
   flow_summary: ["counted_at", "stale", "decisions_sig"],
   duplicate_scans: ["at"],
   item_plans: ["planned_at"],
+  lane_next: ["at"],
 };
 
 /** Settings the runner, the sync and the planner write for their own use; the dashboard shows none of them. */
@@ -58,7 +59,7 @@ export const TOPIC_TABLES: Record<string, Source[]> = {
   queue: [{ table: "merges" }, { table: "merge_batches" }, { table: "merge_batch_prs" }, { table: "merge_holds" }, { table: "premerge_reviews" }],
   fasttrack: [{ table: "fast_track" }],
   // The planner's Plan cache; its own output, so the planner does not plan again for it.
-  plans: [{ table: "item_plans" }],
+  plans: [{ table: "item_plans" }, { table: "lane_next" }],
   jobs: [{ table: "jobs" }, { table: "stage_limits" }, { table: "stage_trips" }],
   usage: [{ table: "token_usage" }, { table: "account_usage_samples" }],
   accounts: [{ table: "claude_accounts" }, { table: "claude_account_status" }],
