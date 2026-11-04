@@ -208,7 +208,7 @@ export function loadItemFacts(db: DatabaseSync, opts: ItemLoadOptions = {}): Ite
       },
       embedHash, embeddedHash: r.e_hash, priorityHash: r.pr_hash, scannedHash: r.scan_hash,
       pairsToCheck: pairs.get(ref) ?? 0, inGroupToAsk: inGroup.has(ref), inCompareSet: inCompare.has(ref), dupeAnswers: dupeAnswers.get(ref) ?? [],
-      scope: { open: openScope.has(ref), answer: answers.get(ref) ?? null, covered: covered.has(ref), pastClassified: r.stage !== null && r.stage !== "classified", recommend: recommend.get(ref) ?? null },
+      scope: { open: openScope.has(ref), answer: answers.get(ref) ?? null, covered: covered.has(ref), labeledOnly: r.stage === "labeled", pastClassified: r.stage !== null && r.stage !== "classified", recommend: recommend.get(ref) ?? null },
       labels: { existing: json<unknown[]>(r.labels, []).map(String), pluginAnswer: operatorAnswers.get(ref) === "plugin", labeledNote: note },
       answeredClose: answeredClose.get(ref) ?? [],
       closeReview: closeReview.get(ref) ?? null,

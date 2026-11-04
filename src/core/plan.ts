@@ -307,6 +307,8 @@ export type ItemFacts = {
     covered: boolean;
     /** The item's stage row is past "classified". */
     pastClassified: boolean;
+    /** The item has only been labelled (stage "labeled"): a scope-vs-scope disagreement from a later classification is still asked. */
+    labeledOnly?: boolean;
     /** Its own open scope decision lacks Opus's recommendation: failures so far and the time of the last failure. */
     recommend: { failures: number; failedAt: string | null } | null;
   };

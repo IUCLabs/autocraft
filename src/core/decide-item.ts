@@ -32,7 +32,15 @@ function fixCandidate(f: ItemFacts): boolean {
 const labelDisagreement = (f: ItemFacts): boolean => f.classification.status === "disagree" && scopeReason(f) !== "scope-disagreement";
 
 /** A scope decision should be asked: the reason holds and no decision or later stage covers the item. */
-const scopeNeeded = (f: ItemFacts): boolean => scopeReason(f) !== null && !f.scope.covered && !f.scope.pastClassified;
+const scopeNeeded = (f: ItemFacts): boolean => {
+  const reason = scopeReason(f);
+  // A new classification that disagrees on a scope label leaves an item that was only labelled without a settled label: ask it.
+  return reason !== null && !f.scope.covered && (!f.scope.pastClassified || (reason === "scope-disagreement" && !!f.scope.labeledOnly));
+};
+
+const PLUGIN_WAIT = "stays open as a plugin candidate";
+/** A PR settled as a plugin candidate is not reviewed or merged: it stays open with its label (no question) unless a scope decision about it is open. */
+const pluginPr = (f: ItemFacts): boolean => f.kind === "pr" && f.classification.status === "settled" && f.classification.label === "plugin candidate" && !f.scope.open;
 
 export function itemState(f: ItemFacts): ItemState {
   if (f.held) return f.held === "backlog" ? "held-backlog" : "held-duplicate";
@@ -110,7 +118,7 @@ export function decideItem(f: ItemFacts): ItemPlan {
 
   // A closed item is here for its unapplied answered close only.
   if (!f.open) actions.splice(0, actions.length, ...actions.filter((a) => a.kind === "act" && !a.params?.ask));
-  return { repo: f.repo, number: f.number, kind: f.kind, state, actions, wait: actions.some(isWork) ? null : !f.inScope ? "not in scope" : WAITS[state] ?? null };
+  return { repo: f.repo, number: f.number, kind: f.kind, state, actions, wait: actions.some(isWork) ? null : !f.inScope ? "not in scope" : state === "classified" && pluginPr(f) ? PLUGIN_WAIT : WAITS[state] ?? null };
 }
 
 /** The Work page's next-step text (rank/next.ts nextStepOf), from the item's state and, for a PR, the facts of its review-to-merge path. */
@@ -123,6 +131,7 @@ export function nextStep(item: ItemPlan, f: ItemFacts, pr: PrFacts | null): stri
     default:
   }
   const c = f.classification;
+  if (item.state === "classified" && pluginPr(f)) return "Stays open as a plugin candidate";
   if (item.state === "scope-due" && c.status === "disagree") return "Decide";
   const needsDecision = c.flags.includes("needs decision");
   if (f.kind === "issue") {
