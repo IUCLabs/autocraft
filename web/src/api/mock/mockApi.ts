@@ -19,6 +19,7 @@ import { createQueueMock } from "./queueMock";
 import { githubActivityPage } from "./githubFixtures";
 import { workList } from "./workFixtures";
 import { flowFixture } from "./flowFixtures";
+import { mainCi } from "./mainCiMock";
 import { DECISIONS, MOCK_USERS, NOW, REPOS, SEARCH_POOL, THREADS, itemFor, permFor, progress, type MockRole } from "./fixtures";
 
 const wait = <T>(v: T, ms = 60) => new Promise<T>((r) => setTimeout(() => r(structuredClone(v)), ms));
@@ -180,6 +181,7 @@ export function createMockApi(): Api {
       return wait(hits.slice(0, 8), 40);
     },
     progress: () => wait(progress(decisions.filter((d) => !d.answer).length)),
+    mainCi: () => wait(mainCi()),
     ...createConversationMock(me, changed),
     ...createAreasMock(me, changed),
     ...createAdminMock(me, changed),

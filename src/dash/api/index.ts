@@ -43,6 +43,7 @@ import { localEmbedder, type Embedder } from "../../embed/model.ts";
 import type { Exec } from "../../fixup/git.ts";
 import { batchRemovePr, batchStop, fastTrackAdd, fastTrackRefs, fastTrackRemove, heldMergeRefs, mergeHoldPr, pipelineRepoNames, queuePage } from "./queue-page.ts";
 import { VectorIndex } from "../../embed/vectors.ts";
+import { mainCiRepos, summarize } from "../../mainci/index.ts";
 
 export type ApiOptions = {
   // Opinions and comments by non-operators, per login per hour.
@@ -206,7 +207,7 @@ const sum = <T extends object>(xs: T[], zero: T): T => {
   return out as T;
 };
 
-type Heavy = Omit<Progress, "decisionsOpen" | "decisionsAnsweredToday">;
+type Heavy = Omit<Progress, "decisionsOpen" | "decisionsAnsweredToday" | "mainCi">;
 // One entry per set of hidden repos (nearly always the operator's empty set and one other).
 const progressCache = new WeakMap<DatabaseSync, Map<string, { key: string; at: number; value: Heavy }>>();
 const PROGRESS_MAX_AGE = 60_000;
@@ -283,6 +284,7 @@ function progress(db: DatabaseSync, hidden: string[]): Progress {
     ...heavy,
     repos: heavy.repos.map((r) => ({ ...r, decisionsOpen: openDec.get(r.repo) ?? 0 })),
     decisionsOpen, decisionsAnsweredToday: answeredToday,
+    mainCi: summarize(mainCiRepos(db, hidden)),
   };
 }
 
@@ -326,6 +328,11 @@ export function apiRoutes(opts: ApiOptions = {}): Route[] {
     get("/api/items", items.listItems),
     get("/api/search", (db, req) => req.query.get("mode") === "semantic" ? sim.semanticSearch(db, req, vectors) : items.quickSearch(db, req)),
     get("/api/progress", async (db, req) => progress(db, await hiddenRepos(db, req))),
+    get("/api/main-ci", async (db, req) => {
+      const repos = mainCiRepos(db, await hiddenRepos(db, req));
+      return { summary: summarize(repos), repos };
+    }),
+    get("/api/main-ci/summary", async (db, req) => summarize(mainCiRepos(db, await hiddenRepos(db, req)))),
     get("/api/contributors", adm.listContributors),
     get("/api/contributors/rule-preview", adm.previewRule),
     post("/api/contributors/rule", adm.saveRule),

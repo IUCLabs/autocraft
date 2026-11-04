@@ -35,6 +35,7 @@ import type {
   ItemFilter,
   ItemList,
   OverrideInput,
+  MainCi,
   Progress,
   PromptsReport,
   BatchFilter,
@@ -125,6 +126,8 @@ export interface Api {
   /** The Items browser: every tracked repo, full-text search over titles, bodies and comments. */
   items(filter: ItemFilter): Promise<ItemList>;
   progress(): Promise<Progress>;
+  /** CI on the default branch of every synced repo the viewer may see. */
+  mainCi(): Promise<MainCi>;
   /** Anyone signed in reads; writes and the preview are for operators. Override notes come only to operators. */
   contributors: {
     list(filter: ContributorFilter): Promise<ContributorList>;

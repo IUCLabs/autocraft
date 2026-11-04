@@ -697,6 +697,14 @@ async function sync(args: string[]): Promise<void> {
       console.log(`sync: mode=${mode} items=${items} points=${client.spent} left=${client.remaining}`);
       // Sandboxed calls read the item snapshot instead of GitHub. The refresh is incremental and writes nothing when nothing differs; a visibility change alone removes a repository's rows.
       refreshSnapshot();
+      // A failed read of the default branches must not fail the mirror run; the next run asks again.
+      if (!opts.full && !opts.only.length) {
+        try {
+          await (await import("./mainci/index.ts")).pollMainCiIfDue(db, querier);
+        } catch (e) {
+          console.log(`main-ci: ${String((e as Error)?.message ?? e).slice(0, 200)}`);
+        }
+      }
     } catch (e) {
       db.prepare("UPDATE sync_runs SET ended_at = ?, error = ? WHERE rowid = ?").run(iso(new Date()), String((e as Error)?.message ?? e).slice(0, 300), row);
       throw e;

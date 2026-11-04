@@ -881,6 +881,8 @@ export const SEARCH_POOL: SearchHit[] = (() => {
 
 // ---------- progress ----------
 
+import { mainCiSummary } from "./mainCiMock";
+
 export function progress(decisionsOpen: number): Progress {
   const r = rng(7);
   const days = Math.ceil((NOW - Date.parse(TRACKING_SINCE)) / D);
@@ -928,5 +930,6 @@ export function progress(decisionsOpen: number): Progress {
     decisionsOpen,
     decisionsAnsweredToday: 64,
     repos,
+    mainCi: mainCiSummary(),
   };
 }

@@ -4,7 +4,7 @@ import type { Querier } from "../mirror.ts";
 import { pilotSql } from "../pilot.ts";
 import { overallAt, recordRuns, type Suite } from "../merge/ci-approval.ts";
 
-const ORG = "storytold";
+export const ORG = "storytold";
 /** PRs per query: 100 check contexts each keeps a query well under GitHub's node limit. */
 export const CHECKS_PER_QUERY = 40;
 

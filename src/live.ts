@@ -16,6 +16,7 @@ export const BOOKKEEPING_COLUMNS: Record<string, string[]> = {
   items: ["embed_hash", "class_hash", "class_scheme"],
   classifications: ["at", "input_hash"],
   pr_checks: ["fetched_at"],
+  main_ci: ["updated_at"],
   ci_run_approvals: ["checked_at"],
   item_priority: ["at"],
   item_rank: ["computed_at"],
@@ -27,7 +28,7 @@ export const BOOKKEEPING_COLUMNS: Record<string, string[]> = {
 const BOOKKEEPING_SETTINGS = [
   "runner_heartbeat", "schema_stamp", "fts_built", "hashes_built", "item_stage_built", "tracking_started_at",
   "pipeline_planned_at", "pipeline_seqs_seen", "pipeline_wake_at", "pipeline_status", "pipeline_sync_seen", "pipeline_sync_at", "pipeline_review_cursor", "pipeline_verify_cursor",
-  "full_sync_cursor", "org_high_water", "search_catchup_at", "repos_refreshed_at", "sync_rate_remaining",
+  "full_sync_cursor", "org_high_water", "main_ci_polled_at", "search_catchup_at", "repos_refreshed_at", "sync_rate_remaining",
   "flow_summary_marks", "classify_run", "worker_update_pending", "worker_update_failures",
 ];
 const BOOKKEEPING_SETTING_LIKE = ["%\\_points\\_last\\_run", "pipeline\\_fp:%"];
@@ -47,6 +48,7 @@ export const TOPIC_TABLES: Record<string, Source[]> = {
   ranks: [{ table: "item_rank" }, { table: "item_priority" }],
   stages: [{ table: "stages" }, { table: "item_stage" }, { table: "flow_summary" }],
   checks: [{ table: "pr_checks" }, { table: "ci_run_approvals" }],
+  mainci: [{ table: "main_ci" }],
   classify: [{ table: "classifications" }, { table: "item_areas" }, { table: "area_lists" }, { table: "area_proposals" }],
   dupes: [{ table: "duplicate_pairs" }, { table: "duplicate_scans" }],
   decisions: [{ table: "decisions" }, { table: "decision_opinions" }, { table: "decision_comments" }, { table: "decision_claims" },

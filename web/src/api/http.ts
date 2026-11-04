@@ -144,6 +144,7 @@ export function createHttpApi(): Api {
     search: (q) => (q.trim() ? get(`/api/search?${new URLSearchParams({ q })}`) : Promise.resolve([])),
     items: (f) => get(`/api/items${itemQuery(f)}`),
     progress: () => get("/api/progress"),
+    mainCi: () => get("/api/main-ci"),
     contributors: {
       list: (filter) => get(`/api/contributors${qs(filter)}`),
       previewRule: (rule) => get(`/api/contributors/rule-preview${qs(rule)}`),
