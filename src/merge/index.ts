@@ -170,6 +170,7 @@ export function mergeQuestion(e: QueueEntry, why: string | null = null): Record<
   const pre = [
     ...(e.premerge?.defects ?? []).filter(() => e.outsideRule.includes(PREMERGE_DEFECT_REASON)).map((f) => `pre-merge defect: ${f.file}:${f.line} ${f.title}: ${f.scenario}`),
     ...(e.premerge?.unknownClaims ?? []).filter(() => e.outsideRule.includes(PREMERGE_UNSURE_REASON)).map((c) => `pre-merge could not settle a claim of the description: ${c.claim} (${c.evidence})`),
+    ...(e.outsideRule.includes(PREMERGE_UNSURE_REASON) && !e.premerge?.unknownClaims.length ? ["pre-merge could not check the description's claims list"] : []),
     ...(e.outsideRule.includes(PREMERGE_FAILED_REASON) ? [`pre-merge review failed: ${(e.premerge?.error ?? "no review stored").replace(/^retry: /, "")}`] : []),
   ];
   const where = `size ${e.size}, label ${e.label ?? "not settled"}; author: ${e.author ?? "unknown"}, ${TIER_LABEL[e.tier]}`;

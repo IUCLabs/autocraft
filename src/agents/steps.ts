@@ -164,7 +164,7 @@ export const REVIEW_OPUS: ClaudeStep<OpusPr, OpusValue, ReferenceCtx> = {
     return own === null ? null : [...own, ...await referenceProblems(opusTexts(text), c.dir, c.semantic, { stage, otherProblems: own.length })];
   } },
   parse: (text, x, ctx) => {
-    const review = parseOpusReply(text, x.ref, true, dropTexts(ctx.problems), false, x.statements, x.body);
+    const review = parseOpusReply(text, x.ref, true, dropTexts(ctx.problems), false, x.statements, x.body, x.files);
     return review === null ? null : { value: { review, text } };
   },
 };
@@ -177,7 +177,7 @@ export const PREMERGE_OPUS: ClaudeStep<OpusPr & { ref: string }, PremergeReview,
     const own = lintPremerge(text, x.ref, x.body);
     return own === null ? null : [...own, ...await referenceProblems(premergeTexts(text, x.ref), c.dir, c.semantic, { stage, otherProblems: own.length })];
   } },
-  parse: (text, x, ctx) => { const r = parsePremerge(text, x.ref, dropTexts(ctx.problems), x.statements, x.body); return r === null ? null : { value: r }; },
+  parse: (text, x, ctx) => { const r = parsePremerge(text, x.ref, dropTexts(ctx.problems), x.statements, x.body, x.files); return r === null ? null : { value: r }; },
 };
 
 export const POSTMERGE_OPUS: ClaudeStep<PostmergePr, Finding[], ReferenceCtx> = {

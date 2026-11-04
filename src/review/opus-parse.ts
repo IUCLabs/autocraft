@@ -107,6 +107,16 @@ export const CLAIM_EVIDENCE_CHARS = 600;
  * does not follow a scheme or a `/` ("v2.0:1" and URLs do not count). Groups: path, line.
  */
 export const EVIDENCE_AT = /(?<![\w./:-])((?:[\w.-]+\/)+[\w.-]+\.\w+|[\w-]+\.(?:ts|tsx|js|jsx|mjs|cjs|rs|py|go|java|kt|swift|c|h|cpp|cs|rb|php|sql|json|toml|ya?ml|md|css|html|sh)):(\d+)/;
+/** The `path:line` an evidence text names, or null: a path of EVIDENCE_AT, or one of the PR's changed `files` (which may have no directory or listed extension). */
+export function evidenceAt(evidence: string, files: readonly string[] = []): { path: string; line: number } | null {
+  const m = EVIDENCE_AT.exec(evidence);
+  if (m) return { path: m[1]!, line: Number(m[2]) };
+  for (const f of files) {
+    const k = new RegExp(`(?<![\\w./:-])${f.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}:(\\d+)`).exec(evidence);
+    if (k) return { path: f, line: Number(k[1]) };
+  }
+  return null;
+}
 const SANDBOX_PREFIX = new RegExp(`(^|[^\\w./-])${REPO_PATH}/`, "g");
 /** The model reads the repository at the sandbox path; the posted text names repo-relative paths. */
 export const stripSandboxPath = (s: string): string => s.replace(SANDBOX_PREFIX, "$1");
@@ -133,24 +143,24 @@ export type ParsedClaims = {
  * are stored and posted: a text that mentions the reference documentation or is in `drop` is replaced by a neutral line
  * (`keep`: leave them, for the lint). Evidence and fix files are repo-relative; a fix with an unsafe path is dropped.
  */
-export function parseClaims(v: unknown, drop: ReadonlySet<string> = new Set(), keep = false): ParsedClaims | null {
+export function parseClaims(v: unknown, drop: ReadonlySet<string> = new Set(), keep = false, files: readonly string[] = []): ParsedClaims | null {
   if (!Array.isArray(v)) return null;
   const out: ParsedClaims = { claims: [], indexes: [], rejected: Math.max(0, v.length - MAX_CLAIMS) };
   v.slice(0, MAX_CLAIMS).forEach((x, index) => {
     const o = x as Record<string, unknown> | null;
-    const text = o && typeof o === "object" && typeof o.claim === "string" ? squashText(o.claim).slice(0, CLAIM_CHARS) : "";
+    const text = o && typeof o === "object" && typeof o.claim === "string" ? squashText(stripSandboxPath(o.claim)).slice(0, CLAIM_CHARS) : "";
     if (!o || !text || (o.status !== "verified" && o.status !== "contradicted" && o.status !== "unverified")) { out.rejected++; return; }
     const proof = typeof o.evidence === "string" ? squashText(stripSandboxPath(o.evidence)).slice(0, CLAIM_EVIDENCE_CHARS) : "";
     const claim = !keep && (REFERENCE_LEAK.test(text) || drop.has(text)) ? NEUTRAL_CLAIM : text;
     const evidence = !keep && (REFERENCE_LEAK.test(proof) || drop.has(proof)) ? NEUTRAL_EVIDENCE : proof;
-    const status: ClaimStatus = o.status === "verified" && !EVIDENCE_AT.test(proof) ? "unverified" : o.status;
+    const status: ClaimStatus = o.status === "verified" && !evidenceAt(proof, files) ? "unverified" : o.status;
     const f = o.fix as { file?: unknown; change?: unknown } | null | undefined;
     const file = f && typeof f === "object" && typeof f.file === "string" ? stripSandboxPath(f.file.trim()) : "";
     const fix = f && typeof f === "object" && typeof f.change === "string" && f.change.trim() && safePath(file) && !REFERENCE_LEAK.test(file + f.change)
       ? { file: file.slice(0, 200), change: f.change.trim().slice(0, 800) } : undefined;
     out.indexes.push(index);
     if (status === "verified") { out.claims.push({ claim, status, evidence }); return; }
-    const impact: ClaimImpact = EVIDENCE_AT.test(proof) && (o.impact === "code-wrong" || o.impact === "description-only") ? o.impact : "unknown";
+    const impact: ClaimImpact = evidenceAt(proof, files) && (o.impact === "code-wrong" || o.impact === "description-only") ? o.impact : "unknown";
     out.claims.push(fix && impact === "code-wrong" ? { claim, status, evidence, impact, fix } : { claim, status, evidence, impact });
   });
   return out;
@@ -201,9 +211,9 @@ function replyObject(text: string): unknown {
  * Claims rule: the code is what merges, not the description. A claim with impact "code-wrong" means the PR is not a take:
  * take-fix when every such claim names a fix, hold otherwise. "description-only" changes nothing. An "unknown" impact, or no
  * `claims` list for a PR with a body (`body`), makes a take or take-fix unsure.
- * `drop`: see parsePublic. `keepLeaky`: keep fixes that mention the reference (the lint checks validity this way, so the fix turn can handle them; the stored review always drops them).
+ * `files`: the PR's changed files, accepted as evidence paths. `drop`: see parsePublic. `keepLeaky`: keep fixes that mention the reference (the lint checks validity this way, so the fix turn can handle them; the stored review always drops them).
  */
-export function parseOpusReply(text: string, ref: string, last = true, drop: ReadonlySet<string> = new Set(), keepLeaky = false, known: readonly OwnerStatement[] = [], body = ""): OpusReview | null {
+export function parseOpusReply(text: string, ref: string, last = true, drop: ReadonlySet<string> = new Set(), keepLeaky = false, known: readonly OwnerStatement[] = [], body = "", files: readonly string[] = []): OpusReview | null {
   const o = replyObject(text);
   if (!o || typeof o !== "object") return null;
   const r = o as Record<string, unknown>;
@@ -218,7 +228,7 @@ export function parseOpusReply(text: string, ref: string, last = true, drop: Rea
   const risks = Array.isArray(r.risks) ? r.risks.filter((x): x is string => typeof x === "string").slice(0, 8).map((x) => x.slice(0, 300)) : [];
   const summary = proseField(r.summary, SUMMARY_MAX_WORDS, last), why = proseField(r.why, WHY_MAX_WORDS, last);
   if (!summary.ok || !why.ok) return null;
-  const parsed = parseClaims(r.claims, drop, keepLeaky), listed = parsed?.claims ?? [];
+  const parsed = parseClaims(r.claims, drop, keepLeaky, files), listed = parsed?.claims ?? [];
   // Every valid claim reaches the verdict; only the texts stored and posted are cleaned. A list that was not fully read leaves the review unsure.
   const bad = listed.filter((c) => c.impact === "code-wrong"), unknownClaim = listed.find((c) => c.impact === "unknown");
   const unproven = parsed === null ? !!body.trim() : parsed.rejected > 0 || !!unknownClaim;

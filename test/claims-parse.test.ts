@@ -33,6 +33,17 @@ describe("claims reach the verdict", () => {
     assert.equal(pre([{ ...bad, claim: "x", evidence: "/repo/src/a.rs:10 wrong" }]).findings[0]!.file, "src/a.rs");
   });
 
+  test("a changed file is evidence at any path; the sandbox path is stripped from the claim text", () => {
+    const files = ["build.gradle.kts", "Makefile"];
+    const run = (evidence: string, f: string[] = files) => parseOpusReply(JSON.stringify({ ...take, claims: [{ ...ok, evidence }] }), "app#1", true, new Set(), false, [], "body", f)!;
+    assert.equal(run("build.gradle.kts:3 sets it").sure, true);
+    assert.equal(run("Makefile:3").sure, true);
+    assert.equal(run("Makefile:3", []).sure, false, "not a changed file");
+    assert.equal(run("Other.kts:3").sure, false);
+    const p = parsePremerge(JSON.stringify({ ref: "app#1", findings: [], claims: [{ ...bad, claim: "x in /repo/src/a.rs", evidence: "Makefile:4 wrong" }] }), "app#1", new Set(), [], "body", files)!;
+    assert.deepEqual([p.findings[0]!.file, p.findings[0]!.line, p.claims[0]!.claim], ["Makefile", 4, "x in src/a.rs"]);
+  });
+
   test("an unknown status, a non-string claim and entries over the cap make the review unsure", () => {
     for (const list of [[ok, { ...ok, status: "maybe" }], [ok, { claim: 3, status: "verified" }], [ok, "x"], Array.from({ length: MAX_CLAIMS + 1 }, () => ok)]) {
       assert.equal(opus(list).sure, false);
@@ -58,6 +69,12 @@ describe("claims reach the verdict", () => {
 });
 
 describe("Merge? question for an unsure pre-merge review", () => {
+  test("without an unknown claim it says the claims list could not be checked", () => {
+    const e = { repo: "r", number: 1, head: "abc", size: "S", label: null, author: "a", tier: "known", ci: "success", noCi: false, mergeable: "MERGEABLE", verdict: "take", reason: "ok", fixes: 0, verify: null,
+      outsideRule: [PREMERGE_UNSURE_REASON], premerge: { state: "unsure", defects: [], minor: 0, error: null, unknownClaims: [] } } as unknown as QueueEntry;
+    assert.equal((mergeQuestion(e, "x").facts as string[]).some((f) => f.includes("could not check the description's claims list")), true);
+  });
+
   test("names the unknown claim and gives no merge recommendation", () => {
     const e = {
       repo: "r", number: 1, head: "abc", size: "S", label: null, author: "a", tier: "known", ci: "success", noCi: false, mergeable: "MERGEABLE", verdict: "take", reason: "ok", fixes: 0,
