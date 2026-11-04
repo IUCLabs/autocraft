@@ -7,7 +7,7 @@ export { PREMERGE_MAX_TRIES };
 
 export type { PremergeFinding } from "./types.ts";
 import type { PremergeFinding } from "./types.ts";
-import type { DirectionHit } from "../review/opus-parse.ts";
+import type { StatementConflict } from "../review/opus-parse.ts";
 
 export type PremergeRow = {
   repo: string; number: number; head_oid: string;
@@ -18,8 +18,8 @@ export type PremergeRow = {
   findings: string | null;
   /** What the reviewer searched, as free text. */
   searched: string | null;
-  /** JSON DirectionHit[]; null before direction support or when none. */
-  directions: string | null;
+  /** JSON StatementConflict[]; null when none. */
+  conflicts: string | null;
   /** Why the last try stored no review; null once a review is stored. */
   error: string | null;
   tries: number;
@@ -31,8 +31,8 @@ export type PremergeSave = {
   /** A stored review. Without it, `error` records a failed try. */
   findings?: PremergeFinding[];
   searched?: string | null;
-  /** The directions the review named (a stored review only). */
-  directions?: DirectionHit[];
+  /** The statements the review named as conflicts (a stored review only). */
+  conflicts?: StatementConflict[];
   error?: string | null;
   /** The failure is final: no more tries (the head cannot be reviewed at all). */
   final?: boolean;
@@ -42,9 +42,9 @@ export type PremergeSave = {
 export function savePremerge(db: DatabaseSync, s: PremergeSave): void {
   const args = [s.repo, s.number, s.head, s.at, s.runId ?? null, s.model ?? null] as const;
   if (s.findings) {
-    db.prepare(`INSERT INTO premerge_reviews (repo, number, head_oid, at, run_id, model, findings, searched, directions, error, tries) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 0)
+    db.prepare(`INSERT INTO premerge_reviews (repo, number, head_oid, at, run_id, model, findings, searched, conflicts, error, tries) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 0)
       ON CONFLICT (repo, number, head_oid) DO UPDATE SET at = excluded.at, run_id = excluded.run_id, model = excluded.model,
-        findings = excluded.findings, searched = excluded.searched, directions = excluded.directions, error = NULL`).run(...args, JSON.stringify(s.findings), s.searched ?? null, s.directions?.length ? JSON.stringify(s.directions) : null);
+        findings = excluded.findings, searched = excluded.searched, conflicts = excluded.conflicts, error = NULL`).run(...args, JSON.stringify(s.findings), s.searched ?? null, s.conflicts?.length ? JSON.stringify(s.conflicts) : null);
     return;
   }
   db.prepare(`INSERT INTO premerge_reviews (repo, number, head_oid, at, run_id, model, error, tries) VALUES (?, ?, ?, ?, ?, ?, ?, ?)

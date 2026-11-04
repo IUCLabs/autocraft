@@ -1171,35 +1171,23 @@ CREATE TABLE IF NOT EXISTS premerge_reviews (
   PRIMARY KEY (repo, number, head_oid)
 );
 
--- Standing directions of the operators for a repo ('*': every repo). The reviews name the directions a PR goes against or touches,
--- and such a PR is never merged by the rule (src/core/decide.ts). A retired direction is kept for the record and no longer read.
-CREATE TABLE IF NOT EXISTS repo_directions (
+-- What operators said once, kept so reviews of related work see it (src/memory/). One row per source: the answer note of a
+-- decision, a comment (or review) of an operator on GitHub that AutoCraft did not post, or an operator's message in a conversation.
+-- source_id is the decision id, the comment's node id or the turn's id. embedding: float32 unit vector of the item title and the text, by `model`.
+CREATE TABLE IF NOT EXISTS owner_statements (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  repo TEXT NOT NULL,                 -- a repo name, or '*'
-  text TEXT NOT NULL,
-  created_by TEXT NOT NULL,
-  created_at TEXT NOT NULL,
-  source_decision TEXT,               -- the decision the text came from, when it did
-  retired_at TEXT
-);
-
--- Notes of operators that the directions.propose step judged. state: open (a draft waits for an operator) | accepted | dismissed | none (the note states no direction).
--- source: 'decision:<id>' (the answer note of a decision) or 'comment:<id>' (an operator's comment on a closed item); one row per source.
-CREATE TABLE IF NOT EXISTS direction_proposals (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  source TEXT NOT NULL UNIQUE,
+  source_kind TEXT NOT NULL,          -- decision-note | comment | conversation
+  source_id TEXT NOT NULL,
   repo TEXT NOT NULL,
   number INTEGER,
-  decision_id TEXT,
-  note TEXT NOT NULL,
-  draft TEXT,
-  state TEXT NOT NULL,
-  created_at TEXT NOT NULL,
-  decided_by TEXT, decided_at TEXT,
-  direction_id INTEGER                -- the direction an accepted proposal created
+  item_title TEXT NOT NULL DEFAULT '',
+  author TEXT NOT NULL,
+  text TEXT NOT NULL,
+  at TEXT NOT NULL,
+  embedding BLOB,
+  model TEXT,
+  UNIQUE (source_kind, source_id)
 );
--- Notes older than this are not judged (set when the table is first created).
-INSERT OR IGNORE INTO settings VALUES ('direction_proposals_since', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'));
 
 -- The planner's output (src/core/plan-cache.ts): what is due for each item at the end of the last planner pass. One row per
 -- PR or item; written by the planner only, in one transaction, only the rows that changed. For a PR, `state` is the state of

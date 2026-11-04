@@ -50,7 +50,7 @@ type Row = {
   repo: string; number: number; author: string | null; state: "OPEN" | "MERGED" | "CLOSED"; review_decision: string | null; head_oid: string | null; updated_at: string | null; is_draft: number | null;
   additions: number | null; deletions: number | null; i_mergeable: string | null; head_repo: string | null; head_ref: string | null; base_ref: string | null; i_can: number | null;
   c_head: string | null; c_at: string | null; c_state: string | null; c_draft: number | null; overall: string | null; c_checks: string | null; c_mergeable: string | null; c_can: number | null;
-  r_head: string | null; r_at: string | null; r_verdict: string | null; r_sure: number | null; r_mode: string | null; r_reason: string | null; r_fixes: string | null; r_public: string | null; r_directions: string | null;
+  r_head: string | null; r_at: string | null; r_verdict: string | null; r_sure: number | null; r_mode: string | null; r_reason: string | null; r_fixes: string | null; r_public: string | null; r_conflicts: string | null;
   score: number | null; in_pilot: number; not_integration: number; batch_pr: number; held_backlog: number; held_dup: number;
 };
 
@@ -60,7 +60,7 @@ const safeJson = (s: string | null): unknown => { try { return JSON.parse(s!); }
 const SELECT = `SELECT i.repo, i.number, i.author, i.state, i.review_decision, i.head_oid, i.updated_at, i.is_draft, i.additions, i.deletions, i.mergeable AS i_mergeable,
     i.head_repo, i.head_ref, i.base_ref, i.maintainer_can_modify AS i_can,
     c.head_oid AS c_head, c.fetched_at AS c_at, c.state AS c_state, c.is_draft AS c_draft, c.overall, c.checks AS c_checks, c.mergeable AS c_mergeable, c.maintainer_can_modify AS c_can,
-    l.head_oid AS r_head, l.at AS r_at, l.verdict AS r_verdict, l.sure AS r_sure, l.mode AS r_mode, l.reason AS r_reason, l.fixes AS r_fixes, l.public_review AS r_public, l.directions AS r_directions,
+    l.head_oid AS r_head, l.at AS r_at, l.verdict AS r_verdict, l.sure AS r_sure, l.mode AS r_mode, l.reason AS r_reason, l.fixes AS r_fixes, l.public_review AS r_public, l.conflicts AS r_conflicts,
     ${fastScoreSql("i.repo", "i.number", "p.score")} AS score,
     ${pilotSql("i")} AS in_pilot, ${notOwnIntegrationSql("i")} AS not_integration,
     EXISTS (SELECT 1 FROM main.merge_batches mb WHERE mb.repo = i.repo AND mb.pr_number = i.number) AS batch_pr,
@@ -75,15 +75,15 @@ const SELECT = `SELECT i.repo, i.number, i.author, i.state, i.review_decision, i
   WHERE i.kind = 'pr' AND (i.state = 'OPEN' OR (i.state = 'MERGED' AND l.verdict IN ('take', 'take-fix'))
     OR EXISTS (SELECT 1 FROM merges mm WHERE mm.repo = i.repo AND mm.number = i.number AND mm.outcome = 'merged'))`;
 
-/** The active directions named by the given stored `directions` values (JSON [{id, reason}]), one entry per id with the first reason; retired or unknown ids and unreadable values count for nothing. */
-function touchedDirections(find: { get(id: number): unknown }, stored: unknown[]): PrFacts["directionsTouched"] {
-  const out: PrFacts["directionsTouched"] = [];
+/** The statements named by the given stored `conflicts` values (JSON [{id, reason}]), one entry per id with the first reason; unknown ids and unreadable values count for nothing. */
+function statementConflicts(find: { get(id: number): unknown }, stored: unknown[]): PrFacts["statementConflicts"] {
+  const out: PrFacts["statementConflicts"] = [];
   for (const v of stored) {
     if (!Array.isArray(v)) continue;
     for (const h of v as { id?: unknown; reason?: unknown }[]) {
       if (typeof h?.id !== "number" || out.some((d) => d.id === h.id)) continue;
-      const d = find.get(h.id) as { id: number; text: string } | undefined;
-      if (d) out.push({ id: d.id, text: d.text, reason: typeof h.reason === "string" ? h.reason : "" });
+      const d = find.get(h.id) as { id: number; repo: string; number: number | null; text: string } | undefined;
+      if (d) out.push({ id: d.id, where: d.number === null ? d.repo : `${d.repo}#${d.number}`, text: d.text, reason: typeof h.reason === "string" ? h.reason : "" });
     }
   }
   return out.sort((a, b) => a.id - b.id);
@@ -154,7 +154,7 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
   const waiting = db.prepare("SELECT runs, approved, reread, failed, cross_repo, approved_at FROM ci_run_approvals WHERE repo = ? AND number = ? AND head_oid = ?");
   const verifs = db.prepare("SELECT state, kind, summary, note FROM verifications WHERE repo = ? AND number = ? AND head_sha = ?");
   const decision = db.prepare("SELECT id FROM decisions WHERE id = ?");
-  const direction = db.prepare("SELECT id, text FROM repo_directions WHERE id = ? AND retired_at IS NULL");
+  const statement = db.prepare("SELECT id, repo, number, text FROM owner_statements WHERE id = ?");
   const openQuestion = db.prepare(OPEN_QUESTION_SQL);
   const answeredAfter = db.prepare("SELECT 1 FROM decisions WHERE id = ? AND kind = 'merge' AND answer = 'merge' AND answered_at > ? AND answered_by IN (SELECT login FROM access WHERE role = 'operator')");
   const pushChain = pushChainOf(db);
@@ -205,7 +205,7 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
       checksHere: false, checksOpen: false, ci: "unknown", mergeable: r.i_mergeable ?? "UNKNOWN", runs: null,
       lastMerge: null, runsApprovedAfterMerge: false, verification: null, verifyUnavailable: null,
       decision: { asked: false, openQuestion: false, answer: null, mergeAnswerAfterReview: false, inOpenGroup: grouped.has(ref) },
-      premerge: null, premergeFixUsed: false, directionsTouched: [], pushable: false, pushChain: [], conflict: null, inActiveBatch: activeBatched.has(ref), fixup: null, carry: [], lint: [], cifix: null, postmerge: null, batch: null, mainFix: false, changesRequested: null, gateFailureNote: null,
+      premerge: null, premergeFixUsed: false, statementConflicts: [], pushable: false, pushChain: [], conflict: null, inActiveBatch: activeBatched.has(ref), fixup: null, carry: [], lint: [], cifix: null, postmerge: null, batch: null, mainFix: false, changesRequested: null, gateFailureNote: null,
     };
     base.inFlight = r.state === "OPEN" && !integration && !!r.author && r.author === own.login && own.prs.has(ref);
     if (integration) {
@@ -251,7 +251,7 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
     };
     base.pushChain = chain;
     if (r.state === "OPEN" && (chain.length > 1 || (!!head && !!pushedHere.get(r.repo, r.number, head)))) base.inFlight = true;
-    base.directionsTouched = touchedDirections(direction, [safeJson(r.r_directions), safeJson(premergeAt(db, r.repo, r.number, r.r_head)?.directions ?? null)]);
+    base.statementConflicts = statementConflicts(statement, [safeJson(r.r_conflicts), safeJson(premergeAt(db, r.repo, r.number, r.r_head)?.conflicts ?? null)]);
     const p = posts.get(ref);
     const hasPublic = r.r_public !== null;
     const pub = !hasPublic ? { ok: true } : parsePublic(safeJson(r.r_public!));

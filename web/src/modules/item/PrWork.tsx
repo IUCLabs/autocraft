@@ -1,7 +1,7 @@
 // Review, Verify, Fix-ups and Actions sections of the Item page.
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
-import { BugIcon, CompassIcon, InfoIcon } from "@phosphor-icons/react";
+import { BugIcon, InfoIcon } from "@phosphor-icons/react";
 import type { Item, ItemAction, ItemFixup, ItemPatchCheck, ItemPostmerge, ItemPremerge, ItemReviews, ItemVerification, PostmergeFinding, ReleaseAction, ReviewSide, ReviewVerdictName, TaskResult } from "../../api/types";
 import { useApi } from "../../api/client";
 import { Badge, type Tone } from "../../ui/atoms/Badge";
@@ -174,16 +174,14 @@ function Reviews({ r }: { r: ItemReviews }) {
       >
         <p className="mt-2 text-ink/80">No review</p>
       </ReviewCard>
-      {r.directions.length > 0 && (
-        <ul className="mt-2 space-y-1 text-sm">
-          {r.directions.map((d) => (
-            <li key={d.id} className="flex items-start gap-2">
-              <CompassIcon className="mt-0.5 shrink-0 text-warn" />
-              <span>
-                <span className="text-ink/55">Directions: </span>
-                {d.text}
-                {d.reason && <span className="text-ink/60"> — {d.reason}</span>}
-              </span>
+      {r.conflicts.length > 0 && (
+        <ul className="mt-2 space-y-1.5 text-sm">
+          {r.conflicts.map((c) => (
+            <li key={c.id} className="flex flex-wrap items-start gap-x-2">
+              <span className="text-ink/55">Conflicts with:</span>
+              {c.number !== null ? <ItemRef repo={c.repo} number={c.number} kind={c.kind} state={c.state} title={c.title} size="sm" /> : <span className="code text-xs text-ink/60">{c.repo}</span>}
+              <span className="text-ink/70">“{c.excerpt}”</span>
+              {c.reason && <span className="text-ink/60">— {c.reason}</span>}
             </li>
           ))}
         </ul>
