@@ -13,11 +13,14 @@ export type Bridge = {
   /** MCP server entry and read-only mount for the sandbox. */
   mcpServer: { command: string; args: string[]; env: Record<string, string> };
   mount: { host: string; path: string };
+  /** The agent run that the tool's rows are recorded under from now on: each turn on the same bridge is its own run. */
+  setRun: (runId: number) => void;
   close: () => void;
 };
 
 /** Starts the bridge for one model call; `runId` is the agent run the tool's rows are recorded under. */
 export async function startBridge(tool: CheckTool, runId: number): Promise<Bridge> {
+  let current = runId;
   const token = randomBytes(24).toString("hex");
   const want = Buffer.from(`Bearer ${token}`);
   const server = createServer((req, res) => {
@@ -31,7 +34,7 @@ export async function startBridge(tool: CheckTool, runId: number): Promise<Bridg
       if (size > 2_000_000) return reply({ text: "refused: the request is too large", isError: true });
       let input: unknown;
       try { input = JSON.parse(Buffer.concat(chunks).toString("utf8")); } catch { return reply({ text: "refused: the input is not JSON", isError: true }); }
-      tool.run(input, runId).then(reply, (e) => reply({ text: `the check could not run: ${String((e as Error).message ?? e).slice(0, 200)}`, isError: true }));
+      tool.run(input, current).then(reply, (e) => reply({ text: `the check could not run: ${String((e as Error).message ?? e).slice(0, 200)}`, isError: true }));
     });
   });
   server.requestTimeout = 0;
@@ -41,6 +44,7 @@ export async function startBridge(tool: CheckTool, runId: number): Promise<Bridg
   return {
     mcpServer: { command: "/usr/bin/node", args: ["--no-warnings", `${CHECK_APP_PATH}/main.ts`], env: { CHECK_TOOL_URL: `http://127.0.0.1:${port}/`, CHECK_TOOL_TOKEN: token } },
     mount: { host: fileURLToPath(new URL("./server", import.meta.url)), path: CHECK_APP_PATH },
+    setRun: (id) => { current = id; },
     close: () => { server.close(); server.closeAllConnections(); },
   };
 }

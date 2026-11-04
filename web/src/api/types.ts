@@ -1405,7 +1405,7 @@ export type AgentRun = {
   endedAt: string | null;
   inputTokens: number | null; outputTokens: number | null;
   cacheReadTokens: number | null; cacheWriteTokens: number | null;
-  costUsd: number | null;    // null for Jev and for runs from before costs were stored
+  costUsd: number | null;    // USD; Jev is input tokens at the flat price; null for runs from before costs were stored
   summary: string | null;    // one line: verdict counts, error class
   progress?: string;         // running calls with tools: the latest thing the model is doing
 };
@@ -1418,7 +1418,7 @@ export type AgentRunDetail = AgentRun & {
 export type AgentRunTool = {
   seq: number;
   tool: string;              // e.g. "Read", "mcp__build__check"
-  args: string;              // scrubbed JSON, capped; results are never stored
+  args: string | null;       // scrubbed JSON, capped; null for viewers without text access; results are never stored
   resultBytes: number | null;
   isError: boolean;
   startedAt: string | null;  // null when the call's output was not streamed

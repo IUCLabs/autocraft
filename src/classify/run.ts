@@ -377,6 +377,7 @@ async function askOnce<K extends ClaudePromptId>(id: K, model: string, input: Cl
     const turn = async (runId: number, stdin: string, resume?: string): Promise<(Reply & { sessionId?: string }) | null> => {
       const finish = (e: Parameters<typeof finishRun>[2]) => finishRun(db, runId, e);
       const extra = resume ? ["--resume", resume] : [];
+      bridge?.setRun(runId);
       let r: Proc;
       const clock: ToolClock = { start: new Map(), end: new Map() };
       if (spec) {
@@ -397,6 +398,8 @@ async function askOnce<K extends ClaudePromptId>(id: K, model: string, input: Cl
       try {
         // `--output-format json` prints the event list (older CLI versions only the final result object); stream-json prints one event per line.
         const parsed = parseOutput(r.stdout);
+        // Before the result is looked at: a call that timed out or ended without a result still shows the tools it used.
+        try { saveTools(db, runId, parsed, clock); } catch (e) { console.log(`tool uses not stored: ${(e as Error).message}`); }
         const j = lastResult(parsed) as { result?: string; is_error?: boolean; session_id?: string; total_cost_usd?: number; num_turns?: number; usage?: Record<string, number>; modelUsage?: ModelUsage } | undefined;
         if (!j) {
           finish({ state: "failed", error: `no result (${exitClass(r.code)}) ${r.stderr}`.slice(0, 400), summary: "no result", output: sandboxed ? scrub(r.stdout) : r.stdout });
@@ -404,7 +407,6 @@ async function askOnce<K extends ClaudePromptId>(id: K, model: string, input: Cl
         }
         const { usage, all: tokens } = resultUsage(j, model);
         const costUsd = typeof j.total_cost_usd === "number" ? j.total_cost_usd : usage.cost;
-        try { saveTools(db, runId, parsed, clock); } catch (e) { console.log(`tool uses not stored: ${(e as Error).message}`); }
         if (j.is_error || typeof j.result !== "string") {
           finish({ state: "failed", tokens, costUsd, error: scrubError(`model error ${typeof j.result === "string" ? j.result : ""}`), summary: "model error", output: sandboxed ? scrub(r.stdout) : r.stdout });
           return null;

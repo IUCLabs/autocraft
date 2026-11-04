@@ -65,6 +65,16 @@ describe("Plan cache", () => {
     refreshPlanCache(db);
     const h = planHistory(db, "app", 1);
     assert.deepEqual(h.slice(before).map((r) => [r.oldState, r.wait === null]), [["earlier", true], ["before-that", true]]);
+    db.prepare("UPDATE item_plans SET wait = 'y' WHERE number = 1").run();
+    refreshPlanCache(db);
+    const w = planHistory(db, "app", 1).at(-1)!;
+    assert.deepEqual([w.oldWait, w.wait === null], ["y", true], "a wait-only change is recorded with the old wait");
+    db.prepare("UPDATE items SET state = 'CLOSED' WHERE number = 2").run();
+    refreshPlanCache(db);
+    const gone = planHistory(db, "app", 2).at(-1)!;
+    db.prepare("UPDATE items SET state = 'OPEN' WHERE number = 2").run();
+    refreshPlanCache(db);
+    assert.deepEqual([gone.newState, gone.oldState === null], ["gone", false], "an item leaving the plan set gets a row");
     assert.equal(h[h.length - 1]!.newState, cache()[0]!.state);
     assert.equal(h[0]!.oldState, null, "the first plan has no old state");
     assert.ok(prunePlanHistory(db, 0, Date.now() + 1000) >= h.length);
