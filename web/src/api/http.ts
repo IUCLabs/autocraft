@@ -141,6 +141,7 @@ export function createHttpApi(): Api {
       },
     },
     now: () => get("/api/now"),
+    nowFeed: (before) => get(`/api/now/feed${qs({ before })}`),
     item: (repo, number) => get(`/api/items/${encodeURIComponent(repo)}/${encodeURIComponent(String(number))}`),
     itemTrace: (repo, number, q = {}) =>
       get(`/api/items/${encodeURIComponent(repo)}/${encodeURIComponent(String(number))}/trace${qs({ ...q, kinds: q.kinds?.join(",") })}`),

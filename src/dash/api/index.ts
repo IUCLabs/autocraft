@@ -29,7 +29,7 @@ import { queue, queueBatches } from "./queue.ts";
 import { next } from "./next.ts";
 import { work } from "./work.ts";
 import { flow } from "./flow.ts";
-import { now } from "./now.ts";
+import { now, nowFeed } from "./now.ts";
 import { queueSlots } from "../../rank/position.ts";
 import * as items from "./items.ts";
 import { activity } from "./activity.ts";
@@ -482,6 +482,7 @@ export function apiRoutes(opts: ApiOptions = {}): Route[] {
     get("/api/needs", needs),
     get("/api/flow", flow),
     get("/api/now", now),
+    get("/api/now/feed", nowFeed),
     get("/api/similar/:repo/:n", (db, req) => sim.similar(db, req, vectors)),
   ];
 }

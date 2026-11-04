@@ -197,7 +197,7 @@ export function createMockApi(): Api {
     ...createPipelineMock(me, changed),
     ...createAgentsMock(me, changed),
     ...createTraceMock(),
-    ...createNowMock(),
+    ...createNowMock(changed),
     ...createActivityMock(),
     ...createBuildMock(me, changed),
     ...createQueueMock(me, changed),

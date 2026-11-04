@@ -1817,39 +1817,41 @@ export type NowHealth = {
   pipeline: { enabled: boolean; by: string | null; at: string | null };
   problems: NowProblem[];
 };
-export type NowRunningKind = "job" | "model-call" | "task" | "batch";
-export type NowRunning = {
+export type NowEntryKind = "job" | "call" | "task" | "batch" | "write" | "merge" | "decision" | "failure";
+/**
+ * One unit of work in the Now feed, newest started first. A job is the same entry while it runs and after it ends; the GitHub writes
+ * made on its items during its run attach to it as `writes`. Writes with no job stand alone.
+ */
+export type NowEntry = {
   key: string;
-  kind: NowRunningKind;
-  /** The step's title as the dashboard shows it. */
-  step: string;
+  /** Every event this entry stands for (a job's writes, a group's members); an entry that gains ids is the same entry, grown. */
+  ids: string[];
+  kind: NowEntryKind;
+  state: "running" | "queued" | "done" | "failed";
+  /** When it started or happened. */
+  at: string;
+  endedAt: string | null;
+  /** The step's title as the dashboard shows it, or the sentence for a write, decision or failure. */
+  title: string;
   /** Model and account for calls, environment for tasks, the branch for batches. */
   what: string | null;
-  state: string;
-  startedAt: string;
+  /** The outcome once ended. */
+  summary: string | null;
+  /** The latest progress line while running. */
   progress: string | null;
-  repo: string | null;
-  items: (ItemRef & ItemShown)[];
-  itemCount: number;
-  /** Trace event id on the first item's page (`run:<id>`, `job:<id>`, `task:<id>`); null when the row has no item. */
-  event: string | null;
-  /** The run, job, task or batch page. */
-  detail: string;
-  /** Model calls and build tasks of this job, shown under it. */
-  children: NowRunning[];
-};
-export type NowEventKind = "write" | "merge" | "decision" | "failure";
-export type NowEvent = {
-  key: string;
-  kind: NowEventKind;
-  at: string;
-  summary: string;
   actor: string;
   item: (ItemRef & ItemShown) | null;
-  /** A grouped row: the first items it covers (at most 3) and how many more it covers. */
-  items?: (ItemRef & ItemShown)[];
-  more?: number;
+  /** The first items it covers (at most 5 for a job, 3 for a group) and how many more. */
+  items: (ItemRef & ItemShown)[];
+  itemCount: number;
+  more: number;
+  /** Trace event id on the first item's page; null when the entry has no item. */
   event: string | null;
+  /** The run, job, task, batch or decision page. */
   detail: string | null;
+  writes: { summary: string; items: (ItemRef & ItemShown)[]; more: number }[];
+  /** Model calls and build tasks of a running job, shown under it. */
+  children: NowEntry[];
 };
-export type Now = { health: NowHealth; running: NowRunning[]; /** Titles of housekeeping jobs that just started, shown as one line. */ alsoRunning: string[]; recent: NowEvent[] };
+export type NowFeed = { entries: NowEntry[]; nextCursor: string | null };
+export type Now = { health: NowHealth; /** Titles of housekeeping jobs that are running, shown as one line. */ alsoRunning: string[] } & NowFeed;

@@ -21,8 +21,14 @@ export function useScrollAnchor(list: RefObject<HTMLElement | null>, dep: unknow
       const delta = a.el.getBoundingClientRect().top - a.top;
       if (delta !== 0) sp.scrollTop += delta;
     }
-    const edge = sp.getBoundingClientRect().top;
-    const first = Array.from(ul.children).find((c) => c.getBoundingClientRect().bottom > edge);
-    anchor.current = first ? { el: first, top: first.getBoundingClientRect().top } : null;
+    const record = () => {
+      const edge = sp.getBoundingClientRect().top;
+      const first = Array.from(ul.children).find((c) => c.getBoundingClientRect().bottom > edge);
+      anchor.current = first ? { el: first, top: first.getBoundingClientRect().top } : null;
+    };
+    record();
+    // Scrolling moves the anchor too; without this the next render would scroll back to where the last render saw it.
+    sp.addEventListener("scroll", record, { passive: true });
+    return () => sp.removeEventListener("scroll", record);
   }, [list, dep]);
 }
