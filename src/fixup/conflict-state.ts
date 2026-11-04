@@ -1,6 +1,6 @@
 // Which conflicted take / take-fix PRs the fix-up step merges the default branch into, from the local tables only.
 import type { DatabaseSync } from "node:sqlite";
-import { conflictNote as coreConflictNote } from "../core/rules.ts";
+import { BASE_NAME, conflictNote as coreConflictNote } from "../core/rules.ts";
 import { fastScoreSql } from "../fasttrack.ts";
 import { notHeldSql } from "../dupes/held.ts";
 import { headOf } from "../review/candidates.ts";
@@ -12,7 +12,7 @@ import { activeBatches, membersOf } from "../merge/batch-store.ts";
 import { longLivedOf, pushable } from "./pushable.ts";
 
 /** Base branch names the merge accepts as a fetch ref. */
-export const BASE_NAME = /^[A-Za-z0-9._/-]+$/;
+export { BASE_NAME };
 
 /** Merge tries per head (pushed, failed, refused or rejected) before the PR is left to a person. */
 export const MAX_CONFLICT_TRIES = 2;

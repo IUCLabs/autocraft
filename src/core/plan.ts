@@ -21,6 +21,7 @@ export const OTHER_PR_STATES = [
   "label-not-reviewed", // its settled label is not one that gets a code review
   "scope", // waits for a scope answer (or the answer keeps it out of core)
   "not-reviewed", // no review yet: due a review
+  "closed", // closed or merged on GitHub, outside the merge queue (post-merge review only)
 ] as const;
 
 export const PLAN_STATES = [...QUEUE_STATES, ...OTHER_PR_STATES] as const;
@@ -42,6 +43,8 @@ export type Plan = {
   note: string | null;
   /** Every action due now, in priority order. */
   actions: Action[];
+  /** The conflict-handling note ("conflict: merging main"); apart from `note`, which is the queue's own. */
+  conflictNote: string | null;
   /** What it waits on when no main-path action is due. */
   wait: string | null;
   /** The merge rule or an operator's answer lets it merge now (a refused PR still counts while its retry waits for a change). */
@@ -77,7 +80,7 @@ export type PrFacts = {
   /** Time of the decision, ms. */
   now: number;
   /** GitHub state as mirrored. */
-  ghState: "OPEN" | "MERGED";
+  ghState: "OPEN" | "MERGED" | "CLOSED";
   /** The PR's current head commit (checks fetched after the mirror's last update win over the mirror). */
   head: string | null;
   /** A draft, or not open on GitHub, as the freshest of mirror and checks says. */
@@ -153,14 +156,31 @@ export type PrFacts = {
   };
 
   /** The pre-merge review row at the reviewed head. */
-  premerge: { at: string; tries: number; hasFindings: boolean; defects: number; defectsAllFixable: boolean; minor: number; error: string | null } | null;
+  premerge: { at: string; tries: number; hasFindings: boolean; defects: number; defectsAllFixable: boolean; /** Every defect's fix names a safe path, so a fix-up can apply them. */ fixesSafe: boolean; minor: number; error: string | null } | null;
   premergeFixUsed: boolean;
   /** The PR's head branch may be pushed to (source of the maintainer flag follows `checksHere`). */
   pushable: boolean;
   /** Heads the PR was pushed from by AutoCraft, newest first, starting with the reviewed head. */
   pushChain: string[];
   /** For a conflicting open PR: what fix-up does and the base branch. */
-  conflict: { bucket: string; base: string } | null;
+  conflict: { bucket: string; base: string; /** The base branch name is one fix-up may merge. */ baseOk: boolean } | null;
+  /** Member of a merge batch that is checking or open, at any head. */
+  inActiveBatch: boolean;
+  /** Fix-up of a take-fix review at the current head: its usable fixes, the tries used and the final rows recorded at the head (fixups.state, no source). */
+  fixup: { fixes: number; attempts: number; recorded: string[] } | null;
+  /** Queued carry-over jobs of the duplicate groups (one per group decision) whose closed PRs left points to carry: tries used. */
+  carry: { attempts: number }[];
+  /** CI fix state at the reviewed head, loaded while CI fails. */
+  cifix: {
+    /** ci_fixes states at the head, oldest first. */
+    states: string[]; tries: number; rerunAt: string | null; infraRuns: number[] | null;
+    formattingTask: number | null; formatterEnded: boolean;
+    totalPushes: number; totalTries: number;
+    /** When the checks were fetched (ISO). */
+    checksAt: string | null;
+  } | null;
+  /** The pipeline merged the PR: when, and what the stored post-merge review looks like. */
+  postmerge: { mergedAt: string; head: string | null; since: string; review: { at: string; error: string | null } | null } | null;
   /** The batch the reviewed head is in. */
   batch: "batch-checking" | "in-batch" | "batch-failed" | null;
   /** The PR is one AutoCraft opened to fix main CI. */

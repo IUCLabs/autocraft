@@ -55,3 +55,17 @@ export function conflictNote(bucket: string, base: string): string | null {
     default: return null;
   }
 }
+
+/** Fix-up tries per PR (pushed, failed, refused or rejected) before the step leaves it to a person. */
+export const FIXUP_MAX_ATTEMPTS = 2;
+/** Base branch names a conflict merge accepts. */
+export const BASE_NAME = /^[A-Za-z0-9._/-]+$/;
+
+/** CI fix: tries per head, pushed fixes and tries per PR over all heads. */
+export const CIFIX_MAX_TRIES = 2;
+export const CIFIX_MAX_PUSHES_PER_PR = 2;
+export const CIFIX_MAX_TRIES_PER_PR = 4;
+export const CIFIX_TRY_STATES = ["formatting", "pushing", "pushed", "failed", "refused", "rejected"];
+export const CIFIX_PUSH_STATES = ["pushing", "pushed"];
+/** States that end the CI fix step's work at a head. */
+export const CIFIX_FINAL_STATES = ["pushed", "pushing", "asked", "push-denied", "cannot-push", "skipped", "comment-failed"];

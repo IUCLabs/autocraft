@@ -9,12 +9,13 @@ import { pushApprovalOf } from "./approval.ts";
 import { FORMAT_REASONS, safePath } from "./patch.ts";
 import { longLivedOf, pushable } from "./pushable.ts";
 import { classifyConflicts, type ConflictCandidate } from "./conflict-state.ts";
+import { FIXUP_MAX_ATTEMPTS } from "../core/rules.ts";
 import { pilotSql } from "../pilot.ts";
 import { buildQueue, type QueueEntry } from "../merge/queue.ts";
 import { findingsOf, premergeAt, premergeFixUsed } from "../premerge/store.ts";
 
 /** Fix-up tries per PR (pushed, failed, refused or rejected) before the step leaves it to a person. */
-export const MAX_ATTEMPTS = 2;
+export const MAX_ATTEMPTS = FIXUP_MAX_ATTEMPTS;
 
 export type Fix = { file: string; change: string };
 /** Parts of PRs closed as duplicates that a duplicate group's kept PR should take over (src/act/dupe-groups.ts queues them). */

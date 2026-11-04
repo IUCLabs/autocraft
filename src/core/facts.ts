@@ -21,13 +21,17 @@ import { OPEN_GROUP_SQL, OPEN_QUESTION_SQL, UNSURE_AT_SQL, ownFixPrs, pushChainO
 import { mergeDecisionId } from "../merge/queue.ts";
 import { effectiveCi } from "../optional-checks.ts";
 import { pilotSql } from "../pilot.ts";
+import { attemptsOf, parseFixes } from "../fixup/candidates.ts";
+import { getTask, TERMINAL } from "../build/tasks.ts";
+import { SINCE_KEY } from "../postmerge/select.ts";
+import { BASE_NAME } from "./rules.ts";
 import { findingsOf, premergeAt, premergeFixUsed } from "../premerge/store.ts";
 import { headOf } from "../review/candidates.ts";
 import { parsePublic } from "../review/opus-parse.ts";
 import { staleReviews } from "../review/discussion.ts";
 import { scopeAnswers } from "../review/candidates.ts";
 import { NOT_RUST_REASON, PRIVATE_REASON, cachedRust } from "../verify/candidates.ts";
-import { MAX_FAILURES, sizeOf } from "./rules.ts";
+import { CIFIX_PUSH_STATES, CIFIX_TRY_STATES, MAX_FAILURES, sizeOf } from "./rules.ts";
 import type { PrFacts, PrTier } from "./plan.ts";
 
 export type { PrFacts } from "./plan.ts";
@@ -43,7 +47,7 @@ export type LoadOptions = {
 };
 
 type Row = {
-  repo: string; number: number; author: string | null; state: "OPEN" | "MERGED"; review_decision: string | null; head_oid: string | null; updated_at: string | null; is_draft: number | null;
+  repo: string; number: number; author: string | null; state: "OPEN" | "MERGED" | "CLOSED"; review_decision: string | null; head_oid: string | null; updated_at: string | null; is_draft: number | null;
   additions: number | null; deletions: number | null; i_mergeable: string | null; head_repo: string | null; head_ref: string | null; base_ref: string | null; i_can: number | null;
   c_head: string | null; c_at: string | null; c_state: string | null; c_draft: number | null; overall: string | null; c_checks: string | null; c_mergeable: string | null; c_can: number | null;
   r_head: string | null; r_at: string | null; r_verdict: string | null; r_sure: number | null; r_mode: string | null; r_reason: string | null; r_fixes: string | null; r_public: string | null;
@@ -68,7 +72,8 @@ const SELECT = `SELECT i.repo, i.number, i.author, i.state, i.review_decision, i
   LEFT JOIN item_rank p ON p.repo = i.repo AND p.number = i.number
   LEFT JOIN opus_reviews l ON l.repo = i.repo AND l.number = i.number AND l.head_oid = (
     SELECT r.head_oid FROM opus_reviews r WHERE r.repo = i.repo AND r.number = i.number AND r.verdict IS NOT NULL ORDER BY r.at DESC, r.rowid DESC LIMIT 1)
-  WHERE i.kind = 'pr' AND (i.state = 'OPEN' OR (i.state = 'MERGED' AND l.verdict IN ('take', 'take-fix')))`;
+  WHERE i.kind = 'pr' AND (i.state = 'OPEN' OR (i.state = 'MERGED' AND l.verdict IN ('take', 'take-fix'))
+    OR EXISTS (SELECT 1 FROM merges mm WHERE mm.repo = i.repo AND mm.number = i.number AND mm.outcome = 'merged'))`;
 
 /** Facts of every open PR (and merged PRs with a take or take-fix review) of the database, repo or refs given. One pass: per-repo values are read once. */
 export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[] {
@@ -96,6 +101,17 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
     .map((p) => [`${p.repo}#${p.number}`, p]));
   const grouped = new Set((db.prepare(`SELECT gi.repo || '#' || gi.number AS ref FROM dupe_group_items gi JOIN decisions g ON g.id = gi.decision_id
     WHERE ${OPEN_GROUP_SQL} AND gi.role <> 'stay'`).all() as { ref: string }[]).map((r) => r.ref));
+  const activeBatched = new Set((db.prepare(`SELECT b.repo || '#' || p.number AS ref FROM main.merge_batch_prs p JOIN main.merge_batches b ON b.id = p.batch_id WHERE b.state IN ('checking', 'open')`).all() as { ref: string }[]).map((x) => x.ref));
+  const mergedByPipeline = new Map((db.prepare(`SELECT m.repo || '#' || m.number AS ref, MIN(m.at) AS merged_at,
+      (SELECT x.head_oid FROM merges x WHERE x.repo = m.repo AND x.number = m.number AND x.outcome = 'merged' ORDER BY x.at DESC, x.rowid DESC LIMIT 1) AS head
+    FROM merges m WHERE m.outcome = 'merged' GROUP BY m.repo, m.number`).all() as { ref: string; merged_at: string; head: string | null }[]).map((x) => [x.ref, x]));
+  const pmReviews = new Map((db.prepare("SELECT repo || '#' || number AS ref, at, error FROM postmerge_reviews").all() as { ref: string; at: string; error: string | null }[]).map((x) => [x.ref, x]));
+  const since = (db.prepare("SELECT value FROM settings WHERE key = ?").get(SINCE_KEY) as { value: string } | undefined)?.value ?? "9999";
+  const carries = db.prepare(`SELECT k.decision_id, k.attempts FROM dupe_carries k WHERE k.repo = ? AND k.number = ? AND k.state = 'queued' ORDER BY k.number`);
+  const carryPoints = db.prepare("SELECT detail FROM dupe_group_items WHERE decision_id = ? AND kind = 'pr' AND role = 'close' ORDER BY number");
+  const fixupRows = db.prepare("SELECT state FROM fixups WHERE repo = ? AND number = ? AND from_head = ? AND source IS NULL AND state IN ('pushed', 'cannot-push', 'too-large', 'asked', 'push-denied')");
+  const cifixRows = db.prepare("SELECT state, created_at, task_id, runs FROM ci_fixes WHERE repo = ? AND number = ? AND head = ? ORDER BY created_at, rowid");
+  const cifixTotals = db.prepare(`SELECT COALESCE(SUM(state IN (${CIFIX_PUSH_STATES.map(() => "?").join(",")})), 0) AS pushes, COALESCE(SUM(state IN (${CIFIX_TRY_STATES.map(() => "?").join(",")})), 0) AS tries FROM ci_fixes WHERE repo = ? AND number = ?`);
   const queued = rows.filter((r) => r.in_pilot && r.not_integration && (r.r_verdict === "take" || r.r_verdict === "take-fix") && r.author);
   const tiers = tiersOf(db, [...new Set(queued.map((r) => r.author!))]);
 
@@ -142,7 +158,7 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
   const out: PrFacts[] = [];
   for (const r of rows) {
     // The queue leaves merged PRs outside the pilot and our own integration PRs out.
-    if (r.state === "MERGED" && (!r.in_pilot || !r.not_integration)) continue;
+    if (r.state !== "OPEN" && (!r.in_pilot || !r.not_integration)) continue;
     const ref = `${r.repo}#${r.number}`;
     const rf = repoOf(r.repo);
     const fresh = !!r.c_at && (!r.updated_at || r.c_at > r.updated_at);
@@ -152,7 +168,7 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
     const lines = (r.additions ?? 0) + (r.deletions ?? 0);
     const base: PrFacts = {
       repo: r.repo, number: r.number, now, ghState: r.state, head, draft: fresh ? r.c_state !== "OPEN" || !!r.c_draft : !!r.is_draft,
-      author: r.author, authorIsPipeline: (r.author ?? "") === (pipelineLogin ?? ""), tier: "not", lines, size: sizeOf(lines), label: null, needsDecisionFlag: false,
+      author: r.author, authorIsPipeline: r.author !== null && r.author === pipelineLogin, tier: "not", lines, size: sizeOf(lines), label: null, needsDecisionFlag: false,
       scopeAnswer: scope.get(ref) ?? null,
       inScope, integration, batchPr: !!r.batch_pr, heldBacklog: !!r.held_backlog, heldDuplicate: !r.held_backlog && !!r.held_dup, mergeHeld: holds.has(ref),
       fast: (r.score ?? 0) >= FAST_FLOOR, score: r.score, repoFacts: rf.f,
@@ -160,7 +176,7 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
       checksHere: false, checksOpen: false, ci: "unknown", mergeable: r.i_mergeable ?? "UNKNOWN", runs: null,
       lastMerge: null, runsApprovedAfterMerge: false, verification: null, verifyUnavailable: null,
       decision: { asked: false, openQuestion: false, answer: null, mergeAnswerAfterReview: false, inOpenGroup: grouped.has(ref) },
-      premerge: null, premergeFixUsed: false, pushable: false, pushChain: [], conflict: null, batch: null, mainFix: false, changesRequested: null, gateFailureNote: null,
+      premerge: null, premergeFixUsed: false, pushable: false, pushChain: [], conflict: null, inActiveBatch: activeBatched.has(ref), fixup: null, carry: [], cifix: null, postmerge: null, batch: null, mainFix: false, changesRequested: null, gateFailureNote: null,
     };
     if (integration) {
       base.runs = runsOf(batchTip.get(r.repo, r.number) as Wait | undefined);
@@ -172,6 +188,20 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
     const s = settled(r.repo, r.number);
     base.label = s.label ?? null;
     base.needsDecisionFlag = s.flags.includes("needs decision");
+    const pm = mergedByPipeline.get(ref);
+    if (pm) base.postmerge = { mergedAt: pm.merged_at, head: pm.head, since, review: pmReviews.get(ref) ?? null };
+    // Checks describe the PR when they were fetched for the reviewed head (or, without a review, the current one).
+    const checksAtHead = r.c_head === (r.r_head ?? head);
+    base.mergeable = (checksAtHead ? r.c_mergeable : r.i_mergeable) ?? "UNKNOWN";
+    base.pushable = pushable(r.head_repo, r.repo, checksAtHead ? r.c_can : r.i_can, r.head_ref, rf.longLived);
+    if (r.state === "OPEN" && !base.heldBacklog) {
+      for (const k of carries.all(r.repo, r.number) as { decision_id: string; attempts: number }[]) {
+        const hasPoints = (carryPoints.all(k.decision_id) as { detail: string | null }[]).some((x) => {
+          try { const c = (JSON.parse(x.detail ?? "null") as { carry?: unknown } | null)?.carry; return Array.isArray(c) && c.some((p) => typeof p === "string"); } catch { return false; }
+        });
+        if (hasPoints) base.carry.push({ attempts: k.attempts });
+      }
+    }
     if (!r.r_head || !r.r_verdict || !r.r_at) { out.push(base); continue; }
 
     const take = r.r_verdict === "take" || r.r_verdict === "take-fix";
@@ -197,7 +227,6 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
     base.checksOpen = checksHere && r.c_state === "OPEN" && !r.c_draft;
     const approvedPending = parseList(wait?.approved ?? "[]").length > 0;
     base.ci = checksHere ? (approvedPending ? "pending" : effectiveCi(db, r.repo, r.overall ?? "none", r.c_checks)) : "unknown";
-    base.mergeable = (checksHere ? r.c_mergeable : r.i_mergeable) ?? "UNKNOWN";
     base.runs = runsOf(wait);
     base.tier = (r.author ? tiers.get(r.author) : undefined) ?? "not";
     // The pipeline's own Fix PRs count as whitelisted; an operator's deny still wins.
@@ -218,18 +247,34 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
       asked: !!decision.get(id), openQuestion: r.state === "OPEN" && !!openQuestion.get(r.repo, r.number), answer: given,
       mergeAnswerAfterReview: given === "merge" && !!answeredAfter.get(id, r.r_at), inOpenGroup: grouped.has(ref),
     };
-    if (r.state === "MERGED") { out.push(base); continue; }
+    if (r.state !== "OPEN") { out.push(base); continue; }
 
-    base.pushable = pushable(r.head_repo, r.repo, checksHere ? r.c_can : r.i_can, r.head_ref, rf.longLived);
     const row = premergeAt(db, r.repo, r.number, r.r_head);
     if (row) {
       const all = findingsOf(row);
       const defects = all.filter((f) => f.severity === "defect");
-      base.premerge = { at: row.at, tries: row.tries, hasFindings: row.findings !== null, defects: defects.length, defectsAllFixable: defects.every((f) => f.fix), minor: all.length - defects.length, error: row.error ?? null };
+      base.premerge = { at: row.at, tries: row.tries, hasFindings: row.findings !== null, defects: defects.length, defectsAllFixable: defects.every((f) => f.fix), fixesSafe: parseFixes(JSON.stringify(defects.map((f) => f.fix))).length === defects.length, minor: all.length - defects.length, error: row.error ?? null };
       if (defects.length) base.premergeFixUsed = premergeFixUsed(db, r.repo, r.number);
     }
     if (base.mergeable === "CONFLICTING" && r.base_ref) {
-      base.conflict = { bucket: conflictBucket(db, { repo: r.repo, number: r.number, head: r.r_head, pushable: base.pushable }, { push: rf.f.pushApproved, comment: rf.f.commentApproved }), base: r.base_ref };
+      base.conflict = { bucket: conflictBucket(db, { repo: r.repo, number: r.number, head: r.r_head, pushable: base.pushable }, { push: rf.f.pushApproved, comment: rf.f.commentApproved }), base: r.base_ref, baseOk: BASE_NAME.test(r.base_ref) };
+    }
+    if (r.r_verdict === "take-fix") {
+      base.fixup = { fixes: parseFixes(r.r_fixes).length, attempts: attemptsOf(db, r.repo, r.number), recorded: (fixupRows.all(r.repo, r.number, r.r_head) as { state: string }[]).map((x) => x.state) };
+    }
+    if (base.ci === "failure") {
+      const prior = cifixRows.all(r.repo, r.number, r.r_head) as { state: string; created_at: string; task_id: number | null; runs: string | null }[];
+      const totals = cifixTotals.get(...CIFIX_PUSH_STATES, ...CIFIX_TRY_STATES, r.repo, r.number) as { pushes: number; tries: number };
+      const formatting = prior.find((x) => x.state === "formatting");
+      const task = formatting?.task_id != null ? getTask(db, formatting.task_id) : null;
+      const infra = prior.find((x) => x.state === "infra");
+      base.cifix = {
+        states: prior.map((x) => x.state), tries: prior.filter((x) => CIFIX_TRY_STATES.includes(x.state)).length,
+        rerunAt: prior.find((x) => x.state === "rerun" || x.state === "rerunning")?.created_at ?? null,
+        infraRuns: infra ? (parseList(infra.runs ?? "[]") as number[]) : null,
+        formattingTask: formatting?.task_id ?? null, formatterEnded: !task || TERMINAL.includes(task.state),
+        totalPushes: totals.pushes, totalTries: totals.tries, checksAt: r.c_at,
+      };
     }
     base.batch = inBatch.get(`${ref}@${r.r_head}`) ?? null;
     base.mainFix = !!r.head_ref?.startsWith(MAIN_FIX_BRANCH_PREFIX) && !!r.author && r.author === own.login && own.prs.has(ref);

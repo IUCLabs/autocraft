@@ -12,17 +12,18 @@ import { ciApprovalOf, overallAt } from "../merge/ci-approval.ts";
 import { mergeHeld } from "../merge/holds.ts";
 import { headOf } from "../review/candidates.ts";
 import { staleReviews } from "../review/discussion.ts";
+import { CIFIX_FINAL_STATES, CIFIX_MAX_PUSHES_PER_PR, CIFIX_MAX_TRIES, CIFIX_MAX_TRIES_PER_PR, CIFIX_PUSH_STATES, CIFIX_TRY_STATES } from "../core/rules.ts";
 import { TERMINAL, getTask } from "../build/tasks.ts";
 
 /** Tries per head (a formatter run, a pushed or rejected patch) before the step leaves the PR to a person. */
-export const MAX_TRIES = 2;
+export const MAX_TRIES = CIFIX_MAX_TRIES;
 /** Pushed CI fixes and tries in all, over every head of a PR: our own pushes make new heads, so a per-head limit alone never ends. */
-export const MAX_PUSHES_PER_PR = 2;
-export const MAX_TRIES_PER_PR = 4;
-const TRY_STATES = ["formatting", "pushing", "pushed", "failed", "refused", "rejected"];
-const PUSH_STATES = ["pushing", "pushed"];
+export const MAX_PUSHES_PER_PR = CIFIX_MAX_PUSHES_PER_PR;
+export const MAX_TRIES_PER_PR = CIFIX_MAX_TRIES_PER_PR;
+const TRY_STATES = CIFIX_TRY_STATES;
+const PUSH_STATES = CIFIX_PUSH_STATES;
 /** States that end the step's work at a head. */
-const FINAL_STATES = ["pushed", "pushing", "asked", "push-denied", "cannot-push", "skipped", "comment-failed"];
+const FINAL_STATES = CIFIX_FINAL_STATES;
 
 export type CifixCandidate = {
   repo: string; number: number; head: string; verdict: "take" | "take-fix"; reason: string;

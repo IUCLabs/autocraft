@@ -31,16 +31,21 @@ const t2 = Date.now();
 const counts = new Map<string, number>();
 const states = new Map<string, number>();
 const tokens = (p: ReturnType<typeof decidePr>): string[] =>
-  p.actions.map((a) => (a.params && typeof a.params.bucket === "string" ? `${a.kind}:${a.params.bucket}` : a.kind)).sort();
+  p.actions.map((a) => {
+    const bucket = typeof a.params?.bucket === "string" ? a.params.bucket : null;
+    if (a.kind === "fixup") return a.params?.source === "premerge" ? "fixup:premerge" : a.params?.source === "carry" ? `fixup:carry-${bucket}` : `fixup:${bucket}`;
+    return bucket ? `${a.kind}:${bucket}` : a.kind;
+  }).sort();
 const rows: string[] = [];
 for (const { f, p } of plans) {
   const due = tokens(p);
+  // Closed PRs outside the queue are listed only when something is due (the old export lists them only then).
+  if (p.state === "closed" && !due.length) continue;
   for (const t of due) counts.set(t, (counts.get(t) ?? 0) + 1);
   states.set(p.state, (states.get(p.state) ?? 0) + 1);
   const queue = isQueueState(p.state) ? { state: p.state, path: p.path, eligible: p.eligible, reasons: [...p.reasons].sort() } : null;
   rows.push(JSON.stringify({ ref: `${p.repo}#${p.number}`, head: queue ? f.review!.head : f.head, queue, due,
-    // The old side exports the queue's own note; the conflict note is a separate field there.
-    note: p.note?.startsWith("conflict:") ? null : p.note }));
+    note: p.note }));
 }
 writeFileSync(out, rows.map((r) => `${r}\n`).join(""));
 const show = (m: Map<string, number>) => [...m].sort().map(([k, v]) => `  ${k}: ${v}`).join("\n");
