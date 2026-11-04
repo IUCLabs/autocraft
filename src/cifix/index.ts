@@ -74,8 +74,12 @@ export const FORMAT_SCRIPT = [
   "set -e", "set -f", "mkdir -p /tmp/w", "cp -a /src /tmp/w/a", "cp -a /src /tmp/w/b", "cd /tmp/w",
   // The PR controls `.cargo/config.toml` (aliases) and `rust-toolchain.toml`: the image's rustfmt runs on the named files
   // directly, by absolute path, from outside the checkout, under an empty environment with the toolchain paths fixed.
-  'files="$*"', "set --", 'for f in $files; do set -- "$@" "b/$f"; done',
-  `env -i PATH=${IMAGE_CARGO}/bin:/usr/bin:/bin HOME=/tmp RUSTUP_HOME=${IMAGE_RUSTUP} CARGO_HOME=${IMAGE_CARGO} ${IMAGE_CARGO}/bin/rustfmt --edition 2021 "$@"`,
+  // rustfmt run on a file parses and formats it as its crate's edition, like `cargo fmt`: the nearest Cargo.toml's
+  // `edition`, the workspace's for `edition.workspace = true`, 2015 (Cargo's default) when none is set.
+  'files="$*"',
+  `ed() { sed -n 's/^[[:space:]]*edition[[:space:]]*=[[:space:]]*"\\([0-9]*\\)".*/\\1/p' "$1" | head -n 1; }`,
+  'edition_of() { d=$(dirname "b/$1"); while :; do if [ -f "$d/Cargo.toml" ]; then e=$(ed "$d/Cargo.toml"); if [ -n "$e" ]; then echo "$e"; return; fi; if grep -q "^[[:space:]]*edition[.[:space:]]*\\(workspace\\|=[[:space:]]*{\\)" "$d/Cargo.toml"; then e=$(ed b/Cargo.toml); echo "${e:-2015}"; return; fi; fi; [ "$d" = b ] && break; d=$(dirname "$d"); done; echo 2015; }',
+  `for f in $files; do env -i PATH=${IMAGE_CARGO}/bin:/usr/bin:/bin HOME=/tmp RUSTUP_HOME=${IMAGE_RUSTUP} CARGO_HOME=${IMAGE_CARGO} ${IMAGE_CARGO}/bin/rustfmt --edition "$(edition_of "$f")" "b/$f"; done`,
   ": > /tmp/w/format.txt",
   'for f in $files; do if ! cmp -s "a/$f" "b/$f"; then echo "diff -uN a/$f b/$f" >> /tmp/w/format.txt; diff -uN "a/$f" "b/$f" >> /tmp/w/format.txt || true; fi; done',
   "if [ -s /tmp/w/format.txt ]; then cp /tmp/w/format.txt /out/format.txt; fi",
