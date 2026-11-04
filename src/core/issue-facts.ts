@@ -9,9 +9,14 @@ import { groupsToAsk } from "../dupes/decide.ts";
 import { dueSets } from "../dupes/plan.ts";
 import { embedderId, modelName } from "../embed/model.ts";
 import { classifyHash, embedHash as hashOfText, SCHEME_ID } from "../itemhash.ts";
+import { actionable } from "../decisions.ts";
+import { commentApprovalOf } from "../act/approval.ts";
+import { TERMINAL } from "../build/tasks.ts";
+import { fixIssueApprovalOf } from "../fixissue/approval.ts";
+import { issuesWithOpenPr, notRustKey, textHash } from "../fixissue/candidates.ts";
+import { headOf, scopeAnswers } from "../review/candidates.ts";
 import { approvalOf as labelsApprovalOf } from "../labels/approval.ts";
 import { pilotSql, pilotSqlFor } from "../pilot.ts";
-import { scopeAnswers } from "../review/candidates.ts";
 import type { ItemFacts } from "./plan.ts";
 
 export type { ItemFacts } from "./plan.ts";
@@ -30,7 +35,8 @@ type Row = {
   repo: string; number: number; kind: "pr" | "issue"; title: string | null; is_draft: number | null; updated_at: string | null; labels: string | null;
   embed_hash: string | null; class_hash: string | null; class_scheme: string | null; score: number | null;
   in_pilot: number; not_integration: number; held_backlog: number; held_dup: number;
-  pr_hash: string | null; e_hash: string | null; scan_hash: string | null; stage: string | null; attempt: string | null;
+  pr_hash: string | null; e_hash: string | null; scan_hash: string | null; stage: string | null; impact: string | null;
+  a_state: string | null; a_hash: string | null; a_head: string | null; a_base: string | null; h_state: string | null; b_state: string | null;
 };
 
 const SELECT = `SELECT i.repo, i.number, i.kind, i.title, i.is_draft, i.updated_at, i.labels, i.embed_hash, i.class_hash, i.class_scheme,
@@ -38,7 +44,8 @@ const SELECT = `SELECT i.repo, i.number, i.kind, i.title, i.is_draft, i.updated_
     ${pilotSql("i")} AS in_pilot, ${notOwnIntegrationSql("i")} AS not_integration, ${backlogHeldSql("i")} AS held_backlog,
     (EXISTS (SELECT 1 FROM decisions dh WHERE dh.kind = 'duplicate' AND dh.id NOT LIKE '%:dupegroup:%' AND dh.repo = i.repo AND dh.number = i.number AND (dh.answer IS NULL OR dh.answer = 'close'))
       OR ${groupHeldSql("i")}) AS held_dup,
-    p.text_hash AS pr_hash, e.hash AS e_hash, s.hash AS scan_hash, st.stage, fa.state AS attempt
+    p.text_hash AS pr_hash, p.impact, e.hash AS e_hash, s.hash AS scan_hash, st.stage,
+    fa.state AS a_state, fa.text_hash AS a_hash, fa.head_task_id AS a_head, fa.base_task_id AS a_base, ht.state AS h_state, bt.state AS b_state
   FROM items i JOIN tracked_repos t ON t.name = i.repo
   LEFT JOIN item_rank r ON r.repo = i.repo AND r.number = i.number
   LEFT JOIN item_priority p ON p.repo = i.repo AND p.number = i.number
@@ -46,7 +53,13 @@ const SELECT = `SELECT i.repo, i.number, i.kind, i.title, i.is_draft, i.updated_
   LEFT JOIN duplicate_scans s ON s.repo = i.repo AND s.number = i.number
   LEFT JOIN item_stage st ON st.repo = i.repo AND st.number = i.number
   LEFT JOIN fix_attempts fa ON fa.repo = i.repo AND fa.number = i.number
+  LEFT JOIN build_tasks ht ON ht.id = fa.head_task_id LEFT JOIN build_tasks bt ON bt.id = fa.base_task_id
   WHERE i.state = 'OPEN'`;
+
+/** `asked_by` of the decisions a security scan asks (act/index.ts SECURITY_ASKER). */
+const SECURITY_ASKER = "security-scan";
+/** Kind of the actions row Act writes for a comment-and-close. */
+const ACT_KIND = "comment-close";
 
 const json = <T>(s: string | null, d: T): T => { try { return s ? (JSON.parse(s) as T) : d; } catch { return d; } };
 const flagsOf = (s: string | null): string[] => { const f = json<unknown>(s, []); return Array.isArray(f) ? f.filter((x): x is string => typeof x === "string") : []; };
@@ -76,10 +89,14 @@ export function loadItemFacts(db: DatabaseSync, opts: ItemLoadOptions = {}): Ite
   }
   const answers = scopeAnswers(db);
   const operatorAnswers = scopeAnswers(db, true);
+  const operators = new Set((db.prepare("SELECT login FROM access WHERE role = 'operator'").all() as { login: string }[]).map((r) => r.login));
+  const latestScope = new Map<string, { answer: string | null; byOperator: boolean }>(), securityIds = new Set<string>();
   const openScope = new Set<string>(), covered = new Set<string>(), recommend = new Map<string, { failures: number; failedAt: string | null }>();
-  for (const d of db.prepare(`SELECT id, kind, repo, number, items, answer, recommended_by, recommend_failures, recommend_failed_at FROM decisions ORDER BY asked_at, id`).all() as
-    { id: string; kind: string; repo: string | null; number: number | null; items: string | null; answer: string | null; recommended_by: string | null; recommend_failures: number | null; recommend_failed_at: string | null }[]) {
+  for (const d of db.prepare(`SELECT id, kind, repo, number, items, answer, answered_by, asked_by, recommended_by, recommend_failures, recommend_failed_at FROM decisions ORDER BY asked_at, id`).all() as
+    { id: string; kind: string; answered_by: string | null; asked_by: string | null; repo: string | null; number: number | null; items: string | null; answer: string | null; recommended_by: string | null; recommend_failures: number | null; recommend_failed_at: string | null }[]) {
     const dupegroup = d.id.includes(":dupegroup:");
+    if (d.kind === "scope" && d.number !== null) latestScope.set(`${d.repo}#${d.number}`, { answer: d.answer, byOperator: !!d.answered_by && operators.has(d.answered_by) });
+    if (d.asked_by === SECURITY_ASKER) securityIds.add(d.id);
     if (d.kind === "scope" && d.answer === null) {
       for (const r of refsOf(d)) openScope.add(r);
       if (d.number !== null && d.recommended_by === null) { const k = `${d.repo}#${d.number}`; if (!recommend.has(k)) recommend.set(k, { failures: d.recommend_failures ?? 0, failedAt: d.recommend_failed_at }); }
@@ -100,6 +117,38 @@ export function loadItemFacts(db: DatabaseSync, opts: ItemLoadOptions = {}): Ite
   const inCompare = new Set(dueSets(db, opts.repo, now).flatMap((s) => s.members.map((m) => `${s.repo}#${m.number}`)));
   const approved = new Map<string, boolean>();
   const labelsApproved = (repo: string) => approved.get(repo) ?? (approved.set(repo, labelsApprovalOf(db, repo) !== null), approved.get(repo)!);
+  // Act: answers an operator gave that close an item (decisions.ts actionable, as act/index.ts targetsOf reads them).
+  const actionState = new Map((db.prepare("SELECT decision_id, repo, number, state FROM actions WHERE kind = ?").all(ACT_KIND) as { decision_id: string; repo: string; number: number; state: string }[])
+    .map((a) => [`${a.decision_id}|${a.repo}#${a.number}`, a.state]));
+  const answeredClose = new Map<string, ItemFacts["answeredClose"]>();
+  for (const a of actionable(db)) {
+    if (a.kind !== "scope" && a.kind !== "close" && a.kind !== "duplicate" && a.kind !== "merge") continue;
+    if (a.kind !== "scope" && a.number === null) continue;
+    for (const it of a.items) {
+      const ex = a.exceptions.find((e) => e.repo === it.repo && e.number === it.number);
+      if ((ex ? ex.answer : a.answer) !== "close") continue;
+      const k = `${it.repo}#${it.number}`;
+      (answeredClose.get(k) ?? answeredClose.set(k, []).get(k)!).push({ decisionId: a.id, kind: a.kind, security: securityIds.has(a.id), action: actionState.get(`${a.id}|${k}`) ?? null });
+    }
+  }
+  const closeReview = new Map<string, NonNullable<ItemFacts["closeReview"]>>();
+  for (const r of db.prepare(`SELECT r.repo, r.number, r.head_oid, i.head_oid AS i_head, i.updated_at, c.head_oid AS c_head, c.fetched_at AS c_at,
+      EXISTS (SELECT 1 FROM decisions d WHERE d.id = r.repo || '#' || r.number || ':close@' || r.head_oid) AS asked
+    FROM final_reviews r JOIN items i ON i.repo = r.repo AND i.number = r.number AND i.kind = 'pr' AND i.state = 'OPEN'
+    LEFT JOIN pr_checks c ON c.repo = r.repo AND c.number = r.number
+    WHERE r.verdict = 'close' AND r.head_oid = (SELECT r2.head_oid FROM opus_reviews r2 WHERE r2.repo = r.repo AND r2.number = r.number AND r2.verdict IS NOT NULL ORDER BY r2.at DESC, r2.rowid DESC LIMIT 1)`).all() as
+    { repo: string; number: number; head_oid: string; i_head: string | null; updated_at: string | null; c_head: string | null; c_at: string | null; asked: number }[])
+    closeReview.set(`${r.repo}#${r.number}`, { head: r.head_oid, atHead: headOf({ head_oid: r.i_head, updated_at: r.updated_at, c_head: r.c_head, c_at: r.c_at }) === r.head_oid, asked: !!r.asked });
+  const repoMemo = new Map<string, { comment: boolean; fix: boolean; pub: boolean; notRust: boolean; openPrs: Set<number> }>();
+  const repoOf = (repo: string) => {
+    let m = repoMemo.get(repo);
+    if (!m) {
+      m = { comment: commentApprovalOf(db, repo) !== null, fix: fixIssueApprovalOf(db, repo) !== null, pub: !!db.prepare("SELECT 1 FROM repos WHERE name = ? AND visibility = 'public'").get(repo),
+        notRust: !!db.prepare("SELECT 1 FROM settings WHERE key = ?").get(notRustKey(repo)), openPrs: issuesWithOpenPr(db, repo) };
+      repoMemo.set(repo, m);
+    }
+    return m;
+  };
   const textOf = db.prepare("SELECT title, body FROM items WHERE repo = ? AND number = ?");
   const body = db.prepare("SELECT repo, number, kind, title, body, additions, deletions, changed_files, author_association FROM items WHERE repo = ? AND number = ?");
 
@@ -143,7 +192,7 @@ export function loadItemFacts(db: DatabaseSync, opts: ItemLoadOptions = {}): Ite
       repo: r.repo, number: r.number, kind: r.kind, now, draft: !!r.is_draft,
       inScope: !!r.in_pilot, integration: !r.not_integration,
       held: r.held_backlog ? "backlog" : r.held_dup ? "duplicate" : null,
-      fast: (r.score ?? 0) >= FAST_FLOOR, score: r.score, repoFacts: { labelsApproved: labelsApproved(r.repo) },
+      fast: (r.score ?? 0) >= FAST_FLOOR, score: r.score, repoFacts: { labelsApproved: labelsApproved(r.repo), commentApproved: repoOf(r.repo).comment, fixIssueApproved: repoOf(r.repo).fix },
       run,
       classification: {
         status: settled.status, label: settled.label, flags: settled.flags, jevLabel: settled.jevLabel, haikuLabel: settled.haikuLabel,
@@ -153,7 +202,18 @@ export function loadItemFacts(db: DatabaseSync, opts: ItemLoadOptions = {}): Ite
       pairsToCheck: pairs.get(ref) ?? 0, inGroupToAsk: inGroup.has(ref), inCompareSet: inCompare.has(ref),
       scope: { open: openScope.has(ref), answer: answers.get(ref) ?? null, covered: covered.has(ref), pastClassified: r.stage !== null && r.stage !== "classified", recommend: recommend.get(ref) ?? null },
       labels: { existing: json<unknown[]>(r.labels, []).map(String), pluginAnswer: operatorAnswers.get(ref) === "plugin", labeledNote: note },
-      fixAttempt: r.attempt,
+      answeredClose: answeredClose.get(ref) ?? [],
+      closeReview: closeReview.get(ref) ?? null,
+      fix: {
+        attempt: r.a_state === null ? null : {
+          state: r.a_state,
+          textChanged: r.a_state === "skipped" && (() => { const b = textOf.get(r.repo, r.number) as { title: string | null; body: string | null }; return textHash(b.title ?? "", b.body ?? "") !== r.a_hash; })(),
+          headDone: r.h_state !== null && (TERMINAL as string[]).includes(r.h_state),
+          baseDone: r.a_base === null || (r.b_state !== null && (TERMINAL as string[]).includes(r.b_state)),
+        },
+        publicRepo: repoOf(r.repo).pub, notRust: repoOf(r.repo).notRust, openPr: r.kind === "issue" && repoOf(r.repo).openPrs.has(r.number), impact: r.impact,
+        scopeDecision: latestScope.get(ref) ?? null,
+      },
     };
   });
 }

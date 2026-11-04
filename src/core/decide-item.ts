@@ -1,6 +1,7 @@
 // decideItem: the triage rules of one open item (issue or PR) in one place: classify, referee, prioritize, embed, duplicates,
 // scope decision, label. Pure: no database, no clock (facts carry `now`). The rules are ported from the step selectors named at each rule.
 // decideAll adds a PR's review-to-merge Plan (decide.ts) and derives the Work page's next-step text.
+import { levelWith, type Level } from "../priority/score.ts";
 import { decidePr } from "./decide.ts";
 import { RECOMMEND_MAX_FAILURES, RECOMMEND_RETRY_MS, alreadyLabeled, isScope, labelsToAdd } from "./item-rules.ts";
 import type { Action, ItemFacts, ItemPlan, ItemState, ItemView, PrFacts } from "./plan.ts";
@@ -13,6 +14,17 @@ export function scopeReason(f: ItemFacts): "needs-decision" | "scope-disagreemen
   if (c.status === "settled" && c.flags.includes("needs decision")) return "needs-decision";
   if (c.status === "disagree" && isScope(c.jevLabel) && isScope(c.haikuLabel)) return "scope-disagreement";
   return null;
+}
+
+/** An issue the Fix stage may start on: settled bugfix, not backlog priority, no attempt (a skipped one returns when its text changed), a public Rust repo, no scope call against it, no open PR for it. */
+function fixCandidate(f: ItemFacts): boolean {
+  const c = f.classification, fix = f.fix, a = fix.attempt;
+  if (!fix.publicRepo || fix.notRust || c.status !== "settled" || c.label !== "bugfix") return false;
+  if (fix.impact && levelWith(fix.impact as Level, c.flags.includes("security")) === "P4") return false;
+  if (a && !(a.state === "skipped" && a.textChanged)) return false;
+  const d = fix.scopeDecision;
+  if (d ? !(d.answer === "take" && d.byOperator) : c.flags.includes("needs decision")) return false;
+  return !fix.openPr;
 }
 
 /** Jev and Haiku chose different labels and it is not a scope call: Sonnet refereed it, or still has to. */
@@ -63,11 +75,27 @@ export function decideItem(f: ItemFacts): ItemPlan {
   if (f.run && live && !f.draft && state === "scope-due") actions.push(act("decide", null, { source: "new" }));
   else if (live && !f.held && f.scope.recommend && f.scope.recommend.failures < RECOMMEND_MAX_FAILURES
     && (f.scope.recommend.failedAt === null || Date.parse(f.scope.recommend.failedAt) < f.now - RECOMMEND_RETRY_MS)) actions.push(act("decide", null, { source: "recommend" }));
-  // label: labels/plan.ts planLabels and github.ts labelsToApply; the lane runs it for repos approved for labelling.
-  if (f.run && live && f.held !== "backlog" && f.repoFacts.labelsApproved) {
+  // label: labels/plan.ts planLabels and github.ts labelsToApply. The repo's labelling approval is applied by gates().
+  if (f.run && live && f.held !== "backlog") {
     const settled = c.status === "settled" && c.label ? { type: c.label, security: c.flags.includes("security"), needsDecision: c.flags.includes("needs decision") } : null;
     const add = labelsToAdd(settled, f.labels.pluginAnswer, f.labels.existing);
     if (add && add.length && !alreadyLabeled(f.labels.labeledNote, add)) actions.push(act("label", null, { add }));
+  }
+
+  const backlog = f.held === "backlog";
+  // act: answers that close the item (act/index.ts pending: in scope, or asked by a security scan; not held by Backlog; no final action row yet)
+  // and Close? questions for PRs the final review says close (closeCandidates). Selecting applies nothing; the repo's comment approval is applied by gates().
+  for (const t of f.answeredClose) {
+    if ((f.inScope || t.security) && !backlog && (t.action === null || t.action === "failed")) actions.push(act("act", null, { bucket: t.kind, decisionId: t.decisionId, security: t.security }));
+  }
+  if (live && !backlog && f.kind === "pr" && f.closeReview && f.closeReview.atHead && !f.closeReview.asked) actions.push(act("act", f.closeReview.head, { bucket: "close", ask: true }));
+  // fixissue: a retry round (fixissue/index.ts fixDue, now with the Backlog hold) or a new candidate (fixissue/candidates.ts candidateIssues).
+  // fixissue-collect: finished build tasks, or a passed fix to open (fixissue/index.ts collectDue and the step's own Backlog hold).
+  const fix = f.fix, a = fix.attempt;
+  if (f.kind === "issue") {
+    if (f.inScope && !backlog && a?.state === "retry") actions.push(act("fixissue", null, { source: "retry" }));
+    else if (live && !f.held && fixCandidate(f)) actions.push(act("fixissue", null, { source: "new" }));
+    if (f.inScope && !backlog && a && ((a.state === "testing" && a.headDone && a.baseDone) || a.state === "passed")) actions.push(act("fixissue-collect", null, { source: a.state }));
   }
 
   return { repo: f.repo, number: f.number, kind: f.kind, state, actions, wait: actions.length ? null : !f.inScope ? "not in scope" : WAITS[state] ?? null };
@@ -87,7 +115,7 @@ export function nextStep(item: ItemPlan, f: ItemFacts, pr: PrFacts | null): stri
   if (item.state === "scope-due" && c.status === "disagree") return "Decide";
   const needsDecision = c.flags.includes("needs decision");
   if (f.kind === "issue") {
-    switch (f.fixAttempt) {
+    switch (f.fix.attempt?.state) {
       case "retry": case "testing": return "Fix: in progress";
       case "passed": case "pr-opened": return "Fix: pull request opened";
       case "skipped": case "failed": return "Needs a person";

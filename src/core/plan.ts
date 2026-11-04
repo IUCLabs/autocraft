@@ -30,7 +30,8 @@ export type ActionKind =
   | "review" | "post-review" | "verify" | "approve-ci" | "premerge" | "ask-merge" | "merge"
   | "fixup" | "conflict" | "cifix" | "postmerge"
   // item steps (issues and PRs)
-  | "classify" | "referee" | "prioritize" | "embed" | "dupes" | "dupes-compare" | "decide" | "label";
+  | "classify" | "referee" | "prioritize" | "embed" | "dupes" | "dupes-compare" | "decide" | "label"
+  | "act" | "fixissue" | "fixissue-collect";
 
 export type Action = { kind: ActionKind; head: string | null; params?: Record<string, unknown> };
 
@@ -204,7 +205,8 @@ export type ItemFacts = {
   held: "backlog" | "duplicate" | null;
   fast: boolean;
   score: number | null;
-  repoFacts: { labelsApproved: boolean };
+  /** The repo's approvals for the writes below. decideItem does not apply them: gates() does. */
+  repoFacts: { labelsApproved: boolean; commentApproved: boolean; fixIssueApproved: boolean };
 
   /** The classification run every step reads (the current run, else the newest verdict run). */
   run: string | null;
@@ -258,8 +260,26 @@ export type ItemFacts = {
     labeledNote: string | null;
   };
 
-  /** State of the item's fix attempt (issues). */
-  fixAttempt: string | null;
+  /** Operator answers "close" that the Act step applies to this item: one per decision, with the state of its action row (null: none yet; done and skipped are final). */
+  answeredClose: { decisionId: string; kind: "scope" | "close" | "duplicate" | "merge"; security: boolean; action: string | null }[];
+  /** The final Opus review at the PR's latest review head says close. `atHead`: that is the PR's current head. `asked`: the Close? decision at that head exists. */
+  closeReview: { head: string; atHead: boolean; asked: boolean } | null;
+
+  /** The Fix stage's view of an issue. */
+  fix: {
+    /** Its fix attempt. `textChanged`: the issue's title or body changed since the attempt (read only for a skipped attempt).
+     *  `headDone`: the head build task is in a terminal state; `baseDone`: there is no base task or it is terminal. */
+    attempt: { state: string; textChanged: boolean; headDone: boolean; baseDone: boolean } | null;
+    publicRepo: boolean;
+    /** The step found the repo has no Rust workspace at its root. */
+    notRust: boolean;
+    /** An open PR in the repo closes the issue or mentions it by number. */
+    openPr: boolean;
+    /** The priority row's impact level (P0 to P4). */
+    impact: string | null;
+    /** The latest scope decision about the issue itself, and whether an operator answered it. */
+    scopeDecision: { answer: string | null; byOperator: boolean } | null;
+  };
 };
 
 /** What is due for an open item in the triage steps. */

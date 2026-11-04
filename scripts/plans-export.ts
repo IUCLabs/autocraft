@@ -43,7 +43,7 @@ const token = (a: { kind: string; params?: Record<string, unknown> }): string =>
 const rows: string[] = [];
 for (const { ref, v, f } of views) {
   const p = v.pr;
-  const due = v.actions.map(token).sort();
+  const due = [...new Set(v.actions.map(token))].sort();
   for (const t of due) counts.set(t, (counts.get(t) ?? 0) + 1);
   const state = p?.state ?? v.item.state;
   states.set(state, (states.get(state) ?? 0) + 1);

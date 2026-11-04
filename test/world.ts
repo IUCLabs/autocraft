@@ -36,7 +36,7 @@ export function prFacts(over: Override = {}): PrFacts {
 
 const itemBase = (): ItemFacts => ({
   repo: "app", number: 1, kind: "issue", now: NOW, draft: false, inScope: true, integration: false, held: null, fast: false, score: 100,
-  repoFacts: { labelsApproved: true }, run: "run1",
+  repoFacts: { labelsApproved: true, commentApproved: true, fixIssueApproved: true }, run: "run1",
   classification: {
     status: "settled", label: "bugfix", flags: [], jevLabel: "bugfix", haikuLabel: null, referee: null,
     jev: { at: "2026-11-04T08:00:00.000Z", changed: false, unsure: false }, haiku: null,
@@ -44,10 +44,11 @@ const itemBase = (): ItemFacts => ({
   embedHash: "e1", embeddedHash: "e1", priorityHash: "e1", scannedHash: "e1", pairsToCheck: 0, inGroupToAsk: false, inCompareSet: false,
   scope: { open: false, answer: null, covered: false, pastClassified: false, recommend: null },
   labels: { existing: ["bugfix"], pluginAnswer: false, labeledNote: null },
-  fixAttempt: null,
+  answeredClose: [], closeReview: null,
+  fix: { attempt: null, publicRepo: true, notRust: false, openPr: false, impact: "P4", scopeDecision: null },
 });
 
-/** The default facts of an open issue with nothing due (classified bugfix, labelled, embedded, scanned, prioritized), with the given fields replaced. Object fields are merged one level deep; null replaces the whole object. */
+/** The default facts of an open issue with nothing due (backlog priority, so no fix, classified bugfix, labelled, embedded, scanned, prioritized), with the given fields replaced. Object fields are merged one level deep; null replaces the whole object. */
 export function itemFacts(over: { [K in keyof ItemFacts]?: ItemFacts[K] extends object | null ? Partial<NonNullable<ItemFacts[K]>> | null : ItemFacts[K] } = {}): ItemFacts {
   const f = itemBase() as Record<string, unknown>;
   for (const [k, v] of Object.entries(over)) {

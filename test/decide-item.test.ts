@@ -19,6 +19,9 @@ const jev = (o: Partial<{ at: string; changed: boolean; unsure: boolean }> = {})
 const disagree = (o: Over = {}): Over => ({ classification: { status: "disagree", label: null, jevLabel: "bugfix", haikuLabel: "infra", jev: jev({ unsure: true }), haiku: { at: `${T}T09:00:00.000Z`, aloneCurrent: false }, ...(o?.classification ?? {}) } });
 const scopeDisagree: Over = { classification: { status: "disagree", label: null, jevLabel: "missing feature", haikuLabel: "small extra", jev: jev({ unsure: true }), haiku: { at: `${T}T09:00:00.000Z`, aloneCurrent: false } } };
 const needsDecision: Over = { classification: { flags: ["needs decision"] }, labels: { existing: ["bugfix", "needs decision"] } };
+const att = (state: string, o: Partial<{ textChanged: boolean; headDone: boolean; baseDone: boolean }> = {}) => ({ state, textChanged: false, headDone: false, baseDone: true, ...o });
+const fixable = (o: Over = {}): Over => ({ ...o, fix: { impact: "P2", ...(o?.fix ?? {}) } });
+const closed = (o: Partial<{ decisionId: string; kind: "scope" | "close" | "duplicate" | "merge"; security: boolean; action: string | null }> = {}) => ({ decisionId: "d1", kind: "close" as const, security: false, action: null, ...o });
 const hoursAgo = (h: number) => new Date(NOW - h * 3600_000).toISOString();
 
 const rows: Row[] = [
@@ -76,19 +79,65 @@ const rows: Row[] = [
 
   // ---- labels
   { name: "a settled type label is missing on GitHub", facts: { labels: { existing: [] } }, expect: { state: "classified", actions: ["label"] } },
-  { name: "flags are added next to the type", facts: { classification: { flags: ["security"] }, labels: { existing: ["bugfix"] } }, expect: { state: "classified", actions: ["label"] } },
+  { name: "flags are added next to the type", facts: { classification: { flags: ["security"] }, labels: { existing: ["bugfix"] } }, expect: { state: "classified", actions: ["label", "fixissue"] } },
   { name: "another type label is on the item: conflict, nothing added", facts: { labels: { existing: ["infra"] } }, expect: { state: "classified", actions: [] } },
   { name: "label match ignores case", facts: { labels: { existing: ["Bugfix"] } }, expect: { state: "classified", actions: [] } },
   { name: "an operator's plugin answer decides the type", facts: { labels: { existing: [], pluginAnswer: true } }, expect: { state: "classified", actions: ["label"] } },
   { name: "the previous pass already added them", facts: { labels: { existing: [], labeledNote: "added: bugfix" } }, expect: { state: "classified", actions: [] } },
-  { name: "repo not approved for labelling", facts: { labels: { existing: [] }, repoFacts: { labelsApproved: false } }, expect: { state: "classified", actions: [] } },
+  { name: "labelling approval is a fact: gates() applies it, not decideItem", facts: { labels: { existing: [] }, repoFacts: { labelsApproved: false } }, expect: { state: "classified", actions: ["label"] } },
   { name: "a Backlog hold stops labelling", facts: { labels: { existing: [] }, held: "backlog" }, expect: { state: "held-backlog", actions: [] } },
   { name: "a duplicate hold does not stop labelling", facts: { labels: { existing: [] }, held: "duplicate" }, expect: { state: "held-duplicate", actions: ["label"] } },
   { name: "an unsettled item is not labelled", facts: { classification: { status: "waiting", label: null, jev: jev({ unsure: true }), haiku: { at: `${T}T09:00:00.000Z`, aloneCurrent: false } }, labels: { existing: [] } }, expect: { state: "waiting-haiku", actions: [] } },
 
+  // ---- act
+  { name: "an answered close decision is acted on", facts: { answeredClose: [closed()] }, expect: { state: "classified", actions: ["act"] } },
+  { name: "scope, duplicate and merge closes are acted on too", facts: { answeredClose: [closed({ kind: "scope" }), closed({ decisionId: "d2", kind: "duplicate" })] }, expect: { state: "classified", actions: ["act", "act"] } },
+  { name: "a done action row is final", facts: { answeredClose: [closed({ action: "done" })] }, expect: { state: "classified", actions: [] } },
+  { name: "a skipped action row is final", facts: { answeredClose: [closed({ action: "skipped" })] }, expect: { state: "classified", actions: [] } },
+  { name: "a failed action row is tried again", facts: { answeredClose: [closed({ action: "failed" })] }, expect: { state: "classified", actions: ["act"] } },
+  { name: "an out-of-scope item is not acted on", facts: { inScope: false, answeredClose: [closed()] }, expect: { state: "classified", actions: [] } },
+  { name: "a security scan's close applies outside the pilot", facts: { inScope: false, answeredClose: [closed({ security: true })] }, expect: { state: "classified", actions: ["act"] } },
+  { name: "a Backlog hold stops the close", facts: { held: "backlog", answeredClose: [closed({ security: true })] }, expect: { state: "held-backlog", actions: [] } },
+  { name: "comment approval is a fact: gates() applies it, not decideItem", facts: { repoFacts: { commentApproved: false }, answeredClose: [closed()] }, expect: { state: "classified", actions: ["act"] } },
+  { name: "a PR the final review says close is asked about", facts: { kind: "pr", closeReview: { head: "h1", atHead: true, asked: false } }, expect: { state: "classified", actions: ["act"] } },
+  { name: "the Close? decision exists: not asked again", facts: { kind: "pr", closeReview: { head: "h1", atHead: true, asked: true } }, expect: { state: "classified", actions: [] } },
+  { name: "the review is of an older head: not asked", facts: { kind: "pr", closeReview: { head: "h0", atHead: false, asked: false } }, expect: { state: "classified", actions: [] } },
+
+  // ---- fix issue
+  { name: "a settled bugfix issue is a fix candidate", facts: fixable(), expect: { state: "classified", actions: ["fixissue"], next: "Fix" } },
+  { name: "approval is a fact: gates() applies it", facts: fixable({ repoFacts: { fixIssueApproved: false } }), expect: { state: "classified", actions: ["fixissue"] } },
+  { name: "P4 priority is backlog", facts: fixable({ fix: { impact: "P4" } }), expect: { state: "classified", actions: [] } },
+  { name: "a security flag lifts P4 to P3", facts: fixable({ fix: { impact: "P4" }, classification: { flags: ["security"] }, labels: { existing: ["bugfix", "security"] } }), expect: { state: "classified", actions: ["fixissue"] } },
+  { name: "no priority row yet: a candidate", facts: fixable({ fix: { impact: null } }), expect: { state: "classified", actions: ["fixissue"] } },
+  { name: "a PR is never a fix candidate", facts: fixable({ kind: "pr" }), expect: { state: "classified", actions: [] } },
+  { name: "not a bugfix", facts: fixable({ classification: { label: "infra" }, labels: { existing: ["infra"] } }), expect: { state: "classified", actions: [] } },
+  { name: "private repo", facts: fixable({ fix: { publicRepo: false } }), expect: { state: "classified", actions: [] } },
+  { name: "repo without a Rust workspace", facts: fixable({ fix: { notRust: true } }), expect: { state: "classified", actions: [] } },
+  { name: "an open PR mentions the issue", facts: fixable({ fix: { openPr: true } }), expect: { state: "classified", actions: [] } },
+  { name: "needs-decision flag without a scope decision", facts: fixable({ ...needsDecision, scope: { covered: true } }), expect: { state: "classified", actions: [] } },
+  { name: "scope decision answered take by an operator", facts: fixable({ ...needsDecision, scope: { covered: true }, fix: { scopeDecision: { answer: "take", byOperator: true } } }), expect: { state: "classified", actions: ["fixissue"] } },
+  { name: "scope decision answered take by someone else", facts: fixable({ fix: { scopeDecision: { answer: "take", byOperator: false } } }), expect: { state: "classified", actions: [] } },
+  { name: "scope decision answered otherwise", facts: fixable({ fix: { scopeDecision: { answer: "backlog", byOperator: true } } }), expect: { state: "classified", actions: [] } },
+  { name: "an attempt exists", facts: fixable({ fix: { attempt: att("pr-opened") } }), expect: { state: "classified", actions: [] } },
+  { name: "a skipped attempt returns when the text changed", facts: fixable({ fix: { attempt: att("skipped", { textChanged: true }) } }), expect: { state: "classified", actions: ["fixissue"] } },
+  { name: "a skipped attempt stays skipped when the text is the same", facts: fixable({ fix: { attempt: att("skipped") } }), expect: { state: "classified", actions: [] } },
+  { name: "a duplicate hold keeps a new candidate out", facts: fixable({ held: "duplicate" }), expect: { state: "held-duplicate", actions: [] } },
+  { name: "a retry round is due", facts: fixable({ fix: { attempt: att("retry") } }), expect: { state: "classified", actions: ["fixissue"], next: "Fix: in progress" } },
+  { name: "a retry round is held by a Backlog answer", facts: fixable({ held: "backlog", fix: { attempt: att("retry") } }), expect: { state: "held-backlog", actions: [] } },
+  { name: "a retry round of an out-of-scope issue", facts: fixable({ inScope: false, fix: { attempt: att("retry") } }), expect: { state: "classified", actions: [] } },
+
+  // ---- fix issue collect
+  { name: "build tasks finished: collect", facts: { fix: { attempt: att("testing", { headDone: true }) } }, expect: { state: "classified", actions: ["fixissue-collect"], next: "Fix: in progress" } },
+  { name: "head task still running", facts: { fix: { attempt: att("testing") } }, expect: { state: "classified", actions: [] } },
+  { name: "base task still running", facts: { fix: { attempt: att("testing", { headDone: true, baseDone: false }) } }, expect: { state: "classified", actions: [] } },
+  { name: "a passed fix is opened as a PR", facts: { fix: { attempt: att("passed") } }, expect: { state: "classified", actions: ["fixissue-collect"] } },
+  { name: "collect is held by a Backlog answer", facts: { held: "backlog", fix: { attempt: att("passed") } }, expect: { state: "held-backlog", actions: [] } },
+  { name: "collect: a duplicate hold does not stop it", facts: { held: "duplicate", fix: { attempt: att("passed") } }, expect: { state: "held-duplicate", actions: ["fixissue-collect"] } },
+  { name: "collect: out of scope", facts: { inScope: false, fix: { attempt: att("passed") } }, expect: { state: "classified", actions: [] } },
+
   // ---- next-step text of issues
-  { name: "issue with a passed fix attempt", facts: { fixAttempt: "passed" }, expect: { state: "classified", next: "Fix: pull request opened" } },
-  { name: "issue with a failed fix attempt", facts: { fixAttempt: "failed" }, expect: { state: "classified", next: "Needs a person" } },
+  { name: "issue with a passed fix attempt", facts: { fix: { attempt: att("passed") } }, expect: { state: "classified", next: "Fix: pull request opened" } },
+  { name: "issue with a failed fix attempt", facts: { fix: { attempt: att("failed") } }, expect: { state: "classified", next: "Needs a person" } },
   { name: "issue that is not a bugfix", facts: { classification: { label: "infra" }, labels: { existing: ["infra"] } }, expect: { state: "classified", next: "Triage by a person" } },
 ];
 

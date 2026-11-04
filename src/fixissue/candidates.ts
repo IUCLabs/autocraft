@@ -20,7 +20,7 @@ export const textHash = (title: string, body: string): string => createHash("sha
 type Row = { number: number; title: string | null; body: string | null; score: number | null; level: Level | null };
 
 /** Issue numbers an open PR in the repo closes or mentions by number. */
-function issuesWithOpenPr(db: DatabaseSync, repo: string): Set<number> {
+export function issuesWithOpenPr(db: DatabaseSync, repo: string): Set<number> {
   const prs = db.prepare("SELECT body, title, closing_issues FROM items WHERE repo = ? AND kind = 'pr' AND state = 'OPEN'").all(repo) as { body: string | null; title: string | null; closing_issues: string | null }[];
   const out = new Set<number>();
   for (const p of prs) {
