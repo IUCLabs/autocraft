@@ -1322,6 +1322,7 @@ CREATE TABLE IF NOT EXISTS pr_commits (
   oid TEXT NOT NULL,
   committed_at TEXT NOT NULL,
   author TEXT,                        -- GitHub login; null when the commit email maps to no account
+  first_seen_at TEXT,                 -- when the sync first read the commit; committed_at is author-controlled and is clamped to it
   PRIMARY KEY (repo, number, oid)
 ) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS item_activity (
@@ -1339,6 +1340,8 @@ CREATE TABLE IF NOT EXISTS activity_sync (
   head TEXT,
   updated_at TEXT,
   read_at TEXT NOT NULL,
+  error TEXT,                         -- the last failed read; the item is read again at retry_at
+  retry_at TEXT,
   PRIMARY KEY (repo, number)
 ) WITHOUT ROWID;
 
@@ -1354,9 +1357,14 @@ CREATE TRIGGER IF NOT EXISTS decision_items_ins AFTER INSERT ON decisions WHEN n
     SELECT json_extract(j.value, '$.repo'), json_extract(j.value, '$.number'), new.id FROM json_each(new.items) j
     WHERE typeof(json_extract(j.value, '$.repo')) = 'text' AND typeof(json_extract(j.value, '$.number')) = 'integer';
 END;
-CREATE TRIGGER IF NOT EXISTS decision_items_upd AFTER UPDATE OF items ON decisions WHEN new.number IS NULL AND json_valid(new.items) AND json_type(new.items) = 'array' BEGIN
+-- Dropped first: IF NOT EXISTS keeps an older definition of a trigger whose body changed.
+DROP TRIGGER IF EXISTS decision_items_upd;
+CREATE TRIGGER decision_items_upd AFTER UPDATE ON decisions WHEN old.items IS NOT new.items OR old.number IS NOT new.number BEGIN
   DELETE FROM decision_items WHERE decision_id = new.id;
   INSERT OR IGNORE INTO decision_items (repo, number, decision_id)
-    SELECT json_extract(j.value, '$.repo'), json_extract(j.value, '$.number'), new.id FROM json_each(new.items) j
+    SELECT json_extract(j.value, '$.repo'), json_extract(j.value, '$.number'), new.id FROM json_each(CASE WHEN new.number IS NULL AND json_valid(new.items) AND json_type(new.items) = 'array' THEN new.items ELSE '[]' END) j
     WHERE typeof(json_extract(j.value, '$.repo')) = 'text' AND typeof(json_extract(j.value, '$.number')) = 'integer';
+END;
+CREATE TRIGGER IF NOT EXISTS decision_items_del AFTER DELETE ON decisions BEGIN
+  DELETE FROM decision_items WHERE decision_id = old.id;
 END;
