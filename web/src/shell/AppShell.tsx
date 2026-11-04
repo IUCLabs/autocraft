@@ -1,5 +1,5 @@
 import { lazy, Suspense, useMemo, useState } from "react";
-import { Navigate, NavLink, Route, Routes, matchPath, useLocation, useNavigate, useParams } from "react-router-dom";
+import { Link, Navigate, NavLink, Route, Routes, matchPath, useLocation, useNavigate, useParams } from "react-router-dom";
 import { Dialog, DropdownMenu } from "radix-ui";
 import { SignOutIcon, MonitorIcon, MoonIcon, DotsThreeIcon, SidebarSimpleIcon, MagnifyingGlassIcon, SunIcon, KeyboardIcon, XIcon, CheckIcon } from "@phosphor-icons/react";
 import { modules } from "../registry";
@@ -17,6 +17,8 @@ import { Kbd } from "../ui/atoms/Kbd";
 import { Logo } from "../ui/atoms/Logo";
 import { Badge, type Tone } from "../ui/atoms/Badge";
 import { cn } from "../ui/cn";
+import { MAIN_CI_DOT, MAIN_CI_LABEL } from "../ui/atoms/MainCiBadge";
+import type { MainCiState, MainCiSummary } from "../api/types";
 import { useApi, useQuery } from "../api/client";
 import { useLiveStatus, type LiveStatus } from "../api/live";
 import { num, zoneName } from "../lib/format";
@@ -266,12 +268,30 @@ function Breadcrumb({ routes }: { routes: RouteDef[] }) {
   );
 }
 
+const CI_ORDER: MainCiState[] = ["green", "red", "running", "optional"];
+
+function MainCiIndicator({ summary }: { summary: MainCiSummary }) {
+  const shown = CI_ORDER.filter((s) => s === "green" || summary[s] > 0);
+  return (
+    <Link to="/main-ci" className="flex items-center gap-1.5 hover:text-ink" aria-label="Main CI">
+      main CI
+      {shown.map((s) => (
+        <span key={s} className="flex items-center gap-1" title={`${MAIN_CI_LABEL[s]}: ${summary[s]}`}>
+          <span className={cn("size-1.5 rounded-full", MAIN_CI_DOT[s])} />
+          <span className="num font-medium text-ink">{summary[s]}</span>
+        </span>
+      ))}
+    </Link>
+  );
+}
+
 function LiveCounters() {
   const { data } = useQuery("progress", (api) => api.progress());
   if (!data) return null;
   const lastHour = data.perHourPipeline[data.perHourPipeline.length - 1] ?? 0;
   return (
     <div className="hidden shrink-0 items-center gap-3 whitespace-nowrap text-xs text-ink/60 xl:flex">
+      {data.mainCi && <MainCiIndicator summary={data.mainCi} />}
       <span className="flex items-center gap-1.5">
         <span className="size-1.5 rounded-full bg-warn" />
         <span className="num font-medium text-ink">{data.decisionsOpen}</span> waiting

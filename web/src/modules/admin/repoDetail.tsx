@@ -11,6 +11,8 @@ import { ErrorLine } from "../../ui/atoms/ErrorLine";
 import { Page } from "../../ui/organisms/Page";
 import { useWrite } from "../../lib/hooks";
 import { PipelineSwitch, Toggle, WRITES, maybe, synced, type Write, type WriteKind } from "./repoParts";
+import { MainCiBadge } from "../../ui/atoms/MainCiBadge";
+import { FailingChecks } from "../mainci/parts";
 import { useNow } from "../../lib/useNow";
 
 function Stat({ label, value, title }: { label: string; value: string; title?: string }) {
@@ -66,6 +68,21 @@ function AllWrites({ r, write }: { r: TrackedRepo; write: Write }) {
   );
 }
 
+function MainCiLine({ name }: { name: string }) {
+  const { data } = useQuery("main-ci", (a) => a.mainCi());
+  const r = data?.repos.find((x) => x.repo === name);
+  if (!r) return null;
+  return (
+    <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
+      <span className="text-ink/60">Main CI</span>
+      <Link to={`/main-ci?repo=${encodeURIComponent(name)}`} className="hover:opacity-80">
+        <MainCiBadge state={r.state} />
+      </Link>
+      {r.failing.length > 0 && <FailingChecks checks={r.failing} />}
+    </div>
+  );
+}
+
 function RepoDetailView({ params }: ViewProps) {
   useNow();
   const name = params.name ?? "";
@@ -92,6 +109,7 @@ function RepoDetailView({ params }: ViewProps) {
           </span>
         )}
       </div>
+      <MainCiLine name={name} />
       <ErrorLine error={write.error ?? error?.message} className="mt-2" />
       {!data && !error && <p className="mt-4 text-sm text-ink/50">Loading…</p>}
       {data && !r && <p className="mt-4 text-sm text-ink/50">No such repo.</p>}
