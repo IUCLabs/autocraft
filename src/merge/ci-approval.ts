@@ -5,6 +5,7 @@
 // The ci-approve step approves them (approveRuns) for repos an operator approved. Set only from the dashboard
 // (src/dash/api/admin.ts).
 import type { DatabaseSync } from "node:sqlite";
+import { MAX_FAILURES } from "../core/rules.ts";
 import { ORG } from "../act/templates.ts";
 import { audit } from "../dash/audit.ts";
 import { effectiveCi } from "../optional-checks.ts";
@@ -42,7 +43,7 @@ export function setCiApproval(db: DatabaseSync, by: string, repo: string, approv
 /** The stage's audit login. */
 export const ACTOR = "ci-approve";
 /** Approval attempts per run before the PR is left to a person. */
-export const MAX_FAILURES = 2;
+export { MAX_FAILURES };
 /** Refusals by GitHub that repeat when asked again; other errors (network, 5xx) are retried without counting. */
 const REPEATABLE = /HTTP (403|422)/;
 /** How long approved runs may stay unfinished before the PR is trusted to CI's own state again. */

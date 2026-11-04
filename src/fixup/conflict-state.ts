@@ -1,5 +1,6 @@
 // Which conflicted take / take-fix PRs the fix-up step merges the default branch into, from the local tables only.
 import type { DatabaseSync } from "node:sqlite";
+import { conflictNote as coreConflictNote } from "../core/rules.ts";
 import { fastScoreSql } from "../fasttrack.ts";
 import { notHeldSql } from "../dupes/held.ts";
 import { headOf } from "../review/candidates.ts";
@@ -42,15 +43,7 @@ export function conflictBucket(db: DatabaseSync, p: { repo: string; number: numb
   return approvals.push ? "merge" : "unapproved";
 }
 
-/** The queue's note for a conflicted PR, or null when nothing here acts on it. */
-export function conflictNote(bucket: ConflictBucket, base: string): string | null {
-  switch (bucket) {
-    case "merge": return `conflict: merging ${base}`;
-    case "ask": case "asked": return "conflict: asked the contributor";
-    case "held": return "conflict: held";
-    default: return null;
-  }
-}
+export const conflictNote = (bucket: ConflictBucket, base: string): string | null => coreConflictNote(bucket, base);
 
 type Row = {
   repo: string; number: number; title: string | null; head_oid: string | null; head_repo: string | null; head_ref: string | null; base_ref: string | null; updated_at: string | null; is_draft: number | null; i_mergeable: string | null; i_can: number | null;

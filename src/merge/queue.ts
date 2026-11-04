@@ -14,6 +14,7 @@ import { NO_CI_SAMPLE, repoHasNoCi } from "./no-ci.ts";
 import { ciApprovalOf, MAX_FAILURES } from "./ci-approval.ts";
 import { MAIN_FIX_BRANCH_PREFIX, redMainRepos } from "../mainci/index.ts";
 import { getRule, STATS_SQL, tierOf, type Tier } from "../whitelist.ts";
+import { BATCHABLE, MAIN_RED_HELD, RULE_LABELS, RULE_SIZES, RULE_TIERS, UNSURE_REASON, PREMERGE_DEFECT_REASON, PREMERGE_FAILED_REASON, VERIFY_OK, verifyOk, VERIFY_UNAVAILABLE, verifyAllows, ciAllows } from "../core/rules.ts";
 import { pilotSql } from "../pilot.ts";
 import { pushApprovalOf } from "../fixup/approval.ts";
 import { commentApprovalOf } from "../act/approval.ts";
@@ -22,19 +23,12 @@ import { effectiveCi } from "../optional-checks.ts";
 import { findingsOf, premergeAt, premergeFixUsed, PREMERGE_MAX_TRIES, type PremergeFinding } from "../premerge/store.ts";
 import { longLivedOf, pushable, type LongLived } from "../fixup/pushable.ts";
 
-export const QUEUE_STATES = [
-  "ready", "decision-answered-merge", "refused", "waiting-ci", "waiting-premerge", "ci-failed", "conflict",
-  "needs-fix-up", "waiting-verify", "verify-failed", "verify-error", "needs-decision", "declined", "merged", "held-duplicate", "held-backlog",
-  "batch-checking", "in-batch", "batch-failed", "ci-approval", "changes-requested", "waiting-main-ci",
-] as const;
-export type QueueState = (typeof QUEUE_STATES)[number];
+export { QUEUE_STATES, type QueueState } from "../core/plan.ts";
+import { QUEUE_STATES, type QueueState } from "../core/plan.ts";
 
-/** Type labels whose PRs may merge without asking. */
-/** Why an unsure Opus take is asked about instead of merged by the rule. */
-export const UNSURE_REASON = "Opus was unsure";
 
 /** Returns a function that gives the head and the earlier heads AutoCraft itself pushed it from (a `pushing` row is a push that started and may have landed) (conflict merges of the base, fix-up pushes, carry-over pushes), newest first. */
-function pushChainOf(db: DatabaseSync): (repo: string, number: number, head: string) => string[] {
+export function pushChainOf(db: DatabaseSync): (repo: string, number: number, head: string) => string[] {
   const from = db.prepare(`SELECT from_head FROM conflict_merges WHERE repo = ?1 AND number = ?2 AND to_head = ?3 AND state IN ('merged', 'pushing')
     UNION SELECT from_head FROM fixups WHERE repo = ?1 AND number = ?2 AND to_head = ?3 AND state IN ('pushed', 'pushing')
     UNION SELECT from_head FROM dupe_carries WHERE repo = ?1 AND number = ?2 AND to_head = ?3 AND from_head IS NOT NULL
@@ -47,20 +41,16 @@ function pushChainOf(db: DatabaseSync): (repo: string, number: number, head: str
 }
 
 /** The PR has an unanswered Merge? question at any head. */
-const OPEN_QUESTION_SQL = "SELECT 1 FROM decisions WHERE repo = ? AND number = ? AND kind = 'merge' AND answer IS NULL AND id NOT LIKE '%~replaced-%' LIMIT 1";
+export const OPEN_QUESTION_SQL = "SELECT 1 FROM decisions WHERE repo = ? AND number = ? AND kind = 'merge' AND answer IS NULL AND id NOT LIKE '%~replaced-%' LIMIT 1";
 
-const UNSURE_AT_SQL = `SELECT 1 FROM opus_review_history WHERE repo = ?1 AND number = ?2 AND head_oid = ?3 AND verdict IN ('take', 'take-fix') AND sure = 0
+export const UNSURE_AT_SQL = `SELECT 1 FROM opus_review_history WHERE repo = ?1 AND number = ?2 AND head_oid = ?3 AND verdict IN ('take', 'take-fix') AND sure = 0
   UNION ALL SELECT 1 FROM opus_reviews WHERE repo = ?1 AND number = ?2 AND head_oid = ?3 AND verdict IN ('take', 'take-fix') AND sure = 0 LIMIT 1`;
 
 /** True when any stored Opus review at the head (the current row or an overwritten one in the history) was a take or take-fix with sure = 0. */
 export function headWasUnsure(db: DatabaseSync, repo: string, number: number, head: string): boolean {
   return !!db.prepare(UNSURE_AT_SQL).get(repo, number, head);
 }
-export const RULE_LABELS = ["bugfix", "infra"];
-/** Sizes that may merge without asking. */
-export const RULE_SIZES = ["S", "M"];
-/** Tiers that count as on the whitelist. */
-export const RULE_TIERS: Tier[] = ["whitelisted", "allow"];
+export { RULE_LABELS, RULE_SIZES, RULE_TIERS, UNSURE_REASON, PREMERGE_DEFECT_REASON, PREMERGE_FAILED_REASON, VERIFY_OK, verifyOk, VERIFY_UNAVAILABLE, verifyAllows, ciAllows };
 
 /** Option keys of a "Merge this PR?" decision. Only an operator's answer counts. */
 export const MERGE_OPTIONS = {
@@ -72,17 +62,6 @@ export const MERGE_OPTIONS = {
 /** One open decision per PR head: a push gets a new one. */
 export const mergeDecisionId = (repo: string, number: number, head: string): string => `${repo}#${number}:merge@${head}`;
 export const HEAD_FACT = "head commit ";
-
-/** Verification states that let a PR merge. */
-export const VERIFY_OK = ["passed", "ci-enough"];
-export const verifyOk = (state: string | null | undefined): boolean => !!state && VERIFY_OK.includes(state);
-/** A PR in a repo Verify cannot build is merged only on an operator's answer, which says "not verified". */
-export const VERIFY_UNAVAILABLE = "unavailable";
-/** What the merge step needs of the verification and CI at merge time: the rule needs a pass and green CI; an operator's answer also accepts an unbuildable repo and a repo with no CI. */
-export const verifyAllows = (path: "rule" | "operator" | null, state: string | null | undefined): boolean =>
-  verifyOk(state) || (path === "operator" && state === VERIFY_UNAVAILABLE);
-export const ciAllows = (path: "rule" | "operator" | null, ci: string | null | undefined, noCi: boolean): boolean =>
-  ci === "success" || (path === "operator" && ci === "none" && noCi);
 
 export { NO_CI_SAMPLE, repoHasNoCi };
 
@@ -122,14 +101,8 @@ export type QueueEntry = {
   premerge: { state: "none" | "clean" | "fix" | "defect" | "failed" | "retry"; defects: PremergeFinding[]; minor: number; error: string | null } | null;
 };
 
-export const PREMERGE_DEFECT_REASON = "the pre-merge review found a defect";
-export const PREMERGE_FAILED_REASON = "the pre-merge review failed";
 
-/** States a PR leaves for its batch's state while it is in a batch. */
-const BATCHABLE: QueueState[] = ["ready", "decision-answered-merge", "refused", "waiting-ci"];
 
-/** States that wait while the repo's main CI is red. */
-const MAIN_RED_HELD: QueueState[] = ["ready", "decision-answered-merge", "refused"];
 
 /** PRs the integration batches leave to the single-PR merge: main-fix PRs, the sandbox cannot build the repo, or the repo has no CI for the batch PR to wait on. */
 export const singleMergeOnly = (e: QueueEntry): boolean => e.verify?.state === VERIFY_UNAVAILABLE || e.noCi || !!e.mainFix;
@@ -146,7 +119,7 @@ type Row = {
 };
 
 /** Tiers of the given logins, from one stats query. */
-function tiersOf(db: DatabaseSync, logins: string[]): Map<string, Tier> {
+export function tiersOf(db: DatabaseSync, logins: string[]): Map<string, Tier> {
   const out = new Map<string, Tier>();
   if (!logins.length) return out;
   const rule = getRule(db);
@@ -164,7 +137,7 @@ function tiersOf(db: DatabaseSync, logins: string[]): Map<string, Tier> {
 export const PIPELINE_LOGIN_KEY = "pipeline_login";
 
 /** PRs the pipeline opened itself from a Fix issues attempt or for a red default branch, as `repo#number`, when authored by its own account. */
-function ownFixPrs(db: DatabaseSync, repo?: string): { login: string | null; prs: Set<string> } {
+export function ownFixPrs(db: DatabaseSync, repo?: string): { login: string | null; prs: Set<string> } {
   const login = (db.prepare("SELECT value FROM main.settings WHERE key = ?").get(PIPELINE_LOGIN_KEY) as { value: string } | undefined)?.value ?? null;
   const prs = new Set<string>();
   if (!login) return { login, prs };

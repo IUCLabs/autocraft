@@ -1,0 +1,249 @@
+// Facts: everything the review-to-merge rules read about open PRs, loaded in one pass for a whole database or a slice of it.
+// Each concept has one definition here (see .thoughts/arch/state.md). Where a step selector and the merge queue used different
+// definitions, the queue's wins; the differences are listed in the report of this change, not here.
+import type { DatabaseSync } from "node:sqlite";
+import { commentApprovalOf } from "../act/approval.ts";
+import { actionable } from "../decisions.ts";
+import { notOwnIntegrationSql, groupHeldSql, backlogHeldSql } from "../dupes/held.ts";
+import { conflictBucket } from "../fixup/conflict-state.ts";
+import { pushApprovalOf } from "../fixup/approval.ts";
+import { longLivedOf, pushable, type LongLived } from "../fixup/pushable.ts";
+import { FAST_FLOOR, fastScoreSql } from "../fasttrack.ts";
+import { latestRun, settledLookup } from "../classify/settled.ts";
+import { redMainRepos, MAIN_FIX_BRANCH_PREFIX } from "../mainci/index.ts";
+import { batchStates } from "../merge/batch-store.ts";
+import { changesRequestedWhy, gatesOf, GATE_FAILURES, failureNote, type ReviewFact } from "../merge/changes-requested.ts";
+import { ciApprovalOf } from "../merge/ci-approval.ts";
+import { mergeApprovalOf } from "../merge/approval.ts";
+import { mergeHolds } from "../merge/holds.ts";
+import { repoHasNoCi } from "../merge/no-ci.ts";
+import { OPEN_GROUP_SQL, OPEN_QUESTION_SQL, UNSURE_AT_SQL, ownFixPrs, pushChainOf, tiersOf } from "../merge/queue.ts";
+import { mergeDecisionId } from "../merge/queue.ts";
+import { effectiveCi } from "../optional-checks.ts";
+import { pilotSql } from "../pilot.ts";
+import { findingsOf, premergeAt, premergeFixUsed } from "../premerge/store.ts";
+import { headOf } from "../review/candidates.ts";
+import { parsePublic } from "../review/opus-parse.ts";
+import { staleReviews } from "../review/discussion.ts";
+import { scopeAnswers } from "../review/candidates.ts";
+import { NOT_RUST_REASON, PRIVATE_REASON, cachedRust } from "../verify/candidates.ts";
+import { MAX_FAILURES, sizeOf } from "./rules.ts";
+import type { PrFacts, PrTier } from "./plan.ts";
+
+export type { PrFacts } from "./plan.ts";
+
+export type LoadOptions = {
+  repo?: string;
+  /** Only these PRs, as "repo#number". */
+  refs?: Iterable<string>;
+  /** Decision time in ms (default: the clock). */
+  now?: number;
+  /** The classification run for labels (default: latestRun). */
+  run?: string | null;
+};
+
+type Row = {
+  repo: string; number: number; author: string | null; state: "OPEN" | "MERGED"; review_decision: string | null; head_oid: string | null; updated_at: string | null; is_draft: number | null;
+  additions: number | null; deletions: number | null; i_mergeable: string | null; head_repo: string | null; head_ref: string | null; base_ref: string | null; i_can: number | null;
+  c_head: string | null; c_at: string | null; c_state: string | null; c_draft: number | null; overall: string | null; c_checks: string | null; c_mergeable: string | null; c_can: number | null;
+  r_head: string | null; r_at: string | null; r_verdict: string | null; r_sure: number | null; r_mode: string | null; r_reason: string | null; r_fixes: string | null; r_public: string | null;
+  score: number | null; in_pilot: number; not_integration: number; batch_pr: number; held_backlog: number; held_dup: number;
+};
+
+const parseList = (s: string | null): unknown[] => { try { const v = JSON.parse(s ?? "[]") as unknown; return Array.isArray(v) ? v : []; } catch { return []; } };
+const safeJson = (s: string): unknown => { try { return JSON.parse(s); } catch { return null; } };
+
+const SELECT = `SELECT i.repo, i.number, i.author, i.state, i.review_decision, i.head_oid, i.updated_at, i.is_draft, i.additions, i.deletions, i.mergeable AS i_mergeable,
+    i.head_repo, i.head_ref, i.base_ref, i.maintainer_can_modify AS i_can,
+    c.head_oid AS c_head, c.fetched_at AS c_at, c.state AS c_state, c.is_draft AS c_draft, c.overall, c.checks AS c_checks, c.mergeable AS c_mergeable, c.maintainer_can_modify AS c_can,
+    l.head_oid AS r_head, l.at AS r_at, l.verdict AS r_verdict, l.sure AS r_sure, l.mode AS r_mode, l.reason AS r_reason, l.fixes AS r_fixes, l.public_review AS r_public,
+    ${fastScoreSql("i.repo", "i.number", "p.score")} AS score,
+    ${pilotSql("i")} AS in_pilot, ${notOwnIntegrationSql("i")} AS not_integration,
+    EXISTS (SELECT 1 FROM main.merge_batches mb WHERE mb.repo = i.repo AND mb.pr_number = i.number) AS batch_pr,
+    ${backlogHeldSql("i")} AS held_backlog,
+    (EXISTS (SELECT 1 FROM decisions dh WHERE dh.kind = 'duplicate' AND dh.id NOT LIKE '%:dupegroup:%' AND dh.repo = i.repo AND dh.number = i.number AND (dh.answer IS NULL OR dh.answer = 'close'))
+      OR ${groupHeldSql("i")}) AS held_dup
+  FROM items i
+  LEFT JOIN pr_checks c ON c.repo = i.repo AND c.number = i.number
+  LEFT JOIN item_rank p ON p.repo = i.repo AND p.number = i.number
+  LEFT JOIN opus_reviews l ON l.repo = i.repo AND l.number = i.number AND l.head_oid = (
+    SELECT r.head_oid FROM opus_reviews r WHERE r.repo = i.repo AND r.number = i.number AND r.verdict IS NOT NULL ORDER BY r.at DESC, r.rowid DESC LIMIT 1)
+  WHERE i.kind = 'pr' AND (i.state = 'OPEN' OR (i.state = 'MERGED' AND l.verdict IN ('take', 'take-fix')))`;
+
+/** Facts of every open PR (and merged PRs with a take or take-fix review) of the database, repo or refs given. One pass: per-repo values are read once. */
+export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[] {
+  const now = opts.now ?? Date.now();
+  const params: Record<string, string> = {};
+  let where = "";
+  if (opts.repo) { where += " AND i.repo = :repo"; params.repo = opts.repo; }
+  if (opts.refs) { where += " AND i.repo || '#' || i.number IN (SELECT value FROM json_each(:refs))"; params.refs = JSON.stringify([...opts.refs]); }
+  const rows = db.prepare(`${SELECT}${where} ORDER BY i.repo, i.number`).all(params) as Row[];
+
+  // Values read once for all PRs.
+  const run = opts.run !== undefined ? opts.run : latestRun(db);
+  const settled = settledLookup(db, run);
+  const stale = staleReviews(db, opts.repo);
+  const staleActionable = staleReviews(db, opts.repo, true);
+  const scope = scopeAnswers(db);
+  const gates = gatesOf(db, opts.repo);
+  const holds = mergeHolds(db, opts.repo);
+  const inBatch = batchStates(db, opts.repo);
+  const own = ownFixPrs(db, opts.repo);
+  const mainRed = redMainRepos(db);
+  const answers = new Map(actionable(db).filter((a) => a.kind === "merge").map((a) => [a.id, a.answer]));
+  const pipelineLogin = (db.prepare("SELECT value FROM main.settings WHERE key = 'pipeline_login'").get() as { value: string } | undefined)?.value ?? null;
+  const posts = new Map((db.prepare("SELECT repo, number, review_id, head_oid, posted_at, opus_at FROM review_posts").all() as { repo: string; number: number; review_id: string; head_oid: string | null; posted_at: string | null; opus_at: string | null }[])
+    .map((p) => [`${p.repo}#${p.number}`, p]));
+  const grouped = new Set((db.prepare(`SELECT gi.repo || '#' || gi.number AS ref FROM dupe_group_items gi JOIN decisions g ON g.id = gi.decision_id
+    WHERE ${OPEN_GROUP_SQL} AND gi.role <> 'stay'`).all() as { ref: string }[]).map((r) => r.ref));
+  const queued = rows.filter((r) => r.in_pilot && r.not_integration && (r.r_verdict === "take" || r.r_verdict === "take-fix") && r.author);
+  const tiers = tiersOf(db, [...new Set(queued.map((r) => r.author!))]);
+
+  const repoMemo = new Map<string, { f: PrFacts["repoFacts"]; pub: boolean; longLived: LongLived }>();
+  const repoOf = (repo: string) => {
+    let m = repoMemo.get(repo);
+    if (!m) {
+      m = {
+        f: { mergeApproved: !!mergeApprovalOf(db, repo), pushApproved: pushApprovalOf(db, repo) !== null, commentApproved: commentApprovalOf(db, repo) !== null, ciApproved: ciApprovalOf(db, repo) !== null,
+          noCi: repoHasNoCi(db, repo), mainRed: mainRed.has(repo) },
+        pub: !!db.prepare("SELECT 1 FROM repos WHERE name = ? AND visibility = 'public'").get(repo),
+        longLived: longLivedOf(db, repo),
+      };
+      repoMemo.set(repo, m);
+    }
+    return m;
+  };
+
+  const merges = db.prepare("SELECT outcome, reason, ci, mergeable, at FROM merges WHERE repo = ? AND number = ? AND head_oid = ? ORDER BY at DESC, rowid DESC LIMIT 1");
+  const waiting = db.prepare("SELECT runs, approved, reread, failed, cross_repo, approved_at FROM ci_run_approvals WHERE repo = ? AND number = ? AND head_oid = ?");
+  const verifs = db.prepare("SELECT state, kind, summary, note FROM verifications WHERE repo = ? AND number = ? AND head_sha = ?");
+  const decision = db.prepare("SELECT id FROM decisions WHERE id = ?");
+  const openQuestion = db.prepare(OPEN_QUESTION_SQL);
+  const answeredAfter = db.prepare("SELECT 1 FROM decisions WHERE id = ? AND kind = 'merge' AND answer = 'merge' AND answered_at > ? AND answered_by IN (SELECT login FROM access WHERE role = 'operator')");
+  const pushChain = pushChainOf(db);
+  const unsureAt = db.prepare(UNSURE_AT_SQL);
+  const reviewRows = db.prepare("SELECT author, author_association AS association, review_state AS state, created_at AS at FROM comments WHERE repo = ? AND number = ? AND kind = 'review'");
+  const batchTip = db.prepare(`SELECT a.runs, a.approved, a.reread, a.failed, a.cross_repo FROM merge_batches b
+    JOIN ci_run_approvals a ON a.repo = b.repo AND a.number = b.pr_number AND a.head_oid = b.commit_sha
+    WHERE b.repo = ? AND b.pr_number = ? AND b.state = 'open'
+      AND NOT EXISTS (SELECT 1 FROM merge_batch_prs p WHERE p.batch_id = b.id AND NOT EXISTS (
+        SELECT 1 FROM final_reviews l WHERE l.repo = b.repo AND l.number = p.number AND l.head_oid = p.head_oid AND l.verdict IN ('take', 'take-fix')
+          AND l.head_oid = (SELECT r.head_oid FROM opus_reviews r WHERE r.repo = l.repo AND r.number = l.number AND r.verdict IS NOT NULL ORDER BY r.at DESC, r.rowid DESC LIMIT 1)))
+    ORDER BY b.id LIMIT 1`);
+
+  type Wait = { runs: string; approved: string; reread: number; failed: string; cross_repo: number; approved_at: string | null };
+  const runsOf = (w: Wait | undefined): PrFacts["runs"] => {
+    if (!w) return null;
+    const runs = parseList(w.runs) as { id: number; event?: string }[];
+    const failed = JSON.parse(w.failed || "{}") as Record<string, number>;
+    return { waiting: runs.length + (w.reread ? 1 : 0), reread: !!w.reread, crossRepo: !!w.cross_repo, approvable: runs.filter((x) => x.event === "pull_request" && (failed[x.id] ?? 0) < MAX_FAILURES).length };
+  };
+
+  const out: PrFacts[] = [];
+  for (const r of rows) {
+    // The queue leaves merged PRs outside the pilot and our own integration PRs out.
+    if (r.state === "MERGED" && (!r.in_pilot || !r.not_integration)) continue;
+    const ref = `${r.repo}#${r.number}`;
+    const rf = repoOf(r.repo);
+    const fresh = !!r.c_at && (!r.updated_at || r.c_at > r.updated_at);
+    const head = headOf(r);
+    const inScope = !!r.in_pilot;
+    const integration = !r.not_integration;
+    const lines = (r.additions ?? 0) + (r.deletions ?? 0);
+    const base: PrFacts = {
+      repo: r.repo, number: r.number, now, ghState: r.state, head, draft: fresh ? r.c_state !== "OPEN" || !!r.c_draft : !!r.is_draft,
+      author: r.author, authorIsPipeline: (r.author ?? "") === (pipelineLogin ?? ""), tier: "not", lines, size: sizeOf(lines), label: null, needsDecisionFlag: false,
+      scopeAnswer: scope.get(ref) ?? null,
+      inScope, integration, batchPr: !!r.batch_pr, heldBacklog: !!r.held_backlog, heldDuplicate: !r.held_backlog && !!r.held_dup, mergeHeld: holds.has(ref),
+      fast: (r.score ?? 0) >= FAST_FLOOR, score: r.score, repoFacts: rf.f,
+      review: null, post: { postable: false, posted: null },
+      checksHere: false, checksOpen: false, ci: "unknown", mergeable: r.i_mergeable ?? "UNKNOWN", runs: null,
+      lastMerge: null, runsApprovedAfterMerge: false, verification: null, verifyUnavailable: null,
+      decision: { asked: false, openQuestion: false, answer: null, mergeAnswerAfterReview: false, inOpenGroup: grouped.has(ref) },
+      premerge: null, premergeFixUsed: false, pushable: false, pushChain: [], conflict: null, batch: null, mainFix: false, changesRequested: null, gateFailureNote: null,
+    };
+    if (integration) {
+      base.runs = runsOf(batchTip.get(r.repo, r.number) as Wait | undefined);
+      out.push(base);
+      continue;
+    }
+    if (!inScope) { out.push(base); continue; }
+
+    const s = settled(r.repo, r.number);
+    base.label = s.label ?? null;
+    base.needsDecisionFlag = s.flags.includes("needs decision");
+    if (!r.r_head || !r.r_verdict || !r.r_at) { out.push(base); continue; }
+
+    const take = r.r_verdict === "take" || r.r_verdict === "take-fix";
+    const chain = take ? pushChain(r.repo, r.number, r.r_head) : [r.r_head];
+    const unsure = take && (r.r_sure === 0 || chain.some((h) => unsureAt.get(r.repo, r.number, h)));
+    base.review = {
+      head: r.r_head, at: r.r_at, verdict: r.r_verdict, unsure, mode: r.r_mode, reason: r.r_reason ?? "", fixes: parseList(r.r_fixes).length,
+      stale: stale.has(`${ref}@${r.r_head}`), staleActionable: staleActionable.has(`${ref}@${r.r_head}`),
+    };
+    base.pushChain = chain;
+    const p = posts.get(ref);
+    const hasPublic = r.r_public !== null;
+    const pub = !hasPublic ? { ok: true } : parsePublic(safeJson(r.r_public!));
+    base.post = {
+      postable: (hasPublic || !!p?.review_id) && !!pub,
+      posted: p ? { head: p.head_oid, at: p.posted_at, opusAt: p.opus_at } : null,
+    };
+    if (!take) { out.push(base); continue; }
+
+    const wait = waiting.get(r.repo, r.number, r.r_head) as Wait | undefined;
+    const checksHere = r.c_head === r.r_head;
+    base.checksHere = checksHere;
+    base.checksOpen = checksHere && r.c_state === "OPEN" && !r.c_draft;
+    const approvedPending = parseList(wait?.approved ?? "[]").length > 0;
+    base.ci = checksHere ? (approvedPending ? "pending" : effectiveCi(db, r.repo, r.overall ?? "none", r.c_checks)) : "unknown";
+    base.mergeable = (checksHere ? r.c_mergeable : r.i_mergeable) ?? "UNKNOWN";
+    base.runs = runsOf(wait);
+    base.tier = (r.author ? tiers.get(r.author) : undefined) ?? "not";
+    // The pipeline's own Fix PRs count as whitelisted; an operator's deny still wins.
+    if (base.tier === "not" && r.author && r.author === own.login && own.prs.has(ref)) base.tier = "whitelisted";
+
+    const last = merges.get(r.repo, r.number, r.r_head) as { outcome: string; reason: string | null; ci: string | null; mergeable: string | null; at: string } | undefined;
+    if (last) {
+      base.lastMerge = { outcome: last.outcome, reason: last.reason, ci: last.ci, mergeable: last.mergeable };
+      base.runsApprovedAfterMerge = !!wait?.approved_at && wait.approved_at > last.at;
+    }
+    base.verification = (verifs.get(r.repo, r.number, r.r_head) as PrFacts["verification"] | undefined) ?? null;
+    if (!base.verification || base.verification.state === "stale") {
+      base.verifyUnavailable = !rf.pub ? PRIVATE_REASON : rf.f.noCi && cachedRust(r.repo, r.r_head) === false ? NOT_RUST_REASON : null;
+    }
+    const id = mergeDecisionId(r.repo, r.number, r.r_head);
+    const given = answers.get(id) ?? null;
+    base.decision = {
+      asked: !!decision.get(id), openQuestion: r.state === "OPEN" && !!openQuestion.get(r.repo, r.number), answer: given,
+      mergeAnswerAfterReview: given === "merge" && !!answeredAfter.get(id, r.r_at), inOpenGroup: grouped.has(ref),
+    };
+    if (r.state === "MERGED") { out.push(base); continue; }
+
+    base.pushable = pushable(r.head_repo, r.repo, checksHere ? r.c_can : r.i_can, r.head_ref, rf.longLived);
+    const row = premergeAt(db, r.repo, r.number, r.r_head);
+    if (row) {
+      const all = findingsOf(row);
+      const defects = all.filter((f) => f.severity === "defect");
+      base.premerge = { at: row.at, tries: row.tries, hasFindings: row.findings !== null, defects: defects.length, defectsAllFixable: defects.every((f) => f.fix), minor: all.length - defects.length, error: row.error ?? null };
+      if (defects.length) base.premergeFixUsed = premergeFixUsed(db, r.repo, r.number);
+    }
+    if (base.mergeable === "CONFLICTING" && r.base_ref) {
+      base.conflict = { bucket: conflictBucket(db, { repo: r.repo, number: r.number, head: r.r_head, pushable: base.pushable }, { push: rf.f.pushApproved, comment: rf.f.commentApproved }), base: r.base_ref };
+    }
+    base.batch = inBatch.get(`${ref}@${r.r_head}`) ?? null;
+    base.mainFix = !!r.head_ref?.startsWith(MAIN_FIX_BRANCH_PREFIX) && !!r.author && r.author === own.login && own.prs.has(ref);
+    const gate = gates.get(ref);
+    const { why, live } = changesRequestedWhy(gate, r.updated_at, reviewRows.all(r.repo, r.number) as ReviewFact[], r.review_decision);
+    if (gate && gate.failures >= GATE_FAILURES) base.gateFailureNote = failureNote(gate.failures);
+    if (why) base.changesRequested = { why, live };
+    out.push(base);
+  }
+  return out;
+}
+
+/** Facts of one PR, or null when it is not an open PR (or a merged one with a take review). */
+export function loadPrFact(db: DatabaseSync, repo: string, number: number, opts: Omit<LoadOptions, "repo" | "refs"> = {}): PrFacts | null {
+  return loadPrFacts(db, { ...opts, repo, refs: [`${repo}#${number}`] })[0] ?? null;
+}
+export type { PrTier };

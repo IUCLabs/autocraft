@@ -3,21 +3,10 @@ import { fastScoreSql } from "../fasttrack.ts";
 import { notHeldSql } from "../dupes/held.ts";
 import type { DatabaseSync } from "node:sqlite";
 import { latestRun, settledLookup, settledTable } from "../classify/settled.ts";
-import { SCOPE_OPTIONS } from "../decide/decision.ts";
 import { staleReviews } from "./discussion.ts";
 
-/** Type labels whose PRs get a code review; plugin candidates do not. */
-export const REVIEW_LABELS = ["bugfix", "performance", "missing feature", "small extra", "infra"];
-
-export type Size = "S" | "M" | "L";
-
-/** Same S and M bounds as the dashboard's size column; its L and XL are both L here. */
-export function sizeOf(linesChanged: number): Size {
-  return linesChanged <= 50 ? "S" : linesChanged <= 300 ? "M" : "L";
-}
-
-/** Scope answers that keep a PR in core. */
-const KEEP_IN_CORE: string[] = [SCOPE_OPTIONS.take.key, SCOPE_OPTIONS["small-extra"].key];
+import { KEEP_IN_CORE, REVIEW_LABELS, sizeOf, type Size } from "../core/rules.ts";
+export { REVIEW_LABELS, sizeOf, type Size };
 
 /**
  * The operator's answer to the latest scope decision on this PR, or null.

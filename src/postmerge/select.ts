@@ -2,9 +2,10 @@
 import type { DatabaseSync } from "node:sqlite";
 import { pilotSqlFor } from "../pilot.ts";
 import type { Finding } from "./parse.ts";
+import { RETRY_AFTER_MS } from "../core/rules.ts";
 
 /** A review that failed with a `retry:` error is tried again after this long. */
-export const RETRY_AFTER_MS = 3600_000;
+export { RETRY_AFTER_MS };
 export const SINCE_KEY = "postmerge_since";
 
 /** `batch`: the PR landed through a merged integration batch. */

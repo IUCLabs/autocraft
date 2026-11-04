@@ -1,9 +1,9 @@
 // Pre-merge review results (table premerge_reviews): one row per PR head, read by the merge queue.
 import type { DatabaseSync } from "node:sqlite";
-import { RETRY_AFTER_MS } from "../postmerge/select.ts";
+import { PREMERGE_MAX_TRIES, RETRY_AFTER_MS } from "../core/rules.ts";
 
 /** A failed head counts as failed after this many tries. */
-export const PREMERGE_MAX_TRIES = 3;
+export { PREMERGE_MAX_TRIES };
 
 export type { PremergeFinding } from "./types.ts";
 import type { PremergeFinding } from "./types.ts";
