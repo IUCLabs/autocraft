@@ -16,6 +16,7 @@ import { outsideShown } from "../fixup/excerpt.ts";
 import { Git, type Exec } from "../fixup/git.ts";
 import { scrubReason, whoAmI } from "../fixup/index.ts";
 import { ghOpenPr, pushOwnBranch } from "../github/write.ts";
+import { foldFormat, queueLint, readLint, type LintRead } from "../prepush/index.ts";
 import { MAIN_FIX_BRANCH_PREFIX } from "../mainci/index.ts";
 import type { Gh } from "../merge/safe-merge.ts";
 import { cleanLine } from "../review/post-template.ts";
@@ -30,7 +31,21 @@ const MAX_PRS = 30;
 export type FixPrDeps = Pick<CifixDeps, "ask" | "check" | "root"> & {
   /** Host directory with a read-only checkout of the head commit for the sandboxed model calls, or null to ask without tools. */
   checkout?: (repo: string, branch: string, sha: string) => Promise<string | null>;
+  /** The lint task's result once it ended, or `pending` when it did not end in time. Default: polls the task. */
+  lintWait?: (db: DatabaseSync, task: number) => Promise<LintRead>;
 };
+
+/** How long the fix PR step waits for the lint task of its patch. */
+const LINT_WAIT_MS = 60 * 60_000;
+const LINT_POLL_MS = 15_000;
+async function waitLint(db: DatabaseSync, task: number): Promise<LintRead> {
+  const end = Date.now() + LINT_WAIT_MS;
+  for (;;) {
+    const r = readLint(db, task);
+    if (r.kind !== "pending" || Date.now() >= end) return r;
+    await new Promise((resolve) => setTimeout(resolve, LINT_POLL_MS));
+  }
+}
 
 /** The default branch's head as the polls show it. */
 export type Head = { headSha: string; branch: string; state: string; redSince: string; culprit: string; culpritPr: number | null };
@@ -144,6 +159,23 @@ async function attempt(c: Ctx, rows: FixRow[], count: () => void): Promise<Outco
     if (!applied.ok) return set(live, "fix-failed", applied.reason);
     const refusal = await made.check(v.patch);
     if (refusal !== null) return set(live, "fix-failed", refusal.replace(/^rejected: /, ""));
+
+    // Like every model patch, this one is linted before it is pushed: findings end the attempt, the formatter's changes are folded in.
+    const lintTask = queueLint(c.db, { step: "mainfix", repo: c.repo, number: null, head, base: head, patch: v.patch });
+    if (lintTask !== null) {
+      const res = await (c.fix.lintWait ?? waitLint)(c.db, lintTask);
+      if (res.kind === "pending") return set(live, "fix-failed", "the lint task did not finish in time");
+      if (res.kind === "infra-failed") return set(live, "fix-failed", `lint: ${res.reason}`);
+      if (res.findings.length) return set(live, "fix-failed", `clippy findings on the patch: ${oneLine(res.findings[0]!.message)}`);
+      if (res.formatDiff) {
+        const fold = await foldFormat(git, head, v.patch, res.formatDiff, c.fix.root);
+        if (!fold.ok) return set(live, "fix-failed", fold.reason);
+        const dir = mkdtempSync(join(c.fix.root, ".index-"));
+        try { applied = await git.applyToTree(head, fold.patch, join(dir, "index")); }
+        finally { rmSync(dir, { recursive: true, force: true }); }
+        if (!applied.ok) return set(live, "fix-failed", applied.reason);
+      }
+    }
 
     const who = await whoAmI(c.exec);
     c.db.prepare("INSERT INTO main.settings (key, value) VALUES ('pipeline_login', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value").run(who.login);

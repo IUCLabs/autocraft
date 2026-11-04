@@ -130,6 +130,7 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
   const fixupRows = db.prepare("SELECT state FROM fixups WHERE repo = ? AND number = ? AND from_head = ? AND source IS NULL AND state IN ('pushed', 'cannot-push', 'too-large', 'asked', 'push-denied', 'linting')");
   const lintFixup = db.prepare("SELECT source, lint_task FROM fixups WHERE repo = ? AND number = ? AND from_head = ? AND state = 'linting' ORDER BY rowid");
   const lintCifix = db.prepare("SELECT lint_task FROM ci_fixes WHERE repo = ? AND number = ? AND head = ? AND state = 'linting' ORDER BY rowid");
+  const lintConflict = db.prepare("SELECT lint_task FROM conflict_merges WHERE repo = ? AND number = ? AND from_head = ? AND state = 'linting' ORDER BY rowid");
   const cifixRows = db.prepare("SELECT state, created_at, task_id, runs FROM ci_fixes WHERE repo = ? AND number = ? AND head = ? ORDER BY created_at, rowid");
   const cifixTotals = db.prepare(`SELECT COALESCE(SUM(state IN (${CIFIX_PUSH_STATES.map(() => "?").join(",")})), 0) AS pushes, COALESCE(SUM(state IN (${CIFIX_TRY_STATES.map(() => "?").join(",")})), 0) AS tries FROM ci_fixes WHERE repo = ? AND number = ?`);
   const queued = rows.filter((r) => r.in_pilot && r.not_integration && (r.r_verdict === "take" || r.r_verdict === "take-fix") && r.author);
@@ -310,6 +311,7 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
         base.lint.push({ step: "fixup", source: x.source === "premerge" || x.source === "carry" ? x.source : "review", ended: ended(x.lint_task) });
       }
       for (const x of lintCifix.all(r.repo, r.number, r.r_head) as { lint_task: number | null }[]) base.lint.push({ step: "cifix", source: "review", ended: ended(x.lint_task) });
+      for (const x of lintConflict.all(r.repo, r.number, r.r_head) as { lint_task: number | null }[]) base.lint.push({ step: "conflict", source: "review", ended: ended(x.lint_task) });
       if (base.lint.length && r.state === "OPEN") base.inFlight = true;
     }
     if (base.ci === "failure" || base.brokeByUs) {

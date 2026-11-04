@@ -89,6 +89,9 @@ const ADDED_COLUMNS: [table: string, column: string, type: string][] = [
   ["comments", "author_association", "TEXT"],
   ["dupe_carries", "from_head", "TEXT"],
   // The fix PR of a red default branch (src/mainfix).
+  // A model-resolved conflict merge waiting for its lint task: the resolved files (JSON) and the task.
+  ["conflict_merges", "patch", "TEXT"],
+  ["conflict_merges", "lint_task", "INTEGER"],
   ["main_fixes", "pr_number", "INTEGER"],
   ["main_fixes", "pr_url", "TEXT"],
 ];

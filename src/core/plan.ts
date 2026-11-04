@@ -36,7 +36,7 @@ export type ActionKind =
 
 export type Action = { kind: ActionKind; head: string | null; params?: Record<string, unknown> };
 
-export type LintFact = { step: "fixup" | "cifix"; source: "review" | "premerge" | "carry"; ended: boolean };
+export type LintFact = { step: "fixup" | "cifix" | "conflict"; source: "review" | "premerge" | "carry"; ended: boolean };
 
 export type Plan = {
   repo: string; number: number; head: string | null;

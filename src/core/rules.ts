@@ -49,7 +49,7 @@ export const MAIN_RED_HELD = ["ready", "decision-answered-merge", "refused"];
 /** The queue's note for a conflicted PR, or null when nothing acts on it. */
 export function conflictNote(bucket: string, base: string): string | null {
   switch (bucket) {
-    case "merge": return `conflict: merging ${base}`;
+    case "merge": case "linting": return `conflict: merging ${base}`;
     case "ask": case "asked": return "conflict: asked the contributor";
     case "held": return "conflict: held";
     default: return null;
