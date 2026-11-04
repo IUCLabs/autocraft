@@ -68,15 +68,14 @@ export function decideItem(f: ItemFacts): ItemPlan {
 
   // classify-new: Jev for items without a verdict or whose classifier input changed (unless Haiku classified the item alone at this input);
   // Haiku for items Jev is unsure of that have no Haiku verdict as new as Jev's.
-  if (f.run && live) {
-    const jevDue = !c.haiku?.aloneCurrent && (!c.jev || c.jev.changed);
-    const haikuDue = !!c.jev && c.jev.unsure && (!c.haiku || c.haiku.at < c.jev.at);
-    if (jevDue || haikuDue) actions.push(act("classify", null, { source: jevDue ? "jev" : "haiku" }));
-  }
+  const jevDue = !c.haiku?.aloneCurrent && (!c.jev || c.jev.changed);
+  const haikuDue = !!c.jev && c.jev.unsure && (!c.haiku || c.haiku.at < c.jev.at);
+  if (f.run && live && (jevDue || haikuDue)) actions.push(act("classify", null, { source: jevDue ? "jev" : "haiku" }));
   // referee: open, not a draft, not held, in scope.
   // A failed Opus call is asked again after a backoff; the third failure sends the item to Decide.
   const backoff = !!c.referee?.failedAt && Date.parse(c.referee.failedAt) > f.now - RECOMMEND_RETRY_MS;
-  if (f.run && live && !f.draft && state === "referee-due" && !backoff) actions.push(act("referee", null, { source: c.referee ? "opus" : "sonnet" }));
+  // Not while Jev or Haiku is due again: the referee would judge the verdicts they are about to replace.
+  if (f.run && live && !f.draft && state === "referee-due" && !backoff && !jevDue && !haikuDue) actions.push(act("referee", null, { source: c.referee ? "opus" : "sonnet" }));
   // prioritize: no priority row at the current text hash.
   if (live && f.priorityHash !== f.embedHash) actions.push(act("prioritize", null));
   // embed: every open item, with no scope test.
