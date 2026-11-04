@@ -6,6 +6,7 @@ import { createAdminMock } from "./adminMock";
 import { createAgentsMock } from "./agentsMock";
 import { createTraceMock } from "./traceMock";
 import { createNowMock } from "./nowMock";
+import { createActivityMock } from "./activityMock";
 import { createAreasMock } from "./areasMock";
 import { createConversationMock } from "./conversationMock";
 import { createBuildMock } from "./buildMock";
@@ -198,6 +199,7 @@ export function createMockApi(): Api {
     ...createAgentsMock(me, changed),
     ...createTraceMock(),
     ...createNowMock(),
+    ...createActivityMock(),
     ...createBuildMock(me, changed),
     ...createQueueMock(me, changed),
     prompts: () => wait(promptsReport(null), 60),

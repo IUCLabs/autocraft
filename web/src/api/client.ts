@@ -8,6 +8,8 @@ import type {
   AccessOverview,
   AccountInput,
   AgentRunDetail,
+  ActivityPage,
+  ActivityQuery,
   ItemTrace,
   Now,
   ItemTraceDetail,
@@ -135,6 +137,8 @@ export interface Api {
   itemTrace(repo: RepoName, number: number, q?: ItemTraceQuery): Promise<ItemTrace | ItemTraceUnchanged>;
   /** What the list leaves out of an event whose kind has no detail endpoint of its own (plan, job, review, check, step, write). */
   itemTraceDetail(repo: RepoName, number: number, id: string): Promise<ItemTraceDetail>;
+  /** Every item's trace events in one stream, newest first; `since` as for `itemTrace`. */
+  activity(q?: ActivityQuery): Promise<ActivityPage | ItemTraceUnchanged>;
   /** Operator only: review the current head again, plan Verify again, or try the issue fix again. Writes nothing to GitHub. */
   release(repo: RepoName, number: number, action: ReleaseAction): Promise<void>;
   /** Top bar: jumps by number, logins, words in titles and bodies. */

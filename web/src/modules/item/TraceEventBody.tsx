@@ -50,7 +50,10 @@ function Fields({ e, fields }: { e: TraceEvent; fields: Record<string, unknown> 
   return rows.length > 0 ? <Facts rows={rows} /> : null;
 }
 
-export function TraceEventBody({ event: e, item }: { event: TraceEvent; item: Item }) {
+/** A GitHub comment shows its text when `comments` is given. */
+export type EventItem = Pick<Item, "repo" | "number" | "kind"> & { comments?: Item["comments"] };
+
+export function TraceEventBody({ event: e, item }: { event: TraceEvent; item: EventItem }) {
   const { repo, number } = item;
   const needsDetail = !(e.kind === "model-call" && e.ref.runId !== undefined) && !(e.kind === "decision" && e.ref.decisionId) && !(e.kind === "github" && e.ref.commentId);
   const detail = useQuery(`item-trace-detail:${repo}#${number}:${e.id}`, (a) => a.itemTraceDetail(repo, number, e.id), { enabled: needsDetail });
@@ -65,7 +68,7 @@ export function TraceEventBody({ event: e, item }: { event: TraceEvent; item: It
     return decision.data ? <DecisionSummary d={decision.data} href={`/decisions/${encodeURIComponent(decision.data.id)}`} /> : <Pending error={decision.error?.message} />;
 
   if (e.kind === "github") {
-    const c = e.ref.commentId ? item.comments.find((x) => x.id === e.ref.commentId) : undefined;
+    const c = e.ref.commentId ? item.comments?.find((x) => x.id === e.ref.commentId) : undefined;
     const url = githubItemUrl(repo, number, item.kind) + (c && /^\d+$/.test(c.id) ? (c.kind === "review" ? `#pullrequestreview-${c.id}` : `#issuecomment-${c.id}`) : "");
     return (
       <div className="flex flex-col gap-2">

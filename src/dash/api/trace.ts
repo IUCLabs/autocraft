@@ -20,44 +20,56 @@ type Ctx = { db: DatabaseSync; repo: string; n: number; ref: string; own: string
 type Source = { kinds: TraceKind[]; run: (c: Ctx) => Ev[] };
 
 export const TRACE_PAGE_DEFAULT = 100, TRACE_PAGE_MAX = 500;
-const KINDS: TraceKind[] = ["github", "plan", "job", "model-call", "check", "review", "decision", "write", "step", "conversation"];
+export const KINDS: TraceKind[] = ["github", "plan", "job", "model-call", "check", "review", "decision", "write", "step", "conversation"];
 
-const humanize = (id: string): string => { const t = id.replace(/[-_]+/g, " ").trim(); return t.charAt(0).toUpperCase() + t.slice(1); };
+export const humanize = (id: string): string => { const t = id.replace(/[-_]+/g, " ").trim(); return t.charAt(0).toUpperCase() + t.slice(1); };
 /** A step's name as the dashboard shows it. */
 export const stepTitle = (id: string): string => knownStep(id)?.title ?? humanize(id);
-const step = (name: string): TraceActor => ({ type: "step", name: name === "AutoCraft" ? name : stepTitle(name) });
-const person = (name: string | null | undefined): TraceActor => ({ type: "person", name: name || "unknown" });
-const model = (name: string | null | undefined, fallback: string): TraceActor => ({ type: "model", name: name || fallback });
+export const step = (name: string): TraceActor => ({ type: "step", name: name === "AutoCraft" ? name : stepTitle(name) });
+export const person = (name: string | null | undefined): TraceActor => ({ type: "person", name: name || "unknown" });
+export const model = (name: string | null | undefined, fallback: string): TraceActor => ({ type: "model", name: name || fallback });
 export const clip = (s: string | null | undefined, n = 140): string => {
   const t = (s ?? "").replace(/\s+/g, " ").trim();
   return t.length > n ? `${t.slice(0, n - 1)}…` : t;
 };
 const json = <T>(s: string | null | undefined, fallback: T): T => { try { return s ? (JSON.parse(s) as T) : fallback; } catch { return fallback; } };
-const arr = <T = unknown>(s: string | null | undefined): T[] => { const v = json<unknown>(s, []); return Array.isArray(v) ? (v as T[]) : []; };
-const obj = (s: string | null | undefined): Record<string, unknown> => { const v = json<unknown>(s, {}); return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {}; };
+export const arr = <T = unknown>(s: string | null | undefined): T[] => { const v = json<unknown>(s, []); return Array.isArray(v) ? (v as T[]) : []; };
+export const obj = (s: string | null | undefined): Record<string, unknown> => { const v = json<unknown>(s, {}); return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {}; };
 /** One format for every time, so mixed formats sort right; null when it is not a time. */
-const iso = (at: unknown): string | null => { const t = typeof at === "string" ? Date.parse(at) : NaN; return Number.isNaN(t) ? null : new Date(t).toISOString(); };
+export const iso = (at: unknown): string | null => { const t = typeof at === "string" ? Date.parse(at) : NaN; return Number.isNaN(t) ? null : new Date(t).toISOString(); };
 const plural = (n: number, w: string): string => `${n} ${w}${n === 1 ? "" : "s"}`;
-const rows = <T>(db: DatabaseSync, sql: string, ...args: (string | number)[]): T[] => db.prepare(sql).all(...args) as T[];
+export const rows = <T>(db: DatabaseSync, sql: string, ...args: (string | number)[]): T[] => db.prepare(sql).all(...args) as T[];
 const count = (xs: unknown[]): string => plural(xs.length, "finding");
+
+export type ItemRow = { kind: string; author: string | null; created_at: string | null; closed_at: string | null; merged_at: string | null; merged_by: string | null; head_oid: string | null };
+export const openedEvent = (it: ItemRow): Ev => ({ id: "gh:opened", kind: "github", at: it.created_at ?? "", head: null, actor: person(it.author), summary: `Opened ${it.kind === "pr" ? "pull request" : "issue"}`, ref: {} });
+export const mergedEvent = (it: ItemRow): Ev => ({ id: "gh:merged", kind: "github", at: it.merged_at ?? "", head: it.head_oid, actor: person(it.merged_by), summary: "Merged", ref: {} });
+export const closedEvent = (it: ItemRow): Ev => ({ id: "gh:closed", kind: "github", at: it.closed_at ?? "", head: null, actor: person(null), summary: "Closed", ref: {} });
+export const commentEvent = (c: { id: string; kind: string | null; author: string | null; created_at: string; review_state: string | null; commit_oid: string | null; len: number }, own: string): Ev => {
+  const ours = own !== "" && c.author === own;
+  const what = c.kind === "review" ? `review (${(c.review_state ?? "commented").toLowerCase().replace("_", " ")})` : "comment";
+  return {
+    id: `comment:${c.id}`, kind: "github", at: c.created_at, head: c.commit_oid, actor: ours ? step("AutoCraft") : person(c.author),
+    summary: `${ours ? "AutoCraft posted a" : "Posted a"} ${what}, ${c.len} characters`, ref: { commentId: c.id },
+  };
+};
+export const activityEvent = (a: { id: string; kind: string; at: string; actor: string | null; label: string | null; after_oid: string | null; before_oid: string | null }, own: string): Ev => {
+  const ours = own !== "" && a.actor === own;
+  const summary = a.kind === "force-push" ? `Force-pushed ${(a.before_oid ?? "").slice(0, 7)} → ${(a.after_oid ?? "").slice(0, 7)}` : `${a.kind === "labeled" ? "Added" : "Removed"} label ${a.label ?? ""}`;
+  return { id: `activity:${a.id}`, kind: "github", at: a.at, head: a.kind === "force-push" ? a.after_oid : null, actor: ours ? step("AutoCraft") : person(a.actor), summary, ref: a.after_oid ? { head: a.after_oid } : {} };
+};
 
 const github: Source = {
   kinds: ["github"],
   run({ db, repo, n, own }) {
     const out: Ev[] = [];
-    const it = db.prepare("SELECT kind, author, created_at, closed_at, merged_at, merged_by, head_oid FROM items WHERE repo = ? AND number = ?").get(repo, n) as
-      { kind: string; author: string | null; created_at: string | null; closed_at: string | null; merged_at: string | null; merged_by: string | null; head_oid: string | null } | undefined;
-    if (it?.created_at) out.push({ id: "gh:opened", kind: "github", at: it.created_at, head: null, actor: person(it.author), summary: `Opened ${it.kind === "pr" ? "pull request" : "issue"}`, ref: {} });
-    if (it?.merged_at) out.push({ id: "gh:merged", kind: "github", at: it.merged_at, head: it.head_oid, actor: person(it.merged_by), summary: "Merged", ref: {} });
-    else if (it?.closed_at) out.push({ id: "gh:closed", kind: "github", at: it.closed_at, head: null, actor: person(null), summary: "Closed", ref: {} });
+    const it = db.prepare("SELECT kind, author, created_at, closed_at, merged_at, merged_by, head_oid FROM items WHERE repo = ? AND number = ?").get(repo, n) as ItemRow | undefined;
+    if (it?.created_at) out.push(openedEvent(it));
+    if (it?.merged_at) out.push(mergedEvent(it));
+    else if (it?.closed_at) out.push(closedEvent(it));
     for (const c of rows<{ id: string; kind: string | null; author: string | null; created_at: string; review_state: string | null; commit_oid: string | null; len: number }>(db,
       "SELECT id, kind, author, created_at, review_state, commit_oid, LENGTH(COALESCE(body, '')) AS len FROM comments WHERE repo = ? AND number = ? AND created_at IS NOT NULL", repo, n)) {
-      const ours = own !== "" && c.author === own;
-      const what = c.kind === "review" ? `review (${(c.review_state ?? "commented").toLowerCase().replace("_", " ")})` : "comment";
-      out.push({
-        id: `comment:${c.id}`, kind: "github", at: c.created_at, head: c.commit_oid, actor: ours ? step("AutoCraft") : person(c.author),
-        summary: `${ours ? "AutoCraft posted a" : "Posted a"} ${what}, ${c.len} characters`, ref: { commentId: c.id },
-      });
+      out.push(commentEvent(c, own));
     }
     for (const c of rows<{ oid: string; committed_at: string; author: string | null }>(db, "SELECT oid, MIN(committed_at, COALESCE(first_seen_at, committed_at)) AS committed_at, author FROM pr_commits WHERE repo = ? AND number = ?", repo, n)) {
       // Our own commits are shown by their audit rows.
@@ -66,101 +78,124 @@ const github: Source = {
     }
     for (const a of rows<{ id: string; kind: string; at: string; actor: string | null; label: string | null; after_oid: string | null; before_oid: string | null }>(db,
       "SELECT id, kind, at, actor, label, after_oid, before_oid FROM item_activity WHERE repo = ? AND number = ?", repo, n)) {
-      const ours = own !== "" && a.actor === own;
-      const summary = a.kind === "force-push" ? `Force-pushed ${(a.before_oid ?? "").slice(0, 7)} → ${(a.after_oid ?? "").slice(0, 7)}` : `${a.kind === "labeled" ? "Added" : "Removed"} label ${a.label ?? ""}`;
-      out.push({ id: `activity:${a.id}`, kind: "github", at: a.at, head: a.kind === "force-push" ? a.after_oid : null, actor: ours ? step("AutoCraft") : person(a.actor), summary, ref: a.after_oid ? { head: a.after_oid } : {} });
+      out.push(activityEvent(a, own));
     }
     return out;
   },
 };
 
+export const stageEvent = (s: { rowid: number; stage: string; at: string; actor: string | null; note: string | null }): Ev =>
+  ({ id: `stage:${s.rowid}`, kind: "plan", at: s.at, head: null, actor: step(s.actor || "pipeline"), summary: `Stage ${s.stage}${s.note ? `: ${clip(s.note)}` : ""}`, ref: {} });
+
 const stages: Source = {
   kinds: ["plan"],
-  run: ({ db, repo, n }) => rows<{ rowid: number; stage: string; at: string; actor: string | null; note: string | null }>(db,
-    "SELECT rowid, stage, at, actor, note FROM stages WHERE repo = ? AND number = ?", repo, n)
-    .map((s) => ({ id: `stage:${s.rowid}`, kind: "plan" as const, at: s.at, head: null, actor: step(s.actor || "pipeline"), summary: `Stage ${s.stage}${s.note ? `: ${clip(s.note)}` : ""}`, ref: {} })),
+  run: ({ db, repo, n }) => rows<Parameters<typeof stageEvent>[0]>(db, "SELECT rowid, stage, at, actor, note FROM stages WHERE repo = ? AND number = ?", repo, n).map(stageEvent),
 };
+
+export const planEvent = (p: { id: number; head: string | null; old_state: string | null; new_state: string; wait: string | null; reasons: string; at: string }): Ev => ({
+  id: `plan:${p.id}`, kind: "plan", at: p.at, head: p.head, actor: step("planner"),
+  summary: `Plan ${p.old_state ? `${p.old_state} → ` : "started as "}${p.new_state}${p.wait ? `, waiting for ${clip(p.wait, 80)}` : ""}`,
+  ref: p.head ? { head: p.head } : {}, detail: { from: p.old_state, to: p.new_state, wait: p.wait, reasons: arr<string>(p.reasons) },
+});
 
 const plans: Source = {
   kinds: ["plan"],
-  run: ({ db, repo, n }) => rows<{ id: number; head: string | null; old_state: string | null; new_state: string; wait: string | null; reasons: string; at: string }>(db,
-    "SELECT id, head, old_state, new_state, wait, reasons, at FROM plan_history WHERE repo = ? AND number = ?", repo, n)
-    .map((p) => ({
-      id: `plan:${p.id}`, kind: "plan" as const, at: p.at, head: p.head, actor: step("planner"),
-      summary: `Plan ${p.old_state ? `${p.old_state} → ` : "started as "}${p.new_state}${p.wait ? `, waiting for ${clip(p.wait, 80)}` : ""}`,
-      ref: p.head ? { head: p.head } : {}, detail: { from: p.old_state, to: p.new_state, wait: p.wait, reasons: arr<string>(p.reasons) },
-    })),
+  run: ({ db, repo, n }) => rows<Parameters<typeof planEvent>[0]>(db, "SELECT id, head, old_state, new_state, wait, reasons, at FROM plan_history WHERE repo = ? AND number = ?", repo, n).map(planEvent),
 };
+
+export const jobEvent = (j: { id: number; job_id: number; outcome: string | null; at: string; step: string | null; state: string | null; error: string | null }): Ev => ({
+  id: `job:${j.id}`, kind: "job", at: j.at, head: null, actor: step(j.step ?? "job"),
+  summary: `${j.step ? stepTitle(j.step) : "Job"}: ${clip(j.outcome) || j.state || "ran"}`, ref: { jobId: j.job_id }, detail: { step: j.step, state: j.state, outcome: j.outcome, error: j.error },
+});
 
 const jobs: Source = {
   kinds: ["job"],
-  run: ({ db, repo, n }) => rows<{ id: number; job_id: number; outcome: string | null; at: string; step: string | null; state: string | null; error: string | null }>(db,
-    "SELECT ji.id, ji.job_id, ji.outcome, ji.at, j.step, j.state, j.error FROM job_items ji LEFT JOIN jobs j ON j.id = ji.job_id WHERE ji.repo = ? AND ji.number = ?", repo, n)
-    .map((j) => ({
-      id: `job:${j.id}`, kind: "job" as const, at: j.at, head: null, actor: step(j.step ?? "job"),
-      summary: `${j.step ? stepTitle(j.step) : "Job"}: ${clip(j.outcome) || j.state || "ran"}`, ref: { jobId: j.job_id }, detail: { step: j.step, state: j.state, outcome: j.outcome, error: j.error },
-    })),
+  run: ({ db, repo, n }) => rows<Parameters<typeof jobEvent>[0]>(db,
+    "SELECT ji.id, ji.job_id, ji.outcome, ji.at, j.step, j.state, j.error FROM job_items ji LEFT JOIN jobs j ON j.id = ji.job_id WHERE ji.repo = ? AND ji.number = ?", repo, n).map(jobEvent),
 };
 
 /** SQL that leaves out runs that also touched a hidden repo (one `?` per name). */
-const hiddenSql = (hidden: string[]): string => (hidden.length ? ` AND NOT EXISTS (SELECT 1 FROM agent_run_items x WHERE x.run_id = r.id AND x.repo IN (${hidden.map(() => "?").join(",")}))` : "");
+export const hiddenSql = (hidden: string[]): string => (hidden.length ? ` AND NOT EXISTS (SELECT 1 FROM agent_run_items x WHERE x.run_id = r.id AND x.repo IN (${hidden.map(() => "?").join(",")}))` : "");
+
+export const RUN_COLUMNS = `r.id, r.step, r.model, r.provider, r.state, r.started_at, r.ended_at, r.input_tokens, r.output_tokens, r.cost_usd, r.summary, r.job_id,
+       COALESCE(a.label, r.account_id) AS label, (SELECT COUNT(*) FROM agent_run_tools t WHERE t.run_id = r.id) AS tools`;
+export const runEvent = (r: { id: number; step: string; model: string; provider: string; state: string; started_at: string; ended_at: string | null; input_tokens: number | null; output_tokens: number | null;
+  cost_usd: number | null; summary: string | null; label: string | null; tools: number; job_id: number | null }): Ev => ({
+  id: `run:${r.id}`, kind: "model-call", at: r.started_at, head: null, actor: model(r.model, "model"),
+  summary: `${stepTitle(r.step)}: ${r.state === "running" ? "running" : r.state === "failed" ? "failed" : clip(r.summary, 100) || "done"}`,
+  ref: { runId: r.id, ...(r.job_id !== null ? { jobId: r.job_id } : {}) },
+  call: { model: r.model, provider: r.provider, account: r.label, state: r.state, inputTokens: r.input_tokens, outputTokens: r.output_tokens, costUsd: r.cost_usd, toolCalls: r.tools, endedAt: r.ended_at },
+});
 
 const modelCalls: Source = {
   kinds: ["model-call"],
-  run: ({ db, repo, n, hidden }) => rows<{ id: number; step: string; model: string; provider: string; state: string; started_at: string; ended_at: string | null; input_tokens: number | null; output_tokens: number | null;
-    cost_usd: number | null; summary: string | null; label: string | null; tools: number; job_id: number | null }>(db,
-    `SELECT r.id, r.step, r.model, r.provider, r.state, r.started_at, r.ended_at, r.input_tokens, r.output_tokens, r.cost_usd, r.summary, r.job_id,
-       COALESCE(a.label, r.account_id) AS label, (SELECT COUNT(*) FROM agent_run_tools t WHERE t.run_id = r.id) AS tools
-     FROM agent_run_items i JOIN agent_runs r ON r.id = i.run_id LEFT JOIN claude_accounts a ON a.id = r.account_id WHERE i.repo = ? AND i.number = ?${hiddenSql(hidden)}`, repo, n, ...hidden)
-    .map((r) => ({
-      id: `run:${r.id}`, kind: "model-call" as const, at: r.started_at, head: null, actor: model(r.model, "model"),
-      summary: `${stepTitle(r.step)}: ${r.state === "running" ? "running" : r.state === "failed" ? "failed" : clip(r.summary, 100) || "done"}`,
-      ref: { runId: r.id, ...(r.job_id !== null ? { jobId: r.job_id } : {}) },
-      call: { model: r.model, provider: r.provider, account: r.label, state: r.state, inputTokens: r.input_tokens, outputTokens: r.output_tokens, costUsd: r.cost_usd, toolCalls: r.tools, endedAt: r.ended_at },
-    })),
+  run: ({ db, repo, n, hidden }) => rows<Parameters<typeof runEvent>[0]>(db,
+    `SELECT ${RUN_COLUMNS}
+     FROM agent_run_items i JOIN agent_runs r ON r.id = i.run_id LEFT JOIN claude_accounts a ON a.id = r.account_id WHERE i.repo = ? AND i.number = ?${hiddenSql(hidden)}`, repo, n, ...hidden).map(runEvent),
 };
 
 const CHECK_NAMES: Record<string, string> = { fmt: "Format check", clippy: "Clippy", check: "Build check", test: "Tests" };
 const outcomeWords = (o: string | null): string => (o === null ? "running" : /^0 findings?$/.test(o) ? "no findings" : /^exit \d+/.test(o) ? `failed (${o})` : o);
 
+export const checkEvent = (c: { id: number; run_id: number | null; step: string; head: string; command: string; crate: string | null; test_name: string | null; task_id: number | null; outcome: string | null; started_at: string }): Ev => ({
+  id: `check:${c.id}`, kind: "check", at: c.started_at, head: c.head, actor: step(c.step),
+  summary: `${CHECK_NAMES[c.command] ?? humanize(c.command)}${c.crate ? ` on ${c.crate}` : ""}${c.test_name ? ` (${c.test_name})` : ""}: ${outcomeWords(c.outcome)}`,
+  ref: { checkId: c.id, head: c.head, ...(c.run_id !== null ? { runId: c.run_id } : {}), ...(c.task_id !== null ? { taskId: c.task_id } : {}) },
+});
+export const taskEvent = (t: { id: number; job_id: number | null; step: string; head_sha: string; state: string; summary: string | null; queued_at: string }): Ev => ({
+  id: `task:${t.id}`, kind: "check", at: t.queued_at, head: t.head_sha, actor: step(t.step),
+  summary: `Build task ${t.state}${t.summary ? `: ${clip(t.summary, 100)}` : ""}`, ref: { taskId: t.id, head: t.head_sha, ...(t.job_id !== null ? { jobId: t.job_id } : {}) },
+});
+export const pushEvent = (p: { id: number; at: string; stage: string; action: string; to_oid: string; before_res: string; after_res: string | null; outcome: string | null }): Ev => ({
+  id: `push:${p.id}`, kind: "check", at: p.at, head: p.to_oid, actor: step(p.stage),
+  summary: `${GITHUB_ACTIONS[p.action] ?? humanize(p.action)} by AutoCraft: required checks ${p.before_res} → ${p.after_res ?? "pending"}${p.outcome ? `, ${p.outcome}` : ""}`, ref: { head: p.to_oid },
+});
+export const patchCheckEvent = (p: { id: number; kind: string; subject: string; round: number; verdict: string; model: string; reasons: string; created_at: string }): Ev => ({
+  id: `patchcheck:${p.id}`, kind: "check", at: p.created_at, head: null, actor: model(p.model, "model"), summary: `Patch check (${p.kind}, round ${p.round}): ${p.verdict}`,
+  ref: {}, detail: { subject: p.subject, reasons: p.reasons },
+});
+
 const checks: Source = {
   kinds: ["check"],
   run({ db, repo, n }) {
-    const out: Ev[] = [];
-    for (const c of rows<{ id: number; run_id: number | null; step: string; head: string; command: string; crate: string | null; test_name: string | null; task_id: number | null; outcome: string | null; started_at: string }>(db,
-      "SELECT id, run_id, step, head, command, crate, test_name, task_id, outcome, started_at FROM model_checks WHERE repo = ? AND number = ?", repo, n))
-      out.push({
-        id: `check:${c.id}`, kind: "check", at: c.started_at, head: c.head, actor: step(c.step),
-        summary: `${CHECK_NAMES[c.command] ?? humanize(c.command)}${c.crate ? ` on ${c.crate}` : ""}${c.test_name ? ` (${c.test_name})` : ""}: ${outcomeWords(c.outcome)}`,
-        ref: { checkId: c.id, head: c.head, ...(c.run_id !== null ? { runId: c.run_id } : {}), ...(c.task_id !== null ? { taskId: c.task_id } : {}) },
-      });
-    for (const t of rows<{ id: number; job_id: number | null; step: string; head_sha: string; state: string; summary: string | null; queued_at: string }>(db,
-      "SELECT id, job_id, step, head_sha, state, summary, queued_at FROM build_tasks WHERE repo = ? AND number = ?", repo, n))
-      out.push({
-        id: `task:${t.id}`, kind: "check", at: t.queued_at, head: t.head_sha, actor: step(t.step),
-        summary: `Build task ${t.state}${t.summary ? `: ${clip(t.summary, 100)}` : ""}`, ref: { taskId: t.id, head: t.head_sha, ...(t.job_id !== null ? { jobId: t.job_id } : {}) },
-      });
-    for (const p of rows<{ id: number; at: string; stage: string; action: string; to_oid: string; before_res: string; after_res: string | null; outcome: string | null }>(db,
-      "SELECT id, at, stage, action, to_oid, before_res, after_res, outcome FROM push_outcomes WHERE repo = ? AND number = ?", repo, n))
-      out.push({
-        id: `push:${p.id}`, kind: "check", at: p.at, head: p.to_oid, actor: step(p.stage),
-        summary: `${GITHUB_ACTIONS[p.action] ?? humanize(p.action)} by AutoCraft: required checks ${p.before_res} → ${p.after_res ?? "pending"}${p.outcome ? `, ${p.outcome}` : ""}`, ref: { head: p.to_oid },
-      });
-    for (const p of rows<{ id: number; kind: string; subject: string; round: number; verdict: string; model: string; reasons: string; created_at: string }>(db,
-      "SELECT id, kind, subject, round, verdict, model, reasons, created_at FROM patch_checks WHERE repo = ? AND number = ?", repo, n))
-      out.push({
-        id: `patchcheck:${p.id}`, kind: "check", at: p.created_at, head: null, actor: model(p.model, "model"), summary: `Patch check (${p.kind}, round ${p.round}): ${p.verdict}`,
-        ref: {}, detail: { subject: p.subject, reasons: p.reasons },
-      });
-    return out;
+    const q = <T>(sql: string) => rows<T>(db, sql, repo, n);
+    return [
+      ...q<Parameters<typeof checkEvent>[0]>("SELECT id, run_id, step, head, command, crate, test_name, task_id, outcome, started_at FROM model_checks WHERE repo = ? AND number = ?").map(checkEvent),
+      ...q<Parameters<typeof taskEvent>[0]>("SELECT id, job_id, step, head_sha, state, summary, queued_at FROM build_tasks WHERE repo = ? AND number = ?").map(taskEvent),
+      ...q<Parameters<typeof pushEvent>[0]>("SELECT id, at, stage, action, to_oid, before_res, after_res, outcome FROM push_outcomes WHERE repo = ? AND number = ?").map(pushEvent),
+      ...q<Parameters<typeof patchCheckEvent>[0]>("SELECT id, kind, subject, round, verdict, model, reasons, created_at FROM patch_checks WHERE repo = ? AND number = ?").map(patchCheckEvent),
+    ];
   },
 };
 
-type OpusRow = { head_oid: string; at: string; model: string | null; mode: string | null; verdict: string | null; sure: number | null; reason: string | null; risks: string | null; fixes: string | null };
-const opusEvent = (r: OpusRow, key: string): Ev => ({
+export type OpusRow = { head_oid: string; at: string; model: string | null; mode: string | null; verdict: string | null; sure: number | null; reason: string | null; risks: string | null; fixes: string | null };
+export const opusEvent = (r: OpusRow, key: string): Ev => ({
   id: `review:${key}`, kind: "review", at: r.at, head: r.head_oid, actor: model(r.model, "opus"),
   summary: `Opus review: ${r.verdict ?? "no verdict"}${arr(r.fixes).length ? ` with ${plural(arr(r.fixes).length, "fix")}` : ""}${r.sure === 0 ? ", not sure" : ""}`, ref: { reviewId: key, head: r.head_oid },
   detail: { mode: r.mode, verdict: r.verdict, sure: r.sure === 1, reason: r.reason, fixes: arr(r.fixes), risks: arr<string>(r.risks) },
+});
+
+export const premergeEvent = (r: { head_oid: string; at: string; model: string | null; findings: string | null; error: string | null; searched: string | null }): Ev => {
+  const f = arr(r.findings);
+  return {
+    id: `review:premerge:${r.head_oid}`, kind: "review", at: r.at, head: r.head_oid, actor: model(r.model, "premerge"),
+    summary: r.error ? `Pre-merge review failed: ${clip(r.error, 100)}` : `Pre-merge review: ${count(f)}`,
+    ref: { reviewId: `premerge:${r.head_oid}`, head: r.head_oid }, detail: { findings: f, searched: r.searched, error: r.error },
+  };
+};
+export const postmergeEvent = (r: { merge_sha: string; at: string; model: string | null; findings: string | null; error: string | null }, staff: boolean): Ev => {
+  const f = arr<Record<string, unknown>>(r.findings);
+  return {
+    id: `review:postmerge:${r.merge_sha}`, kind: "review", at: r.at, head: r.merge_sha, actor: model(r.model, "postmerge"),
+    summary: r.error ? `Post-merge review failed: ${clip(r.error, 100)}` : `Post-merge review: ${count(f)}`,
+    ref: { reviewId: `postmerge:${r.merge_sha}`, head: r.merge_sha },
+    // Which stage missed a finding and why is for staff, as on the item page (postmergeOf).
+    detail: { findings: staff ? f : f.map(({ missed_by: _by, missed_why: _why, ...rest }) => rest), error: r.error },
+  };
+};
+export const verifyEvent = (v: { head_sha: string; kind: string; state: string; reason: string; summary: string | null; note: string | null; created_at: string; head_task_id: number | null }): Ev => ({
+  id: `verify:${v.head_sha}`, kind: "review", at: v.created_at, head: v.head_sha, actor: step("verify"), summary: `Verification (${v.kind}): ${v.state}`,
+  ref: { head: v.head_sha, ...(v.head_task_id !== null ? { taskId: v.head_task_id } : {}) }, detail: { reason: v.reason, summary: v.summary, note: v.note },
 });
 
 const reviews: Source = {
@@ -175,32 +210,10 @@ const reviews: Source = {
     // Reviews stored before the history table existed.
     for (const r of rows<OpusRow>(db, "SELECT head_oid, at, model, mode, verdict, sure, reason, risks, fixes FROM opus_reviews WHERE repo = ? AND number = ?", repo, n))
       if (!seen.has(`${r.head_oid}|${r.at}`)) out.push(opusEvent(r, `opus-latest:${r.head_oid}`));
-    for (const r of rows<{ head_oid: string; at: string; model: string | null; findings: string | null; error: string | null; searched: string | null }>(db,
-      "SELECT head_oid, at, model, findings, error, searched FROM premerge_reviews WHERE repo = ? AND number = ?", repo, n)) {
-      const f = arr(r.findings);
-      out.push({
-        id: `review:premerge:${r.head_oid}`, kind: "review", at: r.at, head: r.head_oid, actor: model(r.model, "premerge"),
-        summary: r.error ? `Pre-merge review failed: ${clip(r.error, 100)}` : `Pre-merge review: ${count(f)}`,
-        ref: { reviewId: `premerge:${r.head_oid}`, head: r.head_oid }, detail: { findings: f, searched: r.searched, error: r.error },
-      });
-    }
-    for (const r of rows<{ merge_sha: string; at: string; model: string | null; findings: string | null; error: string | null }>(db,
-      "SELECT merge_sha, at, model, findings, error FROM postmerge_reviews WHERE repo = ? AND number = ?", repo, n)) {
-      const f = arr<Record<string, unknown>>(r.findings);
-      out.push({
-        id: `review:postmerge:${r.merge_sha}`, kind: "review", at: r.at, head: r.merge_sha, actor: model(r.model, "postmerge"),
-        summary: r.error ? `Post-merge review failed: ${clip(r.error, 100)}` : `Post-merge review: ${count(f)}`,
-        ref: { reviewId: `postmerge:${r.merge_sha}`, head: r.merge_sha },
-        // Which stage missed a finding and why is for staff, as on the item page (postmergeOf).
-        detail: { findings: staff ? f : f.map(({ missed_by: _by, missed_why: _why, ...rest }) => rest), error: r.error },
-      });
-    }
-    for (const v of rows<{ head_sha: string; kind: string; state: string; reason: string; summary: string | null; note: string | null; created_at: string; head_task_id: number | null }>(db,
-      "SELECT head_sha, kind, state, reason, summary, note, created_at, head_task_id FROM verifications WHERE repo = ? AND number = ?", repo, n))
-      out.push({
-        id: `verify:${v.head_sha}`, kind: "review", at: v.created_at, head: v.head_sha, actor: step("verify"), summary: `Verification (${v.kind}): ${v.state}`,
-        ref: { head: v.head_sha, ...(v.head_task_id !== null ? { taskId: v.head_task_id } : {}) }, detail: { reason: v.reason, summary: v.summary, note: v.note },
-      });
+    for (const r of rows<Parameters<typeof premergeEvent>[0]>(db, "SELECT head_oid, at, model, findings, error, searched FROM premerge_reviews WHERE repo = ? AND number = ?", repo, n)) out.push(premergeEvent(r));
+    for (const r of rows<Parameters<typeof postmergeEvent>[0]>(db, "SELECT merge_sha, at, model, findings, error FROM postmerge_reviews WHERE repo = ? AND number = ?", repo, n)) out.push(postmergeEvent(r, staff));
+    for (const v of rows<Parameters<typeof verifyEvent>[0]>(db,
+      "SELECT head_sha, kind, state, reason, summary, note, created_at, head_task_id FROM verifications WHERE repo = ? AND number = ?", repo, n)) out.push(verifyEvent(v));
     return out;
   },
 };
@@ -217,57 +230,66 @@ function decisionIds({ db, repo, n, hidden }: Ctx): string[] {
   }).sort();
 }
 
+export type DecisionRow = { id: string; kind: string; question: string; asked_at: string; asked_by: string | null; answer: string | null; answered_at: string | null; answered_by: string | null };
+export const decisionEvents = (d: DecisionRow): Ev[] => [
+  { id: `decision:${d.id}:asked`, kind: "decision", at: d.asked_at, head: null, actor: step(d.asked_by || "decide"), summary: `Asked: ${clip(d.question, 100)}`, ref: { decisionId: d.id } },
+  ...(d.answered_at ? [{ id: `decision:${d.id}:answered`, kind: "decision" as const, at: d.answered_at, head: null, actor: person(d.answered_by), summary: `Answered: ${d.answer ?? ""}`, ref: { decisionId: d.id } }] : []),
+];
+export const feedbackEvent = (decisionId: string, c: { id: string; login: string; at: string; len: number }): Ev =>
+  ({ id: `decision:${decisionId}:feedback:${c.id}`, kind: "decision", at: c.at, head: null, actor: person(c.login), summary: `Feedback on the question, ${c.len} characters`, ref: { decisionId } });
+
 const decisions: Source = {
   kinds: ["decision"],
   run(c) {
     const { db } = c;
     const out: Ev[] = [];
     for (const id of decisionIds(c)) {
-      const d = db.prepare("SELECT id, kind, question, asked_at, asked_by, answer, answered_at, answered_by FROM decisions WHERE id = ?").get(id) as
-        { id: string; kind: string; question: string; asked_at: string; asked_by: string | null; answer: string | null; answered_at: string | null; answered_by: string | null } | undefined;
+      const d = db.prepare("SELECT id, kind, question, asked_at, asked_by, answer, answered_at, answered_by FROM decisions WHERE id = ?").get(id) as DecisionRow | undefined;
       if (!d) continue;
-      out.push({ id: `decision:${d.id}:asked`, kind: "decision", at: d.asked_at, head: null, actor: step(d.asked_by || "decide"), summary: `Asked: ${clip(d.question, 100)}`, ref: { decisionId: d.id } });
-      if (d.answered_at) out.push({ id: `decision:${d.id}:answered`, kind: "decision", at: d.answered_at, head: null, actor: person(d.answered_by), summary: `Answered: ${d.answer ?? ""}`, ref: { decisionId: d.id } });
-      for (const c of rows<{ id: string; login: string; at: string; len: number }>(db, "SELECT id, login, at, LENGTH(body) AS len FROM decision_comments WHERE decision_id = ?", d.id))
-        out.push({ id: `decision:${d.id}:feedback:${c.id}`, kind: "decision", at: c.at, head: null, actor: person(c.login), summary: `Feedback on the question, ${c.len} characters`, ref: { decisionId: d.id } });
+      out.push(...decisionEvents(d));
+      for (const f of rows<{ id: string; login: string; at: string; len: number }>(db, "SELECT id, login, at, LENGTH(body) AS len FROM decision_comments WHERE decision_id = ?", d.id)) out.push(feedbackEvent(d.id, f));
     }
     return out;
   },
 };
 
 type FixRow = { rowid: number; head: string; to_head: string | null; state: string; reason: string | null; files: string | null; attempt: number; created_at: string; task_id?: number | null; kind?: string };
-const fixEvent = (f: FixRow, id: string, name: string, label: string): Ev => ({
+export const fixEvent = (f: FixRow, id: string, name: string, label: string): Ev => ({
   id: `${id}:${f.rowid}`, kind: "step", at: f.created_at, head: f.head, actor: step(name), summary: `${label}, try ${f.attempt}: ${f.state}${f.reason ? `, ${clip(f.reason, 100)}` : ""}`,
   ref: { head: f.head, ...(f.to_head ? { toHead: f.to_head } : {}), ...(f.task_id ? { taskId: f.task_id } : {}) }, detail: { to: f.to_head, reason: f.reason, files: arr<string>(f.files) },
 });
-
+export const fixupEvent = (f: FixRow): Ev => fixEvent(f, "fixup", "fixup", "Fix-up");
+export const ciFixEvent = (f: FixRow): Ev => fixEvent(f, "cifix", "cifix", `CI fix (${f.kind})`);
+export const conflictEvent = (f: FixRow): Ev => fixEvent(f, "conflict", "conflict", "Conflict merge");
+export const mergeEvent = (m: { rowid: number; head_oid: string; at: string; path: string; method: string | null; outcome: string; reason: string | null }): Ev =>
+  ({ id: `merge:${m.rowid}`, kind: "step", at: m.at, head: m.head_oid, actor: step("merge"), summary: `Merge attempt (${m.path}${m.method ? `, ${m.method}` : ""}): ${m.outcome}${m.reason ? `, ${clip(m.reason, 100)}` : ""}`, ref: { head: m.head_oid } });
 const ACTION_NAMES: Record<string, string> = { "comment-close": "Comment and close" };
+export const actionEvent = (a: { id: number; decision_id: string; kind: string; state: string; reason: string | null; created_at: string }): Ev =>
+  ({ id: `action:${a.id}`, kind: "step", at: a.created_at, head: null, actor: step("act"), summary: `${ACTION_NAMES[a.kind] ?? humanize(a.kind)}: ${a.state}${a.reason ? `, ${clip(a.reason, 100)}` : ""}`, ref: { decisionId: a.decision_id } });
 
 const steps: Source = {
   kinds: ["step"],
   run({ db, repo, n }) {
-    const out: Ev[] = [];
-    for (const f of rows<FixRow>(db, "SELECT rowid, from_head AS head, to_head, state, reason, files, attempt, created_at FROM fixups WHERE repo = ? AND number = ?", repo, n)) out.push(fixEvent(f, "fixup", "fixup", "Fix-up"));
-    for (const f of rows<FixRow>(db, "SELECT rowid, head, to_head, kind, state, reason, files, attempt, task_id, created_at FROM ci_fixes WHERE repo = ? AND number = ?", repo, n)) out.push(fixEvent(f, "cifix", "cifix", `CI fix (${f.kind})`));
-    for (const f of rows<FixRow>(db, "SELECT rowid, from_head AS head, to_head, state, reason, files, attempt, created_at FROM conflict_merges WHERE repo = ? AND number = ?", repo, n)) out.push(fixEvent(f, "conflict", "conflict", "Conflict merge"));
-    for (const m of rows<{ rowid: number; head_oid: string; at: string; path: string; method: string | null; outcome: string; reason: string | null }>(db,
-      "SELECT rowid, head_oid, at, path, method, outcome, reason FROM merges WHERE repo = ? AND number = ?", repo, n))
-      out.push({ id: `merge:${m.rowid}`, kind: "step", at: m.at, head: m.head_oid, actor: step("merge"), summary: `Merge attempt (${m.path}${m.method ? `, ${m.method}` : ""}): ${m.outcome}${m.reason ? `, ${clip(m.reason, 100)}` : ""}`, ref: { head: m.head_oid } });
-    for (const a of rows<{ id: number; decision_id: string; kind: string; state: string; reason: string | null; created_at: string }>(db,
-      "SELECT id, decision_id, kind, state, reason, created_at FROM actions WHERE repo = ? AND number = ?", repo, n))
-      out.push({ id: `action:${a.id}`, kind: "step", at: a.created_at, head: null, actor: step("act"), summary: `${ACTION_NAMES[a.kind] ?? humanize(a.kind)}: ${a.state}${a.reason ? `, ${clip(a.reason, 100)}` : ""}`, ref: { decisionId: a.decision_id } });
-    return out;
+    const q = <T>(sql: string) => rows<T>(db, sql, repo, n);
+    return [
+      ...q<FixRow>("SELECT rowid, from_head AS head, to_head, state, reason, files, attempt, created_at FROM fixups WHERE repo = ? AND number = ?").map(fixupEvent),
+      ...q<FixRow>("SELECT rowid, head, to_head, kind, state, reason, files, attempt, task_id, created_at FROM ci_fixes WHERE repo = ? AND number = ?").map(ciFixEvent),
+      ...q<FixRow>("SELECT rowid, from_head AS head, to_head, state, reason, files, attempt, created_at FROM conflict_merges WHERE repo = ? AND number = ?").map(conflictEvent),
+      ...q<Parameters<typeof mergeEvent>[0]>("SELECT rowid, head_oid, at, path, method, outcome, reason FROM merges WHERE repo = ? AND number = ?").map(mergeEvent),
+      ...q<Parameters<typeof actionEvent>[0]>("SELECT id, decision_id, kind, state, reason, created_at FROM actions WHERE repo = ? AND number = ?").map(actionEvent),
+    ];
   },
 };
 
+export const turnEvent = (t: { id: number; kind: string; login: string; at: string; len: number; status: string | null }): Ev => ({
+  id: `turn:${t.id}`, kind: "conversation", at: t.at, head: null, actor: t.kind === "opus" ? model("opus", "opus") : t.kind === "system" ? step("system") : person(t.login),
+  summary: `Conversation ${t.kind} message, ${t.len} characters${t.status && t.status !== "answered" ? ` (${t.status})` : ""}`, ref: {},
+});
+
 const conversation: Source = {
   kinds: ["conversation"],
-  run: ({ db, repo, n }) => rows<{ id: number; kind: string; login: string; at: string; len: number; status: string | null }>(db,
-    "SELECT id, kind, login, at, LENGTH(body) AS len, status FROM conversation_turns WHERE repo = ? AND number = ?", repo, n)
-    .map((t) => ({
-      id: `turn:${t.id}`, kind: "conversation" as const, at: t.at, head: null, actor: t.kind === "opus" ? model("opus", "opus") : t.kind === "system" ? step("system") : person(t.login),
-      summary: `Conversation ${t.kind} message, ${t.len} characters${t.status && t.status !== "answered" ? ` (${t.status})` : ""}`, ref: {},
-    })),
+  run: ({ db, repo, n }) => rows<Parameters<typeof turnEvent>[0]>(db,
+    "SELECT id, kind, login, at, LENGTH(body) AS len, status FROM conversation_turns WHERE repo = ? AND number = ?", repo, n).map(turnEvent),
 };
 
 /** The audit actions a viewer may see as writes: everyone the GitHub writes, maintainers the dashboard actions that are not operator-only, operators all (null). */
@@ -306,7 +328,7 @@ const writes: Source = {
 const SOURCES: Source[] = [github, stages, plans, jobs, modelCalls, checks, reviews, decisions, steps, conversation, writes];
 
 /** Heads are known for pushes, reviews and checks only; a model call, job or decision between two of them belongs to the head current at its time. */
-function carryHeads(events: Ev[]): void {
+export function carryHeads(events: Ev[]): void {
   const asc = [...events].sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : a.id < b.id ? -1 : 1));
   let current: string | null = null;
   for (const e of asc) {

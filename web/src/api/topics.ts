@@ -22,6 +22,7 @@ const RULES: [prefix: string, topics: Topic[]][] = [
   ["main-ci", ["mainci", "repos"]],
   // The trace reads most tables behind an item page plus model calls, jobs and GitHub detail. The `trace` topic leaves out a running call's progress lines; the page also asks the server `since` its last stamp.
   ["item-trace:", withSlot("items", "stages", "decisions", "reviews", "verify", "fixes", "postmerge", "actions", "plans", "tasks", "conversations", "queue", "access", "checks", "trace")],
+  ["activity:", withSlot("items", "stages", "decisions", "reviews", "verify", "fixes", "postmerge", "actions", "plans", "tasks", "conversations", "queue", "access", "checks", "trace", "agents", "jobs", "github")],
   ["item:", ITEM],
   ["item-decisions:", withSlot("decisions", "items")],
   ["items:", withSlot("items", "stages", "classify", "decisions")],

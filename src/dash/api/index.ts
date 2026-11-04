@@ -33,6 +33,7 @@ import { flow } from "./flow.ts";
 import { now } from "./now.ts";
 import { queueSlots } from "../../rank/position.ts";
 import * as items from "./items.ts";
+import { activity } from "./activity.ts";
 import { trace as itemTrace, traceDetail as itemTraceDetail } from "./trace.ts";
 import { postmergeOf } from "./postmerge.ts";
 import { canSeeInternals } from "./staff.ts";
@@ -365,6 +366,7 @@ export function apiRoutes(opts: ApiOptions = {}): Route[] {
     post("/api/decisions/:id/retract", (db, req) => dec.retract(db, req, limiter)),
     post("/api/decisions/:id/claim", dec.claim),
     get("/api/items/:repo/:n", item),
+    get("/api/activity", activity),
     get("/api/items/:repo/:n/trace", itemTrace),
     get("/api/items/:repo/:n/trace/event", itemTraceDetail),
     get("/api/items/:repo/:n/decision", dec.forItem),
