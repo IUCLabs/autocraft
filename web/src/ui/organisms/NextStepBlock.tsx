@@ -36,6 +36,7 @@ export function NextStepBlock({ step, className }: { step: NextStep; className?:
           ))}
         </ul>
       )}
+      {step.total > step.items.length && <p className="border-t border-line px-4 py-2 text-xs text-ink/50">{step.total - step.items.length} more</p>}
       {held.length > 0 && (
         <div className={cn(ready.length > 0 && "border-t border-line")}>
           <button type="button" aria-expanded={open} onClick={() => setOpen(!open)} className="flex w-full items-center gap-1.5 px-4 py-2 text-left text-xs text-ink/60 hover:bg-ink/[0.03] max-md:min-h-11">

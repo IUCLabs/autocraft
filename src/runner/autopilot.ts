@@ -819,6 +819,10 @@ export async function detectAutopilot(db: DatabaseSync, opts: PlanOptions = {}):
       log(`autopilot: ${lane.name}: ${(e as Error).message}`);
     }
   }
+  // The lists the Next page shows come from the same pass, so the page needs no Plans of its own.
+  if (!opts.lanes) {
+    try { storeLaneItems(db, lanes, ctx); } catch (e) { log(`autopilot: next items: ${(e as Error).message}`); }
+  }
   const lanesMs = performance.now() - t0 - loadMs;
   // The Plan cache: the planner's output for the dashboard.
   let cache = { written: 0, deleted: 0 };
@@ -972,6 +976,27 @@ export function laneItems(db: DatabaseSync, ctx: PlanCtx, lane: Pick<Lane, "name
 }
 
 const plain = (why: string): string => { const t = why.replace(/^(paused|tripped): /, ""); return t.charAt(0).toUpperCase() + t.slice(1); };
+
+const KEY_NEXT = "pipeline_next_items";
+/** The most items of one lane the planner stores. */
+const NEXT_PER_LANE = 500;
+export type StoredLaneItems = Record<string, { total: number; items: LaneItem[] }>;
+
+/** Writes each lane's items as this pass sees them, only when they changed. */
+function storeLaneItems(db: DatabaseSync, lanes: Lane[], ctx: PlanCtx): void {
+  const out: StoredLaneItems = {};
+  for (const lane of lanes) {
+    const all = laneItems(db, ctx, lane);
+    if (all.length) out[lane.name] = { total: all.length, items: all.slice(0, NEXT_PER_LANE) };
+  }
+  const json = JSON.stringify(out);
+  if (json !== getSetting(db, KEY_NEXT)) setSetting(db, KEY_NEXT, json);
+}
+
+/** The lane lists of the planner's last pass, keyed by lane name. */
+export function storedLaneItems(db: DatabaseSync): StoredLaneItems {
+  try { return JSON.parse(getSetting(db, KEY_NEXT) ?? "{}") as StoredLaneItems; } catch { return {}; }
+}
 
 export type LaneGate = { canRun: boolean; kind: "ok" | "running" | "off" | "breaker" | "limit" | "account" | "backoff"; why: string | null };
 

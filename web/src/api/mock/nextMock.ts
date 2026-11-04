@@ -7,7 +7,7 @@ const item = (repo: string, number: number, action: string, why: string, o: Part
 });
 const [a, b, c] = REPOS;
 
-const STEPS: NextStep[] = [
+const STEPS: NextStep[] = ([
   {
     lane: "classify", title: "Classify new and changed items", stage: "Classify", steps: ["classify-new"], canRun: true, kind: "ok", why: null, note: null,
     items: [item(a!, 412, "classify", "Needs a first classification", { kind: "issue" }), item(a!, 418, "classify", "Changed since its last classification", { kind: "issue" }), item(b!, 77, "classify", "Needs a first classification", { kind: "issue" })],
@@ -41,7 +41,7 @@ const STEPS: NextStep[] = [
     lane: "labels", title: "Apply pipeline labels", stage: "Label", steps: ["labels-apply"], canRun: false, kind: "approval", why: `labelling in ${c} is not approved`, note: null,
     items: [item(c!, 12, "label", "Label disagrees with the classification", { kind: "issue", blocked: `labelling in ${c} is not approved`, next: false })],
   },
-];
+] as Omit<NextStep, "total">[]).map((s) => ({ ...s, total: s.items.length }));
 
 export function nextPageFixture(): NextPage {
   const waiting = [

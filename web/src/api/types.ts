@@ -1837,6 +1837,8 @@ export interface NextStep {
   why: string | null;
   /** The planner's last reading of the step, when it holds back. */
   note: string | null;
+  /** Items due for the step; `items` may hold fewer. */
+  total: number;
   /** In the order the step takes them. */
   items: NextItem[];
 }
