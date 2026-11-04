@@ -18,6 +18,7 @@ import { createIssue, ghRerunFailed, IssueError, type Writer } from "../github/w
 import { askClaude, saveUsage, type Usage } from "../classify/run.ts";
 import { checkoutForCommit } from "../sandbox/index.ts";
 import { readFailure } from "../cifix/logs.ts";
+import { optionalChecks } from "../optional-checks.ts";
 import type { CiFailure } from "../cifix/types.ts";
 import { mainCiRepos } from "../mainci/index.ts";
 import { ghExec, type Gh } from "../merge/safe-merge.ts";
@@ -154,7 +155,7 @@ export function mainFixDue(db: DatabaseSync, repo: string): boolean {
   const rows = rowsAt(db, repo, cur.headSha);
   if (cur.state === "red") return rows.length === 0 || rows.some((r) => r.state === "rerun-requested" || r.state === "needs-fix");
   // A row left at needs-fix by an older head is closed by the next run.
-  return rows.some((r) => r.state === "rerun-requested") || !!db.prepare("SELECT 1 FROM main_fixes WHERE repo = ? AND state = 'needs-fix'").get(repo);
+  return rows.some((r) => r.state === "rerun-requested") || (cur.state !== "running" && !!db.prepare("SELECT 1 FROM main_fixes WHERE repo = ? AND state = 'needs-fix'").get(repo));
 }
 
 const issueTitle = (check: string): string => `Main CI fails: ${cleanLine(check, 100)}`;
@@ -187,7 +188,7 @@ function fromDecision(db: DatabaseSync, id: string): { state: string; issue: num
 
 async function classifyHead(db: DatabaseSync, repo: string, cur: Current, deps: MainFixDeps, log: (l: string) => void, s: MainFixSummary): Promise<boolean> {
   const at = deps.now().toISOString();
-  const reading = await readFailure(deps.gh, repo, cur.headSha);
+  const reading = await readFailure(deps.gh, repo, cur.headSha, optionalChecks(db, repo));
   const base = { repo, head_sha: cur.headSha, run_id: null, run_url: null, excerpt: null, decision_id: null, issue_number: null, pr_number: null, pr_url: null, created_at: at } as const;
   if (reading.kind === "skip") {
     save(db, { ...base, check: "(none)", verdict: "code", state: "nothing-to-do", reason: oneLine(reading.why) }, at);
@@ -250,7 +251,7 @@ async function askInfra(db: DatabaseSync, row: FixRow, cur: Current, at: string,
 function settleReruns(db: DatabaseSync, repo: string, cur: Current, deps: MainFixDeps, s: MainFixSummary): void {
   const at = deps.now().toISOString();
   for (const r of rowsAt(db, repo, cur.headSha).filter((x) => x.state === "rerun-requested")) {
-    if (cur.state === "green") { setState(db, r, "rerun-passed", r.reason, at); continue; }
+    if (cur.state === "green" || cur.state === "optional") { setState(db, r, "rerun-passed", r.reason, at); continue; }
     if (cur.state !== "red") continue;
     const changedSince = cur.stateChangedAt > r.updated_at;
     if (changedSince || deps.now().getTime() - Date.parse(r.updated_at) > RERUN_WAIT_MS) { onCodeVerdict(db, r, "red again after a rerun", at); s.needsFix++; }

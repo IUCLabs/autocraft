@@ -158,7 +158,11 @@ describe("merge queue", () => {
     const db = fresh();
     const mainCi = (state: string) => db.prepare(`INSERT INTO main_ci (repo, head_sha, branch, state, failing, checks, committed_at, headline, first_seen_at, state_changed_at, updated_at)
       VALUES ('app', 'm1', 'main', ?, '[]', '[]', '${T1}', 'x', '${T1}', '${T1}', '${T1}') ON CONFLICT (repo, head_sha) DO UPDATE SET state = excluded.state`).run(state);
-    db.prepare("UPDATE items SET head_ref = 'autocraft/main-ci-1' WHERE repo = 'app' AND number = 11").run();
+    // Only a PR of our own main-fix attempts, by the pipeline account, skips the hold; the same branch name on PR 16 does not.
+    db.prepare("UPDATE items SET head_ref = 'autocraft/main-ci-1', author = 'bot' WHERE repo = 'app' AND number = 11").run();
+    db.prepare("UPDATE items SET head_ref = 'autocraft/main-ci-2' WHERE repo = 'app' AND number = 16").run();
+    db.prepare("INSERT INTO settings (key, value) VALUES ('pipeline_login', 'bot') ON CONFLICT (key) DO UPDATE SET value = excluded.value").run();
+    db.prepare("INSERT INTO main_fixes (repo, head_sha, \"check\", verdict, state, pr_number, created_at, updated_at) VALUES ('app', 'm0', 'gate', 'code', 'pr-opened', 11, ?, ?)").run(T1, T1);
     mainCi("red");
     const q = buildQueue(db, { repo: "app" });
     assert.equal(q.find((e) => e.number === 1)!.state, "waiting-main-ci");
