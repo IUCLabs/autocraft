@@ -1,5 +1,5 @@
 // A complete default PrFacts for decision tests: an open take PR on the rule path with everything green (state ready, due: merge).
-import type { PrFacts } from "../src/core/plan.ts";
+import type { ItemFacts, PrFacts } from "../src/core/plan.ts";
 
 export const NOW = Date.parse("2026-11-04T12:00:00Z");
 export const HEAD = "h1";
@@ -30,4 +30,29 @@ export function prFacts(over: Override = {}): PrFacts {
     f[k] = v !== null && typeof v === "object" && !Array.isArray(v) && cur !== null && typeof cur === "object" && !Array.isArray(cur) ? { ...cur, ...v } : v;
   }
   return f as PrFacts;
+}
+
+// ---- items (issues and PRs) in the triage steps
+
+const itemBase = (): ItemFacts => ({
+  repo: "app", number: 1, kind: "issue", now: NOW, draft: false, inScope: true, integration: false, held: null, fast: false, score: 100,
+  repoFacts: { labelsApproved: true }, run: "run1",
+  classification: {
+    status: "settled", label: "bugfix", flags: [], jevLabel: "bugfix", haikuLabel: null, referee: null,
+    jev: { at: "2026-11-04T08:00:00.000Z", changed: false, unsure: false }, haiku: null,
+  },
+  embedHash: "e1", embeddedHash: "e1", priorityHash: "e1", scannedHash: "e1", pairsToCheck: 0, inGroupToAsk: false, inCompareSet: false,
+  scope: { open: false, answer: null, covered: false, pastClassified: false, recommend: null },
+  labels: { existing: ["bugfix"], pluginAnswer: false, labeledNote: null },
+  fixAttempt: null,
+});
+
+/** The default facts of an open issue with nothing due (classified bugfix, labelled, embedded, scanned, prioritized), with the given fields replaced. Object fields are merged one level deep; null replaces the whole object. */
+export function itemFacts(over: { [K in keyof ItemFacts]?: ItemFacts[K] extends object | null ? Partial<NonNullable<ItemFacts[K]>> | null : ItemFacts[K] } = {}): ItemFacts {
+  const f = itemBase() as Record<string, unknown>;
+  for (const [k, v] of Object.entries(over)) {
+    const cur = f[k];
+    f[k] = v !== null && typeof v === "object" && !Array.isArray(v) && cur !== null && typeof cur === "object" && !Array.isArray(cur) ? { ...cur, ...v } : v;
+  }
+  return f as ItemFacts;
 }
