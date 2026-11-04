@@ -366,7 +366,7 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
       return;
     }
     // The merge command prints `<repo>#<pr> MERGED <merge commit>`.
-    recordLanded(b, members, q, /\bMERGED ([0-9a-f]{40})\b/.exec(r.stdout)?.[1] ?? null);
+    recordLanded(b, members, q, /\bMERGED ([0-9a-f]{7,40})\b/.exec(r.stdout)?.[1] ?? null);
   }
 
   async function advance(id: number): Promise<void> {
