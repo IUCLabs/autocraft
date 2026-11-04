@@ -17,7 +17,6 @@ import type { DiscussionEntry } from "./parse.ts";
 import { cachedDiff, codeDiff, ghDelta, ghDiff, type DeltaFetcher, type DiffFetcher } from "./diff.ts";
 import { selectOpusCandidates, type OpusCandidate } from "./opus-candidates.ts";
 import { carriedOutcome, rawReason, type EarlierOpus, type OpusPr, type OpusReview, type UnappliedFix } from "./opus-parse.ts";
-import { carriedReview, CARRIED } from "./carry.ts";
 import { ourCommitsSince } from "./ours.ts";
 import { relatedStatements } from "../memory/retrieve.ts";
 import { REPO_PATH } from "../sandbox/command.ts";
@@ -182,18 +181,6 @@ export async function runOpusReview(db: DatabaseSync, params: OpusParams, log: (
   const capped = [...allStale].filter((k) => !uncapped.has(k));
   if (capped.length) log(`opus-review ${repo}: ${capped.join(", ")} not reviewed again: already ${MAX_RERUNS_PER_DAY} re-reviews today after new discussion`);
   const summary: OpusSummary = { runId, repo, candidates: cands.length, reviewed: 0, dropped: 0, verdicts: {}, missing: [], skipped: [] };
-  // A sure take or take-fix carries over our own checked fix-up without a model call.
-  if (!params.dryRun) {
-    cands = cands.filter((c) => {
-      const k = carriedReview(db, c, allStale);
-      if (!k) return true;
-      saveOpus(db, runId, c, { mode: CARRIED, base: k.from, model: CARRIED, review: k.review, snap: { seen: k.seen, hash: k.hash } });
-      log(`  ${refOf(c)}: ${k.review.reason}`);
-      summary.verdicts.take = (summary.verdicts.take ?? 0) + 1;
-      summary.reviewed++;
-      return false;
-    });
-  }
   if (params.limit !== undefined) cands = cands.slice(0, params.limit);
   if (params.dryRun || !cands.length) {
     log(`opus-review ${repo}: ${summary.candidates} candidates${params.dryRun ? "; dry run, nothing fetched or asked" : ""}`);

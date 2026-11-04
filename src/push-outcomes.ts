@@ -16,14 +16,16 @@ const parse = (s: string | null | undefined): CheckRow => { try { const v = JSON
 
 /**
  * Records a push that succeeded: the required-check result at the head before it (from the stored checks, when they are for that head).
- * A branch the push created has no earlier head: it takes the result of the default branch's latest CI (a red or unknown main is no baseline for "broke"). Pushes of other kinds (batches, main fixes) are not recorded.
+ * A branch the push created has no earlier head: it takes the CI result of the commit it was built on (`base`), else of the default branch's latest CI
+ * (a red or unknown baseline is no baseline for "broke"). Pushes of other kinds (batches, main fixes) are not recorded.
  */
-export function recordPush(db: DatabaseSync, action: string, o: { repo: string; number: number | null; from: string | null; to: string }, at = new Date().toISOString()): void {
+export function recordPush(db: DatabaseSync, action: string, o: { repo: string; number: number | null; from: string | null; to: string; base?: string | null }, at = new Date().toISOString()): void {
   const stage = PUSH_STAGE[action];
   if (!stage) return;
   let before: Required | "unknown" = "unknown";
   if (!o.from) {
-    const m = db.prepare("SELECT state FROM main_ci WHERE repo = ? ORDER BY committed_at DESC, first_seen_at DESC LIMIT 1").get(o.repo) as { state: string } | undefined;
+    const m = (o.base ? db.prepare("SELECT state FROM main_ci WHERE repo = ? AND head_sha = ?").get(o.repo, o.base) : undefined)
+      ?? db.prepare("SELECT state FROM main_ci WHERE repo = ? ORDER BY committed_at DESC, first_seen_at DESC LIMIT 1").get(o.repo) as { state: string } | undefined;
     before = m?.state === "green" || m?.state === "optional" ? "green" : m?.state === "red" ? "red" : "unknown";
   }
   else if (o.number !== null) {
