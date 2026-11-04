@@ -60,8 +60,10 @@ export async function refereeItems(db: DatabaseSync, runId: string, items: Item[
         got++;
         jobItem(db, repo!, Number(num), `refereed${opts.model ? ` by ${opts.model}` : ""} as ${v.type_label}${v.sure === true ? "" : " (unsure)"}`);
       }
-      // Opus gave no answer for an item: count the failure on Sonnet's row (rewritten, so the settled table sees it); the planner backs off, and the third failure ends the referee's turn.
-      if (opts.model && opts.pipeline) {
+      // A reply arrived and left an item out (or was invalid): count the failure on Sonnet's row (rewritten, so the settled table sees it); the planner backs off, and the third failure ends the referee's turn.
+      // No reply at all (no Claude account free, a failed call) and a cancelled job are not the item's failure.
+      const replied = r.ok || r.error !== "no answer";
+      if (opts.model && opts.pipeline && replied && !opts.cancelled?.()) {
         const answered = new Set(r.ok ? r.values.flat().map((v) => v.ref) : []);
         for (const i of first) {
           if (answered.has(`${i.repo}#${i.number}`)) continue;
