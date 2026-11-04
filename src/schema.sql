@@ -526,7 +526,7 @@ CREATE TABLE IF NOT EXISTS agent_runs (
   summary TEXT,
   error TEXT,
   progress TEXT,                      -- running: the latest line of what the call is doing
-  cost_usd REAL                       -- the call's cost; null for Jev (unpriced) and for rows from before this column
+  cost_usd REAL                       -- the call's cost in USD (Jev: input tokens times the flat price); null for rows from before this column
 );
 CREATE INDEX IF NOT EXISTS agent_runs_running ON agent_runs(account_id) WHERE state = 'running';
 CREATE INDEX IF NOT EXISTS agent_runs_state ON agent_runs(state, id);
@@ -1284,8 +1284,8 @@ CREATE TABLE IF NOT EXISTS plan_history (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   repo TEXT NOT NULL, number INTEGER NOT NULL,
   head TEXT,
-  old_state TEXT, new_state TEXT NOT NULL,
-  wait TEXT,
+  old_state TEXT, new_state TEXT NOT NULL,   -- new_state is 'gone' when the item left the plan set
+  old_wait TEXT, wait TEXT,
   reasons TEXT NOT NULL,              -- JSON string[], as in item_plans
   at TEXT NOT NULL
 );

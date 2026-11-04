@@ -155,7 +155,8 @@ export function getRun(db: DatabaseSync, id: unknown, view: { hidden?: string[];
     throw new RunQueryError(404, `no agent run ${id}`);
   }
   const tools = runTools(db, id);
-  if (!view.texts) return { ...toRun(r, shownLookup(db)), prompt: null, output: null, error: r.error, tools };
+  // Tool arguments carry file paths and patch text: like the prompt, for operators only.
+  if (!view.texts) return { ...toRun(r, shownLookup(db)), prompt: null, output: null, error: r.error, tools: tools.map((t) => ({ ...t, args: null })) };
   const t = db.prepare("SELECT prompt, output FROM agent_run_texts WHERE run_id = ?").get(id) as { prompt: unknown; output: unknown } | undefined;
   return { ...toRun(r, shownLookup(db)), prompt: unpackText(t?.prompt), output: unpackText(t?.output), error: r.error, tools };
 }

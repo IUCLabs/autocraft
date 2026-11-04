@@ -19,7 +19,7 @@ test("tool uses of a call are stored with result sizes, scrubbed arguments and t
   ]);
   const tools = runTools(db, run);
   assert.deepEqual(tools.map((t) => [t.seq, t.tool, t.resultBytes, t.isError, t.check?.id ?? null]), [[1, "Read", 6, false, null], [2, "mcp__build__check", 7, true, null], [3, "mcp__build__check", 10, false, check]]);
-  assert.ok(tools[2]!.args.length <= 4000);
+  assert.ok(tools[2]!.args!.length <= 4000);
   assert.equal(tools[2]!.check?.command, "clippy");
 });
 
@@ -40,4 +40,24 @@ test("texts past 14 days are kept compressed and read back; old plain rows still
   db.prepare("UPDATE agent_runs SET started_at = ?").run(ago(91));
   pruneRuns(db);
   assert.equal(db.prepare("SELECT COUNT(*) AS n FROM agent_run_texts").get()!.n, 0);
+});
+
+test("a check use that wrote no row does not take the row of a later use of the same command", () => {
+  const db = connect(":memory:");
+  const run = start(db);
+  const check = Number(db.prepare("INSERT INTO model_checks (run_id, step, repo, number, head, command, started_at) VALUES (?, 'fixup', 'app', 1, 'h', 'fmt', 't')").run(run).lastInsertRowid);
+  saveTools(db, run, [
+    use("a", "mcp__build__check", { command: "fmt", patch: "p" }), result("a", "rustfmt: the patch changes no .rs file; nothing to format"),
+    use("b", "mcp__build__check", { command: "fmt", patch: "q" }), result("b", "ok"),
+  ]);
+  assert.deepEqual(runTools(db, run).map((t) => t.check?.id ?? null), [null, check]);
+});
+
+test("viewers without text access get tools without arguments", () => {
+  const db = connect(":memory:");
+  const run = start(db);
+  saveTools(db, run, [use("a", "Read", { file_path: "/repo/secret.rs" }), result("a", "x")]);
+  const t = getRun(db, run, { texts: false }).tools;
+  assert.deepEqual([t[0]!.tool, t[0]!.args, t[0]!.resultBytes], ["Read", null, 1]);
+  assert.match(getRun(db, run).tools[0]!.args!, /secret/);
 });

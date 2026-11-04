@@ -15,7 +15,12 @@ export function jobItem(db: DatabaseSync, repo: string, number: number, outcome:
   log(`${itemTag(repo, number)} ${line}`);
   const job = currentJobId();
   if (job === null) return;
-  db.prepare("INSERT INTO job_items (job_id, repo, number, outcome, at) VALUES (?, ?, ?, ?, ?)").run(job, repo, number, line, new Date().toISOString());
+  // Bookkeeping: a failed insert must not fail the stage.
+  try {
+    db.prepare("INSERT INTO job_items (job_id, repo, number, outcome, at) VALUES (?, ?, ?, ?, ?)").run(job, repo, number, line, new Date().toISOString());
+  } catch (e) {
+    log(`job item not recorded: ${(e as Error).message}`);
+  }
 }
 
 export type ItemJob = { jobId: number; outcome: string | null; at: string };
