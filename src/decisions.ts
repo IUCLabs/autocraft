@@ -132,7 +132,7 @@ export function ask(db: DatabaseSync, questions: Record<string, unknown>[], inTr
     SUMMARY_FIELDS.includes(c) ? `${c} = COALESCE(excluded.${c}, ${c})`
     : c === "recommended" || c === "recommended_reason" ? `${c} = CASE WHEN ${keepsPick} THEN ${c} ELSE excluded.${c} END`
     : `${c} = excluded.${c}`;
-  const stmt = db.prepare(`INSERT INTO decisions (${cols.join(",")}) VALUES (${cols.map((c) => `:${c}`).join(",")})
+  const stmt = db.prepare(`INSERT INTO main.decisions (${cols.join(",")}) VALUES (${cols.map((c) => `:${c}`).join(",")})
     ON CONFLICT(id) DO UPDATE SET ${ASK_FIELDS.map(set).join(", ")}, recommended_by = CASE WHEN ${keepsPick} THEN recommended_by ELSE NULL END,
       prepared_at = CASE WHEN ${changed} THEN NULL ELSE prepared_at END,
       recommend_failures = CASE WHEN ${changed} THEN NULL ELSE recommend_failures END,
@@ -195,7 +195,7 @@ export function backlogOpen(db: DatabaseSync, scope: BacklogScope, by: string, a
   if (!apply) return { applied: false, decisions };
   db.exec("BEGIN IMMEDIATE");
   try {
-    const set = db.prepare(`UPDATE decisions SET answer = ?, answer_note = NULL, exceptions = ?, answered_by = ?, answered_at = ?, adopted_opinion = NULL, snoozed_by = NULL, snoozed_at = NULL WHERE id = ? AND answer IS NULL`);
+    const set = db.prepare(`UPDATE main.decisions SET answer = ?, answer_note = NULL, exceptions = ?, answered_by = ?, answered_at = ?, adopted_opinion = NULL, snoozed_by = NULL, snoozed_at = NULL WHERE id = ? AND answer IS NULL`);
     for (const d of rows) {
       if (set.run(BACKLOG.key, isBatch(d) ? "[]" : null, by, at, d.id).changes === 1) audit(db, by, "answer", d.id, { answer: BACKLOG.key, bulk: true });
     }
@@ -214,7 +214,7 @@ export function backlogOpen(db: DatabaseSync, scope: BacklogScope, by: string, a
  * trigger only, so it is rebuilt from the remaining stages rows.
  */
 export function clearAskedStage(db: DatabaseSync): (repo: string, number: number, decisionId: string) => void {
-  const stage = db.prepare("DELETE FROM stages WHERE repo = ? AND number = ? AND stage = 'needs-decision' AND note = ?");
+  const stage = db.prepare("DELETE FROM main.stages WHERE repo = ? AND number = ? AND stage = 'needs-decision' AND note = ?");
   const latest = db.prepare("SELECT stage, at FROM stages WHERE repo = ? AND number = ? ORDER BY at DESC, rowid DESC LIMIT 1");
   const reviewed = db.prepare("SELECT 1 FROM stages WHERE repo = ? AND number = ? AND stage = 'reviewed' LIMIT 1");
   const put = db.prepare("UPDATE item_stage SET stage = ?, at = ?, reviewed = ? WHERE repo = ? AND number = ?");
@@ -238,7 +238,7 @@ export function withdrawOpen(db: DatabaseSync, scope: BacklogScope, by: string, 
   if (!apply) return { applied: false, decisions };
   db.exec("BEGIN IMMEDIATE");
   try {
-    const del = db.prepare("DELETE FROM decisions WHERE id = ? AND answer IS NULL");
+    const del = db.prepare("DELETE FROM main.decisions WHERE id = ? AND answer IS NULL");
     const side = ["decision_opinions", "decision_comments", "decision_claims"].map((t) => db.prepare(`DELETE FROM ${t} WHERE decision_id = ?`));
     const clear = clearAskedStage(db);
     for (const d of rows) {

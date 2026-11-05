@@ -93,7 +93,7 @@ export async function runDecide(db: DatabaseSync, params: DecideParams = {}, log
   let sent = 0;
   // New decisions are asked first, without a model call; the prepare step below gives them (and every other open decision) its summary, pick and drafts.
   const at = now();
-  const stage = db.prepare("INSERT INTO stages (repo, number, stage, at, actor, note) VALUES (?, ?, 'needs-decision', ?, 'decide', ?)");
+  const stage = db.prepare("INSERT INTO main.stages (repo, number, stage, at, actor, note) VALUES (?, ?, 'needs-decision', ?, 'decide', ?)");
   for (const c of picked) {
     const q = buildDecision(db, c);
     ask(db, [{ ...q, asked_at: at }]);

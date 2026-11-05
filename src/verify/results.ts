@@ -157,7 +157,7 @@ const now = (): string => new Date().toISOString();
 const cut = (s: string): string => s.trim().split(/\s+/).slice(0, MAX_SUMMARY_WORDS).join(" ");
 
 function stageRow(db: DatabaseSync, v: Row, stage: string, at: string, note: string): void {
-  db.prepare("INSERT INTO stages (repo, number, stage, at, actor, note) VALUES (?, ?, ?, ?, ?, ?)").run(v.repo, v.number, stage, at, ACTOR, note.slice(0, 300));
+  db.prepare("INSERT INTO main.stages (repo, number, stage, at, actor, note) VALUES (?, ?, ?, ?, ?, ?)").run(v.repo, v.number, stage, at, ACTOR, note.slice(0, 300));
   if (stage !== "hold") jobItem(db, v.repo, v.number, note, () => {});   // the caller logs the outcome itself
 }
 

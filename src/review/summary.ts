@@ -51,7 +51,7 @@ export const reviewFact = (r: ReviewText): string => `review: ${r.verdict}: ${r.
 export function fillReviewSummaries(db: DatabaseSync, at: string, repo?: string): number {
   const rows = db.prepare(`SELECT * FROM decisions WHERE kind IN ('merge', 'close') AND answer IS NULL AND number IS NOT NULL AND prepared_at IS NULL
     ${repo ? "AND repo = ?" : ""}`).all(...(repo ? [repo] : [])) as DecisionRow[];
-  const upd = db.prepare(`UPDATE decisions SET summary = ?, summary_by = ?, summary_at = ?, facts = ?, recommended = ?, recommended_reason = ?, recommended_by = NULL
+  const upd = db.prepare(`UPDATE main.decisions SET summary = ?, summary_by = ?, summary_at = ?, facts = ?, recommended = ?, recommended_reason = ?, recommended_by = NULL
     WHERE id = ? AND answer IS NULL`);
   let n = 0;
   for (const d of rows) {

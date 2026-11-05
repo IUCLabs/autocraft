@@ -137,7 +137,7 @@ export type PrNode = {
 export function noteLive(db: DatabaseSync, repo: string, number: number, pr: PrNode | null | undefined, at: string): void {
   if (!pr) return;
   // The planner reads the mirrored value when the checks row is missing or at another head: a conflict seen live must reach it, or the PR keeps planning as a fix-up.
-  if (pr.mergeable === "CONFLICTING" || pr.mergeable === "MERGEABLE") db.prepare("UPDATE items SET mergeable = ? WHERE repo = ? AND number = ? AND kind = 'pr' AND head_oid = ?").run(pr.mergeable, repo, number, pr.headRefOid);
+  if (pr.mergeable === "CONFLICTING" || pr.mergeable === "MERGEABLE") db.prepare("UPDATE main.items SET mergeable = ? WHERE repo = ? AND number = ? AND kind = 'pr' AND head_oid = ?").run(pr.mergeable, repo, number, pr.headRefOid);
   const row = db.prepare("SELECT head_oid FROM pr_checks WHERE repo = ? AND number = ?").get(repo, number) as { head_oid: string } | undefined;
   if (!row) return;
   if (row.head_oid === pr.headRefOid) {
@@ -232,7 +232,7 @@ class Recorder {
     const hold = state === "cannot-push" || state === "too-large" || state === "push-denied";
     const note = state === "pushed" ? `fix-up pushed at ${short(c.head)}: ${files.join(", ")}`
       : state === "asked" ? `asked the contributor for changes at ${short(c.head)}: ${files.join(", ")}` : `fix-up ${state} at ${short(c.head)}: ${reason}`;
-    this.db.prepare("INSERT INTO stages (repo, number, stage, at, actor, note) VALUES (?, ?, ?, ?, ?, ?)")
+    this.db.prepare("INSERT INTO main.stages (repo, number, stage, at, actor, note) VALUES (?, ?, ?, ?, ?, ?)")
       .run(c.repo, c.number, hold ? "hold" : "take", at, ACTOR, hold ? reason : note);
   }
 }

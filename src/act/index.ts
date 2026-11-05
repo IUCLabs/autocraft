@@ -246,7 +246,7 @@ export async function runAct(db: DatabaseSync, params: ActParams, log: (line: st
   const settle = (t: Target) => {
     const a = actionable(db).find((x) => x.id === t.decisionId);
     if (a && !pending(db, repo, a.items.filter((i) => i.repo === repo).map(refOf)).some((p) => p.decisionId === t.decisionId) && !targetsOfElsewhere(a, repo))
-      db.prepare("UPDATE decisions SET applied_at = ? WHERE id = ? AND applied_at IS NULL").run(at(), t.decisionId);
+      db.prepare("UPDATE main.decisions SET applied_at = ? WHERE id = ? AND applied_at IS NULL").run(at(), t.decisionId);
   };
   const skip = (t: Target, reason: string) => {
     save(t, "skipped", reason, null);
@@ -298,7 +298,7 @@ export async function runAct(db: DatabaseSync, params: ActParams, log: (line: st
       }
       await closeItem(w, g, q, { repo: t.repo, number: t.number, id: live.id, pr: live.type === "PullRequest" }, { decision: t.decisionId, head: live.head });
       save(t, "done", null, url);
-      db.prepare("INSERT INTO stages (repo, number, stage, at, actor, note) VALUES (?, ?, 'closed', ?, ?, ?)").run(t.repo, t.number, at(), ACTOR, `closed after ${t.kind} decision ${t.decisionId}`);
+      db.prepare("INSERT INTO main.stages (repo, number, stage, at, actor, note) VALUES (?, ?, 'closed', ?, ?, ?)").run(t.repo, t.number, at(), ACTOR, `closed after ${t.kind} decision ${t.decisionId}`);
       summary.done.push(refOf(t));
       jobItem(db, t.repo, t.number, "commented and closed", log);
       settle(t);

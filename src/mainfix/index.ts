@@ -270,7 +270,7 @@ async function applyAnswers(db: DatabaseSync, repo: string, deps: MainFixDeps, l
   for (const a of actionable(db).filter((x) => x.kind === "other" && isMainFixDecision(repo, x.id))) {
     const at = deps.now().toISOString();
     const rows = db.prepare("SELECT * FROM main_fixes WHERE decision_id = ? ORDER BY created_at DESC, head_sha").all(a.id) as FixRow[];
-    const done = (): void => void db.prepare("UPDATE decisions SET applied_at = ? WHERE id = ? AND applied_at IS NULL").run(at, a.id);
+    const done = (): void => void db.prepare("UPDATE main.decisions SET applied_at = ? WHERE id = ? AND applied_at IS NULL").run(at, a.id);
     if (a.answer === NOT_NOW) { for (const r of rows) setState(db, r, "declined", r.reason, at); done(); continue; }
     if (a.answer !== OPEN_ISSUE) continue;
     const row = rows[0];

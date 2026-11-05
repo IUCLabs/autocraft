@@ -82,7 +82,7 @@ export function saveVerification(db: DatabaseSync, c: { repo: string; number: nu
     .run(c.repo, c.number, c.head_oid, v.baseSha, v.kind, v.reason, v.plan === null ? null : JSON.stringify(v.plan), v.model, v.headTask, v.baseTask, v.state, v.summary, at,
       v.state === "ci-enough" || v.state === "error" || v.state === "unavailable" ? at : null);
   const stage = v.state === "planned" ? "verify-planned" : v.state === "ci-enough" ? "verify-ci-enough" : v.state === "unavailable" ? "verify-unavailable" : "verify-error";
-  db.prepare("INSERT INTO stages (repo, number, stage, at, actor, note) VALUES (?, ?, ?, ?, ?, ?)")
+  db.prepare("INSERT INTO main.stages (repo, number, stage, at, actor, note) VALUES (?, ?, ?, ?, ?, ?)")
     .run(c.repo, c.number, stage, at, "verify", `${v.kind} at ${c.head_oid.slice(0, 7)}: ${v.summary ?? v.reason}`.slice(0, 300));
   jobItem(db, c.repo, c.number, `${stage}: ${v.kind} at ${c.head_oid.slice(0, 7)}`, () => {});   // the caller logs the outcome itself
 }

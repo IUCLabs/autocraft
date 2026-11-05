@@ -183,17 +183,17 @@ export function resultUsage(j: { usage?: Record<string, number>; total_cost_usd?
 
 export function saveVerdict(db: DatabaseSync, classifier: string, runId: string, v: Verdict): void {
   const [repo, num] = v.ref.split("#");
-  db.prepare(`INSERT OR REPLACE INTO classifications (repo, number, classifier, run_id, at, type_label, flags, reason, probs)
+  db.prepare(`INSERT OR REPLACE INTO main.classifications (repo, number, classifier, run_id, at, type_label, flags, reason, probs)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(repo!, Number(num), classifier, runId, now(), v.type_label, flagsOf(v), v.reason, v.probs);
 }
 
 export function saveUsage(db: DatabaseSync, runId: string, agent: string, stage: string, model: string, items: number, u: Usage, start: string, end: string): void {
-  db.prepare(`INSERT OR REPLACE INTO token_usage (run_id, agent, stage, model, items, input_tokens, output_tokens,
+  db.prepare(`INSERT OR REPLACE INTO main.token_usage (run_id, agent, stage, model, items, input_tokens, output_tokens,
     cache_read_tokens, cache_write_tokens, started_at, ended_at, cost_usd) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .run(runId, agent, stage, model, items, u.input, u.output, u.cacheRead, u.cacheWrite, start, end, u.cost);
   // Subagent models get their own rows (same run and stage), so the Cost page splits by model and its totals stay whole.
   for (const e of u.extra ?? []) {
-    db.prepare(`INSERT OR REPLACE INTO token_usage (run_id, agent, stage, model, items, input_tokens, output_tokens,
+    db.prepare(`INSERT OR REPLACE INTO main.token_usage (run_id, agent, stage, model, items, input_tokens, output_tokens,
       cache_read_tokens, cache_write_tokens, started_at, ended_at, cost_usd) VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?)`)
       .run(runId, `${agent}+${e.model}`, stage, e.model, e.usage.input, e.usage.output, e.usage.cacheRead, e.usage.cacheWrite, start, end, e.usage.cost);
   }

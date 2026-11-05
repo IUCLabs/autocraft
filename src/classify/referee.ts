@@ -37,7 +37,7 @@ export async function refereeItems(db: DatabaseSync, runId: string, items: Item[
   const perCall = opts.perCall ?? REFEREE.limits.perCall;
   const chunks: Item[][] = [];
   for (let i = 0; i < items.length; i += perCall) chunks.push(items.slice(i, i + perCall));
-  const ins = db.prepare(`INSERT OR REPLACE INTO classifications (repo, number, classifier, run_id, at, type_label, flags, reason, probs)
+  const ins = db.prepare(`INSERT OR REPLACE INTO main.classifications (repo, number, classifier, run_id, at, type_label, flags, reason, probs)
     VALUES (?, ?, 'sonnet', ?, ?, ?, '[]', ?, ?)`);
   const have = db.prepare(`SELECT 1 FROM classifications WHERE repo = ? AND number = ? AND classifier = 'sonnet' AND run_id = ? AND at >= ?`);
   // Evaluation runs resume: any earlier answer in the run counts. Pipeline runs ask again, since a new answer replaces the old one.
@@ -73,7 +73,7 @@ export async function refereeItems(db: DatabaseSync, runId: string, items: Item[
           try { p = (JSON.parse(row.probs ?? "{}") as Record<string, unknown>) ?? {}; } catch { /* keep empty */ }
           p.opusFailures = (typeof p.opusFailures === "number" ? p.opusFailures : 0) + 1;
           p.opusFailedAt = new Date().toISOString();
-          db.prepare(`INSERT OR REPLACE INTO classifications (repo, number, classifier, run_id, at, type_label, flags, reason, probs) VALUES (?, ?, 'sonnet', ?, ?, ?, '[]', ?, ?)`)
+          db.prepare(`INSERT OR REPLACE INTO main.classifications (repo, number, classifier, run_id, at, type_label, flags, reason, probs) VALUES (?, ?, 'sonnet', ?, ?, ?, '[]', ?, ?)`)
             .run(i.repo, i.number, runId, row.at, row.type_label, row.reason, JSON.stringify(p));
         }
       }
@@ -91,7 +91,7 @@ export function markSpotCheck(db: DatabaseSync, runId: string, pairs: Pair[], co
   );
   const refereed = pairs.filter((p) => verdicts.has(ref(p.r)));
   const side = (p: Pair) => { const v = verdicts.get(ref(p.r)); return v === p.jev.type_label ? "jev" : v === p.haiku.type_label ? "haiku" : "neither"; };
-  db.prepare(`UPDATE classifications SET flags = '[]' WHERE classifier = 'sonnet' AND run_id = ?`).run(runId);
-  const upd = db.prepare(`UPDATE classifications SET flags = '["spot-check"]' WHERE classifier = 'sonnet' AND run_id = ? AND repo = ? AND number = ?`);
+  db.prepare(`UPDATE main.classifications SET flags = '[]' WHERE classifier = 'sonnet' AND run_id = ?`).run(runId);
+  const upd = db.prepare(`UPDATE main.classifications SET flags = '["spot-check"]' WHERE classifier = 'sonnet' AND run_id = ? AND repo = ? AND number = ?`);
   for (const p of spread(refereed, (p) => `${p.r.kind}|${side(p)}`, count, rng(seed + 1))) upd.run(runId, p.r.repo, p.r.number);
 }
