@@ -4,6 +4,7 @@ import type { Decision } from "../../api/types";
 import { Button } from "../../ui/atoms/Button";
 import { cn } from "../../ui/cn";
 import { useWrite } from "../../lib/hooks";
+import { useUser } from "../../shell/UserContext";
 
 /** Starts the GitHub App user authorization for the signed-in operator and returns to this page. The session is not touched. */
 export const authorizeHref = (): string => `/auth/authorize-app?${new URLSearchParams({ return_to: window.location.pathname + window.location.search })}`;
@@ -17,6 +18,7 @@ const TONE = { pending: "text-ink/55", "waiting-token": "text-warn", "waiting-pe
 export function ExecLine({ d, canRetry, compact }: { d: Decision; canRetry: boolean; compact?: boolean }) {
   const api = useApi();
   const write = useWrite();
+  const operator = useUser().role === "operator";
   const exec = d.exec;
   if (!exec || exec.state === "done") return null;
   const Icon = exec.state === "pending" ? HourglassIcon : WarningCircleIcon;
@@ -27,7 +29,7 @@ export function ExecLine({ d, canRetry, compact }: { d: Decision; canRetry: bool
         <Icon className="shrink-0" />
         <span>{text}</span>
       </span>
-      {canRetry && exec.state === "waiting-token" && (
+      {operator && exec.state === "waiting-token" && (
         <a href={authorizeHref()} className="inline-flex items-center gap-1 text-accent-ink hover:underline">
           <KeyIcon />
           Authorize AutoCraft to act as you
