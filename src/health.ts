@@ -37,5 +37,6 @@ export async function startHealthServer(listen: string, ready: () => boolean): P
     server.once("error", reject);
     server.listen(port, host, resolve);
   });
+  server.on("error", (e) => console.error(`health listener: ${e.message}`));
   return { url: `http://${listen}`, close: () => new Promise<void>((r) => (server.closeAllConnections(), server.close(() => r()))) };
 }

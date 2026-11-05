@@ -475,6 +475,8 @@ export function lockHeld(path: string): boolean {
     const pid = Number(readFileSync(path, "utf8"));
     const fresh = Date.now() - statSync(path).mtimeMs < LOCK_STALE_MS;
     if (!(pid > 0 && fresh)) return false;
+    // A file naming this very process is left over from an earlier run whose pid was reused (a container's init gives every start the same pid).
+    if (pid === process.pid) return false;
     try {
       process.kill(pid, 0);
       return true;

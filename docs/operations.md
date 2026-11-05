@@ -302,7 +302,7 @@ docker build -f deploy/container/Dockerfile -t autocraft .
 docker run -v data:/data -v config:/config -e AUTOCRAFT_BASE_URL=https://dashboard.example autocraft dashboard
 ```
 
-The image is `node:24-bookworm-slim` (pinned by digest) with `git`, `bubblewrap`, `sqlite3`, `curl`, `zstd`, `tini`, pnpm, the production dependencies, the built `web/dist` and the Claude CLI (`--build-arg CLAUDE_CODE_VERSION=...`, default the version the systemd install runs). It runs as uid 10001. It does not contain `gh` or `jev`; steps that need them fail until you add them to a derived image. `tini` is PID 1 and reaps the jobs' child processes.
+The image is `node:24-bookworm-slim` (pinned by digest) with `git`, `bubblewrap`, `sqlite3`, `curl`, `zstd`, `tini`, pnpm, the production dependencies, the built `web/dist` and the Claude CLI (`--build-arg CLAUDE_CODE_VERSION=...`, default the version the systemd install runs). It runs as uid 10001. It contains `gh` (pinned by checksum; authenticate with the `GH_TOKEN` environment variable) but not `jev`; steps that need `jev` fail until a derived image adds it. `--build-arg SOURCE_COMMIT=<sha>` records the commit the dashboard shows (the image has no `.git`). `tini` is PID 1 and reaps the jobs' child processes.
 
 The first argument picks the process, exactly as the systemd units start them:
 
@@ -314,7 +314,7 @@ The first argument picks the process, exactly as the systemd units start them:
 | `backup [PREFIX [KEEP]]` | `deploy/backup.sh`, one-shot, default prefix `daily` | `autocraft-backup` |
 | anything else | passed to the `autocraft` CLI, for example `pipeline status` | |
 
-Run one dashboard and one runner per database. The runner holds a lock file and refuses to start a second copy on the same data volume.
+Run one dashboard and one runner per database, on one host (SQLite). The runner and sync hold lock files holding a process id. A lock left by a crashed container is recognised as stale, but a process id check cannot see another container: two runners on one volume are not excluded. Run one replica with the Recreate strategy (or a StatefulSet with one replica).
 
 ### Volumes
 
@@ -352,7 +352,7 @@ Every path is set by an environment variable. When a variable is unset, the code
 | `AUTOCRAFT_LISTEN` (dashboard) | `127.0.0.1:8993` | `0.0.0.0:3005` | `127.0.0.1:3005` |
 | `AUTOCRAFT_WORKER_LISTEN` (worker API) | `127.0.0.1:8981` | `0.0.0.0:8981` | `127.0.0.1:8981` |
 | `AUTOCRAFT_HEALTH_LISTEN` (runner probes only) | none | none | none |
-| `AUTOCRAFT_STOP_TIMEOUT` (seconds the runner may take to stop) | `25` | `25` | `25` |
+| `AUTOCRAFT_STOP_TIMEOUT` (seconds the runner may take to stop) | `25` | unset | unset |
 | `HOME` | the user's home | `/data/home` | the app user's home |
 
 `AUTOCRAFT_BASE_URL` (no default; the public origin) and `AUTOCRAFT_TRUST_PROXY` stay as described under Dashboard server. The older `CRAFT_AUTO_*` names still work.
@@ -367,7 +367,7 @@ The dashboard, the runner, sync and backup write to stdout and stderr. The runne
 
 ### Stopping
 
-On SIGTERM or SIGINT the runner claims no new jobs, signals its running jobs (SIGTERM, then SIGKILL after 10 seconds, as under systemd), closes its listeners and exits 0. If that takes longer than `AUTOCRAFT_STOP_TIMEOUT` seconds, it exits 1. Set the orchestrator's grace period above that value. The dashboard closes its connections and the database and exits 0.
+On SIGTERM or SIGINT the runner claims no new jobs, signals its running jobs (SIGTERM, then SIGKILL after 10 seconds, as under systemd), closes its listeners and exits 0. If that takes longer than `AUTOCRAFT_STOP_TIMEOUT` seconds, it exits 1. Set the orchestrator's grace period above that value: `docker run --stop-timeout 30`, Compose `stop_grace_period: 30s`, or the Kubernetes default `terminationGracePeriodSeconds: 30`. The dashboard closes its connections and the database and exits 0.
 
 ### Sandbox (bubblewrap)
 
@@ -382,7 +382,27 @@ Tool-using Claude calls run in `bwrap` (see Pipeline runner). Docker's default p
 | `--security-opt systempaths=unconfined` | fails: namespace | fails |
 | `--security-opt seccomp=unconfined --security-opt systempaths=unconfined` | works | works (`claude --version` ran inside it) |
 
-The runner container therefore needs an unconfined seccomp profile and unmasked `/proc` paths (`systempaths=unconfined`; an orchestrator's equivalent is `procMount: Unmasked`, which needs a user-namespaced pod). `apparmor=unconfined` was not needed where no AppArmor profile applies; on a host that confines the container with one that denies user namespaces, it may be. No extra capabilities are needed. Only the runner needs these settings; the dashboard, sync and backup run with the defaults. Without them, set `AUTOCRAFT_NO_SANDBOX=1` to run without tool mode.
+The runner container therefore needs an unconfined seccomp profile and unmasked `/proc` paths. With Docker that is `--security-opt seccomp=unconfined --security-opt systempaths=unconfined`. In Kubernetes: pod `spec.hostUsers: false`, and on the runner container `securityContext.procMount: Unmasked` and `securityContext.seccompProfile.type: Unconfined`. `procMount: Unmasked` is accepted only on pods with `hostUsers: false` and only on clusters that support `ProcMountType` (a feature gate in older releases). These settings are not tested on a cluster. `apparmor=unconfined` was not needed where no AppArmor profile applies; on a host that confines the container with one that denies user namespaces, it may be. No extra capabilities are needed. Only the runner needs these settings; the dashboard, sync and backup run with the defaults. Without them, set `AUTOCRAFT_NO_SANDBOX=1` to run without tool mode.
+
+### Kubernetes
+
+`deploy/k8s/autocraft.yaml` holds two Services and a StatefulSet with one replica. Edit the image and `AUTOCRAFT_BASE_URL`, then apply it. It is plain YAML, checked only by a YAML parse (no cluster was available).
+
+| Choice | Reason |
+|---|---|
+| One pod, three containers: `dashboard`, `runner` and `periodic` (three containers, two shared volumes) | The database is SQLite on a ReadWriteOnce volume, so every process that opens it must run on the same node. Separate pods would need node affinity. |
+| StatefulSet, one replica | The old pod is gone before the new one starts, so two runners never share the volume. The lock files cannot exclude a second pod. |
+| `periodic` container instead of CronJobs | A CronJob pod may land on another node, where the volume cannot attach. The container loops `sync` (every 60 seconds after the previous run, like the timer) and runs `backup daily 7` once a day. |
+| Two volume claims, `data` and `config` (ReadWriteOnce) | `/config` is writable because the app writes accounts, Claude logins and usage readings there. |
+| Pod `hostUsers: false`, `runAsNonRoot`, uid and `fsGroup` 10001 | The user namespace is required for the runner's `procMount: Unmasked`. |
+| Runner container: `procMount: Unmasked`, `seccompProfile: Unconfined` | The sandbox requirement above. The other containers keep the defaults. |
+| Probes on `/healthz` and `/readyz`; `terminationGracePeriodSeconds: 30` | The dashboard probes its own port; the runner probes the worker API port. |
+| `autocraft-worker-api` Service on 8981 | For workers inside the cluster. Do not publish it. |
+
+The manifest holds no secret values. Before the first start:
+
+1. Create the claims (`kubectl apply`), then place `secrets.json` on the config volume as uid 10001 with mode 0600, for example with a short-lived pod that mounts the `config-autocraft-0` claim, `kubectl cp`, then `chown 10001:10001` and `chmod 600`. Delete the pod before the first start, because a ReadWriteOnce claim attaches to one node.
+2. Optionally create the Secret `autocraft-github` with key `token` (a GitHub token for `gh`) with `kubectl create secret generic autocraft-github --from-literal=token=...` typed by the operator.
 
 ## Similar items and semantic search
 

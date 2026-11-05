@@ -51,8 +51,9 @@ async function serve(): Promise<void> {
     : null;
   // On a stop signal the runner claims nothing new and stops its jobs (10 s each to end, then killed). If that takes longer than the bound, exit anyway.
   const stopMs = (Number(envVar("STOP_TIMEOUT")) || 25) * 1000;
-  const onStop = () => void setTimeout(() => (console.error("runner: stop timed out; exiting"), process.exit(1)), stopMs).unref();
-  ac.signal.addEventListener("abort", onStop, { once: true });
+  const onStop = () => void setTimeout(() => (console.error("runner: stop timed out; exiting"), release(), process.exit(1)), stopMs).unref();
+  if (ac.signal.aborted) onStop();
+  else ac.signal.addEventListener("abort", onStop, { once: true });
   try {
     await runner.serve(ac.signal, Number(envVar("RUNNER_POLL_MS")) || 2000);
   } finally {

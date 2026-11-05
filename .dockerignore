@@ -7,3 +7,8 @@ web/dist
 export/
 test/
 deploy/systemd/
+**/.env*
+**/*.db
+**/*.db-*
+.claude/
+CLAUDE.local.md
