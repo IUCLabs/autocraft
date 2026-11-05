@@ -31,7 +31,7 @@ const SOURCES: string[] = [
    WHERE o.at >= :since AND o.at <= :cur AND o.retracted_at IS NULL AND TRIM(COALESCE(o.note, '')) <> ''
      AND NOT EXISTS (SELECT 1 FROM access a WHERE a.login = o.login AND a.role = 'operator')`,
   // An operator's message to Opus on an item; handled once Opus answered it.
-  `SELECT 'turn:' || t.id, 'operator', t.login, t.at, t.body, t.repo, t.number, NULL, t.id, NULL, COALESCE(t.status = 'answered', 0)
+  `SELECT 'turn:' || t.id, 'operator', t.login, t.at, t.body, t.repo, t.number, NULL, t.id, NULL, t.status IS NULL OR t.status = 'answered'
    FROM conversation_turns t WHERE t.kind = 'operator' AND t.at >= :since AND t.at <= :cur`,
   // A GitHub comment or review that names the pipeline login (flagged when written, so an index finds them); handled once the
   // pipeline login posted on the item afterwards. Nothing without a pipeline login.

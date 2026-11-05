@@ -70,6 +70,8 @@ export const TOPIC_TABLES: Record<string, Source[]> = {
   envs: [{ table: "build_envs", ops: ["INSERT", "DELETE"] }, { table: "build_envs", ops: ["UPDATE"], when: "old.label IS NOT new.label OR old.kind IS NOT new.kind OR old.enabled IS NOT new.enabled OR old.slots IS NOT new.slots OR old.key_hash IS NOT new.key_hash OR old.capabilities IS NOT new.capabilities OR old.reported_slots IS NOT new.reported_slots OR old.version IS NOT new.version OR old.paused_reason IS NOT new.paused_reason" }],
   tasks: [{ table: "build_tasks" }, { table: "build_task_logs" }, { table: "build_artifacts" }],
   actions: [{ table: "actions" }],
+  // Which maintainer posts an operator shared with Opus; not planner input.
+  "conversation-includes": [{ table: "conversation_includes" }],
   conversations: [{ table: "conversations" }, { table: "conversation_turns" }, { table: "conversation_cards" }],
   fixes: [{ table: "fix_attempts" }, { table: "patch_checks" }, { table: "dupe_carries" }],
   verify: [{ table: "verifications" }, { table: "fixups" }, { table: "ci_fixes" }],
@@ -93,7 +95,7 @@ export const TOPIC_TABLES: Record<string, Source[]> = {
   ],
   // What the item trace reads that no page topic watches. A model call's progress line is not a change here.
   trace: [
-    { table: "conversation_includes" }, { table: "model_checks" }, { table: "conflict_merges" }, { table: "job_items" }, { table: "opus_review_history" }, { table: "plan_history" }, { table: "patch_checks" },
+    { table: "model_checks" }, { table: "conflict_merges" }, { table: "job_items" }, { table: "opus_review_history" }, { table: "plan_history" }, { table: "patch_checks" },
     { table: "pr_files" }, { table: "pr_commits" }, { table: "item_activity" }, { table: "agent_run_items" }, { table: "agent_run_tools" },
     { table: "agent_runs", ops: ["INSERT"] },
     { table: "agent_runs", ops: ["UPDATE"], when: "old.state IS NOT new.state OR old.ended_at IS NOT new.ended_at OR old.cost_usd IS NOT new.cost_usd OR old.summary IS NOT new.summary" },

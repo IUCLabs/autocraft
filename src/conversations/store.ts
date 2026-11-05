@@ -2,7 +2,7 @@
 // Every turn stores the exact text its prompt block carries, so later prompts repeat earlier ones byte for byte.
 import { createHash, randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
-import { factsOf, optionsOf, type DecisionRow } from "../decisions.ts";
+import { factsOf, getDecision, optionsOf, type DecisionRow } from "../decisions.ts";
 import { CLAUDE_PROMPTS, untrustedJson } from "../prompts/index.ts";
 import { cleanComment, openDecision, type NewCard } from "./cards.ts";
 import { ITEM_BODY_LIMIT, ITEM_COMMENT_LIMIT, ITEM_COMMENTS, ITEM_DIFF_LIMIT, MESSAGE_MAX, OPENING_MAX, type TurnKind } from "./types.ts";
@@ -239,9 +239,11 @@ export async function addOperatorMessage(db: DatabaseSync, repo: string, n: numb
   await refreshItem(db, repo, n, deps);
   const shared = ask ? unsentIncludes(db, repo, n) : [];
   try {
-    const id = insertTurn(db, repo, n, { kind: "operator", login, body, block: operatorBlock(login, body, shared.map((x) => x.post)), ...(ask && { status: "pending" }) }, deps);
-    for (const x of shared) db.prepare("UPDATE conversation_includes SET sent_turn = ? WHERE repo = ? AND number = ? AND source = ? AND sent_turn IS NULL").run(id, repo, n, x.source);
-    return id;
+    return inTx(db, () => {
+      const id = appendTurn(db, repo, n, { kind: "operator", login, body, block: operatorBlock(login, body, shared.map((x) => x.post)), ...(ask && { status: "pending" }) }, deps);
+      for (const x of shared) db.prepare("UPDATE conversation_includes SET sent_turn = ? WHERE repo = ? AND number = ? AND source = ? AND sent_turn IS NULL").run(id, repo, n, x.source);
+      return id;
+    });
   } catch (e) {
     if (/UNIQUE/i.test(String((e as Error).message))) throw new ConversationError(409, "Opus has not answered the last message yet");
     throw e;
@@ -256,12 +258,20 @@ export type IncludeRow = { source: string; by: string; at: string; sent: boolean
 function postOf(db: DatabaseSync, repo: string, n: number, source: string): Included | null {
   const m = /^(decision-comment|decision-opinion):(.+)$/.exec(source);
   if (!m) return null;
-  const row = (m[1] === "decision-comment"
-    ? db.prepare("SELECT c.login, c.at, c.body AS text FROM decision_comments c JOIN decisions d ON d.id = c.decision_id WHERE c.id = ? AND d.repo = ? AND d.number = ?")
-    : db.prepare("SELECT o.login, o.at, o.note AS text FROM decision_opinions o JOIN decisions d ON d.id = o.decision_id WHERE o.id = ? AND d.repo = ? AND d.number = ? AND o.retracted_at IS NULL"))
-    .get(m[2]!, repo, n) as { login: string; at: string; text: string | null } | undefined;
-  const text = row?.text ? cleanComment(row.text).slice(0, ITEM_COMMENT_LIMIT) : "";
-  return row && text ? { login: row.login, at: row.at, text } : null;
+  if (m[1] === "decision-comment") {
+    const row = db.prepare("SELECT c.login, c.at, c.body AS text FROM decision_comments c JOIN decisions d ON d.id = c.decision_id WHERE c.id = ? AND d.repo = ? AND d.number = ?")
+      .get(m[2]!, repo, n) as { login: string; at: string; text: string | null } | undefined;
+    const text = row?.text ? cleanComment(row.text).slice(0, ITEM_COMMENT_LIMIT) : "";
+    return row && text ? { login: row.login, at: row.at, text } : null;
+  }
+  const o = db.prepare("SELECT o.login, o.at, o.option, o.note, o.decision_id FROM decision_opinions o JOIN decisions d ON d.id = o.decision_id WHERE o.id = ? AND d.repo = ? AND d.number = ? AND o.retracted_at IS NULL")
+    .get(m[2]!, repo, n) as { login: string; at: string; option: string | null; note: string | null; decision_id: string } | undefined;
+  if (!o) return null;
+  const d = getDecision(db, o.decision_id);
+  const label = o.option ? (d ? optionsOf(d).find((x) => x.key === o.option)?.label : undefined) ?? o.option : null;
+  const note = o.note ? cleanComment(o.note) : "";
+  const text = (label ? (note ? `Suggests ${label}: ${note}` : `Suggests ${label}`) : note).slice(0, ITEM_COMMENT_LIMIT);
+  return text ? { login: o.login, at: o.at, text } : null;
 }
 
 function unsentIncludes(db: DatabaseSync, repo: string, n: number): { source: string; post: Included }[] {

@@ -1,6 +1,7 @@
 // Decisions over JSON: the queue, answers (operator only), feedback, claims
 // and the thread. Feedback (picks and comments) is display-only: nothing the pipeline
-// reads (src/decisions.ts `actionable`) touches their tables.
+// reads (src/decisions.ts `actionable`) touches their tables. Feedback reaches a prompt only when an operator includes
+// it in a conversation (`<included>` blocks, src/conversations/store.ts).
 import { priorityOf } from "../../priority/read.ts";
 import type { DatabaseSync } from "node:sqlite";
 import type {

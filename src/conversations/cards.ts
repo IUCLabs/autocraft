@@ -93,7 +93,7 @@ export function settleLine(db: DatabaseSync, s: Settle): string {
   const d = getDecision(db, s.decision);
   switch (s.kind) {
     case "answer": return `Answers the ${questionWord(d)} question with "${optionLabel(d, s.option)}"`;
-    case "handled": return `Closes the ${questionWord(d)} question as handled`;
+    case "handled": return `Closes the ${questionWord(d)} question as handled: "${s.summary}"`;
     case "backlog": return "Moves the item to the Backlog";
   }
 }
@@ -103,9 +103,9 @@ export function cardLines(db: DatabaseSync, p: CardParams, description: string):
   if (p.kind === "resolution") return { steps: p.steps.map(stepLine), ...(p.settle && { settles: settleLine(db, p.settle) }) };
   const steps = [description];
   switch (p.kind) {
-    case "answer": return { steps, settles: settleLine(db, { kind: "answer", decision: p.decision, option: p.option, stamp: p.stamp ?? "" }) };
-    case "backlog": return { steps, settles: "Moves the item to the Backlog" };
-    case "resolve": return { steps, settles: settleLine(db, { kind: "handled", decision: p.decision, summary: p.summary, stamp: p.stamp ?? "" }) };
+    case "answer": return { steps: [], settles: settleLine(db, { kind: "answer", decision: p.decision, option: p.option, stamp: p.stamp ?? "" }) };
+    case "backlog": return { steps: [], settles: "Moves the item to the Backlog" };
+    case "resolve": return { steps: [], settles: settleLine(db, { kind: "handled", decision: p.decision, summary: p.summary, stamp: p.stamp ?? "" }) };
     case "close": case "duplicate": return { steps, settles: "Closes the open questions as handled" };
     default: return { steps };
   }
@@ -291,6 +291,9 @@ function validateResolution(db: DatabaseSync, repo: string, n: number, c: Record
     if ("note" in r) return r;
     steps.push(r.value);
   }
+  const labels = steps.flatMap((x) => (x.kind === "label" ? [x.label] : []));
+  if (new Set(labels).size !== labels.length) return { note: "dropped a resolution that adds the same label twice" };
+  if (labels.filter(isTypeLabel).length > 1) return { note: "dropped a resolution that adds more than one type label" };
   const count = (k: Step["kind"]) => steps.filter((x) => x.kind === k).length;
   const closing = steps.filter((x): x is Extract<Step, { kind: "close" | "duplicate" }> => x.kind === "close" || x.kind === "duplicate");
   if (count("comment") > 1) return { note: "dropped a resolution with more than one comment step" };
