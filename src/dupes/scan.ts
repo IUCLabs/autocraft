@@ -5,8 +5,12 @@ import type { DatabaseSync } from "node:sqlite";
 import { notOwnIntegrationSql } from "./held.ts";
 import type { VectorIndex } from "../embed/vectors.ts";
 
-/** Cosine similarity of the embedding model (bge-small): about the top quartile of nearest-neighbour scores in the real data; true duplicates sit above it. */
-export const SIM_THRESHOLD = 0.86;
+/**
+ * Cosine similarity of the embedding model (bge-small) from which a neighbour becomes a candidate pair. The same bug in other
+ * words can score near 0.8, and the pair check that follows is cheap; below about 0.8 Jev finds almost no duplicates.
+ * Changing it rescans every item once (src/db.ts).
+ */
+export const SIM_THRESHOLD = 0.8;
 /** Most neighbours kept per scanned item. */
 export const MAX_NEIGHBOURS = 3;
 /** Neighbours looked up per item before the filters; the filters drop some. */
