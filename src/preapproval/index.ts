@@ -409,16 +409,51 @@ function settleCancelled(db: DatabaseSync): void {
   }
 }
 
+/**
+ * An operator's Merge answer at head H carries across the pipeline's own push to H2 (a conflict merge or a CI fix): when the answer
+ * still stands and the PR has no pre-approved merge, a row starts in `review` at H2 with no fix-up, and the chain of review, pre-merge
+ * review and CI runs again before the hand-over answers the Merge? question at H2. One row per (PR, H2); the row's existence is the memory.
+ */
+function carryAnswers(db: DatabaseSync): void {
+  const pushes = db.prepare(`SELECT c.repo, c.number, c.head AS from_head, c.to_head, 'CI fix' AS what FROM ci_fixes c WHERE c.state IN ('pushing', 'pushed') AND c.to_head IS NOT NULL
+    UNION SELECT m.repo, m.number, m.from_head, m.to_head, 'conflict merge' FROM conflict_merges m WHERE m.state IN ('pushing', 'merged') AND m.to_head IS NOT NULL`).all() as { repo: string; number: number; from_head: string; to_head: string; what: string }[];
+  for (const x of pushes) {
+    const it = prRow(db, x.repo, x.number);
+    if (!it || it.kind !== "pr" || it.state !== "OPEN" || it.head_oid !== x.to_head) continue;
+    const d = getDecision(db, mergeDecisionId(x.repo, x.number, x.from_head));
+    if (!d || d.answer !== "merge" || !d.answered_by || !isOperator(db, d.answered_by)) continue;
+    if (db.prepare(`SELECT 1 FROM preapprovals WHERE repo = ? AND number = ? AND (head = ? OR state IN (${ACTIVE.map(() => "?").join(",")}))`).get(x.repo, x.number, x.to_head, ...ACTIVE)) continue;
+    // An answer the hand-over of a row wrote is that row's own; its ownPush handling carries it while the row is active.
+    if (db.prepare("SELECT 1 FROM audit WHERE action = 'answer' AND target = ? AND details LIKE '%\"source\":\"preapproval\"%'").get(d.id) && db.prepare(`SELECT 1 FROM preapprovals WHERE repo = ? AND number = ? AND head = ? AND state IN (${ACTIVE.map(() => "?").join(",")})`).get(x.repo, x.number, x.from_head, ...ACTIVE)) continue;
+    if (!mergeApprovalOf(db, x.repo)) continue;
+    const at = iso();
+    db.exec("BEGIN IMMEDIATE");
+    let id: number;
+    try {
+      // Re-check under the write lock: another tick may have created it.
+      if (db.prepare("SELECT 1 FROM preapprovals WHERE repo = ? AND number = ? AND head = ?").get(x.repo, x.number, x.to_head)) { db.exec("ROLLBACK"); continue; }
+      id = Number(db.prepare("INSERT INTO preapprovals (repo, number, by, at, instructions, state, from_head, head, updated_at, fix_id) VALUES (?, ?, ?, ?, '', 'review', ?, ?, ?, NULL)").run(x.repo, x.number, d.answered_by, at, x.from_head, x.to_head, at).lastInsertRowid);
+      audit(db, ACTOR, "preapproval", `${x.repo}#${x.number}`, { id, state: "review", head: x.to_head, carried: x.from_head });
+      db.exec("COMMIT");
+    } catch (e) {
+      db.exec("ROLLBACK");
+      throw e;
+    }
+    say(db, x.repo, x.number, `${d.answered_by}'s Merge answer at ${short(x.from_head)} carries to the pipeline's ${x.what} ${short(x.to_head)} once the review, the pre-merge review and CI there are clean.`);
+  }
+}
+
 /** Runs on every runner tick: moves each pre-approved merge that other steps' rows have carried to a new state. Writes nothing when nothing moved. */
 export function advancePreapprovals(db: DatabaseSync, log: (line: string) => void = () => {}): number {
-  const rows = db.prepare(`SELECT * FROM preapprovals WHERE state IN (${ACTIVE.map(() => "?").join(",")}) ORDER BY id`).all(...ACTIVE) as Row[];
   let n = 0;
   try {
     endStaleRequests(db);
     settleCancelled(db);
+    carryAnswers(db);
   } catch (e) {
     log(`preapproval requests: ${(e as Error).message}`);
   }
+  const rows = db.prepare(`SELECT * FROM preapprovals WHERE state IN (${ACTIVE.map(() => "?").join(",")}) ORDER BY id`).all(...ACTIVE) as Row[];
   for (const p of rows) {
     try {
       advance(db, p);
