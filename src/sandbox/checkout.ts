@@ -8,6 +8,9 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { GIT_ENV, HARDENING } from "../fixup/git.ts";
 import { envVar } from "../env.ts";
+import { isInstructionPath } from "./instruction-paths.ts";
+
+export { isInstructionPath };
 
 export type CheckoutCaps = { maxFiles: number; maxBytes: number; maxFileBytes: number };
 export const DEFAULT_CAPS: CheckoutCaps = { maxFiles: 20_000, maxBytes: 150 * 1024 * 1024, maxFileBytes: 2 * 1024 * 1024 };
@@ -33,13 +36,6 @@ function git(gitDir: string, args: string[], input?: string): Promise<Out> {
 export function safePath(p: string): boolean {
   if (!p || p.length > 500 || p.includes("\0") || p.startsWith("/")) return false;
   return p.split("/").every((c) => c !== "" && c !== "." && c !== ".." && c.toLowerCase() !== ".git");
-}
-
-const INSTRUCTION_FILES = new Set(["claude.md", "claude.local.md", "agents.md"]);
-
-/** True for a path that claude could load as instructions or settings: CLAUDE.md, CLAUDE.local.md, AGENTS.md at any depth, or anything under a `.claude` directory (case-insensitive). */
-export function isInstructionPath(p: string): boolean {
-  return p.split("/").some((c) => INSTRUCTION_FILES.has(c.toLowerCase()) || c.toLowerCase() === ".claude");
 }
 
 type Entry = { oid: string; size: number; path: string };

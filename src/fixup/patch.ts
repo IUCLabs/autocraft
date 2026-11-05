@@ -2,7 +2,7 @@
 // checks; whether it applies is decided by `git apply --check` in index.ts.
 
 import { cleanReason } from "../act/templates.ts";
-import { isInstructionPath } from "../sandbox/checkout.ts";
+import { isInstructionPath } from "../sandbox/instruction-paths.ts";
 import { QUOTE_WORDS } from "../replylint.ts";
 import type { ShownFile } from "./excerpt.ts";
 
