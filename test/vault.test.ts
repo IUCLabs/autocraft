@@ -8,7 +8,7 @@ import { connect } from "../src/db.ts";
 import { pkceChallenge, TokenBox } from "../src/dash/server/crypto.ts";
 import { FakeProvider, type Tokens } from "../src/dash/server/provider.ts";
 import { createSession, openTokens } from "../src/dash/server/sessions.ts";
-import { saveUserTokens } from "../src/dash/server/user-tokens.ts";
+import { dropSessionTokens, saveUserTokens } from "../src/dash/server/user-tokens.ts";
 import { Vault } from "../src/github/vault.ts";
 import { SCRATCH } from "./scratch.ts";
 
@@ -73,5 +73,24 @@ test("removing a login deletes its token row and the sweep revokes the grant at 
   const v = new Vault(db, box, provider);
   assert.equal(await v.sweepRevocations(), 1);
   assert.deepEqual(provider.revokedGrants, [t.access]);
+  assert.equal(db.prepare("SELECT 1 FROM user_token_revocations").get(), undefined);
+});
+
+test("revoking one session revokes only its token and keeps the login's newer sign-in", async () => {
+  const { db, box, provider, signIn } = setup("vault-session");
+  addLogin(db, "op", "example-user", "viewer", null);
+  // The older session's token set expired; the sweep refreshes it once before revoking.
+  const a = await signIn("example-user", -1000);
+  createSession(db, box, "example-user", a, undefined);
+  const s = db.prepare("SELECT id_hash, token_enc FROM sessions").get() as { id_hash: string; token_enc: string };
+  const b = await signIn("example-user", 8 * 3_600_000);
+  assert.ok(dropSessionTokens(db, "example-user", s.id_hash, s.token_enc));
+  const v = new Vault(db, box, provider);
+  assert.equal(await v.sweepRevocations(), 1);
+  assert.deepEqual(provider.revokedGrants, []);
+  assert.equal(provider.revoked.length, 1);
+  assert.notEqual(provider.revoked[0], a.access);
+  assert.equal((await v.userToken("example-user")).ok, true);
+  assert.equal(openTokens(box, (db.prepare("SELECT token_enc FROM user_tokens").get() as { token_enc: string }).token_enc, "user_tokens:example-user")?.access, b.access);
   assert.equal(db.prepare("SELECT 1 FROM user_token_revocations").get(), undefined);
 });

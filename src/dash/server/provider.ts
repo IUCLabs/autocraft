@@ -22,6 +22,15 @@ export type Tokens = {
 // renamed or released, so access is bound to it.
 export type GithubUser = { login: string; id: number };
 
+/** GitHub answered a revoke with a refusal; `status` is its HTTP status (404/422: the token is expired or already gone). */
+export class RevokeRefused extends Error {
+  status: number;
+  constructor(status: number) {
+    super(`revoke: HTTP ${status}`);
+    this.status = status;
+  }
+}
+
 export interface Provider {
   /** With selectAccount the provider shows its account picker even when someone is already signed in there. */
   authorizeUrl(state: string, challenge: string, redirectUri: string, selectAccount?: boolean, scopes?: string[]): string;
@@ -30,9 +39,9 @@ export interface Provider {
   exchange(code: string, verifier: string, redirectUri: string): Promise<Tokens | null>;
   refresh(refreshToken: string): Promise<Tokens | null>;
   identity(access: string): Promise<GithubUser | null>;
-  /** Revokes a token at the provider; callers ignore failures. */
+  /** Revokes a token at the provider; throws RevokeRefused when the provider refuses, another error on a transport failure. */
   revoke(access: string): Promise<void>;
-  /** Revokes the whole authorization behind a token: every token of that user for this app dies with it. Callers ignore failures. */
+  /** Revokes the whole authorization behind a token: every token of that user for this app dies with it. Throws like revoke. */
   revokeGrant(access: string): Promise<void>;
   // "unauthorized": the access token is expired or revoked. Throws on a
   // transport failure, so a GitHub outage isn't cached as "none".
@@ -93,7 +102,7 @@ export class GitHubProvider implements Provider {
     return this.#deleteApplication("grant", access);
   }
   async #deleteApplication(what: "token" | "grant", access: string): Promise<void> {
-    await fetch(`https://api.github.com/applications/${encodeURIComponent(this.#id)}/${what}`, {
+    const r = await fetch(`https://api.github.com/applications/${encodeURIComponent(this.#id)}/${what}`, {
       method: "DELETE",
       headers: {
         authorization: `Basic ${Buffer.from(`${this.#id}:${this.#secret}`).toString("base64")}`, accept: "application/vnd.github+json",
@@ -102,6 +111,7 @@ export class GitHubProvider implements Provider {
       body: JSON.stringify({ access_token: access }),
       signal: AbortSignal.timeout(10_000),
     });
+    if (!r.ok) throw new RevokeRefused(r.status);
   }
   async identity(access: string): Promise<GithubUser | null> {
     const r = await this.#api(access, "/user");
@@ -178,15 +188,17 @@ export class FakeProvider implements Provider {
     return this.#issue(c.login);
   }
   revoked: string[] = [];
+  // Like GitHub: an expired or unknown token cannot be revoked (404).
   async revoke(access: string): Promise<void> {
+    if (!this.#valid(access)) throw new RevokeRefused(404);
     this.#access.delete(access);
     this.revoked.push(access);
   }
   revokedGrants: string[] = [];
   async revokeGrant(access: string): Promise<void> {
-    this.revokedGrants.push(access);
     const t = this.#access.get(access);
-    if (!t) return;
+    if (!t || !this.#valid(access)) throw new RevokeRefused(404);
+    this.revokedGrants.push(access);
     for (const [a, v] of this.#access) if (v.login === t.login) this.#access.delete(a);
     for (const [r, l] of this.#refresh) if (l === t.login) this.#refresh.delete(r);
   }

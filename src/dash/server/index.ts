@@ -370,6 +370,8 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
         // "Act as you": only the user token is stored. The session and the sign-in are untouched.
         const s = loadSession(db, cookies.get(SESSION_COOKIE));
         if (!s || s.role !== "operator" || s.login.toLowerCase() !== who.login.toLowerCase() || checkGithubId(db, s.login, who.id) === "mismatch") {
+          // The token belongs to an account that may not act here: end it before answering.
+          void (appProvider ?? provider).revoke(tokens.access).catch(() => {});
           return { r: errorPage(nonce, 403, "Not authorised", "Sign in to the dashboard as the GitHub account you authorize, then try again."), cookies: clear };
         }
         saveUserTokens(db, box, s.login, who.id, tokens);
@@ -453,6 +455,8 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
         pruneTokens(db);
         void vault.sweepRevocations().catch(() => {});
       }
+      // A revoked session's token is revoked at once, not at the next hourly sweep; failures are retried by that sweep.
+      if (db.prepare("SELECT 1 FROM user_token_revocations WHERE attempts = 0 LIMIT 1").get()) void vault.sweepRevocations(true).catch(() => {});
       // Dev auth lets anyone who reaches the port sign in as any login, so
       // a request that came through a proxy or under a public name is refused.
       if (config.devAuth && (req.headers["x-forwarded-for"] !== undefined || !isLoopbackHost(req.headers.host))) {

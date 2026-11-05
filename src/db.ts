@@ -22,6 +22,9 @@ export function dbPath(): string {
 // Columns added to existing tables after their first release. CREATE TABLE IF
 // NOT EXISTS leaves an older table as it was, so these are added here.
 const ADDED_COLUMNS: [table: string, column: string, type: string][] = [
+  ["user_token_revocations", "kind", "TEXT NOT NULL DEFAULT 'grant'"],
+  ["user_token_revocations", "aad", "TEXT"],
+  ["user_token_revocations", "attempts", "INTEGER NOT NULL DEFAULT 0"],
   ["repos", "owner", "TEXT NOT NULL DEFAULT 'storytold'"],
   ["security_findings", "fix_patch", "TEXT"],
   ["security_findings", "fix_title", "TEXT"],

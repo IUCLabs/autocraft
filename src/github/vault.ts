@@ -14,7 +14,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { envVar } from "../env.ts";
 import { TokenBox } from "../dash/server/crypto.ts";
 import { readSecrets } from "../dash/server/config.ts";
-import { GitHubProvider, type Provider, type Tokens } from "../dash/server/provider.ts";
+import { GitHubProvider, RevokeRefused, type Provider, type Tokens } from "../dash/server/provider.ts";
 import { failUserTokens, readUserTokens, revocationAad, shareRefresh, swapUserTokens } from "../dash/server/user-tokens.ts";
 
 export type NeedsSignIn = { ok: false; needsSignIn: true; why: "no-token" | "refresh-failed" | "expired" };
@@ -24,11 +24,13 @@ export type UserTokenResult = { ok: true; access: string } | NeedsSignIn | Unava
 
 const EXPIRY_MARGIN = 60_000;
 const REREADS = 4;
+const MAX_REVOKE_ATTEMPTS = 5;
 
 export class Vault {
   #db: DatabaseSync;
   #box: TokenBox;
   #provider: Provider;
+  #sweeping = false;
   #inflight = new Map<string, Promise<UserTokenResult>>();
   /** Pause between rereads after a rejected refresh; tests set it to 0. */
   waitMs = 300;
@@ -86,18 +88,73 @@ export class Vault {
     return { ok: false, needsSignIn: true, why: "refresh-failed" };
   }
 
-  /** Revokes the grants of removed rows (user_tokens deleted with a removed login, revoked session or demotion). Failures are ignored. */
-  async sweepRevocations(): Promise<number> {
-    const rows = this.#db.prepare("SELECT id, login, token_enc FROM user_token_revocations ORDER BY id").all() as { id: number; login: string; token_enc: string }[];
-    for (const r of rows) {
-      this.#db.prepare("DELETE FROM user_token_revocations WHERE id = ?").run(r.id);
-      try {
-        const plain = this.#box.open(r.token_enc, revocationAad(r.login));
-        const t = plain ? (JSON.parse(plain) as Tokens) : null;
-        if (t) await this.#provider.revokeGrant(t.access);
-      } catch { /* best effort */ }
+  /**
+   * Works through the revocation queue (a removed login's whole grant, or one revoked session's token). A row stays
+   * until GitHub confirms the revoke. An expired stored access token, or a 404/422 answer, is retried once with a
+   * freshly refreshed token. After MAX_REVOKE_ATTEMPTS failed sweeps the row is dropped. `fresh` handles only rows
+   * not tried yet. Returns the number of rows handled.
+   */
+  async sweepRevocations(fresh = false): Promise<number> {
+    if (this.#sweeping) return 0;
+    this.#sweeping = true;
+    try {
+      const rows = this.#db.prepare(`SELECT id, login, token_enc, kind, aad, attempts FROM user_token_revocations ${fresh ? "WHERE attempts = 0 " : ""}ORDER BY id`)
+        .all() as { id: number; login: string; token_enc: string; kind: string; aad: string | null; attempts: number }[];
+      for (const r of rows) {
+        let done = false;
+        try {
+          done = await this.#revokeRow(r);
+        } catch (e) {
+          console.error(`revocation for ${r.login}: ${(e as Error).message}`);
+        }
+        if (done) {
+          this.#db.prepare("DELETE FROM user_token_revocations WHERE id = ?").run(r.id);
+        } else if (r.attempts + 1 >= MAX_REVOKE_ATTEMPTS) {
+          console.error(`revocation for ${r.login}: given up after ${r.attempts + 1} failed attempts`);
+          this.#db.prepare("DELETE FROM user_token_revocations WHERE id = ?").run(r.id);
+        } else {
+          this.#db.prepare("UPDATE user_token_revocations SET attempts = attempts + 1 WHERE id = ?").run(r.id);
+        }
+      }
+      return rows.length;
+    } finally {
+      this.#sweeping = false;
     }
-    return rows.length;
+  }
+
+  /** True once GitHub confirmed the revoke (or there is nothing left to revoke: an unreadable row). */
+  async #revokeRow(r: { login: string; token_enc: string; kind: string; aad: string | null }): Promise<boolean> {
+    const plain = this.#box.open(r.token_enc, r.aad ?? revocationAad(r.login));
+    let t: Tokens | null = null;
+    try {
+      t = plain ? (JSON.parse(plain) as Tokens) : null;
+    } catch { /* unreadable */ }
+    if (!t) return true;
+    const revoke = (access: string): Promise<void> => (r.kind === "token" ? this.#provider.revoke(access) : this.#provider.revokeGrant(access));
+    // The login's user_tokens row written by the same sign-in holds this very token set and dies with it.
+    const own = r.kind === "token" ? readUserTokens(this.#db, this.#box, r.login) : null;
+    const sameSignIn = !!own?.tokens && (own.tokens.access === t.access || (!!t.refresh && own.tokens.refresh === t.refresh));
+    const refreshed = async (): Promise<string | null> => {
+      if (!t.refresh || (t.refreshExpiresAt !== null && t.refreshExpiresAt <= Date.now())) return null;
+      return (await this.#provider.refresh(t.refresh))?.access ?? null;
+    };
+    let ok = false;
+    const expired = t.expiresAt !== null && t.expiresAt - EXPIRY_MARGIN <= Date.now();
+    if (!expired) {
+      try {
+        await revoke(t.access);
+        ok = true;
+      } catch (e) {
+        if (!(e instanceof RevokeRefused) || (e.status !== 404 && e.status !== 422)) throw e;
+      }
+    }
+    if (!ok) {
+      const access = await refreshed();
+      if (!access) return false;
+      await revoke(access);
+    }
+    if (sameSignIn) this.#db.prepare("DELETE FROM user_tokens WHERE login = ?").run(r.login);
+    return true;
   }
 }
 
