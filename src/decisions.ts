@@ -284,7 +284,10 @@ export async function answerAsSession(db: DatabaseSync, id: string, option: stri
   const d = sessionDecision(db, id, login);
   if (d.answer) throw new Error(`decision ${id} is already answered by ${d.answered_by}`);
   const { applyAnswer } = await import("./dash/api/decisions.ts");
-  applyAnswer(db, d, login, { answer: option, note }, "cli", "session");
+  // A group answer approves the comments stored for its option; the session approves the ones stored now (answerCmd prints them).
+  const { textsFor, textsHash } = await import("./dupes/texts.ts");
+  const texts = d.id.includes(":dupegroup:") ? textsFor(db, id, option) : [];
+  applyAnswer(db, d, login, { answer: option, note, ...(texts.length && { textsHash: textsHash(texts) }) }, "cli", "session");
   db.prepare("DELETE FROM decision_claims WHERE decision_id = ?").run(id);
   return getDecision(db, id)!;
 }
@@ -367,6 +370,10 @@ async function answerCmd(args: string[]): Promise<void> {
     throw new Error("usage: decisions answer ID OPTION --as LOGIN [--note TEXT]");
   const d = await answerAsSession(connect(), id, option, login, ni >= 0 ? args[ni + 1] : undefined);
   console.log(`${d.id}\tanswered ${d.answer} as ${d.answered_by} (source cli, via session)`);
+  if (d.id.includes(":dupegroup:")) {
+    const { textsFor } = await import("./dupes/texts.ts");
+    for (const t of textsFor(connect(), d.id, d.answer!)) console.log(`approved ${t.step} on #${t.number}: ${t.text}`);
+  }
   console.log(`state: ${d.applied_at ? "applied" : "waiting for the pipeline to act"}`);
 }
 
