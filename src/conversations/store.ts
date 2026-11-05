@@ -168,12 +168,13 @@ function inTx<T>(db: DatabaseSync, f: () => T): T {
   }
 }
 
-function insertRow(db: DatabaseSync, repo: string, n: number, t: NewTurn, seq: number | null, status: string | null, deps?: StoreDeps): number {
+function insertRow(db: DatabaseSync, repo: string, n: number, t: NewTurn, seq: number | null, status: string | null, deps?: StoreDeps, seenAt?: string | null): number {
   const id = Number(db.prepare("INSERT INTO conversation_turns (repo, number, kind, login, at, body, block, status, error, notes, seq) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)")
     .run(repo, n, t.kind, t.login, nowOf(deps), t.body, t.block, status, t.notes?.length ? JSON.stringify(t.notes) : null, seq).lastInsertRowid);
   // One current set: a new Opus turn replaces the proposals of the earlier ones.
   if (t.kind === "opus") db.prepare("UPDATE conversation_cards SET state = 'replaced' WHERE repo = ? AND number = ? AND state = 'proposed'").run(repo, n);
-  const seen = seenOf(db, repo, n);
+  // A reply's cards are stamped with what Opus was told when its prompt was built, not with a later refresh.
+  const seen = seenAt !== undefined ? seenAt : seenOf(db, repo, n);
   for (const c of t.cards ?? []) {
     db.prepare("INSERT INTO conversation_cards (turn_id, repo, number, kind, params, text, description, seen) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
       .run(id, repo, n, c.params.kind, JSON.stringify(c.params), c.text, c.description, seen);
@@ -354,11 +355,11 @@ export function setTurnProgress(db: DatabaseSync, repo: string, n: number, claim
 }
 
 /** The pieces of the next prompt: the stored item block and the turns in prompt order, the claimed message last. */
-export function promptParts(db: DatabaseSync, repo: string, n: number, wait: TurnRow): { item: string; turns: string; earlier: string; message: string } | null {
+export function promptParts(db: DatabaseSync, repo: string, n: number, wait: TurnRow): { item: string; turns: string; earlier: string; message: string; seen: string | null } | null {
   const c = conversationOf(db, repo, n);
   if (!c) return null;
   const earlier = (db.prepare("SELECT block FROM conversation_turns WHERE repo = ? AND number = ? AND seq IS NOT NULL ORDER BY seq").all(repo, n) as { block: string }[]).map((t) => t.block).join("");
-  return { item: c.item_block, turns: earlier + wait.block, earlier, message: wait.block };
+  return { item: c.item_block, turns: earlier + wait.block, earlier, message: wait.block, seen: seenOf(db, repo, n) };
 }
 
 /** Gives the claimed message its place in the prompt order, then the turns held while it was answered, in the order they arrived. */
@@ -376,12 +377,12 @@ const claimed = (db: DatabaseSync, repo: string, n: number, claim: string): Turn
  * Stores Opus's reply to the claimed message and marks the message answered, in one transaction. Returns the reply's turn id,
  * or null when the run no longer holds the message (its claim was released and taken by another run).
  */
-export function storeReply(db: DatabaseSync, repo: string, n: number, claim: string, text: string, cards: NewCard[], notes: string[], deps?: StoreDeps): number | null {
+export function storeReply(db: DatabaseSync, repo: string, n: number, claim: string, text: string, cards: NewCard[], notes: string[], deps?: StoreDeps, seen?: string | null): number | null {
   return inTx(db, () => {
     const wait = claimed(db, repo, n, claim);
     if (!wait) return null;
     let id = 0;
-    settleWait(db, repo, n, wait, "answered", null, () => { id = insertRow(db, repo, n, { kind: "opus", login: "opus", body: text, block: opusBlock(text, cards), notes, cards }, nextSeq(db, repo, n), null, deps); });
+    settleWait(db, repo, n, wait, "answered", null, () => { id = insertRow(db, repo, n, { kind: "opus", login: "opus", body: text, block: opusBlock(text, cards), notes, cards }, nextSeq(db, repo, n), null, deps, seen); });
     return id;
   });
 }

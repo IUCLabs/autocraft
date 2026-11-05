@@ -37,10 +37,10 @@ const RULES: [prefix: string, topics: Topic[]][] = [
   ["work:", ["items", "ranks", "classify", "checks", "decisions", "reviews", "verify", "fixes"]],
   ["cost:", ["usage", "agents"]],
   ["rates-", ["usage", "agents", "accounts"]],
-  ["count:", ["decisions"]],
+  ["count:", ["decisions", "decision-snooze", "items", "conversations"]],
   // Feedback reads comments (in `items`), decisions and conversations; stopped rows read breakers and limits, not job runs.
-  ["needs:", ["decisions", "conversations", "items", "limits", "accounts", "settings"]],
-  ["decisions?", withSlot("decisions", "decision-snooze")],
+  ["needs:", ["decisions", "decision-snooze", "conversations", "items", "limits", "accounts", "settings"]],
+  ["decisions?", withSlot("decisions", "decision-snooze", "items", "conversations")],
   ["decision:", withSlot("decisions", "decision-snooze")],
   ["thread:", ["decisions"]],
   ["conversation:", ["conversations", "conversation-includes"]],

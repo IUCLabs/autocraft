@@ -5,7 +5,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { readLive } from "../act/index.ts";
 import { duplicateComment } from "../act/templates.ts";
 import { audit } from "../dash/audit.ts";
-import { optionsOf, BACKLOG, HANDLED, getDecision, reposOf } from "../decisions.ts";
+import { optionsOf, BACKLOG, HANDLED, getDecision, reposOf, replaceProposedCards } from "../decisions.ts";
 import { addLabels, closeItem, commentOn, type Note, type Writer } from "../github/write.ts";
 import { repoLabels } from "../labels/github.ts";
 import { Client, type Querier } from "../mirror.ts";
@@ -76,10 +76,11 @@ async function answerDecision(db: DatabaseSync, c: CardRow, decisionId: string |
     if (!d || d.answer !== null || (stamp !== undefined && decisionStamp(db, d) !== stamp)) throw new Error("the decision changed");
     const o = optionsOf(d).find((x) => x.key === key);
     if (!o) throw new Error(`"${key}" is not an option of the decision`);
-    const r = db.prepare(`UPDATE main.decisions SET answer = ?, answer_note = ?, exceptions = NULL, answered_by = ?, answered_at = ?, adopted_opinion = NULL
+    const r = db.prepare(`UPDATE main.decisions SET answer = ?, answer_note = ?, exceptions = NULL, answered_by = ?, answered_at = ?, adopted_opinion = NULL, snoozed_by = NULL, snoozed_at = NULL
       WHERE id = ? AND answer IS NULL`).run(key, note ?? null, by, at, d.id);
     if (r.changes !== 1) throw new Error("the decision changed");
     db.prepare("DELETE FROM main.decision_claims WHERE decision_id = ?").run(d.id);
+    replaceProposedCards(db, d.repo, d.number);
     audit(db, by, "answer", d.id, { answer: key, source: "conversation" });
     db.exec("COMMIT");
     return { result: `Answered the decision with "${o.label}"`, url: null };
@@ -96,10 +97,11 @@ function resolveDecision(db: DatabaseSync, c: CardRow, decisionId: string | unde
   try {
     const d = getDecision(db, decisionId);
     if (!d || d.answer !== null || d.repo !== c.repo || d.number !== c.number || (stamp !== undefined && decisionStamp(db, d) !== stamp)) throw new Error("the decision changed");
-    const r = db.prepare(`UPDATE main.decisions SET answer = ?, answer_note = ?, exceptions = NULL, answered_by = ?, answered_at = ?, applied_at = ?, adopted_opinion = NULL
+    const r = db.prepare(`UPDATE main.decisions SET answer = ?, answer_note = ?, exceptions = NULL, answered_by = ?, answered_at = ?, applied_at = ?, adopted_opinion = NULL, snoozed_by = NULL, snoozed_at = NULL
       WHERE id = ? AND answer IS NULL`).run(HANDLED.key, summary, by, at, at, d.id);
     if (r.changes !== 1) throw new Error("the decision changed");
     db.prepare("DELETE FROM main.decision_claims WHERE decision_id = ?").run(d.id);
+    replaceProposedCards(db, d.repo, d.number);
     audit(db, by, "answer", d.id, { answer: HANDLED.key, source: "conversation" });
     db.exec("COMMIT");
     return { result: "Decision closed as handled in the conversation", url: null };
@@ -283,6 +285,7 @@ export async function doCard(db: DatabaseSync, id: number, by: string, deps: Act
   if (note && note.length > NOTE_MAX) throw new ConversationError(400, `the note is longer than ${NOTE_MAX} characters`);
   let params = JSON.parse(c.params) as CardParams;
   const skipped: string[] = [];
+  let noteIsSummary = false;
   if (deps.skip?.length) {
     if (params.kind !== "resolution") throw new ConversationError(400, "only a resolution has steps to skip");
     const all = params.steps;
@@ -291,13 +294,19 @@ export async function doCard(db: DatabaseSync, id: number, by: string, deps: Act
     if (steps.length === 0 && !params.settle) throw new ConversationError(400, "a card with no steps left and no settlement does nothing");
     skipped.push(...all.filter((_, k) => deps.skip!.includes(k)).map(stepLine));
     params = { ...params, steps };
+    // The settlement derived from a close step says the item was closed; without that step only the operator's own words are true.
+    if (params.settle?.kind === "handled" && params.settle.fromClose && all.some((x, k) => deps.skip!.includes(k) && (x.kind === "close" || x.kind === "duplicate"))) {
+      if (!note) throw new ConversationError(400, "skipping the close step needs a note saying how the question was handled");
+      params = { ...params, settle: { kind: "handled", decision: params.settle.decision, summary: note, stamp: params.settle.stamp } };
+      noteIsSummary = true;
+    }
   }
   const at = (deps.now?.() ?? new Date()).toISOString();
   const claim = db.prepare("UPDATE conversation_cards SET state = 'running', acted_by = ?, acted_at = ? WHERE id = ? AND state = 'proposed'").run(by, at, id);
   if (claim.changes !== 1) return { card: c, ran: false };
   let out: Outcome | null = null, error: string | null = null, posted = false;
   try {
-    out = await run(db, c, params, by, deps.querier ?? new Client(1000), at, deps.canWrite, note);
+    out = await run(db, c, params, by, deps.querier ?? new Client(1000), at, deps.canWrite, noteIsSummary ? undefined : note);
   } catch (e) {
     error = oneLine(String((e as Error).message ?? e));
     posted = e instanceof StepError && e.posted;

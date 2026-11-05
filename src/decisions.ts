@@ -35,16 +35,27 @@ export const HANDLED: Option = { key: "handled", label: "Handled in the conversa
 /** The answer the pipeline gives a question that can no longer be answered (see src/merge/withdraw.ts). */
 export const WITHDRAWN_OPTION: Option = { key: "withdrawn", label: "Withdrawn" };
 /**
- * A decision is snoozed while `snoozed_at` is set and the item has had no activity since: a GitHub comment or review, a pushed commit,
+ * A decision is snoozed while `snoozed_at` is set and the item has had no activity since: a GitHub comment or review, a pushed commit or force-push,
  * a decision comment or opinion, an operator conversation message. Evaluated at read time, so no writer has to clear it and a missed
  * clear is impossible. Use with the table unaliased (`decisions`).
  */
-export const SNOOZED_SQL = `(decisions.answer IS NULL AND decisions.snoozed_at IS NOT NULL AND NOT (
-  EXISTS (SELECT 1 FROM comments sc WHERE sc.repo = decisions.repo AND sc.number = decisions.number AND sc.created_at > decisions.snoozed_at)
-  OR EXISTS (SELECT 1 FROM pr_commits sp WHERE sp.repo = decisions.repo AND sp.number = decisions.number AND COALESCE(sp.first_seen_at, sp.committed_at) > decisions.snoozed_at)
+export const SNOOZED_SQL = (() => {
+  // The item itself, or for a duplicate-group decision any of its member items.
+  const onItem = (a: string): string => `((${a}.repo = decisions.repo AND ${a}.number = decisions.number)
+    OR EXISTS (SELECT 1 FROM dupe_group_items gi WHERE gi.decision_id = decisions.id AND gi.repo = ${a}.repo AND gi.number = ${a}.number))`;
+  return `(decisions.answer IS NULL AND decisions.snoozed_at IS NOT NULL AND NOT (
+  EXISTS (SELECT 1 FROM comments sc WHERE ${onItem("sc")} AND sc.created_at > decisions.snoozed_at)
+  OR EXISTS (SELECT 1 FROM pr_commits sp WHERE ${onItem("sp")} AND COALESCE(sp.first_seen_at, sp.committed_at) > decisions.snoozed_at)
+  OR EXISTS (SELECT 1 FROM item_activity sf WHERE ${onItem("sf")} AND sf.kind = 'force-push' AND sf.at > decisions.snoozed_at)
   OR EXISTS (SELECT 1 FROM decision_comments sd WHERE sd.decision_id = decisions.id AND sd.at > decisions.snoozed_at)
   OR EXISTS (SELECT 1 FROM decision_opinions so WHERE so.decision_id = decisions.id AND so.at > decisions.snoozed_at)
-  OR EXISTS (SELECT 1 FROM conversation_turns st WHERE st.repo = decisions.repo AND st.number = decisions.number AND st.kind = 'operator' AND st.at > decisions.snoozed_at)))`;
+  OR EXISTS (SELECT 1 FROM conversation_turns st WHERE ${onItem("st")} AND st.kind = 'operator' AND st.at > decisions.snoozed_at)))`;
+})();
+
+/** A settled decision makes the drafts still proposed on its item obsolete (the ask card, the other options' drafts). */
+export function replaceProposedCards(db: DatabaseSync, repo: string | null, number: number | null): void {
+  if (repo && number !== null) db.prepare("UPDATE main.conversation_cards SET state = 'replaced' WHERE repo = ? AND number = ? AND state = 'proposed'").run(repo, number);
+}
 
 export const isBacklog = (answer: string | null): boolean => answer === BACKLOG.key;
 
@@ -109,12 +120,14 @@ export function validateAsk(q: Record<string, unknown>): Record<string, string |
   };
 }
 
-// Inserts or updates the question by id; answer columns are never touched, a re-ask replaces the recommendation along with its reason and clears its author, and neither is a summary the new question lacks.
+// Inserts or updates the question by id; answer columns are never touched, a re-ask replaces the recommendation along with its reason and clears its author (and the snooze when the question or options changed), and neither is a summary the new question lacks.
 export function ask(db: DatabaseSync, questions: Record<string, unknown>[], inTransaction = false): { inserted: number; updated: number } {
   const rows = questions.map(validateAsk);
   const cols = ["id", ...ASK_FIELDS];
   const stmt = db.prepare(`INSERT INTO decisions (${cols.join(",")}) VALUES (${cols.map((c) => `:${c}`).join(",")})
-    ON CONFLICT(id) DO UPDATE SET ${ASK_FIELDS.map((c) => SUMMARY_FIELDS.includes(c) ? `${c} = COALESCE(excluded.${c}, ${c})` : `${c} = excluded.${c}`).join(", ")}, recommended_by = NULL`);
+    ON CONFLICT(id) DO UPDATE SET ${ASK_FIELDS.map((c) => SUMMARY_FIELDS.includes(c) ? `${c} = COALESCE(excluded.${c}, ${c})` : `${c} = excluded.${c}`).join(", ")}, recommended_by = NULL,
+      snoozed_by = CASE WHEN excluded.question IS NOT question OR excluded.options IS NOT options THEN NULL ELSE snoozed_by END,
+      snoozed_at = CASE WHEN excluded.question IS NOT question OR excluded.options IS NOT options THEN NULL ELSE snoozed_at END`);
   const exists = db.prepare("SELECT 1 FROM decisions WHERE id = ?");
   let inserted = 0, updated = 0;
   if (!inTransaction) db.exec("BEGIN IMMEDIATE");
@@ -172,7 +185,7 @@ export function backlogOpen(db: DatabaseSync, scope: BacklogScope, by: string, a
   if (!apply) return { applied: false, decisions };
   db.exec("BEGIN IMMEDIATE");
   try {
-    const set = db.prepare(`UPDATE decisions SET answer = ?, answer_note = NULL, exceptions = ?, answered_by = ?, answered_at = ?, adopted_opinion = NULL WHERE id = ? AND answer IS NULL`);
+    const set = db.prepare(`UPDATE decisions SET answer = ?, answer_note = NULL, exceptions = ?, answered_by = ?, answered_at = ?, adopted_opinion = NULL, snoozed_by = NULL, snoozed_at = NULL WHERE id = ? AND answer IS NULL`);
     for (const d of rows) {
       if (set.run(BACKLOG.key, isBatch(d) ? "[]" : null, by, at, d.id).changes === 1) audit(db, by, "answer", d.id, { answer: BACKLOG.key, bulk: true });
     }

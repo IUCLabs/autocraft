@@ -256,14 +256,25 @@ describe("api", () => {
     assert.equal((await boss.post<Decision>(dpath(P2, "/undo"))).answer, null);
 
     const ids = async (status: string) => (await boss.get<{ decisions: Decision[] }>(`/api/decisions?status=${status}&repo=photocraft`)).decisions.map((x) => x.id);
+    const seq = (topic: string) => (db.prepare("SELECT seq FROM change_seq WHERE topic = ?").get(topic) as { seq: number }).seq;
+    const [snoozeSeq, decisionsSeq] = [seq("decision-snooze"), seq("decisions")];
     const s = await boss.post<Decision>(dpath(P2, "/snooze"), { on: true });
     assert.equal(s.snoozed?.by, "boss");
+    assert.ok(seq("decision-snooze") > snoozeSeq, "a snooze bumps its topic");
+    assert.equal(seq("decisions"), decisionsSeq, "and leaves the planner's input alone");
     assert.ok(!(await ids("open")).includes(P2));
     assert.deepEqual(await ids("snoozed"), [P2]);
     // Feedback after the snooze wakes it.
     db.prepare("INSERT INTO decision_comments (id, decision_id, login, at, body) VALUES ('wake1', ?, 'maint', ?, 'More news')").run(P2, new Date(Date.now() + 60_000).toISOString());
     assert.equal((await boss.get<Decision>(dpath(P2))).snoozed, null);
     assert.ok((await ids("open")).includes(P2));
+    assert.deepEqual(await ids("snoozed"), []);
+    // A force-push wakes it too (the earlier comment is removed so it does not wake the new snooze).
+    db.prepare("DELETE FROM decision_comments WHERE id = 'wake1'").run();
+    await boss.post(dpath(P2, "/snooze"), { on: true });
+    assert.deepEqual(await ids("snoozed"), [P2]);
+    const d2 = db.prepare("SELECT repo, number FROM decisions WHERE id = ?").get(P2) as { repo: string; number: number };
+    db.prepare("INSERT INTO item_activity (repo, number, id, kind, at) VALUES (?, ?, 'fp1', 'force-push', ?)").run(d2.repo, d2.number, new Date(Date.now() + 120_000).toISOString());
     assert.deepEqual(await ids("snoozed"), []);
   });
 

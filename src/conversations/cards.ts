@@ -19,7 +19,8 @@ export type Step =
 /** How a resolution ends the item's open decision. `stamp` identifies the decision state it was written for. */
 export type Settle =
   | { kind: "answer"; decision: string; option: string; stamp: string }
-  | { kind: "handled"; decision: string; summary: string; stamp: string }
+  /** `fromClose`: derived from the close or duplicate step, so its summary is false when that step is skipped. */
+  | { kind: "handled"; decision: string; summary: string; stamp: string; fromClose?: true }
   | { kind: "backlog"; decision: string; stamp: string };
 
 /** The legacy kinds (everything below `resolution`) stay runnable for cards stored before resolutions; new Opus output only produces `resolution`. */
@@ -266,7 +267,7 @@ function settleOf(db: DatabaseSync, d: DecisionRow, raw: unknown): Checked<Settl
 function closeSettle(db: DatabaseSync, repo: string, d: DecisionRow, closing: Extract<Step, { kind: "close" | "duplicate" }>): Settle {
   const summary = closing.kind === "duplicate" ? `Closed as a duplicate of ${ref(repo, closing.of)} in the conversation`
     : closing.pr ? "Closed in the conversation" : `Closed as ${closing.reason === "completed" ? "completed" : "not planned"} in the conversation`;
-  return { kind: "handled", decision: d.id, summary, stamp: decisionStamp(db, d) };
+  return { kind: "handled", decision: d.id, summary, stamp: decisionStamp(db, d), fromClose: true };
 }
 
 /**
