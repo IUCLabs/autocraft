@@ -1,9 +1,10 @@
 // Items held back from the later stages while a duplicate decision about them
 // is open or was answered "close as duplicate", or any decision about them was
 // answered Backlog. An answer of "not a duplicate"
-// or "keep both" releases them. No Node imports besides the type.
+// or "keep both" releases them. No Node imports besides the type and the app-slug lookup.
 import type { DatabaseSync } from "node:sqlite";
 import { pilotSql } from "../pilot.ts";
+import { appSlug } from "../github/identity.ts";
 
 /** The fact line that names the original; the act step reads it. */
 export const DUP_FACT = "duplicate of ";
@@ -35,10 +36,13 @@ export const backlogHeldSql = (alias: string): string =>
       WHERE json_extract(bj.value, '$.repo') = ${alias}.repo AND json_extract(bj.value, '$.number') = ${alias}.number)
     OR EXISTS (SELECT 1 FROM dupe_group_items bg WHERE bg.decision_id = db.id AND bg.repo = ${alias}.repo AND bg.number = ${alias}.number)))`;
 
+const botLogins = (): string[] => { const s = appSlug()?.toLowerCase(); return s ? [s, `${s}[bot]`] : []; };
+
 /** SQL condition, true when the item `alias` (a row of items) is not an integration batch PR the pipeline opened itself (see src/merge/batch.ts). Such PRs only carry reviewed PRs and never enter the pipeline as contributor PRs. */
 export const notOwnIntegrationSql = (alias: string): string =>
   `NOT EXISTS (SELECT 1 FROM main.merge_batches mb WHERE mb.repo = ${alias}.repo AND mb.pr_number = ${alias}.number
-    AND ${alias}.author = (SELECT value FROM main.settings WHERE key = 'pipeline_login'))`;
+    AND (${alias}.author = (SELECT value FROM main.settings WHERE key = 'pipeline_login')
+      OR lower(${alias}.author) IN (SELECT value FROM json_each('${JSON.stringify(botLogins()).replaceAll("'", "''")}'))))`;
 
 /** SQL condition, true when the item `alias` (a row of items) is not held by a duplicate decision, is not one of our integration PRs and is in the pilot (when one is set). For WHERE clauses of candidate queries. */
 export const notHeldSql = (alias: string): string =>

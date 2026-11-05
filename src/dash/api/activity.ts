@@ -16,6 +16,7 @@ import {
 } from "./trace.ts";
 import { canSeeInternals } from "./staff.ts";
 import { hiddenRepos, needVisible, visibleRepos } from "./visible.ts";
+import { allOwnLogins } from "../../github/identity.ts";
 
 export const ACTIVITY_PAGE_DEFAULT = 50, ACTIVITY_PAGE_MAX = 200;
 /** Plan changes and stages come from every planner pass of every item and would bury the rest, so they show only when asked for. */
@@ -23,7 +24,7 @@ export const ACTIVITY_DEFAULT_KINDS: TraceKind[] = KINDS.filter((k) => k !== "pl
 /** Sorts after every event id of the same time. */
 const LAST = "~";
 
-export type Ctx = { db: DatabaseSync; own: string; staff: boolean; operator: boolean; hidden: string[]; visible: string[]; only: boolean; repo: string | null; limit: number; before: { at: string; id: string } | null };
+export type Ctx = { db: DatabaseSync; own: Set<string>; staff: boolean; operator: boolean; hidden: string[]; visible: string[]; only: boolean; repo: string | null; limit: number; before: { at: string; id: string } | null };
 type At = { repo: string; number: number };
 type Pulled = { events: (Ev & At)[]; /** Oldest time read when the source had more rows than it returned; null when it returned everything. */ floor: string | null };
 export type Source = { kinds: TraceKind[]; table: string; time: string; pull: (c: Ctx) => Pulled };
@@ -74,8 +75,8 @@ export const SOURCES: Source[] = [
   item("created_at", "kind IS NOT NULL", openedEvent),
   item("merged_at", "merged_at IS NOT NULL", mergedEvent),
   item("closed_at", "closed_at IS NOT NULL AND merged_at IS NULL", closedEvent),
-  plain<Parameters<typeof commentEvent>[0] & At>("github", "comments", "created_at", "repo, number, id, kind, author, created_at, review_state, commit_oid, LENGTH(COALESCE(body, '')) AS len", (r, c) => commentEvent(r, c.own), { only: (c) => (c.own ? { where: "author = ?", args: [c.own] } : null) }),
-  plain<Parameters<typeof activityEvent>[0] & At>("github", "item_activity", "at", "repo, number, id, kind, at, actor, label, after_oid, before_oid", (r, c) => activityEvent(r, c.own), { only: (c) => (c.own ? { where: "actor = ?", args: [c.own] } : null) }),
+  plain<Parameters<typeof commentEvent>[0] & At>("github", "comments", "created_at", "repo, number, id, kind, author, created_at, review_state, commit_oid, LENGTH(COALESCE(body, '')) AS len", (r, c) => commentEvent(r, c.own), { only: (c) => (c.own.size ? { where: `lower(author) IN (${[...c.own].map(() => "?").join(",")})`, args: [...c.own] } : null) }),
+  plain<Parameters<typeof activityEvent>[0] & At>("github", "item_activity", "at", "repo, number, id, kind, at, actor, label, after_oid, before_oid", (r, c) => activityEvent(r, c.own), { only: (c) => (c.own.size ? { where: `lower(actor) IN (${[...c.own].map(() => "?").join(",")})`, args: [...c.own] } : null) }),
   plain<Parameters<typeof stageEvent>[0] & At>("plan", "stages", "at", "repo, number, rowid, stage, at, actor, note", stageEvent),
   plain<Parameters<typeof planEvent>[0] & At>("plan", "plan_history", "at", "repo, number, id, head, old_state, new_state, wait, reasons, at", planEvent),
   // A job over many items is one row of the stream, at its newest item.
@@ -232,7 +233,7 @@ export async function activity(db: DatabaseSync, req: Req): Promise<ActivityPage
   }
   const base = {
     db, staff: canSeeInternals(req), operator: req.user.role === "operator", hidden: await hiddenRepos(db, req), visible: await visibleRepos(db, req), repo,
-    own: (db.prepare("SELECT value FROM main.settings WHERE key = 'pipeline_login'").get() as { value: string } | undefined)?.value ?? "",
+    own: allOwnLogins(db),
   };
   const sources = SOURCES.filter((s) => s.kinds.some((k) => kinds.has(k)));
   const stamp = stampOf(db, sources, [[...kinds].sort(), only, repo, limit, base.staff, base.operator, base.visible]);

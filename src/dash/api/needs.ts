@@ -11,6 +11,7 @@ import { HttpError } from "../server/util.ts";
 import type { Req } from "../types.ts";
 import { itemState } from "./shown.ts";
 import { blankIfHidden, hiddenRepos } from "./visible.ts";
+import { allOwnLogins } from "../../github/identity.ts";
 
 export const NEEDS_PAGE = 30;
 /** Older feedback is not asked for any more; the window also bounds the scans. */
@@ -18,7 +19,7 @@ const WINDOW_MS = 60 * 86_400_000;
 
 type Raw = { id: string; source: NeedsFeedbackRow["source"]; author: string; at: string; text: string; repo: string | null; number: number | null; decision: string | null; turn: number | null; comment: string | null; handled: number };
 
-// One SELECT per source, each with a `handled` flag. They share the parameters :since, :cur (newest time wanted), :own and :bots.
+// One SELECT per source, each with a `handled` flag. They share the parameters :since, :cur (newest time wanted), :own (the box account), :owns (JSON list of every login that is ours) and :bots.
 const SOURCES: string[] = [
   // Feedback on a decision from anyone but an operator; handled once the decision was answered afterwards.
   `SELECT 'decision-comment:' || c.id AS id, 'decision' AS source, c.login AS author, c.at, c.body AS text, d.repo, d.number, d.id AS decision, NULL AS turn, c.id AS comment,
@@ -36,16 +37,16 @@ const SOURCES: string[] = [
   // A GitHub comment or review that names the pipeline login (flagged when written, so an index finds them); handled once the
   // pipeline login posted on the item afterwards. Nothing without a pipeline login.
   `SELECT 'comment:' || c.id, 'github', c.author, c.created_at, c.body, c.repo, c.number, NULL, NULL, c.id,
-     EXISTS (SELECT 1 FROM comments a WHERE a.repo = c.repo AND a.number = c.number AND a.author = :own AND a.created_at > c.created_at)
+     EXISTS (SELECT 1 FROM comments a WHERE a.repo = c.repo AND a.number = c.number AND lower(a.author) IN (SELECT value FROM json_each(:owns)) AND a.created_at > c.created_at)
    FROM comments c
-   WHERE :own <> '' AND c.mentions_pipeline = 1 AND c.created_at >= :since AND c.created_at <= :cur AND c.author IS NOT NULL AND c.author <> :own`,
+   WHERE :own <> '' AND c.mentions_pipeline = 1 AND c.created_at >= :since AND c.created_at <= :cur AND c.author IS NOT NULL AND lower(c.author) NOT IN (SELECT value FROM json_each(:owns))`,
   // The comment right after one of AutoCraft's own (a comment the audit log recorded with its URL and text, or the review we posted (audit `review-post`); the account's older manual comments do not count), on an item it commented on; bots do not count as replies.
   `SELECT 'comment:' || c.id, 'github', c.author, c.created_at, c.body, c.repo, c.number, NULL, NULL, c.id,
-     EXISTS (SELECT 1 FROM comments a WHERE a.repo = c.repo AND a.number = c.number AND a.author = :own AND a.created_at > c.created_at)
-   FROM (SELECT DISTINCT repo, number FROM comments WHERE author = :own) o JOIN comments c ON c.repo = o.repo AND c.number = o.number
-   WHERE :own <> '' AND c.mentions_pipeline = 0 AND c.created_at >= :since AND c.created_at <= :cur AND c.author IS NOT NULL AND c.author <> :own AND c.author NOT LIKE '%[bot]' AND lower(c.author) NOT IN (SELECT value FROM json_each(:bots)) AND TRIM(COALESCE(c.body, '')) <> ''
+     EXISTS (SELECT 1 FROM comments a WHERE a.repo = c.repo AND a.number = c.number AND lower(a.author) IN (SELECT value FROM json_each(:owns)) AND a.created_at > c.created_at)
+   FROM (SELECT DISTINCT repo, number FROM comments WHERE lower(author) IN (SELECT value FROM json_each(:owns))) o JOIN comments c ON c.repo = o.repo AND c.number = o.number
+   WHERE :own <> '' AND c.mentions_pipeline = 0 AND c.created_at >= :since AND c.created_at <= :cur AND c.author IS NOT NULL AND lower(c.author) NOT IN (SELECT value FROM json_each(:owns)) AND c.author NOT LIKE '%[bot]' AND lower(c.author) NOT IN (SELECT value FROM json_each(:bots)) AND TRIM(COALESCE(c.body, '')) <> ''
      AND EXISTS (SELECT 1 FROM (SELECT p.id, p.author, p.body FROM comments p WHERE p.repo = c.repo AND p.number = c.number AND p.created_at < c.created_at ORDER BY p.created_at DESC LIMIT 1) q
-       WHERE q.author = :own AND EXISTS (SELECT 1 FROM audit a WHERE a.target = c.repo || '#' || c.number
+       WHERE lower(q.author) IN (SELECT value FROM json_each(:owns)) AND EXISTS (SELECT 1 FROM audit a WHERE a.target = c.repo || '#' || c.number
          AND ((json_extract(a.details, '$.url') IS NOT NULL AND TRIM(REPLACE(json_extract(a.details, '$.text'), char(13), ''), ' ' || char(10) || char(9)) = TRIM(REPLACE(q.body, char(13), ''), ' ' || char(10) || char(9)))
            OR (a.action = 'review-post' AND json_extract(a.details, '$.review') = q.id))))`,
 ];
@@ -58,7 +59,7 @@ function hiddenSql(hidden: string[], params: Record<string, SQLInputValue>): str
 }
 
 function feedback(db: DatabaseSync, hidden: string[], cursor: { at: string; id: string } | null, limit: number): { rows: Raw[]; more: boolean; unhandled: number } {
-  const params: Record<string, SQLInputValue> = { since: new Date(Date.now() - WINDOW_MS).toISOString(), own: ownLogin(db), bots: JSON.stringify(reviewBots()) };
+  const params: Record<string, SQLInputValue> = { since: new Date(Date.now() - WINDOW_MS).toISOString(), own: ownLogin(db), owns: JSON.stringify([...allOwnLogins(db)]), bots: JSON.stringify(reviewBots()) };
   const union = SOURCES.map((s) => `SELECT * FROM (${s})`).join(" UNION ALL ");
   const where = hiddenSql(hidden, params);
   const size = limit * 3 + 1;

@@ -9,6 +9,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { commentApprovalOf } from "../act/approval.ts";
 import { actionable } from "../decisions.ts";
+import { ownLogins } from "../github/identity.ts";
 import { notOwnIntegrationSql, groupHeldSql, backlogHeldSql } from "../dupes/held.ts";
 import { conflictBucket } from "../fixup/conflict-state.ts";
 import { pushApprovalOf } from "../fixup/approval.ts";
@@ -53,6 +54,8 @@ export type LoadOptions = {
   refs?: Iterable<string>;
   /** Decision time in ms (default: the clock). */
   now?: number;
+  /** The GitHub App's slug, when it is not to be read from the registered app (null: none). */
+  appSlug?: string | null;
   /** The classification run for labels (default: latestRun). */
   run?: string | null;
 };
@@ -131,7 +134,7 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
   const gates = gatesOf(db, opts.repo);
   const holds = mergeHolds(db, opts.repo);
   const inBatch = batchStates(db, opts.repo);
-  const own = ownFixPrs(db, opts.repo);
+  const own = ownFixPrs(db, opts.repo, opts.appSlug);
   const assigned = assignmentsOf(db, opts.repo);
   const mainRed = redMainRepos(db);
   const tripped = activeTrips(db);
@@ -141,7 +144,6 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
   const pushedHere = db.prepare("SELECT 1 FROM push_outcomes WHERE repo = ? AND number = ? AND to_oid = ?");
   const answers = new Map(actionable(db).filter((a) => a.kind === "merge").map((a) => [a.id, a.answer]));
   const pipelineOn = pipelineWrites((db.prepare("SELECT value FROM main.settings WHERE key = 'pipeline_enabled'").get() as { value: string } | undefined)?.value);
-  const pipelineLogin = (db.prepare("SELECT value FROM main.settings WHERE key = 'pipeline_login'").get() as { value: string } | undefined)?.value ?? null;
   const posts = new Map((db.prepare("SELECT repo, number, review_id, head_oid, posted_at, opus_at FROM review_posts").all() as { repo: string; number: number; review_id: string; head_oid: string | null; posted_at: string | null; opus_at: string | null }[])
     .map((p) => [`${p.repo}#${p.number}`, p]));
   const grouped = new Set((db.prepare(`SELECT gi.repo || '#' || gi.number AS ref FROM dupe_group_items gi JOIN decisions g ON g.id = gi.decision_id
@@ -229,7 +231,7 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
     const lines = (r.additions ?? 0) + (r.deletions ?? 0);
     const base: PrFacts = {
       repo: r.repo, number: r.number, assignment: assigned(ref, r.assignees), now, pipelineOn, tripped, ghState: r.state, head, draft: fresh ? r.c_state !== "OPEN" || !!r.c_draft : !!r.is_draft,
-      author: r.author, authorIsPipeline: r.author !== null && r.author === pipelineLogin, tier: "not", lines, size: sizeOf(lines), label: null, needsDecisionFlag: false,
+      author: r.author, authorIsPipeline: r.author !== null && own.isOwn(r.repo, r.author), tier: "not", lines, size: sizeOf(lines), label: null, needsDecisionFlag: false,
       scopeAnswer: scope.get(ref) ?? null,
       inScope, integration, batchPr: !!r.batch_pr, heldBacklog: !!r.held_backlog, heldDuplicate: !r.held_backlog && !!r.held_dup, mergeHeld: holds.has(ref),
       fast: (r.score ?? 0) >= FAST_FLOOR, score: r.score, repoFacts: rf.f,
@@ -239,7 +241,7 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
       decision: { asked: false, openQuestion: false, answer: null, mergeAnswerAfterReview: false, inOpenGroup: grouped.has(ref) },
       premerge: null, premergeFixUsed: false, sensitive: null, statementConflicts: [], pushable: false, pushChain: [], conflict: null, inActiveBatch: activeBatched.has(ref), fixup: null, carry: [], lint: [], cifix: null, postmerge: null, batch: null, mainFix: false, changesRequested: null, gateFailureNote: null,
     };
-    base.inFlight = r.state === "OPEN" && !integration && !!r.author && r.author === own.login && own.prs.has(ref);
+    base.inFlight = r.state === "OPEN" && !integration && !!r.author && own.isOwn(r.repo, r.author) && own.prs.has(ref);
     if (integration) {
       base.runs = runsOf(batchTip.get(r.repo, r.number) as Wait | undefined, rf.f.ciApproved);
       out.push(base);
@@ -317,7 +319,7 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
     base.brokeByUs = brokeAt.get(ref) === head && r.c_head === head && effectiveCi(db, r.repo, r.overall ?? "none", r.c_checks) === "failure";
     base.tier = (r.author ? tiers.get(r.author) : undefined) ?? "not";
     // The pipeline's own Fix PRs count as whitelisted; an operator's deny still wins.
-    if (base.tier === "not" && r.author && r.author === own.login && own.prs.has(ref)) base.tier = "whitelisted";
+    if (base.tier === "not" && r.author && own.isOwn(r.repo, r.author) && own.prs.has(ref)) base.tier = "whitelisted";
 
     const last = merges.get(r.repo, r.number, r.r_head) as { outcome: string; reason: string | null; ci: string | null; mergeable: string | null; at: string } | undefined;
     if (last) {
@@ -374,7 +376,7 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
       };
     }
     base.batch = inBatch.get(`${ref}@${r.r_head}`) ?? null;
-    base.mainFix = !!r.head_ref?.startsWith(MAIN_FIX_BRANCH_PREFIX) && !!r.author && r.author === own.login && own.prs.has(ref);
+    base.mainFix = !!r.head_ref?.startsWith(MAIN_FIX_BRANCH_PREFIX) && !!r.author && own.isOwn(r.repo, r.author) && own.prs.has(ref);
     const gate = gates.get(ref);
     const { why, live } = changesRequestedWhy(gate, r.updated_at, reviewRows.all(r.repo, r.number) as ReviewFact[], r.review_decision);
     if (gate && gate.failures >= GATE_FAILURES) base.gateFailureNote = failureNote(gate.failures);
@@ -426,18 +428,25 @@ export function tiersOf(db: DatabaseSync, logins: string[]): Map<string, Tier> {
 }
 
 /** PRs the pipeline opened itself from a Fix issues attempt or for a red default branch, as `repo#number`, when authored by its own account. */
-export function ownFixPrs(db: DatabaseSync, repo?: string): { login: string | null; prs: Set<string>; quiet: Set<string> } {
+export function ownFixPrs(db: DatabaseSync, repo?: string, slug?: string | null): { login: string | null; prs: Set<string>; quiet: Set<string>; isOwn: (repo: string, author: string | null) => boolean } {
+  const logins = new Map<string, Set<string>>();
+  const isOwn = (r: string, author: string | null): boolean => {
+    if (!author) return false;
+    let set = logins.get(r);
+    if (!set) logins.set(r, (set = ownLogins(db, r, slug)));
+    return set.has(author.toLowerCase());
+  };
   const login = (db.prepare("SELECT value FROM main.settings WHERE key = ?").get(PIPELINE_LOGIN_KEY) as { value: string } | undefined)?.value ?? null;
   const prs = new Set<string>();
   const quiet = quietFixPrs(db, repo);
-  if (!login) return { login, prs, quiet };
+  if (!login) return { login, prs, quiet, isOwn };
   for (const ref of quiet) prs.add(ref);
   for (const r of db.prepare("SELECT repo, pr_url FROM main.fix_attempts WHERE pr_url IS NOT NULL" + (repo ? " AND repo = ?" : "")).all(...(repo ? [repo] : [])) as { repo: string; pr_url: string }[]) {
     const m = r.pr_url.match(/\/pull\/(\d+)$/);
     if (m) prs.add(`${r.repo}#${m[1]}`);
   }
   for (const r of db.prepare("SELECT repo, pr_number AS n FROM main.main_fixes WHERE pr_number IS NOT NULL" + (repo ? " AND repo = ?" : "")).all(...(repo ? [repo] : [])) as { repo: string; n: number }[]) prs.add(`${r.repo}#${r.n}`);
-  return { login, prs, quiet };
+  return { login, prs, quiet, isOwn };
 }
 
 /** Reads the pipeline account and the last successful assign or unassign of every item from the audit once; the returned function gives an item's assignment facts from its mirrored `assignees` (JSON). */

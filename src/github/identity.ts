@@ -112,3 +112,33 @@ export async function commitIdentity(
   const w = await box();
   return { name: w.login, login: w.login, email: w.email };
 }
+
+/** Slug of the registered GitHub App, read from the secrets file at most once a minute; null when none is registered or the file is unreadable. */
+let slugMemo: { at: number; slug: string | null } | null = null;
+export function appSlug(): string | null {
+  if (slugMemo && Date.now() - slugMemo.at < 60_000) return slugMemo.slug;
+  let slug: string | null = null;
+  try { slug = readAppSecrets()?.slug ?? null; } catch { slug = null; }
+  slugMemo = { at: Date.now(), slug };
+  return slug;
+}
+
+/**
+ * Logins whose items and comments are ours on `repo`: the box account (when recorded) and, on a repo that writes as the app, the app's bot
+ * (a bare slug in the mirror, `<slug>[bot]` in REST). The box account stays in the set so items from before a switch remain ours.
+ * Lower-cased. `slug` is injectable for tests; by default the registered app's.
+ */
+export function ownLogins(db: DatabaseSync, repo: string, slug: string | null = appSlug()): Set<string> {
+  const out = new Set<string>();
+  const box = (db.prepare("SELECT value FROM main.settings WHERE key = 'pipeline_login'").get() as { value: string } | undefined)?.value;
+  if (box) out.add(box.toLowerCase());
+  if (slug && repoIdentity(db, repo) === "app") { out.add(slug.toLowerCase()); out.add(`${slug.toLowerCase()}[bot]`); }
+  return out;
+}
+
+/** Every login that is ours on any repo (for views that span repos). */
+export function allOwnLogins(db: DatabaseSync, slug: string | null = appSlug()): Set<string> {
+  const out = ownLogins(db, "", null);
+  if (slug) { out.add(slug.toLowerCase()); out.add(`${slug.toLowerCase()}[bot]`); }
+  return out;
+}

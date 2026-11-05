@@ -10,6 +10,7 @@ import type { Querier } from "../mirror.ts";
 import { FORMAL_REVIEWS, recordGate, recordGateFailure, type ReviewFact } from "../merge/changes-requested.ts";
 import { ENTRY_LIMIT, TOTAL_LIMIT, type DiscussionEntry } from "./parse.ts";
 import { ownerOf } from "../owners.ts";
+import { allOwnLogins, ownLogins } from "../github/identity.ts";
 
 /** Setting that holds the pipeline account's login (also read by src/merge/queue.ts). */
 const LOGIN_KEY = "pipeline_login";
@@ -89,14 +90,17 @@ export function discussionHash(xs: { id: string; body: string | null }[]): strin
 /** What a review read: when, and a hash of the counted entries. */
 export type Snapshot = { seen: string; hash: string | null };
 
+/** The `:own` parameter of NOT_OURS. With no login known, '' stands in, so authorless rows stay out as before. */
+const ownJson = (own: Set<string>): string => JSON.stringify(own.size ? [...own] : [""]);
+
 /** SQL for "written by someone other than us" (`c` is the comments table alias). */
-const NOT_OURS = `COALESCE(c.author, '') <> :own
+const NOT_OURS = `lower(COALESCE(c.author, '')) NOT IN (SELECT value FROM json_each(:own))
   AND c.id NOT IN (SELECT review_id FROM review_posts WHERE repo = c.repo AND number = c.number)`;
 
 type MirrorRow = { id: string; kind: string; author: string | null; created_at: string | null; body: string | null; review_state: string | null; counted: number | null };
 const mirrorRows = (db: DatabaseSync, repo: string, number: number): MirrorRow[] =>
   db.prepare(`SELECT c.id, c.kind, c.author, c.created_at, c.body, c.review_state, c.counted FROM comments c
-    WHERE c.repo = :repo AND c.number = :number AND ${NOT_OURS} ORDER BY c.created_at`).all({ repo, number, own: pipelineLogin(db) }) as MirrorRow[];
+    WHERE c.repo = :repo AND c.number = :number AND ${NOT_OURS} ORDER BY c.created_at`).all({ repo, number, own: ownJson(ownLogins(db, repo)) }) as MirrorRow[];
 
 /** Comments and review bodies from the mirror: the fallback for a call that has no GitHub connection. */
 function mirrorDiscussion(db: DatabaseSync, repo: string, number: number): { entries: DiscussionEntry[]; hash: string } {
@@ -142,9 +146,9 @@ export async function liveDiscussion(q: Querier, db: DatabaseSync, repo: string,
   const res = await q.query(DISCUSSION_QUERY, { owner: ownerOf(repo), name: repo, number });
   const pr = res?.repository?.pullRequest;
   if (!pr) throw new Error(`${repo}#${number} not found on GitHub`);
-  const own = pipelineLogin(db);
+  const own = ownLogins(db, repo);
   const posted = new Set((db.prepare("SELECT review_id FROM review_posts WHERE repo = ? AND number = ?").all(repo, number) as { review_id: string }[]).map((r) => r.review_id));
-  const mine = (a: Author | undefined, id?: string) => (!!own && a?.login === own) || (!!id && posted.has(id));
+  const mine = (a: Author | undefined, id?: string) => (!!a?.login && own.has(a.login.toLowerCase())) || (!!id && posted.has(id));
   const prAuthor: string | null = pr.author?.login ?? null;
   const entries: DiscussionEntry[] = [];
   const counted: { id: string; body: string | null }[] = [];
@@ -225,7 +229,7 @@ const stateMemo = new WeakMap<DatabaseSync, Map<string, { sig: string; state: Di
 /** Newest counted comment or review by someone else, and the hash of those, per "repo#n" from the mirror. Callers must not modify the result. */
 export function discussionState(db: DatabaseSync, repo?: string): DiscussionState {
   const seqs = db.prepare("SELECT topic, seq FROM change_seq WHERE topic IN ('items', 'reviews') ORDER BY topic").all() as { topic: string; seq: number }[];
-  const sig = JSON.stringify([seqs, pipelineLogin(db)]);
+  const sig = JSON.stringify([seqs, [...allOwnLogins(db)]]);
   const memo = stateMemo.get(db) ?? new Map<string, { sig: string; state: DiscussionState }>();
   stateMemo.set(db, memo);
   const key = repo ?? "";
@@ -238,7 +242,7 @@ export function discussionState(db: DatabaseSync, repo?: string): DiscussionStat
 
 function computeDiscussionState(db: DatabaseSync, repo?: string): DiscussionState {
   const rows = db.prepare(`SELECT c.repo, c.number, c.id, c.body, c.created_at FROM comments c
-    WHERE (:repo IS NULL OR c.repo = :repo) AND c.counted = 1 AND ${NOT_OURS}`).all({ repo: repo ?? null, own: pipelineLogin(db) }) as { repo: string; number: number; id: string; body: string | null; created_at: string }[];
+    WHERE (:repo IS NULL OR c.repo = :repo) AND c.counted = 1 AND ${NOT_OURS}`).all({ repo: repo ?? null, own: ownJson(repo ? ownLogins(db, repo) : allOwnLogins(db)) }) as { repo: string; number: number; id: string; body: string | null; created_at: string }[];
   const by = new Map<string, typeof rows>();
   for (const r of rows) {
     const k = `${r.repo}#${r.number}`;
