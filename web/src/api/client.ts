@@ -10,6 +10,7 @@ import type {
   AccessOverview,
   McpTokenCreated,
   McpTokens,
+  GithubAppStatus, GithubSetupLink,
   AccountInput,
   AgentRunDetail,
   ActivityPage,
@@ -225,6 +226,15 @@ export interface Api {
     revokeSession(id: number): Promise<AccessOverview>;
     revokeToken(id: number): Promise<AccessOverview>;
     audit(filter: AuditFilter): Promise<AuditPage>;
+  };
+  /** Operator only. */
+  githubApp: {
+    status(): Promise<GithubAppStatus>;
+    /** The link's URL is in this answer only; it is a path when the server has no base URL. */
+    createLink(org: string): Promise<{ link: GithubSetupLink; url: string }>;
+    revokeLink(id: string): Promise<{ links: GithubSetupLink[] }>;
+    /** Clears the app's keys; `settingsUrl` is where to delete the app on GitHub. */
+    remove(): Promise<{ settingsUrl: string }>;
   };
   classifiers: {
     /** `run`, `a` and `b` default to the latest run and its first pair. */

@@ -199,6 +199,12 @@ export function createHttpApi(): Api {
       revokeToken: (id) => post("/api/access/tokens/revoke", { id }),
       audit: (filter) => get(`/api/audit${qs(filter)}`),
     },
+    githubApp: {
+      status: () => get("/api/admin/github-app"),
+      createLink: (org) => post("/api/admin/github-app/links", { org }),
+      revokeLink: (id) => post("/api/admin/github-app/links/revoke", { id }),
+      remove: () => post("/api/admin/github-app/remove", {}),
+    },
     classifiers: {
       report: (sel) => get(`/api/classifiers${qs(sel)}`),
       disagreements: (f) => get(`/api/classifiers/disagreements${qs(f)}`),

@@ -227,6 +227,38 @@ CREATE TABLE IF NOT EXISTS mcp_tokens (
   created_at TEXT NOT NULL, last_used_at TEXT, expires_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS mcp_tokens_login ON mcp_tokens(login);
+-- The GitHub App's user token of each login, written at every sign-in while AUTOCRAFT_LOGIN_APP=github-app.
+-- Separate from sessions: later steps act for a login when it has no live session.
+CREATE TABLE IF NOT EXISTS user_tokens (
+  login TEXT PRIMARY KEY COLLATE NOCASE,
+  github_id INTEGER NOT NULL,
+  token_enc TEXT NOT NULL,            -- sealed JSON of the whole token set (access, refresh, expiry times), like sessions.token_enc
+  version INTEGER NOT NULL DEFAULT 1, -- compare-and-swap counter for refreshes
+  updated_at TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'ok'   -- ok; later steps add refresh-failed and revoked
+);
+
+-- One row per started GitHub App registration: the manifest flow's single-use state nonce.
+CREATE TABLE IF NOT EXISTS github_app_states (
+  state TEXT PRIMARY KEY,
+  login TEXT NOT NULL,
+  session_hash TEXT NOT NULL,         -- id_hash of the session that started the registration
+  created_at TEXT NOT NULL
+);
+
+-- One-time links an operator hands to an org owner to set the GitHub App up in their org. Only the hash of the link's secret is kept.
+CREATE TABLE IF NOT EXISTS github_setup_links (
+  id TEXT PRIMARY KEY,
+  org TEXT NOT NULL,
+  created_by TEXT NOT NULL,           -- the operator the owner is asked to make an app manager
+  hash TEXT NOT NULL UNIQUE,          -- sha256 of the secret in the URL
+  created_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  revoked_at TEXT,
+  used_at TEXT,
+  used_by TEXT,                       -- the org owner's login
+  installation_id INTEGER
+);
 
 CREATE TABLE IF NOT EXISTS repo_permissions (
   login TEXT NOT NULL COLLATE NOCASE,

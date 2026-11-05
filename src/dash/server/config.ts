@@ -1,4 +1,4 @@
-import { readFileSync, statSync } from "node:fs";
+import { chmodSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { isIP } from "node:net";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -7,7 +7,19 @@ import { dbPath } from "../../db.ts";
 import { defaultImageCacheDir } from "./images.ts";
 import { envVar } from "../../env.ts";
 
-export type Secrets = { githubClientId: string; githubClientSecret: string; sessionKey: string };
+// The GitHub App that AutoCraft registered through the manifest flow. The
+// private key and client secret leave this object only to sign a JWT or to
+// sign a user in; the webhook secret is stored but unused (webhooks are off).
+export type AppSecrets = {
+  id: string; slug: string; privateKey: string; clientId: string; clientSecret: string; webhookSecret: string | null;
+  /** Who owns the app on GitHub (a user or an organization); null when unknown. */
+  owner: AppOwner | null;
+};
+export type AppOwner = { login: string; type: "User" | "Organization" };
+export type Secrets = { githubClientId: string; githubClientSecret: string; sessionKey: string; app: AppSecrets | null };
+
+/** Which GitHub application signs dashboard users in: the OAuth App (secrets github_client_*) or the GitHub App (secrets github_app_*). */
+export type LoginApp = "oauth" | "github-app";
 
 export type Config = {
   host: string;
@@ -21,6 +33,8 @@ export type Config = {
   trustProxy: boolean;
   imageCacheDir: string | null;    // the image proxy's disk cache; null: none
   secrets: Secrets;
+  secretsFile: string | null;      // where registration writes the app's secrets
+  loginApp: LoginApp;
 };
 
 export const DEFAULT_WEB_DIST = fileURLToPath(new URL("../../../web/dist", import.meta.url));
@@ -79,7 +93,92 @@ export function readSecrets(path: string | undefined): Secrets {
     githubClientId: get("github_client_id"),
     githubClientSecret: get("github_client_secret"),
     sessionKey: get("session_key", 32),
+    app: appSecretsOf(raw),
   };
+}
+
+/** The app's keys from a parsed secrets file; null unless all required ones are present. */
+function appSecretsOf(raw: Record<string, unknown>): AppSecrets | null {
+  const opt = (k: string): string | null => (typeof raw?.[k] === "string" && (raw[k] as string).length > 0 ? (raw[k] as string) : null);
+  const id = opt("github_app_id"), slug = opt("github_app_slug"), privateKey = opt("github_app_private_key");
+  const clientId = opt("github_app_client_id"), clientSecret = opt("github_app_client_secret");
+  if (!id || !slug || !privateKey || !clientId || !clientSecret) return null;
+  const o = raw.github_app_owner as { login?: unknown; type?: unknown } | undefined;
+  const owner: AppOwner | null = typeof o?.login === "string" && o.login && (o.type === "User" || o.type === "Organization") ? { login: o.login, type: o.type } : null;
+  return { id, slug, privateKey, clientId, clientSecret, webhookSecret: opt("github_app_webhook_secret"), owner };
+}
+
+function readRawSecrets(path: string): Record<string, unknown> {
+  try {
+    return JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return {};
+    throw new ConfigError("secrets file is not valid JSON");
+  }
+}
+
+/** A sibling of the target with a random name, created exclusively (`wx`) so it never follows or replaces an existing file. */
+function writeTemp(target: string, body: string): string {
+  const tmp = `${target}.${randomToken(6)}.tmp`;
+  try {
+    writeFileSync(tmp, body, { mode: 0o600, flag: "wx" });
+    chmodSync(tmp, 0o600);
+  } catch (e) {
+    try { unlinkSync(tmp); } catch { /* not created */ }
+    throw e;
+  }
+  return tmp;
+}
+
+/** The file a write must replace: the secrets file itself, or the file a symlink there points to. */
+function secretsTarget(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return path;
+    throw e;
+  }
+}
+
+/** Throws unless a later `writeAppSecrets` can succeed: the file parses and a temporary file can be created beside it. */
+export function checkSecretsWritable(path: string): void {
+  readRawSecrets(path);
+  unlinkSync(writeTemp(secretsTarget(path), ""));
+}
+
+/**
+ * Adds the app's keys to the secrets file through a temporary file in the same
+ * directory and a rename, mode 0600. Other keys stay as they are, and a
+ * symlinked secrets file stays a symlink.
+ */
+export function writeAppSecrets(path: string, app: AppSecrets): void {
+  const target = secretsTarget(path);
+  const next = {
+    ...readRawSecrets(target),
+    github_app_id: app.id, github_app_slug: app.slug, github_app_private_key: app.privateKey,
+    github_app_client_id: app.clientId, github_app_client_secret: app.clientSecret, github_app_webhook_secret: app.webhookSecret ?? "",
+    github_app_owner: app.owner,
+  };
+  const tmp = writeTemp(target, `${JSON.stringify(next, null, 2)}\n`);
+  try {
+    renameSync(tmp, target);
+  } catch (e) {
+    try { unlinkSync(tmp); } catch { /* already gone */ }
+    throw e;
+  }
+}
+
+/** Removes every `github_app_*` key from the file the same way: temporary file, rename, mode 0600. */
+export function removeAppSecrets(path: string): void {
+  const target = secretsTarget(path);
+  const next = Object.fromEntries(Object.entries(readRawSecrets(target)).filter(([k]) => !k.startsWith("github_app_")));
+  const tmp = writeTemp(target, `${JSON.stringify(next, null, 2)}\n`);
+  try {
+    renameSync(tmp, target);
+  } catch (e) {
+    try { unlinkSync(tmp); } catch { /* already gone */ }
+    throw e;
+  }
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
@@ -90,10 +189,21 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   if (devAuth) {
     if (!isLoopback(host)) throw new ConfigError("AUTOCRAFT_DEV_AUTH=1 is allowed only on a loopback listen address");
     // Dev sessions don't survive a restart: the key lives only in this process.
-    secrets = { githubClientId: "dev", githubClientSecret: "dev", sessionKey: randomToken() };
+    secrets = { githubClientId: "dev", githubClientSecret: "dev", sessionKey: randomToken(), app: null };
   } else {
     secrets = readSecrets(envVar("SECRETS_FILE", env));
   }
+  const secretsFile = envVar("SECRETS_FILE", env) ?? null;
+  // A dev server reads the app's keys from a secrets file when one is given, so registration can be tried locally.
+  if (devAuth && secretsFile) {
+    try {
+      secrets.app = appSecretsOf(JSON.parse(readFileSync(secretsFile, "utf8")) as Record<string, unknown>);
+    } catch { /* no file yet: registration creates it */ }
+  }
+  const loginAppRaw = envVar("LOGIN_APP", env) ?? "oauth";
+  if (loginAppRaw !== "oauth" && loginAppRaw !== "github-app") throw new ConfigError("AUTOCRAFT_LOGIN_APP must be oauth or github-app");
+  const loginApp: LoginApp = loginAppRaw;
+  if (loginApp === "github-app" && !devAuth && !secrets.app) throw new ConfigError("AUTOCRAFT_LOGIN_APP=github-app needs the github_app_* secrets; register the app first");
   const rawBaseUrl = envVar("BASE_URL", env);
   if (rawBaseUrl) {
     let u: URL;
@@ -113,7 +223,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   }
   const webDistEnv = envVar("WEB_DIST", env);
   return {
-    host, port, baseUrl, devAuth, secrets,
+    host, port, baseUrl, devAuth, secrets, secretsFile, loginApp,
     dbPath: envVar("DB", env) ?? dbPath(),
     webDist: webDistEnv ? resolve(webDistEnv) : DEFAULT_WEB_DIST,
     devPermsFile: devAuth ? (envVar("DEV_PERMS", env) ?? null) : null,

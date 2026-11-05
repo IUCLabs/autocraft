@@ -7,6 +7,7 @@ import type {
   AccessOverview,
   AccessToken,
   AuditEntry,
+  GithubAppStatus, GithubSetupLink,
   Contributor,
   ContributorSort,
   OverrideStatus,
@@ -133,9 +134,11 @@ function buildSessions(): Omit<SessionInfo, "current">[] {
   return rows.map(([login, created, seen, ua], i) => ({ id: 101 + i, login, createdAt: iso(created), lastSeen: iso(seen), expiresAt: new Date(NOW - seen + 14 * D).toISOString(), userAgent: UA[ua]! }));
 }
 
+let appRemoved = false;
 export const AUDIT_ACTIONS = [
   "answer", "undo", "adopt", "opinion", "opinion-retract", "comment", "override", "rule", "access-add", "access-remove", "access-role",
   "session-revoke", "mcp-token-create", "mcp-token-revoke", "sign-in", "sign-in-refused", "repo-track", "repo-untrack",
+  "session-revoke", "sign-in", "sign-in-refused", "github-app-register", "github-app-register-failed", "github-app-remove", "github-app-login-mode", "github-app-link-create", "github-app-link-revoke", "github-app-link-use", "github-app-manager", "repo-track", "repo-untrack",
 ];
 
 function buildAudit(): AuditEntry[] {
@@ -160,13 +163,17 @@ function buildAudit(): AuditEntry[] {
   return out.sort((a, b) => b.at.localeCompare(a.at));
 }
 
-type AdminApi = Pick<Api, "contributors" | "repoAdmin" | "access">;
+type AdminApi = Pick<Api, "contributors" | "repoAdmin" | "access" | "githubApp">;
 
 export function createAdminMock(me: User, changed: () => void): AdminApi {
   const authors = buildAuthors();
   let singleMax = 3;
   const repos = buildRepos();
   const access = structuredClone(ACCESS);
+  const setupLinks: GithubSetupLink[] = [
+    { id: "l1", org: "storytold", createdBy: me.login, createdAt: new Date(NOW - 2 * H).toISOString(), expiresAt: new Date(NOW + 7 * D - 2 * H).toISOString() },
+    { id: "l2", org: "glasswing", createdBy: me.login, createdAt: new Date(NOW - 3 * D).toISOString(), expiresAt: new Date(NOW + 4 * D).toISOString() },
+  ];
   let sessions = buildSessions();
   let agentTokens: AccessToken[] = [
     { id: 11, login: ACCESS[0]!.login, label: "laptop", canAnswer: true, createdAt: new Date(NOW - 2 * 86_400_000).toISOString(), lastUsedAt: new Date(NOW - 3_600_000).toISOString(), expiresAt: new Date(NOW + 5 * 86_400_000).toISOString() },
@@ -376,6 +383,43 @@ export function createAdminMock(me: User, changed: () => void): AdminApi {
         log(approved ? "labels-approve" : "labels-revoke", name);
         changed();
         return this.list();
+      },
+    },
+    githubApp: {
+      status() {
+        requireOperator("see the GitHub App");
+        // The mock shows the registered app; ?unregistered shows the registration form.
+        const registered = !appRemoved && (typeof location === "undefined" || !location.search.includes("unregistered"));
+        const status: GithubAppStatus = {
+          configured: registered, loginMode: "oauth", canRegister: true, defaultName: "AutoCraft", csrf: "mock",
+          app: registered ? { id: "1234567", slug: "autocraft-demo", name: "AutoCraft", installUrl: "https://github.com/apps/autocraft-demo/installations/new", transferUrl: "https://github.com/settings/apps/autocraft-demo/advanced" } : null,
+          links: [...setupLinks],
+          installations: registered ? [{ owner: "glasswing", selection: "selected", repos: ["glasswing/photocraft", "glasswing/designcraft", "glasswing/filmcraft"] }] : [],
+          error: null,
+        };
+        return wait(status);
+      },
+      async createLink(org) {
+        requireOperator("create setup links");
+        if (!/^[A-Za-z0-9][A-Za-z0-9-]{0,38}$/.test(org)) throw new Error("That is not a GitHub organization name.");
+        const link = { id: `l${setupLinks.length + 10}`, org, createdBy: me.login, createdAt: nowIso(), expiresAt: new Date(NOW + 7 * D).toISOString() };
+        setupLinks.unshift(link);
+        log("github-app-link-create", org, { id: link.id });
+        return wait({ link, url: "https://autocraft.example/auth/setup/mock-one-time-secret-9f2c4b7a1d" });
+      },
+      async remove() {
+        requireOperator("remove the GitHub App");
+        appRemoved = true;
+        log("github-app-remove", "autocraft-demo", { slug: "autocraft-demo", owner: "glasswing" });
+        return wait({ settingsUrl: "https://github.com/organizations/glasswing/settings/apps/autocraft-demo" });
+      },
+      async revokeLink(id) {
+        requireOperator("revoke setup links");
+        const i = setupLinks.findIndex((l) => l.id === id);
+        if (i < 0) throw new Error("That link is not open.");
+        const [l] = setupLinks.splice(i, 1);
+        log("github-app-link-revoke", l!.org, { id });
+        return wait({ links: [...setupLinks] });
       },
     },
     access: {

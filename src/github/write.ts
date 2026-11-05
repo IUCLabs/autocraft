@@ -17,6 +17,7 @@ import type { Exec, ExecResult, Git } from "../fixup/git.ts";
 import type { Querier } from "../mirror.ts";
 import { type Note, withNote } from "./note.ts";
 import { slugOf, splitSlug } from "../owners.ts";
+import { call, GITHUB_API } from "./app.ts";
 
 export { GITHUB_ACTIONS } from "./actions.ts";
 export type { Note } from "./note.ts";
@@ -420,4 +421,16 @@ export function cliMergeRecorder(repoSlug: string, pr: string, method: string, h
       }
     };
   };
+}
+
+// ---- Organization roles -----------------------------------------------------
+
+/**
+ * Gives `user` an organization role with the org owner's own token (GitHub
+ * documents this only for OAuth tokens with admin:org). The token goes to the
+ * call and nowhere else: the audit row names the org, user and role.
+ */
+export function grantOrgRole(w: Writer, o: { org: string; user: string; role: { id: number; name: string }; token: string; apiBase?: string }): Promise<void> {
+  return recorded(w, "github-app-manager", o.org, { user: o.user, role: o.role.name, roleId: o.role.id },
+    () => call(o.apiBase ?? GITHUB_API, `/orgs/${encodeURIComponent(o.org)}/organization-roles/users/${encodeURIComponent(o.user)}/${o.role.id}`, o.token, "PUT").then(() => undefined));
 }

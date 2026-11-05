@@ -24,12 +24,14 @@ export type GithubUser = { login: string; id: number };
 
 export interface Provider {
   /** With selectAccount the provider shows its account picker even when someone is already signed in there. */
-  authorizeUrl(state: string, challenge: string, redirectUri: string, selectAccount?: boolean): string;
+  authorizeUrl(state: string, challenge: string, redirectUri: string, selectAccount?: boolean, scopes?: string[]): string;
   // Each returns null when the provider rejects the code or refresh token, and
   // throws on a transport failure.
   exchange(code: string, verifier: string, redirectUri: string): Promise<Tokens | null>;
   refresh(refreshToken: string): Promise<Tokens | null>;
   identity(access: string): Promise<GithubUser | null>;
+  /** Revokes a token at the provider; callers ignore failures. */
+  revoke(access: string): Promise<void>;
   // "unauthorized": the access token is expired or revoked. Throws on a
   // transport failure, so a GitHub outage isn't cached as "none".
   permission(access: string, repo: string): Promise<Permission | "unauthorized">;
@@ -55,13 +57,14 @@ export class GitHubProvider implements Provider {
     this.#id = clientId;
     this.#secret = clientSecret;
   }
-  authorizeUrl(state: string, challenge: string, redirectUri: string, selectAccount = false): string {
-    // No scopes: the token reads public data, which is all a permission check on a public repo needs.
+  authorizeUrl(state: string, challenge: string, redirectUri: string, selectAccount = false, scopes: string[] = []): string {
+    // Dashboard sign-in asks for no scopes: the token reads public data, which is all a permission check on a public repo needs.
     const q = new URLSearchParams({
       client_id: this.#id, redirect_uri: redirectUri, state,
       code_challenge: challenge, code_challenge_method: "S256", allow_signup: "false",
     });
     if (selectAccount) q.set("prompt", "select_account");
+    if (scopes.length) q.set("scope", scopes.join(" "));
     return `https://github.com/login/oauth/authorize?${q}`;
   }
   exchange(code: string, verifier: string, redirectUri: string): Promise<Tokens | null> {
@@ -80,6 +83,17 @@ export class GitHubProvider implements Provider {
     if (!r.ok) throw new Error(`token endpoint: HTTP ${r.status}`);
     // A rejected code or refresh token answers 200 with an `error` field.
     return tokensFrom((await r.json()) as Record<string, unknown>);
+  }
+  async revoke(access: string): Promise<void> {
+    await fetch(`https://api.github.com/applications/${encodeURIComponent(this.#id)}/token`, {
+      method: "DELETE",
+      headers: {
+        authorization: `Basic ${Buffer.from(`${this.#id}:${this.#secret}`).toString("base64")}`, accept: "application/vnd.github+json",
+        "x-github-api-version": "2022-11-28", "user-agent": UA, "content-type": "application/json",
+      },
+      body: JSON.stringify({ access_token: access }),
+      signal: AbortSignal.timeout(10_000),
+    });
   }
   async identity(access: string): Promise<GithubUser | null> {
     const r = await this.#api(access, "/user");
@@ -130,8 +144,8 @@ export class FakeProvider implements Provider {
     this.#permsFile = permsFile;
     this.tokenTtlMs = tokenTtlMs;
   }
-  authorizeUrl(state: string, challenge: string, redirectUri: string): string {
-    return `/auth/dev/authorize?${new URLSearchParams({ state, code_challenge: challenge, redirect_uri: redirectUri })}`;
+  authorizeUrl(state: string, challenge: string, redirectUri: string, _selectAccount = false, scopes: string[] = []): string {
+    return `/auth/dev/authorize?${new URLSearchParams({ state, code_challenge: challenge, redirect_uri: redirectUri, ...(scopes.length ? { scope: scopes.join(" ") } : {}) })}`;
   }
   issueCode(login: string, challenge: string, redirectUri: string): string {
     const code = randomToken(16);
@@ -154,6 +168,11 @@ export class FakeProvider implements Provider {
     if (!c || Date.now() - c.at > 600_000 || c.redirectUri !== redirectUri) return null;
     if (!safeEqual(pkceChallenge(verifier), c.challenge)) return null;
     return this.#issue(c.login);
+  }
+  revoked: string[] = [];
+  async revoke(access: string): Promise<void> {
+    this.#access.delete(access);
+    this.revoked.push(access);
   }
   async refresh(refreshToken: string): Promise<Tokens | null> {
     const login = this.#refresh.get(refreshToken);
@@ -190,8 +209,16 @@ export class FakeProvider implements Provider {
   }
 }
 
+/** The OAuth App's provider whatever the dashboard sign-in mode: the org setup link needs scopes, which a GitHub App's authorization ignores. */
+export function oauthProviderFor(config: Config): Provider {
+  if (config.devAuth) return new FakeProvider(config.devPermsFile, config.devTokenTtlMs ?? undefined);
+  const { githubClientId, githubClientSecret } = config.secrets;
+  return new GitHubProvider(githubClientId, githubClientSecret);
+}
+
 export function providerFor(config: Config): Provider {
-  return config.devAuth
-    ? new FakeProvider(config.devPermsFile, config.devTokenTtlMs ?? undefined)
-    : new GitHubProvider(config.secrets.githubClientId, config.secrets.githubClientSecret);
+  if (config.devAuth) return new FakeProvider(config.devPermsFile, config.devTokenTtlMs ?? undefined);
+  const { githubClientId, githubClientSecret, app } = config.secrets;
+  // The GitHub App's user authorization uses the same endpoints as the OAuth App's.
+  return config.loginApp === "github-app" && app ? new GitHubProvider(app.clientId, app.clientSecret) : new GitHubProvider(githubClientId, githubClientSecret);
 }

@@ -847,6 +847,33 @@ export interface SessionInfo {
 
 /** A live agent token of any login (operators see all of them). */
 export type AccessToken = McpToken & { login: string };
+export interface GithubAppStatus {
+  /** The app's keys are in the secrets file. */
+  configured: boolean;
+  /** Which application signs dashboard users in. */
+  loginMode: "oauth" | "github-app";
+  /** False when the server has no secrets file to keep the keys in. */
+  canRegister: boolean;
+  defaultName: string;
+  /** The session's CSRF token, for the registration form. */
+  csrf: string;
+  app: { id: string; slug: string; name: string | null; installUrl: string; transferUrl: string } | null;
+  /** Each account the app is installed on, with the repos it covers. */
+  installations: { owner: string; selection: "all" | "selected"; repos: string[] }[];
+  /** Org setup links that can still be used. */
+  links: GithubSetupLink[];
+  /** Set when GitHub could not be read. */
+  error: string | null;
+}
+
+/** A one-time link for an organization's owner to set the app up; the link's URL is shown once, when it is created. */
+export interface GithubSetupLink {
+  id: string;
+  org: string;
+  createdBy: string;
+  createdAt: string;
+  expiresAt: string;
+}
 
 export interface AccessOverview {
   entries: AccessEntry[];

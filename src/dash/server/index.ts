@@ -16,7 +16,10 @@ import { allowedImage, ImageProxy, imageTokenSource, registerImageRepos } from "
 import { TokenBucket } from "./limits.ts";
 import { dbReady, serveHealth } from "../../health.ts";
 import { LiveHub, type LiveOptions } from "./live.ts";
-import { FakeProvider, providerFor, type GithubUser, type Provider, type Tokens } from "./provider.ts";
+import { auditLoginMode, finishRegistration, githubAppRoutes, startRegistration } from "./github-app.ts";
+import { OrgSetup } from "./github-setup.ts";
+import { saveUserTokens } from "./user-tokens.ts";
+import { FakeProvider, oauthProviderFor, providerFor, type GithubUser, type Provider, type Tokens } from "./provider.ts";
 import { createSession, deleteSession, loadSession, makeUser, pruneExpired, SESSION_TTL, userForLogin, type Session } from "./sessions.ts";
 import { answering, handleMcp, writes as mcpWrites, type Msg as McpMsg } from "../mcp/index.ts";
 import { loadToken, pruneTokens } from "../mcp/tokens.ts";
@@ -55,6 +58,7 @@ export type AppOptions = {
   live?: LiveOptions;        // GET /api/live timing; defaults suit production
   // Opinions and comments per login per hour. The dashboard's routes and the MCP server's feedback must share one instance.
   feedbackLimiter?: RateLimiter;
+  githubApi?: string;        // base URL of the GitHub API for the GitHub App calls; default: api.github.com
 };
 
 type Compiled = Route & { parts: string[] };
@@ -137,8 +141,12 @@ function cookie(name: string, value: string, maxAgeSec: number): string {
 export function createApp(opts: AppOptions & { routes: Route[] }) {
   const { config, db } = opts;
   const provider = opts.provider ?? providerFor(config);
+  // The org setup link signs in with the OAuth App even when dashboard sign-in uses the GitHub App.
+  const setupProvider = opts.provider ?? (config.devAuth ? provider : oauthProviderFor(config));
   const box = new TokenBox(config.secrets.sessionKey);
-  const routes = compile(opts.routes);
+  const appDeps = { apiBase: opts.githubApi };
+  const routes = compile([...opts.routes, ...githubAppRoutes(config, appDeps)]);
+  auditLoginMode(db, config);
   const signinLimit = new RateLimiter(60, 10 * 60_000);
   const writeLimitSession = new RateLimiter(60, 60_000);
   const writeLimitIp = new RateLimiter(300, 60_000);
@@ -257,7 +265,7 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
     if (route.operator && session.role !== "operator") return out(apiError(403, "operators only"));
     const r: Req = {
       method, path: url.pathname, params: params!, query: url.searchParams, form: new URLSearchParams(), json,
-      user: makeUser(db, box, provider, session, writes),
+      user: makeUser(db, box, provider, session, writes, config.loginApp === "github-app"),
       csrf: session.csrf, nonce,
     };
     const res2 = await route.handler(db, r);
@@ -280,20 +288,36 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
     live.add(res, () => loadSession(db, cookieId) !== null);
   }
 
+  function startOAuth(returnTo: string, selectAccount: boolean, scopes?: string[], p: Provider = provider): { r: Res; cookies: string[] } {
+    const state = randomToken(24), verifier = randomToken(48);
+    db.prepare("INSERT INTO oauth_states (state, verifier, return_to, created_at) VALUES (?, ?, ?, ?)")
+      .run(state, verifier, returnTo, new Date().toISOString());
+    return {
+      r: { redirect: p.authorizeUrl(state, pkceChallenge(verifier), callbackUrl, selectAccount, scopes) },
+      cookies: [cookie(STATE_COOKIE, state, 600)],
+    };
+  }
+
+  const setup = new OrgSetup({
+    db, config, deps: appDeps, provider: setupProvider,
+    startOAuth: (returnTo, scopes) => startOAuth(returnTo, true, scopes, setupProvider),
+    sameOrigin: (req) => sameOrigin(req),
+    readForm: readBody,
+  });
+
   async function auth(req: IncomingMessage, url: URL, nonce: string, cookies: Map<string, string>): Promise<{ r: Res; cookies?: string[] }> {
     const ip = clientIp(req);
     const path = url.pathname;
+    if (path.startsWith("/auth/setup") || path === "/auth/github-app/setup" || (path === "/auth/github-app/callback" && setup.ownsState(url.searchParams.get("state") ?? ""))) {
+      if (!signinLimit.allow(ip)) return { r: errorPage(nonce, 429, "Too many attempts", "Wait a few minutes and try again.") };
+      const out = await setup.handle(req, url, nonce, cookies, loadSession(db, cookies.get(SESSION_COOKIE))?.role === "operator");
+      if (out) return out;
+    }
     if (req.method === "GET" && path === "/auth/signin") {
       if (!signinLimit.allow(ip)) return { r: errorPage(nonce, 429, "Too many attempts", "Wait a few minutes and try again.") };
       const returnTo = safeReturnTo(url.searchParams.get("return_to"));
       if (loadSession(db, cookies.get(SESSION_COOKIE))) return { r: { redirect: returnTo } };
-      const state = randomToken(24), verifier = randomToken(48);
-      db.prepare("INSERT INTO oauth_states (state, verifier, return_to, created_at) VALUES (?, ?, ?, ?)")
-        .run(state, verifier, returnTo, new Date().toISOString());
-      return {
-        r: { redirect: provider.authorizeUrl(state, pkceChallenge(verifier), callbackUrl, url.searchParams.get("select") === "1") },
-        cookies: [cookie(STATE_COOKIE, state, 600)],
-      };
+      return startOAuth(returnTo, url.searchParams.get("select") === "1");
     }
     if (req.method === "GET" && path === "/auth/callback") {
       if (!signinLimit.allow(ip)) return { r: errorPage(nonce, 429, "Too many attempts", "Wait a few minutes and try again.") };
@@ -311,14 +335,19 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
       }
       let tokens: Tokens | null, who: GithubUser | null;
       try {
-        tokens = await provider.exchange(code, row.verifier, callbackUrl);
-        who = tokens ? await provider.identity(tokens.access) : null;
+        const p = row.return_to?.startsWith("setup:") ? setupProvider : provider;
+        tokens = await p.exchange(code, row.verifier, callbackUrl);
+        who = tokens ? await p.identity(tokens.access) : null;
       } catch (e) {
         console.error(`sign-in: ${(e as Error).message}`);
         return { r: errorPage(nonce, 502, "Sign-in failed", "GitHub did not answer. Try again in a minute."), cookies: clear };
       }
       if (!tokens || !who) {
         return { r: errorPage(nonce, 400, "Sign-in failed", "GitHub did not accept the sign-in. Start again."), cookies: clear };
+      }
+      if (row.return_to?.startsWith("setup:")) {
+        const out = await setup.signedIn(row.return_to, tokens, who, nonce, cookies);
+        return { r: out.r, cookies: [...clear, ...(out.cookies ?? [])] };
       }
       const login = who.login;
       const access = getAccess(db, login);
@@ -331,11 +360,25 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
         return { r: errorPage(nonce, 403, "Not authorised", `The GitHub account ${login} is not the account that was added to this dashboard's access list.`), cookies: clear };
       }
       const id = createSession(db, box, access.login, tokens, req.headers["user-agent"]);
+      if (config.loginApp === "github-app") saveUserTokens(db, box, access.login, who.id, tokens);
       audit(db, access.login, "sign-in", access.login, { ip });
       return {
         r: { redirect: safeReturnTo(row.return_to) },
         cookies: [...clear, cookie(SESSION_COOKIE, id, SESSION_TTL / 1000)],
       };
+    }
+    if (req.method === "POST" && path === "/auth/github-app/start") {
+      if (!sameOrigin(req)) return { r: errorPage(nonce, 403, "Refused", "This form was sent from another site.") };
+      const form = await readBody(req);
+      const s = loadSession(db, cookies.get(SESSION_COOKIE));
+      if (!s) return { r: { redirect: `/auth/signin?${new URLSearchParams({ return_to: "/admin/github-app" })}` } };
+      if (!safeEqual(form.get("csrf") ?? "", s.csrf)) return { r: errorPage(nonce, 403, "Refused", "The form expired. Reload the page and try again.") };
+      return { r: startRegistration(db, config, req, form, nonce, s) };
+    }
+    if (req.method === "GET" && path === "/auth/github-app/callback") {
+      const s = loadSession(db, cookies.get(SESSION_COOKIE));
+      if (!s) return { r: { redirect: `/auth/signin?${new URLSearchParams({ return_to: "/admin/github-app" })}` } };
+      return { r: await finishRegistration(db, config, appDeps, url, nonce, s) };
     }
     if (req.method === "POST" && path === "/auth/signout") {
       if (!sameOrigin(req)) return { r: errorPage(nonce, 403, "Refused", "This form was sent from another site.") };
@@ -462,7 +505,7 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
     const href = allowedImage(raw)?.href;
     const owners = href ? imageIndex.reposOf(href) : [];
     if (owners.length) {
-      const visible = new Set(await visibleTo(db, makeUser(db, box, provider, session, false)));
+      const visible = new Set(await visibleTo(db, makeUser(db, box, provider, session, false, config.loginApp === "github-app")));
       if (!owners.some((o) => visible.has(o))) {
         res.writeHead(404, secure({ "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" }, "default-src 'none'"));
         return void res.end("not an image of a tracked repo");
