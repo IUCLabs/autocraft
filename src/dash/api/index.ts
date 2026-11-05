@@ -44,7 +44,7 @@ import { actionsOf as releasesOf } from "../../operator-actions.ts";
 import { verificationOf } from "../../verify/results.ts";
 import { areaNameOf } from "../../areas/store.ts";
 import { settledOf, unflagged } from "../../classify/settled.ts";
-import { quietFixPrs } from "../../core/facts.ts";
+import { isQuiet } from "../../security/quiet.ts";
 import { classificationsOf, itemState, relatedOf } from "./decisions.ts";
 import * as sim from "./similar.ts";
 import { needs } from "./needs.ts";
@@ -124,7 +124,9 @@ async function item(db: DatabaseSync, req: Req): Promise<Item> {
   const decisionIds = (db.prepare(`SELECT id FROM decisions WHERE (repo = :repo AND number = :n) OR (number IS NULL AND EXISTS (
       SELECT 1 FROM json_each(CASE WHEN json_valid(items) THEN items ELSE '[]' END) j
       WHERE json_extract(j.value, '$.repo') = :repo AND json_extract(j.value, '$.number') = :n)) ORDER BY asked_at`).all({ repo, n }) as { id: string }[]).map((r) => r.id);
-  return {
+  // The quiet pull request of a security fix: viewers get none of the model text about it.
+  const veil = !canSeeInternals(req) && isQuiet(db, repo, n);
+  const out: Item = {
     repo, number: n, kind: it.kind === "pr" ? "pr" : "issue",
     title: it.title ?? "", body: it.body ?? "", state: itemState(it.state), author: it.author ?? "",
     tier: TIER[c?.tier ?? "not"] ?? "not", authorMerged: c?.merged ?? 0, authorClosedUnmerged: c?.closed ?? 0,
@@ -140,7 +142,7 @@ async function item(db: DatabaseSync, req: Req): Promise<Item> {
     related: relatedOf(db, repo, n), classifications: classificationsOf(db, repo, n), area: areaNameOf(db, repo, n),
     stages: stages.map((s) => ({ ...s, by: s.by ?? "" })),
     comments: comments.map((x) => ({ ...x, author: x.author ?? "", body: x.body ?? "" })),
-    decisionIds, settled: unflagged(settledOf(db, repo, n), quietFixPrs(db, repo).has(`${repo}#${n}`)) as Item["settled"], priority: priorityOf(db, repo, n),
+    decisionIds, settled: unflagged(settledOf(db, repo, n), isQuiet(db, repo, n), !veil) as Item["settled"], priority: priorityOf(db, repo, n),
     ...(it.kind === "pr" ? prWork(db, repo, n, canSeeInternals(req)) : { verification: null, fixups: [] }),
     // The reviewer's reasons quote the patch, so viewers get the verdict only.
     patchChecks: checksOf(db, repo, n).map(({ kind, subject, patchHash, round, verdict, reasons, problems, model, createdAt }) =>
@@ -152,6 +154,14 @@ async function item(db: DatabaseSync, req: Req): Promise<Item> {
     queue: queueSlots(db, await visibleRepos(db, req)).get(`${repo}#${n}`) ?? null,
     // The operator's instructions are shown to those who see the internals only.
     ...(it.kind === "pr" ? { preapproval: ((p) => (p && !canSeeInternals(req) ? { ...p, instructions: "" } : p))(preapprovalOf(db, repo, n)) } : {}),
+  };
+  if (!veil) return out;
+  return {
+    ...out,
+    classifications: out.classifications.map((c) => ({ ...c, reason: "" })),
+    priority: out.priority && { ...out.priority, reason: null },
+    premerge: out.premerge?.map((p) => ({ ...p, findings: [] })),
+    reviews: out.reviews && { ...out.reviews, conflicts: out.reviews.conflicts.map((c) => ({ ...c, reason: "" })) },
   };
 }
 

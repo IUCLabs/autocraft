@@ -22,6 +22,7 @@ import { REPO_PATH } from "../sandbox/command.ts";
 import { checkoutForCommit } from "../sandbox/index.ts";
 import { cachedCrates, ghCrates, type CratesFetcher } from "../verify/crates.ts";
 import { regressionPath } from "../verify/plan.ts";
+import { baseScopeRepos } from "../pilot.ts";
 import { cloneTask, queueWarmBuild } from "../verify/tasks.ts";
 import { outcomeOf } from "../verify/results.ts";
 import type { Crate } from "../verify/types.ts";
@@ -67,7 +68,8 @@ export async function buildInWorker(db: DatabaseSync, r: BuildRequest, cancelled
   // Tasks need the real repo to fetch it. Their step name says nothing about what the patch is for, and they carry no item number.
   const queue = (): number[] => {
     const ids = tasksFor({ repo: r.repo, number: null, main_sha: r.sha, crate: r.crate }, r.patch, r.testPatch, "fix-check").map((t: NewTask) => createTask(db, t));
-    queueWarmBuild(db, r.repo, r.sha);
+    // The warm build is a pipeline task: it would never be claimed for a repo outside the pipeline scope.
+    if (baseScopeRepos(db).has(r.repo)) queueWarmBuild(db, r.repo, r.sha);
     return ids;
   };
   let ids: number[];

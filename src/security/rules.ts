@@ -164,12 +164,21 @@ const GIVEAWAY_CODE = /\b(?:security|vulnerab\w*|exploit\w*|attack\w*|attacker\w
 /** The first giveaway word in `text`, or null. */
 export const giveaway = (text: string): string | null => GIVEAWAY.exec(text)?.[0] ?? null;
 
-/** The comment parts of one source line: from a double slash to the end, block-comment segments, and block-comment continuation lines. */
-function commentText(line: string): string {
+/** The comment parts of one source line: from a double slash to the end, block-comment segments, and the lines inside a block comment. `inBlock` carries across the lines of a hunk. */
+function commentText(line: string, st: { inBlock: boolean }): string {
   const out: string[] = [];
-  const t = line.trim();
-  if (t.startsWith("*") || t.startsWith("/*")) out.push(t);
-  for (const m of line.matchAll(/\/\/.*$|\/\*.*?(?:\*\/|$)/g)) out.push(m[0]);
+  let rest = line;
+  if (st.inBlock) {
+    const end = rest.indexOf("*/");
+    out.push(end < 0 ? rest : rest.slice(0, end));
+    if (end < 0) return out.join(" ");
+    st.inBlock = false;
+    rest = rest.slice(end + 2);
+  }
+  for (const m of rest.matchAll(/\/\/.*$|\/\*.*?(?:\*\/|$)/g)) {
+    out.push(m[0]);
+    if (m[0].startsWith("/*") && !m[0].endsWith("*/")) st.inBlock = true;
+  }
   return out.join(" ");
 }
 
@@ -182,6 +191,7 @@ export const nameGiveaway = (s: string): string | null => giveaway(s.replace(/[_
  */
 export function patchGiveaway(patch: string): string | null {
   let prev = "";
+  const block = { inBlock: false };
   for (const line of patch.split("\n")) {
     // Existing file names are public already; only the path of a file the patch adds is checked.
     if (line.startsWith("+++ ")) {
@@ -192,9 +202,12 @@ export function patchGiveaway(patch: string): string | null {
     }
     if (line.startsWith("--- ")) { prev = line; continue; }
     if (line.startsWith("diff --git ")) continue;
+    if (line.startsWith("@@")) block.inBlock = false;
+    // Unchanged lines can open or close a block comment that added lines sit in.
+    if (line.startsWith(" ")) commentText(line.slice(1), block);
     if (!line.startsWith("+")) continue;
     const added = line.slice(1);
-    const w = GIVEAWAY_CODE.exec(added)?.[0] ?? giveaway(commentText(added)) ?? nameGiveaway([...added.matchAll(/\bfn\s+(\w+)/g)].map((m) => m[1]).join(" "));
+    const w = GIVEAWAY_CODE.exec(added)?.[0] ?? giveaway(commentText(added, block)) ?? nameGiveaway([...added.matchAll(/\bfn\s+(\w+)/g)].map((m) => m[1]).join(" "));
     if (w) return w;
   }
   return null;

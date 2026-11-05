@@ -1,6 +1,8 @@
 // Facts: everything the review-to-merge rules read about open PRs, loaded in one pass for a whole database or a slice of it.
 // Each concept has one definition here. Where a step selector and the merge queue used different
 // definitions, the queue's wins; the differences are listed in the report of this change, not here.
+import { quietFixPrs } from "../security/quiet.ts";
+export { quietFixPrs };
 import type { DatabaseSync } from "node:sqlite";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -432,12 +434,6 @@ export function ownFixPrs(db: DatabaseSync, repo?: string): { login: string | nu
   }
   for (const r of db.prepare("SELECT repo, pr_number AS n FROM main.main_fixes WHERE pr_number IS NOT NULL" + (repo ? " AND repo = ?" : "")).all(...(repo ? [repo] : [])) as { repo: string; n: number }[]) prs.add(`${r.repo}#${r.n}`);
   return { login, prs, quiet };
-}
-
-/** Quiet pull requests of security fixes that are still landing, as `repo#number`. They are the pipeline's own fix PRs; nothing public may call them a security matter until they merge. */
-export function quietFixPrs(db: DatabaseSync, repo?: string): Set<string> {
-  const rows = db.prepare("SELECT repo, fix_pr AS n FROM main.security_findings WHERE state = 'landing' AND fork IS NULL AND fix_pr IS NOT NULL" + (repo ? " AND repo = ?" : "")).all(...(repo ? [repo] : [])) as { repo: string; n: number }[];
-  return new Set(rows.map((r) => `${r.repo}#${r.n}`));
 }
 
 /** Reads the pipeline account and the last successful assign or unassign of every item from the audit once; the returned function gives an item's assignment facts from its mirrored `assignees` (JSON). */

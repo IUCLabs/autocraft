@@ -1,10 +1,11 @@
 // The Items browser (`GET /api/items`) and the top-bar search (`GET /api/search`),
 // both over the full-text tables items_fts and comments_fts (src/schema.sql).
+import { canSeeInternals } from "./staff.ts";
 import type { DatabaseSync, SQLInputValue } from "node:sqlite";
 import type {
   ItemList, ItemListRow, ItemSort, SearchHit, SettledStatus, Snippet, Stage,
 } from "../../../web/src/api/types.ts";
-import { quietFixPrs } from "../../core/facts.ts";
+import { quietFixPrs, quietSqlFor } from "../../security/quiet.ts";
 import { fromRow, unflagged, latestRun, settledTable, type SettledRow } from "../../classify/settled.ts";
 import { LABELS } from "../../classify/rules.ts";
 import { HttpError } from "../server/util.ts";
@@ -128,7 +129,7 @@ function build(db: DatabaseSync, req: Req, hidden: string[]): Built & { sort: It
   }
   list(req, "flag").forEach((f) => {
     if (!FLAGS.includes(f)) throw new HttpError(400, "flag must be security or needs decision");
-    where.push(f === "security" ? "s.security = 1 AND NOT EXISTS (SELECT 1 FROM main.security_findings q WHERE q.repo = i.repo AND q.fix_pr = i.number AND q.state = 'landing' AND q.fork IS NULL)" : "s.needs_decision = 1");
+    where.push(f === "security" ? "s.security = 1 AND NOT " + quietSqlFor("i.repo", "i.number") : "s.needs_decision = 1");
   });
   const author = q.get("author")?.trim();
   if (author) {
@@ -277,7 +278,7 @@ export async function listItems(db: DatabaseSync, req: Req): Promise<ItemList> {
     rows: rows.map((r): ItemListRow => ({
       repo: r.repo, number: r.number, kind: r.kind === "pr" ? "pr" : "issue", state: itemState(r.state),
       title: r.title ?? "", author: r.author ?? "", createdAt: r.created_at ?? "", updatedAt: r.updated_at ?? "",
-      comments: r.comments_count ?? 0, settled: unflagged(fromRow(r), quiet.has(`${r.repo}#${r.number}`)) as ItemListRow["settled"],
+      comments: r.comments_count ?? 0, settled: unflagged(fromRow(r), quiet.has(`${r.repo}#${r.number}`), canSeeInternals(req)) as ItemListRow["settled"],
       stage: (stages.get(`${r.repo}#${r.number}`) ?? null) as Stage | null, snippet: snips.get(r.rid) ?? null,
       queue: slots.get(`${r.repo}#${r.number}`) ?? null,
       mergedHow: how.get(`${r.repo}#${r.number}`) ?? null, mergedAt: how.has(`${r.repo}#${r.number}`) ? r.merged_by_us_at ?? null : null,

@@ -23,6 +23,7 @@ import { queueSlots } from "../../rank/position.ts";
 import { hiddenRepos, visibleRepos } from "./visible.ts";
 import { pickDecision, shortRepo } from "../../../web/src/lib/links.ts";
 import { canSeeInternals } from "./staff.ts";
+import { isQuiet } from "../../security/quiet.ts";
 
 export const CLAIM_TTL = 10 * 60_000;
 const COMMENT_MAX = 4000;
@@ -197,7 +198,9 @@ export function toDecision(db: DatabaseSync, d: DecisionRow, viewer: Viewer): De
   const claimRow = db.prepare(`SELECT login, since FROM decision_claims WHERE decision_id = ? AND at > ? AND login <> ? ORDER BY at DESC LIMIT 1`)
     .get(d.id, new Date(Date.now() - CLAIM_TTL).toISOString(), viewer.login) as Claim | undefined;
   const commentCount = (db.prepare("SELECT COUNT(*) AS n FROM decision_comments WHERE decision_id = ?").get(d.id) as { n: number }).n;
-  return {
+  // Viewers get none of the model text of a decision about a quiet pull request.
+  const veil = !viewer.staff && !batch && d.repo !== null && d.number !== null && isQuiet(db, d.repo, d.number);
+  const out: Decision = {
     id: d.id, kind: d.kind as DecisionKind,
     repo: d.repo ?? refs[0]?.repo ?? "",
     number: d.number,
@@ -233,6 +236,11 @@ export function toDecision(db: DatabaseSync, d: DecisionRow, viewer: Viewer): De
     area: batch ? null : areaNameOf(db, d.repo!, d.number!),
     priority: batch ? null : priorityOf(db, d.repo!, d.number!),
     queue: batch ? null : (viewer.slots?.get(`${d.repo}#${d.number}`) ?? null),
+  };
+  if (!veil) return out;
+  return {
+    ...out, question: "", summary: "", context: [], facts: [], recommendedReason: "", risks: [], publicText: null, optionTexts: [],
+    classifications: out.classifications.map((c) => ({ ...c, reason: "" })), priority: out.priority && { ...out.priority, reason: null },
   };
 }
 

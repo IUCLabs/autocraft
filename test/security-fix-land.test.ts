@@ -75,6 +75,8 @@ describe("private fix and landing", () => {
     assert.equal(patchGiveaway("diff --git a/x.rs b/x.rs\n+fn rejects_crafted_input() {}\n"), "crafted");
     assert.equal(patchGiveaway("diff --git a/src/sanitize_names.rs b/src/sanitize_names.rs\nnew file mode 100644\n--- /dev/null\n+++ b/src/sanitize_names.rs\n"), "sanitize", "a new file's name counts");
     assert.equal(patchGiveaway("diff --git a/src/sanitize.rs b/src/sanitize.rs\n--- a/src/sanitize.rs\n+++ b/src/sanitize.rs\n"), null, "an existing file's name does not");
+    assert.equal(patchGiveaway("diff --git a/x.rs b/x.rs\n@@ -1,1 +1,2 @@\n let y = 1;\n+    * crafted\n"), null, "a star line outside a block comment is code");
+    assert.equal(patchGiveaway("diff --git a/x.rs b/x.rs\n@@ -1,2 +1,3 @@\n /*\n+ * crafted input\n */\n"), "crafted", "inside a block comment it is a comment");
     // L1: the branch has the shape of the other pipeline branches and no finding number.
     assert.match(fixBranch("Check layer length", "a1b2c3"), /^autocraft\/fix-check-layer-length-a1b2c3$/);
   });
@@ -144,6 +146,9 @@ describe("private fix and landing", () => {
     const n = finding("landing", { fix_pr: 91 });
     assert.ok(ownFixPrs(db, "photocraft").prs.has("photocraft#91"), "counted as an own fix PR");
     assert.ok(ownFixPrs(db, "photocraft").quiet.has("photocraft#91"));
+    db.prepare("UPDATE security_findings SET state = 'landed' WHERE number = ?").run(n);
+    assert.ok(ownFixPrs(db, "photocraft").quiet.has("photocraft#91"), "still quiet after the merge, until published");
+    db.prepare("UPDATE security_findings SET state = 'landing' WHERE number = ?").run(n);
     db.prepare("INSERT INTO items (repo, number, kind, state) VALUES ('photocraft', 5, 'issue', 'OPEN')").run();
     setPilot(db, "boss", ["photocraft#5"]);
     assert.equal(inPilot(db, "photocraft", 91), true, "in scope although the pilot list names other items");

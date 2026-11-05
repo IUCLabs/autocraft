@@ -183,9 +183,13 @@ export async function runAdvisory(db: DatabaseSync, repo: string, n: number, by:
 /** Creates the finding's draft advisory (private) and stores its id. A finding landed by a quiet pull request has none until its fix merges. */
 async function draftAdvisory(db: DatabaseSync, row: FindingRow, w: Writer, g: Parameters<typeof ghAdvisoryCreate>[1], d: Pick<LandDeps, "exec">): ReturnType<typeof ghAdvisoryCreate> {
   const key = findingKey(row.repo, row.number);
+  // One draft per finding: the empty id claims the creation, so the merge poll and a Publish press never both create one. A claim older than ten minutes is a crashed attempt.
+  const stale = new Date(Date.now() - 600_000).toISOString();
+  const claimed = db.prepare("UPDATE security_findings SET ghsa_id = '', updated_at = ? WHERE repo = ? AND number = ? AND (ghsa_id IS NULL OR (ghsa_id = '' AND updated_at < ?))").run(new Date().toISOString(), row.repo, row.number, stale).changes;
+  if (!claimed) return { ghsa: null, result: { code: 1, stdout: "", stderr: "the advisory is being created" } };
   const text = `${advisoryText(row)}${row.fix_pr ? `\n### Fix\n\nFixed in ${slugOf(row.repo)}#${row.fix_pr}.\n` : ""}`;
   const a = await ghAdvisoryCreate(w, g, d.exec, { repo: row.repo, key, summary: row.title, description: text, severity: row.severity });
-  if (a.ghsa) db.prepare("UPDATE security_findings SET ghsa_id = ? WHERE repo = ? AND number = ?").run(a.ghsa, row.repo, row.number);
+  db.prepare("UPDATE security_findings SET ghsa_id = ? WHERE repo = ? AND number = ? AND ghsa_id = ''").run(a.ghsa, row.repo, row.number);
   return a;
 }
 

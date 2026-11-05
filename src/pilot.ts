@@ -3,6 +3,7 @@
 // Empty or absent means no pilot. A Fix PR the pipeline opened for a pilot issue, a follow-up issue it filed for a pilot PR, and a Fix PR it opened for such a follow-up issue count as pilot items.
 // A fast-tracked item (src/fasttrack.ts) is in scope whatever its repo's flag and the pilot say.
 // No Node imports besides the type, so candidate queries can use the SQL fragments.
+import { quietSqlFor } from "./security/quiet.ts";
 import type { DatabaseSync } from "node:sqlite";
 import { audit } from "./dash/audit.ts";
 
@@ -93,7 +94,7 @@ export const pilotSqlFor = (repo: string, number: string): string =>
     OR (EXISTS (SELECT 1 FROM main.tracked_repos pt WHERE pt.name = ${repo} AND pt.pipeline = 1)
     AND (COALESCE(json_array_length(${LIST}), 0) = 0
       OR EXISTS (SELECT 1 FROM json_each(${LIST}) pj WHERE pj.value = ${repo} || '#' || ${number})
-      OR EXISTS (SELECT 1 FROM main.security_findings psf WHERE psf.repo = ${repo} AND psf.fix_pr = ${number} AND psf.state = 'landing' AND psf.fork IS NULL)
+      OR ${quietSqlFor(repo, number)}
       OR EXISTS (SELECT 1 FROM main.fix_attempts pf, json_each(${LIST}) pj WHERE pf.repo = ${repo} AND pf.pr_url LIKE '%/pull/' || ${number}
         AND pj.value = pf.repo || '#' || pf.number)
       OR EXISTS (SELECT 1 FROM main.fix_attempts pf2 JOIN main.postmerge_followups pm2 ON pm2.repo = pf2.repo AND pm2.issue_number = pf2.number, json_each(${LIST}) pj

@@ -131,14 +131,16 @@ async function startStep(db: DatabaseSync, req: Req, repo: string, n: number, ac
     throw new HttpError(409, "this finding is already being published");
   }
   if (action === "fix" && !row.verification) throw new HttpError(409, "the finding has not been verified");
-  if (s.to && !advance(db, repo, n, s.from, s.to, { note: null }, req.user.login)) throw new HttpError(409, "the finding changed; reload and try again");
+  // Land after the advisory route starts over on the public fork: the advisory's private fork and its pull request are forgotten (ghsa_id stays).
+  const reset: Record<string, null> = action === "land" && row.state === "awaiting-admin" ? { fork: null, fix_pr: null } : {};
+  if (s.to && !advance(db, repo, n, s.from, s.to, { note: null, ...reset }, req.user.login)) throw new HttpError(409, "the finding changed; reload and try again");
   try {
     const params: Record<string, string | number> = { repo, number: n, ...(action === "publish" && { cve: b.cve === true ? 1 : 0 }) };
     const job = await enqueue(db, s.step, params, req.user.login);
     // The job is recorded under the scan's pseudo repo, like the scan's own jobs, so job listings leave it out for viewers.
     db.prepare("UPDATE jobs SET repo = ? WHERE id = ?").run(securityRepo(repo), job.id);
   } catch (e) {
-    if (s.to) advance(db, repo, n, [s.to], row.state, {});
+    if (s.to) advance(db, repo, n, [s.to], row.state, { fork: row.fork, fix_pr: row.fix_pr });
     if (e instanceof JobError) throw new HttpError(e.status, e.message);
     throw e;
   }
