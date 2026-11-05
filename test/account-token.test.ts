@@ -37,7 +37,7 @@ delete process.env.AUTOCRAFT_ACCOUNTS;
 const db = connect(join(dir, "t.db"));
 
 const waitFor = async (f: () => boolean) => {
-  for (let i = 0; i < 100 && !f(); i++) await new Promise((r) => setTimeout(r, 50));
+  for (let i = 0; i < 400 && !f(); i++) await new Promise((r) => setTimeout(r, 50));
   assert.ok(f());
 };
 

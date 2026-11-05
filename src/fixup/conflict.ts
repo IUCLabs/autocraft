@@ -89,8 +89,8 @@ async function live(db: DatabaseSync, x: ConflictRun, c: ConflictCandidate): Pro
   return pr;
 }
 
-const NEWEST_QUERY = `query($name: String!, $n: Int!) {
-  repository(name: $name, owner: "${BASE_ORG}") { pullRequest(number: $n) {
+const NEWEST_QUERY = `query($owner: String!, $name: String!, $n: Int!) {
+  repository(owner: $owner, name: $name) { pullRequest(number: $n) {
     comments(last: 1) { nodes { databaseId body createdAt author { login } } }
     reviews(last: 1) { nodes { submittedAt } }
   } }
@@ -102,7 +102,7 @@ const NEWEST_QUERY = `query($name: String!, $n: Int!) {
  */
 export async function newestConflictNote(x: ConflictRun, c: ConflictCandidate): Promise<{ id: string; count: number } | null> {
   try {
-    const r = await x.d.querier.query(NEWEST_QUERY, { name: x.repo, n: c.number }) as { repository?: { pullRequest?: {
+    const r = await x.d.querier.query(NEWEST_QUERY, { owner: BASE_ORG, name: x.repo, n: c.number }) as { repository?: { pullRequest?: {
       comments?: { nodes?: { databaseId: number; body: string; createdAt: string; author: { login: string } | null }[] };
       reviews?: { nodes?: { submittedAt: string | null }[] };
     } | null } };
