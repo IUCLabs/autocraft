@@ -19,6 +19,8 @@ const SECRET = "sk-ant-oat01-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789_-AbCdEfGhIjKlM
 const FAKE = join(dir, "claude");
 writeFileSync(FAKE, `#!/bin/sh
 echo "Open https://claude.example/oauth/authorize?code=true&state=abc to sign in"
+# The real CLI redraws its screen while it waits, filling the capped output buffer before the code arrives.
+head -c 25000 /dev/zero | tr '\\0' 'x'; echo
 read -r line
 if [ "$line" = "goodcode#state" ]; then
   echo "Your OAuth token (valid for 1 year):"

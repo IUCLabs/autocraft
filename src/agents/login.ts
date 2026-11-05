@@ -5,8 +5,12 @@
 // token, which is handed to `onToken` and cut out of the buffered output.
 // The code and the token are secrets: never logged, stored (the token only by
 // `onToken`) or echoed, and none of the command's output leaves this process
-// except the URL.
+// except the URL and, when a token request fails, its screen text after the code
+// with every token and the code cut out (`setup-token-failed.log` in the account's
+// config directory, mode 0600), so the failure can be read.
 import { spawn, type ChildProcess } from "node:child_process";
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { claudeBin } from "./box.ts";
 import { childEnv } from "./status.ts";
 import { extractToken } from "./token.ts";
@@ -23,20 +27,31 @@ const LOGIN_FAILED = /error|failed|invalid|expired|denied/i;
 // eslint-disable-next-line no-control-regex
 const ANSI = /\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[()][A-Za-z0-9]|[\x00-\x08\x0b-\x1f\x7f]/g;
 
-export const timing = { urlMs: 30_000, codeMs: 30_000, maxMs: 10 * 60_000 };
+export const timing = { urlMs: 30_000, codeMs: 60_000, enterMs: 300, maxMs: 10 * 60_000 };
 
-type Live = { kind: LoginKind; onToken?: (token: string) => void; child: ChildProcess; info: LoginInfo; out: string; since: number; code?: string; timers: NodeJS.Timeout[]; onDone?: () => void };
+type Live = { kind: LoginKind; configDir: string; onToken?: (token: string) => void; child: ChildProcess; info: LoginInfo; out: string; code?: string; timers: NodeJS.Timeout[]; onDone?: () => void };
 const live = new Map<string, Live>();
 const last = new Map<string, LoginInfo>();
 
 const shq = (s: string) => `'${s.replaceAll("'", `'\\''`)}'`;
 // The terminal echoes the typed code; it is cut out before any pattern looks at the output.
-const fresh = (l: Live) => (l.code ? l.out.slice(l.since).replaceAll(l.code, "") : l.out.slice(l.since));
+const fresh = (l: Live) => (l.code ? l.out.replaceAll(l.code, "") : l.out);
 const clean = (s: string) => s.replace(ANSI, "");
+
+const ANY_TOKEN = /sk-ant-[A-Za-z0-9_-]+/g;
+
+function keepFailedScreen(l: Live): void {
+  try {
+    writeFileSync(join(l.configDir, "setup-token-failed.log"), `${new Date().toISOString()}\n${fresh(l).replace(ANY_TOKEN, "[token]").slice(-4000)}\n`, { mode: 0o600 });
+  } catch {
+    // Diagnostics only.
+  }
+}
 
 function finish(id: string, l: Live, state: LoginState, message: string | null): void {
   if (live.get(id) !== l) return;
   for (const t of l.timers) clearTimeout(t);
+  if (l.kind === "token" && state === "failed" && l.info.state === "checking") keepFailedScreen(l);
   l.code = undefined;
   l.out = "";
   l.info = { state, url: null, message, kind: l.kind };
@@ -81,7 +96,7 @@ export async function startLogin(id: string, configDir: string, onDone?: () => v
   // A wide terminal keeps the URL on one line. exec: killing the pty's shell kills the CLI.
   const cmd = `stty cols 1000 rows 50 2>/dev/null; exec ${shq(claudeBin())} ${kind === "token" ? "setup-token" : "auth login --claudeai"}`;
   const child = spawn("script", ["-q", "-f", "-e", "-c", cmd, "/dev/null"], { env: childEnv(configDir, { BROWSER: "true" }), stdio: ["pipe", "pipe", "ignore"] });
-  const l: Live = { kind, onToken, child, info: { state: "starting", url: null, message: null, kind }, out: "", since: 0, timers: [], onDone };
+  const l: Live = { kind, configDir, onToken, child, info: { state: "starting", url: null, message: null, kind }, out: "", timers: [], onDone };
   live.set(id, l);
   last.delete(id);
   l.timers.push(setTimeout(() => finish(id, l, "failed", "the sign-in timed out"), timing.maxMs));
@@ -117,11 +132,14 @@ export async function startLogin(id: string, configDir: string, onDone?: () => v
 export function submitCode(id: string, code: string): boolean {
   const l = live.get(id);
   if (!l || l.info.state !== "waiting" || !LOGIN_CODE.test(code)) return false;
-  l.since = l.out.length;
+  // Only output after the code counts; a fresh buffer keeps that true once the capped buffer is full.
+  l.out = "";
   l.code = code;
   l.info = { state: "checking", url: null, message: null, kind: l.kind };
   l.timers.push(setTimeout(() => finish(id, l, "failed", "no answer to the code"), timing.codeMs));
-  l.child.stdin!.write(`${code}\r`);
+  // Enter goes separately: the CLI reads one write as a paste, and an Enter inside a paste doesn't submit.
+  l.child.stdin!.write(code);
+  l.timers.push(setTimeout(() => l.child.stdin!.write("\r"), timing.enterMs));
   return true;
 }
 
