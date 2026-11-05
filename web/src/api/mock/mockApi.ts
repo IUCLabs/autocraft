@@ -1,5 +1,5 @@
 import type { Api } from "../client";
-import type { Decision, DecisionComment, DecisionFilter, User } from "../types";
+import type { Decision, DecisionComment, DecisionFilter, Item, User } from "../types";
 import { canAct } from "../../registry/permissions";
 import { setClock } from "../../lib/format";
 import { createAdminMock } from "./adminMock";
@@ -186,7 +186,15 @@ export function createMockApi(): Api {
       const it = itemFor(repo, number);
       const postmerge = postmergeFor(number, it.kind, mockRole() !== "viewer");
       const merged = postmerge ? { state: "merged" as const, mergedAt: postmerge.at, mergedBy: "pipeline" } : {};
-      return wait({ ...it, ...merged, settled: settledFor(number), ...prWorkFor(number, it.kind), premerge: premergeFor(number, it.kind), postmerge });
+      const full: Item = { ...it, ...merged, settled: settledFor(number), ...prWorkFor(number, it.kind), premerge: premergeFor(number, it.kind), postmerge };
+      // As on the server, viewers get states and verdicts without job errors or model text.
+      if (mockRole() !== "viewer") return wait(full);
+      return wait({
+        ...full,
+        fixups: full.fixups.map((f) => ({ ...f, reason: null, files: [] })),
+        verification: full.verification && { ...full.verification, reason: "", summary: null, note: null, tasks: full.verification.tasks.map((t) => ({ ...t, results: [] })) },
+        reviews: full.reviews && { ...full.reviews, opus: full.reviews.opus && { ...full.reviews.opus, reason: "", fixes: [], risks: [] }, final: { ...full.reviews.final, reason: "" } },
+      });
     },
     items: (f) => wait(itemList(f), 70),
     search(q) {

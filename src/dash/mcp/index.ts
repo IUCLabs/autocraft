@@ -34,7 +34,7 @@ export type McpEnv = {
   baseUrl: string | null;
   /** Feedback posts per login per hour (maintainers; operators are not limited, as on the dashboard). */
   limiter: RateLimiter;
-  /** The token was made to answer and its login is an operator now: the answer tools are offered and allowed. */
+  /** The token was made to answer, its login is an operator now and answering is available: the answer tools are offered and allowed. */
   canAnswer: boolean;
   /** Spends one of the token's expensive calls (list_repos, list_fixups); the number of seconds to wait when it has none left, else 0. */
   expensive: () => number;
@@ -102,7 +102,7 @@ const reqOf = (user: User, o: { method?: Req["method"]; params?: Record<string, 
 
 const KIND_HELP = "scope (is this wanted in the app?), duplicate (same as another item?), close (close this?), merge (merge this PR?), split (split into parts?), other";
 
-/** Offered only to an answering token of a current operator (McpEnv.canAnswer). */
+/** Offered only to an answering token of a current operator while answering is available (McpEnv.canAnswer). */
 export const ANSWER_TOOLS = [
   {
     name: "answer_decision",
@@ -284,8 +284,8 @@ const PERMISSION_HINT = " (your GitHub permission is read with your newest dashb
 
 /** The one place that refuses the answer tools while answering is not available. */
 function requireAnswering(env: McpEnv): void {
-  if (!env.canAnswer) throw new HttpError(403, NO_ANSWER);
   if (!answering.enabled) throw new HttpError(403, NOT_YET);
+  if (!env.canAnswer) throw new HttpError(403, NO_ANSWER);
 }
 
 const spend = (env: McpEnv): void => {
@@ -341,6 +341,7 @@ async function listFixups(env: McpEnv, raw: unknown): Promise<ToolResult> {
   const a = args(raw, { repo: "repo", limit: "limit" });
   spend(env);
   const user = env.user(false);
+  const internals = user.role !== "viewer";
   const repos = await visibleTo(env.db, user);
   if (a.repo !== undefined && !repos.includes(a.repo as string)) throw new HttpError(404, `${a.repo} is not a tracked repo`);
   const limit = (a.limit as number | undefined) ?? 10;
@@ -353,8 +354,9 @@ async function listFixups(env: McpEnv, raw: unknown): Promise<ToolResult> {
     return {
       item: `${h.repo}#${h.number}`, title: h.title, author: h.author, head: h.head.slice(0, 12),
       github: githubItemUrl(h.repo, h.number, "pr"), link: link(env, itemPath(h.repo, h.number)),
-      stopped: last ? `${last.state}${last.reason ? `: ${last.reason}` : ""}` : (h.note ?? "held"),
-      review: review?.reason ?? null, fixes: list(review?.fixes ?? null),
+      // Job errors and the review's text are for operators and maintainers; a viewer gets the state only.
+      stopped: last ? `${last.state}${internals && last.reason ? `: ${last.reason}` : ""}` : (internals ? h.note ?? "held" : "held"),
+      review: internals ? review?.reason ?? null : null, fixes: internals ? list(review?.fixes ?? null) : [],
     };
   });
   const more = held.length > limit;

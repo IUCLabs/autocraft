@@ -83,9 +83,9 @@ async function requireOperator(req: Req, d: DecisionRow): Promise<void> {
 
 // ---- reading -----------------------------------------------------------
 
-type OpinionRow = { id: string; login: string; option: string | null; note: string | null; at: string; permission: string };
+type OpinionRow = { id: string; login: string; option: string | null; note: string | null; at: string; permission: string; via: string | null };
 const toOpinion = (o: OpinionRow): Opinion => ({
-  id: o.id, login: o.login, option: o.option, note: o.note, at: o.at, permission: o.permission === "write" ? "write" : "none",
+  id: o.id, login: o.login, option: o.option, note: o.note, at: o.at, permission: o.permission === "write" ? "write" : "none", ...(o.via === "mcp" ? { via: "mcp" as const } : {}),
 });
 
 type ClassRow = {
@@ -189,10 +189,10 @@ export function toDecision(db: DatabaseSync, d: DecisionRow, viewer: Viewer): De
   const refs = itemsOf(d);
   const look = db.prepare("SELECT title, body, kind, state FROM items WHERE repo = ? AND number = ?");
   const item = batch ? undefined : (look.get(d.repo, d.number) as { title: string | null; body: string | null; kind: string; state: string } | undefined);
-  const opinions = (db.prepare(`SELECT id, login, option, note, at, permission FROM decision_opinions
+  const opinions = (db.prepare(`SELECT id, login, option, note, at, permission, via FROM decision_opinions
     WHERE decision_id = ? AND retracted_at IS NULL ORDER BY at DESC`).all(d.id) as OpinionRow[]).map(toOpinion);
   const adopted = d.adopted_opinion
-    ? (db.prepare("SELECT id, login, option, note, at, permission FROM decision_opinions WHERE id = ?").get(d.adopted_opinion) as OpinionRow | undefined)
+    ? (db.prepare("SELECT id, login, option, note, at, permission, via FROM decision_opinions WHERE id = ?").get(d.adopted_opinion) as OpinionRow | undefined)
     : undefined;
   const claimRow = db.prepare(`SELECT login, since FROM decision_claims WHERE decision_id = ? AND at > ? AND login <> ? ORDER BY at DESC LIMIT 1`)
     .get(d.id, new Date(Date.now() - CLAIM_TTL).toISOString(), viewer.login) as Claim | undefined;
@@ -356,7 +356,8 @@ export async function forItem(db: DatabaseSync, req: Req): Promise<Decision | nu
 
 export async function thread(db: DatabaseSync, req: Req): Promise<DecisionComment[]> {
   await needDecision(db, req, req.params.id!);
-  return db.prepare("SELECT id, login, at, body FROM decision_comments WHERE decision_id = ? ORDER BY at, rowid").all(req.params.id!) as unknown as DecisionComment[];
+  return (db.prepare("SELECT id, login, at, body, via FROM decision_comments WHERE decision_id = ? ORDER BY at, rowid").all(req.params.id!) as { id: string; login: string; at: string; body: string; via: string | null }[])
+    .map(({ via, ...c }): DecisionComment => (via === "mcp" ? { ...c, via: "mcp" } : c));
 }
 
 // ---- operator writes -----------------------------------------------------
@@ -533,7 +534,7 @@ export async function feedback(db: DatabaseSync, req: Req, limiter: RateLimiter,
   const at = new Date().toISOString();
   if (option === null) {
     const id = randomToken(12);
-    db.prepare("INSERT INTO decision_comments (id, decision_id, login, at, body) VALUES (?, ?, ?, ?, ?)").run(id, d.id, req.user.login, at, text);
+    db.prepare("INSERT INTO decision_comments (id, decision_id, login, at, body, via) VALUES (?, ?, ?, ?, ?, ?)").run(id, d.id, req.user.login, at, text, via ?? null);
     audit(db, req.user.login, "comment", d.id, { comment: id, length: text!.length, ...(via ? { via } : {}) });
     return toDecision(db, getDecision(db, d.id)!, await viewerWith(db, req));
   }
@@ -548,8 +549,8 @@ export async function feedback(db: DatabaseSync, req: Req, limiter: RateLimiter,
     const earlier = db.prepare("SELECT note FROM decision_opinions WHERE decision_id = ? AND login = ? AND retracted_at IS NULL").get(d.id, req.user.login) as { note: string | null } | undefined;
     const note = text ?? earlier?.note ?? null;
     db.prepare("UPDATE decision_opinions SET retracted_at = ? WHERE decision_id = ? AND login = ? AND retracted_at IS NULL").run(at, d.id, req.user.login);
-    db.prepare("INSERT INTO decision_opinions (id, decision_id, login, option, note, at, permission) VALUES (?, ?, ?, ?, ?, ?, ?)")
-      .run(randomToken(12), d.id, req.user.login, option, note, at, permission);
+    db.prepare("INSERT INTO decision_opinions (id, decision_id, login, option, note, at, permission, via) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(randomToken(12), d.id, req.user.login, option, note, at, permission, via ?? null);
     audit(db, req.user.login, "opinion", d.id, { option, note: note ? true : undefined, ...(via ? { via } : {}) });
     db.exec("COMMIT");
   } catch (e) {

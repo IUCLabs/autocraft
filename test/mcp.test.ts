@@ -12,6 +12,7 @@ import { actionable, ask } from "../src/decisions.ts";
 import { scopeToTracked } from "../src/repos.ts";
 import { apiRoutes } from "../src/dash/api/index.ts";
 import { loadConfig } from "../src/dash/server/config.ts";
+import { RateLimiter } from "../src/dash/server/util.ts";
 import { startServer } from "../src/dash/server/index.ts";
 import { FakeProvider } from "../src/dash/server/provider.ts";
 import { answering } from "../src/dash/mcp/index.ts";
@@ -65,7 +66,8 @@ before(async () => {
   addLogin(db, "cli", "op2", "operator", null);
   scopeToTracked(db);
   const config = loadConfig({ AUTOCRAFT_DEV_AUTH: "1", AUTOCRAFT_LISTEN: "127.0.0.1:0", AUTOCRAFT_DB: dbFile, AUTOCRAFT_DEV_PERMS: permsFile });
-  const s = await startServer({ config, db, provider: new FakeProvider(permsFile), routes: apiRoutes() });
+  const feedbackLimiter = new RateLimiter(60, 3600_000);
+  const s = await startServer({ config, db, provider: new FakeProvider(permsFile), feedbackLimiter, routes: apiRoutes({ limiter: feedbackLimiter }) });
   base = s.url;
   close = s.close;
 });
@@ -296,15 +298,29 @@ describe("tools", () => {
     assert.equal(shown.comments.at(-1).text, "Plain comment.");
   });
 
+  test("list_fixups gives a viewer the state only, as the item page does", async () => {
+    const rows = data((await call(await viewerToken(), "list_fixups")).text);
+    assert.equal(rows[0].stopped, "cannot-push");
+    assert.equal(rows[0].review, null);
+    assert.deepEqual(rows[0].fixes, []);
+    const v = await signedIn("viewer1");
+    const it = await v.json<{ fixups: { reason: string | null }[]; reviews: { opus: { reason: string; fixes: unknown[] } } | null }>("GET", "/api/items/photocraft/8");
+    assert.ok(it.fixups.every((f) => f.reason === null));
+    assert.equal(it.reviews?.opus.reason, "");
+    assert.deepEqual(it.reviews?.opus.fixes, []);
+    const m = await signedIn("maint");
+    assert.equal((await m.json<{ reviews: { opus: { reason: string } } }>("GET", "/api/items/photocraft/8")).reviews.opus.reason, "Good change; two small fixes.");
+  });
+
   test("list_fixups lists held take-fix PRs with their fix list, not ones with our push under way", async () => {
-    const t = await viewerToken();
+    const t = await tokenFor("maint");
     const rows = data((await call(t, "list_fixups")).text);
     assert.deepEqual(rows.map((r: { item: string }) => r.item), ["photocraft#8"]);
     assert.equal(rows[0].stopped, "cannot-push: maintainers may not modify the branch");
     assert.deepEqual(rows[0].fixes, [{ file: "src/brush.rs", change: "Drop the unused import" }]);
     assert.equal(rows[0].github, "https://github.com/storytold/photocraft/pull/8");
     assert.deepEqual(data((await call(t, "list_fixups", { repo: "filmcraft" })).text), []);
-    assert.equal((await call(t, "list_fixups", { repo: "secretcraft" })).isError, true);
+    assert.equal((await call(await viewerToken(), "list_fixups", { repo: "secretcraft" })).isError, true);
     const repos = data((await call(t, "list_repos")).text);
     assert.equal(repos.find((r: { repo: string }) => r.repo === "photocraft").fixupsWaiting, 1);
   });
@@ -312,6 +328,26 @@ describe("tools", () => {
 
 describe("answering", () => {
   const toolNames = async (t: string): Promise<string[]> => (await rpc(t, "tools/list")).body.result.tools.map((x: { name: string }) => x.name);
+
+  test("while answering is not available: no answering tokens, no answer tools or instructions, and a call refuses", async () => {
+    const b = await signedIn("boss");
+    await b.json("POST", "/api/mcp/tokens", { label: "x", answer: true }, 403);
+    assert.equal((await b.json<McpTokens>("GET", "/api/mcp/tokens")).answering, false);
+    const t = await tokenFor("boss");
+    assert.equal((await toolNames(t)).some((n) => n.includes("answer")), false);
+    assert.doesNotMatch((await rpc(t, "initialize", { protocolVersion: "2025-06-18" })).body.result.instructions, /answer_decision/);
+    assert.doesNotMatch((await call(t, "get_inbox_item", { id: P10 })).text, /call answer_decision/);
+    for (const [name, args] of [["answer_decision", { id: P10, option: "small" }], ["undo_answer", { id: P10 }]] as const) {
+      const r = await call(t, name, args);
+      assert.equal(r.isError, true);
+      assert.match(r.text, /sign in to AutoCraft again with GitHub App sign-in/);
+    }
+    assert.equal(actionable(db).length, 0);
+  });
+
+  describe("with answering switched on", () => {
+    before(() => { answering.enabled = true; });
+    after(() => { answering.enabled = false; });
 
   test("only an operator makes an answering token, and it lasts 7 days", async () => {
     const m = await signedIn("maint");
@@ -335,21 +371,6 @@ describe("answering", () => {
     assert.equal(actionable(db).length, 0);
   });
 
-  test("while answering is not available, the answer tools are listed but refuse, and nothing is recorded", async () => {
-    const b = await signedIn("boss");
-    const t = (await b.json<McpTokenCreated>("POST", "/api/mcp/tokens", { label: "answers", answer: true })).token;
-    assert.deepEqual((await toolNames(t)).filter((n) => n.includes("answer")).sort(), ["answer_decision", "undo_answer"]);
-    for (const [name, args] of [["answer_decision", { id: P10, option: "small" }], ["undo_answer", { id: P10 }]] as const) {
-      const r = await call(t, name, args);
-      assert.equal(r.isError, true);
-      assert.match(r.text, /sign in to AutoCraft again with GitHub App sign-in/);
-    }
-    assert.equal(actionable(db).length, 0);
-  });
-
-  describe("with answering switched on", () => {
-    before(() => { answering.enabled = true; });
-    after(() => { answering.enabled = false; });
 
   test("an answering token answers as the operator, the pipeline sees it, and undo takes it back", async () => {
     const t = await (async () => {
@@ -380,19 +401,25 @@ describe("answering", () => {
     assert.ok(db.prepare("SELECT 1 FROM audit WHERE action = 'undo' AND target = ? AND details LIKE '%\"via\":\"mcp\"%'").get(P10));
   });
 
-  test("an answer needs a live dashboard session of the operator", async () => {
+  test("after signing out, an answer is refused for want of a dashboard session", async () => {
+    db.prepare("DELETE FROM sessions WHERE login = 'boss'").run();
     const b = await signedIn("boss");
     const t = (await b.json<McpTokenCreated>("POST", "/api/mcp/tokens", { label: "answers", answer: true })).token;
-    db.prepare("DELETE FROM sessions WHERE login = 'boss'").run();
+    db.prepare("DELETE FROM repo_permissions WHERE login = 'boss'").run();
+    assert.equal((await b.req("POST", "/api/signout")).status < 400, true);
     db.prepare("DELETE FROM repo_permissions WHERE login = 'boss'").run();
     const r = await call(t, "answer_decision", { id: P10, option: "small" });
     assert.equal(r.isError, true);
+    assert.match(r.text, /no write access to storytold\/photocraft/);
+    assert.match(r.text, /sign in to the dashboard/);
     assert.equal(actionable(db).length, 0);
   });
   });
 });
 
 describe("token revocation", () => {
+  before(() => { answering.enabled = true; });
+  after(() => { answering.enabled = false; });
   const live = (login: string): number => (db.prepare("SELECT COUNT(*) AS n FROM mcp_tokens WHERE login = ?").get(login) as { n: number }).n;
 
   test("demoting an operator ends its answering tokens for good; plain tokens stay", async () => {

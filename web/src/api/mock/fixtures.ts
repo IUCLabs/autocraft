@@ -735,7 +735,7 @@ export const permFor = (login: string, repo: string): "write" | "none" =>
 
 function toDecision(s: Seed): Decision {
   const id = s.number === null ? `batch-${s.repo}-${hash(s.title) & 0xffff}` : `${s.repo}#${s.number}:${s.kind}`;
-  const opinions = (s.opinions ?? []).map(([login, option, note, mins], i) => ({ id: `${id}/o${i}`, login, option, note, at: iso(mins * M), permission: permFor(login, s.repo) }));
+  const opinions = (s.opinions ?? []).map(([login, option, note, mins], i) => ({ id: `${id}/o${i}`, login, option, note, at: iso(mins * M), permission: permFor(login, s.repo), ...(i === 0 && s.number === 4127 ? { via: "mcp" as const } : {}) }));
   const text = s.number === null ? { summary: BATCH_SUMMARY[s.repo] ?? s.question, body: null } : (TEXT[`${s.repo}#${s.number}`] ?? fillerText(s.title, s.repo));
   return {
     id,

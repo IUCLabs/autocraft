@@ -170,7 +170,8 @@ CREATE TABLE IF NOT EXISTS decision_opinions (
   note TEXT,
   at TEXT NOT NULL,
   permission TEXT NOT NULL,           -- the login's GitHub permission on the repo when given: write | none
-  retracted_at TEXT                   -- set when changed or retracted; one live row per login and decision
+  retracted_at TEXT,                  -- set when changed or retracted; one live row per login and decision
+  via TEXT                            -- 'mcp' when an agent sent it for the login; NULL from the dashboard (db.ts adds it to older databases)
 );
 CREATE UNIQUE INDEX IF NOT EXISTS decision_opinions_live ON decision_opinions(decision_id, login) WHERE retracted_at IS NULL;
 
@@ -179,7 +180,8 @@ CREATE TABLE IF NOT EXISTS decision_comments (
   decision_id TEXT NOT NULL,
   login TEXT NOT NULL COLLATE NOCASE,
   at TEXT NOT NULL,
-  body TEXT NOT NULL
+  body TEXT NOT NULL,
+  via TEXT                            -- 'mcp' when an agent sent it for the login; NULL from the dashboard (db.ts adds it to older databases)
 );
 CREATE INDEX IF NOT EXISTS decision_comments_decision ON decision_comments(decision_id, at);
 CREATE INDEX IF NOT EXISTS decision_comments_at ON decision_comments(at);

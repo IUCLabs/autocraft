@@ -5,6 +5,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import type { McpTokenCreated, McpTokens } from "../../../web/src/api/types.ts";
 import { audit } from "../audit.ts";
+import { answering } from "../mcp/index.ts";
 import { createToken, listTokens, MCP_TOKENS_PER_LOGIN, revokeToken } from "../mcp/tokens.ts";
 import { HttpError } from "../server/util.ts";
 import type { Req } from "../types.ts";
@@ -16,12 +17,13 @@ const body = (req: Req): Record<string, unknown> => {
   return b as Record<string, unknown>;
 };
 
-export const tokens = (db: DatabaseSync, req: Req): McpTokens => ({ tokens: listTokens(db, req.user.login), max: MCP_TOKENS_PER_LOGIN, path: "/mcp" });
+export const tokens = (db: DatabaseSync, req: Req): McpTokens => ({ tokens: listTokens(db, req.user.login), max: MCP_TOKENS_PER_LOGIN, path: "/mcp", answering: answering.enabled });
 
 export function create(db: DatabaseSync, req: Req): McpTokenCreated {
   if (req.user.role === "viewer") throw new HttpError(403, "viewers cannot make agent tokens");
   const b = body(req);
   if (b.answer !== undefined && typeof b.answer !== "boolean") throw new HttpError(400, "answer must be true or false");
+  if (b.answer === true && !answering.enabled) throw new HttpError(403, "answering from an agent is not available yet");
   if (b.answer === true && req.user.role !== "operator") throw new HttpError(403, "only operators make tokens that answer decisions");
   const { token, row } = createToken(db, req.user.login, b.label, b.answer === true);
   audit(db, req.user.login, "mcp-token-create", req.user.login, { id: row.id, label: row.label ?? undefined, ...(row.canAnswer ? { canAnswer: true } : {}) });

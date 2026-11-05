@@ -57,6 +57,8 @@ import { mainCiRepos, summarize } from "../../mainci/index.ts";
 export type ApiOptions = {
   // Opinions and comments by non-operators, per login per hour.
   writesPerHour?: number;
+  // The limiter itself, when the Inbox MCP server's feedback must share it (see AppOptions.feedbackLimiter); overrides writesPerHour.
+  limiter?: RateLimiter;
   // Embeds search queries and items without a stored vector; default: the local model, loaded on first use.
   embedder?: Embedder;
   // Runs `gh` for the batch controls that close a PR; default: the real one. Tests fake it.
@@ -138,11 +140,11 @@ async function item(db: DatabaseSync, req: Req): Promise<Item> {
     stages: stages.map((s) => ({ ...s, by: s.by ?? "" })),
     comments: comments.map((x) => ({ ...x, author: x.author ?? "", body: x.body ?? "" })),
     decisionIds, settled: settledOf(db, repo, n) as Item["settled"], priority: priorityOf(db, repo, n),
-    ...(it.kind === "pr" ? prWork(db, repo, n) : { verification: null, fixups: [] }),
+    ...(it.kind === "pr" ? prWork(db, repo, n, canSeeInternals(req)) : { verification: null, fixups: [] }),
     // The reviewer's reasons quote the patch, so viewers get the verdict only.
     patchChecks: checksOf(db, repo, n).map(({ kind, subject, patchHash, round, verdict, reasons, problems, model, createdAt }) =>
       ({ kind, subject, patchHash, round, verdict, reasons: canSeeInternals(req) ? reasons : "", problems: canSeeInternals(req) ? problems : [], model, createdAt })),
-    reviews: it.kind === "pr" ? reviewsOf(db, repo, n) : null,
+    reviews: it.kind === "pr" ? reviewsOf(db, repo, n, canSeeInternals(req)) : null,
     premerge: it.kind === "pr" ? premergeOf(db, repo, n) : [],
     postmerge: it.kind === "pr" ? postmergeOf(db, repo, n, canSeeInternals(req)) : null,
     actions: actionsOf(db, repo, n), releases: releasesOf(db, repo, n),
@@ -200,7 +202,8 @@ function conflictsNamed(db: DatabaseSync, repo: string, n: number, head: string)
   return out.sort((a, b) => a.id - b.id);
 }
 
-function reviewsOf(db: DatabaseSync, repo: string, n: number): ItemReviews | null {
+/** `internals` false (viewers): the verdict only; the reviewer's reason, fixes and risks quote the patch. */
+function reviewsOf(db: DatabaseSync, repo: string, n: number, internals: boolean): ItemReviews | null {
   const o = db.prepare(`SELECT head_oid, at, mode, base_head, verdict, sure, reason, fixes, risks FROM final_reviews
     WHERE repo = ? AND number = ? ORDER BY at DESC, head_oid DESC LIMIT 1`).get(repo, n) as
     { head_oid: string; at: string; mode: "full" | "delta"; base_head: string | null; verdict: ReviewSide["verdict"]; sure: number; reason: string; fixes: string | null; risks: string | null } | undefined;
@@ -209,12 +212,13 @@ function reviewsOf(db: DatabaseSync, repo: string, n: number): ItemReviews | nul
   const head = (db.prepare("SELECT head_oid FROM items WHERE repo = ? AND number = ?").get(repo, n) as { head_oid: string | null } | undefined)?.head_oid ?? null;
   return {
     head: o.head_oid, current: o.head_oid === head, conflicts: conflictsNamed(db, repo, n, o.head_oid),
-    opus: { verdict: o.verdict, reason: o.reason, fixes: list(o.fixes), risks: list(o.risks), at: o.at, sure: o.sure === 1, mode: o.mode, baseHead: o.base_head },
-    final: { verdict: o.verdict, reason: o.reason, decided: true },
+    opus: { verdict: o.verdict, reason: internals ? o.reason : "", fixes: internals ? list(o.fixes) : [], risks: internals ? list(o.risks) : [], at: o.at, sure: o.sure === 1, mode: o.mode, baseHead: o.base_head },
+    final: { verdict: o.verdict, reason: internals ? o.reason : "", decided: true },
   };
 }
 
-function prWork(db: DatabaseSync, repo: string, n: number): Pick<Item, "verification" | "fixups"> {
+/** `internals` false (viewers): states only, without job errors or model output. */
+function prWork(db: DatabaseSync, repo: string, n: number, internals: boolean): Pick<Item, "verification" | "fixups"> {
   const head = (db.prepare("SELECT head_oid FROM items WHERE repo = ? AND number = ?").get(repo, n) as { head_oid: string | null } | undefined)?.head_oid ?? null;
   const latest = db.prepare("SELECT head_sha FROM verifications WHERE repo = ? AND number = ? ORDER BY (head_sha = ?) DESC, created_at DESC LIMIT 1").get(repo, n, head) as { head_sha: string } | undefined;
   const v = latest ? verificationOf(db, repo, n, latest.head_sha) : null;
@@ -225,7 +229,7 @@ function prWork(db: DatabaseSync, repo: string, n: number): Pick<Item, "verifica
     .map((f): ItemFixup => {
       let files: string[] = [];
       try { files = strings(JSON.parse(f.files ?? "[]")); } catch { /* malformed: none */ }
-      return { fromHead: f.from_head, toHead: f.to_head, state: f.state as ItemFixup["state"], reason: f.reason, files, attempt: f.attempt, createdAt: f.created_at };
+      return { fromHead: f.from_head, toHead: f.to_head, state: f.state as ItemFixup["state"], reason: internals ? f.reason : null, files: internals ? files : [], attempt: f.attempt, createdAt: f.created_at };
     });
   // CI fix tries are listed with the fix-ups, oldest first.
   const ciFixes = (db.prepare("SELECT head, to_head, state, reason, files, attempt, created_at FROM ci_fixes WHERE repo = ? AND number = ? ORDER BY created_at, rowid").all(repo, n) as
@@ -233,17 +237,17 @@ function prWork(db: DatabaseSync, repo: string, n: number): Pick<Item, "verifica
     .map((f): ItemFixup => {
       let files: string[] = [];
       try { files = strings(JSON.parse(f.files ?? "[]")); } catch { /* malformed: none */ }
-      return { kind: "ci-fix", fromHead: f.head, toHead: f.to_head, state: f.state as ItemFixup["state"], reason: f.reason, files, attempt: f.attempt, createdAt: f.created_at };
+      return { kind: "ci-fix", fromHead: f.head, toHead: f.to_head, state: f.state as ItemFixup["state"], reason: internals ? f.reason : null, files: internals ? files : [], attempt: f.attempt, createdAt: f.created_at };
     });
   fixups.push(...ciFixes);
   fixups.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   return {
     fixups,
     verification: !v ? null : {
-      headSha: v.headSha, baseSha: v.baseSha, current: v.headSha === head, kind: v.kind as ItemVerification["kind"], reason: v.reason,
+      headSha: v.headSha, baseSha: v.baseSha, current: v.headSha === head, kind: v.kind as ItemVerification["kind"], reason: internals ? v.reason : "",
       plan: !plan ? null : { crates: plan.crate ? [String(plan.crate)] : strings(plan.crates), tests: strings(plan.tests), testLines: typeof plan.test_lines === "number" ? plan.test_lines : null },
-      state: v.state, summary: v.summary, note: v.note, createdAt: v.createdAt, finishedAt: v.finishedAt,
-      tasks: v.tasks.map((t) => ({ id: t.id, role: t.role, state: t.state, results: t.results, endedAt: t.endedAt })),
+      state: v.state, summary: internals ? v.summary : null, note: internals ? v.note : null, createdAt: v.createdAt, finishedAt: v.finishedAt,
+      tasks: v.tasks.map((t) => ({ id: t.id, role: t.role, state: t.state, results: internals ? t.results : [], endedAt: t.endedAt })),
     },
   };
 }
@@ -352,15 +356,12 @@ function progress(db: DatabaseSync, hidden: string[]): Progress {
 
 // ---- routes --------------------------------------------------------------
 
-/** The routes, with the limiter of opinions and comments that the MCP server's feedback shares with them. */
-export type ApiRoutes = Route[] & { feedbackLimiter: RateLimiter };
-
-export function apiRoutes(opts: ApiOptions = {}): ApiRoutes {
-  const limiter = new RateLimiter(opts.writesPerHour ?? 60, 3600_000);
+export function apiRoutes(opts: ApiOptions = {}): Route[] {
+  const limiter = opts.limiter ?? new RateLimiter(opts.writesPerHour ?? 60, 3600_000);
   const vectors = new VectorIndex(opts.embedder ?? localEmbedder({ threads: 2 }));
   const get = (pattern: string, fn: (db: DatabaseSync, req: Req) => unknown): Route => ({ method: "GET", pattern, handler: ok(fn) });
   const post = (pattern: string, fn: (db: DatabaseSync, req: Req) => unknown): Route => ({ method: "POST", pattern, handler: ok(fn) });
-  const routes: Route[] = [
+  return [
     get("/api/me", me),
     get("/api/repos", visibleRepos),
     get("/api/repos/owners", repoOwners),
@@ -517,5 +518,4 @@ export function apiRoutes(opts: ApiOptions = {}): ApiRoutes {
     get("/api/now/feed", nowFeed),
     get("/api/similar/:repo/:n", (db, req) => sim.similar(db, req, vectors)),
   ];
-  return Object.assign(routes, { feedbackLimiter: limiter });
 }
