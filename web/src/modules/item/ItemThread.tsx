@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { CheckCircleIcon, PlusCircleIcon, WarningCircleIcon } from "@phosphor-icons/react";
 import { useApi, useQuery, usePagedQuery } from "../../api/client";
-import type { ConversationTurn, Decision, Item, ItemTrace, TraceEvent, TraceKind } from "../../api/types";
+import type { ConversationTurn, Decision, Item, ItemTrace, Preapproval, TraceEvent, TraceKind } from "../../api/types";
 import { Button } from "../../ui/atoms/Button";
 import { ErrorLine } from "../../ui/atoms/ErrorLine";
 import { TimeAgo } from "../../ui/atoms/TimeAgo";
@@ -243,12 +243,14 @@ function PreapprovalPart({ it, operator }: { it: Item; operator: boolean }) {
   const api = useApi();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
-  const p = it.preapproval!;
+  const [applied, setApplied] = useState<Preapproval>();
+  // The returned row shows at once; a newer server row (a later update time) replaces it.
+  const p = applied && applied.id === it.preapproval!.id && applied.updatedAt >= it.preapproval!.updatedAt ? applied : it.preapproval!;
   const cancel = async () => {
     setBusy(true);
     setError(undefined);
     try {
-      await api.conversations.cancelPreapproval(it.repo, it.number);
+      setApplied(await api.conversations.cancelPreapproval(it.repo, it.number));
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {

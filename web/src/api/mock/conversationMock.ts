@@ -204,6 +204,7 @@ export function createConversationMock(me: User, changed: () => void, settle?: (
         need();
         const p = PREAPPROVALS[`${repo}#${number}`];
         if (!p) throw new Error(`no pre-approved merge on ${repo}#${number}`);
+        if (!["fixup", "review", "ci", "queued"].includes(p.state)) throw new Error(`the pre-approved merge is already ${p.state}`);
         Object.assign(p, { state: "cancelled", reason: `Cancelled by ${me.login}`, updatedAt: new Date().toISOString() });
         open(repo, number).turns.push(sys(nextId++, 0, `${me.login} cancelled the pre-approved merge.`));
         changed();

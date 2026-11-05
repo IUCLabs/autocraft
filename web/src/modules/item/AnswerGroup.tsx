@@ -15,7 +15,8 @@ const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
 const OTHER = "other";
 
 const NOTE_MAX = 500;
-const area = "block w-full resize-none rounded border border-line bg-sunken px-2.5 py-2 text-sm leading-5 outline-none focus:border-accent/60";
+const omit = <T,>(m: Record<number, T>, id: number) => Object.fromEntries(Object.entries(m).filter(([k]) => Number(k) !== id)) as Record<number, T>;
+const area = "block w-full [field-sizing:content] max-h-[60vh] min-h-24 resize-none rounded border border-line bg-sunken px-2.5 py-2 text-sm leading-5 outline-none focus:border-accent/60";
 
 /**
  * The outcomes of an open question as one pick-one list: the decision's options in order, outcomes only Opus offers
@@ -78,6 +79,7 @@ export function AnswerGroup({ d, user, resolutions, onAnswered }: { d: Decision;
     select(ids[next]!);
     refs.current[next]?.focus();
   };
+  const locked = (c: ConversationCard) => busy || c.state === "running";
   const key = (c: ConversationCard, what: string) => `${c.id}:${what}`;
   const isEditing = (c: ConversationCard, what: string) => editing.has(key(c, what));
   const toggleEdit = (c: ConversationCard, what: string) =>
@@ -99,6 +101,7 @@ export function AnswerGroup({ d, user, resolutions, onAnswered }: { d: Decision;
   const label = isOther ? "Mark handled" : card ? card.label : plain ? `Answer "${selOption!.label}"` : "";
   const confirming = card ? armed : plain ? wf.isArmed : false;
 
+  const blankIssue = !!card?.issue && !skipped(card).includes(card.issue.step) && !(issues[card.id]?.title ?? card.issue.title).trim();
   const run = async () => {
     setError(undefined);
     if (needsConfirm && !confirming) return card ? setArmed(true) : void wf.submit();
@@ -202,22 +205,22 @@ export function AnswerGroup({ d, user, resolutions, onAnswered }: { d: Decision;
                   <StepDraft
                     editing={isEditing(c, "text")}
                     onToggle={() => {
-                      if (isEditing(c, "text")) setTexts((t) => ({ ...t, [c.id]: c.text ?? "" }));
+                      if (isEditing(c, "text")) setTexts((t) => omit(t, c.id));
                       toggleEdit(c, "text");
                     }}
-                    disabled={busy}
+                    disabled={busy || c.state === "running"}
                     preview={<blockquote className="whitespace-pre-wrap border-l-2 border-line-strong pl-3 leading-5 text-ink/75">{text}</blockquote>}
-                    editor={<textarea value={text} onChange={(e) => setTexts((t) => ({ ...t, [c.id]: e.target.value }))} rows={5} aria-label="Comment text" className={area} />}
+                    editor={<textarea value={text} onChange={(e) => setTexts((t) => ({ ...t, [c.id]: e.target.value }))} rows={5} aria-label="Comment text" disabled={locked(c)} className={area} />}
                   />
                 )}
                 {c.issue && i === c.issue.step && !off && (
                   <StepDraft
                     editing={isEditing(c, "issue")}
                     onToggle={() => {
-                      if (isEditing(c, "issue")) setIssues((m) => ({ ...m, [c.id]: { title: c.issue!.title, body: c.issue!.body } }));
+                      if (isEditing(c, "issue")) setIssues((m) => omit(m, c.id));
                       toggleEdit(c, "issue");
                     }}
-                    disabled={busy}
+                    disabled={busy || c.state === "running"}
                     preview={
                       <div className="border-l-2 border-line-strong pl-3 leading-5 text-ink/75">
                         <p className="font-medium text-ink/90">{issueOf(c).title}</p>
@@ -231,9 +234,10 @@ export function AnswerGroup({ d, user, resolutions, onAnswered }: { d: Decision;
                           maxLength={120}
                           onChange={(e) => setIssues((m) => ({ ...m, [c.id]: { ...issueOf(c), title: e.target.value } }))}
                           aria-label="Issue title"
+                          disabled={locked(c)}
                           className="block h-8 w-full rounded border border-line bg-sunken px-2.5 text-sm outline-none focus:border-accent/60 max-md:h-11"
                         />
-                        <textarea value={issueOf(c).body} onChange={(e) => setIssues((m) => ({ ...m, [c.id]: { ...issueOf(c), body: e.target.value } }))} rows={6} aria-label="Issue body" className={area} />
+                        <textarea value={issueOf(c).body} onChange={(e) => setIssues((m) => ({ ...m, [c.id]: { ...issueOf(c), body: e.target.value } }))} rows={6} aria-label="Issue body" disabled={locked(c)} className={area} />
                       </div>
                     }
                   />
@@ -242,12 +246,12 @@ export function AnswerGroup({ d, user, resolutions, onAnswered }: { d: Decision;
                   <StepDraft
                     editing={isEditing(c, "fixup")}
                     onToggle={() => {
-                      if (isEditing(c, "fixup")) setInstr((m) => ({ ...m, [c.id]: c.fixup!.instructions }));
+                      if (isEditing(c, "fixup")) setInstr((m) => omit(m, c.id));
                       toggleEdit(c, "fixup");
                     }}
-                    disabled={busy}
+                    disabled={busy || c.state === "running"}
                     preview={<blockquote className="whitespace-pre-wrap border-l-2 border-line-strong pl-3 leading-5 text-ink/75">{instrOf(c)}</blockquote>}
-                    editor={<textarea value={instrOf(c)} maxLength={1500} onChange={(e) => setInstr((m) => ({ ...m, [c.id]: e.target.value }))} rows={5} aria-label="Fix-up instructions" className={area} />}
+                    editor={<textarea value={instrOf(c)} maxLength={1500} onChange={(e) => setInstr((m) => ({ ...m, [c.id]: e.target.value }))} rows={5} aria-label="Fix-up instructions" disabled={locked(c)} className={area} />}
                   />
                 )}
               </li>
@@ -348,7 +352,7 @@ export function AnswerGroup({ d, user, resolutions, onAnswered }: { d: Decision;
               variant="primary"
               className={cn("max-md:h-11", confirming && "border-bad bg-bad text-white hover:bg-bad/90")}
               loading={busy}
-              disabled={(isOther && !note.trim()) || card?.state === "running"}
+              disabled={(isOther && !note.trim()) || card?.state === "running" || blankIssue}
               onClick={() => void run()}
             >
               {confirming ? `Confirm: ${writes}` : label}

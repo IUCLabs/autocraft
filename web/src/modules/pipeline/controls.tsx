@@ -277,8 +277,8 @@ export function PilotPanel({ className }: { className?: string }) {
               className="num w-full rounded border border-line bg-sunken px-2.5 py-1.5 text-sm outline-none focus:border-accent/60"
             />
             <div className="flex flex-wrap items-center gap-2">
-              <ConfirmButton label="Save" confirmLabel="Confirm save" loading={write.busy === "pilot"} onConfirm={() => save(refs)} />
-              {pilot.length > 0 && <ConfirmButton label="Clear" confirmLabel="Confirm clear" loading={write.busy === "pilot"} onConfirm={() => save([])} />}
+              <ConfirmButton idle="secondary" label="Save" confirmLabel="Confirm save" loading={write.busy === "pilot"} onConfirm={() => save(refs)} />
+              {pilot.length > 0 && <ConfirmButton idle="secondary" label="Clear" confirmLabel="Confirm clear" loading={write.busy === "pilot"} onConfirm={() => save([])} />}
             </div>
             <ErrorLine error={write.error} />
           </div>
