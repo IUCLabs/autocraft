@@ -21,7 +21,7 @@ import { setSingleMergeMax, singleMergeMax } from "../../merge/single.ts";
 import { setRepoPipeline } from "../../pilot.ts";
 import { countPlan, planLabels } from "../../labels/plan.ts";
 import { repoIdentity, setRepoIdentityChecked } from "../../github/identity.ts";
-import { listAll, RepoError, trackRepoChecked, untrackRepo } from "../../repos.ts";
+import { listAll, RepoError, type RepoRow, trackRepoChecked, untrackRepo } from "../../repos.ts";
 import { contributors, getRule, setOverride, setRule, tierOf, type Contributor as Row, type Rule } from "../../whitelist.ts";
 import { audit } from "../audit.ts";
 import { dropSessionTokens } from "../server/user-tokens.ts";
@@ -254,7 +254,11 @@ export function override(db: DatabaseSync, req: Req): Contributor {
 
 export function allRepos(db: DatabaseSync, req: Req): TrackedRepo[] {
   if (!canSeeInternals(req)) throw new HttpError(403, "only operators and maintainers read the repo settings");
-  return listAll(db).map((r) => ({
+  return listAll(db).map((r) => toTrackedRepo(db, r));
+}
+
+function toTrackedRepo(db: DatabaseSync, r: RepoRow): TrackedRepo {
+  return {
     name: r.name, owner: r.owner, tracked: !!r.tracked, openPrs: r.open_prs, openIssues: r.open_issues, mirrored: r.rows, syncedAt: r.synced_at,
     labels: r.tracked ? labelsInfo(db, r.name) : null,
     merging: r.tracked ? mergeInfo(db, r.name) : null,
@@ -267,7 +271,14 @@ export function allRepos(db: DatabaseSync, req: Req): TrackedRepo[] {
     seenChecks: r.tracked ? seenChecks(db, r.name) : [],
     pipeline: !!r.tracked && !!r.pipeline,
     identity: r.tracked ? repoIdentity(db, r.name) : "legacy",
-  }));
+  };
+}
+
+// One repo, for the endpoints that change a single repo's settings: the web patches it into its list, so the answer skips every other repo's label plan.
+function oneRepo(db: DatabaseSync, name: string): TrackedRepo {
+  const r = listAll(db).find((x) => x.name === name);
+  if (!r) throw new HttpError(404, `${name} is not a known repo`);
+  return toTrackedRepo(db, r);
 }
 
 function approvalInfo(a: { by: string; at: string } | null): RepoApproval {
@@ -286,7 +297,7 @@ function labelsInfo(db: DatabaseSync, repo: string): RepoLabels {
 }
 
 // Only an operator lets the Label stage write to a repo on GitHub.
-export function labelsApproval(db: DatabaseSync, req: Req, approved: boolean): TrackedRepo[] {
+export function labelsApproval(db: DatabaseSync, req: Req, approved: boolean): TrackedRepo {
   requireOperator(req, "approve labelling");
   const name = required(body(req).name, "name");
   const changed = refused(() => {
@@ -297,11 +308,11 @@ export function labelsApproval(db: DatabaseSync, req: Req, approved: boolean): T
     }
   });
   if (!changed) throw new HttpError(409, `${name} is ${approved ? "already" : "not"} approved for labelling`);
-  return allRepos(db, req);
+  return oneRepo(db, name);
 }
 
 // Only an operator lets the pipeline merge pull requests in a repo.
-export function mergeApproval(db: DatabaseSync, req: Req, approved: boolean): TrackedRepo[] {
+export function mergeApproval(db: DatabaseSync, req: Req, approved: boolean): TrackedRepo {
   requireOperator(req, "approve merging");
   const name = required(body(req).name, "name");
   const changed = refused(() => {
@@ -312,11 +323,11 @@ export function mergeApproval(db: DatabaseSync, req: Req, approved: boolean): Tr
     }
   });
   if (!changed) throw new HttpError(409, `${name} is ${approved ? "already" : "not"} approved for merging`);
-  return allRepos(db, req);
+  return oneRepo(db, name);
 }
 
 // Only an operator lets the pipeline approve the CI runs GitHub holds for outside contributors' PRs in a repo.
-export function ciApproval(db: DatabaseSync, req: Req, approved: boolean): TrackedRepo[] {
+export function ciApproval(db: DatabaseSync, req: Req, approved: boolean): TrackedRepo {
   requireOperator(req, "approve CI runs");
   const name = required(body(req).name, "name");
   const changed = refused(() => {
@@ -327,7 +338,7 @@ export function ciApproval(db: DatabaseSync, req: Req, approved: boolean): Track
     }
   });
   if (!changed) throw new HttpError(409, `${name} is ${approved ? "already" : "not"} approved for approving CI runs`);
-  return allRepos(db, req);
+  return oneRepo(db, name);
 }
 
 export const workspaceInfo = (db: DatabaseSync): { excluded: string[] } => ({ excluded: workspaceExcluded(db) });
@@ -355,7 +366,7 @@ export function setSingleMerge(db: DatabaseSync, req: Req): { max: number } {
 }
 
 // Only an operator lets the pipeline comment on and close items in a repo.
-export function commentApproval(db: DatabaseSync, req: Req, approved: boolean): TrackedRepo[] {
+export function commentApproval(db: DatabaseSync, req: Req, approved: boolean): TrackedRepo {
   requireOperator(req, "approve commenting");
   const name = required(body(req).name, "name");
   const changed = refused(() => {
@@ -366,11 +377,11 @@ export function commentApproval(db: DatabaseSync, req: Req, approved: boolean): 
     }
   });
   if (!changed) throw new HttpError(409, `${name} is ${approved ? "already" : "not"} approved for commenting`);
-  return allRepos(db, req);
+  return oneRepo(db, name);
 }
 
 // Only an operator lets the pipeline push fix-up commits to contributors' branches in a repo.
-export function pushApproval(db: DatabaseSync, req: Req, approved: boolean): TrackedRepo[] {
+export function pushApproval(db: DatabaseSync, req: Req, approved: boolean): TrackedRepo {
   requireOperator(req, "approve pushing");
   const name = required(body(req).name, "name");
   const changed = refused(() => {
@@ -381,11 +392,11 @@ export function pushApproval(db: DatabaseSync, req: Req, approved: boolean): Tra
     }
   });
   if (!changed) throw new HttpError(409, `${name} is ${approved ? "already" : "not"} approved for pushing`);
-  return allRepos(db, req);
+  return oneRepo(db, name);
 }
 
 // Only an operator lets the pipeline open fix PRs for issues in a repo.
-export function fixIssueApproval(db: DatabaseSync, req: Req, approved: boolean): TrackedRepo[] {
+export function fixIssueApproval(db: DatabaseSync, req: Req, approved: boolean): TrackedRepo {
   requireOperator(req, "approve fixing issues");
   const name = required(body(req).name, "name");
   const changed = refused(() => {
@@ -396,11 +407,11 @@ export function fixIssueApproval(db: DatabaseSync, req: Req, approved: boolean):
     }
   });
   if (!changed) throw new HttpError(409, `${name} is ${approved ? "already" : "not"} approved for fixing issues`);
-  return allRepos(db, req);
+  return oneRepo(db, name);
 }
 
 // Only an operator switches the pipeline stages on or off for a repo (off: sync only).
-export function pipelineSwitch(db: DatabaseSync, req: Req, on: boolean): TrackedRepo[] {
+export function pipelineSwitch(db: DatabaseSync, req: Req, on: boolean): TrackedRepo {
   requireOperator(req, "switch the pipeline");
   const name = required(body(req).name, "name");
   const changed = refused(() => {
@@ -411,11 +422,11 @@ export function pipelineSwitch(db: DatabaseSync, req: Req, on: boolean): Tracked
     }
   });
   if (!changed) throw new HttpError(409, `the pipeline is already ${on ? "on" : "off"} for ${name}`);
-  return allRepos(db, req);
+  return oneRepo(db, name);
 }
 
 // Only an operator moves a repo's GitHub writes between the box account (legacy) and the GitHub App (app).
-export async function identitySwitch(db: DatabaseSync, req: Req): Promise<TrackedRepo[]> {
+export async function identitySwitch(db: DatabaseSync, req: Req): Promise<TrackedRepo> {
   requireOperator(req, "set the repo identity");
   const b = body(req);
   const name = required(b.name, "name");
@@ -427,7 +438,7 @@ export async function identitySwitch(db: DatabaseSync, req: Req): Promise<Tracke
     }
   });
   if (!changed) throw new HttpError(409, `${name} already uses the ${String(b.identity)} identity`);
-  return allRepos(db, req);
+  return oneRepo(db, name);
 }
 
 export async function track(db: DatabaseSync, req: Req, on: boolean): Promise<TrackedRepo[]> {
@@ -573,7 +584,7 @@ export async function putPilot(db: DatabaseSync, req: Req) {
 }
 
 // Only an operator sets the checks whose failure does not stop a merge.
-export function optionalCheck(db: DatabaseSync, req: Req, on: boolean): TrackedRepo[] {
+export function optionalCheck(db: DatabaseSync, req: Req, on: boolean): TrackedRepo {
   requireOperator(req, "set optional checks");
   const name = required(body(req).name, "name");
   const check = required(body(req).check, "check");
@@ -585,11 +596,11 @@ export function optionalCheck(db: DatabaseSync, req: Req, on: boolean): TrackedR
     }
   });
   if (!changed) throw new HttpError(409, `${check} is ${on ? "already" : "not"} an optional check of ${name}`);
-  return allRepos(db, req);
+  return oneRepo(db, name);
 }
 
 // Only an operator lets the pipeline act on a red default branch in a repo: rerun failed jobs, and open an issue on an operator's answer.
-export function mainFixApproval(db: DatabaseSync, req: Req, approved: boolean): TrackedRepo[] {
+export function mainFixApproval(db: DatabaseSync, req: Req, approved: boolean): TrackedRepo {
   requireOperator(req, "approve fixing a red main");
   const name = required(body(req).name, "name");
   const changed = refused(() => {
@@ -600,5 +611,5 @@ export function mainFixApproval(db: DatabaseSync, req: Req, approved: boolean): 
     }
   });
   if (!changed) throw new HttpError(409, `${name} is ${approved ? "already" : "not"} approved for fixing a red main`);
-  return allRepos(db, req);
+  return oneRepo(db, name);
 }
