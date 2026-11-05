@@ -213,6 +213,24 @@ CREATE TABLE IF NOT EXISTS sessions (
 );
 CREATE INDEX IF NOT EXISTS sessions_login ON sessions(login);
 
+-- The GitHub App's user token of each login, written at every sign-in while AUTOCRAFT_LOGIN_APP=github-app.
+-- Separate from sessions: later steps act for a login when it has no live session.
+CREATE TABLE IF NOT EXISTS user_tokens (
+  login TEXT PRIMARY KEY COLLATE NOCASE,
+  github_id INTEGER NOT NULL,
+  token_enc TEXT NOT NULL,            -- sealed JSON of the whole token set (access, refresh, expiry times), like sessions.token_enc
+  version INTEGER NOT NULL DEFAULT 1, -- compare-and-swap counter for refreshes
+  updated_at TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'ok'   -- ok; later steps add refresh-failed and revoked
+);
+
+-- One row per started GitHub App registration: the manifest flow's single-use state nonce.
+CREATE TABLE IF NOT EXISTS github_app_states (
+  state TEXT PRIMARY KEY,
+  login TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS repo_permissions (
   login TEXT NOT NULL COLLATE NOCASE,
   repo TEXT NOT NULL,

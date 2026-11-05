@@ -6,6 +6,7 @@ import type {
   AccessEntry,
   AccessOverview,
   AuditEntry,
+  GithubAppStatus,
   Contributor,
   ContributorSort,
   OverrideStatus,
@@ -134,7 +135,7 @@ function buildSessions(): Omit<SessionInfo, "current">[] {
 
 export const AUDIT_ACTIONS = [
   "answer", "undo", "adopt", "opinion", "opinion-retract", "comment", "override", "rule", "access-add", "access-remove", "access-role",
-  "session-revoke", "sign-in", "sign-in-refused", "repo-track", "repo-untrack",
+  "session-revoke", "sign-in", "sign-in-refused", "github-app-register", "github-app-login-mode", "repo-track", "repo-untrack",
 ];
 
 function buildAudit(): AuditEntry[] {
@@ -159,7 +160,7 @@ function buildAudit(): AuditEntry[] {
   return out.sort((a, b) => b.at.localeCompare(a.at));
 }
 
-type AdminApi = Pick<Api, "contributors" | "repoAdmin" | "access">;
+type AdminApi = Pick<Api, "contributors" | "repoAdmin" | "access" | "githubApp">;
 
 export function createAdminMock(me: User, changed: () => void): AdminApi {
   const authors = buildAuthors();
@@ -370,6 +371,20 @@ export function createAdminMock(me: User, changed: () => void): AdminApi {
         log(approved ? "labels-approve" : "labels-revoke", name);
         changed();
         return this.list();
+      },
+    },
+    githubApp: {
+      status() {
+        requireOperator("see the GitHub App");
+        // The mock shows the registered app; ?unregistered shows the registration form.
+        const registered = typeof location === "undefined" || !location.search.includes("unregistered");
+        const status: GithubAppStatus = {
+          configured: registered, loginMode: "oauth", canRegister: true, defaultName: "AutoCraft",
+          app: registered ? { id: "1234567", slug: "autocraft-demo", name: "AutoCraft", installUrl: "https://github.com/apps/autocraft-demo/installations/new", transferUrl: "https://github.com/settings/apps/autocraft-demo/advanced" } : null,
+          installations: registered ? [{ owner: "glasswing", selection: "selected", repos: ["glasswing/photocraft", "glasswing/designcraft", "glasswing/filmcraft"] }] : [],
+          error: null,
+        };
+        return wait(status);
       },
     },
     access: {

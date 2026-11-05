@@ -15,6 +15,8 @@ import { visibleTo } from "../api/visible.ts";
 import { allowedImage, ImageProxy, imageTokenSource, registerImageRepos } from "./images.ts";
 import { TokenBucket } from "./limits.ts";
 import { LiveHub, type LiveOptions } from "./live.ts";
+import { auditLoginMode, finishRegistration, githubAppRoutes, startRegistration } from "./github-app.ts";
+import { saveUserTokens } from "./user-tokens.ts";
 import { FakeProvider, providerFor, type GithubUser, type Provider, type Tokens } from "./provider.ts";
 import { createSession, deleteSession, loadSession, makeUser, pruneExpired, SESSION_TTL, type Session } from "./sessions.ts";
 import { esc, HttpError, parseCookies, plainPage, RateLimiter, safeReturnTo } from "./util.ts";
@@ -50,6 +52,7 @@ export type AppOptions = {
   routes?: Route[];          // default: the JSON API
   images?: ImageProxy;       // default: fetches with global fetch and the bot's gh token
   live?: LiveOptions;        // GET /api/live timing; defaults suit production
+  githubApi?: string;        // base URL of the GitHub API for the GitHub App calls; default: api.github.com
 };
 
 type Compiled = Route & { parts: string[] };
@@ -133,7 +136,9 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
   const { config, db } = opts;
   const provider = opts.provider ?? providerFor(config);
   const box = new TokenBox(config.secrets.sessionKey);
-  const routes = compile(opts.routes);
+  const appDeps = { apiBase: opts.githubApi };
+  const routes = compile([...opts.routes, ...githubAppRoutes(config, appDeps)]);
+  auditLoginMode(db, config);
   const signinLimit = new RateLimiter(60, 10 * 60_000);
   const writeLimitSession = new RateLimiter(60, 60_000);
   const writeLimitIp = new RateLimiter(300, 60_000);
@@ -319,11 +324,18 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
         return { r: errorPage(nonce, 403, "Not authorised", `The GitHub account ${login} is not the account that was added to this dashboard's access list.`), cookies: clear };
       }
       const id = createSession(db, box, access.login, tokens, req.headers["user-agent"]);
+      if (config.loginApp === "github-app") saveUserTokens(db, box, access.login, who.id, tokens);
       audit(db, access.login, "sign-in", access.login, { ip });
       return {
         r: { redirect: safeReturnTo(row.return_to) },
         cookies: [...clear, cookie(SESSION_COOKIE, id, SESSION_TTL / 1000)],
       };
+    }
+    if (req.method === "GET" && (path === "/auth/github-app/start" || path === "/auth/github-app/callback")) {
+      const s = loadSession(db, cookies.get(SESSION_COOKIE));
+      if (!s) return { r: { redirect: `/auth/signin?${new URLSearchParams({ return_to: "/admin/github-app" })}` } };
+      const operator = s.role === "operator";
+      return { r: path.endsWith("/start") ? startRegistration(db, config, req, url, nonce, s.login, operator) : await finishRegistration(db, config, appDeps, url, nonce, s.login, operator) };
     }
     if (req.method === "POST" && path === "/auth/signout") {
       if (!sameOrigin(req)) return { r: errorPage(nonce, 403, "Refused", "This form was sent from another site.") };

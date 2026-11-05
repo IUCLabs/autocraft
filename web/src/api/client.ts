@@ -8,6 +8,7 @@ import type {
   ReleaseAction,
   DecisionKind,
   AccessOverview,
+  GithubAppStatus,
   AccountInput,
   AgentRunDetail,
   ActivityPage,
@@ -203,6 +204,10 @@ export interface Api {
     setRole(login: string, role: Role): Promise<AccessOverview>;
     revokeSession(id: number): Promise<AccessOverview>;
     audit(filter: AuditFilter): Promise<AuditPage>;
+  };
+  /** Operator only. */
+  githubApp: {
+    status(): Promise<GithubAppStatus>;
   };
   classifiers: {
     /** `run`, `a` and `b` default to the latest run and its first pair. */

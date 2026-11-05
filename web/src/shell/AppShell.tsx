@@ -31,7 +31,7 @@ const MockRoleMenu = import.meta.env.VITE_MOCK === "1" ? lazy(() => import("../a
 // registers (a page the reader's role cannot open) is left out.
 const RAIL: { label: string; paths: string[] }[] = [
   { label: "", paths: ["/", "/next", "/flow", "/needs", "/items", "/activity"] },
-  { label: "Settings", paths: ["/repos", "/pipeline", "/accounts", "/envs", "/access", "/audit", "/prompts"] },
+  { label: "Settings", paths: ["/repos", "/pipeline", "/accounts", "/envs", "/access", "/admin/github-app", "/audit", "/prompts"] },
   { label: "Insight", paths: ["/progress", "/cost", "/rates", "/agents", "/classifiers", "/contributors", "/main-ci", "/about"] },
 ];
 const PHONE_TABS = ["/", "/next", "/needs", "/items"];

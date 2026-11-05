@@ -186,6 +186,9 @@ export function createHttpApi(): Api {
       revokeSession: (id) => post("/api/access/sessions/revoke", { id }),
       audit: (filter) => get(`/api/audit${qs(filter)}`),
     },
+    githubApp: {
+      status: () => get("/api/admin/github-app"),
+    },
     classifiers: {
       report: (sel) => get(`/api/classifiers${qs(sel)}`),
       disagreements: (f) => get(`/api/classifiers/disagreements${qs(f)}`),

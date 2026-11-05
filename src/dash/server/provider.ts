@@ -191,7 +191,8 @@ export class FakeProvider implements Provider {
 }
 
 export function providerFor(config: Config): Provider {
-  return config.devAuth
-    ? new FakeProvider(config.devPermsFile, config.devTokenTtlMs ?? undefined)
-    : new GitHubProvider(config.secrets.githubClientId, config.secrets.githubClientSecret);
+  if (config.devAuth) return new FakeProvider(config.devPermsFile, config.devTokenTtlMs ?? undefined);
+  const { githubClientId, githubClientSecret, app } = config.secrets;
+  // The GitHub App's user authorization uses the same endpoints as the OAuth App's.
+  return config.loginApp === "github-app" && app ? new GitHubProvider(app.clientId, app.clientSecret) : new GitHubProvider(githubClientId, githubClientSecret);
 }

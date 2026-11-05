@@ -841,6 +841,21 @@ export interface SessionInfo {
   current: boolean;
 }
 
+export interface GithubAppStatus {
+  /** The app's keys are in the secrets file. */
+  configured: boolean;
+  /** Which application signs dashboard users in. */
+  loginMode: "oauth" | "github-app";
+  /** False when the server has no secrets file to keep the keys in. */
+  canRegister: boolean;
+  defaultName: string;
+  app: { id: string; slug: string; name: string | null; installUrl: string; transferUrl: string } | null;
+  /** Each account the app is installed on, with the repos it covers. */
+  installations: { owner: string; selection: "all" | "selected"; repos: string[] }[];
+  /** Set when GitHub could not be read. */
+  error: string | null;
+}
+
 export interface AccessOverview {
   entries: AccessEntry[];
   sessions: SessionInfo[];
