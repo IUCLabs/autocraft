@@ -12,6 +12,7 @@ import type {
   DecisionKind,
   Preapproval,
   DecisionOption,
+  ExecState,
   Item,
   Progress,
   RelatedItem,
@@ -157,6 +158,8 @@ interface Seed {
   answer?: [string, string, number, boolean, string?, number?]; // answer, by, hoursAgo, applied, note, index of the adopted opinion
   opinions?: [string, string | null, string | null, number][]; // login, option, note, minutes ago
   docket?: string;
+  /** An answer whose GitHub write has not run: where it stands and why. */
+  exec?: [ExecState, string | null];
 }
 
 const SEEDS: Seed[] = [
@@ -549,6 +552,59 @@ const SEEDS: Seed[] = [
     size: [344, 61, 5],
     cls: [["haiku", "missing feature", "yes"], ["jev", "missing feature", "yes"]],
   },
+  // answered, the GitHub write waits or failed
+  {
+    kind: "close",
+    repo: "texturecraft",
+    number: 230,
+    title: "Replace the brush engine with a shader pipeline",
+    question: "Close this PR?",
+    context: [],
+    facts: ["+3,120 −2,004 · 22 files", "author: 0 merged"],
+    options: [
+      { key: "close", label: "Close with note" },
+      { key: "hold", label: "Hold" },
+      { key: "keep", label: "Keep open" },
+    ],
+    recommended: "close",
+    publicText: "Thanks for the work here. A replacement of the whole brush engine is more than we can review as one PR.",
+    ageH: 5,
+    author: "gridlock-9",
+    answer: ["close", "ochre-fox", 1, false],
+    exec: ["waiting-token", "Sign in to let AutoCraft finish this as you"],
+  },
+  {
+    kind: "merge",
+    repo: "filmcraft",
+    number: 3362,
+    title: "Show the frame counter while scrubbing",
+    question: "Merge now?",
+    context: [],
+    facts: ["+64 −9 · 3 files", "CI passing · mergeable"],
+    options: [
+      { key: "merge", label: "Merge" },
+      { key: "hold", label: "Hold" },
+    ],
+    recommended: "merge",
+    ageH: 8,
+    author: "larkspur-dev",
+    answer: ["merge", "kiri-n", 2, false],
+    exec: ["waiting-permission", "You have no write access to storytold/filmcraft"],
+  },
+  {
+    kind: "scope",
+    repo: "designcraft",
+    number: 2251,
+    title: "Export artboards as animated SVG",
+    question: "Is animated SVG export in scope?",
+    context: [],
+    facts: ["+410 −12 · 6 files"],
+    ...spread(scopeOpts("close")),
+    ageH: 12,
+    author: "kiln-and-reed",
+    answer: ["close", "ochre-fox", 3, false],
+    exec: ["failed", "GitHub answered 502 while closing the item"],
+  },
   // answered
   {
     kind: "scope",
@@ -771,6 +827,7 @@ function toDecision(s: Seed): Decision {
     answeredBy: s.answer?.[1] ?? null,
     answeredAt: s.answer ? iso(s.answer[2] * H) : null,
     appliedAt: s.answer?.[3] ? iso(s.answer[2] * H - 20 * M) : null,
+    exec: s.exec ? { state: s.exec[0], reason: s.exec[1] } : null,
     opinions,
     adoptedOpinion: s.answer?.[5] !== undefined ? opinions[s.answer[5]] : null,
     exceptions: [],

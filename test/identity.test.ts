@@ -31,7 +31,7 @@ test("the audit row records legacy until the repo is switched, then the grant's 
   mkdirSync(SCRATCH, { recursive: true });
   const db = connect(join(SCRATCH, `identity-audit-${process.pid}.db`));
   db.prepare("INSERT OR IGNORE INTO tracked_repos (name) VALUES ('app')").run();
-  const w = { db, login: "act" };
+  const w = { db, login: "act", mint: async () => "ghs_test", appClient: () => q };
   const item = { repo: "app", number: 7, id: "I_1", pr: false };
   const last = () => JSON.parse((db.prepare("SELECT details FROM audit WHERE action = 'act-close' ORDER BY rowid DESC LIMIT 1").get() as { details: string }).details) as { identity: string };
   assert.equal(repoIdentity(db, "app"), "legacy");

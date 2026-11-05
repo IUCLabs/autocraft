@@ -12,6 +12,7 @@ import { audit } from "./dash/audit.ts";
 import { actionable, getDecision } from "./decisions.ts";
 import { PLUGIN_LABEL } from "./labels/plan.ts";
 import { sameLabel } from "./labels/set.ts";
+import { markExecDone } from "./github/user-lane.ts";
 
 const ACTOR = "pipeline";
 
@@ -43,6 +44,7 @@ export function applyUsedAnswers(db: DatabaseSync, at: string = new Date().toISO
     audit(db, ACTOR, "answer-used", a.id, { answer: a.answer });
     n++;
   }
+  markExecDone(db);
   return n;
 }
 

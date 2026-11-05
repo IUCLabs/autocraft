@@ -20,6 +20,10 @@ export type GroupIo = {
   /** Returns the comment's URL. */
   comment(live: GroupLive, body: string, at: { number: number; decision: string }): Promise<string>;
   close(live: GroupLive, at: { number: number; decision: string }): Promise<void>;
+  /** Called before a decision's writes: a string says why the decision waits (its operator has no token or no access), and it is left for a later run. */
+  begin?(decision: string): Promise<string | null>;
+  /** A write of the decision failed with `why`; true when that is a wait for the operator's access, not a failure to count. */
+  failed?(decision: string, why: string): boolean;
 };
 export type GroupRun = {
   repo: string; io: GroupIo; at: () => string; log: (line: string) => void;
@@ -70,6 +74,8 @@ export async function actOnGroups(db: DatabaseSync, run: GroupRun): Promise<Grou
       for (const c of closers) if (!posted.get(dec.id, c.number, "close")) run.log(`  would comment and close ${ref(c.number)} (${dec.id})`);
       continue;
     }
+    const waits = await run.io.begin?.(dec.id);
+    if (waits) { run.log(`  ${dec.id}: waiting: ${waits}`); continue; }
     const skip = (n: number, step: string, reason: string, release = false) => {
       record(dec.id, n, step, null);
       if (release) {
@@ -152,6 +158,7 @@ export async function actOnGroups(db: DatabaseSync, run: GroupRun): Promise<Grou
       }
     } catch (e) {
       const why = (e as Error).message.replace(/\s+/g, " ").slice(0, 300);
+      if (run.io.failed?.(dec.id, why)) { run.log(`  ${dec.id}: waiting: ${why}`); continue; }
       res.failed.push({ ref: cur ? ref(cur.item.number) : dec.id, reason: why });
       run.log(`  ${dec.id}: failed: ${why}`);
       if (!cur) return res;

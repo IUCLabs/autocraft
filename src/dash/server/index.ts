@@ -20,13 +20,16 @@ import { auditLoginMode, finishRegistration, githubAppRoutes, startRegistration 
 import { OrgSetup } from "./github-setup.ts";
 import { Vault } from "../../github/vault.ts";
 import { saveUserTokens } from "./user-tokens.ts";
-import { FakeProvider, oauthProviderFor, providerFor, type GithubUser, type Provider, type Tokens } from "./provider.ts";
+import { FakeProvider, GitHubProvider, oauthProviderFor, providerFor, type GithubUser, type Provider, type Tokens } from "./provider.ts";
+import { retryWaiting } from "../../github/user-lane.ts";
 import { createSession, deleteSession, loadSession, makeUser, pruneExpired, SESSION_TTL, userForLogin, type Session } from "./sessions.ts";
 import { answering, handleMcp, writes as mcpWrites, type Msg as McpMsg } from "../mcp/index.ts";
 import { loadToken, pruneTokens } from "../mcp/tokens.ts";
 import { esc, HttpError, parseCookies, plainPage, RateLimiter, safeReturnTo } from "./util.ts";
 
 export const SESSION_COOKIE = "__Host-craft_session";
+/** `oauth_states.return_to` of an "act as you" authorization, which the shared sign-in callback tells apart from a sign-in by this prefix. */
+const AUTHORIZE_PREFIX = "authorize:";
 const STATE_COOKIE = "__Host-craft_oauth";
 const BODY_LIMIT = 64 * 1024;
 const FILE_TYPES: Record<string, string> = {
@@ -145,7 +148,10 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
   // The org setup link signs in with the OAuth App even when dashboard sign-in uses the GitHub App.
   const setupProvider = opts.provider ?? (config.devAuth ? provider : oauthProviderFor(config));
   const box = new TokenBox(config.secrets.sessionKey);
-  const vault = new Vault(db, box, provider);
+  // The GitHub App's own provider: it signs users in under login=github-app, and always makes and refreshes their user tokens (the "act as you" authorization).
+  const appKeys = config.secrets.app;
+  const appProvider: Provider | null = opts.provider ?? (config.devAuth ? provider : appKeys ? new GitHubProvider(appKeys.clientId, appKeys.clientSecret) : null);
+  const vault = new Vault(db, box, appProvider ?? provider);
   const appDeps = { apiBase: opts.githubApi };
   const routes = compile([...opts.routes, ...githubAppRoutes(config, appDeps)]);
   auditLoginMode(db, config);
@@ -321,6 +327,15 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
       if (loadSession(db, cookies.get(SESSION_COOKIE))) return { r: { redirect: returnTo } };
       return startOAuth(returnTo, url.searchParams.get("select") === "1");
     }
+    if (req.method === "GET" && path === "/auth/authorize-app") {
+      if (!signinLimit.allow(ip)) return { r: errorPage(nonce, 429, "Too many attempts", "Wait a few minutes and try again.") };
+      const returnTo = safeReturnTo(url.searchParams.get("return_to"));
+      const s = loadSession(db, cookies.get(SESSION_COOKIE));
+      if (!s) return { r: { redirect: `/auth/signin?${new URLSearchParams({ return_to: `/auth/authorize-app?${new URLSearchParams({ return_to: returnTo })}` })}` } };
+      if (s.role !== "operator") return { r: errorPage(nonce, 403, "Not authorised", "Only operators authorize AutoCraft to act as them.") };
+      if (!appProvider) return { r: errorPage(nonce, 409, "No GitHub App", "No GitHub App is registered, so there is nothing to authorize.") };
+      return startOAuth(`${AUTHORIZE_PREFIX}${returnTo}`, false, undefined, appProvider);
+    }
     if (req.method === "GET" && path === "/auth/callback") {
       if (!signinLimit.allow(ip)) return { r: errorPage(nonce, 429, "Too many attempts", "Wait a few minutes and try again.") };
       const clear = [cookie(STATE_COOKIE, "", 0)];
@@ -337,7 +352,7 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
       }
       let tokens: Tokens | null, who: GithubUser | null;
       try {
-        const p = row.return_to?.startsWith("setup:") ? setupProvider : provider;
+        const p = row.return_to?.startsWith("setup:") ? setupProvider : row.return_to?.startsWith(AUTHORIZE_PREFIX) ? (appProvider ?? provider) : provider;
         tokens = await p.exchange(code, row.verifier, callbackUrl);
         who = tokens ? await p.identity(tokens.access) : null;
       } catch (e) {
@@ -351,6 +366,17 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
         const out = await setup.signedIn(row.return_to, tokens, who, nonce, cookies);
         return { r: out.r, cookies: [...clear, ...(out.cookies ?? [])] };
       }
+      if (row.return_to?.startsWith(AUTHORIZE_PREFIX)) {
+        // "Act as you": only the user token is stored. The session and the sign-in are untouched.
+        const s = loadSession(db, cookies.get(SESSION_COOKIE));
+        if (!s || s.role !== "operator" || s.login.toLowerCase() !== who.login.toLowerCase() || checkGithubId(db, s.login, who.id) === "mismatch") {
+          return { r: errorPage(nonce, 403, "Not authorised", "Sign in to the dashboard as the GitHub account you authorize, then try again."), cookies: clear };
+        }
+        saveUserTokens(db, box, s.login, who.id, tokens);
+        retryWaiting(db, s.login);
+        audit(db, s.login, "github-app-authorize", s.login, { ip });
+        return { r: { redirect: safeReturnTo(row.return_to.slice(AUTHORIZE_PREFIX.length)) }, cookies: clear };
+      }
       const login = who.login;
       const access = getAccess(db, login);
       if (!access) {
@@ -362,7 +388,7 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
         return { r: errorPage(nonce, 403, "Not authorised", `The GitHub account ${login} is not the account that was added to this dashboard's access list.`), cookies: clear };
       }
       const id = createSession(db, box, access.login, tokens, req.headers["user-agent"]);
-      if (config.loginApp === "github-app") saveUserTokens(db, box, access.login, who.id, tokens);
+      if (config.loginApp === "github-app") { saveUserTokens(db, box, access.login, who.id, tokens); retryWaiting(db, access.login); }
       audit(db, access.login, "sign-in", access.login, { ip });
       return {
         r: { redirect: safeReturnTo(row.return_to) },

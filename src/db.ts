@@ -55,6 +55,9 @@ const ADDED_COLUMNS: [table: string, column: string, type: string][] = [
   // What Opus had seen of the item when it proposed the card: JSON {head, last_comment}; null for cards stored before this.
   ["conversation_cards", "seen", "TEXT"],
   ["decisions", "snoozed_at", "TEXT"],
+  // Where the GitHub write of an answer stands under repo_identity=app (src/github/user-lane.ts): pending | waiting-token | waiting-permission | done | failed; null before any attempt.
+  ["decisions", "exec_state", "TEXT"],
+  ["decisions", "exec_reason", "TEXT"],
   ["classifications", "probs", "TEXT"],
   ["token_usage", "cost_usd", "REAL"],
   ["classifications", "input_hash", "TEXT"],

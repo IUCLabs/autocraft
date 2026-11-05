@@ -96,7 +96,7 @@ export function createMockApi(): Api {
   };
 
   const settle = (d: Decision, answer: string, note: string | null, adoptedOpinion: Decision["adoptedOpinion"], exceptions: Decision["exceptions"] = []) =>
-    Object.assign(d, { answer, answerNote: note, exceptions, answeredBy: me.login, answeredAt: nowIso(), adoptedOpinion, claim: null, undoable: true });
+    Object.assign(d, { answer, answerNote: note, exceptions, answeredBy: me.login, answeredAt: nowIso(), adoptedOpinion, claim: null, undoable: true, exec: null });
 
   return {
     me: () => wait(me, 10),
@@ -122,6 +122,13 @@ export function createMockApi(): Api {
         const d = find(id);
         requireOperator(d);
         settle(d, input.answer, input.note ?? null, null, input.exceptions ?? []);
+        changed();
+        return wait(d, 30);
+      },
+      async retry(id) {
+        const d = find(id);
+        requireOperator(d);
+        if (d.exec) Object.assign(d, { exec: { state: "pending", reason: null } });
         changed();
         return wait(d, 30);
       },

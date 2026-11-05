@@ -13,6 +13,7 @@ import { Block } from "../../ui/molecules/Block";
 import { ConfirmButton } from "../../ui/molecules/ConfirmButton";
 import { Facts } from "../../ui/molecules/Facts";
 import { Page } from "../../ui/organisms/Page";
+import { authorizeHref } from "../decisions/ExecLine";
 
 const LOGIN_MODE = { oauth: "OAuth App", "github-app": "GitHub App" } as const;
 
@@ -60,9 +61,13 @@ function AppBlock({ s, onChange }: { s: GithubAppStatus; onChange: () => void })
                 ["Slug", <code key="slug">{s.app.slug}</code>],
                 ["App id", <code key="id">{s.app.id}</code>],
                 ["Sign-in", LOGIN_MODE[s.loginMode]],
+                ["Acts as you", s.authorized ? "Authorized" : "Not authorized"],
               ]}
             />
             <div className="mt-3 flex flex-wrap gap-x-5 gap-y-2 text-sm">
+              <a href={authorizeHref()} className="text-accent-ink hover:underline">
+                {s.authorized ? "Authorize again" : "Authorize AutoCraft to act as you"}
+              </a>
               <TextLink href={s.app.installUrl}>Install</TextLink>
               <TextLink href={s.app.transferUrl}>Transfer</TextLink>
               <ConfirmButton className="ml-auto" label="Remove" confirmLabel="Remove app" loading={busy} onConfirm={() => void remove()} />

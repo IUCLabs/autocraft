@@ -37,6 +37,7 @@ export { buildQueue, countStates, QUEUE_STATES, type QueueEntry, type QueueState
 import { envVar } from "../env.ts";
 import { effectiveCi, optionalChecks } from "../optional-checks.ts";
 import { jobItem } from "../runner/job-items.ts";
+import { authFailure, laneForDecision, markExecDone, noWriteReason, setExecState, SIGN_IN_REASON, type Lane, type LaneDeps } from "../github/user-lane.ts";
 import { ownerOf } from "../owners.ts";
 
 /** Name of the built-in guarded merge (`autocraft safe-merge`); any other `$AUTOCRAFT_MERGE_CMD` is run as an external command that must accept `--head <sha>` and refuse when the PR head differs. */
@@ -53,8 +54,10 @@ export type CommandResult = { code: number; stdout: string; stderr: string };
 export type MergeDeps = {
   querier: Querier;
   /** Runs the merge command; throws only when it can't be started. */
-  run: (cmd: string, args: string[], appEnv?: Record<string, string>) => Promise<CommandResult>;
+  run: (cmd: string, args: string[], env?: Record<string, string>) => Promise<CommandResult>;
   now: () => Date;
+  /** The user lane's token source and transports; default: the secrets file's app. */
+  lane?: LaneDeps;
   /** `$AUTOCRAFT_MERGE_CMD`, default the built-in `safe-merge`. */
   mergeCommand: string;
 };
@@ -88,7 +91,7 @@ export type MergeSummary = {
 
 export function spawnRun(cmd: string, args: string[], env?: Record<string, string>, replaceEnv = false): Promise<CommandResult> {
   return new Promise((resolve, reject) => {
-    const p = spawn(cmd, args, { stdio: ["ignore", "pipe", "pipe"], env: replaceEnv ? env : env ? { ...process.env, ...env } : process.env });
+    const p = spawn(cmd, args, { stdio: ["ignore", "pipe", "pipe"], env: env ? (replaceEnv ? env : { ...process.env, ...env }) : process.env });
     let stdout = "", stderr = "";
     p.stdout.on("data", (d) => (stdout += d));
     p.stderr.on("data", (d) => (stderr += d));
@@ -98,10 +101,9 @@ export function spawnRun(cmd: string, args: string[], env?: Record<string, strin
 }
 
 /** Runs the merge command; the built-in name runs `autocraft safe-merge` from this checkout. */
-export function mergeRun(cmd: string, args: string[], appEnv?: Record<string, string>): Promise<CommandResult> {
-  // `appEnv` is the app lane's whole child environment: the merge runs with the installation token only.
-  if (appEnv) return cmd === DEFAULT_MERGE_COMMAND ? spawnRun(process.execPath, ["--no-warnings", CLI, "safe-merge", ...args], { ...appEnv, [MERGE_RECORDED_ENV]: "1" }, true) : spawnRun(cmd, args, appEnv, true);
-  return cmd === DEFAULT_MERGE_COMMAND ? spawnRun(process.execPath, ["--no-warnings", CLI, "safe-merge", ...args], { [MERGE_RECORDED_ENV]: "1" }) : spawnRun(cmd, args);
+export function mergeRun(cmd: string, args: string[], env?: Record<string, string>): Promise<CommandResult> {
+  // With `env` (a user's token set) the child gets exactly that environment: no box token is left in it.
+  return cmd === DEFAULT_MERGE_COMMAND ? spawnRun(process.execPath, ["--no-warnings", CLI, "safe-merge", ...args], { ...env, [MERGE_RECORDED_ENV]: "1" }, !!env) : spawnRun(cmd, args, env, !!env);
 }
 
 export function defaultDeps(): MergeDeps {
@@ -315,6 +317,17 @@ export async function runMerge(db: DatabaseSync, params: MergeParams, log: (line
     if (!mergeApprovalOf(db, repo)) { log(`  merging in ${repo} is no longer approved; stopping`); break; }
     if (mergeHeld(db, repo, e.number)) { log(`  ${refOf(e)}: merge held since the queue was read; skipped`); continue; }
     if (backlogHeld(db, repo, e.number) || duplicateHeld(db, repo, e.number)) { log(`  ${refOf(e)}: held since the queue was read; skipped`); continue; }
+    // An operator's Merge answer in a repo on the app's identity is carried out as that operator, with their token.
+    let lane: Lane | null = null;
+    if (e.path === "operator" && e.decisionId) {
+      const lr = await laneForDecision(db, d.lane, e.decisionId, [repo]);
+      if (lr && !("lane" in lr)) {
+        if (!("transient" in lr)) setExecState(db, e.decisionId, lr.state, lr.reason);
+        log(`  ${refOf(e)}: ${"transient" in lr ? `not merged yet: ${lr.transient}` : `waiting: ${lr.reason}`}`);
+        continue;
+      }
+      if (lr) { lane = lr.lane; setExecState(db, e.decisionId, "pending"); }
+    }
     summary.attempted.push(refOf(e));
     seen = null;
     const [ch] = await refreshChecks(db, d.querier, repo, [e.number]);
@@ -363,9 +376,18 @@ export async function runMerge(db: DatabaseSync, params: MergeParams, log: (line
       log(`  ${refOf(e)}: not merged: ${g.refused}`);
       continue;
     }
-    const r = await mergeViaCommand(w, d.run, d.mergeCommand, g, { method, extra: allowFailedArgs(db, repo, d.mergeCommand) }, { run: runId, head: e.head, path: e.path });
+    const r = await mergeViaCommand(w, d.run, d.mergeCommand, g, { method, extra: allowFailedArgs(db, repo, d.mergeCommand) }, { run: runId, head: e.head, path: e.path }, undefined, lane?.env);
     if (r.code !== 0) {
       const why = oneLine(r.stderr) || oneLine(r.stdout) || `exit code ${r.code}`;
+      const denied = lane && e.decisionId ? authFailure(why) : null;
+      if (denied) {
+        // The user's token may not merge: wait for their access. No refusal is recorded, so the PR stays queued.
+        setExecState(db, e.decisionId!, denied, denied === "waiting-token" ? SIGN_IN_REASON : noWriteReason(repo));
+        log(`  ${refOf(e)}: waiting: ${why}`);
+        summary.attempted.pop();
+        continue;
+      }
+      if (lane && e.decisionId) setExecState(db, e.decisionId, "failed", why);
       refuse(e, method, `${d.mergeCommand}: ${why}`);
       continue;
     }
@@ -379,6 +401,7 @@ export async function runMerge(db: DatabaseSync, params: MergeParams, log: (line
     params.onMerged?.(summary.merged.length);
     log(`  ${refOf(e)}: merged (${method})`);
   }
+  markExecDone(db);
   log(`merge ${repo}: ${summary.merged.length} merged, ${summary.refused.length} refused, ${summary.asked.length} asked; run ${runId}`);
   return summary;
 }

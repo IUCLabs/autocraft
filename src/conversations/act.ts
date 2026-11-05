@@ -1,8 +1,9 @@
 // Runs one action card once through the existing write paths (src/github/write.ts, the decision answer,
 // the per-repo approvals) with the operator's login on every audit row. Cards never run on their own.
 import { guardRepo } from "../core/guard.ts";
+import { initExecState, laneForOperator, type LaneDeps } from "../github/user-lane.ts";
 import type { DatabaseSync } from "node:sqlite";
-import { readLive } from "../act/index.ts";
+import { readLive, writeEffect } from "../act/index.ts";
 import { duplicateComment } from "../act/templates.ts";
 import { audit } from "../dash/audit.ts";
 import { optionsOf, BACKLOG, HANDLED, getDecision, reposOf, replaceProposedCards } from "../decisions.ts";
@@ -26,7 +27,7 @@ export type CardRow = {
 };
 
 /** `canWrite` is the signed-in operator's write access to a repo; the shell has none to check. */
-export type ActDeps = StoreDeps & { querier?: Querier; /** Runs `gh` for the open_issue step. */ exec?: Exec; canWrite?: (repo: string) => Promise<boolean>; /** Indexes into a resolution's steps the operator removed. */ skip?: number[]; /** The operator's note with the choice. */ note?: string };
+export type ActDeps = StoreDeps & { querier?: Querier; /** Runs `gh` for the open_issue step. */ exec?: Exec; canWrite?: (repo: string) => Promise<boolean>; /** Indexes into a resolution's steps the operator removed. */ skip?: number[]; /** The user lane's token source and transports; default: the secrets file's app. */ lane?: LaneDeps; /** The operator's note with the choice. */ note?: string };
 
 export const cardOf = (db: DatabaseSync, id: number): CardRow | undefined =>
   db.prepare("SELECT * FROM conversation_cards WHERE id = ?").get(id) as CardRow | undefined;
@@ -115,6 +116,7 @@ async function answerDecision(db: DatabaseSync, c: CardRow, decisionId: string |
     replaceProposedCards(db, d.repo, d.number);
     audit(db, by, "answer", d.id, { answer: key, source: "conversation" });
     db.exec("COMMIT");
+    if (writeEffect(d.kind, key)) initExecState(db, d.id);
     return { result: `Answered the decision with "${o.label}"`, url: null };
   } catch (e) {
     db.exec("ROLLBACK");
@@ -235,7 +237,8 @@ function actRoom(db: DatabaseSync): void {
 
 /** The Act approval of `repo` for the operator's write, and room under the daily limit. */
 function actGrant(db: DatabaseSync, repo: string, by: string, need: "comment" | "labels" = "comment") {
-  const g = guardRepo(db, repo, need, { operator: by });
+  // The operator who presses the button acts as themselves (as `user:<login>` once the repo is on the app's identity).
+  const g = guardRepo(db, repo, need, { operator: by }, undefined, by);
   if ("refused" in g) throw new Error(g.refused);
   actRoom(db);
   return g;
@@ -465,12 +468,18 @@ export async function doCard(db: DatabaseSync, id: number, by: string, deps: Act
       noteIsSummary = true;
     }
   }
+  // A card's GitHub writes are the pressing operator's own: on a repo with the app's identity they use that operator's token, and a card that cannot stays proposed.
+  const repos = [c.repo, ...(params.kind === "resolution" ? params.steps.flatMap((x) => (x.kind === "transfer" ? [x.to] : x.kind === "open_issue" ? [x.repo] : [])) : [])];
+  const writes = params.kind === "comment" || params.kind === "label" || params.kind === "close" || params.kind === "duplicate"
+    || (params.kind === "resolution" && params.steps.some((x) => x.kind !== "review" && x.kind !== "fixup"));
+  const lr = writes ? await laneForOperator(db, deps.lane, by, repos) : null;
+  if (lr && !("lane" in lr)) throw new ConversationError("transient" in lr ? 503 : 409, "transient" in lr ? `GitHub could not be reached to check your access: ${lr.transient}` : lr.reason);
   const at = (deps.now?.() ?? new Date()).toISOString();
   const claim = db.prepare("UPDATE conversation_cards SET state = 'running', acted_by = ?, acted_at = ? WHERE id = ? AND state = 'proposed'").run(by, at, id);
   if (claim.changes !== 1) return { card: c, ran: false };
   let out: Outcome | null = null, error: string | null = null, posted = false;
   try {
-    out = await run(db, c, params, by, deps.querier ?? new Client(1000), at, deps.canWrite, noteIsSummary ? undefined : note, deps.exec);
+    out = await run(db, c, params, by, lr ? lr.lane.querier : deps.querier ?? new Client(1000), at, deps.canWrite, noteIsSummary ? undefined : note, lr ? lr.lane.exec : deps.exec);
   } catch (e) {
     error = oneLine(String((e as Error).message ?? e));
     posted = e instanceof StepError && e.posted;

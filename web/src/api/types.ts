@@ -94,6 +94,8 @@ export interface DuplicateMember {
   adds: string[];
 }
 
+export type ExecState = "pending" | "waiting-token" | "waiting-permission" | "done" | "failed";
+
 export interface Decision {
   id: string;
   kind: DecisionKind;
@@ -138,6 +140,8 @@ export interface Decision {
   answeredBy: string | null;
   answeredAt: string | null;
   appliedAt: string | null;
+  /** The GitHub write of the answer while it is not done (repos on the app's identity only): waiting for the answering operator's sign-in or access, failed, or pending. null otherwise. */
+  exec: { state: ExecState; reason: string | null } | null;
   /** The opinion the operator adopted as the answer, if any. */
   adoptedOpinion: Opinion | null;
   opinions: Opinion[];
@@ -859,6 +863,8 @@ export interface GithubAppStatus {
   defaultName: string;
   /** The session's CSRF token, for the registration form. */
   csrf: string;
+  /** The signed-in operator has let the app act as them; null when no app is registered. */
+  authorized: boolean | null;
   app: { id: string; slug: string; name: string | null; installUrl: string; transferUrl: string } | null;
   /** Each account the app is installed on, with the repos it covers. */
   installations: { owner: string; selection: "all" | "selected"; repos: string[] }[];

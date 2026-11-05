@@ -31,12 +31,13 @@ import { fillEmbedHashes } from "../itemhash.ts";
 import { applyDuplicateAnswers } from "../dupes/decide.ts";
 import { commentApprovalOf } from "./approval.ts";
 import { CLI_BY, type By } from "../core/gates.ts";
-import { guardItem, guardRepo } from "../core/guard.ts";
+import { guardItem, guardRepo, type GuardedRepo } from "../core/guard.ts";
 import { actOnGroups, type GroupIo } from "./dupe-groups.ts";
 import { cleanReason, duplicateComment, prCloseComment, scopeCloseComment } from "./templates.ts";
 import { plannedItems } from "../core/select-items.ts";
 import { jobItem } from "../runner/job-items.ts";
 import { ownerOf } from "../owners.ts";
+import { authFailure, laneForDecision, markExecDone, noWriteReason, setExecState, SIGN_IN_REASON, type LaneDeps, type Lane } from "../github/user-lane.ts";
 
 const ACTOR = "act";
 const NO_IO: GroupIo = { live: async () => null, comment: async () => "", close: async () => {} };
@@ -44,7 +45,7 @@ const KIND = "comment-close";
 const DUP_FACT = "duplicate of ";
 const REASON_FACT = "review reason: ";
 
-export type ActDeps = { querier: Querier; now: () => Date };
+export type ActDeps = { querier: Querier; now: () => Date; /** The user lane's token source and transports; default: the secrets file's app. */ lane?: LaneDeps };
 export const defaultDeps = (): ActDeps => ({ querier: new Client(1000), now: () => new Date() });
 
 export type ActParams = {
@@ -260,8 +261,17 @@ export async function runAct(db: DatabaseSync, params: ActParams, log: (line: st
     handled++;
     params.onHandled?.(handled);
     const prev = rowOf(db, t);
+    // An answer in a repo on the app's identity is carried out as the operator who gave it, with their token; it waits when there is none.
+    const lr = await laneForDecision(db, d.lane, t.decisionId, [t.repo]);
+    if (lr && !("lane" in lr)) {
+      if ("transient" in lr) jobItem(db, t.repo, t.number, `not closed yet: ${lr.transient}`, log);
+      else { setExecState(db, t.decisionId, lr.state, lr.reason); jobItem(db, t.repo, t.number, `waiting: ${lr.reason}`, log); }
+      continue;
+    }
+    if (lr) setExecState(db, t.decisionId, "pending");
+    const q = lr ? lr.lane.querier : d.querier;
     try {
-      const live = await readLive(d.querier, t.repo, t.number);
+      const live = await readLive(q, t.repo, t.number);
       if (!live) { skip(t, "GitHub returned no such item"); continue; }
       if (live.state !== "OPEN") { skip(t, `already ${live.state.toLowerCase()} on GitHub`); continue; }
       if (t.kind === "close" || t.kind === "merge") {
@@ -276,15 +286,15 @@ export async function runAct(db: DatabaseSync, params: ActParams, log: (line: st
         if (t.kind === "duplicate") {
           const orig = /^([\w.-]+)#(\d+)$/.exec(factValue(dec, DUP_FACT) ?? "");
           if (!orig || orig[1] !== t.repo || Number(orig[2]) === t.number) { skip(t, "the decision names no other item of this repo as the original"); continue; }
-          const o = await readLive(d.querier, t.repo, Number(orig[2]));
+          const o = await readLive(q, t.repo, Number(orig[2]));
           if (!o) { skip(t, "GitHub returned no such original"); continue; }
           body = duplicateComment({ repo: t.repo, original: `${orig[1]}#${orig[2]}`, closed: o.state !== "OPEN" });
         } else body = commentFor(dec, t);
-        url = await commentOn(w, g, d.querier, "act-comment", { repo: t.repo, number: t.number, id: live.id }, decisionNote(dec), body, { decision: t.decisionId });
+        url = await commentOn(w, g, q, "act-comment", { repo: t.repo, number: t.number, id: live.id }, decisionNote(dec), body, { decision: t.decisionId });
         // Saved before the close so a retry after a failed close does not comment twice.
         save(t, "failed", "comment posted; close not done yet", url);
       }
-      await closeItem(w, g, d.querier, { repo: t.repo, number: t.number, id: live.id, pr: live.type === "PullRequest" }, { decision: t.decisionId, head: live.head });
+      await closeItem(w, g, q, { repo: t.repo, number: t.number, id: live.id, pr: live.type === "PullRequest" }, { decision: t.decisionId, head: live.head });
       save(t, "done", null, url);
       db.prepare("INSERT INTO stages (repo, number, stage, at, actor, note) VALUES (?, ?, 'closed', ?, ?, ?)").run(t.repo, t.number, at(), ACTOR, `closed after ${t.kind} decision ${t.decisionId}`);
       summary.done.push(refOf(t));
@@ -292,6 +302,14 @@ export async function runAct(db: DatabaseSync, params: ActParams, log: (line: st
       settle(t);
     } catch (e) {
       const why = (e as Error).message.replace(/\s+/g, " ").slice(0, 300);
+      const denied = lr ? authFailure(why) : null;
+      if (denied) {
+        // The user's token may not do this write: wait for access instead of failing, and write nothing as anyone else.
+        setExecState(db, t.decisionId, denied, denied === "waiting-token" ? SIGN_IN_REASON : noWriteReason(t.repo));
+        jobItem(db, t.repo, t.number, `waiting: ${why}`, log);
+        continue;
+      }
+      if (lr) setExecState(db, t.decisionId, "failed", why);
       const row = rowOf(db, t);
       save(t, "failed", why, row?.comment_url ?? null);
       summary.failed.push({ ref: refOf(t), reason: why });
@@ -303,10 +321,33 @@ export async function runAct(db: DatabaseSync, params: ActParams, log: (line: st
   const groupGrant = summary.failed.length ? null : guardRepo(db, repo, "comment", params.by ?? CLI_BY);
   if (groupGrant && "refused" in groupGrant) log(`  duplicate groups: not applied: ${groupGrant.refused}`);
   else if (groupGrant) {
+    // Each group decision is carried out as the operator who answered it; `begin` picks that operator's lane.
+    let lane: Lane | null = null;
+    const q = (): Querier => lane?.querier ?? d.querier;
+    const asAnswerer = (decision: string): GuardedRepo => {
+      const g = guardRepo(db, repo, "comment", params.by ?? CLI_BY, decision);
+      if ("refused" in g) throw new Error(g.refused);
+      return g;
+    };
     const io: GroupIo = {
-      live: (n) => readLive(d.querier, repo, n),
-      comment: (live, body, at) => commentOn(w, groupGrant, d.querier, "act-comment", { repo, number: at.number, id: live.id }, decisionNote(getDecision(db, at.decision)!), body, { decision: at.decision }),
-      close: (live, at) => closeItem(w, groupGrant, d.querier, { repo, number: at.number, id: live.id, pr: live.type === "PullRequest" }, { decision: at.decision, head: live.head }),
+      async begin(decision) {
+        lane = null;
+        const lr = await laneForDecision(db, d.lane, decision, [repo]);
+        if (!lr) return null;
+        if ("lane" in lr) { lane = lr.lane; setExecState(db, decision, "pending"); return null; }
+        if ("transient" in lr) return lr.transient;
+        setExecState(db, decision, lr.state, lr.reason);
+        return lr.reason;
+      },
+      failed(decision, why) {
+        const denied = lane ? authFailure(why) : null;
+        if (denied) { setExecState(db, decision, denied, denied === "waiting-token" ? SIGN_IN_REASON : noWriteReason(repo)); return true; }
+        if (lane) setExecState(db, decision, "failed", why);
+        return false;
+      },
+      live: (n) => readLive(q(), repo, n),
+      comment: (live, body, at) => commentOn(w, asAnswerer(at.decision), q(), "act-comment", { repo, number: at.number, id: live.id }, decisionNote(getDecision(db, at.decision)!), body, { decision: at.decision }),
+      close: (live, at) => closeItem(w, asAnswerer(at.decision), q(), { repo, number: at.number, id: live.id, pr: live.type === "PullRequest" }, { decision: at.decision, head: live.head }),
     };
     const g = await actOnGroups(db, {
       repo, io, at, log, dryRun: false,
@@ -317,6 +358,7 @@ export async function runAct(db: DatabaseSync, params: ActParams, log: (line: st
     summary.skipped.push(...g.skipped);
     summary.failed.push(...g.failed);
   }
+  markExecDone(db);
   log(`act ${repo}: ${summary.done.length} closed, ${summary.skipped.length} skipped, ${summary.failed.length} failed, ${summary.asked.length} asked`);
   return summary;
 }

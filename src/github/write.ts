@@ -26,7 +26,7 @@ export { GITHUB_ACTIONS } from "./actions.ts";
 export type { Note } from "./note.ts";
 
 /** Who writes (the audit login: the stage name, or the operator for manual actions) and where the row goes. */
-export type Writer = { db: DatabaseSync; login: string; /** Replaces the installation-token minter (tests). */ mint?: (owner: string, repo: string) => Promise<string> };
+export type Writer = { db: DatabaseSync; login: string; /** Replaces the installation-token minter (tests). */ mint?: (owner: string, repo: string) => Promise<string>; /** Replaces the app lane's GraphQL client (tests). */ appClient?: (env: Record<string, string>) => Pick<Querier, "query"> };
 type Details = Record<string, unknown>;
 type Retry = <T>(f: () => Promise<T>) => Promise<T>;
 
@@ -96,7 +96,7 @@ function laneGit(w: Writer, g: Guarded | Grant, git: Pick<Git, "git">): Pick<Git
 function laneQuery(w: Writer, g: Guarded | Grant, q: Querier): Querier {
   if (!inAppLane(w, g)) return q;
   return {
-    query: async (query, variables) => new Client(0, await appEnv(w, g)).query(query, variables),
+    query: async (query, variables) => (w.appClient ?? ((env) => new Client(0, env)))(await appEnv(w, g)).query(query, variables),
     get spent() { return q.spent; },
     get remaining() { return q.remaining; },
   };
@@ -546,8 +546,9 @@ export const MERGE_RECORDED_ENV = "AUTOCRAFT_MERGE_RECORDED";
  * Runs the merge command for the guarded PR and records the merge or the refusal. The command gets
  * `OWNER/REPO PR --squash|--merge <extra> --head <guarded head>`, and must refuse when GitHub's head
  * differs from that head. Every merge command, the built-in safe-merge and any `$AUTOCRAFT_MERGE_CMD`, takes `--head` as part of this contract.
+ * `env`, when given, is the command's whole environment (a user's token replaces the box's).
  */
-export async function mergeViaCommand(w: Writer, run: (cmd: string, args: string[], appEnv?: Record<string, string>) => Promise<CommandResult>, cmd: string, g: Guarded<"merge">, o: { method: "squash" | "merge"; extra?: string[] }, details: Details = {}, landed?: () => Promise<boolean>): Promise<CommandResult> {
+export async function mergeViaCommand(w: Writer, run: (cmd: string, args: string[], env?: Record<string, string>) => Promise<CommandResult>, cmd: string, g: Guarded<"merge">, o: { method: "squash" | "merge"; extra?: string[] }, details: Details = {}, landed?: () => Promise<boolean>, env?: Record<string, string>): Promise<CommandResult> {
   const args = [`${slugOf(g.repo)}`, String(g.number), `--${o.method}`, ...(o.extra ?? []), "--head", g.head];
   const repo = g.repo;
   const method: string = o.method;
@@ -559,7 +560,7 @@ export async function mergeViaCommand(w: Writer, run: (cmd: string, args: string
     if (inAppLane(w, g)) {
       // The merge command runs with the installation token as its whole environment.
       try { r = await run(cmd, args, await appEnv(w, g)); } catch (e) { if (!String((e as Error).message).startsWith("app identity:")) throw e; r = failedResult(e); }
-    } else r = await run(cmd, args);
+    } else r = await run(cmd, args, env);
   } catch (e) {
     finish(w, id, base, oneLine(String((e as Error).message ?? e)));
     throw e;

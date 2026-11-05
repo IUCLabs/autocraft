@@ -6,7 +6,7 @@ import { preparing } from "../../decide/prepared.ts";
 import { priorityOf } from "../../priority/read.ts";
 import type { DatabaseSync } from "node:sqlite";
 import type {
-  Claim, Classification, Decision, DecisionComment, DecisionKind, DecisionList, DuplicateMember, ItemState, Opinion, QueueSlot, RelatedItem, Relation,
+  Claim, Classification, Decision, ExecState, DecisionComment, DecisionKind, DecisionList, DuplicateMember, ItemState, Opinion, QueueSlot, RelatedItem, Relation,
 } from "../../../web/src/api/types.ts";
 import { resetGroupAnswer } from "../../dupes/decide.ts";
 import { NOTE_MAX } from "../../conversations/types.ts";
@@ -15,6 +15,7 @@ import { BACKLOG, HANDLED, SNOOZED_SQL, replaceProposedCards, WITHDRAWN_OPTION, 
 import { commentPreview, writeEffect } from "../../act/index.ts";
 import { optionTextsOf, textsFor, textsHash } from "../../dupes/texts.ts";
 import { audit } from "../audit.ts";
+import { initExecState, retryDecision } from "../../github/user-lane.ts";
 import { randomToken } from "../server/crypto.ts";
 import { HttpError, type RateLimiter } from "../server/util.ts";
 import type { Req } from "../types.ts";
@@ -224,6 +225,7 @@ export function toDecision(db: DatabaseSync, d: DecisionRow, viewer: Viewer): De
     answer: d.answer,
     answerNote: viewer.staff ? d.answer_note : null,
     answeredBy: d.answered_by, answeredAt: d.answered_at, appliedAt: d.applied_at,
+    exec: d.answer && !d.applied_at && d.exec_state && d.exec_state !== "done" ? { state: d.exec_state as ExecState, reason: d.exec_reason ?? null } : null,
     adoptedOpinion: adopted ? toOpinion(adopted) : null,
     opinions,
     exceptions: exceptionsOf(d),
@@ -427,6 +429,7 @@ export async function answer(db: DatabaseSync, req: Req, via?: "mcp"): Promise<D
     if (r.changes !== 1) throw new HttpError(409, "someone answered this a moment ago");
     replaceProposedCards(db, d.repo, d.number);
   });
+  if (writeEffect(d.kind, ans)) initExecState(db, d.id);
   audit(db, req.user.login, "answer", d.id, { answer: ans, source: "dashboard", ...(via ? { via } : {}), exceptions: exceptions?.length ? exceptions : undefined, note: note ? true : undefined });
   // The thread keeps the choice (and the note) when the item has a conversation.
   if (d.repo && d.number !== null && conversationOf(db, d.repo, d.number)) {
@@ -458,12 +461,22 @@ export async function undo(db: DatabaseSync, req: Req, via?: "mcp"): Promise<Dec
   if (d.applied_at && !directHandled(db, d)) throw new HttpError(409, "the pipeline already acted on this answer");
   inTransaction(db, () => {
     if (!canUndo(db, d)) throw new HttpError(409, "the pipeline already wrote to GitHub for this answer");
-    const r = db.prepare(`UPDATE main.decisions SET answer = NULL, answer_note = NULL, exceptions = NULL, answered_by = NULL, answered_at = NULL, applied_at = NULL, adopted_opinion = NULL, snoozed_by = NULL, snoozed_at = NULL
+    const r = db.prepare(`UPDATE main.decisions SET answer = NULL, answer_note = NULL, exceptions = NULL, answered_by = NULL, answered_at = NULL, applied_at = NULL, adopted_opinion = NULL, snoozed_by = NULL, snoozed_at = NULL, exec_state = NULL, exec_reason = NULL
       WHERE id = ? AND answer IS NOT NULL AND (applied_at IS NULL OR answer = '${HANDLED.key}')`).run(d.id);
     if (r.changes !== 1) throw new HttpError(409, "the pipeline acted on this a moment ago");
     resetGroupAnswer(db, d.id);
   });
   audit(db, req.user.login, "undo", d.id, { answer: d.answer, adopted: d.adopted_opinion ?? undefined, ...(via ? { via } : {}) });
+  return toDecision(db, getDecision(db, d.id)!, await viewerWith(db, req));
+}
+
+/** Operator: tries the GitHub write of a waiting or failed answer again. It is still made as the operator who answered. */
+export async function retry(db: DatabaseSync, req: Req): Promise<Decision> {
+  const d = await needDecision(db, req, req.params.id!);
+  await requireOperator(req, d);
+  if (!d.answer || d.applied_at) throw new HttpError(409, "that decision has nothing waiting to run");
+  if (!retryDecision(db, d.id)) throw new HttpError(409, "that decision is not waiting or failed");
+  audit(db, req.user.login, "retry", d.id, { answer: d.answer });
   return toDecision(db, getDecision(db, d.id)!, await viewerWith(db, req));
 }
 
@@ -509,6 +522,7 @@ export async function adopt(db: DatabaseSync, req: Req): Promise<Decision> {
       WHERE id = ? AND answer IS NULL`).run(option, isBatch(d) ? "[]" : null, req.user.login, new Date().toISOString(), o.id, d.id);
     if (r.changes !== 1) throw new HttpError(409, "someone answered this a moment ago");
   });
+  if (writeEffect(d.kind, option)) initExecState(db, d.id);
   audit(db, req.user.login, "adopt", d.id, { answer: o.option, opinion: o.id, of: o.login });
   return await settled(db, req, d.id);
 }
