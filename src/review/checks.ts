@@ -1,5 +1,6 @@
 // CI and merge state of PR heads: one GraphQL query per chunk of PRs, stored in pr_checks.
 import type { DatabaseSync } from "node:sqlite";
+import { ownerOf } from "../owners.ts";
 import type { Querier } from "../mirror.ts";
 import { pilotSql } from "../pilot.ts";
 import { resolvePushes } from "../push-outcomes.ts";
@@ -108,7 +109,7 @@ export async function refreshChecks(db: DatabaseSync, client: Querier, repo: str
   const all: PrChecks[] = [];
   for (let i = 0; i < list.length; i += CHECKS_PER_QUERY) {
     const chunk = list.slice(i, i + CHECKS_PER_QUERY);
-    const data = await client.query(checksQuery(chunk), { name: repo });
+    const data = await client.query(checksQuery(chunk), { owner: ownerOf(repo), name: repo });
     const rows = parseChecks(repo, (data as { repository: Record<string, PrNode | null> }).repository);
     saveChecks(db, rows);
     all.push(...rows);

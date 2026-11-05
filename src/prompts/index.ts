@@ -31,6 +31,9 @@ import { PREPARE_BODY_LIMIT, PREPARE_REASON_MAX, PREPARE_SUMMARY_MAX, PREPARE_SU
 import { SAMPLE_COMPARE_ISSUES, SAMPLE_COMPARE_PRS, SAMPLE_CONFLICT_PRS, SAMPLE_DUPE_PAIRS, SAMPLE_FIXUP_PRS, SAMPLE_ITEMS, SAMPLE_OPUS_PRS, SAMPLE_PREMERGE_PRS } from "./samples.ts";
 import { QUOTE_WORDS, REFERENCE_JEV_ACCEPT, REFERENCE_JEV_REJECT, SAMPLE_REFERENCE_LINT, type ReferenceLintInput } from "../replylint.ts";
 import { LEVELS, LEVEL_MEANING } from "../priority/score.ts";
+import { SAMPLE_SECURITY_AREA, SAMPLE_SECURITY_MODEL, SAMPLE_SECURITY_VERIFY } from "../security/samples.ts";
+import { SECURITY_AREA_TEMPLATE, SECURITY_MODEL_TEMPLATE, SECURITY_VERIFY_TEMPLATE } from "../security/prompts.ts";
+import { AREAS_MAX as SECURITY_AREAS_MAX, MIN_CONFIDENCE, MIN_VERIFY_SCORE, type SecurityAreaInput, type SecurityModelInput, type SecurityVerifyInput } from "../security/rules.ts";
 import { CLAIM_COMMENT_TEMPLATE as FIXISSUE_CLAIM, COMMENT_TEMPLATE as FIXISSUE_COMMENT, PR_BODY_TEMPLATE, PR_TITLE_TEMPLATE } from "../fixissue/template.ts";
 import { MAX_FILES, MAX_PATHS, MAX_ROUNDS, ISSUE_BODY_LIMIT, SAMPLE_PATCH, SAMPLE_TRIAGE, TRIAGE_REASON_WORDS, type PatchInput, type TriageInput } from "../fixissue/types.ts";
 import { REASON_WORDS as MAINFIX_REASON_WORDS, SAMPLE_MAIN_FIX, type MainFixInput } from "../mainfix/types.ts";
@@ -1163,7 +1166,57 @@ Reply with ONLY a JSON array with one object: {"ref": "<ref as given>", "refers"
   limits: { perCall: 1, attempts: 2, timeoutSeconds: 300 },
 };
 
-export const CLAUDE_PROMPTS = { "classify.haiku": HAIKU, "referee.sonnet": REFEREE, "fixup.patch": FIXUP, "verify.plan": VERIFY_PLAN, "verify.summary": VERIFY_SUMMARY, "priority.haiku": PRIORITY_HAIKU, "dupes.haiku": DUPES_HAIKU, "fixissue.triage": FIXISSUE_TRIAGE, "fixissue.patch": FIXISSUE_PATCH, "fixup.check": FIXUP_CHECK, "fixissue.check": FIXISSUE_CHECK, "review.opus": OPUS_REVIEW, "premerge.opus": PREMERGE, "postmerge.opus": POSTMERGE, "dupes.compare-prs.opus": DUPES_COMPARE_PRS, "dupes.compare-issues.sonnet": DUPES_COMPARE_ISSUES, "decide.prepare": PREPARE, "conversation.turn": CONVERSATION, "areas.haiku": AREAS_HAIKU, "areas.propose": AREAS_PROPOSE, "areas.suggest": AREAS_SUGGEST, "fixup.conflict": FIXUP_CONFLICT, "lint.reference.haiku": REFERENCE_HAIKU, "cifix.patch": CIFIX, "mainfix.classify": MAINFIX_CLASSIFY } as const;
+const SECURITY_ACCESS = (what: string) => `The repository checkout at ${REPO_PATH} (${what}; read-only; use Read, Grep and Glob; instruction files such as CLAUDE.md are not in it). The call has no web tools and no other tools.`;
+const SECURITY_SANDBOX = { tools: ["Read", "Grep", "Glob"], maxTurns: 60 };
+const SECURITY_REPLY = `${CLAUDE_RESULT} The text from the first "{" to the last "}" is parsed as JSON.`;
+const SECURITY_ENTRY = "The scan as a JSON object: project (the repository name) and commit (the pinned commit of the default branch).";
+
+const SECURITY_MODEL: ClaudePrompt = {
+  id: "security.model",
+  stage: "Security",
+  runner: "claude",
+  purpose: "Deep scan, first call: the threat model (where untrusted input enters) and the split of the repository into areas in risk order. Started only by an operator; its output is visible to operators and maintainers only.",
+  models: ["opus"],
+  effort: "high",
+  placeholders: { scan: SECURITY_ENTRY, repo_access: "One sentence: the permission to read the repository checkout at the pinned commit." },
+  sandbox: SECURITY_SANDBOX,
+  template: SECURITY_MODEL_TEMPLATE,
+  output: `A JSON object: {"summary", "entry_points": [{"name", "kind", "where"}], "areas": [{"name", "paths", "entry_points", "risk", "why"}]}.`,
+  validation: `${SECURITY_REPLY} Entry points need a name; a kind outside the list becomes "other". An area needs a name and at least one relative path (a path that is absolute or has a ".." segment is dropped), risk is rounded into 1 to 5, areas are ordered by risk (highest first) and cut to ${SECURITY_AREAS_MAX}. A reply with no valid area is asked once more; after that the scan fails. The scan's estimate is recorded from the area count.`,
+  limits: { perCall: 1, attempts: 2, timeoutSeconds: 1800 },
+};
+
+const SECURITY_AREA: ClaudePrompt = {
+  id: "security.area",
+  stage: "Security",
+  runner: "claude",
+  purpose: "Deep scan, one call per area: vulnerabilities in the area that an outsider can reach, each with file:line for every claim, the path from untrusted input, the impact and a severity. Structure adapted from anthropics/claude-code-security-review (MIT).",
+  models: ["opus"],
+  effort: "high",
+  placeholders: { area: "The area as a JSON object: project, commit, area (name, paths, why), entry_points (those that reach the area) and summary (the threat model's summary).", repo_access: "One sentence: the permission to read the repository checkout at the pinned commit." },
+  sandbox: SECURITY_SANDBOX,
+  template: SECURITY_AREA_TEMPLATE,
+  output: `A JSON object: {"findings": [{"title", "severity", "urgent", "confidence", "category", "refs": [{"path", "line", "claim"}], "reach", "impact"}]}.`,
+  validation: `${SECURITY_REPLY} A finding is kept only with a title, a severity (critical, high, medium or low), confidence of ${MIN_CONFIDENCE} or more, a reach, an impact and at least one ref whose path exists in the checkout and whose line is inside the file; refs that fail this are dropped, and a finding left without refs is dropped. A reply that is not the object is asked once more; after that the area counts as failed. The first ref is the sink and must be a real line. A finding that repeats an earlier finding of the repository (the same sink line and title, or the same sink file within three lines and a similar title) is stored as a hidden repeat that links to the earlier one, which shows it in its timeline; a finding the verify step disproved suppresses only an exact repeat.`,
+  limits: { perCall: 1, attempts: 2, timeoutSeconds: 2400 },
+};
+
+const SECURITY_VERIFY: ClaudePrompt = {
+  id: "security.verify",
+  stage: "Security",
+  runner: "claude",
+  purpose: "Deep scan, one call per finding: tries to disprove it. A finding stays only when confirmed with a score of " + MIN_VERIFY_SCORE + " or more out of 10. The model may propose a failing test; the scan records the reasoning and the proposal and does not run it.",
+  models: ["opus"],
+  effort: "high",
+  placeholders: { finding: "The finding as a JSON object: project, commit and finding (title, severity, urgent, category, refs, reach, impact, area).", repo_access: "One sentence: the permission to read the repository checkout at the pinned commit." },
+  sandbox: { ...SECURITY_SANDBOX, maxTurns: 40 },
+  template: SECURITY_VERIFY_TEMPLATE,
+  output: `A JSON object: {"verdict": "confirmed" or "disproved", "score": 1 to 10, "result", "notes", "proposed_test"}.`,
+  validation: `${SECURITY_REPLY} The reply is kept only with a verdict, an integer score (rounded into 1 to 10) and a result text. A finding survives when the verdict is confirmed and the score is ${MIN_VERIFY_SCORE} or more; a disproved finding is kept out of the lists and remembered so that a later scan does not raise it again. A reply that is not valid is asked once more; after that the finding is kept as unverified.`,
+  limits: { perCall: 1, attempts: 2, timeoutSeconds: 1800 },
+};
+
+export const CLAUDE_PROMPTS = { "classify.haiku": HAIKU, "referee.sonnet": REFEREE, "fixup.patch": FIXUP, "verify.plan": VERIFY_PLAN, "verify.summary": VERIFY_SUMMARY, "priority.haiku": PRIORITY_HAIKU, "dupes.haiku": DUPES_HAIKU, "fixissue.triage": FIXISSUE_TRIAGE, "fixissue.patch": FIXISSUE_PATCH, "fixup.check": FIXUP_CHECK, "fixissue.check": FIXISSUE_CHECK, "review.opus": OPUS_REVIEW, "premerge.opus": PREMERGE, "postmerge.opus": POSTMERGE, "dupes.compare-prs.opus": DUPES_COMPARE_PRS, "dupes.compare-issues.sonnet": DUPES_COMPARE_ISSUES, "decide.prepare": PREPARE, "conversation.turn": CONVERSATION, "areas.haiku": AREAS_HAIKU, "areas.propose": AREAS_PROPOSE, "areas.suggest": AREAS_SUGGEST, "fixup.conflict": FIXUP_CONFLICT, "lint.reference.haiku": REFERENCE_HAIKU, "cifix.patch": CIFIX, "mainfix.classify": MAINFIX_CLASSIFY, "security.model": SECURITY_MODEL, "security.area": SECURITY_AREA, "security.verify": SECURITY_VERIFY } as const;
 /** TypeSafe's published price per input token for jev-1.13.0, jev-1.14.0 and jev-latest ($0.042 per million); output tokens are free. */
 /** Models of the operator sessions that write text AutoCraft posts on their behalf (not a registered prompt's model): the security scan's questions. */
 export const OPERATOR_MODELS = { security: "claude-opus-5-5" } as const;
@@ -1173,10 +1226,10 @@ export const JEV_USD_PER_INPUT_TOKEN = 0.042 / 1e6;
 export const JEV_PROMPTS = { "classify.jev": JEV, "priority.jev": PRIORITY_JEV, "dupes.jev": DUPES_JEV, "areas.jev": AREAS_JEV, "lint.reference.jev": REFERENCE_JEV } as const;
 export type ClaudePromptId = keyof typeof CLAUDE_PROMPTS;
 export type JevPromptId = keyof typeof JEV_PROMPTS;
-export const PROMPTS: (ClaudePrompt | JevPrompt)[] = [JEV, HAIKU, REFEREE, FIXUP, VERIFY_PLAN, VERIFY_SUMMARY, PRIORITY_JEV, PRIORITY_HAIKU, DUPES_JEV, DUPES_HAIKU, FIXISSUE_TRIAGE, FIXISSUE_PATCH, FIXUP_CHECK, FIXISSUE_CHECK, OPUS_REVIEW, PREMERGE, POSTMERGE, DUPES_COMPARE_PRS, DUPES_COMPARE_ISSUES, PREPARE, CONVERSATION, AREAS_JEV, AREAS_HAIKU, AREAS_PROPOSE, AREAS_SUGGEST, FIXUP_CONFLICT, REFERENCE_JEV, REFERENCE_HAIKU, CIFIX, MAINFIX_CLASSIFY];
+export const PROMPTS: (ClaudePrompt | JevPrompt)[] = [JEV, HAIKU, REFEREE, FIXUP, VERIFY_PLAN, VERIFY_SUMMARY, PRIORITY_JEV, PRIORITY_HAIKU, DUPES_JEV, DUPES_HAIKU, FIXISSUE_TRIAGE, FIXISSUE_PATCH, FIXUP_CHECK, FIXISSUE_CHECK, OPUS_REVIEW, PREMERGE, POSTMERGE, DUPES_COMPARE_PRS, DUPES_COMPARE_ISSUES, PREPARE, CONVERSATION, AREAS_JEV, AREAS_HAIKU, AREAS_PROPOSE, AREAS_SUGGEST, FIXUP_CONFLICT, REFERENCE_JEV, REFERENCE_HAIKU, CIFIX, MAINFIX_CLASSIFY, SECURITY_MODEL, SECURITY_AREA, SECURITY_VERIFY];
 
 /** What each Claude prompt is rendered from. */
-export type ClaudeInput = { "classify.haiku": Item[]; "referee.sonnet": Item[]; "fixup.patch": FixupPr[]; "verify.plan": VerifyPlanInput[]; "verify.summary": VerifySummaryInput[]; "priority.haiku": Item[]; "dupes.haiku": DupePair[]; "fixissue.triage": TriageInput[]; "fixissue.patch": PatchInput[]; "fixup.check": FixupCheckInput[]; "fixissue.check": FixIssueCheckInput[], "review.opus": OpusPr[]; "premerge.opus": OpusPr[]; "postmerge.opus": PostmergePr[]; "dupes.compare-prs.opus": ComparePrs[]; "dupes.compare-issues.sonnet": CompareIssues[]; "decide.prepare": PrepareInput[]; "conversation.turn": ConversationInput[]; "areas.haiku": AreaAsk[]; "areas.propose": AreaProposeInput[]; "areas.suggest": AreaSuggestInput[]; "fixup.conflict": ConflictPr[]; "lint.reference.haiku": ReferenceLintInput[]; "cifix.patch": CifixPr[]; "mainfix.classify": MainFixInput[] };
+export type ClaudeInput = { "classify.haiku": Item[]; "referee.sonnet": Item[]; "fixup.patch": FixupPr[]; "verify.plan": VerifyPlanInput[]; "verify.summary": VerifySummaryInput[]; "priority.haiku": Item[]; "dupes.haiku": DupePair[]; "fixissue.triage": TriageInput[]; "fixissue.patch": PatchInput[]; "fixup.check": FixupCheckInput[]; "fixissue.check": FixIssueCheckInput[], "review.opus": OpusPr[]; "premerge.opus": OpusPr[]; "postmerge.opus": PostmergePr[]; "dupes.compare-prs.opus": ComparePrs[]; "dupes.compare-issues.sonnet": CompareIssues[]; "decide.prepare": PrepareInput[]; "conversation.turn": ConversationInput[]; "areas.haiku": AreaAsk[]; "areas.propose": AreaProposeInput[]; "areas.suggest": AreaSuggestInput[]; "fixup.conflict": ConflictPr[]; "lint.reference.haiku": ReferenceLintInput[]; "cifix.patch": CifixPr[]; "mainfix.classify": MainFixInput[]; "security.model": SecurityModelInput[]; "security.area": SecurityAreaInput[]; "security.verify": SecurityVerifyInput[] };
 
 /** Pretty JSON for text a stranger wrote, safe inside a tagged frame: JSON leaves "<" alone, so "</pr>" in a body would close the tag. */
 export const untrustedJson = (v: unknown): string => JSON.stringify(v, null, 1).replace(/</g, "\\u003c");
@@ -1231,6 +1284,8 @@ export function renderAreaJev(item: AreaItem, areas: Area[]): string {
 }
 
 const itemValues = (items: Item[]) => ({ items: untrustedJson(items.map(itemInput)) });
+const repoDir = (dir: string | undefined): string => (dir ? SECURITY_ACCESS("the pinned commit of the default branch") : "You cannot read the repository.");
+
 const VALUES: { [K in ClaudePromptId]: (input: ClaudeInput[K]) => Record<string, string> } = {
   "classify.haiku": itemValues,
   "referee.sonnet": itemValues,
@@ -1318,6 +1373,18 @@ const VALUES: { [K in ClaudePromptId]: (input: ClaudeInput[K]) => Record<string,
       repo_access: repoAccess(repo_dir, "the default branch or the pull request's head commit, to check claims about the repository's docs and code", "You cannot read the repository; say that claims about it are unverified.", true, reference === true),
     };
   },
+  "security.model": ([s]) => {
+    const { repo_dir, repo: _r, number: _n, project, commit } = s!;
+    return { scan: untrustedJson({ project, commit }), repo_access: repoDir(repo_dir) };
+  },
+  "security.area": ([s]) => {
+    const { repo_dir, repo: _r, number: _n, ...rest } = s!;
+    return { area: untrustedJson(rest), repo_access: repoDir(repo_dir) };
+  },
+  "security.verify": ([s]) => {
+    const { repo_dir, repo: _r, number: _n, ...rest } = s!;
+    return { finding: untrustedJson(rest), repo_access: repoDir(repo_dir) };
+  },
 };
 
 const withRepo = <T extends object>(xs: T[]): T[] => xs.map((x) => ({ ...x, repo_dir: REPO_PATH }));
@@ -1349,6 +1416,9 @@ const EXAMPLES: { [K in ClaudePromptId]: { input: ClaudeInput[K]; refs: string[]
   "conversation.turn": { input: SAMPLE_CONVERSATION, refs: SAMPLE_CONVERSATION.map((p) => p.ref) },
   "fixup.conflict": { input: withRepo(SAMPLE_CONFLICT_PRS), refs: SAMPLE_CONFLICT_PRS.map((p) => p.ref) },
   "lint.reference.haiku": { input: SAMPLE_REFERENCE_LINT, refs: SAMPLE_REFERENCE_LINT.map((p) => p.ref) },
+  "security.model": { input: withRepo(SAMPLE_SECURITY_MODEL), refs: [] },
+  "security.area": { input: withRepo(SAMPLE_SECURITY_AREA), refs: [] },
+  "security.verify": { input: withRepo(SAMPLE_SECURITY_VERIFY), refs: [] },
 };
 
 /** One pass over the template, so text inside item data is never read as a placeholder. */

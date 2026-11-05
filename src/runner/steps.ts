@@ -471,6 +471,31 @@ export const STEPS: StepDef[] = [
     },
   },
   {
+    name: "security-scan",
+    title: "Security deep scan",
+    description: "Audits the default branch of a repo for vulnerabilities: Opus builds a threat model and splits the code into areas, scans each area read-only, then tries to disprove every finding. Started only by an operator on the repo page, with an optional spend cap; findings are visible to operators and maintainers only and nothing goes to GitHub.",
+    stage: 9,
+    requires: "operator",
+    group: "security",
+    models: ["opus"],
+    params: [
+      { name: "repo", label: "Repo", kind: "repo", required: true },
+      { name: "scan", label: "Scan", kind: "int", min: 1, max: 1_000_000_000, required: true, help: "the scan row the API created" },
+    ],
+    check: async (db, p) => {
+      const row = db.prepare("SELECT repo, state FROM security_scans WHERE id = ?").get(Number(p.scan)) as { repo: string; state: string } | undefined;
+      if (!row || row.repo !== p.repo) return "no such scan";
+      return ["modeling", "scanning", "verifying"].includes(row.state) ? null : `the scan already ended (${row.state})`;
+    },
+    run: async (ctx) => {
+      const { runScan } = await import("../security/scan.ts");
+      const { realDeps } = await import("../security/real.ts");
+      const { usageRunId } = await import("../security/real.ts");
+      ctx.usageRun(usageRunId(Number(ctx.params.scan)));
+      return runScan(ctx.db, Number(ctx.params.scan), realDeps(ctx.db, Number(ctx.params.scan), { cancelled: ctx.cancelled, log: ctx.log, progress: ctx.progress }));
+    },
+  },
+  {
     name: "rank",
     title: "Rank open items",
     description: "Computes the work rank of every open item: priority level (raised by one for the security flag), type label, size (changed lines of a PR, the Fix triage's estimate for an issue), then reach. Review, Fix (which skips P4), Verify, Fix-up, Decide and the merge queue take their items in this order. Calls no model and writes nothing to GitHub.",

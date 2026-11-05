@@ -1,0 +1,235 @@
+// The security deep scan engine: threat model, one call per area, one verify call per finding, with a spend cap
+// checked before every call. It runs in the runner's job process (step `security-scan`) on a pinned commit of the
+// default branch; nothing here writes to GitHub.
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { join, resolve, sep } from "node:path";
+import type { DatabaseSync } from "node:sqlite";
+import type { FindingVerification } from "../../web/src/api/types.ts";
+import { ACTIVE_STATES, finishScan, scanRow } from "./store.ts";
+import {
+  securityRepo, parseCandidates, parseThreatModel, parseVerdict, survives, titleKey,
+  type Candidate, type SecurityAreaInput, type SecurityModelInput, type SecurityVerifyInput, type ThreatArea, type ThreatModel,
+} from "./rules.ts";
+
+/** One model call. `text` is null when the call gave no answer; `cost` is what it cost whatever the outcome, null when unknown. */
+export type Reply = { text: string | null; cost: number | null };
+export type Ask = {
+  (id: "security.model", input: SecurityModelInput): Promise<Reply | null>;
+  (id: "security.area", input: SecurityAreaInput): Promise<Reply | null>;
+  (id: "security.verify", input: SecurityVerifyInput): Promise<Reply | null>;
+};
+export type ScanDeps = {
+  ask: Ask;
+  /** The pinned commit of the default branch and a read-only directory of its files, or null when none can be made. */
+  checkout: (repo: string) => Promise<{ dir: string; sha: string } | null>;
+  cancelled: () => boolean;
+  log: (line: string) => void;
+  progress?: (line: string) => void;
+};
+
+/** What a call is expected to cost before any has run, in dollars. The area guess grows with the size of the area's files. */
+export const MODEL_GUESS_USD = 2;
+export const VERIFY_GUESS_USD = 0.6;
+export const areaGuessUsd = (bytes: number): number => Math.min(6, 1 + bytes / 200_000);
+const BYTES_CAP = 2_000_000;
+const MAX_FILE = 2 * 1024 * 1024;
+/** Calls are repeated once when the reply cannot be read. */
+const ATTEMPTS = 2;
+
+const now = (): string => new Date().toISOString();
+const mean = (xs: number[]): number | null => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null);
+
+/** Bytes of the regular files under `paths` in the checkout, counted up to BYTES_CAP; null when none of the paths exists. */
+export function pathsBytes(dir: string, paths: string[]): number | null {
+  const root = resolve(dir);
+  let total = 0, any = false;
+  const walk = (p: string): void => {
+    if (total >= BYTES_CAP) return;
+    let st;
+    try { st = statSync(p); } catch { return; }
+    any = true;
+    if (st.isFile()) total += st.size;
+    else if (st.isDirectory()) for (const e of readdirSync(p)) walk(join(p, e));
+  };
+  for (const p of paths) {
+    const full = resolve(root, p);
+    if (full === root || full.startsWith(root + sep)) walk(full);
+  }
+  return any ? total : null;
+}
+
+/** Keeps the refs that point at a line of a file in the checkout. */
+function realRefs(dir: string, refs: Candidate["refs"]): Candidate["refs"] {
+  const root = resolve(dir);
+  return refs.filter((r) => {
+    const full = resolve(root, r.path);
+    if (!full.startsWith(root + sep) || !existsSync(full)) return false;
+    try {
+      const st = statSync(full);
+      if (!st.isFile() || st.size > MAX_FILE) return false;
+      return readFileSync(full, "utf8").split("\n").length >= r.line;
+    } catch { return false; }
+  });
+}
+
+type Known = { number: number; state: string; fingerprint: string; sink: { path: string; line: number } | null; title: string };
+
+/** The primary location of a finding is its first ref: the line where the unsafe operation is (the prompt asks for it first). Other refs are entry points and checks that findings may share. */
+const fingerprintOf = (c: Candidate): string => `${c.refs[0]!.path}:${c.refs[0]!.line}|${titleKey(c.title)}`;
+
+const words = (t: string): Set<string> => new Set(titleKey(t).split(" ").filter((w) => w.length > 2));
+const similar = (a: string, b: string): boolean => {
+  const x = words(a), y = words(b);
+  const common = [...x].filter((w) => y.has(w)).length;
+  return common > 0 && common / (x.size + y.size - common) >= 0.5;
+};
+
+/** The earlier finding of the repository that `c` repeats: its exact fingerprint (a disproved finding suppresses only that), or the same sink file within a few lines and a similar title. */
+export const earlierFinding = (known: Known[], c: Candidate): Known | undefined => {
+  const fp = fingerprintOf(c), sink = c.refs[0]!;
+  return known.find((k) => k.fingerprint === fp)
+    ?? known.find((k) => k.state !== "disproved" && k.state !== "duplicate" && k.sink?.path === sink.path && Math.abs(k.sink.line - sink.line) <= 3 && similar(k.title, c.title));
+};
+
+class Capped extends Error {}
+class Stopped extends Error {}
+
+/**
+ * Runs scan `scanId` (created by the API in state `modeling`) to the end: done, stopped, capped or failed.
+ * Returns the summary line of the job.
+ */
+export async function runScan(db: DatabaseSync, scanId: number, deps: ScanDeps): Promise<string> {
+  const scan = scanRow(db, scanId);
+  if (!scan) throw new Error(`no scan ${scanId}`);
+  if (!ACTIVE_STATES.includes(scan.state)) return `scan ${scanId} already ${scan.state}`;
+  const { repo, cap_usd: cap } = scan;
+  const stopped = (): boolean => deps.cancelled() || scanRow(db, scanId)?.state === "stopped";
+  const setState = (state: "modeling" | "scanning" | "verifying"): void => void db.prepare(`UPDATE security_scans SET state = ? WHERE id = ? AND state IN (${ACTIVE_STATES.map((s) => `'${s}'`).join(", ")})`).run(state, scanId);
+  const progress = (line: string): void => { deps.progress?.(line); deps.log(line); };
+  const cost = (): number => scanRow(db, scanId)!.cost_usd;
+  const areaCalls: number[] = [], verifyCalls: number[] = [];
+  let areaGuess = areaGuessUsd(0);
+
+  /** One call with the cap and stop checks before it; the call's cost goes to the scan and, for area work, to the area. */
+  async function call<T>(kind: "model" | "area" | "verify", expected: number, meta: { area?: number; finding?: number; bill?: number }, run: () => Promise<Reply | null>, readReply: (text: string) => T | null): Promise<{ value: T; cost: number } | null> {
+    let spent = 0;
+    for (let attempt = 0; attempt < ATTEMPTS; attempt++) {
+      if (stopped()) throw new Stopped();
+      if (cap !== null && cost() + expected > cap) throw new Capped();
+      const id = Number(db.prepare("INSERT INTO security_calls (scan_id, kind, area_idx, finding_number, started_at) VALUES (?, ?, ?, ?, ?)").run(scanId, kind, meta.area ?? null, meta.finding ?? null, now()).lastInsertRowid);
+      let reply: Reply | null = null;
+      try { reply = await run(); } catch (e) { deps.log(`${kind} call failed: ${(e as Error).message}`.slice(0, 300)); }
+      // A call that answered without a reported cost counts as the expected cost; one that failed counts what it reported.
+      const c = reply ? reply.cost ?? (reply.text !== null ? expected : 0) : 0;
+      const value = reply?.text != null ? readReply(reply.text) : null;
+      db.prepare("UPDATE security_calls SET ended_at = ?, ok = ?, cost_usd = ? WHERE id = ?").run(now(), value === null ? 0 : 1, reply ? c : null, id);
+      db.prepare("UPDATE security_scans SET cost_usd = cost_usd + ? WHERE id = ?").run(c, scanId);
+      if (meta.bill !== undefined) db.prepare("UPDATE security_areas SET cost_usd = cost_usd + ? WHERE scan_id = ? AND idx = ?").run(c, scanId, meta.bill);
+      spent += c;
+      if (value !== null) return { value, cost: spent };
+    }
+    return null;
+  }
+
+  /** Ends the scan as failed and throws, so the job fails too. */
+  const fail = (msg: string): never => {
+    finishScan(db, scanId, "failed", msg.slice(0, 500));
+    throw new Error(`${repo}: scan ${scanId} failed: ${msg}`);
+  };
+
+  try {
+    const co = await deps.checkout(repo);
+    if (!co) return fail("The repository could not be checked out for a read-only scan.");
+    db.prepare("UPDATE security_scans SET commit_sha = ? WHERE id = ?").run(co.sha, scanId);
+    const base = { repo: securityRepo(repo), number: scanId, project: repo, commit: co.sha } as const;
+
+    // ---- threat model ----
+    setState("modeling");
+    progress(`${repo}: threat model`);
+    const modeled = await call<ThreatModel>("model", MODEL_GUESS_USD, {}, () => deps.ask("security.model", { ...base }), parseThreatModel);
+    if (!modeled) return fail("The threat model could not be read.");
+    const areas: ThreatArea[] = [];
+    const sizes: number[] = [];
+    for (const a of modeled.value.areas) {
+      const bytes = pathsBytes(co.dir, a.paths);
+      if (bytes === null) continue;
+      areas.push(a);
+      sizes.push(bytes);
+    }
+    if (!areas.length) return fail("The threat model named no area that exists in the checkout.");
+    const insArea = db.prepare("INSERT INTO security_areas (scan_id, idx, name, paths, entry_points, risk, why) VALUES (?, ?, ?, ?, ?, ?, ?)");
+    areas.forEach((a, i) => insArea.run(scanId, i, a.name, JSON.stringify(a.paths), JSON.stringify(a.entryPoints), a.risk, a.why));
+    const guesses = sizes.map(areaGuessUsd);
+    db.prepare("UPDATE security_scans SET areas_total = ?, estimate_usd = ?, threat_model = ? WHERE id = ?")
+      .run(areas.length, cost() + guesses.reduce((x, y) => x + y, 0), JSON.stringify({ summary: modeled.value.summary, entryPoints: modeled.value.entryPoints }), scanId);
+
+    const known: Known[] = (db.prepare("SELECT number, state, fingerprint, title, refs FROM security_findings WHERE repo = ?").all(repo) as { number: number; state: string; fingerprint: string; title: string; refs: string }[])
+      .map((r) => ({ number: r.number, state: r.state, fingerprint: r.fingerprint, title: r.title, sink: (JSON.parse(r.refs) as { path: string; line: number }[])[0] ?? null }));
+    const insFinding = db.prepare(`INSERT INTO security_findings (repo, number, scan_id, area, title, severity, urgent, state, refs, category, reach, impact, fingerprint, created_at, updated_at, duplicate_of)
+      VALUES (?, (SELECT COALESCE(MAX(number), 0) + 1 FROM security_findings WHERE repo = ?), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING number`);
+
+    // ---- areas ----
+    for (const [idx, area] of areas.entries()) {
+      areaGuess = mean(areaCalls) ?? guesses[idx]!;
+      setState("scanning");
+      progress(`${repo}: area ${idx + 1} of ${areas.length}: ${area.name}`);
+      const input: SecurityAreaInput = {
+        ...base, summary: modeled.value.summary, area: { name: area.name, paths: area.paths, why: area.why },
+        entry_points: modeled.value.entryPoints.filter((e) => area.entryPoints.includes(e.name)),
+      };
+      const found = await call<Candidate[]>("area", areaGuess, { area: idx, bill: idx }, () => deps.ask("security.area", input), parseCandidates);
+      if (!found) {
+        db.prepare("UPDATE security_areas SET state = 'failed' WHERE scan_id = ? AND idx = ?").run(scanId, idx);
+        deps.log(`area ${area.name}: no readable answer`);
+      } else {
+        areaCalls.push(found.cost);
+        const fresh: { number: number; c: Candidate }[] = [];
+        for (const c of found.value) {
+          const refs = realRefs(co.dir, c.refs);
+          // The first ref is the sink: a finding whose sink is not a real line is dropped.
+          if (!refs.length || refs[0]!.path !== c.refs[0]!.path || refs[0]!.line !== c.refs[0]!.line) continue;
+          const cand: Candidate = { ...c, refs };
+          const earlier = earlierFinding(known, cand);
+          const at = now();
+          // A repeat is kept as a hidden row that points at the earlier finding, which shows it in its timeline.
+          const row = insFinding.get(repo, repo, scanId, area.name, cand.title, cand.severity, cand.urgent ? 1 : 0, earlier ? "duplicate" : "unverified", JSON.stringify(cand.refs), cand.category, cand.reach, cand.impact, fingerprintOf(cand), at, at, earlier?.number ?? null) as { number: number };
+          known.push({ number: row.number, state: earlier ? "duplicate" : "unverified", fingerprint: fingerprintOf(cand), sink: cand.refs[0]!, title: cand.title });
+          if (!earlier) fresh.push({ number: row.number, c: cand });
+        }
+        // ---- verify ----
+        for (const f of fresh) {
+          setState("verifying");
+          progress(`${repo}: verifying "${f.c.title}"`);
+          const vin: SecurityVerifyInput = { ...base, number: scanId, finding: { ...f.c, area: area.name } };
+          const checked = await call("verify", mean(verifyCalls) ?? VERIFY_GUESS_USD, { finding: f.number, bill: idx }, () => deps.ask("security.verify", vin), parseVerdict);
+          if (!checked) {
+            const v: FindingVerification = { kind: "reasoning", result: "Not verified: the verify call gave no readable answer.", notes: "", score: null, proposedTest: null };
+            db.prepare("UPDATE security_findings SET state = 'new', verification = ?, updated_at = ? WHERE repo = ? AND number = ?").run(JSON.stringify(v), now(), repo, f.number);
+            continue;
+          }
+          verifyCalls.push(checked.cost);
+          const verdict = checked.value;
+          const v: FindingVerification = { kind: "reasoning", result: verdict.result, notes: verdict.notes, score: verdict.score, proposedTest: verdict.proposedTest };
+          db.prepare("UPDATE security_findings SET state = ?, verification = ?, updated_at = ? WHERE repo = ? AND number = ?").run(survives(verdict) ? "new" : "disproved", JSON.stringify(v), now(), repo, f.number);
+        }
+      }
+      db.prepare("UPDATE security_areas SET state = CASE state WHEN 'failed' THEN 'failed' ELSE 'done' END WHERE scan_id = ? AND idx = ?").run(scanId, idx);
+      const left = guesses.slice(idx + 1);
+      const avg = (db.prepare("SELECT AVG(cost_usd) AS a FROM security_areas WHERE scan_id = ? AND state != 'pending'").get(scanId) as { a: number }).a;
+      db.prepare("UPDATE security_scans SET areas_done = ?, estimate_usd = ? WHERE id = ?").run(idx + 1, cost() + left.length * avg, scanId);
+    }
+    finishScan(db, scanId, "done");
+    return `${repo}: scan ${scanId} done: ${areas.length} areas, ${(db.prepare("SELECT COUNT(*) AS n FROM security_findings WHERE scan_id = ? AND state = 'new'").get(scanId) as { n: number }).n} findings, $${cost().toFixed(2)}`;
+  } catch (e) {
+    if (e instanceof Capped) {
+      finishScan(db, scanId, "capped");
+      return `${repo}: scan ${scanId} stopped at the spend cap ($${cost().toFixed(2)} of $${cap})`;
+    }
+    if (e instanceof Stopped) {
+      finishScan(db, scanId, "stopped");
+      return `${repo}: scan ${scanId} stopped`;
+    }
+    finishScan(db, scanId, "failed", (e as Error).message.slice(0, 500));
+    throw e;
+  }
+}

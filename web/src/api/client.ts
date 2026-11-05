@@ -64,6 +64,10 @@ import type {
   SearchHit,
   SimilarHit,
   TrackedRepo,
+  FindingAction,
+  FindingView,
+  ScanView,
+  SecurityOverview,
   User,
   WhitelistRule,
   Job,
@@ -169,6 +173,14 @@ export interface Api {
     previewRule(rule: WhitelistRule): Promise<RulePreview>;
     setRule(rule: WhitelistRule): Promise<WhitelistRule>;
     override(login: string, input: OverrideInput): Promise<Contributor>;
+  };
+  /** Security deep scan. Reading is for operators and maintainers (viewers get 404); the writes are operator only and may answer with the server's error message. */
+  security: {
+    overview(repo: RepoName): Promise<SecurityOverview>;
+    startScan(repo: RepoName, capUsd: number | null): Promise<ScanView>;
+    stopScan(id: number): Promise<ScanView>;
+    finding(repo: RepoName, number: number): Promise<FindingView>;
+    act(repo: RepoName, number: number, action: FindingAction, reason?: string): Promise<FindingView>;
   };
   /** Operator only: every org repo and whether it is tracked. */
   repoAdmin: {

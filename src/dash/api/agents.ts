@@ -11,6 +11,7 @@ import { HttpError } from "../server/util.ts";
 import type { Req } from "../types.ts";
 import { hiddenRepos } from "./visible.ts";
 import { canSeeInternals } from "./staff.ts";
+import { SECURITY_STEP } from "../../security/rules.ts";
 
 const wrap = async <T>(f: () => T | Promise<T>): Promise<T> => {
   try {
@@ -76,4 +77,7 @@ export const detail = (db: DatabaseSync, req: Req) => wrap(async () => {
   return getRun(db, Number(req.params.id), { hidden: await hiddenRepos(db, req), texts: canSeeInternals(req) });
 });
 
-export const rates = (db: DatabaseSync, req: Req) => wrap(async () => ratesOf(db, req.query.get("window") ?? "24h", Date.now(), await hiddenRepos(db, req)));
+export const rates = (db: DatabaseSync, req: Req) => wrap(async () => {
+  const r = await ratesOf(db, req.query.get("window") ?? "24h", Date.now(), await hiddenRepos(db, req));
+  return canSeeInternals(req) ? r : { ...r, stages: r.stages.filter((s) => s.step !== SECURITY_STEP) };
+});
