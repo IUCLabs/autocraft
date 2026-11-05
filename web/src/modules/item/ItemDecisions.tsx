@@ -8,6 +8,8 @@ import { KindTag } from "../decisions/parts";
 import { Refs } from "../decisions/Refs";
 import { AnswerNotice } from "../decisions/AnswerNotice";
 import { WorkflowBox } from "../decisions/Workflow";
+import { canComment } from "../../registry/permissions";
+import { FeedbackBox } from "../decisions/FeedbackBox";
 import { useLocal } from "../decisions/state";
 import { AnsweredState, canActOn } from "../decisions/DecisionDetail";
 import { RecommendationLine } from "../../ui/molecules/RecommendationLine";
@@ -34,7 +36,7 @@ export const scrollToThreadEnd = () => document.getElementById(THREAD_END_ID)?.s
  * first question) and the decision's own options, answerable in place with the Decisions page's controls and permission rules.
  * On a decision page, `focus` comes first, shows its answer with Undo once answered, and has no link to itself.
  */
-export function OpenQuestions({ ds, focus, cards, onAnswered }: { ds: Decision[]; focus?: Decision; cards?: ReactNode; onAnswered?: () => void }) {
+export function OpenQuestions({ ds, focus, cards, onAnswered, boxes }: { ds: Decision[]; focus?: Decision; cards?: ReactNode; onAnswered?: () => void; boxes?: boolean }) {
   const loc = useLocal();
   const user = useUser();
   const open = ds.filter((d) => !d.answer);
@@ -47,13 +49,13 @@ export function OpenQuestions({ ds, focus, cards, onAnswered }: { ds: Decision[]
       ))}
       {focus?.answer && <AnsweredState d={focus} canUndo={canActOn(user, [focus])} />}
       {open.map((d, i) => (
-        <Question key={d.id} d={d} siblings={ds} cards={i === 0 ? cards : undefined} here={d.id === focus?.id} onAnswered={onAnswered} />
+        <Question key={d.id} d={d} siblings={ds} cards={i === 0 ? cards : undefined} here={d.id === focus?.id} onAnswered={onAnswered} feedback={!!boxes && d.id !== focus?.id} />
       ))}
     </section>
   );
 }
 
-function Question({ d, siblings, cards, here, onAnswered }: { d: Decision; siblings: Decision[]; cards?: ReactNode; here: boolean; onAnswered?: () => void }) {
+function Question({ d, siblings, cards, here, onAnswered, feedback }: { d: Decision; siblings: Decision[]; cards?: ReactNode; here: boolean; onAnswered?: () => void; feedback: boolean }) {
   const user = useUser();
   const phone = useIsPhone();
   return (
@@ -78,6 +80,8 @@ function Question({ d, siblings, cards, here, onAnswered }: { d: Decision; sibli
       <div className="mt-2"><RecommendationLine d={d} /></div>
       {cards && <div className="mt-3 space-y-2">{cards}</div>}
       <WorkflowBox ds={[d]} user={user} phone={phone} compact onAnswered={onAnswered} />
+      {/* With several open questions the composer serves one; the others get their own box. */}
+      {feedback && canComment(user) && !canActOn(user, [d]) && <FeedbackBox d={d} className="mt-3" />}
     </article>
   );
 }

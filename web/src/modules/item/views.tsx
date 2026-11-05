@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useEffect, useSyncExternalStore, type ReactNode } from "react";
 import { QueueBadge } from "../../ui/molecules/QueueBadge";
 import { Link } from "react-router-dom";
 import {
@@ -74,9 +74,19 @@ function Section({ title, aside, children }: { title: string; aside?: ReactNode;
   );
 }
 
+// Whether the item's right-hand panel is on screen (it unmounts while collapsed), so the main column can show the details itself otherwise.
+let sideShown = 0;
+const sideListeners = new Set<() => void>();
+const sideSub = (f: () => void) => (sideListeners.add(f), () => void sideListeners.delete(f));
+const setSide = (d: number) => {
+  sideShown += d;
+  sideListeners.forEach((f) => f());
+};
+
 export function ItemMain({ params }: ViewProps) {
   const { data: it, error } = useItem(params);
-  const wide = useMedia("(min-width: 1024px)");
+  const sideUp = useSyncExternalStore(sideSub, () => sideShown > 0);
+  const wide = useMedia("(min-width: 1024px)") && sideUp;
   const repo = params.repo!;
   const number = Number(params.number);
   // The trace request starts with the item request, and the page keeps one tree, so the trace is not fetched again when the item arrives.
@@ -386,6 +396,12 @@ export function ItemSide(props: ViewProps) {
   const { data: it } = useItem(props.params);
   const { data: ds } = useItemDecisions(props.params.repo!, Number(props.params.number));
   const wide = useMedia("(min-width: 1024px)");
+  const showing = wide && !!it;
+  useEffect(() => {
+    if (!showing) return;
+    setSide(1);
+    return () => setSide(-1);
+  }, [showing]);
   if (!it) return null;
   return (
     <div className="h-full overflow-y-auto pt-1">

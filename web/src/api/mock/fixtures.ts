@@ -638,6 +638,18 @@ const SEEDS: Seed[] = [
     author: "kiln-and-reed",
     answer: ["withdrawn", "pipeline", 3, true, "the pull request was closed on GitHub"],
   },
+  {
+    kind: "scope",
+    repo: "photocraft",
+    number: 4133,
+    title: "Healing brush leaves visible seams on 16-bit images",
+    question: "Is a 16-bit healing brush in scope for photocraft?",
+    context: [],
+    facts: ["issue · 2 comments"],
+    ...spread(scopeOpts("take")),
+    ageH: 20,
+    author: "okapi-codes",
+  },
 ];
 
 function spread([options, recommended]: [DecisionOption[], string]) {

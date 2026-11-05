@@ -23,6 +23,8 @@ import { OpenQuestions, useItemDecisions } from "./ItemDecisions";
 import { PipelineRows, hashEvent } from "./PipelineRows";
 
 const PAGE = 50;
+/** Pages fetched on their own so recent comments are not left behind "Load more"; past this, a button continues. */
+const AUTO_PAGES = 20;
 const dedupe = (events: TraceEvent[]) => {
   const seen = new Set<string>();
   return events.filter((e) => !seen.has(e.id) && seen.add(e.id));
@@ -91,21 +93,25 @@ export function ItemThread({ repo, number, it, decision, onAnswered }: {
       return n;
     });
 
-  // A link with #event=<id> opens that row and scrolls to it once the row exists.
+  // Turns and feedback load whole, so the trace pages are fetched until the end (up to AUTO_PAGES) to keep the thread in order.
+  const loaded = q.pages?.length ?? 0;
+  useEffect(() => {
+    if (q.hasMore && !q.loadingMore && !q.error && loaded > 0 && loaded < AUTO_PAGES) q.loadMore();
+  }, [q.hasMore, q.loadingMore, q.error, loaded]);
+
+  // A link with #event=<id> opens that row and scrolls to it once its element exists (the item, the pages and the rows arrive separately).
   const scrolled = useRef(false);
   useEffect(() => {
     const id = hashEvent();
     if (!id || scrolled.current) return;
-    if (!events.some((e) => e.id === id)) {
-      if (q.hasMore && !q.loadingMore) q.loadMore();
-      return;
-    }
+    const el = document.getElementById(`event-${id}`);
+    if (!el) return;
     scrolled.current = true;
-    document.getElementById(`event-${id}`)?.scrollIntoView({ block: "start" });
-  }, [events, q.hasMore, q.loadingMore]);
+    el.scrollIntoView({ block: "start" });
+  }, [events.length, !!it, loaded]);
 
   if (!it) return null;
-  if (!first) return q.error ? <ErrorLine error={q.error.message} className="mt-4" /> : <div className="mt-4 h-24" aria-hidden />;
+  if (!first && !q.error) return <div className="mt-4 h-24" aria-hidden />;
 
   const operator = canAct(user, [it.repo]);
   const openDecisions = ds?.filter((d) => !d.answer) ?? [];
@@ -122,10 +128,10 @@ export function ItemThread({ repo, number, it, decision, onAnswered }: {
   ]);
   const entries: Entry[] = [
     ...feedback.map((f): Entry => ({ t: "feedback", f, at: ms(f.at) })),
-    ...events.filter((e) => e.kind !== "conversation").map((e): Entry => ({ t: "event", e, at: ms(e.at) })),
+    ...events.filter((e) => e.kind !== "conversation" && !(e.id.startsWith("decision:") && e.id.includes(":feedback:"))).map((e): Entry => ({ t: "event", e, at: ms(e.at) })),
     ...turns.map((turn): Entry => ({ t: "turn", turn, at: ms(turn.at) })),
   ];
-  if (q.hasMore && events.length) entries.push({ t: "more", at: ms(events[events.length - 1]!.at) + 0.5 });
+  if (q.hasMore && events.length && loaded >= AUTO_PAGES) entries.push({ t: "more", at: ms(events[events.length - 1]!.at) + 0.5 });
   entries.sort((a, b) => a.at - b.at);
 
   const list: ReactNode[] = [];
@@ -192,7 +198,7 @@ export function ItemThread({ repo, number, it, decision, onAnswered }: {
   );
   return (
     <>
-      {!decision && <TraceHeader header={first.header} decisionHref={(id) => `/needs/decisions/${encodeURIComponent(id)}`} />}
+      {!decision && first && <TraceHeader header={first!.header} decisionHref={(id) => `/needs/decisions/${encodeURIComponent(id)}`} />}
       <section className="mt-6" aria-label="Thread">
         <TraceFilters kinds={kinds} onKinds={setKinds} autocraftOnly={autocraftOnly} onAutocraftOnly={setAutocraftOnly} />
         <ol className="mt-3 space-y-3">
@@ -218,7 +224,7 @@ export function ItemThread({ repo, number, it, decision, onAnswered }: {
         {list.length === 0 && !it.body && <p className="text-sm text-ink/55">No events match.</p>}
         <ErrorLine error={q.error?.message} className="mt-2" />
       </section>
-      <OpenQuestions ds={ds ?? []} focus={decision} cards={cards} onAnswered={onAnswered} />
+      <OpenQuestions ds={ds ?? []} focus={decision} cards={cards} onAnswered={onAnswered} boxes={openDecisions.length > 1} />
       <Composer
         repo={it.repo}
         number={it.number}
@@ -226,7 +232,7 @@ export function ItemThread({ repo, number, it, decision, onAnswered }: {
         commenter={canComment(user)}
         exists={!!conv?.exists}
         pending={!!conv?.pending}
-        feedbackOn={decision && !decision.answer ? decision : openDecisions[0]}
+        feedbackOn={decision && !decision.answer ? decision : openDecisions.length === 1 ? openDecisions[0] : undefined}
       />
     </>
   );
@@ -280,6 +286,14 @@ function FeedbackPost({ f, repo, number, include, operator, me, commenter }: { f
       setBusy(false);
     }
   };
+  const retract = async () => {
+    setError(undefined);
+    try {
+      await api.decisions.retract(f.d.id);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  };
   const label = f.pick ? (f.d.options.find((o) => o.key === f.pick)?.label ?? f.pick) : null;
   const open = !f.d.answer;
   return (
@@ -290,7 +304,7 @@ function FeedbackPost({ f, repo, number, include, operator, me, commenter }: { f
         </p>
       )}
       {f.text && <p className={`whitespace-pre-wrap break-words ${label ? "mt-1" : ""}`}>{f.text}</p>}
-      {operator && f.login !== me && (
+      {operator && f.login !== me && (f.d.number !== null || (!!f.pick && !f.text)) && (
         <button
           onClick={() => void flip()}
           disabled={busy || include?.sent}
@@ -301,11 +315,11 @@ function FeedbackPost({ f, repo, number, include, operator, me, commenter }: { f
           {include?.sent ? "Sent to Opus" : include ? "Included" : "Include for Opus"}
         </button>
       )}
-      {error && <p className="mt-1 text-xs text-bad">{error}</p>}
+      <ErrorLine error={error} className="mt-1 text-xs" />
       {open && ((f.pick && f.login === me && commenter) || (operator && f.pick && f.write)) && (
         <div className="mt-2 flex flex-wrap gap-3">
           {f.pick && f.login === me && commenter && (
-            <button onClick={() => void api.decisions.retract(f.d.id)} className="text-xs text-accent-ink hover:underline max-md:min-h-11">
+            <button onClick={() => void retract()} className="text-xs text-accent-ink hover:underline max-md:min-h-11">
               Retract
             </button>
           )}
