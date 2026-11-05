@@ -161,11 +161,11 @@ export const STAGES: StageDef[] = [
   },
   {
     id: "decide", title: "Decide", order: 5, runStage: 3, docSection: "Decide", mode: "gate",
-    description: "Asks an operator for scope calls, with a summary and a recommendation, and answers questions about an item in its conversation.",
+    description: "Asks an operator for scope calls, prepares every open decision with a summary, a pick and drafted answers, and answers questions about an item in its conversation.",
     steps: [{ name: "decide", label: "Decide", limit: null, seeded: 100 }, { name: "conversation", label: "Conversations", limit: 30 }],
     lanes: [{ name: "decide", steps: ["decide"], order: 6 }, { name: "conversation", steps: ["conversation"], order: 20 }],
     reads: ["Classified items", "Reviews", "Operator answers"],
-    sets: ["Decisions with summary and recommendation", "Conversation replies"],
+    sets: ["Decisions with summary, pick and drafted answers", "Conversation replies"],
     states: [
       { id: "not-asked", label: "Not asked yet", waitsOn: "model", tone: "neutral", hint: "Needs a decision; the decide step writes the question and summary" },
       { id: "open", label: "Waiting for an answer", waitsOn: "person", tone: "accent", gate: true },
@@ -178,11 +178,11 @@ export const STAGES: StageDef[] = [
     ],
     models: [
       { model: "haiku", use: "Summaries of duplicate decisions" },
-      { model: "opus", use: "Writes the scope decision summary and recommendation, and conversation replies" },
+      { model: "opus", use: "Prepares every open decision (summary, pick, drafted answers; the judgement model setting), and conversation replies" },
     ],
-    promptIds: ["decide.recommend", "conversation.turn"], promptStage: "Decide",
+    promptIds: ["decide.prepare", "conversation.turn"], promptStage: "Decide",
     waits: [
-      { name: "Failed recommendation", why: "A scope recommendation call that keeps failing must not re-run Decide", howLong: "1 hour between tries, at most 3; then the decision keeps no recommendation", showsAs: "none (the decision shows no recommendation)", kind: "backoff" },
+      { name: "Failed prepare", why: "A prepare call that keeps failing must not re-run Decide", howLong: "1 hour between tries, at most 3 at one PR head; then the decision keeps what it has", showsAs: "none (the decision shows no pick or drafts)", kind: "backoff" },
     ],
     writes: [],
     person: "An operator answers",

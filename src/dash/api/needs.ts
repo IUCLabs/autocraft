@@ -39,12 +39,13 @@ const SOURCES: string[] = [
      EXISTS (SELECT 1 FROM comments a WHERE a.repo = c.repo AND a.number = c.number AND a.author = :own AND a.created_at > c.created_at)
    FROM comments c
    WHERE :own <> '' AND c.mentions_pipeline = 1 AND c.created_at >= :since AND c.created_at <= :cur AND c.author IS NOT NULL AND c.author <> :own`,
-  // The comment right after one of the pipeline login's own, on an item it commented on; bots do not count as replies.
+  // The comment right after one of AutoCraft's own (a comment the audit log recorded with its URL and text; the account's older manual comments do not count), on an item it commented on; bots do not count as replies.
   `SELECT 'comment:' || c.id, 'github', c.author, c.created_at, c.body, c.repo, c.number, NULL, NULL, c.id,
      EXISTS (SELECT 1 FROM comments a WHERE a.repo = c.repo AND a.number = c.number AND a.author = :own AND a.created_at > c.created_at)
    FROM (SELECT DISTINCT repo, number FROM comments WHERE author = :own) o JOIN comments c ON c.repo = o.repo AND c.number = o.number
    WHERE :own <> '' AND c.mentions_pipeline = 0 AND c.created_at >= :since AND c.created_at <= :cur AND c.author IS NOT NULL AND c.author <> :own AND c.author NOT LIKE '%[bot]' AND lower(c.author) NOT IN (SELECT value FROM json_each(:bots)) AND TRIM(COALESCE(c.body, '')) <> ''
-     AND (SELECT p.author FROM comments p WHERE p.repo = c.repo AND p.number = c.number AND p.created_at < c.created_at ORDER BY p.created_at DESC LIMIT 1) = :own`,
+     AND EXISTS (SELECT 1 FROM (SELECT p.author, p.body FROM comments p WHERE p.repo = c.repo AND p.number = c.number AND p.created_at < c.created_at ORDER BY p.created_at DESC LIMIT 1) q
+       WHERE q.author = :own AND EXISTS (SELECT 1 FROM audit a WHERE a.target = c.repo || '#' || c.number AND json_extract(a.details, '$.url') IS NOT NULL AND json_extract(a.details, '$.text') = q.body))`,
 ];
 
 const ownLogin = (db: DatabaseSync): string => (db.prepare("SELECT value FROM main.settings WHERE key = 'pipeline_login'").get() as { value: string } | undefined)?.value ?? "";

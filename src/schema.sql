@@ -139,6 +139,8 @@ CREATE TABLE IF NOT EXISTS decisions (
   options TEXT NOT NULL,              -- JSON [{key, label}]
   recommended TEXT,
   recommended_reason TEXT, recommended_by TEXT,
+  prepared_at TEXT, prepared_head TEXT,  -- when the prepare step stored its summary, pick and drafts, and the PR head it prepared for
+  prepare_failed_head TEXT,           -- the PR head at the last failed prepare try (a new head starts the tries again)
   recommend_failures INTEGER, recommend_failed_at TEXT,  -- recommendation calls that gave no valid answer, and the last one  -- one-sentence reason and the model that gave the recommendation (null: none from a model)
   public_text TEXT,
   asked_at TEXT NOT NULL, asked_by TEXT,

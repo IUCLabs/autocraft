@@ -310,7 +310,7 @@ AutoCraft is dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APAC
 
 ## Reference documentation
 
-A repo can have private reference documentation: plain-text pages (`.txt`, `.md`) and the source PDF, in `<data dir>/reference/<repo>/` (the directory of the mirror database). The calls that judge reference-app behaviour (`review.opus`, `dupes.compare-prs.opus`, `decide.recommend`, `conversation.turn`) get the folder read-only at `/reference` when it exists.
+A repo can have private reference documentation: plain-text pages (`.txt`, `.md`) and the source PDF, in `<data dir>/reference/<repo>/` (the directory of the mirror database). The calls that judge reference-app behaviour (`review.opus`, `dupes.compare-prs.opus`, `decide.prepare`, `conversation.turn`) get the folder read-only at `/reference` when it exists.
 
 - Import: `tar -cf - -C <dir> . | autocraft reference import <repo> [--replace]`. The archive may hold plain files only, at most one sub-directory level, names of `[A-Za-z0-9._-]`, 100 MB in total. It is extracted beside the folder and renamed into place; the import is audited as `reference-import`.
 - List: `autocraft reference list` (repo, file count, size).

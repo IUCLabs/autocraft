@@ -311,7 +311,7 @@ export type ItemFacts = {
     pastClassified: boolean;
     /** The item has only been labelled (stage "labeled"): a scope-vs-scope disagreement from a later classification is still asked. */
     labeledOnly?: boolean;
-    /** Its own open scope decision lacks Opus's recommendation: failures so far and the time of the last failure. */
+    /** One of its open decisions (any kind) has no prepare for its current state (src/decide/prepared.ts): failed tries so far at the current head and the time of the last failure. */
     recommend: { failures: number; failedAt: string | null } | null;
   };
 
