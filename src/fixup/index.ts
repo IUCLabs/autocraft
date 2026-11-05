@@ -41,9 +41,10 @@ import { longLivedOf, pushable, BASE_ORG } from "./pushable.ts";
 import { claimForWork } from "../github/claim.ts";
 import { askConflict, mergeConflict, type ConflictRun } from "./conflict.ts";
 import { referenceDir } from "../reference.ts";
-import { referenceProblems } from "../reference-lint.ts";
+import { cleanReason } from "../act/templates.ts";
+import { defaultSemanticDeps, referenceProblems } from "../reference-lint.ts";
 import { dropTexts } from "../replylint.ts";
-import { fixupEditable, operatorEditable, splitChanges, validatePatch, type ConflictPr, type FixupPr } from "./patch.ts";
+import { fixupEditable, operatorEditable, quotesText, splitChanges, validatePatch, type ConflictPr, type FixupPr } from "./patch.ts";
 import { outsideShown, shownSize, viewFile } from "./excerpt.ts";
 import { HOLD_CANNOT_PUSH, askText, carryCommentText, commentText, commitMessage, operatorCommentText } from "./template.ts";
 import { commentApprovalOf } from "../act/approval.ts";
@@ -435,7 +436,7 @@ async function runFixupWith(db: DatabaseSync, params: FixupParams, log: (line: s
       if (c.lint && folded === null) dropSessions(c.lint.session, ses.kept ? { "": ses.kept } : {});
       if (raw === null) { fail("failed", "the model gave no answer"); continue; }
       // An operator fix-up's reply ends with the model's list of what it changed; a stored patch keeps the list in its row.
-      const split = c.operator && folded === null ? splitChanges(raw) : { diff: raw, changes: c.lint?.changes ?? [] };
+      const split = c.operator && folded === null ? splitChanges(raw, c.operator.instructions) : { diff: raw, changes: c.lint?.changes ?? [] };
       const reply = split.diff;
       const v = c.operator ? validatePatch(reply, null, operatorEditable) : validatePatch(reply, files, fixupEditable);
       if (!v.ok) { fail("refused", v.reason); continue; }
@@ -504,7 +505,7 @@ async function runFixupWith(db: DatabaseSync, params: FixupParams, log: (line: s
       summary.pushed.push(ref);
       jobItem(db, repo, c.number, `pushed ${short(commit)} on ${short(head)}: ${v.files.join(", ")}`, log);
 
-      const body = c.carry ? carryCommentText(c.carry.sources.map((x) => x.number), v.files) : c.operator ? operatorCommentText(v.files, await postableChanges(repo, split.changes)) : commentText(v.files, c.attempt);
+      const body = c.carry ? carryCommentText(c.carry.sources.map((x) => x.number), v.files) : c.operator ? operatorCommentText(v.files, await postableChanges(db, repo, `${repo}#${c.number}`, split.changes, c.operator.instructions)) : commentText(v.files, c.attempt);
       const cm = await ghComment(gw, g, d.exec, "fixup-comment", { repo, number: c.number, pr: true }, c.carry ? { by: "operator", model: PROMPT.models[0] } : c.operator ? { by: "fixed-operator" } : { by: "model", kind: "comment", model: PROMPT.models[0] }, body, { run: runId });
       if (cm.code !== 0) log(`  ${ref}: comment failed: ${oneLine(cm.stderr)}`);
     } catch (e) {
@@ -517,9 +518,11 @@ async function runFixupWith(db: DatabaseSync, params: FixupParams, log: (line: s
 }
 
 /** The model's list of changes with the items the reference lint flags (a mention or quote of the reference documentation) left out. */
-async function postableChanges(repo: string, changes: string[]): Promise<string[]> {
-  const bad = dropTexts(await referenceProblems(changes.map((text, i) => ({ field: `changes[${i}]`, text })), referenceDir(repo)));
-  return changes.filter((t) => !bad.has(t));
+async function postableChanges(db: DatabaseSync, repo: string, ref: string, changes: string[], instructions: string): Promise<string[]> {
+  const items = changes.map((t) => cleanReason(t, 200) ?? "").filter((t) => t && !quotesText(t, instructions));
+  const dir = referenceDir(repo);
+  const bad = dropTexts(await referenceProblems(items.map((text, i) => ({ field: `changes[${i}]`, text })), dir, dir ? defaultSemanticDeps(db, ref) : undefined));
+  return items.filter((t) => !bad.has(t));
 }
 
 const DIFF_FILE = /^diff --git a\/(\S+) b\/\S+$/gm;

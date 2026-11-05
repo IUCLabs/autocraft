@@ -1,6 +1,9 @@
 // Validation of the unified diff a model returns for the fix-up step. Pure text
 // checks; whether it applies is decided by `git apply --check` in index.ts.
 
+import { cleanReason } from "../act/templates.ts";
+import { isInstructionPath } from "../sandbox/checkout.ts";
+import { QUOTE_WORDS } from "../replylint.ts";
 import type { ShownFile } from "./excerpt.ts";
 
 export const MAX_CHANGED_LINES = 300;
@@ -26,15 +29,31 @@ export function fixupEditable(path: string): boolean {
  */
 export function operatorEditable(path: string): boolean {
   const parts = path.split("/");
-  return safePath(path) && path !== "build.rs" && !path.endsWith("/build.rs") && !parts.some((s) => s === ".cargo" || s === ".github") && !AGENT_DOCS.test(parts[parts.length - 1]!);
+  const name = parts[parts.length - 1]!.toLowerCase();
+  return safePath(path) && path !== "build.rs" && !path.endsWith("/build.rs") && !parts.some((s) => s === ".cargo" || s === ".github")
+    && !AGENT_DOCS.test(parts[parts.length - 1]!) && !isInstructionPath(path)
+    && name !== "cargo.toml" && name !== "cargo.lock" && !name.startsWith("rust-toolchain")
+    && name !== ".gitmodules" && name !== ".gitattributes" && name !== "codeowners";
 }
 
-/** The reply of an operator's fix-up splits at its last `CHANGES:` line into the diff and the model's numbered list of what it changed (items cleaned: one line each, at most 8). */
-export function splitChanges(text: string): { diff: string; changes: string[] } {
+const words = (s: string): string[] => s.toLowerCase().match(/[\p{L}\p{N}']+/gu) ?? [];
+
+/** True when `text` shares a run of QUOTE_WORDS consecutive words with `source`. */
+export function quotesText(text: string, source: string): boolean {
+  const w = words(text), v = words(source);
+  if (w.length < QUOTE_WORDS || v.length < QUOTE_WORDS) return false;
+  const runs = new Set<string>();
+  for (let i = 0; i + QUOTE_WORDS <= v.length; i++) runs.add(v.slice(i, i + QUOTE_WORDS).join(" "));
+  for (let i = 0; i + QUOTE_WORDS <= w.length; i++) if (runs.has(w.slice(i, i + QUOTE_WORDS).join(" "))) return true;
+  return false;
+}
+
+/** The reply of an operator's fix-up splits at its last `CHANGES:` line into the diff and the model's numbered list of what it changed (items cleaned like any public reason, one line each, at most 8; an item that quotes the operator's `instructions` is dropped). */
+export function splitChanges(text: string, instructions = ""): { diff: string; changes: string[] } {
   const t = text.replace(/\r\n/g, "\n");
   const i = t.search(/^CHANGES:[ \t]*$(?![\s\S]*^CHANGES:)/m);
   if (i < 0) return { diff: text, changes: [] };
-  const changes = t.slice(i).split("\n").slice(1).map((l) => l.replace(/^\s*(?:\d+[.)]|[-*])\s*/, "").replace(/\s+/g, " ").trim().slice(0, 200)).filter(Boolean).slice(0, 8);
+  const changes = t.slice(i).split("\n").slice(1).map((l) => cleanReason(l.replace(/^\s*(?:\d+[.)]|[-*])\s*/, ""), 200) ?? "").filter((x) => x && !quotesText(x, instructions)).slice(0, 8);
   return { diff: t.slice(0, i).trimEnd(), changes };
 }
 

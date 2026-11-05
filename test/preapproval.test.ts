@@ -209,11 +209,28 @@ describe("pre-approved merge", () => {
   });
 
   test("an operator fix-up may edit any file but the protected ones, and its comment lists the model's changes", () => {
-    assert.ok(operatorEditable("docs/guide.txt") && operatorEditable("Cargo.toml") && operatorEditable("src/a.rs"));
+    assert.ok(operatorEditable("docs/guide.txt") && operatorEditable("src/a.rs"));
+    for (const f of ["Cargo.toml", "crates/x/Cargo.toml", "Cargo.lock", "rust-toolchain.toml", "rust-toolchain", ".gitmodules", ".gitattributes", "CODEOWNERS", ".github/CODEOWNERS", "docs/CODEOWNERS", ".claude/settings.json", "sub/AGENTS.md"]) assert.ok(!operatorEditable(f), f);
     assert.ok(!operatorEditable(".github/workflows/ci.yml") && !operatorEditable("build.rs") && !operatorEditable("CLAUDE.md") && !operatorEditable("a/../b"));
     const r = splitChanges("diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n\nCHANGES:\n1. Renamed a to b.\n2) Fixed the doc.\n");
     assert.deepEqual(r.changes, ["Renamed a to b.", "Fixed the doc."]);
     assert.ok(r.diff.endsWith("+b"));
+    const quoted = "Keep the exported file names stable across every release of the tool please";
+    const c = splitChanges(`d\n\nCHANGES:\n1. See [the docs](https://example.org/x) and @someone for details\n2. ${quoted} and more\n3. Renamed a to b\n`, quoted);
+    assert.deepEqual(c.changes, ["See the docs and someone for details.", "Renamed a to b."]);
     assert.equal(operatorCommentText(["x"], r.changes), "Fixes included:\n1. Renamed a to b.\n2. Fixed the doc.");
+  });
+
+  test("a cancel whose batch removal fails leaves no hold the removal set", async () => {
+    const w = fresh().pr(19).review(19, { verdict: "take-fix" });
+    await inCi(w, 19);
+    w.premerge(19, "clean");
+    settle(w);
+    w.db.prepare("INSERT INTO merge_batches (id, repo, branch, state, base_sha, commit_sha, pr_number, created_at, updated_at) VALUES (6, 'app', 'integration-app-2', 'open', 'b', 't', 77, ?, ?)").run(T0, T0);
+    w.db.prepare("INSERT INTO merge_batch_prs (batch_id, number, head_oid, position) VALUES (6, 19, 'sha19b', 1)").run();
+    const failing = async () => ({ code: 1, stdout: "", stderr: "boom" });
+    await assert.rejects(cancelPreapproval(w.db, OPERATOR, "app", 19, failing));
+    assert.equal(w.rows("SELECT 1 FROM merge_holds WHERE number = 19").length, 0);
+    assert.equal(preapprovalOf(w.db, "app", 19)?.state, "queued");
   });
 });

@@ -9,7 +9,7 @@
 //              then merges it with every check it always makes (safe-merge included)
 //   merged / asked / cancelled / failed end it.
 // Every transition is a pure reaction to rows other steps write (fixups, opus_reviews, pr_checks, items, merges), evaluated by
-// advancePreapprovals on each runner tick: no timer and no wait of its own; the one time comparison (the mirror's last sync against the push) is made when the tick runs anyway. Merging itself is never called from here.
+// advancePreapprovals on each runner tick: no timer and no wait of its own; the one time comparison (the start of the mirror's last sync against the push) is made when the tick runs anyway. Merging itself is never called from here.
 import type { DatabaseSync } from "node:sqlite";
 import type { Preapproval } from "../../web/src/api/types.ts";
 import type { Step } from "../conversations/cards.ts";
@@ -271,6 +271,14 @@ function whyNotPlanned(db: DatabaseSync, f: PrFacts): string | null {
   return "the pipeline does not plan the fix-up";
 }
 
+/** Whether the CI fix or conflict step is working the PR now or the planner lists it: a wait for it ends. A step the planner does not list (not approved, held, merge blocked) and that has no task in flight never moves the PR on. */
+function stepRuns(f: PrFacts, step: "cifix" | "conflict"): boolean {
+  const acts = decidePr(f).actions;
+  if (step === "conflict") return f.conflict?.bucket === "linting" || acts.some((a) => a.kind === "conflict" && a.params?.bucket === "merge");
+  const b = cifixBucket(f);
+  return (b !== null && ["formatting", "linting", "rerun-wait"].includes(b)) || acts.some((a) => a.kind === "cifix" && !["capped", "ask"].includes(String(a.params?.bucket)));
+}
+
 const FAILED_FIXUP = ["failed", "refused", "rejected", "cannot-push", "too-large", "push-denied", "asked", "comment-failed", "superseded"];
 
 /** One pre-approved merge: reads what the other steps recorded and makes at most one transition. */
@@ -310,7 +318,7 @@ function advance(db: DatabaseSync, p: Row): void {
   // Every later state: the head is the fix-up's push. Until a review exists at it, the mirror may still show the head the push started from, for a short time.
   const head = p.head!;
   if (cur !== null && cur !== head) {
-    // The mirror row shows the old head until a sync finishes after the push (the row's state entry follows the push); a review at the pushed head also shows the mirror saw it.
+    // The mirror row shows the old head until a sync that started after the push has finished (synced_at is the sync's start; the row's state entry follows the push); a review at the pushed head also shows the mirror saw it.
     const synced = (db.prepare("SELECT synced_at FROM repos WHERE name = ?").get(p.repo) as { synced_at: string | null } | undefined)?.synced_at ?? null;
     const lag = p.state === "review" && cur === p.from_head && (synced === null || synced <= p.updated_at)
       && !db.prepare("SELECT 1 FROM opus_reviews WHERE repo = ? AND number = ? AND head_oid = ?").get(p.repo, p.number, head);
@@ -349,14 +357,14 @@ function advance(db: DatabaseSync, p: Row): void {
       // The CI fix step works the red head as it would for any PR; its push is a new head that continues this pre-approval (see ownPush). The operator decides when the step has given up.
       const f = loadPrFact(db, p.repo, p.number);
       const bucket = f ? cifixBucket(f) : null;
-      if (bucket !== null && ["work", "formatting", "linting", "collect", "rerun", "rerun-wait"].includes(bucket)) return;
+      if (bucket !== null && ["work", "formatting", "linting", "collect", "rerun", "rerun-wait"].includes(bucket) && stepRuns(f!, "cifix")) return;
       return stop("asked", "CI failed at the pushed head and the CI fix did not repair it", head, ["review of the fix-up: take", "CI failed at the pushed head"]);
     }
     if (c.overall === "none" && !repoHasNoCi(db, p.repo)) return;
     if (c.mergeable === "CONFLICTING") {
       // The conflict step merges the base into the PR when it can; its push is a new head that continues this pre-approval.
       const f = loadPrFact(db, p.repo, p.number);
-      if (f?.conflict?.baseOk && f.conflict.bucket === "merge") return;
+      if (f?.conflict?.baseOk && ["merge", "linting"].includes(f.conflict.bucket) && stepRuns(f, "conflict")) return;
       return stop("asked", "the PR conflicts with its base branch", head);
     }
     // The pre-merge review of this head must be clean; the planner runs it (src/core/decide.ts) and retries a failed one.
@@ -435,14 +443,23 @@ export async function cancelPreapproval(db: DatabaseSync, by: string, repo: stri
   const p = db.prepare(`SELECT id FROM preapprovals WHERE repo = ? AND number = ? AND state IN (${ACTIVE.map(() => "?").join(",")}) ORDER BY id DESC LIMIT 1`).get(repo, n, ...ACTIVE) as { id: number } | undefined;
   if (!p) throw new Error(`${repo}#${n} has no pre-approved merge in progress`);
   const state = (db.prepare("SELECT state FROM preapprovals WHERE id = ?").get(p.id) as { state: string }).state;
+  // The state change and the take-back of the hand-over answer are one transaction, so the merge queue never sees a cancelled row with a live answer.
+  const finish = () => {
+    if (!cancelRow(db, p.id, by, `cancelled by ${by}`, `${by} cancelled the pre-approved merge.`, true)) throw new Error("the pre-approved merge changed a moment ago");
+  };
   if (state === "queued" && inActiveBatch(db, repo, n)) {
     if (mergeRunning(db, repo)) throw new Error("a merge of the repo is running: it may be merging this PR");
-    // The removal holds the PR's merge; a hold that was there before stays, the one the removal set is released again.
+    // The removal holds the PR's merge; a hold that was there before stays, the one the removal set is released again after the row
+    // is cancelled (so the queue never sees an unheld PR with a live Merge answer), also when the removal or the cancel fails.
     const heldBefore = !!db.prepare("SELECT 1 FROM main.merge_holds WHERE repo = ? AND number = ?").get(repo, n);
-    await removeFromBatch(db, by, repo, n, run);
-    if (!heldBefore) releaseMerge(db, by, repo, n);
-  }
-  // The state change and the take-back of the hand-over answer are one transaction, so the merge queue never sees a cancelled row with a live answer.
-  if (!cancelRow(db, p.id, by, `cancelled by ${by}`, `${by} cancelled the pre-approved merge.`, true)) throw new Error("the pre-approved merge changed a moment ago");
+    try {
+      const r = await removeFromBatch(db, by, repo, n, run);
+      const b = db.prepare("SELECT state FROM main.merge_batches WHERE repo = ? AND branch = ? ORDER BY id DESC LIMIT 1").get(repo, r.batch) as { state: string } | undefined;
+      if (b?.state === "merged") throw new Error("the PR is already merged: its batch merged");
+      finish();
+    } finally {
+      if (!heldBefore) releaseMerge(db, by, repo, n);
+    }
+  } else finish();
   return preapprovalOf(db, repo, n)!;
 }
