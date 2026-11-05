@@ -381,6 +381,22 @@ The dashboard, the runner, sync and backup write to stdout and stderr. The runne
 
 `GET /healthz` answers 200 `ok` while the process is up. `GET /readyz` answers 200 while the database answers a query and 503 otherwise. Neither needs authentication and neither returns data. They are served by the dashboard (before sign-in), by the runner's worker API listener (before the worker key check) and, when `AUTOCRAFT_HEALTH_LISTEN` is set, by a listener of the runner that serves only these two paths.
 
+### Health checks
+
+The dashboard computes the checks below from the database on each request; nothing runs on a timer. The warnings menu in the header lists the ones that are not `ok` (red for `fail`; viewers see that a check is bad but not its cause or repos they cannot see), and `GET /healthz/checks` returns them for external monitoring (no sign-in; ids, states, `since` and counts only; 200 for `ok` and `warn`, 503 when any check is `fail`). Thresholds are the constants in `THRESHOLDS` in `src/health-checks.ts`.
+
+| Id | Fails or warns when |
+|---|---|
+| `runner` | `runner_heartbeat` is missing or older than 2 minutes (fail) |
+| `worker:<env id>` (`workers` in the endpoint) | an enabled build environment has not reported (`last_seen_at`) for 5 minutes, or never (fail) |
+| `build-queue` | a build task has been queued for over 10 minutes: fail when no enabled environment has reported in 5 minutes, else warn |
+| `sync` | no successful `sync_runs` row ended in the last 10 minutes, or the last 3 runs failed (fail) |
+| `sync-repos` (`sync-repo:<repo>` in the dashboard) | a tracked repo could not be read by the last sync (warn; fail when more than half of the tracked repos have an error, for example after a token lost access). The reason is `sync_repo_errors`: `not-found` (moved, renamed or deleted; the new name is shown when GitHub's REST endpoint redirects), `forbidden`, `transient` or `error` |
+| `accounts` | every enabled Claude account is paused or signed out (fail) |
+| `github-rate` | fewer than 500 (warn) or 100 (fail) GitHub points are left until the next reset |
+
+A repo that fails is skipped for that run and the sync continues with the others; the run exits non-zero only when every repo it tried failed, or after three transient failures in a row or a rate-limit stop (a GitHub outage). A full re-sync keeps its cursor before the first failed repo. A repo is never untracked automatically: untrack it or track it under its new name, and its warning goes with the next successful read (a not-found record also clears when the org listing shows the repo again).
+
 ### Stopping
 
 On SIGTERM or SIGINT the runner claims no new jobs, signals its running jobs (SIGTERM, then SIGKILL after 10 seconds, as under systemd), closes its listeners and exits 0. If that takes longer than `AUTOCRAFT_STOP_TIMEOUT` seconds, it exits 1. Set the orchestrator's grace period above that value: `docker run --stop-timeout 30`, Compose `stop_grace_period: 30s`, or the Kubernetes default `terminationGracePeriodSeconds: 30`. The dashboard closes its connections and the database and exits 0.

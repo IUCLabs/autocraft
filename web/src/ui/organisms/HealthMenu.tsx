@@ -16,12 +16,12 @@ const TONE: Record<NowProblem["tone"], { Icon: typeof WarningIcon; text: string 
 };
 
 /** Problems keep one place in the list whatever order they arrive in. */
-const AREAS: NowProblem["area"][] = ["pipeline", "runner", "sync", "breaker", "limit", "account", "jev", "main-ci", "jobs"];
+const AREAS: NowProblem["area"][] = ["pipeline", "runner", "workers", "sync", "breaker", "limit", "account", "jev", "main-ci", "jobs", "deadline"];
 const place = (p: NowProblem) => AREAS.indexOf(p.area);
 
 /** Header indicator: icon and count of what is wrong, coloured by the worst problem; opens the list with a link to each fix. Renders nothing when healthy. */
 export function HealthMenu() {
-  const { data } = useQuery("now", (a) => a.now());
+  const { data } = useQuery("now", (a) => a.now(), { pollMs: 30_000 });
   const [open, setOpen] = useState(false);
   const api = useApi();
   const operator = useUser().role === "operator";

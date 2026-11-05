@@ -15,6 +15,7 @@ import { visibleTo } from "../api/visible.ts";
 import { allowedImage, ImageProxy, imageTokenSource, registerImageRepos } from "./images.ts";
 import { TokenBucket } from "./limits.ts";
 import { dbReady, serveHealth } from "../../health.ts";
+import { serveChecks } from "../../health-checks.ts";
 import { LiveHub, type LiveOptions } from "./live.ts";
 import { auditLoginMode, finishRegistration, githubAppRoutes, startRegistration } from "./github-app.ts";
 import { OrgSetup } from "./github-setup.ts";
@@ -446,7 +447,7 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
   }
 
   async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    if (serveHealth(req, res, () => dbReady(db))) return;
+    if (serveHealth(req, res, () => dbReady(db)) || serveChecks(req, res, db)) return;
     const nonce = randomToken(16);
     try {
       if (Date.now() - lastPrune > 3_600_000) {

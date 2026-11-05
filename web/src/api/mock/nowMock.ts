@@ -14,11 +14,13 @@ const D = item("pdfcraft", 877, "Export fails on pages with spot colors");
 const HEALTH: Now["health"] = {
   pipeline: { enabled: true, by: "operator", at: at(60 * 30) },
   problems: [
-    { id: "sync", area: "sync", tone: "bad", text: "Sync is failing: GraphQL request failed with HTTP 502 for storytold/craft-libs", to: "/pipeline", since: at(620) },
+    { id: "worker:sandbox", area: "workers", tone: "bad", text: "Build worker Sandbox has not reported for 4 h", to: "/envs", since: at(4 * 3600) },
+    { id: "build-queue", area: "workers", tone: "bad", text: "3 build tasks have waited over 10 min for a worker", to: "/envs", since: at(1500) },
+    { id: "sync-repo:stencilcraft", area: "sync", tone: "warn", text: "storytold/stencilcraft no longer resolves on GitHub (moved, renamed or deleted)", to: "/repos", since: at(3 * 3600) },
     { id: "main-ci:designcraft", area: "main-ci", tone: "bad", text: "Main is red in designcraft: Tests, Clippy", to: "/main-ci", since: at(95) },
     { id: "account:c", area: "account", tone: "warn", text: "Account Team account C is paused: 5-hour use 92 % (pauses at 90 %)", to: "/accounts", since: null },
     { id: "jobs", area: "jobs", tone: "warn", text: "2 jobs failed in the last hour: Review pull requests", to: "/pipeline", since: null },
-    { id: "deadline:fixup", area: "jobs", tone: "warn", text: "Fix up pull requests was stopped (job 641: stopped: ran past 120 min)", to: "/pipeline/641", since: at(40), ackStep: "fixup" },
+    { id: "deadline:fixup", area: "deadline", tone: "warn", text: "Fix up pull requests was stopped (job 641: stopped: ran past 120 min)", to: "/pipeline/641", since: at(40), ackStep: "fixup" },
   ],
 };
 
