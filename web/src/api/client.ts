@@ -99,6 +99,8 @@ export interface Api {
     undo(id: string): Promise<Decision>;
     /** Operator: clear a Backlog answer so the decision is open again. */
     reopen(id: string): Promise<Decision>;
+    /** Operator: snooze (`on`) or wake an open decision. */
+    snooze(id: string, on: boolean): Promise<Decision>;
     /** The feedback box: an optional pick (replaces the user's live one) and free text, at least one. Text alone joins the thread. */
     feedback(id: string, input: { option?: string | null; text?: string }): Promise<Decision>;
     retract(id: string): Promise<Decision>;
@@ -110,10 +112,14 @@ export interface Api {
   /** Opus conversations, one per item. Writes are for operators; a message is refused while Opus has not answered the last one. */
   conversations: {
     get(repo: RepoName, number: number): Promise<Conversation>;
-    say(repo: RepoName, number: number, text: string): Promise<Conversation>;
+    /** `ask: false` posts the message without asking Opus (no reply is expected). */
+    say(repo: RepoName, number: number, text: string, ask?: boolean): Promise<Conversation>;
+    /** Includes (`on`) or excludes a maintainer post for Opus. Removing an include that was already sent is refused. */
+    include(repo: RepoName, number: number, source: string, on: boolean): Promise<Conversation>;
     /** A proposed comment card's text. */
     editCard(id: number, text: string): Promise<ConversationCard>;
-    doCard(id: number): Promise<ConversationCard>;
+    /** `skip`: indexes into `steps` the operator removed; the rest run in order. `note`: kept with the choice (on the decision it settles, in the thread), never posted to GitHub; at most 500 characters. */
+    doCard(id: number, opts?: { skip?: number[]; note?: string }): Promise<ConversationCard>;
     dismissCard(id: number): Promise<ConversationCard>;
   };
   /** A repo's area list. Reading is for everyone who sees the repo; every write is operator only. */

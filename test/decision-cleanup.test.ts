@@ -58,10 +58,10 @@ describe("resolve card", () => {
   test("answers the open decision as handled and writes nothing to GitHub", async () => {
     const db = fresh();
     ask(db, [{ id: "app#1:scope", kind: "scope", repo: "app", number: 1, question: "Scope?", options: OPTIONS }]);
-    const parsed = parseReply(db, "app", 1, 'None of the options fits; the comment settled it.\n```actions\n[{"kind":"resolve","summary":"Asked for a use case."},{"kind":"resolve","summary":""}]\n```')!;
-    assert.equal(parsed.cards.length, 1, "a resolve card without a summary is dropped");
+    const parsed = parseReply(db, "app", 1, 'None of the options fits; the comment settled it.\n```actions\n[{"kind":"resolution","steps":[],"settle":{"kind":"handled","summary":"Asked for a use case."}},{"kind":"resolution","steps":[],"settle":{"kind":"handled","summary":""}}]\n```')!;
+    assert.equal(parsed.cards.length, 1, "a handled settle without a summary is dropped");
     const turn = insertTurn(db, "app", 1, { kind: "opus", login: "opus", body: "x", block: "x" });
-    const card = db.prepare("INSERT INTO conversation_cards (turn_id, repo, number, kind, params, text, description) VALUES (?, 'app', 1, 'resolve', ?, NULL, ?)")
+    const card = db.prepare("INSERT INTO conversation_cards (turn_id, repo, number, kind, params, text, description) VALUES (?, 'app', 1, 'resolution', ?, NULL, ?)")
       .run(turn, JSON.stringify(parsed.cards[0]!.params), parsed.cards[0]!.description).lastInsertRowid as number;
     const querier = { query: async () => { throw new Error("GitHub was called"); }, spent: 0, remaining: null };
     const r = await doCard(db, card, "op", { querier });

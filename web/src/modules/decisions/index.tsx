@@ -1,7 +1,6 @@
 import type { ViewDef } from "../../registry/types";
 import { InboxList } from "./InboxList";
 import { DetailPanel } from "./DecisionDetail";
-import { ThreadPanel } from "./Thread";
 import { PhoneInbox } from "./PhoneInbox";
 import { DecisionsToolbar } from "./Toolbar";
 
@@ -12,8 +11,7 @@ export const decisionsView: ViewDef = {
   toolbar: DecisionsToolbar,
   phone: PhoneInbox,
   panels: [
-    { id: "list", title: "Queue", component: InboxList, defaultSize: 28, minSize: 20, maxSize: 45 },
-    { id: "detail", title: "Decision", component: DetailPanel, defaultSize: 45, minSize: 32 },
-    { id: "thread", title: "Discussion", component: ThreadPanel, defaultSize: 27, minSize: 18, maxSize: 40, collapsible: true, hideOnPhone: true },
+    { id: "list", title: "Queue", component: InboxList, defaultSize: 32, minSize: 20, maxSize: 45 },
+    { id: "detail", title: "Decision", component: DetailPanel, defaultSize: 68, minSize: 40 },
   ],
 };

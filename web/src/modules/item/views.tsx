@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useEffect, useSyncExternalStore, type ReactNode } from "react";
 import { QueueBadge } from "../../ui/molecules/QueueBadge";
 import { Link } from "react-router-dom";
 import {
@@ -31,15 +31,12 @@ import { num } from "../../lib/format";
 import { TimeAgo } from "../../ui/atoms/TimeAgo";
 import { KindTag, tallyOf } from "../decisions/parts";
 import { RecommendationLine } from "../../ui/molecules/RecommendationLine";
-import { Markdown, Collapsible } from "../../ui/molecules/Markdown";
-import { useIsPhone } from "../../shell/useMedia";
 import { SettledBadge } from "../items/views";
-import { ItemQuestions, useItemDecisions } from "./ItemDecisions";
+import { useItemDecisions } from "./ItemDecisions";
+import { ItemThread } from "./ItemThread";
 import { PrWork } from "./PrWork";
-import { TracePanel } from "./TracePanel";
-import { useUser } from "../../shell/UserContext";
-import { canAct } from "../../registry/permissions";
-import { Conversation } from "../decisions/Conversation";
+import { useMedia } from "../../shell/useMedia";
+import { Disclosure } from "../decisions/parts";
 import { useNow } from "../../lib/useNow";
 import { decisionPath, githubItemUrl } from "../../lib/links";
 
@@ -77,47 +74,54 @@ function Section({ title, aside, children }: { title: string; aside?: ReactNode;
   );
 }
 
+// Whether the item's right-hand panel is on screen (it unmounts while collapsed), so the main column can show the details itself otherwise.
+let sideShown = 0;
+const sideListeners = new Set<() => void>();
+const sideSub = (f: () => void) => (sideListeners.add(f), () => void sideListeners.delete(f));
+const setSide = (d: number) => {
+  sideShown += d;
+  sideListeners.forEach((f) => f());
+};
+
 export function ItemMain({ params }: ViewProps) {
   const { data: it, error } = useItem(params);
-  const user = useUser();
+  const sideUp = useSyncExternalStore(sideSub, () => sideShown > 0);
+  const wide = useMedia("(min-width: 1024px)") && sideUp;
   const repo = params.repo!;
   const number = Number(params.number);
   // The trace request starts with the item request, and the page keeps one tree, so the trace is not fetched again when the item arrives.
   return (
-    <div className="h-full overflow-y-auto">
-      <div className="mx-auto max-w-[920px] px-4 pb-12 pt-5 md:px-6">
+    <div className="md:h-full md:overflow-y-auto">
+      <div className="mx-auto max-w-[920px] px-4 pb-0 pt-5 md:px-6">
         {it ? <Header it={it} /> : <Pending error={error} />}
-        {it && <ItemQuestions repo={repo} number={number} />}
-        <TracePanel repo={repo} number={number} it={it} />
-        {it && (
-          <>
-            <ItemPath it={it} />
-            <Properties it={it} />
-            {it.body && (
-              <Section title="Description">
-                <div className="rounded-md border border-line px-4 py-3">
-                  <Collapsible lines={25}>
-                    <Markdown source={it.body} />
-                  </Collapsible>
-                </div>
-              </Section>
-            )}
-            <Section title="Classifier verdicts" aside={agreement(it.classifications)}>
-              <Verdicts cls={it.classifications} />
-            </Section>
-            <PrWork it={it} />
-            <Section title="Opus">
-              <Conversation repo={it.repo} number={it.number} operator={canAct(user, [it.repo])} />
-            </Section>
-            {it.files.length > 0 && (
-              <Section title="Files changed" aside={it.changedFiles !== null && it.changedFiles > it.files.length ? `first ${it.files.length} of ${it.changedFiles} files` : `${it.files.length} files`}>
-                <Files it={it} />
-              </Section>
-            )}
-          </>
+        {it && !wide && (
+          <div className="mt-3">
+            <Disclosure title="Details">
+              <Details it={it} />
+            </Disclosure>
+          </div>
         )}
+        <ItemThread repo={repo} number={number} it={it} />
       </div>
     </div>
+  );
+}
+
+function Details({ it }: { it: Item }) {
+  return (
+    <>
+      <ItemPath it={it} />
+      <Properties it={it} />
+      <Section title="Classifier verdicts" aside={agreement(it.classifications)}>
+        <Verdicts cls={it.classifications} stacked />
+      </Section>
+      <PrWork it={it} />
+      {it.files.length > 0 && (
+        <Section title="Files changed" aside={it.changedFiles !== null && it.changedFiles > it.files.length ? `first ${it.files.length} of ${it.changedFiles} files` : `${it.files.length} files`}>
+          <Files it={it} />
+        </Section>
+      )}
+    </>
   );
 }
 
@@ -186,7 +190,7 @@ function Properties({ it }: { it: Item }) {
   const showCi = it.kind === "pr" && it.ci !== "none";
   const showMergeable = it.kind === "pr" && it.state === "open" && it.mergeable !== "unknown";
   return (
-    <dl className="mt-4 grid grid-cols-[96px_1fr] gap-x-4 text-sm md:grid-cols-[96px_1fr_96px_1fr]">
+    <dl className="mt-4 grid grid-cols-[80px_1fr] gap-x-3 text-sm">
       <Prop label="Author">
         <span className="font-medium">{it.author}</span>
         <Badge tone={tierTone}>{tierLabel}</Badge>
@@ -287,9 +291,9 @@ function Reason({ reason }: { reason: string }) {
 
 const WANT: Record<string, string> = { yes: "text-ok", no: "text-bad", unclear: "text-warn" };
 
-function Verdicts({ cls }: { cls: Classification[] }) {
+function Verdicts({ cls }: { cls: Classification[]; stacked?: boolean }) {
   useNow();
-  const phone = useIsPhone();
+  const phone = true;
   if (!cls.length) return <p className="text-sm text-ink/50">Not classified yet.</p>;
   const typeMaj = majority(cls.map((c) => c.typeLabel))[0];
   const wantMaj = majority(cls.map((c) => c.want))[0];
@@ -391,9 +395,21 @@ export function ItemSide(props: ViewProps) {
   useNow();
   const { data: it } = useItem(props.params);
   const { data: ds } = useItemDecisions(props.params.repo!, Number(props.params.number));
+  const wide = useMedia("(min-width: 1024px)");
+  const showing = wide && !!it;
+  useEffect(() => {
+    if (!showing) return;
+    setSide(1);
+    return () => setSide(-1);
+  }, [showing]);
   if (!it) return null;
   return (
     <div className="h-full overflow-y-auto pt-1">
+      {wide && (
+        <div className="border-b border-line px-4 pb-4">
+          <Details it={it} />
+        </div>
+      )}
       <SideSection title="Decisions" count={ds?.length}>
         {ds?.length === 0 && <p className="text-sm text-ink/50">No decisions about this item.</p>}
         <div className="space-y-2">

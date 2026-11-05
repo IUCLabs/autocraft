@@ -24,6 +24,7 @@ export const BOOKKEEPING_COLUMNS: Record<string, string[]> = {
   duplicate_scans: ["at"],
   item_plans: ["planned_at"],
   lane_next: ["at"],
+  decisions: ["snoozed_by", "snoozed_at"],
 };
 
 /** Settings the runner, the sync and the planner write for their own use; the dashboard shows none of them. */
@@ -53,6 +54,8 @@ export const TOPIC_TABLES: Record<string, Source[]> = {
   mainci: [{ table: "main_ci" }, { table: "main_fixes" }],
   classify: [{ table: "classifications" }, { table: "item_areas" }, { table: "area_lists" }, { table: "area_proposals" }],
   dupes: [{ table: "duplicate_pairs" }, { table: "duplicate_scans" }],
+  // A snooze or wake: the inbox changes, the pipeline's input does not (the `decisions` topic skips these columns).
+  "decision-snooze": [{ table: "decisions", ops: ["UPDATE"], when: "old.snoozed_at IS NOT new.snoozed_at" }],
   decisions: [{ table: "decisions" }, { table: "decision_opinions" }, { table: "decision_comments" }, { table: "decision_claims" },
     { table: "dupe_comparisons" }, { table: "dupe_groups" }, { table: "dupe_group_items" }, { table: "dupe_group_posts" }, { table: "dupe_group_texts" }],
   reviews: [{ table: "opus_reviews" }, { table: "review_posts" }],
@@ -70,6 +73,8 @@ export const TOPIC_TABLES: Record<string, Source[]> = {
   envs: [{ table: "build_envs", ops: ["INSERT", "DELETE"] }, { table: "build_envs", ops: ["UPDATE"], when: "old.label IS NOT new.label OR old.kind IS NOT new.kind OR old.enabled IS NOT new.enabled OR old.slots IS NOT new.slots OR old.key_hash IS NOT new.key_hash OR old.capabilities IS NOT new.capabilities OR old.reported_slots IS NOT new.reported_slots OR old.version IS NOT new.version OR old.paused_reason IS NOT new.paused_reason" }],
   tasks: [{ table: "build_tasks" }, { table: "build_task_logs" }, { table: "build_artifacts" }],
   actions: [{ table: "actions" }],
+  // Which maintainer posts an operator shared with Opus; not planner input.
+  "conversation-includes": [{ table: "conversation_includes" }],
   conversations: [{ table: "conversations" }, { table: "conversation_turns" }, { table: "conversation_cards" }],
   fixes: [{ table: "fix_attempts" }, { table: "patch_checks" }, { table: "dupe_carries" }],
   verify: [{ table: "verifications" }, { table: "fixups" }, { table: "ci_fixes" }],
@@ -136,8 +141,8 @@ export function liveSql(db?: DatabaseSync): string {
   for (const [topic, sources] of Object.entries(TOPIC_TABLES)) {
     for (const { table, ops = ALL_OPS, when } of sources) {
       for (const op of ops) {
-        // `steps`, `trace` and `limits` read tables other topics already watch; their triggers need names of their own.
-        const name = `live_${topic === "steps" || topic === "trace" || topic === "limits" ? `${topic}_` : ""}${table}_${op[0]!.toLowerCase()}`;
+        // `steps`, `trace`, `limits` and `decision-snooze` read tables other topics already watch; their triggers need names of their own.
+        const name = `live_${topic === "steps" || topic === "trace" || topic === "limits" || topic === "decision-snooze" ? `${topic.replace(/\W/g, "_")}_` : ""}${table}_${op[0]!.toLowerCase()}`;
         const key = op === "DELETE" ? "old.key" : "new.key";
         let cond = when ? when.replaceAll("new_key", key) : "";
         if (op === "UPDATE" && !when) {

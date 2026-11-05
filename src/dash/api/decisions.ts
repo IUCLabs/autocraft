@@ -1,13 +1,16 @@
 // Decisions over JSON: the queue, answers (operator only), feedback, claims
 // and the thread. Feedback (picks and comments) is display-only: nothing the pipeline
-// reads (src/decisions.ts `actionable`) touches their tables.
+// reads (src/decisions.ts `actionable`) touches their tables. Feedback reaches a prompt only when an operator includes
+// it in a conversation (`<included>` blocks, src/conversations/store.ts).
 import { priorityOf } from "../../priority/read.ts";
 import type { DatabaseSync } from "node:sqlite";
 import type {
   Claim, Classification, Decision, DecisionComment, DecisionKind, DecisionList, DuplicateMember, ItemState, Opinion, QueueSlot, RelatedItem, Relation,
 } from "../../../web/src/api/types.ts";
 import { resetGroupAnswer } from "../../dupes/decide.ts";
-import { BACKLOG, HANDLED, WITHDRAWN_OPTION, backlogOpen, exceptionsOf, factsOf, getDecision, isBatch, itemsOf, KINDS, optionsOf, reposOf, type DecisionRow, type Exception } from "../../decisions.ts";
+import { NOTE_MAX } from "../../conversations/types.ts";
+import { conversationOf, insertTurn, systemBlock } from "../../conversations/store.ts";
+import { BACKLOG, HANDLED, SNOOZED_SQL, replaceProposedCards, WITHDRAWN_OPTION, backlogOpen, exceptionsOf, factsOf, getDecision, isBatch, itemsOf, KINDS, optionsOf, reposOf, type DecisionRow, type Exception } from "../../decisions.ts";
 import { commentPreview, writeEffect } from "../../act/index.ts";
 import { optionTextsOf, textsFor, textsHash } from "../../dupes/texts.ts";
 import { audit } from "../audit.ts";
@@ -21,7 +24,6 @@ import { pickDecision, shortRepo } from "../../../web/src/lib/links.ts";
 import { canSeeInternals } from "./staff.ts";
 
 export const CLAIM_TTL = 10 * 60_000;
-const NOTE_MAX = 500;
 const COMMENT_MAX = 4000;
 
 export const isOperator = (req: Req): boolean => req.user.role === "operator";
@@ -144,7 +146,11 @@ const viewerWith = async (db: DatabaseSync, req: Req): Promise<Viewer> => ({ ...
 
 /** Whether Undo would succeed: answered, not acted on, and nothing written to GitHub for a group answer. */
 export const canUndo = (db: DatabaseSync, d: DecisionRow): boolean =>
-  !!d.answer && !d.applied_at && !db.prepare("SELECT 1 FROM dupe_group_posts WHERE decision_id = ? AND url IS NOT NULL LIMIT 1").get(d.id);
+  !!d.answer && !d.id.includes("~replaced-") && (!d.applied_at || directHandled(db, d)) && !db.prepare("SELECT 1 FROM dupe_group_posts WHERE decision_id = ? AND url IS NOT NULL LIMIT 1").get(d.id);
+
+/** An operator's own "handled" answer, recorded by its audit source: nothing was written anywhere, so Undo stays possible although it is marked applied (a conversation card's handled answer follows GitHub writes and stays final). A withdrawn question's renamed row (`~replaced-`) never reopens. */
+const directHandled = (db: DatabaseSync, d: DecisionRow): boolean =>
+  d.answer === HANDLED.key && !d.id.includes("~replaced-") && !!db.prepare("SELECT 1 FROM audit WHERE target = ? AND action = 'answer' AND details LIKE '%\"source\":\"dashboard\"%' LIMIT 1").get(d.id);
 
 const ROLE_ORDER: Record<DuplicateMember["role"], number> = { keep: 0, close: 1, stay: 2 };
 const strings = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string" && !!x.trim()) : []);
@@ -168,6 +174,12 @@ function risksOf(db: DatabaseSync, d: DecisionRow): string[] {
   if (!head) return [];
   const o = db.prepare("SELECT risks FROM opus_reviews WHERE repo = ? AND number = ? AND head_oid = ? AND verdict IS NOT NULL").get(d.repo, d.number, head) as { risks: string | null } | undefined;
   try { return strings(JSON.parse(o?.risks ?? "[]")); } catch { return []; }
+}
+
+function snoozedOf(db: DatabaseSync, d: DecisionRow): { by: string; at: string } | null {
+  if (d.answer || !d.snoozed_at) return null;
+  const row = db.prepare(`SELECT ${SNOOZED_SQL} AS s FROM decisions WHERE id = ?`).get(d.id) as { s: number } | undefined;
+  return row?.s ? { by: d.snoozed_by ?? "", at: d.snoozed_at } : null;
 }
 
 export function toDecision(db: DatabaseSync, d: DecisionRow, viewer: Viewer): Decision {
@@ -210,6 +222,7 @@ export function toDecision(db: DatabaseSync, d: DecisionRow, viewer: Viewer): De
     adoptedOpinion: adopted ? toOpinion(adopted) : null,
     opinions,
     exceptions: exceptionsOf(d),
+    snoozed: snoozedOf(db, d),
     claim: d.answer ? null : (claimRow ? { login: claimRow.login, since: claimRow.since } : null),
     commentCount,
     related: batch ? [] : relatedOf(db, d.repo!, d.number!),
@@ -242,14 +255,15 @@ export function withoutHidden(hidden: string[], params: Record<string, string>):
 export async function listDecisions(db: DatabaseSync, req: Req, writeRepos: () => Promise<string[]>): Promise<DecisionList> {
   const q = req.query;
   const status = q.get("status") ?? "open";
-  if (!["open", "opinions", "answered", "backlog"].includes(status)) throw new HttpError(400, "status must be open, opinions, answered or backlog");
+  if (!["open", "opinions", "answered", "backlog", "snoozed"].includes(status)) throw new HttpError(400, "status must be open, opinions, answered, backlog or snoozed");
   const where: string[] = [];
   const params: Record<string, string> = {};
   if (status === "answered") {
     where.push(`answer IS NOT NULL AND answer <> '${BACKLOG.key}' AND (applied_at IS NULL OR applied_at >= :since)`);
     params.since = new Date(Date.now() - 7 * 86400_000).toISOString();
   } else if (status === "backlog") where.push(`answer = '${BACKLOG.key}'`);
-  else where.push("answer IS NULL");
+  else if (status === "snoozed") where.push(SNOOZED_SQL);
+  else if (status === "open" || status === "opinions") where.push(`answer IS NULL AND NOT ${SNOOZED_SQL}`);
   if (status === "opinions") where.push("(EXISTS (SELECT 1 FROM decision_opinions o WHERE o.decision_id = decisions.id AND o.retracted_at IS NULL) OR EXISTS (SELECT 1 FROM decision_comments c WHERE c.decision_id = decisions.id))");
   const kinds = list(req, "kind").filter((k) => (KINDS as readonly string[]).includes(k));
   if (kinds.length) where.push(`kind IN (${kinds.map((k) => `'${k}'`).join(",")})`);
@@ -368,9 +382,11 @@ export async function answer(db: DatabaseSync, req: Req): Promise<Decision> {
   if (d.answer) throw new HttpError(409, `already answered by ${d.answered_by}`);
   const b = body(req);
   const keys = new Set(optionsOf(d).map((o) => o.key));
-  if (typeof b.answer !== "string" || !keys.has(b.answer)) throw new HttpError(400, "answer must be one of the option keys");
+  const handled = b.answer === HANDLED.key;
+  if (typeof b.answer !== "string" || !(keys.has(b.answer) || (handled && !isBatch(d) && !d.id.includes(":dupegroup:")))) throw new HttpError(400, "answer must be one of the option keys");
   const ans = b.answer;
   const note = optionalText(b.note, NOTE_MAX, "note");
+  if (handled && !note) throw new HttpError(400, "a handled answer needs a note");
   let exceptions: Exception[] | null = null;
   if (b.exceptions !== undefined && b.exceptions !== null) {
     if (!Array.isArray(b.exceptions)) throw new HttpError(400, "exceptions must be an array");
@@ -391,23 +407,46 @@ export async function answer(db: DatabaseSync, req: Req): Promise<Decision> {
   inTransaction(db, () => {
     const stored = d.kind === "duplicate" && d.id.includes(":dupegroup:") ? textsFor(db, d.id, ans) : [];
     if (stored.length && b.textsHash !== textsHash(stored)) throw new HttpError(409, "the comments for this answer changed; reload the decision");
-    const r = db.prepare(`UPDATE main.decisions SET answer = ?, answer_note = ?, exceptions = ?, answered_by = ?, answered_at = ?, adopted_opinion = NULL
-      WHERE id = ? AND answer IS NULL`).run(ans, note, exceptions ? JSON.stringify(exceptions) : null, req.user.login, new Date().toISOString(), d.id);
+    const at = new Date().toISOString();
+    // Handled writes nothing and no step acts on it, so it counts as applied at once (Undo still works, see directHandled).
+    const r = db.prepare(`UPDATE main.decisions SET answer = ?, answer_note = ?, exceptions = ?, answered_by = ?, answered_at = ?, applied_at = ?, adopted_opinion = NULL, snoozed_by = NULL, snoozed_at = NULL
+      WHERE id = ? AND answer IS NULL`).run(ans, note, exceptions ? JSON.stringify(exceptions) : null, req.user.login, at, handled ? at : null, d.id);
     if (r.changes !== 1) throw new HttpError(409, "someone answered this a moment ago");
+    replaceProposedCards(db, d.repo, d.number);
   });
-  audit(db, req.user.login, "answer", d.id, { answer: ans, exceptions: exceptions?.length ? exceptions : undefined, note: note ? true : undefined });
+  audit(db, req.user.login, "answer", d.id, { answer: ans, source: "dashboard", exceptions: exceptions?.length ? exceptions : undefined, note: note ? true : undefined });
+  // The thread keeps the choice (and the note) when the item has a conversation.
+  if (d.repo && d.number !== null && conversationOf(db, d.repo, d.number)) {
+    const label = optionsOf(d).find((o) => o.key === ans)?.label ?? (handled ? HANDLED.label : ans);
+    const said = `${req.user.login} answered "${d.question}" with "${label}"`;
+    insertTurn(db, d.repo, d.number, { kind: "system", login: "system", body: note ? `${said}: ${note}` : said, block: systemBlock(`The operator ${req.user.login} answered the open question "${d.question.replace(/[\r\n<]+/g, " ")}" with "${label.replace(/[\r\n<]+/g, " ")}".`, note ? { operator_note: note } : undefined) });
+  }
   return await settled(db, req, d.id);
+}
+
+/** Operator: snooze (`on`) or wake an open decision. It stays open for the pipeline; only the inbox hides it until the item has new activity. */
+export async function snooze(db: DatabaseSync, req: Req): Promise<Decision> {
+  const d = await needDecision(db, req, req.params.id!);
+  await requireOperator(req, d);
+  if (d.answer) throw new HttpError(409, "only an open decision can be snoozed");
+  const b = body(req);
+  if (typeof b.on !== "boolean") throw new HttpError(400, "on must be true or false");
+  const at = new Date().toISOString();
+  db.prepare("UPDATE main.decisions SET snoozed_by = ?, snoozed_at = ? WHERE id = ? AND answer IS NULL").run(b.on ? req.user.login : null, b.on ? at : null, d.id);
+  audit(db, req.user.login, b.on ? "snooze" : "unsnooze", d.id);
+  return toDecision(db, getDecision(db, d.id)!, await viewerWith(db, req));
 }
 
 export async function undo(db: DatabaseSync, req: Req): Promise<Decision> {
   const d = await needDecision(db, req, req.params.id!);
   await requireOperator(req, d);
   if (!d.answer) throw new HttpError(409, "that decision has no answer to undo");
-  if (d.applied_at) throw new HttpError(409, "the pipeline already acted on this answer");
+  if (d.id.includes("~replaced-")) throw new HttpError(409, "a withdrawn question stays closed");
+  if (d.applied_at && !directHandled(db, d)) throw new HttpError(409, "the pipeline already acted on this answer");
   inTransaction(db, () => {
     if (!canUndo(db, d)) throw new HttpError(409, "the pipeline already wrote to GitHub for this answer");
-    const r = db.prepare(`UPDATE main.decisions SET answer = NULL, answer_note = NULL, exceptions = NULL, answered_by = NULL, answered_at = NULL, adopted_opinion = NULL
-      WHERE id = ? AND answer IS NOT NULL AND applied_at IS NULL`).run(d.id);
+    const r = db.prepare(`UPDATE main.decisions SET answer = NULL, answer_note = NULL, exceptions = NULL, answered_by = NULL, answered_at = NULL, applied_at = NULL, adopted_opinion = NULL, snoozed_by = NULL, snoozed_at = NULL
+      WHERE id = ? AND answer IS NOT NULL AND (applied_at IS NULL OR answer = '${HANDLED.key}')`).run(d.id);
     if (r.changes !== 1) throw new HttpError(409, "the pipeline acted on this a moment ago");
     resetGroupAnswer(db, d.id);
   });
@@ -419,7 +458,7 @@ export async function reopen(db: DatabaseSync, req: Req): Promise<Decision> {
   const d = await needDecision(db, req, req.params.id!);
   await requireOperator(req, d);
   if (d.answer !== BACKLOG.key) throw new HttpError(409, "that decision is not in the Backlog");
-  const r = db.prepare(`UPDATE main.decisions SET answer = NULL, answer_note = NULL, exceptions = NULL, answered_by = NULL, answered_at = NULL, adopted_opinion = NULL
+  const r = db.prepare(`UPDATE main.decisions SET answer = NULL, answer_note = NULL, exceptions = NULL, answered_by = NULL, answered_at = NULL, adopted_opinion = NULL, snoozed_by = NULL, snoozed_at = NULL
     WHERE id = ? AND answer = ?`).run(d.id, BACKLOG.key);
   if (r.changes !== 1) throw new HttpError(409, "someone changed this a moment ago");
   audit(db, req.user.login, "reopen", d.id, { answer: d.answer });
@@ -453,7 +492,7 @@ export async function adopt(db: DatabaseSync, req: Req): Promise<Decision> {
   inTransaction(db, () => {
     const stored = d.kind === "duplicate" && d.id.includes(":dupegroup:") ? textsFor(db, d.id, option) : [];
     if (stored.length && body(req).textsHash !== textsHash(stored)) throw new HttpError(409, "the comments for this answer changed; reload the decision");
-    const r = db.prepare(`UPDATE main.decisions SET answer = ?, answer_note = NULL, exceptions = ?, answered_by = ?, answered_at = ?, adopted_opinion = ?
+    const r = db.prepare(`UPDATE main.decisions SET answer = ?, answer_note = NULL, exceptions = ?, answered_by = ?, answered_at = ?, adopted_opinion = ?, snoozed_by = NULL, snoozed_at = NULL
       WHERE id = ? AND answer IS NULL`).run(option, isBatch(d) ? "[]" : null, req.user.login, new Date().toISOString(), o.id, d.id);
     if (r.changes !== 1) throw new HttpError(409, "someone answered this a moment ago");
   });

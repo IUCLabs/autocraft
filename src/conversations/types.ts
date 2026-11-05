@@ -14,13 +14,15 @@ export type ConversationInput = {
   reference?: boolean;
 };
 
-export const CARD_KINDS = ["comment", "answer", "label", "backlog", "duplicate", "resolve", "close"] as const;
+export const CARD_KINDS = ["resolution", "comment", "answer", "label", "backlog", "duplicate", "resolve", "close"] as const;
 export const CLOSE_REASONS = ["completed", "not_planned"] as const;
 export type CloseReason = (typeof CLOSE_REASONS)[number];
 export type CardKind = (typeof CARD_KINDS)[number];
 export type TurnKind = "operator" | "opus" | "system";
 
 export const COMMENT_MAX = 1500;
+/** Longest operator note kept with an answer. */
+export const NOTE_MAX = 500;
 /** Longest summary of a resolve card. */
 export const RESOLVE_MAX = 200;
 export const MESSAGE_MAX = 4000;
@@ -40,7 +42,7 @@ export const SAMPLE_CONVERSATION: ConversationInput[] = [{
   turns: `<turn from="opus">
 Most of this PR is dictionary data. craft-i18n already has a Hungarian pack. I suggest asking the author to use it.
 <actions>
-[{"kind":"comment","text":"craft-i18n already ships a Hungarian language pack. Could you load it instead of committing the data?"}]
+[{"kind":"resolution","steps":[{"kind":"comment"}],"settle":{"kind":"backlog"},"text":"craft-i18n already ships a Hungarian language pack. Could you load it instead of committing the data?"}]
 </actions>
 </turn>
 <turn from="operator" login="maintainer">

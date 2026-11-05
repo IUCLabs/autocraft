@@ -2,9 +2,9 @@
 // Every turn stores the exact text its prompt block carries, so later prompts repeat earlier ones byte for byte.
 import { createHash, randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
-import { factsOf, optionsOf, type DecisionRow } from "../decisions.ts";
+import { factsOf, getDecision, optionsOf, type DecisionRow } from "../decisions.ts";
 import { CLAUDE_PROMPTS, untrustedJson } from "../prompts/index.ts";
-import { openDecision, type NewCard } from "./cards.ts";
+import { cleanComment, openDecision, type NewCard } from "./cards.ts";
 import { ITEM_BODY_LIMIT, ITEM_COMMENT_LIMIT, ITEM_COMMENTS, ITEM_DIFF_LIMIT, MESSAGE_MAX, OPENING_MAX, type TurnKind } from "./types.ts";
 
 export class ConversationError extends Error {
@@ -40,14 +40,20 @@ const STALE_CLAIM_MS = (CLAUDE_PROMPTS["conversation.turn"].limits.timeoutSecond
 // ---- blocks ------------------------------------------------------------------
 
 /** Text of operators and Opus must not close or open the frame the prompt puts around turns. */
-const frameSafe = (t: string): string => t.replace(/<(\/?)(turn|item|actions|untrusted)\b/gi, "&lt;$1$2");
+const frameSafe = (t: string): string => t.replace(/<(\/?)(turn|item|actions|untrusted|included)\b/gi, "&lt;$1$2");
 
-export function operatorBlock(login: string, text: string): string {
-  return `<turn from="operator" login="${login.replace(/[^\w.-]/g, "")}">\n${frameSafe(text)}\n</turn>\n`;
+export type Included = { login: string; at: string; text: string };
+
+const attr = (v: string): string => v.replace(/[^\w.:-]/g, "");
+
+/** `included`: maintainers' posts the operator chose to share, carried in this turn once. */
+export function operatorBlock(login: string, text: string, included: Included[] = []): string {
+  const extra = included.map((i) => `<included from="maintainer" login="${attr(i.login)}" at="${attr(i.at)}">\n${frameSafe(i.text)}\n</included>\n`).join("");
+  return `<turn from="operator" login="${attr(login)}">\n${frameSafe(text)}\n${extra}</turn>\n`;
 }
 
 export function opusBlock(text: string, cards: NewCard[]): string {
-  const list = cards.map((c) => ({ ...c.params }));
+  const list = cards.map((c) => ({ ...c.params, ...(c.params.kind === "resolution" && c.text !== null && { text: c.text }) }));
   return `<turn from="opus">\n${frameSafe(text)}\n${cards.length ? `<actions>\n${JSON.stringify(list)}\n</actions>\n` : ""}</turn>\n`;
 }
 
@@ -86,6 +92,23 @@ const sigOf = (db: DatabaseSync, i: ItemRow): string => JSON.stringify(snapshotO
 const parseSig = (sig: string): Snapshot | null => {
   try { const v = JSON.parse(sig) as Snapshot; return v && typeof v === "object" ? v : null; } catch { return null; }
 };
+
+/** The head and newest comment Opus had been told about (the conversation's item snapshot), recorded on each card it proposes. */
+function seenOf(db: DatabaseSync, repo: string, n: number): string | null {
+  const c = conversationOf(db, repo, n);
+  const s = c ? parseSig(c.item_sig) : null;
+  return s ? JSON.stringify({ head: s.head, last_comment: s.last_comment }) : null;
+}
+
+/** Whether a card still proposed was written for an older item: a push since (it refuses to run) or new GitHub comments since (it still runs). */
+export function staleOf(db: DatabaseSync, repo: string, n: number, seen: string | null): "pr-changed" | "new-comments" | undefined {
+  const i = itemRow(db, repo, n);
+  if (!seen || !i) return undefined;
+  let was: { head: string | null; last_comment: string | null };
+  try { was = JSON.parse(seen) as typeof was; } catch { return undefined; }
+  if (i.kind === "pr" && (was.head ?? null) !== i.head_oid) return "pr-changed";
+  return was.last_comment !== snapshotOf(db, i).last_comment ? "new-comments" : undefined;
+}
 
 const cut = (s: string | null, max: number): string => (s ?? "").slice(0, max);
 
@@ -145,12 +168,16 @@ function inTx<T>(db: DatabaseSync, f: () => T): T {
   }
 }
 
-function insertRow(db: DatabaseSync, repo: string, n: number, t: NewTurn, seq: number | null, status: string | null, deps?: StoreDeps): number {
+function insertRow(db: DatabaseSync, repo: string, n: number, t: NewTurn, seq: number | null, status: string | null, deps?: StoreDeps, seenAt?: string | null): number {
   const id = Number(db.prepare("INSERT INTO conversation_turns (repo, number, kind, login, at, body, block, status, error, notes, seq) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)")
     .run(repo, n, t.kind, t.login, nowOf(deps), t.body, t.block, status, t.notes?.length ? JSON.stringify(t.notes) : null, seq).lastInsertRowid);
+  // One current set: a new Opus turn replaces the proposals of the earlier ones.
+  if (t.kind === "opus") db.prepare("UPDATE conversation_cards SET state = 'replaced' WHERE repo = ? AND number = ? AND state = 'proposed'").run(repo, n);
+  // A reply's cards are stamped with what Opus was told when its prompt was built, not with a later refresh.
+  const seen = seenAt !== undefined ? seenAt : seenOf(db, repo, n);
   for (const c of t.cards ?? []) {
-    db.prepare("INSERT INTO conversation_cards (turn_id, repo, number, kind, params, text, description) VALUES (?, ?, ?, ?, ?, ?, ?)")
-      .run(id, repo, n, c.params.kind, JSON.stringify(c.params), c.text, c.description);
+    db.prepare("INSERT INTO conversation_cards (turn_id, repo, number, kind, params, text, description, seen) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(id, repo, n, c.params.kind, JSON.stringify(c.params), c.text, c.description, seen);
   }
   return id;
 }
@@ -219,21 +246,74 @@ export async function refreshItem(db: DatabaseSync, repo: string, n: number, dep
   });
 }
 
-/** An operator's message: creates the conversation when the item has none and queues the message for the Conversation step. */
-export async function addOperatorMessage(db: DatabaseSync, repo: string, n: number, login: string, text: string, deps?: StoreDeps): Promise<number> {
+/**
+ * An operator's message: creates the conversation when the item has none and queues the message for the Conversation step.
+ * With `ask` false the message is only stored (no pending state, no model call); Opus sees it among the turns at the next ask.
+ */
+export async function addOperatorMessage(db: DatabaseSync, repo: string, n: number, login: string, text: string, deps?: StoreDeps, ask = true): Promise<number> {
   const body = text.trim();
   if (!body) throw new ConversationError(400, "the message is empty");
   if (body.length > MESSAGE_MAX) throw new ConversationError(400, `the message is longer than ${MESSAGE_MAX} characters`);
   if (!itemRow(db, repo, n)) throw new ConversationError(404, `no item ${repo}#${n} in the mirror`);
-  if (pendingTurn(db, repo, n)) throw new ConversationError(409, "Opus has not answered the last message yet");
+  if (ask && pendingTurn(db, repo, n)) throw new ConversationError(409, "Opus has not answered the last message yet");
   await ensureConversation(db, repo, n, login, deps);
   await refreshItem(db, repo, n, deps);
+  const shared = ask ? unsentIncludes(db, repo, n) : [];
   try {
-    return insertTurn(db, repo, n, { kind: "operator", login, body, block: operatorBlock(login, body), status: "pending" }, deps);
+    return inTx(db, () => {
+      const id = appendTurn(db, repo, n, { kind: "operator", login, body, block: operatorBlock(login, body, shared.map((x) => x.post)), ...(ask && { status: "pending" }) }, deps);
+      for (const x of shared) db.prepare("UPDATE conversation_includes SET sent_turn = ? WHERE repo = ? AND number = ? AND source = ? AND sent_turn IS NULL").run(id, repo, n, x.source);
+      return id;
+    });
   } catch (e) {
     if (/UNIQUE/i.test(String((e as Error).message))) throw new ConversationError(409, "Opus has not answered the last message yet");
     throw e;
   }
+}
+
+// ---- maintainer posts shared with Opus ---------------------------------------
+
+export type IncludeRow = { source: string; by: string; at: string; sent: boolean };
+
+/** The stored post behind an include source of this item, or null. Only decision comments and opinions on the item's own decisions can be shared. */
+function postOf(db: DatabaseSync, repo: string, n: number, source: string): Included | null {
+  const m = /^(decision-comment|decision-opinion):(.+)$/.exec(source);
+  if (!m) return null;
+  if (m[1] === "decision-comment") {
+    const row = db.prepare("SELECT c.login, c.at, c.body AS text FROM decision_comments c JOIN decisions d ON d.id = c.decision_id WHERE c.id = ? AND d.repo = ? AND d.number = ?")
+      .get(m[2]!, repo, n) as { login: string; at: string; text: string | null } | undefined;
+    const text = row?.text ? cleanComment(row.text).slice(0, ITEM_COMMENT_LIMIT) : "";
+    return row && text ? { login: row.login, at: row.at, text } : null;
+  }
+  const o = db.prepare("SELECT o.login, o.at, o.option, o.note, o.decision_id FROM decision_opinions o JOIN decisions d ON d.id = o.decision_id WHERE o.id = ? AND d.repo = ? AND d.number = ? AND o.retracted_at IS NULL")
+    .get(m[2]!, repo, n) as { login: string; at: string; option: string | null; note: string | null; decision_id: string } | undefined;
+  if (!o) return null;
+  const d = getDecision(db, o.decision_id);
+  const label = o.option ? (d ? optionsOf(d).find((x) => x.key === o.option)?.label : undefined) ?? o.option : null;
+  const note = o.note ? cleanComment(o.note) : "";
+  const text = (label ? (note ? `Suggests ${label}: ${note}` : `Suggests ${label}`) : note).slice(0, ITEM_COMMENT_LIMIT);
+  return text ? { login: o.login, at: o.at, text } : null;
+}
+
+function unsentIncludes(db: DatabaseSync, repo: string, n: number): { source: string; post: Included }[] {
+  const rows = db.prepare("SELECT source FROM conversation_includes WHERE repo = ? AND number = ? AND sent_turn IS NULL ORDER BY at, source").all(repo, n) as { source: string }[];
+  return rows.flatMap((r) => { const post = postOf(db, repo, n, r.source); return post ? [{ source: r.source, post }] : []; });
+}
+
+export function includesOf(db: DatabaseSync, repo: string, n: number): IncludeRow[] {
+  const rows = db.prepare("SELECT source, by, at, sent_turn FROM conversation_includes WHERE repo = ? AND number = ? ORDER BY at, source").all(repo, n) as { source: string; by: string; at: string; sent_turn: number | null }[];
+  return rows.map((r) => ({ source: r.source, by: r.by, at: r.at, sent: r.sent_turn !== null }));
+}
+
+/** Shares (`on`) or stops sharing a maintainer post with Opus. A post already sent stays sent. */
+export function setInclude(db: DatabaseSync, repo: string, n: number, source: string, on: boolean, by: string, deps?: StoreDeps): void {
+  const row = db.prepare("SELECT sent_turn FROM conversation_includes WHERE repo = ? AND number = ? AND source = ?").get(repo, n, source) as { sent_turn: number | null } | undefined;
+  if (row?.sent_turn != null) throw new ConversationError(409, "already sent to Opus");
+  if (!on) { db.prepare("DELETE FROM conversation_includes WHERE repo = ? AND number = ? AND source = ?").run(repo, n, source); return; }
+  if (row) return;
+  if (!itemRow(db, repo, n)) throw new ConversationError(404, `no item ${repo}#${n} in the mirror`);
+  if (!postOf(db, repo, n, source)) throw new ConversationError(400, "no such post on this item's questions");
+  db.prepare("INSERT INTO conversation_includes (repo, number, source, by, at) VALUES (?, ?, ?, ?, ?)").run(repo, n, source, by, nowOf(deps));
 }
 
 /** Opus's opening turn (a question or proposal from the recommendation). Does nothing when the item already has a conversation. */
@@ -275,11 +355,11 @@ export function setTurnProgress(db: DatabaseSync, repo: string, n: number, claim
 }
 
 /** The pieces of the next prompt: the stored item block and the turns in prompt order, the claimed message last. */
-export function promptParts(db: DatabaseSync, repo: string, n: number, wait: TurnRow): { item: string; turns: string; earlier: string; message: string } | null {
+export function promptParts(db: DatabaseSync, repo: string, n: number, wait: TurnRow): { item: string; turns: string; earlier: string; message: string; seen: string | null } | null {
   const c = conversationOf(db, repo, n);
   if (!c) return null;
   const earlier = (db.prepare("SELECT block FROM conversation_turns WHERE repo = ? AND number = ? AND seq IS NOT NULL ORDER BY seq").all(repo, n) as { block: string }[]).map((t) => t.block).join("");
-  return { item: c.item_block, turns: earlier + wait.block, earlier, message: wait.block };
+  return { item: c.item_block, turns: earlier + wait.block, earlier, message: wait.block, seen: seenOf(db, repo, n) };
 }
 
 /** Gives the claimed message its place in the prompt order, then the turns held while it was answered, in the order they arrived. */
@@ -297,12 +377,12 @@ const claimed = (db: DatabaseSync, repo: string, n: number, claim: string): Turn
  * Stores Opus's reply to the claimed message and marks the message answered, in one transaction. Returns the reply's turn id,
  * or null when the run no longer holds the message (its claim was released and taken by another run).
  */
-export function storeReply(db: DatabaseSync, repo: string, n: number, claim: string, text: string, cards: NewCard[], notes: string[], deps?: StoreDeps): number | null {
+export function storeReply(db: DatabaseSync, repo: string, n: number, claim: string, text: string, cards: NewCard[], notes: string[], deps?: StoreDeps, seen?: string | null): number | null {
   return inTx(db, () => {
     const wait = claimed(db, repo, n, claim);
     if (!wait) return null;
     let id = 0;
-    settleWait(db, repo, n, wait, "answered", null, () => { id = insertRow(db, repo, n, { kind: "opus", login: "opus", body: text, block: opusBlock(text, cards), notes, cards }, nextSeq(db, repo, n), null, deps); });
+    settleWait(db, repo, n, wait, "answered", null, () => { id = insertRow(db, repo, n, { kind: "opus", login: "opus", body: text, block: opusBlock(text, cards), notes, cards }, nextSeq(db, repo, n), null, deps, seen); });
     return id;
   });
 }

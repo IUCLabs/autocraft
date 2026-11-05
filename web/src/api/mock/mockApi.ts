@@ -78,8 +78,12 @@ export function createMockApi(): Api {
   const matches = (d: Decision, f: DecisionFilter) => {
     const status = f.status ?? "open";
     if (status !== "answered" && d.answer) return false;
+    if (status === "open" && d.snoozed) return false;
+    if (status === "snoozed" && !d.snoozed) return false;
     if (status === "answered" && (!d.answer || d.answer === "backlog")) return false;
     if (status === "backlog" && d.answer !== "backlog") return false;
+    if (status === "snoozed" && !d.snoozed) return false;
+    if (status === "open" && d.snoozed) return false;
     if (status === "opinions" && !d.opinions.length && !d.commentCount) return false;
     if (f.repo?.length && !f.repo.includes(d.repo)) return false;
     if (f.number !== undefined && !(d.number === f.number || d.items.some((i) => i.repo === d.repo && i.number === f.number))) return false;
@@ -164,6 +168,13 @@ export function createMockApi(): Api {
         changed();
         return wait(d, 30);
       },
+      async snooze(id, on) {
+        const d = find(id);
+        requireOperator(d);
+        d.snoozed = on ? { by: me.login, at: nowIso() } : null;
+        changed();
+        return wait(d, 30);
+      },
       claim: () => wait(undefined, 10),
       thread: (id) => wait(threads[id] ?? []),
     },
@@ -188,7 +199,10 @@ export function createMockApi(): Api {
     },
     progress: () => wait(progress(decisions.filter((d) => !d.answer).length)),
     mainCi: () => wait(mainCi()),
-    ...createConversationMock(me, changed),
+    ...createConversationMock(me, changed, (repo, number, option, note) => {
+      const d = decisions.find((x) => !x.answer && x.repo === shortRepo(repo) && x.number === number);
+      if (d) settle(d, option, note, null);
+    }),
     ...createAreasMock(me, changed),
     ...createAdminMock(me, changed),
     classifiers: {

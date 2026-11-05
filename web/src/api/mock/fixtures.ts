@@ -177,6 +177,8 @@ const SEEDS: Seed[] = [
     author: "rhea-m",
     size: [270412, 96, 41],
     cls: [["haiku", "missing feature", "yes"], ["jev", "missing feature", "yes"]],
+    comments: [["kiri-n", 150, "The pack is the better source; I checked that the patterns match."]],
+    opinions: [["saltmarsh-ink", "changes", "Ask them to load the pack. 270k lines of data is too much to carry.", 160]],
   },
   {
     kind: "scope",
@@ -636,6 +638,18 @@ const SEEDS: Seed[] = [
     author: "kiln-and-reed",
     answer: ["withdrawn", "pipeline", 3, true, "the pull request was closed on GitHub"],
   },
+  {
+    kind: "scope",
+    repo: "photocraft",
+    number: 4133,
+    title: "Healing brush leaves visible seams on 16-bit images",
+    question: "Is a 16-bit healing brush in scope for photocraft?",
+    context: [],
+    facts: ["issue · 2 comments"],
+    ...spread(scopeOpts("take")),
+    ageH: 20,
+    author: "okapi-codes",
+  },
 ];
 
 function spread([options, recommended]: [DecisionOption[], string]) {
@@ -722,6 +736,7 @@ function toDecision(s: Seed): Decision {
   const text = s.number === null ? { summary: BATCH_SUMMARY[s.repo] ?? s.question, body: null } : (TEXT[`${s.repo}#${s.number}`] ?? fillerText(s.title, s.repo));
   return {
     id,
+    snoozed: null,
     kind: s.kind,
     repo: s.repo,
     number: s.number,
@@ -764,6 +779,10 @@ function toDecision(s: Seed): Decision {
 
 const ALL_SEEDS = [...SEEDS, ...FILLER.map((_, i) => fillerSeed(i))];
 export const DECISIONS: Decision[] = ALL_SEEDS.map(toDecision);
+
+// One decision starts snoozed, for the Snoozed tab and the item page.
+const SNOOZED = DECISIONS.find((d) => d.id === "photocraft#4133:duplicate");
+if (SNOOZED) SNOOZED.snoozed = { by: "mosswood", at: iso(3 * H) };
 
 export const THREADS: Record<string, DecisionComment[]> = Object.fromEntries(
   ALL_SEEDS.filter((s) => s.comments).map((s) => {

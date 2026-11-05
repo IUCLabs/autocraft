@@ -3,16 +3,46 @@ import type { Decision, User } from "../../api/types";
 import { Button } from "../../ui/atoms/Button";
 import { Kbd } from "../../ui/atoms/Kbd";
 import { cn } from "../../ui/cn";
-import { AnsweredState, canActOn } from "./DecisionDetail";
+import { canActOn } from "./DecisionDetail";
 import { RecommendationLine } from "../../ui/molecules/RecommendationLine";
 import { localActions, useAnswer, useArmed, useLocal, userSelection } from "./state";
 
-export const WORKFLOW_ID = "workflow-box";
-
-export const scrollToWorkflow = () => document.getElementById(WORKFLOW_ID)?.scrollIntoView({ behavior: "smooth", block: "start" });
-
 /** Key under which the picked option of one decision, or of a batch of checked decisions, is kept. */
 const pickKey = (ds: Decision[]) => ds.map((d) => d.id).join("+");
+
+/** The pick, its GitHub write effect, the second confirmation and the submit of the workflow, shared by every place that answers a decision. */
+export function useWorkflow(ds: Decision[], onAnswered?: () => void) {
+  const answer = useAnswer();
+  const loc = useLocal();
+  const [armed, setArmed] = useArmed();
+  const d = ds[0];
+  const key = pickKey(ds);
+  const picked = loc.picks[key] ?? "";
+  const option = d.options.find((o) => o.key === picked);
+
+  // The GitHub write a pick causes: the option's own, or that of a per-item exception in a batch.
+  const effect = (k: string): string | null =>
+    d.options.find((o) => o.key === k)?.writes ??
+    Object.values(loc.overrides[d.id] ?? {}).map((x) => d.options.find((o) => o.key === x)?.writes).find(Boolean) ??
+    null;
+  const choose = (k: string) => {
+    setArmed(null);
+    localActions.setPick(key, k);
+  };
+  const clear = () => {
+    setArmed(null);
+    localActions.setPick(key, null);
+  };
+  const submit = async () => {
+    if (!option) return;
+    if (effect(option.key) && armed !== option.key) return setArmed(option.key);
+    setArmed(null);
+    await answer(ds, option.key);
+    localActions.setPick(key, null);
+    onAnswered?.();
+  };
+  return { key, picked, option, effect, choose, clear, submit, armed, setArmed, isArmed: !!option && armed === option.key, writes: option ? effect(option.key) : null, notes: loc.notes };
+}
 
 /**
  * The operator's explicit decision for the next step, at the end of the decision content.
@@ -30,35 +60,13 @@ export function WorkflowBox({
   phone?: boolean;
   onAnswered?: () => void;
 }) {
-  const answer = useAnswer();
   const loc = useLocal();
-  const [armed, setArmed] = useArmed();
+  const { key, picked, option, choose, submit, armed, setArmed, isArmed, writes } = useWorkflow(ds, onAnswered);
   const noteRef = useRef<HTMLInputElement>(null);
   const d = ds[0];
   const many = ds.length > 1;
   const rec = ds.every((x) => x.recommended === d.recommended) ? d.recommended : "";
-  const key = pickKey(ds);
-  const picked = loc.picks[key] ?? "";
-  const option = d.options.find((o) => o.key === picked);
   const operator = canActOn(user, ds);
-
-  // The GitHub write a pick causes: the option's own, or that of a per-item exception in a batch.
-  const effect = (k: string): string | null =>
-    d.options.find((o) => o.key === k)?.writes ??
-    Object.values(loc.overrides[d.id] ?? {}).map((x) => d.options.find((o) => o.key === x)?.writes).find(Boolean) ??
-    null;
-  const choose = (k: string) => {
-    setArmed(null);
-    localActions.setPick(key, k);
-  };
-  const submit = async () => {
-    if (!option) return;
-    if (effect(option.key) && armed !== option.key) return setArmed(option.key);
-    setArmed(null);
-    await answer(ds, option.key);
-    localActions.setPick(key, null);
-    onAnswered?.();
-  };
 
   // Digits select an option on a decision the user opened themselves; they never submit.
   useEffect(() => {
@@ -81,17 +89,16 @@ export function WorkflowBox({
   });
 
   if (!operator) return null;
-  if (d.answer && !many) return <section id={WORKFLOW_ID} className="mt-8 scroll-mt-3"><h2 className="mb-2 text-sm font-semibold">Workflow</h2><AnsweredState d={d} canUndo /></section>;
+  if (d.answer && !many) return null;
+  const title = "Workflow";
 
-  const isArmed = !!option && armed === option.key;
-  const writes = option ? effect(option.key) : null;
   const suffix = many ? ` for ${ds.length} decisions` : "";
   return (
-    <section id={WORKFLOW_ID} className="mt-8 scroll-mt-3 rounded-md border border-line-strong bg-raised">
-      <h2 className="border-b border-line px-3 py-2 text-sm font-semibold">Workflow</h2>
+    <section className="mt-8 scroll-mt-3 rounded-md border border-line-strong bg-raised">
+      <h2 className="border-b border-line px-3 py-2 text-sm font-semibold">{title}</h2>
       <div className="px-3 py-2.5">
         {!many && <div className="mb-2 px-2"><RecommendationLine d={d} /></div>}
-        <div role="radiogroup" aria-label="Workflow" className="grid gap-0.5">
+        <div role="radiogroup" aria-label={title} className="grid gap-0.5">
           {d.options.map((o, i) => {
             const on = o.key === picked;
             return (
@@ -125,7 +132,7 @@ export function WorkflowBox({
             );
           })}
         </div>
-        <label className="mt-2 flex h-8 min-w-0 items-center gap-2 rounded border border-line bg-sunken px-2.5 focus-within:border-accent/60 max-md:h-11">
+        <label className={cn("mt-2 flex h-8 min-w-0 items-center gap-2 rounded border border-line bg-sunken px-2.5 focus-within:border-accent/60 max-md:h-11")}>
           <input
             ref={noteRef}
             value={loc.notes[d.id] ?? ""}

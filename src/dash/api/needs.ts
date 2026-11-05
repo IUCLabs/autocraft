@@ -3,7 +3,7 @@
 import type { DatabaseSync, SQLInputValue } from "node:sqlite";
 import type { NeedsFeedbackPage, NeedsFeedbackRow, NeedsPage, NeedsStoppedRow } from "../../../web/src/api/types.ts";
 import { listAccounts } from "../../agents/accounts.ts";
-import { getDecision, reposOf, type DecisionRow } from "../../decisions.ts";
+import { SNOOZED_SQL, getDecision, reposOf, type DecisionRow } from "../../decisions.ts";
 import { stageLimits } from "../../runner/autopilot.ts";
 import { decisionPath, itemPath } from "../../../web/src/lib/links.ts";
 import { reviewBots } from "../../review/bots.ts";
@@ -31,7 +31,7 @@ const SOURCES: string[] = [
    WHERE o.at >= :since AND o.at <= :cur AND o.retracted_at IS NULL AND TRIM(COALESCE(o.note, '')) <> ''
      AND NOT EXISTS (SELECT 1 FROM access a WHERE a.login = o.login AND a.role = 'operator')`,
   // An operator's message to Opus on an item; handled once Opus answered it.
-  `SELECT 'turn:' || t.id, 'operator', t.login, t.at, t.body, t.repo, t.number, NULL, t.id, NULL, COALESCE(t.status = 'answered', 0)
+  `SELECT 'turn:' || t.id, 'operator', t.login, t.at, t.body, t.repo, t.number, NULL, t.id, NULL, t.status IS NULL OR t.status = 'answered'
    FROM conversation_turns t WHERE t.kind = 'operator' AND t.at >= :since AND t.at <= :cur`,
   // A GitHub comment or review that names the pipeline login (flagged when written, so an index finds them); handled once the
   // pipeline login posted on the item afterwards. Nothing without a pipeline login.
@@ -127,8 +127,8 @@ export async function needs(db: DatabaseSync, req: Req): Promise<NeedsPage> {
   const fb = feedback(db, hidden, cursor, q.get("feedback") === "1" ? limit : 1);
   // A batch decision counts only when none of its items is in a hidden repo, as in the Decisions list.
   const decisions = hidden.length
-    ? (db.prepare("SELECT * FROM decisions WHERE answer IS NULL").all() as DecisionRow[]).filter((d) => !reposOf(d).some((x) => hidden.includes(x))).length
-    : (db.prepare("SELECT COUNT(*) AS n FROM decisions WHERE answer IS NULL").get() as { n: number }).n;
+    ? (db.prepare(`SELECT * FROM decisions WHERE answer IS NULL AND NOT ${SNOOZED_SQL}`).all() as DecisionRow[]).filter((d) => !reposOf(d).some((x) => hidden.includes(x))).length
+    : (db.prepare(`SELECT COUNT(*) AS n FROM decisions WHERE answer IS NULL AND NOT ${SNOOZED_SQL}`).get() as { n: number }).n;
   const rows = await stopped(db, hidden);
   const last = fb.rows[fb.rows.length - 1];
   return {

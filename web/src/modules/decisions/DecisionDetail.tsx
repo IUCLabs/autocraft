@@ -1,30 +1,27 @@
 import { PriorityBadge } from "../../ui/atoms/PriorityBadge";
 import { QueueBadge } from "../../ui/molecules/QueueBadge";
-import { useEffect, useRef, type ReactNode } from "react";
+import { useEffect, type ReactNode } from "react";
 import { ItemRef } from "../../ui/molecules/ItemRef";
 import { FastMarkFor, FastToggle, HoldToggle } from "../queue/fastTrack";
 import { CaretLeftIcon, CaretRightIcon, CheckIcon, ArrowUUpLeftIcon, ChatCircleIcon, TrayIcon, SparkleIcon, ArrowDownIcon } from "@phosphor-icons/react";
-import { useApi } from "../../api/client";
+import { useApi, useQuery } from "../../api/client";
 import type { Decision, ItemKind, ItemState, User } from "../../api/types";
 import type { ViewProps } from "../../registry/types";
 import { canAct, canComment } from "../../registry/permissions";
 import { Kbd } from "../../ui/atoms/Kbd";
 import { Button, IconButton } from "../../ui/atoms/Button";
 import { ConfirmButton, useWrite } from "../admin/parts";
-import { Count } from "../../ui/atoms/Heading";
-import { Markdown, Collapsible } from "../../ui/molecules/Markdown";
 import { cn } from "../../ui/cn";
 import {  } from "../../lib/format";
 import { TimeAgo } from "../../ui/atoms/TimeAgo";
 import { ClaimPill, ClassifierLines, Disclosure, Facts, KindTag, RelatedList } from "./parts";
 import { Refs } from "./Refs";
-import { FeedbackBox } from "./FeedbackBox";
 import { AnswerNotice } from "./AnswerNotice";
 import { DuplicateGroup, RiskList } from "./Group";
 import { localActions, ordered, refOf, useDecisionFilter, useDecisionList, useLocal, usePinned, useSelection, useUndo, type AnswerEntry } from "./state";
-import { Conversation } from "./Conversation";
-import { FeedbackList } from "./Thread";
-import { WorkflowBox, scrollToWorkflow } from "./Workflow";
+import { WorkflowBox } from "./Workflow";
+import { ItemThread } from "../item/ItemThread";
+import { scrollToThreadEnd } from "../item/ItemDecisions";
 import { useNow } from "../../lib/useNow";
 
 export const canActOn = (user: User, ds: Decision[]): boolean =>
@@ -113,21 +110,25 @@ function AnsweredNotice({ entry }: { entry: AnswerEntry }) {
   );
 }
 
-function Section({ title, aside, children }: { title: ReactNode; aside?: ReactNode; children: ReactNode }) {
+function Section({ title, children }: { title: ReactNode; children: ReactNode }) {
   return (
     <section className="mt-5">
-      <h2 className="mb-2 flex items-center gap-1.5 text-xs font-semibold text-ink/60">
-        {title}
-        {aside && <span className="ml-auto font-normal text-ink/45">{aside}</span>}
-      </h2>
+      <h2 className="mb-2 flex items-center gap-1.5 text-xs font-semibold text-ink/60">{title}</h2>
       {children}
     </section>
   );
 }
 
+/** The thread of the decision's item (a batch: its first item) with this decision at the end. */
+function DecisionThread({ d, onAnswered }: { d: Decision; onAnswered?: () => void }) {
+  const ref = d.number === null ? d.items[0] : { repo: d.repo, number: d.number };
+  const { data: it } = useQuery(ref ? `item:${ref.repo}#${ref.number}` : "item:none", (api) => api.item(ref!.repo, ref!.number), { enabled: !!ref });
+  if (!ref) return null;
+  return <ItemThread repo={ref.repo} number={ref.number} it={it} decision={d} onAnswered={onAnswered} />;
+}
+
 /**
- * The decision: the item first (AI summary, then its description), then facts,
- * opinions and the question. Shared by the desktop detail panel and the phone pager;
+ * The decision: header, AI summary, facts and risks, details, then the item's thread with the question at its end. Shared by the desktop detail panel and the phone pager;
  * it owns its scroll container so the decision bar can stay pinned.
  */
 export function DecisionBody({
@@ -149,16 +150,10 @@ export function DecisionBody({
   const isBatch = d.number === null;
   const operator = canActOn(user, [d]);
   const commenter = canComment(user);
-  const feedbackRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!d.answer && commenter) void api.decisions.claim(d.id);
   }, [api, d.id, d.answer, commenter]);
-
-  const use = (option: string) => {
-    localActions.setPick(d.id, option);
-    scrollToWorkflow();
-  };
 
   const header = (
     <>
@@ -210,16 +205,6 @@ export function DecisionBody({
     </section>
   );
 
-  const description = d.body && (
-    <Section
-      title="Description"
-    >
-      <Collapsible lines={phone ? 15 : 25}>
-        <Markdown source={d.body} />
-      </Collapsible>
-    </Section>
-  );
-
   const facts = (
     <Section title="Key facts">
       <div className="rounded-md border border-line px-3 py-2.5">
@@ -228,40 +213,23 @@ export function DecisionBody({
     </Section>
   );
 
-  const feedback = (
-    <Section
-      title={
-        <>
-          Feedback <Count n={d.opinions.length + d.commentCount} />
-        </>
-      }
-    >
-      <FeedbackList d={d} me={user.login} compact onUse={operator && !d.answer ? use : undefined} onRetract={commenter && !d.answer ? () => void api.decisions.retract(d.id) : undefined} />
-      {commenter && <FeedbackBox d={d} className="mt-3" />}
-    </Section>
+  const question = (
+    <p className="mt-3 text-sm font-semibold">
+      <Refs text={d.question} repo={d.repo} />
+    </p>
   );
 
-  const question = (
+  const items = isBatch && (
     <div className="mt-5">
-      <p className="text-sm font-semibold">
-        <Refs text={d.question} repo={d.repo} />
-      </p>
-      {d.answer && !operator && (
-        <div className="mt-2">
-          <AnsweredState d={d} canUndo={false} />
-        </div>
-      )}
+      <Disclosure title="Items" count={d.items.length} defaultOpen>
+        <BatchItems d={d} />
+      </Disclosure>
     </div>
   );
-  const workflow = <WorkflowBox ds={[d]} user={user} phone={phone} onAnswered={onAnswered} />;
 
   const rest = (
     <div className="mt-5">
-      {isBatch && (
-        <Disclosure title="Items" count={d.items.length} defaultOpen>
-          <BatchItems d={d} />
-        </Disclosure>
-      )}
+      <Disclosure title="Details">
       {d.context.length > 0 && (
         <Disclosure title="Context">
           <div className="space-y-1 text-sm leading-6 text-ink/80">
@@ -306,11 +274,7 @@ export function DecisionBody({
           <RelatedList d={d} />
         </Disclosure>
       )}
-      {phone && d.number !== null && (
-        <Disclosure title="Opus" defaultOpen>
-          <Conversation repo={d.repo} number={d.number} operator={operator} />
-        </Disclosure>
-      )}
+      </Disclosure>
     </div>
   );
 
@@ -320,15 +284,14 @@ export function DecisionBody({
         <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-6 pt-3">
           <article className="animate-rise">
             {header}
+            {question}
             {group}
             {summary}
             {risks}
-            {description}
             {facts}
-            {question}
-            <div ref={feedbackRef} className="scroll-mt-3">{feedback}</div>
+            {items}
             {rest}
-            {workflow}
+            <DecisionThread d={d} onAnswered={onAnswered} />
           </article>
         </div>
         <div className="flex shrink-0 items-center gap-1 border-t border-line bg-bg px-1 py-1.5">
@@ -338,13 +301,8 @@ export function DecisionBody({
             <p className="truncate text-xs font-medium">{d.answer ? "Answered" : d.question}</p>
           </div>
           {commenter && (
-            <Button size="md" variant={operator && !d.answer ? "secondary" : "primary"} icon={ChatCircleIcon} className="h-10 px-3" onClick={() => feedbackRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })}>
-              Feedback
-            </Button>
-          )}
-          {operator && (
-            <Button size="md" variant="primary" icon={ArrowDownIcon} className="h-10 px-3" onClick={scrollToWorkflow}>
-              Workflow
+            <Button size="md" variant="primary" icon={operator && !d.answer ? ArrowDownIcon : ChatCircleIcon} className="h-10 px-3" onClick={scrollToThreadEnd}>
+              {operator && !d.answer ? "Answer" : "Reply"}
             </Button>
           )}
           <IconButton size="lg" icon={CaretRightIcon} label="Next decision" disabled={!pager?.next} onClick={pager?.next} />
@@ -357,14 +315,14 @@ export function DecisionBody({
       <div className="min-h-0 flex-1 overflow-y-auto">
         <article className="mx-auto max-w-[760px] px-6 pb-8 pt-5 animate-rise">
           {header}
+          {question}
           {group}
           {summary}
           {risks}
-          {description}
           {facts}
-          {question}
+          {items}
           {rest}
-          {workflow}
+          <DecisionThread d={d} onAnswered={onAnswered} />
         </article>
       </div>
     </div>
