@@ -32,7 +32,7 @@ import { Client, type Querier } from "../mirror.ts";
 import { viewerOf } from "../merge/index.ts";
 import { commentApprovalOf } from "../act/approval.ts";
 import { claimForWork, issueInfo } from "../github/claim.ts";
-import { repoIdentity } from "../github/identity.ts";
+import { commitIdentity, repoIdentity } from "../github/identity.ts";
 import { CLAUDE_PROMPTS } from "../prompts/index.ts";
 import { diffCacheDir } from "../review/diff.ts";
 import { rustPlan } from "../worker/rust.ts";
@@ -633,6 +633,7 @@ export async function openPr(x: Ctx, r: AttemptRow): Promise<boolean> {
     if (issueNow && issueNow.state !== "OPEN") { fail(db, d, r, "the issue is closed"); return false; }
     if (await closedLive(x, r)) { fail(db, d, r, "the issue is closed"); return false; }
     const who = await whoAmI(d.exec);
+    const author = await commitIdentity(db, r.repo, async () => who);
     db.prepare("INSERT INTO main.settings (key, value) VALUES ('pipeline_login', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value").run(who.login);
     const branch = branchName(r.number, issueNow?.title ?? "", who.login);
     const found = await d.exec("gh", ["pr", "list", "--repo", `${slugOf(r.repo)}`, "--state", "open", "--head", branch, "--json", "url,headRepositoryOwner", "--jq", `.[] | select(.headRepositoryOwner.login == "${who.login}") | .url`]);
@@ -671,7 +672,7 @@ export async function openPr(x: Ctx, r: AttemptRow): Promise<boolean> {
         rmSync(scratch2, { recursive: true, force: true });
       }
     }
-    const commit = await git.commit(tree, r.main_sha, commitMessage(r.number, title, [...files, testPath]), { name: who.login, email: who.email });
+    const commit = await git.commit(tree, r.main_sha, commitMessage(r.number, title, [...files, testPath]), { name: author.name, email: author.email });
     const changes = await git.rawChanges(r.main_sha, commit);
     const allowed = new Set([...files, testPath]);
     if (changes.some((c) => !allowed.has(c[3]!) || (c[2] === "A" ? c[1] !== "100644" : c[2] !== "M" || c[0] !== c[1]))) {

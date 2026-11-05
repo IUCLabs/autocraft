@@ -8,8 +8,8 @@ import type { DatabaseSync } from "node:sqlite";
 import { audit } from "../dash/audit.ts";
 import type { Grant, Guarded } from "../core/guard.ts";
 import { ownerOf } from "../owners.ts";
-import { AppError } from "./app.ts";
-import { AppNotInstalledError, installationToken, RepoNotInInstallationError } from "./install-token.ts";
+import { AppError, call, GITHUB_API } from "./app.ts";
+import { AppNotInstalledError, installationToken, readAppSecrets, RepoNotInInstallationError } from "./install-token.ts";
 
 export type Identity = "app" | `user:${string}`;
 export type RepoIdentity = "legacy" | "app";
@@ -70,4 +70,45 @@ export async function setRepoIdentityChecked(db: DatabaseSync, by: string, repo:
     if (why) throw new Error(why);
   }
   return setRepoIdentity(db, by, repo, value);
+}
+
+/** Who a commit is made as, and the login its comments carry. */
+export type CommitIdentity = { name: string; email: string; login: string };
+
+const botIds = new Map<string, Promise<number>>();
+
+/** The numeric id of the bot user `<slug>[bot]`, read with `token` (the anonymous rate limit is too small to share); cached per process (a failure is not cached). */
+export function botUserId(slug: string, token: () => Promise<string>, base: string = GITHUB_API): Promise<number> {
+  const k = `${base}|${slug}`;
+  let p = botIds.get(k);
+  if (!p) {
+    p = (async () => {
+      const j = (await call(base, `/users/${encodeURIComponent(`${slug}[bot]`)}`, await token())) as { id?: unknown };
+      if (typeof j.id !== "number") throw new AppError(`GitHub gave no user id for ${slug}[bot]`);
+      return j.id;
+    })();
+    p.catch(() => botIds.delete(k));
+    botIds.set(k, p);
+  }
+  return p;
+}
+
+/**
+ * The author and committer of commits AutoCraft creates in `repo`. On a repo on the app's identity that is the app's bot
+ * user (`<slug>[bot]`), which is also the login its comments carry; otherwise the box account `box` reads.
+ */
+export async function commitIdentity(
+  db: DatabaseSync, repo: string, box: () => Promise<{ login: string; email: string }>,
+  deps: { slug?: () => string | null; botId?: (slug: string) => Promise<number> } = {},
+): Promise<CommitIdentity> {
+  if (repoIdentity(db, repo) === "app") {
+    const slug = (deps.slug ?? (() => readAppSecrets()?.slug ?? null))();
+    if (slug) {
+      const id = await (deps.botId ?? ((s: string) => botUserId(s, () => installationToken(ownerOf(repo), repo))))(slug);
+      const login = `${slug}[bot]`;
+      return { name: login, login, email: `${id}+${login}@users.noreply.github.com` };
+    }
+  }
+  const w = await box();
+  return { name: w.login, login: w.login, email: w.email };
 }

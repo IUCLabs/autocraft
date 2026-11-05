@@ -9,6 +9,7 @@
 //
 // Without --apply it is a dry run: local tables only, nothing called or written.
 // The checkout is untrusted data: nothing from it is ever run (see git.ts).
+import { commitIdentity, type CommitIdentity } from "../github/identity.ts";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -318,6 +319,9 @@ async function runFixupWith(db: DatabaseSync, params: FixupParams, log: (line: s
   for (const c of asks) await askOne(c);
   const git = new Git(d.exec, d.root, repo);
   let whoP: Promise<Who> | undefined;
+  let identP: Promise<CommitIdentity> | undefined;
+  /** The author of our commits and comments here: the app's bot user on an app-lane repo, else the box account. */
+  const ident = (): Promise<CommitIdentity> => (identP ??= commitIdentity(db, repo, () => (whoP ??= whoAmI(d.exec))));
   /** The stage starts work on a PR: the pipeline's account is assigned when nobody is. */
   const claim = async (c: { number: number }): Promise<void> => {
     const g = guardRepo(db, repo, "push", params.by ?? CLI_BY);
@@ -327,12 +331,12 @@ async function runFixupWith(db: DatabaseSync, params: FixupParams, log: (line: s
   const conflictRun: ConflictRun = {
     ledger,
     repo, runId, log, d, gw, at, summary, prQuery: PR_QUERY, scrub: (raw) => scrubReason(raw, d.root), git: () => git,
-    who: () => (whoP ??= whoAmI(d.exec)), onHandled: params.onHandled, handled, claim, by: params.by ?? CLI_BY,
+    who: ident, onHandled: params.onHandled, handled, claim, by: params.by ?? CLI_BY,
   };
   for (const c of cAsks) await askConflict(db, conflictRun, c);
   if (!picks.length && !cMerges.length) return summary;
 
-  const who = await (whoP ??= whoAmI(d.exec));
+  const who = await ident();
   mkdirSync(d.root, { recursive: true });
   let worked = 0;
   for (const c of picks) {

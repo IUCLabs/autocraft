@@ -20,6 +20,7 @@ import { optionalChecks } from "../optional-checks.ts";
 import { pushApprovalOf } from "../fixup/approval.ts";
 import { Git, exec, fixupDir, type Exec } from "../fixup/git.ts";
 import { DIFF_CAP, FILE_CAP, PR_QUERY, TOTAL_CAP, noteLive, scrubReason, whoAmI, type PrNode } from "../fixup/index.ts";
+import { commitIdentity } from "../github/identity.ts";
 import { outsideShown, shownSize, viewFile } from "../fixup/excerpt.ts";
 import { editable, validatePatch } from "../fixup/patch.ts";
 import { readGate } from "../merge/changes-requested.ts";
@@ -483,7 +484,8 @@ async function runCifixWith(db: DatabaseSync, params: CifixParams, log: (line: s
       return;
     }
     const who = await (whoP ??= whoAmI(d.exec));
-    const commit = await git.commit(applied.tree, head, commitMessage(kind, v.files), { name: who.login, email: who.email });
+    const author = await commitIdentity(db, repo, async () => who);
+    const commit = await git.commit(applied.tree, head, commitMessage(kind, v.files), { name: author.name, email: author.email });
     const changes = await git.rawChanges(head, commit);
     const touched = changes.map((x) => x[3]!).sort().join("\n");
     if (changes.some((x) => x[2] !== "M" || x[0] !== x[1] || (x[0] !== "100644" && x[0] !== "100755")) || touched !== [...v.files].sort().join("\n")) {

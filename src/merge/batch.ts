@@ -22,6 +22,7 @@ import { claimForWork } from "../github/claim.ts";
 import { ghClosePr, ghOpenPr, mergeViaCommand, pushOwnBranch, type Writer } from "../github/write.ts";
 import { type Exec, exec, fixupDir } from "../fixup/git.ts";
 import { whoAmI } from "../fixup/index.ts";
+import { commitIdentity } from "../github/identity.ts";
 import { branchOf, forkOf } from "../fixissue/index.ts";
 import type { Querier } from "../mirror.ts";
 import { refreshChecks } from "../review/checks.ts";
@@ -123,6 +124,7 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
   async function startBatch(cands: Cand[], max: number, parentId: number | null): Promise<number | null> {
     const base = await git.fetchMain(ownerOf(repo), repo, branch);
     const who = await whoAmI(d.exec);
+    const author = await commitIdentity(db, repo, async () => who);
     db.prepare("INSERT INTO main.settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value").run(PIPELINE_LOGIN_KEY, who.login);
     const chain: { cand: Cand; commit: string }[] = [];
     let cur = base;
@@ -134,7 +136,7 @@ export async function runBatches(db: DatabaseSync, params: BatchParams, log: (li
       if ("refused" in g) { log(`  ${refOf(c.number)}: left out: ${g.refused}`); continue; }
       const tree = await git.mergeTree(cur, sha);
       if (!tree) { log(`  ${refOf(c.number)}: conflicts with the batch so far; waits for the next one`); continue; }
-      cur = await git.mergeCommit(tree, [cur, sha], `Merge pull request #${c.number}`, { name: who.login, email: who.email });
+      cur = await git.mergeCommit(tree, [cur, sha], `Merge pull request #${c.number}`, { name: author.name, email: author.email });
       chain.push({ cand: c, commit: cur });
     }
     if (!chain.length) return null;

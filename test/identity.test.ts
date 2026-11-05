@@ -5,7 +5,7 @@ import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { connect } from "../src/db.ts";
-import { identityFor, identityOfDecision, repoIdentity, setRepoIdentity } from "../src/github/identity.ts";
+import { commitIdentity, identityFor, identityOfDecision, repoIdentity, setRepoIdentity } from "../src/github/identity.ts";
 import { closeItem } from "../src/github/write.ts";
 import type { GuardedItem } from "../src/core/guard.ts";
 import type { Querier } from "../src/mirror.ts";
@@ -59,4 +59,15 @@ test("every audited write in write.ts takes its identity from a grant", () => {
   assert.match(src, /identity: idOf\(w, it\.g\)/);
   assert.match(src, /base = \{ \.\.\.details, method, identity: idOf\(w, g\) \}/);
   assert.match(src, /identity: "legacy"/);
+});
+
+test("commits are authored by the app's bot user on an app-lane repo and by the box account on a legacy one", async () => {
+  mkdirSync(SCRATCH, { recursive: true });
+  const db = connect(join(SCRATCH, `identity-commit-${process.pid}.db`));
+  db.prepare("INSERT INTO tracked_repos (name) VALUES ('app')").run();
+  const box = async () => ({ login: "box", email: "1+box@users.noreply.github.com" });
+  const deps = { slug: () => "demo-app", botId: async () => 42 };
+  assert.deepEqual(await commitIdentity(db, "app", box, deps), { name: "box", login: "box", email: "1+box@users.noreply.github.com" });
+  setRepoIdentity(db, "t", "app", "app");
+  assert.deepEqual(await commitIdentity(db, "app", box, deps), { name: "demo-app[bot]", login: "demo-app[bot]", email: "42+demo-app[bot]@users.noreply.github.com" });
 });

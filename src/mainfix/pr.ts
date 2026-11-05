@@ -17,6 +17,7 @@ import { forkOf } from "../fixissue/index.ts";
 import { outsideShown } from "../fixup/excerpt.ts";
 import { Git, type Exec } from "../fixup/git.ts";
 import { scrubReason, whoAmI } from "../fixup/index.ts";
+import { commitIdentity } from "../github/identity.ts";
 import { ghOpenPr, pushOwnBranch } from "../github/write.ts";
 import { LINT_MAX_ROUNDS } from "../core/rules.ts";
 import { validatePatch } from "../fixup/patch.ts";
@@ -237,8 +238,9 @@ async function attempt(c: Ctx, rows: FixRow[], count: () => void, ledger: Sessio
     if (!applied.ok) return set(live, "fix-failed", applied.reason);
 
     const who = await whoAmI(c.exec);
+    const author = await commitIdentity(c.db, c.repo, async () => who);
     c.db.prepare("INSERT INTO main.settings (key, value) VALUES ('pipeline_login', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value").run(who.login);
-    const commit = await git.commit(applied.tree, head, commitMessage(title, patchFiles), { name: who.login, email: who.email });
+    const commit = await git.commit(applied.tree, head, commitMessage(title, patchFiles), { name: author.name, email: author.email });
     const changes = await git.rawChanges(head, commit);
     const touched = changes.map((x) => x[3]!).sort().join("\n");
     if (changes.some((x) => x[2] !== "M" || x[0] !== x[1] || (x[0] !== "100644" && x[0] !== "100755")) || touched !== [...files].sort().join("\n"))
