@@ -9,9 +9,7 @@ export const MAX_FILTERS = 10;
 /** Added lines a regression test may have. */
 export const MAX_TEST_LINES = 200;
 /** Name (cargo test target and file stem under tests/) of the regression test written for item `n`. One name per item keeps later patches from colliding with files already on the default branch. */
-export const regressionName = (n: number): string => `autocraft_regression_${n}`;
-/** The same for the regression test of security finding `n`. */
-export const securityTestName = (n: number): string => `autocraft_security_${n}`;
+export const regressionName = (n: number | string): string => `autocraft_regression_${n}`;
 export const PLAN_BODY_LIMIT = 3000;
 
 export type Crate = { name: string; dir: string };

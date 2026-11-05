@@ -1,7 +1,7 @@
 // The private fix of a finding: a patch on the scan's pinned commit, built and tested in the worker container, reviewed by
 // Opus, and kept as a local commit in the bare cache that is never pushed before Land. Nothing here writes to GitHub:
 // `gh api user` and the fetch of the default branch are reads.
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
@@ -26,7 +26,7 @@ import { regressionPath } from "../verify/plan.ts";
 import { baseScopeRepos } from "../pilot.ts";
 import { cloneTask, queueWarmBuild } from "../verify/tasks.ts";
 import { outcomeOf } from "../verify/results.ts";
-import { securityTestName, type Crate } from "../verify/types.ts";
+import { regressionName, type Crate } from "../verify/types.ts";
 import {
   FIX_RUN_BASE, FIX_ROUNDS, fixBranch, giveaway, parseFixReply, patchGiveaway, quietProblem, securityRepo,
   type SecurityFixCheckInput, type SecurityFixInput,
@@ -39,6 +39,9 @@ const SHA = /^[0-9a-f]{40}$/;
 export const fixRef = (repo: string, n: number): string => `refs/autocraft/security/${repo}-${n}`;
 const oneLine = (s: string, max = 300): string => s.replace(/\s+/g, " ").trim().slice(0, max);
 const ASK_STEPS = { fix: "security.fix", review: "security.fixcheck" } as const;
+
+/** Test name for security finding `n` of `repo`. The test lands in a quiet PR, so it looks like any other regression test and carries no finding number. */
+const securityTestName = (repo: string, n: number): string => regressionName(createHash("sha256").update(`${repo}#${n}`).digest("hex").slice(0, 10));
 
 export type BuildRequest = { repo: string; sha: string; crate: string; test: string; patch: string; testPatch: string };
 export type BuildVerdict = { ok: true; formatDiff: string | null } | { ok: false; reason: string };
@@ -161,7 +164,7 @@ export async function runFix(db: DatabaseSync, repo: string, n: number, d: FixDe
     if (!crate || !/^[A-Za-z0-9_./-]+$/.test(crate.dir) || crate.dir.split("/").includes("..")) return giveUp(db, repo, n, "the fix step covers Rust crates only, and the finding is not in one", log);
     const listed = (await git.must(["ls-tree", "-r", "--name-only", sha, "--", crate.dir === "." ? "" : crate.dir].filter((x) => x !== ""))).split("\n").filter(Boolean);
     const allowed = listed.filter((p) => editable(p));
-    const testName = securityTestName(n);
+    const testName = securityTestName(repo, n);
     const testPath = regressionPath(crate.dir, testName);
     const verification = row.verification ? JSON.parse(row.verification) as { proposedTest?: string | null } : null;
     const checkout = (await d.checkout(repo, branch, sha)) ?? undefined;
