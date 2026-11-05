@@ -57,16 +57,39 @@ export function loadItems(db: DatabaseSync, refs: { repo: string; number: number
   });
 }
 
-type Proc = { code: number | null; stdout: string; stderr: string };
-/** `env` is added to the process environment of the child, or with `exactEnv` is the child's whole environment. `onLine` gets each complete line of stdout as it arrives (the whole stdout is still returned). */
-export type Runner = (cmd: string, args: string[], input: string, cwd?: string, timeoutMs?: number, env?: Record<string, string>, onLine?: (line: string) => void, exactEnv?: boolean) => Promise<Proc>;
+/** `idleMs` is how long the process may stay silent (the time since its last output, counted as zero while `busy()` is true) before it is stopped. */
+export type IdleWatch = { idleMs: number; busy?: () => boolean };
+type Proc = { code: number | null; stdout: string; stderr: string; /** The idle watchdog stopped the process. */ idle?: boolean };
 
-export function exec(cmd: string, args: string[], input: string, cwd?: string, timeoutMs = 600_000, env?: Record<string, string>, onLine?: (line: string) => void, exactEnv = false): Promise<Proc> {
+/** How long a model call may produce no output before it is stopped: `AUTOCRAFT_CALL_IDLE_MIN` minutes, default 15. */
+export function callIdleMs(env: NodeJS.ProcessEnv = process.env): number {
+  const n = Number(envVar("CALL_IDLE_MIN", env));
+  return (Number.isFinite(n) && n > 0 ? n : 15) * 60_000;
+}
+/** Time between SIGTERM and SIGKILL when the watchdog stops a process. */
+export const IDLE_KILL_GRACE_MS = 10_000;
+/** `env` is added to the process environment of the child, or with `exactEnv` is the child's whole environment. `onLine` gets each complete line of stdout as it arrives (the whole stdout is still returned). */
+export type Runner = (cmd: string, args: string[], input: string, cwd?: string, timeoutMs?: number, env?: Record<string, string>, onLine?: (line: string) => void, exactEnv?: boolean, watch?: IdleWatch) => Promise<Proc>;
+
+export function exec(cmd: string, args: string[], input: string, cwd?: string, timeoutMs = 600_000, env?: Record<string, string>, onLine?: (line: string) => void, exactEnv = false, watch?: IdleWatch): Promise<Proc> {
   return new Promise((resolve) => {
-    const p = spawn(cmd, args, { cwd, stdio: ["pipe", "pipe", "pipe"], timeout: timeoutMs, ...(env && { env: exactEnv ? env : { ...process.env, ...env } }) });
+    // With a watchdog the child leads its own process group, so the stop reaches everything it started.
+    const p = spawn(cmd, args, { cwd, stdio: ["pipe", "pipe", "pipe"], timeout: timeoutMs, ...(watch && { detached: true }), ...(env && { env: exactEnv ? env : { ...process.env, ...env } }) });
     let stdout = "", stderr = "";
     let partial = "";
+    let last = Date.now(), idle = false, ended = false;
+    const signal = (sig: NodeJS.Signals) => { try { process.kill(-p.pid!, sig); } catch { try { p.kill(sig); } catch { /* gone */ } } };
+    const timer = watch && setInterval(() => {
+      if (watch.busy?.()) last = Date.now();
+      if (idle || Date.now() - last < watch.idleMs) return;
+      idle = true;
+      signal("SIGTERM");
+      setTimeout(() => { if (!ended) signal("SIGKILL"); }, IDLE_KILL_GRACE_MS).unref();
+    }, Math.max(10, Math.min(30_000, Math.floor(watch.idleMs / 4))));
+    timer?.unref();
+    const done = (r: Proc) => { ended = true; if (timer) clearInterval(timer); resolve(idle ? { ...r, idle: true } : r); };
     p.stdout.on("data", (d) => {
+      last = Date.now();
       stdout += d;
       if (!onLine) return;
       partial += d;
@@ -74,9 +97,9 @@ export function exec(cmd: string, args: string[], input: string, cwd?: string, t
       partial = lines.pop()!;
       for (const l of lines) try { onLine(l); } catch { /* progress is best effort */ }
     });
-    p.stderr.on("data", (d) => (stderr += d));
-    p.on("error", (e) => resolve({ code: -1, stdout, stderr: String(e) }));
-    p.on("close", (code) => resolve({ code, stdout, stderr }));
+    p.stderr.on("data", (d) => { last = Date.now(); stderr += d; });
+    p.on("error", (e) => done({ code: -1, stdout, stderr: String(e) }));
+    p.on("close", (code) => done({ code, stdout, stderr }));
     p.stdin.on("error", () => {});
     p.stdin.end(input);
   });
@@ -243,6 +266,18 @@ function parseOutput(stdout: string): { type?: string }[] | { type?: string } {
   }
 }
 
+/** Tokens of the assistant messages seen so far (each message id once), for a call that ended without a result. */
+function streamTokens(events: { type?: string }[]): { input: number; output: number; cacheRead: number; cacheWrite: number } | undefined {
+  const seen = new Map<string, Record<string, number>>();
+  for (const e of events as { type?: string; message?: { id?: string; usage?: Record<string, number> } }[]) {
+    if (e.type === "assistant" && e.message?.usage) seen.set(e.message.id ?? `#${seen.size}`, e.message.usage);
+  }
+  if (!seen.size) return undefined;
+  const t = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+  for (const u of seen.values()) { t.input += u.input_tokens ?? 0; t.output += u.output_tokens ?? 0; t.cacheRead += u.cache_read_input_tokens ?? 0; t.cacheWrite += u.cache_creation_input_tokens ?? 0; }
+  return t;
+}
+
 const exitClass = (code: number | null): string => (code === null ? "timed out or killed" : code === -1 ? "could not start" : `exit code ${code}`);
 
 const madeDirs = new Set<string>();
@@ -407,7 +442,7 @@ async function askOnce<K extends ClaudePromptId>(id: K, model: string, input: Cl
         const feed = (raw: string) => { clockLine(clock, raw); progress(raw); };
         const release = holdCheckouts([opts.checkout!, ...(shared ?? []).map((x) => x.dir)]);
         try {
-          r = await runner(c.cmd, c.args, stdin, cwd, timeoutMs, c.env, feed, true);
+          r = await runner(c.cmd, c.args, stdin, cwd, timeoutMs, c.env, feed, true, { idleMs: callIdleMs(), busy: () => (checkTool?.active ?? 0) > 0 });
         } finally {
           release();
         }
@@ -415,6 +450,13 @@ async function askOnce<K extends ClaudePromptId>(id: K, model: string, input: Cl
       } else r = await runner("claude", [...args, ...extra], stdin, cwd, timeoutMs, { CLAUDE_CONFIG_DIR: run.configDir, ...(usedToken && tokenEnv(db, run.accountId, run.configDir)) });
       // Stderr is scrubbed up front. For a sandboxed call the reply text is scrubbed after parsing, so a match cannot break the JSON.
       if (sandboxed) r = { ...r, stderr: scrub(r.stderr) };
+      // Stopped by the idle watchdog: a failed call with the tokens the stream showed, so the usual failure and retry path applies.
+      if (r.idle) {
+        let tokens: ReturnType<typeof streamTokens>;
+        try { const p = parseOutput(r.stdout); saveTools(db, runId, p, clock); tokens = streamTokens(Array.isArray(p) ? p : [p]); } catch { tokens = undefined; }
+        finish({ state: "failed", ...(tokens && { tokens }), error: `no output for ${Math.round(callIdleMs() / 60_000 * 10) / 10} min; stopped`, summary: "no output; stopped", output: sandboxed ? scrub(r.stdout) : r.stdout });
+        return null;
+      }
       // A call that used the long-lived token and failed with an authentication error: the token is marked rejected; this call fails as before and later calls take the regular sign-in path. Only stderr and the CLI's own error fields are tested, never assistant or tool text.
       const authFailed = (text: string) => { if (usedToken && isAuthFailure(text)) markTokenRejected(db, run.accountId); };
       try {
