@@ -4,7 +4,7 @@
 // API, and app sign-in keeps the user's token sealed in user_tokens.
 import assert from "node:assert/strict";
 import { generateKeyPairSync } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { join } from "node:path";
@@ -14,6 +14,7 @@ import { connect } from "../src/db.ts";
 import { loadConfig } from "../src/dash/server/config.ts";
 import { startServer } from "../src/dash/server/index.ts";
 import { FakeProvider } from "../src/dash/server/provider.ts";
+import type { Route } from "../src/dash/types.ts";
 import { SCRATCH } from "./scratch.ts";
 
 mkdirSync(SCRATCH, { recursive: true });
@@ -29,6 +30,7 @@ const WEBHOOK_SECRET = "webhook-secret-for-the-test";
 const db = connect(dbFile);
 let github: Server;
 let converted: string[] = [];
+let onConvert: () => void = () => {};
 const closers: Array<() => Promise<void>> = [];
 let base = "";
 
@@ -42,8 +44,9 @@ before(async () => {
     if (req.method === "POST" && url.startsWith("/app-manifests/")) {
       const code = decodeURIComponent(url.split("/")[2]!);
       converted.push(code);
+      onConvert();
       return code === "good-code"
-        ? send(201, { id: 4242, slug: "autocraft-test", name: "AutoCraft", client_id: "Iv1.test", client_secret: CLIENT_SECRET, webhook_secret: WEBHOOK_SECRET, pem: PEM })
+        ? send(201, { id: 4242, slug: "autocraft-test", name: "AutoCraft", owner: { login: "glasswing", type: "Organization" }, client_id: "Iv1.test", client_secret: CLIENT_SECRET, webhook_secret: WEBHOOK_SECRET, pem: PEM })
         : send(404, { message: "Not Found" });
     }
     if (!(req.headers.authorization ?? "").startsWith("Bearer ")) return send(401, {});
@@ -86,6 +89,16 @@ class Client {
     }
     return r;
   }
+  async csrf(): Promise<string> {
+    return (await this.req("/api/me")).headers.get("x-csrf-token")!;
+  }
+  async post(path: string, form: Record<string, string>): Promise<Response> {
+    const r = await fetch(new URL(path, this.origin), {
+      method: "POST", body: new URLSearchParams(form), redirect: "manual",
+      headers: { cookie: [...this.jar].map(([k, v]) => `${k}=${v}`).join("; ") },
+    });
+    return r;
+  }
 }
 
 async function signedIn(login: string, origin = base): Promise<Client> {
@@ -101,7 +114,7 @@ describe("github app registration", () => {
     for (const login of ["viewer1", "maint"]) {
       const c = await signedIn(login);
       assert.equal((await c.req("/api/admin/github-app")).status, 403);
-      assert.equal((await c.req("/auth/github-app/start")).status, 403);
+      assert.equal((await c.post("/auth/github-app/start", { csrf: await c.csrf() })).status, 403);
     }
   });
 
@@ -110,7 +123,8 @@ describe("github app registration", () => {
     const before = (await (await boss.req("/api/admin/github-app")).json()) as { configured: boolean };
     assert.equal(before.configured, false);
 
-    const page = await (await boss.req("/auth/github-app/start?name=AutoCraft")).text();
+    assert.equal((await boss.post("/auth/github-app/start", { name: "AutoCraft", csrf: "wrong" })).status, 403);
+    const page = await (await boss.post("/auth/github-app/start", { name: "AutoCraft", csrf: await boss.csrf() })).text();
     const state = /settings\/apps\/new\?state=([A-Za-z0-9_-]+)/.exec(page)?.[1];
     assert.ok(state, "the start page posts to GitHub with a state");
     assert.match(page, /&#34;active&#34;:false/);
@@ -124,16 +138,18 @@ describe("github app registration", () => {
     assert.equal(stored.github_app_slug, "autocraft-test");
     assert.equal(stored.github_app_private_key, PEM);
     assert.equal(stored.github_app_client_secret, CLIENT_SECRET);
+    assert.deepEqual(stored.github_app_owner, { login: "glasswing", type: "Organization" });
 
     const replay = await boss.req(`/auth/github-app/callback?code=good-code&state=${state}`);
     assert.equal(replay.status, 400);
     assert.deepEqual(converted, ["good-code"]);
 
     const text = await (await boss.req("/api/admin/github-app")).text();
-    const status = JSON.parse(text) as { configured: boolean; app: { slug: string; installUrl: string }; installations: { owner: string; repos: string[] }[] };
+    const status = JSON.parse(text) as { configured: boolean; app: { slug: string; installUrl: string; transferUrl: string }; installations: { owner: string; repos: string[] }[] };
     assert.equal(status.configured, true);
     assert.equal(status.app.slug, "autocraft-test");
     assert.equal(status.app.installUrl, "https://github.com/apps/autocraft-test/installations/new");
+    assert.equal(status.app.transferUrl, "https://github.com/organizations/glasswing/settings/apps/autocraft-test/advanced");
     assert.deepEqual(status.installations, [{ owner: "glasswing", selection: "selected", repos: ["glasswing/photocraft"] }]);
     const audit = JSON.stringify(db.prepare("SELECT * FROM audit").all());
     for (const secret of [PEM.slice(40, 80), CLIENT_SECRET, WEBHOOK_SECRET, "ghs_installation"]) {
@@ -153,5 +169,56 @@ describe("github app registration", () => {
     await signedIn("maint", s.url);
     assert.equal((db.prepare("SELECT version FROM user_tokens WHERE login = 'maint'").get() as { version: number }).version, 2);
     assert.equal((db.prepare("SELECT COUNT(*) AS n FROM audit WHERE action = 'github-app-login-mode' AND target = 'github-app'").get() as { n: number }).n, 1);
+  });
+
+  test("a secrets file that cannot be written keeps the app's slug visible and leaks no key", async () => {
+    const dir2 = join(dir, "readonly");
+    mkdirSync(dir2);
+    const file2 = join(dir2, "secrets.json");
+    const env = { AUTOCRAFT_DEV_AUTH: "1", AUTOCRAFT_LISTEN: "127.0.0.1:0", AUTOCRAFT_DB: dbFile, AUTOCRAFT_DEV_PERMS: permsFile, AUTOCRAFT_SECRETS_FILE: file2 };
+    const s = await startServer({ config: loadConfig(env), db, provider: new FakeProvider(permsFile), routes: [], githubApi: `http://127.0.0.1:${(github.address() as AddressInfo).port}` });
+    closers.push(s.close);
+    const boss = await signedIn("boss", s.url);
+    const start = async () => /settings\/apps\/new\?state=([A-Za-z0-9_-]+)/.exec(await (await boss.post("/auth/github-app/start", { csrf: await boss.csrf() })).text())![1]!;
+    const errors: string[] = [];
+    const log = console.error;
+    console.error = (...a: unknown[]) => void errors.push(a.join(" "));
+    try {
+      // The directory turns read-only while GitHub converts the code: the probe passed, the write fails.
+      const state = await start();
+      onConvert = () => chmodSync(dir2, 0o500);
+      const page = await (await boss.req(`/auth/github-app/callback?code=good-code&state=${state}`)).text();
+      onConvert = () => {};
+      assert.match(page, /autocraft-test/);
+      assert.match(page, /https:\/\/github\.com\/organizations\/glasswing\/settings\/apps\/autocraft-test/);
+      assert.match(page, /EACCES/);
+      // With the directory still read-only, a new registration stops before GitHub is asked.
+      const before = converted.length;
+      assert.equal((await boss.post("/auth/github-app/start", { csrf: await boss.csrf() })).status, 409);
+      assert.equal(converted.length, before);
+      const text = JSON.stringify(db.prepare("SELECT * FROM audit").all()) + page + errors.join("\n");
+      for (const secret of [PEM.slice(40, 80), CLIENT_SECRET, WEBHOOK_SECRET]) assert.ok(!text.includes(secret));
+      assert.match(errors.join("\n"), /autocraft-test/);
+    } finally {
+      console.error = log;
+      chmodSync(dir2, 0o700);
+    }
+  });
+
+  test("a refreshed app sign-in token reaches user_tokens", async () => {
+    const env = { AUTOCRAFT_DEV_AUTH: "1", AUTOCRAFT_LISTEN: "127.0.0.1:0", AUTOCRAFT_DB: dbFile, AUTOCRAFT_DEV_PERMS: permsFile, AUTOCRAFT_SECRETS_FILE: secretsFile, AUTOCRAFT_LOGIN_APP: "github-app" };
+    const provider = new FakeProvider(permsFile, 300);
+    const routes: Route[] = [{ method: "GET", pattern: "/api/test/can/:repo", handler: async (_db, r) => ({ json: { can: await r.user.canWrite(r.params.repo!) } }) }];
+    const s = await startServer({ config: loadConfig(env), db, provider, routes });
+    closers.push(s.close);
+    const c = await signedIn("viewer1", s.url);
+    const row = () => db.prepare("SELECT token_enc, version FROM user_tokens WHERE login = 'viewer1'").get() as { token_enc: string; version: number };
+    const before = row();
+    await new Promise((r) => setTimeout(r, 350));
+    await c.req("/api/test/can/photocraft");
+    assert.equal(provider.refreshes, 1);
+    const after = row();
+    assert.equal(after.version, before.version + 1);
+    assert.notEqual(after.token_enc, before.token_enc);
   });
 });

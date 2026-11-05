@@ -135,7 +135,7 @@ function buildSessions(): Omit<SessionInfo, "current">[] {
 
 export const AUDIT_ACTIONS = [
   "answer", "undo", "adopt", "opinion", "opinion-retract", "comment", "override", "rule", "access-add", "access-remove", "access-role",
-  "session-revoke", "sign-in", "sign-in-refused", "github-app-register", "github-app-login-mode", "repo-track", "repo-untrack",
+  "session-revoke", "sign-in", "sign-in-refused", "github-app-register", "github-app-register-failed", "github-app-login-mode", "repo-track", "repo-untrack",
 ];
 
 function buildAudit(): AuditEntry[] {
@@ -379,7 +379,7 @@ export function createAdminMock(me: User, changed: () => void): AdminApi {
         // The mock shows the registered app; ?unregistered shows the registration form.
         const registered = typeof location === "undefined" || !location.search.includes("unregistered");
         const status: GithubAppStatus = {
-          configured: registered, loginMode: "oauth", canRegister: true, defaultName: "AutoCraft",
+          configured: registered, loginMode: "oauth", canRegister: true, defaultName: "AutoCraft", csrf: "mock",
           app: registered ? { id: "1234567", slug: "autocraft-demo", name: "AutoCraft", installUrl: "https://github.com/apps/autocraft-demo/installations/new", transferUrl: "https://github.com/settings/apps/autocraft-demo/advanced" } : null,
           installations: registered ? [{ owner: "glasswing", selection: "selected", repos: ["glasswing/photocraft", "glasswing/designcraft", "glasswing/filmcraft"] }] : [],
           error: null,

@@ -250,7 +250,7 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
     if (route.operator && session.role !== "operator") return out(apiError(403, "operators only"));
     const r: Req = {
       method, path: url.pathname, params: params!, query: url.searchParams, form: new URLSearchParams(), json,
-      user: makeUser(db, box, provider, session, writes),
+      user: makeUser(db, box, provider, session, writes, config.loginApp === "github-app"),
       csrf: session.csrf, nonce,
     };
     const res2 = await route.handler(db, r);
@@ -331,11 +331,18 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
         cookies: [...clear, cookie(SESSION_COOKIE, id, SESSION_TTL / 1000)],
       };
     }
-    if (req.method === "GET" && (path === "/auth/github-app/start" || path === "/auth/github-app/callback")) {
+    if (req.method === "POST" && path === "/auth/github-app/start") {
+      if (!sameOrigin(req)) return { r: errorPage(nonce, 403, "Refused", "This form was sent from another site.") };
+      const form = await readBody(req);
       const s = loadSession(db, cookies.get(SESSION_COOKIE));
       if (!s) return { r: { redirect: `/auth/signin?${new URLSearchParams({ return_to: "/admin/github-app" })}` } };
-      const operator = s.role === "operator";
-      return { r: path.endsWith("/start") ? startRegistration(db, config, req, url, nonce, s.login, operator) : await finishRegistration(db, config, appDeps, url, nonce, s.login, operator) };
+      if (!safeEqual(form.get("csrf") ?? "", s.csrf)) return { r: errorPage(nonce, 403, "Refused", "The form expired. Reload the page and try again.") };
+      return { r: startRegistration(db, config, req, form, nonce, s) };
+    }
+    if (req.method === "GET" && path === "/auth/github-app/callback") {
+      const s = loadSession(db, cookies.get(SESSION_COOKIE));
+      if (!s) return { r: { redirect: `/auth/signin?${new URLSearchParams({ return_to: "/admin/github-app" })}` } };
+      return { r: await finishRegistration(db, config, appDeps, url, nonce, s) };
     }
     if (req.method === "POST" && path === "/auth/signout") {
       if (!sameOrigin(req)) return { r: errorPage(nonce, 403, "Refused", "This form was sent from another site.") };
@@ -423,7 +430,7 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
     const href = allowedImage(raw)?.href;
     const owners = href ? imageIndex.reposOf(href) : [];
     if (owners.length) {
-      const visible = new Set(await visibleTo(db, makeUser(db, box, provider, session, false)));
+      const visible = new Set(await visibleTo(db, makeUser(db, box, provider, session, false, config.loginApp === "github-app")));
       if (!owners.some((o) => visible.has(o))) {
         res.writeHead(404, secure({ "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" }, "default-src 'none'"));
         return void res.end("not an image of a tracked repo");

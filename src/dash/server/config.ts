@@ -1,4 +1,4 @@
-import { chmodSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { isIP } from "node:net";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -12,7 +12,10 @@ import { envVar } from "../../env.ts";
 // sign a user in; the webhook secret is stored but unused (webhooks are off).
 export type AppSecrets = {
   id: string; slug: string; privateKey: string; clientId: string; clientSecret: string; webhookSecret: string | null;
+  /** Who owns the app on GitHub (a user or an organization); null when unknown. */
+  owner: AppOwner | null;
 };
+export type AppOwner = { login: string; type: "User" | "Organization" };
 export type Secrets = { githubClientId: string; githubClientSecret: string; sessionKey: string; app: AppSecrets | null };
 
 /** Which GitHub application signs dashboard users in: the OAuth App (secrets github_client_*) or the GitHub App (secrets github_app_*). */
@@ -100,32 +103,67 @@ function appSecretsOf(raw: Record<string, unknown>): AppSecrets | null {
   const id = opt("github_app_id"), slug = opt("github_app_slug"), privateKey = opt("github_app_private_key");
   const clientId = opt("github_app_client_id"), clientSecret = opt("github_app_client_secret");
   if (!id || !slug || !privateKey || !clientId || !clientSecret) return null;
-  return { id, slug, privateKey, clientId, clientSecret, webhookSecret: opt("github_app_webhook_secret") };
+  const o = raw.github_app_owner as { login?: unknown; type?: unknown } | undefined;
+  const owner: AppOwner | null = typeof o?.login === "string" && o.login && (o.type === "User" || o.type === "Organization") ? { login: o.login, type: o.type } : null;
+  return { id, slug, privateKey, clientId, clientSecret, webhookSecret: opt("github_app_webhook_secret"), owner };
+}
+
+function readRawSecrets(path: string): Record<string, unknown> {
+  try {
+    return JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return {};
+    throw new ConfigError("secrets file is not valid JSON");
+  }
+}
+
+/** A sibling of the target with a random name, created exclusively (`wx`) so it never follows or replaces an existing file. */
+function writeTemp(target: string, body: string): string {
+  const tmp = `${target}.${randomToken(6)}.tmp`;
+  try {
+    writeFileSync(tmp, body, { mode: 0o600, flag: "wx" });
+    chmodSync(tmp, 0o600);
+  } catch (e) {
+    try { unlinkSync(tmp); } catch { /* not created */ }
+    throw e;
+  }
+  return tmp;
+}
+
+/** The file a write must replace: the secrets file itself, or the file a symlink there points to. */
+function secretsTarget(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return path;
+    throw e;
+  }
+}
+
+/** Throws unless a later `writeAppSecrets` can succeed: the file parses and a temporary file can be created beside it. */
+export function checkSecretsWritable(path: string): void {
+  readRawSecrets(path);
+  unlinkSync(writeTemp(secretsTarget(path), ""));
 }
 
 /**
  * Adds the app's keys to the secrets file through a temporary file in the same
- * directory and a rename, mode 0600. Other keys stay as they are.
+ * directory and a rename, mode 0600. Other keys stay as they are, and a
+ * symlinked secrets file stays a symlink.
  */
 export function writeAppSecrets(path: string, app: AppSecrets): void {
-  let raw: Record<string, unknown> = {};
-  try {
-    raw = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw new ConfigError("secrets file is not valid JSON");
-  }
+  const target = secretsTarget(path);
   const next = {
-    ...raw,
+    ...readRawSecrets(target),
     github_app_id: app.id, github_app_slug: app.slug, github_app_private_key: app.privateKey,
     github_app_client_id: app.clientId, github_app_client_secret: app.clientSecret, github_app_webhook_secret: app.webhookSecret ?? "",
+    github_app_owner: app.owner,
   };
-  const tmp = `${path}.tmp`;
+  const tmp = writeTemp(target, `${JSON.stringify(next, null, 2)}\n`);
   try {
-    writeFileSync(tmp, `${JSON.stringify(next, null, 2)}\n`, { mode: 0o600 });
-    chmodSync(tmp, 0o600);
-    renameSync(tmp, path);
+    renameSync(tmp, target);
   } catch (e) {
-    try { unlinkSync(tmp); } catch { /* not written */ }
+    try { unlinkSync(tmp); } catch { /* already gone */ }
     throw e;
   }
 }

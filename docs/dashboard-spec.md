@@ -230,6 +230,7 @@ GitHub permissions: after sign-in, read the user's permission on each repo with 
 ### Secrets and configuration
 
 - The OAuth client secret and the session key are never in the repo, in logs or in error pages. The server reads them from a file named by `AUTOCRAFT_SECRETS_FILE` (mode 0600, JSON) and refuses to start if it's missing, readable by others, or incomplete.
+- With a GitHub App, the same file holds `github_app_id`, `github_app_slug`, `github_app_private_key`, `github_app_client_id`, `github_app_client_secret`, `github_app_webhook_secret` and `github_app_owner`. The dashboard writes them itself when an operator registers the app (temporary file in the same directory, mode 0600, renamed over the file). `AUTOCRAFT_LOGIN_APP=github-app` makes the server refuse to start without them; `AUTOCRAFT_GITHUB_APP_NAME` sets the suggested app name.
 - Other configuration (base URL, listen address, port, database path) comes from environment variables, documented in the README with no values specific to one machine.
 
 ### Hosting for now

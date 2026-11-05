@@ -1,6 +1,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import type { Role, User } from "../types.ts";
 import { randomToken, sha256hex, type TokenBox } from "./crypto.ts";
+import { updateUserTokens } from "./user-tokens.ts";
 import { REPO_NAME, WRITE_PERMISSIONS, type Provider, type Tokens } from "./provider.ts";
 
 const DAY = 86_400_000;
@@ -88,8 +89,8 @@ const EXPIRY_MARGIN = 60_000;
 
 // Returns a usable access token: null when the session can no longer get one
 // (and has been ended), undefined after a transient failure.
-async function accessToken(db: DatabaseSync, box: TokenBox, provider: Provider, idHash: string, rejected?: string): Promise<string | null | undefined> {
-  const row = db.prepare("SELECT token_enc FROM sessions WHERE id_hash = ?").get(idHash) as { token_enc: string | null } | undefined;
+async function accessToken(db: DatabaseSync, box: TokenBox, provider: Provider, idHash: string, mirror: boolean, rejected?: string): Promise<string | null | undefined> {
+  const row = db.prepare("SELECT token_enc, login FROM sessions WHERE id_hash = ?").get(idHash) as { token_enc: string | null; login: string } | undefined;
   if (!row) return null;
   const t = openTokens(box, row.token_enc, idHash);
   if (!t) return null;
@@ -112,6 +113,8 @@ async function accessToken(db: DatabaseSync, box: TokenBox, provider: Provider, 
       }
       if (!next) return end();
       db.prepare("UPDATE sessions SET token_enc = ? WHERE id_hash = ?").run(sealTokens(box, next, idHash), idHash);
+      // The old refresh token is dead now, so user_tokens must hold the new pair too.
+      if (mirror) updateUserTokens(db, box, row.login, next);
       return next.access;
     })().finally(() => refreshing.delete(idHash));
     refreshing.set(idHash, p);
@@ -121,7 +124,7 @@ async function accessToken(db: DatabaseSync, box: TokenBox, provider: Provider, 
 
 // `forWrite` is true on POST requests: a handler that calls canWrite there is
 // about to write, so the cached permission must be at most a minute old.
-export function makeUser(db: DatabaseSync, box: TokenBox, provider: Provider, s: Session, forWrite: boolean): User {
+export function makeUser(db: DatabaseSync, box: TokenBox, provider: Provider, s: Session, forWrite: boolean, mirrorUserTokens = false): User {
   const memo = new Map<string, Promise<string | null>>();
   // The user's permission on the repo from GitHub (cached), or null when it can't be told.
   const check = async (repo: string): Promise<string | null> => {
@@ -132,11 +135,11 @@ export function makeUser(db: DatabaseSync, box: TokenBox, provider: Provider, s:
     if (cached && Date.now() - Date.parse(cached.checked_at) < maxAge) return cached.permission;
     let permission: string | undefined;
     try {
-      let token = await accessToken(db, box, provider, s.idHash);
+      let token = await accessToken(db, box, provider, s.idHash, mirrorUserTokens);
       if (!token) return null;
       permission = await provider.permission(token, repo);
       if (permission === "unauthorized") {
-        token = await accessToken(db, box, provider, s.idHash, token);
+        token = await accessToken(db, box, provider, s.idHash, mirrorUserTokens, token);
         if (!token) return null;
         permission = await provider.permission(token, repo);
         if (permission === "unauthorized") return null;

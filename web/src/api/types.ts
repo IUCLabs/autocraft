@@ -849,6 +849,8 @@ export interface GithubAppStatus {
   /** False when the server has no secrets file to keep the keys in. */
   canRegister: boolean;
   defaultName: string;
+  /** The session's CSRF token, for the registration form. */
+  csrf: string;
   app: { id: string; slug: string; name: string | null; installUrl: string; transferUrl: string } | null;
   /** Each account the app is installed on, with the repos it covers. */
   installations: { owner: string; selection: "all" | "selected"; repos: string[] }[];

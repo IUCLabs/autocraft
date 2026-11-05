@@ -61,7 +61,8 @@ function RegisterForm({ s }: { s: GithubAppStatus }) {
   return (
     <>
       <Facts rows={[["Sign-in", LOGIN_MODE[s.loginMode]]]} className="mb-3" />
-      <form method="get" action="/auth/github-app/start" className="flex flex-wrap items-center gap-2">
+      <form method="post" action="/auth/github-app/start" className="flex flex-wrap items-center gap-2">
+        <input type="hidden" name="csrf" value={s.csrf} />
         <Input name="name" value={name} onChange={(e) => setName(e.target.value)} maxLength={34} aria-label="App name" className="w-full sm:w-52" />
         <Input name="org" value={org} onChange={(e) => setOrg(e.target.value)} placeholder="Organization (optional)" aria-label="Organization" className="w-full sm:w-52" />
         <Button type="submit" variant="primary" disabled={!s.canRegister || !name.trim()} className="max-md:h-11 max-md:w-full">

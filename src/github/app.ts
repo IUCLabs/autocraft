@@ -7,7 +7,7 @@
 // or an error message from here: `convertManifest` hands them straight to the
 // caller that writes them to the secrets file.
 import { createSign } from "node:crypto";
-import type { AppSecrets } from "../dash/server/config.ts";
+import type { AppOwner, AppSecrets } from "../dash/server/config.ts";
 
 export const GITHUB_API = "https://api.github.com";
 export const REPO_URL = "https://github.com/storytold/autocraft";
@@ -48,7 +48,13 @@ export function registrationUrl(state: string, org: string | null): string {
 }
 
 export const installUrl = (slug: string): string => `https://github.com/apps/${encodeURIComponent(slug)}/installations/new`;
-export const transferUrl = (slug: string): string => `https://github.com/settings/apps/${encodeURIComponent(slug)}/advanced`;
+
+/** The app's settings page on GitHub; organization-owned apps live under the organization. */
+export function settingsUrl(slug: string, owner: AppOwner | null): string {
+  const base = owner?.type === "Organization" ? `/organizations/${encodeURIComponent(owner.login)}/settings/apps` : "/settings/apps";
+  return `https://github.com${base}/${encodeURIComponent(slug)}`;
+}
+export const transferUrl = (slug: string, owner: AppOwner | null): string => `${settingsUrl(slug, owner)}/advanced`;
 
 const b64 = (s: string): string => Buffer.from(s).toString("base64url");
 
@@ -80,7 +86,10 @@ export async function convertManifest(code: string, deps: AppDeps = {}): Promise
   const id = typeof j.id === "number" ? String(j.id) : null;
   const slug = str(j.slug), privateKey = str(j.pem), clientId = str(j.client_id), clientSecret = str(j.client_secret);
   if (!id || !slug || !privateKey || !clientId || !clientSecret) throw new AppError("GitHub's answer to the conversion lacks the app's keys");
-  return { id, slug, privateKey, clientId, clientSecret, webhookSecret: str(j.webhook_secret), name: str(j.name) };
+  const o = j.owner as { login?: unknown; type?: unknown } | null | undefined;
+  const ownerLogin = str(o?.login);
+  const owner: AppOwner | null = ownerLogin && (o?.type === "User" || o?.type === "Organization") ? { login: ownerLogin, type: o.type } : null;
+  return { id, slug, privateKey, clientId, clientSecret, webhookSecret: str(j.webhook_secret), owner, name: str(j.name) };
 }
 
 export type Installation = { id: number; owner: string; selection: "all" | "selected" };

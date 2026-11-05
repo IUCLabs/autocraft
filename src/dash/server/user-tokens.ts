@@ -25,3 +25,9 @@ export function loadUserTokens(db: DatabaseSync, box: TokenBox, login: string): 
     return null;
   }
 }
+
+/** Stores the pair a refresh returned (GitHub invalidates the old refresh token), if the login has a row. */
+export function updateUserTokens(db: DatabaseSync, box: TokenBox, login: string, tokens: Tokens): void {
+  db.prepare("UPDATE user_tokens SET token_enc = ?, version = version + 1, updated_at = ?, status = 'ok' WHERE login = ?")
+    .run(box.seal(JSON.stringify(tokens), aad(login)), new Date().toISOString(), login);
+}

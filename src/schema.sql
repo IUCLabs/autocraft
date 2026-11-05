@@ -228,6 +228,7 @@ CREATE TABLE IF NOT EXISTS user_tokens (
 CREATE TABLE IF NOT EXISTS github_app_states (
   state TEXT PRIMARY KEY,
   login TEXT NOT NULL,
+  session_hash TEXT NOT NULL,         -- id_hash of the session that started the registration
   created_at TEXT NOT NULL
 );
 
