@@ -75,8 +75,8 @@ export const SOURCES: Source[] = [
   item("created_at", "kind IS NOT NULL", openedEvent),
   item("merged_at", "merged_at IS NOT NULL", mergedEvent),
   item("closed_at", "closed_at IS NOT NULL AND merged_at IS NULL", closedEvent),
-  plain<Parameters<typeof commentEvent>[0] & At>("github", "comments", "created_at", "repo, number, id, kind, author, created_at, review_state, commit_oid, LENGTH(COALESCE(body, '')) AS len", (r, c) => commentEvent(r, c.own), { only: (c) => (c.own.size ? { where: `lower(author) IN (${[...c.own].map(() => "?").join(",")})`, args: [...c.own] } : null) }),
-  plain<Parameters<typeof activityEvent>[0] & At>("github", "item_activity", "at", "repo, number, id, kind, at, actor, label, after_oid, before_oid", (r, c) => activityEvent(r, c.own), { only: (c) => (c.own.size ? { where: `lower(actor) IN (${[...c.own].map(() => "?").join(",")})`, args: [...c.own] } : null) }),
+  plain<Parameters<typeof commentEvent>[0] & At>("github", "comments", "created_at", "repo, number, id, kind, author, created_at, review_state, commit_oid, LENGTH(COALESCE(body, '')) AS len", (r, c) => commentEvent(r, c.own), { only: (c) => (c.own.size ? { where: `author IN (${[...c.own].map(() => "?").join(",")})`, args: [...c.own] } : null) }),
+  plain<Parameters<typeof activityEvent>[0] & At>("github", "item_activity", "at", "repo, number, id, kind, at, actor, label, after_oid, before_oid", (r, c) => activityEvent(r, c.own), { only: (c) => (c.own.size ? { where: `actor IN (${[...c.own].map(() => "?").join(",")})`, args: [...c.own] } : null) }),
   plain<Parameters<typeof stageEvent>[0] & At>("plan", "stages", "at", "repo, number, rowid, stage, at, actor, note", stageEvent),
   plain<Parameters<typeof planEvent>[0] & At>("plan", "plan_history", "at", "repo, number, id, head, old_state, new_state, wait, reasons, at", planEvent),
   // A job over many items is one row of the stream, at its newest item.

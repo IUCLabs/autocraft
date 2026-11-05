@@ -94,7 +94,7 @@ export type Snapshot = { seen: string; hash: string | null };
 const ownJson = (own: Set<string>): string => JSON.stringify(own.size ? [...own] : [""]);
 
 /** SQL for "written by someone other than us" (`c` is the comments table alias). */
-const NOT_OURS = `lower(COALESCE(c.author, '')) NOT IN (SELECT value FROM json_each(:own))
+const NOT_OURS = `COALESCE(c.author, '') NOT IN (SELECT value FROM json_each(:own))
   AND c.id NOT IN (SELECT review_id FROM review_posts WHERE repo = c.repo AND number = c.number)`;
 
 type MirrorRow = { id: string; kind: string; author: string | null; created_at: string | null; body: string | null; review_state: string | null; counted: number | null };
@@ -148,7 +148,7 @@ export async function liveDiscussion(q: Querier, db: DatabaseSync, repo: string,
   if (!pr) throw new Error(`${repo}#${number} not found on GitHub`);
   const own = ownLogins(db, repo);
   const posted = new Set((db.prepare("SELECT review_id FROM review_posts WHERE repo = ? AND number = ?").all(repo, number) as { review_id: string }[]).map((r) => r.review_id));
-  const mine = (a: Author | undefined, id?: string) => (!!a?.login && own.has(a.login.toLowerCase())) || (!!id && posted.has(id));
+  const mine = (a: Author | undefined, id?: string) => (!!a?.login && own.has(a.login)) || (!!id && posted.has(id));
   const prAuthor: string | null = pr.author?.login ?? null;
   const entries: DiscussionEntry[] = [];
   const counted: { id: string; body: string | null }[] = [];

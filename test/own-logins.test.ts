@@ -13,6 +13,6 @@ test("the app's bot is ours on app repos only; the box account stays ours on bot
 
   w.db.prepare("INSERT INTO main.settings (key, value) VALUES ('repo_identity:app', 'app')").run();
   assert.deepEqual(mine(), { 1: true, 2: true, 3: false });
-  assert.deepEqual([...ownLogins(w.db, "app", "My-App")].sort(), ["box", "my-app", "my-app[bot]"]);
+  assert.deepEqual([...ownLogins(w.db, "app", "my-app")].sort(), ["box", "my-app", "my-app[bot]"]);
   assert.deepEqual([...ownLogins(w.db, "app", null)], ["box"]);
 });

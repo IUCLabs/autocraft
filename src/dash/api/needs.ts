@@ -37,16 +37,16 @@ const SOURCES: string[] = [
   // A GitHub comment or review that names the pipeline login (flagged when written, so an index finds them); handled once the
   // pipeline login posted on the item afterwards. Nothing without a pipeline login.
   `SELECT 'comment:' || c.id, 'github', c.author, c.created_at, c.body, c.repo, c.number, NULL, NULL, c.id,
-     EXISTS (SELECT 1 FROM comments a WHERE a.repo = c.repo AND a.number = c.number AND lower(a.author) IN (SELECT value FROM json_each(:owns)) AND a.created_at > c.created_at)
+     EXISTS (SELECT 1 FROM comments a WHERE a.repo = c.repo AND a.number = c.number AND a.author IN (SELECT value FROM json_each(:owns)) AND a.created_at > c.created_at)
    FROM comments c
-   WHERE :own <> '' AND c.mentions_pipeline = 1 AND c.created_at >= :since AND c.created_at <= :cur AND c.author IS NOT NULL AND lower(c.author) NOT IN (SELECT value FROM json_each(:owns))`,
+   WHERE :own <> '' AND c.mentions_pipeline = 1 AND c.created_at >= :since AND c.created_at <= :cur AND c.author IS NOT NULL AND c.author NOT IN (SELECT value FROM json_each(:owns))`,
   // The comment right after one of AutoCraft's own (a comment the audit log recorded with its URL and text, or the review we posted (audit `review-post`); the account's older manual comments do not count), on an item it commented on; bots do not count as replies.
   `SELECT 'comment:' || c.id, 'github', c.author, c.created_at, c.body, c.repo, c.number, NULL, NULL, c.id,
-     EXISTS (SELECT 1 FROM comments a WHERE a.repo = c.repo AND a.number = c.number AND lower(a.author) IN (SELECT value FROM json_each(:owns)) AND a.created_at > c.created_at)
-   FROM (SELECT DISTINCT repo, number FROM comments WHERE lower(author) IN (SELECT value FROM json_each(:owns))) o JOIN comments c ON c.repo = o.repo AND c.number = o.number
-   WHERE :own <> '' AND c.mentions_pipeline = 0 AND c.created_at >= :since AND c.created_at <= :cur AND c.author IS NOT NULL AND lower(c.author) NOT IN (SELECT value FROM json_each(:owns)) AND c.author NOT LIKE '%[bot]' AND lower(c.author) NOT IN (SELECT value FROM json_each(:bots)) AND TRIM(COALESCE(c.body, '')) <> ''
+     EXISTS (SELECT 1 FROM comments a WHERE a.repo = c.repo AND a.number = c.number AND a.author IN (SELECT value FROM json_each(:owns)) AND a.created_at > c.created_at)
+   FROM (SELECT DISTINCT repo, number FROM comments WHERE author IN (SELECT value FROM json_each(:owns))) o JOIN comments c ON c.repo = o.repo AND c.number = o.number
+   WHERE :own <> '' AND c.mentions_pipeline = 0 AND c.created_at >= :since AND c.created_at <= :cur AND c.author IS NOT NULL AND c.author NOT IN (SELECT value FROM json_each(:owns)) AND c.author NOT LIKE '%[bot]' AND lower(c.author) NOT IN (SELECT value FROM json_each(:bots)) AND TRIM(COALESCE(c.body, '')) <> ''
      AND EXISTS (SELECT 1 FROM (SELECT p.id, p.author, p.body FROM comments p WHERE p.repo = c.repo AND p.number = c.number AND p.created_at < c.created_at ORDER BY p.created_at DESC LIMIT 1) q
-       WHERE lower(q.author) IN (SELECT value FROM json_each(:owns)) AND EXISTS (SELECT 1 FROM audit a WHERE a.target = c.repo || '#' || c.number
+       WHERE q.author IN (SELECT value FROM json_each(:owns)) AND EXISTS (SELECT 1 FROM audit a WHERE a.target = c.repo || '#' || c.number
          AND ((json_extract(a.details, '$.url') IS NOT NULL AND TRIM(REPLACE(json_extract(a.details, '$.text'), char(13), ''), ' ' || char(10) || char(9)) = TRIM(REPLACE(q.body, char(13), ''), ' ' || char(10) || char(9)))
            OR (a.action = 'review-post' AND json_extract(a.details, '$.review') = q.id))))`,
 ];

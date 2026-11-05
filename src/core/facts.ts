@@ -434,7 +434,7 @@ export function ownFixPrs(db: DatabaseSync, repo?: string, slug?: string | null)
     if (!author) return false;
     let set = logins.get(r);
     if (!set) logins.set(r, (set = ownLogins(db, r, slug)));
-    return set.has(author.toLowerCase());
+    return set.has(author);
   };
   const login = (db.prepare("SELECT value FROM main.settings WHERE key = ?").get(PIPELINE_LOGIN_KEY) as { value: string } | undefined)?.value ?? null;
   const prs = new Set<string>();

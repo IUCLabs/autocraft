@@ -131,14 +131,14 @@ export function appSlug(): string | null {
 export function ownLogins(db: DatabaseSync, repo: string, slug: string | null = appSlug()): Set<string> {
   const out = new Set<string>();
   const box = (db.prepare("SELECT value FROM main.settings WHERE key = 'pipeline_login'").get() as { value: string } | undefined)?.value;
-  if (box) out.add(box.toLowerCase());
-  if (slug && repoIdentity(db, repo) === "app") { out.add(slug.toLowerCase()); out.add(`${slug.toLowerCase()}[bot]`); }
+  if (box) out.add(box);
+  if (slug && repoIdentity(db, repo) === "app") { out.add(slug); out.add(`${slug}[bot]`); }
   return out;
 }
 
 /** Every login that is ours on any repo (for views that span repos). */
 export function allOwnLogins(db: DatabaseSync, slug: string | null = appSlug()): Set<string> {
   const out = ownLogins(db, "", null);
-  if (slug) { out.add(slug.toLowerCase()); out.add(`${slug.toLowerCase()}[bot]`); }
+  if (slug) { out.add(slug); out.add(`${slug}[bot]`); }
   return out;
 }
