@@ -50,7 +50,7 @@ function finding(state: string, extra: Record<string, string | number | null> = 
   const at = "2026-11-05T00:00:00Z";
   db.prepare(`INSERT INTO security_findings (repo, number, scan_id, area, title, severity, urgent, state, refs, reach, impact, fingerprint, fix_commit, fix_title, fix_summary, fix_branch, fix_files, created_at, updated_at)
     VALUES ('photocraft', ?, 1, 'psd', 'Layer length trusted', 'high', 0, ?, '[{"path":"crates/psd/src/layer.rs","line":118,"claim":""}]', 'open file', 'writes outside', ?, ?, 'Check layer length before copying', 'The reader compares the length with the remaining data and returns an error.', ?, ?, ?, ?)`)
-    .run(n, state, `fp${n}`, SHA, `fix-check-layer-length-${n}`, JSON.stringify(["crates/psd/src/layer.rs", "crates/psd/tests/autocraft_regression.rs"]), at, at);
+    .run(n, state, `fp${n}`, SHA, `fix-check-layer-length-${n}`, JSON.stringify(["crates/psd/src/layer.rs", "crates/psd/tests/autocraft_security_1.rs"]), at, at);
   for (const [k, v] of Object.entries(extra)) db.prepare(`UPDATE security_findings SET ${k} = ? WHERE repo = 'photocraft' AND number = ?`).run(v, n);
   return n;
 }

@@ -22,7 +22,7 @@ process.env.AUTOCRAFT_DIFF_CACHE = join(dir, "diffs");
 const T0 = "2026-01-01T00:00:00Z";
 const LOGIN = "pipeline-bot";
 const LIB = "crates/app/src/lib.rs";
-const TEST = "crates/app/tests/autocraft_regression.rs";
+const TEST = "crates/app/tests/autocraft_regression_5.rs";
 
 function git(cwd: string, ...args: string[]): string {
   const r = spawnSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...args], { cwd, encoding: "utf8" });
@@ -86,7 +86,7 @@ describe("approval", () => {
 });
 
 describe("patch validation", () => {
-  const ok = (text: string) => validateFixPatch(text, [LIB], TEST, "crates/app");
+  const ok = (text: string) => validateFixPatch(text, [LIB], TEST, "crates/app", "autocraft_regression_5");
   const reason = (text: string) => (ok(text) as { reason: string }).reason;
 
   test("accepts the fix and the test file, also inside a fence, and builds a test-only patch", () => {

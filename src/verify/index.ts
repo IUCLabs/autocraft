@@ -24,7 +24,7 @@ import { selectCandidates, unavailableCandidates } from "./select.ts";
 import { type VerifyPlan } from "./plan.ts";
 import { repoChecksKnown, repoHasNoCi } from "../merge/no-ci.ts";
 import { queueTasks, queueWarmBuild } from "./tasks.ts";
-import type { Crate, VerifyPlanInput } from "./types.ts";
+import { regressionName, type Crate, type VerifyPlanInput } from "./types.ts";
 import { jobItem } from "../runner/job-items.ts";
 import { slugOf } from "../owners.ts";
 
@@ -203,7 +203,7 @@ export async function runVerify(db: DatabaseSync, params: VerifyParams, log: (li
 
 function planInput(c: VerifyCandidate, crates: Crate[], cd: ReturnType<typeof codeDiff>, ci: boolean): VerifyPlanInput {
   return {
-    ref: refOf(c), title: c.title, body: c.body, label: c.label, ci, review: c.review, crates,
+    ref: refOf(c), title: c.title, body: c.body, test_file_name: `${regressionName(c.number)}.rs`, label: c.label, ci, review: c.review, crates,
     files: cd.files, tests_omitted: cd.testsOmitted, diff: cd.text,
   };
 }

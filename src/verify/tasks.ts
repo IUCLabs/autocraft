@@ -21,7 +21,7 @@ export function tasksFor(plan: Planned, c: { repo: string; number: number; head:
     return [{ ...common, headSha: c.head, baseSha: c.base, plan: steps }];
   }
   const steps = rustPlan({ cargoArgs: ["-p", plan.crate] }).map((s): TaskStep =>
-    s.name === "test" ? { ...s, cmd: [...s.cmd, "--test", "autocraft_regression"] } : s);
+    s.name === "test" ? { ...s, cmd: [...s.cmd, "--test", plan.test] } : s);
   return [
     { ...common, headSha: c.head, baseSha: c.base, plan: steps, patch: plan.patch },
     { ...common, headSha: c.base, baseSha: c.base, plan: steps, patch: plan.patch },

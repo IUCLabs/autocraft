@@ -26,7 +26,7 @@ import { regressionPath } from "../verify/plan.ts";
 import { baseScopeRepos } from "../pilot.ts";
 import { cloneTask, queueWarmBuild } from "../verify/tasks.ts";
 import { outcomeOf } from "../verify/results.ts";
-import type { Crate } from "../verify/types.ts";
+import { securityTestName, type Crate } from "../verify/types.ts";
 import {
   FIX_RUN_BASE, FIX_ROUNDS, fixBranch, giveaway, parseFixReply, patchGiveaway, quietProblem, securityRepo,
   type SecurityFixCheckInput, type SecurityFixInput,
@@ -40,7 +40,7 @@ export const fixRef = (repo: string, n: number): string => `refs/autocraft/secur
 const oneLine = (s: string, max = 300): string => s.replace(/\s+/g, " ").trim().slice(0, max);
 const ASK_STEPS = { fix: "security.fix", review: "security.fixcheck" } as const;
 
-export type BuildRequest = { repo: string; sha: string; crate: string; patch: string; testPatch: string };
+export type BuildRequest = { repo: string; sha: string; crate: string; test: string; patch: string; testPatch: string };
 export type BuildVerdict = { ok: true; formatDiff: string | null } | { ok: false; reason: string };
 export type FixDeps = {
   exec: Exec;
@@ -68,7 +68,7 @@ function failureTail(db: DatabaseSync, taskId: number, step: string): string {
 export async function buildInWorker(db: DatabaseSync, r: BuildRequest, cancelled: () => boolean, log: (l: string) => void): Promise<BuildVerdict> {
   // Tasks need the real repo to fetch it. Their step name says nothing about what the patch is for, and they carry no item number.
   const queue = (): number[] => {
-    const ids = tasksFor({ repo: r.repo, number: null, main_sha: r.sha, crate: r.crate }, r.patch, r.testPatch, "fix-check").map((t: NewTask) => createTask(db, t));
+    const ids = tasksFor({ repo: r.repo, number: null, main_sha: r.sha, crate: r.crate, test: r.test }, r.patch, r.testPatch, "fix-check").map((t: NewTask) => createTask(db, t));
     // The warm build is a pipeline task: it would never be claimed for a repo outside the pipeline scope.
     if (baseScopeRepos(db).has(r.repo)) queueWarmBuild(db, r.repo, r.sha);
     return ids;
@@ -161,7 +161,8 @@ export async function runFix(db: DatabaseSync, repo: string, n: number, d: FixDe
     if (!crate || !/^[A-Za-z0-9_./-]+$/.test(crate.dir) || crate.dir.split("/").includes("..")) return giveUp(db, repo, n, "the fix step covers Rust crates only, and the finding is not in one", log);
     const listed = (await git.must(["ls-tree", "-r", "--name-only", sha, "--", crate.dir === "." ? "" : crate.dir].filter((x) => x !== ""))).split("\n").filter(Boolean);
     const allowed = listed.filter((p) => editable(p));
-    const testPath = regressionPath(crate.dir);
+    const testName = securityTestName(n);
+    const testPath = regressionPath(crate.dir, testName);
     const verification = row.verification ? JSON.parse(row.verification) as { proposedTest?: string | null } : null;
     const checkout = (await d.checkout(repo, branch, sha)) ?? undefined;
     const base = { repo: securityRepo(repo), number: FIX_RUN_BASE + n, project: repo, commit: sha, ...(checkout && { repo_dir: REPO_PATH }) };
@@ -177,7 +178,7 @@ export async function runFix(db: DatabaseSync, repo: string, n: number, d: FixDe
         log(`${repo} finding ${n}: round ${round} failed: ${oneLine(why, 160)}`);
       };
       const input: SecurityFixInput = { ...base, finding, crate: { name: crate.name, dir: crate.dir }, test_path: testPath, proposed_test: verification?.proposedTest ?? null, ...(previous && { previous }) };
-      const tool = new CheckTool({ db, step: "fix-check", repo, number: null, recordRepo: securityRepo(repo), head: sha, base: sha, applies: applyCheck(git, d.root, sha, (p) => refusal(validateFixPatch(p, allowed, testPath, crate.dir))) });
+      const tool = new CheckTool({ db, step: "fix-check", repo, number: null, recordRepo: securityRepo(repo), head: sha, base: sha, applies: applyCheck(git, d.root, sha, (p) => refusal(validateFixPatch(p, allowed, testPath, crate.dir, testName))) });
       const started = new Date().toISOString();
       let reply: Awaited<ReturnType<FixDeps["ask"]>>;
       try { reply = await d.ask(ASK_STEPS.fix, input, { checkout, tool, agent: `security-fix-${n}`, run }); } finally { tool.close(); }
@@ -187,13 +188,13 @@ export async function runFix(db: DatabaseSync, repo: string, n: number, d: FixDe
       if (!parsed) { failRound("the reply did not follow the form: TITLE line, SUMMARY line, the marker line and the diff"); continue; }
       const quiet = quietProblem(parsed.title, parsed.summary) ?? (patchGiveaway(parsed.patch) ? `the diff adds the word "${patchGiveaway(parsed.patch)}"; name things for what the code does` : null);
       if (quiet) { failRound(quiet, parsed.patch); continue; }
-      const v = validateFixPatch(parsed.patch, allowed, testPath, crate.dir);
+      const v = validateFixPatch(parsed.patch, allowed, testPath, crate.dir, testName);
       if (!v.ok) { failRound(v.reason, parsed.patch); continue; }
       const scratch = mkdtempSync(join(d.root, ".index-"));
       let applied;
       try { applied = await git.applyToTree(sha, v.patch, join(scratch, "index")); } finally { rmSync(scratch, { recursive: true, force: true }); }
       if (!applied.ok) { failRound(applied.reason, v.patch); continue; }
-      const built = await d.build(db, { repo, sha, crate: crate.name, patch: v.patch, testPatch: v.testPatch }, d.cancelled, log);
+      const built = await d.build(db, { repo, sha, crate: crate.name, test: testName, patch: v.patch, testPatch: v.testPatch }, d.cancelled, log);
       if (!built.ok) { failRound(built.reason, v.patch); continue; }
       let patch = v.patch, tree = applied.tree;
       // The formatter's whitespace-only changes ride in the same commit.

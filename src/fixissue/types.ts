@@ -1,7 +1,7 @@
 // Shared by the fix-issue prompts (src/prompts, which imports no Node modules) and the Fix stage.
-import { MAX_TEST_LINES, REGRESSION_FILE, type Crate } from "../verify/types.ts";
+import { MAX_TEST_LINES, regressionName, type Crate } from "../verify/types.ts";
 
-export { MAX_TEST_LINES, REGRESSION_FILE, type Crate };
+export { MAX_TEST_LINES, regressionName, type Crate };
 
 /** Files the triage may ask to read, and the largest source path list the model is shown. */
 export const MAX_FILES = 8;
@@ -41,6 +41,6 @@ export const SAMPLE_TRIAGE: TriageInput[] = [{
 export const SAMPLE_PATCH: PatchInput[] = [{
   ref: "photocraft#1279", title: "Crash when opening a 16-bit PNG with alpha",
   body: "Opening a 16-bit RGBA PNG panics in the decoder: index out of bounds in decode_rows.", comments: [],
-  crate: { name: "codecs", dir: "crates/codecs" }, test_path: "crates/codecs/tests/autocraft_regression.rs",
+  crate: { name: "codecs", dir: "crates/codecs" }, test_path: "crates/codecs/tests/autocraft_regression_1279.rs",
   files: [{ path: "crates/codecs/src/png.rs", content: "fn stride(width: usize, channels: usize) -> usize {\n    width * channels\n}\n" }],
 }];
