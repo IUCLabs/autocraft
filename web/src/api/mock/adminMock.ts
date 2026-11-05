@@ -397,7 +397,7 @@ export function createAdminMock(me: User, changed: () => void): AdminApi {
         const link = { id: `l${setupLinks.length + 10}`, org, createdBy: me.login, createdAt: nowIso(), expiresAt: new Date(NOW + 7 * D).toISOString() };
         setupLinks.unshift(link);
         log("github-app-link-create", org, { id: link.id });
-        return wait({ link, path: "/auth/setup/mock-one-time-secret-9f2c4b7a1d" });
+        return wait({ link, url: "https://autocraft.example/auth/setup/mock-one-time-secret-9f2c4b7a1d" });
       },
       async revokeLink(id) {
         requireOperator("revoke setup links");

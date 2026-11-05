@@ -18,7 +18,7 @@ import { LiveHub, type LiveOptions } from "./live.ts";
 import { auditLoginMode, finishRegistration, githubAppRoutes, startRegistration } from "./github-app.ts";
 import { OrgSetup } from "./github-setup.ts";
 import { saveUserTokens } from "./user-tokens.ts";
-import { FakeProvider, providerFor, type GithubUser, type Provider, type Tokens } from "./provider.ts";
+import { FakeProvider, oauthProviderFor, providerFor, type GithubUser, type Provider, type Tokens } from "./provider.ts";
 import { createSession, deleteSession, loadSession, makeUser, pruneExpired, SESSION_TTL, type Session } from "./sessions.ts";
 import { esc, HttpError, parseCookies, plainPage, RateLimiter, safeReturnTo } from "./util.ts";
 
@@ -136,6 +136,8 @@ function cookie(name: string, value: string, maxAgeSec: number): string {
 export function createApp(opts: AppOptions & { routes: Route[] }) {
   const { config, db } = opts;
   const provider = opts.provider ?? providerFor(config);
+  // The org setup link signs in with the OAuth App even when dashboard sign-in uses the GitHub App.
+  const setupProvider = opts.provider ?? (config.devAuth ? provider : oauthProviderFor(config));
   const box = new TokenBox(config.secrets.sessionKey);
   const appDeps = { apiBase: opts.githubApi };
   const routes = compile([...opts.routes, ...githubAppRoutes(config, appDeps)]);
@@ -274,19 +276,19 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
     live.add(res, () => loadSession(db, cookieId) !== null);
   }
 
-  function startOAuth(returnTo: string, selectAccount: boolean, scopes?: string[]): { r: Res; cookies: string[] } {
+  function startOAuth(returnTo: string, selectAccount: boolean, scopes?: string[], p: Provider = provider): { r: Res; cookies: string[] } {
     const state = randomToken(24), verifier = randomToken(48);
     db.prepare("INSERT INTO oauth_states (state, verifier, return_to, created_at) VALUES (?, ?, ?, ?)")
       .run(state, verifier, returnTo, new Date().toISOString());
     return {
-      r: { redirect: provider.authorizeUrl(state, pkceChallenge(verifier), callbackUrl, selectAccount, scopes) },
+      r: { redirect: p.authorizeUrl(state, pkceChallenge(verifier), callbackUrl, selectAccount, scopes) },
       cookies: [cookie(STATE_COOKIE, state, 600)],
     };
   }
 
   const setup = new OrgSetup({
-    db, config, deps: appDeps,
-    startOAuth: (returnTo, scopes) => startOAuth(returnTo, true, scopes),
+    db, config, deps: appDeps, provider: setupProvider,
+    startOAuth: (returnTo, scopes) => startOAuth(returnTo, true, scopes, setupProvider),
     sameOrigin: (req) => sameOrigin(req),
     readForm: readBody,
   });
@@ -296,7 +298,7 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
     const path = url.pathname;
     if (path.startsWith("/auth/setup") || path === "/auth/github-app/setup" || (path === "/auth/github-app/callback" && setup.ownsState(url.searchParams.get("state") ?? ""))) {
       if (!signinLimit.allow(ip)) return { r: errorPage(nonce, 429, "Too many attempts", "Wait a few minutes and try again.") };
-      const out = await setup.handle(req, url, nonce, cookies);
+      const out = await setup.handle(req, url, nonce, cookies, loadSession(db, cookies.get(SESSION_COOKIE))?.role === "operator");
       if (out) return out;
     }
     if (req.method === "GET" && path === "/auth/signin") {
@@ -321,8 +323,9 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
       }
       let tokens: Tokens | null, who: GithubUser | null;
       try {
-        tokens = await provider.exchange(code, row.verifier, callbackUrl);
-        who = tokens ? await provider.identity(tokens.access) : null;
+        const p = row.return_to?.startsWith("setup:") ? setupProvider : provider;
+        tokens = await p.exchange(code, row.verifier, callbackUrl);
+        who = tokens ? await p.identity(tokens.access) : null;
       } catch (e) {
         console.error(`sign-in: ${(e as Error).message}`);
         return { r: errorPage(nonce, 502, "Sign-in failed", "GitHub did not answer. Try again in a minute."), cookies: clear };

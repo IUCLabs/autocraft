@@ -7,15 +7,15 @@ import type { IncomingMessage } from "node:http";
 import type { DatabaseSync } from "node:sqlite";
 import type { GithubSetupLink } from "../../../web/src/api/types.ts";
 import { audit } from "../audit.ts";
-import { AppError, appManifest, installUrl, registrationUrl, settingsUrl, type AppDeps } from "../../github/app.ts";
-import { appManagerRole, isOrgOwner } from "../../github/org-setup.ts";
+import { AppError, appManifest, installationAccount, installUrl, registrationUrl, settingsUrl, type AppDeps } from "../../github/app.ts";
+import { appManagerRole, orgOwnership } from "../../github/org-setup.ts";
 import { grantOrgRole } from "../../github/write.ts";
 import { envVar } from "../../env.ts";
 import type { Res } from "../types.ts";
 import type { Config } from "./config.ts";
 import { randomToken, safeEqual, sha256hex } from "./crypto.ts";
 import { convertAndStore, DEFAULT_APP_NAME, publicBase } from "./github-app.ts";
-import type { GithubUser, Tokens } from "./provider.ts";
+import type { GithubUser, Provider, Tokens } from "./provider.ts";
 import { esc, plainPage } from "./util.ts";
 
 export const SETUP_COOKIE = "__Host-craft_setup";
@@ -60,7 +60,9 @@ const openLink = (db: DatabaseSync, where: "id" | "hash", value: string): LinkRo
 // ---- The visitor's flow -----------------------------------------------------
 
 type Flow = {
-  id: string; linkId: string; org: string; operator: string; manager: boolean;
+  id: string;                         // the cookie's value
+  key: string;                        // what the OAuth state row carries instead of the cookie value
+  linkId: string; org: string; operator: string; manager: boolean;
   login: string | null;               // set once GitHub confirmed the visitor owns the org
   token: string | null;               // memory only; kept just until the app-manager step ran
   manage: "done" | "fallback" | null;
@@ -70,15 +72,21 @@ type Reply = { r: Res; cookies?: string[] };
 
 export type SetupDeps = {
   db: DatabaseSync; config: Config; deps: AppDeps;
-  /** Starts the dashboard's OAuth sign-in; the callback returns here with `returnTo`. */
+  /** The OAuth App's provider: it issues the visitor's token and revokes it again. */
+  provider: Provider;
+  /** Starts the OAuth sign-in; the callback returns here with `returnTo`. */
   startOAuth: (returnTo: string, scopes: string[]) => Reply;
   sameOrigin: (req: IncomingMessage) => boolean;
   readForm: (req: IncomingMessage) => Promise<URLSearchParams>;
 };
 
+/** Statuses of the role calls that mean "do it on GitHub's settings page instead". */
+const FALLBACK_STATUS = [401, 403, 404, 422];
+
 export class OrgSetup {
   #d: SetupDeps;
   #flows = new Map<string, Flow>();
+  #byKey = new Map<string, Flow>();
   constructor(d: SetupDeps) {
     this.#d = d;
   }
@@ -89,7 +97,19 @@ export class OrgSetup {
     return !!row && /^(link|install):/.test(row.session_hash);
   }
 
-  async handle(req: IncomingMessage, url: URL, nonce: string, cookies: Map<string, string>): Promise<Reply | null> {
+  #revoke(token: string): void {
+    void this.#d.provider.revoke(token).catch(() => {});
+  }
+
+  /** Forgets a flow and revokes its token if it still holds one. */
+  #drop(flow: Flow): void {
+    this.#flows.delete(flow.id);
+    this.#byKey.delete(flow.key);
+    if (flow.token) this.#revoke(flow.token);
+    flow.token = null;
+  }
+
+  async handle(req: IncomingMessage, url: URL, nonce: string, cookies: Map<string, string>, operatorSession: boolean): Promise<Reply | null> {
     const path = url.pathname, method = req.method;
     const seg = path.split("/");     // "", "auth", "setup", ...
     if (method === "GET" && path === "/auth/setup") return { r: this.#page(req, nonce, cookies) };
@@ -97,7 +117,7 @@ export class OrgSetup {
     if (method === "GET" && seg.length === 4 && seg[2] === "setup") return { r: this.#landing(seg[3]!, nonce) };
     if (method === "POST" && seg.length === 5 && seg[2] === "setup" && seg[4] === "signin") return await this.#signin(req, seg[3]!, nonce);
     if (method === "GET" && path === "/auth/github-app/callback") return { r: await this.#registered(url, nonce, cookies) };
-    if (method === "GET" && path === "/auth/github-app/setup") return { r: this.#installed(url, nonce) };
+    if (method === "GET" && path === "/auth/github-app/setup") return await this.#installed(url, nonce, operatorSession);
     return null;
   }
 
@@ -117,31 +137,41 @@ export class OrgSetup {
     const form = await this.#d.readForm(req);
     const link = openLink(this.#d.db, "hash", sha256hex(secret));
     if (!link) return { r: gone(nonce) };
-    const flow: Flow = { id: randomToken(24), linkId: link.id, org: link.org, operator: link.created_by, manager: form.get("manager") === "1", login: null, token: null, manage: null };
-    for (const [id, f] of this.#flows) if (f.linkId === link.id) this.#flows.delete(id);
+    const flow: Flow = { id: randomToken(24), key: randomToken(16), linkId: link.id, org: link.org, operator: link.created_by, manager: form.get("manager") === "1", login: null, token: null, manage: null };
     this.#flows.set(flow.id, flow);
-    setTimeout(() => this.#flows.delete(flow.id), FLOW_TTL_MS).unref();
-    const out = this.#d.startOAuth(OAUTH_PREFIX + flow.id, flow.manager ? ["read:org", "admin:org"] : ["read:org"]);
+    this.#byKey.set(flow.key, flow);
+    setTimeout(() => this.#drop(flow), FLOW_TTL_MS).unref();
+    const out = this.#d.startOAuth(OAUTH_PREFIX + flow.key, flow.manager ? ["read:org", "admin:org"] : ["read:org"]);
     return { r: out.r, cookies: [...(out.cookies ?? []), `${SETUP_COOKIE}=${flow.id}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${FLOW_TTL_MS / 1000}`] };
   }
 
-  /** The dashboard's OAuth callback for a setup flow: the visitor must own the org. The token is not kept unless the manager step needs it. */
+  /** The OAuth callback for a setup flow: the visitor must own the org. The token is not kept unless the manager step needs it. */
   async signedIn(returnTo: string, tokens: Tokens, who: GithubUser, nonce: string, cookies: Map<string, string>): Promise<Reply> {
-    const flow = this.#flows.get(returnTo.slice(OAUTH_PREFIX.length));
-    if (!flow || !safeEqual(cookies.get(SETUP_COOKIE) ?? "", flow.id) || !openLink(this.#d.db, "id", flow.linkId)) return { r: gone(nonce) };
-    let owner: boolean;
+    const flow = this.#byKey.get(returnTo.slice(OAUTH_PREFIX.length));
+    if (!flow || !safeEqual(cookies.get(SETUP_COOKIE) ?? "", flow.id) || !openLink(this.#d.db, "id", flow.linkId)) {
+      this.#revoke(tokens.access);
+      return { r: gone(nonce) };
+    }
+    let ownership: Awaited<ReturnType<typeof orgOwnership>>;
     try {
-      owner = await isOrgOwner(tokens.access, flow.org, this.#d.deps);
+      ownership = await orgOwnership(tokens.access, flow.org, this.#d.deps);
     } catch (e) {
       console.error(`org setup: ${e instanceof AppError ? e.message : "membership check failed"}`);
+      this.#revoke(tokens.access);
       return { r: message(nonce, 502, "GitHub did not answer. Open the link again in a minute.") };
     }
-    if (!owner) {
-      this.#flows.delete(flow.id);
-      return { r: message(nonce, 403, `${who.login} is not an owner of ${flow.org} on GitHub.`) };
+    if (ownership !== "owner") {
+      this.#revoke(tokens.access);
+      this.#drop(flow);
+      return { r: ownership === "restricted"
+        ? message(nonce, 403, `Grant the app access to ${flow.org} on GitHub's sign-in screen, then open the link again.`)
+        : message(nonce, 403, `${who.login} is not an owner of ${flow.org} on GitHub.`) };
     }
+    // Only a verified owner replaces the link's earlier flows, so a stranger with the link cannot cut an owner's flow short.
+    for (const f of [...this.#flows.values()]) if (f.linkId === flow.linkId && f !== flow) this.#drop(f);
     flow.login = who.login;
-    flow.token = flow.manager ? tokens.access : null;
+    if (flow.manager) flow.token = tokens.access;
+    else this.#revoke(tokens.access);
     return { r: { redirect: "/auth/setup" } };
   }
 
@@ -150,10 +180,17 @@ export class OrgSetup {
     const flow = this.#flows.get(id);
     if (!flow || !flow.login || !safeEqual(id, flow.id)) return null;
     if (!openLink(this.#d.db, "id", flow.linkId)) {
-      this.#flows.delete(id);
+      this.#drop(flow);
       return null;
     }
     return flow;
+  }
+
+  /** Why the app in the secrets file cannot serve this flow's org, or null when it can. */
+  #foreignApp(flow: Flow): string | null {
+    const app = this.#d.config.secrets.app;
+    if (!app || app.owner?.login.toLowerCase() === flow.org.toLowerCase()) return null;
+    return `AutoCraft's app belongs to ${app.owner?.login ?? "another account"}; transfer it or ask the operator.`;
   }
 
   #newState(kind: "link" | "install", flow: Flow): string {
@@ -165,8 +202,10 @@ export class OrgSetup {
 
   #page(req: IncomingMessage, nonce: string, cookies: Map<string, string>): Res {
     const flow = this.#flowOf(cookies);
-    if (!flow) return gone(nonce);
+    if (!flow) return reopen(nonce);
     const { config } = this.#d, app = config.secrets.app;
+    const foreign = this.#foreignApp(flow);
+    if (foreign) return message(nonce, 409, foreign);
     const steps: string[] = [];
     const done = (label: string) => steps.push(`<li class="done">&#10003; ${esc(label)}</li>`);
     const later = (label: string) => steps.push(`<li class="later">${esc(label)}</li>`);
@@ -193,25 +232,28 @@ export class OrgSetup {
   async #manager(req: IncomingMessage, nonce: string, cookies: Map<string, string>): Promise<Reply> {
     if (!this.#d.sameOrigin(req)) return { r: message(nonce, 403, "This form was sent from another site.") };
     const flow = this.#flowOf(cookies);
-    if (!flow || !flow.manager || !flow.token) return { r: gone(nonce) };
+    if (!flow) return { r: reopen(nonce) };
+    const foreign = this.#foreignApp(flow);
+    if (foreign) return { r: message(nonce, 409, foreign) };
+    if (!flow.manager || !flow.token) return { r: { redirect: "/auth/setup" } };
     const token = flow.token;
     try {
       const role = await appManagerRole(token, flow.org, this.#d.deps);
       if (!role) flow.manage = "fallback";
       else {
-        try {
-          await grantOrgRole({ db: this.#d.db, login: flow.login! }, { org: flow.org, user: flow.operator, role, token, apiBase: this.#d.deps.apiBase });
-          flow.manage = "done";
-        } catch (e) {
-          if (!(e instanceof AppError) || ![403, 404, 422].includes(e.status)) throw e;
-          flow.manage = "fallback";
-        }
+        await grantOrgRole({ db: this.#d.db, login: flow.login! }, { org: flow.org, user: flow.operator, role, token, apiBase: this.#d.deps.apiBase });
+        flow.manage = "done";
       }
     } catch (e) {
-      console.error(`org setup: ${e instanceof AppError ? e.message : "app manager step failed"}`);
-      return { r: message(nonce, 502, "GitHub did not answer. Go back and try again.", "/auth/setup") };
+      // 401, 403, 404 and 422 mean the org's plan, roles or the token's scope do not allow it: the settings page is the way. Anything else may pass on retry.
+      if (!(e instanceof AppError) || !FALLBACK_STATUS.includes(e.status)) {
+        console.error(`org setup: ${e instanceof AppError ? e.message : "app manager step failed"}`);
+        return { r: message(nonce, 502, "GitHub did not answer. Go back and try again.", "/auth/setup") };
+      }
+      flow.manage = "fallback";
     }
     flow.token = null;
+    this.#revoke(token);
     return { r: { redirect: "/auth/setup" } };
   }
 
@@ -225,22 +267,36 @@ export class OrgSetup {
     const row = this.#d.db.prepare("SELECT login, session_hash, created_at FROM github_app_states WHERE state = ?").get(state) as { login: string; session_hash: string; created_at: string } | undefined;
     if (!flow || !row || !code || row.session_hash !== `link:${flow.linkId}` || row.login !== flow.login || Date.now() - Date.parse(row.created_at) > FLOW_TTL_MS) return message(nonce, 400, stale);
     return await convertAndStore(this.#d.db, this.#d.config, this.#d.deps, code, state, nonce,
-      { login: flow.login!, back: "/auth/setup", backLabel: "Back", redirect: "/auth/setup", details: { org: flow.org, via: "setup-link" } }, stale);
+      { login: flow.login!, back: "/auth/setup", backLabel: "Back", redirect: "/auth/setup", org: flow.org, details: { org: flow.org, via: "setup-link" } }, stale);
   }
 
-  /** The app's setup URL: GitHub returns here with the installation id. */
-  #installed(url: URL, nonce: string): Res {
-    const { db } = this.#d;
+  /** The app's setup URL: GitHub returns here with the installation id, from a setup link or from an install started elsewhere. */
+  async #installed(url: URL, nonce: string, operatorSession: boolean): Promise<Reply> {
+    const { db, config } = this.#d;
     const state = url.searchParams.get("state") ?? "", id = Number(url.searchParams.get("installation_id"));
-    const row = db.prepare("DELETE FROM github_app_states WHERE state = ? RETURNING login, session_hash, created_at").get(state) as { login: string; session_hash: string; created_at: string } | undefined;
-    if (!row || !row.session_hash.startsWith("install:") || Date.now() - Date.parse(row.created_at) > FLOW_TTL_MS) return gone(nonce);
-    const link = openLink(db, "id", row.session_hash.slice("install:".length));
-    if (!link) return gone(nonce);
-    if (!Number.isSafeInteger(id) || id <= 0) return message(nonce, 400, "GitHub did not install the app.");
+    const row = state ? db.prepare("SELECT login, session_hash, created_at FROM github_app_states WHERE state = ?").get(state) as { login: string; session_hash: string; created_at: string } | undefined : undefined;
+    if (!row || !row.session_hash.startsWith("install:")) {
+      // An install started from the admin page or on GitHub: the setup URL is in every manifest.
+      return { r: operatorSession ? { redirect: "/admin/github-app" } : page(nonce, "AutoCraft", `<p class="done-text">Installed</p>`) };
+    }
+    db.prepare("DELETE FROM github_app_states WHERE state = ?").run(state);
+    const link = Date.now() - Date.parse(row.created_at) > FLOW_TTL_MS ? null : openLink(db, "id", row.session_hash.slice("install:".length));
+    if (!link) return { r: gone(nonce) };
+    const retry = (status: number, text: string): Reply => ({ r: message(nonce, status, text, "/auth/setup") });
+    const app = config.secrets.app;
+    if (!app || !Number.isSafeInteger(id) || id <= 0) return retry(400, "GitHub did not install the app.");
+    let account: string | null;
+    try {
+      account = await installationAccount(app, id, this.#d.deps);
+    } catch (e) {
+      console.error(`org setup: ${e instanceof AppError ? e.message : "installation check failed"}`);
+      return retry(502, "GitHub did not answer. Go back and try again.");
+    }
+    if (account?.toLowerCase() !== link.org.toLowerCase()) return retry(409, `The app was installed on ${account ?? "another account"}, not ${link.org}. Install it on ${link.org}.`);
     db.prepare("UPDATE github_setup_links SET used_at = ?, used_by = ?, installation_id = ? WHERE id = ?").run(new Date().toISOString(), row.login, id, link.id);
     audit(db, row.login, "github-app-link-use", link.org, { id: link.id, installationId: id });
-    for (const [fid, f] of this.#flows) if (f.linkId === link.id) this.#flows.delete(fid);
-    return page(nonce, link.org, `<p class="done-text">Done</p>`);
+    for (const f of [...this.#flows.values()]) if (f.linkId === link.id) this.#drop(f);
+    return { r: page(nonce, link.org, `<p class="done-text">Done</p>`) };
   }
 }
 
@@ -266,5 +322,7 @@ function page(nonce: string, title: string, body: string): Res {
 
 const message = (nonce: string, status: number, text: string, back?: string): Res =>
   ({ ...page(nonce, "GitHub App", `<p>${esc(text)}</p>${back ? `<p><a href="${esc(back)}">Back</a></p>` : ""}`), status });
+
+const reopen = (nonce: string): Res => message(nonce, 400, "Open the link again.");
 
 const gone = (nonce: string): Res => message(nonce, 410, "This link has expired, was used or was revoked.");

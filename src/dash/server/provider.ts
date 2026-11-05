@@ -30,6 +30,8 @@ export interface Provider {
   exchange(code: string, verifier: string, redirectUri: string): Promise<Tokens | null>;
   refresh(refreshToken: string): Promise<Tokens | null>;
   identity(access: string): Promise<GithubUser | null>;
+  /** Revokes a token at the provider; callers ignore failures. */
+  revoke(access: string): Promise<void>;
   // "unauthorized": the access token is expired or revoked. Throws on a
   // transport failure, so a GitHub outage isn't cached as "none".
   permission(access: string, repo: string): Promise<Permission | "unauthorized">;
@@ -81,6 +83,17 @@ export class GitHubProvider implements Provider {
     if (!r.ok) throw new Error(`token endpoint: HTTP ${r.status}`);
     // A rejected code or refresh token answers 200 with an `error` field.
     return tokensFrom((await r.json()) as Record<string, unknown>);
+  }
+  async revoke(access: string): Promise<void> {
+    await fetch(`https://api.github.com/applications/${encodeURIComponent(this.#id)}/token`, {
+      method: "DELETE",
+      headers: {
+        authorization: `Basic ${Buffer.from(`${this.#id}:${this.#secret}`).toString("base64")}`, accept: "application/vnd.github+json",
+        "x-github-api-version": "2022-11-28", "user-agent": UA, "content-type": "application/json",
+      },
+      body: JSON.stringify({ access_token: access }),
+      signal: AbortSignal.timeout(10_000),
+    });
   }
   async identity(access: string): Promise<GithubUser | null> {
     const r = await this.#api(access, "/user");
@@ -156,6 +169,11 @@ export class FakeProvider implements Provider {
     if (!safeEqual(pkceChallenge(verifier), c.challenge)) return null;
     return this.#issue(c.login);
   }
+  revoked: string[] = [];
+  async revoke(access: string): Promise<void> {
+    this.#access.delete(access);
+    this.revoked.push(access);
+  }
   async refresh(refreshToken: string): Promise<Tokens | null> {
     const login = this.#refresh.get(refreshToken);
     this.#refresh.delete(refreshToken);
@@ -189,6 +207,13 @@ export class FakeProvider implements Provider {
     const p = key ? all[key]?.[repo] : undefined;
     return (["admin", "maintain", "write", "triage", "read"].includes(p ?? "") ? p : "none") as Permission;
   }
+}
+
+/** The OAuth App's provider whatever the dashboard sign-in mode: the org setup link needs scopes, which a GitHub App's authorization ignores. */
+export function oauthProviderFor(config: Config): Provider {
+  if (config.devAuth) return new FakeProvider(config.devPermsFile, config.devTokenTtlMs ?? undefined);
+  const { githubClientId, githubClientSecret } = config.secrets;
+  return new GitHubProvider(githubClientId, githubClientSecret);
 }
 
 export function providerFor(config: Config): Provider {

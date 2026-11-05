@@ -111,6 +111,17 @@ export async function installations(app: AppSecrets, deps: AppDeps = {}): Promis
   });
 }
 
+/** The login of the account an installation belongs to, or null when the app has no such installation. */
+export async function installationAccount(app: AppSecrets, id: number, deps: AppDeps = {}): Promise<string | null> {
+  try {
+    const i = (await call(deps.apiBase ?? GITHUB_API, `/app/installations/${id}`, appJwt(app))) as { account?: { login?: unknown } | null };
+    return str(i.account?.login);
+  } catch (e) {
+    if (e instanceof AppError && e.status === 404) return null;
+    throw e;
+  }
+}
+
 /** The installation of the app on a user or org, or null when it is not installed there. */
 export async function installationFor(app: AppSecrets, owner: string, deps: AppDeps = {}): Promise<Installation | null> {
   return (await installations(app, deps)).find((i) => i.owner.toLowerCase() === owner.toLowerCase()) ?? null;

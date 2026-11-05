@@ -5,18 +5,19 @@ import { AppError, call, GITHUB_API, type AppDeps } from "./app.ts";
 
 export type OrgRole = { id: number; name: string };
 
-/** True when the token's user is an active owner (admin) of the org. */
-export async function isOrgOwner(token: string, org: string, deps: AppDeps = {}): Promise<boolean> {
+/** "owner": an active owner of the org; "restricted": the org's OAuth app access restrictions hide it from this token; "no": anything else. */
+export async function orgOwnership(token: string, org: string, deps: AppDeps = {}): Promise<"owner" | "restricted" | "no"> {
   try {
     const m = (await call(deps.apiBase ?? GITHUB_API, `/user/memberships/orgs/${encodeURIComponent(org)}`, token)) as { role?: unknown; state?: unknown } | null;
-    return m?.role === "admin" && m.state === "active";
+    return m?.role === "admin" && m.state === "active" ? "owner" : "no";
   } catch (e) {
-    if (e instanceof AppError && (e.status === 403 || e.status === 404)) return false;
+    if (e instanceof AppError && e.status === 403) return "restricted";
+    if (e instanceof AppError && e.status === 404) return "no";
     throw e;
   }
 }
 
-/** The org's predefined app manager role, or null when the org has none (plans without organization roles answer 404). */
+/** The org's predefined app manager role, or null when the org has none (plans without organization roles answer 404). Other failures throw an AppError with the status. */
 export async function appManagerRole(token: string, org: string, deps: AppDeps = {}): Promise<OrgRole | null> {
   try {
     const r = (await call(deps.apiBase ?? GITHUB_API, `/orgs/${encodeURIComponent(org)}/organization-roles`, token)) as { roles?: Array<{ id?: unknown; name?: unknown }> } | null;

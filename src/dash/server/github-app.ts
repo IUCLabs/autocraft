@@ -31,7 +31,7 @@ export function githubAppRoutes(config: Config, deps: AppDeps): Route[] {
     handler: (db, r): Res => {
       const org = String((r.json as { org?: unknown } | undefined)?.org ?? "").trim();
       const made = createLink(db, r.user.login, org);
-      return made ? { json: made } : { status: 400, json: { error: "That is not a GitHub organization name." } };
+      return made ? { json: { link: made.link, url: `${config.baseUrl ?? ""}${made.path}` } } : { status: 400, json: { error: "That is not a GitHub organization name." } };
     },
   }, {
     method: "POST", pattern: "/api/admin/github-app/links/revoke", operator: true,
@@ -122,7 +122,8 @@ export async function finishRegistration(db: DatabaseSync, config: Config, deps:
 }
 
 /** Who a registration runs for, and where its result page leads back. */
-export type Actor = { login: string; back: string; backLabel: string; redirect: string; details?: Record<string, unknown> };
+/** `org`, when set, is the organization that must own the new app; a stray app owned elsewhere is not stored. */
+export type Actor = { login: string; back: string; backLabel: string; redirect: string; org?: string; details?: Record<string, unknown> };
 
 /**
  * Turns the manifest code into the app's keys and stores them; the caller has
@@ -150,6 +151,15 @@ export async function convertAndStore(db: DatabaseSync, config: Config, deps: Ap
       return refuseTo(502, "GitHub did not return the app. Start again.");
     }
     const { name, ...app } = converted;
+    if (actor.org && app.owner?.login.toLowerCase() !== actor.org.toLowerCase()) {
+      console.error(`github-app registration: app ${app.slug} was created under another owner than ${actor.org}; keys not stored`);
+      audit(db, actor.login, "github-app-register-failed", app.slug, { id: app.id, code: "wrong-owner" });
+      const link = settingsUrl(app.slug, app.owner);
+      return {
+        status: 409,
+        html: plainPage(nonce, "GitHub App", `<p>GitHub created the app <code>${esc(app.slug)}</code> under ${esc(app.owner?.login ?? "another account")}, not ${esc(actor.org)}. Its keys were not stored. Delete the app on GitHub and start again.</p><p><a href="${esc(link)}">${esc(link)}</a></p><p><a href="${esc(actor.back)}">${esc(actor.backLabel)}</a></p>`),
+      };
+    }
     try {
       if (config.secrets.app) throw Object.assign(new Error("another app was registered meanwhile"), { code: "EEXIST" });
       writeAppSecrets(config.secretsFile, app);

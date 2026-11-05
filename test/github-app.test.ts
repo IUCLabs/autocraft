@@ -34,7 +34,7 @@ let converted: string[] = [];
 let onConvert: () => void = () => {};
 // The org setup link's fake GitHub: bearer tokens seen on the visitor's calls, what organization-roles answers, and the PUTs it got.
 const visitorTokens = new Set<string>();
-let rolesAnswer: 404 | 200 = 404;
+let rolesAnswer: 404 | 403 | 200 = 404;
 const rolePuts: string[] = [];
 const closers: Array<() => Promise<void>> = [];
 let base = "";
@@ -62,7 +62,7 @@ before(async () => {
     }
     if (url === "/orgs/glasswing/organization-roles") {
       visitorTokens.add(bearer);
-      return rolesAnswer === 404 ? send(404, {}) : send(200, { total_count: 2, roles: [{ id: 1, name: "all_repo_read" }, { id: 8140, name: "GitHub App Manager" }] });
+      return rolesAnswer !== 200 ? send(rolesAnswer, {}) : send(200, { total_count: 2, roles: [{ id: 1, name: "all_repo_read" }, { id: 8140, name: "GitHub App Manager" }] });
     }
     if (req.method === "PUT" && url.startsWith("/orgs/glasswing/organization-roles/users/")) {
       visitorTokens.add(bearer);
@@ -70,6 +70,8 @@ before(async () => {
       res.writeHead(204);
       return void res.end();
     }
+    if (url === "/app/installations/99") return send(200, { id: 99, account: { login: "Glasswing" } });
+    if (url === "/app/installations/98") return send(200, { id: 98, account: { login: "elsewhere" } });
     if (url === "/app") return send(200, { name: "AutoCraft" });
     if (url.startsWith("/app/installations?")) return send(200, [{ id: 7, account: { login: "glasswing" }, repository_selection: "selected" }]);
     if (req.method === "POST" && url === "/app/installations/7/access_tokens") return send(201, { token: "ghs_installation" });
@@ -252,14 +254,14 @@ describe("github app registration", () => {
     assert.notEqual(after.token_enc, before.token_enc);
   });
 
-  test("org setup link: owners only, single use, the owner's token is never stored, app manager falls back on 404", async () => {
+  test("org setup link: owners only, single use, the owner's token is kept nowhere, the role list 404 falls back to the settings link", async () => {
     const file = join(dir, "setup-secrets.json");
     writeFileSync(file, "{}");
     const env = { AUTOCRAFT_DEV_AUTH: "1", AUTOCRAFT_LISTEN: "127.0.0.1:0", AUTOCRAFT_DB: dbFile, AUTOCRAFT_DEV_PERMS: permsFile, AUTOCRAFT_SECRETS_FILE: file };
     const s = await startServer({ config: loadConfig(env), db, provider: new FakeProvider(permsFile), routes: [], githubApi: `http://127.0.0.1:${(github.address() as AddressInfo).port}` });
     closers.push(s.close);
     const boss = await signedIn("boss", s.url);
-    const mint = async (org: string) => ((await (await boss.json("/api/admin/github-app/links", { org })).json()) as { path: string }).path;
+    const mint = async (org: string) => ((await (await boss.json("/api/admin/github-app/links", { org })).json()) as { url: string }).url;
     const pages: string[] = [];
     const get = async (c: Client, path: string) => {
       const r = await c.req(path);
@@ -318,7 +320,7 @@ describe("github app registration", () => {
     const done = await get(owner, `/auth/github-app/setup?installation_id=99&setup_action=install&state=${installState}`);
     assert.match(done.t, />Done</);
     assert.equal((await get(new Client(s.url), path)).r.status, 410);
-    assert.equal((await get(owner, `/auth/github-app/setup?installation_id=99&state=${installState}`)).r.status, 410);
+    assert.match((await get(owner, `/auth/github-app/setup?installation_id=99&state=${installState}`)).t, />Installed</);
     assert.equal((await new Client(s.url).post(`${path}/signin`, { manager: "1" })).status, 410);
     const used = db.prepare("SELECT used_by, installation_id FROM github_setup_links WHERE hash IS NOT NULL AND org = 'glasswing'").get() as { used_by: string; installation_id: number };
     assert.deepEqual({ ...used }, { used_by: "alice", installation_id: 99 });
@@ -340,5 +342,78 @@ describe("github app registration", () => {
     const everything = JSON.stringify([db.prepare("SELECT * FROM audit").all(), db.prepare("SELECT * FROM github_setup_links").all(), db.prepare("SELECT * FROM github_app_states").all(), db.prepare("SELECT * FROM oauth_states").all(), db.prepare("SELECT * FROM sessions").all()]) + readFileSync(file, "utf8") + pages.join("");
     for (const t of visitorTokens) assert.ok(!everything.includes(t), "the owner's token is kept nowhere");
     for (const a of ["github-app-link-create", "github-app-link-use", "github-app-link-revoke"]) assert.ok(db.prepare("SELECT 1 FROM audit WHERE action = ?").get(a), a);
+  });
+
+  test("org setup link: unticked manager keeps no token, flows are bound to their cookie and link, a 403 on roles falls back, a foreign installation is refused", async () => {
+    const file = join(dir, "setup2-secrets.json");
+    writeFileSync(file, "{}");
+    const env = { AUTOCRAFT_DEV_AUTH: "1", AUTOCRAFT_LISTEN: "127.0.0.1:0", AUTOCRAFT_DB: dbFile, AUTOCRAFT_DEV_PERMS: permsFile, AUTOCRAFT_SECRETS_FILE: file };
+    const provider = new FakeProvider(permsFile);
+    const s = await startServer({ config: loadConfig(env), db, provider, routes: [], githubApi: `http://127.0.0.1:${(github.address() as AddressInfo).port}` });
+    closers.push(s.close);
+    const boss = await signedIn("boss", s.url);
+    const mint = async () => ((await (await boss.json("/api/admin/github-app/links", { org: "glasswing" })).json()) as { url: string }).url;
+    const signIn = async (c: Client, path: string, login: string, manager: boolean) => {
+      const start = await c.post(`${path}/signin`, manager ? { manager: "1" } : {});
+      const authorize = start.headers.get("location")!;
+      assert.equal(new URL(authorize, s.url).searchParams.get("scope"), manager ? "read:org admin:org" : "read:org");
+      const back = await c.req(`${authorize}&login=${login}`);
+      return c.req(back.headers.get("location")!);
+    };
+    const text = async (c: Client, path: string) => (await c.req(path)).text();
+    const revokedBefore = provider.revoked.length;
+
+    // Unticked: read:org only, no manager step, and the token is revoked at once.
+    const a = new Client(s.url), pathA = await mint();
+    assert.equal((await signIn(a, pathA, "alice", false)).status, 303);
+    assert.equal(provider.revoked.length, revokedBefore + 1);
+    const pageA = await text(a, "/auth/setup");
+    assert.ok(!/app manager/i.test(pageA));
+    const stateA = /apps\/new\?state=([A-Za-z0-9_-]+)/.exec(pageA)![1]!;
+
+    // Without the setup cookie, or with another flow's cookie, nothing opens and the state survives.
+    const bare = new Client(s.url);
+    const noCookie = await bare.req("/auth/setup");
+    assert.equal(noCookie.status, 400);
+    assert.match(await noCookie.text(), /Open the link again/);
+    assert.equal((await bare.req(`/auth/github-app/callback?code=good-code&state=${stateA}`)).status, 400);
+    const b = new Client(s.url), pathB = await mint();
+    assert.equal((await signIn(b, pathB, "alice", true)).status, 303);
+    assert.equal((await b.req("/auth/setup")).status, 200);
+    assert.equal((await b.req(`/auth/github-app/callback?code=good-code&state=${stateA}`)).status, 400, "a state of another link");
+    const crossed = new Client(s.url);
+    const cookieName = [...a.jar.keys()].find((k) => k.includes("setup"))!;
+    crossed.jar.set(cookieName, a.jar.get(cookieName)!);
+    // Rendering the page again issues a fresh state for the same flow and retires the old one.
+    const stateA2 = /apps\/new\?state=([A-Za-z0-9_-]+)/.exec(await text(crossed, "/auth/setup"))![1]!;
+    assert.notEqual(stateA2, stateA);
+    const stranger = new Client(s.url), pathC = await mint();
+    const start = await stranger.post(`${pathC}/signin`, { manager: "1" });
+    stranger.jar.set(cookieName, a.jar.get(cookieName)!);
+    const back = await stranger.req(`${start.headers.get("location")}&login=alice`);
+    assert.equal((await stranger.req(back.headers.get("location")!)).status, 410, "another flow's cookie cannot finish a sign-in");
+
+    // The owner's flow still works: create, then a 403 on the role list leaves the settings link and the Install step.
+    assert.equal((await a.req(`/auth/github-app/callback?code=good-code&state=${stateA2}`)).status, 303);
+    const keys = JSON.parse(readFileSync(file, "utf8")) as Record<string, string>;
+    assert.equal(keys.github_app_slug, "autocraft-test");
+    const pageB = await text(b, "/auth/setup");
+    assert.match(pageB, /Make boss an app manager/);
+    rolesAnswer = 403;
+    assert.equal((await b.post("/auth/setup/manager", {})).status, 303);
+    const fallback = await text(b, "/auth/setup");
+    assert.match(fallback, /App managers &rarr; Grant boss/);
+    const installState = /installations\/new\?state=([A-Za-z0-9_-]+)/.exec(fallback)![1]!;
+    assert.ok(provider.revoked.length >= revokedBefore + 2, "the manager step revokes the token");
+
+    // An installation on another account leaves the link open; the right one finishes it.
+    assert.equal((await b.req(`/auth/github-app/setup?installation_id=98&state=${installState}`)).status, 409);
+    assert.equal((await new Client(s.url).req(pathB)).status, 200);
+    const again = /installations\/new\?state=([A-Za-z0-9_-]+)/.exec(await text(b, "/auth/setup"))![1]!;
+    assert.match(await text(b, `/auth/github-app/setup?installation_id=99&state=${again}`), />Done</);
+    assert.equal((await new Client(s.url).req(pathB)).status, 410);
+    // An install started elsewhere lands on a neutral page.
+    assert.match(await text(new Client(s.url), "/auth/github-app/setup?installation_id=5"), />Installed</);
+    assert.equal((await boss.req("/auth/github-app/setup?installation_id=5")).headers.get("location"), "/admin/github-app");
   });
 });

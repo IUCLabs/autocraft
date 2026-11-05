@@ -220,8 +220,8 @@ export interface Api {
   /** Operator only. */
   githubApp: {
     status(): Promise<GithubAppStatus>;
-    /** The link's URL path is in this answer only. */
-    createLink(org: string): Promise<{ link: GithubSetupLink; path: string }>;
+    /** The link's URL is in this answer only; it is a path when the server has no base URL. */
+    createLink(org: string): Promise<{ link: GithubSetupLink; url: string }>;
     revokeLink(id: string): Promise<{ links: GithubSetupLink[] }>;
   };
   classifiers: {

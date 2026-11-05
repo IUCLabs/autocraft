@@ -130,7 +130,7 @@ function SetupLinks({ links, onChange }: { links: GithubSetupLink[]; onChange: (
           e.preventDefault();
           void run("create", async () => {
             const made = await api.githubApp.createLink(org.trim());
-            setFresh({ org: made.link.org, url: `${location.origin}${made.path}` });
+            setFresh({ org: made.link.org, url: made.url.startsWith("/") ? `${location.origin}${made.url}` : made.url });
             setCopied(false);
             setOrg("");
           });
