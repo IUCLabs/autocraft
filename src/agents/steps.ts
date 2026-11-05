@@ -195,7 +195,7 @@ export type ConversationCtx = ReferenceCtx & { db: DatabaseSync; repo: string; n
 export const CONVERSATION: ClaudeStep<ConversationInput, ConversationReply, ConversationCtx> = {
   provider: "claude", id: "conversation.turn",
   toPrompt: (x) => [x], size: () => 1,
-  lint: { fields: ["cards[].text"], make: (_x, c) => async (text, stage) => (parseReply(c.db, c.repo, c.n, text) ? referenceProblems(commentTexts(text), c.dir, c.semantic, { stage }) : null) },
+  lint: { fields: ["cards[].text", "cards[].steps[].body"], make: (_x, c) => async (text, stage) => (parseReply(c.db, c.repo, c.n, text) ? referenceProblems(commentTexts(text), c.dir, c.semantic, { stage }) : null) },
   parse: (text, _x, ctx, c) => { const r = parseReply(c.db, c.repo, c.n, text, dropTexts(ctx.problems)); return r === null ? null : { value: r }; },
 };
 

@@ -79,6 +79,13 @@ const ASSIGN = `mutation($id: ID!, $user: ID!) {
 const UNASSIGN = `mutation($id: ID!, $user: ID!) {
   removeAssigneesFromAssignable(input: { assignableId: $id, assigneeIds: [$user] }) { clientMutationId }
 }`;
+const REOPEN_ISSUE = `mutation($id: ID!) { reopenIssue(input: { issueId: $id }) { clientMutationId } }`;
+const REOPEN_PR = `mutation($id: ID!) { reopenPullRequest(input: { pullRequestId: $id }) { clientMutationId } }`;
+const REMOVE_LABEL = `mutation($id: ID!, $label: ID!) { removeLabelsFromLabelable(input: { labelableId: $id, labelIds: [$label] }) { clientMutationId } }`;
+const TRANSFER_ISSUE = `mutation($id: ID!, $repo: ID!) { transferIssue(input: { issueId: $id, repositoryId: $repo }) { issue { url number } } }`;
+const REQUEST_REVIEWS = `mutation($id: ID!, $users: [ID!]!) {
+  requestReviews(input: { pullRequestId: $id, userIds: $users, union: true }) { clientMutationId }
+}`;
 const ADD_REVIEW = `mutation($pr: ID!, $oid: GitObjectID!, $body: String!) {
   addPullRequestReview(input: { pullRequestId: $pr, commitOID: $oid, body: $body, event: COMMENT }) { pullRequestReview { id } }
 }`;
@@ -122,6 +129,33 @@ export async function assignTo(w: Writer, g: Grant, q: Querier, item: ItemRef, u
 export async function unassignFrom(w: Writer, g: Grant, q: Querier, item: ItemRef, user: { id: string; login: string }, details: Details = {}): Promise<void> {
   covers(g, item.repo, item.number);
   await recorded(w, "unassign", refOf(item.repo, item.number), { ...details, assignee: user.login }, () => q.query(UNASSIGN, { id: item.id, user: user.id }));
+}
+
+export async function reopenItem(w: Writer, g: Grant, q: Querier, item: ItemRef & { pr: boolean }, details: Details = {}): Promise<void> {
+  covers(g, item.repo, item.number);
+  await recorded(w, "act-reopen", refOf(item.repo, item.number), details, () => q.query(item.pr ? REOPEN_PR : REOPEN_ISSUE, { id: item.id }));
+}
+
+export async function removeLabel(w: Writer, g: Grant, q: Querier, item: ItemRef, label: { id: string; name: string }, details: Details = {}): Promise<void> {
+  covers(g, item.repo, item.number);
+  await recorded(w, "act-unlabel", refOf(item.repo, item.number), { ...details, label: label.name }, () => q.query(REMOVE_LABEL, { id: item.id, label: label.id }));
+}
+
+/** Moves an issue to another repository of the organisation (`to.id` is its node id). The grant `gTo` must cover the target repo; returns the issue's new URL. */
+export async function transferIssue(w: Writer, g: Grant, gTo: Grant, q: Querier, item: ItemRef, to: { repo: string; id: string }, details: Details = {}): Promise<string> {
+  covers(g, item.repo, item.number);
+  covers(gTo, to.repo);
+  const r = await recorded(w, "act-transfer", refOf(item.repo, item.number), { ...details, to: to.repo },
+    () => q.query(TRANSFER_ISSUE, { id: item.id, repo: to.id }) as Promise<{ transferIssue?: { issue?: { url?: string } } }>,
+    (x) => ({ url: x.transferIssue?.issue?.url ?? undefined }));
+  return r.transferIssue?.issue?.url ?? "";
+}
+
+/** Requests reviews from users (added to the reviewers already requested). */
+export async function requestReviewers(w: Writer, g: Grant, q: Querier, item: ItemRef, users: { id: string; login: string }[], details: Details = {}): Promise<void> {
+  covers(g, item.repo, item.number);
+  await recorded(w, "act-request-reviewers", refOf(item.repo, item.number), { ...details, reviewers: users.map((u) => u.login) },
+    () => q.query(REQUEST_REVIEWS, { id: item.id, users: users.map((u) => u.id) }));
 }
 
 /** Posts a review as a plain comment review on the commit; returns the review id (null when GitHub returned none). */

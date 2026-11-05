@@ -6,13 +6,17 @@ import { readLive } from "../act/index.ts";
 import { duplicateComment } from "../act/templates.ts";
 import { audit } from "../dash/audit.ts";
 import { optionsOf, BACKLOG, HANDLED, getDecision, reposOf, replaceProposedCards } from "../decisions.ts";
-import { addLabels, closeItem, commentOn, type Note, type Writer } from "../github/write.ts";
+import { GITHUB_ACTIONS } from "../github/actions.ts";
+import { addLabels, closeItem, commentOn, createIssue, IssueError, assignTo, removeLabel, reopenItem, requestReviewers, transferIssue, type Note, type Writer } from "../github/write.ts";
+import { exec as defaultExec, type Exec } from "../fixup/git.ts";
+import { runPipelineStep } from "../preapproval/index.ts";
+import type { CardEdit } from "../../web/src/api/types.ts";
 import { repoLabels } from "../labels/github.ts";
 import { Client, type Querier } from "../mirror.ts";
 import { CLAUDE_PROMPTS } from "../prompts/index.ts";
-import { closeRefusal, decisionStamp, openDecision, otherTypeLabel, stepLine, type CardParams, type Settle } from "./cards.ts";
+import { closeRefusal, decisionStamp, isSettling, openDecision, otherTypeLabel, stepLine, type CardParams, type Settle, type Step } from "./cards.ts";
 import { ConversationError, insertTurn, staleOf, systemBlock, type StoreDeps } from "./store.ts";
-import { COMMENT_MAX, NOTE_MAX, type CloseReason } from "./types.ts";
+import { COMMENT_MAX, INSTRUCTIONS_MAX, ISSUE_TITLE_MAX, NOTE_MAX, type CloseReason } from "./types.ts";
 
 export type CardRow = {
   seen: string | null;
@@ -21,7 +25,7 @@ export type CardRow = {
 };
 
 /** `canWrite` is the signed-in operator's write access to a repo; the shell has none to check. */
-export type ActDeps = StoreDeps & { querier?: Querier; canWrite?: (repo: string) => Promise<boolean>; /** Indexes into a resolution's steps the operator removed. */ skip?: number[]; /** The operator's note with the choice. */ note?: string };
+export type ActDeps = StoreDeps & { querier?: Querier; /** Runs `gh` for the open_issue step. */ exec?: Exec; canWrite?: (repo: string) => Promise<boolean>; /** Indexes into a resolution's steps the operator removed. */ skip?: number[]; /** The operator's note with the choice. */ note?: string };
 
 export const cardOf = (db: DatabaseSync, id: number): CardRow | undefined =>
   db.prepare("SELECT * FROM conversation_cards WHERE id = ?").get(id) as CardRow | undefined;
@@ -38,15 +42,42 @@ const CARD_NOTE: Note = { by: "operator", model: CLAUDE_PROMPTS["conversation.tu
 const oneLine = (s: string): string => s.replace(/\s+/g, " ").trim().slice(0, 300);
 const ref = (repo: string, n: number) => `${repo}#${n}`;
 
-/** Replaces the text of a comment card that has not run. */
-export function editCard(db: DatabaseSync, id: number, by: string, text: string, deps?: StoreDeps): CardRow {
+/** Replaces the drafts of a card that has not run: the comment text, the open_issue step's title and body, the fixup step's instructions. A field left out stays. */
+export function editCard(db: DatabaseSync, id: number, by: string, edit: CardEdit, deps?: StoreDeps): CardRow {
   const c = need(db, id);
-  if (c.kind !== "comment" && !((c.kind === "close" || c.kind === "resolution") && c.text !== null)) throw new ConversationError(400, "only a comment card, or a card with a comment, has text to edit");
-  const t = text.trim();
-  if (!t) throw new ConversationError(400, "the comment is empty");
-  if (t.length > COMMENT_MAX) throw new ConversationError(400, `the comment is longer than ${COMMENT_MAX} characters`);
+  if (edit.text === undefined && edit.issue === undefined && edit.instructions === undefined) throw new ConversationError(400, "nothing to edit");
+  let text: string | null = c.text;
+  if (edit.text !== undefined) {
+    if (c.kind !== "comment" && !((c.kind === "close" || c.kind === "resolution") && c.text !== null)) throw new ConversationError(400, "only a comment card, or a card with a comment, has text to edit");
+    const t = edit.text.trim();
+    if (!t) throw new ConversationError(400, "the comment is empty");
+    if (t.length > COMMENT_MAX) throw new ConversationError(400, `the comment is longer than ${COMMENT_MAX} characters`);
+    text = t;
+  }
+  let params = c.params;
+  if (edit.issue !== undefined || edit.instructions !== undefined) {
+    const p = JSON.parse(c.params) as CardParams;
+    if (p.kind !== "resolution") throw new ConversationError(400, "only a resolution has an issue or instructions to edit");
+    let steps: Step[] = p.steps;
+    if (edit.issue !== undefined) {
+      const title = String(edit.issue.title ?? "").replace(/\s+/g, " ").trim(), body = String(edit.issue.body ?? "").trim();
+      if (!steps.some((x) => x.kind === "open_issue")) throw new ConversationError(400, "the card has no open_issue step");
+      if (!title || !body) throw new ConversationError(400, "the issue needs a title and a body");
+      if (title.length > ISSUE_TITLE_MAX) throw new ConversationError(400, `the issue title is longer than ${ISSUE_TITLE_MAX} characters`);
+      if (body.length > COMMENT_MAX) throw new ConversationError(400, `the issue body is longer than ${COMMENT_MAX} characters`);
+      steps = steps.map((x) => (x.kind === "open_issue" ? { ...x, title, body } : x));
+    }
+    if (edit.instructions !== undefined) {
+      const instructions = edit.instructions.trim();
+      if (!steps.some((x) => x.kind === "fixup")) throw new ConversationError(400, "the card has no fixup step");
+      if (!instructions) throw new ConversationError(400, "the instructions are empty");
+      if (instructions.length > INSTRUCTIONS_MAX) throw new ConversationError(400, `the instructions are longer than ${INSTRUCTIONS_MAX} characters`);
+      steps = steps.map((x) => (x.kind === "fixup" ? { ...x, instructions } : x));
+    }
+    params = JSON.stringify({ ...p, steps });
+  }
   const at = (deps?.now?.() ?? new Date()).toISOString();
-  const r = db.prepare("UPDATE conversation_cards SET text = ?, edited_by = ?, edited_at = ? WHERE id = ? AND state = 'proposed'").run(t, by, at, id);
+  const r = db.prepare("UPDATE conversation_cards SET text = ?, params = ?, edited_by = ?, edited_at = ? WHERE id = ? AND state = 'proposed'").run(text, params, by, at, id);
   if (r.changes !== 1) throw new ConversationError(409, `the card is already ${c.state}`);
   audit(db, by, "conversation-card-edit", ref(c.repo, c.number), { card: id });
   return need(db, id);
@@ -125,6 +156,7 @@ class StepError extends Error {
 }
 
 type Ctx = {
+  exec: Exec;
   /** The operator's note: kept on the decision it settles, never posted to GitHub. */
   note?: string; db: DatabaseSync; c: CardRow; by: string; q: Querier; at: string; w: Writer; source: { source: string; card: number } };
 
@@ -166,12 +198,12 @@ async function closeThe({ db, c, by, q, at, w, source }: Ctx, p: { reason: Close
   return { how, url };
 }
 
-/** The item is closed: its open decisions (but `except`) are settled now, not at the next sync's withdrawal. */
+/** The item is closed or moved: its open decisions (but `except`) are settled now, not at the next sync's withdrawal. `what` is the phrase after "Closed" or the whole summary when it starts with "Moved". */
 function settleOthers(db: DatabaseSync, c: CardRow, how: string, by: string, at: string, except?: string): void {
   const open = db.prepare("SELECT id FROM decisions WHERE repo = ? AND number = ? AND answer IS NULL AND id NOT LIKE '%:dupegroup:%'").all(c.repo, c.number) as { id: string }[];
   for (const d of open) {
     if (d.id === except) continue;
-    try { resolveDecision(db, c, d.id, undefined, `Closed${how} in the conversation`, by, at); } catch { /* answered meanwhile; the next sync withdraws what is left */ }
+    try { resolveDecision(db, c, d.id, undefined, how.startsWith("Moved") ? `${how} in the conversation` : `Closed${how} in the conversation`, by, at); } catch { /* answered meanwhile; the next sync withdraws what is left */ }
   }
 }
 
@@ -193,6 +225,118 @@ async function closeDuplicate({ db, c, by, q, at, w, source }: Ctx, of: number):
   action("done", null);
   db.prepare("INSERT INTO main.stages (repo, number, stage, at, actor, note) VALUES (?, ?, 'closed', ?, ?, ?)").run(c.repo, c.number, at, by, `closed as a duplicate of ${ref(c.repo, of)} from a conversation`);
   return { url };
+}
+
+/** The Act step's daily limit also covers the GitHub writes of conversation cards: they and the Act jobs' items today, against the limit row. */
+function actRoom(db: DatabaseSync): void {
+  const row = db.prepare("SELECT per_day FROM stage_limits WHERE step = 'act'").get() as { per_day: number | null } | undefined;
+  if (!row || row.per_day === null) return;
+  const day = `${new Date().toISOString().slice(0, 10)}T00:00:00.000Z`;
+  const actions = Object.keys(GITHUB_ACTIONS);
+  const cards = (db.prepare(`SELECT COUNT(*) AS n FROM audit WHERE at >= ? AND details LIKE '%"source":"conversation"%' AND action IN (${actions.map(() => "?").join(",")})`).get(day, ...actions) as { n: number }).n;
+  const jobs = (db.prepare("SELECT COALESCE(SUM(items), 0) AS n FROM jobs WHERE step = 'act' AND started_at >= ?").get(day) as { n: number }).n;
+  if (cards + jobs >= row.per_day) throw new Error(`the daily limit of ${row.per_day} Act writes is reached`);
+}
+
+/** The Act approval of `repo` for the operator's write, and room under the daily limit. */
+function actGrant(db: DatabaseSync, repo: string, by: string, need: "comment" | "labels" = "comment") {
+  const g = guardRepo(db, repo, need, { operator: by });
+  if ("refused" in g) throw new Error(g.refused);
+  actRoom(db);
+  return g;
+}
+
+const ORG = "storytold";
+const USER_ID = `query($login: String!) { user(login: $login) { id login } }`;
+const COLLABORATORS = `query($owner: String!, $name: String!, $login: String!) { repository(owner: $owner, name: $name) { collaborators(query: $login, first: 10) { edges { permission node { login } } } } }`;
+const REPO_ID = `query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { id } }`;
+
+async function userOf(q: Querier, login: string): Promise<{ id: string; login: string }> {
+  const d = await q.query(USER_ID, { login }) as { user?: { id: string; login: string } | null };
+  if (!d.user) throw new Error(`GitHub has no user ${login}`);
+  return d.user;
+}
+
+/** Reads the live permission: `login` must hold write, maintain or admin on the repo. Throws when GitHub cannot tell. */
+async function needLiveWrite(q: Querier, repo: string, login: string): Promise<void> {
+  const d = await q.query(COLLABORATORS, { owner: ORG, name: repo, login }) as { repository?: { collaborators?: { edges?: { permission: string; node: { login: string } }[] } | null } | null };
+  const e = d.repository?.collaborators?.edges?.find((x) => x.node.login.toLowerCase() === login.toLowerCase());
+  if (!e || !["WRITE", "MAINTAIN", "ADMIN"].includes(e.permission)) throw new Error(`${login} does not have write access to ${repo}`);
+}
+
+async function unlabel(ctx: Ctx, label: string): Promise<Outcome> {
+  const { db, c, by, q, w, source } = ctx;
+  const g = actGrant(db, c.repo, by, "labels");
+  const live = await liveOpen(q, c.repo, c.number);
+  const id = (await repoLabels(q, c.repo)).labels.get(label.toLowerCase());
+  if (!id) throw new Error(`the label "${label}" does not exist on ${c.repo}`);
+  await removeLabel(w, g, q, { repo: c.repo, number: c.number, id: live.id }, { id, name: label }, source);
+  return { result: `Label "${label}" removed`, url: null };
+}
+
+async function reopen(ctx: Ctx): Promise<Outcome> {
+  const { db, c, by, q, w, source } = ctx;
+  const g = actGrant(db, c.repo, by);
+  const refusal = closeRefusal(db, c.repo, c.number);
+  if (refusal) throw new Error(refusal);
+  const live = await readLive(q, c.repo, c.number);
+  if (!live) throw new Error("GitHub returned no such item");
+  if (live.state === "OPEN") throw new Error("already open on GitHub");
+  if (live.state !== "CLOSED") throw new Error(`${live.state.toLowerCase()} on GitHub: it cannot be reopened`);
+  await reopenItem(w, g, q, { repo: c.repo, number: c.number, id: live.id, pr: live.type === "PullRequest" }, source);
+  return { result: "Reopened", url: null };
+}
+
+async function openIssue(ctx: Ctx, st: Extract<Step, { kind: "open_issue" }>): Promise<Outcome> {
+  const { db, c, by, w, source, exec } = ctx;
+  const g = actGrant(db, st.repo, by);
+  try {
+    const made = await createIssue(w, g, exec, { repo: st.repo, target: ref(c.repo, c.number), title: st.title, body: st.body }, CARD_NOTE, source);
+    return { result: `Opened ${ref(st.repo, made.number)}`, url: made.url };
+  } catch (e) {
+    if (e instanceof IssueError && !e.clear) throw new Error(`${e.message}; the issue may exist in ${st.repo}, check before running again`);
+    throw e;
+  }
+}
+
+async function transfer(ctx: Ctx, st: Extract<Step, { kind: "transfer" }>): Promise<Outcome> {
+  const { db, c, by, q, w, source } = ctx;
+  const g = actGrant(db, c.repo, by);
+  const gTo = actGrant(db, st.to, by);
+  const refusal = closeRefusal(db, c.repo, c.number);
+  if (refusal) throw new Error(refusal);
+  const live = await liveOpen(q, c.repo, c.number);
+  if (live.type !== "Issue") throw new Error("only an issue can be moved to another repository");
+  const t = await q.query(REPO_ID, { owner: ORG, name: st.to }) as { repository?: { id: string } | null };
+  if (!t.repository) throw new Error(`GitHub has no repository ${st.to}`);
+  const url = await transferIssue(w, g, gTo, q, { repo: c.repo, number: c.number, id: live.id }, { repo: st.to, id: t.repository.id }, source);
+  return { result: `Moved to ${st.to}`, url: url || null };
+}
+
+async function assign(ctx: Ctx, login: string): Promise<Outcome> {
+  const { db, c, by, q, w, source } = ctx;
+  const g = actGrant(db, c.repo, by);
+  const live = await liveOpen(q, c.repo, c.number);
+  const author = (db.prepare("SELECT author FROM items WHERE repo = ? AND number = ?").get(c.repo, c.number) as { author: string | null } | undefined)?.author ?? null;
+  if (author?.toLowerCase() !== login.toLowerCase()) await needLiveWrite(q, c.repo, login);
+  await assignTo(w, g, q, { repo: c.repo, number: c.number, id: live.id }, await userOf(q, login), source);
+  return { result: `Assigned ${login}`, url: null };
+}
+
+async function askReviewers(ctx: Ctx, logins: string[]): Promise<Outcome> {
+  const { db, c, by, q, w, source } = ctx;
+  const g = actGrant(db, c.repo, by);
+  const live = await liveOpen(q, c.repo, c.number);
+  if (live.type !== "PullRequest") throw new Error("reviewers can be requested on a PR only");
+  const author = (db.prepare("SELECT author FROM items WHERE repo = ? AND number = ?").get(c.repo, c.number) as { author: string | null } | undefined)?.author ?? null;
+  const users: { id: string; login: string }[] = [];
+  for (const l of logins) {
+    if (author?.toLowerCase() === l.toLowerCase()) throw new Error(`${l} is the PR's author`);
+    await needLiveWrite(q, c.repo, l);
+    users.push(await userOf(q, l));
+  }
+  await requestReviewers(w, g, q, { repo: c.repo, number: c.number, id: live.id }, users, source);
+  return { result: `Asked ${logins.join(", ")} for a review`, url: null };
 }
 
 /** Fails before any step runs when the decision a resolution settles has changed. */
@@ -235,6 +379,24 @@ async function runResolution(ctx: Ctx, p: CardParams & { kind: "resolution" }, c
           results.push(`Closed as a duplicate of ${ref(c.repo, st.of)}`);
           break;
         }
+        case "unlabel": results.push((await unlabel(ctx, st.label)).result); break;
+        case "reopen": results.push((await reopen(ctx)).result); break;
+        case "open_issue": {
+          const o = await openIssue(ctx, st);
+          url ??= o.url;
+          results.push(o.result);
+          break;
+        }
+        case "transfer": {
+          const o = await transfer(ctx, st);
+          url ??= o.url;
+          closedHow = `Moved to ${st.to}`;
+          results.push(o.result);
+          break;
+        }
+        case "assign": results.push((await assign(ctx, st.login)).result); break;
+        case "request_reviewers": results.push((await askReviewers(ctx, st.logins)).result); break;
+        case "review": case "fixup": results.push((await runPipelineStep(db, { repo: c.repo, number: c.number, step: st, by })).label); break;
       }
       done.push(stepLine(st));
     }
@@ -252,8 +414,8 @@ async function runResolution(ctx: Ctx, p: CardParams & { kind: "resolution" }, c
   return { result: results.join("; "), url };
 }
 
-async function run(db: DatabaseSync, c: CardRow, p: CardParams, by: string, q: Querier, at: string, canWrite?: ActDeps["canWrite"], note?: string): Promise<Outcome> {
-  const ctx: Ctx = { note, db, c, by, q, at, w: { db, login: by }, source: { source: "conversation", card: c.id } };
+async function run(db: DatabaseSync, c: CardRow, p: CardParams, by: string, q: Querier, at: string, canWrite?: ActDeps["canWrite"], note?: string, exec: Exec = defaultExec): Promise<Outcome> {
+  const ctx: Ctx = { exec, note, db, c, by, q, at, w: { db, login: by }, source: { source: "conversation", card: c.id } };
   switch (p.kind) {
     case "resolution": return runResolution(ctx, p, canWrite);
     case "answer": return answerDecision(db, c, p.decision, p.stamp, p.option, by, at, canWrite, note);
@@ -295,8 +457,8 @@ export async function doCard(db: DatabaseSync, id: number, by: string, deps: Act
     skipped.push(...all.filter((_, k) => deps.skip!.includes(k)).map(stepLine));
     params = { ...params, steps };
     // The settlement derived from a close step says the item was closed; without that step only the operator's own words are true.
-    if (params.settle?.kind === "handled" && params.settle.fromClose && all.some((x, k) => deps.skip!.includes(k) && (x.kind === "close" || x.kind === "duplicate"))) {
-      if (!note) throw new ConversationError(400, "skipping the close step needs a note saying how the question was handled");
+    if (params.settle?.kind === "handled" && params.settle.fromClose && all.some((x, k) => deps.skip!.includes(k) && isSettling(x))) {
+      if (!note) throw new ConversationError(400, "skipping the step that settles the question needs a note saying how it was handled");
       params = { ...params, settle: { kind: "handled", decision: params.settle.decision, summary: note, stamp: params.settle.stamp } };
       noteIsSummary = true;
     }
@@ -306,7 +468,7 @@ export async function doCard(db: DatabaseSync, id: number, by: string, deps: Act
   if (claim.changes !== 1) return { card: c, ran: false };
   let out: Outcome | null = null, error: string | null = null, posted = false;
   try {
-    out = await run(db, c, params, by, deps.querier ?? new Client(1000), at, deps.canWrite, noteIsSummary ? undefined : note);
+    out = await run(db, c, params, by, deps.querier ?? new Client(1000), at, deps.canWrite, noteIsSummary ? undefined : note, deps.exec);
   } catch (e) {
     error = oneLine(String((e as Error).message ?? e));
     posted = e instanceof StepError && e.posted;
