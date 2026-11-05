@@ -82,12 +82,10 @@ Rehearsed with rootless Docker on a copy of the newest production snapshot (1.2 
 | Runner start to `/readyz` 200 | 1.0 s |
 | `repos list` | all repositories, counts equal to the snapshot |
 | `pipeline status` | `OFF` |
-| Runner with the pipeline off | planner passes of 3 to 7 s run continuously (about 2 CPU cores on this database), no job is queued or started |
+| Runner with the pipeline off | one planner pass of about 4 s at start, then idle (a wake time that had passed no longer repeats the pass); no job is queued or started |
 | `backup predeploy` in the container | 12.7 s, snapshot written to `/data/backups` |
-| Runner stop (SIGTERM) | does not finish within `AUTOCRAFT_STOP_TIMEOUT` (25 s): the planner's worker thread keeps running at 100% CPU, the runner logs `stop timed out; exiting` and the process ends only after 80 to 140 s, or when the orchestrator kills it (exit 137 at the stop timeout). The next start worked every time (stale lock recognised, no recovery needed with no job running). The dashboard stops in under 0.1 s. |
+| Runner stop (SIGTERM) | under 1 s; the flowchart summary's duplicate-pairs query uses the pairs index first, so no helper thread sits in a long statement. If a stop still exceeds `AUTOCRAFT_STOP_TIMEOUT` the runner kills itself. The next start worked every time (stale lock recognised, no recovery needed with no job running). The dashboard stops in under 0.1 s. |
 | Sealed GitHub tokens read with another `session_key` | `null` (unavailable), no error |
-
-Open problem: the runner stop above also happens on any host with a database this size; stop the runner during the cut-over and the rollback with `docker stop --time 30` and accept the kill. The database is in WAL mode and survives it.
 
 Not covered: the Accounts page (it needs a signed-in session and the GitHub App), Claude and GitHub calls, and a runner with a running job.
 

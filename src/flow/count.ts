@@ -284,9 +284,11 @@ const sizeOf = (m: Map<string, Refs>, key: string) => m.get(key)?.size ?? 0;
 function dupes(c: Ctx): NodeCount {
   const members = new Map<string, Refs>(["checking", "waiting", "held", "closed"].map((k) => [`dupes.${k}`, new Set()]));
   // Unjudged pairs whose items still have the hashed text; duplicate_pairs_open reads only the rows without a verdict.
+  // CROSS JOIN fixes the order: with a single repo the planner otherwise scans both items tables for the repo and probes the pairs
+  // last, which took minutes on a large repo.
   const pairs = c.db.prepare(`SELECT p.repo, p.a, p.b, ia.state AS sa, ib.state AS sb FROM main.duplicate_pairs p
-    JOIN main.items ia ON ia.repo = p.repo AND ia.number = p.a AND ia.embed_hash = p.a_hash
-    JOIN main.items ib ON ib.repo = p.repo AND ib.number = p.b AND ib.embed_hash = p.b_hash
+    CROSS JOIN main.items ia ON ia.repo = p.repo AND ia.number = p.a AND ia.embed_hash = p.a_hash
+    CROSS JOIN main.items ib ON ib.repo = p.repo AND ib.number = p.b AND ib.embed_hash = p.b_hash
     WHERE p.verdict IS NULL AND (ia.state = 'OPEN' OR ib.state = 'OPEN') ${c.tracked("p.repo")}`).all(c.rp) as { repo: string; a: number; b: number; sa: string; sb: string }[];
   for (const p of pairs) {
     if (p.sa === "OPEN") members.get("dupes.checking")!.add(`${p.repo}#${p.a}`);

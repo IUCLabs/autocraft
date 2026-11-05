@@ -51,7 +51,8 @@ async function serve(): Promise<void> {
     : null;
   // On a stop signal the runner claims nothing new and stops its jobs (10 s each to end, then killed). If that takes longer than the bound, exit anyway.
   const stopMs = (Number(envVar("STOP_TIMEOUT")) || 25) * 1000;
-  const onStop = () => void setTimeout(() => (console.error("runner: stop timed out; exiting"), release(), process.exit(1)), stopMs).unref();
+  // process.exit joins the worker threads, and a thread inside one long synchronous call cannot be terminated until the call returns: kill the process instead (the database is in WAL mode and survives it).
+  const onStop = () => void setTimeout(() => (console.error("runner: stop timed out; exiting"), release(), process.kill(process.pid, "SIGKILL")), stopMs).unref();
   if (ac.signal.aborted) onStop();
   else ac.signal.addEventListener("abort", onStop, { once: true });
   try {
