@@ -108,6 +108,8 @@ export interface Api {
     forItem(repo: RepoName, number: number, kind?: DecisionKind): Promise<Decision | null>;
     answer(id: string, input: AnswerInput): Promise<Decision>;
     undo(id: string): Promise<Decision>;
+    /** Operator: runs the GitHub write of a waiting or failed answer again. */
+    retry(id: string): Promise<Decision>;
     /** Operator: clear a Backlog answer so the decision is open again. */
     reopen(id: string): Promise<Decision>;
     /** Operator: snooze (`on`) or wake an open decision. */

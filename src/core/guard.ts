@@ -119,7 +119,7 @@ export async function guardBatchMerge(db: DatabaseSync, batch: Ref & { head: str
 }
 
 /** Lets an issue or PR write of the item steps through while decideItem still has the action for the item. No GitHub read: the caller reads what it needs. */
-export async function guardItem(db: DatabaseSync, ref: Ref, action: ItemWant, by: By): Promise<GuardedItem | Refused> {
+export async function guardItem(db: DatabaseSync, ref: Ref, action: ItemWant, by: By, asDecision?: string): Promise<GuardedItem | Refused> {
   const name = `${ref.repo}#${ref.number}`;
   const f = loadItemFact(db, ref.repo, ref.number);
   if (!f) return { refused: `${name}: not an open item the pipeline tracks` };
@@ -134,7 +134,7 @@ export async function guardItem(db: DatabaseSync, ref: Ref, action: ItemWant, by
     const now = plan.actions.map((x) => x.kind + (typeof x.params?.bucket === "string" ? `:${x.params.bucket}` : "")).join(", ") || "none";
     return { refused: `${name}: the plan no longer has ${action.kind}${action.bucket ? `:${action.bucket}` : ""} (state ${plan.state}, actions: ${now})` };
   }
-  return { scope: "item", action, repo: ref.repo, number: ref.number, as: identityOfDecision(db, action.decisionId) } as unknown as GuardedItem;
+  return { scope: "item", action, repo: ref.repo, number: ref.number, as: identityOfDecision(db, asDecision ?? action.decisionId) } as unknown as GuardedItem;
 }
 
 /** The approvals of a repo and the global switch, read now. */
@@ -147,7 +147,8 @@ export function repoApprovals(db: DatabaseSync, repo: string): Parameters<typeof
 }
 
 /** Lets a repo-level write through (no item behind it): the repo approval it needs (null: none) and, for the pipeline's own writes, the global switch. */
-export function guardRepo(db: DatabaseSync, repo: string, need: Approval | null, by: By, decisionId?: string): GuardedRepo | Refused {
+export function guardRepo(db: DatabaseSync, repo: string, need: Approval | null, by: By, decisionId?: string, login?: string): GuardedRepo | Refused {
   const why = gateRepo(repoApprovals(db, repo), need, by, repo);
-  return why ? { refused: `${repo}: ${why}` } : ({ scope: "repo", need, repo, as: identityOfDecision(db, decisionId) } as unknown as GuardedRepo);
+  // `login`: the operator pressing the button right now (a conversation card), who acts as themselves with no answered decision yet.
+  return why ? { refused: `${repo}: ${why}` } : ({ scope: "repo", need, repo, as: login ? `user:${login}` : identityOfDecision(db, decisionId) } as unknown as GuardedRepo);
 }

@@ -11,6 +11,8 @@ import { plannedItems } from "../core/select-items.ts";
 import { ALL_LABELS, type LabelDef } from "./set.ts";
 import { jobItem } from "../runner/job-items.ts";
 import { ownerOf } from "../owners.ts";
+import { repoIdentity } from "../github/identity.ts";
+import { authFailure, laneForDecision, noWriteReason, setExecState, SIGN_IN_REASON, type LaneDeps } from "../github/user-lane.ts";
 
 export const BATCH = 10;          // mutations per request
 export const WRITES_PER_MIN = 60; // GitHub asks integrators to stay near this for content-creating writes
@@ -65,7 +67,15 @@ export async function ensureLabels(client: Querier, repo: string, apply: boolean
 export type ApplyResult = { planned: number; labeled: number; failed: number[]; skipped: number; batches: number; dryRun: boolean };
 export type ApplyOpts = { runId: string; limit?: number; apply: boolean; login?: string; /** Who asked; default: an operator at the command line. */ by?: By; wait?: Wait; log?: (s: string) => void;
   /** Called with the running count of items labelled, after each batch. */
-  onLabeled?: (labeled: number) => void };
+  onLabeled?: (labeled: number) => void;
+  /** The user lane's token source and transports; default: the secrets file's app. */
+  lane?: LaneDeps };
+
+/** The scope decision an operator answered "plugin" for this item: its answer is what adds the plugin candidate label, so its operator writes it. */
+export function pluginDecisionOf(db: DatabaseSync, repo: string, number: number): string | undefined {
+  return (db.prepare(`SELECT id FROM main.decisions WHERE kind = 'scope' AND repo = ? AND number = ? AND answer = 'plugin' AND answered_by IN (SELECT login FROM main.access WHERE role = 'operator')
+    ORDER BY answered_at DESC LIMIT 1`).get(repo, number) as { id: string } | undefined)?.id;
+}
 
 /** An item the Plans give labels to, and the labels to add. */
 type Todo = { number: number; add: string[] };
@@ -106,12 +116,37 @@ export async function applyLabels(db: DatabaseSync, client: Querier, repo: strin
     const idMap = new Map([...ids].map(([n, v]) => [n, v.id] as [number, string | null]));
     // Each item is guarded right before its labels are written: the Plan must still add them.
     const grants = new Map<number, GuardedItem>();
+    // A label an operator's answer adds (plugin candidate) is written as that operator in a repo on the app's identity; the rest stay with the stage's own account.
+    const asUser = new Map<number, string>();
     for (const r of writable) {
-      const g = await guardItem(db, { repo, number: r.number }, { kind: "label" }, o.by ?? CLI_BY);
-      if ("refused" in g) { log(`${repo}#${r.number}: not labelled: ${g.refused}`); res.skipped++; } else grants.set(r.number, g);
+      const dec = repoIdentity(db, repo) === "app" ? pluginDecisionOf(db, repo, r.number) : undefined;
+      const g = await guardItem(db, { repo, number: r.number }, { kind: "label" }, o.by ?? CLI_BY, dec);
+      if ("refused" in g) { log(`${repo}#${r.number}: not labelled: ${g.refused}`); res.skipped++; } else { grants.set(r.number, g); if (dec) asUser.set(r.number, dec); }
     }
     const guarded = writable.filter((r) => grants.has(r.number));
-    const done = guarded.length ? await mutate(w, client, repo, guarded, idMap, have, wait, o.runId, grants) : [];
+    const done: number[] = [];
+    const plain = guarded.filter((r) => !asUser.has(r.number));
+    if (plain.length) done.push(...await mutate(w, client, repo, plain, idMap, have, wait, o.runId, grants));
+    for (const r of guarded.filter((x) => asUser.has(x.number))) {
+      const dec = asUser.get(r.number)!;
+      const lr = await laneForDecision(db, o.lane, dec, [repo]);
+      if (lr && !("lane" in lr)) {
+        if (!("transient" in lr)) { setExecState(db, dec, lr.state, lr.reason); log(`${repo}#${r.number}: waiting: ${lr.reason}`); }
+        res.skipped++;
+        continue;
+      }
+      if (lr) setExecState(db, dec, "pending");
+      try {
+        done.push(...await addLabels(w, lr ? lr.lane.querier : client, repo,
+          [{ number: r.number, id: idMap.get(r.number)!, labelIds: r.add.map((a) => have.labels.get(a.toLowerCase())!), names: r.add, g: grants.get(r.number)! }], (f) => retrying(f, wait), { run: o.runId }));
+      } catch (e) {
+        const why = String((e as Error).message ?? e).replace(/\s+/g, " ").slice(0, 300);
+        const denied = lr ? authFailure(why) : null;
+        if (denied) { setExecState(db, dec, denied, denied === "waiting-token" ? SIGN_IN_REASON : noWriteReason(repo)); res.skipped++; continue; }
+        if (lr) setExecState(db, dec, "failed", why);
+        throw e;
+      }
+    }
     for (const r of guarded) if (!done.includes(r.number)) res.failed.push(r.number);
     const ok = guarded.filter((r) => done.includes(r.number));
     if (ok.length) {

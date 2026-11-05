@@ -14,6 +14,7 @@ import { ItemRef } from "../../ui/molecules/ItemRef";
 import { ClaimPill, KIND_ICON } from "./parts";
 import { canActOn } from "./DecisionDetail";
 import { AnswerNotice } from "./AnswerNotice";
+import { ExecLine } from "./ExecLine";
 import { KIND_LABEL, KINDS, localActions, ordered, useDecisionFilter, useDecisionList, useLocal, useSelection, useUndo } from "./state";
 import { useNow } from "../../lib/useNow";
 import { itemPath } from "../../lib/links";
@@ -164,6 +165,7 @@ function Row({ d, canUndo, active, checked, mine, onOpen, activeRef }: { d: Deci
             {d.answer && d.undoable && canUndo && <RowUndo id={d.id} />}
           </span>
         </div>
+        <ExecLine d={d} canRetry={canUndo} compact />
       </div>
     </div>
   );

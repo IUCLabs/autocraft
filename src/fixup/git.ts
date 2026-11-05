@@ -9,12 +9,12 @@ import { join } from "node:path";
 import { envVar } from "../env.ts";
 
 export type ExecResult = { code: number; stdout: string; stderr: string };
-export type ExecOpts = { cwd?: string; env?: Record<string, string>; input?: string };
+export type ExecOpts = { cwd?: string; env?: Record<string, string>; input?: string; /** `env` is the child's whole environment instead of additions to the process's. */ replaceEnv?: boolean };
 /** Runs a command; resolves with its exit code, rejects only when it can't be started. */
 export type Exec = (cmd: string, args: string[], opts?: ExecOpts) => Promise<ExecResult>;
 
 export const exec: Exec = (cmd, args, opts = {}) => new Promise((resolve, reject) => {
-  const p = spawn(cmd, args, { cwd: opts.cwd, env: { ...process.env, ...opts.env }, stdio: ["pipe", "pipe", "pipe"], timeout: 300_000 });
+  const p = spawn(cmd, args, { cwd: opts.cwd, env: opts.replaceEnv ? opts.env : { ...process.env, ...opts.env }, stdio: ["pipe", "pipe", "pipe"], timeout: 300_000 });
   let stdout = "", stderr = "";
   p.stdout.on("data", (d) => (stdout += d));
   p.stderr.on("data", (d) => (stderr += d));

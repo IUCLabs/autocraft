@@ -391,7 +391,7 @@ export function createAdminMock(me: User, changed: () => void): AdminApi {
         // The mock shows the registered app; ?unregistered shows the registration form.
         const registered = !appRemoved && (typeof location === "undefined" || !location.search.includes("unregistered"));
         const status: GithubAppStatus = {
-          configured: registered, loginMode: "oauth", canRegister: true, defaultName: "AutoCraft", csrf: "mock",
+          configured: registered, loginMode: "oauth", canRegister: true, defaultName: "AutoCraft", csrf: "mock", authorized: registered ? false : null,
           app: registered ? { id: "1234567", slug: "autocraft-demo", name: "AutoCraft", installUrl: "https://github.com/apps/autocraft-demo/installations/new", transferUrl: "https://github.com/settings/apps/autocraft-demo/advanced" } : null,
           links: [...setupLinks],
           installations: registered ? [{ owner: "glasswing", selection: "selected", repos: ["glasswing/photocraft", "glasswing/designcraft", "glasswing/filmcraft"] }] : [],

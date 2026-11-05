@@ -115,6 +115,7 @@ export function createHttpApi(): Api {
       forItem: (repo, number, kind) => get(`/api/items/${encodeURIComponent(repo)}/${encodeURIComponent(String(number))}/decision${qs({ kind })}`),
       answer: (id, input) => post(dec(id, "/answer"), input),
       undo: (id) => post(dec(id, "/undo")),
+      retry: (id) => post(dec(id, "/retry")),
       snooze: (id, on) => post(dec(id, "/snooze"), { on }),
       reopen: (id) => post(dec(id, "/reopen")),
       feedback: (id, input) => post(dec(id, "/feedback"), input),

@@ -460,8 +460,9 @@ export const MERGE_RECORDED_ENV = "AUTOCRAFT_MERGE_RECORDED";
  * Runs the merge command for the guarded PR and records the merge or the refusal. The command gets
  * `OWNER/REPO PR --squash|--merge <extra> --head <guarded head>`, and must refuse when GitHub's head
  * differs from that head. Every merge command, the built-in safe-merge and any `$AUTOCRAFT_MERGE_CMD`, takes `--head` as part of this contract.
+ * `env`, when given, is the command's whole environment (a user's token replaces the box's).
  */
-export async function mergeViaCommand(w: Writer, run: (cmd: string, args: string[]) => Promise<CommandResult>, cmd: string, g: Guarded<"merge">, o: { method: "squash" | "merge"; extra?: string[] }, details: Details = {}, landed?: () => Promise<boolean>): Promise<CommandResult> {
+export async function mergeViaCommand(w: Writer, run: (cmd: string, args: string[], env?: Record<string, string>) => Promise<CommandResult>, cmd: string, g: Guarded<"merge">, o: { method: "squash" | "merge"; extra?: string[] }, details: Details = {}, landed?: () => Promise<boolean>, env?: Record<string, string>): Promise<CommandResult> {
   const args = [`${slugOf(g.repo)}`, String(g.number), `--${o.method}`, ...(o.extra ?? []), "--head", g.head];
   const repo = g.repo;
   const method: string = o.method;
@@ -470,7 +471,7 @@ export async function mergeViaCommand(w: Writer, run: (cmd: string, args: string
   const id = begin(w, "merge", target, base);
   let r: CommandResult;
   try {
-    r = await run(cmd, args);
+    r = await run(cmd, args, env);
   } catch (e) {
     finish(w, id, base, oneLine(String((e as Error).message ?? e)));
     throw e;

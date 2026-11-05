@@ -23,6 +23,7 @@ export type DecisionRow = {
   answered_by: string | null; answered_at: string | null; applied_at: string | null;
   prepared_at?: string | null; prepared_head?: string | null; prepare_failed_head?: string | null; recommend_failures?: number | null; recommend_failed_at?: string | null;
   summary: string | null; summary_by: string | null; summary_at: string | null; adopted_opinion: string | null; snoozed_by: string | null; snoozed_at: string | null;
+  exec_state?: string | null; exec_reason?: string | null;
 };
 
 const j = <T>(s: string | null, d: T): T => {

@@ -16,6 +16,7 @@ import {  } from "../../lib/format";
 import { TimeAgo } from "../../ui/atoms/TimeAgo";
 import { ClaimPill, ClassifierLines, Disclosure, Facts, KindTag, RelatedList } from "./parts";
 import { Refs } from "./Refs";
+import { ExecLine } from "./ExecLine";
 import { AnswerNotice } from "./AnswerNotice";
 import { DuplicateGroup, RiskList } from "./Group";
 import { localActions, ordered, refOf, useDecisionFilter, useDecisionList, useLocal, usePinned, useSelection, useUndo, type AnswerEntry } from "./state";
@@ -348,6 +349,7 @@ export function AnsweredState({ d, canUndo }: { d: Decision; canUndo: boolean })
         {d.adoptedOpinion ? `, using ${d.adoptedOpinion.login}'s answer` : ""} · <TimeAgo iso={d.answeredAt!} />{closed ? "" : ` · ${d.appliedAt ? "applied" : "not applied yet"}`}
       </span>
       {d.answerNote && <span className="w-full text-sm text-ink/70">“{d.answerNote}”</span>}
+      <ExecLine d={d} canRetry={canUndo} />
       {backlog && canUndo && (
         <span className="ml-auto flex items-center gap-2">
           {write.error && <span className="text-xs text-bad">{write.error}</span>}

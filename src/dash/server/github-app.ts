@@ -24,7 +24,14 @@ export const publicBase = (config: Config, req: IncomingMessage): string => conf
 export function githubAppRoutes(config: Config, deps: AppDeps): Route[] {
   return [{
     method: "GET", pattern: "/api/admin/github-app", operator: true,
-    handler: async (db, r): Promise<Res> => ({ json: { ...(await githubAppStatus(db, config, deps)), csrf: r.csrf } }),
+    handler: async (db, r): Promise<Res> => ({
+      json: {
+        ...(await githubAppStatus(db, config, deps)),
+        csrf: r.csrf,
+        // Whether the signed-in operator has let the app act as them (their user token is stored and still good).
+        authorized: config.secrets.app ? !!db.prepare("SELECT 1 FROM user_tokens WHERE login = ? AND status = 'ok'").get(r.user.login) : null,
+      },
+    }),
   }, {
     // Forgets the registered app's keys so another app can be registered; the operator deletes the app on GitHub.
     method: "POST", pattern: "/api/admin/github-app/remove", operator: true,
@@ -61,9 +68,9 @@ export function githubAppRoutes(config: Config, deps: AppDeps): Route[] {
   }];
 }
 
-export async function githubAppStatus(db: DatabaseSync, config: Config, deps: AppDeps): Promise<Omit<GithubAppStatus, "csrf">> {
+export async function githubAppStatus(db: DatabaseSync, config: Config, deps: AppDeps): Promise<Omit<GithubAppStatus, "csrf" | "authorized">> {
   const app = config.secrets.app;
-  const status: Omit<GithubAppStatus, "csrf"> = {
+  const status: Omit<GithubAppStatus, "csrf" | "authorized"> = {
     configured: !!app, loginMode: config.loginApp, canRegister: !!config.secretsFile,
     defaultName: envVar("GITHUB_APP_NAME") ?? DEFAULT_APP_NAME, app: null, installations: [], links: openLinks(db), error: null,
   };
