@@ -12,6 +12,7 @@ import { RateLimiter } from "../dash/server/util.ts";
 import { ArtifactError, MAX_ARTIFACT_BYTES, NAME_RE, storeArtifact, tempPath } from "./artifacts.ts";
 import { authenticate, BuildError, hello, touch } from "./envs.ts";
 import { appendLog, claim, finishTask, heartbeat, MAX_CHUNK_BYTES, ownedTask, startTask } from "./tasks.ts";
+import { dbReady, serveHealth } from "../health.ts";
 import { envVar } from "../env.ts";
 
 export const DEFAULT_WORKER_LISTEN = "127.0.0.1:8981";
@@ -157,6 +158,7 @@ export function handler(o: WorkerServerOptions) {
   }
 
   return async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+    if (serveHealth(req, res, () => dbReady(db))) return;
     try {
       await route(req, res);
     } catch (e) {

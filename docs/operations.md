@@ -291,6 +291,99 @@ A production install runs the dashboard, the runner, the sync timer and a daily 
 
 Layout: `<root>/{repo.git,releases,app,data,cache,config}` (`app` is a symlink to the current release). `<root>/config` holds the settings file, `secrets.json` (mode 0600), `accounts.json` and the per-account Claude config directories. The user needs `node` 24, `git`, `pnpm`, `sqlite3`, `curl`, `bwrap`, `gh` (logged in, with its git credential helper), `claude` (logged in per account) and `jev` on its PATH (`<root>/.local/bin` comes first). The restart needs a sudoers entry allowing the user `systemctl restart` of its own units, and `start`/`stop` of the sync timer, without a password. The units load `autocraft.env` themselves as the app user. The worker runs as a separate user (see Running a worker); `AUTOCRAFT_WORKER_SSH` and an SSH key at `<root>/.ssh/id_craftsandbox` let the hook install its code through the worker's forced-command key.
 
+## Running in a container
+
+One image runs the dashboard, the runner and the one-shot sync and backup commands, beside the systemd install (which is unchanged). Sandbox workers are not part of the image; they keep running on their own machines and reach the runner's worker API.
+
+### Build and run
+
+```
+docker build -f deploy/container/Dockerfile -t autocraft .
+docker run -v data:/data -v config:/config -e AUTOCRAFT_BASE_URL=https://dashboard.example autocraft dashboard
+```
+
+The image is `node:24-bookworm-slim` (pinned by digest) with `git`, `bubblewrap`, `sqlite3`, `curl`, `zstd`, `tini`, pnpm, the production dependencies, the built `web/dist` and the Claude CLI (`--build-arg CLAUDE_CODE_VERSION=...`, default the version the systemd install runs). It runs as uid 10001. It does not contain `gh` or `jev`; steps that need them fail until you add them to a derived image. `tini` is PID 1 and reaps the jobs' child processes.
+
+The first argument picks the process, exactly as the systemd units start them:
+
+| Command | Runs | Systemd unit |
+|---|---|---|
+| `dashboard` (default) | `autocraft dash serve` | `autocraft-dashboard` |
+| `runner` | `autocraft runner serve` (also the worker API) | `autocraft-runner` |
+| `sync [args]` | `autocraft sync`, one-shot | `autocraft-sync` |
+| `backup [PREFIX [KEEP]]` | `deploy/backup.sh`, one-shot, default prefix `daily` | `autocraft-backup` |
+| anything else | passed to the `autocraft` CLI, for example `pipeline status` | |
+
+Run one dashboard and one runner per database. The runner holds a lock file and refuses to start a second copy on the same data volume.
+
+### Volumes
+
+| Mount | Holds | Access |
+|---|---|---|
+| `/data` | the database, caches, job logs, checkouts, backups, `HOME` | read-write, uid 10001 |
+| `/config` | `secrets.json` (mode 0600, owned by uid 10001), `accounts.json`, the Claude config directories | read-write: accounts added on the dashboard create directories and write credentials and usage readings here |
+
+Both are declared `VOLUME`s. `sync` and `backup` need `/data` and the same environment as the dashboard and runner.
+
+### Settings
+
+Every path is set by an environment variable. When a variable is unset, the code falls back to the default in the second column (a directory under `HOME`); the image and the systemd settings file set the values in the other two columns.
+
+| Variable | Code default | Image | Systemd example |
+|---|---|---|---|
+| `AUTOCRAFT_DB` | `~/.local/share/autocraft/mirror.db` | `/data/mirror.db` | `<root>/data/mirror.db` |
+| `AUTOCRAFT_SECRETS_FILE` | none (required) | `/config/secrets.json` | `<root>/config/secrets.json` |
+| `AUTOCRAFT_ACCOUNTS` | none | `/config/accounts.json` | `<root>/config/accounts.json` |
+| `AUTOCRAFT_ACCOUNTS_ROOT` (Claude config directories) | none | `/config/claude` | `<root>/config/claude` |
+| `AUTOCRAFT_USAGE_DIR` | `<accounts root>/.usage` | `/data/cache/autocraft/usage` | `<root>/cache/autocraft/usage` |
+| `XDG_CACHE_HOME` (model, image and label caches) | `~/.cache` | `/data/cache` | `<root>/cache` |
+| `AUTOCRAFT_LOCK_DIR` | `~/.cache/autocraft-logs` | `/data/cache/autocraft/locks` | `<root>/cache/autocraft/locks` |
+| `AUTOCRAFT_RUNNER_LOGS` (job logs) | `~/.cache/autocraft-logs/jobs` | `/data/cache/autocraft/jobs` | `<root>/cache/autocraft/jobs` |
+| `AUTOCRAFT_DIFF_CACHE` | `~/.cache/autocraft/diffs` | `/data/cache/autocraft/diffs` | `<root>/cache/autocraft/diffs` |
+| `AUTOCRAFT_CHECKOUT_DIR` | `~/.cache/autocraft/checkouts-v2` | `/data/cache/autocraft/checkouts` | `<root>/cache/autocraft/checkouts` |
+| `AUTOCRAFT_FIXUP_DIR` (bare git cache) | `~/.cache/autocraft/fixups` | `/data/cache/autocraft/fixups` | `<root>/cache/autocraft/fixups` |
+| `AUTOCRAFT_BACKUP_DIR` | `<database dir>/backups` | `/data/backups` | `<database dir>/backups` |
+| `AUTOCRAFT_ARTIFACT_DIR` | `<database dir>/artifacts` | unset | unset |
+| `AUTOCRAFT_SNAPSHOT_DIR` | `<database dir>/item-snapshot` | unset | unset |
+| `AUTOCRAFT_CLAUDE_CWD` | `~/.cache/autocraft/claude-cwd` | unset | unset |
+| `AUTOCRAFT_MODEL_CACHE` | `$XDG_CACHE_HOME/autocraft/models` | unset | unset |
+| `AUTOCRAFT_WEB_DIST` | `web/dist` of the code | unset | unset |
+| `AUTOCRAFT_CLAUDE_BIN` | `claude` on `PATH` | `/usr/local/bin/claude` | unset (`<root>/.local/bin` is on `PATH`) |
+| `AUTOCRAFT_LISTEN` (dashboard) | `127.0.0.1:8993` | `0.0.0.0:3005` | `127.0.0.1:3005` |
+| `AUTOCRAFT_WORKER_LISTEN` (worker API) | `127.0.0.1:8981` | `0.0.0.0:8981` | `127.0.0.1:8981` |
+| `AUTOCRAFT_HEALTH_LISTEN` (runner probes only) | none | none | none |
+| `AUTOCRAFT_STOP_TIMEOUT` (seconds the runner may take to stop) | `25` | `25` | `25` |
+| `HOME` | the user's home | `/data/home` | the app user's home |
+
+`AUTOCRAFT_BASE_URL` (no default; the public origin) and `AUTOCRAFT_TRUST_PROXY` stay as described under Dashboard server. The older `CRAFT_AUTO_*` names still work.
+
+### Logs
+
+The dashboard, the runner, sync and backup write to stdout and stderr. The runner also writes one file per job under `AUTOCRAFT_RUNNER_LOGS`.
+
+### Health endpoints
+
+`GET /healthz` answers 200 `ok` while the process is up. `GET /readyz` answers 200 while the database answers a query and 503 otherwise. Neither needs authentication and neither returns data. They are served by the dashboard (before sign-in), by the runner's worker API listener (before the worker key check) and, when `AUTOCRAFT_HEALTH_LISTEN` is set, by a listener of the runner that serves only these two paths.
+
+### Stopping
+
+On SIGTERM or SIGINT the runner claims no new jobs, signals its running jobs (SIGTERM, then SIGKILL after 10 seconds, as under systemd), closes its listeners and exits 0. If that takes longer than `AUTOCRAFT_STOP_TIMEOUT` seconds, it exits 1. Set the orchestrator's grace period above that value. The dashboard closes its connections and the database and exits 0.
+
+### Sandbox (bubblewrap)
+
+Tool-using Claude calls run in `bwrap` (see Pipeline runner). Docker's default profile blocks it in two places: the seccomp profile denies creating the user namespace, and the masked paths under `/proc` deny the `--proc /proc` mount. Tested with rootless Docker on a kernel that allows unprivileged user namespaces:
+
+| Flags | `bwrap --unshare-all --ro-bind / / true` | the runner's sandbox command (`--proc /proc`, `--dev /dev`) |
+|---|---|---|
+| none | fails: no permission to create a namespace | fails |
+| `--security-opt seccomp=unconfined` | works | fails: cannot mount proc |
+| `--security-opt seccomp=unconfined --security-opt apparmor=unconfined` | works | fails: cannot mount proc |
+| `--cap-add SYS_ADMIN` | fails: `pivot_root` not permitted | not tried further |
+| `--security-opt systempaths=unconfined` | fails: namespace | fails |
+| `--security-opt seccomp=unconfined --security-opt systempaths=unconfined` | works | works (`claude --version` ran inside it) |
+
+The runner container therefore needs an unconfined seccomp profile and unmasked `/proc` paths (`systempaths=unconfined`; an orchestrator's equivalent is `procMount: Unmasked`, which needs a user-namespaced pod). `apparmor=unconfined` was not needed where no AppArmor profile applies; on a host that confines the container with one that denies user namespaces, it may be. No extra capabilities are needed. Only the runner needs these settings; the dashboard, sync and backup run with the defaults. Without them, set `AUTOCRAFT_NO_SANDBOX=1` to run without tool mode.
+
 ## Similar items and semantic search
 
 `autocraft embed [--all] [--threads N] [--batch N]` embeds every tracked item whose text changed since its last embedding (`--all`: every tracked item) into `item_embeddings`, and removes vectors of items that left the mirror or the tracked repos. Each batch commits on its own, so an interrupted run continues where it stopped. The dashboard reads the table for "Similar items" on the Item page and for the search box's meaning toggle; it embeds search queries, and items without a vector yet, itself.
