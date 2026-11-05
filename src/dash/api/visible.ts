@@ -7,6 +7,8 @@ import type { DatabaseSync, SQLInputValue } from "node:sqlite";
 import { trackedNames } from "../../repos.ts";
 import { HttpError } from "../server/util.ts";
 import type { Req, User } from "../types.ts";
+import { SECURITY_REPO } from "../../security/rules.ts";
+import { canSeeInternals } from "./staff.ts";
 
 const memo = new WeakMap<Req, Promise<string[]>>();
 
@@ -28,10 +30,15 @@ export function visibleRepos(db: DatabaseSync, req: Req): Promise<string[]> {
   return p;
 }
 
-/** Tracked repos the requester may not see (empty for operators and when every repo is public). */
+/**
+ * Tracked repos the requester may not see (empty for operators and when every repo is public). Viewers also get the
+ * security scan's pseudo repo: the scan's jobs and agent runs are recorded under it, so every listing that leaves out
+ * hidden repos leaves them out for viewers.
+ */
 export async function hiddenRepos(db: DatabaseSync, req: Req): Promise<string[]> {
   const visible = new Set(await visibleRepos(db, req));
-  return trackedNames(db).filter((r) => !visible.has(r));
+  const hidden = trackedNames(db).filter((r) => !visible.has(r));
+  return canSeeInternals(req) ? hidden : [...hidden, SECURITY_REPO];
 }
 
 /** 404 unless the repo is tracked and visible to the requester; the message is the same for both. */

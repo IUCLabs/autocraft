@@ -2013,3 +2013,71 @@ export type NowEntry = {
 };
 export type NowFeed = { entries: NowEntry[]; nextCursor: string | null };
 export type Now = { health: NowHealth; /** Titles of housekeeping jobs that are running, shown as one line. */ alsoRunning: string[] } & NowFeed;
+
+// ---- security deep scan (operators and maintainers only; viewers get 404) ----------------------------------
+
+/** A scan is active in `modeling` (including while it waits in the job queue), `scanning` and `verifying`. */
+export type ScanState = "modeling" | "scanning" | "verifying" | "done" | "stopped" | "capped" | "failed";
+export type FindingSeverity = "critical" | "high" | "medium" | "low";
+export type FindingState = "new" | "dismissed" | "backlog" | "fixing" | "ready" | "landing" | "landed" | "advisory" | "awaiting-admin" | "published";
+export type FindingAction = "fix" | "dismiss" | "backlog" | "reopen" | "land" | "advisory" | "publish";
+
+export interface ScanView {
+  id: number;
+  repo: string;
+  /** The pinned commit of the default branch; null before the scan has fetched it. */
+  commit: string | null;
+  state: ScanState;
+  /** The spend cap in dollars; null means none. */
+  capUsd: number | null;
+  costUsd: number;
+  /** Estimated total cost, recorded after the threat model; null before. */
+  estimateUsd: number | null;
+  areasTotal: number;
+  areasDone: number;
+  /** Findings that survived verification so far. */
+  findingCount: number;
+  startedBy: string;
+  startedAt: string;
+  endedAt: string | null;
+  error: string | null;
+}
+
+export interface FindingSummary {
+  repo: string;
+  number: number;
+  /** `<repo>:finding:<n>` */
+  key: string;
+  scanId: number;
+  title: string;
+  severity: FindingSeverity;
+  /** The model judged that it needs an immediate release. */
+  urgent: boolean;
+  /** Name of the scanned area. */
+  area: string;
+  state: FindingState;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface FindingRef { path: string; line: number; /** What the line shows; empty when the model gave none. */ claim: string }
+export interface FindingVerification { kind: "test" | "reasoning"; result: string; notes: string; /** Verify score, 1 to 10; null for a finding that was not verified. */ score: number | null; /** A failing test the model proposed; the scan does not run it. */ proposedTest: string | null }
+/** One model call of the finding's scan that concerns it: the threat model, its area's scan, its verification. */
+export interface FindingCall { kind: "model" | "area" | "verify"; at: string; endedAt: string | null; ok: boolean; costUsd: number | null }
+
+export interface FindingView extends FindingSummary {
+  refs: FindingRef[];
+  reach: string;
+  impact: string;
+  verification: FindingVerification | null;
+  /** The unified diff of the private fix, once there is one. */
+  fixDiff: string | null;
+  fixPr: number | null;
+  ghsaId: string | null;
+  /** The reason given when dismissing. */
+  reason: string | null;
+  decidedBy: string | null;
+  timeline: FindingCall[];
+}
+
+export interface SecurityOverview { scans: ScanView[]; findings: FindingSummary[] }

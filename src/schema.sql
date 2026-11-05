@@ -1459,3 +1459,80 @@ CREATE TABLE IF NOT EXISTS preapprovals (
   fix_id INTEGER
 );
 CREATE INDEX IF NOT EXISTS preapprovals_item ON preapprovals(repo, number, id);
+
+-- Security deep scan (src/security). Private to operators and maintainers; never an input of the planner.
+-- security_scans.state: modeling | scanning | verifying | done | stopped | capped | failed (modeling includes waiting in the job queue).
+CREATE TABLE IF NOT EXISTS security_scans (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  repo TEXT NOT NULL,
+  commit_sha TEXT,
+  state TEXT NOT NULL,
+  cap_usd REAL,                       -- null = no cap
+  cost_usd REAL NOT NULL DEFAULT 0,
+  estimate_usd REAL,
+  areas_total INTEGER NOT NULL DEFAULT 0,
+  areas_done INTEGER NOT NULL DEFAULT 0,
+  started_by TEXT NOT NULL,
+  started_at TEXT NOT NULL,
+  ended_at TEXT,
+  error TEXT,
+  job_id INTEGER,
+  threat_model TEXT                   -- JSON {summary, entryPoints}
+);
+CREATE INDEX IF NOT EXISTS security_scans_repo ON security_scans(repo, id);
+
+CREATE TABLE IF NOT EXISTS security_areas (
+  scan_id INTEGER NOT NULL,
+  idx INTEGER NOT NULL,
+  name TEXT NOT NULL,
+  paths TEXT NOT NULL,                -- JSON array
+  entry_points TEXT NOT NULL,         -- JSON array of names
+  risk INTEGER NOT NULL,
+  why TEXT,
+  state TEXT NOT NULL DEFAULT 'pending',   -- pending | done | failed
+  cost_usd REAL NOT NULL DEFAULT 0,
+  PRIMARY KEY (scan_id, idx)
+) WITHOUT ROWID;
+
+-- state: new | dismissed | backlog | fixing | ready | landing | landed | advisory | awaiting-admin | published, and two internal
+-- states the API never lists: unverified (found, not yet checked) and disproved (kept so a later scan does not raise it again).
+CREATE TABLE IF NOT EXISTS security_findings (
+  repo TEXT NOT NULL,
+  number INTEGER NOT NULL,            -- per-repo sequence; item key <repo>:finding:<n>
+  scan_id INTEGER NOT NULL,
+  area TEXT NOT NULL,
+  title TEXT NOT NULL,
+  severity TEXT NOT NULL,
+  urgent INTEGER NOT NULL DEFAULT 0,
+  state TEXT NOT NULL,
+  refs TEXT NOT NULL,                 -- JSON [{path, line, claim}]
+  category TEXT,
+  reach TEXT NOT NULL,
+  impact TEXT NOT NULL,
+  verification TEXT,                  -- JSON {kind, result, notes, score, proposedTest}
+  fingerprint TEXT NOT NULL,
+  fix_commit TEXT,
+  fix_pr INTEGER,
+  ghsa_id TEXT,
+  fork TEXT,
+  reason TEXT,
+  decided_by TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (repo, number)
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS security_findings_scan ON security_findings(scan_id, number);
+
+-- The model calls of a scan, for the cost total and a finding's timeline. kind: model | area | verify.
+CREATE TABLE IF NOT EXISTS security_calls (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  scan_id INTEGER NOT NULL,
+  kind TEXT NOT NULL,
+  area_idx INTEGER,
+  finding_number INTEGER,
+  started_at TEXT NOT NULL,
+  ended_at TEXT,
+  ok INTEGER NOT NULL DEFAULT 0,
+  cost_usd REAL
+);
+CREATE INDEX IF NOT EXISTS security_calls_scan ON security_calls(scan_id, id);
