@@ -1,8 +1,9 @@
 import { useRef, useState, type KeyboardEvent } from "react";
 import { BellIcon, BellSlashIcon, XIcon } from "@phosphor-icons/react";
 import { useApi } from "../../api/client";
-import type { ConversationCard, Decision, User } from "../../api/types";
+import type { CardEdit, ConversationCard, Decision, User } from "../../api/types";
 import { Button } from "../../ui/atoms/Button";
+import { StepDraft } from "../../ui/molecules/StepDraft";
 import { ErrorLine } from "../../ui/atoms/ErrorLine";
 import { cn } from "../../ui/cn";
 import { canActOn } from "../decisions/DecisionDetail";
@@ -14,6 +15,7 @@ const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
 const OTHER = "other";
 
 const NOTE_MAX = 500;
+const area = "block w-full resize-none rounded border border-line bg-sunken px-2.5 py-2 text-sm leading-5 outline-none focus:border-accent/60";
 
 /**
  * The outcomes of an open question as one pick-one list: the decision's options in order, outcomes only Opus offers
@@ -27,7 +29,10 @@ export function AnswerGroup({ d, user, resolutions, onAnswered }: { d: Decision;
   const [sel, setSel] = useState<string | null>(null);
   const [texts, setTexts] = useState<Record<number, string>>({});
   const [skips, setSkips] = useState<Record<number, number[]>>({});
-  const [editing, setEditing] = useState(false);
+  const [issues, setIssues] = useState<Record<number, { title: string; body: string }>>({});
+  const [instr, setInstr] = useState<Record<number, string>>({});
+  // The drafts being edited, as "<card id>:<text|issue|fixup>".
+  const [editing, setEditing] = useState<Set<string>>(new Set());
   const [armed, setArmed] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
@@ -56,7 +61,7 @@ export function AnswerGroup({ d, user, resolutions, onAnswered }: { d: Decision;
   const select = (id: string) => {
     setError(undefined);
     setArmed(false);
-    setEditing(false);
+    setEditing(new Set());
     if (id.startsWith("o:")) {
       setSel(null);
       wf.choose(id.slice(2));
@@ -73,6 +78,16 @@ export function AnswerGroup({ d, user, resolutions, onAnswered }: { d: Decision;
     select(ids[next]!);
     refs.current[next]?.focus();
   };
+  const key = (c: ConversationCard, what: string) => `${c.id}:${what}`;
+  const isEditing = (c: ConversationCard, what: string) => editing.has(key(c, what));
+  const toggleEdit = (c: ConversationCard, what: string) =>
+    setEditing((s) => {
+      const n = new Set(s);
+      if (!n.delete(key(c, what))) n.add(key(c, what));
+      return n;
+    });
+  const issueOf = (c: ConversationCard) => issues[c.id] ?? { title: c.issue!.title, body: c.issue!.body };
+  const instrOf = (c: ConversationCard) => instr[c.id] ?? c.fixup!.instructions;
   const toggleStep = (c: ConversationCard, i: number) => {
     setArmed(false);
     setSkips((s) => ({ ...s, [c.id]: skipped(c).includes(i) ? skipped(c).filter((x) => x !== i) : [...skipped(c), i] }));
@@ -91,7 +106,13 @@ export function AnswerGroup({ d, user, resolutions, onAnswered }: { d: Decision;
     setBusy(true);
     try {
       if (card) {
-        if (text !== undefined && text !== card.text) await api.conversations.editCard(card.id, { text });
+        const edit: CardEdit = {};
+        if (text !== undefined && text !== card.text) edit.text = text;
+        const iss = issues[card.id];
+        if (iss && card.issue && !skipped(card).includes(card.issue.step) && (iss.title !== card.issue.title || iss.body !== card.issue.body)) edit.issue = iss;
+        const ins = instr[card.id];
+        if (ins !== undefined && card.fixup && !skipped(card).includes(card.fixup.step) && ins !== card.fixup.instructions) edit.instructions = ins;
+        if (Object.keys(edit).length) await api.conversations.editCard(card.id, edit);
         const skip = skipped(card);
         await api.conversations.doCard(card.id, { ...(skip.length ? { skip } : {}), ...(note.trim() ? { note: note.trim() } : {}) });
         onAnswered?.();
@@ -178,31 +199,56 @@ export function AnswerGroup({ d, user, resolutions, onAnswered }: { d: Decision;
                   </button>
                 </div>
                 {i === ci && showText && (
-                  <div className="mb-1 mt-1 space-y-1">
-                    {editing ? (
-                      <textarea
-                        value={text}
-                        onChange={(e) => setTexts((t) => ({ ...t, [c.id]: e.target.value }))}
-                        rows={5}
-                        aria-label="Comment text"
-                        className="block w-full resize-none rounded border border-line bg-sunken px-2.5 py-2 text-sm leading-5 outline-none focus:border-accent/60"
-                      />
-                    ) : (
-                      <blockquote className="whitespace-pre-wrap border-l-2 border-line-strong pl-3 leading-5 text-ink/75">{text}</blockquote>
-                    )}
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      className="max-md:h-11"
-                      disabled={busy}
-                      onClick={() => {
-                        if (editing) setTexts((t) => ({ ...t, [c.id]: c.text ?? "" }));
-                        setEditing(!editing);
-                      }}
-                    >
-                      {editing ? "Cancel edit" : "Edit"}
-                    </Button>
-                  </div>
+                  <StepDraft
+                    editing={isEditing(c, "text")}
+                    onToggle={() => {
+                      if (isEditing(c, "text")) setTexts((t) => ({ ...t, [c.id]: c.text ?? "" }));
+                      toggleEdit(c, "text");
+                    }}
+                    disabled={busy}
+                    preview={<blockquote className="whitespace-pre-wrap border-l-2 border-line-strong pl-3 leading-5 text-ink/75">{text}</blockquote>}
+                    editor={<textarea value={text} onChange={(e) => setTexts((t) => ({ ...t, [c.id]: e.target.value }))} rows={5} aria-label="Comment text" className={area} />}
+                  />
+                )}
+                {c.issue && i === c.issue.step && !off && (
+                  <StepDraft
+                    editing={isEditing(c, "issue")}
+                    onToggle={() => {
+                      if (isEditing(c, "issue")) setIssues((m) => ({ ...m, [c.id]: { title: c.issue!.title, body: c.issue!.body } }));
+                      toggleEdit(c, "issue");
+                    }}
+                    disabled={busy}
+                    preview={
+                      <div className="border-l-2 border-line-strong pl-3 leading-5 text-ink/75">
+                        <p className="font-medium text-ink/90">{issueOf(c).title}</p>
+                        <p className="mt-0.5 whitespace-pre-wrap">{issueOf(c).body}</p>
+                      </div>
+                    }
+                    editor={
+                      <div className="space-y-1.5">
+                        <input
+                          value={issueOf(c).title}
+                          maxLength={120}
+                          onChange={(e) => setIssues((m) => ({ ...m, [c.id]: { ...issueOf(c), title: e.target.value } }))}
+                          aria-label="Issue title"
+                          className="block h-8 w-full rounded border border-line bg-sunken px-2.5 text-sm outline-none focus:border-accent/60 max-md:h-11"
+                        />
+                        <textarea value={issueOf(c).body} onChange={(e) => setIssues((m) => ({ ...m, [c.id]: { ...issueOf(c), body: e.target.value } }))} rows={6} aria-label="Issue body" className={area} />
+                      </div>
+                    }
+                  />
+                )}
+                {c.fixup && i === c.fixup.step && !off && (
+                  <StepDraft
+                    editing={isEditing(c, "fixup")}
+                    onToggle={() => {
+                      if (isEditing(c, "fixup")) setInstr((m) => ({ ...m, [c.id]: c.fixup!.instructions }));
+                      toggleEdit(c, "fixup");
+                    }}
+                    disabled={busy}
+                    preview={<blockquote className="whitespace-pre-wrap border-l-2 border-line-strong pl-3 leading-5 text-ink/75">{instrOf(c)}</blockquote>}
+                    editor={<textarea value={instrOf(c)} maxLength={1500} onChange={(e) => setInstr((m) => ({ ...m, [c.id]: e.target.value }))} rows={5} aria-label="Fix-up instructions" className={area} />}
+                  />
                 )}
               </li>
             );

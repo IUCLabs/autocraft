@@ -12,6 +12,7 @@ import { FeedbackBox } from "../decisions/FeedbackBox";
 import { useLocal } from "../decisions/state";
 import { AnsweredState, canActOn } from "../decisions/DecisionDetail";
 import { RecommendationLine } from "../../ui/molecules/RecommendationLine";
+import { OpusWorking } from "../../ui/molecules/OpusWorking";
 import { TimeAgo } from "../../ui/atoms/TimeAgo";
 import { decisionPath } from "../../lib/links";
 
@@ -74,6 +75,7 @@ function Question({ d, siblings, resolutions, here, onAnswered, feedback }: { d:
       <p className="mt-2 text-pretty text-[15px] font-semibold leading-6">
         <Refs text={d.question} repo={d.repo} />
       </p>
+      {d.preparing && !d.answer && <OpusWorking text="Opus is preparing options…" className="mt-2" />}
       <div className="mt-2"><RecommendationLine d={d} /></div>
       <AnswerGroup d={d} user={user} resolutions={resolutions ?? []} onAnswered={onAnswered} />
       {/* With several open questions the composer serves one; the others get their own box. */}

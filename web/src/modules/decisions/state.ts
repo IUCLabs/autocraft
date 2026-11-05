@@ -5,12 +5,12 @@ import { decisionPath, parseDecisionRoute } from "../../lib/links";
 import type { Decision, DecisionFilter, DecisionKind } from "../../api/types";
 
 export const KIND_LABEL: Record<DecisionKind, string> = {
-  scope: "Scope",
+  scope: "Scope check",
   duplicate: "Duplicates",
-  close: "Close",
-  merge: "Merge",
+  close: "Close approval",
+  merge: "Merge approval",
   split: "Split",
-  other: "Other",
+  other: "Question",
 };
 export const KINDS = Object.keys(KIND_LABEL) as DecisionKind[];
 
