@@ -16,8 +16,9 @@ test("a call that goes silent is stopped and flagged", async () => {
 
 test("a call inside a long tool call is not stopped", async () => {
   let busy = true;
-  setTimeout(() => { busy = false; }, 900);
-  const r = await exec("sh", ["-c", `sleep 1.2; echo '{"type":"result"}'`], "", undefined, 60_000, undefined, undefined, false, { idleMs: 400, busy: () => busy });
+  // Silent for 1.2 s against a 0.8 s limit; busy until 1 s, so the earliest stop is near 1.8 s.
+  setTimeout(() => { busy = false; }, 1000);
+  const r = await exec("sh", ["-c", `sleep 1.2; echo '{"type":"result"}'`], "", undefined, 60_000, undefined, undefined, false, { idleMs: 800, busy: () => busy });
   assert.equal(r.idle, undefined);
   assert.equal(r.code, 0);
 });
