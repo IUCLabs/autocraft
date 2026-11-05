@@ -19,7 +19,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import xterm from "@xterm/headless";
+import type xterm from "@xterm/headless";
 import { claudeBin } from "./box.ts";
 import { childEnv } from "./status.ts";
 import { extractScreenToken, extractToken } from "./token.ts";
@@ -40,8 +40,7 @@ export const timing = { urlMs: 30_000, codeMs: 60_000, enterMs: 300, maxMs: 10 *
 
 /** Checks and stores a token: true when it was saved, false when the check failed; a throw means it could not be saved. */
 export type TokenSink = (token: string, signal: AbortSignal) => Promise<boolean>;
-const { Terminal } = xterm;
-type Terminal = InstanceType<typeof Terminal>;
+type Terminal = InstanceType<typeof xterm.Terminal>;
 type Live = { kind: LoginKind; configDir: string; onToken?: TokenSink; child: ChildProcess; info: LoginInfo; out: string; code?: string; term?: Terminal; screen: string; busy?: boolean; abort: AbortController; codeTimer?: NodeJS.Timeout; timers: NodeJS.Timeout[]; onDone?: () => void };
 const live = new Map<string, Live>();
 const last = new Map<string, LoginInfo>();
@@ -135,7 +134,8 @@ export async function startLogin(id: string, configDir: string, onDone?: () => v
   const cmd = `stty cols 1000 rows 50 2>/dev/null; exec ${shq(claudeBin())} ${kind === "token" ? "setup-token" : "auth login --claudeai"}`;
   const child = spawn("script", ["-q", "-f", "-e", "-c", cmd, "/dev/null"], { env: childEnv(configDir, { BROWSER: "true" }), stdio: ["pipe", "pipe", "ignore"] });
   const l: Live = { kind, configDir, onToken, child, info: { state: "starting", url: null, message: null, kind }, out: "", screen: "", abort: new AbortController(), timers: [], onDone };
-  if (kind === "token") l.term = new Terminal({ cols: 1000, rows: 50, scrollback: 200, allowProposedApi: true });
+  // Loaded here, not at the top: the build worker runs this code from a git archive without node_modules, and the CLI loads every module.
+  if (kind === "token") l.term = new (await import("@xterm/headless")).default.Terminal({ cols: 1000, rows: 50, scrollback: 200, allowProposedApi: true });
   live.set(id, l);
   last.delete(id);
   l.timers.push(setTimeout(() => finish(id, l, "failed", "the sign-in timed out"), timing.maxMs));
