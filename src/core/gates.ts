@@ -54,7 +54,8 @@ export function gates(f: PrFacts | ItemFacts, a: Want, by: By): string | null {
   if (by === "pipeline" && !f.pipelineOn) return "The pipeline is off";
   // A stage that stopped itself (circuit breaker) writes nothing until an operator resumes it, whoever asks.
   const stage = tripStageOf(a);
-  const tripped = stage && (f as { tripped?: Partial<Record<string, string>> }).tripped?.[stage];
+  const trips = (f as { tripped?: Partial<Record<string, string>> }).tripped;
+  const tripped = stage && (trips?.[stage] ?? trips?.[`${stage}:${f.repo}`]);
   if (tripped) return `${stage[0]!.toUpperCase()}${stage.slice(1)} is paused: ${tripped}`;
   const need = approvalOf(f as { pushable?: boolean }, a);
   if (!need) return null;

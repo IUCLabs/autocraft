@@ -92,7 +92,14 @@ export function tripEvidence(db: DatabaseSync, stage: string): string[] {
   try { return r ? (JSON.parse(r.evidence) as string[]) : []; } catch { return []; }
 }
 
-function trip(db: DatabaseSync, stage: TripStage, reason: string, evidence: string[], at: string): void {
+/**
+ * The breaker a merge on `repo` trips: on a test repo (setting test_repo:<repo>) its own `merge:<repo>`, which holds merges on
+ * that repo only, so a test repo's deliberate defects never stop the whole pipeline.
+ */
+const mergeKey = (db: DatabaseSync, repo: string): string =>
+  db.prepare("SELECT 1 FROM main.settings WHERE key = ?").get(`test_repo:${repo}`) ? `merge:${repo}` : "merge";
+
+function trip(db: DatabaseSync, stage: string, reason: string, evidence: string[], at: string): void {
   const r = tripRow(db, stage);
   if (r?.active) return;
   db.prepare(`INSERT INTO stage_trips (stage, active, reason, evidence, tripped_at) VALUES (?, 1, ?, ?, ?)
@@ -117,17 +124,17 @@ const weMerged = (db: DatabaseSync, repo: string, number: number): { at: string 
 
 /** The default branch of `repo` is red and its culprit is PR `number` (main CI): trips the merge path when we merged that PR after the last resume. */
 export function mainRedAfterMerge(db: DatabaseSync, repo: string, number: number, sha: string, at = new Date().toISOString()): void {
-  const m = weMerged(db, repo, number);
-  if (!m || m.at <= sinceOf(db, "merge")) return;
-  trip(db, "merge", `main CI of ${repo} is red after our merge of #${number}`, [`${repo}#${number}`, `${repo}@${sha.slice(0, 8)}`], at);
+  const m = weMerged(db, repo, number), key = mergeKey(db, repo);
+  if (!m || m.at <= sinceOf(db, key)) return;
+  trip(db, key, `main CI of ${repo} is red after our merge of #${number}`, [`${repo}#${number}`, `${repo}@${sha.slice(0, 8)}`], at);
 }
 
 /** A post-merge review of a PR we merged found defects. */
 export function mergeDefect(db: DatabaseSync, repo: string, number: number, defects: number, at = new Date().toISOString()): void {
   if (defects < 1) return;
-  const m = weMerged(db, repo, number);
-  if (!m || m.at <= sinceOf(db, "merge")) return;
-  trip(db, "merge", `the post-merge review of ${repo}#${number} found ${defects} defect${defects === 1 ? "" : "s"}`, [`${repo}#${number}`], at);
+  const m = weMerged(db, repo, number), key = mergeKey(db, repo);
+  if (!m || m.at <= sinceOf(db, key)) return;
+  trip(db, key, `the post-merge review of ${repo}#${number} found ${defects} defect${defects === 1 ? "" : "s"}`, [`${repo}#${number}`], at);
 }
 
 export class TripError extends Error {
@@ -136,7 +143,8 @@ export class TripError extends Error {
 
 /** An operator clears a trip. Pushes and merges before this moment no longer count. */
 export function resumeStage(db: DatabaseSync, stage: string, by: string): void {
-  if (!(TRIP_STAGES as readonly string[]).includes(stage)) throw new TripError(`no such stage: ${stage}; stages: ${TRIP_STAGES.join(", ")}`);
+  // `merge:<repo>` is a test repo's own merge breaker.
+  if (!(TRIP_STAGES as readonly string[]).includes(stage.split(":")[0]!)) throw new TripError(`no such stage: ${stage}; stages: ${TRIP_STAGES.join(", ")}`);
   const r = tripRow(db, stage);
   if (!r?.active) throw new TripError(`${stage} is not paused by the circuit breaker`);
   const at = new Date().toISOString();
