@@ -7,7 +7,7 @@ import { optionsOf, getDecision, type DecisionRow, type Kind } from "../decision
 import { backlogHeldSql, notOwnIntegrationSql } from "../dupes/held.ts";
 import { ALL_LABELS, isTypeLabel, sameLabel } from "../labels/set.ts";
 import { pilotSql } from "../pilot.ts";
-import { COMMENT_MAX, RESOLVE_MAX, type CardKind } from "./types.ts";
+import { CLOSE_REASONS, COMMENT_MAX, RESOLVE_MAX, type CardKind, type CloseReason } from "./types.ts";
 
 export type CardParams =
   | { kind: "comment"; text: string }
@@ -15,7 +15,8 @@ export type CardParams =
   | { kind: "label"; label: string }
   | { kind: "backlog"; decision: string; stamp?: string }
   | { kind: "duplicate"; of: number }
-  | { kind: "resolve"; decision: string; summary: string; stamp?: string };
+  | { kind: "resolve"; decision: string; summary: string; stamp?: string }
+  | { kind: "close"; reason: CloseReason; pr: boolean };
 
 export type NewCard = { params: CardParams; text: string | null; description: string };
 
@@ -35,12 +36,30 @@ export function decisionStamp(db: DatabaseSync, d: DecisionRow): string {
 
 /** The GitHub write that answering with this card's option causes later (the Act step does it), or null when it writes nothing. */
 export function cardEffect(db: DatabaseSync, p: CardParams): string | null {
+  if (p.kind === "close") return p.pr ? "closes the PR on GitHub" : `closes the issue as ${p.reason === "completed" ? "completed" : "not planned"} on GitHub`;
   if (p.kind !== "answer" || !p.decision) return null;
   const d = getDecision(db, p.decision);
   return d ? writeEffect(d.kind as Kind, p.option) : null;
 }
 
-export function describe(db: DatabaseSync, repo: string, n: number, p: CardParams): string {
+/** The primary button's label: the action in a few words, from the parameters and the item. */
+export function buttonLabel(db: DatabaseSync, p: CardParams): string {
+  switch (p.kind) {
+    case "comment": return "Post comment";
+    case "answer": {
+      const d = getDecision(db, p.decision);
+      const o = d ? optionsOf(d).find((x) => x.key === p.option) : undefined;
+      return `Answer "${o?.label ?? p.option}"`;
+    }
+    case "label": return "Add label";
+    case "backlog": return "Move to Backlog";
+    case "resolve": return "Close decision";
+    case "duplicate": return "Close as duplicate";
+    case "close": return p.pr ? "Close PR" : "Close issue";
+  }
+}
+
+export function describe(db: DatabaseSync, repo: string, n: number, p: CardParams, text: string | null = null): string {
   const it = ref(repo, n);
   switch (p.kind) {
     case "comment": return `Post the comment below on ${it}`;
@@ -53,6 +72,10 @@ export function describe(db: DatabaseSync, repo: string, n: number, p: CardParam
     case "label": return `Add the label "${p.label}" to ${it}`;
     case "backlog": return `Put ${it} in the Backlog: nothing is written to GitHub and no later step takes it up`;
     case "resolve": return `Close the open decision on ${it} as handled in the conversation ("${p.summary}"): nothing is written to GitHub`;
+    case "close": {
+      const how = p.pr ? "" : p.reason === "completed" ? " as completed" : " as not planned";
+      return `${text ? `Post the comment below on ${it}, then close` : "Close"} ${it}${how}; its open decisions are closed as handled`;
+    }
     case "duplicate": return `Comment "Duplicate of #${p.of}." on ${it} and close it as a duplicate of ${ref(repo, p.of)}`;
   }
 }
@@ -121,7 +144,7 @@ export function validateCard(db: DatabaseSync, repo: string, n: number, raw: unk
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return { note: "dropped a card that is not an object" };
   const c = raw as Record<string, unknown>;
   const kind = c.kind;
-  const done = (params: CardParams, text: string | null = null): { card: NewCard } => ({ card: { params, text, description: describe(db, repo, n, params) } });
+  const done = (params: CardParams, text: string | null = null): { card: NewCard } => ({ card: { params, text, description: describe(db, repo, n, params, text) } });
   switch (kind as CardKind) {
     case "comment": {
       const text = typeof c.text === "string" ? cleanComment(c.text) : "";
@@ -165,6 +188,23 @@ export function validateCard(db: DatabaseSync, repo: string, n: number, raw: unk
       if (why) return { note: `dropped a duplicate card: ${why}` };
       return done({ kind: "duplicate", of: of as number });
     }
+    case "close": {
+      const reason = c.reason;
+      if (!CLOSE_REASONS.includes(reason as CloseReason)) return { note: "dropped a close card without the reason completed or not_planned" };
+      const why = closeRefusal(db, repo, n);
+      if (why) return { note: `dropped a close card: ${why}` };
+      const row = db.prepare("SELECT kind, state FROM items WHERE repo = ? AND number = ?").get(repo, n) as { kind: string; state: string };
+      if (row.state !== "OPEN") return { note: `dropped a close card: ${ref(repo, n)} is not open` };
+      let text: string | null = null;
+      if (c.text !== undefined && c.text !== null && c.text !== "") {
+        text = typeof c.text === "string" ? cleanComment(c.text) : "";
+        if (!text) return { note: "dropped a close card whose comment is empty after cleaning" };
+        if (REFERENCE_LEAK.test(text) || drop.has(text)) return { note: "dropped a close card whose comment mentions the reference folder or its documentation" };
+        if (text.length > COMMENT_MAX) return { note: `dropped a close card whose comment is longer than ${COMMENT_MAX} characters` };
+      }
+      const pr = row.kind === "pr";
+      return done({ kind: "close", reason: reason as CloseReason, pr }, text);
+    }
     default:
       return { note: `dropped a card with unknown action "${String(kind).slice(0, 40)}"` };
   }
@@ -183,7 +223,7 @@ export function commentTexts(reply: string): { field: string; text: string }[] {
   try { list = JSON.parse(m[1]!); } catch { return []; }
   if (!Array.isArray(list)) return [];
   return list.slice(0, 20).flatMap((c: { kind?: unknown; text?: unknown }, i) => {
-    const text = c && c.kind === "comment" && typeof c.text === "string" ? cleanComment(c.text) : "";
+    const text = c && (c.kind === "comment" || c.kind === "close") && typeof c.text === "string" ? cleanComment(c.text) : "";
     return text ? [{ field: `cards[${i}].text`, text }] : [];
   });
 }

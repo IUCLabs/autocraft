@@ -14,7 +14,9 @@ export type ConversationInput = {
   reference?: boolean;
 };
 
-export const CARD_KINDS = ["comment", "answer", "label", "backlog", "duplicate", "resolve"] as const;
+export const CARD_KINDS = ["comment", "answer", "label", "backlog", "duplicate", "resolve", "close"] as const;
+export const CLOSE_REASONS = ["completed", "not_planned"] as const;
+export type CloseReason = (typeof CLOSE_REASONS)[number];
 export type CardKind = (typeof CARD_KINDS)[number];
 export type TurnKind = "operator" | "opus" | "system";
 

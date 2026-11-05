@@ -1689,17 +1689,19 @@ export type ConversationCardState = "proposed" | "running" | "done" | "failed" |
 /** An action Opus proposed. `title` is written by the server from the card's parameters; `text` is a comment card's editable text. */
 export interface ConversationCard {
   id: number;
-  kind: "comment" | "answer" | "label" | "backlog" | "duplicate";
+  kind: "comment" | "answer" | "label" | "backlog" | "duplicate" | "resolve" | "close";
   title: string;
+  /** The primary button: the action in a few words, written by the server from the card's parameters. */
+  label: string;
   text?: string;
-  /** An answer card whose option writes to GitHub: what it does, e.g. "closes the PR on GitHub". Do it asks for a second confirmation. */
+  /** An answer or close card that writes to GitHub: what it does, e.g. "closes the PR on GitHub". The button asks for a second confirmation. */
   writes?: string;
   state: ConversationCardState;
   /** Set when state is done; `link` is empty when the action wrote nothing on GitHub. */
   done?: { at: string; link: string; label: string };
   /** Set when state is failed. */
   error?: string;
-  /** Who pressed Do it or dismissed the card, and when. */
+  /** Who pressed the button or dismissed the card, and when. */
   by?: string;
   at?: string;
   /** The text was edited by an operator before it ran. */
