@@ -53,7 +53,7 @@ export type CommandResult = { code: number; stdout: string; stderr: string };
 export type MergeDeps = {
   querier: Querier;
   /** Runs the merge command; throws only when it can't be started. */
-  run: (cmd: string, args: string[]) => Promise<CommandResult>;
+  run: (cmd: string, args: string[], appEnv?: Record<string, string>) => Promise<CommandResult>;
   now: () => Date;
   /** `$AUTOCRAFT_MERGE_CMD`, default the built-in `safe-merge`. */
   mergeCommand: string;
@@ -86,9 +86,9 @@ export type MergeSummary = {
   asked: string[];
 };
 
-export function spawnRun(cmd: string, args: string[], env?: Record<string, string>): Promise<CommandResult> {
+export function spawnRun(cmd: string, args: string[], env?: Record<string, string>, replaceEnv = false): Promise<CommandResult> {
   return new Promise((resolve, reject) => {
-    const p = spawn(cmd, args, { stdio: ["ignore", "pipe", "pipe"], env: env ? { ...process.env, ...env } : process.env });
+    const p = spawn(cmd, args, { stdio: ["ignore", "pipe", "pipe"], env: replaceEnv ? env : env ? { ...process.env, ...env } : process.env });
     let stdout = "", stderr = "";
     p.stdout.on("data", (d) => (stdout += d));
     p.stderr.on("data", (d) => (stderr += d));
@@ -98,7 +98,9 @@ export function spawnRun(cmd: string, args: string[], env?: Record<string, strin
 }
 
 /** Runs the merge command; the built-in name runs `autocraft safe-merge` from this checkout. */
-export function mergeRun(cmd: string, args: string[]): Promise<CommandResult> {
+export function mergeRun(cmd: string, args: string[], appEnv?: Record<string, string>): Promise<CommandResult> {
+  // `appEnv` is the app lane's whole child environment: the merge runs with the installation token only.
+  if (appEnv) return cmd === DEFAULT_MERGE_COMMAND ? spawnRun(process.execPath, ["--no-warnings", CLI, "safe-merge", ...args], { ...appEnv, [MERGE_RECORDED_ENV]: "1" }, true) : spawnRun(cmd, args, appEnv, true);
   return cmd === DEFAULT_MERGE_COMMAND ? spawnRun(process.execPath, ["--no-warnings", CLI, "safe-merge", ...args], { [MERGE_RECORDED_ENV]: "1" }) : spawnRun(cmd, args);
 }
 

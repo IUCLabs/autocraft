@@ -20,6 +20,7 @@ import { setWorkspaceExcluded, workspaceExcluded } from "../../sandbox/workspace
 import { setSingleMergeMax, singleMergeMax } from "../../merge/single.ts";
 import { setRepoPipeline } from "../../pilot.ts";
 import { countPlan, planLabels } from "../../labels/plan.ts";
+import { repoIdentity, setRepoIdentityChecked } from "../../github/identity.ts";
 import { listAll, RepoError, trackRepoChecked, untrackRepo } from "../../repos.ts";
 import { contributors, getRule, setOverride, setRule, tierOf, type Contributor as Row, type Rule } from "../../whitelist.ts";
 import { audit } from "../audit.ts";
@@ -40,7 +41,7 @@ export const operatorOnly = (a: string) => a.startsWith("access-") || a.startsWi
 export const AUDIT_ACTIONS = [
   "answer", "undo", "adopt", "opinion", "opinion-retract", "comment", "override", "rule", "access-add", "access-remove", "access-role",
   "session-revoke", "mcp-token-create", "mcp-token-revoke", "sign-in", "sign-in-refused", "account-add", "account-change", "account-login-start", "account-login-code", "account-login-cancel", "account-token-start", "account-token-code", "account-token-cancel", "account-token-set", "account-token-remove", "account-sign-out", "account-refresh", "repo-track", "repo-untrack", "reference-import", "labels-approve", "labels-revoke", "labels-apply", "merge-approve", "merge-revoke", "comment-approve", "comment-revoke", "act-comment", "act-close", "act-reopen", "act-open-issue", "act-unlabel", "act-transfer", "act-request-reviewers", "act-skip", "push-approve", "push-revoke", "fixup-push", "fixup-comment", "fixup-comment-edit", "fixissue-approve", "fixissue-revoke", "mainfix-approve", "mainfix-revoke", "optional-check-add", "optional-check-remove", "fixissue-push", "fixissue-pr", "fixissue-comment",
-  "job-request", "job-cancel", "security-scan-start", "security-scan-stop", "security-finding-dismiss", "security-finding-backlog", "security-finding-reopen", "security-finding-fix", "security-finding-land", "security-finding-advisory", "security-finding-publish", "security-land-push", "security-land", "security-land-opened", "security-landed", "security-advisory", "security-advisory-fork", "security-advisory-push", "security-advisory-pr", "security-advisory-ready", "security-publish", "security-published", "security-cve", "pipeline-switch", "stage-limit", "limit-reset", "pilot-set", "pilot-clear", "repo-pipeline", "review-post", "review-edit", "batch-again", "reopen", "backlog-bulk", "withdraw",
+  "job-request", "job-cancel", "security-scan-start", "security-scan-stop", "security-finding-dismiss", "security-finding-backlog", "security-finding-reopen", "security-finding-fix", "security-finding-land", "security-finding-advisory", "security-finding-publish", "security-land-push", "security-land", "security-land-opened", "security-landed", "security-advisory", "security-advisory-fork", "security-advisory-push", "security-advisory-pr", "security-advisory-ready", "security-publish", "security-published", "security-cve", "pipeline-switch", "stage-limit", "limit-reset", "pilot-set", "pilot-clear", "repo-pipeline", "repo-identity", "review-post", "review-edit", "batch-again", "reopen", "backlog-bulk", "withdraw",
   "single-merge-max", "label-create", "batch-pr-close", "fork-create", "assign", "unassign", "merge", "batch-push", "batch-pr", "shared-repos",
   "fasttrack-add", "fasttrack-remove", "merge-hold", "merge-release", "batch-remove", "batch-stop", "areas-edit", "areas-accept", "ci-approve", "ci-revoke", "ci-run-approve", "ci-rerun", "cifix-push", "cifix-comment", "cifix-check", "postmerge-file", "postmerge-file-one", "postmerge-review", "postmerge-backfill",
   "act-group-applied", "answer-used", "batch-end-too-late", "batch-hold", "batch-merged-after-end", "batch-start", "carry-queued", "classify-run", "compare-again", "conflict-comment", "conflict-comment-edit", "conflict-push", "conversation-card", "conversation-card-dismiss", "conversation-card-edit", "decision-withdrawn", "duplicate-answer", "duplicate-group-ended", "duplicate-member-released", "duplicate-superseded", "env-change", "env-create", "env-rotate-key", "fix-again", "fixissue-check", "fixissue-claim", "fixissue-unclaim", "fixup-check", "item-gone", "merge-answer-superseded", "merge-held-for-discussion", "merge-question-withdrawn", "merge-refused", "preapproval", "github-app-register", "github-app-register-failed", "github-app-remove", "github-app-login-mode", "github-app-link-create", "github-app-link-revoke", "github-app-link-use", "github-app-manager", "operator-fixup", "review-again", "task-cancel", "verify-again", "workspace-exclude",
@@ -265,6 +266,7 @@ export function allRepos(db: DatabaseSync, req: Req): TrackedRepo[] {
     optionalChecks: r.tracked ? optionalChecks(db, r.name) : [],
     seenChecks: r.tracked ? seenChecks(db, r.name) : [],
     pipeline: !!r.tracked && !!r.pipeline,
+    identity: r.tracked ? repoIdentity(db, r.name) : "legacy",
   }));
 }
 
@@ -409,6 +411,22 @@ export function pipelineSwitch(db: DatabaseSync, req: Req, on: boolean): Tracked
     }
   });
   if (!changed) throw new HttpError(409, `the pipeline is already ${on ? "on" : "off"} for ${name}`);
+  return allRepos(db, req);
+}
+
+// Only an operator moves a repo's GitHub writes between the box account (legacy) and the GitHub App (app).
+export async function identitySwitch(db: DatabaseSync, req: Req): Promise<TrackedRepo[]> {
+  requireOperator(req, "set the repo identity");
+  const b = body(req);
+  const name = required(b.name, "name");
+  const changed = await refusedAsync(async () => {
+    try {
+      return await setRepoIdentityChecked(db, req.user.login, name, b.identity);
+    } catch (e) {
+      throw new RepoError((e as Error).message);
+    }
+  });
+  if (!changed) throw new HttpError(409, `${name} already uses the ${String(b.identity)} identity`);
   return allRepos(db, req);
 }
 

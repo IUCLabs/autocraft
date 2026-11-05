@@ -209,6 +209,8 @@ export interface Api {
     setOptionalCheck(name: RepoName, check: string, on: boolean): Promise<TrackedRepo[]>;
     /** Switches the pipeline stages on or off for this repo (off: sync only). */
     setPipeline(name: RepoName, on: boolean): Promise<TrackedRepo[]>;
+    /** Sets who makes the pipeline's GitHub writes here; `app` needs the GitHub App registered and installed on the repo. */
+    setIdentity(name: RepoName, identity: "legacy" | "app"): Promise<TrackedRepo[]>;
   };
   /** The signed-in user's own tokens for the Inbox MCP server: maintainers and operators make them; anyone lists and revokes their own. */
   mcp: {

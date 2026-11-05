@@ -32,6 +32,7 @@ import { Client, type Querier } from "../mirror.ts";
 import { viewerOf } from "../merge/index.ts";
 import { commentApprovalOf } from "../act/approval.ts";
 import { claimForWork, issueInfo } from "../github/claim.ts";
+import { repoIdentity } from "../github/identity.ts";
 import { CLAUDE_PROMPTS } from "../prompts/index.ts";
 import { diffCacheDir } from "../review/diff.ts";
 import { rustPlan } from "../worker/rust.ts";
@@ -562,8 +563,10 @@ async function checkPatch(x: Ctx, r: AttemptRow): Promise<boolean> {
   return true;
 }
 
-/** The pipeline account's fork of the repo as owner/name, created when missing. */
+/** The pipeline account's fork of the repo as owner/name, created when missing; the base repo itself for a repo on the app identity. */
 export async function forkOf(w: Writer, g: GuardedRepo, run: Exec, login: string, repo: string, details: Record<string, unknown> = {}): Promise<string> {
+  // The GitHub App has no account to own a fork: its autocraft/* branches live in the base repository.
+  if (g.as === "app" && repoIdentity(w.db, repo) === "app") return slugOf(repo);
   const find = async (): Promise<string | null> => {
     const r = await run("gh", ["api", `repos/${slugOf(repo)}/forks?per_page=100`, "--jq", `.[] | select(.owner.login == "${login}") | .full_name`]);
     return r.code === 0 ? r.stdout.trim().split("\n")[0] || null : null;

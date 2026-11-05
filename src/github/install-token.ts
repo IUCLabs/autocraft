@@ -173,3 +173,17 @@ export function withIdentityEnv(identity: Identity, env: Record<string, string |
   out.GIT_TERMINAL_PROMPT = "0";
   return out;
 }
+
+/** Variables an app-lane child may inherit: process basics only, so no account credential of the box leaks into it. */
+const INHERITED = /^(PATH|HOME|USER|LOGNAME|SHELL|LANG|LANGUAGE|TZ|TMPDIR|TERM|NODE_OPTIONS|NODE_EXTRA_CA_CERTS|LC_.*|XDG_.*|SSL_CERT_.*|AUTOCRAFT_.*|CRAFT_AUTO_.*)$/;
+const CREDENTIAL = /TOKEN|SECRET|PASSWORD|KEY/i;
+
+/**
+ * The complete environment of a child that acts as the app: the inherited basics and the installation token, never
+ * the box account's GITHUB_TOKEN or GH_TOKEN. Pass it as the whole child environment, not as an addition to process.env.
+ */
+export function appChildEnv(token: string, env: Record<string, string | undefined> = process.env): Record<string, string> {
+  const base: Record<string, string> = {};
+  for (const [k, v] of Object.entries(env)) if (v !== undefined && INHERITED.test(k) && !CREDENTIAL.test(k)) base[k] = v;
+  return withIdentityEnv({ kind: "app", token }, base);
+}

@@ -46,7 +46,7 @@ export type BatchDeps = {
   exec: Exec;
   querier: Querier;
   /** Runs the merge command (`$AUTOCRAFT_MERGE_CMD`, default safe-merge). */
-  run: (cmd: string, args: string[]) => Promise<CommandResult>;
+  run: (cmd: string, args: string[], appEnv?: Record<string, string>) => Promise<CommandResult>;
   mergeCommand: string;
   /** The head commit of the repo's default branch, or null. */
   mainHead: (repo: string, branch: string) => Promise<string | null>;

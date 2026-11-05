@@ -7,6 +7,9 @@
 import type { DatabaseSync } from "node:sqlite";
 import { audit } from "../dash/audit.ts";
 import type { Grant, Guarded } from "../core/guard.ts";
+import { ownerOf } from "../owners.ts";
+import { AppError } from "./app.ts";
+import { AppNotInstalledError, installationToken, RepoNotInInstallationError } from "./install-token.ts";
 
 export type Identity = "app" | `user:${string}`;
 export type RepoIdentity = "legacy" | "app";
@@ -44,4 +47,27 @@ export const identityFor = (g: Guarded | Grant): Identity => g.as;
 /** What an audit row records: `legacy` while the repo is on the box account, else the grant's identity. */
 export function auditIdentity(db: DatabaseSync, g: Guarded | Grant): "legacy" | Identity {
   return repoIdentity(db, g.repo) === "legacy" ? "legacy" : identityFor(g);
+}
+
+/** Why a repo cannot use the app identity (no app registered, not installed, repo outside the installation), or null when it can. */
+export async function appIdentityBlocker(repo: string, mint: (owner: string, repo: string) => Promise<string> = installationToken): Promise<string | null> {
+  const owner = ownerOf(repo);
+  try {
+    await mint(owner, repo);
+    return null;
+  } catch (e) {
+    if (e instanceof AppNotInstalledError) return `The GitHub App is not installed on ${owner}.`;
+    if (e instanceof RepoNotInInstallationError) return `${owner}/${repo} is not in the GitHub App's installation.`;
+    if (e instanceof AppError && e.message === "no GitHub App is registered") return "No GitHub App is registered.";
+    return `GitHub could not confirm the installation: ${String((e as Error).message ?? e).replace(/\s+/g, " ").slice(0, 160)}`;
+  }
+}
+
+/** Sets a repo's identity after checking that the app can act there (checked for `app` only). Returns false when nothing changed. */
+export async function setRepoIdentityChecked(db: DatabaseSync, by: string, repo: string, value: unknown, mint?: (owner: string, repo: string) => Promise<string>): Promise<boolean> {
+  if (value === "app") {
+    const why = await appIdentityBlocker(repo, mint);
+    if (why) throw new Error(why);
+  }
+  return setRepoIdentity(db, by, repo, value);
 }

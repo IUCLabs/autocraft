@@ -7,14 +7,16 @@ import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { envVar } from "../env.ts";
+import { APP_CREDENTIAL_HELPER } from "../github/install-token.ts";
 
 export type ExecResult = { code: number; stdout: string; stderr: string };
-export type ExecOpts = { cwd?: string; env?: Record<string, string>; input?: string };
+/** `replaceEnv`: `env` is the child's whole environment, not an addition to this process's (the app lane, which must not inherit the box account's tokens). */
+export type ExecOpts = { cwd?: string; env?: Record<string, string>; input?: string; replaceEnv?: boolean };
 /** Runs a command; resolves with its exit code, rejects only when it can't be started. */
 export type Exec = (cmd: string, args: string[], opts?: ExecOpts) => Promise<ExecResult>;
 
 export const exec: Exec = (cmd, args, opts = {}) => new Promise((resolve, reject) => {
-  const p = spawn(cmd, args, { cwd: opts.cwd, env: { ...process.env, ...opts.env }, stdio: ["pipe", "pipe", "pipe"], timeout: 300_000 });
+  const p = spawn(cmd, args, { cwd: opts.cwd, env: opts.replaceEnv ? opts.env : { ...process.env, ...opts.env }, stdio: ["pipe", "pipe", "pipe"], timeout: 300_000 });
   let stdout = "", stderr = "";
   p.stdout.on("data", (d) => (stdout += d));
   p.stderr.on("data", (d) => (stderr += d));
@@ -50,9 +52,15 @@ export class Git {
     this.dir = join(root, repo);
   }
 
-  /** git in the bare repository; `env` adds to the locked-down environment. */
-  async git(args: string[], opts: { input?: string; env?: Record<string, string> } = {}): Promise<ExecResult> {
-    const go = () => this.run("git", [...HARDENING, ...args], { cwd: this.dir, input: opts.input, env: { ...GIT_ENV, ...opts.env } });
+  /**
+   * git in the bare repository; `env` adds to the locked-down environment. With `app` the credentials are
+   * the installation token's (`app.env` is the child's whole environment) instead of the box account's.
+   */
+  async git(args: string[], opts: { input?: string; env?: Record<string, string>; app?: { env: Record<string, string> } } = {}): Promise<ExecResult> {
+    const app = opts.app;
+    const go = () => app
+      ? this.run("git", [...HARDENING, "-c", "credential.helper=", "-c", `credential.helper=${APP_CREDENTIAL_HELPER}`, ...args], { cwd: this.dir, input: opts.input, env: { ...app.env, ...GIT_ENV, ...opts.env }, replaceEnv: true })
+      : this.run("git", [...HARDENING, ...args], { cwd: this.dir, input: opts.input, env: { ...GIT_ENV, ...opts.env } });
     if (args[0] !== "fetch") return go();
     // Sessions fetch into the same bare cache at once; a ref lock held by another fetch clears within moments.
     let r = await go();
