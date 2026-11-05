@@ -13,6 +13,7 @@ import { OptionalChecks, PipelineSwitch, Toggle, WRITES, useRepoWrite, maybe, sy
 import { MainCiBadge } from "../../ui/atoms/MainCiBadge";
 import { FailingChecks } from "../mainci/parts";
 import { useNow } from "../../lib/useNow";
+import { SecuritySection } from "./securityParts";
 
 function Stat({ label, value, title }: { label: string; value: string; title?: string }) {
   return (
@@ -91,6 +92,7 @@ export function RepoDetailView({ params }: ViewProps) {
   const write = useRepoWrite();
   const r = data?.find((x) => x.name === name);
   const l = r?.labels;
+  const staff = useUser().role !== "viewer";
 
   return (
     <Page title={name}>
@@ -124,6 +126,7 @@ export function RepoDetailView({ params }: ViewProps) {
           </div>
           {r.tracked && (
             <>
+              {staff && <SecuritySection repo={r.name} />}
               <Block className="mt-4" flush title="GitHub writes" aside={<AllWrites r={r} write={write} />}>
                 <ul>
                   {WRITES.map((w) => (

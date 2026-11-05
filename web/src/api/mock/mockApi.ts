@@ -9,6 +9,7 @@ import { createNowMock } from "./nowMock";
 import { createActivityMock } from "./activityMock";
 import { createAreasMock } from "./areasMock";
 import { createConversationMock } from "./conversationMock";
+import { createSecurityMock } from "./securityMock";
 import { createBuildMock } from "./buildMock";
 import { createPipelineMock } from "./pipelineMock";
 import { promptsReport } from "../../../../src/prompts/index.ts";
@@ -216,6 +217,7 @@ export function createMockApi(): Api {
     ...createNowMock(changed),
     ...createActivityMock(),
     ...createBuildMock(me, changed),
+    ...createSecurityMock(me, changed),
     ...createQueueMock(me, changed),
     prompts: () => wait(promptsReport(null), 60),
     next: () => wait(nextPageFixture(), 60),

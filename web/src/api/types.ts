@@ -2013,3 +2013,57 @@ export type NowEntry = {
 };
 export type NowFeed = { entries: NowEntry[]; nextCursor: string | null };
 export type Now = { health: NowHealth; /** Titles of housekeeping jobs that are running, shown as one line. */ alsoRunning: string[] } & NowFeed;
+
+// Security deep scan (operators and maintainers only).
+export type ScanState = "modeling" | "scanning" | "verifying" | "done" | "stopped" | "capped" | "failed";
+export type ScanView = {
+  id: number;
+  repo: string;
+  commitSha: string;
+  state: ScanState;
+  /** Spend cap in USD; null = no cap. */
+  capUsd: number | null;
+  costUsd: number;
+  /** Known once the threat model has listed the areas. */
+  estimateUsd: number | null;
+  areasTotal: number;
+  areasDone: number;
+  startedBy: string;
+  startedAt: string;
+  endedAt: string | null;
+  error: string | null;
+};
+export type FindingSeverity = "critical" | "high" | "medium" | "low";
+export type FindingState = "new" | "dismissed" | "backlog" | "fixing" | "ready" | "landing" | "landed" | "advisory" | "awaiting-admin" | "published";
+export type FindingSummary = {
+  repo: string;
+  number: number;
+  scanId: number;
+  area: string;
+  title: string;
+  severity: FindingSeverity;
+  /** Needs an immediate release: lands through the advisory route. */
+  urgent: boolean;
+  state: FindingState;
+  createdAt: string;
+  updatedAt: string;
+};
+export type FindingRef = { path: string; line: number };
+export type FindingCall = { id: string; at: string; step: string; model: string; summary: string; costUsd: number | null };
+export type FindingView = FindingSummary & {
+  /** The scan's pinned commit; file references link to it. */
+  commitSha: string;
+  refs: FindingRef[];
+  reach: string;
+  impact: string;
+  verification: { kind: "test" | "reasoning"; result: string; notes: string };
+  reason: string | null;
+  decidedBy: string | null;
+  fixCommit: string | null;
+  fixPr: number | null;
+  ghsaId: string | null;
+  fixDiff: string | null;
+  timeline: FindingCall[];
+};
+export type FindingAction = "fix" | "dismiss" | "backlog" | "reopen" | "land" | "advisory" | "publish";
+export type SecurityOverview = { scans: ScanView[]; findings: FindingSummary[] };

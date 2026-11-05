@@ -161,6 +161,13 @@ export function createHttpApi(): Api {
       setRule: (rule) => post("/api/contributors/rule", rule),
       override: (login, input) => post(`/api/contributors/${encodeURIComponent(login)}/override`, input),
     },
+    security: {
+      overview: (repo) => get(`/api/repos/${encodeURIComponent(repo)}/security`),
+      startScan: (repo, capUsd) => post(`/api/repos/${encodeURIComponent(repo)}/security/scans`, { capUsd }),
+      stopScan: (id) => post(`/api/security/scans/${id}/stop`),
+      finding: (repo, number) => get(`/api/security/findings/${encodeURIComponent(repo)}/${number}`),
+      act: (repo, number, action, reason) => post(`/api/security/findings/${encodeURIComponent(repo)}/${number}`, { action, reason }),
+    },
     repoAdmin: {
       list: () => get("/api/repos/all"),
       track: (name) => post("/api/repos/track", { name }),

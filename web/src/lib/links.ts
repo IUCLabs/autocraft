@@ -62,3 +62,10 @@ export function pickDecision<T extends Pick<Decision, "kind" | "answer" | "asked
 
 /** A commit as shown inside the PR on GitHub. */
 export const githubCommitUrl = (repo: string, number: number, sha: string): string => `${githubItemUrl(repo, number, "pr")}/commits/${encodeURIComponent(sha)}`;
+
+/** A file at a commit on GitHub, at the given line. */
+export const githubBlobUrl = (repo: string, sha: string, path: string, line?: number): string =>
+  `https://github.com/${GITHUB_ORG}/${encodeURIComponent(shortRepo(repo))}/blob/${encodeURIComponent(sha)}/${path.split("/").map(encodeURIComponent).join("/")}${line ? `#L${line}` : ""}`;
+
+/** `/security/<repo>/<n>`: the page of one security finding. */
+export const findingPath = (repo: string, number: number): string => `/security/${encodeURIComponent(shortRepo(repo))}/${number}`;
