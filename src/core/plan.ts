@@ -203,9 +203,10 @@ export type PrFacts = {
   carry: { attempts: number }[];
   /**
    * An operator's fix-up (src/preapproval): `fix` is the queued one for the current head with the tries the PR's operator fix-ups used;
-   * `hold` is true while a pre-approved merge waits for its fix-up, review or CI, so nothing merges or asks Merge? meanwhile.
+   * `hold` is true while a pre-approved merge waits for its fix-up, review or CI (or an operator fix-up request is still worked), so nothing merges or asks Merge? meanwhile.
+   * `premerge` is true when the PR's pre-approved merge waits for the pre-merge review of this head.
    */
-  operator?: { fix: { attempts: number } | null; hold: boolean };
+  operator?: { fix: { attempts: number } | null; hold: boolean; premerge: boolean };
   /** Stored model patches at the reviewed head whose lint task is queued, oldest first: `ended` once the task has a final state. A CI fix's source is `review`. */
   lint: LintFact[];
   /** CI fix state at the reviewed head, loaded while CI fails. */

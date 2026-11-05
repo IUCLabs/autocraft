@@ -87,6 +87,8 @@ const ADDED_COLUMNS: [table: string, column: string, type: string][] = [
   ["fixups", "lint_round", "INTEGER"],
   ["fixups", "lint_state", "TEXT"],
   ["fixups", "carry_decision", "TEXT"],
+  // The operator_fixups request an operator-source row works (src/preapproval).
+  ["fixups", "operator_fix", "INTEGER"],
   // The model session that wrote the stored patch (JSON, src/prepush/resume.ts), kept for 60 minutes so the lint findings continue it.
   ["fixups", "session", "TEXT"],
   ["ci_fixes", "session", "TEXT"],

@@ -152,7 +152,10 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
   const carries = db.prepare(`SELECT k.decision_id, k.attempts FROM dupe_carries k WHERE k.repo = ? AND k.number = ? AND k.state = 'queued' ORDER BY k.number`);
   const carryPoints = db.prepare("SELECT detail FROM dupe_group_items WHERE decision_id = ? AND kind = 'pr' AND role = 'close' ORDER BY number");
   const fixupRows = db.prepare("SELECT state FROM fixups WHERE repo = ? AND number = ? AND from_head = ? AND source IS NULL AND state IN ('pushed', 'cannot-push', 'too-large', 'asked', 'comment-failed', 'push-denied', 'linting')");
-  const lintFixup = db.prepare("SELECT source, lint_task FROM fixups WHERE repo = ? AND number = ? AND from_head = ? AND state = 'linting' ORDER BY rowid");
+  const lintFixup = db.prepare("SELECT source, lint_task FROM fixups WHERE repo = ? AND number = ? AND from_head = ? AND state = 'linting' AND COALESCE(source, '') != 'operator' ORDER BY rowid");
+  // An operator's fix-up works the current head, with or without a review there, so its stored patch is read at the head before the review is.
+  const lintOperator = db.prepare("SELECT lint_task FROM fixups WHERE repo = ? AND number = ? AND from_head = ? AND state = 'linting' AND source = 'operator' ORDER BY rowid");
+  const taskEnded = (id: number | null): boolean => { const t = id != null ? getTask(db, id) : null; return !t || TERMINAL.includes(t.state); };
   const lintCifix = db.prepare("SELECT lint_task FROM ci_fixes WHERE repo = ? AND number = ? AND head = ? AND state = 'linting' ORDER BY rowid");
   const lintConflict = db.prepare("SELECT lint_task FROM conflict_merges WHERE repo = ? AND number = ? AND from_head = ? AND state = 'linting' ORDER BY rowid");
   const cifixRows = db.prepare("SELECT state, created_at, task_id, runs FROM ci_fixes WHERE repo = ? AND number = ? AND head = ? ORDER BY created_at, rowid");
@@ -259,7 +262,11 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
     base.mergeable = (checksAtHead ? r.c_mergeable : r.i_mergeable) ?? "UNKNOWN";
     base.pushable = pushable(r.head_repo, r.repo, checksAtHead ? r.c_can : r.i_can, r.head_ref, rf.longLived);
     const ow = operator.get(ref);
-    if (ow && r.state === "OPEN") base.operator = { fix: head && ow.fixHeads.has(head) && queuedOperatorFix(db, r.repo, r.number, head) ? { attempts: operatorTries(db, r.repo, r.number) } : null, hold: ow.hold };
+    if (ow && r.state === "OPEN") base.operator = { fix: head && ow.fixHeads.has(head) && queuedOperatorFix(db, r.repo, r.number, head) ? { attempts: operatorTries(db, r.repo, r.number) } : null, hold: ow.hold, premerge: !!head && ow.premergeHeads.has(head) };
+    if (ow && r.state === "OPEN" && head) {
+      for (const x of lintOperator.all(r.repo, r.number, head) as { lint_task: number | null }[]) base.lint.push({ step: "fixup", source: "operator", ended: taskEnded(x.lint_task) });
+      if (base.lint.length) base.inFlight = true;
+    }
     if (r.state === "OPEN" && !base.heldBacklog) {
       for (const k of carries.all(r.repo, r.number) as { decision_id: string; attempts: number }[]) {
         const hasPoints = (carryPoints.all(k.decision_id) as { detail: string | null }[]).some((x) => {
@@ -335,7 +342,7 @@ export function loadPrFacts(db: DatabaseSync, opts: LoadOptions = {}): PrFacts[]
       base.fixup = { fixes: parseFixes(r.r_fixes).length, attempts: attemptsOf(db, r.repo, r.number), recorded: (fixupRows.all(r.repo, r.number, r.r_head) as { state: string }[]).map((x) => x.state) };
     }
     {
-      const ended = (id: number | null): boolean => { const t = id != null ? getTask(db, id) : null; return !t || TERMINAL.includes(t.state); };
+      const ended = taskEnded;
       for (const x of lintFixup.all(r.repo, r.number, r.r_head) as { source: string | null; lint_task: number | null }[]) {
         base.lint.push({ step: "fixup", source: x.source === "premerge" || x.source === "carry" || x.source === "operator" ? x.source : "review", ended: ended(x.lint_task) });
       }

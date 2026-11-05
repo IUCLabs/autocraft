@@ -382,6 +382,8 @@ export function decidePr(f: PrFacts): Plan {
 
   // A pre-approved merge before its merge answer: the PR is not merged, batched or asked about meanwhile (src/preapproval).
   if (f.operator?.hold) for (let i = actions.length - 1; i >= 0; i--) if (["merge", "ask-merge", "premerge"].includes(actions[i]!.kind)) actions.splice(i, 1);
+  // Its pre-merge review is the one thing it still needs from the queue: the merge answer is handed over only after a clean one at the head.
+  if (f.operator?.premerge && e && r && inQueue && f.repoFacts.mergeApproved && !f.draft && !f.mergeHeld && ciAllows("operator", f.ci, e.noCi) && f.mergeable === "MERGEABLE" && premergeRetryDue(f)) actions.push(act("premerge", r.head));
 
   actions.push(...unassignOf(f, state, actions));
 

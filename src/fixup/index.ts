@@ -175,8 +175,8 @@ class Recorder {
       return;
     }
     if (c.lint) return;
-    this.db.prepare("INSERT INTO fixups (repo, number, from_head, to_head, state, reason, files, attempt, created_at, source) VALUES (?, ?, ?, ?, 'pushing', NULL, ?, ?, ?, ?)")
-      .run(c.repo, c.number, c.head, commit, JSON.stringify(files), c.attempt, this.at(), c.source ?? null);
+    this.db.prepare("INSERT INTO fixups (repo, number, from_head, to_head, state, reason, files, attempt, created_at, source, operator_fix) VALUES (?, ?, ?, ?, 'pushing', NULL, ?, ?, ?, ?, ?)")
+      .run(c.repo, c.number, c.head, commit, JSON.stringify(files), c.attempt, this.at(), c.source ?? null, c.operator?.id ?? null);
   }
 
   /** The model patch waits for its lint task: a first row, or the same row with the next round's patch and task. */
@@ -185,8 +185,8 @@ class Recorder {
       this.db.prepare("UPDATE fixups SET patch = ?, files = ?, lint_task = ?, lint_round = ?, lint_state = ?, session = ? WHERE rowid = ?").run(patch, JSON.stringify(files), task, round, lintState, session, c.lint.rowid);
       return;
     }
-    this.db.prepare("INSERT INTO fixups (repo, number, from_head, to_head, state, reason, files, attempt, created_at, source, patch, lint_task, lint_round, lint_state, carry_decision, session) VALUES (?, ?, ?, NULL, 'linting', NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-      .run(c.repo, c.number, c.head, JSON.stringify(files), c.attempt, this.at(), c.carry ? "carry" : c.source ?? null, patch, task, round, lintState, c.carry?.decisionId ?? null, session);
+    this.db.prepare("INSERT INTO fixups (repo, number, from_head, to_head, state, reason, files, attempt, created_at, source, patch, lint_task, lint_round, lint_state, carry_decision, session, operator_fix) VALUES (?, ?, ?, NULL, 'linting', NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(c.repo, c.number, c.head, JSON.stringify(files), c.attempt, this.at(), c.carry ? "carry" : c.source ?? null, patch, task, round, lintState, c.carry?.decisionId ?? null, session, c.operator?.id ?? null);
   }
 
   /** Stored patches whose Plan no longer lists the push (head moved, a Hold or Close answer, approval revoked) are dropped. */
@@ -218,8 +218,8 @@ class Recorder {
     if (open) {
       this.db.prepare("UPDATE fixups SET state = ?, reason = ?, files = ?, to_head = ? WHERE rowid = ?").run(state, reason, JSON.stringify(files), toHead, open.id);
     } else {
-      this.db.prepare("INSERT INTO fixups (repo, number, from_head, to_head, state, reason, files, attempt, created_at, source) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-        .run(c.repo, c.number, c.head, toHead, state, reason, JSON.stringify(files), c.attempt, at, c.source ?? null);
+      this.db.prepare("INSERT INTO fixups (repo, number, from_head, to_head, state, reason, files, attempt, created_at, source, operator_fix) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .run(c.repo, c.number, c.head, toHead, state, reason, JSON.stringify(files), c.attempt, at, c.source ?? null, c.operator?.id ?? null);
     }
     const hold = state === "cannot-push" || state === "too-large" || state === "push-denied";
     const note = state === "pushed" ? `fix-up pushed at ${short(c.head)}: ${files.join(", ")}`

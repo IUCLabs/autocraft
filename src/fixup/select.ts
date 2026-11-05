@@ -69,8 +69,8 @@ export function selectFixups(db: DatabaseSync, repo: string, run?: string | null
     }
   }
   // Stored patches (review, pre-merge and carry-over sources) whose lint task ended. Their row is found by source; a carry-over's also by its decision.
-  const row = db.prepare("SELECT rowid AS id, attempt, patch, lint_task, lint_round, lint_state, carry_decision, session FROM fixups WHERE repo = ? AND number = ? AND from_head = ? AND COALESCE(source, 'review') = ? AND state = 'linting' ORDER BY rowid");
-  type LintRow = { id: number; attempt: number; patch: string | null; lint_task: number | null; lint_round: number | null; lint_state: string | null; carry_decision: string | null; session: string | null };
+  const row = db.prepare("SELECT rowid AS id, attempt, patch, lint_task, lint_round, lint_state, carry_decision, session, operator_fix FROM fixups WHERE repo = ? AND number = ? AND from_head = ? AND COALESCE(source, 'review') = ? AND state = 'linting' ORDER BY rowid");
+  type LintRow = { id: number; attempt: number; patch: string | null; lint_task: number | null; lint_round: number | null; lint_state: string | null; carry_decision: string | null; session: string | null; operator_fix: number | null };
   const seenLint = new Set<string>();
   for (const { facts: f, action } of planned(db, "lint", { ...opts, bucket: "fixup" })) {
     const head = action.head!, source = String(action.params?.source ?? "review");
@@ -86,7 +86,7 @@ export function selectFixups(db: DatabaseSync, repo: string, run?: string | null
         if (c) out.lint.push({ ...c, attempt: w.attempt, lint });
       } else if (source === "operator") {
         const o = queuedOperatorFix(db, repo, f.number, head);
-        if (o) out.lint.push({ repo, number: f.number, head, reason: "an operator's instructions", fixes: [], attempt: w.attempt, model: null, source: "operator", operator: { id: o.id, instructions: o.instructions }, lint });
+        if (o && w.operator_fix === o.id) out.lint.push({ repo, number: f.number, head, reason: "an operator's instructions", fixes: [], attempt: w.attempt, model: null, source: "operator", operator: { id: o.id, instructions: o.instructions }, lint });
       } else if (source === "premerge") {
         const pm = premergeAt(db, repo, f.number, head);
         const defects = findingsOf(pm).filter((x) => x.severity === "defect");
