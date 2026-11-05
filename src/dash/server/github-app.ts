@@ -104,16 +104,17 @@ export async function finishRegistration(db: DatabaseSync, config: Config, deps:
   const found = db.prepare("SELECT login, session_hash, created_at FROM github_app_states WHERE state = ?").get(state) as { login: string; session_hash: string; created_at: string } | undefined;
   if (!found || !code || found.login !== session.login || found.session_hash !== session.idHash || Date.now() - Date.parse(found.created_at) > STATE_TTL_MS) return refuse(nonce, 400, stale);
   if (config.secrets.app || !config.secretsFile || converting.has(config)) return refuse(nonce, 409, "An app is already registered, or no secrets file is set.");
+  // Prove the file can take the keys before the state is consumed: GitHub's code works once, and a lost PEM leaves an app nobody holds keys for.
+  // GitHub has already created the app by now; a failed probe keeps the state and the unconverted code, so a reload recovers.
+  try {
+    checkSecretsWritable(config.secretsFile);
+  } catch (e) {
+    console.error(`github-app registration: secrets file not writable (${errorCode(e)})`);
+    return refuse(nonce, 409, `The app exists on GitHub, but the secrets file cannot be updated (${errorCode(e)}). Fix the file and reload this page within an hour.`);
+  }
   if (db.prepare("DELETE FROM github_app_states WHERE state = ?").run(state).changes !== 1) return refuse(nonce, 400, stale);
   converting.add(config);
   try {
-    // Prove the file can take the keys first: GitHub's code works once, and a lost PEM leaves an app nobody holds keys for.
-    try {
-      checkSecretsWritable(config.secretsFile);
-    } catch (e) {
-      console.error(`github-app registration: secrets file not writable (${errorCode(e)})`);
-      return refuse(nonce, 409, `The secrets file cannot be updated (${errorCode(e)}). Nothing was created on GitHub; fix the file and start again.`);
-    }
     let converted: Awaited<ReturnType<typeof convertManifest>>;
     try {
       converted = await convertManifest(code, deps);
