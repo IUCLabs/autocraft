@@ -23,6 +23,8 @@ export function dbPath(): string {
 // NOT EXISTS leaves an older table as it was, so these are added here.
 const ADDED_COLUMNS: [table: string, column: string, type: string][] = [
   ["repos", "owner", "TEXT NOT NULL DEFAULT 'storytold'"],
+  ["decision_opinions", "via", "TEXT"],
+  ["decision_comments", "via", "TEXT"],
   ["jobs", "acted", "INTEGER"],
   ["job_items", "ref", "TEXT"],
   ["pr_commits", "first_seen_at", "TEXT"],

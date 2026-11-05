@@ -4,6 +4,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { CheckCircleIcon, PlusCircleIcon, WarningCircleIcon } from "@phosphor-icons/react";
 import { useApi, useQuery, usePagedQuery } from "../../api/client";
 import type { ConversationTurn, Decision, Item, ItemTrace, Preapproval, TraceEvent, TraceKind } from "../../api/types";
+import { Badge } from "../../ui/atoms/Badge";
 import { Button } from "../../ui/atoms/Button";
 import { ErrorLine } from "../../ui/atoms/ErrorLine";
 import { TimeAgo } from "../../ui/atoms/TimeAgo";
@@ -38,7 +39,7 @@ type Entry =
   | { t: "more"; at: number };
 
 /** A maintainer's or operator's post on one of the item's decisions: a pick with its note, or plain text. */
-type Feedback = { id: string; source: string; login: string; role: "maintainer" | "operator"; text: string | null; pick: string | null; write: boolean; d: Decision; at: string };
+type Feedback = { id: string; source: string; login: string; role: "maintainer" | "operator"; text: string | null; pick: string | null; write: boolean; d: Decision; at: string; viaAgent: boolean };
 
 const isChat = (e: TraceEvent) => e.kind === "github" && e.body !== undefined;
 const ms = (iso: string) => Date.parse(iso);
@@ -123,8 +124,8 @@ export function ItemThread({ repo, number, it, decision, onAnswered }: {
   // The author's role comes from the write access recorded with their pick; plain comments take it from a pick of the same person.
   const writers = new Set((ds ?? []).flatMap((d) => d.opinions.filter((o) => o.permission === "write").map((o) => o.login)));
   const feedback: Feedback[] = (ds ?? []).flatMap((d) => [
-    ...d.opinions.map((o): Feedback => ({ id: `opinion:${o.id}`, source: `decision-opinion:${o.id}`, login: o.login, role: o.permission === "write" ? "operator" : "maintainer", text: o.note, pick: o.option, write: o.permission === "write", d, at: o.at })),
-    ...(threads?.[d.id] ?? []).map((c): Feedback => ({ id: `comment:${c.id}`, source: `decision-comment:${c.id}`, login: c.login, role: writers.has(c.login) ? "operator" : "maintainer", text: c.body, pick: null, write: false, d, at: c.at })),
+    ...d.opinions.map((o): Feedback => ({ id: `opinion:${o.id}`, source: `decision-opinion:${o.id}`, login: o.login, role: o.permission === "write" ? "operator" : "maintainer", text: o.note, pick: o.option, write: o.permission === "write", d, at: o.at, viaAgent: o.via === "mcp" })),
+    ...(threads?.[d.id] ?? []).map((c): Feedback => ({ id: `comment:${c.id}`, source: `decision-comment:${c.id}`, login: c.login, role: writers.has(c.login) ? "operator" : "maintainer", text: c.body, pick: null, write: false, d, at: c.at, viaAgent: c.via === "mcp" })),
   ]);
   const entries: Entry[] = [
     ...feedback.map((f): Entry => ({ t: "feedback", f, at: ms(f.at) })),
@@ -317,7 +318,7 @@ function FeedbackPost({ f, repo, number, include, operator, me, commenter }: { f
   const label = f.pick ? (f.d.options.find((o) => o.key === f.pick)?.label ?? f.pick) : null;
   const open = !f.d.answer;
   return (
-    <ChatEntry id={f.id} author={f.login === me ? "You" : f.login} at={f.at} tag={f.role === "operator" ? "Operator" : "Maintainer"}>
+    <ChatEntry id={f.id} author={f.login === me ? "You" : f.login} at={f.at} tag={<>{f.viaAgent && <Badge className="mr-2">via agent</Badge>}{f.role === "operator" ? "Operator" : "Maintainer"}</>}>
       {label && (
         <p className="text-ink/60">
           Suggests <span className="font-medium text-ink">{label}</span>

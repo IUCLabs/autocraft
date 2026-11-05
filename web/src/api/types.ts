@@ -75,6 +75,8 @@ export interface Opinion {
   note: string | null;
   at: string;
   permission: "write" | "none";
+  /** Sent by an agent through the Inbox MCP server for this login. */
+  via?: "mcp";
 }
 
 /** One item of a duplicate group decision, with the role the comparison gave it and the model's points about it, each shown whole. */
@@ -157,6 +159,8 @@ export interface DecisionComment {
   login: string;
   at: string;
   body: string;
+  /** Sent by an agent through the Inbox MCP server for this login. */
+  via?: "mcp";
 }
 
 export type ItemState = "open" | "merged" | "closed";
@@ -841,9 +845,13 @@ export interface SessionInfo {
   current: boolean;
 }
 
+/** A live agent token of any login (operators see all of them). */
+export type AccessToken = McpToken & { login: string };
+
 export interface AccessOverview {
   entries: AccessEntry[];
   sessions: SessionInfo[];
+  tokens: AccessToken[];
 }
 
 export interface AuditEntry {
@@ -2083,3 +2091,10 @@ export interface FindingView extends FindingSummary {
 }
 
 export interface SecurityOverview { scans: ScanView[]; findings: FindingSummary[] }
+
+/** One of the signed-in user's agent tokens for the Inbox MCP server; the token itself is shown only when made. `canAnswer`: an operator's token whose agent may answer decisions. */
+export type McpToken = { id: number; label: string | null; canAnswer: boolean; createdAt: string; lastUsedAt: string | null; expiresAt: string };
+/** The user's live tokens, the most they may hold, and the server's MCP path (on the dashboard's own origin). */
+export type McpTokens = { tokens: McpToken[]; max: number; path: string; /** Whether an operator may make a token that answers decisions. */ answering: boolean };
+/** After making a token: the list, the new token's id, and its value, shown this once. */
+export type McpTokenCreated = McpTokens & { id: number; token: string };

@@ -185,12 +185,18 @@ export function createHttpApi(): Api {
       setPipeline: (name, on) => post(on ? "/api/repos/pipeline-on" : "/api/repos/pipeline-off", { name }),
       approveLabels: (name, approved) => post(approved ? "/api/repos/labels-approve" : "/api/repos/labels-revoke", { name }),
     },
+    mcp: {
+      tokens: () => get("/api/mcp/tokens"),
+      create: (label, answer = false) => post("/api/mcp/tokens", { label, answer }),
+      revoke: (id) => post("/api/mcp/tokens/revoke", { id }),
+    },
     access: {
       overview: () => get("/api/access"),
       add: (input) => post("/api/access/add", input),
       remove: (login) => post("/api/access/remove", { login }),
       setRole: (login, role) => post("/api/access/role", { login, role }),
       revokeSession: (id) => post("/api/access/sessions/revoke", { id }),
+      revokeToken: (id) => post("/api/access/tokens/revoke", { id }),
       audit: (filter) => get(`/api/audit${qs(filter)}`),
     },
     classifiers: {

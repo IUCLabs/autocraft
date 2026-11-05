@@ -16,7 +16,9 @@ import { allowedImage, ImageProxy, imageTokenSource, registerImageRepos } from "
 import { TokenBucket } from "./limits.ts";
 import { LiveHub, type LiveOptions } from "./live.ts";
 import { FakeProvider, providerFor, type GithubUser, type Provider, type Tokens } from "./provider.ts";
-import { createSession, deleteSession, loadSession, makeUser, pruneExpired, SESSION_TTL, type Session } from "./sessions.ts";
+import { createSession, deleteSession, loadSession, makeUser, pruneExpired, SESSION_TTL, userForLogin, type Session } from "./sessions.ts";
+import { answering, handleMcp, writes as mcpWrites, type Msg as McpMsg } from "../mcp/index.ts";
+import { loadToken, pruneTokens } from "../mcp/tokens.ts";
 import { esc, HttpError, parseCookies, plainPage, RateLimiter, safeReturnTo } from "./util.ts";
 
 export const SESSION_COOKIE = "__Host-craft_session";
@@ -50,14 +52,16 @@ export type AppOptions = {
   routes?: Route[];          // default: the JSON API
   images?: ImageProxy;       // default: fetches with global fetch and the bot's gh token
   live?: LiveOptions;        // GET /api/live timing; defaults suit production
+  // Opinions and comments per login per hour. The dashboard's routes and the MCP server's feedback must share one instance.
+  feedbackLimiter?: RateLimiter;
 };
 
 type Compiled = Route & { parts: string[] };
 
 
-export async function defaultRoutes(): Promise<Route[]> {
+export async function defaultRoutes(feedbackLimiter?: RateLimiter): Promise<Route[]> {
   const { apiRoutes } = await import("../api/index.ts");
-  return apiRoutes();
+  return apiRoutes({ limiter: feedbackLimiter });
 }
 
 function compile(routes: Route[]): Compiled[] {
@@ -150,6 +154,13 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
   const isExpensive = (path: string, q: URLSearchParams) =>
     path === "/api/queue" || path === "/api/queue/batches" || path.startsWith("/api/contributors") || (path === "/api/search" && q.get("mode") === "semantic");
   const live = new LiveHub(db, opts.live);
+  // The Inbox MCP server (POST /mcp): calls per login and failed authentications per client address, and feedback posts per login as on the dashboard.
+  const mcpLimitToken = new RateLimiter(120, 60_000);
+  const mcpLimitIp = new RateLimiter(300, 60_000);
+  // Feedback shares the dashboard's limiter, so the two doors together stay within one budget per login.
+  const mcpFeedback = opts.feedbackLimiter ?? new RateLimiter(60, 3600_000);
+  // list_repos and list_fixups aggregate the mirror like the dashboard's expensive GETs: a burst, then 30 a minute, per login.
+  const mcpExpensive = new TokenBucket(20, 0.5);
   const callbackUrl = `${config.baseUrl ?? ""}/auth/callback`;
   let lastPrune = 0;
 
@@ -366,6 +377,7 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
       if (Date.now() - lastPrune > 3_600_000) {
         lastPrune = Date.now();
         pruneExpired(db);
+        pruneTokens(db);
       }
       // Dev auth lets anyone who reaches the port sign in as any login, so
       // a request that came through a proxy or under a public name is refused.
@@ -378,6 +390,7 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
         const { r, cookies: set } = await auth(req, url, nonce, cookies);
         return send(res, nonce, r, set);
       }
+      if (url.pathname === "/mcp") return await handleMcpHttp(req, res);
       const method = req.method;
       const session = loadSession(db, cookies.get(SESSION_COOKIE));
       if (!session) {
@@ -398,6 +411,42 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
       if (!res.headersSent) send(res, nonce, api ? apiError(500, "server error; it is logged") : errorPage(nonce, 500, "Something went wrong", "The error is logged on the server."));
       else res.destroy();
     }
+  }
+
+  // POST /mcp: one JSON-RPC message, authenticated by an agent token (Authorization: Bearer), never by the session
+  // cookie, so a browser page cannot make a signed-in user's browser call it. A request from a browser
+  // context on another site (Origin or Sec-Fetch-Site) is refused, which also covers DNS rebinding.
+  async function handleMcpHttp(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const reply = (status: number, body: unknown, headers: Record<string, string> = {}): void => {
+      res.writeHead(status, secure({ "cache-control": "no-store", ...(body === null ? {} : { "content-type": "application/json; charset=utf-8" }), ...headers }, "default-src 'none'"));
+      res.end(body === null ? "" : JSON.stringify(body));
+    };
+    const rpcError = (code: number, message: string) => ({ jsonrpc: "2.0", id: null, error: { code, message } });
+    if (req.method !== "POST") return reply(405, rpcError(-32000, "POST one JSON-RPC message; this server has no event stream"), { allow: "POST" });
+    if (!sameOrigin(req)) return reply(403, rpcError(-32000, "cross-origin request refused"));
+    const auth = String(req.headers.authorization ?? "");
+    const caller = loadToken(db, /^Bearer\s+(\S+)$/i.exec(auth)?.[1]);
+    // The per-address limit counts failed authentications only: behind a proxy every client shares one address.
+    if (!caller && !mcpLimitIp.allow(clientIp(req))) return reply(429, rpcError(-32000, "too many requests; wait a minute"), { "retry-after": "60" });
+    if (!caller) return reply(401, rpcError(-32001, "a valid AutoCraft agent token is required (Authorization: Bearer <token>); make one on the dashboard's Connect page"), { "www-authenticate": 'Bearer realm="autocraft"' });
+    if (!mcpLimitToken.allow(caller.login.toLowerCase())) return reply(429, rpcError(-32000, "too many requests for this login; wait a minute"), { "retry-after": "60" });
+    let msg: unknown;
+    try {
+      msg = await readJson(req);
+    } catch (e) {
+      if (e instanceof HttpError) return reply(e.status, rpcError(e.status === 400 ? -32700 : -32600, e.message));
+      throw e;
+    }
+    if (!msg || typeof msg !== "object" || Array.isArray(msg)) return reply(400, rpcError(-32600, "send one JSON-RPC message as an object; batches are not supported"));
+    const m = msg as McpMsg;
+    const out = await handleMcp({
+      db, baseUrl: config.baseUrl, limiter: mcpFeedback, expensive: () => mcpExpensive.take(caller.login.toLowerCase()), canAnswer: answering.enabled && caller.canAnswer && caller.role === "operator",
+      user: (forWrite) => userForLogin(db, box, provider, caller.login, caller.role, forWrite),
+    }, m);
+    if (mcpWrites(m)) live.poke();
+    // A notification or a response from the client: accepted, nothing to say.
+    if (!out) return reply(202, null);
+    return reply(200, out);
   }
 
   async function sendImage(req: IncomingMessage, res: ServerResponse, url: URL, session: Session): Promise<void> {
@@ -484,7 +533,8 @@ export function createApp(opts: AppOptions & { routes: Route[] }) {
 }
 
 export async function startServer(opts: AppOptions): Promise<{ server: Server; url: string; app: ReturnType<typeof createApp>; close(): Promise<void> }> {
-  const app = createApp({ ...opts, routes: opts.routes ?? (await defaultRoutes()) });
+  const feedbackLimiter = opts.feedbackLimiter ?? new RateLimiter(60, 3600_000);
+  const app = createApp({ ...opts, feedbackLimiter, routes: opts.routes ?? (await defaultRoutes(feedbackLimiter)) });
   const server = createServer({ requestTimeout: 30_000, headersTimeout: 15_000 }, (req, res) => void app.handle(req, res));
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);

@@ -47,6 +47,9 @@ export function createSession(db: DatabaseSync, box: TokenBox, login: string, to
   return id;
 }
 
+/** The time a session made at `createdAt` ends at the latest, whatever its activity. */
+export const sessionEndsAt = (createdAt: string, role: Role): number => Date.parse(createdAt) + (role === "operator" ? OPERATOR_SESSION_MAX : SESSION_MAX);
+
 // A session counts only while its login is still on the access list; the
 // role comes from the list, not the session, so it is always current.
 export function loadSession(db: DatabaseSync, id: string | undefined): Session | null {
@@ -59,7 +62,7 @@ export function loadSession(db: DatabaseSync, id: string | undefined): Session |
     { rowid: number; login: string; csrf: string; token_enc: string | null; last_seen: string; created_at: string; role: Role } | undefined;
   if (!row) return null;
   const now = Date.now();
-  const endsAt = Date.parse(row.created_at) + (row.role === "operator" ? OPERATOR_SESSION_MAX : SESSION_MAX);
+  const endsAt = sessionEndsAt(row.created_at, row.role);
   if (!(now < endsAt)) {
     db.prepare("DELETE FROM sessions WHERE id_hash = ?").run(idHash);
     return null;
@@ -117,6 +120,28 @@ async function accessToken(db: DatabaseSync, box: TokenBox, provider: Provider, 
     refreshing.set(idHash, p);
   }
   return p;
+}
+
+/**
+ * The User an agent token stands for (src/dash/mcp/). A token carries no GitHub token of its own, so permission checks
+ * use the login's newest live dashboard session, as that session's own requests would. Without one, only a cached
+ * permission young enough for the request counts, and anything else reads as no permission: the repo is hidden
+ * unless public, and a pick is shown as `none`.
+ */
+export function userForLogin(db: DatabaseSync, box: TokenBox, provider: Provider, login: string, role: Role, forWrite: boolean): User {
+  const s = (db.prepare(`SELECT rowid, id_hash, login, csrf, token_enc, created_at FROM sessions WHERE login = ? AND expires_at > ? AND token_enc IS NOT NULL
+    ORDER BY created_at DESC`).all(login, new Date().toISOString()) as { rowid: number; id_hash: string; login: string; csrf: string; token_enc: string; created_at: string }[])
+    .find((x) => Date.now() < sessionEndsAt(x.created_at, role));
+  if (s) return makeUser(db, box, provider, { rowid: Number(s.rowid), idHash: s.id_hash, login: s.login, role, csrf: s.csrf, tokenEnc: s.token_enc }, forWrite);
+  const cached = (repo: string): string | null => {
+    const row = db.prepare("SELECT permission, checked_at FROM repo_permissions WHERE login = ? AND repo = ?").get(login, repo) as { permission: string; checked_at: string } | undefined;
+    return row && Date.now() - Date.parse(row.checked_at) < (forWrite ? PERM_WRITE_TTL : PERM_READ_TTL) ? row.permission : null;
+  };
+  return {
+    login, role,
+    canWrite: async (repo) => WRITE_PERMISSIONS.has(cached(repo) ?? ""),
+    canRead: async (repo) => { const p = cached(repo); return p !== null && p !== "none"; },
+  };
 }
 
 // `forWrite` is true on POST requests: a handler that calls canWrite there is

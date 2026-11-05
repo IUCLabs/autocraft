@@ -126,8 +126,8 @@ CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
 INSERT OR IGNORE INTO settings VALUES ('whitelist_min_merged', '5');
 INSERT OR IGNORE INTO settings VALUES ('whitelist_min_merge_rate', '0.6');
 
--- Decisions for people. The pipeline asks; only a signed-in person on the
--- dashboard answers (spec: docs/dashboard-spec.md).
+-- Decisions for people. The pipeline asks; only a signed-in operator answers, on the dashboard or through
+-- their own agent with an answering token (src/dash/mcp/) (spec: docs/dashboard-spec.md).
 CREATE TABLE IF NOT EXISTS decisions (
   id TEXT PRIMARY KEY,
   kind TEXT NOT NULL,                 -- scope | duplicate | close | merge | split | other
@@ -170,7 +170,8 @@ CREATE TABLE IF NOT EXISTS decision_opinions (
   note TEXT,
   at TEXT NOT NULL,
   permission TEXT NOT NULL,           -- the login's GitHub permission on the repo when given: write | none
-  retracted_at TEXT                   -- set when changed or retracted; one live row per login and decision
+  retracted_at TEXT,                  -- set when changed or retracted; one live row per login and decision
+  via TEXT                            -- 'mcp' when an agent sent it for the login; NULL from the dashboard (db.ts adds it to older databases)
 );
 CREATE UNIQUE INDEX IF NOT EXISTS decision_opinions_live ON decision_opinions(decision_id, login) WHERE retracted_at IS NULL;
 
@@ -179,7 +180,8 @@ CREATE TABLE IF NOT EXISTS decision_comments (
   decision_id TEXT NOT NULL,
   login TEXT NOT NULL COLLATE NOCASE,
   at TEXT NOT NULL,
-  body TEXT NOT NULL
+  body TEXT NOT NULL,
+  via TEXT                            -- 'mcp' when an agent sent it for the login; NULL from the dashboard (db.ts adds it to older databases)
 );
 CREATE INDEX IF NOT EXISTS decision_comments_decision ON decision_comments(decision_id, at);
 CREATE INDEX IF NOT EXISTS decision_comments_at ON decision_comments(at);
@@ -212,6 +214,19 @@ CREATE TABLE IF NOT EXISTS sessions (
   user_agent TEXT
 );
 CREATE INDEX IF NOT EXISTS sessions_login ON sessions(login);
+
+-- Personal tokens for the Inbox MCP server (POST /mcp, src/dash/mcp/): a signed-in user's own agent reads the
+-- inbox and sends feedback as that user, with the user's current role from the access list. The token is shown once.
+-- can_answer: an operator opted the token in to answering decisions and undoing answers; such a token lasts 7 days.
+CREATE TABLE IF NOT EXISTS mcp_tokens (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  login TEXT NOT NULL COLLATE NOCASE,
+  token_hash TEXT NOT NULL UNIQUE,    -- sha256 of the token
+  label TEXT,
+  can_answer INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL, last_used_at TEXT, expires_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS mcp_tokens_login ON mcp_tokens(login);
 
 CREATE TABLE IF NOT EXISTS repo_permissions (
   login TEXT NOT NULL COLLATE NOCASE,

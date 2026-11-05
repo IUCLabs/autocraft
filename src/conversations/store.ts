@@ -42,13 +42,13 @@ const STALE_CLAIM_MS = (CLAUDE_PROMPTS["conversation.turn"].limits.timeoutSecond
 /** Text of operators and Opus must not close or open the frame the prompt puts around turns. */
 const frameSafe = (t: string): string => t.replace(/<(\/?)(turn|item|actions|untrusted|included|steps)\b/gi, "&lt;$1$2");
 
-export type Included = { login: string; at: string; text: string };
+export type Included = { login: string; at: string; text: string; /** An agent sent it for the login. */ viaAgent?: boolean };
 
 const attr = (v: string): string => v.replace(/[^\w.:-]/g, "");
 
 /** `included`: maintainers' posts the operator chose to share, carried in this turn once. */
 export function operatorBlock(login: string, text: string, included: Included[] = [], steps?: string[]): string {
-  const extra = included.map((i) => `<included from="maintainer" login="${attr(i.login)}" at="${attr(i.at)}">\n${frameSafe(i.text)}\n</included>\n`).join("");
+  const extra = included.map((i) => `<included from="maintainer" login="${attr(i.login)}" at="${attr(i.at)}"${i.viaAgent ? ' via="agent"' : ""}>\n${frameSafe(i.text)}\n</included>\n`).join("");
   return `<turn from="operator" login="${attr(login)}">\n${frameSafe(text)}\n${extra}${steps ? `<steps>${JSON.stringify(steps)}</steps>\n` : ""}</turn>\n`;
 }
 
@@ -295,19 +295,19 @@ function postOf(db: DatabaseSync, repo: string, n: number, source: string): Incl
   const m = /^(decision-comment|decision-opinion):(.+)$/.exec(source);
   if (!m) return null;
   if (m[1] === "decision-comment") {
-    const row = db.prepare("SELECT c.login, c.at, c.body AS text FROM decision_comments c JOIN decisions d ON d.id = c.decision_id WHERE c.id = ? AND d.repo = ? AND d.number = ?")
-      .get(m[2]!, repo, n) as { login: string; at: string; text: string | null } | undefined;
+    const row = db.prepare("SELECT c.login, c.at, c.body AS text, c.via FROM decision_comments c JOIN decisions d ON d.id = c.decision_id WHERE c.id = ? AND d.repo = ? AND d.number = ?")
+      .get(m[2]!, repo, n) as { login: string; at: string; text: string | null; via: string | null } | undefined;
     const text = row?.text ? cleanComment(row.text).slice(0, ITEM_COMMENT_LIMIT) : "";
-    return row && text ? { login: row.login, at: row.at, text } : null;
+    return row && text ? { login: row.login, at: row.at, text, viaAgent: row.via === "mcp" } : null;
   }
-  const o = db.prepare("SELECT o.login, o.at, o.option, o.note, o.decision_id FROM decision_opinions o JOIN decisions d ON d.id = o.decision_id WHERE o.id = ? AND d.repo = ? AND d.number = ? AND o.retracted_at IS NULL")
-    .get(m[2]!, repo, n) as { login: string; at: string; option: string | null; note: string | null; decision_id: string } | undefined;
+  const o = db.prepare("SELECT o.login, o.at, o.option, o.note, o.decision_id, o.via FROM decision_opinions o JOIN decisions d ON d.id = o.decision_id WHERE o.id = ? AND d.repo = ? AND d.number = ? AND o.retracted_at IS NULL")
+    .get(m[2]!, repo, n) as { login: string; at: string; option: string | null; note: string | null; decision_id: string; via: string | null } | undefined;
   if (!o) return null;
   const d = getDecision(db, o.decision_id);
   const label = o.option ? (d ? optionsOf(d).find((x) => x.key === o.option)?.label : undefined) ?? o.option : null;
   const note = o.note ? cleanComment(o.note) : "";
   const text = (label ? (note ? `Suggests ${label}: ${note}` : `Suggests ${label}`) : note).slice(0, ITEM_COMMENT_LIMIT);
-  return text ? { login: o.login, at: o.at, text } : null;
+  return text ? { login: o.login, at: o.at, text, viaAgent: o.via === "mcp" } : null;
 }
 
 function unsentIncludes(db: DatabaseSync, repo: string, n: number): { source: string; post: Included }[] {

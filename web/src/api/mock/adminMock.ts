@@ -5,6 +5,7 @@ import type { Api } from "../client";
 import type {
   AccessEntry,
   AccessOverview,
+  AccessToken,
   AuditEntry,
   Contributor,
   ContributorSort,
@@ -134,7 +135,7 @@ function buildSessions(): Omit<SessionInfo, "current">[] {
 
 export const AUDIT_ACTIONS = [
   "answer", "undo", "adopt", "opinion", "opinion-retract", "comment", "override", "rule", "access-add", "access-remove", "access-role",
-  "session-revoke", "sign-in", "sign-in-refused", "repo-track", "repo-untrack",
+  "session-revoke", "mcp-token-create", "mcp-token-revoke", "sign-in", "sign-in-refused", "repo-track", "repo-untrack",
 ];
 
 function buildAudit(): AuditEntry[] {
@@ -167,6 +168,10 @@ export function createAdminMock(me: User, changed: () => void): AdminApi {
   const repos = buildRepos();
   const access = structuredClone(ACCESS);
   let sessions = buildSessions();
+  let agentTokens: AccessToken[] = [
+    { id: 11, login: ACCESS[0]!.login, label: "laptop", canAnswer: true, createdAt: new Date(NOW - 2 * 86_400_000).toISOString(), lastUsedAt: new Date(NOW - 3_600_000).toISOString(), expiresAt: new Date(NOW + 5 * 86_400_000).toISOString() },
+    { id: 12, login: ACCESS[1]!.login, label: null, canAnswer: false, createdAt: new Date(NOW - 20 * 86_400_000).toISOString(), lastUsedAt: null, expiresAt: new Date(NOW + 70 * 86_400_000).toISOString() },
+  ];
   const auditLog = buildAudit();
   let rule: WhitelistRule = { minMerged: 5, minRate: 0.6 };
   const operator = me.role === "operator";
@@ -204,6 +209,7 @@ export function createAdminMock(me: User, changed: () => void): AdminApi {
   const overview = (): AccessOverview => ({
     entries: access.map((e) => ({ ...e, sessions: sessions.filter((s) => s.login === e.login).length })).sort((a, b) => a.role.localeCompare(b.role) || a.login.localeCompare(b.login)),
     sessions: sessions.map((s, i) => ({ ...s, current: s.login === me.login && i === sessions.findIndex((x) => x.login === me.login) })),
+    tokens: structuredClone(agentTokens),
   });
   const entry = (login: string) => {
     const e = access.find((x) => x.login.toLowerCase() === login.toLowerCase());
@@ -411,12 +417,21 @@ export function createAdminMock(me: User, changed: () => void): AdminApi {
         const s = sessions.find((x) => x.id === id);
         if (!s) throw new Error("that session has already ended");
         sessions = sessions.filter((x) => x !== s);
+        agentTokens = agentTokens.filter((t) => t.login !== s.login);
         log("session-revoke", s.login, { created_at: s.createdAt });
+        return write(overview());
+      },
+      async revokeToken(id) {
+        requireOperator("manage access");
+        const t = agentTokens.find((x) => x.id === id);
+        if (!t) throw new Error("that token has already ended");
+        agentTokens = agentTokens.filter((x) => x !== t);
+        log("mcp-token-revoke", t.login, { id });
         return write(overview());
       },
       audit(f) {
         if (me.role === "viewer") throw new Error("only operators and maintainers read the audit log");
-        const hidden = operator ? [] : ["access-add", "access-remove", "access-role", "session-revoke", "sign-in", "sign-in-refused", "account-change"];
+        const hidden = operator ? [] : ["access-add", "access-remove", "access-role", "session-revoke", "mcp-token-create", "mcp-token-revoke", "sign-in", "sign-in-refused", "account-change"];
         const l = f.login?.trim().toLowerCase();
         const rows = auditLog.filter((e) => !hidden.includes(e.action) && (!l || e.login.toLowerCase() === l || e.target?.toLowerCase() === l) && (!f.action || e.action === f.action));
         const from = f.offset ?? 0;
