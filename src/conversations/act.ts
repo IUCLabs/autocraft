@@ -307,6 +307,7 @@ async function transfer(ctx: Ctx, st: Extract<Step, { kind: "transfer" }>): Prom
   if (refusal) throw new Error(refusal);
   const live = await liveOpen(q, c.repo, c.number);
   if (live.type !== "Issue") throw new Error("only an issue can be moved to another repository");
+  if (ownerOf(st.to) !== ownerOf(c.repo)) throw new Error("an issue moves only between repositories of one owner");
   const t = await q.query(REPO_ID, { owner: ownerOf(st.to), name: st.to }) as { repository?: { id: string } | null };
   if (!t.repository) throw new Error(`GitHub has no repository ${st.to}`);
   const url = await transferIssue(w, g, gTo, q, { repo: c.repo, number: c.number, id: live.id }, { repo: st.to, id: t.repository.id }, source);

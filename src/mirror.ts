@@ -13,7 +13,7 @@ import { audit } from "./dash/audit.ts";
 import { hashColumns } from "./itemhash.ts";
 import { syncActivity } from "./activity.ts";
 import { envVar } from "./env.ts";
-import { DEFAULT_OWNER, loadOwners, ownerOf, trackedOwners } from "./owners.ts";
+import { DEFAULT_OWNER, loadOwners, ownerOf, slugOf } from "./owners.ts";
 
 const OVERLAP_MS = 10 * 60 * 1000;
 const FULL_PAGE = 30;
@@ -281,6 +281,12 @@ async function listRepos(client: Querier, login: string): Promise<Node[]> {
   }
 }
 
+/** False for a node of a repo with the tracked name but another owner (names are unique across tracked repos). */
+const ownedBy = (n: Node, name: string): boolean => {
+  const login = n.repository?.owner?.login;
+  return !login || login.toLowerCase() === ownerOf(name).toLowerCase();
+};
+
 const iso = (d: Date): string => d.toISOString().replace(/\.\d+Z$/, "Z");
 
 // Reads a repo's items, newest first, down to `cutoff` (everything when null). Moves no high water.
@@ -349,8 +355,8 @@ query($q: String!, $first: Int!, $after: String) {
     pageInfo { hasNextPage endCursor }
     nodes {
       __typename
-      ... on Issue { repository { name } ${COMMON} stateReason ${COMMENTS} }
-      ... on PullRequest { repository { name } ${COMMON} ${PR_EXTRA} ${COMMENTS} ${PR_FULL} }
+      ... on Issue { repository { name owner { login } } ${COMMON} stateReason ${COMMENTS} }
+      ... on PullRequest { repository { name owner { login } } ${COMMON} ${PR_EXTRA} ${COMMENTS} ${PR_FULL} }
     }
   }
 }`;
@@ -378,8 +384,8 @@ export type SearchResult = { count: number; newest: string | null; slices: numbe
 // returned (tracked repos or not), the next sync's starting point; null when nothing matched.
 export async function syncBySearch(db: DatabaseSync, client: Querier, tracked: string[], since: string, until: string): Promise<SearchResult> {
   const trackedSet = new Set(tracked);
-  // One query for every owner: `org:` for the default owner, `user:` (also matches organizations) for the others.
-  const scope = trackedOwners(db).map((o) => (o === DEFAULT_OWNER ? `org:${o}` : `user:${o}`)).join(" ");
+  // Search covers the default org only; repos of other owners are read one by one after it.
+  const scope = `org:${DEFAULT_OWNER}`;
   const bump = db.prepare("UPDATE repos SET high_water=? WHERE name=? AND (high_water IS NULL OR high_water < ?)");
   // Applied once every window has been read, so a failed run leaves the repos' high water alone.
   const repoNewest = new Map<string, string>();
@@ -405,7 +411,7 @@ export async function syncBySearch(db: DatabaseSync, client: Querier, tracked: s
     for (const n of nodes) {
       if (n?.updatedAt && n.updatedAt > (out.newest ?? "")) out.newest = n.updatedAt;
       // Untracked repos are dropped here, before anything else is done with the node.
-      if (!n?.repository || !trackedSet.has(n.repository.name)) continue;
+      if (!n?.repository || !trackedSet.has(n.repository.name) || !ownedBy(n, n.repository.name)) continue;
       const kind: Kind = n.__typename === "PullRequest" ? "pr" : "issue";
       const detail: Detail = n.state === "OPEN" ? "full" : "light";
       const key = `${n.repository.name}\t${kind}\t${detail}`;
@@ -450,6 +456,15 @@ export async function syncBySearch(db: DatabaseSync, client: Querier, tracked: s
 
   const from = new Date(since);
   await window(from, new Date(Math.max(from.getTime(), new Date(until).getTime())));
+  for (const name of tracked.filter((n) => ownerOf(n) !== DEFAULT_OWNER)) {
+    try {
+      const r = await readRepoSince(db, client, name, iso(from));
+      out.count += r.count;
+      if (r.newest > (repoNewest.get(name) ?? "")) repoNewest.set(name, r.newest);
+    } catch (e) {
+      console.warn(`  ${slugOf(name)}: not synced: ${(e as Error).message}`);
+    }
+  }
   for (const [repo, t] of repoNewest) bump.run(t, repo, t);
   return out;
 }
@@ -538,19 +553,42 @@ export function lowPriority(inner: Client, o: LowPriorityOpts): Querier {
 
 type SyncOpts = { only: string[]; all: boolean; full: boolean; perRepo: boolean };
 
+export const REPO_QUERY = `
+query($owner: String!, $name: String!) {
+  rateLimit { cost remaining resetAt }
+  repository(owner: $owner, name: $name) {
+    name owner { login } visibility defaultBranchRef { name }
+    pullRequests(states: OPEN) { totalCount }
+    issues(states: OPEN) { totalCount }
+  }
+}`;
+
+// Lists the default org's repos. Repos of other owners are tracked one by one by name, never listed;
+// a failure reading one is logged and leaves the rest of the sync alone.
 async function refreshRepoList(db: DatabaseSync, client: Querier): Promise<string[]> {
   const repos: (Node & { owner: string })[] = [];
-  for (const owner of trackedOwners(db)) for (const r of await listRepos(client, owner)) repos.push({ ...r, owner });
+  for (const r of await listRepos(client, DEFAULT_OWNER)) repos.push({ ...r, owner: DEFAULT_OWNER });
+  for (const name of trackedNames(db).filter((n) => ownerOf(n) !== DEFAULT_OWNER)) {
+    const owner = ownerOf(name);
+    try {
+      const r = (await client.query(REPO_QUERY, { owner, name })).repository;
+      if (r && r.owner?.login?.toLowerCase() === owner.toLowerCase()) repos.push({ ...r, owner });
+      else console.warn(`  ${owner}/${name}: not found`);
+    } catch (e) {
+      console.warn(`  ${owner}/${name}: ${(e as Error).message}`);
+    }
+  }
   // Names are unique across owners: a repo already known under another owner is left alone.
   const upsert = db.prepare(`INSERT INTO repos (name, owner, visibility, default_branch, open_prs, open_issues) VALUES (?,?,?,?,?,?)
     ON CONFLICT(name) DO UPDATE SET visibility=excluded.visibility, default_branch=excluded.default_branch,
     open_prs=excluded.open_prs, open_issues=excluded.open_issues WHERE repos.owner = excluded.owner`);
   for (const r of repos) {
-    upsert.run(r.name, r.owner, r.visibility.toLowerCase(), r.defaultBranchRef?.name ?? null, r.pullRequests.totalCount, r.issues.totalCount);
+    const res = upsert.run(r.name, r.owner, r.visibility.toLowerCase(), r.defaultBranchRef?.name ?? null, r.pullRequests.totalCount, r.issues.totalCount);
+    if (!res.changes) console.warn(`  ${r.owner}/${r.name}: skipped, the name is known under another owner`);
   }
   loadOwners(db);
   setSetting(db, "repos_refreshed_at", iso(new Date()));
-  return repos.map((r: Node) => r.name as string);
+  return [...new Set(repos.map((r: Node) => r.name as string))];
 }
 
 async function syncPerRepo(db: DatabaseSync, client: Querier, opts: SyncOpts): Promise<number> {
@@ -570,7 +608,14 @@ async function syncPerRepo(db: DatabaseSync, client: Querier, opts: SyncOpts): P
   let total = 0;
   for (const name of todo) {
     const before = client.spent;
-    const count = await syncRepo(db, client, name, opts.full);
+    let count: number;
+    try {
+      count = await syncRepo(db, client, name, opts.full);
+    } catch (e) {
+      if (ownerOf(name) === DEFAULT_OWNER) throw e;
+      console.warn(`${slugOf(name)}: not synced: ${(e as Error).message}`);
+      continue;
+    }
     total += count;
     if (resumable) setSetting(db, "full_sync_cursor", `${scope}|${name}`);
     console.log(`${name}: ${count} items, ${client.spent - before} points used, ${client.remaining} left`);
@@ -586,8 +631,8 @@ query($owner: String!, $name: String!, $number: Int!) {
   repository(owner: $owner, name: $name) {
     issueOrPullRequest(number: $number) {
       __typename
-      ... on Issue { repository { name } ${COMMON} stateReason ${COMMENTS} }
-      ... on PullRequest { repository { name } ${COMMON} ${PR_EXTRA} ${COMMENTS} ${PR_FULL} }
+      ... on Issue { repository { name owner { login } } ${COMMON} stateReason ${COMMENTS} }
+      ... on PullRequest { repository { name owner { login } } ${COMMON} ${PR_EXTRA} ${COMMENTS} ${PR_FULL} }
     }
   }
 }`;
@@ -610,7 +655,7 @@ export async function reconcileRepo(db: DatabaseSync, client: Querier, name: str
   let gone = 0;
   for (const r of stale) {
     const n: Node = (await client.query(ONE_QUERY, { owner: ownerOf(name), name, number: r.number })).repository?.issueOrPullRequest;
-    if (n && n.repository?.name === name) {
+    if (n && n.repository?.name === name && ownedBy(n, name)) {
       writePage(db, name, n.__typename === "PullRequest" ? "pr" : "issue", n.state === "OPEN" ? "full" : "light", [n]);
       updated++;
     } else {
@@ -664,8 +709,13 @@ export async function runSync(db: DatabaseSync, client: Querier, opts: SyncOpts,
       console.log(`search: ${r.slices} slice${r.slices === 1 ? "" : "s"}${r.fallbacks ? `, ${r.fallbacks} listed per repo` : ""}`);
       const due = reconcileDue(db, tracked, now);
       if (due) {
-        const c = await reconcileRepo(db, client, due, now);
-        console.log(`reconcile ${due}: ${c.open} open, ${c.updated} re-read, ${c.gone} gone`);
+        try {
+          const c = await reconcileRepo(db, client, due, now);
+          console.log(`reconcile ${due}: ${c.open} open, ${c.updated} re-read, ${c.gone} gone`);
+        } catch (e) {
+          if (ownerOf(due) === DEFAULT_OWNER) throw e;
+          console.warn(`reconcile ${slugOf(due)}: ${(e as Error).message}`);
+        }
       }
       const at = getSetting(db, "repos_refreshed_at");
       if (!at || now.getTime() - new Date(at).getTime() >= META_REFRESH_MS) await refreshRepoList(db, client);

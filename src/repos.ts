@@ -3,7 +3,8 @@
 import type { DatabaseSync } from "node:sqlite";
 import { audit } from "./dash/audit.ts";
 import { connect } from "./db.ts";
-import { loadOwners, OWNER, splitSlug } from "./owners.ts";
+import { execFile } from "node:child_process";
+import { DEFAULT_OWNER, loadOwners, OWNER, splitSlug } from "./owners.ts";
 import { PilotError, setRepoPipeline } from "./pilot.ts";
 
 export class RepoError extends Error {}
@@ -38,14 +39,36 @@ export function trackRepo(db: DatabaseSync, by: string, input: string): boolean 
   return r.changes > 0;
 }
 
-export function untrackRepo(db: DatabaseSync, by: string, name: string): boolean {
+/** Whether `owner/name` exists and the account can read it. */
+export type RepoExists = (owner: string, name: string) => Promise<boolean>;
+
+export const ghRepoExists: RepoExists = (owner, name) =>
+  new Promise((resolve) => execFile("gh", ["api", `repos/${owner}/${name}`, "--jq", ".full_name"], { timeout: 30_000 }, (err) => resolve(!err)));
+
+/**
+ * trackRepo for an operator's input: a repo of another owner is tracked only when GitHub confirms it
+ * and storytold has no repo of that name (names are unique across owners).
+ */
+export async function trackRepoChecked(db: DatabaseSync, by: string, input: string, exists: RepoExists = ghRepoExists): Promise<boolean> {
+  const { owner, name } = splitSlug(input);
+  const known = NAME.test(name) && db.prepare("SELECT 1 FROM main.repos WHERE name = ?").get(name) !== undefined;
+  if (input.includes("/") && owner.toLowerCase() !== DEFAULT_OWNER && OWNER.test(owner) && NAME.test(name) && !known) {
+    if (await exists(DEFAULT_OWNER, name)) throw new RepoError(`${DEFAULT_OWNER}/${name} exists; repo names are unique across owners.`);
+    if (!(await exists(owner, name))) throw new RepoError(`${owner}/${name} was not found or is not readable.`);
+  }
+  return trackRepo(db, by, input);
+}
+
+export function untrackRepo(db: DatabaseSync, by: string, input: string): boolean {
+  const { name } = splitSlug(input);
   const r = db.prepare("DELETE FROM main.tracked_repos WHERE name = ?").run(name);
   if (r.changes) audit(db, by, "repo-untrack", name);
   return r.changes > 0;
 }
 
 // Deletes the mirrored items and comments of one untracked repo.
-export function purgeRepo(db: DatabaseSync, name: string): { items: number; comments: number } {
+export function purgeRepo(db: DatabaseSync, input: string): { items: number; comments: number } {
+  const { name } = splitSlug(input);
   if (isTracked(db, name)) throw new RepoError(`${name} is tracked; untrack it first.`);
   db.exec("BEGIN IMMEDIATE");
   try {
@@ -116,11 +139,17 @@ function need(args: string[], usage: string): string {
   return args[0];
 }
 
-const sub: Record<string, (args: string[]) => void> = {
+const sub: Record<string, (args: string[]) => void | Promise<void>> = {
   list,
   track: (a) => {
     const name = need(a, "track <name | owner/name>");
-    console.log(trackRepo(connect(), "cli", name) ? `tracking ${name}; it syncs at the next sync` : `${name} was already tracked`);
+    return trackRepoChecked(connect(), "cli", name).then((added) => {
+      console.log(added ? `tracking ${name}; it syncs at the next sync` : `${name} was already tracked`);
+    }, (e) => {
+      if (!(e instanceof RepoError)) throw e;
+      console.error(e.message);
+      process.exit(1);
+    });
   },
   untrack: (a) => {
     const name = need(a, "untrack <name>");
@@ -129,7 +158,7 @@ const sub: Record<string, (args: string[]) => void> = {
   pipeline: (a) => {
     const usage = "pipeline <name> on|off";
     const name = need(a, usage);
-    if (a[1] !== "on" && a[1] !== "off") return need([], usage);
+    if (a[1] !== "on" && a[1] !== "off") { need([], usage); return; }
     try {
       const on = a[1] === "on";
       console.log(setRepoPipeline(connect(), "cli", name, on) ? `${name}: pipeline ${a[1]}` : `${name}: pipeline was already ${a[1]}`);
@@ -161,7 +190,7 @@ export const commands = {
         console.error(`usage: autocraft repos ${Object.keys(sub).join("|")}`);
         process.exit(1);
       }
-      f(args.slice(1));
+      return f(args.slice(1));
     },
   },
 };

@@ -5,7 +5,7 @@ import type { Decision, ItemKind } from "../api/types.ts";
 /** The owner of repos the API does not list as owned by someone else. */
 export const GITHUB_ORG = "storytold";
 
-// Owners of the repos that are not storytold's, from `/api/repos/owners`. Repo names are unique across owners.
+// Owners of the repos that are not storytold's, from `/api/repos/owners`, set before the app renders and after a repo is tracked. Repo names are unique across owners.
 let owners: Record<string, string> = {};
 export const setRepoOwners = (next: Record<string, string>): void => { owners = next; };
 export const ownerOfRepo = (repo: string): string => (repo.includes("/") ? repo.slice(0, repo.indexOf("/")) : owners[repo] ?? GITHUB_ORG);

@@ -20,7 +20,7 @@ import { setWorkspaceExcluded, workspaceExcluded } from "../../sandbox/workspace
 import { setSingleMergeMax, singleMergeMax } from "../../merge/single.ts";
 import { setRepoPipeline } from "../../pilot.ts";
 import { countPlan, planLabels } from "../../labels/plan.ts";
-import { listAll, RepoError, trackRepo, untrackRepo } from "../../repos.ts";
+import { listAll, RepoError, trackRepoChecked, untrackRepo } from "../../repos.ts";
 import { contributors, getRule, setOverride, setRule, tierOf, type Contributor as Row, type Rule } from "../../whitelist.ts";
 import { audit } from "../audit.ts";
 import { HttpError } from "../server/util.ts";
@@ -75,6 +75,15 @@ const required = (v: unknown, what: string): string => {
 function refused<T>(f: () => T): T {
   try {
     return f();
+  } catch (e) {
+    if (e instanceof AccessError || e instanceof RepoError) throw new HttpError(400, e.message);
+    throw e;
+  }
+}
+
+async function refusedAsync<T>(f: () => Promise<T>): Promise<T> {
+  try {
+    return await f();
   } catch (e) {
     if (e instanceof AccessError || e instanceof RepoError) throw new HttpError(400, e.message);
     throw e;
@@ -401,10 +410,10 @@ export function pipelineSwitch(db: DatabaseSync, req: Req, on: boolean): Tracked
   return allRepos(db, req);
 }
 
-export function track(db: DatabaseSync, req: Req, on: boolean): TrackedRepo[] {
+export async function track(db: DatabaseSync, req: Req, on: boolean): Promise<TrackedRepo[]> {
   requireOperator(req, "manage tracked repos");
   const name = required(body(req).name, "name");
-  const changed = refused(() => (on ? trackRepo : untrackRepo)(db, req.user.login, name));
+  const changed = await refusedAsync(async () => (on ? trackRepoChecked : untrackRepo)(db, req.user.login, name));
   if (!changed) throw new HttpError(409, `${name} is ${on ? "already" : "not"} tracked`);
   clearContributorCache(db);
   return allRepos(db, req);

@@ -29,8 +29,9 @@ export function useRepoWrite(): Write {
       base(key, async () => {
         const out = await f();
         if (Array.isArray(out)) {
+          // Owners first: the views that re-render with the new list build links from them.
+          await api.repoOwners().then(setRepoOwners, () => {});
           qc.setQueryData(["repo-admin"], out);
-          void api.repoOwners().then(setRepoOwners, () => {});
         }
         return out;
       }),
