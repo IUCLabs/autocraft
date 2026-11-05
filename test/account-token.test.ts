@@ -25,7 +25,6 @@ if [ "$1" = "-p" ]; then
   case "$CLAUDE_CONFIG_DIR" in */token-check-*) ;; *) echo '{"type":"result","is_error":true,"result":"wrong config dir"}'; exit 1;; esac
   if [ "$CLAUDE_CODE_OAUTH_TOKEN" = "${SLOW}" ]; then sleep 1; fi
   if [ "$CLAUDE_CODE_OAUTH_TOKEN" = "${SECRET}" ] || [ "$CLAUDE_CODE_OAUTH_TOKEN" = "${SLOW}" ]; then if [ -z "$ANTHROPIC_API_KEY" ]; then echo '{"type":"result","is_error":false,"result":"OK"}'; exit 0; fi; fi
-  if false && [ -z "$ANTHROPIC_API_KEY" ]; then echo '{"type":"result","is_error":false,"result":"OK"}'; exit 0; fi
   echo '{"type":"result","is_error":true,"result":"API Error: 401 authentication_error"}'; exit 1
 fi
 # One write: the URL and then more output than the capped buffer keeps (the real CLI redraws its screen while it waits).
