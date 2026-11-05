@@ -17,7 +17,7 @@ import { useUser } from "../../shell/UserContext";
 import { canAct, canComment } from "../../registry/permissions";
 import { useNow } from "../../lib/useNow";
 import { localActions } from "../decisions/state";
-import { ActionCard, Progress } from "../decisions/Conversation";
+import { ActionCard, Progress } from "./OpusCards";
 import { Composer } from "./Composer";
 import { OpenQuestions, useItemDecisions } from "./ItemDecisions";
 import { PipelineRows, hashEvent } from "./PipelineRows";
@@ -44,7 +44,14 @@ const ms = (iso: string) => Date.parse(iso);
  * The trace request starts from the route's repo and number, beside the item request. The thread shows once
  * the item is there too, so the header never pushes it down.
  */
-export function ItemThread({ repo, number, it }: { repo: string; number: number; it?: Item }) {
+export function ItemThread({ repo, number, it, decision, onAnswered }: {
+  repo: string;
+  number: number;
+  it?: Item;
+  /** The decision page's own decision: it comes first at the end of the thread, the trace header is left out. */
+  decision?: Decision;
+  onAnswered?: () => void;
+}) {
   useNow();
   const user = useUser();
   const [kinds, setKinds] = useState<TraceKind[]>([]);
@@ -62,7 +69,8 @@ export function ItemThread({ repo, number, it }: { repo: string; number: number;
     (p) => p.nextCursor,
   );
   const { data: conv } = useQuery(`conversation:${repo}#${number}`, (a) => a.conversations.get(repo, number), { pollMs: (d) => (d?.pending ? 4000 : false) });
-  const { data: ds } = useItemDecisions(repo, number);
+  const { data: listed } = useItemDecisions(repo, number);
+  const ds = listed && decision ? [decision, ...listed.filter((d) => d.id !== decision.id)] : decision ? [decision] : listed;
   const ids = ds?.map((d) => d.id).join(",") ?? "";
   const { data: threads } = useQuery(
     `thread:item:${repo}#${number}:${ids}`,
@@ -184,7 +192,7 @@ export function ItemThread({ repo, number, it }: { repo: string; number: number;
   );
   return (
     <>
-      <TraceHeader header={first.header} decisionHref={(id) => `/needs/decisions/${encodeURIComponent(id)}`} />
+      {!decision && <TraceHeader header={first.header} decisionHref={(id) => `/needs/decisions/${encodeURIComponent(id)}`} />}
       <section className="mt-6" aria-label="Thread">
         <TraceFilters kinds={kinds} onKinds={setKinds} autocraftOnly={autocraftOnly} onAutocraftOnly={setAutocraftOnly} />
         <ol className="mt-3 space-y-3">
@@ -210,7 +218,7 @@ export function ItemThread({ repo, number, it }: { repo: string; number: number;
         {list.length === 0 && !it.body && <p className="text-sm text-ink/55">No events match.</p>}
         <ErrorLine error={q.error?.message} className="mt-2" />
       </section>
-      <OpenQuestions repo={it.repo} number={it.number} cards={cards} />
+      <OpenQuestions ds={ds ?? []} focus={decision} cards={cards} onAnswered={onAnswered} />
       <Composer
         repo={it.repo}
         number={it.number}
@@ -218,7 +226,7 @@ export function ItemThread({ repo, number, it }: { repo: string; number: number;
         commenter={canComment(user)}
         exists={!!conv?.exists}
         pending={!!conv?.pending}
-        feedbackOn={openDecisions[0]}
+        feedbackOn={decision && !decision.answer ? decision : openDecisions[0]}
       />
     </>
   );

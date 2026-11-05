@@ -3,13 +3,9 @@ import type { Decision, User } from "../../api/types";
 import { Button } from "../../ui/atoms/Button";
 import { Kbd } from "../../ui/atoms/Kbd";
 import { cn } from "../../ui/cn";
-import { AnsweredState, canActOn } from "./DecisionDetail";
+import { canActOn } from "./DecisionDetail";
 import { RecommendationLine } from "../../ui/molecules/RecommendationLine";
 import { localActions, useAnswer, useArmed, useLocal, userSelection } from "./state";
-
-export const WORKFLOW_ID = "workflow-box";
-
-export const scrollToWorkflow = () => document.getElementById(WORKFLOW_ID)?.scrollIntoView({ behavior: "smooth", block: "start" });
 
 /** Key under which the picked option of one decision, or of a batch of checked decisions, is kept. */
 const pickKey = (ds: Decision[]) => ds.map((d) => d.id).join("+");
@@ -84,14 +80,14 @@ export function WorkflowBox({
   });
 
   if (!operator) return null;
-  if (d.answer && !many) return <section id={WORKFLOW_ID} className="mt-8 scroll-mt-3"><h2 className="mb-2 text-sm font-semibold">Workflow</h2><AnsweredState d={d} canUndo /></section>;
+  if (d.answer && !many) return null;
   const title = compact ? "Answer directly" : "Workflow";
 
   const isArmed = !!option && armed === option.key;
   const writes = option ? effect(option.key) : null;
   const suffix = many ? ` for ${ds.length} decisions` : "";
   return (
-    <section id={compact ? undefined : WORKFLOW_ID} className={cn("scroll-mt-3", compact ? "mt-3" : "mt-8 rounded-md border border-line-strong bg-raised")}>
+    <section className={cn("scroll-mt-3", compact ? "mt-3" : "mt-8 rounded-md border border-line-strong bg-raised")}>
       <h2 className={cn("text-sm font-semibold", compact ? "mb-1.5 text-xs text-ink/60" : "border-b border-line px-3 py-2")}>{title}</h2>
       <div className={compact ? undefined : "px-3 py-2.5"}>
         {!many && !compact && <div className="mb-2 px-2"><RecommendationLine d={d} /></div>}
