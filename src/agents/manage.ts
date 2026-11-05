@@ -70,11 +70,13 @@ export async function beginToken(db: DatabaseSync, id: unknown, by: string): Pro
   const a = dirOf(db, id);
   if (loginRunning(a.id) && loginInfo(a.id)?.kind !== "token") throw new AccountError(409, "a sign-in is running for this account");
   if (!loginRunning(a.id)) audit(db, by, "account-token-start", `account:${a.id}`);
-  await startLogin(a.id, a.configDir, undefined, "token", async (token) => {
-    if (!(await checkToken(a.configDir, token))) {
+  await startLogin(a.id, a.configDir, undefined, "token", async (token, signal) => {
+    if (!(await checkToken(a.configDir, token, signal))) {
+      if (signal.aborted) return false;
       audit(db, by, "account-token-check-failed", `account:${a.id}`);
       return false;
     }
+    if (signal.aborted) return false;
     writeToken(a.configDir, token);
     try {
       recordTokenSet(db, a.id);

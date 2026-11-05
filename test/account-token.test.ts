@@ -2,11 +2,11 @@
 // the account's config directory, kept out of every response and audit row, and
 // passed to model calls (host env, sandbox env without a credentials mount) but not to status.
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, test } from "node:test";
 import { listAccounts } from "../src/agents/accounts.ts";
-import { addAccount, beginToken, removeToken, sendTokenCode } from "../src/agents/manage.ts";
+import { addAccount, beginToken, removeToken, sendTokenCode, stopToken } from "../src/agents/manage.ts";
 import { childEnv } from "../src/agents/status.ts";
 import { cliErrorText, credentialsNearExpiry, isAuthFailure, markTokenRejected, tokenEnv, tokenFile, usesToken } from "../src/agents/token.ts";
 import { connect } from "../src/db.ts";
@@ -17,12 +17,15 @@ mkdirSync(SCRATCH, { recursive: true });
 const dir = mkdtempSync(join(SCRATCH, "account-token-"));
 const SECRET = "sk-ant-oat01-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789_-AbCdEfGhIjKlMnOpQrStUv";
 const BAD = "sk-ant-oat01-ZyXwVuTsRqPoNmLkJiHgFeDcBa9876543210_-ZyXwVuTsRqPoNmLkJiHgFe";
+const SLOW = "sk-ant-oat01-SlowSlowSlowSlow0123456789_-SlowSlowSlowSlowSlowSlowSl";
 const FAKE = join(dir, "claude");
 // The token check (-p): works only with the right token in the environment and a config directory other than the account's.
 writeFileSync(FAKE, `#!/bin/sh
 if [ "$1" = "-p" ]; then
   case "$CLAUDE_CONFIG_DIR" in */token-check-*) ;; *) echo '{"type":"result","is_error":true,"result":"wrong config dir"}'; exit 1;; esac
-  if [ "$CLAUDE_CODE_OAUTH_TOKEN" = "${SECRET}" ] && [ -z "$ANTHROPIC_API_KEY" ]; then echo '{"type":"result","is_error":false,"result":"OK"}'; exit 0; fi
+  if [ "$CLAUDE_CODE_OAUTH_TOKEN" = "${SLOW}" ]; then sleep 1; fi
+  if [ "$CLAUDE_CODE_OAUTH_TOKEN" = "${SECRET}" ] || [ "$CLAUDE_CODE_OAUTH_TOKEN" = "${SLOW}" ]; then if [ -z "$ANTHROPIC_API_KEY" ]; then echo '{"type":"result","is_error":false,"result":"OK"}'; exit 0; fi; fi
+  if false && [ -z "$ANTHROPIC_API_KEY" ]; then echo '{"type":"result","is_error":false,"result":"OK"}'; exit 0; fi
   echo '{"type":"result","is_error":true,"result":"API Error: 401 authentication_error"}'; exit 1
 fi
 # One write: the URL and then more output than the capped buffer keeps (the real CLI redraws its screen while it waits).
@@ -31,8 +34,15 @@ read -r line
 if [ "$line" = "goodcode#state" ]; then
   echo "Your OAuth token (valid for 1 year):"
   # The cursor jumps below the token and more text follows: stripping the codes would glue "Store" onto the token.
-  printf '%s\\033[5;1HStore this token securely.\\n' "${SECRET}"
+  # The token arrives in two writes, after a large one.
+  head -c 30000 /dev/zero | tr '\\0' 'y'; printf '\\033[1;1H\\033[2J'
+  printf '%s' "${SECRET.slice(0, 30)}"; sleep 0.3
+  printf '%s\\033[5;1HStore this token securely.\\n' "${SECRET.slice(30)}"
   exit 0
+fi
+if [ "$line" = "slowtoken#state" ]; then
+  printf '%s\\033[5;1HStore this token securely.\\n' "${SLOW}"
+  sleep 3; exit 0
 fi
 if [ "$line" = "badtoken#state" ]; then
   printf '%s\\033[5;1HStore this token securely.\\n' "${BAD}"
@@ -65,6 +75,7 @@ describe("long-lived token", () => {
     assert.equal(readFileSync(tokenFile(dirA), "utf8").trim(), SECRET);
     assert.equal(statSync(tokenFile(dirA)).mode & 0o777, 0o600);
     assert.ok(!existsSync(`${tokenFile(dirA)}.tmp`));
+    assert.deepEqual(readdirSync(dirA).filter((n) => n.startsWith("token-check-")), []);
     const everything = JSON.stringify([listAccounts(db), db.prepare("SELECT * FROM audit").all(), db.prepare("SELECT * FROM claude_account_tokens").all()]);
     assert.ok(!everything.includes("sk-ant-oat01"));
     assert.deepEqual(db.prepare("SELECT action FROM audit WHERE action LIKE 'account-token%' ORDER BY rowid").all().map((r) => (r as { action: string }).action), ["account-token-start", "account-token-code", "account-token-set"]);
@@ -105,9 +116,25 @@ describe("long-lived token", () => {
     const view = listAccounts(db).find((x) => x.id === a.id)!;
     assert.equal(view.login?.message, "the token could not be checked");
     assert.ok(!existsSync(tokenFile(join(dir, "root", a.id))));
+    const log = readFileSync(join(dir, "root", a.id, "setup-token-failed.log"), "utf8");
+    assert.ok(!log.includes(BAD) && !log.includes("badtoken#state") && !log.includes(BAD.slice(0, 40)));
     const actions = db.prepare("SELECT action FROM audit WHERE target = ? ORDER BY rowid").all(`account:${a.id}`).map((r) => (r as { action: string }).action);
     assert.ok(actions.includes("account-token-check-failed") && !actions.includes("account-token-set"));
     assert.ok(!JSON.stringify(db.prepare("SELECT * FROM audit").all()).includes("sk-ant-oat01"));
+  });
+
+  test("a cancel during the check saves nothing", async () => {
+    const a = addAccount(db, { label: "Team C" }, "op");
+    const dirC = join(dir, "root", a.id);
+    await beginToken(db, a.id, "op");
+    sendTokenCode(db, a.id, { code: "slowtoken#state" }, "op");
+    await waitFor(() => existsSync(dirC) && readdirSync(dirC).some((n) => n.startsWith("token-check-")));
+    stopToken(db, a.id, "op");
+    await new Promise((r) => setTimeout(r, 1500));
+    assert.equal(listAccounts(db).find((x) => x.id === a.id)!.login?.state, "cancelled");
+    assert.ok(!existsSync(tokenFile(dirC)));
+    const actions = db.prepare("SELECT action FROM audit WHERE target = ?").all(`account:${a.id}`).map((r) => (r as { action: string }).action);
+    assert.ok(!actions.includes("account-token-set"));
   });
 
   test("only the CLI's own error text counts as an authentication failure", () => {

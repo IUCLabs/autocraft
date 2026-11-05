@@ -5,10 +5,10 @@
 // token with its TUI. Cursor positioning makes the raw byte stream an unreliable
 // source (stripping the codes glues unrelated screen text onto the token), so that
 // output also feeds a headless terminal emulator (xterm, 1000 x 50 like the pty)
-// that is reset when the code is submitted, and the token is read from its
+// that draws everything after the code was typed, and the token is read from its
 // rendered screen. A token at the end of a screen line may be half drawn, so the
 // screen is read only once the stripped stream shows a complete token or the
-// process has closed. The URL and the failure patterns read the stripped stream.
+// process has closed, and a blank cell follows it on its row. The URL and the failure patterns read the stripped stream.
 // The token goes to `onToken`, which checks and stores it (true: saved, false: the
 // check failed) while the state stays "checking".
 // The code and the token are secrets: never logged, stored (the token only by
@@ -22,7 +22,7 @@ import { join } from "node:path";
 import xterm from "@xterm/headless";
 import { claudeBin } from "./box.ts";
 import { childEnv } from "./status.ts";
-import { extractToken } from "./token.ts";
+import { extractScreenToken, extractToken } from "./token.ts";
 
 export type LoginState = "starting" | "waiting" | "checking" | "done" | "failed" | "cancelled";
 /** "login": the regular sign-in; "token": a long-lived token from `claude setup-token`. */
@@ -39,10 +39,10 @@ const ANSI = /\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[(
 export const timing = { urlMs: 30_000, codeMs: 60_000, enterMs: 300, maxMs: 10 * 60_000 };
 
 /** Checks and stores a token: true when it was saved, false when the check failed; a throw means it could not be saved. */
-export type TokenSink = (token: string) => Promise<boolean>;
+export type TokenSink = (token: string, signal: AbortSignal) => Promise<boolean>;
 const { Terminal } = xterm;
 type Terminal = InstanceType<typeof Terminal>;
-type Live = { kind: LoginKind; configDir: string; onToken?: TokenSink; child: ChildProcess; info: LoginInfo; out: string; code?: string; term?: Terminal; screen: string; busy?: boolean; timers: NodeJS.Timeout[]; onDone?: () => void };
+type Live = { kind: LoginKind; configDir: string; onToken?: TokenSink; child: ChildProcess; info: LoginInfo; out: string; code?: string; term?: Terminal; screen: string; busy?: boolean; abort: AbortController; codeTimer?: NodeJS.Timeout; timers: NodeJS.Timeout[]; onDone?: () => void };
 const live = new Map<string, Live>();
 const last = new Map<string, LoginInfo>();
 
@@ -54,21 +54,23 @@ const cutCode = (l: Live, s: string) => (l.code ? s.replaceAll(l.code, "") : s);
 
 /** The text on the emulated screen (and its scrollback): wrapped lines joined, others split by a newline. */
 function renderScreen(term: Terminal): string {
+  // Cells are not trimmed: a blank cell after the token proves the row holds no more of it.
   const buf = term.buffer.active;
   let out = "";
   for (let i = 0; i < buf.length; i++) {
     const line = buf.getLine(i);
     if (!line) continue;
-    out += (i > 0 && line.isWrapped ? "" : i > 0 ? "\n" : "") + line.translateToString(true);
+    out += (i > 0 && line.isWrapped ? "" : i > 0 ? "\n" : "") + line.translateToString(false);
   }
   return out;
 }
 
 const ANY_TOKEN = /sk-ant-[A-Za-z0-9_-]+/g;
+const LONG_RUN = /[A-Za-z0-9_-]{40,}/g;
 
 function keepFailedScreen(l: Live): void {
   try {
-    writeFileSync(join(l.configDir, "setup-token-failed.log"), `${new Date().toISOString()}\n${cutCode(l, l.screen).replace(ANY_TOKEN, "[token]").slice(-4000)}\n`, { mode: 0o600 });
+    writeFileSync(join(l.configDir, "setup-token-failed.log"), `${new Date().toISOString()}\n${cutCode(l, l.screen).replace(/ +$/gm, "").replace(ANY_TOKEN, "[token]").replace(LONG_RUN, "[token]").slice(-4000)}\n`, { mode: 0o600 });
   } catch {
     // Diagnostics only.
   }
@@ -77,6 +79,7 @@ function keepFailedScreen(l: Live): void {
 function finish(id: string, l: Live, state: LoginState, message: string | null): void {
   if (live.get(id) !== l) return;
   for (const t of l.timers) clearTimeout(t);
+  l.abort.abort();
   if (l.kind === "token" && state === "failed" && l.info.state === "checking") keepFailedScreen(l);
   l.code = undefined;
   l.out = "";
@@ -105,16 +108,16 @@ export function loginRunning(id: string): boolean {
  */
 async function takeToken(id: string, l: Live, final: boolean): Promise<boolean> {
   if (l.kind !== "token" || !l.term || !extractToken(fresh(l), final)) return false;
-  const t = extractToken(cutCode(l, l.screen), true);
+  const t = extractScreenToken(cutCode(l, l.screen), final);
   if (!t) return false;
   l.busy = true;
   l.out = "";
-  for (const timer of l.timers) clearTimeout(timer);
-  l.timers = [];
+  clearTimeout(l.codeTimer);
   try {
-    const saved = await l.onToken?.(t);
-    if (saved === false) finish(id, l, "failed", "the token could not be checked");
-    else finish(id, l, "done", "token saved");
+    if (!l.onToken) throw new Error("no sink");
+    const saved = await l.onToken(t, l.abort.signal);
+    if (saved === true) finish(id, l, "done", "token saved");
+    else finish(id, l, "failed", "the token could not be checked");
   } catch {
     finish(id, l, "failed", "the token could not be saved");
   }
@@ -131,7 +134,7 @@ export async function startLogin(id: string, configDir: string, onDone?: () => v
   // A wide terminal keeps the URL on one line. exec: killing the pty's shell kills the CLI.
   const cmd = `stty cols 1000 rows 50 2>/dev/null; exec ${shq(claudeBin())} ${kind === "token" ? "setup-token" : "auth login --claudeai"}`;
   const child = spawn("script", ["-q", "-f", "-e", "-c", cmd, "/dev/null"], { env: childEnv(configDir, { BROWSER: "true" }), stdio: ["pipe", "pipe", "ignore"] });
-  const l: Live = { kind, configDir, onToken, child, info: { state: "starting", url: null, message: null, kind }, out: "", screen: "", timers: [], onDone };
+  const l: Live = { kind, configDir, onToken, child, info: { state: "starting", url: null, message: null, kind }, out: "", screen: "", abort: new AbortController(), timers: [], onDone };
   if (kind === "token") l.term = new Terminal({ cols: 1000, rows: 50, scrollback: 200, allowProposedApi: true });
   live.set(id, l);
   last.delete(id);
@@ -141,7 +144,6 @@ export async function startLogin(id: string, configDir: string, onDone?: () => v
     if (live.get(id) !== l) return;
     const chunk = b.toString("utf8");
     // Patterns look at the whole buffer with this chunk; the cap applies after, so a large chunk can't cut off the URL or the token first.
-    l.out += clean(chunk);
     const handle = async () => {
       try {
         await onData();
@@ -150,8 +152,15 @@ export async function startLogin(id: string, configDir: string, onDone?: () => v
       }
     };
     // The emulator parses asynchronously: the screen is read once this chunk is drawn.
-    if (l.term && l.info.state === "checking") l.term.write(chunk, () => void render(l).then(handle));
-    else {
+    // Once the emulator is in use, the stream text joins the buffer only when the chunk is drawn, so the token gate never sees bytes the screen lacks.
+    if (l.term && l.info.state === "checking") {
+      l.term.write(chunk, () => {
+        if (live.get(id) !== l) return;
+        l.out += clean(chunk);
+        void render(l).then(handle);
+      });
+    } else {
+      l.out += clean(chunk);
       l.term?.write(chunk);
       void handle();
     }
@@ -198,11 +207,10 @@ export function submitCode(id: string, code: string): boolean {
   if (!l || l.info.state !== "waiting" || !LOGIN_CODE.test(code)) return false;
   // Only output after the code counts; a fresh buffer keeps that true once the capped buffer is full.
   l.out = "";
-  // Reset through the write queue so output drawn before the code is gone and nothing queued lands after it.
-  l.term?.write("\x1bc");
   l.code = code;
   l.info = { state: "checking", url: null, message: null, kind: l.kind };
-  l.timers.push(setTimeout(() => finish(id, l, "failed", "no answer to the code"), timing.codeMs));
+  l.codeTimer = setTimeout(() => finish(id, l, "failed", "no answer to the code"), timing.codeMs);
+  l.timers.push(l.codeTimer);
   // Enter goes separately: the CLI reads one write as a paste, and an Enter inside a paste doesn't submit.
   l.child.stdin!.write(code);
   l.timers.push(setTimeout(() => l.child.stdin!.write("\r"), timing.enterMs));
