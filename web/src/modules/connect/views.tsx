@@ -14,6 +14,7 @@ import { Block } from "../../ui/molecules/Block";
 import { CodeBlock } from "../../ui/molecules/CodeBlock";
 import { ConfirmButton } from "../../ui/molecules/ConfirmButton";
 import { Page } from "../../ui/organisms/Page";
+import { useIsPhone } from "../../shell/useMedia";
 import { day } from "../../lib/format";
 import { useWrite } from "../../lib/hooks";
 
@@ -82,7 +83,34 @@ export function ConnectView({ user }: ViewProps) {
 
 function Tokens({ tokens, write, fresh }: { tokens: McpToken[]; write: ReturnType<typeof useWrite>; fresh: number | null }) {
   const api = useApi();
+  const phone = useIsPhone();
   if (!tokens.length) return <EmptyState>No tokens yet.</EmptyState>;
+  const revoke = (t: McpToken) => (
+    <ConfirmButton label="Revoke" confirmLabel="Revoke now" loading={write.busy === `revoke:${t.id}`} onConfirm={() => void write.run(`revoke:${t.id}`, () => api.mcp.revoke(t.id))} />
+  );
+  const name = (t: McpToken) => (
+    <>
+      {t.label ?? <span className="text-ink/40">no label</span>}
+      {t.canAnswer && <Badge className="ml-2">answers decisions</Badge>}
+      {t.id === fresh && <Badge tone="accent" className="ml-2">new</Badge>}
+    </>
+  );
+  if (phone)
+    return (
+      <ul>
+        {tokens.map((t) => (
+          <li key={t.id} className="flex items-center gap-3 border-b border-line px-4 py-2.5 last:border-0">
+            <div className="min-w-0 flex-1">
+              <div className="font-medium">{name(t)}</div>
+              <div className="mt-0.5 text-xs text-ink/55">
+                Made {day(t.createdAt)} · {t.lastUsedAt ? <>used <TimeAgo iso={t.lastUsedAt} /></> : "never used"} · expires {day(t.expiresAt)}
+              </div>
+            </div>
+            {revoke(t)}
+          </li>
+        ))}
+      </ul>
+    );
   return (
     <div className="overflow-x-auto">
       <table className="w-full min-w-[560px] border-collapse text-sm">
@@ -98,16 +126,12 @@ function Tokens({ tokens, write, fresh }: { tokens: McpToken[]; write: ReturnTyp
         <tbody>
           {tokens.map((t) => (
             <tr key={t.id} className="h-10 border-b border-line last:border-0 hover:bg-ink/[0.03]">
-              <td className="px-3">
-                {t.label ?? <span className="text-ink/40">no label</span>}
-                {t.canAnswer && <Badge className="ml-2">answers decisions</Badge>}
-                {t.id === fresh && <Badge tone="accent" className="ml-2">new</Badge>}
-              </td>
+              <td className="px-3">{name(t)}</td>
               <td className="num whitespace-nowrap px-3 text-ink/65">{day(t.createdAt)}</td>
               <td className="num whitespace-nowrap px-3 text-ink/65">{t.lastUsedAt ? <TimeAgo iso={t.lastUsedAt} /> : "never"}</td>
               <td className="num whitespace-nowrap px-3 text-ink/65">{day(t.expiresAt)}</td>
               <td className="px-3 text-right">
-                <ConfirmButton label="Revoke" confirmLabel="Revoke now" loading={write.busy === `revoke:${t.id}`} onConfirm={() => void write.run(`revoke:${t.id}`, () => api.mcp.revoke(t.id))} />
+                {revoke(t)}
               </td>
             </tr>
           ))}
