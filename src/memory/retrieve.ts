@@ -6,8 +6,8 @@ import { STATEMENT_PROMPT_CHARS } from "../review/opus-parse.ts";
 /** How many statements a review sees. */
 export const STATEMENTS_PER_REVIEW = 5;
 /**
- * Cosine similarity a statement needs to the PR. Whole-item pairs of the same kind count as duplicates from 0.86
- * (src/dupes/scan.ts); a statement is short and about a topic, so related work scores lower. 0.7 sits above
+ * Cosine similarity a statement needs to the PR. Whole-item pairs of the same kind become duplicate candidates from
+ * SIM_THRESHOLD (src/dupes/scan.ts); a statement is short and about a topic, so related work scores lower. 0.7 sits above
  * the 0.5 to 0.65 that unrelated text gets from the bge-small model.
  */
 export const STATEMENT_MIN_SIMILARITY = 0.7;

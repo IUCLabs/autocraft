@@ -13,6 +13,7 @@ import { envVar } from "./env.ts";
 import { repoHasNoCi } from "./merge/no-ci.ts";
 import { fixupEditable } from "./fixup/patch.ts";
 import { mentionNames } from "./github/slugs.ts";
+import { SIM_THRESHOLD } from "./dupes/scan.ts";
 
 export const DEFAULT_DB = join(homedir(), ".local/share/autocraft/mirror.db");
 
@@ -239,6 +240,17 @@ function dropColumns(db: DatabaseSync): void {
 
 // Values renamed after their first release, rewritten on every connect.
 function migrateValues(db: DatabaseSync): void {
+  // A new duplicate cut-off applies to every item, so each one is scanned again at it.
+  const cut = String(SIM_THRESHOLD);
+  const scannedAt = () => (db.prepare("SELECT value FROM main.settings WHERE key = 'dupes_scan_threshold'").get() as { value: string } | undefined)?.value;
+  if (scannedAt() !== cut) {
+    db.exec("BEGIN IMMEDIATE");
+    if (scannedAt() !== cut) {
+      db.exec("DELETE FROM main.duplicate_scans");
+      db.prepare("INSERT INTO main.settings (key, value) VALUES ('dupes_scan_threshold', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value").run(cut);
+    }
+    db.exec("COMMIT");
+  }
   // The mention flag for the pipeline login and app slugs the comments were last flagged for.
   const names = JSON.stringify(mentionNames(db));
   const built = (db.prepare("SELECT value FROM main.settings WHERE key = 'mentions_built'").get() as { value: string } | undefined)?.value ?? "";
