@@ -141,7 +141,8 @@ export interface Decision {
   answeredAt: string | null;
   appliedAt: string | null;
   /** The GitHub write of the answer while it is not done (repos on the app's identity only): waiting for the answering operator's sign-in or access, failed, or pending. null otherwise. */
-  exec: { state: ExecState; reason: string | null } | null;
+  /** `approvalsRepo`: the repo whose approvals hold the write back, for operators who can change them. */
+  exec: { state: ExecState; reason: string | null; approvalsRepo?: string } | null;
   /** The opinion the operator adopted as the answer, if any. */
   adoptedOpinion: Opinion | null;
   opinions: Opinion[];

@@ -12,15 +12,15 @@ export type Want<K extends ActionKind = ActionKind> = { kind: K; bucket?: string
 /** The repo approvals a write can need. */
 export type Approval = "merge" | "push" | "comment" | "ci" | "labels" | "fix-issue" | "main-fix";
 
-const WHAT: Record<Approval, string> = { merge: "merging", push: "pushing", comment: "commenting", ci: "approving CI runs", labels: "labelling", "fix-issue": "fixing issues", "main-fix": "fixing main CI" };
+const WHAT: Record<Approval, string> = { merge: "Merges", push: "Pushes", comment: "Comments", ci: "CI run approvals", labels: "Labels", "fix-issue": "Issue fixes", "main-fix": "Main CI fixes" };
 
 /** A repo's approvals and the global switch, as the repo-level guard loads them. */
 export type RepoApprovals = Record<Approval, boolean> & { pipelineOn: boolean };
 
 /** Why a write needing `need` is refused, or null. A write with no approval need (`need` null) is gated by the switch only. */
 export function gateRepo(a: RepoApprovals, need: Approval | null, by: By, repo: string): string | null {
-  if (by === "pipeline" && !a.pipelineOn) return "the pipeline is off";
-  return need === null || a[need] ? null : `${WHAT[need]} in ${repo} is not approved`;
+  if (by === "pipeline" && !a.pipelineOn) return "The pipeline is off";
+  return need === null || a[need] ? null : `${WHAT[need]} in ${repo} are not approved`;
 }
 
 /** The approval an action's GitHub write needs, or null for an action that writes nothing there. */
@@ -51,16 +51,16 @@ export function approvalOf(f: { pushable?: boolean }, a: Want): Approval | null 
 
 /** Why the write is refused, or null. */
 export function gates(f: PrFacts | ItemFacts, a: Want, by: By): string | null {
-  if (by === "pipeline" && !f.pipelineOn) return "the pipeline is off";
+  if (by === "pipeline" && !f.pipelineOn) return "The pipeline is off";
   // A stage that stopped itself (circuit breaker) writes nothing until an operator resumes it, whoever asks.
   const stage = tripStageOf(a);
   const tripped = stage && (f as { tripped?: Partial<Record<string, string>> }).tripped?.[stage];
-  if (tripped) return `${stage} is paused: ${tripped}`;
+  if (tripped) return `${stage[0]!.toUpperCase()}${stage.slice(1)} is paused: ${tripped}`;
   const need = approvalOf(f as { pushable?: boolean }, a);
   if (!need) return null;
   const r = f.repoFacts as Record<string, boolean | undefined>;
   const ok = { merge: r.mergeApproved, push: r.pushApproved, comment: r.commentApproved, ci: r.ciApproved, labels: r.labelsApproved, "fix-issue": r.fixIssueApproved, "main-fix": undefined }[need];
-  return ok ? null : `${WHAT[need]} in ${f.repo} is not approved`;
+  return ok ? null : `${WHAT[need]} in ${f.repo} are not approved`;
 }
 
 /** Writes from the command line are an operator's. */

@@ -1,4 +1,5 @@
-import { ArrowClockwiseIcon, HourglassIcon, KeyIcon, WarningCircleIcon } from "@phosphor-icons/react";
+import { Link } from "react-router-dom";
+import { ArrowClockwiseIcon, GearSixIcon, HourglassIcon, KeyIcon, WarningCircleIcon } from "@phosphor-icons/react";
 import { useApi } from "../../api/client";
 import type { Decision } from "../../api/types";
 import { Button } from "../../ui/atoms/Button";
@@ -25,13 +26,19 @@ export function ExecLine({ d, canRetry, compact }: { d: Decision; canRetry: bool
   if (!exec || exec.state === "done") return null;
   const Icon = exec.state === "pending" ? HourglassIcon : WarningCircleIcon;
   // The stored waiting-token reason speaks to the answerer; anyone else reads who it waits for.
-  const text = exec.state === "waiting-token" && !answerer && d.answeredBy ? `Waiting for ${d.answeredBy} to authorize AutoCraft` : exec.reason ?? "Waiting to run";
+  const text = exec.state === "pending" && exec.reason ? `Waiting: ${/^[A-Z][a-z]/.test(exec.reason) ? exec.reason[0]!.toLowerCase() + exec.reason.slice(1) : exec.reason}` : exec.state === "waiting-token" && !answerer && d.answeredBy ? `Waiting for ${d.answeredBy} to authorize AutoCraft` : exec.reason ?? "Waiting to run";
   return (
     <div className={cn("flex flex-wrap items-center gap-x-3 gap-y-1", compact ? "mt-1 text-xs" : "w-full text-sm", TONE[exec.state])} onClick={(e) => e.stopPropagation()}>
       <span className="inline-flex items-center gap-1.5">
         <Icon className="shrink-0" />
         <span>{text}</span>
       </span>
+      {exec.approvalsRepo && me.role === "operator" && (
+        <Link to={`/repos/${exec.approvalsRepo}`} className="inline-flex items-center gap-1 text-accent-ink hover:underline">
+          <GearSixIcon />
+          Approvals for {exec.approvalsRepo}
+        </Link>
+      )}
       {answerer && exec.state === "waiting-token" && (
         <a href={authorizeHref()} className="inline-flex items-center gap-1 text-accent-ink hover:underline">
           <KeyIcon />

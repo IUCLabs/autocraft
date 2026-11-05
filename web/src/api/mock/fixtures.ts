@@ -159,7 +159,7 @@ interface Seed {
   opinions?: [string, string | null, string | null, number][]; // login, option, note, minutes ago
   docket?: string;
   /** An answer whose GitHub write has not run: where it stands and why. */
-  exec?: [ExecState, string | null];
+  exec?: [ExecState, string | null] | [ExecState, string | null, string]; // state, reason, repo whose approvals hold it
 }
 
 const SEEDS: Seed[] = [
@@ -625,6 +625,20 @@ const SEEDS: Seed[] = [
     answer: ["close", "ochre-fox", 3, false],
     exec: ["failed", "GitHub answered 502 while closing the item"],
   },
+  {
+    kind: "scope",
+    repo: "texturecraft",
+    number: 241,
+    title: "Replace the swatch grid with a color wheel",
+    question: "Is a color wheel swatch picker in scope?",
+    context: [],
+    facts: ["+220 −95 · 4 files"],
+    ...spread(scopeOpts("close")),
+    ageH: 1,
+    author: "gridlock-9",
+    answer: ["close", "ochre-fox", 0.2, false],
+    exec: ["pending", "Comments in texturecraft are not approved", "texturecraft"],
+  },
   // answered
   {
     kind: "scope",
@@ -847,7 +861,7 @@ function toDecision(s: Seed): Decision {
     answeredBy: s.answer?.[1] ?? null,
     answeredAt: s.answer ? iso(s.answer[2] * H) : null,
     appliedAt: s.answer?.[3] ? iso(s.answer[2] * H - 20 * M) : null,
-    exec: s.exec ? { state: s.exec[0], reason: s.exec[1] } : null,
+    exec: s.exec ? { state: s.exec[0], reason: s.exec[1], ...(s.exec[2] ? { approvalsRepo: s.exec[2] } : {}) } : null,
     opinions,
     adoptedOpinion: s.answer?.[5] !== undefined ? opinions[s.answer[5]] : null,
     exceptions: [],
