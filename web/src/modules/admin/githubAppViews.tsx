@@ -23,7 +23,7 @@ export function GithubAppView(_: ViewProps) {
       <ErrorLine error={error?.message} className="mt-3" />
       {data && (
         <>
-          <AppBlock s={data} />
+          <AppBlock s={data} onChange={refetch} />
           <SetupLinks links={data.links} onChange={refetch} />
           {data.app && <Installations s={data} />}
         </>
@@ -32,7 +32,23 @@ export function GithubAppView(_: ViewProps) {
   );
 }
 
-function AppBlock({ s }: { s: GithubAppStatus }) {
+function AppBlock({ s, onChange }: { s: GithubAppStatus; onChange: () => void }) {
+  const api = useApi();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [removed, setRemoved] = useState<string | null>(null);
+  const remove = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      setRemoved((await api.githubApp.remove()).settingsUrl);
+      onChange();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
   return (
     <Block className="mt-4" title="App" aside={<Badge tone={s.configured ? "ok" : "neutral"}>{s.configured ? "Registered" : "Not registered"}</Badge>}>
       <div className="px-4 py-3">
@@ -49,10 +65,19 @@ function AppBlock({ s }: { s: GithubAppStatus }) {
             <div className="mt-3 flex flex-wrap gap-x-5 gap-y-2 text-sm">
               <TextLink href={s.app.installUrl}>Install</TextLink>
               <TextLink href={s.app.transferUrl}>Transfer</TextLink>
+              <ConfirmButton className="ml-auto" label="Remove" confirmLabel="Remove app" loading={busy} onConfirm={() => void remove()} />
             </div>
+            <ErrorLine error={error} className="mt-2" />
           </>
         ) : (
-          <RegisterForm s={s} />
+          <>
+            {removed && (
+              <div className="mb-3 text-sm">
+                <TextLink href={removed}>Delete it on GitHub</TextLink>
+              </div>
+            )}
+            <RegisterForm s={s} />
+          </>
         )}
       </div>
     </Block>

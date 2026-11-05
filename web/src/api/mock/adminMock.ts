@@ -133,9 +133,10 @@ function buildSessions(): Omit<SessionInfo, "current">[] {
   return rows.map(([login, created, seen, ua], i) => ({ id: 101 + i, login, createdAt: iso(created), lastSeen: iso(seen), expiresAt: new Date(NOW - seen + 14 * D).toISOString(), userAgent: UA[ua]! }));
 }
 
+let appRemoved = false;
 export const AUDIT_ACTIONS = [
   "answer", "undo", "adopt", "opinion", "opinion-retract", "comment", "override", "rule", "access-add", "access-remove", "access-role",
-  "session-revoke", "sign-in", "sign-in-refused", "github-app-register", "github-app-register-failed", "github-app-login-mode", "github-app-link-create", "github-app-link-revoke", "github-app-link-use", "github-app-manager", "repo-track", "repo-untrack",
+  "session-revoke", "sign-in", "sign-in-refused", "github-app-register", "github-app-register-failed", "github-app-remove", "github-app-login-mode", "github-app-link-create", "github-app-link-revoke", "github-app-link-use", "github-app-manager", "repo-track", "repo-untrack",
 ];
 
 function buildAudit(): AuditEntry[] {
@@ -381,7 +382,7 @@ export function createAdminMock(me: User, changed: () => void): AdminApi {
       status() {
         requireOperator("see the GitHub App");
         // The mock shows the registered app; ?unregistered shows the registration form.
-        const registered = typeof location === "undefined" || !location.search.includes("unregistered");
+        const registered = !appRemoved && (typeof location === "undefined" || !location.search.includes("unregistered"));
         const status: GithubAppStatus = {
           configured: registered, loginMode: "oauth", canRegister: true, defaultName: "AutoCraft", csrf: "mock",
           app: registered ? { id: "1234567", slug: "autocraft-demo", name: "AutoCraft", installUrl: "https://github.com/apps/autocraft-demo/installations/new", transferUrl: "https://github.com/settings/apps/autocraft-demo/advanced" } : null,
@@ -398,6 +399,12 @@ export function createAdminMock(me: User, changed: () => void): AdminApi {
         setupLinks.unshift(link);
         log("github-app-link-create", org, { id: link.id });
         return wait({ link, url: "https://autocraft.example/auth/setup/mock-one-time-secret-9f2c4b7a1d" });
+      },
+      async remove() {
+        requireOperator("remove the GitHub App");
+        appRemoved = true;
+        log("github-app-remove", "autocraft-demo", { slug: "autocraft-demo", owner: "glasswing" });
+        return wait({ settingsUrl: "https://github.com/organizations/glasswing/settings/apps/autocraft-demo" });
       },
       async revokeLink(id) {
         requireOperator("revoke setup links");

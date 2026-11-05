@@ -168,6 +168,19 @@ export function writeAppSecrets(path: string, app: AppSecrets): void {
   }
 }
 
+/** Removes every `github_app_*` key from the file the same way: temporary file, rename, mode 0600. */
+export function removeAppSecrets(path: string): void {
+  const target = secretsTarget(path);
+  const next = Object.fromEntries(Object.entries(readRawSecrets(target)).filter(([k]) => !k.startsWith("github_app_")));
+  const tmp = writeTemp(target, `${JSON.stringify(next, null, 2)}\n`);
+  try {
+    renameSync(tmp, target);
+  } catch (e) {
+    try { unlinkSync(tmp); } catch { /* already gone */ }
+    throw e;
+  }
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const { host, port } = parseListen(envVar("LISTEN", env) ?? (envVar("DEV_AUTH", env) === "1" ? DEV_LISTEN : DEFAULT_LISTEN));
   const devAuth = envVar("DEV_AUTH", env) === "1";

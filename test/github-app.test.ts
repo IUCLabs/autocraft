@@ -416,4 +416,33 @@ describe("github app registration", () => {
     assert.match(await text(new Client(s.url), "/auth/github-app/setup?installation_id=5"), />Installed</);
     assert.equal((await boss.req("/auth/github-app/setup?installation_id=5")).headers.get("location"), "/admin/github-app");
   });
+
+  test("remove clears the app's keys from the file and memory, and is refused while sign-in uses the app", async () => {
+    const file = join(dir, "remove-secrets.json");
+    writeFileSync(file, JSON.stringify({ other_key: "kept", github_app_id: "4242", github_app_slug: "autocraft-test", github_app_private_key: PEM, github_app_client_id: "Iv1.test", github_app_client_secret: CLIENT_SECRET, github_app_webhook_secret: "", github_app_owner: { login: "glasswing", type: "Organization" } }), { mode: 0o600 });
+    const env = { AUTOCRAFT_DEV_AUTH: "1", AUTOCRAFT_LISTEN: "127.0.0.1:0", AUTOCRAFT_DB: dbFile, AUTOCRAFT_DEV_PERMS: permsFile, AUTOCRAFT_SECRETS_FILE: file };
+    const githubApi = `http://127.0.0.1:${(github.address() as AddressInfo).port}`;
+    const appMode = await startServer({ config: loadConfig({ ...env, AUTOCRAFT_LOGIN_APP: "github-app" }), db, provider: new FakeProvider(permsFile), routes: [], githubApi });
+    closers.push(appMode.close);
+    const locked = await signedIn("boss", appMode.url);
+    assert.equal((await locked.json("/api/admin/github-app/remove", {})).status, 409);
+    assert.equal(JSON.parse(readFileSync(file, "utf8")).github_app_slug, "autocraft-test");
+
+    const s = await startServer({ config: loadConfig(env), db, provider: new FakeProvider(permsFile), routes: [], githubApi });
+    closers.push(s.close);
+    assert.equal((await (await signedIn("maint", s.url)).json("/api/admin/github-app/remove", {})).status, 403);
+    const boss = await signedIn("boss", s.url);
+    db.prepare("INSERT INTO github_app_states (state, login, session_hash, created_at) VALUES ('open', 'boss', 'h', ?)").run(new Date().toISOString());
+    const res = await boss.json("/api/admin/github-app/remove", {});
+    assert.equal(res.status, 200);
+    const text = await res.text();
+    assert.deepEqual(JSON.parse(text), { settingsUrl: "https://github.com/organizations/glasswing/settings/apps/autocraft-test" });
+    assert.deepEqual(JSON.parse(readFileSync(file, "utf8")), { other_key: "kept" });
+    assert.equal(statSync(file).mode & 0o777, 0o600);
+    assert.equal((await (await boss.req("/api/admin/github-app")).json() as { configured: boolean }).configured, false);
+    assert.equal((db.prepare("SELECT COUNT(*) AS n FROM github_app_states").get() as { n: number }).n, 0);
+    assert.equal((db.prepare("SELECT COUNT(*) AS n FROM audit WHERE action = 'github-app-remove' AND target = 'autocraft-test'").get() as { n: number }).n, 1);
+    assert.ok(!JSON.stringify(db.prepare("SELECT * FROM audit").all()).includes(CLIENT_SECRET));
+    assert.equal((await boss.json("/api/admin/github-app/remove", {})).status, 409);
+  });
 });

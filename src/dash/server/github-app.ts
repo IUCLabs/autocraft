@@ -10,7 +10,7 @@ import type { Session } from "./sessions.ts";
 import { AppError, APP_NAME, appManifest, appName, convertManifest, installUrl, installations, installationRepos, registrationUrl, settingsUrl, transferUrl, type AppDeps } from "../../github/app.ts";
 import type { Res, Route } from "../types.ts";
 import { envVar } from "../../env.ts";
-import { checkSecretsWritable, writeAppSecrets, type Config } from "./config.ts";
+import { checkSecretsWritable, removeAppSecrets, writeAppSecrets, type Config } from "./config.ts";
 import { randomToken } from "./crypto.ts";
 import { esc, plainPage } from "./util.ts";
 import { createLink, openLinks, revokeLink } from "./github-setup.ts";
@@ -25,6 +25,25 @@ export function githubAppRoutes(config: Config, deps: AppDeps): Route[] {
   return [{
     method: "GET", pattern: "/api/admin/github-app", operator: true,
     handler: async (db, r): Promise<Res> => ({ json: { ...(await githubAppStatus(db, config, deps)), csrf: r.csrf } }),
+  }, {
+    // Forgets the registered app's keys so another app can be registered; the operator deletes the app on GitHub.
+    method: "POST", pattern: "/api/admin/github-app/remove", operator: true,
+    handler: (db, r): Res => {
+      const app = config.secrets.app;
+      if (!app) return { status: 409, json: { error: "No app is registered." } };
+      if (config.loginApp === "github-app") return { status: 409, json: { error: "Sign-in uses the GitHub App. Switch AUTOCRAFT_LOGIN_APP back to oauth and restart first." } };
+      if (!config.secretsFile) return { status: 409, json: { error: "AUTOCRAFT_SECRETS_FILE is not set." } };
+      try {
+        removeAppSecrets(config.secretsFile);
+      } catch (e) {
+        console.error(`github-app remove: file not updated (${errorCode(e)})`);
+        return { status: 500, json: { error: `The file holding the app's keys could not be updated (${errorCode(e)}).` } };
+      }
+      config.secrets.app = null;
+      db.prepare("DELETE FROM github_app_states").run();
+      audit(db, r.user.login, "github-app-remove", app.slug, { slug: app.slug, owner: app.owner?.login ?? null });
+      return { json: { settingsUrl: settingsUrl(app.slug, app.owner) } };
+    },
   }, {
     // Creates a one-time setup link; the URL path is in this answer only.
     method: "POST", pattern: "/api/admin/github-app/links", operator: true,

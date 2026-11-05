@@ -223,6 +223,8 @@ export interface Api {
     /** The link's URL is in this answer only; it is a path when the server has no base URL. */
     createLink(org: string): Promise<{ link: GithubSetupLink; url: string }>;
     revokeLink(id: string): Promise<{ links: GithubSetupLink[] }>;
+    /** Clears the app's keys; `settingsUrl` is where to delete the app on GitHub. */
+    remove(): Promise<{ settingsUrl: string }>;
   };
   classifiers: {
     /** `run`, `a` and `b` default to the latest run and its first pair. */

@@ -197,6 +197,7 @@ export function createHttpApi(): Api {
       status: () => get("/api/admin/github-app"),
       createLink: (org) => post("/api/admin/github-app/links", { org }),
       revokeLink: (id) => post("/api/admin/github-app/links/revoke", { id }),
+      remove: () => post("/api/admin/github-app/remove", {}),
     },
     classifiers: {
       report: (sel) => get(`/api/classifiers${qs(sel)}`),
