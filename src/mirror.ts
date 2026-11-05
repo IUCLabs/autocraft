@@ -14,7 +14,7 @@ import { hashColumns } from "./itemhash.ts";
 import { syncActivity } from "./activity.ts";
 import { envVar } from "./env.ts";
 import { DEFAULT_OWNER, loadOwners, ownerOf, slugOf } from "./owners.ts";
-import { clearRepoFailure, recordRepoFailure } from "./sync-errors.ts";
+import { classifyFailure, clearRepoFailure, recordRepoFailure } from "./sync-errors.ts";
 
 const OVERLAP_MS = 10 * 60 * 1000;
 const FULL_PAGE = 30;
@@ -496,7 +496,10 @@ export async function syncBySearch(db: DatabaseSync, client: Querier, tracked: s
   await window(from, new Date(Math.max(from.getTime(), new Date(until).getTime())));
   for (const name of tracked.filter((n) => ownerOf(n) !== DEFAULT_OWNER)) {
     try {
-      const r = await readRepoSince(db, client, name, iso(from));
+      // A repo that failed for a while has its own high water behind the window: read from there.
+      const hw = (db.prepare("SELECT high_water FROM repos WHERE name = ?").get(name) as { high_water: string | null } | undefined)?.high_water;
+      const own = hw ? new Date(new Date(hw).getTime() - OVERLAP_MS) : null;
+      const r = await readRepoSince(db, client, name, iso(own && own < from ? own : from));
       clearRepoFailure(db, name);
       out.count += r.count;
       if (r.newest > (repoNewest.get(name) ?? "")) repoNewest.set(name, r.newest);
@@ -614,9 +617,20 @@ async function refreshRepoList(db: DatabaseSync, client: Querier): Promise<strin
     try {
       const r = (await client.query(REPO_QUERY, { owner, name })).repository;
       if (r && r.owner?.login?.toLowerCase() === owner.toLowerCase()) repos.push({ ...r, owner });
-      else console.warn(`  ${owner}/${name}: not found`);
+      else failRepo(db, client, name, new GithubError("graphql error: repository not found under this owner", 0, "NOT_FOUND"));
     } catch (e) {
       failRepo(db, client, name, e);
+    }
+  }
+  // A tracked repo of the default org missing from the listing is archived, or moved or deleted: only the last two are errors.
+  const listedNames = new Set(repos.map((r) => r.name as string));
+  for (const name of trackedNames(db).filter((n) => ownerOf(n) === DEFAULT_OWNER && !listedNames.has(n))) {
+    try {
+      const r = (await client.query(REPO_QUERY, { owner: DEFAULT_OWNER, name })).repository;
+      if (!r || r.owner?.login?.toLowerCase() !== DEFAULT_OWNER.toLowerCase()) throw new GithubError("graphql error: repository not found under this owner", 0, "NOT_FOUND");
+    } catch (e) {
+      if (e instanceof GithubError && e.type === "NOT_FOUND") failRepo(db, client, name, e);
+      else console.warn(`  ${slugOf(name)}: ${(e as Error).message}`);
     }
   }
   // Names are unique across owners: a repo already known under another owner is left alone.
@@ -625,7 +639,9 @@ async function refreshRepoList(db: DatabaseSync, client: Querier): Promise<strin
     open_prs=excluded.open_prs, open_issues=excluded.open_issues WHERE repos.owner = excluded.owner`);
   for (const r of repos) {
     const res = upsert.run(r.name, r.owner, r.visibility.toLowerCase(), r.defaultBranchRef?.name ?? null, r.pullRequests.totalCount, r.issues.totalCount);
-    if (!res.changes) console.warn(`  ${r.owner}/${r.name}: skipped, the name is known under another owner`);
+    if (!res.changes) {
+      failRepo(db, client, r.name, new GithubError(`the name is known under another owner than ${r.owner}`, 0, "NOT_FOUND"));
+    }
   }
   loadOwners(db);
   // A repo the listing shows exists again: its not-found record is stale.
@@ -654,6 +670,7 @@ async function syncPerRepo(db: DatabaseSync, client: Querier, opts: SyncOpts): P
   let total = 0;
   let failed = 0;
   let lastError: unknown;
+  let transientRun = 0;
   for (const name of todo) {
     const before = client.spent;
     let count: number;
@@ -663,14 +680,19 @@ async function syncPerRepo(db: DatabaseSync, client: Querier, opts: SyncOpts): P
       failRepo(db, client, name, e);
       failed++;
       lastError = e;
+      // A GitHub outage or an exhausted rate limit fails every repo after long backoffs: end the run instead.
+      transientRun = classifyFailure(e) === "transient" ? transientRun + 1 : 0;
+      if (transientRun >= 3 || /rate limit|secondary/i.test((e as Error).message)) throw e;
       continue;
     }
+    transientRun = 0;
     clearRepoFailure(db, name);
     total += count;
-    if (resumable) setSetting(db, "full_sync_cursor", `${scope}|${name}`);
+    // The cursor stops at the first failure so the next full run redoes that repo.
+    if (resumable && !failed) setSetting(db, "full_sync_cursor", `${scope}|${name}`);
     console.log(`${name}: ${count} items, ${client.spent - before} points used, ${client.remaining} left`);
   }
-  if (resumable) db.prepare("DELETE FROM settings WHERE key='full_sync_cursor'").run();
+  if (resumable && !failed) db.prepare("DELETE FROM settings WHERE key='full_sync_cursor'").run();
   // One broken repo does not fail the run; all of them failing does.
   if (failed > 0 && failed === todo.length) throw lastError;
   syncFailures = failed;
@@ -739,7 +761,8 @@ export async function runSync(db: DatabaseSync, client: Querier, opts: SyncOpts,
   const tracked = trackedNames(db);
   const synced = new Set((db.prepare("SELECT name FROM repos WHERE synced_at IS NOT NULL").all() as { name: string }[]).map((r) => r.name));
   // A repo that cannot be read has no synced_at and would keep every run per-repo.
-  const broken = new Set((db.prepare("SELECT repo FROM sync_repo_errors").all() as { repo: string }[]).map((r) => r.repo));
+  // Only a repo that cannot be read at all (not found, no access) is passed over; others are retried per repo for their first full read.
+  const broken = new Set((db.prepare("SELECT repo FROM sync_repo_errors WHERE kind IN ('not-found', 'forbidden')").all() as { repo: string }[]).map((r) => r.repo));
   const wantsSearch = !opts.only.length && !opts.all && !opts.full && !opts.perRepo && orgHigh !== null
     && tracked.every((n) => synced.has(n) || broken.has(n));
   const spent0 = client.spent;
@@ -759,7 +782,10 @@ export async function runSync(db: DatabaseSync, client: Querier, opts: SyncOpts,
         setSetting(db, "search_catchup_at", started);
       }
       // One org-wide search covers every tracked repo, so each counts as synced now.
-      const mark = db.prepare("UPDATE repos SET synced_at = ? WHERE name = ?");
+      // The search read every default-org repo, so errors of earlier runs other than not-found are stale; a failure of this run (at >= started) stays.
+      for (const n of tracked.filter((x) => ownerOf(x) === DEFAULT_OWNER)) db.prepare("DELETE FROM sync_repo_errors WHERE repo = ? AND kind IN ('transient', 'error') AND at < ?").run(n, started);
+      // Not the repos that were never read in full (no high water) or that cannot be read.
+      const mark = db.prepare("UPDATE repos SET synced_at = ? WHERE name = ? AND high_water IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sync_repo_errors e WHERE e.repo = repos.name)");
       for (const n of tracked) mark.run(started, n);
       console.log(`search: ${r.slices} slice${r.slices === 1 ? "" : "s"}${r.fallbacks ? `, ${r.fallbacks} listed per repo` : ""}`);
       const due = reconcileDue(db, tracked, now);

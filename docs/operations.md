@@ -388,14 +388,14 @@ The dashboard computes the checks below from the database on each request; nothi
 | Id | Fails or warns when |
 |---|---|
 | `runner` | `runner_heartbeat` is missing or older than 2 minutes (fail) |
-| `worker:<env id>` | an enabled build environment has not reported (`last_seen_at`) for 5 minutes, or never (fail) |
+| `worker:<env id>` (`workers` in the endpoint) | an enabled build environment has not reported (`last_seen_at`) for 5 minutes, or never (fail) |
 | `build-queue` | a build task has been queued for over 10 minutes: fail when no enabled environment has reported in 5 minutes, else warn |
 | `sync` | no successful `sync_runs` row ended in the last 10 minutes, or the last 3 runs failed (fail) |
-| `sync-repos` (`sync-repo:<repo>` in the dashboard) | a tracked repo could not be read by the last sync (warn). The reason is `sync_repo_errors`: `not-found` (moved, renamed or deleted; the new name is shown when GitHub's REST endpoint redirects), `forbidden`, `transient` or `error` |
+| `sync-repos` (`sync-repo:<repo>` in the dashboard) | a tracked repo could not be read by the last sync (warn; fail when more than half of the tracked repos have an error, for example after a token lost access). The reason is `sync_repo_errors`: `not-found` (moved, renamed or deleted; the new name is shown when GitHub's REST endpoint redirects), `forbidden`, `transient` or `error` |
 | `accounts` | every enabled Claude account is paused or signed out (fail) |
 | `github-rate` | fewer than 500 (warn) or 100 (fail) GitHub points are left until the next reset |
 
-A repo that fails is skipped for that run and the sync continues with the others; the run exits non-zero only when every repo it tried failed. A repo is never untracked automatically: untrack it or track it under its new name, and its warning goes with the next successful read (a not-found record also clears when the org listing shows the repo again).
+A repo that fails is skipped for that run and the sync continues with the others; the run exits non-zero only when every repo it tried failed, or after three transient failures in a row or a rate-limit stop (a GitHub outage). A full re-sync keeps its cursor before the first failed repo. A repo is never untracked automatically: untrack it or track it under its new name, and its warning goes with the next successful read (a not-found record also clears when the org listing shows the repo again).
 
 ### Stopping
 

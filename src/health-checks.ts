@@ -37,12 +37,16 @@ export type Check = {
   since: string | null;
   /** The repo a check is about; viewers who cannot see the repo do not see the check. */
   repo?: string;
+  /** Checks of one kind that /healthz/checks reports as one entry with counts, so no repo or environment name leaves the server. */
+  group?: "workers" | "sync-repos";
+  /** Size of the group the check is counted against (tracked repos for `sync-repos`). */
+  of?: number;
   /** Dashboard page that shows the cause. */
   to: string;
 };
 export type CheckCtx = { db: DatabaseSync; nowMs: number };
 
-const ok = (id: string, to: string): Check => ({ id, state: "ok", text: "", brief: "", since: null, to });
+const ok = (id: string, to: string, extra: Partial<Check> = {}): Check => ({ id, state: "ok", text: "", brief: "", since: null, to, ...extra });
 const minutes = (ms: number): string => (ms < 90 * 60_000 ? `${Math.max(1, Math.round(ms / 60_000))} min` : `${Math.round(ms / 3_600_000)} h`);
 const clip = (s: string, n: number): string => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
 const all = <T>(db: DatabaseSync, sql: string, ...args: (string | number)[]): T[] => db.prepare(sql).all(...args) as T[];
@@ -62,9 +66,9 @@ const seenRecently = (e: Env, nowMs: number): boolean => e.last_seen_at !== null
 function workerChecks({ db, nowMs }: CheckCtx): Check[] {
   return enabledEnvs(db).map((e) => {
     const id = `worker:${e.id}`;
-    if (seenRecently(e, nowMs)) return ok(id, "/envs");
+    if (seenRecently(e, nowMs)) return ok(id, "/envs", { group: "workers" });
     const text = e.last_seen_at ? `Build worker ${e.label} has not reported for ${minutes(nowMs - Date.parse(e.last_seen_at))}` : `Build worker ${e.label} has never reported`;
-    return { id, state: "fail", text, brief: text, since: e.last_seen_at ?? e.created_at, to: "/envs" };
+    return { id, state: "fail", text, brief: "A build worker is not reporting", since: e.last_seen_at ?? e.created_at, to: "/envs", group: "workers" };
   });
 }
 
@@ -99,14 +103,19 @@ function syncCheck({ db, nowMs }: CheckCtx): Check[] {
 }
 
 function syncRepoChecks({ db }: CheckCtx): Check[] {
-  return repoErrors(db).map((e) => {
+  const errors = repoErrors(db);
+  const total = trackedNames(db).length;
+  // When most repos cannot be read the cause is shared (a token that lost access), not one repo: that is a failure.
+  const state: CheckState = errors.length * 2 > total ? "fail" : "warn";
+  if (!errors.length) return [ok("sync-repos", "/repos", { group: "sync-repos", of: total })];
+  return errors.map((e) => {
     const slug = slugOf(e.repo);
     const why = e.kind === "not-found"
       ? `${slug} no longer resolves on GitHub (${e.movedTo ? `moved to ${e.movedTo}` : "moved, renamed or deleted"})`
       : e.kind === "forbidden" ? `${slug} cannot be read: GitHub denied access`
       : e.kind === "transient" ? `${slug} could not be read: GitHub kept failing`
       : `${slug} failed to sync: ${clip(e.message, 120)}`;
-    return { id: `sync-repo:${e.repo}`, state: "warn", text: why, brief: `${slug} is not syncing`, since: e.since, repo: e.repo, to: "/repos" } satisfies Check;
+    return { id: `sync-repo:${e.repo}`, state, text: why, brief: `${slug} is not syncing`, since: e.since, repo: e.repo, group: "sync-repos", of: total, to: "/repos" } satisfies Check;
   });
 }
 
@@ -139,30 +148,42 @@ export function computeChecks(db: DatabaseSync, nowMs: number = Date.now()): Che
   return SOURCES.flatMap((f) => f({ db, nowMs }));
 }
 
-/** The answer of GET /healthz/checks: states, times and counts only; no repo, account or error text. */
-export type PublicCheck = { id: string; state: CheckState; since: string | null; count?: number };
+/** The answer of GET /healthz/checks: states, times and counts only; no repo, environment, account or error text. */
+export type PublicCheck = { id: string; state: CheckState; since: string | null; count?: number; of?: number };
 
 export function publicChecks(checks: Check[]): { status: CheckState; checks: PublicCheck[] } {
   const out: PublicCheck[] = [];
-  const repos = checks.filter((c) => c.repo !== undefined);
-  for (const c of checks) if (c.repo === undefined) out.push({ id: c.id, state: c.state, since: c.since });
-  // Repo checks collapse into one so no repo name leaves the server.
-  out.push({ id: "sync-repos", state: repos.length ? "warn" : "ok", since: repos.map((c) => c.since).filter((s): s is string => !!s).sort()[0] ?? null, count: repos.length });
+  const groups = new Map<string, Check[]>();
+  for (const c of checks) {
+    if (c.group) groups.set(c.group, [...(groups.get(c.group) ?? []), c]);
+    else out.push({ id: c.id, state: c.state, since: c.since });
+  }
+  for (const [id, list] of groups) {
+    const bad = list.filter((c) => c.state !== "ok");
+    out.push({
+      id, state: bad.some((c) => c.state === "fail") ? "fail" : bad.length ? "warn" : "ok",
+      since: bad.map((c) => c.since).filter((x): x is string => !!x).sort()[0] ?? null, count: bad.length, of: list[0]!.of ?? list.length,
+    });
+  }
   const status = out.some((c) => c.state === "fail") ? "fail" : out.some((c) => c.state === "warn") ? "warn" : "ok";
   return { status, checks: out };
 }
 
-/** Answers GET/HEAD /healthz/checks: 200 when every check is ok or warn, 503 when one fails; returns false for any other request. No auth: see `publicChecks`. */
-export function serveChecks(req: IncomingMessage, res: ServerResponse, db: DatabaseSync, nowMs: number = Date.now()): boolean {
+let cached: { db: DatabaseSync; at: number; text: string; fail: boolean } | null = null;
+
+/** Answers GET/HEAD /healthz/checks: 200 when every check is ok or warn, 503 when one fails; returns false for any other request. No auth: see `publicChecks`. The answer is reused for `ttlMs`, since anyone can call this. */
+export function serveChecks(req: IncomingMessage, res: ServerResponse, db: DatabaseSync, nowMs: number = Date.now(), ttlMs = 5_000): boolean {
   if ((req.method !== "GET" && req.method !== "HEAD") || (req.url ?? "").split("?")[0] !== "/healthz/checks") return false;
-  let body: ReturnType<typeof publicChecks>;
-  try {
-    body = publicChecks(computeChecks(db, nowMs));
-  } catch {
-    body = { status: "fail", checks: [{ id: "database", state: "fail", since: null }] };
+  if (!cached || cached.db !== db || Date.now() - cached.at >= ttlMs) {
+    let body: ReturnType<typeof publicChecks>;
+    try {
+      body = publicChecks(computeChecks(db, nowMs));
+    } catch {
+      body = { status: "fail", checks: [{ id: "database", state: "fail", since: null }] };
+    }
+    cached = { db, at: Date.now(), text: JSON.stringify({ ...body, at: new Date(nowMs).toISOString() }), fail: body.status === "fail" };
   }
-  const text = JSON.stringify({ ...body, at: new Date(nowMs).toISOString() });
-  res.writeHead(body.status === "fail" ? 503 : 200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", "content-length": Buffer.byteLength(text) });
-  res.end(req.method === "HEAD" ? undefined : text);
+  res.writeHead(cached.fail ? 503 : 200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", "content-length": Buffer.byteLength(cached.text) });
+  res.end(req.method === "HEAD" ? undefined : cached.text);
   return true;
 }
