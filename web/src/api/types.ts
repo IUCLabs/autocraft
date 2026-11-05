@@ -1707,6 +1707,8 @@ export interface ConversationCard {
   option?: string;
   /** Why a proposed card may be out of date: "pr-changed" (a push since it was proposed; it refuses to run) or "new-comments" (GitHub comments since; it still runs). */
   stale?: "pr-changed" | "new-comments";
+  /** Index in `steps` of the comment step, whose text is `text`. Absent: the card has no comment. */
+  commentStep?: number;
   /** How the open question ends when the card runs, e.g. 'Answers the scope question with "Small extra"', "Closes the scope question as handled". Absent: the question stays open. */
   settles?: string;
   /** The primary button: the action in a few words, written by the server from the card's parameters. */

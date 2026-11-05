@@ -93,6 +93,23 @@ const parseSig = (sig: string): Snapshot | null => {
   try { const v = JSON.parse(sig) as Snapshot; return v && typeof v === "object" ? v : null; } catch { return null; }
 };
 
+/** The head and newest comment Opus had been told about (the conversation's item snapshot), recorded on each card it proposes. */
+function seenOf(db: DatabaseSync, repo: string, n: number): string | null {
+  const c = conversationOf(db, repo, n);
+  const s = c ? parseSig(c.item_sig) : null;
+  return s ? JSON.stringify({ head: s.head, last_comment: s.last_comment }) : null;
+}
+
+/** Whether a card still proposed was written for an older item: a push since (it refuses to run) or new GitHub comments since (it still runs). */
+export function staleOf(db: DatabaseSync, repo: string, n: number, seen: string | null): "pr-changed" | "new-comments" | undefined {
+  const i = itemRow(db, repo, n);
+  if (!seen || !i) return undefined;
+  let was: { head: string | null; last_comment: string | null };
+  try { was = JSON.parse(seen) as typeof was; } catch { return undefined; }
+  if (i.kind === "pr" && (was.head ?? null) !== i.head_oid) return "pr-changed";
+  return was.last_comment !== snapshotOf(db, i).last_comment ? "new-comments" : undefined;
+}
+
 const cut = (s: string | null, max: number): string => (s ?? "").slice(0, max);
 
 function decisionPart(d: DecisionRow | undefined): unknown {
@@ -154,9 +171,12 @@ function inTx<T>(db: DatabaseSync, f: () => T): T {
 function insertRow(db: DatabaseSync, repo: string, n: number, t: NewTurn, seq: number | null, status: string | null, deps?: StoreDeps): number {
   const id = Number(db.prepare("INSERT INTO conversation_turns (repo, number, kind, login, at, body, block, status, error, notes, seq) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)")
     .run(repo, n, t.kind, t.login, nowOf(deps), t.body, t.block, status, t.notes?.length ? JSON.stringify(t.notes) : null, seq).lastInsertRowid);
+  // One current set: a new Opus turn replaces the proposals of the earlier ones.
+  if (t.kind === "opus") db.prepare("UPDATE conversation_cards SET state = 'replaced' WHERE repo = ? AND number = ? AND state = 'proposed'").run(repo, n);
+  const seen = seenOf(db, repo, n);
   for (const c of t.cards ?? []) {
-    db.prepare("INSERT INTO conversation_cards (turn_id, repo, number, kind, params, text, description) VALUES (?, ?, ?, ?, ?, ?, ?)")
-      .run(id, repo, n, c.params.kind, JSON.stringify(c.params), c.text, c.description);
+    db.prepare("INSERT INTO conversation_cards (turn_id, repo, number, kind, params, text, description, seen) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(id, repo, n, c.params.kind, JSON.stringify(c.params), c.text, c.description, seen);
   }
   return id;
 }

@@ -24,6 +24,7 @@ export const BOOKKEEPING_COLUMNS: Record<string, string[]> = {
   duplicate_scans: ["at"],
   item_plans: ["planned_at"],
   lane_next: ["at"],
+  decisions: ["snoozed_by", "snoozed_at"],
 };
 
 /** Settings the runner, the sync and the planner write for their own use; the dashboard shows none of them. */
@@ -53,6 +54,8 @@ export const TOPIC_TABLES: Record<string, Source[]> = {
   mainci: [{ table: "main_ci" }, { table: "main_fixes" }],
   classify: [{ table: "classifications" }, { table: "item_areas" }, { table: "area_lists" }, { table: "area_proposals" }],
   dupes: [{ table: "duplicate_pairs" }, { table: "duplicate_scans" }],
+  // A snooze or wake: the inbox changes, the pipeline's input does not (the `decisions` topic skips these columns).
+  "decision-snooze": [{ table: "decisions", ops: ["UPDATE"], when: "old.snoozed_at IS NOT new.snoozed_at" }],
   decisions: [{ table: "decisions" }, { table: "decision_opinions" }, { table: "decision_comments" }, { table: "decision_claims" },
     { table: "dupe_comparisons" }, { table: "dupe_groups" }, { table: "dupe_group_items" }, { table: "dupe_group_posts" }, { table: "dupe_group_texts" }],
   reviews: [{ table: "opus_reviews" }, { table: "review_posts" }],

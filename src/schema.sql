@@ -148,7 +148,9 @@ CREATE TABLE IF NOT EXISTS decisions (
   answered_by TEXT, answered_at TEXT,
   applied_at TEXT,
   summary TEXT, summary_by TEXT, summary_at TEXT,  -- AI summary of the item or batch, by which model, when
-  adopted_opinion TEXT                -- decision_opinions.id when the answer adopted an opinion
+  adopted_opinion TEXT,               -- decision_opinions.id when the answer adopted an opinion
+  snoozed_by TEXT,                    -- operator who snoozed the open question
+  snoozed_at TEXT                     -- the question is snoozed while the item has no activity after this (SNOOZED_SQL)
 );
 CREATE INDEX IF NOT EXISTS decisions_open ON decisions(answer, kind, repo);
 CREATE INDEX IF NOT EXISTS decisions_asked ON decisions(answer, asked_at);
@@ -1020,7 +1022,8 @@ CREATE TABLE IF NOT EXISTS conversation_cards (
   acted_by TEXT,
   acted_at TEXT,
   edited_by TEXT,
-  edited_at TEXT
+  edited_at TEXT,
+  seen TEXT                           -- JSON {head, last_comment}: the item as Opus last saw it; null on cards from before it was recorded
 );
 -- Maintainer posts (decision comments and opinions) an operator chose to share with Opus. Excluded unless a row exists; `sent_turn`
 -- is the operator turn whose stored block carries the text (each post is sent once).

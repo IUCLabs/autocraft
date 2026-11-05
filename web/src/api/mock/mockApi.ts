@@ -78,6 +78,8 @@ export function createMockApi(): Api {
   const matches = (d: Decision, f: DecisionFilter) => {
     const status = f.status ?? "open";
     if (status !== "answered" && d.answer) return false;
+    if (status === "open" && d.snoozed) return false;
+    if (status === "snoozed" && !d.snoozed) return false;
     if (status === "answered" && (!d.answer || d.answer === "backlog")) return false;
     if (status === "backlog" && d.answer !== "backlog") return false;
     if (status === "snoozed" && !d.snoozed) return false;

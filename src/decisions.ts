@@ -21,7 +21,7 @@ export type DecisionRow = {
   recommended: string | null; recommended_reason: string | null; recommended_by: string | null; public_text: string | null; asked_at: string; asked_by: string | null;
   docket: string | null; answer: string | null; answer_note: string | null; exceptions: string | null;
   answered_by: string | null; answered_at: string | null; applied_at: string | null;
-  summary: string | null; summary_by: string | null; summary_at: string | null; adopted_opinion: string | null;
+  summary: string | null; summary_by: string | null; summary_at: string | null; adopted_opinion: string | null; snoozed_by: string | null; snoozed_at: string | null;
 };
 
 const j = <T>(s: string | null, d: T): T => {
@@ -34,6 +34,18 @@ export const BACKLOG: Option = { key: "backlog", label: "Backlog", hint: "Hold t
 export const HANDLED: Option = { key: "handled", label: "Handled in the conversation" };
 /** The answer the pipeline gives a question that can no longer be answered (see src/merge/withdraw.ts). */
 export const WITHDRAWN_OPTION: Option = { key: "withdrawn", label: "Withdrawn" };
+/**
+ * A decision is snoozed while `snoozed_at` is set and the item has had no activity since: a GitHub comment or review, a pushed commit,
+ * a decision comment or opinion, an operator conversation message. Evaluated at read time, so no writer has to clear it and a missed
+ * clear is impossible. Use with the table unaliased (`decisions`).
+ */
+export const SNOOZED_SQL = `(decisions.answer IS NULL AND decisions.snoozed_at IS NOT NULL AND NOT (
+  EXISTS (SELECT 1 FROM comments sc WHERE sc.repo = decisions.repo AND sc.number = decisions.number AND sc.created_at > decisions.snoozed_at)
+  OR EXISTS (SELECT 1 FROM pr_commits sp WHERE sp.repo = decisions.repo AND sp.number = decisions.number AND COALESCE(sp.first_seen_at, sp.committed_at) > decisions.snoozed_at)
+  OR EXISTS (SELECT 1 FROM decision_comments sd WHERE sd.decision_id = decisions.id AND sd.at > decisions.snoozed_at)
+  OR EXISTS (SELECT 1 FROM decision_opinions so WHERE so.decision_id = decisions.id AND so.at > decisions.snoozed_at)
+  OR EXISTS (SELECT 1 FROM conversation_turns st WHERE st.repo = decisions.repo AND st.number = decisions.number AND st.kind = 'operator' AND st.at > decisions.snoozed_at)))`;
+
 export const isBacklog = (answer: string | null): boolean => answer === BACKLOG.key;
 
 /** The options the pipeline asked, then Backlog. */
@@ -273,7 +285,7 @@ function show(args: string[]): void {
   if (!d) throw new Error(`no decision ${id}`);
   // Agents run this command: no free text from people (answer_note), and
   // adopted_opinion points at an opinion, which agents never see.
-  const { adopted_opinion: _adopted, answer_note: _note, ...rest } = d;
+  const { adopted_opinion: _adopted, answer_note: _note, snoozed_by: _sb, snoozed_at: _sa, ...rest } = d;
   const actionable = d.answer !== null && !isBacklog(d.answer) && d.answered_by !== null && operators(db).has(d.answered_by);
   const out = { ...rest, actionable, items: j(d.items, null), facts: factsOf(d), options: optionsOf(d), exceptions: j(d.exceptions, null) };
   console.log(JSON.stringify(out, null, 2));

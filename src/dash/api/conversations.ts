@@ -3,7 +3,7 @@ import type { DatabaseSync } from "node:sqlite";
 import type { Conversation, ConversationCard, ConversationTurn } from "../../../web/src/api/types.ts";
 import { buttonLabel, cardEffect, cardLines, type CardParams } from "../../conversations/cards.ts";
 import { cardOf, dismissCard, doCard, editCard, sweepRunningCards, type ActDeps, type CardRow } from "../../conversations/act.ts";
-import { ConversationError, addOperatorMessage, conversationOf, includesOf, pendingTurn, setInclude, turnsOf, type IncludeRow, type StoreDeps } from "../../conversations/store.ts";
+import { ConversationError, addOperatorMessage, conversationOf, includesOf, pendingTurn, setInclude, staleOf, turnsOf, type IncludeRow, type StoreDeps } from "../../conversations/store.ts";
 import { HttpError } from "../server/util.ts";
 import type { Req } from "../types.ts";
 import { needVisible } from "./visible.ts";
@@ -32,8 +32,13 @@ export function cardView(db: DatabaseSync, c: CardRow): ConversationCard {
   const params = JSON.parse(c.params) as CardParams;
   const effect = c.kind === "answer" || c.kind === "close" || c.kind === "resolution" ? cardEffect(db, params) : null;
   const lines = cardLines(db, params, c.description);
+  const commentStep = params.kind === "resolution" ? params.steps.findIndex((x) => x.kind === "comment") : params.kind === "comment" || (params.kind === "close" && c.text !== null) ? 0 : -1;
+  const stale = c.state === "proposed" ? staleOf(db, c.repo, c.number, c.seen) : undefined;
   return {
     steps: lines.steps,
+    ...(commentStep >= 0 && { commentStep }),
+    ...(params.kind === "resolution" && params.settle?.kind === "answer" && { option: params.settle.option }),
+    ...(stale && { stale }),
     ...(lines.settles && { settles: lines.settles }),
     label: buttonLabel(db, params),
     id: c.id, kind: c.kind as ConversationCard["kind"], title: c.description, state: c.state as ConversationCard["state"],
@@ -140,5 +145,9 @@ export async function dismiss(db: DatabaseSync, req: Req): Promise<ConversationC
 /** Runs the card once; a second press returns the card as it is. */
 export async function doIt(db: DatabaseSync, req: Req, deps?: ActDeps): Promise<ConversationCard> {
   const c = await needCard(db, req);
-  return cardView(db, (await guardAsync(() => doCard(db, c.id, req.user.login, { ...deps, canWrite: (r) => req.user.canWrite(r) }))).card);
+  const b = req.json as { skip?: unknown; note?: unknown } | null;
+  if (b?.note !== undefined && typeof b.note !== "string") throw new HttpError(400, "note must be a string");
+  if (b?.skip !== undefined && (!Array.isArray(b.skip) || b.skip.some((k) => !Number.isInteger(k)))) throw new HttpError(400, "skip must be a list of step positions");
+  const skip = (b?.skip as number[] | undefined) ?? [];
+  return cardView(db, (await guardAsync(() => doCard(db, c.id, req.user.login, { ...deps, skip, note: b?.note as string | undefined, canWrite: (r) => req.user.canWrite(r) }))).card);
 }

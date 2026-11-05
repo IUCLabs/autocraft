@@ -360,6 +360,7 @@ export function apiRoutes(opts: ApiOptions = {}): Route[] {
     get("/api/decisions/:id/thread", dec.thread),
     post("/api/decisions/:id/answer", dec.answer),
     post("/api/decisions/:id/undo", dec.undo),
+    { method: "POST", pattern: "/api/decisions/:id/snooze", operator: true, handler: ok(dec.snooze) },
     post("/api/decisions/:id/reopen", dec.reopen),
     { method: "POST", pattern: "/api/decisions/backlog", operator: true, handler: ok(dec.backlogBulk) },
     post("/api/decisions/:id/adopt", dec.adopt),

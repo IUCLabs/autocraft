@@ -21,6 +21,8 @@ export type CardKind = (typeof CARD_KINDS)[number];
 export type TurnKind = "operator" | "opus" | "system";
 
 export const COMMENT_MAX = 1500;
+/** Longest operator note kept with an answer. */
+export const NOTE_MAX = 500;
 /** Longest summary of a resolve card. */
 export const RESOLVE_MAX = 200;
 export const MESSAGE_MAX = 4000;
