@@ -10,7 +10,7 @@
 // Without --apply it is a dry run: local tables only, nothing called or written.
 // The checkout is untrusted data: nothing from it is ever run (see git.ts).
 import { duplicateHeld } from "../dupes/held.ts";
-import { commitIdentity, type CommitIdentity } from "../github/identity.ts";
+import { commitIdentity, ownLogins, type CommitIdentity } from "../github/identity.ts";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -514,7 +514,7 @@ async function runFixupWith(db: DatabaseSync, params: FixupParams, log: (line: s
       const body = c.carry ? carryCommentText(c.carry.sources.map((x) => x.number), v.files) : c.operator ? operatorCommentText(v.files, await postableChanges(db, repo, `${repo}#${c.number}`, split.changes, c.operator.instructions)) : commentText(v.files, c.attempt);
       const note: Note = c.carry ? { by: "operator", model: PROMPT.models[0] } : c.operator ? { by: "fixed-operator" } : { by: "model", kind: "comment", model: PROMPT.models[0] };
       // A plain review-fix push right after our own review-fix comment extends that comment instead of adding a second one.
-      const prev = c.carry || c.operator ? null : await newestOwnComment(d.querier, who.login, repo, c.number);
+      const prev = c.carry || c.operator ? null : await newestOwnComment(d.querier, new Set([who.login, ...ownLogins(db, repo)]), repo, c.number);
       const prevLines = prev ? fixupCommentLines(prev.body) : null;
       const cm = prev && prevLines
         ? await ghEditComment(gw, g, d.exec, "fixup-comment-edit", { repo, number: c.number, commentId: prev.id }, note, fixupCommentEdited(prevLines, v.files), { run: runId })

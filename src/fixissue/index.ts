@@ -58,6 +58,7 @@ import { inPilot, pilotSqlFor } from "../pilot.ts";
 import { backlogHeldSql, duplicateHeld } from "../dupes/held.ts";
 import { jobItem } from "../runner/job-items.ts";
 import { ownerOf, slugOf } from "../owners.ts";
+import { isBotLogin } from "../review/bots.ts";
 
 export { type IssueCandidate } from "./candidates.ts";
 
@@ -183,8 +184,10 @@ function roundFailed(db: DatabaseSync, d: FixIssueDeps, r: AttemptRow, round: nu
 }
 
 function issueText(db: DatabaseSync, c: { repo: string; number: number; title: string; body: string }): IssueText {
+  // The mirror stores bot logins without `[bot]`, so bots are recognised by name and our own logins are dropped explicitly.
+  const own = ownLogins(db, c.repo);
   const comments = (db.prepare("SELECT author, body FROM comments WHERE repo = ? AND number = ? AND COALESCE(kind, 'comment') = 'comment' ORDER BY created_at LIMIT 40").all(c.repo, c.number) as { author: string | null; body: string | null }[])
-    .filter((x) => x.author && !x.author.endsWith("[bot]")).slice(0, COMMENTS_SHOWN)
+    .filter((x) => x.author && !own.has(x.author) && !isBotLogin(x.author)).slice(0, COMMENTS_SHOWN)
     .map((x) => ({ author: x.author!, body: (x.body ?? "").slice(0, COMMENT_CHARS) }));
   return { ref: refOf(c), title: c.title.slice(0, 300), body: c.body.slice(0, ISSUE_BODY_LIMIT), comments };
 }
@@ -640,7 +643,9 @@ export async function openPr(x: Ctx, r: AttemptRow): Promise<boolean> {
     const author = await commitIdentity(db, r.repo, async () => who);
     db.prepare("INSERT INTO main.settings (key, value) VALUES ('pipeline_login', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value").run(who.login);
     const branch = branchName(r.number, issueNow?.title ?? "", who.login);
-    const found = await d.exec("gh", ["pr", "list", "--repo", `${slugOf(r.repo)}`, "--state", "open", "--head", branch, "--json", "url,headRepositoryOwner", "--jq", `.[] | select(.headRepositoryOwner.login == "${who.login}") | .url`]);
+    // On an app repo the branch lives in the base repository, so its head owner is the org.
+    const headOwners = [who.login, ...(repoIdentity(db, r.repo) === "app" ? [ownerOf(r.repo)] : [])];
+    const found = await d.exec("gh", ["pr", "list", "--repo", `${slugOf(r.repo)}`, "--state", "open", "--head", branch, "--json", "url,headRepositoryOwner", "--jq", `.[] | select(.headRepositoryOwner.login as $o | ${JSON.stringify(headOwners)} | index($o)) | .url`]);
     const existing = found.code === 0 ? found.stdout.trim().split("\n")[0] ?? "" : "";
     if (existing && urlOk(existing, r.repo)) {
       const ag = await guardItem(db, { repo: r.repo, number: r.number }, { kind: "fixissue-collect" }, x.by ?? CLI_BY);

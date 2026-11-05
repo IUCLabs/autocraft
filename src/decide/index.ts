@@ -17,6 +17,8 @@ import { type Candidate, type Reason } from "./select.ts";
 import { latestRun, settledLookup } from "../classify/settled.ts";
 import { scopeReason } from "../core/decide-item.ts";
 import { plannedItems } from "../core/select-items.ts";
+import { ownLogins } from "../github/identity.ts";
+import { isBotLogin } from "../review/bots.ts";
 
 export type DecideParams = {
   /** Repo names; empty or missing means every tracked repo. */
@@ -48,13 +50,15 @@ const now = () => new Date().toISOString();
 export function loadSummaryItems(db: DatabaseSync, refs: { repo: string; number: number }[]): Item[] {
   const labels = db.prepare("SELECT labels FROM items WHERE repo = ? AND number = ?");
   const comments = db.prepare(`SELECT author, body FROM comments WHERE repo = ? AND number = ? AND COALESCE(TRIM(body), '') <> ''
-    AND COALESCE(author, '') NOT LIKE '%[bot]' ORDER BY created_at LIMIT 3`);
+    ORDER BY created_at LIMIT 100`);
+  // The mirror stores bot logins without `[bot]`: drop our own logins and known bots by name.
+  const own = ownLogins(db, "");
   return loadItems(db, refs).map((i) => {
     let l: unknown = [];
     try { l = JSON.parse((labels.get(i.repo, i.number) as { labels: string | null }).labels ?? "[]"); } catch { /* none */ }
     return {
       ...i, labels: Array.isArray(l) ? l.filter((x): x is string => typeof x === "string") : [],
-      comments: comments.all(i.repo, i.number) as { author: string | null; body: string }[],
+      comments: (comments.all(i.repo, i.number) as { author: string | null; body: string }[]).filter((x) => !x.author || (!own.has(x.author) && !isBotLogin(x.author))).slice(0, 3),
     };
   });
 }
