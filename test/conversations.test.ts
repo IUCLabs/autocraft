@@ -10,7 +10,7 @@ import { SCRATCH } from "./scratch.ts";
 import { setCommentApproval } from "../src/act/approval.ts";
 import { setApproval as setLabelApproval } from "../src/labels/approval.ts";
 import { setRunner } from "../src/classify/run.ts";
-import { cleanComment, parseReply } from "../src/conversations/cards.ts";
+import { applicableSteps, cleanComment, parseReply } from "../src/conversations/cards.ts";
 import { doCard } from "../src/conversations/act.ts";
 import { ensureConversation, insertTurn } from "../src/conversations/store.ts";
 import { answerPending } from "../src/conversations/run.ts";
@@ -144,6 +144,9 @@ describe("new step kinds", () => {
     assert.equal(p3.cards.length, 1, "the answer settle is refused with a fixup");
     assert.equal(p3.cards[0]!.params.kind === "resolution" && p3.cards[0]!.params.settle?.kind, "handled");
     assert.equal(run(db, 3, [R([fix(true)])]).cards.length, 0, "an issue has no fix-up");
+    const st3 = applicableSteps(db, "app", 3), st2 = applicableSteps(db, "app", 2);
+    assert.ok(st3.includes("transfer") && !st3.includes("fixup") && !st3.includes("request_reviewers"));
+    assert.ok(st2.includes("fixup with merge") && !st2.includes("transfer") && !st3.includes("fixup with merge"));
     const none = run(db, 2, [R([{ kind: "fixup", instructions: "x", merge: true }, { kind: "request_reviewers", logins: ["someone"] }])]);
     assert.equal(none.cards.length, 0);
   });

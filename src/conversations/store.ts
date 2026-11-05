@@ -4,7 +4,7 @@ import { createHash, randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { factsOf, getDecision, optionsOf, type DecisionRow } from "../decisions.ts";
 import { CLAUDE_PROMPTS, untrustedJson } from "../prompts/index.ts";
-import { cleanComment, openDecision, type NewCard } from "./cards.ts";
+import { applicableSteps, cleanComment, openDecision, type NewCard } from "./cards.ts";
 import { ITEM_BODY_LIMIT, ITEM_COMMENT_LIMIT, ITEM_COMMENTS, ITEM_DIFF_LIMIT, MESSAGE_MAX, OPENING_MAX, type TurnKind } from "./types.ts";
 
 export class ConversationError extends Error {
@@ -135,6 +135,7 @@ export async function buildItemBlock(db: DatabaseSync, repo: string, n: number, 
     comments: comments.map((c) => ({ author: c.author, body: cut(c.body, ITEM_COMMENT_LIMIT) })),
     ...(pr ? { head: i.head_oid, lines: { additions: i.additions, deletions: i.deletions, files: i.changed_files }, diff: diff === null ? null : cut(diff, ITEM_DIFF_LIMIT) + (diff.length > ITEM_DIFF_LIMIT ? "\n[diff cut]" : "") } : {}),
     decision: decisionPart(openDecision(db, repo, n) ?? latestDecision(db, repo, n)),
+    steps: applicableSteps(db, repo, n),
   };
   return { block: untrustedJson(data), sig: sigOf(db, i) };
 }

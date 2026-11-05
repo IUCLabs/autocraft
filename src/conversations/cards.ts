@@ -366,6 +366,24 @@ function pipelineStep(db: DatabaseSync, repo: string, n: number, st: Record<stri
 
 const MAX_STEPS = 8;
 
+/** The step kinds that can validate for the item as it is now, from the same facts and refusals as validateResolution; "fixup with merge" is listed apart. */
+export function applicableSteps(db: DatabaseSync, repo: string, n: number): string[] {
+  const f = itemFacts(db, repo, n);
+  if (!f) return [];
+  const open = f.state === "OPEN", isPr = pr(f), out: string[] = ["open_issue"];
+  if (open) {
+    out.push("comment", "label", "assign");
+    if (ALL_LABELS.some((l) => !("note" in unlabelStep(db, repo, n, l.name)))) out.push("unlabel");
+    if (!closeRefusal(db, repo, n)) out.push("close", "duplicate");
+    if (isPr) {
+      out.push("request_reviewers", "review", "fixup");
+      const d = openDecision(db, repo, n);
+      if (d && (d.kind === "merge" || d.kind === "scope")) out.push("fixup with merge");
+    } else if (!closeRefusal(db, repo, n)) out.push("transfer");
+  } else if (f.state === "CLOSED" && !("note" in reopenStep(db, repo, n))) out.push("reopen");
+  return out;
+}
+
 /** The settlement the model asked for, checked against the item's open decision `d`. */
 function settleOf(db: DatabaseSync, d: DecisionRow, raw: unknown): Checked<Settle> {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return { note: "dropped a resolution whose settle is not an object" };
