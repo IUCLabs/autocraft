@@ -369,13 +369,18 @@ function assertQuiet(...texts: string[]): void {
 
 /** The HTTP status in gh's error text, or null. */
 export const httpStatus = (r: ExecResult): number | null => {
-  const m = /HTTP (\d{3})/.exec(`${r.stderr} ${r.stdout}`);
-  return m ? Number(m[1]) : /not found/i.test(`${r.stderr} ${r.stdout}`) ? 404 : null;
+  const text = `${r.stderr} ${r.stdout}`;
+  // gh prints "HTTP 403"; git prints "The requested URL returned error: 403" or "Permission to <repo> denied".
+  const m = /HTTP (\d{3})/.exec(text) ?? /returned error: (\d{3})/.exec(text);
+  return m ? Number(m[1]) : /Permission to .* denied/i.test(text) ? 403 : /not found/i.test(text) ? 404 : null;
 };
 
 /** Pushes the fix commit to the pipeline's fork under a neutral branch name: the quiet landing's push. */
-export function ghLandPush(w: Writer, g: Grant, git: Pick<Git, "git">, o: { repo: string; fork: string; branch: string; sha: string; base: string; key: string }): Promise<ExecResult> {
-  assertQuiet(o.branch);
+export async function ghLandPush(w: Writer, g: Grant, git: Pick<Git, "git">, o: { repo: string; fork: string; branch: string; sha: string; base: string; key: string }): Promise<ExecResult> {
+  // The pushed commit is public with its branch: its message is checked as well as the branch name.
+  const message = await git.git(["log", "-1", "--format=%B", o.sha]);
+  if (message.code !== 0) throw new Error("the commit message could not be read");
+  assertQuiet(o.branch, message.stdout);
   return pushOwnBranch(w, g, git, "security-land-push", { repo: o.repo, remote: o.fork, branch: o.branch, sha: o.sha }, { base: o.base, finding: o.key });
 }
 

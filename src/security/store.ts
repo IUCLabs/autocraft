@@ -114,7 +114,7 @@ export function toFinding(db: DatabaseSync, r: FindingRow): FindingView {
 
 /** The states a finding moves to by each operator action, and from which states. */
 export const TRANSITIONS: Record<"dismiss" | "backlog" | "reopen", { from: FindingState[]; to: FindingState }> = {
-  dismiss: { from: ["new", "backlog", "ready"], to: "dismissed" },
+  dismiss: { from: ["new", "backlog", "ready", "awaiting-admin"], to: "dismissed" },
   backlog: { from: ["new", "dismissed"], to: "backlog" },
   reopen: { from: ["dismissed", "backlog"], to: "new" },
 };

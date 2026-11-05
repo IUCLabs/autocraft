@@ -164,13 +164,33 @@ const GIVEAWAY_CODE = /\b(?:security|vulnerab\w*|exploit\w*|attack\w*|attacker\w
 /** The first giveaway word in `text`, or null. */
 export const giveaway = (text: string): string | null => GIVEAWAY.exec(text)?.[0] ?? null;
 
-/** The giveaway words in the lines a unified diff adds (file names included), or null when there are none. */
+/** The comment parts of one source line: from a double slash to the end, block-comment segments, and block-comment continuation lines. */
+function commentText(line: string): string {
+  const out: string[] = [];
+  const t = line.trim();
+  if (t.startsWith("*") || t.startsWith("/*")) out.push(t);
+  for (const m of line.matchAll(/\/\/.*$|\/\*.*?(?:\*\/|$)/g)) out.push(m[0]);
+  return out.join(" ");
+}
+
+/** Giveaway test for names and paths: underscores, slashes and dots split words, so a name like test_path_traversal is caught. */
+export const nameGiveaway = (s: string): string | null => giveaway(s.replace(/[_/.]+/g, " "));
+
+/**
+ * The giveaway word in what a unified diff shows: the narrow list for code tokens on added lines, the full list for the file
+ * names, for comments and for function (test) names, or null when there is none.
+ */
 export function patchGiveaway(patch: string): string | null {
   for (const line of patch.split("\n")) {
-    if (line.startsWith("+++ ") || line.startsWith("diff --git ") || (line.startsWith("+") && !line.startsWith("+++"))) {
-      const w = GIVEAWAY_CODE.exec(line)?.[0];
+    if (line.startsWith("diff --git ") || line.startsWith("+++ ") || line.startsWith("--- ")) {
+      const w = nameGiveaway(line.replace(/^(diff --git|\+\+\+|---) /, ""));
       if (w) return w;
+      continue;
     }
+    if (!line.startsWith("+")) continue;
+    const added = line.slice(1);
+    const w = GIVEAWAY_CODE.exec(added)?.[0] ?? giveaway(commentText(added)) ?? nameGiveaway([...added.matchAll(/\bfn\s+(\w+)/g)].map((m) => m[1]).join(" "));
+    if (w) return w;
   }
   return null;
 }
@@ -195,10 +215,10 @@ export function quietProblem(title: string, summary: string): string | null {
   return w ? `the title or summary says "${w}"; describe only what the code does now` : null;
 }
 
-/** `fix-<slug>` from the plain title; the number keeps two fixes with one title apart. */
-export function fixBranch(title: string, n: number): string {
-  const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40).replace(/-+$/, "");
-  return `fix-${slug || "change"}-${n}`;
+/** `autocraft/fix-<slug>-<suffix>`, the shape of the other pipeline branches; the caller passes a random suffix, which keeps the finding count and number out of the name. */
+export function fixBranch(title: string, suffix: string): string {
+  const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 30).replace(/-+$/, "");
+  return `autocraft/fix-${slug ? `${slug}-` : ""}${suffix}`;
 }
 
 /** The body of the quiet pull request: only the code change. */

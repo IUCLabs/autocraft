@@ -43,7 +43,8 @@ import * as operator from "./operator.ts";
 import { actionsOf as releasesOf } from "../../operator-actions.ts";
 import { verificationOf } from "../../verify/results.ts";
 import { areaNameOf } from "../../areas/store.ts";
-import { settledOf } from "../../classify/settled.ts";
+import { settledOf, unflagged } from "../../classify/settled.ts";
+import { quietFixPrs } from "../../core/facts.ts";
 import { classificationsOf, itemState, relatedOf } from "./decisions.ts";
 import * as sim from "./similar.ts";
 import { needs } from "./needs.ts";
@@ -139,7 +140,7 @@ async function item(db: DatabaseSync, req: Req): Promise<Item> {
     related: relatedOf(db, repo, n), classifications: classificationsOf(db, repo, n), area: areaNameOf(db, repo, n),
     stages: stages.map((s) => ({ ...s, by: s.by ?? "" })),
     comments: comments.map((x) => ({ ...x, author: x.author ?? "", body: x.body ?? "" })),
-    decisionIds, settled: settledOf(db, repo, n) as Item["settled"], priority: priorityOf(db, repo, n),
+    decisionIds, settled: unflagged(settledOf(db, repo, n), quietFixPrs(db, repo).has(`${repo}#${n}`)) as Item["settled"], priority: priorityOf(db, repo, n),
     ...(it.kind === "pr" ? prWork(db, repo, n, canSeeInternals(req)) : { verification: null, fixups: [] }),
     // The reviewer's reasons quote the patch, so viewers get the verdict only.
     patchChecks: checksOf(db, repo, n).map(({ kind, subject, patchHash, round, verdict, reasons, problems, model, createdAt }) =>

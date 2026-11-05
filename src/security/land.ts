@@ -14,7 +14,7 @@ import {
 } from "../github/write.ts";
 import { regressionPath } from "../verify/plan.ts";
 import { findingKey, advance, rawFinding, type FindingRow } from "./store.ts";
-import { landBody } from "./rules.ts";
+import { giveaway, landBody, nameGiveaway } from "./rules.ts";
 import type { ExecResult } from "../fixup/git.ts";
 
 const ACTOR = "security";
@@ -26,9 +26,18 @@ export type LandDeps = {
   /** The pipeline account's login and noreply email. */
   who: () => Promise<{ login: string }>;
   log: (line: string) => void;
+  /** Pause between polls for a new fork; defaults to a timer. */
+  sleep?: (ms: number) => Promise<void>;
 };
 
 const PR_URL = /https:\/\/github\.com\/(\S+?)\/pull\/(\d+)/;
+/** The number of the pull request at `url` when it is in `slug`, else null. */
+const prNumber = (url: string, slug: string): number | null => {
+  const m = PR_URL.exec(url);
+  return m && m[1]!.toLowerCase() === slug.toLowerCase() ? Number(m[2]) : null;
+};
+/** The giveaway word in text bound for GitHub: the title, the body and the file names. */
+const wordedIn = (...texts: string[]): string | null => texts.map((t) => giveaway(t) ?? nameGiveaway(t)).find((w) => w) ?? null;
 
 /** Back to `ready` with the reason, after a failure that leaves the fix intact. */
 function back(db: DatabaseSync, repo: string, n: number, why: string, log: (l: string) => void, set: Record<string, string | number | null> = {}): string {
@@ -60,18 +69,23 @@ export async function runLand(db: DatabaseSync, repo: string, n: number, by: By,
     const who = await d.who();
     const base = branchOf(db, repo);
     const files = JSON.parse(row.fix_files ?? "[]") as string[];
+    const testPath = files.find((f) => f.endsWith("autocraft_regression.rs")) ?? regressionPath("");
+    const body = landBody(row.fix_summary, files.filter((f) => f !== testPath), testPath);
+    // Nothing is pushed or opened before the whole public text has passed the wording guard.
+    const worded = wordedIn(row.fix_title, body, files.join(" "), row.fix_branch);
+    if (worded) return back(db, repo, n, `the text for GitHub says "${worded}"; write the fix again`, d.log);
     const found = await d.exec("gh", ["pr", "list", "--repo", slugOf(repo), "--state", "open", "--head", row.fix_branch, "--json", "url,headRepositoryOwner", "--jq", `.[] | select(.headRepositoryOwner.login == "${who.login}") | .url`]);
     let url = found.code === 0 ? found.stdout.trim().split("\n")[0] ?? "" : "";
-    if (!PR_URL.test(url)) {
+    let number = prNumber(url, slugOf(repo));
+    if (number === null) {
       const fork = await forkOf(w, g, d.exec, who.login, repo, { finding: key });
       const push = await ghLandPush(w, g, git, { repo, fork, branch: row.fix_branch, sha: row.fix_commit, base: row.fix_commit, key });
       if (push.code !== 0) return back(db, repo, n, `the push failed: ${oneLine(push.stderr)}`, d.log);
-      const testPath = files.find((f) => f.endsWith("autocraft_regression.rs")) ?? regressionPath("");
-      const pr = await ghLandPr(w, g, d.exec, { repo, key, base, head: `${fork.split("/")[0]}:${row.fix_branch}`, title: row.fix_title, body: landBody(row.fix_summary, files.filter((f) => f !== testPath), testPath) }, { by: "model", kind: "pull request", model: "opus" });
+      const pr = await ghLandPr(w, g, d.exec, { repo, key, base, head: `${fork.split("/")[0]}:${row.fix_branch}`, title: row.fix_title, body }, { by: "model", kind: "pull request", model: "opus" });
       url = pr.stdout.trim().split("\n").pop() ?? "";
-      if (pr.code !== 0 || !PR_URL.test(url)) return back(db, repo, n, `the pull request was not opened: ${oneLine(pr.stderr || pr.stdout)}`, d.log);
+      number = prNumber(url, slugOf(repo));
+      if (pr.code !== 0 || number === null) return back(db, repo, n, `the pull request was not opened: ${oneLine(pr.stderr || pr.stdout)}`, d.log);
     }
-    const number = Number(PR_URL.exec(url)![2]);
     advance(db, repo, n, ["landing"], "landing", { fix_pr: number, fork: null, note: null });
     audit(db, ACTOR, "security-land-opened", key, { pr: number });
     d.log(`${repo} finding ${n}: opened pull request ${number}`);
@@ -138,15 +152,29 @@ export async function runAdvisory(db: DatabaseSync, repo: string, n: number, by:
       fork = f.fork;
       set.fork = fork;
       advance(db, repo, n, ["landing"], "landing", { fork });
+      // GitHub creates the fork in the background; a push right after the request can hit a repository that does not exist yet.
+      const sleep = d.sleep ?? ((ms: number) => new Promise<void>((ok) => setTimeout(ok, ms)));
+      for (let i = 0; i < 6; i++) {
+        if ((await d.exec("gh", ["api", `repos/${fork}`, "--jq", ".full_name"])).code === 0) break;
+        await sleep(5000);
+      }
     }
-    if (row.fix_pr === null) {
+    // A press after an interrupted run finds the pull request already in the fork.
+    let fixPr = row.fix_pr;
+    if (fixPr === null) {
+      const open = await d.exec("gh", ["pr", "list", "--repo", fork, "--head", row.fix_branch, "--state", "open", "--json", "number", "--jq", ".[0].number"]);
+      const found = Number(open.stdout.trim());
+      if (open.code === 0 && Number.isInteger(found) && found > 0) { fixPr = found; set.fix_pr = found; }
+    }
+    if (fixPr === null) {
       const push = await ghAdvisoryPush(w, g, git, { repo, fork, branch: row.fix_branch, sha: row.fix_commit, key });
       if (push.code !== 0) return failed(push, "push", set);
       const files = JSON.parse(row.fix_files ?? "[]") as string[];
       const pr = await ghAdvisoryPr(w, g, d.exec, { repo, key, fork, base: branchOf(db, repo), head: row.fix_branch, title: row.fix_title, body: landBody(row.fix_summary, files.filter((f) => !f.endsWith("autocraft_regression.rs")), files.find((f) => f.endsWith("autocraft_regression.rs")) ?? "") });
-      const m = PR_URL.exec(pr.stdout);
-      if (pr.code !== 0 || !m) return failed(pr, "pr", set);
-      set.fix_pr = Number(m[2]);
+      const made = prNumber(pr.stdout, fork);
+      if (pr.code !== 0 || made === null) return failed(pr, "pr", set);
+      set.fix_pr = made;
+      advance(db, repo, n, ["landing"], "landing", { fix_pr: set.fix_pr });
     }
     audit(db, ACTOR, "security-advisory-ready", key, { ghsa, fork });
     return wait(ADMIN.merge, set) + ` (${ghsa})`;
@@ -154,6 +182,15 @@ export async function runAdvisory(db: DatabaseSync, repo: string, n: number, by:
     back(db, repo, n, `the advisory route failed: ${(e as Error).message}`, d.log);
     throw e;
   }
+}
+
+/** Creates the finding's draft advisory (private) and stores its id. A finding landed by a quiet pull request has none until its fix merges. */
+async function draftAdvisory(db: DatabaseSync, row: FindingRow, w: Writer, g: Parameters<typeof ghAdvisoryCreate>[1], d: Pick<LandDeps, "exec">): ReturnType<typeof ghAdvisoryCreate> {
+  const key = findingKey(row.repo, row.number);
+  const text = `${advisoryText(row)}${row.fix_pr ? `\n### Fix\n\nFixed in ${slugOf(row.repo)}#${row.fix_pr}.\n` : ""}`;
+  const a = await ghAdvisoryCreate(w, g, d.exec, { repo: row.repo, key, summary: row.title, description: text, severity: row.severity });
+  if (a.ghsa) db.prepare("UPDATE security_findings SET ghsa_id = ? WHERE repo = ? AND number = ?").run(a.ghsa, row.repo, row.number);
+  return a;
 }
 
 /**
@@ -170,11 +207,9 @@ export async function runPublish(db: DatabaseSync, repo: string, n: number, by: 
   if ("refused" in g) return note(g.refused);
   let ghsa = row.ghsa_id;
   if (!ghsa) {
-    const text = `${advisoryText(row)}${row.fix_pr ? `\n### Fix\n\nFixed in ${slugOf(repo)}#${row.fix_pr}.\n` : ""}`;
-    const a = await ghAdvisoryCreate(w, g, d.exec, { repo, key, summary: row.title, description: text, severity: row.severity });
+    const a = await draftAdvisory(db, row, w, g, d);
     if (!a.ghsa) return note(`the advisory could not be created: ${oneLine(a.result.stderr || a.result.stdout)}`);
     ghsa = a.ghsa;
-    db.prepare("UPDATE security_findings SET ghsa_id = ? WHERE repo = ? AND number = ?").run(ghsa, repo, n);
   }
   const p = await ghAdvisoryPublish(w, g, d.exec, { repo, key, ghsa });
   if (p.code !== 0) return note(`the advisory was not published: ${oneLine(p.stderr || p.stdout)}`);
@@ -192,7 +227,7 @@ export async function runPublish(db: DatabaseSync, repo: string, n: number, by: 
 
 /** Patch ids (`git patch-id --stable`) of the last commits on `head`. */
 async function patchIds(git: Git, head: string, limit: number): Promise<Set<string>> {
-  const log = await git.git(["log", "-p", "--no-merges", "--no-ext-diff", "--no-textconv", `-n${limit}`, head]);
+  const log = await git.git(["log", "-p", "--no-renames", "--no-merges", "--no-ext-diff", "--no-textconv", `-n${limit}`, head]);
   if (log.code !== 0 || !log.stdout) return new Set();
   const ids = await git.git(["patch-id", "--stable"], { input: log.stdout });
   return new Set(ids.stdout.split("\n").map((l) => l.split(" ")[0]!).filter(Boolean));
@@ -205,6 +240,26 @@ export async function fixOnMain(git: Git, fixCommit: string, head: string): Prom
   if (mine.code !== 0) return false;
   const own = (await git.git(["patch-id", "--stable"], { input: mine.stdout })).stdout.split(" ")[0] ?? "";
   return !!own && (await patchIds(git, head, 300)).has(own);
+}
+
+function setNote(db: DatabaseSync, repo: string, n: number, note: string): void {
+  db.prepare("UPDATE security_findings SET note = ?, updated_at = ? WHERE repo = ? AND number = ? AND state = 'landing' AND COALESCE(note, '') <> ?").run(note, new Date().toISOString(), repo, n, note);
+}
+
+/**
+ * Why the quiet pull request is still open, from the mirror: shown on the finding page. The text avoids naming the finding
+ * so it is safe wherever the note is shown.
+ */
+export function stallReason(db: DatabaseSync, repo: string, number: number): string {
+  const it = db.prepare("SELECT is_draft, ci_state, mergeable FROM main.items WHERE repo = ? AND number = ?").get(repo, number) as { is_draft: number | null; ci_state: string | null; mergeable: string | null } | undefined;
+  const last = db.prepare("SELECT outcome, reason FROM main.merges WHERE repo = ? AND number = ? ORDER BY at DESC LIMIT 1").get(repo, number) as { outcome: string; reason: string | null } | undefined;
+  if (!it) return "The pull request is open; waiting for the pipeline to read it.";
+  if (it.is_draft) return "The pull request is a draft.";
+  if (it.mergeable === "CONFLICTING") return "The pull request has merge conflicts.";
+  if (it.ci_state === "FAILURE" || it.ci_state === "ERROR") return "The pull request's checks failed.";
+  if (it.ci_state === "PENDING" || it.ci_state === "EXPECTED") return "Waiting for the pull request's checks.";
+  if (last?.outcome === "refused" && last.reason) return `The merge was refused: ${oneLine(last.reason, 200)}`;
+  return "The pull request is open; waiting for the merge step.";
 }
 
 /**
@@ -220,9 +275,27 @@ export async function pollLanding(db: DatabaseSync, d: Pick<LandDeps, "exec" | "
     if (pr?.state === "MERGED" && advance(db, f.repo, f.number, ["landing"], "landed", { note: null })) {
       audit(db, ACTOR, "security-landed", findingKey(f.repo, f.number), { pr: f.fix_pr });
       moved++;
+      // The draft advisory records the issue once the fix is public. Best effort: Publish creates it when this could not.
+      try {
+        const row = rawFinding(db, f.repo, f.number)!;
+        const g = row.ghsa_id ? null : guardRepo(db, f.repo, null, "pipeline");
+        if (g && !("refused" in g)) await draftAdvisory(db, row, { db, login: ACTOR }, g, d);
+      } catch (e) {
+        d.log(`security: ${f.repo}: draft advisory not created: ${oneLine(String((e as Error).message ?? e), 160)}`);
+      }
     } else if (pr?.state === "CLOSED" && advance(db, f.repo, f.number, ["landing"], "ready", { fix_pr: null, note: "The pull request was closed without merging." })) moved++;
+    else if (pr?.state === "OPEN") setNote(db, f.repo, f.number, stallReason(db, f.repo, f.fix_pr));
   }
-  const waiting = db.prepare("SELECT repo, number, fix_commit FROM security_findings WHERE state = 'awaiting-admin' AND fix_commit IS NOT NULL").all() as { repo: string; number: number; fix_commit: string }[];
+  const waiting = db.prepare("SELECT repo, number, fix_commit, fork, fix_pr FROM security_findings WHERE state = 'awaiting-admin' AND fix_commit IS NOT NULL").all() as { repo: string; number: number; fix_commit: string; fork: string | null; fix_pr: number | null }[];
+  // The admin may merge the pull request in the advisory's fork; the fork exists until the advisory is published.
+  for (const f of waiting) {
+    if (!f.fork || f.fix_pr === null) continue;
+    const view = await d.exec("gh", ["pr", "view", String(f.fix_pr), "--repo", f.fork, "--json", "state", "--jq", ".state"]);
+    if (view.code === 0 && view.stdout.trim() === "MERGED" && advance(db, f.repo, f.number, ["awaiting-admin"], "advisory", { note: null })) {
+      audit(db, ACTOR, "security-landed", findingKey(f.repo, f.number), { route: "advisory" });
+      moved++;
+    }
+  }
   for (const repo of new Set(waiting.map((f) => f.repo))) {
     try {
       const git = new Git(d.exec, d.root, repo);

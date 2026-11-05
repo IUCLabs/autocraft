@@ -9,7 +9,7 @@ import type { DatabaseSync } from "node:sqlite";
 import type { BuildEnv, BuildSummary, BuildTask, BuildTaskDetail, TaskFilter, TaskPage, TaskState } from "../../../web/src/api/types.ts";
 import { absolute } from "../../build/artifacts.ts";
 import { BuildError, createEnv, listEnvs, rotateKey, updateEnv } from "../../build/envs.ts";
-import { cancelTask, getTaskDetail, listTasks, summary } from "../../build/tasks.ts";
+import { FIX_CHECK_STEP, cancelTask, getTaskDetail, listTasks, summary } from "../../build/tasks.ts";
 import { HttpError } from "../server/util.ts";
 import type { Req, Res } from "../types.ts";
 import { hiddenRepos } from "./visible.ts";
@@ -44,14 +44,14 @@ export const tasks = (db: DatabaseSync, req: Req): Promise<TaskPage> => wrap(asy
   const hidden = await hiddenRepos(db, req);
   if (repo && hidden.includes(repo)) throw new HttpError(404, `${repo} is not a tracked repo`);
   const f: TaskFilter = { state: q("state") as TaskState | "active" | undefined, env: q("env"), repo, cursor: q("cursor"), limit: intParam(req, "limit") };
-  return listTasks(db, f, hidden);
+  return listTasks(db, f, hidden, canSeeInternals(req));
 });
 
 async function visibleTask(db: DatabaseSync, req: Req): Promise<BuildTaskDetail> {
   if (!/^\d{1,15}$/.test(req.params.id ?? "")) throw new HttpError(400, "not a task id");
   const t = getTaskDetail(db, Number(req.params.id));
   // The same answer for a task that does not exist and one of a repo the viewer cannot see.
-  if (!t || (await hiddenRepos(db, req)).includes(t.repo)) throw new HttpError(404, "no such task");
+  if (!t || (await hiddenRepos(db, req)).includes(t.repo) || (t.step === FIX_CHECK_STEP && !canSeeInternals(req))) throw new HttpError(404, "no such task");
   return t;
 }
 
@@ -66,7 +66,7 @@ export const cancel = (db: DatabaseSync, req: Req): Promise<BuildTask> => wrap(a
   return cancelTask(db, req.params.id, req.user.login);
 });
 
-export const buildSummary = async (db: DatabaseSync, req: Req): Promise<BuildSummary> => summary(db, await hiddenRepos(db, req));
+export const buildSummary = async (db: DatabaseSync, req: Req): Promise<BuildSummary> => summary(db, await hiddenRepos(db, req), canSeeInternals(req));
 
 export async function artifact(db: DatabaseSync, req: Req): Promise<Res> {
   try {

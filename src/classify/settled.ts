@@ -263,3 +263,6 @@ export function fromRow(r: Partial<SettledRow> | undefined): Settled {
     referee: r.referee_label != null && r.referee_sure != null ? { label: r.referee_label, sure: !!r.referee_sure, reason: r.referee_reason ?? "", ...(r.referee_final ? { final: true } : {}) } : null,
   };
 }
+
+/** The verdict without its `security` flag, for the quiet pull request of a security fix that is still landing. */
+export const unflagged = (s: Settled, quiet: boolean): Settled => (quiet ? { ...s, flags: s.flags.filter((f) => f !== "security") } : s);

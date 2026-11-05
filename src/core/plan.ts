@@ -322,6 +322,8 @@ export type ItemFacts = {
   };
 
   labels: {
+    /** The item is the quiet pull request of a security fix that is still landing: it gets no `security` label. */
+    quietFix?: boolean;
     /** Labels on GitHub as mirrored. */
     existing: string[];
     /** An operator answered the scope decision with "plugin". */

@@ -1,6 +1,7 @@
 // The private fix of a finding: a patch on the scan's pinned commit, built and tested in the worker container, reviewed by
 // Opus, and kept as a local commit in the bare cache that is never pushed before Land. Nothing here writes to GitHub:
 // `gh api user` and the fetch of the default branch are reads.
+import { randomBytes } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
@@ -25,7 +26,7 @@ import { cloneTask, queueWarmBuild } from "../verify/tasks.ts";
 import { outcomeOf } from "../verify/results.ts";
 import type { Crate } from "../verify/types.ts";
 import {
-  FIX_RUN_BASE, FIX_ROUNDS, fixBranch, parseFixReply, patchGiveaway, quietProblem, securityRepo,
+  FIX_RUN_BASE, FIX_ROUNDS, fixBranch, giveaway, nameGiveaway, parseFixReply, patchGiveaway, quietProblem, securityRepo,
   type SecurityFixCheckInput, type SecurityFixInput,
 } from "./rules.ts";
 import { advance, rawFinding, recordFixCall, scanRow } from "./store.ts";
@@ -208,13 +209,16 @@ export async function runFix(db: DatabaseSync, repo: string, n: number, d: FixDe
       if (!review.ok) { failRound(review.reason, v.patch); continue; }
       const who = await d.who();
       const files = [...v.files, testPath];
-      const commit = await git.commit(tree, sha, `${parsed.title}\n\n${parsed.summary}\n\n${files.map((f) => `- ${f}`).join("\n")}\n`, { name: who.login, email: who.email });
+      const message = `${parsed.title}\n\n${parsed.summary}\n\n${files.map((f) => `- ${f}`).join("\n")}\n`;
+      const worded = giveaway(message) ?? nameGiveaway(files.join(" "));
+      if (worded) { failRound(`the commit message or a file name says "${worded}"; describe only what the code does now`, v.patch); continue; }
+      const commit = await git.commit(tree, sha, message, { name: who.login, email: who.email });
       const changes = await git.rawChanges(sha, commit);
       const okFiles = new Set(files);
       if (changes.some((c) => !okFiles.has(c[3]!) || (c[2] === "A" ? c[1] !== "100644" : c[2] !== "M" || c[0] !== c[1]))) { failRound("the commit would change files or modes outside the validated diff", v.patch); continue; }
       await git.must(["update-ref", fixRef(repo, n), commit]);
       const moved = advance(db, repo, n, ["fixing"], "ready", {
-        fix_commit: commit, fix_patch: patch, fix_title: parsed.title, fix_summary: parsed.summary, fix_branch: fixBranch(parsed.title, n), fix_files: JSON.stringify(files), fix_ref: fixRef(repo, n), note: null,
+        fix_commit: commit, fix_patch: patch, fix_title: parsed.title, fix_summary: parsed.summary, fix_branch: fixBranch(parsed.title, randomBytes(3).toString("hex")), fix_files: JSON.stringify(files), fix_ref: fixRef(repo, n), note: null,
       });
       return moved ? `${repo} finding ${n}: fix ready (${files.length} files, round ${round})` : `finding ${n}: left fixing while the fix was written`;
     }

@@ -420,16 +420,24 @@ export function tiersOf(db: DatabaseSync, logins: string[]): Map<string, Tier> {
 }
 
 /** PRs the pipeline opened itself from a Fix issues attempt or for a red default branch, as `repo#number`, when authored by its own account. */
-export function ownFixPrs(db: DatabaseSync, repo?: string): { login: string | null; prs: Set<string> } {
+export function ownFixPrs(db: DatabaseSync, repo?: string): { login: string | null; prs: Set<string>; quiet: Set<string> } {
   const login = (db.prepare("SELECT value FROM main.settings WHERE key = ?").get(PIPELINE_LOGIN_KEY) as { value: string } | undefined)?.value ?? null;
   const prs = new Set<string>();
-  if (!login) return { login, prs };
+  const quiet = quietFixPrs(db, repo);
+  if (!login) return { login, prs, quiet };
+  for (const ref of quiet) prs.add(ref);
   for (const r of db.prepare("SELECT repo, pr_url FROM main.fix_attempts WHERE pr_url IS NOT NULL" + (repo ? " AND repo = ?" : "")).all(...(repo ? [repo] : [])) as { repo: string; pr_url: string }[]) {
     const m = r.pr_url.match(/\/pull\/(\d+)$/);
     if (m) prs.add(`${r.repo}#${m[1]}`);
   }
   for (const r of db.prepare("SELECT repo, pr_number AS n FROM main.main_fixes WHERE pr_number IS NOT NULL" + (repo ? " AND repo = ?" : "")).all(...(repo ? [repo] : [])) as { repo: string; n: number }[]) prs.add(`${r.repo}#${r.n}`);
-  return { login, prs };
+  return { login, prs, quiet };
+}
+
+/** Quiet pull requests of security fixes that are still landing, as `repo#number`. They are the pipeline's own fix PRs; nothing public may call them a security matter until they merge. */
+export function quietFixPrs(db: DatabaseSync, repo?: string): Set<string> {
+  const rows = db.prepare("SELECT repo, fix_pr AS n FROM main.security_findings WHERE state = 'landing' AND fork IS NULL AND fix_pr IS NOT NULL" + (repo ? " AND repo = ?" : "")).all(...(repo ? [repo] : [])) as { repo: string; n: number }[];
+  return new Set(rows.map((r) => `${r.repo}#${r.n}`));
 }
 
 /** Reads the pipeline account and the last successful assign or unassign of every item from the audit once; the returned function gives an item's assignment facts from its mirrored `assignees` (JSON). */

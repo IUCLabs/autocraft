@@ -52,7 +52,7 @@ function findings(): FindingView[] {
       fixDiff: "--- a/crates/bundle/src/unpack.rs\n+++ b/crates/bundle/src/unpack.rs\n@@ -75,3 +75,6 @@\n-    let out = target.join(entry.name());\n+    let out = target.join(entry.name());\n+    if !out.starts_with(target) {\n+        return Err(Error::OutsideTarget);\n+    }\n",
     }),
     f(10, {
-      title: "Template importer reads referenced files from any folder", severity: "high", state: "landing", area: "templates", decidedBy: "kiri-n", fixPr: 2431, fixPrUrl: "https://github.com/storytold/designcraft/pull/2431",
+      title: "Template importer reads referenced files from any folder", severity: "high", state: "landing", note: "Waiting for the pull request's checks.", area: "templates", decidedBy: "kiri-n", fixPr: 2431, fixPrUrl: "https://github.com/storytold/designcraft/pull/2431",
       refs: [{ path: "crates/templates/src/import.rs", line: 54, claim: "" }],
       fixDiff: "--- a/crates/templates/src/import.rs\n+++ b/crates/templates/src/import.rs\n@@ -52,3 +52,5 @@\n-    let data = fs::read(base.join(rel))?;\n+    let path = base.join(rel).canonicalize()?;\n+    let data = fs::read(path)?;\n",
     }),

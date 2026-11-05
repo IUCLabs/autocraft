@@ -7,9 +7,14 @@ import { before, describe, test } from "node:test";
 import { connect } from "../src/db.ts";
 import type { Exec } from "../src/fixup/git.ts";
 import { GITHUB_ACTIONS } from "../src/github/actions.ts";
-import { fixOnMain, pollLanding, runAdvisory, runLand, runPublish, type LandDeps } from "../src/security/land.ts";
+import { createEnv, hello } from "../src/build/envs.ts";
+import { claim, createTask } from "../src/build/tasks.ts";
+import { PIPELINE_LOGIN_KEY } from "../src/core/rules.ts";
+import { ownFixPrs } from "../src/core/facts.ts";
+import { inPilot, setPilot } from "../src/pilot.ts";
+import { fixOnMain, pollLanding, runAdvisory, stallReason, runLand, runPublish, type LandDeps } from "../src/security/land.ts";
 import { runFix, type FixDeps } from "../src/security/fix.ts";
-import { giveaway, parseFixReply, patchGiveaway, quietProblem } from "../src/security/rules.ts";
+import { fixBranch, giveaway, parseFixReply, patchGiveaway, quietProblem } from "../src/security/rules.ts";
 import { rawFinding } from "../src/security/store.ts";
 import { Git } from "../src/fixup/git.ts";
 import { SCRATCH } from "./scratch.ts";
@@ -65,6 +70,12 @@ describe("private fix and landing", () => {
     assert.equal(patchGiveaway("diff --git a/x.rs b/x.rs\n+    // block the attacker\n"), "attacker");
     assert.equal(patchGiveaway("diff --git a/x.rs b/x.rs\n+    return Err(Error::Overflow);\n-    // security\n"), null, "only added lines count, and ordinary identifiers do not");
     assert.equal(giveaway("Validate chunk sizes"), null);
+    // Comments, test names and file names use the full list; other code tokens only the narrow one.
+    assert.equal(patchGiveaway("diff --git a/x.rs b/x.rs\n+    // reject path traversal\n"), "traversal");
+    assert.equal(patchGiveaway("diff --git a/x.rs b/x.rs\n+fn rejects_crafted_input() {}\n"), "crafted");
+    assert.equal(patchGiveaway("diff --git a/src/sanitize_names.rs b/src/sanitize_names.rs\n"), "sanitize");
+    // L1: the branch has the shape of the other pipeline branches and no finding number.
+    assert.match(fixBranch("Check layer length", "a1b2c3"), /^autocraft\/fix-check-layer-length-a1b2c3$/);
   });
 
   test("a fix that cannot start returns the finding to new with a note", async () => {
@@ -101,12 +112,60 @@ describe("private fix and landing", () => {
     assert.ok(wrote.some((w) => w.includes("PATCH")) && wrote.some((w) => w.endsWith("/cve")));
   });
 
-  test("a landing that names the problem is refused by the write layer", async () => {
+  test("no public branch exists unless every public text passed the wording guard", async () => {
+    // Title, summary (body), file list and commit message are all checked before the first push.
+    for (const extra of [{ fix_title: "Fix path traversal in the importer" }, { fix_summary: "Stops a crafted file from escaping." }, { fix_files: JSON.stringify(["crates/psd/src/sanitize_path.rs", "crates/psd/tests/autocraft_regression.rs"]) }] as Record<string, string>[]) {
+      const f = fake();
+      const n = finding("landing", extra);
+      await runLand(db, "photocraft", n, BY, deps(f.exec));
+      assert.equal(stateOf(n).state, "ready", JSON.stringify(extra));
+      assert.equal(f.calls.some((c) => (c.args[0] === "pr" && c.args[1] === "create") || c.args.includes("push")), false, JSON.stringify(extra));
+    }
+    // The commit message is read from the commit and refused when it names the problem.
     const f = fake();
-    const n = finding("landing", { fix_title: "Fix path traversal in the importer" });
-    await assert.rejects(runLand(db, "photocraft", n, BY, deps(f.exec)), /may not mention/);
-    assert.equal(stateOf(n).state, "ready");
-    assert.equal(f.calls.some((c) => c.args[0] === "pr" && c.args[1] === "create"), false);
+    const bad: Exec = async (cmd, args, opts) => (cmd === "git" && args.includes("--format=%B") ? { code: 0, stdout: "Check length\n\nBlocks a path traversal.\n", stderr: "" } : f.exec(cmd, args, opts));
+    const n = finding("landing");
+    await assert.rejects(runLand(db, "photocraft", n, BY, deps(bad)), /may not mention/);
+    assert.equal(f.calls.some((c) => c.args.includes("push")), false);
+  });
+
+  test("a refused git push is an admin wait on the advisory route", async () => {
+    const f = fake({ fork: { code: 0, stderr: "" } });
+    const denied: Exec = async (cmd, args, opts) => (cmd === "git" && args.includes("push") ? { code: 128, stdout: "", stderr: "remote: Permission to storytold/x denied to bot.\nfatal: unable to access: The requested URL returned error: 403" } : f.exec(cmd, args, opts));
+    const n = finding("landing", { urgent: 1 });
+    await runAdvisory(db, "photocraft", n, BY, deps(denied));
+    assert.equal(stateOf(n).state, "awaiting-admin");
+  });
+
+  test("the quiet pull request is the pipeline's own: counted as an own fix PR and in pilot scope; a stalled one shows why", () => {
+    db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES (?, 'pipeline-bot')").run(PIPELINE_LOGIN_KEY);
+    db.exec("INSERT INTO tracked_repos (name, pipeline) VALUES ('photocraft', 1) ON CONFLICT (name) DO UPDATE SET pipeline = 1");
+    const n = finding("landing", { fix_pr: 91 });
+    assert.ok(ownFixPrs(db, "photocraft").prs.has("photocraft#91"), "counted as an own fix PR");
+    assert.ok(ownFixPrs(db, "photocraft").quiet.has("photocraft#91"));
+    db.prepare("INSERT INTO items (repo, number, kind, state) VALUES ('photocraft', 5, 'issue', 'OPEN')").run();
+    setPilot(db, "boss", ["photocraft#5"]);
+    assert.equal(inPilot(db, "photocraft", 91), true, "in scope although the pilot list names other items");
+    assert.equal(inPilot(db, "photocraft", 92), false);
+    setPilot(db, "boss", []);
+    // The finding page shows why a stalled pull request waits.
+    db.prepare("INSERT INTO items (repo, number, kind, state, ci_state) VALUES ('photocraft', 91, 'pr', 'OPEN', 'FAILURE')").run();
+    assert.match(stallReason(db, "photocraft", 91), /checks failed/);
+    assert.equal(giveaway(stallReason(db, "photocraft", 91)), null);
+    assert.equal(stateOf(n).state, "landing");
+  });
+
+  test("a security fix's build tasks run for a repo outside the pipeline scope", () => {
+    const id = "fixenv";
+    createEnv(db, { id, label: id, kind: "local-sandbox", slots: 2 }, "op");
+    hello(db, id, { version: "1.0", capabilities: { os: "linux", arch: "x86_64", cpus: 8, memGb: 32, diskGb: 200, display: false, gpu: false, toolchains: ["rust-stable"] }, slots: 8 });
+    const plan = [{ name: "t", cmd: ["true"], network: "none" as const, timeoutSec: 10 }];
+    db.exec("DELETE FROM tracked_repos");
+    const other = createTask(db, { step: "verify", repo: "photocraft", headSha: SHA, plan });
+    const fix = createTask(db, { step: "fix-check", repo: "photocraft", headSha: SHA, plan });
+    const got = claim(db, id, 2).tasks.map((t) => t.id);
+    assert.deepEqual(got, [fix]);
+    assert.ok(!got.includes(other));
   });
 
   test("a pull request closed without merging returns the fix to ready", async () => {
@@ -135,12 +194,26 @@ describe("private fix and landing", () => {
     assert.equal(row.fork, "storytold/photocraft-ghsa-aaaa");
     assert.equal(row.fix_pr, 3);
     assert.ok(ok.calls.some((c) => c.cmd === "git" && c.args.some((a) => a.includes("storytold/photocraft-ghsa-aaaa.git"))), "the fix is pushed to the private fork");
-    assert.ok(!ok.calls.some((c) => c.args.includes("security-advisories") && c.args.includes("POST") && c.args.length < 8 && !c.args.join(" ").includes("GHSA")), "the advisory is not created twice");
+    assert.ok(!ok.calls.some((c) => c.args.includes("POST") && c.args.some((a) => a.endsWith("/security-advisories"))), "the advisory is not created twice");
 
     // The merge shows as the fix commit being part of the default branch (the fake git answers yes to the ancestor check).
     assert.equal(await fixOnMain(new Git(ok.exec, SCRATCH, "photocraft"), SHA, SHA), true);
     assert.equal(await pollLanding(db, deps(ok.exec)), 1);
     assert.equal(stateOf(n).state, "advisory");
+  });
+
+  test("the merge of the fix is also seen when main has a commit with the same patch", async () => {
+    const answer = (): Exec => async (cmd, args) => {
+      const a = args.join(" ");
+      if (a.includes("--is-ancestor")) return { code: 1, stdout: "", stderr: "" };
+      if (args.includes("diff-tree")) return { code: 0, stdout: "diff of the fix", stderr: "" };
+      if (args.includes("log")) return { code: 0, stdout: "log of main", stderr: "" };
+      if (args.includes("patch-id")) return { code: 0, stdout: "abc123 0000\n", stderr: "" };
+      return { code: 0, stdout: "", stderr: "" };
+    };
+    assert.equal(await fixOnMain(new Git(answer(), SCRATCH, "photocraft"), SHA, "c".repeat(40)), true);
+    const other: Exec = async (cmd, args, opts) => (args.includes("patch-id") && opts?.input === "log of main" ? { code: 0, stdout: "def456 0000\n", stderr: "" } : answer()(cmd, args, opts));
+    assert.equal(await fixOnMain(new Git(other, SCRATCH, "photocraft"), SHA, "c".repeat(40)), false);
   });
 
   test("security audit actions are not GitHub feed rows", () => {

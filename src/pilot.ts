@@ -93,6 +93,7 @@ export const pilotSqlFor = (repo: string, number: string): string =>
     OR (EXISTS (SELECT 1 FROM main.tracked_repos pt WHERE pt.name = ${repo} AND pt.pipeline = 1)
     AND (COALESCE(json_array_length(${LIST}), 0) = 0
       OR EXISTS (SELECT 1 FROM json_each(${LIST}) pj WHERE pj.value = ${repo} || '#' || ${number})
+      OR EXISTS (SELECT 1 FROM main.security_findings psf WHERE psf.repo = ${repo} AND psf.fix_pr = ${number} AND psf.state = 'landing' AND psf.fork IS NULL)
       OR EXISTS (SELECT 1 FROM main.fix_attempts pf, json_each(${LIST}) pj WHERE pf.repo = ${repo} AND pf.pr_url LIKE '%/pull/' || ${number}
         AND pj.value = pf.repo || '#' || pf.number)
       OR EXISTS (SELECT 1 FROM main.fix_attempts pf2 JOIN main.postmerge_followups pm2 ON pm2.repo = pf2.repo AND pm2.issue_number = pf2.number, json_each(${LIST}) pj

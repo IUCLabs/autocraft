@@ -17,7 +17,7 @@ const CAP_MAX = 100_000;
 /** The actions that start a step: the states they start from, the state the finding takes at once, and the step. */
 const STEPS: Partial<Record<FindingAction, { from: FindingState[]; to: FindingState | null; step: string; busy: string }>> = {
   fix: { from: ["new", "backlog"], to: "fixing", step: "security-fix", busy: "a fix" },
-  land: { from: ["ready"], to: "landing", step: "security-land", busy: "a fix that is ready" },
+  land: { from: ["ready", "awaiting-admin"], to: "landing", step: "security-land", busy: "a fix that is ready or waiting for an admin" },
   advisory: { from: ["ready", "awaiting-admin"], to: "landing", step: "security-advisory", busy: "a fix that is ready or waiting for an admin" },
   publish: { from: ["landed", "advisory"], to: null, step: "security-publish", busy: "a landed fix" },
 };
@@ -127,6 +127,9 @@ async function startStep(db: DatabaseSync, req: Req, repo: string, n: number, ac
   const row = findingRow(db, repo, n);
   if (!row) throw new HttpError(404, NOT_FOUND);
   if (!s.from.includes(row.state)) throw new HttpError(409, `a finding that is ${row.state} cannot be ${action === "fix" ? "fixed" : action === "land" ? "landed" : action === "advisory" ? "sent the advisory way" : "published"}; this needs ${s.busy}`);
+  if (action === "publish" && db.prepare("SELECT 1 FROM jobs WHERE step = ? AND state IN ('queued', 'running') AND json_extract(params, '$.repo') = ? AND json_extract(params, '$.number') = ?").get(s.step, repo, n)) {
+    throw new HttpError(409, "this finding is already being published");
+  }
   if (action === "fix" && !row.verification) throw new HttpError(409, "the finding has not been verified");
   if (s.to && !advance(db, repo, n, s.from, s.to, { note: null }, req.user.login)) throw new HttpError(409, "the finding changed; reload and try again");
   try {
