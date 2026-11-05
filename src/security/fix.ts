@@ -12,6 +12,7 @@ import { runModelStep } from "../agents/step.ts";
 import { textStep } from "../agents/steps.ts";
 import { Git, exec as realExec, fixupDir, type Exec } from "../fixup/git.ts";
 import { whoAmI } from "../fixup/index.ts";
+import { commitIdentity } from "../github/identity.ts";
 import { branchOf, tasksFor } from "../fixissue/index.ts";
 import { editable, validateFixPatch } from "../fixissue/parse.ts";
 import { parseCheck } from "../patchcheck/index.ts";
@@ -52,7 +53,7 @@ export type FixDeps = {
   ask: (id: "security.fix" | "security.fixcheck", input: SecurityFixInput | SecurityFixCheckInput, o: { checkout?: string; tool?: CheckTool; agent: string; run: string }) => Promise<{ text: string | null; cost: number | null }>;
   /** Builds and tests the patch in the worker container, and the regression test alone on the pinned commit. */
   build: (db: DatabaseSync, r: BuildRequest, cancelled: () => boolean, log: (l: string) => void) => Promise<BuildVerdict>;
-  who: () => Promise<{ login: string; email: string }>;
+  who: (repo: string) => Promise<{ login: string; email: string }>;
   cancelled: () => boolean;
   log: (line: string) => void;
 };
@@ -109,7 +110,7 @@ export function defaultFixDeps(db: DatabaseSync, scanId: number, io: { cancelled
   return {
     exec: realExec, root: fixupDir(), fetchCrates: ghCrates, build: buildInWorker, ...io,
     checkout: (repo, branch, sha) => checkoutForCommit(repo, branch, sha, io.log),
-    who: async () => { const w = await whoAmI(realExec); return { login: w.login, email: w.email }; },
+    who: (repo) => commitIdentity(db, repo, () => whoAmI(realExec)),
     ask: async (id, input, o) => {
       const before = (db.prepare("SELECT COALESCE(MAX(id), 0) AS n FROM agent_runs").get() as { n: number }).n;
       const r = await runModelStep(db, textStep<typeof input>(id), input, { checkout: o.checkout, check: o.tool, cancelled: io.cancelled, usage: { run: o.run, agent: o.agent, stage: "security", items: (ok) => (ok ? 1 : 0) } });
@@ -209,7 +210,7 @@ export async function runFix(db: DatabaseSync, repo: string, n: number, d: FixDe
       if (patch.length > CHECK_PATCH_CAP) { failRound(`the patch is over the ${CHECK_PATCH_CAP} character limit for the review`, v.patch); continue; }
       const review = await reviewPatch(db, d, { ...base, finding: { title: row.title, refs, reach: row.reach, impact: row.impact }, patch, test_path: testPath }, { checkout, scanId: row.scan_id, n, run });
       if (!review.ok) { failRound(review.reason, v.patch); continue; }
-      const who = await d.who();
+      const who = await d.who(repo);
       const files = [...v.files, testPath];
       const message = `${parsed.title}\n\n${parsed.summary}\n`;
       const worded = giveaway(message);

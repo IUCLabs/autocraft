@@ -50,7 +50,7 @@ const checkSize = (files: CheckSections): number => untrustedJson({ files }).len
 export type ConflictRun = {
   ledger: SessionLedger;
   repo: string; runId: string; log: (line: string) => void; d: FixupDeps; gw: Writer; at: () => string; summary: FixupSummary;
-  prQuery: string; scrub: (raw: string) => string; who: () => Promise<Who>; git: () => Git;
+  prQuery: string; scrub: (raw: string) => string; who: () => Promise<{ login: string; email: string }>; git: () => Git;
   /** Called once per PR handled. */
   onHandled?: (n: number) => void; handled: { n: number };
   /** Who asked: gates the writes. */
