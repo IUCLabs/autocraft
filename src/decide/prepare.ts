@@ -9,7 +9,7 @@ import { runModelStep, type ClaudeStep } from "../agents/step.ts";
 import { referenceProblems, defaultSemanticDeps, type SemanticDeps } from "../reference-lint.ts";
 import { dropTexts } from "../replylint.ts";
 import { referenceDir } from "../reference.ts";
-import { SUMMARY_MAX, SUMMARY_MIN, summaryInput } from "../classify/parse.ts";
+import { SUMMARY_MIN, summaryInput } from "../classify/parse.ts";
 import { pool } from "../classify/run.ts";
 import { itemsOf, optionsOf, factsOf, type DecisionRow } from "../decisions.ts";
 import { commentTexts, openDecision, parseReply, type NewCard } from "../conversations/cards.ts";
@@ -23,7 +23,7 @@ import { notOwnIntegrationSql } from "../dupes/held.ts";
 import { judgementModel } from "./judgement.ts";
 import { loadSummaryItems } from "./index.ts";
 import { prepareDue, type PrepareColumns } from "./prepared.ts";
-import { PREPARE_DIFF_LIMIT, PREPARE_MEMBERS, PREPARE_REASON_MAX, PREPARE_STOPPED_LIMIT, PREPARE_TURNS_LIMIT, type PrepareInput } from "./prepare-types.ts";
+import { PREPARE_DIFF_LIMIT, PREPARE_MEMBERS, PREPARE_REASON_MAX, PREPARE_STOPPED_LIMIT, PREPARE_SUMMARY_MAX, PREPARE_TURNS_LIMIT, type PrepareInput } from "./prepare-types.ts";
 
 export const PREPARE_PROMPT = CLAUDE_PROMPTS["decide.prepare"];
 
@@ -35,14 +35,17 @@ const PICK_LINE = /^[ \t]*[*_`]*[ \t]*Pick[*_`]*[ \t]*:[*_`]*[ \t]*([^\s|\u2014\
 const PICK_START = /^[ \t]*[*_`]*[ \t]*Pick[*_`]*[ \t]*:/i;
 const ACTIONS_TAIL = /```actions[\s\S]*$/;
 
-/** The pick line of a reply (its first non-empty line) and the text after it. The pick is a key of `keys`, else null ("none" or anything else). `matched`: the reply has a pick line at all. */
+/** The pick line of a reply (the first line that starts with "Pick:"; narration before it is dropped) and the text after it. The pick is a key of `keys`, else null ("none" or anything else). `matched`: the reply has a pick line at all. */
 export function splitPick(text: string, keys: string[]): { pick: string | null; reason: string; rest: string; matched: boolean } {
   const t = text.replace(/^\s+/, "");
-  const nl = t.indexOf("\n");
-  const first = nl < 0 ? t : t.slice(0, nl);
+  const lines = t.split("\n");
+  const end = lines.findIndex((l) => l.trimStart().startsWith("```"));
+  const at = lines.slice(0, end < 0 ? lines.length : end).findIndex((l) => PICK_START.test(l));
+  if (at < 0) return { pick: null, reason: "", rest: t, matched: false };
+  const first = lines[at]!;
+  const after = lines.slice(at + 1).join("\n");
   const m = PICK_LINE.exec(first);
-  const after = nl < 0 ? "" : t.slice(nl + 1);
-  if (!m) return PICK_START.test(first) ? { pick: null, reason: "", rest: after, matched: true } : { pick: null, reason: "", rest: t, matched: false };
+  if (!m) return { pick: null, reason: "", rest: after, matched: true };
   const key = m[1]!.replace(/^[`"'*]+|[`"'*.,;]+$/g, "");
   return { pick: keys.includes(key) ? key : null, reason: (m[2] ?? "").replace(/\s+/g, " ").trim().slice(0, PREPARE_REASON_MAX), rest: after, matched: true };
 }
@@ -50,7 +53,7 @@ export function splitPick(text: string, keys: string[]): { pick: string | null; 
 /**
  * Reads a prepare reply. A single item (`item` given): the text and cards come from `parseReply`; with no pick line at all the first
  * card's answer is the pick ("Pick: none" stays no pick). A group: the text is the summary and any actions block is dropped. Null: no valid summary
- * (a summary needs SUMMARY_MIN to SUMMARY_MAX characters), so the call is repeated.
+ * (a summary needs SUMMARY_MIN to PREPARE_SUMMARY_MAX characters), so the call is repeated.
  */
 export function parsePrepareReply(db: DatabaseSync, item: { repo: string; n: number } | null, text: string, keys: string[], drop: ReadonlySet<string> = new Set()): Prepared | null {
   const { pick, reason, rest, matched } = splitPick(text, keys);
@@ -61,7 +64,7 @@ export function parsePrepareReply(db: DatabaseSync, item: { repo: string; n: num
     ({ text: body, cards, notes } = r);
   } else body = rest.replace(ACTIONS_TAIL, "").trim();
   const summary = body.replace(/\s+/g, " ").trim();
-  if (summary.length < SUMMARY_MIN || summary.length > SUMMARY_MAX) return null;
+  if (summary.length < SUMMARY_MIN || summary.length > PREPARE_SUMMARY_MAX) return null;
   const first = cards[0]?.params;
   const fromCard = first?.kind === "resolution" && first.settle?.kind === "answer" && keys.includes(first.settle.option) ? first.settle.option : null;
   return { summary, pick: matched ? pick : fromCard, reason: pick ? reason : "", cards, notes, text: body };

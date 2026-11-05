@@ -26,6 +26,9 @@ export type PrepareInput = {
 };
 
 export const PREPARE_REASON_MAX = 200;
+/** The prompt asks for about PREPARE_SUMMARY_TARGET characters; a longer summary is kept up to PREPARE_SUMMARY_MAX so a long reply is not thrown away. */
+export const PREPARE_SUMMARY_TARGET = 800;
+export const PREPARE_SUMMARY_MAX = 2500;
 export const PREPARE_BODY_LIMIT = 4000;
 export const PREPARE_DIFF_LIMIT = 120_000;
 export const PREPARE_STOPPED_LIMIT = 6000;

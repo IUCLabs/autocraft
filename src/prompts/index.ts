@@ -6,7 +6,7 @@
 //
 // No Node imports: the web mockup imports this file too.
 import type { PromptInfo, PromptsReport } from "../../web/src/api/types.ts";
-import { BODY_LIMIT, COMMENTS_PER_ITEM, SUMMARY_MAX, SUMMARY_MIN, itemInput, refOf, type Item } from "../classify/parse.ts";
+import { BODY_LIMIT, COMMENTS_PER_ITEM, SUMMARY_MIN, itemInput, refOf, type Item } from "../classify/parse.ts";
 import { AREAS_MAX, AREAS_MIN, AREA_DESCRIPTION_MAX, AREA_NAME_MAX, AREA_PATHS_MAX, AREA_SUGGEST_BODY, AREA_SURE, NONE_OF_THESE, PROPOSE_TITLES, SAMPLE_AREAS, SAMPLE_AREA_ASK, SAMPLE_AREA_ITEM, SAMPLE_AREA_PROPOSE, SAMPLE_AREA_SUGGEST, SUGGEST_ITEMS, SUGGEST_MAX, type Area, type AreaAsk, type AreaItem, type AreaProposeInput, type AreaSuggestInput } from "../areas/types.ts";
 import { LABELS, LABEL_MEANING, RULES, UNTRUSTED_NOTE } from "../classify/rules.ts";
 import { CHECK_MAX_CALLS, CHECK_MAX_WALL_MS, CHECK_OUTPUT_LINES } from "../core/rules.ts";
@@ -27,7 +27,7 @@ import { GROUP_BODY_LIMIT, GROUP_DIFF_CHARS, GROUP_MAX, GROUP_MAX_POINTS, GROUP_
 import { JEV_ACCEPT, JEV_REJECT, PAIR_BODY_LIMIT, VERDICTS as PAIR_VERDICTS, pairView, type DupePair } from "../dupes/pair.ts";
 import { CHECK_MAX_PROBLEMS, CHECK_REASON_WORDS, SAMPLE_FIXISSUE_CHECK, SAMPLE_FIXUP_CHECK, type FixIssueCheckInput, type FixupCheckInput } from "../patchcheck/types.ts";
 import { COMMENT_MAX, INSTRUCTIONS_MAX, ISSUE_TITLE_MAX, RESOLVE_MAX, SAMPLE_CONVERSATION, type ConversationInput } from "../conversations/types.ts";
-import { PREPARE_BODY_LIMIT, PREPARE_REASON_MAX, SAMPLE_PREPARE, type PrepareInput } from "../decide/prepare-types.ts";
+import { PREPARE_BODY_LIMIT, PREPARE_REASON_MAX, PREPARE_SUMMARY_MAX, PREPARE_SUMMARY_TARGET, SAMPLE_PREPARE, type PrepareInput } from "../decide/prepare-types.ts";
 import { SAMPLE_COMPARE_ISSUES, SAMPLE_COMPARE_PRS, SAMPLE_CONFLICT_PRS, SAMPLE_DUPE_PAIRS, SAMPLE_FIXUP_PRS, SAMPLE_ITEMS, SAMPLE_OPUS_PRS, SAMPLE_PREMERGE_PRS } from "./samples.ts";
 import { QUOTE_WORDS, REFERENCE_JEV_ACCEPT, REFERENCE_JEV_REJECT, SAMPLE_REFERENCE_LINT, type ReferenceLintInput } from "../replylint.ts";
 import { LEVELS, LEVEL_MEANING } from "../priority/score.ts";
@@ -982,9 +982,9 @@ Use only the steps listed under steps in the item. When group is true the decisi
 
 ${RESOLUTION_FORMAT}
 
-Reply format. The first line names your pick; then the summary for the operator, then the optional actions block. The first card is the pick.
+Reply format. The first line of your reply names your pick, with nothing before it; then the summary for the operator, then the optional actions block. The first card is the pick.
 Pick: <key of one option of the decision, or none> | <one sentence, at most ${PREPARE_REASON_MAX} characters, saying why>
-<the summary: 2 to 6 plain sentences, no headings, lists, Markdown or praise: what the item asks for or changes in user terms, how it relates to the reference app (unclear when you could not verify it), what stopped the pipeline and what is unclear or needs checking>
+<the summary: 2 to 6 short plain sentences, at most about ${PREPARE_SUMMARY_TARGET} characters, no headings, lists, Markdown or praise: what the item asks for or changes in user terms, how it relates to the reference app (unclear when you could not verify it), what stopped the pipeline and what is unclear or needs checking>
 \`\`\`actions
 [ ... ]
 \`\`\`
@@ -993,7 +993,7 @@ Pick: <key of one option of the decision, or none> | <one sentence, at most ${PR
 {{decision}}
 </decision>`,
   output: "A pick line, the summary text and an optional fenced actions block holding a JSON array of cards.",
-  validation: `${CLAUDE_RESULT} The first line is read as "Pick: <key> | <reason>": the key is kept only when it is the key of one of the decision's options (anything else, or none, stores no pick; without a pick line the first card's answer is the pick) and the reason, with whitespace runs collapsed, is cut to ${PREPARE_REASON_MAX} characters and kept only with a pick. The text after it, whitespace runs collapsed, must be ${SUMMARY_MIN} to ${SUMMARY_MAX} characters: it is the decision's summary and the text of the Opus turn. The actions block is checked as in conversation.turn (every card a resolution that our code validates; invalid cards are dropped with a note). A decision about one item gets that turn in the item's conversation, with the cards proposed (older proposed cards become replaced); a group decision keeps the summary and the pick and drops any actions block. ${FIX_TURN} The lint is the one of conversation.turn. A reply without a valid summary is repeated once; after that the try is counted, tried again an hour later, at most 3 tries; then the decision keeps what it has. A pull request is prepared again when its head commit changes; a new head starts the tries again. The model is the operator's judgement model setting.`,
+  validation: `${CLAUDE_RESULT} The first line that starts with "Pick:" (text before it is dropped) is read as "Pick: <key> | <reason>": the key is kept only when it is the key of one of the decision's options (anything else, or none, stores no pick; without a pick line the first card's answer is the pick) and the reason, with whitespace runs collapsed, is cut to ${PREPARE_REASON_MAX} characters and kept only with a pick. The text after it, whitespace runs collapsed, must be ${SUMMARY_MIN} to ${PREPARE_SUMMARY_MAX} characters: it is the decision's summary and the text of the Opus turn. The actions block is checked as in conversation.turn (every card a resolution that our code validates; invalid cards are dropped with a note). A decision about one item gets that turn in the item's conversation, with the cards proposed (older proposed cards become replaced); a group decision keeps the summary and the pick and drops any actions block. ${FIX_TURN} The lint is the one of conversation.turn. A reply without a valid summary is repeated once; after that the try is counted, tried again an hour later, at most 3 tries; then the decision keeps what it has. A pull request is prepared again when its head commit changes; a new head starts the tries again. The model is the operator's judgement model setting.`,
   limits: { perCall: 1, attempts: 2, timeoutSeconds: 1800 },
   extra: [
     { label: "Checkout", value: "A pull request: its head commit, as the review reads it. An issue: the default branch at its current head. Plus the workspace." },

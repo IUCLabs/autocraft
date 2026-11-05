@@ -20,6 +20,8 @@ describe("model replies", () => {
   test("prepare reply: the pick is a known option key, anything else is none", () => {
     assert.deepEqual(splitPick("Pick: small | a  small\nchange\nSummary text", ["small", "plugin"]), { pick: "small", reason: "a small", rest: "change\nSummary text", matched: true });
     assert.equal(splitPick("Pick: `plugin` | fits", ["small", "plugin"]).pick, "plugin");
+    assert.deepEqual(splitPick("I've checked the docs and the checkout.\nPick: plugin | fits\nSummary", ["small", "plugin"]), { pick: "plugin", reason: "fits", rest: "Summary", matched: true });
+    assert.equal(splitPick("Summary only\n```actions\nPick: small\n```", ["small"]).matched, false);
     assert.equal(splitPick("Pick: huge | x\nSummary", ["small"]).pick, null);
     assert.equal(splitPick("Pick: none\nSummary", ["small"]).pick, null);
     assert.equal(splitPick("No pick line.\nSummary", ["small"]).rest, "No pick line.\nSummary");
