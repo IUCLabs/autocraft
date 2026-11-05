@@ -42,7 +42,7 @@ import { pendingDefects, selectPostmerge } from "../postmerge/select.ts";
 import { mainFixDue } from "../mainfix/index.ts";
 import { latestRun } from "../classify/settled.ts";
 import { PIPELINE_DRAIN } from "../core/rules.ts";
-import { enqueue, JobError, now, requestCancel, RUNNER_STOPPED } from "./jobs.ts";
+import { DEADLINE_ERROR, enqueue, JobError, now, requestCancel, RUNNER_STOPPED } from "./jobs.ts";
 import { claudePauseReason } from "../agents/accounts.ts";
 import { tripReasonOfStep } from "../push-outcomes.ts";
 import { STEP_STAGE } from "../core/push-outcome.ts";
@@ -601,6 +601,9 @@ function releasedAt(db: DatabaseSync, step: string): string | null {
   return (db.prepare(`SELECT MAX(at) AS at FROM audit WHERE action IN (${actions.map(() => "?").join(", ")})`).get(...actions) as { at: string | null }).at;
 }
 
+/** The least wait after a job stopped for running past its deadline. */
+export const DEADLINE_BACKOFF_MS = 3600_000;
+
 /** Minutes-long wait after `failures` failed jobs in a row: 1, 2, 4, 8, 16 minutes, then 30. */
 export const failureDelayMs = (failures: number): number => Math.min(FAIL_BACKOFF_MAX_MS, FAIL_BACKOFF_MS * 2 ** Math.max(0, failures - 1));
 
@@ -611,18 +614,20 @@ export const failureDelayMs = (failures: number): number => Math.min(FAIL_BACKOF
  * minute would otherwise retry a failing step at once, every time. Jobs a runner restart ended do not count.
  */
 export function failureBackoff(db: DatabaseSync, step: string, ms: number = Date.now(), o: { repo?: string | null; fp?: string } = {}): { until: number; failures: number } | null {
-  const rows = db.prepare(`SELECT id, state, ended_at FROM jobs WHERE step = ? AND (? IS NULL OR repo = ?) AND requested_by = ? AND state IN ('done', 'failed')
-    AND COALESCE(error, '') <> ? ORDER BY id DESC LIMIT 12`).all(step, o.repo ?? null, o.repo ?? null, AUTOPILOT_USER, RUNNER_STOPPED) as { id: number; state: string; ended_at: string | null }[];
+  const rows = db.prepare(`SELECT id, state, ended_at, error FROM jobs WHERE step = ? AND (? IS NULL OR repo = ?) AND requested_by = ? AND state IN ('done', 'failed')
+    AND COALESCE(error, '') <> ? ORDER BY id DESC LIMIT 12`).all(step, o.repo ?? null, o.repo ?? null, AUTOPILOT_USER, RUNNER_STOPPED) as { id: number; state: string; ended_at: string | null; error: string | null }[];
   let failures = 0;
   while (failures < rows.length && rows[failures]!.state === "failed") failures++;
   if (!failures || !rows[0]!.ended_at) return null;
   const released = releasedAt(db, step);
   if (released && released > rows[0]!.ended_at) return null;
-  if (o.fp !== undefined && failures === 1) {
+  // A job stopped for its deadline did paid work that a rerun would repeat: a changed input does not end the wait.
+  const stopped = DEADLINE_ERROR.test(rows[0]!.error ?? "");
+  if (o.fp !== undefined && failures === 1 && !stopped) {
     const rec = fpRecord(db, step, o.repo ?? null);
     if (rec && rec.job === rows[0]!.id && rec.fp !== o.fp) return null;
   }
-  const until = Date.parse(rows[0]!.ended_at) + failureDelayMs(failures);
+  const until = Date.parse(rows[0]!.ended_at) + (stopped ? Math.max(DEADLINE_BACKOFF_MS, failureDelayMs(failures)) : failureDelayMs(failures));
   return until > ms ? { until, failures } : null;
 }
 
@@ -665,15 +670,27 @@ export function setEnabled(db: DatabaseSync, enabled: boolean, by: string, mode:
   if (enabled) db.prepare("DELETE FROM settings WHERE key = ?").run(KEY_PLANNED_AT);
 }
 
+/** How many of the newest jobs deadlineStops looks at. */
+const STOP_WINDOW = 5000;
+
 /** Jobs the runner stopped for running past their step's limit that nobody has acknowledged and no later job of the step has beaten. */
 export function deadlineStops(db: DatabaseSync): { step: string; jobId: number; error: string; endedAt: string; count: number }[] {
-  const rows = db.prepare(`SELECT j.step, j.id, j.error, j.ended_at AS endedAt,
-      (SELECT COUNT(*) FROM jobs k WHERE k.step = j.step AND k.state = 'failed' AND k.error LIKE 'stopped: ran past %' AND k.id <= j.id AND k.id > COALESCE((SELECT MAX(d.id) FROM jobs d WHERE d.step = j.step AND d.state = 'done'), 0)) AS count
-    FROM jobs j WHERE j.state = 'failed' AND j.error LIKE 'stopped: ran past %' AND j.id = (SELECT MAX(l.id) FROM jobs l WHERE l.step = j.step AND l.state = 'failed' AND l.error LIKE 'stopped: ran past %')
-      AND NOT EXISTS (SELECT 1 FROM jobs d WHERE d.step = j.step AND d.state = 'done' AND d.id > j.id)`).all() as { step: string; id: number; error: string; endedAt: string; count: number }[];
+  const floor = Number((db.prepare("SELECT MAX(id) AS m FROM jobs").get() as { m: number | null }).m ?? 0) - STOP_WINDOW;
+  const rows = db.prepare("SELECT step, id, error, ended_at AS endedAt FROM jobs WHERE id > ? AND state = 'failed' AND error LIKE 'stopped: ran past %' ORDER BY id DESC").all(floor) as { step: string; id: number; error: string; endedAt: string }[];
+  const lastDone = db.prepare("SELECT MAX(id) AS m FROM jobs WHERE step = ? AND state = 'done'");
   // The acknowledgement is an audit row, which the header's query refetches on and the planner does not.
   const acked = db.prepare("SELECT MAX(at) AS at FROM audit WHERE action = 'deadline-ack' AND target = ?");
-  return rows.filter((r) => { const ack = (acked.get(`step:${r.step}`) as { at: string | null }).at; return !ack || ack < r.endedAt; }).map((r) => ({ step: r.step, jobId: r.id, error: r.error, endedAt: r.endedAt, count: r.count }));
+  const out: { step: string; jobId: number; error: string; endedAt: string; count: number }[] = [];
+  const steps = [...new Set(rows.map((r) => r.step))];
+  for (const step of steps) {
+    const mine = rows.filter((r) => r.step === step), latest = mine[0]!;
+    const done = Number((lastDone.get(step) as { m: number | null }).m ?? 0);
+    if (done > latest.id) continue;
+    const ack = (acked.get(`step:${step}`) as { at: string | null }).at;
+    if (ack && ack >= latest.endedAt) continue;
+    out.push({ step, jobId: latest.id, error: latest.error, endedAt: latest.endedAt, count: mine.filter((r) => r.id > done).length });
+  }
+  return out;
 }
 
 /** An operator acknowledges the deadline stops of a step: they leave the warnings until the next one. */

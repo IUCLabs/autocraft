@@ -79,14 +79,18 @@ const firstLines = (text: string, n: number): string => {
 };
 
 /**
- * The wall time one check of `command` may take in `repo`: CHECK_LIMIT_FACTOR times the median duration of its recent finished runs
- * (model_checks rows that ran to a result), within [CHECK_LIMIT_MIN_MS, CHECK_LIMIT_MAX_MS]; the maximum without enough history.
+ * The run time one check may take: CHECK_LIMIT_FACTOR times the median run time of the repo's recent successful checks of the same
+ * shape (the command, and for a test whether it names a crate and a test), within [CHECK_LIMIT_MIN_MS, CHECK_LIMIT_MAX_MS]; the
+ * maximum without enough history. Run time counts from when a worker took the task, not from the check's start, so a queue wait
+ * does not stretch the history. A successful run is exit code 0 for cargo; fmt and clippy count whenever they gave a result.
  */
-export function checkLimitMs(db: DatabaseSync, repo: string, command: CheckCommand): number {
-  const rows = db.prepare(`SELECT (julianday(ended_at) - julianday(started_at)) * 86400000 AS ms FROM model_checks
-    WHERE repo = ? AND command = ? AND ended_at IS NOT NULL AND outcome IS NOT NULL
-      AND outcome NOT LIKE 'failed%' AND outcome NOT LIKE 'refused%' AND outcome NOT LIKE 'cancelled%' AND outcome NOT LIKE 'stopped%' AND outcome <> 'out of time'
-    ORDER BY id DESC LIMIT ?`).all(repo, command, CHECK_HISTORY_RUNS) as { ms: number }[];
+export function checkLimitMs(db: DatabaseSync, repo: string, i: Pick<CheckInput, "command" | "crate" | "test_name">): number {
+  const ok = i.command === "check" || i.command === "test" ? "m.outcome = 'exit 0'" : "m.outcome NOT LIKE 'failed%' AND m.outcome NOT LIKE 'refused%' AND m.outcome NOT LIKE 'cancelled%' AND m.outcome NOT LIKE 'stopped%' AND m.outcome <> 'out of time'";
+  const rows = db.prepare(`SELECT (julianday(t.ended_at) - julianday(COALESCE(t.started_at, t.claimed_at))) * 86400000 AS ms
+    FROM model_checks m JOIN build_tasks t ON t.id = m.task_id
+    WHERE m.repo = ? AND m.command = ? AND (m.crate IS NULL) = ? AND (m.test_name IS NULL) = ? AND ${ok}
+      AND t.state = 'done' AND t.ended_at IS NOT NULL AND COALESCE(t.started_at, t.claimed_at) IS NOT NULL
+    ORDER BY m.id DESC LIMIT ?`).all(repo, i.command, i.crate === undefined ? 1 : 0, i.test_name === undefined ? 1 : 0, CHECK_HISTORY_RUNS) as { ms: number }[];
   if (rows.length < CHECK_HISTORY_MIN) return CHECK_LIMIT_MAX_MS;
   const ms = rows.map((r) => r.ms).sort((a, b) => a - b);
   const median = ms.length % 2 ? ms[(ms.length - 1) / 2]! : (ms[ms.length / 2 - 1]! + ms[ms.length / 2]!) / 2;
@@ -187,8 +191,7 @@ export class CheckTool {
 
     this.calls++;
     const started = Date.now();
-    const perCheck = this.checkLimitMs?.(i.command) ?? checkLimitMs(t.db, t.recordRepo ?? t.repo, i.command);
-    const limit = Math.min(left, perCheck);
+    const perCheck = this.checkLimitMs?.(i.command) ?? checkLimitMs(t.db, t.recordRepo ?? t.repo, i);
     const row = Number(t.db.prepare("INSERT INTO model_checks (run_id, step, repo, number, head, command, crate, test_name, started_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
       .run(runId, t.step, t.recordRepo ?? t.repo, t.number, t.head, i.command, i.crate ?? null, i.test_name ?? null, new Date().toISOString()).lastInsertRowid);
     const end = (outcome: string, taskId: number | null) => t.db.prepare("UPDATE model_checks SET outcome = ?, task_id = ?, ended_at = ? WHERE id = ?").run(outcome.slice(0, 200), taskId, new Date().toISOString(), row);
@@ -200,11 +203,14 @@ export class CheckTool {
       });
       this.open.add(taskId);
       let state = getTask(t.db, taskId)?.state;
+      let ranFrom: number | null = null;
       while (state && !TERMINAL.includes(state)) {
         if (this.closed) { end("cancelled: the model call ended", taskId); return { text: "the model call is over", isError: true }; }
-        if (Date.now() - started >= limit) {
-          const overCheck = perCheck <= left;
-          this.logStopped(i, taskId, Math.round((Date.now() - started) / 1000), overCheck ? perCheck : left);
+        // The per-check limit is run time: it starts when a worker takes the task. A task still queued is held only by the total time left.
+        if (state !== "queued") ranFrom ??= Date.now();
+        const overCheck = ranFrom !== null && Date.now() - ranFrom >= perCheck;
+        if (overCheck || Date.now() - started >= left) {
+          this.logStopped(i, taskId, Math.round((Date.now() - (overCheck ? ranFrom! : started)) / 1000), overCheck ? perCheck : left);
           try { cancelTask(t.db, taskId, "check-tool"); } catch { /* it ended meanwhile */ }
           end(overCheck ? "stopped: over the check time limit" : "out of time", taskId);
           return { text: overCheck ? `the check ran past its limit of ${Math.round(perCheck / 60_000)} minutes and was stopped; answer with your best patch` : "the check ran out of the time allowed for checks and was stopped; answer with your best patch", isError: true };

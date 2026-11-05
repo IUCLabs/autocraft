@@ -1340,6 +1340,7 @@ CREATE TABLE IF NOT EXISTS model_checks (
   ended_at TEXT
 );
 CREATE INDEX IF NOT EXISTS model_checks_item ON model_checks(repo, number, id);
+CREATE INDEX IF NOT EXISTS model_checks_median ON model_checks(repo, command, id);
 
 -- Every push of ours to a PR branch (fix-up, conflict merge, CI fix, fix-issue PR) and what it did to the PR's required checks.
 -- before_res / after_res: green | red | pending | none | unknown (required checks only; optional ones are ignored). A branch created

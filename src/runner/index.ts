@@ -6,7 +6,7 @@ import { connect } from "../db.ts";
 import { audit } from "../dash/audit.ts";
 import { scopeToTracked } from "../repos.ts";
 import { execJob } from "./exec.ts";
-import { LimitError, pipelineState, resetLimitCount, setEnabled, setLimit } from "./autopilot.ts";
+import { isDraining, isEnabled, LimitError, pipelineState, resetLimitCount, setEnabled, setLimit } from "./autopilot.ts";
 import { PilotError, pilotItems, setPilot } from "../pilot.ts";
 import { enqueue, JobError, listJobs, requestCancel } from "./jobs.ts";
 import { DEFAULT_MAX_JOBS, Runner, runnerLockPath } from "./runner.ts";
@@ -138,7 +138,7 @@ export const commands = {
   },
 };
 
-const PIPELINE_USAGE = `usage: autocraft pipeline on | off | drain | status
+const PIPELINE_USAGE = `usage: autocraft pipeline on [--if-draining] | off | drain | status
        autocraft pipeline limit <step> --per-day <N|none>
        autocraft pipeline limit reset <step>|--all
        autocraft pipeline resume <fixup|cifix|fixissue|merge>
@@ -148,6 +148,13 @@ const PIPELINE_USAGE = `usage: autocraft pipeline on | off | drain | status
 async function pipeline(args: string[]): Promise<void> {
   const [sub, ...rest] = args;
   const db = connect();
+  const mode = isEnabled(db) ? "on" : isDraining(db) ? "drain" : "off";
+  if ((sub === "drain" && mode === "off") || (sub === "on" && rest[0] === "--if-draining" && mode !== "drain")) {
+    // A deploy drains from On only and ends only a drain it started: an operator's Off stays Off.
+    if (sub === "drain") die(`pipeline is OFF; not draining`);
+    console.log(`pipeline is ${mode === "on" ? "ON" : "OFF"}; left as it is`);
+    return;
+  }
   if (sub === "on" || sub === "off" || sub === "drain") {
     setEnabled(db, sub === "on", "cli", sub === "drain" ? "drain" : "off");
     audit(db, "cli", "pipeline-switch", "pipeline", { enabled: sub === "on", ...(sub === "drain" && { draining: true }) });

@@ -11,6 +11,8 @@ import { shownLookup } from "../dash/api/shown.ts";
 export const JOB_STATES: JobState[] = ["queued", "running", "done", "failed", "cancelled"];
 /** Error text of jobs ended by a runner stop or restart; the autopilot does not count them as failures. */
 export const RUNNER_STOPPED = "The runner stopped while this job ran; start it again if needed.";
+/** Error of a job the runner stopped for running past its step's deadline; set when the stop is asked, so the job can finish its current item. */
+export const DEADLINE_ERROR = /^stopped: ran past /;
 export const now = (): string => new Date().toISOString();
 
 export class JobError extends Error {
@@ -214,7 +216,7 @@ export function endJob(db: DatabaseSync, id: number, code: number | null, signal
   let state: "done" | "failed" | "cancelled";
   let error: string | null = row.error;
   if (row.cancel_requested_at) state = "cancelled";
-  else if (code === 0) state = "done";
+  else if (code === 0 && !DEADLINE_ERROR.test(error ?? "")) state = "done";
   else {
     state = "failed";
     if (stopping) error = RUNNER_STOPPED;

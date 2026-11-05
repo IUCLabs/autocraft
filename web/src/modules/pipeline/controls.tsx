@@ -71,7 +71,7 @@ export function PipelineSwitch({ className }: { className?: string }) {
         <div className="min-w-0">
           <div className="text-sm font-semibold">Pipeline is {s.enabled ? "On" : s.draining ? "Draining" : "Off"}</div>
           <div className="text-xs text-ink/55">
-            {s.enabled ? "Watching all issues and running the automations." : s.draining ? "No new jobs start. Jobs already running finish and keep their writes." : "Stopped: no new jobs start. Jobs already running finish."}
+            {s.enabled ? "Watching all issues and running the automations." : s.draining ? null : "Stopped: no new jobs start. Jobs already running finish."}
             {s.changedAt && (
               <span title={s.changedAt}>
                 {" "}

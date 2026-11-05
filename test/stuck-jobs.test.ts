@@ -12,16 +12,19 @@ import { world } from "./world-db.ts";
 process.env.AUTOCRAFT_EXTRA_STEPS = fileURLToPath(new URL("./runner-steps.ts", import.meta.url));
 
 const { connect } = await import("../src/db.ts");
-const { enqueue, getJob } = await import("../src/runner/jobs.ts");
+const { enqueue, getJob, jobDetail } = await import("../src/runner/jobs.ts");
 const { Runner, deadlineError } = await import("../src/runner/runner.ts");
 const { ackDeadline, deadlineStops, isDraining, isEnabled, setEnabled } = await import("../src/runner/autopilot.ts");
+const { failureBackoff, DEADLINE_BACKOFF_MS } = await import("../src/runner/autopilot.ts");
+const { STEP_PLANS, stepBoundMin, stepDeadlineMin } = await import("../src/runner/deadlines.ts");
+const { loadSteps } = await import("../src/runner/steps.ts");
 const { guardRepo } = await import("../src/core/guard.ts");
 
 mkdirSync(SCRATCH, { recursive: true });
 const dir = mkdtempSync(join(SCRATCH, "stuck-jobs-"));
 const dbFile = join(dir, "runner.db");
 const db = connect(dbFile);
-const runner = new Runner({ db, dbFile, logs: join(dir, "logs"), killAfterMs: 2000, log: () => {}, maxMin: () => 0.02 });
+const runner = new Runner({ db, dbFile, logs: join(dir, "logs"), killAfterMs: 2000, log: () => {}, maxMin: () => 0.02, graceMs: 500 });
 after(async () => {
   await runner.stop();
   db.close();
@@ -35,16 +38,35 @@ test("a job past its step's deadline is stopped and failed, and warns until ackn
   assert.equal(j.state, "failed");
   assert.equal(j.error, deadlineError(0.02));
   assert.deepEqual(deadlineStops(db).map((d) => d.step), ["test-sleep"]);
+  assert.match(jobDetail(db, slow.id).log ?? "", /may finish its current item/);
+  // The stopped paid work is not started again for an hour, whatever the input does.
+  db.prepare("UPDATE jobs SET requested_by = 'pipeline' WHERE id = ?").run(slow.id);
+  const b = failureBackoff(db, "test-sleep", Date.now(), { fp: "changed" });
+  assert.ok(b && b.until - Date.parse(j.endedAt!) >= DEADLINE_BACKOFF_MS);
+  // Every step with model calls gets at least the time the code lets its job work.
+  const known = await loadSteps();
+  for (const step of Object.keys(STEP_PLANS)) {
+    assert.ok(known.has(step), step);
+    assert.ok(stepDeadlineMin(step) >= stepBoundMin(step)!, step);
+  }
   ackDeadline(db, "test-sleep", "op");
   assert.deepEqual(deadlineStops(db), []);
 });
 
-test("draining keeps a running job's writes; off blocks them", () => {
+test("draining keeps a running job's writes and starts nothing; off blocks the writes", async () => {
   const pipe = world().repo(["comment"]).pr(1).pipeline(false).db;
   setCommentApproval(pipe, "op", "app", true);
   const refused = () => (guardRepo(pipe, "app", "comment", "pipeline") as { refused?: string }).refused;
   setEnabled(pipe, false, "op", "drain");
   assert.ok(isDraining(pipe) && !isEnabled(pipe));
+  // While draining no job starts, a manual one included; it runs once the pipeline is on.
+  setEnabled(db, false, "op", "drain");
+  const manual = await enqueue(db, "test-echo", {}, "boss");
+  for (let n = 0; n < 5; n++) { await runner.tick(); await new Promise((r) => setTimeout(r, 50)); }
+  assert.equal(getJob(db, manual.id).state, "queued");
+  setEnabled(db, true, "op");
+  for (const end = Date.now() + 20_000; getJob(db, manual.id).state !== "done" && Date.now() < end; await new Promise((r) => setTimeout(r, 50))) await runner.tick();
+  assert.equal(getJob(db, manual.id).state, "done");
   assert.equal(refused(), undefined);
   setEnabled(pipe, false, "op");
   assert.match(refused() ?? "", /pipeline is off/);

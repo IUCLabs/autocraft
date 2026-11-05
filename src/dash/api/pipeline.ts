@@ -231,6 +231,8 @@ export async function resetLimit(db: DatabaseSync, req: Req) {
 /** An operator acknowledges the deadline stops of a step, which clears their warning in the header. */
 export async function ackStepDeadline(db: DatabaseSync, req: Req) {
   requireOperator(req);
-  ackDeadline(db, req.params.step!, req.user.login);
+  const step = req.params.step!;
+  if (!(await loadSteps()).has(step)) throw new HttpError(404, "no such step");
+  ackDeadline(db, step, req.user.login);
   return { ok: true };
 }

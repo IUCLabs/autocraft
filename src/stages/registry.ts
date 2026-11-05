@@ -448,10 +448,11 @@ export const STAGES: StageDef[] = [
 ];
 
 /**
- * Longest run of a job of a step, in minutes (StageDef.steps[].maxMin): about twice the longest realistic job, from the 30-day
+ * Floor of the longest run of a job of a step, in minutes (StageDef.steps[].maxMin): about twice the longest realistic job, from the 30-day
  * history of finished jobs (longest done job: fixup 92 incl. one stuck check, decide 35, opus-review 33, premerge 31,
  * dupes-compare 25, fixissue 25, cifix 17, postmerge 14, prioritize 10, labels-apply 9, classify-new 7, others under 2) and the
- * limits in the code (a model call is at most 40 min, a job a handful of items). The runner stops a job past it and fails it.
+ * limits in the code. The runner's deadline is the larger of this and the bound the code allows (src/runner/deadlines.ts: model calls,
+ * check time and lint rounds times the job's items); it stops a job past it and fails it.
  * A step with no registry entry (the security steps, review-batch) gets DEFAULT_STEP_MAX_MIN.
  */
 export const DEFAULT_STEP_MAX_MIN = 60;
@@ -463,6 +464,7 @@ export function stepMaxMin(step: string): number {
 /** Waits that belong to no single stage. */
 export const GLOBAL_WAITS: { name: string; why: string; howLong: string; showsAs: string; kind: "external" | "backoff" }[] = [
   { name: "Failed job", why: "Retry a real failure without hammering", howLong: "1, 2, 4, 8, 16, then 30 minutes; ends on a release, and after a single failure also on a changed input", showsAs: "\"failed N times in a row; retry at HH:MM UTC\"", kind: "backoff" },
+  { name: "Job past its deadline", why: "The runner stopped a job for running past its step's deadline; running the same paid work again at once would stop it again", howLong: "At least 1 hour (longer after more failures in a row); no timer runs, the planner reads the failure", showsAs: "\"failed N times in a row; retry at HH:MM UTC\"", kind: "backoff" },
   { name: "Daily limit", why: "Cost control", howLong: "Until 00:00 UTC", showsAs: "\"daily limit of N items reached; resumes at 00:00 UTC\"", kind: "backoff" },
   { name: "Jev unavailable", why: "Jev is switched off (`autocraft accounts jev off`), the `jev` command is missing, or its account fails: out of credit, or a missing or rejected key (status 401, 402, 403, or a message about credit, billing, quota or the key). Haiku does Jev's classify, priority and duplicate work through the Claude accounts. Off or not installed: no retry until it is switched on or the command exists (checked on each pass). Account failure: the first pass an hour after the last failure tries Jev again; no timer runs. Other Jev errors (timeouts, server errors, bad answers) are retried as before", howLong: "1 hour after an account failure", showsAs: "Accounts page and run logs", kind: "external" },
   { name: "Circuit breaker", why: "A push stage (fix-up, CI fix, fix issue) stops when 2 of its last 10 pushes turned a required check red; the merge path stops when main CI turns red because of a merge of ours or a post-merge review finds a defect in it", howLong: "Until an operator resumes the stage (`autocraft pipeline resume <stage>` or the Resume button on the Pipeline page); no timer", showsAs: "\"tripped: ...\" as the stage's pause reason", kind: "external" },
