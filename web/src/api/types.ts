@@ -2083,3 +2083,10 @@ export interface FindingView extends FindingSummary {
 }
 
 export interface SecurityOverview { scans: ScanView[]; findings: FindingSummary[] }
+
+/** One of the signed-in user's agent tokens for the Inbox MCP server; the token itself is shown only when made. `canAnswer`: an operator's token whose agent may answer decisions. */
+export type McpToken = { id: number; label: string | null; canAnswer: boolean; createdAt: string; lastUsedAt: string | null; expiresAt: string };
+/** The user's live tokens, the most they may hold, and the server's MCP path (on the dashboard's own origin). */
+export type McpTokens = { tokens: McpToken[]; max: number; path: string };
+/** After making a token: the list, the new token's id, and its value, shown this once. */
+export type McpTokenCreated = McpTokens & { id: number; token: string };

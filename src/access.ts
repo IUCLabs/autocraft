@@ -4,6 +4,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { connect } from "./db.ts";
 import { audit } from "./dash/audit.ts";
 import type { Role } from "./dash/types.ts";
+import { endTokens } from "./dash/mcp/tokens.ts";
 
 export type AccessRow = { login: string; role: Role; added_by: string | null; added_at: string | null; note: string | null };
 
@@ -80,7 +81,9 @@ export function removeLogin(db: DatabaseSync, by: string, login: string, opts: A
     if (opts.keepOperator) keepAnOperator(db, row);
     db.prepare("DELETE FROM access WHERE login = ?").run(login);
     const sessions = endSessions(db, login);
-    audit(db, by, "access-remove", row.login, { role: row.role, sessions });
+    // Re-adding the login later must not bring its old agent tokens back.
+    const mcpTokens = endTokens(db, login);
+    audit(db, by, "access-remove", row.login, { role: row.role, sessions, ...(mcpTokens ? { mcpTokens } : {}) });
   });
 }
 

@@ -51,6 +51,8 @@ const RULES: [prefix: string, topics: Topic[]][] = [
   ["dis:", ["dupes", "items"]],
   ["contributors:", ["items", "settings"]],
   ["access", ["access"]],
+  // Making and revoking a token writes an audit row.
+  ["mcp-tokens", ["access"]],
   ["audit:", ["access"]],
   ["prompts", []],
   ["flow-running", ["agents"]],

@@ -119,6 +119,27 @@ async function accessToken(db: DatabaseSync, box: TokenBox, provider: Provider, 
   return p;
 }
 
+/**
+ * The User an agent token stands for (src/dash/mcp/). A token carries no GitHub token of its own, so permission checks
+ * use the login's newest live dashboard session, as that session's own requests would. Without one, only a cached
+ * permission young enough for the request counts, and anything else reads as no permission: the repo is hidden
+ * unless public, and a pick is shown as `none`.
+ */
+export function userForLogin(db: DatabaseSync, box: TokenBox, provider: Provider, login: string, role: Role, forWrite: boolean): User {
+  const s = db.prepare(`SELECT rowid, id_hash, login, csrf, token_enc FROM sessions WHERE login = ? AND expires_at > ? AND token_enc IS NOT NULL
+    ORDER BY created_at DESC LIMIT 1`).get(login, new Date().toISOString()) as { rowid: number; id_hash: string; login: string; csrf: string; token_enc: string } | undefined;
+  if (s) return makeUser(db, box, provider, { rowid: Number(s.rowid), idHash: s.id_hash, login: s.login, role, csrf: s.csrf, tokenEnc: s.token_enc }, forWrite);
+  const cached = (repo: string): string | null => {
+    const row = db.prepare("SELECT permission, checked_at FROM repo_permissions WHERE login = ? AND repo = ?").get(login, repo) as { permission: string; checked_at: string } | undefined;
+    return row && Date.now() - Date.parse(row.checked_at) < (forWrite ? PERM_WRITE_TTL : PERM_READ_TTL) ? row.permission : null;
+  };
+  return {
+    login, role,
+    canWrite: async (repo) => WRITE_PERMISSIONS.has(cached(repo) ?? ""),
+    canRead: async (repo) => { const p = cached(repo); return p !== null && p !== "none"; },
+  };
+}
+
 // `forWrite` is true on POST requests: a handler that calls canWrite there is
 // about to write, so the cached permission must be at most a minute old.
 export function makeUser(db: DatabaseSync, box: TokenBox, provider: Provider, s: Session, forWrite: boolean): User {

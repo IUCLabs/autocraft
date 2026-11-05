@@ -191,6 +191,7 @@ The pipeline runs Claude agents under the operator's own Claude account on the o
 - **Agent texts**: the prompt and output of an agent run hold item and comment text verbatim, so only operators and maintainers receive them (viewers get `null`). They are passed through the credential scrubber when stored. Job logs of jobs that ran across all repos are withheld from non-operators and non-maintainers while any tracked repo is hidden from them.
 - **What viewers can see**: public GitHub data and the pipeline's public-safe outputs. Private fields (override notes, answer notes, anything naming why a contributor gets extra scrutiny) are seen by operators and maintainers only and are never in the export. Maintainers also see job logs, disabled build environments and every GitHub activity row, untracked repos included. Accounts (disabled accounts and sign-in logins), the access list, sessions and the access audit are operator-only.
 - **Pipeline hygiene**: agents treat all GitHub content and all dashboard text as untrusted data. Briefs quote it as data and never as instructions.
+- **Contributors' agents** (Inbox MCP server, `POST /mcp`, see [docs/operations.md](operations.md#inbox-mcp-server)) act with an agent token their user made, under that user's current role: they read what the user may read and send the same feedback the Feedback box sends. An operator can make an **answering token**: its agent also answers decisions and undoes answers, as the operator, with the same GitHub write check, and the pipeline acts on those answers. It is opt-in per token, shown on the token's row, lasts 7 days (an operator session's longest), and stops answering as soon as its login is no longer an operator. No token approves a repo, changes settings or starts a step. A leaked token can do what a leaked session of its user could do with decisions, and the user or an operator (by removing the login) ends it.
 
 ### What each person can do
 
@@ -199,6 +200,8 @@ The pipeline runs Claude agents under the operator's own Claude account on the o
 | Read every page | anyone on the access list |
 | Answer, undo, adopt an opinion | operator; for a repo decision the operator also needs write, maintain or admin permission on `storytold/R` on GitHub |
 | Send feedback (a pick, text or both), retract your pick; mark a decision as open (presence) | operator or maintainer (rate-limited, audited; opinions shown with their GitHub permission on the repo). Viewers get 403 and see no such controls |
+| Make an agent token for the Inbox MCP server | operator or maintainer (audited); anyone lists and revokes their own |
+| Make an answering agent token (its agent answers and undoes answers as the operator, with the operator's GitHub write check) | operator (audited); lasts 7 days |
 | Whitelist overrides, whitelist rule, settings (including `maintainer_writes`) | operator |
 | Access list, sessions, access-management audit rows | operator |
 | Repo settings and the audit log (without access rows), read-only | operator or maintainer |
@@ -225,7 +228,7 @@ GitHub permissions: after sign-in, read the user's permission on each repo with 
 
 ### Audit log
 
-`audit` table: `at`, `login`, `action` (`answer`, `undo`, `adopt`, `opinion`, `opinion-retract`, `comment`, `override`, `rule`, `access-add`, `access-remove`, `session-revoke`, `sign-in`, `sign-in-refused` (anyone with a GitHub account can cause one, so there is at most one row per login per hour and `details.refused` counts the rest), `job-request`, `job-cancel`, `pipeline-switch`, `stage-limit`), `target`, `details` (JSON). Shown on the item page (that item's entries) and on the Access page (everything, filterable).
+`audit` table: `at`, `login`, `action` (`answer`, `undo`, `adopt`, `opinion`, `opinion-retract`, `comment`, `override`, `rule`, `access-add`, `access-remove`, `session-revoke`, `sign-in`, `sign-in-refused` (anyone with a GitHub account can cause one, so there is at most one row per login per hour and `details.refused` counts the rest), `job-request`, `job-cancel`, `pipeline-switch`, `stage-limit`, `mcp-token-create`, `mcp-token-revoke`), `target`, `details` (JSON). Shown on the item page (that item's entries) and on the Access page (everything, filterable).
 
 ### Secrets and configuration
 
